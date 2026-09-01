@@ -17,6 +17,7 @@ const {
   summarizeToolInput,
 } = require('./shared');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
+const { deriveTurnState } = require('./turnState');
 
 const OMP_HOME = path.join(os.homedir(), '.omp');
 const DEFAULT_SESSIONS_DIR = path.join(OMP_HOME, 'agent', 'sessions');
@@ -149,9 +150,11 @@ function parseOmpTranscript(records, {
   let latestActivity = 0;
   let latestAssistantText = null;
   let latestAssistantTs = 0;
+  let turnStartedAt = null;
+  let turnEnded = false;
+  let turnEndedAt = null;
   let latestTool = null;
   let latestToolInput = null;
-  let sawSessionExit = false;
   const pendingTools = new Map();
   const toolHistory = [];
   const messages = [];
@@ -200,7 +203,8 @@ function parseOmpTranscript(records, {
       continue;
     }
     if (record?.type === 'custom' && record.customType === 'session_exit') {
-      sawSessionExit = true;
+      turnEnded = true;
+      turnEndedAt = recordTs || customTs || turnEndedAt;
       continue;
     }
 
@@ -218,6 +222,8 @@ function parseOmpTranscript(records, {
       if (text) {
         latestAssistantText = compactText(text);
         latestAssistantTs = messageTs;
+        turnEnded = true;
+        turnEndedAt = messageTs || turnEndedAt;
         rememberDialogue({
           text,
           kind: 'assistant',
@@ -271,12 +277,17 @@ function parseOmpTranscript(records, {
         latestToolInput = entry.detail || null;
         if (detail) toolHistory.push(entry);
         pendingTools.set(toolCallId, { tool, ts: messageTs });
+        turnEnded = false;
+        turnEndedAt = null;
       }
       continue;
     }
     if (role === 'user') {
       const text = extractText(message.content);
       if (detail && text) messages.push({ role: 'user', text: compactText(text), ts: messageTs });
+      turnStartedAt = messageTs || turnStartedAt;
+      turnEnded = false;
+      turnEndedAt = null;
       continue;
     }
     if (role === 'toolResult' || role === 'tool') {
@@ -322,9 +333,14 @@ function parseOmpTranscript(records, {
     reasoningInOutput: false,
     turnCount: usage.turnCount,
   } : null;
-  const turnState = pendingTools.size > 0
-    ? 'tool_pending'
-    : (latestAssistantText || sawSessionExit ? 'awaiting_input' : 'unknown');
+  const pending = pendingTools.values().next().value || null;
+  const turn = deriveTurnState({
+    pendingTool: pending?.tool || null,
+    pendingSince: pending?.ts || null,
+    turnEnded,
+    turnEndedAt,
+    permissionMode: 'bypassPermissions',
+  }, now);
   const resolvedModel = model || 'omp';
   const resolvedProvider = underlyingProvider || modelProvider(resolvedModel);
 
@@ -347,9 +363,9 @@ function parseOmpTranscript(records, {
       observedSources,
       tokenUsage,
       parentSessionId: parentSessionId ? transcriptId(parentSessionId) : null,
-      turnState,
-      pendingTool: pendingTools.values().next().value?.tool || null,
-      pendingSince: pendingTools.values().next().value?.ts || null,
+      ...turn,
+      signalSource: 'transcript',
+      turnStartedAt,
     },
     detail: createDetailResponse({
       provider: 'omp',
@@ -370,6 +386,8 @@ class OmpAdapter {
     this.home = path.resolve(this.sessionsDir, '..', '..');
     this.now = now;
     this._index = new Map();
+    this._detailIndex = new Map();
+    this._detailScanDirectoryMtimes = null;
     this._perf = {
       activePasses: 0,
       filesDiscovered: 0,
@@ -403,10 +421,13 @@ class OmpAdapter {
     try { return fs.statSync(this.sessionsDir).isDirectory(); } catch { return false; }
   }
 
-  _listTranscriptFiles() {
+  _listTranscriptFiles(directoryMtimes = null) {
     const files = [];
     const visit = (directory) => {
       if (files.length >= MAX_TRANSCRIPTS) return;
+      if (directoryMtimes) {
+        try { directoryMtimes.set(directory, fs.statSync(directory).mtimeMs); } catch { return; }
+      }
       let entries;
       try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
       for (const entry of entries) {
@@ -418,6 +439,15 @@ class OmpAdapter {
     };
     visit(this.sessionsDir);
     return files;
+  }
+
+  _directoryMtimesChanged(current) {
+    const previous = this._detailScanDirectoryMtimes;
+    if (!previous || previous.size !== current.size) return true;
+    for (const [directory, mtimeMs] of current) {
+      if (previous.get(directory) !== mtimeMs) return true;
+    }
+    return false;
   }
 
   _readRecords(filePath, lines = TRANSCRIPT_TAIL_LINES) {
@@ -495,7 +525,10 @@ class OmpAdapter {
       pass.bytesRead += Math.min(fileStat.size, TRANSCRIPT_HEAD_MAX_BYTES);
       const parsed = this._parseFile(filePath, { activeThresholdMs, fileStat });
       if (!parsed) continue;
-      this._index.set(rawSessionId(parsed.session.sessionId), { filePath, parentSessionId: parsed.session.parentSessionId });
+      const rawId = rawSessionId(parsed.session.sessionId);
+      const entry = { filePath, parentSessionId: parsed.session.parentSessionId };
+      this._index.set(rawId, entry);
+      this._detailIndex.set(rawId, entry);
       sessions.push(parsed.session);
     }
 
@@ -531,14 +564,20 @@ class OmpAdapter {
 
   getSessionDetail(sessionId, project) {
     const rawId = rawSessionId(sessionId);
-    let entry = this._index.get(rawId);
+    let entry = this._index.get(rawId) || this._detailIndex.get(rawId);
     if (!entry) {
-      for (const filePath of this._listTranscriptFiles()) {
-        const parsed = this._parseFile(filePath);
-        if (!parsed) continue;
-        const parsedRawId = rawSessionId(parsed.session.sessionId);
-        this._index.set(parsedRawId, { filePath, parentSessionId: parsed.session.parentSessionId });
-        if (parsedRawId === rawId) entry = { filePath, parentSessionId: parsed.session.parentSessionId };
+      const directoryMtimes = new Map();
+      const files = this._listTranscriptFiles(directoryMtimes);
+      if (this._directoryMtimesChanged(directoryMtimes)) {
+        for (const filePath of files) {
+          const parsed = this._parseFile(filePath);
+          if (!parsed) continue;
+          const parsedRawId = rawSessionId(parsed.session.sessionId);
+          const parsedEntry = { filePath, parentSessionId: parsed.session.parentSessionId };
+          this._detailIndex.set(parsedRawId, parsedEntry);
+          if (parsedRawId === rawId) entry = parsedEntry;
+        }
+        this._detailScanDirectoryMtimes = directoryMtimes;
       }
     }
     if (!entry) return createDetailResponse({ provider: this.provider, sessionId, project: project || '' });
@@ -554,6 +593,8 @@ class OmpAdapter {
 
   invalidateCachesForDirty() {
     this._index.clear();
+    this._detailIndex.clear();
+    this._detailScanDirectoryMtimes = null;
   }
 
   getPerfStats() {
@@ -562,6 +603,8 @@ class OmpAdapter {
 
   shutdown() {
     this._index.clear();
+    this._detailIndex.clear();
+    this._detailScanDirectoryMtimes = null;
   }
 }
 

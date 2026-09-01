@@ -20,6 +20,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
+const { deriveTurnState } = require('./turnState');
 const {
   createDetailResponse,
   fileSignature,
@@ -62,6 +63,7 @@ const KIMI_CODE_INDEX_FALLBACK_MAX_MS = Math.max(
   1,
   Number(process.env.CLAUDEVILLE_KIMI_INDEX_FALLBACK_MAX_MS || 20) || 20,
 );
+const DISCOVERY_CACHE_MS = 5000;
 const KIMI_TOOL_INPUT_FIELDS = Object.freeze([
   'command',
   'file_path',
@@ -98,6 +100,9 @@ const _codeIndexCache = {
   fallbackDiscarding: false,
   fallbackTargetSignature: '',
 };
+const _projectPathMapCache = { at: 0, value: null };
+const _legacyWirePathCache = { at: 0, value: null };
+const _codeWirePathCache = { at: 0, value: null };
 const _perf = {
   codeIndexHits: 0,
   codeIndexMisses: 0,
@@ -160,6 +165,14 @@ function readJsonLines(filePath, { from = 'end', count = 100 } = {}) {
     tailMaxBytes: MAX_TAIL_BYTES,
     source: 'kimi',
   });
+}
+
+function tailEntries(entries, count) {
+  return entries.length > count ? entries.slice(-count) : entries;
+}
+
+function readActiveWireTail(filePath) {
+  return readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
 }
 
 function readKimiJson() {
@@ -500,6 +513,10 @@ function hydrateKimiCodeIndexForSessions(index, sessionRecords) {
 }
 
 function buildProjectPathMap() {
+  const now = Date.now();
+  if (_projectPathMapCache.value && now - _projectPathMapCache.at < DISCOVERY_CACHE_MS) {
+    return _projectPathMapCache.value;
+  }
   const map = new Map();
   const kimiJson = readKimiJson();
   if (Array.isArray(kimiJson.work_dirs)) {
@@ -527,6 +544,8 @@ function buildProjectPathMap() {
       }
     } catch { /* ignore */ }
   }
+  _projectPathMapCache.at = now;
+  _projectPathMapCache.value = map;
   return map;
 }
 
@@ -615,7 +634,7 @@ function readKimiToolIntent(args) {
   return null;
 }
 
-function parseWireDetail(filePath, project = null) {
+function parseWireDetail(filePath, project = null, wireEntries = null) {
   const detail = {
     model: null,
     lastTool: null,
@@ -650,7 +669,9 @@ function parseWireDetail(filePath, project = null) {
     }
   };
 
-  const entries = readJsonLines(filePath, { from: 'end', count: 100 });
+  const entries = wireEntries
+    ? tailEntries(wireEntries, 100)
+    : readJsonLines(filePath, { from: 'end', count: 100 });
 
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
@@ -745,7 +766,7 @@ function getRecentMessages(filePath, maxItems = 5) {
   return messages.slice(-maxItems);
 }
 
-function getTokenUsage(filePath) {
+function getTokenUsage(filePath, wireEntries = null) {
   const emptyUsage = {
     input: 0,
     output: 0,
@@ -757,7 +778,9 @@ function getTokenUsage(filePath) {
   };
 
   try {
-    const entries = readJsonLines(filePath, { from: 'end', count: 500 });
+    const entries = wireEntries
+      ? tailEntries(wireEntries, 500)
+      : readJsonLines(filePath, { from: 'end', count: 500 });
     let totalInput = 0;
     let totalOutput = 0;
     let totalCacheRead = 0;
@@ -806,10 +829,10 @@ function getTokenUsage(filePath) {
   return emptyUsage;
 }
 
-function getGitEvents(filePath, context) {
+function getGitEvents(filePath, context, wireEntries = null) {
   const events = [];
   try {
-    const entries = readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
+    const entries = wireEntries || readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
 
     entries.forEach((entry, entryIndex) => {
       const msg = entry.message;
@@ -954,7 +977,7 @@ function kimiCodeSessionModelKey(detailsByAgentName, agentRecords, now, activeTh
   return null;
 }
 
-function parseWireDetailV2(filePath, project = null) {
+function parseWireDetailV2(filePath, project = null, wireEntries = null) {
   const detail = {
     model: null,
     project: null,
@@ -989,7 +1012,9 @@ function parseWireDetailV2(filePath, project = null) {
       collectDialogue = false;
     }
   };
-  const entries = readJsonLines(filePath, { from: 'end', count: 100 });
+  const entries = wireEntries
+    ? tailEntries(wireEntries, 100)
+    : readJsonLines(filePath, { from: 'end', count: 100 });
 
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
@@ -1048,6 +1073,91 @@ function parseWireDetailV2(filePath, project = null) {
   }
 
   return detail;
+}
+
+function deriveKimiCodeTurnState(wireEntries, now) {
+  const entries = wireEntries;
+  let turnStartIndex = -1;
+  let turnStartedAt = null;
+
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry?.type !== 'context.append_message' || entry.message?.role !== 'user') continue;
+    turnStartIndex = i;
+    turnStartedAt = kimiCodeEventTime(entry) || null;
+    break;
+  }
+
+  if (turnStartIndex === -1) {
+    const latestTurnId = [...entries].reverse()
+      .map(entry => entry?.event?.turnId)
+      .find(turnId => turnId != null);
+    if (latestTurnId != null) {
+      turnStartIndex = entries.findIndex(entry => entry?.event?.turnId === latestTurnId);
+      const startEntry = entries[turnStartIndex];
+      turnStartedAt = kimiCodeEventTime(startEntry, startEntry?.event) || null;
+    }
+  }
+
+  const pendingCalls = new Map();
+  let turnEnded = false;
+  let turnEndedAt = null;
+  const scopedEntries = turnStartIndex >= 0 ? entries.slice(turnStartIndex) : entries;
+
+  for (const entry of scopedEntries) {
+    const call = loopEvent(entry, 'tool.call');
+    if (call) {
+      const callId = kimiCodeToolCallId(call);
+      if (callId) {
+        pendingCalls.set(callId, {
+          tool: call.name || 'unknown',
+          at: kimiCodeEventTime(entry, call) || null,
+        });
+      }
+      turnEnded = false;
+      turnEndedAt = null;
+      continue;
+    }
+
+    const result = loopEvent(entry, 'tool.result');
+    if (result) {
+      const callId = kimiCodeToolCallId(result);
+      if (callId) pendingCalls.delete(callId);
+      continue;
+    }
+
+    const event = entry?.event;
+    if (event?.type === 'step.begin' || event?.type === 'turn.begin') {
+      turnEnded = false;
+      turnEndedAt = null;
+      continue;
+    }
+    if (event?.type === 'turn.end') {
+      turnEnded = true;
+      turnEndedAt = kimiCodeEventTime(entry, event) || null;
+      continue;
+    }
+    if (event?.type === 'step.end') {
+      const finishReason = String(event.finishReason || event.finish_reason || '').toLowerCase();
+      if (finishReason && !['tool_use', 'tool_calls', 'function_call'].includes(finishReason)) {
+        turnEnded = true;
+        turnEndedAt = kimiCodeEventTime(entry, event) || null;
+      }
+    }
+  }
+
+  const pending = [...pendingCalls.values()].sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
+  return {
+    ...deriveTurnState({
+      pendingTool: pending?.tool || null,
+      pendingSince: pending?.at || null,
+      turnEnded,
+      turnEndedAt,
+      permissionMode: 'bypassPermissions',
+    }, now),
+    signalSource: 'transcript',
+    turnStartedAt,
+  };
 }
 
 function getToolHistoryV2(filePath, maxItems = 15) {
@@ -1147,11 +1257,13 @@ function emptyKimiCodeUsage(contextWindowMax = 0) {
   };
 }
 
-function getTokenUsageV2(filePath, contextWindowMax = 0) {
+function getTokenUsageV2(filePath, contextWindowMax = 0, wireEntries = null) {
   const emptyUsage = emptyKimiCodeUsage(contextWindowMax);
 
   try {
-    const entries = readJsonLines(filePath, { from: 'end', count: 500 });
+    const entries = wireEntries
+      ? tailEntries(wireEntries, 500)
+      : readJsonLines(filePath, { from: 'end', count: 500 });
     let totalInput = 0;
     let totalOutput = 0;
     let totalCacheRead = 0;
@@ -1211,10 +1323,10 @@ function getKimiCodeWireContext(wirePath, fallbackProject = null) {
   };
 }
 
-function getGitEventsV2(filePath, context) {
+function getGitEventsV2(filePath, context, wireEntries = null) {
   const events = [];
   try {
-    const entries = readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
+    const entries = wireEntries || readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
     const completionsByCallId = new Map();
     for (const entry of entries) {
       const result = loopEvent(entry, 'tool.result');
@@ -1246,21 +1358,18 @@ function getGitEventsV2(filePath, context) {
 
 // Walk ~/.kimi-code/sessions/<workspace>/<session>/agents/<agent>/wire.jsonl.
 // The `main` agent is the user-facing session; subagents become child sessions.
-function getActiveSessionsV2(activeThresholdMs, now) {
-  if (!fs.existsSync(KIMI_CODE_SESSIONS_DIR)) return [];
-
-  const index = readKimiCodeIndex();
-  const config = readConfigToml(KIMI_CODE_CONFIG_TOML, _codeConfigCache);
-  const modelInfo = resolveModelInfo(config);
-  const sessions = [];
-  const sessionRecords = [];
-
+function discoverKimiCodeWires() {
+  const now = Date.now();
+  if (_codeWirePathCache.value && now - _codeWirePathCache.at < DISCOVERY_CACHE_MS) {
+    return _codeWirePathCache.value;
+  }
+  const records = [];
   let workspaceDirs;
   try {
     workspaceDirs = fs.readdirSync(KIMI_CODE_SESSIONS_DIR, { withFileTypes: true })
       .filter(d => d.isDirectory());
   } catch {
-    return [];
+    return records;
   }
 
   for (const wsDir of workspaceDirs) {
@@ -1274,34 +1383,57 @@ function getActiveSessionsV2(activeThresholdMs, now) {
       const sessionDirName = sDir.name;
       const sessionPath = path.join(wsPath, sessionDirName);
       const agentsDir = path.join(sessionPath, 'agents');
-
       let agentDirs;
       try {
         agentDirs = fs.readdirSync(agentsDir, { withFileTypes: true }).filter(d => d.isDirectory());
       } catch { continue; }
-
-      const agentRecords = [];
-      let latestAgentActivity = 0;
-      for (const aDir of agentDirs) {
-        const agentName = aDir.name;
-        const wirePath = path.join(agentsDir, agentName, 'wire.jsonl');
-        if (!fs.existsSync(wirePath)) continue;
-
-        let stat;
-        try { stat = fs.statSync(wirePath); } catch { continue; }
-        latestAgentActivity = Math.max(latestAgentActivity, stat.mtimeMs);
-        agentRecords.push({ agentName, wirePath, stat });
-      }
-      if (!agentRecords.length || now - latestAgentActivity > activeThresholdMs) continue;
-
-      sessionRecords.push({
+      records.push({
         sessionDirName,
         sessionPath,
         sessionRealPath: safeExistingDirectory(sessionPath, KIMI_CODE_SESSIONS_DIR),
-        agentRecords,
-        latestAgentActivity,
+        agents: agentDirs.flatMap(aDir => {
+          const wirePath = path.join(agentsDir, aDir.name, 'wire.jsonl');
+          try {
+            return [{ agentName: aDir.name, wirePath, stat: fs.statSync(wirePath) }];
+          } catch {
+            return [];
+          }
+        }),
       });
     }
+  }
+
+  _codeWirePathCache.at = now;
+  _codeWirePathCache.value = records;
+  return records;
+}
+
+function getActiveSessionsV2(activeThresholdMs, now) {
+  if (!fs.existsSync(KIMI_CODE_SESSIONS_DIR)) return [];
+
+  const index = readKimiCodeIndex();
+  const config = readConfigToml(KIMI_CODE_CONFIG_TOML, _codeConfigCache);
+  const modelInfo = resolveModelInfo(config);
+  const sessions = [];
+  const sessionRecords = [];
+
+  for (const discovered of discoverKimiCodeWires()) {
+    const { sessionDirName, sessionPath, sessionRealPath } = discovered;
+    const agentRecords = [];
+    let latestAgentActivity = 0;
+    for (const { agentName, wirePath, stat } of discovered.agents) {
+      latestAgentActivity = Math.max(latestAgentActivity, stat.mtimeMs);
+      agentRecords.push({ agentName, wirePath, stat });
+    }
+    if (!agentRecords.length || now - latestAgentActivity > activeThresholdMs) continue;
+
+    sessionRecords.push({
+      sessionDirName,
+      sessionPath,
+      sessionRealPath,
+      agentRecords,
+      latestAgentActivity,
+    });
   }
 
   hydrateKimiCodeIndexForSessions(index, sessionRecords);
@@ -1327,6 +1459,7 @@ function getActiveSessionsV2(activeThresholdMs, now) {
       .map(record => record.agentName));
     const hasMainRecord = agentRecords.some(record => record.agentName === 'main');
     const detailsByAgentName = new Map();
+    const wireEntriesByAgentName = new Map();
     const projectHint = indexEntry?.workDir || kimiCodeProjectFromState(stateMeta) || null;
     let wireProject = null;
     for (const record of agentRecords) {
@@ -1335,7 +1468,9 @@ function getActiveSessionsV2(activeThresholdMs, now) {
         continue;
       }
       _perf.parsedActiveAgentWires++;
-      const detail = parseWireDetailV2(record.wirePath, projectHint);
+      const wireEntries = readActiveWireTail(record.wirePath);
+      const detail = parseWireDetailV2(record.wirePath, projectHint, wireEntries);
+      wireEntriesByAgentName.set(record.agentName, wireEntries);
       detailsByAgentName.set(record.agentName, detail);
       if (!wireProject && detail.project) wireProject = detail.project;
     }
@@ -1377,7 +1512,12 @@ function getActiveSessionsV2(activeThresholdMs, now) {
       const lastActivity = isMain ? Math.max(stat.mtimeMs, latestAgentActivity) : stat.mtimeMs;
       if (now - lastActivity > activeThresholdMs) continue;
 
-      const detail = detailsByAgentName.get(agentName) || parseWireDetailV2(wirePath, project);
+      let wireEntries = wireEntriesByAgentName.get(agentName);
+      if (!wireEntries) {
+        wireEntries = readActiveWireTail(wirePath);
+        wireEntriesByAgentName.set(agentName, wireEntries);
+      }
+      const detail = detailsByAgentName.get(agentName) || parseWireDetailV2(wirePath, project, wireEntries);
       const sessionId = isMain ? `kimi-${sessionDirName}` : `kimi-${sessionDirName}::${agentName}`;
 
       const modelKey = detail.model || config.defaultModel;
@@ -1385,6 +1525,7 @@ function getActiveSessionsV2(activeThresholdMs, now) {
       const model = (modelEntry && modelEntry.displayName) || modelInfo.displayName || modelInfo.model || 'kimi';
       const ctxMax = (modelEntry && modelEntry.maxContext) || modelInfo.maxContext || 0;
       const agentLabel = isMain ? title : agentName;
+      const turnState = deriveKimiCodeTurnState(wireEntries, now);
 
       sessions.push({
         sessionId,
@@ -1402,12 +1543,13 @@ function getActiveSessionsV2(activeThresholdMs, now) {
         lastToolInput: detail.lastToolInput,
         dialogue: pickDialogue(detail.dialogueCandidates, { now: Date.now() }),
         observedSources: detail.observedSources,
-        tokenUsage: getTokenUsageV2(wirePath, ctxMax),
+        tokenUsage: getTokenUsageV2(wirePath, ctxMax, wireEntries),
         gitEvents: getGitEventsV2(wirePath, {
           provider: 'kimi',
           sessionId,
           project,
-        }),
+        }, wireEntries),
+        ...turnState,
         parentSessionId: kimiCodeParentSessionId(sessionDirName, agentName, stateMeta.agents, activeAgentNames),
       });
     }
@@ -1496,6 +1638,50 @@ function findNewestKimiCodeChildWire(dirName, indexedSessionDir = null) {
 
 // ─── Adapter class ────────────────────────────────────
 
+function discoverLegacyKimiWires() {
+  const now = Date.now();
+  if (_legacyWirePathCache.value && now - _legacyWirePathCache.at < DISCOVERY_CACHE_MS) {
+    return _legacyWirePathCache.value;
+  }
+  const records = [];
+  let projectDirs;
+  try {
+    projectDirs = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
+      .filter(d => d.isDirectory());
+  } catch {
+    return records;
+  }
+
+  for (const projDir of projectDirs) {
+    const projectHash = projDir.name;
+    const projPath = path.join(SESSIONS_DIR, projectHash);
+    let sessionDirs;
+    try {
+      sessionDirs = fs.readdirSync(projPath, { withFileTypes: true })
+        .filter(d => d.isDirectory());
+    } catch { continue; }
+
+    for (const sessionDir of sessionDirs) {
+      const sessionId = sessionDir.name;
+      const sessionPath = path.join(projPath, sessionId);
+      const wirePath = path.join(sessionPath, 'wire.jsonl');
+      let stat;
+      try { stat = fs.statSync(wirePath); } catch { continue; }
+      records.push({
+        projectHash,
+        sessionId,
+        wirePath,
+        stat,
+        statePath: path.join(sessionPath, 'state.json'),
+      });
+    }
+  }
+
+  _legacyWirePathCache.at = now;
+  _legacyWirePathCache.value = records;
+  return records;
+}
+
 class KimiAdapter {
   get name() { return 'Kimi CLI'; }
   get provider() { return 'kimi'; }
@@ -1514,61 +1700,38 @@ class KimiAdapter {
       const modelInfo = resolveModelInfo(config);
 
       try {
-        const projectDirs = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
-          .filter(d => d.isDirectory());
-
-        for (const projDir of projectDirs) {
-          const projectHash = projDir.name;
-          const projPath = path.join(SESSIONS_DIR, projectHash);
+        for (const { projectHash, sessionId, wirePath, stat, statePath } of discoverLegacyKimiWires()) {
           const project = resolveProjectPath(projectHash);
+          if (now - stat.mtimeMs > activeThresholdMs) continue;
 
-          let sessionDirs;
-          try {
-            sessionDirs = fs.readdirSync(projPath, { withFileTypes: true })
-              .filter(d => d.isDirectory());
-          } catch { continue; }
+          const title = fs.existsSync(statePath) ? getSessionTitle(statePath) : null;
+          const wireEntries = readActiveWireTail(wirePath);
+          const detail = parseWireDetail(wirePath, project, wireEntries);
 
-          for (const sessionDir of sessionDirs) {
-            const sessionId = sessionDir.name;
-            const sessionPath = path.join(projPath, sessionId);
-            const wirePath = path.join(sessionPath, 'wire.jsonl');
-
-            if (!fs.existsSync(wirePath)) continue;
-
-            let stat;
-            try { stat = fs.statSync(wirePath); } catch { continue; }
-
-            if (now - stat.mtimeMs > activeThresholdMs) continue;
-
-            const statePath = path.join(sessionPath, 'state.json');
-            const title = fs.existsSync(statePath) ? getSessionTitle(statePath) : null;
-            const detail = parseWireDetail(wirePath, project);
-
-            sessions.push({
-              sessionId: `kimi-${sessionId}`,
+          sessions.push({
+            sessionId: `kimi-${sessionId}`,
+            provider: 'kimi',
+            agentId: sessionId,
+            name: title,
+            agentName: title,
+            agentType: 'main',
+            model: detail.model || modelInfo.displayName || modelInfo.model || 'kimi',
+            status: 'active',
+            lastActivity: stat.mtimeMs,
+            project,
+            lastMessage: detail.lastMessage,
+            lastTool: detail.lastTool,
+            lastToolInput: detail.lastToolInput,
+            dialogue: pickDialogue(detail.dialogueCandidates, { now: Date.now() }),
+            observedSources: detail.observedSources,
+            tokenUsage: getTokenUsage(wirePath, wireEntries),
+            gitEvents: getGitEvents(wirePath, {
               provider: 'kimi',
-              agentId: sessionId,
-              name: title,
-              agentName: title,
-              agentType: 'main',
-              model: detail.model || modelInfo.displayName || modelInfo.model || 'kimi',
-              status: 'active',
-              lastActivity: stat.mtimeMs,
+              sessionId: `kimi-${sessionId}`,
               project,
-              lastMessage: detail.lastMessage,
-              lastTool: detail.lastTool,
-              lastToolInput: detail.lastToolInput,
-              dialogue: pickDialogue(detail.dialogueCandidates, { now: Date.now() }),
-              observedSources: detail.observedSources,
-              tokenUsage: getTokenUsage(wirePath),
-              gitEvents: getGitEvents(wirePath, {
-                provider: 'kimi',
-                sessionId: `kimi-${sessionId}`,
-                project,
-              }),
-              parentSessionId: null,
-            });
-          }
+            }, wireEntries),
+            parentSessionId: null,
+          });
         }
       } catch { /* ignore */ }
     }
@@ -1697,6 +1860,12 @@ class KimiAdapter {
     _codeIndexCache.fallbackOffset = 0;
     _codeIndexCache.fallbackDiscarding = false;
     _codeIndexCache.fallbackTargetSignature = '';
+    _projectPathMapCache.value = null;
+    _projectPathMapCache.at = 0;
+    _legacyWirePathCache.value = null;
+    _legacyWirePathCache.at = 0;
+    _codeWirePathCache.value = null;
+    _codeWirePathCache.at = 0;
   }
 
   getPerfStats() {

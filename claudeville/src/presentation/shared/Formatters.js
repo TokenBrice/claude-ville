@@ -1,6 +1,8 @@
 import { AgentStatus, normalizeAgentStatus } from '../../domain/value-objects/AgentStatus.js';
 
-const HOME_ROOTS = Object.freeze(['Users', 'home']);
+const HOME_ROOTS = Object.freeze(['users', 'home']);
+const ABSOLUTE_PATH_TOKEN_RE = /(^|[\s"'`=(\[{])((?:\/|[A-Za-z]:[\\/])[^"'`\s;&|<>()[\]{}]*)/g;
+const COMMAND_PREFIX_RE = /^(?:(?:env|sudo|command|exec|time)\s+)*(?:apply_patch|awk|bash|bun|cargo|cat|cd|chmod|chown|cmd|composer|cp|curl|deno|diff|docker|fd|find|gh|git|grep|head|java|javac|jest|kubectl|ls|make|mkdir|mv|node|npm|npx|patch|perl|php|pip|pnpm|powershell|pytest|python|python3|pwd|pwsh|rg|rm|ruby|rustc|sed|scp|sh|ssh|tail|touch|vitest|wget|yarn|zsh)(?=\s|$)/i;
 const RELATIVE_TIME_THRESHOLDS = [
     [60_000, 'just now'],
     [60 * 60_000, (ms) => `${Math.floor(ms / 60_000)}m ago`],
@@ -79,8 +81,12 @@ export function shortenHomePath(path) {
     if (!text || text === '_unknown') return '';
     const separator = text.includes('\\') ? '\\' : '/';
     const parts = text.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean);
-    if (parts.length >= 2 && HOME_ROOTS.includes(parts[0])) {
-        const suffix = parts.slice(2).join(separator);
+    const homeRootIndex = HOME_ROOTS.includes(String(parts[0] || '').toLowerCase())
+        ? 0
+        : (/^[A-Za-z]:$/.test(parts[0] || '')
+            && HOME_ROOTS.includes(String(parts[1] || '').toLowerCase()) ? 1 : -1);
+    if (homeRootIndex >= 0 && parts.length > homeRootIndex) {
+        const suffix = parts.slice(homeRootIndex + 2).join(separator);
         return suffix ? `~${separator}${suffix}` : '~';
     }
     return text;
@@ -107,4 +113,101 @@ export function truncateText(value, max) {
     if (limit === 0) return '';
     if (limit === 1) return '…';
     return `${text.slice(0, limit - 1)}…`;
+}
+
+function normalizedPath(value) {
+    return String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function isWindowsPath(value) {
+    return /^[A-Za-z]:[\\/]/.test(String(value || '')) || String(value || '').includes('\\');
+}
+
+function shortenAbsolutePathTokens(value) {
+    return String(value || '').replace(ABSOLUTE_PATH_TOKEN_RE, (match, prefix, token) => (
+        `${prefix}${shortenHomePath(token)}`
+    ));
+}
+
+function unwrapPath(value) {
+    const text = String(value || '').trim();
+    if (text.length >= 2 && ['"', "'", '`'].includes(text[0]) && text.at(-1) === text[0]) {
+        return text.slice(1, -1);
+    }
+    return text;
+}
+
+function isPathShapedDetail(value) {
+    const text = unwrapPath(value);
+    if (!text || /^[A-Za-z][A-Za-z\d+.-]*:\/\//.test(text)) return false;
+    if (isAbsolutePath(text) || /^~[\\/]/.test(text) || /^\.{1,2}[\\/]/.test(text)) return true;
+    if (!/\s/.test(text) && /[\\/]/.test(text) && /(?:^|[\\/])[^\\/]+(?:\.[A-Za-z\d_-]+)?$/.test(text)) return true;
+    return /^[^\\/\s]+\.[A-Za-z\d_-]+$/.test(text);
+}
+
+function isAbsolutePath(value) {
+    return /^(?:\/|[A-Za-z]:[\\/])/.test(String(value || ''));
+}
+
+function stripProjectPrefix(pathText, projectPath) {
+    const text = String(pathText || '');
+    const rawProject = String(projectPath || '');
+    const project = shortenHomePath(rawProject);
+    const normalizedText = normalizedPath(text);
+    const normalizedProject = normalizedPath(project);
+    if (!normalizedText || !normalizedProject || normalizedProject === '_unknown') return text;
+
+    const caseInsensitive = isWindowsPath(text) || isWindowsPath(rawProject) || isWindowsPath(project);
+    const comparableText = caseInsensitive ? normalizedText.toLowerCase() : normalizedText;
+    const comparableProject = caseInsensitive ? normalizedProject.toLowerCase() : normalizedProject;
+    if (comparableText === comparableProject) return '.';
+    if (!comparableText.startsWith(`${comparableProject}/`)) return text;
+
+    const suffix = normalizedText.slice(normalizedProject.length).replace(/^\/+/, '');
+    const separator = text.includes('\\') || project.includes('\\') ? '\\' : '/';
+    return suffix.replace(/\//g, separator);
+}
+
+function truncatePathFromHead(value, max) {
+    const text = String(value || '');
+    const limit = Math.max(0, Math.floor(Number(max) || 0));
+    if (text.length <= limit) return text;
+    if (limit === 0) return '';
+    if (limit === 1) return '…';
+
+    const separator = text.includes('\\') ? '\\' : '/';
+    const segments = text.split(/[\\/]+/).filter(Boolean);
+    const filename = segments.at(-1) || text;
+    const marker = `…${separator}`;
+    const available = limit - marker.length;
+    if (available <= 0) return `…${filename.slice(-(limit - 1))}`;
+    if (filename.length >= available) return `${marker}${filename.slice(-available)}`;
+
+    const parent = segments.at(-2) || '';
+    const parentBudget = available - separator.length - filename.length;
+    if (parentBudget <= 0 || !parent) return `${marker}${filename}`;
+    return `${marker}${parent.slice(-parentBudget)}${separator}${filename}`;
+}
+
+/**
+ * Format a tool detail without sacrificing the useful end of a file path.
+ * The raw value remains available to the caller for hover text.
+ */
+export function formatToolDetail(detail, { max = 48, projectPath = '' } = {}) {
+    const raw = String(detail || '');
+    if (!raw) return '';
+
+    if (COMMAND_PREFIX_RE.test(raw.trim())) {
+        return truncateText(shortenAbsolutePathTokens(raw), max);
+    }
+
+    const shortened = shortenAbsolutePathTokens(raw);
+    const pathCandidate = unwrapPath(shortened);
+    if (isPathShapedDetail(pathCandidate)) {
+        const displayPath = shortenHomePath(pathCandidate);
+        const relativePath = stripProjectPrefix(displayPath, projectPath);
+        return truncatePathFromHead(relativePath, max);
+    }
+
+    return truncateText(shortened, max);
 }

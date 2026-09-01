@@ -25,7 +25,7 @@ Do not change port `4000` casually. The README and local workflows assume it.
 
 Cadence constants live in `src/config/constants.js`, `server.js`, `adapters/index.js`, and `adapters/gitEvents.js`.
 
-Invariant: client poll fallback runs at 2 s; server cache TTL is 5 s; WS heartbeat is 30 s — never lower client poll under server cache TTL/2 or the cache becomes useless.
+Invariant: client poll fallback runs at 2 s; server session-list cache TTL is 2000 ms; WS heartbeat is 30 s — never lower client poll under server cache TTL/2 or the cache becomes useless.
 
 ## Provider Adapters
 
@@ -41,7 +41,7 @@ In `adapters/`, registered by `adapters/index.js`.
 - `turnState.js`: pure, provider-agnostic turn state (`working` / `tool_pending` / `awaiting_input` / `unknown`) plus the pending-tool classifier that separates a permission prompt from a slow tool. Adapters extract a small descriptor from their own transcript format and hand it here; `claude.js` pairs `tool_use`/`tool_result` and reads `stop_reason`, `codex.js` uses `task_started`/`task_complete` and `call_id`. Sessions carry `turnState`, `pendingTool`, `pendingSince`, `awaitingSince`, `waitReason`, `resident`.
 - `gitEvents.js`: parses git `commit`/`push` from provider tool logs (dry-runs omitted) into session `gitEvents`; the registry can synthesize repository-only `provider: 'git'` sessions. Scans default to `~/Documents/git`; tune `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`/`CLAUDEVILLE_REPOSITORY_SCAN_MAX`; disable `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`.
 
-Adapter availability is automatic; empty provider output is not necessarily an error. Treat all provider session files as read-only inputs. `adapters/index.js` caches lists and details for 5 s; detail failures return stale cache when present, else `{ toolHistory: [], messages: [] }`.
+Adapter availability is automatic; empty provider output is not necessarily an error. Treat all provider session files as read-only inputs. `adapters/index.js` caches lists for 2000 ms and details for 5000 ms; detail failures return stale cache when present, else `{ toolHistory: [], messages: [] }`.
 
 ## Frontend
 

@@ -1,6 +1,6 @@
 # ClaudeVille enchantment plan — the Council of Six
 
-**Status:** `proposed — not started`
+**Status:** `shipped as v0.36.0`
 
 **Baseline:** `main` at `v0.35.0.1` (*The Whetstone* + js-yaml hotfix), clean tree at plan time.
 

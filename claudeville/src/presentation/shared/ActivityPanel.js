@@ -6,7 +6,7 @@ import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { dialogueShape, dialogueSourceLabel } from '../../config/dialogue.js';
 import { el, replaceChildren } from './DomSafe.js';
-import { formatCdCommand, formatCost, formatRelative, formatTokens, hashRows, shortenHomePath, truncateText } from './Formatters.js';
+import { formatCdCommand, formatCost, formatRelative, formatTokens, formatToolDetail, hashRows, shortenHomePath, truncateText } from './Formatters.js';
 import { emitAgentDeselected, emitAgentSelected } from './AgentSelection.js';
 import { Toast } from './Toast.js';
 import {
@@ -858,7 +858,7 @@ export class ActivityPanel {
             const contextPct = maxContext ? Math.min(100, (tokenUsage.contextWindow / maxContext) * 100) : 0;
             const cost = agent
                 ? TokenUsage.estimateCost(tokenUsage, agent.model, agent.provider)
-                : 0;
+                : { usd: 0, rateMatch: null, unknownModel: false };
             return {
                 id,
                 agent,
@@ -876,7 +876,7 @@ export class ActivityPanel {
             row => row.tool?.icon || '',
             row => row.tool?.name || '',
             row => Math.round(row.contextPct),
-            row => row.cost.toFixed(6),
+            row => row.cost.usd.toFixed(6),
         ]);
         this._pinStripEl.style.display = '';
         if (signature === this._renderSignatures.pins) return;
@@ -918,7 +918,14 @@ export class ActivityPanel {
             }),
             el('span', { className: 'activity-panel__pin-name', text: name }),
             el('span', { className: 'activity-panel__pin-tool', text: row.tool?.icon || '-' }),
-            el('span', { className: 'activity-panel__pin-cost', text: formatCost(row.cost) }),
+            el('span', {
+                className: 'activity-panel__pin-cost',
+                title: `Estimated using ${row.cost.rateMatch || 'default'} rates, revision ${TokenUsage.rateRevision}`,
+            }, [
+                `~${formatCost(row.cost.usd)}`,
+                row.cost.unknownModel ? ' ' : null,
+                row.cost.unknownModel ? el('span', { className: 'dash-card__provider-badge', text: 'default rate' }) : null,
+            ]),
             el('span', { className: 'activity-panel__pin-context' }, [
                 el('span', {
                     className: 'activity-panel__pin-context-fill',
@@ -1270,6 +1277,10 @@ export class ActivityPanel {
             iconClass: 'activity-panel__tool-item-icon',
             nameClass: 'activity-panel__tool-item-name',
             detailClass: 'activity-panel__tool-item-detail',
+            formatDetail: detail => formatToolDetail(detail, {
+                max: 45,
+                projectPath: this.currentAgent?.projectPath || '',
+            }),
         });
         if (limited.length) {
             // Nodes mirror `limited` in reverse order (newest first).
@@ -1382,7 +1393,12 @@ export class ActivityPanel {
             this.currentAgent?.model,
             this.currentAgent?.provider,
         );
-        this.dom.panelEstCost.textContent = formatCost(cost);
+        this.dom.panelEstCost.title = `Estimated using ${cost.rateMatch} rates, revision ${TokenUsage.rateRevision}`;
+        replaceChildren(this.dom.panelEstCost, [
+            `~${formatCost(cost.usd)}`,
+            cost.unknownModel ? ' ' : null,
+            cost.unknownModel ? el('span', { className: 'dash-card__provider-badge', text: 'default rate' }) : null,
+        ]);
     }
 
     _setDetailState(activityText, usageText) {

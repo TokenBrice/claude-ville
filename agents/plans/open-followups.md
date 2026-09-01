@@ -2,7 +2,7 @@
 
 **Status:** live checklist
 
-**As of:** 2026-08-25, current checkout at `5f6ba42` (`v0.33.3`)
+**As of:** 2026-09-01, current checkout at `e7737d5` (`v0.37.0`)
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs
@@ -15,10 +15,9 @@ relevant work is already implemented and must not be carried forward as open.
 
 ## Artifact-policy note
 
-The repository instructions reference `agents/README.md`, but that file is not
-present in this checkout (and the post-OOM plan records the same baseline
-condition). This file follows the existing retained-artifact convention of
-`agents/plans/<slug>.md` and is linked from each source plan below.
+The repository instructions reference this `agents/README.md` index. It follows
+the existing retained-artifact convention of `agents/plans/<slug>.md` and is
+linked from each source plan below.
 
 ## Open / deferred
 
@@ -27,7 +26,7 @@ condition). This file follows the existing retained-artifact convention of
   - **Source:** [comprehensive remediation plan — CV-PERF-003](claudeville-comprehensive-remediation-plan.md#package-9--small-cleanup-and-explicit-deferrals) and [post-OOM plan — retained follow-ups](claudeville-post-oom-reliability-performance-plan.md#retained-follow-ups).
   - **Reopen when, from the comprehensive plan:** post-Package-8 runtime measurements show Git timeouts or sustained user-visible event-loop/broadcast stalls. The execution record restates this as isolated timeouts or user-visible stalls reproducing.
   - **Reopen when, from the post-OOM plan:** cold/change Git enrichment exceeds **50 ms p95**, Git appears in broadcast p95, or an unchanged warm run launches any Git command.
-  - **Current status:** Partially closed. The bounded async stale-while-revalidate worker **is now implemented** in `claudeville/adapters/gitEvents.js` (2 concurrent jobs, 32-deep queue with shedding, request coalescing, 750 ms subprocess timeout, 256 KiB output cap, 1 s–30 s retry backoff, telemetry at `/api/perf` under `gitWorker`). Two synchronous paths remain and are the residual work: `claudeville/adapters/index.js:147` (`execFileSync('git', …)`, which was outside the implementing task's file ownership) and the fallback at `claudeville/adapters/gitEvents.js:1656`. Close this item once those two are migrated or explicitly justified as safe.
+  - **Current status:** Partially closed. The bounded async stale-while-revalidate worker **is now implemented** in `claudeville/adapters/gitEvents.js` (2 concurrent jobs, 32-deep queue with shedding, request coalescing, 750 ms subprocess timeout, 256 KiB output cap, 1 s–30 s retry backoff, telemetry at `/api/perf` under `gitWorker`). Two synchronous paths remain and are the residual work: `claudeville/adapters/index.js:210-216` (`execFileSync('git', …)`, which was outside the implementing task's file ownership) and the fallback at `claudeville/adapters/gitEvents.js:1656`. Close this item once those two are migrated or explicitly justified as safe.
   - **Current measurement:** recorded cold enrichment was **17.02 ms / 4 commands** and unchanged warm enrichment **0.34 ms / 0 commands**; the comprehensive release gate recorded steady Git activity at **2.50 commands/second** and event-loop p95 at **22.9 ms or below**. No listed trigger is currently evidenced.
 
 - [ ] **Provider/model lazy asset loading**

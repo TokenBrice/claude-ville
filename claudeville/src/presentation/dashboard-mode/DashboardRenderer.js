@@ -6,7 +6,7 @@ import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { replaceChildren } from '../shared/DomSafe.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
-import { formatCost, formatRelative, formatTokens, normalizeStatus, shortenHomePath, shortProjectName, truncateText } from '../shared/Formatters.js';
+import { formatCost, formatRelative, formatTokens, formatToolDetail, normalizeStatus, shortenHomePath, shortProjectName, truncateText } from '../shared/Formatters.js';
 import { AgentSelectionMirror, emitAgentDeselected, emitAgentSelected } from '../shared/AgentSelection.js';
 import { operatorStatusLabel } from '../shared/SemanticTriage.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
@@ -984,7 +984,9 @@ export class DashboardRenderer {
         const cost = TokenUsage.estimateCost(usage, agent.model, agent.provider);
         return {
             tokens: `${formatTokens(totalTokens)} tokens`,
-            cost: formatCost(cost),
+            cost: `~${formatCost(cost.usd)}`,
+            costTitle: `Estimated using ${cost.rateMatch} rates, revision ${TokenUsage.rateRevision}`,
+            unknownModel: cost.unknownModel,
         };
     }
 
@@ -996,7 +998,14 @@ export class DashboardRenderer {
             return;
         }
         this._setText(refs.usageTokens, footer.tokens);
-        this._setText(refs.usageCost, footer.cost);
+        refs.usageCost.title = footer.costTitle;
+        refs.usageCost.replaceChildren(
+            document.createTextNode(footer.cost),
+            ...(footer.unknownModel ? [document.createTextNode(' '), Object.assign(document.createElement('span'), {
+                className: 'dash-card__provider-badge',
+                textContent: 'default rate',
+            })] : []),
+        );
         this._setStyle(refs.usage, 'display', '');
     }
 
@@ -1061,6 +1070,10 @@ export class DashboardRenderer {
             detailClass: 'dash-card__tool-item-detail',
             timeClass: 'dash-card__tool-item-time',
             includeCategoryClasses: true,
+            formatDetail: detail => formatToolDetail(detail, {
+                max: 60,
+                projectPath: this.world.agents.get(agentId)?.projectPath || '',
+            }),
         });
         const newestFirst = [...limited].reverse();
         nodes.forEach((node, index) => {

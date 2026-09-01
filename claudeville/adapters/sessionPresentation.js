@@ -110,35 +110,36 @@ function ratesForModel(model, provider) {
   const modelCandidates = pricingModelCandidates(model);
   const normalizedModel = modelCandidates[0] || '';
   const normalizedProvider = String(provider || '').toLowerCase();
-  if (normalizedProvider === 'kimi' || modelCandidates.some((candidate) => candidate.includes('kimi'))) {
-    return pricing.kimi.rates.find((rate) => rateMatches(modelCandidates, rate)) || pricing.kimi.default;
-  }
-  if (normalizedProvider === 'deepseek' || modelCandidates.some((candidate) => candidate.includes('deepseek'))) {
-    return pricing.deepseek.rates.find((rate) => rateMatches(modelCandidates, rate)) || pricing.deepseek.default;
-  }
-  if (normalizedProvider === 'grok' || modelCandidates.some((candidate) => candidate.includes('grok'))) {
-    return pricing.grok.rates.find((rate) => rateMatches(modelCandidates, rate)) || pricing.grok.default;
-  }
-  if (normalizedProvider === 'gemini' || modelCandidates.some((candidate) => candidate.includes('gemini'))) {
-    return pricing.gemini.rates.find((rate) => rateMatches(modelCandidates, rate)) || pricing.gemini.default;
-  }
-  const tableKey = normalizedProvider === 'codex' || normalizedModel.includes('gpt') ? 'openai' : 'claude';
-  return pricing[tableKey].rates.find((rate) => rateMatches(modelCandidates, rate)) || pricing[tableKey].default;
+  let tableKey;
+  if (normalizedProvider === 'kimi' || modelCandidates.some((candidate) => candidate.includes('kimi'))) tableKey = 'kimi';
+  else if (normalizedProvider === 'deepseek' || modelCandidates.some((candidate) => candidate.includes('deepseek'))) tableKey = 'deepseek';
+  else if (normalizedProvider === 'grok' || modelCandidates.some((candidate) => candidate.includes('grok'))) tableKey = 'grok';
+  else if (normalizedProvider === 'gemini' || modelCandidates.some((candidate) => candidate.includes('gemini'))) tableKey = 'gemini';
+  else tableKey = normalizedProvider === 'codex' || normalizedModel.includes('gpt') ? 'openai' : 'claude';
+
+  const matchedRate = pricing[tableKey].rates.find((rate) => rateMatches(modelCandidates, rate));
+  return matchedRate
+    ? { rate: matchedRate, match: matchedRate.match, isDefault: false }
+    : { rate: pricing[tableKey].default, match: `default:${tableKey}`, isDefault: true };
 }
 
 function estimateCost(rawUsage, model, provider) {
   const usage = normalizeTokenUsage(rawUsage);
-  const rates = ratesForModel(model, provider);
+  const { rate, match, isDefault } = ratesForModel(model, provider);
   // Reasoning tokens are billed at the output rate. Skip them when the
   // provider already counts them inside output (e.g. Codex) to avoid
   // double pricing.
   const billableReasoning = usage.reasoningInOutput ? 0 : usage.reasoningTokens;
-  return (
-    usage.input * rates.input +
-    (usage.output + billableReasoning) * rates.output +
-    usage.cacheRead * rates.cacheRead +
-    usage.cacheCreate * rates.cacheCreate
-  ) / 1000000;
+  return {
+    usd: (
+      usage.input * rate.input +
+      (usage.output + billableReasoning) * rate.output +
+      usage.cacheRead * rate.cacheRead +
+      usage.cacheCreate * rate.cacheCreate
+    ) / 1000000,
+    rateMatch: match,
+    unknownModel: isDefault,
+  };
 }
 
 function normalizeModel(model) {
@@ -262,11 +263,23 @@ function formatModelLabel(model, effort, provider = '') {
 function decorateSessionPresentation(session) {
   const identity = modelIdentity(session.model, session.reasoningEffort || session.effort, session.provider);
   const explicitCost = Number(session.estimatedCost);
+  const estimate = estimateCost(session.tokenUsage ?? session.tokens ?? session.usage, session.model, session.provider);
+  const estimatedCost = Number.isFinite(explicitCost) && explicitCost >= 0
+    ? explicitCost
+    : estimate.usd;
+  const providerCost = session.cost?.source === 'provider' && Number.isFinite(Number(session.cost.usd))
+    ? session.cost
+    : null;
   return {
     ...session,
-    estimatedCost: Number.isFinite(explicitCost) && explicitCost >= 0
-      ? explicitCost
-      : estimateCost(session.tokenUsage ?? session.tokens ?? session.usage, session.model, session.provider),
+    estimatedCost,
+    cost: providerCost || {
+      usd: estimatedCost,
+      source: 'estimate',
+      rateMatch: estimate.rateMatch,
+      rateRevision: pricing.revision,
+      unknownModel: estimate.unknownModel,
+    },
     displayModel: session.displayModel || formatModelLabel(session.model, session.reasoningEffort || session.effort, session.provider),
     modelColor: session.modelColor || identity.color,
     spriteId: session.spriteId || identity.spriteId,

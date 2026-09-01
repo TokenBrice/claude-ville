@@ -1,4 +1,5 @@
 {
+  "revision": "2026-09-01",
   "claude": {
     "default": {
       "input": 3,
@@ -7,6 +8,69 @@
       "cacheCreate": 3.75
     },
     "rates": [
+      {
+        "match": "fable-5",
+        "input": 10,
+        "output": 50,
+        "cacheRead": 1,
+        "cacheCreate": 12.5
+      },
+      {
+        "match": "mythos-5",
+        "input": 10,
+        "output": 50,
+        "cacheRead": 1,
+        "cacheCreate": 12.5
+      },
+      {
+        "match": "opus-5",
+        "input": 5,
+        "output": 25,
+        "cacheRead": 0.5,
+        "cacheCreate": 6.25
+      },
+      {
+        "match": "opus-4-8",
+        "input": 5,
+        "output": 25,
+        "cacheRead": 0.5,
+        "cacheCreate": 6.25
+      },
+      {
+        "match": "opus-4-7",
+        "input": 5,
+        "output": 25,
+        "cacheRead": 0.5,
+        "cacheCreate": 6.25
+      },
+      {
+        "match": "opus-4-6",
+        "input": 5,
+        "output": 25,
+        "cacheRead": 0.5,
+        "cacheCreate": 6.25
+      },
+      {
+        "match": "sonnet-5",
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.2,
+        "cacheCreate": 2.5
+      },
+      {
+        "match": "sonnet-4-6",
+        "input": 3,
+        "output": 15,
+        "cacheRead": 0.3,
+        "cacheCreate": 3.75
+      },
+      {
+        "match": "haiku-4-5",
+        "input": 1,
+        "output": 5,
+        "cacheRead": 0.1,
+        "cacheCreate": 1.25
+      },
       {
         "match": "opus",
         "input": 15,

@@ -14,6 +14,15 @@ const DEFAULT_TOKEN_USAGE = {
 };
 
 const CLAUDE_RATES = [
+    { match: 'fable-5', input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
+    { match: 'mythos-5', input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
+    { match: 'opus-5', input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+    { match: 'opus-4-8', input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+    { match: 'opus-4-7', input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+    { match: 'opus-4-6', input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+    { match: 'sonnet-5', input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5 },
+    { match: 'sonnet-4-6', input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
+    { match: 'haiku-4-5', input: 1, output: 5, cacheRead: 0.1, cacheCreate: 1.25 },
     { match: 'opus', input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
     { match: 'sonnet', input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
     { match: 'haiku', input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
@@ -71,6 +80,7 @@ const DEFAULT_KIMI_RATES = { input: 3, output: 12, cacheRead: 0.3, cacheCreate: 
 const DEFAULT_DEEPSEEK_RATES = { input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 };
 const DEFAULT_GROK_RATES = { input: 2, output: 6, cacheRead: 0.5, cacheCreate: 0 };
 const DEFAULT_GEMINI_RATES = { input: 0.5, output: 3, cacheRead: 0.05, cacheCreate: 0.5 };
+const PRICING_REVISION = '2026-09-01';
 
 const FIELD_ALIASES = {
     input: ['input', 'totalInput', 'input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'total_input_tokens', 'total_input'],
@@ -172,42 +182,58 @@ export class TokenUsage {
         return usage.totalInput + usage.totalOutput + usage.cacheRead + usage.cacheCreate;
     }
 
+    static get rateRevision() {
+        return PRICING_REVISION;
+    }
+
     static pricingForModel(model, provider) {
         const modelCandidates = pricingModelCandidates(model);
         const normalizedModel = modelCandidates[0] || '';
         const normalizedProvider = String(provider || '').toLowerCase();
+        let table;
+        let defaultRate;
+        let tableKey;
         if (normalizedProvider === 'kimi' || modelCandidates.some((candidate) => candidate.includes('kimi'))) {
-            return KIMI_RATES.find((rate) => rateMatches(modelCandidates, rate)) || DEFAULT_KIMI_RATES;
+            [table, defaultRate, tableKey] = [KIMI_RATES, DEFAULT_KIMI_RATES, 'kimi'];
+        } else if (normalizedProvider === 'deepseek' || modelCandidates.some((candidate) => candidate.includes('deepseek'))) {
+            [table, defaultRate, tableKey] = [DEEPSEEK_RATES, DEFAULT_DEEPSEEK_RATES, 'deepseek'];
+        } else if (normalizedProvider === 'grok' || modelCandidates.some((candidate) => candidate.includes('grok'))) {
+            [table, defaultRate, tableKey] = [GROK_RATES, DEFAULT_GROK_RATES, 'grok'];
+        } else if (normalizedProvider === 'gemini' || modelCandidates.some((candidate) => candidate.includes('gemini'))) {
+            [table, defaultRate, tableKey] = [GEMINI_RATES, DEFAULT_GEMINI_RATES, 'gemini'];
+        } else if (normalizedProvider === 'codex' || normalizedModel.includes('gpt')) {
+            [table, defaultRate, tableKey] = [OPEN_AI_RATES, DEFAULT_OPEN_AI_RATES, 'openai'];
+        } else {
+            [table, defaultRate, tableKey] = [CLAUDE_RATES, DEFAULT_CLAUDE_RATES, 'claude'];
         }
-        if (normalizedProvider === 'deepseek' || modelCandidates.some((candidate) => candidate.includes('deepseek'))) {
-            return DEEPSEEK_RATES.find((rate) => rateMatches(modelCandidates, rate)) || DEFAULT_DEEPSEEK_RATES;
-        }
-        if (normalizedProvider === 'grok' || modelCandidates.some((candidate) => candidate.includes('grok'))) {
-            return GROK_RATES.find((rate) => rateMatches(modelCandidates, rate)) || DEFAULT_GROK_RATES;
-        }
-        if (normalizedProvider === 'gemini' || modelCandidates.some((candidate) => candidate.includes('gemini'))) {
-            return GEMINI_RATES.find((rate) => rateMatches(modelCandidates, rate)) || DEFAULT_GEMINI_RATES;
-        }
-        const table = (normalizedProvider === 'codex' || normalizedModel.includes('gpt'))
-            ? OPEN_AI_RATES
-            : CLAUDE_RATES;
 
-        return table.find((rate) => rateMatches(modelCandidates, rate)) ||
-            (table === OPEN_AI_RATES ? DEFAULT_OPEN_AI_RATES : DEFAULT_CLAUDE_RATES);
+        const matchedRate = table.find((rate) => rateMatches(modelCandidates, rate));
+        return matchedRate
+            ? { rate: matchedRate, match: matchedRate.match, isDefault: false }
+            : { rate: defaultRate, match: `default:${tableKey}`, isDefault: true };
     }
 
     static estimateCost(rawUsage, model, provider) {
         const usage = rawUsage instanceof TokenUsage ? rawUsage : TokenUsage.normalize(rawUsage);
-        const rates = TokenUsage.pricingForModel(model, provider);
+        const { rate, match, isDefault } = TokenUsage.pricingForModel(model, provider);
         // Reasoning tokens are billed at the output rate. Skip them when the
         // provider already counts them inside output (e.g. Codex) to avoid
         // double pricing.
         const billableReasoning = usage.reasoningInOutput ? 0 : usage.reasoningTokens;
-        return (
-            usage.input * rates.input +
-            (usage.output + billableReasoning) * rates.output +
-            usage.cacheRead * rates.cacheRead +
-            usage.cacheCreate * rates.cacheCreate
-        ) / 1000000;
+        const estimate = {
+            usd: (
+                usage.input * rate.input +
+                (usage.output + billableReasoning) * rate.output +
+                usage.cacheRead * rate.cacheRead +
+                usage.cacheCreate * rate.cacheCreate
+            ) / 1000000,
+            rateMatch: match,
+            unknownModel: isDefault,
+        };
+        Object.defineProperty(estimate, 'valueOf', {
+            value: () => estimate.usd,
+            enumerable: false,
+        });
+        return estimate;
     }
 }

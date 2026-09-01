@@ -79,6 +79,12 @@ const EMPTY_SURFACE_COPY = Object.freeze({
         title: 'PROVIDERS FOUND / NOTHING ACTIVE',
         copy: 'A watchtower is ready, but no coding session is running.',
         next: 'Start a coding CLI session to see agents here.',
+        legend: Object.freeze([
+            Object.freeze({ label: 'Forge', value: 'Code work' }),
+            Object.freeze({ label: 'Archive', value: 'Reading and search' }),
+            Object.freeze({ label: 'Harbor', value: 'Commit ships' }),
+            Object.freeze({ label: 'Mine', value: 'Token usage' }),
+        ]),
     }),
     [VillagePhase.DEGRADED]: Object.freeze({
         title: 'A WATCHTOWER IS UNREADABLE',
@@ -174,6 +180,7 @@ export class App {
         this._usageRequested = false;
         this._bootStatusWrap = null;
         this._bootStatusEl = null;
+        this._bootAnnouncementEl = null;
         this._bootFailureEl = null;
         this._bootActionEl = null;
         this._onBootRetry = null;
@@ -797,9 +804,16 @@ export class App {
             },
         });
         status.id = 'bootStatus';
-        status.setAttribute('role', 'status');
-        status.setAttribute('aria-live', 'polite');
-        status.setAttribute('aria-atomic', 'true');
+        status.setAttribute('aria-hidden', 'true');
+
+        const announcement = el('div', {
+            className: 'visually-hidden',
+            text: bootStatusText(this.villageState),
+        });
+        announcement.id = 'bootStatusAnnouncement';
+        announcement.setAttribute('role', 'status');
+        announcement.setAttribute('aria-live', 'polite');
+        announcement.setAttribute('aria-atomic', 'true');
 
         const failure = el('div', {
             className: 'boot-failure',
@@ -835,9 +849,10 @@ export class App {
         action.addEventListener('click', this._onBootRetry);
 
         wrap.append(status, failure, action);
-        document.body.appendChild(wrap);
+        document.body.append(wrap, announcement);
         this._bootStatusWrap = wrap;
         this._bootStatusEl = status;
+        this._bootAnnouncementEl = announcement;
         this._bootFailureEl = failure;
         this._bootActionEl = action;
     }
@@ -852,6 +867,10 @@ export class App {
             status = `${status} · CHRONICLE HISTORY UNAVAILABLE`;
         }
         this._setTextIfChanged(this._bootStatusEl, status);
+        this._setTextIfChanged(this._bootAnnouncementEl, status);
+        if (this._bootStatusWrap) {
+            this._bootStatusWrap.hidden = phase === VillagePhase.READY_LIVE;
+        }
 
         const retryable = isRetryable(state);
         const failureCode = state.failureCode || (phase === VillagePhase.DEGRADED ? state.link?.lastErrorCode : null);
@@ -875,6 +894,7 @@ export class App {
             titleSel: '.world-empty__title',
             copySel: '.world-empty__copy',
             nextClass: 'world-empty__next',
+            legendSel: '.world-empty__legend',
             copy,
             show: showEmpty,
             useHidden: true,
@@ -891,7 +911,7 @@ export class App {
         this._syncFirstRunHint();
     }
 
-    _paintEmptySurface(root, { titleSel, copySel, nextClass, copy, show, useHidden, visibleClass }) {
+    _paintEmptySurface(root, { titleSel, copySel, nextClass, legendSel, copy, show, useHidden, visibleClass }) {
         if (!root) return;
         const title = root.querySelector(titleSel);
         const body = root.querySelector(copySel);
@@ -912,6 +932,18 @@ export class App {
         this._setTextIfChanged(title, copy.title);
         this._setTextIfChanged(body, copy.copy);
         this._setTextIfChanged(next, copy.next);
+        const legend = legendSel ? root.querySelector(legendSel) : null;
+        if (legend) {
+            const rows = copy.legend || [];
+            legend.replaceChildren(...rows.flatMap(({ label, value }) => {
+                const term = document.createElement('dt');
+                const description = document.createElement('dd');
+                term.textContent = label;
+                description.textContent = value;
+                return [term, description];
+            }));
+            legend.hidden = rows.length === 0;
+        }
         if (useHidden) root.hidden = !show;
         if (visibleClass) root.classList.toggle(visibleClass, show);
         const hints = root.querySelector('.dashboard__empty-hints');
@@ -1692,8 +1724,10 @@ export class App {
             this._bootActionEl.removeEventListener('click', this._onBootRetry);
         }
         this._bootStatusWrap?.remove?.();
+        this._bootAnnouncementEl?.remove?.();
         this._bootStatusWrap = null;
         this._bootStatusEl = null;
+        this._bootAnnouncementEl = null;
         this._bootFailureEl = null;
         this._bootActionEl = null;
         this._onBootRetry = null;

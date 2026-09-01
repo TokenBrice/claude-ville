@@ -1443,15 +1443,18 @@ function createGitEvent(command, type, dryRun, context, parsed = {}) {
   if (parsed.refspec) event.refspec = parsed.refspec;
   if (Array.isArray(parsed.refspecs) && parsed.refspecs.length) event.refspecs = parsed.refspecs;
   if (project && type === 'push') {
-    const branch = normalizeRefName(parsed.targetRef) || currentBranch(project);
+    const targetBranch = normalizeRefName(parsed.targetRef);
+    const branch = targetBranch || currentBranch(project, { deferOnWorker: true });
     if (branch) {
       event.branch = branch;
       if (!event.targetRef) event.targetRef = branch;
-    }
+    } else if (!targetBranch) event.branch = null;
   }
   if (project && (type === 'pull' || type === 'fetch')) {
-    const branch = normalizeRefName(parsed.targetRef) || currentBranch(project);
+    const targetBranch = normalizeRefName(parsed.targetRef);
+    const branch = targetBranch || currentBranch(project, { deferOnWorker: true });
     if (branch) event.branch = branch;
+    else if (!targetBranch) event.branch = null;
   }
   if (type === 'push' && parsed.force) event.force = parsed.force;
   if (type === 'push' && parsed.deleted) event.deleted = true;
@@ -1843,13 +1846,17 @@ function refExists(project, ref) {
   return !!tryRunGit(project, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
 }
 
-function currentBranch(project) {
+function currentBranch(project, { deferOnWorker = false } = {}) {
   if (!project) return '';
   const now = Date.now();
   const cached = _currentBranchCache.get(project);
   if (cached && now - cached.at < gitStatusCacheTtl(project, now)) {
     _perf.cacheHits++;
     return cached.value;
+  }
+  if (deferOnWorker && _gitWorker.enabled && !_gitWorker.stopping) {
+    requestGitWorkerRefresh(project, { reason: 'branch-cache-miss' });
+    return null;
   }
   const value = tryRunGit(project, ['branch', '--show-current']);
   _currentBranchCache.set(project, { at: now, value });

@@ -1297,7 +1297,7 @@ export class GpuWorldRenderer {
             occlusionScale: OCCLUSION_SCALE,
             bloomScale: BLOOM_SCALE,
             qualityLevel: quality.effectiveLevel,
-            qualityReason: quality.lastDecisionReason,
+            qualityReason: quality.lastDecisionReason.replace(/^disabled(?=:|$)/, 'minimal-resident'),
             qualityDegradationReason: quality.lastDegradationReason,
             qualityTransitionAtMs: quality.lastTransitionAtMs,
             qualityTransitionMetrics: quality.lastTransitionMetrics,

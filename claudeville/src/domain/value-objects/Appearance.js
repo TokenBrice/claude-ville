@@ -3,10 +3,10 @@
  *
  * DEPRECATED FIELDS (skin, shirt, hair, hairStyle, pants, accessory, eyeStyle):
  * These fields are only consumed by the dashboard avatar's procedural fallback
- * path in `presentation/dashboard-mode/AvatarCanvas.js` (i.e. when
+ * path in the dashboard-mode `AvatarCanvas.js` (i.e. when
  * `getModelVisualIdentity(...).spriteId` is null, when the sprite PNG fails to
  * load, or on the first frame before the PNG is decoded). World mode
- * (`presentation/character-mode/*`) renders agents from sprite sheets with
+ * (the character-mode renderers) renders agents from sprite sheets with
  * palette-swap and does NOT read any of these fields. When the dashboard
  * fallback is retired or replaced with sprite-only rendering, these fields and
  * their color tables can be removed.

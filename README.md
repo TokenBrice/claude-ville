@@ -1,24 +1,24 @@
 # ClaudeVille
 
-[![Version](https://img.shields.io/badge/version-v0.30.0-8a6f2a)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v0.37.0-8a6f2a)](./CHANGELOG.md)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-3c873a)](./package.json)
 [![Runtime](https://img.shields.io/badge/runtime-zero--build-7c3aed)](#quick-start)
 [![Local first](https://img.shields.io/badge/local--first-read--only-0f766e)](#local-and-read-only)
-[![Providers](https://img.shields.io/badge/providers-6-f97316)](#supported-providers)
+[![Providers](https://img.shields.io/badge/providers-7-f97316)](#supported-providers)
 
 Watch your local AI coding CLIs work in a living pixel village.
 
-ClaudeVille is a local-first dashboard for Claude Code, OpenAI Codex CLI, Google Gemini CLI, xAI Grok CLI, Kimi, and OpenCode sessions. It reads provider logs read-only, normalizes them into one session model, and renders active agents as either an isometric RPG village or a dense monitoring dashboard.
+ClaudeVille is a local-first dashboard for Claude Code, OpenAI Codex CLI, Google Gemini CLI, xAI Grok CLI, Kimi, OpenCode, and OMP (Oh My Pi) sessions. It reads provider logs read-only, normalizes them into one session model, and renders active agents as either an isometric RPG village or a dense monitoring dashboard.
 
 ![ClaudeVille World mode showing simulated AI coding agents in an isometric pixel village](./docs/assets/github/world-day.png)
 
 - **Local and read-only:** no hosted service, no telemetry, no provider-file writes.
-- **Multi-provider:** Claude Code, Codex CLI, Gemini CLI, Grok CLI, Kimi, and OpenCode.
+- **Multi-provider:** Claude Code, Codex CLI, Gemini CLI, Grok CLI, Kimi, OpenCode, and OMP.
 - **Glanceable:** World mode for second-monitor awareness; Dashboard mode for exact state.
 - **Zero-build runtime:** Node HTTP/WebSocket server plus static browser assets.
 
-Current version: **v0.30.0**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
+Current version: **v0.37.0**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
 
 Active development lives in this repository. It is currently a public fork of `honorstudio/claude-ville`, but `TokenBrice/claude-ville` is the maintained branch for the current multi-provider ClaudeVille work.
 
@@ -44,6 +44,7 @@ Desktop browser viewports 1280px wide and larger are the supported target. Empty
 | Grok CLI | `~/.grok/sessions/` |
 | Kimi | `~/.kimi/` and `~/.kimi-code/` |
 | OpenCode | `~/.local/share/opencode/opencode.db` |
+| OMP (Oh My Pi) | `~/.omp/agent/sessions/` |
 
 ## Screenshots
 
@@ -112,6 +113,7 @@ For an unfamiliar agent, read these first:
   - Grok CLI: `~/.grok/` (sessions are read from `~/.grok/sessions/`)
   - Kimi: `~/.kimi/` or `~/.kimi-code/` (legacy sessions are read from `~/.kimi/sessions/`; Kimi Code sessions from `~/.kimi-code/sessions/`)
   - OpenCode: `~/.local/share/opencode/opencode.db` with Node `node:sqlite` support or the `sqlite3` CLI available for read-only access.
+  - OMP (Oh My Pi): `~/.omp/` (sessions are read from `~/.omp/agent/sessions/`)
 
 Empty provider lists are normal on machines where no supported CLI has local session files yet.
 
@@ -129,6 +131,7 @@ claude-ville/
 |   |   |-- grok.js
 |   |   |-- kimi.js
 |   |   |-- opencode.js
+|   |   |-- omp.js
 |   |   |-- gitEvents.js            # Git commit/push extraction from tool commands
 |   |   |-- turnState.js            # Transcript-derived turn state and pending-tool classification
 |   |   `-- index.js               # Adapter registry
@@ -199,10 +202,11 @@ Adapters live in `claudeville/adapters/` and are registered in `adapters/index.j
 | Grok CLI | `~/.grok/sessions/` | `<url-encoded-cwd>/<session-id>/{summary.json,updates.jsonl,chat_history.jsonl}` | Reads summary metadata (model, title, effort, activity), ACP update streams for tools/messages/context occupancy, chat history fallback, and git commit/push events from shell tools. Session ids are prefixed `grok-`. |
 | Kimi | `~/.kimi/`, `~/.kimi-code/` | Legacy `sessions/<project_hash>/<session_uuid>/wire.jsonl`; Kimi Code `sessions/<workspace>/<session_uuid>/agents/<agent>/wire.jsonl` plus `session_index.jsonl` | Reads tool/message/status events, resolves projects from legacy hashes or the Kimi Code index, extracts token usage, surfaces Kimi Code child agents, and extracts git commit/push events. |
 | OpenCode | `~/.local/share/opencode/opencode.db` | SQLite session/message/part rows | Opens the database read-only via `node:sqlite` or `sqlite3 -readonly`, preserves OpenCode as the provider, exposes model families such as DeepSeek through `model`, and extracts git commit/push events from shell tools. |
+| OMP (Oh My Pi) | `~/.omp/agent/sessions/` | `<project>/<session>.jsonl` plus nested agent JSONL files | Reads parent and nested agent transcripts, model/provider metadata, tool history, messages, and aggregated response usage. |
 
 Only active adapters are used. Claude-only concepts such as teams and tasks are optional and return empty arrays when unavailable.
 
-`claudeville/adapters/index.js` owns aggregation and short-lived caches: session lists and detail payloads are cached for 5 seconds to protect the 2-second scheduler, detail payloads have an LRU-style trim, and adapter failures degrade to an empty or stale cached detail response instead of breaking the app.
+`claudeville/adapters/index.js` owns aggregation and short-lived caches: session lists are cached for 2000 ms and detail payloads for 5000 ms to protect the 2-second scheduler, detail payloads have an LRU-style trim, and adapter failures degrade to an empty or stale cached detail response instead of breaking the app.
 
 ## UI Modes
 

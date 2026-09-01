@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
+const pricing = require('../src/config/model-pricing.json');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const {
   createDetailResponse,
@@ -19,6 +20,7 @@ const {
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
+const { deriveTurnState } = require('./turnState');
 
 const OPENCODE_CONFIG_DIR = process.env.CLAUDEVILLE_OPENCODE_CONFIG_DIR
   || path.join(os.homedir(), '.config', 'opencode');
@@ -305,13 +307,18 @@ function normalizeProjectedPartData(row) {
   if (input && Object.keys(input).length) state.input = input;
   if (row.state_status) state.status = row.state_status;
   if (row.state_exit != null) state.metadata = { exit: Number(row.state_exit) };
-  if (row.state_time_end != null) state.time = { end: Number(row.state_time_end) };
+  if (row.state_time_start != null || row.state_time_end != null) {
+    state.time = {};
+    if (row.state_time_start != null) state.time.start = Number(row.state_time_start);
+    if (row.state_time_end != null) state.time.end = Number(row.state_time_end);
+  }
 
   const data = {
     type: row.part_type || null,
     tool: row.tool || null,
     text: row.text || null,
     callID: row.call_id || null,
+    reason: row.finish_reason || null,
   };
   if (Object.keys(state).length) data.state = state;
   if (row.tokens_total != null) data.tokens = { total: Number(row.tokens_total) || 0 };
@@ -342,7 +349,9 @@ function partProjectionSelect() {
     substr(json_extract(p.data, '$.state.input.url'), 1, 800) AS input_url,
     json_extract(p.data, '$.state.status') AS state_status,
     json_extract(p.data, '$.state.metadata.exit') AS state_exit,
+    json_extract(p.data, '$.state.time.start') AS state_time_start,
     json_extract(p.data, '$.state.time.end') AS state_time_end,
+    json_extract(p.data, '$.reason') AS finish_reason,
     json_extract(p.data, '$.tokens.total') AS tokens_total
   `;
 }
@@ -351,27 +360,32 @@ function getRecentPartsForSession(sessionId, limit = RECENT_PART_LIMIT) {
   return getRecentPartsForSessions([sessionId], limit).get(sessionId) || [];
 }
 
-function getRecentPartsForSessions(sessionIds, limit = RECENT_PART_LIMIT) {
-  const ids = [...new Set((sessionIds || []).map(id => String(id || '').trim()).filter(Boolean))];
-  const partsBySession = new Map(ids.map(id => [id, []]));
-  if (!ids.length) return partsBySession;
-
-  const idList = ids.map(sqlString).join(', ');
-  const rows = queryRows(`
+function recentPartsQuery(idList) {
+  return `
     SELECT id, message_id, session_id, time_created, time_updated, role, part_type, tool, text,
            call_id, input_description, input_command, input_cmd, input_path, input_file_path,
            input_file_path_legacy, input_pattern, input_query, input_prompt, input_url,
-           state_status, state_exit, state_time_end, tokens_total
+           state_status, state_exit, state_time_start, state_time_end, finish_reason, tokens_total
     FROM (
       SELECT ${partProjectionSelect()},
              ROW_NUMBER() OVER (PARTITION BY p.session_id ORDER BY p.time_created DESC, p.id DESC) AS rn
       FROM part p
       LEFT JOIN message m ON m.id = p.message_id
       WHERE p.session_id IN (${idList})
+        AND p.time_created >= :cutoff
     )
     WHERE rn <= :limit
     ORDER BY session_id ASC, time_created ASC, id ASC
-  `, { limit });
+  `;
+}
+
+function getRecentPartsForSessions(sessionIds, limit = RECENT_PART_LIMIT, cutoff = 0) {
+  const ids = [...new Set((sessionIds || []).map(id => String(id || '').trim()).filter(Boolean))];
+  const partsBySession = new Map(ids.map(id => [id, []]));
+  if (!ids.length) return partsBySession;
+
+  const idList = ids.map(sqlString).join(', ');
+  const rows = queryRows(recentPartsQuery(idList), { limit, cutoff });
 
   for (const row of rows) {
     const part = normalizePartRow(row);
@@ -415,6 +429,77 @@ function getLastMessage(parts) {
     if (text) return text;
   }
   return null;
+}
+
+function getOpenCodeTurnState(parts, now = Date.now()) {
+  const projectedParts = Array.isArray(parts) ? parts : [];
+  if (!projectedParts.length) {
+    return {
+      ...deriveTurnState({ known: false }, now),
+      turnStartedAt: null,
+    };
+  }
+
+  let turnStartIndex = 0;
+  let turnStartedAt = null;
+  for (let i = projectedParts.length - 1; i >= 0; i--) {
+    const part = projectedParts[i];
+    if (String(part?.role || '').toLowerCase() !== 'user') continue;
+    turnStartIndex = i;
+    turnStartedAt = observedAtForPart(part);
+    break;
+  }
+
+  const currentTurn = projectedParts.slice(turnStartIndex);
+  let pendingTool = null;
+  let pendingSince = null;
+  for (const part of currentTurn) {
+    if (part?.type !== 'tool') continue;
+    const status = String(part.data?.state?.status || '').toLowerCase();
+    if (status !== 'pending' && status !== 'running') continue;
+    pendingTool = normalizeToolName(part.data?.tool);
+    pendingSince = Number(part.data?.state?.time?.start) || observedAtForPart(part);
+    break;
+  }
+
+  let lastFinish = null;
+  let lastAssistantText = null;
+  for (const part of currentTurn) {
+    if (part?.type === 'step-finish') lastFinish = part;
+    if (part?.type === 'text' && modelAuthoredRole(part.role) && compactText(part.data?.text)) {
+      lastAssistantText = part;
+    }
+  }
+  const finishReason = String(lastFinish?.data?.reason || '').toLowerCase();
+  const turnEnded = !pendingTool && (
+    (lastFinish && finishReason && finishReason !== 'tool-calls')
+    || (!finishReason && !!lastAssistantText)
+  );
+  const turnEndedAt = observedAtForPart(lastFinish) || observedAtForPart(lastAssistantText);
+
+  return {
+    ...deriveTurnState({
+      pendingTool,
+      pendingSince,
+      turnEnded,
+      turnEndedAt,
+      permissionMode: 'bypassPermissions',
+    }, now),
+    turnStartedAt,
+  };
+}
+
+function providerCostFromRow(row) {
+  if (row?.cost == null || row.cost === '') return null;
+  const usd = Number(row.cost);
+  if (!Number.isFinite(usd) || usd < 0) return null;
+  return {
+    usd,
+    source: 'provider',
+    rateMatch: null,
+    rateRevision: pricing.revision,
+    unknownModel: false,
+  };
 }
 
 function observedAtForPart(part) {
@@ -616,6 +701,41 @@ function rawSessionId(sessionId) {
   return String(sessionId || '').replace(/^opencode-/, '');
 }
 
+function buildOpenCodeSession(row, parts, now = Date.now()) {
+  const model = parseModel(row.model);
+  const sessionId = `opencode-${row.id}`;
+  const tool = getLastTool(parts);
+  const project = row.directory || row.worktree || null;
+  const dialogue = getDialogue(parts, project);
+  const title = compactText(row.title, 80) || null;
+  const agentName = row.agent || title;
+  const turn = getOpenCodeTurnState(parts, now);
+  const cost = providerCostFromRow(row);
+  return {
+    sessionId,
+    provider: 'opencode',
+    agentId: row.id,
+    agentName,
+    name: agentName,
+    agentType: row.parent_id ? 'sub-agent' : 'main',
+    parentSessionId: row.parent_id ? `opencode-${row.parent_id}` : null,
+    project,
+    model: model.label,
+    status: 'active',
+    lastActivity: Number(row.latestActivity) || Number(row.time_updated) || 0,
+    lastTool: tool.lastTool,
+    lastToolInput: tool.lastToolInput,
+    lastMessage: getLastMessage(parts),
+    dialogue: dialogue.dialogue,
+    observedSources: dialogue.observedSources,
+    tokenUsage: tokenUsageFromSession(row, parts),
+    ...(cost ? { cost } : {}),
+    ...turn,
+    signalSource: 'transcript',
+    gitEvents: getGitEvents(parts, { provider: 'opencode', sessionId, project }),
+  };
+}
+
 class OpenCodeAdapter {
   get name() { return 'OpenCode'; }
   get provider() { return 'opencode'; }
@@ -653,38 +773,8 @@ class OpenCodeAdapter {
         latestActivity: Number(row.latestActivity) || Number(row.time_updated) || 0,
       }))
       .sort((a, b) => b.latestActivity - a.latestActivity);
-    const partsBySession = getRecentPartsForSessions(rows.map(row => row.id));
-
-    const sessions = rows.map((row) => {
-      const parts = partsBySession.get(row.id) || [];
-      const model = parseModel(row.model);
-      const sessionId = `opencode-${row.id}`;
-      const tool = getLastTool(parts);
-      const project = row.directory || row.worktree || null;
-      const dialogue = getDialogue(parts, project);
-      const title = compactText(row.title, 80) || null;
-      const agentName = row.agent || title;
-      return {
-        sessionId,
-        provider: 'opencode',
-        agentId: row.id,
-        agentName,
-        name: agentName,
-        agentType: row.parent_id ? 'sub-agent' : 'main',
-        parentSessionId: row.parent_id ? `opencode-${row.parent_id}` : null,
-        project,
-        model: model.label,
-        status: 'active',
-        lastActivity: Number(row.latestActivity) || Number(row.time_updated) || 0,
-        lastTool: tool.lastTool,
-        lastToolInput: tool.lastToolInput,
-        lastMessage: getLastMessage(parts),
-        dialogue: dialogue.dialogue,
-        observedSources: dialogue.observedSources,
-        tokenUsage: tokenUsageFromSession(row, parts),
-        gitEvents: getGitEvents(parts, { provider: 'opencode', sessionId, project }),
-      };
-    });
+    const partsBySession = getRecentPartsForSessions(rows.map(row => row.id), RECENT_PART_LIMIT, cutoff);
+    const sessions = rows.map(row => buildOpenCodeSession(row, partsBySession.get(row.id) || []));
     _activeSessionsCache.signature = signature;
     _activeSessionsCache.threshold = activeThresholdMs;
     _activeSessionsCache.sessions = sessions;
@@ -770,5 +860,9 @@ module.exports = {
   OpenCodeAdapter,
   _test: {
     ACTIVE_SESSION_CANDIDATE_SQL,
+    buildOpenCodeSession,
+    getOpenCodeTurnState,
+    providerCostFromRow,
+    recentPartsQuery,
   },
 };

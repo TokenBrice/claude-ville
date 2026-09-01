@@ -667,7 +667,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawSelectedAgentXray(renderer, ctx, buildingDrawables);
 
     renderer.particleSystem.draw(ctx, { excludeLayer: 'screen' });
-    renderer._drawEmptyStateWorldCue(ctx);
     renderer.harborTraffic?.drawFinaleEffects(ctx, renderNow);
     markFrameTiming(frameTimer, 'world-effects');
 
@@ -738,7 +737,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawPrimaryMarksPostAtmosphere(renderer, overlayCtx, villageSnapshot, atmosphere, {
         force: gpuWorldRendered,
     });
-    if (gpuWorldRendered) renderer._drawEmptyStateWorldCue(overlayCtx);
     if (gpuWorldRendered) {
         for (const sprite of sortedSprites) {
             sprite.drawGpuWorldOverlay?.(overlayCtx, zoom, agentRenderMode);

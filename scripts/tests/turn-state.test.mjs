@@ -6,7 +6,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const {
@@ -21,6 +26,72 @@ const {
 } = require('../../claudeville/adapters/turnState.js');
 
 const NOW = 1_700_000_000_000;
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const CODEX_FIXTURES = path.join(REPO_ROOT, 'scripts', 'adapters', 'fixtures', 'codex');
+
+function materializeCodexFixtures(root, now) {
+    const project = path.join(root, 'work', 'codex-fixture');
+    const rolloutDir = path.join(root, '.codex', 'sessions', '2026', '09', '01');
+    fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+    fs.mkdirSync(rolloutDir, { recursive: true });
+
+    const replacements = new Map([
+        ['__PROJECT__', project],
+        ['__FIVE_MINUTES_AGO__', new Date(now - 5 * 60_000).toISOString()],
+        ['__FOUR_MINUTES_AGO__', new Date(now - 4 * 60_000).toISOString()],
+        ['__THREE_MINUTES_AGO__', new Date(now - 3 * 60_000).toISOString()],
+        ['__NOW__', new Date(now).toISOString()],
+        ['__FOUR_MINUTES_AGO_MS__', String(now - 4 * 60_000)],
+        ['__THREE_MINUTES_AGO_MS__', String(now - 3 * 60_000)],
+        ['__COMMAND_STARTED_MS__', String(now - 1500)],
+        ['__NOW_MS__', String(now)],
+    ]);
+
+    for (const fixtureName of fs.readdirSync(CODEX_FIXTURES)) {
+        let content = fs.readFileSync(path.join(CODEX_FIXTURES, fixtureName), 'utf8');
+        for (const [placeholder, value] of replacements) {
+            content = content.replaceAll(placeholder, value);
+        }
+        const target = path.join(rolloutDir, `rollout-${fixtureName}`);
+        fs.writeFileSync(target, content);
+        fs.utimesSync(target, now / 1000, now / 1000);
+    }
+
+    return project;
+}
+
+function readCodexFixtureProjection(root) {
+    const script = `
+        const fs = require('fs');
+        const path = require('path');
+        const { CodexAdapter } = require('./claudeville/adapters/codex');
+        const longRollout = path.join(
+            process.env.HOME,
+            '.codex', 'sessions', '2026', '09', '01', 'rollout-long-running-turn.jsonl',
+        );
+        const fullLongRollout = fs.readFileSync(longRollout, 'utf8');
+        fs.writeFileSync(longRollout, fullLongRollout.split('\\n').slice(0, 3).join('\\n') + '\\n');
+        fs.utimesSync(longRollout, Date.now() / 1000, Date.now() / 1000);
+        const adapter = new CodexAdapter();
+        adapter.getActiveSessions(60 * 60 * 1000, { force: true });
+        fs.writeFileSync(longRollout, fullLongRollout);
+        fs.utimesSync(longRollout, Date.now() / 1000, Date.now() / 1000);
+        adapter.invalidateCachesForDirty({ path: longRollout, kind: 'transcript' });
+        const sessions = adapter.getActiveSessions(60 * 60 * 1000, { force: true });
+        const details = Object.fromEntries(sessions.map((session) => [
+            session.sessionId,
+            adapter.getSessionDetail(session.sessionId, session.project),
+        ]));
+        process.stdout.write(JSON.stringify({ sessions, details }));
+    `;
+    const output = execFileSync(process.execPath, ['-e', script], {
+        cwd: REPO_ROOT,
+        env: { ...process.env, HOME: root, USERPROFILE: root },
+        encoding: 'utf8',
+        maxBuffer: 4 * 1024 * 1024,
+    });
+    return JSON.parse(output);
+}
 
 test('a closed turn hands control back to the user', () => {
     const state = deriveTurnState({ turnEnded: true, turnEndedAt: NOW - 5000 }, NOW);
@@ -132,4 +203,54 @@ test('timestamps parse from ISO strings and numbers alike', () => {
     assert.equal(toEpochMs(NOW), NOW);
     assert.equal(toEpochMs(null), null);
     assert.equal(toEpochMs('not a date'), null);
+});
+
+test('Codex transcript fixtures preserve turn truth and project item_completed fields', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-codex-turn-state-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const now = Date.now();
+    const project = materializeCodexFixtures(root, now);
+    const { sessions, details } = readCodexFixtureProjection(root);
+    const byId = new Map(sessions.map((session) => [session.sessionId, session]));
+
+    const aborted = byId.get('codex-abort-after-pending');
+    assert.ok(aborted);
+    assert.equal(aborted.turnState, TurnState.AWAITING_INPUT);
+    assert.equal(aborted.pendingTool, null);
+    assert.equal(aborted.waitReason, null);
+    assert.equal(aborted.signalSource, 'transcript');
+    assert.ok(Number.isFinite(aborted.turnStartedAt));
+
+    const longRunning = byId.get('codex-long-running-turn');
+    assert.ok(longRunning);
+    assert.equal(longRunning.turnState, TurnState.WORKING);
+    assert.notEqual(longRunning.turnState, TurnState.UNKNOWN);
+    assert.equal(longRunning.pendingTool, null);
+    assert.equal(longRunning.turnStartedAt, now - 5 * 60_000);
+    assert.equal(longRunning.signalSource, 'transcript');
+
+    const fullAuto = byId.get('codex-full-auto-pending');
+    assert.ok(fullAuto);
+    assert.equal(fullAuto.permissionMode, 'bypassPermissions');
+    assert.equal(fullAuto.turnState, TurnState.TOOL_PENDING);
+    assert.equal(fullAuto.pendingTool, 'Bash');
+    assert.equal(fullAuto.waitReason, null);
+    assert.equal(fullAuto.awaitingSince, null);
+
+    const completed = byId.get('codex-item-completed');
+    assert.ok(completed);
+    assert.equal(completed.permissionMode, 'bypassPermissions');
+    assert.deepEqual(completed.workingSet, [
+        { path: path.join('src', 'newer.js'), op: 'write', at: now - 3 * 60_000, source: 'transcript' },
+        { path: path.join('src', 'older.js'), op: 'write', at: now - 3 * 60_000, source: 'transcript' },
+    ]);
+    assert.ok(completed.workingSet.length <= 16);
+    assert.ok(completed.workingSet.every((entry) => !entry.path.startsWith(project)));
+
+    const failedCommand = details['codex-item-completed'].toolHistory.find(
+        (item) => item.toolExitCode === 1,
+    );
+    assert.ok(failedCommand);
+    assert.equal(failedCommand.tool, 'Bash');
+    assert.equal(failedCommand.durationMs, 1500);
 });

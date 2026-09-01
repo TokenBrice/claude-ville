@@ -45,6 +45,7 @@ const SUMMARY_SCAN_LINES = 50;
 const TOKEN_USAGE_SCAN_LINES = 500;
 const GIT_EVENT_SCAN_LINES = 5000;
 const MAX_CURRENT_TOOL_INPUT_CHARS = 500;
+const MAX_WORKING_SET_ITEMS = 16;
 const MAX_ROLLOUT_DAY_DIRS = 8192;
 const MAX_ROLLOUT_FILES = Math.max(
   1,
@@ -176,14 +177,24 @@ function extractSessionMetadataFromText(line) {
 }
 
 function extractTurnMetadataFromPayload(payload) {
-  if (!payload) return { model: null, reasoningEffort: null, project: null };
+  if (!payload || typeof payload !== 'object') {
+    return { model: null, reasoningEffort: null, project: null, permissionMode: null };
+  }
   return {
-    model: payload.model || payload.collaboration_mode?.settings?.model || null,
-    reasoningEffort: payload.effort
-      || payload.reasoning_effort
-      || payload.collaboration_mode?.settings?.reasoning_effort
-      || null,
-    project: payload.cwd || null,
+    model: typeof payload.model === 'string'
+      ? payload.model
+      : (typeof payload.collaboration_mode?.settings?.model === 'string'
+        ? payload.collaboration_mode.settings.model
+        : null),
+    reasoningEffort: typeof payload.effort === 'string'
+      ? payload.effort
+      : (typeof payload.reasoning_effort === 'string'
+        ? payload.reasoning_effort
+        : (typeof payload.collaboration_mode?.settings?.reasoning_effort === 'string'
+          ? payload.collaboration_mode.settings.reasoning_effort
+          : null)),
+    project: typeof payload.cwd === 'string' ? payload.cwd : null,
+    permissionMode: permissionModeFromApprovalPolicy(payload.approval_policy),
   };
 }
 
@@ -193,7 +204,16 @@ function extractTurnMetadataFromText(line) {
     model: extractJsonString(metadataPrefix, 'model'),
     reasoningEffort: extractJsonString(metadataPrefix, 'effort') || extractJsonString(metadataPrefix, 'reasoning_effort'),
     project: extractJsonString(metadataPrefix, 'cwd'),
+    permissionMode: permissionModeFromApprovalPolicy(extractJsonString(metadataPrefix, 'approval_policy')),
   };
+}
+
+function permissionModeFromApprovalPolicy(value) {
+  if (typeof value !== 'string') return null;
+  const policy = value.trim().toLowerCase().replace(/_/g, '-');
+  return policy === 'full-auto' || policy === 'never-ask' || policy === 'never'
+    ? 'bypassPermissions'
+    : null;
 }
 
 function parseTurnMetadataLine(line) {
@@ -289,6 +309,7 @@ function applyTurnMetadata(detail, metadata) {
   if (!detail.model && metadata.model) detail.model = metadata.model;
   if (!detail.reasoningEffort && metadata.reasoningEffort) detail.reasoningEffort = metadata.reasoningEffort;
   if (!detail.project && metadata.project) detail.project = metadata.project;
+  if (!detail.permissionMode && metadata.permissionMode) detail.permissionMode = metadata.permissionMode;
 }
 
 // Orchestration tools (spawn_agent/send_message) carry the routed prompt as a
@@ -356,13 +377,64 @@ function sameEarlyMetadataIdentity(cached, identity) {
     && cached.ino === identity.ino;
 }
 
-function cacheEarlyMetadata(filePath, identity, metadata) {
+function cacheEarlyMetadata(filePath, identity, metadata, boundary = undefined) {
+  const previous = _earlyMetadataCache.get(filePath);
+  const retainedBoundary = boundary === undefined ? previous?.boundary || null : boundary;
   _earlyMetadataCache.delete(filePath);
-  _earlyMetadataCache.set(filePath, { ...identity, metadata });
+  _earlyMetadataCache.set(filePath, { ...identity, metadata, boundary: retainedBoundary });
   while (_earlyMetadataCache.size > MAX_EARLY_METADATA_CACHE_ENTRIES) {
     _earlyMetadataCache.delete(_earlyMetadataCache.keys().next().value);
   }
   return metadata;
+}
+
+function boundaryFromEntry(entry, previous = null) {
+  const payload = entry?.payload;
+  if (entry?.type !== 'event_msg' || !payload || typeof payload.type !== 'string') return previous;
+
+  const at = toEpochMs(entry.timestamp);
+  if (payload.type === 'task_started') {
+    return {
+      type: payload.type,
+      at,
+      turnStartedAt: at,
+    };
+  }
+  if (payload.type === 'task_complete' || payload.type === 'turn_complete' || payload.type === 'turn_aborted') {
+    return {
+      type: payload.type,
+      at,
+      turnStartedAt: previous?.turnStartedAt || null,
+    };
+  }
+  return previous;
+}
+
+function foldRolloutBoundary(entries, initial = null) {
+  let boundary = initial;
+  for (const entry of entries) {
+    const candidate = boundaryFromEntry(entry, boundary);
+    if (candidate === boundary) continue;
+    if (
+      boundary?.at
+      && candidate?.at
+      && candidate.at < boundary.at
+    ) continue;
+    boundary = candidate;
+  }
+  return boundary;
+}
+
+function cachedRolloutBoundary(filePath) {
+  return _earlyMetadataCache.get(filePath)?.boundary || null;
+}
+
+function rememberRolloutBoundary(filePath, entries) {
+  const cached = _earlyMetadataCache.get(filePath);
+  if (!cached) return foldRolloutBoundary(entries);
+  const boundary = foldRolloutBoundary(entries, cached.boundary || null);
+  cacheEarlyMetadata(filePath, cached, cached.metadata, boundary);
+  return boundary;
 }
 
 function readEarlyMetadata(filePath) {
@@ -374,7 +446,7 @@ function readEarlyMetadata(filePath) {
 
   const cached = _earlyMetadataCache.get(filePath);
   if (sameEarlyMetadataIdentity(cached, identity)) {
-    return cacheEarlyMetadata(filePath, identity, cached.metadata);
+    return cacheEarlyMetadata(filePath, identity, cached.metadata, cached.boundary || null);
   }
 
   const headText = readHeadText(filePath);
@@ -388,8 +460,10 @@ function readEarlyMetadata(filePath) {
     parentThreadId: null,
     model: null,
     reasoningEffort: null,
+    permissionMode: null,
     project: null,
   };
+  let boundary = cached?.boundary || null;
 
   const lines = headText.split('\n').slice(0, MAX_METADATA_LINES);
   for (const line of lines) {
@@ -418,11 +492,10 @@ function readEarlyMetadata(filePath) {
     } else if (line.includes('"type":"turn_context"') || line.includes('"type": "turn_context"')) {
       applyTurnMetadata(metadata, extractTurnMetadataFromText(line));
     }
-
-    if (metadata.agentId && metadata.project && metadata.model && metadata.reasoningEffort) break;
+    boundary = foldRolloutBoundary(entry ? [entry] : [], boundary);
   }
 
-  return cacheEarlyMetadata(filePath, identity, metadata);
+  return cacheEarlyMetadata(filePath, identity, metadata, boundary);
 }
 
 function parseEarlyMetadata(filePath, detail) {
@@ -444,6 +517,104 @@ function inferCodexModel(detail) {
   const match = leaf.match(/^(sol|terra|luna)[-_]/i);
   if (!match) return model;
   return `gpt-5.6-${match[1].toLowerCase()}`;
+}
+
+function realpathWithMissingTail(value) {
+  const resolved = path.resolve(value);
+  let cursor = resolved;
+  const missing = [];
+
+  while (!fs.existsSync(cursor)) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) return resolved;
+    missing.unshift(path.basename(cursor));
+    cursor = parent;
+  }
+
+  try {
+    const canonicalParent = fs.realpathSync.native
+      ? fs.realpathSync.native(cursor)
+      : fs.realpathSync(cursor);
+    return path.resolve(canonicalParent, ...missing);
+  } catch {
+    return resolved;
+  }
+}
+
+function relativeWithin(basePath, targetPath) {
+  if (!basePath) return null;
+  const relative = path.relative(basePath, targetPath);
+  if (relative === '') return '.';
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  return relative;
+}
+
+function canonicalWorkingSetPath(rawPath, { cwd = null, project = null } = {}) {
+  if (typeof rawPath !== 'string' || !rawPath.trim() || rawPath.includes('\0')) return null;
+  const base = typeof cwd === 'string' && cwd.trim()
+    ? cwd
+    : (typeof project === 'string' && project.trim() ? project : process.cwd());
+  const absolute = path.isAbsolute(rawPath)
+    ? path.normalize(rawPath)
+    : path.resolve(base, rawPath);
+  const canonical = realpathWithMissingTail(absolute);
+  const canonicalProject = typeof project === 'string' && project.trim()
+    ? realpathWithMissingTail(project)
+    : null;
+  const projectRelative = relativeWithin(canonicalProject, canonical);
+  if (projectRelative !== null) return projectRelative;
+
+  const canonicalHome = realpathWithMissingTail(path.dirname(CODEX_DIR));
+  const homeRelative = relativeWithin(canonicalHome, canonical);
+  return homeRelative === null ? canonical : homeRelative;
+}
+
+function fileChangeRecords(changes) {
+  if (Array.isArray(changes)) {
+    return changes.flatMap((change) => {
+      if (typeof change === 'string') return [{ path: change, change: null }];
+      if (!change || typeof change !== 'object') return [];
+      const changePath = typeof change.path === 'string'
+        ? change.path
+        : (typeof change.file_path === 'string' ? change.file_path : null);
+      return changePath ? [{ path: changePath, change }] : [];
+    });
+  }
+  if (!changes || typeof changes !== 'object') return [];
+  return Object.entries(changes).map(([changePath, change]) => ({ path: changePath, change }));
+}
+
+function appendFileChanges(workingSet, seenPaths, entry, project) {
+  const payload = entry?.payload;
+  const item = payload?.item;
+  if (
+    entry?.type !== 'event_msg'
+    || payload?.type !== 'item_completed'
+    || !item
+    || typeof item !== 'object'
+    || item.type !== 'FileChange'
+  ) return;
+
+  const at = toEpochMs(payload.completed_at_ms)
+    || toEpochMs(payload.started_at_ms)
+    || toEpochMs(entry.timestamp)
+    || 0;
+  const cwd = typeof item.cwd === 'string'
+    ? item.cwd
+    : (typeof payload.cwd === 'string' ? payload.cwd : project);
+
+  for (const record of fileChangeRecords(item.changes)) {
+    if (workingSet.length >= MAX_WORKING_SET_ITEMS) return;
+    const canonicalPath = canonicalWorkingSetPath(record.path, { cwd, project });
+    if (!canonicalPath || seenPaths.has(canonicalPath)) continue;
+    seenPaths.add(canonicalPath);
+    workingSet.push({
+      path: canonicalPath,
+      op: 'write',
+      at,
+      source: 'transcript',
+    });
+  }
 }
 
 /**
@@ -472,6 +643,7 @@ function parseRollout(filePath, scanContext = null) {
     parentThreadId: null,
     model: null,
     reasoningEffort: null,
+    permissionMode: null,
     project: null,
     lastTool: null,
     lastToolInput: null,
@@ -490,6 +662,9 @@ function parseRollout(filePath, scanContext = null) {
   const candidates = [];
   const observedSources = emptyObservedSources();
   const candidateCounts = { plan: 0, thinking: 0, assistant: 0 };
+  const workingSet = [];
+  const workingSetPaths = new Set();
+  let tailPermissionMode = null;
   let collectDialogue = true;
 
   const addDialogue = (text, kind, source, entry, payload) => {
@@ -590,6 +765,16 @@ function parseRollout(filePath, scanContext = null) {
     }
 
     if (entry.type === 'event_msg') {
+      appendFileChanges(workingSet, workingSetPaths, entry, detail.project);
+
+      const item = payload.type === 'item_completed' && payload.item && typeof payload.item === 'object'
+        ? payload.item
+        : null;
+      if (!detail.lastTool && item?.type === 'CommandExecution') {
+        detail.lastTool = typeof item.name === 'string' ? item.name : 'Bash';
+        detail.lastToolInput = summarizeCodexToolPayload(item);
+      }
+
       if (payload.type === 'agent_reasoning' || payload.type === 'agent_reasoning_raw_content') {
         addDialogue(
           payload.text,
@@ -621,7 +806,11 @@ function parseRollout(filePath, scanContext = null) {
     }
 
     // If model is missing, try extracting it from turn_context or event_msg
-    if (entry.type === 'turn_context') applyTurnMetadata(detail, extractTurnMetadataFromPayload(payload));
+    if (entry.type === 'turn_context') {
+      const metadata = extractTurnMetadataFromPayload(payload);
+      applyTurnMetadata(detail, metadata);
+      if (!tailPermissionMode && metadata.permissionMode) tailPermissionMode = metadata.permissionMode;
+    }
     if (!detail.model && entry.type === 'event_msg' && payload.model) {
       detail.model = payload.model;
     }
@@ -630,7 +819,12 @@ function parseRollout(filePath, scanContext = null) {
     }
   }
 
-  Object.assign(detail, deriveCodexTurnState(entries));
+  if (tailPermissionMode) detail.permissionMode = tailPermissionMode;
+  const priorBoundary = cachedRolloutBoundary(filePath);
+  Object.assign(detail, deriveCodexTurnState(entries, Date.now(), priorBoundary, detail.permissionMode));
+  rememberRolloutBoundary(filePath, entries);
+  detail.signalSource = 'transcript';
+  detail.workingSet = workingSet;
   detail.dialogue = pickDialogue(candidates, { now: Date.now() });
   detail.observedSources = observedSources;
 
@@ -639,23 +833,21 @@ function parseRollout(filePath, scanContext = null) {
 
 
 // Codex states its turn boundaries outright: `task_started` opens a turn and
-// `task_complete` closes it, while tool calls pair by `call_id`. Derived from
-// the tail window the summary already parsed, so it costs no extra read.
-function deriveCodexTurnState(entries, now = Date.now()) {
-  const resolved = new Set();
-  for (const entry of entries) {
-    const payload = entry?.payload;
-    if (!payload?.call_id) continue;
-    if (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output') {
-      resolved.add(payload.call_id);
-    }
-  }
-
-  let pendingTool = null;
-  let pendingSince = null;
-  let turnEnded = false;
-  let turnEndedAt = null;
-  let sawTurnBoundary = false;
+// `task_complete` closes it, while tool calls pair by `call_id`. The summary
+// tail is folded over the cached last boundary, so it costs no extra read.
+function deriveCodexTurnState(
+  entries,
+  now = Date.now(),
+  priorBoundary = null,
+  permissionMode = null,
+) {
+  const pendingCalls = new Map();
+  let turnEnded = priorBoundary?.type === 'task_complete'
+    || priorBoundary?.type === 'turn_complete'
+    || priorBoundary?.type === 'turn_aborted';
+  let turnEndedAt = turnEnded ? priorBoundary?.at || null : null;
+  let turnStartedAt = priorBoundary?.turnStartedAt || null;
+  let sawTurnBoundary = Boolean(priorBoundary);
 
   for (const entry of entries) {
     const payload = entry?.payload;
@@ -665,27 +857,53 @@ function deriveCodexTurnState(entries, now = Date.now()) {
       sawTurnBoundary = true;
       turnEnded = false;
       turnEndedAt = null;
+      turnStartedAt = toEpochMs(entry.timestamp);
+      pendingCalls.clear();
     }
-    if (entry.type === 'event_msg' && (payload.type === 'task_complete' || payload.type === 'turn_complete')) {
+    if (
+      entry.type === 'event_msg'
+      && (payload.type === 'task_complete' || payload.type === 'turn_complete' || payload.type === 'turn_aborted')
+    ) {
       sawTurnBoundary = true;
       turnEnded = true;
       turnEndedAt = toEpochMs(entry.timestamp);
+      pendingCalls.clear();
     }
 
     if (entry.type !== 'response_item') continue;
+    if (
+      (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output')
+      && typeof payload.call_id === 'string'
+    ) {
+      pendingCalls.delete(payload.call_id);
+      continue;
+    }
     const isCall = payload.type === 'function_call' || payload.type === 'custom_tool_call';
-    if (isCall && payload.call_id && !resolved.has(payload.call_id) && !pendingTool) {
-      pendingTool = payload.name || payload.type;
-      pendingSince = toEpochMs(entry.timestamp);
+    if (isCall && typeof payload.call_id === 'string') {
+      pendingCalls.set(payload.call_id, {
+        tool: typeof payload.name === 'string' ? payload.name : payload.type,
+        since: toEpochMs(entry.timestamp),
+      });
     }
   }
 
-  if (!sawTurnBoundary && !pendingTool) return deriveTurnState({ known: false }, now);
+  const pending = pendingCalls.values().next().value || null;
+  const pendingTool = pending?.tool || null;
+  const pendingSince = pending?.since || null;
+  if (!sawTurnBoundary && !pendingTool) {
+    return { ...deriveTurnState({ known: false }, now), turnStartedAt: null };
+  }
 
-  // Codex approvals are surfaced by the CLI, not the rollout, so dwell time is
-  // the only signal available; leaving permissionMode null keeps the shared
-  // thresholds in charge.
-  return deriveTurnState({ turnEnded, turnEndedAt, pendingTool, pendingSince }, now);
+  return {
+    ...deriveTurnState({
+      turnEnded,
+      turnEndedAt,
+      pendingTool,
+      pendingSince,
+      permissionMode,
+    }, now),
+    turnStartedAt,
+  };
 }
 
 /**
@@ -698,15 +916,26 @@ function getToolHistory(filePath, maxItems = 15) {
     const itemsByCallId = new Map();
 
     for (const entry of entries) {
+      const itemCompletion = completionFromItemCompleted(entry);
+      if (itemCompletion) {
+        let item = itemCompletion.callId ? itemsByCallId.get(itemCompletion.callId) : null;
+        if (!item) {
+          item = {
+            tool: itemCompletion.tool,
+            detail: itemCompletion.detail,
+            ts: itemCompletion.startedAt || itemCompletion.completedAt || 0,
+          };
+          tools.push(item);
+          if (itemCompletion.callId) itemsByCallId.set(itemCompletion.callId, item);
+        }
+        applyToolCompletion(item, itemCompletion);
+        continue;
+      }
+
       const completion = completionFromExecEvent(entry);
       if (completion) {
         const item = completion.callId ? itemsByCallId.get(completion.callId) : null;
-        if (item && completion.exitCode !== null) {
-          item.toolExitCode = completion.exitCode;
-          if (completion.exitCode !== 0 && completion.stderr) {
-            item.toolStderr = completion.stderr.trim().substring(0, 200);
-          }
-        }
+        if (item) applyToolCompletion(item, completion);
         continue;
       }
 
@@ -930,6 +1159,71 @@ function completionFromExecEvent(entry) {
     completedAt,
     stderr: stderrParts.join('\n'),
   };
+}
+
+function durationObjectToMs(value) {
+  if (Number.isFinite(value)) return Math.max(0, value);
+  if (!value || typeof value !== 'object') return null;
+  const hasSeconds = Number.isFinite(value.secs) || Number.isFinite(value.seconds);
+  const hasNanos = Number.isFinite(value.nanos) || Number.isFinite(value.nanoseconds);
+  if (!hasSeconds && !hasNanos) return null;
+  const seconds = Number.isFinite(value.secs) ? value.secs : (value.seconds || 0);
+  const nanos = Number.isFinite(value.nanos) ? value.nanos : (value.nanoseconds || 0);
+  if (!Number.isFinite(seconds) || !Number.isFinite(nanos)) return null;
+  return Math.max(0, (seconds * 1000) + (nanos / 1_000_000));
+}
+
+function completionFromItemCompleted(entry) {
+  const payload = entry?.payload;
+  const item = payload?.item;
+  if (
+    entry?.type !== 'event_msg'
+    || payload?.type !== 'item_completed'
+    || !item
+    || typeof item !== 'object'
+    || item.type !== 'CommandExecution'
+  ) return null;
+
+  const rawExitCode = item.exit_code ?? item.exitCode;
+  const exitCode = Number.isFinite(rawExitCode) ? rawExitCode : null;
+  const startedAt = Number.isFinite(payload.started_at_ms)
+    ? payload.started_at_ms
+    : toEpochMs(item.started_at_ms ?? item.startedAt ?? entry.timestamp);
+  const completedAt = Number.isFinite(payload.completed_at_ms)
+    ? payload.completed_at_ms
+    : toEpochMs(item.completed_at_ms ?? item.completedAt ?? entry.timestamp);
+  let durationMs = Number.isFinite(item.duration_ms)
+    ? Math.max(0, item.duration_ms)
+    : (Number.isFinite(item.durationMs) ? Math.max(0, item.durationMs) : null);
+  if (durationMs === null) durationMs = durationObjectToMs(item.duration);
+  if (durationMs === null && startedAt !== null && completedAt !== null) {
+    durationMs = Math.max(0, completedAt - startedAt);
+  }
+
+  const stderr = typeof item.stderr === 'string' ? item.stderr : '';
+  return {
+    callId: typeof item.call_id === 'string'
+      ? item.call_id
+      : (typeof item.id === 'string' ? item.id : null),
+    tool: typeof item.name === 'string' ? item.name : 'Bash',
+    detail: summarizeCodexToolPayload(item, { maxLength: 80, missingValue: '' }),
+    exitCode,
+    durationMs,
+    startedAt,
+    completedAt,
+    stderr,
+  };
+}
+
+function applyToolCompletion(item, completion) {
+  if (!item || !completion) return;
+  if (Number.isFinite(completion.exitCode)) {
+    item.toolExitCode = completion.exitCode;
+    if (completion.exitCode !== 0 && typeof completion.stderr === 'string' && completion.stderr.trim()) {
+      item.toolStderr = completion.stderr.trim().substring(0, 200);
+    }
+  }
+  if (Number.isFinite(completion.durationMs)) item.durationMs = completion.durationMs;
 }
 
 function rememberGitEvents(events, bySourceId, byCommandHash) {
@@ -1336,7 +1630,10 @@ class CodexAdapter {
         agentType: detail.agentType || 'main',
         model: inferCodexModel(detail) || 'codex',
         reasoningEffort: detail.reasoningEffort,
+        permissionMode: detail.permissionMode,
         turnState: detail.turnState,
+        signalSource: detail.signalSource,
+        turnStartedAt: detail.turnStartedAt,
         pendingTool: detail.pendingTool,
         pendingSince: detail.pendingSince,
         awaitingSince: detail.awaitingSince,
@@ -1349,6 +1646,7 @@ class CodexAdapter {
         lastToolInput: detail.lastToolInput,
         dialogue: detail.dialogue,
         observedSources: detail.observedSources,
+        workingSet: detail.workingSet,
         tokenUsage: getTokenUsage(filePath, scanContext.tokenEntries),
         gitEvents: getGitEvents(filePath, {
           provider: 'codex',
@@ -1454,7 +1752,12 @@ class CodexAdapter {
 
   invalidateCachesForDirty(dirty = {}) {
     if (dirty.path) {
-      _earlyMetadataCache.delete(dirty.path);
+      const cached = _earlyMetadataCache.get(dirty.path);
+      if (cached) {
+        // Force a metadata refresh while retaining the last transcript
+        // boundary across append notifications.
+        _earlyMetadataCache.set(dirty.path, { ...cached, size: -1, mtimeMs: -1 });
+      }
       _turnMetadataCache.delete(dirty.path);
     }
     if (dirty.kind === 'metadata') {

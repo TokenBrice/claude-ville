@@ -66,7 +66,7 @@ If you change this, update: `docs/troubleshooting.md` (the empty-sessions diagno
 
 ## Static pricing estimates
 
-The runtime pricing estimate is static. The browser app keeps synchronous pricing helpers in `claudeville/src/domain/value-objects/TokenUsage.js` because `Agent.cost` and Activity Panel rendering are synchronous ES-module code with no build step. Server-side session presentation uses `claudeville/src/config/model-pricing.json` to decorate `/api/sessions` with `estimatedCost`, `displayModel`, `modelColor`, and `spriteId`.
+The runtime pricing estimate is static. The browser app keeps synchronous pricing helpers in `claudeville/src/domain/value-objects/TokenUsage.js` because `Agent.cost` and Activity Panel rendering are synchronous ES-module code with no build step. Server-side session presentation uses `claudeville/src/config/model-pricing.json` to decorate `/api/sessions` with `estimatedCost`, cost provenance, `displayModel`, `modelColor`, and `spriteId`. The current Claude table source note is: Anthropic first-party API rates, coordinator reference cached 2026-06-24, plan revision 2026-09-01.
 
 The dashboard does not have a billing API key or an authoritative price feed. Hardcoded estimates are good enough for the "is this run getting expensive?" question this UI answers. Prices change rarely.
 

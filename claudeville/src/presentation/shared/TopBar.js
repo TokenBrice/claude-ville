@@ -760,7 +760,7 @@ export class TopBar {
         this.els.rate.textContent = rate ? `${formatNumber(Math.round(rate.tokensPerHour))}/h` : '';
         if (this.els.rateWrap) {
             this.els.rateWrap.title = rate
-                ? `Tokens observed today, now running at about ${formatCost(rate.costPerHour)}/hour at API rates. Click for project and provider detail.`
+                ? `Tokens observed today, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates. Rate match: mixed session models; revision 2026-09-01. Click for project and provider detail.`
                 : 'Tokens observed today by this page. A burn rate appears after a couple of minutes of activity. Click for project and provider detail.';
         }
         if (this._spendPanelEl?.style.display !== 'none') this._renderSpendPanel();
@@ -818,10 +818,16 @@ export class TopBar {
             text: 'SPEND MAP',
             className: 'topbar__spend-heading',
         });
+        const hasUnknownModel = [...(this.world?.agents?.values?.() || [])]
+            .some((agent) => agent.cost?.unknownModel === true);
         const note = el('div', {
-            text: '5-minute burn rate first · today observed totals · estimated API pricing',
             className: 'topbar__spend-note',
-        });
+            title: 'Estimated API pricing · rate match: mixed session models · revision 2026-09-01',
+        }, [
+            '5-minute burn rate first · today observed totals · estimated API pricing, revision 2026-09-01',
+            hasUnknownModel ? ' ' : null,
+            hasUnknownModel ? el('span', { className: 'dash-card__provider-badge', text: 'default rate' }) : null,
+        ]);
         const columns = el('div', {
             className: 'topbar__spend-columns',
         }, [
@@ -856,12 +862,18 @@ export class TopBar {
                 : this._providerLabel(row.key);
             const burning = row.burnRate && row.burnRate.tokensPerHour > 0;
             const activeNoSpend = row.activeSessions > 0 && row.tokens === 0 && row.cost === 0;
+            const unknownRate = [...(this.world?.agents?.values?.() || [])].some((agent) => {
+                const key = projects
+                    ? String(agent.projectPath || '').trim() || 'unattributed'
+                    : String(agent.provider || '').trim().toLowerCase() || 'unknown';
+                return key === row.key && agent.cost?.unknownModel === true;
+            });
             const primary = burning
-                ? `${formatNumber(Math.round(row.burnRate.tokensPerHour))}/h · ${formatCost(row.burnRate.costPerHour)}/h`
+                ? `${formatNumber(Math.round(row.burnRate.tokensPerHour))}/h · ~${formatCost(row.burnRate.costPerHour)}/h`
                 : activeNoSpend ? 'WATCHING · no spend observed' : 'QUIET';
-            const detail = `${formatNumber(row.tokens)} tokens · ${formatCost(row.cost)} est.`;
+            const detail = `${formatNumber(row.tokens)} tokens · ~${formatCost(row.cost)}`;
             section.appendChild(el('div', {
-                title: projects ? row.key : `${name} provider`,
+                title: `${projects ? row.key : `${name} provider`} · estimated API rates · rate match: mixed session models · revision 2026-09-01`,
                 className: 'topbar__spend-row',
             }, [
                 el('div', {
@@ -877,6 +889,8 @@ export class TopBar {
                         text: detail,
                         className: 'topbar__spend-detail',
                     }),
+                    unknownRate ? ' ' : null,
+                    unknownRate ? el('span', { className: 'dash-card__provider-badge', text: 'default rate' }) : null,
                 ]),
             ]));
         }

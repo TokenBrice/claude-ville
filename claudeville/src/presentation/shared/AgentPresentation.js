@@ -4,7 +4,7 @@ import { buildingForTool, toolCategory, toolIcon, shortToolName } from '../../do
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { repoProfile } from './RepoColor.js';
 import { el } from './DomSafe.js';
-import { hashRows, formatRelative, normalizeStatus, truncateText } from './Formatters.js';
+import { formatToolDetail, hashRows, formatRelative, normalizeStatus } from './Formatters.js';
 
 export const UNKNOWN_PROJECT_KEY = '_unknown';
 
@@ -228,6 +228,7 @@ export function toolHistoryNodes(tools, options = {}) {
         iconClass,
         nameClass,
         detailClass,
+        formatDetail = null,
         // 4.4 — opt-in relative-timestamp span per row (dashboard only);
         // callers that omit timeClass render exactly as before.
         timeClass = '',
@@ -246,6 +247,10 @@ export function toolHistoryNodes(tools, options = {}) {
     return [...limited].reverse().map((entry) => {
         const cat = includeCategoryClasses ? toolCategory(entry.tool) : '';
         const categoryClass = cat ? `tool-cat--${cat}` : '';
+        const rawDetail = entry.detail == null ? '' : String(entry.detail);
+        const formattedDetail = typeof formatDetail === 'function'
+            ? formatDetail(rawDetail, entry)
+            : formatToolDetail(rawDetail, { max: detailLength });
         const children = [
             el('span', {
                 className: [iconClass, categoryClass],
@@ -257,7 +262,8 @@ export function toolHistoryNodes(tools, options = {}) {
             }),
             el('span', {
                 className: detailClass,
-                text: entry.detail ? truncateText(entry.detail, detailLength) : '',
+                text: formattedDetail,
+                title: rawDetail,
             }),
         ];
         if (timeClass) {

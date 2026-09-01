@@ -16,14 +16,21 @@ export const POST_FX_LADDER_REASONS = Object.freeze({
     WITHIN_BUDGET: 'within-budget',
     HEALTHY_PROBE: 'healthy-probe',
     HEALTHY_RECOVERY: 'healthy-recovery',
+    UPLOAD_GRACE: 'upload-grace',
+    UPLOAD_IDLE_RECOVERY: 'upload-idle-recovery',
+    MINIMAL_RESIDENT: 'minimal-resident',
     OVERRIDE: 'override',
 });
 
 const DEFAULT_OPTIONS = Object.freeze({
     budgetMs: 4,
-    healthyMs: 2,
-    overBudgetFrames: 60,
-    probeMs: 5000,
+    healthyRatio: 0.75,
+    overBudgetMs: 1000,
+    scoreWindowFrames: 15,
+    unhealthyResetFrames: 3,
+    probeMs: 3000,
+    uploadGraceMs: 3000,
+    uploadIdleFullMs: 1000,
 });
 
 function clampLevel(value) {
@@ -35,6 +42,37 @@ function clampLevel(value) {
 
 function finite(value, fallback = 0) {
     return Number.isFinite(Number(value)) ? Number(value) : fallback;
+}
+
+function positive(value, fallback) {
+    const number = finite(value, fallback);
+    return number > 0 ? number : fallback;
+}
+
+function normalizeOptions(options = {}) {
+    const budgetMs = positive(options.budgetMs, DEFAULT_OPTIONS.budgetMs);
+    const healthyRatio = DEFAULT_OPTIONS.healthyRatio;
+    const normalized = {
+        ...DEFAULT_OPTIONS,
+        ...options,
+        budgetMs,
+        healthyRatio,
+        healthyMs: budgetMs * healthyRatio,
+        overBudgetMs: positive(options.overBudgetMs, DEFAULT_OPTIONS.overBudgetMs),
+        scoreWindowFrames: Math.max(1, Math.floor(positive(
+            options.scoreWindowFrames,
+            DEFAULT_OPTIONS.scoreWindowFrames,
+        ))),
+        unhealthyResetFrames: Math.max(1, Math.floor(positive(
+            options.unhealthyResetFrames,
+            DEFAULT_OPTIONS.unhealthyResetFrames,
+        ))),
+        probeMs: positive(options.probeMs, DEFAULT_OPTIONS.probeMs),
+        uploadGraceMs: Math.max(0, finite(options.uploadGraceMs, DEFAULT_OPTIONS.uploadGraceMs)),
+        uploadIdleFullMs: positive(options.uploadIdleFullMs, DEFAULT_OPTIONS.uploadIdleFullMs),
+    };
+    delete normalized.overBudgetFrames;
+    return normalized;
 }
 
 export function assessPostFxTimings(metrics = {}) {
@@ -83,17 +121,66 @@ export function assessPostFxTimings(metrics = {}) {
     return { score: Math.max(0, score), driver, components };
 }
 
+function normalizeSample(sample) {
+    if (!sample || typeof sample !== 'object') return null;
+    const score = Math.max(0, finite(sample.score));
+    return {
+        score,
+        driver: typeof sample.driver === 'string' ? sample.driver : 'none',
+        components: sample.components && typeof sample.components === 'object'
+            ? { ...sample.components }
+            : {},
+    };
+}
+
+function medianAssessment(samples) {
+    const sorted = [...samples].sort((a, b) => a.score - b.score);
+    const middle = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 1) return sorted[middle];
+    const lower = sorted[middle - 1];
+    const upper = sorted[middle];
+    return {
+        ...(upper.score >= lower.score ? upper : lower),
+        score: (lower.score + upper.score) / 2,
+    };
+}
+
 function normalizeState(state = {}, options = {}) {
-    const config = { ...DEFAULT_OPTIONS, ...options };
+    const config = normalizeOptions({ ...(state.options || {}), ...options });
+    const scoreWindow = Array.isArray(state.scoreWindow)
+        ? state.scoreWindow.map(normalizeSample).filter(Boolean).slice(-config.scoreWindowFrames)
+        : [];
     return {
         level: clampLevel(state.level) ?? 0,
         override: clampLevel(state.override),
-        overBudgetFrames: Math.max(0, Math.floor(finite(state.overBudgetFrames))),
+        overBudgetMs: Math.max(0, finite(state.overBudgetMs)),
+        overBudgetSinceMs: state.overBudgetSinceMs !== null
+            && state.overBudgetSinceMs !== undefined
+            && Number.isFinite(Number(state.overBudgetSinceMs))
+            ? Number(state.overBudgetSinceMs)
+            : null,
         healthySinceMs: state.healthySinceMs !== null
             && state.healthySinceMs !== undefined
             && Number.isFinite(Number(state.healthySinceMs))
             ? Number(state.healthySinceMs)
             : null,
+        overHealthyFrames: Math.max(0, Math.floor(finite(state.overHealthyFrames))),
+        uploadGraceUntilMs: state.uploadGraceUntilMs !== null
+            && state.uploadGraceUntilMs !== undefined
+            && Number.isFinite(Number(state.uploadGraceUntilMs))
+            ? Number(state.uploadGraceUntilMs)
+            : null,
+        uploadIdleSinceMs: state.uploadIdleSinceMs !== null
+            && state.uploadIdleSinceMs !== undefined
+            && Number.isFinite(Number(state.uploadIdleSinceMs))
+            ? Number(state.uploadIdleSinceMs)
+            : null,
+        lastSampleAtMs: state.lastSampleAtMs !== null
+            && state.lastSampleAtMs !== undefined
+            && Number.isFinite(Number(state.lastSampleAtMs))
+            ? Number(state.lastSampleAtMs)
+            : null,
+        scoreWindow,
         lastScore: Math.max(0, finite(state.lastScore)),
         lastDriver: typeof state.lastDriver === 'string' ? state.lastDriver : 'none',
         lastDecisionReason: typeof state.lastDecisionReason === 'string'
@@ -122,15 +209,27 @@ export function advancePostFxLadder(state = {}, metrics = {}, nowMs = Date.now()
     const current = normalizeState(state, options);
     const config = current.options;
     const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
-    const assessment = assessPostFxTimings(metrics);
-    const score = assessment.score;
-    const driver = assessment.driver;
+    const rawAssessment = assessPostFxTimings(metrics);
+    const uploadGraceUntilMs = current.uploadGraceUntilMs ?? (now + config.uploadGraceMs);
+    const uploadDriven = rawAssessment.driver === 'uploadMs' || rawAssessment.driver === 'auxUploadMs';
+    const inUploadGrace = uploadDriven && now < uploadGraceUntilMs;
+    const assessment = inUploadGrace
+        ? assessPostFxTimings({ ...metrics, uploadMs: 0, auxUploadMs: 0 })
+        : rawAssessment;
+    const scoreWindow = [...current.scoreWindow, assessment]
+        .slice(-config.scoreWindowFrames);
+    const median = medianAssessment(scoreWindow);
+    const score = median.score;
+    const driver = median.driver;
 
     // A QA override is deliberately sticky and does not poison the underlying
     // level's healthy/budget counters.
     if (current.override !== null) {
         return {
             ...current,
+            uploadGraceUntilMs,
+            scoreWindow,
+            lastSampleAtMs: now,
             lastScore: score,
             lastDriver: driver,
             lastDecisionReason: POST_FX_LADDER_REASONS.OVERRIDE,
@@ -138,58 +237,108 @@ export function advancePostFxLadder(state = {}, metrics = {}, nowMs = Date.now()
     }
 
     let level = current.level;
-    let overBudgetFrames = current.overBudgetFrames;
+    let overBudgetMs = current.overBudgetMs;
+    let overBudgetSinceMs = current.overBudgetSinceMs;
     let healthySinceMs = current.healthySinceMs;
+    let overHealthyFrames = current.overHealthyFrames;
+    let uploadIdleSinceMs = current.uploadIdleSinceMs;
     let lastDecisionReason = current.lastDecisionReason;
     let lastDegradationReason = current.lastDegradationReason;
     let lastTransitionAtMs = current.lastTransitionAtMs;
     let lastTransitionMetrics = current.lastTransitionMetrics;
+    const hasUploadMetric = Number.isFinite(Number(metrics.uploadMs));
+    const uploadMs = Math.max(0, finite(metrics.uploadMs));
+
+    if (hasUploadMetric && uploadMs === 0) {
+        if (uploadIdleSinceMs === null) uploadIdleSinceMs = now;
+    } else if (hasUploadMetric) {
+        uploadIdleSinceMs = null;
+    }
 
     if (score > config.budgetMs) {
-        overBudgetFrames += 1;
-        healthySinceMs = null;
+        if (overBudgetSinceMs === null) overBudgetSinceMs = now;
+        overBudgetMs = Math.max(0, now - overBudgetSinceMs);
         lastDecisionReason = `over-budget:${driver}`;
-        if (overBudgetFrames >= config.overBudgetFrames && level < POST_FX_LEVELS.DISABLED) {
+        if (overBudgetMs >= config.overBudgetMs && level < POST_FX_LEVELS.DISABLED) {
             level += 1;
-            overBudgetFrames = 0;
+            overBudgetMs = 0;
+            overBudgetSinceMs = null;
             lastDegradationReason = `sustained-${driver}`;
             lastDecisionReason = `degrade:${lastDegradationReason}`;
             lastTransitionAtMs = now;
             lastTransitionMetrics = {
                 score,
                 driver,
-                ...assessment.components,
+                ...median.components,
             };
         } else if (level >= POST_FX_LEVELS.DISABLED) {
-            lastDecisionReason = `disabled:${driver}`;
+            lastDecisionReason = `${POST_FX_LADDER_REASONS.MINIMAL_RESIDENT}:${driver}`;
         }
     } else {
-        overBudgetFrames = 0;
-        if (score < config.healthyMs && level > POST_FX_LEVELS.FULL) {
+        overBudgetMs = 0;
+        overBudgetSinceMs = null;
+        lastDecisionReason = inUploadGrace
+            ? POST_FX_LADDER_REASONS.UPLOAD_GRACE
+            : POST_FX_LADDER_REASONS.WITHIN_BUDGET;
+    }
+
+    if (score < config.healthyMs) {
+        overHealthyFrames = 0;
+        if (level > POST_FX_LEVELS.FULL) {
             if (healthySinceMs === null) healthySinceMs = now;
-            lastDecisionReason = POST_FX_LADDER_REASONS.HEALTHY_PROBE;
-            if (now - healthySinceMs >= config.probeMs) {
-                level -= 1;
-                healthySinceMs = now;
-                lastDecisionReason = POST_FX_LADDER_REASONS.HEALTHY_RECOVERY;
-                lastTransitionAtMs = now;
-                lastTransitionMetrics = {
-                    score,
-                    driver,
-                    ...assessment.components,
-                };
-            }
+            lastDecisionReason = inUploadGrace
+                ? POST_FX_LADDER_REASONS.UPLOAD_GRACE
+                : POST_FX_LADDER_REASONS.HEALTHY_PROBE;
         } else {
             healthySinceMs = null;
-            lastDecisionReason = POST_FX_LADDER_REASONS.WITHIN_BUDGET;
         }
+    } else {
+        overHealthyFrames += 1;
+        if (overHealthyFrames >= config.unhealthyResetFrames) healthySinceMs = null;
+    }
+
+    const uploadIdleForMs = uploadIdleSinceMs === null ? 0 : now - uploadIdleSinceMs;
+    if (level > POST_FX_LEVELS.FULL
+        && hasUploadMetric
+        && rawAssessment.score <= config.budgetMs
+        && score <= config.budgetMs
+        && uploadIdleForMs >= config.uploadIdleFullMs) {
+        level = POST_FX_LEVELS.FULL;
+        healthySinceMs = null;
+        overHealthyFrames = 0;
+        lastDecisionReason = POST_FX_LADDER_REASONS.UPLOAD_IDLE_RECOVERY;
+        lastTransitionAtMs = now;
+        lastTransitionMetrics = {
+            score,
+            driver,
+            ...median.components,
+        };
+    } else if (level > POST_FX_LEVELS.FULL
+        && score < config.healthyMs
+        && healthySinceMs !== null
+        && now - healthySinceMs >= config.probeMs) {
+        level -= 1;
+        healthySinceMs = now;
+        lastDecisionReason = POST_FX_LADDER_REASONS.HEALTHY_RECOVERY;
+        lastTransitionAtMs = now;
+        lastTransitionMetrics = {
+            score,
+            driver,
+            ...median.components,
+        };
     }
 
     return {
         ...current,
         level,
-        overBudgetFrames,
+        overBudgetMs,
+        overBudgetSinceMs,
         healthySinceMs,
+        overHealthyFrames,
+        uploadGraceUntilMs,
+        uploadIdleSinceMs,
+        lastSampleAtMs: now,
+        scoreWindow,
         lastScore: score,
         lastDriver: driver,
         lastDecisionReason,

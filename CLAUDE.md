@@ -4,7 +4,7 @@
 - ClaudeVille is a local, zero-build dashboard for watching AI coding CLI sessions as a browser "village".
 - Desktop-only target: assume browser viewports ≥1280px wide. Do not add `@media` queries, mobile/narrow-viewport testing, or responsive shrinking.
 - Touch only files needed for the task. Shared checkout: start with `git status --short`, preserve unrelated edits, prefer `rg`/`rg --files` for discovery.
-- No install step, bundler, transpiler, lint, formatter, or CI. Tests are limited to dependency-free `node:test` cases over pure logic (`npm run test:unit`, part of `validate:quick`); there is no browser/component test runner.
+- No install step, bundler, transpiler, lint, or formatter is required for local validation. CI runs `npm run validate:quick` on pushes and pull requests. Tests are limited to dependency-free `node:test` cases over pure logic (`npm run test:unit`, part of `validate:quick`); there is no browser/component test runner.
 
 Local dev-server (maintained): http://localhost:4000
 

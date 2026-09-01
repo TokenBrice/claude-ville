@@ -222,6 +222,49 @@ async function measureFrames(page, durationMs) {
   }, durationMs);
 }
 
+async function startQualityTimeline(page) {
+  await page.evaluate(() => {
+    const startedAt = performance.now();
+    const entries = [];
+    let lastLevel;
+    const sample = () => {
+      const health = window.__claudeVillePerf?.frameHealth?.() || null;
+      const gpu = window.__claudeVilleApp?.renderer?.gpuWorld?.getDiagnostics?.() || null;
+      const qualityLevel = health?.qualityLevel ?? null;
+      if (qualityLevel === null) return;
+      if (entries.length && qualityLevel === lastLevel) return;
+      lastLevel = qualityLevel;
+      entries.push({
+        elapsedMs: Math.round(performance.now() - startedAt),
+        qualityLevel,
+        qualityReason: health?.qualityReason ?? null,
+        gpuMs: Number.isFinite(health?.gpuMs) ? health.gpuMs : null,
+        lights: gpu?.lights ?? null,
+      });
+    };
+    sample();
+    const interval = setInterval(sample, 250);
+    window.__claudeVilleBenchmarkQualityTimeline = {
+      entries,
+      sample,
+      stop() {
+        clearInterval(interval);
+        sample();
+        return entries;
+      },
+    };
+  });
+}
+
+async function stopQualityTimeline(page) {
+  return page.evaluate(() => {
+    const tracker = window.__claudeVilleBenchmarkQualityTimeline;
+    const entries = tracker?.stop?.() || [];
+    delete window.__claudeVilleBenchmarkQualityTimeline;
+    return entries;
+  });
+}
+
 async function runCase(browser, options, count, weatherName, repetition) {
   const loadAverageStart = os.loadavg();
   const context = await browser.newContext({
@@ -245,6 +288,7 @@ async function runCase(browser, options, count, weatherName, repetition) {
 
   try {
     await page.goto(pageUrl.href, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await startQualityTimeline(page);
     await page.waitForFunction(expectedCount => {
       const app = window.__claudeVilleApp;
       return app?._bootState === 'ready'
@@ -287,6 +331,7 @@ async function runCase(browser, options, count, weatherName, repetition) {
     const profile = options.profile
       ? await page.evaluate(() => window.__claudeVillePerf.stopFrameProfile())
       : null;
+    const qualityTimeline = await stopQualityTimeline(page);
     if (!measured.fpsSamples.length) throw new Error('no fps:updated samples were recorded');
     if (errors.length) throw new Error(`browser errors:\n${errors.join('\n')}`);
 
@@ -335,6 +380,7 @@ async function runCase(browser, options, count, weatherName, repetition) {
       hostLoadAverage: { start: loadAverageStart, end: os.loadavg() },
       uiFps: summarizeFps(measured.fpsSamples),
       frames: summarizeFrames(measured.deltas),
+      qualityTimeline,
       profile: summarizeProfile(profile),
       snapshot,
     };

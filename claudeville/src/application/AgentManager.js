@@ -10,7 +10,7 @@ import {
     verifiedOutcomeIsLive,
     verifiedOutcomeKey,
     VERIFIED_OUTCOME_EVENT,
-} from '../presentation/character-mode/ChronicleEvents.js';
+} from '../domain/services/VerifiedOutcome.js';
 
 const GENERATED_NAMES_STORAGE_KEY = 'claudeville.generatedAgentNames.v1';
 
@@ -288,7 +288,7 @@ export class AgentManager {
         }
 
         // Missing sessions linger as departed villagers. COMPLETED is an
-        // existing compatibility projection for presentation/counters; the
+        // existing compatibility projection for UI counters; the
         // departedAt marker, not status, owns this presence lifecycle.
         const now = this._now();
         const toRemove = [];

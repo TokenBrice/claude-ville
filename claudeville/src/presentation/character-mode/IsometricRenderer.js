@@ -10008,53 +10008,6 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _drawEmptyStateWorldCue(ctx) {
-        const visibleAgentCount = Array.from(this.agentSprites.values())
-            .filter(sprite => !this._isGateTransit(sprite, 'departure'))
-            .length;
-        if (visibleAgentCount !== 0) return;
-
-        const viewport = this._screenViewport();
-        if (!viewport.width || !viewport.height) return;
-        const cardWidth = 536;
-        const cardHeight = 166;
-        const x = Math.round((viewport.width - cardWidth) / 2);
-        const y = Math.round(viewport.height * 0.5 - cardHeight / 2);
-        const rows = [
-            ['Forge', 'Code work'],
-            ['Archive', 'Reading/search'],
-            ['Harbor', 'Commit ships'],
-            ['Mine', 'Token usage'],
-        ];
-
-        ctx.save();
-        this._resetScreenTransform(ctx);
-        ctx.globalAlpha = 0.85;
-        ctx.fillStyle = '#121822';
-        ctx.fillRect(x, y, cardWidth, cardHeight);
-        ctx.strokeStyle = 'rgba(242, 211, 107, 0.72)';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x + 0.5, y + 0.5, cardWidth, cardHeight);
-        ctx.globalAlpha = 1;
-        ctx.textBaseline = 'top';
-        ctx.fillStyle = '#f5e6a8';
-        ctx.font = '12px "Press Start 2P", monospace';
-        ctx.fillText('THE VILLAGE AWAITS', x + 24, y + 22, cardWidth - 48);
-        ctx.font = `13px ${WORLD_BODY_FONT}`;
-        ctx.fillStyle = '#d6e7ee';
-        ctx.fillText('Start an AI coding session to summon a villager.', x + 24, y + 52, cardWidth - 48);
-        ctx.font = `12px ${WORLD_BODY_FONT}`;
-        for (let i = 0; i < rows.length; i++) {
-            const [label, value] = rows[i];
-            const rowY = y + 86 + i * 18;
-            ctx.fillStyle = '#8bd7ff';
-            ctx.fillText(label, x + 24, rowY, 92);
-            ctx.fillStyle = '#d6e7ee';
-            ctx.fillText(value, x + 120, rowY, cardWidth - 144);
-        }
-        ctx.restore();
-    }
-
     _tileToWorld(tileX, tileY) {
         return tileToWorld(tileX, tileY);
     }

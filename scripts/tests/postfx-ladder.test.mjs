@@ -7,74 +7,183 @@ import {
     createPostFxLadder,
 } from '../../claudeville/src/presentation/character-mode/postfx/PostFxLadder.js';
 
-function run(ladder, metrics, frames, startMs = 0, stepMs = 16) {
+function run(ladder, metrics, durationMs, startMs = 0, stepMs = 16, onFrame = null) {
     let now = startMs;
-    for (let i = 0; i < frames; i++) {
-        now += stepMs;
-        ladder.update(metrics, now);
+    const endMs = startMs + durationMs;
+    while (now < endMs) {
+        now = Math.min(endMs, now + stepMs);
+        const state = ladder.update(
+            typeof metrics === 'function' ? metrics(now) : metrics,
+            now,
+        );
+        onFrame?.(state, now);
     }
     return now;
 }
 
 test('healthy timings keep the ladder at FULL', () => {
     const ladder = createPostFxLadder();
-    run(ladder, { uploadMs: 1, cpuMs: 0.5 }, 300);
+    run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 10_000);
     assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
 });
 
-test('sustained over-budget frames degrade exactly one level at the threshold', () => {
-    const ladder = createPostFxLadder();
-    run(ladder, { uploadMs: 5, cpuMs: 1 }, 59);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL, 'must not degrade before 60 frames');
-    run(ladder, { uploadMs: 5, cpuMs: 1 }, 1, 59 * 16);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.REDUCED);
+test('over-budget duration is measured in milliseconds at different frame rates', () => {
+    for (const stepMs of [8, 20]) {
+        const ladder = createPostFxLadder({ scoreWindowFrames: 1, uploadGraceMs: 0 });
+        let now = run(ladder, { gpuMs: 6 }, 999, 0, stepMs);
+        assert.equal(
+            ladder.getLevel(),
+            POST_FX_LEVELS.FULL,
+            `must not degrade before 1000 ms at a ${stepMs} ms cadence`,
+        );
+        run(ladder, { gpuMs: 6 }, 25, now, stepMs);
+        assert.equal(ladder.getLevel(), POST_FX_LEVELS.REDUCED);
+    }
 });
 
-test('a brief spike resets the over-budget counter (hysteresis)', () => {
-    const ladder = createPostFxLadder();
-    run(ladder, { uploadMs: 5, cpuMs: 1 }, 59);
-    run(ladder, { uploadMs: 1, cpuMs: 0.2 }, 1, 59 * 16);
-    run(ladder, { uploadMs: 5, cpuMs: 1 }, 59, 60 * 16);
+test('rolling median rejects a single over-budget frame', () => {
+    const ladder = createPostFxLadder({
+        scoreWindowFrames: 5,
+        overBudgetMs: 100,
+        uploadGraceMs: 0,
+    });
+    let now = run(ladder, { gpuMs: 1 }, 80);
+    ladder.update({ gpuMs: 20 }, now += 16);
+    assert.equal(ladder.getState().lastScore, 1);
+    run(ladder, { gpuMs: 1 }, 200, now);
     assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
 });
 
-test('persistent stalls walk the ladder to DISABLED', () => {
-    const ladder = createPostFxLadder();
-    run(ladder, { uploadMs: 8, cpuMs: 2 }, 60 * 3);
+test('persistent stalls walk the ladder to DISABLED by elapsed time', () => {
+    const ladder = createPostFxLadder({
+        scoreWindowFrames: 1,
+        overBudgetMs: 100,
+        uploadGraceMs: 0,
+    });
+    run(ladder, { gpuMs: 8 }, 400, 0, 10);
     assert.equal(ladder.getLevel(), POST_FX_LEVELS.DISABLED);
+    assert.match(ladder.getState().lastDecisionReason, /^minimal-resident:/);
 });
 
 test('frame-gap stalls degrade even when instrumented timings look healthy', () => {
-    const ladder = createPostFxLadder();
-    // Software-GL producer flushes: upload/cpu read tiny while the real frame
-    // gap collapses to ~7 FPS. The gap excess must count against the budget.
-    run(ladder, { uploadMs: 0.5, cpuMs: 0.2, frameGapMs: 140 }, 60, 0, 140);
+    const ladder = createPostFxLadder({
+        scoreWindowFrames: 1,
+        overBudgetMs: 1000,
+        uploadGraceMs: 0,
+    });
+    run(ladder, { uploadMs: 0.5, gpuMs: 0.2, frameGapMs: 140 }, 1260, 0, 140);
     assert.equal(ladder.getLevel(), POST_FX_LEVELS.REDUCED);
     assert.equal(ladder.getState().lastDegradationReason, 'sustained-frameGapMs');
 });
 
-test('healthy frames probe one level up only after the probe window', () => {
+test('healthy recovery reaches FULL within ten seconds from MINIMAL', () => {
+    const ladder = createPostFxLadder({ uploadIdleFullMs: 60_000 });
+    ladder.reset(POST_FX_LEVELS.MINIMAL);
+    const transitions = [];
+    run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 10_000, 0, 16, (state, now) => {
+        if (state.lastTransitionAtMs === now) transitions.push({ level: state.level, now });
+    });
+    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
+    assert.ok(transitions.some(item => item.level === POST_FX_LEVELS.FULL && item.now <= 10_000));
+});
+
+test('healthy hardware has at most one transition in the following minute', () => {
+    const ladder = createPostFxLadder({ uploadIdleFullMs: 60_000 });
+    ladder.reset(POST_FX_LEVELS.MINIMAL);
+    let now = run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 10_000);
+    let transitions = 0;
+    let previousLevel = ladder.getLevel();
+    let lastSpikeBucket = -1;
+    run(
+        ladder,
+        sampleAt => {
+            const spikeBucket = Math.floor((sampleAt - now) / 10_000);
+            const spike = spikeBucket > lastSpikeBucket;
+            lastSpikeBucket = Math.max(lastSpikeBucket, spikeBucket);
+            return { uploadMs: 0.2, gpuMs: spike ? 12 : 1 };
+        },
+        60_000,
+        now,
+        16,
+        state => {
+            if (state.level !== previousLevel) transitions += 1;
+            previousLevel = state.level;
+        },
+    );
+    assert.ok(transitions <= 1, `expected at most one transition, received ${transitions}`);
+});
+
+test('a single over-threshold frame does not reset recovery', () => {
+    const ladder = createPostFxLadder({
+        scoreWindowFrames: 1,
+        unhealthyResetFrames: 3,
+        probeMs: 1000,
+        uploadGraceMs: 0,
+        uploadIdleFullMs: 60_000,
+    });
+    ladder.reset(POST_FX_LEVELS.REDUCED);
+    let now = run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 800, 0, 100);
+    const healthySinceMs = ladder.getState().healthySinceMs;
+    ladder.update({ uploadMs: 0.2, gpuMs: 5 }, now += 100);
+    assert.equal(ladder.getState().healthySinceMs, healthySinceMs);
+    run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 200, now, 100);
+    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
+});
+
+test('three consecutive over-threshold frames reset recovery', () => {
+    const ladder = createPostFxLadder({
+        scoreWindowFrames: 1,
+        unhealthyResetFrames: 3,
+        uploadGraceMs: 0,
+        uploadIdleFullMs: 60_000,
+    });
+    ladder.reset(POST_FX_LEVELS.REDUCED);
+    let now = run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 500, 0, 100);
+    run(ladder, { uploadMs: 0.2, gpuMs: 3 }, 300, now, 100);
+    assert.equal(ladder.getState().healthySinceMs, null);
+});
+
+test('recovery threshold is always 75 percent of the budget', () => {
+    const ladder = createPostFxLadder({ budgetMs: 10, healthyMs: 1 });
+    assert.equal(ladder.getState().options.healthyMs, 7.5);
+});
+
+test('upload-driven boot work is ignored for the three-second grace window', () => {
+    const ladder = createPostFxLadder({
+        scoreWindowFrames: 1,
+        overBudgetMs: 100,
+        uploadGraceMs: 3000,
+    });
+    run(ladder, { uploadMs: 20, gpuMs: 1 }, 2900, 0, 100);
+    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
+    assert.equal(ladder.getState().lastDecisionReason, 'upload-grace');
+});
+
+test('one second with no uploads snaps a healthy resident ladder back to FULL', () => {
     const ladder = createPostFxLadder();
-    run(ladder, { uploadMs: 5, cpuMs: 1 }, 60);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.REDUCED);
-    let now = 60 * 16;
-    now = run(ladder, { uploadMs: 1, cpuMs: 0.2 }, 200, now);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.REDUCED, '3.2s healthy is inside the probe window');
-    run(ladder, { uploadMs: 1, cpuMs: 0.2 }, 140, now);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL, 'healthy past 5s must recover a level');
+    ladder.reset(POST_FX_LEVELS.MINIMAL);
+    run(ladder, { uploadMs: 0, gpuMs: 1 }, 1100, 0, 100);
+    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
+    assert.equal(ladder.getState().lastDecisionReason, 'upload-idle-recovery');
 });
 
 test('override pins the effective level and survives metric churn', () => {
     const ladder = createPostFxLadder();
     ladder.setOverride(POST_FX_LEVELS.MINIMAL);
-    run(ladder, { uploadMs: 20, cpuMs: 10 }, 120);
+    run(ladder, { uploadMs: 20, gpuMs: 10 }, 5000);
     assert.equal(ladder.getLevel(), POST_FX_LEVELS.MINIMAL);
     ladder.setOverride(null);
     assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
 });
 
 test('timing assessment attributes upload, auxiliary upload, shader, GPU, and frame-gap cost', () => {
-    const upload = assessPostFxTimings({ uploadMs: 6, auxUploadMs: 1, setupCpuMs: 0.5, shaderCpuMs: 1, gpuMs: 2 });
+    const upload = assessPostFxTimings({
+        uploadMs: 6,
+        auxUploadMs: 1,
+        setupCpuMs: 0.5,
+        shaderCpuMs: 1,
+        gpuMs: 2,
+    });
     assert.equal(upload.driver, 'uploadMs');
     assert.equal(upload.score, 10.5);
 
@@ -84,17 +193,27 @@ test('timing assessment attributes upload, auxiliary upload, shader, GPU, and fr
 });
 
 test('degradation diagnostics retain the concrete bottleneck reason', () => {
-    const ladder = createPostFxLadder({ probeMs: 32 });
-    run(ladder, { uploadMs: 6, shaderCpuMs: 0.5 }, 60);
+    const ladder = createPostFxLadder({
+        scoreWindowFrames: 1,
+        overBudgetMs: 100,
+        probeMs: 100,
+        uploadGraceMs: 0,
+        uploadIdleFullMs: 60_000,
+    });
+    run(ladder, { uploadMs: 0.2, gpuMs: 6 }, 120, 0, 20);
     const degraded = ladder.getState();
     assert.equal(degraded.level, POST_FX_LEVELS.REDUCED);
-    assert.equal(degraded.lastDecisionReason, 'degrade:sustained-uploadMs');
-    assert.equal(degraded.lastDegradationReason, 'sustained-uploadMs');
-    assert.equal(degraded.lastTransitionMetrics.driver, 'uploadMs');
+    assert.equal(degraded.lastDecisionReason, 'degrade:sustained-gpuMs');
+    assert.equal(degraded.lastDegradationReason, 'sustained-gpuMs');
+    assert.equal(degraded.lastTransitionMetrics.driver, 'gpuMs');
 
-    run(ladder, { uploadMs: 0.2, shaderCpuMs: 0.2 }, 3, 60 * 16);
+    run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 120, 120, 20);
     const recovered = ladder.getState();
     assert.equal(recovered.level, POST_FX_LEVELS.FULL);
     assert.equal(recovered.lastDecisionReason, 'healthy-recovery');
-    assert.equal(recovered.lastDegradationReason, 'sustained-uploadMs', 'recovery must not erase the last degradation cause');
+    assert.equal(
+        recovered.lastDegradationReason,
+        'sustained-gpuMs',
+        'recovery must not erase the last degradation cause',
+    );
 });

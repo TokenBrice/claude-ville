@@ -19,6 +19,8 @@ const os = require('os');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const {
   createDetailResponse,
+  getJsonlDiagnostics,
+  getTailCacheDiagnostics,
   normalizeCacheTokens,
   readJsonLines: readSharedJsonLines,
   summarizeToolInput: summarizeSharedToolInput,
@@ -65,6 +67,27 @@ const _tailParseCache = new Map(); // filePath -> { key, detail }
 const _subagentMetaCache = new Map(); // meta.json path -> { key, childId, parentId }
 const _projectSessionsCache = new Map(); // projectPath -> { mtimeMs, entries }
 const _discoveryPerf = {
+  activePasses: 0,
+  filesDiscovered: 0,
+  filesStatted: 0,
+  filesSkippedBeforeRead: 0,
+  filesOpened: 0,
+  bytesRead: 0,
+  linesParsed: 0,
+  cacheHits: 0,
+  cacheMisses: 0,
+  statErrors: 0,
+  lastPassAt: null,
+  lastPassDurationMs: 0,
+  lastFilesDiscovered: 0,
+  lastFilesStatted: 0,
+  lastFilesSkippedBeforeRead: 0,
+  lastFilesOpened: 0,
+  lastBytesRead: 0,
+  lastLinesParsed: 0,
+  lastCacheHits: 0,
+  lastCacheMisses: 0,
+  lastStatErrors: 0,
   projectCacheHits: 0,
   projectCacheMisses: 0,
   lastDiscoveredSessions: 0,
@@ -117,9 +140,9 @@ function decodeProjectDirName(encoded) {
   }
 }
 
-function getSummary(summaryPath) {
+function getSummary(summaryPath, fileStat = null) {
   try {
-    const stat = fs.statSync(summaryPath);
+    const stat = fileStat || fs.statSync(summaryPath);
     const key = statCacheKey(summaryPath, stat);
     const cached = _summaryCache.get(summaryPath);
     if (cached?.key === key) {
@@ -330,18 +353,30 @@ function buildSubagentParentIndex(entries, wantedChildIds = null) {
   return childToParent;
 }
 
-function sessionActivityMs(entry, summary) {
+function sessionActivityMs(entry, summary, { sessionStat = null, summaryStat = null } = {}) {
   const candidates = [
     parseTimestampMs(summary?.last_active_at),
     parseTimestampMs(summary?.updated_at),
     parseTimestampMs(summary?.created_at),
   ];
+  if (sessionStat) candidates.push(sessionStat.mtimeMs);
   for (const filePath of [entry.updatesPath, entry.chatPath, entry.eventsPath, entry.summaryPath]) {
     try {
-      if (fs.existsSync(filePath)) candidates.push(fs.statSync(filePath).mtimeMs);
+      if (filePath === entry.summaryPath && summaryStat) {
+        candidates.push(summaryStat.mtimeMs);
+      } else if (fs.existsSync(filePath)) {
+        candidates.push(fs.statSync(filePath).mtimeMs);
+      }
     } catch { /* ignore */ }
   }
   return Math.max(0, ...candidates.filter((n) => Number.isFinite(n) && n > 0));
+}
+
+function inactiveByAge(ageMs, threshold) {
+  return threshold != null && (
+    threshold <= 0
+    || (Number.isFinite(threshold) && Number.isFinite(ageMs) && ageMs >= 0 && ageMs > threshold)
+  );
 }
 
 function parseLiveDetail(entry, project = null) {
@@ -696,18 +731,53 @@ class GrokAdapter {
   }
 
   getActiveSessions(activeThresholdMs) {
+    const startedAt = Date.now();
     const now = Date.now();
     const sessions = [];
 
     const entries = listSessionDirs();
+    const pass = {
+      filesDiscovered: entries.length,
+      filesStatted: 0,
+      filesSkippedBeforeRead: 0,
+      filesOpened: 0,
+      bytesRead: 0,
+      linesParsed: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      statErrors: 0,
+    };
+    const diagnosticsBefore = getJsonlDiagnostics()[this.provider]?.parsedLines || 0;
+    const tailBefore = getTailCacheDiagnostics().parsed;
+    const threshold = activeThresholdMs == null ? null : Number(activeThresholdMs);
     const activeEntries = [];
 
     for (const entry of entries) {
-      const summary = getSummary(entry.summaryPath);
+      let sessionStat;
+      let summaryStat;
+      pass.filesStatted += 1;
+      try {
+        sessionStat = fs.statSync(entry.dir);
+        summaryStat = fs.statSync(entry.summaryPath);
+      } catch {
+        pass.statErrors += 1;
+        pass.filesSkippedBeforeRead += 1;
+        continue;
+      }
+
+      const ageMs = now - Math.max(sessionStat.mtimeMs, summaryStat.mtimeMs);
+      if (inactiveByAge(ageMs, threshold)) {
+        pass.filesSkippedBeforeRead += 1;
+        continue;
+      }
+
+      pass.filesOpened += 1;
+      pass.bytesRead += Math.min(summaryStat.size, MAX_HEAD_BYTES);
+      const summary = getSummary(entry.summaryPath, summaryStat);
       if (!summary) continue;
 
-      const lastActivity = sessionActivityMs(entry, summary);
-      if (!lastActivity || now - lastActivity > activeThresholdMs) continue;
+      const lastActivity = sessionActivityMs(entry, summary, { sessionStat, summaryStat });
+      if (!lastActivity || inactiveByAge(now - lastActivity, threshold)) continue;
       activeEntries.push({ entry, summary, lastActivity });
     }
     const unresolvedChildIds = activeEntries
@@ -763,7 +833,34 @@ class GrokAdapter {
       });
     }
 
+    const diagnosticsAfter = getJsonlDiagnostics()[this.provider]?.parsedLines || 0;
+    const tailAfter = getTailCacheDiagnostics().parsed;
+    pass.bytesRead += Math.max(0, tailAfter.bytesRead - tailBefore.bytesRead);
+    pass.linesParsed = Math.max(0, diagnosticsAfter - diagnosticsBefore);
+    pass.cacheHits = Math.max(0, tailAfter.hits - tailBefore.hits);
+    pass.cacheMisses = Math.max(0, tailAfter.misses - tailBefore.misses);
+    this._recordActivePass(startedAt, pass);
     return sessions.sort((a, b) => b.lastActivity - a.lastActivity);
+  }
+
+  _recordActivePass(startedAt, pass) {
+    _discoveryPerf.activePasses += 1;
+    for (const field of [
+      'filesDiscovered',
+      'filesStatted',
+      'filesSkippedBeforeRead',
+      'filesOpened',
+      'bytesRead',
+      'linesParsed',
+      'cacheHits',
+      'cacheMisses',
+      'statErrors',
+    ]) {
+      _discoveryPerf[field] += pass[field];
+      _discoveryPerf[`last${field[0].toUpperCase()}${field.slice(1)}`] = pass[field];
+    }
+    _discoveryPerf.lastPassAt = Date.now();
+    _discoveryPerf.lastPassDurationMs = _discoveryPerf.lastPassAt - startedAt;
   }
 
   getSessionDetail(sessionId) {
