@@ -76,9 +76,9 @@
 .modal__content {
     padding: 16px;
     overflow-y: auto;
-    font-size: 11px;
+    font-size: var(--fs-body);
     color: var(--cv-tan);
-    line-height: 1.8;
+    line-height: var(--lh-body);
     font-family: var(--font-body);
 }
 
@@ -111,7 +111,7 @@
 }
 
 .cl-ver {
-    font-size: 8px;
+    font-size: var(--fs-label);
     color: var(--cv-gold-bright);
     border: 1px solid rgba(242, 211, 107, 0.45);
     background: rgba(36, 24, 17, 0.9);
@@ -134,7 +134,7 @@
 }
 
 .cl-date {
-    font-size: 10px;
+    font-size: var(--fs-data);
     color: #7a6a52;
     margin-left: auto;
     white-space: nowrap;
@@ -190,8 +190,8 @@
 }
 
 .modal__content code {
-    font-family: monospace;
-    font-size: 10px;
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
     color: #9fc78a;
     background: rgba(0, 0, 0, 0.35);
     padding: 0 3px;
@@ -205,7 +205,7 @@
 .chronicle__opening {
     font-family: var(--font-display);
     font-size: 10px;
-    line-height: 1.7;
+    line-height: var(--lh-body);
     color: var(--cv-gold-soft);
     margin: 0 0 12px;
 }
@@ -224,7 +224,7 @@
     flex-direction: column;
     gap: 4px;
     font-family: var(--font-display);
-    font-size: 8px;
+    font-size: var(--fs-label);
     letter-spacing: 1px;
     text-transform: uppercase;
     color: rgba(187, 161, 122, 0.7);
@@ -248,7 +248,7 @@
 }
 
 .chronicle__date-label-text {
-    font-size: 8px;
+    font-size: var(--fs-label);
     letter-spacing: 1px;
     text-transform: uppercase;
     color: rgba(187, 161, 122, 0.7);
@@ -271,7 +271,7 @@
 
 .chronicle__export-button {
     font-family: var(--font-display);
-    font-size: 8px;
+    font-size: var(--fs-label);
     letter-spacing: 1px;
     text-transform: uppercase;
     color: var(--cv-gold-soft);
@@ -312,7 +312,7 @@
 
 .chronicle__stat-label {
     font-family: var(--font-display);
-    font-size: 8px;
+    font-size: var(--fs-label);
     letter-spacing: 1px;
     color: rgba(187, 161, 122, 0.7);
 }
@@ -324,7 +324,8 @@
 }
 
 .chronicle__note {
-    font-size: 11px;
+    font-size: var(--fs-body);
+    line-height: var(--lh-body);
     color: rgba(187, 161, 122, 0.82);
     margin: 0 0 12px;
 }
@@ -342,15 +343,57 @@
     align-items: baseline;
     gap: 6px;
     padding: 5px 2px;
-    font-size: 11px;
+    font-size: var(--fs-data);
+    line-height: var(--lh-body);
     color: var(--cv-tan);
     border-bottom: 1px solid rgba(199, 157, 76, 0.1);
 }
 
 .chronicle__time {
-    font-family: var(--font-display);
-    font-size: 9px;
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
     color: rgba(187, 161, 122, 0.62);
+}
+
+.settings-panel__note,
+.settings-panel__key,
+.settings-panel__value {
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
+    line-height: var(--lh-body);
+}
+
+.settings-panel__note,
+.settings-panel__key {
+    color: var(--cv-text-muted);
+}
+
+.settings-panel__value {
+    color: var(--cv-tan);
+}
+
+.settings-panel__heading {
+    margin-bottom: 6px;
+    color: var(--cv-gold-bright, #f2d36b);
+    font: var(--fs-label)/1.4 var(--font-display);
+    letter-spacing: 1px;
+}
+
+:where(
+    .modal__title,
+    .cl-ver,
+    .cl-name,
+    .cl-hotfix-badge,
+    .chronicle__opening,
+    .chronicle__date-label,
+    .chronicle__date-input,
+    .chronicle__date-heading,
+    .chronicle__export-button,
+    .chronicle__stat-label,
+    .chronicle__stat-value,
+    .settings-panel__heading
+) {
+    -webkit-font-smoothing: none;
 }
 
 .chronicle__glyph {

@@ -67,10 +67,21 @@ export function setGpuLightColor(slot, rgb = []) {
     return slot;
 }
 
-export function gpuLightColorForShader(light = {}, fallback = [1, 0.78, 0.42]) {
-    const channels = ['r', 'g', 'b'].map(channel => Number(light?.[channel]));
-    if (!channels.every(Number.isFinite)) return fallback.slice();
-    return channels.map(channel => Math.max(0, Math.min(1, channel / 255)));
+export function gpuLightColorForShader(light = {}, fallback = [1, 0.78, 0.42], target = null) {
+    const output = target || new Array(3);
+    const r = Number(light?.r);
+    const g = Number(light?.g);
+    const b = Number(light?.b);
+    if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) {
+        output[0] = fallback[0];
+        output[1] = fallback[1];
+        output[2] = fallback[2];
+        return output;
+    }
+    output[0] = Math.max(0, Math.min(1, r / 255));
+    output[1] = Math.max(0, Math.min(1, g / 255));
+    output[2] = Math.max(0, Math.min(1, b / 255));
+    return output;
 }
 
 export function createGpuTimingMetricsScratch() {
@@ -152,7 +163,7 @@ export function materialClassId(value) {
     return registryMaterialClassId(value);
 }
 
-export function normalizeGpuRecord(record = {}, sequence = 0) {
+export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     const source = record.source || record.image || null;
     const sourceWidth = Math.max(1, finite(record.sourceWidth, source?.width || 1));
     const sourceHeight = Math.max(1, finite(record.sourceHeight, source?.height || 1));
@@ -169,33 +180,36 @@ export function normalizeGpuRecord(record = {}, sequence = 0) {
     const blend = record.blend === 'add' ? 'add' : 'normal';
     const textureKey = String(record.textureKey || record.stableKey || record.id || `texture:${sequence}`);
     const sidecarKey = String(record.sidecarKey || record.materialSidecarKey || '');
-    return {
-        ...record,
-        source,
-        materialSource: record.materialSource || record.sidecar || null,
-        emissiveSource: record.emissiveSource || null,
-        textureKey,
-        sidecarKey,
-        sourceWidth,
-        sourceHeight,
-        sx,
-        sy,
-        sw,
-        sh,
-        x: finite(record.x),
-        y: finite(record.y),
-        width,
-        height,
-        alpha,
-        elevation,
-        emissive,
-        occluder,
-        material: materialClassId(record.material ?? record.materialId),
-        blend,
-        sequence: finite(record.sequence, sequence),
-        textureRevision: record.textureRevision ?? null,
-        sidecarRevision: record.sidecarRevision ?? null,
-    };
+    const normalized = target || { ...record };
+    if (target) Object.assign(normalized, record);
+    normalized.source = source;
+    normalized.materialSource = record.materialSource || record.sidecar || null;
+    normalized.emissiveSource = record.emissiveSource || null;
+    normalized.textureKey = textureKey;
+    normalized.sidecarKey = sidecarKey;
+    normalized.sourceWidth = sourceWidth;
+    normalized.sourceHeight = sourceHeight;
+    normalized.sx = sx;
+    normalized.sy = sy;
+    normalized.sw = sw;
+    normalized.sh = sh;
+    normalized.x = finite(record.x);
+    normalized.y = finite(record.y);
+    normalized.width = width;
+    normalized.height = height;
+    normalized.alpha = alpha;
+    normalized.elevation = elevation;
+    normalized.emissive = emissive;
+    normalized.occluder = occluder;
+    normalized.material = materialClassId(record.material ?? record.materialId);
+    normalized.blend = blend;
+    normalized.sequence = finite(record.sequence, sequence);
+    normalized.textureRevision = record.textureRevision ?? null;
+    normalized.sidecarRevision = record.sidecarRevision ?? null;
+    normalized.textureUpdates = record.textureUpdates ?? null;
+    normalized.materialTextureUpdates = record.materialTextureUpdates ?? null;
+    normalized.emissiveTextureUpdates = record.emissiveTextureUpdates ?? null;
+    return normalized;
 }
 
 export function validGpuRecord(record) {
@@ -210,35 +224,47 @@ export function validGpuRecord(record) {
     );
 }
 
-export function buildStableGpuBatches(records = []) {
-    const normalized = records
-        .map((record, index) => normalizeGpuRecord(record, index))
-        .filter(validGpuRecord);
-    const batches = [];
+export function buildStableGpuBatches(records = [], batches = [], normalizedRecords = []) {
+    let batchCount = 0;
     let current = null;
-    for (const record of normalized) {
-        const batchKey = [
-            record.textureKey,
-            record.sidecarKey,
-            record.blend,
-        ].join('|');
-        if (!current || current.key !== batchKey || current.source !== record.source
+    for (let index = 0; index < records.length; index++) {
+        const normalized = normalizedRecords[index] || (normalizedRecords[index] = {});
+        const record = normalizeGpuRecord(records[index], index, normalized);
+        if (!validGpuRecord(record)) continue;
+        if (!current || current.textureKey !== record.textureKey
+            || current.sidecarKey !== record.sidecarKey
+            || current.blend !== record.blend
+            || current.source !== record.source
             || current.materialSource !== record.materialSource
             || current.emissiveSource !== record.emissiveSource) {
-            current = {
-                key: batchKey,
-                source: record.source,
-                materialSource: record.materialSource,
-                emissiveSource: record.emissiveSource,
-                textureKey: record.textureKey,
-                sidecarKey: record.sidecarKey,
-                blend: record.blend,
-                records: [],
-            };
-            batches.push(current);
+            current = batches[batchCount];
+            if (!current) {
+                current = { records: [] };
+                batches[batchCount] = current;
+            }
+            if (current.textureKey !== record.textureKey
+                || current.sidecarKey !== record.sidecarKey
+                || current.blend !== record.blend) {
+                current.key = `${record.textureKey}|${record.sidecarKey}|${record.blend}`;
+            }
+            current.source = record.source;
+            current.materialSource = record.materialSource;
+            current.emissiveSource = record.emissiveSource;
+            current.textureKey = record.textureKey;
+            current.sidecarKey = record.sidecarKey;
+            current.blend = record.blend;
+            current.records.length = 0;
+            current.first = 0;
+            current.count = 0;
+            current.occlusionFirst = 0;
+            current.occlusionCount = 0;
+            current.occluderMax = 0;
+            batchCount++;
         }
         current.records.push(record);
     }
+    batches.length = batchCount;
+    normalizedRecords.length = records.length;
     return batches;
 }
 
@@ -270,20 +296,61 @@ function isAttentionLight(light) {
     return Boolean(light?.attention) || String(light?.id || '').startsWith('attention:');
 }
 
-export function clampGpuLights(lights = [], limit = 16, hardLimit = limit) {
+export function clampGpuLights(lights = [], limit = 16, hardLimit = limit, cache = null) {
     const cap = Math.max(0, Math.floor(finite(limit, 16)));
     const hardCap = Math.max(cap, Math.floor(finite(hardLimit, cap)));
-    const ranked = (lights || [])
-        .filter(light => Number.isFinite(Number(light?.x)) && Number.isFinite(Number(light?.y)))
-        .sort((a, b) => (
+    const source = lights || [];
+    const ranked = cache?.ranked || [];
+    let unchanged = Boolean(cache && cache.source === source && cache.sourceLength === source.length);
+    if (unchanged) {
+        for (let index = 0; index < source.length; index++) {
+            const light = source[index];
+            const snapshot = cache.snapshots[index];
+            if (!snapshot || snapshot.light !== light
+                || snapshot.x !== light?.x || snapshot.y !== light?.y
+                || snapshot.priority !== light?.priority || snapshot.intensity !== light?.intensity
+                || snapshot.id !== light?.id || snapshot.attention !== light?.attention) {
+                unchanged = false;
+                break;
+            }
+        }
+    }
+    if (!unchanged) {
+        ranked.length = 0;
+        if (cache) cache.snapshots.length = source.length;
+        for (let index = 0; index < source.length; index++) {
+            const light = source[index];
+            if (Number.isFinite(Number(light?.x)) && Number.isFinite(Number(light?.y))) ranked.push(light);
+            if (cache) {
+                const snapshot = cache.snapshots[index] || (cache.snapshots[index] = {});
+                snapshot.light = light;
+                snapshot.x = light?.x;
+                snapshot.y = light?.y;
+                snapshot.priority = light?.priority;
+                snapshot.intensity = light?.intensity;
+                snapshot.id = light?.id;
+                snapshot.attention = light?.attention;
+            }
+        }
+        ranked.sort((a, b) => (
             Number(isAttentionLight(b)) - Number(isAttentionLight(a))
             || finite(b.priority, 0) - finite(a.priority, 0)
             || finite(b.intensity, 1) - finite(a.intensity, 1)
             || String(a.id || '').localeCompare(String(b.id || ''))
         ));
+        if (cache) {
+            cache.source = source;
+            cache.sourceLength = source.length;
+        }
+    }
     let protectedCount = 0;
     while (protectedCount < ranked.length && isAttentionLight(ranked[protectedCount])) protectedCount++;
-    return ranked.slice(0, Math.min(hardCap, Math.max(cap, protectedCount)));
+    const admittedCount = Math.min(hardCap, Math.max(cap, protectedCount));
+    if (!cache) return ranked.slice(0, admittedCount);
+    const admitted = cache.admitted;
+    admitted.length = admittedCount;
+    for (let index = 0; index < admittedCount; index++) admitted[index] = ranked[index];
+    return admitted;
 }
 
 export function emissivePhaseForAmbientLight(ambientLight = 1) {

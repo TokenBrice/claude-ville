@@ -45,6 +45,14 @@ function normalizedKind(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
+function normalizedProviderKind(value, provider) {
+  const kind = normalizedKind(value);
+  if (provider !== 'gemini') return kind;
+  if (kind === 'beforetool') return 'pretooluse';
+  if (kind === 'aftertool') return 'posttooluse';
+  return kind;
+}
+
 function safeTimestamp(value, now) {
   let timestamp = null;
   if (typeof value === 'string' && value.trim()) {
@@ -147,7 +155,7 @@ class HookOverlay {
     this.prune(now);
     const provider = String(event.provider || '').trim().toLowerCase();
     const sessionId = String(event.sessionId || '').trim();
-    const kind = normalizedKind(event.kind);
+    const kind = normalizedProviderKind(event.kind, provider);
     if (!KNOWN_PROVIDERS.has(provider)) {
       const error = new Error('unknown provider');
       error.code = 'UNKNOWN_PROVIDER';
@@ -211,10 +219,7 @@ class HookOverlay {
       };
     }
 
-    if (previous && (
-      eventAt < previous.eventAt
-      || (eventAt === previous.eventAt && urgency(previous) > urgency(next))
-    )) {
+    if (previous && eventAt < previous.eventAt) {
       return this.overlayFor(sessionId, now);
     }
 

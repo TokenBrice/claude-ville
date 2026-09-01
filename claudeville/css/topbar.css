@@ -20,6 +20,7 @@
         0 1px 0 rgba(255, 226, 138, 0.1);
     flex-shrink: 0;
     z-index: 100;
+    -webkit-font-smoothing: none;
 }
 
 /* ── Living activity rail ──
@@ -109,9 +110,10 @@
     display: flex;
     align-items: center;
     font-family: var(--font-body);
-    font-size: 10px;
+    font-size: var(--fs-data);
     line-height: 1;
     color: var(--cv-text-muted);
+    -webkit-font-smoothing: auto;
 }
 
 .topbar__meta > * + *::before {
@@ -292,8 +294,7 @@
     border: 1px solid var(--cv-gold-warm);
     border-radius: 2px;
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--cv-panel-deep) 92%, transparent), var(--cv-elev-2);
-    font: 10px var(--font-body);
-    line-height: 1.45;
+    font: var(--fs-data)/var(--lh-body) var(--font-body);
 }
 
 .topbar__connection-panel > * + * {
@@ -454,6 +455,7 @@
     font-size: 13px;
     color: rgba(244, 214, 120, 0.92);
     text-shadow: 0 0 8px rgba(242, 211, 107, 0.16);
+    -webkit-font-smoothing: auto;
 }
 
 .topbar__badges {
@@ -718,8 +720,11 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
 
 /* Burn rate rides in the TODAY cell: same subject, secondary weight. */
 .topbar__stat-rate {
-    font-size: 9px;
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
+    line-height: 1;
     color: rgba(187, 161, 122, 0.9);
+    -webkit-font-smoothing: auto;
 }
 
 .topbar__stat-rate:empty {
@@ -736,7 +741,7 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     border: 1px solid var(--cv-gold-warm, #c79d4c);
     border-radius: 2px;
     box-shadow: 0 0 0 2px rgba(28, 17, 11, 0.96), var(--cv-elev-2);
-    font: 10px var(--font-body);
+    font: var(--fs-data)/var(--lh-body) var(--font-body);
 }
 
 .topbar__fps-panel {
@@ -760,7 +765,7 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
 .topbar__spend-note {
     margin-bottom: 9px;
     color: var(--cv-text-muted);
-    font-size: 9px;
+    font-size: var(--fs-data);
 }
 
 .topbar__spend-columns {
@@ -783,7 +788,7 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     color: var(--cv-text-muted);
     border-bottom: 1px solid rgba(199, 157, 76, 0.3);
     font-family: var(--font-pixel);
-    font-size: 8px;
+    font-size: var(--fs-label);
     letter-spacing: 1px;
 }
 
@@ -826,13 +831,13 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
 .topbar__spend-detail {
     margin-top: 2px;
     color: var(--cv-text-muted);
-    font-size: 9px;
+    font-size: var(--fs-data);
 }
 
 .topbar__spend-more {
     padding-top: 5px;
     color: var(--cv-text-muted);
-    font-size: 9px;
+    font-size: var(--fs-data);
     text-align: right;
 }
 
@@ -848,4 +853,35 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
 #statRateWrap[role="button"]:focus-visible {
     outline: 1px solid var(--cv-gold-soft);
     outline-offset: 2px;
+}
+
+.topbar__mixer-panel {
+    font: var(--fs-data)/var(--lh-body) var(--font-body);
+}
+
+.topbar__mixer-heading {
+    margin-bottom: 3px;
+    color: var(--cv-gold-bright, #f2d36b);
+    font: var(--fs-label)/1.4 var(--font-display);
+    letter-spacing: 1px;
+}
+
+.topbar__mixer-note {
+    margin-bottom: 8px;
+    color: var(--cv-text-muted);
+    font-size: var(--fs-data);
+}
+
+.topbar__mixer-row {
+    color: var(--cv-gold-soft, #d7b96f);
+    font: var(--fs-label)/1.4 var(--font-display);
+}
+
+:where(
+    .topbar__spend-heading,
+    .topbar__spend-section-heading,
+    .topbar__mixer-heading,
+    .topbar__mixer-row
+) {
+    -webkit-font-smoothing: none;
 }

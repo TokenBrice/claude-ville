@@ -42,21 +42,21 @@ typography:
     fontWeight: 700
     lineHeight: 1.3
   body:
-    fontFamily: "'Press Start 2P', monospace"
-    fontSize: "10px"
+    fontFamily: "'Departure Mono', ui-monospace, monospace"
+    fontSize: "13px"
     fontWeight: 400
-    lineHeight: 1.6
+    lineHeight: 1.45
   label:
     fontFamily: "'Press Start 2P', monospace"
-    fontSize: "7px"
+    fontSize: "10px"
     fontWeight: 400
     lineHeight: 1.4
     letterSpacing: "1px"
   micro:
-    fontFamily: "'Press Start 2P', monospace"
-    fontSize: "6px"
+    fontFamily: "'Departure Mono', ui-monospace, monospace"
+    fontSize: "12px"
     fontWeight: 400
-    letterSpacing: "0.5px"
+    lineHeight: 1.45
 rounded:
   xs: "1px"
   sm: "2px"
@@ -125,7 +125,7 @@ This spec documents the DOM chrome only. The canvas village's own visual system 
 It explicitly rejects the look of a **generic SaaS dashboard** (cool grays, Inter, chart-card grids), **neon cyberpunk / synthwave** (glowing neon grids, purple-and-cyan), **corporate gamification** (badges, points, XP bars bolted onto a business app), and **mobile / casual-game UI** (bubbly buttons, candy gradients, juicy CTAs). It is a game world, hand-pixelled, not a gamified spreadsheet and not an App Store toy.
 
 **Key Characteristics:**
-- One pixel typeface (`Press Start 2P`) at whole-pixel sizes, smoothing off.
+- A two-face type system: `Press Start 2P` for display and `Departure Mono` for body and data.
 - Warm gold-on-near-black; gold used as lamplight (text, edges, glow), never as a fill.
 - Carved relief: top highlight + drop shadow + inset hairline frame on every raised surface.
 - Saturated color reserved for agent status and provider identity, never decoration.
@@ -174,21 +174,21 @@ A torchlit timber palette: warm golds and ember browns over a charred near-black
 
 ## 3. Typography
 
-**Display / Body / Label Font:** `Press Start 2P` (with `monospace` fallback)
-**Code Font:** generic `monospace` (changelog `<code>` only)
+**Display / Label Font:** `Press Start 2P` (with `monospace` fallback)
+**Body / Data / Code Font:** `Departure Mono` (with system monospace fallbacks)
 
-**Character:** One chunky 8-bit pixel face does the entire job: titles, values, labels, body. There is no second typeface and there should never be one. Hierarchy comes from size, weight (the font's `bold` thickens the bitmap), letter-spacing, and color, not from pairing. The face is loaded from Google Fonts and rendered with `-webkit-font-smoothing: none` and `image-rendering: pixelated` so the glyphs stay crisp.
+**Character:** ClaudeVille uses exactly two local faces. `Press Start 2P` carries the wordmark, headings, short labels, and controls; it stays at 10px or larger and renders with smoothing disabled so its bitmap edges stay crisp. `Departure Mono` carries prose, paths, messages, timestamps, and numeric data at 12–13px with a 1.45 line height and normal font smoothing. Do not introduce a third face.
 
 ### Hierarchy
 - **Display** (400, 13px, line-height 1, letter-spacing 2px): the `ClaudeVille` wordmark in the top bar, with a dark drop and a gold glow.
 - **Headline** (700, 12px, letter-spacing 1px): dashboard section names, card names, modal title.
 - **Title** (700, 11px): tool names, token values, primary in-card labels.
-- **Body** (400, 10px, line-height 1.6): card meta, messages, tool details, modal prose.
-- **Label** (400, 7px, letter-spacing 1px, UPPERCASE): stat labels, section eyebrows, meta keys.
-- **Micro** (400, 5-6px): token-cell labels, journey labels, the densest readouts.
+- **Body** (Departure Mono 400, 13px, line-height 1.45): messages, tool details, and modal prose.
+- **Data** (Departure Mono 400, 12px, line-height 1.45): paths, timestamps, meta values, and dense readouts.
+- **Label** (Press Start 2P 400, 10px, letter-spacing 1px, UPPERCASE): stat labels, section eyebrows, and short meta keys.
 
 ### Named Rules
-**The Whole-Pixel Rule.** Sizes are whole pixels and fixed, never fluid `clamp()`. A pixel font sheared by sub-pixel scaling stops being pixel art. Keep smoothing off and let the bitmap be the bitmap.
+**The Whole-Pixel Rule.** Sizes are whole pixels and fixed, never fluid `clamp()`. A pixel font sheared by sub-pixel scaling stops being pixel art. Keep smoothing off on display-face selectors only; body and data text retain normal smoothing.
 
 **The Breathing-Label Rule.** Small labels get `letter-spacing` (1-3px) and uppercase so the heavy glyphs have air. Uppercase is for short labels only (a few words), never for sentences or messages.
 

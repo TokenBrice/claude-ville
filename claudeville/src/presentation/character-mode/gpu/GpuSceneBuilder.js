@@ -1174,7 +1174,8 @@ function sourceKindCensus(records = [], decision = {}) {
 export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     const decision = decideAtlasCategories(renderer, drawables);
     if (renderer) renderer._gpuAtlasDecision = decision;
-    const records = [];
+    const records = renderer?._gpuWorldRecordScratch || [];
+    records.length = 0;
     const terrain = recordForTerrain(renderer);
     if (terrain) records.push(terrain);
     const haze = recordForHaze(renderer);
@@ -1187,24 +1188,36 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
         } else if (drawable.kind?.startsWith?.('prop')) {
             next = recordForProp(renderer, drawable, sequence);
         } else if (drawable.kind === 'agent') {
-            records.push(...recordsForAgent(drawable, sequence));
+            const agentRecords = recordsForAgent(drawable, sequence);
+            for (let index = 0; index < agentRecords.length; index++) records.push(agentRecords[index]);
         } else if (typeof drawable.buildGpuRecord === 'function') {
             next = drawable.buildGpuRecord({ renderer, sequence });
         } else if (typeof drawable.payload?.buildGpuRecord === 'function') {
             next = drawable.payload.buildGpuRecord({ renderer, drawable, sequence });
         }
-        if (Array.isArray(next)) records.push(...next);
+        if (Array.isArray(next)) {
+            for (let index = 0; index < next.length; index++) records.push(next[index]);
+        }
         else if (next) records.push(next);
         sequence++;
     }
     packGpuAgentFrameAtlas(renderer, records);
-    const terrainRecords = records.filter(record => record.id === 'terrain:static');
-    const groundRecords = records.filter(record => String(record.id || '').startsWith('ground:'));
-    const sceneRecords = records.filter(record => (
-        record.id !== 'terrain:static' && !String(record.id || '').startsWith('ground:')
-    ));
-    const ordered = [...terrainRecords, ...groundRecords, ...sceneRecords];
+    const ordered = renderer?._gpuWorldOrderedRecords || [];
+    ordered.length = 0;
+    for (let index = 0; index < records.length; index++) {
+        if (records[index].id === 'terrain:static') ordered.push(records[index]);
+    }
+    for (let index = 0; index < records.length; index++) {
+        const record = records[index];
+        if (record.id !== 'terrain:static' && String(record.id || '').startsWith('ground:')) ordered.push(record);
+    }
+    for (let index = 0; index < records.length; index++) {
+        const record = records[index];
+        if (record.id !== 'terrain:static' && !String(record.id || '').startsWith('ground:')) ordered.push(record);
+    }
     if (renderer) {
+        renderer._gpuWorldRecordScratch = records;
+        renderer._gpuWorldOrderedRecords = ordered;
         renderer._gpuMaterialPacketDiagnostics = sourceKindCensus(ordered, decision);
         renderer._gpuMaterialPacketDiagnostics.terrainOrigin = renderer._gpuTerrainMaterialOrigin || 'procedural';
     }

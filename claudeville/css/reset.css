@@ -72,11 +72,13 @@
 
     /* ─── Type system (two-face: pixel display + legible companion) ─── */
     --font-display: 'Press Start 2P', monospace;                 /* brand face: short labels, >=10px only */
+    --font-pixel: var(--font-display);                           /* legacy display alias */
     --font-body: 'Departure Mono', ui-monospace, SFMono-Regular, Menlo, monospace; /* data/body face */
     --fs-title: 12px;   /* section + card headings */
-    --fs-body: 12px;    /* primary data values */
-    --fs-data: 11px;    /* dense data values */
+    --fs-body: 13px;    /* prose and primary body copy */
+    --fs-data: 12px;    /* paths, values, and dense data */
     --fs-label: 10px;   /* labels / eyebrows (floor — nothing smaller) */
+    --lh-body: 1.45;
 
     /* ─── Spacing scale ─── */
     --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px;
@@ -102,8 +104,6 @@ html, body {
         linear-gradient(180deg, #09070a 0%, #110c0d 100%);
     color: var(--cv-gold);
     font-family: var(--font-body);
-    -webkit-font-smoothing: none;
-    -moz-osx-font-smoothing: unset;
     image-rendering: pixelated;
 }
 

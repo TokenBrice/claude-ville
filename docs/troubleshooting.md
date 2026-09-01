@@ -38,7 +38,7 @@ Repository-only `git` sessions can also appear when git enrichment detects unpus
 
 Transcript parsing remains the default and requires no configuration. To opt into the transient permission overlay, configure the CLI yourself to send ClaudeVille's normalized body to `POST /api/ingest/hook`. ClaudeVille never edits provider settings. The route accepts `{ provider, sessionId, cwd, ts, kind, tool, input, decision }`, keeps at most 256 sessions in memory, and never persists or logs request bodies. Displayed command/path detail is secret-stripped and capped at 200 characters.
 
-All examples use `curl --max-time 1 -s -X POST http://127.0.0.1:4000/api/ingest/hook` and an asynchronous hook so a stopped dashboard does not block the CLI. They require `jq`. If ClaudeVille runs with `CLAUDEVILLE_INGEST_TOKEN`, export the same value into the CLI environment; the helpers always send it in `X-ClaudeVille-Ingest-Token` (an empty value is harmless when the server token is unset).
+All examples use `curl --max-time 1 -s -X POST http://127.0.0.1:4000/api/ingest/hook` and, where supported, an asynchronous hook so a stopped dashboard does not block the CLI. They require `jq`. If ClaudeVille runs with `CLAUDEVILLE_INGEST_TOKEN`, export the same value into the CLI environment; the helpers always send it in `X-ClaudeVille-Ingest-Token` (an empty value is harmless when the server token is unset).
 
 For Claude Code, save this executable helper as `~/.config/claudeville/ingest-claude-hook`:
 
@@ -153,7 +153,43 @@ notify = ["/bin/sh", "/home/YOU/.config/claudeville/ingest-codex-notify"]
 
 Its verified `approval-requested` type produces an exact wait signal, but it has no verified tool input, so it cannot add command/path detail by itself.
 
-Gemini CLI lifecycle hooks appear analogous, but their current payload shape has not been verified. Do not copy either mapping into Gemini configuration until its documented fields are checked.
+Gemini CLI's verified [`BeforeTool` and `AfterTool` hooks](https://geminicli.com/docs/hooks/reference/) carry `session_id`, `cwd`, `hook_event_name`, `tool_name`, and `tool_input`. Save this executable helper as `~/.config/claudeville/ingest-gemini-hook`:
+
+```sh
+#!/bin/sh
+jq -c '{
+  provider: "gemini",
+  sessionId: .session_id,
+  cwd: .cwd,
+  ts: (now * 1000 | floor),
+  kind: .hook_event_name,
+  tool: (.tool_name // null),
+  input: ((.tool_input.command? // .tool_input.file_path? // .tool_input.path? // .tool_input.query? // .tool_input.pattern? // .tool_input.description? // null) | if type == "string" then .[0:200] else . end),
+  decision: null
+}' | curl --max-time 1 -s -X POST http://127.0.0.1:4000/api/ingest/hook \
+  -H 'Content-Type: application/json' \
+  -H "X-ClaudeVille-Ingest-Token: ${CLAUDEVILLE_INGEST_TOKEN:-}" \
+  --data-binary @- >/dev/null 2>&1 || true
+```
+
+Add both events to your own Gemini CLI `settings.json`. Gemini hook timeouts are milliseconds, so `1000` matches the curl cap:
+
+```json
+{
+  "hooks": {
+    "BeforeTool": [{
+      "matcher": ".*",
+      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-gemini-hook", "timeout": 1000 }]
+    }],
+    "AfterTool": [{
+      "matcher": ".*",
+      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-gemini-hook", "timeout": 1000 }]
+    }]
+  }
+}
+```
+
+`BeforeTool` maps to a transient `tool_pending` overlay with the sanitized command/path detail. `AfterTool` clears that pending state back to working.
 
 If the overlay does not appear, POST one normalized fixture with `curl`, confirm a `202` response, and fetch `/api/sessions` immediately. A `401` means the token header does not match; `403`/`421` means the Origin/Host is not local; `400` means the provider, event, session id, or JSON is invalid. After 10 seconds the transcript state wins again, and after 30 seconds the in-memory event is discarded.
 

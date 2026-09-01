@@ -71,6 +71,37 @@ test('a scoped Claude notification retains preceding tool detail', () => {
   assert.equal(value.promptDetail, '/workspace/app.js');
 });
 
+test('Gemini BeforeTool starts a pending tool and AfterTool clears it', () => {
+  const clock = fixture();
+  clock.overlay.ingest({
+    provider: 'gemini',
+    sessionId: 'gemini-1',
+    cwd: '/workspace',
+    kind: 'BeforeTool',
+    tool: 'run_shell_command',
+    input: { command: 'npm test' },
+  });
+
+  const pending = clock.overlay.overlayFor('gemini-1');
+  assert.equal(pending.turnState, 'tool_pending');
+  assert.equal(pending.pendingTool, 'run_shell_command');
+  assert.equal(pending.promptDetail, 'npm test');
+
+  clock.overlay.ingest({
+    provider: 'gemini',
+    sessionId: 'gemini-1',
+    cwd: '/workspace',
+    kind: 'AfterTool',
+    tool: 'run_shell_command',
+    input: { command: 'npm test' },
+  });
+
+  const cleared = clock.overlay.overlayFor('gemini-1');
+  assert.equal(cleared.turnState, 'working');
+  assert.equal(cleared.pendingTool, null);
+  assert.equal(cleared.promptDetail, null);
+});
+
 test('an out-of-order asynchronous hook cannot suppress a newer approval', () => {
   const clock = fixture();
   const older = clock.now() - 100;

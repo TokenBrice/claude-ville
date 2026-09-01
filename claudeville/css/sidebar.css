@@ -452,14 +452,14 @@
     border-radius: 2px;
     background: rgba(34, 22, 15, 0.72);
     color: #f4d983;
-    font: 700 7px var(--font-display);
+    font: 700 var(--fs-label) var(--font-display);
     line-height: 1;
     text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.76);
 }
 
 .sidebar__team-icon {
-    width: 12px;
-    height: 10px;
+    width: 14px;
+    height: 12px;
     margin-right: 4px;
     color: #2a160e;
     border-color: rgba(255, 245, 205, 0.42);
@@ -684,4 +684,14 @@
     font-size: var(--fs-label);
     font-style: italic;
     color: var(--cv-text-muted);
+}
+
+:where(
+    .sidebar__title,
+    .sidebar__label-icon,
+    .sidebar__team-icon,
+    .sidebar__project-name,
+    .sidebar__empty-title
+) {
+    -webkit-font-smoothing: none;
 }

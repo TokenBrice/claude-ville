@@ -798,13 +798,6 @@ export class App {
         const status = el('div', {
             className: 'boot-status',
             text: bootStatusText(this.villageState),
-            style: {
-                fontFamily: 'var(--font-display), monospace',
-                fontSize: '9px',
-                letterSpacing: '1.5px',
-                color: 'var(--cv-gold-bright, #ffe58d)',
-                textShadow: '1px 1px 0 #2d1a12',
-            },
         });
         status.id = 'bootStatus';
         status.setAttribute('aria-hidden', 'true');
@@ -820,13 +813,6 @@ export class App {
 
         const failure = el('div', {
             className: 'boot-failure',
-            style: {
-                fontFamily: 'var(--font-display), monospace',
-                fontSize: '8px',
-                letterSpacing: '0.5px',
-                color: 'var(--cv-text-muted, #8b8b9e)',
-                display: 'none',
-            },
         });
         failure.id = 'bootFailureCopy';
 
@@ -838,13 +824,6 @@ export class App {
         action.setAttribute('aria-label', 'Try again');
         Object.assign(action.style, {
             pointerEvents: 'auto',
-            fontFamily: 'var(--font-display), monospace',
-            fontSize: '9px',
-            letterSpacing: '1px',
-            color: '#1b120d',
-            background: 'var(--cv-gold-bright, #ffe58d)',
-            border: '1px solid rgba(214, 169, 81, 0.8)',
-            padding: '6px 12px',
             cursor: 'pointer',
             display: 'none',
         });
@@ -922,13 +901,6 @@ export class App {
         if (!next) {
             next = el('span', {
                 className: nextClass,
-                style: {
-                    maxWidth: '340px',
-                    fontFamily: 'var(--font-display), monospace',
-                    fontSize: '8px',
-                    letterSpacing: '0.5px',
-                    color: 'var(--cv-tan, #d8b77a)',
-                },
             });
             root.appendChild(next);
         }

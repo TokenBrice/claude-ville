@@ -309,7 +309,7 @@ export class TopBar {
             text: 'SET',
             title: 'Review settings and reset defaults',
             ariaLabel: 'Open settings',
-            style: { fontSize: '9px', padding: '6px 7px', letterSpacing: '0.5px' },
+            style: { padding: '6px 7px', letterSpacing: '0.5px' },
         });
         button.type = 'button';
         button.setAttribute('aria-haspopup', 'dialog');
@@ -376,8 +376,8 @@ export class TopBar {
         reset.type = 'button';
         reset.addEventListener('click', () => this._resetSettings());
         actions.append(reset, el('span', {
+            className: 'settings-panel__note',
             text: 'Keeps session history, names, pins, and Chronicle data.',
-            style: { color: 'var(--cv-text-muted)', fontSize: '11px' },
         }));
         content.appendChild(actions);
         return content;
@@ -397,25 +397,19 @@ export class TopBar {
         for (const [label, value] of rows) {
             list.append(
                 el('span', {
+                    className: 'settings-panel__key',
                     text: label,
-                    style: { color: 'var(--cv-text-muted)', fontSize: '11px' },
                 }),
                 el('span', {
+                    className: 'settings-panel__value',
                     text: value,
-                    style: { color: 'var(--cv-tan)', fontSize: '11px' },
                 }),
             );
         }
         return el('section', {}, [
             el('div', {
+                className: 'settings-panel__heading',
                 text: title,
-                style: {
-                    marginBottom: '6px',
-                    color: 'var(--cv-gold-bright, #f2d36b)',
-                    fontFamily: 'var(--font-pixel)',
-                    fontSize: '9px',
-                    letterSpacing: '1px',
-                },
             }),
             list,
         ]);
@@ -514,7 +508,7 @@ export class TopBar {
             text: 'MIX',
             title: 'Open soundscape mixer',
             ariaLabel: 'Open soundscape mixer',
-            style: { fontSize: '9px', padding: '6px 7px', letterSpacing: '0.5px' },
+            style: { padding: '6px 7px', letterSpacing: '0.5px' },
         });
         button.type = 'button';
         button.hidden = true;
@@ -538,7 +532,6 @@ export class TopBar {
                 background: 'linear-gradient(180deg, var(--cv-panel, #211811), #17100c)',
                 boxShadow: '0 0 0 2px rgba(28, 17, 11, 0.96), var(--cv-elev-2)',
                 color: 'var(--cv-tan, #d6c09c)',
-                font: '10px var(--font-body)',
             },
         });
         panel.id = 'audioMixerPanel';
@@ -546,18 +539,12 @@ export class TopBar {
         panel.tabIndex = -1;
 
         const heading = el('div', {
+            className: 'topbar__mixer-heading',
             text: 'SOUNDSCAPE MIXER',
-            style: {
-                color: 'var(--cv-gold-bright, #f2d36b)',
-                fontFamily: 'var(--font-pixel)',
-                fontSize: '10px',
-                letterSpacing: '1px',
-                marginBottom: '3px',
-            },
         });
         const note = el('div', {
+            className: 'topbar__mixer-note',
             text: 'Layer trims · master volume still applies',
-            style: { color: 'var(--cv-text-muted)', fontSize: '9px', marginBottom: '8px' },
         });
         const rows = el('div', {
             style: {
@@ -588,6 +575,7 @@ export class TopBar {
                 style: { color: 'var(--cv-text-muted)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
             });
             rows.appendChild(el('label', {
+                className: 'topbar__mixer-row',
                 style: {
                     display: 'grid',
                     gridTemplateColumns: '78px 1fr 34px',
@@ -595,9 +583,6 @@ export class TopBar {
                     alignItems: 'center',
                     minHeight: '32px',
                     borderBottom: '1px solid rgba(199, 157, 76, 0.12)',
-                    color: 'var(--cv-gold-soft, #d7b96f)',
-                    fontFamily: 'var(--font-pixel)',
-                    fontSize: '8px',
                 },
             }, [label, slider, value]));
             controls[name] = { slider, value };
