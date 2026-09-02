@@ -145,7 +145,7 @@ test('tile position is a graceful World-mode screen-X fallback', () => {
 });
 
 test('provider bell voicings are distinct and council bell count follows team size', () => {
-    const providers = ['claude', 'codex', 'gemini', 'grok', 'kimi', 'omp', 'opencode', 'deepseek'];
+    const providers = ['claude', 'codex', 'gemini', 'grok', 'kimi', 'omp', 'opencode', 'deepseek', 'zai'];
     const signatures = providers.map((provider) => JSON.stringify(bellVoicingForProvider(provider)));
     assert.equal(new Set(signatures).size, providers.length);
     assert.notEqual(bellVoicingForProvider('claude').register, bellVoicingForProvider('codex').register);

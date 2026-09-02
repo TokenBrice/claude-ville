@@ -44,6 +44,7 @@ test('agent overlay and profile lookup use the provider table for every provider
     assert.equal(gpuMaterialNameForProvider('codex'), 'metal');
     assert.equal(gpuMaterialNameForProvider('gemini'), 'glass-rune');
     assert.equal(gpuMaterialNameForProvider('deepseek'), 'earth');
+    assert.equal(gpuMaterialNameForProvider('zai'), 'fabric');
     assert.equal(gpuMaterialNameForProvider('unknown-provider'), DEFAULT_PROVIDER_MATERIAL_CLASS);
 
     const source = { width: 16, height: 16 };

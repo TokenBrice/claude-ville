@@ -55,7 +55,7 @@ test('Claude projects provider records, turn timing, and a canonical working set
       usd: 12.34,
       source: 'provider',
       rateMatch: null,
-      rateRevision: '2026-09-01',
+      rateRevision: '2026-09-02',
       unknownModel: false,
     });
     assert.equal(all.estimatedCost, 12.34);
