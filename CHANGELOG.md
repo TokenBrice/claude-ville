@@ -2,6 +2,43 @@
 
 ---
 
+## v0.38.0 — *The Commander's Map* · Sep 02, 2026
+
+The village told the truth about *state*; it did not yet tell the operator *why*, *how much*, or *where the light went*. This release spends on those three questions, in that order: correct money, actionable signal, and the lighting the project already paid for delivered to the renderer operators actually run.
+
+**Money you can act on**
+- **Every current Anthropic model now has a real rate.** Fable and Opus 5 sessions were silently priced at the Sonnet-class default — wrong by roughly 3x in both directions. The pricing table is now revisioned and ordered most-specific-first, verified against the first-party pricing page, including Fable 5.1's unusual $0.25/MTok cache-read rate (0.025x, where every other model uses 0.1x).
+- **Provenance on every figure.** Costs carry `source` (provider-reported vs estimate), the matched rate, the table revision, and an `unknownModel` flag. Estimates print `~`; a model the table does not know shows a `default rate` badge instead of a confident number. Claude sessions prefer the CLI's own `totalCostUSD` when present.
+
+**Signal the operator can act on**
+- **The adapters stopped ignoring what the CLIs already write.** Claude transcripts now project provider cost, lines added/removed, last-turn duration, the prompt being answered, the todo list, git branch, hook errors and model/effort history. Codex rollouts now project tool durations, exit codes, changed files and approval policy — a full-auto session can no longer show a false "needs approval", and an Esc-aborted call no longer becomes a phantom blocker.
+- **Every provider has a turn state.** Kimi Code, OpenCode and OMP now derive turn state through the same machinery as Claude and Codex instead of falling back to file-mtime guessing that flipped generating agents to "idle".
+- **Time in state, everywhere.** "Working for 4m12s", "Waiting on you for 38s" next to every status pill, in the sidebar, the Dashboard and the panel — patched once a second with zero node creation.
+- **Working set and collision advisory.** Each agent lists the files it recently read or wrote; two live agents writing the same file in one project raise an `OVERLAP` advisory on both rows. Parallel agents most dangerously *succeed incompatibly* — now you see it coming.
+- **An exact permission inbox, opt-in.** `POST /api/ingest/hook` (loopback-only, in-memory only, capped, expiring) lets a one-line CLI hook stanza name a blocked prompt within half a second, with a `HOOK` provenance chip. Verified payload mappings for Claude Code, Codex CLI and Gemini CLI are documented; without hooks, nothing changes. No approve button — the terminal remains the only place to answer.
+- **Identity truth.** Long-running Claude main sessions no longer degrade into `team-member`; subagents report `sub-agent` plus their kind. Grok, OpenCode, OMP and Kimi stopped re-reading history on every pass, and the git branch lookup no longer spawns synchronous processes on the hot path.
+
+**Light that reaches the screen**
+- **The quality ladder reaches FULL in seconds, not half a minute.** Boot-time texture uploads were read as sustained overload, so the WebGL2 world sat at MINIMAL (4 lights, no bloom, no occlusion) for up to 29 s. With elapsed-time budgets, rolling-median scoring and upload grace, the reference machine reaches FULL within 2 s and holds it.
+- **The GPU world caught up with the Canvas one.** Building sun shadows, the haze field, cloud shadows, water shimmer, and the entire fauna and harbor layer now appear on the WebGL2 path every operator runs — previously they were drawn under the opaque GPU island and simply never seen.
+- **Attention is the brightest light in the village.** Agents that need you, errored agents and quota stops each cast their own protected light pool (light budget raised 16 → 32), readable at overview zoom where nameplates are not.
+- **Quieter crowds, honest labels.** Plaques hold a constant screen size instead of growing to 450 px at zoom 3; dense clusters fold routine names into the building's occupancy chip while every needs-you, errored or rate-limited agent keeps its name.
+- **A leaner frame.** The GPU lane allocates nothing per frame: one vertex buffer upload, reused batches, cached light ranking, incremental texture accounting with honest resident-vs-cap diagnostics.
+
+**The chrome as an instrument**
+- **Exception-first Dashboard.** Dense project rows — status with age, provenance, model, current tool, blocker, working set, tokens, cost — with needs-you rows first, filter chips, sticky headers and one in-place expansion. The same detail is no longer rendered twice on screen.
+- **Operations-first Activity Panel.** Current Tool, Tool History, Messages, Cost & Tokens, prompt and todos, and the working set come first; the village flavour collapses into an "IN THE VILLAGE" group. Mood hides when empty; bonds render only with evidence.
+- **Type you can read.** A hard 10 px floor for the display face (fourteen sub-floor sizes fixed), Departure Mono at 12-13 px for data, and no inline font sizing left in the app shell.
+- **Paths keep their filename.** Tool rows end with the file, not `/Users/…/shar…`; home directories never reach the DOM; full paths on hover.
+- **A real Settings & Health surface.** Editable controls, a per-provider watchtower roster, storage ledger, the pricing table revision, and frame p50/p95 health — where the FPS number now lives, appearing in the top bar only when it is in trouble.
+- **Keyboard-first.** `/` or `Ctrl/Cmd+K` focuses search; arrows walk the roster; Enter selects and follows; Escape unwinds. Every text token now meets 4.5:1 contrast, enforced by a smoke test, and the raw Tailwind palette is gone from the tokens.
+
+**Fixed while shipping**
+- The first-run hint and World Controls popover no longer cover the Activity Panel; the boot status line leaves once the village is live; the empty world shows one card, not two; the first toast is a framed toast.
+- Layer hygiene: verified-outcome helpers moved into the domain layer; README, cache figures and plan statuses say what the code does.
+
+---
+
 ## v0.37.0 — *The Thaw* · Sep 01, 2026
 
 The village had frozen solid. Not the picture — that still ran at sixty frames — but the ground beneath it: the server spent ninety-three percent of its life locked inside a synchronous filesystem scan, and every request for a stylesheet, a sprite or a session queued behind it. The thaw is measurable. A static file that took 36.9 seconds to arrive now takes 0.26.

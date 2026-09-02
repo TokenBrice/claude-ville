@@ -712,6 +712,10 @@ export class GpuWorldRenderer {
         this.occlusionProgram = null;
         this.bloomProgram = null;
         this.compositeProgram = null;
+        // The next _initResources creates a zero-size VBO; a stale capacity
+        // here would make _uploadVertices skip its bufferData allocation and
+        // leave every draw without geometry after suspend/resume.
+        this.vertexBufferBytes = 0;
     }
 
     _abandonGpuResources() {
