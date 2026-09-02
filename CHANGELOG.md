@@ -2,6 +2,32 @@
 
 ---
 
+## v0.40.0 — *The Scriptorium* · Sep 02, 2026
+
+The village's own scribes get a proper workshop. This release changes nothing an operator sees at a glance and everything an agent working on the repository relies on: one source of truth for models, verification a machine can run, docs that match the code, and a CI badge that finally tells the truth. Plan and evidence: `agents/plans/claudeville-agentic-dx-plan.md`.
+
+**CI was red on every push since August 25**
+- The workflow never installed dev dependencies, so the last step of `validate:quick` failed on `js-yaml` for every release from v0.34.0 to v0.39.1. CI now runs `npm ci` and `validate:full` (quick checks, the integration replay, the isolated server smokes, world and sprite validators) on Node 18 and 24.
+
+**One model registry**
+- `claudeville/src/config/models.json` is the canonical table for pricing, context window, mood tier, label, sprite, palette, and colours. `npm run models:generate` emits `models.generated.js` (browser/ESM) and `models.generated.cjs` (server/CJS) from one resolver template; `npm run models:check` fails `validate:quick` on drift. `model-pricing.json` and the hand-mirrored tables in `TokenUsage.js` are gone; the server's `modelIdentity` and the browser's `getModelVisualIdentity` read the same rows, and `mythos-*` models now resolve to the Fable identity instead of falling through to Sonnet.
+- `npm run models:resolve -- <provider> <model>` prints how a model resolves on both sides (pricing, context window, label, sprite, manifest entry, sheet dimensions) and exits non-zero on any disagreement; `model-registry.test.mjs` checks every row in both directions against the sprite manifest.
+- The burn-rate tooltips read the pricing revision from `TokenUsage.rateRevision` instead of four hard-coded dates.
+
+**Verification an agent can run**
+- `npm run verify:render` boots an isolated server on an ephemeral port with a temporary HOME, drives `?sim=1` through World, Dashboard, selection and the Activity Panel with Playwright, and writes `world.png`, `dashboard.png`, `panel.png`, and `diagnostics.json` to a temp directory. `npm run verify:server` composes the boot, security, and fatal smokes; `npm run verify:architecture` checks layers, adapter registration, port binding, the `position: fixed` allowlist, and root-doc parity. None of them touch port 4000.
+- `test:unit` is the fast loop again (~5 s): the 20-second pipeline replay moved to `npm run test:integration`, which `gate:release` runs once. A session payload contract test asserts every client-consumed field over HTTP and the WebSocket `init` frame. `CLAUDEVILLE_TEST_TMPDIR` redirects every test and smoke fixture for sandboxes that cannot write to the default temp directory.
+
+**Skills, hooks, release tooling**
+- New Claude Code skills: `add-model`, `add-provider`, `sprite-character`, `release` (manual invocation only), `verify-ui`; `verify-architecture` and `verify-server` are rewritten as routers to the scripts above and no longer assert a CORS header the server never sent or ask agents to start port 4000.
+- `.claude/settings.json` hooks: a `PreToolUse` guard blocks the destructive git and process-killing commands `AGENTS.md` forbids, `PostToolUse` runs `node --check` on edited JavaScript, `SessionStart` prints the checkout status. An opt-in `ingest` mode (`CLAUDEVILLE_DOGFOOD_HOOKS=1`) forwards redacted tool lifecycle events to `/api/ingest/hook`.
+- `scripts/release/prepare.mjs` validates the top changelog entry, bumps `package.json` and the top-bar version (`v<major>.<minor>`), extracts release notes, and prints the exact `gh release` command; `release:verify` runs inside `gate:release`. `scripts/agents/check-artifacts.mjs` keeps `agents/README.md` and the plan status lines in sync.
+
+**Docs that match the code**
+- `AGENTS.md`/`CLAUDE.md` shrink to ~700 words with a project map that includes skills, hooks, Codex config, the model registry, tests, and CI; release mechanics move to `CONTRIBUTING.md`. `claudeville/CLAUDE.md` keeps invariants and links owners. The provider/model runbook, the sprite runbook (`generationSize` per character, one canonical "Add One Character" procedure), the test and smoke catalogues, and `docs/README.md` are rewritten against the current tree; stale claims (a deleted minimap, a nonexistent `upstream` remote, a machine-specific path, an unlisted `/api/changelog`) are gone.
+
+---
+
 ## v0.39.1 — *Titan Tides* · Sep 02, 2026
 
 The harbor stops drowning in skiffs. Unpushed commits still sail, but a busy repo now sails as a fleet of titans moored at its own stretch of coast.
