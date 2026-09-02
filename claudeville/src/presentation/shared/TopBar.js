@@ -1273,6 +1273,9 @@ export class TopBar {
     }
 
     // fps is a number while the World render loop runs, null when it stops.
+    // The live value stays visible on the brand meta line (maintainer request,
+    // v0.39.0.1); the danger band below 25 FPS adds the warning styling, and
+    // Settings -> Health keeps the honest p50/p95 detail.
     renderFps(fps) {
         if (!this.els.fps) return;
         const value = Number(fps);
@@ -1285,7 +1288,7 @@ export class TopBar {
         this._lastFps = value;
         const danger = value < 25;
         this.els.fps.textContent = `${Math.round(value)} FPS`;
-        this.els.fps.hidden = !danger;
+        this.els.fps.hidden = false;
         this.els.fps.classList.toggle('topbar__fps--danger', danger);
         this.els.fps.title = danger ? 'Render health is struggling; open Settings for details' : '';
     }

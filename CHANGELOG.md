@@ -2,6 +2,13 @@
 
 ---
 
+## v0.39.0.1 · Sep 02, 2026 — Hotfix
+
+- **The FPS counter is back on the brand line.** v0.38 demoted it to a danger-only chip with the honest percentiles in Settings → Health; the maintainer wants the live number always visible next to LIVE and the version, so it is. The danger styling below 25 FPS and the Settings detail both stay.
+- Corrected the v0.39.0 notes below: the cliff-reflection blackout fix is verified by the render-stage recovery observed live and the reflection bake smoke, not by the GPU lifecycle tests (those pin the unrelated suspend/resume VBO bug from v0.38).
+
+---
+
 ## v0.39.0 — *The Chronicler's Tide* · Sep 02, 2026
 
 Wave 4 of *The Commander's Map*: composition and depth. The village learns to remember its days, show its causes, and sit in its sea.
@@ -24,7 +31,7 @@ Wave 4 of *The Commander's Map*: composition and depth. The village learns to re
 
 **Fixed while shipping**
 - A dropped constant in the execution-tree work briefly broke six AgentManager suites; restored.
-- The cliff reflection referenced an undeclared variable, blacking out the world canvas; fixed and pinned by lifecycle tests that now drive the real suspend/resume path.
+- The cliff reflection referenced an undeclared variable, blacking out the world canvas; fixed, verified by the live render-stage recovery and the reflection bake smoke. (The GPU suspend/resume lifecycle tests added in the same pass pin a different, earlier VBO bug.)
 - `orderedDither4` gained direct coverage: determinism, full bucket set, GPU-formula parity, negative and large coordinates.
 
 ---

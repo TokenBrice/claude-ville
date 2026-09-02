@@ -170,9 +170,10 @@
     text-underline-offset: 2px;
 }
 
-/* ── FPS (meta sub-line); absent unless the render loop enters danger ── */
+/* Always visible beside LIVE and the version (v0.39.0.1); healthy reads as
+   quiet meta text and only the danger band goes red. */
 .topbar__fps {
-    color: var(--cv-status-errored);
+    color: var(--cv-text-muted);
 }
 
 .topbar__fps--danger {
