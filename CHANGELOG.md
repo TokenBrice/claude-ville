@@ -4,7 +4,12 @@
 
 ## v0.40.0 — *The Scriptorium* · Sep 02, 2026
 
-The village's own scribes get a proper workshop. This release changes nothing an operator sees at a glance and everything an agent working on the repository relies on: one source of truth for models, verification a machine can run, docs that match the code, and a CI badge that finally tells the truth. Plan and evidence: `agents/plans/claudeville-agentic-dx-plan.md`.
+The village's own scribes get a proper workshop, and the river gets a real bridge. Most of this release is invisible at a glance and load-bearing for every agent working on the repository: one source of truth for models, verification a machine can run, docs that match the code, and a CI badge that finally tells the truth. Plan and evidence: `agents/plans/claudeville-agentic-dx-plan.md`.
+
+**The central river footbridge, reforged**
+- The 5×5 pontoon deck becomes a 3×3 arched footbridge over a local river narrows (x 15–21, rows 23–25), drawn at native 1× from a new civic sprite (`bridge.landmark.civic.ns`) with stone abutments, oak deck, and post lanterns baked in. The procedural fallback deck, the shadow ribbon, the fake pier foam, the floating accent props, and the elderwood style are removed; the lily pond returns to four tiles beside the north abutment.
+- Agents cross *behind* the near rail: the sprite's camera-side handrail is redrawn as six clipped Y-sorted slices, and sprites (with everything anchored to them) rise along the arch while the depth sort keeps their ground Y.
+- The avenue runs straight down column 18 through the deck. The Task Board moves to (23,33) with its slots, the chronicler landmark, and the production-row and bridge roads rerouted so its roof no longer overlaps the bridge foot. Bank props (boulders, flowers, lantern, banner, scenic rail points) hug the abutments and vegetation exclusion tightens to the deck. Asset version `footbridge-v1`.
 
 **CI was red on every push since August 25**
 - The workflow never installed dev dependencies, so the last step of `validate:quick` failed on `js-yaml` for every release from v0.34.0 to v0.39.1. CI now runs `npm ci` and `validate:full` (quick checks, the integration replay, the isolated server smokes, world and sprite validators) on Node 18 and 24.
