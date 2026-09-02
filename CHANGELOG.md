@@ -2,6 +2,22 @@
 
 ---
 
+## v0.41.0 — *The Vermilion Order* · Sep 02, 2026
+
+Two warrior-monks from z.AI join the village. GLM 5.3 and GLM 5.3 Flash arrive through Oh My Pi and are now recognised, priced, and drawn as their own family instead of falling through to Claude rates and a generic sprite.
+
+**z.AI GLM identity**
+- New registry family `zai` with rows `zai.glm-5-3` (label *GLM 5.3*, short *GLM*, apex tier, deliberate) and `zai.glm-5-3-flash` (*GLM 5.3 Flash* / *GLM Flash*, swift tier, quick), plus a `defaults.zai` fallback for future `glm-*` strings. Both carry a 1,000,000-token context window. Rates per MTok — GLM 5.3: $1.40 in / $4.40 out / $0.26 cache read; Flash: $0.15 / $0.50 / $0.03 — taken from omp's bundled `classes/glm.kdl` cost table and cross-checked against per-message `usage.cost` in real transcripts (verified 2026-09-02). Registry revision `2026-09-02`.
+- OMP sessions keep `provider: 'omp'`; the `zai/glm-*` model string now resolves the `zai` pricing family in both resolvers, the presentation identity, and the server's `sessionPresentation`, so the Dashboard cost estimate, Activity Panel context bar, and burn-rate tooltips are correct. Without the new `pricingProvider` branch these sessions were billed at Claude Sonnet rates.
+- House palette: `zai` takes vermilion (`#ff7a55` badge, `#ffa585` trim), the one warm hue no status or incident colour uses. Sidebar icon `Z`, label `z.AI`, home building Archive, familiar-mote glyph a monk's hexagon, GPU material `fabric`, and a distinct bell voicing.
+
+**Two new character sheets**
+- `agent.zai.glm` — the grandmaster: shaved head, vermilion martial robe, peach sash, jade prayer beads (the beads are the authored emissive source). `agent.zai.flash` — the acolyte: sleeveless tunic, peach headband, fists up. Both are PixelLab pro 8-direction rigs with walk and breathing-idle rows, new `zai` palette family in both mirrors, and authored material/emissive/occluder sidecars. Asset version `glm-monks-v1`.
+- `generate-character-mcp.mjs` now centres frames that are smaller than the 92px cell: PixelLab's `create_character` takes `size` instead of `image_size` and pro mode returns frames at exactly that size instead of a ~40% padded canvas. Runbook, PixelLab reference, and the `sprite-character` skill say so.
+- `npm run models:resolve -- omp <model>` checks the sprite the presentation actually renders, so source-adapter providers (`omp`, `opencode`) no longer fail the sheet check for every model.
+
+---
+
 ## v0.40.0.2 · Sep 02, 2026 — Hotfix
 
 - **Hook timing test bounded by the real contract.** `agent-hooks.test.mjs` asserted every hook run under 200 ms; a `session` run that spawns `git status` took 203 ms on a shared CI runner. Each run must now stay under 500 ms (half the 1 s `timeout` in `.claude/settings.json`) and the median over ten runs under 200 ms, so a regression still surfaces before hooks start being killed without failing on runner jitter.
