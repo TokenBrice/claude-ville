@@ -7,7 +7,7 @@
 - You see an unfamiliar HTTP status (423, 429) or an unexpected ZIP layout and need to know what's normal.
 - You need to know whether a capability lives in the MCP server or only in the REST API.
 
-For tactical "how do I run the validation script" questions, stay in `scripts/sprites/generate.md`. For the PixelLab subscription / quota question, see the next section.
+For the complete character workflow and tactical validation commands, use [`scripts/sprites/generate.md`](../scripts/sprites/generate.md). This document is only the PixelLab API, lifecycle, and pitfalls reference.
 
 ## Tier-3 budget
 
@@ -81,8 +81,8 @@ Per-tool quick reference. Inputs list the most-used parameters, not every option
 
 - Inputs: `description`, `name`, `image_size` (16-128 width/height), `n_directions` (4 or 8), `view`, `outline`, `shading`, `detail`, `mode` (`standard` / `pro`), `proportions`, `template_id` (`mannequin` for humanoid; `bear`/`cat`/`dog`/`horse`/`lion` for quadrupeds), `seed`.
 - Output: `character_id` + URLs for the 4 or 8 rotation images. **Async.**
-- Canvas auto-pads ~40% — request `92` and the source frame is ~128. Crop in post.
-- Generation size vs engine cell size: the manifest `size: 92` on `agent.*` entries is the **engine cell size** (the 92-px cell `SpriteSheet.js` reads), not the size to pass to `create_character`. For tall silhouettes (crowns, wide hats, hoods) generate at a smaller size — e.g. `size=76` (canvas ~108) — so the silhouette survives the center-crop back to 92×92 without clipping. Per-entry `# NOTE:` comments in `manifest.yaml` record the generation size that worked for a given character (see `agent.claude.fable` and `agent.claude.opus`).
+- Canvas auto-pads ~40% around the requested manifest `generationSize`; crop the exported source frame in post.
+- Generation size vs engine cell size: character manifest `generationSize` supplies both `image_size` dimensions to `create_character`; `size: 92` is the separate engine-cell contract read by `SpriteSheet.js`. A recorded smaller generation size leaves room for PixelLab auto-padding before the deterministic 92px center crop.
 - Repo usage: ClaudeVille agent characters in `claudeville/assets/sprites/characters/agent.*/sheet.png`.
 
 ### `animate_character`
@@ -125,7 +125,7 @@ Per-tool quick reference. Inputs list the most-used parameters, not every option
 
 You need to bake or edit X. Use this branching:
 
-- **New character with directional walk + idle:** MCP `create_character` (size 92, n_directions 8, view `low top-down`, detail `medium detail`, shading `basic shading`, outline `single color black outline`) → `animate_character` template `walking-6-frames` → `animate_character` template `breathing-idle` → poll `get_character` until both at 100% → download ZIP → `node scripts/sprites/generate-character-mcp.mjs --id=<sprite-id> --zip=<path>`.
+- **New character with directional walk + idle:** follow the canonical [Add One Character](../scripts/sprites/generate.md#add-one-character) procedure. Its manifest `generationSize` and optional `generationMode` are the request source of truth.
 - **Building (single-image, ≤400 px):** MCP `create_map_object` (`view: low top-down`, `outline: selective outline`, `shading: detailed shading`, `detail: high detail`) per the building style contract (`docs/building-style-contract.md`); or REST `create-image-pixflux` via `scripts/sprites/generate-pixellab-revamp.mjs`. `create_map_object` downloads arrive flattened on grey — run `node scripts/sprites/key-out-bg.mjs <base.png>` to key out the background. `composeGrid` tile-slicing is retired; every building is one `base.png`.
 - **Floor ring / status overlay (small isometric icon, transparent BG):** MCP `create_isometric_tile` size 32-64, `isometric_tile_shape: thin tile`. Use shape language in the description ("single-band ring", "triple-band").
 - **Head accessory overlay (32 px, on top of head):** MCP `create_isometric_tile` size 32, `isometric_tile_shape: thin tile`. Differentiate with explicit shape words ("vertical pillar", "wreath", "halo") so overlays read distinctly at small size.
@@ -236,7 +236,7 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 
 ## Pitfalls
 
-1. **Character canvas auto-pads ~40%.** `create_character` with `width: 64` returns a ~90×90 source frame. `scripts/sprites/generate-character-mcp.mjs:108` center-crops back to 92×92. Don't fight this; rely on the crop. Corollary: the manifest `size` field is the engine cell size, not the generation size — tall silhouettes need a smaller generation size (see the `create_character` section and the `# NOTE:` comments in `manifest.yaml`).
+1. **Character canvas auto-pads ~40%.** `create_character` with `width: 64` returns a ~90×90 source frame. `generate-character-mcp.mjs` center-crops back to 92×92. Do not substitute engine `size` for manifest `generationSize`; the fields have different contracts.
 2. **Isometric tiles cap at 64 px.** Above 64 px you must use REST `create-image-pixflux` or MCP `create_map_object` (32–400 px, but not the isometric tile model).
 3. **Tile sizes <24 px give weaker results** even though 16 is allowed. Prefer 32+ for production assets.
 4. **`'highly detailed'` is mandatory for REST pixflux `detail`.** The pixflux endpoint 422s on `'high detail'` (verified 2026-07-17); the MCP tools use the shorter enum. `scripts/sprites/pixellab-rest.mjs` passes the pixflux-canonical string.
@@ -281,33 +281,7 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 
 ### MCP character bake
 
-```text
-1. mcp__pixellab__create_character(
-     description="<style anchor>, <character description>",
-     name="<sprite-id>",
-     image_size={"width": 92, "height": 92},
-     n_directions=8,
-     view="low top-down",
-     detail="medium detail",
-     shading="basic shading",
-     outline="single color black outline",
-   )
-   → returns character_id
-2. mcp__pixellab__animate_character(
-     character_id=<id>,
-     template_animation_id="walking-6-frames",
-   )
-3. mcp__pixellab__animate_character(
-     character_id=<id>,
-     template_animation_id="breathing-idle",
-   )
-4. Poll mcp__pixellab__get_character(<id>) every 60s until both animations
-   show progress: 100 (5–10 min total).
-5. Download character ZIP from the /characters/{id}/zip URL in the response.
-6. node scripts/sprites/generate-character-mcp.mjs --id=<sprite-id> --zip=<path>
-7. file claudeville/assets/sprites/characters/<sprite-id>/sheet.png   # 736×920
-8. npm run sprites:validate
-```
+The copyable character recipe is maintained once in [Add One Character](../scripts/sprites/generate.md#add-one-character). This reference retains the parameter enums above and the async lifecycle details needed to diagnose MCP calls.
 
 ### REST pixflux
 

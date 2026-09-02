@@ -13,6 +13,8 @@
  * so moods are reproducible from inputs.
  */
 
+import { findModelRow } from '../../config/models.generated.js';
+
 export const Mood = {
     NEUTRAL: 'neutral',
     DISTRESSED: 'distressed',
@@ -53,26 +55,6 @@ export const MODEL_BEHAVIOR_PROFILES = Object.freeze({
     }),
 });
 
-const QUICK_MODEL_MARKERS = Object.freeze([
-    'haiku',
-    'spark',
-    'gpt-5-3',
-    'v4-flash',
-    'composer',
-    'luna',
-    'mini',
-    'nano',
-    'lite',
-]);
-const DELIBERATE_MODEL_MARKERS = Object.freeze([
-    'opus',
-    'fable',
-    'gpt-5-5',
-    'gpt-5-6-sol',
-    'v4-pro',
-    'reasoner',
-    'grok-4',
-]);
 const EFFORT_WEIGHTS = Object.freeze({
     none: -0.6,
     low: -0.6,
@@ -91,11 +73,13 @@ function normalizeBehaviorKey(value) {
 
 /** Resolve a stable behavior profile without allocating a per-frame object. */
 export function modelBehaviorProfile(model = '', effort = null) {
-    const modelKey = normalizeBehaviorKey(model);
     const effortKey = normalizeBehaviorKey(effort);
-    let weight = 0;
-    if (QUICK_MODEL_MARKERS.some(marker => modelKey.includes(marker))) weight = -1;
-    if (DELIBERATE_MODEL_MARKERS.some(marker => modelKey.includes(marker))) weight = 1;
+    const mood = findModelRow(model).row?.mood || ModelBehaviorTier.BALANCED;
+    let weight = mood === ModelBehaviorTier.QUICK
+        ? -1
+        : mood === ModelBehaviorTier.DELIBERATE
+            ? 1
+            : 0;
     weight += EFFORT_WEIGHTS[effortKey] || 0;
 
     if (weight <= -0.5) return MODEL_BEHAVIOR_PROFILES[ModelBehaviorTier.QUICK];

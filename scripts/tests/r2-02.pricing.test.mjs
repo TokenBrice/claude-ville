@@ -2,8 +2,23 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRequire } from 'node:module';
 
-import pricing from '../../claudeville/src/config/model-pricing.json' with { type: 'json' };
+import {
+  MODEL_DEFAULTS,
+  MODEL_REGISTRY,
+  MODEL_REVISION,
+} from '../../claudeville/src/config/models.generated.js';
 import { TokenUsage } from '../../claudeville/src/domain/value-objects/TokenUsage.js';
+
+const registryProviderForPricingTable = { openai: 'codex' };
+const pricing = Object.fromEntries(
+  Object.entries(MODEL_DEFAULTS).map(([provider, defaults]) => [defaults.pricingKey || provider, {
+    default: defaults.pricing,
+    rates: MODEL_REGISTRY
+      .filter(row => row.provider === (registryProviderForPricingTable[provider] || provider))
+      .flatMap(row => row.match.map(match => ({ match, ...row.pricing }))),
+  }]),
+);
+pricing.revision = MODEL_REVISION;
 
 const require = createRequire(import.meta.url);
 const {

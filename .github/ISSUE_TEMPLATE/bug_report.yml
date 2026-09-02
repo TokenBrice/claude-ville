@@ -43,7 +43,10 @@ body:
     id: environment
     attributes:
       label: Environment
-      placeholder: OS, browser, Node version
+      description: Include the operating system, Node version, and installed providers.
+      placeholder: "OS: ...; Node: ...; Providers installed: ..."
+    validations:
+      required: true
   - type: textarea
     id: context
     attributes:

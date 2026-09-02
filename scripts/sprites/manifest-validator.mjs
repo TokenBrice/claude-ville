@@ -210,16 +210,23 @@ function validateManifestEntry(entry) {
     if (!entry?.id) return 0;
 
     let errors = 0;
-    if (entry.id.startsWith('agent.') && entry.mode !== undefined) {
-        const mode = String(entry.mode);
+    if (entry.id.startsWith('agent.')) {
+        if (!Number.isInteger(entry.generationSize)
+            || entry.generationSize < 32
+            || entry.generationSize > 128) {
+            console.error(`INVALID MANIFEST: ${entry.id} generationSize must be an integer from 32 through 128`);
+            errors++;
+        }
+
+        const mode = entry.generationMode === undefined ? 'standard' : String(entry.generationMode);
         if (!CHARACTER_GENERATION_MODES.has(mode)) {
-            console.error(`INVALID MANIFEST: ${entry.id} has unsupported mode "${entry.mode}"`);
+            console.error(`INVALID MANIFEST: ${entry.id} has unsupported generationMode "${entry.generationMode}"`);
             errors++;
         }
     }
 
-    if (REQUIRED_PRO_CHARACTER_IDS.has(entry.id) && entry.mode !== 'pro') {
-        console.error(`INVALID MANIFEST: ${entry.id} must set mode: pro for Codex equipment coherence bakes`);
+    if (REQUIRED_PRO_CHARACTER_IDS.has(entry.id) && entry.generationMode !== 'pro') {
+        console.error(`INVALID MANIFEST: ${entry.id} must set generationMode: pro for Codex equipment coherence bakes`);
         errors++;
     }
 

@@ -1,8 +1,8 @@
 # Open follow-ups
 
-**Status:** live checklist
+**Status:** `live checklist`
 
-**As of:** 2026-09-01, current checkout at `e7737d5` (`v0.37.0`)
+**As of:** 2026-09-02, current checkout at `f1e96e1` (`v0.39.1`)
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs
@@ -23,6 +23,10 @@ linked from each source plan below.
 
 - [ ] **Async stale-while-revalidate Git worker / bounded async Git refresh**
 
+  - **ID:** `OF-001`
+  - **Added:** 2026-07-26
+  - **Last reviewed:** 2026-09-02
+  - **Trigger:** Git timeouts, user-visible stalls, cold/change enrichment above 50 ms p95, Git in broadcast p95, or Git commands during an unchanged warm run.
   - **Source:** [comprehensive remediation plan — CV-PERF-003](claudeville-comprehensive-remediation-plan.md#package-9--small-cleanup-and-explicit-deferrals) and [post-OOM plan — retained follow-ups](claudeville-post-oom-reliability-performance-plan.md#retained-follow-ups).
   - **Reopen when, from the comprehensive plan:** post-Package-8 runtime measurements show Git timeouts or sustained user-visible event-loop/broadcast stalls. The execution record restates this as isolated timeouts or user-visible stalls reproducing.
   - **Reopen when, from the post-OOM plan:** cold/change Git enrichment exceeds **50 ms p95**, Git appears in broadcast p95, or an unchanged warm run launches any Git command.
@@ -31,12 +35,20 @@ linked from each source plan below.
 
 - [ ] **Provider/model lazy asset loading**
 
+  - **ID:** `OF-002`
+  - **Added:** 2026-07-26
+  - **Last reviewed:** 2026-09-02
+  - **Trigger:** Cold readiness exceeds 2 seconds or memory pressure is reproduced.
   - **Source:** [comprehensive remediation plan — CV-PERF-004](claudeville-comprehensive-remediation-plan.md#package-9--small-cleanup-and-explicit-deferrals).
   - **Reopen when:** cold readiness exceeds **2 seconds** or memory pressure is reproduced. The retained baseline was cold readiness near **1.23 seconds** with bounded caches.
   - **Current status:** Open — deferred. World resource suspension/reload is implemented, but broader provider/model lazy-loading infrastructure was not added. Current boot still awaits `AssetManager.load()` and, for the material renderer, `loadMaterialAssets()` before loading the renderer (`claudeville/src/presentation/App.js`).
 
 - [ ] **Identity-aware native-surface registry and staged asset groups**
 
+  - **ID:** `OF-003`
+  - **Added:** 2026-07-28
+  - **Last reviewed:** 2026-09-02
+  - **Trigger:** A new surface owner shares World assets with Dashboard, diagnostics cannot attribute overlap, or Dashboard becomes a direct boot mode.
   - **Source:** [post-OOM plan — retained follow-ups](claudeville-post-oom-reliability-performance-plan.md#retained-follow-ups).
   - **Reopen when:** a new surface owner shares World assets with Dashboard, diagnostics cannot attribute overlap, or Dashboard becomes a direct boot mode.
   - **Current status:** Open — deferred architecture. The simpler explicit owner lifecycle is implemented and reaches zero World canvas/decoded-resource checkpoints, but current `CanvasBudget` is aggregate accounting and `AssetManager` has no identity-aware owner registry or staged `ensure()` groups.
@@ -44,12 +56,20 @@ linked from each source plan below.
 
 - [ ] **Durable Claude aggregate checkpoints and a global provider cold-work scheduler**
 
+  - **ID:** `OF-004`
+  - **Added:** 2026-07-28
+  - **Last reviewed:** 2026-09-02
+  - **Trigger:** A cold restart scans more than 64 MiB synchronously, takes more than 2 seconds, or provider diagnostics show a growing deferred-age backlog.
   - **Source:** [post-OOM plan — retained follow-ups](claudeville-post-oom-reliability-performance-plan.md#retained-follow-ups), corresponding to Package 7 Phase B.
   - **Reopen when:** a cold restart scans more than **64 MiB synchronously**, takes more than **2 seconds**, or provider diagnostics show a growing deferred-age backlog.
   - **Current status:** Open — deferred. Current Claude code has bounded signature/aggregate caches, guard/append aggregation, and a concurrency-one async scan queue, but no durable ClaudeVille-owned checkpoint or global provider cold-work scheduler. The large-fixture evidence was about **52.5 MiB** and an unchanged second detail read added zero parsed lines, so the trigger was not met.
 
 - [ ] **Conditional P3 provider whole-file caches and incremental indexes**
 
+  - **ID:** `OF-005`
+  - **Added:** 2026-07-28
+  - **Last reviewed:** 2026-09-02
+  - **Trigger:** Oversized fixtures demonstrate material savings.
   - **Source:** [post-OOM plan — Package 7, Phase C](claudeville-post-oom-reliability-performance-plan.md#phase-c-conditional-p3-whole-file-caches).
   - **Scope:** byte-bound Gemini’s whole-history cache and derive all consumers from one compact pass; incrementally parse growing Codex/Kimi session indexes with last-write-wins semantics instead of full read/split/parse on each signature change.
   - **Reopen when:** oversized fixtures demonstrate **material savings**; the plan records that current local index files were small and no Gemini corpus was present.
@@ -57,6 +77,10 @@ linked from each source plan below.
 
 - [ ] **Long pressure soak before a release push**
 
+  - **ID:** `OF-006`
+  - **Added:** 2026-07-28
+  - **Last reviewed:** 2026-09-02
+  - **Trigger:** Before a release push, run and pass the long pressure soak against the correct server process.
   - **Source:** [post-OOM plan — Definition of done](claudeville-post-oom-reliability-performance-plan.md#definition-of-done) and [release verification gate](claudeville-post-oom-reliability-performance-plan.md#package-9--release-verification-gate).
   - **Reopen when:** before a release push, run the long pressure soak against the correct server process and pass both the JavaScript heap/RSS gates and deduplicated native-resource gates.
   - **Current status:** Open release gate, not a missing implementation. The default soak infrastructure and the recorded **10-minute browser / 30-minute server** run are present and passed, but the source plan explicitly leaves this release-duration gate open because no release push was requested.
@@ -71,12 +95,20 @@ implementation checklist is not otherwise treated as open work.
 
 - [ ] **Evaluate OffscreenCanvas for remaining main-thread contention**
 
+  - **ID:** `OF-007`
+  - **Added:** 2026-08-21
+  - **Last reviewed:** 2026-09-02
+  - **Trigger:** Profiling after the GPU-resident path is complete shows main-thread contention remains material.
   - **Source:** [semantic diorama rendering plan — Package 9](claudeville-semantic-diorama-rendering-plan.md#package-9--conditional-modernization-and-polish).
   - **Reopen when:** profiling after the GPU-resident path is complete shows main-thread contention remains material.
   - **Current status:** Open — conditional and not implemented. Current source has no `OffscreenCanvas` path; the plan’s recorded post-GPU verification was **12.6 ms rAF p95** at **100% FULL** quality, so no trigger is recorded.
 
 - [ ] **Prototype WebGPU behind the existing fallback**
 
+  - **ID:** `OF-008`
+  - **Added:** 2026-08-21
+  - **Last reviewed:** 2026-09-02
+  - **Trigger:** WebGL2 batching, attachment limits, or material passes remain a measured blocker.
   - **Source:** [semantic diorama rendering plan — Package 9](claudeville-semantic-diorama-rendering-plan.md#package-9--conditional-modernization-and-polish).
   - **Reopen when:** WebGL2 batching, attachment limits, or material passes remain a measured blocker.
   - **Current status:** Open — conditional and not implemented. Current source contains the WebGL2 GPU path but no `navigator.gpu`/`GPUDevice` implementation, and no measured WebGL2 blocker is recorded.

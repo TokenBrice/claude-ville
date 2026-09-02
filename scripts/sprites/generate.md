@@ -69,7 +69,7 @@ This writes `agent.grok.base` and `agent.grok.composer` sheets (8×10 × 92px). 
 1. Read the current `style.anchor` from `manifest.yaml`.
 2. For entries with `prompt`, prepend the anchor to that prompt.
 3. For tileset entries with `lower` and `upper`, prepend the anchor to both descriptions and pass them as the lower/upper tileset inputs.
-4. Use the entry's `tool`, `size` or `width`/`height`, `n_directions`, `animations`, `layers`, and `anchor` fields. Buildings are single-image (`create_map_object`/`create-image-pixflux`); `create_map_object` downloads are flattened on grey, so run `node scripts/sprites/key-out-bg.mjs <base.png>` after saving. Manifest `tool` names are short repo labels; map them to the actual PixelLab surface before calling tools (`create_character`, `isometric_tile`, `create_topdown_tileset`, `create_map_object`, or REST `create-image-pixflux` for large hero assets). For `agent.*` characters, `size` is the engine cell size (92), not the generation size: honor any per-entry `# NOTE:` comment in the manifest that records a smaller generation size (e.g. `size=76`) used to keep a tall silhouette inside the 92-px cell after center-crop. See "Generation size vs engine cell size" in [`docs/pixellab-reference.md`](../../docs/pixellab-reference.md).
+4. Use the entry's `tool`, `size` or `width`/`height`, `n_directions`, `animations`, `layers`, and `anchor` fields. Buildings are single-image (`create_map_object`/`create-image-pixflux`); `create_map_object` downloads are flattened on grey, so run `node scripts/sprites/key-out-bg.mjs <base.png>` after saving. Manifest `tool` names are short repo labels; map them to the actual PixelLab surface before calling tools (`create_character`, `isometric_tile`, `create_topdown_tileset`, `create_map_object`, or REST `create-image-pixflux` for large hero assets). Character generation uses `generationSize` and optional `generationMode`; character `size: 92` remains the engine cell.
 5. Save output to the path contract above.
 6. Bump `style.assetVersion` only when PNGs on disk actually change; manifest-only edits (prompts, comments, anchors) must not bump it.
 7. If editing palette keys or colors, keep `manifest.yaml` and `palettes.yaml` synchronized.
@@ -79,6 +79,22 @@ Use `curl --fail` when downloading direct Pixellab URLs. Pixellab may return non
 Use `npm run sprites:plan -- --ids=<manifest-id>` for a manifest-backed dry run before generating. The plan prints the selected IDs, expected output paths, tool names, dimensions, and style-anchored prompts without calling external services.
 
 `scripts/sprites/generate-pixellab-revamp.mjs` is a legacy REST helper with a static asset inventory. It now fails unless run with an explicit, reviewed `--ids` list.
+
+## Add One Character
+
+This is the canonical character procedure. PixelLab parameter definitions and lifecycle details live in [`docs/pixellab-reference.md`](../../docs/pixellab-reference.md).
+
+1. Add the `agent.*` entry to `manifest.yaml` before generating. Include the subject-only `prompt`, `tool: create_character`, `n_directions: 8`, engine `size: 92`, integer `generationSize` from 32 through 128, optional `generationMode`, animations, palette, anchor, and reviewed material metadata. Use `generationSize: 92 # generation size unverified — inherited default` only when generation history is unknown.
+2. Preview the manifest-backed request: `node scripts/sprites/plan.mjs --ids=<sprite-id>`. Confirm its anchored prompt, generation size/mode, 92px engine cell, expected 736x920 sheet, and output path.
+3. Call `mcp__pixellab__create_character` with `description` (`style.anchor` plus the entry prompt), `name`, `image_size` (width and height equal to `generationSize`), `n_directions=8`, `view="low top-down"`, `outline="single color black outline"`, `shading="basic shading"`, `detail="medium detail"`, `mode` from `generationMode` (default `standard`), and an optional reviewed `seed`. Save the returned `character_id`.
+4. Call `mcp__pixellab__animate_character` twice with that `character_id`, `mode="template"`, all eight `directions`, and `template_animation_id="walking-6-frames"` then `template_animation_id="breathing-idle"`.
+5. Call `mcp__pixellab__get_character` with `character_id` every 60 seconds until both animations report 100%. Download the completed ZIP URL to `output/character-mcp-cache/<sprite-id>.zip` with `curl --fail`.
+6. Assemble the runtime sheet: `node scripts/sprites/generate-character-mcp.mjs --id=<sprite-id> --zip=<path>`. It identifies animations by frame count, requires eight directions, center-crops to 92px, and writes the manifest-implied 736x920 `sheet.png`.
+7. Confirm the artifact: `file claudeville/assets/sprites/characters/<sprite-id>/sheet.png`. The result must be a 736x920 PNG.
+8. Select or add `palette_layer`. Change both palette mirrors only for a shared palette change. Add reviewed material/emissive/occluder metadata and a `PROFILES` entry in `author-roster-channels.mjs` whenever required by sidecar declarations; never infer emission from brightness. Then run `node scripts/sprites/author-roster-channels.mjs`.
+9. Run `npm run sprites:audit-refresh`. This must cover ID, manifest/PNG/palette, roster-profile, and channel validation before the character is accepted.
+10. Create and inspect character evidence with `node scripts/sprites/contact-sheet.mjs --groups=characters`; also review every direction and representative walk/idle frames in World mode. The building-only visual-diff suite does not display characters.
+11. Bump `style.assetVersion` only after PNG bytes change, then rerun `NODE_NO_WARNINGS=1 node scripts/sprites/manifest-validator.mjs`. Do not bump it for manifest-only metadata or comment changes.
 
 ## Manifest-Driven Bulk Bake + Contact Sheets
 

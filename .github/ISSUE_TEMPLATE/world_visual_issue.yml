@@ -33,8 +33,11 @@ body:
   - type: input
     id: viewport
     attributes:
-      label: Viewport, browser zoom, and display scale
+      label: "Desktop viewport (minimum width: 1280px)"
+      description: "Record the viewport as width x height; use a width of at least 1280px."
       placeholder: 1440x900, 100% browser zoom, 2x display scale
+    validations:
+      required: true
   - type: input
     id: motion
     attributes:
@@ -43,5 +46,7 @@ body:
   - type: textarea
     id: screenshots
     attributes:
-      label: Screenshots or capture notes
-      description: Include before/after images when available.
+      label: Screenshot or capture
+      description: "Attach a screenshot/capture, or write `cannot capture — reason: <explanation>`."
+    validations:
+      required: true

@@ -76,11 +76,11 @@ If you change this, update: `docs/troubleshooting.md` (the empty-sessions diagno
 
 ## Static pricing estimates
 
-The runtime pricing estimate is static. The browser app keeps synchronous pricing helpers in `claudeville/src/domain/value-objects/TokenUsage.js` because `Agent.cost` and Activity Panel rendering are synchronous ES-module code with no build step. Server-side session presentation uses `claudeville/src/config/model-pricing.json` to decorate `/api/sessions` with `estimatedCost`, cost provenance, `displayModel`, `modelColor`, and `spriteId`. The Claude table (revision 2026-09-01) was verified against the first-party pricing page (https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-02): Fable 5.1 and Mythos 5.1 cache reads are $0.25/MTok (0.025x base input), unlike the 0.1x rule every other model uses, and Sonnet 5 is $2/$10 as the standard price (the page states the previously scheduled September 1, 2026 increase to $3/$15 "will not occur").
+The runtime pricing estimate is static. `claudeville/src/config/models.json` is the canonical model registry for pricing, context windows, mood tiers, and visual identity. `scripts/models/generate.mjs` commits matching ESM and CommonJS resolver modules so browser and server consumers keep synchronous helpers with no runtime build step. The Claude table (revision 2026-09-01) was verified against the first-party pricing page (https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-02): Fable 5.1 and Mythos 5.1 cache reads are $0.25/MTok (0.025x base input), unlike the 0.1x rule every other model uses, and Sonnet 5 is $2/$10 as the standard price (the page states the previously scheduled September 1, 2026 increase to $3/$15 "will not occur").
 
 The dashboard does not have a billing API key or an authoritative price feed. Hardcoded estimates are good enough for the "is this run getting expensive?" question this UI answers. Prices change rarely.
 
-If a price changes, update `claudeville/src/config/model-pricing.json` and `TokenUsage.js`; then validate `agent.cost`, Activity Panel rendering, and `/api/sessions`.
+If model data changes, update `claudeville/src/config/models.json`, regenerate both committed modules, and validate `agent.cost`, Activity Panel rendering, and `/api/sessions`.
 
 ## Cache token normalization
 

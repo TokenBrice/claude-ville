@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
-const pricing = require('../src/config/model-pricing.json');
+const { MODEL_REVISION } = require('../src/config/models.generated.cjs');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const {
   createDetailResponse,
@@ -497,7 +497,7 @@ function providerCostFromRow(row) {
     usd,
     source: 'provider',
     rateMatch: null,
-    rateRevision: pricing.revision,
+    rateRevision: MODEL_REVISION,
     unknownModel: false,
   };
 }

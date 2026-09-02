@@ -25,6 +25,7 @@ const check = process.argv.includes('--check');
 // in emissive alpha and deliberately remains below 0.20 for daylight restraint.
 const PROFILES = Object.freeze({
     'agent.claude.fable': character('fabric', 0.10, ['#f9c855', '#f9cc57', '#f6c658']),
+    'agent.claude.opus': character('fabric'),
     'agent.claude.sonnet': character('fabric', 0.12, ['#6f70cc', '#bed2f6']),
     'agent.claude.haiku': character('fabric'),
     'agent.codex.gpt55': character('metal', 0.16, ['#56efc9', '#43e1ca']),
@@ -32,6 +33,7 @@ const PROFILES = Object.freeze({
     'agent.codex.gpt55.xhigh': character('metal', 0.18, ['#55e0d8', '#44c9c6']),
     'agent.codex.gpt56terra': character('metal', 0.14, ['#e69744', '#da8e43']),
     'agent.codex.gpt56luna': character('metal'),
+    'agent.codex.gpt56sol': character('metal'),
     'agent.codex.gpt54': character('metal'),
     'agent.codex.gpt53spark': character('metal'),
     'agent.claude.base': character('fabric'),
@@ -51,9 +53,20 @@ const PROFILES = Object.freeze({
 
 const entries = new Map(collectSpriteEntries(loadSpriteManifest()).map((entry) => [entry.id, entry]));
 let failures = 0;
+if (check) {
+    const missingProfiles = [...entries.values()]
+        .filter((entry) => entry.id?.startsWith('agent.') && requiresSidecarProfile(entry))
+        .filter((entry) => !PROFILES[entry.id])
+        .map((entry) => entry.id);
+    if (missingProfiles.length) {
+        console.error(`[author-roster-channels] missing required character profiles: ${missingProfiles.join(', ')}`);
+        failures += missingProfiles.length;
+    }
+}
 for (const [id, profile] of Object.entries(PROFILES)) {
     const entry = entries.get(id);
     if (!entry) throw new Error(`missing manifest entry ${id}`);
+    if (id.startsWith('agent.') && !declaresSidecarFile(entry)) continue;
     const sourcePath = pathForEntry(entry);
     const albedo = PNG.sync.read(readFileSync(join(spritesRoot, sourcePath)));
     const channels = authorChannels(albedo, profile);
@@ -78,6 +91,22 @@ if (failures) {
     process.exit(1);
 }
 console.log(`[author-roster-channels] ${check ? 'check passed' : 'done'}: ${Object.keys(PROFILES).length} ids`);
+
+function declaresSidecarFile(entry) {
+    return Object.entries(entry).some(([key, value]) => key.endsWith('Sidecar') && value === true);
+}
+
+function requiresSidecarProfile(entry) {
+    if (declaresSidecarFile(entry)) return true;
+    return declaresSidecarRequiredGeometry(entry);
+}
+
+function declaresSidecarRequiredGeometry(value) {
+    if (Array.isArray(value)) return value.some(declaresSidecarRequiredGeometry);
+    if (!value || typeof value !== 'object') return false;
+    if (value.geometry === 'sidecar-required') return true;
+    return Object.values(value).some(declaresSidecarRequiredGeometry);
+}
 
 function character(material, emissiveContribution = 0, emissiveColors = []) {
     return { material, emissiveContribution, emissiveColors, occluder: 'alpha-silhouette' };

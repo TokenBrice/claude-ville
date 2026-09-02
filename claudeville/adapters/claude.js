@@ -16,7 +16,7 @@ const {
 } = require('./shared');
 const { deriveTurnState, toEpochMs } = require('./turnState');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
-const modelPricing = require('../src/config/model-pricing.json');
+const { MODEL_REVISION, contextWindowForModel } = require('../src/config/models.generated.cjs');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
@@ -97,12 +97,6 @@ const CLAUDE_CACHE_FIELD_MAP = Object.freeze({
   cacheRead: ['cache_read_input_tokens', 'cached_input_tokens', 'cacheReadInputTokens'],
   cacheCreate: ['cache_creation_input_tokens', 'cacheCreationInputTokens'],
 });
-const CLAUDE_CONTEXT_WINDOW_TABLE = Object.freeze([
-  Object.freeze({ match: /(?:^|-)(?:fable|mythos|opus|sonnet|haiku)-5(?:-|$)/, tokens: 1_000_000 }),
-  Object.freeze({ match: /(?:^|-)claude-5(?:-|$)/, tokens: 1_000_000 }),
-  Object.freeze({ match: /(?:^|-)haiku-4-5(?:-|$)/, tokens: 200_000 }),
-]);
-const CLAUDE_CONTEXT_WINDOW_DEFAULT = 200_000;
 const CLAUDE_AGENT_TYPES = new Set(['main', 'sub-agent', 'team-member', 'workflow-subagent']);
 const TASK_SUMMARY_LIMIT = 12;
 const TASK_SUBJECT_MAX_LENGTH = 120;
@@ -380,13 +374,7 @@ function getSessionIdentity(sessionId) {
 }
 
 function contextWindowMaxForClaudeModel(model) {
-  const normalized = String(model || '').toLowerCase().replace(/[._]/g, '-');
-  const opusMatch = normalized.match(/(?:^|-)opus-4-(\d+)(?:-|$)/);
-  if (opusMatch && Number(opusMatch[1]) >= 6) return 1_000_000;
-  for (const row of CLAUDE_CONTEXT_WINDOW_TABLE) {
-    if (row.match.test(normalized)) return row.tokens;
-  }
-  return normalized.includes('claude') ? CLAUDE_CONTEXT_WINDOW_DEFAULT : 0;
+  return contextWindowForModel(model, 'claude') || 0;
 }
 
 function finiteNumber(value) {
@@ -464,7 +452,7 @@ function addTranscriptProjectionEntry(projection, entry, msg) {
         usd,
         source: 'provider',
         rateMatch: null,
-        rateRevision: typeof modelPricing.revision === 'string' ? modelPricing.revision : '2026-09-01',
+        rateRevision: MODEL_REVISION,
         unknownModel: entry.hasUnknownModelCost === true,
       };
     }

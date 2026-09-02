@@ -1,6 +1,6 @@
 # World Mode Renderer
 
-World mode is the Canvas-2D isometric view that ClaudeVille shows by default. This directory owns the render loop, sprites, camera, particles, and minimap. It reads from the domain `World` and listens to the event bus; it never mutates domain state.
+World mode is the Canvas-2D isometric view that ClaudeVille shows by default. This directory owns the render loop, sprites, camera, and particles. It reads from the domain `World` and listens to the event bus; it never mutates domain state.
 
 The directory is named `character-mode/` for historical reasons. In prose, the user-facing surface is "World mode" (paired with "Dashboard mode" under `../dashboard-mode/`).
 
@@ -8,7 +8,7 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 
 | File | Responsibility |
 | --- | --- |
-| `IsometricRenderer.js` | Render loop (`requestAnimationFrame`), terrain/water/road generation, hit testing, click and hover handlers, event-bus subscriptions, minimap mount, selection plumbing. |
+| `IsometricRenderer.js` | Render loop (`requestAnimationFrame`), terrain/water/road generation, hit testing, click and hover handlers, event-bus subscriptions, and selection plumbing. |
 | `Camera.js` | Pan, zoom, `centerOnMap`, `followAgent` / `stopFollow`, `screenToWorld` / `worldToScreen` projections. |
 | `CanvasBudget.js` | Effective DPR selection and backing-store guardrails for large desktop canvases. |
 | `AgentSprite.js` | Per-agent sprite state: tile position, smoothed motion, selection ring, chat animation toward a target sprite, hit testing in world coordinates. |
@@ -37,7 +37,6 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `DebugOverlay.js` | Shift-D debug overlay for renderer diagnostics; Shift-P pathfinding overlay (planned-path breadcrumbs and glowing destination tiles). Both off by default. |
 | `RitualConductor.js` | Capped, reduced-motion-aware scheduler for tool ritual visuals: building rituals plus per-agent reading/typing/thinking pose records consumed by `AgentSprite`. |
 | `ParticleSystem.js` | Particle emitters and ambient effects. Honors `prefers-reduced-motion`. |
-| `Minimap.js` | Minimap rendering and click-to-pan; mounted into the canvas's parent node. |
 | `postfx/PostFx.js` | WebGL2 post-processing stage: samples the finished 2D scene as a texture and applies the atmosphere grade, light glows, bloom, water displacement, god rays, heat haze, incident pulses, and grain. Owns context loss, timings, and diagnostics. |
 | `postfx/PostFxLadder.js` | Pure hysteretic degradation ladder (FULL → REDUCED → MINIMAL → DISABLED). It sheds optional effects only; the direct GPU world holds a minimal resident scene at DISABLED so Canvas-only water/fauna layers cannot flicker through during recovery. Unit-tested in `scripts/tests/postfx-ladder.test.mjs`. |
 | `postfx/PostFxFeed.js` | Allocation-light per-frame uniform feed: screen-space light list, quarter-res water mask (camera-pose cached, revision-counted), sun anchor, haze anchors, incident pulse envelope, motion state. |
@@ -57,7 +56,7 @@ The render loop keeps the scene readable by drawing in broad layers:
 2. Static props and scenery sorted by world Y where they can overlap agents.
 3. Building bases and occlusion-aware hero building pieces.
 4. Agents, selection/status overlays, chat motion, and current-tool effects.
-5. Building labels/bubbles, particles, atmospheric overlays, and the minimap.
+5. Building labels/bubbles, particles, and atmospheric overlays.
 
 World mode renders through a three-canvas stack inside `#characterMode`: `#worldCanvas` (the 2D scene, source of truth and mouse target), `#worldFxCanvas` (WebGL2 post-process output, hidden whenever inactive), and `#worldOverlayCanvas` (2D UI: weather foreground, primary marks, labels, bubbles, screen particles, letterbox, debug — never graded or distorted). Grading ownership is exclusive: when the post stage is active the 2D multiply grade and glow/lantern stamps are skipped and the GPU reproduces them from the same `atmosphere.grade` inputs; when inactive (`?postfx=0`, no WebGL2, context loss, or ladder level 3) the 2D path draws exactly as before. Shift-D shows post-FX level and timings.
 

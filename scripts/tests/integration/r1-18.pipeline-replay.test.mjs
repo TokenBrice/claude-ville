@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { runReplay } from '../smoke/r1-18.e2e-replay.mjs';
+import { runReplay } from '../../smoke/r1-18.e2e-replay.mjs';
 
 test('real multi-provider pipeline replays WebSocket delta and snapshot payloads', async () => {
   const summary = await runReplay();

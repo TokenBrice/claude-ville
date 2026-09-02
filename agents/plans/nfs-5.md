@@ -1,9 +1,9 @@
 # NFS-5 — ClaudeVille Need For Speed
 
-Status: **implemented and verified** (2026-09-01)
+**Status:** `implemented and verified` (2026-09-01)
 Date: 2026-09-01
 Owner: performance workstream
-Research backing: [`agents/research/nfs-5/`](research/nfs-5/) (7 independent investigations, all measured)
+Research backing: [`agents/research/nfs-5/`](../research/nfs-5/) (7 independent investigations, all measured)
 
 ---
 
@@ -385,10 +385,10 @@ Browser verification stays manual (no browser or component test runner exists): 
 
 | Report | Scope | Headline |
 |---|---|---|
-| [01-server-eventloop.md](research/nfs-5/01-server-eventloop.md) | scheduler, caches, startup | 10 s scans on the HTTP thread; two double-scan paths; cache stamped at start |
-| [02-adapters-scan.md](research/nfs-5/02-adapters-scan.md) | adapter internals | OMP 941.7 MB/pass, 93.5% of cost; cutoff after parse |
-| [03-client-boot.md](research/nfs-5/03-client-boot.md) | module graph, caching | 141 modules, depth 7, no ETag, 3.94 MB warm reload |
-| [04-renderer.md](research/nfs-5/04-renderer.md) | canvas/GPU | FPS metric is a rAF average; Harbor history; O(A²) overlay |
-| [05-wire-protocol.md](research/nfs-5/05-wire-protocol.md) | payload shape | 859 KB snapshot, 96.4% gitEvents, 688 KB duplication |
-| [06-dom-ui.md](research/nfs-5/06-dom-ui.md) | DOM/CSS | Sidebar full-tree rebuild; 50.6% of CSS deferrable |
-| [07-assets.md](research/nfs-5/07-assets.md) | sprites | 7.76 MiB gates first paint; all 21 sheets eager |
+| [01-server-eventloop.md](../research/nfs-5/01-server-eventloop.md) | scheduler, caches, startup | 10 s scans on the HTTP thread; two double-scan paths; cache stamped at start |
+| [02-adapters-scan.md](../research/nfs-5/02-adapters-scan.md) | adapter internals | OMP 941.7 MB/pass, 93.5% of cost; cutoff after parse |
+| [03-client-boot.md](../research/nfs-5/03-client-boot.md) | module graph, caching | 141 modules, depth 7, no ETag, 3.94 MB warm reload |
+| [04-renderer.md](../research/nfs-5/04-renderer.md) | canvas/GPU | FPS metric is a rAF average; Harbor history; O(A²) overlay |
+| [05-wire-protocol.md](../research/nfs-5/05-wire-protocol.md) | payload shape | 859 KB snapshot, 96.4% gitEvents, 688 KB duplication |
+| [06-dom-ui.md](../research/nfs-5/06-dom-ui.md) | DOM/CSS | Sidebar full-tree rebuild; 50.6% of CSS deferrable |
+| [07-assets.md](../research/nfs-5/07-assets.md) | sprites | 7.76 MiB gates first paint; all 21 sheets eager |

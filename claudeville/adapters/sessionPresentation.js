@@ -1,4 +1,4 @@
-const pricing = require('../src/config/model-pricing.json');
+const { MODEL_REVISION, ratesForModel } = require('../src/config/models.generated.cjs');
 
 const DEFAULT_TOKEN_USAGE = Object.freeze({
   input: 0,
@@ -90,37 +90,6 @@ function normalizeTokenUsage(raw = null) {
     reasoningTokens: coerceTokenField(raw, FIELD_ALIASES.reasoningTokens),
     reasoningInOutput: raw.reasoningInOutput === true,
   };
-}
-
-function pricingModelCandidates(model) {
-  const normalized = String(model || '')
-    .toLowerCase()
-    .replace(/[._]/g, '-')
-    .replace(/\s+/g, '-');
-  const dottedCodex = normalized.replace(/\bgpt-5-(\d)\b/g, 'gpt-5.$1');
-  return [...new Set([normalized, dottedCodex])];
-}
-
-function rateMatches(candidates, rate) {
-  const match = String(rate?.match || '').toLowerCase();
-  return !!match && candidates.some((candidate) => candidate.includes(match));
-}
-
-function ratesForModel(model, provider) {
-  const modelCandidates = pricingModelCandidates(model);
-  const normalizedModel = modelCandidates[0] || '';
-  const normalizedProvider = String(provider || '').toLowerCase();
-  let tableKey;
-  if (normalizedProvider === 'kimi' || modelCandidates.some((candidate) => candidate.includes('kimi'))) tableKey = 'kimi';
-  else if (normalizedProvider === 'deepseek' || modelCandidates.some((candidate) => candidate.includes('deepseek'))) tableKey = 'deepseek';
-  else if (normalizedProvider === 'grok' || modelCandidates.some((candidate) => candidate.includes('grok'))) tableKey = 'grok';
-  else if (normalizedProvider === 'gemini' || modelCandidates.some((candidate) => candidate.includes('gemini'))) tableKey = 'gemini';
-  else tableKey = normalizedProvider === 'codex' || normalizedModel.includes('gpt') ? 'openai' : 'claude';
-
-  const matchedRate = pricing[tableKey].rates.find((rate) => rateMatches(modelCandidates, rate));
-  return matchedRate
-    ? { rate: matchedRate, match: matchedRate.match, isDefault: false }
-    : { rate: pricing[tableKey].default, match: `default:${tableKey}`, isDefault: true };
 }
 
 function estimateCost(rawUsage, model, provider) {
@@ -277,7 +246,7 @@ function decorateSessionPresentation(session) {
       usd: estimatedCost,
       source: 'estimate',
       rateMatch: estimate.rateMatch,
-      rateRevision: pricing.revision,
+      rateRevision: MODEL_REVISION,
       unknownModel: estimate.unknownModel,
     },
     displayModel: session.displayModel || formatModelLabel(session.model, session.reasoningEffort || session.effort, session.provider),

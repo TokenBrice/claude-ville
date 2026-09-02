@@ -25,7 +25,7 @@ Slice 5 of the six-part agentic-DX review. Consolidated into `agents/plans/claud
 
 6. The retained-artifact index is already incomplete. `agents/README.md` calls itself the current inventory and says statuses mirror artifacts ([agents/README.md:11](agents/README.md:11)), but omits:
 
-   - `agents/NFS-5.md`, an implemented performance plan with owner, date, status, and seven linked investigations ([agents/NFS-5.md:1](agents/NFS-5.md:1)).
+   - `agents/NFS-5.md`, an implemented performance plan with owner, date, status, and seven linked investigations ([agents/plans/nfs-5.md](../../plans/nfs-5.md)).
    - `agents/research/nfs-5/`.
    - `agents/research/claudeville-agentic-dx-review/`.
 

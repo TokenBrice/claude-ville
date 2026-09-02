@@ -1,10 +1,10 @@
 ## Scope
 
-- Work from `/home/ahirice/Documents/git/claude-ville`.
+- Work from the repository root (the directory containing this file).
 - ClaudeVille is a local, zero-build dashboard for watching AI coding CLI sessions as a browser "village".
 - Desktop-only target: assume browser viewports ≥1280px wide. Do not add `@media` queries, mobile/narrow-viewport testing, or responsive shrinking.
 - Touch only files needed for the task. Shared checkout: start with `git status --short`, preserve unrelated edits, prefer `rg`/`rg --files` for discovery.
-- No install step, bundler, transpiler, lint, or formatter is required for local validation. CI runs `npm run validate:quick` on pushes and pull requests. Tests are limited to dependency-free `node:test` cases over pure logic (`npm run test:unit`, part of `validate:quick`); there is no browser/component test runner.
+- No install step, bundler, transpiler, lint, or formatter is required for local validation. CI runs `npm run validate:quick` on pushes and pull requests. `npm run test:unit` is the fast dependency-free loop over every `scripts/tests/*.test.mjs` (103 files: adapters, pricing, renderer policy, DOM-stub UI, GPU resources, server replay, and more); there is no browser/component test runner.
 
 Local dev-server (maintained): http://localhost:4000
 
@@ -60,12 +60,12 @@ Match validation to what you changed:
 | --- | --- |
 | `server.js`, `adapters/*.js`, `services/*.js` | `node --check <file>`; multiple: `find claudeville/adapters claudeville/services -name '*.js' -print0 \| xargs -0 -n1 node --check` |
 | Broad non-runtime regression pass | `npm run validate:quick` |
-| Status derivation, session residency, chronicle, spend ledger | `npm run test:unit` (`scripts/tests/`) |
+| Status derivation, session residency, chronicle, spend ledger | `npm run test:unit` is the fast dependency-free loop over every `scripts/tests/*.test.mjs`; `npm run test:integration` runs the server replay |
 | Adapter discovery or relationship state | `node scripts/smoke/adapters.mjs`; `NODE_NO_WARNINGS=1 node scripts/smoke/relationship.mjs` |
 | Runtime / API behavior | `npm run dev`; then `curl http://localhost:4000/api/{providers,sessions}` and confirm browser console |
 | Anything under `src/` | Open `http://localhost:4000`, test World + Dashboard, resize, agent select/deselect |
 | Pre-push release gate | `npm run gate:release`; package.json promises Node `>=18`, but the gate runs only on the developer's local Node version |
-| Sprite assets or `manifest.yaml` | `npm run sprites:audit-refresh`; for visuals, `sprites:capture-fresh` then `sprites:visual-diff` |
+| Sprite assets or `manifest.yaml` | `npm run sprites:audit-refresh`; for visuals, `npm run sprites:capture-fresh` then `npm run sprites:visual-diff` |
 | World building or terrain config | `npm run world:validate-buildings`; `npm run world:validate-terrain` |
 | Root agent docs | parity must hold: `diff <(tail -n +3 CLAUDE.md) <(tail -n +3 AGENTS.md)` empty |
 | Docs-only | diff review + `git status --short` |
@@ -77,7 +77,7 @@ First-hour failure modes: [`docs/troubleshooting.md`](docs/troubleshooting.md). 
 ## GitHub And Remotes
 
 - `origin` → `https://github.com/TokenBrice/claude-ville.git` (fetch + push, working fork).
-- `upstream` → `https://github.com/honorstudio/claude-ville.git` (fetch only).
+- Optional maintainer setup: add `upstream` → `https://github.com/honorstudio/claude-ville.git` as fetch-only; it is not present by default.
 - Do not change remotes, branches, or fork workflow unless explicitly asked.
 
 ## Git Hygiene

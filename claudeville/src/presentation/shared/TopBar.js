@@ -13,6 +13,7 @@ import {
     linkStatusText,
     snapshotAgeMs,
 } from '../../application/VillageState.js';
+import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 
 const SETTINGS_MODAL_OWNER = 'topbar-settings';
 const UNKNOWN_MODEL_DATE_KEY = 'claudeville.pricing.unknownModelDate';
@@ -789,7 +790,7 @@ export class TopBar {
         this.els.rate.textContent = rate ? `${formatNumber(Math.round(rate.tokensPerHour))}/h` : '';
         if (this.els.rateWrap) {
             this.els.rateWrap.title = rate
-                ? `Tokens observed today, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates. Rate match: mixed session models; revision 2026-09-01. Click for project and provider detail.`
+                ? `Tokens observed today, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates. Rate match: mixed session models; revision ${TokenUsage.rateRevision}. Click for project and provider detail.`
                 : 'Tokens observed today by this page. A burn rate appears after a couple of minutes of activity. Click for project and provider detail.';
         }
         if (this._spendPanelEl?.style.display !== 'none') this._renderSpendPanel();
@@ -851,9 +852,9 @@ export class TopBar {
             .some((agent) => agent.cost?.unknownModel === true);
         const note = el('div', {
             className: 'topbar__spend-note',
-            title: 'Estimated API pricing · rate match: mixed session models · revision 2026-09-01',
+            title: `Estimated API pricing · rate match: mixed session models · revision ${TokenUsage.rateRevision}`,
         }, [
-            '5-minute burn rate first · today observed totals · estimated API pricing, revision 2026-09-01',
+            `5-minute burn rate first · today observed totals · estimated API pricing, revision ${TokenUsage.rateRevision}`,
             hasUnknownModel ? ' ' : null,
             hasUnknownModel ? el('span', { className: 'dash-card__provider-badge', text: 'default rate' }) : null,
         ]);
@@ -902,7 +903,7 @@ export class TopBar {
                 : activeNoSpend ? 'WATCHING · no spend observed' : 'QUIET';
             const detail = `${formatNumber(row.tokens)} tokens · ~${formatCost(row.cost)}`;
             section.appendChild(el('div', {
-                title: `${projects ? row.key : `${name} provider`} · estimated API rates · rate match: mixed session models · revision 2026-09-01`,
+                title: `${projects ? row.key : `${name} provider`} · estimated API rates · rate match: mixed session models · revision ${TokenUsage.rateRevision}`,
                 className: 'topbar__spend-row',
             }, [
                 el('div', {

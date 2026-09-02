@@ -49,10 +49,10 @@ const zipPath = arg('zip', join(cacheRoot, `${id}.zip`));
 main().catch((err) => { console.error(err.stack || err.message); process.exit(1); });
 
 async function main() {
-    assertManifested(id);
+    const entry = characterManifestEntry(id);
     if (!existsSync(zipPath)) throw new Error(`ZIP not found: ${zipPath}`);
     if (dryRun) {
-        console.log(`[character-mcp] dry run: ${id} is manifest-backed; ZIP exists at ${zipPath}`);
+        console.log(`[character-mcp] dry run: ${id} is manifest-backed; generation=${entry.generationSize}px/${entry.generationMode || 'standard'}; engine=${CELL}px; ZIP exists at ${zipPath}`);
         return;
     }
     let extractDir = zipPath;
@@ -115,7 +115,7 @@ async function main() {
     const outPath = join(spritesRoot, id, 'sheet.png');
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, PNG.sync.write(sheet));
-    console.log(`wrote ${outPath} (${CELL * COLS}×${CELL * ROWS}, source=${SOURCE})`);
+    console.log(`wrote ${outPath} (${CELL * COLS}×${CELL * ROWS}, generation=${entry.generationSize}px/${entry.generationMode || 'standard'}, source=${SOURCE})`);
 }
 
 function readPng(p) {
@@ -123,16 +123,22 @@ function readPng(p) {
     return PNG.sync.read(readFileSync(p));
 }
 
-function assertManifested(spriteId) {
+function characterManifestEntry(spriteId) {
     const manifest = yaml.load(readFileSync(manifestPath, 'utf8'));
-    const ids = new Set((manifest.characters || []).map((entry) => entry?.id).filter(Boolean));
-    if (ids.has(spriteId)) return;
+    const entry = (manifest.characters || []).find((candidate) => candidate?.id === spriteId);
+    if (entry) {
+        if (!Number.isInteger(entry.generationSize)) {
+            throw new Error(`manifest character ${spriteId} has invalid generationSize`);
+        }
+        return entry;
+    }
 
     const message = `unmanifested character ID: ${spriteId}`;
     if (!allowUnmanifested) {
         throw new Error(`${message}; pass --allow-unmanifested only for scratch assets`);
     }
     console.warn(`[character-mcp] WARNING: ${message}`);
+    return { generationSize: '(unmanifested)', generationMode: null };
 }
 
 // Center-crop a CELL×CELL window from a SOURCE×SOURCE frame.

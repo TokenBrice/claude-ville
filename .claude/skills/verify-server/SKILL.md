@@ -1,85 +1,34 @@
 ---
 name: verify-server
-description: Verify ClaudeVille server starts correctly, REST API responds, and WebSocket connections work. Trigger after changes to server.js or adapters/ files.
+description: Verify ClaudeVille server startup, REST payloads, WebSocket snapshots and deltas, and local-request security. Trigger after changes to server.js, adapters, services, or server-facing contracts.
 ---
 
 # Server Verification
 
-Verify the ClaudeVille Node.js server operates correctly with all endpoints and real-time features.
+Use the repository's isolated smoke scripts. They create temporary provider data and bind their own server to an ephemeral loopback port.
 
-## Prerequisites
+Never start, stop, or probe port 4000. The operator's maintained server there is read-only for judgment checks through the browser.
 
-- Server may already be running on port 4000 in the operator's environment. Do not stop or replace an existing listener unless ownership is clear and the operator approves process cleanup.
-- Node.js available
-
-## Check Items
-
-### 1. Server Startup
-
-Start the server only when port 4000 is free, then verify it binds to port 4000:
+## 1. Boot Contract
 
 ```bash
-npm run dev
-sleep 2
-lsof -ti :4000
+node scripts/smoke/boot-contract.mjs
 ```
 
-- **PASS**: Server starts, port 4000 in use, startup summary printed
-- **FAIL**: Server crashes, port conflict, or startup error
+This asserts that an isolated server starts and cleans up correctly; `/` serves HTML; `/api/providers`, `/api/sessions`, and `/api/usage` return the expected synthetic payloads; and a WebSocket upgrade succeeds. It also verifies the WebSocket `init` snapshot, a later full snapshot, a JSON-Patch delta after fixture mutation, and a fresh `init` snapshot after a resync request.
 
-### 2. Provider Detection
+- **PASS**: The script exits 0 and prints `boot contract smoke passed`.
+- **WARN**: The script reaches its timeout; inspect its reported startup, request, or WebSocket phase.
+- **FAIL**: The script exits non-zero; use the named assertion and endpoint or frame type to locate the regression.
 
-Check server log output for active providers:
-
-- **PASS**: At least one provider detected (`~/.claude/`, `~/.codex/`, or `~/.gemini/` exists)
-- **WARN**: Only 1 provider detected
-- **WARN**: No providers detected on a machine with no supported CLI session data
-
-### 3. REST API - Sessions Endpoint
+## 2. Server Security
 
 ```bash
-curl -s http://localhost:4000/api/sessions
+node scripts/smoke/server-security.mjs
 ```
 
-- **PASS**: Returns JSON with `{ sessions: [...], count: N, timestamp: N }`
-- **FAIL**: Non-200 status, invalid JSON, or missing fields
+This asserts loopback binding and local Host/Origin validation for HTTP APIs and WebSocket upgrades. It checks rejected hostile hosts and origins, allowed origin-less CLI requests, request methods and body limits, authenticated hook ingestion and safe errors, valid WebSocket upgrade behavior, and rejection of invalid WebSocket requests and frames. The server intentionally sends no `Access-Control-Allow-Origin` header.
 
-### 4. REST API - Teams Endpoint
-
-```bash
-curl -s http://localhost:4000/api/teams
-```
-
-- **PASS**: Returns JSON with `{ teams: [...], count: N }`
-- **FAIL**: Non-200 status or invalid JSON
-
-### 5. REST API - Providers Endpoint
-
-```bash
-curl -s http://localhost:4000/api/providers
-```
-
-- **PASS**: Returns JSON with `{ providers: [...], count: N }`
-- **FAIL**: Non-200 status or invalid JSON
-
-### 6. Static File Serving
-
-```bash
-curl -s -o /dev/null -w "%{http_code}" http://localhost:4000/
-```
-
-- **PASS**: index.html returns 200
-- **FAIL**: index.html returns non-200
-
-### 7. CORS Headers
-
-```bash
-curl -s -I http://localhost:4000/api/sessions
-```
-
-- **PASS**: `Access-Control-Allow-Origin: *` header present
-- **FAIL**: Missing CORS headers
-
-## Cleanup
-
-If you started the server in a dedicated terminal, stop only that process with Ctrl-C in that terminal. Do not kill arbitrary port-4000 listeners in a shared checkout.
+- **PASS**: The script exits 0 and prints `server security smoke passed`.
+- **WARN**: A failure follows an intentional server contract change; update the implementation contract and smoke together before accepting it.
+- **FAIL**: The script exits non-zero; treat the named status, header, hook, or WebSocket assertion as a security regression.

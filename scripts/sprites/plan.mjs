@@ -18,6 +18,9 @@ const selectedIds = idsArg
     : entries.map((entry) => entry.id);
 const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
 const missing = selectedIds.filter((id) => !entriesById.has(id));
+const CHARACTER_ENGINE_CELL = 92;
+const CHARACTER_DIRECTIONS = 8;
+const CHARACTER_ROWS = 10;
 
 if (missing.length) {
     console.error(`unknown manifest sprite IDs: ${missing.join(', ')}`);
@@ -33,6 +36,12 @@ for (const id of selectedIds) {
     console.log(id);
     console.log(`  tool: ${entry.tool || inferSpriteTool(id)}`);
     console.log(`  dimensions: ${dimensionsForEntry(entry)}`);
+    if (id.startsWith('agent.')) {
+        console.log(`  generation size: ${entry.generationSize}`);
+        console.log(`  generation mode: ${entry.generationMode || 'standard'}`);
+        console.log(`  engine cell: ${CHARACTER_ENGINE_CELL}`);
+        console.log(`  expected sheet: ${CHARACTER_ENGINE_CELL * CHARACTER_DIRECTIONS}x${CHARACTER_ENGINE_CELL * CHARACTER_ROWS}`);
+    }
     for (const path of expectedPathsForEntry(entry)) {
         console.log(`  path: claudeville/assets/sprites/${path}`);
     }

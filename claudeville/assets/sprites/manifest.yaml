@@ -54,23 +54,22 @@ atlases:
 # garment families per role). Entries without it fall back to the palette
 # family's first ramp color.
 characters:
-  # NOTE: generated 2026-06-11 with mode=pro, size=76 (canvas 148px, crop to 92px).
-  # Pro mode is what fixed cross-direction consistency (standard mode produced
-  # different outfits per angle). If regenerating: pass size=76 to keep the
-  # star-crown inside the cell, and avoid ambiguous color language like
+  # Pro mode fixed cross-direction consistency (standard mode produced
+  # different outfits per angle). Avoid ambiguous color language like
   # "shifting violet to gold" — it caused per-angle palette flips.
   - id: agent.claude.fable
     tool: create_character
     prompt: "Claude Fable transcendent mythweaver sovereign, legendary female storyteller-archmage who outranks all other arcane masters, floor-length ivory and royal crimson ceremonial robe with ornate gold filigree, deep violet starfield cloak with gold constellation embroidery hanging from her shoulders, long flowing platinum starlit hair, radiant golden star-crown resting firmly on her head, glowing ancient storybook clasped at her chest, luminous quill-tipped staff held upright close to her body, soft golden constellation motes near her shoulders, compact majestic old-school RPG sorceress, identical outfit and colors from every viewing angle, no wings, no horns, no revealing outfit"
     n_directions: 8
     size: 92
+    generationSize: 76
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: claude
     # Sampled from sheet.png (plan 0.5): crimson gown + gold filigree; the
     # declared claude sources match nothing on this sheet.
     paletteSource: { robe: ['#8a1d34', '#20143e'], trim: '#dfc18a' }
     anchor: [46, 80]
-    mode: pro
     materialClass: fabric
     materialSidecar: true
     emissiveSidecar: true
@@ -82,21 +81,19 @@ characters:
         - { id: emissive.agent.claude.fable.constellations, kind: rune, geometry: sidecar, strength: 0.1 }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
-  # NOTE: regenerate via pixellab create_character with size=76 (canvas ~108) to
-  # keep the tall hood silhouette inside the 92-px engine cell. The manifest `size: 92`
-  # below is the engine cell size, not the generation hint.
   - id: agent.claude.opus
     tool: create_character
     prompt: "Claude Opus female accomplished arcane master, long silver-white hair, ivory and midnight-blue ceremonial robe, ornate gold and copper arcane trim, rune-embroidered mantle, wide celestial archmage hat, crystal-topped staff held close to body, subtle luminous aura and floating motes near shoulders, regal old-school RPG master sorceress silhouette, no wings, no horns, no tail, no demon, no succubus, no revealing outfit"
     n_directions: 8
     size: 92
+    generationSize: 76
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: claude
     # Sampled from sheet.png (plan 0.5): midnight-blue robe, ivory hem, dusty
     # rose trim; the declared claude sources are inert here.
     paletteSource: { robe: ['#1b1b32', '#2f3251'], pants: '#eee4c1', trim: '#ab8a81' }
     anchor: [46, 80]
-    mode: pro
     materialClass: fabric
     atlasFrame: { atlas: world-pilot, keyPrefix: agent.claude.opus }
     elevation: { base: 0, top: 80, unit: sprite-px }
@@ -111,13 +108,14 @@ characters:
     prompt: "Claude Sonnet female mid-tier wizard, deep violet and cobalt robes with silver rune trim, shorter pointed wizard hat below top margin, star-lined cloak, crystal-topped staff held tight inside silhouette, chained spellbook at belt, controlled blue-violet hand runes, robe hem fully visible above bottom margin, no pixels touching canvas edge, no wings, no angel armor, no warrior plate armor, no revealing outfit, elegant seasoned mage stance"
     n_directions: 8
     size: 92
+    generationSize: 92 # generation size unverified — inherited default
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: claude
     # Sampled from sheet.png (plan 0.5): dark violet robe + cobalt cloak; the
     # declared claude sources are inert here.
     paletteSource: { robe: ['#34184f', '#522c6b'], pants: '#2a4791' }
     anchor: [46, 80]
-    mode: pro
     materialClass: fabric
     materialSidecar: true
     emissiveSidecar: true
@@ -134,13 +132,14 @@ characters:
     prompt: "Claude Haiku female lightest model magician apprentice, green dominant palette with moss green hood, emerald short apprentice robe, pale mint scarf, bronze rune clasp, leather satchel of scrolls, tiny spellbook at belt, short wooden wand held close to body with small green magic spark, compact humble novice sorcerer silhouette, no wings, no crown, no heavy armor, no revealing outfit"
     n_directions: 8
     size: 92
+    generationSize: 92 # generation size unverified — inherited default
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: claude
     # Sampled from sheet.png (plan 0.5): mint scarf (robe role) + bronze clasp;
     # declared pants source already matches the moss-green lower robe.
     paletteSource: { robe: ['#c0e9c3', '#78894d'], pants: '#0e8c44', trim: '#a49159' }
     anchor: [46, 80]
-    mode: pro
     materialClass: fabric
     materialSidecar: true
     emissiveSidecar: true
@@ -154,13 +153,14 @@ characters:
     prompt: "Codex GPT-5.5 apex techno-paladin base, navy under-armor with gold trim, simple consistent commander helm, teal energy core on breastplate, compact shoulder pauldrons, full body centered with clear transparent margin, empty open hands visible near torso, no sword, no blade, no spear, no staff, no sidearm, no shield, no cape, runtime weapon overlay added separately, commanding upright stance, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 92 # generation size unverified — inherited default
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: codex
     # Sampled from sheet.png (plan 0.5): navy armor + steel-blue limbs + teal
     # core glow; the declared codex sources are inert here.
     paletteSource: { robe: ['#222945', '#333c5c'], pants: '#404b6d', trim: '#55a6a0' }
     anchor: [46, 80]
-    mode: pro
     materialClass: metal
     materialSidecar: true
     emissiveSidecar: true
@@ -177,13 +177,14 @@ characters:
     prompt: "Codex GPT-5.5 high reasoning techno-paladin, navy and steel heavy plate armor baked onto body, broad gold-trimmed shoulder pauldrons, closed angular commander helmet with cyan visor, short dark violet cape behind shoulders, teal energy core on breastplate, empty visible hands held near torso for gripping runtime greatsword, no held weapon, no shield, no polearm, no sword, no staff, heroic old-school RPG pixel art, 8-direction character sprite"
     n_directions: 8
     size: 92
+    generationSize: 92 # generation size unverified — inherited default
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: codex
     # Sampled from sheet.png (plan 0.5): indigo plate + steel-blue pauldrons +
     # pale teal visor; the declared codex sources are inert here.
     paletteSource: { robe: ['#1f1d36', '#2d3a54'], pants: '#495c77', trim: '#79aabb' }
     anchor: [46, 80]
-    mode: pro
     materialClass: metal
     materialSidecar: true
     emissiveSidecar: true
@@ -200,13 +201,14 @@ characters:
     prompt: "Codex GPT-5.5 extra-high reasoning arcane warlord paladin, massive navy and steel rune plate armor baked onto body, oversized gold-trimmed pauldrons, crested angular helmet with cyan visor, dramatic dark violet cape trailing behind, bright teal reactor core on chest, empty visible hands held near torso for gripping runtime polearm, no held weapon, no shield, no polearm, no sword, no staff, apex old-school RPG pixel art, 8-direction character sprite"
     n_directions: 8
     size: 92
+    generationSize: 92 # generation size unverified — inherited default
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: codex
     # Sampled from sheet.png (plan 0.5): near-black navy plate + violet cape;
     # the declared trim source already matches the teal reactor glow.
     paletteSource: { robe: ['#191c2a', '#202a45'], pants: '#4a2868' }
     anchor: [46, 80]
-    mode: pro
     materialClass: metal
     materialSidecar: true
     emissiveSidecar: true
@@ -218,22 +220,22 @@ characters:
         - { id: emissive.agent.codex.gpt55.xhigh.reactor, kind: rune, geometry: sidecar, strength: 0.18 }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
-  # GPT-5.6 celestial warrior triad (Sol/Terra/Luna). Generated with mode=pro,
-  # size=76 (canvas ~108, center-crop to 92) so Sol's crest crown stays inside
-  # the cell. Base sprites are empty-handed; signature weapons are runtime
+  # GPT-5.6 celestial warrior triad (Sol/Terra/Luna). Base sprites are
+  # empty-handed; signature weapons are runtime
   # overlays (dawnblade / earthbreaker / crescentSaber).
   - id: agent.codex.gpt56sol
     tool: create_character
     prompt: "Codex GPT-5.6 Sol radiant sun-warlord supreme commander, ornate navy and gold full plate armor baked onto body, molten gold sun reactor core blazing on breastplate, gold crest helmet with short solar ray spikes and cyan visor, broad gold-trimmed pauldrons, white-gold cape behind shoulders, identical outfit and colors from every viewing angle, empty visible hands held near torso for gripping runtime greatblade, no held weapon, no sword, no shield, no polearm, no staff, apex old-school RPG pixel art, 8-direction character sprite"
     n_directions: 8
     size: 92
+    generationSize: 76
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: codex
     # Sampled from sheet.png (plan 0.5): navy plate only — the signature gold
     # armor stays untouched so Sol keeps his radiant identity on every variant.
     paletteSource: { robe: '#2d2f41' }
     anchor: [46, 80]
-    mode: pro
     materialClass: metal
     atlasFrame: { atlas: world-pilot, keyPrefix: agent.codex.gpt56sol }
     elevation: { base: 0, top: 80, unit: sprite-px }
@@ -248,13 +250,14 @@ characters:
     prompt: "Codex GPT-5.6 Terra earth sentinel knight, sturdy navy and bronze full plate armor baked onto body, squared copper-trimmed pauldrons, closed rounded knight helmet with cyan visor, moss-green sash at waist, amber earth-core gem on breastplate, grounded steadfast stance, identical outfit and colors from every viewing angle, empty visible hands held near torso for gripping runtime warhammer, no held weapon, no hammer, no sword, no shield, no staff, heroic old-school RPG pixel art, 8-direction character sprite"
     n_directions: 8
     size: 92
+    generationSize: 76
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: codex
     # Sampled from sheet.png (plan 0.5): navy plate + moss-green sash; the
     # declared codex sources are inert here.
     paletteSource: { robe: ['#32384a', '#292f42'], pants: '#697b59' }
     anchor: [46, 80]
-    mode: pro
     materialClass: metal
     materialSidecar: true
     emissiveSidecar: true
@@ -271,13 +274,14 @@ characters:
     prompt: "Codex GPT-5.6 Luna moonlit skirmisher, sleek silver and pale blue light armor over dark navy under-suit, slim crescent-moon crest on a light open-face helm, short silver-blue scarf, lean agile duelist stance, identical outfit and colors from every viewing angle, empty visible hands held near torso for gripping runtime saber, no held weapon, no sword, no dagger, no shield, no staff, swift readable old-school RPG pixel art, 8-direction character sprite"
     n_directions: 8
     size: 92
+    generationSize: 76
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: codex
     # Sampled from sheet.png (plan 0.5): silver-blue light armor + navy
     # under-suit + steel accent; the declared codex sources are inert here.
     paletteSource: { robe: ['#bdd2e3', '#a6b8cd'], pants: '#24263e', trim: '#8c9bb5' }
     anchor: [46, 80]
-    mode: pro
     materialClass: metal
     materialSidecar: true
     emissiveSidecar: true
@@ -291,13 +295,14 @@ characters:
     prompt: "Codex GPT-5.4 senior battle-engineer, deep teal half-plate with brass utility belt, brass goggles on helmet, mechanical bronze gauntlet on left forearm, sturdy readable body height inside the frame, short backpack nub antenna attached to backpack only, open hands visible, no handheld tool, no staff, no rod, no rifle, no wrench in base sprite, runtime wrench overlay added separately, sturdy grounded stance, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 92 # generation size unverified — inherited default
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: codex
     # Sampled from sheet.png (plan 0.5): deep teal half-plate; declared pants
     # source already matches, and the cyan visor is too small to key trim on.
     paletteSource: { robe: ['#22575d', '#1e4651'] }
     anchor: [46, 80]
-    mode: pro
     materialClass: metal
     materialSidecar: true
     emissiveSidecar: true
@@ -311,13 +316,14 @@ characters:
     prompt: "Codex GPT-5.3 Spark scout technician, light teal leather armor with yellow lightning sash, backwards visor helm with cyan lens, runner boots, readable compact body height, open hands visible, folded belt gadget only, no blade, no weapon, no handheld multitool, no sword, no spear, agile alert stance, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 92 # generation size unverified — inherited default
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: codex
     # Sampled from sheet.png (plan 0.5): light teal armor, darker teal limbs,
     # muted cyan lens; the declared codex sources are inert here.
     paletteSource: { robe: '#7bb9b0', pants: '#3d676f', trim: '#73ada8' }
     anchor: [46, 80]
-    mode: pro
     materialClass: metal
     materialSidecar: true
     emissiveSidecar: true
@@ -331,10 +337,11 @@ characters:
     prompt: "Claude base humanoid mage scholar, warm amber layered robes with gold trim, readable face under amber hood, glowing rune sigil on chest, layered robe folds, small belt satchel and scroll case, compact readable RPG silhouette, no block body, no floating square prop, no staff, no weapon, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 92 # generation size unverified — inherited default
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: claude
     anchor: [46, 80]
-    mode: pro
     materialClass: fabric
     materialSidecar: true
     emissiveSidecar: true
@@ -348,13 +355,14 @@ characters:
     prompt: "Codex base humanoid arcane engineer, deep teal coat over visible arms and legs, circuit-glow trim, compact rogue mask, visible tool belt only, leather boots, readable RPG silhouette, no staff, no cube body, no handheld weapon, no wrench in hand, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 92 # generation size unverified — inherited default
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: codex
     # Sampled from sheet.png (plan 0.5): brown leather boots/belt + circuit-teal
     # glow; the declared robe source already matches the deep teal coat.
     paletteSource: { pants: '#7f5e4f', trim: '#55c3b6' }
     anchor: [46, 80]
-    mode: pro
     materialClass: metal
     materialSidecar: true
     emissiveSidecar: true
@@ -371,13 +379,14 @@ characters:
     prompt: "Gemini base humanoid celestial oracle, deep violet robe folds with starlight trim, translucent constellation veil around head and shoulders, readable face silhouette, small star charm at belt, compact readable RPG silhouette, no crown block, no floating cube, no handheld staff, no weapon, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 92 # generation size unverified — inherited default
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: gemini
     # Sampled from sheet.png (plan 0.5): violet robe + steel-indigo starlight
     # trim; the declared pants source already matches the deep indigo folds.
     paletteSource: { robe: ['#52337d', '#362361'], trim: '#8692c3' }
     anchor: [46, 80]
-    mode: pro
     materialClass: glass-rune
     materialSidecar: true
     emissiveSidecar: true
@@ -394,13 +403,14 @@ characters:
     prompt: "Kimi lunar celestial oracle, flowing ivory ceremonial robe with rose-pink sash and cloak tails, ornate gold filigree trim, single silver crescent-moon circlet on the forehead, soft platinum hair, serene readable face, gentle moonlight glow at the shoulders, heroic high-fantasy RPG silhouette, compact readable character, no horns, no mask, no demon, no handheld staff, no handheld weapon, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 92 # generation size unverified — inherited default
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: kimi
     # Sampled from sheet.png (plan 0.5): dusty-rose sash/filigree accent; the
     # declared robe and pants sources already match the ivory robe and wrap.
     paletteSource: { trim: '#c47774' }
     anchor: [46, 80]
-    mode: pro
     materialClass: fabric
     materialSidecar: true
     emissiveSidecar: true
@@ -410,20 +420,20 @@ characters:
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   # DeepSeek rogue/archer class: ranged-heavy -> melee-light ladder, distinct
-  # from Codex warriors and Claude mages. Generated at size 76 (canvas ~106) so
-  # the hood/cloak/slung-bow stays inside the 92-px engine cell after center-crop.
+  # from Codex warriors and Claude mages.
   - id: agent.deepseek.reasoner
     tool: create_character
     prompt: "DeepSeek Reasoner master longbow ranger, deep forest-green layered leather armor with ornate bronze trim, hooded cloak with glowing teal rune edging, large ornate recurve longbow slung across back, full arrow quiver at hip, leather bracers, dark green leggings and boots, commanding seasoned ranger stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no plate armor, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 76
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: deepseek
     # Sampled from sheet.png (plan 0.5): dark forest-green leathers + teal rune
     # edging; the declared pants source already matches the leggings.
     paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
     anchor: [46, 80]
-    mode: pro
     materialClass: earth
     materialSidecar: true
     emissiveSidecar: true
@@ -440,13 +450,14 @@ characters:
     prompt: "DeepSeek Pro hooded dagger assassin, deep forest-green leather armor with teal-glowing trim, deep pointed hood and face wrap, twin curved daggers sheathed at belt and thigh, leather bracers and belt pouches, dark green leggings and soft boots, agile balanced stance, glowing teal accents, readable high-fantasy RPG rogue silhouette, no mage robe, no wizard hat, no staff, no bow, no plate armor, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 76
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: deepseek
     # Sampled from sheet.png (plan 0.5): near-black hood/wrap + muted teal trim;
     # the declared pants source already matches the dark leggings.
     paletteSource: { robe: '#171f1f', trim: '#4d7762' }
     anchor: [46, 80]
-    mode: pro
     materialClass: earth
     materialSidecar: true
     emissiveSidecar: true
@@ -463,13 +474,14 @@ characters:
     prompt: "DeepSeek Flash light scout rogue, minimal forest-green leather vest and green headband, single curved dagger sheathed at hip, light bracers, dark green leggings and light boots, lean fast agile runner stance, glowing teal accent trim, compact readable high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no bow, no plate armor, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 76
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: deepseek
     # Sampled from sheet.png (plan 0.5): dark green vest/leggings; the declared
     # pants source already matches and no confident trim cluster exists.
     paletteSource: { robe: '#17251d' }
     anchor: [46, 80]
-    mode: pro
     materialClass: earth
     materialSidecar: true
     emissiveSidecar: true
@@ -483,8 +495,6 @@ characters:
 
   # Grok cosmic truthseeker class: void-black + electric cyan, distinct from
   # Codex warriors, Claude mages, and DeepSeek rogues.
-  # NOTE: rebaked 2026-07-10 via PixelLab create_character mode=pro size=76
-  # (canvas ~108, center-crop to 92) + walking-6-frames + breathing-idle.
   # character_ids: base=831e8a22-50bc-4e45-985d-8c32b8e81f6b
   #                composer=f70b6f4c-b250-40bd-b1ad-fcb1a16a17a2
   # Reassemble: node scripts/sprites/generate-character-mcp.mjs --id=<id> --zip=...
@@ -494,13 +504,14 @@ characters:
     prompt: "Grok cosmic truthseeker herald, deep void-black traveler coat with glowing electric cyan constellation embroidery, short navy starfield cloak dusted with tiny white stars, confident irreverent smirk on a readable face, silver-white swept hair with one cyan lightning streak, small cyan star mote orbiting near the shoulder, brown leather satchel of cosmic charts at the hip, dark boots, open empty hands, lean upright heroic explorer stance, strong cyan rim light for a crisp readable silhouette, identical outfit and colors from every viewing angle, isolated character on transparent background, no scenery, no ground tile, no plate armor, no wizard hat, no staff, no bow, no daggers, no mask, no horns, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 76
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: grok
     # Sampled from sheet.png (plan 0.5): electric cyan constellation embroidery;
     # declared robe/pants sources already match the void-black coat.
     paletteSource: { trim: '#64a9c8' }
     anchor: [46, 80]
-    mode: pro
     materialClass: fabric
     materialSidecar: true
     emissiveSidecar: true
@@ -517,13 +528,14 @@ characters:
     prompt: "Grok Composer swift star-messenger scout, fitted void-charcoal courier jacket with bright electric cyan trim and small glowing star clasps, cyan headband with short trailing tails, silver-white short hair, wry grin on a readable face, small star charm at the belt, dark leggings, light swift boots, lean agile runner stance, cyan rim light for a crisp readable silhouette, identical outfit and colors from every viewing angle, isolated character on transparent background, no scenery, no ground tile, no plate armor, no wizard hat, no staff, no bow, no daggers, no heavy cloak, 8-direction pixel art"
     n_directions: 8
     size: 92
+    generationSize: 76
+    generationMode: pro
     animations: [walk, breathing-idle]
     palette_layer: grok
     # Sampled from sheet.png (plan 0.5): bright cyan trim/headband glow;
     # declared robe/pants sources already match the void-charcoal jacket.
     paletteSource: { trim: '#86bbcb' }
     anchor: [46, 80]
-    mode: pro
     materialClass: fabric
     materialSidecar: true
     emissiveSidecar: true

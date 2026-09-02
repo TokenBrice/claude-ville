@@ -15,7 +15,9 @@ body:
         - Claude Code
         - Codex CLI
         - Gemini CLI
+        - Grok
         - Kimi
+        - OMP
         - OpenCode
         - Other
     validations:

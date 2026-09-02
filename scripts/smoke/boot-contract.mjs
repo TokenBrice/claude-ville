@@ -7,17 +7,9 @@ import * as http from 'node:http';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(SCRIPT_DIR, '../..');
-const SERVER_MODULE = path.join(REPO_ROOT, 'claudeville', 'server.js');
-// This existing bootstrap redirects server.js's first listen call to port 0.
-const SERVER_BOOTSTRAP = path.join(SCRIPT_DIR, 'r1-18.server-bootstrap.cjs');
+import { startIsolatedServer } from './support/isolated-server.mjs';
 
 const REQUEST_TIMEOUT_MS = 2_000;
-const STARTUP_TIMEOUT_MS = 5_000;
 const FRAME_TIMEOUT_MS = 8_000;
 const OVERALL_TIMEOUT_MS = 30_000;
 
@@ -541,127 +533,6 @@ function assertUsagePayload(payload) {
   assert.equal(typeof payload.quotaAvailable, 'boolean');
 }
 
-function startIsolatedServer(context, fixture) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [SERVER_BOOTSTRAP, SERVER_MODULE], {
-      cwd: REPO_ROOT,
-      env: {
-        HOME: fixture.home,
-        USERPROFILE: fixture.home,
-        PATH: fixture.binDir,
-        XDG_CONFIG_HOME: path.join(fixture.home, '.config'),
-        XDG_DATA_HOME: path.join(fixture.home, '.local', 'share'),
-        CLAUDEVILLE_DISABLE_GIT_ENRICHMENT: '1',
-        CLAUDEVILLE_REPOSITORY_SCAN_ROOT: fixture.repositoryRoot,
-        CLAUDEVILLE_OPENCODE_CONFIG_DIR: path.join(fixture.home, '.config', 'opencode'),
-        CLAUDEVILLE_OPENCODE_STATE_DIR: path.join(fixture.home, '.local', 'share', 'opencode'),
-        CLAUDEVILLE_OPENCODE_DB: path.join(fixture.home, '.local', 'share', 'opencode', 'opencode.db'),
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    context.child = child;
-    child.stdin.on('error', () => {});
-
-    let stdout = '';
-    let stderr = '';
-    let stdoutRemainder = '';
-    let settled = false;
-    let startupTimer = null;
-
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      if (startupTimer) clearTimeout(startupTimer);
-      reject(error);
-    };
-
-    startupTimer = setTimeout(() => {
-      fail(new Error(
-        `Timed out waiting for isolated server readiness; stdout: ${stdout}; stderr: ${stderr}`,
-      ));
-    }, STARTUP_TIMEOUT_MS);
-
-    const onLine = (line) => {
-      if (line.startsWith('R1_18_SERVER_ERROR ')) {
-        fail(new Error(`Isolated server could not listen: ${line.slice('R1_18_SERVER_ERROR '.length)}`));
-        return;
-      }
-      const match = line.match(/^R1_18_READY (\d+)$/);
-      if (!match || settled) return;
-      const port = Number(match[1]);
-      if (port === 0) {
-        fail(new Error('Isolated server reported port 0 instead of an assigned ephemeral port'));
-        return;
-      }
-      if (port === 4000) {
-        fail(new Error('Isolated server selected port 4000; port redirection failed'));
-        return;
-      }
-      settled = true;
-      if (startupTimer) clearTimeout(startupTimer);
-      context.port = port;
-      resolve({ child, port });
-    };
-
-    const collectStdout = (chunk) => {
-      stdout = `${stdout}${chunk}`.slice(-12_000);
-      const lines = `${stdoutRemainder}${chunk}`.split('\n');
-      stdoutRemainder = lines.pop() || '';
-      for (const line of lines) onLine(line.replace(/\r$/, ''));
-    };
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', collectStdout);
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', chunk => { stderr = `${stderr}${chunk}`.slice(-12_000); });
-    child.once('error', fail);
-    child.once('exit', (code, signal) => {
-      if (settled) return;
-      fail(new Error(
-        `Isolated server exited before listening (code=${code}, signal=${signal}); stdout: ${stdout}; stderr: ${stderr}`,
-      ));
-    });
-  });
-}
-
-function waitForExit(child, timeoutMs) {
-  if (!child || child.exitCode !== null) return Promise.resolve(true);
-  return new Promise(resolve => {
-    let settled = false;
-    const finish = (exited) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.off('exit', onExit);
-      resolve(exited);
-    };
-    const onExit = () => finish(true);
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    child.once('exit', onExit);
-    if (child.exitCode !== null) finish(true);
-  });
-}
-
-async function stopChild(child) {
-  if (!child || child.exitCode !== null) return;
-  try {
-    child.stdin.write('shutdown\n');
-    child.stdin.end();
-  } catch {
-    // The child may already be exiting.
-  }
-  if (await waitForExit(child, 1_000)) return;
-  if (child.exitCode === null) {
-    try { child.kill('SIGTERM'); } catch { /* best effort */ }
-  }
-  if (await waitForExit(child, 1_000)) return;
-  if (child.exitCode === null) {
-    try { child.kill('SIGKILL'); } catch { /* best effort */ }
-  }
-  if (!(await waitForExit(child, 1_000)) && child.exitCode === null) {
-    throw new Error('Isolated server child did not exit after forced cleanup');
-  }
-}
-
 async function cleanup(context) {
   let cleanupError = null;
   try {
@@ -670,7 +541,7 @@ async function cleanup(context) {
     cleanupError = error;
   }
   try {
-    await stopChild(context.child);
+    await context.server?.stop();
   } catch (error) {
     cleanupError ||= error;
   }
@@ -690,7 +561,14 @@ async function cleanup(context) {
 async function run(context) {
   context.tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-boot-contract-'));
   const fixture = createFixture(context.tmpHome);
-  const server = await startIsolatedServer(context, fixture);
+  const server = await startIsolatedServer({
+    home: fixture.home,
+    env: {
+      PATH: fixture.binDir,
+      CLAUDEVILLE_REPOSITORY_SCAN_ROOT: fixture.repositoryRoot,
+    },
+  });
+  context.server = server;
 
   let rootResponse;
   try {
@@ -748,7 +626,7 @@ async function run(context) {
 async function main() {
   const context = {
     tmpHome: null,
-    child: null,
+    server: null,
     port: null,
     websocket: null,
   };

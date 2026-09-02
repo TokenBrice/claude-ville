@@ -19,7 +19,7 @@ Desktop-only constraint: shared UI only needs to support browser widths of 1280p
 | `Formatters.js` | Status, path, number, cost, hash, and truncation formatting helpers. |
 | `GitEventIdentity.js` | Shared git event labeling and identity helpers for harbor/git flows. |
 | `SessionDetailsService.js` | Shared `/api/session-detail` and `/api/session-details` fetch dedupe, cache, stale fallback, and timeout handling. |
-| `ModelVisualIdentity.js` | Provider/model/effort labels, sprite IDs, palette keys, colors, and minimap accents. |
+| `ModelVisualIdentity.js` | Provider/model/effort labels, sprite IDs, palette keys, colors, and effort accessories. |
 | `RepoColor.js` | Deterministic project/repository color assignment. |
 | `TeamColor.js` | Deterministic team color assignment. |
 | `Modal.js` | Shared modal primitive. |
@@ -53,14 +53,13 @@ The server adapter registry also has short detail caches. Keep client polling in
 
 ## Model Visual Identity
 
-`ModelVisualIdentity.js` maps provider/model/effort to user-facing labels, colors, sprite IDs, palette keys, and effort accessories. World mode, Dashboard mode, Activity Panel, and Minimap should all use this module instead of duplicating model parsing.
+`ModelVisualIdentity.js` maps provider/model/effort to user-facing labels, colors, sprite IDs, palette keys, and effort accessories. World mode, Dashboard mode, and Activity Panel should all use this module instead of duplicating model parsing.
 
 When adding a new model-specific sprite in `manifest.yaml`, add or update its identity mapping here and verify:
 
 1. Dashboard card label/color.
 2. Activity panel label/color.
 3. World mode sprite selection and palette/accessory composition.
-4. Minimap color.
 
 ## Validation
 

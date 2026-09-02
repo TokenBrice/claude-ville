@@ -1,88 +1,60 @@
 ---
 name: verify-architecture
-description: Verify ClaudeVille follows its architectural rules - layer structure, adapter pattern, CLAUDE.md conventions, and file organization. Trigger after adding new files, refactoring, or modifying project structure.
+description: Verify ClaudeVille layer structure, adapter registration, zero-build runtime boundaries, CSS overlay allowlists, module conventions, and documented server configuration. Trigger after adding files, refactoring, or changing project structure.
 ---
 
 # Architecture Verification
 
-Verify the ClaudeVille project adheres to its documented architecture and conventions defined in CLAUDE.md.
+Verify the project against `AGENTS.md`, `claudeville/CLAUDE.md`, and the implementation sources named below.
 
-## Check Items
+## 1. Layer Structure
 
-### 1. Layer Structure
+Confirm `claudeville/src/` contains `domain/`, `application/`, `infrastructure/`, `presentation/`, and `config/`. Presentation contains `character-mode/`, `dashboard-mode/`, and `shared/`; configuration includes `i18n.js`.
 
-Verify `claudeville/src/` follows the defined layers:
+- **PASS**: Core layers exist and files match their responsibilities.
+- **WARN**: A file appears misplaced or a non-core directory is unexpectedly empty.
+- **FAIL**: A core layer is missing.
 
-```
-src/
-├── domain/          (entities, value-objects, events)
-├── application/     (managers, services)
-├── infrastructure/  (WebSocketClient, data sources)
-├── presentation/    (renderers, UI components)
-│   ├── character-mode/
-│   ├── dashboard-mode/
-│   └── shared/
-└── config/          (constants, theme, i18n, buildings)
-```
+## 2. Zero-Build Runtime
 
-- **PASS**: All directories exist with appropriate files
-- **WARN**: Empty directories or misplaced files
-- **FAIL**: Missing core directories (domain, application, presentation)
+Confirm `package.json` has no runtime `dependencies`. Development-only tooling may remain in `devDependencies`; Node tooling must not import `claudeville/vendor/*`.
 
-### 2. No Framework Dependencies
+- **PASS**: Runtime remains dependency-free vanilla JavaScript.
+- **WARN**: Development dependencies changed; confirm they stay outside runtime paths.
+- **FAIL**: A runtime dependency, framework, bundler, or required build step was introduced.
 
-Verify the project uses pure HTML/CSS/JS at runtime with no runtime npm dependencies:
+## 3. Adapter Registration
 
-- `package.json` should not have runtime `dependencies`
-- `devDependencies` are allowed for sprite validation, visual diffs, and Playwright capture scripts
-- All imports use relative paths or ES modules
+Read `claudeville/adapters/index.js` as the registry. It currently registers `claude.js`, `codex.js`, `gemini.js`, `grok.js`, `kimi.js`, `opencode.js`, and `omp.js`.
 
-- **PASS**: No runtime dependencies
-- **WARN**: Dev dependencies changed; confirm they are still development-only
-- **FAIL**: Runtime dependencies added without updating README and design decisions
+- **PASS**: All seven registry entries resolve to adapters with the expected interface and optional CLI detection.
+- **WARN**: An adapter file is intentionally helper-only; confirm it is not a provider implementation.
+- **FAIL**: A provider adapter is unregistered, missing, or hard-requires its CLI.
 
-### 3. Adapter Pattern Compliance
-
-Verify `claudeville/adapters/` follows the multi-provider pattern:
-
-- `index.js` exists and acts as registry
-- Each adapter (`claude.js`, `codex.js`, `gemini.js`) exports consistent interface
-- Adapters detect installed CLIs, not hard-require them
-
-- **PASS**: All adapters present with consistent exports
-- **WARN**: Adapter missing but referenced in index.js
-- **FAIL**: index.js missing or broken adapter interface
-
-### 4. CSS Convention
-
-Verify no `position: fixed` in CSS files (except modal/toast as per CLAUDE.md rules):
+## 4. Fixed-Position CSS Allowlist
 
 ```bash
-grep -rn "position.*fixed" claudeville/css/ --include="*.css"
+rg -n 'position:\s*fixed' claudeville/css
 ```
 
-Allowed exceptions: `modal.css`, toast-related code
+Allowed selectors are `.first-run-hint` and `.world-grammar` in `character.css`, `.toast-container` in `layout.css`, `.modal-overlay` in `modal.css`, and `.topbar__connection-panel` plus `.topbar__spend-panel` in `topbar.css`. These are intentional first-run/grammar overlays, toasts, modals, and connection/spend overlays.
 
-- **PASS**: No violations or only in allowed files
-- **FAIL**: `position: fixed` in layout/sidebar/topbar CSS files
+- **PASS**: Every hit is one of the listed file/selector pairs.
+- **WARN**: An intentional overlay needs a new fixed selector; document why before extending the allowlist.
+- **FAIL**: Fixed positioning appears in ordinary page, world, dashboard, sidebar, or topbar layout.
 
-### 5. ES Module Consistency
+## 5. Module Boundaries
 
-Verify all JS files in `src/` use ES module syntax:
+Use `rg -n 'require\(|module\.exports' claudeville/src` to check that browser `src/` remains ES modules. CommonJS is expected in `server.js` and `adapters/`.
 
-- Files should use `import`/`export`, not `require()`/`module.exports`
-- Exception: `server.js` and `adapters/` (Node.js CommonJS)
+- **PASS**: Browser source uses `import`/`export`; Node CommonJS stays outside `src/`.
+- **WARN**: A compatibility file has an explicit documented reason for different syntax.
+- **FAIL**: Module systems are mixed accidentally in browser source.
 
-- **PASS**: All src/ files use ES modules
-- **FAIL**: Mixed module systems in src/
+## 6. Server Configuration
 
-### 6. Port Configuration
+Confirm `claudeville/server.js` keeps the documented port constant and loopback binding, without starting or probing any server.
 
-Verify server port is 4000 as documented in CLAUDE.md:
-
-- `claudeville/CLAUDE.md` mentions port 4000
-- `claudeville/server.js` uses `const PORT = 4000`
-
-- **PASS**: Port 4000 documented and configured
-- **FAIL**: Port mismatch or not documented
-
+- **PASS**: Code and documentation agree on port 4000 and loopback-only access.
+- **WARN**: An intentional configuration change needs matching documentation and smoke updates.
+- **FAIL**: The implementation and documented server contract disagree.

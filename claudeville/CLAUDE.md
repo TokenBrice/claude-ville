@@ -2,22 +2,22 @@
 
 ## Scope
 
-- Work from the repo root: `/home/ahirice/Documents/git/claude-ville`.
+- Work from the repository root (the directory containing this file).
 - This checkout may be edited by multiple agents. Run `git status --short` before changes and do not revert or absorb unrelated edits.
 - For documentation-only tasks scoped to `README.md`, root `AGENTS.md`/`CLAUDE.md`, or `claudeville/CLAUDE.md`, edit only those files.
 - Workflow, git hygiene, and multi-agent coordination are controlled by the root `AGENTS.md`.
 
 ## Project Shape
 
-Static HTML/CSS/vanilla ES modules; `server.js` uses only Node built-ins; no bundler or transpiler. The only tests are dependency-free `node:test` cases over pure logic in `scripts/tests/` (`npm run test:unit`); there is no browser/component test runner. Dev dependencies exist only for sprite validation, Playwright capture, and pixelmatch diffs — run `npm install` only when those scripts are in scope. Dev server: `npm run dev` (node claudeville/server.js).
+Static HTML/CSS/vanilla ES modules; `server.js` uses only Node built-ins; no bundler or transpiler. `npm run test:unit` is the fast dependency-free loop over every `scripts/tests/*.test.mjs` (103 files: adapters, pricing, renderer policy, DOM-stub UI, GPU resources, server replay, and more); there is no browser/component test runner. Dev dependencies exist only for sprite validation, Playwright capture, and pixelmatch diffs — run `npm install` only when those scripts are in scope. Dev server: `npm run dev` (node claudeville/server.js).
 
 ## Server
 
 `server.js`: port hardcoded to `4000` and bound to `127.0.0.1`; static files from `claudeville/`; local Host/same-origin checks guard HTTP and WebSocket access; watch paths come from active provider adapters; updates debounce on fs events plus a 2 s poll that no-ops with no WS clients.
 
-API: `/api/sessions`; `/api/session-detail?sessionId=&project=&provider=`; POST `/api/session-details` (body max 256 KiB, up to 100 items read, invalid providers skipped); POST `/api/ingest/hook` (optional normalized lifecycle overlay, loopback-only, body max 256 KiB, optional `CLAUDEVILLE_INGEST_TOKEN` via `X-ClaudeVille-Ingest-Token`); `/api/teams`; `/api/tasks`; `/api/providers`; `/api/usage` (from `services/usageQuota.js`); `/api/perf` (includes `sessionResidency` diagnostics); `ws://localhost:4000/ws` (same-origin init payload, updates, ping/pong).
+API: `/api/sessions`; `/api/session-detail?sessionId=&project=&provider=`; POST `/api/session-details` (body max 256 KiB, up to 100 items read, invalid providers skipped); POST `/api/ingest/hook` (optional normalized lifecycle overlay, loopback-only, body max 256 KiB, optional `CLAUDEVILLE_INGEST_TOKEN` via `X-ClaudeVille-Ingest-Token`); `/api/teams`; `/api/tasks`; `/api/providers`; `/api/usage` (from `services/usageQuota.js`); `/api/perf` (includes `sessionResidency` diagnostics); `/api/changelog`; `ws://localhost:4000/ws` (same-origin init payload, updates, ping/pong).
 
-`/api/tasks`, `/api/providers`, and `/api/perf` are loopback-only diagnostic/external integration surfaces; the product UI does not consume `/api/tasks`.
+`/api/tasks` and `/api/perf` are loopback-only diagnostic/external integration surfaces; the product UI does not consume `/api/tasks`. The app fetches `/api/providers` during boot in `src/presentation/App.js`.
 
 Client-facing session collection goes through `collectSessionsForClients()`, which folds unresolved `tool_pending` residents from `services/sessionResidency.js` into the live list. Completed turns are excluded and use the frontend's shorter departed-villager grace. Discovery, canonical active projects, and watch topology deliberately stay on the raw `ACTIVE_THRESHOLD_MS` window so residency never widens the watcher footprint.
 
@@ -35,7 +35,7 @@ In `adapters/`, registered by `adapters/index.js`.
 - `codex.js`: `~/.codex/sessions/` — recent `rollout-*.jsonl` under `YYYY/MM/DD/`.
 - `gemini.js`: `~/.gemini/tmp/` — `tmp/<project_hash>/chats/session-*.json`; reverse-maps project hashes to local paths.
 - `grok.js`: `~/.grok/sessions/` — `<url-encoded-cwd>/<session-id>/{summary.json,updates.jsonl,chat_history.jsonl}`; optional `~/.grok/active_sessions.json`.
-- `kimi.js`: `~/.kimi/` — session wire/state files and config.
+- `kimi.js`: `~/.kimi/` and `~/.kimi-code/` — legacy session wire/state files and Kimi Code session indexes, transcripts, state, and config.
 - `opencode.js`: `~/.local/share/opencode/opencode.db` — SQLite read-only; includes subagent parent links and git events from shell tools.
 - `omp.js`: `~/.omp/agent/sessions/` — OMP parent and nested agent JSONL transcripts; maps OMP model/provider, nested parent links, tool history, messages, and aggregated response usage.
 - `turnState.js`: pure, provider-agnostic turn state (`working` / `tool_pending` / `awaiting_input` / `unknown`) plus the pending-tool classifier that separates a permission prompt from a slow tool. Adapters extract a small descriptor from their own transcript format and hand it here; `claude.js` pairs `tool_use`/`tool_result` and reads `stop_reason`, `codex.js` uses `task_started`/`task_complete` and `call_id`. Sessions carry `turnState`, `pendingTool`, `pendingSince`, `awaitingSince`, `waitReason`, `resident`.
@@ -53,7 +53,7 @@ Layout: `header.topbar` fixed-height; `aside.sidebar` fixed-width; `.content` ta
 
 ## World Mode
 
-Sprite-based pixel-art Canvas 2D isometric rendering under `src/presentation/character-mode/`. Invariants: `Camera.js` zoom is clamped to integer steps {1,2,3} for pixel-perfect blits. `SpriteRenderer.js` is the sole entry point for sprite blits (integer snap, smoothing off); `AgentSprite.js` is state and animation only. `Minimap.js` is intentionally vector parchment art, out of scope for the pixel-art migration.
+Sprite-based pixel-art Canvas 2D isometric rendering under `src/presentation/character-mode/`. Invariants: `Camera.js` zoom is clamped to integer steps {1,2,3} for pixel-perfect blits. `SpriteRenderer.js` is the sole entry point for sprite blits (integer snap, smoothing off); `AgentSprite.js` is state and animation only.
 
 Buildings (nine) come from `src/config/buildings.js`. Agent clicks select, open the activity panel via domain events, and start camera follow; empty-space clicks clear selection and stop follow, but the panel closes only via its own close action or when the selected agent is removed.
 
@@ -75,7 +75,7 @@ In-app (after rendering/layout/event-bus changes): open `http://localhost:4000`;
 
 Assets (`npm install` first if `node_modules/` is missing): `npm run sprites:validate` (manifest ↔ PNG bidirectional check); `npm run sprites:capture-fresh` then `npm run sprites:visual-diff` (pixelmatch baselines).
 
-Signal layer (status derivation, residency, day book, spend): `npm run test:unit` — `node:test` cases under `scripts/tests/`, also part of `validate:quick`. Anything touching `adapters/turnState.js`, `domain/services/StatusResolver.js`, `services/sessionResidency.js`, `application/ChronicleLog.js`, or `application/SpendLedger.js` must keep these green.
+Signal layer (status derivation, residency, day book, spend): `npm run test:unit` is the fast dependency-free loop over every `scripts/tests/*.test.mjs` (103 files: adapters, pricing, renderer policy, DOM-stub UI, GPU resources, server replay, and more), also part of `validate:quick`. Anything touching `adapters/turnState.js`, `domain/services/StatusResolver.js`, `services/sessionResidency.js`, `application/ChronicleLog.js`, or `application/SpendLedger.js` must keep these green.
 
 Docs (English-only; must return no matches):
 
@@ -83,11 +83,11 @@ Docs (English-only; must return no matches):
 rg -n -P "[\\x{1100}-\\x{11FF}\\x{3130}-\\x{318F}\\x{AC00}-\\x{D7AF}]" $(rg --files -g '*.md' --glob '!node_modules')
 ```
 
-See `AGENTS.md` § Validation Checklist for the canonical syntax/runtime smoke list.
+See [`../AGENTS.md`](../AGENTS.md#validation) for the canonical syntax/runtime smoke list.
 
 ## Event Bus
 
-Singleton at `src/domain/events/DomainEvent.js`, exports `eventBus`; no replay or persistence; subscriptions are global. Events: `agent:added`/`agent:updated`/`agent:removed` (`Agent`, from `domain/entities/World.js`); `agent:selected` (`Agent`); `agent:deselected`; `attention:raised`/`attention:cleared` (from `application/AttentionService.js`; `raised` carries `{ agentId, status, label }` and drives the `summons` cue); `mode:changed` (`'character' | 'dashboard'`, from `application/ModeManager.js`); `usage:updated`; `fps:updated` (number ~2/s from `character-mode/IsometricRenderer.js`, `null` when the World loop stops); `ws:connected`/`ws:disconnected`/`ws:init`/`ws:update`/`ws:message` (from `infrastructure/WebSocketClient.js`). `ws:message` currently has no subscribers.
+Singleton at `src/domain/events/DomainEvent.js`, exports `eventBus`; no replay or persistence; subscriptions are global. This list is partial: `agent:added`/`agent:updated`/`agent:removed` (`Agent`, from `domain/entities/World.js`); `agent:selected` (`Agent`); `agent:deselected`; `attention:raised`/`attention:cleared` (from `application/AttentionService.js`; `raised` carries `{ agentId, status, label }` and drives the `summons` cue); `mode:changed` (`'character' | 'dashboard'`, from `application/ModeManager.js`); `usage:updated`; `fps:updated` (number ~2/s from `character-mode/IsometricRenderer.js`, `null` when the World loop stops); `ws:connected`/`ws:disconnected`/`ws:init`/`ws:update`/`ws:message` (from `infrastructure/WebSocketClient.js`). `ws:message` currently has no subscribers. Search the emitters in `src/application/`, `src/presentation/`, and `src/infrastructure/WebSocketClient.js` for the complete current set.
 
 ## Development Constraints
 

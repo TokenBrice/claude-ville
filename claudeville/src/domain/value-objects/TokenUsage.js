@@ -1,3 +1,10 @@
+import {
+    MODEL_DEFAULTS,
+    MODEL_REGISTRY,
+    MODEL_REVISION,
+    ratesForModel,
+} from '../../config/models.generated.js';
+
 const DEFAULT_TOKEN_USAGE = {
     input: 0,
     output: 0,
@@ -12,77 +19,6 @@ const DEFAULT_TOKEN_USAGE = {
     contextWindowMax: 0,
     turnCount: 0,
 };
-
-const CLAUDE_RATES = [
-    { match: 'fable-5-1', input: 10, output: 50, cacheRead: 0.25, cacheCreate: 12.5 },
-    { match: 'mythos-5-1', input: 10, output: 50, cacheRead: 0.25, cacheCreate: 12.5 },
-    { match: 'fable-5', input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
-    { match: 'mythos-5', input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
-    { match: 'opus-5', input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
-    { match: 'opus-4-8', input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
-    { match: 'opus-4-7', input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
-    { match: 'opus-4-6', input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
-    { match: 'sonnet-5', input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5 },
-    { match: 'sonnet-4-6', input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
-    { match: 'haiku-4-5', input: 1, output: 5, cacheRead: 0.1, cacheCreate: 1.25 },
-    { match: 'opus', input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
-    { match: 'sonnet', input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
-    { match: 'haiku', input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
-];
-
-const OPEN_AI_RATES = [
-    { match: 'gpt-5.6-sol', input: 5, output: 30, cacheRead: 0.5, cacheCreate: 6.25 },
-    { match: 'gpt-5.6-terra', input: 2.5, output: 15, cacheRead: 0.25, cacheCreate: 3.125 },
-    { match: 'gpt-5.6-luna', input: 1, output: 6, cacheRead: 0.1, cacheCreate: 1.25 },
-    { match: 'gpt-5.6', input: 2.5, output: 15, cacheRead: 0.25, cacheCreate: 3.125 },
-    { match: 'gpt-5.5', input: 15, output: 120, cacheRead: 1.5, cacheCreate: 0 },
-    { match: 'gpt-5.4', input: 10, output: 80, cacheRead: 1, cacheCreate: 0 },
-    { match: 'gpt-5.3', input: 5, output: 40, cacheRead: 0.5, cacheCreate: 0 },
-    { match: 'gpt-5', input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 },
-];
-
-const KIMI_RATES = [
-    { match: 'kimi-for-coding', input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 },
-];
-
-const DEEPSEEK_RATES = [
-    { match: 'deepseek-v4-pro', input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0 },
-    { match: 'v4-pro', input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0 },
-    { match: 'deepseek-v4-flash', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
-    { match: 'v4-flash', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
-    { match: 'deepseek-reasoner', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
-    { match: 'reasoner', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
-];
-
-// xAI public API rates (USD per 1M tokens). Cached input is priced when known.
-const GROK_RATES = [
-    { match: 'grok-4.5', input: 2, output: 6, cacheRead: 0.5, cacheCreate: 0 },
-    { match: 'grok-4-5', input: 2, output: 6, cacheRead: 0.5, cacheCreate: 0 },
-    { match: 'composer', input: 0.2, output: 0.5, cacheRead: 0.05, cacheCreate: 0 },
-    { match: 'grok-4.3', input: 1.25, output: 2.5, cacheRead: 0.2, cacheCreate: 0 },
-    { match: 'grok-4-3', input: 1.25, output: 2.5, cacheRead: 0.2, cacheCreate: 0 },
-    { match: 'grok-4', input: 3, output: 15, cacheRead: 0.75, cacheCreate: 0 },
-];
-
-// Google Gemini API rates (USD per 1M tokens). cacheRead is context-cache read
-// pricing; cacheCreate is the documented one-time cache write on the 3.x family.
-const GEMINI_RATES = [
-    { match: 'gemini-3-5-flash', input: 1.5, output: 9, cacheRead: 0.15, cacheCreate: 0.5 },
-    { match: 'gemini-3-1-pro', input: 2, output: 12, cacheRead: 0.2, cacheCreate: 0.5 },
-    { match: 'gemini-3-1-flash-lite', input: 0.25, output: 1.5, cacheRead: 0.025, cacheCreate: 0.5 },
-    { match: 'gemini-3-pro', input: 2, output: 12, cacheRead: 0.2, cacheCreate: 0.5 },
-    { match: 'gemini-3-flash', input: 0.5, output: 3, cacheRead: 0.05, cacheCreate: 0.5 },
-    { match: 'gemini-2-5-pro', input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 },
-    { match: 'gemini-2-5-flash', input: 0.3, output: 2.5, cacheRead: 0.03, cacheCreate: 0 },
-];
-
-const DEFAULT_CLAUDE_RATES = { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 };
-const DEFAULT_OPEN_AI_RATES = { input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 };
-const DEFAULT_KIMI_RATES = { input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 };
-const DEFAULT_DEEPSEEK_RATES = { input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 };
-const DEFAULT_GROK_RATES = { input: 2, output: 6, cacheRead: 0.5, cacheCreate: 0 };
-const DEFAULT_GEMINI_RATES = { input: 0.5, output: 3, cacheRead: 0.05, cacheCreate: 0.5 };
-const PRICING_REVISION = '2026-09-01';
 
 const FIELD_ALIASES = {
     input: ['input', 'totalInput', 'input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'total_input_tokens', 'total_input'],
@@ -115,20 +51,6 @@ const coerceTokenField = (raw, candidates) => {
 const isLikelyNormalized = (raw) => {
     if (!raw || typeof raw !== 'object') return false;
     return ['input', 'output', 'cacheRead', 'cacheCreate'].every((key) => Number.isFinite(Number(raw[key])));
-};
-
-const pricingModelCandidates = (model) => {
-    const normalized = String(model || '')
-        .toLowerCase()
-        .replace(/[._]/g, '-')
-        .replace(/\s+/g, '-');
-    const dottedCodex = normalized.replace(/\bgpt-5-(\d)\b/g, 'gpt-5.$1');
-    return [...new Set([normalized, dottedCodex])];
-};
-
-const rateMatches = (candidates, rate) => {
-    const match = String(rate?.match || '').toLowerCase();
-    return !!match && candidates.some((candidate) => candidate.includes(match));
 };
 
 export class TokenUsage {
@@ -185,34 +107,11 @@ export class TokenUsage {
     }
 
     static get rateRevision() {
-        return PRICING_REVISION;
+        return MODEL_REVISION;
     }
 
     static pricingForModel(model, provider) {
-        const modelCandidates = pricingModelCandidates(model);
-        const normalizedModel = modelCandidates[0] || '';
-        const normalizedProvider = String(provider || '').toLowerCase();
-        let table;
-        let defaultRate;
-        let tableKey;
-        if (normalizedProvider === 'kimi' || modelCandidates.some((candidate) => candidate.includes('kimi'))) {
-            [table, defaultRate, tableKey] = [KIMI_RATES, DEFAULT_KIMI_RATES, 'kimi'];
-        } else if (normalizedProvider === 'deepseek' || modelCandidates.some((candidate) => candidate.includes('deepseek'))) {
-            [table, defaultRate, tableKey] = [DEEPSEEK_RATES, DEFAULT_DEEPSEEK_RATES, 'deepseek'];
-        } else if (normalizedProvider === 'grok' || modelCandidates.some((candidate) => candidate.includes('grok'))) {
-            [table, defaultRate, tableKey] = [GROK_RATES, DEFAULT_GROK_RATES, 'grok'];
-        } else if (normalizedProvider === 'gemini' || modelCandidates.some((candidate) => candidate.includes('gemini'))) {
-            [table, defaultRate, tableKey] = [GEMINI_RATES, DEFAULT_GEMINI_RATES, 'gemini'];
-        } else if (normalizedProvider === 'codex' || normalizedModel.includes('gpt')) {
-            [table, defaultRate, tableKey] = [OPEN_AI_RATES, DEFAULT_OPEN_AI_RATES, 'openai'];
-        } else {
-            [table, defaultRate, tableKey] = [CLAUDE_RATES, DEFAULT_CLAUDE_RATES, 'claude'];
-        }
-
-        const matchedRate = table.find((rate) => rateMatches(modelCandidates, rate));
-        return matchedRate
-            ? { rate: matchedRate, match: matchedRate.match, isDefault: false }
-            : { rate: defaultRate, match: `default:${tableKey}`, isDefault: true };
+        return ratesForModel(model, provider);
     }
 
     static estimateCost(rawUsage, model, provider) {
