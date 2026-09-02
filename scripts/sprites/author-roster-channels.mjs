@@ -45,6 +45,8 @@ const PROFILES = Object.freeze({
     'agent.deepseek.flash': character('earth', 0.08, ['#5aab9d', '#41a9b7']),
     'agent.grok.base': character('fabric', 0.14, ['#46a9d1', '#59d3e4']),
     'agent.grok.composer': character('fabric', 0.12, ['#4ab9cf', '#47dce4']),
+    'agent.zai.glm': character('fabric', 0.12, ['#73b493', '#4e7c61']),
+    'agent.zai.flash': character('fabric'),
     'terrain.grass-dirt': terrain('earth'),
     'terrain.grass-cobble': terrain('cobble'),
     'terrain.grass-shore': terrain('foliage'),

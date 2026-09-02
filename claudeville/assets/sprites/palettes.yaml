@@ -24,3 +24,7 @@ grok:
   robe: ['#14141f', '#1c1c2e', '#0a0a14']
   pants: ['#101018', '#181822', '#0c0c14']
   trim: ['#7df9ff', '#22d3ee', '#e8f7ff']
+zai:
+  robe: ['#b8382c', '#d24a3b', '#8e2a21']
+  pants: ['#3a1c18', '#48231f', '#2b1311']
+  trim: ['#ffb28c', '#ff8c5f', '#ffe0cf']
