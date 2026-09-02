@@ -7,7 +7,7 @@
 The harbor stops drowning in skiffs. Unpushed commits still sail, but a busy repo now sails as a fleet of titans moored at its own stretch of coast.
 
 **Titan-class commit ships**
-- A repo branch holding five or more unpushed commits no longer shows one ship per commit. The fleet consolidates into `ceil(n / 50)` balanced stack ships on a 5 / 10 / 20 / 30 / 40 / 50-class hull ladder; the exact count rides on the hull (`47⚓`). Two new hulls — `prop.harborShip.stack40` and `prop.harborShip.stack50` — carry the 40 and 50 tiers; the 20 tier reuses the 20–30 flagship art. Failed, rejected, cancelled, untethered, and detached-HEAD commits keep their own ship so trouble stays visible.
+- A repo branch holding five or more unpushed commits no longer shows one ship per commit. The fleet consolidates into `ceil(n / 50)` balanced stack ships on a 5 / 10 / 20 / 30 / 40 / 50-class hull ladder; each hull badges its exact count (`29x` + `28x` for 57; the buoy label carries the fleet total). Two new hulls — `prop.harborShip.stack40` and `prop.harborShip.stack50` — carry the 40 and 50 tiers; the 20 tier reuses the 20–30 flagship art. Failed, rejected, cancelled, untethered, and detached-HEAD commits keep their own ship so trouble stays visible.
 - Hidden pack members inherit their titan's position, so a push still launches the whole fleet from where you saw it, and the titan sails out as one hull instead of a fifty-skiff procession. Small fleets (under five) keep the lead-hull-and-skiffs look.
 
 **Home Waters moved to the coast**
