@@ -31,8 +31,10 @@ test('OMP adapter discovers parent and nested agent transcripts with details and
   const projectDir = path.join(tmpRoot, '-workspace-fixture');
   const parentId = '01900000-0000-7000-8000-000000000001';
   const childId = '01900000-0000-7000-8000-000000000002';
+  const glmChildId = '01900000-0000-7000-8000-000000000003';
   const parentPath = path.join(projectDir, `2026-08-12T10-00-00-000Z_${parentId}.jsonl`);
   const childPath = path.join(projectDir, `2026-08-12T10-00-00-000Z_${parentId}`, 'ReviewWorker.jsonl');
+  const glmChildPath = path.join(projectDir, `2026-08-12T10-00-00-000Z_${parentId}`, 'GlmWorker.jsonl');
   const now = Date.parse('2026-08-12T10:01:00.000Z');
 
   writeJsonl(parentPath, [
@@ -56,6 +58,18 @@ test('OMP adapter discovers parent and nested agent transcripts with details and
       { type: 'text', text: 'Review finished.' },
       { type: 'toolCall', id: 'call-child', name: 'read', arguments: { path: '/workspace/fixture/index.js' } },
     ], { input: 10, output: 6, cacheRead: 2, cacheWrite: 0, totalTokens: 18, reasoningTokens: 0 }),
+  ]);
+  // Observed z.AI order: model_change carries the prefixed string, then each
+  // assistant message overwrites the presented model with the bare id.
+  writeJsonl(glmChildPath, [
+    { type: 'title', title: '', updatedAt: '2026-08-12T10:00:45.000Z' },
+    { type: 'session', id: glmChildId, timestamp: '2026-08-12T10:00:45.000Z', cwd: '/workspace/fixture' },
+    { type: 'model_change', id: 'glm-model-change', parentId: null, model: 'zai/glm-5.3-flash', timestamp: '2026-08-12T10:00:46.000Z' },
+    { type: 'message', id: 'glm-assistant', timestamp: '2026-08-12T10:00:50.000Z', message: {
+      role: 'assistant', provider: 'zai', model: 'glm-5.3-flash',
+      content: [{ type: 'text', text: 'GLM review finished.' }],
+      usage: { input: 8, output: 4, cacheRead: 1, cacheWrite: 0, totalTokens: 13, reasoningTokens: 0 },
+    } },
   ]);
 
   const adapter = new OmpAdapter({ rootDir: tmpRoot, now: () => now });
@@ -81,6 +95,12 @@ test('OMP adapter discovers parent and nested agent transcripts with details and
     assert.equal(child.agentName, 'ReviewWorker');
     assert.equal(child.parentSessionId, `omp-${parentId}`);
     assert.equal(child.underlyingProvider, 'kimi-code');
+
+    const glmChild = sessions.find(session => session.sessionId === `omp-${glmChildId}`);
+    assert.ok(glmChild);
+    assert.equal(glmChild.provider, 'omp');
+    assert.equal(glmChild.model, 'glm-5.3-flash');
+    assert.equal(glmChild.underlyingProvider, 'zai');
 
     const detail = adapter.getSessionDetail(`omp-${parentId}`, '/workspace/fixture');
     assert.equal(detail.provider, 'omp');

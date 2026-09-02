@@ -52,7 +52,7 @@ The PixelLab MCP server (configured via `claude mcp add --transport http pixella
 
 | Tool | Purpose | Canvas range |
 | --- | --- | --- |
-| `create_character` | 4- or 8-direction character | 16-128 px (canvas auto-pads ~40%) |
+| `create_character` | 4- or 8-direction character | 16-128 px (`size`; pro mode returns frames at exactly that size) |
 | `animate_character` | Animate an existing character (template / v3 / pro) | inherits character size |
 | `create_isometric_tile` | Single isometric tile | 16-64 px (24+ recommended) |
 | `create_map_object` | Transparent-BG prop | 32-400 px |
@@ -79,10 +79,10 @@ Per-tool quick reference. Inputs list the most-used parameters, not every option
 
 ### `create_character`
 
-- Inputs: `description`, `name`, `image_size` (16-128 width/height), `n_directions` (4 or 8), `view`, `outline`, `shading`, `detail`, `mode` (`standard` / `pro`), `proportions`, `template_id` (`mannequin` for humanoid; `bear`/`cat`/`dog`/`horse`/`lion` for quadrupeds), `seed`.
+- Inputs: `description`, `name`, `size` (16-128; replaces the former `image_size` object, which the tool rejects since 2026-09), `n_directions` (4 or 8; pro is always 8), `view`, `outline`, `shading`, `detail`, `mode` (`standard` / `pro` / `v3`), `proportions`, `body_type` + `template` (`bear`/`cat`/`dog`/`horse`/`lion` for quadrupeds), `style_character_id` (pro only), `seed`.
 - Output: `character_id` + URLs for the 4 or 8 rotation images. **Async.**
-- Canvas auto-pads ~40% around the requested manifest `generationSize`; crop the exported source frame in post.
-- Generation size vs engine cell size: character manifest `generationSize` supplies both `image_size` dimensions to `create_character`; `size: 92` is the separate engine-cell contract read by `SpriteSheet.js`. A recorded smaller generation size leaves room for PixelLab auto-padding before the deterministic 92px center crop.
+- Older exports padded the canvas ~40% around the requested size; pro mode (verified 2026-09-02) returns frames at exactly `generationSize`. `generate-character-mcp.mjs` centres either shape in the 92px cell.
+- Generation size vs engine cell size: character manifest `generationSize` supplies `size` to `create_character`; `size: 92` in the manifest is the separate engine-cell contract read by `SpriteSheet.js`. A generation size below 92 leaves margin inside the cell for animation overshoot.
 - Repo usage: ClaudeVille agent characters in `claudeville/assets/sprites/characters/agent.*/sheet.png`.
 
 ### `animate_character`
@@ -236,7 +236,7 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 
 ## Pitfalls
 
-1. **Character canvas auto-pads ~40%.** `create_character` with `width: 64` returns a ~90×90 source frame. `generate-character-mcp.mjs` center-crops back to 92×92. Do not substitute engine `size` for manifest `generationSize`; the fields have different contracts.
+1. **Character frames are not always padded.** Older `create_character` exports padded ~40% (a 64 px request returned ~90×90); pro mode now returns exactly the requested `size`. `generate-character-mcp.mjs` crops or pads to 92×92 accordingly. Do not substitute engine `size` for manifest `generationSize`; the fields have different contracts.
 2. **Isometric tiles cap at 64 px.** Above 64 px you must use REST `create-image-pixflux` or MCP `create_map_object` (32–400 px, but not the isometric tile model).
 3. **Tile sizes <24 px give weaker results** even though 16 is allowed. Prefer 32+ for production assets.
 4. **`'highly detailed'` is mandatory for REST pixflux `detail`.** The pixflux endpoint 422s on `'high detail'` (verified 2026-07-17); the MCP tools use the shorter enum. `scripts/sprites/pixellab-rest.mjs` passes the pixflux-canonical string.

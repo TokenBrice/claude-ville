@@ -15,7 +15,7 @@ import {
 test('provider material profiles use contract classes and a documented safe fallback', () => {
   assert.deepEqual(
     Object.keys(PROVIDER_MATERIAL_PROFILES).sort(),
-    ['claude', 'codex', 'deepseek', 'gemini', 'git', 'grok', 'kimi', 'omp', 'opencode'],
+    ['claude', 'codex', 'deepseek', 'gemini', 'git', 'grok', 'kimi', 'omp', 'opencode', 'zai'],
   );
   for (const profile of Object.values(PROVIDER_MATERIAL_PROFILES)) {
     assert.ok(MATERIAL_CLASS_NAMES.includes(profile.defaultMaterialClass));

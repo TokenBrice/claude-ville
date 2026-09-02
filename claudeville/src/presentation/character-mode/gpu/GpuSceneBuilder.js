@@ -45,6 +45,7 @@ export const PROVIDER_MATERIAL_PROFILES = Object.freeze({
     omp: Object.freeze({ defaultMaterialClass: 'fabric' }),
     opencode: Object.freeze({ defaultMaterialClass: 'fabric' }),
     deepseek: Object.freeze({ defaultMaterialClass: 'earth' }),
+    zai: Object.freeze({ defaultMaterialClass: 'fabric' }),
 });
 
 export function gpuMaterialNameForProvider(provider) {

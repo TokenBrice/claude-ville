@@ -129,7 +129,7 @@ test('HTTP fallback and WebSocket delta hydration preserve F1, F2, and F3', asyn
         usd: 0.42,
         source: 'provider',
         rateMatch: 'provider:codex',
-        rateRevision: '2026-09-01',
+        rateRevision: '2026-09-02',
         unknownModel: false,
     };
     const sessionsPayload = [{

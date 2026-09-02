@@ -35,6 +35,8 @@ const ADAPTER_FIXTURE_MODELS = [
   { adapter: 'Kimi', provider: 'kimi', model: 'kimi-code/kimi-for-coding' },
   { adapter: 'OpenCode', provider: 'opencode', model: 'deepseek/deepseek-v4-pro' },
   { adapter: 'OMP', provider: 'omp', model: 'openai-codex/gpt-5.6-luna' },
+  { adapter: 'OMP', provider: 'omp', model: 'zai/glm-5.3-flash' },
+  { adapter: 'OMP', provider: 'omp', model: 'glm-5.3' },
 ];
 
 const LIVE_MODELS = [
@@ -78,6 +80,7 @@ test('server and browser estimates agree on cost provenance', () => {
     openai: 'codex',
     kimi: 'kimi',
     deepseek: 'deepseek',
+    zai: 'zai',
     grok: 'grok',
     gemini: 'gemini',
   };
@@ -105,6 +108,16 @@ test('rate selection shape and session payload expose F1 provenance', () => {
   assert.equal(selected.rate.input, 10);
   assert.equal(selected.rate.cacheRead, 0.25);
   assert.equal(ratesForModel('claude-fable-5', 'claude').rate.cacheRead, 1);
+  // OMP presents either the prefixed model_change string or the bare id from
+  // later assistant messages; both must pin the flash row, not glm-5-3 or claude.
+  for (const raw of ['zai/glm-5.3-flash', 'glm-5.3-flash']) {
+    const glmFlash = ratesForModel(raw, 'omp');
+    assert.equal(glmFlash.match, 'glm-5-3-flash', raw);
+    assert.equal(glmFlash.isDefault, false, raw);
+    assert.equal(glmFlash.rate.input, 0.15, raw);
+    assert.equal(glmFlash.rate.output, 0.5, raw);
+  }
+  assert.equal(ratesForModel('glm-5.3', 'omp').match, 'glm-5-3');
 
   const session = decorateSessionPresentation({
     provider: 'claude',

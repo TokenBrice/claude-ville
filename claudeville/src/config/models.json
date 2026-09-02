@@ -1,5 +1,5 @@
 {
-    "revision": "2026-09-01",
+    "revision": "2026-09-02",
     "models": [
         {
             "id": "claude.fable-5-1", "provider": "claude", "match": ["fable-5-1", "mythos-5-1"], "sample": "claude-fable-5-1",
@@ -219,6 +219,20 @@
             "contextWindow": 500000, "pricing": { "input": 3, "output": 15, "cacheRead": 0.75, "cacheCreate": 0 }
         },
         {
+            "id": "zai.glm-5-3-flash", "provider": "zai", "match": ["glm-5-3-flash"], "sample": "zai/glm-5.3-flash",
+            "label": "GLM 5.3 Flash", "shortLabel": "GLM Flash", "modelClass": "glm-flash", "modelTier": "swift", "mood": "quick",
+            "spriteId": "agent.zai.flash", "paletteKey": "zai", "color": "#ffb28c",
+            "trim": ["#ffb28c", "#ff8c5f", "#ffe0cf"], "accent": ["#fff1e8", "#ffb28c", "#ff8c5f"],
+            "contextWindow": 1000000, "pricing": { "input": 0.15, "output": 0.5, "cacheRead": 0.03, "cacheCreate": 0 }
+        },
+        {
+            "id": "zai.glm-5-3", "provider": "zai", "match": ["glm-5-3"], "sample": "zai/glm-5.3",
+            "label": "GLM 5.3", "shortLabel": "GLM", "modelClass": "glm", "modelTier": "apex", "mood": "deliberate",
+            "spriteId": "agent.zai.glm", "paletteKey": "zai", "color": "#ff8c5f",
+            "trim": ["#ff8c5f", "#ffb28c", "#ffe0cf"], "accent": ["#fff1e8", "#ff8c5f", "#ffd6a5"],
+            "contextWindow": 1000000, "pricing": { "input": 1.4, "output": 4.4, "cacheRead": 0.26, "cacheCreate": 0 }
+        },
+        {
             "id": "gemini.3-5-flash", "provider": "gemini", "match": ["gemini-3-5-flash"], "sample": "gemini-3.5-flash",
             "label": "Gemini", "shortLabel": "Gemini", "modelClass": "standard", "modelTier": null, "mood": "balanced",
             "spriteId": "agent.gemini.base", "paletteKey": "gemini", "color": "#9ad7ff", "trim": null, "accent": null,
@@ -291,6 +305,12 @@
             "label": "Grok", "shortLabel": "Grok", "modelClass": "base", "modelTier": "apex", "mood": "balanced",
             "spriteId": "agent.grok.base", "paletteKey": "grok", "color": "#7df9ff",
             "trim": ["#7df9ff", "#e8f7ff", "#22d3ee"], "accent": ["#f0fdff", "#7df9ff", "#38bdf8"]
+        },
+        "zai": {
+            "pricingKey": "zai", "pricing": { "input": 1.4, "output": 4.4, "cacheRead": 0.26, "cacheCreate": 0 }, "contextWindow": 1000000,
+            "label": "GLM", "shortLabel": "GLM", "modelClass": "glm", "modelTier": "balanced", "mood": "balanced",
+            "spriteId": "agent.zai.glm", "paletteKey": "zai", "color": "#ff8c5f",
+            "trim": ["#ff8c5f", "#ffb28c", "#ffe0cf"], "accent": ["#fff1e8", "#ff8c5f", "#ffd6a5"]
         },
         "gemini": {
             "pricingKey": "gemini", "pricing": { "input": 0.5, "output": 3, "cacheRead": 0.05, "cacheCreate": 0.5 }, "contextWindow": null,

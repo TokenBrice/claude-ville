@@ -68,8 +68,10 @@ async function main() {
     // Pixellab export schema bump: character/frames are now nested under
     // states[0]. Fall back to the legacy flat layout for older ZIPs.
     const meta = Array.isArray(parsed.states) ? parsed.states[0] : parsed;
+    // Pro mode (2026-09) returns frames at exactly generationSize with no
+    // auto-padding; older exports padded ~40%. Either way the content lands
+    // centred in the 92px cell.
     const SOURCE = meta.character.size.width;
-    if (SOURCE < CELL) throw new Error(`Source canvas ${SOURCE} smaller than cell ${CELL}`);
 
     // Merge all animations by frame count: a single template (walk/idle) may be
     // split across multiple animation IDs if some directions failed and were
@@ -96,7 +98,7 @@ async function main() {
         }
         for (let f = 0; f < WALK_FRAMES; f++) {
             const frame = readPng(join(extractDir, walkFrames[f]));
-            const cropped = cropCenter(frame, SOURCE);
+            const cropped = fitCenter(frame, SOURCE);
             blit(cropped, sheet, col * CELL, f * CELL);
         }
 
@@ -107,7 +109,7 @@ async function main() {
         }
         for (let f = 0; f < IDLE_FRAMES; f++) {
             const frame = readPng(join(extractDir, idleFrames[f]));
-            const cropped = cropCenter(frame, SOURCE);
+            const cropped = fitCenter(frame, SOURCE);
             blit(cropped, sheet, col * CELL, (WALK_FRAMES + f) * CELL);
         }
     }
@@ -141,8 +143,9 @@ function characterManifestEntry(spriteId) {
     return { generationSize: '(unmanifested)', generationMode: null };
 }
 
-// Center-crop a CELL×CELL window from a SOURCE×SOURCE frame.
-function cropCenter(src, source) {
+// Centre a SOURCE×SOURCE frame in a CELL×CELL window: crop when the source is
+// larger, pad with transparency when it is smaller.
+function fitCenter(src, source) {
     if (src.width !== source || src.height !== source) {
         throw new Error(`expected ${source}×${source}, got ${src.width}×${src.height}`);
     }
@@ -150,9 +153,11 @@ function cropCenter(src, source) {
     const out = new PNG({ width: CELL, height: CELL });
     out.data.fill(0);
     for (let y = 0; y < CELL; y++) {
+        const syy = off + y;
+        if (syy < 0 || syy >= source) continue;
         for (let x = 0; x < CELL; x++) {
             const sxx = off + x;
-            const syy = off + y;
+            if (sxx < 0 || sxx >= source) continue;
             const si = (src.width * syy + sxx) << 2;
             const di = (CELL * y + x) << 2;
             out.data[di] = src.data[si];

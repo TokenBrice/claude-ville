@@ -101,11 +101,20 @@ const BELL_VOICINGS = Object.freeze({
             bellPartial(6, 0.08, 0.24),
         ]),
     }),
+    zai: Object.freeze({
+        register: 2,
+        partials: Object.freeze([
+            bellPartial(1, 1, 1),
+            bellPartial(2, 0.26, 0.48),
+            bellPartial(6, 0.09, 0.25),
+        ]),
+    }),
 });
 
 function providerFamily(provider) {
     const key = String(provider || '').toLowerCase();
     if (key.includes('deepseek')) return 'deepseek';
+    if (key.includes('zai') || key.includes('glm') || key.includes('zhipu')) return 'zai';
     if (key.includes('opencode')) return 'opencode';
     if (key === 'omp' || key.includes('open-model')) return 'omp';
     if (key.includes('codex') || key.includes('openai') || key.includes('gpt')) return 'codex';

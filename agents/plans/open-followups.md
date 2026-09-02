@@ -2,7 +2,7 @@
 
 **Status:** `live checklist`
 
-**As of:** 2026-09-02, current checkout at `15d10bc` (`v0.40.0` in preparation)
+**As of:** 2026-09-02, current checkout at `cee54d6` (`v0.41.0` in preparation)
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs

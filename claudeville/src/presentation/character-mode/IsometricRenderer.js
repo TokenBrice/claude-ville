@@ -2738,6 +2738,7 @@ export class IsometricRenderer {
                 if (provider === 'kimi' && point.tags?.includes('portal')) score -= 10;
                 if (provider === 'opencode' && point.tags?.includes('portal')) score -= 8;
                 if (model.includes('deepseek') && point.tags?.includes('observatory')) score -= 10;
+                if (model.includes('glm') && point.tags?.includes('archive')) score -= 10;
                 if (agent.teamName && point.district === 'civic') score -= 6;
                 if (agent.isSubagent && point.tags?.includes('command')) score -= 7;
                 if (this.pathfinder && !this.pathfinder.isWalkable(Math.round(point.tileX), Math.round(point.tileY))) score += 1000;

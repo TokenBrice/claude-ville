@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-09-02-footbridge-v1"
+  assetVersion: "2026-09-02-glm-monks-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -547,6 +547,57 @@ characters:
         - { id: emissive.agent.grok.composer.star-clasps, kind: rune, geometry: sidecar, strength: 0.12 }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
+  # z.AI GLM warrior-monk class: vermilion martial robes + peach meridian glow,
+  # open-hand stance — distinct from Claude mages (staff/hat), Codex warriors
+  # (plate/weapons), DeepSeek rogues (daggers/bow), and Grok truthseekers (coat).
+  # character_ids: glm=f64e33dc-6476-4c03-aac3-722e32a82088
+  #                flash=f2b37456-ed34-4c67-84bf-f1ab93cf6f68
+  # Reassemble: node scripts/sprites/generate-character-mcp.mjs --id=<id> --zip=...
+  - id: agent.zai.glm
+    tool: create_character
+    prompt: "GLM warrior-monk grandmaster, flowing vermilion-crimson martial robe with wide sleeves and a broad pale-peach sash knotted at the waist, shaved head with faint glowing peach meridian tattoo lines on the temples, jade prayer-bead necklace, cloth-wrapped forearms and fists, dark crimson trousers, cloth-wrapped feet, calm centered open-hand ready stance, serene disciplined face, peach rim light for a crisp readable silhouette, identical outfit and colors from every viewing angle, isolated character on transparent background, no scenery, no ground tile, no weapon, no staff, no wizard hat, no plate armor, no bow, no daggers, no hood, no cloak, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    palette_layer: zai
+    # Sampled from sheet.png: vermilion robe + shade; the peach sash shares the
+    # skin ramp so only the jade prayer beads form a confident trim cluster.
+    paletteSource: { robe: ['#b7362f', '#88242e'], trim: '#73b493' }
+    anchor: [46, 80]
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.zai.glm.jade-beads, kind: rune, geometry: sidecar, strength: 0.12 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  - id: agent.zai.flash
+    tool: create_character
+    prompt: "GLM Flash swift acolyte monk, sleeveless vermilion-crimson martial tunic with a short pale-peach sash, peach headband with two short trailing tails, short dark hair, cloth-wrapped forearms, dark crimson leggings, light cloth-wrapped boots, lean agile sprinter stance with fists raised, bright eager face, peach rim light for a crisp readable silhouette, identical outfit and colors from every viewing angle, isolated character on transparent background, no scenery, no ground tile, no weapon, no staff, no wizard hat, no plate armor, no bow, no daggers, no hood, no cloak, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    palette_layer: zai
+    # Sampled from sheet.png: vermilion tunic + shade; the peach headband and
+    # sash share the skin ramp, so no confident trim cluster exists.
+    paletteSource: { robe: ['#b83f41', '#a52d3b'] }
+    anchor: [46, 80]
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
 # ─── PALETTES ────────────────────────────────────────────────────────────────
 # Canonical palette definitions. claudeville/assets/sprites/palettes.yaml mirrors
 # this block for standalone tooling — keep both in sync if you edit either.
@@ -575,6 +626,10 @@ palettes:
     robe: ['#14141f', '#1c1c2e', '#0a0a14']
     pants: ['#101018', '#181822', '#0c0c14']
     trim: ['#7df9ff', '#22d3ee', '#e8f7ff']
+  zai:
+    robe: ['#b8382c', '#d24a3b', '#8e2a21']
+    pants: ['#3a1c18', '#48231f', '#2b1311']
+    trim: ['#ffb28c', '#ff8c5f', '#ffe0cf']
 
 # ─── EQUIPMENT ───────────────────────────────────────────────────────────────
 # Runtime-held Codex weapons. Anchors mark the grip point used by AgentSprite,

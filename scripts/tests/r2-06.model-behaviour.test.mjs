@@ -19,6 +19,8 @@ test('model families resolve to intuitive quick, balanced, and deliberate tiers'
     assert.equal(modelBehaviorProfile('gpt-5.6-sol').tier, ModelBehaviorTier.DELIBERATE);
     assert.equal(modelBehaviorProfile('deepseek-v4-flash').tier, ModelBehaviorTier.QUICK);
     assert.equal(modelBehaviorProfile('deepseek-reasoner').tier, ModelBehaviorTier.DELIBERATE);
+    assert.equal(modelBehaviorProfile('zai/glm-5.3-flash').tier, ModelBehaviorTier.QUICK);
+    assert.equal(modelBehaviorProfile('zai/glm-5.3').tier, ModelBehaviorTier.DELIBERATE);
 });
 
 test('reasoning effort can shift a balanced model without erasing model identity', () => {

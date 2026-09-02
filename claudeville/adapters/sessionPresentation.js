@@ -144,6 +144,7 @@ function codexGpt55Sprite(effortTier) {
 function inferredRegistryProvider(model, provider = '') {
   const normalizedModel = normalizeModel(model);
   if (normalizedModel.includes('deepseek')) return 'deepseek';
+  if (normalizedModel.includes('glm')) return 'zai';
   if (normalizedModel.includes('gemini')) return 'gemini';
   if (normalizedModel.includes('codex') || normalizedModel.includes('gpt')) return 'codex';
   if (normalizedModel.includes('claude')) return 'claude';
@@ -151,6 +152,7 @@ function inferredRegistryProvider(model, provider = '') {
   if (normalizedModel.includes('grok')) return 'grok';
   const normalizedProvider = String(provider || '').toLowerCase();
   if (normalizedProvider.includes('deepseek')) return 'deepseek';
+  if (normalizedProvider.includes('zai') || normalizedProvider.includes('zhipu')) return 'zai';
   if (normalizedProvider.includes('gemini')) return 'gemini';
   if (normalizedProvider.includes('codex') || normalizedProvider.includes('openai')) return 'codex';
   if (normalizedProvider.includes('claude')) return 'claude';
