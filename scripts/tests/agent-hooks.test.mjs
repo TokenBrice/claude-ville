@@ -195,11 +195,13 @@ test('ingest flag unset exits zero without reading input or opening a request', 
 // observable contract: a hook that exceeds it is killed and the tool call stalls.
 // The 200 ms figure from the plan is a local design budget, not a CI-safe
 // per-run bound (a shared runner spawning `git status` can cross it), so it is
-// asserted on the median over ten runs and the hard limit is the 1 s timeout.
+// asserted on the median over ten runs; each run must stay under 500 ms, half
+// the timeout, so a regression surfaces well before hooks start being killed.
 const HOOK_TIMEOUT_MS = 1000;
+const HOOK_RUN_BUDGET_MS = 500; // half the configured timeout: early warning with headroom for CI jitter
 const HOOK_MEDIAN_BUDGET_MS = 200;
 
-test('each hook mode stays inside the configured 1 s timeout with a sub-200 ms median', () => {
+test('each hook mode stays under 500 ms per run (half the 1 s hook timeout) with a sub-200 ms median', () => {
   const fixtures = {
     session: { cwd: repoRoot, hook_event_name: 'SessionStart', tool_input: {} },
     guard: bash('git status --short'),
@@ -211,7 +213,7 @@ test('each hook mode stays inside the configured 1 s timeout with a sub-200 ms m
     for (let runNumber = 1; runNumber <= 10; runNumber += 1) {
       const result = run(mode, fixture);
       assert.equal(result.status, 0, `${mode} run ${runNumber}`);
-      assert.ok(result.elapsed < HOOK_TIMEOUT_MS, `${mode} run ${runNumber} took ${result.elapsed.toFixed(1)} ms`);
+      assert.ok(result.elapsed < HOOK_RUN_BUDGET_MS, `${mode} run ${runNumber} took ${result.elapsed.toFixed(1)} ms`);
       elapsed.push(result.elapsed);
     }
     const median = elapsed.sort((a, b) => a - b)[Math.floor(elapsed.length / 2)];
