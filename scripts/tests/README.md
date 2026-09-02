@@ -1,37 +1,55 @@
-# scripts/tests/
+# Test catalog
 
-Unit tests for signal and pure renderer-policy logic, run by `npm run test:unit` (part of
-`npm run validate:quick`). They use Node's built-in `node:test` runner — no
-dependency, no build step, consistent with the rest of the project.
+ClaudeVille uses Node's built-in `node:test` runner. The fast unit suite is dependency-free and needs neither a build, browser, real provider home, nor running server:
 
-The signal tests decide **what the village believes about an agent**. The
-renderer-policy tests cover deterministic admission, resource accounting,
-material records, atlas layout, and degradation without requiring Canvas or a
-browser. Actual pixels stay covered by sprite/channel validation, visual diffs,
-and World validators.
+```sh
+npm run test:unit
+node --test scripts/tests/turn-state.test.mjs
+node --test scripts/tests/turn-state.test.mjs --test-name-pattern "completed"
+```
 
-| File | Covers |
+`test:unit` runs top-level `scripts/tests/*.test.mjs` files. Integration tests start an isolated production server on an ephemeral socket and run separately with `npm run test:integration`.
+
+Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when the normal temporary directory is unavailable. `support/tmp.mjs` and `support/tmp.cjs` create unique children beneath it, otherwise falling back to the OS temporary directory.
+
+## Suite map
+
+| Category | Files or prefixes | Covers |
+| --- | --- | --- |
+| Adapter and turn state | `turn-state*`, `claude-*`, `omp-adapter`, `r2-02.adapter-parity` | Provider parsing, normalized sessions, identity, projection, and pending/completed turn rules. |
+| Pricing and registry | `r1-09.cache-token-normalize`, `r1-15.spend-rollup`, `r2-02.pricing`, `model-registry` | Token normalization, pricing, spend, and canonical model metadata. |
+| Renderer and GPU policy | `material-*`, `postfx-*`, `trail-*`, `canvas-budget`, `drawable-pass`, `gpu-*`, `w4-*`, `r3-*` | Admission, resources, materials, trails, atlases, and degradation policy without Canvas. |
+| DOM-stub UI | `frontend-reliability`, `ui-data-remediation`, `hook-overlay`, `r1-11.*`, `r1-19.*`, `r2-04.*`–`r2-11.*`, `r3-settings.*`, `r4-dialogue.*`, `w1-g.*`–`w1-i.*`, `w5-*` | Browser-facing code under small DOM, storage, audio, and canvas stubs. These are not browser/component tests. |
+| Server and hook tooling | `agent-hooks`, `release-changelog`, `catalog-check`, `session-residency`, `working-set`, `persistent-history`, `r1-12.*`, `r2-12.*`, `w1-*`, `w2-*`, `w3-*` | Server state, hooks, releases, catalogs, persistence, and telemetry. |
+| Integration | `integration/*.test.mjs` | Real isolated-server HTTP/WebSocket contracts and replay pipelines; run only by `test:integration`. |
+
+## Notable contract tests
+
+| File | Contract |
 | --- | --- |
-| `turn-state.test.mjs` | `adapters/turnState.js` — turn-state derivation, and the dwell/permission-mode rules that separate a pending permission prompt from a tool that is simply slow. |
-| `status-resolver.test.mjs` | `src/domain/services/StatusResolver.js` — status priority, and the two regressions the module exists to prevent: a long-running tool decaying to WAITING, and a finished turn never producing COMPLETED. |
-| `session-residency.test.mjs` | `services/sessionResidency.js` — unresolved-tool residency, completed-turn exclusion, TTL expiry, re-classification as a wait lengthens, and the resident cap. |
-| `chronicle-log.test.mjs` | `src/application/ChronicleLog.js` — commit-subject extraction and the day rollup. |
-| `spend-ledger.test.mjs` | `src/application/SpendLedger.js` — delta banking, cache-read separation, backwards counters, rate windowing, and midnight rollover. |
-| `material-contract.test.mjs` | Semantic material defaults, nine-landmark metadata, Canvas-compatible drawable/GPU seams, SpriteRenderer placement parity, and deterministic atlas packing. |
-| `postfx-ladder.test.mjs` | PostFX degradation/recovery hysteresis, timing-driver attribution, and sticky degradation reasons. |
-| `postfx-feed.test.mjs` | Water-mask cache reuse, camera-pose rebuild diagnostics, and mask resource ownership. |
-| `trail-render-policy.test.mjs` | Camera-motion classification, world-cache admission, and no-repaint pose transforms. |
-| `canvas-budget.test.mjs` | Named GPU texture/attachment/buffer accounting and the unified Canvas/GPU byte ledger. |
-| `render-baseline-manifest.test.mjs` | Required deterministic scenes, atmospheres, desktop sizes, renderer modes, camera declarations, and north-star coverage. |
+| `model-registry.test.mjs` | Generated ESM/CJS resolver parity, presentation identity parity, and bidirectional registry/manifest completeness. |
+| `agent-hooks.test.mjs` | Destructive-command guards, fail-open input, syntax reports, session output, opt-in ingestion, and latency. |
+| `release-changelog.test.mjs` | Release header parsing, exact extraction, version rejection, and read-only/write preparation behavior. |
+| `catalog-check.test.mjs` | Smoke files, verification npm scripts, and `docs/*.md` files remain cataloged. |
+| `integration/session-payload-contract.test.mjs` | HTTP sessions and WebSocket initialization satisfy the client payload contract. |
+| `integration/r1-18.pipeline-replay.test.mjs` | A real multi-provider pipeline emits valid WebSocket delta and snapshot payloads. |
 
 ## Conventions
 
-- One behaviour per test, named as the claim it makes.
-- Time is injected (`now` parameters), never `Date.now()` — these must not be
-  flaky at midnight or under load.
-- CommonJS modules under `adapters/` and `services/` load via `createRequire`;
-  browser ES modules under `src/` are imported directly (Node detects the
-  module type, which is why `NODE_NO_WARNINGS=1` is set on the script).
+- Name tests as the behavior they prove and keep fixtures deterministic.
+- Inject a fixed clock for exact boundaries. Some tests use `Date.now()` for unique import/IndexedDB names, fresh filesystem timestamps, or relative-time fixtures; wall-clock use is allowed when assertions do not depend on an exact instant.
+- CommonJS adapter/service modules load via `createRequire`; browser ES modules import directly.
+- Transcript fixtures are documented in `scripts/adapters/fixtures/README.md`; browser pixels and live lifecycle behavior belong to smoke and visual checks.
 
-Frontend rendering, adapter fixture parsing, and watcher behaviour remain
-covered by `scripts/smoke/` — see that directory's README.
+## Verification command index
+
+| Area | Commands |
+| --- | --- |
+| Syntax/static contracts | `check:server`, `check:adapters`, `check:services`, `check:frontend-syntax`, `check:scripts`, `check:git-events`, `check:adapter-fixtures`, `check:theme-tokens`, `check:artifacts` |
+| Tests | `test:unit`, `test:integration`, `test:e2e:replay` |
+| Models | `models:generate`, `models:check`, `models:resolve` |
+| Focused verification | `verify:architecture`, `verify:server`, `verify:render` |
+| Gates | `validate:quick`, `validate:full`, `gate:release` |
+| Release | `release:check`, `release:prepare`, `release:verify` |
+
+The smoke catalog details focused runtime requirements. `validate:quick` is the deterministic pre-push loop; `validate:full` adds integration, server, World, and sprite validation; `gate:release` also verifies release metadata.

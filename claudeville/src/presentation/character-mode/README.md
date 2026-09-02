@@ -193,6 +193,8 @@ Persisted movement history is retained for diagnostics and replay but routine hi
 
 Shift-D reports PostFX source upload, mask upload, setup CPU, shader CPU/GPU, ladder decision/degradation reason, named GPU resource bytes, mask rebuild causes, and trail camera-mode timing.
 
+For World presentation changes, run `npm run verify:render` to capture deterministic screenshots and console evidence, then review the changed behavior on the operator-maintained server. Browser judgment remains manual; evidence capture does not.
+
 ## Frame and update notes
 
 - The render loop is plain `requestAnimationFrame`; one update tick per frame, no fixed timestep.

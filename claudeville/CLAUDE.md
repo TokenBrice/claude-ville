@@ -1,98 +1,51 @@
 # ClaudeVille Agent Notes
 
-## Scope
+## Scope and Shape
 
-- Work from the repository root (the directory containing this file).
-- This checkout may be edited by multiple agents. Run `git status --short` before changes and do not revert or absorb unrelated edits.
-- For documentation-only tasks scoped to `README.md`, root `AGENTS.md`/`CLAUDE.md`, or `claudeville/CLAUDE.md`, edit only those files.
-- Workflow, git hygiene, and multi-agent coordination are controlled by the root `AGENTS.md`.
+Work from the repository root. This shared checkout may be edited by multiple agents: run `git status --short` before changes, preserve unrelated edits, and follow the root [`AGENTS.md`](../AGENTS.md).
 
-## Project Shape
-
-Static HTML/CSS/vanilla ES modules; `server.js` uses only Node built-ins; no bundler or transpiler. `npm run test:unit` is the fast dependency-free loop over every `scripts/tests/*.test.mjs` (103 files: adapters, pricing, renderer policy, DOM-stub UI, GPU resources, server replay, and more); there is no browser/component test runner. Dev dependencies exist only for sprite validation, Playwright capture, and pixelmatch diffs — run `npm install` only when those scripts are in scope. Dev server: `npm run dev` (node claudeville/server.js).
+ClaudeVille is static HTML/CSS with vanilla ES modules. `server.js` uses Node built-ins only; there is no build step, bundler, transpiler, framework, or runtime dependency. The desktop-only UI targets viewports at least 1280px wide. Start the maintained server with `npm run dev`; do not change its port casually.
 
 ## Server
 
-`server.js`: port hardcoded to `4000` and bound to `127.0.0.1`; static files from `claudeville/`; local Host/same-origin checks guard HTTP and WebSocket access; watch paths come from active provider adapters; updates debounce on fs events plus a 2 s poll that no-ops with no WS clients.
+`server.js` binds `127.0.0.1:4000`. Local Host and same-origin checks guard HTTP and WebSocket access. Static files come from `claudeville/`; watch paths come from active provider adapters. Filesystem updates debounce alongside a two-second poll, and broadcasts no-op when there are no WebSocket clients.
 
-API: `/api/sessions`; `/api/session-detail?sessionId=&project=&provider=`; POST `/api/session-details` (body max 256 KiB, up to 100 items read, invalid providers skipped); POST `/api/ingest/hook` (optional normalized lifecycle overlay, loopback-only, body max 256 KiB, optional `CLAUDEVILLE_INGEST_TOKEN` via `X-ClaudeVille-Ingest-Token`); `/api/teams`; `/api/tasks`; `/api/providers`; `/api/usage` (from `services/usageQuota.js`); `/api/perf` (includes `sessionResidency` diagnostics); `/api/changelog`; `ws://localhost:4000/ws` (same-origin init payload, updates, ping/pong).
+Main surfaces are `/api/sessions`, `/api/session-detail`, `POST /api/session-details`, `POST /api/ingest/hook`, `/api/teams`, `/api/tasks`, `/api/providers`, `/api/usage`, `/api/perf`, `/api/changelog`, and `/ws`. The app fetches `/api/providers` during boot. `/api/tasks` and `/api/perf` are diagnostic/external-integration surfaces; the product UI does not consume `/api/tasks`.
 
-`/api/tasks` and `/api/perf` are loopback-only diagnostic/external integration surfaces; the product UI does not consume `/api/tasks`. The app fetches `/api/providers` during boot in `src/presentation/App.js`.
+Client session collection runs through `collectSessionsForClients()`, which folds unresolved `tool_pending` residents from `services/sessionResidency.js` into the live list. Completed turns use the shorter departed-villager grace. Discovery, canonical active projects, and watch topology remain on the raw `ACTIVE_THRESHOLD_MS` window so residency never widens the watcher footprint.
 
-Client-facing session collection goes through `collectSessionsForClients()`, which folds unresolved `tool_pending` residents from `services/sessionResidency.js` into the live list. Completed turns are excluded and use the frontend's shorter departed-villager grace. Discovery, canonical active projects, and watch topology deliberately stay on the raw `ACTIVE_THRESHOLD_MS` window so residency never widens the watcher footprint.
+Cadence constants live in `src/config/constants.js`, `server.js`, `adapters/index.js`, and `adapters/gitEvents.js`. The client fallback poll is two seconds, server session-list cache TTL is 2000 ms, and WebSocket heartbeat is 30 seconds. Never lower the client poll below half the server cache TTL.
 
-Do not change port `4000` casually. The README and local workflows assume it.
-
-Cadence constants live in `src/config/constants.js`, `server.js`, `adapters/index.js`, and `adapters/gitEvents.js`.
-
-Invariant: client poll fallback runs at 2 s; server session-list cache TTL is 2000 ms; WS heartbeat is 30 s — never lower client poll under server cache TTL/2 or the cache becomes useless.
+Hook ingestion payload schema and opt-in Claude Code dogfood instructions: see [`docs/troubleshooting.md#permission-prompts-are-inferred-or-arrive-late`](../docs/troubleshooting.md#permission-prompts-are-inferred-or-arrive-late).
 
 ## Provider Adapters
 
-In `adapters/`, registered by `adapters/index.js`.
+Adapters are read-only inputs registered by `adapters/index.js`. Availability is automatic, empty output is not necessarily an error, and adapter failures may use short stale caches. The normalized contract, provider source paths, watch behavior, token semantics, and per-provider fixtures live in [`adapters/README.md`](adapters/README.md).
 
-- `claude.js`: `~/.claude/` — `history.jsonl`, `projects/`, `teams/`, `tasks/`; subagents under `subagents/`, workflow-tool subagents under `subagents/workflows/<wfRunId>/` (tagged `agentType: 'workflow-subagent'`), orphan/team-member project JSONL files.
-- `codex.js`: `~/.codex/sessions/` — recent `rollout-*.jsonl` under `YYYY/MM/DD/`.
-- `gemini.js`: `~/.gemini/tmp/` — `tmp/<project_hash>/chats/session-*.json`; reverse-maps project hashes to local paths.
-- `grok.js`: `~/.grok/sessions/` — `<url-encoded-cwd>/<session-id>/{summary.json,updates.jsonl,chat_history.jsonl}`; optional `~/.grok/active_sessions.json`.
-- `kimi.js`: `~/.kimi/` and `~/.kimi-code/` — legacy session wire/state files and Kimi Code session indexes, transcripts, state, and config.
-- `opencode.js`: `~/.local/share/opencode/opencode.db` — SQLite read-only; includes subagent parent links and git events from shell tools.
-- `omp.js`: `~/.omp/agent/sessions/` — OMP parent and nested agent JSONL transcripts; maps OMP model/provider, nested parent links, tool history, messages, and aggregated response usage.
-- `turnState.js`: pure, provider-agnostic turn state (`working` / `tool_pending` / `awaiting_input` / `unknown`) plus the pending-tool classifier that separates a permission prompt from a slow tool. Adapters extract a small descriptor from their own transcript format and hand it here; `claude.js` pairs `tool_use`/`tool_result` and reads `stop_reason`, `codex.js` uses `task_started`/`task_complete` and `call_id`. Sessions carry `turnState`, `pendingTool`, `pendingSince`, `awaitingSince`, `waitReason`, `resident`.
+## Model Registry
 
-Session payloads may include bounded `tasks` (`subject` and `status`, at most 12) and `taskProgress` (`done`, `total`, and `source: 'exact'|'inferred'`). Claude's exact progress comes from its task store; inferred progress is based on observed child sessions, and a disappeared child remains unknown rather than completed.
-- `gitEvents.js`: parses git `commit`/`push` from provider tool logs (dry-runs omitted) into session `gitEvents`; the registry can synthesize repository-only `provider: 'git'` sessions. Scans default to `~/Documents/git`; tune `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`/`CLAUDEVILLE_REPOSITORY_SCAN_MAX`; disable `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`.
+`src/config/models.json` is the source of truth for model identity, pricing, context window, and mood. `npm run models:generate` emits `models.generated.js` and `models.generated.cjs`; never edit either generated file. Rendering policy stays in `src/presentation/shared/ModelVisualIdentity.js`, keyed by `modelClass`. Use `npm run models:resolve -- <provider> <model>` to inspect a match and [`.claude/skills/add-model/SKILL.md`](../.claude/skills/add-model/SKILL.md) for the contributor workflow.
 
-Adapter availability is automatic; empty provider output is not necessarily an error. Treat all provider session files as read-only inputs. `adapters/index.js` caches lists for 2000 ms and details for 5000 ms; detail failures return stale cache when present, else `{ toolHistory: [], messages: [] }`.
+## Frontend Ownership
 
-## Frontend
+`src/presentation/App.js` owns startup. UI and documentation copy are English-only. Mode-specific behavior belongs with its nearest owner:
 
-`src/presentation/App.js` owns startup. The app exposes English UI strings only. Documentation should also stay English.
+- [World renderer and selection lifecycle](src/presentation/character-mode/README.md)
+- [Dashboard cards, lifecycle, and detail polling](src/presentation/dashboard-mode/README.md)
+- [Shared chrome, Activity Panel, selection, and detail cache](src/presentation/shared/README.md)
 
-Layout: `header.topbar` fixed-height; `aside.sidebar` fixed-width; `.content` takes remaining space (holds `section#characterMode`, `section#dashboardMode`); `#activityPanel` is 320px wide and shrinks `.content` when open. World canvas fills remaining content; Dashboard scrolls vertically. Do not use `position: fixed` for normal UI panels. Modals and toasts are the exceptions.
-
-## World Mode
-
-Sprite-based pixel-art Canvas 2D isometric rendering under `src/presentation/character-mode/`. Invariants: `Camera.js` zoom is clamped to integer steps {1,2,3} for pixel-perfect blits. `SpriteRenderer.js` is the sole entry point for sprite blits (integer snap, smoothing off); `AgentSprite.js` is state and animation only.
-
-Buildings (nine) come from `src/config/buildings.js`. Agent clicks select, open the activity panel via domain events, and start camera follow; empty-space clicks clear selection and stop follow, but the panel closes only via its own close action or when the selected agent is removed.
-
-Motion-bearing World mode work must follow `../docs/motion-budget.md`: check `motionScale` before allocating animation resources, declare a pulse band, and ship a static reduced-motion fallback.
+The World canvas is pixel-art Canvas 2D. `Camera.js` uses integer zoom steps `{1,2,3}`; `SpriteRenderer.js` is the only sprite-blit entry point and disables smoothing. Motion-bearing changes must follow [`docs/motion-budget.md`](../docs/motion-budget.md).
 
 ## Sprite Generation
 
-Via the PixelLab MCP server. `claudeville/assets/sprites/manifest.yaml` is the single source of truth — every sprite the renderer references must have a corresponding manifest entry, and every PNG on disk must correspond to a manifest entry. PNGs go to the manifest-implied path (`AssetManager._pathFor`). `AssetManager` cache-busts PNG loads with `style.assetVersion` and falls back to `assets/sprites/_placeholder/checker-64.png` for missing/invalid images. `style.anchor` is concatenated into every prompt; bump `style.assetVersion` when PNGs change and browser cache matters. The `palettes` block is mirrored in `claudeville/assets/sprites/palettes.yaml`; keep both in sync. Then run `npm run sprites:validate`. Steps: `scripts/sprites/generate.md`; PixelLab: `../docs/pixellab-reference.md`.
-
-## Dashboard and Activity Panel
-
-`src/presentation/dashboard-mode/DashboardRenderer.js` groups agents by project; listens for `agent:added`/`agent:updated`/`agent:removed`/`mode:changed`; detail fetching runs only while Dashboard mode is active; card clicks emit `agent:selected`. Details flow through `shared/SessionDetailsService.js` (dedupe + short-lived cache).
-
-`src/presentation/shared/ActivityPanel.js`: `agent:selected` opens agent mode; `BUILDING_EVENTS.SELECTED` opens building mode and clears agent selection. Polls session detail every 2 s, building occupants every 5 s; renders only when detail signatures change.
-
-## Validation
-
-In-app (after rendering/layout/event-bus changes): open `http://localhost:4000`; switch World/Dashboard modes; select/deselect an agent — `agent:selected`/`agent:deselected` must open/close the activity panel and toggle camera follow; the world canvas must resize with `.content` (not `position: fixed`).
-
-Assets (`npm install` first if `node_modules/` is missing): `npm run sprites:validate` (manifest ↔ PNG bidirectional check); `npm run sprites:capture-fresh` then `npm run sprites:visual-diff` (pixelmatch baselines).
-
-Signal layer (status derivation, residency, day book, spend): `npm run test:unit` is the fast dependency-free loop over every `scripts/tests/*.test.mjs` (103 files: adapters, pricing, renderer policy, DOM-stub UI, GPU resources, server replay, and more), also part of `validate:quick`. Anything touching `adapters/turnState.js`, `domain/services/StatusResolver.js`, `services/sessionResidency.js`, `application/ChronicleLog.js`, or `application/SpendLedger.js` must keep these green.
-
-Docs (English-only; must return no matches):
-
-```bash
-rg -n -P "[\\x{1100}-\\x{11FF}\\x{3130}-\\x{318F}\\x{AC00}-\\x{D7AF}]" $(rg --files -g '*.md' --glob '!node_modules')
-```
-
-See [`../AGENTS.md`](../AGENTS.md#validation) for the canonical syntax/runtime smoke list.
+`assets/sprites/manifest.yaml` is the sprite source of truth: every runtime sprite must have a manifest entry, every PNG must live at its manifest-implied path, character `generationSize` is distinct from the 92px engine cell, palette mirrors must remain identical, and `style.assetVersion` changes only when PNG bytes change. Follow [`scripts/sprites/generate.md`](../scripts/sprites/generate.md), including its canonical “Add One Character” procedure and validation commands.
 
 ## Event Bus
 
-Singleton at `src/domain/events/DomainEvent.js`, exports `eventBus`; no replay or persistence; subscriptions are global. This list is partial: `agent:added`/`agent:updated`/`agent:removed` (`Agent`, from `domain/entities/World.js`); `agent:selected` (`Agent`); `agent:deselected`; `attention:raised`/`attention:cleared` (from `application/AttentionService.js`; `raised` carries `{ agentId, status, label }` and drives the `summons` cue); `mode:changed` (`'character' | 'dashboard'`, from `application/ModeManager.js`); `usage:updated`; `fps:updated` (number ~2/s from `character-mode/IsometricRenderer.js`, `null` when the World loop stops); `ws:connected`/`ws:disconnected`/`ws:init`/`ws:update`/`ws:message` (from `infrastructure/WebSocketClient.js`). `ws:message` currently has no subscribers. Search the emitters in `src/application/`, `src/presentation/`, and `src/infrastructure/WebSocketClient.js` for the complete current set.
+The singleton `src/domain/events/DomainEvent.js` exports `eventBus`; subscriptions are global with no replay or persistence. Major families include agent lifecycle/selection, attention, mode, usage/FPS, WebSocket state/messages, and village/director presentation signals. This list is intentionally partial: search emitters in `src/application/`, `src/presentation/`, and `src/infrastructure/WebSocketClient.js` before changing an event contract.
 
-## Development Constraints
+## Validation and Constraints
 
-- Keep changes narrow and consistent with the existing no-build-step architecture.
-- Do not introduce a frontend framework for small UI or documentation changes.
-- Do not mutate local CLI session files.
-- Do not delete generated app-bundle files or `.playwright-cli/` unless explicitly asked.
-- Re-run `git status --short` before committing or handing off changed files.
+Use the canonical change-to-command table in [`AGENTS.md#validation`](../AGENTS.md#validation). For presentation work, automated screenshot and console evidence comes from `npm run verify:render`; visual judgment on the operator-maintained server remains manual.
+
+Keep changes narrow. Do not mutate local CLI session files, introduce a frontend framework, or delete generated app artifacts unless explicitly asked. Re-run `git status --short` before handoff.

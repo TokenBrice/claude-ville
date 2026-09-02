@@ -53,7 +53,7 @@ Use `SESSION_DETAIL_REFRESH_INTERVAL` from `src/config/constants.js` for Dashboa
 
 After Dashboard changes:
 
-1. Start `npm run dev`.
-2. Open `http://localhost:4000` and switch to Dashboard mode.
+1. Run `npm run verify:render` and retain its screenshots and console diagnostics.
+2. On the operator-maintained `http://localhost:4000`, switch to Dashboard mode.
 3. Confirm project sections, card click selection, and tool history render correctly.
 4. Switch back to World mode and confirm detail polling stops causing visible updates or console noise.

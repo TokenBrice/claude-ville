@@ -36,14 +36,13 @@ Match validation to what changed. Common checks:
 
 ```bash
 npm run validate:quick
-npm run check:server
-npm run check:adapters
-npm run check:services
-npm run check:frontend-syntax
-npm run check:scripts
+npm run validate:full
+npm run verify:architecture
+npm run verify:server
+npm run verify:render
 ```
 
-For UI or canvas changes, also open the app, test World and Dashboard modes, and verify agent selection opens and closes the activity panel.
+For UI or canvas changes, keep the screenshot and console evidence from `verify:render`, then use the operator-maintained server for visual judgment in World and Dashboard modes. The canonical routing table is in [`AGENTS.md`](AGENTS.md#validation).
 
 ## Pull Requests
 
@@ -52,3 +51,29 @@ For UI or canvas changes, also open the app, test World and Dashboard modes, and
 - List focused validation commands and any checks you skipped.
 - Include screenshots for visual changes.
 - Do not include provider logs, API keys, tokens, private paths, or screenshots with secrets.
+
+## Remotes
+
+- `origin` is the working fork: `https://github.com/TokenBrice/claude-ville.git` (fetch and push).
+- Maintainers may optionally add `upstream` as fetch-only: `https://github.com/honorstudio/claude-ville.git`. It is not present by default.
+- Do not change remotes, branches, or the fork workflow unless the task explicitly requires it.
+
+## Releases
+
+Choose the changelog tier and header grammar from [`AGENTS.md`](AGENTS.md#changelog). Named releases use short medieval/RPG village names; hotfixes have no name. The release helper validates that the top entry is well-formed, synchronizes the package and UI versions, and prints the publication command:
+
+```bash
+npm run release:check -- <version>
+npm run release:prepare -- <version> --write
+npm run gate:release
+```
+
+When publication is explicitly requested:
+
+1. Commit the release files and push `main`.
+2. From a clean committed tree, create the annotated tag with `npm run release:prepare -- <version> --tag` and push `v<version>` to `origin`. The tag must point at the release commit; `--target` does not accept a raw SHA, so push the tag first.
+3. Run the exact `gh release create` command printed by the helper. Its notes file contains the top `CHANGELOG.md` section verbatim.
+4. When backfilling an older version, add `--latest=false` so the newest release remains marked Latest.
+5. Verify the remote tag and GitHub release. Every pushed version must have both; no gaps (v0.20.0 was once pushed without one).
+
+The Claude Code release router at [`.claude/skills/release/SKILL.md`](.claude/skills/release/SKILL.md) carries the same safe sequencing and never authorizes publication on its own.

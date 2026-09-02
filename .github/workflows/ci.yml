@@ -22,4 +22,4 @@ jobs:
       - name: Install dev dependencies
         run: npm ci --ignore-scripts
       - name: Run validation
-        run: npm run validate:quick
+        run: npm run validate:full

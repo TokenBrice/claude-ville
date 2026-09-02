@@ -8,6 +8,20 @@ Each adapter wraps one provider's on-disk session format and exposes a small uni
 
 Adapters never write. Provider session files are inputs; do not mutate them.
 
+## Provider sources
+
+- `claude.js`: `~/.claude/` history, projects, teams, tasks, subagents, and workflow subagents.
+- `codex.js`: recent `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` transcripts and `session_index.jsonl` names.
+- `gemini.js`: `~/.gemini/tmp/<project_hash>/chats/session-*.json`, with best-effort project-hash reversal.
+- `grok.js`: `~/.grok/sessions/<url-encoded-cwd>/<session-id>/` summaries, updates, and chat history; `active_sessions.json` is optional.
+- `kimi.js`: legacy `~/.kimi/` wire/state data and Kimi Code indexes, transcripts, state, and config under `~/.kimi-code/`.
+- `opencode.js`: read-only `~/.local/share/opencode/opencode.db`, including parent links and shell-derived git events.
+- `omp.js`: `~/.omp/agent/sessions/` parent and nested-agent JSONL transcripts.
+- `turnState.js`: provider-neutral `working`, `tool_pending`, `awaiting_input`, and `unknown` derivation plus pending-tool classification.
+- `gitEvents.js`: best-effort commit/push extraction and repository-only `provider: 'git'` synthesis.
+
+Adapter availability is automatic; empty provider output is not necessarily an error. `adapters/index.js` caches lists for 2000 ms and details for 5000 ms. A detail failure returns stale cached data when available, otherwise an empty detail shape.
+
 Registration and runtime metadata live in `claudeville/adapters/index.js`:
 
 ```js
@@ -140,6 +154,10 @@ Reasoning-token semantics differ per provider, so usage objects carry a `reasoni
 - Codex `output_tokens` already includes `reasoning_output_tokens` (`total_tokens` = input + output), so the Codex adapter sets `reasoningInOutput: true` and cost estimation skips reasoning to avoid double pricing; the field remains available as an output breakdown.
 
 The fallback chain exists because providers rename fields between releases (Codex switched to cumulative `token_count` events; Gemini varies between camelCase and snake_case; OpenCode stores cumulative totals in SQLite columns). Adapters absorb the variance so the UI does not need provider-specific conditionals.
+
+### Model identity and pricing
+
+Adapters pass provider model strings into the canonical registry at `../src/config/models.json`. The committed `models.generated.cjs` supplies synchronous server-side resolution; never edit it directly. Identity, pricing, context window, and mood belong in the registry, while effort/accessory rendering policy remains in `../src/presentation/shared/ModelVisualIdentity.js` keyed by `modelClass`. Probe a raw string with `npm run models:resolve -- <provider> <model>` before and after changing the registry.
 
 ## `getWatchPaths()` shape
 

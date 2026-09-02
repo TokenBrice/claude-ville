@@ -53,9 +53,9 @@ The server adapter registry also has short detail caches. Keep client polling in
 
 ## Model Visual Identity
 
-`ModelVisualIdentity.js` maps provider/model/effort to user-facing labels, colors, sprite IDs, palette keys, and effort accessories. World mode, Dashboard mode, and Activity Panel should all use this module instead of duplicating model parsing.
+`ModelVisualIdentity.js` combines canonical registry identity with rendering policy to produce user-facing labels, colors, sprite IDs, palette keys, and effort accessories. World mode, Dashboard mode, and Activity Panel should all use this module instead of duplicating model parsing.
 
-When adding a new model-specific sprite in `manifest.yaml`, add or update its identity mapping here and verify:
+Model identity, pricing, context window, and mood live in `../../config/models.json`; run `npm run models:generate` and never edit `models.generated.js` or `models.generated.cjs`. Effort equipment and accessories remain here, keyed by `modelClass`. When adding a model-specific sprite, update the registry and sprite manifest, then verify:
 
 1. Dashboard card label/color.
 2. Activity panel label/color.
@@ -63,7 +63,7 @@ When adding a new model-specific sprite in `manifest.yaml`, add or update its id
 
 ## Validation
 
-After shared component changes, test both modes because these components sit across mode boundaries:
+After shared component changes, run `npm run verify:render` for screenshot and console evidence, then judge both modes on the operator-maintained server because these components sit across mode boundaries:
 
 1. Select an agent from World mode, Dashboard mode, and Sidebar if available.
 2. Close the Activity Panel and confirm World mode follow clears.

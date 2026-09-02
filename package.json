@@ -44,6 +44,7 @@
     "test:e2e:replay": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/smoke/r1-18.e2e-replay.mjs",
     "check:artifacts": "node scripts/agents/check-artifacts.mjs",
     "validate:quick": "npm run models:check && npm run verify:architecture && npm run check:server && npm run check:adapters && npm run check:services && npm run check:frontend-syntax && npm run check:scripts && npm run check:git-events && npm run check:adapter-fixtures && npm run check:theme-tokens && npm run check:artifacts && npm run test:unit && npm run sprites:audit-ids",
+    "validate:full": "npm run validate:quick && npm run test:integration && npm run verify:server && npm run world:validate-buildings && npm run world:validate-terrain && npm run sprites:validate",
     "gate:release": "npm run release:verify && npm run validate:quick && npm run test:integration && npm run verify:server",
     "release:check": "node scripts/release/prepare.mjs",
     "release:prepare": "node scripts/release/prepare.mjs",

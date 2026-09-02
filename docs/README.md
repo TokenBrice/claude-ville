@@ -1,51 +1,54 @@
 # Documentation
 
-This directory holds current operational and design documentation for ClaudeVille. It should stay small, current, and task-oriented. Historical agent plans and raw research do not belong here; keep those under `agents/` only when they are still useful enough to index.
+ClaudeVille documentation stays current, task-oriented, and close to the code it governs. Historical plans and raw proofs belong under `agents/` only when they remain useful enough to retain.
 
 ## Start Here
 
-Read these in order when joining the project:
+1. Read the root `README.md` for product shape and quick start.
+2. Read `AGENTS.md` or `CLAUDE.md` for shared-checkout rules and validation routing.
+3. Read `claudeville/CLAUDE.md` for runtime ownership and invariants.
+4. Use the catalog below to find the authoritative contract, runbook, checklist, or reference.
 
-1. `README.md` for the product shape, quick start, APIs, and top-level validation.
-2. `AGENTS.md` or `CLAUDE.md` for shared-checkout rules, git hygiene, and repo-wide constraints.
-3. `claudeville/CLAUDE.md` for implementation context inside the app.
-4. The specific runbook below for the task you are doing.
+## Documentation Catalog
 
-## Task Map
+| Document | Status | Classification | Purpose |
+| --- | --- | --- | --- |
+| [`docs/README.md`](README.md) | Current | Reference | Indexes maintained documentation and routes contributors to owner-level guidance. |
+| [`docs/agent-provider-addition.md`](agent-provider-addition.md) | Current | Runbook | Adds providers or model-registry rows, including fixture and validation routes. |
+| [`docs/building-style-contract.md`](building-style-contract.md) | Current | Contract | Defines building silhouette, material, palette, lighting, and landmark-quality rules. |
+| [`docs/design-decisions.md`](design-decisions.md) | Current | Reference | Records load-bearing architecture decisions, rationale, and change obligations. |
+| [`docs/material-channel-contract.md`](material-channel-contract.md) | Current | Contract | Defines semantic drawables, material channels, sidecars, atlases, and deterministic defaults. |
+| [`docs/motion-budget.md`](motion-budget.md) | Current | Contract | Defines animation allocation gates, pulse bands, and reduced-motion fallbacks. |
+| [`docs/pixellab-reference.md`](pixellab-reference.md) | Current | Reference | Covers PixelLab capabilities, parameters, lifecycle, and API pitfalls; the generation runbook remains under `scripts/sprites/`. |
+| [`docs/rendering-baselines.md`](rendering-baselines.md) | Current | Reference | Defines deterministic renderer evidence, capture metadata, scenario matrix, and performance comparisons. |
+| [`docs/troubleshooting.md`](troubleshooting.md) | Current | Runbook | Diagnoses first-hour setup, providers, APIs, graphics, and opt-in hook ingestion. |
+| [`docs/visual-experience-crafting.md`](visual-experience-crafting.md) | Current | Reference | Explains how to adapt ClaudeVille's world-metaphor method to other domains. |
+| [`docs/world-visual-qa-checklist.md`](world-visual-qa-checklist.md) | Current | Checklist | Reviews deterministic World scenes, visual hierarchy, effects, materials, and regressions. |
 
-| Task | Read |
+## Workflow Index
+
+| Workflow | Authoritative route |
 | --- | --- |
-| Diagnose a first-hour setup, provider, API, or graphics issue | `docs/troubleshooting.md` |
-| Understand load-bearing constraints before changing architecture | `docs/design-decisions.md` |
-| Add or change a provider, model, pricing identity, or agent sprite mapping | `docs/agent-provider-addition.md` |
-| Add World mode animation, pulses, particles, or reduced-motion behavior | `docs/motion-budget.md` |
-| Capture deterministic renderer stills or profile PostFX/trail performance | `docs/rendering-baselines.md` |
-| QA World mode visuals, deterministic scenarios, terrain cache, or sprite refreshes | `docs/world-visual-qa-checklist.md` |
-| Generate or edit PixelLab sprite assets | `scripts/sprites/generate.md`, then `docs/pixellab-reference.md` only for tool/API specifics |
-| Add semantic drawable metadata, material channels, sidecars, or deterministic atlases | `docs/material-channel-contract.md`, then `scripts/sprites/generate.md` |
-| Adapt the ClaudeVille world-metaphor approach to another domain | `docs/visual-experience-crafting.md` |
+| Hook ingestion | [Permission prompts are inferred or arrive late](troubleshooting.md#permission-prompts-are-inferred-or-arrive-late) documents the payload schema and opt-in Claude Code dogfood setup. |
+| Screenshot capture | Run `npm run verify:render` for UI screenshot and console evidence. Use `npm run sprites:capture-baseline` or `npm run sprites:capture-fresh`, followed by `npm run sprites:visual-diff`, for sprite comparisons. |
+| Sprite generation | Follow [`scripts/sprites/generate.md`](../scripts/sprites/generate.md); use the PixelLab reference only for tool/API specifics. |
+| Retained proofs and plans | Check [`agents/README.md`](../agents/README.md) before adding or relying on an artifact. |
 
 ## Documentation Rules
 
-- Prefer one maintained source of truth over parallel notes. If a detail belongs to code ownership, put it in the nearest area README or `claudeville/CLAUDE.md`; if it is a project-wide decision, put it in `docs/design-decisions.md`.
-- Keep runbooks executable. Include commands, expected symptoms, and the exact files to check. Remove stale line references instead of preserving them as provenance.
-- Keep `/docs` focused on current guidance. Move large proofs, screenshots, and exploratory notes to `agents/research/` only when the repo needs to retain them.
-- Use English for new or edited docs and UI copy.
-- For docs-only changes, review the diff and run `git status --short`. Use `npm run validate:quick` only when the doc change affects commands, generated assets, validation policy, or code-facing contracts.
+- Prefer one maintained authority. Code-owner detail belongs in the nearest README; project-wide decisions belong in the relevant contract or decision record.
+- Keep runbooks executable: name exact commands, symptoms, and files. Remove stale line references.
+- Keep large proofs and screenshots out of `docs/`; retain them under `agents/research/` only when future work needs them.
+- Use English for edited documentation and UI copy.
+- Validate structure and links with `npm run verify:architecture`; use `npm run check:artifacts` when retained artifacts change.
 
-## Related Local Docs
+## Related Owner Docs
 
 | Location | Purpose |
 | --- | --- |
-| `PRODUCT.md` | Product purpose, audience, positioning, and brand principles. |
-| `DESIGN.md` | DOM chrome design system and visual design contract. |
-| `CHANGELOG.md` | Named release history shown in-app from the version chip. |
-| `CONTRIBUTING.md` | Public contribution lanes, setup, validation, and pull request expectations. |
-| `SECURITY.md` | Private vulnerability reporting policy and scope. |
-| `SUPPORT.md` | Support routing for setup, provider, and visual issues. |
-| `claudeville/adapters/README.md` | Adapter contract and normalized provider data. |
-| `claudeville/src/presentation/character-mode/README.md` | World mode renderer pipeline and canvas contracts. |
-| `claudeville/src/presentation/dashboard-mode/README.md` | Dashboard renderer lifecycle and detail polling. |
-| `claudeville/src/presentation/shared/README.md` | Top bar, sidebar, activity panel, model identity, and shared detail cache. |
-| `scripts/sprites/generate.md` | Manifest-first sprite generation and validation workflow. |
-| `agents/README.md` | Current agent-artifact policy and retained artifact index. |
+| [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Contribution lanes, setup, remotes, pull requests, and release publication. |
+| [`claudeville/CLAUDE.md`](../claudeville/CLAUDE.md) | Server invariants, model registry, frontend ownership, sprites, and event bus. |
+| [`claudeville/adapters/README.md`](../claudeville/adapters/README.md) | Adapter contract and per-provider source formats. |
+| [World mode README](../claudeville/src/presentation/character-mode/README.md) | Renderer pipeline, selection, draw order, and canvas contracts. |
+| [Dashboard mode README](../claudeville/src/presentation/dashboard-mode/README.md) | Card lifecycle, details, and keyboard behavior. |
+| [Shared presentation README](../claudeville/src/presentation/shared/README.md) | Shared chrome, Activity Panel, model identity, selection, and detail cache. |
