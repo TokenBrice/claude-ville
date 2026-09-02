@@ -128,27 +128,24 @@ function timelineMinute(ts) {
     return Number.isFinite(value) ? Math.floor(value / 60_000) : null;
 }
 
-/** Fold adjacent same-kind events into deterministic chronological rows. */
+/** Fold same-kind events within each minute into deterministic chronological rows. */
 export function foldTimeline(events = []) {
     const rows = [];
-    let previousKind = null;
-    let previousMinute = null;
+    // Folding is per minute and kind across the whole minute, not just over
+    // adjacent rows: a burst stays one row per kind even when another kind is
+    // interleaved. Each folded row keeps the position of its first member, so
+    // the timeline order stays chronological and deterministic.
+    const folded = new Map();
     for (const event of orderedEvents(events)) {
         if (!event || typeof event !== 'object') continue;
         const kind = timelineKind(event);
         const minute = timelineMinute(event.ts);
-        const previous = rows.at(-1);
-        if (
-            minute !== null
-            && previous
-            && previousKind === kind
-            && previousMinute === minute
-        ) {
+        const foldKey = minute === null ? null : `${minute}\u0000${kind}`;
+        const previous = foldKey === null ? undefined : folded.get(foldKey);
+        if (previous) {
             previous.count++;
             previous.label = timelineKindLabel(kind, previous.count);
             if (previous.project !== event.project) previous.project = null;
-            previousKind = kind;
-            previousMinute = minute;
             continue;
         }
         const row = {
@@ -159,8 +156,7 @@ export function foldTimeline(events = []) {
         };
         if (event.label !== undefined) row.eventLabel = event.label;
         rows.push(row);
-        previousKind = kind;
-        previousMinute = minute;
+        if (foldKey !== null) folded.set(foldKey, row);
     }
     return rows;
 }
