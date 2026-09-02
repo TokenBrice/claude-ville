@@ -9260,6 +9260,7 @@ export class IsometricRenderer {
             const y0 = waterlineOffset + bandHeight * k;
             const y1 = waterlineOffset + bandHeight * (k + 1);
 
+            const alpha = CLIFF_REFLECTION_ALPHA_STEPS[alphaBand] ?? CLIFF_REFLECTION_ALPHA_STEPS.at(-1);
             ctx.fillStyle = this._withAlpha(palette[keyBand], alpha);
             ctx.beginPath();
             ctx.moveTo(side.a.x + o0, Math.round(side.a.y + y0));
