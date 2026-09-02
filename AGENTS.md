@@ -26,7 +26,7 @@ Start the maintained local server with `npm run dev` at `http://localhost:4000`.
 | Codex config | `.codex/config.toml` | Project-scoped PixelLab MCP |
 | Model registry | `claudeville/src/config/models.json` (+ generated `.js`/`.cjs`) | [`.claude/skills/add-model/SKILL.md`](.claude/skills/add-model/SKILL.md) |
 | Tests / smoke | `scripts/tests/`, `scripts/smoke/` | [test README](scripts/tests/README.md), [smoke README](scripts/smoke/README.md) |
-| CI | `.github/workflows/ci.yml` | `npm ci` + `validate:full` on Node 18 and 24 |
+| CI | `.github/workflows/ci.yml` | `npm ci` + `validate:full` on Node 22 and 24 |
 | Documentation | `docs/` | [`docs/README.md`](docs/README.md) |
 
 Retained agent artifacts belong under `/agents/`; read [`agents/README.md`](agents/README.md) before using or adding one.

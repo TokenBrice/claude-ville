@@ -2,6 +2,12 @@
 
 ---
 
+## v0.40.0.1 · Sep 02, 2026 — Hotfix
+
+- **Node floor is now 22.7.** The first honest CI run (v0.40.0) was green on Node 24 and red on Node 18: the browser code is `.js` ES modules, and Node only detects that syntax unflagged from 22.7, so `node --check` and the unit suite both fail on 18 (verified with a real Node 18.20.8 binary — `ModelVisualIdentity.js` is loaded as CommonJS). `engines.node` is `>=22.7.0`, CI runs 22.x and 24.x, and the README badge and prerequisites say so. Node 20 is end-of-life; `server.js` itself still runs on older Node, but the repository's checks do not.
+
+---
+
 ## v0.40.0 — *The Scriptorium* · Sep 02, 2026
 
 The village's own scribes get a proper workshop, and the river gets a real bridge. Most of this release is invisible at a glance and load-bearing for every agent working on the repository: one source of truth for models, verification a machine can run, docs that match the code, and a CI badge that finally tells the truth. Plan and evidence: `agents/plans/claudeville-agentic-dx-plan.md`.

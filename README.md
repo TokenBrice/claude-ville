@@ -2,7 +2,7 @@
 
 [![Version](https://img.shields.io/badge/version-v0.37.0-8a6f2a)](./CHANGELOG.md)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-3c873a)](./package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.7-3c873a)](./package.json)
 [![Runtime](https://img.shields.io/badge/runtime-zero--build-7c3aed)](#quick-start)
 [![Local first](https://img.shields.io/badge/local--first-read--only-0f766e)](#local-and-read-only)
 [![Providers](https://img.shields.io/badge/providers-7-f97316)](#supported-providers)
@@ -104,7 +104,7 @@ For an unfamiliar agent, read these first:
 ## Requirements
 
 - Desktop browser at 1280px wide or larger. Mobile and narrow viewports are out of scope.
-- Node.js 18 or newer.
+- Node.js 22.7 or newer (the browser modules are `.js` ES modules; Node needs unflagged module-syntax detection to run the checks and tests).
 - `npm install` only for dev scripts that import packages (`js-yaml`, `pngjs`, `pixelmatch`, `playwright`). The server itself does not need installed packages.
 - At least one local provider home directory:
   - Claude Code: `~/.claude/`
