@@ -77,3 +77,51 @@ test('a suspend/resume round trip cannot leave capacity ahead of the live buffer
         'World -> Dashboard -> World must not inherit the pre-suspend VBO size',
     );
 });
+
+test('a resumed renderer allocates the frame VBO before filling it', () => {
+    const renderer = detachedRenderer();
+    const calls = [];
+    renderer.gl = new Proxy({ ARRAY_BUFFER: 34962, DYNAMIC_DRAW: 35048 }, {
+        get(target, property) {
+            if (property in target) return target[property];
+            if (property === 'isContextLost') return () => false;
+            return (...args) => {
+                calls.push(String(property));
+                return null;
+            };
+        },
+        has: () => true,
+    });
+
+    const batch = () => ({
+        records: [{
+            x: 0, y: 0, width: 8, height: 8,
+            u0: 0, v0: 0, u1: 1, v1: 1,
+            alpha: 1, material: 1, emissive: 0, elevation: 0, occluder: 0,
+        }],
+    });
+
+    renderer.vertexBuffer = { id: 'first' };
+    renderer._stageFrameVertices([batch()]);
+    assert.ok(
+        calls.includes('bufferData'),
+        'the first frame must allocate storage for the buffer',
+    );
+
+    // World -> Dashboard tears the resources down; World again builds a fresh
+    // zero-size buffer. The upload must allocate before it writes, or every
+    // draw reads an empty buffer and the island disappears.
+    renderer._releaseGpuResources();
+    renderer.vertexBuffer = { id: 'resumed' };
+    calls.length = 0;
+    renderer._stageFrameVertices([batch()]);
+
+    const allocated = calls.indexOf('bufferData');
+    const filled = calls.indexOf('bufferSubData');
+    assert.notEqual(allocated, -1, 'the resumed buffer must be allocated again');
+    assert.notEqual(filled, -1, 'the resumed buffer must still be filled');
+    assert.ok(
+        allocated < filled,
+        'bufferData must precede bufferSubData on the frame after a resume',
+    );
+});
