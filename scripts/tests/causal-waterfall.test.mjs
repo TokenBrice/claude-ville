@@ -109,3 +109,22 @@ test('returns no rows when no usable timeline timestamp exists', () => {
   assert.deepEqual(build({ toolHistory: [{ tool: 'missing-ts', durationMs: 5_000 }] }), []);
   assert.deepEqual(build(null), []);
 });
+
+test('secrets in a tool command never reach a waterfall row', () => {
+  const rows = build({
+    turnStartedAt: NOW - 60_000,
+    toolHistory: [
+      {
+        tool: 'Bash',
+        ts: NOW - 30_000,
+        durationMs: 1_200,
+        command: 'deploy --env prod TOKEN=abcdefghijklmnopqrstuvwxyz012345 --key=s3cr3tvalue',
+      },
+    ],
+  });
+  const toolRow = rows.find(row => row.kind === 'tool');
+  assert.ok(toolRow, 'the tool row must still render');
+  assert.doesNotMatch(toolRow.detail, /abcdefghijklmnopqrstuvwxyz012345/);
+  assert.doesNotMatch(toolRow.detail, /s3cr3tvalue/);
+  assert.match(toolRow.detail, /\[REDACTED\]/);
+});

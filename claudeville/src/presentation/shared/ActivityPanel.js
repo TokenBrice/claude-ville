@@ -109,11 +109,23 @@ function causalDuration(value) {
     return Number.isFinite(duration) && duration >= 0 ? duration : null;
 }
 
+// Secrets never reach the DOM. The causal waterfall and the blocked banner
+// share one redaction so a command echoed into tool history cannot leak a
+// token that the banner would have stripped.
+function redactSecrets(text) {
+    return String(text)
+        .replace(/\b((?:[A-Za-z0-9_-]*?(?:key|token)))\s*=\s*(?:"[^"]*"|'[^']*'|[^\s&;,]+)/gi, '$1=[REDACTED]')
+        .replace(/[A-Za-z0-9_-]{32,}/g, '[REDACTED]');
+}
+
 function causalText(value, fallback = '') {
     const text = typeof value === 'string'
         ? value
         : value === null || value === undefined ? '' : String(value);
-    const clean = text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const clean = redactSecrets(text)
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
     if (!clean) return fallback;
     return clean.length <= 96 ? clean : `${clean.slice(0, 95).trimEnd()}…`;
 }
@@ -452,9 +464,7 @@ export function buildCausalWaterfall(session, { now = Date.now(), toolHistory, c
 function safePromptDetail(agent) {
     const source = agent?.promptDetail
         || (agent?.signalSource === 'hook' ? agent?.lastToolInput : '');
-    const clean = String(source || '')
-        .replace(/\b((?:[A-Za-z0-9_-]*?(?:key|token)))\s*=\s*(?:"[^"]*"|'[^']*'|[^\s&;,]+)/gi, '$1=[REDACTED]')
-        .replace(/[A-Za-z0-9_-]{32,}/g, '[REDACTED]')
+    const clean = redactSecrets(source || '')
         .replace(/[\u0000-\u001f\u007f]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
