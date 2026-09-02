@@ -26,6 +26,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'agentId',
     'agentName',
     'agentType',
+    'subagentKind',
     'parentSessionId',
     'workflowId',
     'workflowName',
@@ -36,6 +37,8 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'teamName',
     'tokens',
     'estimatedCost',
+    'taskProgress',
+    'tasks',
     'cost',
     'currentTool',
     'currentToolInput',
@@ -71,8 +74,47 @@ const SIGNATURE_COLLECTION_VALUE_BUDGET = 1024;
 const SIGNATURE_FIELD_CHARACTER_BUDGET = 1024;
 const SIGNATURE_COLLECTION_CHARACTER_BUDGET = 15 * 1024;
 const SIGNATURE_CHARACTER_BUDGET = 64 * 1024;
-const SIGNATURE_COLLECTION_FIELDS = new Set(['gitEvents', 'sendMessages', 'workingSet', 'collisions']);
+const SIGNATURE_COLLECTION_FIELDS = new Set(['gitEvents', 'sendMessages', 'workingSet', 'collisions', 'tasks']);
 const VERIFIED_OUTCOME_KEY_LIMIT = 512;
+const EXECUTION_TASK_LIMIT = 12;
+
+function normalizeExecutionTaskSubject(value) {
+    if (typeof value !== 'string') return '';
+    const subject = value
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/(^|[\s"'([{=])((?:\/|[A-Za-z]:[\\/])(?:[^\s"'`<>()[\]{};,]+))/g, '$1[path]');
+    if (!subject) return '';
+    return subject.length <= 120 ? subject : `${subject.slice(0, 119).trimEnd()}…`;
+}
+
+function normalizeExecutionTaskStatus(value) {
+    return String(value || 'unknown')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 64) || 'unknown';
+}
+
+function normalizeExecutionTaskProgress(value) {
+    if (!value || typeof value !== 'object') return null;
+    const total = Number(value.total);
+    const done = Number(value.done);
+    if (!Number.isFinite(total) || !Number.isFinite(done)) return null;
+    const normalizedTotal = Math.max(0, Math.trunc(total));
+    const source = value.source === 'exact' || value.source === 'inferred'
+        ? value.source
+        : null;
+    if (!source) return null;
+    return {
+        done: Math.min(normalizedTotal, Math.max(0, Math.trunc(done))),
+        total: normalizedTotal,
+        source,
+    };
+}
+
 
 function gitEventWireReference(value) {
     let hash = 2166136261;
@@ -376,6 +418,9 @@ export class AgentManager {
         } else {
             this._agentSignatures.set(id, signature);
             const agent = new Agent(payload);
+            agent.subagentKind = payload.subagentKind;
+            agent.taskProgress = payload.taskProgress;
+            agent.tasks = payload.tasks;
             // Fallback (non-provider) names come from a shared pool; probe past
             // names already held by live agents so busy villages stay distinct.
             // Persist the result under the pre-probe identity as well as the
@@ -485,6 +530,9 @@ export class AgentManager {
         return {
             id,
             agentId: session.agentId || null,
+            subagentKind: typeof session.subagentKind === 'string' && session.subagentKind.trim()
+                ? session.subagentKind.trim().slice(0, 128)
+                : null,
             agentName,
             agentType: session.agentType || null,
             parentSessionId: session.parentSessionId || null,
@@ -502,6 +550,15 @@ export class AgentManager {
                 ? Number(session.estimatedCost)
                 : null,
             cost: session.cost && typeof session.cost === 'object' ? { ...session.cost } : null,
+            taskProgress: normalizeExecutionTaskProgress(session.taskProgress),
+            tasks: Array.isArray(session.tasks)
+                ? session.tasks.slice(0, EXECUTION_TASK_LIMIT).flatMap((task) => {
+                    const subject = normalizeExecutionTaskSubject(task?.subject);
+                    return subject
+                        ? [{ subject, status: normalizeExecutionTaskStatus(task?.status) }]
+                        : [];
+                })
+                : [],
             currentTool: hasFreshTool ? session.lastTool : null,
             currentToolInput: hasFreshTool ? session.lastToolInput || null : null,
             lastTool: session.lastTool || null,

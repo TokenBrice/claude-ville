@@ -148,6 +148,216 @@ export function nonZeroSectionHealthBuckets(counts) {
 export function shouldFlashForStatus(status) {
     return bucketForStatus(status) === 'errors';
 }
+const EXECUTION_TASK_DONE_STATUSES = new Set(['complete', 'completed', 'done', 'success', 'succeeded']);
+const EXECUTION_CHILD_STATUSES = new Set([
+    'active',
+    'completed',
+    'complete',
+    'done',
+    'errored',
+    'idle',
+    'rate_limited',
+    'waiting',
+    'waiting_on_user',
+    'working',
+]);
+const EXECUTION_TASK_LIMIT = 12;
+
+function executionStatus(value) {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'unknown';
+}
+
+function executionChildId(child, index) {
+    return String(child?.id ?? child?.sessionId ?? child?.agentId ?? `child-${index}`);
+}
+
+function executionTask(task, index) {
+    if (!task || typeof task !== 'object') return null;
+    const subject = String(task.subject || '')
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/(^|[\s"'([{=])((?:\/|[A-Za-z]:[\\/])(?:[^\s"'`<>()[\]{};,]+))/g, '$1[path]');
+    if (!subject) return null;
+    return {
+        kind: 'task',
+        type: 'task',
+        id: `task:${String(task.id || index)}`,
+        subject: subject.length > 120 ? `${subject.slice(0, 119).trimEnd()}…` : subject,
+        status: executionStatus(task.status),
+        owner: String(task.owner || task.assignee || '').trim(),
+    };
+}
+
+function executionChildIsDone(child) {
+    return !child?.isDeparted && EXECUTION_TASK_DONE_STATUSES.has(executionStatus(child?.status));
+}
+
+function executionChildIsUnknown(child) {
+    return child?.isDeparted === true
+        || !EXECUTION_CHILD_STATUSES.has(executionStatus(child?.status));
+}
+
+/**
+ * Progress is exact only when a Claude task-store projection supplied it.
+ * Otherwise count observed children, retaining prior IDs as unknown when a
+ * child disappears. A departed child is not a completed child.
+ */
+export function deriveChildProgress(agent, children = [], { previousChildIds = [] } = {}) {
+    const provider = String(agent?.provider || 'claude').toLowerCase();
+    const supplied = agent?.taskProgress;
+    const suppliedDone = Number(supplied?.done);
+    const suppliedTotal = Number(supplied?.total);
+    const hasExact = provider === 'claude'
+        && supplied?.source === 'exact'
+        && Number.isFinite(suppliedDone)
+        && Number.isFinite(suppliedTotal)
+        && suppliedDone >= 0
+        && suppliedTotal >= suppliedDone
+        && (suppliedTotal > 0 || !Array.isArray(children) || children.length === 0);
+    if (hasExact) {
+        return {
+            done: Math.trunc(suppliedDone),
+            total: Math.trunc(suppliedTotal),
+            source: 'exact',
+        };
+    }
+
+    const current = Array.isArray(children) ? children : [];
+    const currentIds = new Set(current.map(executionChildId));
+    const previousIds = new Set(
+        (Array.isArray(previousChildIds) ? previousChildIds : [])
+            .map(id => String(id || '').trim())
+            .filter(Boolean),
+    );
+    const disappeared = [...previousIds].filter(id => !currentIds.has(id)).length;
+    const hintedTotal = provider === 'claude' && supplied?.source === 'inferred'
+        ? Math.max(0, Math.trunc(Number(supplied.total) || 0))
+        : 0;
+    const total = Math.max(current.length, currentIds.size + disappeared, hintedTotal);
+    const done = Math.min(total, current.filter(executionChildIsDone).length);
+    return {
+        done,
+        total,
+        source: 'inferred',
+        unknown: disappeared + current.filter(executionChildIsUnknown).length,
+    };
+}
+
+function executionNodeAgent(child) {
+    const id = String(child?.id ?? child?.sessionId ?? child?.agentId ?? '');
+    return {
+        kind: 'subagent',
+        type: 'subagent',
+        id,
+        label: String(child?.name || child?.agentName || child?.agentId || id || 'Subagent'),
+        agentType: String(child?.agentType || 'sub-agent'),
+        subagentKind: child?.subagentKind || null,
+        status: child?.isDeparted ? 'unknown' : executionStatus(child?.status),
+        departed: child?.isDeparted === true,
+        children: [],
+    };
+}
+
+function executionOwnerMatches(node, owner) {
+    if (!owner) return false;
+    if (node.kind === 'subagent') {
+        return [node.id, node.label, node.agentType, node.subagentKind]
+            .filter(Boolean)
+            .some(value => String(value) === owner);
+    }
+    return node.children.some(child => executionOwnerMatches(child, owner));
+}
+
+/**
+ * Build the UI-safe hierarchy from the session fields already on Agent.
+ * Claude gets subagent/workflow/task nodes; other providers intentionally
+ * receive a counts-only shape.
+ */
+export function buildExecutionTree(agent, agents = [], options = {}) {
+    const provider = String(agent?.provider || 'claude').toLowerCase();
+    const rootId = String(agent?.id ?? agent?.sessionId ?? '');
+    const children = (Array.isArray(agents) ? agents : []).filter((candidate) => (
+        candidate
+        && String(candidate.parentSessionId || '') === rootId
+        && (candidate.isSubagent === true
+            || Boolean(candidate.parentSessionId)
+            || (candidate.agentType && candidate.agentType !== 'main'))
+    ));
+    const progress = deriveChildProgress(agent, children, options);
+    if (provider !== 'claude') {
+        return {
+            kind: 'counts',
+            type: 'counts',
+            id: rootId,
+            provider,
+            progress,
+            children: [],
+            hasChildren: children.length > 0,
+        };
+    }
+
+    const workflows = new Map();
+    const nodes = [];
+    for (const child of children) {
+        const workflowKey = child.workflowId
+            || (child.agentType === 'workflow-subagent'
+                ? child.workflowName || child.subagentKind || 'workflow'
+                : null);
+        if (!workflowKey) {
+            nodes.push(executionNodeAgent(child));
+            continue;
+        }
+        const key = String(workflowKey);
+        let workflow = workflows.get(key);
+        if (!workflow) {
+            workflow = {
+                kind: 'workflow',
+                type: 'workflow',
+                id: `workflow:${key}`,
+                label: String(child.workflowName || child.subagentKind || child.workflowId || 'Workflow'),
+                children: [],
+            };
+            workflows.set(key, workflow);
+            nodes.push(workflow);
+        }
+        workflow.children.push(executionNodeAgent(child));
+    }
+
+    const taskNodes = (Array.isArray(agent?.tasks) ? agent.tasks : [])
+        .slice(0, EXECUTION_TASK_LIMIT)
+        .map(executionTask)
+        .filter(Boolean);
+    for (const task of taskNodes) {
+        const owner = task.owner;
+        const ownerNode = nodes.find(node => executionOwnerMatches(node, owner));
+        if (ownerNode) {
+            const target = ownerNode.kind === 'workflow'
+                ? ownerNode.children.find(child => executionOwnerMatches(child, owner)) || ownerNode
+                : ownerNode;
+            target.children.push(task);
+        } else {
+            nodes.push(task);
+        }
+        delete task.owner;
+    }
+
+    return {
+        kind: 'session',
+        type: 'session',
+        id: rootId,
+        provider,
+        label: String(agent?.name || agent?.agentName || rootId || 'Session'),
+        progress,
+        children: nodes,
+        hasChildren: nodes.length > 0,
+    };
+}
+
 
 function healthCounterText(bucket, count) {
     const label = SECTION_HEALTH_PRESENTATION[bucket].label;
@@ -216,6 +426,7 @@ export class DashboardRenderer {
         this.usageFooters = new Map();
         this.toolHistoryRenderSignatures = new Map();
         this._cardRenderSignatures = new Map();
+        this._executionChildIdsByParent = new Map();
         this._visibleAgentIds = new Set();
         this._visibilityLayoutDirty = true;
         this._selectedAgentId = null;
@@ -260,11 +471,15 @@ export class DashboardRenderer {
         this._onAgentUpdated = (agent) => {
             if (this.active) {
                 this._renderAgentUpdate(agent);
+                const parentId = String(agent?.parentSessionId || '');
+                const parent = parentId ? this.world.agents.get(parentId) : null;
+                const parentCard = parentId ? this.cards.get(parentId) : null;
+                if (parent && parentCard) this._updateChildProgress(parentCard, parent);
                 this._renderAttentionQueue(Array.from(this.world.agents.values()));
             }
         };
         this._onAgentRemoved = (agent) => {
-            this._removeCard(agent.id);
+            this._executionChildIdsByParent.delete(String(agent.id));
             sessionDetailsService.deleteForAgent(agent);
             if (this.active) this.render();
         };
@@ -741,6 +956,7 @@ export class DashboardRenderer {
                 <span class="dash-card__row-cell dash-card__children-cell">
                     <span class="dash-card__row-label">CHILDREN</span>
                     <span class="dash-card__row-value dash-card__children"></span>
+                    <span class="dash-card__children-source"></span>
                 </span>
                 <span class="dash-card__search-context" style="display: none"></span>
             </button>
@@ -842,6 +1058,7 @@ export class DashboardRenderer {
             blocker: card.querySelector('.dash-card__blocker'),
             promptDetail: card.querySelector('.dash-card__prompt-detail'),
             workSummary: card.querySelector('.dash-card__work-summary'),
+            childrenSource: card.querySelector('.dash-card__children-source'),
             children: card.querySelector('.dash-card__children'),
             searchContext: card.querySelector('.dash-card__search-context'),
             currentTool: card.querySelector('.dash-card__current-tool'),
@@ -1206,18 +1423,41 @@ export class DashboardRenderer {
     _updateChildProgress(cardEl, agent) {
         const target = cardEl._elements?.children;
         if (!target) return;
+        const sourceEl = cardEl._elements?.childrenSource;
+        const parentId = String(agent.id);
         const children = [...this.world.agents.values()]
-            .filter(candidate => String(candidate.parentSessionId || '') === String(agent.id));
-        if (!children.length) {
+            .filter(candidate => String(candidate.parentSessionId || '') === parentId);
+        const previousChildIds = this._executionChildIdsByParent.get(parentId) || [];
+        const progress = deriveChildProgress(agent, children, { previousChildIds });
+        this._executionChildIdsByParent.set(
+            parentId,
+            children.map((child, index) => executionChildId(child, index)),
+        );
+        const hasTaskProgress = progress.total > 0
+            || children.length > 0
+            || (String(agent.provider || 'claude').toLowerCase() === 'claude'
+                && Array.isArray(agent.tasks)
+                && agent.tasks.length > 0);
+        if (!hasTaskProgress) {
             this._setText(target, agent.parentSessionId ? 'Child agent' : 'None');
             target.title = agent.parentSessionId ? `Parent ${agent.parentSessionId}` : 'No child agents';
+            this._setText(sourceEl, '');
+            sourceEl?.removeAttribute('title');
+            sourceEl?.classList.remove('dash-card__children-source--exact', 'dash-card__children-source--inferred');
             return;
         }
-        const completed = children.filter(child => normalizeStatus(child.status) === 'completed').length;
-        const active = children.filter(child => ['working', 'waiting', 'waiting_on_user']
-            .includes(normalizeStatus(child.status))).length;
-        this._setText(target, `${completed} done · ${active} active · ${children.length} total`);
-        target.title = children.map(child => `${child.name}: ${operatorStatusLabel(child.status)}`).join('; ');
+        this._setText(target, `${progress.done}/${progress.total} children done`);
+        target.title = children.length
+            ? children.map(child => `${child.name || child.id}: ${child.isDeparted ? 'Unknown' : operatorStatusLabel(child.status)}`).join('; ')
+            : 'Task-store progress';
+        this._setText(sourceEl, String(progress.source || 'inferred').toUpperCase());
+        sourceEl?.classList.remove('dash-card__children-source--exact', 'dash-card__children-source--inferred');
+        sourceEl?.classList.add(`dash-card__children-source--${progress.source || 'inferred'}`);
+        if (sourceEl) {
+            sourceEl.title = progress.source === 'exact'
+                ? 'Exact progress from the Claude task store'
+                : 'Inferred from observed child sessions; disappearance is unknown';
+        }
     }
 
     _updateParentChip(cardEl, agent) {

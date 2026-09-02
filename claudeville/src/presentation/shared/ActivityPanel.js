@@ -33,6 +33,7 @@ import {
 import { normalizeGitEvent } from './GitEventIdentity.js';
 import { contextWindowLimitForModel } from './ModelVisualIdentity.js';
 import { AvatarCanvas } from '../dashboard-mode/AvatarCanvas.js';
+import { buildExecutionTree } from '../dashboard-mode/DashboardRenderer.js';
 import { narrativeFeedEntries } from '../character-mode/VillageDirector.js';
 
 const PANEL_TOOL_LIMIT = 30;
@@ -72,6 +73,7 @@ export const SECTION_ORDER = Object.freeze([
     'messages',
     'cost-tokens',
     'prompt-plan',
+    'execution-tree',
     'working-set',
     'journey',
     'village',
@@ -480,6 +482,9 @@ export class ActivityPanel {
         this._relationshipsBodyEl = null;
         this._messageEdgesSectionEl = null;
         this._messageEdgesBodyEl = null;
+        this._executionTreeSectionEl = null;
+        this._executionTreeBodyEl = null;
+        this._executionChildIdsByParent = new Map();
         this._promptPlanSectionEl = null;
         this._promptPlanBodyEl = null;
         this._villageSectionEl = null;
@@ -501,6 +506,7 @@ export class ActivityPanel {
         this._mountSection('blocked', this._blockedBannerEl);
         this._registerAgentSection(this._blockedBannerEl);
         this._ensurePromptPlanSection();
+        this._ensureExecutionTreeSection();
         this._ensureJourneySection();
         this._ensureWorkingSetSection();
         this._ensureNarrationSection();
@@ -572,6 +578,11 @@ export class ActivityPanel {
                 this._renderPinCompare();
                 this._fetchPinnedDetails();
             }
+            if (this._mode === 'agent'
+                && this.currentAgent
+                && String(agent?.parentSessionId || '') === String(this.currentAgent.id || '')) {
+                this._updateExecutionTree(this.currentAgent);
+            }
             if (this._mode === 'agent' && this.currentAgent && agent.id === this.currentAgent.id) {
                 const nextBiographyIdentityKey = this._biographyIdentityKey(agent);
                 const biographyIdentityChanged = nextBiographyIdentityKey !== this._currentBiographyIdentityKey;
@@ -581,6 +592,7 @@ export class ActivityPanel {
                 this._updateInfo(agent);
                 this._updateCurrentTool(agent);
                 this._updatePromptPlan(agent);
+                this._updateExecutionTree(agent);
                 this._updateWorkingSet(agent);
                 this._updateJourney(agent);
                 this._updateHarborLog(agent);
@@ -597,6 +609,11 @@ export class ActivityPanel {
         this._onAgentRemoved = (agent) => {
             if (agent?.id && agent.id === this._narrationAgentId) this._resetNarration();
             sessionDetailsService.deleteForAgent(agent);
+            if (this._mode === 'agent'
+                && this.currentAgent
+                && String(agent?.parentSessionId || '') === String(this.currentAgent.id || '')) {
+                this._updateExecutionTree(this.currentAgent);
+            }
             if (this.currentAgent && agent.id === this.currentAgent.id) {
                 if (this._mode === 'agent') this.hide();
                 else this.currentAgent = null;
@@ -757,6 +774,7 @@ export class ActivityPanel {
             messages: '',
             tokenUsage: '',
             harborLog: '',
+            executionTree: '',
             chronicle: '',
             directorFeed: '',
             narration: '',
@@ -1152,6 +1170,7 @@ export class ActivityPanel {
         this._updateInfo(agent);
         this._updateCurrentTool(agent);
         this._updatePromptPlan(agent);
+        this._updateExecutionTree(agent);
         this._updateWorkingSet(agent);
         this._updateJourney(agent);
         this._updateHarborLog(agent);
@@ -1388,6 +1407,115 @@ export class ActivityPanel {
         iconEl.textContent = tool.icon;
         nameEl.textContent = tool.name;
         inputEl.textContent = tool.detail;
+    }
+
+    _ensureExecutionTreeSection() {
+        if (this._executionTreeSectionEl && this._executionTreeBodyEl) return;
+        const body = el('div', { className: 'activity-panel__execution-tree' });
+        const section = el('div', {
+            className: 'activity-panel__section',
+            style: { display: 'none' },
+        }, [
+            el('div', { className: 'activity-panel__section-title', text: 'Execution tree' }),
+            body,
+        ]);
+        this._mountSection('execution-tree', section);
+        this._executionTreeSectionEl = section;
+        this._executionTreeBodyEl = body;
+        this._registerAgentSection(section);
+    }
+
+    _executionTreeNode(node) {
+        if (!node || typeof node !== 'object') return null;
+        const kind = String(node.kind || node.type || 'node')
+            .toLowerCase()
+            .replace(/[^a-z0-9_-]+/g, '-');
+        if (kind === 'task') {
+            return el('div', {
+                className: ['activity-panel__execution-node', 'activity-panel__execution-node--task'],
+            }, [
+                el('span', {
+                    className: `activity-panel__execution-status activity-panel__execution-status--${String(node.status || 'unknown')}`,
+                    text: String(node.status || 'unknown').toUpperCase(),
+                }),
+                el('span', {
+                    className: 'activity-panel__execution-label',
+                    text: String(node.subject || node.label || 'Untitled task'),
+                }),
+            ]);
+        }
+
+        const children = Array.isArray(node.children)
+            ? node.children.map(child => this._executionTreeNode(child)).filter(Boolean)
+            : [];
+        const label = String(node.label || node.name || node.id || 'Execution node');
+        const status = kind === 'subagent' ? String(node.status || 'unknown') : '';
+        const heading = kind === 'workflow'
+            ? `WORKFLOW · ${label}`
+            : `${status ? `${status.toUpperCase()} · ` : ''}${label}`;
+        return el('div', {
+            className: [
+                'activity-panel__execution-node',
+                `activity-panel__execution-node--${kind || 'node'}`,
+            ],
+        }, [
+            el('div', { className: 'activity-panel__execution-heading', text: heading }),
+            children.length
+                ? el('div', { className: 'activity-panel__execution-children' }, children)
+                : null,
+        ]);
+    }
+
+    _updateExecutionTree(agent) {
+        if (!this._executionTreeSectionEl || !this._executionTreeBodyEl || !agent) return;
+        const parentId = String(agent.id || '');
+        if (!parentId) return;
+        const worldAgents = this._getWorld()?.agents;
+        const agents = [...worldAgents?.values?.() || []];
+        const previousChildIds = this._executionChildIdsByParent.get(parentId) || [];
+        const tree = buildExecutionTree(agent, agents, { previousChildIds });
+        const currentChildIds = agents
+            .filter(child => String(child?.parentSessionId || '') === parentId)
+            .map((child, index) => String(child?.id ?? child?.sessionId ?? child?.agentId ?? `child-${index}`));
+        this._executionChildIdsByParent.set(parentId, currentChildIds);
+
+        if (!tree.hasChildren) {
+            this._executionTreeSectionEl.style.display = 'none';
+            this._renderSignatures.executionTree = '';
+            replaceChildren(this._executionTreeBodyEl, []);
+            return;
+        }
+
+        const signature = JSON.stringify(tree);
+        this._executionTreeSectionEl.style.display = '';
+        if (signature === this._renderSignatures.executionTree) return;
+        this._renderSignatures.executionTree = signature;
+        const progress = tree.progress || { done: 0, total: 0, source: 'inferred', unknown: 0 };
+        const source = progress.source === 'exact' ? 'EXACT' : 'INFERRED';
+        const unknown = Number(progress.unknown) || 0;
+        const provenanceTitle = progress.source === 'exact'
+            ? 'Progress from the Claude task store'
+            : unknown
+                ? `${unknown} child${unknown === 1 ? '' : 'ren'} unknown; disappeared children are not counted as done`
+                : 'Progress inferred from observed child sessions';
+        const summary = el('div', { className: 'activity-panel__execution-summary' }, [
+            el('span', {
+                className: 'activity-panel__execution-progress',
+                text: `${Number(progress.done) || 0}/${Number(progress.total) || 0} children done`,
+            }),
+            el('span', {
+                className: [
+                    'activity-panel__execution-provenance',
+                    `activity-panel__execution-provenance--${progress.source === 'exact' ? 'exact' : 'inferred'}`,
+                ],
+                text: source,
+                title: provenanceTitle,
+            }),
+        ]);
+        const nodes = tree.kind === 'counts'
+            ? []
+            : tree.children.map(child => this._executionTreeNode(child)).filter(Boolean);
+        replaceChildren(this._executionTreeBodyEl, [summary, ...nodes]);
     }
 
     _ensurePromptPlanSection() {
@@ -3954,6 +4082,7 @@ export class ActivityPanel {
             this._statusElapsedEl,
             this._blockedBannerEl,
             this._promptPlanSectionEl,
+            this._executionTreeSectionEl,
             this._workingSetSectionEl,
             this._journeySectionEl,
             this._harborLogSectionEl,
@@ -3965,6 +4094,7 @@ export class ActivityPanel {
             this._villageSectionEl,
         ];
         for (const node of ownedNodes) node?.remove?.();
+        this._executionChildIdsByParent.clear();
         this._agentSections = [];
         this._pinnedDetails.clear();
         this._pinned.clear();
@@ -4002,6 +4132,8 @@ export class ActivityPanel {
         this._relationshipsBodyEl = null;
         this._messageEdgesSectionEl = null;
         this._messageEdgesBodyEl = null;
+        this._executionTreeSectionEl = null;
+        this._executionTreeBodyEl = null;
         this._promptPlanSectionEl = null;
         this._promptPlanBodyEl = null;
         this._villageSectionEl = null;

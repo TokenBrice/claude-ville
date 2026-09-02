@@ -5,6 +5,18 @@ const { isDeepStrictEqual } = require('util');
 const { execFile, execFileSync } = require('child_process');
 
 const GIT_EVENT_TYPES = new Set(['commit', 'push', 'pull', 'fetch']);
+const GH_EVENT_TYPES = new Set(['pr', 'issue', 'release']);
+const GH_EVENT_COMMANDS = Object.freeze({
+  pr: new Set(['create', 'merge']),
+  issue: new Set(['create']),
+  release: new Set(['create']),
+});
+const GH_GLOBAL_FLAGS_WITH_VALUE = new Set([
+  '--repo',
+  '-R',
+  '--hostname',
+  '--config',
+]);
 const GIT_PULL_FETCH_FLAG_TRACKED = new Set(['--all', '--prune', '--tags']);
 const GIT_GLOBAL_FLAGS_WITH_VALUE = new Set([
   '-C',
@@ -57,6 +69,9 @@ const REPOSITORY_UNPUSHED_EVENT_TTL_MS = Math.max(
   Number(process.env.CLAUDEVILLE_REPOSITORY_UNPUSHED_EVENT_TTL_MS || (7 * 24 * 60 * 60 * 1000)) || (7 * 24 * 60 * 60 * 1000)
 );
 const MAX_UNPUSHED_COMMITS_PER_BRANCH = 120;
+// Forge events are transcript-derived and intentionally bounded like the
+// repository commit cache. The newest records win when a scan is larger.
+const MAX_FORGE_EVENTS_PER_PROJECT = MAX_UNPUSHED_COMMITS_PER_BRANCH;
 const GIT_TRACKING_TTL_MS = 6 * 60 * 60 * 1000;
 const GIT_TRACKING_MAX_PROJECTS = 512;
 const GIT_REMOTE_REF_SCAN_MAX_ENTRIES = 800;
@@ -1082,17 +1097,62 @@ function tryParseJson(value) {
   }
 }
 
-function extractCommand(value) {
-  if (!value) return null;
+function extractCommand(value, depth = 0) {
+  if (!value || depth > 4) return null;
   const parsed = tryParseJson(value);
 
   if (typeof parsed === 'string') return parsed;
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     if (typeof parsed.command === 'string') return parsed.command;
     if (typeof parsed.cmd === 'string') return parsed.cmd;
+
+    for (const key of ['input', 'arguments', 'args', 'payload', 'data']) {
+      const command = extractCommand(parsed[key], depth + 1);
+      if (command) return command;
+    }
   }
 
   return null;
+}
+const OUTPUT_FIELD_KEYS = new Set([
+  'aggregated_output',
+  'content',
+  'message',
+  'output',
+  'result',
+  'stderr',
+  'stdout',
+  'text',
+  'tool_result',
+  'toolUseResult',
+]);
+
+function collectOutputStrings(value, parts, depth = 0, active = false) {
+  if (value == null || depth > 6) return;
+  if (typeof value === 'string') {
+    if (active && value.trim()) parts.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectOutputStrings(item, parts, depth + 1, active);
+    return;
+  }
+  if (typeof value !== 'object') return;
+
+  for (const [key, child] of Object.entries(value)) {
+    const normalizedKey = String(key || '');
+    if (/^(?:command|cmd|input|arguments|args)$/i.test(normalizedKey)) continue;
+    const childIsOutput = active
+      || OUTPUT_FIELD_KEYS.has(normalizedKey)
+      || /(?:output|result|stdout|stderr)/i.test(normalizedKey);
+    collectOutputStrings(child, parts, depth + 1, childIsOutput);
+  }
+}
+
+function extractToolOutput(value, { direct = false } = {}) {
+  const parts = [];
+  collectOutputStrings(tryParseJson(value), parts, 0, direct);
+  return [...new Set(parts)].join('\n').slice(0, 64 * 1024);
 }
 
 function splitShellCommands(command) {
@@ -1232,6 +1292,55 @@ function findGitCommand(tokens) {
 
   return null;
 }
+function findGhCommand(tokens) {
+  let index = 0;
+  while (index < tokens.length && isEnvAssignment(tokens[index])) index++;
+  if (tokens[index] === 'env') {
+    index++;
+    while (index < tokens.length && isEnvAssignment(tokens[index])) index++;
+  }
+  if (tokens[index] !== 'gh') return null;
+
+  index++;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === '--') return null;
+    if (GH_GLOBAL_FLAGS_WITH_VALUE.has(token)) {
+      index += 2;
+      continue;
+    }
+    if (token.startsWith('--repo=') || token.startsWith('--hostname=') || token.startsWith('--config=')) {
+      index++;
+      continue;
+    }
+    if (token.startsWith('-')) {
+      index++;
+      continue;
+    }
+
+    const type = String(token).toLowerCase();
+    if (!GH_EVENT_TYPES.has(type)) return null;
+    index++;
+    while (index < tokens.length) {
+      const actionToken = tokens[index];
+      if (actionToken === '--') return null;
+      if (GH_GLOBAL_FLAGS_WITH_VALUE.has(actionToken)) {
+        index += 2;
+        continue;
+      }
+      if (actionToken.startsWith('-')) {
+        index++;
+        continue;
+      }
+
+      const action = String(actionToken).toLowerCase();
+      if (!GH_EVENT_COMMANDS[type]?.has(action)) return null;
+      return { type, action, actionIndex: index };
+    }
+  }
+
+  return null;
+}
 
 function isDryRun(type, tokens, subcommandIndex) {
   for (let i = subcommandIndex + 1; i < tokens.length; i++) {
@@ -1255,6 +1364,50 @@ function isHelpRequest(tokens, subcommandIndex) {
 
 function normalizeCommand(command) {
   return String(command || '').trim().replace(/\s+/g, ' ');
+}
+const SECRET_ASSIGNMENT_RE = /(^|[\s?&,;])(?:--)?(?:key|token)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s;&|,]*)/gi;
+const SECRET_TOKEN_RE = /[A-Za-z0-9_-]{32,}/g;
+
+function stripSecrets(value) {
+  return String(value ?? '')
+    .replace(SECRET_ASSIGNMENT_RE, '$1')
+    .replace(SECRET_TOKEN_RE, '[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isForgeEventType(type) {
+  return GH_EVENT_TYPES.has(String(type || '').toLowerCase());
+}
+
+function normalizeForgeUrl(value, type) {
+  let candidate = String(value || '').trim().replace(/[),.;!?]+$/g, '');
+  if (!candidate || stripSecrets(candidate) !== candidate) return null;
+
+  const route = type === 'pr'
+    ? /\/[^/\s]+\/[^/\s]+\/pull\/\d+\/?$/i
+    : type === 'issue'
+      ? /\/[^/\s]+\/[^/\s]+\/issues\/\d+\/?$/i
+      : /\/[^/\s]+\/[^/\s]+\/releases\/tag\/[^/\s?#]+\/?$/i;
+  if (!/^https?:\/\/(?:www\.)?github\.com\//i.test(candidate) || !route.test(candidate)) return null;
+  return candidate;
+}
+
+function forgeUrlsByType(output) {
+  const urls = new Map();
+  const text = String(output || '');
+  const matches = text.match(/https?:\/\/(?:www\.)?github\.com\/[^\s<>"'`]+/gi) || [];
+  for (const match of matches) {
+    for (const type of GH_EVENT_TYPES) {
+      const url = normalizeForgeUrl(match, type);
+      if (!url) continue;
+      const values = urls.get(type) || [];
+      if (!values.includes(url)) values.push(url);
+      urls.set(type, values);
+      break;
+    }
+  }
+  return urls;
 }
 
 function normalizeRefName(ref) {
@@ -1408,8 +1561,15 @@ function clampConfidence(value, fallback) {
 }
 
 function createGitEvent(command, type, dryRun, context, parsed = {}) {
-  const normalized = normalizeCommand(command);
-  const commandHash = stableHash(normalized);
+  const forge = isForgeEventType(type);
+  const rawNormalized = normalizeCommand(command);
+  // Forge command arguments can contain titles, prompts, and credentials.
+  // Keep only the executable/action for new event records; Git events retain
+  // their existing command field after secret scrubbing.
+  const normalized = forge
+    ? `gh ${type} ${parsed.action || 'create'}`
+    : stripSecrets(rawNormalized);
+  const commandHash = stableHash(forge ? stripSecrets(rawNormalized) : normalized);
   const provider = context.provider || 'unknown';
   const sessionId = context.sessionId || null;
   const sourceId = context.sourceId || null;
@@ -1434,11 +1594,13 @@ function createGitEvent(command, type, dryRun, context, parsed = {}) {
     commandHash,
     dryRun,
     source: context.source || 'command-parser',
-    confidence: clampConfidence(context.confidence, hasCompletionMetadata ? 0.98 : 0.92),
-    inferred: context.inferred === true,
-    observed: context.observed !== false && context.inferred !== true,
+    confidence: clampConfidence(context.confidence, forge ? 0.7 : (hasCompletionMetadata ? 0.98 : 0.92)),
+    inferred: forge || context.inferred === true,
+    observed: !forge && context.observed !== false && context.inferred !== true,
   };
 
+  if (forge && parsed.action) event.action = parsed.action;
+  if (forge && parsed.url) event.url = parsed.url;
   if (parsed.targetRef) event.targetRef = parsed.targetRef;
   if (parsed.refspec) event.refspec = parsed.refspec;
   if (Array.isArray(parsed.refspecs) && parsed.refspecs.length) event.refspecs = parsed.refspecs;
@@ -1466,7 +1628,9 @@ function createGitEvent(command, type, dryRun, context, parsed = {}) {
   if (Number.isFinite(Number(context.exitCode))) event.exitCode = Number(context.exitCode);
   if (context.status) event.status = context.status;
   if (completedAt) event.completedAt = completedAt;
-  if (typeof context.stderr === 'string' && context.stderr) event.stderr = context.stderr;
+  if (!forge && typeof context.stderr === 'string' && context.stderr) {
+    event.stderr = stripSecrets(context.stderr);
+  }
 
   return event;
 }
@@ -1474,39 +1638,103 @@ function createGitEvent(command, type, dryRun, context, parsed = {}) {
 function parseGitEventsFromCommand(command, context = {}, options = {}) {
   if (typeof command !== 'string' || !command.trim()) return [];
 
+  const outputValues = [];
+  for (const source of [options, context]) {
+    for (const key of [
+      'output',
+      'stdout',
+      'stderr',
+      'result',
+      'toolOutput',
+      'tool_output',
+      'toolResult',
+      'tool_result',
+      'aggregated_output',
+    ]) {
+      if (source?.[key] !== undefined) outputValues.push(source[key]);
+    }
+  }
+  const output = [...new Set(outputValues
+    .map(value => extractToolOutput(value, { direct: typeof value === 'string' }))
+    .filter(Boolean))]
+    .join('\n');
+  const forgeUrls = forgeUrlsByType(output);
+  const forgeUrlIndexes = new Map();
   const events = [];
   const ignoreDryRun = options.ignoreDryRun !== false;
 
   for (const segment of splitShellCommands(command)) {
     const tokens = tokenizeShellSegment(segment);
     const match = findGitCommand(tokens);
-    if (!match) continue;
-    if (isHelpRequest(tokens, match.subcommandIndex)) continue;
+    if (match) {
+      if (isHelpRequest(tokens, match.subcommandIndex)) continue;
 
-    const dryRun = isDryRun(match.type, tokens, match.subcommandIndex);
+      const dryRun = isDryRun(match.type, tokens, match.subcommandIndex);
+      if (dryRun && ignoreDryRun) continue;
+
+      const parsed = {
+        targetRef: extractTargetRef(match.type, tokens, match.subcommandIndex),
+      };
+      const refspecs = extractRefspecs(match.type, tokens, match.subcommandIndex);
+      if (refspecs.length) {
+        parsed.refspec = refspecs[0];
+        parsed.refspecs = refspecs;
+      }
+      if (match.type === 'push') {
+        const pushInfo = pushPositionals(tokens, match.subcommandIndex);
+        if (pushInfo.force) parsed.force = pushInfo.force;
+        if (isPushDelete(tokens, match.subcommandIndex)) parsed.deleted = true;
+      } else if (match.type === 'pull' || match.type === 'fetch') {
+        parsed.remote = extractRemote(match.type, tokens, match.subcommandIndex);
+        const pullInfo = pullFetchPositionals(tokens, match.subcommandIndex);
+        if (pullInfo.flags.length) parsed.flags = pullInfo.flags;
+      }
+      events.push(createGitEvent(segment, match.type, dryRun, context, parsed));
+      continue;
+    }
+
+    const forgeMatch = findGhCommand(tokens);
+    if (!forgeMatch) continue;
+    if (tokens.some(token => HELP_FLAGS.has(token))) continue;
+
+    const dryRun = tokens.some(token => token === '--dry-run' || token.startsWith('--dry-run='));
     if (dryRun && ignoreDryRun) continue;
-
-    const parsed = {
-      targetRef: extractTargetRef(match.type, tokens, match.subcommandIndex),
-    };
-    const refspecs = extractRefspecs(match.type, tokens, match.subcommandIndex);
-    if (refspecs.length) {
-      parsed.refspec = refspecs[0];
-      parsed.refspecs = refspecs;
-    }
-    if (match.type === 'push') {
-      const pushInfo = pushPositionals(tokens, match.subcommandIndex);
-      if (pushInfo.force) parsed.force = pushInfo.force;
-      if (isPushDelete(tokens, match.subcommandIndex)) parsed.deleted = true;
-    } else if (match.type === 'pull' || match.type === 'fetch') {
-      parsed.remote = extractRemote(match.type, tokens, match.subcommandIndex);
-      const pullInfo = pullFetchPositionals(tokens, match.subcommandIndex);
-      if (pullInfo.flags.length) parsed.flags = pullInfo.flags;
-    }
-    events.push(createGitEvent(segment, match.type, dryRun, context, parsed));
+    const urls = forgeUrls.get(forgeMatch.type) || [];
+    const urlIndex = forgeUrlIndexes.get(forgeMatch.type) || 0;
+    const parsed = { action: forgeMatch.action };
+    if (urls[urlIndex]) parsed.url = urls[urlIndex];
+    forgeUrlIndexes.set(forgeMatch.type, urlIndex + 1);
+    events.push(createGitEvent(
+      segment,
+      forgeMatch.type,
+      dryRun,
+      { ...context, inferred: true, observed: false },
+      parsed,
+    ));
   }
 
   return dedupeGitEvents(events);
+}
+
+function scrubForgeEventOutput(event) {
+  const type = String(event?.type || event?.kind || '').toLowerCase();
+  if (!isForgeEventType(type)) return;
+
+  if (!event.url) {
+    const output = [event.stderr, event.stdout, event.output, event.result]
+      .filter(value => typeof value === 'string')
+      .join('\n');
+    const url = forgeUrlsByType(output).get(type)?.[0];
+    if (url) event.url = url;
+  } else {
+    const url = normalizeForgeUrl(event.url, type);
+    if (url) event.url = url;
+    else delete event.url;
+  }
+
+  // Completion records may temporarily attach stdout/stderr after parsing.
+  // Parse the URL above, then discard the provider prose and any credentials.
+  for (const field of ['stderr', 'stdout', 'output', 'result']) delete event[field];
 }
 
 function dedupeGitEvents(events) {
@@ -1514,12 +1742,34 @@ function dedupeGitEvents(events) {
   const unique = [];
 
   for (const event of events) {
+    const type = event?.type || event?.kind;
+    if (!isForgeEventType(type) && typeof event?.stderr === 'string') {
+      event.stderr = stripSecrets(event.stderr);
+    }
+    scrubForgeEventOutput(event);
     if (!event || !event.id || seen.has(event.id)) continue;
     seen.add(event.id);
     unique.push(event);
   }
 
-  return unique;
+  // Adapter scans can contain many old tool records for one repository. Keep
+  // the newest forge records without imposing a new limit on Git history.
+  const dropped = new Set();
+  const forgeCountsByProject = new Map();
+  for (let index = unique.length - 1; index >= 0; index--) {
+    const event = unique[index];
+    const type = event?.type || event?.kind;
+    if (!isForgeEventType(type)) continue;
+    const project = String(event?.project || '').trim() || '<unknown>';
+    const count = forgeCountsByProject.get(project) || 0;
+    if (count >= MAX_FORGE_EVENTS_PER_PROJECT) {
+      dropped.add(index);
+      continue;
+    }
+    forgeCountsByProject.set(project, count + 1);
+  }
+
+  return unique.filter((_, index) => !dropped.has(index));
 }
 
 function gitEventWireReference(value) {
@@ -2595,11 +2845,18 @@ function inferPushedGitEventsForSessions(sessions, options = {}) {
 }
 
 function extractGitEventsFromCommandSource(source, context = {}, options = {}) {
-  const command = extractCommand(source);
-  return parseGitEventsFromCommand(command, context, options);
+  const parsedSource = tryParseJson(source);
+  const command = extractCommand(parsedSource);
+  const sourceOutput = extractToolOutput(parsedSource);
+  const output = sourceOutput
+    ? [context.output, sourceOutput].filter(Boolean).join('\n')
+    : context.output;
+  const parserContext = output ? { ...context, output } : context;
+  return parseGitEventsFromCommand(command, parserContext, options);
 }
 
 module.exports = {
+  MAX_FORGE_EVENTS_PER_PROJECT,
   compactGitEventsForWire,
   dedupeGitEvents,
   configureGitEnrichmentWorker,

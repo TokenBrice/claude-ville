@@ -768,6 +768,114 @@ body[data-cv-selected] .activity-panel__header::before {
     overflow-wrap: anywhere;
 }
 
+/* ─── Execution tree ─────────────────────────────── */
+
+.activity-panel__execution-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.activity-panel__execution-summary {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px;
+    color: var(--cv-gold-bright);
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
+}
+
+.activity-panel__execution-progress {
+    font-weight: bold;
+}
+
+.activity-panel__execution-provenance {
+    padding: 1px 4px;
+    border: 1px solid rgba(214, 169, 81, 0.3);
+    border-radius: 2px;
+    font-family: var(--font-body);
+    font-size: var(--fs-label);
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+}
+
+.activity-panel__execution-provenance--exact {
+    color: var(--cv-green-soft);
+    border-color: rgba(125, 190, 128, 0.4);
+}
+
+.activity-panel__execution-provenance--inferred {
+    color: var(--cv-text-muted);
+}
+
+.activity-panel__execution-node {
+    min-width: 0;
+    padding: 3px 0;
+    border-top: 1px solid var(--cv-divider);
+}
+
+.activity-panel__execution-node--workflow {
+    padding-left: 4px;
+}
+
+.activity-panel__execution-node--subagent {
+    padding-left: 8px;
+}
+
+.activity-panel__execution-node--task {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 7px;
+    align-items: baseline;
+    padding-left: 16px;
+}
+
+.activity-panel__execution-heading {
+    min-width: 0;
+    color: var(--cv-text-soft);
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
+    overflow-wrap: anywhere;
+}
+
+.activity-panel__execution-children {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.activity-panel__execution-status {
+    color: var(--cv-text-muted);
+    font-family: var(--font-body);
+    font-size: var(--fs-label);
+    text-transform: uppercase;
+}
+
+.activity-panel__execution-status--working {
+    color: var(--cv-gold-bright);
+}
+
+.activity-panel__execution-status--completed,
+.activity-panel__execution-status--complete,
+.activity-panel__execution-status--done {
+    color: var(--cv-green-soft);
+}
+
+.activity-panel__execution-status--errored {
+    color: var(--cv-status-errored);
+}
+
+.activity-panel__execution-label {
+    min-width: 0;
+    color: var(--cv-text-soft);
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
+    overflow-wrap: anywhere;
+}
+
+
 /* ─── Village disclosure ─────────────────────────── */
 
 .activity-panel__village {

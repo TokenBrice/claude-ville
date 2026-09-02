@@ -51,7 +51,7 @@ export function createVerifiedOutcome(kind, project, agentId = null, at = Date.n
 
 export function verifiedOutcomeFromGitEvent(event, context = {}) {
     const kind = String(event?.type || event?.kind || '').toLowerCase();
-    if (kind !== 'commit' && kind !== 'push') return null;
+    if (!VERIFIED_OUTCOME_KIND_SET.has(kind) || kind === 'milestone') return null;
     if (!hasVerifiedSuccess(event)) return null;
     return createVerifiedOutcome(
         kind,

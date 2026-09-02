@@ -31,6 +31,41 @@ const REASON_TEXT = {
     plan_review: 'awaited plan review',
 };
 
+const TIMELINE_LABELS = Object.freeze({
+    arrived: 'arrival',
+    departed: 'departure',
+    completed: 'completed turn',
+    waiting: 'wait',
+    resolved: 'resolution',
+    errored: 'error',
+    'rate limited': 'rate limit',
+    commit: 'commit',
+    push: 'push',
+});
+
+function humanizeTimelineKind(kind) {
+    const normalized = String(kind ?? 'event')
+        .trim()
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ');
+    if (/^[a-z]{2}$/i.test(normalized)) return normalized.toUpperCase();
+    return normalized || 'event';
+}
+
+function pluralizeTimelineLabel(value) {
+    const words = value.split(' ');
+    const last = words.pop() || 'event';
+    let plural = last;
+    if (/(s|x|z|ch|sh)$/i.test(last)) {
+        plural = `${last}es`;
+    } else if (/[^aeiou]y$/i.test(last)) {
+        plural = `${last.slice(0, -1)}ies`;
+    } else {
+        plural = `${last}s`;
+    }
+    return [...words, plural].join(' ');
+}
+
 export const CHRONICLE_TIMELINE_PAGE_SIZE = 100;
 
 const CHRONICLE_EXPORT_MIME = {
@@ -57,6 +92,7 @@ function duration(ms) {
 function eventText(event) {
     const who = event.agentName || 'someone';
     const where = event.project ? ` · ${event.project}` : '';
+    const detailLabel = event.count !== undefined ? event.eventLabel : event.label;
     switch (event.kind) {
         case ChronicleEventKind.ARRIVED: return `${who} arrived${where}`;
         case ChronicleEventKind.DEPARTED: return `${who} left${where}`;
@@ -70,10 +106,63 @@ function eventText(event) {
             return `${who} was answered after ${duration(event.waitedMs || 0)}${where}`;
         case ChronicleEventKind.ERRORED: return `${who} hit an error${where}`;
         case ChronicleEventKind.RATE_LIMITED: return `${who} hit the rate limit${where}`;
-        case ChronicleEventKind.COMMIT: return `${who} committed ${event.label || 'a change'}${where}`;
-        case ChronicleEventKind.PUSH: return `${who} pushed ${event.label || ''}${where}`.trim();
+        case ChronicleEventKind.COMMIT: return `${who} committed ${detailLabel || 'a change'}${where}`;
+        case ChronicleEventKind.PUSH: return `${who} pushed ${detailLabel || ''}${where}`.trim();
         default: return `${who} ${event.kind}${where}`;
     }
+}
+
+function timelineKind(event) {
+    const value = event?.kind ?? event?.type;
+    return String(value ?? 'event').trim() || 'event';
+}
+
+function timelineKindLabel(kind, count = 1) {
+    const normalized = humanizeTimelineKind(kind);
+    const singular = TIMELINE_LABELS[normalized.toLowerCase()] || normalized;
+    return Number(count) > 1 ? pluralizeTimelineLabel(singular) : singular;
+}
+
+function timelineMinute(ts) {
+    const value = Number(ts);
+    return Number.isFinite(value) ? Math.floor(value / 60_000) : null;
+}
+
+/** Fold adjacent same-kind events into deterministic chronological rows. */
+export function foldTimeline(events = []) {
+    const rows = [];
+    let previousKind = null;
+    let previousMinute = null;
+    for (const event of orderedEvents(events)) {
+        if (!event || typeof event !== 'object') continue;
+        const kind = timelineKind(event);
+        const minute = timelineMinute(event.ts);
+        const previous = rows.at(-1);
+        if (
+            minute !== null
+            && previous
+            && previousKind === kind
+            && previousMinute === minute
+        ) {
+            previous.count++;
+            previous.label = timelineKindLabel(kind, previous.count);
+            if (previous.project !== event.project) previous.project = null;
+            previousKind = kind;
+            previousMinute = minute;
+            continue;
+        }
+        const row = {
+            ...event,
+            kind,
+            count: 1,
+            label: timelineKindLabel(kind),
+        };
+        if (event.label !== undefined) row.eventLabel = event.label;
+        rows.push(row);
+        previousKind = kind;
+        previousMinute = minute;
+    }
+    return rows;
 }
 
 function ledgerRow(label, value) {
@@ -141,6 +230,43 @@ function summaryRows(summary) {
         ['Rate limits', summary.rateLimits],
         ['Total wait', durationOrZero(summary.totalWaitMs)],
         ['Longest wait', durationOrZero(summary.longestWaitMs)],
+    ];
+}
+
+function projectKey(value) {
+    if (typeof value === 'string') return value.trim();
+    if (!value || typeof value !== 'object') return '';
+    return String(value.name ?? value.key ?? value.project ?? '').trim();
+}
+
+function projectSubtotals(summary, events) {
+    const projects = Array.isArray(summary?.projects) ? summary.projects : [];
+    const names = [];
+    const counts = new Map();
+    for (const project of projects) {
+        const name = projectKey(project);
+        if (!name || counts.has(name)) continue;
+        names.push(name);
+        counts.set(name, 0);
+    }
+    for (const event of Array.isArray(events) ? events : []) {
+        const name = projectKey(event?.project);
+        if (name && counts.has(name)) counts.set(name, counts.get(name) + 1);
+    }
+    return names.map(name => ({ name, count: counts.get(name) || 0 }));
+}
+
+function projectSubtotalNodes(summary, events) {
+    const rows = projectSubtotals(summary, events);
+    if (!rows.length) return [];
+    return [
+        el('div', { className: 'chronicle__project-subtotals' }, [
+            el('div', { className: 'chronicle__project-heading' }, 'PROJECT SUBTOTALS'),
+            ...rows.map(({ name, count }) => el('div', { className: 'chronicle__project-row' }, [
+                el('span', { className: 'chronicle__project-name' }, name),
+                el('span', { className: 'chronicle__project-count' }, `${formatNumber(count)} ${count === 1 ? 'event' : 'events'}`),
+            ])),
+        ]),
     ];
 }
 
@@ -489,6 +615,13 @@ export class ChroniclePanel {
     _datePicker(dateKey, onDateChange) {
         const retentionDays = Number(this.log?.retentionDays) || 14;
         const window = chronicleDateWindow(Date.now(), retentionDays);
+        const shiftDate = offset => {
+            const shifted = chronicleDateFromKey(dateKey);
+            shifted.setDate(shifted.getDate() + offset);
+            return chronicleDateKey(shifted);
+        };
+        const previousKey = shiftDate(-1);
+        const nextKey = shiftDate(1);
         const input = el('input', {
             className: 'chronicle__date-input',
             ariaLabel: 'Chronicle date',
@@ -498,6 +631,36 @@ export class ChroniclePanel {
         input.min = window.min;
         input.max = window.max;
         input.addEventListener('change', () => onDateChange?.(input.value));
+
+        const previousButton = el('button', {
+            className: 'chronicle__date-button',
+            text: 'Previous',
+            title: 'Show the previous retained Chronicle day',
+            ariaLabel: 'Show previous Chronicle day',
+        });
+        previousButton.type = 'button';
+        previousButton.disabled = dateKey <= window.min;
+        previousButton.addEventListener('click', () => onDateChange?.(previousKey));
+
+        const nextButton = el('button', {
+            className: 'chronicle__date-button',
+            text: 'Next',
+            title: 'Show the next Chronicle day',
+            ariaLabel: 'Show next Chronicle day',
+        });
+        nextButton.type = 'button';
+        nextButton.disabled = dateKey >= window.max;
+        nextButton.addEventListener('click', () => onDateChange?.(nextKey));
+
+        const todayButton = el('button', {
+            className: ['chronicle__date-button', 'chronicle__today-button'],
+            text: 'Today',
+            title: 'Return to today\'s Chronicle',
+            ariaLabel: 'Show today\'s Chronicle',
+        });
+        todayButton.type = 'button';
+        todayButton.addEventListener('click', () => onDateChange?.(window.max));
+
         const markdownButton = el('button', {
             className: 'chronicle__export-button',
             text: 'Markdown',
@@ -522,9 +685,14 @@ export class ChroniclePanel {
             year: 'numeric',
         });
         return el('div', { className: 'chronicle__date-controls' }, [
-            el('label', { className: 'chronicle__date-label' }, [
-                el('span', { className: 'chronicle__date-label-text' }, 'Day'),
-                input,
+            el('div', { className: 'chronicle__date-navigation' }, [
+                previousButton,
+                el('label', { className: 'chronicle__date-label' }, [
+                    el('span', { className: 'chronicle__date-label-text' }, 'Day'),
+                    input,
+                ]),
+                nextButton,
+                todayButton,
             ]),
             el('span', { className: 'chronicle__date-heading' }, heading),
             el('span', { className: 'chronicle__export-actions' }, [markdownButton, csvButton]),
@@ -551,6 +719,7 @@ export class ChroniclePanel {
             ledgerRow('ERRORS', summary.errors),
             ledgerRow('RATE LIMITS', summary.rateLimits),
         ]));
+        nodes.push(...projectSubtotalNodes(summary, events));
 
         nodes.push(...this._spendNodes(isToday));
 
@@ -568,19 +737,23 @@ export class ChroniclePanel {
         }
 
         // Newest first: the recap answers "what did I miss" before "how did the
-        // day start".
-        const ordered = newestFirst ? events : [...events].reverse();
-        nodes.push(el('ul', { className: 'chronicle__timeline' }, ordered.map(event => (
-            el('li', { className: `chronicle__entry chronicle__entry--${event.kind}` }, [
-                el('span', { className: 'chronicle__time' }, clockTime(event.ts)),
-                el('span', { className: 'chronicle__glyph' }, KIND_GLYPH[event.kind] || '·'),
-                el('span', { className: 'chronicle__text' }, eventText(event)),
-            ])
-        ))));
-        const omitted = Math.max(0, totalCount - ordered.length);
+        // day start", while same-minute bursts stay on one intelligible row.
+        const timeline = foldTimeline(events);
+        const ordered = newestFirst ? [...timeline].reverse() : timeline;
+        nodes.push(el('ul', { className: 'chronicle__timeline' }, ordered.map(row => {
+            const text = row.count > 1
+                ? `${row.label} ×${row.count}${row.project ? ` · ${row.project}` : ''}`
+                : eventText(row);
+            return el('li', { className: `chronicle__entry chronicle__entry--${row.kind}` }, [
+                el('span', { className: 'chronicle__time' }, clockTime(row.ts)),
+                el('span', { className: 'chronicle__glyph' }, KIND_GLYPH[row.kind] || '·'),
+                el('span', { className: 'chronicle__text' }, text),
+            ]);
+        })));
+        const omitted = Math.max(0, totalCount - events.length);
         if (omitted > 0) {
             nodes.push(el('p', { className: 'chronicle__note' },
-                `Showing the newest ${ordered.length} of ${totalCount} events.`));
+                `Showing the newest ${events.length} of ${totalCount} events.`));
         }
 
         return nodes;

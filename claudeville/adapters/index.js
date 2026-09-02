@@ -2,7 +2,7 @@
  * Adapter registry
  * Registers and manages all AI coding CLI adapters
  */
-const { ClaudeAdapter } = require('./claude');
+const { ClaudeAdapter, sanitizeTaskSubject } = require('./claude');
 const { CodexAdapter } = require('./codex');
 const { GeminiAdapter } = require('./gemini');
 const { GrokAdapter } = require('./grok');
@@ -134,6 +134,40 @@ function getProviderHealth() {
 function normalizeProviderId(provider, fallback = 'claude') {
   return String(provider || fallback).toLowerCase();
 }
+const SESSION_TASK_LIMIT = 12;
+
+function normalizeTaskProgress(value) {
+  if (!value || typeof value !== 'object') return null;
+  const total = Number(value.total);
+  const done = Number(value.done);
+  if (!Number.isFinite(total) || !Number.isFinite(done)) return null;
+  const normalizedTotal = Math.max(0, Math.trunc(total));
+  const source = value.source === 'exact' || value.source === 'inferred'
+    ? value.source
+    : null;
+  if (!source) return null;
+  return {
+    done: Math.min(normalizedTotal, Math.max(0, Math.trunc(done))),
+    total: normalizedTotal,
+    source,
+  };
+}
+
+function normalizeTasks(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, SESSION_TASK_LIMIT).flatMap((task) => {
+    const subject = sanitizeTaskSubject(task?.subject);
+    if (!subject) return [];
+    const status = String(task?.status || 'unknown')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64) || 'unknown';
+    return [{ subject, status }];
+  });
+}
+
 
 function normalizeSession(session, context = {}) {
   const provider = normalizeProviderId(session?.provider, context.provider || 'unknown');
@@ -168,6 +202,11 @@ function normalizeSession(session, context = {}) {
     observedSources: normalizeObservedSources(session?.observedSources),
     tokenUsage: session?.tokenUsage ?? session?.tokens ?? session?.usage ?? null,
     parentSessionId: session?.parentSessionId ?? null,
+    subagentKind: typeof session?.subagentKind === 'string' && session.subagentKind.trim()
+      ? session.subagentKind.trim().slice(0, 128)
+      : null,
+    taskProgress: normalizeTaskProgress(session?.taskProgress),
+    tasks: normalizeTasks(session?.tasks),
     reasoningEffort: session?.reasoningEffort ?? null,
     workflowId: session?.workflowId ?? null,
     workflowName: session?.workflowName ?? null,

@@ -9,6 +9,51 @@ function unescapeJsonPointerToken(token) {
 function cloneContainer(value) {
     return Array.isArray(value) ? value.slice() : { ...value };
 }
+const SESSION_EXECUTION_FIELDS = Object.freeze([
+    'parentSessionId',
+    'agentType',
+    'subagentKind',
+    'taskProgress',
+    'tasks',
+]);
+
+function cloneSessionPayload(session) {
+    if (!session || typeof session !== 'object') return session;
+    const next = { ...session };
+    for (const field of SESSION_EXECUTION_FIELDS) {
+        if (!Object.prototype.hasOwnProperty.call(session, field)) continue;
+        if (field === 'taskProgress') {
+            const progress = session.taskProgress;
+            next.taskProgress = progress && typeof progress === 'object'
+                ? {
+                    done: progress.done,
+                    total: progress.total,
+                    source: progress.source,
+                }
+                : progress;
+        } else if (field === 'tasks') {
+            next.tasks = Array.isArray(session.tasks)
+                ? session.tasks.slice(0, 12).flatMap(task => {
+                    const subject = typeof task?.subject === 'string'
+                        ? task.subject.trim().slice(0, 120)
+                        : '';
+                    const status = typeof task?.status === 'string'
+                        ? task.status.trim().slice(0, 64)
+                        : '';
+                    return subject && status ? [{ subject, status }] : [];
+                })
+                : session.tasks;
+        } else {
+            next[field] = session[field];
+        }
+    }
+    return next;
+}
+
+function cloneSessionPayloads(sessions) {
+    return Array.isArray(sessions) ? sessions.map(cloneSessionPayload) : [];
+}
+
 
 function resolveArrayIndex(array, token, allowAppend) {
     if (token === '-' && allowAppend) return array.length;
@@ -226,7 +271,7 @@ export class WebSocketClient {
 
     _rememberSnapshot(data) {
         this._state = {
-            sessions: Array.isArray(data.sessions) ? data.sessions : [],
+            sessions: cloneSessionPayloads(data.sessions),
             gitEventFields: Array.isArray(data.gitEventFields) ? data.gitEventFields : [],
             gitEventStringTables: Array.isArray(data.gitEventStringTables)
                 ? data.gitEventStringTables
@@ -287,6 +332,7 @@ export class WebSocketClient {
             return;
         }
         if (deltaPerf) metrics.markPatchApplied?.(deltaPerf, data.patch.length);
+        next = { ...next, sessions: cloneSessionPayloads(next.sessions) };
         this._state = next;
         this._seq = data.seq;
         this.reconnectAttempts = 0;

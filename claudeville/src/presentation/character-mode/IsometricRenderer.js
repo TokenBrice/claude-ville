@@ -1,5 +1,7 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { INCIDENT_COLORS_RGB, THEME, WORLD_BODY_FONT } from '../../config/theme.js';
+import { AUTHORED_KEY_LIGHT } from './MaterialRegistry.js';
+
 import { drawPixelFlame, fillPixelEllipse, fillTileDiamond } from './PixelShapes.js';
 import { normalizeBuildingType } from '../../config/buildings.js';
 import { PORTAL_SPAWN_TILE, TOWN_ROAD_ROUTES, VILLAGE_GATE, VILLAGE_GATE_BOUNDS, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
@@ -334,6 +336,49 @@ function sampleRamp(stops, t) {
     const alpha = (lo.c[3] + (hi.c[3] - lo.c[3]) * k).toFixed(3);
     return `rgba(${ch(0)}, ${ch(1)}, ${ch(2)}, ${alpha})`;
 }
+// Canvas counterpart to the GPU wetness shader's four-pixel ordered dither.
+// Keep the same 2x2 Bayer ordering so the two paths share the same stepped
+// visual grammar without introducing a second pattern.
+export function orderedDither4(x = 0, y = 0) {
+    const px = Math.floor(Number(x) || 0);
+    const py = Math.floor(Number(y) || 0);
+    return ((px + 2 * py) & 3) / 3;
+}
+
+const CLIFF_REFLECTION_DEPTH = 60;
+const CLIFF_REFLECTION_BAND_COUNT = 8;
+// Three fixed alpha steps keep the reflection readable without becoming a
+// translucent gradient. They are all exact 1/32 values for _withAlpha().
+const CLIFF_REFLECTION_ALPHA_STEPS = Object.freeze([0.1875, 0.125, 0.0625]);
+const CLIFF_REFLECTION_PHASE_PALETTES = Object.freeze({
+    day: Object.freeze(['#2c4c59', '#3f5f65', '#5b706d', '#846f55']),
+    dawn: Object.freeze(['#394f64', '#5a6070', '#806f76', '#a37d68']),
+    dusk: Object.freeze(['#35465f', '#554f68', '#795c72', '#986a5c']),
+    night: Object.freeze(['#182d49', '#283e5b', '#3b5066', '#5a4d57']),
+});
+const WATERLINE_DITHER_PALETTES = Object.freeze({
+    day: Object.freeze([
+        'rgba(208, 246, 227, 0.78)',
+        'rgba(126, 202, 203, 0.66)',
+        'rgba(62, 137, 150, 0.54)',
+    ]),
+    dawn: Object.freeze([
+        'rgba(224, 237, 231, 0.78)',
+        'rgba(151, 190, 203, 0.66)',
+        'rgba(82, 126, 157, 0.54)',
+    ]),
+    dusk: Object.freeze([
+        'rgba(226, 212, 220, 0.78)',
+        'rgba(169, 151, 178, 0.66)',
+        'rgba(93, 102, 144, 0.54)',
+    ]),
+    night: Object.freeze([
+        'rgba(168, 206, 224, 0.72)',
+        'rgba(91, 151, 181, 0.60)',
+        'rgba(43, 93, 133, 0.50)',
+    ]),
+});
+
 
 const VILLAGE_GATE_ARCH_COLUMN_SPAN = 104;
 // Inscription band inside prop.villageGateArch.png, in sprite pixels. The PNG
@@ -5719,12 +5764,18 @@ export class IsometricRenderer {
         // per frame. Stored for _drawGroundDecals / _drawTile to branch on.
         const season = this._currentSeasonToken();
         this._terrainSeason = season;
-        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|edge|atmo-persp|season:${season}`;
+        // The reflection is world-anchored, so camera panning follows it through
+        // the existing transform. A resting zoom tier is enough camera input to
+        // preserve the pixel grammar without rebaking during a smooth glide.
+        const cameraZoomTier = this.camera?.currentZoomTier?.() || 1;
+        const phase = this._lastAtmosphere?.phase || 'day';
+        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|edge|atmo-persp|season:${season}|camera:${cameraZoomTier}|phase:${phase}`;
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
         }
 
         releaseCanvasBackingStore(this.terrainCache);
+
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.round(bounds.w * dpr));
         canvas.height = Math.max(1, Math.round(bounds.h * dpr));
@@ -9127,6 +9178,7 @@ export class IsometricRenderer {
         const west = points[3];
         const sandH = 16;   // sunlit beach lip
         const cliffH = 46;   // shaded face dropping to the void
+        const phase = this._lastAtmosphere?.phase || 'day';
 
         // Both faces are drawn as stepped bands rather than linear gradients.
         // A smooth vertical ramp is the one thing a pixel-art coastline cannot
@@ -9166,13 +9218,84 @@ export class IsometricRenderer {
         ];
 
         for (const side of [{ a: east, b: south, dir: -1 }, { a: south, b: west, dir: 1 }]) {
+            // Reflection is drawn first, so the face and its waterline sit over
+            // the reflected edge instead of receiving an overlaid stripe.
+            this._drawBakedCliffReflection(ctx, side, phase, sandH + cliffH);
             ctx.save();
             // Sunlit sand lip hugging the diamond edge — 4 courses.
             bandedFace(side, 0, sandH, 4, 0, 6, SAND_RAMP);
             // Shaded cliff face beneath, dissolving into the distant-sea void.
             bandedFace(side, sandH, cliffH, 8, 6, 14, CLIFF_RAMP);
+            this._drawDitheredWaterline(ctx, side, phase, sandH + cliffH);
             ctx.restore();
         }
+    }
+
+    // Reflect the lower 60px of the cliff shelf into the water. Each reflected
+    // course reverses the source order, selects one of the four authored
+    // key-light response bands, and then uses one of exactly three alpha steps.
+    // It is part of the terrain bake, never a per-frame water pass.
+    _drawBakedCliffReflection(ctx, side, phase = 'day', waterlineOffset = 62) {
+        const palette = CLIFF_REFLECTION_PHASE_PALETTES[phase] || CLIFF_REFLECTION_PHASE_PALETTES.day;
+        const responseBands = AUTHORED_KEY_LIGHT.responseBands;
+        const bandHeight = CLIFF_REFLECTION_DEPTH / CLIFF_REFLECTION_BAND_COUNT;
+        const sourceBottom = CLIFF_REFLECTION_BAND_COUNT - 1;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        for (let k = 0; k < CLIFF_REFLECTION_BAND_COUNT; k++) {
+            const t0 = k / CLIFF_REFLECTION_BAND_COUNT;
+            const t1 = (k + 1) / CLIFF_REFLECTION_BAND_COUNT;
+            const sourceBand = sourceBottom - k;
+            const keyBand = Math.min(
+                responseBands.length - 1,
+                Math.floor((sourceBottom - sourceBand) * responseBands.length / CLIFF_REFLECTION_BAND_COUNT),
+            );
+            const response = responseBands[keyBand] ?? 1;
+            const alphaBand = response >= 1.12 ? 2 : response >= 1 ? 1 : 0;
+            const offsetNear = side.dir * 14;
+            const offsetFar = side.dir * 0;
+            const o0 = offsetNear + (offsetFar - offsetNear) * t0;
+            const o1 = offsetNear + (offsetFar - offsetNear) * t1;
+            const y0 = waterlineOffset + bandHeight * k;
+            const y1 = waterlineOffset + bandHeight * (k + 1);
+
+            ctx.fillStyle = this._withAlpha(palette[keyBand], alpha);
+            ctx.beginPath();
+            ctx.moveTo(side.a.x + o0, Math.round(side.a.y + y0));
+            ctx.lineTo(side.b.x + o0, Math.round(side.b.y + y0));
+            ctx.lineTo(side.b.x + o1, Math.round(side.b.y + y1));
+            ctx.lineTo(side.a.x + o1, Math.round(side.a.y + y1));
+            ctx.closePath();
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+
+    // The 2px blocks make the island/sea seam a stepped waterline. Bucket 3 is
+    // intentionally omitted, matching the GPU wetness shader's four-cell
+    // ordered dither rather than inventing another Canvas pattern.
+    _drawDitheredWaterline(ctx, side, phase = 'day', waterlineOffset = 62) {
+        const palette = WATERLINE_DITHER_PALETTES[phase] || WATERLINE_DITHER_PALETTES.day;
+        const length = Math.hypot(side.b.x - side.a.x, side.b.y - side.a.y);
+        if (!(length > 0)) return;
+        const ux = (side.b.x - side.a.x) / length;
+        const uy = (side.b.y - side.a.y) / length;
+        const startX = side.a.x + side.dir * 14;
+        const startY = side.a.y + waterlineOffset;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        SpriteRenderer.disableSmoothing(ctx);
+        for (let distance = 0; distance < length; distance += 2) {
+            const x = Math.round(startX + ux * distance);
+            const y = Math.round(startY + uy * distance);
+            const bucket = Math.round(orderedDither4(x, y) * 3);
+            if (bucket >= 3) continue;
+            ctx.fillStyle = palette[bucket];
+            ctx.fillRect(x, y, 2, 2);
+        }
+        ctx.restore();
     }
 
     // Distant sea + horizon beyond the island. Drawn per-frame in world space,

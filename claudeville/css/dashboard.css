@@ -1145,6 +1145,27 @@
     white-space: nowrap;
 }
 
+.dash-card__children-source {
+    width: fit-content;
+    padding: 0 3px;
+    border: 1px solid rgba(var(--cv-dash-rim-dim-rgb), 0.24);
+    border-radius: 2px;
+    color: var(--cv-text-muted);
+    font: 10px var(--font-body);
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+}
+
+.dash-card__children-source--exact {
+    color: var(--cv-green-soft);
+    border-color: rgba(125, 190, 128, 0.4);
+}
+
+.dash-card__children-source--inferred {
+    color: var(--cv-text-muted);
+}
+
+
 .dash-card__row-label {
     overflow: hidden;
     color: var(--cv-text-muted);

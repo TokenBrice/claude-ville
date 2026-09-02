@@ -104,6 +104,160 @@ const CLAUDE_CONTEXT_WINDOW_TABLE = Object.freeze([
 ]);
 const CLAUDE_CONTEXT_WINDOW_DEFAULT = 200_000;
 const CLAUDE_AGENT_TYPES = new Set(['main', 'sub-agent', 'team-member', 'workflow-subagent']);
+const TASK_SUMMARY_LIMIT = 12;
+const TASK_SUBJECT_MAX_LENGTH = 120;
+const TASK_STATUS_MAX_LENGTH = 64;
+const TASK_DONE_STATUSES = new Set(['complete', 'completed', 'done', 'success', 'succeeded']);
+const TASK_KNOWN_CHILD_STATUSES = new Set([
+  'active',
+  'completed',
+  'complete',
+  'done',
+  'errored',
+  'idle',
+  'rate_limited',
+  'waiting',
+  'waiting_on_user',
+  'working',
+]);
+
+function normalizeTaskStatus(value) {
+  const status = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return (status || 'unknown').slice(0, TASK_STATUS_MAX_LENGTH);
+}
+
+function sanitizeTaskSubject(value, maxLength = TASK_SUBJECT_MAX_LENGTH) {
+  if (typeof value !== 'string') return '';
+  let subject = value
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Task subjects are the only task text that leaves the adapter. Replace
+  // absolute paths instead of allowing a home directory or file name to
+  // become part of the client-facing session payload.
+  subject = subject.replace(
+    /(^|[\s"'([{=])((?:\/|[A-Za-z]:[\\/])(?:[^\s"'`<>()[\]{};,]+))/g,
+    '$1[path]',
+  );
+  subject = subject.replace(/\s+/g, ' ').trim();
+  if (subject.length <= maxLength) return subject;
+  return `${subject.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function normalizedTaskRecords(tasks) {
+  return (Array.isArray(tasks) ? tasks : []).flatMap((task) => {
+    if (!task || typeof task !== 'object') return [];
+    const subject = sanitizeTaskSubject(task.subject);
+    if (!subject) return [];
+    return [{ subject, status: normalizeTaskStatus(task.status) }];
+  });
+}
+
+function childIdentity(child, index) {
+  const id = child?.id ?? child?.sessionId ?? child?.agentId;
+  return String(id || `child-${index}`);
+}
+
+function childStatus(child) {
+  return normalizeTaskStatus(child?.status);
+}
+
+function childIsDone(child) {
+  return !child?.isDeparted && TASK_DONE_STATUSES.has(childStatus(child));
+}
+
+function childIsUnknown(child) {
+  return child?.isDeparted === true || !TASK_KNOWN_CHILD_STATUSES.has(childStatus(child));
+}
+
+/**
+ * Derive a bounded progress shape from either Claude's task records or the
+ * currently observed child sessions. Missing/departed children remain
+ * unknown; absence is never promoted to completion.
+ */
+function deriveTaskProgress({
+  tasks = [],
+  children = [],
+  previousChildIds = [],
+  source = 'inferred',
+} = {}) {
+  if (source === 'exact') {
+    const records = normalizedTaskRecords(tasks);
+    return {
+      done: records.filter(task => TASK_DONE_STATUSES.has(task.status)).length,
+      total: records.length,
+      source: 'exact',
+    };
+  }
+
+  const current = Array.isArray(children) ? children : [];
+  const currentIds = new Set(current.map(childIdentity));
+  const previousIds = new Set(
+    (Array.isArray(previousChildIds) ? previousChildIds : [])
+      .map(value => String(value || '').trim())
+      .filter(Boolean),
+  );
+  const disappeared = [...previousIds].filter(id => !currentIds.has(id)).length;
+  const total = Math.max(current.length, currentIds.size + disappeared);
+  const done = Math.min(total, current.filter(childIsDone).length);
+  return {
+    done,
+    total,
+    source: 'inferred',
+    unknown: disappeared + current.filter(childIsUnknown).length,
+  };
+}
+
+function summarizeTaskGroup(group) {
+  const records = normalizedTaskRecords(group?.tasks);
+  return {
+    taskProgress: {
+      done: records.filter(task => TASK_DONE_STATUSES.has(task.status)).length,
+      total: records.length,
+      source: 'exact',
+    },
+    tasks: records.slice(0, TASK_SUMMARY_LIMIT),
+  };
+}
+
+/**
+ * Attach only the bounded task projection to Claude sessions. The full task
+ * records remain available to the diagnostic adapter method, but descriptions
+ * and every other private field stay server-side.
+ */
+function projectClaudeExecution(sessions, taskGroups = []) {
+  const source = Array.isArray(sessions) ? sessions : [];
+  const groups = new Map(
+    (Array.isArray(taskGroups) ? taskGroups : [])
+      .filter(group => group && group.groupName !== undefined && group.groupName !== null)
+      .map(group => [String(group.groupName), group]),
+  );
+  return source.map((session) => {
+    const sessionId = String(session?.sessionId || '');
+    const children = source.filter(candidate => (
+      candidate
+      && String(candidate.parentSessionId || '') === sessionId
+    ));
+    const group = groups.get(sessionId);
+    if (group) {
+      const summary = summarizeTaskGroup(group);
+      if (summary.taskProgress.total > 0 || children.length === 0) {
+        return { ...session, ...summary };
+      }
+    }
+    if (children.length > 0) {
+      return {
+        ...session,
+        taskProgress: deriveTaskProgress({ children, source: 'inferred' }),
+      };
+    }
+    return session;
+  });
+}
 
 const _sessionEntryCache = new Map();
 let _sessionEntryCacheBytes = 0;
@@ -2011,6 +2165,33 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
   };
 }
 
+function readClaudeTaskGroups() {
+  if (!fs.existsSync(TASKS_DIR)) return [];
+  const taskGroups = [];
+  try {
+    const taskDirs = fs.readdirSync(TASKS_DIR, { withFileTypes: true })
+      .filter(d => d.isDirectory());
+    for (const dir of taskDirs) {
+      const groupDir = path.join(TASKS_DIR, dir.name);
+      const tasks = [];
+      try {
+        const files = fs.readdirSync(groupDir).filter(f => f.endsWith('.json'));
+        for (const file of files) {
+          try {
+            tasks.push(JSON.parse(fs.readFileSync(path.join(groupDir, file), 'utf-8')));
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+      taskGroups.push({
+        groupName: dir.name,
+        tasks: tasks.sort((a, b) => Number(a.id || 0) - Number(b.id || 0)),
+        count: tasks.length,
+      });
+    }
+  } catch { /* ignore */ }
+  return taskGroups;
+}
+
 // ─── Adapter class ────────────────────────────────────
 
 class ClaudeAdapter {
@@ -2103,7 +2284,6 @@ class ClaudeAdapter {
         lastToolInput: detail.lastToolInput,
         lastMessage: detail.lastMessage || session.lastMessage,
         dialogue: detail.dialogue,
-        observedSources: detail.observedSources,
         tokenUsage: sessionFilePath ? getTokenUsage(sessionFilePath, model) : null,
         permissionMode,
         sendMessages: sessionFilePath ? getSendMessageEdges(sessionFilePath) : [],
@@ -2130,7 +2310,8 @@ class ClaudeAdapter {
 
     const subAgents = this._getActiveSubAgents(activeThresholdMs, activeSessionIdsByProject, projectPathMap);
 
-    return [...mainSessions, ...subAgents, ...orphans];
+    const sessions = [...mainSessions, ...subAgents, ...orphans];
+    return projectClaudeExecution(sessions, this.getTasks());
   }
 
   _getActiveSubAgents(activeThresholdMs, activeSessionIdsByProject = new Map(), projectPathMap = new Map()) {
@@ -2469,30 +2650,7 @@ class ClaudeAdapter {
 
   getTasks() {
     if (_adapterShutdown) return [];
-    if (!fs.existsSync(TASKS_DIR)) return [];
-    const taskGroups = [];
-    try {
-      const taskDirs = fs.readdirSync(TASKS_DIR, { withFileTypes: true })
-        .filter(d => d.isDirectory());
-      for (const dir of taskDirs) {
-        const groupDir = path.join(TASKS_DIR, dir.name);
-        const tasks = [];
-        try {
-          const files = fs.readdirSync(groupDir).filter(f => f.endsWith('.json'));
-          for (const file of files) {
-            try {
-              tasks.push(JSON.parse(fs.readFileSync(path.join(groupDir, file), 'utf-8')));
-            } catch { /* ignore */ }
-          }
-        } catch { /* ignore */ }
-        taskGroups.push({
-          groupName: dir.name,
-          tasks: tasks.sort((a, b) => Number(a.id || 0) - Number(b.id || 0)),
-          count: tasks.length,
-        });
-      }
-    } catch { /* ignore */ }
-    return taskGroups;
+    return readClaudeTaskGroups();
   }
 
   setDataReadyCallback(callback) {
@@ -2601,4 +2759,10 @@ class ClaudeAdapter {
   }
 }
 
-module.exports = { ClaudeAdapter };
+module.exports = {
+  ClaudeAdapter,
+  deriveTaskProgress,
+  projectClaudeExecution,
+  sanitizeTaskSubject,
+  summarizeTaskGroup,
+};

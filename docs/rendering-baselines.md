@@ -83,7 +83,8 @@ The following decorations are intentionally Canvas-only and must not be mistaken
 - the ten low-fog wisp sprites; WebGL2 carries the coherent haze field;
 - discrete ground and roof damp-mark stamps; WebGL2 carries material wetness instead;
 - building activity and hover ground-footprint decoration;
-- the directional lighthouse beam; WebGL2 retains the lighthouse local light and water reflection.
+- the directional lighthouse beam; WebGL2 retains the lighthouse local light and water reflection;
+- baked quantised cliff reflection and stepped, four-pixel dithered waterline; both are decorative composition cues, so WebGL2 intentionally omits them rather than treating them as operator signal.
 
 ## Trail camera benchmark
 
