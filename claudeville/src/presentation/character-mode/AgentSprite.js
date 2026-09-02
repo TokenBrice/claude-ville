@@ -741,6 +741,7 @@ export class AgentSprite {
         compositor = null,
         getIntentForAgent = null,
         getBuilding = null,
+        getBridgeLift = null,
         allocateVisitTile = null,
         releaseVisitReservation = null,
         renewVisitReservation = null,
@@ -883,6 +884,7 @@ export class AgentSprite {
         this.bridgeTiles = bridgeTiles;
         this.getIntentForAgent = typeof getIntentForAgent === 'function' ? getIntentForAgent : null;
         this.getBuilding = typeof getBuilding === 'function' ? getBuilding : null;
+        this.getBridgeLift = typeof getBridgeLift === 'function' ? getBridgeLift : null;
         this.allocateVisitTile = typeof allocateVisitTile === 'function' ? allocateVisitTile : null;
         this.releaseVisitReservation = typeof releaseVisitReservation === 'function' ? releaseVisitReservation : null;
         this.renewVisitReservation = typeof renewVisitReservation === 'function' ? renewVisitReservation : null;
@@ -2315,7 +2317,7 @@ export class AgentSprite {
             FOOTFALL_FRAMES.has(this.frame)
         ) {
             const footSide = this.frame === 0 ? -5 : 5;
-            particleSystem.spawn(this._footfallPresetForSurface(), this.x + footSide, this.y + 7, 1);
+            particleSystem.spawn(this._footfallPresetForSurface(), this.x + footSide, this._visualAnchorY() + 7, 1);
         }
     }
 
@@ -2562,7 +2564,38 @@ export class AgentSprite {
         };
     }
 
+    _currentBridgeLift() {
+        if (!this.getBridgeLift) return 0;
+        const tile = worldToTile(this.x, this.y);
+        const lift = Number(this.getBridgeLift(tile.tileX, tile.tileY)) || 0;
+        return Math.max(0, lift);
+    }
+
+    _visualAnchorY() {
+        return this.y - this._currentBridgeLift();
+    }
+
+    withBridgeLift(callback) {
+        if (typeof callback !== 'function') return undefined;
+        const lift = this._currentBridgeLift();
+        if (lift <= 0) return callback();
+        // Rendering reads this.y throughout the anchored effect stack. Shift it
+        // only for the synchronous draw, then restore the base Y so painter
+        // sorting, movement, routing, and relationship geometry stay unchanged.
+        const baseY = this.y;
+        this.y = baseY - lift;
+        try {
+            return callback();
+        } finally {
+            this.y = baseY;
+        }
+    }
+
     draw(ctx, zoom = 1, renderMode = 'full') {
+        return this.withBridgeLift(() => this._drawAtScreenPosition(ctx, zoom, renderMode));
+    }
+
+    _drawAtScreenPosition(ctx, zoom = 1, renderMode = 'full') {
         this._zoom = zoom;
 
         if (this.isArrivalPending()) return;
@@ -3458,7 +3491,7 @@ export class AgentSprite {
         if (beat === this._strainSweatBeat) return;
         this._strainSweatBeat = beat;
         // Bead off the temple (slightly off-centre, head height).
-        particleSystem.spawn('sweatDrop', this.x + 5, this.y - 30, 1, { spread: 1.5 });
+        particleSystem.spawn('sweatDrop', this.x + 5, this._visualAnchorY() - 30, 1, { spread: 1.5 });
     }
 
     _drawGrounding(ctx) {
@@ -3669,6 +3702,10 @@ export class AgentSprite {
     // sprite-sheet blit that drawing via SpriteRenderer.drawSilhouette would
     // produce against multi-direction agent sheets.
     drawXraySilhouette(ctx) {
+        return this.withBridgeLift(() => this._drawXraySilhouetteAtScreenPosition(ctx));
+    }
+
+    _drawXraySilhouetteAtScreenPosition(ctx) {
         if (!this.spriteCanvas || !this.spriteSheet) return;
         const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
         const bounds = this._getCellContentBounds(cell);
@@ -3704,7 +3741,10 @@ export class AgentSprite {
     }
 
     drawGpuWorldOverlay(ctx, zoom = 1, annotationMode = 'full') {
-        this.gpuOverlayRenderer.draw(ctx, zoom, annotationMode);
+        // Compatibility entry point: callers may invoke it on duck-typed hosts
+        // that only own a gpuOverlayRenderer, so the lift wrapper is optional.
+        const draw = () => this.gpuOverlayRenderer.draw(ctx, zoom, annotationMode);
+        return typeof this.withBridgeLift === 'function' ? this.withBridgeLift(draw) : draw();
     }
 
     _setGpuFrameRecord(record) {
@@ -6106,7 +6146,7 @@ export class AgentSprite {
         const beat = Math.floor((Date.now() + offset) / period);
         if (beat === this._moodMoteBeat) return;
         this._moodMoteBeat = beat;
-        particleSystem.spawn(preset, this.x, this.y + dy, 1);
+        particleSystem.spawn(preset, this.x, this._visualAnchorY() + dy, 1);
     }
 
     // #34 — token-flow motes. While the villager is WORKING and parked, recent
@@ -6153,7 +6193,7 @@ export class AgentSprite {
         // Drift toward the bound building centre (world space). The mote rises
         // off the chest, so bias velocity along the chest→building vector.
         const originX = this.x;
-        const originY = this.y - 24;
+        const originY = this._visualAnchorY() - 24;
         let driftX = 0;
         let driftY = -0.18; // gentle default rise when the building is unknown
         const center = this._tokenFlowBuildingCenter();
@@ -6202,7 +6242,7 @@ export class AgentSprite {
         const storming = this._isStorming();
         if (this._stormingLast && !storming && this.motionScale > 0 && particleSystem) {
             this._reliefSparkAt = Date.now();
-            particleSystem.spawn('distressRelief', this.x, this.y - 30, 7);
+            particleSystem.spawn('distressRelief', this.x, this._visualAnchorY() - 30, 7);
         }
         this._stormingLast = storming;
     }
@@ -6215,8 +6255,9 @@ export class AgentSprite {
         if (!this._arrivalBurstPending) return;
         this._arrivalBurstPending = false;
         if (!particleSystem || this.motionScale <= 0) return;
-        particleSystem.spawn('portalRune', this.x, this.y - 14, 6, { spread: 10 });
-        particleSystem.spawn('footstep', this.x, this.y + 6, 5, { spread: 9 });
+        const visualY = this._visualAnchorY();
+        particleSystem.spawn('portalRune', this.x, visualY - 14, 6, { spread: 10 });
+        particleSystem.spawn('footstep', this.x, visualY + 6, 5, { spread: 9 });
     }
 
     // Arrival ceremony progress in [0, 1] over ARRIVAL_CEREMONY_MS, or 0 when
@@ -6248,7 +6289,7 @@ export class AgentSprite {
         this._ritualDownbeat = cycle;
         const emit = RITUAL_GESTURE_PARTICLE[ritual.pose];
         if (!emit) return;
-        particleSystem.spawn(emit.preset, this.x + (emit.dx || 0), this.y + (emit.dy || 0), emit.count || 2);
+        particleSystem.spawn(emit.preset, this.x + (emit.dx || 0), this._visualAnchorY() + (emit.dy || 0), emit.count || 2);
     }
 
     // Tool ritual pose overlay driven by RitualConductor: a small procedural
@@ -6623,7 +6664,7 @@ export class AgentSprite {
     hitTest(screenX, screenY) {
         if (this.isArrivalPending()) return false;
         const dx = screenX - this.x;
-        const dy = screenY - this.y;
+        const dy = screenY - (this.y - this._currentBridgeLift());
         return Math.abs(dx) < SPRITE_HIT_HALF_WIDTH && dy > SPRITE_HIT_TOP && dy < SPRITE_HIT_BOTTOM;
     }
 }

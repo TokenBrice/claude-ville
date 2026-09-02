@@ -9,8 +9,6 @@ import {
     AMBIENT_GROUND_PROPS,
     AMBIENT_SCENIC_POINTS,
     ANCIENT_RUINS,
-    BRIDGE_ACCENT_PROPS,
-    BRIDGE_STYLE_PALETTES,
     DISTRICT_PROPS,
     DISTRICT_WASHES,
     FOREST_FLOOR_REGIONS,
@@ -287,8 +285,6 @@ const ARCHIVE_FADE_DURATION_MS = 800;
 // drift bounded in dense worlds).
 const AFFINITY_PROXIMITY_INTERVAL_MS = 5000;
 const MAX_AFFINITY_PROXIMITY_PAIRS = 6;
-const BRIDGE_SPRITE_MIN_WIDTH = 390;
-const BRIDGE_SPRITE_MAX_WIDTH = 500;
 const VILLAGE_WOOD_PALETTE = Object.freeze({
     shadow: 'rgba(28, 15, 7, 0.34)',
     outline: '#1b1009',
@@ -3088,6 +3084,7 @@ export class IsometricRenderer {
                 compositor: this.compositor,
                 getIntentForAgent: (agentId) => this.visitIntentManager?.getIntentForAgent?.(agentId) || null,
                 getBuilding: (type) => this._getBuildingByType(type),
+                getBridgeLift: (tileX, tileY) => this.getBridgeLift(tileX, tileY),
                 allocateVisitTile: (request) => this._allocateVisitTile(request),
                 releaseVisitReservation: (agentId) => this.visitTileAllocator?.release?.(agentId),
                 renewVisitReservation: (agentId) => this.visitTileAllocator?.renew?.(agentId),
@@ -5853,6 +5850,7 @@ export class IsometricRenderer {
     _buildDistrictPropSprites() {
         if (!this.sprites) return [];
         const sprites = this._buildVillageWallSprites();
+        sprites.push(...this._buildBridgeNearRailSprites());
         sprites.push(new StaticPropSprite({
             tileX: VILLAGE_GATE.tileX,
             tileY: VILLAGE_GATE.tileY,
@@ -5884,6 +5882,76 @@ export class IsometricRenderer {
                 });
             }));
         return sprites;
+    }
+
+    _buildBridgeNearRailSprites() {
+        if (!this.bridgeSpans?.length || !this.assets) return [];
+        const sprites = [];
+        for (const span of this.bridgeSpans) {
+            const rail = span.nearRail;
+            if (!rail) continue;
+            const segmentCount = Math.max(1, span.lengthTiles * 2);
+            for (let i = 0; i < segmentCount; i++) {
+                const t0 = i / segmentCount;
+                const t1 = (i + 1) / segmentCount;
+                const midT = (t0 + t1) / 2;
+                const quad = this._bridgeNearRailQuad(span, t0, t1);
+                const propWorld = this._bridgePoint(span, midT, span.halfWidth, 0);
+                const propTile = worldToTile(propWorld.x, propWorld.y);
+                const localQuad = quad.map((point) => ({
+                    x: point.x - propWorld.x,
+                    y: point.y - propWorld.y,
+                }));
+                const xs = localQuad.map((point) => point.x);
+                const ys = localQuad.map((point) => point.y);
+                sprites.push(new StaticPropSprite({
+                    tileX: propTile.tileX,
+                    tileY: propTile.tileY,
+                    id: `bridge.rail.${span.id}.${i}`,
+                    bounds: {
+                        left: Math.floor(Math.min(...xs)),
+                        right: Math.ceil(Math.max(...xs)),
+                        top: Math.floor(Math.min(...ys)),
+                        bottom: Math.ceil(Math.max(...ys)),
+                        splitY: 0,
+                    },
+                    splitForOcclusion: false,
+                    sortY: propWorld.y,
+                    drawFn: (ctx) => {
+                        const clipQuad = this._bridgeNearRailQuad(span, t0, t1);
+                        const placement = this._bridgeSpritePlacement(span);
+                        if (!placement) return;
+                        ctx.save();
+                        ctx.beginPath();
+                        ctx.moveTo(clipQuad[0].x, clipQuad[0].y);
+                        for (let q = 1; q < clipQuad.length; q++) {
+                            ctx.lineTo(clipQuad[q].x, clipQuad[q].y);
+                        }
+                        ctx.closePath();
+                        ctx.clip();
+                        ctx.drawImage(
+                            placement.img,
+                            placement.x,
+                            placement.y,
+                            placement.dims.w,
+                            placement.dims.h
+                        );
+                        ctx.restore();
+                    },
+                }));
+            }
+        }
+        return sprites;
+    }
+
+    _bridgeNearRailQuad(span, t0, t1) {
+        const rail = span.nearRail;
+        return [
+            this._bridgePoint(span, t0, rail.inner, rail.top),
+            this._bridgePoint(span, t1, rail.inner, rail.top),
+            this._bridgePoint(span, t1, rail.outer, -rail.bottom),
+            this._bridgePoint(span, t0, rail.outer, -rail.bottom),
+        ];
     }
 
     _buildVillageWallSprites() {
@@ -8681,7 +8749,8 @@ export class IsometricRenderer {
             axisUnit: { x: axisVector.x / axisLength, y: axisVector.y / axisLength },
             crossUnit: { x: crossVector.x / crossLength, y: crossVector.y / crossLength },
             halfWidth: Math.max(34, Math.min(54, 24 + crossTiles * 8)),
-            rise: Math.max(16, Math.min(32, 12 + lengthTiles * 1.9)),
+            deckRise: info.deckRise || 0,
+            nearRail: info.nearRail || null,
             lengthTiles,
             depth: (centerX + centerY) * TILE_HEIGHT / 2,
         };
@@ -8705,8 +8774,23 @@ export class IsometricRenderer {
     _bridgePoint(span, t, crossOffset = 0, verticalLift = 0, drop = 0) {
         const arch = Math.sin(Math.PI * t);
         const x = span.start.x + (span.end.x - span.start.x) * t + span.crossUnit.x * crossOffset;
-        const y = span.start.y + (span.end.y - span.start.y) * t + span.crossUnit.y * crossOffset - arch * span.rise - verticalLift + drop;
+        const y = span.start.y + (span.end.y - span.start.y) * t + span.crossUnit.y * crossOffset - arch * span.deckRise - verticalLift + drop;
         return { x, y };
+    }
+
+    getBridgeLift(tileX, tileY) {
+        if (!this.bridgeSpans?.length) return 0;
+        const point = this._tileToScreen(tileX, tileY);
+        for (const span of this.bridgeSpans) {
+            const dx = point.x - span.start.x;
+            const dy = point.y - span.start.y;
+            const axisLength = Math.hypot(span.end.x - span.start.x, span.end.y - span.start.y) || 1;
+            const along = dx * span.axisUnit.x + dy * span.axisUnit.y;
+            const cross = dx * span.crossUnit.x + dy * span.crossUnit.y;
+            if (along < 0 || along > axisLength || Math.abs(cross) > span.halfWidth) continue;
+            return Math.sin(Math.PI * along / axisLength) * span.deckRise;
+        }
+        return 0;
     }
 
     _isInBridgeTreeExclusion(tileX, tileY) {
@@ -8718,8 +8802,8 @@ export class IsometricRenderer {
             const axisLength = Math.hypot(span.end.x - span.start.x, span.end.y - span.start.y) || 1;
             const along = dx * span.axisUnit.x + dy * span.axisUnit.y;
             const cross = Math.abs(dx * span.crossUnit.x + dy * span.crossUnit.y);
-            const rampPad = 96;
-            const crossPad = span.halfWidth + 72;
+            const rampPad = 40;
+            const crossPad = span.halfWidth + 8;
             if (along >= -rampPad && along <= axisLength + rampPad && cross <= crossPad) {
                 return true;
             }
@@ -8743,85 +8827,8 @@ export class IsometricRenderer {
         ctx.closePath();
     }
 
-    _strokeBridgeCurve(ctx, points) {
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-        ctx.stroke();
-    }
-
-    _bridgePalette(span) {
-        return BRIDGE_STYLE_PALETTES[span.style] || BRIDGE_STYLE_PALETTES.civic;
-    }
-
-    _drawBridgeMasonryCap(ctx, span, t, palette) {
-        const left = this._bridgePoint(span, t, -span.halfWidth - 12, 0, 8);
-        const right = this._bridgePoint(span, t, span.halfWidth + 12, 0, 8);
-
-        ctx.lineCap = 'round';
-        ctx.strokeStyle = palette.underStoneDark;
-        ctx.lineWidth = 13;
-        ctx.beginPath();
-        ctx.moveTo(left.x, left.y);
-        ctx.lineTo(right.x, right.y);
-        ctx.stroke();
-
-        ctx.strokeStyle = palette.underStone;
-        ctx.lineWidth = 9;
-        ctx.beginPath();
-        ctx.moveTo(left.x, left.y - 2);
-        ctx.lineTo(right.x, right.y - 2);
-        ctx.stroke();
-
-        ctx.strokeStyle = palette.underStoneLight;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(left.x + span.axisUnit.x * 3, left.y - 7);
-        ctx.lineTo(right.x + span.axisUnit.x * 3, right.y - 7);
-        ctx.stroke();
-
-        ctx.strokeStyle = 'rgba(28, 22, 17, 0.42)';
-        ctx.lineWidth = 1.5;
-        for (const offset of [-span.halfWidth * 0.55, 0, span.halfWidth * 0.55]) {
-            const p = this._bridgePoint(span, t, offset, 0, 2);
-            ctx.beginPath();
-            ctx.moveTo(p.x - span.axisUnit.x * 5, p.y - span.axisUnit.y * 5);
-            ctx.lineTo(p.x + span.axisUnit.x * 5, p.y + span.axisUnit.y * 5);
-            ctx.stroke();
-        }
-    }
-
-    _drawBridgePier(ctx, span, t, palette) {
-        for (const offset of [-span.halfWidth * 0.62, span.halfWidth * 0.62]) {
-            const top = this._bridgePoint(span, t, offset, 4, 8);
-            const foot = { x: top.x - span.axisUnit.x * 2, y: top.y + 35 };
-            ctx.strokeStyle = palette.underStoneDark;
-            ctx.lineWidth = 9;
-            ctx.lineCap = 'round';
-            ctx.beginPath();
-            ctx.moveTo(top.x, top.y);
-            ctx.lineTo(foot.x, foot.y);
-            ctx.stroke();
-
-            ctx.strokeStyle = palette.underStone;
-            ctx.lineWidth = 6;
-            ctx.beginPath();
-            ctx.moveTo(top.x - 1, top.y - 2);
-            ctx.lineTo(foot.x - 1, foot.y - 2);
-            ctx.stroke();
-
-            ctx.strokeStyle = palette.underStoneLight;
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.moveTo(top.x - 3, top.y + 2);
-            ctx.lineTo(foot.x - 3, foot.y + 18);
-            ctx.stroke();
-        }
-    }
-
-    // 2.7 — bridge/water contact: a multiply shadow pooling on the water under
-    // the deck, and foam collars where the pier feet (procedural or the sprite's
-    // mid-edge supports) meet the surface. Baked with the span; no motion.
+    // Bridge/water contact: a tight multiply shadow pooling under the deck.
+    // Baked with the span; no motion.
     _drawBridgeUnderDeckWaterShadow(ctx, span) {
         ctx.save();
         ctx.globalCompositeOperation = 'multiply';
@@ -8835,257 +8842,41 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _drawBridgePierFoam(ctx, span) {
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        ctx.lineCap = 'round';
-        for (const t of [0.38, 0.62]) {
-            for (const offset of [-span.halfWidth * 0.62, span.halfWidth * 0.62]) {
-                const top = this._bridgePoint(span, t, offset, 4, 8);
-                const foot = { x: top.x - span.axisUnit.x * 2, y: top.y + 35 };
-                ctx.strokeStyle = 'rgba(226, 246, 252, 0.30)';
-                ctx.lineWidth = 1.6;
-                ctx.beginPath();
-                ctx.ellipse(foot.x, foot.y, 7, 3, 0, 0, Math.PI * 2);
-                ctx.stroke();
-                ctx.fillStyle = 'rgba(226, 246, 252, 0.15)';
-                ctx.beginPath();
-                ctx.ellipse(foot.x, foot.y, 4.5, 2, 0, 0, Math.PI * 2);
-                ctx.fill();
-            }
-        }
-        ctx.restore();
-    }
-
-    _drawBridgeRopeRuns(ctx, span, palette) {
-        ctx.strokeStyle = palette.rope;
-        ctx.globalAlpha = 0.78;
-        ctx.lineWidth = 1.5;
-        ctx.lineCap = 'round';
-        for (const side of [-1, 1]) {
-            this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, side * (span.halfWidth + 5), 19, 8, 18));
-            this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, side * (span.halfWidth + 5), 12, 12, 18));
-        }
-        ctx.globalAlpha = 1;
-    }
-
-    _drawBridgeRuneBands(ctx, span, palette) {
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        ctx.strokeStyle = palette.rune;
-        ctx.lineWidth = 2;
-        ctx.lineCap = 'round';
-        for (const t of [0.32, 0.50, 0.68]) {
-            const left = this._bridgePoint(span, t, -span.halfWidth + 15, 2);
-            const right = this._bridgePoint(span, t, span.halfWidth - 15, 2);
-            ctx.beginPath();
-            ctx.moveTo(left.x, left.y);
-            ctx.lineTo(right.x, right.y);
-            ctx.stroke();
-        }
-        ctx.restore();
-    }
-
-    _drawBridgeMoss(ctx, span, palette) {
-        ctx.fillStyle = palette.moss;
-        for (let i = 0; i < 18; i++) {
-            const t = (i + 0.5) / 18;
-            const side = i % 2 === 0 ? -1 : 1;
-            const p = this._bridgePoint(span, t, side * (span.halfWidth - 8), 0, 1);
-            ctx.fillRect(Math.round(p.x - 2), Math.round(p.y - 1), 4, 2);
-        }
-    }
-
-    _drawBridgeAccentSprites(ctx, span, palette) {
-        if (!this.sprites || !span.id) return;
-        const accents = BRIDGE_ACCENT_PROPS.filter((accent) => accent.bridgeId === span.id);
-        for (const accent of accents) {
-            const t = Math.max(0.04, Math.min(0.96, accent.t));
-            const side = accent.side < 0 ? -1 : 1;
-            const p = this._bridgePoint(span, t, side * (span.halfWidth + 16), 20, -2);
-            ctx.save();
-            ctx.globalCompositeOperation = 'lighter';
-            ctx.fillStyle = palette.glow;
-            ctx.beginPath();
-            ctx.ellipse(p.x, p.y - 16, 13, 17, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-            this.sprites.drawSprite(ctx, accent.id, p.x, p.y);
-        }
-    }
-
     _bridgeSpriteId(span) {
         const orientation = (span.orientation || 'EW').toLowerCase();
         const style = span.style || 'civic';
         return `bridge.landmark.${style}.${orientation}`;
     }
 
-    _bridgeSpriteTargetWidth(span, dims) {
-        const spanLength = Math.hypot(span.end.x - span.start.x, span.end.y - span.start.y);
-        const footprintWidth = spanLength + span.halfWidth * 2.8;
-        return Math.round(Math.max(
-            BRIDGE_SPRITE_MIN_WIDTH,
-            Math.min(BRIDGE_SPRITE_MAX_WIDTH, footprintWidth, dims.w * 1.8)
-        ));
-    }
-
-    _drawGeneratedBridgeSpan(ctx, span, palette) {
-        if (!this.sprites || !this.assets) return false;
+    _bridgeSpritePlacement(span) {
+        if (!this.assets) return null;
         const spriteId = this._bridgeSpriteId(span);
+        if (this.assets.has && !this.assets.has(spriteId)) return null;
         const img = this.assets.get(spriteId);
-        if (!img) return false;
-        const dims = this.assets.getDims(spriteId) || { w: img.width, h: img.height };
+        const dims = this.assets.getDims(spriteId);
+        if (!img || !dims) return null;
         const [anchorX, anchorY] = this.assets.getAnchor(spriteId);
-        const targetWidth = this._bridgeSpriteTargetWidth(span, dims);
-        const scale = targetWidth / dims.w;
-        const targetHeight = Math.round(dims.h * scale);
-
-        const center = this._bridgePoint(span, 0.5, 0, 0, 18);
-        ctx.save();
-        this._traceBridgeRibbon(
-            ctx,
-            this._bridgeSidePoints(span, -span.halfWidth - 46, 0, 22, 10),
-            this._bridgeSidePoints(span, span.halfWidth + 46, 0, 22, 10)
-        );
-        ctx.fillStyle = palette.shadow;
-        ctx.fill();
-        ctx.restore();
-        this._drawBridgeUnderDeckWaterShadow(ctx, span);
-
-        ctx.drawImage(
+        const midX = (span.start.x + span.end.x) / 2;
+        const midY = (span.start.y + span.end.y) / 2;
+        return {
             img,
-            Math.round(center.x - anchorX * scale),
-            Math.round(center.y - anchorY * scale),
-            targetWidth,
-            targetHeight
-        );
-        this._drawBridgePierFoam(ctx, span);
-        this._drawBridgeAccentSprites(ctx, span, palette);
-        return true;
+            dims,
+            x: Math.round(midX - anchorX),
+            y: Math.round(midY - anchorY),
+        };
     }
 
     _drawLandmarkBridgeSpan(ctx, span) {
-        const palette = this._bridgePalette(span);
-        if (this._drawGeneratedBridgeSpan(ctx, span, palette)) return;
-
-        const leftDeck = this._bridgeSidePoints(span, -span.halfWidth);
-        const rightDeck = this._bridgeSidePoints(span, span.halfWidth);
-        const shadowLeft = this._bridgeSidePoints(span, -span.halfWidth - 7, 0, 15, 10);
-        const shadowRight = this._bridgeSidePoints(span, span.halfWidth + 7, 0, 15, 10);
-        const railLeft = this._bridgeSidePoints(span, -span.halfWidth - 3, 24, 0, 14);
-        const railRight = this._bridgeSidePoints(span, span.halfWidth + 3, 24, 0, 14);
-        const centerSeam = this._bridgeSidePoints(span, 0, 0, 0, 14);
-
-        ctx.save();
-
-        this._traceBridgeRibbon(ctx, shadowLeft, shadowRight);
-        ctx.fillStyle = palette.shadow;
-        ctx.fill();
-
-        for (const t of [0, 1]) {
-            this._drawBridgeMasonryCap(ctx, span, t, palette);
-        }
-
-        this._drawBridgePier(ctx, span, 0.38, palette);
-        this._drawBridgePier(ctx, span, 0.62, palette);
         this._drawBridgeUnderDeckWaterShadow(ctx, span);
-        this._drawBridgePierFoam(ctx, span);
-
-        this._traceBridgeRibbon(ctx, leftDeck, rightDeck);
-        const deckGradient = ctx.createLinearGradient(span.start.x, span.start.y - span.rise, span.end.x, span.end.y);
-        deckGradient.addColorStop(0, palette.deckA);
-        deckGradient.addColorStop(0.24, palette.deckB);
-        deckGradient.addColorStop(0.55, palette.deckC);
-        deckGradient.addColorStop(1, palette.deckA);
-        ctx.fillStyle = deckGradient;
-        ctx.fill();
-        ctx.strokeStyle = palette.deckDark;
-        ctx.lineWidth = 4;
-        ctx.lineJoin = 'round';
-        ctx.stroke();
-
-        ctx.globalAlpha = 0.55;
-        this._traceBridgeRibbon(
-            ctx,
-            this._bridgeSidePoints(span, -span.halfWidth + 6, 3, 4, 10),
-            this._bridgeSidePoints(span, span.halfWidth - 6, 3, 4, 10)
+        const placement = this._bridgeSpritePlacement(span);
+        if (!placement) return;
+        ctx.drawImage(
+            placement.img,
+            placement.x,
+            placement.y,
+            placement.dims.w,
+            placement.dims.h
         );
-        ctx.fillStyle = 'rgba(255, 187, 103, 0.22)';
-        ctx.fill();
-        ctx.globalAlpha = 1;
-
-        ctx.strokeStyle = 'rgba(52, 25, 15, 0.74)';
-        ctx.lineWidth = 2;
-        for (let i = 1; i <= span.lengthTiles + 2; i++) {
-            const t = i / (span.lengthTiles + 3);
-            const a = this._bridgePoint(span, t, -span.halfWidth + 8, 1);
-            const b = this._bridgePoint(span, t, span.halfWidth - 8, 1);
-            ctx.beginPath();
-            ctx.moveTo(a.x, a.y);
-            ctx.lineTo(b.x, b.y);
-            ctx.stroke();
-        }
-
-        this._drawBridgeRuneBands(ctx, span, palette);
-        this._drawBridgeMoss(ctx, span, palette);
-
-        ctx.strokeStyle = palette.deckEdge;
-        ctx.lineWidth = 3;
-        this._strokeBridgeCurve(ctx, centerSeam);
-        this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, -span.halfWidth + 4));
-        this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, span.halfWidth - 4));
-
-        const postCount = Math.max(5, Math.min(9, Math.round(span.lengthTiles / 1.35)));
-        for (let i = 0; i <= postCount; i++) {
-            const t = i / postCount;
-            const postLift = 19 + Math.sin(Math.PI * t) * 9;
-            for (const side of [-1, 1]) {
-                const deck = this._bridgePoint(span, t, side * (span.halfWidth - 1), 0);
-                const rail = this._bridgePoint(span, t, side * (span.halfWidth + 4), postLift);
-                ctx.strokeStyle = palette.railDark;
-                ctx.lineWidth = i === 0 || i === postCount ? 5 : 4;
-                ctx.lineCap = 'round';
-                ctx.beginPath();
-                ctx.moveTo(deck.x, deck.y + 4);
-                ctx.lineTo(rail.x, rail.y);
-                ctx.stroke();
-                ctx.strokeStyle = palette.railMid;
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.moveTo(deck.x - span.axisUnit.x * 1.5, deck.y + 2);
-                ctx.lineTo(rail.x - span.axisUnit.x * 1.5, rail.y + 1);
-                ctx.stroke();
-            }
-        }
-
-        this._drawBridgeRopeRuns(ctx, span, palette);
-
-        ctx.strokeStyle = palette.railDark;
-        ctx.lineWidth = 5;
-        ctx.lineCap = 'round';
-        this._strokeBridgeCurve(ctx, railLeft);
-        this._strokeBridgeCurve(ctx, railRight);
-        ctx.strokeStyle = palette.railMid;
-        ctx.lineWidth = 2;
-        this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, -span.halfWidth - 4, 27, 0, 14));
-        this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, span.halfWidth + 2, 27, 0, 14));
-
-        for (const t of [0, 1]) {
-            for (const side of [-1, 1]) {
-                const base = this._bridgePoint(span, t, side * (span.halfWidth + 7), 0, 5);
-                ctx.fillStyle = palette.railDark;
-                ctx.beginPath();
-                ctx.arc(base.x, base.y - 14, 5, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.fillStyle = palette.deckC;
-                ctx.beginPath();
-                ctx.arc(base.x - 1, base.y - 16, 2, 0, Math.PI * 2);
-                ctx.fill();
-            }
-        }
-
-        this._drawBridgeAccentSprites(ctx, span, palette);
-        ctx.restore();
     }
 
     _worldDiamondPoints() {

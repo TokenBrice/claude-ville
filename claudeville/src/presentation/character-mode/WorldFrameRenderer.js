@@ -952,31 +952,35 @@ function drawPrimaryMarksPostAtmosphere(renderer, ctx, villageSnapshot, atmosphe
 
     for (const sprite of renderer.agentSprites?.values?.() || []) {
         if (!sprite) continue;
-        // Waiting-on-user beacon pillar. The outer alpha scales the gradient
-        // body; the method's own save/restore keeps state clean (its tiny `!`
-        // pennant sets its own alpha — acceptable, it is the top-priority read).
-        if (sprite.agent?.status === AgentStatus.WAITING_ON_USER
-            && typeof sprite._drawWaitingOnUserBeacon === 'function') {
-            ctx.save();
-            ctx.globalAlpha = (force ? 1 : 0.55) * nightFactor;
-            sprite._drawWaitingOnUserBeacon(ctx, null);
-            ctx.restore();
-        }
-        // Selection ring: a soft additive echo of the asset ring at the feet,
-        // in the provider accent so it still reads identity at a glance.
-        if (sprite.selected) {
-            const accent = hexToRgb(sprite._providerAccentColor?.() || '#f2d36b') || { r: 242, g: 211, b: 107 };
-            ctx.save();
-            ctx.globalCompositeOperation = 'screen';
-            ctx.beginPath();
-            ctx.ellipse(sprite.x, sprite.y - 2, 24, 9, 0, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(${accent.r}, ${accent.g}, ${accent.b}, ${0.10 * nightFactor})`;
-            ctx.fill();
-            ctx.strokeStyle = `rgba(${accent.r}, ${accent.g}, ${accent.b}, ${0.5 * nightFactor})`;
-            ctx.lineWidth = 1.4;
-            ctx.stroke();
-            ctx.restore();
-        }
+        const drawMarks = () => {
+            // Waiting-on-user beacon pillar. The outer alpha scales the gradient
+            // body; the method's own save/restore keeps state clean (its tiny `!`
+            // pennant sets its own alpha — acceptable, it is the top-priority read).
+            if (sprite.agent?.status === AgentStatus.WAITING_ON_USER
+                && typeof sprite._drawWaitingOnUserBeacon === 'function') {
+                ctx.save();
+                ctx.globalAlpha = (force ? 1 : 0.55) * nightFactor;
+                sprite._drawWaitingOnUserBeacon(ctx, null);
+                ctx.restore();
+            }
+            // Selection ring: a soft additive echo of the asset ring at the feet,
+            // in the provider accent so it still reads identity at a glance.
+            if (sprite.selected) {
+                const accent = hexToRgb(sprite._providerAccentColor?.() || '#f2d36b') || { r: 242, g: 211, b: 107 };
+                ctx.save();
+                ctx.globalCompositeOperation = 'screen';
+                ctx.beginPath();
+                ctx.ellipse(sprite.x, sprite.y - 2, 24, 9, 0, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(${accent.r}, ${accent.g}, ${accent.b}, ${0.10 * nightFactor})`;
+                ctx.fill();
+                ctx.strokeStyle = `rgba(${accent.r}, ${accent.g}, ${accent.b}, ${0.5 * nightFactor})`;
+                ctx.lineWidth = 1.4;
+                ctx.stroke();
+                ctx.restore();
+            }
+        };
+        if (typeof sprite.withBridgeLift === 'function') sprite.withBridgeLift(drawMarks);
+        else drawMarks();
     }
 
     drawPrimaryPillRestamp(ctx, villageSnapshot, nightFactor, buildingDimsLookup(renderer));

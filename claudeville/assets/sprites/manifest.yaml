@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-09-02-titan-hulls-v1"
+  assetVersion: "2026-09-02-footbridge-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -1734,19 +1734,18 @@ atmosphere:
 
 # ─── BRIDGES ─────────────────────────────────────────────────────────────────
 bridges:
-  - id: bridge.landmark.elderwood.ns
-    tool: map_object
-    prompt: "single cohesive epic fantasy RPG bridge crossing asset, wide wooden onramp on the left, raised central bridge deck, wide wooden offramp on the right, all one continuous structure in the same style, left-to-right screen direction with slight isometric diagonal, mossy elderwood timber planks, carved grey stone abutments and side rails, green rune lantern posts, broad enough for two characters to pass, transparent background only, isolated sprite, no water, no ground tile, no square base, empty transparent corners"
-    width: 256
-    height: 192
-    anchor: [128, 112]
-
+  # Central river footbridge (BRIDGE_HINTS central-river-bridge). Drawn at
+  # native 1x with `anchor` on the deck midpoint's ground-plane point (the
+  # hint tile, 18,24); the deck runs upper-right -> lower-left (NS) and the
+  # stone abutments land on the bank tiles 22 and 26. REST pixflux returns this on a
+  # flat grey card, so key the exact card colour (tight tolerance) rather than
+  # the shared 85-per-channel flood fill, which eats the dark outlines.
   - id: bridge.landmark.civic.ns
     tool: map_object
-    prompt: "single cohesive epic fantasy RPG town bridge crossing asset, wide wooden onramp on the left, raised central bridge deck, wide wooden offramp on the right, all one continuous structure in the same style, left-to-right screen direction with slight isometric diagonal, warm timber planks, carved civic stone abutments, brass rail posts, blue rune lanterns and subtle red pennants, broad enough for two characters to pass, transparent background only, isolated sprite, no water, no ground tile, no square base, empty transparent corners"
+    prompt: "isolated village footbridge centered in the frame with empty margins on every side, gently arched warm oak plank deck with curved timber handrails and carved corner posts, resting on mossy grey fieldstone abutments with rounded boulders and small wildflower clumps at both ends, two small brass lanterns with soft amber glow on the end posts, the bridge runs diagonally from upper-right to lower-left, wide enough for two people, no water, no ground tile, no square base, no baked cast shadow, no text, no characters, a single low grey stone arch beneath the wooden deck"
     width: 256
-    height: 192
-    anchor: [128, 112]
+    height: 208
+    anchor: [132, 124]
 
   - id: bridge.ew
     tool: isometric_tile

@@ -9,7 +9,7 @@ export const CHRONICLER_PAUSE_MS = 3600;
 const LANDMARKS = Object.freeze({
     archive: CHRONICLER_HOME,
     harbor: Object.freeze({ tileX: 28, tileY: 19 }),
-    taskboard: Object.freeze({ tileX: 23, tileY: 35 }),
+    taskboard: Object.freeze({ tileX: 25, tileY: 37 }),
     watchtower: Object.freeze({ tileX: 28, tileY: 14 }),
 });
 const SPEED_TILES_PER_FRAME = 0.018;

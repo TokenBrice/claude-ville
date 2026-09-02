@@ -643,6 +643,8 @@ export class SceneryEngine {
             kind: meta.kind || 'landmark',
             bridgeId: meta.id || null,
             style: meta.style || 'civic',
+            deckRise: Number(meta.deckRise) || 0,
+            nearRail: meta.nearRail || null,
             walkable: meta.walkable !== false,
         });
     }

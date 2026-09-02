@@ -52,7 +52,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'production-row',
         material: 'dirt',
         width: 1,
-        points: [[6, 34], [13, 34], [18, 38], [24, 37], [25, 29]],
+        points: [[6, 34], [13, 34], [18, 38], [22, 37], [28, 37], [28, 31], [25, 29]],
     },
     {
         id: 'west-production-road',
@@ -64,7 +64,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'central-river-bridge',
         material: 'avenue',
         width: 1,
-        points: [[16, 20], [19, 21], [20, 23], [19, 26], [18, 27], [24, 31], [24, 37]],
+        points: [[16, 20], [18, 21], [18, 26], [22, 31], [22, 37]],
     },
     {
         id: 'archive-walk',
@@ -94,6 +94,6 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'gate-avenue',
         material: 'avenue',
         width: 1,
-        points: [[18, 27], [18, 32], [19, 36], [19, 39]],
+        points: [[18, 26], [18, 32], [19, 36], [19, 39]],
     },
 ]);

@@ -51,15 +51,31 @@ export const WATER_POLYLINES = [
         width: 2.6,
         points: [[31, 22], [34, 22], [37, 22], [39, 23]],
     },
-    // Main moat through City Center. It separates the north civic landmarks
-    // from the production row, then drains into the harbor sea.
+    // Main river through City Center. The local narrows shortens the
+    // footbridge span before the river drains into the harbor sea.
     {
         kind: 'river',
         region: 'river',
         surface: 'current',
         weatherProfile: 'river',
         width: 2.15,
-        points: [[0, 25], [9, 25], [14, 25], [22, 25], [30, 24], [35, 23], [39, 22]],
+        points: [[0, 25], [9, 25], [13, 25]],
+    },
+    {
+        kind: 'river',
+        region: 'river',
+        surface: 'current',
+        weatherProfile: 'river',
+        width: 1.4,
+        points: [[13, 25], [15, 24.5], [21, 24.5], [23, 25]],
+    },
+    {
+        kind: 'river',
+        region: 'river',
+        surface: 'current',
+        weatherProfile: 'river',
+        width: 2.15,
+        points: [[23, 25], [30, 24], [35, 23], [39, 22]],
     },
 ];
 
@@ -172,7 +188,7 @@ export const WATER_BASINS = [
         weatherProfile: 'lagoon',
         centerX: 17,
         centerY: 22,
-        radiusX: 1.6,
+        radiusX: 1.2,
         radiusY: 1.2,
         edgeNoise: 0.14,
     },
@@ -184,16 +200,20 @@ export const WATER_BASINS = [
 // `orientation` is optional; when omitted the engine derives it from neighbor
 // water tiles.
 export const BRIDGE_HINTS = [
+    // The deck is 3 tiles wide (17..19) x 3 long (23..25); only the center
+    // column is walkable. deckRise is the visual arch height in px used for
+    // the agent lift. nearRail is the span-space band (px) containing the
+    // sprite's camera-near handrail used for occlusion.
     {
         id: 'central-river-bridge',
         tileX: 18,
-        tileY: 25,
+        tileY: 24,
         orientation: 'NS',
-        style: 'elderwood',
-        widthRadius: 2,
-        // Side spans carry the landmark art, rails, and accents over water;
-        // traversal stays on the authored center deck.
+        style: 'civic',
+        widthRadius: 1,
         walkableRadius: 0,
+        deckRise: 10,
+        nearRail: { inner: 30, outer: 76, top: 44, bottom: 10 },
     },
 ];
 
@@ -211,49 +231,6 @@ export const PLANK_BRIDGES = [
         orientation: 'NS',
     },
 ];
-
-export const BRIDGE_ACCENT_PROPS = [
-    { bridgeId: 'central-river-bridge', id: 'prop.bridgeLanternPost', t: 0.16, side: -1 },
-    { bridgeId: 'central-river-bridge', id: 'prop.bridgeLanternPost', t: 0.84, side: 1 },
-    { bridgeId: 'central-river-bridge', id: 'prop.bridgeBannerRune', t: 0.50, side: -1 },
-];
-
-export const BRIDGE_STYLE_PALETTES = {
-    civic: {
-        shadow: 'rgba(19, 7, 5, 0.36)',
-        underStone: '#4c4a42',
-        underStoneDark: '#27241f',
-        underStoneLight: '#80745e',
-        deckDark: '#3d1b13',
-        deckEdge: '#4a2015',
-        deckA: '#774326',
-        deckB: '#c17a42',
-        deckC: '#e1a05d',
-        railDark: '#2a0f09',
-        railMid: '#8e4528',
-        rope: '#d3a45e',
-        rune: 'rgba(104, 204, 255, 0.72)',
-        glow: 'rgba(85, 195, 255, 0.24)',
-        moss: 'rgba(86, 126, 60, 0.45)',
-    },
-    elderwood: {
-        shadow: 'rgba(14, 10, 6, 0.38)',
-        underStone: '#3f4a3d',
-        underStoneDark: '#20281f',
-        underStoneLight: '#71805c',
-        deckDark: '#332015',
-        deckEdge: '#49301c',
-        deckA: '#684b29',
-        deckB: '#a26c35',
-        deckC: '#d0914f',
-        railDark: '#26180f',
-        railMid: '#7d542b',
-        rope: '#c7a35e',
-        rune: 'rgba(149, 226, 133, 0.70)',
-        glow: 'rgba(112, 207, 102, 0.22)',
-        moss: 'rgba(92, 151, 70, 0.54)',
-    },
-};
 
 // Small authored Harbor Master causeway. This is intentionally separate from
 // the two landmark river bridges so agents can reach the harbor without
@@ -358,13 +335,12 @@ export const BOULDERS = [
     { tileX: 4.8, tileY: 27.4, scale: 0.95, variant: 'a' },
     { tileX: 6.2, tileY: 30.6, scale: 1.1, variant: 'b' },
     { tileX: 15.4, tileY: 34.3, scale: 0.9, variant: 'a' },
-    { tileX: 27.9, tileY: 33.6, scale: 1.05, variant: 'b' },
+    { tileX: 29.2, tileY: 33.6, scale: 1.05, variant: 'b' },
     { tileX: 32.8, tileY: 6.5, scale: 0.9, variant: 'a' },
     { tileX: 22.0, tileY: 14.0, scale: 1.05, variant: 'b' },
     { tileX: 23.2, tileY: 13.2, scale: 0.95, variant: 'b' },
-    { tileX: 18.6, tileY: 23.2, scale: 0.90, variant: 'a' },
-    { tileX: 19.0, tileY: 22.4, scale: 1.00, variant: 'a' },
-    { tileX: 16.4, tileY: 23.4, scale: 0.85, variant: 'a' },
+    { tileX: 14.6, tileY: 22.4, scale: 0.9, variant: 'b' },
+    { tileX: 21.5, tileY: 26.4, scale: 0.85, variant: 'b' },
 ];
 
 // District biases make the authored map read in larger masses instead of
@@ -405,10 +381,10 @@ export const SCENERY_CLEARINGS = [
     { name: 'clock-terrace', centerX: 27, centerY: 18, radius: 5.2, strength: 0.32 },
     { name: 'production-row', centerX: 22, centerY: 29.5, radius: 12.0, strength: 0.21 },
     { name: 'harbor-stage', centerX: 37, centerY: 20.5, radius: 7.5, strength: 0.28 },
-    { name: 'central-river-bridge', centerX: 18, centerY: 24, radius: 5.4, strength: 0.30 },
+    { name: 'central-river-bridge', centerX: 18, centerY: 23, radius: 5.4, strength: 0.30 },
     { name: 'harbor-mouth', centerX: 32, centerY: 21, radius: 4.0, strength: 0.24 },
     { name: 'isle-promenade-bend', centerX: 14, centerY: 21, radius: 1.6, strength: 0.5 },
-    { name: 'isle-bridge-bend', centerX: 20, centerY: 23, radius: 1.8, strength: 0.5 },
+    { name: 'isle-bridge-bend', centerX: 19.5, centerY: 22.0, radius: 1.6, strength: 0.5 },
 ];
 
 export const TROPICAL_WATERFALLS = [
@@ -433,7 +409,7 @@ export const ANCIENT_RUINS = [
 
 export const DISTRICT_PROPS = [
     { tileX: 11.9, tileY: 21.0, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
-    { tileX: 18.8, tileY: 21.1, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
+    { tileX: 19.2, tileY: 21.1, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
     { tileX: 15.4, tileY: 21.6, id: 'prop.runeFountain', layer: 'cache', district: 'civic' },
     { tileX: 2.2, tileY: 14.4, id: 'veg.root.arch', layer: 'sorted', district: 'elderwood' },
     { tileX: 6.2, tileY: 26.5, id: 'veg.standingStone.mossy', layer: 'cache', district: 'elderwood' },
@@ -463,22 +439,34 @@ export const DISTRICT_PROPS = [
     // Driftwood logs: west shore shallows.
     { tileX: 7.2, tileY: 10.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
     { tileX: 8.6, tileY: 9.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
-    // Central island shrine and lily pool composition. Pads sit on the open
-    // water tiles beside the landmark bridge deck (the widened deck covers
-    // the pond's east half, so pads keep clear of it).
-    { tileX: 15.0, tileY: 22.4, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
-    { tileX: 15.6, tileY: 21.0, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
-    { tileX: 15.2, tileY: 22.2, id: 'prop.runeBrazier', layer: 'cache', district: 'civic' },
-    { tileX: 15.4, tileY: 21.2, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 16.4, tileY: 21.3, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 17.2, tileY: 21.5, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 14.6, tileY: 23.3, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 15.4, tileY: 23.7, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 17.4, tileY: 22.7, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'civic' },
-    { tileX: 16.4, tileY: 21.4, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
-    { tileX: 16.2, tileY: 22.4, id: 'prop.mangroveRoot.arch', layer: 'sorted', district: 'civic' },
-    { tileX: 17.8, tileY: 21.4, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
-    { tileX: 17.6, tileY: 22.8, id: 'prop.driftwood.log', layer: 'cache', district: 'civic' },
+    // Central island shrine and restored lily pool composition. Pads and the
+    // buoy sit within the four pond tiles; roots and shrine props ring the dry
+    // west and south banks, clear of the avenue and bridge.
+    { tileX: 15.3, tileY: 22.5, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
+    { tileX: 15.4, tileY: 22.7, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
+    { tileX: 14.8, tileY: 22.3, id: 'prop.runeBrazier', layer: 'cache', district: 'civic' },
+    { tileX: 16.4, tileY: 21.5, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 17.3, tileY: 21.4, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 16.6, tileY: 22.4, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 17.4, tileY: 22.6, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 16.2, tileY: 21.2, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 17.6, tileY: 22.2, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'civic' },
+    { tileX: 15.2, tileY: 22.1, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
+    { tileX: 14.6, tileY: 22.8, id: 'prop.mangroveRoot.arch', layer: 'sorted', district: 'civic' },
+    { tileX: 20.4, tileY: 22.7, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
+    { tileX: 15.8, tileY: 22.8, id: 'prop.driftwood.log', layer: 'cache', district: 'civic' },
+    { tileX: 20.6, tileY: 22.2, id: 'prop.signpost', layer: 'sorted', district: 'civic' },
+    // Footbridge abutments. The north-west corner stands in the lily pond, so
+    // only the dry south-east corner carries a lantern post; the sprite's own
+    // post lanterns light the other three.
+    { tileX: 19.4, tileY: 26.6, id: 'prop.bridgeLanternPost', layer: 'sorted', district: 'civic' },
+    { tileX: 16.4, tileY: 26.9, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
+    { tileX: 19.6, tileY: 22.3, id: 'veg.boulder.mossy.small', layer: 'sorted', district: 'civic' },
+    { tileX: 16.3, tileY: 22.6, id: 'veg.flower.a', layer: 'cache', district: 'civic' },
+    { tileX: 19.8, tileY: 22.5, id: 'veg.flower.b', layer: 'cache', district: 'civic' },
+    { tileX: 16.4, tileY: 26.6, id: 'veg.flower.c', layer: 'cache', district: 'civic' },
+    { tileX: 19.7, tileY: 26.7, id: 'veg.flowerBed', layer: 'cache', district: 'civic' },
+    { tileX: 19.7, tileY: 26.1, id: 'prop.bridgeBannerRune', layer: 'sorted', district: 'civic' },
     // Workshop district: Code Forge approach and Forge → Task Board handoff.
     { tileX: 27.0, tileY: 30.2, id: 'prop.scrollCrates', layer: 'cache', district: 'workshop' },
     { tileX: 30.2, tileY: 28.4, id: 'prop.runestone', layer: 'sorted', district: 'workshop' },
@@ -486,7 +474,6 @@ export const DISTRICT_PROPS = [
     // Civic north promenade: Command Center → Observatory corridor.
     { tileX: 18.5, tileY: 17.5, id: 'prop.well', layer: 'cache', district: 'civic' },
     { tileX: 19.0, tileY: 18.0, id: 'prop.flowerCart', layer: 'cache', district: 'civic' },
-    { tileX: 16.0, tileY: 21.3, id: 'prop.signpost', layer: 'sorted', district: 'civic' },
     // Gate-avenue spine between river bridge and village gate.
     { tileX: 17.5, tileY: 30.0, id: 'prop.marketStall', layer: 'sorted', district: 'gate' },
     { tileX: 20.0, tileY: 27.5, id: 'prop.noticePillar', layer: 'sorted', district: 'gate' },
@@ -513,7 +500,7 @@ export const AMBIENT_GROUND_PROPS = [
     { tileX: 13.3, tileY: 34.7, type: 'oreCart' },
     { tileX: 9.0, tileY: 33.8, type: 'lantern' },
     { tileX: 15.5, tileY: 34.4, type: 'runestone' },
-    { tileX: 22.5, tileY: 33.6, type: 'noticePillar' },
+    { tileX: 21.4, tileY: 33.6, type: 'noticePillar' },
 
     // Civic core: utility props around the square, not scattered through the woods.
     { tileX: 15.3, tileY: 20.4, type: 'well' },
@@ -534,8 +521,8 @@ export const AMBIENT_GROUND_PROPS = [
 ];
 
 export const AMBIENT_SCENIC_POINTS = Object.freeze([
-    { id: 'bridge-west', tileX: 14, tileY: 28, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
-    { id: 'bridge-east', tileX: 18, tileY: 30, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
+    { id: 'bridge-west', tileX: 17, tileY: 26, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
+    { id: 'bridge-east', tileX: 19, tileY: 22, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
     { id: 'harbor-rail', tileX: 31, tileY: 23, district: 'harbor', reason: 'harbor-watch', tags: ['water'] },
     { id: 'harbor-ledger', tileX: 33, tileY: 24, district: 'harbor', reason: 'dock-ledger', tags: ['harbor'] },
     { id: 'portal-ruins', tileX: 4, tileY: 36, district: 'arcane', reason: 'portal-observe', tags: ['portal'] },
@@ -544,8 +531,8 @@ export const AMBIENT_SCENIC_POINTS = Object.freeze([
     { id: 'archive-alcove', tileX: 10, tileY: 18, district: 'knowledge', reason: 'reading-alcove', tags: ['archive'] },
     { id: 'observatory-view', tileX: 25, tileY: 19, district: 'knowledge', reason: 'skywatch', tags: ['observatory'] },
     { id: 'lighthouse-shore', tileX: 30, tileY: 15, district: 'harbor', reason: 'shore-watch', tags: ['watchtower'] },
-    { id: 'plaza-corner', tileX: 18, tileY: 23, district: 'civic', reason: 'plaza-pause', tags: ['command'] },
-    { id: 'forge-handoff', tileX: 25, tileY: 32, district: 'workshop', reason: 'handoff-path', tags: ['forge', 'taskboard'] },
+    { id: 'plaza-corner', tileX: 20, tileY: 22, district: 'civic', reason: 'plaza-pause', tags: ['command'] },
+    { id: 'forge-handoff', tileX: 27, tileY: 31, district: 'workshop', reason: 'handoff-path', tags: ['forge', 'taskboard'] },
 ]);
 
 // #41 — Scenic-point storytelling props. Authored detail baked at the
@@ -557,8 +544,8 @@ export const AMBIENT_SCENIC_POINTS = Object.freeze([
 // standing villager and the prop compose rather than overlap. Existing,
 // manifest-validated sprite ids only — no new PNGs, so no assetVersion bump.
 export const SCENIC_POINT_PROPS = [
-    { scenicPoint: 'bridge-west', tileX: 14.6, tileY: 27.4, id: 'prop.lantern', layer: 'cache' },
-    { scenicPoint: 'bridge-east', tileX: 18.6, tileY: 30.5, id: 'prop.lantern', layer: 'cache' },
+    { scenicPoint: 'bridge-west', tileX: 16.5, tileY: 26.4, id: 'prop.lantern', layer: 'cache' },
+    { scenicPoint: 'bridge-east', tileX: 19.6, tileY: 21.6, id: 'prop.lantern', layer: 'cache' },
     { scenicPoint: 'harbor-rail', tileX: 31.5, tileY: 23.4, id: 'prop.netRack', layer: 'cache' },
     { scenicPoint: 'harbor-ledger', tileX: 33.5, tileY: 24.3, id: 'prop.scrollCrates', layer: 'cache' },
     { scenicPoint: 'portal-ruins', tileX: 4.5, tileY: 35.5, id: 'prop.runestone', layer: 'cache' },
@@ -567,8 +554,8 @@ export const SCENIC_POINT_PROPS = [
     { scenicPoint: 'archive-alcove', tileX: 10.4, tileY: 17.6, id: 'prop.scrollCrates', layer: 'cache' },
     { scenicPoint: 'observatory-view', tileX: 25.4, tileY: 18.5, id: 'prop.runestone', layer: 'cache' },
     { scenicPoint: 'lighthouse-shore', tileX: 29.6, tileY: 15.4, id: 'prop.driftwood.log', layer: 'cache' },
-    { scenicPoint: 'plaza-corner', tileX: 17.5, tileY: 22.6, id: 'prop.flowerCart', layer: 'cache' },
-    { scenicPoint: 'forge-handoff', tileX: 24.5, tileY: 32.4, id: 'prop.scrollCrates', layer: 'cache' },
+    { scenicPoint: 'plaza-corner', tileX: 20.6, tileY: 21.4, id: 'prop.flowerCart', layer: 'cache' },
+    { scenicPoint: 'forge-handoff', tileX: 27.4, tileY: 32.4, id: 'prop.scrollCrates', layer: 'cache' },
 ];
 
 export const GULL_FLIGHT_FRAMES = [
