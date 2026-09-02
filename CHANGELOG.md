@@ -2,6 +2,12 @@
 
 ---
 
+## v0.40.0.2 · Sep 02, 2026 — Hotfix
+
+- **Hook timing test bounded by the real contract.** `agent-hooks.test.mjs` asserted every hook run under 200 ms; a `session` run that spawns `git status` took 203 ms on a shared CI runner. Each run must now stay under 500 ms (half the 1 s `timeout` in `.claude/settings.json`) and the median over ten runs under 200 ms, so a regression still surfaces before hooks start being killed without failing on runner jitter.
+
+---
+
 ## v0.40.0.1 · Sep 02, 2026 — Hotfix
 
 - **Node floor is now 22.7.** The first honest CI run (v0.40.0) was green on Node 24 and red on Node 18: the browser code is `.js` ES modules, and Node only detects that syntax unflagged from 22.7, so `node --check` and the unit suite both fail on 18 (verified with a real Node 18.20.8 binary — `ModelVisualIdentity.js` is loaded as CommonJS). `engines.node` is `>=22.7.0`, CI runs 22.x and 24.x, and the README badge and prerequisites say so. Node 20 is end-of-life; `server.js` itself still runs on older Node, but the repository's checks do not.
