@@ -97,7 +97,9 @@ if (options) {
     const browserLabel = browserFormatModelLabel(model, effort, provider);
     const serverLabel = serverFormatModelLabel(model, effort, provider);
     const resolvedRow = browserMatch.row;
-    const spriteId = resolvedRow?.spriteId || null;
+    // Source adapters (omp, opencode) resolve identity through the inferred
+    // model family, so check the sprite the presentation actually renders.
+    const spriteId = browserIdentity.spriteId || resolvedRow?.spriteId || null;
     const sheetPath = spriteId
         ? join(repoRoot, 'claudeville', 'assets', 'sprites', 'characters', spriteId, 'sheet.png')
         : null;

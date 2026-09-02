@@ -20,7 +20,7 @@ Mutation boundary: the selected character entry and PNGs, reviewed palette/chann
 
 1. Add or verify the manifest entry, including engine `size: 92`, `generationSize`, optional `generationMode`, prompt, eight directions, animations, palette, anchor, and material metadata.
 2. Run `node scripts/sprites/plan.mjs --ids=<sprite_id>` and stop if the prompt, generation size/mode, engine cell, sheet dimensions, or output path is wrong.
-3. Call `mcp__pixellab__create_character` with `description`, `name`, `image_size`, `n_directions`, `view`, `outline`, `shading`, `detail`, `mode`, and optional `seed`, using the values specified by the runbook.
+3. Call `mcp__pixellab__create_character` with `description`, `name`, `size` (not the retired `image_size` object), `n_directions`, `view`, `outline`, `shading`, `detail`, `mode`, and optional `seed`, using the values specified by the runbook.
 4. Call `mcp__pixellab__animate_character` twice with `character_id`, `mode="template"`, `directions`, and `template_animation_id`: first `walking-6-frames`, then `breathing-idle`.
 5. Poll `mcp__pixellab__get_character` with `character_id` every 60 seconds until both animations reach 100%; download the completed ZIP with `curl --fail`.
 6. Run `node scripts/sprites/generate-character-mcp.mjs --id=<sprite_id> --zip=<path>`.
