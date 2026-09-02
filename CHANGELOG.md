@@ -2,6 +2,20 @@
 
 ---
 
+## v0.39.1 — *Titan Tides* · Sep 02, 2026
+
+The harbor stops drowning in skiffs. Unpushed commits still sail, but a busy repo now sails as a fleet of titans moored at its own stretch of coast.
+
+**Titan-class commit ships**
+- A repo branch holding five or more unpushed commits no longer shows one ship per commit. The fleet consolidates into `ceil(n / 50)` balanced stack ships on a 5 / 10 / 20 / 30 / 40 / 50-class hull ladder; the exact count rides on the hull (`47⚓`). Two new hulls — `prop.harborShip.stack40` and `prop.harborShip.stack50` — carry the 40 and 50 tiers; the 20 tier reuses the 20–30 flagship art. Failed, rejected, cancelled, untethered, and detached-HEAD commits keep their own ship so trouble stays visible.
+- Hidden pack members inherit their titan's position, so a push still launches the whole fleet from where you saw it, and the titan sails out as one hull instead of a fifty-skiff procession. Small fleets (under five) keep the lead-hull-and-skiffs look.
+
+**Home Waters moved to the coast**
+- Repo anchorages leave the harbor basin and spread along the whole east coast — ten named slots (Beacon Shoal, River Mouth, Pharos Reach, Southern Strand, North Shoal, Reed Point, Far North Sea, Wall Tower Bank, Pharos Bank, Strand Shallows) filled alternately north and south of the Harbor Master so even a few repos already line the shore.
+- Each repo's commit ships now dock beside **its own buoy**: the buoy, its name-and-count label, and the fleet share one slot allocated in harbor state, so a glance answers "whose ships are those". The Commit Lagoon becomes the overflow anchorage for repos beyond the ten slots (plus the `+N` chip), and the lighthouse pulses for unpushed commits anywhere in home waters.
+
+---
+
 ## v0.39.0.1 · Sep 02, 2026 — Hotfix
 
 - **The FPS counter is back on the brand line.** v0.38 demoted it to a danger-only chip with the honest percentiles in Settings → Health; the maintainer wants the live number always visible next to LIVE and the version, so it is. The danger styling below 25 FPS and the Settings detail both stay.

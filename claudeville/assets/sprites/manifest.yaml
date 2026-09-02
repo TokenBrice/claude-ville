@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-08-25-native-landmarks-v3"
+  assetVersion: "2026-09-02-titan-hulls-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -1136,6 +1136,20 @@ props:
     prompt: "heavy isometric fleet-stack marker for about twenty to thirty fantasy harbor commit cargo boats, central flagship hull with smaller dark wood boats around it, dense staggered cream sails, gold branch sigils, transparent background, no text, no numbers"
     size: 168
     anchor: [84, 130]
+
+  - id: prop.harborShip.stack40
+    tool: map_object
+    # NOTE: baked via REST pixflux with seed=11 (the manifest-hash seed keeps
+    # returning a hull sitting on an opaque water diamond).
+    prompt: "titan-class isometric fleet-stack marker for about forty fantasy harbor commit cargo boats, colossal dark wood treasure galleon with towering stacked cream sails and a cluster of small cargo boats lashed to its hull, gold branch sigils, glowing sealed cargo crates on deck, transparent background, no text, no numbers"
+    size: 184
+    anchor: [92, 142]
+
+  - id: prop.harborShip.stack50
+    tool: map_object
+    prompt: "titan-class isometric fleet-stack marker for about fifty fantasy harbor commit cargo boats, mythic leviathan-sized dark wood ark with five towering masts of cream sails, ornate gold prow, magical lanterns, dense flotilla of tiny cargo boats moored around its hull, gold branch sigils, transparent background, no text, no numbers"
+    size: 200
+    anchor: [100, 156]
 
   - id: prop.harborCrates
     tool: isometric_tile

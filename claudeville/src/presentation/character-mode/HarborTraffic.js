@@ -66,11 +66,12 @@ const PUSH_SIGNAL_EXPIRY_MS = 8000;
 const HARBOR_BEACON_BUOY_TILE = { tileX: 26.0, tileY: 6.0 };
 const REPO_DOCK_SHIP_Y_OFFSET = 236;
 const REPO_DOCK_SHIP_SORT_OFFSET = 8;
-const MAX_HARBOR_SHIP_PACK_SIZE = 30;
-// v0.23 A1 — one visible ship per commit up to this cap; overflow past the cap
-// collapses into stack drawables so a busy repo stays legible.
-const HARBOR_DOCKED_VISUAL_PACK_THRESHOLD = 15;
-const HARBOR_DOCKED_VISUAL_PACK_SIZE = 30;
+const MAX_HARBOR_SHIP_PACK_SIZE = 50;
+// Titan tiers — a repo/branch fleet of HARBOR_TITAN_MIN_COMMITS or more docked
+// commits stops sailing as one ship per commit and consolidates into
+// ceil(n / 50) balanced stack ships (5/10/20/30/40/50-class hulls, exact count
+// on the badge). Smaller fleets keep the lead-hull + skiffs look.
+const HARBOR_TITAN_MIN_COMMITS = 5;
 const HARBOR_SQUAD_REUSE_OFFSETS = Object.freeze([
     { tileX: 0.70, tileY: 0.48 },
     { tileX: -0.56, tileY: 0.56 },
@@ -86,11 +87,14 @@ const HARBOR_SHIP_CLASSES = Object.freeze([
     { key: 'cutter', spriteId: 'prop.harborShip.cutter', minCommits: 2, scale: 0.88, wakeScale: 1.15, cargoRows: 1, mastCount: 1, labelLift: 16, flagOffsetX: 8, flagOffsetY: 16, badge: '2+' },
     { key: 'skiff', spriteId: 'prop.harborShip.skiff', minCommits: 1, scale: 0.82, wakeScale: 0.88, cargoRows: 0, mastCount: 1, labelLift: 0, flagOffsetX: 0, flagOffsetY: 0, badge: '' },
 ]);
+// Stack hull per titan tier, chosen by the pack's exact commit count.
 const HARBOR_SHIP_STACK_CLASSES = Object.freeze([
-    { key: 'stack30', spriteId: 'prop.harborShip.stack30', minCommits: 25, scale: 0.82, wakeScale: 2.34, cargoRows: 8, mastCount: 6, labelLift: 54, flagOffsetX: 34, flagOffsetY: 52 },
-    { key: 'stack20', spriteId: 'prop.harborShip.stack30', minCommits: 15, scale: 0.72, wakeScale: 2.02, cargoRows: 7, mastCount: 5, labelLift: 46, flagOffsetX: 30, flagOffsetY: 46 },
-    { key: 'stack10', spriteId: 'prop.harborShip.stack10', minCommits: 8, scale: 0.76, wakeScale: 1.66, cargoRows: 5, mastCount: 4, labelLift: 36, flagOffsetX: 24, flagOffsetY: 36 },
-    { key: 'stack5', spriteId: 'prop.harborShip.stack5', minCommits: 5, scale: 0.80, wakeScale: 1.30, cargoRows: 3, mastCount: 3, labelLift: 26, flagOffsetX: 17, flagOffsetY: 28 },
+    { key: 'stack50', spriteId: 'prop.harborShip.stack50', minCommits: 50, scale: 0.90, wakeScale: 2.80, cargoRows: 10, mastCount: 7, labelLift: 68, flagOffsetX: 42, flagOffsetY: 66 },
+    { key: 'stack40', spriteId: 'prop.harborShip.stack40', minCommits: 40, scale: 0.88, wakeScale: 2.60, cargoRows: 9, mastCount: 6, labelLift: 62, flagOffsetX: 38, flagOffsetY: 60 },
+    { key: 'stack30', spriteId: 'prop.harborShip.stack30', minCommits: 30, scale: 0.86, wakeScale: 2.38, cargoRows: 8, mastCount: 6, labelLift: 56, flagOffsetX: 34, flagOffsetY: 54 },
+    { key: 'stack20', spriteId: 'prop.harborShip.stack30', minCommits: 20, scale: 0.76, wakeScale: 2.12, cargoRows: 7, mastCount: 5, labelLift: 50, flagOffsetX: 30, flagOffsetY: 48 },
+    { key: 'stack10', spriteId: 'prop.harborShip.stack10', minCommits: 10, scale: 0.80, wakeScale: 1.72, cargoRows: 5, mastCount: 4, labelLift: 38, flagOffsetX: 24, flagOffsetY: 38 },
+    { key: 'stack5', spriteId: 'prop.harborShip.stack5', minCommits: 1, scale: 0.80, wakeScale: 1.30, cargoRows: 3, mastCount: 3, labelLift: 26, flagOffsetX: 17, flagOffsetY: 28 },
 ]);
 const HARBOR_DOCK_WATER_BOUNDS = Object.freeze({
     minTileX: 31.05,
@@ -154,24 +158,42 @@ const QUAY_GROUPS = [
     { name: 'Outer Quay', berthIndexes: [9, 10, 11] },
 ];
 
-// Home Waters — persistent per-repo anchorages. Each active repo (a repo with
-// a live agent, or with docked commit ships) gets a stable buoy + crest +
-// tinted-water marker in the glanceable harbor basin, so the harbor reads as a
-// map of which projects are alive. Slots sit in open water among the squad
-// anchorages where commit ships dock. Repos beyond the pool share an overflow
-// chip (no silent drop).
-const REPO_ANCHORAGE_SLOTS = Object.freeze([
-    { tileX: 35.6, tileY: 22.2 },
-    { tileX: 37.4, tileY: 20.6 },
-    { tileX: 37.8, tileY: 17.6 },
-    { tileX: 38.1, tileY: 14.2 },
-    { tileX: 38.6, tileY: 16.4 },
-    { tileX: 38.4, tileY: 21.4 },
-    { tileX: 37.0, tileY: 19.0 },
-    { tileX: 36.2, tileY: 21.4 },
+// Home Waters — persistent per-repo coastal anchorages. Each active repo (a
+// repo with a live agent, or with docked commit ships) claims a stable buoy +
+// crest + tinted-water slot spread along the east coast, and that repo's
+// docked commit ships form up beside their own buoy, so the coast reads as a
+// map of which projects are alive and how much each is holding. Slots are
+// listed in fill order (alternating north/south of the Harbor Master so a few
+// repos already spread along the whole coast). `leadDx/leadDy` offset the
+// formation origin from the buoy; rows march away from the buoy along the
+// shore so the buoy label stays in front of its fleet. Repos beyond the pool
+// share an overflow chip and dock in the Commit Lagoon (no silent drop).
+const COAST_ANCHORAGE_SLOTS = Object.freeze([
+    { name: 'Beacon Shoal', tileX: 35.4, tileY: 13.2, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
+    { name: 'River Mouth', tileX: 34.2, tileY: 25.6, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
+    { name: 'Pharos Reach', tileX: 33.0, tileY: 10.2, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
+    { name: 'Southern Strand', tileX: 35.8, tileY: 28.6, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
+    { name: 'North Shoal', tileX: 35.4, tileY: 7.4, columns: 2, columnDx: 0, columnDy: 1.15, rowDx: -1.05, rowDy: 0, leadDx: -1.15, leadDy: 0 },
+    { name: 'Reed Point', tileX: 33.6, tileY: 31.4, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
+    { name: 'Far North Sea', tileX: 32.8, tileY: 4.6, columns: 2, columnDx: 0, columnDy: 1.15, rowDx: -1.05, rowDy: 0, leadDx: -1.15, leadDy: 0 },
+    { name: 'Wall Tower Bank', tileX: 35.8, tileY: 34.2, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
+    { name: 'Pharos Bank', tileX: 32.0, tileY: 13.4, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
+    { name: 'Strand Shallows', tileX: 32.2, tileY: 28.2, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
 ]);
-const REPO_ANCHORAGE_OVERFLOW_TILE = Object.freeze({ tileX: 38.5, tileY: 23.6 });
-const MAX_REPO_ANCHORAGES = REPO_ANCHORAGE_SLOTS.length;
+const COAST_ANCHORAGE_ZONE = 'coast';
+const COAST_WATER_BOUNDS = Object.freeze({
+    minTileX: 30.4,
+    maxTileX: MAP_SIZE - 2.3,
+    minTileY: 3.3,
+    maxTileY: 36.6,
+});
+const COAST_WATER_REGIONS = Object.freeze([
+    { centerX: 33.00, centerY: 6.20, radiusX: 6.00, radiusY: 3.40, limit: 0.90 },
+    { centerX: 34.30, centerY: 13.50, radiusX: 3.60, radiusY: 5.00, limit: 0.90 },
+    { centerX: 34.00, centerY: 24.50, radiusX: 4.00, radiusY: 5.20, limit: 0.90 },
+    { centerX: 35.20, centerY: 31.80, radiusX: 2.40, radiusY: 4.60, limit: 0.90 },
+]);
+const REPO_ANCHORAGE_OVERFLOW_TILE = Object.freeze({ tileX: 17.2, tileY: 11.4 });
 // An agent's repo stays "home" (a lit anchorage) this long after its last update.
 const REPO_ANCHORAGE_ACTIVE_MS = 5 * 60 * 1000;
 
@@ -723,6 +745,15 @@ function cloneState(previous = {}) {
         if (!identity || count <= 0) continue;
         overflowDockCounts.set(identity, { ...overflow, count });
     }
+    const sourceRepoAnchorages = previous.repoAnchorages instanceof Map
+        ? previous.repoAnchorages.entries()
+        : Object.entries(previous.repoAnchorages || {});
+    const repoAnchorages = new Map();
+    for (const [project, slot] of sourceRepoAnchorages) {
+        const index = Number(slot);
+        if (!project || !Number.isInteger(index) || index < 0 || index >= COAST_ANCHORAGE_SLOTS.length) continue;
+        repoAnchorages.set(project, index);
+    }
     return {
         seenEventIds,
         seenEventTimes,
@@ -733,9 +764,50 @@ function cloneState(previous = {}) {
         batches,
         pushEvents,
         repoQuays,
+        repoAnchorages,
         nextSequence: Number.isFinite(previous.nextSequence) ? previous.nextSequence : ships.size,
         nextBatchSequence: Number.isFinite(previous.nextBatchSequence) ? previous.nextBatchSequence : batches.size,
     };
+}
+
+function repoAnchorageKey(project) {
+    return String(project || 'unknown');
+}
+
+// Home Waters allocation lives in the semantic state so the dock layout, the
+// push reducer (departure start tiles) and the buoy drawables all agree on
+// which coastal slot a repo owns. First come keeps its slot until it has no
+// docked ships and no live agent; slots are claimed in COAST_ANCHORAGE_SLOTS
+// order so the fleet spreads along the coast. Returns the slot index or null
+// when the pool is exhausted (the repo then docks in the Commit Lagoon).
+function ensureRepoAnchorage(state, project) {
+    const key = repoAnchorageKey(project);
+    const existing = state.repoAnchorages.get(key);
+    if (Number.isInteger(existing)) return existing;
+    const used = new Set(state.repoAnchorages.values());
+    for (let slot = 0; slot < COAST_ANCHORAGE_SLOTS.length; slot++) {
+        if (used.has(slot)) continue;
+        state.repoAnchorages.set(key, slot);
+        return slot;
+    }
+    return null;
+}
+
+function repoAnchorageSlot(state, project) {
+    const slot = state?.repoAnchorages?.get?.(repoAnchorageKey(project));
+    return Number.isInteger(slot) ? slot : null;
+}
+
+function syncRepoAnchorages(state, activeProjects = null) {
+    const keep = new Set();
+    for (const ship of state.ships.values()) {
+        if (ship.status === 'docked') keep.add(repoAnchorageKey(ship.project));
+    }
+    for (const project of activeProjects || []) keep.add(repoAnchorageKey(project));
+    for (const key of [...state.repoAnchorages.keys()]) {
+        if (!keep.has(key)) state.repoAnchorages.delete(key);
+    }
+    for (const key of keep) ensureRepoAnchorage(state, key);
 }
 
 function markHarborEventSeen(state, event, now) {
@@ -1268,16 +1340,22 @@ function isCommitLagoonZone(zone) {
     return zone === 'commit-lagoon';
 }
 
+function isCoastZone(zone) {
+    return zone === COAST_ANCHORAGE_ZONE;
+}
+
 function dockWaterBounds(entry = {}) {
-    return isCommitLagoonZone(entry.waitingZone || entry.departWaterZone)
-        ? COMMIT_LAGOON_WATER_BOUNDS
-        : HARBOR_DOCK_WATER_BOUNDS;
+    const zone = entry.waitingZone || entry.departWaterZone;
+    if (isCommitLagoonZone(zone)) return COMMIT_LAGOON_WATER_BOUNDS;
+    if (isCoastZone(zone)) return COAST_WATER_BOUNDS;
+    return HARBOR_DOCK_WATER_BOUNDS;
 }
 
 function dockWaterRegions(entry = {}) {
-    return isCommitLagoonZone(entry.waitingZone || entry.departWaterZone)
-        ? COMMIT_LAGOON_WATER_REGIONS
-        : HARBOR_DOCK_WATER_REGIONS;
+    const zone = entry.waitingZone || entry.departWaterZone;
+    if (isCommitLagoonZone(zone)) return COMMIT_LAGOON_WATER_REGIONS;
+    if (isCoastZone(zone)) return COAST_WATER_REGIONS;
+    return HARBOR_DOCK_WATER_REGIONS;
 }
 
 function dockShipWaterBounds(entry = {}) {
@@ -1425,7 +1503,8 @@ function relaxDockShipLayout(entries = []) {
 // 5.5 — memo for buildDockSquadLayout. relaxDockShipLayout runs up to 14 iterations
 // per call; on first-paint replay (200 unpushed commits across 8 repos) the same
 // ship set + status set repeats across many ticks. Key is the sorted ship-id list +
-// per-ship status/pushStatus/eventTime; cap at 32 entries (drop oldest on overflow).
+// per-ship status/pushStatus/eventTime + the repo→anchorage allocation; cap at
+// 32 entries (drop oldest on overflow).
 const DOCK_SQUAD_LAYOUT_CACHE_SIZE = 32;
 const _dockSquadLayoutCache = new Map();
 
@@ -1445,7 +1524,10 @@ function dockSquadLayoutCacheKey(state) {
     if (!ids.length) return 'empty';
     ids.sort();
     meta.sort();
-    return `${ids.join('|')}#${meta.join(',')}`;
+    const anchorages = [];
+    for (const [project, slot] of state?.repoAnchorages?.entries?.() || []) anchorages.push(`${project}=${slot}`);
+    anchorages.sort();
+    return `${ids.join('|')}#${meta.join(',')}#${anchorages.join(',')}`;
 }
 
 function buildDockSquadLayout(state) {
@@ -1468,6 +1550,74 @@ function buildDockSquadLayout(state) {
         }
     }
     return layout;
+}
+
+function dockedShipNeedsIndividualVisual(ship = {}) {
+    return ship.pushStatus === 'failed'
+        || ship.pushStatus === 'rejected'
+        || ship.pushStatus === 'cancelled'
+        || ship.pushStatus === 'canceled'
+        || ship.untetheredFlag
+        || ship.detachedHead;
+}
+
+// Titan packing. `ships` is one repo/branch fleet in dock order. Fleets under
+// HARBOR_TITAN_MIN_COMMITS keep one ship per commit; larger fleets collapse
+// into ceil(n / MAX_HARBOR_SHIP_PACK_SIZE) balanced packs, each drawn as a
+// single stack hull whose badge carries the exact count. Ships that need their
+// own visual (failed/rejected/cancelled pushes, untethered, detached HEAD)
+// always sail individually. Every pack's lead is its first ship; the rest are
+// hidden behind that lead and inherit its position.
+function planDockedVisualPacks(ships = []) {
+    const regular = [];
+    const special = [];
+    ships.forEach((ship, index) => {
+        (dockedShipNeedsIndividualVisual(ship) ? special : regular).push({ ship, index });
+    });
+    const toPack = (chunk) => ({
+        ships: chunk.map(entry => entry.ship),
+        lead: chunk[0].ship,
+        size: chunk.length,
+        startIndex: chunk[0].index,
+        endIndex: chunk[chunk.length - 1].index,
+    });
+    const packs = [];
+    if (regular.length >= HARBOR_TITAN_MIN_COMMITS) {
+        const packCount = Math.ceil(regular.length / MAX_HARBOR_SHIP_PACK_SIZE);
+        const base = Math.floor(regular.length / packCount);
+        const extra = regular.length % packCount;
+        let cursor = 0;
+        for (let packIndex = 0; packIndex < packCount; packIndex++) {
+            const size = base + (packIndex < extra ? 1 : 0);
+            packs.push(toPack(regular.slice(cursor, cursor + size)));
+            cursor += size;
+        }
+    } else {
+        for (const entry of regular) packs.push(toPack([entry]));
+    }
+    for (const entry of special) packs.push(toPack([entry]));
+    packs.sort((a, b) => a.startIndex - b.startIndex);
+    return packs;
+}
+
+function coastFormationAnchor(slot = COAST_ANCHORAGE_SLOTS[0]) {
+    return {
+        ...slot,
+        tileX: slot.tileX + (Number(slot.leadDx) || 0),
+        tileY: slot.tileY + (Number(slot.leadDy) || 0),
+    };
+}
+
+function dockSquadPackSpacing(squad) {
+    return squad.packs.reduce((spacing, pack) => (
+        Math.max(spacing, harborShipClassFormationSpacing(harborShipClass({
+            ...pack.lead,
+            repoDockIndex: pack.startIndex,
+            repoDockCount: squad.repoDockCount,
+            repoDockVisibleCount: squad.packs.length,
+            visualPackSize: pack.size,
+        })))
+    ), 1);
 }
 
 function _buildDockSquadLayoutFresh(state) {
@@ -1504,65 +1654,120 @@ function _buildDockSquadLayoutFresh(state) {
             || (b.latestEventTime - a.latestEventTime)
             || a.profile.name.localeCompare(b.profile.name));
 
+    // Each repo/branch fleet is packed first, then routed either to its
+    // project's coastal anchorage (every branch of a project shares one buoy and
+    // one formation) or, when the coast is full, to the Commit Lagoon in squads
+    // of up to MAX_SHIPS_PER_SQUAD_ANCHORAGE visible packs.
     const squads = [];
+    const fleets = new Map();
+    const makeSquad = (group, packs, extra) => {
+        const ships = packs.flatMap(pack => pack.ships);
+        const dockIndexById = new Map();
+        group.ships.forEach((ship, index) => dockIndexById.set(ship.id, index));
+        return {
+            ...group,
+            ships,
+            packs,
+            dockIndexById,
+            count: ships.length,
+            repoDockCount: group.ships.length,
+            repoTotalDockCount: group.ships.length,
+            repoDockOffset: packs[0]?.startIndex || 0,
+            failedCount: ships.filter(ship => ship.pushStatus === 'failed').length,
+            latestEventTime: ships.reduce((max, ship) => Math.max(max, ship.eventTime || 0), 0),
+            ...extra,
+        };
+    };
     repoGroups.forEach((group, repoGroupIndex) => {
-        const totalRepoDockCount = group.ships.length;
-        const zonePartitions = [
-            {
-                waitingZone: 'harbor',
-                ships: [],
-                sourceOffset: 0,
-            },
-            {
+        const packs = planDockedVisualPacks(group.ships);
+        if (!packs.length) return;
+        const slot = repoAnchorageSlot(state, group.project);
+        if (slot != null) {
+            const fleetKey = repoAnchorageKey(group.project);
+            const fleet = fleets.get(fleetKey) || { key: fleetKey, slot, squads: [] };
+            const squad = makeSquad(group, packs, {
+                waitingZone: COAST_ANCHORAGE_ZONE,
+                repoGroupIndex,
+                repoSegmentIndex: 0,
+                repoSegmentCount: 1,
+                segmentKey: `${group.key}:${COAST_ANCHORAGE_ZONE}:segment:0`,
+            });
+            fleet.squads.push(squad);
+            fleets.set(fleetKey, fleet);
+            squads.push(squad);
+            return;
+        }
+        const repoSegmentCount = Math.max(1, Math.ceil(packs.length / MAX_SHIPS_PER_SQUAD_ANCHORAGE));
+        for (let repoSegmentIndex = 0; repoSegmentIndex < repoSegmentCount; repoSegmentIndex++) {
+            const start = repoSegmentIndex * MAX_SHIPS_PER_SQUAD_ANCHORAGE;
+            const segmentPacks = packs.slice(start, start + MAX_SHIPS_PER_SQUAD_ANCHORAGE);
+            if (!segmentPacks.length) continue;
+            squads.push(makeSquad(group, segmentPacks, {
                 waitingZone: 'commit-lagoon',
-                ships: group.ships,
-                sourceOffset: 0,
-            },
-        ];
-
-        for (const partition of zonePartitions) {
-            const zoneDockCount = partition.ships.length;
-            if (!zoneDockCount) continue;
-            const repoSegmentCount = Math.max(1, Math.ceil(zoneDockCount / MAX_SHIPS_PER_SQUAD_ANCHORAGE));
-            for (let repoSegmentIndex = 0; repoSegmentIndex < repoSegmentCount; repoSegmentIndex++) {
-                const start = repoSegmentIndex * MAX_SHIPS_PER_SQUAD_ANCHORAGE;
-                const ships = partition.ships.slice(start, start + MAX_SHIPS_PER_SQUAD_ANCHORAGE);
-                if (!ships.length) continue;
-                const repoDockOffset = start;
-                squads.push({
-                    ...group,
-                    ships,
-                    count: ships.length,
-                    repoDockCount: zoneDockCount,
-                    repoTotalDockCount: totalRepoDockCount,
-                    repoDockOffset,
-                    repoSourceOffset: partition.sourceOffset + start,
-                    repoGroupIndex,
-                    repoSegmentIndex,
-                    repoSegmentCount,
-                    segmentKey: `${group.key}:${partition.waitingZone}:segment:${repoSegmentIndex}`,
-                    waitingZone: partition.waitingZone,
-                    failedCount: ships.filter(ship => ship.pushStatus === 'failed').length,
-                    latestEventTime: ships.reduce((max, ship) => Math.max(max, ship.eventTime || 0), 0),
-                });
-            }
+                repoGroupIndex,
+                repoSegmentIndex,
+                repoSegmentCount,
+                segmentKey: `${group.key}:commit-lagoon:segment:${repoSegmentIndex}`,
+            }));
         }
     });
 
     const byShipId = new Map();
+    const visualPackByShipId = new Map();
     const squadCount = squads.length;
+    const totalVisible = squads.reduce((sum, squad) => sum + squad.packs.length, 0);
+    for (const fleet of fleets.values()) {
+        const slot = COAST_ANCHORAGE_SLOTS[fleet.slot];
+        const packs = fleet.squads.flatMap(squad => squad.packs);
+        // Coastal slots sit ~3 tiles apart, so keep each fleet short along the
+        // shore: skiff-only fleets take a third column, and one oversized lead
+        // hull does not stretch the whole grid (collision relax clears it).
+        const spacings = fleet.squads.flatMap(squad => squad.packs.map(pack => (
+            harborShipClassFormationSpacing(harborShipClass({
+                ...pack.lead,
+                repoDockIndex: pack.startIndex,
+                repoDockCount: squad.repoDockCount,
+                repoDockVisibleCount: squad.packs.length,
+                visualPackSize: pack.size,
+            }))
+        ))).sort((a, b) => b - a);
+        const hasPack = packs.some(pack => pack.size > 1);
+        fleet.anchor = { ...coastFormationAnchor(slot), columns: hasPack ? slot.columns : slot.columns + 1 };
+        fleet.visibleCount = packs.length;
+        fleet.spacing = Math.max(1.05, (spacings.length >= 3 ? spacings[1] : spacings[0]) || 1);
+        fleet.cursor = 0;
+    }
     const zoneSquadCounts = new Map();
+    const representatives = [];
     squads.forEach((squad, squadIndex) => {
-        const waitingZone = squad.waitingZone || 'harbor';
+        const waitingZone = squad.waitingZone;
         const zoneSquadIndex = zoneSquadCounts.get(waitingZone) || 0;
         zoneSquadCounts.set(waitingZone, zoneSquadIndex + 1);
-        const anchorages = anchoragesForWaitingZone(waitingZone);
-        const anchorIndex = zoneSquadIndex % anchorages.length;
-        const squadCycle = Math.floor(zoneSquadIndex / anchorages.length);
-        const anchor = anchorages[anchorIndex] || anchorages[0] || HARBOR_SQUAD_ANCHORAGES[0];
-        const repoDockCount = Math.max(squad.count, Number(squad.repoDockCount) || squad.count);
-        const density = dockSquadDensity(totalDocked, squadCount, repoDockCount);
-        const compactCommitLabel = density >= 0.52 || totalDocked >= 9 || repoDockCount >= 3;
+        let anchor;
+        let anchorIndex;
+        let squadCycle = 0;
+        let formationBase = 0;
+        let formationCount = squad.packs.length;
+        let spacing;
+        if (isCoastZone(waitingZone)) {
+            const fleet = fleets.get(repoAnchorageKey(squad.project));
+            anchor = fleet.anchor;
+            anchorIndex = fleet.slot;
+            formationBase = fleet.cursor;
+            fleet.cursor += squad.packs.length;
+            formationCount = fleet.visibleCount;
+            spacing = fleet.spacing;
+        } else {
+            const anchorages = anchoragesForWaitingZone(waitingZone);
+            anchorIndex = zoneSquadIndex % anchorages.length;
+            squadCycle = Math.floor(zoneSquadIndex / anchorages.length);
+            anchor = anchorages[anchorIndex] || anchorages[0] || HARBOR_SQUAD_ANCHORAGES[0];
+            spacing = dockSquadPackSpacing(squad);
+        }
+        const repoDockCount = squad.repoDockCount;
+        const visibleCount = squad.packs.length;
+        const density = dockSquadDensity(totalVisible, squadCount, visibleCount);
+        const compactCommitLabel = density >= 0.52 || totalVisible >= 9 || visibleCount >= 3;
         squad.anchor = anchor;
         squad.anchorIndex = anchorIndex;
         squad.squadIndex = squadIndex;
@@ -1571,26 +1776,27 @@ function _buildDockSquadLayoutFresh(state) {
         squad.totalDocked = totalDocked;
         squad.density = density;
         squad.compactCommitLabel = compactCommitLabel;
-        const repoDockOffset = Number(squad.repoDockOffset) || 0;
-        squad.formationSpacing = dockSquadFormationSpacing(squad.ships, repoDockOffset, repoDockCount);
-        squad.ships.forEach((ship, shipIndex) => {
-            const tile = dockSquadFormationTile(anchor, shipIndex, squad.count, squadCycle, squad.segmentKey || squad.key, squad.formationSpacing, anchorIndex);
+        squad.formationSpacing = spacing;
+        squad.packs.forEach((pack, packIndex) => {
+            const tile = dockSquadFormationTile(anchor, formationBase + packIndex, formationCount, squadCycle, squad.segmentKey || squad.key, spacing, anchorIndex);
             const world = toWorld(tile.tileX, tile.tileY);
-            const repoDockIndex = repoDockOffset + shipIndex;
+            const lead = pack.lead;
+            const repoDockIndex = pack.startIndex;
             const layoutShip = {
-                ...ship,
+                ...lead,
                 repoDockIndex,
                 repoDockCount,
-                repoDockVisibleCount: squad.count,
+                repoDockVisibleCount: visibleCount,
                 waitingZone,
+                visualPackSize: pack.size,
             };
-            const showCommitLabel = ship.pushStatus === 'failed'
-                || (!compactCommitLabel && totalDocked <= 18)
-                || (shipIndex === 0 && totalDocked <= 18 && repoDockCount <= 5)
-                || (shipIndex === 0 && totalDocked <= 36 && (squad.repoSegmentIndex % 3) === 0);
-            byShipId.set(ship.id, {
+            const showCommitLabel = lead.pushStatus === 'failed'
+                || (!compactCommitLabel && totalVisible <= 18)
+                || (packIndex === 0 && totalVisible <= 18 && repoDockCount <= 5)
+                || (packIndex === 0 && totalVisible <= 36 && (squad.repoSegmentIndex % 3) === 0);
+            const meta = {
                 ...tile,
-                id: ship.id,
+                id: lead.id,
                 x: world.x,
                 y: world.y,
                 collisionRadius: harborShipCollisionRadius(layoutShip),
@@ -1601,27 +1807,58 @@ function _buildDockSquadLayoutFresh(state) {
                 repoDockIndex,
                 repoDockCount,
                 repoTotalDockCount: squad.repoTotalDockCount,
-                repoDockVisibleCount: squad.count,
+                repoDockVisibleCount: visibleCount,
                 repoSegmentIndex: squad.repoSegmentIndex,
                 repoSegmentCount: squad.repoSegmentCount,
                 squadIndex,
                 zoneSquadIndex,
                 squadCount,
-                squadShipIndex: shipIndex,
-                squadShipCount: squad.count,
+                squadShipIndex: packIndex,
+                squadShipCount: visibleCount,
                 squadDensity: density,
                 compactCommitLabel,
                 showCommitLabel,
+                visualLeadId: lead.id,
+            };
+            byShipId.set(lead.id, meta);
+            representatives.push(meta);
+            visualPackByShipId.set(lead.id, {
+                visualPackSize: pack.size,
+                visualPackStartIndex: pack.startIndex,
+                visualPackEndIndex: pack.endIndex,
+                visualPackHiddenCount: Math.max(0, pack.size - 1),
+                visualIndex: packIndex,
+                visibleCount,
             });
+            for (const ship of pack.ships) {
+                if (ship === lead) continue;
+                byShipId.set(ship.id, {
+                    ...meta,
+                    id: ship.id,
+                    repoDockIndex: squad.dockIndexById.get(ship.id) ?? repoDockIndex,
+                    showCommitLabel: false,
+                });
+            }
         });
     });
 
-    relaxDockShipLayout([...byShipId.values()]);
+    relaxDockShipLayout(representatives);
+    for (const meta of byShipId.values()) {
+        if (meta.visualLeadId === meta.id) continue;
+        const lead = byShipId.get(meta.visualLeadId);
+        if (!lead) continue;
+        meta.x = lead.x;
+        meta.y = lead.y;
+        meta.tileX = lead.tileX;
+        meta.tileY = lead.tileY;
+    }
 
     return {
         squads,
         byShipId,
+        visualPackByShipId,
         totalDocked,
+        totalVisible,
         squadCount,
     };
 }
@@ -2051,6 +2288,9 @@ export function snapshotHarborTrafficState(state) {
         repoQuays: [...cloned.repoQuays.entries()]
             .map(([project, quayIndex]) => ({ project, quayIndex }))
             .sort((a, b) => a.project.localeCompare(b.project)),
+        repoAnchorages: [...cloned.repoAnchorages.entries()]
+            .map(([project, slot]) => ({ project, slot, anchorage: COAST_ANCHORAGE_SLOTS[slot]?.name || '' }))
+            .sort((a, b) => a.project.localeCompare(b.project)),
         batches: [...cloned.batches.values()]
             .map(batch => ({
                 id: batch.id,
@@ -2136,93 +2376,6 @@ function pendingRepoSummariesFromDockSummaries(summaries) {
             || a.repoName.localeCompare(b.repoName));
 }
 
-function dockedShipNeedsIndividualVisual(ship = {}) {
-    return ship.pushStatus === 'failed'
-        || ship.pushStatus === 'rejected'
-        || ship.pushStatus === 'cancelled'
-        || ship.pushStatus === 'canceled'
-        || ship.untetheredFlag
-        || ship.detachedHead;
-}
-
-function buildDockedVisualPackMap(dockLayout) {
-    const groups = new Map();
-    for (const squad of dockLayout?.squads || []) {
-        for (const ship of squad.ships || []) {
-            const meta = dockLayout.byShipId?.get?.(ship.id);
-            if (!meta) continue;
-            const waitingZone = meta.waitingZone || squad.waitingZone || 'harbor';
-            const key = `${squad.key}\x1f${waitingZone}`;
-            const group = groups.get(key) || [];
-            group.push({ ship, meta });
-            groups.set(key, group);
-        }
-    }
-
-    const visible = new Map();
-    for (const entries of groups.values()) {
-        entries.sort((a, b) => (a.meta.repoDockIndex - b.meta.repoDockIndex)
-            || ((a.ship.eventTime || 0) - (b.ship.eventTime || 0))
-            || a.ship.id.localeCompare(b.ship.id));
-
-        const regular = [];
-        const special = [];
-        for (const entry of entries) {
-            if (dockedShipNeedsIndividualVisual(entry.ship)) special.push(entry);
-            else regular.push(entry);
-        }
-
-        // v0.23 A1 — render the first HARBOR_DOCKED_VISUAL_PACK_THRESHOLD commits
-        // as individual ships; only the overflow beyond the cap collapses into
-        // stack drawables.
-        const visualEntries = [];
-        const individual = regular.slice(0, HARBOR_DOCKED_VISUAL_PACK_THRESHOLD);
-        const overflow = regular.slice(HARBOR_DOCKED_VISUAL_PACK_THRESHOLD);
-        for (const entry of individual) {
-            visualEntries.push({
-                entry,
-                visualPackSize: 1,
-                visualPackStartIndex: entry.meta.repoDockIndex,
-                visualPackEndIndex: entry.meta.repoDockIndex,
-                visualPackHiddenCount: 0,
-            });
-        }
-        for (let start = 0; start < overflow.length; start += HARBOR_DOCKED_VISUAL_PACK_SIZE) {
-            const chunk = overflow.slice(start, start + HARBOR_DOCKED_VISUAL_PACK_SIZE);
-            const last = chunk[chunk.length - 1];
-            visualEntries.push({
-                entry: chunk[0],
-                visualPackSize: chunk.length,
-                visualPackStartIndex: chunk[0].meta.repoDockIndex,
-                visualPackEndIndex: last?.meta?.repoDockIndex ?? chunk[0].meta.repoDockIndex + chunk.length - 1,
-                visualPackHiddenCount: Math.max(0, chunk.length - 1),
-            });
-        }
-
-        for (const entry of special) {
-            visualEntries.push({
-                entry,
-                visualPackSize: 1,
-                visualPackStartIndex: entry.meta.repoDockIndex,
-                visualPackEndIndex: entry.meta.repoDockIndex,
-                visualPackHiddenCount: 0,
-            });
-        }
-
-        visualEntries.sort((a, b) => (a.visualPackStartIndex - b.visualPackStartIndex)
-            || a.entry.ship.id.localeCompare(b.entry.ship.id));
-        const visibleCount = visualEntries.length;
-        visualEntries.forEach((item, visualIndex) => {
-            visible.set(item.entry.ship.id, {
-                ...item,
-                visualIndex,
-                visibleCount,
-            });
-        });
-    }
-    return visible;
-}
-
 // v0.23 A2 — the repo's lead ship (repoDockIndex/departSquadIndex 0) carries a
 // commit-count-class hull sized by the whole fleet; every other commit sails as
 // an individual skiff.
@@ -2237,11 +2390,11 @@ function harborFleetCount(ship = {}) {
 }
 
 function harborShipPackSize(ship = {}) {
+    const visualPackSize = Number(ship.visualPackSize);
+    if (Number.isFinite(visualPackSize) && visualPackSize > 1) {
+        return Math.max(1, Math.min(MAX_HARBOR_SHIP_PACK_SIZE, Math.round(visualPackSize)));
+    }
     if (ship.status === 'docked') {
-        const visualPackSize = Number(ship.visualPackSize);
-        if (Number.isFinite(visualPackSize) && visualPackSize > 1) {
-            return Math.max(1, Math.min(MAX_HARBOR_SHIP_PACK_SIZE, Math.round(visualPackSize)));
-        }
         const repoIndex = Number.isFinite(Number(ship.repoDockIndex))
             ? Math.max(0, Number(ship.repoDockIndex))
             : 0;
@@ -2366,6 +2519,9 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         for (const project of relevantProjects) assignedQuayIndex(state, project);
     }
     const commitIdentityIndex = buildCommitIdentityIndex(state);
+    // Live-only repos claim coastal slots only after this tail's commits have,
+    // so a fresh replay parks fleets first and idle agents fill what's left.
+    const activeProjects = Array.isArray(options.activeProjects) ? options.activeProjects : [];
     const occupiedBerths = new Set();
     for (const ship of state.ships.values()) {
         if (Number.isFinite(Number(ship.berthIndex))) occupiedBerths.add(Number(ship.berthIndex));
@@ -2415,6 +2571,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 amendCount: 0,
             };
             state.ships.set(event.id, ship);
+            ensureRepoAnchorage(state, event.project);
             occupiedBerths.add(berthIndex);
             indexCommitShip(commitIdentityIndex, ship);
             continue;
@@ -2604,8 +2761,20 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             });
 
             const departSquadCount = Math.max(1, selectedShips.length);
+            // Titan packs sail as one hull: members of a docked pack that leave
+            // together stay hidden behind the first selected member of that pack.
+            const departPacks = new Map();
+            for (const ship of selectedShips) {
+                const key = dockLayout.byShipId.get(ship.id)?.visualLeadId || ship.id;
+                const pack = departPacks.get(key) || { leadId: ship.id, size: 0, visibleIndex: departPacks.size };
+                pack.size += 1;
+                departPacks.set(key, pack);
+            }
             selectedShips.forEach((ship, departSquadIndex) => {
                 const dockMeta = dockLayout.byShipId.get(ship.id);
+                const departPack = departPacks.get(dockMeta?.visualLeadId || ship.id) || { leadId: ship.id, size: 1, visibleIndex: departSquadIndex };
+                ship.visualPackLeadId = departPack.leadId;
+                ship.visualPackSize = departPack.leadId === ship.id ? departPack.size : 1;
                 const berth = BERTHS[ship.berthIndex % BERTHS.length] || BERTHS[0];
                 const departWaterZone = dockMeta?.waitingZone || ship.waitingZone || 'harbor';
                 const routeBands = isCommitLagoonZone(departWaterZone)
@@ -2679,7 +2848,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     if (statusChanged || !ship.boomerangStartedAt) {
                         ship.boomerangStartedAt = skipDepartureAnimation
                             ? now - BOOMERANG_OUT_MS - BOOMERANG_IN_MS - 1
-                            : now + departSquadIndex * DEPARTURE_STAGGER_MS;
+                            : now + departPack.visibleIndex * DEPARTURE_STAGGER_MS;
                     }
                     ship.status = skipDepartureAnimation ? 'docked' : 'rejecting';
                     ship.departEventId = event.id;
@@ -2691,7 +2860,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     if (statusChanged || !ship.cancelReturnStartedAt) {
                         ship.cancelReturnStartedAt = skipDepartureAnimation
                             ? now - CANCEL_RETURN_MS - 1
-                            : now + departSquadIndex * DEPARTURE_STAGGER_MS;
+                            : now + departPack.visibleIndex * DEPARTURE_STAGGER_MS;
                     }
                     ship.status = skipDepartureAnimation ? 'docked' : 'cancelling';
                     ship.departEventId = event.id;
@@ -2700,14 +2869,15 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 }
                 ship.status = 'departing';
                 ship.departEventId = event.id;
-                // Mass-scaled departure (force-push wins).
-                ship.departMsOverride = dynamicDepartureMs(ship, forceFlag);
+                // Mass-scaled departure (force-push wins). Pack members share
+                // their lead's timing so the whole titan retires together.
+                ship.departMsOverride = dynamicDepartureMs({ ...ship, visualPackSize: departPack.size }, forceFlag);
                 if (status === 'success' && previousStatus !== 'success') {
                     ship.departStartedAt = null;
                 }
                 ship.departStartedAt = skipDepartureAnimation
                     ? now - ship.departMsOverride - FADE_DELAY_MS - EXIT_FADE_MS - EXIT_HOLD_MS - 1
-                    : ship.departStartedAt || startedAt + departSquadIndex * DEPARTURE_STAGGER_MS;
+                    : ship.departStartedAt || startedAt + departPack.visibleIndex * DEPARTURE_STAGGER_MS;
                 // Cast-off phase: hold at berth briefly before the proper departure.
                 if (!skipDepartureAnimation && (statusChanged || !ship.castOffStartedAt)) {
                     ship.castOffStartedAt = ship.departStartedAt;
@@ -2728,6 +2898,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ship.rejectedAt = now;
                 ship.boomerangStartedAt = null;
                 ship.departStartedAt = null;
+                ship.visualPackLeadId = null;
+                ship.visualPackSize = null;
                 ship.departEventId = null;
             }
             continue;
@@ -2741,6 +2913,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ship.cancelledAt = now;
                 ship.cancelReturnStartedAt = null;
                 ship.departStartedAt = null;
+                ship.visualPackLeadId = null;
+                ship.visualPackSize = null;
                 ship.departEventId = null;
             }
             continue;
@@ -2805,6 +2979,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
     pruneHarborShips(state, now);
     pruneHarborBatches(state);
     pruneHarborRepoQuays(state);
+    syncRepoAnchorages(state, activeProjects);
     pruneHarborReplayState(state, now);
 
     return state;
@@ -3034,6 +3209,8 @@ export class HarborTraffic {
         // #18 — repos seen at least once, so a brand-new repo's first anchorage
         // can fire a one-time christening (maiden banner) and skip it thereafter.
         this._repoFirstSeen = new Map();
+        this._activeRepoAnchorages = new Map();
+        this._activeProjectsKey = '';
         this._lastEventsVersion = '';
         this._nextMaintenanceAt = 0;
         this._stateVersion = 0;
@@ -3050,9 +3227,9 @@ export class HarborTraffic {
         this._dockLayout = buildDockSquadLayout(this.state);
         this._repoDockSummaryCache = new Map();
         // The semantic state retains replay history, but frames only need the
-        // ships selected by the 15-individual / 30-per-stack visual packing
-        // policy plus currently animated ships. Rebuild this window when state
-        // changes instead of walking the complete retained history every frame.
+        // pack representatives chosen by the titan packing policy plus
+        // currently animated ships. Rebuild this window when state changes
+        // instead of walking the complete retained history every frame.
         this._packedDockedEntries = [];
         this._activeRenderShips = [];
         this._repoQuayDrawableCache = [];
@@ -3161,16 +3338,25 @@ export class HarborTraffic {
             this._sourceCacheHits++;
         }
         const eventsChanged = sourceChanged && eventsVersion !== this._lastEventsVersion;
+        // Home Waters: live-agent repos claim coastal anchorages through the
+        // reducer, so a change in the live set is a reduction trigger too.
+        this._observeRepoAnchorages(agents, now);
+        const activeProjects = [...this._activeRepoAnchorages.values()].map(entry => entry.project);
+        const activeProjectsKey = [...activeProjects].sort().join('\x1f');
+        const activeChanged = activeProjectsKey !== this._activeProjectsKey;
         const shouldReduce = force
             || eventsChanged
+            || activeChanged
             || this._hasTimedLifecycle
             || now >= this._nextMaintenanceAt;
         if (shouldReduce) {
             this.state = reduceHarborTrafficState(this.state, force || eventsChanged ? events : [], {
                 now,
                 motionScale: this.motionScale,
+                activeProjects,
             });
             this._lastEventsVersion = eventsVersion;
+            this._activeProjectsKey = activeProjectsKey;
             this._nextMaintenanceAt = now + HARBOR_MAINTENANCE_INTERVAL_MS;
             this._hasTimedLifecycle = harborStateHasTimedLifecycle(this.state);
             this._stateVersion++;
@@ -3184,7 +3370,6 @@ export class HarborTraffic {
             this._unchangedReconciliations++;
         }
         this._observeHarborCrates(agents, sourceChanged || force ? events : [], now);
-        this._observeRepoAnchorages(agents, now);
         this._repoAnchorageDrawableCache = this._repoAnchorageDrawables(this._repoDockSummaryCache, now);
         this._observePeakDensity(now);
         this._enumeratedFrame = -1;
@@ -3246,8 +3431,8 @@ export class HarborTraffic {
         this._lastDockLayoutByShipId.clear();
         this._shipHitEntries = [];
         this.hoveredShipId = null;
-        this._activeRepoAnchorages?.clear?.();
-        this._repoAnchorageSlots?.clear?.();
+        this._activeRepoAnchorages.clear();
+        this._activeProjectsKey = '';
         this._repoFirstSeen.clear();
         this._eventSourceSnapshot = null;
         this._lastRawEventCount = 0;
@@ -3276,7 +3461,7 @@ export class HarborTraffic {
      * shipped a commit keeps its anchorage even after its agent departs.
      */
     _observeRepoAnchorages(agents, now = Date.now()) {
-        const active = this._activeRepoAnchorages || (this._activeRepoAnchorages = new Map());
+        const active = this._activeRepoAnchorages;
         for (const agent of agents || []) {
             const project = agent?.projectPath || agent?.project;
             if (!project) continue;
@@ -3599,7 +3784,7 @@ export class HarborTraffic {
 
     _refreshRenderWindow(now = Date.now()) {
         const dockLayout = this._dockLayout || buildDockSquadLayout(this.state);
-        const visualPackByShipId = buildDockedVisualPackMap(dockLayout);
+        const visualPackByShipId = dockLayout.visualPackByShipId || new Map();
         const untetheredProjects = this._computeUntetheredProjects(now);
         const packed = this._packedDockedEntries;
         const active = this._activeRenderShips;
@@ -3662,7 +3847,10 @@ export class HarborTraffic {
         }
 
         for (const ship of this.state.ships.values()) {
-            if (ship.status !== 'docked') active.push(ship);
+            if (ship.status === 'docked') continue;
+            // Pack members sailing behind their titan lead never draw themselves.
+            if (ship.visualPackLeadId && ship.visualPackLeadId !== ship.id) continue;
+            active.push(ship);
         }
 
         this._repoQuayDrawableCache = this._repoQuayDrawables(this._repoDockSummaryCache);
@@ -4142,7 +4330,11 @@ export class HarborTraffic {
                     project: summary.project,
                     branch: summary.branch || '',
                     profile: summary.profile,
-                    quayName: isCommitLagoonZone(waitingZone) ? 'Commit Lagoon' : QUAY_GROUPS[quayIndex]?.name || 'Quay',
+                    quayName: isCommitLagoonZone(waitingZone)
+                        ? 'Commit Lagoon'
+                        : (isCoastZone(waitingZone) && COAST_ANCHORAGE_SLOTS[repoAnchorageSlot(this.state, summary.project)]?.name)
+                            || QUAY_GROUPS[quayIndex]?.name
+                            || 'Quay',
                     waitingZone,
                     count: summary.count,
                     failedCount: summary.failedCount,
@@ -4157,13 +4349,13 @@ export class HarborTraffic {
     }
 
     /**
-     * Home Waters anchorages: one persistent buoy per active repo, allocated a
-     * stable slot in the harbor basin. Live-agent repos and docked-ship repos
-     * are merged; the busiest get their own anchorage, the rest fold into an
-     * overflow chip.
+     * Home Waters anchorages: one persistent buoy per active repo on the
+     * coastal slot the reducer allocated (`state.repoAnchorages`), so the buoy
+     * and that repo's docked fleet always share a position. Repos without a
+     * slot (pool exhausted) fold into an overflow chip beside the Commit Lagoon.
      */
     _repoAnchorageDrawables(repoSummaries = new Map(), now = Date.now()) {
-        const active = this._activeRepoAnchorages || new Map();
+        const active = this._activeRepoAnchorages;
         const repos = new Map();
         for (const [key, entry] of active) {
             repos.set(key, {
@@ -4193,46 +4385,26 @@ export class HarborTraffic {
             existing.lastActive = Math.max(existing.lastActive, summary.latestEventTime || 0);
             repos.set(key, existing);
         }
-        const slots = this._repoAnchorageSlots || (this._repoAnchorageSlots = new Map());
-        if (!repos.size) {
-            slots.clear();
-            return [];
-        }
-        const ordered = [...repos.values()].sort((a, b) =>
-            (b.docked - a.docked)
-            || (Number(b.live) - Number(a.live))
-            || (b.lastActive - a.lastActive)
-            || a.profile.name.localeCompare(b.profile.name));
-        const shown = ordered.slice(0, MAX_REPO_ANCHORAGES);
-        const overflow = ordered.length - shown.length;
+        if (!repos.size) return [];
 
-        // Keep each repo on its previous slot when possible so anchorages do
-        // not shuffle between frames; fill gaps in slot order otherwise.
-        const used = new Set();
-        for (const repo of shown) {
-            const prev = slots.get(repo.key);
-            if (prev != null && prev < REPO_ANCHORAGE_SLOTS.length && !used.has(prev)) {
-                repo.slot = prev;
-                used.add(prev);
+        const shown = [];
+        let overflow = 0;
+        const seenSlots = new Set();
+        for (const repo of repos.values()) {
+            const slot = repoAnchorageSlot(this.state, repo.project);
+            if (slot == null || seenSlots.has(slot)) {
+                overflow += 1;
+                continue;
             }
+            seenSlots.add(slot);
+            repo.slot = slot;
+            shown.push(repo);
         }
-        let nextSlot = 0;
-        for (const repo of shown) {
-            if (repo.slot != null) continue;
-            while (nextSlot < REPO_ANCHORAGE_SLOTS.length && used.has(nextSlot)) nextSlot++;
-            if (nextSlot >= REPO_ANCHORAGE_SLOTS.length) break;
-            repo.slot = nextSlot;
-            used.add(nextSlot);
-            nextSlot++;
-        }
-        slots.clear();
-        for (const repo of shown) {
-            if (repo.slot != null) slots.set(repo.key, repo.slot);
-        }
+        shown.sort((a, b) => a.slot - b.slot);
 
         const drawables = [];
         for (const repo of shown) {
-            const tile = REPO_ANCHORAGE_SLOTS[repo.slot];
+            const tile = COAST_ANCHORAGE_SLOTS[repo.slot];
             if (!tile) continue;
             const pos = toWorld(tile.tileX, tile.tileY);
             const lively = repo.docked > 0 || (now - repo.lastActive) < REPO_ANCHORAGE_ACTIVE_MS;
@@ -5002,8 +5174,10 @@ export class HarborTraffic {
 
     _drawShipTierBadge(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
         // v0.23 A7 — the repo's lead docked ship shows a single fleet-count banner
-        // in place of its class tier badge.
-        if (this._isFleetLead(ship)) {
+        // in place of its class tier badge. Titan packs keep their exact `Nx`
+        // badge instead (a 57-commit fleet reads 29x + 28x; the buoy label
+        // carries the fleet total), so per-hull counts never disagree.
+        if (this._isFleetLead(ship) && !(Number(ship.visualPackSize) > 1)) {
             this._drawFleetBanner(ctx, ship, alpha, profile, shipClass);
             return;
         }
@@ -5479,12 +5653,12 @@ export class HarborTraffic {
         if (untethered.size > 0) {
             return { state: 'untethered' };
         }
-        // 5. Unpushed commits sitting in the lagoon → gentle pulse.
+        // 5. Unpushed commits sitting in home waters (coast or lagoon) → gentle pulse.
         for (const ship of this.state.ships.values()) {
             if (ship.status !== 'docked') continue;
             const meta = this._lastDockLayoutByShipId.get(ship.id);
-            const inLagoon = isCommitLagoonZone(meta?.waitingZone || ship.waitingZone);
-            if (inLagoon) return { state: 'pulsing' };
+            const zone = meta?.waitingZone || ship.waitingZone;
+            if (isCommitLagoonZone(zone) || isCoastZone(zone)) return { state: 'pulsing' };
         }
         return { state: 'idle' };
     }
