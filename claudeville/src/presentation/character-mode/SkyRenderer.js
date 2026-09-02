@@ -45,6 +45,55 @@ const FALLBACK_MOON_ID = 'atmosphere.moon.crescent';
 // quantized stepped-disc fallback (pixel doctrine: no soft gradient orb).
 const FALLBACK_SUN_ID = 'atmosphere.sun';
 const SUN_STAMP_CELL_PX = 2;
+// 4.1 — the authored distant coastline. It is a world cue, not a sky
+// ornament. The diorama's visible horizon is the far (north) apex of the map
+// diamond: that is where the island's own water tiles meet bare sky, and it
+// is the edge that made the village read as a tile floating on a gradient.
+// The band's base is anchored to that projected apex (tucked two pixels
+// behind it) so the coastline stays welded to the world at any pan or zoom,
+// and culls itself when the horizon is off-screen. The sea plate that
+// `IsometricRenderer._drawDistantSeaHorizon` paints sits further down the
+// screen, behind the island, and is deliberately not the anchor.
+export const DISTANT_SHORE_ASSET_ID = 'atmosphere.shore.distant-band';
+export const DISTANT_SHORE_PARALLAX = 0.15;
+export const DISTANT_SHORE_TILE_WIDTH = 400;
+export const DISTANT_SHORE_TILE_HEIGHT = 31;
+export const DISTANT_SHORE_HORIZON_WORLD_Y = mapWorldCorners()[0].y;
+const SHORE_APEX_OVERLAP_PX = 2;
+const SHORE_MAX_SCALE = 4;
+
+export function wrapTileOffset(value, tileWidth = DISTANT_SHORE_TILE_WIDTH) {
+    const width = Number(tileWidth);
+    const input = Number(value);
+    if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(input)) return 0;
+    return ((input % width) + width) % width;
+}
+
+// Source-crop offset for the composed strip. The strip repeats every tile, so
+// wrapping into one tile is invisible and keeps the crop inside the bitmap.
+export function distantShoreOffset(cameraX = 0, tileWidth = DISTANT_SHORE_TILE_WIDTH) {
+    const x = Number(cameraX);
+    return wrapTileOffset(Number.isFinite(x) ? -x * DISTANT_SHORE_PARALLAX : 0, tileWidth);
+}
+
+// Integer stamp scale: the coastline sits beside world art, so it grows in
+// whole pixels with the camera instead of resampling to a fractional zoom.
+export function distantShoreScale(zoom = 1) {
+    const value = Number(zoom);
+    if (!Number.isFinite(value) || value <= 0) return 1;
+    return Math.max(1, Math.min(SHORE_MAX_SCALE, Math.round(value)));
+}
+
+// Screen y of the coastline's base. Mirrors Camera.worldToScreen arithmetic
+// rather than calling it: the draw path runs every frame and must not
+// allocate the point object that method returns.
+export function distantShoreBaseY(camera = null) {
+    const zoom = Number(camera?.zoom) > 0 ? Number(camera.zoom) : 1;
+    const cameraY = Number(camera?.y) || 0;
+    return Math.round((DISTANT_SHORE_HORIZON_WORLD_Y + cameraY) * zoom)
+        + SHORE_APEX_OVERLAP_PX;
+}
+
 const MOON_PHASE_ASSETS = {
     crescent: 'atmosphere.moon.crescent.cool',
     half: 'atmosphere.moon.half.cool',
@@ -151,6 +200,7 @@ export class SkyRenderer {
         this._lastPushGradeAt = 0;
         this._nextAmbientMeteorAt = 0;
         this._sunStamp = null;
+        this._distantShoreBand = null;
         this._currentPhase = null;
         this._currentCloudCover = 0;
         this._currentMotionScale = 1;
@@ -221,6 +271,13 @@ export class SkyRenderer {
         // draw over terrain instead of behind the village.
         this._publishCalmSceneHints(snapshot);
         this._drawLiveStarTwinkle(ctx, canvas, snapshot, motionScale);
+        // The coastline is horizon-anchored, so it follows the camera exactly
+        // while the sky frame behind it is camera-quantized. One blit of the
+        // cached strip per frame keeps it welded to the sea instead of
+        // snapping in 4 px (or 64 px, on the fast cache) steps. Drawn after
+        // the stars so distant land occludes them, and before the weather so
+        // fog washes over it.
+        this._drawDistantShore(ctx, camera, canvas);
         this._drawBackgroundWeather(ctx, canvas, snapshot);
         this._maybeTriggerAmbientMeteor(snapshot);
     }
@@ -456,6 +513,93 @@ export class SkyRenderer {
         this.cache = off;
         this.cacheKey = key;
         return off;
+    }
+
+    // 4.1 — the authored 400x31 coastline, tiled once into a strip a full
+    // viewport plus one tile wide. Any wrapped parallax offset then crops a
+    // whole viewport out of that strip in a single read, so the repeat is
+    // seamless at any width >= 1280 and the composition never runs per frame.
+    // Rebuilt only when the viewport width or the authored asset changes; the
+    // identity check is field-by-field so the hot path builds no key string.
+    _getDistantShoreBand(canvas) {
+        if (!canvas || !this.assets) return null;
+        if (!this.assets.has?.(DISTANT_SHORE_ASSET_ID)) return null;
+        const image = this.assets.get?.(DISTANT_SHORE_ASSET_ID);
+        if (!image) return null;
+        const dims = this.assets.getDims?.(DISTANT_SHORE_ASSET_ID);
+        const tileWidth = Math.max(1, Math.round(
+            Number(dims?.w ?? image.width) || DISTANT_SHORE_TILE_WIDTH,
+        ));
+        const tileHeight = Math.max(1, Math.round(
+            Number(dims?.h ?? image.height) || DISTANT_SHORE_TILE_HEIGHT,
+        ));
+        const viewportWidth = Math.max(1, Math.ceil(Number(canvas.width) || 1));
+        const assetVersion = this.assets.assetVersion || '';
+        const cached = this._distantShoreBand;
+        if (cached
+            && cached.viewportWidth === viewportWidth
+            && cached.assetVersion === assetVersion
+            && cached.tileWidth === tileWidth
+            && cached.tileHeight === tileHeight) {
+            return cached;
+        }
+        releaseCanvasBackingStore(cached?.canvas);
+        this._distantShoreBand = this._buildDistantShoreBand(
+            viewportWidth,
+            image,
+            tileWidth,
+            tileHeight,
+            assetVersion,
+        );
+        return this._distantShoreBand;
+    }
+
+    _buildDistantShoreBand(viewportWidth, image, tileWidth, tileHeight, assetVersion) {
+        if (typeof document === 'undefined') return null;
+        const width = viewportWidth + tileWidth;
+        const strip = document.createElement('canvas');
+        strip.width = width;
+        strip.height = tileHeight;
+        const sctx = strip.getContext('2d');
+        if (!sctx) {
+            releaseCanvasBackingStore(strip);
+            return null;
+        }
+        sctx.imageSmoothingEnabled = false;
+        for (let x = 0; x < width; x += tileWidth) {
+            sctx.drawImage(image, x, 0, tileWidth, tileHeight);
+        }
+        return { canvas: strip, tileWidth, tileHeight, width, viewportWidth, assetVersion };
+    }
+
+    // One source-crop blit: no arrays, closures or canvases per frame. The
+    // only inputs are the camera and the viewport, so a reduced-motion or
+    // otherwise frozen scene draws exactly the same pixels every frame.
+    _drawDistantShore(ctx, camera, canvas) {
+        const band = this._getDistantShoreBand(canvas);
+        if (!band?.canvas) return;
+        const viewportHeight = Math.max(1, Number(canvas.height) || 1);
+        const scale = distantShoreScale(camera?.zoom);
+        const height = band.tileHeight * scale;
+        const bottom = distantShoreBaseY(camera);
+        const top = bottom - height;
+        // Off-screen horizon: nothing to say, and nothing to pay for.
+        if (bottom <= 0 || top >= viewportHeight) return;
+        const sourceWidth = Math.min(
+            band.width - band.tileWidth,
+            Math.ceil(band.viewportWidth / scale) + 1,
+        );
+        const sourceX = Math.floor(distantShoreOffset(camera?.x, band.tileWidth));
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(
+            band.canvas,
+            sourceX, 0, sourceWidth, band.tileHeight,
+            0, top, sourceWidth * scale, height,
+        );
+        ctx.restore();
     }
 
     _useFastSkyCache(canvas) {
@@ -1429,6 +1573,8 @@ export class SkyRenderer {
         this._frameCacheKey = '';
         releaseCanvasBackingStore(this._sunStamp?.canvas);
         this._sunStamp = null;
+        releaseCanvasBackingStore(this._distantShoreBand?.canvas);
+        this._distantShoreBand = null;
     }
 
     dispose() {
@@ -1448,7 +1594,9 @@ export class SkyRenderer {
 
     getCanvasBudget() {
         return {
-            volatilePixels: canvasPixelCount(this.cache) + canvasPixelCount(this._frameCache),
+            volatilePixels: canvasPixelCount(this.cache)
+                + canvasPixelCount(this._frameCache)
+                + canvasPixelCount(this._distantShoreBand?.canvas),
             cacheKey: this.cacheKey,
         };
     }

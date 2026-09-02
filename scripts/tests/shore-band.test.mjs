@@ -3,18 +3,20 @@ import assert from 'node:assert/strict';
 
 import {
     DISTANT_SHORE_ASSET_ID,
+    DISTANT_SHORE_HORIZON_WORLD_Y,
     DISTANT_SHORE_PARALLAX,
     DISTANT_SHORE_TILE_HEIGHT,
     DISTANT_SHORE_TILE_WIDTH,
     SkyRenderer,
-    distantShoreBandKey,
+    distantShoreBaseY,
     distantShoreOffset,
+    distantShoreScale,
     wrapTileOffset,
 } from '../../claudeville/src/presentation/character-mode/SkyRenderer.js';
 
 // The band is drawn as a source crop of a seamless strip, so the pixel that
-// sits at source x lands on screen at `x - sourceOffset`: the on-screen shift
-// is the negation of the offset the renderer computes.
+// sits at source x lands on screen at `x - offset`: the on-screen shift is the
+// negation of the offset the renderer computes.
 function screenShift(cameraX) {
     const shift = -distantShoreOffset(cameraX, DISTANT_SHORE_TILE_WIDTH);
     return shift === 0 ? 0 : shift;
@@ -72,6 +74,12 @@ function recordingCtx() {
     };
 }
 
+// A camera pose that puts the world's far horizon at a chosen screen row,
+// the way a pan toward the island's far edge does in the live renderer.
+function cameraAt(x, { horizonY = 300, zoom = 1 } = {}) {
+    return { x, y: horizonY / zoom - DISTANT_SHORE_HORIZON_WORLD_Y, zoom };
+}
+
 
 test('the shore band tracks the camera at 0.15 of its pan, in the same direction', () => {
     assert.equal(DISTANT_SHORE_PARALLAX, 0.15);
@@ -81,12 +89,14 @@ test('the shore band tracks the camera at 0.15 of its pan, in the same direction
     assert.equal(screenShift(-1000), -150);
     assert.equal(screenShift(-2000), -300);
     assert.equal(screenShift(-100) - screenShift(-500), 60);
-    // Motion is strictly a fraction of the pan, never a match for it.
+    // The strip repeats every tile, so apparent motion is defined modulo the
+    // tile: a 200 px pan always shows exactly 30 px of coastline travel.
     for (const cameraX of [-2600, -1300, -640, -12, 0, 12, 640, 1300, 2600]) {
-        const shifted = screenShift(cameraX) - screenShift(cameraX + 200);
-        assert.ok(
-            Math.abs(shifted) <= 200 * DISTANT_SHORE_PARALLAX + 1e-9,
-            `camera x=${cameraX} moved the band faster than the camera`,
+        const travelled = screenShift(cameraX + 200) - screenShift(cameraX);
+        assert.equal(
+            wrapTileOffset(travelled, DISTANT_SHORE_TILE_WIDTH),
+            200 * DISTANT_SHORE_PARALLAX,
+            `camera x=${cameraX} did not travel 0.15 of the pan`,
         );
     }
 });
@@ -110,19 +120,51 @@ test('every camera position crops inside one tile, so the tiling never seams', (
 });
 
 
+test('the coastline base rides the projected world horizon, not the viewport', () => {
+    // The base follows camera.y one for one at zoom 1, so the coastline stays
+    // welded to the far edge of the world instead of floating at a fixed
+    // screen fraction while the operator pans.
+    const camera = cameraAt(0, { horizonY: 300 });
+    assert.equal(distantShoreBaseY(camera), 302);
+    assert.equal(distantShoreBaseY({ ...camera, y: camera.y - 100 }), 202);
+    assert.equal(distantShoreBaseY({ ...camera, y: camera.y + 640 }), 942);
+    // Zoom scales the horizon exactly as the world transform does.
+    assert.equal(distantShoreBaseY(cameraAt(0, { horizonY: 300, zoom: 2 })), 302);
+    assert.equal(distantShoreBaseY({ ...cameraAt(0, { horizonY: 300, zoom: 2 }), zoom: 1 }), 152);
+    // A camera-less call must not throw or land at a random row.
+    assert.equal(distantShoreBaseY(null), Math.round(DISTANT_SHORE_HORIZON_WORLD_Y) + 2);
+    // Integer stamp scale: whole-pixel growth, never a fractional resample.
+    assert.equal(distantShoreScale(1), 1);
+    assert.equal(distantShoreScale(1.2), 1);
+    assert.equal(distantShoreScale(2.4), 2);
+    assert.equal(distantShoreScale(3), 3);
+    assert.equal(distantShoreScale(0), 1);
+    assert.equal(distantShoreScale(Number.NaN), 1);
+});
+
+
 test('the composed strip is reused until the viewport or the asset changes', () => {
     const assets = shoreAssets();
     const renderer = new SkyRenderer({ assets });
     const canvas = { width: 1280, height: 720, _claudeVilleDpr: 1 };
     let rebuilds = 0;
-    renderer._buildDistantShoreBand = (surface, image, tileWidth, tileHeight) => {
+    renderer._buildDistantShoreBand = (viewportWidth, image, tileWidth, tileHeight, assetVersion) => {
         rebuilds += 1;
-        return { canvas: {}, tileWidth, tileHeight, width: surface.width + tileWidth };
+        return {
+            canvas: {},
+            tileWidth,
+            tileHeight,
+            width: viewportWidth + tileWidth,
+            viewportWidth,
+            assetVersion,
+        };
     };
     try {
         const first = renderer._getDistantShoreBand(canvas);
         assert.strictEqual(renderer._getDistantShoreBand(canvas), first);
         assert.strictEqual(renderer._getDistantShoreBand({ ...canvas }), first);
+        // A pure zoom or pan change is a crop change, never a rebuild.
+        assert.strictEqual(renderer._getDistantShoreBand({ ...canvas, height: 900 }), first);
         assert.equal(rebuilds, 1);
 
         const wide = renderer._getDistantShoreBand({ ...canvas, width: 2560 });
@@ -135,10 +177,6 @@ test('the composed strip is reused until the viewport or the asset changes', () 
     } finally {
         renderer.dispose();
     }
-    assert.notEqual(
-        distantShoreBandKey({ viewportWidth: 1280, assetVersion: 'a' }),
-        distantShoreBandKey({ viewportWidth: 1280, assetVersion: 'b' }),
-    );
 });
 
 
@@ -151,7 +189,7 @@ test('a full pan draws one crop per frame from a strip that always covers the vi
     const ctx = recordingCtx();
     try {
         for (let cameraX = -4000; cameraX <= 4000; cameraX += 37) {
-            renderer._drawDistantShore(ctx, { x: cameraX }, canvas);
+            renderer._drawDistantShore(ctx, cameraAt(cameraX), canvas);
         }
         assert.equal(docState.created, 1, 'the strip must be composed once, not per frame');
         const strip = docState.strips[0];
@@ -162,20 +200,33 @@ test('a full pan draws one crop per frame from a strip that always covers the vi
         assert.equal(ctx.calls.length, 217);
         for (const call of ctx.calls) {
             assert.strictEqual(call.image, strip);
-            assert.equal(call.sw, canvas.width);
-            assert.equal(call.dw, canvas.width);
             assert.equal(call.sh, DISTANT_SHORE_TILE_HEIGHT);
             assert.equal(call.dh, DISTANT_SHORE_TILE_HEIGHT);
             assert.equal(call.dx, 0);
+            assert.ok(call.dw >= canvas.width, 'the crop must span the whole viewport');
             assert.equal(Number.isInteger(call.sx), true);
             assert.equal(Number.isInteger(call.dy), true);
-            // A crop that ran past the composed strip would expose a gap where
-            // the last tile ends: the seam this band exists to avoid.
+            // A crop running past the composed strip would expose the gap after
+            // the last tile: the seam this band exists to avoid.
             assert.ok(call.sx >= 0 && call.sx + call.sw <= strip.width, `crop ${call.sx} escaped the strip`);
-            // The coastline sits at the horizon, above the canvas midline.
-            assert.ok(call.dy > 0 && call.dy + call.dh < canvas.height / 2);
         }
         assert.equal(ctx.imageSmoothingEnabled, false);
+
+        // Zoom stamps whole pixels and keeps the crop inside the same strip.
+        ctx.calls.length = 0;
+        renderer._drawDistantShore(ctx, cameraAt(-900, { horizonY: 300, zoom: 3 }), canvas);
+        assert.equal(docState.created, 1);
+        const zoomed = ctx.calls[0];
+        assert.equal(zoomed.dh, DISTANT_SHORE_TILE_HEIGHT * 3);
+        assert.equal(zoomed.dw, zoomed.sw * 3);
+        assert.ok(zoomed.dw >= canvas.width);
+        assert.ok(zoomed.sx + zoomed.sw <= strip.width);
+
+        // A horizon off either end of the viewport draws nothing at all.
+        ctx.calls.length = 0;
+        renderer._drawDistantShore(ctx, cameraAt(0, { horizonY: canvas.height + 40 }), canvas);
+        renderer._drawDistantShore(ctx, cameraAt(0, { horizonY: -200 }), canvas);
+        assert.equal(ctx.calls.length, 0);
     } finally {
         renderer.dispose();
         globalThis.document = originalDocument;
@@ -190,7 +241,7 @@ test('a missing shore asset draws nothing instead of a placeholder band', () => 
     const renderer = new SkyRenderer({ assets: shoreAssets({ available: false }) });
     const ctx = recordingCtx();
     try {
-        renderer._drawDistantShore(ctx, { x: 0 }, { width: 1280, height: 720, _claudeVilleDpr: 1 });
+        renderer._drawDistantShore(ctx, cameraAt(0), { width: 1280, height: 720, _claudeVilleDpr: 1 });
         assert.equal(ctx.calls.length, 0);
         assert.equal(docState.created, 0);
         assert.equal(renderer.getCanvasBudget().volatilePixels, 0);

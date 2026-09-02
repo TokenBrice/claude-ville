@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-08-25-native-landmarks-v3"
+  assetVersion: "2026-09-02-distant-shore-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -1699,6 +1699,15 @@ atmosphere:
     prompt: "V shaped harbor boat wake pixel art, pale cyan and white foam trails with transparent center, low top-down, transparent background"
     width: 96
     height: 48
+
+  # 4.1 — the horizon coastline behind the island, tiled horizontally by
+  # SkyRenderer at parallax 0.15. Seamless left/right edges are load-bearing:
+  # the strip repeats across any viewport width.
+  - id: atmosphere.shore.distant-band
+    tool: map_object
+    prompt: "distant coastline silhouette of low headlands and sea cliffs in cool blue-grey haze, flat far-horizon band, seamless horizontal tiling with matching left and right edges, no sky, no water, no foreground detail, transparent background, pixel art"
+    width: 400
+    height: 31
 
   # optional — include for polish pass
   # - id: atmosphere.aurora
