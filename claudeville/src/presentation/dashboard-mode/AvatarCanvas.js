@@ -121,7 +121,7 @@ export class AvatarCanvas {
         ctx.stroke();
 
         // Body
-        ctx.fillStyle = identity.family === 'codex' || identity.family === 'claude' || identity.family === 'kimi' || identity.family === 'deepseek' ? trim : app.shirt;
+        ctx.fillStyle = identity.family === 'codex' || identity.family === 'claude' || identity.family === 'kimi' || identity.family === 'deepseek' || identity.family === 'zai' ? trim : app.shirt;
         ctx.fillRect(-5, -2, 10, 12);
         this._drawModelInsignia(ctx, identity, accent, trim);
 
@@ -495,6 +495,39 @@ export class AvatarCanvas {
             ctx.moveTo(-4, 7);
             ctx.lineTo(4, 1);
             ctx.stroke();
+            return;
+        }
+
+        if (identity.modelClass === 'glm') {
+            // filled hex sigil — GLM flagship
+            ctx.fillStyle = accent;
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(2.6, 1.5);
+            ctx.lineTo(2.6, 4.5);
+            ctx.lineTo(0, 6);
+            ctx.lineTo(-2.6, 4.5);
+            ctx.lineTo(-2.6, 1.5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = trim;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            return;
+        }
+
+        if (identity.modelClass === 'glm-flash') {
+            // lightning bolt — flash tier
+            ctx.fillStyle = accent;
+            ctx.beginPath();
+            ctx.moveTo(1, 0);
+            ctx.lineTo(-2, 3);
+            ctx.lineTo(0, 3);
+            ctx.lineTo(-1, 6);
+            ctx.lineTo(2, 3);
+            ctx.lineTo(0, 3);
+            ctx.closePath();
+            ctx.fill();
             return;
         }
 

@@ -41,6 +41,7 @@ function pricingProvider(model, provider) {
     const normalizedProvider = registryProvider(provider);
     if (normalizedProvider === 'kimi' || candidates.some(candidate => candidate.includes('kimi'))) return 'kimi';
     if (normalizedProvider === 'deepseek' || candidates.some(candidate => candidate.includes('deepseek'))) return 'deepseek';
+    if (normalizedProvider === 'zai' || candidates.some(candidate => candidate.includes('glm'))) return 'zai';
     if (normalizedProvider === 'grok' || candidates.some(candidate => candidate.includes('grok'))) return 'grok';
     if (normalizedProvider === 'gemini' || candidates.some(candidate => candidate.includes('gemini'))) return 'gemini';
     if (normalizedProvider === 'codex' || candidates.some(candidate => candidate.includes('gpt'))) return 'codex';

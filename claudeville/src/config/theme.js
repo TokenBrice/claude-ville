@@ -127,7 +127,9 @@ export const INCIDENT_COLORS_RGB = Object.freeze({
 // chip), and the dashboard/sidebar glyph (plan 1.5 — trim may be a lighter
 // tint of the badge hue for sprite legibility). Hues are de-collided from the
 // STATUS_VISUALS ramp (plan 1.3): codex left working-green for sprite teal,
-// gemini left idle-blue for indigo, deepseek split from opencode's mint.
+// gemini left idle-blue for indigo, deepseek split from opencode's mint; zai
+// takes vermilion, the one warm hue no status/incident uses exactly (errored
+// is #e06c5b coral, quota is orange #fb923c).
 export const PROVIDER_HUES = Object.freeze({
     claude: { trim: '#a78bfa', badge: '#a78bfa', badgeBg: 'rgba(167,139,250,0.15)' },
     codex: { trim: '#7be3d7', badge: '#2dd4bf', badgeBg: 'rgba(45,212,191,0.15)' },
@@ -138,6 +140,7 @@ export const PROVIDER_HUES = Object.freeze({
     omp: { trim: '#f2d36b', badge: '#f2d36b', badgeBg: 'rgba(242,211,107,0.15)' },
     opencode: { trim: '#7cf4c8', badge: '#7cf4c8', badgeBg: 'rgba(124,244,200,0.15)' },
     deepseek: { trim: '#9ec1ff', badge: '#5b8def', badgeBg: 'rgba(91,141,239,0.15)' },
+    zai: { trim: '#ffa585', badge: '#ff7a55', badgeBg: 'rgba(255,122,85,0.15)' },
     default: { trim: '#f2d36b', badge: '#8b8b9e', badgeBg: 'rgba(139,139,158,0.15)' },
 });
 

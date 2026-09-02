@@ -1,6 +1,6 @@
 // GENERATED FROM models.json + scripts/models/resolver.template.js — DO NOT EDIT
 
-const MODEL_REVISION = "2026-09-01";
+const MODEL_REVISION = "2026-09-02";
 const MODEL_REGISTRY = [
     {
         "accent": [
@@ -1033,6 +1033,72 @@ const MODEL_REGISTRY = [
         ]
     },
     {
+        "accent": [
+            "#fff1e8",
+            "#ffb28c",
+            "#ff8c5f"
+        ],
+        "color": "#ffb28c",
+        "contextWindow": 1000000,
+        "id": "zai.glm-5-3-flash",
+        "label": "GLM 5.3 Flash",
+        "match": [
+            "glm-5-3-flash"
+        ],
+        "modelClass": "glm-flash",
+        "modelTier": "swift",
+        "mood": "quick",
+        "paletteKey": "zai",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.03,
+            "input": 0.15,
+            "output": 0.5
+        },
+        "provider": "zai",
+        "sample": "zai/glm-5.3-flash",
+        "shortLabel": "GLM Flash",
+        "spriteId": "agent.zai.flash",
+        "trim": [
+            "#ffb28c",
+            "#ff8c5f",
+            "#ffe0cf"
+        ]
+    },
+    {
+        "accent": [
+            "#fff1e8",
+            "#ff8c5f",
+            "#ffd6a5"
+        ],
+        "color": "#ff8c5f",
+        "contextWindow": 1000000,
+        "id": "zai.glm-5-3",
+        "label": "GLM 5.3",
+        "match": [
+            "glm-5-3"
+        ],
+        "modelClass": "glm",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "zai",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.26,
+            "input": 1.4,
+            "output": 4.4
+        },
+        "provider": "zai",
+        "sample": "zai/glm-5.3",
+        "shortLabel": "GLM",
+        "spriteId": "agent.zai.glm",
+        "trim": [
+            "#ff8c5f",
+            "#ffb28c",
+            "#ffe0cf"
+        ]
+    },
+    {
         "accent": null,
         "color": "#9ad7ff",
         "contextWindow": null,
@@ -1368,6 +1434,34 @@ const MODEL_DEFAULTS = {
             "#ff8da8",
             "#ffeff3"
         ]
+    },
+    "zai": {
+        "accent": [
+            "#fff1e8",
+            "#ff8c5f",
+            "#ffd6a5"
+        ],
+        "color": "#ff8c5f",
+        "contextWindow": 1000000,
+        "label": "GLM",
+        "modelClass": "glm",
+        "modelTier": "balanced",
+        "mood": "balanced",
+        "paletteKey": "zai",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.26,
+            "input": 1.4,
+            "output": 4.4
+        },
+        "pricingKey": "zai",
+        "shortLabel": "GLM",
+        "spriteId": "agent.zai.glm",
+        "trim": [
+            "#ff8c5f",
+            "#ffb28c",
+            "#ffe0cf"
+        ]
     }
 };
 
@@ -1414,6 +1508,7 @@ function pricingProvider(model, provider) {
     const normalizedProvider = registryProvider(provider);
     if (normalizedProvider === 'kimi' || candidates.some(candidate => candidate.includes('kimi'))) return 'kimi';
     if (normalizedProvider === 'deepseek' || candidates.some(candidate => candidate.includes('deepseek'))) return 'deepseek';
+    if (normalizedProvider === 'zai' || candidates.some(candidate => candidate.includes('glm'))) return 'zai';
     if (normalizedProvider === 'grok' || candidates.some(candidate => candidate.includes('grok'))) return 'grok';
     if (normalizedProvider === 'gemini' || candidates.some(candidate => candidate.includes('gemini'))) return 'gemini';
     if (normalizedProvider === 'codex' || candidates.some(candidate => candidate.includes('gpt'))) return 'codex';

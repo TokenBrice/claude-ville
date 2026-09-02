@@ -106,6 +106,7 @@ const PROVIDER_HOME_BUILDINGS = {
     omp: 'taskboard',
     opencode: 'portal',
     deepseek: 'observatory',
+    zai: 'archive',
 };
 const TARGET_AGENT_CONTENT_HEIGHT = 92 * AGENT_WORLD_SCALE;
 const MIN_AGENT_DRAW_SCALE = AGENT_WORLD_SCALE;
@@ -6677,8 +6678,8 @@ function providerMoteColor(agent) {
 }
 
 // 6.3 — familiar motes wear their provider family's shape (mage rune, engineer
-// chip, oracle orb, lunar crescent, ranger arrow, cosmic star) so a parent's
-// orbiting children read as little familiars, not identical dots.
+// chip, oracle orb, lunar crescent, ranger arrow, cosmic star, monk hex) so a
+// parent's orbiting children read as little familiars, not identical dots.
 const FAMILIAR_MOTE_SHAPES = Object.freeze({
     claude: 'rune',
     codex: 'chip',
@@ -6686,6 +6687,7 @@ const FAMILIAR_MOTE_SHAPES = Object.freeze({
     kimi: 'crescent',
     deepseek: 'arrow',
     grok: 'star',
+    zai: 'hex',
 });
 
 function providerMoteShape(agent) {
@@ -6737,6 +6739,16 @@ function drawFamiliarMoteShape(ctx, shape, x, y, r) {
         case 'star':
             ctx.fillRect(cx - 1, cy - rr, 2, rr * 2);
             ctx.fillRect(cx - rr, cy - 1, rr * 2, 2);
+            return;
+        case 'hex':
+            ctx.moveTo(cx, cy - rr);
+            ctx.lineTo(cx - Math.round(rr * 0.87), cy - Math.round(rr * 0.5));
+            ctx.lineTo(cx - Math.round(rr * 0.87), cy + Math.round(rr * 0.5));
+            ctx.lineTo(cx, cy + rr);
+            ctx.lineTo(cx + Math.round(rr * 0.87), cy + Math.round(rr * 0.5));
+            ctx.lineTo(cx + Math.round(rr * 0.87), cy - Math.round(rr * 0.5));
+            ctx.closePath();
+            ctx.fill();
             return;
         default:
             ctx.arc(cx, cy, rr, 0, Math.PI * 2);
