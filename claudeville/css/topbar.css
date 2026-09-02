@@ -426,6 +426,12 @@
     color: var(--cv-text-muted);
 }
 
+/* The chip is hidden until a quota window has real usage; inline-flex above
+   would otherwise override the [hidden] UA rule and leak an empty gauge. */
+.topbar__quota-meta[hidden] {
+    display: none;
+}
+
 .topbar__quota {
     display: flex;
     flex-direction: column;

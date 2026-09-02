@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan item by item. Each item is one reviewable unit with its own tests, owned paths, and acceptance. Re-check every `file:line` anchor before editing; line numbers move.
 
-**Status:** `implemented and release-verified for v0.38.0` — all 24 Waves 0-3 items landed 2026-09-02; Wave 4 (5 items) remains gated and unstarted. Verification: `npm run gate:release` green (588 unit tests, sprite audit, e2e replay, server-security/fatal/boot-contract smokes), WebGL+Canvas render baselines at parity per **F4**, real-GPU ladder probe reaching `q=0` in 2 s, and manual browser passes over World, Dashboard and the mode round trip.
+**Status:** `implemented and release-verified` — the 24 Waves 0-3 items shipped as `v0.38.0` (2026-09-02); the 5 Wave 4 items shipped as `v0.39.0` (2026-09-02), with 4.1's generated distant-shore band built, measured, and cut on maintainer review (the cliff reflection and dithered waterline shipped). Verification: `npm run gate:release` green each release, WebGL+Canvas render baselines at parity per **F4**, real-GPU ladder probe reaching `q=0` in 2 s, and manual browser passes over World, Dashboard, Chronicle, the mode round trip, and resize.
 
 **Baseline:** `main` at `e7737d5` (`v0.37.0` *The Thaw*), clean tree, 2026-09-01. Node v24.16.0 locally; `package.json` still promises `>=18`.
 

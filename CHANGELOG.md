@@ -2,6 +2,33 @@
 
 ---
 
+## v0.39.0 — *The Chronicler's Tide* · Sep 02, 2026
+
+Wave 4 of *The Commander's Map*: composition and depth. The village learns to remember its days, show its causes, and sit in its sea.
+
+**The Chronicle becomes a day ledger**
+- Prev / next / today controls walk the village's history; a failed read keeps your place. Forty same-minute arrivals fold into one `arrivals ×40` row — folding now groups the whole minute by kind, not just adjacent rows, so interleaved events cannot escape it. Per-project subtotals count every raw event beneath the folded view.
+- New event kinds label themselves: the ledger derives its labels from the kind, so the forge events below appeared without a single ledger edit.
+
+**The execution tree**
+- A Claude session with subagents shows its real hierarchy — primary, subagents, tasks — with `3/5 children done` counts read server-side from the CLI's own task store and marked `exact`. Other providers show honest counts marked `inferred`, and a child that disappears is unknown, never silently "done". `/api/tasks` stays a loopback diagnostic; the browser never fetches it.
+
+**The causal waterfall**
+- A collapsed panel section draws the last twenty minutes as proportional bars: turns, permission waits, tools with durations and exit codes, retries, child activity. Long silences dominate the picture — a stall between two timestamp-only events is a stall row, not a stretched tool bar. Secrets in tool commands are redacted by the same rule the blocked banner uses.
+
+**The forge speaks of pull requests**
+- `gh pr create`, issue and release outcomes already sitting in transcripts become chronicle events with their real URLs, marked `inferred` — parse-only, no subprocess, no network, secrets scrubbed, bounded per project.
+
+**The island sits in its sea**
+- A quantised, palette-safe reflection of the cliff face rests on the water below the island, and the hard island/sea seam is now a stepped, dithered waterline using the same four-cell pattern as the GPU wetness shader. Both are static under reduced motion. A generated distant-shore horizon band was built, measured (0.15 parallax, seamless tiling on both render paths) — and cut on maintainer review: against the flat day sky it read as a detached skyline, and the village is better without it.
+
+**Fixed while shipping**
+- A dropped constant in the execution-tree work briefly broke six AgentManager suites; restored.
+- The cliff reflection referenced an undeclared variable, blacking out the world canvas; fixed and pinned by lifecycle tests that now drive the real suspend/resume path.
+- `orderedDither4` gained direct coverage: determinism, full bucket set, GPU-formula parity, negative and large coordinates.
+
+---
+
 ## v0.38.0 — *The Commander's Map* · Sep 02, 2026
 
 The village told the truth about *state*; it did not yet tell the operator *why*, *how much*, or *where the light went*. This release spends on those three questions, in that order: correct money, actionable signal, and the lighting the project already paid for delivered to the renderer operators actually run.
