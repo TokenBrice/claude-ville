@@ -2,16 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTempDir as makeConfiguredTempDir } from './support/tmp.mjs';
 
 const require = createRequire(import.meta.url);
 const REPO_ROOT = path.resolve(new URL('../..', import.meta.url).pathname);
 const GIT_EVENTS_PATH = path.join(REPO_ROOT, 'claudeville', 'adapters', 'gitEvents.js');
 
 function makeTempDir(label) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `claudeville-${label}-`));
+  return makeConfiguredTempDir(`claudeville-${label}-`);
 }
 
 function writeFakeGit(directory) {

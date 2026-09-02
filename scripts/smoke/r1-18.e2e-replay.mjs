@@ -7,9 +7,9 @@ import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as net from 'node:net';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '../..');
@@ -739,7 +739,7 @@ function assertProviderPayload(sessions, fixtures) {
 }
 
 export async function runReplay({ assertPeriodicSnapshot = true } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-r1-18-'));
+  const root = makeTempDir('claudeville-r1-18-');
   let fixtures = null;
   let serverProcess = null;
   let websocket = null;

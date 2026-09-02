@@ -36,52 +36,11 @@ Repository-only `git` sessions can also appear when git enrichment detects unpus
 
 ## Permission prompts are inferred or arrive late
 
-Transcript parsing remains the default and requires no configuration. To opt into the transient permission overlay, configure the CLI yourself to send ClaudeVille's normalized body to `POST /api/ingest/hook`. ClaudeVille never edits provider settings. The route accepts `{ provider, sessionId, cwd, ts, kind, tool, input, decision }`, keeps at most 256 sessions in memory, and never persists or logs request bodies. Displayed command/path detail is secret-stripped and capped at 200 characters.
+Transcript parsing remains the default and requires no configuration. The route accepts the normalized schema `{ provider, sessionId, cwd, ts, kind, tool, input, decision? }` at `POST /api/ingest/hook`, keeps at most 256 sessions in memory, and never persists or logs request bodies. `kind` must be a supported lifecycle event such as `PreToolUse`, `PostToolUse`, or `Stop`. `input` may contain only operator-facing command/path context; displayed detail is secret-stripped and capped at 200 characters. This is the canonical payload schema; other documentation should link here instead of duplicating it.
 
 All examples use `curl --max-time 1 -s -X POST http://127.0.0.1:4000/api/ingest/hook` and, where supported, an asynchronous hook so a stopped dashboard does not block the CLI. They require `jq`. If ClaudeVille runs with `CLAUDEVILLE_INGEST_TOKEN`, export the same value into the CLI environment; the helpers always send it in `X-ClaudeVille-Ingest-Token` (an empty value is harmless when the server token is unset).
 
-For Claude Code, save this executable helper as `~/.config/claudeville/ingest-claude-hook`:
-
-```sh
-#!/bin/sh
-jq -c '{
-  provider: "claude",
-  sessionId: .session_id,
-  cwd: .cwd,
-  ts: (now * 1000 | floor),
-  kind: .hook_event_name,
-  tool: (.tool_name // null),
-  input: ((.tool_input.command? // .tool_input.file_path? // .tool_input.path? // .tool_input.query? // .tool_input.pattern? // null) | if type == "string" then .[0:200] else . end),
-  decision: (.permission_mode // null)
-}' | curl --max-time 1 -s -X POST http://127.0.0.1:4000/api/ingest/hook \
-  -H 'Content-Type: application/json' \
-  -H "X-ClaudeVille-Ingest-Token: ${CLAUDEVILLE_INGEST_TOKEN:-}" \
-  --data-binary @- >/dev/null 2>&1 || true
-```
-
-Then add the following entries to your own Claude Code `settings.json`. `PreToolUse` supplies the tool and truncated command/path; the `permission_prompt`-scoped `Notification` turns that latest tool into an exact approval wait. `PostToolUse` and `Stop` clear or close the short-lived overlay.
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [{
-      "matcher": "Bash|Read|Write|Edit|Glob|Grep|Agent",
-      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-claude-hook", "async": true, "timeout": 1 }]
-    }],
-    "Notification": [{
-      "matcher": "permission_prompt",
-      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-claude-hook", "async": true, "timeout": 1 }]
-    }],
-    "PostToolUse": [{
-      "matcher": "Bash|Read|Write|Edit|Glob|Grep|Agent",
-      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-claude-hook", "async": true, "timeout": 1 }]
-    }],
-    "Stop": [{
-      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-claude-hook", "async": true, "timeout": 1 }]
-    }]
-  }
-}
-```
+This repository dogfoods Claude Code ingestion through the committed `.claude/settings.json`. It is inert unless Claude Code is launched with `CLAUDEVILLE_DOGFOOD_HOOKS=1`; if the server requires authentication, also export `CLAUDEVILLE_INGEST_TOKEN`. The hook maps `session_id` to `sessionId`, preserves the accepted `hook_event_name` as `kind`, and forwards only `tool_name`, `cwd`, a reception-time `ts`, and the first available `tool_input.command`, `file_path`, `pattern`, or `description`. Prompts, transcript paths, file contents, tool results, and all other input fields are discarded before the request. The built-in request times out after 150 ms and always fails open, so a stopped dashboard cannot block Claude Code.
 
 For Codex CLI lifecycle hooks, save the analogous executable helper as `~/.config/claudeville/ingest-codex-hook`:
 
@@ -244,9 +203,9 @@ Credential and activity sources are cached briefly, and quota checks are best-ef
 
 ## Cost numbers look wrong
 
-Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. Browser-side estimates use `claudeville/src/domain/value-objects/TokenUsage.js`; server-side `/api/sessions` estimates use `claudeville/src/config/model-pricing.json` through the adapter session-presentation helper. The numbers are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`, `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `kimi-for-coding`, `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-reasoner`, `grok-4.5`, `grok-4.3`, `grok-4`, `composer`). DeepSeek-backed OpenCode sessions still use `provider: "opencode"` but match DeepSeek pricing by model string. Grok sessions currently surface a cumulative `contextWindow` occupancy from ACP metadata rather than a full input/output split, so estimated cost often stays near zero until richer usage is written on disk. Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
+Cost is computed locally from token counts in session files multiplied by static per-million-token rates. `claudeville/src/config/models.json` is the canonical source for pricing, model aliases, and provider defaults; generated ESM and CommonJS resolvers keep browser and server estimates aligned. The numbers are estimates, not billing truth. DeepSeek-backed OpenCode sessions still use `provider: "opencode"` but resolve DeepSeek rates from the model string. Grok sessions currently surface cumulative `contextWindow` occupancy from ACP metadata rather than a full input/output split, so estimated cost often stays near zero until richer usage is written on disk. An unmatched model uses its provider's `defaults` entry.
 
-If a model is missing or its price has changed, update `claudeville/src/config/model-pricing.json` and `TokenUsage.js`, then verify the browser and `/api/sessions` cost displays.
+If a model is missing or its price has changed, update one row in `claudeville/src/config/models.json`, run `npm run models:generate`, inspect it with `npm run models:resolve <provider> <model>`, and run the model registry and pricing tests before verifying browser and `/api/sessions` cost displays.
 
 ## Desktop graphics reset or compositor crash while ClaudeVille is open
 

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createRequire } from 'node:module';
+import { makeTempDir } from './support/tmp.mjs';
 
 test('Claude orphan discovery rechecks active children without rescanning cold child trees', () => {
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-orphan-cache-'));
+  const tmpHome = makeTempDir('claudeville-orphan-cache-');
   const previousHome = process.env.HOME;
   const project = path.join(tmpHome, 'workspace', 'fixture');
   const projectDir = path.join(tmpHome, '.claude', 'projects', project.replace(/\//g, '-'));

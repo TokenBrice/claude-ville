@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createRequire } from 'node:module';
+import { makeTempDir } from './support/tmp.mjs';
 
 const FIXTURE_ROOT = path.resolve(import.meta.dirname, '../adapters/fixtures/claude');
 
@@ -13,7 +13,7 @@ function writeJsonLines(filePath, records) {
 }
 
 test('Claude keeps a seen main identity and separates Agent kind from agentType', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-claude-identity-'));
+  const root = makeTempDir('claudeville-claude-identity-');
   const previousHome = process.env.HOME;
   let adapter = null;
   try {

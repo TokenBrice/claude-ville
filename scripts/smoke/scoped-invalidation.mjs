@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-invalidation-'));
+const tmpHome = makeTempDir('claudeville-invalidation-');
 const require = createRequire(import.meta.url);
 const previousHome = process.env.HOME;
 const previousDisableGit = process.env.CLAUDEVILLE_DISABLE_GIT_ENRICHMENT;

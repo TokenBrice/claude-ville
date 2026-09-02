@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createRequire } from 'node:module';
+import { makeTempDir } from './support/tmp.mjs';
 
 const require = createRequire(import.meta.url);
 const { OmpAdapter } = require('../../claudeville/adapters/omp.js');
@@ -27,7 +27,7 @@ function assistantMessage(id, timestamp, content, usage = null) {
 }
 
 test('OMP adapter discovers parent and nested agent transcripts with details and usage', () => {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-omp-'));
+  const tmpRoot = makeTempDir('claudeville-omp-');
   const projectDir = path.join(tmpRoot, '-workspace-fixture');
   const parentId = '01900000-0000-7000-8000-000000000001';
   const childId = '01900000-0000-7000-8000-000000000002';

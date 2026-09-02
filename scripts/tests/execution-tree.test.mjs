@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createRequire } from 'node:module';
+import { makeTempDir } from './support/tmp.mjs';
 
 import {
   buildExecutionTree,
@@ -116,7 +116,7 @@ test('task subjects are truncated and sanitized without descriptions or absolute
 });
 
 test('Claude adapter reads task groups and attaches bounded progress to the session payload', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-execution-tree-'));
+  const home = makeTempDir('claudeville-execution-tree-');
   try {
     const project = path.join(home, 'workspace', 'tree');
     const sessionId = 'tree-main';

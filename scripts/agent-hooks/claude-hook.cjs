@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
@@ -233,8 +234,75 @@ function runSession(input) {
   return 0;
 }
 
-// Reserved for the opt-in hook ingestion item. It deliberately performs no work yet.
-function runIngest() {
+function redactIngestValue(value) {
+  const clean = String(value || '')
+    .replace(/\b((?:[A-Za-z0-9_-]*?(?:key|token)))\s*=\s*(?:"[^"]*"|'[^']*'|[^\s&;,]+)/gi, '$1=[REDACTED]')
+    .replace(/[A-Za-z0-9_-]{32,}/g, '[REDACTED]')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!clean) return null;
+  if (clean.length <= 200) return clean;
+  return `${clean.slice(0, 199).trimEnd()}…`;
+}
+
+function mapClaudeHookEvent(input, now = Date.now()) {
+  const kinds = {
+    PreToolUse: 'PreToolUse',
+    PostToolUse: 'PostToolUse',
+    Stop: 'Stop'
+  };
+  const kind = kinds[input?.hook_event_name];
+  const sessionId = typeof input?.session_id === 'string' ? input.session_id.trim() : '';
+  if (!kind || !sessionId) return null;
+
+  let safeInput = null;
+  if (input.tool_input && typeof input.tool_input === 'object' && !Array.isArray(input.tool_input)) {
+    for (const key of ['command', 'file_path', 'pattern', 'description']) {
+      if (typeof input.tool_input[key] !== 'string') continue;
+      const value = redactIngestValue(input.tool_input[key]);
+      if (value) safeInput = { [key]: value };
+      break;
+    }
+  }
+
+  return {
+    provider: 'claude',
+    sessionId,
+    kind,
+    tool: typeof input.tool_name === 'string' ? redactIngestValue(input.tool_name)?.slice(0, 128) || null : null,
+    input: safeInput,
+    cwd: typeof input.cwd === 'string' ? input.cwd.slice(0, 4096) : '',
+    ts: now
+  };
+}
+
+function postIngestEvent(event, { request = http.request, token = process.env.CLAUDEVILLE_INGEST_TOKEN } = {}) {
+  const body = JSON.stringify(event);
+  const headers = {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(body)
+  };
+  if (token) headers['X-ClaudeVille-Ingest-Token'] = token;
+  try {
+    const req = request({
+      hostname: '127.0.0.1',
+      port: 4000,
+      path: '/api/ingest/hook',
+      method: 'POST',
+      headers,
+      timeout: 150
+    }, (res) => res.resume());
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => {});
+    req.end(body);
+  } catch {}
+}
+
+function runIngest({ env = process.env, read = readInput, request = http.request, now = Date.now } = {}) {
+  if (env.CLAUDEVILLE_DOGFOOD_HOOKS !== '1') return 0;
+  const event = mapClaudeHookEvent(read(), now());
+  if (event) postIngestEvent(event, { request, token: env.CLAUDEVILLE_INGEST_TOKEN });
   return 0;
 }
 
@@ -248,6 +316,14 @@ function main(argv = process.argv.slice(2)) {
   return runSession(input);
 }
 
-module.exports = { parseArgs, shellParts, commandTokens, denyReason, main };
+module.exports = {
+  parseArgs,
+  shellParts,
+  commandTokens,
+  denyReason,
+  mapClaudeHookEvent,
+  runIngest,
+  main
+};
 
 if (require.main === module) process.exitCode = main();

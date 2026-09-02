@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { makeTempDir } from './support/tmp.mjs';
 
 const require = createRequire(import.meta.url);
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -33,7 +33,7 @@ function healthFor(registry, provider) {
 }
 
 test('provider health records distinguish absence, emptiness, parser damage, and failures', async (t) => {
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-provider-health-'));
+  const tmpHome = makeTempDir('claudeville-provider-health-');
   const previousHome = process.env.HOME;
   const previousGitSetting = process.env.CLAUDEVILLE_DISABLE_GIT_ENRICHMENT;
   process.env.HOME = tmpHome;

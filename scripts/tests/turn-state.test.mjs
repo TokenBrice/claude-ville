@@ -9,9 +9,9 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeTempDir } from './support/tmp.mjs';
 
 const require = createRequire(import.meta.url);
 const {
@@ -206,7 +206,7 @@ test('timestamps parse from ISO strings and numbers alike', () => {
 });
 
 test('Codex transcript fixtures preserve turn truth and project item_completed fields', (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-codex-turn-state-'));
+    const root = makeTempDir('claudeville-codex-turn-state-');
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const now = Date.now();
     const project = materializeCodexFixtures(root, now);

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { makeTempDir } from './support/tmp.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 const FIXTURE_ROOT = path.join(REPO_ROOT, 'scripts', 'adapters', 'fixtures', 'claude');
@@ -14,7 +14,7 @@ function writeJsonLines(filePath, records) {
 }
 
 test('Claude projects provider records, turn timing, and a canonical working set', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-claude-projection-'));
+  const root = makeTempDir('claudeville-claude-projection-');
   try {
     const project = path.join(root, 'work', 'projection');
     const projectDir = path.join(root, '.claude', 'projects', project.replaceAll('/', '-'));

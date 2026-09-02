@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import test from 'node:test';
+import { makeTempDir } from './support/tmp.mjs';
 
 const require = createRequire(import.meta.url);
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
@@ -206,7 +206,7 @@ function readFixtureSessions(root, openCodeDb, openCodeStrategy) {
 }
 
 test('adapter fixtures keep genuinely shared optional fields aligned', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-r2-02-'));
+  const root = makeTempDir('claudeville-r2-02-');
   try {
     const fixture = createFixtures(root);
     const sessions = readFixtureSessions(root, fixture.openCodeDb, fixture.openCodeStrategy);

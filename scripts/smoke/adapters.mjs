@@ -7,10 +7,10 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const SCRIPT_NAME = 'adapters.mjs';
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -27,7 +27,7 @@ const WORKFLOW_RUN_ID = 'wf_smoke-001';
 const WORKFLOW_NAME = 'doc-corpus-audit';
 const WORKFLOW_AGENT_ID = 'bbbbbbbbbbbbbbbbb';
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cv-smoke-claude-'));
+const tmpRoot = makeTempDir('cv-smoke-claude-');
 let failed = false;
 
 function pass(message) {

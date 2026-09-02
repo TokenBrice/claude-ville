@@ -1,4 +1,10 @@
-const { MODEL_REVISION, ratesForModel } = require('../src/config/models.generated.cjs');
+const {
+  MODEL_DEFAULTS,
+  MODEL_REVISION,
+  findModelRow,
+  normalizeModel,
+  ratesForModel,
+} = require('../src/config/models.generated.cjs');
 
 const DEFAULT_TOKEN_USAGE = Object.freeze({
   input: 0,
@@ -34,10 +40,10 @@ const EFFORT_LABELS = Object.freeze({
 });
 
 const DEFAULT_CODEX_IDENTITY = Object.freeze({
-  label: 'Codex',
-  shortLabel: 'Codex',
-  spriteId: 'agent.codex.gpt54',
-  color: '#7be3d7',
+  label: MODEL_DEFAULTS.codex.label,
+  shortLabel: MODEL_DEFAULTS.codex.shortLabel,
+  spriteId: MODEL_DEFAULTS.codex.spriteId,
+  color: MODEL_DEFAULTS.codex.color,
 });
 
 function normalizeNumber(value) {
@@ -111,13 +117,6 @@ function estimateCost(rawUsage, model, provider) {
   };
 }
 
-function normalizeModel(model) {
-  return String(model || '')
-    .toLowerCase()
-    .replace(/[._]/g, '-')
-    .replace(/\s+/g, '-');
-}
-
 function normalizeReasoningEffort(effort) {
   const normalized = String(effort || '').toLowerCase();
   if (!normalized || normalized === 'none') return normalized ? 'none' : null;
@@ -142,77 +141,65 @@ function codexGpt55Sprite(effortTier) {
       : 'agent.codex.gpt55';
 }
 
-function modelIdentity(model, effort, provider = '') {
+function inferredRegistryProvider(model, provider = '') {
   const normalizedModel = normalizeModel(model);
+  if (normalizedModel.includes('deepseek')) return 'deepseek';
+  if (normalizedModel.includes('gemini')) return 'gemini';
+  if (normalizedModel.includes('codex') || normalizedModel.includes('gpt')) return 'codex';
+  if (normalizedModel.includes('claude')) return 'claude';
+  if (normalizedModel.includes('kimi')) return 'kimi';
+  if (normalizedModel.includes('grok')) return 'grok';
   const normalizedProvider = String(provider || '').toLowerCase();
-  const effortTier = normalizeReasoningEffort(effort);
+  if (normalizedProvider.includes('deepseek')) return 'deepseek';
+  if (normalizedProvider.includes('gemini')) return 'gemini';
+  if (normalizedProvider.includes('codex') || normalizedProvider.includes('openai')) return 'codex';
+  if (normalizedProvider.includes('claude')) return 'claude';
+  if (normalizedProvider.includes('kimi')) return 'kimi';
+  if (normalizedProvider.includes('grok')) return 'grok';
+  return normalizedProvider;
+}
 
-  if (normalizedModel.includes('fable')) return { shortLabel: 'Fable', effortTier, spriteId: 'agent.claude.fable', color: '#ffd6f0' };
-  if (normalizedModel.includes('opus')) return { shortLabel: 'Opus', effortTier, spriteId: 'agent.claude.opus', color: '#ffe7a8' };
-  if (normalizedModel.includes('haiku')) return { shortLabel: 'Haiku', effortTier, spriteId: 'agent.claude.haiku', color: '#ffd47a' };
-  if (normalizedModel.includes('sonnet') || normalizedProvider.includes('claude')) {
-    return { shortLabel: normalizedModel.includes('sonnet') ? 'Sonnet' : 'Claude', effortTier, spriteId: 'agent.claude.sonnet', color: '#f2d36b' };
+function selectModelRow(model, provider = '') {
+  const direct = findModelRow(model, provider);
+  if (!direct.isDefault) return direct;
+
+  const modelMatch = findModelRow(model);
+  if (!modelMatch.isDefault) return modelMatch;
+
+  const inferredProvider = inferredRegistryProvider(model, provider);
+  if (inferredProvider && inferredProvider !== String(provider || '').toLowerCase()) {
+    const inferred = findModelRow(model, inferredProvider);
+    if (inferred.row) return inferred;
   }
-  if (normalizedModel.includes('gpt-5-3-codex-spark')) {
-    return { shortLabel: '5.3 Spark', effortTier: normalizeCodexEffortTier(effortTier), spriteId: 'agent.codex.gpt53spark', color: '#f8e36f' };
-  }
-  if (normalizedModel.includes('gpt-5-3-codex')) {
-    return { shortLabel: '5.3', effortTier: normalizeCodexEffortTier(effortTier), spriteId: 'agent.codex.gpt53spark', color: '#f8e36f' };
-  }
-  if (normalizedModel.includes('gpt-5-6')) {
-    const isSol = normalizedModel.includes('sol');
-    const isLuna = normalizedModel.includes('luna');
+  return direct;
+}
+
+function modelIdentity(model, effort, provider = '') {
+  const { row } = selectModelRow(model, provider);
+  const effortTier = normalizeReasoningEffort(effort);
+  if (!row) {
     return {
-      shortLabel: isSol ? '5.6 Sol' : isLuna ? '5.6 Luna' : '5.6 Terra',
+      shortLabel: String(model || ''),
       effortTier,
-      spriteId: isSol ? 'agent.codex.gpt56sol' : isLuna ? 'agent.codex.gpt56luna' : 'agent.codex.gpt56terra',
-      color: isSol ? '#ffd76a' : isLuna ? '#cfe4ff' : '#d9a066',
+      spriteId: null,
+      color: '#64748b',
     };
   }
-  if (normalizedModel.includes('gpt-5-5')) {
-    const codexEffort = normalizeCodexEffortTier(effortTier);
-    return { shortLabel: '5.5', effortTier: codexEffort, spriteId: codexGpt55Sprite(codexEffort), color: '#fff1b8' };
-  }
-  if (normalizedModel.includes('gpt-5-4') || normalizedModel.includes('gpt-5.4')) {
-    return { shortLabel: '5.4', effortTier: normalizeCodexEffortTier(effortTier), spriteId: 'agent.codex.gpt54', color: '#8bd6ff' };
-  }
-  if (normalizedProvider.includes('codex') || normalizedModel.includes('codex') || normalizedModel.includes('gpt')) {
-    return { ...DEFAULT_CODEX_IDENTITY, effortTier: normalizeCodexEffortTier(effortTier) };
-  }
-  if (normalizedProvider.includes('kimi') || normalizedModel.includes('kimi')) {
-    return { shortLabel: 'Kimi', effortTier, spriteId: 'agent.kimi.base', color: '#ff8da8' };
-  }
-  if (normalizedProvider.includes('grok') || normalizedModel.includes('grok')) {
-    const isComposer = normalizedModel.includes('composer');
-    return {
-      shortLabel: isComposer ? 'Composer' : normalizedModel.includes('4-5') || normalizedModel.includes('4.5') ? 'Grok 4.5' : 'Grok',
-      effortTier,
-      spriteId: isComposer ? 'agent.grok.composer' : 'agent.grok.base',
-      color: isComposer ? '#a5f3fc' : '#7df9ff',
-    };
-  }
-  if (normalizedProvider.includes('deepseek') || normalizedModel.includes('deepseek')) {
-    const isPro = normalizedModel.includes('v4-pro');
-    const isFlash = normalizedModel.includes('v4-flash');
-    const isReasoner = normalizedModel.includes('reasoner');
-    return {
-      shortLabel: isPro ? 'DS V4 Pro' : isFlash ? 'DS Flash' : isReasoner ? 'DS Reasoner' : 'DeepSeek',
-      effortTier,
-      spriteId: isPro ? 'agent.deepseek.pro'
-        : isFlash ? 'agent.deepseek.flash'
-        : isReasoner ? 'agent.deepseek.reasoner'
-        : 'agent.deepseek.pro',
-      color: isPro ? '#9ee7ff' : '#7cf4c8',
-    };
-  }
-  if (normalizedProvider.includes('gemini') || normalizedModel.includes('gemini')) {
-    return { shortLabel: 'Gemini', effortTier, spriteId: 'agent.gemini.base', color: '#9ad7ff' };
-  }
+
+  const isGpt56 = row.modelClass === 'gpt56sol'
+    || row.modelClass === 'gpt56terra'
+    || row.modelClass === 'gpt56luna';
+  const resolvedEffortTier = row.paletteKey === 'codex' && !isGpt56
+    ? normalizeCodexEffortTier(effortTier)
+    : effortTier;
+  const identity = row === MODEL_DEFAULTS.codex ? DEFAULT_CODEX_IDENTITY : row;
   return {
-    shortLabel: String(model || ''),
-    effortTier,
-    spriteId: null,
-    color: '#64748b',
+    shortLabel: identity.shortLabel,
+    effortTier: resolvedEffortTier,
+    spriteId: row.modelClass === 'gpt55'
+      ? codexGpt55Sprite(resolvedEffortTier)
+      : identity.spriteId,
+    color: identity.color,
   };
 }
 

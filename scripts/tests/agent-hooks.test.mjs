@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { makeTempDir } from './support/tmp.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const hookPath = path.join(repoRoot, 'scripts/agent-hooks/claude-hook.cjs');
+const require = createRequire(import.meta.url);
+const { mapClaudeHookEvent, runIngest } = require(hookPath);
 
 function run(mode, input, options = {}) {
   const started = performance.now();
@@ -90,7 +94,7 @@ test('check-js reports syntax failures without blocking', () => {
   assert.equal(result.status, 0);
   assert.equal(result.stderr, '');
 
-  const fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'claudeville-hook-'));
+  const fixtureDir = makeTempDir('claudeville-hook-');
   try {
     writeFileSync(path.join(fixtureDir, 'invalid.js'), 'const = broken;\n');
     const invalid = run('check-js', {
@@ -109,6 +113,82 @@ test('session prints repository status, package version, and maintained-server w
   assert.equal(result.status, 0);
   assert.match(result.stdout, /^ClaudeVille v\d+\.\d+\.\d+/);
   assert.match(result.stdout, /maintained server: http:\/\/localhost:4000 \(do not start\/stop\)/);
+});
+
+test('ingest maps Claude lifecycle fixtures to allowlisted normalized payloads', () => {
+  const base = {
+    session_id: ' session-123 ',
+    cwd: '/tmp/project',
+    tool_name: 'Bash',
+    prompt: 'never forward me',
+    transcript_path: '/secret/transcript',
+    tool_input: {
+      command: 'deploy token=supersecretvalue --note ' + 'x'.repeat(220),
+      prompt: 'never forward this either',
+      file_content: 'private source'
+    }
+  };
+  const pre = mapClaudeHookEvent({ ...base, hook_event_name: 'PreToolUse' }, 123456);
+  assert.deepEqual(pre, {
+    provider: 'claude',
+    sessionId: 'session-123',
+    kind: 'PreToolUse',
+    tool: 'Bash',
+    input: { command: 'deploy token=[REDACTED] --note [REDACTED]' },
+    cwd: '/tmp/project',
+    ts: 123456
+  });
+  assert.equal(JSON.stringify(pre).includes('never forward'), false);
+
+  const pattern = mapClaudeHookEvent({
+    ...base,
+    hook_event_name: 'PreToolUse',
+    tool_input: { pattern: 'safe words '.repeat(30), prompt: 'not allowed' }
+  }, 123456);
+  assert.equal(pattern.input.pattern.length, 200);
+  assert.equal(pattern.input.pattern.endsWith('…'), true);
+
+  const post = mapClaudeHookEvent({
+    ...base,
+    hook_event_name: 'PostToolUse',
+    tool_input: { file_path: '/tmp/example.js', content: 'not allowed' }
+  }, 123457);
+  assert.equal(post.kind, 'PostToolUse');
+  assert.deepEqual(post.input, { file_path: '/tmp/example.js' });
+
+  const stop = mapClaudeHookEvent({
+    session_id: 'session-123',
+    hook_event_name: 'Stop',
+    cwd: '/tmp/project',
+    stop_hook_active: true
+  }, 123458);
+  assert.deepEqual(stop, {
+    provider: 'claude',
+    sessionId: 'session-123',
+    kind: 'Stop',
+    tool: null,
+    input: null,
+    cwd: '/tmp/project',
+    ts: 123458
+  });
+  assert.equal(mapClaudeHookEvent({ ...base, hook_event_name: 'Notification' }), null);
+});
+
+test('ingest flag unset exits zero without reading input or opening a request', () => {
+  let read = false;
+  let requested = false;
+  assert.equal(runIngest({
+    env: {},
+    read: () => { read = true; },
+    request: () => { requested = true; }
+  }), 0);
+  assert.equal(read, false);
+  assert.equal(requested, false);
+
+  const result = run('ingest', '{not json', { env: { PATH: process.env.PATH } });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
 });
 
 test('each hook mode completes under 200 ms across ten runs', () => {

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const require = createRequire(import.meta.url);
 const {
@@ -14,7 +14,7 @@ const {
   readTailLines,
 } = require('../../claudeville/adapters/shared.js');
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-tail-cache-'));
+const dir = makeTempDir('claudeville-tail-cache-');
 const file = path.join(dir, 'session.jsonl');
 
 try {

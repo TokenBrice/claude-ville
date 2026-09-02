@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createRequire } from 'node:module';
+import { makeTempDir } from './support/tmp.mjs';
 
 const require = createRequire(import.meta.url);
 const { OmpAdapter, parseOmpTranscript } = require('../../claudeville/adapters/omp.js');
@@ -97,7 +97,7 @@ test('OMP derives working after a user starts a new turn', () => {
 });
 
 test('OMP detail index misses do not reparse transcripts until a directory mtime changes', () => {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-omp-detail-gate-'));
+  const tmpRoot = makeTempDir('claudeville-omp-detail-gate-');
   const projectDir = path.join(tmpRoot, 'project');
   const id = '01900000-0000-7000-8000-000000000104';
   const transcriptPath = path.join(projectDir, `${id}.jsonl`);

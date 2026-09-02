@@ -3,8 +3,8 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
+const { makeTempDir } = require('../tests/support/tmp.cjs');
 
 const kimiFixture = buildKimiCodeFixture();
 if (kimiFixture) {
@@ -513,7 +513,7 @@ function buildCodexFixture(root) {
 }
 
 function buildKimiCodeFixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cv-kimi-code-fixture-'));
+  const root = makeTempDir('cv-kimi-code-fixture-');
   const kimiDir = path.join(root, '.kimi-code');
   const sessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_fixture');
   const childFreshSessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_child_fresh');
@@ -1155,7 +1155,7 @@ function buildOpenCodeFixture() {
   }
   if (!sqlite?.DatabaseSync) return null;
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cv-opencode-fixture-'));
+  const root = makeTempDir('cv-opencode-fixture-');
   const stateDir = path.join(root, 'state');
   const configDir = path.join(root, 'config');
   fs.mkdirSync(stateDir, { recursive: true });

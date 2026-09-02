@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-fatal-'));
+const tmpHome = makeTempDir('claudeville-fatal-');
 const watchedFile = path.join(tmpHome, 'watched.jsonl');
 fs.writeFileSync(watchedFile, '{}\n');
 

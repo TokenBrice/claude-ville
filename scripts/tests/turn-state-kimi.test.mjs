@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeTempDir } from './support/tmp.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -35,7 +35,7 @@ function readSessions(root) {
 }
 
 test('Kimi Code derives pending and closed turns from one transcript projection', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-kimi-turn-state-'));
+  const root = makeTempDir('claudeville-kimi-turn-state-');
   const now = Date.now();
   const pendingStart = now - 10_000;
   const pendingAt = now - 8_000;

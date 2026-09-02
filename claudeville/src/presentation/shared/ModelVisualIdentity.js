@@ -1,16 +1,21 @@
-import { contextWindowForModel } from '../../config/models.generated.js';
+import {
+    MODEL_DEFAULTS,
+    contextWindowForModel,
+    findModelRow,
+    normalizeModel,
+} from '../../config/models.generated.js';
 
 const DEFAULT_CODEX_IDENTITY = Object.freeze({
     family: 'codex',
-    modelClass: 'codex',
-    modelTier: null,
-    label: 'Codex',
-    shortLabel: 'Codex',
-    spriteId: 'agent.codex.gpt54',
-    paletteKey: 'codex',
-    trim: ['#7be3d7', '#55c7f0', '#8ee88e'],
-    accent: ['#bff7ee', '#6ee7d8', '#5ad6ff'],
-    minimapColor: '#7be3d7',
+    modelClass: MODEL_DEFAULTS.codex.modelClass,
+    modelTier: MODEL_DEFAULTS.codex.modelTier,
+    label: MODEL_DEFAULTS.codex.label,
+    shortLabel: MODEL_DEFAULTS.codex.shortLabel,
+    spriteId: MODEL_DEFAULTS.codex.spriteId,
+    paletteKey: MODEL_DEFAULTS.codex.paletteKey,
+    trim: MODEL_DEFAULTS.codex.trim,
+    accent: MODEL_DEFAULTS.codex.accent,
+    minimapColor: MODEL_DEFAULTS.codex.color,
 });
 
 const EFFORT_LABELS = Object.freeze({
@@ -69,13 +74,19 @@ const DEFAULT_EFFORT_RENDERING = Object.freeze({
     allowRuntimeEffortWeapon: true,
 });
 
-const PROVIDER_BASE_SPRITES = Object.freeze({
-    claude: 'agent.claude.base',
-    codex: 'agent.codex.base',
-    gemini: 'agent.gemini.base',
-    kimi: 'agent.kimi.base',
-    grok: 'agent.grok.base',
-});
+const PROVIDER_BASE_SPRITES = Object.freeze(Object.fromEntries(
+    Object.entries(MODEL_DEFAULTS).map(([provider, identity]) => [provider, identity.spriteId]),
+));
+
+// Sprite ids selected by rendering policy rather than by a registry row:
+// the per-provider `agent.<provider>.base` fallback (AgentSprite composes
+// `agent.${provider}.base` when an identity has no spriteId) and the GPT-5.5
+// effort variants. The registry completeness test accepts these alongside
+// registry rows and provider defaults.
+export const POLICY_SPRITE_IDS = Object.freeze([
+    ...Object.keys(MODEL_DEFAULTS).map((provider) => `agent.${provider}.base`),
+    ...Object.values(CODEX_GPT55_SPRITE_BY_EFFORT),
+]);
 
 function codexEquipment(effortTier, modelClass, { suppressBakedWeapon = true } = {}) {
     const equipment = modelClass === 'gpt55'
@@ -98,13 +109,6 @@ function normalizeCodexEffortTier(effortTier) {
     return effortTier === 'max' ? 'xhigh' : effortTier;
 }
 
-function normalizeModel(model) {
-    return String(model || '')
-        .toLowerCase()
-        .replace(/[._]/g, '-')
-        .replace(/\s+/g, '-');
-}
-
 // Canonical provider key for palette/hue lookups, shared by the world sprite
 // (AgentSprite delegates here) and the dashboard avatar (which keys its
 // shared-Compositor requests with it, plan 1.7).
@@ -121,7 +125,42 @@ export function providerPaletteKey(agent) {
     return 'default';
 }
 
+function inferredRegistryProvider(model, provider = '') {
+    const normalizedModel = normalizeModel(model);
+    if (normalizedModel.includes('deepseek')) return 'deepseek';
+    if (normalizedModel.includes('gemini')) return 'gemini';
+    if (normalizedModel.includes('codex') || normalizedModel.includes('gpt')) return 'codex';
+    if (normalizedModel.includes('claude')) return 'claude';
+    if (normalizedModel.includes('kimi')) return 'kimi';
+    if (normalizedModel.includes('grok')) return 'grok';
+    const normalizedProvider = String(provider || '').toLowerCase();
+    if (normalizedProvider.includes('deepseek')) return 'deepseek';
+    if (normalizedProvider.includes('gemini')) return 'gemini';
+    if (normalizedProvider.includes('codex') || normalizedProvider.includes('openai')) return 'codex';
+    if (normalizedProvider.includes('claude')) return 'claude';
+    if (normalizedProvider.includes('kimi')) return 'kimi';
+    if (normalizedProvider.includes('grok')) return 'grok';
+    return normalizedProvider;
+}
+
+function selectModelRow(model, provider = '') {
+    const direct = findModelRow(model, provider);
+    if (!direct.isDefault) return direct;
+
+    const modelMatch = findModelRow(model);
+    if (!modelMatch.isDefault) return modelMatch;
+
+    const inferredProvider = inferredRegistryProvider(model, provider);
+    if (inferredProvider && inferredProvider !== String(provider || '').toLowerCase()) {
+        const inferred = findModelRow(model, inferredProvider);
+        if (inferred.row) return inferred;
+    }
+    return direct;
+}
+
 export function providerBaseSpriteId(model, provider = '') {
+    const { row } = selectModelRow(model, provider);
+    if (row?.spriteId) return row.spriteId;
     const paletteKey = providerPaletteKey({ model, provider });
     return PROVIDER_BASE_SPRITES[paletteKey] || null;
 }
@@ -144,309 +183,78 @@ export function contextWindowLimitForModel(model, provider = '') {
 }
 
 export function getModelVisualIdentity(model, effort, provider = '') {
-    const normalizedModel = normalizeModel(model);
-    const normalizedProvider = String(provider || '').toLowerCase();
+    const { row, isDefault } = selectModelRow(model, provider);
     const effortTier = normalizeReasoningEffort(effort);
     const effortAccessory = EFFORT_ACCESSORIES[effortTier] || null;
     const effortFloorRing = EFFORT_FLOOR_RINGS[effortTier] || null;
 
-    if (normalizedModel.includes('fable')) {
+    if (!row) {
+        const paletteKey = providerPaletteKey({ model, provider });
         return {
-            family: 'claude',
-            modelClass: 'fable',
-            modelTier: 'mythic',
-            label: 'Claude Fable',
-            shortLabel: 'Fable',
+            family: null,
+            modelClass: 'standard',
+            modelTier: null,
+            label: String(model || ''),
+            shortLabel: String(model || ''),
             effortTier,
             ...DEFAULT_EFFORT_RENDERING,
             effortAccessory,
             effortFloorRing,
-            spriteId: 'agent.claude.fable',
-            paletteKey: 'claude',
-            trim: ['#ffd6f0', '#ffe7a8', '#c8a3ff'],
-            accent: ['#fff0fa', '#fff4cf', '#d8bcff'],
-            minimapColor: '#ffd6f0',
+            spriteId: PROVIDER_BASE_SPRITES[paletteKey] || null,
+            paletteKey: paletteKey === 'default' ? null : paletteKey,
+            trim: null,
+            accent: null,
+            minimapColor: null,
         };
     }
 
-    if (normalizedModel.includes('opus')) {
+    const baseIdentity = row === MODEL_DEFAULTS.codex
+        ? DEFAULT_CODEX_IDENTITY
+        : {
+            family: isDefault ? row.paletteKey : row.provider,
+            modelClass: row.modelClass,
+            modelTier: row.modelTier,
+            label: row.label,
+            shortLabel: row.shortLabel,
+            spriteId: row.spriteId,
+            paletteKey: row.paletteKey,
+            trim: row.trim,
+            accent: row.accent,
+            minimapColor: row.color,
+        };
+
+    if (row.paletteKey !== 'codex') {
         return {
-            family: 'claude',
-            modelClass: 'opus',
-            modelTier: 'apex',
-            label: 'Claude Opus',
-            shortLabel: 'Opus',
+            ...baseIdentity,
             effortTier,
             ...DEFAULT_EFFORT_RENDERING,
             effortAccessory,
             effortFloorRing,
-            spriteId: 'agent.claude.opus',
-            paletteKey: 'claude',
-            trim: ['#ffe7a8', '#c8a3ff', '#f4b15f'],
-            accent: ['#fff4cf', '#d8bcff', '#ffca7a'],
-            minimapColor: '#ffe7a8',
         };
     }
 
-    if (normalizedModel.includes('haiku')) {
-        return {
-            family: 'claude',
-            modelClass: 'haiku',
-            modelTier: 'light',
-            label: 'Claude Haiku',
-            shortLabel: 'Haiku',
-            effortTier,
-            ...DEFAULT_EFFORT_RENDERING,
-            effortAccessory,
-            effortFloorRing,
-            spriteId: 'agent.claude.haiku',
-            paletteKey: 'claude',
-            trim: ['#ffd47a', '#ffe39a', '#f6c25c'],
-            accent: ['#fff1c2', '#ffe39a', '#ffcc7a'],
-            minimapColor: '#ffd47a',
-        };
-    }
-
-    if (normalizedModel.includes('sonnet') || normalizedProvider.includes('claude')) {
-        return {
-            family: 'claude',
-            modelClass: 'sonnet',
-            modelTier: 'balanced',
-            label: 'Claude Sonnet',
-            shortLabel: normalizedModel.includes('sonnet') ? 'Sonnet' : 'Claude',
-            effortTier,
-            ...DEFAULT_EFFORT_RENDERING,
-            effortAccessory,
-            effortFloorRing,
-            spriteId: 'agent.claude.sonnet',
-            paletteKey: 'claude',
-            trim: ['#f2d36b', '#b7ccff', '#e9b85f'],
-            accent: ['#ffe39a', '#dfe8ff', '#f7bf6d'],
-            minimapColor: '#f2d36b',
-        };
-    }
-
-    if (normalizedModel.includes('gpt-5-3-codex-spark')) {
-        const modelClass = 'spark';
-        const codexEffortTier = normalizeCodexEffortTier(effortTier);
-        const equipment = codexEquipment(codexEffortTier, modelClass);
-        return {
-            family: 'codex',
-            modelClass,
-            modelTier: 'swift',
-            label: 'GPT-5.3 Codex Spark',
-            shortLabel: '5.3 Spark',
-            effortTier: codexEffortTier,
-            ...DEFAULT_EFFORT_RENDERING,
-            ...equipment,
-            spriteId: 'agent.codex.gpt53spark',
-            paletteKey: 'codex',
-            trim: ['#f8e36f', '#87f7ff', '#c5ff72'],
-            accent: ['#fff6a3', '#55e7ff', '#b8ff5c'],
-            minimapColor: '#f8e36f',
-        };
-    }
-
-    if (normalizedModel.includes('gpt-5-3-codex')) {
-        const modelClass = 'spark';
-        const codexEffortTier = normalizeCodexEffortTier(effortTier);
-        const equipment = codexEquipment(codexEffortTier, modelClass);
-        return {
-            family: 'codex',
-            modelClass,
-            modelTier: 'swift',
-            label: 'GPT-5.3 Codex',
-            shortLabel: '5.3',
-            effortTier: codexEffortTier,
-            ...DEFAULT_EFFORT_RENDERING,
-            ...equipment,
-            spriteId: 'agent.codex.gpt53spark',
-            paletteKey: 'codex',
-            trim: ['#f8e36f', '#87f7ff', '#c5ff72'],
-            accent: ['#fff6a3', '#55e7ff', '#b8ff5c'],
-            minimapColor: '#f8e36f',
-        };
-    }
-
-    if (normalizedModel.includes('gpt-5-6')) {
-        // Celestial warrior triad. Base sprites are empty-handed with armor
-        // baked in, so baked-weapon scrubbing must stay off (the gold-hilt
-        // selector would eat Sol's gold plate).
-        const isSol = normalizedModel.includes('sol');
-        const isLuna = normalizedModel.includes('luna');
-        const modelClass = isSol ? 'gpt56sol' : isLuna ? 'gpt56luna' : 'gpt56terra';
-        const variantLabel = isSol ? 'Sol' : isLuna ? 'Luna' : 'Terra';
-        const equipment = codexEquipment(effortTier, modelClass, { suppressBakedWeapon: false });
-        return {
-            family: 'codex',
-            modelClass,
-            modelTier: isSol ? 'mythic' : isLuna ? 'balanced' : 'apex',
-            label: `GPT-5.6 ${variantLabel}`,
-            shortLabel: `5.6 ${variantLabel}`,
-            effortTier,
-            ...DEFAULT_EFFORT_RENDERING,
-            ...equipment,
-            spriteId: isSol ? 'agent.codex.gpt56sol' : isLuna ? 'agent.codex.gpt56luna' : 'agent.codex.gpt56terra',
-            paletteKey: 'codex',
-            trim: isSol
-                ? ['#ffd76a', '#ffedb3', '#7be3d7']
-                : isLuna
-                    ? ['#cfe4ff', '#9db8d9', '#7be3d7']
-                    : ['#d9a066', '#9fce6e', '#7be3d7'],
-            accent: isSol
-                ? ['#fff6d8', '#ffd76a', '#bff7ee']
-                : isLuna
-                    ? ['#f0f7ff', '#cfe4ff', '#bff7ee']
-                    : ['#f0c896', '#c8e8a0', '#bff7ee'],
-            minimapColor: isSol ? '#ffd76a' : isLuna ? '#cfe4ff' : '#d9a066',
-        };
-    }
-
-    if (normalizedModel.includes('gpt-5-5')) {
-        const modelClass = 'gpt55';
-        const codexEffortTier = normalizeCodexEffortTier(effortTier);
-        const equipment = codexEquipment(codexEffortTier, modelClass);
-        return {
-            family: 'codex',
-            modelClass,
-            modelTier: 'apex',
-            label: 'GPT-5.5',
-            shortLabel: '5.5',
-            effortTier: codexEffortTier,
-            ...DEFAULT_EFFORT_RENDERING,
-            ...equipment,
-            spriteId: codexGpt55Sprite(codexEffortTier),
-            codexHeavyGearBaked: codexEffortTier === 'high' || codexEffortTier === 'xhigh',
-            paletteKey: 'codex',
-            trim: ['#fff1b8', '#7be3d7', '#f8c45f'],
-            accent: ['#ffffff', '#bff7ee', '#ffd98a'],
-            minimapColor: '#fff1b8',
-        };
-    }
-
-    if (normalizedModel.includes('gpt-5-4') || normalizedModel.includes('gpt-5.4')) {
-        const modelClass = 'gpt54';
-        const codexEffortTier = normalizeCodexEffortTier(effortTier);
-        const equipment = codexEquipment(codexEffortTier, modelClass);
-        return {
-            family: 'codex',
-            modelClass,
-            modelTier: 'senior',
-            label: 'GPT-5.4',
-            shortLabel: '5.4',
-            effortTier: codexEffortTier,
-            ...DEFAULT_EFFORT_RENDERING,
-            ...equipment,
-            spriteId: 'agent.codex.gpt54',
-            paletteKey: 'codex',
-            trim: ['#8bd6ff', '#7be3d7', '#a9b7ff'],
-            accent: ['#d5f4ff', '#95f0df', '#d3dcff'],
-            minimapColor: '#8bd6ff',
-        };
-    }
-
-    if (normalizedProvider.includes('codex') || normalizedModel.includes('codex') || normalizedModel.includes('gpt')) {
-        const codexEffortTier = normalizeCodexEffortTier(effortTier);
-        const equipment = codexEquipment(codexEffortTier, DEFAULT_CODEX_IDENTITY.modelClass);
-        return {
-            ...DEFAULT_CODEX_IDENTITY,
-            effortTier: codexEffortTier,
-            ...DEFAULT_EFFORT_RENDERING,
-            ...equipment,
-        };
-    }
-
-    if (normalizedProvider.includes('kimi') || normalizedModel.includes('kimi')) {
-        return {
-            family: 'kimi',
-            modelClass: 'kimi',
-            modelTier: 'balanced',
-            label: 'Kimi',
-            shortLabel: 'Kimi',
-            effortTier,
-            ...DEFAULT_EFFORT_RENDERING,
-            effortAccessory,
-            effortFloorRing,
-            spriteId: 'agent.kimi.base',
-            paletteKey: 'kimi',
-            trim: ['#f5c36a', '#ff8da8', '#ffeff3'],
-            accent: ['#ffeff3', '#ff8da8', '#f5c36a'],
-            minimapColor: '#ff8da8',
-        };
-    }
-
-    if (normalizedProvider.includes('grok') || normalizedModel.includes('grok')) {
-        const isComposer = normalizedModel.includes('composer');
-        return {
-            family: 'grok',
-            modelClass: isComposer ? 'composer' : 'base',
-            modelTier: isComposer ? 'swift' : 'apex',
-            label: isComposer ? 'Grok Composer' : 'Grok',
-            shortLabel: isComposer
-                ? 'Composer'
-                : (normalizedModel.includes('4-5') || normalizedModel.includes('4.5') ? 'Grok 4.5' : 'Grok'),
-            effortTier,
-            ...DEFAULT_EFFORT_RENDERING,
-            effortAccessory,
-            effortFloorRing,
-            spriteId: isComposer ? 'agent.grok.composer' : 'agent.grok.base',
-            paletteKey: 'grok',
-            trim: isComposer
-                ? ['#a5f3fc', '#67e8f9', '#e0f2fe']
-                : ['#7df9ff', '#e8f7ff', '#22d3ee'],
-            accent: isComposer
-                ? ['#ecfeff', '#a5f3fc', '#67e8f9']
-                : ['#f0fdff', '#7df9ff', '#38bdf8'],
-            minimapColor: isComposer ? '#a5f3fc' : '#7df9ff',
-        };
-    }
-
-    if (normalizedProvider.includes('deepseek') || normalizedModel.includes('deepseek')) {
-        const isPro = normalizedModel.includes('v4-pro');
-        const isFlash = normalizedModel.includes('v4-flash');
-        const isReasoner = normalizedModel.includes('reasoner');
-        return {
-            family: 'deepseek',
-            modelClass: isPro ? 'v4-pro' : isFlash ? 'v4-flash' : isReasoner ? 'reasoner' : 'deepseek',
-            modelTier: isPro ? 'long-context' : isFlash ? 'swift' : isReasoner ? 'balanced' : null,
-            label: isPro ? 'DeepSeek V4 Pro' : isFlash ? 'DeepSeek V4 Flash' : isReasoner ? 'DeepSeek Reasoner' : 'DeepSeek',
-            shortLabel: isPro ? 'DS V4 Pro' : isFlash ? 'DS Flash' : isReasoner ? 'DS Reasoner' : 'DeepSeek',
-            effortTier,
-            ...DEFAULT_EFFORT_RENDERING,
-            effortAccessory,
-            effortFloorRing,
-            spriteId: isPro ? 'agent.deepseek.pro'
-                : isFlash ? 'agent.deepseek.flash'
-                : isReasoner ? 'agent.deepseek.reasoner'
-                : 'agent.deepseek.pro',
-            paletteKey: 'deepseek',
-            trim: isPro
-                ? ['#9ee7ff', '#6dd7ff', '#d9f7ff']
-                : ['#7cf4c8', '#45dca8', '#c8fff0'],
-            accent: isPro
-                ? ['#e5fbff', '#9ee7ff', '#76b8ff']
-                : ['#d8fff4', '#7cf4c8', '#6dd7ff'],
-            minimapColor: isPro ? '#9ee7ff' : '#7cf4c8',
-        };
-    }
-
-    const paletteKey = providerPaletteKey({ model, provider });
-    return {
-        family: null,
-        modelClass: 'standard',
-        modelTier: null,
-        label: String(model || ''),
-        shortLabel: String(model || ''),
-        effortTier,
+    const isGpt56 = row.modelClass === 'gpt56sol'
+        || row.modelClass === 'gpt56terra'
+        || row.modelClass === 'gpt56luna';
+    const codexEffortTier = isGpt56 ? effortTier : normalizeCodexEffortTier(effortTier);
+    const equipment = codexEquipment(
+        codexEffortTier,
+        row.modelClass,
+        { suppressBakedWeapon: !isGpt56 },
+    );
+    const identity = {
+        ...baseIdentity,
+        effortTier: codexEffortTier,
         ...DEFAULT_EFFORT_RENDERING,
-        effortAccessory,
-        effortFloorRing,
-        spriteId: providerBaseSpriteId(model, provider),
-        paletteKey: paletteKey === 'default' ? null : paletteKey,
-        trim: null,
-        accent: null,
-        minimapColor: null,
+        ...equipment,
+        spriteId: row.modelClass === 'gpt55'
+            ? codexGpt55Sprite(codexEffortTier)
+            : row.spriteId,
     };
+    if (row.modelClass === 'gpt55') {
+        identity.codexHeavyGearBaked = codexEffortTier === 'high' || codexEffortTier === 'xhigh';
+    }
+    return identity;
 }
 
 export function formatModelLabel(model, effort, provider = '') {

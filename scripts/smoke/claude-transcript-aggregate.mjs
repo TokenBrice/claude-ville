@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { PassThrough } from 'node:stream';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-transcript-'));
+const tmpHome = makeTempDir('claudeville-transcript-');
 const project = path.join(tmpHome, 'workspace', 'project-alpha');
 const encodedProject = project.replace(/\//g, '-');
 const claudeDir = path.join(tmpHome, '.claude');

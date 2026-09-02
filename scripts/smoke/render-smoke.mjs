@@ -5,11 +5,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { chromium } from 'playwright';
 import { startIsolatedServer } from './support/isolated-server.mjs';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const VIEWPORT = { width: 1440, height: 900 };
 const STEP_TIMEOUT_MS = 8_000;
 
-const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-render-'));
+const artifactDir = makeTempDir('claudeville-render-');
 const diagnostics = {
   status: 'running',
   baseUrl: null,

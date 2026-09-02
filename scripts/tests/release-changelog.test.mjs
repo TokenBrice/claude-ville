@@ -12,6 +12,7 @@ import {
     prepareRelease,
     verifyRelease,
 } from '../release/prepare.mjs';
+import { makeTempDir } from './support/tmp.mjs';
 
 const roots = [];
 
@@ -20,7 +21,7 @@ after(() => {
 });
 
 function fixture(changelog, packageVersion = '0.38.0', uiVersion = 'v0.38') {
-    const root = mkdtempSync(join(tmpdir(), 'claudeville-release-test-'));
+    const root = makeTempDir('claudeville-release-test-');
     roots.push(root);
     mkdirSync(join(root, 'claudeville'));
     writeFileSync(join(root, 'CHANGELOG.md'), changelog);

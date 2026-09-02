@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const ACTIVE_THRESHOLD_MS = 10 * 60 * 1000;
@@ -13,7 +13,7 @@ const CAP_CHURN_FILE_COUNT = 260;
 const NOW = Date.now();
 const OLD_MTIME = new Date(NOW - 7 * 24 * 60 * 60 * 1000);
 const OLDER_MTIME = new Date(NOW - 14 * 24 * 60 * 60 * 1000);
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-codex-warm-'));
+const tmpRoot = makeTempDir('claudeville-codex-warm-');
 const sessionsDir = path.join(tmpRoot, '.codex', 'sessions');
 const activeDayDir = path.join(sessionsDir, '9999', '12', '31');
 const historicalDayDir = path.join(sessionsDir, '9998', '01', '01');

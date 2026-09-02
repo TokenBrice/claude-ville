@@ -3,12 +3,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-server-security-'));
+const tmpHome = makeTempDir('claudeville-server-security-');
 let child = null;
 let childOutput = '';
 

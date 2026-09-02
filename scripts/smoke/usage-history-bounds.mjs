@@ -2,12 +2,12 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const require = createRequire(import.meta.url);
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-usage-history-'));
+const tmpHome = makeTempDir('claudeville-usage-history-');
 const claudeHome = path.join(tmpHome, '.claude');
 const historyPath = path.join(claudeHome, 'history.jsonl');
 const previousHome = process.env.HOME;

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { makeTempDir } from './support/tmp.mjs';
 
 import workingSetService from '../../claudeville/services/workingSet.js';
 import adapterRegistry from '../../claudeville/adapters/index.js';
@@ -56,7 +56,7 @@ test('read/write overlap is advisory and read/read overlap is silent', () => {
 });
 
 test('a symlink canonicalised outside the project does not join a project-relative path', (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-working-set-'));
+    const root = makeTempDir('claudeville-working-set-');
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const project = path.join(root, 'project');
     const outside = path.join(root, 'outside');

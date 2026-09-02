@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeTempDir } from '../../tests/support/tmp.mjs';
 
 const SUPPORT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SUPPORT_DIR, '../../..');
@@ -65,7 +66,7 @@ async function stopChildTree(child) {
 
 export async function startIsolatedServer({ home, env } = {}) {
   const ownsHome = !home;
-  const isolatedHome = home || fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-server-'));
+  const isolatedHome = home || makeTempDir('claudeville-server-');
   const binDir = path.join(isolatedHome, 'bin');
   const repositoryRoot = path.join(isolatedHome, 'repositories');
   fs.mkdirSync(binDir, { recursive: true });

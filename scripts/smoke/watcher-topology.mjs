@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-watch-'));
+const tmpRoot = makeTempDir('claudeville-watch-');
 const previousHome = process.env.HOME;
 process.env.HOME = tmpRoot;
 process.env.CLAUDEVILLE_WATCH_ZERO_CLIENT_GRACE_MS = '50';

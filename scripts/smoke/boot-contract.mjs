@@ -8,6 +8,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { startIsolatedServer } from './support/isolated-server.mjs';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const REQUEST_TIMEOUT_MS = 2_000;
 const FRAME_TIMEOUT_MS = 8_000;
@@ -559,7 +560,7 @@ async function cleanup(context) {
 }
 
 async function run(context) {
-  context.tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-boot-contract-'));
+  context.tmpHome = makeTempDir('claudeville-boot-contract-');
   const fixture = createFixture(context.tmpHome);
   const server = await startIsolatedServer({
     home: fixture.home,

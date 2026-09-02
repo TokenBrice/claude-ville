@@ -3,12 +3,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
+import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-watch-runtime-'));
+const tmpHome = makeTempDir('claudeville-watch-runtime-');
 const project = path.join(tmpHome, 'work', 'demo');
 const sessionId = 'runtime-fixture';
 const projectDir = path.join(tmpHome, '.claude', 'projects', project.replace(/\//g, '-'));
