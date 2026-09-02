@@ -128,3 +128,20 @@ test('secrets in a tool command never reach a waterfall row', () => {
   assert.doesNotMatch(toolRow.detail, /s3cr3tvalue/);
   assert.match(toolRow.detail, /\[REDACTED\]/);
 });
+
+test('a silent gap between timestamp-only events becomes the dominant stall row', () => {
+  const rows = build({
+    turnStartedAt: NOW - 19 * 60_000,
+    toolHistory: [
+      { tool: 'Read', ts: NOW - 18 * 60_000 },
+      { tool: 'Edit', ts: NOW - 2 * 60_000 },
+    ],
+  });
+  const stall = rows.find(row => row.kind === 'stall');
+  assert.ok(stall, 'the sixteen-minute silence must surface as a stall row');
+  assert.equal(stall.provenance, 'inferred');
+  const widest = rows.reduce((a, b) => (b.width > a.width ? b : a));
+  assert.equal(widest.kind, 'stall', 'the gap must dominate the waterfall');
+  const readRow = rows.find(row => row.kind === 'tool' && row.label === 'Read');
+  assert.ok(readRow.durationMs < 60_000, 'a timestamp-only tool row must not absorb the gap');
+});

@@ -394,7 +394,14 @@ export function buildCausalWaterfall(session, { now = Date.now(), toolHistory, c
             && nextAt >= current;
         let endAt = event.endAt;
         if (endAt === null) {
-            endAt = event.at + (event.durationMs ?? Math.max(0, nextAt - event.at));
+            // An event with no reported end or duration must not absorb the
+            // silence that follows it: stretching it to the next timestamp
+            // would repaint a stall as a long tool bar. It ends where it
+            // began (the stall pass owns the gap), except for the final
+            // ongoing event, which honestly extends to now.
+            endAt = event.durationMs !== null
+                ? event.at + event.durationMs
+                : (inferredToNow ? current : event.at);
         }
         endAt = Math.min(current, Math.max(event.at, endAt));
         const durationMs = Math.max(0, endAt - event.at);
