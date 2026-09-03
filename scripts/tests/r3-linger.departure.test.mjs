@@ -8,6 +8,7 @@ import {
 } from '../../claudeville/src/application/AgentManager.js';
 import { isAttentionStatus } from '../../claudeville/src/domain/services/StatusResolver.js';
 import { World } from '../../claudeville/src/domain/entities/World.js';
+import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 
 function liveSession(id) {
@@ -91,4 +92,50 @@ test('departed retention evicts the oldest villagers first at a fixed cap', () =
     assert.equal(world.agents.size, MAX_DEPARTED_AGENTS);
     assert.equal(world.agents.has('churn-000'), false);
     assert.equal(world.agents.has(`churn-${String(MAX_DEPARTED_AGENTS).padStart(3, '0')}`), true);
+});
+
+test('the grace expires on its own clock, without another WebSocket update', async () => {
+    // The server stops broadcasting once nothing changes, which is exactly the
+    // moment the last villager departs. Without a wall-clock sweep the ghost
+    // stands in the village until the page reloads.
+    let now = 20_000;
+    const world = new World();
+    const manager = new AgentManager(world, null, { clock: () => now });
+
+    manager.handleWebSocketMessage({ sessions: [liveSession('last-one')] });
+    manager.handleWebSocketMessage({ sessions: [] });
+    assert.equal(world.agents.get('last-one').isDeparted, true);
+
+    const removed = [];
+    const unsubscribe = eventBus.on('agent:removed', agent => removed.push(agent.id));
+    try {
+        manager.startDepartureSweep({ intervalMs: 5 });
+        now += DEPARTED_AGENT_GRACE_MS;
+        await new Promise(resolve => setTimeout(resolve, 40));
+    } finally {
+        manager.stop();
+        unsubscribe();
+    }
+
+    assert.equal(world.agents.size, 0);
+    // agent:removed is what walks the villager out through the village gate.
+    assert.deepEqual(removed, ['last-one']);
+});
+
+test('the sweep never departs a villager the roster has not dropped', async () => {
+    let now = 30_000;
+    const world = new World();
+    const manager = new AgentManager(world, null, { clock: () => now });
+
+    manager.handleWebSocketMessage({ sessions: [liveSession('busy')] });
+    try {
+        manager.startDepartureSweep({ intervalMs: 5 });
+        now += DEPARTED_AGENT_GRACE_MS * 2;
+        await new Promise(resolve => setTimeout(resolve, 40));
+    } finally {
+        manager.stop();
+    }
+
+    assert.equal(world.agents.size, 1);
+    assert.equal(world.agents.get('busy').isDeparted, false);
 });
