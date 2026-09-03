@@ -15,8 +15,14 @@ import {
 const GENERATED_NAMES_STORAGE_KEY = 'claudeville.generatedAgentNames.v1';
 
 // Sessions leave the server's live roster after two quiet minutes. Keep their
-// villagers present long enough for short parallel fan-outs to remain visible.
-export const DEPARTED_AGENT_GRACE_MS = 10 * 60 * 1000;
+// villagers present just long enough for a short parallel fan-out to still be
+// readable once it finishes, then send them out through the village gate.
+export const DEPARTED_AGENT_GRACE_MS = 90 * 1000;
+// The grace above expires on wall-clock time, but WebSocket updates stop the
+// moment the server has nothing left to report — which is exactly when the last
+// villager departs. Sweep on our own cadence so departures never wait on
+// unrelated traffic.
+export const DEPARTED_SWEEP_INTERVAL_MS = 15 * 1000;
 // Bound world presence independently of Chronicle history. A 20-agent fan-out
 // fits comfortably while pathological churn evicts the oldest departures.
 export const MAX_DEPARTED_AGENTS = 100;
@@ -272,6 +278,7 @@ export class AgentManager {
         this._agentSignatures = new Map();
         this._generatedNames = this._loadGeneratedNames();
         this._verifiedOutcomeKeys = new Set();
+        this._departureSweepTimer = null;
         this._unsubscribeVerifiedMilestones = [
             eventBus.on('chronicle:milestone', (record) => this._noteVerifiedMilestone(record)),
             eventBus.on('chronicle:milestone-banner', (record) => this._noteVerifiedMilestone(record)),
@@ -349,37 +356,75 @@ export class AgentManager {
             );
         }
 
+        this._sweepDepartedAgents(currentIds);
+    }
+
+    /**
+     * Advance the departed-villager lifecycle: mark newly missing sessions as
+     * departed, then remove the ones whose grace has run out so the renderer
+     * can walk them out through the village gate.
+     *
+     * @param {Set<string>|null} liveIds Sessions present in the update that
+     *   triggered this sweep, or null for a timer sweep, where every villager
+     *   already in the World keeps whatever presence it currently has.
+     */
+    _sweepDepartedAgents(liveIds = null) {
         // Missing sessions linger as departed villagers. COMPLETED is an
         // existing compatibility projection for UI counters; the
         // departedAt marker, not status, owns this presence lifecycle.
         const now = this._now();
         const toRemove = [];
         for (const [id, agent] of this.world.agents) {
-            if (!currentIds.has(id)) {
+            if (liveIds?.has(id)) continue;
+            if (agent.isDeparted) {
                 this._agentSignatures.delete(id);
-                if (agent.isDeparted) {
-                    if (now - agent.departedAt >= DEPARTED_AGENT_GRACE_MS) {
-                        toRemove.push(id);
-                    }
-                } else {
-                    this.world.updateAgent(id, {
-                        status: AgentStatus.COMPLETED,
-                        departedAt: now,
-                        currentTool: null,
-                        currentToolInput: null,
-                        pendingTool: null,
-                        waitReason: null,
-                        awaitingSince: null,
-                        resident: false,
-                        dialogue: null,
-                    });
+                if (now - agent.departedAt >= DEPARTED_AGENT_GRACE_MS) {
+                    toRemove.push(id);
                 }
+            } else if (liveIds) {
+                // Only a roster update can tell us a live villager has gone
+                // missing; a timer sweep never demotes one on its own.
+                this._agentSignatures.delete(id);
+                this.world.updateAgent(id, {
+                    status: AgentStatus.COMPLETED,
+                    departedAt: now,
+                    currentTool: null,
+                    currentToolInput: null,
+                    pendingTool: null,
+                    waitReason: null,
+                    awaitingSince: null,
+                    resident: false,
+                    dialogue: null,
+                });
             }
         }
         for (const id of toRemove) {
             this.world.removeAgent(id);
         }
         this._evictDepartedOverflow();
+    }
+
+    /**
+     * Start the wall-clock sweep. Without it a departed villager only leaves
+     * when some unrelated session change wakes a broadcast, so the last agents
+     * of a run stand frozen in the village until the page is reloaded.
+     */
+    startDepartureSweep({ intervalMs = DEPARTED_SWEEP_INTERVAL_MS } = {}) {
+        if (this._departureSweepTimer || typeof setInterval !== 'function') return;
+        this._departureSweepTimer = setInterval(() => this._sweepDepartedAgents(), intervalMs);
+        this._departureSweepTimer.unref?.();
+    }
+
+    stopDepartureSweep() {
+        if (!this._departureSweepTimer) return;
+        clearInterval(this._departureSweepTimer);
+        this._departureSweepTimer = null;
+    }
+
+    stop() {
+        this.stopDepartureSweep();
+        for (const unsubscribe of this._unsubscribeVerifiedMilestones) unsubscribe?.();
+        this._unsubscribeVerifiedMilestones = [];
     }
 
     _evictDepartedOverflow() {

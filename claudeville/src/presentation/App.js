@@ -442,6 +442,7 @@ export class App {
         if (!this.agentManager) {
             this.agentManager = new AgentManager(this.world, this.dataSource);
             this.agentManager.setUsageGetter(() => this.latestUsage);
+            this.agentManager.startDepartureSweep();
         }
         if (!this.modeManager) this.modeManager = new ModeManager();
         if (!this.notificationService) this.notificationService = new NotificationService(this.toast);
@@ -1776,6 +1777,7 @@ export class App {
         }
 
         this._callLifecycle('SessionWatcher.stop', () => this.sessionWatcher?.stop?.());
+        this._callLifecycle('AgentManager.stop', () => this.agentManager?.stop?.());
         this._callLifecycle('AgentSimulator.stop', () => this.agentSimulator?.stop?.());
         this._callLifecycle('NotificationService.destroy', () => this.notificationService?.destroy?.());
         this._callLifecycle('AttentionService.destroy', () => this.attentionService?.destroy?.());

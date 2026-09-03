@@ -2,6 +2,17 @@
 
 ---
 
+## v0.41.1 — *The Evening Gate* · Sep 03, 2026
+
+Finished villagers leave town instead of haunting it. The gate walk was always there; nothing was ever telling it to start.
+
+**Departures run on their own clock**
+- `AgentManager` evicted departed villagers only inside `handleWebSocketMessage`, but `broadcastUpdate()` returns early when the payload signature is unchanged — so broadcasts stop the instant the last session goes quiet, which is exactly when the last villagers should be leaving. Their grace never expired and they stood frozen and grey until the page was reloaded; a later session would then flush the whole backlog out at once. The lifecycle now lives in `_sweepDepartedAgents()` and `startDepartureSweep()` re-checks it every 15 seconds regardless of traffic. A timer sweep only expires villagers that are already departed — only a roster update can mark a live one as departed.
+- `DEPARTED_AGENT_GRACE_MS` drops from 10 minutes to 90 seconds. With the server's unchanged 2-minute `ACTIVE_THRESHOLD_MS`, a finished agent now walks out through the village gate roughly three and a half minutes after its last activity instead of twelve. A short fan-out is still readable after it finishes; it no longer outlives your interest in it.
+- `AgentManager.stop()` clears the sweep and unsubscribes the two `chronicle:milestone` listeners the manager had been holding for the life of the page. `App` starts the sweep on construction and stops it in teardown.
+
+---
+
 ## v0.41.0 — *The Vermilion Order* · Sep 02, 2026
 
 Two warrior-monks from z.AI join the village. GLM 5.3 and GLM 5.3 Flash arrive through Oh My Pi and are now recognised, priced, and drawn as their own family instead of falling through to Claude rates and a generic sprite.
