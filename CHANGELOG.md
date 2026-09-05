@@ -2,6 +2,19 @@
 
 ---
 
+## v0.44.0 — *The Slatekeeper* · Sep 05, 2026
+
+The task board becomes a readable record of live work, from the village overview down to individual checklist items. This release includes all local work since v0.42.0, including the additions documented under v0.43.0 that were not published separately.
+
+- **A slate board that stays legible.** A new flat slate face replaces the pinned parchment. The same phase-aware chalk checklist stays inside its oak frame at every zoom level, scaling with the building instead of switching to an overflowing plaque. The board follows the selected agent's checklist, then a pinned agent, then the most recently changed available plan.
+- **Plans keep their phases and progress.** Claude, Codex, and Oh My Pi checklists now carry up to 64 items through the session pipeline, replacing the 12-item limit that cut longer plans short. OMP phase labels survive parsing and WebSocket updates. The board groups phases in declared order and expands the first unfinished phase; the Activity Panel adds phase disclosures and done/total counts.
+- **Real prompts and plans reach the village.** Agent updates now forward prompts, todos, and recorded branches to the UI. Codex reads its latest update_plan and genuine user prompt, with bounded backfill beyond the short summary window. OMP folds todo operations into the current checklist and filters reminder-only user content.
+- **The night shift lights the village.** After dusk, building windows and authored light respond to working or tool-pending occupants, fading down when buildings empty. Token-mine carts mix cache-read crystal with fresh-input ore using reported token ratios, with a cache percentage and tooltip when the data is available.
+- **Unpushed work has a place and an age.** The harbor ledger lists repository branches by their oldest unpushed commit, with its scan limits disclosed. The command-pond bridge carries up to six branch lanterns with age-based brightness and hover details, sized to remain visible at overview zoom. The first two repository anchorages sit in the northern lagoon.
+- **Steadier villagers and complete GPU activity.** Annotation congestion no longer shrinks villager bodies in ordinary fleets. Building rituals, occupancy pennants, mine cargo, and bridge lanterns render in the default WebGL path as well as Canvas. The slate material and atlas were refreshed alongside 20 day/night visual baselines; regression checks cover provider plans, phase counts, consistent chalk rendering across zoom levels, lighting, cargo, and overlay rendering.
+
+---
+
 ## v0.43.0 — *The Chalk and the Lantern* · Sep 05, 2026
 
 Four additions that put data the adapters already parsed into the village itself, chosen from a sixty-idea ideation round and its critic debate. Every one renders only real session state and shows nothing when the data is absent.
