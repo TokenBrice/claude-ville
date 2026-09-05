@@ -522,7 +522,7 @@
       "id": "building.taskboard",
       "materialClass": "timber",
       "sourcePath": "buildings/building.taskboard/base.png",
-      "sourceSha256": "11724bc082e246915e0062f56f9d0e3643e347794139a5e71304b50916624501",
+      "sourceSha256": "70ef422e9310828703f130e2aaabf7bbeb6570478f4d1602f459a0cca582d146",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -699,9 +699,9 @@
     }
   },
   "channelSha256": {
-    "albedo": "0071f534ddeb3247354a7ab9eeedfc9ef9a82e4db27336ac565b03135aa485ed",
+    "albedo": "bb95c866ee2d09b9c80e5dfe7a4926e6fd2f1ef57a102d28eea695000fb049b4",
     "emissive": "623a5aee605f9c57db0cdfe3a9ac29d70a043adfe01f8010b0f13e32325cbd38",
-    "material": "96c7b1554ea6b67f73490abddec57c5dcec007a075b3b53f03639bb05cf6b02f",
+    "material": "9118ff0e4cfb2fab972722cc2b0192f80bdf2af0bb1da0f556dcdfc01d6a31d9",
     "occluder": "ca149700e652bd9950925898873a169daf9684f230fec9b577eeb90e682c274e"
   },
   "channels": {
@@ -10401,7 +10401,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "11724bc082e246915e0062f56f9d0e3643e347794139a5e71304b50916624501",
+      "sourceSha256": "70ef422e9310828703f130e2aaabf7bbeb6570478f4d1602f459a0cca582d146",
       "sourceSize": {
         "h": 232,
         "w": 256
