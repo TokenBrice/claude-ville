@@ -1,6 +1,6 @@
 // GENERATED FROM models.json + scripts/models/resolver.template.js — DO NOT EDIT
 
-const MODEL_REVISION = "2026-09-02";
+const MODEL_REVISION = "2026-09-05";
 const MODEL_REGISTRY = [
     {
         "accent": [
@@ -431,6 +431,39 @@ const MODEL_REGISTRY = [
             "#f2d36b",
             "#b7ccff",
             "#e9b85f"
+        ]
+    },
+    {
+        "accent": [
+            "#f3eaff",
+            "#c6efff",
+            "#bff7ee"
+        ],
+        "color": "#d8bcff",
+        "contextWindow": 1050000,
+        "id": "codex.gpt-6-astra",
+        "label": "GPT-6 Astra",
+        "match": [
+            "gpt-6-astra"
+        ],
+        "modelClass": "gpt6astra",
+        "modelTier": "mythic",
+        "mood": "deliberate",
+        "paletteKey": "codex",
+        "pricing": {
+            "cacheCreate": 12.5,
+            "cacheRead": 1,
+            "input": 10,
+            "output": 50
+        },
+        "provider": "codex",
+        "sample": "gpt-6-astra",
+        "shortLabel": "6 Astra",
+        "spriteId": "agent.codex.gpt6astra",
+        "trim": [
+            "#d8bcff",
+            "#e6f1ff",
+            "#8be9f5"
         ]
     },
     {

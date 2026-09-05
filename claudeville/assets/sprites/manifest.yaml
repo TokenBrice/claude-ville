@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-09-02-glm-monks-v1"
+  assetVersion: "2026-09-05-astra-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -218,6 +218,21 @@ characters:
       strength: 0
       sources:
         - { id: emissive.agent.codex.gpt55.xhigh.reactor, kind: rune, geometry: sidecar, strength: 0.18 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  - id: agent.codex.gpt6astra
+    tool: create_character
+    prompt: "Codex GPT-6 Astra celestial star-knight, heroic compact old-school RPG proportions, polished silver full plate armor over deep violet undersuit, four-point diamond star on breastplate, angular silver helmet with small four-point star crest and luminous pale cyan visor, broad silver pauldrons, short deep violet cape with tiny silver constellation embroidery, silver gauntlets and boots, identical outfit and colors from every viewing angle, empty visible hands near torso for runtime weapons, no held weapon, no sword, no shield, no staff, no floating particles, crisp readable 8-direction pixel art character"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [46, 80]
+    materialClass: metal
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   # GPT-5.6 celestial warrior triad (Sol/Terra/Luna). Base sprites are

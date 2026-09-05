@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { makeTempDir } from './support/tmp.mjs';
+import { MODEL_REVISION } from '../../claudeville/src/config/models.generated.js';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 const FIXTURE_ROOT = path.join(REPO_ROOT, 'scripts', 'adapters', 'fixtures', 'claude');
@@ -55,7 +56,7 @@ test('Claude projects provider records, turn timing, and a canonical working set
       usd: 12.34,
       source: 'provider',
       rateMatch: null,
-      rateRevision: '2026-09-02',
+      rateRevision: MODEL_REVISION,
       unknownModel: false,
     });
     assert.equal(all.estimatedCost, 12.34);

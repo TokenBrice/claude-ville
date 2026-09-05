@@ -28,6 +28,42 @@ try {
     manifestImportError = error;
 }
 
+test('Astra identity resolves canonical and provider-qualified IDs without claiming other models', () => {
+    for (const raw of ['gpt-6-astra', 'GPT-6-Astra', 'gpt_6_astra', 'openai/gpt-6-astra']) {
+        for (const registry of [browserRegistry, serverRegistry]) {
+            assert.equal(registry.findModelRow(raw, 'codex').row.id, 'codex.gpt-6-astra');
+            assert.equal(registry.contextWindowForModel(raw, 'codex'), 1050000);
+        }
+    }
+    for (const raw of ['gpt-6', 'astra', 'gpt-6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna']) {
+        assert.notEqual(getModelVisualIdentity(raw, 'high', 'codex').modelClass, 'gpt6astra');
+    }
+});
+
+test('Astra equipment progresses with effort and max stays distinct from xhigh', () => {
+    const tiers = [
+        [null, 'crescentSaber', null, null],
+        ['low', 'crescentSaber', 'overlay.status.effortLow', null],
+        ['medium', 'runeblade', 'overlay.status.effortMedium', null],
+        ['high', 'dawnblade', 'overlay.status.effortHigh', null],
+        ['xhigh', 'polearm', null, 'effortXhigh'],
+        ['max', 'polearm', null, 'effortMax'],
+        ['ultra', 'polearm', null, 'effortUltra'],
+    ];
+    for (const [effort, weapon, ring, crest] of tiers) {
+        const identity = getModelVisualIdentity('gpt-6-astra', effort, 'codex');
+        assert.equal(identity.effortTier, effort);
+        assert.equal(identity.equipment, weapon);
+        assert.equal(identity.effortFloorRing, ring);
+        assert.equal(identity.effortAccessory, crest);
+        assert.equal(identity.suppressBakedWeapon, false);
+        assert.equal(identity.codexHeavyGearBaked, true);
+        assert.equal(identity.spriteId, 'agent.codex.gpt6astra');
+        assert.equal(modelIdentity('gpt-6-astra', effort, 'codex').effortTier, effort);
+        assert.equal(browserFormatModelLabel('gpt-6-astra', effort, 'codex'), serverFormatModelLabel('gpt-6-astra', effort, 'codex'));
+    }
+});
+
 describe('generated model registry parity', () => {
     for (const row of browserRegistry.MODEL_REGISTRY) {
         test(row.id, () => {

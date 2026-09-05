@@ -230,9 +230,9 @@ function parseTurnMetadataLine(line) {
   }
 }
 
-function cacheTurnMetadata(filePath, metadata) {
+function cacheTurnMetadata(filePath, metadata, identity) {
   _turnMetadataCache.delete(filePath);
-  _turnMetadataCache.set(filePath, metadata);
+  _turnMetadataCache.set(filePath, { ...identity, metadata });
   while (_turnMetadataCache.size > MAX_TURN_METADATA_CACHE_ENTRIES) {
     _turnMetadataCache.delete(_turnMetadataCache.keys().next().value);
   }
@@ -241,25 +241,30 @@ function cacheTurnMetadata(filePath, metadata) {
 
 /**
  * Spawned Codex rollouts can place the child's first turn_context after a
- * large forked-parent transcript. Search backward for it once, then retain
- * the session-stable model metadata for subsequent polling passes.
+ * large forked-parent transcript. The latest turn owns model and effort;
+ * cache by file identity and scan only appended bytes on subsequent polls.
  */
 function readLatestTurnMetadata(filePath) {
   const cached = _turnMetadataCache.get(filePath);
-  if (cached) return cacheTurnMetadata(filePath, cached);
+  const identity = earlyMetadataIdentity(filePath);
+  if (!identity) return null;
+  if (sameEarlyMetadataIdentity(cached, identity)) return cached.metadata;
+  const appended = cached && cached.ino === identity.ino && identity.size > cached.size;
 
   let fd = null;
   try {
     fd = fs.openSync(filePath, 'r');
     const stat = fs.fstatSync(fd);
     let position = stat.size;
+    // Include the old final chunk so a formerly partial JSONL record can finish.
+    const scanStart = appended ? Math.max(0, cached.size - METADATA_BACKSCAN_CHUNK_BYTES) : 0;
     let bytesScanned = 0;
     let carry = '';
 
-    while (position > 0 && bytesScanned < MAX_METADATA_BACKSCAN_BYTES) {
+    while (position > scanStart && bytesScanned < MAX_METADATA_BACKSCAN_BYTES) {
       const bytesToRead = Math.min(
         METADATA_BACKSCAN_CHUNK_BYTES,
-        position,
+        position - scanStart,
         MAX_METADATA_BACKSCAN_BYTES - bytesScanned,
       );
       position -= bytesToRead;
@@ -274,23 +279,25 @@ function readLatestTurnMetadata(filePath) {
 
       for (let i = lines.length - 1; i >= 0; i--) {
         const metadata = parseTurnMetadataLine(lines[i]);
-        if (metadata) return cacheTurnMetadata(filePath, metadata);
+        if (metadata) return cacheTurnMetadata(filePath, metadata, identity);
       }
 
       if (position === 0) {
         const metadata = parseTurnMetadataLine(leadingFragment);
-        if (metadata) return cacheTurnMetadata(filePath, metadata);
+        if (metadata) return cacheTurnMetadata(filePath, metadata, identity);
       } else {
         carry = leadingFragment;
       }
     }
-  } catch { /* ignore unreadable or concurrently rotated rollout */ } finally {
+  } catch { // Retry unreadable or concurrently rotated rollouts on the next poll.
+    return null;
+  } finally {
     if (fd !== null) {
       try { fs.closeSync(fd); } catch { /* ignore */ }
     }
   }
 
-  return null;
+  return cacheTurnMetadata(filePath, appended ? cached.metadata : null, identity);
 }
 
 function applySessionMetadata(detail, metadata) {
@@ -304,10 +311,10 @@ function applySessionMetadata(detail, metadata) {
   if (!detail.project && metadata.project) detail.project = metadata.project;
 }
 
-function applyTurnMetadata(detail, metadata) {
+function applyTurnMetadata(detail, metadata, overwrite = false) {
   if (!metadata) return;
-  if (!detail.model && metadata.model) detail.model = metadata.model;
-  if (!detail.reasoningEffort && metadata.reasoningEffort) detail.reasoningEffort = metadata.reasoningEffort;
+  if ((overwrite || !detail.model) && metadata.model) detail.model = metadata.model;
+  if ((overwrite || !detail.reasoningEffort) && metadata.reasoningEffort) detail.reasoningEffort = metadata.reasoningEffort;
   if (!detail.project && metadata.project) detail.project = metadata.project;
   if (!detail.permissionMode && metadata.permissionMode) detail.permissionMode = metadata.permissionMode;
 }
@@ -652,9 +659,7 @@ function parseRollout(filePath, scanContext = null) {
 
   parseEarlyMetadata(filePath, detail);
 
-  if (!detail.model || !detail.reasoningEffort || !detail.project) {
-    applyTurnMetadata(detail, readLatestTurnMetadata(filePath));
-  }
+  applyTurnMetadata(detail, readLatestTurnMetadata(filePath), true);
 
   // Read recent tools/messages from the end of the file
   const entries = scanContext?.summaryEntries

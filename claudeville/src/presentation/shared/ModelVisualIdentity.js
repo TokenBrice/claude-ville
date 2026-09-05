@@ -52,6 +52,17 @@ const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     gpt56sol: 'dawnblade',
     gpt56terra: 'earthbreaker',
     gpt56luna: 'crescentSaber',
+    gpt6astra: 'crescentSaber',
+});
+
+const CODEX_ASTRA_EQUIPMENT_BY_EFFORT = Object.freeze({
+    none: 'crescentSaber',
+    low: 'crescentSaber',
+    medium: 'runeblade',
+    high: 'dawnblade',
+    xhigh: 'polearm',
+    max: 'polearm',
+    ultra: 'polearm',
 });
 
 const CODEX_GPT55_EQUIPMENT_BY_EFFORT = Object.freeze({
@@ -89,7 +100,9 @@ export const POLICY_SPRITE_IDS = Object.freeze([
 ]);
 
 function codexEquipment(effortTier, modelClass, { suppressBakedWeapon = true } = {}) {
-    const equipment = modelClass === 'gpt55'
+    const equipment = modelClass === 'gpt6astra'
+        ? CODEX_ASTRA_EQUIPMENT_BY_EFFORT[effortTier || 'none'] || CODEX_EQUIPMENT_BY_CLASS.gpt6astra
+        : modelClass === 'gpt55'
         ? CODEX_GPT55_EQUIPMENT_BY_EFFORT[effortTier || 'none'] || CODEX_EQUIPMENT_BY_CLASS.gpt55
         : CODEX_EQUIPMENT_BY_CLASS[modelClass] || null;
     return {
@@ -236,14 +249,15 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         };
     }
 
-    const isGpt56 = row.modelClass === 'gpt56sol'
+    const isCelestial = row.modelClass === 'gpt6astra'
+        || row.modelClass === 'gpt56sol'
         || row.modelClass === 'gpt56terra'
         || row.modelClass === 'gpt56luna';
-    const codexEffortTier = isGpt56 ? effortTier : normalizeCodexEffortTier(effortTier);
+    const codexEffortTier = isCelestial ? effortTier : normalizeCodexEffortTier(effortTier);
     const equipment = codexEquipment(
         codexEffortTier,
         row.modelClass,
-        { suppressBakedWeapon: !isGpt56 },
+        { suppressBakedWeapon: !isCelestial },
     );
     const identity = {
         ...baseIdentity,
@@ -257,6 +271,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     if (row.modelClass === 'gpt55') {
         identity.codexHeavyGearBaked = codexEffortTier === 'high' || codexEffortTier === 'xhigh';
     }
+    if (row.modelClass === 'gpt6astra') identity.codexHeavyGearBaked = true;
     return identity;
 }
 

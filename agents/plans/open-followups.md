@@ -2,7 +2,7 @@
 
 **Status:** `live checklist`
 
-**As of:** 2026-09-03, current checkout at `f0f3298` (`v0.41.1` in preparation)
+**As of:** 2026-09-05, release `v0.41.2` — The Astral Vanguard
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs

@@ -40,13 +40,18 @@ const captureIndividual = flags.has('individual');
 const viewport = { width: 1440, height: 1000 };
 
 const DIRECTIONS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
-const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh'];
+const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const POSES = [
   { key: 'idle0', label: 'idle 0', moving: false, motionScale: 0, frame: 0 },
   { key: 'walk0', label: 'walk 0', moving: true, motionScale: 1, frame: 0 },
   { key: 'walk3', label: 'walk 3', moving: true, motionScale: 1, frame: 3 },
 ];
 const CODEX_MODELS = [
+  {
+    key: 'gpt6astra',
+    label: 'GPT-6 Astra',
+    model: 'gpt-6-astra',
+  },
   {
     key: 'gpt53spark',
     label: 'GPT-5.3 Spark',
@@ -64,12 +69,15 @@ const CODEX_MODELS = [
   },
 ];
 const REQUIRED_EQUIPMENT_ASSETS = [
+  'equipment.codex.crescentSaber',
+  'equipment.codex.dawnblade',
   'equipment.codex.runeblade',
   'equipment.codex.greatsword',
   'equipment.codex.polearm',
   'equipment.codex.engineerWrench',
 ];
 const REQUIRED_CHARACTER_ASSETS = [
+  'agent.codex.gpt6astra',
   'agent.codex.gpt53spark',
   'agent.codex.gpt54',
   'agent.codex.gpt55',

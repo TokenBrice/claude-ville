@@ -2,6 +2,22 @@
 
 ---
 
+## v0.41.2 — *The Astral Vanguard* · Sep 05, 2026
+
+GPT-6 Astra joins the village as a silver-armored star knight, with a violet constellation cape and equipment that grows with reasoning effort.
+
+**Astra identity and current-turn detection**
+- `gpt-6-astra`, including normalized and provider-qualified forms, resolves to its own mythic, deliberate model class instead of the generic Codex fallback. World, Dashboard, and Activity Panel share the `6 Astra` label and violet accents. Bare `gpt-6` and `astra` remain unknown rather than guessing an identity.
+- Codex now takes model and reasoning effort from the latest `turn_context`, overriding inherited session metadata. File-aware caching follows appended turns and file replacement, including model changes buried beyond the normal transcript tail. Switching to Astra no longer leaves an agent wearing its previous model's identity.
+- Registry revision `2026-09-05`: a 1,050,000-token context window and standard per-MTok rates of $10 input, $50 output, $1 cache read, and $12.50 cache write, verified against [OpenAI's Astra model page](https://developers.openai.com/api/docs/models/gpt-6-astra). Estimates retain the existing static pricing policy; long-context and service-tier multipliers are not applied.
+
+**A star knight and six effort tiers**
+- New PixelLab pro character `agent.codex.gpt6astra`: polished silver plate, a star-crested helmet, pale cyan visor, and violet cape. Its 736×920 sheet includes all eight directions, six walk frames, and four breathing-idle frames. Dashboard's procedural fallback gains a four-point star insignia. Sprite asset version `2026-09-05-astra-v1`.
+- Existing runtime weapons provide the progression: low carries a crescent saber, medium a runeblade, high a dawnblade, and xhigh/max/ultra a polearm. Lower tiers show floor rings; the upper tiers have distinct crests. `max` stays separate from `xhigh`, and missing effort uses the light saber without an effort marker. Astra's baked armor remains visible under every loadout.
+- Regression coverage checks registry identity, effort equipment, and live Codex model changes. The equipment capture script now includes Astra, max, and ultra across every direction and representative animation poses.
+
+---
+
 ## v0.41.1 — *The Evening Gate* · Sep 03, 2026
 
 Finished villagers leave town instead of haunting it. The gate walk was always there; nothing was ever telling it to start.

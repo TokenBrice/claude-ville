@@ -188,10 +188,11 @@ function modelIdentity(model, effort, provider = '') {
     };
   }
 
-  const isGpt56 = row.modelClass === 'gpt56sol'
+  const isCelestial = row.modelClass === 'gpt6astra'
+    || row.modelClass === 'gpt56sol'
     || row.modelClass === 'gpt56terra'
     || row.modelClass === 'gpt56luna';
-  const resolvedEffortTier = row.paletteKey === 'codex' && !isGpt56
+  const resolvedEffortTier = row.paletteKey === 'codex' && !isCelestial
     ? normalizeCodexEffortTier(effortTier)
     : effortTier;
   const identity = row === MODEL_DEFAULTS.codex ? DEFAULT_CODEX_IDENTITY : row;

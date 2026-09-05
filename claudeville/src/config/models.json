@@ -1,5 +1,5 @@
 {
-    "revision": "2026-09-02",
+    "revision": "2026-09-05",
     "models": [
         {
             "id": "claude.fable-5-1", "provider": "claude", "match": ["fable-5-1", "mythos-5-1"], "sample": "claude-fable-5-1",
@@ -91,6 +91,13 @@
             "spriteId": "agent.claude.sonnet", "paletteKey": "claude", "color": "#f2d36b",
             "trim": ["#f2d36b", "#b7ccff", "#e9b85f"], "accent": ["#ffe39a", "#dfe8ff", "#f7bf6d"],
             "contextWindow": 1000000, "pricing": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheCreate": 3.75 }
+        },
+        {
+            "id": "codex.gpt-6-astra", "provider": "codex", "match": ["gpt-6-astra"], "sample": "gpt-6-astra",
+            "label": "GPT-6 Astra", "shortLabel": "6 Astra", "modelClass": "gpt6astra", "modelTier": "mythic", "mood": "deliberate",
+            "spriteId": "agent.codex.gpt6astra", "paletteKey": "codex", "color": "#d8bcff",
+            "trim": ["#d8bcff", "#e6f1ff", "#8be9f5"], "accent": ["#f3eaff", "#c6efff", "#bff7ee"],
+            "contextWindow": 1050000, "pricing": { "input": 10, "output": 50, "cacheRead": 1, "cacheCreate": 12.5 }
         },
         {
             "id": "codex.gpt-5-6-sol", "provider": "codex", "match": ["gpt-5.6-sol"], "sample": "gpt-5.6-sol",

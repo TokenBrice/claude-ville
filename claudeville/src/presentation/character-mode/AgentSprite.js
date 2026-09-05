@@ -257,6 +257,7 @@ const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     gpt56sol: 'dawnblade',
     gpt56terra: 'earthbreaker',
     gpt56luna: 'crescentSaber',
+    gpt6astra: 'crescentSaber',
 });
 // Exported so the layering invariant is testable: a weapon whose sprite is
 // authored empty-handed must not be forced behind the body, or the villager

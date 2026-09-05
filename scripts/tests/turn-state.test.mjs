@@ -82,6 +82,26 @@ function readCodexFixtureProjection(root) {
             session.sessionId,
             adapter.getSessionDetail(session.sessionId, session.project),
         ]));
+        const astraRollout = path.join(path.dirname(longRollout), 'rollout-astra.jsonl');
+        const metadata = (model, effort) => JSON.stringify({ type: 'turn_context', payload: {
+            collaboration_mode: { settings: { model, reasoning_effort: effort } },
+        } }) + '\\n';
+        const padding = (JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', padding: 'x'.repeat(2048) } }) + '\\n').repeat(60);
+        const currentModel = () => {
+            const session = adapter.getActiveSessions(60 * 60 * 1000, { force: true }).find(s => s.sessionId === 'codex-astra');
+            return [session.model, session.reasoningEffort];
+        };
+        const transitions = [currentModel()];
+        fs.appendFileSync(astraRollout, metadata('gpt-6-astra', 'ultra') + padding);
+        transitions.push(currentModel());
+        fs.appendFileSync(astraRollout, padding);
+        transitions.push(currentModel());
+        fs.writeFileSync(astraRollout, metadata('gpt-5.6-luna', 'low'));
+        transitions.push(currentModel());
+        require('node:assert/strict').deepEqual(transitions, [
+            ['gpt-6-astra', 'max'], ['gpt-6-astra', 'ultra'],
+            ['gpt-6-astra', 'ultra'], ['gpt-5.6-luna', 'low'],
+        ]);
         process.stdout.write(JSON.stringify({ sessions, details }));
     `;
     const output = execFileSync(process.execPath, ['-e', script], {
@@ -212,6 +232,11 @@ test('Codex transcript fixtures preserve turn truth and project item_completed f
     const project = materializeCodexFixtures(root, now);
     const { sessions, details } = readCodexFixtureProjection(root);
     const byId = new Map(sessions.map((session) => [session.sessionId, session]));
+
+    const astra = byId.get('codex-astra');
+    assert.ok(astra);
+    assert.equal(astra.model, 'gpt-6-astra');
+    assert.equal(astra.reasoningEffort, 'max');
 
     const aborted = byId.get('codex-abort-after-pending');
     assert.ok(aborted);

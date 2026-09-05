@@ -583,6 +583,22 @@ export class AvatarCanvas {
             return;
         }
 
+        if (identity.modelClass === 'gpt6astra') {
+            ctx.fillStyle = accent;
+            ctx.beginPath();
+            ctx.moveTo(0, -2);
+            ctx.lineTo(2, 2);
+            ctx.lineTo(6, 4);
+            ctx.lineTo(2, 6);
+            ctx.lineTo(0, 10);
+            ctx.lineTo(-2, 6);
+            ctx.lineTo(-6, 4);
+            ctx.lineTo(-2, 2);
+            ctx.closePath();
+            ctx.fill();
+            return;
+        }
+
         if (identity.modelClass === 'gpt56sol') {
             // radiant sun disc — 5.6 flagship
             ctx.fillStyle = trim;
