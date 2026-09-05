@@ -9,6 +9,21 @@ export const MAX_BRIDGE_LANTERNS = 6;
 const DAY_MS = 24 * 60 * 60_000;
 const LANTERN_COLOR = '#ffd56a';
 const LANTERN_LIGHT_PRIORITY = 100;
+const LANTERN_GLASS_WORLD_SIZE = 7;
+const LANTERN_HALO_WORLD_RADIUS = 7;
+
+function normalizedZoom(zoom) {
+    const value = Number(zoom);
+    return Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+export function lanternScreenSize(zoom = 1) {
+    return Math.max(12, LANTERN_GLASS_WORLD_SIZE * normalizedZoom(zoom));
+}
+
+function lanternHaloScreenRadius(zoom = 1) {
+    return Math.max(10, LANTERN_HALO_WORLD_RADIUS * normalizedZoom(zoom));
+}
 
 const BRIDGE_LANTERN_SCENE_ITEMS = [];
 export const BRIDGE_LANTERN_SCENE_CATEGORY = Object.freeze({
@@ -91,31 +106,42 @@ export function deriveLanternPlan(pendingRepoSummaries = [], bridgeTiles = [], n
     });
 }
 
-function drawLantern(ctx, lantern, now, motionScale) {
+function drawLantern(ctx, lantern, now, motionScale, zoom) {
     const world = lantern.world;
     const policy = ornamentPlan({ motionScale });
     const animated = policy.lanterns === 'on' && motionScale > 0;
     const pulse = animated ? pulseValueMs('harbor', now, motionScale, lantern.phase) : 1;
     const alpha = Math.max(0.2, Math.min(1, lantern.tier * pulse));
-    const x = Math.round(world.x);
-    const top = Math.round(world.y) - 16;
+    const scale = normalizedZoom(zoom);
+    const glassSize = Math.round(lanternScreenSize(scale));
+    const glassHalf = Math.floor(glassSize / 2);
+    const haloRadius = lanternHaloScreenRadius(scale);
 
     ctx.save();
-    ctx.fillStyle = '#563820';
+    ctx.translate(Math.round(world.x), Math.round(world.y) - 12);
+    ctx.scale(1 / scale, 1 / scale);
+
+    const halo = ctx.createRadialGradient(0, 0, 1, 0, 0, haloRadius);
+    halo.addColorStop(0, lantern.accent);
+    halo.addColorStop(1, 'rgba(255, 213, 106, 0)');
+    ctx.globalAlpha = alpha * 0.34;
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(0, 0, haloRadius, 0, Math.PI * 2);
+    ctx.fill();
+
     ctx.globalAlpha = alpha;
-    ctx.fillRect(x - 4, top, 5, 1);
-    ctx.fillRect(x - 4, top, 1, 3);
-    ctx.fillRect(x, top, 1, 3);
-    ctx.globalAlpha = alpha * 0.22;
-    ctx.fillStyle = lantern.accent;
-    ctx.fillRect(x - 3, top + 1, 7, 7);
-    ctx.globalAlpha = alpha;
     ctx.fillStyle = '#563820';
-    ctx.fillRect(x - 2, top + 2, 5, 5);
+    ctx.fillRect(-glassHalf, -glassHalf - 5, glassSize, 2);
+    ctx.fillRect(-glassHalf, -glassHalf - 5, 2, 6);
+    ctx.fillRect(glassHalf - 1, -glassHalf - 5, 2, 6);
+    ctx.fillRect(-glassHalf, -glassHalf, glassSize, glassSize);
+    ctx.globalAlpha = alpha * 0.9;
     ctx.fillStyle = lantern.accent;
-    ctx.fillRect(x - 1, top + 3, 3, 3);
+    ctx.fillRect(-glassHalf + 2, -glassHalf + 2, glassSize - 4, glassSize - 4);
+    ctx.globalAlpha = alpha;
     ctx.fillStyle = LANTERN_COLOR;
-    ctx.fillRect(x - 1, top + 3, 1, 2);
+    ctx.fillRect(-glassHalf + 3, -glassHalf + 3, Math.max(2, glassSize - 7), Math.max(2, glassSize - 7));
     ctx.restore();
 }
 
@@ -148,11 +174,12 @@ export class BridgeLanterns {
             sortY: lantern.world.y + 1,
             stableKey: `bridge-lantern:${lantern.repoName}:${lantern.branch}`,
             payload: lantern,
-            draw: (ctx) => drawLantern(
+            draw: (ctx, zoom) => drawLantern(
                 ctx,
                 lantern,
                 this._drawNow,
                 Number(this.renderer?.motionScale) || 0,
+                zoom,
             ),
         }));
         return true;
@@ -171,11 +198,13 @@ export class BridgeLanterns {
     }
 
     hitTest(worldX, worldY) {
+        const zoom = normalizedZoom(this.renderer?.camera?.zoom);
+        const radius = lanternHaloScreenRadius(zoom) / zoom;
+        const radiusSquared = radius * radius;
         for (const lantern of this.plan) {
-            if (
-                worldX >= lantern.world.x - 6 && worldX <= lantern.world.x + 6
-                && worldY >= lantern.world.y - 16 && worldY <= lantern.world.y + 3
-            ) return lantern;
+            const dx = worldX - lantern.world.x;
+            const dy = worldY - (lantern.world.y - 12);
+            if (dx * dx + dy * dy <= radiusSquared) return lantern;
         }
         return null;
     }

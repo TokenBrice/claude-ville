@@ -85,6 +85,72 @@ function compactText(value, maxLength = 200) {
   const text = String(value).replace(/\s+/g, ' ').trim();
   return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
 }
+function projectPrompt(content) {
+  const text = extractText(content)
+    ?.replace(/<(system-reminder|advisory)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .trim();
+  return text ? text.slice(0, 200) : null;
+}
+
+function todoItems(argumentsValue) {
+  const items = [];
+  const append = (value, phase = null) => {
+    if (!Array.isArray(value)) return;
+    for (const item of value) {
+      const rawSubject = typeof item === 'string'
+        ? item
+        : (typeof item?.task === 'string' ? item.task : item?.subject);
+      const key = typeof rawSubject === 'string' ? rawSubject.trim() : '';
+      if (!key) continue;
+      const rawStatus = typeof item?.status === 'string' ? item.status : 'pending';
+      const status = ['pending', 'in_progress', 'completed'].includes(rawStatus)
+        ? rawStatus
+        : 'pending';
+      items.push({ key, subject: key.slice(0, 200), status, phase });
+    }
+  };
+  for (const group of Array.isArray(argumentsValue?.list) ? argumentsValue.list : []) {
+    append(group?.items, typeof group?.phase === 'string' ? group.phase : null);
+  }
+  append(argumentsValue?.items, typeof argumentsValue?.phase === 'string' ? argumentsValue.phase : null);
+  if (typeof argumentsValue?.task === 'string' && ['init', 'append'].includes(argumentsValue.op)) {
+    append([argumentsValue.task], typeof argumentsValue?.phase === 'string' ? argumentsValue.phase : null);
+  }
+  return items;
+}
+
+function applyTodoOperation(todos, rawArguments) {
+  let argumentsValue = rawArguments;
+  if (typeof argumentsValue === 'string') {
+    try { argumentsValue = JSON.parse(argumentsValue); } catch { return; }
+  }
+  if (!argumentsValue || typeof argumentsValue !== 'object') return;
+  const op = argumentsValue.op;
+  if (op === 'init') {
+    todos.splice(0, todos.length, ...todoItems(argumentsValue));
+    return;
+  }
+  if (op === 'append') {
+    todos.push(...todoItems(argumentsValue));
+    return;
+  }
+  if (!['done', 'start', 'drop'].includes(op)) return;
+  const task = typeof argumentsValue.task === 'string' ? argumentsValue.task.trim() : null;
+  const phase = typeof argumentsValue.phase === 'string' ? argumentsValue.phase : null;
+  const matches = todo => (!task || todo.key === task) && (!phase || todo.phase === phase);
+  if (!task && !phase) return;
+  if (op === 'drop') {
+    for (let index = todos.length - 1; index >= 0; index--) {
+      if (matches(todos[index])) todos.splice(index, 1);
+    }
+    return;
+  }
+  const status = op === 'start' ? 'in_progress' : 'completed';
+  for (const todo of todos) {
+    if (matches(todo)) todo.status = status;
+  }
+}
+
 
 function readUsage(rawUsage, total) {
   if (!rawUsage || typeof rawUsage !== 'object') return null;
@@ -151,12 +217,15 @@ function parseOmpTranscript(records, {
   let latestActivity = 0;
   let latestAssistantText = null;
   let latestAssistantTs = 0;
+  let lastPrompt = null;
+  let gitBranch = null;
   let turnStartedAt = null;
   let turnEnded = false;
   let turnEndedAt = null;
   let latestTool = null;
   let latestToolInput = null;
   const pendingTools = new Map();
+  const todos = [];
   const toolHistory = [];
   const messages = [];
   const usage = {
@@ -185,6 +254,13 @@ function parseOmpTranscript(records, {
     const recordTs = parseTimestamp(record?.timestamp);
     const customTs = parseTimestamp(record?.data?.recordedAt);
     latestActivity = Math.max(latestActivity, recordTs, customTs);
+    const branch = record?.gitBranch
+      ?? record?.git_branch
+      ?? record?.git?.branch
+      ?? record?.data?.gitBranch
+      ?? record?.data?.git_branch
+      ?? record?.data?.git?.branch;
+    if (typeof branch === 'string' && branch.trim()) gitBranch = branch.trim().slice(0, 256);
 
     if (record?.type === 'session') {
       session = record;
@@ -250,6 +326,7 @@ function parseOmpTranscript(records, {
         const tool = String(part.name || 'tool');
         const toolCallId = String(part.id || `${tool}:${messageTs}:${toolHistory.length}`);
         const args = part.arguments ?? null;
+        if (tool === 'todo') applyTodoOperation(todos, args);
         if (args && typeof args === 'object') {
           rememberDialogue({
             text: args.i,
@@ -285,6 +362,8 @@ function parseOmpTranscript(records, {
     }
     if (role === 'user') {
       const text = extractText(message.content);
+      const prompt = projectPrompt(message.content);
+      if (prompt) lastPrompt = prompt;
       if (detail && text) messages.push({ role: 'user', text: compactText(text), ts: messageTs });
       turnStartedAt = messageTs || turnStartedAt;
       turnEnded = false;
@@ -364,6 +443,9 @@ function parseOmpTranscript(records, {
       observedSources,
       tokenUsage,
       parentSessionId: parentSessionId ? transcriptId(parentSessionId) : null,
+      lastPrompt,
+      todos: todos.slice(0, 12).map(({ subject, status }) => ({ subject, status })),
+      gitBranch,
       ...turn,
       signalSource: 'transcript',
       turnStartedAt,

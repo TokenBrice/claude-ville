@@ -44,6 +44,11 @@ const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const SUMMARY_SCAN_LINES = 50;
 const TOKEN_USAGE_SCAN_LINES = 500;
+// The user's last real prompt and the latest update_plan can sit well behind
+// the 50-line summary window on a busy turn; scan deeper for just those two.
+const PROMPT_PLAN_SCAN_LINES = 600;
+// Codex injects these as user-role messages; none of them is a prompt.
+const INJECTED_USER_PREFIXES = /^\s*(<environment_context>|<recommended_plugins>|<INSTRUCTIONS|<image name=|# AGENTS\.md instructions)/;
 const GIT_EVENT_SCAN_LINES = 5000;
 const MAX_CURRENT_TOOL_INPUT_CHARS = 500;
 const MAX_WORKING_SET_ITEMS = 16;
@@ -310,6 +315,7 @@ function applySessionMetadata(detail, metadata) {
   if (!detail.parentThreadId && metadata.parentThreadId) detail.parentThreadId = metadata.parentThreadId;
   if (!detail.model && metadata.model) detail.model = metadata.model;
   if (!detail.project && metadata.project) detail.project = metadata.project;
+  if (!detail.gitBranch && metadata.gitBranch) detail.gitBranch = metadata.gitBranch;
 }
 
 function applyTurnMetadata(detail, metadata, overwrite = false) {
@@ -470,6 +476,7 @@ function readEarlyMetadata(filePath) {
     reasoningEffort: null,
     permissionMode: null,
     project: null,
+    gitBranch: null,
   };
   let boundary = cached?.boundary || null;
 
@@ -490,6 +497,7 @@ function readEarlyMetadata(filePath) {
         parentThreadId: subagent?.parent_thread_id || null,
         model: entry.payload.model || null,
         project: entry.payload.cwd || null,
+        gitBranch: entry.payload.git?.branch || entry.payload.gitBranch || entry.payload.git_branch || null,
       });
     } else if (line.includes('"type":"session_meta"') || line.includes('"type": "session_meta"')) {
       applySessionMetadata(metadata, extractSessionMetadataFromText(line));
@@ -641,6 +649,75 @@ function createActiveRolloutScanContext(filePath) {
     gitEntries: windows.get(GIT_EVENT_SCAN_LINES) || [],
   };
 }
+function projectCodexTodos(value) {
+  if (!Array.isArray(value)) return null;
+  return value.slice(0, 12).flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const subject = typeof item.step === 'string' ? item.step.trim().slice(0, 200) : '';
+    const status = ['pending', 'in_progress', 'completed'].includes(item.status)
+      ? item.status
+      : null;
+    return subject && status ? [{ subject, status }] : [];
+  });
+}
+
+function planFromUpdatePlanPayload(payload) {
+  let argumentsValue = payload.arguments;
+  if (typeof argumentsValue === 'string') {
+    try {
+      argumentsValue = JSON.parse(argumentsValue);
+    } catch {
+      argumentsValue = null;
+    }
+  }
+  return argumentsValue && Array.isArray(argumentsValue.plan) ? argumentsValue.plan : [];
+}
+
+function projectCodexPrompt(content) {
+  const parts = typeof content === 'string'
+    ? [content]
+    : Array.isArray(content)
+      ? content.flatMap(block => (
+        block
+        && ['input_text', 'text'].includes(block.type)
+        && typeof block.text === 'string'
+          ? [block.text]
+          : []
+      ))
+      : [];
+  const text = parts
+    .filter(part => !INJECTED_USER_PREFIXES.test(part))
+    .map(part => part.replace(/<(system-reminder|advisory)\b[^>]*>[\s\S]*?<\/\1>/gi, ''))
+    .join('\n')
+    .trim();
+  return text.slice(0, 200) || null;
+}
+
+// Second, narrower pass behind the summary window: latest genuine user prompt
+// and latest update_plan only. Entries already covered by the summary window
+// are skipped so a prompt found there is never overwritten by an older one.
+function backfillPromptAndPlan(filePath, detail, coveredCount, foundPlan) {
+  if (detail.lastPrompt && foundPlan) return;
+  const entries = readJsonLines(filePath, { from: 'end', count: PROMPT_PLAN_SCAN_LINES });
+  for (let i = entries.length - 1 - coveredCount; i >= 0; i--) {
+    const entry = entries[i];
+    const payload = entry?.payload;
+    if (!payload) continue;
+    if (!detail.lastPrompt) {
+      if (entry.type === 'response_item' && payload.type === 'message' && payload.role === 'user') {
+        detail.lastPrompt = projectCodexPrompt(payload.content);
+      } else if (entry.type === 'event_msg' && payload.type === 'user_message') {
+        detail.lastPrompt = projectCodexPrompt(payload.message ?? payload.text ?? payload.content);
+      }
+    }
+    if (!foundPlan && entry.type === 'response_item' && payload.type === 'function_call' && payload.name === 'update_plan') {
+      detail.todos = projectCodexTodos(planFromUpdatePlanPayload(payload)) || [];
+      foundPlan = true;
+    }
+    if (detail.lastPrompt && foundPlan) return;
+  }
+}
+
 
 function parseRollout(filePath, scanContext = null) {
   const detail = {
@@ -657,6 +734,9 @@ function parseRollout(filePath, scanContext = null) {
     lastToolInput: null,
     lastMessage: null,
   };
+  detail.lastPrompt = null;
+  detail.todos = [];
+  detail.gitBranch = null;
 
   parseEarlyMetadata(filePath, detail);
 
@@ -672,6 +752,7 @@ function parseRollout(filePath, scanContext = null) {
   const workingSetPaths = new Set();
   let tailPermissionMode = null;
   let collectDialogue = true;
+  let foundPlan = false;
 
   const addDialogue = (text, kind, source, entry, payload) => {
     if (typeof text !== 'string' || !text.trim()) return;
@@ -713,15 +794,12 @@ function parseRollout(filePath, scanContext = null) {
       }
 
       if (payload.type === 'function_call' && payload.name === 'update_plan') {
-        let argumentsValue = null;
-        if (typeof payload.arguments === 'string') {
-          try {
-            argumentsValue = JSON.parse(payload.arguments);
-          } catch {
-            argumentsValue = null;
-          }
+        const plan = planFromUpdatePlanPayload(payload);
+        if (!foundPlan) {
+          const todos = projectCodexTodos(plan);
+          detail.todos = todos || [];
+          foundPlan = true;
         }
-        const plan = argumentsValue && Array.isArray(argumentsValue.plan) ? argumentsValue.plan : [];
         const currentStep = plan.find((step) => (
           step
           && step.status === 'in_progress'
@@ -768,10 +846,17 @@ function parseRollout(filePath, scanContext = null) {
           }
         }
       }
+
+      if (!detail.lastPrompt && payload.type === 'message' && payload.role === 'user') {
+        detail.lastPrompt = projectCodexPrompt(payload.content);
+      }
     }
 
     if (entry.type === 'event_msg') {
       appendFileChanges(workingSet, workingSetPaths, entry, detail.project);
+      if (!detail.lastPrompt && payload.type === 'user_message') {
+        detail.lastPrompt = projectCodexPrompt(payload.message ?? payload.text ?? payload.content);
+      }
 
       const item = payload.type === 'item_completed' && payload.item && typeof payload.item === 'object'
         ? payload.item
@@ -823,8 +908,16 @@ function parseRollout(filePath, scanContext = null) {
     if (!detail.reasoningEffort && entry.type === 'event_msg') {
       detail.reasoningEffort = payload.effort || payload.reasoning_effort || null;
     }
+
+    if (!detail.gitBranch) {
+      const branch = payload.gitBranch ?? payload.git_branch;
+      if (typeof branch === 'string' && branch.trim()) {
+        detail.gitBranch = branch.trim().slice(0, 256);
+      }
+    }
   }
 
+  backfillPromptAndPlan(filePath, detail, entries.length, foundPlan);
   if (tailPermissionMode) detail.permissionMode = tailPermissionMode;
   const priorBoundary = cachedRolloutBoundary(filePath);
   Object.assign(detail, deriveCodexTurnState(entries, Date.now(), priorBoundary, detail.permissionMode));
@@ -1660,6 +1753,9 @@ class CodexAdapter {
         dialogue: detail.dialogue,
         observedSources: detail.observedSources,
         workingSet: detail.workingSet,
+        lastPrompt: detail.lastPrompt,
+        todos: detail.todos,
+        gitBranch: detail.gitBranch,
         tokenUsage: getTokenUsage(filePath, scanContext.tokenEntries),
         gitEvents: getGitEvents(filePath, {
           provider: 'codex',

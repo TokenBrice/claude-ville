@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { makeTempDir } from './support/tmp.mjs';
 
 const require = createRequire(import.meta.url);
-const { OmpAdapter } = require('../../claudeville/adapters/omp.js');
+const { OmpAdapter, parseOmpTranscript } = require('../../claudeville/adapters/omp.js');
 
 function writeJsonl(filePath, records) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -25,6 +25,55 @@ function assistantMessage(id, timestamp, content, usage = null) {
     },
   };
 }
+
+test('OMP transcript projects the latest user prompt and reconstructed todo checklist', () => {
+  const prompt = ` ${'Latest OMP prompt '.repeat(20)} `;
+  const parsed = parseOmpTranscript([
+    {
+      type: 'session',
+      id: '01900000-0000-7000-8000-000000000010',
+      timestamp: '2026-08-12T10:00:00.000Z',
+      cwd: '/workspace/fixture',
+      git: { branch: 'feature/omp-todos' },
+    },
+    { type: 'message', timestamp: '2026-08-12T10:00:01.000Z', message: {
+      role: 'user', content: [{ type: 'text', text: prompt }],
+    } },
+    { type: 'message', timestamp: '2026-08-12T10:00:02.000Z', message: {
+      role: 'user', content: [{ type: 'text', text: '<system-reminder>Not a user prompt.</system-reminder>' }],
+    } },
+    assistantMessage('todo-init', '2026-08-12T10:00:03.000Z', [
+      { type: 'toolCall', id: 'todo-init-call', name: 'todo', arguments: {
+        op: 'init',
+        list: [{ phase: 'Implementation', items: ['Inspect OMP', 'Project checklist', 'Remove this item'] }],
+      } },
+      { type: 'toolCall', id: 'todo-done-call', name: 'todo', arguments: {
+        op: 'done', task: 'Inspect OMP',
+      } },
+      { type: 'toolCall', id: 'todo-append-call', name: 'todo', arguments: {
+        op: 'append', phase: 'Verification', items: ['Verify bounds'],
+      } },
+      { type: 'toolCall', id: 'todo-start-call', name: 'todo', arguments: {
+        op: 'start', task: 'Project checklist',
+      } },
+      { type: 'toolCall', id: 'todo-drop-call', name: 'todo', arguments: {
+        op: 'drop', task: 'Remove this item',
+      } },
+    ]),
+  ], {
+    filePath: '/nonexistent/omp-fixture.jsonl',
+    now: Date.parse('2026-08-12T10:01:00.000Z'),
+    fileMtimeMs: Date.parse('2026-08-12T10:00:03.000Z'),
+  });
+
+  assert.equal(parsed.session.lastPrompt, prompt.trim().slice(0, 200));
+  assert.deepEqual(parsed.session.todos, [
+    { subject: 'Inspect OMP', status: 'completed' },
+    { subject: 'Project checklist', status: 'in_progress' },
+    { subject: 'Verify bounds', status: 'pending' },
+  ]);
+  assert.equal(parsed.session.gitBranch, 'feature/omp-todos');
+});
 
 test('OMP adapter discovers parent and nested agent transcripts with details and usage', () => {
   const tmpRoot = makeTempDir('claudeville-omp-');

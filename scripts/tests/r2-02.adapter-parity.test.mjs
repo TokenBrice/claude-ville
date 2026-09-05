@@ -93,8 +93,13 @@ function createFixtures(root) {
 
   const codexRollout = path.join(root, '.codex', 'sessions', '2026', '08', '25', 'rollout-r2-02.jsonl');
   writeJsonLines(codexRollout, [
-    { type: 'session_meta', payload: { id: 'codex-r2-02', cwd: project, model: 'gpt-5', agent_nickname: 'Codex Fixture', agent_role: 'main' } },
+    { type: 'session_meta', payload: { id: 'codex-r2-02', cwd: project, model: 'gpt-5', agent_nickname: 'Codex Fixture', agent_role: 'main', git: { branch: 'feature/codex-plan' } } },
     { type: 'turn_context', payload: { model: 'gpt-5', effort: 'medium' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Older prompt.' }] } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'update_plan', arguments: JSON.stringify({ plan: [{ step: 'Old step', status: 'pending' }] }) } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>not user text</environment_context>' }] } },
+    { type: 'event_msg', payload: { type: 'user_message', message: ` ${'Latest Codex prompt '.repeat(20)} ` } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'update_plan', arguments: JSON.stringify({ plan: [{ step: 'Inspect rollout', status: 'completed' }, { step: 'Project plan', status: 'in_progress' }, { step: 'Verify bounds', status: 'pending' }] }) } },
     { type: 'response_item', payload: { type: 'function_call', name: 'shell', arguments: JSON.stringify({ command: 'git status' }) } },
     { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Fixture complete.' }] } },
     { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, output_tokens: 20, cached_input_tokens: 30 }, last_token_usage: { total_tokens: 150 }, model_context_window: 200000 } } },
@@ -227,6 +232,14 @@ test('adapter fixtures keep genuinely shared optional fields aligned', () => {
       assert.match(String(session.lastToolInput), /git status/, `${provider} lastToolInput lost its command`);
       assert.equal(session.lastMessage, 'Fixture complete.', `${provider} lastMessage normalization drifted`);
     }
+
+    assert.equal(sessions.codex.lastPrompt, 'Latest Codex prompt '.repeat(20).trim().slice(0, 200));
+    assert.deepEqual(sessions.codex.todos, [
+      { subject: 'Inspect rollout', status: 'completed' },
+      { subject: 'Project plan', status: 'in_progress' },
+      { subject: 'Verify bounds', status: 'pending' },
+    ]);
+    assert.equal(sessions.codex.gitBranch, 'feature/codex-plan');
 
     // Gemini has no agent-name field in its session format; the other six
     // fixtures exercise the common optional name exposed by their adapters.

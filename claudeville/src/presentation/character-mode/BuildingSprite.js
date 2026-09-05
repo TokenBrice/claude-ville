@@ -20,7 +20,7 @@ import { SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { pulseBand01Frame } from './PulsePolicy.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
-import { resolveTaskboardAgent, taskboardBoardRows } from './TaskboardBoardModel.js';
+import { TaskboardBoardModel, taskboardBoardRows } from './TaskboardBoardModel.js';
 import {
     advanceNightOccupancyGate,
     buildingEmissiveGate,
@@ -139,6 +139,11 @@ const BUILDING_ACTIVITY_STATE_WEIGHT = Object.freeze({
     full: 0.9,
     alert: 1,
 });
+const BUILDING_DRAWABLE_SORT_BAND = Object.freeze({
+    'building-back': 10,
+    'building-front': 90,
+    building: 95,
+});
 const FOUNDATION_MATERIALS = Object.freeze({
     'civic-cobble': Object.freeze({
         base: '#727064', stone: '#aaa58f', dark: '#514f47', wear: '#b8a57d', accent: '#6c7650',
@@ -159,6 +164,11 @@ const FOUNDATION_MATERIALS = Object.freeze({
 
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
+}
+
+function compareBuildingDrawableDepth(a, b) {
+    return (a.sortY - b.sortY)
+        || (BUILDING_DRAWABLE_SORT_BAND[a.kind] - BUILDING_DRAWABLE_SORT_BAND[b.kind]);
 }
 
 function shadowAngleForLighting(lighting) {
@@ -275,6 +285,7 @@ export class BuildingSprite {
         this.quotaState = null;
         this.harborStatus = { failedPushActive: false, activeWorkingCount: null };
         this._taskboardPapers = [];
+        this._taskboardBoardModel = new TaskboardBoardModel();
         this._seenTaskboardRituals = new Set();
         this._forgeGlow = FORGE_GLOW_BASELINE;
         this._presenceByType = new Map();
@@ -403,7 +414,10 @@ export class BuildingSprite {
         this._labelMetricsCache.clear();
     }
 
-    setAgentSprites(sprites) { this.agentSprites = sprites; }
+    setAgentSprites(sprites) {
+        this.agentSprites = sprites;
+        this._taskboardBoardModel.updateAgentSprites(sprites);
+    }
 
     setTaskboardCandidates(ids) {
         this._taskboardCandidates = Array.isArray(ids)
@@ -417,23 +431,40 @@ export class BuildingSprite {
     }
 
     _taskboardBoardAgent() {
-        return resolveTaskboardAgent({
+        return this._taskboardBoardModel.resolve({
             candidates: this._taskboardCandidates || [],
             agentSprites: this.agentSprites,
         });
     }
 
-    drawTaskboardBoardOverlay(ctx) {
-        const building = this.buildings.find((candidate) => candidate?.type === 'taskboard');
-        const entry = building ? this.assets.getEntry('building.taskboard') : null;
-        if (!building || !entry) return false;
-        const [anchorX, anchorY] = this.assets.getAnchor(entry.id);
-        const center = this._buildingScreenCenter(building);
-        const localPoint = (localX, localY) => ({
-            x: Math.round(center.x - anchorX + localX),
-            y: Math.round(center.y - anchorY + localY),
-        });
-        return this._drawTaskboardBoard(ctx, localPoint);
+    drawGpuFunctionalOverlays(ctx) {
+        const drawables = this.enumerateDrawables();
+        for (let index = 0; index < drawables.length; index++) {
+            const drawable = drawables[index];
+            const splitPass = drawable.kind === 'building-back'
+                ? 'back'
+                : drawable.kind === 'building-front'
+                    ? 'front'
+                    : 'whole';
+            this._drawFunctionalOverlay(
+                ctx,
+                drawable.building,
+                drawable.entry,
+                drawable.wx,
+                drawable.wy,
+                splitPass,
+                drawable.horizonY ?? null,
+            );
+            this._drawOccupancyPennant(
+                ctx,
+                drawable.building,
+                drawable.entry,
+                drawable.wx,
+                drawable.wy,
+                splitPass,
+                drawable.horizonY ?? null,
+            );
+        }
     }
 
     // Hover state does NOT invalidate _drawablesCache — drawDrawable reads
@@ -1666,6 +1697,7 @@ export class BuildingSprite {
                 out.push({ kind: 'building', building: b, entry, wx, wy, sortY: this._buildingWholeSortY(b, wy) });
             }
         }
+        out.sort(compareBuildingDrawableDepth);
         this._drawablesCache = out;
         return out;
     }

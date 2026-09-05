@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 
 import { MAP_SIZE } from '../../claudeville/src/config/constants.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
-import { BridgeLanterns, deriveLanternPlan, MAX_BRIDGE_LANTERNS } from '../../claudeville/src/presentation/character-mode/BridgeLanterns.js';
+import {
+    BridgeLanterns,
+    deriveLanternPlan,
+    lanternScreenSize,
+    MAX_BRIDGE_LANTERNS,
+} from '../../claudeville/src/presentation/character-mode/BridgeLanterns.js';
 import {
     appendDepthSortedDrawables,
     drawDepthSortedDrawables,
@@ -60,6 +65,13 @@ test('lantern plan caps at six and braids oldest branches west to east', () => {
     assert.equal(plan[0].tileX, 16);
     assert.equal(plan.at(-1).tileX, 17);
     assert.equal(plan[0].overflowCount, 2);
+});
+
+test('lantern glass keeps a 12px screen floor and scales above it', () => {
+    assert.equal(lanternScreenSize(1), 12);
+    assert.equal(lanternScreenSize(1.5), 12);
+    assert.equal(lanternScreenSize(2), 14);
+    assert.ok(lanternScreenSize(3) > lanternScreenSize(2));
 });
 
 test('lantern brightness follows age boundaries without using unknown ages', () => {

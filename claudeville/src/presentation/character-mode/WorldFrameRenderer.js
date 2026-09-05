@@ -661,7 +661,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     });
     renderer.camera.applyTransform(overlayCtx);
     if (gpuWorldRendered) {
-        renderer.buildingRenderer?.drawTaskboardBoardOverlay?.(overlayCtx);
+        renderer.buildingRenderer?.drawGpuFunctionalOverlays?.(overlayCtx);
     }
     drawTalkArcs(overlayCtx, {
         relationship: renderer.relationshipState,

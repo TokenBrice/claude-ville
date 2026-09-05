@@ -103,6 +103,9 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `lastTool` | string \| null | Most recent tool name. |
 | `lastToolInput` | string \| null | Compact summary of the tool's argument; truncated to ~60 chars. |
 | `lastMessage` | string \| null | Most recent assistant text; truncated. |
+| `lastPrompt` | string \| null | Most recent user prompt, trimmed to 200 characters. Codex reads user rollout messages; OMP ignores system-reminder and advisory XML blocks. |
+| `todos` | array | Current provider checklist, up to 12 `{ subject, status }` items in declared order. Subjects are capped at 200 characters and statuses are `pending`, `in_progress`, or `completed`. Claude uses `TodoWrite`, Codex uses the latest `update_plan`, and OMP folds `todo` operations. |
+| `gitBranch` | string \| null | Provider-recorded git branch when present, capped at 256 characters. |
 | `tokenUsage` | object \| null | See "Token normalization" below. Registry normalization sets this to null when adapters omit token data. |
 | `parentSessionId` | string \| null | Set on subagent / spawned-thread sessions. |
 | `reasoningEffort` | string \| null | Codex-only. Pulled from `turn_context` / `event_msg`. |

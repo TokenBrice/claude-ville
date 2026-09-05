@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    resolveTaskboardAgent,
+    TaskboardBoardModel,
     taskboardBoardRows,
 } from '../../claudeville/src/presentation/character-mode/TaskboardBoardModel.js';
 
@@ -10,34 +10,72 @@ function sprite(agent) {
     return { agent };
 }
 
-test('taskboard resolution follows candidate order and skips agents without truthful rows', () => {
-    const selected = { id: 'selected', todos: [{ subject: 'Selected work', status: 'pending' }] };
-    const firstPin = { id: 'first-pin', todos: [{ subject: 'Pinned work', status: 'in_progress' }] };
-    const secondPin = { id: 'second-pin', todos: [{ subject: 'Fallback work', status: 'pending' }] };
+test('taskboard resolution prefers selected, then pinned, then the latest changed todos', () => {
+    const selected = {
+        id: 'selected',
+        lastActive: 500,
+        todos: [{ subject: 'Selected work', status: 'pending' }],
+    };
+    const pinned = {
+        id: 'pinned',
+        lastActive: 400,
+        todos: [{ subject: 'Pinned work', status: 'in_progress' }],
+    };
+    const recent = {
+        id: 'recent',
+        lastActive: 200,
+        todos: [{ subject: 'Recent work', status: 'pending' }],
+    };
+    const older = {
+        id: 'older',
+        lastActive: 100,
+        todos: [{ subject: 'Older work', status: 'pending' }],
+    };
+    const empty = { id: 'empty', lastActive: 900, todos: [] };
     const sprites = new Map([
         ['selected', sprite(selected)],
-        ['empty', sprite({ id: 'empty', todos: [] })],
-        ['departed', sprite({ id: 'departed', isDeparted: true, todos: [{ subject: 'Old', status: 'pending' }] })],
-        ['first-pin', sprite(firstPin)],
-        ['second-pin', sprite(secondPin)],
+        ['pinned', sprite(pinned)],
+        ['recent', sprite(recent)],
+        ['older', sprite(older)],
+        ['empty', sprite(empty)],
     ]);
+    const model = new TaskboardBoardModel();
+    model.updateAgentSprites(sprites, 100);
 
-    assert.equal(resolveTaskboardAgent({
-        candidates: ['selected', 'first-pin', 'second-pin'],
+    recent.todos = [{ subject: 'Most recently changed', status: 'in_progress' }];
+    model.updateAgentSprites(sprites, 200);
+
+    assert.equal(model.resolve({
+        candidates: ['selected', 'pinned'],
         agentSprites: sprites,
     }), selected);
-    assert.equal(resolveTaskboardAgent({
-        candidates: ['missing', 'departed', 'empty', 'first-pin', 'second-pin'],
+    assert.equal(model.resolve({
+        candidates: ['empty', 'pinned'],
         agentSprites: sprites,
-    }), firstPin);
-    assert.equal(resolveTaskboardAgent({
-        candidates: ['missing', 'first-pin'],
-        agentSprites: [...sprites.values()],
-    }), firstPin);
-    assert.equal(resolveTaskboardAgent({
-        candidates: ['missing', 'departed', 'empty'],
+    }), pinned);
+    assert.equal(model.resolve({
+        candidates: ['empty'],
         agentSprites: sprites,
-    }), null);
+    }), recent);
+
+    older.todos = [{ subject: 'Now newest', status: 'pending' }];
+    model.updateAgentSprites(sprites, 300);
+    model.updateAgentSprites(sprites, 400);
+    assert.equal(model.resolve({ candidates: [], agentSprites: sprites }), older);
+});
+
+test('taskboard fallback breaks update ties by latest activity and returns null without todos', () => {
+    const active = { id: 'active', lastActive: 200, todos: [{ subject: 'Active', status: 'pending' }] };
+    const idle = { id: 'idle', lastActive: 100, todos: [{ subject: 'Idle', status: 'pending' }] };
+    const model = new TaskboardBoardModel();
+    const tied = [sprite(idle), sprite(active)];
+    model.updateAgentSprites(tied, 100);
+
+    assert.equal(model.resolve({ candidates: [], agentSprites: tied }), active);
+
+    const empty = [sprite({ id: 'none', todos: [] })];
+    model.updateAgentSprites(empty, 200);
+    assert.equal(model.resolve({ candidates: [], agentSprites: empty }), null);
 });
 
 test('taskboard rows preserve provider order, overflow, and full subjects', () => {
