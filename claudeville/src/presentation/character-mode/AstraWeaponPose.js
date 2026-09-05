@@ -29,22 +29,3 @@ export function astraWeaponPose({ cell, dx, dy, drawScale = 1 }, direction, equi
         scale: equipment === 'polearm' ? 0.82 : 0.80,
     };
 }
-
-export function drawAstraGauntlet(ctx, pose, drawScale) {
-    ctx.save();
-    ctx.translate(Math.round(pose.x), Math.round(pose.y));
-    ctx.scale(drawScale, drawScale);
-    // Unrotated cuff joins the authored forearm; fingers close over the hilt.
-    ctx.fillStyle = '#171724';
-    ctx.fillRect(-2, -4, 4, 7);
-    ctx.fillRect(-3, -2, 6, 4);
-    ctx.fillStyle = '#555569';
-    ctx.fillRect(-2, -3, 4, 6);
-    ctx.fillStyle = '#a5b4c2';
-    ctx.fillRect(-2, -3, 4, 2);
-    ctx.fillRect(-2, 0, 4, 2);
-    ctx.fillStyle = '#dce8ed';
-    ctx.fillRect(-2, -3, 3, 1);
-    ctx.fillRect(-2, 0, 3, 1);
-    ctx.restore();
-}

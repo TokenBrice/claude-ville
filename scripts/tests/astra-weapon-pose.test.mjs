@@ -52,12 +52,12 @@ test('GPU baking passes all 80 source cells to the same equipment path used by C
     }
 });
 
-test('Astra hides the far hand with its blade; other Codex models keep their existing poses', () => {
+test('Astra hides the far hand with its blade; unprofiled sprites keep their fallback poses', () => {
     const sprite = Object.create(AgentSprite.prototype);
     sprite.assets = { has: () => true };
     const calls = [];
     sprite._drawCodexAssetEquipment = (ctx, asset, geometry, direction, part) => {
-        calls.push({ part, grip: geometry.astraGrip });
+        calls.push({ part, grip: geometry.authoredGrip });
     };
     const geometry = { cell: { sy: 552 }, dx: 0, dy: 0,
         bounds: { minX: 20, maxX: 70, minY: 20, maxY: 75 }, drawScale: 1 };
@@ -68,7 +68,7 @@ test('Astra hides the far hand with its blade; other Codex models keep their exi
     calls.length = 0;
     sprite._drawCodexEquipment(null, identity, geometry, 'front', 'e');
     assert.equal(calls.length, 0, 'no floating hand may be stamped over the torso');
-    sprite._drawCodexEquipment(null, { ...identity, spriteId: 'agent.codex.gpt55' }, geometry, 'front', 's');
+    sprite._drawCodexEquipment(null, { ...identity, spriteId: 'agent.codex.unprofiled' }, geometry, 'front', 's');
     assert.deepEqual(calls.map(call => call.part), ['asset', 'hands']);
-    assert.ok(calls.every(call => call.grip === undefined));
+    assert.ok(calls.every(call => call.grip === null));
 });

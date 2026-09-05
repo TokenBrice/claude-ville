@@ -1,3 +1,4 @@
+import { clearDetachedCodexWrench } from './CodexEngineerGrips.js';
 import { DEFAULT_CELL, DIRECTIONS, WALK_FRAMES, IDLE_FRAMES } from './SpriteSheet.js';
 
 // Compositor produces per-agent character bitmaps by:
@@ -88,6 +89,8 @@ export class Compositor {
         ctx.imageSmoothingEnabled = false;
 
         ctx.drawImage(baseImg, 0, 0);
+        // The detached tool must not become the head apex for effort crests.
+        if (baseId === 'agent.codex.gpt54') clearDetachedCodexWrench(ctx, canvas.width, canvas.height);
         this._applyPaletteSwap(ctx, canvas.width, canvas.height, palette, paletteVariant, teamTrim, sheetSource);
         if (runtimeAccessory) this._compositeAccessory(ctx, baseId, runtimeAccessory, palette);
 

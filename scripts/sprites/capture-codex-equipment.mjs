@@ -14,6 +14,7 @@
  *   node scripts/sprites/capture-codex-equipment.mjs --base-url=http://localhost:4000
  *   node scripts/sprites/capture-codex-equipment.mjs --individual
  *   node scripts/sprites/capture-codex-equipment.mjs --model=gpt6astra --effort=medium --all-frames
+ *   node scripts/sprites/capture-codex-equipment.mjs --effort=none --all-frames --verify-gpu
  */
 
 import { chromium } from 'playwright';
@@ -52,6 +53,10 @@ const POSES = flags.has('all-frames') ? [
   { key: 'walk3', label: 'walk 3', moving: true, motionScale: 1, frame: 3 },
 ];
 const CODEX_MODELS = [
+  { key: 'codex', label: 'Codex', model: 'codex' },
+  { key: 'gpt56sol', label: 'GPT-5.6 Sol', model: 'gpt-5.6-sol' },
+  { key: 'gpt56terra', label: 'GPT-5.6 Terra', model: 'gpt-5.6-terra' },
+  { key: 'gpt56luna', label: 'GPT-5.6 Luna', model: 'gpt-5.6-luna' },
   {
     key: 'gpt6astra',
     label: 'GPT-6 Astra',
@@ -77,12 +82,17 @@ if (!CODEX_MODELS.length || !EFFORTS.length) throw new Error('Unknown model or e
 const REQUIRED_EQUIPMENT_ASSETS = [
   'equipment.codex.crescentSaber',
   'equipment.codex.dawnblade',
+  'equipment.codex.earthbreaker',
   'equipment.codex.runeblade',
   'equipment.codex.greatsword',
   'equipment.codex.polearm',
   'equipment.codex.engineerWrench',
 ];
 const REQUIRED_CHARACTER_ASSETS = [
+  'agent.codex.base',
+  'agent.codex.gpt56sol',
+  'agent.codex.gpt56terra',
+  'agent.codex.gpt56luna',
   'agent.codex.gpt6astra',
   'agent.codex.gpt53spark',
   'agent.codex.gpt54',
@@ -100,9 +110,11 @@ const context = await browser.newContext({
   deviceScaleFactor: 1,
 });
 const page = await context.newPage();
+const browserErrors = [];
+page.on('pageerror', error => browserErrors.push(error.message));
 
 page.on('console', (msg) => {
-  if (msg.type() === 'error') console.error(`[browser:${msg.type()}] ${msg.text()}`);
+  if (msg.type() === 'error') browserErrors.push(msg.text());
 });
 
 try {
@@ -199,6 +211,7 @@ try {
       sprite._drawStatus = () => {};
       sprite._drawCompactNameStatus = () => {};
       sprite.draw(ctx, 2);
+      sprite.releaseRenderResources();
     };
 
     window.__codexEquipmentCapture = {
@@ -230,6 +243,11 @@ try {
     throw new Error(`Missing required Codex equipment assets: ${setup.missingEquipmentAssets.join(', ')}`);
   }
 
+  if (flags.has('verify-gpu')) {
+    const verified = await verifyGpuFrames(page);
+    console.log(`Canvas/GPU pixel parity passed: ${verified.cells} cells (${verified.rasterTies} with sampling ties)`);
+  }
+
   for (const model of CODEX_MODELS) {
     await renderGrid(page, model);
     const gridPath = join(outDir, `${model.key}-equipment-grid.png`);
@@ -258,6 +276,7 @@ try {
   }
 
   const total = CODEX_MODELS.length * EFFORTS.length * DIRECTIONS.length * POSES.length;
+  if (browserErrors.length) throw new Error(browserErrors.join('\n'));
   console.log(`Done. Captured ${total} forced Codex combinations into ${outDir}`);
   if (!captureIndividual) {
     console.log('Tip: pass --individual to also write one PNG per model/effort/direction combination.');
@@ -300,6 +319,65 @@ async function renderGrid(page, model) {
       });
     });
   }, { model });
+}
+
+// Compare the baked GPU texture with the Canvas equipment/body composition at
+// source scale. This catches missing frame metadata and front/back divergence.
+async function verifyGpuFrames(page) {
+  return page.evaluate(async () => {
+    const { getModelVisualIdentity } = await import('/src/presentation/shared/ModelVisualIdentity.js');
+    const { Agent, AgentSprite, assets, compositor, models, efforts, directions } = window.__codexEquipmentCapture;
+    const scratch = document.createElement('canvas');
+    const ctx = scratch.getContext('2d', { willReadFrequently: true });
+    let cells = 0;
+    let rasterTies = 0;
+    for (const model of models) for (const effort of efforts) {
+      const identity = getModelVisualIdentity(model.model, effort, 'codex');
+      const agent = new Agent({ id: `gpu-${model.key}-${effort}`, model: model.model, effort, provider: 'codex' });
+      const sprite = new AgentSprite(agent, { assets, compositor });
+      sprite.setMotionScale(0);
+      sprite.draw(ctx, 1);
+      const baked = sprite._composeGpuEquippedSheet(identity);
+      const padded = baked.width / directions.length;
+      const cellSize = sprite.spriteSheet.cellSize;
+      const pad = (padded - cellSize) / 2;
+      const gpuCtx = baked.getContext('2d', { willReadFrequently: true });
+      scratch.width = scratch.height = padded;
+      ctx.imageSmoothingEnabled = false;
+      for (let dir = 0; dir < directions.length; dir++) for (let row = 0; row < 10; row++) {
+        const cell = sprite.spriteSheet.cell(row < 6 ? 'walk' : 'idle', dir, row < 6 ? row : row - 6);
+        const geometry = { cell, dx: 0, dy: 0, drawScale: 1, bounds: sprite._getCellContentBounds(cell), cacheEquipment: false };
+        ctx.clearRect(0, 0, padded, padded);
+        ctx.save();
+        ctx.translate(pad, pad);
+        sprite._drawCodexEquipment(ctx, identity, geometry, 'back', directions[dir]);
+        ctx.drawImage(sprite.spriteCanvas, cell.sx, cell.sy, cellSize, cellSize, 0, 0, cellSize, cellSize);
+        sprite._drawCodexEquipment(ctx, identity, geometry, 'front', directions[dir]);
+        ctx.restore();
+        const expected = ctx.getImageData(0, 0, padded, padded).data;
+        const actual = gpuCtx.getImageData(dir * padded, row * padded, padded, padded).data;
+        // Translating the same rotated PNG can break a nearest-neighbor tie
+        // at a source pixel boundary. Allow two pixels, plus channel rounding
+        // on antialiased edges (6/255 for vector tools, 1/255 for PNGs).
+        const channelTolerance = identity.equipment === 'multitool' ? 6 : 1;
+        let differentPixels = 0;
+        for (let index = 0; index < expected.length; index += 4) {
+          if (Math.abs(expected[index] - actual[index]) > channelTolerance
+            || Math.abs(expected[index + 1] - actual[index + 1]) > channelTolerance
+            || Math.abs(expected[index + 2] - actual[index + 2]) > channelTolerance
+            || Math.abs(expected[index + 3] - actual[index + 3]) > channelTolerance) differentPixels++;
+        }
+        if (differentPixels > 2) {
+          throw new Error(`Canvas/GPU mismatch: ${model.key}/${effort}/${directions[dir]}/row${row} (${differentPixels} pixels)`);
+        }
+        if (differentPixels) rasterTies++;
+        cells++;
+      }
+      baked.width = baked.height = 0;
+      sprite.releaseRenderResources();
+    }
+    return { cells, rasterTies };
+  });
 }
 
 async function renderOverview(page) {
