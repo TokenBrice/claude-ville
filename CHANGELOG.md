@@ -2,6 +2,28 @@
 
 ---
 
+## v0.43.0 — *The Chalk and the Lantern* · Sep 05, 2026
+
+Four additions that put data the adapters already parsed into the village itself, chosen from a sixty-idea ideation round and its critic debate. Every one renders only real session state and shows nothing when the data is absent.
+
+**The task board comes alive**
+- The Claude adapter has always projected the last user prompt and the TodoWrite checklist onto each session, and the Activity Panel's Prompt & Plan section was built to render them — but `AgentManager._sessionToAgentPayload` never mapped the fields, so the section stayed empty for every live session. `lastPrompt`, `todos`, and `gitBranch` now cross the boundary with bounded validation, participate in change detection, and survive WebSocket delta snapshots.
+- The selected agent's real checklist is drawn in chalk on the TASK BOARD face: a `done/total` header, strike-through only for completed items, an accent tick for the step in progress, six rows plus an overflow count, zoom-gated and static under reduced motion. With nothing selected, the first pinned agent with todos takes the board; with no todos anywhere, the legacy paper ritual returns. Canvas and WebGL show the same board. Scenario `taskboard-live`.
+
+**Midnight oil**
+- After dusk a building's windows, static light sources, and GPU authored emissive are gated by live occupancy: lit only while a working or `tool_pending` villager stands at the building. The old 45% empty-building warmth floor is gone at night, so a dark village with two glowing buildings is the true night shift. Daytime rendering is unchanged; the gate rises in 400 ms and falls in 1.6 s, instantly under reduced motion. Scenario `midnight-oil`.
+
+**Cache ore**
+- Token-mine carts haul pale crystal for cache-read tokens against raw ore for fresh input, mixed in the session's real per-beat ratio, with a cumulative fallback and honest absence when a provider reports no cache classes. A DepartureMono `NN% CACHE` label and hover tooltip give the exact figure. The cart rides the existing token-delta ritual — no new loop. Landmark items (mine carts, forge handoffs) now register an overlay-safe scene category, so they render in the resident WebGL path for the first time instead of only under `?renderer=canvas`. Scenario `cache-ore`.
+
+**Stale cargo and the lantern-braid bridge**
+- Harbor dock summaries now carry the oldest unpushed commit per repo and branch. The sidebar ledger reads `repo · branch: N commits, oldest 2d`, sorted oldest-first, with the best-effort disclosure (newest 120 commits on the current branch, 7-day repo-watch window) on the header.
+- The `bridge.ew` sprite, kept unreferenced since plan 2.8 awaiting an east–west hint, becomes the command-pond plank. `BridgeLanterns.js` hangs one lantern per branch holding unpushed work — capped at six, braided oldest to newest, brightness stepped by age, hover naming the branch and count, night-gated light sources, static under reduced motion. `world:validate-terrain` now checks plank bridge hints. Scenario `stale-cargo`.
+
+Regression coverage: `o2-prompt-plan-mapping`, `c10-taskboard-board`, `c16-night-occupancy-gate`, `w11-cache-ore-ratio`, `o10-stale-cargo-ledger`, `w5-bridge-lanterns`, and the scene-category suite.
+
+---
+
 ## v0.42.0 — *The Astral Lens* · Sep 05, 2026
 
 The village becomes clearer to watch and more reliable to act on. This release brings 21 coordinated refinements to rendering, provider state, and the desktop interface, while preserving the local, zero-build runtime.
