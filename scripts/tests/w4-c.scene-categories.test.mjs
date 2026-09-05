@@ -59,6 +59,48 @@ test('harbor traffic uses the same Canvas fallback for Canvas and automatic GPU 
     assert.deepEqual([...resolution.overlayCategoryIds], ['harbor-traffic']);
 });
 
+test('landmark activity uses the depth pass on Canvas and overlay replay on unsupported GPU backends', () => {
+    const item = {
+        kind: 'landmark-activity',
+        sortY: 66,
+        payload: { id: 'cache-cart', type: 'token', cargoLabel: '50% CACHE' },
+    };
+    const calls = [];
+    const enumerationTimes = [];
+    const renderer = {
+        landmarkActivity: {
+            enumerateDrawables: now => {
+                enumerationTimes.push(now);
+                return [item];
+            },
+            draw: (ctx, drawable, zoom) => calls.push({ ctx, drawable, zoom }),
+        },
+    };
+    const frame = worldSceneCategoryRegistry.enumerate({ renderer, renderNow: 8500 });
+    const resolution = worldSceneCategoryRegistry.resolve(frame, {
+        id: 'webgl2',
+        supportsSceneCommands: () => false,
+    });
+    const drawables = [];
+    appendDepthSortedDrawables(drawables, { sceneCategoryFrame: frame });
+
+    const canvasCtx = { path: 'canvas-depth' };
+    drawDepthSortedDrawables(canvasCtx, drawables, { renderer, zoom: 1.5 });
+    const overlayCtx = { path: 'gpu-overlay' };
+    drawSceneCategoryOverlays(overlayCtx, drawables, resolution, { renderer, zoom: 1.5 });
+
+    assert.deepEqual(enumerationTimes, [8500]);
+    assert.equal(drawables.length, 1);
+    assert.equal(drawables[0].kind, 'landmark-activity');
+    assert.equal(drawables[0].sortBand, 60);
+    assert.equal(drawables[0].payload, item);
+    assert.deepEqual([...resolution.overlayCategoryIds], ['landmark-activity']);
+    assert.deepEqual(calls, [
+        { ctx: canvasCtx, drawable: item, zoom: 1.5 },
+        { ctx: overlayCtx, drawable: item, zoom: 1.5 },
+    ]);
+});
+
 test('require-canvas-frame prevents an unsupported depth category from being overlaid', () => {
     const registry = new SceneCategoryRegistry([
         category({ unsupported: 'require-canvas-frame' }),

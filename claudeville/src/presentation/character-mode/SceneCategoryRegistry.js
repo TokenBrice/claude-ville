@@ -1,4 +1,5 @@
 import { HARBOR_TRAFFIC_SCENE_CATEGORY } from './HarborTraffic.js';
+import { LANDMARK_ACTIVITY_SCENE_CATEGORY } from './LandmarkActivity.js';
 
 const UNSUPPORTED_POLICIES = new Set([
     'overlay-safe',
@@ -297,4 +298,5 @@ function writeCategoryStatus(pool, index, category, handling, count) {
 // source adapter, while every renderer receives the same resolved frame.
 export const worldSceneCategoryRegistry = new SceneCategoryRegistry([
     HARBOR_TRAFFIC_SCENE_CATEGORY,
+    LANDMARK_ACTIVITY_SCENE_CATEGORY,
 ]);

@@ -884,7 +884,8 @@ export class ActivityPanel {
         this._pinStripEl = null;
         this._pinToggleBtn = null;
         this._pinFetchSeq = 0;
-        this._pinned = new Set(this._loadPinnedAgentIds());
+        const rendererPinnedIds = this._getRenderer()?.getPinnedAgentIds?.() || [];
+        this._pinned = new Set(rendererPinnedIds.length ? rendererPinnedIds : this._loadPinnedAgentIds());
         this._pinnedDetails = new Map();
         this._agentSections = [];
         this._viewMode = document.getElementById('dashboardMode')?.style.display === '' ? 'dashboard' : 'character';
@@ -925,6 +926,9 @@ export class ActivityPanel {
         this.panelEl.querySelector('.activity-panel__header')?.appendChild(this._detailFreshnessEl);
         this._bind();
         this._renderPinCompare();
+        eventBus.emit('agents:pins-changed', {
+            pinnedAgentIds: [...this._pinned].slice(0, PIN_COMPARE_LIMIT),
+        });
     }
 
     _bind() {
@@ -1380,6 +1384,9 @@ export class ActivityPanel {
             this._pinned.add(agent.id);
         }
         this._persistPinnedAgentIds();
+        eventBus.emit('agents:pins-changed', {
+            pinnedAgentIds: [...this._pinned].slice(0, PIN_COMPARE_LIMIT),
+        });
         this._renderPinCompare();
         this._updatePinToggle(agent);
         this._fetchPinnedDetails();
@@ -4689,6 +4696,7 @@ export class ActivityPanel {
         this._causalWaterfallToolHistory = [];
         this._agentSections = [];
         this._pinnedDetails.clear();
+        eventBus.emit('agents:pins-changed', { pinnedAgentIds: [] });
         this._pinned.clear();
         this._buildingPresenceByType.clear();
         this._buildingSignalByType.clear();

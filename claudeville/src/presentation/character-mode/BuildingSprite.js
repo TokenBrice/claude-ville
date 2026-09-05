@@ -20,6 +20,13 @@ import { SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { pulseBand01Frame } from './PulsePolicy.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
+import { resolveTaskboardAgent, taskboardBoardRows } from './TaskboardBoardModel.js';
+import {
+    advanceNightOccupancyGate,
+    buildingEmissiveGate,
+    lightsBuildingWindows,
+    nightWindowGate,
+} from './NightOccupancyGate.js';
 import {
     BUILDING_EMITTER_FALLBACKS,
     BUILDING_LIGHT_FALLBACKS,
@@ -96,6 +103,8 @@ const OBSERVATORY_CLOCK_FACE = Object.freeze(getBuildingEffectAnchor('observator
     minuteHandLength: 15,
 }));
 const MINE_SEAM_COLORS = ['#ffc15a', '#ff8a33', '#ff4528'];
+const MINE_CARGO_CRYSTAL_COLORS = ['#bfe9ff', '#8fd0f4', '#e6f8ff'];
+const MINE_CARGO_ORE_COLORS = ['#5c554b', '#3f3a33', '#7e6a50'];
 // Presence tier -> (emitter chance ×, light radius ×, occupancy scalar 0..1).
 // Occupancy feeds window warmth via 0.45 + 0.55 * scalar.
 const PRESENCE_TIER_TABLE = Object.freeze({
@@ -269,6 +278,7 @@ export class BuildingSprite {
         this._seenTaskboardRituals = new Set();
         this._forgeGlow = FORGE_GLOW_BASELINE;
         this._presenceByType = new Map();
+        this._litGateByType = new Map();
         this._onPresence = (map) => {
             this._presenceByType.clear();
             for (const [type, entry] of Object.entries(map || {})) {
@@ -320,10 +330,30 @@ export class BuildingSprite {
         eventBus.off(BUILDING_EVENTS.ACTIVE_AGENTS, this._onPresence);
         eventBus.off('building:read-intensity', this._onReadIntensity);
         eventBus.off('distress:watchtower', this._onDistress);
+        this._litGateByType.clear();
     }
 
     _presenceTierFor(type) {
         return this._presenceByType.get(type)?.tier || 'dormant';
+    }
+
+    _nightShiftLit(type) {
+        return this._litGateByType.get(type)?.value || 0;
+    }
+
+    _nightWindowGate() {
+        return nightWindowGate(
+            this.atmosphereState?.phase,
+            this.atmosphereState?.phaseProgress,
+        );
+    }
+
+    _emissiveGateFor(building) {
+        return buildingEmissiveGate(
+            this.atmosphereState?.phase,
+            this.atmosphereState?.phaseProgress,
+            this._nightShiftLit(building?.type),
+        );
     }
 
     _buildingAlertFor(building) {
@@ -375,6 +405,37 @@ export class BuildingSprite {
 
     setAgentSprites(sprites) { this.agentSprites = sprites; }
 
+    setTaskboardCandidates(ids) {
+        this._taskboardCandidates = Array.isArray(ids)
+            ? ids.filter((id) => typeof id === 'string' && id)
+            : [];
+    }
+
+    setZoom(value) {
+        const zoom = Number(value);
+        this._zoom = Number.isFinite(zoom) ? zoom : 0;
+    }
+
+    _taskboardBoardAgent() {
+        return resolveTaskboardAgent({
+            candidates: this._taskboardCandidates || [],
+            agentSprites: this.agentSprites,
+        });
+    }
+
+    drawTaskboardBoardOverlay(ctx) {
+        const building = this.buildings.find((candidate) => candidate?.type === 'taskboard');
+        const entry = building ? this.assets.getEntry('building.taskboard') : null;
+        if (!building || !entry) return false;
+        const [anchorX, anchorY] = this.assets.getAnchor(entry.id);
+        const center = this._buildingScreenCenter(building);
+        const localPoint = (localX, localY) => ({
+            x: Math.round(center.x - anchorX + localX),
+            y: Math.round(center.y - anchorY + localY),
+        });
+        return this._drawTaskboardBoard(ctx, localPoint);
+    }
+
     // Hover state does NOT invalidate _drawablesCache — drawDrawable reads
     // this.hovered live at draw time, so a fresh enumerate isn't required.
     setHovered(b) { this.hovered = b; }
@@ -382,6 +443,7 @@ export class BuildingSprite {
     update(dt) {
         this.frame += (dt / 16) * (this.motionScale || 0);
         this._updateVisitorCounts();
+        this._updateNightLightGates(dt);
         this._emitVillagePopulation();
         this._trackObservatoryWebRituals();
         this._syncTaskboardPapers(Date.now());
@@ -1369,7 +1431,8 @@ export class BuildingSprite {
         const lightBoost = lightingState?.lightBoost ?? 1;
         const windowWarmth = this.atmosphereState?.reactions?.windowWarmth || 0;
         const staticSources = this._staticLightSources();
-        const out = staticSources.map(source => {
+        const out = [];
+        for (const source of staticSources) {
             const visitors = source.building ? this._visitorCountFor(source.building) : 0;
             let activity = visitors > 0 ? 1.12 : 1;
             let alpha = source.alpha;
@@ -1391,19 +1454,24 @@ export class BuildingSprite {
                 ? PRESENCE_TIER_TABLE[this._presenceTierFor(source.buildingType)].radius
                 : 1;
             const radius = source.radius * Math.min(1.84, 0.72 + lightBoost * 0.28 + warmthBoost + beaconScale * 0.22 + (activity - 1) * 0.18) * presenceRadiusMult;
-            if (alpha != null) alpha *= 1 + beaconBoost;
-            return normalizeLightSource({
+            const emissiveGate = !source.buildingType || source.buildingType === 'watchtower'
+                ? 1
+                : this._emissiveGateFor(source.building);
+            const intensity = (activity + warmthBoost + beaconBoost) * emissiveGate;
+            if (intensity < 0.02) continue;
+            if (alpha != null) alpha *= (1 + beaconBoost) * emissiveGate;
+            out.push(normalizeLightSource({
                 ...source,
                 color,
-                intensity: activity + warmthBoost + beaconBoost,
+                intensity,
                 radius,
                 alpha,
                 origin: source.origin || { x: source.x, y: source.y },
             }, {
                 buildingType: source.buildingType,
                 building: source.building,
-            });
-        });
+            }));
+        }
         for (const source of this._ritualLightSources(lightBoost)) out.push(source);
         for (const source of this._forgeSpillLightSources(lightBoost)) out.push(source);
         for (const source of this._archiveSpillLightSources(lightBoost)) out.push(source);
@@ -1740,10 +1808,12 @@ export class BuildingSprite {
         this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, dims, baseAnchor);
         ctx.globalCompositeOperation = 'screen';
         if (windowWarmth > 0.035) {
-            // Per-building occupancy modulates the global warmth: empty buildings
-            // stay dim, packed ones stay lit regardless of hour.
+            // Dusk crossfades legacy presence warmth into the live night-shift
+            // gate; at night only a physically present working agent lights it.
             const occupancy = PRESENCE_TIER_TABLE[this._presenceTierFor(building.type)].occupancy;
-            const buildingWarmth = windowWarmth * (0.45 + 0.55 * occupancy);
+            const lit = this._nightShiftLit(building.type);
+            const nightGate = this._nightWindowGate();
+            const buildingWarmth = windowWarmth * lerp(0.45 + 0.55 * occupancy, lit, nightGate);
             // Window warmth breathes with the building beacon so lit windows
             // brighten together as night deepens (static floor under reduced motion).
             const beaconWarm = 0.82 + this._beaconScaleFor(building.type) * 0.4;
@@ -1777,7 +1847,7 @@ export class BuildingSprite {
             }
 
             const doorSpill = getBuildingDoorSpillDescriptor(building.type, {
-                occupancy,
+                occupancy: lerp(occupancy, lit, nightGate),
                 beaconIntensity: this._beaconScaleFor(building.type),
                 weatherWetness: this.atmosphereState?.weather?.precipitation || 0,
                 atmosphereWarmth: windowWarmth,
@@ -2028,15 +2098,7 @@ export class BuildingSprite {
             // away from the cave mouth. Static decoration (no motion claim).
             ctx.globalAlpha = 0.85;
             {
-                const railA = { x: mouth.x - 26, y: mouth.y + 23 };
-                const railB = { x: mouth.x + 30, y: mouth.y + 14 };
-                const rdx = railB.x - railA.x;
-                const rdy = railB.y - railA.y;
-                const railLen = Math.hypot(rdx, rdy) || 1;
-                const ux = rdx / railLen;
-                const uy = rdy / railLen;
-                const nx = -uy;
-                const ny = ux;
+                const { railA, railB, railLen, ux, uy, nx, ny } = this._mineRailSpan(mouth);
                 ctx.strokeStyle = '#4a3524';
                 ctx.lineWidth = 2;
                 ctx.beginPath();
@@ -2117,7 +2179,9 @@ export class BuildingSprite {
         } else if (building.type === 'archive') {
             if (splitPass !== 'back') this._drawArchiveEnhancement(ctx, localPoint, pulse);
         } else if (building.type === 'taskboard') {
-            if (splitPass !== 'back') this._drawTaskboardRitual(ctx, localPoint, building);
+            if (splitPass !== 'front' && !this._drawTaskboardBoard(ctx, localPoint)) {
+                this._drawTaskboardRitual(ctx, localPoint, building);
+            }
         } else if (building.type === 'command') {
             if (splitPass !== 'back') {
                 this._drawCommandActivityDetails(ctx, localPoint, building, pulse);
@@ -2309,7 +2373,9 @@ export class BuildingSprite {
                         id: `ritual:${ritual.id}:ore`,
                         kind: 'spark',
                         origin: toOrigin([128, 158]),
-                        color: this._mineSeamColor(),
+                        color: ritual.cargo
+                            ? mixHex(this._mineSeamColor(), '#9fd8f0', this._mineCargoMix(ritual.cargo).bucket)
+                            : this._mineSeamColor(),
                         radius: 44 + fade * 24,
                         alpha: fade * 0.3 * lightBoost,
                         overlay: 'atmosphere.light.lantern-glow',
@@ -2864,6 +2930,65 @@ export class BuildingSprite {
         ctx.restore();
     }
 
+    _mineRailSpan(mouth) {
+        const railA = { x: mouth.x - 26, y: mouth.y + 23 };
+        const railB = { x: mouth.x + 30, y: mouth.y + 14 };
+        const rdx = railB.x - railA.x;
+        const rdy = railB.y - railA.y;
+        const railLen = Math.hypot(rdx, rdy) || 1;
+        const ux = rdx / railLen;
+        const uy = rdy / railLen;
+        return { railA, railB, railLen, ux, uy, nx: -uy, ny: ux };
+    }
+
+    _mineCargoMix(cargo) {
+        if (!cargo || !Number.isFinite(Number(cargo.ratio))) {
+            return { ratio: 0, bucket: 0, crystalSlots: 0 };
+        }
+        const ratio = clamp01(cargo.ratio);
+        const bucket = Math.round(ratio * 8) / 8;
+        return { ratio, bucket, crystalSlots: Math.round(6 * bucket) };
+    }
+
+    _drawMineCargoHeap(ctx, x, y, cargo, alpha = 1) {
+        const mix = this._mineCargoMix(cargo);
+        for (let i = 0; i < 6; i++) {
+            const row = i < 3 ? 0 : 1;
+            const col = i % 3;
+            const px = x + (col - 1) * 7 + row * 3;
+            const py = y - 13 - row * 6;
+            const crystal = i < mix.crystalSlots;
+            const palette = crystal ? MINE_CARGO_CRYSTAL_COLORS : MINE_CARGO_ORE_COLORS;
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = palette[i % palette.length];
+            ctx.strokeStyle = crystal ? '#e6f8ff' : '#7e6a50';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            if (crystal) {
+                ctx.moveTo(px, py - 4);
+                ctx.lineTo(px + 4, py);
+                ctx.lineTo(px, py + 4);
+                ctx.lineTo(px - 4, py);
+            } else {
+                ctx.moveTo(px - 4, py + 2);
+                ctx.lineTo(px - 2, py - 3);
+                ctx.lineTo(px + 3, py - 4);
+                ctx.lineTo(px + 5, py + 2);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            if (crystal) {
+                ctx.globalCompositeOperation = 'screen';
+                ctx.globalAlpha = alpha * 0.72;
+                ctx.fillStyle = '#e6f8ff';
+                ctx.fillRect(Math.round(px - 1), Math.round(py - 3), 1, 2);
+            }
+        }
+        ctx.globalCompositeOperation = 'source-over';
+    }
+
     _drawMineRitual(ctx, mouth, ritual) {
         if (!ritual) return;
         const progress = this._ritualProgress(ritual);
@@ -2889,23 +3014,57 @@ export class BuildingSprite {
         ctx.stroke();
         ctx.restore();
 
+        const rail = this._mineRailSpan(mouth);
+        const rollProgress = ritual.motionEnabled === false
+            ? 0.6
+            : 1 - Math.pow(1 - clamp01(progress), 3);
+        const cartX = rail.railA.x + rail.ux * rail.railLen * rollProgress;
+        const cartY = rail.railA.y + rail.uy * rail.railLen * rollProgress;
+        ctx.save();
+        ctx.globalAlpha = fade;
+        if (this.assets?.get?.('prop.oreCart')) {
+            this.sprites.drawSprite(ctx, 'prop.oreCart', cartX, cartY);
+        } else {
+            ctx.fillStyle = '#5a3927';
+            ctx.fillRect(Math.round(cartX - 15), Math.round(cartY - 10), 30, 14);
+            ctx.strokeStyle = '#2f2119';
+            ctx.strokeRect(Math.round(cartX - 15) + 0.5, Math.round(cartY - 10) + 0.5, 29, 13);
+        }
+        if (ritual.cargo && (ritual.motionEnabled === false || this._zoom >= 1)) {
+            this._drawMineCargoHeap(ctx, cartX, cartY, ritual.cargo, fade);
+        }
+        ctx.restore();
+
         const oreProgress = ritual.motionEnabled === false ? 0.5 : clamp01((progress - 0.18) / 0.58);
         if (oreProgress > 0 && oreProgress < 1) {
-            const ox = mouth.x - 8 + oreProgress * 44;
-            const oy = mouth.y + 12 - Math.sin(oreProgress * Math.PI) * 28;
-            ctx.save();
-            ctx.globalAlpha = fade;
-            ctx.fillStyle = this._mineSeamColor();
-            ctx.strokeStyle = '#4a2f1c';
-            ctx.beginPath();
-            ctx.moveTo(ox - 5, oy);
-            ctx.lineTo(ox + 1, oy - 5);
-            ctx.lineTo(ox + 7, oy - 1);
-            ctx.lineTo(ox + 3, oy + 5);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            ctx.restore();
+            const mix = this._mineCargoMix(ritual.cargo);
+            const shardCount = ritual.cargo ? 2 : 1;
+            for (let i = 0; i < shardCount; i++) {
+                const shardProgress = clamp01(oreProgress - i * 0.08);
+                const ox = mouth.x - 8 + shardProgress * 44;
+                const oy = mouth.y + 12 - Math.sin(shardProgress * Math.PI) * (28 - i * 5);
+                const crystal = ritual.cargo && i < Math.round(2 * mix.bucket);
+                ctx.save();
+                ctx.globalAlpha = fade;
+                ctx.fillStyle = crystal
+                    ? MINE_CARGO_CRYSTAL_COLORS[i % MINE_CARGO_CRYSTAL_COLORS.length]
+                    : (ritual.cargo ? MINE_CARGO_ORE_COLORS[i % MINE_CARGO_ORE_COLORS.length] : this._mineSeamColor());
+                ctx.strokeStyle = crystal ? '#e6f8ff' : '#4a2f1c';
+                ctx.beginPath();
+                ctx.moveTo(ox - 5, oy);
+                ctx.lineTo(ox + 1, oy - 5);
+                ctx.lineTo(ox + 7, oy - 1);
+                ctx.lineTo(ox + 3, oy + 5);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+        if (ritual.label) this._drawRitualLabel(ctx, mouth.x, mouth.y - 40, ritual.label, this._mineSeamColor(), fade);
+        if (ritual.cargo && (ritual.motionEnabled === false || this._zoom >= 1.5)) {
+            const percentage = Math.round(this._mineCargoMix(ritual.cargo).ratio * 100);
+            this._drawRitualLabel(ctx, cartX, cartY - 31, `${percentage}% CACHE`, '#9fd8f0', fade);
         }
     }
 
@@ -3260,6 +3419,100 @@ export class BuildingSprite {
                             ? 'TETHER'
                             : 'PORTAL';
         return compactRitualLabel(ritual?.label, fallback).toUpperCase();
+    }
+
+    _drawTaskboardBoard(ctx, localPoint) {
+        const agent = this._taskboardBoardAgent();
+        if (!agent) return false;
+
+        const board = taskboardBoardRows(agent.todos, { maxRows: 6 });
+        if (!board) return false;
+
+        const zoom = Number(this._zoom) || 0;
+        if (zoom < LABEL_VISIBLE_ZOOM) return true;
+
+        const chalk = 'rgba(226, 240, 248, 0.92)';
+        const dimChalk = 'rgba(226, 240, 248, 0.45)';
+        const accent = '#8bd7ff';
+        const progress = `${board.done}/${board.total}`;
+        ctx.save();
+        ctx.textBaseline = 'middle';
+        const faceTopLeft = localPoint(74, 73);
+        ctx.fillStyle = 'rgba(18, 34, 33, 0.91)';
+        ctx.fillRect(faceTopLeft.x, faceTopLeft.y, 108, 78);
+        ctx.strokeStyle = 'rgba(226, 240, 248, 0.38)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(faceTopLeft.x + 0.5, faceTopLeft.y + 0.5, 107, 77);
+
+        if (zoom < TALLY_FOLD_ZOOM) {
+            const center = localPoint(128, 110);
+            ctx.font = '6px "Press Start 2P"';
+            ctx.textAlign = 'center';
+            const width = Math.ceil(ctx.measureText(progress).width) + 10;
+            ctx.fillStyle = 'rgba(21, 34, 35, 0.78)';
+            ctx.fillRect(Math.round(center.x - width / 2), center.y - 7, width, 14);
+            ctx.strokeStyle = 'rgba(226, 240, 248, 0.58)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(Math.round(center.x - width / 2) + 0.5, center.y - 6.5, width - 1, 13);
+            ctx.fillStyle = chalk;
+            ctx.fillText(progress, center.x, center.y + 0.5);
+            ctx.restore();
+            return true;
+        }
+
+        const left = localPoint(79, 83);
+        const right = localPoint(177, 83);
+        const displayName = String(agent.displayName || agent.name || '').trim().slice(0, 14);
+        ctx.font = '7px "Press Start 2P"';
+        ctx.fillStyle = chalk;
+        ctx.textAlign = 'left';
+        ctx.fillText(displayName, left.x, left.y);
+        ctx.textAlign = 'right';
+        ctx.fillText(progress, right.x, right.y);
+
+        ctx.font = `9px ${WORLD_BODY_FONT}`;
+        ctx.textAlign = 'left';
+        const maxWidth = 96;
+        const fitSubject = (subject) => {
+            const source = String(subject || '');
+            if (ctx.measureText(source).width <= maxWidth) return source;
+            let low = 0;
+            let high = source.length;
+            while (low < high) {
+                const mid = Math.ceil((low + high) / 2);
+                if (ctx.measureText(`${source.slice(0, mid).trimEnd()}…`).width <= maxWidth) low = mid;
+                else high = mid - 1;
+            }
+            return `${source.slice(0, low).trimEnd()}…`;
+        };
+
+        board.rows.forEach((row, index) => {
+            const point = localPoint(80, 94 + index * 9);
+            const text = fitSubject(row.subject);
+            const width = ctx.measureText(text).width;
+            if (row.status === 'in_progress') {
+                ctx.fillStyle = accent;
+                ctx.fillRect(point.x - 5, point.y - 2, 3, 4);
+            }
+            ctx.fillStyle = row.done ? dimChalk : chalk;
+            ctx.fillText(text, point.x, point.y);
+            if (row.done) {
+                ctx.strokeStyle = 'rgba(226, 240, 248, 0.62)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(point.x, point.y);
+                ctx.lineTo(point.x + width, point.y);
+                ctx.stroke();
+            }
+        });
+
+        if (board.overflow > 0) {
+            const overflowPoint = localPoint(80, 94 + board.rows.length * 9);
+            ctx.fillStyle = chalk;
+            ctx.fillText(`+${board.overflow} more`, overflowPoint.x, overflowPoint.y);
+        }
+        ctx.restore();
+        return true;
     }
 
     _drawTaskboardRitual(ctx, localPoint) {
@@ -3761,8 +4014,8 @@ export class BuildingSprite {
                     this._visitorStatusByType.set(building.type, tally);
                 }
                 const status = sprite.agent?.status;
-                if (status === AgentStatus.WORKING) tally.working++;
-                else if (status === AgentStatus.WAITING_ON_USER) tally.waiting_on_user++;
+                if (lightsBuildingWindows(sprite.agent)) tally.working++;
+                if (status === AgentStatus.WAITING_ON_USER) tally.waiting_on_user++;
                 else if (status === AgentStatus.ERRORED) tally.errored++;
                 const project = this._repoProjectKey(sprite.agent);
                 if (project) {
@@ -3805,6 +4058,19 @@ export class BuildingSprite {
                     profile: this._repoProfileFor(dominant.project),
                 });
             }
+        }
+    }
+
+    _updateNightLightGates(dt) {
+        const types = new Set([
+            ...this._visitorStatusByType.keys(),
+            ...this._litGateByType.keys(),
+        ]);
+        for (const type of types) {
+            const target = (this._visitorStatusByType.get(type)?.working || 0) > 0 ? 1 : 0;
+            const current = this._litGateByType.get(type)?.value || 0;
+            const value = advanceNightOccupancyGate(current, target, dt, this.motionScale);
+            this._litGateByType.set(type, { value, target });
         }
     }
 

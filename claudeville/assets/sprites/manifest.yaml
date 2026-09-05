@@ -1820,10 +1820,8 @@ bridges:
 
   - id: bridge.ew
     tool: isometric_tile
-    # KEPT but currently unreferenced: today's only plank crossing (scenery.js
-    # PLANK_BRIDGES west-river-plank) runs NS. Reserved for a future EW plank
-    # crossing (plan 2.8 follow-up); drawn via the dynamic `bridge.${orientation}`
-    # path in IsometricRenderer when an EW plank hint lands.
+    # Referenced by scenery.js PLANK_BRIDGES command-pond-plank and drawn
+    # through IsometricRenderer's dynamic `bridge.${orientation}` path.
     prompt: "weathered wooden bridge, plank deck, rope rails, east-west orientation, isometric"
     size: 64
     anchor: [32, 32]

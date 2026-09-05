@@ -230,6 +230,12 @@ export const PLANK_BRIDGES = [
         tileY: 25,
         orientation: 'NS',
     },
+    {
+        id: 'command-pond-plank',
+        tileX: 17,
+        tileY: 22,
+        orientation: 'EW',
+    },
 ];
 
 // Small authored Harbor Master causeway. This is intentionally separate from

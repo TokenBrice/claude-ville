@@ -439,6 +439,13 @@ export function getBuildingOccupancyState(type, { count = 0, capacity = 0, alert
     return 'full';
 }
 
+export {
+    MIDNIGHT_OIL_FALL_MS,
+    MIDNIGHT_OIL_RISE_MS,
+    lightsBuildingWindows,
+    nightWindowGate,
+} from './NightOccupancyGate.js';
+
 function landmarkMaterial(type, materialClass, top, horizonY, sources) {
     return Object.freeze(normalizeMaterialMetadata({
         materialId: `building.${type}`,

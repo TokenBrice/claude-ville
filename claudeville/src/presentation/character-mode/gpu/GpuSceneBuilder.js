@@ -531,6 +531,7 @@ function recordForBuilding(renderer, drawable, sequence) {
     const materialName = materialMeta.class || drawable.entry?.materialClass || MATERIAL_BY_BUILDING[buildingType] || 'stone';
     const occupied = renderer?.buildingRenderer?._buildingOccupancyInfo?.(drawable.building)?.state;
     const active = occupied && occupied !== 'idle';
+    const emissiveGate = renderer?.buildingRenderer?._emissiveGateFor?.(drawable.building) ?? 1;
     // Material/emissive are sampled with the albedo's UVs (see the GL fragment
     // shaders), so a channel source must share the albedo's geometry. When the
     // albedo comes from an atlas page the channels must be that page's channel
@@ -575,6 +576,7 @@ function recordForBuilding(renderer, drawable, sequence) {
         emissive: materialSource
             ? (active ? finite(materialMeta.activeEmissive, 0.12) : finite(materialMeta.emissive, 0.03))
             : 0,
+        emissiveGate,
         occluder: finite(materialMeta.occluder, 0.86),
         textureRevision: assets.assetVersion || null,
         sidecarRevision: useAtlas && atlasFrame?.atlas

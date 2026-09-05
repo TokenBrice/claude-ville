@@ -49,6 +49,39 @@ function safeStorageSet(key, value) {
         // usable for the current page even when it cannot be persisted.
     }
 }
+export function buildHarborLedgerRows(repos = [], now = Date.now()) {
+    return [...(Array.isArray(repos) ? repos : [])]
+        .filter(repo => (Number(repo.pendingCommits ?? repo.count) || 0) > 0)
+        .sort((a, b) => {
+            const aOldest = Number(a.oldestCommitTime) || 0;
+            const bOldest = Number(b.oldestCommitTime) || 0;
+            if (aOldest > 0 && bOldest > 0 && aOldest !== bOldest) return aOldest - bOldest;
+            if ((aOldest > 0) !== (bOldest > 0)) return aOldest > 0 ? -1 : 1;
+            return (Number(b.failedPushes) || 0) - (Number(a.failedPushes) || 0)
+                || (Number(b.pendingCommits ?? b.count) || 0) - (Number(a.pendingCommits ?? a.count) || 0)
+                || String(a.repoName || a.shortName || a.project || '').localeCompare(
+                    String(b.repoName || b.shortName || b.project || ''),
+                );
+        })
+        .map((repo) => {
+            const profile = repo.profile || repoBranchProfile(repo.project, repo.branch);
+            const count = Number(repo.pendingCommits ?? repo.count) || 0;
+            const oldestCommitTime = Number(repo.oldestCommitTime) || 0;
+            const ageLabel = oldestCommitTime > 0 ? formatRelative(oldestCommitTime, now) : '';
+            const branch = repo.branch || '';
+            return {
+                profile,
+                project: repo.project || '',
+                name: repo.repoName || repo.shortName || profile.shortName || profile.name || 'unknown',
+                branch,
+                count,
+                ageLabel,
+                countCapped: count >= 120,
+                detailText: `${branch || 'unknown branch'} - ${count} ${count === 1 ? 'commit' : 'commits'}${ageLabel ? ` - oldest ${ageLabel}` : ''}`,
+            };
+        });
+}
+
 
 export class Sidebar {
     constructor(world) {
@@ -102,6 +135,7 @@ export class Sidebar {
                 repo => Number(repo.pendingCommits ?? repo.count) || 0,
                 repo => Number(repo.failedPushes) || 0,
                 repo => Math.floor((Number(repo.latestEventTime) || 0) / 1000),
+                repo => Math.floor((Number(repo.oldestCommitTime) || 0) / 60_000),
                 repo => repo.profile?.accent || '',
             ]);
             if (signature === this._harborSignature) return;
@@ -1085,12 +1119,8 @@ export class Sidebar {
             return;
         }
 
-        const repos = [...this.harborRepos]
-            .filter(repo => (Number(repo.pendingCommits ?? repo.count) || 0) > 0)
-            .sort((a, b) => (b.failedPushes || 0) - (a.failedPushes || 0)
-                || (b.pendingCommits || b.count || 0) - (a.pendingCommits || a.count || 0)
-                || (b.latestEventTime || 0) - (a.latestEventTime || 0));
-        const total = repos.reduce((sum, repo) => sum + (Number(repo.pendingCommits ?? repo.count) || 0), 0);
+        const repos = buildHarborLedgerRows(this.harborRepos, Date.now());
+        const total = repos.reduce((sum, repo) => sum + repo.count, 0);
         this.harborCountEl.textContent = total;
 
         if (repos.length === 0) {
@@ -1100,25 +1130,21 @@ export class Sidebar {
             return;
         }
 
-        const now = Date.now();
         const nodes = repos.map(repo => {
-            const profile = repo.profile || repoBranchProfile(repo.project, repo.branch);
-            const name = repo.repoName || repo.shortName || profile.shortName || profile.name || 'unknown';
-            const count = Number(repo.pendingCommits ?? repo.count) || 0;
-            const rel = formatRelative(Number(repo.latestEventTime) || 0, now);
+            const { profile } = repo;
+            const disclosure = `best-effort scan - newest 120 commits per branch - repo-watch window 7 days${repo.countCapped ? ' - count capped' : ''}`;
+            const sourceTitle = repo.branch ? `${repo.project} (${repo.branch})` : repo.project;
             const infoChildren = [
                 el('span', {
                     className: 'sidebar__agent-name',
-                    text: name,
+                    text: repo.name,
                     style: { color: profile.labelText || profile.accent },
                 }),
+                el('span', { className: 'sidebar__agent-model', text: repo.detailText }),
             ];
-            if (rel) {
-                infoChildren.push(el('span', { className: 'sidebar__agent-model', text: rel }));
-            }
             return el('div', {
                 className: ['sidebar__agent', 'sidebar__harbor-row'],
-                title: repo.branch ? `${repo.project || ''} (${repo.branch})` : repo.project || '',
+                title: `${sourceTitle} - ${disclosure}`,
                 style: {
                     borderLeftColor: profile.panelBorder || profile.accent,
                     background: profile.panel,
@@ -1135,7 +1161,7 @@ export class Sidebar {
                 el('div', { className: 'sidebar__agent-info' }, infoChildren),
                 el('span', {
                     className: ['sidebar__project-count', 'sidebar__harbor-count'],
-                    text: count,
+                    text: repo.count,
                     style: { color: profile.labelText || profile.accent },
                 }),
             ]);

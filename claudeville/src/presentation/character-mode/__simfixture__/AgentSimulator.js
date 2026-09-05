@@ -85,6 +85,9 @@ function buildAgent(spec, timeBase) {
         freshness: spec.freshness ? { ...spec.freshness, observedAt: timeBase - (Number(spec.freshness.ageMs) || 0) } : null,
         messages: Array.isArray(spec.messages) ? clonePlain(spec.messages) : [],
         gitEvents: Array.isArray(spec.gitEvents) ? clonePlain(spec.gitEvents) : [],
+        lastPrompt: spec.lastPrompt ?? null,
+        todos: Array.isArray(spec.todos) ? clonePlain(spec.todos) : [],
+        gitBranch: spec.gitBranch ?? null,
         lastMessage: spec.lastMessage || null,
         currentTool: spec.currentTool || null,
         currentToolInput: spec.currentToolInput || null,
@@ -361,6 +364,10 @@ export default class AgentSimulator {
         if (position) updates.position = position;
         const targetPosition = positionFromSpec(step.targetPosition);
         if (targetPosition) updates.targetPosition = targetPosition;
+        if (step.tokens) updates.tokens = { ...(agent?.tokens || {}), ...step.tokens };
+        if (Object.prototype.hasOwnProperty.call(step, 'lastPrompt')) updates.lastPrompt = step.lastPrompt;
+        if (Array.isArray(step.todos)) updates.todos = clonePlain(step.todos);
+        if (Object.prototype.hasOwnProperty.call(step, 'gitBranch')) updates.gitBranch = step.gitBranch;
         if (Object.prototype.hasOwnProperty.call(step, 'lastMessage')) {
             updates.lastMessage = step.lastMessage;
         }

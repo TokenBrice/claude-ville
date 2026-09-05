@@ -202,6 +202,7 @@ export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     normalized.alpha = alpha;
     normalized.elevation = elevation;
     normalized.emissive = emissive;
+    normalized.emissiveGate = Math.max(0, Math.min(1, finite(record.emissiveGate, 1)));
     normalized.occluder = occluder;
     normalized.material = materialClassId(record.material ?? record.materialId);
     normalized.blend = blend;

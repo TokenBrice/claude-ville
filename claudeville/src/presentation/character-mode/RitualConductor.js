@@ -253,7 +253,12 @@ function ritualMetaFor(event) {
     }
     if (!base) return null;
     if (tool === '__token_delta') {
-        return { ...RITUAL_META.mine, kind: 'mine-pick', label: `+${Number(input) || 0}` };
+        return {
+            ...RITUAL_META.mine,
+            kind: 'mine-pick',
+            label: `+${Number(input) || 0}`,
+            cargo: event.cargo || null,
+        };
     }
     if (building === 'taskboard') {
         return {
@@ -416,6 +421,7 @@ export class RitualConductor {
             existing.createdAt = now;
             existing.remainingMs = Math.max(existing.remainingMs, meta.durationMs || DEFAULT_DURATION_MS);
             existing.label = meta.label || existing.label;
+            existing.cargo = meta.cargo || existing.cargo;
             return existing;
         }
 
@@ -434,6 +440,7 @@ export class RitualConductor {
             kind: meta.kind,
             action: meta.action || null,
             taskKey: meta.taskKey || null,
+            cargo: meta.cargo || null,
             label: meta.label || '',
             angle: meta.angle || 0,
             commandLifecycle: meta.commandLifecycle || event.commandLifecycle || null,

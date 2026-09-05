@@ -2341,7 +2341,7 @@ export function snapshotHarborTrafficState(state) {
     };
 }
 
-function pendingRepoSummariesFromDockSummaries(summaries) {
+export function pendingRepoSummariesFromDockSummaries(summaries) {
     const byRepo = new Map();
     for (const summary of summaries?.values?.() || []) {
         const count = Number(summary.count) || 0;
@@ -2356,12 +2356,19 @@ function pendingRepoSummariesFromDockSummaries(summaries) {
             pendingCommits: 0,
             failedPushes: 0,
             latestEventTime: 0,
+            oldestCommitTime: 0,
             waitingZone: 'harbor',
             storageCommits: 0,
         };
         existing.pendingCommits += count;
         existing.failedPushes += Number(summary.failedCount) || 0;
         existing.latestEventTime = Math.max(existing.latestEventTime, Number(summary.latestEventTime) || 0);
+        const earliestEventTime = Number(summary.earliestEventTime) || 0;
+        if (earliestEventTime > 0) {
+            existing.oldestCommitTime = existing.oldestCommitTime > 0
+                ? Math.min(existing.oldestCommitTime, earliestEventTime)
+                : earliestEventTime;
+        }
         if (isCommitLagoonZone(summary.waitingZone)) {
             existing.waitingZone = 'commit-lagoon';
             existing.storageCommits += count;
@@ -4241,12 +4248,20 @@ export class HarborTraffic {
                 x: 0,
                 y: 0,
                 latestEventTime: 0,
+                earliestEventTime: 0,
             };
             summary.count += 1;
             if (ship.pushStatus === 'failed') summary.failedCount += 1;
             summary.x += pos.x;
             summary.y += pos.y;
             summary.latestEventTime = Math.max(summary.latestEventTime, ship.eventTime || 0);
+            const isCommitShip = ship.isInbound !== true && (ship.gitKind || 'commit') === 'commit';
+            const eventTime = Number(ship.eventTime) || 0;
+            if (isCommitShip && eventTime > 0) {
+                summary.earliestEventTime = summary.earliestEventTime > 0
+                    ? Math.min(summary.earliestEventTime, eventTime)
+                    : eventTime;
+            }
             summary.waitingZone = waitingZone;
             summaries.set(summaryKey, summary);
         }
@@ -4268,10 +4283,17 @@ export class HarborTraffic {
                 x: 0,
                 y: 0,
                 latestEventTime: 0,
+                earliestEventTime: 0,
             };
             summary.count += count;
             summary.failedCount += Math.max(0, Number(overflow.failedCount || 0));
             summary.latestEventTime = Math.max(summary.latestEventTime, Number(overflow.latestEventTime || 0));
+            const overflowEarliestEventTime = Number(overflow.earliestEventTime) || 0;
+            if (overflowEarliestEventTime > 0) {
+                summary.earliestEventTime = summary.earliestEventTime > 0
+                    ? Math.min(summary.earliestEventTime, overflowEarliestEventTime)
+                    : overflowEarliestEventTime;
+            }
             summary.overflowCount = Math.max(0, Number(summary.overflowCount || 0)) + count;
             summaries.set(summaryKey, summary);
         }

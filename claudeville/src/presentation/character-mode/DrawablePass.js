@@ -9,6 +9,7 @@ const KIND_ORDER = Object.freeze({
     'prop-back': 20,
     prop: 30,
     'harbor-traffic': 40,
+    'bridge-lantern': 45,
     agent: 50,
     'landmark-activity': 60,
     'chronicle-monument': 70,
@@ -112,9 +113,6 @@ function drawProp(ctx, zoom, context, payload) {
     payload?.sprite?.drawPart?.(ctx, payload.part || 'whole', zoom);
 }
 
-function drawLandmarkActivity(ctx, zoom, context, drawable) {
-    context.landmarkActivity?.draw?.(ctx, drawable, zoom);
-}
 
 function drawChronicleMonument(ctx, zoom, context, drawable) {
     context.chronicleMonuments?.draw?.(ctx, drawable, zoom, context.renderNow);
@@ -123,6 +121,10 @@ function drawChronicleMonument(ctx, zoom, context, drawable) {
 function drawChronicler(ctx, zoom, context, drawable) {
     context.chronicler?.draw?.(ctx, drawable, zoom);
 }
+function drawBridgeLantern(ctx, zoom, context, drawable) {
+    drawable?.draw?.(ctx, zoom, context);
+}
+
 
 function drawFamiliarMotes(ctx, zoom, context, drawable) {
     drawable?.draw?.(ctx, zoom, context);
@@ -213,8 +215,8 @@ export function appendDepthSortedDrawables(target, {
     propDrawables = [],
     agentSprites = [],
     sceneCategoryFrame = null,
-    landmarkDrawables = [],
     chronicleMonumentDrawables = [],
+    bridgeLanternDrawables = [],
     chroniclerDrawables = [],
     familiarDrawables = [],
 } = {}) {
@@ -252,11 +254,11 @@ export function appendDepthSortedDrawables(target, {
             pushDepthDrawable(target, drawable);
         }
     }
-    for (const drawable of landmarkDrawables) {
-        pushDepthDrawable(target, pooledDepthDrawable(target, 'landmark-activity', drawable.sortY, drawable, drawLandmarkActivity));
-    }
     for (const drawable of chronicleMonumentDrawables) {
         pushDepthDrawable(target, pooledDepthDrawable(target, 'chronicle-monument', drawable.sortY, drawable, drawChronicleMonument));
+    }
+    for (const drawable of bridgeLanternDrawables) {
+        pushDepthDrawable(target, pooledDepthDrawable(target, 'bridge-lantern', drawable.sortY, drawable, drawBridgeLantern));
     }
     for (const drawable of chroniclerDrawables) {
         pushDepthDrawable(target, pooledDepthDrawable(target, 'chronicler', drawable.sortY, drawable, drawChronicler));

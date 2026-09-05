@@ -15,7 +15,9 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `AgentBehaviorState.js` | Per-agent behavior and destination state used by movement/visit systems. |
 | `VisitIntentManager.js`, `VisitTileAllocator.js` | Building capacity, visit reservations, and destination assignment. |
 | `BuildingSprite.js` | Current building visuals, sprite blits, hover state, building-specific decoration/effects, occlusion split for hero buildings, and `hitTest` in world coordinates. |
+| `TaskboardBoardModel.js` | Pure selected/pinned agent resolution and truthful TodoWrite row shaping for the Task Board face. |
 | `BuildingVisualRegistry.js` | Data-driven building visual profiles for labels, sprites, lights, emitter anchors, overlays, and split-pass rules. |
+| `NightOccupancyGate.js` | Pure night-window phase, live working-status, and reduced-motion-aware transition policy shared by Canvas and GPU building light paths. |
 | `AssetManager.js` | Loads `manifest.yaml` and `palettes.yaml`, maps manifest IDs to PNG paths, cache-busts with `style.assetVersion`, and supplies placeholder/checker fallbacks. Material companions and deterministic atlases are opt-in and never use the checker fallback. |
 | `MaterialRegistry.js` | Stable material classes, authored upper-left key-light convention, safe channel defaults, companion-path rules, and semantic material normalization. |
 | `SpriteRenderer.js` | Single entry point for PNG sprite blits; keeps pixel-art draws snapped and smoothing disabled. Also builds additive sprite-quad records and can draw optional companion channels for debugging. |
@@ -27,6 +29,7 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `AtmosphereState.js`, `SkyRenderer.js`, `WeatherRenderer.js` | Time/weather snapshots, sky rendering, and foreground weather effects. |
 | `LightSourceRegistry.js` | Shared light-source records consumed by world grading and effects. |
 | `HarborTraffic.js` | Harbor/ship motion and git-event-aware harbor activity. |
+| `BridgeLanterns.js` | Age-ordered pending-branch lantern plan, plank drawables, hover copy, and night light sources. |
 | `LandmarkActivity.js` | Harbor/landmark event extraction and activity state updates tied to git-event streams. |
 | `AgentEventStream.js` | Shared observer that derives tool, subagent, team, and chat semantic events from `agent:*` updates. |
 | `RelationshipState.js` | Debounced relationship snapshot for parent/child, team, arrival/departure, and chat-pair consumers. |

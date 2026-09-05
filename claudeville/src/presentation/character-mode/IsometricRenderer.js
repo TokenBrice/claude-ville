@@ -49,6 +49,7 @@ import { SeasonalAmbience, seasonTokenForAtmosphere } from './SeasonalAmbience.j
 import { TerrainTileset } from './TerrainTileset.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
+import { BridgeLanterns } from './BridgeLanterns.js';
 import { LandmarkActivity } from './LandmarkActivity.js';
 import { AgentEventStream } from './AgentEventStream.js';
 import { RelationshipState } from './RelationshipState.js';
@@ -768,6 +769,7 @@ export class IsometricRenderer {
         // Bridges (Task 5): two authored river crossings only.
         this.scenery.generateBridges();
         this.bridgeTiles = this.scenery.getBridgeTiles();
+        this.bridgeLanterns = new BridgeLanterns({ renderer: this });
         this.bridgeSpans = this._buildBridgeSpans();
         this._waterTileDescriptors = this._buildWaterTileDescriptors();
         this._shoreWaterEdgeDescriptors = this._buildShoreWaterEdgeDescriptors();
@@ -1799,11 +1801,22 @@ export class IsometricRenderer {
                 ? null
                 : (this.harborTraffic?.hitTestShip?.(worldPos.x, worldPos.y) ?? null);
             this.harborTraffic?.setHoveredShip?.(hoveredShip ? hoveredShip.id : null);
+            const bridgeLantern = (hoveredBuilding || monument || hoveredShip)
+                ? null
+                : (this.bridgeLanterns?.hitTest?.(worldPos.x, worldPos.y, Date.now()) ?? null);
+            this.bridgeLanterns?.setHovered?.(bridgeLantern);
+            const tokenItem = (hoveredBuilding || monument || hoveredShip || bridgeLantern)
+                ? null
+                : (this.landmarkActivity?.hitTestTokenItem?.(worldPos.x, worldPos.y) ?? null);
             canvas.title = hoveredBuilding
                 ? this._buildingVisitorTooltip(hoveredBuilding)
                 : (monument
                     ? this.chronicleMonuments.tooltipFor(monument, Date.now())
-                    : (hoveredShip ? this.harborTraffic.shipTooltip(hoveredShip) : ''));
+                    : (hoveredShip
+                        ? this.harborTraffic.shipTooltip(hoveredShip)
+                        : (bridgeLantern
+                            ? this.bridgeLanterns.tooltipFor(bridgeLantern, Date.now())
+                            : (tokenItem ? this.landmarkActivity.tokenItemTooltip(tokenItem) : ''))));
             this._scheduleAgentHoverTest(worldPos.x, worldPos.y);
         };
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
@@ -1816,6 +1829,7 @@ export class IsometricRenderer {
             this.buildingRenderer?.setHovered(null);
             this.villageDirector?.setHoveredBuilding?.(null);
             this.harborTraffic?.setHoveredShip?.(null);
+            this.bridgeLanterns?.setHovered?.(null);
             canvas.title = '';
         };
         canvas.addEventListener('mouseleave', this._onMouseLeaveMain);
@@ -2708,6 +2722,8 @@ export class IsometricRenderer {
         } else if (camera.zoom != null) {
             this.setCameraPose({ zoom: camera.zoom });
         }
+
+        this.setPinnedAgentIds(metadata.pinnedAgentIds || []);
 
         if (metadata.selectedAgentId) {
             this.selectAgentById(metadata.selectedAgentId);
@@ -4027,6 +4043,31 @@ export class IsometricRenderer {
         }
     }
 
+    setPinnedAgentIds(ids) {
+        const seen = new Set();
+        this._pinnedAgentIds = Array.isArray(ids)
+            ? ids.flatMap((id) => {
+                const normalized = typeof id === 'string' ? id.trim() : '';
+                if (!normalized || seen.has(normalized)) return [];
+                seen.add(normalized);
+                return [normalized];
+            }).slice(0, 2)
+            : [];
+        this._forwardTaskboardCandidates();
+        this._invalidateIdleFrame();
+    }
+
+    getPinnedAgentIds() {
+        return [...(this._pinnedAgentIds || [])];
+    }
+
+    _forwardTaskboardCandidates() {
+        this.buildingRenderer?.setTaskboardCandidates?.([
+            this.selectedAgent?.id,
+            ...(this._pinnedAgentIds || []),
+        ].filter(Boolean));
+    }
+
     selectAgentById(agentId) {
         this._invalidateIdleFrame();
         if (agentId && !this.selectedAgent) this._inspectionPose = this.camera.capturePose();
@@ -4039,10 +4080,12 @@ export class IsometricRenderer {
                 sprite.selected = true;
                 this.selectedAgent = sprite.agent;
                 this.camera.followAgent(sprite);
+                this._forwardTaskboardCandidates();
                 return;
             }
         }
         this.selectedAgent = null;
+        this._forwardTaskboardCandidates();
         this.camera.stopFollow();
         if (this._inspectionPose && this.camera._lastUserInputAt === this._inspectionPose.inputAt) this.camera.restorePose(this._inspectionPose);
         this._inspectionPose = null;
@@ -4182,6 +4225,7 @@ export class IsometricRenderer {
         this.landmarkActivity?.update?.(agents, allSpritesSnapshot, dt, chronicleNow);
         const updateNow = Date.now();
         this.villageDirector?.update?.(this, dt, updateNow);
+        this.buildingRenderer?.setZoom?.(this.camera?.zoom);
 
         // Update building renderer (pass agent sprite positions)
         this.buildingRenderer?.setAgentSprites(allSpritesSnapshot);
@@ -4846,6 +4890,7 @@ export class IsometricRenderer {
                 repo.pendingCommits ?? repo.count ?? repo.pending ?? '',
                 repo.failedPushes ?? '',
                 Math.floor((Number(repo.latestEventTime) || 0) / 1000),
+                Math.floor((Number(repo.oldestCommitTime) || 0) / 60_000),
                 repo.profile?.accent || '',
             ].join(':'))
             .sort()
@@ -10192,6 +10237,7 @@ export class IsometricRenderer {
             ...(this.arrivalDeparture?.getLightSources?.({ now }) || []),
             ...this._villageGateLightSources(lighting),
             ...this._lanternGroundLightSources(lighting),
+            ...(this.bridgeLanterns?.getLightSources?.(lighting) || []),
         ];
         return { building, ambient };
     }

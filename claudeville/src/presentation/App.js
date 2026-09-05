@@ -1397,6 +1397,10 @@ export class App {
                 this.renderer.selectAgentById(agent.id);
             }
         }));
+        this._eventUnsubscribers.push(eventBus.on('agents:pins-changed', (detail = {}) => {
+            this.renderer?.setPinnedAgentIds?.(detail.pinnedAgentIds || []);
+        }));
+
 
         // Stop following when the panel closes
         this._eventUnsubscribers.push(eventBus.on('agent:deselected', () => {

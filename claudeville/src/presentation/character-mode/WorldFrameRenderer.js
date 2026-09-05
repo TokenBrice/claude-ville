@@ -549,13 +549,14 @@ export function renderWorldFrame(renderer, dt = 16) {
     }
     const propDrawables = renderer._enumeratePropDrawables();
     const harborPendingRepos = renderer.harborTraffic?.getPendingRepoSummaries?.() ?? [];
+    renderer.bridgeLanterns?.update?.(harborPendingRepos, renderNow);
     const harborSignature = renderer._harborPendingReposSignature(harborPendingRepos);
     if (harborSignature !== renderer._harborPendingSignature) {
         renderer._harborPendingSignature = harborSignature;
         eventBus.emit('harbor:updated', harborPendingRepos);
     }
-    const landmarkDrawables = renderer.landmarkActivity?.enumerateDrawables() ?? [];
     const chronicleMonumentDrawables = renderer.chronicleMonuments?.enumerateDrawables?.(renderNow, renderer.camera) ?? [];
+    const bridgeLanternDrawables = renderer.bridgeLanterns?.enumerateDrawables?.(renderNow, renderer.camera) ?? [];
     const chroniclerDrawables = renderer.chronicler?.enumerateDrawables?.() ?? [];
     const familiarDrawables = renderer._enumerateFamiliarMoteDrawables?.(atmosphere) ?? [];
     const zoom = renderer.camera.zoom;
@@ -572,8 +573,8 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawableAssembly.propDrawables = propDrawables;
     drawableAssembly.agentSprites = sortedSprites;
     drawableAssembly.sceneCategoryFrame = sceneCategoryFrame;
-    drawableAssembly.landmarkDrawables = landmarkDrawables;
     drawableAssembly.chronicleMonumentDrawables = chronicleMonumentDrawables;
+    drawableAssembly.bridgeLanternDrawables = bridgeLanternDrawables;
     drawableAssembly.chroniclerDrawables = chroniclerDrawables;
     drawableAssembly.familiarDrawables = familiarDrawables;
     appendDepthSortedDrawables(drawables, drawableAssembly);
@@ -661,6 +662,9 @@ export function renderWorldFrame(renderer, dt = 16) {
         profileMark: frameTimer ? label => markFrameTiming(frameTimer, label) : null,
     });
     renderer.camera.applyTransform(overlayCtx);
+    if (gpuWorldRendered) {
+        renderer.buildingRenderer?.drawTaskboardBoardOverlay?.(overlayCtx);
+    }
     drawTalkArcs(overlayCtx, {
         relationship: renderer.relationshipState,
         agentSprites: renderer.agentSprites,
@@ -726,8 +730,8 @@ export function renderWorldFrame(renderer, dt = 16) {
                     entry.category.id,
                     entry.items.length,
                 ])),
-                landmarks: landmarkDrawables.length,
                 monuments: chronicleMonumentDrawables.length,
+                bridgeLanterns: bridgeLanternDrawables.length,
                 chronicler: chroniclerDrawables.length,
                 familiars: familiarDrawables.length,
             },
@@ -1490,6 +1494,7 @@ function buildRenderStats(renderer, {
             pendingRepos: pendingRepos.length,
             pendingCommits: pendingRepos.reduce((sum, repo) => sum + (Number(repo.pendingCommits ?? repo.count) || 0), 0),
             failedPushes: pendingRepos.reduce((sum, repo) => sum + (Number(repo.failedPushes) || 0), 0),
+            bridgeLanterns: Number(inputCounts?.bridgeLanterns) || 0,
         },
         canvas: {
             particles: renderer.particleSystem?.particles?.length || 0,

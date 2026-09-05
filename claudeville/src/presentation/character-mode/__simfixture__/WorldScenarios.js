@@ -1052,6 +1052,250 @@ export const MATERIAL_PILOT_SCENARIO = {
     metadata: { selectedAgentId: 'material-terra', qaTags: ['material', 'sonnet', 'terra', 'command'], camera: { centerTile: { tileX: 18, tileY: 22 }, zoom: 2 } },
 };
 
+export const MIDNIGHT_OIL_SCENARIO = {
+    id: 'midnight-oil',
+    label: 'Midnight oil',
+    description: '23:10 clear night: working buildings lit, idle, waiting, and empty buildings dark.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({
+            id: 'oil-forge',
+            name: 'Ember',
+            status: AgentStatus.WORKING,
+            currentTool: 'Edit',
+            currentToolInput: 'file_path=/src/anvil.js',
+            position: { tileX: 25, tileY: 30 },
+        }),
+        agentSpec({
+            id: 'oil-archive',
+            name: 'Quill',
+            status: AgentStatus.WORKING,
+            currentTool: 'Read',
+            currentToolInput: 'file_path=/docs/spec.md',
+            position: { tileX: 8, tileY: 17 },
+        }),
+        agentSpec({
+            id: 'oil-idle',
+            name: 'Dozer',
+            status: AgentStatus.IDLE,
+            position: { tileX: 25, tileY: 37 },
+        }),
+        agentSpec({
+            id: 'oil-waiting',
+            name: 'Herald',
+            status: AgentStatus.WAITING_ON_USER,
+            currentTool: 'AskUserQuestion',
+            pendingTool: 'AskUserQuestion',
+            waitReason: 'question',
+            position: { tileX: 15, tileY: 21 },
+        }),
+    ],
+    // Visit intents are sticky for 8s and the inferred work cycle walks a
+    // worker on to its next stop afterwards. Re-issuing the same building's
+    // tool keeps Ember at the anvil and Quill at the desk for the capture
+    // window; Ember finishes at 18s so the forge windows are seen falling dark.
+    timeline: [
+        ...[2500, 5000, 7500, 10000, 12500, 15000].flatMap((ts) => [
+            { ts, agentId: 'oil-forge', tool: 'Edit', input: 'file_path=/src/anvil.js', status: AgentStatus.WORKING },
+            { ts: ts + 400, agentId: 'oil-archive', tool: 'Read', input: 'file_path=/docs/spec.md', status: AgentStatus.WORKING },
+        ]),
+        { ts: 18000, agentId: 'oil-forge', tool: null, input: null, status: AgentStatus.COMPLETED, lastMessage: 'Anvil cooled' },
+    ],
+    metadata: {
+        qaTags: ['night', 'midnight-oil', 'windows', 'lighting'],
+        atmosphere: {
+            phase: 'night',
+            clock: { hours: 23, minutes: 10, seconds: 0, label: '23:10', phase: 'night' },
+            weather: { type: 'clear', intensity: 0.18 },
+        },
+        camera: { centerTile: { tileX: 18, tileY: 25 }, zoom: 2.2 },
+    },
+};
+
+export const CACHE_ORE_SCENARIO = {
+    id: 'cache-ore',
+    label: 'Cache ore',
+    description: 'Three mine carts compare fresh-input ore with half-warm and crystal-heavy cache reads.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({
+            id: 'ore-fresh',
+            name: 'Flint',
+            provider: 'codex',
+            model: CODEX_MODEL,
+            status: AgentStatus.WORKING,
+            currentTool: 'Read',
+            currentToolInput: 'file_path=/sim/cache/fresh.js',
+            position: { tileX: 11, tileY: 35 },
+            tokens: { input: 30000, output: 4000, cacheRead: 2000, availability: 'observed' },
+        }),
+        agentSpec({
+            id: 'ore-balanced',
+            name: 'Quartz',
+            provider: 'claude',
+            model: CLAUDE_MODEL,
+            status: AgentStatus.WORKING,
+            currentTool: 'Read',
+            currentToolInput: 'file_path=/sim/cache/balanced.js',
+            position: { tileX: 13, tileY: 35 },
+            tokens: { input: 20000, output: 5000, cacheRead: 20000, availability: 'observed' },
+        }),
+        agentSpec({
+            id: 'ore-crystal',
+            name: 'Frost',
+            provider: 'claude',
+            model: CLAUDE_MODEL,
+            status: AgentStatus.WORKING,
+            currentTool: 'Read',
+            currentToolInput: 'file_path=/sim/cache/warm.js',
+            position: { tileX: 15, tileY: 35 },
+            tokens: { input: 20000, output: 6000, cacheRead: 80000, availability: 'observed' },
+        }),
+    ],
+    timeline: [
+        { ts: 1000, agentId: 'ore-fresh', tool: 'Read', input: 'file_path=/sim/cache/fresh.js', status: AgentStatus.WORKING, tokens: { input: 30000, output: 4000, cacheRead: 2000 } },
+        { ts: 1000, agentId: 'ore-balanced', tool: 'Read', input: 'file_path=/sim/cache/balanced.js', status: AgentStatus.WORKING, tokens: { input: 20000, output: 5000, cacheRead: 20000 } },
+        { ts: 1000, agentId: 'ore-crystal', tool: 'Read', input: 'file_path=/sim/cache/warm.js', status: AgentStatus.WORKING, tokens: { input: 20000, output: 6000, cacheRead: 80000 } },
+        { ts: 8000, agentId: 'ore-fresh', tool: 'Read', input: 'file_path=/sim/cache/fresh-next.js', status: AgentStatus.WORKING, tokens: { input: 30150, output: 4000, cacheRead: 2000 } },
+        { ts: 8000, agentId: 'ore-balanced', tool: 'Read', input: 'file_path=/sim/cache/balanced-next.js', status: AgentStatus.WORKING, tokens: { input: 20075, output: 5000, cacheRead: 20075 } },
+        { ts: 8000, agentId: 'ore-crystal', tool: 'Read', input: 'file_path=/sim/cache/warm-next.js', status: AgentStatus.WORKING, tokens: { input: 20015, output: 6000, cacheRead: 80135 } },
+    ],
+    metadata: {
+        qaTags: ['cache-ore', 'mine-ritual', 'honest-absence'],
+        expectedAgentCount: 3,
+        expectedWorkingCount: 3,
+        camera: { centerTile: { tileX: 13, tileY: 34 }, zoom: 2.2 },
+    },
+};
+
+export const TASKBOARD_LIVE_SCENARIO = {
+    id: 'taskboard-live',
+    label: 'Taskboard live',
+    description: 'Selected and pinned TodoWrite plans exercise truthful chalk progress and fallback.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({
+            id: 'sim-todo-lead',
+            name: 'Wren',
+            provider: 'claude',
+            status: AgentStatus.WORKING,
+            currentTool: 'Edit',
+            lastPrompt: 'Refactor the plank renderer and verify the board fixtures',
+            todos: [
+                { subject: 'Split plank draw path', status: 'completed' },
+                { subject: 'Cache plank metrics', status: 'in_progress' },
+                { subject: 'Update board fixtures', status: 'pending' },
+                { subject: 'Run render baselines', status: 'pending' },
+            ],
+            position: { tileX: 23, tileY: 37 },
+            projectPath: '/sim/repos/board',
+        }),
+        agentSpec({
+            id: 'sim-todo-pin',
+            name: 'Rune',
+            provider: 'claude',
+            status: AgentStatus.WORKING,
+            currentTool: 'Read',
+            todos: [{ subject: 'Audit chalk contrast', status: 'pending' }],
+            position: { tileX: 27, tileY: 37 },
+            projectPath: '/sim/repos/board',
+        }),
+    ],
+    timeline: [
+        {
+            ts: 3500,
+            agentId: 'sim-todo-lead',
+            tool: 'TodoWrite',
+            status: AgentStatus.WORKING,
+            todos: [
+                { subject: 'Split plank draw path', status: 'completed' },
+                { subject: 'Cache plank metrics', status: 'completed' },
+                { subject: 'Update board fixtures', status: 'in_progress' },
+                { subject: 'Run render baselines', status: 'pending' },
+            ],
+        },
+        {
+            ts: 14000,
+            agentId: 'sim-todo-lead',
+            tool: null,
+            status: AgentStatus.WORKING,
+            todos: [],
+        },
+    ],
+    metadata: {
+        qaTags: ['taskboard', 'todos', 'pin-fallback', 'chalk'],
+        selectedAgentId: 'sim-todo-lead',
+        pinnedAgentIds: ['sim-todo-pin'],
+        camera: { centerTile: { tileX: 25, tileY: 35 }, zoom: 2.2 },
+    },
+};
+const STALE_CARGO_TIME_BASE = Date.now();
+const staleCargoCommit = ({ id, project, branch, ageMs, label, sha }) => ({
+    ...gitEvent({
+        id,
+        type: 'commit',
+        project,
+        branch,
+        targetRef: branch,
+        label,
+        command: `git commit -m "${label}"`,
+        sha,
+        inferred: true,
+        upstream: `origin/${branch}`,
+    }),
+    timestamp: STALE_CARGO_TIME_BASE - ageMs,
+});
+const STALE_ALPHA_COMMITS = [
+    staleCargoCommit({ id: 'stale-alpha-1', project: '/sim/repos/alpha', branch: 'main', ageMs: 2 * 86400000, label: 'Start cargo ledger', sha: 'a1000001' }),
+    staleCargoCommit({ id: 'stale-alpha-2', project: '/sim/repos/alpha', branch: 'main', ageMs: 36 * 3600000, label: 'Refine cargo labels', sha: 'a1000002' }),
+    staleCargoCommit({ id: 'stale-alpha-3', project: '/sim/repos/alpha', branch: 'main', ageMs: 25 * 3600000, label: 'Sort the manifest', sha: 'a1000003' }),
+    staleCargoCommit({ id: 'stale-alpha-4', project: '/sim/repos/alpha', branch: 'main', ageMs: 5 * 3600000, label: 'Polish the gangway', sha: 'a1000004' }),
+];
+const STALE_BETA_COMMITS = [
+    staleCargoCommit({ id: 'stale-beta-1', project: '/sim/repos/beta', branch: 'feature/leaks', ageMs: 6 * 86400000, label: 'Patch the oldest leak', sha: 'b2000001' }),
+    staleCargoCommit({ id: 'stale-beta-2', project: '/sim/repos/beta', branch: 'feature/leaks', ageMs: 5 * 86400000, label: 'Seal the cargo hold', sha: 'b2000002' }),
+];
+
+export const STALE_CARGO_SCENARIO = {
+    id: 'stale-cargo',
+    label: 'Stale cargo',
+    description: 'Age-sorted pending branches light the Command pond lantern braid.',
+    timeBase: STALE_CARGO_TIME_BASE,
+    agents: [
+        agentSpec({
+            id: 'sim-stale-alpha',
+            name: 'Alpha',
+            status: AgentStatus.WORKING,
+            currentTool: 'Bash',
+            currentToolInput: 'command=git status --short',
+            projectPath: '/sim/repos/alpha',
+            position: { tileX: 15, tileY: 22 },
+            gitEvents: STALE_ALPHA_COMMITS,
+        }),
+        agentSpec({
+            id: 'sim-stale-beta',
+            name: 'Beta',
+            status: AgentStatus.WORKING,
+            currentTool: 'Bash',
+            currentToolInput: 'command=git log origin/feature/leaks..feature/leaks',
+            projectPath: '/sim/repos/beta',
+            position: { tileX: 18, tileY: 22 },
+            gitEvents: STALE_BETA_COMMITS,
+        }),
+    ],
+    timeline: [
+        { ts: 900, event: 'git:event', agentId: 'sim-stale-alpha', gitEvents: STALE_ALPHA_COMMITS },
+        { ts: 1200, event: 'git:event', agentId: 'sim-stale-beta', gitEvents: STALE_BETA_COMMITS },
+    ],
+    metadata: {
+        qaTags: ['git', 'stale-cargo', 'harbor-age'],
+        expectedOldestBranches: ['feature/leaks', 'main'],
+        expectedBridgeLanterns: 2,
+        camera: { centerTile: { tileX: 17, tileY: 22 }, zoom: 2.6 },
+    },
+};
+
+
 export const WORLD_SCENARIOS = [
     NO_AGENTS_SCENARIO,
     ONE_WORKING_AGENT_SCENARIO,
@@ -1074,6 +1318,10 @@ export const WORLD_SCENARIOS = [
     BUILDING_INSPECTION_REPLAY_SCENARIO,
     SELECTED_BEHIND_BUILDING_SCENARIO,
     STORM_NIGHT_REDUCED_MOTION_SCENARIO,
+    MIDNIGHT_OIL_SCENARIO,
+    CACHE_ORE_SCENARIO,
+    TASKBOARD_LIVE_SCENARIO,
+    STALE_CARGO_SCENARIO,
 ];
 
 const WORLD_SCENARIO_BY_ID = new Map(WORLD_SCENARIOS.map((scenario) => [scenario.id, scenario]));

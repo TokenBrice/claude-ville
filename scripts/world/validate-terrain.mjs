@@ -177,17 +177,22 @@ function validateWaterBasins(reporter, basins, mapSize) {
     }
 }
 
-function validateBridgeHints(reporter, bridgeHints, polylines, basins, mapSize) {
+function validateBridgeHints(reporter, bridgeHints, polylines, basins, mapSize, source = 'BRIDGE_HINTS') {
+    const ids = new Set();
     for (const [index, bridge] of bridgeHints.entries()) {
-        const path = sourcePath('BRIDGE_HINTS', index);
+        const path = sourcePath(source, index);
         if (!bridge.id || typeof bridge.id !== 'string') {
             reporter.error(`${path}.id`, 'must be a non-empty string');
+        } else if (ids.has(bridge.id)) {
+            reporter.error(`${path}.id`, `duplicates bridge id "${bridge.id}"`);
+        } else {
+            ids.add(bridge.id);
         }
         if (!inTileBounds(bridge.tileX, bridge.tileY, mapSize)) {
             reporter.error(path, `tile ${bridge.tileX},${bridge.tileY} is outside 0..${mapSize - 1}`);
         }
-        if (bridge.orientation && !ORIENTATIONS.has(bridge.orientation)) {
-            reporter.error(`${path}.orientation`, 'must be NS or EW when provided');
+        if ((source === 'PLANK_BRIDGES' || bridge.orientation) && !ORIENTATIONS.has(bridge.orientation)) {
+            reporter.error(`${path}.orientation`, 'must be NS or EW');
         }
         if (!tileNearWater(bridge, polylines, basins, () => true, 1.2)) {
             reporter.error(path, 'bridge hint is not near any rough water source');
@@ -329,6 +334,7 @@ const {
     WATER_POLYLINES,
     WATER_BASINS,
     BRIDGE_HINTS,
+    PLANK_BRIDGES,
     HARBOR_DOCK_TILES,
     FOREST_FLOOR_REGIONS,
     TREE_CLUSTERS,
@@ -347,6 +353,7 @@ const {
     'WATER_POLYLINES',
     'WATER_BASINS',
     'BRIDGE_HINTS',
+    'PLANK_BRIDGES',
     'HARBOR_DOCK_TILES',
     'FOREST_FLOOR_REGIONS',
     'TREE_CLUSTERS',
@@ -368,6 +375,7 @@ validateBuildingTerrain(reporter, BUILDING_DEFS, MAP_SIZE);
 validateWaterPolylines(reporter, WATER_POLYLINES, MAP_SIZE);
 validateWaterBasins(reporter, WATER_BASINS, MAP_SIZE);
 validateBridgeHints(reporter, BRIDGE_HINTS, WATER_POLYLINES, WATER_BASINS, MAP_SIZE);
+validateBridgeHints(reporter, PLANK_BRIDGES, WATER_POLYLINES, WATER_BASINS, MAP_SIZE, 'PLANK_BRIDGES');
 validateDockTiles(reporter, HARBOR_DOCK_TILES, BUILDING_DEFS, WATER_POLYLINES, WATER_BASINS, MAP_SIZE);
 validateRegions(reporter, 'FOREST_FLOOR_REGIONS', FOREST_FLOOR_REGIONS, MAP_SIZE);
 validateRegions(reporter, 'TREE_CLUSTERS', TREE_CLUSTERS, MAP_SIZE);
@@ -406,4 +414,4 @@ if (harborSourceCount === 0) {
 const terrainCacheSummary = terrainCachePlan
     ? ` terrain cache plan: ${terrainCachePlan.chunksX}x${terrainCachePlan.chunksY} chunks (${terrainCachePlan.chunkCount}) at ${terrainCachePlan.chunkSize} tiles, ${terrainCachePlan.pixels} px single-surface estimate.`
     : '';
-reporter.finish(`${BUILDING_DEFS.length} building(s), ${WATER_POLYLINES.length} water polyline(s), ${WATER_BASINS.length} basin(s), and ${HARBOR_DOCK_TILES.length} dock tile(s) checked.${terrainCacheSummary}`);
+reporter.finish(`${BUILDING_DEFS.length} building(s), ${WATER_POLYLINES.length} water polyline(s), ${WATER_BASINS.length} basin(s), ${PLANK_BRIDGES.length} plank bridge(s), and ${HARBOR_DOCK_TILES.length} dock tile(s) checked.${terrainCacheSummary}`);

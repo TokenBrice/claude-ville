@@ -17,7 +17,7 @@ import { glslMaterialWeatherFunctions } from '../MaterialRegistry.js';
 import { growTypedArray } from '../AssetManager.js';
 
 const MAX_LIGHTS = 32;
-const VERTEX_FLOATS = 9;
+const VERTEX_FLOATS = 10;
 const VERTEX_STRIDE = VERTEX_FLOATS * Float32Array.BYTES_PER_ELEMENT;
 const BLOOM_SCALE = 0.375;
 const OCCLUSION_SCALE = 0.375;
@@ -37,6 +37,7 @@ function writeGpuVertex(vertices, offset, x, y, u, v, record) {
     vertices[offset++] = record.elevation;
     vertices[offset++] = record.emissive;
     vertices[offset++] = record.occluder;
+    vertices[offset++] = record.emissiveGate ?? 1;
     return offset;
 }
 
@@ -64,6 +65,7 @@ layout(location = 0) in vec2 a_world;
 layout(location = 1) in vec2 a_uv;
 layout(location = 2) in vec4 a_meta;
 layout(location = 3) in float a_occluder;
+layout(location = 4) in float a_gate;
 uniform vec3 u_camera;
 uniform vec2 u_resolution;
 out vec2 v_uv;
@@ -73,6 +75,7 @@ out float v_material;
 out float v_elevation;
 out float v_emissive;
 out float v_occluder;
+out float v_gate;
 void main() {
     vec2 screen = (a_world + u_camera.xy) * u_camera.z;
     vec2 clip = vec2(
@@ -87,6 +90,7 @@ void main() {
     v_elevation = a_meta.z;
     v_emissive = a_meta.w;
     v_occluder = a_occluder;
+    v_gate = a_gate;
 }`;
 
 const SCENE_FRAGMENT = `#version 300 es
@@ -97,6 +101,7 @@ in float v_alpha;
 in float v_material;
 in float v_elevation;
 in float v_emissive;
+in float v_gate;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outEmission;
 uniform sampler2D u_albedo;
@@ -238,7 +243,7 @@ void main() {
         // The emissive channel owns both hue (RGB) and contribution (A). Do
         // not reconstruct authored emission from the albedo texture.
         emissionColor = authoredEmission.rgb;
-        emissive = authoredEmission.a * 2.0;
+        emissive = authoredEmission.a * 2.0 * clamp(v_gate, 0.0, 1.0);
     } else if (u_hasMaterialMap) {
         // A material map without an authored emissive channel is explicitly
         // non-emissive; never infer a glow from its albedo pixels.
@@ -633,6 +638,8 @@ export class GpuWorldRenderer {
         gl.vertexAttribPointer(2, 4, gl.FLOAT, false, VERTEX_STRIDE, 4 * Float32Array.BYTES_PER_ELEMENT);
         gl.enableVertexAttribArray(3);
         gl.vertexAttribPointer(3, 1, gl.FLOAT, false, VERTEX_STRIDE, 8 * Float32Array.BYTES_PER_ELEMENT);
+        gl.enableVertexAttribArray(4);
+        gl.vertexAttribPointer(4, 1, gl.FLOAT, false, VERTEX_STRIDE, 9 * Float32Array.BYTES_PER_ELEMENT);
         gl.bindVertexArray(null);
         gl.bindBuffer(gl.ARRAY_BUFFER, null);
         this.emptyMaterialTexture = this._createTexture(1, 1, {

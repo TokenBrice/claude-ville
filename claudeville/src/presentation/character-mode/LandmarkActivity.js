@@ -10,6 +10,11 @@ const FORGE_HANDOFF_WINDOW_MS = 45000;
 const TOKEN_ITEM_TTL_MS = 22000;
 const COMMAND_ITEM_TTL_MS = 16000;
 const RITUAL_TOKEN_DELTA_THRESHOLD = 256;
+const CACHE_CARGO_CRYSTAL = '#9fd8f0';
+const CACHE_CARGO_ORE = '#5c554b';
+const CACHE_CARGO_CRYSTAL_COLORS = ['#bfe9ff', '#8fd0f4', '#e6f8ff'];
+const CACHE_CARGO_ORE_COLORS = ['#5c554b', '#3f3a33', '#7e6a50'];
+const CACHE_CLASS_DELTA_THRESHOLD = 64;
 // Chat direction lines fade linearly over this window from the last
 // observed message activity, so older messages read as fainter links.
 const CHAT_LINE_MESSAGE_FADE_MS = 8000;
@@ -57,12 +62,60 @@ function tokenTotal(agent) {
     return input + output + cacheRead + cacheCreate;
 }
 
-function contextRatio(agent) {
+function tokenClassTotals(agent) {
     const tokens = agent?.tokens || {};
-    const current = Number(tokens.contextWindow ?? 0) || 0;
-    const max = Number(tokens.contextWindowMax ?? 0) || 0;
-    if (current <= 0 || max <= 0) return 0;
-    return Math.max(0, Math.min(1, current / max));
+    return {
+        input: Math.max(0, Number(tokens.input ?? tokens.totalInput ?? 0) || 0),
+        cacheRead: Math.max(0, Number(tokens.cacheRead ?? 0) || 0),
+        available: tokens.availability !== 'unavailable',
+    };
+}
+
+function mixHex(a, b, ratio) {
+    const parse = value => {
+        const hex = String(value).replace('#', '');
+        return [
+            Number.parseInt(hex.slice(0, 2), 16),
+            Number.parseInt(hex.slice(2, 4), 16),
+            Number.parseInt(hex.slice(4, 6), 16),
+        ];
+    };
+    const from = parse(a);
+    const to = parse(b);
+    const t = Math.max(0, Math.min(1, Number(ratio) || 0));
+    return `rgb(${from.map((value, i) => Math.round(value + (to[i] - value) * t)).join(', ')})`;
+}
+
+function cargoFromTokenBeat(current, previous, deltaTotal) {
+    if (!current.available || !previous.available) return null;
+    const cacheReadDelta = current.cacheRead - previous.cacheRead;
+    const inputDelta = current.input - previous.input;
+    if (cacheReadDelta < 0 || inputDelta < 0) return null;
+    const classDeltaTotal = cacheReadDelta + inputDelta;
+    if (classDeltaTotal >= CACHE_CLASS_DELTA_THRESHOLD) {
+        return {
+            ratio: cacheReadDelta / classDeltaTotal,
+            source: 'delta',
+            cacheRead: cacheReadDelta,
+            input: inputDelta,
+            deltaTotal,
+        };
+    }
+    const cumulativeTotal = current.cacheRead + current.input;
+    if (cumulativeTotal <= 0) return null;
+    return {
+        ratio: current.cacheRead / cumulativeTotal,
+        source: 'cumulative',
+        cacheRead: current.cacheRead,
+        input: current.input,
+        deltaTotal,
+    };
+}
+
+function formatTokenCount(value) {
+    const count = Math.max(0, Number(value) || 0);
+    if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
+    return String(Math.round(count));
 }
 
 function stableHash(input) {
@@ -98,6 +151,28 @@ function commandActivityLabel(agent) {
     return compactToolLabel(agent?.currentTool, TOOL_LABELS.command, 10);
 }
 
+const LANDMARK_ACTIVITY_SCENE_ITEMS = [];
+export const LANDMARK_ACTIVITY_SCENE_CATEGORY = Object.freeze({
+    id: 'landmark-activity',
+    sortBand: 60,
+    enumerate({ renderer, renderNow } = {}) {
+        const items = LANDMARK_ACTIVITY_SCENE_ITEMS;
+        items.length = 0;
+        const drawables = renderer?.landmarkActivity?.enumerateDrawables?.(renderNow) ?? [];
+        for (let index = 0; index < drawables.length; index++) items.push(drawables[index]);
+        return items;
+    },
+    emitSceneCommands() {
+        return null;
+    },
+    canvasFallback(ctx, drawable, zoom, context = {}) {
+        const landmarkActivity = context.renderer?.landmarkActivity || context.landmarkActivity;
+        landmarkActivity?.draw?.(ctx, drawable, zoom);
+    },
+    unsupported: 'overlay-safe',
+    overlayBand: 60,
+});
+
 export class LandmarkActivity {
     constructor({ world, sprites } = {}) {
         this.world = world || null;
@@ -107,6 +182,8 @@ export class LandmarkActivity {
         this.items = new Map();
         this.seenSnapshots = new Set();
         this.previousTokenTotals = new Map();
+        this.previousTokenClassTotals = new Map();
+        this._tokenHitEntries = [];
         this.lastForgeByAgent = new Map();
         // Rolling Read/Grep/Glob/LS counter for the Archive.
         // Decay-based: each update() step multiplies count by exp(-dt / halflife).
@@ -163,6 +240,9 @@ export class LandmarkActivity {
         for (const agentId of this.previousTokenTotals.keys()) {
             if (!liveIds.has(agentId)) this.previousTokenTotals.delete(agentId);
         }
+        for (const agentId of this.previousTokenClassTotals.keys()) {
+            if (!liveIds.has(agentId)) this.previousTokenClassTotals.delete(agentId);
+        }
         for (const [agentId, forge] of this.lastForgeByAgent) {
             if (!liveIds.has(agentId) || now - Number(forge?.at || 0) > FORGE_HANDOFF_WINDOW_MS) {
                 this.lastForgeByAgent.delete(agentId);
@@ -175,6 +255,7 @@ export class LandmarkActivity {
             items: this.items.size,
             seenSnapshots: this.seenSnapshots.size,
             previousTokenTotals: this.previousTokenTotals.size,
+            previousTokenClassTotals: this.previousTokenClassTotals.size,
             lastForgeAgents: this.lastForgeByAgent.size,
             archiveReadKeys: this._archiveReadSeen.size,
             retainedAgentSprites: this.agentSprites.length,
@@ -188,6 +269,8 @@ export class LandmarkActivity {
         this.items.clear();
         this.seenSnapshots.clear();
         this.previousTokenTotals.clear();
+        this.previousTokenClassTotals.clear();
+        this._tokenHitEntries = [];
         this.lastForgeByAgent.clear();
         this._archiveReadSeen.clear();
         this._kindIds.clear();
@@ -217,9 +300,30 @@ export class LandmarkActivity {
                 },
             });
         }
-        return drawables
+        const visible = drawables
             .filter((d) => d.payload.alpha > 0.03)
             .sort((a, b) => a.sortY - b.sortY);
+        this._tokenHitEntries = visible
+            .filter(drawable => drawable.payload.type === 'token')
+            .map(drawable => ({ x: drawable.payload.x, y: drawable.payload.y, item: drawable.payload }));
+        return visible;
+    }
+
+    hitTestTokenItem(worldX, worldY) {
+        for (let i = this._tokenHitEntries.length - 1; i >= 0; i--) {
+            const entry = this._tokenHitEntries[i];
+            if (Math.hypot(worldX - entry.x, worldY - entry.y) <= 20) return entry.item;
+        }
+        return null;
+    }
+
+    tokenItemTooltip(item) {
+        const cargo = item?.cargo;
+        if (!cargo) return '';
+        const percentage = Math.round(Math.max(0, Math.min(1, cargo.ratio)) * 100);
+        const classTotal = cargo.cacheRead + cargo.input;
+        const sourceSuffix = cargo.source === 'cumulative' ? ' · session total' : '';
+        return `Cache ${percentage}% · read ${formatTokenCount(cargo.cacheRead)} / fresh ${formatTokenCount(cargo.input)} of ${formatTokenCount(classTotal)} tok${sourceSuffix}`;
     }
 
     draw(ctx, drawable, zoom = 1) {
@@ -288,11 +392,16 @@ export class LandmarkActivity {
     _observeTokens(agent, now) {
         if (!agent?.id) return;
         const current = tokenTotal(agent);
+        const currentClasses = tokenClassTotals(agent);
         const previous = this.previousTokenTotals.get(agent.id);
+        const previousClasses = this.previousTokenClassTotals.get(agent.id);
         this.previousTokenTotals.set(agent.id, current);
-        if (previous == null || current <= previous) return;
+        this.previousTokenClassTotals.set(agent.id, currentClasses);
+        if (previous == null || !previousClasses || current <= previous) return;
         const delta = current - previous;
+        if (currentClasses.cacheRead < previousClasses.cacheRead || currentClasses.input < previousClasses.input) return;
         if (delta < 128) return;
+        const cargo = cargoFromTokenBeat(currentClasses, previousClasses, delta);
         if (delta >= RITUAL_TOKEN_DELTA_THRESHOLD) {
             eventBus.emit('tool:invoked', {
                 agentId: agent.id,
@@ -300,6 +409,7 @@ export class LandmarkActivity {
                 input: delta,
                 building: 'mine',
                 ts: now,
+                cargo,
             });
             return;
         }
@@ -313,7 +423,8 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + TOKEN_ITEM_TTL_MS,
             delta,
-            ratio: contextRatio(agent),
+            cargo,
+            cargoLabel: cargo ? `${Math.round(cargo.ratio * 100)}% CACHE` : '',
             slot: stableHash(id) % BUILDING_OFFSETS.mine.length,
             sortOffset: 4,
         });
@@ -715,8 +826,11 @@ export class LandmarkActivity {
     }
 
     _drawTokenItem(ctx, item, zoom) {
-        const s = 1 / Math.max(1, zoom || 1);
-        const fill = Math.max(0.18, Math.min(1, item.ratio || Math.min(1, item.delta / 40000)));
+        const actualZoom = Math.max(0, Number(zoom) || 1);
+        const s = 1 / Math.max(1, actualZoom);
+        const cargo = item.cargo || null;
+        const ratio = cargo ? Math.max(0, Math.min(1, cargo.ratio)) : null;
+        const fill = Math.max(0.18, Math.min(1, item.delta / 40000));
         ctx.save();
         ctx.globalAlpha = item.alpha;
         if (this.sprites?.assets?.get('prop.oreCart')) {
@@ -725,11 +839,62 @@ export class LandmarkActivity {
             ctx.fillStyle = '#5a3927';
             ctx.fillRect(Math.round(item.x - 15 * s), Math.round(item.y - 10 * s), Math.round(30 * s), Math.round(14 * s));
         }
-        ctx.fillStyle = `rgba(242, 211, 107, ${0.28 + fill * 0.62})`;
+        ctx.globalAlpha = item.alpha * (0.28 + fill * 0.62);
+        ctx.fillStyle = cargo ? mixHex(CACHE_CARGO_ORE, CACHE_CARGO_CRYSTAL, ratio) : '#f2d36b';
         ctx.beginPath();
         ctx.ellipse(item.x, item.y - 15 * s, (10 + fill * 8) * s, (5 + fill * 3) * s, -0.15, 0, Math.PI * 2);
         ctx.fill();
+        ctx.globalAlpha = item.alpha;
+        if (cargo && actualZoom >= 1) this._drawTokenCargoHeap(ctx, item.x, item.y, s, ratio);
+        if (cargo && actualZoom >= 1.5) {
+            this._drawTinyLabel(
+                ctx,
+                { label: item.cargoLabel || `${Math.round(ratio * 100)}% CACHE` },
+                item.x,
+                item.y - 28 * s,
+                s,
+                CACHE_CARGO_CRYSTAL,
+            );
+        }
         ctx.restore();
+    }
+
+    _drawTokenCargoHeap(ctx, x, y, s, ratio) {
+        const bucket = Math.round(Math.max(0, Math.min(1, ratio)) * 8) / 8;
+        const crystalSlots = Math.round(6 * bucket);
+        for (let i = 0; i < 6; i++) {
+            const row = i < 3 ? 0 : 1;
+            const col = i % 3;
+            const px = x + (col - 1) * 7 * s + row * 3 * s;
+            const py = y - (12 + row * 6) * s;
+            const crystal = i < crystalSlots;
+            const palette = crystal ? CACHE_CARGO_CRYSTAL_COLORS : CACHE_CARGO_ORE_COLORS;
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.fillStyle = palette[i % palette.length];
+            ctx.strokeStyle = crystal ? '#e6f8ff' : '#7e6a50';
+            ctx.lineWidth = Math.max(0.7, s);
+            ctx.beginPath();
+            if (crystal) {
+                ctx.moveTo(px, py - 4 * s);
+                ctx.lineTo(px + 4 * s, py);
+                ctx.lineTo(px, py + 4 * s);
+                ctx.lineTo(px - 4 * s, py);
+            } else {
+                ctx.moveTo(px - 4 * s, py + 2 * s);
+                ctx.lineTo(px - 2 * s, py - 3 * s);
+                ctx.lineTo(px + 3 * s, py - 4 * s);
+                ctx.lineTo(px + 5 * s, py + 2 * s);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            if (crystal) {
+                ctx.globalCompositeOperation = 'screen';
+                ctx.fillStyle = '#e6f8ff';
+                ctx.fillRect(Math.round(px - s), Math.round(py - 3 * s), Math.max(1, Math.round(s)), Math.max(1, Math.round(2 * s)));
+            }
+        }
+        ctx.globalCompositeOperation = 'source-over';
     }
 
     _drawCommandItem(ctx, item, zoom) {
@@ -790,7 +955,7 @@ export class LandmarkActivity {
         const label = String(item.label || '').toUpperCase();
         if (!label) return;
         ctx.font = `${Math.max(5, Math.round(6 * s))}px ${WORLD_BODY_FONT}`;
-        const width = Math.min(52 * s, Math.max(22 * s, ctx.measureText(label).width + 8 * s));
+        const width = Math.min(64 * s, Math.max(22 * s, ctx.measureText(label).width + 8 * s));
         ctx.fillStyle = 'rgba(38, 26, 16, 0.86)';
         ctx.fillRect(Math.round(x - width / 2), Math.round(y - 6 * s), Math.round(width), Math.round(11 * s));
         ctx.strokeStyle = color;
@@ -798,6 +963,6 @@ export class LandmarkActivity {
         ctx.fillStyle = color;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(label.slice(0, 8), Math.round(x), Math.round(y));
+        ctx.fillText(label.slice(0, 10), Math.round(x), Math.round(y));
     }
 }

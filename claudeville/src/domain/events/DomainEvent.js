@@ -3,6 +3,7 @@
 // Event-name contracts (string keys; no registry enforcement):
 //   agent:added, agent:updated, agent:removed
 //   agent:selected, agent:deselected
+//   agents:pins-changed                       // { pinnedAgentIds: string[] } in insertion order
 //   building:selected, building:deselected     // emitted by IsometricRenderer click handler
 //   building:active-agents                      // map<type,{count,recencyScore,tier}> from LandmarkActivity (~500ms)
 //   tool:invoked, subagent:dispatched, subagent:completed
