@@ -1,4 +1,4 @@
-import { Agent } from '../domain/entities/Agent.js';
+import { Agent, normalizeTodoList } from '../domain/entities/Agent.js';
 import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
 import { resolveAgentStatus } from '../domain/services/StatusResolver.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
@@ -45,11 +45,14 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'estimatedCost',
     'taskProgress',
     'tasks',
+    'todos',
     'cost',
     'currentTool',
     'currentToolInput',
     'lastTool',
     'lastToolInput',
+    'lastPrompt',
+    'gitBranch',
     'gitEvents',
     'permissionMode',
     'turnState',
@@ -84,7 +87,7 @@ const SIGNATURE_COLLECTION_VALUE_BUDGET = 1024;
 const SIGNATURE_FIELD_CHARACTER_BUDGET = 1024;
 const SIGNATURE_COLLECTION_CHARACTER_BUDGET = 15 * 1024;
 const SIGNATURE_CHARACTER_BUDGET = 64 * 1024;
-const SIGNATURE_COLLECTION_FIELDS = new Set(['gitEvents', 'sendMessages', 'workingSet', 'collisions', 'tasks']);
+const SIGNATURE_COLLECTION_FIELDS = new Set(['gitEvents', 'sendMessages', 'workingSet', 'collisions', 'tasks', 'todos']);
 const VERIFIED_OUTCOME_KEY_LIMIT = 512;
 const EXECUTION_TASK_LIMIT = 12;
 
@@ -608,10 +611,17 @@ export class AgentManager {
                         : [];
                 })
                 : [],
+            todos: normalizeTodoList(session.todos),
             currentTool: hasFreshTool ? session.lastTool : null,
             currentToolInput: hasFreshTool ? session.lastToolInput || null : null,
             lastTool: session.lastTool || null,
             lastToolInput: session.lastToolInput || null,
+            lastPrompt: typeof session.lastPrompt === 'string' && session.lastPrompt.trim()
+                ? session.lastPrompt.trim().slice(0, 200)
+                : null,
+            gitBranch: typeof session.gitBranch === 'string' && session.gitBranch.trim()
+                ? session.gitBranch.trim().slice(0, 256)
+                : null,
             gitEvents: this._rehydrateGitEvents(session.gitEvents, gitEventWire),
             permissionMode: session.permissionMode ?? null,
             turnState: session.turnState ?? 'unknown',

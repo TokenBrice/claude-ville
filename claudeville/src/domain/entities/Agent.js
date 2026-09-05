@@ -26,6 +26,19 @@ function optionalNumber(value, { nonnegative = false } = {}) {
     return number;
 }
 
+export const TODO_LIMIT = 12;
+
+export function normalizeTodoList(value) {
+    return Array.isArray(value)
+        ? value.slice(0, TODO_LIMIT).flatMap((todo) => {
+            const subject = typeof todo?.subject === 'string' ? todo.subject.trim().slice(0, 200) : '';
+            const rawStatus = typeof todo?.status === 'string' ? todo.status.trim().toLowerCase() : '';
+            const status = rawStatus === 'completed' || rawStatus === 'in_progress' ? rawStatus : 'pending';
+            return subject ? [{ subject, status }] : [];
+        })
+        : [];
+}
+
 export class Agent {
     constructor({
         id,
@@ -46,6 +59,9 @@ export class Agent {
         lastToolInput,
         lastMessage,
         gitEvents,
+        lastPrompt,
+        todos,
+        gitBranch,
         permissionMode,
         sendMessages,
         provider,
@@ -106,6 +122,15 @@ export class Agent {
         this.lastTool = lastTool || currentTool || null;
         this.lastToolInput = lastToolInput || currentToolInput || null;
         this.gitEvents = Array.isArray(gitEvents) ? gitEvents : [];
+        // AgentManager normalizes live updates; constructor validation also keeps
+        // direct/simulated agents inside the same bounded provider-data contract.
+        this.lastPrompt = typeof lastPrompt === 'string' && lastPrompt.trim()
+            ? lastPrompt.trim().slice(0, 200)
+            : null;
+        this.todos = normalizeTodoList(todos);
+        this.gitBranch = typeof gitBranch === 'string' && gitBranch.trim()
+            ? gitBranch.trim().slice(0, 256)
+            : null;
         this.permissionMode = permissionMode ?? null;
         // Transcript-derived turn state (see adapters/turnState.js). `waitReason`
         // says why a WAITING_ON_USER agent is blocked; `resident` marks a session

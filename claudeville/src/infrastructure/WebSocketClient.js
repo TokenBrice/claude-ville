@@ -15,6 +15,7 @@ const SESSION_EXECUTION_FIELDS = Object.freeze([
     'subagentKind',
     'taskProgress',
     'tasks',
+    'todos',
 ]);
 
 function cloneSessionPayload(session) {
@@ -43,6 +44,12 @@ function cloneSessionPayload(session) {
                     return subject && status ? [{ subject, status }] : [];
                 })
                 : session.tasks;
+        } else if (field === 'todos') {
+            next.todos = Array.isArray(session.todos)
+                ? session.todos.slice(0, 12).map(todo => (
+                    todo && typeof todo === 'object' ? { ...todo } : todo
+                ))
+                : session.todos;
         } else {
             next[field] = session[field];
         }

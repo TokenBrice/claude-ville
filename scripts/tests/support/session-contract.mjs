@@ -26,6 +26,9 @@ export const SESSION_FIELD_CONTRACT = Object.freeze([
   { key: 'cost', requirement: 'required', types: ['object'] },
   { key: 'taskProgress', requirement: 'nullable', types: ['object'] },
   { key: 'tasks', requirement: 'required', types: ['array'], maxLength: 12 },
+  { key: 'lastPrompt', requirement: 'optional', types: ['string'], nullable: true },
+  { key: 'todos', requirement: 'optional', types: ['array'], maxLength: 12 },
+  { key: 'gitBranch', requirement: 'optional', types: ['string'], nullable: true },
   {
     key: 'lastToolInput',
     requirement: 'nullable',
