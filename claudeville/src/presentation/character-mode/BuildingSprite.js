@@ -23,7 +23,6 @@ import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js
 import {
     TaskboardBoardModel,
     taskboardBoardLayout,
-    taskboardCompactCardAnchor,
 } from './TaskboardBoardModel.js';
 import {
     advanceNightOccupancyGate,
@@ -298,7 +297,6 @@ export class BuildingSprite {
         this._taskboardPapers = [];
         this._taskboardBoardModel = new TaskboardBoardModel();
         this._taskboardLayoutCache = new Map();
-        this._taskboardCompactCardCache = null;
         this._seenTaskboardRituals = new Set();
         this._forgeGlow = FORGE_GLOW_BASELINE;
         this._presenceByType = new Map();
@@ -854,14 +852,6 @@ export class BuildingSprite {
             const center = this._buildingScreenCenter(b);
             const dims = this.assets.getDims(`building.${b.type}`);
             if (!dims) continue;
-            if (b.type === 'taskboard' && zoom < TALLY_FOLD_ZOOM) {
-                this._drawTaskboardCompactCard(ctx, b, {
-                    zoom,
-                    center,
-                    dims,
-                });
-                continue;
-            }
             const isHovered = this.hovered === b;
             const visual = getBuildingVisual(b.type);
             const registryLabelPriority = getBuildingLabelPriority(b.type, b.labelPriority);
@@ -1172,101 +1162,6 @@ export class BuildingSprite {
 
             ctx.restore();
         }
-    }
-
-    _drawTaskboardCompactCard(ctx, building, {
-        zoom,
-        center,
-        dims,
-    }) {
-        const agent = this._taskboardBoardAgent();
-        const view = this._taskboardViewFor(agent, 64);
-        if (!view) return;
-        const compactItem = view.currentItem;
-        const font = `11px ${WORLD_BODY_FONT}`;
-        const signature = [
-            agent.id,
-            this._taskboardBoardModel.signatureFor(agent.id),
-            view.header,
-            view.activePhase,
-            compactItem,
-        ].join('\u0000');
-        let card = this._taskboardCompactCardCache;
-        if (card?.signature !== signature) {
-            ctx.save();
-            ctx.font = font;
-            const metricsFor = (text) => this._labelMetrics(ctx, building, {
-                text,
-                labelFont: font,
-                maxTextWidth: 198,
-                zoom,
-                isHovered: false,
-                isLandmark: true,
-                scaleMode: 'screen-fixed',
-            });
-            const header = metricsFor(view.header);
-            const phase = metricsFor(view.activePhase);
-            const item = metricsFor(compactItem);
-            const width = Math.min(218, Math.ceil(Math.max(header.width, phase.width, item.width) + 20));
-            const height = view.activePhase && item.displayText
-                ? 49
-                : view.activePhase || item.displayText
-                    ? 36
-                    : 23;
-            card = { signature, header, phase, item, width, height };
-            this._taskboardCompactCardCache = card;
-            ctx.restore();
-        }
-        const spriteAnchor = this.assets.getAnchor(`building.${building.type}`) || [dims.w / 2, dims.h];
-        const transform = ctx.getTransform();
-        const dpr = Math.abs(transform.a / Math.max(0.01, zoom)) || 1;
-        const anchor = taskboardCompactCardAnchor({
-            buildingCenter: center,
-            spriteAnchor,
-            panel: TASKBOARD_SLATE_RECT,
-            zoom,
-            renderOffset: {
-                x: transform.e / dpr,
-                y: transform.f / dpr,
-            },
-        });
-        const left = Math.round(anchor.x - card.width / 2);
-        const top = anchor.y - card.height;
-        ctx.save();
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.fillStyle = 'rgba(32, 53, 48, 0.98)';
-        ctx.strokeStyle = '#7a4a32';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.rect(left, top, card.width, card.height);
-        ctx.fill();
-        ctx.stroke();
-        ctx.strokeStyle = '#a87448';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(left + 2, top + 2);
-        ctx.lineTo(left + card.width - 2, top + 2);
-        ctx.stroke();
-        ctx.fillStyle = '#8bd7ff';
-        ctx.fillRect(left + 7, top + 5, card.width - 14, 2);
-        ctx.font = font;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        this._applyReadableLabelShadow(ctx);
-        let lineY = top + 15;
-        ctx.fillStyle = '#e7ead8';
-        ctx.fillText(card.header.displayText, left + 10, lineY);
-        if (view.activePhase) {
-            lineY += 13;
-            ctx.fillStyle = '#8bd7ff';
-            ctx.fillText(card.phase.displayText, left + 10, lineY);
-        }
-        if (card.item.displayText) {
-            lineY += 13;
-            ctx.fillStyle = '#d8dfd0';
-            ctx.fillText(card.item.displayText, left + 10, lineY);
-        }
-        ctx.restore();
     }
 
     // Compact working/waiting/errored tally drawn beneath a building label when
@@ -3608,8 +3503,6 @@ export class BuildingSprite {
     }
 
     _drawTaskboardBoard(ctx, localPoint) {
-        const zoom = Number(this._zoom) || 0;
-        if (zoom < TALLY_FOLD_ZOOM) return Boolean(this._taskboardBoardAgent());
         const agent = this._taskboardBoardAgent();
         const view = this._taskboardViewFor(agent, 3);
         if (!view) return false;

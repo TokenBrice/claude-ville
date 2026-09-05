@@ -15,7 +15,7 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `AgentBehaviorState.js` | Per-agent behavior and destination state used by movement/visit systems. |
 | `VisitIntentManager.js`, `VisitTileAllocator.js` | Building capacity, visit reservations, and destination assignment. |
 | `BuildingSprite.js` | Current building visuals, sprite blits, hover state, building-specific decoration/effects, occlusion split for hero buildings, and `hitTest` in world coordinates. |
-| `TaskboardBoardModel.js` | Pure selected/pinned agent resolution plus phase-aware TodoWrite grouping, truthful full-list progress layouts for the inset slate chalk face, and deterministic panel-edge anchoring for the compact low-zoom plaque. |
+| `TaskboardBoardModel.js` | Pure selected/pinned agent resolution plus phase-aware TodoWrite grouping, truthful full-list progress layouts for the inset slate chalk face at every zoom level. |
 | `BuildingVisualRegistry.js` | Data-driven building visual profiles for labels, sprites, lights, emitter anchors, overlays, and split-pass rules. |
 | `NightOccupancyGate.js` | Pure night-window phase, live working-status, and reduced-motion-aware transition policy shared by Canvas and GPU building light paths. |
 | `AssetManager.js` | Loads `manifest.yaml` and `palettes.yaml`, maps manifest IDs to PNG paths, cache-busts with `style.assetVersion`, and supplies placeholder/checker fallbacks. Material companions and deterministic atlases are opt-in and never use the checker fallback. |

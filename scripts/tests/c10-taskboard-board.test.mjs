@@ -6,7 +6,6 @@ import {
     TaskboardBoardModel,
     taskboardBoardLayout,
     taskboardBoardRows,
-    taskboardCompactCardAnchor,
 } from '../../claudeville/src/presentation/character-mode/TaskboardBoardModel.js';
 
 function sprite(agent) {
@@ -178,18 +177,23 @@ test('taskboard flat layout renders capped items directly without phase rows', (
     ]);
 });
 
-test('taskboard compact card anchor is deterministic for a fixed camera', () => {
-    const input = {
-        buildingCenter: { x: 1000, y: 500 },
-        spriteAnchor: [128, 203],
-        panel: { x: 92, y: 76, w: 77, h: 69 },
-        zoom: 1,
-        renderOffset: { x: 37.25, y: -18.5 },
+test('taskboard draws the same inset chalk at every zoom level', async () => {
+    const { BuildingSprite } = await import('../../claudeville/src/presentation/character-mode/BuildingSprite.js');
+    const agent = { id: 'plan', todos: [{ subject: 'Ship', status: 'in_progress' }] };
+    const building = Object.create(BuildingSprite.prototype);
+    building._taskboardBoardAgent = () => agent;
+    building._taskboardViewFor = () => ({ header: 'Plan · 0/1', layout: taskboardBoardLayout(agent.todos) });
+    const draw = (zoom) => {
+        const calls = [];
+        const ctx = new Proxy({ measureText: text => ({ width: text.length * 3 }) }, {
+            get: (target, key) => target[key] ?? ((...args) => calls.push([key, ...args])),
+        });
+        building._zoom = zoom;
+        assert.equal(building._drawTaskboardBoard(ctx, (x, y) => ({ x, y })), true);
+        assert.ok(calls.some(([method]) => method === 'fillText'));
+        assert.ok(calls.some(([method]) => method === 'clip'));
+        return calls;
     };
-
-    const first = taskboardCompactCardAnchor(input);
-    const second = taskboardCompactCardAnchor(input);
-
-    assert.deepEqual(first, { x: 1040, y: 355 });
-    assert.deepEqual(second, first);
+    assert.deepEqual(draw(1), draw(2));
+    assert.deepEqual(draw(0.5), draw(3));
 });
