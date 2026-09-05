@@ -27,6 +27,7 @@ import {
 } from './CanvasBudget.js';
 import { AgentAction, resolveAgentAction } from './ActionVocabulary.js';
 import { AgentGpuOverlayRenderer } from './AgentGpuOverlayRenderer.js';
+import { astraWeaponPose, drawAstraGauntlet } from './AstraWeaponPose.js';
 import { clampDt, inDutyPause, IDLE_STRIDE_PERIOD_MS, IDLE_STRIDE_PAUSE_FRACTION } from './MotionClock.js';
 
 // Keep villagers visually authoritative beside the newer hero-scale buildings.
@@ -2721,6 +2722,7 @@ export class AgentSprite {
             const dx = drawX - contentCenterX * drawScale;
             const dy = drawY - bounds.maxY * drawScale + 2;
             const frameGeometry = {
+                cell,
                 dx,
                 dy,
                 bounds,
@@ -2862,6 +2864,7 @@ export class AgentSprite {
             arrivalPushed = true;
         }
         const frameGeometry = {
+            cell,
             dx,
             dy,
             bounds,
@@ -3794,7 +3797,7 @@ export class AgentSprite {
                 const cell = { sx: col * cellSize, sy: row * cellSize, sw: cellSize, sh: cellSize };
                 const bounds = this._getCellContentBounds(cell);
                 if (!bounds) continue;
-                const frameGeometry = { dx: 0, dy: 0, bounds, drawScale: 1, cacheEquipment: false };
+                const frameGeometry = { cell, dx: 0, dy: 0, bounds, drawScale: 1, cacheEquipment: false };
                 ctx.save();
                 ctx.beginPath();
                 ctx.rect(col * padded, row * padded, padded, padded);
@@ -4134,12 +4137,17 @@ export class AgentSprite {
 
         const directionKey = directionOverride || DIRECTIONS[this.direction] || 's';
         const geometry = this._codexWeaponGeometry(frameGeometry, directionKey);
+        if (identity?.spriteId === 'agent.codex.gpt6astra' && this.assets?.has?.(identity.spriteId)) {
+            geometry.astraGrip = astraWeaponPose(frameGeometry, directionKey, equipment);
+        }
         const useCache = frameGeometry.cacheEquipment !== false;
         const heavyGearBaked = identity?.codexHeavyGearBaked && this.assets?.has?.(identity.spriteId);
         const heavyArmor = !heavyGearBaked && (equipment === 'greatsword' || equipment === 'polearm');
         const warlord = equipment === 'polearm';
         const assetDef = CODEX_WEAPON_ASSETS[equipment] || null;
-        const assetDrawsBehindBody = assetDef && this._assetWeaponBackLayer(assetDef, directionKey);
+        const assetDrawsBehindBody = assetDef && (geometry.astraGrip
+            ? geometry.astraGrip.behindBody || directionKey === 'n'
+            : this._assetWeaponBackLayer(assetDef, directionKey));
 
         if (layer === 'back') {
             if (heavyArmor) {
@@ -4150,6 +4158,9 @@ export class AgentSprite {
 
             if (assetDef && assetDrawsBehindBody) {
                 this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset', useCache);
+                if (geometry.astraGrip?.behindBody) {
+                    this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'hands', useCache);
+                }
             } else if (equipment === 'engineerWrench' && this._weaponBackCarryDirection(directionKey)) {
                 this._drawWeaponAt(ctx, geometry.backCarry, geometry.drawScale, () => this._drawCodexBackWrench(ctx));
             }
@@ -4165,7 +4176,7 @@ export class AgentSprite {
 
         if (assetDef) {
             if (!assetDrawsBehindBody) this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset', useCache);
-            this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'hands', useCache);
+            if (!geometry.astraGrip?.behindBody) this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'hands', useCache);
             return;
         }
 
@@ -4246,7 +4257,7 @@ export class AgentSprite {
 
     _drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, part = 'asset', useCache = true) {
         const poseName = this._weaponPoseName(assetDef, directionKey);
-        const pose = geometry[poseName] || geometry.rightHand;
+        const pose = geometry.astraGrip || geometry[poseName] || geometry.rightHand;
         if (!pose) return;
 
         if (part === 'asset') {
@@ -4276,6 +4287,10 @@ export class AgentSprite {
             return;
         }
 
+        if (geometry.astraGrip) {
+            drawAstraGauntlet(ctx, pose, geometry.drawScale);
+            return;
+        }
         this._drawWeaponAt(ctx, pose, geometry.drawScale, () => {
             if (assetDef.hands === 'double') this._drawWeaponGripHands(ctx, assetDef.handSpacing || 11, assetDef.handVector);
             else this._drawWeaponGripHand(ctx);

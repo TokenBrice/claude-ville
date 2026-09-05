@@ -13,6 +13,7 @@
  *   node scripts/sprites/capture-codex-equipment.mjs
  *   node scripts/sprites/capture-codex-equipment.mjs --base-url=http://localhost:4000
  *   node scripts/sprites/capture-codex-equipment.mjs --individual
+ *   node scripts/sprites/capture-codex-equipment.mjs --model=gpt6astra --effort=medium --all-frames
  */
 
 import { chromium } from 'playwright';
@@ -40,8 +41,12 @@ const captureIndividual = flags.has('individual');
 const viewport = { width: 1440, height: 1000 };
 
 const DIRECTIONS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
-const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-const POSES = [
+const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+  .filter(effort => !args.has('effort') || effort === args.get('effort'));
+const POSES = flags.has('all-frames') ? [
+  ...Array.from({ length: 4 }, (_, frame) => ({ key: `idle${frame}`, label: `idle ${frame}`, moving: false, motionScale: 0, frame })),
+  ...Array.from({ length: 6 }, (_, frame) => ({ key: `walk${frame}`, label: `walk ${frame}`, moving: true, motionScale: 1, frame })),
+] : [
   { key: 'idle0', label: 'idle 0', moving: false, motionScale: 0, frame: 0 },
   { key: 'walk0', label: 'walk 0', moving: true, motionScale: 1, frame: 0 },
   { key: 'walk3', label: 'walk 3', moving: true, motionScale: 1, frame: 3 },
@@ -67,7 +72,8 @@ const CODEX_MODELS = [
     label: 'GPT-5.5',
     model: 'gpt-5.5',
   },
-];
+].filter(model => !args.has('model') || model.key === args.get('model'));
+if (!CODEX_MODELS.length || !EFFORTS.length) throw new Error('Unknown model or effort filter');
 const REQUIRED_EQUIPMENT_ASSETS = [
   'equipment.codex.crescentSaber',
   'equipment.codex.dawnblade',
