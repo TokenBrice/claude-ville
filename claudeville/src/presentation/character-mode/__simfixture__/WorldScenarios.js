@@ -1168,6 +1168,33 @@ export const CACHE_ORE_SCENARIO = {
     },
 };
 
+const TASKBOARD_PHASED_TODOS = [
+    { subject: 'Set a neutral resting silhouette', status: 'completed', phase: 'Resting frame' },
+    { subject: 'Balance the planted foot spacing', status: 'completed', phase: 'Resting frame' },
+    { subject: 'Relax the shoulders and hands', status: 'completed', phase: 'Resting frame' },
+    { subject: 'Align the head over the torso', status: 'pending', phase: 'Resting frame' },
+    { subject: 'Clarify the coat hem at rest', status: 'pending', phase: 'Resting frame' },
+    { subject: 'Separate the satchel from the hip', status: 'pending', phase: 'Resting frame' },
+    { subject: 'Clean the boots against the ground', status: 'pending', phase: 'Resting frame' },
+    { subject: 'Lock the final resting palette', status: 'pending', phase: 'Resting frame' },
+    { subject: 'Make the face readable at one times zoom', status: 'in_progress', phase: 'Recognizability' },
+    { subject: 'Strengthen the hair silhouette', status: 'pending', phase: 'Recognizability' },
+    { subject: 'Separate skin and collar values', status: 'pending', phase: 'Recognizability' },
+    { subject: 'Preserve the eye line in every direction', status: 'pending', phase: 'Recognizability' },
+    { subject: 'Match the side-view nose profile', status: 'pending', phase: 'Recognizability' },
+    { subject: 'Keep the satchel as the identity cue', status: 'pending', phase: 'Recognizability' },
+    { subject: 'Check the rear-view hair mass', status: 'pending', phase: 'Recognizability' },
+    { subject: 'Review the shared eight-way palette', status: 'pending', phase: 'Recognizability' },
+    { subject: 'Add weight to the first walk contact', status: 'pending', phase: 'Life' },
+    { subject: 'Lift the passing pose cleanly', status: 'pending', phase: 'Life' },
+    { subject: 'Settle the stride without foot slide', status: 'pending', phase: 'Life' },
+    { subject: 'Keep the satchel motion restrained', status: 'pending', phase: 'Life' },
+    { subject: 'Hold a static reduced-motion frame', status: 'pending', phase: 'Life' },
+    { subject: 'Review the loop at village scale', status: 'pending', phase: 'Life' },
+    { subject: 'Run the final character sheet audit', status: 'pending', phase: 'Closure' },
+    { subject: 'Capture the recognizability proof', status: 'pending', phase: 'Closure' },
+];
+
 export const TASKBOARD_LIVE_SCENARIO = {
     id: 'taskboard-live',
     label: 'Taskboard live',
@@ -1181,12 +1208,7 @@ export const TASKBOARD_LIVE_SCENARIO = {
             status: AgentStatus.WORKING,
             currentTool: 'Edit',
             lastPrompt: 'Refactor the plank renderer and verify the board fixtures',
-            todos: [
-                { subject: 'Split plank draw path', status: 'completed' },
-                { subject: 'Cache plank metrics', status: 'in_progress' },
-                { subject: 'Update board fixtures', status: 'pending' },
-                { subject: 'Run render baselines', status: 'pending' },
-            ],
+            todos: TASKBOARD_PHASED_TODOS,
             position: { tileX: 23, tileY: 37 },
             projectPath: '/sim/repos/board',
         }),
@@ -1207,12 +1229,7 @@ export const TASKBOARD_LIVE_SCENARIO = {
             agentId: 'sim-todo-lead',
             tool: 'TodoWrite',
             status: AgentStatus.WORKING,
-            todos: [
-                { subject: 'Split plank draw path', status: 'completed' },
-                { subject: 'Cache plank metrics', status: 'completed' },
-                { subject: 'Update board fixtures', status: 'in_progress' },
-                { subject: 'Run render baselines', status: 'pending' },
-            ],
+            todos: TASKBOARD_PHASED_TODOS,
         },
         {
             ts: 14000,
@@ -1225,7 +1242,7 @@ export const TASKBOARD_LIVE_SCENARIO = {
     metadata: {
         qaTags: ['taskboard', 'todos', 'pin-fallback', 'chalk'],
         selectedAgentId: 'sim-todo-lead',
-        pinnedAgentIds: ['sim-todo-pin'],
+        pinnedAgentIds: ['sim-todo-lead', 'sim-todo-pin'],
         camera: { centerTile: { tileX: 25, tileY: 35 }, zoom: 2.2 },
     },
 };

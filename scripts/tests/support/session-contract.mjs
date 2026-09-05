@@ -27,7 +27,7 @@ export const SESSION_FIELD_CONTRACT = Object.freeze([
   { key: 'taskProgress', requirement: 'nullable', types: ['object'] },
   { key: 'tasks', requirement: 'required', types: ['array'], maxLength: 12 },
   { key: 'lastPrompt', requirement: 'optional', types: ['string'], nullable: true },
-  { key: 'todos', requirement: 'optional', types: ['array'], maxLength: 12 },
+  { key: 'todos', requirement: 'optional', types: ['array'], maxLength: 64, todoItems: true },
   { key: 'gitBranch', requirement: 'optional', types: ['string'], nullable: true },
   {
     key: 'lastToolInput',
@@ -92,6 +92,28 @@ export function assertSessionContract(session, label = 'session') {
     }
     if (field.maxLength !== undefined) {
       assert.ok(value.length <= field.maxLength, `${fieldLabel} must contain at most ${field.maxLength} items`);
+    }
+    if (field.todoItems) {
+      for (const [index, todo] of value.entries()) {
+        const itemLabel = `${fieldLabel}[${index}]`;
+        assert.deepEqual(
+          Object.keys(todo || {}).sort(),
+          ['phase', 'status', 'subject'],
+          `${itemLabel} must use the canonical todo shape`,
+        );
+        assert.ok(
+          typeof todo.subject === 'string' && todo.subject.length <= 200,
+          `${itemLabel}.subject must be a string of at most 200 characters`,
+        );
+        assert.ok(
+          ['pending', 'in_progress', 'completed'].includes(todo.status),
+          `${itemLabel}.status must be canonical`,
+        );
+        assert.ok(
+          todo.phase === null || (typeof todo.phase === 'string' && todo.phase.length <= 80),
+          `${itemLabel}.phase must be null or a string of at most 80 characters`,
+        );
+      }
     }
     if (field.wireReferences) {
       for (const [index, reference] of value.entries()) {

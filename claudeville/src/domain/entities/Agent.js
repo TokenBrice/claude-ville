@@ -26,7 +26,7 @@ function optionalNumber(value, { nonnegative = false } = {}) {
     return number;
 }
 
-export const TODO_LIMIT = 12;
+export const TODO_LIMIT = 64;
 
 export function normalizeTodoList(value) {
     return Array.isArray(value)
@@ -34,7 +34,10 @@ export function normalizeTodoList(value) {
             const subject = typeof todo?.subject === 'string' ? todo.subject.trim().slice(0, 200) : '';
             const rawStatus = typeof todo?.status === 'string' ? todo.status.trim().toLowerCase() : '';
             const status = rawStatus === 'completed' || rawStatus === 'in_progress' ? rawStatus : 'pending';
-            return subject ? [{ subject, status }] : [];
+            const phase = typeof todo?.phase === 'string' && todo.phase.trim()
+                ? todo.phase.trim().slice(0, 80)
+                : null;
+            return subject ? [{ subject, status, phase }] : [];
         })
         : [];
 }
@@ -302,6 +305,9 @@ export class Agent {
         }
         if (Object.prototype.hasOwnProperty.call(updates, 'tokens')) {
             updates.tokens = TokenUsage.normalize(updates.tokens);
+        }
+        if (Object.prototype.hasOwnProperty.call(updates, 'todos')) {
+            updates.todos = normalizeTodoList(updates.todos);
         }
         if (Object.prototype.hasOwnProperty.call(updates, 'status')) {
             updates.status = normalizeAgentStatus(updates.status, this.status || AgentStatus.IDLE);

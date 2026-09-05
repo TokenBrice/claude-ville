@@ -235,9 +235,9 @@ test('adapter fixtures keep genuinely shared optional fields aligned', () => {
 
     assert.equal(sessions.codex.lastPrompt, 'Latest Codex prompt '.repeat(20).trim().slice(0, 200));
     assert.deepEqual(sessions.codex.todos, [
-      { subject: 'Inspect rollout', status: 'completed' },
-      { subject: 'Project plan', status: 'in_progress' },
-      { subject: 'Verify bounds', status: 'pending' },
+      { subject: 'Inspect rollout', status: 'completed', phase: null },
+      { subject: 'Project plan', status: 'in_progress', phase: null },
+      { subject: 'Verify bounds', status: 'pending', phase: null },
     ]);
     assert.equal(sessions.codex.gitBranch, 'feature/codex-plan');
 

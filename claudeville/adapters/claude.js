@@ -415,11 +415,14 @@ function hookErrorCount(value) {
 
 function projectTodos(value) {
   if (!Array.isArray(value)) return null;
-  return value.slice(0, 12).flatMap((todo) => {
+  return value.slice(0, 64).flatMap((todo) => {
     if (!todo || typeof todo !== 'object') return [];
     const subject = typeof todo.subject === 'string' ? todo.subject.trim() : '';
-    const status = typeof todo.status === 'string' ? todo.status.trim() : '';
-    return subject && status ? [{ subject: subject.slice(0, 200), status: status.slice(0, 64) }] : [];
+    const rawStatus = typeof todo.status === 'string' ? todo.status.trim().toLowerCase() : '';
+    const status = ['pending', 'in_progress', 'completed'].includes(rawStatus)
+      ? rawStatus
+      : 'pending';
+    return subject ? [{ subject: subject.slice(0, 200), status, phase: null }] : [];
   });
 }
 

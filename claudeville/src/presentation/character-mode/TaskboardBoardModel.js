@@ -22,6 +22,7 @@ function todosSignature(todos) {
     return JSON.stringify(todos.map(todo => [
         typeof todo?.subject === 'string' ? todo.subject : '',
         typeof todo?.status === 'string' ? todo.status : '',
+        typeof todo?.phase === 'string' ? todo.phase : null,
     ]));
 }
 
@@ -101,6 +102,83 @@ export class TaskboardBoardModel {
             todosUpdatedAt: this.todosUpdatedAt,
         });
     }
+
+    signatureFor(agentId) {
+        return this._todoStateByAgent.get(agentId)?.signature || '[]';
+    }
+}
+
+export function groupTodosByPhase(todos) {
+    if (!Array.isArray(todos) || todos.length === 0) return [];
+    const groups = [];
+    const byPhase = new Map();
+    for (const todo of todos) {
+        const phase = typeof todo?.phase === 'string' && todo.phase ? todo.phase : null;
+        let group = byPhase.get(phase);
+        if (!group) {
+            group = { phase, items: [], done: 0, total: 0 };
+            byPhase.set(phase, group);
+            groups.push(group);
+        }
+        group.items.push(todo);
+        group.total += 1;
+        if (todo?.status === 'completed') group.done += 1;
+    }
+    return groups;
+}
+
+export function taskboardBoardLayout(todos, { maxItemRows = 6 } = {}) {
+    if (!Array.isArray(todos) || todos.length === 0) return null;
+    const groups = groupTodosByPhase(todos);
+    const done = groups.reduce((count, group) => count + group.done, 0);
+    const total = todos.length;
+    const limit = Number.isFinite(Number(maxItemRows))
+        ? Math.max(0, Math.trunc(Number(maxItemRows)))
+        : 6;
+    const hasNamedPhase = groups.some((group) => group.phase !== null);
+    const rows = [];
+
+    if (!hasNamedPhase) {
+        const items = groups[0]?.items || [];
+        for (const todo of items.slice(0, limit)) {
+            rows.push({
+                kind: 'item',
+                text: String(todo?.subject || ''),
+                status: todo?.status,
+            });
+        }
+        if (items.length > limit) {
+            rows.push({ kind: 'more', text: `+${items.length - limit} more` });
+        }
+        return { done, total, rows };
+    }
+
+    let activeIndex = groups.findIndex((group) => group.done < group.total);
+    if (activeIndex < 0) activeIndex = groups.length - 1;
+    groups.forEach((group, index) => {
+        const active = index === activeIndex;
+        if (group.phase !== null) {
+            rows.push({
+                kind: 'phase',
+                text: group.phase,
+                done: group.done,
+                total: group.total,
+                active,
+            });
+        }
+        if (!active) return;
+        for (const todo of group.items.slice(0, limit)) {
+            rows.push({
+                kind: 'item',
+                text: String(todo?.subject || ''),
+                status: todo?.status,
+            });
+        }
+        if (group.items.length > limit) {
+            rows.push({ kind: 'more', text: `+${group.items.length - limit} more` });
+        }
+    });
+    return { done, total, rows };
 }
 
 export function taskboardBoardRows(todos, { maxRows = 6 } = {}) {

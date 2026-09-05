@@ -94,7 +94,10 @@ function projectPrompt(content) {
 
 function todoItems(argumentsValue) {
   const items = [];
-  const append = (value, phase = null) => {
+  const append = (value, rawPhase = null) => {
+    const phase = typeof rawPhase === 'string' && rawPhase.trim()
+      ? rawPhase.trim().slice(0, 80)
+      : null;
     if (!Array.isArray(value)) return;
     for (const item of value) {
       const rawSubject = typeof item === 'string'
@@ -136,7 +139,9 @@ function applyTodoOperation(todos, rawArguments) {
   }
   if (!['done', 'start', 'drop'].includes(op)) return;
   const task = typeof argumentsValue.task === 'string' ? argumentsValue.task.trim() : null;
-  const phase = typeof argumentsValue.phase === 'string' ? argumentsValue.phase : null;
+  const phase = typeof argumentsValue.phase === 'string' && argumentsValue.phase.trim()
+    ? argumentsValue.phase.trim().slice(0, 80)
+    : null;
   const matches = todo => (!task || todo.key === task) && (!phase || todo.phase === phase);
   if (!task && !phase) return;
   if (op === 'drop') {
@@ -444,7 +449,7 @@ function parseOmpTranscript(records, {
       tokenUsage,
       parentSessionId: parentSessionId ? transcriptId(parentSessionId) : null,
       lastPrompt,
-      todos: todos.slice(0, 12).map(({ subject, status }) => ({ subject, status })),
+      todos: todos.slice(0, 64).map(({ subject, status, phase }) => ({ subject, status, phase })),
       gitBranch,
       ...turn,
       signalSource: 'transcript',

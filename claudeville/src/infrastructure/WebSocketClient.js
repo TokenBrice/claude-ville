@@ -46,7 +46,7 @@ function cloneSessionPayload(session) {
                 : session.tasks;
         } else if (field === 'todos') {
             next.todos = Array.isArray(session.todos)
-                ? session.todos.slice(0, 12).map(todo => (
+                ? session.todos.slice(0, 64).map(todo => (
                     todo && typeof todo === 'object' ? { ...todo } : todo
                 ))
                 : session.todos;

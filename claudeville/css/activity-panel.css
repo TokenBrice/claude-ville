@@ -732,7 +732,8 @@ body[data-cv-selected] .activity-panel__header::before {
 /* ─── Prompt and plan ────────────────────────────── */
 
 .activity-panel__prompt-plan,
-.activity-panel__todo-list {
+.activity-panel__todo-list,
+.activity-panel__todo-groups {
     display: flex;
     flex-direction: column;
     gap: 5px;
@@ -748,6 +749,23 @@ body[data-cv-selected] .activity-panel__header::before {
     overflow-wrap: anywhere;
 }
 
+.activity-panel__todo-phase {
+    min-width: 0;
+}
+
+.activity-panel__todo-phase-summary {
+    padding: 4px 0;
+    color: var(--cv-gold);
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.activity-panel__todo-phase-items {
+    padding-left: 12px;
+}
+
 .activity-panel__todo {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -758,9 +776,25 @@ body[data-cv-selected] .activity-panel__header::before {
 }
 
 .activity-panel__todo-status {
+    padding: 1px 4px;
     color: var(--cv-text-muted);
+    background: rgba(54, 38, 24, 0.72);
+    border: 1px solid rgba(214, 169, 81, 0.24);
+    border-radius: 2px;
+    font-family: var(--font-body);
     font-size: var(--fs-label);
+    line-height: 1.2;
     text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.activity-panel__todo--completed .activity-panel__todo-status {
+    color: var(--cv-green-soft);
+    border-color: rgba(114, 208, 113, 0.3);
+}
+
+.activity-panel__todo--in_progress .activity-panel__todo-status {
+    color: var(--cv-gold-bright);
 }
 
 .activity-panel__todo-subject {

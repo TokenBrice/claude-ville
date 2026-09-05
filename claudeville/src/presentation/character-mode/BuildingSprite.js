@@ -20,7 +20,7 @@ import { SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { pulseBand01Frame } from './PulsePolicy.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
-import { TaskboardBoardModel, taskboardBoardRows } from './TaskboardBoardModel.js';
+import { TaskboardBoardModel, taskboardBoardLayout } from './TaskboardBoardModel.js';
 import {
     advanceNightOccupancyGate,
     buildingEmissiveGate,
@@ -162,6 +162,12 @@ const FOUNDATION_MATERIALS = Object.freeze({
     }),
 });
 
+const TASKBOARD_PHASE_MARKERS = Object.freeze(['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII']);
+
+function taskboardPhaseMarker(index) {
+    return TASKBOARD_PHASE_MARKERS[index] || String(index + 1);
+}
+
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
 }
@@ -286,6 +292,7 @@ export class BuildingSprite {
         this.harborStatus = { failedPushActive: false, activeWorkingCount: null };
         this._taskboardPapers = [];
         this._taskboardBoardModel = new TaskboardBoardModel();
+        this._taskboardLayoutCache = new Map();
         this._seenTaskboardRituals = new Set();
         this._forgeGlow = FORGE_GLOW_BASELINE;
         this._presenceByType = new Map();
@@ -435,6 +442,44 @@ export class BuildingSprite {
             candidates: this._taskboardCandidates || [],
             agentSprites: this.agentSprites,
         });
+    }
+
+    _taskboardViewFor(agent, maxItemRows) {
+        if (!agent) return null;
+        const signature = this._taskboardBoardModel.signatureFor(agent.id);
+        const name = String(agent.displayName || agent.name || '').trim();
+        const cached = this._taskboardLayoutCache.get(maxItemRows);
+        if (cached?.agent === agent && cached.signature === signature && cached.name === name) return cached.view;
+        const layout = taskboardBoardLayout(agent.todos, { maxItemRows });
+        if (!layout) return null;
+        const phaseRows = layout.rows.filter((row) => row.kind === 'phase');
+        const activePhase = phaseRows.find((row) => row.active) || null;
+        let activeItems = layout.rows.filter((row) => row.kind === 'item');
+        if (activePhase) {
+            const start = layout.rows.indexOf(activePhase) + 1;
+            activeItems = [];
+            for (let index = start; index < layout.rows.length; index++) {
+                const row = layout.rows[index];
+                if (row.kind === 'phase') break;
+                if (row.kind === 'item') activeItems.push(row);
+            }
+        }
+        const currentItem = activeItems.find((row) => row.status === 'in_progress')
+            || activeItems.find((row) => row.status === 'pending')
+            || null;
+        const currentItemText = currentItem?.text || '';
+        const view = {
+            layout,
+            header: `${name} · ${layout.done}/${layout.total}`,
+            activePhase: activePhase
+                ? `${taskboardPhaseMarker(phaseRows.indexOf(activePhase))}. ${activePhase.text} · ${activePhase.done}/${activePhase.total}`
+                : '',
+            currentItem: currentItemText.length > 28
+                ? `${currentItemText.slice(0, 27).trimEnd()}…`
+                : currentItemText,
+        };
+        this._taskboardLayoutCache.set(maxItemRows, { agent, signature, name, view });
+        return view;
     }
 
     drawGpuFunctionalOverlays(ctx) {
@@ -803,6 +848,17 @@ export class BuildingSprite {
             const center = this._buildingScreenCenter(b);
             const dims = this.assets.getDims(`building.${b.type}`);
             if (!dims) continue;
+            if (b.type === 'taskboard' && zoom < TALLY_FOLD_ZOOM) {
+                this._drawTaskboardCompactCard(ctx, b, {
+                    zoom,
+                    labelScale,
+                    occupied,
+                    occupiedExternal: normalizedOccupiedBoxes,
+                    center,
+                    dims,
+                });
+                continue;
+            }
             const isHovered = this.hovered === b;
             const visual = getBuildingVisual(b.type);
             const registryLabelPriority = getBuildingLabelPriority(b.type, b.labelPriority);
@@ -1113,6 +1169,123 @@ export class BuildingSprite {
 
             ctx.restore();
         }
+    }
+
+    _drawTaskboardCompactCard(ctx, building, {
+        zoom,
+        labelScale,
+        occupied,
+        occupiedExternal,
+        center,
+        dims,
+    }) {
+        const agent = this._taskboardBoardAgent();
+        const view = this._taskboardViewFor(agent, 64);
+        if (!view) return;
+        const compactItem = view.currentItem;
+        const font = `11px ${WORLD_BODY_FONT}`;
+        ctx.save();
+        ctx.font = font;
+        const header = this._labelMetrics(ctx, building, {
+            text: view.header,
+            labelFont: font,
+            maxTextWidth: 198,
+            zoom,
+            isHovered: false,
+            isLandmark: true,
+            scaleMode: 'screen-fixed',
+        });
+        const phase = this._labelMetrics(ctx, building, {
+            text: view.activePhase,
+            labelFont: font,
+            maxTextWidth: 198,
+            zoom,
+            isHovered: false,
+            isLandmark: true,
+            scaleMode: 'screen-fixed',
+        });
+        const item = this._labelMetrics(ctx, building, {
+            text: compactItem,
+            labelFont: font,
+            maxTextWidth: 198,
+            zoom,
+            isHovered: false,
+            isLandmark: true,
+            scaleMode: 'screen-fixed',
+        });
+        const cardW = Math.min(218, Math.ceil(Math.max(header.width, phase.width, item.width) + 20));
+        const cardH = view.activePhase && item.displayText ? 49 : view.activePhase || item.displayText ? 36 : 23;
+        const anchorY = this.assets.getAnchor(`building.${building.type}`)?.[1] ?? dims.h;
+        const firstOpaque = this.assets.getMask?.(`building.${building.type}`)?.indexOf(1) ?? 0;
+        const spriteTop = Math.round(center.y - anchorY) + Math.floor(Math.max(0, firstOpaque) / dims.w);
+        const cardCenterY = spriteTop - (cardH / 2 + 9) * labelScale;
+        const layout = this._resolveLabelLayout({
+            candidates: [
+                { dx: 0, dy: 0 },
+                { dx: -14 * labelScale, dy: -10 * labelScale },
+                { dx: 14 * labelScale, dy: -10 * labelScale },
+                { dx: 0, dy: -20 * labelScale },
+            ],
+            occupied,
+            occupiedExternal,
+            centerX: center.x,
+            centerY: cardCenterY,
+            tagW: cardW * labelScale,
+            tagH: cardH * labelScale,
+            isLandmark: true,
+            maxOverlap: 0.9,
+        });
+        if (!layout) {
+            ctx.restore();
+            return;
+        }
+        occupied.push(layout.box);
+
+        const bx = layout.x;
+        const by = layout.y;
+        const left = Math.round(bx - cardW / 2);
+        const top = Math.round(by - cardH / 2);
+        ctx.translate(bx, by);
+        ctx.scale(labelScale, labelScale);
+        ctx.translate(-bx, -by);
+        ctx.fillStyle = 'rgba(42, 28, 18, 0.94)';
+        ctx.strokeStyle = 'rgba(215, 185, 121, 0.72)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(left, top, cardW, cardH, 4);
+        else ctx.rect(left, top, cardW, cardH);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#8bd7ff';
+        ctx.fillRect(left + 6, top + 4, cardW - 12, 2);
+
+        ctx.font = font;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        this._applyReadableLabelShadow(ctx);
+        let lineY = top + 14;
+        ctx.fillStyle = '#fff0bd';
+        ctx.fillText(header.displayText, left + 10, lineY);
+        if (view.activePhase) {
+            lineY += 13;
+            ctx.fillStyle = '#8bd7ff';
+            ctx.fillText(phase.displayText, left + 10, lineY);
+        }
+        if (item.displayText) {
+            lineY += 13;
+            ctx.fillStyle = '#e8c982';
+            ctx.fillText(item.displayText, left + 10, lineY);
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.strokeStyle = 'rgba(215, 185, 121, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(bx, by + cardH * labelScale / 2);
+        ctx.lineTo(center.x, spriteTop - 1);
+        ctx.stroke();
+        ctx.restore();
     }
 
     // Compact working/waiting/errored tally drawn beneath a building label when
@@ -3454,81 +3627,78 @@ export class BuildingSprite {
     }
 
     _drawTaskboardBoard(ctx, localPoint) {
-        const agent = this._taskboardBoardAgent();
-        if (!agent) return false;
-
-        const board = taskboardBoardRows(agent.todos, { maxRows: 6 });
-        if (!board) return false;
-
         const zoom = Number(this._zoom) || 0;
-        if (zoom < LABEL_VISIBLE_ZOOM) return true;
+        if (zoom < TALLY_FOLD_ZOOM) return Boolean(this._taskboardBoardAgent());
+
+        const agent = this._taskboardBoardAgent();
+        const view = this._taskboardViewFor(agent, 3);
+        if (!view) return false;
 
         const chalk = 'rgba(226, 240, 248, 0.92)';
         const dimChalk = 'rgba(226, 240, 248, 0.45)';
         const accent = '#8bd7ff';
-        const progress = `${board.done}/${board.total}`;
+        const faceTopLeft = localPoint(74, 73);
+        const faceRight = localPoint(182, 73).x;
+        const maxWidth = faceRight - faceTopLeft.x - 14;
         ctx.save();
         ctx.textBaseline = 'middle';
-        const faceTopLeft = localPoint(74, 73);
         ctx.fillStyle = 'rgba(18, 34, 33, 0.91)';
         ctx.fillRect(faceTopLeft.x, faceTopLeft.y, 108, 78);
         ctx.strokeStyle = 'rgba(226, 240, 248, 0.38)';
         ctx.lineWidth = 1;
         ctx.strokeRect(faceTopLeft.x + 0.5, faceTopLeft.y + 0.5, 107, 77);
 
-        if (zoom < TALLY_FOLD_ZOOM) {
-            const center = localPoint(128, 110);
-            ctx.font = '6px "Press Start 2P"';
-            ctx.textAlign = 'center';
-            const width = Math.ceil(ctx.measureText(progress).width) + 10;
-            ctx.fillStyle = 'rgba(21, 34, 35, 0.78)';
-            ctx.fillRect(Math.round(center.x - width / 2), center.y - 7, width, 14);
-            ctx.strokeStyle = 'rgba(226, 240, 248, 0.58)';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(Math.round(center.x - width / 2) + 0.5, center.y - 6.5, width - 1, 13);
-            ctx.fillStyle = chalk;
-            ctx.fillText(progress, center.x, center.y + 0.5);
-            ctx.restore();
-            return true;
-        }
-
-        const left = localPoint(79, 83);
-        const right = localPoint(177, 83);
-        const displayName = String(agent.displayName || agent.name || '').trim().slice(0, 14);
-        ctx.font = '7px "Press Start 2P"';
-        ctx.fillStyle = chalk;
-        ctx.textAlign = 'left';
-        ctx.fillText(displayName, left.x, left.y);
-        ctx.textAlign = 'right';
-        ctx.fillText(progress, right.x, right.y);
-
-        ctx.font = `9px ${WORLD_BODY_FONT}`;
-        ctx.textAlign = 'left';
-        const maxWidth = 96;
-        const fitSubject = (subject) => {
-            const source = String(subject || '');
-            if (ctx.measureText(source).width <= maxWidth) return source;
+        const fitText = (source, width) => {
+            const text = String(source || '');
+            if (ctx.measureText(text).width <= width) return text;
             let low = 0;
-            let high = source.length;
+            let high = text.length;
             while (low < high) {
                 const mid = Math.ceil((low + high) / 2);
-                if (ctx.measureText(`${source.slice(0, mid).trimEnd()}…`).width <= maxWidth) low = mid;
+                if (ctx.measureText(`${text.slice(0, mid).trimEnd()}…`).width <= width) low = mid;
                 else high = mid - 1;
             }
-            return `${source.slice(0, low).trimEnd()}…`;
+            return low > 0 ? `${text.slice(0, low).trimEnd()}…` : '…';
         };
 
-        board.rows.forEach((row, index) => {
-            const point = localPoint(80, 94 + index * 9);
-            const text = fitSubject(row.subject);
+        const headerPoint = localPoint(79, 79);
+        ctx.font = '6px "Press Start 2P", monospace';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = chalk;
+        ctx.fillText(fitText(view.header, maxWidth), headerPoint.x, headerPoint.y);
+        const rule = localPoint(79, 87);
+        ctx.fillStyle = 'rgba(139, 215, 255, 0.42)';
+        ctx.fillRect(rule.x, rule.y, maxWidth, 1);
+
+        const maximumRows = 9;
+        const rows = view.layout.rows.length > maximumRows
+            ? [...view.layout.rows.slice(0, maximumRows - 1), { kind: 'more', text: '…' }]
+            : view.layout.rows;
+        const availableHeight = 58;
+        const lineHeight = Math.max(6, Math.min(9, Math.floor(availableHeight / Math.max(1, rows.length))));
+        const fontSize = Math.max(7, Math.min(9, lineHeight));
+        ctx.font = `${fontSize}px ${WORLD_BODY_FONT}`;
+
+        let phaseIndex = 0;
+        rows.forEach((row, index) => {
+            const itemIndent = row.kind === 'item' || row.kind === 'more' ? 7 : 0;
+            const point = localPoint(79 + itemIndent, 93 + index * lineHeight);
+            const rowText = row.kind === 'phase'
+                ? `${taskboardPhaseMarker(phaseIndex++)}. ${row.text} · ${row.done}/${row.total}`
+                : row.text;
+            const text = fitText(rowText, maxWidth - itemIndent);
             const width = ctx.measureText(text).width;
-            if (row.status === 'in_progress') {
+            if ((row.kind === 'phase' && row.active) || row.status === 'in_progress') {
                 ctx.fillStyle = accent;
-                ctx.fillRect(point.x - 5, point.y - 2, 3, 4);
+                ctx.fillRect(point.x - (itemIndent ? 5 : 4), point.y - 2, 3, 4);
             }
-            ctx.fillStyle = row.done ? dimChalk : chalk;
+            ctx.fillStyle = row.status === 'completed'
+                ? dimChalk
+                : row.status === 'in_progress'
+                    ? accent
+                    : chalk;
             ctx.fillText(text, point.x, point.y);
-            if (row.done) {
+            if (row.status === 'completed') {
                 ctx.strokeStyle = 'rgba(226, 240, 248, 0.62)';
                 ctx.lineWidth = 1;
                 ctx.beginPath();
@@ -3537,12 +3707,6 @@ export class BuildingSprite {
                 ctx.stroke();
             }
         });
-
-        if (board.overflow > 0) {
-            const overflowPoint = localPoint(80, 94 + board.rows.length * 9);
-            ctx.fillStyle = chalk;
-            ctx.fillText(`+${board.overflow} more`, overflowPoint.x, overflowPoint.y);
-        }
         ctx.restore();
         return true;
     }

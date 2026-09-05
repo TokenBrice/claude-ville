@@ -42,6 +42,7 @@ import { contextWindowLimitForModel } from './ModelVisualIdentity.js';
 import { AvatarCanvas } from '../dashboard-mode/AvatarCanvas.js';
 import { buildExecutionTree } from '../dashboard-mode/DashboardRenderer.js';
 import { narrativeFeedEntries } from '../character-mode/VillageDirector.js';
+import { groupTodosByPhase } from '../character-mode/TaskboardBoardModel.js';
 
 const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
@@ -70,6 +71,41 @@ const BUILDING_PAYLOAD_CHARACTER_LIMIT = 8192;
 const BUILDING_PAYLOAD_SCAN_LIMIT = 512;
 const BUILDING_PAYLOAD_ENTRY_LIMIT = 64;
 const PROMPT_DETAIL_MAX_LENGTH = 200;
+
+const ROMAN_NUMERALS = Object.freeze([
+    [1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'],
+    [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'],
+    [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I'],
+]);
+
+function romanNumeral(value) {
+    const numerals = ROMAN_NUMERALS;
+    let remaining = Math.max(1, Math.trunc(Number(value) || 1));
+    let result = '';
+    for (const [amount, glyph] of numerals) {
+        while (remaining >= amount) {
+            result += glyph;
+            remaining -= amount;
+        }
+    }
+    return result;
+}
+
+function phaseHeading(phase, index) {
+    return /^[IVXLCDM]+\.\s/i.test(phase)
+        ? phase
+        : `${romanNumeral(index)}. ${phase}`;
+}
+
+function promptPlanTodoNode(todo) {
+    const status = String(todo?.status || 'pending').replace(/[^a-z0-9_-]/g, '-');
+    return el('div', {
+        className: ['activity-panel__todo', `activity-panel__todo--${status}`],
+    }, [
+        el('span', { className: 'activity-panel__todo-status', text: todo.status }),
+        el('span', { className: 'activity-panel__todo-subject', text: todo.subject }),
+    ]);
+}
 export const BOOK_OF_LIVES_VISIBLE_CHAPTER_LIMIT = 6;
 export const BOOK_OF_LIVES_CHAPTER_LIMIT = 32;
 export const BOOK_OF_LIVES_MILESTONE_LIMIT = 6;
@@ -878,6 +914,7 @@ export class ActivityPanel {
         this._causalWaterfallToolHistory = [];
         this._causalWaterfallElapsedUnsubscribers = [];
         this._promptPlanSectionEl = null;
+        this._promptPlanTitleEl = null;
         this._promptPlanBodyEl = null;
         this._villageSectionEl = null;
         this._villageBodyEl = null;
@@ -2092,42 +2129,49 @@ export class ActivityPanel {
 
     _ensurePromptPlanSection() {
         if (this._promptPlanSectionEl && this._promptPlanBodyEl) return;
+        const title = el('div', { className: 'activity-panel__section-title', text: 'Prompt & Plan' });
         const body = el('div', { className: 'activity-panel__prompt-plan' });
         const section = el('div', {
             className: 'activity-panel__section',
             style: { display: 'none' },
-        }, [
-            el('div', { className: 'activity-panel__section-title', text: 'Prompt & Plan' }),
-            body,
-        ]);
+        }, [title, body]);
         this._mountSection('prompt-plan', section);
         this._promptPlanSectionEl = section;
+        this._promptPlanTitleEl = title;
         this._promptPlanBodyEl = body;
         this._registerAgentSection(section);
     }
 
     _updatePromptPlan(agent) {
-        if (!this._promptPlanSectionEl || !this._promptPlanBodyEl) return;
+        if (!this._promptPlanSectionEl || !this._promptPlanTitleEl || !this._promptPlanBodyEl) return;
         const prompt = truncateText(String(agent?.lastPrompt || '').trim(), PROMPT_DETAIL_MAX_LENGTH);
         const todos = (Array.isArray(agent?.todos) ? agent.todos : [])
-            .slice(0, 12)
+            .slice(0, 64)
             .flatMap((todo) => {
                 const subject = String(todo?.subject || '').trim();
                 if (!subject) return [];
                 return [{
                     subject: truncateText(subject, 120),
                     status: String(todo?.status || 'pending').trim().toLowerCase(),
+                    phase: typeof todo?.phase === 'string' && todo.phase.trim()
+                        ? truncateText(todo.phase.trim(), 80)
+                        : null,
                 }];
             });
         if (!prompt && !todos.length) {
             this._promptPlanSectionEl.style.display = 'none';
+            this._promptPlanTitleEl.textContent = 'Prompt & Plan';
             this._renderSignatures.promptPlan = '';
             replaceChildren(this._promptPlanBodyEl, []);
             return;
         }
 
-        const signature = `${prompt}|${todos.map(todo => `${todo.status}:${todo.subject}`).join('|')}`;
+        const done = todos.filter(todo => todo.status === 'completed').length;
+        const signature = `${prompt}|${todos.map(todo => `${todo.phase}:${todo.status}:${todo.subject}`).join('|')}`;
         this._promptPlanSectionEl.style.display = '';
+        this._promptPlanTitleEl.textContent = todos.length
+            ? `Prompt & Plan · ${done}/${todos.length}`
+            : 'Prompt & Plan';
         if (signature === this._renderSignatures.promptPlan) return;
         this._renderSignatures.promptPlan = signature;
 
@@ -2136,15 +2180,35 @@ export class ActivityPanel {
             nodes.push(el('div', { className: 'activity-panel__prompt', text: prompt }));
         }
         if (todos.length) {
-            nodes.push(el('div', { className: 'activity-panel__todo-list' }, todos.map(todo => el('div', {
-                className: [
-                    'activity-panel__todo',
-                    `activity-panel__todo--${todo.status.replace(/[^a-z0-9_-]/g, '-')}`,
-                ],
-            }, [
-                el('span', { className: 'activity-panel__todo-status', text: todo.status }),
-                el('span', { className: 'activity-panel__todo-subject', text: todo.subject }),
-            ]))));
+            const groups = groupTodosByPhase(todos);
+            const hasNamedPhase = groups.some(group => group.phase !== null);
+            if (!hasNamedPhase) {
+                nodes.push(el('div', { className: 'activity-panel__todo-list' }, todos.map(promptPlanTodoNode)));
+            } else {
+                let activeIndex = groups.findIndex(group => group.done < group.total);
+                if (activeIndex < 0) activeIndex = groups.length - 1;
+                let phaseNumber = 0;
+                const groupNodes = groups.map((group, index) => {
+                    if (group.phase === null) {
+                        return index === activeIndex
+                            ? el('div', { className: 'activity-panel__todo-list' }, group.items.map(promptPlanTodoNode))
+                            : null;
+                    }
+                    phaseNumber += 1;
+                    const details = el('details', { className: 'activity-panel__todo-phase' }, [
+                        el('summary', {
+                            className: 'activity-panel__todo-phase-summary',
+                            text: `${phaseHeading(group.phase, phaseNumber)} · ${group.done}/${group.total}`,
+                        }),
+                        el('div', {
+                            className: ['activity-panel__todo-list', 'activity-panel__todo-phase-items'],
+                        }, group.items.map(promptPlanTodoNode)),
+                    ]);
+                    details.open = index === activeIndex;
+                    return details;
+                });
+                nodes.push(el('div', { className: 'activity-panel__todo-groups' }, groupNodes));
+            }
         }
         replaceChildren(this._promptPlanBodyEl, nodes);
     }
@@ -4740,6 +4804,7 @@ export class ActivityPanel {
         this._causalWaterfallRows = [];
         this._causalWaterfallToolHistory = [];
         this._promptPlanSectionEl = null;
+        this._promptPlanTitleEl = null;
         this._villageSectionEl = null;
         this._villageBodyEl = null;
     }

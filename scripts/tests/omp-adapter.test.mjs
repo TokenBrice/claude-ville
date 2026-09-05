@@ -45,13 +45,13 @@ test('OMP transcript projects the latest user prompt and reconstructed todo chec
     assistantMessage('todo-init', '2026-08-12T10:00:03.000Z', [
       { type: 'toolCall', id: 'todo-init-call', name: 'todo', arguments: {
         op: 'init',
-        list: [{ phase: 'Implementation', items: ['Inspect OMP', 'Project checklist', 'Remove this item'] }],
+        list: [
+          { phase: 'Implementation', items: ['Inspect OMP', 'Project checklist', 'Remove this item'] },
+          { phase: 'Verification', items: ['Verify bounds', 'Check ordering', 'Confirm counts'] },
+        ],
       } },
       { type: 'toolCall', id: 'todo-done-call', name: 'todo', arguments: {
         op: 'done', task: 'Inspect OMP',
-      } },
-      { type: 'toolCall', id: 'todo-append-call', name: 'todo', arguments: {
-        op: 'append', phase: 'Verification', items: ['Verify bounds'],
       } },
       { type: 'toolCall', id: 'todo-start-call', name: 'todo', arguments: {
         op: 'start', task: 'Project checklist',
@@ -68,10 +68,14 @@ test('OMP transcript projects the latest user prompt and reconstructed todo chec
 
   assert.equal(parsed.session.lastPrompt, prompt.trim().slice(0, 200));
   assert.deepEqual(parsed.session.todos, [
-    { subject: 'Inspect OMP', status: 'completed' },
-    { subject: 'Project checklist', status: 'in_progress' },
-    { subject: 'Verify bounds', status: 'pending' },
+    { subject: 'Inspect OMP', status: 'completed', phase: 'Implementation' },
+    { subject: 'Project checklist', status: 'in_progress', phase: 'Implementation' },
+    { subject: 'Verify bounds', status: 'pending', phase: 'Verification' },
+    { subject: 'Check ordering', status: 'pending', phase: 'Verification' },
+    { subject: 'Confirm counts', status: 'pending', phase: 'Verification' },
   ]);
+  assert.equal(parsed.session.todos.length, 5);
+  assert.equal(parsed.session.todos.filter(todo => todo.status === 'completed').length, 1);
   assert.equal(parsed.session.gitBranch, 'feature/omp-todos');
 });
 

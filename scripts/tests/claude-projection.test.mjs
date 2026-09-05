@@ -64,8 +64,8 @@ test('Claude projects provider records, turn timing, and a canonical working set
     assert.equal(all.linesRemoved, 9);
     assert.equal(all.lastTurnDurationMs, 12345);
     assert.equal(all.lastPrompt.length, 200);
-    assert.equal(all.todos.length, 12);
-    assert.deepEqual(all.todos[1], { subject: 'Task 2', status: 'in_progress' });
+    assert.equal(all.todos.length, 13);
+    assert.deepEqual(all.todos[1], { subject: 'Task 2', status: 'in_progress', phase: null });
     assert.equal(all.gitBranch, 'feature/transcript-projection');
     assert.equal(all.hookErrors, 2);
     assert.deepEqual(all.modelHistory.map(item => item.effort), ['low', 'high']);

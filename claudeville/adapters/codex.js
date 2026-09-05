@@ -651,13 +651,13 @@ function createActiveRolloutScanContext(filePath) {
 }
 function projectCodexTodos(value) {
   if (!Array.isArray(value)) return null;
-  return value.slice(0, 12).flatMap((item) => {
+  return value.slice(0, 64).flatMap((item) => {
     if (!item || typeof item !== 'object') return [];
     const subject = typeof item.step === 'string' ? item.step.trim().slice(0, 200) : '';
     const status = ['pending', 'in_progress', 'completed'].includes(item.status)
       ? item.status
       : null;
-    return subject && status ? [{ subject, status }] : [];
+    return subject && status ? [{ subject, status, phase: null }] : [];
   });
 }
 

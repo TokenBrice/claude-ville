@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    groupTodosByPhase,
     TaskboardBoardModel,
+    taskboardBoardLayout,
     taskboardBoardRows,
 } from '../../claudeville/src/presentation/character-mode/TaskboardBoardModel.js';
 
@@ -107,4 +109,70 @@ test('taskboard rows render nothing without provider todos and strike completed 
     ]);
     assert.deepEqual(board.rows.map(row => row.done), [true, false, false]);
     assert.equal(board.done, 1);
+});
+
+test('taskboard phase groups preserve first-seen phase and item order with truthful counts', () => {
+    const todos = [
+        { subject: 'A1', status: 'completed', phase: 'I. Resting frame' },
+        { subject: 'B1', status: 'pending', phase: 'II. Recognizability' },
+        { subject: 'A2', status: 'pending', phase: 'I. Resting frame' },
+        { subject: 'Loose', status: 'completed', phase: null },
+    ];
+
+    const groups = groupTodosByPhase(todos);
+    assert.deepEqual(groups.map(({ phase, done, total }) => ({ phase, done, total })), [
+        { phase: 'I. Resting frame', done: 1, total: 2 },
+        { phase: 'II. Recognizability', done: 0, total: 1 },
+        { phase: null, done: 1, total: 1 },
+    ]);
+    assert.deepEqual(groups[0].items, [todos[0], todos[2]]);
+});
+
+test('taskboard layout expands the first incomplete phase and uses full-list header counts', () => {
+    const todos = [
+        { subject: 'Rest pose', status: 'completed', phase: 'I. Resting frame' },
+        { subject: 'Silhouette', status: 'pending', phase: 'I. Resting frame' },
+        { subject: 'Face', status: 'completed', phase: 'II. Recognizability' },
+        { subject: 'Walk', status: 'pending', phase: 'III. Life' },
+    ];
+    const board = taskboardBoardLayout(todos, { maxItemRows: 1 });
+
+    assert.equal(board.done, 2);
+    assert.equal(board.total, 4);
+    assert.deepEqual(board.rows, [
+        { kind: 'phase', text: 'I. Resting frame', done: 1, total: 2, active: true },
+        { kind: 'item', text: 'Rest pose', status: 'completed' },
+        { kind: 'more', text: '+1 more' },
+        { kind: 'phase', text: 'II. Recognizability', done: 1, total: 1, active: false },
+        { kind: 'phase', text: 'III. Life', done: 0, total: 1, active: false },
+    ]);
+});
+
+test('taskboard layout selects the last phase when every item is complete', () => {
+    const board = taskboardBoardLayout([
+        { subject: 'First', status: 'completed', phase: 'I. Shape' },
+        { subject: 'Last', status: 'completed', phase: 'II. Finish' },
+    ], { maxItemRows: 2 });
+
+    assert.deepEqual(board.rows, [
+        { kind: 'phase', text: 'I. Shape', done: 1, total: 1, active: false },
+        { kind: 'phase', text: 'II. Finish', done: 1, total: 1, active: true },
+        { kind: 'item', text: 'Last', status: 'completed' },
+    ]);
+});
+
+test('taskboard flat layout renders capped items directly without phase rows', () => {
+    const board = taskboardBoardLayout([
+        { subject: 'One', status: 'completed', phase: null },
+        { subject: 'Two', status: 'in_progress', phase: null },
+        { subject: 'Three', status: 'pending', phase: null },
+    ], { maxItemRows: 2 });
+
+    assert.equal(board.done, 1);
+    assert.equal(board.total, 3);
+    assert.deepEqual(board.rows, [
+        { kind: 'item', text: 'One', status: 'completed' },
+        { kind: 'item', text: 'Two', status: 'in_progress' },
+        { kind: 'more', text: '+1 more' },
+    ]);
 });
