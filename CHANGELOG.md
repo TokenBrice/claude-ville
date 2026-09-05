@@ -2,6 +2,16 @@
 
 ---
 
+## v0.41.3 — *The Steady Blade* · Sep 05, 2026
+
+Codex villagers now keep their weapons in hand as they walk, idle, and turn. The grip pass introduced for Astra extends across the full Codex roster.
+
+- **Grips follow the animation.** Astra, Sol, Terra, Luna, GPT-5.5 and its heavier armor variants, GPT-5.4, Spark, and the generic Codex engineer use authored wrist positions for all eight directions and ten animation frames. Matching gloves, compact weapon placement, and front/back layering keep swords and tools attached to the hand in both Canvas and GPU rendering.
+- **Armor and tools stay intact.** Empty-handed character sheets no longer pass through the old weapon cleanup that erased parts of their hands and armor. GPT-5.4's detached baked wrench is removed precisely before accessories are positioned, so higher-effort crowns sit above the helmet and remain complete. Authored engineer grips also prevent duplicate back-layer wrenches.
+- **Visual regression coverage.** Equipment capture covers the full roster, every animation frame, and optional Canvas/GPU comparison. Regression checks cover wrist placement, equipment layering, armor preservation, and cleanup before crown placement.
+
+---
+
 ## v0.41.2 — *The Astral Vanguard* · Sep 05, 2026
 
 GPT-6 Astra joins the village as a silver-armored star knight, with a violet constellation cape and equipment that grows with reasoning effort.
