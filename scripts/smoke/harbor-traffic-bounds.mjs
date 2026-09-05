@@ -33,6 +33,7 @@ function sourceModuleUrl(filePath) {
 const {
   HarborTraffic,
   reduceHarborTrafficState,
+  snapshotHarborTrafficState,
 } = await import(sourceModuleUrl(HARBOR_PATH));
 
 const BASE_TIME = Date.parse('2026-07-14T12:00:00Z');
@@ -73,6 +74,36 @@ function push(id, timestamp, overrides = {}) {
 }
 
 const limits = new HarborTraffic().getDiagnostics();
+
+// The first two repo fleets share their lagoon buoys across branches; later
+// repos retain coastal slots, and pushes depart from the same water region.
+const homeEvents = Array.from({ length: 6 }, (_, index) => commit(`home-${index}`, BASE_TIME + index, {
+  project: `${PROJECT}-${Math.floor(index / 2)}`,
+  branch: index % 2 ? 'feature' : 'main',
+  sequence: index + 1,
+}));
+const homeState = reduceHarborTrafficState(null, homeEvents, { now: BASE_TIME + 100, motionScale: 1 });
+const homeSnapshot = snapshotHarborTrafficState(homeState);
+assert.deepEqual(homeSnapshot.repoAnchorages.map(entry => entry.anchorage), [
+  'Commit Lagoon West', 'Commit Lagoon Spring', 'Pharos Reach',
+]);
+for (const ship of homeSnapshot.ships) {
+  const slot = homeSnapshot.repoAnchorages.find(entry => entry.project === ship.project).slot;
+  assert.equal(ship.waitingZone, slot < 2 ? 'commit-lagoon' : 'coast');
+  assert.equal(ship.anchorageIndex, slot);
+}
+const homeReplay = reduceHarborTrafficState(homeState, [...homeEvents].reverse(), { now: BASE_TIME + 200 });
+assert.deepEqual(snapshotHarborTrafficState(homeReplay).repoAnchorages, homeSnapshot.repoAnchorages);
+const homeDepartures = reduceHarborTrafficState(homeReplay, homeEvents.map((event, index) => (
+  push(`home-push-${index}`, BASE_TIME + 300, { project: event.project, branch: event.branch, targetRef: event.branch })
+)), { now: BASE_TIME + 400, motionScale: 1 });
+for (const ship of homeDepartures.ships.values()) {
+  const lagoon = ship.project !== `${PROJECT}-2`;
+  assert.equal(ship.status, 'departing');
+  assert.equal(ship.departWaterZone, lagoon ? 'commit-lagoon' : 'coast');
+  assert.ok(lagoon ? ship.departFromTile.tileX < 28 : ship.departFromTile.tileX > 30);
+  if (lagoon) assert.ok(ship.departFromTile.tileY < 13);
+}
 
 // A push before a source tail longer than the seen-id cap must still launch a
 // ship that was already docked, while later commits remain docked.

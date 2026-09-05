@@ -158,19 +158,18 @@ const QUAY_GROUPS = [
     { name: 'Outer Quay', berthIndexes: [9, 10, 11] },
 ];
 
-// Home Waters — persistent per-repo coastal anchorages. Each active repo (a
+// Home Waters — persistent per-repo anchorages. Each active repo (a
 // repo with a live agent, or with docked commit ships) claims a stable buoy +
-// crest + tinted-water slot spread along the east coast, and that repo's
-// docked commit ships form up beside their own buoy, so the coast reads as a
+// crest + tinted-water slot in the lagoon or along the east coast. The repo's
+// docked commit ships form up beside their own buoy, so the water reads as a
 // map of which projects are alive and how much each is holding. Slots are
-// listed in fill order (alternating north/south of the Harbor Master so a few
-// repos already spread along the whole coast). `leadDx/leadDy` offset the
-// formation origin from the buoy; rows march away from the buoy along the
+// listed in fill order: two northern lagoon slots, then the coast.
+// `leadDx/leadDy` offset the formation origin from the buoy; rows march along the
 // shore so the buoy label stays in front of its fleet. Repos beyond the pool
 // share an overflow chip and dock in the Commit Lagoon (no silent drop).
 const COAST_ANCHORAGE_SLOTS = Object.freeze([
-    { name: 'Beacon Shoal', tileX: 35.4, tileY: 13.2, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
-    { name: 'River Mouth', tileX: 34.2, tileY: 25.6, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
+    { ...COMMIT_LAGOON_SQUAD_ANCHORAGES[0], tileY: 9.65, leadDy: -1.1 },
+    { ...COMMIT_LAGOON_SQUAD_ANCHORAGES[1], tileY: 6.85, leadDy: -1.1 },
     { name: 'Pharos Reach', tileX: 33.0, tileY: 10.2, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
     { name: 'Southern Strand', tileX: 35.8, tileY: 28.6, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
     { name: 'North Shoal', tileX: 35.4, tileY: 7.4, columns: 2, columnDx: 0, columnDy: 1.15, rowDx: -1.05, rowDy: 0, leadDx: -1.15, leadDy: 0 },
@@ -1686,7 +1685,7 @@ function _buildDockSquadLayoutFresh(state) {
             const fleetKey = repoAnchorageKey(group.project);
             const fleet = fleets.get(fleetKey) || { key: fleetKey, slot, squads: [] };
             const squad = makeSquad(group, packs, {
-                waitingZone: COAST_ANCHORAGE_ZONE,
+                waitingZone: COAST_ANCHORAGE_SLOTS[slot].zone || COAST_ANCHORAGE_ZONE,
                 repoGroupIndex,
                 repoSegmentIndex: 0,
                 repoSegmentCount: 1,
@@ -1749,8 +1748,8 @@ function _buildDockSquadLayoutFresh(state) {
         let formationBase = 0;
         let formationCount = squad.packs.length;
         let spacing;
-        if (isCoastZone(waitingZone)) {
-            const fleet = fleets.get(repoAnchorageKey(squad.project));
+        const fleet = fleets.get(repoAnchorageKey(squad.project));
+        if (fleet) {
             anchor = fleet.anchor;
             anchorIndex = fleet.slot;
             formationBase = fleet.cursor;
