@@ -121,9 +121,6 @@ function drawChronicleMonument(ctx, zoom, context, drawable) {
 function drawChronicler(ctx, zoom, context, drawable) {
     context.chronicler?.draw?.(ctx, drawable, zoom);
 }
-function drawBridgeLantern(ctx, zoom, context, drawable) {
-    drawable?.draw?.(ctx, zoom, context);
-}
 
 
 function drawFamiliarMotes(ctx, zoom, context, drawable) {
@@ -216,7 +213,6 @@ export function appendDepthSortedDrawables(target, {
     agentSprites = [],
     sceneCategoryFrame = null,
     chronicleMonumentDrawables = [],
-    bridgeLanternDrawables = [],
     chroniclerDrawables = [],
     familiarDrawables = [],
 } = {}) {
@@ -256,9 +252,6 @@ export function appendDepthSortedDrawables(target, {
     }
     for (const drawable of chronicleMonumentDrawables) {
         pushDepthDrawable(target, pooledDepthDrawable(target, 'chronicle-monument', drawable.sortY, drawable, drawChronicleMonument));
-    }
-    for (const drawable of bridgeLanternDrawables) {
-        pushDepthDrawable(target, pooledDepthDrawable(target, 'bridge-lantern', drawable.sortY, drawable, drawBridgeLantern));
     }
     for (const drawable of chroniclerDrawables) {
         pushDepthDrawable(target, pooledDepthDrawable(target, 'chronicler', drawable.sortY, drawable, drawChronicler));

@@ -556,7 +556,6 @@ export function renderWorldFrame(renderer, dt = 16) {
         eventBus.emit('harbor:updated', harborPendingRepos);
     }
     const chronicleMonumentDrawables = renderer.chronicleMonuments?.enumerateDrawables?.(renderNow, renderer.camera) ?? [];
-    const bridgeLanternDrawables = renderer.bridgeLanterns?.enumerateDrawables?.(renderNow, renderer.camera) ?? [];
     const chroniclerDrawables = renderer.chronicler?.enumerateDrawables?.() ?? [];
     const familiarDrawables = renderer._enumerateFamiliarMoteDrawables?.(atmosphere) ?? [];
     const zoom = renderer.camera.zoom;
@@ -574,7 +573,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawableAssembly.agentSprites = sortedSprites;
     drawableAssembly.sceneCategoryFrame = sceneCategoryFrame;
     drawableAssembly.chronicleMonumentDrawables = chronicleMonumentDrawables;
-    drawableAssembly.bridgeLanternDrawables = bridgeLanternDrawables;
     drawableAssembly.chroniclerDrawables = chroniclerDrawables;
     drawableAssembly.familiarDrawables = familiarDrawables;
     appendDepthSortedDrawables(drawables, drawableAssembly);
@@ -731,7 +729,6 @@ export function renderWorldFrame(renderer, dt = 16) {
                     entry.items.length,
                 ])),
                 monuments: chronicleMonumentDrawables.length,
-                bridgeLanterns: bridgeLanternDrawables.length,
                 chronicler: chroniclerDrawables.length,
                 familiars: familiarDrawables.length,
             },
@@ -1494,7 +1491,7 @@ function buildRenderStats(renderer, {
             pendingRepos: pendingRepos.length,
             pendingCommits: pendingRepos.reduce((sum, repo) => sum + (Number(repo.pendingCommits ?? repo.count) || 0), 0),
             failedPushes: pendingRepos.reduce((sum, repo) => sum + (Number(repo.failedPushes) || 0), 0),
-            bridgeLanterns: Number(inputCounts?.bridgeLanterns) || 0,
+            bridgeLanterns: Number(inputCounts?.sceneCategories?.['bridge-lantern']) || 0,
         },
         canvas: {
             particles: renderer.particleSystem?.particles?.length || 0,

@@ -10,6 +10,27 @@ const DAY_MS = 24 * 60 * 60_000;
 const LANTERN_COLOR = '#ffd56a';
 const LANTERN_LIGHT_PRIORITY = 100;
 
+const BRIDGE_LANTERN_SCENE_ITEMS = [];
+export const BRIDGE_LANTERN_SCENE_CATEGORY = Object.freeze({
+    id: 'bridge-lantern',
+    sortBand: 45,
+    enumerate({ renderer, renderNow } = {}) {
+        const items = BRIDGE_LANTERN_SCENE_ITEMS;
+        items.length = 0;
+        const drawables = renderer?.bridgeLanterns?.enumerateDrawables?.(renderNow, renderer.camera) ?? [];
+        for (let index = 0; index < drawables.length; index++) items.push(drawables[index]);
+        return items;
+    },
+    emitSceneCommands() {
+        return null;
+    },
+    canvasFallback(ctx, drawable, zoom, context = {}) {
+        drawable?.draw?.(ctx, zoom, context);
+    },
+    unsupported: 'overlay-safe',
+    overlayBand: 45,
+});
+
 function brightnessTier(ageMs) {
     if (ageMs < DAY_MS) return 0.5;
     if (ageMs < 3 * DAY_MS) return 0.68;
@@ -76,15 +97,25 @@ function drawLantern(ctx, lantern, now, motionScale) {
     const animated = policy.lanterns === 'on' && motionScale > 0;
     const pulse = animated ? pulseValueMs('harbor', now, motionScale, lantern.phase) : 1;
     const alpha = Math.max(0.2, Math.min(1, lantern.tier * pulse));
+    const x = Math.round(world.x);
+    const top = Math.round(world.y) - 16;
 
     ctx.save();
+    ctx.fillStyle = '#563820';
+    ctx.globalAlpha = alpha;
+    ctx.fillRect(x - 4, top, 5, 1);
+    ctx.fillRect(x - 4, top, 1, 3);
+    ctx.fillRect(x, top, 1, 3);
+    ctx.globalAlpha = alpha * 0.22;
+    ctx.fillStyle = lantern.accent;
+    ctx.fillRect(x - 3, top + 1, 7, 7);
     ctx.globalAlpha = alpha;
     ctx.fillStyle = '#563820';
-    ctx.fillRect(Math.round(world.x) - 1, Math.round(world.y) - 10, 2, 10);
-    ctx.fillStyle = LANTERN_COLOR;
-    ctx.fillRect(Math.round(world.x) - 2, Math.round(world.y) - 12, 4, 3);
+    ctx.fillRect(x - 2, top + 2, 5, 5);
     ctx.fillStyle = lantern.accent;
-    ctx.fillRect(Math.round(world.x) - 1, Math.round(world.y) - 11, 1, 1);
+    ctx.fillRect(x - 1, top + 3, 3, 3);
+    ctx.fillStyle = LANTERN_COLOR;
+    ctx.fillRect(x - 1, top + 3, 1, 2);
     ctx.restore();
 }
 

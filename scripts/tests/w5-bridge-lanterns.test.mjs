@@ -4,6 +4,12 @@ import assert from 'node:assert/strict';
 import { MAP_SIZE } from '../../claudeville/src/config/constants.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 import { BridgeLanterns, deriveLanternPlan, MAX_BRIDGE_LANTERNS } from '../../claudeville/src/presentation/character-mode/BridgeLanterns.js';
+import {
+    appendDepthSortedDrawables,
+    drawDepthSortedDrawables,
+    drawSceneCategoryOverlays,
+} from '../../claudeville/src/presentation/character-mode/DrawablePass.js';
+import { worldSceneCategoryRegistry } from '../../claudeville/src/presentation/character-mode/SceneCategoryRegistry.js';
 
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -87,4 +93,58 @@ test('bridge lanterns disclose capped branches and render nothing without oldest
     const camera = { canvas: { width: 1440, height: 900 }, worldToScreen: () => ({ x: 400, y: 300 }) };
     assert.deepEqual(lanterns.enumerateDrawables(NOW, camera), []);
     assert.deepEqual(lanterns.getLightSources({ beaconIntensity: 1 }), []);
+});
+
+test('bridge lanterns use the depth pass on Canvas and overlay replay on unsupported GPU backends', () => {
+    const camera = { id: 'camera' };
+    const calls = [];
+    const enumerationArgs = [];
+    const item = {
+        kind: 'bridge-lantern',
+        sortY: 73,
+        draw: (ctx, zoom, context) => calls.push({ ctx, zoom, context }),
+    };
+    const renderer = {
+        camera,
+        bridgeLanterns: {
+            enumerateDrawables(now, receivedCamera) {
+                enumerationArgs.push({ now, camera: receivedCamera });
+                return [item];
+            },
+        },
+    };
+    const frame = worldSceneCategoryRegistry.enumerate({ renderer, renderNow: 8500 });
+    const canvasResolution = worldSceneCategoryRegistry.resolve(frame, {
+        id: 'canvas2d',
+        canvasFallback: true,
+    });
+    assert.equal(
+        canvasResolution.categories.find(category => category.id === 'bridge-lantern')?.handling,
+        'canvas-fallback',
+    );
+
+    const drawables = [];
+    appendDepthSortedDrawables(drawables, { sceneCategoryFrame: frame });
+    const canvasCtx = { path: 'canvas-depth' };
+    const canvasContext = { renderer, zoom: 1.5 };
+    drawDepthSortedDrawables(canvasCtx, drawables, canvasContext);
+
+    const gpuResolution = worldSceneCategoryRegistry.resolve(frame, {
+        id: 'webgl2',
+        supportsSceneCommands: () => false,
+    });
+    const overlayCtx = { path: 'gpu-overlay' };
+    const overlayContext = { renderer, zoom: 1.5 };
+    drawSceneCategoryOverlays(overlayCtx, drawables, gpuResolution, overlayContext);
+
+    assert.deepEqual(enumerationArgs, [{ now: 8500, camera }]);
+    assert.equal(drawables.length, 1);
+    assert.equal(drawables[0].kind, 'bridge-lantern');
+    assert.equal(drawables[0].sortBand, 45);
+    assert.equal(drawables[0].payload, item);
+    assert.deepEqual([...gpuResolution.overlayCategoryIds], ['bridge-lantern']);
+    assert.deepEqual(calls, [
+        { ctx: canvasCtx, zoom: 1.5, context: canvasContext },
+        { ctx: overlayCtx, zoom: 1.5, context: overlayContext },
+    ]);
 });

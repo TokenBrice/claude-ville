@@ -1,3 +1,4 @@
+import { BRIDGE_LANTERN_SCENE_CATEGORY } from './BridgeLanterns.js';
 import { HARBOR_TRAFFIC_SCENE_CATEGORY } from './HarborTraffic.js';
 import { LANDMARK_ACTIVITY_SCENE_CATEGORY } from './LandmarkActivity.js';
 
@@ -299,4 +300,5 @@ function writeCategoryStatus(pool, index, category, handling, count) {
 export const worldSceneCategoryRegistry = new SceneCategoryRegistry([
     HARBOR_TRAFFIC_SCENE_CATEGORY,
     LANDMARK_ACTIVITY_SCENE_CATEGORY,
+    BRIDGE_LANTERN_SCENE_CATEGORY,
 ]);
