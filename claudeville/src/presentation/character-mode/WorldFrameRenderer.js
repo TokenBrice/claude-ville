@@ -559,8 +559,10 @@ export function renderWorldFrame(renderer, dt = 16) {
     const chroniclerDrawables = renderer.chronicler?.enumerateDrawables?.() ?? [];
     const familiarDrawables = renderer._enumerateFamiliarMoteDrawables?.(atmosphere) ?? [];
     const zoom = renderer.camera.zoom;
-    const agentRenderMode = renderer._agentRenderMode?.(viewport, sortedSprites) || 'full';
-    renderer._assignAgentOverlaySlots(sortedSprites, zoom, { agentRenderMode });
+    const renderModes = renderer._agentRenderMode?.(viewport, sortedSprites);
+    const agentRenderMode = renderModes?.body || 'full';
+    const annotationMode = renderModes?.annotation || 'full';
+    renderer._assignAgentOverlaySlots(sortedSprites, zoom, { agentRenderMode: annotationMode });
     markFrameTiming(frameTimer, 'collect');
 
     const drawables = renderer._drawables;
@@ -697,7 +699,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     });
     if (gpuWorldRendered) {
         for (const sprite of sortedSprites) {
-            sprite.drawGpuWorldOverlay?.(overlayCtx, zoom, agentRenderMode);
+            sprite.drawGpuWorldOverlay?.(overlayCtx, zoom, annotationMode);
         }
     }
     drawSelectedAgentXray(renderer, overlayCtx, buildingDrawables);
@@ -730,6 +732,7 @@ export function renderWorldFrame(renderer, dt = 16) {
                 familiars: familiarDrawables.length,
             },
             agentRenderMode,
+            annotationMode,
         });
     }
     markFrameTiming(frameTimer, 'labels');
@@ -1476,6 +1479,7 @@ function buildRenderStats(renderer, {
     inputCounts,
     sceneCategoryResolution,
     agentRenderMode = 'full',
+    annotationMode = 'full',
 }) {
     const pendingRepos = Array.isArray(harborPendingRepos) ? harborPendingRepos : [];
     return {
@@ -1495,6 +1499,7 @@ function buildRenderStats(renderer, {
         director: renderer.villageDirector?.getStats?.() || null,
         quality: {
             agentRenderMode,
+            annotationMode,
             worldRendererMode: renderer.worldRendererMode || 'canvas',
             gpuWorld: renderer.gpuWorld?.getDiagnostics?.() || null,
             sceneCategories: sceneCategoryResolution?.categories || [],

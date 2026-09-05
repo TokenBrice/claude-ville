@@ -189,6 +189,23 @@ const AGENT_RENDER_MINIMAL_CSS_PIXELS = 1_700_000;
 const CROWD_CLUSTER_TILE_SIZE = 4;
 const CROWD_CLUSTER_TOP_LIMIT = 12;
 const CROWD_BUMP_COOLDOWN_LIMIT = 512;
+
+// Body LOD for villager sprites (AgentSprite's 28px compact silhouette). Gated
+// on population and CSS viewport only; never on frame-to-frame scene pressure.
+function agentBodyRenderMode(count, viewport, zoom) {
+    if (count < 50) return 'full';
+    const cssPixels = Math.max(0, (viewport?.width || 0) * (viewport?.height || 0));
+    if (count >= AGENT_RENDER_MINIMAL_COUNT && cssPixels >= AGENT_RENDER_MINIMAL_CSS_PIXELS) {
+        return 'minimal';
+    }
+    if (
+        count >= AGENT_RENDER_COMPACT_COUNT &&
+        (zoom <= AGENT_RENDER_COMPACT_ZOOM || cssPixels >= AGENT_RENDER_COMPACT_CSS_PIXELS)
+    ) {
+        return 'compact';
+    }
+    return 'full';
+}
 const AGENT_NAME_TAG_MAX_WIDTH = 152;
 const AGENT_NAME_TAG_MIN_WIDTH = 40;
 // Must track the real name-tag pill in AgentSprite._drawNameTag: Departure Mono
@@ -4901,11 +4918,16 @@ export class IsometricRenderer {
         return drawables;
     }
 
+    // Returns `{ body, annotation }`. Annotation LOD (labels, bubbles, name
+    // tags) follows scene pressure as a whole-village policy so viewport
+    // culling cannot visibly change label style while the camera pans.
+    // Body LOD (the 28px compact silhouette in AgentSprite) is gated on the
+    // population/viewport thresholds only: pressure is fed by crowd-cell
+    // congestion that steps every time a walker crosses a cell boundary, and
+    // letting it drive body size made whole villages flicker to mini size.
     _agentRenderMode(viewport = this._screenViewport(), _visibleSprites = this._snapshotSortedSprites()) {
-        // Annotation LOD remains a whole-village policy so viewport culling
-        // cannot visibly change label style while the camera pans. Pressure
-        // does not depend on painter order, so the reusable unsorted snapshot
-        // preserves the previous semantics without reintroducing a full sort.
+        // Pressure does not depend on painter order, so the reusable unsorted
+        // snapshot preserves the previous semantics without a full sort.
         const sprites = this._snapshotAllSprites();
         const count = sprites.length;
         const zoom = this.camera?.zoom || 1;
@@ -4924,18 +4946,13 @@ export class IsometricRenderer {
         );
         const pressureMode = annotationModeForPressure(pressure, this._annotationMode || 'full');
         this._annotationMode = pressureMode;
-        if (count < 50) return pressureMode;
-        const cssPixels = Math.max(0, (viewport?.width || 0) * (viewport?.height || 0));
-        if (count >= AGENT_RENDER_MINIMAL_COUNT && cssPixels >= AGENT_RENDER_MINIMAL_CSS_PIXELS) {
-            return 'minimal';
-        }
-        if (
-            count >= AGENT_RENDER_COMPACT_COUNT &&
-            (zoom <= AGENT_RENDER_COMPACT_ZOOM || cssPixels >= AGENT_RENDER_COMPACT_CSS_PIXELS)
-        ) {
-            return pressureMode === 'minimal' ? 'minimal' : 'compact';
-        }
-        return pressureMode;
+        const body = agentBodyRenderMode(count, viewport, zoom);
+        const annotation = body === 'minimal' || pressureMode === 'minimal'
+            ? 'minimal'
+            : body === 'compact' || pressureMode === 'compact'
+                ? 'compact'
+                : 'full';
+        return { body, annotation };
     }
 
     _createRectGrid(cellSize = AGENT_OVERLAY_GRID_CELL) {

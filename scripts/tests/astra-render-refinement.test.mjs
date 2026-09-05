@@ -90,18 +90,35 @@ test('important and turning atlas slots refresh immediately while ambient frames
     } finally { globalThis.document = previousDocument; }
 });
 
-test('a congested small group and a dense narrow canvas retain compact pressure policy', () => {
-    for (const count of [7, 100]) {
+test('crowd congestion tightens annotations but never shrinks bodies below the population gate', () => {
+    const viewport = { width: 880, height: 845 };
+    const rendererFor = (count, zoom = 3) => {
         const sprites = Array.from({ length: count }, () => ({ x: 100, y: 100 }));
-        const renderer = {
-            camera: { zoom: 3, worldToScreen: (x, y) => ({ x, y }) },
+        return {
+            sprites,
+            camera: { zoom, worldToScreen: (x, y) => ({ x, y }) },
             _snapshotAllSprites: () => sprites,
-            _crowdStats: { congestedAgents: count }, _annotationMode: 'full',
+            _crowdStats: { congestedAgents: 0 }, _annotationMode: 'full',
         };
-        const mode = IsometricRenderer.prototype._agentRenderMode.call(renderer, { width: 880, height: 845 }, sprites);
-        assert.notEqual(mode, 'full');
-        assert.equal(mode, renderer._annotationMode);
+    };
+    const modeAt = (renderer) => IsometricRenderer.prototype._agentRenderMode.call(renderer, viewport, renderer.sprites);
+
+    // ~28 villagers with congestion stepping above and below count/2 as
+    // walkers cross crowd cells: the annotation LOD may flip, the body must not.
+    const small = rendererFor(28);
+    for (const congested of [0, 20, 6, 20, 0]) {
+        small._crowdStats.congestedAgents = congested;
+        assert.equal(modeAt(small).body, 'full');
     }
+    small._crowdStats.congestedAgents = 28;
+    assert.notEqual(modeAt(small).annotation, 'full');
+
+    // 100 villagers at overview zoom: the population gate compacts bodies.
+    const large = rendererFor(100, 1);
+    large._crowdStats.congestedAgents = 100;
+    const mode = modeAt(large);
+    assert.notEqual(mode.body, 'full');
+    assert.notEqual(mode.annotation, 'full');
     assert.equal(CameraDirector.prototype._currentMaxZoom.call({ camera: { currentZoomTier: () => 3 } }), 1.5);
 });
 
