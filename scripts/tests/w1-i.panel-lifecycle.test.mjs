@@ -114,3 +114,22 @@ test('sidebar status dots stop pulsing under reduced motion without viewport med
     assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\.sidebar__agent-dot--working,\s*\.sidebar__agent-dot--waiting,\s*\.sidebar__agent-dot--rate_limited,\s*\.sidebar__agent-dot--errored,\s*\.sidebar__agent-dot--waiting_on_user\s*\{\s*animation:\s*none\s*;\s*\}\s*\}/);
     assert.doesNotMatch(css, /@media[^\{]*\b(?:width|min-width|max-width)\b/i);
 });
+
+
+test('collapsed sidebar count tracks population while row rendering is suspended', async () => {
+    const { Sidebar } = await import('../../claudeville/src/presentation/shared/Sidebar.js');
+    const countEl = { textContent: '0' };
+    const sidebar = {
+        world: { agents: new Map([['one', { id: 'one' }], ['two', { id: 'two' }]]) },
+        searchIndex: { has: () => true, search: () => [] },
+        _publishSharedFilter() {},
+        _isRenderHidden: () => true,
+        _setText: (node, value) => { node.textContent = String(value); },
+        countEl,
+    };
+    Sidebar.prototype.render.call(sidebar);
+    assert.equal(countEl.textContent, '2');
+    sidebar.world.agents.delete('one');
+    Sidebar.prototype.render.call(sidebar);
+    assert.equal(countEl.textContent, '1');
+});

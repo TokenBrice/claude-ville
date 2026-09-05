@@ -8,6 +8,7 @@
  *   {"type":"response_item","payload":{"type":"message","role":"assistant","content":[...]}}
  *   {"type":"event_msg","payload":{"type":"turn_complete","usage":{...}}}
  */
+const { noteReadFailure } = require('./shared');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -1018,6 +1019,7 @@ function readUsageNumber(usage, keys) {
  */
 function getTokenUsage(filePath, entries = null) {
   const tokenUsage = {
+    availability: 'unavailable',
     totalInput: 0,
     totalOutput: 0,
     cacheRead: 0,
@@ -1062,6 +1064,7 @@ function getTokenUsage(filePath, entries = null) {
       ]);
       const { cacheRead, cacheCreate } = normalizeCacheTokens(usage, CODEX_TURN_CACHE_FIELD_MAP);
 
+      tokenUsage.availability = 'observed';
       tokenUsage.totalInput += input;
       tokenUsage.totalOutput += output;
       tokenUsage.cacheRead += cacheRead;
@@ -1076,6 +1079,7 @@ function getTokenUsage(filePath, entries = null) {
     }
 
     if (latestTokenCount) {
+      tokenUsage.availability = 'observed';
       const total = latestTokenCount.total_token_usage || {};
       const last = latestTokenCount.last_token_usage || {};
       const totalInput = readUsageNumber(total, ['input_tokens', 'inputTokens']);
@@ -1309,7 +1313,8 @@ function readSortedChildDirs(parentDir) {
       .map(d => d.name)
       .sort()
       .reverse();
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return [];
   }
 }
@@ -1320,7 +1325,8 @@ function readRolloutFileNames(dayDir) {
       .filter(f => f.startsWith('rollout-') && f.endsWith('.jsonl'))
       .sort()
       .reverse();
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return [];
   }
 }
@@ -1328,7 +1334,8 @@ function readRolloutFileNames(dayDir) {
 function statMtimeMs(filePath) {
   try {
     return fs.statSync(filePath).mtimeMs;
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return null;
   }
 }
@@ -1638,6 +1645,7 @@ class CodexAdapter {
         permissionMode: detail.permissionMode,
         turnState: detail.turnState,
         signalSource: detail.signalSource,
+        signalCertainty: detail.signalCertainty,
         turnStartedAt: detail.turnStartedAt,
         pendingTool: detail.pendingTool,
         pendingSince: detail.pendingSince,

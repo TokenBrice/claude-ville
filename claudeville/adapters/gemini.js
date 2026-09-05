@@ -16,7 +16,9 @@
  * Restore project paths: projectHash is the SHA-256 hash of cwd
  * Hash known project paths to map them
  */
+const { noteReadFailure } = require('./shared');
 const fs = require('fs');
+const { deriveTurnState } = require('./turnState');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
@@ -160,7 +162,8 @@ function getParsedSession(filePath) {
       _parsedSessionCacheRejected++;
     }
     return session;
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return null;
   }
 }
@@ -262,6 +265,7 @@ function geminiContextWindowMax(model) {
  */
 function getTokenUsage(filePath, parsedSession) {
   const tokenUsage = {
+    availability: 'unavailable',
     totalInput: 0,
     totalOutput: 0,
     cacheRead: 0,
@@ -287,6 +291,7 @@ function getTokenUsage(filePath, parsedSession) {
       const tokens = msg?.tokens;
       if (!tokens || typeof tokens !== 'object') continue;
 
+      tokenUsage.availability = 'observed';
       const input = readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.input);
       const output = readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.output);
       const { cacheRead, cacheCreate } = normalizeCacheTokens(tokens, GEMINI_CACHE_FIELD_MAP);
@@ -306,6 +311,18 @@ function getTokenUsage(filePath, parsedSession) {
   } catch { /* ignore */ }
 
   return tokenUsage;
+}
+
+function geminiTurnState(session) {
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  const last = messages.findLast(msg => msg?.type !== 'info');
+  if (!last || !['user', 'gemini'].includes(last.type)) return deriveTurnState({ known: false });
+  const pending = Array.isArray(last.toolCalls)
+    ? last.toolCalls.findLast(tool => tool && tool.result == null && !['success', 'error', 'cancelled'].includes(tool.status))
+    : null;
+  if (pending) return deriveTurnState({ pendingTool: pending.name, pendingSince: parseGeminiTimestamp(last.timestamp) });
+  // Text alone is not a recorded end-of-turn marker.
+  return deriveTurnState({ turnEnded: last.finishReason === 'STOP', turnEndedAt: parseGeminiTimestamp(last.timestamp) });
 }
 
 // ─── Session parsing ────────────────────────────────────────
@@ -548,12 +565,12 @@ function scanActiveSessions(activeThresholdMs) {
       try {
         sessionFiles = fs.readdirSync(chatsDir)
           .filter(f => f.startsWith('session-') && f.endsWith('.json'));
-      } catch { continue; }
+      } catch (error) { noteReadFailure(error); continue; }
 
       for (const file of sessionFiles) {
         const filePath = path.join(chatsDir, file);
         let stat;
-        try { stat = fs.statSync(filePath); } catch { continue; }
+        try { stat = fs.statSync(filePath); } catch (error) { noteReadFailure(error); continue; }
 
         if (now - stat.mtimeMs > activeThresholdMs) continue;
 
@@ -565,7 +582,7 @@ function scanActiveSessions(activeThresholdMs) {
         });
       }
     }
-  } catch { /* ignore */ }
+  } catch (error) { noteReadFailure(error); /* ignore */ }
 
   return results;
 }
@@ -597,6 +614,8 @@ class GeminiAdapter {
       sessions.push({
         sessionId: fullSessionId,
         provider: 'gemini',
+        sourceSessionId: parsedSession?.sessionId || null,
+        ...geminiTurnState(parsedSession),
         agentId: null,
         agentType: 'main',
         model: detail.model || 'gemini',

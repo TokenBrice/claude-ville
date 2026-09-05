@@ -2047,6 +2047,15 @@ export class IsometricRenderer {
         // survived context loss, which the lifecycle smoke reports as leaked
         // volatile pixels.
         this.postFxFeed?.dispose?.();
+        releaseCanvasBackingStore(this._semanticGroundCanvas);
+        this._semanticGroundCanvas = null;
+        this._semanticGroundKey = null;
+        releaseCanvasBackingStore(this._gpuAgentOccluderAtlas);
+        this._gpuAgentOccluderAtlas = null;
+        this._gpuAgentOccluderAtlasState = null;
+        releaseCanvasMap(this._gpuAgentOccluderUpdateCanvases);
+        this._gpuAgentOccluderUpdateCanvases = null;
+        this._gpuAgentOccluderTextureUpdates = [];
         releaseCanvasBackingStore(this._gpuAgentFrameAtlas);
         this._gpuAgentFrameAtlas = null;
         releaseCanvasBackingStore(this._gpuAgentMaterialAtlas);
@@ -2068,6 +2077,7 @@ export class IsometricRenderer {
         this._gpuAgentFrameAtlasRevision = 0;
         this._gpuAgentAtlasSlots?.clear?.();
         this._gpuAgentAtlasFrameKeys?.clear?.();
+        this._gpuAgentAtlasPoses?.clear?.();
         this._gpuAgentAtlasNextSlot = 0;
         this._gpuAgentAtlasRosterSignature = '';
         this._gpuAgentAtlasUpdatedAt = 0;
@@ -2600,7 +2610,7 @@ export class IsometricRenderer {
         // The flag is set only when the shot actually starts (5.7), so a failed
         // attempt (e.g. missing viewport) retries on the next re-frame.
         if (!this._didEstablishingShot) {
-            if (this.camera.establishingShot(this._fullIslandWorldBox(), targetBox)) {
+            if (this.camera.establishingShot(this._fullIslandWorldBox(), targetBox, { maxZoom: 1.5 })) {
                 this._didEstablishingShot = true;
                 return;
             }
@@ -2609,8 +2619,8 @@ export class IsometricRenderer {
         // 5.7 — subsequent re-frames (resize, the F key) take a short glide
         // instead of an instant snap; glideToWorld cuts directly under reduced
         // motion, and fitToWorldBox stays as the no-viewport fallback.
-        if (this.camera.glideToWorld(targetBox, { duration: 700, owner: 'system' })) return;
-        this.camera.fitToWorldBox(targetBox);
+        if (this.camera.glideToWorld(targetBox, { duration: 700, owner: 'system', maxZoom: 1.5 })) return;
+        this.camera.fitToWorldBox(targetBox, { maxZoom: 1.5 });
         this.camera._userAdjusted = false;
     }
 
@@ -4899,9 +4909,19 @@ export class IsometricRenderer {
         const sprites = this._snapshotAllSprites();
         const count = sprites.length;
         const zoom = this.camera?.zoom || 1;
-        const overlayArea = count * (zoom >= 3 ? 3900 : 2100);
+        let projectedArea = 0;
+        for (const sprite of _visibleSprites) {
+            const point = this.camera.worldToScreen(sprite.x, sprite.y);
+            if (point.x < -60 * zoom || point.x > viewport.width + 60 * zoom
+                || point.y < 0 || point.y > viewport.height + 100 * zoom) continue;
+            projectedArea += 48 * 72 * zoom * zoom;
+        }
+        const overlayArea = Math.max(count * (zoom >= 3 ? 3900 : 2100), projectedArea);
         const collisions = Number(this._crowdStats?.congestedAgents) || 0;
-        const pressure = calculateScenePressure({ sprites, viewport, zoom, overlayArea, collisions });
+        const pressure = Math.max(
+            calculateScenePressure({ sprites, viewport, zoom, overlayArea, collisions }),
+            collisions >= 5 && collisions > count / 2 ? 0.5 : 0,
+        );
         const pressureMode = annotationModeForPressure(pressure, this._annotationMode || 'full');
         this._annotationMode = pressureMode;
         if (count < 50) return pressureMode;
@@ -4913,9 +4933,9 @@ export class IsometricRenderer {
             count >= AGENT_RENDER_COMPACT_COUNT &&
             (zoom <= AGENT_RENDER_COMPACT_ZOOM || cssPixels >= AGENT_RENDER_COMPACT_CSS_PIXELS)
         ) {
-            return 'compact';
+            return pressureMode === 'minimal' ? 'minimal' : 'compact';
         }
-        return 'full';
+        return pressureMode;
     }
 
     _createRectGrid(cellSize = AGENT_OVERLAY_GRID_CELL) {
@@ -5051,14 +5071,17 @@ export class IsometricRenderer {
         compactRects.length = 0;
         nameRects.length = 0;
         reservedRects.length = 0;
-        // Names are persistent at every annotation LOD. Action labels still
-        // retain a density cap because they are transient secondary detail.
+        // Dense crowd badges carry routine identities; primary agents stay named.
+        // Action labels retain a cap because they are secondary detail.
         const actionLabelCap = agentRenderMode === 'minimal'
             ? 3
             : agentRenderMode === 'compact'
                 ? 4
                 : Infinity;
         let actionLabels = 0;
+        const namedCrowdCells = new Set();
+        const denseCrowdCells = new Set(agentRenderMode === 'full' ? []
+            : (this._crowdStats?.clusters || []).filter(cluster => cluster.count > 5).map(cluster => cluster.id));
         // Cull before priority sorting or allocating any label geometry. The
         // input is normally already the visible painter snapshot, but keeping
         // this guard here makes the layout contract safe for other callers.
@@ -5112,6 +5135,18 @@ export class IsometricRenderer {
                 sprite.nameTagSlot = 0;
                 sprite.gpuActionOverlay = true;
                 continue;
+            }
+
+            if (denseCrowdCells.size && this._isRoutineFoldCandidate(sprite)) {
+                const tile = worldToTile(sprite.x, sprite.y);
+                const cell = `${Math.floor(tile.tileX / CROWD_CLUSTER_TILE_SIZE)},${Math.floor(tile.tileY / CROWD_CLUSTER_TILE_SIZE)}`;
+                if (denseCrowdCells.has(cell)) {
+                    if (namedCrowdCells.has(cell)) {
+                        sprite.labelAlpha = 0;
+                        continue;
+                    }
+                    namedCrowdCells.add(cell);
+                }
             }
 
             const compactSlot = this._leastOverlappedCompactSlot(
@@ -5385,7 +5420,8 @@ export class IsometricRenderer {
             return false;
         }
         const spawnAge = performance.now() - (sprite.addedAt || 0);
-        if (spawnAge >= 0 && spawnAge < 12000) return false;
+        // A burst must not grant twelve seconds of overlapping names to the whole crowd.
+        if (this.agentSprites.size < 24 && spawnAge >= 0 && spawnAge < 12000) return false;
         return true;
     }
 
@@ -10778,9 +10814,12 @@ export class IsometricRenderer {
             gpuAgentAtlas: canvasPixelCount(this._gpuAgentFrameAtlas),
             gpuAgentMaterialAtlas: canvasPixelCount(this._gpuAgentMaterialAtlas),
             gpuAgentEmissiveAtlas: canvasPixelCount(this._gpuAgentEmissiveAtlas),
+            gpuAgentOccluderAtlas: canvasPixelCount(this._gpuAgentOccluderAtlas),
+            semanticGround: canvasPixelCount(this._semanticGroundCanvas),
             gpuAgentAtlasUpdateSlots: canvasMapPixelCount(this._gpuAgentAlbedoUpdateCanvases)
                 + canvasMapPixelCount(this._gpuAgentMaterialUpdateCanvases)
-                + canvasMapPixelCount(this._gpuAgentEmissiveUpdateCanvases),
+                + canvasMapPixelCount(this._gpuAgentEmissiveUpdateCanvases)
+                + canvasMapPixelCount(this._gpuAgentOccluderUpdateCanvases),
         };
         const volatilePixels = Object.values(volatile).reduce((sum, value) => sum + value, 0);
         const visibleCanvasPixels = canvasPixelCount(this.canvas);

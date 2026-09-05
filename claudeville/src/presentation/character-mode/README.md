@@ -1,6 +1,6 @@
 # World Mode Renderer
 
-World mode is the Canvas-2D isometric view that ClaudeVille shows by default. This directory owns the render loop, sprites, camera, and particles. It reads from the domain `World` and listens to the event bus; it never mutates domain state.
+World mode is the resident WebGL2 isometric view that ClaudeVille shows by default, with Canvas 2D fallback. This directory owns the render loop, sprites, camera, and particles. It reads from the domain `World` and listens to the event bus; it never mutates domain state.
 
 The directory is named `character-mode/` for historical reasons. In prose, the user-facing surface is "World mode" (paired with "Dashboard mode" under `../dashboard-mode/`).
 
@@ -59,6 +59,14 @@ The render loop keeps the scene readable by drawing in broad layers:
 5. Building labels/bubbles, particles, and atmospheric overlays.
 
 World mode renders through a three-canvas stack inside `#characterMode`: `#worldCanvas` (the 2D scene, source of truth and mouse target), `#worldFxCanvas` (WebGL2 post-process output, hidden whenever inactive), and `#worldOverlayCanvas` (2D UI: weather foreground, primary marks, labels, bubbles, screen particles, letterbox, debug — never graded or distorted). Grading ownership is exclusive: when the post stage is active the 2D multiply grade and glow/lantern stamps are skipped and the GPU reproduces them from the same `atmosphere.grade` inputs; when inactive (`?postfx=0`, no WebGL2, context loss, or ladder level 3) the 2D path draws exactly as before. Shift-D shows post-FX level and timings.
+
+Ground semantic cues (Director routes/replay/halos, relationship rings/tethers, crowd auras, and short selected/action routes) share a ground draw function. In resident WebGL they enter the terrain-first GPU record stream through one retained Canvas texture capped at 1024 pixels on its longest edge. It is absent without cues, invalidated by camera/semantic/position changes, and reuses static reduced-motion frames; ornament-only changes advance at 8 Hz. Buildings and bodies occlude this texture. Talk arcs, counts, handoffs, lifecycle annotations, and selected x-ray silhouettes draw once on the upper Canvas in all backends. Primary beacons remain readable above the atmosphere; the resident selection footprint stays on the ground.
+
+Canvas, GPU, and camera hit projections share backing-pixel-snapped translation while logical pan and zoom stay continuous. Building plaques use the sprite's manifest anchor with screen-space gap and bounded collision displacement; their leaders terminate at the owning sprite top. Under crowd pressure ordinary GPU bodies are capped at 28 world pixels; selected, hovered, waiting, errored, and rate-limited agents retain full silhouettes. Dense groups reuse the existing crowd count badges, retaining one routine name per group plus all primary names. Automatic establishing and idle focus zoom is capped at 1.5; explicit detail zoom remains available. Mass arrivals of 24 or more bypass newcomer name protection; selection through the existing Sidebar, Dashboard, or keyboard agent cycling reveals an individual immediately.
+
+The foliage pilot reuses existing oak, pine, and willow pixel sprites at cached 1× and 2× sizes, cropping their lower plinth rows. At most six sprite caches are retained. Civic foliage accents are reduced to leave quieter ground around work areas. The material pilot uses exact palette overrides only for Terra, Sonnet, and Command; albedo and emission stay unchanged. Command separates stone roof, crimson fabric, and foliage, while shared door/masonry colors stay stone. This is a small authored pilot, not a roster rollout.
+
+Agent atlas slots normally refresh at 125 ms. A measured fast-turn sequence exposed a stale selected Codex body while attachments advanced; selected, hovered, action-needed, direction-changing, and tool-changing slots now refresh immediately. Other dirty animation slots retain the ambient cadence. GPU surface animation and foliage consume the public `motionTimeMs` visual clock. Existing zero-height character geometry masks remain flat; the renderer now honors their authored value instead of manufacturing anatomical height from a default floor.
 
 When adding a visual feature, place it in the lowest layer that still communicates the state. Avoid adding per-frame work when it can be cached into terrain or static scenery.
 
@@ -198,7 +206,7 @@ For World presentation changes, run `npm run verify:render` to capture determini
 ## Frame and update notes
 
 - The render loop is plain `requestAnimationFrame`; one update tick per frame, no fixed timestep.
-- Water shimmer advances by `WATER_FRAME_STEP = 0.03` per frame and freezes to `STATIC_WATER_SHIMMER` when reduced motion is preferred.
+- Water shimmer advances from the shared visual elapsed clock and freezes when reduced motion is preferred. GPU water and wet-surface patterns use world coordinates, so camera movement does not drag the pattern across the surface.
 - The terrain is precomputed into `terrainSeed` and a `terrainCache` canvas; only water/agents/effects redraw per frame. Adding terrain variation should extend the cache, not the per-frame path.
 - Event-bus subscriptions (`agent:added`, `agent:updated`, `agent:removed`) are stored in `_unsubscribers` and torn down in `hide()`. New subscriptions in this directory should follow the same pattern to avoid leaks across mode toggles.
 - `ParticleSystem.setMotionEnabled(false)` is set when `(prefers-reduced-motion: reduce)` matches; respect this when adding new effects.

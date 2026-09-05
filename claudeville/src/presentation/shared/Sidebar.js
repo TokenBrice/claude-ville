@@ -470,6 +470,7 @@ export class Sidebar {
         }
         const searchResults = this.searchIndex.search(this._filter, agents.map(agent => agent.id));
         this._publishSharedFilter(searchResults);
+        this._setText(this.countEl, agents.length);
         if (this._isRenderHidden()) {
             this._renderWhileHidden = true;
             return;
@@ -477,7 +478,6 @@ export class Sidebar {
         this._renderWhileHidden = false;
         const matchesById = new Map(searchResults.map(match => [match.agentId, match]));
         this._reconcileWorkflowState(agents);
-        this._setText(this.countEl, agents.length);
         // Per-row extras (time in state, subagent parent link) feed
         // both the render signature and the row builder; the formatted age
         // string only changes when the displayed text would, so it stays cheap.

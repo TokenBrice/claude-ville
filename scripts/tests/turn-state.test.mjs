@@ -19,10 +19,7 @@ const {
     WaitReason,
     classifyPendingTool,
     deriveTurnState,
-    pendingThresholdMs,
     toEpochMs,
-    INSTANT_PENDING_MS,
-    VARIABLE_PENDING_MS,
 } = require('../../claudeville/adapters/turnState.js');
 
 const NOW = 1_700_000_000_000;
@@ -153,12 +150,12 @@ test('plan tools read as a review request, not an approval', () => {
     assert.equal(result.reason, WaitReason.PLAN_REVIEW);
 });
 
-test('a fast tool pending past the instant threshold is a permission prompt', () => {
-    const before = classifyPendingTool({ tool: 'Edit', pendingForMs: INSTANT_PENDING_MS - 1 });
-    const after = classifyPendingTool({ tool: 'Edit', pendingForMs: INSTANT_PENDING_MS + 1 });
+test('elapsed time is not evidence of a permission prompt', () => {
+    const before = classifyPendingTool({ tool: 'Edit', pendingForMs: 15_000 - 1 });
+    const after = classifyPendingTool({ tool: 'Edit', pendingForMs: 15_000 + 1 });
     assert.equal(before.blocked, false);
-    assert.equal(after.blocked, true);
-    assert.equal(after.reason, WaitReason.APPROVAL);
+    assert.equal(after.blocked, false);
+    assert.equal(after.reason, null);
 });
 
 test('a long-running Bash is not mistaken for a permission prompt', () => {
@@ -167,8 +164,8 @@ test('a long-running Bash is not mistaken for a permission prompt', () => {
     // ignore the badge.
     const running = classifyPendingTool({ tool: 'Bash', pendingForMs: 3 * 60_000 });
     assert.equal(running.blocked, false);
-    const stuck = classifyPendingTool({ tool: 'Bash', pendingForMs: VARIABLE_PENDING_MS + 1 });
-    assert.equal(stuck.blocked, true);
+    const stuck = classifyPendingTool({ tool: 'Bash', pendingForMs: 240_000 + 1 });
+    assert.equal(stuck.blocked, false);
 });
 
 test('bypassPermissions means a pending tool is always executing', () => {
@@ -186,9 +183,9 @@ test('acceptEdits silences edit prompts but not Bash', () => {
     });
     assert.equal(edit.blocked, false);
     const bash = classifyPendingTool({
-        tool: 'Bash', permissionMode: 'acceptEdits', pendingForMs: VARIABLE_PENDING_MS + 1,
+        tool: 'Bash', permissionMode: 'acceptEdits', pendingForMs: 240_000 + 1,
     });
-    assert.equal(bash.blocked, true);
+    assert.equal(bash.blocked, false);
 });
 
 test('bypassPermissions never suppresses an explicit question', () => {
@@ -196,12 +193,6 @@ test('bypassPermissions never suppresses an explicit question', () => {
         tool: 'AskUserQuestion', permissionMode: 'bypassPermissions', pendingForMs: 0,
     });
     assert.equal(result.blocked, true);
-});
-
-test('unknown tools get the forgiving threshold', () => {
-    assert.equal(pendingThresholdMs('mcp__something__do_a_thing'), VARIABLE_PENDING_MS);
-    assert.equal(pendingThresholdMs('Read'), INSTANT_PENDING_MS);
-    assert.equal(pendingThresholdMs(null), VARIABLE_PENDING_MS);
 });
 
 test('derived state carries the wait reason only when blocked', () => {
@@ -212,9 +203,9 @@ test('derived state carries the wait reason only when blocked', () => {
     assert.equal(running.awaitingSince, null);
 
     const blocked = deriveTurnState(
-        { pendingTool: 'Edit', pendingSince: NOW - 60_000 }, NOW,
+        { pendingTool: 'AskUserQuestion', pendingSince: NOW - 60_000 }, NOW,
     );
-    assert.equal(blocked.waitReason, WaitReason.APPROVAL);
+    assert.equal(blocked.waitReason, WaitReason.QUESTION);
     assert.equal(blocked.awaitingSince, NOW - 60_000);
 });
 

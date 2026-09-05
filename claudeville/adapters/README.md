@@ -109,14 +109,24 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `workflowId` | string \| null | Claude-only. Workflow run id (`wf_<id>`) for sub-agents spawned by the Workflow tool; null otherwise. |
 | `workflowName` | string \| null | Claude-only. Human workflow name recovered from the persisted run-script filename; null otherwise. |
 | `permissionMode` | string \| null | Claude-only. Latest `permissionMode` marker in the transcript tail window (`'default'` / `'plan'` / `'acceptEdits'` / `'bypassPermissions'`); `'plan'` means the session is in plan mode, anything else is act mode. Registry normalization sets this to null when adapters omit it. |
-| `turnState` | string | What the session is doing, from its transcript: `'working'`, `'tool_pending'` (a tool call with no result yet), `'awaiting_input'` (the turn closed and the next move is the user's), or `'unknown'` when the adapter cannot tell. Derived via `turnState.js`; Claude and Codex populate it, other providers report `'unknown'` and fall back to activity timing. |
+| `turnState` | string | What the session is doing, from its transcript: `'working'`, `'tool_pending'` (a tool call with no result yet), `'awaiting_input'` (the turn closed and the next move is the user's), or `'unknown'` when the adapter cannot tell. Derived via `turnState.js`; Claude, Codex, Kimi Code, OMP, and OpenCode populate it from their recorded lifecycle. Gemini tool calls/results and explicit finish markers, and Grok ACP tool calls/updates, provide narrower coverage; unrecognized records stay unknown. |
 | `pendingTool` | string \| null | Name of the unanswered tool call, when `turnState` is `'tool_pending'`. |
-| `pendingSince` | number \| null | ms epoch the pending call was issued. Drives the dwell-time half of the permission-prompt classifier. |
+| `pendingSince` | number \| null | ms epoch the pending call was issued. Orders unresolved calls; elapsed time never proves an approval prompt. |
 | `waitReason` | string \| null | Why the session is blocked on a person: `'question'`, `'approval'`, or `'plan_review'`. Null when a pending tool is judged to be merely executing. |
 | `awaitingSince` | number \| null | ms epoch the session started waiting on the user (or closed its turn). Orders the attention queue. |
 | `resident` | boolean | True when the server is serving a frozen snapshot of a session that has left the active window (see `services/sessionResidency.js`). |
 | `sendMessages` | array | Claude-only sender→recipient edges from `SendMessage` tool calls; the carrying session is the sender. Up to 10 most recent edges of `{ recipient, messageType, summary, ts }`: `recipient` is the raw alias from the tool input (match against `agentName`/`name`/`agentId`), `messageType` is the tool input `type` (default `'message'`), `summary` is truncated to 80 chars or null, `ts` is the transcript entry timestamp. Edges without a resolvable recipient (e.g. `shutdown_response` replies keyed by `request_id`) are skipped. Registry normalization sets this to `[]` when adapters omit it. |
 | `gitEvents` | array | Backend-extracted git `commit` / `push` events from raw tool records. Registry normalization sets this to `[]` when adapters omit it. Dry-run events are omitted. Events include `id`, `type`, `project`, `provider`, `sessionId`, `sourceId`, `ts`, and `commandHash`; `command`, `targetRef`, `success`, `exitCode`, and `completedAt` are optional metadata when the adapter can derive them. |
+
+### Observation and signal certainty
+
+Public `sessionId` remains the filename-derived dashboard identity. Hooks are keyed by provider and source ID; matching also considers `sourceSessionId`, `agentId`, and the unprefixed public ID. Gemini supplies its JSON `sessionId` as `sourceSessionId`; Codex retains its actual thread ID in `agentId`. Identical raw IDs from different providers never share overlays.
+
+Sessions and details expose `freshness: { state, observedAt, ageMs }`. A successful provider scan is `fresh`; an actual empty result removes that provider slice. Failed discovery/read keeps the last good slice `stale` for at most 60 seconds, without changing its observation time. Detail failures use the same bound and then return `state: 'unavailable'`. Dirty-cache invalidation preserves this backup. A missing provider is unavailable, and successful recovery clears staleness. Residency never extends degraded provider retention; ordinary unresolved residents carry stale observation metadata.
+
+`signalCertainty` is `observed`, `inferred`, or `unavailable`; `signalObservedAt` gives its timestamp and `signalStale` marks a last observation. A pending ordinary tool remains work however long it runs. Explicit question/review tools and approval hooks supply waiting evidence. Exact unanswered hook approvals remain last-observed waits after the 10-second fresh window, until a resolving hook/newer recorded turn or a bounded 30-minute expiry. Other hook overlays stop merging after 10 seconds and expire after 30 seconds. Gemini text and Grok message chunks alone do not assert a completed turn.
+
+Claude quota utilization is provider-qualified pressure, never evidence of enforcement. Session `rateLimit: { enforced: true }` carries an observed rejection (including Claude `stop_reason: 'rate_limited'`). Account-wide enforcement also requires matching provider and explicit account ID. An unanswered question/approval remains the primary status.
 
 ### Git event extraction
 
@@ -154,6 +164,8 @@ Reasoning-token semantics differ per provider, so usage objects carry a `reasoni
 - Codex `output_tokens` already includes `reasoning_output_tokens` (`total_tokens` = input + output), so the Codex adapter sets `reasoningInOutput: true` and cost estimation skips reasoning to avoid double pricing; the field remains available as an output breakdown.
 
 The fallback chain exists because providers rename fields between releases (Codex switched to cumulative `token_count` events; Gemini varies between camelCase and snake_case; OpenCode stores cumulative totals in SQLite columns). Adapters absorb the variance so the UI does not need provider-specific conditionals.
+
+Normalized browser usage and server cost carry `availability: 'observed' | 'partial' | 'unavailable'`. Input and output observations, including explicit zero, are billable coverage; a missing split is partial, and missing usage is unavailable. Numeric DTO slots may remain zero for arithmetic compatibility, so availability must accompany totals. Grok context occupancy explicitly has unavailable billable usage. Unavailable estimated cost is `usd: null` / `estimatedCost: null`, while observed zero remains zero. Mixed totals must disclose missing or partial coverage. Provider-reported cost remains an observed cost even if token coverage is unavailable.
 
 ### Model identity and pricing
 

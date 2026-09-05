@@ -18,9 +18,9 @@ Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when the normal temporary 
 | --- | --- | --- |
 | Adapter and turn state | `turn-state*`, `claude-*`, `omp-adapter`, `r2-02.adapter-parity` | Provider parsing, normalized sessions, identity, projection, and pending/completed turn rules. |
 | Pricing and registry | `r1-09.cache-token-normalize`, `r1-15.spend-rollup`, `r2-02.pricing`, `model-registry` | Token normalization, pricing, spend, and canonical model metadata. |
-| Renderer and GPU policy | `material-*`, `postfx-*`, `trail-*`, `canvas-budget`, `drawable-pass`, `gpu-*`, `w4-*`, `r3-*` | Admission, resources, materials, trails, atlases, and degradation policy without Canvas. |
+| Renderer and GPU policy | `astra-render-refinement`, `material-*`, `postfx-*`, `trail-*`, `canvas-budget`, `drawable-pass`, `gpu-*`, `w4-*`, `r3-*` | Admission, resources, materials, trails, atlases, and degradation policy without Canvas. |
 | DOM-stub UI | `frontend-reliability`, `ui-data-remediation`, `hook-overlay`, `r1-11.*`, `r1-19.*`, `r2-04.*`–`r2-11.*`, `r3-settings.*`, `r4-dialogue.*`, `w1-g.*`–`w1-i.*`, `w5-*` | Browser-facing code under small DOM, storage, audio, and canvas stubs. These are not browser/component tests. |
-| Server and hook tooling | `agent-hooks`, `release-changelog`, `catalog-check`, `session-residency`, `working-set`, `persistent-history`, `r1-12.*`, `r2-12.*`, `w1-*`, `w2-*`, `w3-*` | Server state, hooks, releases, catalogs, persistence, and telemetry. |
+| Server and hook tooling | `astra-runtime`, `agent-hooks`, `release-changelog`, `catalog-check`, `session-residency`, `working-set`, `persistent-history`, `r1-12.*`, `r2-12.*`, `w1-*`, `w2-*`, `w3-*` | Server state, hooks, releases, catalogs, persistence, and telemetry. |
 | Integration | `integration/*.test.mjs` | Real isolated-server HTTP/WebSocket contracts and replay pipelines; run only by `test:integration`. |
 
 ## Notable contract tests
@@ -28,6 +28,7 @@ Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when the normal temporary 
 | File | Contract |
 | --- | --- |
 | `model-registry.test.mjs` | Generated ESM/CJS resolver parity, presentation identity parity, and bidirectional registry/manifest completeness. |
+| `simulation-isolation.test.mjs` | Simulator storage, cross-tab channels and writer leases remain separate from live history; simulated freshness is explicit. |
 | `agent-hooks.test.mjs` | Destructive-command guards, fail-open input, syntax reports, session output, opt-in ingestion, and latency. |
 | `release-changelog.test.mjs` | Release header parsing, exact extraction, version rejection, and read-only/write preparation behavior. |
 | `catalog-check.test.mjs` | Smoke files, verification npm scripts, and `docs/*.md` files remain cataloged. |

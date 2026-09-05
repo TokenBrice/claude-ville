@@ -4,7 +4,7 @@ import { buildingForTool, toolCategory, toolIcon, shortToolName } from '../../do
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { repoProfile } from './RepoColor.js';
 import { el } from './DomSafe.js';
-import { formatToolDetail, hashRows, formatRelative, normalizeStatus } from './Formatters.js';
+import { formatToolDetail, hashRows, formatRelative, formatElapsed, normalizeStatus } from './Formatters.js';
 
 export const UNKNOWN_PROJECT_KEY = '_unknown';
 
@@ -81,8 +81,8 @@ export function sortAgentsByStatus(agents) {
 }
 
 export function providerPresentation(provider, identity = null) {
-    const key = String(provider || 'claude').toLowerCase();
-    const badge = PROVIDER_BADGES[key] || PROVIDER_BADGES.claude;
+    const key = String(provider || 'unknown').toLowerCase();
+    const badge = PROVIDER_BADGES[key] || { label: String(provider || 'Unknown'), color: '#c6c6d2', bg: 'rgba(139,139,158,0.14)' };
     return {
         key,
         icon: PROVIDER_ICONS[key] || '?',
@@ -213,8 +213,80 @@ export function toolHistorySignature(tools, { limit, detailLength }) {
     return `${limited.length}|${hashRows(limited, [
         row => row?.ts || 0,
         row => row?.tool || '',
-        row => (row?.detail || '').slice(0, detailLength),
+        row => row?.detail || '',
     ])}`;
+}
+
+const PIXEL_ICON_PATHS = Object.freeze({
+    read: 'M2 2h5l1 1 1-1h5v11H9l-1 1-1-1H2V2Zm2 2v7h3V4H4Zm5 0v7h3V4H9Z',
+    search: 'M3 1h6v1h2v2h1v5h-2v2H5v-1H3V8H2V3h1V1Zm2 2v1H4v4h1v1h4V8h1V4H9V3H5Zm5 8h2v1h1v1h2v2h-3v-1h-1v-1h-1v-2Z',
+    write: 'M11 1h2v1h1v2h-1v1h-2V4h-1V2h1V1ZM9 4h1v1h1v1l-7 7H2v-2l7-7ZM2 14h12v1H2v-1Z',
+    exec: 'M9 1H7L3 9h4l-1 6 7-9H9l2-5H9Z',
+    task: 'M3 2h3V1h4v1h3v13H3V2Zm3 1v2h4V3H6ZM5 7v2h2V7H5Zm3 0v1h3V7H8Zm-3 4v2h2v-2H5Zm3 0v1h3v-1H8Z',
+    other: 'M2 3h12v9H9l-3 3v-3H2V3Zm2 2v1h8V5H4Zm0 3v1h6V8H4Z',
+    harbor: 'M7 1h2v2h1v3H9v5h3V9h2v4h-2v1H9v1H7v-1H4v-1H2V9h2v2h3V6H6V3h1V1Z',
+});
+
+export function pixelIcon(kind = 'other') {
+    const aliases = { archive: 'read', observatory: 'search', forge: 'write', mine: 'exec', command: 'task', taskboard: 'task', watchtower: 'search', portal: 'other' };
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('class', 'cv-pixel-icon');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('fill', 'currentColor');
+    path.setAttribute('fill-rule', 'evenodd');
+    path.setAttribute('d', PIXEL_ICON_PATHS[aliases[kind] || kind] || PIXEL_ICON_PATHS.other);
+    svg.appendChild(path);
+    return svg;
+}
+
+export function inspectableText(text, { summary = 'Inspect available text', key = '', truncated = false } = {}) {
+    const value = String(text ?? '');
+    const node = el('details', {
+        className: 'cv-inspection',
+        dataset: { detailKey: key, detailSignature: JSON.stringify([summary, value, truncated]) },
+    }, [
+        el('summary', { text: summary }),
+        el('pre', { className: 'cv-inspection__text', text: value }),
+        truncated ? el('div', { className: 'cv-inspection__note', text: 'The provider supplied a truncated excerpt.' }) : null,
+    ]);
+    return node;
+}
+
+// Reuse unchanged disclosures so polling preserves expansion, focus and selected text.
+export function replaceDetailRows(container, nodes) {
+    const previous = new Map([...container.children].map(node => [node.dataset.detailKey, node]));
+    const active = document.activeElement;
+    const desired = nodes.map(node => {
+        const old = previous.get(node.dataset.detailKey);
+        if (old && old.dataset.detailSignature === node.dataset.detailSignature) return old;
+        if (old?.open) node.open = true;
+        if (old?.contains(active)) node._restoreFocus = true;
+        return node;
+    });
+    for (const child of [...container.children]) if (!desired.includes(child)) child.remove();
+    desired.forEach((node, index) => {
+        if (container.children[index] !== node) container.insertBefore(node, container.children[index] || null);
+        if (node._restoreFocus) { node.querySelector('summary')?.focus({ preventScroll: true }); delete node._restoreFocus; }
+    });
+    if (active?.isConnected && container.contains(active) && document.activeElement !== active) active.focus?.({ preventScroll: true });
+}
+
+export function detailFreshnessLabel(agent, cacheState, now = Date.now()) {
+    const server = cacheState?.value?.freshness || agent?.freshness;
+    const stale = server?.state === 'stale' || (cacheState?.hasEntry && !cacheState.isFresh);
+    if (!stale) return '';
+    const observedAt = Number(server?.observedAt) || Number(cacheState?.entry?.at);
+    const age = observedAt ? Math.max(0, now - observedAt) : Number(server?.ageMs ?? cacheState?.age);
+    return Number.isFinite(age) ? `Cached · updated ${formatElapsed(age)} ago` : 'Cached · update unavailable';
+}
+
+export function signalProvenance(agent) {
+    const source = agent?.signalSource === 'hook' ? 'HOOK' : 'TRANSCRIPT';
+    const certainty = agent?.signalCertainty || (agent?.signalSource === 'hook' ? 'observed' : 'inferred');
+    return `${source} · ${certainty}${agent?.signalStale ? ' · stale' : ''}`;
 }
 
 export function toolHistoryNodes(tools, options = {}) {
@@ -244,7 +316,7 @@ export function toolHistoryNodes(tools, options = {}) {
             }),
         ];
     }
-    return [...limited].reverse().map((entry) => {
+    return [...limited].reverse().map((entry, index) => {
         const cat = includeCategoryClasses ? toolCategory(entry.tool) : '';
         const categoryClass = cat ? `tool-cat--${cat}` : '';
         const rawDetail = entry.detail == null ? '' : String(entry.detail);
@@ -254,8 +326,7 @@ export function toolHistoryNodes(tools, options = {}) {
         const children = [
             el('span', {
                 className: [iconClass, categoryClass],
-                text: toolIcon(entry.tool),
-            }),
+            }, [pixelIcon(toolCategory(entry.tool))]),
             el('span', {
                 className: [nameClass, categoryClass],
                 text: shortToolName(entry.tool),
@@ -272,6 +343,11 @@ export function toolHistoryNodes(tools, options = {}) {
                 text: formatRelative(Number(entry.ts) || 0),
             }));
         }
-        return el('div', { className: itemClass }, children);
+        const key = String(entry.id || `${entry.ts || index}:${entry.tool || ''}`);
+        const node = inspectableText(rawDetail, { key, truncated: entry.truncated === true || entry.detailTruncated === true });
+        node.classList.add(itemClass);
+        node.dataset.detailSignature = JSON.stringify(entry);
+        node.querySelector('summary').replaceChildren(...children);
+        return node;
     });
 }

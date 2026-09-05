@@ -13,7 +13,9 @@
  * Active process index (optional hint, not required for discovery):
  *   ~/.grok/active_sessions.json → [{ session_id, pid, cwd, opened_at }]
  */
+const { noteReadFailure } = require('./shared');
 const fs = require('fs');
+const { deriveTurnState } = require('./turnState');
 const path = require('path');
 const os = require('os');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
@@ -117,7 +119,8 @@ function readJsonFile(filePath) {
   try {
     if (!fs.existsSync(filePath)) return null;
     return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return null;
   }
 }
@@ -155,7 +158,8 @@ function getSummary(summaryPath, fileStat = null) {
     _summaryCache.set(summaryPath, { key, summary });
     trimCache(_summaryCache, SESSION_CACHE_MAX);
     return summary;
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return null;
   }
 }
@@ -242,7 +246,8 @@ function listSessionDirs() {
   try {
     projectDirs = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'));
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return results;
   }
 
@@ -252,7 +257,8 @@ function listSessionDirs() {
     let projectMtimeMs = 0;
     try {
       projectMtimeMs = fs.statSync(projectPath).mtimeMs;
-    } catch {
+    } catch (error) {
+      noteReadFailure(error);
       continue;
     }
     const cached = _projectSessionsCache.get(projectPath);
@@ -267,7 +273,8 @@ function listSessionDirs() {
     try {
       sessionDirs = fs.readdirSync(projectPath, { withFileTypes: true })
         .filter((entry) => entry.isDirectory());
-    } catch {
+    } catch (error) {
+      noteReadFailure(error);
       continue;
     }
 
@@ -385,6 +392,7 @@ function parseLiveDetail(entry, project = null) {
     lastToolInput: null,
     lastMessage: null,
     contextTokens: 0,
+    lifecycle: deriveTurnState({ known: false }),
     dialogueCandidates: [],
     observedSources: emptyObservedSources(),
   };
@@ -427,6 +435,20 @@ function parseLiveDetail(entry, project = null) {
   // shared.readJsonLines already returns parsed objects.
   if (fs.existsSync(entry.updatesPath)) {
     const records = readJsonLines(entry.updatesPath, { from: 'end', count: DETAIL_SCAN_LINES });
+    const pending = new Map();
+    let known = false;
+    for (const record of records) {
+      const update = record?.params?.update || record?.update;
+      const kind = update?.sessionUpdate;
+      if (kind === 'user_message_chunk') { known = true; pending.clear(); }
+      if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') known = true;
+      if (kind === 'tool_call' && update.toolCallId) {
+        known = true;
+        pending.set(update.toolCallId, { pendingTool: toolNameFromUpdate(update) || 'tool', pendingSince: recordTimestampMs(record, { includeMeta: true }) });
+      }
+      if (kind === 'tool_call_update' && ['completed', 'failed'].includes(update.status)) pending.delete(update.toolCallId);
+    }
+    detail.lifecycle = deriveTurnState({ known, ...[...pending.values()].at(-1) });
     for (let i = records.length - 1; i >= 0; i--) {
       const record = records[i];
       if (!record || typeof record !== 'object') continue;
@@ -496,6 +518,21 @@ function parseLiveDetail(entry, project = null) {
   // chat_history fallback for last tool / assistant text when updates are sparse.
   if ((!detail.lastTool || !detail.lastMessage) && fs.existsSync(entry.chatPath)) {
     const records = readJsonLines(entry.chatPath, { from: 'end', count: 80 });
+    if (detail.lifecycle.turnState === 'unknown') {
+      const pending = new Map();
+      let known = false;
+      for (const record of records) {
+        if (record?.type === 'user') { known = true; pending.clear(); }
+        if (record?.type === 'assistant') {
+          known = true;
+          for (const call of Array.isArray(record.tool_calls) ? record.tool_calls : []) {
+            if (call.id) pending.set(call.id, { pendingTool: call.name || 'tool', pendingSince: recordTimestampMs(record, { includeMeta: true }) });
+          }
+        }
+        if (record?.type === 'tool_result') pending.delete(record.tool_call_id);
+      }
+      detail.lifecycle = deriveTurnState({ known, ...[...pending.values()].at(-1) });
+    }
     for (let i = records.length - 1; i >= 0; i--) {
       const record = records[i];
       if (!record || typeof record !== 'object') continue;
@@ -677,6 +714,7 @@ function buildTokenUsage(summary, liveDetail) {
 
   if (!contextWindow) {
     return {
+      availability: 'unavailable',
       input: 0,
       output: 0,
       cacheRead: cacheTokens.cacheRead,
@@ -689,6 +727,7 @@ function buildTokenUsage(summary, liveDetail) {
   // ACP update stream, not a full input/output split. Treat it as context
   // window occupancy so the UI can show a meter without inventing costs.
   return {
+    availability: 'unavailable',
     input: 0,
     output: 0,
     cacheRead: cacheTokens.cacheRead,
@@ -759,13 +798,14 @@ class GrokAdapter {
       try {
         sessionStat = fs.statSync(entry.dir);
         summaryStat = fs.statSync(entry.summaryPath);
-      } catch {
+      } catch (error) {
+        noteReadFailure(error);
         pass.statErrors += 1;
         pass.filesSkippedBeforeRead += 1;
         continue;
       }
 
-      const ageMs = now - Math.max(sessionStat.mtimeMs, summaryStat.mtimeMs);
+      const ageMs = now - sessionActivityMs(entry, null, { sessionStat, summaryStat });
       if (inactiveByAge(ageMs, threshold)) {
         pass.filesSkippedBeforeRead += 1;
         continue;
@@ -822,6 +862,7 @@ class GrokAdapter {
         lastMessage: live.lastMessage,
         dialogue: pickDialogue(live.dialogueCandidates, { now: Date.now() }),
         observedSources: live.observedSources,
+        ...live.lifecycle,
         tokenUsage: buildTokenUsage(summary, live),
         parentSessionId: parentUuid ? `grok-${parentUuid}` : null,
         reasoningEffort: summary.reasoning_effort || null,

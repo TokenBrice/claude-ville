@@ -56,6 +56,7 @@ export function initialVillageState() {
         providers: [],
         providersKnown: false,
         agentCount: 0,
+        source: null,
         sourceFailed: false,
         failureCode: null,
         storage: { chronicle: 'unknown' },
@@ -147,6 +148,7 @@ export function reduceVillageState(state = initialVillageState(), action = {}) {
             break;
 
         case 'snapshot':
+            if (action.source) next.source = String(action.source);
             next.agentCount = Math.max(0, Number(action.agentCount) || 0);
             next.link.lastSnapshotAt = Number(action.at) || Date.now();
             next.link.attempts = 0;
@@ -200,6 +202,7 @@ export function reduceVillageState(state = initialVillageState(), action = {}) {
  * discount the scene. Returns false while still syncing: unknown is not stale.
  */
 export function isStale(state, now = Date.now(), staleAfterMs = DEFAULT_STALE_AFTER_MS) {
+    if (state?.source === 'simulator') return false;
     const at = state?.link?.lastSnapshotAt;
     if (!at) return false;
     return (now - at) > staleAfterMs;
@@ -240,6 +243,7 @@ export function bootStatusText(state) {
  * contract exists to remove.
  */
 export function linkStatusText(state, now = Date.now()) {
+    if (state?.source === 'simulator') return 'SIMULATED';
     const link = state?.link || {};
     if (!link.lastSnapshotAt) return 'SYNCING';
     if (isStale(state, now)) {

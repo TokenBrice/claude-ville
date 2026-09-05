@@ -22,7 +22,7 @@ export const SESSION_FIELD_CONTRACT = Object.freeze([
   { key: 'tokenUsage', requirement: 'nullable', types: ['object'] },
   { key: 'tokens', requirement: 'optional', types: ['object'], nullable: true },
   { key: 'usage', requirement: 'optional', types: ['object'], nullable: true },
-  { key: 'estimatedCost', requirement: 'required', types: ['number'] },
+  { key: 'estimatedCost', requirement: 'nullable', types: ['number'] },
   { key: 'cost', requirement: 'required', types: ['object'] },
   { key: 'taskProgress', requirement: 'nullable', types: ['object'] },
   { key: 'tasks', requirement: 'required', types: ['array'], maxLength: 12 },
@@ -41,6 +41,9 @@ export const SESSION_FIELD_CONTRACT = Object.freeze([
   { key: 'awaitingSince', requirement: 'nullable', types: ['number'] },
   { key: 'turnStartedAt', requirement: 'nullable', types: ['number'] },
   { key: 'lastTurnDurationMs', requirement: 'nullable', types: ['number'] },
+  { key: 'freshness', requirement: 'required', types: ['object'] },
+  { key: 'signalCertainty', requirement: 'required', types: ['string'] },
+  { key: 'signalObservedAt', requirement: 'nullable', types: ['number'] },
   { key: 'signalSource', requirement: 'required', types: ['string'] },
   { key: 'workingSet', requirement: 'required', types: ['array'], maxLength: 16 },
   { key: 'resident', requirement: 'required', types: ['boolean'] },
@@ -99,3 +102,10 @@ export function assertSessionContract(session, label = 'session') {
   }
 }
 
+// Independent successful scans have distinct observation times; content and
+// freshness state still must agree across HTTP, full snapshots, and deltas.
+export function stableSessionObservation(session) {
+  assert.ok(Number.isFinite(session.freshness?.observedAt));
+  assert.ok(Number.isFinite(session.freshness?.ageMs) && session.freshness.ageMs >= 0);
+  return { ...session, freshness: { ...session.freshness, observedAt: 0, ageMs: 0 } };
+}

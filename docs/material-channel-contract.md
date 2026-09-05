@@ -66,8 +66,7 @@ Stable material classes, in numeric encoding order, are:
 | 10 | `fire` | Semantic emission, no key-light response |
 
 Append new classes; never reorder these indices. The authored key convention is
-warm light from screen upper-left with quantized response bands
-`0.72 / 0.86 / 1.00 / 1.12`.
+warm light from screen upper-left. The direct GPU renderer currently reaches two restrained material-wide response bands, `0.86 / 1.00`; it does not infer roof or wall normals.
 
 ## Manifest Fields
 
@@ -116,6 +115,13 @@ The committed pilot atlas has identical rectangles and padding in every channel:
 - `emissive`: authored RGB with A as contribution; transparent black by default.
 - `occluder`: R = authored height (zero in the flat default), G = occlusion
   strength, B reserved, A = albedo alpha. `mode: none` is transparent.
+
+The direct GPU renderer samples the occluder companion separately from the raw
+material map. Material alpha also marks presence: opaque class zero is authored unlit, not the provider fallback. Nonzero occluder companion alpha explicitly marks authored geometry:
+R (including zero) overrides default elevation; G overrides default occlusion
+strength. Uncovered pixels use record defaults. Default strength is per vertex,
+never a batch-wide height floor. Agent geometry follows the same atlas slots and
+update cadence as albedo, including padded equipped Codex frames.
 
 Generated emissive defaults come only from named semantic sources and existing
 window/light anchors. The tooling does not infer emission from luminance.

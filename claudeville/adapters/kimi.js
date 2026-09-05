@@ -14,6 +14,7 @@
  *   {"timestamp": <unix_ts>, "message": {"type": "ContentPart", "payload": {"type": "text", "text": "..."}}}
  *   {"timestamp": <unix_ts>, "message": {"type": "StatusUpdate", "payload": {"token_usage": {"input_other": N, "output": N, "input_cache_read": N, "input_cache_creation": N}, "context_tokens": N, "max_context_tokens": N}}}
  */
+const { noteReadFailure } = require('./shared');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -768,6 +769,7 @@ function getRecentMessages(filePath, maxItems = 5) {
 
 function getTokenUsage(filePath, wireEntries = null) {
   const emptyUsage = {
+    availability: 'unavailable',
     input: 0,
     output: 0,
     cacheRead: 0,
@@ -814,6 +816,7 @@ function getTokenUsage(filePath, wireEntries = null) {
     }
 
     return {
+      availability: turnCount > 0 ? 'observed' : 'unavailable',
       input: totalInput,
       output: totalOutput,
       cacheRead: totalCacheRead,
@@ -1247,6 +1250,7 @@ function getRecentMessagesV2(filePath, maxItems = 5) {
 
 function emptyKimiCodeUsage(contextWindowMax = 0) {
   return {
+    availability: 'unavailable',
     input: 0,
     output: 0,
     cacheRead: 0,
@@ -1286,6 +1290,7 @@ function getTokenUsageV2(filePath, contextWindowMax = 0, wireEntries = null) {
     }
 
     return {
+      availability: turnCount > 0 ? 'observed' : 'unavailable',
       input: totalInput,
       output: totalOutput,
       cacheRead: totalCacheRead,
@@ -1368,7 +1373,8 @@ function discoverKimiCodeWires() {
   try {
     workspaceDirs = fs.readdirSync(KIMI_CODE_SESSIONS_DIR, { withFileTypes: true })
       .filter(d => d.isDirectory());
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return records;
   }
 
@@ -1377,7 +1383,7 @@ function discoverKimiCodeWires() {
     let sessionDirs;
     try {
       sessionDirs = fs.readdirSync(wsPath, { withFileTypes: true }).filter(d => d.isDirectory());
-    } catch { continue; }
+    } catch (error) { noteReadFailure(error); continue; }
 
     for (const sDir of sessionDirs) {
       const sessionDirName = sDir.name;
@@ -1386,7 +1392,7 @@ function discoverKimiCodeWires() {
       let agentDirs;
       try {
         agentDirs = fs.readdirSync(agentsDir, { withFileTypes: true }).filter(d => d.isDirectory());
-      } catch { continue; }
+      } catch (error) { noteReadFailure(error); continue; }
       records.push({
         sessionDirName,
         sessionPath,
@@ -1395,7 +1401,8 @@ function discoverKimiCodeWires() {
           const wirePath = path.join(agentsDir, aDir.name, 'wire.jsonl');
           try {
             return [{ agentName: aDir.name, wirePath, stat: fs.statSync(wirePath) }];
-          } catch {
+          } catch (error) {
+            noteReadFailure(error);
             return [];
           }
         }),
@@ -1648,7 +1655,8 @@ function discoverLegacyKimiWires() {
   try {
     projectDirs = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
       .filter(d => d.isDirectory());
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return records;
   }
 
@@ -1659,14 +1667,14 @@ function discoverLegacyKimiWires() {
     try {
       sessionDirs = fs.readdirSync(projPath, { withFileTypes: true })
         .filter(d => d.isDirectory());
-    } catch { continue; }
+    } catch (error) { noteReadFailure(error); continue; }
 
     for (const sessionDir of sessionDirs) {
       const sessionId = sessionDir.name;
       const sessionPath = path.join(projPath, sessionId);
       const wirePath = path.join(sessionPath, 'wire.jsonl');
       let stat;
-      try { stat = fs.statSync(wirePath); } catch { continue; }
+      try { stat = fs.statSync(wirePath); } catch (error) { noteReadFailure(error); continue; }
       records.push({
         projectHash,
         sessionId,
@@ -1733,7 +1741,7 @@ class KimiAdapter {
             parentSessionId: null,
           });
         }
-      } catch { /* ignore */ }
+      } catch (error) { noteReadFailure(error); /* ignore */ }
     }
 
     sessions.push(...getActiveSessionsV2(activeThresholdMs, now));
@@ -1780,7 +1788,7 @@ class KimiAdapter {
           });
         }
       }
-    } catch { /* ignore */ }
+    } catch (error) { noteReadFailure(error); /* ignore */ }
 
     return createDetailResponse({ sessionId });
   }

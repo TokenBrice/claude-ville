@@ -9,7 +9,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { startIsolatedServer } from '../../smoke/support/isolated-server.mjs';
-import { assertSessionContract } from '../support/session-contract.mjs';
+import { assertSessionContract, stableSessionObservation } from '../support/session-contract.mjs';
 import { makeTempDir } from '../support/tmp.mjs';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -186,7 +186,7 @@ test('HTTP sessions and WebSocket init honor the client session contract', { tim
     assert.ok(httpSessions.size > 0, 'fixture server must expose at least one session');
     assert.deepEqual([...wsSessions.keys()].sort(), [...httpSessions.keys()].sort(), 'HTTP and WebSocket sessionIds must agree');
     for (const [sessionId, httpSession] of httpSessions) {
-      assert.deepEqual(wsSessions.get(sessionId), httpSession, `HTTP and WebSocket session ${sessionId} must agree`);
+      assert.deepEqual(stableSessionObservation(wsSessions.get(sessionId)), stableSessionObservation(httpSession), `HTTP and WebSocket session ${sessionId} must agree`);
     }
   } finally {
     await server?.stop();

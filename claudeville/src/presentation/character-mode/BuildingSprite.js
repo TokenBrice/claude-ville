@@ -725,10 +725,13 @@ export class BuildingSprite {
                 ? '#ff755d'
                 : this._occupancyAccent(baseAccent, occupancy.state);
             const textColor = isHovered ? '#fff6cf' : isLandmark ? '#ffe7a3' : '#e8c982';
-            const baseY = Math.round(center.y - dims.h - (isHovered ? 34 : isLandmark ? 28 : 24));
+            const anchorY = this.assets.getAnchor(`building.${b.type}`)?.[1] ?? dims.h;
+            const firstOpaque = this.assets.getMask?.(`building.${b.type}`)?.indexOf(1) ?? 0;
+            const spriteTop = Math.round(center.y - anchorY) + Math.floor(Math.max(0, firstOpaque) / dims.w);
+            const baseY = spriteTop - (isHovered ? 34 : isLandmark ? 28 : 24) * labelScale;
             const baseX = center.x;
 
-            const blocksAgentRectangles = isHovered || (isLandmark && zoom >= LABEL_DETAIL_ZOOM);
+            const blocksAgentRectangles = true;
             const labelAttempts = this._labelRenderAttempts(b, {
                 isHovered,
                 isLandmark,
@@ -785,9 +788,9 @@ export class BuildingSprite {
                 const tagW = Math.ceil(Math.max(tw, subTw + subIconSpace) + attempt.iconSize + attempt.iconGap + attempt.padX * 2 + (isLandmark ? 8 : 0));
                 const tagH = attempt.tagH;
                 const layout = this._resolveLabelLayout({
-                    candidates: this._labelLayoutCandidates(isLandmark, isHovered),
+                    candidates: this._labelLayoutCandidates(isLandmark, isHovered).map(({ dx, dy }) => ({ dx: dx * labelScale, dy: dy * labelScale })),
                     occupied,
-                    occupiedExternal: blocksAgentRectangles ? normalizedOccupiedBoxes : [],
+                    occupiedExternal: normalizedOccupiedBoxes,
                     centerX: baseX,
                     centerY: baseY,
                     tagW: tagW * labelScale,
@@ -879,7 +882,7 @@ export class BuildingSprite {
 
             const notch = isHovered || isLandmark ? 6 : 4;
             const isHarborLedger = b.type === 'harbor' && (displaySubText || displaySubRows.length);
-            const poleBottom = Math.min(center.y - dims.h * 0.52, tagTop + tagH + (isHovered ? 18 : isLandmark ? 14 : 7));
+            const poleBottom = spriteTop + 2 * labelScale;
 
             ctx.globalAlpha = isHovered ? 1 : degraded ? labelAlpha : isLandmark ? 0.96 : 0.78;
             ctx.strokeStyle = isHovered ? 'rgba(255, 242, 197, 0.9)' : isHarborLedger ? 'rgba(113, 73, 31, 0.92)' : isLandmark ? 'rgba(242, 211, 107, 0.72)' : 'rgba(215, 185, 121, 0.62)';
@@ -1007,12 +1010,12 @@ export class BuildingSprite {
             ctx.lineWidth = isHovered ? 2 : 1;
             ctx.beginPath();
             ctx.moveTo(bx, by + (tagH / 2 - 1) * labelScale);
-            ctx.lineTo(bx, poleBottom);
+            ctx.lineTo(baseX, poleBottom);
             ctx.stroke();
 
             ctx.fillStyle = isHovered ? 'rgba(255, 232, 166, 0.62)' : 'rgba(151, 99, 43, 0.46)';
             ctx.beginPath();
-            ctx.ellipse(bx, poleBottom + 1, isHovered ? 5 : 3, isHovered ? 2 : 1.5, 0, 0, Math.PI * 2);
+            ctx.ellipse(baseX, poleBottom + 1, isHovered ? 5 : 3, isHovered ? 2 : 1.5, 0, 0, Math.PI * 2);
             ctx.fill();
 
             ctx.restore();

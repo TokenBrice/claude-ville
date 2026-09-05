@@ -9,6 +9,7 @@
     flex-direction: column;
     gap: 16px;
     /* warm-dark field tokens reused by every parchment surface below */
+    --cv-text-muted: #c6b08a;
     --cv-parchment-glint: rgba(var(--cv-dash-glint-rgb), 0.13);
     --cv-parchment-warm: rgba(55, 36, 24, 0.95);
     --cv-parchment-deep: rgba(15, 10, 9, 0.96);
@@ -1073,12 +1074,12 @@
 .dash-card__row {
     display: grid;
     grid-template-columns:
-        118px minmax(95px, 0.7fr) 126px minmax(120px, 1fr)
-        minmax(125px, 1fr) minmax(145px, 1.1fr) 120px 145px;
+        128px minmax(90px, .8fr) 102px minmax(120px, 2fr)
+        minmax(90px, .8fr) minmax(110px, 1.3fr) 92px 80px;
     align-items: center;
     gap: 7px;
     width: 100%;
-    min-height: 38px;
+    min-height: 58px;
     padding: 4px 8px;
     color: var(--cv-tan);
     text-align: left;
@@ -1169,8 +1170,8 @@
 .dash-card__row-label {
     overflow: hidden;
     color: var(--cv-text-muted);
-    font: 10px var(--font-display);
-    letter-spacing: 0.5px;
+    font: var(--fs-label) var(--font-body);
+    letter-spacing: 0.3px;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -1203,17 +1204,27 @@
 }
 
 .dash-card__row .dash-card__status {
-    min-width: 0;
-    padding: 2px 5px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    display: grid;
+    grid-template-columns: 6px 1fr;
+    gap: 4px 6px;
+    padding: 4px 0;
+    border: 0;
+    background: none;
+    box-shadow: none;
+    font: var(--fs-data) var(--font-body);
+    white-space: normal;
 }
 
-.dash-card__row .dash-card__status-label,
 .dash-card__row .dash-card__status-elapsed {
-    overflow: hidden;
-    text-overflow: ellipsis;
+    grid-column: 2;
+    color: var(--cv-text-muted);
+    text-transform: none;
+    font-size: var(--fs-label);
+}
+
+.dash-card__row .dash-card__status-label {
+    overflow-wrap: normal;
+    line-height: 1.35;
 }
 
 .dash-card__row .dash-card__usage {
@@ -1323,3 +1334,17 @@
             var(--cv-elev-1);
     }
 }
+
+.dash-card__tool-item.cv-inspection { display: block; }
+.dash-card__tool-item.cv-inspection > summary { display: flex; gap: 6px; align-items: baseline; }
+.dash-card__tool-item.cv-inspection > summary::before { content: '▸'; color: var(--cv-tan); }
+.dash-card__tool-item.cv-inspection[open] > summary::before { content: '▾'; }
+.dash-card__message:has(.cv-inspection), .dash-card__tool-detail:has(.cv-inspection) { overflow: visible; white-space: normal; max-height: none; }
+.dash-card__stale-badge { white-space: normal; text-transform: none; font: var(--fs-data)/var(--lh-body) var(--font-body); }
+
+.dash-card__signal-source { overflow: visible; white-space: normal; }
+.dash-card__current-tool--idle { display: none; }
+
+.dash-card__row .dash-card__usage { grid-template-columns: minmax(0, 1fr); }
+.dash-card__row .dash-card__usage-tokens, .dash-card__row .dash-card__usage-cost { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.dashboard-attention__item { border-color: rgba(199, 157, 76, .65); }

@@ -468,6 +468,49 @@ test('ActivityPanel stops periodic work while hidden and resumes once visible', 
     }
 });
 
+test('AssetManager settles image callbacks after success, fallback, failure and abort', async () => {
+    const previousImage = globalThis.Image;
+    const images = [];
+    globalThis.Image = class {
+        constructor() { images.push(this); }
+        set src(value) { this.path = value; }
+    };
+    try {
+        const manager = new AssetManager();
+        for (const method of ['_loadImage', '_loadOptionalImage']) {
+            const success = manager[method]('success.png');
+            const image = images.at(-1);
+            await image.onload();
+            assert.equal((await success).ok, true);
+            assert.equal(image.onload, null);
+            assert.equal(image.onerror, null);
+        }
+        const optionalFailure = manager._loadOptionalImage('missing.png');
+        images.at(-1).onerror();
+        assert.equal((await optionalFailure).ok, false);
+        for (const fallbackSucceeds of [true, false]) {
+            const requiredFailure = manager._loadImage('missing.png');
+            images.at(-1).onerror();
+            const placeholder = images.at(-1);
+            placeholder[fallbackSucceeds ? 'onload' : 'onerror']();
+            assert.equal((await requiredFailure).ok, false);
+        }
+        for (const method of ['_loadImage', '_loadOptionalImage']) {
+            const controller = new AbortController();
+            const pending = manager[method]('pending.png', { signal: controller.signal });
+            controller.abort();
+            if (method === '_loadImage') await assert.rejects(pending, { name: 'AbortError' });
+            else assert.equal((await pending).reason, 'aborted');
+        }
+        for (const image of images) {
+            assert.equal(image.onload, null, image.path);
+            assert.equal(image.onerror, null, image.path);
+        }
+    } finally {
+        globalThis.Image = previousImage;
+    }
+});
+
 test('AssetManager releases decoded World assets and restarts an interrupted resume', async () => {
     const manager = new AssetManager();
     manager.manifest = { style: { assetVersion: 'test' } };

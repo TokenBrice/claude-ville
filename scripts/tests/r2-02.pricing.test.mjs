@@ -93,7 +93,7 @@ test('server and browser estimates agree on cost provenance', () => {
       const server = estimateServerCost(SAMPLE_USAGE, model, provider);
       const browser = TokenUsage.estimateCost(SAMPLE_USAGE, model, provider);
       assert.deepEqual(
-        { usd: browser.usd, rateMatch: browser.rateMatch, unknownModel: browser.unknownModel },
+        { availability: browser.availability, usd: browser.usd, rateMatch: browser.rateMatch, unknownModel: browser.unknownModel },
         server,
         `${tableName} estimate differs between server and browser`,
       );
@@ -127,6 +127,7 @@ test('rate selection shape and session payload expose F1 provenance', () => {
   assert.equal(session.estimatedCost, session.cost.usd);
   assert.deepEqual(session.cost, {
     usd: 15.6875,
+    availability: 'observed',
     source: 'estimate',
     rateMatch: 'fable-5-1',
     rateRevision: pricing.revision,

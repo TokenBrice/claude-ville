@@ -14,6 +14,7 @@
  */
 
 const { classifyPendingTool } = require('../adapters/turnState');
+const { HOOK_WAIT_RETENTION_MS } = require('../adapters/hooks');
 
 const DEFAULT_TTL_MS = 45 * 60 * 1000;
 const DEFAULT_MAX_RESIDENTS = 24;
@@ -46,7 +47,7 @@ class SessionResidency {
       // resumed; refreshing a still-live retained session is not a resumption.
       if (previous?.absent) this._stats.resumed++;
       this._residents.delete(id);
-      if (RETAINED_TURN_STATES.has(session.turnState)) {
+      if (RETAINED_TURN_STATES.has(session.turnState) && session.freshness?.state !== 'stale') {
         if (!previous) this._stats.admitted++;
         this._residents.set(id, {
           session: { ...session },
@@ -61,7 +62,9 @@ class SessionResidency {
     // one last time on its way out.
     for (const [id, record] of [...this._residents]) {
       if (liveIds.has(id)) continue;
-      if (now - record.lastLiveAt > this.ttlMs) {
+      const hookExpired = record.session.signalSource === 'hook' && record.session.waitReason
+        && record.session.signalObservedAt != null && now - record.session.signalObservedAt >= HOOK_WAIT_RETENTION_MS;
+      if (hookExpired || now - record.lastLiveAt > this.ttlMs) {
         this._residents.delete(id);
         this._stats.expired++;
       }
@@ -77,16 +80,16 @@ class SessionResidency {
     return out;
   }
 
-  // A resident's transcript is frozen, but how long it has been waiting is not.
-  // Re-run the pending-tool classification so a call that merely looked slow
-  // when the session went quiet is recognised as blocked once it has sat long
-  // enough.
+  // A retained transcript is a last observation, never a new approval signal.
   _presentResident(record, now) {
     const session = {
       waitReason: null,
       awaitingSince: null,
       ...record.session,
       resident: true,
+      signalStale: true,
+      freshness: { state: 'stale', observedAt: record.session.freshness?.observedAt ?? record.lastLiveAt,
+        ageMs: now - (record.session.freshness?.observedAt ?? record.lastLiveAt) },
     };
     if (session.turnState === 'tool_pending' && !session.waitReason) {
       const { blocked, reason } = classifyPendingTool({

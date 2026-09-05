@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 
 const DEFAULT_URL = process.env.CLAUDEVILLE_URL || 'http://localhost:4000';
@@ -44,6 +46,8 @@ Options:
   --ws-timeout-seconds=<n>  Per-attempt reconnect probe deadline (default: ${DEFAULT_WS_PROBE_TIMEOUT_SECONDS})
   --ws-attempts=<n>         Reconnect probe attempts before failing (default: ${DEFAULT_WS_PROBE_ATTEMPTS})
   --headed                  Show the Chromium window
+  --listener-counter-check  Verify native listener accounting; no server or soak
+  --rss-gate-check          Verify RSS plateau and growth controls; no server or soak
   --help                    Print this help
 
 The default run is the release-gate 10-minute World and 30-minute server soak.
@@ -117,41 +121,131 @@ function parseArgs(argv) {
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function installListenerAudit(page) {
-  await page.addInitScript(() => {
-    const originalAdd = EventTarget.prototype.addEventListener;
-    const originalRemove = EventTarget.prototype.removeEventListener;
-    const targetIds = new WeakMap();
-    const listenerIds = new WeakMap();
-    const active = new Set();
-    let nextTargetId = 1;
-    let nextListenerId = 1;
-    const idFor = (map, value, next) => {
-      if (!map.has(value)) map.set(value, next());
-      return map.get(value);
+async function retainedListenerCount(cdp) {
+  // Chromium accounts for once/AbortSignal cleanup and collected targets.
+  // Registration-minus-explicit-removal monkeypatches count dead listeners.
+  return (await cdp.send('Memory.getDOMCounters')).jsEventListeners;
+}
+
+async function quiescentListenerCount(page, cdp) {
+  let floor = Infinity;
+  // A pending IndexedDB request is live even after GC. Barrier all Chronicle
+  // stores before each bounded sample; the floor discounts writes that start
+  // between that barrier and the native counter without discounting retained
+  // UI listeners, which remain present in every sample.
+  for (let sample = 0; sample < 3; sample++) {
+    await page.evaluate(async () => {
+      const databases = new Set([
+        window.__claudeVilleApp?.chronicleStore?.db,
+        window.__chronicle?.db,
+      ].filter(Boolean));
+      await Promise.all([...databases].map(db => new Promise((resolve, reject) => {
+        const names = [...db.objectStoreNames];
+        if (!names.length) { resolve(); return; }
+        const tx = db.transaction(names, 'readonly');
+        const finish = error => {
+          clearTimeout(timer);
+          tx.oncomplete = tx.onabort = tx.onerror = null;
+          if (error) reject(error); else resolve();
+        };
+        const timer = setTimeout(() => {
+          finish(new Error('Chronicle listener barrier timed out'));
+          try { tx.abort(); } catch { /* already settled */ }
+        }, 5000);
+        tx.oncomplete = () => finish();
+        tx.onabort = tx.onerror = () => finish(tx.error || new Error('Chronicle listener barrier failed'));
+        for (const name of names) tx.objectStore(name).count();
+      })));
+    });
+    await cdp.send('HeapProfiler.collectGarbage');
+    floor = Math.min(floor, await retainedListenerCount(cdp));
+  }
+  return floor;
+}
+
+async function checkListenerCounter() {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.goto('about:blank');
+    const cdp = await page.context().newCDPSession(page);
+    const count = async () => {
+      await cdp.send('HeapProfiler.collectGarbage');
+      return retainedListenerCount(cdp);
     };
-    const captureFor = options => (
-      typeof options === 'boolean' ? options : Boolean(options?.capture)
-    );
-    const keyFor = (target, type, listener, options) => {
-      const targetId = idFor(targetIds, target, () => nextTargetId++);
-      const listenerId = idFor(listenerIds, listener, () => nextListenerId++);
-      return `${targetId}|${type}|${listenerId}|${captureFor(options) ? 1 : 0}`;
-    };
-    EventTarget.prototype.addEventListener = function addEventListener(type, listener, options) {
-      originalAdd.call(this, type, listener, options);
-      if (listener && (typeof listener === 'function' || typeof listener === 'object')) {
-        active.add(keyFor(this, type, listener, options));
+    const baseline = await count();
+    await page.evaluate(() => {
+      // Retain this target so the once/abort checks cannot pass merely because
+      // its entire listener owner was collected.
+      const target = window.listenerProbeTarget = new EventTarget();
+      target.addEventListener('once', () => {}, { once: true });
+      target.dispatchEvent(new Event('once'));
+      const controller = new AbortController();
+      target.addEventListener('aborted', () => {}, { signal: controller.signal });
+      controller.abort();
+      target.addEventListener('already-aborted', () => {}, { signal: controller.signal });
+      for (let index = 0; index < 20; index++) {
+        const button = document.createElement('button');
+        button.addEventListener('click', () => {});
+        document.body.append(button);
+        button.remove();
       }
-    };
-    EventTarget.prototype.removeEventListener = function removeEventListener(type, listener, options) {
-      originalRemove.call(this, type, listener, options);
-      if (listener && (typeof listener === 'function' || typeof listener === 'object')) {
-        active.delete(keyFor(this, type, listener, options));
-      }
-    };
-    window.__cvSoakListenerCount = () => active.size;
-  });
+    });
+    assert.equal(await count(), baseline, 'expired listeners must not survive forced GC');
+    await page.evaluate(() => {
+      window.retainedListener = () => {};
+      window.addEventListener('retained-probe', window.retainedListener);
+    });
+    assert.equal(await count(), baseline + 1, 'a retained listener must be counted');
+    await page.evaluate(() => {
+      window.removeEventListener('retained-probe', window.retainedListener);
+      delete window.retainedListener;
+      delete window.listenerProbeTarget;
+    });
+    assert.equal(await count(), baseline, 'explicit removal must restore the baseline');
+    const root = 'http://listener-probe.local';
+    for (const path of ['src/infrastructure/ChronicleStore.js', 'src/domain/events/DomainEvent.js']) {
+      const body = await readFile(new URL(`../../claudeville/${path}`, import.meta.url), 'utf8');
+      await page.route(`${root}/${path}`, route => route.fulfill({ contentType: 'text/javascript', body }));
+    }
+    await page.route(`${root}/`, route => route.fulfill({ contentType: 'text/html', body: '<body></body>' }));
+    await page.goto(`${root}/`);
+    await page.evaluate(async () => {
+      const { ChronicleStore } = await import('/src/infrastructure/ChronicleStore.js');
+      const store = new ChronicleStore({ dbName: 'listener-counter-regression' });
+      await store.open();
+      window.__claudeVilleApp = { chronicleStore: store };
+    });
+    const settled = await quiescentListenerCount(page, cdp);
+    await page.evaluate(() => {
+      const store = window.__claudeVilleApp.chronicleStore;
+      const tx = store.db.transaction('meta', 'readwrite');
+      window.keepProbeAlive = true;
+      const pump = () => {
+        const request = tx.objectStore('meta').get('probe');
+        request.onsuccess = () => { if (window.keepProbeAlive) pump(); };
+      };
+      pump();
+      window.probeWrites = Promise.all(Array.from({ length: 4 }, (_, index) =>
+        store.put('meta', { key: `probe${index}`, value: index })));
+      window.retainedListener = () => {};
+      window.addEventListener('retained-probe', window.retainedListener);
+    });
+    assert.ok(await count() > settled + 1, 'pending IDB work must exercise the transient listener case');
+    await page.evaluate(() => { window.keepProbeAlive = false; });
+    assert.equal(await quiescentListenerCount(page, cdp), settled + 1,
+      'the barrier must drain real writes while preserving a retained listener');
+    await page.evaluate(async () => {
+      await window.probeWrites;
+      delete window.probeWrites;
+      window.removeEventListener('retained-probe', window.retainedListener);
+      delete window.retainedListener;
+    });
+    assert.equal(await quiescentListenerCount(page, cdp), settled);
+    console.log('[performance-soak] native listener counter check passed');
+  } finally {
+    await browser.close();
+  }
 }
 
 async function measureFrames(page, frameCount = 45) {
@@ -182,7 +276,7 @@ async function measureFrames(page, frameCount = 45) {
 }
 
 async function sampleBrowser(page, cdp, elapsedSeconds) {
-  await cdp.send('HeapProfiler.collectGarbage');
+  const listeners = await quiescentListenerCount(page, cdp);
   await sleep(50);
   const frame = await measureFrames(page);
   const snapshot = await page.evaluate(async () => {
@@ -195,7 +289,6 @@ async function sampleBrowser(page, cdp, elapsedSeconds) {
       : null;
     return {
       heapUsed: performance.memory?.usedJSHeapSize ?? null,
-      listeners: window.__cvSoakListenerCount?.() ?? null,
       eventBusListeners: [...eventBus.listeners.values()]
         .reduce((sum, callbacks) => sum + callbacks.size, 0),
       agents: app?.world?.agents?.size ?? null,
@@ -210,7 +303,7 @@ async function sampleBrowser(page, cdp, elapsedSeconds) {
   return {
     elapsedSeconds,
     heapUsed: snapshot.heapUsed,
-    listeners: snapshot.listeners,
+    listeners,
     eventBusListeners: snapshot.eventBusListeners,
     agents: snapshot.agents,
     cards: snapshot.cards,
@@ -504,7 +597,7 @@ function assertBrowserPlateau(samples, warmupSeconds) {
   return assertRollingSlope(steady, sample => sample.heapUsed, MAX_HEAP_PLATEAU_BYTES, 'forced-GC heap');
 }
 
-function assertServerPlateau(samples, warmupSeconds) {
+export function assertServerPlateau(samples, warmupSeconds) {
   assert.ok(samples.length >= 3, 'server soak needs at least 3 checkpoints');
   const steady = samplesAfterWarmup(samples, warmupSeconds);
   const rssSamples = steady
@@ -512,9 +605,13 @@ function assertServerPlateau(samples, warmupSeconds) {
     .filter(Number.isFinite);
   if (rssSamples.length >= 3) {
     const secondHalf = rssSamples.slice(Math.floor(rssSamples.length / 2));
-    const floor = Math.min(...secondHalf);
-    assert.ok(rssSamples.at(-1) - floor <= MAX_SERVER_RSS_PLATEAU_BYTES,
-      `server RSS did not plateau within ${MAX_SERVER_RSS_PLATEAU_BYTES} bytes`);
+    // RSS is not forced-GC heap: one capacity-shrink trough must not turn an
+    // ordinary rebound into a leak. Keep the same allowance and both slopes.
+    const sorted = secondHalf.slice().sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    assert.ok(rssSamples.at(-1) - median <= MAX_SERVER_RSS_PLATEAU_BYTES,
+      `server RSS exceeded its second-half median by more than ${MAX_SERVER_RSS_PLATEAU_BYTES} bytes`);
   }
 
   // The reconnect probe's meaningful gate: a cold provider scan may be slow
@@ -581,7 +678,39 @@ function assertServerPlateau(samples, warmupSeconds) {
   );
 }
 
+function checkRssGate() {
+  const samples = values => values.map((rssMiB, index) => ({
+    elapsedSeconds: 120 + index * 60,
+    runtime: { memory: { rss: rssMiB * 1024 * 1024 }, eventLoop: { delayMs: { p95: 1 } } },
+    tailCache: { estimatedBytes: 0, byteLimit: 32 * 1024 * 1024 },
+    providers: { claude: { orphanScan: { subagentActivityEntries: 0, subagentActivityLimit: 24 } } },
+    gitCommandCount: 0,
+    tailRate: { parsedLinesPerSecond: 0 },
+    wsInitMs: 1,
+  }));
+  for (const values of [
+    Array(29).fill(300),
+    [...Array(27).fill(400), 190, 305],
+    [...Array(4).fill(400), 400, 200, 300, 365], // Even median is the midpoint, not the lower element.
+    Array.from({ length: 29 }, (_, index) => 200 + index * 2), // 56 MiB remains within the allowance.
+  ]) assert.doesNotThrow(() => assertServerPlateau(samples(values), 120));
+  for (const values of [
+    [...Array(28).fill(300), 396],
+    [...Array(4).fill(400), 300, 100, 100, 300], // Using the upper element would hide this 100 MiB rise.
+  ]) assert.throws(() => assertServerPlateau(samples(values), 120), /second-half median/);
+  for (const values of [
+    Array.from({ length: 29 }, (_, index) => 200 + index * 128 / 28),
+    Array.from({ length: 29 }, (_, index) => 200 + Math.max(0, index - 14) * 128 / 14),
+    Array.from({ length: 29 }, (_, index) => 200 + index * 6 - (index % 7 === 0 ? 50 : 0)),
+  ]) assert.throws(() => assertServerPlateau(samples(values), 120), /slope projects/);
+  const lateGrowth = Array.from({ length: 29 }, (_, index) => index < 14 ? 600 : 200 + (index - 14) * 128 / 14);
+  assert.throws(() => assertServerPlateau(samples(lateGrowth), 120), /trailing slope projects/);
+  console.log('[performance-soak] RSS gate controls passed');
+}
+
 async function main() {
+  if (process.argv.includes('--listener-counter-check')) return checkListenerCounter();
+  if (process.argv.includes('--rss-gate-check')) return checkRssGate();
   const options = parseArgs(process.argv.slice(2));
   const browserSamples = [];
   const serverSamples = [];
@@ -607,7 +736,6 @@ async function main() {
     if (message.type() === 'error') browserErrors.push(message.text());
   });
   page.on('pageerror', error => browserErrors.push(error.message));
-  await installListenerAudit(page);
   await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await probePage.goto(`${options.url}/api/providers`, {
     waitUntil: 'domcontentloaded',
@@ -719,7 +847,9 @@ async function main() {
   console.log(JSON.stringify({ type: 'summary', ...summary }, null, 2));
 }
 
-main().catch(error => {
-  console.error(`[performance-soak] FAIL: ${error.stack || error.message}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(error => {
+    console.error(`[performance-soak] FAIL: ${error.stack || error.message}`);
+    process.exitCode = 1;
+  });
+}

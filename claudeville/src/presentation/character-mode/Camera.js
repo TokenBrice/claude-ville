@@ -644,15 +644,15 @@ export class Camera {
 
     worldToScreen(worldX, worldY) {
         return {
-            x: (worldX + this.x) * this.zoom,
-            y: (worldY + this.y) * this.zoom,
+            x: worldX * this.zoom + this.renderOffsetX,
+            y: worldY * this.zoom + this.renderOffsetY,
         };
     }
 
     screenToWorld(screenX, screenY) {
         return {
-            x: screenX / this.zoom - this.x,
-            y: screenY / this.zoom - this.y,
+            x: (screenX - this.renderOffsetX) / this.zoom,
+            y: (screenY - this.renderOffsetY) / this.zoom,
         };
     }
 
@@ -768,6 +768,10 @@ export class Camera {
         return true;
     }
 
+    get renderOffsetX() { return Math.round(this.x * this.zoom * this._dpr()) / this._dpr(); }
+
+    get renderOffsetY() { return Math.round(this.y * this.zoom * this._dpr()) / this._dpr(); }
+
     applyTransform(ctx) {
         const dpr = this._dpr();
         ctx.setTransform(
@@ -775,8 +779,8 @@ export class Camera {
             0,
             0,
             this.zoom * dpr,
-            Math.round(this.x * this.zoom * dpr),
-            Math.round(this.y * this.zoom * dpr)
+            this.renderOffsetX * dpr,
+            this.renderOffsetY * dpr
         );
     }
 

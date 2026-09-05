@@ -65,6 +65,10 @@ export class Agent {
         turnStartedAt,
         lastTurnDurationMs,
         signalSource,
+        signalCertainty,
+        signalObservedAt,
+        signalStale,
+        freshness,
         workingSet,
         collisions,
         resident,
@@ -116,6 +120,10 @@ export class Agent {
         this.signalSource = signalSource === 'hook' || signalSource === 'transcript'
             ? signalSource
             : null;
+        this.signalCertainty = signalCertainty || 'unavailable';
+        this.signalObservedAt = signalObservedAt ?? null;
+        this.signalStale = signalStale === true;
+        this.freshness = freshness || null;
         this.workingSet = Array.isArray(workingSet) ? workingSet.slice(0, 16) : [];
         this.collisions = Array.isArray(collisions) ? collisions : [];
         this.resident = resident === true;
@@ -220,12 +228,13 @@ export class Agent {
     }
 
     set cost(value) {
-        if (!value || typeof value !== 'object' || !Number.isFinite(Number(value.usd))) {
+        if (!value || typeof value !== 'object' || (value.usd !== null && !Number.isFinite(Number(value.usd)))) {
             this._cost = null;
             return;
         }
         const normalized = {
-            usd: Math.max(0, Number(value.usd)),
+            usd: value.usd === null ? null : Math.max(0, Number(value.usd)),
+            availability: value.availability || (value.usd === null ? 'unavailable' : 'observed'),
             source: value.source === 'provider' ? 'provider' : 'estimate',
             rateMatch: value.rateMatch == null ? null : String(value.rateMatch),
             rateRevision: String(value.rateRevision || TokenUsage.rateRevision),
@@ -262,6 +271,10 @@ export class Agent {
 
     update(data) {
         const updates = { ...(data || {}) };
+        if (Object.prototype.hasOwnProperty.call(updates, 'lastMessage')) {
+            updates._lastMessage = updates.lastMessage || null;
+            delete updates.lastMessage;
+        }
         if (Object.prototype.hasOwnProperty.call(updates, 'tokens')) {
             updates.tokens = TokenUsage.normalize(updates.tokens);
         }

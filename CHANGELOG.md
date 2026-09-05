@@ -2,6 +2,20 @@
 
 ---
 
+## v0.42.0 — *The Astral Lens* · Sep 05, 2026
+
+The village becomes clearer to watch and more reliable to act on. This release brings 21 coordinated refinements to rendering, provider state, and the desktop interface, while preserving the local, zero-build runtime.
+
+- **A more coherent pixel world.** Authored oak, pine, and willow canopies replace smooth procedural foliage, with quieter planting around work areas. A restrained material pass separates Terra's cloth and armor, Sonnet's fittings and crystal, and Command's masonry and banners without changing their albedo or adding bloom.
+- **Graphics carry the meaning.** GPU ground cues now survive terrain composition, while upper annotations and selected-agent x-ray render once. Relationship and lighting changes refresh cached cues even with reduced motion. Building plaques follow visible sprite bounds, water detail stays attached to the world, and Canvas, GPU, and hit testing share snapped camera coordinates.
+- **Steadier motion and clearer crowds.** Important agents and direction changes refresh their GPU poses immediately. Dense groups use compact ordinary bodies and fewer overlapping labels, retaining individual access to selected, hovered, and action-needed agents. Automatic camera framing is less aggressive; explicit zoom remains available. Reduced-motion lookups reuse one subscription as new villagers arrive, and completed image loads release their callbacks. Authored height, shadow strength, and material class zero now retain their intended shader meaning.
+- **Provider state you can trust.** Broad account quota pressure no longer marks unrelated sessions as rate-limited. Hooks are scoped to the correct CLI and resolve Codex and Gemini session aliases. Grok follows fresh transcript writes inside old directories. Native lifecycle signals retain their source and certainty; stale approval signals expire instead of lingering indefinitely.
+- **Honest freshness and usage.** Failed reads preserve the last good roster and detail for a bounded 60 seconds, with visible age. Missing cost stays unavailable and incomplete totals disclose their coverage. Simulation has separate history, channels, and writer leases, never requests live account usage, and clearly identifies itself as SIMULATED.
+- **A more useful desktop interface.** NEEDS YOU is counted separately from ordinary waiting. Status and elapsed text stay readable, long details open in native disclosures without losing focus or text selection, and search understands CLI, model vendor, project, and team. Avatars keep their proportions, repeated tool marks use pixel SVGs, and healthy-empty World shows a compact banner.
+- **Stronger visual and runtime evidence.** Added provider, persistence, GPU, motion, and crowd regressions; a seven-provider capture fixture; correctly positioned art studies; and 20 refreshed day/night baselines with repeatable capture quality. The Git-worker queue test waits for bounded completion instead of assuming a fixed machine speed. The long soak measures native retained listeners after pending history writes settle and uses a median RSS baseline while retaining its memory-growth limits. The implementation record includes measured performance tradeoffs and preserves the explicit deferrals for larger rendering experiments.
+
+---
+
 ## v0.41.3 — *The Steady Blade* · Sep 05, 2026
 
 Codex villagers now keep their weapons in hand as they walk, idle, and turn. The grip pass introduced for Astra extends across the full Codex roster.

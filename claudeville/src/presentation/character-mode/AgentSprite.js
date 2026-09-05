@@ -193,7 +193,7 @@ const GPU_AGENT_CHANNEL_ATLAS_RECORDS = new Map();
 
 function gpuEquippedSheetEntryPixels(entry) {
     let pixels = 0;
-    for (const canvas of [entry?.albedo, entry?.material, entry?.emissive]) {
+    for (const canvas of [entry?.albedo, entry?.material, entry?.emissive, entry?.occluder]) {
         pixels += (canvas?.width || 0) * (canvas?.height || 0);
     }
     return pixels;
@@ -220,7 +220,7 @@ function activeProfilePins() {
 }
 
 function releaseSharedEntry(entry) {
-    for (const canvas of [entry?.canvas, entry?.albedo, entry?.material, entry?.emissive, entry]) {
+    for (const canvas of [entry?.canvas, entry?.albedo, entry?.material, entry?.emissive, entry?.occluder, entry]) {
         if (typeof canvas?.getContext === 'function') releaseCanvasBackingStore(canvas);
     }
 }
@@ -532,12 +532,14 @@ export class AgentSprite {
         let gpuEquippedAlbedoPixels = 0;
         let gpuEquippedMaterialPixels = 0;
         let gpuEquippedEmissivePixels = 0;
+        let gpuEquippedOccluderPixels = 0;
         for (const canvas of TINTED_SELECTION_RING_CACHE.values()) {
             tintedSelectionRingPixels += (canvas?.width || 0) * (canvas?.height || 0);
         }
         for (const entry of GPU_EQUIPPED_SHEET_CACHE.values()) {
             gpuEquippedAlbedoPixels += (entry.albedo?.width || 0) * (entry.albedo?.height || 0);
             gpuEquippedMaterialPixels += (entry.material?.width || 0) * (entry.material?.height || 0);
+            gpuEquippedOccluderPixels += (entry.occluder?.width || 0) * (entry.occluder?.height || 0);
             gpuEquippedEmissivePixels += (entry.emissive?.width || 0) * (entry.emissive?.height || 0);
         }
         const privateDerivedEstimateBytes = [...PRIVATE_DERIVED_CACHE_ESTIMATES.values()]
@@ -547,11 +549,13 @@ export class AgentSprite {
         let gpuAgentChannelCellSize = 1;
         let hasGpuAgentMaterialAtlas = false;
         let hasGpuAgentEmissiveAtlas = false;
+        let hasGpuAgentOccluderAtlas = false;
         for (const record of GPU_AGENT_CHANNEL_ATLAS_RECORDS.values()) {
             const cell = Math.max(1, Math.ceil(Math.max(record.sw || 1, record.sh || 1)));
             gpuAgentChannelCellSize = Math.max(gpuAgentChannelCellSize, cell);
             hasGpuAgentMaterialAtlas ||= record.material;
             hasGpuAgentEmissiveAtlas ||= record.emissive;
+            hasGpuAgentOccluderAtlas ||= record.occluder;
         }
         const gpuAgentAtlasCapacity = Math.max(activeSpriteCount, GPU_AGENT_CHANNEL_ATLAS_RECORDS.size, 1);
         const gpuAgentAtlasColumns = Math.max(1, Math.ceil(Math.sqrt(gpuAgentAtlasCapacity)));
@@ -567,6 +571,7 @@ export class AgentSprite {
         const gpuAgentEmissiveAtlasEstimateBytes = hasGpuAgentEmissiveAtlas
             ? gpuAgentChannelAtlasEstimateBytes
             : 0;
+        const gpuAgentOccluderAtlasEstimateBytes = hasGpuAgentOccluderAtlas ? gpuAgentChannelAtlasEstimateBytes : 0;
         const compositorCanvases = new Set(Compositor.shared()?.cache?.values?.() || []);
         for (const refs of ACTIVE_PROFILE_REFS.values()) {
             if (refs.baseCanvas) compositorCanvases.add(refs.baseCanvas);
@@ -586,7 +591,8 @@ export class AgentSprite {
             + tintedSelectionRingEstimateBytes
             + privateDerivedEstimateBytes
             + gpuAgentMaterialAtlasEstimateBytes
-            + gpuAgentEmissiveAtlasEstimateBytes;
+            + gpuAgentEmissiveAtlasEstimateBytes
+            + gpuAgentOccluderAtlasEstimateBytes;
         return {
             processedSpriteSheets: PROCESSED_SPRITE_CACHE.size,
             processedSpritePixels: processedSpriteCachePixels,
@@ -601,6 +607,7 @@ export class AgentSprite {
             gpuEquippedAlbedoEstimateBytes: gpuEquippedAlbedoPixels * 4,
             gpuEquippedMaterialEstimateBytes: gpuEquippedMaterialPixels * 4,
             gpuEquippedEmissiveEstimateBytes: gpuEquippedEmissivePixels * 4,
+            gpuEquippedOccluderEstimateBytes: gpuEquippedOccluderPixels * 4,
             gpuEquippedSheetPixelLimit: GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT,
             tintedSelectionRings: TINTED_SELECTION_RING_CACHE.size,
             tintedSelectionRingPixels,
@@ -610,6 +617,7 @@ export class AgentSprite {
             privateDerivedEstimateBytes,
             gpuAgentMaterialAtlasEstimateBytes,
             gpuAgentEmissiveAtlasEstimateBytes,
+            gpuAgentOccluderAtlasEstimateBytes,
             cpuDerivedEstimateBytes,
             ownership: {
                 compositorSpriteSheets: {
@@ -632,6 +640,10 @@ export class AgentSprite {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
                     estimateBytes: gpuEquippedMaterialPixels * 4,
                 },
+                gpuEquippedOccluderSheets: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: gpuEquippedOccluderPixels * 4,
+                },
                 gpuEquippedEmissiveSheets: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
                     estimateBytes: gpuEquippedEmissivePixels * 4,
@@ -647,6 +659,10 @@ export class AgentSprite {
                 gpuAgentMaterialAtlas: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
                     estimateBytes: gpuAgentMaterialAtlasEstimateBytes,
+                },
+                gpuAgentOccluderAtlas: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: gpuAgentOccluderAtlasEstimateBytes,
                 },
                 gpuAgentEmissiveAtlas: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
@@ -788,6 +804,7 @@ export class AgentSprite {
         this._gpuEquippedSheetLayout = null;
         this._gpuEquippedMaterialSheet = null;
         this._gpuEquippedEmissiveSheet = null;
+        this._gpuEquippedOccluderSheet = null;
         this.gpuOverlayRenderer = new AgentGpuOverlayRenderer(this);
         this._lastBuildingType = null;
         this._lastIntentId = null;
@@ -959,6 +976,7 @@ export class AgentSprite {
         this._gpuEquippedSheetLayout = null;
         this._gpuEquippedMaterialSheet = null;
         this._gpuEquippedEmissiveSheet = null;
+        this._gpuEquippedOccluderSheet = null;
         this._nameTagLayoutCacheKey = '';
         this._nameTagLayoutCache = null;
         this._bubbleLayoutCacheKey = '';
@@ -2632,7 +2650,8 @@ export class AgentSprite {
             this._lastStatus = currentStatus;
         }
 
-        const budgetMode = renderMode !== 'full' && !this.selected;
+        const budgetMode = renderMode !== 'full' && !this.selected && !this.hovered
+            && ![AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(this.agent?.status);
         if (budgetMode && !this.gpuWorldEnabled) {
             this._drawBudgetImpostor(ctx);
             if (this.agent?.isDeparted) this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
@@ -2710,13 +2729,13 @@ export class AgentSprite {
             ? 'idle'
             : this.moving && this.motionScale > 0 ? 'walk' : 'idle';
 
-        // GPU mode still resolves the real sprite while Canvas annotation LOD
-        // is compact/minimal. This avoids turning dense GPU scenes into blank
-        // crowds while keeping the quiet Canvas impostor vocabulary intact.
+        // Compact GPU bodies retain provider silhouettes at a bounded 28 world
+        // pixels. Selected, hovered, and action-needed agents remain full size.
         if (budgetMode) {
             const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
             const bounds = this._getCellContentBounds(cell);
-            const drawScale = this._spriteDrawScale(this._scaleBounds(cell, bounds));
+            const drawScale = Math.min(this._spriteDrawScale(this._scaleBounds(cell, bounds)),
+                28 / Math.max(1, bounds.maxY - bounds.minY));
             const drawX = this._snapWorldToScreenPixel(this.x);
             const drawY = this._snapWorldToScreenPixel(this.y);
             const contentCenterX = (bounds.minX + bounds.maxX) / 2;
@@ -3732,7 +3751,7 @@ export class AgentSprite {
         const dy = drawY - bounds.maxY * drawScale + 2;
         ctx.save();
         ctx.imageSmoothingEnabled = false;
-        ctx.globalAlpha = 0.4;
+        ctx.globalAlpha = 0.65;
         ctx.drawImage(
             this.spriteCanvas,
             cell.sx, cell.sy, cell.sw, cell.sh,
@@ -3765,12 +3784,13 @@ export class AgentSprite {
     _setGpuFrameRecord(record) {
         this.gpuOverlayRenderer.setFrameRecord(record);
         const frame = this._gpuFrameRecord;
-        if (frame?.materialSource || frame?.emissiveSource) {
+        if (frame?.materialSource || frame?.emissiveSource || frame?.occluderSource) {
             GPU_AGENT_CHANNEL_ATLAS_RECORDS.set(this._resourceOwnerKey, {
                 sw: frame.sw,
                 sh: frame.sh,
                 material: Boolean(frame.materialSource),
                 emissive: Boolean(frame.emissiveSource),
+                occluder: Boolean(frame.occluderSource),
             });
         } else {
             GPU_AGENT_CHANNEL_ATLAS_RECORDS.delete(this._resourceOwnerKey);
@@ -3862,6 +3882,7 @@ export class AgentSprite {
         this._gpuEquippedSheetLayout = null;
         this._gpuEquippedMaterialSheet = null;
         this._gpuEquippedEmissiveSheet = null;
+        this._gpuEquippedOccluderSheet = null;
         if (!equipment) return;
         let entry = GPU_EQUIPPED_SHEET_CACHE.get(key);
         if (entry) {
@@ -3879,8 +3900,10 @@ export class AgentSprite {
                 || this.assets?.getMaterialSidecar?.(spriteId, 'material') || null;
             const emissive = this.assets?.getSidecar?.(spriteId, 'emissive')
                 || this.assets?.getMaterialSidecar?.(spriteId, 'emissive') || null;
+            const occluder = this.assets?.getSidecar?.(spriteId, 'occluder') || null;
             entry = {
                 albedo: composed,
+                occluder: occluder ? this._padSidecarSheet(occluder, cellSize, GPU_EQUIP_SHEET_PAD, cols, rows) : null,
                 material: material ? this._padSidecarSheet(material, cellSize, GPU_EQUIP_SHEET_PAD, cols, rows) : null,
                 emissive: emissive ? this._padSidecarSheet(emissive, cellSize, GPU_EQUIP_SHEET_PAD, cols, rows) : null,
                 layout: { pad: GPU_EQUIP_SHEET_PAD, cellSize },
@@ -3905,6 +3928,7 @@ export class AgentSprite {
         this._gpuEquippedSheetLayout = entry.layout;
         this._gpuEquippedMaterialSheet = entry.material;
         this._gpuEquippedEmissiveSheet = entry.emissive;
+        this._gpuEquippedOccluderSheet = entry.occluder;
     }
 
     _drawSpriteSilhouette(ctx, cell, dx, dy, drawScale = 1) {

@@ -59,6 +59,12 @@ function loadSpriteImage(spriteId) {
     return record;
 }
 
+export function fitAvatarFrame(width, height, maxWidth, maxHeight, integer = false) {
+    const fit = Math.min(maxWidth / Math.max(1, width), maxHeight / Math.max(1, height));
+    const scale = integer && fit >= 1 ? Math.min(4, Math.floor(fit)) : fit;
+    return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+}
+
 export class AvatarCanvas {
     // size: 'card' (44x52 dashboard chip) | 'hero' (96x96 Activity Panel portrait, #46).
     constructor(agent, size = 'card') {
@@ -226,22 +232,9 @@ export class AvatarCanvas {
         const sourceW = bounds.maxX - bounds.minX + 1;
         const sourceH = bounds.maxY - bounds.minY + 1;
         const hero = this.size === 'hero';
-        let targetW;
-        let targetH;
-        if (hero) {
-            // Integer-scaled blit for pixel-perfect hero portrait (#46): pick the
-            // largest integer factor that fits the 96px niche above the ellipse.
-            const fitH = Math.floor((this.canvas.height - 14) / Math.max(1, sourceH));
-            const fitW = Math.floor((this.canvas.width - 8) / Math.max(1, sourceW));
-            const factor = Math.max(1, Math.min(fitH, fitW, 4));
-            targetW = sourceW * factor;
-            targetH = sourceH * factor;
-        } else {
-            const baseH = 46;
-            const scale = baseH / Math.max(1, sourceH);
-            targetH = baseH;
-            targetW = Math.min(40, Math.round(sourceW * scale));
-        }
+        const { width: targetW, height: targetH } = fitAvatarFrame(
+            sourceW, sourceH, hero ? 88 : 40, hero ? 82 : 46, hero,
+        );
         const dx = Math.round((this.canvas.width - targetW) / 2);
         const groundPad = hero ? 8 : 3;
         const dy = Math.round(this.canvas.height - targetH - groundPad);

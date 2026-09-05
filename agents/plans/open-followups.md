@@ -2,7 +2,7 @@
 
 **Status:** `live checklist`
 
-**As of:** 2026-09-05, release `v0.41.2` — The Astral Vanguard
+**As of:** 2026-09-05, release `v0.42.0` — The Astral Lens
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs
@@ -79,12 +79,12 @@ linked from each source plan below.
 
   - **ID:** `OF-006`
   - **Added:** 2026-07-28
-  - **Last reviewed:** 2026-09-02
+  - **Last reviewed:** 2026-09-05
   - **Trigger:** Before a release push, run and pass the long pressure soak against the correct server process.
   - **Source:** [post-OOM plan — Definition of done](claudeville-post-oom-reliability-performance-plan.md#definition-of-done) and [release verification gate](claudeville-post-oom-reliability-performance-plan.md#package-9--release-verification-gate).
   - **Reopen when:** before a release push, run the long pressure soak against the correct server process and pass both the JavaScript heap/RSS gates and deduplicated native-resource gates.
-  - **Current status:** Open release gate, not a missing implementation. The default soak infrastructure and the recorded **10-minute browser / 30-minute server** run are present and passed, but the source plan explicitly leaves this release-duration gate open because no release push was requested.
-  - **Current gate values:** **8 MiB** browser-heap projected-growth limit, **64 MiB** server-RSS plateau limit, **250 ms** event-loop p95 limit, plus native canvas/asset drift checks in `scripts/smoke/performance-soak.mjs`.
+  - **Current status:** Satisfied for v0.42.0; recurring before the next release push. The final 10-minute browser run passed, and the immutable 30-minute trace from an identical backend was independently revalidated after correcting the RSS baseline. [Release evidence](../research/claudeville-astra-refinement/README.md#v0420-release-verification) records the separate processes, measurement repairs, and unchanged limits.
+  - **Current gate values:** **8 MiB** browser-heap projected-growth limit, **64 MiB** server-RSS allowance above the second-half median, with steady and trailing growth-slope limits, **250 ms** event-loop p95 limit, plus native canvas/asset drift checks in `scripts/smoke/performance-soak.mjs`.
 
 ### Additional conditional follow-ups from the semantic rendering plan
 

@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
+  HOOK_WAIT_RETENTION_MS,
   HOOK_EXPIRY_MS,
   HOOK_MERGE_WINDOW_MS,
   HookOverlay,
@@ -124,7 +125,7 @@ test('an out-of-order asynchronous hook cannot suppress a newer approval', () =>
   assert.equal(clock.overlay.overlayFor('codex-race').waitReason, 'approval');
 });
 
-test('fresh overlays escalate or refresh but never suppress transcript awaiting_input', () => {
+test('fresh overlays escalate old state but never suppress a newer transcript resolution', () => {
   const clock = fixture();
   clock.overlay.ingest({
     provider: 'claude',
@@ -149,12 +150,12 @@ test('fresh overlays escalate or refresh but never suppress transcript awaiting_
   const awaiting = {
     ...working,
     turnState: 'awaiting_input',
-    awaitingSince: clock.now() - 500,
+    awaitingSince: clock.now() + 500,
   };
   assert.strictEqual(mergeOverlay(awaiting, hook, clock.now()), awaiting);
 });
 
-test('overlay stops merging after 10 seconds and expires after 30 seconds', () => {
+test('unanswered approval remains last observed waiting until bounded expiry', () => {
   const clock = fixture();
   clock.overlay.ingest({
     provider: 'codex',
@@ -170,8 +171,8 @@ test('overlay stops merging after 10 seconds and expires after 30 seconds', () =
   };
   const hook = clock.overlay.overlayFor('session-2');
   clock.advance(HOOK_MERGE_WINDOW_MS);
-  assert.strictEqual(mergeOverlay(transcript, hook, clock.now()), transcript);
-  clock.advance(HOOK_EXPIRY_MS - HOOK_MERGE_WINDOW_MS);
+  assert.equal(mergeOverlay(transcript, hook, clock.now()).signalStale, true);
+  clock.advance(HOOK_WAIT_RETENTION_MS - HOOK_MERGE_WINDOW_MS);
   assert.equal(clock.overlay.overlayFor('session-2'), null);
 });
 

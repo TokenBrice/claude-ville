@@ -388,9 +388,9 @@ export class CameraDirector {
 
     _currentMaxZoom() {
         const camera = this.camera;
-        if (typeof camera?.currentZoomTier === 'function') return camera.currentZoomTier();
+        if (typeof camera?.currentZoomTier === 'function') return Math.min(1.5, camera.currentZoomTier());
         const minZoom = camera?.minZoom || 1;
-        const maxZoom = camera?.maxZoom || 3;
+        const maxZoom = Math.min(1.5, camera?.maxZoom || 3);
         const zoom = Number(camera?.zoom);
         return Math.max(minZoom, Math.min(maxZoom, Number.isFinite(zoom) ? zoom : minZoom));
     }

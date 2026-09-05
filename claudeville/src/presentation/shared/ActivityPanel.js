@@ -22,9 +22,15 @@ import {
     workingSetForAgent,
 } from './Formatters.js';
 import { emitAgentDeselected, emitAgentSelected } from './AgentSelection.js';
+import { toolCategory } from '../../domain/services/ToolIdentity.js';
 import { Toast } from './Toast.js';
 import {
     currentToolPresentation,
+    pixelIcon,
+    inspectableText,
+    replaceDetailRows,
+    detailFreshnessLabel,
+    signalProvenance,
     modelPresentation,
     statusPresentation,
     waitReasonLabel,
@@ -468,15 +474,15 @@ export function buildCausalWaterfall(session, { now = Date.now(), toolHistory, c
         });
 }
 
-function safePromptDetail(agent) {
+function safePromptDetail(agent, limit = PROMPT_DETAIL_MAX_LENGTH) {
     const source = agent?.promptDetail
         || (agent?.signalSource === 'hook' ? agent?.lastToolInput : '');
     const clean = redactSecrets(source || '')
         .replace(/[\u0000-\u001f\u007f]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
-    if (clean.length <= PROMPT_DETAIL_MAX_LENGTH) return clean;
-    return `${clean.slice(0, PROMPT_DETAIL_MAX_LENGTH - 1).trimEnd()}…`;
+    if (clean.length <= limit) return clean;
+    return `${clean.slice(0, limit - 1).trimEnd()}…`;
 }
 
 const BOOK_OF_LIVES_EPISODE_LABELS = Object.freeze({
@@ -812,19 +818,17 @@ export class ActivityPanel {
         this.dom.panelAgentName?.setAttribute('aria-level', '2');
         if (this.dom.panelAgentName) this.dom.panelAgentName.tabIndex = -1;
         this._statusElapsedEl = el('span', {
-            className: 'activity-panel__value',
-            style: { marginLeft: '0.5rem' },
+            className: 'activity-panel__value activity-panel__status-age',
         });
         this.dom.panelAgentStatus?.parentNode?.insertBefore(
             this._statusElapsedEl,
             this.dom.panelAgentStatus.nextSibling,
         );
-        this._blockedPromptEl = el('span', {
+        this._blockedPromptEl = el('div', {
             className: 'activity-panel__value',
         });
         this._blockedProvenanceEl = el('span', {
             className: 'activity-panel__narration-provenance',
-            style: { marginLeft: '0.5rem' },
         });
         this._blockedBannerEl = el('div', {
             className: 'activity-panel__blocked',
@@ -883,7 +887,7 @@ export class ActivityPanel {
         this._pinned = new Set(this._loadPinnedAgentIds());
         this._pinnedDetails = new Map();
         this._agentSections = [];
-        this._viewMode = 'character';
+        this._viewMode = document.getElementById('dashboardMode')?.style.display === '' ? 'dashboard' : 'character';
         this._workingDirectoryRowEl = null;
         this._workingDirectoryValueEl = null;
         this._workingDirectoryCopyBtn = null;
@@ -916,6 +920,9 @@ export class ActivityPanel {
         this._focusRequestVersion = 0;
         this._panelKeydownBound = false;
 
+        this._detailFreshnessEl = el('div', { className: 'activity-panel__freshness' });
+        this._detailFreshnessEl.hidden = true;
+        this.panelEl.querySelector('.activity-panel__header')?.appendChild(this._detailFreshnessEl);
         this._bind();
         this._renderPinCompare();
     }
@@ -1437,7 +1444,7 @@ export class ActivityPanel {
             const maxContext = tokenUsage.contextWindowMax || contextWindowLimitForModel(agent?.model, agent?.provider);
             const contextPct = maxContext ? Math.min(100, (tokenUsage.contextWindow / maxContext) * 100) : 0;
             const suppliedCost = agent?.cost;
-            const cost = suppliedCost && Number.isFinite(Number(suppliedCost.usd))
+            const cost = suppliedCost && (suppliedCost.usd === null || Number.isFinite(Number(suppliedCost.usd)))
                 ? suppliedCost
                 : agent
                     ? {
@@ -1514,7 +1521,7 @@ export class ActivityPanel {
                     ? `Estimated using ${row.cost.rateMatch || 'default'} rates, revision ${row.cost.rateRevision || TokenUsage.rateRevision}`
                     : 'Provider-reported cost',
             }, [
-                `${estimated ? '~' : ''}${formatCost(row.cost.usd)}`,
+                row.cost.usd == null ? 'Cost unavailable' : `${estimated ? '~' : ''}${formatCost(row.cost.usd)}${row.cost.availability === 'partial' ? ' · partial' : ''}`,
                 row.cost.unknownModel ? ' ' : null,
                 row.cost.unknownModel ? el('span', { className: 'activity-panel__cost-source', text: 'default rate' }) : null,
             ]),
@@ -1549,6 +1556,7 @@ export class ActivityPanel {
         this._currentBiographyIdentityKey = this._biographyIdentityKey(agent);
         this._renderSignatures = this._emptyRenderSignatures();
         this._setDetailState('Loading activity…', 'Loading usage…');
+        if (this._detailFreshnessEl) this._detailFreshnessEl.hidden = true;
         this._setChronicleState('Loading biography…');
         this._showAgentSections();
         this._ingestNarration(agent);
@@ -1704,13 +1712,9 @@ export class ActivityPanel {
         }
         const tool = agent.pendingTool || agent.currentTool || agent.lastTool || '';
         const detail = safePromptDetail(agent);
-        this._blockedPromptEl.textContent = [
-            tool ? `${tool} ${String(reason).toLowerCase()}` : reason,
-            detail,
-        ].filter(Boolean).join(' · ');
-        this._blockedProvenanceEl.textContent = agent.signalSource === 'hook'
-            ? 'HOOK'
-            : 'TRANSCRIPT · inferred';
+        const prompt = [tool ? `${tool} ${String(reason).toLowerCase()}` : reason, safePromptDetail(agent, Infinity)].filter(Boolean).join(' · ');
+        replaceDetailRows(this._blockedPromptEl, [inspectableText(prompt, { summary: detail || reason, key: 'blocked-request' })]);
+        this._blockedProvenanceEl.textContent = signalProvenance(agent);
         this._blockedBannerEl.style.color = statusPresentation(agent.status).color;
         this._blockedBannerEl.style.display = 'flex';
     }
@@ -1795,10 +1799,11 @@ export class ActivityPanel {
         const inputEl = this._toolEls.input;
         const tool = currentToolPresentation(agent);
 
+        container.closest('[data-section]')?.style.setProperty('display', tool.isIdle ? 'none' : '');
         container.classList.toggle('activity-panel__current-tool--idle', tool.isIdle);
-        iconEl.textContent = tool.icon;
+        iconEl.replaceChildren(pixelIcon(toolCategory(agent.currentTool)));
         nameEl.textContent = tool.name;
-        inputEl.textContent = tool.detail;
+        replaceDetailRows(inputEl, tool.detail ? [inspectableText(tool.detail, { summary: formatToolDetail(tool.detail, { max: 45 }), key: 'current-tool' })] : []);
     }
 
     _ensureExecutionTreeSection() {
@@ -2263,6 +2268,11 @@ export class ActivityPanel {
             || !this.currentAgent
             || this.currentAgent.id !== agent.id
         ) return;
+        const freshness = detailFreshnessLabel(agent, sessionDetailsService.detailCacheState(agent));
+        if (this._detailFreshnessEl) {
+            this._detailFreshnessEl.textContent = freshness;
+            this._detailFreshnessEl.hidden = !freshness;
+        }
         if (!data) {
             this._causalWaterfallToolHistory = [];
             this._updateCausalWaterfall(this.currentAgent);
@@ -2302,6 +2312,7 @@ export class ActivityPanel {
         this._renderSignatures.toolHistory = signature;
 
         const container = this.dom.panelToolHistory;
+        container.closest('[data-section]')?.style.setProperty('display', limited.length ? '' : 'none');
         const nodes = toolHistoryNodes(limited, {
             limit: PANEL_TOOL_LIMIT,
             detailLength: 45,
@@ -2321,10 +2332,10 @@ export class ActivityPanel {
             const reversed = [...limited].reverse();
             nodes.forEach((node, index) => {
                 const chip = this._toolExitChip(reversed[index]);
-                if (chip) node.appendChild(chip);
+                if (chip) node.querySelector('summary')?.appendChild(chip);
             });
         }
-        replaceChildren(container, nodes);
+        replaceDetailRows(container, nodes);
     }
 
     _toolExitChip(entry) {
@@ -2351,12 +2362,13 @@ export class ActivityPanel {
         const signature = `${limited.length}|${hashRows(limited, [
             row => row?.ts || 0,
             row => row?.role || '',
-            row => (row?.text || '').slice(0, 60),
+            row => row?.text || '',
         ])}`;
         if (signature === this._renderSignatures.messages) return;
         this._renderSignatures.messages = signature;
 
         const container = this.dom.panelMessages;
+        container.closest('[data-section]')?.style.setProperty('display', limited.length ? '' : 'none');
         if (!limited.length) {
             replaceChildren(container, [
                 this._emptyState('No messages'),
@@ -2364,14 +2376,14 @@ export class ActivityPanel {
             return;
         }
         const reversed = [...limited].reverse();
-        replaceChildren(container, reversed.map(m => {
-            const cls = m.role === 'assistant' ? 'assistant' : 'user';
-            return el('div', {
-                className: ['activity-panel__msg', `activity-panel__msg--${cls}`],
-            }, [
-                el('div', { className: 'activity-panel__msg-role', text: m.role || '' }),
-                el('div', { text: truncateText(m.text || '', 60) }),
-            ]);
+        replaceDetailRows(container, reversed.map((m, index) => {
+            const node = inspectableText(m.text || '', {
+                summary: `${m.role || 'Message'} excerpt · ${truncateText(m.text || '', 80)}`,
+                key: String(m.id || `${m.ts || index}:${m.role || ''}`),
+                truncated: m.truncated === true || m.textTruncated === true,
+            });
+            node.classList.add('activity-panel__msg');
+            return node;
         }));
     }
 
@@ -2382,8 +2394,13 @@ export class ActivityPanel {
         }
 
         const normalizedUsage = TokenUsage.normalize(usage);
+        if (normalizedUsage.availability === 'unavailable') {
+            this._clearTokenUsage('Usage unavailable');
+            if (normalizedUsage.contextWindow > 0) this.dom.panelContextSize.textContent = `${formatTokens(normalizedUsage.contextWindow)} context · billing unavailable`;
+            return;
+        }
         const cost = this._costForUsage(normalizedUsage);
-        const usageSignature = `${normalizedUsage.totalInput}|${normalizedUsage.totalOutput}|${normalizedUsage.cacheRead}|${normalizedUsage.cacheCreate}|${normalizedUsage.contextWindow}|${normalizedUsage.contextWindowMax}|${normalizedUsage.turnCount}|${cost.usd}|${cost.source}|${cost.rateMatch}|${cost.rateRevision}|${cost.unknownModel}`;
+        const usageSignature = `${normalizedUsage.availability}|${normalizedUsage.totalInput}|${normalizedUsage.totalOutput}|${normalizedUsage.cacheRead}|${normalizedUsage.cacheCreate}|${normalizedUsage.contextWindow}|${normalizedUsage.contextWindowMax}|${normalizedUsage.turnCount}|${cost.usd}|${cost.source}|${cost.rateMatch}|${cost.rateRevision}|${cost.unknownModel}`;
         if (usageSignature === this._renderSignatures.tokenUsage) return;
         this._renderSignatures.tokenUsage = usageSignature;
 
@@ -2405,7 +2422,8 @@ export class ActivityPanel {
         else if (contextPct > 50) bar.classList.add('activity-panel__context-bar--warning');
         this.dom.panelTokenGrid.hidden = false;
         this.dom.panelCostRow.hidden = false;
-        this.dom.panelNoUsage.hidden = true;
+        this.dom.panelNoUsage.hidden = normalizedUsage.availability !== 'partial';
+        this.dom.panelNoUsage.textContent = 'Partial usage · some token counts are unavailable';
 
         // Token cells
         this.dom.panelInputTokens.textContent =
@@ -2425,9 +2443,11 @@ export class ActivityPanel {
 
     _costForUsage(usage) {
         const supplied = this.currentAgent?.cost;
+        if (supplied?.usd === null || supplied?.availability === 'unavailable') return { ...supplied, usd: null };
         if (supplied && Number.isFinite(Number(supplied.usd))) {
             return {
                 usd: Math.max(0, Number(supplied.usd)),
+                availability: supplied.availability,
                 source: supplied.source === 'provider' ? 'provider' : 'estimate',
                 rateMatch: supplied.rateMatch ?? null,
                 rateRevision: supplied.rateRevision || TokenUsage.rateRevision,
@@ -2447,9 +2467,10 @@ export class ActivityPanel {
     }
 
     _renderCost(cost) {
-        if (!cost || !Number.isFinite(Number(cost.usd))) {
-            this.dom.panelCostRow.hidden = true;
-            this.dom.panelEstCost.textContent = '-';
+        if (!cost || cost.usd == null || !Number.isFinite(Number(cost.usd))) {
+            this.dom.panelCostRow.hidden = false;
+            this.dom.panelEstCost.textContent = 'Unavailable';
+            this.dom.panelEstCost.title = 'No billable usage or provider-reported cost is available';
             return;
         }
         const estimated = cost.source !== 'provider';
@@ -2463,7 +2484,7 @@ export class ActivityPanel {
             ' ',
             el('span', {
                 className: 'activity-panel__cost-source',
-                text: estimated ? 'estimate' : 'provider',
+                text: `${estimated ? 'estimate' : 'provider'}${cost.availability === 'partial' ? ' · partial' : ''}`,
             }),
             cost.unknownModel ? ' ' : null,
             cost.unknownModel ? el('span', { className: 'activity-panel__cost-source', text: 'default rate' }) : null,
@@ -2471,6 +2492,9 @@ export class ActivityPanel {
     }
 
     _setDetailState(activityText, usageText) {
+        for (const node of [this.dom.panelToolHistory, this.dom.panelMessages]) {
+            node.closest('[data-section]')?.style.setProperty('display', '');
+        }
         this._renderSignatures.toolHistory = `state:${activityText}`;
         this._renderSignatures.messages = `state:${activityText}`;
         replaceChildren(this.dom.panelToolHistory, [this._emptyState(activityText)]);
@@ -2493,7 +2517,7 @@ export class ActivityPanel {
         this.dom.panelCacheCreate.textContent = '-';
         this.dom.panelCacheHit.textContent = '-';
         this.dom.panelTurnCount.textContent = '-';
-        this._renderCost(this._costForUsage(null));
+        this._renderCost(this._costForUsage(this.currentAgent?.tokens || null));
     }
 
     _emptyState(text) {

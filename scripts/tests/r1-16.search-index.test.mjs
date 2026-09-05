@@ -102,3 +102,15 @@ test('adds lazy detail incrementally and retains it without repeated rebuilding'
     assert.equal(index.remove('lazy'), true);
     assert.equal(index.search('read').length, 0);
 });
+
+
+test('searches CLI identity independently of model vendor, project, team, workflow and session', () => {
+    const index = new AgentSearchIndex();
+    index.upsert(agent('session-123', { name: 'Aria', provider: 'opencode', model: 'gpt-6-astra', projectPath: '/repo/checkout', teamName: 'Night Watch', workflowName: 'ship-release' }));
+    index.upsert(agent('session-456', { provider: 'omp', model: 'glm-5', projectPath: '/repo/library' }));
+    for (const query of ['opencode', 'gpt-6-astra', 'checkout', 'Night Watch', 'ship-release', 'session-123']) {
+        assert.equal(index.search(query)[0]?.agentId, 'session-123', query);
+    }
+    for (const query of ['omp', 'glm-5', 'library']) assert.equal(index.search(query)[0]?.agentId, 'session-456', query);
+    assert.equal(index.search('claude').length, 0);
+});

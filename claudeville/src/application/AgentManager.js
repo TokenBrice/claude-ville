@@ -60,6 +60,10 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'turnStartedAt',
     'lastTurnDurationMs',
     'signalSource',
+    'signalCertainty',
+    'signalObservedAt',
+    'signalStale',
+    'freshness',
     'workingSet',
     'collisions',
     'resident',
@@ -636,6 +640,10 @@ export class AgentManager {
             signalSource: session.signalSource === 'hook' || session.signalSource === 'transcript'
                 ? session.signalSource
                 : null,
+            signalCertainty: session.signalCertainty || 'unavailable',
+            signalObservedAt: session.signalObservedAt ?? null,
+            signalStale: session.signalStale === true,
+            freshness: session.freshness || null,
             workingSet: Array.isArray(session.workingSet) ? session.workingSet.slice(0, 16) : [],
             collisions: Array.isArray(collisions) ? collisions : [],
             resident: session.resident === true,

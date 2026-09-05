@@ -190,7 +190,7 @@ async function freezeFixture(page, timelineMs) {
 
 async function configureCapture(page, run) {
     const weather = { ...WEATHER[run.atmosphere.weather], seed: run.seed };
-    await page.evaluate(({ capture, weatherProfile }) => {
+    await page.evaluate(async ({ capture, weatherProfile }) => {
         const app = window.__claudeVilleApp;
         const renderer = app?.renderer;
         renderer?.cameraDirector?.setAutoMode?.(false);
@@ -210,6 +210,28 @@ async function configureCapture(page, run) {
             });
             renderer?.selectAgentById?.(capture.agentOverride.id);
             renderer?.onAgentSelect?.(app?.world?.agents?.get?.(capture.agentOverride.id) || null);
+        }
+        if (capture.pinAgentPositions) {
+            const { tileToWorld } = await import('/src/presentation/character-mode/Projection.js');
+            const specs = app.agentSimulator.getScenario().agents;
+            for (const spec of specs) {
+                if (!spec.position) continue;
+                const sprite = renderer.agentSprites.get(spec.id);
+                if (!sprite) throw new Error(`Missing posed actor ${spec.id}`);
+                const point = tileToWorld(spec.position);
+                sprite.x = sprite.targetX = point.x;
+                sprite.y = sprite.targetY = point.y;
+                sprite.moving = false;
+                sprite.waypoints = [];
+                // Static art comparisons intentionally exclude actor locomotion.
+                sprite.update = () => {};
+            }
+        }
+        if (capture.camera.centerTile) {
+            const { tileToWorld } = await import('/src/presentation/character-mode/Projection.js');
+            const center = tileToWorld(capture.camera.centerTile);
+            renderer.camera.stopFollow();
+            window.cameraSet?.({ ...center, zoom: capture.camera.zoom });
         }
         if (capture.camera.mode === 'absolute') {
             window.cameraSet?.({ x: capture.camera.x, y: capture.camera.y, zoom: capture.camera.zoom });
@@ -475,7 +497,7 @@ async function main() {
                 captured: `${run.id}--${run.mode}`,
                 frameP95Ms: result.performance.frames.p95Ms,
                 postFxLevel: result.actual.adaptivePostFxLevel,
-                textureBytes: result.diagnostics.postFx?.textureBytes ?? 0,
+                textureBytes: result.diagnostics.canvasBudget?.gpu?.textureBytes ?? result.diagnostics.postFx?.textureBytes ?? 0,
                 trailRepaintMs: result.diagnostics.trails?.repaintTimeMs ?? 0,
             }));
         }

@@ -7,6 +7,7 @@
 const MAX_HOOK_SESSIONS = 256;
 const HOOK_EXPIRY_MS = 30_000;
 const HOOK_MERGE_WINDOW_MS = 10_000;
+const HOOK_WAIT_RETENTION_MS = 30 * 60_000;
 const PROMPT_DETAIL_MAX_LENGTH = 200;
 
 const KNOWN_PROVIDERS = new Set([
@@ -117,10 +118,11 @@ function urgency(value = {}) {
 }
 
 function shouldMergeOverlay(session, overlay, now = Date.now()) {
-  if (!overlay || now - overlay.lastHookAt >= HOOK_MERGE_WINDOW_MS) return false;
+  if (!overlay || now - overlay.lastHookAt >= (overlay.waitReason ? HOOK_WAIT_RETENTION_MS : HOOK_MERGE_WINDOW_MS)) return false;
   if (session?.provider && overlay.provider && session.provider !== overlay.provider) return false;
-  // A transcript's closed turn is the one state hooks may not suppress.
-  if (session?.turnState === 'awaiting_input') return false;
+  // A recorded resolution newer than the hook closes the unanswered wait.
+  if (session?.turnState === 'awaiting_input' && Number(session.awaitingSince) >= overlay.eventAt) return false;
+  if (Math.max(Number(session?.turnStartedAt) || 0, Number(session?.pendingSince) || 0) > overlay.eventAt) return false;
   return urgency(overlay) > urgency(session)
     || overlay.lastHookAt >= stateTimestamp(session);
 }
@@ -137,6 +139,9 @@ function mergeOverlay(session, overlay, now = Date.now()) {
     waitReason: overlay.waitReason,
     promptDetail,
     signalSource: 'hook',
+    signalCertainty: 'observed',
+    signalObservedAt: overlay.eventAt,
+    signalStale: now - overlay.lastHookAt >= HOOK_MERGE_WINDOW_MS,
     // These existing client fields carry the ephemeral detail through the
     // current Agent projection; /api/sessions still exposes promptDetail as F2.
     lastTool: overlay.pendingTool || session.lastTool || null,
@@ -172,7 +177,8 @@ class HookOverlay {
       throw error;
     }
 
-    const previous = this._entries.get(sessionId) || null;
+    const key = `${provider}::${sessionId}`;
+    const previous = this._entries.get(key) || null;
     const eventAt = safeTimestamp(event.ts, now);
     const safeTool = typeof event.tool === 'string'
       ? truncatePromptDetail(event.tool)?.slice(0, 128) || null
@@ -220,16 +226,16 @@ class HookOverlay {
     }
 
     if (previous && eventAt < previous.eventAt) {
-      return this.overlayFor(sessionId, now);
+      return this.overlayFor(sessionId, now, provider);
     }
 
-    if (this._entries.has(sessionId)) this._entries.delete(sessionId);
+    if (this._entries.has(key)) this._entries.delete(key);
     while (this._entries.size >= MAX_HOOK_SESSIONS) {
       const oldest = this._entries.keys().next().value;
       if (oldest === undefined) break;
       this._entries.delete(oldest);
     }
-    this._entries.set(sessionId, {
+    this._entries.set(key, {
       ...next,
       provider,
       sessionId,
@@ -238,14 +244,16 @@ class HookOverlay {
       signalSource: 'hook',
       lastHookAt: now,
     });
-    return this.overlayFor(sessionId, now);
+    return this.overlayFor(sessionId, now, provider);
   }
 
-  overlayFor(sessionId, now = this._now()) {
-    const key = String(sessionId || '');
+  overlayFor(sessionId, now = this._now(), provider = null) {
+    const matches = provider ? [] : [...this._entries.values()].filter(entry => entry.sessionId === sessionId);
+    if (!provider && matches.length !== 1) return null;
+    const key = `${provider || matches[0].provider}::${sessionId}`;
     const entry = this._entries.get(key);
     if (!entry) return null;
-    if (now - entry.lastHookAt >= HOOK_EXPIRY_MS) {
+    if (now - entry.lastHookAt >= (entry.waitReason ? HOOK_WAIT_RETENTION_MS : HOOK_EXPIRY_MS)) {
       this._entries.delete(key);
       return null;
     }
@@ -254,7 +262,7 @@ class HookOverlay {
 
   prune(now = this._now()) {
     for (const [sessionId, entry] of this._entries) {
-      if (now - entry.lastHookAt >= HOOK_EXPIRY_MS) this._entries.delete(sessionId);
+      if (now - entry.lastHookAt >= (entry.waitReason ? HOOK_WAIT_RETENTION_MS : HOOK_EXPIRY_MS)) this._entries.delete(sessionId);
     }
   }
 
@@ -271,7 +279,7 @@ class HookOverlay {
   nextExpiryAt(now = this._now()) {
     let next = null;
     for (const entry of this._entries.values()) {
-      const at = entry.lastHookAt + HOOK_EXPIRY_MS;
+      const at = entry.lastHookAt + (entry.waitReason ? HOOK_WAIT_RETENTION_MS : HOOK_EXPIRY_MS);
       if (at <= now) continue;
       if (next === null || at < next) next = at;
     }
@@ -286,6 +294,7 @@ class HookOverlay {
 const hookOverlay = new HookOverlay();
 
 module.exports = {
+  HOOK_WAIT_RETENTION_MS,
   HOOK_EXPIRY_MS,
   HOOK_MERGE_WINDOW_MS,
   HookOverlay,

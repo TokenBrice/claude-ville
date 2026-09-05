@@ -73,7 +73,16 @@ function buildAgent(spec, timeBase) {
         agentName: spec.name,
         agentType: spec.agentType || 'main',
         parentSessionId: spec.parentId || null,
-        tokens: spec.tokens || { input: 0, output: 0 },
+        tokens: spec.tokens === undefined ? { input: 0, output: 0 } : spec.tokens,
+        cost: spec.cost,
+        effort: spec.effort,
+        waitReason: spec.waitReason,
+        pendingTool: spec.pendingTool,
+        signalSource: spec.signalSource,
+        signalCertainty: spec.signalCertainty,
+        signalStale: spec.signalStale,
+        signalObservedAt: timeBase - (Number(spec.signalAgeMs) || 0),
+        freshness: spec.freshness ? { ...spec.freshness, observedAt: timeBase - (Number(spec.freshness.ageMs) || 0) } : null,
         messages: Array.isArray(spec.messages) ? clonePlain(spec.messages) : [],
         gitEvents: Array.isArray(spec.gitEvents) ? clonePlain(spec.gitEvents) : [],
         lastMessage: spec.lastMessage || null,
@@ -84,6 +93,8 @@ function buildAgent(spec, timeBase) {
         lastSessionActivity,
         activityAgeMs: 0,
     });
+    agent.underlyingProvider = spec.underlyingProvider || null;
+    agent.promptDetail = spec.promptDetail || null;
     const position = positionFromSpec(spec.position);
     if (position) agent.position = position;
     const targetPosition = positionFromSpec(spec.targetPosition);

@@ -252,7 +252,7 @@ export const FOREST_FLOOR_REGIONS = [
     { name: 'clock-greenwood', centerX: 27.8, centerY: 8.2, radiusX: 9.8, radiusY: 6.6, base: '#2e5835', accent: '#6c9648', strength: 0.80 },
     { name: 'archive-grove', centerX: 8.2, centerY: 14.8, radiusX: 6.2, radiusY: 4.8, base: '#315f32', accent: '#729948', strength: 0.68 },
     { name: 'lighthouse-windbreak', centerX: 30.2, centerY: 10.8, radiusX: 5.8, radiusY: 6.2, base: '#315a36', accent: '#73924c', strength: 0.58 },
-    { name: 'central-isle', centerX: 17, centerY: 22, radiusX: 7, radiusY: 6, base: '#2c5a32', accent: '#6c9a48', strength: 0.95 },
+    { name: 'central-isle', centerX: 17, centerY: 22, radiusX: 7, radiusY: 6, base: '#2c5a32', accent: '#54753f', strength: 0.55 },
 ];
 
 // Tree clusters: anchor tile + radius (tiles) + density (0..1).
@@ -272,7 +272,7 @@ export const TREE_CLUSTERS = [
     { centerX: 4, centerY: 35, radiusX: 7.6, radiusY: 5.6, density: 0.68, palmBias: 0.52 },
     { centerX: 35, centerY: 4, radiusX: 4.8, radiusY: 5.8, density: 0.52, palmBias: 0.44 },
     { centerX: 36, centerY: 36, radiusX: 7, radiusY: 5.8, density: 0.68, palmBias: 0.68 },
-    // Abundant but path-safe woodland around the settlement.
+    // The settlement keeps a lighter canopy than the northern forest.
     { centerX: 7, centerY: 31, radiusX: 6.8, radiusY: 4.6, density: 0.40, palmBias: 0.50 },
     { centerX: 17, centerY: 32, radiusX: 5.8, radiusY: 3.6, density: 0.35, palmBias: 0.42 },
     { centerX: 28, centerY: 32, radiusX: 6.2, radiusY: 3.8, density: 0.35, palmBias: 0.48 },
@@ -281,9 +281,9 @@ export const TREE_CLUSTERS = [
     { centerX: 18, centerY: 23, radiusX: 7.2, radiusY: 3.2, density: 0.28, palmBias: 0.61 },
     { centerX: 26, centerY: 23, radiusX: 5.6, radiusY: 3.6, density: 0.25, palmBias: 0.57 },
     { centerX: 35, centerY: 15, radiusX: 4.8, radiusY: 5.2, density: 0.34, palmBias: 0.61 },
-    { centerX: 14, centerY: 21, radiusX: 4.6, radiusY: 4.0, density: 0.78, palmBias: 0.55 },
-    { centerX: 20, centerY: 22, radiusX: 4.4, radiusY: 4.0, density: 0.74, palmBias: 0.50 },
-    { centerX: 17, centerY: 19, radiusX: 5.2, radiusY: 3.4, density: 0.70, palmBias: 0.48 },
+    { centerX: 14, centerY: 21, radiusX: 4.6, radiusY: 4.0, density: 0.28, palmBias: 0.55 },
+    { centerX: 20, centerY: 22, radiusX: 4.4, radiusY: 4.0, density: 0.25, palmBias: 0.50 },
+    { centerX: 17, centerY: 19, radiusX: 5.2, radiusY: 3.4, density: 0.30, palmBias: 0.48 },
 ];
 
 export const TROPICAL_PALMS = [
@@ -353,9 +353,8 @@ export const VEGETATION_DISTRICTS = [
     { name: 'portal-grove', centerX: 7.5, centerY: 28.5, radius: 5.0, bushBoost: 0.032, grassBoost: 0.023, treeBoost: 0.018, flowerBoost: 0.045 },
     { name: 'south-wildwood', centerX: 22, centerY: 35, radius: 12, bushBoost: 0.04, grassBoost: 0.05, treeBoost: 0.08, flowerBoost: 0.080 },
     { name: 'harbor-windbreak', centerX: 35, centerY: 22, radius: 5.2, bushBoost: 0.020, grassBoost: 0.014, treeBoost: 0.008, flowerBoost: 0.040 },
-    // Civic heart — the inhabited belt between the landmarks. Flowers here are
-    // the core of the "living ground" pass; flat so they never block sightlines.
-    { name: 'civic-meadow', centerX: 17, centerY: 22, radius: 9.0, bushBoost: 0.0, grassBoost: 0.030, treeBoost: 0.0, flowerBoost: 0.120 },
+    // Keep the inhabited belt quiet so agents, paths and thresholds remain legible.
+    { name: 'civic-meadow', centerX: 17, centerY: 22, radius: 9.0, bushBoost: -0.035, grassBoost: -0.035, treeBoost: 0.0, flowerBoost: -0.025 },
 ];
 
 // Shoreline accents are deterministic bands near water. They add readable

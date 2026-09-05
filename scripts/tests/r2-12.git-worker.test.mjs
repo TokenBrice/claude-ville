@@ -49,11 +49,16 @@ git.configureGitEnrichmentWorker({ enabled: true });
 if (mode === 'queue') {
   for (const project of projects) git.requestGitWorkerRefresh(project, { reason: 'load' });
   console.log(JSON.stringify({ phase: 'queued', stats: git.getGitWorkerPerfStats() }));
-  setTimeout(() => {
+  const deadline = Date.now() + 5000;
+  const waitForDrain = () => {
     const stats = git.getGitWorkerPerfStats();
+    if ((stats.queueDepth || stats.activeJobs) && Date.now() < deadline) {
+      return setTimeout(waitForDrain, 10);
+    }
     git.shutdownGitEnrichmentWorker();
     console.log(JSON.stringify({ phase: 'settled', stats }));
-  }, 900);
+  };
+  waitForDrain();
 } else if (mode === 'coalesce') {
   for (let index = 0; index < 8; index += 1) {
     git.requestGitWorkerRefresh(projects[0], { reason: 'duplicate' });

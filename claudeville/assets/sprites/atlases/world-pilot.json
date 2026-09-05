@@ -701,7 +701,7 @@
   "channelSha256": {
     "albedo": "0071f534ddeb3247354a7ab9eeedfc9ef9a82e4db27336ac565b03135aa485ed",
     "emissive": "623a5aee605f9c57db0cdfe3a9ac29d70a043adfe01f8010b0f13e32325cbd38",
-    "material": "df3b1e6865b5c93dfe509aaf01536e0bbe9e36c2081bd550c846645891b34a5e",
+    "material": "96c7b1554ea6b67f73490abddec57c5dcec007a075b3b53f03639bb05cf6b02f",
     "occluder": "ca149700e652bd9950925898873a169daf9684f230fec9b577eeb90e682c274e"
   },
   "channels": {
@@ -9937,7 +9937,7 @@
       },
       "sidecars": {
         "emissive": null,
-        "material": null,
+        "material": "buildings/building.command/base.material.png",
         "occluder": null
       },
       "sourcePath": "buildings/building.command/base.png",

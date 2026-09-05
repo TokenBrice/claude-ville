@@ -14,7 +14,7 @@ Desktop-only constraint: shared UI only needs to support browser widths of 1280p
 | `Sidebar.js` | Project-grouped agent list, selection mirror/toggle, persisted collapsed state, and Harbor pending-commit ledger from `harbor:updated`. |
 | `ActivityPanel.js` | Right-side 320px detail panel with selected-agent and selected-building modes. |
 | `AgentSelection.js` | Shared selection event helpers and local selected-agent mirrors for presentation components. |
-| `AgentPresentation.js` | Shared project grouping plus provider, model, status, current-tool, and tool-history presentation helpers. |
+| `AgentPresentation.js` | Shared identity/status presentation, pixel SVG emblems, freshness/provenance labels, and reusable native text disclosures. |
 | `DomSafe.js` | DOM construction/replacement helpers used by App, Dashboard, Sidebar, Activity Panel, and presentation helpers. |
 | `Formatters.js` | Status, path, number, cost, hash, and truncation formatting helpers. |
 | `GitEventIdentity.js` | Shared git event labeling and identity helpers for harbor/git flows. |
@@ -29,16 +29,18 @@ Desktop-only constraint: shared UI only needs to support browser widths of 1280p
 
 - Emit `agent:selected` and `agent:deselected` through `AgentSelection.js` helpers so future event-shape changes stay centralized.
 - `agent:selected` can be emitted by World mode, Dashboard cards, or Sidebar rows.
-- `ActivityPanel` opens on `agent:selected`, refreshes its selected agent on matching `agent:updated`, and hides when that agent is removed.
+- In World mode, `ActivityPanel` opens on `agent:selected`, refreshes its selected agent on matching `agent:updated`, and hides when that agent is removed. Dashboard keeps this panel hidden and expands selected detail inline.
 - `BUILDING_EVENTS.SELECTED` opens Activity Panel building mode, shows building purpose/status/occupants, polls occupants every 5 seconds, and emits `agent:deselected` when building selection overrides an agent selection.
 - `BUILDING_EVENTS.DESELECTED` clears building mode when the currently shown building is deselected.
 - `ActivityPanel.hide()` emits `agent:deselected`; `App.js` bridges that event back to World mode so camera follow stops.
 - Empty world clicks clear renderer selection/follow but do not close the panel. The panel remains open until its close button or selected-agent removal.
-- `usage:updated` feeds shared status surfaces such as `TopBar`. `ws:connected` and `ws:disconnected` are currently consumed by application services.
+- `usage:updated` feeds shared status surfaces such as `TopBar`. `TopBar` consumes App’s canonical `village:state`; it does not separately reduce WebSocket/watcher events. Simulator state reads `SIMULATED`. Null World FPS hides the renderer health value while genuine numeric zero remains visible as an error.
 
 ## Session Detail Fetching
 
 Use `sessionDetailsService.fetchSessionDetail(agent)` for one-agent surfaces or `sessionDetailsService.fetchSessionDetailsBatch(agents)` for card grids that need tools/messages/tokens. Do not add direct `/api/session-detail` or `/api/session-details` fetches in components.
+
+Activity Panel and Dashboard expose complete available message/tool text through native disclosures, preserve unchanged DOM across refresh, and show cache/server observation age when stale. Provider truncation flags remain visible. Empty successful activity sections collapse; loading and unavailable states remain explicit. Usage and cost distinguish unavailable, partial, and observed zero, and the spend headline discloses incomplete active-session coverage.
 
 Service behavior:
 

@@ -877,7 +877,11 @@ export class AssetManager {
         return new Promise((resolve) => {
             const img = new Image();
             let settled = false;
-            const cleanup = () => signal?.removeEventListener?.('abort', abort);
+            const cleanup = () => {
+                signal?.removeEventListener?.('abort', abort);
+                img.onload = null;
+                img.onerror = null;
+            };
             const finish = (value) => {
                 if (settled) return;
                 settled = true;
@@ -911,7 +915,15 @@ export class AssetManager {
             const img = new Image();
             let placeholder = null;
             let settled = false;
-            const cleanup = () => signal?.removeEventListener?.('abort', abort);
+            const cleanup = () => {
+                signal?.removeEventListener?.('abort', abort);
+                img.onload = null;
+                img.onerror = null;
+                if (placeholder) {
+                    placeholder.onload = null;
+                    placeholder.onerror = null;
+                }
+            };
             const finish = (value, error = null) => {
                 if (settled) return;
                 settled = true;

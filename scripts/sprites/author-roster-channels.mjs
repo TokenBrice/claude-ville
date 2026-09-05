@@ -26,12 +26,28 @@ const check = process.argv.includes('--check');
 const PROFILES = Object.freeze({
     'agent.claude.fable': character('fabric', 0.10, ['#f9c855', '#f9cc57', '#f6c658']),
     'agent.claude.opus': character('fabric'),
-    'agent.claude.sonnet': character('fabric', 0.12, ['#6f70cc', '#bed2f6']),
+    'agent.claude.sonnet': {
+        ...character('fabric', 0.12, ['#6f70cc', '#bed2f6']),
+        // Reviewed source palette: silver fittings, exposed face, crystal focus.
+        materialColors: {
+            metal: ['a7aabe', '9697b2', '9ca6b4', '8884b2', 'd5d3ef', '898d97', 'eeeef5'],
+            unlit: ['dea88f', 'bd8978', 'a67360', 'e4bdae', '8e6350', 'f0c5a3'],
+            'glass-rune': ['6f70cc', 'bed2f6', 'b2beea', '9d97ec'],
+        },
+    },
     'agent.claude.haiku': character('fabric'),
     'agent.codex.gpt55': character('metal', 0.16, ['#56efc9', '#43e1ca']),
     'agent.codex.gpt55.high': character('metal', 0.14, ['#70c0c7', '#68adba']),
     'agent.codex.gpt55.xhigh': character('metal', 0.18, ['#55e0d8', '#44c9c6']),
-    'agent.codex.gpt56terra': character('metal', 0.14, ['#e69744', '#da8e43']),
+    'agent.codex.gpt56terra': {
+        ...character('metal', 0.14, ['#e69744', '#da8e43']),
+        // Reviewed source palette: olive cloth, leather fittings and bare skin.
+        materialColors: {
+            fabric: ['697b59', '3e4b38', '5e6955', '515b4e', '81514a', '73413c', '684747', '4e3f3e', '39262a'],
+            unlit: ['ba8375', 'a66758', '8b655e', 'd1a292', '9f7873', 'eab9a1', 'd98f79'],
+            'glass-rune': ['e69744', 'da8e43'],
+        },
+    },
     'agent.codex.gpt56luna': character('metal'),
     'agent.codex.gpt56sol': character('metal'),
     'agent.codex.gpt54': character('metal'),
@@ -47,6 +63,17 @@ const PROFILES = Object.freeze({
     'agent.grok.composer': character('fabric', 0.12, ['#4ab9cf', '#47dce4']),
     'agent.zai.glm': character('fabric', 0.12, ['#73b493', '#4e7c61']),
     'agent.zai.flash': character('fabric'),
+    'building.command': {
+        ...terrain('stone'),
+        channels: ['material'],
+        // Blue roof tiles remain stone; these authored palette groups distinguish
+        // the crimson cloth and planted edges from masonry. Shared wall/door
+        // colors deliberately stay stone; a palette cannot disambiguate them.
+        materialColors: {
+            fabric: ['9f1f1f', '96201a', '912323', 'a01322', 'a32b21', 'b82821', '823022'],
+            foliage: ['255a18', '2a5f1c', '29611a', '12240e'],
+        },
+    },
     'terrain.grass-dirt': terrain('earth'),
     'terrain.grass-cobble': terrain('cobble'),
     'terrain.grass-shore': terrain('foliage'),
@@ -84,7 +111,7 @@ for (const [id, profile] of Object.entries(PROFILES)) {
             writeFileSync(outputPath, bytes);
         }
     }
-    const emissivePixels = countContributingPixels(channels.emissive);
+    const emissivePixels = channels.emissive ? countContributingPixels(channels.emissive) : 0;
     console.log(`[author-roster-channels] ${check ? 'checked' : 'authored'} ${id}: ${profile.material}, ${emissivePixels} emissive pixels`);
 }
 
@@ -124,10 +151,14 @@ function authorChannels(albedo, profile) {
     const occluder = blankLike(albedo);
     const selected = new Set(profile.emissiveColors.map(normalizeHex));
     const materialIndex = materialClassId(profile.material);
+    const materialColors = new Map(Object.entries(profile.materialColors || {}).flatMap(
+        ([name, colors]) => colors.map(color => [normalizeHex(color), materialClassId(name)])
+    ));
     for (let index = 0; index < albedo.data.length; index += 4) {
         const alpha = albedo.data[index + 3];
         if (alpha === 0) continue;
-        material.data[index] = materialIndex;
+        const rgb = rgbKey(albedo.data[index], albedo.data[index + 1], albedo.data[index + 2]);
+        material.data[index] = materialColors.get(rgb) ?? materialIndex;
         material.data[index + 3] = alpha;
 
         if (profile.occluder === 'alpha-silhouette') {
@@ -135,7 +166,6 @@ function authorChannels(albedo, profile) {
             occluder.data[index + 3] = alpha;
         }
 
-        const rgb = rgbKey(albedo.data[index], albedo.data[index + 1], albedo.data[index + 2]);
         if (selected.has(rgb)) {
             emissive.data[index] = albedo.data[index];
             emissive.data[index + 1] = albedo.data[index + 1];
@@ -143,7 +173,8 @@ function authorChannels(albedo, profile) {
             emissive.data[index + 3] = Math.min(alpha, Math.round(alpha * profile.emissiveContribution));
         }
     }
-    return { material, emissive, occluder };
+    const channels = { material, emissive, occluder };
+    return profile.channels ? Object.fromEntries(profile.channels.map(name => [name, channels[name]])) : channels;
 }
 
 function blankLike(source) {

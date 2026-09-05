@@ -13,7 +13,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { getJsonlDiagnostics, trimCache } = require('./shared');
+const { getJsonlDiagnostics, trimCache, readFailures } = require('./shared');
 const { decorateSessionPresentation } = require('./sessionPresentation');
 const { normalizeDialogue, normalizeObservedSources } = require('./dialogue');
 const { hookOverlay, mergeOverlay } = require('./hooks');
@@ -52,6 +52,7 @@ const SYNTHETIC_PROVIDERS = Object.freeze([
 const SESSION_LIST_CACHE_TTL_MS = 2000;
 const SESSION_DETAIL_CACHE_TTL_MS = 5000;
 const SESSION_DETAIL_MAX_CACHE = 256;
+const DEGRADED_RETENTION_MS = 60_000;
 // Repository discovery is a cold fallback, not active-session state. Watcher
 // descriptors and per-project Git signatures handle live changes, so avoid
 // rescanning the checkout root (and spawning rev-parse) every five seconds.
@@ -213,8 +214,8 @@ function normalizeSession(session, context = {}) {
     permissionMode: session?.permissionMode ?? null,
     turnState: session?.turnState ?? 'unknown',
     pendingTool: session?.pendingTool ?? null,
-    pendingSince: Number.isFinite(Number(session?.pendingSince)) ? Number(session.pendingSince) : null,
-    awaitingSince: Number.isFinite(Number(session?.awaitingSince)) ? Number(session.awaitingSince) : null,
+    pendingSince: session?.pendingSince != null && Number.isFinite(Number(session.pendingSince)) ? Number(session.pendingSince) : null,
+    awaitingSince: session?.awaitingSince != null && Number.isFinite(Number(session.awaitingSince)) ? Number(session.awaitingSince) : null,
     turnStartedAt: session?.turnStartedAt !== null
       && session?.turnStartedAt !== undefined
       && Number.isFinite(Number(session.turnStartedAt))
@@ -225,6 +226,8 @@ function normalizeSession(session, context = {}) {
       && Number.isFinite(Number(session.lastTurnDurationMs))
       ? Math.max(0, Number(session.lastTurnDurationMs))
       : null,
+    signalObservedAt: session?.signalObservedAt ?? session?.pendingSince ?? session?.awaitingSince ?? session?.lastActivity ?? null,
+    signalCertainty: session?.signalCertainty || (session?.turnState && session.turnState !== 'unknown' ? 'observed' : 'unavailable'),
     signalSource: session?.signalSource === 'hook' ? 'hook' : 'transcript',
     promptDetail: session?.signalSource === 'hook' && typeof session?.promptDetail === 'string'
       ? session.promptDetail.slice(0, 200)
@@ -375,14 +378,18 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
   // TTL expiry still reconciles every adapter. Within that window, refresh only
   // dirty provider slices, then merge them in the original adapter order.
   for (const adapter of adaptersToScan) {
-    _sessionsByProvider.set(adapter.provider, []);
+    const previous = _sessionsByProvider.get(adapter.provider) || [];
+    _sessionsByProvider.set(adapter.provider, previous.filter(session => now - session.freshness.observedAt < DEGRADED_RETENTION_MS)
+      .map(session => ({ ...session, freshness: { ...session.freshness, state: 'stale', ageMs: now - session.freshness.observedAt } })));
     const lastScanStartedAt = Date.now();
     let available = false;
+    const failuresBefore = readFailures.count;
     try {
       available = adapter.isAvailable();
+      if (readFailures.count !== failuresBefore) throw Object.assign(new Error('Provider availability failed'), { code: readFailures.code });
     } catch (err) {
       recordProviderFailure(adapter, boundedErrorCode(err, 'ADAPTER_AVAILABILITY_FAILED'), {
-        sessions: 0,
+        sessions: _sessionsByProvider.get(adapter.provider)?.length || 0,
         lastScanStartedAt,
       });
       console.error(`[${adapter.name}] Failed to check availability:`, err.message);
@@ -391,20 +398,22 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
     if (!available) {
       updateProviderHealth(adapter, { lastScanStartedAt });
       recordProviderUnavailable(adapter);
+      _sessionsByProvider.set(adapter.provider, []);
       continue;
     }
     try {
       const sessions = adapter.getActiveSessions(activeThresholdMs);
+      if (readFailures.count !== failuresBefore) throw Object.assign(new Error('Provider observation failed'), { code: readFailures.code });
       if (!Array.isArray(sessions)) {
         recordProviderFailure(adapter, 'INVALID_SESSION_RESULT', {
-          sessions: 0,
+          sessions: _sessionsByProvider.get(adapter.provider)?.length || 0,
           lastScanStartedAt,
         });
         continue;
       }
       _sessionsByProvider.set(
         adapter.provider,
-        sessions.map((session) => normalizeSession(session, { provider: adapter.provider })),
+        sessions.map((session) => normalizeSession({ ...session, freshness: { state: 'fresh', observedAt: now, ageMs: 0 } }, { provider: adapter.provider })),
       );
       const lastSuccessAt = Date.now();
       updateProviderHealth(adapter, {
@@ -419,7 +428,7 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
       });
     } catch (err) {
       recordProviderFailure(adapter, boundedErrorCode(err, 'ADAPTER_READ_FAILED'), {
-        sessions: 0,
+        sessions: _sessionsByProvider.get(adapter.provider)?.length || 0,
         lastScanStartedAt,
       });
       console.error(`[${adapter.name}] Failed to fetch sessions:`, err.message);
@@ -433,7 +442,11 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
   }))
     .map((session) => {
       const normalized = normalizeSession(session);
-      return mergeOverlay(normalized, hookOverlay.overlayFor(normalized.sessionId, now), now);
+      const aliases = [normalized.sessionId, normalized.sourceSessionId, normalized.agentId,
+        normalized.sessionId.replace(new RegExp(`^${normalized.provider}-`), '')].filter(Boolean);
+      const overlay = aliases.map(id => hookOverlay.overlayFor(id, now, normalized.provider)).filter(Boolean)
+        .sort((a, b) => b.eventAt - a.eventAt)[0];
+      return mergeOverlay(normalized, overlay, now);
     })
     .sort((a, b) => b.lastActivity - a.lastActivity);
 
@@ -457,10 +470,10 @@ function getSessionDetailByProvider(provider, sessionId, project, { force = fals
   const key = `${provider}::${sessionId}::${project || ''}`;
   const cached = _sessionDetailCache.get(key);
 
-  if (!force && cached && (now - cached.at) < SESSION_DETAIL_CACHE_TTL_MS) {
+  if (!force && cached && !cached.dirty && (now - cached.at) < SESSION_DETAIL_CACHE_TTL_MS) {
     _sessionDetailCache.delete(key);
     _sessionDetailCache.set(key, cached);
-    return cached.value;
+    return { ...cached.value, freshness: { state: 'fresh', observedAt: cached.at, ageMs: now - cached.at } };
   }
 
   const adapter = ADAPTER_BY_PROVIDER[provider];
@@ -471,13 +484,19 @@ function getSessionDetailByProvider(provider, sessionId, project, { force = fals
   }
 
   try {
+    const failuresBefore = readFailures.count;
     const value = normalizeDetail(adapter.getSessionDetail(sessionId, project), { provider, sessionId, project });
+    if (readFailures.count !== failuresBefore) throw Object.assign(new Error('Detail observation failed'), { code: readFailures.code });
+    value.freshness = { state: 'fresh', observedAt: now, ageMs: 0 };
     _sessionDetailCache.set(key, { value, at: now });
     _trimSessionDetailCache();
     return value;
   } catch (err) {
     console.error(`[${adapter.name}] Failed to fetch session details:`, err.message);
-    return cached?.value || normalizeDetail(null, { provider, sessionId, project });
+    if (cached) cached.dirty = true;
+    return cached && now - cached.at < DEGRADED_RETENTION_MS
+      ? { ...cached.value, freshness: { state: 'stale', observedAt: cached.at, ageMs: now - cached.at } }
+      : { ...normalizeDetail(null, { provider, sessionId, project }), freshness: { state: 'unavailable', observedAt: null, ageMs: null } };
   }
 }
 
@@ -523,7 +542,6 @@ function invalidateSessionCaches({ details = true, provider = null, dirty = null
     _sessionListCache.at = 0;
     _sessionListCache.threshold = null;
     _sessionListCache.sessions = [];
-    _sessionsByProvider.clear();
     _dirtySessionProviders.clear();
   }
 
@@ -535,21 +553,21 @@ function invalidateSessionCaches({ details = true, provider = null, dirty = null
     if (descriptor.kind === 'git' && (descriptor.project || descriptor.path)) {
       const project = descriptor.project || descriptor.path;
       for (const key of _sessionDetailCache.keys()) {
-        if (key.endsWith(`::${project}`)) _sessionDetailCache.delete(key);
+        if (key.endsWith(`::${project}`)) _sessionDetailCache.get(key).dirty = true;
       }
     } else if (scopedProvider && descriptor.sessionId) {
       const prefix = `${scopedProvider}::${descriptor.sessionId}::`;
       for (const key of _sessionDetailCache.keys()) {
-        if (key.startsWith(prefix)) _sessionDetailCache.delete(key);
+        if (key.startsWith(prefix)) _sessionDetailCache.get(key).dirty = true;
       }
     } else if (scopedProvider) {
       for (const key of _sessionDetailCache.keys()) {
         if (key.startsWith(`${scopedProvider}::`)) {
-          _sessionDetailCache.delete(key);
+          _sessionDetailCache.get(key).dirty = true;
         }
       }
     } else if (descriptor.kind !== 'git') {
-      _sessionDetailCache.clear();
+      for (const cached of _sessionDetailCache.values()) cached.dirty = true;
     }
   }
 
@@ -591,8 +609,10 @@ function getAllWatchPaths({ sessions = [], activeThresholdMs = null } = {}) {
   const paths = [];
   for (const adapter of adapters) {
     let available = false;
+    const failuresBefore = readFailures.count;
     try {
       available = adapter.isAvailable();
+      if (readFailures.count !== failuresBefore) throw Object.assign(new Error('Provider availability failed'), { code: readFailures.code });
     } catch (err) {
       recordProviderFailure(adapter, boundedErrorCode(err, 'ADAPTER_AVAILABILITY_FAILED'), {
         watchState: 'failed',

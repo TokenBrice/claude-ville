@@ -237,3 +237,24 @@ body.cv-panel-open .world-grammar {
 ) {
     -webkit-font-smoothing: none;
 }
+
+/* A healthy empty village stays visible and available to explore. */
+.world-empty[data-phase="ready-empty"] {
+    left: 24px;
+    top: auto;
+    bottom: 24px;
+    width: auto;
+    max-width: calc(100% - 48px);
+    transform: none;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 12px 16px;
+    text-align: left;
+    background: rgba(20, 14, 12, .92);
+    box-shadow: none;
+}
+.world-empty[data-phase="ready-empty"] .world-empty__crest,
+.world-empty[data-phase="ready-empty"] .world-empty__legend,
+.world-empty[data-phase="ready-empty"] .world-empty__next { display: none; }
+.world-empty[data-phase="ready-empty"] .world-empty__title { font: var(--fs-label) var(--font-display); }
+.world-empty[data-phase="ready-empty"] .world-empty__copy { font: var(--fs-body)/var(--lh-body) var(--font-body); }

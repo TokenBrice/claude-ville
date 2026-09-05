@@ -308,7 +308,7 @@ function tryFetchQuota() {
       const fiveHour = quotaRatio(data.five_hour);
       const sevenDay = quotaRatio(data.seven_day);
       if (fiveHour === null && sevenDay === null) return;
-      cache.quota.data = { fiveHour, sevenDay };
+      cache.quota.data = { provider: 'claude', fiveHour, sevenDay };
       cache.quota.lastSuccessTs = Date.now();
       if (!cache.quota.available) console.log('[Usage] Quota API available');
       cache.quota.available = true;

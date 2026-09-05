@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveAgentStatus, isAttentionStatus } from '../../claudeville/src/domain/services/StatusResolver.js';
+import { resolveAgentStatus, isAttentionStatus, quotaPressure } from '../../claudeville/src/domain/services/StatusResolver.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 
 const NOW = 1_700_000_000_000;
@@ -33,10 +33,10 @@ test('a blocked tool resolves to WAITING_ON_USER', () => {
     );
 });
 
-test('rate limiting outranks everything for a busy agent', () => {
+test('observed rate limiting raises attention for a busy agent', () => {
     const usage = { quota: { fiveHour: 0.99 } };
     const status = resolveAgentStatus(
-        { ...fresh, turnState: 'tool_pending', pendingTool: 'Bash' },
+        { ...fresh, turnState: 'tool_pending', pendingTool: 'Bash', rateLimit: { enforced: true } },
         { usage, now: NOW },
     );
     assert.equal(status, AgentStatus.RATE_LIMITED);
@@ -85,4 +85,23 @@ test('attention covers the three states that need a person', () => {
     assert.equal(isAttentionStatus(AgentStatus.RATE_LIMITED), true);
     assert.equal(isAttentionStatus(AgentStatus.COMPLETED), false);
     assert.equal(isAttentionStatus(AgentStatus.WORKING), false);
+});
+
+test('Claude pressure never asserts enforcement or hides a question', () => {
+    const usage = { quota: { provider: 'claude', fiveHour: .99 } };
+    for (const provider of ['claude', 'codex', 'gemini', 'grok', 'kimi', 'omp', 'opencode']) {
+        assert.equal(resolveAgentStatus({ ...fresh, provider, turnState: 'working' }, { usage, now: NOW }), AgentStatus.WORKING);
+        assert.equal(resolveAgentStatus({ ...fresh, provider, turnState: 'tool_pending', waitReason: 'question', rateLimit: { enforced: true } }, { usage, now: NOW }), AgentStatus.WAITING_ON_USER);
+    }
+});
+
+test('quota pressure and account enforcement are provider/account scoped', () => {
+    const usage = { quota: { provider: 'claude', accountId: 'a', fiveHour: .99, enforced: true } };
+    const session = { ...fresh, provider: 'claude', accountId: 'a', turnState: 'working' };
+    assert.equal(quotaPressure(session, usage), .99);
+    assert.equal(resolveAgentStatus(session, { usage, now: NOW }), AgentStatus.RATE_LIMITED);
+    for (const other of [{ ...session, provider: 'codex' }, { ...session, accountId: 'b' }]) {
+        assert.equal(quotaPressure(other, usage), null);
+        assert.equal(resolveAgentStatus(other, { usage, now: NOW }), AgentStatus.WORKING);
+    }
 });

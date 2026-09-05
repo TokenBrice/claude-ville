@@ -509,6 +509,15 @@
     border-left: 1px solid rgba(214, 169, 81, 0.3);
 }
 
+.topbar__seg[hidden] {
+    display: none;
+}
+
+.topbar__seg--needs-you {
+    color: var(--cv-status-waiting-user);
+    white-space: nowrap;
+}
+
 .topbar__seg--working .topbar__badge-dot {
     background: var(--cv-status-working);
 }

@@ -525,65 +525,19 @@ export function renderWorldFrame(renderer, dt = 16) {
     // scene category. Canvas draws them in the depth stream; direct GPU replays
     // the same category above its opaque island.
     markFrameTiming(frameTimer, 'fauna');
-    if (!gpuWorldActive) renderer.trailRenderer?.draw?.(ctx, renderer.camera, viewport, renderNow);
-    markFrameTiming(frameTimer, 'trails');
-    // 3.10 — teams with a live council ring skip the director aura wash.
-    drawVillageDirectorGround(ctx, villageSnapshot, renderNow, atmosphere?.grade, {
-        councilTeamNames: collectCouncilTeamNames(renderer, villageSnapshot),
-    });
-    markFrameTiming(frameTimer, 'director-ground');
-
-    if (!gpuWorldActive) drawBuildingLightReflections(renderer, ctx, atmosphere);
-    markFrameTiming(frameTimer, 'light-reflections');
-
-    if (!gpuWorldActive) renderer.buildingRenderer?.drawShadows(ctx);
-    // 3.9 — priority-ordered admission: talk arcs draw last (above sprites) but
-    // are the highest-value SECONDARY marks, so they are admitted into the mark
-    // governor up front and the ring/tether passes cull ahead of them.
-    admitTalkArcMarks({
-        relationship: renderer.relationshipState,
-        agentSprites: renderer.agentSprites,
-    });
-    drawCouncilRings(ctx, {
-        relationship: renderer.relationshipState,
-        agentSprites: renderer.agentSprites,
-        zoom: renderer.camera.zoom,
-        now: perfNow,
-        motionScale: renderer.motionScale,
-        lighting: atmosphere?.lighting,
-        grade: atmosphere?.grade,
-    });
-    drawFamilyTethers(ctx, {
-        relationship: renderer.relationshipState,
-        agentSprites: renderer.agentSprites,
-        zoom: renderer.camera.zoom,
-        now: perfNow,
-        motionScale: renderer.motionScale,
-        lighting: atmosphere?.lighting,
-        grade: atmosphere?.grade,
-    });
-    drawAdvisorTethers(ctx, {
-        relationship: renderer.relationshipState,
-        agentSprites: renderer.agentSprites,
-        zoom: renderer.camera.zoom,
-        now: perfNow,
-        motionScale: renderer.motionScale,
-        lighting: atmosphere?.lighting,
-        grade: atmosphere?.grade,
-    });
-    drawAllyTethers(ctx, {
-        pairs: renderer._allyTetherPairs,
-        zoom: renderer.camera.zoom,
-        now: perfNow,
-        motionScale: renderer.motionScale,
-        lighting: atmosphere?.lighting,
-        grade: atmosphere?.grade,
-    });
-    drawCrowdClusterAuras(ctx, {
-        crowdStats: renderer._crowdStats,
-        zoom: renderer.camera.zoom,
-        lighting: atmosphere?.lighting,
-    });
+    admitTalkArcMarks({ relationship: renderer.relationshipState, agentSprites: renderer.agentSprites });
+    const ground = gpuWorldActive ? prepareSemanticGround(renderer, viewport, villageSnapshot, atmosphere) : null;
+    if (!gpuWorldActive || ground?.dirty) {
+        drawGroundSemantics(renderer, ground?.ctx || ctx, { villageSnapshot, renderNow, perfNow, atmosphere, viewport });
+    }
+    if (!gpuWorldActive) {
+        drawBuildingLightReflections(renderer, ctx, atmosphere);
+        renderer.buildingRenderer?.drawShadows(ctx);
+    } else if (ground) {
+        renderer._resetScreenTransform(ctx);
+        ctx.drawImage(renderer._semanticGroundCanvas, 0, 0, viewport.width, viewport.height);
+        renderer.camera.applyTransform(ctx);
+    }
     markFrameTiming(frameTimer, 'prelayers');
 
     const buildingDrawables = renderer.buildingRenderer?.enumerateDrawables() ?? [];
@@ -648,30 +602,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     // damp-mark decoration remains fallback-only and is documented as such.
     if (!gpuWorldActive) renderer._drawSurfaceWetnessMarks?.(ctx, 'roofs');
     markFrameTiming(frameTimer, 'drawables');
-    drawTalkArcs(ctx, {
-        relationship: renderer.relationshipState,
-        agentSprites: renderer.agentSprites,
-        zoom,
-        now: perfNow,
-        motionScale: renderer.motionScale,
-        lighting: atmosphere?.lighting,
-        grade: atmosphere?.grade,
-    });
-    drawCrowdClusterBadges(ctx, {
-        crowdStats: renderer._crowdStats,
-        zoom,
-    });
-    renderer.arrivalDeparture?.draw?.(ctx, {
-        zoom,
-        now: perfNow,
-        lighting: atmosphere?.lighting,
-    });
-    drawVillageDirectorOverlays(ctx, villageSnapshot, perfNow, atmosphere?.grade, {
-        getBuildingDims: buildingDimsLookup(renderer),
-    });
-
-    drawSelectedAgentXray(renderer, ctx, buildingDrawables);
-
     renderer.particleSystem.draw(ctx, { excludeLayer: 'screen' });
     renderer.harborTraffic?.drawFinaleEffects(ctx, renderNow);
     markFrameTiming(frameTimer, 'world-effects');
@@ -693,6 +623,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         gpuBuildContext.drawables = drawables;
         const records = buildGpuWorldRecords(renderer, gpuBuildContext);
         const gpuFeed = Object.assign(renderer._gpuFeedEnvelope ||= {}, feed || {});
+        gpuFeed.timeMs = renderer.motionTimeMs ?? feed?.timeMs;
         gpuFeed.atmosphere = atmosphere;
         gpuFeed.weather = atmosphere?.weather || null;
         gpuFeed.lighting = atmosphere?.lighting || null;
@@ -728,8 +659,29 @@ export function renderWorldFrame(renderer, dt = 16) {
         profileMark: frameTimer ? label => markFrameTiming(frameTimer, label) : null,
     });
     renderer.camera.applyTransform(overlayCtx);
+    drawTalkArcs(overlayCtx, {
+        relationship: renderer.relationshipState,
+        agentSprites: renderer.agentSprites,
+        zoom,
+        now: perfNow,
+        motionScale: renderer.motionScale,
+        lighting: atmosphere?.lighting,
+        grade: atmosphere?.grade,
+    });
+    drawCrowdClusterBadges(overlayCtx, {
+        crowdStats: renderer._crowdStats,
+        zoom,
+    });
+    renderer.arrivalDeparture?.draw?.(overlayCtx, {
+        zoom,
+        now: perfNow,
+        lighting: atmosphere?.lighting,
+    });
+    drawVillageDirectorOverlays(overlayCtx, villageSnapshot, perfNow, atmosphere?.grade, {
+        getBuildingDims: buildingDimsLookup(renderer),
+    });
+
     if (gpuWorldRendered) {
-        renderer.trailRenderer?.draw?.(overlayCtx, renderer.camera, viewport, renderNow);
         const sceneOverlayContext = renderer._sceneOverlayContext || (renderer._sceneOverlayContext = {});
         sceneOverlayContext.zoom = zoom;
         sceneOverlayContext.renderNow = renderNow;
@@ -748,6 +700,7 @@ export function renderWorldFrame(renderer, dt = 16) {
             sprite.drawGpuWorldOverlay?.(overlayCtx, zoom, agentRenderMode);
         }
     }
+    drawSelectedAgentXray(renderer, overlayCtx, buildingDrawables);
     markFrameTiming(frameTimer, 'post-atmosphere-effects');
 
     renderer.buildingRenderer?.drawBubbles(overlayCtx, renderer.world);
@@ -802,6 +755,119 @@ export function renderWorldFrame(renderer, dt = 16) {
         const renderStats = renderer._lastRenderStats || (renderer._lastRenderStats = {});
         renderStats.timings = timings;
     }
+}
+
+function drawGroundSemantics(renderer, groundCtx, { villageSnapshot, renderNow, perfNow, atmosphere, viewport }) {
+    renderer.trailRenderer?.draw?.(groundCtx, renderer.camera, viewport, renderNow, true);
+
+    // 3.10 — teams with a live council ring skip the director aura wash.
+    drawVillageDirectorGround(groundCtx, villageSnapshot, renderNow, atmosphere?.grade, {
+        councilTeamNames: collectCouncilTeamNames(renderer, villageSnapshot),
+    });
+
+    drawCouncilRings(groundCtx, {
+        relationship: renderer.relationshipState,
+        agentSprites: renderer.agentSprites,
+        zoom: renderer.camera.zoom,
+        now: perfNow,
+        motionScale: renderer.motionScale,
+        lighting: atmosphere?.lighting,
+        grade: atmosphere?.grade,
+    });
+    drawFamilyTethers(groundCtx, {
+        relationship: renderer.relationshipState,
+        agentSprites: renderer.agentSprites,
+        zoom: renderer.camera.zoom,
+        now: perfNow,
+        motionScale: renderer.motionScale,
+        lighting: atmosphere?.lighting,
+        grade: atmosphere?.grade,
+    });
+    drawAdvisorTethers(groundCtx, {
+        relationship: renderer.relationshipState,
+        agentSprites: renderer.agentSprites,
+        zoom: renderer.camera.zoom,
+        now: perfNow,
+        motionScale: renderer.motionScale,
+        lighting: atmosphere?.lighting,
+        grade: atmosphere?.grade,
+    });
+    drawAllyTethers(groundCtx, {
+        pairs: renderer._allyTetherPairs,
+        zoom: renderer.camera.zoom,
+        now: perfNow,
+        motionScale: renderer.motionScale,
+        lighting: atmosphere?.lighting,
+        grade: atmosphere?.grade,
+    });
+    drawCrowdClusterAuras(groundCtx, {
+        crowdStats: renderer._crowdStats,
+        zoom: renderer.camera.zoom,
+        lighting: atmosphere?.lighting,
+    });
+    if (renderer.gpuWorld?.isActive?.()) {
+        for (const sprite of renderer.agentSprites.values()) {
+            if (!sprite.selected && !sprite.hovered) continue;
+            groundCtx.save();
+            groundCtx.strokeStyle = sprite._providerAccentColor?.() || '#f2d36b';
+            groundCtx.lineWidth = 1.5 / renderer.camera.zoom;
+            groundCtx.beginPath();
+            groundCtx.ellipse(sprite.x, sprite.y - 2, 24, 9, 0, 0, Math.PI * 2);
+            groundCtx.stroke();
+            groundCtx.restore();
+        }
+    }
+
+}
+
+export function prepareSemanticGround(renderer, viewport, snapshot, atmosphere) {
+    const relationship = renderer.relationshipState?.getSnapshot?.() || renderer.relationshipState;
+    const sprites = [...renderer.agentSprites.values()];
+    const hasCues = sprites.some(sprite => sprite.selected || sprite.hovered || [AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(sprite.agent?.status))
+        || relationship?.teamToMembers?.size || relationship?.parentToChildren?.size
+        || relationship?.advisorPairs?.length || renderer._allyTetherPairs?.length
+        || renderer._crowdStats?.clusters?.length
+        || snapshot?.buildingSignals?.length
+        || snapshot?.replaySamples?.length || snapshot?.selectedBuildingSignal || snapshot?.hoverBuildingSignal
+        || snapshot?.teams?.length || snapshot?.incidents?.length || snapshot?.recoveries?.length || snapshot?.releaseParade;
+    renderer._semanticGroundActive = Boolean(hasCues);
+    if (!hasCues) return null;
+    // ponytail: one 1024px-bounded cue texture; cache static frames and quantize
+    // ornament phases to 8 Hz. Native cue records if measured uploads still dominate.
+    const canvas = renderer._semanticGroundCanvas ||= document.createElement('canvas');
+    const scale = Math.min(1, 1024 / Math.max(viewport.width, viewport.height));
+    const width = Math.ceil(viewport.width * scale);
+    const height = Math.ceil(viewport.height * scale);
+    renderer._semanticGroundViewport = viewport;
+    const camera = renderer.camera;
+    const key = [width, height, camera.renderOffsetX, camera.renderOffsetY, camera.zoom,
+        renderer.motionScale > 0 ? Math.floor((renderer.motionTimeMs || 0) / 125) : 0,
+        renderer.motionScale,
+        // Compare contents, not collection identity: relationship and crowd owners
+        // mutate these in place, including while the visual clock is frozen.
+        JSON.stringify([
+            [...(relationship?.teamToMembers || [])].map(([name, ids]) => [name, [...ids]]),
+            [...(relationship?.parentToChildren || [])].map(([id, children]) => [id, [...children]]),
+            relationship?.advisorPairs,
+            renderer._allyTetherPairs?.map(pair => [pair.a?.agent?.id, pair.b?.agent?.id]),
+            renderer._crowdStats?.clusters?.map(cluster => [cluster.id, cluster.tileX, cluster.tileY, cluster.count, cluster.dominantStatus]),
+            // Light boost changes continuously through the day. Sub-byte alpha
+            // drift must not turn a static cue texture into a per-frame upload.
+            Math.round((atmosphere?.lighting?.lightBoost ?? 1) * 64), atmosphere?.grade?.worldTint,
+        ]),
+        JSON.stringify([snapshot?.buildingSignals, snapshot?.selectedBuildingSignal, snapshot?.hoverBuildingSignal,
+            snapshot?.replaySamples, snapshot?.teams, snapshot?.incidents, snapshot?.recoveries, snapshot?.releaseParade]),
+        sprites.map(sprite => `${sprite.agent?.id}:${Math.round(sprite.x)}:${Math.round(sprite.y)}:${sprite.selected}:${sprite.hovered}:${sprite.agent?.status}:${sprite.isArrivalPending?.()}:${sprite._providerAccentColor?.()}:${sprite._providerTrimColor?.() || sprite.providerTrimColor}`).join('|'),
+    ].join(';');
+    const ctx = canvas.getContext('2d');
+    if (key === renderer._semanticGroundKey) return { ctx, dirty: false };
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.setTransform(camera.zoom * scale, 0, 0, camera.zoom * scale, camera.renderOffsetX * scale, camera.renderOffsetY * scale);
+    renderer._semanticGroundKey = key;
+    renderer._semanticGroundRevision = (renderer._semanticGroundRevision || 0) + 1;
+    return { ctx, dirty: true };
 }
 
 function hexToRgb(hex) {
@@ -965,7 +1031,7 @@ function drawPrimaryMarksPostAtmosphere(renderer, ctx, villageSnapshot, atmosphe
             }
             // Selection ring: a soft additive echo of the asset ring at the feet,
             // in the provider accent so it still reads identity at a glance.
-            if (sprite.selected) {
+            if (sprite.selected && !force) {
                 const accent = hexToRgb(sprite._providerAccentColor?.() || '#f2d36b') || { r: 242, g: 211, b: 107 };
                 ctx.save();
                 ctx.globalCompositeOperation = 'screen';
@@ -1332,7 +1398,7 @@ function drawBuildingLightReflections(renderer, ctx, atmosphere) {
 function drawSelectedAgentXray(renderer, ctx, buildingDrawables) {
     if (!renderer.buildingRenderer || !renderer.assets) return;
     for (const drawable of buildingDrawables) {
-        if (drawable.kind !== 'building-front') continue;
+        if (drawable.kind !== 'building-front' && drawable.kind !== 'building') continue;
         const dims = renderer.assets.getDims(drawable.entry.id);
         if (!dims) continue;
         const [ax, ay] = renderer.assets.getAnchor(drawable.entry.id);
@@ -1340,7 +1406,6 @@ function drawSelectedAgentXray(renderer, ctx, buildingDrawables) {
         const top = drawable.wy - ay;
         const right = left + dims.w;
         const bottom = top + dims.h;
-        const backY = drawable.sortY - dims.h / 2;
         const frontY = drawable.sortY;
         for (const sprite of renderer.agentSprites.values()) {
             if (!sprite.selected) continue;
@@ -1348,8 +1413,9 @@ function drawSelectedAgentXray(renderer, ctx, buildingDrawables) {
                 && sprite.x <= right + 12
                 && sprite.y >= top
                 && sprite.y <= bottom + 12;
-            if (withinSpriteBounds && sprite.y >= backY && sprite.y < frontY) {
+            if (withinSpriteBounds && sprite.y < frontY) {
                 sprite.drawXraySilhouette(ctx);
+                return;
             }
         }
     }

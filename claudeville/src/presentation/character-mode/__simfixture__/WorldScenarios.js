@@ -31,6 +31,7 @@ function agentSpec({
     lastMessage = null,
     tokens = { input: 0, output: 0 },
     gitEvents = [],
+    ...presentation
 }) {
     return {
         id,
@@ -54,6 +55,7 @@ function agentSpec({
         lastMessage,
         tokens,
         gitEvents,
+        ...presentation,
     };
 }
 
@@ -1019,6 +1021,37 @@ export const STORM_NIGHT_REDUCED_MOTION_SCENARIO = {
     },
 };
 
+export const MULTI_PROVIDER_SHOWCASE_SCENARIO = {
+    id: 'multi-provider-showcase',
+    label: 'Seven CLI houses',
+    description: 'CLI identity, hosted models, observed zero, partial and unavailable billing, and stale approvals.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({ id: 'showcase-claude', name: 'Rowan', provider: 'claude', model: 'claude-sonnet-4-5', status: AgentStatus.WORKING, currentTool: 'Read', currentToolInput: '/sim/refinement/architecture.md', tokens: { input: 2400, output: 800, availability: 'observed' }, signalCertainty: 'observed', position: { tileX: 16, tileY: 21 } }),
+        agentSpec({ id: 'showcase-codex', name: 'Astra', provider: 'codex', model: 'gpt-6-astra', effort: 'high', status: AgentStatus.WAITING_ON_USER, waitReason: 'approval', pendingTool: 'exec_command', promptDetail: 'Review the complete test output before approving the deployment preview.', signalSource: 'hook', signalCertainty: 'observed', signalStale: true, signalAgeMs: 12000, tokens: { input: 0, output: 0, availability: 'observed' }, position: { tileX: 19, tileY: 22 } }),
+        agentSpec({ id: 'showcase-gemini', name: 'Lyra', provider: 'gemini', model: 'gemini-2.5-pro', status: AgentStatus.WORKING, currentTool: 'web_search', currentToolInput: 'pixel art surface materials', tokens: { input: 400, availability: 'partial' }, signalCertainty: 'inferred', position: { tileX: 23, tileY: 18 } }),
+        agentSpec({ id: 'showcase-kimi', name: 'Moon', provider: 'kimi', model: 'kimi-k2.5', status: AgentStatus.WORKING, currentTool: 'ReadFile', currentToolInput: '/sim/refinement/lighting.js', tokens: { input: 1300, output: 440, availability: 'observed' }, signalCertainty: 'observed', position: { tileX: 25, tileY: 22 } }),
+        agentSpec({ id: 'showcase-grok', name: 'Ember', provider: 'grok', model: 'grok-4', status: AgentStatus.IDLE, tokens: { contextWindow: 12000, availability: 'unavailable' }, cost: { usd: null, availability: 'unavailable', source: 'estimate' }, signalCertainty: 'unavailable', freshness: { state: 'stale', ageMs: 25000 }, position: { tileX: 27, tileY: 27 } }),
+        agentSpec({ id: 'showcase-opencode', name: 'Sable', provider: 'opencode', underlyingProvider: 'openai', model: 'gpt-6-astra', status: AgentStatus.WORKING, currentTool: 'apply_patch', currentToolInput: '/sim/refinement/dashboard.css', tokens: { input: 900, output: 270, availability: 'observed' }, signalCertainty: 'observed', position: { tileX: 23, tileY: 29 } }),
+        agentSpec({ id: 'showcase-omp', name: 'Jade', provider: 'omp', underlyingProvider: 'zai', model: 'glm-5', status: AgentStatus.WORKING, currentTool: 'Bash', currentToolInput: 'npm run verify:render', tokens: { input: 600, output: 160, availability: 'observed' }, signalCertainty: 'observed', position: { tileX: 18, tileY: 28 } }),
+    ],
+    timeline: [],
+    metadata: { selectedAgentId: 'showcase-codex', qaTags: ['multi-provider', 'hosted-model', 'availability', 'stale-approval'], camera: { centerTile: { tileX: 21, tileY: 24 }, zoom: 2 } },
+};
+
+export const MATERIAL_PILOT_SCENARIO = {
+    id: 'material-pilot',
+    label: 'Command material study',
+    description: 'Sonnet fabric, Terra armor, and Command stone/banners under controlled light.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({ id: 'material-sonnet', name: 'Rowan', provider: 'claude', model: 'claude-sonnet-4-5', status: AgentStatus.WORKING, currentTool: 'Read', currentToolInput: '/sim/materials.md', position: { tileX: 17, tileY: 22 } }),
+        agentSpec({ id: 'material-terra', name: 'Terra', provider: 'codex', model: 'gpt-5.6-terra', status: AgentStatus.WORKING, currentTool: 'Read', currentToolInput: '/sim/materials.md', position: { tileX: 19, tileY: 22 } }),
+    ],
+    timeline: [],
+    metadata: { selectedAgentId: 'material-terra', qaTags: ['material', 'sonnet', 'terra', 'command'], camera: { centerTile: { tileX: 18, tileY: 22 }, zoom: 2 } },
+};
+
 export const WORLD_SCENARIOS = [
     NO_AGENTS_SCENARIO,
     ONE_WORKING_AGENT_SCENARIO,
@@ -1031,6 +1064,8 @@ export const WORLD_SCENARIOS = [
     PARENT_SUBAGENTS_SCENARIO,
     TEAM_GATHER_SCENARIO,
     MIXED_TOOLS_SCENARIO,
+    MULTI_PROVIDER_SHOWCASE_SCENARIO,
+    MATERIAL_PILOT_SCENARIO,
     GIT_HARBOR_SCENARIO,
     FAILED_PUSH_SCENARIO,
     WAITING_ON_USER_SCENARIO,

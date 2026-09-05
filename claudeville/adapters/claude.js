@@ -2,6 +2,7 @@
  * Claude Code CLI adapter
  * Data source: ~/.claude/
  */
+const { noteReadFailure } = require('./shared');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -912,6 +913,7 @@ function readUsageNumber(usage, keys) {
 
 function emptyTokenUsage() {
   return {
+    availability: 'unavailable',
     input: 0,
     output: 0,
     totalInput: 0,
@@ -976,6 +978,7 @@ function addTranscriptEntry(aggregate, entry) {
     const input = readUsageNumber(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']);
     const output = readUsageNumber(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens']);
     const { cacheRead, cacheCreate } = normalizeCacheTokens(usage, CLAUDE_CACHE_FIELD_MAP);
+    aggregate.usage.availability = 'observed';
     aggregate.usage.totalInput += input;
     aggregate.usage.totalOutput += output;
     aggregate.usage.cacheRead += cacheRead;
@@ -1358,7 +1361,8 @@ function getTranscriptAggregate(filePath) {
   let stat;
   try {
     stat = fs.statSync(filePath);
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     deleteTranscriptRecord(filePath);
     return null;
   }
@@ -1401,7 +1405,8 @@ function getTranscriptAggregate(filePath) {
     record.aggregate = scanTranscriptRangeSync(filePath, target, mode, cached, start);
     touchTranscriptRecord(filePath, record);
     return record.aggregate;
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     _transcriptAggregateStats.scanErrors++;
     return cached;
   }
@@ -1801,13 +1806,13 @@ function turnStateFromEntries(entries, { permissionMode, skipSidechain, now }) {
   const lastAssistant = entries[lastAssistantIndex];
   const stopReason = lastAssistant?.message?.stop_reason || null;
 
-  return withSignal(deriveTurnState({
+  return withSignal({ rateLimit: { enforced: stopReason === 'rate_limited' }, ...deriveTurnState({
     turnEnded: !pendingTool && stopReason === 'end_turn',
     turnEndedAt: toEpochMs(lastAssistant?.timestamp),
     pendingTool,
     pendingSince,
     permissionMode,
-  }, now));
+  }, now) });
 }
 
 function getClaudeTurnState(sessionFilePath, permissionMode = null, now = Date.now()) {

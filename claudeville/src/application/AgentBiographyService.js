@@ -85,6 +85,7 @@ function nameFromIdentityKey(identityKey) {
 export class AgentBiographyService {
     constructor({ store = null } = {}) {
         this.store = store;
+        this._writeLeaseKey = WRITE_LEASE_KEY + (store?.storageNamespace || '');
         this._biographies = new Map(); // identityKey -> Promise<AgentBiography|null>
         this._loadingKeys = new Set();
         this._flushingKeys = new Set();
@@ -408,12 +409,12 @@ export class AgentBiographyService {
         if (typeof localStorage === 'undefined') return true;
         const now = Date.now();
         try {
-            const raw = localStorage.getItem(WRITE_LEASE_KEY);
+            const raw = localStorage.getItem(this._writeLeaseKey);
             const current = raw ? JSON.parse(raw) : null;
             if (current && current.token !== this._leaseToken && Number(current.expiresAt) > now) {
                 return false;
             }
-            localStorage.setItem(WRITE_LEASE_KEY, JSON.stringify({
+            localStorage.setItem(this._writeLeaseKey, JSON.stringify({
                 token: this._leaseToken,
                 expiresAt: now + WRITE_LEASE_TTL_MS,
             }));
@@ -426,9 +427,9 @@ export class AgentBiographyService {
     _releaseWriteLease() {
         if (typeof localStorage === 'undefined') return;
         try {
-            const raw = localStorage.getItem(WRITE_LEASE_KEY);
+            const raw = localStorage.getItem(this._writeLeaseKey);
             const current = raw ? JSON.parse(raw) : null;
-            if (current?.token === this._leaseToken) localStorage.removeItem(WRITE_LEASE_KEY);
+            if (current?.token === this._leaseToken) localStorage.removeItem(this._writeLeaseKey);
         } catch { /* ignore */ }
     }
 }

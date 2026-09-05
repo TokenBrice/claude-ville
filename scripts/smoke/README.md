@@ -5,6 +5,7 @@ These checks complement `node:test`. Most are deterministic Node programs; brows
 | Script | What it proves | Requirements | Runtime | npm wrapper |
 | --- | --- | --- | --- | --- |
 | `adapters.mjs` | Claude discovery, parent linkage, and team membership. | Temp dir; no dependencies/server | <1 s | None |
+| `astra-height-smoke.mjs` | GPU pixel readback proves authored zero/low/tall height and independent shadow strength against a tall receiver and one light. | `node_modules`, Playwright, maintained server or `CLAUDEVILLE_URL` | <1 s | None |
 | `architecture.mjs` | Layer boundaries and adapter-helper allowlists. | No dependencies/server | <1 s | `verify:architecture` |
 | `boot-contract.mjs` | HTML, APIs, and WebSocket init/delta/resync. | Temp dir; isolated socket | Seconds | `verify:server` |
 | `browser-lifecycle.mjs` | Repeated mode switches preserve lifecycle and resource invariants. | `node_modules`, Playwright, server on 4000 or `CLAUDEVILLE_URL` | Minutes | None |
@@ -12,7 +13,7 @@ These checks complement `node:test`. Most are deterministic Node programs; brows
 | `codex-warm-discovery.mjs` | Warm discovery caches while detecting changes. | Temp dir; no server | <1 s | None |
 | `harbor-traffic-bounds.mjs` | Harbor ingest, dedupe, state, and bounded reconciliation. | No dependencies/server | <1 s | None |
 | `overlay-layout.mjs` | Randomized overlay placement and dense folding. | No dependencies/server | <1 s | None |
-| `performance-soak.mjs` | Long-run memory, frames, polling, and reconnect health. | `node_modules`, Playwright, server on 4000/`CLAUDEVILLE_URL`, WebSocket | 30 min default | None |
+| `performance-soak.mjs` | Long-run memory, frames, polling, and reconnect health; strict retained-listener plateau uses three native forced-GC samples after all-store Chronicle write barriers. `--listener-counter-check` tests expired/retained listeners and real pending IndexedDB writes without a server. `assertServerPlateau` can independently validate retained server samples. RSS uses a second-half median with the unchanged 64 MiB allowance and steady/trailing slope checks; `node scripts/smoke/performance-soak.mjs --rss-gate-check` checks flat, trough/rebound, exact even medians, terminal spikes, and growing traces without a server. | `node_modules`, Playwright, server on 4000/`CLAUDEVILLE_URL`, WebSocket | 30 min default; counter check <1 s | None |
 | `r1-18.e2e-replay.mjs` | Multi-provider replay reaches WebSocket snapshots/deltas. | Temp dir; isolated socket | Seconds | `test:e2e:replay` |
 | `relationship.mjs` | Relationship maps and clean cache reference reuse. | No dependencies/server | <1 s | None |
 | `render-smoke.mjs` | Isolated World/Dashboard render with screenshot diagnostics. | `node_modules`, Playwright, temp dir, isolated socket | Seconds | `verify:render` |

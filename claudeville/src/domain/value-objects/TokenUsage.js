@@ -59,12 +59,18 @@ export class TokenUsage {
     }
 
     static normalize(raw = null) {
-        if (!raw || typeof raw !== 'object') return { ...DEFAULT_TOKEN_USAGE };
+        const has = keys => keys.some(key => raw?.[key] != null && raw[key] !== ''
+          && typeof raw[key] !== 'boolean' && Number.isFinite(Number(raw[key])) && Number(raw[key]) >= 0);
+        const availability = ['observed', 'partial', 'unavailable'].includes(raw?.availability) ? raw.availability
+          : has(FIELD_ALIASES.input) && has(FIELD_ALIASES.output) ? 'observed'
+            : ['input', 'output', 'cacheRead', 'cacheCreate'].some(field => has(FIELD_ALIASES[field])) ? 'partial' : 'unavailable';
+        if (!raw || typeof raw !== 'object') return { ...DEFAULT_TOKEN_USAGE, availability };
         if (raw instanceof TokenUsage) {
             return { ...raw };
         }
         if (isLikelyNormalized(raw)) {
             return {
+                availability,
                 input: normalizeNumber(raw.input),
                 output: normalizeNumber(raw.output),
                 cacheRead: normalizeNumber(raw.cacheRead),
@@ -86,6 +92,7 @@ export class TokenUsage {
         const cacheCreate = coerceTokenField(raw, FIELD_ALIASES.cacheCreate);
 
         return {
+            availability,
             input,
             output,
             cacheRead,
@@ -122,7 +129,8 @@ export class TokenUsage {
         // double pricing.
         const billableReasoning = usage.reasoningInOutput ? 0 : usage.reasoningTokens;
         const estimate = {
-            usd: (
+            availability: usage.availability,
+            usd: usage.availability === 'unavailable' ? null : (
                 usage.input * rate.input +
                 (usage.output + billableReasoning) * rate.output +
                 usage.cacheRead * rate.cacheRead +

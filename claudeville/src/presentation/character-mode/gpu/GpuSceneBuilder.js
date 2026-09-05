@@ -121,6 +121,7 @@ function packedLandmarkChannels(renderer, id, { crop = false } = {}) {
         if (crop && resolved.layout === 'atlas-rect') return null;
         return {
             material: resolved.material,
+            occluder: resolved.occluder,
             emissive: resolved.emissive,
             revision: resolved.revision,
             origin: resolved.origin,
@@ -134,6 +135,7 @@ function packedLandmarkChannels(renderer, id, { crop = false } = {}) {
     return {
         material,
         emissive,
+        occluder: sidecarFor(assets, id, 'occluder'),
         revision: `${assets?.assetVersion || ''}:${id}:sidecars`,
         origin: 'sidecar',
         layout: 'sidecar',
@@ -554,6 +556,7 @@ function recordForBuilding(renderer, drawable, sequence) {
         source,
         materialSource,
         emissiveSource,
+        occluderSource: useAtlas ? assets.getAtlas?.(atlasFrame.atlas, 'occluder') : resolved?.occluder,
         sourceWidth,
         sourceHeight,
         sx,
@@ -876,10 +879,12 @@ export function packGpuAgentFrameAtlas(renderer, records) {
     let cell = 1;
     let hasMaterialSource = false;
     let hasEmissiveSource = false;
+    let hasOccluderSource = false;
     for (const record of agentRecords) {
         cell = Math.max(cell, Math.ceil(Math.max(record.sw || 1, record.sh || 1)));
         hasMaterialSource ||= Boolean(record.materialSource);
         hasEmissiveSource ||= Boolean(record.emissiveSource);
+        hasOccluderSource ||= Boolean(record.occluderSource);
     }
     const capacity = Math.max(agentRecords.length, renderer?.agentSprites?.size || 0, 1);
     const columns = Math.max(1, Math.ceil(Math.sqrt(capacity)));
@@ -897,6 +902,7 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         nextSlot = roster.length;
         renderer._gpuAgentAtlasRosterSignature = rosterSignature;
         renderer._gpuAgentAtlasFrameKeys?.clear?.();
+        renderer._gpuAgentAtlasPoses?.clear?.();
         newSlot = true;
     }
     for (const record of agentRecords) {
@@ -918,6 +924,7 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         resized = true;
     }
     const frameKeys = renderer._gpuAgentAtlasFrameKeys ||= new Map();
+    const poses = renderer._gpuAgentAtlasPoses ||= new Map();
     const desiredKeys = renderer._gpuAgentAtlasDesiredKeys ||= [];
     desiredKeys.length = agentRecords.length;
     let changed = resized || newSlot;
@@ -936,6 +943,8 @@ export function packGpuAgentFrameAtlas(renderer, records) {
             record.channelRevision ?? record.sidecarRevision,
             record.materialSource ? 'material' : '',
             record.emissiveSource ? 'emissive' : '',
+            record.occluderSource ? 'occluder' : '',
+            record.poseKey || '',
         ].join(':');
         desiredKeys[index] = key;
         if (frameKeys.get(record.id) !== key) {
@@ -958,20 +967,35 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         emissiveAtlasState.atlas = null;
         emissiveAtlasState.resized = false;
     }
-    const channelsChanged = changed
+    const occluderAtlasState = renderer._gpuAgentOccluderAtlasState ||= { atlas: null, resized: false };
+    if (hasOccluderSource) ensureAgentChannelAtlas(renderer, '_gpuAgentOccluderAtlas', width, height, occluderAtlasState);
+    else { occluderAtlasState.atlas = null; occluderAtlasState.resized = false; }
+    const channelsChanged = occluderAtlasState.resized || changed
         || materialAtlasState.resized
-        || emissiveAtlasState.resized;
+        || emissiveAtlasState.resized
+        || occluderAtlasState.resized;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const cadenceElapsed = now - (renderer._gpuAgentAtlasUpdatedAt || 0) >= 125;
+    // Direction/tool changes and individually important actors must keep body
+    // and attachment poses in the same frame. Ambient animation stays at 8 Hz.
+    const immediate = new Set(dirtyRecords.filter(record => record.urgentPose
+        || (poses.has(record.id) && poses.get(record.id) !== record.poseKey)));
+    if (!resized && !newSlot && !missingFrame && !cadenceElapsed) {
+        for (let index = dirtyRecords.length - 1; index >= 0; index--) {
+            if (!immediate.has(dirtyRecords[index])) dirtyRecords.splice(index, 1);
+        }
+    }
     renderer._gpuAgentAlbedoTextureUpdates = [];
     renderer._gpuAgentMaterialTextureUpdates = [];
     renderer._gpuAgentEmissiveTextureUpdates = [];
-    if (changed && (resized || newSlot || missingFrame || cadenceElapsed)) {
+    renderer._gpuAgentOccluderTextureUpdates = [];
+    if (changed && (resized || newSlot || missingFrame || cadenceElapsed || immediate.size)) {
         const ctx = atlas.getContext('2d', { alpha: true });
         ctx.imageSmoothingEnabled = false;
         for (let index = 0; index < agentRecords.length; index++) {
             const record = agentRecords[index];
             if (!resized && frameKeys.get(record.id) === desiredKeys[index]) continue;
+            if (!resized && !newSlot && !missingFrame && !cadenceElapsed && !immediate.has(record)) continue;
             const slot = slots.get(record.id) || 0;
             const slotX = (slot % columns) * cell;
             const slotY = Math.floor(slot / columns) * cell;
@@ -988,10 +1012,11 @@ export function packGpuAgentFrameAtlas(renderer, records) {
                 record.sh,
             );
             frameKeys.set(record.id, desiredKeys[index]);
+            poses.set(record.id, record.poseKey);
         }
         renderer._gpuAgentFrameAtlasSignature = desiredKeys.slice().sort().join('|');
         renderer._gpuAgentFrameAtlasRevision++;
-        renderer._gpuAgentAtlasUpdatedAt = now;
+        if (cadenceElapsed || resized || newSlot || missingFrame) renderer._gpuAgentAtlasUpdatedAt = now;
         if (!resized) {
             renderer._gpuAgentAlbedoTextureUpdates = buildAgentAtlasTextureUpdates(
                 renderer,
@@ -1008,9 +1033,17 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         || newSlot
         || missingFrame
         || cadenceElapsed
+        || immediate.size > 0
         || materialAtlasState.resized
-        || emissiveAtlasState.resized;
+        || emissiveAtlasState.resized
+        || occluderAtlasState.resized;
     if (channelsChanged && packNow) {
+        const geometryRecords = occluderAtlasState.resized ? agentRecords : dirtyRecords;
+        drawAgentChannelAtlas(occluderAtlasState.atlas, geometryRecords, slots, columns, cell, 'occluderSource');
+        if (!occluderAtlasState.resized && occluderAtlasState.atlas) {
+            renderer._gpuAgentOccluderTextureUpdates = buildAgentAtlasTextureUpdates(renderer,
+                '_gpuAgentOccluderUpdateCanvases', geometryRecords, slots, columns, cell, 'occluderSource');
+        }
         const materialRecords = materialAtlasState.resized ? agentRecords : dirtyRecords;
         const emissiveRecords = emissiveAtlasState.resized ? agentRecords : dirtyRecords;
         drawAgentChannelAtlas(
@@ -1069,6 +1102,8 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         // record values without inferring emission from albedo.
         record.materialSource = materialAtlasState.atlas;
         record.emissiveSource = emissiveAtlasState.atlas;
+        record.occluderSource = occluderAtlasState.atlas;
+        record.occluderTextureUpdates = renderer._gpuAgentOccluderTextureUpdates;
         record.sidecarKey = materialAtlasState.atlas || emissiveAtlasState.atlas
             ? 'agent-frame-atlas:channels'
             : '';
@@ -1149,13 +1184,10 @@ function sourceKindCensus(records = [], decision = {}) {
         if (seenTextures.has(key)) continue;
         seenTextures.add(key);
         uploadBytesEstimate += Math.max(0, record.sourceWidth || 0) * Math.max(0, record.sourceHeight || 0) * 4;
-        if (record.materialSource && record.materialSource !== record.source) {
-            uploadBytesEstimate += Math.max(0, record.materialSource.width || 0)
-                * Math.max(0, record.materialSource.height || 0) * 4;
-        }
-        if (record.emissiveSource && record.emissiveSource !== record.source) {
-            uploadBytesEstimate += Math.max(0, record.emissiveSource.width || 0)
-                * Math.max(0, record.emissiveSource.height || 0) * 4;
+        for (const channel of [record.materialSource, record.emissiveSource, record.occluderSource]) {
+            if (channel && channel !== record.source) {
+                uploadBytesEstimate += Math.max(0, channel.width || 0) * Math.max(0, channel.height || 0) * 4;
+            }
         }
     }
     return {
@@ -1181,6 +1213,14 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     if (terrain) records.push(terrain);
     const haze = recordForHaze(renderer);
     if (haze) records.push(haze);
+    const cue = renderer?._semanticGroundCanvas;
+    if (cue && renderer._semanticGroundActive) {
+        const camera = renderer.camera;
+        records.push({ id: 'ground:semantics', source: cue, textureKey: 'ground:semantics',
+            x: -camera.renderOffsetX / camera.zoom, y: -camera.renderOffsetY / camera.zoom,
+            width: renderer._semanticGroundViewport.width / camera.zoom, height: renderer._semanticGroundViewport.height / camera.zoom,
+            textureRevision: renderer._semanticGroundRevision, elevation: 0, occluder: 0 });
+    }
     let sequence = 0;
     for (const drawable of drawables || []) {
         let next = null;

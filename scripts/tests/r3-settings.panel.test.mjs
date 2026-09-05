@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { installReducedMotionOverride } from '../../claudeville/src/presentation/shared/SettingsPanel.js';
 
 import {
     PERSISTED_SETTING_DEFAULTS,
@@ -21,6 +22,51 @@ class MemoryStorage {
         this.values.set(key, String(value));
     }
 }
+
+test('reduced-motion reads reuse one native query and preserve override notifications', () => {
+    let queryCount = 0;
+    let nativeListenerCount = 0;
+    let legacyListenerCount = 0;
+    let notifyNative;
+    const native = {
+        media: '(prefers-reduced-motion: reduce)', matches: false,
+        addEventListener(type, listener) {
+            assert.equal(type, 'change');
+            nativeListenerCount++;
+            notifyNative = listener;
+        },
+        addListener() { legacyListenerCount++; },
+    };
+    const unrelated = { media: '(min-width: 1280px)', matches: true };
+    const root = {
+        localStorage: new MemoryStorage(),
+        document: { documentElement: { classList: { toggle() {} } } },
+        matchMedia(query) { queryCount++; return query === native.media ? native : unrelated; },
+    };
+    const controller = installReducedMotionOverride(root);
+    for (let index = 0; index < 100; index++) assert.equal(root.matchMedia(native.media).matches, false);
+    assert.equal(queryCount, 1);
+    assert.equal(nativeListenerCount, 1);
+    assert.equal(legacyListenerCount, 0);
+    const query = root.matchMedia(native.media);
+    const changes = [];
+    const listener = event => changes.push(event.matches);
+    query.addEventListener('change', listener);
+    controller.set(true);
+    controller.set(true);
+    native.matches = true;
+    notifyNative();
+    controller.set(false);
+    assert.equal(query.matches, true, 'native preference remains effective when override is off');
+    native.matches = false;
+    notifyNative();
+    assert.deepEqual(changes, [true, false]);
+    query.removeEventListener('change', listener);
+    controller.set(true);
+    assert.deepEqual(changes, [true, false], 'removed observers are released');
+    assert.equal(root.matchMedia(unrelated.media), unrelated, 'other queries retain native behavior');
+    assert.equal(queryCount, 2);
+});
 
 test('settings review reads every operator preference using its existing encoding', () => {
     const storage = new MemoryStorage({

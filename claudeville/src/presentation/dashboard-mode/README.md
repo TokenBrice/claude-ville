@@ -1,6 +1,6 @@
 # Dashboard Mode
 
-Dashboard mode is the DOM/card view for scanning active sessions without the Canvas world. It is owned by `DashboardRenderer.js` and uses the same domain `World` data as World mode.
+Dashboard mode is the compact DOM row view for scanning active sessions without the Canvas world. It is owned by `DashboardRenderer.js` and uses the same domain `World` data as World mode.
 
 Desktop-only constraint: validate at browser widths of 1280px or wider. Do not add narrow-viewport behavior, mobile breakpoints, or responsive shrinking in this area.
 
@@ -23,7 +23,9 @@ Desktop-only constraint: validate at browser widths of 1280px or wider. Do not a
 
 The renderer groups agents by `agent.projectPath || '_unknown'`, creates one section per project, and reuses existing section/card DOM nodes across updates. After each render it removes cards and sections no longer represented in `world.agents`.
 
-Cards show:
+Rows show status and elapsed time, agent and CLI/model identity, tool context, blockers, working files, usage, and child progress. Status has its own complete line; empty secondary values use a quiet dash. Only the selected row expands its detail.
+
+Expanded detail shows:
 
 - Agent avatar, name, role, provider badge, and model label.
 - Normalized status (`active` becomes `working`).
@@ -32,7 +34,7 @@ Cards show:
 - Detail-fetch lifecycle states: a `data-loading` skeleton until the first detail result, an explicit "Session details unavailable" error when a fetch pass returns nothing and no history is cached, and a STALE badge when rendered detail data is older than the `SessionDetailsService` cache TTL.
 - A hover-revealed copy button in the header copies the agent/session id to the clipboard and confirms via the shared `Toast` service (passed in by `App.js`).
 
-Clicking a card emits `agent:selected`, the same event used by the sidebar and World mode. The right activity panel owns deselection/close behavior.
+Clicking a row emits `agent:selected`, the same event used by the sidebar and World mode. Dashboard expands detail inline and keeps the right Activity Panel hidden. Escape deselects the row.
 
 ## Keyboard Navigation
 
@@ -47,7 +49,9 @@ Clicking a card emits `agent:selected`, the same event used by the sidebar and W
 
 Dashboard detail fetches flow through `shared/SessionDetailsService.js`, not direct `fetch()` calls. Dashboard uses `fetchSessionDetailsBatch()` and the server's `POST /api/session-details` route for its active-card refresh path; singular detail fetches remain available for one-agent surfaces such as the Activity Panel. The service dedupes in-flight requests, caches fresh responses briefly, serves stale data while a background refresh is running, and times out slow fetches.
 
-Use `SESSION_DETAIL_REFRESH_INTERVAL` from `src/config/constants.js` for Dashboard polling cadence. The candidate policy prioritizes the selected agent, then active-attention statuses (`working`, `waiting`, `errored`, `rate_limited`, `waiting_on_user`), then visible cards, and caps each pass at `DETAIL_FETCH_LIMIT = 48`. Do not add another independent timer without considering the Activity Panel and adapter-registry caches.
+Tool inputs and messages use native keyboard-accessible disclosures. Unchanged disclosure nodes are reused across refreshes to preserve expansion, focus, and text selection. Cached detail displays its observation age; unavailable and partial usage stay distinct from observed zero. The DOM tool and district emblems use shared pixel SVGs, and avatar fitting preserves aspect ratio.
+
+Use `SESSION_DETAIL_REFRESH_INTERVAL` from `src/config/constants.js` for Dashboard polling cadence. The candidate policy fetches only the selected agent; unselected rows use the live session payload. There is no card-visibility observer or layout scan. Do not add another independent timer without considering the Activity Panel and adapter-registry caches.
 
 ## Validation
 

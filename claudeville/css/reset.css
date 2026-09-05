@@ -154,3 +154,11 @@ a {
 ::-webkit-scrollbar-thumb:hover {
     background: rgba(242, 211, 107, 0.65);
 }
+
+/* Shared native disclosures keep complete available details keyboard-accessible. */
+.cv-pixel-icon { width: 16px; height: 16px; display: inline-block; vertical-align: middle; flex-shrink: 0; shape-rendering: crispEdges; }
+.cv-inspection { display: block; min-width: 0; color: var(--cv-tan); }
+.cv-inspection > summary { cursor: pointer; line-height: var(--lh-body); overflow-wrap: anywhere; }
+.cv-inspection[open] > summary { color: var(--cv-gold-bright); }
+.cv-inspection__text { margin-top: 8px; padding: 8px; background: var(--cv-panel-deep); color: #dfcfb8; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: var(--fs-body)/var(--lh-body) var(--font-body); }
+.cv-inspection__note { margin-top: 4px; color: var(--cv-text-muted); font: var(--fs-data)/var(--lh-body) var(--font-body); }

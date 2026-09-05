@@ -7,6 +7,7 @@
  *   part: structured tool/text/reasoning/step rows keyed by session_id
  *   message: role metadata keyed by session_id
  */
+const { noteReadFailure } = require('./shared');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -128,10 +129,11 @@ function queryRows(sql, params = {}) {
     try {
       db = new sqlite.DatabaseSync(OPENCODE_DB, { readOnly: true });
       return db.prepare(sql).all(params);
-    } catch {
+    } catch (error) {
+      noteReadFailure(error);
       return [];
     } finally {
-      try { db?.close(); } catch { /* ignore */ }
+      try { db?.close(); } catch (error) { noteReadFailure(error); /* ignore */ }
     }
   }
 
@@ -148,7 +150,8 @@ function queryRows(sql, params = {}) {
       timeout: SQL_TIMEOUT_MS,
       maxBuffer: SQL_MAX_BUFFER,
     });
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return [];
   }
   if (!out.trim()) return [];
@@ -240,6 +243,8 @@ function tokenUsageFromSession(row, parts = []) {
   const cacheWrite = cacheTokens.cacheCreate;
 
   return {
+    availability: row.tokens_input != null && row.tokens_output != null ? 'observed'
+      : row.tokens_input != null || row.tokens_output != null ? 'partial' : 'unavailable',
     input,
     output,
     cacheRead,

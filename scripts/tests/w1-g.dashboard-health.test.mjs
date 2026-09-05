@@ -95,3 +95,55 @@ test('dashboard CSS covers every emitted health-strip class without width media 
 
     assert.doesNotMatch(dashboardCss, /@media[^\{]*(?:min|max)-width\s*:/i);
 });
+
+
+test('avatar fit preserves wide and tall silhouettes within native niche bounds', async () => {
+    const { fitAvatarFrame } = await import('../../claudeville/src/presentation/dashboard-mode/AvatarCanvas.js');
+    for (const [width, height] of [[92, 30], [20, 92], [60, 60], [180, 110]]) {
+        for (const [maxWidth, maxHeight, integer] of [[40, 46, false], [88, 82, true]]) {
+            const fit = fitAvatarFrame(width, height, maxWidth, maxHeight, integer);
+            assert.ok(fit.width <= maxWidth && fit.height <= maxHeight);
+            assert.ok(Math.abs(fit.width / fit.height - width / height) <= (1 + width / height) / fit.height);
+        }
+    }
+});
+
+test('unknown CLI badges and stale detail never claim another provider or fresh data', async () => {
+    const { providerPresentation, detailFreshnessLabel, signalProvenance } = await import('../../claudeville/src/presentation/shared/AgentPresentation.js');
+    assert.equal(providerPresentation('new-cli').badge.label, 'new-cli');
+    assert.equal(providerPresentation().badge.label, 'Unknown');
+    const now = 100000;
+    assert.equal(detailFreshnessLabel({}, { hasEntry: true, isFresh: false, entry: { at: now - 12000 } }, now), 'Cached · updated 12s ago');
+    assert.equal(detailFreshnessLabel({}, { hasEntry: true, isFresh: true, value: { freshness: { state: 'stale', observedAt: now - 30000 } } }, now), 'Cached · updated 30s ago');
+    assert.equal(detailFreshnessLabel({}, { hasEntry: true, isFresh: true }, now), '');
+    assert.equal(signalProvenance({ signalSource: 'hook', signalCertainty: 'observed', signalStale: true }), 'HOOK · observed · stale');
+});
+
+test('dashboard cost keeps unavailable billing distinct from observed zero', async () => {
+    const { DashboardRenderer } = await import('../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js');
+    const footer = agent => DashboardRenderer.prototype._usageFooterFor.call({}, agent, null);
+    assert.equal(footer({ tokens: { availability: 'unavailable', contextWindow: 2000 }, provider: 'grok' }).cost, 'Cost unavailable');
+    assert.match(footer({ tokens: { availability: 'observed', input: 0, output: 0 }, provider: 'codex' }).cost, /0/);
+});
+
+test('seven-provider fixture retains hosted identity, stale certainty and unavailable versus zero usage', async () => {
+    const { default: AgentSimulator } = await import('../../claudeville/src/presentation/character-mode/__simfixture__/AgentSimulator.js');
+    const agents = new Map();
+    const world = { addAgent: agent => agents.set(agent.id, agent), removeAgent: id => agents.delete(id) };
+    const simulator = new AgentSimulator({ world, scenarioId: 'multi-provider-showcase' });
+    simulator.start();
+    try {
+        assert.equal(new Set([...agents.values()].map(agent => agent.provider)).size, 7);
+        assert.equal(agents.get('showcase-omp').underlyingProvider, 'zai');
+        assert.equal(agents.get('showcase-opencode').underlyingProvider, 'openai');
+        assert.equal(agents.get('showcase-grok').cost.usd, null);
+        assert.equal(agents.get('showcase-grok').freshness.state, 'stale');
+        assert.equal(agents.get('showcase-codex').tokens.availability, 'observed');
+        assert.equal(agents.get('showcase-codex').cost.usd, 0);
+        assert.equal(agents.get('showcase-codex').signalCertainty, 'observed');
+        assert.equal(agents.get('showcase-codex').signalStale, true);
+        assert.equal(agents.get('showcase-gemini').tokens.availability, 'partial');
+    } finally {
+        simulator.stop();
+    }
+});

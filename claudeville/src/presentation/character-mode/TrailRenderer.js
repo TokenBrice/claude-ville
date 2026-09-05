@@ -338,7 +338,7 @@ export class TrailRenderer {
         return wrapped;
     }
 
-    draw(ctx, camera, viewport, now = Date.now()) {
+    draw(ctx, camera, viewport, now = Date.now(), preserveTransform = false) {
         if (this._disposed || this._paused || !ctx || !camera || !viewport) return;
         const drawStartedAt = timerNow();
         const motionMode = classifyTrailCameraMotion(camera, this._lastCameraPose);
@@ -353,7 +353,7 @@ export class TrailRenderer {
             // Ambient history is deliberately invisible. Only a short recent
             // route for selection or action-needed state survives, preventing
             // long-lived paths from webbing over the authored village.
-            this._drawSemanticTrailOverlays(ctx, camera, now);
+            this._drawSemanticTrailOverlays(ctx, camera, now, preserveTransform);
         } finally {
             this._recordCameraMotionDraw(motionMode, drawStartedAt);
             this._lastCameraPose = cameraPose(camera);
@@ -622,11 +622,11 @@ export class TrailRenderer {
         this._recordRepaint(repaintStartedAt, motionMode);
     }
 
-    _drawSemanticTrailOverlays(ctx, camera, now) {
+    _drawSemanticTrailOverlays(ctx, camera, now, preserveTransform = false) {
         const zoom = Math.max(0.25, Number(camera?.zoom) || 1);
         let drewAny = false;
         ctx.save();
-        camera.applyTransform?.(ctx);
+        if (!preserveTransform) camera.applyTransform?.(ctx);
         for (const [agentId, samples] of this.samplesByAgent) {
             if (samples.length < 2) continue;
             const importance = this._trailImportance(agentId);

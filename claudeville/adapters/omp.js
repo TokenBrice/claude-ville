@@ -5,6 +5,7 @@
  * ~/.omp/agent/sessions/<project>/<session>.jsonl. Nested task agents are
  * stored below the parent transcript in <session>/<agent-name>.jsonl.
  */
+const { noteReadFailure } = require('./shared');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -418,7 +419,7 @@ class OmpAdapter {
   get homeDir() { return this.home; }
 
   isAvailable() {
-    try { return fs.statSync(this.sessionsDir).isDirectory(); } catch { return false; }
+    try { return fs.statSync(this.sessionsDir).isDirectory(); } catch (error) { noteReadFailure(error); return false; }
   }
 
   _listTranscriptFiles(directoryMtimes = null) {
@@ -426,10 +427,10 @@ class OmpAdapter {
     const visit = (directory) => {
       if (files.length >= MAX_TRANSCRIPTS) return;
       if (directoryMtimes) {
-        try { directoryMtimes.set(directory, fs.statSync(directory).mtimeMs); } catch { return; }
+        try { directoryMtimes.set(directory, fs.statSync(directory).mtimeMs); } catch (error) { noteReadFailure(error); return; }
       }
       let entries;
-      try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
+      try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch (error) { noteReadFailure(error); return; }
       for (const entry of entries) {
         if (files.length >= MAX_TRANSCRIPTS) break;
         const current = path.join(directory, entry.name);

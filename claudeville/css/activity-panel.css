@@ -158,7 +158,9 @@ body[data-cv-selected] .activity-panel__header::before {
     border-radius: 2px;
     background: rgba(57, 37, 24, 0.88);
     border: 1px solid rgba(199, 157, 76, 0.28);
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: var(--lh-body);
 }
 
 .activity-panel__close {
@@ -367,7 +369,7 @@ body[data-cv-selected] .activity-panel__header::before {
 }
 
 .activity-panel__blocked .activity-panel__value {
-    flex: 1 1 180px;
+    flex: 0 1 auto;
     white-space: normal;
     overflow-wrap: anywhere;
 }
@@ -1698,3 +1700,20 @@ body[data-cv-selected] .activity-panel__header::before {
         opacity: 1;
     }
 }
+
+.activity-panel__freshness { color: var(--cv-tan); font: var(--fs-data)/var(--lh-body) var(--font-body); }
+.activity-panel__tool-item.cv-inspection { display: block; }
+.activity-panel__tool-item.cv-inspection > summary { display: flex; gap: 5px; align-items: baseline; }
+.activity-panel__tool-item.cv-inspection > summary::before { content: '▸'; color: var(--cv-tan); }
+.activity-panel__tool-item.cv-inspection[open] > summary::before { content: '▾'; }
+.activity-panel__tool-input:has(.cv-inspection) { white-space: normal; overflow: visible; max-height: none; }
+.activity-panel__msg.cv-inspection { font: var(--fs-body)/var(--lh-body) var(--font-body); }
+
+.activity-panel__messages:has(details[open]), .activity-panel__tool-history:has(details[open]) { max-height: none; overflow: visible; }
+
+.activity-panel__agent-info { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: start; }
+.activity-panel__hero-portrait { grid-row: 1 / span 2; }
+.activity-panel__status-age { grid-column: 2; white-space: normal; overflow-wrap: anywhere; }
+.activity-panel__blocked { flex-direction: column; align-items: stretch; }
+.activity-panel__blocked .activity-panel__narration-provenance { flex: none; font: var(--fs-label)/var(--lh-body) var(--font-body); overflow-wrap: normal; }
+.activity-panel__empty { color: var(--cv-text-muted); }

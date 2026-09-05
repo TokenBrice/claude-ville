@@ -166,6 +166,7 @@ export class AgentGpuOverlayRenderer {
             source,
             materialSource,
             emissiveSource,
+            occluderSource: pad ? host._gpuEquippedOccluderSheet : resolved?.occluder || host.assets?.getSidecar?.(spriteId, 'occluder') || null,
             channelRevision: resolved?.revision || host.assets?.assetVersion || null,
             sourceWidth: source.width,
             sourceHeight: source.height,
@@ -195,6 +196,9 @@ export class AgentGpuOverlayRenderer {
             textureRevision: host._gpuEquippedSheetKey || profileKey,
             sidecarRevision: resolved?.revision || host.assets?.assetVersion || null,
             contentTopY,
+            poseKey: `${host.animState}:${host.direction}:${host.agent?.currentTool || ''}`,
+            urgentPose: host.selected || host.hovered
+                || [AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(status),
             frameGeometry,
         };
     }

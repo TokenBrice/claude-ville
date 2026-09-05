@@ -36,7 +36,7 @@ Repository-only `git` sessions can also appear when git enrichment detects unpus
 
 ## Permission prompts are inferred or arrive late
 
-Transcript parsing remains the default and requires no configuration. The route accepts the normalized schema `{ provider, sessionId, cwd, ts, kind, tool, input, decision? }` at `POST /api/ingest/hook`, keeps at most 256 sessions in memory, and never persists or logs request bodies. `kind` must be a supported lifecycle event such as `PreToolUse`, `PostToolUse`, or `Stop`. `input` may contain only operator-facing command/path context; displayed detail is secret-stripped and capped at 200 characters. This is the canonical payload schema; other documentation should link here instead of duplicating it.
+Transcript parsing remains the default and requires no configuration. An elapsed tool duration never proves a permission prompt: long builds remain work, while explicit question/review tools and approval hooks provide waiting evidence. The route accepts the normalized schema `{ provider, sessionId, cwd, ts, kind, tool, input, decision? }` at `POST /api/ingest/hook`, keeps at most 256 sessions in memory, and never persists or logs request bodies. `kind` must be a supported lifecycle event such as `PreToolUse`, `PostToolUse`, or `Stop`. `input` may contain only operator-facing command/path context; displayed detail is secret-stripped and capped at 200 characters. This is the canonical payload schema; other documentation should link here instead of duplicating it.
 
 All examples use `curl --max-time 1 -s -X POST http://127.0.0.1:4000/api/ingest/hook` and, where supported, an asynchronous hook so a stopped dashboard does not block the CLI. They require `jq`. If ClaudeVille runs with `CLAUDEVILLE_INGEST_TOKEN`, export the same value into the CLI environment; the helpers always send it in `X-ClaudeVille-Ingest-Token` (an empty value is harmless when the server token is unset).
 
@@ -150,7 +150,7 @@ Add both events to your own Gemini CLI `settings.json`. Gemini hook timeouts are
 
 `BeforeTool` maps to a transient `tool_pending` overlay with the sanitized command/path detail. `AfterTool` clears that pending state back to working.
 
-If the overlay does not appear, POST one normalized fixture with `curl`, confirm a `202` response, and fetch `/api/sessions` immediately. A `401` means the token header does not match; `403`/`421` means the Origin/Host is not local; `400` means the provider, event, session id, or JSON is invalid. After 10 seconds the transcript state wins again, and after 30 seconds the in-memory event is discarded.
+If the overlay does not appear, POST one normalized fixture with `curl`, confirm a `202` response, and fetch `/api/sessions` immediately. A `401` means the token header does not match; `403`/`421` means the Origin/Host is not local; `400` means the provider, event, session id, or JSON is invalid. Match the returned public session, not just the HTTP acceptance: Codex hook thread IDs and Gemini payload session IDs can differ from dashboard filename IDs, and matching is provider-qualified. Ordinary overlays stop merging after 10 seconds and expire after 30 seconds. Exact unanswered approvals instead become last-observed waits after 10 seconds; a resolving hook/newer recorded turn clears them, and a 30-minute bound prevents indefinite retention.
 
 ## WebSocket never connects / port 4000 collision (`EADDRINUSE`)
 

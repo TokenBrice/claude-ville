@@ -226,12 +226,11 @@ export class App {
             this._dispatchVillage({ type: 'sync-start' });
             this._advanceFromStarting();
 
-            this._bootFoundation();
-            this._bindVillageObservations();
-
             // 4-1. Behavior simulator (?sim=1, dev only — overrides session ingestion)
             const simMode = new URLSearchParams(location.search).get('sim') === '1';
             this.simMode = simMode;
+            this._bootFoundation();
+            this._bindVillageObservations();
             if (simMode && !this.agentSimulator) {
                 const mod = await import('./character-mode/__simfixture__/AgentSimulator.js');
                 if (this._destroyed) return null;
@@ -290,7 +289,7 @@ export class App {
             // A normal WebSocket init already includes usage. REST usage is a
             // fallback only, so the same payload is not transferred and parsed
             // twice during a healthy boot.
-            if (sourceResult?.source !== 'websocket' && !this._usageRequested && this.dataSource) {
+            if (!simMode && sourceResult?.source !== 'websocket' && !this._usageRequested && this.dataSource) {
                 this._usageRequested = true;
                 this.dataSource.getUsage({ signal }).then(usage => {
                     if (this._destroyed) return;
@@ -385,7 +384,9 @@ export class App {
             });
         }
         if (!this.chronicleStore) {
-            this.chronicleStore = new ChronicleStore();
+            this.chronicleStore = new ChronicleStore(this.simMode
+                ? { dbName: 'claudeville-chronicle-simulation' }
+                : {});
             this._bindVillageObservations();
             const initialStore = this.chronicleStore;
             this._trackChronicleTask(this._runChroniclePrune().then(() => {
@@ -490,6 +491,7 @@ export class App {
             if (payload?.ok === true) {
                 this._dispatchVillage({
                     type: 'snapshot',
+                    source: 'polling',
                     agentCount: this.world?.agents?.size || 0,
                     at: payload.at || Date.now(),
                 });
@@ -512,6 +514,7 @@ export class App {
                 : (this.world?.agents?.size || 0);
             this._dispatchVillage({
                 type: 'snapshot',
+                source: 'websocket',
                 agentCount: count,
                 at: Date.now(),
             });
@@ -533,6 +536,7 @@ export class App {
     async _syncVillageSources({ signal = null, onSnapshot = null } = {}) {
         if (this._destroyed) return;
         if (this.simMode) {
+            this.latestUsage = null;
             this._dispatchVillage({
                 type: 'providers',
                 providers: [{
@@ -544,6 +548,7 @@ export class App {
             });
             this._dispatchVillage({
                 type: 'snapshot',
+                source: 'simulator',
                 agentCount: this.world?.agents?.size || 0,
                 at: Date.now(),
             });
@@ -852,7 +857,10 @@ export class App {
         this._setTextIfChanged(this._bootStatusEl, status);
         this._setTextIfChanged(this._bootAnnouncementEl, status);
         if (this._bootStatusWrap) {
-            this._bootStatusWrap.hidden = phase === VillagePhase.READY_LIVE;
+            const settled = phase === VillagePhase.READY_LIVE
+                || phase === VillagePhase.READY_EMPTY
+                || phase === VillagePhase.READY_NO_PROVIDERS;
+            this._bootStatusWrap.hidden = settled && state.storage?.chronicle !== 'degraded';
         }
 
         const retryable = isRetryable(state);
@@ -896,6 +904,8 @@ export class App {
 
     _paintEmptySurface(root, { titleSel, copySel, nextClass, legendSel, copy, show, useHidden, visibleClass }) {
         if (!root) return;
+        root.dataset.phase = this.villageState?.phase || VillagePhase.SYNCING;
+        const quietWorld = root.id === 'worldEmpty' && copy === EMPTY_SURFACE_COPY[VillagePhase.READY_EMPTY];
         const title = root.querySelector(titleSel);
         const body = root.querySelector(copySel);
         let next = root.querySelector(`.${nextClass}`);
@@ -905,8 +915,8 @@ export class App {
             });
             root.appendChild(next);
         }
-        this._setTextIfChanged(title, copy.title);
-        this._setTextIfChanged(body, copy.copy);
+        this._setTextIfChanged(title, quietWorld ? 'VILLAGE READY' : copy.title);
+        this._setTextIfChanged(body, quietWorld ? 'Start a coding CLI session to see agents here.' : copy.copy);
         this._setTextIfChanged(next, copy.next);
         const legend = legendSel ? root.querySelector(legendSel) : null;
         if (legend) {

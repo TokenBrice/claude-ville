@@ -9,6 +9,7 @@ import * as http from 'node:http';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stableSessionObservation } from '../tests/support/session-contract.mjs';
 import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -777,7 +778,8 @@ export async function runReplay({ assertPeriodicSnapshot = true } = {}) {
     const warmupObservedAt = Date.now();
     assert.ok(warmup.seq > initial.seq);
     assert.equal('baseSeq' in warmup, false);
-    assert.deepEqual(coreState(warmup), coreState(initial));
+    assert.deepEqual({ ...coreState(warmup), sessions: null }, { ...coreState(initial), sessions: null });
+    assert.deepEqual(warmup.sessions.map(stableSessionObservation), initial.sessions.map(stableSessionObservation));
 
     const phaseOne = appendClaudeReplay(fixtures, 1);
     const delta = await websocket.waitForMessage(message => message.type === 'update-delta', FRAME_TIMEOUT_MS);
@@ -791,7 +793,7 @@ export async function runReplay({ assertPeriodicSnapshot = true } = {}) {
     assert.equal(reconstructedClaude.lastMessage, phaseOne.message);
     assert.equal(reconstructedClaude.lastTool, phaseOne.tool);
     const deltaApi = await requestJson(serverProcess.port, '/api/sessions?force=1');
-    assert.deepEqual(reconstructed.sessions, deltaApi.sessions);
+    assert.deepEqual(reconstructed.sessions.map(stableSessionObservation), deltaApi.sessions.map(stableSessionObservation));
 
     let floor = null;
     let phaseTwo = null;
@@ -821,7 +823,7 @@ export async function runReplay({ assertPeriodicSnapshot = true } = {}) {
       assert.equal(floorClaude.lastMessage, phaseTwo.message);
       assert.equal(floorClaude.lastTool, phaseTwo.tool);
       const floorApi = await requestJson(serverProcess.port, '/api/sessions?force=1');
-      assert.deepEqual(floor.sessions, floorApi.sessions);
+      assert.deepEqual(floor.sessions.map(stableSessionObservation), floorApi.sessions.map(stableSessionObservation));
     }
 
     return {

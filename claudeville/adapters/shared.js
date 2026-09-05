@@ -1,5 +1,15 @@
 const fs = require('fs');
 
+// Synchronous adapters may recover locally; the registry must still distinguish
+// a failed observation from a confirmed empty provider slice.
+const readFailures = { count: 0, code: null };
+function noteReadFailure(error) {
+  if (!error || ['ENOENT', 'ENOTDIR'].includes(error.code)) return;
+  readFailures.count++;
+  readFailures.code = error.code || 'ADAPTER_READ_FAILED';
+}
+
+
 const DEFAULT_HEAD_BYTES = 512 * 1024;
 const DEFAULT_TAIL_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_TAIL_BYTES = 8 * 1024 * 1024;
@@ -63,7 +73,8 @@ function readHeadText(filePath, maxBytes = DEFAULT_HEAD_BYTES) {
     } finally {
       fs.closeSync(fd);
     }
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return '';
   }
 }
@@ -294,7 +305,8 @@ function readTailLines(filePath, count, {
     };
     cacheTailState(filePath, entry);
     return finalizeTailLines(lines, split.pendingBuffer, requestedCount);
-  } catch {
+  } catch (error) {
+    noteReadFailure(error);
     return [];
   }
 }
@@ -834,6 +846,8 @@ function createDetailResponse({
 }
 
 module.exports = {
+  readFailures,
+  noteReadFailure,
   clearTailCache,
   createDetailResponse,
   fileSignature,

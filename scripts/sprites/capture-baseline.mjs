@@ -51,10 +51,17 @@ page.on('console', (message) => {
 
 try {
     await page.goto(captureUrl.href, { waitUntil: 'networkidle' });
-    await page.waitForFunction(() => typeof window.cameraSet === 'function', null, { timeout: 5000 });
+    await page.waitForFunction(() => window.__claudeVilleApp?._bootState === 'ready'
+        && typeof window.cameraSet === 'function', null, { timeout: 12000 });
+    // These are art baselines; render-smoke owns empty-state and onboarding UI.
+    await page.addStyleTag({ content: '#worldEmpty, #firstRunHint, #worldSemanticSummary, #bootStatusWrap { display: none !important; }' });
     await page.evaluate(() => {
         const renderer = window.__claudeVilleApp?.renderer;
         renderer?.cameraDirector?.setAutoMode?.(false);
+        // Art comparisons pin FULL; adaptive quality is measured separately.
+        // Host load otherwise changes night lighting between identical poses.
+        renderer?.gpuWorld?.qualityLadder?.setOverride?.(0);
+        renderer?.postFx?.setLevelOverride?.(0);
         if (renderer) renderer._drawEmptyStateWorldCue = () => {};
         const atmosphere = window.__claudeVilleAtmosphere;
         atmosphere?.setTimelineMode?.('fixed');

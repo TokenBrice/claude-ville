@@ -1,6 +1,7 @@
 const FIELD_PRIORITY = Object.freeze({
     name: 500,
     model: 450,
+    identity: 425,
     status: 400,
     tool: 300,
     file: 250,
@@ -8,6 +9,7 @@ const FIELD_PRIORITY = Object.freeze({
 });
 
 const CONTEXT_LABELS = Object.freeze({
+    identity: 'Identity',
     tool: 'Tool',
     file: 'File',
     commit: 'Commit',
@@ -79,6 +81,9 @@ function liveFields(agent, modelLabel) {
     addField(fields, 'model', modelLabel);
     addField(fields, 'model', agent?.model);
     addField(fields, 'status', agent?.status);
+    for (const value of [agent?.provider, agent?.projectPath, agent?.teamName, agent?.workflowName, agent?.id, agent?.agentId, agent?.sessionId]) {
+        addField(fields, 'identity', value);
+    }
 
     for (const tool of [agent?.currentTool, agent?.lastTool, agent?.pendingTool]) {
         addField(fields, 'tool', tool);

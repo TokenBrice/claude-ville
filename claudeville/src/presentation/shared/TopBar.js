@@ -115,6 +115,15 @@ export function resetPersistedSettings(storage = globalThis.window?.localStorage
     return readPersistedSettings(storage);
 }
 
+export function usageCoverage(agents = []) {
+    const counts = { observed: 0, partial: 0, unavailable: 0 };
+    for (const agent of agents) {
+        const availability = TokenUsage.normalize(agent?.tokens).availability;
+        counts[availability]++;
+    }
+    return counts;
+}
+
 export class TopBar {
     constructor(world, { modal, attention, chronicle, spendLedger } = {}) {
         this._motionOverride = installReducedMotionOverride();
@@ -146,6 +155,13 @@ export class TopBar {
             quota7d: document.getElementById('statQuota7d'),
             quotaText: document.getElementById('statQuotaText'),
         };
+        this.els.needsYou = el('span', {
+            className: 'topbar__seg topbar__seg--needs-you',
+            title: 'Agents waiting for your input or approval',
+        });
+        this.els.needsYou.id = 'badgeNeedsYou';
+        this.els.needsYou.hidden = true;
+        this.els.waiting?.parentElement?.parentElement?.prepend(this.els.needsYou);
         this._usage = null;
         this.timeInterval = null;
         this._lastFps = null;
@@ -156,8 +172,6 @@ export class TopBar {
         this._changelogController = null;
         this._destroyed = false;
         this._villageState = initialVillageState();
-        this._watcherErrorCode = null;
-        this._watcherPolling = false;
         this._connectionAnnouncementKey = null;
         this._recoverySweepPending = false;
         this._recoveryBaselineSnapshotAt = null;
@@ -196,14 +210,16 @@ export class TopBar {
         this._onUsage = (usage) => { this._usage = usage; this._renderQuota(); };
         eventBus.on('usage:updated', this._onUsage);
 
-        this._onWsConnected = () => this._setConnection(true);
-        this._onWsDisconnected = () => this._setConnection(false);
-        this._onWsState = (payload) => this._applyWsState(payload);
-        this._onWatcherState = (payload) => this._applyWatcherState(payload);
-        eventBus.on('ws:connected', this._onWsConnected);
-        eventBus.on('ws:disconnected', this._onWsDisconnected);
-        eventBus.on('ws:state', this._onWsState);
-        eventBus.on('watcher:state', this._onWatcherState);
+        this._onVillageState = (state) => {
+            if (!state?.link) return;
+            this._villageState = state;
+            const connected = state.source === 'simulator'
+                || (Boolean(state.link.lastSnapshotAt) && !isStale(state)
+                    && [LinkState.LIVE, LinkState.POLLING].includes(state.link.state));
+            this._applyConnectionChrome(connected);
+            this._renderConnection();
+        };
+        eventBus.on('village:state', this._onVillageState);
         this._onChronicleStatus = (payload = {}) => {
             this._chronicleStatus = String(payload.status || 'unknown');
         };
@@ -769,6 +785,10 @@ export class TopBar {
         this.els.working.textContent = stats.working;
         this.els.idle.textContent = stats.idle;
         this.els.waiting.textContent = stats.waiting;
+        if (this.els.needsYou) {
+            this.els.needsYou.hidden = !(stats.needsYou > 0);
+            this.els.needsYou.textContent = `${stats.needsYou || 0} NEEDS YOU`;
+        }
 
         this._renderActivityRail(stats);
     }
@@ -780,7 +800,10 @@ export class TopBar {
     _renderSpend() {
         const now = Date.now();
         const today = this.spendLedger?.sample?.(now) || { tokens: 0, cacheRead: 0, cost: 0 };
-        this.els.tokens.textContent = formatNumber(today.tokens);
+        const coverage = usageCoverage(this.world?.agents?.values?.() || []);
+        const incomplete = coverage.partial + coverage.unavailable;
+        this._coverageNote = incomplete ? `Partial coverage: ${coverage.partial} partial, ${coverage.unavailable} unavailable among current sessions.` : '';
+        this.els.tokens.textContent = `${formatNumber(today.tokens)}${incomplete ? ' · partial' : ''}`;
 
 
         // The rate rides alongside today's total in one cell — two numbers
@@ -793,6 +816,7 @@ export class TopBar {
                 ? `Tokens observed today, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates. Rate match: mixed session models; revision ${TokenUsage.rateRevision}. Click for project and provider detail.`
                 : 'Tokens observed today by this page. A burn rate appears after a couple of minutes of activity. Click for project and provider detail.';
         }
+        if (this.els.rateWrap && this._coverageNote) this.els.rateWrap.title += ` ${this._coverageNote}`;
         if (this._spendPanelEl?.style.display !== 'none') this._renderSpendPanel();
     }
 
@@ -854,7 +878,7 @@ export class TopBar {
             className: 'topbar__spend-note',
             title: `Estimated API pricing · rate match: mixed session models · revision ${TokenUsage.rateRevision}`,
         }, [
-            `5-minute burn rate first · today observed totals · estimated API pricing, revision ${TokenUsage.rateRevision}`,
+            `5-minute burn rate first · today observed totals · estimated API pricing, revision ${TokenUsage.rateRevision}. ${this._coverageNote || ''}`,
             hasUnknownModel ? ' ' : null,
             hasUnknownModel ? el('span', { className: 'dash-card__provider-badge', text: 'default rate' }) : null,
         ]);
@@ -1057,89 +1081,13 @@ export class TopBar {
         this._renderConnection();
     }
 
-    _setConnection(connected) {
-        const link = this._villageState.link;
-        this._villageState = {
-            ...this._villageState,
-            link: {
-                ...link,
-                state: connected ? LinkState.LIVE : LinkState.RECONNECTING,
-                attempts: connected ? 0 : Math.max(1, link.attempts || 0),
-            },
-        };
-        this._applyConnectionChrome(connected);
-        this._renderConnection();
-    }
-
-    _applyWsState(payload = {}) {
-        const rawState = String(payload?.state || '').toLowerCase();
-        const stateAliases = {
-            connected: LinkState.LIVE,
-            open: LinkState.LIVE,
-            disconnected: LinkState.RECONNECTING,
-            closed: LinkState.RECONNECTING,
-            offline: LinkState.RECONNECTING,
-            connecting: LinkState.SYNCING,
-        };
-        const state = Object.values(LinkState).includes(rawState) ? rawState : stateAliases[rawState];
-        const displayState = state === LinkState.RECONNECTING && this._watcherPolling
-            ? LinkState.POLLING
-            : state;
-        const link = this._villageState.link;
-        this._villageState = {
-            ...this._villageState,
-            link: {
-                ...link,
-                ...(displayState ? { state: displayState } : {}),
-                attempts: payload.attempts === undefined ? link.attempts : Math.max(0, Number(payload.attempts) || 0),
-                nextRetryAt: payload.nextRetryAt === undefined ? link.nextRetryAt : Number(payload.nextRetryAt) || null,
-                lastMessageAt: payload.lastMessageAt === undefined ? link.lastMessageAt : Number(payload.lastMessageAt) || null,
-                lastSnapshotAt: payload.lastSnapshotAt === undefined ? link.lastSnapshotAt : Number(payload.lastSnapshotAt) || null,
-                lastErrorCode: payload.lastErrorCode === undefined ? link.lastErrorCode : payload.lastErrorCode,
-            },
-        };
-        if (displayState) {
-            const connected = displayState === LinkState.LIVE
-                || displayState === LinkState.POLLING
-                || displayState === LinkState.SYNCING;
-            this._applyConnectionChrome(connected);
-        }
-        this._renderConnection();
-    }
-
-    _applyWatcherState(payload = {}) {
-        const state = String(payload?.state || '').toLowerCase();
-        if (state === 'polling') this._watcherPolling = true;
-        else if (state === 'idle') this._watcherPolling = false;
-        const healthy = payload?.ok === true || ['live', 'ready', 'watching', 'healthy'].includes(state);
-        if (healthy) this._watcherErrorCode = null;
-        else if (payload?.ok === false || ['failed', 'degraded', 'unavailable', 'error'].includes(state)) {
-            this._watcherErrorCode = payload?.code || 'watcher-unavailable';
-        }
-        const link = this._villageState.link;
-        const snapshotAt = Number(payload?.at) || null;
-        if (state === 'polling' || snapshotAt) {
-            this._villageState = {
-                ...this._villageState,
-                link: {
-                    ...link,
-                    state: LinkState.POLLING,
-                    ...(snapshotAt ? { lastSnapshotAt: snapshotAt } : {}),
-                },
-            };
-        }
-        if (snapshotAt) {
-            this._applyConnectionChrome(true);
-        }
-        this._renderConnection();
-    }
-
     _renderConnection(now = Date.now()) {
         const chip = this.els.connection;
         if (!chip) return;
         const label = linkStatusText(this._villageState, now);
         const stale = isStale(this._villageState, now);
-        const state = stale ? LinkState.STALE : this._villageState.link.state;
+        const state = stale ? LinkState.STALE
+            : this._villageState.source === 'simulator' ? LinkState.LIVE : this._villageState.link.state;
         chip.textContent = label;
         chip.classList.toggle('topbar__conn--connected', state === LinkState.LIVE);
         chip.classList.toggle('topbar__conn--disconnected', state === LinkState.RECONNECTING);
@@ -1230,7 +1178,7 @@ export class TopBar {
             const retryMs = Math.max(0, link.nextRetryAt - now);
             rows.push(el('div', { text: `Next retry: in ${Math.ceil(retryMs / 1000)}s` }));
         }
-        const code = link.lastErrorCode || this._watcherErrorCode;
+        const code = link.lastErrorCode || this._villageState.failureCode;
         if (code) rows.push(el('div', { text: `Reason: ${connectionReasonText(code)}` }));
         replaceChildren(panel, rows);
     }
@@ -1279,7 +1227,7 @@ export class TopBar {
     // Settings -> Health keeps the honest p50/p95 detail.
     renderFps(fps) {
         if (!this.els.fps) return;
-        const value = Number(fps);
+        const value = typeof fps === 'number' ? fps : NaN;
         if (!Number.isFinite(value)) {
             this._lastFps = null;
             this.els.fps.hidden = true;
@@ -1388,6 +1336,7 @@ export class TopBar {
     destroy() {
         if (this._destroyed) return this._destroyPromise;
         this._destroyed = true;
+        this.els.needsYou?.remove();
         if (this.timeInterval) {
             clearInterval(this.timeInterval);
             this.timeInterval = null;
@@ -1404,10 +1353,7 @@ export class TopBar {
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('fps:updated', this._onFps);
         eventBus.off('usage:updated', this._onUsage);
-        eventBus.off('ws:connected', this._onWsConnected);
-        eventBus.off('ws:disconnected', this._onWsDisconnected);
-        eventBus.off('ws:state', this._onWsState);
-        eventBus.off('watcher:state', this._onWatcherState);
+        eventBus.off('village:state', this._onVillageState);
         eventBus.off('chronicle:status', this._onChronicleStatus);
         if (this.els.connection) {
             this.els.connection.removeEventListener('click', this._onConnectionClick);

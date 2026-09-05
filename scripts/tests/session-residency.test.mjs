@@ -36,7 +36,7 @@ test('providers with no turn state are not retained', () => {
     assert.deepEqual(residency.merge([], T + 1000), []);
 });
 
-test('a resident is re-classified as its wait lengthens', () => {
+test('a slow resident never acquires an invented approval', () => {
     const residency = new SessionResidency({ ttlMs: 10 * 60_000 });
     residency.merge([
         session('blocked', 'tool_pending', { pendingTool: 'Edit', pendingSince: T }),
@@ -46,8 +46,9 @@ test('a resident is re-classified as its wait lengthens', () => {
     assert.equal(early.waitReason, null);
 
     const [late] = residency.merge([], T + 30_000);
-    assert.equal(late.waitReason, 'approval');
-    assert.equal(late.awaitingSince, T);
+    assert.equal(late.waitReason, null);
+    assert.equal(late.awaitingSince, null);
+    assert.equal(late.freshness.state, 'stale');
 });
 
 test('residents expire at the TTL', () => {
@@ -87,4 +88,12 @@ test('merge never drops or reorders the live list', () => {
     const merged = residency.merge(live, T + 1000);
     assert.deepEqual(merged.slice(0, 2).map((s) => s.sessionId), ['one', 'two']);
     assert.equal(merged[2].sessionId, 'blocked');
+});
+
+test('residency cannot extend a failed provider observation or an expired hook approval', () => {
+    const residency = new SessionResidency();
+    residency.merge([session('failed', 'tool_pending', { freshness: { state: 'stale', observedAt: T } })], T);
+    assert.equal(residency.merge([], T + 1000).length, 0);
+    residency.merge([session('hook', 'tool_pending', { signalSource: 'hook', signalObservedAt: T, waitReason: 'approval' })], T);
+    assert.equal(residency.merge([], T + 30 * 60_000).length, 0);
 });

@@ -17,7 +17,7 @@ import { glslMaterialWeatherFunctions } from '../MaterialRegistry.js';
 import { growTypedArray } from '../AssetManager.js';
 
 const MAX_LIGHTS = 32;
-const VERTEX_FLOATS = 8;
+const VERTEX_FLOATS = 9;
 const VERTEX_STRIDE = VERTEX_FLOATS * Float32Array.BYTES_PER_ELEMENT;
 const BLOOM_SCALE = 0.375;
 const OCCLUSION_SCALE = 0.375;
@@ -36,6 +36,7 @@ function writeGpuVertex(vertices, offset, x, y, u, v, record) {
     vertices[offset++] = record.material;
     vertices[offset++] = record.elevation;
     vertices[offset++] = record.emissive;
+    vertices[offset++] = record.occluder;
     return offset;
 }
 
@@ -62,13 +63,16 @@ precision highp float;
 layout(location = 0) in vec2 a_world;
 layout(location = 1) in vec2 a_uv;
 layout(location = 2) in vec4 a_meta;
+layout(location = 3) in float a_occluder;
 uniform vec3 u_camera;
 uniform vec2 u_resolution;
 out vec2 v_uv;
+out vec2 v_world;
 out float v_alpha;
 out float v_material;
 out float v_elevation;
 out float v_emissive;
+out float v_occluder;
 void main() {
     vec2 screen = (a_world + u_camera.xy) * u_camera.z;
     vec2 clip = vec2(
@@ -77,15 +81,18 @@ void main() {
     );
     gl_Position = vec4(clip, 0.0, 1.0);
     v_uv = a_uv;
+    v_world = a_world;
     v_alpha = a_meta.x;
     v_material = a_meta.y;
     v_elevation = a_meta.z;
     v_emissive = a_meta.w;
+    v_occluder = a_occluder;
 }`;
 
 const SCENE_FRAGMENT = `#version 300 es
 precision highp float;
 in vec2 v_uv;
+in vec2 v_world;
 in float v_alpha;
 in float v_material;
 in float v_elevation;
@@ -97,6 +104,8 @@ uniform sampler2D u_materialMap;
 uniform sampler2D u_emissiveMap;
 uniform sampler2D u_occlusion;
 uniform bool u_hasMaterialMap;
+uniform sampler2D u_occluderMap;
+uniform bool u_hasOccluderMap;
 uniform bool u_hasEmissiveMap;
 uniform vec2 u_resolution;
 uniform vec2 u_occlusionResolution;
@@ -183,12 +192,8 @@ vec3 applyAuthoredSunBand(vec3 color, float material) {
     response = mix(response, 0.24, materialNear(material, 8.0));
     float keyFacing = clamp(0.5 + (-u_sun.x - u_sun.y) * 0.25, 0.0, 1.0);
     float rawBand = 0.84 + response * (0.12 + keyFacing * 0.12);
-    // Four restrained palette bands preserve authored ramps instead of adding
-    // a smooth PBR gradient across individual sprite pixels.
-    float quantized = rawBand < 0.79 ? 0.72
-        : rawBand < 0.93 ? 0.86
-        : rawBand < 1.06 ? 1.0
-        : 1.12;
+    // Two restrained material-wide bands preserve the baked upper-left key.
+    float quantized = rawBand < 0.93 ? 0.86 : 1.0;
     return color * mix(1.0, quantized, clamp(u_sun.w, 0.0, 1.0));
 }
 
@@ -226,7 +231,7 @@ void main() {
     if (alpha < 0.01) discard;
     vec4 sidecar = u_hasMaterialMap ? texture(u_materialMap, v_uv) : vec4(0.0);
     vec4 authoredEmission = u_hasEmissiveMap ? texture(u_emissiveMap, v_uv) : vec4(0.0);
-    float material = sidecar.r > 0.003 ? floor(sidecar.r * 255.0 + 0.5) : v_material;
+    float material = sidecar.a > 0.0 ? floor(sidecar.r * 255.0 + 0.5) : v_material;
     float emissive = max(v_emissive, sidecar.g * 2.0);
     vec3 emissionColor = albedo.rgb;
     if (u_hasEmissiveMap) {
@@ -245,15 +250,16 @@ void main() {
     // restoring their full energy when illumination is actually needed.
     float emissivePhase = mix(0.12, 1.0, 1.0 - clamp(u_sun.w, 0.0, 1.0));
     emissive *= emissivePhase;
-    float elevation = max(v_elevation, sidecar.b);
+    vec4 geometry = u_hasOccluderMap ? texture(u_occluderMap, v_uv) : vec4(0.0);
+    float elevation = geometry.a > 0.0 ? geometry.r : v_elevation;
     vec2 px = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
     vec2 glPx = gl_FragCoord.xy;
     vec3 color = albedo.rgb;
     // Clear weather is the overwhelmingly common case. Avoid the ordered
     // glint/material classification work when every weather contribution is
     // mathematically zero; rainy output remains byte-for-byte equivalent.
-    if (u_weather.x > 0.001) color = applyMaterialWeather(color, material, px);
-    if (materialNear(material, 8.0) > 0.5) color = applyWaterState(color, px);
+    if (u_weather.x > 0.001) color = applyMaterialWeather(color, material, v_world);
+    if (materialNear(material, 8.0) > 0.5) color = applyWaterState(color, v_world);
     color = applyAuthoredSunBand(color, material);
     color = applyGrade(color, px, material);
 
@@ -270,7 +276,7 @@ void main() {
         float waterReceiver = materialNear(material, 8.0);
         float reflectionX = 1.0 - smoothstep(0.0, radius * 0.30, abs(glPx.x - light.x));
         float reflectionY = 1.0 - smoothstep(0.0, radius * 1.70, abs(glPx.y - light.y));
-        float reflectionCourse = step(0.52, fract((floor(px.x) + floor(px.y) * 0.5) * 0.125));
+        float reflectionCourse = step(0.52, fract((floor(v_world.x) + floor(v_world.y) * 0.5) * 0.125));
         color += u_lightColors[i].rgb * waterReceiver * reflectionX * reflectionY
             * reflectionCourse * light.w * u_lightColors[i].a * 0.10;
     }
@@ -292,7 +298,9 @@ in float v_elevation;
 uniform sampler2D u_albedo;
 uniform sampler2D u_materialMap;
 uniform bool u_hasMaterialMap;
-uniform float u_occluder;
+uniform sampler2D u_occluderMap;
+uniform bool u_hasOccluderMap;
+in float v_occluder;
 layout(location = 0) out vec4 outColor;
 void main() {
     float alpha = texture(u_albedo, v_uv).a * v_alpha;
@@ -300,8 +308,9 @@ void main() {
     vec4 sidecar = u_hasMaterialMap ? texture(u_materialMap, v_uv) : vec4(0.0);
     // Height and strength are independent: authored strength attenuates the
     // trace in the target alpha channel and never lowers the height itself.
-    float height = max(max(v_elevation, sidecar.b), u_occluder);
-    float strength = u_hasMaterialMap ? sidecar.a : 1.0;
+    vec4 geometry = u_hasOccluderMap ? texture(u_occluderMap, v_uv) : vec4(0.0);
+    float height = geometry.a > 0.0 ? geometry.r : v_elevation;
+    float strength = geometry.a > 0.0 ? geometry.g : v_occluder;
     outColor = vec4(height * alpha, 0.0, 0.0, strength * alpha);
 }`;
 
@@ -599,14 +608,14 @@ export class GpuWorldRenderer {
         this.timerExtension = gl.getExtension?.('EXT_disjoint_timer_query_webgl2') || null;
         this.sceneUniforms = uniformLocations(gl, this.sceneProgram, [
             'u_camera', 'u_resolution', 'u_albedo', 'u_materialMap', 'u_emissiveMap', 'u_occlusion',
-            'u_hasMaterialMap', 'u_hasEmissiveMap', 'u_occlusionResolution', 'u_gradeBase', 'u_gradeEdge',
+            'u_hasMaterialMap', 'u_occluderMap', 'u_hasOccluderMap', 'u_hasEmissiveMap', 'u_occlusionResolution', 'u_gradeBase', 'u_gradeEdge',
             'u_edgeAlpha', 'u_fogColor', 'u_weather', 'u_time', 'u_motionScale',
             'u_sun', 'u_cloudShadow[0]',
             'u_lightCount', 'u_lights[0]', 'u_lightColors[0]',
         ]);
         this.occlusionUniforms = uniformLocations(gl, this.occlusionProgram, [
             'u_camera', 'u_resolution', 'u_albedo', 'u_materialMap',
-            'u_hasMaterialMap', 'u_occluder',
+            'u_hasMaterialMap', 'u_occluderMap', 'u_hasOccluderMap',
         ]);
         this.bloomUniforms = uniformLocations(gl, this.bloomProgram, ['u_input', 'u_texel', 'u_blur']);
         this.compositeUniforms = uniformLocations(gl, this.compositeProgram, [
@@ -622,6 +631,8 @@ export class GpuWorldRenderer {
         gl.vertexAttribPointer(1, 2, gl.FLOAT, false, VERTEX_STRIDE, 2 * Float32Array.BYTES_PER_ELEMENT);
         gl.enableVertexAttribArray(2);
         gl.vertexAttribPointer(2, 4, gl.FLOAT, false, VERTEX_STRIDE, 4 * Float32Array.BYTES_PER_ELEMENT);
+        gl.enableVertexAttribArray(3);
+        gl.vertexAttribPointer(3, 1, gl.FLOAT, false, VERTEX_STRIDE, 8 * Float32Array.BYTES_PER_ELEMENT);
         gl.bindVertexArray(null);
         gl.bindBuffer(gl.ARRAY_BUFFER, null);
         this.emptyMaterialTexture = this._createTexture(1, 1, {
@@ -825,7 +836,7 @@ export class GpuWorldRenderer {
 
     _textureFor(key, source, revision = null, updates = null) {
         const gl = this.gl;
-        if (!source) return null;
+        if (!source || source.width === 0 || source.height === 0) return null;
         const width = Math.max(1, Math.floor(source.width || source.videoWidth || 1));
         const height = Math.max(1, Math.floor(source.height || source.videoHeight || 1));
         let entry = this._textureEntries.get(key);
@@ -1036,13 +1047,11 @@ export class GpuWorldRenderer {
             const batch = batches[index];
             batch.occlusionFirst = first;
             batch.occlusionCount = 0;
-            batch.occluderMax = 0;
             for (let recordIndex = 0; recordIndex < batch.records.length; recordIndex++) {
                 const record = batch.records[recordIndex];
-                if (record.occluder <= 0 && record.elevation <= 0.05) continue;
+                if (!record.occluderSource && record.occluder <= 0 && record.elevation <= 0.05) continue;
                 offset = writeGpuRecordVertices(vertices, offset, record);
                 batch.occlusionCount += 6;
-                if (record.occluder > batch.occluderMax) batch.occluderMax = record.occluder;
             }
             first += batch.occlusionCount;
         }
@@ -1064,8 +1073,8 @@ export class GpuWorldRenderer {
         const zoom = Math.max(0.01, finite(camera?.zoom, 1));
         gl.uniform3f(
             uniforms.u_camera,
-            finite(camera?.x),
-            finite(camera?.y),
+            finite(camera?.renderOffsetX, Math.round(finite(camera?.x) * zoom * dpr) / dpr) / zoom,
+            finite(camera?.renderOffsetY, Math.round(finite(camera?.y) * zoom * dpr) / dpr) / zoom,
             zoom * dpr * scale,
         );
     }
@@ -1092,7 +1101,7 @@ export class GpuWorldRenderer {
         gl.bindTexture(gl.TEXTURE_2D, albedo);
         gl.uniform1i(uniforms.u_albedo, 0);
         gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, material);
+        gl.bindTexture(gl.TEXTURE_2D, material || this.emptyMaterialTexture);
         gl.uniform1i(uniforms.u_materialMap, 1);
         gl.uniform1i(uniforms.u_hasMaterialMap, batch.materialSource ? 1 : 0);
         if (uniforms.u_emissiveMap) {
@@ -1105,12 +1114,19 @@ export class GpuWorldRenderer {
                 )
                 : this.emptyMaterialTexture;
             gl.activeTexture(gl.TEXTURE3);
-            gl.bindTexture(gl.TEXTURE_2D, emissive);
+            gl.bindTexture(gl.TEXTURE_2D, emissive || this.emptyMaterialTexture);
             gl.uniform1i(uniforms.u_emissiveMap, 3);
             gl.uniform1i(uniforms.u_hasEmissiveMap, batch.emissiveSource ? 1 : 0);
         }
-        if (occlusion) {
-            gl.uniform1f(uniforms.u_occluder, batch.occluderMax);
+        if (uniforms.u_occluderMap) {
+            const geometry = batch.occluderSource
+                ? this._textureFor(`occluder:${batch.sidecarKey || batch.textureKey}`, batch.occluderSource,
+                    first?.sidecarRevision, first?.occluderTextureUpdates)
+                : this.emptyMaterialTexture;
+            gl.activeTexture(gl.TEXTURE4);
+            gl.bindTexture(gl.TEXTURE_2D, geometry || this.emptyMaterialTexture);
+            gl.uniform1i(uniforms.u_occluderMap, 4);
+            gl.uniform1i(uniforms.u_hasOccluderMap, batch.occluderSource ? 1 : 0);
         }
         gl.drawArrays(
             gl.TRIANGLES,

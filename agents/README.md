@@ -12,6 +12,8 @@ Before using or adding a retained artifact, check this index and the artifact's 
 
 Statuses below are the statuses recorded in the artifacts themselves.
 
+At the maintainer's requested root path, [claudeville-astra-refinement-plan.md](claudeville-astra-refinement-plan.md) has status `release-verified for v0.42.0`: the v0.41.3 review and all 21 refinement items, with final graphics, provider, desktop, persistence and performance evidence. The original advanced experiments remain conditional; the 10-minute browser and 30-minute server release checks are recorded for v0.42.0.
+
 ### Plans
 
 | Artifact | Status | Purpose |
@@ -30,6 +32,7 @@ Statuses below are the statuses recorded in the artifacts themselves.
 
 | Artifact | Status | Purpose |
 | --- | --- | --- |
+| [`research/claudeville-astra-refinement/`](research/claudeville-astra-refinement/) | `ready` | Full refinement execution evidence: authored material/foliage review, crowd/occlusion captures, motion and keyboard probes, same-host profiles, and final validation. |
 | [`research/claudeville-comprehensive-verification/`](research/claudeville-comprehensive-verification/) | `ready` | Comprehensive verification audit and evidence index. |
 | [`research/claudeville-fable-5.1-review/`](research/claudeville-fable-5.1-review/) | `ready` | Evidence for the Fable 5.1 plan: four read-only reviews (`rendering-review.md`, `ui-review.md`, `signal-review.md`, `sol-outside-review.md`), the GPU quality-ladder timeline and probe script, and eight reference captures under `shots/`. |
 | [`research/claudeville-agentic-dx-review/`](research/claudeville-agentic-dx-review/) | `ready` | Evidence for the agentic-DX plan: six read-only Codex Sol reviews over disjoint territories — model-addition surface, agent-doc accuracy, skills/hooks/CI, verification tooling, release and artifacts, sprite/PixelLab workflow. |

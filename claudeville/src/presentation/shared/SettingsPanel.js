@@ -40,7 +40,7 @@ function callMediaListener(listener, event) {
 export function installReducedMotionOverride(root = globalThis.window) {
     if (motionOverrideController || !root?.matchMedia) return motionOverrideController;
     const nativeMatchMedia = root.matchMedia.bind(root);
-    const records = new Set();
+    let reducedMotionRecord = null;
     let forced = readReducedMotionOverride(root.localStorage);
 
     const applyClass = () => {
@@ -57,8 +57,11 @@ export function installReducedMotionOverride(root = globalThis.window) {
     };
 
     root.matchMedia = (query) => {
+        if (String(query).trim() !== '(prefers-reduced-motion: reduce)') return nativeMatchMedia(query);
+        // Every caller observes the same preference. In particular, creating
+        // an AgentSprite only reads .matches and must not retain a new query.
+        if (reducedMotionRecord) return reducedMotionRecord.proxy;
         const nativeQuery = nativeMatchMedia(query);
-        if (String(query).trim() !== '(prefers-reduced-motion: reduce)') return nativeQuery;
         const record = {
             media: nativeQuery.media,
             nativeQuery,
@@ -85,9 +88,9 @@ export function installReducedMotionOverride(root = globalThis.window) {
             },
         };
         record.proxy = proxy;
-        records.add(record);
-        nativeQuery.addEventListener?.('change', onNativeChange);
-        nativeQuery.addListener?.(onNativeChange);
+        reducedMotionRecord = record;
+        if (nativeQuery.addEventListener) nativeQuery.addEventListener('change', onNativeChange);
+        else nativeQuery.addListener?.(onNativeChange);
         return proxy;
     };
 
@@ -97,7 +100,7 @@ export function installReducedMotionOverride(root = globalThis.window) {
             forced = Boolean(reduced);
             storageSet(root.localStorage, REDUCED_MOTION_OVERRIDE_KEY, forced ? '1' : '0');
             applyClass();
-            for (const record of records) notify(record);
+            if (reducedMotionRecord) notify(reducedMotionRecord);
             return forced;
         },
     };

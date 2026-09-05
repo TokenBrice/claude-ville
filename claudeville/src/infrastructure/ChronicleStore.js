@@ -82,6 +82,8 @@ export class ChronicleStore {
         onStatusChange = null,
     } = {}) {
         this.dbName = dbName;
+        this.storageNamespace = dbName === DB_NAME ? '' : `:${dbName}`;
+        this.captureLeaseKey = LEASE_KEY + this.storageNamespace;
         this.eventRetentionDays = EVENT_RETENTION_DAYS;
         this.openTimeoutMs = Number.isFinite(Number(openTimeoutMs))
             ? Math.max(1, Number(openTimeoutMs))
@@ -93,7 +95,7 @@ export class ChronicleStore {
         this.degradedError = null;
         this._statusListener = typeof onStatusChange === 'function' ? onStatusChange : null;
         this.channel = typeof BroadcastChannel !== 'undefined'
-            ? new BroadcastChannel('claudeville-chronicle')
+            ? new BroadcastChannel(DB_NAME + this.storageNamespace)
             : null;
         this._leaseToken = null;
         this._lastLeaseNotice = 0;
@@ -785,7 +787,7 @@ export class ChronicleStore {
     _readLease() {
         if (typeof localStorage === 'undefined') return null;
         try {
-            const raw = localStorage.getItem(LEASE_KEY);
+            const raw = localStorage.getItem(this.captureLeaseKey);
             return raw ? JSON.parse(raw) : null;
         } catch {
             return null;
@@ -795,7 +797,7 @@ export class ChronicleStore {
     _writeLease(record) {
         if (typeof localStorage === 'undefined') return;
         try {
-            localStorage.setItem(LEASE_KEY, JSON.stringify(record));
+            localStorage.setItem(this.captureLeaseKey, JSON.stringify(record));
         } catch { /* ignore */ }
     }
 
@@ -812,7 +814,7 @@ export class ChronicleStore {
         const current = this._readLease();
         if (!current || current.token !== token) return false;
         try {
-            localStorage.removeItem(LEASE_KEY);
+            localStorage.removeItem(this.captureLeaseKey);
         } catch { /* ignore */ }
         this.channel?.postMessage?.({ type: 'lease-released', token });
         if (this._leaseToken === token) this._leaseToken = null;

@@ -185,6 +185,8 @@ export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     normalized.source = source;
     normalized.materialSource = record.materialSource || record.sidecar || null;
     normalized.emissiveSource = record.emissiveSource || null;
+    normalized.occluderSource = record.occluderSource || null;
+    normalized.occluderTextureUpdates = record.occluderTextureUpdates || null;
     normalized.textureKey = textureKey;
     normalized.sidecarKey = sidecarKey;
     normalized.sourceWidth = sourceWidth;
@@ -236,7 +238,8 @@ export function buildStableGpuBatches(records = [], batches = [], normalizedReco
             || current.blend !== record.blend
             || current.source !== record.source
             || current.materialSource !== record.materialSource
-            || current.emissiveSource !== record.emissiveSource) {
+            || current.emissiveSource !== record.emissiveSource
+            || current.occluderSource !== record.occluderSource) {
             current = batches[batchCount];
             if (!current) {
                 current = { records: [] };
@@ -250,6 +253,7 @@ export function buildStableGpuBatches(records = [], batches = [], normalizedReco
             current.source = record.source;
             current.materialSource = record.materialSource;
             current.emissiveSource = record.emissiveSource;
+            current.occluderSource = record.occluderSource;
             current.textureKey = record.textureKey;
             current.sidecarKey = record.sidecarKey;
             current.blend = record.blend;
@@ -345,7 +349,7 @@ export function clampGpuLights(lights = [], limit = 16, hardLimit = limit, cache
     }
     let protectedCount = 0;
     while (protectedCount < ranked.length && isAttentionLight(ranked[protectedCount])) protectedCount++;
-    const admittedCount = Math.min(hardCap, Math.max(cap, protectedCount));
+    const admittedCount = Math.min(ranked.length, hardCap, Math.max(cap, protectedCount));
     if (!cache) return ranked.slice(0, admittedCount);
     const admitted = cache.admitted;
     admitted.length = admittedCount;

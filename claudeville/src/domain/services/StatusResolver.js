@@ -26,9 +26,19 @@ const ERROR_MESSAGE_PATTERN = /^FAIL[: ]|error:|exception\b|timeout/i;
 const GIT_FAIL_WINDOW_MS = 60_000;
 export const RATE_LIMIT_THRESHOLD = 0.95;
 
-function isRateLimited(usage) {
-    const fiveHour = Number(usage?.quota?.fiveHour);
-    return Number.isFinite(fiveHour) && fiveHour > RATE_LIMIT_THRESHOLD;
+export function quotaPressure(session, usage) {
+    const quota = usage?.quota;
+    if (!quota || (quota.provider || usage.provider) !== session.provider) return null;
+    if (quota.accountId !== session.accountId) return null;
+    const value = quota.fiveHour;
+    return typeof value === 'number' && Number.isFinite(value) && value > RATE_LIMIT_THRESHOLD ? value : null;
+}
+
+function isRateLimited(session, usage) {
+    if (session.rateLimit?.enforced === true) return true;
+    const quota = usage?.quota;
+    return quota?.enforced === true && (quota.provider || usage.provider) === session.provider
+        && !!quota.accountId && quota.accountId === session.accountId;
 }
 
 function isErrored(session, now) {
@@ -69,7 +79,7 @@ function looksLikeAskWithoutTurnState(session, baseStatus) {
  * running keeps the session WORKING however long it takes. Only sessions with
  * no turn state fall back to timing the file's mtime.
  *
- * Priority: RATE_LIMITED > ERRORED > WAITING_ON_USER > COMPLETED > base.
+ * Priority: explicit WAITING_ON_USER > observed RATE_LIMITED > ERRORED > COMPLETED > base.
  *
  * @param {object} session normalized session payload
  * @param {object} options
@@ -88,7 +98,8 @@ export function resolveAgentStatus(session = {}, { usage = null, now = Date.now(
         ? (turnState === TurnState.WORKING || turnState === TurnState.TOOL_PENDING)
         : base === AgentStatus.WORKING;
 
-    if (busy && isRateLimited(usage)) return AgentStatus.RATE_LIMITED;
+    if (turnState === TurnState.TOOL_PENDING && session.waitReason) return AgentStatus.WAITING_ON_USER;
+    if (busy && isRateLimited(session, usage)) return AgentStatus.RATE_LIMITED;
     if (isErrored(session, now)) return AgentStatus.ERRORED;
 
     if (known) {

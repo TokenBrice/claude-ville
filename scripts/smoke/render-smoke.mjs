@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -67,7 +68,38 @@ async function run() {
       viewport: VIEWPORT,
       reducedMotion: 'reduce',
     });
+    // A separate tab holds real history while the simulator runs on the same
+    // origin. This exercises actual IndexedDB and BroadcastChannel isolation.
+    const history = await context.newPage();
+    await history.route('**/__render-seed', route => route.fulfill({ contentType: 'text/html', body: '<title>History isolation probe</title>' }));
+    await history.goto(`${server.baseUrl}/__render-seed`);
+    const liveBefore = await history.evaluate(async () => {
+      const { ChronicleStore } = await import('/src/infrastructure/ChronicleStore.js');
+      const { SpendLedger } = await import('/src/application/SpendLedger.js');
+      const store = new ChronicleStore();
+      await store.put('meta', { key: 'founding', value: { identityKey: 'live:founder', ts: 1234 } });
+      await store.put('meta', { key: `usageLedger:${new SpendLedger(null).date}`, value: { tokens: 456, cost: 12.34 } });
+      await store.put('biographies', { identityKey: 'live:founder', lifetimeTokens: 456 });
+      await store.put('affinities', { pairKey: 'live:a|live:b', score: 7 });
+      const keys = ['claudeville.chronicle.captureLease', 'claudeville.biography.writeLease', 'claudeville.affinity.writeLease'];
+      for (const key of keys) localStorage.setItem(key, JSON.stringify({ token: 'live-observer', expiresAt: Date.now() + 60000 }));
+      window.liveMessages = [];
+      store.channel.onmessage = event => window.liveMessages.push(event.data);
+      window.readLiveHistory = async () => ({
+        rows: await Promise.all(['meta', 'biographies', 'affinities'].map(name => new Promise((resolve, reject) => {
+          const request = store.db.transaction(name).objectStore(name).getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        }))),
+        leases: keys.map(key => localStorage.getItem(key)),
+      });
+      return window.readLiveHistory();
+    });
     const page = await context.newPage();
+    const usageRequests = [];
+    page.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/usage') usageRequests.push(request.url());
+    });
     page.setDefaultTimeout(STEP_TIMEOUT_MS);
     page.on('console', (message) => {
       if (message.type() === 'error') diagnostics.consoleErrors.push(message.text());
@@ -145,6 +177,45 @@ async function run() {
       await page.waitForFunction(() => document.getElementById('activityPanel')?.style.display === 'none');
       await page.waitForFunction(() => !document.body.hasAttribute('data-cv-selected'));
       await page.locator('#worldCanvas').waitFor({ state: 'visible' });
+    });
+
+    await timedStep('simulation-isolation', async () => {
+      await page.evaluate(async () => {
+        const { AgentBiography } = await import('/src/domain/value-objects/AgentBiography.js');
+        const app = window.__claudeVilleApp;
+        const store = app.chronicleStore;
+        if (!app.simMode || store.dbName === 'claudeville-chronicle' || app.latestUsage != null) {
+          throw new Error('Simulator acquired live storage or usage');
+        }
+        // Drive the actual observers with nonzero counters, then inspect their
+        // persisted output while another tab holds live history and leases.
+        const agent = app.world.agents.values().next().value;
+        const ledger = app.spendLedger;
+        ledger.sample();
+        const before = { ...ledger.today };
+        app.world.updateAgent(agent.id, {
+          tokens: { ...agent.tokens, input: agent.tokens.input + 1234, totalInput: agent.tokens.totalInput + 1234 },
+          cost: { ...agent.cost, usd: (Number(agent.cost) || 0) + 2.5 },
+        });
+        await ledger.flush();
+        const saved = await store.getMeta(`usageLedger:${ledger.date}`);
+        if (!(saved?.tokens >= before.tokens + 1234 && saved?.cost >= before.cost + 2.5)) {
+          throw new Error('Simulator did not persist nonzero observed spend');
+        }
+        await app.biographyService._foundingPromise;
+        await app.biographyService._drainMutations();
+        await app.biographyService.flush();
+        const founding = await store.getFounding();
+        const biography = await store.getBiography(AgentBiography.identityKeyFor(agent));
+        if (!founding || founding.identityKey === 'live:founder' || !(biography?.lifetimeTokens >= 1234)) {
+          throw new Error('Simulator did not persist its own founding and token biography');
+        }
+        await store.putAffinity({ pairKey: 'sim:a|sim:b', score: 999 });
+      });
+      assert.deepEqual(await history.evaluate(() => window.readLiveHistory()), liveBefore);
+      assert.deepEqual(await history.evaluate(() => window.liveMessages), []);
+      assert.deepEqual(usageRequests, []);
+      diagnostics.simulationIsolation = 'live history, leases, broadcast and usage preserved';
     });
 
     const browserFailures = [

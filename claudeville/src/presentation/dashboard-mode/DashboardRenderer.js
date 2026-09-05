@@ -1,5 +1,6 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { bucketAgents, bucketCounts, bucketForStatus } from '../../domain/services/SignalLedger.js';
+import { toolCategory } from '../../domain/services/ToolIdentity.js';
 import { AvatarCanvas } from './AvatarCanvas.js';
 import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
@@ -26,6 +27,11 @@ import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
 import { phaseNameForDate } from '../character-mode/AtmosphereState.js';
 import { attentionAgentIds, isKeyboardEditTarget, nextCardId, recoveryCardId } from './DashboardKeyboardNavigation.js';
 import {
+    pixelIcon,
+    inspectableText,
+    replaceDetailRows,
+    detailFreshnessLabel,
+    signalProvenance,
     buildingClassForAgent,
     buildingPresentation,
     currentToolPresentation,
@@ -64,7 +70,7 @@ const TURN_STATE_LABELS = Object.freeze({
     working: 'Responding',
 });
 
-function safePromptDetail(agent) {
+function safePromptDetail(agent, limit = PROMPT_DETAIL_MAX_LENGTH) {
     const source = agent?.promptDetail
         || (agent?.signalSource === 'hook' ? agent?.lastToolInput : '');
     const clean = String(source || '')
@@ -73,12 +79,13 @@ function safePromptDetail(agent) {
         .replace(/[\u0000-\u001f\u007f]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
-    if (clean.length <= PROMPT_DETAIL_MAX_LENGTH) return clean;
-    return `${clean.slice(0, PROMPT_DETAIL_MAX_LENGTH - 1).trimEnd()}…`;
+    if (clean.length <= limit) return clean;
+    return `${clean.slice(0, limit - 1).trimEnd()}…`;
 }
 
 function waitProvenance(agent) {
-    return agent?.signalSource === 'hook' ? 'HOOK' : 'TRANSCRIPT';
+    const certainty = agent?.signalCertainty || (agent?.signalSource === 'hook' ? 'observed' : 'inferred');
+    return `${certainty}${agent?.signalStale ? ' · stale' : ''}`.toUpperCase();
 }
 
 function rowWaitAnchor(agent) {
@@ -427,8 +434,6 @@ export class DashboardRenderer {
         this.toolHistoryRenderSignatures = new Map();
         this._cardRenderSignatures = new Map();
         this._executionChildIdsByParent = new Map();
-        this._visibleAgentIds = new Set();
-        this._visibilityLayoutDirty = true;
         this._selectedAgentId = null;
         this._focusedAgentId = null;
         this._attentionCursor = 0;
@@ -457,7 +462,6 @@ export class DashboardRenderer {
         this._motionQuery = typeof window !== 'undefined'
             ? window.matchMedia?.('(prefers-reduced-motion: reduce)')
             : null;
-        this._observer = this._createVisibilityObserver();
         this.selection = new AgentSelectionMirror({
             notifyOnRepeat: true,
             onChange: (nextId, previousId) => {
@@ -486,7 +490,6 @@ export class DashboardRenderer {
         this._onModeChanged = (mode) => {
             this.active = mode === 'dashboard';
             if (this.active) {
-                this._visibilityLayoutDirty = true;
                 this.render();
                 this._startDetailFetching();
                 this._startAmbienceSync();
@@ -532,7 +535,6 @@ export class DashboardRenderer {
     }
 
     render() {
-        this._visibilityLayoutDirty = true;
         const agents = Array.from(this.world.agents.values());
         this._rememberStableOrder(agents);
         this._renderAttentionQueue(agents);
@@ -580,7 +582,6 @@ export class DashboardRenderer {
                 if (!cardEl) {
                     cardEl = this._createCard(agent);
                     this.cards.set(agent.id, cardEl);
-                    this._observer?.observe(cardEl);
                 }
 
                 // Move the card if it is not in this section
@@ -613,7 +614,6 @@ export class DashboardRenderer {
         }
         sessionDetailsService.sweep(agents);
         this._syncCardTabStops();
-        if (this.active) this._syncVisibleAgentIdsFromLayout();
     }
 
     _rememberStableOrder(agents) {
@@ -685,19 +685,6 @@ export class DashboardRenderer {
             this.gridEl.appendChild(this._filteredEmptyEl);
         }
         this._filteredEmptyEl.hidden = !visible;
-    }
-
-    _createVisibilityObserver() {
-        if (typeof IntersectionObserver === 'undefined') return null;
-        const root = document.getElementById('dashboardMode') || null;
-        return new IntersectionObserver((entries) => {
-            for (const entry of entries) {
-                const id = entry.target?.dataset?.agentId;
-                if (!id) continue;
-                if (entry.isIntersecting) this._visibleAgentIds.add(id);
-                else this._visibleAgentIds.delete(id);
-            }
-        }, { root, rootMargin: '160px 0px', threshold: 0.01 });
     }
 
     _renderAgentUpdate(agent) {
@@ -1202,6 +1189,8 @@ export class DashboardRenderer {
             status,
             agent.waitReason || '',
             agent.signalSource || '',
+            agent.signalCertainty || '',
+            agent.signalStale || false,
             agent.turnState || '',
             safePromptDetail(agent),
             agent.pendingTool || '',
@@ -1258,9 +1247,7 @@ export class DashboardRenderer {
             this._setStyle(refs.providerBadge, 'color', badge.color);
             this._setStyle(refs.providerBadge, 'background', badge.bg);
             this._setText(refs.signalSource, waitProvenance(agent));
-            refs.signalSource.title = agent.signalSource === 'hook'
-                ? 'Live hook signal'
-                : 'Transcript-derived signal';
+            refs.signalSource.title = signalProvenance(agent);
 
             const nextStatusClass = `dash-card__status dash-card__status--${status}`;
             if (refs.status.className !== nextStatusClass) refs.status.className = nextStatusClass;
@@ -1270,9 +1257,9 @@ export class DashboardRenderer {
 
             const tool = currentToolPresentation(agent, i18n);
             refs.currentTool.classList.toggle('dash-card__current-tool--idle', tool.isIdle);
-            this._setText(refs.toolIcon, tool.icon);
+            refs.toolIcon.replaceChildren(pixelIcon(toolCategory(agent.currentTool)));
             this._setText(refs.toolName, tool.name);
-            this._setText(refs.toolDetail, tool.detail);
+            replaceDetailRows(refs.toolDetail, tool.detail ? [inspectableText(tool.detail, { summary: formatToolDetail(tool.detail, { max: 80 }), key: 'current-tool' })] : []);
             this._setText(refs.phase, rowPhase(agent));
             this._setText(refs.phaseDetail, formatToolDetail(tool.detail, {
                 max: 54,
@@ -1285,8 +1272,9 @@ export class DashboardRenderer {
                 || (status === 'waiting_on_user' ? 'Waiting for input' : '')
                 || (status === 'errored' ? 'Session error' : '')
                 || (status === 'rate_limited' ? 'Quota limit' : '')
-                || 'None';
+                || '—';
             this._setText(refs.blocker, blocker);
+            refs.blocker.title = blocker === '—' ? 'No blocker observed' : blocker;
             this._setText(refs.promptDetail, promptDetail);
             refs.promptDetail.title = promptDetail;
             refs.blocker.parentElement?.classList.toggle(
@@ -1299,7 +1287,10 @@ export class DashboardRenderer {
             this._setStyle(refs.searchContext, 'display', searchContext ? '' : 'none');
 
             if (agent.lastMessage) {
-                this._setText(refs.message, `"${agent.lastMessage}"`);
+                replaceDetailRows(refs.message, [inspectableText(agent.lastMessage, { summary: truncateText(agent.lastMessage, 100), key: 'latest-message', truncated: agent.lastMessageTruncated === true })]);
+                this._setStyle(refs.message, 'display', '');
+            } else if (promptDetail) {
+                replaceDetailRows(refs.message, [inspectableText(safePromptDetail(agent, Infinity), { summary: `${blocker} · available request`, key: 'blocked-request' })]);
                 this._setStyle(refs.message, 'display', '');
             } else {
                 this._setStyle(refs.message, 'display', 'none');
@@ -1313,7 +1304,7 @@ export class DashboardRenderer {
                 cardEl.style.setProperty('--cv-building', buildingInfo.accent);
                 cardEl.style.setProperty('--cv-building-rgb', buildingInfo.accentRgb);
                 if (refs.buildingEmblem) {
-                    this._setText(refs.buildingEmblem, buildingInfo.emblem);
+                    refs.buildingEmblem.replaceChildren(pixelIcon(buildingInfo.building));
                     refs.buildingEmblem.title = `${buildingInfo.building.charAt(0).toUpperCase()}${buildingInfo.building.slice(1)} district`;
                     this._setStyle(refs.buildingEmblem, 'display', '');
                 }
@@ -1370,6 +1361,7 @@ export class DashboardRenderer {
         if (!container) return;
         const workingSet = workingSetForAgent(agent);
         const collisions = collisionsForAgent(agent);
+        container.hidden = !workingSet.length && !collisions.length;
         const summary = cardEl._elements?.workSummary;
         const writes = workingSet.filter(item => item.op === 'write').length;
         const reads = workingSet.filter(item => item.op === 'read').length;
@@ -1378,7 +1370,7 @@ export class DashboardRenderer {
         const prefix = collisions.length ? `${collisions.length} overlap` : counts.join(' · ');
         const summaryText = leadPath
             ? `${prefix}${prefix ? ' · ' : ''}${formatToolDetail(leadPath, { max: 38, projectPath: agent.projectPath || '' })}`
-            : 'No files';
+            : '—';
         this._setText(summary, summaryText);
         if (summary) summary.title = leadPath;
         summary?.parentElement?.classList.toggle('dash-card__work-cell--collision', collisions.length > 0);
@@ -1439,7 +1431,7 @@ export class DashboardRenderer {
                 && Array.isArray(agent.tasks)
                 && agent.tasks.length > 0);
         if (!hasTaskProgress) {
-            this._setText(target, agent.parentSessionId ? 'Child agent' : 'None');
+            this._setText(target, agent.parentSessionId ? 'Child agent' : '—');
             target.title = agent.parentSessionId ? `Parent ${agent.parentSessionId}` : 'No child agents';
             this._setText(sourceEl, '');
             sourceEl?.removeAttribute('title');
@@ -1635,12 +1627,13 @@ export class DashboardRenderer {
         const source = reported ? 'provider' : 'estimate';
         const revision = cost.rateRevision || TokenUsage.rateRevision;
         return {
-            tokens: `${formatTokens(totalTokens)} tokens`,
-            cost: `${source === 'estimate' ? '~' : ''}${formatCost(cost.usd)}`,
+            tokens: usage.availability === 'unavailable' ? 'Usage unavailable'
+                : `${formatTokens(totalTokens)} tokens${usage.availability === 'partial' ? ' · partial' : ''}`,
+            cost: cost.usd == null ? 'Cost unavailable' : `${source === 'estimate' ? '~' : ''}${formatCost(cost.usd)}`,
             costTitle: source === 'provider'
                 ? `Reported by ${agent.provider || 'provider'}`
                 : `Estimated using ${cost.rateMatch || 'default'} rates, revision ${revision}`,
-            source,
+            source: cost.usd == null ? 'unavailable' : source,
             unknownModel: cost.unknownModel,
         };
     }
@@ -1653,7 +1646,7 @@ export class DashboardRenderer {
             return;
         }
         this._setText(refs.usageTokens, footer.tokens);
-        this._setText(refs.usageSource, footer.source === 'provider' ? 'reported' : 'estimate');
+        this._setText(refs.usageSource, footer.source === 'unavailable' ? '' : footer.source === 'provider' ? 'reported' : 'estimate');
         refs.usageCost.title = footer.costTitle;
         refs.usageCost.replaceChildren(
             document.createTextNode(footer.cost),
@@ -1683,8 +1676,9 @@ export class DashboardRenderer {
         if (!badge) return;
         const hasDetail = this.toolHistories.has(agent.id) || this.usageFooters.has(agent.id);
         const cacheState = hasDetail ? sessionDetailsService.detailCacheState(agent) : null;
-        const isStale = hasDetail && !cacheState?.isFresh;
-        this._setStyle(badge, 'display', isStale ? '' : 'none');
+        const label = detailFreshnessLabel(agent, cacheState);
+        this._setText(badge, label);
+        this._setStyle(badge, 'display', label ? '' : 'none');
     }
 
     _renderToolHistory(cardEl, agentId, tools) {
@@ -1734,9 +1728,9 @@ export class DashboardRenderer {
         const newestFirst = [...limited].reverse();
         nodes.forEach((node, index) => {
             const chip = this._toolExitChip(newestFirst[index]);
-            if (chip) node.appendChild(chip);
+            if (chip) node.querySelector('summary')?.appendChild(chip);
         });
-        replaceChildren(listEl, nodes);
+        replaceDetailRows(listEl, nodes);
     }
 
     _toolExitChip(entry) {
@@ -1810,7 +1804,6 @@ export class DashboardRenderer {
         this.usageFooters.clear();
         this.toolHistoryRenderSignatures.clear();
         this._cardRenderSignatures.clear();
-        this._visibleAgentIds.clear();
 
         for (const [, sectionEl] of this._sectionEls) {
             if (sectionEl._erroredFlashTimer) clearTimeout(sectionEl._erroredFlashTimer);
@@ -1827,7 +1820,6 @@ export class DashboardRenderer {
             ? this._cardIdsInVisualOrder()
             : null;
         if (cardEl) {
-            this._observer?.unobserve?.(cardEl);
             this._pendingAvatarDraws.delete(cardEl);
             if (cardEl._parentFlashTimer) clearTimeout(cardEl._parentFlashTimer);
             cardEl._elapsedUnsubscribe?.();
@@ -1846,7 +1838,6 @@ export class DashboardRenderer {
         this.usageFooters.delete(agentId);
         this.toolHistoryRenderSignatures.delete(agentId);
         this._cardRenderSignatures.delete(agentId);
-        this._visibleAgentIds.delete(agentId);
 
         if (!removeEmptySection || !projectPath) return;
         const sectionEl = this._sectionEls.get(projectPath);
@@ -1864,33 +1855,6 @@ export class DashboardRenderer {
         return selected ? [selected] : [];
     }
 
-    _syncVisibleAgentIdsFromLayout() {
-        if (!this._observer || !this.active) return false;
-        if (this.cards.size === 0) {
-            this._visibilityLayoutDirty = false;
-            return true;
-        }
-        const root = document.getElementById('dashboardMode') || this.gridEl;
-        const rootRect = root?.getBoundingClientRect?.();
-        if (!rootRect || rootRect.width <= 0 || rootRect.height <= 0) return false;
-
-        const top = rootRect.top - 160;
-        const bottom = rootRect.bottom + 160;
-        for (const [id, cardEl] of this.cards) {
-            if (!cardEl.isConnected) {
-                this._visibleAgentIds.delete(id);
-                continue;
-            }
-            const rect = cardEl.getBoundingClientRect();
-            if (rect.bottom >= top && rect.top <= bottom && rect.right >= rootRect.left && rect.left <= rootRect.right) {
-                this._visibleAgentIds.add(id);
-            } else {
-                this._visibleAgentIds.delete(id);
-            }
-        }
-        this._visibilityLayoutDirty = false;
-        return true;
-    }
 
     async _copyAgentId(agentId) {
         if (!agentId || this._destroyed) return;
@@ -1945,7 +1909,6 @@ export class DashboardRenderer {
         }
         this._pendingAvatarDraws.clear();
         this._clearAllCardsAndSections();
-        this._observer?.disconnect?.();
         this.selection?.destroy?.();
         window.removeEventListener('keydown', this._onDashboardKeyDown);
         this.gridEl?.removeEventListener('focusin', this._onDashboardFocusIn);
