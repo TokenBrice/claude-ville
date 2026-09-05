@@ -6,6 +6,7 @@ import {
     TaskboardBoardModel,
     taskboardBoardLayout,
     taskboardBoardRows,
+    taskboardCompactCardAnchor,
 } from '../../claudeville/src/presentation/character-mode/TaskboardBoardModel.js';
 
 function sprite(agent) {
@@ -175,4 +176,20 @@ test('taskboard flat layout renders capped items directly without phase rows', (
         { kind: 'item', text: 'Two', status: 'in_progress' },
         { kind: 'more', text: '+1 more' },
     ]);
+});
+
+test('taskboard compact card anchor is deterministic for a fixed camera', () => {
+    const input = {
+        buildingCenter: { x: 1000, y: 500 },
+        spriteAnchor: [128, 203],
+        panel: { x: 92, y: 76, w: 77, h: 69 },
+        zoom: 1,
+        renderOffset: { x: 37.25, y: -18.5 },
+    };
+
+    const first = taskboardCompactCardAnchor(input);
+    const second = taskboardCompactCardAnchor(input);
+
+    assert.deepEqual(first, { x: 1040, y: 355 });
+    assert.deepEqual(second, first);
 });

@@ -67,6 +67,27 @@ export function resolveTaskboardAgent({
     return fallback;
 }
 
+export function taskboardCompactCardAnchor({
+    buildingCenter,
+    spriteAnchor,
+    panel,
+    zoom = 1,
+    renderOffset = { x: 0, y: 0 },
+} = {}) {
+    const scale = Number(zoom) || 1;
+    const worldX = (Number(buildingCenter?.x) || 0)
+        - (Number(spriteAnchor?.[0]) || 0)
+        + (Number(panel?.x) || 0)
+        + (Number(panel?.w) || 0) / 2;
+    const worldY = (Number(buildingCenter?.y) || 0)
+        - (Number(spriteAnchor?.[1]) || 0)
+        + (Number(panel?.y) || 0);
+    return {
+        x: Math.round(worldX * scale + (Number(renderOffset?.x) || 0)),
+        y: Math.round(worldY * scale + (Number(renderOffset?.y) || 0)),
+    };
+}
+
 export class TaskboardBoardModel {
     constructor({ now = Date.now } = {}) {
         this._now = now;
