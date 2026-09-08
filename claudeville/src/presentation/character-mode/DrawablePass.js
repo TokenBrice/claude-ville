@@ -102,6 +102,7 @@ function initializeDepthDrawable(drawable, kind, sortY, payload, drawFallback, s
 }
 
 function drawAgent(ctx, zoom, context, sprite) {
+    sprite?.setGpuWorldEnabled?.(context.gpuWorldActive === true);
     sprite?.draw?.(ctx, zoom, context.agentRenderMode || 'full');
 }
 
@@ -288,14 +289,22 @@ function clearPooledDrawable(drawable) {
 
 export function drawDepthSortedDrawables(ctx, drawables, context = {}) {
     const zoom = context.zoom || 1;
+    const paintCounts = context.paintCounts;
     for (const drawable of drawables) {
+        if (paintCounts) {
+            paintCounts.lower[drawable.kind] ??= 0;
+            paintCounts.upper[drawable.kind] ??= 0;
+        }
         if (
             context.gpuWorldActive
             && (drawable.kind?.startsWith?.('building') || drawable.kind?.startsWith?.('prop'))
         ) {
             continue;
         }
-        drawable.draw?.(ctx, zoom, context);
+        if (drawable.draw) {
+            drawable.draw(ctx, zoom, context);
+            if (paintCounts) paintCounts.lower[drawable.kind] += 1;
+        }
     }
 }
 
@@ -326,7 +335,13 @@ export function drawSceneCategoryOverlays(ctx, drawables, resolution, context = 
     }
     selected.sort(compareOverlayBands);
     const zoom = context.zoom || 1;
-    for (const drawable of selected) drawable.draw?.(ctx, zoom, context);
+    const paintCounts = context.paintCounts?.upper;
+    for (const drawable of selected) {
+        if (drawable.draw) {
+            drawable.draw(ctx, zoom, context);
+            if (paintCounts) paintCounts[drawable.kind] = (paintCounts[drawable.kind] || 0) + 1;
+        }
+    }
 }
 
 const _sceneOverlayBuffer = [];

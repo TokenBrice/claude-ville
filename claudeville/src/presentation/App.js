@@ -257,7 +257,7 @@ export class App {
                 && renderParams.get('postfx') !== '0';
             let assetsReady = null;
             const beginResidentAssets = (snapshotResult) => {
-                if (assetsReady) return;
+                if (assetsReady || this._destroyed || signal?.aborted) return;
                 if (snapshotResult?.source === 'websocket' && !simMode && !this.sessionWatcher) {
                     this.sessionWatcher = new SessionWatcher(
                         this.agentManager, this.wsClient, this.dataSource
@@ -591,9 +591,10 @@ export class App {
     }
 
     _waitForInitialWebSocketSnapshot({ signal = null } = {}) {
-        if (!this.wsClient || !this.agentManager || signal?.aborted) {
+        if (!this.wsClient || !this.agentManager || this._destroyed || signal?.aborted) {
             return Promise.resolve({ ok: false, failed: false, source: 'websocket' });
         }
+        const wsClient = this.wsClient;
 
         return new Promise((resolve) => {
             let settled = false;
@@ -622,11 +623,14 @@ export class App {
                 failed: true,
                 source: 'websocket',
             });
-            const onAbort = () => finish({
-                ok: false,
-                failed: false,
-                source: 'websocket',
-            });
+            const onAbort = () => {
+                finish({
+                    ok: false,
+                    failed: false,
+                    source: 'websocket',
+                });
+                if (this._destroyed) wsClient.disconnect();
+            };
 
             unsubscribers.push(eventBus.on('ws:init', onInit));
             unsubscribers.push(eventBus.on('ws:disconnected', onDisconnected));
@@ -636,7 +640,7 @@ export class App {
                 failed: true,
                 source: 'websocket',
             }), INITIAL_WEBSOCKET_TIMEOUT_MS);
-            this.wsClient.connect();
+            wsClient.connect();
         });
     }
 
@@ -1882,6 +1886,7 @@ export class App {
         }
 
         this._callLifecycle('SessionWatcher.stop', () => this.sessionWatcher?.stop?.());
+        this._callLifecycle('WebSocketClient.disconnect', () => this.wsClient?.disconnect?.());
         this._callLifecycle('AgentManager.stop', () => this.agentManager?.stop?.());
         this._callLifecycle('AgentSimulator.stop', () => this.agentSimulator?.stop?.());
         this._callLifecycle('NotificationService.destroy', () => this.notificationService?.destroy?.());

@@ -626,6 +626,7 @@ export class GpuWorldRenderer {
         this.frameGapMs = null;
         this.uploads = 0;
         this.uploadBytes = 0;
+        this.skippedOccluderUploads = 0;
         this.textureBytes = 0;
         this.textureEvictions = 0;
         this.qualityLadder = createPostFxLadder({
@@ -1176,15 +1177,15 @@ export class GpuWorldRenderer {
         }
     }
 
-    _stageFrameVertices(batches) {
+    _stageFrameVertices(batches, occluderChannelEnabled = true) {
         let sceneRecordCount = 0;
         let occlusionRecordCount = 0;
         for (let index = 0; index < batches.length; index++) {
             const records = batches[index].records;
             sceneRecordCount += records.length;
-            for (let recordIndex = 0; recordIndex < records.length; recordIndex++) {
+            for (let recordIndex = 0; occluderChannelEnabled && recordIndex < records.length; recordIndex++) {
                 const record = records[recordIndex];
-                if (record.occluder > 0 || record.elevation > 0.05) occlusionRecordCount++;
+                if (record.occluderSource || record.occluder > 0 || record.elevation > 0.05) occlusionRecordCount++;
             }
         }
         const needed = (sceneRecordCount + occlusionRecordCount) * 6 * VERTEX_FLOATS;
@@ -1205,7 +1206,7 @@ export class GpuWorldRenderer {
             const batch = batches[index];
             batch.occlusionFirst = first;
             batch.occlusionCount = 0;
-            for (let recordIndex = 0; recordIndex < batch.records.length; recordIndex++) {
+            for (let recordIndex = 0; occluderChannelEnabled && recordIndex < batch.records.length; recordIndex++) {
                 const record = batch.records[recordIndex];
                 if (!record.occluderSource && record.occluder <= 0 && record.elevation <= 0.05) continue;
                 offset = writeGpuRecordVertices(vertices, offset, record);
@@ -1242,7 +1243,7 @@ export class GpuWorldRenderer {
     // are built once per frame instead of once per batch per pass, and every
     // texSubImage/texImage cost is attributed to the upload phase rather than
     // appearing inside whichever pass happened to bind the batch first.
-    _uploadBatchTextures(batches) {
+    _uploadBatchTextures(batches, occluderChannelEnabled = true) {
         for (let index = 0; index < batches.length; index++) {
             const batch = batches[index];
             const first = batch.records[0];
@@ -1261,7 +1262,8 @@ export class GpuWorldRenderer {
                 ? this._textureFor(`emissive:${sidecar}`, batch.emissiveSource,
                     first?.sidecarRevision, first?.emissiveTextureUpdates)
                 : null;
-            batch.occluderTexture = batch.occluderSource
+            if (!occluderChannelEnabled && batch.occluderSource) this.skippedOccluderUploads++;
+            batch.occluderTexture = occluderChannelEnabled && batch.occluderSource
                 ? this._textureFor(`occluder:${sidecar}`, batch.occluderSource,
                     first?.sidecarRevision, first?.occluderTextureUpdates)
                 : null;
@@ -1515,6 +1517,22 @@ export class GpuWorldRenderer {
         gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
+    prepareFrame(feed = {}) {
+        let qualityLevel = this.qualityLadder.getLevel();
+        // DISABLED means optional GPU effects are exhausted, not that the
+        // renderer may swap composition paths mid-scene. Canvas-only fauna and
+        // water details sit beneath this surface; toggling to Canvas and back
+        // makes boats/waterfalls blink. Keep the minimal resident scene while
+        // cheap probes allow recovery after warm-up.
+        if (qualityLevel >= POST_FX_LEVELS.DISABLED) {
+            const recovery = this.qualityLadder.update({ totalMs: 0 }, performance.now());
+            qualityLevel = Math.min(recovery.effectiveLevel, POST_FX_LEVELS.MINIMAL);
+        }
+        this._preparedQualityLevel = qualityLevel;
+        this._preparedFeed = feed;
+        return effectBudgetMode('occlusion', qualityLevel) !== 'off' || weatherUniform(feed)[1] !== 0;
+    }
+
     render({ records = [], camera = null, feed = {} } = {}) {
         if (!this.isActive() || !camera || !records.length) return false;
         const gl = this.gl;
@@ -1522,17 +1540,18 @@ export class GpuWorldRenderer {
         const frameGapMs = this._lastRenderAtMs == null ? 0 : started - this._lastRenderAtMs;
         this._lastRenderAtMs = started;
         this._frameUploadMs = 0;
-        let qualityLevel = this.qualityLadder.getLevel();
+        const occluderChannelEnabled = this._preparedFeed === feed
+            ? effectBudgetMode('occlusion', this._preparedQualityLevel) !== 'off' || weatherUniform(feed)[1] !== 0
+            : this.prepareFrame(feed);
+        const qualityLevel = this._preparedQualityLevel;
+        this._preparedFeed = null;
         let gpuTimer = null;
-        // DISABLED means optional GPU effects are exhausted, not that the
-        // renderer may swap composition paths mid-scene. Canvas-only fauna and
-        // water details sit beneath this surface; toggling to Canvas and back
-        // makes boats/waterfalls blink. Keep the minimal resident scene while
-        // cheap probes allow recovery after warm-up.
-        if (qualityLevel >= POST_FX_LEVELS.DISABLED) {
-            const recovery = this.qualityLadder.update({ totalMs: 0 }, started);
-            qualityLevel = Math.min(recovery.effectiveLevel, POST_FX_LEVELS.MINIMAL);
+        if (occluderChannelEnabled && this._occluderChannelSkipped) {
+            for (const [key, entry] of this._textureEntries) {
+                if (key.startsWith('occluder:')) entry.source = null;
+            }
         }
+        this._occluderChannelSkipped = !occluderChannelEnabled;
         try {
             // Timer results are asynchronous. Polling only availability keeps
             // this path non-blocking; until the first clean result arrives the
@@ -1546,8 +1565,8 @@ export class GpuWorldRenderer {
             this._sampledPass = this.passSamplingEnabled && this.frames % 12 === 0
                 ? GPU_PASS_NAMES[this._passCursor++ % GPU_PASS_NAMES.length] : null;
             this._beginPass('upload');
-            this._stageFrameVertices(batches);
-            this._uploadBatchTextures(batches);
+            this._stageFrameVertices(batches, occluderChannelEnabled);
+            this._uploadBatchTextures(batches, occluderChannelEnabled);
             this._endPass('upload', 0, this._vertexScratchUsed * 4);
             let atlasRecords = 0;
             let individualRecords = 0;
@@ -1571,7 +1590,7 @@ export class GpuWorldRenderer {
             this._beginPass('occlusion');
             if (effectBudgetMode('occlusion', qualityLevel) !== 'off' && localLightsVisible) {
                 this._renderOcclusion(batches, camera);
-            } else {
+            } else if (occluderChannelEnabled) {
                 gl.bindFramebuffer(gl.FRAMEBUFFER, this.occlusionTarget.framebuffer);
                 gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
                 gl.viewport(0, 0, this.occlusionTarget.width, this.occlusionTarget.height);
@@ -1662,6 +1681,7 @@ export class GpuWorldRenderer {
             wetReflections: this.wetReflectionCount,
             uploads: this.uploads,
             uploadBytes: this.uploadBytes,
+            skippedOccluderUploads: this.skippedOccluderUploads,
             uploadMs: this.uploadMs ?? 0,
             cpuMs: this.cpuMs ?? 0,
             shaderCpuMs: this.shaderCpuMs ?? 0,

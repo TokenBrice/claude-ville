@@ -880,8 +880,17 @@ function buildAgentAtlasTextureUpdates(renderer, poolProperty, records, slots, c
     return updates;
 }
 
-export function packGpuAgentFrameAtlas(renderer, records) {
+export function packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled = true) {
     const agentRecords = records.filter(record => String(record.id || '').startsWith('agent:'));
+    const occluderFrames = renderer._gpuAgentOccluderFrames ||= new Map();
+    const liveAgentIds = renderer._gpuAgentOccluderLiveIds ||= new Set();
+    liveAgentIds.clear();
+    for (const record of agentRecords) liveAgentIds.add(record.id);
+    for (const id of occluderFrames.keys()) {
+        if (!liveAgentIds.has(id)) occluderFrames.delete(id);
+    }
+    const restoreOccluder = occluderChannelEnabled && renderer._gpuAgentOccluderSkipped === true;
+    renderer._gpuAgentOccluderSkipped = !occluderChannelEnabled;
     if (!agentRecords.length || typeof document === 'undefined') return records;
     let cell = 1;
     let hasMaterialSource = false;
@@ -975,7 +984,7 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         emissiveAtlasState.resized = false;
     }
     const occluderAtlasState = renderer._gpuAgentOccluderAtlasState ||= { atlas: null, resized: false };
-    if (hasOccluderSource) ensureAgentChannelAtlas(renderer, '_gpuAgentOccluderAtlas', width, height, occluderAtlasState);
+    if (hasOccluderSource && occluderChannelEnabled) ensureAgentChannelAtlas(renderer, '_gpuAgentOccluderAtlas', width, height, occluderAtlasState);
     else { occluderAtlasState.atlas = null; occluderAtlasState.resized = false; }
     const channelsChanged = occluderAtlasState.resized || changed
         || materialAtlasState.resized
@@ -1020,6 +1029,17 @@ export function packGpuAgentFrameAtlas(renderer, records) {
             );
             frameKeys.set(record.id, desiredKeys[index]);
             poses.set(record.id, record.poseKey);
+            let geometry = occluderFrames.get(record.id);
+            if (!geometry) {
+                geometry = {};
+                occluderFrames.set(record.id, geometry);
+            }
+            geometry.id = record.id;
+            geometry.occluderSource = record.occluderSource;
+            geometry.sx = record.sx;
+            geometry.sy = record.sy;
+            geometry.sw = record.sw;
+            geometry.sh = record.sh;
         }
         renderer._gpuAgentFrameAtlasSignature = desiredKeys.slice().sort().join('|');
         renderer._gpuAgentFrameAtlasRevision++;
@@ -1045,11 +1065,13 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         || emissiveAtlasState.resized
         || occluderAtlasState.resized;
     if (channelsChanged && packNow) {
-        const geometryRecords = occluderAtlasState.resized ? agentRecords : dirtyRecords;
-        drawAgentChannelAtlas(occluderAtlasState.atlas, geometryRecords, slots, columns, cell, 'occluderSource');
-        if (!occluderAtlasState.resized && occluderAtlasState.atlas) {
-            renderer._gpuAgentOccluderTextureUpdates = buildAgentAtlasTextureUpdates(renderer,
-                '_gpuAgentOccluderUpdateCanvases', geometryRecords, slots, columns, cell, 'occluderSource');
+        if (occluderChannelEnabled && !restoreOccluder) {
+            const geometryRecords = occluderAtlasState.resized ? agentRecords : dirtyRecords;
+            drawAgentChannelAtlas(occluderAtlasState.atlas, geometryRecords, slots, columns, cell, 'occluderSource');
+            if (!occluderAtlasState.resized && occluderAtlasState.atlas) {
+                renderer._gpuAgentOccluderTextureUpdates = buildAgentAtlasTextureUpdates(renderer,
+                    '_gpuAgentOccluderUpdateCanvases', geometryRecords, slots, columns, cell, 'occluderSource');
+            }
         }
         const materialRecords = materialAtlasState.resized ? agentRecords : dirtyRecords;
         const emissiveRecords = emissiveAtlasState.resized ? agentRecords : dirtyRecords;
@@ -1092,6 +1114,12 @@ export function packGpuAgentFrameAtlas(renderer, records) {
                 'emissiveSource',
             );
         }
+    }
+    if (restoreOccluder && occluderAtlasState.atlas) {
+        const ctx = occluderAtlasState.atlas.getContext('2d', { alpha: true });
+        ctx.clearRect(0, 0, width, height);
+        drawAgentChannelAtlas(occluderAtlasState.atlas, occluderFrames.values(), slots, columns, cell, 'occluderSource');
+        renderer._gpuAgentSidecarRevision = (renderer._gpuAgentSidecarRevision || 0) + 1;
     }
     for (const record of agentRecords) {
         const slot = slots.get(record.id) || 0;
@@ -1211,7 +1239,7 @@ function sourceKindCensus(records = [], decision = {}) {
     };
 }
 
-export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
+export function buildGpuWorldRecords(renderer, { drawables = [], occluderChannelEnabled = true } = {}) {
     const decision = decideAtlasCategories(renderer, drawables);
     if (renderer) renderer._gpuAtlasDecision = decision;
     const records = renderer?._gpuWorldRecordScratch || [];
@@ -1249,7 +1277,7 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
         else if (next) records.push(next);
         sequence++;
     }
-    packGpuAgentFrameAtlas(renderer, records);
+    packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled);
     const ordered = renderer?._gpuWorldOrderedRecords || [];
     ordered.length = 0;
     for (let index = 0; index < records.length; index++) {

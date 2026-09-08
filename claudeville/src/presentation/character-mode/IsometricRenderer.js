@@ -2112,6 +2112,8 @@ export class IsometricRenderer {
         releaseCanvasBackingStore(this._gpuAgentOccluderAtlas);
         this._gpuAgentOccluderAtlas = null;
         this._gpuAgentOccluderAtlasState = null;
+        this._gpuAgentOccluderFrames?.clear();
+        this._gpuAgentOccluderLiveIds?.clear();
         releaseCanvasMap(this._gpuAgentOccluderUpdateCanvases);
         this._gpuAgentOccluderUpdateCanvases = null;
         this._gpuAgentOccluderTextureUpdates = [];
@@ -5073,11 +5075,15 @@ export class IsometricRenderer {
             cellSize,
             generation: 0,
             buckets: new Map(),
+            touchedBuckets: [],
             seen: new Set(),
         };
     }
 
     _beginRectGridFrame(grid) {
+        for (const bucket of grid.touchedBuckets) bucket.items.length = 0;
+        grid.touchedBuckets.length = 0;
+        grid.seen.clear();
         grid.generation++;
         if (grid.generation < 1000000000) return;
         grid.generation = 1;
@@ -5102,6 +5108,7 @@ export class IsometricRenderer {
                     bucket.generation = grid.generation;
                     bucket.items.length = 0;
                 }
+                if (bucket.items.length === 0) grid.touchedBuckets.push(bucket);
                 bucket.items.push(item);
             }
         }
@@ -5225,11 +5232,9 @@ export class IsometricRenderer {
         // A direct scan is faster for small visible sets. Above that, the grid
         // bounds each query to spatial neighbours instead of the full crowd.
         const useSpatialGrid = prioritized.length > 32;
-        if (useSpatialGrid) {
-            this._beginRectGridFrame(compactGrid);
-            this._beginRectGridFrame(nameGrid);
-            this._beginRectGridFrame(bubbleGrid);
-        }
+        this._beginRectGridFrame(compactGrid);
+        this._beginRectGridFrame(nameGrid);
+        this._beginRectGridFrame(bubbleGrid);
 
         // Primary agents reserve their label envelope before buildings and
         // routine agents request overlay space later in the frame.
@@ -5460,7 +5465,7 @@ export class IsometricRenderer {
     _mergeIdenticalClusterBubbles(order, baseRects, useSpatialGrid = true) {
         const clusters = this._overlayBubbleClusters;
         const clusterGrid = this._overlayClusterGrid;
-        if (useSpatialGrid) this._beginRectGridFrame(clusterGrid);
+        this._beginRectGridFrame(clusterGrid);
         let clusterCount = 0;
         for (let i = 0; i < order.length; i++) {
             const sprite = order[i];
@@ -5503,6 +5508,9 @@ export class IsometricRenderer {
             // overlap is always rechecked against the current union rect.
             if (useSpatialGrid) this._insertRectGridItem(clusterGrid, cluster.rect, cluster);
         }
+        for (let i = clusterCount; i < this._overlayBubbleClusterCount; i++) {
+            clusters[i].members.length = 0;
+        }
         this._overlayBubbleClusterCount = clusterCount;
         const groups = this._overlayBubbleGroups;
         for (let clusterIndex = 0; clusterIndex < clusterCount; clusterIndex++) {
@@ -5522,6 +5530,7 @@ export class IsometricRenderer {
             }
             this._foldRoutineClusterNames(cluster);
         }
+        groups.clear();
     }
 
     // F5 — under annotation pressure, a slot-0 crowd delegates routine
@@ -10417,7 +10426,7 @@ export class IsometricRenderer {
             if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
             const width = Math.max(6, Math.round(light.radius * 0.52 * zoom));
             const height = Math.max(4, Math.round(light.radius * 0.40 * zoom));
-            const stamp = this._getWetReflectionStamp(light.color, width, height, plan.wetness, atmosphere);
+            const stamp = this._getWetReflectionStamp(light.color, width, height, plan.wetness);
             ctx.beginPath();
             for (const tile of entry.tiles) {
                 const c = this.camera.worldToScreen(tile.x, tile.y);
@@ -10442,9 +10451,9 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _getWetReflectionStamp(color, width, height, wetness, atmosphere = null) {
+    _getWetReflectionStamp(color, width, height, wetness) {
         const wetBucket = Math.round(clampUnit(wetness) * 4);
-        const key = `${color}|${width}x${height}|w${wetBucket}|${atmosphere?.cacheKey || 'fallback'}`;
+        const key = `${color}|${width}x${height}|w${wetBucket}`;
         const cached = this.lightGradientCache.get(key);
         if (cached) {
             this.lightGradientCache.delete(key);
@@ -10474,7 +10483,20 @@ export class IsometricRenderer {
                 }
             }
         }
-        if (canvasPixelCount(stamp) <= MAX_LIGHT_GRADIENT_STAMP_PIXELS) {
+        const stampPixels = canvasPixelCount(stamp);
+        if (stampPixels <= MAX_LIGHT_GRADIENT_STAMP_PIXELS) {
+            let retainedPixels = canvasMapPixelCount(this.lightGradientCache);
+            while (
+                this.lightGradientCache.size > 0 &&
+                (this.lightGradientCache.size >= 240 ||
+                    retainedPixels + stampPixels > MAX_LIGHT_GRADIENT_CACHE_PIXELS)
+            ) {
+                const oldestKey = this.lightGradientCache.keys().next().value;
+                const oldest = this.lightGradientCache.get(oldestKey);
+                retainedPixels -= canvasPixelCount(oldest);
+                releaseCanvasBackingStore(oldest);
+                this.lightGradientCache.delete(oldestKey);
+            }
             this.lightGradientCache.set(key, stamp);
         }
         return stamp;

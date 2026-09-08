@@ -59,6 +59,20 @@ const viewBoxes = Object.fromEntries(Object.entries(runs).map(([id, rects]) => {
     const maxY = rects[rects.length - 1][1] + 1;
     return [id, `${minX} ${minY} ${maxX - minX} ${maxY - minY}`];
 }));
+const EVENT_SHAPE_STAMPS = new Map();
+const EVENT_SHAPE_STAMP_LIMIT = 240;
+const EVENT_SHAPE_STAMP_PIXEL_LIMIT = 4 * 1024 * 1024;
+let eventShapeStampPixels = 0;
+
+export function clearEventShapeCache() {
+    for (const stamp of EVENT_SHAPE_STAMPS.values()) {
+        stamp.canvas.width = 0;
+        stamp.canvas.height = 0;
+    }
+    EVENT_SHAPE_STAMPS.clear();
+    eventShapeStampPixels = 0;
+}
+
 export function drawEventShape(ctx, id, x, y, scale = 1, color = 'currentColor') {
     const rects = runs[id];
     if (!rects) return;
@@ -66,6 +80,59 @@ export function drawEventShape(ctx, id, x, y, scale = 1, color = 'currentColor')
     const left = Math.round(x);
     const top = Math.round(y);
     ctx.fillStyle = color;
+    const transform = ctx.getTransform?.();
+    const scaleX = transform ? Math.round(transform.a * 1e6) / 1e6 : 0;
+    const scaleY = transform ? Math.round(transform.d * 1e6) / 1e6 : 0;
+    // Preserve per-run compositing for effects and unsupported transforms.
+    if (!transform || transform.b !== 0 || transform.c !== 0 || scaleX !== scaleY ||
+        !Number.isFinite(scaleX) || scaleX <= 0 || ctx.globalCompositeOperation !== 'source-over' ||
+        ctx.shadowBlur || ctx.shadowOffsetX || ctx.shadowOffsetY || (ctx.filter && ctx.filter !== 'none') ||
+        (ctx.shadowColor !== 'rgba(0, 0, 0, 0)' && ctx.shadowColor !== 'transparent') ||
+        typeof ctx.fillStyle !== 'string') {
+        paintEventShape(ctx, rects, left, top, step);
+        return;
+    }
+    const width = Math.ceil(16 * step * scaleX);
+    const height = Math.ceil(16 * step * scaleY);
+    if (!Number.isFinite(width * height) || width * height > EVENT_SHAPE_STAMP_PIXEL_LIMIT) {
+        paintEventShape(ctx, rects, left, top, step);
+        return;
+    }
+    const key = JSON.stringify([id, EVENT_SHAPES[id], ctx.fillStyle, step, ctx.globalAlpha, scaleX, scaleY]);
+    let stamp = EVENT_SHAPE_STAMPS.get(key);
+    if (stamp) {
+        EVENT_SHAPE_STAMPS.delete(key);
+        EVENT_SHAPE_STAMPS.set(key, stamp);
+    } else {
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const stampCtx = canvas.getContext('2d');
+        stampCtx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+        stampCtx.globalAlpha = ctx.globalAlpha;
+        stampCtx.fillStyle = ctx.fillStyle;
+        paintEventShape(stampCtx, rects, 0, 0, step);
+        stamp = { canvas, pixels: width * height };
+        while (EVENT_SHAPE_STAMPS.size && (EVENT_SHAPE_STAMPS.size >= EVENT_SHAPE_STAMP_LIMIT ||
+            eventShapeStampPixels + stamp.pixels > EVENT_SHAPE_STAMP_PIXEL_LIMIT)) {
+            const oldestKey = EVENT_SHAPE_STAMPS.keys().next().value;
+            const oldest = EVENT_SHAPE_STAMPS.get(oldestKey);
+            eventShapeStampPixels -= oldest.pixels;
+            oldest.canvas.width = 0;
+            oldest.canvas.height = 0;
+            EVENT_SHAPE_STAMPS.delete(oldestKey);
+        }
+        EVENT_SHAPE_STAMPS.set(key, stamp);
+        eventShapeStampPixels += stamp.pixels;
+    }
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.drawImage(stamp.canvas, Math.round(left * scaleX + transform.e), Math.round(top * scaleY + transform.f));
+    ctx.restore();
+}
+
+function paintEventShape(ctx, rects, left, top, step) {
     for (const [rx, ry, width] of rects) ctx.fillRect(left + rx * step, top + ry * step, width * step, step);
 }
 export function eventShapeSvgPath(id) {

@@ -383,6 +383,20 @@ export function agentSignature(agentId, family) {
     return signature;
 }
 
+const SIGNATURE_STAMPS = new Map();
+const SIGNATURE_STAMP_LIMIT = 240;
+const SIGNATURE_STAMP_PIXEL_LIMIT = 4 * 1024 * 1024;
+let signatureStampPixels = 0;
+
+export function clearAgentSignatureCache() {
+    for (const stamp of SIGNATURE_STAMPS.values()) {
+        stamp.canvas.width = 0;
+        stamp.canvas.height = 0;
+    }
+    SIGNATURE_STAMPS.clear();
+    signatureStampPixels = 0;
+}
+
 /**
  * Stamps the signature centered on (x, y) at `pixel` device pixels per cell.
  * The same call renders the mark on a hero body, a compact GPU body, an
@@ -394,6 +408,59 @@ export function drawAgentSignature(ctx, signature, { x, y, pixel = 1, ink = '#15
     const step = Math.max(1, Math.round(pixel));
     const left = Math.round(x) - Math.round(SIGNATURE_CELLS * step / 2);
     const top = Math.round(y) - Math.round(SIGNATURE_CELLS * step / 2);
+    const transform = ctx.getTransform?.();
+    const scaleX = transform ? Math.round(transform.a * 1e6) / 1e6 : 0;
+    const scaleY = transform ? Math.round(transform.d * 1e6) / 1e6 : 0;
+    // Effects and non-axis-aligned transforms must retain per-cell compositing.
+    if (!transform || transform.b !== 0 || transform.c !== 0 || scaleX !== scaleY ||
+        !Number.isFinite(scaleX) || scaleX <= 0 || ctx.globalCompositeOperation !== 'source-over' ||
+        ctx.shadowBlur || ctx.shadowOffsetX || ctx.shadowOffsetY || (ctx.filter && ctx.filter !== 'none') ||
+        (ctx.shadowColor !== 'rgba(0, 0, 0, 0)' && ctx.shadowColor !== 'transparent') ||
+        typeof ink !== 'string' || typeof accent !== 'string') {
+        paintAgentSignature(ctx, rows, left, top, step, ink, accent);
+        return;
+    }
+    const width = Math.ceil(SIGNATURE_CELLS * step * scaleX);
+    const height = Math.ceil(rows.length * step * scaleY);
+    if (!Number.isFinite(width * height) || width * height > SIGNATURE_STAMP_PIXEL_LIMIT) {
+        paintAgentSignature(ctx, rows, left, top, step, ink, accent);
+        return;
+    }
+    const key = JSON.stringify([signature.key, rows, ink, accent, step, ctx.globalAlpha, scaleX, scaleY]);
+    let stamp = SIGNATURE_STAMPS.get(key);
+    if (stamp) {
+        SIGNATURE_STAMPS.delete(key);
+        SIGNATURE_STAMPS.set(key, stamp);
+    } else {
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const stampCtx = canvas.getContext('2d');
+        stampCtx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+        stampCtx.globalAlpha = ctx.globalAlpha;
+        paintAgentSignature(stampCtx, rows, 0, 0, step, ink, accent);
+        stamp = { canvas, pixels: width * height, fillStyle: stampCtx.fillStyle };
+        while (SIGNATURE_STAMPS.size && (SIGNATURE_STAMPS.size >= SIGNATURE_STAMP_LIMIT ||
+            signatureStampPixels + stamp.pixels > SIGNATURE_STAMP_PIXEL_LIMIT)) {
+            const oldestKey = SIGNATURE_STAMPS.keys().next().value;
+            const oldest = SIGNATURE_STAMPS.get(oldestKey);
+            signatureStampPixels -= oldest.pixels;
+            oldest.canvas.width = 0;
+            oldest.canvas.height = 0;
+            SIGNATURE_STAMPS.delete(oldestKey);
+        }
+        SIGNATURE_STAMPS.set(key, stamp);
+        signatureStampPixels += stamp.pixels;
+    }
+    ctx.fillStyle = stamp.fillStyle;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.drawImage(stamp.canvas, Math.round(left * scaleX + transform.e), Math.round(top * scaleY + transform.f));
+    ctx.restore();
+}
+
+function paintAgentSignature(ctx, rows, left, top, step, ink, accent) {
     for (let y0 = 0; y0 < rows.length; y0++) {
         const row = rows[y0];
         for (let x0 = 0; x0 < row.length; x0++) {

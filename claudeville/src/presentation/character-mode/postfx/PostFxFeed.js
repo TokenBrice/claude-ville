@@ -708,7 +708,14 @@ export function createPostFxFeed() {
             const camera = renderer.camera || null;
 
             fillLights(renderer, viewport, dpr);
-            fillWater(renderer, camera, viewport, dpr);
+            if (args.gpuWorldActive === true) {
+                waterObj.mask = null;
+                waterObj.flowX = 0;
+                waterObj.flowY = 0;
+                waterObj.maskRevision = maskRevision;
+            } else {
+                fillWater(renderer, camera, viewport, dpr);
+            }
             diagnostics.visibleLights = lightsOut.length;
             diagnostics.visibleHaze = hazeOut.length;
 

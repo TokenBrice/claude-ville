@@ -1,11 +1,11 @@
 import { resolveObservation } from './ObservationCertainty.js';
-import { drawEventShape } from '../shared/EventShapes.js';
+import { drawEventShape, clearEventShapeCache } from '../shared/EventShapes.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { modelBehaviorProfile, moodBehaviorMultiplier } from '../../domain/value-objects/AgentMood.js';
 import { bucketForStatus } from '../../domain/services/SignalLedger.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { THEME, STATUS_VISUALS, MOOD_ACCENTS, MODEL_TIER_COLORS, PROVIDER_HUES, WORLD_BODY_FONT } from '../../config/theme.js';
-import { agentSignature, drawAgentSignature, getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
+import { agentSignature, drawAgentSignature, clearAgentSignatureCache, getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
 import { getTeamColor } from '../shared/TeamColor.js';
 import { SpriteSheet, dirFromVelocity, resolveActionFrame, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS, DEFAULT_CELL } from './SpriteSheet.js';
@@ -788,6 +788,9 @@ export class AgentSprite {
         GPU_EQUIPPED_SHEET_CACHE.clear();
         TINTED_SELECTION_RING_CACHE.clear();
         TOOL_CLASSIFICATION_CACHE.clear();
+        AgentSprite.clearOverlayStampCache();
+        clearAgentSignatureCache();
+        clearEventShapeCache();
         processedSpriteCachePixels = 0;
         codexEquipmentCachePixels = 0;
         gpuEquippedSheetCachePixels = 0;
@@ -3008,6 +3011,9 @@ export class AgentSprite {
             // Canvas body blits, so both backends show one pose.
             pose,
         });
+        // Agent records are submitted independently of terrain coverage, even
+        // beyond the island. Only the resident backend owns their body paint.
+        const canvasBody = !this.gpuWorldEnabled;
         const departedBody = this.agent?.isDeparted && !this.gpuWorldEnabled;
         if (departedBody) {
             ctx.save();
@@ -3017,19 +3023,21 @@ export class AgentSprite {
         // An authored pose owns its own hands: a strip that declares a sheathed
         // grip parks the runtime weapon instead of painting it over the prop.
         const sheathed = Boolean(pose && pose.strip?.meta?.grip?.sheathe);
-        if (!sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'back');
-        this._drawSpriteSilhouette(ctx, bodyCell, dx, dy, drawScale, poseSource);
-        ctx.drawImage(
-            bodySource,
-            bodyCell.sx, bodyCell.sy, bodyCell.sw, bodyCell.sh,
-            dx, dy, bodyCell.sw * drawScale, bodyCell.sh * drawScale
-        );
+        if (canvasBody) {
+            if (!sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'back');
+            this._drawSpriteSilhouette(ctx, bodyCell, dx, dy, drawScale, poseSource);
+            ctx.drawImage(
+                bodySource,
+                bodyCell.sx, bodyCell.sy, bodyCell.sw, bodyCell.sh,
+                dx, dy, bodyCell.sw * drawScale, bodyCell.sh * drawScale
+            );
+        }
         // Frozen/darkened body tint while rate-limited — static overlay, so it
-        // reads identically under reduced motion.
+        // reads identically under reduced motion. No GPU channel owns this tint.
         if (this.agent?.status === AgentStatus.RATE_LIMITED) {
             this._drawFrozenTint(ctx, bodyCell, dx, dy, drawScale, poseSource);
         }
-        if (!sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
+        if (canvasBody && !sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
         if (departedBody) ctx.restore();
         if (arrivalPushed) ctx.restore();
         if (arrivalProgress > 0) this._drawArrivalRuneRing(ctx, arrivalProgress);
@@ -5625,6 +5633,85 @@ export class AgentSprite {
         ctx.restore();
     }
 
+    static _overlayStampCache = new Map();
+    static _overlayStampPixels = 0;
+    static _overlayStampFontsReady = false;
+
+    static clearOverlayStampCache() {
+        for (const stamp of AgentSprite._overlayStampCache.values()) {
+            stamp.canvas.width = 0;
+            stamp.canvas.height = 0;
+        }
+        AgentSprite._overlayStampCache.clear();
+        AgentSprite._overlayStampPixels = 0;
+    }
+
+    _drawOverlayStamp(ctx, identity, left, top, width, height, paint) {
+        if (!AgentSprite._overlayStampFontsReady && document.fonts) {
+            AgentSprite._overlayStampFontsReady = true;
+            document.fonts.ready.then(() => AgentSprite.clearOverlayStampCache());
+        }
+        const transform = ctx.getTransform();
+        // Plaques cancel camera zoom before this call: retain the resulting
+        // device scale, not a coarse zoom bucket that would blur their text.
+        const scaleX = Math.round(transform.a * 1e6) / 1e6;
+        const scaleY = Math.round(transform.d * 1e6) / 1e6;
+        const pixelLeft = Math.floor(left * scaleX);
+        const pixelTop = Math.floor(top * scaleY);
+        const pixelWidth = Math.ceil((left + width) * scaleX) - pixelLeft;
+        const pixelHeight = Math.ceil((top + height) * scaleY) - pixelTop;
+        const key = `${identity}|${scaleX}|${scaleY}|${ctx.globalAlpha}|${ctx.font}`;
+        const cache = AgentSprite._overlayStampCache;
+        let stamp = cache.get(key);
+        if (stamp) {
+            cache.delete(key);
+            cache.set(key, stamp);
+        } else {
+            const canvas = document.createElement('canvas');
+            canvas.width = pixelWidth;
+            canvas.height = pixelHeight;
+            const stampCtx = canvas.getContext('2d');
+            stampCtx.setTransform(scaleX, 0, 0, scaleY, -pixelLeft, -pixelTop);
+            // Alpha belongs to each original paint operation, not the flattened
+            // result: translucent borders, text shadows and panels overlap.
+            stampCtx.globalAlpha = ctx.globalAlpha;
+            stampCtx.font = ctx.font;
+            stampCtx.direction = ctx.direction;
+            stampCtx.shadowColor = ctx.shadowColor;
+            stampCtx.shadowBlur = ctx.shadowBlur;
+            stampCtx.shadowOffsetX = ctx.shadowOffsetX;
+            stampCtx.shadowOffsetY = ctx.shadowOffsetY;
+            paint(stampCtx);
+            stamp = { canvas, pixels: pixelWidth * pixelHeight };
+            if (stamp.pixels <= 4 * 1024 * 1024) {
+                while (cache.size && (cache.size >= 240 ||
+                    AgentSprite._overlayStampPixels + stamp.pixels > 4 * 1024 * 1024)) {
+                    const oldestKey = cache.keys().next().value;
+                    const oldest = cache.get(oldestKey);
+                    AgentSprite._overlayStampPixels -= oldest.pixels;
+                    oldest.canvas.width = 0;
+                    oldest.canvas.height = 0;
+                    cache.delete(oldestKey);
+                }
+                cache.set(key, stamp);
+                AgentSprite._overlayStampPixels += stamp.pixels;
+            }
+        }
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+        ctx.drawImage(stamp.canvas, Math.round(transform.e) + pixelLeft, Math.round(transform.f) + pixelTop);
+        ctx.restore();
+        if (stamp.pixels > 4 * 1024 * 1024) {
+            stamp.canvas.width = 0;
+            stamp.canvas.height = 0;
+        }
+    }
+
     _drawChatEffect(ctx) {
         if (this.decisionFocusMuted) return;
         ctx.save();
@@ -5639,29 +5726,31 @@ export class AgentSprite {
         const w = 30;
         const h = 24;
         const r = 5;
+        this._drawOverlayStamp(ctx, `chat|${accent}`, -18, bubbleY - 15, 36, 36, (ctx) => {
 
-        // Parchment backplate (rounded scroll), with a small downward tail.
-        ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
-        ctx.strokeStyle = accent;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        if (ctx.roundRect) {
-            ctx.roundRect(-w / 2, bubbleY - h / 2, w, h, r);
-        } else {
-            ctx.rect(-w / 2, bubbleY - h / 2, w, h);
-        }
-        ctx.fill();
-        ctx.stroke();
+            // Parchment backplate (rounded scroll), with a small downward tail.
+            ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
+            ctx.strokeStyle = accent;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(-w / 2, bubbleY - h / 2, w, h, r);
+            } else {
+                ctx.rect(-w / 2, bubbleY - h / 2, w, h);
+            }
+            ctx.fill();
+            ctx.stroke();
 
-        // Tail
-        ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
-        ctx.beginPath();
-        ctx.moveTo(-3, bubbleY + h / 2 - 1);
-        ctx.lineTo(0, bubbleY + h / 2 + 6);
-        ctx.lineTo(3, bubbleY + h / 2 - 1);
-        ctx.fill();
+            // Tail
+            ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
+            ctx.beginPath();
+            ctx.moveTo(-3, bubbleY + h / 2 - 1);
+            ctx.lineTo(0, bubbleY + h / 2 + 6);
+            ctx.lineTo(3, bubbleY + h / 2 - 1);
+            ctx.fill();
 
-        drawEventShape(ctx, 'message-scroll', -8, bubbleY - 8, 1, accent);
+            drawEventShape(ctx, 'message-scroll', -8, bubbleY - 8, 1, accent);
+        });
 
         ctx.restore();
     }
@@ -5699,41 +5788,44 @@ export class AgentSprite {
         const repo = this._repoNameTagProfile();
         // 3.4 — near-opaque dark panel + parchment text; the repo hue survives
         // on the glyph and border only, so names stay legible on any ground.
-        ctx.fillStyle = NAME_TAG_PANEL;
         const h = lines.length > 1 ? NAME_TAG_DOUBLE_HEIGHT : NAME_TAG_SINGLE_HEIGHT;
         const r = 4;
-        ctx.beginPath();
-        ctx.moveTo(-w/2 + r, -h/2);
-        ctx.lineTo(w/2 - r, -h/2);
-        ctx.quadraticCurveTo(w/2, -h/2, w/2, -h/2 + r);
-        ctx.lineTo(w/2, h/2 - r);
-        ctx.quadraticCurveTo(w/2, h/2, w/2 - r, h/2);
-        ctx.lineTo(-w/2 + r, h/2);
-        ctx.quadraticCurveTo(-w/2, h/2, -w/2, h/2 - r);
-        ctx.lineTo(-w/2, -h/2 + r);
-        ctx.quadraticCurveTo(-w/2, -h/2, -w/2 + r, -h/2);
-        ctx.closePath();
-        ctx.fill();
-        ctx.strokeStyle = repo.panelBorder || repo.accent;
-        ctx.lineWidth = this.selected ? 2 : 1.25;
-        ctx.stroke();
-        if (this.selected) {
+        const stampKey = `name|${rawName.length}:${rawName}|${w}|${h}|${repo.accent}|${repo.panelBorder}|${this.selected}`;
+        this._drawOverlayStamp(ctx, stampKey, -w / 2 - 3, -h / 2 - 3, w + 6, h + 7, (ctx) => {
+            ctx.fillStyle = NAME_TAG_PANEL;
+            ctx.beginPath();
+            ctx.moveTo(-w/2 + r, -h/2);
+            ctx.lineTo(w/2 - r, -h/2);
+            ctx.quadraticCurveTo(w/2, -h/2, w/2, -h/2 + r);
+            ctx.lineTo(w/2, h/2 - r);
+            ctx.quadraticCurveTo(w/2, h/2, w/2 - r, h/2);
+            ctx.lineTo(-w/2 + r, h/2);
+            ctx.quadraticCurveTo(-w/2, h/2, -w/2, h/2 - r);
+            ctx.lineTo(-w/2, -h/2 + r);
+            ctx.quadraticCurveTo(-w/2, -h/2, -w/2 + r, -h/2);
+            ctx.closePath();
+            ctx.fill();
             ctx.strokeStyle = repo.panelBorder || repo.accent;
-            ctx.lineWidth = 1;
-            ctx.strokeRect(Math.round(-w / 2 + 3) + 0.5, Math.round(-h / 2 + 3) + 0.5, Math.max(1, Math.round(w - 6)), Math.max(1, Math.round(h - 6)));
-        }
-        this._drawRepoLabelGlyph(ctx, -w / 2 + 8, 0, NAME_TAG_GLYPH_SIZE, repo);
-        ctx.fillStyle = NAME_TAG_TEXT;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        this._applyReadableTextShadow(ctx);
-        ctx.shadowOffsetX = 0; // vertical-only: avoid doubling Departure Mono's hairlines
-        if (lines.length === 1) {
-            ctx.fillText(lines[0], 3, 0.5);
-        } else {
-            ctx.fillText(lines[0], 3, -4);
-            ctx.fillText(lines[1], 3, 5);
-        }
+            ctx.lineWidth = this.selected ? 2 : 1.25;
+            ctx.stroke();
+            if (this.selected) {
+                ctx.strokeStyle = repo.panelBorder || repo.accent;
+                ctx.lineWidth = 1;
+                ctx.strokeRect(Math.round(-w / 2 + 3) + 0.5, Math.round(-h / 2 + 3) + 0.5, Math.max(1, Math.round(w - 6)), Math.max(1, Math.round(h - 6)));
+            }
+            this._drawRepoLabelGlyph(ctx, -w / 2 + 8, 0, NAME_TAG_GLYPH_SIZE, repo);
+            ctx.fillStyle = NAME_TAG_TEXT;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            this._applyReadableTextShadow(ctx);
+            ctx.shadowOffsetX = 0; // vertical-only: avoid doubling Departure Mono's hairlines
+            if (lines.length === 1) {
+                ctx.fillText(lines[0], 3, 0.5);
+            } else {
+                ctx.fillText(lines[0], 3, -4);
+                ctx.fillText(lines[1], 3, 5);
+            }
+        });
         ctx.restore();
     }
 
@@ -5794,33 +5886,36 @@ export class AgentSprite {
         const text = layout.text;
         const w = layout.width;
         const h = COMPACT_NAME_HEIGHT;
+        const stampKey = `compact-name|${text.length}:${text}|${w}|${repo.panel}|${repo.panelBorder}|${repo.accent}|${repo.labelText}|${providerColor}|${tierColor}`;
+        this._drawOverlayStamp(ctx, stampKey, -w / 2 - 3, -h / 2 - 3, w + 6, h + 7, (ctx) => {
 
-        ctx.fillStyle = repo.panel;
-        ctx.strokeStyle = repo.panelBorder || repo.accent;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        if (ctx.roundRect) {
-            ctx.roundRect(-w / 2, -h / 2, w, h, 4);
-        } else {
-            ctx.rect(-w / 2, -h / 2, w, h);
-        }
-        ctx.fill();
-        ctx.stroke();
+            ctx.fillStyle = repo.panel;
+            ctx.strokeStyle = repo.panelBorder || repo.accent;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(-w / 2, -h / 2, w, h, 4);
+            } else {
+                ctx.rect(-w / 2, -h / 2, w, h);
+            }
+            ctx.fill();
+            ctx.stroke();
 
-        const glyphLeft = -w / 2 + 5;
-        this._drawProviderMarkGlyph(ctx, glyphLeft, 0, COMPACT_NAME_GLYPH_SIZE, providerColor);
-        this._drawModelTierDotGlyph(ctx, glyphLeft + 7, 0, COMPACT_NAME_GLYPH_SIZE, tierColor);
-        this._drawRepoLabelGlyph(ctx, glyphLeft + 14, 0, COMPACT_NAME_GLYPH_SIZE, repo);
+            const glyphLeft = -w / 2 + 5;
+            this._drawProviderMarkGlyph(ctx, glyphLeft, 0, COMPACT_NAME_GLYPH_SIZE, providerColor);
+            this._drawModelTierDotGlyph(ctx, glyphLeft + 7, 0, COMPACT_NAME_GLYPH_SIZE, tierColor);
+            this._drawRepoLabelGlyph(ctx, glyphLeft + 14, 0, COMPACT_NAME_GLYPH_SIZE, repo);
 
-        const textAreaLeft = glyphLeft + 18 + 3;
-        const textAreaRight = w / 2 - 4;
-        const textCenter = (textAreaLeft + textAreaRight) / 2;
-        ctx.fillStyle = repo.labelText || repo.accent;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        this._applyReadableTextShadow(ctx);
-        ctx.shadowOffsetX = 0; // vertical-only: avoid doubling Departure Mono's hairlines
-        ctx.fillText(text, Math.round(textCenter), 0.5);
+            const textAreaLeft = glyphLeft + 18 + 3;
+            const textAreaRight = w / 2 - 4;
+            const textCenter = (textAreaLeft + textAreaRight) / 2;
+            ctx.fillStyle = repo.labelText || repo.accent;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            this._applyReadableTextShadow(ctx);
+            ctx.shadowOffsetX = 0; // vertical-only: avoid doubling Departure Mono's hairlines
+            ctx.fillText(text, Math.round(textCenter), 0.5);
+        });
         ctx.restore();
     }
 
@@ -6976,35 +7071,46 @@ export class AgentSprite {
         const visual = this._statusVisual();
         const trim = this._providerTrimColor();
         const provider = this._providerAccentColor();
+        const signature = this.signature();
+        const accent = this.signatureAccent();
+        const statusColor = visual?.color || trim;
         ctx.save();
         ctx.translate(Math.round(this.x), Math.round(this.y));
-        // 3.6 — provider-filled diamond: the zoomed-out village reads as a
-        // provider constellation matching the sidebar glyph hues, instead of a
-        // field of identical dark kites. Dark backing keeps the fill legible
-        // on bright ground; the status dot stays the topmost mark.
-        ctx.fillStyle = 'rgba(7, 10, 12, 0.55)';
-        ctx.beginPath();
-        ctx.ellipse(0, -4, 12, 15, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = provider;
-        ctx.strokeStyle = 'rgba(7, 10, 12, 0.85)';
-        ctx.lineWidth = 1.3;
-        ctx.beginPath();
-        ctx.moveTo(0, -17);
-        ctx.lineTo(9, 1);
-        ctx.lineTo(0, 8);
-        ctx.lineTo(-9, 1);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        // 2.4 — the same signature plate the hero and compact bodies carry, so
-        // an agent stays recognisable after the body collapses to a kite. The
-        // status dot keeps the apex and stays the topmost mark.
-        drawAgentSignature(ctx, this.signature(), { x: 0, y: -1, pixel: 1, accent: this.signatureAccent() });
-        ctx.fillStyle = visual?.color || trim;
-        ctx.beginPath();
-        ctx.arc(0, -9, 3, 0, Math.PI * 2);
-        ctx.fill();
+        const paint = (ctx) => {
+            // 3.6 — provider-filled diamond: the zoomed-out village reads as a
+            // provider constellation matching the sidebar glyph hues, instead of a
+            // field of identical dark kites. Dark backing keeps the fill legible
+            // on bright ground; the status dot stays the topmost mark.
+            ctx.fillStyle = 'rgba(7, 10, 12, 0.55)';
+            ctx.beginPath();
+            ctx.ellipse(0, -4, 12, 15, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = provider;
+            ctx.strokeStyle = 'rgba(7, 10, 12, 0.85)';
+            ctx.lineWidth = 1.3;
+            ctx.beginPath();
+            ctx.moveTo(0, -17);
+            ctx.lineTo(9, 1);
+            ctx.lineTo(0, 8);
+            ctx.lineTo(-9, 1);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            // 2.4 — the same signature plate the hero and compact bodies carry, so
+            // an agent stays recognisable after the body collapses to a kite. The
+            // status dot keeps the apex and stays the topmost mark.
+            drawAgentSignature(ctx, signature, { x: 0, y: -1, pixel: 1, accent });
+            ctx.fillStyle = statusColor;
+            ctx.beginPath();
+            ctx.arc(0, -9, 3, 0, Math.PI * 2);
+            ctx.fill();
+        };
+        if (this.gpuWorldEnabled) {
+            const key = `impostor-low-zoom|${provider}|${trim}|${signature.key}|${accent}|${statusColor}`;
+            this._drawOverlayStamp(ctx, key, -13, -20, 26, 32, paint);
+        } else {
+            paint(ctx);
+        }
         ctx.restore();
     }
 
@@ -7012,32 +7118,43 @@ export class AgentSprite {
         const visual = this._statusVisual();
         const trim = this._providerTrimColor();
         const provider = this._providerAccentColor();
+        const signature = this.signature();
+        const accent = this.signatureAccent();
+        const statusColor = visual?.color || trim;
         const x = Math.round(this.x);
         const y = Math.round(this.y);
         ctx.save();
         ctx.translate(x, y);
-        ctx.fillStyle = 'rgba(5, 8, 12, 0.48)';
-        ctx.beginPath();
-        ctx.ellipse(0, 5, 13, 4, 0, 0, Math.PI * 2);
-        ctx.fill();
-        // 3.6 — provider-filled diamond (same constellation language as the
-        // low-zoom impostor); the separate provider chip is absorbed into it.
-        ctx.fillStyle = provider;
-        ctx.strokeStyle = 'rgba(7, 10, 12, 0.85)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(0, -13);
-        ctx.lineTo(8, 0);
-        ctx.lineTo(0, 7);
-        ctx.lineTo(-8, 0);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        drawAgentSignature(ctx, this.signature(), { x: 0, y: 0, pixel: 1, accent: this.signatureAccent() });
-        ctx.fillStyle = visual?.color || trim;
-        ctx.beginPath();
-        ctx.arc(0, -7, 2.5, 0, Math.PI * 2);
-        ctx.fill();
+        const paint = (ctx) => {
+            ctx.fillStyle = 'rgba(5, 8, 12, 0.48)';
+            ctx.beginPath();
+            ctx.ellipse(0, 5, 13, 4, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // 3.6 — provider-filled diamond (same constellation language as the
+            // low-zoom impostor); the separate provider chip is absorbed into it.
+            ctx.fillStyle = provider;
+            ctx.strokeStyle = 'rgba(7, 10, 12, 0.85)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, -13);
+            ctx.lineTo(8, 0);
+            ctx.lineTo(0, 7);
+            ctx.lineTo(-8, 0);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            drawAgentSignature(ctx, signature, { x: 0, y: 0, pixel: 1, accent });
+            ctx.fillStyle = statusColor;
+            ctx.beginPath();
+            ctx.arc(0, -7, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+        };
+        if (this.gpuWorldEnabled) {
+            const key = `impostor-budget|${provider}|${trim}|${signature.key}|${accent}|${statusColor}`;
+            this._drawOverlayStamp(ctx, key, -14, -14, 28, 24, paint);
+        } else {
+            paint(ctx);
+        }
         ctx.restore();
     }
 

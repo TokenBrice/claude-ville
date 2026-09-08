@@ -273,6 +273,12 @@ export class DebugOverlay {
     }
 
     _renderLayerRows(renderStats) {
+        const paintCounts = renderStats?.paintCounts;
+        if (paintCounts) {
+            return [...new Set([...Object.keys(paintCounts.lower), ...Object.keys(paintCounts.upper)])]
+                .sort()
+                .map(kind => `paint ${kind}: lower ${paintCounts.lower[kind] || 0} / upper ${paintCounts.upper[kind] || 0}`);
+        }
         const byKind = renderStats?.drawables?.byKind || {};
         return Object.entries(byKind)
             .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))

@@ -416,6 +416,13 @@ export function renderWorldFrame(renderer, dt = 16) {
     if (!canvas.width || !canvas.height) return;
     const frameTimer = beginFrameTiming(renderer);
     const collectStructuralDiagnostics = renderer.debugOverlay?.enabled === true;
+    const paintCounts = collectStructuralDiagnostics
+        ? (renderer._paintCounts ||= { lower: Object.create(null), upper: Object.create(null) })
+        : null;
+    if (paintCounts) {
+        for (const kind in paintCounts.lower) paintCounts.lower[kind] = 0;
+        for (const kind in paintCounts.upper) paintCounts.upper[kind] = 0;
+    }
     const renderNow = Date.now();
     const villageSnapshot = renderer.villageDirector?.getSnapshot?.() || null;
     const viewport = renderer._screenViewport();
@@ -605,6 +612,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawableContext.chronicler = renderer.chronicler;
     drawableContext.agentRenderMode = agentRenderMode;
     drawableContext.gpuWorldActive = gpuWorldActive;
+    drawableContext.paintCounts = paintCounts;
     drawDepthSortedDrawables(ctx, drawables, drawableContext);
     // Direct GPU carries wetness in the material shader; the discrete Canvas
     // damp-mark decoration remains fallback-only and is documented as such.
@@ -620,6 +628,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     const needsGpuFeed = gpuWorldActive || postFxActive;
     const postFxFeedContext = renderer._postFxFeedContext || (renderer._postFxFeedContext = {});
     postFxFeedContext.renderer = renderer;
+    postFxFeedContext.gpuWorldActive = gpuWorldActive;
     postFxFeedContext.atmosphere = atmosphere;
     postFxFeedContext.villageSnapshot = villageSnapshot;
     postFxFeedContext.nowMs = renderNow;
@@ -629,7 +638,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     if (gpuWorldActive) {
         const gpuBuildContext = renderer._gpuBuildContext || (renderer._gpuBuildContext = {});
         gpuBuildContext.drawables = drawables;
-        const records = buildGpuWorldRecords(renderer, gpuBuildContext);
         const gpuFeed = Object.assign(renderer._gpuFeedEnvelope ||= {}, feed || {});
         gpuFeed.timeMs = renderer.motionTimeMs ?? feed?.timeMs;
         gpuFeed.atmosphere = atmosphere;
@@ -642,6 +650,8 @@ export function renderWorldFrame(renderer, dt = 16) {
         // missing or unexpected table leaves the pilot at today's response.
         gpuFeed.paletteLut = renderer.assets?.get?.(PALETTE_RAMP_ASSET_ID) || null;
         gpuFeed.paletteLutRevision = renderer.assets?.assetVersion || null;
+        gpuBuildContext.occluderChannelEnabled = renderer.gpuWorld.prepareFrame(gpuFeed);
+        const records = buildGpuWorldRecords(renderer, gpuBuildContext);
         const gpuRenderContext = renderer._gpuRenderContext || (renderer._gpuRenderContext = {});
         gpuRenderContext.records = records;
         gpuRenderContext.camera = renderer.camera;
@@ -705,6 +715,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         sceneOverlayContext.zoom = zoom;
         sceneOverlayContext.renderNow = renderNow;
         sceneOverlayContext.renderer = renderer;
+        sceneOverlayContext.paintCounts = paintCounts;
         drawSceneCategoryOverlays(overlayCtx, drawables, sceneCategoryResolution, sceneOverlayContext);
         renderer.harborTraffic?.drawFinaleEffects?.(overlayCtx, renderNow);
     }
@@ -716,7 +727,10 @@ export function renderWorldFrame(renderer, dt = 16) {
     });
     if (gpuWorldRendered) {
         for (const sprite of sortedSprites) {
-            sprite.drawGpuWorldOverlay?.(overlayCtx, zoom, annotationMode);
+            if (sprite.drawGpuWorldOverlay) {
+                sprite.drawGpuWorldOverlay(overlayCtx, zoom, annotationMode);
+                if (paintCounts) paintCounts.upper.agent = (paintCounts.upper.agent || 0) + 1;
+            }
         }
     }
     drawSelectedAgentXray(renderer, overlayCtx, buildingDrawables);
@@ -1627,6 +1641,7 @@ function buildRenderStats(renderer, {
         drawables: drawableStats,
         culling: cullingStats,
         inputs: inputCounts,
+        paintCounts: renderer._paintCounts,
         harbor: {
             pendingRepos: pendingRepos.length,
             pendingCommits: pendingRepos.reduce((sum, repo) => sum + (Number(repo.pendingCommits ?? repo.count) || 0), 0),
