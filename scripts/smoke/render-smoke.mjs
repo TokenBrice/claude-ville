@@ -116,6 +116,15 @@ async function run() {
       });
     });
 
+    async function assertFpsCounter(idle = false) {
+      await page.locator('#statFps').waitFor({ state: 'visible' });
+      await page.waitForFunction(expectedIdle => {
+        const text = document.getElementById('statFps')?.textContent;
+        return expectedIdle ? text === 'FPS idle' : /^\d+ FPS$/.test(text);
+      }, idle);
+      assert.equal(await page.locator('#statQuotaWrap').count(), 0);
+    }
+
     await timedStep('world', async () => {
       await page.goto(`${server.baseUrl}/?sim=1`, {
         waitUntil: 'domcontentloaded',
@@ -135,6 +144,8 @@ async function run() {
       });
       await page.waitForFunction(() => Number.isFinite(window.__claudeVilleRenderSmokeFps));
       diagnostics.fpsSample = await page.evaluate(() => window.__claudeVilleRenderSmokeFps);
+      await assertFpsCounter();
+      assert.equal(await page.evaluate(() => document.getElementById('statFps').textContent === `${window.__claudeVilleRenderSmokeFps} FPS`), true);
       await page.screenshot({ path: path.join(artifactDir, 'world.png') });
     });
 
@@ -145,6 +156,7 @@ async function run() {
       ));
       await page.locator('#dashboardMode').waitFor({ state: 'visible' });
       await page.locator('.dash-card__select').first().waitFor({ state: 'visible' });
+      await assertFpsCounter(true);
       await page.screenshot({ path: path.join(artifactDir, 'dashboard.png') });
     });
 
@@ -169,6 +181,7 @@ async function run() {
         const panel = document.getElementById('activityPanel');
         return !!panel && panel.style.display !== 'none' && panel.getBoundingClientRect().width > 0;
       });
+      await assertFpsCounter();
       await page.screenshot({ path: path.join(artifactDir, 'panel.png') });
     });
 

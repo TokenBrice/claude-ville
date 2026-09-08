@@ -415,50 +415,12 @@
     text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
 }
 
-/* Quota headroom: two thin gauges (5-hour, 7-day). It sits on the brand meta
-   line with the other account/connection readouts rather than in the spend
-   ledger — quota is a property of the account, not of today's tokens. */
-.topbar__quota-meta {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
+/* FPS is a permanent instrument beside the clock, including while idle. */
+.topbar__fps {
+    flex-shrink: 0;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
     color: var(--cv-text-muted);
-}
-
-/* The chip is hidden until a quota window has real usage; inline-flex above
-   would otherwise override the [hidden] UA rule and leak an empty gauge. */
-.topbar__quota-meta[hidden] {
-    display: none;
-}
-
-.topbar__quota {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.topbar__quota-bar {
-    display: block;
-    width: 26px;
-    height: 3px;
-    background: rgba(0, 0, 0, 0.55);
-    border: 1px solid rgba(199, 157, 76, 0.32);
-}
-
-.topbar__quota-fill {
-    display: block;
-    height: 100%;
-    width: 0;
-    background: var(--cv-gold-soft);
-}
-
-/* Near the ceiling the gauges stop being scenery. */
-.topbar__quota-meta--hot .topbar__quota-fill {
-    background: var(--cv-status-errored);
-}
-
-.topbar__quota-meta--hot {
-    color: var(--cv-status-errored);
 }
 
 /* Values use the legible data face (Departure Mono), sized up from the pixel

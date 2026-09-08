@@ -3913,8 +3913,14 @@ export class IsometricRenderer {
 
     // Emit a smoothed FPS reading roughly twice a second; TopBar renders it.
     _trackFps(now) {
+        // The first callback establishes the baseline, not a frame interval.
+        // Use a null check because a timestamp of zero is valid in tests.
+        if (this._fpsWindowStart == null) {
+            this._fpsWindowStart = now;
+            this._fpsFrames = 0;
+            return;
+        }
         this._fpsFrames = (this._fpsFrames || 0) + 1;
-        if (!this._fpsWindowStart) this._fpsWindowStart = now;
         const elapsed = now - this._fpsWindowStart;
         if (elapsed >= 500) {
             eventBus.emit('fps:updated', Math.round((this._fpsFrames * 1000) / elapsed));

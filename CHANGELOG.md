@@ -2,6 +2,14 @@
 
 ---
 
+## v0.45.1 — *The Steady Watch* · Sep 08, 2026
+
+- **FPS returns to the header.** A permanent counter beside the village clock shows the World render-loop rate and stays visible as `FPS idle` when rendering is suspended or Dashboard mode is active. Returning to World mode starts a fresh sample.
+- **Accurate readings, protected by regression checks.** The first frame establishes the measurement baseline, eliminating the extra frame counted in the initial sample. Tests cover 30, 60, 120, and 144 FPS, slow frames, suspension, and recovery; browser checks guard visibility and mode switching.
+- **A simpler status line.** Removed the 5-hour and 7-day quota gauges and percentages from the header.
+
+---
+
 ## v0.45.0 — *The Open Door* · Sep 06, 2026
 
 The village becomes more extraordinary by becoming more truthful: bodies whose hands do the work, buildings that open to show who is inside, light that belongs to the architecture, and a frame that steps back until the operator asks for an instrument. Plan and evidence: `agents/plans/claudeville-frontier-visual-plan.md`.

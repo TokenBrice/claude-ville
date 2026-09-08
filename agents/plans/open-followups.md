@@ -2,7 +2,7 @@
 
 **Status:** `live checklist`
 
-**As of:** 2026-09-06, release `v0.45.0` — The Open Door
+**As of:** 2026-09-08, release `v0.45.1` — The Steady Watch
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs

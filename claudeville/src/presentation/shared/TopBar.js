@@ -152,10 +152,7 @@ export class TopBar {
             chronicleBtn: document.getElementById('topbarChronicle'),
             rate: document.getElementById('statRate'),
             rateWrap: document.getElementById('statRateWrap'),
-            quotaWrap: document.getElementById('statQuotaWrap'),
-            quota5h: document.getElementById('statQuota5h'),
-            quota7d: document.getElementById('statQuota7d'),
-            quotaText: document.getElementById('statQuotaText'),
+            fps: document.getElementById('statFps'),
         };
         this.els.needsYou = el('span', {
             className: 'topbar__seg topbar__seg--needs-you',
@@ -211,7 +208,7 @@ export class TopBar {
         this._onAtmosphere = snapshot => this._renderWitnessClock(snapshot);
         eventBus.on('atmosphere:updated', this._onAtmosphere);
 
-        this._onUsage = (usage) => { this._usage = usage; this._renderQuota(); };
+        this._onUsage = (usage) => { this._usage = usage; };
         eventBus.on('usage:updated', this._onUsage);
 
         this._onVillageState = (state) => {
@@ -1012,36 +1009,6 @@ export class TopBar {
         return labels[provider] || String(provider || 'Unknown');
     }
 
-    // Quota is the resource that actually runs out on a subscription, so it
-    // gets the bars and the dollar figure is labelled an estimate.
-    _renderQuota() {
-        const quota = this._usage?.quota;
-        const wrap = this.els.quotaWrap;
-        if (!wrap) return;
-        const fiveHour = Number(quota?.fiveHour);
-        const sevenDay = Number(quota?.sevenDay);
-        const hasFiveHourUsage = Number.isFinite(fiveHour) && fiveHour > 0;
-        const hasSevenDayUsage = Number.isFinite(sevenDay) && sevenDay > 0;
-        if (!hasFiveHourUsage && !hasSevenDayUsage) {
-            wrap.hidden = true;
-            return;
-        }
-        wrap.hidden = false;
-        const pct = (value) => Math.round(Math.max(0, Math.min(1, value || 0)) * 100);
-        const five = pct(fiveHour);
-        const seven = pct(sevenDay);
-        if (this.els.quota5h) this.els.quota5h.style.width = `${five}%`;
-        if (this.els.quota7d) this.els.quota7d.style.width = `${seven}%`;
-        const windows = [];
-        if (hasFiveHourUsage) windows.push(`5h ${five}%`);
-        if (hasSevenDayUsage) windows.push(`7d ${seven}%`);
-        if (this.els.quotaText) this.els.quotaText.textContent = windows.join(' · ');
-        wrap.title = `Claude usage: ${windows.join(', ')}`;
-        // Near the ceiling the bars stop being scenery.
-        const hot = Math.max(fiveHour || 0, sevenDay || 0) > 0.85;
-        wrap.classList.toggle('topbar__quota-meta--hot', hot);
-    }
-
     // Living activity rail: a 2px strip along the topbar bottom whose hue and
     // intensity echo the fleet's status mix. Mostly-working reads as a warm
     // gold; any errored agent bleeds red in from the left, weighted by how much
@@ -1251,11 +1218,15 @@ export class TopBar {
         }, 1100);
     }
 
-    // The top bar no longer carries an FPS read-out (the witness clock owns that
-    // slot); this only keeps the last honest sample for Settings > Health, which
-    // must be able to tell a suspended render loop (null) from a genuine 0 FPS.
+    // Permanent header instrument; null means suspended, never a fabricated zero.
     renderFps(fps) {
-        this._lastFps = typeof fps === 'number' && Number.isFinite(fps) ? fps : null;
+        this._lastFps = typeof fps === 'number' && Number.isFinite(fps) && fps >= 0 ? fps : null;
+        const counter = this.els.fps;
+        if (!counter) return;
+        counter.textContent = this._lastFps === null ? 'FPS idle' : `${Math.round(this._lastFps)} FPS`;
+        counter.title = this._lastFps === null
+            ? 'World render loop is idle'
+            : 'World render-loop frames per second, averaged over at least 500 ms; includes reused idle frames';
     }
 
     _startTimer() {

@@ -84,9 +84,7 @@ test('every concrete topbar class emitted by TopBar has a stylesheet rule', asyn
 
 
 test('a suspended render loop reads as idle in Settings > Health while genuine zero stays 0 FPS', () => {
-    // The top bar no longer prints FPS (the witness clock owns that slot); the
-    // last sample travels to Settings > Health exactly as TopBar wires it there.
-    const bar = {};
+    const bar = { els: { fps: {} } };
     const healthText = (fps) => {
         TopBar.prototype.renderFps.call(bar, fps);
         const panel = {
@@ -97,11 +95,14 @@ test('a suspended render loop reads as idle in Settings > Health while genuine z
         SettingsPanel.prototype._refreshOperationalRows.call(panel);
         return panel.healthFrames.textContent;
     };
-    for (const suspended of [null, undefined, '', '60', NaN, Infinity]) {
+    for (const suspended of [null, undefined, '', '60', NaN, Infinity, -1]) {
         assert.match(healthText(suspended), /^render loop idle · /, String(suspended));
+        assert.equal(bar.els.fps.textContent, 'FPS idle');
     }
     assert.match(healthText(0), /^0 FPS · /);
+    assert.equal(bar.els.fps.textContent, '0 FPS');
     assert.match(healthText(60), /^60 FPS · /);
+    assert.equal(bar.els.fps.textContent, '60 FPS');
 });
 
 test('usage coverage distinguishes observed zero, partial counts and unavailable billing', () => {
@@ -127,4 +128,31 @@ test('needs-you status stays separate from generic waiting and hides when empty'
     TopBar.prototype.render.call(bar);
     assert.equal(bar.els.waiting.textContent, 1);
     assert.equal(bar.els.needsYou.hidden, true);
+});
+
+// Exercise the real sampler with deterministic frame pacing and suspension.
+test('FPS counts elapsed intervals accurately and excludes suspended time', async () => {
+    const { IsometricRenderer } = await import('../../claudeville/src/presentation/character-mode/IsometricRenderer.js');
+    const { eventBus } = await import('../../claudeville/src/domain/events/DomainEvent.js');
+    const samples = [];
+    const off = eventBus.on('fps:updated', value => samples.push(value));
+    const renderer = { frameId: null };
+    const frame = now => IsometricRenderer.prototype._trackFps.call(renderer, now);
+    try {
+        for (const hz of [30, 60, 120, 144]) {
+            IsometricRenderer.prototype._stopLoop.call(renderer);
+            for (let i = 0; i <= hz; i++) frame(i * 1000 / hz);
+            assert.equal(samples.at(-1), hz);
+        }
+        IsometricRenderer.prototype._stopLoop.call(renderer);
+        assert.equal(samples.at(-1), null);
+        frame(100000);
+        assert.equal(samples.at(-1), null);
+        frame(100500);
+        assert.equal(samples.at(-1), 2);
+        frame(101500);
+        assert.equal(samples.at(-1), 1, 'a long frame must lower the sample');
+    } finally {
+        off();
+    }
 });
