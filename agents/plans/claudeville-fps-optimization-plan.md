@@ -1,9 +1,36 @@
 # ClaudeVille World FPS optimization plan
 
-**Status:** `proposed — not started`
+**Status:** `implemented in 9f0ec8f (P1–P5, P8 code fixes, Wave 0 counters); P6 and P7 not implemented; P8 60-minute soak pending`
 **Date:** 2026-09-08
 **Constraint:** every item must have no or low visual-quality impact. Resolution cuts, effect removal, cadence throttling of visible motion, and agent-count caps are out of scope.
 **Evidence:** four read-only Astra investigations on today's `main` against the maintained server (see *Evidence sources*), plus retained `agents/research/nfs-5/04-renderer.md` and `agents/research/claudeville-frontier-visual/performance-envelope.md`. Numbers below are measured unless marked `[estimate]`.
+
+## 0. Execution record (2026-09-08, commit `9f0ec8f`)
+
+Seven Astra implementation slices, reviewed and gated by the orchestrator (`validate:quick` 898 tests, `verify:render`, plaque/impostor pixel parity on a headed NVIDIA probe).
+
+| Item | Outcome |
+| --- | --- |
+| Wave 0 counters | `renderer._lastRenderStats.paintCounts.{lower,upper}[kind]` when the debug overlay is enabled; rows in Shift-D. |
+| P1 | Resident path skips Canvas body/equipment/silhouette after `_setGpuFrameRecord`; frozen tint stays on Canvas (no GPU owner). |
+| P1 addendum | Budget and low-zoom LOD impostors bypassed P1; blanket gating was unsafe (low-zoom publishes no record; GPU shadow is translucent), so both impostors are now one cached stamp each on the resident path. |
+| P2 | Audit found no further GPU-owned categories (`HarborTraffic.emitSceneCommands` returns null; harbor includes off-island wildlife). No new skips. |
+| P3 | Chat, compact and full-name plaques cached as stamps. The larger overlay cost was per-pixel glyph rasterization in `shared/ModelVisualIdentity.drawAgentSignature` and `shared/EventShapes.drawEventShape` (32,340 + 3,168 fillRect/s at 50 agents); both now draw cached device-scale stamps, falling back to the original loop under non-uniform/rotated transforms. |
+| P4 | `fillWater` skipped when `gpuWorldActive`. |
+| P5 | `GpuWorldRenderer.prepareFrame(feed)` returns whether the occluder channel is live (`occlusion !== 'off' || fog elevation !== 0`); atlas painting, upload, vertex staging and target clear are gated; reactivation forces a full occluder upload. |
+| P6 | Not implemented: the semantic-ground producers expose no dirty bounds; consumer-only plumbing would be dead code. |
+| P7 | Not attempted (conditional; command volume fell far enough without it). |
+| P8 | Wet-reflection stamps bounded (240 entries / 1.25 Mpx, atmosphere dropped from key); overlay grids truncate every touched bucket per frame; bubble clusters clear inactive members; `App` disconnects the WebSocket on boot-abort destroy. 60-minute headed soak still to run. |
+
+Matched-roster A/B on the headed NVIDIA probe (1245×693, sim scenarios, quality level 0 throughout):
+
+| agents | worldCanvas cmds/frame | overlay cmds/frame | appTotalMs | FPS |
+| ---: | ---: | ---: | ---: | ---: |
+| 24 | 762 → 429 | 1734 → 786 | 4.5 → 3.8 | 113 → 128 |
+| 50 | 1299 → 692 | 2597 → 898 | 7.2 → 5.8 | 78 → 97 |
+| 100 | 3577 → 424 | 4263 → 1092 | 9.5 → 7.6 | 79 → 91 |
+
+The 100-agent `worldCanvas` reduction is the P1 addendum (impostor stamps); the overlay reduction is the glyph stamps. Remaining overlay commands are `drawEventShape` callers with per-run fills, `BuildingSprite.drawLabels`/capacity meters and functional overlays — candidates for the same stamp treatment if a further wave is wanted.
 
 ## 1. Diagnosis
 
