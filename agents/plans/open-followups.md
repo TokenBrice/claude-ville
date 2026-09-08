@@ -2,7 +2,7 @@
 
 **Status:** `live checklist`
 
-**As of:** 2026-09-08, release `v0.45.1` — The Steady Watch
+**As of:** 2026-09-08, release `v0.45.2` — The Lighter Brush
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs

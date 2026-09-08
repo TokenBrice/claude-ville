@@ -2,6 +2,22 @@
 
 ---
 
+## v0.45.2 — *The Lighter Brush* · Sep 08, 2026
+
+The World was never GPU-bound: a headed NVIDIA trace showed the card idle at under a millisecond per frame while Chrome's GPU process spent ~14 ms per commit replaying our own Canvas2D command stream. This release cuts that stream by 75–88 % without changing a pixel of the steady-state village. Plan, evidence, and matched-roster A/B: `agents/plans/claudeville-fps-optimization-plan.md`.
+
+- **One owner per body.** On the resident GPU path the lower Canvas no longer repaints agent bodies, equipment and silhouettes after the GPU frame record is published; the WebGL layer already draws them. Budget and low-zoom impostors draw as one cached stamp each; the rate-limited frozen tint keeps its Canvas owner because no GPU channel carries it.
+- **Glyphs and plaques as stamps.** Agent signatures and event silhouettes were rasterized one `fillRect` per pixel every frame (32,000+ per second at 50 agents); they, along with name, compact and chat plaques, now draw from bounded device-scale stamp caches with pixel-snapped placement, released alongside the other shared sprite caches. Fading plaques keep their vector paint so translucent overlaps composite exactly as before.
+- **Dead channels stay dead.** The resident path skips the unused PostFx water mask, and the occluder atlas channel is neither painted, uploaded, staged nor cleared while occlusion is off and ground fog is zero; reactivation forces a full occluder upload. Emissive is untouched.
+- **Bounded for long sessions.** Wet-reflection stamps gain the same entry/pixel eviction as lantern glows and drop the atmosphere from their key; overlay spatial grids and bubble clusters release every stale member each frame; the WebSocket disconnects even when the app is torn down mid-boot.
+- **Shift-D counts the paint.** Per-category lower/upper paint counts appear in the debug overlay and `_lastRenderStats.paintCounts` so backend ownership is observable.
+
+Measured on a headed RTX 5070 Ti at 1245×693 with matched simulator rosters: Canvas2D commands per frame 762/1299/3577 → 429/692/424 (world) and 1734/2597/4263 → 786/898/1092 (overlay) at 24/50/100 agents; renderer JS 4.5/7.2/9.5 → 3.8/5.8/7.6 ms; quality ladder unchanged.
+
+**Not shipped:** dirty-rect uploads for the semantic ground (its mark producers expose no bounds) and dirty-cell coalescing for the agent atlas; the 60-minute headed soak that confirms the hours-old-window slowdown is gone remains to be run.
+
+---
+
 ## v0.45.1 — *The Steady Watch* · Sep 08, 2026
 
 - **FPS returns to the header.** A permanent counter beside the village clock shows the World render-loop rate and stays visible as `FPS idle` when rendering is suspended or Dashboard mode is active. Returning to World mode starts a fresh sample.
