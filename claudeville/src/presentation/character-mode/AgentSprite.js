@@ -5647,6 +5647,12 @@ export class AgentSprite {
     }
 
     _drawOverlayStamp(ctx, identity, left, top, width, height, paint) {
+        // A flattened stamp composites translucent overlaps differently from
+        // the original source-over sequence; fading plaques keep vector paint.
+        if (ctx.globalAlpha !== 1) {
+            paint(ctx);
+            return;
+        }
         if (!AgentSprite._overlayStampFontsReady && document.fonts) {
             AgentSprite._overlayStampFontsReady = true;
             document.fonts.ready.then(() => AgentSprite.clearOverlayStampCache());
@@ -5660,7 +5666,7 @@ export class AgentSprite {
         const pixelTop = Math.floor(top * scaleY);
         const pixelWidth = Math.ceil((left + width) * scaleX) - pixelLeft;
         const pixelHeight = Math.ceil((top + height) * scaleY) - pixelTop;
-        const key = `${identity}|${scaleX}|${scaleY}|${ctx.globalAlpha}|${ctx.font}`;
+        const key = `${identity}|${scaleX}|${scaleY}|${ctx.font}`;
         const cache = AgentSprite._overlayStampCache;
         let stamp = cache.get(key);
         if (stamp) {
@@ -5672,9 +5678,7 @@ export class AgentSprite {
             canvas.height = pixelHeight;
             const stampCtx = canvas.getContext('2d');
             stampCtx.setTransform(scaleX, 0, 0, scaleY, -pixelLeft, -pixelTop);
-            // Alpha belongs to each original paint operation, not the flattened
-            // result: translucent borders, text shadows and panels overlap.
-            stampCtx.globalAlpha = ctx.globalAlpha;
+            stampCtx.globalAlpha = 1;
             stampCtx.font = ctx.font;
             stampCtx.direction = ctx.direction;
             stampCtx.shadowColor = ctx.shadowColor;
