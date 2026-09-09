@@ -98,6 +98,8 @@ This is the canonical character procedure. PixelLab parameter definitions and li
 
 Every character may declare `animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }`; ranges are inclusive and cannot overlap. Optional `provenance: { characterId, animationGroupId, generationSize, generationMode }` stores only known source facts; unknown IDs stay absent. `animationGroupId` identifies the most recently assembled named group (full two-group assembly omits this singular field). The separate optional `actionStrip` contract keeps its own `path`, `cell`, named `groups` with `rows`/`hold`, `grip`, and `provenance`; do not widen or repurpose the base sheet for new actions.
 
+For a reviewed direction repair, add `--directions=north,north-east,north-west` to a named-group assembly. Other columns and groups remain untouched. If v3 exported an extra leading reference frame, explicitly pass `--skip-reference`; frame counts are still validated after that selection. When the repair's verified PNG canvas differs from the original rig metadata, pass `--source-size=<actual-size>`; this controls centering/cropping, not generation size. The ledger records `repairedDirections`, `skippedReference`, and `animationSourceSize` for this partial assembly. Keep the original and repair group IDs in the execution record so the mixed-source sheet can be reproduced.
+
 The planner quotes v3 animation generations as `ceil(width * height * frames / 65536)` per direction using the source generation size, and template animation as one generation per direction when a matching template exists. These animation costs are separate from the character rig's `generationMode`. It parses `.dev.vars` with the shared token loader (`PIXELLAB_API_TOKEN`, or unquoted `PIXELLAB_AUTHORIZATION`); never source that file or print credentials. Tier 1 / 2,000 generations was verified on 2026-09-05 with 1,403 remaining and a September 9 reset; only the live balance authorizes a new batch.
 
 ## Add An Action Strip
@@ -122,6 +124,8 @@ contract is in [`docs/material-channel-contract.md`](../../docs/material-channel
    and one 8-direction group fills them; a concurrency `429` is retried, not
    failed. Frames cache under `output/action-strip-cache/`, so `--assemble-only`
    re-assembles and re-reviews without spending anything.
+   Frame caches include the source animation URL's path identity, so a new rig
+   or repaired direction cannot reuse an older pose's cached pixels.
 4. Review every direction at 1×/2×/3×: `--contact-sheet=/tmp/strip-{id}.png`.
    Regenerate one group with `--groups=<name> --force` when hands, hats, or
    props clip the cell, optionally narrowed with

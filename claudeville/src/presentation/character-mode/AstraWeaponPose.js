@@ -3,14 +3,14 @@
 // cannot move the grip. Follow the same hand around the body; E/NE hide the
 // far forearm behind the torso instead of switching to the nearer hand.
 const WRISTS = {
-    s:  [[58,55], [58,54], [58,56], [58,57], [58,57], [58,55], [58,57], [58,55], [58,57], [58,57]],
-    se: [[56,52], [56,52], [56,53], [56,54], [60,55], [60,52], [56,53], [56,52], [56,54], [56,54]],
-    e:  [[48,58], [51,58], [50,59], [46,61], [42,61], [42,60], [48,58], [48,58], [48,59], [48,60]],
-    ne: [[37,53], [37,54], [37,54], [37,55], [37,54], [37,53], [37,54], [37,53], [37,55], [37,55]],
-    n:  [[33,54], [33,55], [33,55], [33,56], [33,53], [33,52], [33,54], [33,53], [33,55], [33,55]],
-    nw: [[40,59], [42,60], [42,60], [39,60], [35,58], [35,56], [40,60], [39,58], [39,60], [39,60]],
-    w:  [[47,59], [53,58], [52,60], [47,59], [43,57], [45,56], [48,59], [48,58], [48,59], [48,60]],
-    sw: [[56,58], [59,59], [58,61], [54,61], [50,61], [50,59], [55,60], [55,59], [55,60], [55,61]],
+    s:  [[63,56], [63,53], [63,54], [64,56], [64,55], [63,57], [63,56], [63,56], [62,55], [63,56]],
+    se: [[59,52], [58,56], [58,52], [60,53], [67,52], [64,51], [59,50], [58,54], [59,52], [59,52]],
+    e:  [[55,55], [57,58], [56,56], [53,55], [56,48], [55,50], [54,55], [54,58], [54,55], [54,56]],
+    ne: [[26,45], [26,44], [26,44], [26,45], [26,46], [26,46], [30,46], [30,46], [30,46], [30,46]],
+    n:  [[27,51], [27,49], [27,46], [27,46], [27,47], [27,49], [30,51], [30,51], [30,51], [30,51]],
+    nw: [[30,55], [32,53], [31,54], [27,54], [26,54], [27,54], [36,60], [36,60], [36,60], [36,60]],
+    w:  [[44,65], [52,63], [50,64], [47,64], [42,59], [44,59], [46,63], [46,63], [47,63], [46,64]],
+    sw: [[62,61], [64,61], [62,62], [59,61], [56,59], [58,60], [60,59], [60,60], [60,60], [60,60]],
 };
 
 export function astraWeaponPose({ cell, dx, dy, drawScale = 1 }, direction, equipment) {
@@ -21,11 +21,13 @@ export function astraWeaponPose({ cell, dx, dy, drawScale = 1 }, direction, equi
         y: dy + wrist[1] * drawScale,
         flipX: ['ne', 'n', 'nw', 'w'].includes(direction),
         behindBody: direction === 'e' || direction === 'ne',
-        // The source blades already lean diagonally; turn them up and out,
-        // with a compact low carry that clears the helmet.
-        angle: equipment === 'polearm'
+        // Worldsplitter's source shaft leans right. Stand it upright at rest
+        // and let it lean outward during walking, with no independent sway.
+        angle: equipment === 'worldsplitter'
+            ? cell.sy < 6 * 92 ? -0.35 : -0.55
+            : equipment === 'polearm'
             ? ['e', 'w'].includes(direction) ? 0.05 : -0.25
             : ['e', 'w'].includes(direction) ? -0.10 : -0.35,
-        scale: equipment === 'polearm' ? 0.82 : 0.80,
+        scale: equipment === 'worldsplitter' ? 1 : equipment === 'polearm' ? 0.82 : 0.80,
     };
 }

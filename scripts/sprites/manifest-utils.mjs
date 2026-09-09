@@ -29,7 +29,7 @@ export function loadSpriteManifest(path = manifestPath) {
 // Replace the named keys of one character entry inside the manifest *text*, so
 // every other line, comment and quoting style survives. `renderedLines` are the
 // already-indented replacement lines; they land after the entry's
-// `animationGroups` ledger line when it exists, otherwise under `- id:`.
+// complete `animationGroups` ledger when it exists, otherwise under `- id:`.
 // Returns null when the entry is absent (scratch/unmanifested assets).
 export function rewriteEntryKeys(source, spriteId, keys, renderedLines) {
     const lines = source.split('\n');
@@ -46,7 +46,11 @@ export function rewriteEntryKeys(source, spriteId, keys, renderedLines) {
         block.splice(index, stop - index);
     }
     const ledger = block.findIndex((line) => line.startsWith('    animationGroups:'));
-    block.splice(ledger < 0 ? 1 : ledger + 1, 0, ...renderedLines);
+    let insert = ledger < 0 ? 1 : ledger + 1;
+    if (ledger >= 0) {
+        while (insert < block.length && /^      \S|^        /.test(block[insert])) insert++;
+    }
+    block.splice(insert, 0, ...renderedLines);
     lines.splice(start, end - start, ...block);
     return lines.join('\n');
 }

@@ -40,15 +40,15 @@ test('Astra identity resolves canonical and provider-qualified IDs without claim
     }
 });
 
-test('Astra equipment progresses with effort and max stays distinct from xhigh', () => {
+test('Astra keeps her signature halberd while effort rings and crests stay distinct', () => {
     const tiers = [
-        [null, 'crescentSaber', null, null],
-        ['low', 'crescentSaber', 'overlay.status.effortLow', null],
-        ['medium', 'runeblade', 'overlay.status.effortMedium', null],
-        ['high', 'dawnblade', 'overlay.status.effortHigh', null],
-        ['xhigh', 'polearm', null, 'effortXhigh'],
-        ['max', 'polearm', null, 'effortMax'],
-        ['ultra', 'polearm', null, 'effortUltra'],
+        [null, 'worldsplitter', null, null],
+        ['low', 'worldsplitter', 'overlay.status.effortLow', null],
+        ['medium', 'worldsplitter', 'overlay.status.effortMedium', null],
+        ['high', 'worldsplitter', 'overlay.status.effortHigh', null],
+        ['xhigh', 'worldsplitter', null, 'effortXhigh'],
+        ['max', 'worldsplitter', null, 'effortMax'],
+        ['ultra', 'worldsplitter', null, 'effortUltra'],
     ];
     for (const [effort, weapon, ring, crest] of tiers) {
         const identity = getModelVisualIdentity('gpt-6-astra', effort, 'codex');

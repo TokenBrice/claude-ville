@@ -18,6 +18,7 @@ At the maintainer's requested root path, [claudeville-astra-refinement-plan.md](
 
 | Artifact | Status | Purpose |
 | --- | --- | --- |
+| [`plans/lets-make-astra-model-really-epic.md`](plans/lets-make-astra-model-really-epic.md) | `implemented and character-verified` | Astra character redesign: dark sovereign armor, permanent Worldsplitter halberd, full violet cape, repaired directional animation/grips, and visual evidence; historical building-baseline mismatches recorded separately. |
 | [`plans/claudeville-agentic-dx-plan.md`](plans/claudeville-agentic-dx-plan.md) | `implemented as v0.40.0` | Agentic development experience plan (*The Scriptorium*): six cross-item contracts and 23 items across four waves against `v0.39.1` — CI repair and doc-contract hotfixes, a canonical model registry with a generated browser module plus `add-model`/`add-provider` skills, agent-runnable verification (isolated render smoke, executable architecture/server checks, payload contract), and hooks, release toolchain, artifact checks, and a sprite skill. Consolidates the six Sol reviews under `research/claudeville-agentic-dx-review/`. |
 | [`plans/claudeville-comprehensive-remediation-plan.md`](plans/claudeville-comprehensive-remediation-plan.md) | `implemented and verified` | Comprehensive remediation plan and verification record. |
 | [`plans/claudeville-council-enchantment-plan.md`](plans/claudeville-council-enchantment-plan.md) | `shipped as v0.36.0` | Council of Six enchantment plan: 15 consolidated items, cross-item contracts, and wave sequencing against `v0.35.0.1`. Note: `CHANGELOG.md` records its items as shipped in `v0.36.0`; the artifact header was stale and is now corrected (see the Fable 5.1 plan, item 0.6). |
@@ -34,6 +35,7 @@ At the maintainer's requested root path, [claudeville-astra-refinement-plan.md](
 
 | Artifact | Status | Purpose |
 | --- | --- | --- |
+| [`research/astra-epic/`](research/astra-epic/) | `ready` | Astra redesign evidence: body comparison, cape walk frames, and day/night village captures. |
 | [`research/claudeville-astra-refinement/`](research/claudeville-astra-refinement/) | `ready` | Full refinement execution evidence: authored material/foliage review, crowd/occlusion captures, motion and keyboard probes, same-host profiles, and final validation. |
 | [`research/claudeville-comprehensive-verification/`](research/claudeville-comprehensive-verification/) | `ready` | Comprehensive verification audit and evidence index. |
 | [`research/claudeville-fable-5.1-review/`](research/claudeville-fable-5.1-review/) | `ready` | Evidence for the Fable 5.1 plan: four read-only reviews (`rendering-review.md`, `ui-review.md`, `signal-review.md`, `sol-outside-review.md`), the GPU quality-ladder timeline and probe script, and eight reference captures under `shots/`. |

@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-09-06-action-strip-roster"
+  assetVersion: "2026-09-09-astra-worldsplitter"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -260,22 +260,32 @@ characters:
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.codex.gpt6astra
-    tool: create_character
-    prompt: "Codex GPT-6 Astra celestial star-knight, heroic compact old-school RPG proportions, polished silver full plate armor over deep violet undersuit, four-point diamond star on breastplate, angular silver helmet with small four-point star crest and luminous pale cyan visor, broad silver pauldrons, short deep violet cape with tiny silver constellation embroidery, silver gauntlets and boots, identical outfit and colors from every viewing angle, empty visible hands near torso for runtime weapons, no held weapon, no sword, no shield, no staff, no floating particles, crisp readable 8-direction pixel art character"
-    n_directions: 8
-    size: 92
-    generationSize: 76
-    generationMode: pro
-    animations: [walk, breathing-idle]
     animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
     actionStrip:
       path: characters/agent.codex.gpt6astra/actions.png
       cell: 92
       groups: { read: { rows: [0, 3], hold: 3 } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: 1cc02eeb-7fff-448a-96bc-ae4de0c6bc48, animationGroupId: 76053945-7415-4790-8abb-e0faf812bc60, generationSize: 76 }
-    portraitCrop: { x: 28, y: 14, w: 36, h: 36 }
-    provenance: { characterId: 1cc02eeb-7fff-448a-96bc-ae4de0c6bc48 }
+      provenance: { characterId: a1da82e8-9dc7-410c-9c5e-81698604ab2c, animationGroupId: 6b29a379-57d5-482d-a4a9-961dbace148f, generationSize: 76 }
+    provenance:
+      characterId: a1da82e8-9dc7-410c-9c5e-81698604ab2c
+      animationGroupId: astra-caped-walk-repair
+      repairedDirections:
+        - north
+        - north-east
+        - north-west
+      skippedReference: true
+      animationSourceSize: 96
+      generationSize: 76
+      generationMode: pro
+    tool: create_character
+    prompt: "Codex GPT-6 Astra Starforged Sovereign, the heaviest celestial warrior, powerful broad compact old-school RPG proportions, massive layered dark blue gunmetal plate armor with wide angular pauldrons and thick breastplate, restrained aged gold armor borders and one four-point gold breastplate star, heavy articulated gauntlets and broad planted boots, low integrated crowned helmet with central star point and narrow pale violet visor, substantial calf-length imperial violet cape with broad shoulders and large simple folds and aged gold border, readable steel-blue armor highlights, clear joints and leg separation, identical outfit and colors from every viewing angle, empty visible hands near waist for runtime halberd grip, no held weapon, no shield, no floating halo, no particles, no pedestal, crisp readable 8-direction pixel art character"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    portraitCrop: { x: 23, y: 12, w: 46, h: 42 }
     palette_layer: codex
     anchor: [46, 80]
     materialClass: metal
@@ -857,6 +867,14 @@ equipment:
     width: 96
     height: 96
     anchor: [34, 70]
+
+  # Astra's permanent signature halberd; the anchor is measured on its shaft.
+  - id: equipment.codex.worldsplitter
+    tool: create_map_object
+    prompt: "Worldsplitter sovereign halberd, long thick straight dark shaft held vertically, massive angular dark blue gunmetal axe head on one side with short opposing piercing beak and spear point above, clear negative space separates the three-part head silhouette, thick aged gold socket and restrained gold shaft collars, pale steel cutting edge, one pale violet four-point star inset in axe face, full isolated weapon with clear margin around tip and shaft end, no hands, no character, no particles, transparent background"
+    width: 112
+    height: 112
+    anchor: [36, 68]
 
   # GPT-5.6 signature weapons (Sol/Terra/Luna).
   - id: equipment.codex.dawnblade

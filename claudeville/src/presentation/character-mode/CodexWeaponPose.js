@@ -9,7 +9,7 @@ export const CODEX_GRIP_PROFILES = {
     ...CODEX_PALADIN_GRIPS,
     ...CODEX_ENGINEER_GRIPS,
 };
-const ASTRA_PALETTE = ['#171724', '#555569', '#a5b4c2', '#dce8ed'];
+const ASTRA_PALETTE = ['#151b2b', '#303c52', '#53627a', '#c49a52'];
 
 export function codexWeaponPose(spriteId, geometry, direction, equipment) {
     if (spriteId === 'agent.codex.gpt6astra') {

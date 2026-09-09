@@ -50,10 +50,18 @@ if (!id) { console.error('Missing --id=<sprite-id>'); process.exit(1); }
 const zipPath = arg('zip', join(cacheRoot, `${id}.zip`));
 const groupName = arg('group', null);
 const animationGroupId = arg('animation-group-id', null);
+// Targeted generation repairs keep every other direction and group intact.
+const repairDirections = arg('directions', null)?.split(',').map(value => value.trim());
+const skipReference = args.has('--skip-reference');
 
 main().catch((err) => { console.error(err.stack || err.message); process.exit(1); });
 
 async function main() {
+    if ((repairDirections || skipReference) && !groupName) throw new Error('--directions/--skip-reference require --group');
+    if (repairDirections && (new Set(repairDirections).size !== repairDirections.length
+        || repairDirections.some(direction => !DIRECTIONS.includes(direction)))) {
+        throw new Error('--directions must contain distinct named compass directions');
+    }
     const entry = characterManifestEntry(id);
     if (!existsSync(zipPath)) throw new Error(`ZIP not found: ${zipPath}`);
     if (dryRun) {
@@ -76,7 +84,9 @@ async function main() {
     // Pro mode (2026-09) returns frames at exactly generationSize with no
     // auto-padding; older exports padded ~40%. Either way the content lands
     // centred in the 92px cell.
-    const SOURCE = meta.character.size.width;
+    // A v3 repair may add export padding beyond the original pro rig canvas.
+    const SOURCE = Number(arg('source-size', meta.character.size.width));
+    if (!Number.isInteger(SOURCE) || SOURCE < 16 || SOURCE > 256) throw new Error('Invalid --source-size');
 
     const groups = entry.animationGroups || { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } };
     if (groupName && !Object.hasOwn(groups, groupName)) {
@@ -106,7 +116,11 @@ async function main() {
         if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= ROWS) throw new Error('Invalid group row range');
         for (let col = 0; col < COLS; col++) {
             const dir = DIRECTIONS[col];
-            const frames = selection.dirs[dir];
+            if (repairDirections && !repairDirections.includes(dir)) continue;
+            const exportedFrames = selection.dirs[dir];
+            // v3 keep_first_frame adds a reference before its animated frames.
+            // Drop it only when explicitly requested, never infer from count.
+            const frames = skipReference ? exportedFrames?.slice(1) : exportedFrames;
             if (!frames || frames.length !== end - start + 1) throw new Error(`${selection.name} missing direction ${dir} or wrong frame count`);
             for (let f = 0; f < frames.length; f++) {
                 const frame = fitCenter(readPng(join(extractDir, frames[f])), SOURCE);
@@ -117,6 +131,7 @@ async function main() {
     const provenance = {
         characterId,
         ...(groupName ? { animationGroupId: selections[0].animationId } : {}),
+        ...(repairDirections ? { repairedDirections: repairDirections, skippedReference: skipReference, animationSourceSize: SOURCE } : {}),
         generationSize,
         generationMode: entry.generationMode || 'standard',
     };

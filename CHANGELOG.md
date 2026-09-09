@@ -2,6 +2,19 @@
 
 ---
 
+## v0.45.3 — *The Starforged Sovereign* · Sep 09, 2026
+
+Astra now stands apart as the village's heaviest celestial warrior, with a broader silhouette and equipment of her own.
+
+- **Sovereign armor and cape.** Dark gunmetal plate, aged-gold trim, a crowned helmet, and a full violet cape replace Astra's silver armor. Updated walking, idle, reading, and portrait artwork keeps her identity consistent across views.
+- **Worldsplitter.** Astra carries a signature halberd at every effort level. Existing effort rings and crests retain their distinctions; the halberd is put away while she reads.
+- **Coherent animation.** Repaired rear-facing walking frames preserve the cape, and updated wrist positions keep the weapon attached throughout all eight directions. Luna and the other warriors retain their existing artwork.
+- **Reliable sprite repairs.** Targeted direction assembly supports padded exports and explicit reference-frame removal. Manifest updates preserve multiline animation metadata, and frame caches distinguish regenerated poses from their predecessors.
+
+Validation: 899 tests passed, clean sprite audits and browser smoke checks, and exact Canvas/GPU equipment parity across 560 Astra combinations. The separate no-agent building comparison reports 14 mismatches against stored baselines; those baselines were not changed. Visual evidence and production details: `agents/research/astra-epic/` and `agents/plans/lets-make-astra-model-really-epic.md`.
+
+---
+
 ## v0.45.2 — *The Lighter Brush* · Sep 08, 2026
 
 The World was never GPU-bound: a headed NVIDIA trace showed the card idle at under a millisecond per frame while Chrome's GPU process spent ~14 ms per commit replaying our own Canvas2D command stream. This release cuts that stream by 75–88 % without changing a pixel of the steady-state village. Plan, evidence, and matched-roster A/B: `agents/plans/claudeville-fps-optimization-plan.md`.

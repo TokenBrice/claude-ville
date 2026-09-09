@@ -300,12 +300,20 @@ const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     gpt56sol: 'dawnblade',
     gpt56terra: 'earthbreaker',
     gpt56luna: 'crescentSaber',
-    gpt6astra: 'crescentSaber',
+    gpt6astra: 'worldsplitter',
 });
 // Exported so the layering invariant is testable: a weapon whose sprite is
 // authored empty-handed must not be forced behind the body, or the villager
 // grips air while the blade hides in its own silhouette.
 export const CODEX_WEAPON_ASSETS = Object.freeze({
+    worldsplitter: {
+        id: 'equipment.codex.worldsplitter',
+        fallback: 'polearm',
+        pose: 'polearmUpright',
+        anchor: [36, 68],
+        scale: 0.78,
+        hands: 'single',
+    },
     runeblade: {
         id: 'equipment.codex.runeblade',
         fallback: 'runeblade',

@@ -80,6 +80,7 @@ const CODEX_MODELS = [
 ].filter(model => !args.has('model') || model.key === args.get('model'));
 if (!CODEX_MODELS.length || !EFFORTS.length) throw new Error('Unknown model or effort filter');
 const REQUIRED_EQUIPMENT_ASSETS = [
+  'equipment.codex.worldsplitter',
   'equipment.codex.crescentSaber',
   'equipment.codex.dawnblade',
   'equipment.codex.earthbreaker',

@@ -10,10 +10,10 @@ test('Astra wrists follow the rendered cell, independently of cape/crest bounds 
         for (let direction = 0; direction < 8; direction++) {
             for (let frame = 0; frame < count; frame++) {
                 const cell = sheet.cell(state, direction, frame);
-                const pose = astraWeaponPose({ cell, dx: 0, dy: 0 }, DIRECTIONS[direction], 'runeblade');
-                assert.ok(pose.x >= 30 && pose.x <= 60 && pose.y >= 50 && pose.y <= 62);
+                const pose = astraWeaponPose({ cell, dx: 0, dy: 0 }, DIRECTIONS[direction], 'worldsplitter');
+                assert.ok(pose.x >= 24 && pose.x <= 68 && pose.y >= 44 && pose.y <= 66);
                 const scaled = astraWeaponPose({ cell, dx: 100, dy: -50, drawScale: 2,
-                    bounds: { minX: 0, maxX: 92, minY: 0, maxY: 92 } }, DIRECTIONS[direction], 'runeblade');
+                    bounds: { minX: 0, maxX: 92, minY: 0, maxY: 92 } }, DIRECTIONS[direction], 'worldsplitter');
                 assert.equal(scaled.x, 100 + pose.x * 2);
                 assert.equal(scaled.y, -50 + pose.y * 2);
             }

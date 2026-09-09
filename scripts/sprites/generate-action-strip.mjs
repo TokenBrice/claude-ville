@@ -17,6 +17,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { PNG } from 'pngjs';
 import {
     blitPng,
@@ -314,7 +315,11 @@ async function requestWithJobSlotBackoff(request, label, { attempts = 30, waitMs
 }
 
 async function cachedFrame(url, key) {
-    const cached = join(cacheRoot, `${key}.png`);
+    // A repaired direction or a replacement rig must not reuse the previous
+    // pose's cached pixels. Ignore the URL's transient timestamp query only.
+    const source = new URL(url);
+    const revision = createHash('sha256').update(`${source.origin}${source.pathname}`).digest('hex').slice(0, 16);
+    const cached = join(cacheRoot, `${key}-${revision}.png`);
     if (existsSync(cached)) return PNG.sync.read(readFileSync(cached));
     const png = await fetchPng(url, { label: key });
     mkdirSync(dirname(cached), { recursive: true });

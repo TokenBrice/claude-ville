@@ -52,17 +52,7 @@ const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     gpt56sol: 'dawnblade',
     gpt56terra: 'earthbreaker',
     gpt56luna: 'crescentSaber',
-    gpt6astra: 'crescentSaber',
-});
-
-const CODEX_ASTRA_EQUIPMENT_BY_EFFORT = Object.freeze({
-    none: 'crescentSaber',
-    low: 'crescentSaber',
-    medium: 'runeblade',
-    high: 'dawnblade',
-    xhigh: 'polearm',
-    max: 'polearm',
-    ultra: 'polearm',
+    gpt6astra: 'worldsplitter',
 });
 
 const CODEX_GPT55_EQUIPMENT_BY_EFFORT = Object.freeze({
@@ -100,9 +90,8 @@ export const POLICY_SPRITE_IDS = Object.freeze([
 ]);
 
 function codexEquipment(effortTier, modelClass, { suppressBakedWeapon = true } = {}) {
-    const equipment = modelClass === 'gpt6astra'
-        ? CODEX_ASTRA_EQUIPMENT_BY_EFFORT[effortTier || 'none'] || CODEX_EQUIPMENT_BY_CLASS.gpt6astra
-        : modelClass === 'gpt55'
+    // Astra's halberd identifies the model; rings and crests identify effort.
+    const equipment = modelClass === 'gpt55'
         ? CODEX_GPT55_EQUIPMENT_BY_EFFORT[effortTier || 'none'] || CODEX_EQUIPMENT_BY_CLASS.gpt55
         : CODEX_EQUIPMENT_BY_CLASS[modelClass] || null;
     return {

@@ -224,6 +224,8 @@ For World presentation changes, run `npm run verify:render` to capture determini
 
 ## Frame and update notes
 
+Astra carries Worldsplitter, her signature halberd, at every effort level. Effort continues to use the existing floor rings and distinct high-tier crests. Her armor and violet cape belong to the authored body and read strip; the halberd is composed separately through `AstraWeaponPose.js` with per-frame wrist coordinates. Read poses suppress equipment while both hands hold the book. Keep body, wrist profile, gauntlet palette, and portrait crop coherent when regenerating Astra.
+
 - The render loop is plain `requestAnimationFrame`; one update tick per frame, no fixed timestep.
 - Water shimmer advances from the shared visual elapsed clock and freezes when reduced motion is preferred. GPU water and wet-surface patterns use world coordinates, so camera movement does not drag the pattern across the surface.
 - The terrain is precomputed into `terrainSeed` and a `terrainCache` canvas; only water/agents/effects redraw per frame. Adding terrain variation should extend the cache, not the per-frame path.
