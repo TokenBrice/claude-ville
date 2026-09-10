@@ -2,6 +2,20 @@
 
 ---
 
+## v0.45.4 — *The Open Gate* · Sep 10, 2026
+
+Finished agents no longer haunt the village. A departed villager used to stand as a grey, frozen "DEPARTED" figure for a minute and a half before its walk-out began; now it leaves the moment its session is gone.
+
+- **Departures through the gate.** The instant an agent departs, top-level sessions walk out through the village gate and vanish on arrival, subagents merge back into their parent, and orphans return to the Portal Gate. The ghost tableau survives only as a fallback for a sprite with no exit in flight, so it should never be seen.
+- **Sessions that come back.** A session that returns while its villager is still walking turns around where it stands; one that returns after leaving arrives again. Switching into World mode no longer spawns sprites for agents that already left.
+- **Unchanged underneath.** The 90-second departed grace still feeds the dashboard, chronicle, and counters; only the visual residency is gone.
+- **DeepSeek V4.1 Flash.** The registry recognises `deepseek-flash` with its 1M context and peak-hour rates, the OpenCode adapter reports its context limit, and the legacy DeepSeek V4 Pro, V4 Flash, and Reasoner rows now carry the Flash rates DeepSeek bills them at.
+- **Model roster dev page.** `claudeville/tools/model-roster.html` renders every model side by side with its runtime accessories, using the app's own compositor.
+
+Validation: 901 tests passed; on the maintained server a forced departure walked to the gate in about nine seconds with doors open, faded, and was removed, and a session restored mid-walk turned around and resumed.
+
+---
+
 ## v0.45.3 — *The Starforged Sovereign* · Sep 09, 2026
 
 Astra now stands apart as the village's heaviest celestial warrior, with a broader silhouette and equipment of her own.
