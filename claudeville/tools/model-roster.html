@@ -1,0 +1,579 @@
+<!doctype html>
+<!--
+  Dev tool: renders every agent model side by side (idle, south-facing) with
+  its runtime accessories — effort head crests (xhigh/max/ultra), effort floor
+  rings (low/medium/high), and codex equipment — using the app's own
+  AssetManager + Compositor + ModelVisualIdentity, so what renders here is what
+  the world draws. Name and effort tier are written below each sprite.
+
+  Capture: node output/capture-model-roster.mjs (writes output/model-roster.png)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ClaudeVille — Model Roster</title>
+<base href="../">
+<link rel="stylesheet" href="css/reset.css">
+<script src="vendor/js-yaml.min.js"></script>
+<style>
+  body { margin: 0; background: #14100c; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<script type="module">
+import { AssetManager } from './src/presentation/character-mode/AssetManager.js';
+import { Compositor } from './src/presentation/character-mode/Compositor.js';
+import { getModelVisualIdentity } from './src/presentation/shared/ModelVisualIdentity.js';
+import { WALK_FRAMES } from './src/presentation/character-mode/SpriteSheet.js';
+
+// --- Roster ----------------------------------------------------------------
+// Effort ladders per model (no 'none' tier exists):
+//   STD   low → high          ring tiers only
+//   XH    low → xhigh         + head crest (gpt-5.5 tops out here)
+//   FULL  low → max           + max crest (claude family, 5.6 luna)
+//   ULTRA low → ultra         full ladder (5.6 terra & sol only)
+const LADDERS = {
+    STD: ['low', 'medium', 'high'],
+    XH: ['low', 'medium', 'high', 'xhigh'],
+    FULL: ['low', 'medium', 'high', 'xhigh', 'max'],
+    ULTRA: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+};
+// Horizontal rows for a 16:9 (Twitter) sheet: each model gets a 3-cell block
+// (low / high / top tier — or low / med / high for ring-only models).
+const ROWS = [
+    { label: 'CLAUDE', models: [
+        ['claude-fable', 'claude', 'FULL'],
+        ['claude-opus', 'claude', 'FULL'],
+        ['claude-sonnet', 'claude', 'FULL'],
+        ['claude-haiku', 'claude', 'FULL'],
+    ] },
+    { label: 'CODEX', models: [
+        ['gpt-5.3-codex-spark', 'codex', 'STD'],
+        ['gpt-5.4', 'codex', 'STD'],
+        ['gpt-5.5', 'codex', 'XH'],
+    ] },
+    { label: 'CODEX · GPT-5.6', models: [
+        ['gpt-5.6-sol', 'codex', 'ULTRA'],
+        ['gpt-5.6-terra', 'codex', 'ULTRA'],
+        ['gpt-5.6-luna', 'codex', 'FULL'],
+    ] },
+    { label: 'KIMI · GROK', models: [
+        ['kimi', 'kimi', 'STD'],
+        ['grok', 'grok', 'STD'],
+        ['grok-composer', 'grok', 'STD'],
+    ] },
+    { label: 'DEEPSEEK', models: [
+        ['deepseek-v4-pro', 'deepseek', 'STD'],
+        ['deepseek-v4-flash', 'deepseek', 'STD'],
+        ['deepseek-reasoner', 'deepseek', 'STD'],
+    ] },
+];
+const EFFORT_LABELS = { low: 'low', medium: 'med', high: 'high', xhigh: 'xhigh', max: 'max', ultra: 'ultra' };
+// Tier colors echo the world's floor-ring metals / aura palette.
+const EFFORT_COLORS = {
+    low: '#d7a456', medium: '#cfd9e4', high: '#f2d36b',
+    xhigh: '#ffe9a8', max: '#ffe9a8', ultra: '#fff6d8',
+};
+
+// --- Layout (screen px) — fixed 2400×1350, exactly 16:9 for X/Twitter -------
+const WIDTH = 2400;
+const HEIGHT = 1350;
+const RENDER = 1.25;           // screen px per world px
+const PAD = 24;
+const TITLE_H = 60;
+const COLS = 12;               // 4 model blocks of 3 variant cells per row
+const CELL_W = (WIDTH - PAD * 2) / COLS;
+const HEADER_H = 26;           // family label strip inside a row
+const SPRITE_ABOVE = 150;      // room above the feet line (body + crest)
+const ROW_H = Math.floor((HEIGHT - PAD - TITLE_H - 16) / ROWS.length);
+// World-space feet offset below the cell origin.
+const WORLD_MAX_Y = 7;
+
+// --- World constants mirrored from AgentSprite.js ----------------------------
+const TARGET_AGENT_CONTENT_HEIGHT = 92;
+const MIN_AGENT_DRAW_SCALE = 1;
+const MAX_AGENT_DRAW_SCALE = 1.25;
+const CODEX_EQUIPMENT_BY_CLASS = {
+    codex: 'engineerWrench', spark: 'multitool', gpt54: 'engineerWrench',
+    gpt55: 'runeblade', gpt56sol: 'dawnblade', gpt56terra: 'earthbreaker',
+    gpt56luna: 'crescentSaber',
+};
+const CODEX_WEAPON_ASSETS = {
+    runeblade:      { id: 'equipment.codex.runeblade',      pose: 'rightHand',          anchor: [31, 70], scale: 0.62, hands: 'single' },
+    greatsword:     { id: 'equipment.codex.greatsword',     pose: 'greatswordShoulder', backLayer: 'always', anchor: [36, 82], scale: 0.56, hands: 'single' },
+    polearm:        { id: 'equipment.codex.polearm',        pose: 'polearmUpright',     anchor: [44, 74], scale: 0.70, hands: 'double', handSpacing: 13, handVector: [-7, 12] },
+    engineerWrench: { id: 'equipment.codex.engineerWrench', pose: 'shoulderRest',       anchor: [34, 70], scale: 0.62, hands: 'single' },
+    dawnblade:      { id: 'equipment.codex.dawnblade',      pose: 'greatswordShoulder', backLayer: 'always', anchor: [36, 82], scale: 0.56, hands: 'single' },
+    earthbreaker:   { id: 'equipment.codex.earthbreaker',   pose: 'shoulderRest',       anchor: [34, 70], scale: 0.62, hands: 'single' },
+    crescentSaber:  { id: 'equipment.codex.crescentSaber',  pose: 'rightHand',          anchor: [31, 70], scale: 0.50, hands: 'single' },
+};
+
+const assets = new AssetManager('assets/sprites/manifest.yaml');
+await assets.load();
+const compositor = new Compositor(assets);
+
+// --- Baked-weapon scrub (verbatim port of AgentSprite's codex sidearm wipe) --
+function shouldScrubBakedCodexWeapon(identity) {
+    if (!identity) return false;
+    if (identity.suppressBakedWeapon === false) return false;
+    if (identity.suppressBakedWeapon) return true;
+    const modelClass = String(identity.modelClass || '').toLowerCase();
+    return Object.prototype.hasOwnProperty.call(CODEX_EQUIPMENT_BY_CLASS, modelClass);
+}
+
+function normalizedBakedWeaponClass(modelClass) {
+    const c = String(modelClass || '').toLowerCase();
+    return c === 'codex' ? 'gpt54' : c;
+}
+
+function bakedWeaponSelectorsForClass(modelClass) {
+    const c = normalizedBakedWeaponClass(modelClass);
+    return {
+        brightBlade: (r, g, b) => r > 168 && g > 168 && b > 152,
+        cyanBlade: c === 'spark'
+            ? (r, g, b) => g > 180 && b > 150 && Math.abs(g - b) < 56 && r < 170
+            : (r, g, b) => g > 150 && b > 150 && Math.abs(g - b) < 56 && r < 170,
+        greyMetal: (r, g, b) => r > 78 && g > 78 && b > 78 && Math.max(r, g, b) - Math.min(r, g, b) < 42,
+        goldHilt: c === 'gpt54'
+            ? (r, g, b) => r > 150 && g > 95 && g < 170 && b < 95
+            : c === 'spark'
+                ? (r, g, b) => r > 165 && g > 95 && g < 190 && b < 95
+                : (r, g, b) => r > 150 && g > 95 && g < 190 && b < 95,
+    };
+}
+
+function bakedWeaponMaskZonesForClass(modelClass, directionKey, cellSize) {
+    const z = (x1, y1, x2, y2) => ({
+        x1: Math.round(x1 * cellSize), y1: Math.round(y1 * cellSize),
+        x2: Math.round(x2 * cellSize), y2: Math.round(y2 * cellSize),
+    });
+    const zones = {
+        s: [z(0.08, 0.46, 0.40, 0.98), z(0.62, 0.46, 0.92, 0.98)],
+        se: [z(0.42, 0.43, 0.96, 0.96)],
+        e: [z(0.46, 0.40, 0.98, 0.90)],
+        ne: [z(0.46, 0.36, 0.98, 0.88)],
+        n: [z(0.08, 0.46, 0.38, 0.96), z(0.62, 0.46, 0.92, 0.96)],
+        nw: [z(0.02, 0.36, 0.54, 0.88)],
+        w: [z(0.02, 0.40, 0.54, 0.90)],
+        sw: [z(0.04, 0.43, 0.58, 0.96)],
+    };
+    const c = normalizedBakedWeaponClass(modelClass);
+    if (c === 'spark') {
+        return {
+            ...zones,
+            s: [z(0.09, 0.50, 0.34, 0.96), z(0.66, 0.50, 0.88, 0.96)],
+            se: [z(0.48, 0.46, 0.94, 0.94)],
+        }[directionKey] || [];
+    }
+    if (c === 'gpt54') {
+        return {
+            ...zones,
+            nw: [z(0.00, 0.35, 0.58, 0.90)],
+            w: [z(0.00, 0.39, 0.58, 0.92)],
+        }[directionKey] || [];
+    }
+    return zones[directionKey] || [];
+}
+
+const SCRUB_DIRECTIONS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
+
+function clearBakedCodexSidearmPixels(ctx, width, height, modelClass) {
+    const cellSize = Math.round(width / SCRUB_DIRECTIONS.length) || 92;
+    const rows = Math.floor(height / cellSize);
+    if (!Number.isFinite(cellSize) || cellSize <= 0 || rows <= 0) return;
+    const image = ctx.getImageData(0, 0, width, height);
+    const data = image.data;
+    const marks = new Uint8Array(width * height);
+    const selectors = bakedWeaponSelectorsForClass(modelClass);
+    for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < SCRUB_DIRECTIONS.length; col++) {
+            const zones = bakedWeaponMaskZonesForClass(modelClass, SCRUB_DIRECTIONS[col], cellSize);
+            for (const zone of zones) {
+                const x1 = Math.max(0, col * cellSize + zone.x1);
+                const y1 = Math.max(0, row * cellSize + zone.y1);
+                const x2 = Math.min(width - 1, col * cellSize + zone.x2);
+                const y2 = Math.min(height - 1, row * cellSize + zone.y2);
+                for (let y = y1; y <= y2; y++) {
+                    for (let x = x1; x <= x2; x++) {
+                        const p = (y * width + x) * 4;
+                        if (data[p + 3] < 16) continue;
+                        const r = data[p], g = data[p + 1], b = data[p + 2];
+                        if (selectors.brightBlade(r, g, b) || selectors.cyanBlade(r, g, b)
+                            || selectors.greyMetal(r, g, b) || selectors.goldHilt(r, g, b)) {
+                            marks[y * width + x] = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const expanded = new Uint8Array(marks.length);
+    for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+            if (!marks[y * width + x]) continue;
+            for (let oy = -1; oy <= 1; oy++) {
+                for (let ox = -1; ox <= 1; ox++) expanded[(y + oy) * width + x + ox] = 1;
+            }
+        }
+    }
+    for (let i = 0; i < expanded.length; i++) {
+        if (expanded[i]) data[i * 4 + 3] = 0;
+    }
+    ctx.putImageData(image, 0, 0);
+}
+
+// --- Per-agent bitmap (palette variant + effort crest + sidearm scrub) ------
+function paletteVariant(model, providerKey) {
+    const text = `roster:${model}:${providerKey}`;
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+        hash = ((hash << 5) - hash) + text.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash) % 4;
+}
+
+function agentSheet(identity, model) {
+    const accessory = identity.allowRuntimeEffortAccessory !== false
+        ? (identity.effortAccessory || null)
+        : null;
+    const composited = compositor.spriteFor(
+        identity.spriteId,
+        identity.paletteKey,
+        paletteVariant(model, identity.paletteKey),
+        accessory,
+        null,
+    );
+    if (!composited) return null;
+    if (!shouldScrubBakedCodexWeapon(identity)) return composited;
+    const canvas = document.createElement('canvas');
+    canvas.width = composited.width;
+    canvas.height = composited.height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(composited, 0, 0);
+    clearBakedCodexSidearmPixels(ctx, canvas.width, canvas.height, identity.modelClass);
+    if (composited.__cvBaseBounds) canvas.__cvBaseBounds = composited.__cvBaseBounds;
+    return canvas;
+}
+
+// --- Frame helpers ------------------------------------------------------------
+function cellContentBounds(sheet, sx, sy, size) {
+    const scratch = document.createElement('canvas');
+    scratch.width = size;
+    scratch.height = size;
+    const ctx = scratch.getContext('2d', { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(sheet, sx, sy, size, size, 0, 0, size, size);
+    const data = ctx.getImageData(0, 0, size, size).data;
+    let minX = size, minY = size, maxX = 0, maxY = 0;
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            if (data[(y * size + x) * 4 + 3] < 16) continue;
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+        }
+    }
+    if (minX > maxX || minY > maxY) return { minX: 0, minY: 0, maxX: size - 1, maxY: size - 1 };
+    return { minX, minY, maxX, maxY };
+}
+
+// South-facing weapon geometry (AgentSprite._codexWeaponGeometry, dir 's').
+function weaponGeometryS(dx, dy, bounds, drawScale) {
+    const contentWidth = Math.max(1, bounds.maxX - bounds.minX);
+    const contentHeight = Math.max(1, bounds.maxY - bounds.minY);
+    const centerX = dx + (bounds.minX + bounds.maxX) * drawScale / 2;
+    const shoulderY = dy + (bounds.minY + contentHeight * 0.36) * drawScale;
+    const torsoY = dy + (bounds.minY + contentHeight * 0.56) * drawScale;
+    const bodyWidth = Math.max(22, Math.min(42, contentWidth));
+    return {
+        drawScale,
+        rightHand: {
+            x: centerX + bodyWidth * 0.32 * drawScale,
+            y: torsoY + 4 * drawScale,
+            flipX: false, angle: 0.08, scale: 0.96,
+        },
+        greatswordShoulder: {
+            x: centerX + bodyWidth * 0.24 * drawScale,
+            y: shoulderY + 7 * drawScale,
+            flipX: false, angle: -0.46, scale: 1.00,
+        },
+        polearmUpright: {
+            x: centerX + bodyWidth * 0.40 * drawScale,
+            y: torsoY + 8 * drawScale,
+            flipX: false, angle: -0.54, scale: 1.00,
+        },
+        shoulderRest: {
+            x: centerX + bodyWidth * 0.30 * drawScale,
+            y: shoulderY,
+            flipX: false, angle: -0.05, scale: 0.94,
+        },
+    };
+}
+
+function weaponAssetAnchor(assetDef) {
+    const entryAnchor = assets.getEntry?.(assetDef.id)?.anchor;
+    if (Array.isArray(entryAnchor) && entryAnchor.length >= 2) return entryAnchor;
+    return assetDef.anchor || [0, 0];
+}
+
+function drawWeaponAsset(ctx, assetDef, pose, drawScale) {
+    const img = assets.has?.(assetDef.id) ? assets.get(assetDef.id) : null;
+    if (!img) return;
+    const dims = assets.getDims(assetDef.id) || { w: img.width, h: img.height };
+    const [ax, ay] = weaponAssetAnchor(assetDef);
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.translate(Math.round(pose.x), Math.round(pose.y));
+    ctx.scale(pose.flipX ? -1 : 1, 1);
+    ctx.scale(drawScale * (pose.scale || 1) * (assetDef.scale || 1), drawScale * (pose.scale || 1) * (assetDef.scale || 1));
+    ctx.rotate(pose.angle || 0);
+    ctx.drawImage(img, Math.round(-ax), Math.round(-ay), dims.w, dims.h);
+    ctx.restore();
+}
+
+function drawGripHand(ctx) {
+    ctx.fillStyle = '#0b2430';
+    ctx.fillRect(-4, -2, 8, 7);
+    ctx.fillStyle = '#7be3d7';
+    ctx.fillRect(-3, -1, 6, 5);
+    ctx.fillStyle = '#f8c45f';
+    ctx.fillRect(-1, 0, 3, 3);
+}
+
+function drawGripHands(ctx, spacing = 11, vector = null) {
+    const secondX = Array.isArray(vector) ? vector[0] : 0;
+    const secondY = Array.isArray(vector) ? vector[1] : spacing;
+    ctx.fillStyle = '#0b2430';
+    ctx.fillRect(-5, -2, 10, 6);
+    ctx.fillRect(secondX - 5, secondY - 2, 10, 6);
+    ctx.fillStyle = '#7be3d7';
+    ctx.fillRect(-4, -1, 8, 4);
+    ctx.fillRect(secondX - 4, secondY - 1, 8, 4);
+    ctx.fillStyle = '#f8c45f';
+    ctx.fillRect(-1, 0, 3, 3);
+    ctx.fillRect(secondX - 1, secondY, 3, 3);
+}
+
+function drawWeaponAt(ctx, pose, drawScale, drawFn) {
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.translate(Math.round(pose.x), Math.round(pose.y));
+    ctx.scale(pose.flipX ? -1 : 1, 1);
+    ctx.scale(drawScale * (pose.scale || 1), drawScale * (pose.scale || 1));
+    ctx.rotate(pose.angle || 0);
+    drawFn();
+    ctx.restore();
+}
+
+function drawWeaponStroke(ctx, color, width, points) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'square';
+    ctx.lineJoin = 'miter';
+    ctx.beginPath();
+    ctx.moveTo(Math.round(points[0][0]), Math.round(points[0][1]));
+    for (let i = 1; i < points.length; i++) ctx.lineTo(Math.round(points[i][0]), Math.round(points[i][1]));
+    ctx.stroke();
+}
+
+function drawCodexMultitool(ctx) {
+    drawWeaponStroke(ctx, '#0b2430', 5, [[-6, 5], [6, -3]]);
+    drawWeaponStroke(ctx, '#7f8f9b', 3, [[-6, 5], [6, -3]]);
+    ctx.fillStyle = '#0b2430';
+    ctx.fillRect(3, -8, 9, 6);
+    ctx.fillStyle = '#dce8ec';
+    ctx.fillRect(5, -7, 5, 2);
+    ctx.fillRect(9, -6, 3, 4);
+    ctx.fillStyle = '#0b2430';
+    ctx.fillRect(9, -4, 4, 2);
+    ctx.fillRect(-5, 3, 8, 5);
+    ctx.fillStyle = '#b47a35';
+    ctx.fillRect(-4, 4, 6, 3);
+    ctx.fillStyle = '#f8c45f';
+    ctx.fillRect(-1, 4, 2, 2);
+    ctx.fillStyle = '#7be3d7';
+    ctx.fillRect(-3, 5, 1, 1);
+}
+
+// --- One cell: rings, back weapon, body, front weapon + hands ----------------
+function drawAgent(ctx, identity, model) {
+    const sheet = agentSheet(identity, model);
+    if (!sheet) return;
+    const cellSize = Math.floor(sheet.width / 8);
+    const sx = 0;                       // direction 's' = column 0
+    const sy = WALK_FRAMES * cellSize;  // idle row 6, frame 0
+    const bounds = cellContentBounds(sheet, sx, sy, cellSize);
+    const baseBounds = sheet.__cvBaseBounds?.get(`${sx},${sy},${cellSize},${cellSize}`) || bounds;
+    const height = Math.max(1, baseBounds.maxY - baseBounds.minY + 1);
+    const drawScale = Math.max(MIN_AGENT_DRAW_SCALE, Math.min(MAX_AGENT_DRAW_SCALE, TARGET_AGENT_CONTENT_HEIGHT / height));
+
+    // Feet anchor at (0,0) in world space.
+    const contentCenterX = (bounds.minX + bounds.maxX) / 2;
+    const dx = -contentCenterX * drawScale;
+    const dy = -bounds.maxY * drawScale + 2;
+
+    // Effort floor ring (low/medium/high), drawn first at the feet.
+    const ringId = identity.allowRuntimeEffortFloorRing === false ? null : identity.effortFloorRing;
+    if (ringId && assets.has?.(ringId)) {
+        const ring = assets.get(ringId);
+        const dims = assets.getDims(ringId);
+        const [ax, ay] = assets.getAnchor(ringId);
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(ring, Math.round(-ax), Math.round(4 - ay), dims.w, dims.h);
+        ctx.restore();
+    }
+
+    // Grounding shadow.
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+    ctx.beginPath();
+    ctx.ellipse(0, 2, 16, 5.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Codex equipment: back-layer weapons first (shoulder-carried blades).
+    const equipment = identity.allowRuntimeEffortWeapon === false
+        ? null
+        : (identity.equipment || CODEX_EQUIPMENT_BY_CLASS[String(identity.modelClass || '').toLowerCase()] || identity.effortWeapon || null);
+    const assetDef = equipment ? CODEX_WEAPON_ASSETS[equipment] : null;
+    const geometry = weaponGeometryS(dx, dy, bounds, drawScale);
+    if (assetDef) {
+        const pose = geometry[assetDef.pose] || geometry.rightHand;
+        if (assetDef.backLayer === 'always') drawWeaponAsset(ctx, assetDef, pose, drawScale);
+    }
+
+    // Body.
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(sheet, sx, sy, cellSize, cellSize, dx, dy, cellSize * drawScale, cellSize * drawScale);
+    ctx.restore();
+
+    // Front-layer weapon + grip hands.
+    if (assetDef) {
+        const pose = geometry[assetDef.pose] || geometry.rightHand;
+        if (assetDef.backLayer !== 'always') drawWeaponAsset(ctx, assetDef, pose, drawScale);
+        drawWeaponAt(ctx, pose, drawScale, () => {
+            if (assetDef.hands === 'double') drawGripHands(ctx, assetDef.handSpacing || 11, assetDef.handVector);
+            else drawGripHand(ctx);
+        });
+    } else if (equipment === 'multitool') {
+        drawWeaponAt(ctx, geometry.rightHand, drawScale, () => {
+            drawCodexMultitool(ctx);
+            drawGripHand(ctx);
+        });
+    }
+}
+
+// --- Sheet assembly -----------------------------------------------------------
+// Labels sit below the lowest possible floor-ring pixel (rings are drawn
+// unscaled at the feet anchor, so measure their real opaque bottoms).
+function opaqueBottom(id) {
+    const img = assets.get(id);
+    const dims = assets.getDims(id);
+    if (!img || !dims) return 0;
+    const scratch = document.createElement('canvas');
+    scratch.width = dims.w;
+    scratch.height = dims.h;
+    const sctx = scratch.getContext('2d', { willReadFrequently: true });
+    sctx.drawImage(img, 0, 0);
+    const data = sctx.getImageData(0, 0, dims.w, dims.h).data;
+    for (let y = dims.h - 1; y >= 0; y--) {
+        for (let x = 0; x < dims.w; x++) {
+            if (data[(y * dims.w + x) * 4 + 3] >= 16) return y;
+        }
+    }
+    return 0;
+}
+const ringBottomWorld = Math.max(
+    ...['overlay.status.effortLow', 'overlay.status.effortMedium', 'overlay.status.effortHigh']
+        .filter(id => assets.has(id))
+        .map(id => 4 - assets.getAnchor(id)[1] + opaqueBottom(id)),
+    0,
+);
+const NAME_OFF = Math.ceil(ringBottomWorld * RENDER) + 10;
+const EFFORT_OFF = NAME_OFF + 17;
+
+const canvas = document.createElement('canvas');
+canvas.width = WIDTH;
+canvas.height = HEIGHT;
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+// Background: village-panel dark with a subtle vignette.
+ctx.fillStyle = '#171208';
+ctx.fillRect(0, 0, WIDTH, HEIGHT);
+const grad = ctx.createRadialGradient(WIDTH / 2, HEIGHT / 2, HEIGHT / 5, WIDTH / 2, HEIGHT / 2, WIDTH / 1.4);
+grad.addColorStop(0, 'rgba(58, 42, 24, 0.35)');
+grad.addColorStop(1, 'rgba(0, 0, 0, 0.28)');
+ctx.fillStyle = grad;
+ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+const FONT = '"Departure Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
+
+ctx.textAlign = 'left';
+ctx.fillStyle = '#f2d36b';
+ctx.font = `700 28px ${FONT}`;
+ctx.fillText('ClaudeVille — Agent Model Roster', PAD, PAD + 26);
+ctx.fillStyle = '#8d8272';
+ctx.font = `13px ${FONT}`;
+ctx.textAlign = 'right';
+ctx.fillText('variants: low · high · apex effort', WIDTH - PAD, PAD + 24);
+
+let y = PAD + TITLE_H;
+
+for (const row of ROWS) {
+    const usedW = row.models.length * 3 * CELL_W;
+    const startX = (WIDTH - usedW) / 2;   // center short rows horizontally
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#f2d36b';
+    ctx.font = `700 15px ${FONT}`;
+    ctx.fillText(row.label, startX, y + 16);
+    ctx.strokeStyle = 'rgba(242, 211, 107, 0.30)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(startX + ctx.measureText(row.label).width + 12, y + 11);
+    ctx.lineTo(startX + usedW, y + 11);
+    ctx.stroke();
+
+    const feetY = y + HEADER_H + SPRITE_ABOVE;
+    for (let m = 0; m < row.models.length; m++) {
+        const [model, provider, ladder] = row.models[m];
+        // Cap at 3 variants per model: low + high (uniform across all models,
+        // so rows stay comparable) + the model's top tier (shows off its best
+        // accessories). Models that top out at high keep all three ring tiers.
+        const full = LADDERS[ladder];
+        const efforts = full.length <= 3 ? full : [full[0], 'high', full[full.length - 1]];
+        for (let v = 0; v < efforts.length; v++) {
+            const identity = getModelVisualIdentity(model, efforts[v], provider);
+            const cellCx = startX + (m * 3 + v) * CELL_W + CELL_W / 2;
+            ctx.save();
+            ctx.translate(cellCx, feetY + WORLD_MAX_Y * RENDER);
+            ctx.scale(RENDER, RENDER);
+            drawAgent(ctx, identity, model);
+            ctx.restore();
+
+            // Labels below the sprite (clear of the floor rings).
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#f3e2bd';
+            ctx.font = `700 14px ${FONT}`;
+            ctx.fillText(identity.label, cellCx, feetY + NAME_OFF);
+            const shownTier = identity.effortTier || 'none';
+            ctx.fillStyle = EFFORT_COLORS[shownTier] || '#8d8272';
+            ctx.font = `12px ${FONT}`;
+            ctx.fillText(EFFORT_LABELS[shownTier] || shownTier, cellCx, feetY + EFFORT_OFF);
+        }
+    }
+    y += ROW_H;
+}
+
+document.body.appendChild(canvas);
+window.__rosterCanvas = canvas;
+window.__rosterReady = true;
+</script>
+</body>
+</html>
