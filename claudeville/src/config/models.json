@@ -1,5 +1,5 @@
 {
-    "revision": "2026-09-05",
+    "revision": "2026-09-10",
     "models": [
         {
             "id": "claude.fable-5-1", "provider": "claude", "match": ["fable-5-1", "mythos-5-1"], "sample": "claude-fable-5-1",
@@ -177,25 +177,32 @@
             "contextWindow": 262144, "pricing": { "input": 3, "output": 12, "cacheRead": 0.3, "cacheCreate": 0 }
         },
         {
+            "id": "deepseek.flash", "provider": "deepseek", "match": ["deepseek-flash"], "sample": "deepseek/deepseek-flash",
+            "label": "DeepSeek V4.1 Flash", "shortLabel": "DS Flash", "modelClass": "flash", "modelTier": "swift", "mood": "quick",
+            "spriteId": "agent.deepseek.flash", "paletteKey": "deepseek", "color": "#7cf4c8",
+            "trim": ["#7cf4c8", "#45dca8", "#c8fff0"], "accent": ["#d8fff4", "#7cf4c8", "#6dd7ff"],
+            "contextWindow": 1000000, "pricing": { "input": 0.3, "output": 1.2, "cacheRead": 0.006, "cacheCreate": 0 }
+        },
+        {
             "id": "deepseek.v4-pro", "provider": "deepseek", "match": ["deepseek-v4-pro", "v4-pro"], "sample": "deepseek/deepseek-v4-pro",
             "label": "DeepSeek V4 Pro", "shortLabel": "DS V4 Pro", "modelClass": "v4-pro", "modelTier": "long-context", "mood": "deliberate",
             "spriteId": "agent.deepseek.pro", "paletteKey": "deepseek", "color": "#9ee7ff",
             "trim": ["#9ee7ff", "#6dd7ff", "#d9f7ff"], "accent": ["#e5fbff", "#9ee7ff", "#76b8ff"],
-            "contextWindow": 1000000, "pricing": { "input": 1.74, "output": 3.48, "cacheRead": 0.145, "cacheCreate": 0 }
+            "contextWindow": 1000000, "pricing": { "input": 0.3, "output": 1.2, "cacheRead": 0.006, "cacheCreate": 0 }
         },
         {
             "id": "deepseek.v4-flash", "provider": "deepseek", "match": ["deepseek-v4-flash", "v4-flash"], "sample": "deepseek/deepseek-v4-flash",
             "label": "DeepSeek V4 Flash", "shortLabel": "DS Flash", "modelClass": "v4-flash", "modelTier": "swift", "mood": "quick",
             "spriteId": "agent.deepseek.flash", "paletteKey": "deepseek", "color": "#7cf4c8",
             "trim": ["#7cf4c8", "#45dca8", "#c8fff0"], "accent": ["#d8fff4", "#7cf4c8", "#6dd7ff"],
-            "contextWindow": 256000, "pricing": { "input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheCreate": 0 }
+            "contextWindow": 256000, "pricing": { "input": 0.3, "output": 1.2, "cacheRead": 0.006, "cacheCreate": 0 }
         },
         {
             "id": "deepseek.reasoner", "provider": "deepseek", "match": ["deepseek-reasoner", "reasoner"], "sample": "deepseek/deepseek-reasoner",
             "label": "DeepSeek Reasoner", "shortLabel": "DS Reasoner", "modelClass": "reasoner", "modelTier": "balanced", "mood": "deliberate",
             "spriteId": "agent.deepseek.reasoner", "paletteKey": "deepseek", "color": "#7cf4c8",
             "trim": ["#7cf4c8", "#45dca8", "#c8fff0"], "accent": ["#d8fff4", "#7cf4c8", "#6dd7ff"],
-            "contextWindow": 128000, "pricing": { "input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheCreate": 0 }
+            "contextWindow": 128000, "pricing": { "input": 0.3, "output": 1.2, "cacheRead": 0.006, "cacheCreate": 0 }
         },
         {
             "id": "grok.4-5", "provider": "grok", "match": ["grok-4-5", "grok-4.5"], "sample": "grok-4.5",
@@ -302,9 +309,9 @@
             "trim": ["#f5c36a", "#ff8da8", "#ffeff3"], "accent": ["#ffeff3", "#ff8da8", "#f5c36a"]
         },
         "deepseek": {
-            "pricingKey": "deepseek", "pricing": { "input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheCreate": 0 }, "contextWindow": 128000,
+            "pricingKey": "deepseek", "pricing": { "input": 0.3, "output": 1.2, "cacheRead": 0.006, "cacheCreate": 0 }, "contextWindow": 1000000,
             "label": "DeepSeek", "shortLabel": "DeepSeek", "modelClass": "deepseek", "modelTier": null, "mood": "balanced",
-            "spriteId": "agent.deepseek.pro", "paletteKey": "deepseek", "color": "#7cf4c8",
+            "spriteId": "agent.deepseek.flash", "paletteKey": "deepseek", "color": "#7cf4c8",
             "trim": ["#7cf4c8", "#45dca8", "#c8fff0"], "accent": ["#d8fff4", "#7cf4c8", "#6dd7ff"]
         },
         "grok": {

@@ -1,6 +1,6 @@
 // GENERATED FROM models.json + scripts/models/resolver.template.js — DO NOT EDIT
 
-const MODEL_REVISION = "2026-09-05";
+const MODEL_REVISION = "2026-09-10";
 const MODEL_REGISTRY = [
     {
         "accent": [
@@ -831,6 +831,39 @@ const MODEL_REGISTRY = [
     },
     {
         "accent": [
+            "#d8fff4",
+            "#7cf4c8",
+            "#6dd7ff"
+        ],
+        "color": "#7cf4c8",
+        "contextWindow": 1000000,
+        "id": "deepseek.flash",
+        "label": "DeepSeek V4.1 Flash",
+        "match": [
+            "deepseek-flash"
+        ],
+        "modelClass": "flash",
+        "modelTier": "swift",
+        "mood": "quick",
+        "paletteKey": "deepseek",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.006,
+            "input": 0.3,
+            "output": 1.2
+        },
+        "provider": "deepseek",
+        "sample": "deepseek/deepseek-flash",
+        "shortLabel": "DS Flash",
+        "spriteId": "agent.deepseek.flash",
+        "trim": [
+            "#7cf4c8",
+            "#45dca8",
+            "#c8fff0"
+        ]
+    },
+    {
+        "accent": [
             "#e5fbff",
             "#9ee7ff",
             "#76b8ff"
@@ -849,9 +882,9 @@ const MODEL_REGISTRY = [
         "paletteKey": "deepseek",
         "pricing": {
             "cacheCreate": 0,
-            "cacheRead": 0.145,
-            "input": 1.74,
-            "output": 3.48
+            "cacheRead": 0.006,
+            "input": 0.3,
+            "output": 1.2
         },
         "provider": "deepseek",
         "sample": "deepseek/deepseek-v4-pro",
@@ -883,9 +916,9 @@ const MODEL_REGISTRY = [
         "paletteKey": "deepseek",
         "pricing": {
             "cacheCreate": 0,
-            "cacheRead": 0.028,
-            "input": 0.14,
-            "output": 0.28
+            "cacheRead": 0.006,
+            "input": 0.3,
+            "output": 1.2
         },
         "provider": "deepseek",
         "sample": "deepseek/deepseek-v4-flash",
@@ -917,9 +950,9 @@ const MODEL_REGISTRY = [
         "paletteKey": "deepseek",
         "pricing": {
             "cacheCreate": 0,
-            "cacheRead": 0.028,
-            "input": 0.14,
-            "output": 0.28
+            "cacheRead": 0.006,
+            "input": 0.3,
+            "output": 1.2
         },
         "provider": "deepseek",
         "sample": "deepseek/deepseek-reasoner",
@@ -1371,7 +1404,7 @@ const MODEL_DEFAULTS = {
             "#6dd7ff"
         ],
         "color": "#7cf4c8",
-        "contextWindow": 128000,
+        "contextWindow": 1000000,
         "label": "DeepSeek",
         "modelClass": "deepseek",
         "modelTier": null,
@@ -1379,13 +1412,13 @@ const MODEL_DEFAULTS = {
         "paletteKey": "deepseek",
         "pricing": {
             "cacheCreate": 0,
-            "cacheRead": 0.028,
-            "input": 0.14,
-            "output": 0.28
+            "cacheRead": 0.006,
+            "input": 0.3,
+            "output": 1.2
         },
         "pricingKey": "deepseek",
         "shortLabel": "DeepSeek",
-        "spriteId": "agent.deepseek.pro",
+        "spriteId": "agent.deepseek.flash",
         "trim": [
             "#7cf4c8",
             "#45dca8",

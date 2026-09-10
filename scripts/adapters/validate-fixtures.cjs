@@ -398,6 +398,11 @@ if (fixture) {
   assert.equal(child.lastTool, 'TodoWrite');
   assert.equal(child.tokenUsage.contextWindowMax, 256000);
 
+  const flash = sessions.find((session) => session.sessionId === 'opencode-ses_flash');
+  assert.ok(flash);
+  assert.equal(flash.model, 'deepseek/deepseek-flash');
+  assert.equal(flash.tokenUsage.contextWindowMax, 1000000);
+
   const detail = adapter.getSessionDetail('opencode-ses_parent', '/tmp/claude-ville');
   assert.equal(detail.provider, 'opencode');
   assert.equal(detail.sessionId, 'opencode-ses_parent');
@@ -1292,6 +1297,29 @@ function buildOpenCodeFixture() {
       tool: 'todowrite',
       state: { status: 'pending', input: { description: 'Update todos' } },
     }));
+
+    // DeepSeek-V4.1-Flash is served under the bare `deepseek-flash` id.
+    insertSession.run(
+      'ses_flash',
+      'proj_fixture',
+      null,
+      'flash',
+      '/tmp/claude-ville',
+      'Fixture flash',
+      '1.15.3',
+      now - 3000,
+      now - 500,
+      'build',
+      JSON.stringify({ id: 'deepseek-flash', providerID: 'deepseek' }),
+      0.001,
+      8,
+      2,
+      0,
+      0,
+      0,
+    );
+    insertMessage.run('msg_flash', 'ses_flash', now - 2000, now - 500, JSON.stringify({ role: 'assistant' }));
+    insertPart.run('prt_flash_text', 'msg_flash', 'ses_flash', now - 600, now - 500, JSON.stringify({ type: 'text', text: 'Flash ready.' }));
   } finally {
     db.close();
   }

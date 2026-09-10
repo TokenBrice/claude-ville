@@ -265,6 +265,7 @@ function tokenUsageFromSession(row, parts = []) {
 
 function contextLimitForModel(model) {
   const normalized = String(model || '').toLowerCase();
+  if (normalized.includes('deepseek-flash')) return 1000000;
   if (normalized.includes('deepseek-v4-pro')) return 1000000;
   if (normalized.includes('deepseek-v4-flash')) return 256000;
   if (normalized.includes('deepseek-reasoner')) return 128000;
