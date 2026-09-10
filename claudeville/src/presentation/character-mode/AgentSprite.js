@@ -28,7 +28,7 @@ import {
     unpinnedCacheKeys,
 } from './CanvasBudget.js';
 import { AgentAction, resolveAgentAction } from './ActionVocabulary.js';
-import { AgentGpuOverlayRenderer } from './AgentGpuOverlayRenderer.js';
+import { AgentGpuOverlayRenderer, departedTableau } from './AgentGpuOverlayRenderer.js';
 import { codexWeaponPose, drawCodexGauntlet } from './CodexWeaponPose.js';
 import { clearDetachedCodexWrench } from './CodexEngineerGrips.js';
 import { clampDt, inDutyPause, IDLE_STRIDE_PERIOD_MS, IDLE_STRIDE_PAUSE_FRACTION } from './MotionClock.js';
@@ -2196,7 +2196,7 @@ export class AgentSprite {
         // Lingering departures are a static finished tableau, not an active
         // participant. Clear stale travel/chat state once, then allocate no
         // cadence, particles, paths, or animation work on subsequent frames.
-        if (this.agent?.isDeparted) {
+        if (departedTableau(this)) {
             if (!this._departedResting) {
                 this._departedResting = true;
                 this.moving = false;
@@ -2747,7 +2747,7 @@ export class AgentSprite {
             && ![AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(this.agent?.status);
         if (budgetMode && !this.gpuWorldEnabled) {
             this._drawBudgetImpostor(ctx);
-            if (this.agent?.isDeparted) this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
+            if (departedTableau(this)) this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
             if (this.overlaySlot != null) {
                 this._drawCompactNameStatus(ctx);
             }
@@ -2820,7 +2820,7 @@ export class AgentSprite {
         // Ensure animState reflects current movement (idle when not moving).
         // Lingering departures hold a finished resting frame even if stale
         // movement state remains on the projected agent.
-        this.animState = this.agent?.isDeparted
+        this.animState = departedTableau(this)
             ? 'idle'
             : this.moving && this.motionScale > 0 ? 'walk' : 'idle';
 
@@ -2866,16 +2866,16 @@ export class AgentSprite {
 
         // Strong ground language keeps agents readable against dense pixel-art terrain.
         // 4.6 — effort aura first so it stays behind the sprite and rings.
-        if (!this.agent?.isDeparted) this._drawEffortAura(ctx, identity);
+        if (!departedTableau(this)) this._drawEffortAura(ctx, identity);
         this._drawGrounding(ctx);
-        if (!this.agent?.isDeparted) {
+        if (!departedTableau(this)) {
             this._drawEffortFloorRing(ctx, identity);
             this._drawContextPressureRing(ctx);
         }
 
         if (!this.selected && zoom < 1) {
             this._drawLowZoomImpostor(ctx);
-            if (this.agent?.isDeparted && !this.gpuWorldEnabled) {
+            if (departedTableau(this) && !this.gpuWorldEnabled) {
                 this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
             }
             // #4 — the beacon must survive the low-zoom busy overview, the exact
@@ -2943,7 +2943,7 @@ export class AgentSprite {
         // offset (reduced motion). Walking keeps the drop so the gait reads
         // hunched all the way to the watchtower.
         const distressDrop = this._distressPostureDrop();
-        const bobY = this.agent?.isDeparted
+        const bobY = departedTableau(this)
             ? 2
             : this.animState === 'idle'
             ? this.motionScale > 0
@@ -3022,7 +3022,7 @@ export class AgentSprite {
         // Agent records are submitted independently of terrain coverage, even
         // beyond the island. Only the resident backend owns their body paint.
         const canvasBody = !this.gpuWorldEnabled;
-        const departedBody = this.agent?.isDeparted && !this.gpuWorldEnabled;
+        const departedBody = departedTableau(this) && !this.gpuWorldEnabled;
         if (departedBody) {
             ctx.save();
             ctx.filter = 'grayscale(0.9) saturate(0.25) brightness(0.72)';
@@ -3055,14 +3055,14 @@ export class AgentSprite {
         // geometry from the frame record. Running both would strike every mark
         // twice on the GPU path — compounded alpha on any frame where the
         // Canvas layer shows through, and double the annotation work always.
-        if (!this.agent?.isDeparted && !this.gpuWorldEnabled) {
+        if (!departedTableau(this) && !this.gpuWorldEnabled) {
             this._drawSignatureMark(ctx, { dx, dy, bounds, drawScale });
             this._drawReceiveBeat(ctx, { dx, dy, bounds, drawScale });
             this._drawStanceOverlay(ctx, { dx, dy, bounds, drawScale });
             this._drawActionPoseOverlay(ctx, { dx, dy, bounds, drawScale });
             this._drawToolRitualOverlay(ctx, { dx, dy, bounds, drawScale });
         }
-        if (this.agent?.isDeparted && !this.gpuWorldEnabled) {
+        if (departedTableau(this) && !this.gpuWorldEnabled) {
             this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
         }
 
@@ -3100,16 +3100,16 @@ export class AgentSprite {
         // Chat bubble overlay (if chatting).
         // Per-agent floating text bubbles are deferred to Phase 4; the chat
         // ellipsis animation already handled by _drawChatEffect below.
-        if (this.chatting && !this.agent?.isDeparted) {
+        if (this.chatting && !departedTableau(this)) {
             this._drawChatEffect(ctx);
-        } else if (!this.agent?.isDeparted) {
+        } else if (!departedTableau(this)) {
             this._drawStatus(ctx, contentTopY);
         }
-        if (!this.agent?.isDeparted) this._drawStatusEmote(ctx, contentTopY);
+        if (!departedTableau(this)) this._drawStatusEmote(ctx, contentTopY);
         // Plan-mode and retry glyphs sit above the silhouette. The status
         // emote (kind != null) wins the slot; otherwise plan-mode glyph renders
         // slightly higher. Retry glyph renders to the right.
-        if (!this.agent?.isDeparted) {
+        if (!departedTableau(this)) {
             this._drawPlanModeGlyph(ctx, contentTopY);
             this._drawRetryGlyph(ctx, contentTopY);
         }
@@ -5158,7 +5158,7 @@ export class AgentSprite {
     // no strip, is travelling, or is doing something the strip does not author.
     // Null is the contract's fallback: the procedural overlay stays in charge.
     _actionStripPose(identity, spriteId) {
-        if (this.moving || this.chatting || this.agent?.isDeparted || this.animState !== 'idle') return null;
+        if (this.moving || this.chatting || departedTableau(this) || this.animState !== 'idle') return null;
         const group = this.actionStripGroup();
         if (!group) return null;
         const strip = this.assets?.getActionStrip?.(spriteId);

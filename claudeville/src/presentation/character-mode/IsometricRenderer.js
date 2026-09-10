@@ -1700,8 +1700,9 @@ export class IsometricRenderer {
                     this._worldSpritesDirty = true;
                     return;
                 }
-                const handled = this._beginRelationshipDeparture(agent);
-                if (!handled) this._beginAgentGateDeparture(agent);
+                // The sprite usually left the moment the agent departed
+                // (agent:updated); this only catches one that never did.
+                this._beginAgentDeparture(agent);
             }),
             eventBus.on('agent:updated', (agent) => {
                 if (!this._worldModeActive) {
@@ -1712,10 +1713,23 @@ export class IsometricRenderer {
                     return;
                 }
                 const sprite = this.agentSprites.get(agent.id);
-                if (sprite) {
-                    if (sprite.applyAgentUpdate) sprite.applyAgentUpdate(agent);
-                    else sprite.agent = agent;
-                    this._markSpritesDirty();
+                if (!sprite) {
+                    // The villager already walked out but its session came
+                    // back inside the departed grace: it arrives again.
+                    if (agent.isDeparted) return;
+                    this._addAgentSprite(agent);
+                    this._beginRelationshipArrival(agent);
+                    return;
+                }
+                if (sprite.applyAgentUpdate) sprite.applyAgentUpdate(agent);
+                else sprite.agent = agent;
+                this._markSpritesDirty();
+                if (agent.isDeparted) {
+                    // No lingering ghost: a departed villager leaves at once.
+                    this._beginAgentDeparture(agent);
+                } else if (this._isGateTransit(sprite, 'departure')) {
+                    // Session returned mid-exit: turn around at the gate.
+                    this._returnFromGateDeparture(agent, sprite);
                 }
             }),
             eventBus.on('subagent:dispatched', (payload) => {
@@ -2272,6 +2286,12 @@ export class IsometricRenderer {
             if (!liveIds.has(agentId)) this._removeAgentSprite(agentId);
         }
         for (const agent of this.world?.agents?.values?.() || []) {
+            if (agent.isDeparted) {
+                // Departed while world mode was inactive: walk out now, and
+                // never spawn a sprite for one that already left.
+                if (this.agentSprites.has(agent.id)) this._beginAgentDeparture(agent);
+                continue;
+            }
             this._addAgentSprite(agent);
         }
         this._worldSpritesDirty = false;
@@ -3147,8 +3167,7 @@ export class IsometricRenderer {
             if (existing.applyAgentUpdate) existing.applyAgentUpdate(agent);
             else existing.agent = agent;
             if (this._isGateTransit(existing, 'departure')) {
-                this.gateTransits.delete(agent.id);
-                this._beginAgentGateArrival(agent, existing);
+                this._returnFromGateDeparture(agent, existing);
             }
             this._markSpritesDirty();
             return;
@@ -3420,11 +3439,32 @@ export class IsometricRenderer {
         }
 
         sprite.selected = false;
+        // Walk out as the villager it was, not as the grey departed tableau.
+        sprite.leaving = true;
         sprite.walkToTile?.(
             VILLAGE_GATE.outside.tileX + this._gateJitter(agent, 'depart-x', 0.30),
             VILLAGE_GATE.outside.tileY + this._gateJitter(agent, 'depart-y', 0.20),
         );
         this.gateTransits.set(agent.id, { type: 'departure' });
+        this._markSpritesDirty();
+    }
+
+    // A villager leaves the moment its agent departs; the exit runs once.
+    // Subagents merge back into their parent, orphans return to the Portal
+    // Gate, and top-level sessions walk out through the village gate.
+    _beginAgentDeparture(agent) {
+        const sprite = this.agentSprites.get(agent?.id);
+        if (!sprite || sprite._archiveAnim || this._isGateTransit(sprite, 'departure')) return;
+        const handled = this._beginRelationshipDeparture(agent);
+        if (!handled) this._beginAgentGateDeparture(agent);
+    }
+
+    // Session came back while its villager was still walking to the gate:
+    // turn around where it stands instead of popping back to the gate.
+    _returnFromGateDeparture(agent, sprite) {
+        this.gateTransits.delete(agent.id);
+        sprite.leaving = false;
+        sprite.retargetVisit?.();
         this._markSpritesDirty();
     }
 

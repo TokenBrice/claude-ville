@@ -8,6 +8,14 @@ import { compactIncidentMark, drawCompactIncidentMark } from './AgentSprite.js';
 // pass. The host remains authoritative for animation, identity, and all shared
 // annotation primitives, matching the coarse host-backed renderer split used
 // by WildlifeRenderer and FoliageRenderer.
+// A departed villager walks out through the village gate at once; the grey
+// resting tableau ("DEPARTED" plaque, dim body, frozen frame) only applies
+// when the renderer has not started that exit. Plain function rather than a
+// method so plain-object hosts in tests and overlays resolve it the same way.
+export function departedTableau(host) {
+    return Boolean(host?.agent?.isDeparted) && !host?.leaving;
+}
+
 export class AgentGpuOverlayRenderer {
     constructor(host) {
         this.host = host;
@@ -34,7 +42,7 @@ export class AgentGpuOverlayRenderer {
 
         // Additive overview annotation: the compact helper is PRIMARY and does
         // not need a GPU body record. needsYou is a no-op (beacon already drawn).
-        if (overview && !host.agent?.isDeparted && incident) {
+        if (overview && !departedTableau(host) && incident) {
             drawCompactIncidentMark(ctx, incident, { x: host.x, y: host.y, zoom });
         }
 
@@ -60,7 +68,7 @@ export class AgentGpuOverlayRenderer {
         // This block is the sole owner of these marks on the resident backend:
         // AgentSprite's Canvas body pass stands down while gpuWorldEnabled, so
         // the order here is the Canvas order and each mark is struck once.
-        if (record.frameGeometry && !host.agent?.isDeparted) {
+        if (record.frameGeometry && !departedTableau(host)) {
             host._drawSignatureMark(ctx, record.frameGeometry);
             host._drawReceiveBeat(ctx, record.frameGeometry);
             host._drawStanceOverlay(ctx, record.frameGeometry);
@@ -70,10 +78,10 @@ export class AgentGpuOverlayRenderer {
 
         // Static-band cue: departed agents never pulse or allocate animation
         // state, so reduced motion receives the complete visual treatment.
-        if (host.agent?.isDeparted) this.drawDepartedTreatment(ctx);
+        if (departedTableau(host)) this.drawDepartedTreatment(ctx);
 
         const admitted = host.overlaySlot != null || host.nameTagSlot != null || primary;
-        if (!host.agent?.isDeparted && (primary || host.selected || annotationMode === 'full' || host.gpuActionOverlay)) {
+        if (!departedTableau(host) && (primary || host.selected || annotationMode === 'full' || host.gpuActionOverlay)) {
             if (host.chatting) host._drawChatEffect(ctx);
             else host._drawStatus(ctx, contentTopY);
             // Overview already used the compact helper; skip the close-zoom
@@ -203,11 +211,11 @@ export class AgentGpuOverlayRenderer {
             y: dy - pad * drawScale,
             width: (pad ? padded : bodyCell.sw) * drawScale,
             height: (pad ? padded : bodyCell.sh) * drawScale,
-            alpha: host.agent?.isDeparted ? alpha * 0.58 : alpha,
+            alpha: departedTableau(host) ? alpha * 0.58 : alpha,
             material: gpuMaterialNameForProvider(host.agent?.provider),
             elevation: 0.52,
             occluder: 0.58,
-            emissive: host.agent?.isDeparted
+            emissive: departedTableau(host)
                 ? 0
                 : status === AgentStatus.WAITING_ON_USER
                     ? 0.42
