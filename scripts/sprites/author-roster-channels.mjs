@@ -59,7 +59,11 @@ const PROFILES = Object.freeze({
     'agent.kimi.base': character('fabric'),
     'agent.deepseek.reasoner': character('earth', 0.12, ['#4ea68c', '#398e7b']),
     'agent.deepseek.pro': character('earth', 0.10, ['#61ab9d', '#319893']),
-    'agent.deepseek.flash': character('earth', 0.08, ['#5aab9d', '#41a9b7']),
+    // Sampled 2026-09-10 from each regenerated sheet: the sparse bright teals
+    // on the cloak's rune edging, not the leather body greens.
+    'agent.deepseek.flash': character('earth', 0.08, ['#3ca186', '#2fb586', '#62caba']),
+    'agent.deepseek.flash.high': character('earth', 0.10, ['#50c3a9', '#17ad8e']),
+    'agent.deepseek.flash.xhigh': character('earth', 0.12, ['#69dcbe', '#80e8cc']),
     'agent.grok.base': character('fabric', 0.14, ['#46a9d1', '#59d3e4']),
     'agent.grok.composer': character('fabric', 0.12, ['#4ab9cf', '#47dce4']),
     'agent.zai.glm': character('fabric', 0.12, ['#73b493', '#4e7c61']),

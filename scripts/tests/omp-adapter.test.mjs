@@ -173,3 +173,31 @@ test('OMP adapter discovers parent and nested agent transcripts with details and
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('OMP thinking level changes become the session reasoning effort', () => {
+  const sessionRecord = {
+    type: 'session',
+    id: '01900000-0000-7000-8000-000000000020',
+    timestamp: '2026-08-12T10:00:00.000Z',
+    cwd: '/workspace/fixture',
+  };
+  const options = {
+    filePath: '/nonexistent/omp-thinking.jsonl',
+    now: Date.parse('2026-08-12T10:01:00.000Z'),
+    fileMtimeMs: Date.parse('2026-08-12T10:00:04.000Z'),
+  };
+
+  const parsed = parseOmpTranscript([
+    sessionRecord,
+    { type: 'thinking_level_change', timestamp: '2026-08-12T10:00:01.000Z', thinkingLevel: 'low' },
+    { type: 'thinking_level_change', timestamp: '2026-08-12T10:00:02.000Z', thinkingLevel: null },
+    { type: 'thinking_level_change', timestamp: '2026-08-12T10:00:03.000Z', thinkingLevel: 'high' },
+    { type: 'thinking_level_change', timestamp: '2026-08-12T10:00:04.000Z', thinkingLevel: 'max' },
+  ], options);
+
+  // The latest level wins, and a null level never clears the previous one.
+  assert.equal(parsed.session.reasoningEffort, 'max');
+
+  const silent = parseOmpTranscript([sessionRecord], options);
+  assert.equal(silent.session.reasoningEffort, null);
+});

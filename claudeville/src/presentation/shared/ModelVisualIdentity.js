@@ -66,6 +66,12 @@ const CODEX_GPT55_SPRITE_BY_EFFORT = Object.freeze({
     high: 'agent.codex.gpt55.high',
     xhigh: 'agent.codex.gpt55.xhigh',
 });
+// DeepSeek Flash's body upgrades with effort — shortbow archer at 'high',
+// longbow ranger at 'xhigh' — so the ladder tops out where Codex folds 'max'.
+const DEEPSEEK_FLASH_SPRITE_BY_EFFORT = Object.freeze({
+    high: 'agent.deepseek.flash.high',
+    xhigh: 'agent.deepseek.flash.xhigh',
+});
 
 const DEFAULT_EFFORT_RENDERING = Object.freeze({
     effortBakedIntoSprite: false,
@@ -81,12 +87,13 @@ const PROVIDER_BASE_SPRITES = Object.freeze(Object.fromEntries(
 
 // Sprite ids selected by rendering policy rather than by a registry row:
 // the per-provider `agent.<provider>.base` fallback (AgentSprite composes
-// `agent.${provider}.base` when an identity has no spriteId) and the GPT-5.5
-// effort variants. The registry completeness test accepts these alongside
-// registry rows and provider defaults.
+// `agent.${provider}.base` when an identity has no spriteId), the GPT-5.5
+// effort variants, and the DeepSeek Flash variants. The registry completeness
+// test accepts these alongside registry rows and provider defaults.
 export const POLICY_SPRITE_IDS = Object.freeze([
     ...Object.keys(MODEL_DEFAULTS).map((provider) => `agent.${provider}.base`),
     ...Object.values(CODEX_GPT55_SPRITE_BY_EFFORT),
+    ...Object.values(DEEPSEEK_FLASH_SPRITE_BY_EFFORT),
 ]);
 
 function codexEquipment(effortTier, modelClass, { suppressBakedWeapon = true } = {}) {
@@ -229,12 +236,19 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         };
 
     if (row.paletteKey !== 'codex') {
+        // DeepSeek Flash is the one non-Codex row whose body upgrades with
+        // effort. Only the sheet lookup folds 'max' into 'xhigh'; the reported
+        // tier, crest, floor ring, and label all keep the literal tier.
+        const ladderSprite = row.spriteId === 'agent.deepseek.flash'
+            ? DEEPSEEK_FLASH_SPRITE_BY_EFFORT[normalizeCodexEffortTier(effortTier)]
+            : null;
         return {
             ...baseIdentity,
             effortTier,
             ...DEFAULT_EFFORT_RENDERING,
             effortAccessory,
             effortFloorRing,
+            spriteId: ladderSprite || row.spriteId,
         };
     }
 

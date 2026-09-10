@@ -149,6 +149,18 @@ function codexGpt55Sprite(effortTier) {
       : 'agent.codex.gpt55';
 }
 
+// Browser/server parity: ModelVisualIdentity.js owns the same ladder for the
+// world sprite. Non-Codex rows otherwise keep their registry sprite at every
+// tier.
+const DEEPSEEK_FLASH_SPRITE_BY_EFFORT = Object.freeze({
+  high: 'agent.deepseek.flash.high',
+  xhigh: 'agent.deepseek.flash.xhigh',
+});
+
+function deepseekFlashSprite(effortTier) {
+  return DEEPSEEK_FLASH_SPRITE_BY_EFFORT[effortTier] || 'agent.deepseek.flash';
+}
+
 function inferredRegistryProvider(model, provider = '') {
   const normalizedModel = normalizeModel(model);
   if (normalizedModel.includes('deepseek')) return 'deepseek';
@@ -200,6 +212,7 @@ function modelIdentity(model, effort, provider = '') {
     || row.modelClass === 'gpt56sol'
     || row.modelClass === 'gpt56terra'
     || row.modelClass === 'gpt56luna';
+  const isFlashLadder = row.spriteId === 'agent.deepseek.flash';
   const resolvedEffortTier = row.paletteKey === 'codex' && !isCelestial
     ? normalizeCodexEffortTier(effortTier)
     : effortTier;
@@ -209,7 +222,7 @@ function modelIdentity(model, effort, provider = '') {
     effortTier: resolvedEffortTier,
     spriteId: row.modelClass === 'gpt55'
       ? codexGpt55Sprite(resolvedEffortTier)
-      : identity.spriteId,
+      : (isFlashLadder ? deepseekFlashSprite(normalizeCodexEffortTier(effortTier)) : identity.spriteId),
     color: identity.color,
   };
 }

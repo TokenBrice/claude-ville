@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-09-09-astra-worldsplitter"
+  assetVersion: "2026-09-10-deepseek-scout-ladder"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -635,27 +635,28 @@ characters:
         - { id: emissive.agent.deepseek.pro.rune-trim, kind: rune, geometry: sidecar, strength: 0.1 }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
+  # DeepSeek Flash effort ladder (mirrors agent.codex.gpt55.{high,xhigh}):
+  # scout -> shortbow -> longbow. All three rungs share the Reasoner rig as
+  # pro-mode style reference so the character visibly upgrades its kit.
   - id: agent.deepseek.flash
-    tool: create_character
-    prompt: "DeepSeek Flash light scout rogue, minimal forest-green leather vest and green headband, single curved dagger sheathed at hip, light bracers, dark green leggings and light boots, lean fast agile runner stance, glowing teal accent trim, compact readable high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no bow, no plate armor, 8-direction pixel art"
-    n_directions: 8
-    size: 92
-    generationSize: 76
-    generationMode: pro
-    animations: [walk, breathing-idle]
     animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
     actionStrip:
       path: characters/agent.deepseek.flash/actions.png
       cell: 92
       groups: { read: { rows: [0, 3], hold: 3 } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: 8bc97f0f-9d7f-4801-92a3-2191cd60fc4b, animationGroupId: b930b023-8b4e-4c4a-88b9-282d5e0ed671, generationSize: 112 }
+      provenance: { characterId: 56645a06-9fff-45e5-8929-6f2bbd54a2c6, animationGroupId: 7da12e76-7616-4a25-8d13-4b3960d532e6, generationSize: 76 }
+    provenance: { characterId: 56645a06-9fff-45e5-8929-6f2bbd54a2c6, generationSize: 76, generationMode: pro }
+    tool: create_character
+    prompt: "DeepSeek Flash hooded forest scout, deep forest-green fitted leather armor with bronze trim, short hooded cloak with glowing teal rune edging, single curved dagger sheathed at hip, leather bracers and belt pouch, dark green leggings and light boots, lean agile ready stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no bow, no plate armor, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
     portraitCrop: { x: 31, y: 15, w: 32, h: 32 }
-    provenance: { characterId: 8bc97f0f-9d7f-4801-92a3-2191cd60fc4b }
     palette_layer: deepseek
-    # Sampled from sheet.png (plan 0.5): dark green vest/leggings; the declared
-    # pants source already matches and no confident trim cluster exists.
-    paletteSource: { robe: '#17251d' }
+    paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
     anchor: [46, 80]
     materialClass: earth
     materialSidecar: true
@@ -665,7 +666,69 @@ characters:
     emissive:
       strength: 0
       sources:
-        - { id: emissive.agent.deepseek.flash.accent-trim, kind: rune, geometry: sidecar, strength: 0.08 }
+        - { id: emissive.agent.deepseek.flash.rune-edging, kind: rune, geometry: sidecar, strength: 0.08 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  - id: agent.deepseek.flash.high
+    animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.deepseek.flash.high/actions.png
+      cell: 92
+      groups: { read: { rows: [0, 3], hold: 3 } }
+      grip: { hand: both, sheathe: true }
+      provenance: { characterId: b2bad297-e8c2-4a73-9a20-266ce33fb26c, animationGroupId: 86d4c084-6cc9-4381-b01a-363278172051, generationSize: 76 }
+    provenance: { characterId: b2bad297-e8c2-4a73-9a20-266ce33fb26c, generationSize: 76, generationMode: pro }
+    tool: create_character
+    prompt: "DeepSeek Flash hooded forest scout archer, deep forest-green fitted leather armor with bronze trim, short hooded cloak with glowing teal rune edging, compact recurve shortbow held in one hand, small arrow quiver at hip, curved dagger sheathed at belt, leather bracers, dark green leggings and light boots, lean agile ready stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no plate armor, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    portraitCrop: { x: 31, y: 15, w: 32, h: 32 }
+    palette_layer: deepseek
+    paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
+    anchor: [46, 80]
+    materialClass: earth
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.deepseek.flash.high.rune-edging, kind: rune, geometry: sidecar, strength: 0.1 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  - id: agent.deepseek.flash.xhigh
+    animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.deepseek.flash.xhigh/actions.png
+      cell: 92
+      groups: { read: { rows: [0, 3], hold: 3 } }
+      grip: { hand: both, sheathe: true }
+      provenance: { characterId: ed46dccd-92ae-4be0-be3a-cb08051d770e, animationGroupId: 89bbe8fe-e17d-4513-bcf6-eec764e2c8e0, generationSize: 76 }
+    provenance: { characterId: ed46dccd-92ae-4be0-be3a-cb08051d770e, generationSize: 76, generationMode: pro }
+    tool: create_character
+    prompt: "DeepSeek Flash hooded forest ranger, deep forest-green layered leather armor with ornate bronze trim, hooded cloak with glowing teal rune edging, large ornate recurve longbow held ready in hand, full arrow quiver at hip, leather bracers and pauldron, dark green leggings and boots, commanding seasoned ranger stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no plate armor, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    portraitCrop: { x: 30, y: 12, w: 34, h: 30 }
+    palette_layer: deepseek
+    paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
+    anchor: [46, 80]
+    materialClass: earth
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.deepseek.flash.xhigh.rune-edging, kind: rune, geometry: sidecar, strength: 0.12 }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   # Grok cosmic truthseeker class: void-black + electric cyan, distinct from

@@ -108,7 +108,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `gitBranch` | string \| null | Provider-recorded git branch when present, capped at 256 characters. |
 | `tokenUsage` | object \| null | See "Token normalization" below. Registry normalization sets this to null when adapters omit token data. |
 | `parentSessionId` | string \| null | Set on subagent / spawned-thread sessions. |
-| `reasoningEffort` | string \| null | Codex-only. Pulled from `turn_context` / `event_msg`. |
+| `reasoningEffort` | string \| null | Codex pulls it from `turn_context` / `event_msg`; OMP takes the latest `thinking_level_change` record (`low` / `medium` / `high` / `max`). Registry normalization sets this to null when adapters omit it. |
 | `workflowId` | string \| null | Claude-only. Workflow run id (`wf_<id>`) for sub-agents spawned by the Workflow tool; null otherwise. |
 | `workflowName` | string \| null | Claude-only. Human workflow name recovered from the persisted run-script filename; null otherwise. |
 | `permissionMode` | string \| null | Claude-only. Latest `permissionMode` marker in the transcript tail window (`'default'` / `'plan'` / `'acceptEdits'` / `'bypassPermissions'`); `'plan'` means the session is in plan mode, anything else is act mode. Registry normalization sets this to null when adapters omit it. |

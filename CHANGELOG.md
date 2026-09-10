@@ -2,6 +2,19 @@
 
 ---
 
+## v0.45.5 — *The Ranger's Bow* · Sep 10, 2026
+
+DeepSeek Flash used to arrive as a bare-armed rogue that faded next to the other villagers. It now walks in as a hooded forest scout in the Reasoner's teal-runed cloak, and strings a bow as its thinking deepens.
+
+- **Scout to ranger.** `agent.deepseek.flash` was regenerated in pro mode against the Reasoner rig, and two new rungs join it: `agent.deepseek.flash.high` draws a shortbow at high effort, `agent.deepseek.flash.xhigh` carries the longbow at xhigh or max. Each rung ships walk, idle, and a `read` action strip with reviewed emissive rune edging.
+- **OMP effort reaches the village.** The OMP adapter now surfaces `thinking_level_change` records as `reasoningEffort`, so every OMP session — not just Codex and Grok — gets effort rings, auras, and the DeepSeek ladder.
+- **Ladder policy.** `ModelVisualIdentity` and the server-side presentation select the rung from the effort tier for any row that maps to the Flash sprite; the reported tier, crest, and label stay literal (`max` still reads max). `deepseek-v4-pro` and the Reasoner keep their own sheets.
+- **Roster page.** `claudeville/tools/model-roster.html` lists `deepseek-flash` on the full ladder so all three rungs render side by side.
+
+Validation: 903 tests passed, manifest validator and channel audit clean, render and server smokes passed; three live OMP DeepSeek agents at low, high, and max thinking walked the village as scout, shortbow archer, and longbow ranger.
+
+---
+
 ## v0.45.4 — *The Open Gate* · Sep 10, 2026
 
 Finished agents no longer haunt the village. A departed villager used to stand as a grey, frozen "DEPARTED" figure for a minute and a half before its walk-out began; now it leaves the moment its session is gone.

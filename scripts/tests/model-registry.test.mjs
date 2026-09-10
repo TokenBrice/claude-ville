@@ -64,6 +64,31 @@ test('Astra keeps her signature halberd while effort rings and crests stay disti
     }
 });
 
+test('DeepSeek Flash upgrades its body along the effort ladder while the tier stays literal', () => {
+    const ladder = [
+        [null, 'agent.deepseek.flash', null],
+        ['low', 'agent.deepseek.flash', 'low'],
+        ['medium', 'agent.deepseek.flash', 'medium'],
+        ['high', 'agent.deepseek.flash.high', 'high'],
+        ['xhigh', 'agent.deepseek.flash.xhigh', 'xhigh'],
+        ['max', 'agent.deepseek.flash.xhigh', 'max'],
+    ];
+    for (const [effort, spriteId, effortTier] of ladder) {
+        const browserIdentity = getModelVisualIdentity('deepseek/deepseek-flash', effort, 'omp');
+        assert.equal(browserIdentity.spriteId, spriteId, `browser ${effort} body`);
+        assert.equal(browserIdentity.effortTier, effortTier, `browser ${effort} tier`);
+        assert.equal(modelIdentity('deepseek/deepseek-flash', effort, 'omp').spriteId, spriteId, `server ${effort} body`);
+    }
+
+    // The ladder follows the flash sprite rather than the provider: the V4
+    // Flash row and the DeepSeek provider default ride it, while Reasoner and
+    // V4 Pro keep their own bodies at every effort.
+    assert.equal(getModelVisualIdentity('deepseek/deepseek-v4-flash', 'max', 'deepseek').spriteId, 'agent.deepseek.flash.xhigh');
+    assert.equal(getModelVisualIdentity('deepseek-unknown-model', 'xhigh', 'deepseek').spriteId, 'agent.deepseek.flash.xhigh');
+    assert.equal(getModelVisualIdentity('deepseek/deepseek-v4-pro', 'high', 'deepseek').spriteId, 'agent.deepseek.pro');
+    assert.equal(modelIdentity('deepseek/deepseek-v4-pro', 'high', 'deepseek').spriteId, 'agent.deepseek.pro');
+});
+
 describe('generated model registry parity', () => {
     for (const row of browserRegistry.MODEL_REGISTRY) {
         test(row.id, () => {

@@ -251,6 +251,7 @@ function parseOmpTranscript(records, {
   let session = null;
   let title = null;
   let model = null;
+  let reasoningEffort = null;
   let underlyingProvider = null;
   let latestActivity = 0;
   let latestAssistantText = null;
@@ -321,6 +322,10 @@ function parseOmpTranscript(records, {
     if (record?.type === 'model_change' && record.model) {
       model = String(record.model);
       underlyingProvider = modelProvider(model) || underlyingProvider;
+      continue;
+    }
+    if (record?.type === 'thinking_level_change' && record.thinkingLevel) {
+      reasoningEffort = String(record.thinkingLevel);
       continue;
     }
     if (record?.type === 'custom' && record.customType === 'session_exit') {
@@ -493,6 +498,7 @@ function parseOmpTranscript(records, {
       agentName: childAgentName || title || null,
       project,
       model: resolvedModel,
+      reasoningEffort: reasoningEffort || null,
       status: 'active',
       lastActivity: latestActivity,
       lastTool: latestTool,
