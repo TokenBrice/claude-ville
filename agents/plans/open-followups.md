@@ -2,7 +2,7 @@
 
 **Status:** `live checklist`
 
-**As of:** 2026-09-09, release `v0.45.3` — The Starforged Sovereign
+**As of:** 2026-09-10, release `v0.45.4` — The Open Gate
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs
