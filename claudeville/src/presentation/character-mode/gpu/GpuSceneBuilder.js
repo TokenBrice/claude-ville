@@ -572,11 +572,12 @@ function recordForProp(renderer, drawable, sequence) {
     const part = drawable?.payload?.part || 'whole';
     const cachedW = cached.canvas.width;
     const cachedH = cached.canvas.height;
+    let destX = cached.x;
     let destY = cached.y;
     let destW = cachedW;
     let destH = cachedH;
     let splitLocalY = 0;
-    const split = Boolean(sprite.splitForOcclusion && part !== 'whole');
+    const split = Boolean(sprite.splitForOcclusion && (part === 'back' || part === 'front'));
     if (split) {
         const splitWorldY = sprite.y + finite(sprite.bounds?.splitY, -18);
         splitLocalY = Math.max(1, Math.min(cachedH - 1, Math.round(splitWorldY - cached.y)));
@@ -585,6 +586,14 @@ function recordForProp(renderer, drawable, sequence) {
             destY += splitLocalY;
             destH = cachedH - splitLocalY;
         }
+    }
+    // A depth column is a vertical slice of the same cached image.
+    const column = part === 'column' ? drawable?.payload?.column : null;
+    const columnSpan = column ? sprite.columnSourceSpan(column, cached) : null;
+    if (columnSpan) {
+        if (columnSpan.sw <= 0) return null;
+        destX += columnSpan.sx;
+        destW = columnSpan.sw;
     }
     const assets = renderer?.assets;
     const propId = sprite.id || '';
@@ -620,11 +629,22 @@ function recordForProp(renderer, drawable, sequence) {
                 sh = native.sh - splitSrc;
             }
         }
-    } else if (split) {
-        if (part === 'back') sh = splitLocalY;
-        else {
-            sy = splitLocalY;
-            sh = cachedH - splitLocalY;
+        if (columnSpan) {
+            const scale = native.sw / cachedW;
+            sx += Math.round(columnSpan.sx * scale);
+            sw = Math.max(1, Math.round(columnSpan.sw * scale));
+        }
+    } else {
+        if (split) {
+            if (part === 'back') sh = splitLocalY;
+            else {
+                sy = splitLocalY;
+                sh = cachedH - splitLocalY;
+            }
+        }
+        if (columnSpan) {
+            sx = columnSpan.sx;
+            sw = columnSpan.sw;
         }
     }
     // Same UV-space rule as landmarks: an atlas albedo takes the atlas channel
@@ -648,7 +668,7 @@ function recordForProp(renderer, drawable, sequence) {
         ? assets?.getAtlas?.(atlasFrame.atlas, 'emissive')
         : (isPilot && resolved?.origin !== 'fallback' ? resolved.emissive : null)) || null;
     const record = {
-        id: `prop:${propId || `${sprite.tileX},${sprite.tileY}`}:${part}`,
+        id: `prop:${propId || `${sprite.tileX},${sprite.tileY}`}:${part}${column ? `:${column.index}` : ''}`,
         stableKey: drawable.stableKey || propId || `${sprite.tileX},${sprite.tileY}`,
         textureKey,
         sidecarKey: materialSource
@@ -663,7 +683,7 @@ function recordForProp(renderer, drawable, sequence) {
         sy,
         sw,
         sh,
-        x: cached.x,
+        x: destX,
         y: destY,
         width: destW,
         height: destH,

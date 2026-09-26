@@ -73,8 +73,8 @@ import { tileToWorld, worldToTile, buildingCenterToWorld } from './Projection.js
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { attentionScreenRects, isAttentionStatus, layoutAttentionPlates } from './AttentionPlates.js';
 import { IDENTITY_LABEL, identityLabelTop, identityLabelWidth } from './WorldLabelKit.js';
-import { buildStaticPropDrawables } from './StaticPropDrawables.js';
-import { createDepthDrawable, propDepthDrawable } from './DrawablePass.js';
+import { StaticPropSprite, buildStaticPropDrawables, lineOcclusionColumns } from './StaticPropDrawables.js';
+import { createDepthDrawable, propPartSortY } from './DrawablePass.js';
 import {
     renderWorldFrame,
     collectDampMarks,
@@ -363,6 +363,18 @@ const VILLAGE_STONE_PALETTE = Object.freeze({
 const VILLAGE_GATE_TOWER_HALF_TILES = 1.55;
 const VILLAGE_GATE_TOWER_SPRITE_ID = 'prop.villageGateTower';
 const VILLAGE_GATE_ARCH_SPRITE_ID = 'prop.villageGateArch';
+// The gatehouse sorts as world-Y slices of its wall line (see
+// _buildDistrictPropSprites). 16 px keeps each slice's depth error to 4 px.
+const VILLAGE_GATE_OCCLUSION_COLUMN_PX = 16;
+// Basket, flame, and its 72 px screen-blended glow around the brazier foot.
+const VILLAGE_GATE_BRAZIER_BOUNDS = Object.freeze({ left: -36, right: 36, top: -60, bottom: 12 });
+const VILLAGE_GATE_LINTEL_INSET = 22;
+const VILLAGE_GATE_DOOR_BOTTOM_LIFT = 14;
+// The open-door threshold glow: two iso ellipses around the door foot
+// midpoint, 14 px north of the gate origin. It sorts at its far edge so every
+// villager standing on it paints over it.
+const VILLAGE_GATE_GLOW_BOUNDS = Object.freeze({ left: -36, right: 36, top: -40, bottom: 10 });
+const VILLAGE_GATE_GLOW_SORT_OFFSET_Y = -36;
 // Canvas counterpart to the GPU wetness shader's four-pixel ordered dither.
 // Keep the same 2x2 Bayer ordering so the two paths share the same stepped
 // visual grammar without introducing a second pattern.
@@ -398,106 +410,6 @@ const VILLAGE_GATE_GLYPHS = Object.freeze({
 });
 const VILLAGE_GATE_GLYPH_ROWS = 5;
 const VILLAGE_WALL_SEA_TOWER_SPRITE_ID = 'prop.villageWallSeaTower';
-class StaticPropSprite {
-    constructor({ tileX, tileY, drawFn, id = null, bounds = null, splitForOcclusion = false, sortY = null }) {
-        this.tileX = tileX;
-        this.tileY = tileY;
-        const world = tileToWorld(tileX, tileY);
-        this.x = world.x;
-        this.y = world.y;
-        this.sortY = Number.isFinite(Number(sortY)) ? Number(sortY) : this.y;
-        this.drawFn = drawFn;
-        this.id = id;
-        this.bounds = bounds || { left: -32, right: 32, top: -64, bottom: 12, splitY: -18 };
-        this.splitForOcclusion = splitForOcclusion;
-        this._cacheCanvas = null;
-    }
-    draw(ctx, zoom) {
-        this.drawFn(ctx, this.x, this.y, zoom);
-    }
-    drawPart(ctx, part, zoom) {
-        if (!this.splitForOcclusion || part === 'whole') {
-            this.draw(ctx, zoom);
-            return;
-        }
-        const { left, right, top, bottom, splitY } = this.bounds;
-        const clipTop = part === 'back' ? top : splitY;
-        const clipBottom = part === 'back' ? splitY : bottom;
-        if (clipBottom <= clipTop) return;
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(
-            Math.floor(this.x + left) - 2,
-            Math.floor(this.y + clipTop) - 2,
-            Math.ceil(right - left) + 4,
-            Math.ceil(clipBottom - clipTop) + 4
-        );
-        ctx.clip();
-        this.draw(ctx, zoom);
-        ctx.restore();
-    }
-    drawCached(ctx, zoom) {
-        const cached = this._getCachedCanvas(zoom);
-        if (!cached) {
-            this.draw(ctx, zoom);
-            return;
-        }
-        ctx.drawImage(cached.canvas, cached.x, cached.y);
-    }
-    drawCachedPart(ctx, part, zoom) {
-        if (!this.splitForOcclusion || part === 'whole') {
-            this.drawCached(ctx, zoom);
-            return;
-        }
-        const { left, right, top, bottom, splitY } = this.bounds;
-        const clipTop = part === 'back' ? top : splitY;
-        const clipBottom = part === 'back' ? splitY : bottom;
-        if (clipBottom <= clipTop) return;
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(
-            Math.floor(this.x + left) - 2,
-            Math.floor(this.y + clipTop) - 2,
-            Math.ceil(right - left) + 4,
-            Math.ceil(clipBottom - clipTop) + 4
-        );
-        ctx.clip();
-        this.drawCached(ctx, zoom);
-        ctx.restore();
-    }
-    _getCachedCanvas(zoom) {
-        if (this._cacheCanvas) return this._cacheCanvas;
-        if (typeof document === 'undefined') return null;
-        const pad = 8;
-        const { left, right, top, bottom } = this.bounds;
-        const width = Math.max(1, Math.ceil(right - left + pad * 2));
-        const height = Math.max(1, Math.ceil(bottom - top + pad * 2));
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return null;
-        SpriteRenderer.disableSmoothing(ctx);
-        ctx.translate(-(this.x + left - pad), -(this.y + top - pad));
-        this.drawFn(ctx, this.x, this.y, zoom);
-        this._cacheCanvas = {
-            canvas,
-            x: Math.floor(this.x + left - pad),
-            y: Math.floor(this.y + top - pad),
-        };
-        return this._cacheCanvas;
-    }
-    releaseCache() {
-        releaseCanvasBackingStore(this._cacheCanvas?.canvas);
-        this._cacheCanvas = null;
-    }
-    propBackSortY() {
-        return this.sortY + Math.min(-8, this.bounds.splitY);
-    }
-    propFrontSortY() {
-        return this.sortY + Math.max(0, this.bounds.bottom * 0.25);
-    }
-}
 
 export class IsometricRenderer {
     constructor(world, options = {}) {
@@ -590,6 +502,7 @@ export class IsometricRenderer {
         this.gateTransits = new Map();
         this.gateDoorsOpen = false;
         this._gateDoorsOpenUntilMs = 0;
+        this._gateDoorStateSprites = [];
         this._sortedSprites = [];
         this._allSpritesSnapshot = [];
         this._visibleSortedSprites = [];
@@ -2458,7 +2371,9 @@ export class IsometricRenderer {
     _buildStaticPropFastDrawables() {
         return (this._staticPropSprites || []).map((sprite) => ({
             sprite,
-            whole: this._cachedPropDepthDrawable(sprite),
+            // A column-sliced prop has no single depth; its slices always draw.
+            columns: sprite.occlusionColumns?.map((column) => this._cachedPropDepthDrawable(sprite, 'column', column)) || null,
+            whole: sprite.occlusionColumns ? null : this._cachedPropDepthDrawable(sprite),
             back: sprite.splitForOcclusion ? this._cachedPropDepthDrawable(sprite, 'back') : null,
             front: sprite.splitForOcclusion ? this._cachedPropDepthDrawable(sprite, 'front') : null,
         }));
@@ -2476,15 +2391,10 @@ export class IsometricRenderer {
         return out;
     }
 
-    _cachedPropDepthDrawable(sprite, part = 'whole') {
+    _cachedPropDepthDrawable(sprite, part = 'whole', column = null) {
         const kind = part === 'whole' ? 'prop' : `prop-${part}`;
-        const sortY = part === 'back'
-            ? sprite.propBackSortY()
-            : part === 'front'
-                ? sprite.propFrontSortY()
-                : sprite.sortY ?? sprite.y;
-        return createDepthDrawable(kind, sortY, { sprite, part }, (ctx, zoom, _context, payload) => {
-            payload?.sprite?.drawCachedPart?.(ctx, payload.part || 'whole', zoom);
+        return createDepthDrawable(kind, propPartSortY(sprite, part, column), { sprite, part, column }, (ctx, zoom, _context, payload) => {
+            payload?.sprite?.drawCachedPart?.(ctx, payload.part || 'whole', zoom, payload.column);
         });
     }
 
@@ -2500,7 +2410,9 @@ export class IsometricRenderer {
         const viewport = this._screenViewport();
         for (const record of this._staticPropFastDrawables || []) {
             if (!this._propVisibleOnScreen(record.sprite, viewport)) continue;
-            if (record.sprite?.splitForOcclusion && this._propIntersectsAgentBand(record.sprite, agents)) {
+            if (record.columns) {
+                for (const column of record.columns) out.push(column);
+            } else if (record.sprite?.splitForOcclusion && this._propIntersectsAgentBand(record.sprite, agents)) {
                 if (record.back) out.push(record.back);
                 if (record.front) out.push(record.front);
             } else if (record.whole) {
@@ -3721,17 +3633,15 @@ export class IsometricRenderer {
     }
 
     _updateGateDoorState(now = performance.now()) {
+        const wasOpen = this.gateDoorsOpen;
         const wantOpen = this.gateTransits.size > 0 || this._hasAgentNearGate();
-        if (wantOpen) {
-            this.gateDoorsOpen = true;
-            this._gateDoorsOpenUntilMs = now + 1500; // 1.5s grace timer
-            return;
+        if (wantOpen) this._gateDoorsOpenUntilMs = now + 1500; // 1.5s grace timer
+        this.gateDoorsOpen = wantOpen || now < this._gateDoorsOpenUntilMs;
+        // The gatehouse and its threshold glow paint from caches (the gate's
+        // depth slices share one), so a door flip must repaint them.
+        if (this.gateDoorsOpen !== wasOpen) {
+            for (const sprite of this._gateDoorStateSprites) sprite.invalidateCache();
         }
-        if (now < this._gateDoorsOpenUntilMs) {
-            this.gateDoorsOpen = true;
-            return;
-        }
-        this.gateDoorsOpen = false;
     }
 
     // Note: when motionScale=0, _beginAgentGateArrival short-circuits BEFORE
@@ -6252,14 +6162,49 @@ export class IsometricRenderer {
         if (!this.sprites) return [];
         const sprites = this._buildVillageWallSprites();
         sprites.push(...this._buildBridgeNearRailSprites());
-        sprites.push(new StaticPropSprite({
+        const gateOrigin = this._tileToWorld(VILLAGE_GATE.tileX, VILLAGE_GATE.tileY);
+        const gateSprite = new StaticPropSprite({
             tileX: VILLAGE_GATE.tileX,
             tileY: VILLAGE_GATE.tileY,
             id: VILLAGE_GATE.id,
             bounds: VILLAGE_GATE_BOUNDS,
-            splitForOcclusion: true,
+            // The gatehouse runs 9 tiles along +tileX, so its ends sit ~140 px
+            // of world Y apart: one sortY put trees behind its east half in
+            // front of it. Slices sort against the wall line itself (slope
+            // TILE_HEIGHT / TILE_WIDTH along +tileX): whatever stands north of
+            // it paints first, whatever stands south of it paints after.
+            occlusionColumns: lineOcclusionColumns({
+                left: VILLAGE_GATE_BOUNDS.left,
+                right: VILLAGE_GATE_BOUNDS.right,
+                width: VILLAGE_GATE_OCCLUSION_COLUMN_PX,
+                originY: gateOrigin.y,
+                slope: TILE_HEIGHT / TILE_WIDTH,
+            }),
             drawFn: (ctx, x, y) => this._drawVillageGatehouse(ctx, x, y),
-        }));
+        });
+        // Drawn under the gatehouse slices and under any villager in the gate
+        // mouth, so it is its own prop rather than part of the gatehouse image.
+        const thresholdGlow = new StaticPropSprite({
+            tileX: VILLAGE_GATE.tileX,
+            tileY: VILLAGE_GATE.tileY,
+            id: 'village.gate.threshold-glow',
+            bounds: VILLAGE_GATE_GLOW_BOUNDS,
+            sortY: gateOrigin.y + VILLAGE_GATE_GLOW_SORT_OFFSET_Y,
+            drawFn: (ctx, x, y) => this._drawVillageGateThresholdGlow(ctx, x, y),
+        });
+        this._gateDoorStateSprites = [gateSprite, thresholdGlow];
+        sprites.push(thresholdGlow, gateSprite);
+        // Braziers flicker in front of the gate; as their own props they keep
+        // that flicker out of the gatehouse image the slices share.
+        for (const { tileX, tileY } of this._villageGateBrazierTiles()) {
+            sprites.push(new StaticPropSprite({
+                tileX,
+                tileY,
+                id: 'village.gate.brazier',
+                bounds: VILLAGE_GATE_BRAZIER_BOUNDS,
+                drawFn: (ctx, x, y) => this._drawGateBrazier(ctx, x, y),
+            }));
+        }
         sprites.push(...this._buildVillageWallTerminalSprites());
         sprites.push(...this._buildWatchtowerBeaconBuoySprites());
         sprites.push(...DISTRICT_PROPS
@@ -6543,7 +6488,8 @@ export class IsometricRenderer {
         const leftBase = { x: originX + leftTower.x, y: originY + leftTower.y };
         const rightBase = { x: originX + rightTower.x, y: originY + rightTower.y };
         const hasGateArchSprite = Boolean(this.assets?.get?.(VILLAGE_GATE_ARCH_SPRITE_ID));
-        this._drawVillageGateThreshold(ctx, leftBase, rightBase);
+        // The open-door glow is a ground pool, drawn by its own sprite under
+        // any villager standing in the gate mouth (_drawVillageGateThresholdGlow).
         if (!hasGateArchSprite) this._drawVillageGateArch(ctx, leftBase, rightBase);
         this._drawVillageGateDoors(ctx, leftBase, rightBase);
         // Towers mask the animated door endpoints. The asset-backed connector
@@ -6551,15 +6497,43 @@ export class IsometricRenderer {
         this._drawVillageGateTower(ctx, leftBase.x, leftBase.y, -1);
         this._drawVillageGateTower(ctx, rightBase.x, rightBase.y, 1);
         if (hasGateArchSprite) this._drawVillageGateArch(ctx, leftBase, rightBase);
-        this._drawGateBrazier(ctx, leftBase.x - 9, leftBase.y + 13);
-        this._drawGateBrazier(ctx, rightBase.x + 9, rightBase.y + 13);
     }
 
-    _drawVillageGateThreshold(ctx, leftBase, rightBase) {
-        // Threshold is now painted by the road tile renderer via the gate-avenue
-        // route in townPlan.js. Tower foot shadows are drawn inside
-        // _drawVillageGateTower. This method is intentionally a no-op; the
-        // call site in _drawVillageGatehouse is kept for future hooks.
+    // Tile positions of the two fire-baskets flanking the gate mouth, just
+    // outboard of each tower foot and in front of the wall line.
+    _villageGateBrazierTiles() {
+        const towerHalf = VILLAGE_GATE_TOWER_HALF_TILES;
+        return [
+            { tileX: VILLAGE_GATE.tileX - towerHalf, offsetX: -9 },
+            { tileX: VILLAGE_GATE.tileX + towerHalf, offsetX: 9 },
+        ].map(({ tileX, offsetX }) => {
+            const base = this._tileToWorld(tileX, VILLAGE_GATE.tileY);
+            return worldToTile(base.x + offsetX, base.y + 13);
+        });
+    }
+
+    // Warm interior glow at the threshold midline while the doors stand open,
+    // rotated with the iso slope. Centred where _drawVillageGateDoors puts the
+    // door foot midpoint.
+    _drawVillageGateThresholdGlow(ctx, originX, originY) {
+        if (!this.gateDoorsOpen) return;
+        const left = this._tileToWorld(VILLAGE_GATE.tileX - VILLAGE_GATE_TOWER_HALF_TILES, VILLAGE_GATE.tileY);
+        const right = this._tileToWorld(VILLAGE_GATE.tileX + VILLAGE_GATE_TOWER_HALF_TILES, VILLAGE_GATE.tileY);
+        const length = Math.max(1, Math.hypot(right.x - left.x, right.y - left.y));
+        const isoAngle = Math.atan2(right.y - left.y, right.x - left.x);
+        const glowRadius = Math.max(8, length / 2 - VILLAGE_GATE_LINTEL_INSET);
+        const x = Math.round(originX);
+        const y = Math.round(originY - VILLAGE_GATE_DOOR_BOTTOM_LIFT);
+        ctx.save();
+        ctx.fillStyle = VILLAGE_WOOD_PALETTE.glow;
+        ctx.beginPath();
+        ctx.ellipse(x, y, glowRadius, 16, isoAngle, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255, 212, 142, 0.32)';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 6, Math.max(6, glowRadius - 4), 10, isoAngle, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
     }
 
     // Iron fire-basket flanking the gate mouth — frames the coastal gate with
@@ -7021,10 +6995,10 @@ export class IsometricRenderer {
         const length = Math.max(1, Math.hypot(dx, dy));
         const ux = dx / length;
         const uy = dy / length;
-        const lintelInset = 22;
+        const lintelInset = VILLAGE_GATE_LINTEL_INSET;
         const lintelHeight = 26;
         const doorTopPad = 2;
-        const doorBottomLift = 14;
+        const doorBottomLift = VILLAGE_GATE_DOOR_BOTTOM_LIFT;
 
         // Lintel-aligned anchors (must match _drawVillageGateArch math exactly).
         const lintelStart = { x: leftBase.x + ux * lintelInset, y: leftBase.y + uy * lintelInset - 110 };
@@ -7037,7 +7011,6 @@ export class IsometricRenderer {
         const br = { x: lintelEnd.x, y: rightBase.y - doorBottomLift };
         const tc = { x: (tl.x + tr.x) / 2, y: (tl.y + tr.y) / 2 };
         const bc = { x: (bl.x + br.x) / 2, y: (bl.y + br.y) / 2 };
-        const isoAngle = Math.atan2(uy, ux);
 
         const trace = (...pts) => {
             ctx.beginPath();
@@ -7077,18 +7050,6 @@ export class IsometricRenderer {
             ctx.strokeStyle = stone.outline;
             ctx.lineWidth = 1.2;
             ctx.stroke();
-
-            // Warm interior glow at the threshold midline (rotated with the iso slope).
-            const glowRadius = Math.max(8, length / 2 - lintelInset);
-            ctx.fillStyle = wood.glow;
-            ctx.beginPath();
-            ctx.ellipse(Math.round(bc.x), Math.round(bc.y), glowRadius, 16, isoAngle, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = 'rgba(255, 212, 142, 0.32)';
-            ctx.beginPath();
-            ctx.ellipse(Math.round(bc.x), Math.round(bc.y - 6),
-                Math.max(6, glowRadius - 4), 10, isoAngle, 0, Math.PI * 2);
-            ctx.fill();
         } else {
             // Closed state: two trapezoidal leaves following the iso slope.
             const doorGradient = ctx.createLinearGradient(0, Math.min(tl.y, tr.y), 0, Math.max(bl.y, br.y));

@@ -16,7 +16,6 @@ export const VILLAGE_GATE_BOUNDS = Object.freeze({
     right: 236,
     top: -180,
     bottom: 96,
-    splitY: -42,
 });
 
 // Center of Portal Gate footprint (origin 2,29 size 4x4). Subagents spawn here

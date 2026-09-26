@@ -9,6 +9,7 @@ const KIND_ORDER = Object.freeze({
     'building-back': 10,
     'prop-back': 20,
     prop: 30,
+    'prop-column': 30,
     'harbor-traffic': 40,
     'bridge-lantern': 45,
     agent: 50,
@@ -112,7 +113,7 @@ function drawBuilding(ctx, zoom, context, drawable) {
 }
 
 function drawProp(ctx, zoom, context, payload) {
-    payload?.sprite?.drawPart?.(ctx, payload.part || 'whole', zoom);
+    payload?.sprite?.drawPart?.(ctx, payload.part || 'whole', zoom, payload.column);
 }
 
 
@@ -199,14 +200,16 @@ function pooledDepthDrawable(target, kind, sortY, payload, drawFallback, semanti
     return initializeDepthDrawable(drawable, kind, sortY, payload, drawFallback, semantics);
 }
 
-export function propDepthDrawable(sprite, part = 'whole') {
+export function propDepthDrawable(sprite, part = 'whole', column = null) {
     const kind = part === 'whole' ? 'prop' : `prop-${part}`;
-    const sortY = part === 'back'
-        ? sprite.propBackSortY()
-        : part === 'front'
-            ? sprite.propFrontSortY()
-            : sprite.sortY ?? sprite.y;
-    return createDepthDrawable(kind, sortY, { sprite, part }, drawProp);
+    return createDepthDrawable(kind, propPartSortY(sprite, part, column), { sprite, part, column }, drawProp);
+}
+
+export function propPartSortY(sprite, part = 'whole', column = null) {
+    if (part === 'column') return column.sortY;
+    if (part === 'back') return sprite.propBackSortY();
+    if (part === 'front') return sprite.propFrontSortY();
+    return sprite.sortY ?? sprite.y;
 }
 
 export function appendDepthSortedDrawables(target, {
