@@ -1,5 +1,6 @@
 // Read-only static server for the listening harness.
-//   /                → <repo>/claudeville/ (the shipped app files, same URL layout as server.js)
+//   /                → <repo>/claudeville/ (the shipped app files, same URL layout as server.js),
+//                      or `appDir` (an exported earlier revision: the probe's reference renders)
 //   /__har/          → scripts/audio/page/ (harness page + runtime)
 //   /__snippet/<id>  → a snippet file registered by the CLI
 // Binds 127.0.0.1 on an ephemeral port (never 4000). Never writes.
@@ -25,14 +26,15 @@ function safeJoin(root, rel) {
     return full.startsWith(root) ? full : null;
 }
 
-export async function startStaticServer() {
+export async function startStaticServer({ appDir = APP_DIR } = {}) {
+    const root = path.resolve(appDir);
     const snippets = new Map();
     const server = http.createServer((req, res) => {
         const url = new URL(req.url, 'http://x');
         let file = null;
         if (url.pathname.startsWith('/__har/')) file = safeJoin(PAGE_DIR, url.pathname.slice(6));
         else if (url.pathname.startsWith('/__snippet/')) file = snippets.get(url.pathname.slice(11)) || null;
-        else file = safeJoin(APP_DIR, url.pathname === '/' ? '/index.html' : url.pathname);
+        else file = safeJoin(root, url.pathname === '/' ? '/index.html' : url.pathname);
         if (!file || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
             res.statusCode = 404;
             res.end('not found');

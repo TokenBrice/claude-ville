@@ -1,11 +1,11 @@
 // Facade between the top-bar sound controls and the audio system. Owns the
 // opt-in lifecycle — off by default, user-gesture unlock, background policy,
-// hidden-tab wakes, localStorage persistence (through SoundSettings) — and
-// delegates all sound to AudioEngine (mix chain, group faders, per-director
-// crossfade gains) and the two directors in ./audio/, which share the one
-// cue arbiter this controller creates per engine. TopBar builds it at boot
-// idle without an AudioContext, so the signal route and captions exist
-// before any click.
+// pause in place while away, hidden-tab wakes, localStorage persistence
+// (through SoundSettings) — and delegates all sound to AudioEngine (mix
+// chain, group faders, per-director crossfade gains, the Transport) and the
+// two directors in ./audio/, which share the one cue arbiter this controller
+// creates per engine. TopBar builds it at boot idle without an AudioContext,
+// so the signal route and captions exist before any click.
 
 import { AudioEngine } from './audio/AudioEngine.js';
 import { AudioDirector } from './audio/AudioDirector.js';
@@ -51,6 +51,17 @@ const WAKE_RELEASE_MARGIN_SEC = 0.08;
 // A cue with no published score (an anonymous agent the score cannot key)
 // still gets the summons' two-note span.
 const UNSCORED_LAST_NOTE_SEC = 0.4;
+// Pause in place (2.1, ENG-2): an absence longer than this, or one across a
+// phase-family change (day ↔ night), rebuilds the village on return instead
+// of resuming the piece where it stopped.
+const RESUME_RESTART_MS = 10 * 60 * 1000;
+// The context suspends once the groups' 80 ms close has certainly finished.
+const PAUSE_SUSPEND_MARGIN_MS = 20;
+
+function phaseFamily(phase) {
+    return phase === 'night' ? 'night' : 'day';
+}
+
 // Agent updates arrive in bursts; one coalesced read per burst keeps the label
 // within a beat of the world, and it is written only when its counts actually
 // change, so a busy poll never touches the DOM.
@@ -141,6 +152,8 @@ export class AmbientAudioController {
         this._activationGeneration = 0;
         this._visibilityGeneration = 0;
         this._suspendTimer = null;
+        // Set while the village is paused in place: `{ at, family }`.
+        this._paused = null;
         this._hiddenSummonsPending = new Set();
         // Hidden-tab wakes: the newest token owns the release, which holds
         // until the latest scheduled urgent note has rung out.
@@ -262,9 +275,11 @@ export class AmbientAudioController {
     }
 
     // Playing, as the listener would hear it: the context runs and the active
-    // director is running. Anything less is armed or off.
+    // director is running and not paused. Anything less is armed or off.
     isRunning() {
-        return this.engine.context?.state === 'running' && this.director.running === true;
+        return this.engine.context?.state === 'running'
+            && this.director.running === true
+            && !this.director.paused;
     }
 
     // Master volume as a whole step 0–10 (1.2): the engine applies the step
@@ -398,7 +413,17 @@ export class AmbientAudioController {
         }
 
         this.engine.start();
-        // A crossfade interrupted by a disable or a hidden tab may have left
+        // Back from an absence: continue the piece where it stopped, unless
+        // the absence was long or crossed day ↔ night, which rebuilds.
+        const away = this._paused;
+        this._paused = null;
+        if (away && !this._resumable(away)) {
+            for (const mode of MODES) this._stopDirector(mode);
+        }
+        for (const director of Object.values(this.directors)) {
+            if (director.paused) director.resume();
+        }
+        // A crossfade interrupted by a disable, or a rebuild, may have left
         // this director's gain part-way; a fresh start plays at full level.
         if (!this.director.running) this.engine.fadeDirector(this.mode, 1, { duration: 0 });
         this.director.start();
@@ -409,6 +434,7 @@ export class AmbientAudioController {
 
     _deactivate({ forceSuspend = false, visibilityGeneration = this._visibilityGeneration } = {}) {
         this._activationGeneration++;
+        this._paused = null;
         for (const mode of MODES) this._stopDirector(mode);
         // Pending routine cues describe a moment the listener has left.
         this.cues.governor.clearRoutine();
@@ -438,8 +464,9 @@ export class AmbientAudioController {
     }
 
     // One presence transition for tab visibility, window focus and the
-    // background setting. Hidden (or blurred with "Signals only") stops the
-    // village and routes urgent cues through the wake; returning rebuilds it.
+    // background setting. Hidden (or blurred with "Signals only") pauses a
+    // playing village in place and routes urgent cues through the wake;
+    // returning resumes it.
     _syncPresence() {
         if (this._destroyed) return;
         const inactive = this._pageInactive();
@@ -448,12 +475,45 @@ export class AmbientAudioController {
         const visibilityGeneration = ++this._visibilityGeneration;
         if (inactive) {
             this.directors.ambient.setHidden(true);
-            this._deactivate({ forceSuspend: true, visibilityGeneration });
+            if (MODES.some((mode) => this.directors[mode].running)) this._pause(visibilityGeneration);
+            else this._deactivate({ forceSuspend: true, visibilityGeneration });
             return;
         }
         this.directors.ambient.setHidden(false);
         if (this.enabled && this.userActivated) void this._activate();
         else this.directors.ambient.setSignalRouting(true);
+    }
+
+    // Pause in place: every running director stops its scheduling and closes
+    // its groups (80 ms); once they are silent the context suspends, which
+    // freezes the audio clock with the committed notes still on it.
+    _pause(visibilityGeneration) {
+        this._activationGeneration++;
+        // Pending routine cues describe a moment the listener has left.
+        this.cues.governor.clearRoutine();
+        let silentAt = this.engine.now();
+        for (const mode of MODES) {
+            const director = this.directors[mode];
+            if (director.running) silentAt = Math.max(silentAt, director.pause());
+        }
+        this._paused ??= {
+            at: Date.now(),
+            family: phaseFamily(this.directors.ambient.currentPhase()),
+        };
+        this._syncSignalRouting();
+        clearTimeout(this._suspendTimer);
+        const waitMs = Math.max(0, (silentAt - this.engine.now()) * 1000) + PAUSE_SUSPEND_MARGIN_MS;
+        this._suspendTimer = setTimeout(() => {
+            this._suspendTimer = null;
+            if (this._destroyed || visibilityGeneration !== this._visibilityGeneration) return;
+            if (this._pageInactive()) void this.engine.suspend();
+        }, waitMs);
+        this._renderControls();
+    }
+
+    _resumable(away) {
+        return Date.now() - away.at <= RESUME_RESTART_MS
+            && phaseFamily(this.directors.ambient.currentPhase()) === away.family;
     }
 
     _handleWindowBlur() {
@@ -697,6 +757,9 @@ export class AmbientAudioController {
             sectionLabel: this._sectionLabelText,
             sectionCounts: workingSectionCounts(this.world),
             ...this.director.snapshot(),
+            musicClock: this.engine.musicClock?.snapshot(this.engine.now()) ?? null,
+            paused: this._paused !== null,
+            transport: this.engine.transport?.diagnostics() ?? null,
             userActivated: this.userActivated,
             soundState: this._soundState(),
             background: this.background,

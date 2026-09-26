@@ -18,9 +18,23 @@
 //                       every tracked async operation
 //   settle()            await tracked async work (worklet addModule, offline
 //                       bakes, audio decoding) and drain microtasks
-//   track(promise)      add an async operation the clock must wait for
 //   real                the page's real timer functions, for harness waits
 //   errors              exceptions thrown by virtual callbacks
+//   audio               the source accounting below (Wave 2)
+//   timerStats()        per timer call site: callbacks fired and their real
+//                       (synchronous) durations in ms
+//
+// Timer attribution (S4: a timer may wake a scheduler, never place a sound):
+// every setTimeout / setInterval / requestIdleCallback records its call site
+// (the first app frame, `layers/BaseLayer.js:55`), and while a timer's task
+// runs — its callback, the microtasks it queues and the async work it
+// starts — that site is the "current" one. Every source start() on the scene
+// context is logged with the current site ('harness' for the harness's own
+// timers, 'untimed' outside any timer), its audio time, the context state
+// (the shimmed 'suspended' of a paused page), and for buffer sources the
+// buffer identity, offset, loop and rate (noise-lane checks). With
+// `audio.keepNodes` the node itself is kept and every node→node connect is
+// recorded, so the harness can trace which bus a source reaches.
 (() => {
     if (window.__vc) return;
     const real = {
@@ -46,8 +60,26 @@
         errors: [],
         fired: 0,
         pending: new Set(),
+        audio: null,
     };
     window.__vc = vc;
+
+    // The first two app frames of a stack: `site` keys the timer, `caller`
+    // says who asked for it. Harness frames (/__har/) never match.
+    const APP_FRAME = /\/src\/(?:presentation\/shared\/audio\/)?([^?#\s)]+?):(\d+):\d+/;
+    function siteOf(stack) {
+        const frames = [];
+        for (const line of String(stack || '').split('\n')) {
+            const m = APP_FRAME.exec(line);
+            if (m) frames.push(`${m[1]}:${m[2]}`);
+            if (frames.length === 2) break;
+        }
+        return { site: frames[0] || 'harness', caller: frames[1] || null };
+    }
+    let current = null;
+    const timerStats = new Map();
+    vc.timerStats = () => [...timerStats.values()].map(s => ({ site: s.site, callers: [...s.callers], fired: s.fired, durationsMs: s.durations }));
+    vc.currentSite = () => (current ? current.site : 'untimed');
 
     // Timers: a binary min-heap on (due, seq) — seq keeps FIFO order for
     // equal due times, as browsers do.
@@ -89,7 +121,8 @@
     function schedule(fn, delay, args, interval) {
         const id = nextId++;
         const ms = Math.max(0, Number(delay) || 0);
-        const entry = { id, due: vc.now + ms, seq: seq++, fn, args, interval: interval ? Math.max(1, ms) : 0 };
+        const { site, caller } = siteOf(new Error().stack);
+        const entry = { id, due: vc.now + ms, seq: seq++, fn, args, interval: interval ? Math.max(1, ms) : 0, site, caller };
         live.set(id, entry);
         push(entry);
         return id;
@@ -155,19 +188,86 @@
             } else {
                 live.delete(entry.id);
             }
+            current = entry;
+            const t0 = real.performanceNow();
             try {
                 if (typeof entry.fn === 'function') entry.fn(...entry.args);
             } catch (err) {
                 vc.errors.push(String(err?.stack || err));
             }
+            const stat = timerStats.get(entry.site) || { site: entry.site, callers: new Set(), fired: 0, durations: [] };
+            stat.fired++;
+            if (entry.caller) stat.callers.add(entry.caller);
+            if (stat.durations.length < 20000) stat.durations.push(real.performanceNow() - t0);
+            timerStats.set(entry.site, stat);
             vc.fired++;
             // Each timer is its own task: let its promise chains run before
-            // the next one fires, as the event loop would.
+            // the next one fires, as the event loop would. They stay
+            // attributed to this timer.
             await macrotask();
             if (vc.pending.size) await vc.settle();
+            current = null;
         }
         await vc.settle();
     };
 
     vc.timers = () => live.size;
+
+    // ------------------------------------------------ source accounting ----
+    const audio = { starts: [], keepNodes: false, edges: new WeakMap(), limit: 400000 };
+    vc.audio = audio;
+    const bufferIds = new WeakMap();
+    let bufferSeq = 0;
+    const bufferId = (b) => {
+        if (!b) return null;
+        if (!bufferIds.has(b)) bufferIds.set(b, ++bufferSeq);
+        return bufferIds.get(b);
+    };
+    const record = (node, when, offset) => {
+        const ctx = node.context;
+        if (ctx !== vc.sceneContext || audio.starts.length >= audio.limit) return;
+        const entry = {
+            t: Math.max(Number(when) || 0, ctx.currentTime),
+            at: ctx.currentTime,
+            k: node.constructor.name[0],
+            site: vc.currentSite(),
+            suspended: ctx.state === 'suspended',
+            e: Infinity,
+        };
+        if (node instanceof AudioBufferSourceNode && node.buffer) {
+            entry.buf = bufferId(node.buffer);
+            entry.len = node.buffer.duration;
+            entry.off = Number(offset) || 0;
+            entry.loop = node.loop;
+            entry.rate = node.playbackRate.value;
+        }
+        if (audio.keepNodes) entry.node = node;
+        node.__vcStart = entry;
+        audio.starts.push(entry);
+    };
+    const srcStart = AudioScheduledSourceNode.prototype.start;
+    AudioScheduledSourceNode.prototype.start = function vcStart(when = 0, ...rest) {
+        record(this, when, 0);
+        return srcStart.call(this, when, ...rest);
+    };
+    const bufStart = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function vcBufferStart(when = 0, offset = 0, ...rest) {
+        record(this, when, offset);
+        return bufStart.call(this, when, offset, ...rest);
+    };
+    const srcStop = AudioScheduledSourceNode.prototype.stop;
+    AudioScheduledSourceNode.prototype.stop = function vcStop(when = 0) {
+        const entry = this.__vcStart;
+        if (entry) entry.e = Math.min(entry.e, Math.max(Number(when) || 0, this.context.currentTime));
+        return srcStop.call(this, when);
+    };
+    const nodeConnect = AudioNode.prototype.connect;
+    AudioNode.prototype.connect = function vcConnect(dest, ...rest) {
+        if (audio.keepNodes && dest instanceof AudioNode && this.context === vc.sceneContext) {
+            let set = audio.edges.get(this);
+            if (!set) audio.edges.set(this, (set = new Set()));
+            set.add(dest);
+        }
+        return nodeConnect.call(this, dest, ...rest);
+    };
 })();

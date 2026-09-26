@@ -2,9 +2,10 @@
 // audio modules straight from the repo (served read-only at "/") and drives
 // them through their public surfaces: the real AmbientAudioController, the
 // real event bus, real AtmosphereState snapshots. Nothing here edits
-// synthesis; the only interventions are selection pins (which tune plays),
-// layer isolation through the director's own forceLayer() QA hook, and a
-// start gate for the first ambient song (see README "fidelity").
+// synthesis; the only interventions are selection pins (which tune plays,
+// set on the sequencer as it starts), layer isolation through the
+// director's own forceLayer() QA hook, and a later first slot for the
+// Village song (see README "fidelity").
 
 import { AmbientAudioController } from '/src/presentation/shared/AmbientAudioController.js';
 import { eventBus } from '/src/domain/events/DomainEvent.js';
@@ -17,13 +18,9 @@ import { cueNoteOffsetsMs } from '/src/presentation/shared/audio/CueScore.js';
 import { STANDARD_VOLUME_STEP } from '/src/presentation/shared/audio/Loudness.js';
 import { PIECES } from '/src/presentation/shared/audio/bgm/BgmSongbook.js';
 import {
-    LAYERS, atmosphereFor, atmosphereSummary, hourFor, makeMarker, makeWorld, plain, runAction, seedSoundStorage,
+    LAYERS, atmosphereFor, atmosphereSummary, hourFor, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
 } from './scene.js';
 
-const MUSIC_FAMILY = {
-    hearthfire: 'millbrook', millbrook: 'hearthfire',
-    lanternway: 'starwake', starwake: 'lanternway',
-};
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 export const modules = {
@@ -60,6 +57,54 @@ export async function runRealtime(spec) {
     });
     if (snippet?.before) await snippet.before({ ...api(), modules, eventBus, world, mark });
 
+    // Music pins and marks (set before the controller: the sequencer picks
+    // its first piece as it starts). Village: the pinned tune, its first slot
+    // held until the layer's level slew has settled, every section marked.
+    // Town band: the pinned piece, every loop and four-bar chunk marked, done
+    // once the requested loop has finished (`loop: 0` pins only).
+    let done = null;
+    let resolveDone = null;
+    if (spec.music) {
+        done = new Promise(r => { resolveDone = r; });
+        const ok = await pinSequencer({
+            preset: 'village',
+            piece: spec.music.tune,
+            holdFirstSec: (spec.music.gateMs ?? 9000) / 1000,
+            onMark(m) {
+                if (m.kind === 'section') {
+                    if (m.index === 0) mark('song-start', { t: m.t });
+                    markers.push({ label: `${m.song}:${m.step}${m.variation ? `(${m.variation})` : ''}`, t: m.t, kind: 'section' });
+                } else if (m.kind === 'songEnd') {
+                    markers.push({ label: 'song-end', t: m.t, kind: 'section' });
+                    resolveDone?.({ endT: m.t });
+                    resolveDone = null;
+                }
+            },
+        });
+        if (!ok) throw new Error('the harness pins music through audio/music/Sequencer.js, which this tree lacks');
+    }
+    if (spec.bgm) {
+        if (!PIECES.some(p => p.name === spec.bgm.piece)) throw new Error(`unknown BGM piece ${spec.bgm.piece}`);
+        const wantLoop = spec.bgm.loop ?? 2;
+        if (wantLoop > 0) done = new Promise(r => { resolveDone = r; });
+        const ok = await pinSequencer({
+            preset: 'townBand',
+            piece: spec.bgm.piece,
+            onMark(m) {
+                if (m.kind === 'loop') {
+                    markers.push({ label: `${m.piece}:loop${m.loop}:${m.section}`, t: m.t, kind: 'loop', loop: m.loop, section: m.section });
+                    if (m.loop === wantLoop && resolveDone) {
+                        resolveDone({ startT: m.t, endT: m.t + m.loopSeconds, loopSeconds: m.loopSeconds });
+                        resolveDone = null;
+                    }
+                } else if (m.kind === 'chunk' && m.bar > 1) {
+                    markers.push({ label: `bar${m.bar}:${m.section}`, t: m.t, kind: 'chunk', loop: m.loop, section: m.section });
+                }
+            },
+        });
+        if (!ok) throw new Error('the harness pins music through audio/music/Sequencer.js, which this tree lacks');
+    }
+
     controller = new AmbientAudioController({ world });
     // The page already holds a real user activation (openHarness clicks it),
     // so this is the same enable a TopBar click performs.
@@ -72,74 +117,11 @@ export async function runRealtime(spec) {
     mark('audio-started');
 
     const director = controller.director;
-    let done = null;
 
     if (spec.isolate) {
         for (const name of LAYERS) {
             if (name !== spec.isolate) director.forceLayer(name, 0, 1e9);
         }
-    }
-
-    // Ambient composer: pin the tune by excluding its sibling, gate the first
-    // song until the layer's level slew has settled, mark every section.
-    if (spec.music) {
-        const layer = director.layers.music;
-        layer._lastSongName = MUSIC_FAMILY[spec.music.tune];
-        const gateUntil = performance.now() + (spec.music.gateMs ?? 9000);
-        const origPlay = layer._playSong.bind(layer);
-        layer._playSong = function gatedPlaySong() {
-            if (performance.now() < gateUntil) { layer._scheduleSong(250); return; }
-            layer._playSong = origPlay;
-            mark('song-start');
-            return origPlay();
-        };
-        const origSection = layer._sectionAt.bind(layer);
-        let resolveDone;
-        done = new Promise(r => { resolveDone = r; });
-        layer._sectionAt = function markedSectionAt(t, index) {
-            const plan = layer._plan;
-            if (plan && index < plan.queue.length) {
-                const step = plan.queue[index];
-                markers.push({ label: `${plan.song.name}:${step.kind}${step.variation ? `(${step.variation})` : ''}`, t, kind: 'section' });
-            } else if (plan) {
-                markers.push({ label: 'song-end', t, kind: 'section' });
-                resolveDone?.({ endT: t });
-                resolveDone = null;
-            }
-            return origSection(t, index);
-        };
-    }
-
-    // BGM: pin the piece through the player's playlist, mark each chunk, and
-    // resolve once the requested loop has finished (`loop: 0` pins only).
-    if (spec.bgm) {
-        const player = director.player;
-        const only = PIECES.filter(p => p.name === spec.bgm.piece);
-        if (!only.length) throw new Error(`unknown BGM piece ${spec.bgm.piece}`);
-        player._playlist = () => only;
-        const wantLoop = spec.bgm.loop ?? 2;
-        const origChunk = player._chunkAt.bind(player);
-        let resolveDone;
-        if (wantLoop > 0) done = new Promise(r => { resolveDone = r; });
-        player._chunkAt = function markedChunkAt(t, chunkStart) {
-            const cur = player._current;
-            const result = origChunk(t, chunkStart);
-            if (cur) {
-                const loop = cur.loop + 1;
-                const section = player.section;
-                if (chunkStart === 0) {
-                    markers.push({ label: `${cur.piece.name}:loop${loop}:${section}`, t, kind: 'loop', loop, section });
-                    if (loop === wantLoop && resolveDone) {
-                        const loopSeconds = cur.totalBeats * cur.beatSec;
-                        resolveDone({ startT: t, endT: t + loopSeconds, loopSeconds });
-                        resolveDone = null;
-                    }
-                } else {
-                    markers.push({ label: `bar${chunkStart / 4 + 1}:${section}`, t, kind: 'chunk', loop, section });
-                }
-            }
-            return result;
-        };
     }
 
     if (snippet?.default) await snippet.default(api());

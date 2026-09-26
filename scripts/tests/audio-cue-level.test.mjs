@@ -77,10 +77,10 @@ function soundingEngine({ now = 0, bedLufs = -45 } = {}) {
         clock: now,
         started: true,
         now: () => engine.clock,
-        busInput: () => fakeNode(),
+        connectVoice: () => ({ output: fakeNode(), dispose() {} }),
         bedLoudness: () => bedLufs,
         releaseVoice() {},
-        noise: () => ({}),
+        noiseSource: () => fakeNode({ playbackRate: fakeParam(1), start() {}, stop() {} }),
         duck(window) {
             const record = { ...window, cancelled: false };
             ducks.push(record);

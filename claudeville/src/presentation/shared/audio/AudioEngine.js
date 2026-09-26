@@ -9,7 +9,14 @@
 //   music ─► low shelf −3 dB @ 160 Hz ─► bass < 300 Hz mono ─► attention ───────────► musicDuck ─┘ tilt
 //     programSum (tilt = circadian high shelf on world + music only)
 //       ─► bedGate ─► PROGRAM_TRIM ─► HPF 30 Hz ─┐
-//   cue ───────────► PROGRAM_TRIM ───────────────┴─► LP 14 kHz ─► limiter (−1.5 dBFS) ─► volume ─► fade ─► out
+//   cue ───────────► PROGRAM_TRIM ───────────────┤
+//   Island Air wet ► PROGRAM_TRIM ───────────────┴─► LP 14 kHz ─► limiter (−1.5 dBFS) ─► volume ─► fade ─► out
+//
+// Island Air (IslandAir.js, S5): layer sends enter per (director, group)
+// wet inputs that follow the director crossfade and the group fader, then
+// the bed air gate (which mirrors bedGate); cue and one-shot sends enter the
+// cue air input. One convolver pair serves both, and its wet return joins
+// at the cue staging, so a wet path gets exactly the trim its dry path gets.
 //
 // Every voice joins a bus through `busInput(name)` or a group through
 // `groupInput(name, director)`. The ducks are note-timed windows per bus
@@ -30,7 +37,12 @@
 
 import { DuckScheduler, dbToGain } from './DuckScheduler.js';
 import { makeFilter } from './Filters.js';
+import { IslandAir } from './IslandAir.js';
 import { LIMITER_CEILING_DBFS, PROGRAM_TRIM_DB, STANDARD_VOLUME_STEP, volumeStepGain } from './Loudness.js';
+import { MusicClock } from './MusicClock.js';
+import { rngStream } from './Rng.js';
+import { NoisePool, SampleBank } from './SampleBank.js';
+import { Transport } from './Transport.js';
 
 export const MIN_GAIN = 0.0001;
 
@@ -74,12 +86,13 @@ export function clamp01(value, fallback = 0) {
     return Math.max(0, Math.min(1, n));
 }
 
-export function rand(min, max) {
-    return min + Math.random() * (max - min);
+// Every draw names its stream (Rng.js): `rng` is a `() => [0, 1)` function.
+export function rand(rng, min, max) {
+    return min + rng() * (max - min);
 }
 
-export function pick(list) {
-    return list[Math.floor(Math.random() * list.length)];
+export function pick(rng, list) {
+    return list[Math.floor(rng() * list.length)];
 }
 
 // Freeze an AudioParam at its current trajectory value at time `t` so a new
@@ -237,24 +250,11 @@ function gainDb(value) {
     return value > 0 ? 20 * Math.log10(value) : null;
 }
 
-function buildNoiseBuffer(ctx, type, seconds = 4) {
-    const length = Math.max(1, Math.floor(ctx.sampleRate * seconds));
-    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-
-    if (type === 'brown') {
-        let last = 0;
-        for (let i = 0; i < length; i++) {
-            const white = Math.random() * 2 - 1;
-            last = (last + 0.02 * white) / 1.02;
-            data[i] = last * 3.2;
-        }
-    } else {
-        for (let i = 0; i < length; i++) {
-            data[i] = (Math.random() * 2 - 1) * 0.6;
-        }
+// Disconnect every node of a released voice chain.
+function disconnectAll(nodes) {
+    for (const node of nodes) {
+        try { node?.disconnect(); } catch { /* already disconnected */ }
     }
-    return buffer;
 }
 
 export class AudioEngine {
@@ -276,6 +276,15 @@ export class AudioEngine {
         this._busOuts = new Map();
         this._groups = new Map();
         this._directorGroups = new Map();
+        // Island Air: per-director wet inputs per group, per-group wet faders.
+        this._directorAir = new Map();
+        this._groupAir = new Map();
+        this.air = null;
+        this._airBedGate = null;
+        this._airWetTrim = null;
+        this._airPhase = 'day';
+        this._airWeather = { rain: 0, fog: 0 };
+        this._noiseWorklet = false;
         this._tilt = null;
         this._attention = null;
         this._weatherCeiling = null;
@@ -291,7 +300,12 @@ export class AudioEngine {
         this._weatherCeilingDb = 0;
         this._duckSchedulers = new Map(DUCKED_BUSES.map(name => [name, new DuckScheduler()]));
         this._contextPromise = null;
-        this._noiseBuffers = new Map();
+        // Context-independent services: one Transport (S4), one MusicClock,
+        // the bake queue and the noise pool (S8). Torn down in dispose().
+        this.transport = new Transport(this);
+        this.musicClock = new MusicClock();
+        this.bank = new SampleBank(this);
+        this.noisePool = new NoisePool(this.bank, key => rngStream(`noise.pool.${key}`));
         this._analyserData = null;
         // Bumped by every fade transition; a pending endWake() that sees it
         // changed knows a newer start or wake owns the fade.
@@ -334,27 +348,31 @@ export class AudioEngine {
     }
 
     // Build the engine on an existing context (an OfflineAudioContext in the
-    // probe): loads the limiter worklet, then builds the graph.
+    // probe): loads the limiter and noise worklets, then builds the graph.
     attachContext(ctx) {
         if (!this._contextPromise) this._contextPromise = this._attach(ctx);
         return this._contextPromise;
     }
 
     async _attach(ctx) {
-        const worklet = await this._loadLimiter(ctx);
+        const [worklet, noiseWorklet] = await Promise.all([
+            this._loadWorklet(ctx, './worklets/limiter-processor.js'),
+            this._loadWorklet(ctx, './worklets/noise-processor.js'),
+        ]);
         if (this._disposed) {
             try { await ctx.close(); } catch { /* already closed */ }
             return false;
         }
         this.context = ctx;
+        this._noiseWorklet = noiseWorklet;
         this._buildGraph(worklet);
         return true;
     }
 
-    async _loadLimiter(ctx) {
+    async _loadWorklet(ctx, path) {
         if (noWorkletsRequested() || !ctx.audioWorklet || typeof AudioWorkletNode !== 'function') return false;
         try {
-            await ctx.audioWorklet.addModule(new URL('./worklets/limiter-processor.js', import.meta.url));
+            await ctx.audioWorklet.addModule(new URL(path, import.meta.url));
             return true;
         } catch {
             return false;
@@ -421,6 +439,14 @@ export class AudioEngine {
             .connect(masterSum);
         this._buses.get('cue').connect(gain(dbToGain(PROGRAM_TRIM_DB))).connect(masterSum);
 
+        // Island Air: one convolver pair; the wet return joins at the cue
+        // staging. Its bed gate mirrors bedGate (start / wake).
+        this.air?.destroy();
+        this.air = new IslandAir(ctx, this.bank, { phase: this._airPhase, weather: this._airWeather });
+        this._airBedGate = this.air.bedGate;
+        this._airWetTrim = gain(dbToGain(PROGRAM_TRIM_DB));
+        this.air.output.connect(this._airWetTrim).connect(masterSum);
+
         // Master: LP 14 kHz → limiter → volume → fade → out.
         this._limiterIn = makeFilter(ctx, 'lowpass', 14000);
         masterSum.connect(this._limiterIn);
@@ -435,12 +461,22 @@ export class AudioEngine {
         this.fadeGain.connect(this.analyser);
 
         this._groups.clear();
+        this._groupAir.clear();
         for (const name of AUDIO_GROUPS) {
             const fader = gain(this._faderGain(name));
             fader.connect(this._buses.get(GROUP_BUS[name]));
             this._groups.set(name, fader);
+            const wetFader = gain(this._faderGain(name));
+            wetFader.connect(this.air.bedInput);
+            this._groupAir.set(name, wetFader);
         }
         this._directorGroups.clear();
+        this._directorAir.clear();
+        // The noise pool builds in idle slices from here on (a lane that
+        // asks first finishes it synchronously). Queued after the graph so
+        // no idle slice is pending across the worklet loads that enabling
+        // awaits. Nothing that sounds ever waits for it (or for a bake).
+        this.noisePool.prebuild();
     }
 
     _buildWorkletLimiter(ctx) {
@@ -569,12 +605,134 @@ export class AudioEngine {
         return Math.max(BED_FLOOR_LUFS, -0.691 + 10 * Math.log10(meanSquare));
     }
 
-    noise(type = 'white') {
+    // A noise lane (AMB-3): an unstarted, looping AudioBufferSourceNode on
+    // the colour's stereo pool buffer ('white' | 'brown'); `start(t)` reads
+    // from a seeded offset ≥ 5 s from every live lane (`startOffset`).
+    // `oneShot` lanes (knocks, hats, thunder) avoid live lanes, but
+    // continuous lanes never avoid them, so world offsets never depend on
+    // work events.
+    noiseSource(color, { rng, oneShot = false } = {}) {
         if (!this.context) return null;
-        if (!this._noiseBuffers.has(type)) {
-            this._noiseBuffers.set(type, buildNoiseBuffer(this.context, type));
+        return this.noisePool.source(this.context, color, { rng, oneShot });
+    }
+
+    // Rain dust or bubbles (worklets/noise-processor.js): a 2-channel
+    // AudioWorkletNode with a k-rate `density` AudioParam (events/s), or
+    // null without AudioWorklet (the caller keeps its native voices).
+    noiseWorklet(kind, { rng, density = 0, gain = 1, fmin, fmax, decayMs, tauMs } = {}) {
+        if (!this.context || !this._noiseWorklet) return null;
+        if (typeof rng !== 'function') throw new Error('noiseWorklet needs an rng stream');
+        const node = new AudioWorkletNode(this.context, 'claudeville-noise', {
+            numberOfInputs: 0,
+            numberOfOutputs: 1,
+            outputChannelCount: [2],
+            processorOptions: { kind, seed: Math.floor(rng() * 4294967295) >>> 0, gain, fmin, fmax, decayMs, tauMs },
+        });
+        node.parameters.get('density').value = density;
+        return node;
+    }
+
+    // One voice's placement chain (S3, S5): node → [low-pass] → panner →
+    // bus (or a director's group input), plus an Island Air send of `air`
+    // (linear) tapped after the panner — into the cue air input for cues
+    // and ungrouped one-shots, into the group's wet input for grouped ones.
+    // Built once per voice; `dispose()` disconnects it after the last tail.
+    connectVoice(node, { bus = 'cue', group = null, director = 'ambient', pan = 0, air = 0, lowpassHz = null } = {}) {
+        const ctx = this.context;
+        if (!ctx || !node) return { output: null, dispose() {} };
+        const nodes = [];
+        let head = node;
+        if (Number(lowpassHz) > 0) {
+            const lp = makeFilter(ctx, 'lowpass', Math.min(Number(lowpassHz), ctx.sampleRate / 2 - 100));
+            head.connect(lp);
+            head = lp;
+            nodes.push(lp);
         }
-        return this._noiseBuffers.get(type);
+        const panner = ctx.createStereoPanner();
+        panner.pan.value = Math.max(-1, Math.min(1, Number(pan) || 0));
+        head.connect(panner);
+        nodes.push(panner);
+        panner.connect(group ? this.groupInput(group, director) : this.busInput(bus));
+        const amount = Math.max(0, Number(air) || 0);
+        if (amount > 0) {
+            nodes.push(this.airSendFrom(panner, amount, group ? { group, director } : { cue: bus === 'cue' }));
+        }
+        let disposed = false;
+        return {
+            output: panner,
+            dispose: () => {
+                if (disposed) return;
+                disposed = true;
+                try { node.disconnect(nodes[0]); } catch { /* already disconnected */ }
+                disconnectAll(nodes);
+            },
+        };
+    }
+
+    // An Island Air send (C-AMB-2: tap it after the layer's level gain):
+    // `from` → gain(amount) → the air input. With `group` the send lands in
+    // that director's wet input for the group, which follows the director
+    // crossfade and the group fader like the dry path; `cue: true` feeds the
+    // cue air input (no bed gate); otherwise the bed air input. Returns the
+    // send gain (automate `.gain`; disconnect it to remove the send).
+    airSendFrom(from, amount, { group = null, director = 'ambient', cue = false } = {}) {
+        if (!this.context || !this.air || !from) return null;
+        const send = this.context.createGain();
+        send.gain.value = Math.max(0, Number(amount) || 0);
+        const target = group ? this._groupAirInput(group, director) : cue ? this.air.cueInput : this.air.bedInput;
+        from.connect(send).connect(target);
+        return send;
+    }
+
+    // Island Air mood by phase ('dawn' | 'day' | 'dusk' | 'night'): an
+    // equal-power crossfade between the day and night IRs (τ 6 s).
+    setAirPhase(phase) {
+        this._airPhase = phase;
+        this.air?.setPhase(phase);
+    }
+
+    // Rain and fog (0..1) colour only the air's return.
+    setAirWeather({ rain = 0, fog = 0 } = {}) {
+        this._airWeather = { rain, fog };
+        this.air?.setWeather(this._airWeather);
+    }
+
+    // Probe taps: the bed and cue send sums and the wet return (pre-trim).
+    get airReturns() {
+        if (!this.air) return null;
+        return { bed: this.air.bedGate, cue: this.air.cueInput, wet: this.air.output };
+    }
+
+    _groupAirInput(name, director) {
+        const wetFader = this._groupAir.get(name);
+        if (!wetFader) throw new Error(`Unknown audio group: ${name}`);
+        let groups = this._directorAir.get(director);
+        if (!groups) {
+            groups = new Map();
+            this._directorAir.set(director, groups);
+        }
+        let node = groups.get(name);
+        if (!node) {
+            node = this._directorNode(director);
+            node.connect(wetFader);
+            groups.set(name, node);
+        }
+        return node;
+    }
+
+    // A gain that carries a director's crossfade level (and any running fade).
+    _directorNode(director) {
+        const node = this.context.createGain();
+        const state = this._directorState(director);
+        const now = this.now();
+        node.gain.value = this._directorLevelAt(state, now);
+        this._followDirectorFade(node.gain, state, now);
+        return node;
+    }
+
+    // bedGate and the air's bed gate move together (start / wake).
+    _bedGateParams() {
+        return [this.bedGate.gain, this._airBedGate?.gain].filter(Boolean);
     }
 
     // Cached console-style timbres: band-limited pulse waves (NES duty
@@ -611,13 +769,14 @@ export class AudioEngine {
         this._fadeEpoch++;
         const now = this.now();
         const fade = this.fadeGain.gain;
-        const gate = this.bedGate.gain;
         // Reopen the bed after a wake. If the fade is already open (a start
         // during a wake) the bed must glide in, not step in under the cue.
         const fadeOpen = fade.value > 0.001;
-        holdAt(gate, now);
-        if (fadeOpen) gate.setTargetAtTime(1, now, 0.4);
-        else gate.setValueAtTime(1, now);
+        for (const gate of this._bedGateParams()) {
+            holdAt(gate, now);
+            if (fadeOpen) gate.setTargetAtTime(1, now, 0.4);
+            else gate.setValueAtTime(1, now);
+        }
         if (this._bedOpenAt === null) this._bedOpenAt = now;
         holdAt(fade, now);
         fade.setTargetAtTime(1, now, 0.4);
@@ -645,12 +804,13 @@ export class AudioEngine {
         this._bedOpenAt = null;
         const now = this.now();
         const fade = this.fadeGain.gain;
-        const gate = this.bedGate.gain;
-        holdAt(gate, now);
         // A closed fade makes the gate step inaudible; an open one (a wake
         // over a running mix) needs the same short ramp the cue path gets.
-        if (fade.value > 0.001) gate.linearRampToValueAtTime(0, now + WAKE_OPEN_SEC);
-        else gate.setValueAtTime(0, now);
+        for (const gate of this._bedGateParams()) {
+            holdAt(gate, now);
+            if (fade.value > 0.001) gate.linearRampToValueAtTime(0, now + WAKE_OPEN_SEC);
+            else gate.setValueAtTime(0, now);
+        }
         holdAt(fade, now);
         fade.linearRampToValueAtTime(1, now + WAKE_OPEN_SEC);
         return true;
@@ -726,26 +886,25 @@ export class AudioEngine {
         }
         let node = groups.get(name);
         if (!node) {
-            node = this.context.createGain();
-            const state = this._directorState(director);
-            const now = this.now();
-            node.gain.value = this._directorLevelAt(state, now);
-            this._followDirectorFade(node.gain, state, now);
+            node = this._directorNode(director);
             node.connect(fader);
             groups.set(name, node);
         }
         return node;
     }
 
-    // Equal-power fade of every group gain of one director to `to01` over
-    // `duration` seconds (64-point setValueCurveAtTime); duration ≤ 0 sets it
-    // at once. Works before a context exists (the level is kept for the next
-    // graph). Returns the audio time at which the fade ends.
+    // Equal-power fade of every group gain (dry and air) of one director to
+    // `to01` over `duration` seconds (64-point setValueCurveAtTime); duration
+    // ≤ 0 sets it at once. Works before a context exists (the level is kept
+    // for the next graph). Returns the audio time at which the fade ends.
     fadeDirector(directorId, to01, { duration = 2.5 } = {}) {
         const state = this._directorState(directorId);
         const to = clamp01(to01, 1);
         const now = this.now();
-        const nodes = [...(this._directorGroups.get(directorId)?.values() ?? [])];
+        const nodes = [
+            ...(this._directorGroups.get(directorId)?.values() ?? []),
+            ...(this._directorAir.get(directorId)?.values() ?? []),
+        ];
         const sec = Number(duration);
         if (!this.context || !(sec > 0)) {
             const previous = state.fade;
@@ -825,8 +984,9 @@ export class AudioEngine {
     setGroupLevel(name, value) {
         if (!this._groupLevels.has(name)) throw new Error(`Unknown audio group: ${name}`);
         this._groupLevels.set(name, clamp01(value, 1));
-        const fader = this._groups.get(name);
-        if (fader) fader.gain.setTargetAtTime(this._faderGain(name), this.now(), 0.05);
+        for (const fader of [this._groups.get(name), this._groupAir.get(name)]) {
+            if (fader) fader.gain.setTargetAtTime(this._faderGain(name), this.now(), 0.05);
+        }
     }
 
     _faderGain(name) {
@@ -1088,6 +1248,17 @@ export class AudioEngine {
         this._busOuts.clear();
         this._groups.clear();
         this._directorGroups.clear();
+        this._groupAir.clear();
+        this._directorAir.clear();
+        // The Transport's interval, pending bakes and pool slices, and the
+        // air's idle-convolver timer.
+        this.transport.destroy();
+        this.bank.destroy();
+        this.noisePool.destroy();
+        this.air?.destroy();
+        this.air = null;
+        this._airBedGate = null;
+        this._airWetTrim = null;
         this._tilt = null;
         this._attention = null;
         this._weatherCeiling = null;
@@ -1095,7 +1266,6 @@ export class AudioEngine {
         this._bedMeter = null;
         this._musicPre = null;
         this._meterModuleContext = null;
-        this._noiseBuffers.clear();
         this._waves = null;
         this._disposePromise = (async () => {
             if (context) {

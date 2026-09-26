@@ -555,7 +555,8 @@ async function runActualAudioLifecycleProbe(page) {
     return audio?.blurred === false && audio?.contextState === 'running' && audio?.running === true;
   });
 
-  // "Signals only" makes a blur behave like a hidden tab; focus rebuilds.
+  // "Signals only" makes a blur behave like a hidden tab: the village pauses
+  // in place and focus resumes it.
   await page.evaluate(() => {
     window.localStorage.setItem('claudeville.sound.background', 'signals');
     window.dispatchEvent(new Event('blur'));
@@ -648,10 +649,12 @@ async function runActualAudioLifecycleProbe(page) {
     signalsFocusRunning: signalsFocus.running,
     hiddenState: hidden.contextState,
     hiddenRunning: hidden.running,
+    hiddenPaused: hidden.paused,
     hiddenSoundState: hidden.soundState,
     wake,
     visibleState: visible.contextState,
     visibleRunning: visible.running,
+    visiblePaused: visible.paused,
   };
 }
 
@@ -666,7 +669,7 @@ async function runAudioLifecycleProbe(page) {
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
     const storedEnabled = window.localStorage.getItem('claudeville.sound.enabled');
 
-    const calls = { ensure: 0, start: 0, stop: 0, suspend: 0, dispose: 0, directorStart: 0 };
+    const calls = { ensure: 0, start: 0, stop: 0, suspend: 0, dispose: 0, directorStart: 0, pause: 0, resume: 0 };
     let delayedResolve = null;
     let delayEnsure = false;
     const controller = new AmbientAudioController();
@@ -695,8 +698,16 @@ async function runAudioLifecycleProbe(page) {
     };
     const director = {
       running: false,
-      start() { this.running = true; calls.directorStart++; },
-      stop() { this.running = false; },
+      paused: false,
+      start() {
+        if (this.running) return;
+        this.running = true;
+        calls.directorStart++;
+      },
+      stop() { this.running = false; this.paused = false; },
+      pause() { this.paused = true; calls.pause++; return 0; },
+      resume() { this.paused = false; calls.resume++; },
+      currentPhase() { return 'day'; },
       setHidden() {},
       setSignalRouting() {},
       snapshot() { return {}; },
@@ -715,16 +726,30 @@ async function runAudioLifecycleProbe(page) {
       const blurKeptPlaying = calls.suspend === 0 && calls.stop === 0 && director.running === true;
       window.dispatchEvent(new Event('focus'));
 
+      // Hidden pauses in place: the director keeps its instance and the
+      // context suspends once the groups have closed.
       hidden = true;
       document.dispatchEvent(new Event('visibilitychange'));
       await new Promise(resolve => setTimeout(resolve, 850));
-      const suspendedWhileHidden = calls.suspend === 1 && director.running === false;
+      const suspendedWhileHidden = calls.suspend === 1 && calls.pause === 1
+        && director.running === true && director.paused === true;
 
       hidden = false;
       document.dispatchEvent(new Event('visibilitychange'));
       await Promise.resolve();
       await Promise.resolve();
-      const resumedOnce = calls.start === 2 && calls.directorStart === 2;
+      const resumedInPlace = calls.start === 2 && calls.resume === 1 && calls.directorStart === 1;
+
+      // An absence past ten minutes rebuilds instead of resuming.
+      hidden = true;
+      document.dispatchEvent(new Event('visibilitychange'));
+      controller._paused.at -= 11 * 60 * 1000;
+      hidden = false;
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+      await Promise.resolve();
+      const rebuiltAfterLongAbsence = calls.start === 3 && calls.resume === 1
+        && calls.directorStart === 2 && director.paused === false;
 
       delayEnsure = true;
       const pendingActivation = controller._activate();
@@ -736,8 +761,9 @@ async function runAudioLifecycleProbe(page) {
         startedOnce,
         blurKeptPlaying,
         suspendedWhileHidden,
-        resumedOnce,
-        noStartAfterDestroy: calls.start === 2 && calls.directorStart === 2,
+        resumedInPlace,
+        rebuiltAfterLongAbsence,
+        noStartAfterDestroy: calls.start === 3 && calls.directorStart === 2,
         disposedOnce: calls.dispose === 1,
       };
     } finally {
@@ -1491,7 +1517,8 @@ async function main() {
       signalsBlurState: 'suspended',
       signalsFocusRunning: true,
       hiddenState: 'suspended',
-      hiddenRunning: false,
+      hiddenRunning: true,
+      hiddenPaused: true,
       hiddenSoundState: 'armed',
       wake: {
         woke: true,
@@ -1501,13 +1528,15 @@ async function main() {
       },
       visibleState: 'running',
       visibleRunning: true,
+      visiblePaused: false,
     });
     const audioProbe = await runAudioLifecycleProbe(page);
     assert.deepEqual(audioProbe, {
       startedOnce: true,
       blurKeptPlaying: true,
       suspendedWhileHidden: true,
-      resumedOnce: true,
+      resumedInPlace: true,
+      rebuiltAfterLongAbsence: true,
       noStartAfterDestroy: true,
       disposedOnce: true,
     });

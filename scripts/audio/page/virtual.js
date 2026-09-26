@@ -10,9 +10,10 @@
 // engine's ensureContext loads its worklets (awaited by the clock) and builds
 // the graph. Rendering then suspends every `stepFrames` (512 = 10.7 ms); each
 // suspension advances the virtual clock to that audio time and fires the
-// timers due by then before resuming. Suspension of the scene context itself
-// (a hidden tab) is not modelled: the away/resume checks stay on the realtime
-// app path.
+// timers due by then before resuming. A hidden tab is modelled by the
+// document.hidden override and a real visibilitychange: the controller's
+// pause and `context.suspend()` reach the shimmed state, the render itself
+// keeps running (a real suspended context would also stop its clock).
 //
 // Stems (HAR-5) ride extra destination channels: channels 0–1 carry the
 // program, and each requested tap adds a stereo pair through a channel
@@ -24,7 +25,7 @@ import { cueScoreDiagnostics, scheduleAccent } from '/src/presentation/shared/au
 import { PROGRAM_TRIM_DB } from '/src/presentation/shared/audio/Loudness.js';
 import { PIECES } from '/src/presentation/shared/audio/bgm/BgmSongbook.js';
 import {
-    LAYERS, atmosphereFor, atmosphereSummary, makeMarker, makeWorld, plain, runAction, seedSoundStorage,
+    LAYERS, atmosphereFor, atmosphereSummary, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
 } from './scene.js';
 
 const vc = window.__vc;
@@ -42,6 +43,9 @@ export const STEM_SOURCES = {
     cue: engine => engine.busInput('cue'),
     limiterIn: engine => engine._limiterIn,
     limiterOut: engine => engine._limiterOut,
+    // Island Air (S5): the wet return before its program trim — the same
+    // staging as the cue and bus taps above.
+    airWet: engine => engine.airReturns?.wet ?? null,
 };
 
 function sceneContext({ seconds, stems, sampleRate }) {
@@ -52,11 +56,14 @@ function sceneContext({ seconds, stems, sampleRate }) {
     });
     vc.sceneContext = ctx;
     let state = 'suspended';
+    const stateLog = [];
     const setState = (next) => {
         if (state === next || state === 'closed') return;
         state = next;
+        stateLog.push({ t: ctx.currentTime, state: next });
         ctx.dispatchEvent(new Event('statechange'));
     };
+    ctx.__vcStateLog = stateLog;
     // The render's own running/suspended transitions are the harness's, not
     // the app's: keep them from any statechange listener the app adds later.
     ctx.addEventListener('statechange', (event) => { if (event.isTrusted) event.stopImmediatePropagation(); });
@@ -94,16 +101,27 @@ function attachStems(ctx, engine, stems) {
 }
 
 // Renders the context with the clock stepping; resolves the AudioBuffer.
-async function renderStepped(ctx, { perfBase, stepFrames }) {
+// With `freeze`, a context the app suspended (a hidden tab) stops the audio
+// clock as a real suspended context does: the render holds at its step
+// while the virtual clock (timers, the hidden page) keeps moving, until the
+// app resumes it. Audio time then continues where it stopped.
+async function renderStepped(ctx, { perfBase, stepFrames, freeze = false }) {
     const sr = ctx.sampleRate;
+    const stepMs = (stepFrames / sr) * 1000;
     let k = 1;
+    let frozenMs = 0;
     let failure = null;
     const arm = () => {
         const frame = k * stepFrames;
         if (frame >= ctx.length) return;
         offline.suspend.call(ctx, frame / sr).then(async () => {
             try {
-                await vc.advanceTo(perfBase + (frame / sr) * 1000);
+                await vc.advanceTo(perfBase + frozenMs + (frame / sr) * 1000);
+                while (freeze && ctx.state === 'suspended') {
+                    if (frozenMs > 3600e3) throw new Error('virtual clock: the context stayed suspended for an hour');
+                    frozenMs += stepMs;
+                    await vc.advanceTo(perfBase + frozenMs + (frame / sr) * 1000);
+                }
                 k++;
                 arm();
             } catch (err) {
@@ -123,17 +141,18 @@ async function renderStepped(ctx, { perfBase, stepFrames }) {
 // one stereo pair at a time into window.__vcStage for the Node side to pull,
 // so a long multi-stem scene never holds two copies of every stem.
 let rendered = null;
-function publishPcm(buffer, stems) {
+function publishPcm(buffer, stems, extra = {}) {
     const names = ['program', ...stems];
-    rendered = { buffer, names };
-    return names;
+    rendered = { buffer, names, extra };
+    return [...names, ...Object.keys(extra)];
 }
 
 export function stage(name) {
     const i = rendered?.names.indexOf(name) ?? -1;
-    if (i < 0) throw new Error(`no rendered channel pair ${name}`);
-    const L = rendered.buffer.getChannelData(2 * i);
-    const R = rendered.buffer.getChannelData(2 * i + 1);
+    const pair = rendered?.extra[name];
+    if (i < 0 && !pair) throw new Error(`no rendered channel pair ${name}`);
+    const L = pair ? pair[0] : rendered.buffer.getChannelData(2 * i);
+    const R = pair ? pair[1] : rendered.buffer.getChannelData(2 * i + 1);
     const pcm = new Float32Array(L.length * 2);
     for (let k = 0; k < L.length; k++) { pcm[2 * k] = L[k]; pcm[2 * k + 1] = R[k]; }
     window.__vcStage = pcm;
@@ -151,10 +170,126 @@ async function pumpUntil(ready, what) {
     }
 }
 
+// Seeded streams (S6): the probe seed reaches Rng.js when the tree has it;
+// `rng: { constant }` pins every draw (Rng.js streams and Math.random) to
+// one value, which is how the sequencer-equivalence renders make two
+// implementations with different stream layouts make the same choices.
+async function setupRng(spec) {
+    const rng = await import('/src/presentation/shared/audio/Rng.js').catch(() => null);
+    const constant = spec.rng?.constant;
+    if (constant != null) {
+        Math.random = () => constant;
+        rng?.setRngOverride?.(() => constant);
+    } else if (rng?.setRngSeed) {
+        rng.setRngSeed(Number(window.__HAR_SEED) >>> 0);
+    }
+    return rng ? { module: true, seed: rng.rngSeed?.() ?? null, constant: constant ?? null } : { module: false, constant: constant ?? null };
+}
+
+// The Village tunes' siblings (the Wave-1 pin excludes the sibling).
+const VILLAGE_SIBLING = { hearthfire: 'millbrook', millbrook: 'hearthfire', lanternway: 'starwake', starwake: 'lanternway' };
+
+// Pin one piece: the sequencer's `pin()`; the Wave-1 hooks (`_playlist`,
+// `_lastSongName`) only for rendering the sequencer check's reference from
+// the Wave-1 tree.
+function pinPiece(controller, spec) {
+    if (spec.bgm?.piece) {
+        const player = controller.directors?.bgm?.player;
+        if (!player) return 'no Town band player';
+        if (typeof player.pin === 'function') { player.pin({ piece: spec.bgm.piece }); return 'pin'; }
+        const only = PIECES.filter(p => p.name === spec.bgm.piece);
+        if (!only.length) throw new Error(`unknown BGM piece ${spec.bgm.piece}`);
+        player._playlist = () => only;
+        return 'playlist';
+    }
+    if (spec.music?.piece) {
+        const layer = controller.director?.layers?.music;
+        if (!layer) return 'no Village music layer';
+        // A held level from the start: the first song slot (3.75 s at
+        // rng 0.5) finds the level settled in both implementations.
+        if (spec.music.level != null) controller.director.forceLayer('music', spec.music.level, 1e9);
+        if (typeof layer.pin === 'function') { layer.pin({ piece: spec.music.piece }); return 'pin'; }
+        layer._lastSongName = VILLAGE_SIBLING[spec.music.piece];
+        return 'sibling';
+    }
+    return null;
+}
+
+// Whether a node's graph reaches `target` (node → node edges only;
+// modulators feeding an AudioParam are not notes).
+function reacherOf(target) {
+    const memo = new Map();
+    const reaches = (node, seen) => {
+        if (node === target) return true;
+        if (memo.has(node)) return memo.get(node);
+        if (seen.has(node)) return false;
+        seen.add(node);
+        let hit = false;
+        for (const next of vc.audio.edges.get(node) || []) {
+            if (reaches(next, seen)) { hit = true; break; }
+        }
+        memo.set(node, hit);
+        return hit;
+    };
+    return node => Boolean(node) && reaches(node, new Set());
+}
+
+// Per timer call site: callbacks fired, their real duration, and the
+// sources started while it ran — continuous ones (`starts`) apart from
+// discrete cues (`cueStarts`, sources reaching the cue bus: control-rate
+// decisions placed on the audio clock with a lead, exempt from S4's
+// one-timer rule), with the first few start times and node kinds.
+function timerReport() {
+    const perSite = new Map();
+    const row = site => perSite.get(site) || perSite.set(site, { starts: 0, cueStarts: 0, first: [] }).get(site);
+    for (const s of vc.audio.starts) {
+        const r = row(s.site);
+        if (s.cue) r.cueStarts++;
+        else {
+            r.starts++;
+            if (r.first.length < 3) r.first.push({ t: Number(s.t.toFixed(3)), k: s.k });
+        }
+    }
+    const stats = vc.timerStats();
+    const empty = { starts: 0, cueStarts: 0, first: [] };
+    return stats.map((s) => {
+        const d = s.durationsMs.slice().sort((a, b) => a - b);
+        const q = p => (d.length ? d[Math.min(d.length - 1, Math.floor(p * d.length))] : null);
+        return { site: s.site, callers: s.callers.slice(0, 4), fired: s.fired, p95Ms: q(0.95), maxMs: d.length ? d[d.length - 1] : null, ...(perSite.get(s.site) || empty) };
+    }).concat(['harness', 'untimed'].filter(k => !stats.some(s => s.site === k) && perSite.has(k)).map(k => ({ site: k, callers: [], fired: 0, p95Ms: null, maxMs: null, ...perSite.get(k) })));
+}
+
+function engineDiagnostics(engine) {
+    const call = (fn) => { try { return plain(fn()); } catch (err) { return { error: String(err?.message || err) }; } };
+    return {
+        transport: engine.transport?.diagnostics ? call(() => engine.transport.diagnostics()) : null,
+        bank: engine.bank?.stats ? call(() => engine.bank.stats()) : null,
+        airReady: engine.air ? Boolean(engine.air.buffers?.().day && engine.air.buffers?.().night) : null,
+    };
+}
+
+let hiddenFlag = false;
+let hiddenInstalled = false;
+function setHidden(value) {
+    if (!hiddenInstalled) {
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => hiddenFlag });
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hiddenFlag ? 'hidden' : 'visible') });
+        hiddenInstalled = true;
+    }
+    hiddenFlag = value;
+    document.dispatchEvent(new Event('visibilitychange'));
+}
+
 // spec: { name, mode, volumeStep, layerSteps, world:{counts},
 //         atmosphere:{phase,progress,weather,hour}, bgm:{piece}, warmup, seconds,
 //         actions:[scene.js runAction | {atmosphere} | {accent:{kind, leadMs}}, …],
-//         stems:[STEM_SOURCES keys], stepFrames, noWorklets, sampleRate }
+//         stems:[STEM_SOURCES keys], stepFrames, noWorklets, sampleRate,
+//         rng:{constant}, music:{piece, level}, lint:false (skip the HAR-4
+//         stack capture: timing scenes), trace:'music' (onsets of every
+//         source reaching the music bus), collect:['starts'], airOff,
+//         freezeOnSuspend }
+// Every start is traced to the cue bus: `cue` marks discrete cue voices.
+// Actions also take {visibility:'hidden'|'visible'} and {window:'blur'|'focus'}.
 // Action `at` is seconds after warmup. Every returned time is audio time in
 // seconds from the start of the render.
 export async function runVirtual(spec) {
@@ -163,6 +298,9 @@ export async function runVirtual(spec) {
     const warmup = spec.warmup ?? 0;
     const total = warmup + spec.seconds;
     if (spec.noWorklets) globalThis.__claudevilleAudioNoWorklets = true;
+    if (spec.lint === false) window.__harNoLint = true;
+    vc.audio.keepNodes = true;
+    const rngInfo = await setupRng(spec);
     const ctx = sceneContext({ seconds: total, stems, sampleRate });
 
     seedSoundStorage(spec);
@@ -183,7 +321,11 @@ export async function runVirtual(spec) {
         log.scheduled.push({ t: ctx.currentTime, kind: p?.kind ?? null, agentId: p?.agentId ?? null, silent: Boolean(p?.silent), notesMs: (p?.notes || []).map(n => n.atMs) });
     });
 
+    // The Town band chooses its first piece as it starts: pin it there (a
+    // tree without the sequencer pins after the enable, below).
+    const pinAtStart = spec.bgm?.piece && await pinSequencer({ preset: 'townBand', piece: spec.bgm.piece }) ? 'pin at start' : null;
     controller = new AmbientAudioController({ world });
+    let pinned = pinAtStart;
     controller.activateFromUser(true);
     await pumpUntil(() => controller.isRunning(), 'the enable');
     const engine = controller.engine;
@@ -205,12 +347,17 @@ export async function runVirtual(spec) {
         return token;
     };
     attachStems(ctx, engine, stems);
-
-    if (spec.bgm?.piece) {
-        const only = PIECES.filter(p => p.name === spec.bgm.piece);
-        if (!only.length) throw new Error(`unknown BGM piece ${spec.bgm.piece}`);
-        const player = controller.directors?.bgm?.player;
-        if (player) player._playlist = () => only;
+    if (!pinned || pinned.startsWith('no ')) pinned = pinPiece(controller, spec);
+    // airOff: 'all' (no air: both send sums cut) | 'bed' (dry bed, so the wet
+    // return carries the cue sends only). Taps on `wet` stay connected.
+    let airOff = null;
+    if (spec.airOff) {
+        const returns = engine.airReturns;
+        airOff = Boolean(returns?.bed && returns?.cue);
+        if (airOff) {
+            returns.bed.disconnect();
+            if (spec.airOff === 'all') returns.cue.disconnect();
+        }
     }
     if (spec.isolate) {
         for (const name of LAYERS) if (name !== spec.isolate) controller.director.forceLayer(name, 0, 1e9);
@@ -227,6 +374,16 @@ export async function runVirtual(spec) {
     setTimeout(() => mark('rec-start'), Math.max(0, perfAt(warmup) - vc.now));
     for (const action of spec.actions || []) {
         setTimeout(() => {
+            if (action.visibility) {
+                setHidden(action.visibility === 'hidden');
+                mark(action.label || `visibility:${action.visibility}`, { kind: 'action' });
+                return;
+            }
+            if (action.window) {
+                window.dispatchEvent(new Event(action.window));
+                mark(action.label || `window:${action.window}`, { kind: 'action' });
+                return;
+            }
             if (action.atmosphere) {
                 ({ snapshot } = atmosphereFor(action.atmosphere));
                 eventBus.emit('atmosphere:updated', snapshot);
@@ -244,12 +401,17 @@ export async function runVirtual(spec) {
     }
 
     const wallStart = vc.real.performanceNow();
-    const buffer = await renderStepped(ctx, { perfBase, stepFrames: spec.stepFrames || 512 });
+    const buffer = await renderStepped(ctx, { perfBase, stepFrames: spec.stepFrames || 512, freeze: Boolean(spec.freezeOnSuspend) });
     const renderMs = vc.real.performanceNow() - wallStart;
     clearInterval(pump);
     const names = publishPcm(buffer, stems);
     const toT = ms => (ms - perfBase) / 1000;
     const snap = plain(window.__claudevilleAudio?.());
+    const starts = vc.audio.starts;
+    const toCue = reacherOf(engine.busInput('cue'));
+    for (const s of starts) s.cue = toCue(s.node);
+    const toMusic = spec.trace === 'music' ? reacherOf(engine.busInput('music')) : null;
+    const traced = toMusic ? starts.filter(s => toMusic(s.node)).map(s => s.t) : null;
     return {
         sampleRate,
         frames: buffer.length,
@@ -272,6 +434,17 @@ export async function runVirtual(spec) {
         finalSnapshot: snap,
         cueScore: plain(cueScoreDiagnostics()),
         clock: { fired: vc.fired, errors: vc.errors.slice(0, 20), timersLeft: vc.timers() },
+        rng: rngInfo,
+        pinned,
+        airOff,
+        contextStates: ctx.__vcStateLog.slice(),
+        timers: timerReport(),
+        diagnostics: engineDiagnostics(engine),
+        musicOnsets: traced,
+        starts: (spec.collect || []).includes('starts')
+            ? starts.map(({ node, ...s }) => ({ ...s, e: Number.isFinite(s.e) ? s.e : null }))
+            : null,
+        startCount: starts.length,
     };
 }
 
@@ -324,5 +497,62 @@ export async function runEngineUnit(spec) {
     return { sampleRate, frames: buffer.length, names, limiterKind: engine.limiterKind ?? null, programTrimDb: PROGRAM_TRIM_DB };
 }
 
-window.__vcRender = { runVirtual, runEngineUnit, stage };
+// Island Air (2.4, S5) on the engine alone: waits for the two baked IRs and
+// publishes them (`irDay`, `irNight`, at their own rate), then renders
+// decaying 8 ms noise bursts through `engine.connectVoice` at the
+// placements SpatialField gives (world kind): `bursts: [{ at, screen:
+// {screenX, screenY, viewportW, viewportH} }]`. Taps: the world bus (dry)
+// and the air's wet return, both before the program trim.
+export async function runAirUnit(spec) {
+    const sampleRate = spec.sampleRate || 48000;
+    const stems = ['world', 'airWet'];
+    const rngInfo = await setupRng(spec);
+    const ctx = sceneContext({ seconds: spec.seconds, stems, sampleRate });
+    const { place } = await import('/src/presentation/shared/audio/SpatialField.js');
+    const engine = new AudioEngine();
+    engine.setVolumeStep(10);
+    const ready = engine.ensureContext();
+    let ok = false;
+    ready.then((v) => { ok = v; });
+    await pumpUntil(() => ok, 'ensureContext');
+    engine.fadeGain.gain.value = 1;
+    engine.started = true;
+    engine.start?.();
+    await pumpUntil(() => Boolean(engine.air?.buffers?.().day && engine.air.buffers().night), 'the Island Air bake');
+    engine.setAirPhase?.(spec.phase || 'day');
+    attachStems(ctx, engine, stems);
+    const placements = [];
+    const bus = spec.bus || 'world';
+    for (const b of spec.bursts || []) {
+        const p = place(b.screen, { kind: spec.kind || 'world' });
+        placements.push({ at: b.at, ...plain(p) });
+        const n = Math.round(0.008 * sampleRate);
+        const buf = ctx.createBuffer(1, n, sampleRate);
+        const d = buf.getChannelData(0);
+        let seed = 0x2468ace;
+        for (let i = 0; i < n; i++) {
+            seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+            d[i] = 0.5 * ((seed / 4294967296) * 2 - 1) * Math.exp(-i / (0.002 * sampleRate));
+        }
+        const src = new AudioBufferSourceNode(ctx, { buffer: buf });
+        const g = new GainNode(ctx, { gain: p.gain });
+        src.connect(g);
+        engine.connectVoice(g, { bus, pan: p.pan, air: p.air, lowpassHz: p.lowpassHz });
+        src.start(b.at);
+    }
+    const perfBase = vc.now - ctx.currentTime * 1000;
+    const irs = engine.air.buffers();
+    const pair = b => [b.getChannelData(0).slice(), b.getChannelData(b.numberOfChannels > 1 ? 1 : 0).slice()];
+    const extra = { irDay: pair(irs.day), irNight: pair(irs.night) };
+    const buffer = await renderStepped(ctx, { perfBase, stepFrames: 4096 });
+    const names = publishPcm(buffer, stems, extra);
+    return {
+        sampleRate, frames: buffer.length, names, placements, rng: rngInfo,
+        irRates: { irDay: irs.day.sampleRate, irNight: irs.night.sampleRate },
+        diagnostics: engineDiagnostics(engine), timers: timerReport(),
+    };
+}
+
+window.__vcRender = { runVirtual, runEngineUnit, runAirUnit, stage };
+
 window.__vcReady = true;

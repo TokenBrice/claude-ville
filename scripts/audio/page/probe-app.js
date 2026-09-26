@@ -1,4 +1,4 @@
-// In-page driver for the Wave-0 audio probe (scripts/audio/probe.mjs).
+// In-page driver for the audio probe's live-app checks (scripts/audio/probe.mjs).
 // Injected into the real app (isolated server, ?sim=1) after init.js. It only
 // uses the app's public/dev surfaces: the event bus, the ?sim=1 fixture
 // driver (`app.agentSimulator`), `window.__claudevilleAudio()`, and real
@@ -170,6 +170,34 @@
                 await sleep(20);
             }
             return null;
+        },
+
+        setMode(mode) {
+            controller()?.setMode(mode);
+        },
+
+        // 2.1 continuity: blur for `blurMs`, focus, and the piece before, at
+        // the end of the blur and `afterMs` after focus.
+        async blurFocus({ blurMs, afterMs }) {
+            const piece = () => { const np = audio()?.nowPlaying; return np ? JSON.parse(JSON.stringify(np)) : null; };
+            const before = piece();
+            const blurAt = performance.now();
+            window.dispatchEvent(new Event('blur'));
+            await sleep(blurMs);
+            const during = piece();
+            const focusAt = performance.now();
+            window.dispatchEvent(new Event('focus'));
+            await sleep(afterMs);
+            return { before, during, after: piece(), blurAt, focusAt, contextState: audio()?.contextState ?? null };
+        },
+
+        // Frame profile (the world benchmark's appTotalMs samples).
+        startFrames() {
+            window.__claudeVillePerf?.startFrameProfile?.();
+        },
+        stopFrames() {
+            const p = window.__claudeVillePerf?.stopFrameProfile?.();
+            return (p?.samples || []).map(s => s.totalMs).filter(Number.isFinite);
         },
 
         restartScenario(id) {

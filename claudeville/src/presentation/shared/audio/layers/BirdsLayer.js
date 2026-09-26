@@ -1,63 +1,85 @@
 // Birdsong: short frequency-glide chirp phrases with long randomized rests.
 // Intensity controls both loudness and phrase density — a dawn chorus sings
 // every few seconds, a quiet afternoon only occasionally. Rain, storm, night
-// and winter suppression happen upstream in the director.
+// and winter suppression happen upstream in the director. Chirps are one
+// renewal process on the Transport: within a phrase the gap is a flutter,
+// after its last chirp a rest, all drawn from the layer's own stream.
 
 import { BaseLayer } from './BaseLayer.js';
 import { MIN_GAIN, rand, pick } from '../AudioEngine.js';
+import { renewalProcess } from '../Transport.js';
+
+const FIRST_PHRASE_SEC = 2;
+// Phrases start only above this level; below it the rests keep running.
+const PHRASE_MIN_LEVEL = 0.04;
+// Birds sit in trees (plan 2.4, ENG-6 send table).
+const AIR_SEND = 0.3;
+const SHAPES = ['rise', 'fall', 'warble'];
 
 export class BirdsLayer extends BaseLayer {
     constructor(engine, options = {}) {
         super(engine, { trim: 0.55, group: 'wildlife', ...options });
+        this._phrase = null;
     }
 
     _start(_ctx) {
-        this._scheduleNext(2000);
+        this._phrase = null;
+        this.airSend(AIR_SEND);
+        this.registerProcess(renewalProcess({
+            name: 'birds',
+            first: () => FIRST_PHRASE_SEC,
+            gap: () => this._gap(),
+            emit: (at) => this._event(at),
+        }));
     }
 
-    _scheduleNext(minMs = null) {
+    // Seconds from one chirp to the next: a flutter inside a phrase, a rest
+    // that shortens as the chorus thickens after it.
+    _gap() {
+        if (this._phrase?.remaining > 0) return rand(this.rng, 0.14, 0.34);
         const density = Math.max(this.level, 0.001);
-        const rest = minMs ?? (5000 + (1 - density) * 26000) * rand(0.6, 1.6);
-        this.timer(() => {
-            if (this.level > 0.04) this._phrase();
-            this._scheduleNext();
-        }, rest);
+        return (5 + (1 - density) * 26) * rand(this.rng, 0.6, 1.6);
     }
 
-    _phrase() {
-        const ctx = this.engine.context;
-        if (!ctx || !this.out) return;
-        const chirps = 2 + Math.floor(rand(0, 4));
-        const panValue = rand(-0.6, 0.6);
-        const baseHz = rand(2300, 4100);
-        let t = ctx.currentTime + 0.05;
-        for (let i = 0; i < chirps; i++) {
-            this._chirp(t, baseHz * rand(0.92, 1.12), panValue);
-            t += rand(0.14, 0.34);
+    // A phrase opens on its first chirp; a rest ending under the level floor
+    // is skipped silently.
+    _event(t) {
+        if (!(this._phrase?.remaining > 0)) {
+            this._phrase = null;
+            if (this.level <= PHRASE_MIN_LEVEL) return;
+            this._phrase = {
+                remaining: 2 + Math.floor(rand(this.rng, 0, 4)),
+                pan: rand(this.rng, -0.6, 0.6),
+                baseHz: rand(this.rng, 2300, 4100),
+            };
         }
+        const phrase = this._phrase;
+        phrase.remaining--;
+        this._chirp(t, phrase.baseHz * rand(this.rng, 0.92, 1.12), phrase.pan);
     }
 
     _chirp(t, f0, panValue) {
         const ctx = this.engine.context;
+        if (!ctx || !this.out) return;
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
-        const dur = rand(0.05, 0.11);
+        const dur = rand(this.rng, 0.05, 0.11);
 
         osc.type = 'sine';
-        const shape = pick(['rise', 'fall', 'warble']);
+        const shape = pick(this.rng, SHAPES);
         osc.frequency.setValueAtTime(f0, t);
         if (shape === 'rise') {
-            osc.frequency.exponentialRampToValueAtTime(f0 * rand(1.2, 1.5), t + dur);
+            osc.frequency.exponentialRampToValueAtTime(f0 * rand(this.rng, 1.2, 1.5), t + dur);
         } else if (shape === 'fall') {
-            osc.frequency.exponentialRampToValueAtTime(f0 * rand(0.65, 0.85), t + dur);
+            osc.frequency.exponentialRampToValueAtTime(f0 * rand(this.rng, 0.65, 0.85), t + dur);
         } else {
             osc.frequency.exponentialRampToValueAtTime(f0 * 1.3, t + dur * 0.4);
             osc.frequency.exponentialRampToValueAtTime(f0 * 0.9, t + dur);
         }
 
         gain.gain.setValueAtTime(MIN_GAIN, t);
-        gain.gain.exponentialRampToValueAtTime(rand(0.02, 0.035), t + 0.008);
+        gain.gain.exponentialRampToValueAtTime(rand(this.rng, 0.02, 0.035), t + 0.008);
         gain.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur + 0.06);
 
         if (pan) {

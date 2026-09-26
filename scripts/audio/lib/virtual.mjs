@@ -51,3 +51,17 @@ export async function renderEngineUnit(browser, baseUrl, spec, { seed }) {
         await h.context.close();
     }
 }
+
+// Island Air unit (page/virtual.js runAirUnit): the baked IRs plus the dry
+// and wet taps of placed bursts. IR pairs keep their own sample rate.
+export async function renderAirUnit(browser, baseUrl, spec, { seed }) {
+    const h = await openVirtual(browser, baseUrl, seed);
+    try {
+        const meta = await h.page.evaluate(s => window.__vcRender.runAirUnit(s), spec);
+        const pcm = await pullAll(h.page, meta);
+        const { program, irDay, irNight, ...stems } = pcm;
+        return { sr: meta.sampleRate, program, stems, irs: { day: irDay, night: irNight }, irRates: meta.irRates, meta, errors: h.errors };
+    } finally {
+        await h.context.close();
+    }
+}

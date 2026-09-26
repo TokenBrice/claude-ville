@@ -1,7 +1,8 @@
 // One-shot cue voices. Every pitched cue draws from the shared tonal center
 // (MusicalScale.cueTones) so cues can never clash with the ambient layers.
-// Each accepted cue gets its own bed-aware trim into the engine's cue bus
-// and one note-timed duck of the bed (plan S3), cancelled with the cue.
+// Each accepted cue gets its own bed-aware trim, placed once through
+// `engine.connectVoice` (pan, distance, Island Air; plan S5) onto the cue
+// bus, and one note-timed duck of the bed (plan S3), cancelled with the cue.
 
 import { MIN_GAIN, rand } from '../AudioEngine.js';
 import { bellVoicingForProvider, cueTones } from '../MusicalScale.js';
@@ -18,6 +19,8 @@ import {
     publishCueScore,
 } from '../CueScore.js';
 import { eventBus } from '../../../../domain/events/DomainEvent.js';
+import { rngStream } from '../Rng.js';
+import { place } from '../SpatialField.js';
 
 const COOLDOWNS_MS = {
     arrival: 20000,
@@ -31,6 +34,37 @@ const COOLDOWNS_MS = {
     thunder: 8000,
     summons: 45000,
 };
+
+// Which cues are located, and how (plan S5): signal cues stay close, dry and
+// at full level; routine cues carry distance. Scenery sounds from the island.
+const PLACEMENT_BY_KIND = Object.freeze({
+    summons: 'signal',
+    distress: 'signal',
+    limit: 'signal',
+    arrival: 'world',
+    departure: 'world',
+    recovery: 'world',
+    council: 'world',
+});
+
+export function cuePlacementKind(kind) {
+    return PLACEMENT_BY_KIND[kind] ?? null;
+}
+
+// Island Air sends (AMB-2 / ENG-6 table). Signal cues take place()'s cap
+// (0.12; S5 overrides ENG-6's distress 0.2); routine cues grow wetter with
+// distance; scenery has fixed sends.
+const ROUTINE_AIR_NEAR = 0.18;
+const ROUTINE_AIR_PER_DISTANCE = 0.45;
+const SCENERY_AIR = Object.freeze({ hourBell: 0.45, aurora: 0.35, thunder: 0.25 });
+
+function cuePlacement(kind, spot) {
+    const placementKind = cuePlacementKind(kind);
+    if (!placementKind) return { pan: 0, gain: 1, lowpassHz: null, air: SCENERY_AIR[kind] ?? 0 };
+    const placed = place(spot ?? null, { kind: placementKind });
+    if (placementKind === 'signal') return placed;
+    return { ...placed, air: ROUTINE_AIR_NEAR + ROUTINE_AIR_PER_DISTANCE * Math.min(1, placed.distance) };
+}
 
 // Weather/clock cues are scenery, exempt from the global chatter budget.
 const UNBUDGETED = new Set(['thunder', 'hourBell']);
@@ -133,12 +167,6 @@ function bedContextFor(cue) {
     return cue.preset === 'townBand' ? 'music' : 'village';
 }
 
-function panForScreenX(screenX) {
-    const x = Number(screenX);
-    if (!Number.isFinite(x)) return 0;
-    return Math.max(-1, Math.min(1, x * 2 - 1));
-}
-
 function monotonicNow() {
     return performance.now();
 }
@@ -181,6 +209,8 @@ export class CueKit {
         this.lastLevel = null;
         // Foreground urgent trims ({ at, trimDb }) for a wake with no bed read.
         this._urgentTrims = [];
+        // Cue randomness never shares a stream with the world (S6).
+        this._rng = rngStream('cues');
     }
 
     // Returns true when the governor accepted the cue. Routine cues sound
@@ -235,9 +265,9 @@ export class CueKit {
         }
 
         const cancels = [];
-        let timer = null;
+        let withdrawn = false;
         const schedule = () => {
-            timer = null;
+            if (withdrawn) return;
             const anchoredDelayMs = anchoredCueDelayMs(
                 kind,
                 cueScoreKey(cue),
@@ -245,7 +275,10 @@ export class CueKit {
                 delayMs,
                 heardLeadMs(this.engine),
             );
-            const t = this.engine.now() + (START_LEAD_MS + anchoredDelayMs) / 1000;
+            // `leadMs` lets a director trail its event on the audio clock
+            // (thunder after the drawn flash) instead of with a timer.
+            const leadMs = Math.max(0, Number(cue.leadMs) || 0);
+            const t = this.engine.now() + (START_LEAD_MS + anchoredDelayMs + leadMs) / 1000;
             const sink = this._openSink(kind, cue, t, cancels);
             this._voice(kind, t, offsetsMs, cue, sink);
             this._closeSink(sink);
@@ -260,15 +293,16 @@ export class CueKit {
 
         // Arrival and departure bells belong to a body in motion: the foot rune
         // of an arriving villager lands seconds after the scene event that
-        // admitted the cue. These two wait out the current event dispatch so the
-        // renderer can declare when its accent is really drawn, then ring on it.
-        if (CUE_ACCENT_NOTE[kind] != null) timer = setTimeout(schedule, 0);
+        // admitted the cue. These two wait out the current (synchronous) event
+        // dispatch so the renderer can declare when its accent is really drawn,
+        // then ring on it. A microtask, not a timer: only the Transport's
+        // timer may lead to a sound (S4).
+        if (CUE_ACCENT_NOTE[kind] != null) queueMicrotask(schedule);
         else schedule();
 
         if (prepare) {
             return () => {
-                clearTimeout(timer);
-                timer = null;
+                withdrawn = true;
                 for (const cancel of cancels) cancel();
             };
         }
@@ -280,11 +314,10 @@ export class CueKit {
         phase = 'day',
         intensity = 1,
         provider = null,
-        screenX = 0.5,
     } = {}, sink) {
         const notes = cueTones(phase);
         const at = index => t + (offsetsMs[Math.min(index, offsetsMs.length - 1)] || 0) / 1000;
-        const agentBell = { pan: panForScreenX(screenX), provider };
+        const agentBell = { provider };
         switch (kind) {
             case 'arrival':
                 this._bell(sink, at(0), notes.root, { gain: 0.035, decay: 1.6, ...agentBell });
@@ -300,7 +333,7 @@ export class CueKit {
             // its own voice lands (plan 3.2).
             case 'distress':
             case 'limit':
-                this._bell(sink, at(0), notes.low, { gain: 0.05, decay: 3, cutoff: 900, pan: agentBell.pan });
+                this._bell(sink, at(0), notes.low, { gain: 0.05, decay: 3, cutoff: 900 });
                 break;
             case 'recovery':
                 this._bell(sink, at(0), notes.third, { gain: 0.028, decay: 1.4, ...agentBell });
@@ -324,7 +357,7 @@ export class CueKit {
             case 'aurora': {
                 const run = [notes.root, notes.fifth, notes.octave, notes.high];
                 run.forEach((hz, i) => {
-                    this._bell(sink, at(i), hz, { gain: 0.022, decay: 2.6, cutoff: 3200 });
+                    this._bell(sink, at(i), hz, { gain: 0.0175, decay: 2.6, cutoff: 3200 });
                 });
                 break;
             }
@@ -352,21 +385,30 @@ export class CueKit {
     }
 
     // One trim gain per cue into the cue bus, so overlapping cues each keep
-    // their own bed-aware level. The sink also collects the cue's cancels and
-    // the end of its longest tail.
+    // their own bed-aware level, placed once (S5). The distance gain acts on
+    // the direct path: the send is divided back out, so the air keeps the
+    // cue's level and a far cue is quieter and relatively wetter (AMB-2). The
+    // sink also collects the cue's cancels and the end of its longest tail.
     _openSink(kind, cue, t, cancels) {
         const trimDb = this._levelDb(kind, cue);
+        const placement = cuePlacement(kind, cue.spot);
         const out = this.engine.context.createGain();
-        out.gain.value = CUE_STAGE_GAIN * dbToGain(trimDb);
-        out.connect(this.engine.busInput('cue'));
+        out.gain.value = CUE_STAGE_GAIN * dbToGain(trimDb) * placement.gain;
+        const voice = this.engine.connectVoice(out, {
+            bus: 'cue',
+            pan: placement.pan,
+            air: placement.air / placement.gain,
+            lowpassHz: placement.lowpassHz,
+        });
         this.lastLevel = { kind, trimDb, at: t };
-        return { out, cancels, endAt: t };
+        return { out, voice, cancels, endAt: t };
     }
 
     _closeSink(sink) {
         const leadSec = Math.max(0, sink.endAt - this.engine.now());
         setTimeout(() => {
             try { sink.out.disconnect(); } catch { /* gone */ }
+            sink.voice?.dispose?.();
         }, (leadSec + SINK_RELEASE_PAD_SEC) * 1000);
     }
 
@@ -422,26 +464,16 @@ export class CueKit {
 
     // A small bell: the fundamental stays in the shared pentatonic scale;
     // provider voicings add quiet harmonic partials and a register shift.
+    // Its place is the sink's (one pan/air chain per cue).
     _bell(sink, t, hz, {
         gain = 0.04,
         decay = 2,
         cutoff = 2400,
-        pan = 0,
         provider = null,
     } = {}) {
         const ctx = this.engine.context;
         const tone = makeFilter(ctx, 'lowpass', cutoff, { q: 'butterworth' });
-        const panner = typeof ctx.createStereoPanner === 'function'
-            ? ctx.createStereoPanner()
-            : null;
-        const safePan = Math.max(-1, Math.min(1, Number(pan) || 0));
-        if (panner) {
-            if (typeof panner.pan?.setValueAtTime === 'function') panner.pan.setValueAtTime(safePan, t);
-            else if (panner.pan) panner.pan.value = safePan;
-            tone.connect(panner).connect(sink.out);
-        } else {
-            tone.connect(sink.out);
-        }
+        tone.connect(sink.out);
 
         const voicing = bellVoicingForProvider(provider);
         const register = Number(voicing.register) || 1;
@@ -450,7 +482,7 @@ export class CueKit {
             gain: gain * partial.gain,
             decay: decay * partial.decay,
         }));
-        const nodes = panner ? [tone, panner] : [tone];
+        const nodes = [tone];
         const voices = [];
         let endAt = t;
         for (const partial of partials) {
@@ -495,25 +527,26 @@ export class CueKit {
     }
 
     // Thunder: a swept low-pass burst of brown noise with a secondary rumble
-    // bump, so strikes roll instead of thump.
+    // bump, so strikes roll instead of thump. Every strike reads the noise
+    // pool at a fresh offset, so no two strikes share a texture.
     _thunder(sink, t, intensity = 1) {
         const ctx = this.engine.context;
+        const rng = this._rng;
         const level = Math.max(0.2, Math.min(1, intensity));
 
-        const src = ctx.createBufferSource();
-        src.buffer = this.engine.noise('brown');
-        src.playbackRate.value = rand(0.65, 0.95);
+        const src = this.engine.noiseSource('brown', { rng, oneShot: true });
+        src.playbackRate.value = rand(rng, 0.65, 0.95);
 
-        const startHz = rand(260, 380);
+        const startHz = rand(rng, 260, 380);
         const lp = makeFilter(ctx, 'lowpass', startHz, { q: 'butterworth' });
         lp.frequency.setValueAtTime(startHz, t);
-        lp.frequency.exponentialRampToValueAtTime(75, t + rand(2, 3));
+        lp.frequency.exponentialRampToValueAtTime(75, t + rand(rng, 2, 3));
 
         const env = ctx.createGain();
         const peak = 0.1 + level * 0.14;
-        const tail = rand(2.4, 4.5);
+        const tail = rand(rng, 2.4, 4.5);
         env.gain.setValueAtTime(MIN_GAIN, t);
-        env.gain.exponentialRampToValueAtTime(peak, t + rand(0.06, 0.14));
+        env.gain.exponentialRampToValueAtTime(peak, t + rand(rng, 0.06, 0.14));
         env.gain.exponentialRampToValueAtTime(peak * 0.35, t + 0.9);
         env.gain.exponentialRampToValueAtTime(peak * 0.5, t + 1.3); // secondary roll
         env.gain.exponentialRampToValueAtTime(MIN_GAIN, t + tail);

@@ -12,6 +12,7 @@ import { startIsolatedServer } from '../../smoke/support/isolated-server.mjs';
 import { marginAt, wallTimeline } from './timeline.mjs';
 import { fmt, shortSite, signed } from './format.mjs';
 import { AUDIBILITY_WINDOWS } from '../../../claudeville/src/presentation/shared/audio/Loudness.js';
+import { energyMeanLufs, frameCostDelta, FRAME_COST_MAX_DELTA_MS, percentile } from './checks.mjs';
 
 const PROBE_APP_JS = fs.readFileSync(path.join(AUDIO_DIR, 'page/probe-app.js'), 'utf8');
 
@@ -273,4 +274,83 @@ export function judgeCeremony({ rows }, { verdict }) {
     const replaced = councils.find(c => c.replaces)?.replaces;
     verdict('ceremony', councils.length === 1,
         `team-gather: ${gathers.length} team:gather, ${councils.length} council cue-played${councils[0] ? ` ("${councils[0].label}")` : ''}${replaced ? `, replaces ${replaced.kind} ×${replaced.count ?? '?'}` : ''}; other cues: ${others.join(', ') || 'none'}; want exactly 1 council`);
+}
+
+// ------------------------------------------------------ Wave 2 (realtime) ----
+// 2.1: blur 3 s → focus in the Town band: the piece is unchanged and, by
+// 0.3 s after focus, the momentary level is within 6 dB of the 3 s before
+// the blur.
+const CONTINUITY = { blurMs: 3000, afterMs: 1500, settleMs: 9000, levelDb: 6, withinSec: 0.3 };
+
+export async function appContinuityUnit(browser, { seed }) {
+    const app = await startIsolatedServer();
+    const h = await openApp(browser, app, 'mixed-tools', 10.4, seed);
+    try {
+        await enableSound(h);
+        await h.page.evaluate(() => window.__probe.setMode('bgm'));
+        await h.page.waitForTimeout(CONTINUITY.settleMs);
+        const ep = await h.page.evaluate(o => window.__probe.blurFocus(o), CONTINUITY);
+        const tap = await h.page.evaluate(() => window.__harTap.collect());
+        const pcm = await pullPcm(h.page, tap.frames * 2);
+        return { ep, tap, pcm, errors: h.errors };
+    } finally {
+        await h.context.close();
+        await app.stop();
+    }
+}
+
+export function judgeContinuity({ ep, tap, pcm, errors }, { verdict }) {
+    const tl = wallTimeline(tap, pcm);
+    const toT = wallMs => wallMs / 1000 - tl.wall0;
+    const { momentaryCurve } = loudness(tl.L, tl.R, tl.sr);
+    const blurT = toT(ep.blurAt);
+    const focusT = toT(ep.focusAt);
+    const pre = energyMeanLufs(momentaryCurve.filter(([t]) => t >= blurT - 3 && t < blurT).map(([, v]) => v));
+    const at = momentaryCurve.find(([t]) => t >= focusT + CONTINUITY.withinSec)?.[1] ?? null;
+    const dDb = Number.isFinite(pre) && Number.isFinite(at) ? at - pre : null;
+    const name = np => (np ? `${np.piece ?? np.song ?? '?'} bar ${np.bar ?? '?'}` : 'nothing');
+    const same = ep.before?.piece != null && ep.before.piece === ep.after?.piece;
+    verdict('continuity', same && dDb != null && Math.abs(dDb) <= CONTINUITY.levelDb,
+        `Town band, blur ${CONTINUITY.blurMs / 1000} s → focus: ${name(ep.before)} → ${name(ep.during)} → ${name(ep.after)}; momentary ${fmt(at)} LUFS at focus + ${CONTINUITY.withinSec} s vs ${fmt(pre)} before the blur (${signed(dDb)} dB); context ${ep.contextState}; want the same piece and within ${CONTINUITY.levelDb} dB${errors.length ? `; page errors: ${errors.slice(0, 2).join(' | ')}` : ''}`);
+}
+
+// 2.4: the world benchmark's app frame total (update + render, the
+// `appTotalMs` samples of __claudeVillePerf's frame profile) with sound on
+// vs off, in alternating segments so drift hits both. The two sound-off
+// segments measure the host's own noise: when they disagree by more than
+// the limit itself, the delta is reported as INFO, not judged.
+const FRAME_COST = { segmentMs: 15000, settleMs: 3000, scenario: 'perf-12-agents' };
+
+export async function appFrameCostUnit(browser, { seed }) {
+    const app = await startIsolatedServer();
+    const h = await openApp(browser, app, FRAME_COST.scenario, 12, seed);
+    try {
+        const segment = async () => {
+            await h.page.waitForTimeout(FRAME_COST.settleMs);
+            await h.page.evaluate(() => window.__probe.startFrames());
+            await h.page.waitForTimeout(FRAME_COST.segmentMs);
+            return h.page.evaluate(() => window.__probe.stopFrames());
+        };
+        const off1 = await segment();
+        await enableSound(h);
+        const on1 = await segment();
+        await h.page.click('#topbarSoundToggle');
+        const off2 = await segment();
+        await h.page.click('#topbarSoundToggle');
+        await h.page.evaluate(() => window.__probe.enableWait(15000));
+        const on2 = await segment();
+        return { off1, off2, on1, on2, errors: h.errors };
+    } finally {
+        await h.context.close();
+        await app.stop();
+    }
+}
+
+export function judgeFrameCost({ off1, off2, on1, on2, errors }, { verdict, info }) {
+    const d = frameCostDelta([...on1, ...on2], [...off1, ...off2]);
+    const noise = Math.abs((percentile(off1, 0.95) ?? NaN) - (percentile(off2, 0.95) ?? NaN));
+    const line = `app frame total p95 sound on ${fmt(d.onP95, 3)} ms vs off ${fmt(d.offP95, 3)} ms (Δ ${signed(d.delta, 3)} ms; ${on1.length + on2.length} / ${off1.length + off2.length} frames); off-vs-off p95 ${fmt(noise, 3)} ms`;
+    if (!(off1.length && on1.length)) { verdict('fps', false, `no frame profile samples (window.__claudeVillePerf.startFrameProfile); ${errors.slice(0, 2).join(' | ')}`); return; }
+    if (!(noise < FRAME_COST_MAX_DELTA_MS - 1e-9)) info('fps', `${line} — the two sound-off segments already differ by the ${FRAME_COST_MAX_DELTA_MS} ms limit or more (the page clock resolves 0.1 ms), so the delta is not judged; re-run on a quiet host`);
+    else verdict('fps', d.pass, `${line}; want Δ ≤ ${FRAME_COST_MAX_DELTA_MS} ms`);
 }

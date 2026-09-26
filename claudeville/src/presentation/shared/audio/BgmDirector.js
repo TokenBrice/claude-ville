@@ -6,18 +6,23 @@
 // local-clock fallback when the World loop is stopped.
 //
 // 5.3 — the score has a working section. The village's real working count
-// picks an arrangement density, applied at the player's next four-bar boundary;
+// picks an arrangement density, applied at the band's next four-bar boundary;
 // music never replaces the visible counts, and a real wait is never hidden
-// behind a busy section.
+// behind a busy section. The band is the one music Sequencer, Town band
+// preset.
 
 import { eventBus } from '../../../domain/events/DomainEvent.js';
 import { bucketCounts } from '../../../domain/services/SignalLedger.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { ActionableCueRouter, attentionStatus } from './ActionableRouting.js';
-import { BgmPlayer } from './bgm/BgmPlayer.js';
+import { Sequencer } from './music/Sequencer.js';
+import { resolveCueSpot } from './SpatialField.js';
 
 const TICK_MS = 1000;
 const ATMO_FRESH_MS = 3000;
+// Pause in place (2.1): the band closes over 80 ms and reopens over 250 ms.
+const PAUSE_CLOSE_SEC = 0.08;
+const RESUME_OPEN_SEC = 0.25;
 
 // Four count bands. The label beside the music control always states the exact
 // counts, so the bands never have to.
@@ -105,6 +110,7 @@ export class BgmDirector {
         this.cueKit = cues?.kit ?? null;
         this.governor = cues?.governor ?? null;
         this.running = false;
+        this.paused = false;
         this._interval = null;
         this._unsubscribes = [];
         this._atmosphere = null;
@@ -121,19 +127,49 @@ export class BgmDirector {
     start() {
         if (this.running || !this.engine.context) return;
         this.running = true;
+        this.paused = false;
+        // A rebuild after a long absence starts on a paused Transport.
+        this.engine.transport.resume();
 
-        this.player = new BgmPlayer(this.engine, { director: 'bgm' });
+        this.player = new Sequencer(this.engine, { preset: 'townBand', director: 'bgm' });
         this.player.start();
         this.player.setLevel(BGM_LEVEL, 0.5);
 
         this._subscribe();
+        this._startTicking();
+    }
+
+    _startTicking() {
         this._interval = setInterval(() => this._tick(), TICK_MS);
         this._tick();
+    }
+
+    // Pause in place (2.1): the band holds its place in the tune; the
+    // director's group closes over 80 ms and the Transport stops waking.
+    // Returns the audio time at which the band is silent (the controller
+    // suspends the context after it).
+    pause() {
+        if (!this.running || this.paused) return this.engine.now();
+        this.paused = true;
+        clearInterval(this._interval);
+        this._interval = null;
+        this.engine.transport.pause();
+        return this.engine.fadeDirector('bgm', 0, { duration: PAUSE_CLOSE_SEC });
+    }
+
+    // Resume from the current audio time (no catch-up), fading in over 250 ms.
+    resume() {
+        if (!this.running || !this.paused) return;
+        this.paused = false;
+        this.engine.fadeDirector('bgm', 1, { duration: RESUME_OPEN_SEC });
+        this.engine.transport.resume();
+        this._startTicking();
     }
 
     stop() {
         if (!this.running) return;
         this.running = false;
+        this.paused = false;
         if (this._interval) clearInterval(this._interval);
         this._interval = null;
         for (const unsubscribe of this._unsubscribes) unsubscribe();
@@ -205,7 +241,12 @@ export class BgmDirector {
 
     cue(kind, extra = {}) {
         if (!this.running || !this.cueKit) return false;
-        return this.cueKit.play(kind, { phase: this._phase, preset: 'townBand', ...extra });
+        const payload = { phase: this._phase, preset: 'townBand', ...extra };
+        payload.spot ??= resolveCueSpot(payload, {
+            agentId: payload.agentId ?? payload.agent?.id ?? null,
+            world: this.world,
+        });
+        return this.cueKit.play(kind, payload);
     }
 
     _currentAtmosphere() {
@@ -221,6 +262,8 @@ export class BgmDirector {
         const atmosphere = this._currentAtmosphere();
         this._phase = atmosphere.phase || 'day';
         this.player.setPhase(this._phase);
+        // The band's lead and counter ring in the Island Air of the hour.
+        this.engine.setAirPhase(this._phase);
         this._applyWorkingSection();
 
         const clock = atmosphere.clock || {};
@@ -231,7 +274,7 @@ export class BgmDirector {
     }
 
     // The arrangement follows the counts, not the poll: the density change is
-    // handed to the player, which applies it at its next four-bar boundary. The
+    // handed to the band, which applies it at its next four-bar boundary. The
     // one immediate move is the attention stage an actionable agent earns.
     _applyWorkingSection(now = Date.now()) {
         this._counts = workingSectionCounts(this.world);

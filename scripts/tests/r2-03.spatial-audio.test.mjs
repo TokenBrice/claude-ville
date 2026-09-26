@@ -21,49 +21,46 @@ class FakeNode {
 }
 
 function fakeAudioKit() {
-    const panners = [];
+    const voices = [];
+    const param = value => ({
+        value,
+        setValueAtTime() {},
+        exponentialRampToValueAtTime() {},
+    });
     const context = {
         createBiquadFilter() {
             const node = new FakeNode();
-            node.frequency = { value: 0 };
-            node.Q = { value: 0 };
-            node.gain = { value: 0 };
-            return node;
-        },
-        createStereoPanner() {
-            const node = new FakeNode();
-            node.pan = { value: 0 };
-            panners.push(node);
+            node.frequency = param(0);
+            node.Q = param(0);
+            node.gain = param(0);
             return node;
         },
         createOscillator() {
             const node = new FakeNode();
-            node.frequency = { value: 0 };
+            node.frequency = param(0);
             node.start = () => {};
             node.stop = () => {};
             return node;
         },
         createGain() {
             const node = new FakeNode();
-            node.gain = {
-                value: 1,
-                setValueAtTime() {},
-                exponentialRampToValueAtTime() {},
-            };
+            node.gain = param(1);
             return node;
         },
     };
-    const cueBus = new FakeNode();
     const engine = {
         context,
         started: true,
         now: () => 0,
-        busInput: () => cueBus,
         bedLoudness: () => null,
         duck: () => ({ cancel() {} }),
+        connectVoice(node, options) {
+            voices.push({ node, level: node.gain.value, ...options });
+            return { output: new FakeNode(), dispose() {} };
+        },
     };
     const governor = new CueGovernor({ maxPerMinute: 6, minSpacingMs: 0 });
-    return { kit: new CueKit(engine, governor), panners };
+    return { kit: new CueKit(engine, governor), voices };
 }
 
 function captureDirectorCalls(world = null) {
@@ -84,36 +81,70 @@ function captureDirectorCalls(world = null) {
 
 // Arrival and departure bells belong to a moving body: they wait out the
 // current event dispatch so the renderer can declare its accent, then ring on
-// it (CueScore.CUE_ACCENT_NOTE). One macrotask drains that wait; the panning
-// contract itself is the same voice path for every cue kind.
+// it (CueScore.CUE_ACCENT_NOTE). One macrotask drains that wait.
 const nextTick = () => new Promise(resolve => { setTimeout(resolve, 0); });
 
-test('spatial agent cues map normalized screen X to a StereoPanner pan', async () => {
-    const left = fakeAudioKit();
-    left.kit.play('arrival', { screenX: 0, provider: 'claude' });
-    await nextTick();
-    assert.equal(left.panners.length, 2);
-    assert.ok(left.panners.every(node => node.pan.value === -1));
+const near = (actual, expected, epsilon = 1e-9) => Math.abs(actual - expected) <= epsilon;
 
-    const right = fakeAudioKit();
-    right.kit.play('distress', { screenX: 1, provider: 'codex' });
-    assert.equal(right.panners.length, 1);
-    assert.equal(right.panners[0].pan.value, 1);
-
+test('a routine cue is placed once: pan within ±0.75, farther is duller, quieter and wetter', async () => {
     const centre = fakeAudioKit();
-    centre.kit.play('summons', { provider: 'gemini' });
-    assert.equal(centre.panners.length, 2);
-    assert.ok(centre.panners.every(node => node.pan.value === 0));
+    centre.kit.play('arrival', { spot: { screenX: 0.5 }, provider: 'claude' });
+    await nextTick();
+    const edge = fakeAudioKit();
+    edge.kit.play('arrival', { spot: { screenX: 0 }, provider: 'claude' });
+    await nextTick();
+
+    // One placed chain per cue, however many notes it strikes.
+    assert.equal(centre.voices.length, 1);
+    assert.equal(edge.voices.length, 1);
+    const [c] = centre.voices;
+    const [e] = edge.voices;
+    assert.equal(c.bus, 'cue');
+    assert.equal(c.pan, 0);
+    assert.equal(c.lowpassHz, null);
+    assert.ok(near(c.air, 0.18));
+    assert.equal(e.pan, -0.75);
+    assert.ok(e.lowpassHz < 9000);
+    // The distance gain is on the direct path only; the send keeps the
+    // cue's level (send × direct gain = the ENG-6 table value at d = 1).
+    assert.ok(e.level < c.level);
+    const directGain = e.level / c.level;
+    assert.ok(near(e.air * directGain, 0.63, 1e-6));
 });
 
-test('AudioDirector threads scene position and provider, then centres Dashboard cues', () => {
+test('signal cues stay close and dry: no distance gain or low-pass, |pan| ≤ 0.3, air ≤ 0.12', () => {
+    const off = fakeAudioKit();
+    off.kit.play('distress', { spot: { screenX: 4, screenY: 3 }, provider: 'codex' });
+    const centre = fakeAudioKit();
+    centre.kit.play('summons', { provider: 'gemini' });
+
+    const [d] = off.voices;
+    const [s] = centre.voices;
+    assert.equal(d.pan, 0.3);
+    assert.equal(d.lowpassHz, null);
+    assert.ok(d.air <= 0.12);
+    assert.equal(s.pan, 0);
+    assert.ok(s.air <= 0.12);
+});
+
+test('scenery cues sound from the island with their fixed sends', () => {
+    const bell = fakeAudioKit();
+    bell.kit.play('hourBell', { spot: { screenX: 0 } });
+    const [hour] = bell.voices;
+    assert.equal(hour.pan, 0);
+    assert.equal(hour.air, 0.45);
+});
+
+test('AudioDirector threads the scene position and provider, then places Dashboard cues on the island map', () => {
     const world = {
         agents: new Map([
             ['left-agent', {
                 id: 'left-agent',
                 provider: 'codex',
                 position: { tileX: 2, tileY: 28 },
+                lastKnownBuildingType: 'harbor',
             }],
+            ['nowhere-agent', { id: 'nowhere-agent', provider: 'claude' }],
         ]),
     };
     const { director, calls } = captureDirectorCalls(world);
@@ -124,7 +155,7 @@ test('AudioDirector threads scene position and provider, then centres Dashboard 
             screenX: 0.12,
         });
         assert.equal(calls[0].kind, 'arrival');
-        assert.equal(calls[0].payload.screenX, 0.12);
+        assert.deepEqual(calls[0].payload.spot, { screenX: 0.12, viewportW: 1, viewportH: 1 });
         assert.equal(calls[0].payload.provider, 'codex');
 
         eventBus.emit('mode:changed', 'dashboard');
@@ -133,13 +164,17 @@ test('AudioDirector threads scene position and provider, then centres Dashboard 
             agent: { id: 'left-agent', provider: 'codex', screenX: 0.04 },
         });
         assert.equal(calls[1].kind, 'summons');
-        assert.equal(calls[1].payload.screenX, 0.5);
+        // Dashboard has no camera: the agent's building, never its old screen X.
+        assert.deepEqual(calls[1].payload.spot, { building: 'harbor' });
+
+        eventBus.emit('attention:raised', { agentId: 'nowhere-agent' });
+        assert.equal(calls[2].payload.spot, null);
     } finally {
         director.destroy();
     }
 });
 
-test('tile position is a graceful World-mode screen-X fallback', () => {
+test('tile position is a graceful World-mode placement fallback', () => {
     const world = {
         agents: new Map([
             ['left-agent', {
@@ -152,7 +187,7 @@ test('tile position is a graceful World-mode screen-X fallback', () => {
     const { director, calls } = captureDirectorCalls(world);
     try {
         eventBus.emit('village:scene', { kind: 'arrival', agentId: 'left-agent' });
-        assert.ok(calls[0].payload.screenX < 0.5);
+        assert.ok(calls[0].payload.spot.screenX < 0.5);
     } finally {
         director.destroy();
     }
@@ -169,7 +204,7 @@ test('provider bell voicings are distinct and council bell count follows team si
             context: { createGain: () => ({ gain: { value: 1 }, connect() {}, disconnect() {} }) },
             started: true,
             now: () => 0,
-            busInput: () => null,
+            connectVoice: () => ({ dispose() {} }),
             bedLoudness: () => null,
             duck: () => ({ cancel() {} }),
         }, new CueGovernor({ maxPerMinute: 6, minSpacingMs: 0 }));

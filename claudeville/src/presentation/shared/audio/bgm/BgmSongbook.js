@@ -1,17 +1,29 @@
-// The BGM songbook: original town themes in the Game Boy tradition.
+// The songbook: every tune the village plays, in one place, for both presets.
 //
-// Style parameters derive from analysis of classic handheld town BGM the
-// operator supplied as reference (tempo 80–96 for towns / ~126 energetic,
-// major keys by day and dark minor for night, near-constant energy with
-// arpeggio motion filling the space between phrases). The melodies here are
-// original compositions — the voice layout is the homage: pulse lead,
-// pulse counter/arpeggio, triangle bass, whisper of noise percussion.
+// The Town band pieces (`PIECES`) are original town themes in the Game Boy
+// tradition. Style parameters derive from analysis of classic handheld town
+// BGM the operator supplied as reference (tempo 80–96 for towns / ~126
+// energetic, major keys by day and dark minor for night, near-constant energy
+// with arpeggio motion filling the space between phrases). The melodies are
+// original compositions — the voice layout is the homage: pulse lead, pulse
+// counter/arpeggio, triangle bass, whisper of noise percussion. Each piece is
+// through-composed: one event list, looped.
 //
-// All pieces stay centered on A (major by day, minor at night) so event
-// cues from CueKit land in key. Notes are [semitonesFromA4, beats]; null
-// pitch is a rest. Chords are one per bar; a two-element array splits the
-// bar in half.
+// The Village tunes (`VILLAGE_TUNES`) are shorter: a pair of 4-bar sections
+// (A, B) over one chord per bar, which the Village arrangement performs as a
+// form (pickup, A-A-B-A and kin, outro) between long rests.
+//
+// Every piece is in A — major by day, minor at night — the key the cues'
+// fixed pitches come from. That keeps cues in key, not out of every clash: a
+// cue can still rub against the chord that is sounding, which is why the
+// sequencer publishes the chord timeline to the MusicClock.
+//
+// Notes are [semitonesFromA4, beats]; null pitch is a rest. Town band chords
+// are one per bar; a two-element array splits the bar in half. `air` is the
+// lead's send into the Island Air (the night bells ring longest).
 
+// The one chord table: voicings in semitones from A4, root position, mid-low
+// register.
 export const CHORDS = {
     'A': [-12, -8, -5],
     'Bm': [-10, -7, -3],
@@ -25,13 +37,23 @@ export const CHORDS = {
     'F': [-16, -12, -9],
 };
 
+const pitchClass = semi => (((9 + semi) % 12) + 12) % 12;
+
+// A chord name as pitch classes (C = 0): `{ rootPc, pcs }`, root first.
+export function chordPitchClasses(name) {
+    const voicing = CHORDS[name];
+    if (!voicing) return null;
+    const pcs = voicing.map(pitchClass);
+    return { rootPc: pcs[0], pcs };
+}
+
 export const PIECES = [
     // ── Willowbrook ── the gentle home-village theme (Pallet-style).
     // Lilting arpeggio openings answered stepwise, sustained inner voice,
     // walking half-note bass with chromatic pickup back into the loop.
     {
         name: 'willowbrook', family: 'day', bpm: 84,
-        lead: 'pulse25', counter: 'written', perc: 'none', delaySend: 0.18,
+        lead: 'pulse25', counter: 'written', perc: 'none', air: 0.22,
         chords: [
             'A', 'E', ['F#m', 'D'], ['A', 'E'], 'A', 'D', ['Bm', 'E'], 'A',
             'D', 'A', 'E', 'F#m', 'D', 'A', ['Bm', 'E'], 'A',
@@ -88,7 +110,7 @@ export const PIECES = [
     // eighth-note arpeggios under a flowing melody with a mixolydian G-natural.
     {
         name: 'cobblemarket', family: 'day', bpm: 92,
-        lead: 'pulse25', counter: 'arp8', perc: 'ticks', delaySend: 0.15,
+        lead: 'pulse25', counter: 'arp8', perc: 'ticks', air: 0.18,
         chords: [
             'A', 'G', 'D', 'A', 'A', 'G', ['D', 'E'], 'A',
             'F#m', 'D', 'A', 'E', 'F#m', 'G', ['D', 'E'], 'A',
@@ -135,7 +157,7 @@ export const PIECES = [
     // village-gentle): eighth-note runs, octave-bouncing bass, soft hats.
     {
         name: 'millwheel', family: 'day', bpm: 126,
-        lead: 'pulse25', counter: 'arp8', perc: 'hat8', delaySend: 0.12,
+        lead: 'pulse25', counter: 'arp8', perc: 'hat8', air: 0.14,
         chords: [
             'A', 'A', 'D', 'E', 'A', 'F#m', ['D', 'E'], 'A',
             'F#m', 'D', 'A', 'E', 'F#m', 'D', 'E', 'A',
@@ -182,7 +204,7 @@ export const PIECES = [
     // music-box bells over soft pad chords, heavy echo, no percussion.
     {
         name: 'starfall', family: 'night', bpm: 64,
-        lead: 'bell', counter: 'pad', perc: 'none', delaySend: 0.45,
+        lead: 'bell', counter: 'pad', perc: 'none', air: 0.3,
         chords: [
             'Am', 'F', 'C', 'G', 'Am', 'F', 'Em', 'Am',
             'F', 'G', 'Am', 'Em', 'F', 'C', 'G', 'Am',
@@ -216,7 +238,7 @@ export const PIECES = [
     // ── Moonwell ── a shorter night interlude: the well square after dark.
     {
         name: 'moonwell', family: 'night', bpm: 70,
-        lead: 'bell', counter: 'pad', perc: 'none', delaySend: 0.4,
+        lead: 'bell', counter: 'pad', perc: 'none', air: 0.3,
         chords: ['Am', 'C', 'F', 'G', 'Am', 'F', 'G', 'Am'],
         melody: [
             [7, 2], [8, 1], [7, 1],
@@ -242,4 +264,125 @@ export const PLAYLISTS = {
     day: ['willowbrook', 'cobblemarket', 'millwheel'],
     dusk: ['willowbrook', 'cobblemarket'],
     night: ['starfall', 'moonwell'],
+};
+
+// ── The Village tunes ── each a pair of 4-bar sections with one chord per
+// bar. Major tunes play by day, minor lullabies at night. `lead` is the
+// first-pass timbre, `leadAlt` the timbre a repeated section may swap to.
+export const VILLAGE_TUNES = [
+    {
+        name: 'hearthfire', mode: 'major', bpm: 88,
+        lead: 'pulse25', leadAlt: 'flute',
+        sections: {
+            A: {
+                chords: ['A', 'D', 'A', 'E'], accomp: 'arp8',
+                melody: [
+                    [-5, 1], [-3, 0.5], [0, 0.5], [2, 1], [4, 1],
+                    [0, 1], [-3, 0.5], [-5, 0.5], [-3, 2],
+                    [-5, 1], [-8, 0.5], [-5, 0.5], [0, 1], [2, 1],
+                    [2, 1.5], [0, 0.5], [2, 2],
+                ],
+            },
+            B: {
+                chords: ['F#m', 'D', 'A', 'E'], accomp: 'block2',
+                melody: [
+                    [4, 1], [2, 0.5], [0, 0.5], [-3, 1], [0, 1],
+                    [2, 1], [0, 0.5], [-3, 0.5], [-5, 2],
+                    [-8, 1], [-5, 0.5], [-3, 0.5], [0, 1], [-3, 1],
+                    [2, 2], [-5, 2],
+                ],
+            },
+        },
+    },
+    {
+        name: 'millbrook', mode: 'major', bpm: 72,
+        lead: 'pulse25', leadAlt: 'flute',
+        sections: {
+            A: {
+                chords: ['A', 'F#m', 'D', 'E'], accomp: 'arp8',
+                melody: [
+                    [0, 2], [4, 1], [2, 1],
+                    [0, 1], [-3, 1], [-5, 2],
+                    [-3, 1], [0, 0.5], [2, 0.5], [4, 1], [2, 1],
+                    [2, 3], [null, 1],
+                ],
+            },
+            B: {
+                chords: ['D', 'A', 'F#m', 'E'], accomp: 'block2',
+                melody: [
+                    [9, 1], [7, 1], [4, 2],
+                    [7, 1], [4, 0.5], [2, 0.5], [0, 2],
+                    [4, 1], [0, 1], [-3, 2],
+                    [-5, 1], [-3, 1], [2, 2],
+                ],
+            },
+        },
+    },
+    {
+        name: 'lanternway', mode: 'minor', bpm: 56,
+        lead: 'flute', leadAlt: 'flute',
+        sections: {
+            A: {
+                chords: ['Am', 'Am', 'C', 'Em'], accomp: 'block1',
+                melody: [
+                    [0, 2], [-2, 1], [-5, 1],
+                    [-7, 1], [-5, 1], [-9, 2],
+                    [-12, 1], [-9, 1], [-7, 1], [-5, 1],
+                    [-5, 3], [null, 1],
+                ],
+            },
+            B: {
+                chords: ['F', 'G', 'Am', 'Am'], accomp: 'arpQ',
+                melody: [
+                    [3, 2], [0, 1], [-2, 1],
+                    [-2, 1], [-5, 0.5], [-7, 0.5], [-2, 2],
+                    [0, 1], [-2, 0.5], [-5, 0.5], [-7, 1], [-9, 1],
+                    [-12, 4],
+                ],
+            },
+        },
+    },
+    {
+        name: 'starwake', mode: 'minor', bpm: 60,
+        lead: 'flute', leadAlt: 'flute',
+        sections: {
+            A: {
+                chords: ['Am', 'C', 'G', 'Am'], accomp: 'arpQ',
+                melody: [
+                    [-5, 1.5], [-2, 0.5], [0, 2],
+                    [-2, 1], [-5, 1], [-9, 2],
+                    [-7, 1], [-5, 0.5], [-2, 0.5], [-7, 2],
+                    [-12, 3], [null, 1],
+                ],
+            },
+            B: {
+                chords: ['F', 'C', 'G', 'Am'], accomp: 'block1',
+                melody: [
+                    [3, 2], [0, 2],
+                    [-2, 1.5], [-5, 0.5], [-2, 2],
+                    [-7, 1], [-2, 1], [-5, 2],
+                    [-12, 4],
+                ],
+            },
+        },
+    },
+];
+
+// The Village bass: root on beat 1, fifth on beat 3, from these roots.
+export const VILLAGE_BASS_ROOT = {
+    'A': -24, 'D': -19, 'E': -29, 'F#m': -27,
+    'Am': -24, 'C': -21, 'Em': -29, 'F': -28, 'G': -26,
+};
+
+// The forms a Village tune is performed in (between a pickup and an outro).
+export const VILLAGE_FORMS = [
+    ['A', 'A', 'B', 'A'],
+    ['A', 'B', 'A', 'A'],
+    ['A', 'A', 'B', 'B'],
+];
+
+// Pentatonic pools for the phrase-end fill of a repeated section.
+export const PENTATONIC = {
+    major: [-12, -10, -8, -5, -3, 0, 2, 4, 7, 9],
+    minor: [-12, -9, -7, -5, -2, 0, 3, 5, 7, 10],
 };

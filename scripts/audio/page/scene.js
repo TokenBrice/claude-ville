@@ -10,6 +10,32 @@ import { STANDARD_VOLUME_STEP } from '/src/presentation/shared/audio/Loudness.js
 // Every layer the ambient director owns (its forceLayer() names).
 export const LAYERS = ['wind', 'rain', 'birds', 'crickets', 'hum', 'music'];
 
+// ------------------------------------------------------------ sequencer ----
+// Selection pins on the one music sequencer (2.3). The Town band chooses its
+// first piece in the Transport window that opens at its start, before any
+// caller can reach the instance, so the pin (and the mark observer) is set
+// in the sequencer's `_start` — the harness's prototype-patch pattern.
+// `holdFirstSec` moves Village's first song slot to at least that long
+// after its start (the level slew settles first). Returns false on a tree
+// without the sequencer.
+export async function pinSequencer({ preset, piece, onMark = null, holdFirstSec = 0 }) {
+    const mod = await import('/src/presentation/shared/audio/music/Sequencer.js').catch(() => null);
+    if (!mod?.Sequencer) return false;
+    const proto = mod.Sequencer.prototype;
+    const start = proto._start;
+    proto._start = function pinnedStart(...a) {
+        if (this.preset !== preset) return start.apply(this, a);
+        if (piece) this.pin({ piece });
+        if (onMark) this.observe(onMark);
+        const result = start.apply(this, a);
+        if (holdFirstSec > 0 && this._cur == null && this._nextAt != null) {
+            this._nextAt = Math.max(this._nextAt, this.engine.now() + holdFirstSec);
+        }
+        return result;
+    };
+    return true;
+}
+
 // ---------------------------------------------------------------- world ----
 let agentSeq = 0;
 export function makeAgent(status, provider = 'claude', extra = {}) {

@@ -1,9 +1,11 @@
-// Shared tonal vocabulary for every pitched element in the soundscape.
+// Shared pitch vocabulary: note frequencies, the village key per phase, and
+// the provider bell voicings.
 //
-// All layers and cues draw notes from one pentatonic scale per time-of-day
-// phase so nothing can clash harmonically: A major pentatonic while the sun
-// is up, drifting to A minor pentatonic at night. Registers shift with the
-// phase (airy at dawn, warm and low at dusk, dark and sparse at night).
+// The village is in A — major while the sun is up, minor at night — and
+// every tune in the songbook is written in it. Cues take fixed pitches from
+// the key's tonic triad (`cueTones`). That keeps them in key, not out of every
+// clash: over music a cue can still rub against the sounding chord, which the
+// MusicClock publishes for the chord-relative cue resolver (plan 3.5).
 
 const A4 = 440;
 
@@ -11,14 +13,33 @@ export function noteHz(semitonesFromA4) {
     return A4 * Math.pow(2, semitonesFromA4 / 12);
 }
 
+// The village key by phase: `{ tonicPc, mode }` (pitch classes, C = 0).
+const PHASE_KEYS = Object.freeze({
+    dawn: Object.freeze({ tonicPc: 9, mode: 'major' }),
+    day: Object.freeze({ tonicPc: 9, mode: 'major' }),
+    dusk: Object.freeze({ tonicPc: 9, mode: 'major' }),
+    night: Object.freeze({ tonicPc: 9, mode: 'minor' }),
+});
+
+export function phaseKey(phase) {
+    return PHASE_KEYS[phase] || PHASE_KEYS.day;
+}
+
+// The tonic triad of a key: `{ rootPc, pcs }`, root first.
+export function tonicTriad({ tonicPc, mode } = PHASE_KEYS.day) {
+    const third = mode === 'minor' ? 3 : 4;
+    return { rootPc: tonicPc, pcs: [tonicPc, (tonicPc + third) % 12, (tonicPc + 7) % 12] };
+}
+
 function bellPartial(ratio, gain, decay) {
     return Object.freeze({ ratio, gain, decay });
 }
 
-// Provider voices keep the fundamental on the shared cue scale, then use
-// integer harmonic partials for colour. Integer partials keep simultaneous
-// providers consonant while the register and harmonic recipe make each house
-// recognizable without needing samples.
+// Provider voices keep the fundamental on the cue pitch, then add partials
+// for colour: integer harmonics for the named providers (so two providers
+// ringing together stay consonant), a single inharmonic 2.756 bell partial
+// for the default. Register and recipe make each house recognizable without
+// samples.
 const BELL_VOICINGS = Object.freeze({
     default: Object.freeze({
         register: 1,
@@ -119,16 +140,24 @@ export function bellVoicingForProvider(provider) {
     return BELL_VOICINGS[providerFamily(provider)] || BELL_VOICINGS.default;
 }
 
-// Fixed interval set for one-shot cues, voiced from the same tonal center.
-// Night borrows the minor third so cues agree with the night scale.
-export function cueTones(phase) {
-    const minor = phase === 'night';
+// The cue pitch set of a triad `{ rootPc, pcs }` in the register the cues
+// were written in: the root sits at or above A (A2, A3, A4 for the tonic).
+// The chord-relative resolver of plan 3.5 grows from here.
+export function chordCueTones({ rootPc, pcs }) {
+    const root = (((rootPc - 9) % 12) + 12) % 12;
+    const third = pcs.includes((rootPc + 3) % 12) && !pcs.includes((rootPc + 4) % 12) ? 3 : 4;
     return {
-        low: noteHz(-24), // A2
-        root: noteHz(-12), // A3
-        third: noteHz(minor ? -9 : -8), // C4 / C#4
-        fifth: noteHz(-5), // E4
-        octave: noteHz(0), // A4
-        high: noteHz(minor ? 3 : 4), // C5 / C#5
+        low: noteHz(root - 24),
+        root: noteHz(root - 12),
+        third: noteHz(root - 12 + third),
+        fifth: noteHz(root - 5),
+        octave: noteHz(root),
+        high: noteHz(root + third),
     };
+}
+
+// One-shot cue pitches for a phase: the tonic triad of the phase key — A2,
+// A3, C♯4 (C4 at night), E4, A4, C♯5 (C5).
+export function cueTones(phase) {
+    return chordCueTones(tonicTriad(phaseKey(phase)));
 }

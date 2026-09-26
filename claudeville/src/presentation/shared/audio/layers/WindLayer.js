@@ -13,9 +13,7 @@ export class WindLayer extends BaseLayer {
     }
 
     _start(ctx) {
-        const source = ctx.createBufferSource();
-        source.buffer = this.engine.noise('brown');
-        source.loop = true;
+        const source = this.engine.noiseSource('brown', { rng: this.rng });
 
         this.filter = makeFilter(ctx, 'lowpass', 420, { q: 'butterworth' });
 

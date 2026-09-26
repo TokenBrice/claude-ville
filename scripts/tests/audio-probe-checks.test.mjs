@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    avSync, duckedTime, judgeLane, judgeSceneTargets, laneWindow, limiterGainReduction, maxGrIn, onsetNear, stageOutcome, switchHoleBump,
+    avSync, compareOnsets, duckedTime, frameCostDelta, judgeAirT60, judgeBank, judgeLane, judgeSceneTargets, judgeSequencer,
+    judgeTransport, laneWindow, limiterGainReduction, maxGrIn, noiseLaneConflicts, onsetNear, pieceOnsets, resumeBurst,
+    stageOutcome, switchHoleBump,
 } from '../audio/lib/checks.mjs';
 
 const SR = 48000;
@@ -80,11 +82,123 @@ test('scene targets are relative to the anchor measured in the same run', () => 
         anchor: { lufsI: -38.4 },
         villageBusy: { lufsI: -33.9, lra: 6 },
         rain: { lufsI: -33.3 },
-        storm: { lufsI: -30.6 },
+        storm: { lufsI: -33.0, stMax: -28 },
         resting: { stMean: -48, stMin: -56 },
     });
     const by = Object.fromEntries(rows.map(r => [r.scene, r.pass]));
     assert.deepEqual(by, { anchor: true, villageBusy: true, rain: false, storm: true, resting: false });
+});
+
+test('a scene over its Loudness.js target fails unless its stage is deferred', () => {
+    const anchor = { lufsI: -38 };
+    // Rain at A + 5.7 is over S2's A + 5 and gated now.
+    const rain = judgeSceneTargets({ anchor, rain: { lufsI: -32.3 } }, undefined, { stage: 2 });
+    assert.equal(rain[1].outcome, 'FAIL');
+    // Storm at A + 7.8 is over S2's A + 6: deferred to Wave 4, failing there.
+    const storm = { lufsI: -30.2, stMax: -27.5 };
+    assert.equal(judgeSceneTargets({ anchor, storm }, undefined, { stage: 2 })[1].outcome, 'DEFER');
+    assert.equal(judgeSceneTargets({ anchor, storm }, undefined, { stage: 4 })[1].outcome, 'FAIL');
+    // Its short-term ceiling fails on its own.
+    assert.equal(judgeSceneTargets({ anchor, storm: { lufsI: -33, stMax: -26.5 } }, undefined, { stage: 4 })[1].outcome, 'FAIL');
+    assert.equal(judgeSceneTargets({ anchor, storm: { lufsI: -33, stMax: -27.5 } }, undefined, { stage: 4 })[1].outcome, 'PASS');
+});
+
+const TICK = { site: 'Transport.js:88', fired: 2400, p95Ms: 0.2, maxMs: 1.1, starts: 900 };
+
+test('the transport passes only when its own timer is the one that placed sound', () => {
+    const diag = { underruns: 0, processes: [{ name: 'music', maxAheadSec: 1.5 }, { name: 'birds', maxAheadSec: 1.2 }] };
+    const harness = { site: 'harness', fired: 40, starts: 30 };
+    assert.equal(judgeTransport(diag, [TICK, harness]).pass, true);
+    const layerTimer = { site: 'layers/BaseLayer.js:55', fired: 300, p95Ms: 0.1, maxMs: 0.3, starts: 12 };
+    const two = judgeTransport(diag, [TICK, layerTimer]);
+    assert.equal(two.pass, false);
+    assert.deepEqual(two.soundSites.map(s => s.site), ['Transport.js:88', 'layers/BaseLayer.js:55']);
+    // A lone sound-placing timer that is not the Transport fails too.
+    assert.equal(judgeTransport(diag, [{ ...TICK, starts: 0 }, layerTimer]).pass, false);
+});
+
+test('the transport holds each process to its horizon, work to 350 ms, and counts underruns and tick cost', () => {
+    const ok = { underruns: 0, processes: [{ name: 'music', maxAheadSec: 1.4 }] };
+    assert.equal(judgeTransport({ ...ok, underruns: 1 }, [TICK]).pass, false);
+    assert.equal(judgeTransport({ underruns: 0, processes: [{ name: 'workshop', maxAheadSec: 0.5 }] }, [TICK]).pass, false);
+    assert.equal(judgeTransport({ underruns: 0, processes: [{ name: 'wind', maxAheadSec: 1.6 }] }, [TICK]).pass, false);
+    assert.equal(judgeTransport(ok, [{ ...TICK, p95Ms: 0.7 }]).pass, false);
+    assert.equal(judgeTransport(ok, [{ ...TICK, maxMs: 2.5 }]).pass, false);
+    assert.equal(judgeTransport(null, [TICK]).pass, false);
+});
+
+test('resume after a hidden stretch: nothing starts while suspended, no catch-up burst, no smear', () => {
+    // Two onsets a second before hiding at 30 s; resume at 150 s.
+    const steady = Array.from({ length: 60 }, (_, i) => ({ t: i * 0.5, at: i * 0.5 - 0.3, suspended: false }));
+    const after = [150.2, 150.7].map(t => ({ t, at: t - 0.3, suspended: false }));
+    const ok = resumeBurst([...steady, ...after], { hideT: 30, resumeT: 150 });
+    assert.equal(ok.steadyPerSec, 2);
+    assert.equal(ok.firstWindow, 2);
+    assert.equal(ok.pass, true);
+    // Catch-up: everything missed while hidden lands in the first second.
+    const burst = Array.from({ length: 8 }, (_, i) => ({ t: 150 + i * 0.1, at: 150, suspended: false }));
+    assert.equal(resumeBurst([...steady, ...burst], { hideT: 30, resumeT: 150 }).pass, false);
+    // A start while suspended, and a note placed in the past after resume.
+    assert.equal(resumeBurst([...steady, { t: 90, at: 90, suspended: true }], { hideT: 30, resumeT: 150 }).pass, false);
+    assert.equal(resumeBurst([...steady, { t: 149.5, at: 150.1, suspended: false }], { hideT: 30, resumeT: 150 }).smeared, 1);
+});
+
+test('noise lanes on one pool buffer conflict when their read heads come within 5 s', () => {
+    const lane = (t, off, extra = {}) => ({ t, e: null, buf: 1, len: 21.3, off, rate: 1, ...extra });
+    // Same rate, offsets 8 s apart: always 8 s apart.
+    assert.equal(noiseLaneConflicts([lane(0, 0), lane(0, 8)], { end: 60 }).conflicts.length, 0);
+    // Started 3 s later at the same offset: 3 s behind for the whole overlap.
+    const late = noiseLaneConflicts([lane(0, 0), lane(3, 0)], { end: 60 });
+    assert.equal(late.conflicts.length, 1);
+    assert.ok(Math.abs(late.conflicts[0].closestSec - 3) < 1e-6);
+    // Distance wraps around the buffer end (0 vs 19 s is 2.3 s apart).
+    assert.equal(noiseLaneConflicts([lane(0, 0), lane(0, 19)], { end: 60 }).conflicts.length, 1);
+    // Lanes that never overlap in time, other buffers and short buffers do not count.
+    assert.equal(noiseLaneConflicts([lane(0, 0, { e: 10 }), lane(11, 0)], { end: 60 }).conflicts.length, 0);
+    assert.equal(noiseLaneConflicts([lane(0, 0), lane(0, 0, { buf: 2 })], { end: 60 }).conflicts.length, 0);
+    assert.equal(noiseLaneConflicts([lane(0, 0, { len: 4 }), lane(0, 0, { len: 4 })], { end: 60 }).lanes, 0);
+});
+
+test('Island Air T60 is judged per phase and needs the 4 kHz tail shorter than 0.8 of 1 kHz', () => {
+    assert.equal(judgeAirT60('day', { t60_1000: 1.1, t60_4000: 0.8 }).pass, true);
+    assert.equal(judgeAirT60('night', { t60_1000: 1.1, t60_4000: 0.8 }).pass, false);
+    assert.equal(judgeAirT60('night', { t60_1000: 1.55, t60_4000: 1.2 }).pass, true);
+    assert.equal(judgeAirT60('day', { t60_1000: 1.1, t60_4000: 0.95 }).pass, false);
+});
+
+test('the bank fails over a client budget, over the total, or on a long slice', () => {
+    const budget = { totalBytes: 100, air: 20, noise: 50 };
+    assert.equal(judgeBank({ residentBytes: 60, byClient: { air: 15, noise: 45 } }, 2, budget).pass, true);
+    assert.equal(judgeBank({ residentBytes: 60, byClient: { air: 25, noise: 35 } }, 2, budget).pass, false);
+    assert.equal(judgeBank({ residentBytes: 120, byClient: { air: 15, noise: 45 } }, 2, budget).pass, false);
+    assert.equal(judgeBank({ residentBytes: 60, byClient: { air: 15, noise: 45 } }, 6, budget).pass, false);
+    assert.equal(judgeBank({ residentBytes: 10, byClient: { gulls: 10 } }, 1, budget).pass, false);
+    assert.equal(judgeBank(null, 1, budget).pass, false);
+});
+
+test('piece onsets: one Village song ends at its first long gap, one Town band loop at its length', () => {
+    const song = pieceOnsets([10.5, 10, 10.25, 10.25, 11, 20, 20.5]);
+    assert.deepEqual(song.onsets, [0, 0.25, 0.5, 1]);
+    const loop = pieceOnsets([3, 4, 5, 6, 7, 8], { loopSec: 4 });
+    assert.deepEqual(loop.onsets, [0, 1, 2, 3]);
+});
+
+test('sequencer equivalence needs identical onsets and the level within 0.5 LU', () => {
+    const ref = { onsets: [0, 0.5, 1, 1.5], lufsI: -40 };
+    assert.equal(judgeSequencer(ref, { onsets: [0, 0.5, 1, 1.5], lufsI: -40.4 }).pass, true);
+    assert.equal(judgeSequencer(ref, { onsets: [0, 0.5, 1, 1.5], lufsI: -40.6 }).pass, false);
+    const moved = judgeSequencer(ref, { onsets: [0, 0.5, 1.002, 1.5], lufsI: -40 });
+    assert.equal(moved.pass, false);
+    assert.equal(moved.onsets.firstMismatch.index, 2);
+    // A missing note is a mismatch even when every shared onset agrees.
+    assert.equal(compareOnsets(ref.onsets, [0, 0.5, 1]).identical, false);
+    assert.equal(judgeSequencer({ onsets: [], lufsI: -40 }, { onsets: [], lufsI: -40 }).pass, false);
+});
+
+test('frame cost compares sound-on and sound-off p95', () => {
+    const off = Array.from({ length: 100 }, (_, i) => 4 + i / 100);
+    assert.equal(frameCostDelta(off.map(x => x + 0.05), off).pass, true);
+    assert.equal(frameCostDelta(off.map(x => x + 0.2), off).pass, false);
 });
 
 function noise(seconds, amp) {

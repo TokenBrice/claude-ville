@@ -176,6 +176,22 @@ export const VOICE_REGISTRY = Object.freeze({
     'cue.recovery': Object.freeze({ nominalLufsM: -40.0, plr: null }),
     'cue.council': Object.freeze({ nominalLufsM: -39.4, plr: null }),
     'cue.hourBell': Object.freeze({ nominalLufsM: -33.5, plr: null }),
-    'cue.aurora': Object.freeze({ nominalLufsM: -38.2, plr: null }),
+    // Wave 2: the aurora rendered with its Island Air send (0.35), voice −2 dB.
+    'cue.aurora': Object.freeze({ nominalLufsM: -38.7, plr: null }),
     'cue.thunder': Object.freeze({ nominalLufsM: -33.7, plr: null }),
+});
+
+// Memory table (S8): resident AudioBuffer bytes per SampleBank client
+// (length × channels × 4), MiB-based. The noise pool counts under `noise`
+// although it is built by the engine, not baked. Rates are each client's
+// planned bake rate; a client may store a band-limited colour lower.
+const MIB = 1024 * 1024;
+export const MEMORY_BUDGET = Object.freeze({
+    totalBytes: 32 * MIB,
+    air: 1.5 * MIB,        // Island Air IRs (2), 48 kHz
+    noise: 8 * MIB,        // noise buffer pool, ≤ 48 kHz
+    workshop: 8 * MIB,     // workshop takes, 32 kHz
+    rareWorld: 5 * MIB,    // gulls, clinks, groans, thunder takes, 32 kHz
+    music: 8 * MIB,        // music instruments (6.1), 32 kHz
+    cueStrikes: 2 * MIB,   // optional; the node path is the default, 48 kHz
 });

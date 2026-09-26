@@ -1,28 +1,33 @@
 // Common plumbing for ambience layers: an output gain on the layer's group
-// (through its director's crossfade gain), smooth intensity targeting, timer
-// bookkeeping for scheduled layers, and teardown that ramps to silence
-// before anything stops so stops never click.
+// (through its director's crossfade gain), smooth intensity targeting, a
+// seeded random stream, Transport registration for scheduled layers, Island
+// Air sends taken after the layer's level (C-AMB-2), and teardown that ramps
+// to silence before anything stops so stops never click.
 
 import { MIN_GAIN } from '../AudioEngine.js';
+import { rngStream } from '../Rng.js';
 
 export class BaseLayer {
     // `group` names the engine fader the layer feeds ('wind', 'rain',
     // 'wildlife', 'hum', 'music'); the mixer trims move that fader, never
     // `level`, so a quieter group keeps its density. `director` names the
     // director that owns the layer ('ambient' or 'bgm'), whose group gain
-    // carries the preset crossfade.
-    constructor(engine, { trim = 0.1, group = null, director = 'ambient' } = {}) {
+    // carries the preset crossfade. `rng` names the layer's own seeded stream
+    // (S6: a world layer never shares one with work or cue code).
+    constructor(engine, { trim = 0.1, group = null, director = 'ambient', rng = null } = {}) {
         if (!group) throw new Error(`${new.target.name} needs a mixer group`);
         this.engine = engine;
         this.trim = trim;
         this.group = group;
         this.director = director;
+        this.rng = rngStream(rng || new.target.name);
         this.level = 0;
         this.running = false;
         this.out = null;
+        this.airOut = null;
         this._nodes = [];
         this._sources = [];
-        this._timers = new Set();
+        this._processes = new Set();
     }
 
     start() {
@@ -43,8 +48,14 @@ export class BaseLayer {
     setLevel(value, timeConstant = 3) {
         this.level = Math.max(0, Math.min(1, Number(value) || 0));
         if (!this.out || !this.engine.context) return;
-        const target = Math.max(MIN_GAIN, this.level * this.trim);
-        this.out.gain.setTargetAtTime(target, this.engine.now(), timeConstant);
+        const target = this._levelGain();
+        const now = this.engine.now();
+        this.out.gain.setTargetAtTime(target, now, timeConstant);
+        this.airOut?.gain.setTargetAtTime(target, now, timeConstant);
+    }
+
+    _levelGain() {
+        return Math.max(MIN_GAIN, this.level * this.trim);
     }
 
     track(...nodes) {
@@ -55,14 +66,43 @@ export class BaseLayer {
         for (const source of sources) if (source) this._sources.push(source);
     }
 
-    // setTimeout wrapper that self-cleans and no-ops after stop().
-    timer(fn, ms) {
-        const id = setTimeout(() => {
-            this._timers.delete(id);
-            if (this.running) fn();
-        }, ms);
-        this._timers.add(id);
-        return id;
+    // Put a scheduler on the engine Transport (S4): `proc.schedule(from, to)`
+    // places sounds in audio time; timers never do. Unregistered on stop().
+    registerProcess(proc) {
+        if (!this.running || !proc) return proc;
+        this._processes.add(proc);
+        return this.engine.transport.register(proc);
+    }
+
+    unregisterProcess(proc) {
+        if (!this._processes.delete(proc)) return;
+        this.engine.transport.unregister(proc);
+    }
+
+    // An Island Air send of `amount` (linear), after the layer's level so dry
+    // and wet move together (C-AMB-2), through the director crossfade and the
+    // group fader. Without `from` it taps the layer output; `from` is a node
+    // upstream of the output (a sub-bus), routed through `airOut`, a gain
+    // that mirrors the layer level. Returns the send gain (automate `.gain`).
+    airSend(amount, from = null) {
+        if (!this.out) return null;
+        const route = { group: this.group, director: this.director };
+        if (!from || from === this.out) {
+            const send = this.engine.airSendFrom(this.out, amount, route);
+            this.track(send);
+            return send;
+        }
+        if (!this.airOut) {
+            this.airOut = this.engine.context.createGain();
+            this.airOut.gain.value = this.out.gain.value;
+            this.airOut.gain.setTargetAtTime(this._levelGain(), this.engine.now(), 0.05);
+            this.track(this.engine.airSendFrom(this.airOut, 1, route));
+        }
+        const send = this.engine.context.createGain();
+        send.gain.value = Math.max(0, Number(amount) || 0);
+        from.connect(send).connect(this.airOut);
+        this.track(send);
+        return send;
     }
 
     // Declicked stop (S8): hold the output where it is, ramp it linearly to
@@ -73,14 +113,15 @@ export class BaseLayer {
     stop() {
         if (!this.running) return undefined;
         this.running = false;
-        for (const id of this._timers) clearTimeout(id);
-        this._timers.clear();
+        for (const proc of this._processes) this.engine.transport.unregister(proc);
+        this._processes.clear();
 
         const silentAt = this.out ? this.engine.stopGroup(this.out, 0.08) : this.engine.now();
+        if (this.airOut) this.engine.stopGroup(this.airOut, 0.08);
         for (const source of this._sources) {
             try { source.stop(silentAt + 0.01); } catch { /* already stopped */ }
         }
-        const doomed = [...this._sources, ...this._nodes, this.out];
+        const doomed = [...this._sources, ...this._nodes, this.out, this.airOut];
         const disconnectMs = Math.max(0, (silentAt - this.engine.now() + 0.2) * 1000);
         setTimeout(() => {
             for (const node of doomed) {
@@ -90,6 +131,7 @@ export class BaseLayer {
         this._sources = [];
         this._nodes = [];
         this.out = null;
+        this.airOut = null;
         return silentAt;
     }
 }

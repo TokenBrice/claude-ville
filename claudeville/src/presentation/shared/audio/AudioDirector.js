@@ -13,27 +13,29 @@
 
 import { eventBus } from '../../../domain/events/DomainEvent.js';
 import { actionableAgents, bucketCounts } from '../../../domain/services/SignalLedger.js';
-import { MAP_SIZE, TILE_WIDTH } from '../../../config/constants.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
 import { clamp01, rand } from './AudioEngine.js';
+import { rngStream } from './Rng.js';
 import { cueLifecycleDecision, updateQuietFloor } from './CueGovernor.js';
-import { laneForCueKind } from './cues/CueKit.js';
+import { cuePlacementKind, laneForCueKind } from './cues/CueKit.js';
+import { buildingOf, explicitSpot, resolveCueSpot } from './SpatialField.js';
 import { ActionableCueRouter, attentionStatus } from './ActionableRouting.js';
 import { WindLayer } from './layers/WindLayer.js';
 import { RainLayer } from './layers/RainLayer.js';
 import { BirdsLayer } from './layers/BirdsLayer.js';
 import { CricketsLayer } from './layers/CricketsLayer.js';
 import { VillageHumLayer } from './layers/VillageHumLayer.js';
-import { MusicLayer } from './layers/MusicLayer.js';
+import { Sequencer } from './music/Sequencer.js';
 
 const TICK_MS = 1000;
+const DIRECTOR_ID = 'ambient';
+// Pause in place (2.1): the groups close over 80 ms and reopen over 250 ms.
+const PAUSE_CLOSE_SEC = 0.08;
+const RESUME_OPEN_SEC = 0.25;
 const ATMO_FRESH_MS = 3000;
 const QUIET_ENTER_MS = 30000;
 const QUIET_LEAVE_MS = 4000;
-const SPATIAL_CUES = new Set(['arrival', 'departure', 'distress', 'limit', 'recovery', 'summons']);
-const WORLD_TILE_SPAN = Math.max(1, MAP_SIZE - 1);
-const WORLD_SCREEN_X_HALF_SPAN = WORLD_TILE_SPAN * (TILE_WIDTH / 2);
 
 // Weather and resting budgets (plan 1.4; MIX-3, SCN-5).
 // The world bus yields up to WEATHER_CEILING_DB as rain or a storm builds,
@@ -121,56 +123,22 @@ function copyPosition(position) {
     };
 }
 
-function normalizedScreenValue(value, width = 0) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return null;
-    if (n >= 0 && n <= 1) return clamp01(n);
-    const viewport = Number(width);
-    if (Number.isFinite(viewport) && viewport > 1) return clamp01(n / viewport);
-    return null;
-}
-
-function normalizedWorldX(worldX) {
-    const x = Number(worldX);
-    if (!Number.isFinite(x) || WORLD_SCREEN_X_HALF_SPAN <= 0) return null;
-    return clamp01((x + WORLD_SCREEN_X_HALF_SPAN) / (WORLD_SCREEN_X_HALF_SPAN * 2));
-}
-
-function normalizedTilePosition(position) {
-    if (!position || typeof position !== 'object') return null;
-    const tileX = Number(position.tileX ?? position.x);
-    const tileY = Number(position.tileY ?? position.y);
-    if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return null;
-    return clamp01((tileX - tileY + WORLD_TILE_SPAN) / (WORLD_TILE_SPAN * 2));
-}
-
-function explicitScreenX(payload) {
-    const candidates = [
-        [payload?.screenX, payload?.viewportWidth || payload?.screenWidth],
-        [payload?.normalizedScreenX, 0],
-        [payload?.screenPosition?.x, payload?.screenPosition?.width || payload?.viewportWidth],
-        [payload?.agent?.screenX, payload?.agent?.viewportWidth || payload?.viewportWidth],
-        [payload?.agent?.normalizedScreenX, 0],
-        [payload?.agent?.position?.screenX, payload?.agent?.position?.viewportWidth || payload?.viewportWidth],
-        [payload?.position?.screenX, payload?.position?.viewportWidth || payload?.viewportWidth],
-    ];
-    for (const [value, width] of candidates) {
-        const normalized = normalizedScreenValue(value, width);
-        if (normalized != null) return normalized;
-    }
-    return null;
-}
-
+// The payload fields a cue's place is resolved from (SpatialField.resolveCueSpot).
 function spatialFields(payload) {
     return {
         agent: payload?.agent,
         screenX: payload?.screenX,
+        screenY: payload?.screenY,
         normalizedScreenX: payload?.normalizedScreenX,
+        normalizedScreenY: payload?.normalizedScreenY,
+        viewportWidth: payload?.viewportWidth,
+        viewportHeight: payload?.viewportHeight,
         screenPosition: payload?.screenPosition,
         position: payload?.position,
         lastTile: payload?.lastTile,
         worldX: payload?.worldX,
         center: payload?.center,
+        building: payload?.building,
     };
 }
 
@@ -187,6 +155,7 @@ export class AudioDirector {
         this._weatherBed = false;
         this._primed = false;
         this.running = false;
+        this.paused = false;
         this._interval = null;
         this._unsubscribes = [];
         this._signalUnsubscribes = [];
@@ -200,7 +169,8 @@ export class AudioDirector {
         this._levels = {};
         this._overrides = new Map();
         this._lastBellHour = null;
-        this._thunderTimers = new Set();
+        // Thunder is weather: its own stream, never shared with work or cues.
+        this._rng = rngStream('weather.thunder');
         this._actionable = new ActionableCueRouter();
         this._agentAudioContext = new Map();
         this._mode = 'character';
@@ -215,18 +185,20 @@ export class AudioDirector {
     start() {
         if (this.running || !this.engine.context) return;
         this.running = true;
+        this.paused = false;
         this._primed = false;
-
+        // A rebuild after a long absence starts on a paused Transport.
+        this.engine.transport.resume();
         // Layers feed this director's own group inputs, so a preset switch
         // can crossfade the whole director (plan 1.6).
-        const options = { director: 'ambient' };
+        const options = { director: DIRECTOR_ID };
         this.layers = {
             wind: new WindLayer(this.engine, options),
             rain: new RainLayer(this.engine, options),
             birds: new BirdsLayer(this.engine, options),
             crickets: new CricketsLayer(this.engine, options),
             hum: new VillageHumLayer(this.engine, options),
-            music: new MusicLayer(this.engine, options),
+            music: new Sequencer(this.engine, { ...options, preset: 'village' }),
         };
         for (const layer of Object.values(this.layers)) layer.start();
 
@@ -239,14 +211,45 @@ export class AudioDirector {
     // clear: during a crossfade it may belong to the incoming director.
     stop() {
         this.running = false;
-        if (this._interval) clearInterval(this._interval);
+        this.paused = false;
+        clearInterval(this._interval);
         this._interval = null;
-        for (const id of this._thunderTimers) clearTimeout(id);
-        this._thunderTimers.clear();
         for (const unsubscribe of this._unsubscribes) unsubscribe();
         this._unsubscribes = [];
         for (const layer of Object.values(this.layers)) layer.stop();
         this.layers = {};
+    }
+
+    // Pause in place (2.1, ENG-2): stop waking the Transport and the 1 Hz
+    // mapping and close this director's groups over 80 ms. What is already
+    // committed stays on the audio clock, which the controller then freezes
+    // with `suspend()`, so a resume continues the same piece mid-phrase.
+    // Returns the audio time at which the groups are silent.
+    pause() {
+        if (!this.running || this.paused) return this.engine.now();
+        this.paused = true;
+        clearInterval(this._interval);
+        this._interval = null;
+        this.engine.transport.pause();
+        return this.engine.fadeDirector(DIRECTOR_ID, 0, { duration: PAUSE_CLOSE_SEC });
+    }
+
+    // Reopen over 250 ms and re-arm every process from the current audio
+    // time: nothing missed while away is caught up.
+    resume() {
+        if (!this.running || !this.paused) return;
+        this.paused = false;
+        this.engine.fadeDirector(DIRECTOR_ID, 1, { duration: RESUME_OPEN_SEC });
+        this.engine.transport.resume();
+        this._interval = setInterval(() => this._tick(), TICK_MS);
+        this._tick();
+    }
+
+    // The local clock's phase: the same source before and after an absence
+    // (a hidden tab stops the World's broadcast), so comparing the two never
+    // mistakes a stale broadcast for a change of phase.
+    currentPhase() {
+        return createAtmosphereSnapshot({}).phase || 'day';
     }
 
     destroy() {
@@ -352,15 +355,12 @@ export class AudioDirector {
             if (this._signalRouting) this._playActionable(payload, attentionStatus(payload, this.world));
         });
 
-        // Thunder trails the visible lightning by a beat, like real distance.
+        // Thunder trails the visible lightning by a beat, like real distance;
+        // the lag lives on the audio clock (the cue's lead), never a timer.
         on('weather:storm-flash', (payload) => {
             if (!this._signalRouting) return;
             const intensity = clamp01(payload?.intensity, 0.6);
-            const id = setTimeout(() => {
-                this._thunderTimers.delete(id);
-                if (this._signalRouting) this.cue('thunder', { intensity });
-            }, rand(300, 1200));
-            this._thunderTimers.add(id);
+            this.cue('thunder', { intensity, leadMs: rand(this._rng, 300, 1200) });
         });
     }
 
@@ -385,7 +385,8 @@ export class AudioDirector {
             provider: agent?.provider || previous.provider || null,
             teamName: agent?.teamName || previous.teamName || null,
             position: copyPosition(agent?.position) || previous.position || null,
-            screenX: explicitScreenX(agent) ?? previous.screenX ?? null,
+            spot: explicitSpot(agent) ?? previous.spot ?? null,
+            building: buildingOf(agent) ?? previous.building ?? null,
             at: Date.now(),
         });
         // A removed agent can wait briefly for its departure scene. Keep this
@@ -410,58 +411,6 @@ export class AudioDirector {
             || this._agentAudioContext.get(agentId)?.teamName
             || this.world?.agents?.get?.(agentId)?.teamName
             || null;
-    }
-
-    _rendererScreenX(agentId) {
-        if (agentId == null) return null;
-        const renderer = globalThis.window?.__claudeVilleApp?.renderer;
-        const sprite = renderer?.agentSprites?.get?.(agentId);
-        const camera = renderer?.camera;
-        if (!sprite || !camera?.worldToScreen) return null;
-        const x = Number(sprite.x);
-        const y = Number(sprite.y);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-        const screen = camera.worldToScreen(x, y);
-        const width = camera._viewportWidth?.()
-            || renderer?.canvas?._claudeVilleCssWidth
-            || renderer?.canvas?.clientWidth
-            || renderer?.canvas?.width;
-        return normalizedScreenValue(screen?.x, width);
-    }
-
-    _resolveScreenX(payload, agentId) {
-        if (this._mode === 'dashboard') return 0.5;
-
-        const direct = explicitScreenX(payload);
-        if (direct != null) return direct;
-
-        const rendered = this._rendererScreenX(agentId);
-        if (rendered != null) return rendered;
-
-        const worldScreen = normalizedWorldX(
-            payload?.worldX
-            ?? payload?.agent?.worldX
-            ?? payload?.center?.x,
-        );
-        if (worldScreen != null) return worldScreen;
-
-        const payloadPosition = payload?.agent?.position || payload?.position || payload?.lastTile;
-        const payloadTile = normalizedTilePosition(payloadPosition);
-        if (payloadTile != null) return payloadTile;
-
-        const cached = this._agentAudioContext.get(agentId);
-        const cachedScreen = normalizedScreenValue(cached?.screenX);
-        if (cachedScreen != null) return cachedScreen;
-        const cachedTile = normalizedTilePosition(cached?.position);
-        if (cachedTile != null) return cachedTile;
-
-        const agent = this.world?.agents?.get?.(agentId);
-        const agentScreen = explicitScreenX(agent);
-        if (agentScreen != null) return agentScreen;
-        const agentTile = normalizedTilePosition(agent?.position);
-        if (agentTile != null) return agentTile;
-
-        return 0.5;
     }
 
     // Both actionable events land here; the router picks the voice from the
@@ -503,8 +452,15 @@ export class AudioDirector {
         if (agentId != null && payload.provider == null) {
             payload.provider = this._agentProvider(payload, agentId);
         }
-        if (SPATIAL_CUES.has(kind)) {
-            payload.screenX = this._resolveScreenX(payload, agentId);
+        // Placed once, here, when the cue is raised; CueKit turns the spot
+        // into pan, distance and air at schedule time (plan S5).
+        if (cuePlacementKind(kind)) {
+            payload.spot ??= resolveCueSpot(payload, {
+                agentId,
+                dashboard: this._mode === 'dashboard',
+                world: this.world,
+                remembered: this._agentAudioContext.get(agentId),
+            });
         }
         payload.lane = laneForCueKind(kind);
         if (cueLifecycleDecision({ lane: payload.lane, hidden: this.hidden }) !== 'play') {
@@ -605,6 +561,10 @@ export class AudioDirector {
         this._primed = true;
         this.engine.setWeatherCeiling(ceilingDb, prime ?? 4);
         this.engine.setTilt(phase);
+        // Island Air follows the phase (a 6 s crossfade between the day and
+        // night rooms) and lets rain and fog colour its return (S5).
+        this.engine.setAirPhase(phase);
+        this.engine.setAirWeather({ rain: precipitation, fog: clamp01(weather.fog) });
         this.layers.wind.setWind({
             strength: levels.wind,
             wind: Math.abs(Number(weather.windX) || 0),
@@ -629,7 +589,7 @@ export class AudioDirector {
 
         // Storm thunder fallback when the World loop (and its flash events)
         // is not running — Poisson-ish, roughly one strike per 15–25 ticks.
-        if (storm > 0 && this._atmosphereSource === 'local' && Math.random() < 0.03 + storm * 0.04) {
+        if (storm > 0 && this._atmosphereSource === 'local' && this._rng() < 0.03 + storm * 0.04) {
             this.cue('thunder', { intensity: storm });
         }
     }

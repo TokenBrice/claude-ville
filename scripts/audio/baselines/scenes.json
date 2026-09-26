@@ -11,88 +11,88 @@
   },
   "summary": {
     "scene:anchor": {
-      "lufsI": -37.93,
-      "stMax": -35.45
+      "lufsI": -37.85,
+      "stMax": -35.47
     },
     "margin:village:needsYou": {
-      "margin": 9.35
+      "margin": 9.57
     },
     "margin:village:error": {
-      "margin": 8.35
+      "margin": 8.94
     },
     "margin:village:limit": {
-      "margin": 7.95
+      "margin": 8.08
     },
     "margin:village:routine": {
-      "margin": 5.17
+      "margin": 5.49
     },
     "margin:village:scenery": {
-      "margin": 3.68
+      "margin": 2.68
     },
     "margin:music:needsYou": {
-      "margin": 9.8
+      "margin": 10.61
     },
     "margin:music:error": {
-      "margin": 9.18
+      "margin": 10.33
     },
     "margin:music:limit": {
-      "margin": 9.55
+      "margin": 10.63
     },
     "margin:music:routine": {
-      "margin": 5.24
+      "margin": 5.62
     },
     "margin:music:scenery": {
-      "margin": 3.96
+      "margin": 3.9
     },
     "scene:villageBusy": {
-      "lufsI": -31.13,
-      "stMax": -27.47
+      "lufsI": -30.83,
+      "stMax": -25.98
     },
     "margin:rain:needsYou": {
-      "margin": 7.91
+      "margin": 10.45
     },
     "margin:rain:error": {
-      "margin": 9.07
+      "margin": 11.26
     },
     "margin:rain:limit": {
-      "margin": 7.56
+      "margin": 10.23
     },
     "margin:rain:routine": {
-      "margin": 5.25
+      "margin": 4.91
     },
     "margin:rain:scenery": {
-      "margin": 3.68
+      "margin": 4.16
     },
     "scene:townBand": {
-      "lufsI": -30.05,
-      "stMax": -25.18
+      "lufsI": -30.84,
+      "stMax": -26
     },
     "margin:storm:needsYou": {
-      "margin": 6.98
+      "margin": 9.03
     },
     "margin:storm:error": {
-      "margin": 7.12
+      "margin": 9.53
     },
     "margin:storm:limit": {
-      "margin": 6.13
+      "margin": 8.7
     },
     "margin:storm:routine": {
-      "margin": 5.25
+      "margin": 4.94
     },
     "margin:storm:scenery": {
-      "margin": 2.89
+      "margin": 2.81
     },
     "scene:rain": {
-      "lufsI": -32.23,
-      "stMax": -30.88
+      "lufsI": -34.09,
+      "stMax": -32.97
     },
     "scene:storm": {
-      "lufsI": -30.12,
-      "stMax": -28.26
+      "lufsI": -31.87,
+      "stMax": -29.53
     },
     "scene:resting": {
-      "lufsI": -48.27,
-      "stMax": -46.11
+      "lufsI": -48.2,
+      "stMax": -46.24
     }
   }
 }

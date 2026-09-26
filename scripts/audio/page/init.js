@@ -168,18 +168,24 @@ registerProcessor('har-recorder', HarRecorder);
             voiceLog.push(entry);
         }
     };
+    // `window.__harNoLint` (a timing scene on the virtual clock) skips the
+    // stack capture, which would otherwise dominate a scheduler's cost.
     AudioScheduledSourceNode.prototype.start = function harStart(when = 0, ...rest) {
         logStart(this, when);
-        const stack = new Error().stack;
-        queueMicrotask(() => checkHazard(this, when, stack));
+        if (!window.__harNoLint) {
+            const stack = new Error().stack;
+            queueMicrotask(() => checkHazard(this, when, stack));
+        }
         return origStart.call(this, when, ...rest);
     };
     // AudioBufferSourceNode declares its own start(when, offset, duration).
     const origBufferStart = AudioBufferSourceNode.prototype.start;
     AudioBufferSourceNode.prototype.start = function harBufferStart(when = 0, ...rest) {
         logStart(this, when);
-        const stack = new Error().stack;
-        queueMicrotask(() => checkHazard(this, when, stack));
+        if (!window.__harNoLint) {
+            const stack = new Error().stack;
+            queueMicrotask(() => checkHazard(this, when, stack));
+        }
         return origBufferStart.call(this, when, ...rest);
     };
     AudioScheduledSourceNode.prototype.stop = function harStop(when = 0) {
