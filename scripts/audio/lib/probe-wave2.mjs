@@ -1,23 +1,15 @@
 // The probe's Wave-2 measurements ("one clock, one air"): the Transport and
-// timer attribution, pause in place, Island Air, the noise pool, the
-// SampleBank and sequencer equivalence, on the virtual clock (lib/virtual.mjs),
-// plus the sequencer's Wave-1 reference renders taken from an exported
-// earlier revision. Every function returns numbers; probe.mjs turns them
-// into PASS/FAIL lines through the pure judges in checks.mjs.
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+// timer attribution, pause in place, Island Air, the noise pool and the
+// SampleBank, on the virtual clock (lib/virtual.mjs). Every function returns
+// numbers; probe.mjs turns them into PASS/FAIL lines through the pure judges
+// in checks.mjs.
 import { loudness } from './analyze.mjs';
 import { renderAirUnit } from './virtual.mjs';
-import { REPO_ROOT, startStaticServer } from './server.mjs';
-import { energyRatioDb, pieceOnsets, resumeBurst } from './checks.mjs';
-import { AIR_ARRIVALS, AIR_UNIT, HIDDEN_AT, HIDDEN_SECONDS, sequencerPieces } from './scenes.mjs';
+import { energyRatioDb, resumeBurst } from './checks.mjs';
+import { AIR_ARRIVALS, AIR_UNIT, HIDDEN_AT, HIDDEN_SECONDS } from './scenes.mjs';
 import { repetition, rt60 } from '../metrics/amb-metrics.mjs';
 import { levelMap } from '../metrics/levelmap.mjs';
 
-const SONGBOOK = 'claudeville/src/presentation/shared/audio/bgm/BgmSongbook.js';
 
 function slice(pair, sr, a, b) {
     const i = Math.max(0, Math.round(a * sr));
@@ -111,34 +103,3 @@ export function bedRows(r) {
     return { monoLossLU: levelMap(cut.L, cut.R, r.sr).monoLossLU, worldIcc: world ? repetition(world.L, world.R, r.sr).icc : null };
 }
 
-// ------------------------------------------------------------- sequencer ----
-// One traced render of a pinned piece → its onsets and program loudness
-// from the first onset to the end of the song or loop (+ 1.5 s of tail).
-export function sequencerRow(r, p) {
-    const po = pieceOnsets(r.meta.musicOnsets || [], { loopSec: p.loopSec });
-    if (po.start == null) return { onsets: [], lufsI: null, pinned: r.meta.pinned, errors: r.errors };
-    const end = p.loopSec != null ? po.start + p.loopSec : po.end + 1.5;
-    const win = slice(r.program, r.sr, po.start, Math.min(end + 1.5, r.program.L.length / r.sr));
-    return { onsets: po.onsets, lufsI: loudness(win.L, win.R, r.sr).integrated, start: po.start, pinned: r.meta.pinned, rng: r.meta.rng, errors: r.errors };
-}
-
-export async function loadPieces(root = REPO_ROOT) {
-    const mod = await import(pathToFileURL(path.join(root, SONGBOOK)).href);
-    return sequencerPieces(mod.PIECES);
-}
-
-// Exports `rev`'s claudeville/ into a temp dir (git archive: read-only) and
-// serves it; the harness pages stay the current ones and feature-detect
-// the older engine.
-export async function referenceServer(rev) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeville-audio-ref-'));
-    const archive = spawnSync('git', ['archive', '--format=tar', rev, 'claudeville'], { cwd: REPO_ROOT, maxBuffer: 1 << 30 });
-    if (archive.status !== 0) throw new Error(`git archive ${rev}: ${archive.stderr}`);
-    const untar = spawnSync('tar', ['-x', '-C', dir], { input: archive.stdout, maxBuffer: 1 << 30 });
-    if (untar.status !== 0) throw new Error(`tar: ${untar.stderr}`);
-    const server = await startStaticServer({ appDir: path.join(dir, 'claudeville') });
-    return {
-        server, root: dir,
-        async close() { await server.close(); fs.rmSync(dir, { recursive: true, force: true }); },
-    };
-}

@@ -346,9 +346,6 @@ export const NOISE_SEAM_SEC = 0.05;
 // Read heads on one buffer stay this far apart (buffer seconds) for as
 // long as both lanes live.
 export const LANE_SEPARATION_SEC = 5;
-// A one-shot lane's assumed life until its stop() says otherwise.
-export const ONE_SHOT_LIFE_SEC = 8;
-const LANE_CANDIDATES = 16;
 // An allocated, unstarted lane holds its head this long (≥ the Transport horizon).
 const LANE_RESERVE_SEC = 2;
 // Placed one-shots (placeOneShot): the offset grid, and the clearance kept
@@ -478,36 +475,38 @@ export function spanGap(a, b, period) {
     return Math.max(0, Math.min(aheadOfB - b.span, aheadOfA - a.span));
 }
 
-// Choose { index, offset } for a new lane among `periods` (one per buffer):
-// the first of LANE_CANDIDATES rng draws whose margin to every lane it must
-// avoid stays ≥ LANE_SEPARATION_SEC, else the best draw. Continuous lanes
-// only consider the least-used buffers and only avoid continuous lanes;
-// one-shots may use any buffer and avoid every lane.
+// Choose { index, offset } for a new continuous lane `lane` ({ start, rate,
+// end }) among `periods` (one per buffer), avoiding only the continuous
+// lanes (one-shots place themselves around these, so world offsets never
+// depend on work events). Its buffer is a least-used one (an rng draw among
+// them). On an unread buffer its offset is a second draw; beside lanes
+// already there it packs as tightly as placeOneShot does — the nearest grid
+// offset LANE_SEPARATION_SEC + PLACE_SLACK_SEC clear of every head — so the
+// lanes of one buffer bunch up and leave its widest free arc to one-shot
+// grains (three lanes on the 21.3 s white loop still leave a grain 5 s
+// from each). With no clear offset, the clearest.
 export function pickLane(rng, periods, lanes, lane) {
-    const avoid = lane.oneShot ? lanes : lanes.filter(l => !l.oneShot);
-    let indices = periods.map((_, i) => i);
-    if (!lane.oneShot) {
-        const load = indices.map(i => avoid.filter(l => l.index === i).length);
-        const least = Math.min(...load);
-        indices = indices.filter(i => load[i] === least);
+    const continuous = lanes.filter(l => !l.oneShot);
+    const load = periods.map((_, i) => continuous.filter(l => l.index === i).length);
+    const least = Math.min(...load);
+    const indices = periods.map((_, i) => i).filter(i => load[i] === least);
+    const index = indices[Math.min(indices.length - 1, Math.floor(rng() * indices.length))];
+    const period = periods[index];
+    const draw = rng();
+    const others = continuous.filter(l => l.index === index);
+    if (!others.length) return { index, offset: draw * period };
+    const need = LANE_SEPARATION_SEC + PLACE_SLACK_SEC;
+    const candidate = { ...lane, offset: 0 };
+    let fit = null;
+    let clearest = null;
+    for (let k = 0; k * PLACE_STEP_SEC < period; k++) {
+        candidate.offset = k * PLACE_STEP_SEC;
+        let clearance = Infinity;
+        for (const other of others) clearance = Math.min(clearance, laneMargin(candidate, other, period));
+        if (!clearest || clearance > clearest.clearance) clearest = { offset: candidate.offset, clearance };
+        if (clearance >= need && !(fit?.clearance <= clearance)) fit = { offset: candidate.offset, clearance };
     }
-    let best = null;
-    let bestMargin = -1;
-    for (let k = 0; k < LANE_CANDIDATES; k++) {
-        const index = indices[Math.min(indices.length - 1, Math.floor(rng() * indices.length))];
-        const period = periods[index];
-        const candidate = { ...lane, index, offset: rng() * period };
-        let margin = Infinity;
-        for (const other of avoid) {
-            if (other.index === index) margin = Math.min(margin, laneMargin(candidate, other, period));
-        }
-        if (margin >= LANE_SEPARATION_SEC) return { index, offset: candidate.offset };
-        if (margin > bestMargin) {
-            best = { index, offset: candidate.offset };
-            bestMargin = margin;
-        }
-    }
-    return best;
+    return { index, offset: (fit ?? clearest).offset };
 }
 
 // Place a one-shot read without drawing. `life` is { start, end, rate }
@@ -591,12 +590,11 @@ export class NoisePool {
         return keys.map(k => this._buffers.get(k) ?? null);
     }
 
-    // An unstarted, looping source of `color`. Its buffer and start offset
-    // are chosen when first needed — reading `startOffset` or calling
-    // `start(t)` — so a one-shot's playbackRate (set by the caller before
-    // then) is known and its head keeps ≥ 5 s from every live lane for its
-    // whole life.
-    source(ctx, color, { rng, oneShot = false } = {}) {
+    // An unstarted, looping continuous source of `color`. Its buffer and
+    // start offset are chosen (pickLane) when first needed — reading
+    // `startOffset` or calling `start(t)`. One-shot grains take
+    // reserveOneShot instead.
+    source(ctx, color, { rng } = {}) {
         if (typeof rng !== 'function') throw new Error('noiseSource needs an rng stream');
         const buffers = this.buffers(color);
         if (buffers.some(b => !b)) return null;
@@ -604,8 +602,7 @@ export class NoisePool {
         const src = ctx.createBufferSource();
         return this._laneSource(ctx, src, lanes, (at) => {
             dropExpired(lanes, at);
-            const rate = src.playbackRate.value;
-            const life = { start: at, rate, end: oneShot ? at + ONE_SHOT_LIFE_SEC / Math.max(rate, 0.1) : Infinity, oneShot };
+            const life = { start: at, rate: src.playbackRate.value, end: Infinity, oneShot: false };
             const { index, offset } = pickLane(rng, buffers.map(b => b.duration), [...lanes], life);
             src.buffer = buffers[index];
             return { ...life, index, offset, reservedUntil: at + LANE_RESERVE_SEC };

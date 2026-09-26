@@ -209,8 +209,8 @@ export async function renderLimiterUnit(browser, baseUrl, { seed, noWorklets }) 
 
 export function sceneSpec(name) {
     if (SCENES[name]) return SCENES[name];
-    const m = /^margin:(\w+)$/.exec(name);
-    if (m) return marginScene(m[1]);
+    const m = /^margin:(\w+):(\w+)$/.exec(name);
+    if (m) return marginScene(m[1], m[2]);
     throw new Error(`unknown scene ${name}`);
 }
 

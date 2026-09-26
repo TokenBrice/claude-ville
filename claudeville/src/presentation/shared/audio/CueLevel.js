@@ -39,8 +39,21 @@ const AIM_OVER_FLOOR_BY_LANE = Object.freeze({
     needsYou: URGENT_AIM_OVER_FLOOR_LU,
     error: URGENT_AIM_OVER_FLOOR_LU,
     limit: URGENT_AIM_OVER_FLOOR_LU,
-    routine: 2,
-    outcomeMinor: -0.2,
+    routine: 2.3,
+    outcomeMinor: -0.5,
+});
+// Over music the band's own swell lifts what a cue reads over it (the Isle
+// Band, Wave 6: routine read +6.8 and a push +6.3 at the aims above), so
+// routine and Medium outcomes aim lower there, and Minor outcomes with them
+// to stay ≥ 3 LU under routine (over the Town band a Minor knock's stem
+// window is −1…+3 LU, so its aim is taken from −1; it reads ≈ −0.5).
+// The rate limit aims 1 LU higher there: its ticks need the extra level to
+// clear the band rule (0.5–4 kHz ≥ +6 dB) over the Isle Band.
+const AIM_OVER_FLOOR_OVER_MUSIC = Object.freeze({
+    limit: URGENT_AIM_OVER_FLOOR_LU + 1,
+    routine: 0.5,
+    outcomeMedium: -0.5,
+    outcomeMinor: -0.6,
 });
 
 // The highest peak (dBFS, in the bedLoudness domain) an urgent voice may
@@ -143,7 +156,8 @@ export function cueTrimDb({
     }
     const floor = laneFloorLu(lane, bed);
     if (!Number.isFinite(nominalLufsM) || floor == null) return clamp(0, capped);
-    const aim = AIM_OVER_FLOOR_BY_LANE[lane] ?? CUE_AIM_OVER_FLOOR_LU;
+    const aim = (bed === 'music' ? AIM_OVER_FLOOR_OVER_MUSIC[lane] : undefined)
+        ?? AIM_OVER_FLOOR_BY_LANE[lane] ?? CUE_AIM_OVER_FLOOR_LU;
     const trim = clamp(bedLufs + floor + aim - nominalLufsM, capped);
     const ceiling = AUDIBILITY_WINDOWS.lanes[lane]?.ceiling;
     if (!urgent || !Number.isFinite(ceiling)) return trim;

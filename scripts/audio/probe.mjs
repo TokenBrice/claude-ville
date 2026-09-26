@@ -4,7 +4,7 @@
 //
 //   npm run audio:probe
 //   node scripts/audio/probe.mjs [--only a,b] [--jobs N] [--seed N] [--out dir]
-//                                [--no-worklets] [--update [--ref-rev REV]] [--soak [--soak-seconds N]]
+//                                [--no-worklets] [--update] [--soak [--soak-seconds N]]
 //
 // Default: the gate at PLAN_STAGE (lib/checks.mjs; criteria owned by a later
 // wave print DEFER and never fail) on the virtual clock (HAR-1: the shipped
@@ -41,10 +41,6 @@
 //                ICC and mono fold (night and storm too), lanes
 //                on one pool buffer ≥ 5 s apart, the pool's budget
 //   bank         2.6: resident bytes vs MEMORY_BUDGET, bake slices ≤ 5 ms
-//   sequencer    2.3: every piece's onsets vs its Wave-1 reference render
-//                (baselines/sequencer-wave1.json; --update --ref-rev REV
-//                re-renders it from REV's tree), identical; its level within
-//                ±0.5 LU of the current baselines/scenes.json
 //   discrim      3.1–3.5 (S1): every cue voice governor-free — signal vs
 //                every other voice ≥ 2/3, urgent pairwise ≥ 2/3, outcomes
 //                vs needs-you, no quick same-pitch opening outside signals
@@ -115,10 +111,12 @@ import { fmt, signed } from './lib/format.mjs';
 import {
     BASELINE_TOLERANCE, CROWN_SYNC_MS, CUE_STRATUM, HELD_NOTE, ISLAND_AIR, LADDER, MUST_NEVER_7_LU, NOISE_LIMITS, PLAN_STAGE, SEA_LIMITS, THUNDER_LIMITS, URGENT_LANES, WORLD_STEM_MAX_ABS, bakeLandingDiffs,
     beatingDepthDb, compareBaseline, expectedLadder, groanViolations, heldNoteRise, judgeAirT60, judgeBank, judgeCaptionParity, judgeCluster, judgeDiscrimination,
-    judgeDuckedTime, judgeHeldTrim, judgeLadder, judgeLane, judgeOnsetBudget, judgeSceneTargets, judgeSequencer, judgeThunder, judgeTransport, judgeWakes,
+    judgeDuckedTime, judgeHeldTrim, judgeLadder, judgeLane, judgeOnsetBudget, judgeSceneTargets, judgeThunder, judgeTransport, judgeWakes,
     judgeWorldMap, judgeWorldStem, median, nightWeatherOverDay, noiseLaneConflicts, onsetNear, presenceUnderNoon, waitAudibleWindows, withinRange, worldStemDiffers,
     WORK_BANDS_DAY, WORK_BANDS_NIGHT, WORK_LIMITS, downbeatSync, judgeCameraPan, judgeFocus, judgeHeard, judgeQuietMix, judgeQuotaSweep, judgeWorkLevel, longestGap,
     maxOnsetsIn, pulseIndex, quietStemRow, signCrossing, stopTiming, targetTrajectory,
+    D1_DUTY, MUSIC_LIMITS, arrangementSwitch, bandStep, breathsPerWindow, coveredSec, earlyReturns, judgeDuty, judgeIsleArm, judgeStemBalance, laneWindow,
+    loopsPerPieceHour, musicInWindows, nightDarker, perHourMax, spearman,
 } from './lib/checks.mjs';
 import {
     AIR_CUE_SCENE, CAPTION_SETTINGS, DASHBOARD_SCENE, GALLERY_VOICES, HELD_ANSWER_SEC, HELD_OPEN_SEC, LADDER_OPEN_SEC, LADDER_SECONDS, LADDER_TRIM_SCENE,
@@ -129,6 +127,8 @@ import {
     worldMapCells, worldStemScene,
     AUDIBILITY_SECONDS, CAMERA_PAN, QUIET_MIX, QUOTA_STALE_AT, QUOTA_STEPS, WORK_HONESTY, WORK_HONESTY_SCENE, WORK_PATTERNS, WORK_POLL, WORK_SLOTS,
     audibilityScene, cameraScene, quietMixScene, quotaScene, workDownbeatScene, workSlotsScene, workshopScene,
+    PERCUSSION_SEGMENTS, RAIN_SWITCH_AT, TOWN_SESSION, VILLAGE_FIXTURES, VIRTUAL_DAY, WAIT_CADENCE, musicStemScene, percussionScene, rainSwitchScene,
+    townSessionScene, villageMusicScene, waitCadenceScene,
 } from './lib/scenes.mjs';
 import {
     captionRows, clusterRow, crownRow, galleryRows, heldNoteRows, heldWhileMusic, ladderCalls, ladderCaptioned, ladderTrimRows, laneEvents, wakeRows,
@@ -147,19 +147,32 @@ import {
     onsetsOf, placementLogRows, quotaRows, routineLossRows, slotRows, strikesOf, tickRows, urgentTpRows, workLevelRow,
 } from './lib/probe-wave5.mjs';
 import {
-    airRows, arrivalDrRows, bedRows, loadPieces, pauseRows, referenceServer, renderAir, sequencerRow, textureRows, transportRows, urgentWetRows,
+    airRows, arrivalDrRows, bedRows, pauseRows, renderAir, textureRows, transportRows, urgentWetRows,
 } from './lib/probe-wave2.mjs';
 import {
     appBusyUnit, appCeremonyUnit, appContinuityUnit, appFrameCostUnit, judgeBusy, judgeCeremony, judgeContinuity, judgeFrameCost, lintUnits,
 } from './lib/probe-app.mjs';
+import {
+    OCTAVE_CENTERS, bandRows, armRow, densityTrack, dutyOf, heardSpans, nodesPerNoteRow, noteRows, percussionPerBar, seatLufs, seatPairs, stopLevels,
+    sumOf, toOutput, visitRows,
+} from './lib/probe-wave6.mjs';
+import { townBandHours, villageDay } from './lib/music-sim.mjs';
+import {
+    cueClash, identicalRenditionGap, motifStatements, parallelPerfects, phraseReheard, range, renditions, seatLine, tonalReheard,
+} from './score-analyzer.mjs';
+import { loudness } from './lib/analyze.mjs';
+import { marginAt } from './lib/timeline.mjs';
+import { sessionMetrics } from './metrics/session-metrics.mjs';
+import { outputGainDb } from './lib/probe-wave5.mjs';
 import { runSoak } from './lib/soak.mjs';
-import { LIMITER_CEILING_DBFS, LOUDNESS_TARGETS, MEMORY_BUDGET, PROGRAM_TRIM_DB, STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
+import { FRAGMENTS, PIECES, PLAYLISTS } from '../../claudeville/src/presentation/shared/audio/bgm/BgmSongbook.js';
+import { voicingFor } from '../../claudeville/src/presentation/shared/audio/music/Voicings.js';
+import { D1_DUTY as OCC_DUTY, RING_OUT_SEC as OCC_RING_OUT_SEC, dutyBandFor } from '../../claudeville/src/presentation/shared/audio/OccasionClock.js';
+import { createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { AUDIBILITY_WINDOWS, LIMITER_CEILING_DBFS, LOUDNESS_TARGETS, MEMORY_BUDGET, PROGRAM_TRIM_DB, STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 
 const APP_CHROME_ARGS = ['--autoplay-policy=user-gesture-required', ...BACKGROUND_ARGS];
 const BASELINE_FILE = path.join(AUDIO_DIR, 'baselines/scenes.json');
-const SEQUENCER_FILE = path.join(AUDIO_DIR, 'baselines/sequencer-wave1.json');
-// The Wave-1 commit: the reference the sequencer must reproduce.
-const SEQUENCER_REFERENCE_REV = 'f4a71e3';
 const DETERMINISM_LU = 0.2;
 const AV_SYNC = { medianAbsMs: 20, p95AbsMs: 40 };
 const SWITCH_LIMIT_DB = 3;
@@ -184,7 +197,7 @@ const JOBS = Math.max(1, Number(args.jobs || 2));
 const SEED = args.seed != null ? Number(args.seed) : DEFAULT_SEED;
 const NO_WORKLETS = Boolean(args['no-worklets']);
 const UPDATE = Boolean(args.update);
-const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'noise', 'bank', 'sequencer', 'discrim', 'ladder', 'cluster', 'heldnote', 'outcomes', 'captions', 'honesty', 'worldmap', 'worldstem', 'sea', 'thunder', 'masking', 'crest', 'workshops', 'worklevel', 'workslots', 'worknight', 'quietmix', 'quota', 'camera'];
+const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'noise', 'bank', 'discrim', 'ladder', 'cluster', 'heldnote', 'outcomes', 'captions', 'honesty', 'worldmap', 'worldstem', 'sea', 'thunder', 'masking', 'crest', 'workshops', 'worklevel', 'workslots', 'worknight', 'quietmix', 'quota', 'camera', 'musicstems', 'isleband', 'nightmusic', 'score', 'occasions', 'townband', 'percussion'];
 const APP_CHECKS = ['lint', 'routing', 'away', 'ceremony', 'continuity', 'fps'];
 const ALL_CHECKS = [...VIRTUAL_CHECKS, ...APP_CHECKS];
 const ONLY = args.only ? String(args.only).split(',').map(s => s.trim()) : ALL_CHECKS;
@@ -278,18 +291,42 @@ function virtualUnits(render, browser, baseUrl) {
             },
         });
     }
+    // Uncached renders (the 72-cell map and one-off scenes): each is reduced
+    // to numbers inside its unit, so its PCM never outlives it.
+    const renderOnce = async (key, spec) => {
+        const r = await renderVirtual(browser, baseUrl, { ...spec, name: key, noWorklets: NO_WORKLETS }, { seed: SEED });
+        keep(key, r);
+        return r;
+    };
+    // HAR-3: each lane over each probe bed from its own render (the bed
+    // under a placement depends on the cues before it; lib/scenes.mjs
+    // marginScene), reduced to its rows and, for urgent lanes, the cue's true
+    // peak at the output; shared by margins, masking, worklevel and townband.
+    const laneMemo = new Map();
+    const marginLane = (bedName, lane) => {
+        const key = `margin:${bedName}:${lane}`;
+        if (!laneMemo.has(key)) {
+            laneMemo.set(key, renderOnce(key, sceneSpec(key)).then(r => ({
+                rows: marginRows(r, bedName), errors: r.errors,
+                urgentTp: URGENT_LANES.includes(lane) ? urgentTpRows(r, [lane])[0] : null,
+            })));
+        }
+        return laneMemo.get(key);
+    };
+    const marginBed = async (bedName, lanes = MARGIN_LANES) => {
+        const each = [];
+        for (const lane of lanes) each.push(await marginLane(bedName, lane));
+        return { rows: each.flatMap(x => x.rows), errors: each.flatMap(x => x.errors), urgentTp: each.map(x => x.urgentTp).filter(Boolean) };
+    };
     if (has('margins') || has('baseline')) {
         for (const bedName of Object.keys(MARGIN_BEDS)) {
             units.push({
                 name: `margins over ${bedName}`,
                 async run() {
-                    const r = await scene(`margin:${bedName}`);
-                    const rows = marginRows(r, bedName);
-                    const medians = {};
+                    const { rows, errors } = await marginBed(bedName);
                     for (const lane of MARGIN_LANES) {
                         const placements = rows.filter(x => x.lane === lane);
                         const j = judgeLane(lane, MARGIN_BEDS[bedName].bed, placements, { probeBed: bedName });
-                        medians[lane] = j.margin;
                         summary[`margin:${bedName}:${lane}`] = { margin: j.margin };
                         if (!has('margins')) continue;
                         const win = `${j.window.min != null ? `≥ ${signed(j.window.min, 0)}` : ''}${j.window.min != null && j.window.max != null ? ', ' : ''}${j.window.max != null ? `≤ ${signed(j.window.max, 0)}` : ''}`;
@@ -316,7 +353,7 @@ function virtualUnits(render, browser, baseUrl) {
                         }).filter(Boolean);
                         info('margins', `${bedName}: the cue-stem-over-bed-stems margin for every lane (judged for Minor outcomes only): ${MARGIN_LANES.map(l => `${l} ${signed(stemMedian(l))}`).join(', ')}; verdicts it would flip: ${flips.join('; ') || 'none'}`);
                     }
-                    if (r.errors.length) info('margins', `${bedName}: page errors: ${r.errors.slice(0, 3).join(' | ')}`);
+                    if (errors.length) info('margins', `${bedName}: page errors: ${errors.slice(0, 3).join(' | ')}`);
                 },
             });
         }
@@ -408,15 +445,9 @@ function virtualUnits(render, browser, baseUrl) {
     }
     units.push(...wave2Units(render, browser, baseUrl, scene));
     units.push(...wave3Units(render, browser, baseUrl));
-    // Uncached renders (the 72-cell map and one-off scenes): each is reduced
-    // to numbers inside its unit, so its PCM never outlives it.
-    const renderOnce = async (key, spec) => {
-        const r = await renderVirtual(browser, baseUrl, { ...spec, name: key, noWorklets: NO_WORKLETS }, { seed: SEED });
-        keep(key, r);
-        return r;
-    };
-    units.push(...wave4Units(render, renderOnce, scene));
-    units.push(...wave5Units(render, renderOnce, scene));
+    units.push(...wave4Units(render, renderOnce, scene, marginBed));
+    units.push(...wave5Units(render, renderOnce, scene, marginBed));
+    units.push(...wave6Units(render, renderOnce, scene, marginBed));
     return units;
 }
 
@@ -535,29 +566,6 @@ function wave2Units(render, browser, baseUrl, scene) {
                 verdict('noise', lanes > 0 && conflicts.length === 0, `${lanes} pool lanes, ${pairs} concurrent pairs on one buffer across ${Object.keys(renders).filter(k => renders[k].meta.starts).length} scenes; ${conflicts.length} read within ${NOISE_LIMITS.laneSepSec} s${conflicts.length ? `: ${conflicts.slice(0, 3).join('; ')}` : ''}; want 0 (and ≥ 1 lane read)`);
                 const pool = wave2.noiseBank?.byClient?.noise;
                 verdict('noise', Number.isFinite(pool) && pool <= MEMORY_BUDGET.noise, `noise pool resident ${Number.isFinite(pool) ? `${fmt(pool / 1048576, 2)} MiB` : 'unreported'}; want ≤ ${fmt(MEMORY_BUDGET.noise / 1048576, 1)} MiB`);
-            },
-        });
-    }
-    if (has('sequencer')) {
-        units.push({
-            name: 'sequencer equivalence (every piece vs Wave 1)',
-            async run() {
-                if (UPDATE && (args['ref-rev'] || !fs.existsSync(SEQUENCER_FILE))) await renderSequencerReference(browser, String(args['ref-rev'] || SEQUENCER_REFERENCE_REV));
-                if (!fs.existsSync(SEQUENCER_FILE)) { verdict('sequencer', false, `no ${path.relative(process.cwd(), SEQUENCER_FILE)}; run --only sequencer --update`); return; }
-                const ref = JSON.parse(fs.readFileSync(SEQUENCER_FILE, 'utf8'));
-                // Levels drift against the current baseline (scenes.json);
-                // with --update the new numbers are written and reported.
-                const base = fs.existsSync(BASELINE_FILE) ? JSON.parse(fs.readFileSync(BASELINE_FILE, 'utf8')).summary || {} : {};
-                for (const p of await loadPieces()) {
-                    const want = ref.pieces[p.key];
-                    if (!want) { verdict('sequencer', false, `${p.key}: no Wave-1 reference`); continue; }
-                    const cur = sequencerRow(await render(`sequencer:${p.key}`, p.spec), p);
-                    summary[`sequencer:${p.key}`] = { lufsI: cur.lufsI };
-                    const baselineLufs = UPDATE ? cur.lufsI : base[`sequencer:${p.key}`]?.lufsI ?? null;
-                    const j = judgeSequencer(want, cur, { baselineLufs });
-                    const mm = j.onsets.firstMismatch;
-                    verdict('sequencer', j.pass, `${p.key} (pinned by ${cur.pinned ?? '—'}): ${j.onsets.curCount} onsets vs ${j.onsets.refCount} in the Wave-1 reference, max Δ ${fmt(j.onsets.maxDeltaMs, 3)} ms${mm ? `, first mismatch #${mm.index} (${mm.ref ?? '—'} vs ${mm.cur ?? '—'} s)` : ''}; LUFS-I ${fmt(cur.lufsI, 2)} vs baseline ${UPDATE ? `${fmt(base[`sequencer:${p.key}`]?.lufsI, 2)} (rewritten)` : fmt(baselineLufs, 2)} (${signed(j.lufsDelta, 2)} LU; Wave 1 read ${fmt(want.lufsI, 2)}); want identical onsets and level within ±0.5 LU of the current baseline${baselineLufs == null ? ' (no baseline row: run --only sequencer --update)' : ''}${cur.errors.length ? `; page errors: ${cur.errors.slice(0, 2).join(' | ')}` : ''}`);
-                }
             },
         });
     }
@@ -703,7 +711,7 @@ function wave3Units(render, browser, baseUrl) {
             name: 'heldnote absent (music, Town band, signals only)',
             async run() {
                 const open = r => r.meta.warmup + HELD_OPEN_SEC;
-                const music = await render('held:music', heldNoteScene({ working: 4, music: { piece: 'hearthfire', level: 0.6 }, answerAt: null, seconds: 50 }));
+                const music = await render('held:music', heldNoteScene({ working: 4, music: true, answerAt: null, seconds: 50 }));
                 const m = heldWhileMusic(music, open(music));
                 verdict('heldnote', m != null && m.seconds > 0 && m.stMaxOut <= HELD_NOTE.absentMaxLufs, `Village under music: held stem ST max ${lufs(m?.stMaxOut)} LUFS at the output over ${m?.seconds ?? 0} s of music after the wait opened; want music playing and ≤ ${HELD_NOTE.absentMaxLufs}`);
                 for (const [key, spec, label] of [['held:bgm', heldNoteScene({ working: 4, mode: 'bgm', answerAt: null, seconds: 40 }), 'Town band'], ['held:signals', heldNoteScene({ working: 4, signals: true, answerAt: null, seconds: 40 }), 'signals only (blurred)']]) {
@@ -799,7 +807,7 @@ function wave3Units(render, browser, baseUrl) {
 const wave4 = { cells: [], A: null };
 const cellLabel = c => `${c.phase} ${c.weather} ${c.load === 'resting' ? 'resting' : c.load.slice(1)}`;
 
-function wave4Units(render, renderOnce, scene) {
+function wave4Units(render, renderOnce, scene, marginBed) {
     const units = [];
     const anchorA = async () => (wave4.A ??= sceneMetrics(await scene('anchor')).lufsI);
     if (has('worldmap')) {
@@ -924,7 +932,7 @@ function wave4Units(render, renderOnce, scene) {
                     const concurrent = row.at != null ? concurrentOverBedLu(r, row.at) : null;
                     outcome('masking', j.outcome, `must-never 8: ${row.lane} ${onset != null ? `${fmt(row.at - onset, 2)} s into a full thunder roll` : '(no thunder before it)'}: ${signed(row.margin)} LU over the 3 s before (${fmt(j.band, 0)} bands ≥ +6 dB, GR ${fmt(j.gr)} dB); cue stem ${signed(concurrent)} LU over the world stem while both sound; want ≥ +${j.window.min}${j.failures.length ? ` — ${j.failures.map(f => f.what).join(', ')}` : ''}`, Math.max(0, ...j.failures.map(f => f.gatedFrom)));
                 }
-                const rain = marginRows(await render('margin:rain', sceneSpec('margin:rain')), 'rain');
+                const { rows: rain } = await marginBed('rain', URGENT_LANES);
                 for (const lane of URGENT_LANES) {
                     const j = judgeLane(lane, 'weather', rain.filter(x => x.lane === lane), { probeBed: 'rain' });
                     outcome('masking', j.outcome, `must-never 8: ${lane} over rain: median ${signed(j.margin)} LU (${j.n} placements, GR ${fmt(j.gr)} dB); want ≥ +${j.window.min}${j.failures.length ? ` — ${j.failures.map(f => f.what).join(', ')}` : ''}`, Math.max(0, ...j.failures.map(f => f.gatedFrom)));
@@ -1008,7 +1016,7 @@ function workshopsPresent(check, r, label) {
     return false;
 }
 
-function wave5Units(render, renderOnce, scene) {
+function wave5Units(render, renderOnce, scene, marginBed) {
     const units = [];
     const L = WORK_LIMITS;
     const reference = () => render('workRef:day', workshopScene('reference'));
@@ -1084,8 +1092,8 @@ function wave5Units(render, renderOnce, scene) {
         units.push({
             name: 'worklevel (5.3: reference scenes by day, ctx vs env)',
             async run() {
-                const urgent = urgentTpRows(await scene('margin:village'), URGENT_LANES);
-                info('worklevel', `urgent-cue true peaks at the output (margin:village placements, Wave-3 voices at their in-context trims): ${urgent.map(u => `${u.lane} ${fmt(u.tpDbtp)} dBTP (n ${u.n})`).join(', ')}`);
+                const urgent = (await marginBed('village', URGENT_LANES)).urgentTp;
+                info('worklevel', `urgent-cue true peaks at the output (the margins' Village placements, each lane on its own render; Wave-3 voices at their in-context trims): ${urgent.map(u => `${u.lane} ${fmt(u.tpDbtp)} dBTP (n ${u.n})`).join(', ')}`);
                 for (const pattern of Object.keys(WORK_PATTERNS)) {
                     const ctx = pattern === 'reference' ? await reference() : await renderOnce(`workOther:day`, workshopScene(pattern));
                     if (!workshopsPresent('worklevel', ctx, `${pattern} day`)) continue;
@@ -1164,17 +1172,24 @@ function wave5Units(render, renderOnce, scene) {
                 const [v, vt] = await pair('village');
                 if (!workshopsPresent('quietmix', v, 'village blur')) return;
                 const musicPlays = levelDiffCurve(vt.stems.music, vt.stems.music, vt.sr).filter(([t]) => t > at(vt, blurAt) && t < at(vt, focusAt)).length;
-                const accIn = accentGainOffsetDb(v, { from: at(v, blurAt) + 1, to: at(v, focusAt) });
-                const accOut = accentGainOffsetDb(v, { from: v.meta.warmup, to: at(v, blurAt) });
-                const acc = { n: accIn.n, medianDb: offsetStepDb(accIn, accOut) };
+                const end = v.meta.warmup + v.meta.seconds;
+                const accIn = accentGainOffsetDb(v, [{ from: at(v, blurAt) + 1, to: at(v, focusAt) }]);
+                // The unblurred reference: before the blur and from 1 s after focus.
+                const accOut = accentGainOffsetDb(v, [{ from: v.meta.warmup, to: at(v, blurAt) }, { from: at(v, focusAt) + 1, to: end }]);
+                const acc = { n: accIn.n, medianDb: accOut.n >= L.quietRefAccentsMin ? offsetStepDb(accIn, accOut) : null };
                 const ghosts = ghostsIn(v, at(v, blurAt) + 0.5, at(v, focusAt));
                 const ghostsTwin = ghostsIn(vt, at(vt, blurAt) + 0.5, at(vt, focusAt));
                 const village = judgeQuietMix({
                     world: { ...rowOf(v, vt, 'world'), want: L.quietWorldDb },
-                    music: { ...rowOf(v, vt, 'music'), want: -Infinity },
+                    // Wave 6 (D1, D3): the quiet mix releases the Village's
+                    // tune; the occasion clock, not the focus, starts the next.
+                    music: { ...rowOf(v, vt, 'music'), want: -Infinity, restore: false },
                     'work accents': { levelDb: acc.medianDb, restoreLagSec: null, restore: false, want: L.quietWorldDb },
                 });
-                for (const x of village.rows) verdict('quietmix', x.pass, `Village blur ${blurAt}–${focusAt} s, ${x.name}: ${signed(x.levelDb)} dB ${x.restore === false ? `(work-stem peak over published gain, ${acc.n} blurred accents vs ${accOut.n} before the blur)` : `vs the twin that never blurred, back within ${L.quietTolDb} dB ${fmt(x.restoreLagSec, 2)} s after focus`}; want ${x.want === -Infinity ? `≤ ${L.musicOffDb} dB (music 0)` : `${signed(x.want)} ± ${L.quietTolDb} dB`}${x.restore === false ? '' : `, restored ≤ ${L.restoreSec} s`}${x.name === 'music' && !musicPlays ? ' (the twin played no music in the window)' : ''}`);
+                const how = x => (x.name === 'music' ? 'vs the twin that never blurred (released at the blur, not resumed at focus: D1)'
+                    : x.restore === false ? `(work-stem peak over published gain, ${acc.n} blurred accents vs ${accOut.n} unblurred before the blur and after focus, want ≥ ${L.quietRefAccentsMin})`
+                        : `vs the twin that never blurred, back within ${L.quietTolDb} dB ${fmt(x.restoreLagSec, 2)} s after focus`);
+                for (const x of village.rows) verdict('quietmix', x.pass, `Village blur ${blurAt}–${focusAt} s, ${x.name}: ${signed(x.levelDb)} dB ${how(x)}; want ${x.want === -Infinity ? `≤ ${L.musicOffDb} dB (music 0)` : `${signed(x.want)} ± ${L.quietTolDb} dB`}${x.restore === false ? '' : `, restored ≤ ${L.restoreSec} s`}${x.name === 'music' && !musicPlays ? ' (the twin played no music in the window)' : ''}`);
                 verdict('quietmix', ghosts === 0 && ghostsTwin > 0, `Village blur: ghost strikes ${ghosts} (twin ${ghostsTwin} in the same window); want 0 while blurred (accents only); ${stateLine(v)}`);
                 const [h, ht] = await pair('held');
                 const held = judgeQuietMix({ 'held note': { ...rowOf(h, ht, 'signalBed'), want: 0, tolDb: L.heldTolDb, restore: false } });
@@ -1246,6 +1261,511 @@ function wave5Units(render, renderOnce, scene) {
     return units;
 }
 
+// ------------------------------------------------------------ Wave 6 units ----
+// The music. The stem matrix (every piece × day/night × Isle/Chip, one
+// full-band render each, every seat on its own stem) feeds musicstems (6.2),
+// isleband (6.1) and nightmusic (6.3); each render is reduced to numbers in
+// its unit. The score (6.5) and the occasion clock's day (6.6) also run the
+// shipped Sequencer and OccasionClock headless (lib/music-sim.mjs).
+// The headless score run (6.5): the whole seeded working day compiles in
+// well under a second, so the 8 hours always run.
+const SCORE_HOURS = 8;
+const re = (v, lead) => (Number.isFinite(v) && Number.isFinite(lead) ? v - lead : (v === -Infinity ? -Infinity : null));
+const lu = v => (v === -Infinity ? '−∞' : signed(v));
+const MUSIC_MARGIN = { bedWindowSec: AUDIBILITY_WINDOWS.bedWindowSec, cueWindowSec: 2.5, silenceFloorLufs: -80 };
+const ROUTINE_KINDS = new Set(['arrival', 'departure', 'recovered', 'recovery', 'council', 'turnDone']);
+const hzToMidi = hz => Math.round(69 + 12 * Math.log2(hz / 440));
+const midiName = m => (Number.isFinite(m) ? `${['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'][((m % 12) + 12) % 12]}${Math.floor(m / 12) - 1}` : '—');
+
+// One 16-bar rendition of a piece: pickup + min(16, its bars) bars + 1.5 s.
+function stemSeconds(piece) {
+    const bpb = piece.beatsPerBar || 4;
+    const beat = 60 / piece.bpm;
+    const pickup = (piece.pickup || []).reduce((s, [, b]) => s + b, 0);
+    return Math.ceil(0.6 + (pickup + Math.min(16, piece.chords.length) * bpb) * beat + 1.5);
+}
+
+// A stem-matrix render → numbers: per-seat LUFS-I, the bands (each the
+// admitted seats of Voicings at the arrangement the band actually played),
+// the Isle/Chip arm, nodes per note, the stop lint, the lead's range and
+// the melody–bass parallels.
+function stemRow(r, { piece, phase, voice }) {
+    const marks = r.meta.music?.marks || [];
+    const first = marks.find(m => m.kind === 'loop' && m.piece === piece);
+    const barSec = first?.barSec ?? null;
+    const from = first?.t ?? r.meta.warmup;
+    const to = Math.min(r.meta.warmup + r.meta.seconds, barSec ? from + 16 * barSec : Infinity);
+    const win = { from, to };
+    const pairs = seatPairs(r, win);
+    const seats = seatLufs(pairs, r.sr);
+    const arr = first?.arrangement ?? {};
+    const admitted = [0, 1, 2, 3].map(band => voicingFor({ voice, mode: 'townBand', keyframe: arr.keyframe, weather: arr.weather, season: arr.season, band }).admitted.filter(s => pairs[s]));
+    const bands = bandRows(r, pairs, admitted, win);
+    const notes = noteRows(r, win);
+    const lead = seatLine(notes, 'lead');
+    const voicesPlayed = [...new Set(marks.filter(m => m.kind === 'loop' || m.kind === 'chunk').map(m => m.voice))];
+    return {
+        piece, phase, voice, keyframe: arr.keyframe ?? null, voicesPlayed, window: win, found: Boolean(first),
+        presence: Object.fromEntries(Object.entries(pairs).map(([seat, p]) => [seat, bandLevelDb(p, r.sr, 2000, 5000)])),
+        seats, admitted, bands, steps: [1, 2, 3].map(k => bandStep(bands[k - 1], bands[k])),
+        arm: armRow(r, win),
+        nodes: nodesPerNoteRow(r), stops: stopLevels(r, { maxDb: MUSIC_LIMITS.stopMaxDb }),
+        lead: range(lead), parallels: parallelPerfects(lead, seatLine(notes, 'bass')),
+        bank: r.meta.diagnostics?.bank ?? null, errors: r.errors,
+    };
+}
+
+// The Village's working day for the occasion clock (09:00–18:00, minutes
+// of the day): busy most of it, a light hour, rain, a resting spell, a wait
+// that passes 6 min, urgent cues.
+const DAY_PLAN = Object.freeze([
+    { from: 540, to: 630, working: 6 },
+    { from: 630, to: 690, working: 2 },
+    { from: 690, to: 780, working: 7 },
+    { from: 780, to: 820, working: 6, raining: true },
+    { from: 820, to: 870, working: 5 },
+    { from: 870, to: 910, working: 0, resting: true },
+    { from: 910, to: 960, working: 6, waitFrom: 920, waitTo: 940 },
+    { from: 960, to: 1080, working: 8 },
+]);
+const DAY_URGENT = Object.freeze([600, 725, 1000, 1050]);
+function dayPlanAt(minute) {
+    const seg = DAY_PLAN.find(s => minute >= s.from && minute < s.to) || DAY_PLAN[DAY_PLAN.length - 1];
+    const waitMs = seg.waitFrom != null && minute >= seg.waitFrom && minute < seg.waitTo ? (minute - seg.waitFrom) * 60e3 : 0;
+    return { working: seg.working, raining: Boolean(seg.raining), resting: Boolean(seg.resting), oldestWaitMs: waitMs, urgent: DAY_URGENT.some(u => minute >= u && minute < u + 1 / 60) };
+}
+function phaseAt(minute) {
+    const s = createAtmosphereSnapshot({ now: new Date(2026, 6, 15, 12, 0, 0), hourOverride: minute / 60, weatherOverride: { type: 'clear' } });
+    return { phase: s.phase, progress: s.phaseProgress ?? 0 };
+}
+// The day's hard-zero windows in sim seconds (S7).
+function dayZeroWindows(fromMinute) {
+    const sec = m => (m - fromMinute) * 60;
+    const rows = [];
+    for (const s of DAY_PLAN) {
+        if (s.raining) rows.push({ from: sec(s.from), to: sec(s.to), why: 'rain' });
+        if (s.resting) rows.push({ from: sec(s.from), to: sec(s.to), why: 'resting' });
+        if (s.waitFrom != null) rows.push({ from: sec(s.waitFrom + 6), to: sec(s.waitTo), why: 'wait ≥ 6 min' });
+    }
+    for (const u of DAY_URGENT) rows.push({ from: sec(u), to: sec(u) + 5, why: 'urgent + 5 s' });
+    return rows;
+}
+
+let daySimPromise = null;
+function daySim() {
+    daySimPromise ||= Promise.resolve().then(() => {
+        const ledger = { firstOccasion: true, welcomeDay: VIRTUAL_DAY, islandDay: VIRTUAL_DAY, occasions: [] };
+        const t0 = Date.now();
+        const sim = villageDay({ seed: SEED, plan: dayPlanAt, phaseAt, ledger });
+        return { ...sim, wallSec: (Date.now() - t0) / 1000 };
+    });
+    return daySimPromise;
+}
+
+// Heard spans: a visit from its first note to its end plus the ring-out in
+// the air (OccasionClock's own measure of duty).
+const heardVisits = (visits, ring = OCC_RING_OUT_SEC) => visits.map(v => ({ ...v, to: v.to + ring }));
+
+function wave6Units(render, renderOnce, scene, marginBed) {
+    const units = [];
+    const L = MUSIC_LIMITS;
+    const stemChecks = ['musicstems', 'isleband', 'nightmusic', 'score'];
+    if (stemChecks.some(has)) {
+        for (const piece of PIECES) {
+            units.push({
+                name: `musicstems (6.1–6.3, 6.5: ${piece.name}, day and night, Isle and Chip)`,
+                async run() {
+                    const rows = {};
+                    for (const phase of ['day', 'night']) {
+                        for (const voice of ['isle', 'chip']) {
+                            const r = await renderOnce(`music:stems:${piece.name}:${phase}:${voice}`, musicStemScene({ piece: piece.name, seconds: stemSeconds(piece), phase, voice }));
+                            rows[`${phase}:${voice}`] = stemRow(r, { piece: piece.name, phase, voice });
+                        }
+                    }
+                    for (const row of Object.values(rows)) {
+                        const tag = `${piece.name} ${row.phase} ${row.voice} (${row.keyframe ?? '—'})`;
+                        if (!row.found) { verdict('musicstems', false, `${tag}: no loop of the pinned piece in the render (errors: ${row.errors.slice(0, 2).join(' | ') || 'none'})`); continue; }
+                        const lead = row.seats.lead;
+                        const reLead = Object.entries(row.seats).filter(([s]) => s !== 'lead').map(([s, v]) => `${s} ${lu(re(v, lead))}`).join(', ');
+                        // Gated on the combinations the Town band plays (PLAYLISTS:
+                        // day pieces by day, night pieces at night); a piece in the
+                        // other phase's voicing prints as INFO.
+                        const played = PLAYLISTS[row.phase]?.includes(piece.name);
+                        const judge = (check, pass, detail) => (played ? verdict(check, pass, detail) : info(check, `(not played at ${row.phase}) ${pass ? 'would pass' : 'would fail'}: ${detail}`));
+                        if (has('musicstems')) {
+                            info('musicstems', `${tag}: per-seat LU re lead (lead ${fmt(lead)} LUFS-I): ${reLead}; admitted by band ${row.admitted.map(a => a.join('+')).join(' / ')}; voice played ${row.voicesPlayed.join('/') || '—'}`);
+                            const b = judgeStemBalance(row.seats, row.admitted[3]);
+                            judge('musicstems', b.pass && row.voicesPlayed.length === 1 && row.voicesPlayed[0] === row.voice, `${tag}: MUSL-2 stems re lead ${b.rows.map(x => `${x.seat} ${lu(x.reLead)}${x.window ? ` [${signed(x.window[0], 1)} ± ${x.window[1]}]` : ''}${x.pass ? '' : ' ✗'}`).join(', ')}; want every admitted seat in its window, ≥ ${L.floorLu} LU and under the lead`);
+                            const steps = row.steps.map((s, i) => `${i}→${i + 1} onsets ${signed(100 * s.rise, 0)} % / octave max ${lu(s.maxOctaveDb)} dB${s.pass ? '' : ' ✗'}`);
+                            judge('musicstems', row.steps.every(s => s.pass), `${tag}: MUSL-3 bands (${row.bands.map(x => x.onsets).join('/')} onsets) ${steps.join('; ')}; want ≥ +${100 * L.bandOnsetRise} % onsets or ≥ ${L.bandOctaveDb} dB in some octave band at every step`);
+                        }
+                        if (has('isleband')) {
+                            const n = row.nodes;
+                            verdict('isleband', n.notes > 0 && n.over === 0, `${tag}: nodes per note max ${n.max} over ${n.notes} notes (${Object.entries(n.byInstrument).map(([k, v]) => `${k} ${v}`).join(', ')}; each player's first note, which builds it, not judged: ${n.firsts}); want ≤ ${L.nodesPerNote}`);
+                        }
+                        if (has('nightmusic') && row.phase === 'night') {
+                            judge('nightmusic', row.lead.high != null && row.lead.high <= L.nightLeadMaxMidi, `${tag}: the night lead sounds ${midiName(row.lead.low)}–${midiName(row.lead.high)}; want ≤ A5`);
+                            verdict('nightmusic', row.stops.voices > 0 && row.stops.over === 0, `${tag}: ${row.stops.voices} stopped voices, the loudest at its stop ${fmt(row.stops.worstDb)} dB re its peak (${row.stops.over} above ${L.stopMaxDb} dB); want none above`);
+                        }
+                        if (has('score')) {
+                            verdict('score', row.parallels.length === 0, `${tag}: melody–bass parallel fifths/octaves ${row.parallels.length}${row.parallels.length ? ` (${row.parallels.slice(0, 3).map(p => `${p.interval} at ${fmt(p.at, 2)} s`).join(', ')})` : ''}; want 0 (MUS-18)`);
+                        }
+                    }
+                    if (has('isleband')) {
+                        for (const phase of ['day', 'night']) {
+                            const isle = rows[`${phase}:isle`].arm;
+                            const chip = rows[`${phase}:chip`].arm;
+                            const j = judgeIsleArm(isle);
+                            verdict('isleband', j.pass, `${piece.name} ${phase}, level-matched A/B of the same notes (music + its air${isle.air ? '' : ' — no air tap'}; dry S/M ${fmt(isle.dry.sideMidDb)} dB): Isle laptop loss ${fmt(isle.laptopLossLu)} LU, S/M ${fmt(isle.sideMidDb)} dB, mono fold ${fmt(isle.monoLossLu)} LU, 2–5 kHz ${fmt(isle.presenceDb)} dB — Chip ${fmt(chip.laptopLossLu)} LU, ${fmt(chip.sideMidDb)} dB, ${fmt(chip.monoLossLu)} LU, ${fmt(chip.presenceDb)} dB; want Isle laptop ≤ ${L.laptopLossMaxLu} LU, S/M ${L.sideMidDb[0]}…${L.sideMidDb[1]} dB, mono ≤ ${L.monoLossMaxLu} LU${j.failures.length ? ` — ${j.failures.join(', ')}` : ''}`);
+                        }
+                        const nd = nightDarker(rows['day:isle'].arm.presenceDb, rows['night:isle'].arm.presenceDb);
+                        const ndChip = nightDarker(rows['day:chip'].arm.presenceDb, rows['night:chip'].arm.presenceDb);
+                        const per = k => Object.entries(rows[k].presence).map(([seat, v]) => `${seat} ${fmt(v)}`).join(', ');
+                        info('isleband', `${piece.name}: 2–5 kHz band level per seat (dB, output-referred), Isle day ${per('day:isle')}; night ${per('night:isle')}; air-wet share in the arm: day ${fmt(rows['day:isle'].arm.presenceDb - rows['day:isle'].arm.dry.presenceDb)} dB, night ${fmt(rows['night:isle'].arm.presenceDb - rows['night:isle'].arm.dry.presenceDb)} dB (arm − dry)`);
+                        verdict('isleband', nd.pass, `${piece.name}: Isle 2–5 kHz share night ${fmt(rows['night:isle'].arm.presenceDb)} vs day ${fmt(rows['day:isle'].arm.presenceDb)} dB (${fmt(nd.under)} dB under); want ≥ ${L.nightPresenceUnderDayDb} dB under (Chip: ${fmt(ndChip.under)} dB)`);
+                    }
+                    if (has('nightmusic')) {
+                        info('nightmusic', `${piece.name}: night 2–5 kHz share Isle ${fmt(rows['night:isle'].arm.presenceDb)} dB vs Chip ${fmt(rows['night:chip'].arm.presenceDb)} dB (Chip restored ≈ the shipped night band's timbres): ${fmt(rows['night:chip'].arm.presenceDb - rows['night:isle'].arm.presenceDb)} dB under (6.3 asks ≈ 6)`);
+                    }
+                    const bank = rows['day:isle'].bank?.byClient?.music ?? null;
+                    if (has('isleband') && bank) wave6.musicBank.push(bank);
+                },
+            });
+        }
+    }
+    if (has('isleband')) {
+        units.push({
+            name: 'isleband (6.1: the music bakes within S8)',
+            async run() {
+                const r = await scene('townBand');
+                const stats = r.meta.diagnostics?.bank;
+                const music = stats?.byClient?.music ?? null;
+                const bytes = typeof music === 'number' ? music : (music?.bytes ?? music?.resident ?? null);
+                verdict('isleband', stats != null && Number.isFinite(bytes) && bytes <= MEMORY_BUDGET.music, `Town band busy: the music client resident ${fmt(bytes / 1048576, 2)} MiB of ${fmt(MEMORY_BUDGET.music / 1048576, 1)} MiB ; bank total ${fmt((stats?.residentBytes ?? NaN) / 1048576, 2)} MiB; slices judged in \`bank\``);
+            },
+        });
+    }
+    if (has('nightmusic')) {
+        units.push({
+            name: 'nightmusic (6.3: the night occasion over its bed)',
+            async run() {
+                const r = await scene('nightProgram');
+                const vis = visitRows(r.meta.music?.marks || [], r.meta.warmup + r.meta.seconds, 'village');
+                const occ = vis.visits.find(v => v.what === 'occasion');
+                verdict('nightmusic', occ != null, `night 22:30, a settled profile: the Village started ${vis.visits.map(v => `${v.what} ${v.name} (${v.reason}) at ${fmt(v.from, 1)} s`).join(', ') || 'nothing'}; want the night occasion`);
+                if (!occ) return;
+                const over = musicOverBed(r, occ);
+                const t = LOUDNESS_TARGETS.villageMusic;
+                verdict('nightmusic', over.stMaxOverBed != null && over.stMaxOverBed <= t.stMaxOverBed, `night occasion ${occ.name}: music ST max ${fmt(over.musicStMax)} vs the bed (world + work) ${fmt(over.bedLufs)} LUFS over the occasion: ${signed(over.stMaxOverBed)} LU; want ≤ bed + ${t.stMaxOverBed} LU`);
+                const lead = range(seatLine(noteRows(r, { from: occ.from, to: occ.to }), 'lead'));
+                verdict('nightmusic', lead.high != null && lead.high <= L.nightLeadMaxMidi, `night occasion lead ${midiName(lead.low)}–${midiName(lead.high)}; want ≤ A5`);
+                const stops = stopLevels(r, { maxDb: L.stopMaxDb });
+                verdict('nightmusic', stops.over === 0, `night occasion: ${stops.voices} stopped voices, the loudest at its stop ${fmt(stops.worstDb)} dB re its peak; want none above ${L.stopMaxDb} dB`);
+            },
+        });
+    }
+    if (has('score')) {
+        units.push({
+            name: 'score (6.5: routine cues over the band, Town band and Village)',
+            async run() {
+                for (const name of ['townBand', 'villageBusy']) {
+                    const r = await scene(name);
+                    const frames = r.meta.music?.frames || [];
+                    const chords = frames.flatMap(f => f.chords.map(c => ({ t: c.time, root: c.rootPc, pcs: c.pcs }))).sort((a, b) => a.t - b.t);
+                    const playing = t => frames.some(f => t >= (f.chords[0]?.time ?? Infinity) && t < f.until);
+                    const cues = r.meta.scheduled.filter(s => !s.silent && ROUTINE_KINDS.has(s.kind)).flatMap(s => s.notes.map((t, i) => ({ t, midi: Number.isFinite(s.hz[i]) ? hzToMidi(s.hz[i]) : null, kind: s.kind }))).filter(c => c.midi != null && playing(c.t));
+                    const j = cueClash(cues, chords);
+                    verdict('score', j.checked > 0 && j.clashes === 0, `${name}: routine-cue notes over the sounding chord (MusicClock frames): ${j.clashes} clashes of ${j.checked} (${fmt(j.pct)} %); want 0 %`);
+                }
+            },
+        });
+        units.push({
+            name: `score (6.5: ${SCORE_HOURS}-hour seeded Town band, headless)`,
+            async run() {
+                const t0 = Date.now();
+                const sim = townBandHours({ hours: SCORE_HOURS, seed: SEED });
+                const own = sim.marks.filter(m => m.kind === 'rendition' && m.what !== 'fragment');
+                const ownGap = identicalRenditionGap(own.map(m => ({ piece: m.piece, t: m.t, key: m.key })));
+                const notes = noteRows(sim.marks).filter(n => n.seat !== 'percussion');
+                const beatSec = Object.fromEntries(sim.marks.filter(m => m.kind === 'loop').map(m => [m.piece, m.beatSec]));
+                const derived = identicalRenditionGap(renditions(notes, { beatSec }));
+                const pass = own.length > 0 && ownGap.minGapSec >= L.renditionGapSec && derived.minGapSec >= L.renditionGapSec;
+                verdict('score', pass, `${SCORE_HOURS} h of the Town band (seed ${SEED}, ${fmt((Date.now() - t0) / 1000, 1)} s): ${own.length} 16-bar renditions; nearest identical pair ${fmt(ownGap.minGapSec / 60, 1)} min by the sequencer's keys, ${fmt(derived.minGapSec / 60, 1)} min by the analyzer's (notes on the sixteenth grid; ${derived.pairs.length} identical pairs in all); want ≥ 60 min`);
+                const loops = loopsPerPieceHour(own.map(m => ({ piece: m.piece, t: m.t, key: m.key })));
+                const vis = visitRows(sim.marks, sim.seconds);
+                const returns = earlyReturns(vis.pieces, { setSize: PLAYLISTS.day.length });
+                verdict('townband', loops.pass && returns.pass, `${SCORE_HOURS} h headless: loops (identical renditions) per piece per hour worst ${loops.worst.loops} (${loops.worst.piece ?? '—'}); early returns ${returns.returns.length} (nearest ${fmt(returns.minGapSec / 60, 1)} min); want ≤ ${L.loopsPerPieceHour} and none < ${returns.minSec / 60} min`);
+                const hour = notes.filter(n => n.t < 3600);
+                const on = coveredSpans(vis.visits, 0, 3600);
+                const tonal = tonalReheard(hour, on);
+                const phrase = phraseReheard(hour, on);
+                info('score', `Town band hour 1 (headless, from notes): tonal re-heard ${fmt(tonal.pct)} % of ${tonal.windows} windows, phrase ${fmt(phrase.pct)} % of ${phrase.grams} grams; motif statements ${motifStatements(hour).count} in the hour (Willowbrook's own opening included)`);
+            },
+        });
+        units.push({
+            name: 'score (6.5: the Village day — re-hearing over music-on windows, motif per hour)',
+            async run() {
+                const sim = await daySim();
+                const vis = visitRows(sim.marks, sim.seconds, 'village');
+                const notes = noteRows(sim.marks).filter(n => n.seat !== 'percussion');
+                const on = heardVisits(vis.visits);
+                const rows = [];
+                for (let h = 0; h * 3600 < sim.seconds; h++) {
+                    const a = h * 3600;
+                    const b = Math.min(sim.seconds, a + 3600);
+                    const hn = notes.filter(n => n.t >= a && n.t < b).map(n => ({ ...n, t: n.t - a }));
+                    const ho = coveredSpans(on, a, b).map(w => ({ from: w.from - a, to: w.to - a }));
+                    rows.push({ h, tonal: tonalReheard(hn, ho), phrase: phraseReheard(hn, ho) });
+                }
+                const worst = Math.max(...rows.map(x => Math.max(x.tonal.pct, x.phrase.pct)));
+                verdict('score', rows.length > 0 && worst <= L.reheardMaxPct, `Village 09:00–18:00 (seed ${SEED}), re-heard over music-on windows per hour — tonal ${rows.map(x => fmt(x.tonal.pct, 0)).join('/')} %, phrase ${rows.map(x => fmt(x.phrase.pct, 0)).join('/')} %; want ≤ ${L.reheardMaxPct} % in every hour`);
+                const motif = motifStatements(notes);
+                // The hour phrase (D7) is the motif's answer: one statement at
+                // each hour 07:00–20:00; the aurora quotes the call when a
+                // chronicle aurora fires (INFO: not modelled here).
+                const chimes = [];
+                for (let m = Math.ceil(sim.fromMinute / 60) * 60; (m - sim.fromMinute) * 60 < sim.seconds; m += 60) chimes.push((m - sim.fromMinute) * 60);
+                const per = perHourMax([...motif.at.map(x => x.t), ...chimes], 0, sim.seconds);
+                verdict('score', per.pass, `motif statements per hour (fragments and occasions ${motif.count} + hour phrases ${chimes.length}): ${per.perHour.join('/')}; want ≤ ${L.motifPerHour} (S7)`);
+            },
+        });
+    }
+    if (has('occasions')) {
+        units.push({
+            name: 'occasions (6.6: the seeded working day 09:00–18:00, headless)',
+            async run() {
+                const sim = await daySim();
+                const end = sim.seconds;
+                const vis = visitRows(sim.marks, end, 'village');
+                const heard = heardVisits(vis.visits);
+                const minuteOf = t => sim.fromMinute + t / 60;
+                // Duty per regime, over the regime's time outside the hard
+                // zeros, from fragments (occasions are their own budget).
+                const zeros = dayZeroWindows(sim.fromMinute);
+                const regimeTime = { busy: 0, light: 0 };
+                const regimeFrag = { busy: 0, light: 0 };
+                for (let t = 0; t < end; t += 10) {
+                    const p = dayPlanAt(minuteOf(t));
+                    if (zeros.some(z => t >= z.from && t < z.to) || p.working === 0) continue;
+                    const regime = dutyBandFor({ phase: phaseAt(minuteOf(t)).phase, working: p.working }).name;
+                    if (!(regime in regimeTime)) continue;
+                    regimeTime[regime] += 10;
+                    regimeFrag[regime] += coveredSec(heard.filter(v => v.what === 'fragment'), t, t + 10);
+                }
+                const busy = judgeDuty(regimeFrag.busy / regimeTime.busy, 'busy');
+                const light = judgeDuty(regimeFrag.light / regimeTime.light, 'light');
+                const dayFrags = FRAGMENTS.filter(f => !f.night);
+                const fragSec = dayFrags.reduce((s, f) => s + fragmentSeconds(f), 0) / Math.max(1, dayFrags.length) + OCC_RING_OUT_SEC;
+                const expect = regime => fragSec / (fragSec + (OCC_DUTY[regime].gapSec[0] + OCC_DUTY[regime].gapSec[1]) / 2);
+                verdict('occasions', busy.pass && light.pass, `D1 fragment duty (heard, incl. ${OCC_RING_OUT_SEC} s ring-out): busy ${pct(busy.share)} of ${fmt(regimeTime.busy / 60, 0)} min (want ${pct(D1_DUTY.busy[0])}–${pct(D1_DUTY.busy[1])}; the constants give ${pct(expect('busy'))}: ${fmt(fragSec, 1)} s fragments, ${OCC_DUTY.busy.gapSec.join('–')} s gaps), light ${pct(light.share)} of ${fmt(regimeTime.light / 60, 0)} min (want ≤ ${pct(D1_DUTY.light[1])}; constants ${pct(expect('light'))})`);
+                const occ = vis.visits.filter(v => v.what === 'occasion').map(v => `${v.name} ${fmtClock(minuteOf(v.from))}`);
+                info('occasions', `the day: ${vis.visits.length} starts (${vis.visits.filter(v => v.what === 'fragment').length} fragments; occasions ${occ.join(', ') || 'none'}); simulated in ${fmt(sim.wallSec, 1)} s`);
+                // S7 zeros: no start inside a zero; what played when one began
+                // ends within the director's tick (1 s) and fade (0.4 s).
+                const shrink = zeros.map(z => ({ ...z, from: z.from + 1.5 }));
+                const z = musicInWindows(vis.visits, shrink, vis.visits.map(v => v.from));
+                const starts = vis.visits.filter(v => zeros.some(w => v.from >= w.from && v.from < w.to));
+                verdict('occasions', z.overlapSec === 0 && starts.length === 0, `must-never 9 / S7 (headless day): music inside rain, resting, a wait ≥ 6 min or 5 s after an urgent cue ${fmt(z.overlapSec, 1)} s past the 1.5 s release; starts inside ${starts.length}${starts.length ? ` (${starts.slice(0, 3).map(v => `${v.name} at ${fmtClock(minuteOf(v.from))}`).join(', ')})` : ''} (${zeros.map(w => `${w.why} ${fmtClock(minuteOf(w.from))}`).join(', ')}); want 0 and 0`);
+                const noReason = vis.visits.filter(v => !v.reason);
+                verdict('occasions', vis.visits.length > 0 && noReason.length === 0, `every start carries a reason: ${vis.visits.length - noReason.length}/${vis.visits.length} (${[...new Set(vis.visits.map(v => v.reason))].join(', ')})`);
+                const hours = [];
+                for (let a = 0; a < end; a += 3600) hours.push(coveredSec(heard, a, Math.min(end, a + 3600)) / Math.min(3600, end - a));
+                verdict('occasions', Math.max(...hours) <= L.villageOnMax, `must-never 10 (Village): music on per working hour ${hours.map(x => pct(x)).join('/')} (occasions included); want ≤ ${pct(L.villageOnMax)}`);
+            },
+        });
+        for (const kind of Object.keys(VILLAGE_FIXTURES)) {
+            units.push({
+                name: `occasions (6.6: Village fixture ${kind})`,
+                async run() {
+                    const r = await renderOnce(`music:village:${kind}`, villageMusicScene(kind));
+                    judgeVillageFixture(kind, r);
+                },
+            });
+        }
+    }
+    if (has('townband')) {
+        units.push({
+            name: `townband (6.7: a ${TOWN_SESSION.seconds / 60}-min Town band session)`,
+            async run() {
+                const r = await renderOnce('music:town:session', townSessionScene());
+                const end = r.meta.warmup + r.meta.seconds;
+                const vis = visitRows(r.meta.music?.marks || [], end);
+                const from = r.meta.warmup;
+                const returns = earlyReturns(vis.pieces, { setSize: PLAYLISTS.day.length });
+                verdict('townband', vis.pieces.length > 0 && returns.pass, `must-never 10 (Town band): ${vis.pieces.length} visits (${vis.pieces.map(v => v.piece).join(', ')}); early returns ${returns.returns.length}${returns.returns.length ? ` (${returns.returns.map(x => `${x.piece} after ${fmt(x.gapSec / 60, 1)} min`).join(', ')})` : ''}, nearest ${fmt(returns.minGapSec / 60, 1)} min; want none < ${returns.minSec / 60} min`);
+                const pauses = [...vis.breaths.map(b => b.t), ...vis.interludes];
+                const bw = breathsPerWindow(pauses, from, end);
+                const breathLen = vis.breaths.map(b => b.until - b.t);
+                const badBreath = breathLen.filter(s => Math.abs(s - L.breathSec) > L.breathTolSec);
+                verdict('townband', bw.pass && badBreath.length === 0, `${vis.breaths.length} breaths (${fmt(Math.min(...breathLen), 3)}–${fmt(Math.max(...breathLen), 3)} s) and ${vis.interludes.length} interludes; 10-min windows without either: ${bw.empty.length} of ${bw.windows}; want ≥ 1 per 10 min, each breath ${L.breathSec} ± ${L.breathTolSec} s`);
+                const duty = dutyOf(vis.visits.filter(v => v.what === 'piece' || v.what === 'interlude'), from, end);
+                const interludeShare = dutyOf(vis.visits.filter(v => v.what === 'interlude'), from, end);
+                verdict('townband', duty >= L.townDutyMin && interludeShare <= 0.15, `music duty ${pct(duty)} (interludes ${pct(interludeShare)} of the hour); want ≥ ${pct(L.townDutyMin)}, interludes ≤ 15 %`);
+                // Tonal re-heard on 10-min windows (the basis of the SCN
+                // 34.5 % baseline: each window measured on its own history);
+                // the whole hour's figure is INFO.
+                const tenMin = [];
+                for (let a = from; a + 600 <= end + 1e-6; a += 600) {
+                    const i = Math.round(a * r.sr);
+                    const j = Math.round((a + 600) * r.sr);
+                    tenMin.push(sessionMetrics(r.program.L.subarray(i, j), r.program.R.subarray(i, j), r.sr).repetition.dejaHeardPct);
+                }
+                const sm = sessionMetrics(r.program.L.subarray(Math.round(from * r.sr)), r.program.R.subarray(Math.round(from * r.sr)), r.sr);
+                verdict('townband', tenMin.length > 0 && Math.max(...tenMin) <= L.townReheardMaxPct, `tonal re-heard in each of the six consecutive 10-min windows (each on its own history) ${tenMin.map(v => fmt(v, 0)).join('/')} %; want ≤ ${L.townReheardMaxPct} % in each (34.5 % in 10 min before)`);
+                info('townband', `the whole hour's history: tonal re-heard ${fmt(sm.repetition.dejaHeardPct)} % of ${sm.repetition.tonalWindows} tonal windows (${fmt(sm.repetition.tonalPct)} % of windows tonal), phrase n-grams ${fmt(sm.repetition.ngram.reheardPct)} %`);
+                const loops = loopsPerPieceHour(vis.renditions, { from });
+                verdict('townband', loops.pass, `loops (identical 16-bar renditions) per piece in the hour: worst ${loops.worst.loops}${loops.worst.piece ? ` (${loops.worst.piece})` : ''} of ${vis.renditions.length} renditions; want ≤ ${L.loopsPerPieceHour}`);
+                const lou = loudness(r.program.L.subarray(Math.round(from * r.sr)), r.program.R.subarray(Math.round(from * r.sr)), r.sr);
+                const t = LOUDNESS_TARGETS.townBand;
+                verdict('townband', Math.abs(lou.integrated - t.lufsI) <= t.toleranceLu, `session LUFS-I ${fmt(lou.integrated)} (${r.sr / 1000} kHz render; the 48 kHz 3-min scene is judged in \`scenes\`); want ${t.lufsI} ± ${t.toleranceLu}`);
+                const full = loudness(r.program.L, r.program.R, r.sr);
+                const call = r.meta.scheduled.find(s => s.kind === 'summons' && !s.silent && s.t >= r.meta.warmup + TOWN_SESSION.waitAt - 0.1);
+                const win = laneWindow('needsYou', 'music');
+                const margin = call ? marginAt(full.momentaryCurve, call.notes[0], MUSIC_MARGIN).margin : null;
+                info('townband', `needs-you at ${TOWN_SESSION.waitAt / 60} min over the band: ${signed(margin)} LU in the ${r.sr / 1000} kHz session (the bell's partials above ${r.sr / 2000} kHz are cut here; judged at 48 kHz below)`);
+                const { rows } = await marginBed('music', ['needsYou']);
+                const j = judgeLane('needsYou', 'music', rows, { probeBed: 'music' });
+                verdict('townband', j.outcome === 'PASS', `needs-you over the Town band (the \`margins\` needs-you render over music, 48 kHz): median ${signed(j.margin)} LU, want ${signed(win.min, 0)}…${signed(win.max, 0)} (S2 over music)${j.failures.length ? ` — ${j.failures.map(f => f.what).join(', ')}` : ''}`);
+            },
+        });
+        units.push({
+            name: 'townband (6.7 MUS-9: the waiting cadence)',
+            async run() {
+                const r = await renderOnce('music:town:wait', waitCadenceScene());
+                const w = WAIT_CADENCE;
+                const at = x => r.meta.warmup + x;
+                const cad = (r.meta.music?.marks || []).filter(m => m.preset === 'townBand' && m.kind === 'cadence').sort((a, b) => a.t - b.t);
+                // A wait reaches the band on the director's next tick and the
+                // phrase end must not yet be committed: 1 s + 1.5 s.
+                const during = cad.filter(c => c.t >= at(w.waitAt) + 2.5 && c.t < at(w.answerAt));
+                const after = cad.find(c => c.t >= at(w.answerAt) + 2.5);
+                const pass = during.length > 0 && during.every(c => c.deceptive) && after != null && !after.deceptive;
+                verdict('townband', pass, `a needs-you open ${w.waitAt}–${w.answerAt} s: phrase ends while waiting ${during.map(c => `${c.type} (${c.piece} bar ${c.bar})`).join(', ') || 'none'}; the first after the answer ${after ? `${after.type} at ${fmt(after.t - at(w.answerAt), 1)} s` : 'none'}; want every phrase end deceptive while waiting, home after`);
+            },
+        });
+    }
+    if (has('percussion')) {
+        units.push({
+            name: 'percussion (6.9: a 10-minute Town band busy sim)',
+            async run() {
+                const r = await renderOnce('music:town:percussion', percussionScene());
+                const marks = r.meta.music?.marks || [];
+                const from = r.meta.warmup;
+                const end = from + r.meta.seconds;
+                const density = densityTrack(marks);
+                const bars = percussionPerBar(marks, density, { from, to: end });
+                const rho = spearman(bars.map(b => b.onsets), bars.map(b => b.density));
+                const bySeg = PERCUSSION_SEGMENTS.map(s => { const x = bars.filter(b => b.from >= from + s.from && b.from < from + s.to); return `${s.from / 60}–${s.to / 60} min ${fmt(x.reduce((a, b) => a + b.onsets, 0) / Math.max(1, x.length), 1)}/bar at density ${fmt(x.reduce((a, b) => a + b.density, 0) / Math.max(1, x.length), 2)}`; });
+                verdict('percussion', rho != null && rho >= L.spearmanMin, `percussion onsets per bar vs total workshop density over ${bars.length} bars: Spearman ${fmt(rho, 2)} (${bySeg.join('; ')}); want ≥ ${L.spearmanMin}`);
+                // working === 0 from the last segment: the director's first
+                // zero-density call, plus the horizon a chunk was compiled in.
+                const lastSeg = PERCUSSION_SEGMENTS[PERCUSSION_SEGMENTS.length - 1];
+                const zeroCall = marks.find(m => m.kind === 'call:setWorkshopDensity' && m.t >= from + lastSeg.from - 1 && Object.keys(m.arg || {}).length === 0);
+                const zeroFrom = (zeroCall?.t ?? from + lastSeg.from) + 1.5;
+                const late = marks.filter(m => m.kind === 'perc' && m.t >= zeroFrom);
+                verdict('percussion', zeroCall != null && late.length === 0, `working === 0 from ${fmt(lastSeg.from, 0)} s: the director's densities empty at ${fmt(zeroCall?.t - from, 1)} s; percussion hits after it (+1.5 s horizon) ${late.length}; want 0`);
+                const busySeg = PERCUSSION_SEGMENTS[2];
+                const pairs = seatPairs(r, { from: from + busySeg.from, to: from + busySeg.to });
+                const seats = seatLufs(pairs, r.sr);
+                const reLead = re(seats.percussion, seats.lead);
+                const [target, tol] = L.stems.percussion;
+                verdict('percussion', reLead != null && Math.abs(reLead - target) <= tol, `busy segment: percussion stem ${lu(reLead)} LU re lead (lead ${fmt(seats.lead)}, percussion ${fmt(seats.percussion)} LUFS-I); want ${target} ± ${tol}`);
+            },
+        });
+        units.push({
+            name: 'percussion (6.9 MUS-16: rain re-dresses the band at a chunk boundary)',
+            async run() {
+                const r = await renderOnce('music:town:rain', rainSwitchScene());
+                const marks = (r.meta.music?.marks || []).filter(m => m.preset === 'townBand');
+                const changeAt = r.meta.warmup + RAIN_SWITCH_AT;
+                const switches = marks.filter(m => m.kind === 'arrangement' && m.weather === 'rain').map(m => m.t);
+                const boundaries = marks.filter(m => ['loop', 'chunk', 'interlude'].includes(m.kind)).map(m => m.t);
+                const j = arrangementSwitch(switches, boundaries, changeAt);
+                const call = marks.find(m => m.kind === 'call:setArrangement' && m.arg?.weather === 'rain');
+                const played = marks.filter(m => m.kind === 'loop' || m.kind === 'chunk').filter(m => m.t >= (j.switchAt ?? Infinity)).map(m => m.arrangement?.weather);
+                verdict('percussion', j.pass && played.length > 0 && played.every(w => w === 'rain'), `rain at ${fmt(RAIN_SWITCH_AT, 0)} s (the director asked at ${fmt(call ? call.t - r.meta.warmup : NaN, 2)} s): the arrangement switched at ${fmt(j.switchAt != null ? j.switchAt - r.meta.warmup : NaN, 2)} s, ${j.onBoundary ? 'on' : 'off'} a chunk boundary (the first after the change ${fmt(j.firstBoundary != null ? j.firstBoundary - r.meta.warmup : NaN, 2)} s); chunks after it ${played.join('/') || '—'}; want the first uncommitted boundary, rain from there`);
+            },
+        });
+    }
+    return units;
+}
+
+const wave6 = { musicBank: [] };
+// Minutes of the day (or of a session) as hh:mm.
+const fmtClock = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(Math.floor(m % 60)).padStart(2, '0')}`;
+const coveredSpans = (visits, a, b) => visits.map(v => ({ from: Math.max(a, v.from), to: Math.min(b, v.to) })).filter(v => v.to > v.from);
+function fragmentSeconds(frag) {
+    const bpb = frag.beatsPerBar || 4;
+    const bars = frag.chords?.length ?? frag.bars ?? 0;
+    const pickup = (frag.pickup || []).reduce((s, [, b]) => s + b, 0);
+    return (bars * bpb + pickup) * 60 / frag.bpm;
+}
+
+// Music ST max over the bed (world + work stems summed) over one visit.
+function musicOverBed(r, visit) {
+    const g = outputGainDb(r);
+    const a = Math.max(0, visit.from);
+    const b = Math.min(r.meta.warmup + r.meta.seconds, visit.to + 1);
+    const cut = pair => ({ L: pair.L.subarray(Math.round(a * r.sr), Math.round(b * r.sr)), R: pair.R.subarray(Math.round(a * r.sr), Math.round(b * r.sr)) });
+    const music = toOutput(cut(r.stems.music), g);
+    const beds = ['world', 'work'].filter(k => r.stems[k]).map(k => toOutput(cut(r.stems[k]), g));
+    const bed = sumOf(beds, music.L.length);
+    const musicStMax = loudness(music.L, music.R, r.sr).shortTermMax;
+    const bedLufs = loudness(bed.L, bed.R, r.sr).integrated;
+    return { musicStMax, bedLufs, stMaxOverBed: Number.isFinite(musicStMax) && Number.isFinite(bedLufs) ? musicStMax - bedLufs : null };
+}
+
+// A Village fixture's heard music (the music stem, output-referred) against
+// its zero windows, its control (music once the zero clears), reasons and
+// level over the bed.
+function judgeVillageFixture(kind, r) {
+    const f = VILLAGE_FIXTURES[kind];
+    const w0 = r.meta.warmup;
+    const end = w0 + r.meta.seconds;
+    const vis = visitRows(r.meta.music?.marks || [], end, 'village');
+    const heard = heardSpans(r.stems.music, r.sr, outputGainDb(r), { floorLufs: -70 });
+    const cueAt = kindName => r.meta.scheduled.filter(s => s.kind === kindName && !s.silent).map(s => s.notes[0]);
+    const startLine = vis.visits.map(v => `${v.what} ${v.name} (${v.reason}) at ${fmt(v.from - w0, 1)} s`).join(', ') || 'none';
+    const zeros = [];
+    let controlFrom = null;
+    if (kind === 'rain') { zeros.push({ from: 0, to: w0 + f.clearAt, why: 'rain' }); controlFrom = w0 + f.clearAt; }
+    if (kind === 'wait') { zeros.push({ from: 0, to: w0 + f.answerAt, why: 'a wait ≥ 6 min' }); controlFrom = w0 + f.answerAt; }
+    if (kind === 'urgent') {
+        zeros.push({ from: 0, to: w0 + f.clearAt, why: 'rain' });
+        for (const t of cueAt('summons')) zeros.push({ from: t, to: t + 5, why: 'urgent + 5 s' });
+        controlFrom = w0 + f.clearAt;
+    }
+    if (kind === 'resting') {
+        const rest = r.meta.stateLog.filter(s => s.state === 'resting').map(s => s.t);
+        if (rest.length) zeros.push({ from: Math.min(...rest), to: Math.max(...rest) + 1, why: 'resting (director state)' });
+        controlFrom = w0 + f.workAt;
+        info('occasions', `resting fixture: director state resting ${rest.length ? `${fmt(Math.min(...rest) - w0, 0)}–${fmt(Math.max(...rest) - w0, 0)} s` : 'never'}`);
+    }
+    if (zeros.length) {
+        // Music already sounding when a zero begins may ring out for the
+        // director's tick, the 0.4 s release and the air (3 s); none may start.
+        const soft = zeros.map(z => ({ ...z, from: z.from === 0 ? 0 : z.from + 3 }));
+        const inside = musicInWindows(heard, soft, vis.visits.map(v => v.from));
+        verdict('occasions', inside.overlapSec === 0 && inside.starts === 0, `must-never 9 / S7, fixture ${kind}: heard music inside ${zeros.map(z => `${z.why} ${fmt(z.from - w0, 1)}–${fmt(z.to - w0, 1)} s`).join(', ')}: ${fmt(inside.overlapSec, 2)} s, starts ${inside.starts}; want 0 (starts: ${startLine})`);
+    }
+    if (controlFrom != null && kind !== 'resting') {
+        const later = vis.visits.find(v => v.from >= controlFrom);
+        verdict('occasions', later != null, `fixture ${kind} control: once the zero clears at ${fmt(controlFrom - w0, 1)} s the due occasion plays: ${later ? `${later.name} at ${fmt(later.from - w0, 1)} s` : 'nothing'} (otherwise the zero proves nothing)`);
+    }
+    if (kind === 'first' || kind === 'fragment') {
+        const want = kind === 'first' ? 'occasion' : 'fragment';
+        const v = vis.visits.find(x => x.what === want);
+        const reasons = r.meta.stateLog.map(s => s.music?.lastStart?.reason).filter(Boolean);
+        verdict('occasions', v != null && Boolean(v.reason) && reasons.length > 0, `fixture ${kind}: starts ${startLine}; snapshot reasons ${[...new Set(reasons)].join(', ') || 'none'}; want a${want === 'occasion' ? 'n' : ''} ${want} with its reason in the snapshot`);
+        if (v) {
+            const over = musicOverBed(r, v);
+            const t = LOUDNESS_TARGETS.villageMusic;
+            const max = kind === 'first' ? t.stMaxOverBed : t.fragmentStMaxOverBed;
+            verdict('occasions', over.stMaxOverBed != null && over.stMaxOverBed <= max, `Village music (${want} ${v.name}): ST max ${fmt(over.musicStMax)} over the bed's ${fmt(over.bedLufs)} LUFS: ${signed(over.stMaxOverBed)} LU; want ≤ bed + ${max} LU (S2)`);
+        }
+    }
+}
+
 // Wave-3 numbers shared between units (the cluster render feeds must-never 13).
 const wave3 = { silent: {}, cluster: {} };
 
@@ -1261,31 +1781,6 @@ function judgeBankRows() {
         const j = judgeBank(stats, sliceMax);
         const clients = j.clients.map(c => `${c.name} ${fmt(c.bytes / 1048576, 2)}/${c.budget != null ? fmt(c.budget / 1048576, 1) : '—'} MiB`).join(', ');
         verdict('bank', j.pass, `${label}: resident ${stats ? fmt(stats.residentBytes / 1048576, 2) : '—'} MiB of ${fmt(MEMORY_BUDGET.totalBytes / 1048576, 0)} (${clients || 'no clients'}); ${stats?.bakes ?? '—'} bakes, ${stats?.evictions ?? '—'} evictions, ${stats?.pending ?? '—'} pending; bake slices ${slices} timed on the virtual clock, max ${fmt(sliceMax, 2)} ms real${j.failures.length ? ` — ${j.failures.join('; ')}` : ''}; want each client and the total within MEMORY_BUDGET, slices ≤ 5 ms`);
-    }
-}
-
-// The Wave-1 reference: every piece rendered from `rev`'s tree (exported,
-// read-only) with the same pinned draws, written to baselines/.
-async function renderSequencerReference(browser, rev) {
-    const ref = await referenceServer(rev);
-    try {
-        const render = makeRenderer(browser, ref.server.baseUrl, { seed: SEED, noWorklets: NO_WORKLETS });
-        const pieces = {};
-        for (const p of await loadPieces(ref.root)) {
-            const row = sequencerRow(await render(p.key, p.spec), p);
-            if (!row.onsets.length) throw new Error(`reference ${p.key}: no music onsets (pinned by ${row.pinned}); ${row.errors.slice(0, 2).join(' | ')}`);
-            pieces[p.key] = { preset: p.preset, piece: p.piece, loopSec: p.loopSec, seconds: p.spec.seconds, lufsI: Number(row.lufsI.toFixed(3)), onsets: row.onsets };
-            info('sequencer', `reference ${p.key} from ${rev}: ${row.onsets.length} onsets, LUFS-I ${fmt(row.lufsI, 2)} (pinned by ${row.pinned})`);
-        }
-        const doc = {
-            note: 'Wave-1 reference for the sequencer-equivalence check (scripts/audio/probe.mjs `sequencer`): every shipped piece rendered from the Wave-1 tree on the virtual clock with every random draw pinned to 0.5; onsets are the distinct scheduled start times of every source reaching the music bus, relative to the piece\'s first, and LUFS-I is the program over the song (Village) or first loop (Town band). Regenerate only from the Wave-1 commit: `node scripts/audio/probe.mjs --only sequencer --update --ref-rev f4a71e3`.',
-            rev, generatedAt: new Date().toISOString().slice(0, 10), programTrimDb: PROGRAM_TRIM_DB, pieces,
-        };
-        fs.mkdirSync(path.dirname(SEQUENCER_FILE), { recursive: true });
-        fs.writeFileSync(SEQUENCER_FILE, `${JSON.stringify(doc)}\n`);
-        info('sequencer', `wrote ${path.relative(process.cwd(), SEQUENCER_FILE)} (${Object.keys(pieces).length} pieces from ${rev})`);
-    } finally {
-        await ref.close();
     }
 }
 

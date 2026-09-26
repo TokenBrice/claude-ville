@@ -1,13 +1,16 @@
 import { snapshotAgeMs, linkStatusText } from '../../application/VillageState.js';
+import { eventBus } from '../../domain/events/DomainEvent.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { getClientPerfMetrics } from './ClientPerfMetrics.js';
 import {
     SOUND_STEP_MAX,
+    readTownBandVoice,
     soundStep,
     writeCaptionSetting,
     writeCountHours,
     writeReminderSetting,
+    writeTownBandVoice,
 } from './SoundSettings.js';
 
 export const REDUCED_MOTION_OVERRIDE_KEY = 'claudeville.motion.reduce';
@@ -34,6 +37,12 @@ const REMINDER_CHOICES = Object.freeze([
     ['standard', 'Standard'],
     ['gentle', 'Gentle'],
     ['off', 'Off'],
+]);
+// D2: the Town band's players. The sound controller hears a change on
+// `sound:town-band-voice` and the band changes voice at its next chunk.
+const TOWN_BAND_VOICE_CHOICES = Object.freeze([
+    ['isle', 'Isle Band'],
+    ['chip', 'Chip restored'],
 ]);
 
 let motionOverrideController = null;
@@ -177,6 +186,7 @@ export class SettingsPanel {
         onSoundLayer,
         onSoundReminders,
         onSoundCountHours,
+        onSoundTownBandVoice,
         onCaptions,
         onAutoCamera,
         onDesktopAlerts,
@@ -202,6 +212,11 @@ export class SettingsPanel {
         // their readers take them on use.
         this.onSoundReminders = onSoundReminders || (value => writeReminderSetting(value, storage));
         this.onSoundCountHours = onSoundCountHours || (on => writeCountHours(on, storage));
+        this.onSoundTownBandVoice = onSoundTownBandVoice || ((value) => {
+            const voice = writeTownBandVoice(value, storage);
+            eventBus.emit('sound:town-band-voice', { voice });
+        });
+        this._storage = storage;
         this.onCaptions = onCaptions || (value => writeCaptionSetting(value, storage));
         this.onAutoCamera = onAutoCamera;
         this.onDesktopAlerts = onDesktopAlerts;
@@ -273,6 +288,8 @@ export class SettingsPanel {
                 ['play', 'Keep playing'],
                 ['signals', 'Signals only'],
             ], settings.soundBackground, this.onSoundBackground),
+            this._select('soundTownBandVoice', 'Town band voice', 'Who plays the town music: the island\'s own band or the restored console chip.',
+                TOWN_BAND_VOICE_CHOICES, settings.soundTownBandVoice ?? readTownBandVoice(this._storage), this.onSoundTownBandVoice),
             this._range('soundVolume', 'Master volume', settings.soundVolume, this.onSoundVolume),
             this._select('soundReminders', 'Reminders', 'Ring again while an agent is still waiting.',
                 REMINDER_CHOICES, settings.soundReminders, this.onSoundReminders),
@@ -560,6 +577,8 @@ export class SettingsPanel {
         if (mode) mode.value = settings.soundMode || 'ambient';
         const background = this.controls.get('soundBackground');
         if (background) background.value = settings.soundBackground || 'play';
+        const voice = this.controls.get('soundTownBandVoice');
+        if (voice) voice.value = settings.soundTownBandVoice ?? readTownBandVoice(this._storage);
         const reminders = this.controls.get('soundReminders');
         if (reminders) reminders.value = settings.soundReminders || 'standard';
         const captions = this.controls.get('captions');

@@ -61,8 +61,9 @@ const lerp = (a, b, t) => a + (b - a) * t;
 
 /**
  * The world stratum's targets at a minute of the day (0..1440) in a season:
- * `{ key, sea, wind, windFloor, birds, rates, crickets, dark }`, the two
- * grade keys' rows eased like the grade and the season applied.
+ * `{ key, keyframe, sea, wind, windFloor, birds, rates, crickets, dark }`,
+ * the two grade keys' rows eased like the grade and the season applied.
+ * `keyframe` is the last grade keyframe passed: the music's arrangement key.
  */
 export function dayArcAt({ minuteOfDay = 12 * 60, season = 'summer' } = {}) {
     const { from, to, t } = gradeKeysAt(minuteOfDay, seasonShiftFor(season));
@@ -80,6 +81,7 @@ export function dayArcAt({ minuteOfDay = 12 * 60, season = 'summer' } = {}) {
     }
     return {
         key: `${from.name}>${to.name}`,
+        keyframe: from.name,
         sea: clamp01(lerp(a.sea, b.sea, t) * mod.sea),
         wind: lerp(a.wind, b.wind, t),
         windFloor: mod.windFloor,
@@ -88,6 +90,15 @@ export function dayArcAt({ minuteOfDay = 12 * 60, season = 'summer' } = {}) {
         crickets: lerp(a.crickets, b.crickets, t) * mod.crickets,
         dark: clamp01(lerp(a.dark, b.dark, t)),
     };
+}
+
+/**
+ * The music's arrangement key (plan 6.8, MUSL-8): the grade keyframe the day
+ * last passed, season-shifted like the picture, so a band's instrumentation
+ * changes at the keyframes and nowhere between them.
+ */
+export function arrangementKeyframeAt({ minuteOfDay = 12 * 60, season = 'summer' } = {}) {
+    return gradeKeysAt(minuteOfDay, seasonShiftFor(season)).from.name;
 }
 
 /**

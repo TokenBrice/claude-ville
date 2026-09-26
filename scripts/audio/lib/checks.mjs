@@ -1,11 +1,13 @@
-// Pure judges for the audio probe (Wave 5 gate): the S2 scene targets, the
+// Pure judges for the audio probe (Wave 6 gate): the S2 scene targets, the
 // cue lane windows at their full S2 floors, limiter gain reduction from the
 // limiter's two taps, the preset-switch hole/bump, ducked time, the AV-sync
-// pairing, Wave 2's clock, air, noise, bank and sequencer judges, Wave 3's
+// pairing, Wave 2's clock, air, noise and bank judges, Wave 3's
 // discrimination, ladder, cluster, held-note, caption and honesty judges,
 // Wave 4's world scene map, sea, thunder and must-never 7/8 judges, and
 // Wave 5's workshop timing, level, focus, quiet-mix, quota and camera
-// judges. No I/O; every function takes plain arrays and numbers. Targets
+// judges, and Wave 6's music judges (stem balance, working bands, the Isle
+// Band A/B, the stop lint's envelope, rotation, breaths, loops, duty and
+// the percussion's rank correlation). No I/O; every function takes plain arrays and numbers. Targets
 // come from Loudness.js or the plan's acceptance lines, never from a
 // baseline: a baseline only detects drift, it cannot pass a failure.
 import { AUDIBILITY_WINDOWS, DUCKED_TIME_BUDGET, LOUDNESS_TARGETS, MEMORY_BUDGET } from '../../../claudeville/src/presentation/shared/audio/Loudness.js';
@@ -39,14 +41,8 @@ export function energyMeanLufs(values) {
 // plan is measured and printed as DEFER (never a failure) until PLAN_STAGE
 // reaches its wave; bump PLAN_STAGE at each wave's exit. Keys not listed are
 // gated now.
-export const PLAN_STAGE = 5;
-export const GATED_FROM = Object.freeze({
-    // S2's night row with its occasion (the program, music included): ≤ the
-    // Village session and 2–5 kHz ≥ 4 dB under noon. The world stratum's
-    // half is gated now (worldmap); the music half needs the night voicing
-    // and the occasion clock (6.3, 6.6).
-    'scene:nightProgram': 6,
-});
+export const PLAN_STAGE = 6;
+export const GATED_FROM = Object.freeze({});
 
 export function gatedFrom(key, table = GATED_FROM) {
     return table[key] ?? 0;
@@ -512,53 +508,6 @@ export function judgeBank(stats, sliceMaxMs, budget = MEMORY_BUDGET) {
     if (!(stats.residentBytes <= budget.totalBytes)) failures.push(`resident ${stats.residentBytes} B > ${budget.totalBytes} B`);
     if (finite(sliceMaxMs) && sliceMaxMs > BAKE_SLICE_MAX_MS) failures.push(`slice ${sliceMaxMs.toFixed(2)} ms > ${BAKE_SLICE_MAX_MS} ms`);
     return { pass: failures.length === 0, failures, clients };
-}
-
-// -------------------------------------------------------------- sequencer ----
-// 2.3: every shipped piece through the one sequencer (chip voicing) against
-// the Wave-1 reference render of the same piece at the same pinned random
-// draws: identical onsets (relative to the piece's first; `onsetTolMs`
-// absorbs float rounding only); its level within 0.5 LU of the current
-// baseline (scenes.json `sequencer:<piece>`).
-export const SEQUENCER_LIMITS = Object.freeze({ lufsTolLu: 0.5, onsetTolMs: 0.5 });
-
-export function compareOnsets(ref, cur, tolMs = SEQUENCER_LIMITS.onsetTolMs) {
-    const n = Math.min(ref.length, cur.length);
-    let maxDeltaMs = 0;
-    let firstMismatch = null;
-    for (let i = 0; i < n; i++) {
-        const d = Math.abs(ref[i] - cur[i]) * 1000;
-        if (d > maxDeltaMs) maxDeltaMs = d;
-        if (firstMismatch == null && d > tolMs) firstMismatch = { index: i, ref: ref[i], cur: cur[i] };
-    }
-    if (firstMismatch == null && ref.length !== cur.length) firstMismatch = { index: n, ref: ref[n] ?? null, cur: cur[n] ?? null };
-    return { refCount: ref.length, curCount: cur.length, maxDeltaMs, firstMismatch, identical: firstMismatch == null };
-}
-
-// Onsets against the Wave-1 reference (they guard the sequencer); level as
-// drift against the current baseline's program LUFS-I (`baselineLufs`), since
-// Village music levels and PROGRAM_TRIM_DB move on purpose after Wave 2.
-export function judgeSequencer(ref, cur, { baselineLufs = null, limits = SEQUENCER_LIMITS } = {}) {
-    const onsets = compareOnsets(ref.onsets, cur.onsets, limits.onsetTolMs);
-    const lufsDelta = finite(baselineLufs) && finite(cur.lufsI) ? cur.lufsI - baselineLufs : null;
-    const pass = onsets.identical && onsets.refCount > 0 && lufsDelta != null && Math.abs(lufsDelta) <= limits.lufsTolLu;
-    return { pass, onsets, lufsDelta };
-}
-
-// Onsets of one piece from a traced render: distinct scheduled times (0.1 ms
-// grid), the first cluster (a gap over `gapSec` ends a Village song) or the
-// first `loopSec` (one Town band loop), relative to the first onset.
-export function pieceOnsets(times, { loopSec = null, gapSec = 4 } = {}) {
-    const t = [...new Set(times.filter(finite).map(x => Math.round(x * 1e4)))].sort((a, b) => a - b).map(x => x / 1e4);
-    if (!t.length) return { start: null, end: null, onsets: [] };
-    const start = t[0];
-    let kept;
-    if (loopSec != null) kept = t.filter(x => x < start + loopSec - 1e-3);
-    else {
-        kept = [start];
-        for (let i = 1; i < t.length && t[i] - t[i - 1] <= gapSec; i++) kept.push(t[i]);
-    }
-    return { start, end: kept[kept.length - 1], onsets: kept.map(x => Number((x - start).toFixed(4))) };
 }
 
 // ------------------------------------------------------------ frame cost ----
@@ -1128,6 +1077,9 @@ export const WORK_LIMITS = Object.freeze({
     // 5.6 (D3): Village world and work ×0.5, music 0, Town band −3 dB; the
     // held note and signals untouched; focus restores within 1 s.
     quietWorldDb: 20 * Math.log10(0.5), quietTownDb: -3, quietTolDb: 1, heldTolDb: 0.5, musicOffDb: -40, restoreSec: 1,
+    // The accents' unblurred reference (before the blur and after focus):
+    // one noisy strike peak per building is no reference.
+    quietRefAccentsMin: 8,
     // 5.7 (SIG-13).
     quotaRiseDb: 10, quotaMonotonicTolDb: 0.2, quotaSilentDb: -40,
     // 5.8 (D8).
@@ -1374,4 +1326,293 @@ export function judgeCameraPan({ cameraCrossSec, heardCrossSec, targets, stillWr
     const pass = lagSec != null && lagSec >= 0 && lagSec <= limits.crossWithinSec
         && maxStep <= limits.panStep + 1e-9 && stillWrites === 0;
     return { lagSec, maxStep, stillWrites, pass };
+}
+
+// ================================================================ Wave 6 ====
+// The music: MUSL-10's stem gate (6.2), the Isle Band A/B (6.1), the night
+// voicing (6.3), the score (6.5), the occasion clock's day (6.6), the Town
+// band hour (6.7) and the band's workshop percussion (6.9). Targets are the
+// plan's acceptance lines, S2 (Loudness.js) and S7.
+export const MUSIC_LIMITS = Object.freeze({
+    // MUSL-2 stem balance, LU re the lead stem: [target, ± tolerance].
+    stems: Object.freeze({
+        bass: Object.freeze([-3.5, 1.5]), counter: Object.freeze([-6, 2]), engine: Object.freeze([-8, 2]), percussion: Object.freeze([-14, 3]),
+        // The band's own brushes / chip hat at the full band (Voicings
+        // STEM_TARGETS.groove): a percussion stem, the percussion window.
+        groove: Object.freeze([-14, 3]),
+    }),
+    // MUSL-1's harp row (−8…−9) for the descant: printed, not gated (the
+    // plan's acceptance names the four stems above and the floor).
+    descantInfo: Object.freeze([-9, -8]),
+    floorLu: -15,
+    // MUSL-3 / HAR-11: each working band vs the one below.
+    bandOnsetRise: 0.3, bandOctaveDb: 3,
+    // 6.1: level-matched A/B of the same notes.
+    laptopLossMaxLu: 1.5, sideMidDb: Object.freeze([-16, -9]), monoLossMaxLu: 1, nightPresenceUnderDayDb: 4, nodesPerNote: 4,
+    // 6.3.
+    nightLeadMaxMidi: 81, stopMaxDb: -60,
+    // 6.5 (S7): identical 16-bar renditions ≥ 60 min apart, re-hearing over
+    // music-on windows, motif statements per hour.
+    renditionGapSec: 3600, reheardMaxPct: 10, motifPerHour: 6,
+    // 6.7 / S7 / must-never 10.
+    loopsPerVisit: 2, noReturnSec: 360, noReturnSmallSetSec: 240, smallSet: 4,
+    breathEverySec: 600, breathSec: 1.4, breathTolSec: 0.05, townDutyMin: 0.85, townReheardMaxPct: 25, loopsPerPieceHour: 12,
+    // 6.9.
+    spearmanMin: 0.7,
+    // Must-never 10: Village music-on per working hour.
+    villageOnMax: 0.15,
+});
+
+// D1 (Decisions, MUSL's revised duty): the Village duty band per regime,
+// as a share of the hour. `busy` is while ≥ 3 agents work; `light` with
+// fewer; `night` and `deepNight` are ceilings (OccasionClock's regimes).
+export const D1_DUTY = Object.freeze({
+    busy: Object.freeze([0.06, 0.10]), light: Object.freeze([0, 0.20]), night: Object.freeze([0, 0.08]), deepNight: Object.freeze([0, 0.03]),
+});
+
+// MUSL-2 / MUSL-3 floor: `seats` { seat: LUFS-I } of one render (every
+// seat measured alone at the output), `admitted` the seats the band plays.
+// Every admitted seat other than the lead sits in its window re the lead,
+// ≥ the floor and under the lead (the melody is the loudest stem).
+// → { rows: [{ seat, reLead, window, inWindow, aboveFloor, pass }], pass }
+export function judgeStemBalance(seats, admitted, limits = MUSIC_LIMITS) {
+    const lead = seats.lead;
+    const rows = [];
+    for (const seat of admitted) {
+        if (seat === 'lead') continue;
+        const v = seats[seat];
+        const reLead = finite(lead) && finite(v) ? v - lead : (finite(lead) && v === -Infinity ? -Infinity : null);
+        const w = limits.stems[seat] ?? null;
+        const inWindow = w ? reLead != null && Math.abs(reLead - w[0]) <= w[1] + 1e-9 : true;
+        const aboveFloor = reLead != null && reLead >= limits.floorLu;
+        const underLead = reLead != null && reLead < 0;
+        rows.push({ seat, reLead, window: w, inWindow, aboveFloor, underLead, pass: inWindow && aboveFloor && underLead });
+    }
+    return { lead, rows, pass: finite(lead) && rows.every(r => r.pass) };
+}
+
+// HAR-11: band `upper` vs the band below: ≥ 30 % more onsets, or ≥ 3 dB
+// more in some octave band. `lower`/`upper` { onsets, octaveDb: number[] }
+// (the same octave bands, same duration). → { rise, maxOctaveDb, pass }
+export function bandStep(lower, upper, limits = MUSIC_LIMITS) {
+    const rise = lower.onsets > 0 ? upper.onsets / lower.onsets - 1 : (upper.onsets > 0 ? Infinity : 0);
+    let maxOctaveDb = -Infinity;
+    for (let i = 0; i < Math.min(lower.octaveDb.length, upper.octaveDb.length); i++) {
+        const a = lower.octaveDb[i];
+        const b = upper.octaveDb[i];
+        if (b === -Infinity) continue;
+        const d = a === -Infinity ? Infinity : b - a;
+        if (Number.isNaN(d)) continue;
+        maxOctaveDb = Math.max(maxOctaveDb, d);
+    }
+    return { rise, maxOctaveDb, pass: rise >= limits.bandOnsetRise - 1e-9 || maxOctaveDb >= limits.bandOctaveDb };
+}
+
+// 6.1: one arm's music stem, level-matched: laptop-model loss (a positive
+// LU number), S/M, mono fold loss. → { failures: [string], pass }
+export function judgeIsleArm({ laptopLossLu, sideMidDb, monoLossLu }, limits = MUSIC_LIMITS) {
+    const failures = [];
+    if (!(finite(laptopLossLu) && laptopLossLu <= limits.laptopLossMaxLu)) failures.push('laptop');
+    if (!(finite(sideMidDb) && sideMidDb >= limits.sideMidDb[0] && sideMidDb <= limits.sideMidDb[1])) failures.push('S/M');
+    if (!(finite(monoLossLu) && monoLossLu <= limits.monoLossMaxLu)) failures.push('mono');
+    return { failures, pass: failures.length === 0 };
+}
+
+// 2–5 kHz share (dB re total) of night vs day: night ≤ day − minDb.
+export function nightDarker(dayDb, nightDb, minDb = MUSIC_LIMITS.nightPresenceUnderDayDb) {
+    const under = finite(dayDb) && finite(nightDb) ? dayDb - nightDb : null;
+    return { under, pass: under != null && under >= minDb - 1e-9 };
+}
+
+// Level of a stopped voice at its stop re its own peak, from the recorded
+// automation of its envelope: `events` in call order, each { type, t, v,
+// tau?, values?, dur? }, the param's value before any automation `v0`.
+// Web Audio semantics (setValue, linear/exponential ramps from the
+// previous event, setTarget, setValueCurve, cancel, cancelAndHold).
+// → value(t)
+export function automationCurve(events, v0 = 1) {
+    let list = [];
+    const valueIn = (evs, t) => {
+        let v = v0;
+        let prevT = 0;
+        let prevV = v0;
+        for (let i = 0; i < evs.length; i++) {
+            const e = evs[i];
+            if (e.type === 'linear' || e.type === 'exponential') {
+                if (t < e.t) {
+                    if (t < prevT) return v;
+                    const f = (t - prevT) / Math.max(1e-12, e.t - prevT);
+                    if (e.type === 'linear') return prevV + (e.v - prevV) * f;
+                    if (prevV > 0 && e.v > 0) return prevV * Math.pow(e.v / prevV, f);
+                    return prevV;
+                }
+                v = e.v; prevT = e.t; prevV = e.v;
+                continue;
+            }
+            if (t < e.t) return v;
+            if (e.type === 'set' || e.type === 'hold') { v = e.v; prevT = e.t; prevV = e.v; continue; }
+            if (e.type === 'target') {
+                const next = evs[i + 1];
+                const end = next && next.t <= t && next.type !== 'linear' && next.type !== 'exponential' ? next.t : t;
+                const at = next && (next.type === 'linear' || next.type === 'exponential') ? Math.min(t, next.t) : end;
+                v = e.v + (prevV - e.v) * Math.exp(-(at - e.t) / Math.max(1e-9, e.tau));
+                prevT = at; prevV = v;
+                continue;
+            }
+            if (e.type === 'curve') {
+                const n = e.values.length;
+                if (t < e.t + e.dur) {
+                    const x = ((t - e.t) / e.dur) * (n - 1);
+                    const k = Math.floor(x);
+                    return e.values[k] + (e.values[Math.min(n - 1, k + 1)] - e.values[k]) * (x - k);
+                }
+                v = e.values[n - 1]; prevT = e.t + e.dur; prevV = v;
+            }
+        }
+        return v;
+    };
+    for (const e of events) {
+        if (e.type === 'cancel') { list = list.filter(x => x.t < e.t); continue; }
+        if (e.type === 'cancelHold') {
+            const held = valueIn(list, e.t);
+            list = list.filter(x => x.t <= e.t && !((x.type === 'linear' || x.type === 'exponential') && x.t > e.t));
+            list.push({ type: 'hold', t: e.t, v: held });
+            continue;
+        }
+        list.push(e);
+        list.sort((a, b) => a.t - b.t);
+    }
+    return t => valueIn(list, t);
+}
+
+// Spearman rank correlation (average ranks for ties); null under 3 pairs
+// or with a constant side.
+export function spearman(xs, ys) {
+    const n = Math.min(xs.length, ys.length);
+    if (n < 3) return null;
+    const rank = (a) => {
+        const idx = a.map((v, i) => [v, i]).sort((p, q) => p[0] - q[0]);
+        const r = new Array(a.length);
+        for (let i = 0; i < idx.length;) {
+            let j = i;
+            while (j + 1 < idx.length && idx[j + 1][0] === idx[i][0]) j++;
+            for (let k = i; k <= j; k++) r[idx[k][1]] = (i + j) / 2 + 1;
+            i = j + 1;
+        }
+        return r;
+    };
+    const rx = rank(xs.slice(0, n));
+    const ry = rank(ys.slice(0, n));
+    const mean = (n + 1) / 2;
+    let sxy = 0;
+    let sxx = 0;
+    let syy = 0;
+    for (let i = 0; i < n; i++) {
+        sxy += (rx[i] - mean) * (ry[i] - mean);
+        sxx += (rx[i] - mean) ** 2;
+        syy += (ry[i] - mean) ** 2;
+    }
+    return sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : null;
+}
+
+// Union length of [from, to) intervals clipped to [t0, t1).
+export function coveredSec(intervals, t0, t1) {
+    const v = intervals.map(i => [Math.max(t0, i.from), Math.min(t1, i.to)]).filter(([a, b]) => b > a).sort((a, b) => a[0] - b[0]);
+    let sum = 0;
+    let end = -Infinity;
+    for (const [a, b] of v) {
+        if (b <= end) continue;
+        sum += b - Math.max(a, end);
+        end = b;
+    }
+    return sum;
+}
+
+// Seconds of music inside forbidden windows (each { from, to, why }), and
+// the starts inside them. → { overlapSec, starts, rows, pass }
+export function musicInWindows(music, windows, starts = []) {
+    const rows = windows.map(w => ({ ...w, sec: coveredSec(music, w.from, w.to), starts: starts.filter(t => t >= w.from && t < w.to).length }));
+    const overlapSec = rows.reduce((a, r) => a + r.sec, 0);
+    const n = rows.reduce((a, r) => a + r.starts, 0);
+    return { overlapSec, starts: n, rows, pass: overlapSec === 0 && n === 0 };
+}
+
+// 6.9: a rain fixture — the arrangement switch lands on a chunk boundary,
+// the first one the band had not yet committed when the atmosphere
+// changed (`commitSec`: the director's 1 s tick + the 1.5 s music horizon).
+// → { switchAt, firstBoundary, onBoundary, pass }
+export function arrangementSwitch(switches, boundaries, changeAt, { commitSec = 2.5, tolSec = 0.002 } = {}) {
+    const sw = switches.filter(t => t >= changeAt - tolSec).sort((a, b) => a - b)[0] ?? null;
+    const after = boundaries.filter(t => t >= changeAt - tolSec).sort((a, b) => a - b);
+    const onBoundary = sw != null && boundaries.some(b => Math.abs(b - sw) <= tolSec);
+    const allowed = after.filter((b, i) => i === 0 || (i === 1 && after[0] < changeAt + commitSec));
+    const pass = onBoundary && allowed.some(b => Math.abs(b - sw) <= tolSec);
+    return { switchAt: sw, firstBoundary: after[0] ?? null, onBoundary, pass };
+}
+
+// 6.7 / must-never 10: a piece starting again less than `noReturnSec` after
+// its previous visit ended (the smaller window when the set has < 4
+// pieces). `visits` [{ piece, from, to }] in time order.
+// → { returns: [{ piece, gapSec, at }], minGapSec, pass }
+export function earlyReturns(visits, { setSize = Infinity, limits = MUSIC_LIMITS } = {}) {
+    const minSec = setSize < limits.smallSet ? limits.noReturnSmallSetSec : limits.noReturnSec;
+    const lastEnd = new Map();
+    const returns = [];
+    let minGapSec = Infinity;
+    for (const v of visits) {
+        if (lastEnd.has(v.piece)) {
+            const gap = v.from - lastEnd.get(v.piece);
+            minGapSec = Math.min(minGapSec, gap);
+            if (gap < minSec) returns.push({ piece: v.piece, gapSec: gap, at: v.from });
+        }
+        lastEnd.set(v.piece, v.to);
+    }
+    return { returns, minGapSec, minSec, pass: returns.length === 0 };
+}
+
+// S7: at least one breath or interlude in every 10 minutes (consecutive
+// windows from `from`; a trailing part shorter than the window is ignored).
+// → { windows, empty: [start], pass }
+export function breathsPerWindow(times, from, to, { windowSec = MUSIC_LIMITS.breathEverySec } = {}) {
+    const empty = [];
+    let windows = 0;
+    for (let a = from; a + windowSec <= to + 1e-9; a += windowSec) {
+        windows++;
+        if (!times.some(t => t >= a && t < a + windowSec)) empty.push(a);
+    }
+    return { windows, empty, pass: windows > 0 && empty.length === 0 };
+}
+
+// S7 loops: identical 16-bar renditions per piece per clock hour — a
+// rendition whose key repeats one already heard in that hour.
+// `renditions` [{ piece, t, key }]. → { worst: { piece, hour, loops }, pass }
+export function loopsPerPieceHour(renditions, { max = MUSIC_LIMITS.loopsPerPieceHour, from = 0 } = {}) {
+    const seen = new Map();
+    const loops = new Map();
+    for (const r of renditions) {
+        const hour = Math.floor((r.t - from) / 3600);
+        const k = `${r.piece}|${hour}`;
+        const keys = seen.get(k) || new Set();
+        if (keys.has(r.key)) loops.set(k, (loops.get(k) || 0) + 1);
+        keys.add(r.key);
+        seen.set(k, keys);
+    }
+    let worst = { piece: null, hour: null, loops: 0 };
+    for (const [k, n] of loops) if (n > worst.loops) worst = { piece: k.split('|')[0], hour: Number(k.split('|')[1]), loops: n };
+    return { worst, pass: worst.loops <= max };
+}
+
+// Motif statements per clock hour: `times` in seconds from `from`.
+// → { perHour: number[], max, pass }
+export function perHourMax(times, from, to, max = MUSIC_LIMITS.motifPerHour) {
+    const hours = Math.max(1, Math.ceil((to - from) / 3600 - 1e-9));
+    const perHour = Array.from({ length: hours }, (_, h) => times.filter(t => t >= from + h * 3600 && t < from + (h + 1) * 3600).length);
+    const worst = Math.max(...perHour);
+    return { perHour, max: worst, pass: worst <= max };
+}
+
+// D1 duty for one regime: music-on share of the regime's time.
+export function judgeDuty(share, regime, bands = D1_DUTY) {
+    const [lo, hi] = bands[regime];
+    return { share, band: [lo, hi], pass: finite(share) && share >= lo - 1e-9 && share <= hi + 1e-9 };
 }

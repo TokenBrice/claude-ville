@@ -22,6 +22,7 @@ import {
     DEFAULT_CAPTIONS,
     DEFAULT_SOUND_COUNT_HOURS,
     DEFAULT_SOUND_REMINDERS,
+    DEFAULT_TOWN_BAND_VOICE,
     SOUND_CALIBRATION,
     SOUND_CALIBRATION_KEY,
     SOUND_COUNT_HOURS_KEY,
@@ -30,12 +31,14 @@ import {
     SOUND_REMINDERS_KEY,
     SOUND_STEP_MAX,
     SOUND_VOLUME_KEY,
+    TOWN_BAND_VOICE_KEY,
     readCaptionSetting,
     readCountHours,
     readReminderSetting,
     readStoredSoundEnabled,
     readStoredTrimSteps,
     readStoredVolumeStep,
+    readTownBandVoice,
 } from './SoundSettings.js';
 import { STANDARD_VOLUME_STEP } from './audio/Loudness.js';
 
@@ -98,6 +101,7 @@ export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
     [SOUND_REMINDERS_KEY]: DEFAULT_SOUND_REMINDERS,
     [SOUND_COUNT_HOURS_KEY]: DEFAULT_SOUND_COUNT_HOURS,
     [CAPTIONS_KEY]: DEFAULT_CAPTIONS,
+    [TOWN_BAND_VOICE_KEY]: DEFAULT_TOWN_BAND_VOICE,
     'cv-auto-camera': '1',
     'claudeville.alerts.desktop': '0',
     'claudeville.sidebarCollapsed': 'false',
@@ -123,6 +127,7 @@ export function readPersistedSettings(storage = globalThis.window?.localStorage)
         soundReminders: readReminderSetting(storage),
         soundCountHours: readCountHours(storage),
         captions: readCaptionSetting(storage),
+        soundTownBandVoice: readTownBandVoice(storage),
         autoCamera: storageValue(storage, 'cv-auto-camera') !== '0',
         desktopAlerts: storageValue(storage, 'claudeville.alerts.desktop') === '1',
         sidebarCollapsed: storageValue(storage, 'claudeville.sidebarCollapsed') === 'true',
@@ -489,6 +494,7 @@ export class TopBar {
         for (const [name, step] of Object.entries(AUDIO_MIXER_DEFAULTS)) {
             this.audio?.setLayerStep(name, step);
         }
+        eventBus.emit('sound:town-band-voice', { voice: DEFAULT_TOWN_BAND_VOICE });
         if (!this.audio) this._renderDeferredAudioControl();
         eventBus.emit('camera:auto-camera', { enabled: true });
         if (this.attention) {

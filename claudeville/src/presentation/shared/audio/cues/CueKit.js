@@ -180,6 +180,16 @@ const LEVEL_LANE_BY_SIGNAL = Object.freeze({ summons: 'needsYou', answered: 'nee
 const OUTCOME_LEVEL_LANE = Object.freeze({ minor: 'outcomeMinor', medium: 'outcomeMedium', major: 'outcomeMajor' });
 
 // The voice a kind sounds with: a reminder rings its family's entry voice.
+// Over the Town band a Minor outcome's knock is voiced a little firmer: its
+// trim may never lift it (S2), and over the band it would sit more than 1 LU
+// under the bed (the Town band window, −1…+3 LU) while still ≥ 3 LU under a
+// routine cue.
+const TOWN_BAND_MINOR_VOICE_DB = 0.6;
+function presetVoiceDb(kind, cue) {
+    if (cue.preset !== 'townBand' || STRATUM_BY_KIND[kind] !== 'outcome') return 0;
+    return (cue.tier ?? outcomeTier(kind)) === 'minor' ? TOWN_BAND_MINOR_VOICE_DB : 0;
+}
+
 // The Signals-only answer is levelled as part of the call it answers.
 function voiceKind(kind, cue) {
     if (kind === 'reminder') return reminderVoice(cue).kind;
@@ -220,6 +230,7 @@ const VOICE_LEVEL_DB = Object.freeze({
     subagentReturn: 0.2,
     dispatch: 5.7,
     hourBell: -3,
+    aurora: -1.5,
     linkLost: 3,
 });
 
@@ -557,9 +568,8 @@ export class CueKit {
         this._urgentTrims = [];
         // The last sounding urgent call per lane, for its flock (SIG-10).
         this._leads = new Map();
-        // Cue randomness never shares a stream with the world (S6). Thunder
-        // is weather: its grains draw from a stream no agent cue touches.
-        this._rng = rngStream('cues');
+        // Thunder is weather (S6): its plans draw from a stream no agent cue
+        // touches. Cue noise grains draw nothing: the pool places them.
         this._thunderRng = rngStream('cue.thunder');
         // The last strikes' pool reads ({ index, offset, span }), so the
         // next strike reads fresh noise.
@@ -1001,7 +1011,7 @@ export class CueKit {
     _openSink(kind, cue, t, cancels, { trimDb = this._levelDb(kind, cue) } = {}) {
         const placement = cuePlacement(kind, cue);
         const out = this.engine.context.createGain();
-        const voiceDb = VOICE_LEVEL_DB[voiceKind(kind, cue)] ?? 0;
+        const voiceDb = (VOICE_LEVEL_DB[voiceKind(kind, cue)] ?? 0) + presetVoiceDb(kind, cue);
         out.gain.value = CUE_STAGE_GAIN * dbToGain(trimDb + voiceDb) * placement.gain;
         const voice = this.engine.connectVoice(out, {
             bus: 'cue',
@@ -1099,28 +1109,44 @@ export class CueKit {
                 nodes.push(osc);
             }
         }
-        if (plan.transient) this._noiseBurst(t, voice, { ...plan.transient, type: 'bandpass' }, sources, nodes);
-        if (plan.thud) this._noiseBurst(t, voice, { hz: plan.thud.lp, q: 0.7, dur: plan.thud.dur, gain: plan.thud.gain, type: 'lowpass' }, sources, nodes);
+        const bursts = [];
+        if (plan.transient) bursts.push({ ...plan.transient, type: 'bandpass' });
+        if (plan.thud) bursts.push({ hz: plan.thud.lp, q: 0.7, dur: plan.thud.dur, gain: plan.thud.gain, type: 'lowpass' });
+        this._noiseBursts(t, voice, bursts, sources, nodes);
         this._track(sink, t, voice, sources, nodes);
         return hz;
     }
 
-    // Filtered noise from the engine's pool at a fresh seeded offset:
-    // 0 → gain in 0.5 ms, then a fall with τ = dur / 3.
-    _noiseBurst(t, into, { hz, q, dur, gain, type }, sources, nodes) {
-        const src = this.engine.noiseSource?.('white', { rng: this._rng, oneShot: true });
+    // Filtered noise bursts at `t`, all from one pool grain read for the
+    // longest of them (placed at its real start for its real length:
+    // NoisePool.reserveOneShot), so a strike takes one read of the pool.
+    // Each: 0 → gain in 0.5 ms, then a fall with τ = dur / 3.
+    _noiseBursts(t, into, bursts, sources, nodes) {
+        if (!bursts.length) return;
+        const stop = t + Math.max(...bursts.map(b => b.dur)) * 6 + 0.02;
+        const src = this._noiseGrain(t, stop);
         if (!src) return;
         const ctx = this.engine.context;
-        const filter = makeFilter(ctx, type, hz, { q });
-        const env = ctx.createGain();
-        env.gain.setValueAtTime(0, t);
-        env.gain.linearRampToValueAtTime(gain, t + 0.0005);
-        env.gain.setTargetAtTime(0, t + 0.0005, dur / 3);
-        src.connect(filter).connect(env).connect(into);
+        for (const { hz, q, dur, gain, type } of bursts) {
+            const filter = makeFilter(ctx, type, hz, { q });
+            const env = ctx.createGain();
+            env.gain.setValueAtTime(0, t);
+            env.gain.linearRampToValueAtTime(gain, t + 0.0005);
+            env.gain.setTargetAtTime(0, t + 0.0005, dur / 3);
+            src.connect(filter).connect(env).connect(into);
+            nodes.push(filter, env);
+        }
         src.start(t);
-        src.stop(t + dur * 6 + 0.02);
+        src.stop(stop);
         sources.push(src);
-        nodes.push(src, filter, env);
+        nodes.push(src);
+    }
+
+    // A white-noise grain read from `t` until `stop`, placed by the pool
+    // ≥ 5 s from every live lane for its whole read; null without a pool.
+    _noiseGrain(t, stop) {
+        const ctx = this.engine.context;
+        return this.engine.noisePool?.reserveOneShot(ctx, 'white', stop - t, { at: t }) ?? null;
     }
 
     // A short sine mode: 1 ms attack, fall to silence with T60.
@@ -1144,7 +1170,7 @@ export class CueKit {
         if (!sink) return;
         const { voice, nodes } = this._voiceGain(sink, gain);
         const sources = [];
-        this._noiseBurst(t, voice, { ...ESCAPEMENT.click, type: 'bandpass' }, sources, nodes);
+        this._noiseBursts(t, voice, [{ ...ESCAPEMENT.click, type: 'bandpass' }], sources, nodes);
         this._mode(t, voice, noteHz(ESCAPEMENT.bodySemi), ESCAPEMENT.bodyGain, ESCAPEMENT.bodyT60, sources, nodes);
         this._track(sink, t, voice, sources, nodes);
     }
@@ -1154,7 +1180,7 @@ export class CueKit {
         if (!sink) return;
         const { voice, nodes } = this._voiceGain(sink, gain);
         const sources = [];
-        this._noiseBurst(t, voice, { ...STONE.click, type: 'bandpass' }, sources, nodes);
+        this._noiseBursts(t, voice, [{ ...STONE.click, type: 'bandpass' }], sources, nodes);
         for (const [hz, g] of STONE.modes) this._mode(t, voice, hz, g, STONE.t60, sources, nodes);
         this._track(sink, t, voice, sources, nodes);
     }
@@ -1193,7 +1219,8 @@ export class CueKit {
     // the dispatch whoosh, the lantern going out.
     _sweep(sink, t, { fromHz, toHz, q, sec }, gain, { peakAt }) {
         if (!sink) return;
-        const src = this.engine.noiseSource?.('white', { rng: this._rng, oneShot: true });
+        const end = t + Math.max(sec, peakAt + 0.06);
+        const src = this._noiseGrain(t, end + 0.02);
         if (!src) return;
         const ctx = this.engine.context;
         const { voice, nodes } = this._voiceGain(sink, gain);
@@ -1201,7 +1228,6 @@ export class CueKit {
         filter.frequency.setValueAtTime(fromHz, t);
         filter.frequency.exponentialRampToValueAtTime(toHz, t + sec);
         const env = ctx.createGain();
-        const end = t + Math.max(sec, peakAt + 0.06);
         env.gain.setValueAtTime(0, t);
         env.gain.linearRampToValueAtTime(1, t + peakAt);
         env.gain.linearRampToValueAtTime(0, end);

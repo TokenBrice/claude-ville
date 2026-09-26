@@ -20,6 +20,12 @@
 // the camera on `atmosphere:updated`, and only when their placement changed.
 // The work stratum lives only in this director: the Town band carries none.
 //
+// The music (plan 6.6, D1): the Village plays only when the occasion clock
+// says so — a whole tune for dawn, noon, dusk, night, a release, a return
+// or the first enable, and between them a closed fragment now and then —
+// never while resting, in rain or storm, within 5 s of an urgent call or
+// over a wait of 6 min or more. Every start carries its reason.
+//
 // Atmosphere source: the World renderer broadcasts its per-frame snapshot as
 // `atmosphere:updated` (so debug overrides and village weather influence are
 // heard, not just seen). When that stream goes quiet — Dashboard mode stops
@@ -38,10 +44,11 @@ import {
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { ritualDownbeat, RITUAL_GESTURE_PERIOD_MS } from '../../character-mode/RitualConductor.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
-import { readCountHours } from '../SoundSettings.js';
+import { readCountHours, readMusicLedger, writeMusicLedger } from '../SoundSettings.js';
+import { actionableAgents, waitAnchor } from '../../../domain/services/SignalLedger.js';
 import { clamp01 } from './AudioEngine.js';
 import { rngStream } from './Rng.js';
-import { cueLifecycleDecision, updateQuietFloor } from './CueGovernor.js';
+import { CUE_LANES, cueLifecycleDecision, isUrgentCueLane, updateQuietFloor } from './CueGovernor.js';
 import { cuePlacementKind, laneForCueKind } from './cues/CueKit.js';
 import {
     buildingOf,
@@ -71,6 +78,10 @@ import { VillageHumLayer } from './layers/VillageHumLayer.js';
 import { WorkshopLayer } from './layers/WorkshopLayer.js';
 import { HeldNote } from './layers/HeldNote.js';
 import { Sequencer } from './music/Sequencer.js';
+import { arrangementWeatherFor } from './music/Voicings.js';
+import { FRAGMENTS, OCCASIONS } from './bgm/BgmSongbook.js';
+import { bandForWorking } from './BgmDirector.js';
+import { OccasionClock } from './OccasionClock.js';
 
 const TICK_MS = 1000;
 const DIRECTOR_ID = 'ambient';
@@ -110,11 +121,14 @@ const RESTING_WEATHER_SCALE = 0.3;
 // village at a smaller share: with its rain and strikes at 0.3 the resting
 // storm sat at A − 6.7 (S2 wants A − 10 ± 3).
 const RESTING_STORM_SCALE = 0.1;
-// The Village composer's level, re-measured on the Wave-4 bed: at 0.375 the
-// continuous composer carried the busy session to A + 7.2 (music the loudest
-// stem, 3.3 dB under the program's energy); 0.25 puts it at bed level.
-// The occasion clock (6.6) replaces this constant.
+// The Village music's level (an occasion or a fragment, when the occasion
+// clock plays one), re-measured on the Wave-4 bed: 0.25 puts a tune at bed
+// level, inside S2's "≤ bed + 3 LU" (the continuous composer at 0.375 had
+// carried the busy session to A + 7.2). Night plays it at 0.7 of that.
 const VILLAGE_MUSIC_LEVEL = 0.25;
+// A hard zero (6.6, S7) fades what plays out over this long, from now: the
+// rest of the tune would sound over the rain, the rest or the urgent call.
+const MUSIC_RELEASE_SEC = 0.4;
 // Slew (s) of the first tick after start(): layers reach their targets under
 // the director crossfade instead of trailing it by their slow time constants.
 const PRIME_TIME_CONSTANT = 0.05;
@@ -198,6 +212,13 @@ function copyPosition(position) {
         ...(Number.isFinite(Number(position.y)) ? { y: Number(position.y) } : {}),
         ...(Number.isFinite(Number(position.screenX)) ? { screenX: Number(position.screenX) } : {}),
     };
+}
+
+// How long the oldest audible actionable agent has waited (ms), from the
+// same anchor the ladder and the sidebar read; 0 with no wait.
+function oldestWaitMs(agents, now) {
+    const anchor = waitAnchor(actionableAgents(agents)[0]);
+    return anchor > 0 ? Math.max(0, now - anchor) : 0;
 }
 
 // The payload fields a cue's place is resolved from (SpatialField.resolveCueSpot).
@@ -290,6 +311,16 @@ export class AudioDirector {
         // D3 (5.6): the blurred Village's quiet mix; the controller moves the
         // faders, this director turns the ghosts off and stops hearing music.
         this._quiet = false;
+        // Music as an event (6.6, D1): the occasion clock decides when the
+        // Village plays; it lives with the director across rebuilds, so the
+        // hour's duty and the once-per-day ledger survive an absence. The
+        // arrangement, band and waiting cadence are sent on change only.
+        this._occasions = null;
+        this._pausedAt = null;
+        this._arrangement = null;
+        this._band = null;
+        this._musicWaiting = null;
+        this._musicInput = null;
         // Probe and QA seams: World's drawn downbeats and camera.
         this._downbeatOverride = null;
         this._cameraOverride = null;
@@ -337,6 +368,19 @@ export class AudioDirector {
         this._applyQuota();
         this._heldNote = new HeldNote(this.engine, options);
         this._heldNote.start();
+        // The music hears of every start: the first-ever enable of this
+        // profile earns a whole occasion, any other start today's welcome.
+        this._occasions ??= new OccasionClock({
+            rng: rngStream('music.village.occasion'),
+            ledger: readMusicLedger(),
+            fragments: FRAGMENTS,
+            occasions: OCCASIONS,
+        });
+        this._occasions.noteEnable(Date.now());
+        this._noteReturnFromPause();
+        this._arrangement = null;
+        this._band = null;
+        this._musicWaiting = null;
 
         this._subscribeRuntime();
         this._interval = setInterval(() => this._tick(), TICK_MS);
@@ -366,6 +410,7 @@ export class AudioDirector {
     pause() {
         if (!this.running || this.paused) return this.engine.now();
         this.paused = true;
+        this._pausedAt = Date.now();
         clearInterval(this._interval);
         this._interval = null;
         this.engine.transport.pause();
@@ -377,10 +422,20 @@ export class AudioDirector {
     resume() {
         if (!this.running || !this.paused) return;
         this.paused = false;
+        this._noteReturnFromPause();
         this.engine.fadeDirector(DIRECTOR_ID, 1, { duration: RESUME_OPEN_SEC });
         this.engine.transport.resume();
         this._interval = setInterval(() => this._tick(), TICK_MS);
         this._tick();
+    }
+
+    // A pause (hidden tab, "Signals only" blur) that lasted long enough is a
+    // return (SCN-3: 20 min away); a rebuild after it counts the same.
+    _noteReturnFromPause() {
+        if (this._pausedAt === null) return;
+        const now = Date.now();
+        this._occasions?.noteReturn(now, now - this._pausedAt);
+        this._pausedAt = null;
     }
 
     // The local clock's phase: the same source before and after an absence
@@ -433,6 +488,8 @@ export class AudioDirector {
         if (next === this._quiet) return;
         this._quiet = next;
         this.layers.workshops?.setGhosts(!next);
+        // The quiet mix has no music (D3): what plays is released.
+        this._syncMusic(Date.now());
         this._syncHeldNote();
     }
 
@@ -634,6 +691,15 @@ export class AudioDirector {
             // ~2 Hz from the World loop: the continuous emitters follow the camera (5.8).
             this._placeEmitters();
         });
+        // An urgent call (or a ladder reminder) releases the Village music and
+        // holds the next start for 5 s (S7). The cue arbiter is shared: its
+        // last cue is the one this caption announces.
+        on('audio:cue-played', () => {
+            const lane = this.cueKit?.lastCue?.lane;
+            if (!isUrgentCueLane(lane) && lane !== CUE_LANES.REMINDER) return;
+            this._occasions?.noteUrgent(Date.now());
+            this._syncMusic(Date.now());
+        });
     }
 
     _rememberAgentAudioContext(agent) {
@@ -746,7 +812,10 @@ export class AudioDirector {
             ...this._presetDetails(),
         };
         details.spot = this._spotFor(details, agentId);
-        return this.cue(outcome.kind, details);
+        const played = this.cue(outcome.kind, details);
+        // The release occasion follows its gold peal (6.8, SCN-6).
+        if (played && outcome.kind === 'release' && this._signalRouting) this._occasions?.noteRelease(Date.now());
+        return played;
     }
 
     _spotFor(payload, agentId) {
@@ -867,6 +936,59 @@ export class AudioDirector {
         this._syncHeldNote();
     }
 
+    // The arrangement (6.8/6.9: the grade keyframe, weather and season), the
+    // working band (MUSL-3) and the waiting cadence (MUS-9, S6: under music a
+    // wait is an open cadence), each sent when it changes; the sequencer
+    // applies them at its next chunk or phrase end.
+    _feedMusic({ weather, season, keyframe, working }) {
+        const music = this.layers.music;
+        if (!music) return;
+        const arrangement = { weather: arrangementWeatherFor(weather, season), season, keyframe };
+        const last = this._arrangement;
+        if (!last || last.weather !== arrangement.weather || last.season !== season || last.keyframe !== keyframe) {
+            this._arrangement = arrangement;
+            music.setArrangement(arrangement);
+        }
+        const band = bandForWorking(working);
+        if (band !== this._band) {
+            this._band = band;
+            music.setBand(band);
+        }
+        const waiting = this._waiting > 0;
+        if (waiting !== this._musicWaiting) {
+            this._musicWaiting = waiting;
+            music.setWaiting(waiting);
+        }
+    }
+
+    // The occasion clock's answer for now, played: a start becomes one
+    // occasion or fragment with its reason; a hard zero releases what plays.
+    _syncMusic(now) {
+        const music = this.layers.music;
+        const clock = this._occasions;
+        if (!music || !clock || !this.running || this.paused || !this._musicInput) return;
+        const decision = clock.decide(now, { ...this._musicInput, quiet: this._quiet, playing: Boolean(music.busy) });
+        if (clock.takeLedgerChange()) writeMusicLedger(clock.ledger);
+        if (!decision) return;
+        if (decision.action === 'stop') {
+            music.release({ reason: decision.reason, fadeSec: MUSIC_RELEASE_SEC });
+            return;
+        }
+        const result = decision.kind === 'fragment'
+            ? music.playFragment(decision.cellRef, { reason: decision.reason })
+            : music.playOccasion(decision.occasion, { reason: decision.reason });
+        if (!result?.ok) {
+            clock.refused(now);
+            return;
+        }
+        const audioNow = this.engine.now();
+        clock.started(now, decision, {
+            startsAtMs: now + (result.startsAt - audioNow) * 1000,
+            endsAtMs: now + (result.endsAt - audioNow) * 1000,
+        });
+        if (clock.takeLedgerChange()) writeMusicLedger(clock.ledger);
+    }
+
     // Open while an audible agent waits, no music plays, the feed is live
     // and the Village is heard; the reason it closes tells the note whether
     // to resolve (answered) or only fade.
@@ -922,6 +1044,8 @@ export class AudioDirector {
     // wait last; nothing when nothing happened.
     _playDigest(payload) {
         if (!(Number(payload?.awayMs) >= UNATTENDED_DIGEST_THRESHOLD_MS)) return false;
+        // A long absence earns the return occasion, after the digest (SCN-4).
+        this._occasions?.noteReturn(Date.now(), Number(payload.awayMs));
         const notes = digestNotes(payload);
         if (!notes.length) return false;
         return this.cue('digest', { notes, soundOnly: true, ...this._presetDetails() });
@@ -1084,9 +1208,20 @@ export class AudioDirector {
         this._syncWorkshops(now);
         this.layers.music.setLevel(levels.music, prime ?? 3);
         this.layers.music.setPhase(phase);
-        this.layers.music.setRestScale(1 - clamp01(working / 8) * 0.35);
         this._levels = levels;
         this._applyWaiting(waitState(this.world, now));
+        this._feedMusic({ weather, season, keyframe: arc.keyframe, working });
+        this._musicInput = {
+            phase,
+            phaseProgress,
+            minuteOfDay: Number.isFinite(minute) ? minute : 12 * 60,
+            keyframe: arc.keyframe,
+            working,
+            resting,
+            raining: this._weatherBed,
+            oldestWaitMs: oldestWaitMs(counts.audible, now),
+        };
+        this._syncMusic(now);
         this._syncHeldNote();
 
         // The hour chime (D7): the phrase by day, a soft chime at 21:00; the
@@ -1113,6 +1248,7 @@ export class AudioDirector {
     }
 
     snapshot() {
+        const occasion = this._occasions?.snapshot(Date.now()) ?? null;
         return {
             running: this.running,
             state: this.hidden
@@ -1126,6 +1262,17 @@ export class AudioDirector {
             levels: { ...this._levels },
             lastCue: this.cueKit?.lastCue || null,
             nowPlaying: this.layers.music?.nowPlaying || null,
+            // Music as an event (6.6): what plays and why, the occasion
+            // clock's band, duty over the last hour, next fragment, pending
+            // occasions and every recent start with its reason.
+            music: {
+                nowPlaying: this.layers.music?.snapshot?.() ?? null,
+                lastStart: occasion?.last ?? null,
+                occasion,
+                input: this._musicInput ? { ...this._musicInput, quiet: this._quiet } : null,
+                arrangement: this._arrangement,
+                band: this._band,
+            },
             ceremonies: this.governor?.snapshot().ceremonies ?? null,
             // Honest silence (3.7): what the continuous strata may follow.
             audible: { ...this._audible, waiting: this._waiting },

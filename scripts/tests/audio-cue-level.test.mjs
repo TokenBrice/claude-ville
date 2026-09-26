@@ -65,8 +65,8 @@ test('with no bed to read, an urgent cue takes the median recent trim, else +6 d
 });
 
 test('routine and Medium/Major outcomes move within -6…+12 dB; unknown beds leave them at 0', () => {
-    // routine floor +3, aim +5.
-    assert.equal(cueTrimDb({ lane: 'routine', nominalLufsM: -38, bedLufs: -44 }), -1);
+    // routine floor +3, aim +5.3.
+    assert.ok(Math.abs(cueTrimDb({ lane: 'routine', nominalLufsM: -38, bedLufs: -44 }) + 0.7) < 1e-9);
     assert.equal(cueTrimDb({ lane: 'routine', nominalLufsM: -38, bedLufs: -70 }), -6);
     assert.equal(cueTrimDb({ lane: 'routine', nominalLufsM: -38, bedLufs: -20 }), 12);
     // Major outcome floor +4, aim +5.
@@ -83,7 +83,7 @@ test('Minor outcomes, scenery and thunder are never lifted', () => {
     // Scenery floor 0, aim +1: a -33.5 bell over a -40 bed comes down 5.5 dB.
     assert.equal(cueTrimDb({ lane: 'scenery', nominalLufsM: -33.5, bedLufs: -40 }), -5.5);
     // A Minor outcome aims just under its floor: the knock sits at the bed's level.
-    assert.ok(Math.abs(cueTrimDb({ lane: 'outcomeMinor', nominalLufsM: -43, bedLufs: -45 }) + 2.2) < 1e-9);
+    assert.ok(Math.abs(cueTrimDb({ lane: 'outcomeMinor', nominalLufsM: -43, bedLufs: -45 }) + 2.5) < 1e-9);
 });
 
 // --- CueKit: note-timed ducks that leave with their cue -----------------------

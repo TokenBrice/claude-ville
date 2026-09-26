@@ -128,7 +128,7 @@ test('lane margins follow both heads over their shared life', () => {
     assert.equal(loopDistance(1, 20.3, 21.3), 2);
 });
 
-test('continuous lanes take their own buffers; a one-shot keeps 5 s clear for its whole life', () => {
+test('continuous lanes take their own buffers, then pack 5 s apart and leave the widest arc free', () => {
     const rng = rngStream('test.lanes');
     const periods = [22.05, 22.61, 23.17];
     const lanes = [];
@@ -137,14 +137,27 @@ test('continuous lanes take their own buffers; a one-shot keeps 5 s clear for it
         lanes.push({ ...lane, ...pickLane(rng, periods, lanes, lane) });
     }
     assert.deepEqual(lanes.map(l => l.index).sort(), [0, 1, 2]);
-    for (let k = 0; k < 40; k++) {
-        const shot = { start: 30, rate: 0.65, end: 30 + 8 / 0.65, oneShot: true };
-        const { index, offset } = pickLane(rng, periods, lanes, shot);
-        const placed = { ...shot, index, offset };
-        for (const other of lanes.filter(l => l.index === index)) {
-            assert.ok(laneMargin(placed, other, periods[index]) >= LANE_SEPARATION_SEC);
-        }
+
+    // Three lanes on the one white loop, the later ones starting later: each
+    // keeps 5 s from the others, and a short grain still fits 5 s from all.
+    const white = [NOISE_POOL.white.frames[0] / NOISE_POOL.white.sampleRate];
+    const whiteLanes = [];
+    for (const start of [0, 3.7, 11.2]) {
+        const lane = { start, rate: 1, end: Infinity, oneShot: false };
+        whiteLanes.push({ ...lane, ...pickLane(rng, white, whiteLanes, lane) });
     }
+    for (let i = 0; i < whiteLanes.length; i++) {
+        for (let j = i + 1; j < whiteLanes.length; j++) assert.ok(laneMargin(whiteLanes[i], whiteLanes[j], white[0]) >= LANE_SEPARATION_SEC);
+    }
+    const grain = { start: 12, end: 12.1, rate: 1 };
+    const placed = { ...grain, ...placeOneShot(white, whiteLanes, grain) };
+    for (const lane of whiteLanes) assert.ok(laneMargin(placed, lane, white[0]) >= LANE_SEPARATION_SEC);
+
+    // Continuous lanes never move for a one-shot.
+    const shot = { index: 0, offset: 0, start: 0, rate: 1, end: 9, oneShot: true };
+    const a = pickLane(rngStream('test.lanes.b'), white, [shot], { start: 0, rate: 1, end: Infinity });
+    const b = pickLane(rngStream('test.lanes.b'), white, [], { start: 0, rate: 1, end: Infinity });
+    assert.deepEqual(a, b);
 });
 
 // A fresh grain per strike: two strikes' reads on one pool buffer are
@@ -208,6 +221,16 @@ test('a placed one-shot packs against what is there and keeps an unused buffer w
     // An avoided read fences its buffer off for a span that cannot fit beside it.
     const avoid = [{ index: 1, offset: 12, span: 8 }];
     assert.notEqual(placeOneShot(periods, [wind], shot, avoid).index, 1);
+});
+
+test('a short grain finds the one gap three live heads leave on a buffer', () => {
+    // The white pool's single buffer carrying three continuous lanes 5.2 s
+    // apart: only the far arc (10.4 → 21.3 s) holds a point 5 s from all.
+    const period = NOISE_POOL.white.frames[0] / NOISE_POOL.white.sampleRate;
+    const lanes = [0, 5.2, 10.4].map(offset => ({ index: 0, offset, start: 0, rate: 1, end: Infinity }));
+    const grain = { start: 0.21, end: 0.21 + 0.09, rate: 1 };
+    const placed = { ...grain, ...placeOneShot([period], lanes, grain) };
+    for (const lane of lanes) assert.ok(laneMargin(placed, lane, period) >= LANE_SEPARATION_SEC, `${placed.offset.toFixed(2)} vs ${lane.offset}`);
 });
 
 test('with no clear offset anywhere, a one-shot takes the clearest', () => {

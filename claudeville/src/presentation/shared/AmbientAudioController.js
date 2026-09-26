@@ -35,10 +35,12 @@ import {
     readStoredTrimSteps,
     readReminderSetting,
     readStoredVolumeStep,
+    readTownBandVoice,
     recalibrateStoredSound,
     soundStep,
     writeStoredTrimSteps,
     writeStoredVolumeStep,
+    writeTownBandVoice,
 } from './SoundSettings.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 
@@ -286,6 +288,9 @@ export class AmbientAudioController {
         // Subscribed after the directors, so the entry cue has been placed.
         this._onAttentionRaised = () => this._openLadderWait();
         eventBus.on('attention:raised', this._onAttentionRaised);
+        // D2: SET's Town band voice lands at the band's next chunk.
+        this._onTownBandVoice = () => this.directors.bgm?.setVoice?.(readTownBandVoice());
+        eventBus.on('sound:town-band-voice', this._onTownBandVoice);
         this._signalTimer = setInterval(() => this._signalTick(), SIGNAL_TICK_MS);
 
         this._renderControls();
@@ -940,6 +945,7 @@ export class AmbientAudioController {
             userActivated: this.userActivated,
             soundState: this._soundState(),
             background: this.background,
+            townBandVoice: readTownBandVoice(),
             blurred: this._windowBlurred,
             // D3 (5.6): the faders' quiet mix, `{ active, preset, factors }`.
             quietMix: { ...this._quietMix, factors: { ...this._quietMix.factors } },
@@ -954,6 +960,12 @@ export class AmbientAudioController {
             setLayerStep: (name, step) => this.setLayerStep(name, step),
             setMode: (m) => this.setMode(m),
             setBackground: (b) => this.setBackground(b),
+            // D2, the same path as SET's row: stored, then heard at the next chunk.
+            setTownBandVoice: (voice) => {
+                const stored = writeTownBandVoice(voice);
+                eventBus.emit('sound:town-band-voice', { voice: stored });
+                return stored;
+            },
             setLayer: (name, level, holdMs) => this.director.forceLayer?.(name, level, holdMs) ?? false,
             cue: (kind) => this.director.cue(kind),
             meters: (opts) => this._meters(opts),
@@ -977,6 +989,7 @@ export class AmbientAudioController {
         this._signalTimer = null;
         eventBus.off('attention:acknowledged', this._onAcknowledged);
         eventBus.off('attention:raised', this._onAttentionRaised);
+        eventBus.off('sound:town-band-voice', this._onTownBandVoice);
         this._closeLadderWait();
         clearTimeout(this._sectionLabelTimer);
         this._sectionLabelTimer = null;

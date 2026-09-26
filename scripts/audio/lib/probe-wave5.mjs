@@ -256,12 +256,13 @@ export function levelDiffCurve(a, b, sr, { hopSec = 0.1, floor = 1e-7 } = {}) {
 
 // The work fader as the accents hear it: each accent's work-stem peak over
 // its first 40 ms minus its own published gain (dB), median per building
-// over [from, to]. Blurred minus unblurred windows of one render, building
-// by building, is the fader's step (ghosts off reshuffle the schedule, so
-// accents cannot be paired with a twin). → { n, byBuilding: { b: dB } }
-export function accentGainOffsetDb(r, { from, to }) {
+// over the `windows` ([{ from, to }]). Blurred minus unblurred windows of one
+// render, building by building, is the fader's step (ghosts off reshuffle
+// the schedule, so accents cannot be paired with a twin). → { n, byBuilding: { b: dB } }
+export function accentGainOffsetDb(r, windows) {
     const rows = {};
-    for (const s of strikesOf(r, { from, to }).filter(x => x.kind === 'accent' && !x.flam && Number.isFinite(x.gainDb))) {
+    const strikes = windows.flatMap(w => strikesOf(r, w));
+    for (const s of strikes.filter(x => x.kind === 'accent' && !x.flam && Number.isFinite(x.gainDb))) {
         const p = slice(r.stems.work, r.sr, s.at, s.at + 0.04);
         const d = toDb(Math.max(peaks(p.L).sample, peaks(p.R).sample)) - s.gainDb;
         if (Number.isFinite(d)) (rows[s.building] ||= []).push(d);

@@ -652,15 +652,15 @@ export class AudioEngine {
         return -10 * Math.log10(g1 + (g0 - g1) * Math.exp(-(t - at) / BED_TAU_SEC));
     }
 
-    // A noise lane (AMB-3): an unstarted, looping AudioBufferSourceNode on
-    // the colour's stereo pool buffer ('white' | 'brown'); `start(t)` reads
-    // from a seeded offset ≥ 5 s from every live lane (`startOffset`).
-    // `oneShot` lanes (knocks, hats, thunder) avoid live lanes, but
-    // continuous lanes never avoid them, so world offsets never depend on
-    // work events.
-    noiseSource(color, { rng, oneShot = false } = {}) {
+    // A continuous noise lane (AMB-3): an unstarted, looping
+    // AudioBufferSourceNode on the colour's stereo pool buffer ('white' |
+    // 'brown'); `start(t)` reads from a seeded offset ≥ 5 s from every live
+    // continuous lane (`startOffset`). One-shot grains (knocks, thunder) take
+    // `noisePool.reserveOneShot` instead, which avoids every live lane, so
+    // world offsets never depend on work events.
+    noiseSource(color, { rng } = {}) {
         if (!this.context) return null;
-        return this.noisePool.source(this.context, color, { rng, oneShot });
+        return this.noisePool.source(this.context, color, { rng });
     }
 
     // Rain dust or bubbles (worklets/noise-processor.js): a 2-channel

@@ -1,3 +1,5 @@
+import { SEATS } from '../../../claudeville/src/presentation/shared/audio/music/Voicings.js';
+
 // The virtual-clock probe's named scenes (page/virtual.js specs). Scene
 // time: `warmup` seconds settle the enable fade and the director's level
 // slews and are discarded; action `at` is seconds after warmup.
@@ -7,6 +9,18 @@ const DAY = Object.freeze({ phase: 'day', progress: 0.5, weather: { type: 'clear
 const RAIN = Object.freeze({ phase: 'day', progress: 0.5, weather: { type: 'rain', intensity: 0.7, windX: 0.6 } });
 const STORM = Object.freeze({ phase: 'day', progress: 0.5, weather: { type: 'storm', intensity: 0.9, windX: 1.2 } });
 const NIGHT = Object.freeze({ phase: 'night', progress: 0.5, weather: { type: 'clear', windX: 0.3 } });
+
+// Wave 6: the music ledger (OccasionClock, SoundSettings MUSIC_LEDGER_KEY)
+// on the virtual clock's calendar day (page/virtual-clock.js: 2026-07-15).
+// A settled profile has had its first occasion and today's welcome, so
+// only the phase occasions and fragments remain; no ledger at all is the
+// first-ever enable.
+export const MUSIC_LEDGER_KEY = 'claudeville.sound.musicLedger';
+export const TOWN_BAND_VOICE_KEY = 'claudeville.sound.townBandVoice';
+export const VIRTUAL_DAY = '2026-07-15';
+export function settledLedger(occasions = []) {
+    return JSON.stringify({ firstOccasion: true, welcomeDay: VIRTUAL_DAY, islandDay: VIRTUAL_DAY, occasions });
+}
 
 // One lane's cue through the real producers (the harness page has no
 // AttentionService or VillageDirector, so the probe emits their events):
@@ -70,8 +84,10 @@ const BUSY_WORLD = { counts: { working: 6, idle: 2 } };
 export const SCENES = {
     // Anchor A: calm clear day, world stratum only (work and music trims off).
     anchor: { mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, layerSteps: { hum: 0, music: 0 }, atmosphere: DAY, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] },
-    villageBusy: { mode: 'ambient', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 180, actions: busyActions(), stems: ['world', 'work', 'music', 'cue'] },
-    townBand: { mode: 'bgm', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 180, actions: busyActions(), stems: ['music', 'cue'] },
+    // `musicProbe`: the sequencer's marks and the MusicClock frames (6.5's
+    // routine-cue clash reads both).
+    villageBusy: { mode: 'ambient', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 180, actions: busyActions(), stems: ['world', 'work', 'music', 'cue'], musicProbe: {} },
+    townBand: { mode: 'bgm', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 180, actions: busyActions(), stems: ['music', 'cue'], musicProbe: {} },
     rain: { mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: RAIN, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] },
     storm: {
         mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: STORM, warmup: 10, seconds: 60, stems: ['world', 'limiterIn', 'limiterOut'], collect: ['starts'],
@@ -83,9 +99,12 @@ export const SCENES = {
     // The anchor's staging at night (C-AMB-3's night bed; 4.1's sea at night).
     nightClear: { mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, layerSteps: { hum: 0, music: 0 }, atmosphere: NIGHT, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] },
     // S2's night row with its occasion (the program, music at its default)
-    // against noon at the same load (gated from Wave 6: scene:nightProgram).
-    nightProgram: { mode: 'ambient', world: { counts: { working: 3, idle: 1 } }, atmosphere: NIGHT, warmup: 10, seconds: 60 },
-    noonProgram: { mode: 'ambient', world: { counts: { working: 3, idle: 1 } }, atmosphere: DAY, warmup: 10, seconds: 60 },
+    // against noon at the same load, each with its phase occasion (6.3,
+    // 6.6): a profile that has had its first occasion and today's welcome,
+    // at 22:30 (the night waltz) and 12:30 (noon), so the occasion starts
+    // at the enable and fills the window.
+    nightProgram: { mode: 'ambient', world: { counts: { working: 3, idle: 1 } }, atmosphere: { ...NIGHT, hour: 22.5 }, storage: { [MUSIC_LEDGER_KEY]: settledLedger() }, warmup: 4, seconds: 75, stems: ['world', 'work', 'music'], musicProbe: { stopLint: true } },
+    noonProgram: { mode: 'ambient', world: { counts: { working: 3, idle: 1 } }, atmosphere: { ...DAY, hour: 12.5 }, storage: { [MUSIC_LEDGER_KEY]: settledLedger() }, warmup: 4, seconds: 75, stems: ['world', 'work', 'music'], musicProbe: {} },
     // Must-never 12: AMBIENT → BGM at 15 s, back at 45 s.
     presetSwitch: {
         mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: DAY, warmup: 15, seconds: 65,
@@ -110,11 +129,18 @@ export const SCENES = {
     },
 };
 
-// Cue lanes over each probe bed: 3 placements per lane, 7 s apart, each on
-// its own agent, lanes interleaved so no placement follows its own lane.
-// Scenery (the aurora) has a 120 s CueKit cooldown and the release is the
-// one Major outcome, so each is placed once. The Village bed is S2's
-// "Village bed (no music)": its music is held at 0.
+// Cue lanes over each probe bed: 3 placements per lane, each on its own
+// agent, on a slot grid 7 s apart with the lanes interleaved (so a lane's
+// own placements sit 42–56 s apart, clear of CueKit's per-kind cooldowns and
+// the governor's spacing). Each lane renders alone on that grid: the bed
+// under a placement depends on the cues before it (their ducks, and the
+// music, which takes different turns for good after the first cue), so a
+// lane over one shared render moved whenever another lane's voice changed
+// (limit's presence rise over music read 6.8, then 6.0 dB, its voice
+// untouched). Scenery (the aurora) has a 120 s CueKit cooldown and the
+// release is the one Major
+// outcome, so each is placed once. The Village bed is S2's "Village bed (no
+// music)": its music is held at 0.
 export const MARGIN_LANES = ['needsYou', 'error', 'limit', 'routine', 'scenery', 'outcomeMinor', 'outcomeMedium', 'outcomeMajor'];
 export const MARGIN_BEDS = {
     village: { bed: 'village', mode: 'ambient', atmosphere: DAY, force: { music: 0 } },
@@ -125,19 +151,25 @@ export const MARGIN_BEDS = {
 export const MARGIN_PLACEMENTS = 3;
 const MARGIN_SPACING = 7;
 const PLACEMENTS_BY_LANE = { scenery: 1, outcomeMajor: 1 };
+// After a lane's last placement: its onset (≤ 5 s after the marker when
+// the score waits for a beat) and the 2.5 s margin window.
+const MARGIN_TAIL_SEC = 8;
 
-export function marginScene(bedName) {
+export function marginScene(bedName, lane) {
     const bed = MARGIN_BEDS[bedName];
+    if (!bed || !MARGIN_LANES.includes(lane)) throw new Error(`unknown margin scene ${bedName}:${lane}`);
     const actions = [];
     let agent = 0;
     let slot = 0;
     for (let p = 0; p < MARGIN_PLACEMENTS; p++) {
-        for (const lane of MARGIN_LANES) {
-            if (p >= (PLACEMENTS_BY_LANE[lane] ?? MARGIN_PLACEMENTS)) continue;
-            actions.push(...laneActions(lane, 3 + slot++ * MARGIN_SPACING, agent++));
+        for (const l of MARGIN_LANES) {
+            if (p >= (PLACEMENTS_BY_LANE[l] ?? MARGIN_PLACEMENTS)) continue;
+            if (l === lane) actions.push(...laneActions(l, 3 + slot * MARGIN_SPACING, agent));
+            slot++;
+            agent++;
         }
     }
-    const seconds = 3 + slot * MARGIN_SPACING + 2;
+    const seconds = Math.max(...actions.map(a => a.at)) + MARGIN_TAIL_SEC;
     return {
         mode: bed.mode, world: { counts: { working: agent + 2 } }, atmosphere: bed.atmosphere, force: bed.force,
         warmup: 10, seconds, actions, stems: ['cue', 'world', 'work', 'music', 'limiterIn', 'limiterOut'],
@@ -227,37 +259,6 @@ export const AIR_CUE_SCENE = {
 
 // Air contribution: the village busy scene with every air send cut.
 export const VILLAGE_DRY_SCENE = { ...SCENES.villageBusy, stems: [], airOff: 'all' };
-
-// 2.3: every shipped piece, one per render, all random draws pinned to 0.5
-// (so the Wave-1 reference and the sequencer make the same choices), the
-// music bus traced. Town band: one loop of the pinned piece. Village: one
-// song at a held level (isolated), started at its first slot.
-export const TOWN_BAND_PIECES = ['willowbrook', 'cobblemarket', 'millwheel', 'starfall', 'moonwell'];
-const VILLAGE_TUNE_BPM = { hearthfire: 88, millbrook: 72, lanternway: 56, starwake: 60 };
-const VILLAGE_TUNE_PHASE = { hearthfire: 'day', millbrook: 'day', lanternway: 'night', starwake: 'night' };
-// Pickup (1 bar) + four 4-bar sections + outro (1.5 bars).
-const VILLAGE_SONG_BARS = 18.5;
-
-export function sequencerPieces(pieces) {
-    const town = TOWN_BAND_PIECES.map((name) => {
-        const piece = pieces.find(p => p.name === name);
-        if (!piece) throw new Error(`the songbook has no ${name}`);
-        const loopSec = piece.chords.length * 4 * 60 / piece.bpm;
-        return {
-            key: `townBand:${name}`, preset: 'townBand', piece: name, loopSec,
-            spec: { mode: 'bgm', bgm: { piece: name }, world: BUSY_WORLD, atmosphere: piece.family === 'night' ? NIGHT : DAY, warmup: 0, seconds: Math.ceil(loopSec + 4), rng: { constant: 0.5 }, trace: 'music' },
-        };
-    });
-    const village = Object.entries(VILLAGE_TUNE_BPM).map(([name, bpm]) => ({
-        key: `village:${name}`, preset: 'village', piece: name, loopSec: null,
-        spec: {
-            mode: 'ambient', isolate: 'music', music: { piece: name, level: 0.6 }, world: { counts: { working: 4, idle: 1 } },
-            atmosphere: VILLAGE_TUNE_PHASE[name] === 'night' ? NIGHT : DAY, warmup: 0,
-            seconds: Math.ceil(4 + VILLAGE_SONG_BARS * 4 * 60 / bpm + 4), rng: { constant: 0.5 }, trace: 'music',
-        },
-    }));
-    return [...town, ...village];
-}
 
 // ================================================================ Wave 3 ====
 
@@ -393,11 +394,12 @@ export const HELD_OPEN_SEC = 15;
 export const HELD_ANSWER_SEC = 60;
 // `signals`: the window blurred with *In the background: Signals only* — the
 // signal route alone (the plan's Signals preset until 7.2 adds it).
-export function heldNoteScene({ working, mode = 'ambient', music = null, signals = false, seconds = HELD_ANSWER_SEC + 15, answerAt = HELD_ANSWER_SEC } = {}) {
+// `music`: the Village plays (no ledger: the first-ever enable's occasion).
+export function heldNoteScene({ working, mode = 'ambient', music = false, signals = false, seconds = HELD_ANSWER_SEC + 15, answerAt = HELD_ANSWER_SEC } = {}) {
     return {
         mode, atmosphere: DAY, warmup: 10, seconds,
         world: { counts: { working }, agents: [{ status: 'working' }] },
-        ...(music ? { music } : { force: mode === 'ambient' ? { music: 0 } : {} }),
+        ...(music ? {} : { force: mode === 'ambient' ? { music: 0 } : {} }),
         ...(signals ? { storage: { 'claudeville.sound.background': 'signals' } } : {}),
         stems: ['signalBed', 'world', 'work', 'music', 'cue'],
         actions: [
@@ -814,7 +816,8 @@ export function workSlotsScene({ select = true } = {}) {
 }
 
 // 5.6 (D3): blur 20 s, focus 40 s, against a twin that never blurs.
-// village: music playing (the fader must take it to 0), workers; held: no
+// village: music playing (no ledger: the first-ever enable's occasion, which
+// the blur must release), workers; held: no
 // music and a waiting agent (the held note sounds; a needs-you at 30 s);
 // town: the Town band (−3 dB) with the same workers (no work stratum, D4).
 export const QUIET_MIX = Object.freeze({ blurAt: 20, focusAt: 40, needsYouAt: 30 });
@@ -823,7 +826,7 @@ export function quietMixScene(kind, { blur = true } = {}) {
     const f = workFixture(QUIET_WORKERS, { seconds: 55, seed: 23, idle: 2 });
     const window = blur ? [{ at: QUIET_MIX.blurAt, window: 'blur' }, { at: QUIET_MIX.focusAt, window: 'focus' }] : [];
     const base = { atmosphere: DAY, warmup: 10, seconds: 55, world: f.world, actions: [...f.actions, ...window] };
-    if (kind === 'village') return { ...base, mode: 'ambient', music: { piece: 'millbrook', level: 1 }, stems: ['world', 'work', 'music', 'signalBed'] };
+    if (kind === 'village') return { ...base, mode: 'ambient', stems: ['world', 'work', 'music', 'signalBed'] };
     if (kind === 'held') {
         return {
             ...base, mode: 'ambient', force: { music: 0 }, stems: ['world', 'work', 'signalBed', 'cue'],
@@ -866,5 +869,168 @@ export function cameraScene(harbor) {
             viewportW: c.viewportW, viewportH: c.viewportH, zoom: c.zoom,
             path: [{ at: c.stillUntil, cx: harbor.x - c.spanPx, cy: harbor.y }, { at: c.panUntil, cx: harbor.x + c.spanPx, cy: harbor.y }],
         },
+    };
+}
+
+// ================================================================ Wave 6 ====
+
+// Every seat a voicing can admit.
+export const MUSIC_SEATS = SEATS;
+// The night the Town band and the night occasion are judged at: 22:30 (the
+// `night` keyframe, inside the night occasion's 21:00–02:00).
+const NIGHT_2230 = Object.freeze({ ...NIGHT, hour: 22.5 });
+
+// A busy island for the Town band's percussion (6.9): every building
+// staffed, a tool start every couple of seconds.
+const TOWN_BUSY = [
+    { b: 'forge', gap: 2.5 }, { b: 'forge', gap: 3 }, { b: 'archive', gap: 3 }, { b: 'archive', gap: 3.5 }, { b: 'harbor', gap: 4 },
+    { b: 'taskboard', gap: 3 }, { b: 'observatory', gap: 3.5 }, { b: 'portal', gap: 3.5 }, { b: 'command', gap: 4 },
+];
+
+// 6.1 / 6.2 / 6.3: one piece of the Town band pinned in its full band (3)
+// at 13:00 (the `noon` keyframe) or 22:30 (`night`)
+// in one voice, every seat on its own stem (seat content never depends on
+// the band, so each lower band is the sum of the seats it admits), long
+// enough for one 16-bar rendition. `seconds` from the piece's own tempo.
+// The Town band has no world or work stratum (D4), so the air's wet return
+// (`airWet`) is the band's own room: the A/B hears music + air.
+export function musicStemScene({ piece, seconds, phase = 'day', voice = 'isle' }) {
+    const f = workFixture(TOWN_BUSY, { seconds: seconds + 4, seed: 61 });
+    return {
+        mode: 'bgm', world: f.world, actions: f.actions, atmosphere: phase === 'night' ? NIGHT_2230 : { ...DAY, hour: 13 },
+        bgm: { piece, band: 3, voice }, storage: { [TOWN_BAND_VOICE_KEY]: voice },
+        warmup: 1, seconds, stems: ['music', 'airWet'], lint: false,
+        musicProbe: { seatStems: MUSIC_SEATS, countNodes: true, stopLint: true },
+    };
+}
+
+// 6.6 / S7 / must-never 9 fixtures in Village. Times are scene seconds.
+//   first    the first-ever enable (no ledger): one full occasion, with
+//            its reason, the Village bed under it
+//   rain     rain from the start with the first occasion due; clears at 60
+//   wait     a needs-you 7 min old with the first occasion due; answered at 60
+//   urgent   rain until 20 (so nothing plays), a needs-you at 19: nothing
+//            may start before 24
+//   resting  a light village whose noon occasion is done: everyone idle at
+//            5 (resting from ≈ 35), working again at 150
+//   fragment a light village whose noon occasion is done: fragments only
+export const VILLAGE_FIXTURES = Object.freeze({
+    first: { seconds: 90 },
+    fragment: { seconds: 240 },
+    rain: { seconds: 110, clearAt: 60 },
+    wait: { seconds: 110, answerAt: 60, waitAgeMs: 7 * 60e3 },
+    urgent: { seconds: 90, clearAt: 20, urgentAt: 19 },
+    resting: { seconds: 240, idleAt: 5, workAt: 150 },
+});
+// The virtual clock's epoch (page/virtual-clock.js): Date.now() at the
+// scene's start is this plus the setup's few seconds.
+const VIRTUAL_EPOCH_MS = new Date(2026, 6, 15, 12, 0, 0).getTime();
+
+export function villageMusicScene(kind) {
+    const f = VILLAGE_FIXTURES[kind];
+    const base = { mode: 'ambient', warmup: 2, seconds: f.seconds, stems: ['world', 'work', 'music'], lint: false, musicProbe: {} };
+    const working = { counts: { working: 3, idle: 1 } };
+    if (kind === 'first') return { ...base, world: working, atmosphere: DAY };
+    if (kind === 'fragment') {
+        return { ...base, world: { counts: { working: 2, idle: 1 } }, atmosphere: { ...DAY, hour: 14 }, storage: { [MUSIC_LEDGER_KEY]: settledLedger(['noon']) } };
+    }
+    if (kind === 'rain') {
+        return { ...base, world: working, atmosphere: DAY_RAIN, actions: [{ at: f.clearAt, atmosphere: DAY, label: 'rain clears' }] };
+    }
+    if (kind === 'wait') {
+        return {
+            ...base, atmosphere: DAY,
+            world: { counts: { working: 3 }, agents: [{ status: 'waiting_on_user', awaitingSince: VIRTUAL_EPOCH_MS - f.waitAgeMs }] },
+            actions: [{ at: f.answerAt, status: { index: 3, status: 'working' }, label: 'answered' }, { at: f.answerAt + 0.01, ack: { index: 3 } }],
+        };
+    }
+    if (kind === 'urgent') {
+        return {
+            ...base, world: { counts: { working: 4 } }, atmosphere: DAY_RAIN,
+            actions: [...laneActions('needsYou', f.urgentAt, 3), { at: f.clearAt, atmosphere: DAY, label: 'rain clears' }],
+        };
+    }
+    if (kind === 'resting') {
+        const idle = [0, 1].map(index => ({ at: f.idleAt, status: { index, status: 'idle' }, label: 'idle' }));
+        const again = [0, 1].map(index => ({ at: f.workAt, status: { index, status: 'working' }, label: 'working' }));
+        return {
+            ...base, world: { counts: { working: 2 } }, atmosphere: { ...DAY, hour: 14 },
+            storage: { [MUSIC_LEDGER_KEY]: settledLedger(['noon']) }, actions: [...idle, ...again],
+        };
+    }
+    throw new Error(`unknown village fixture ${kind}`);
+}
+const DAY_RAIN = Object.freeze({ ...RAIN });
+
+// 6.7: an hour of the Town band by day on the virtual clock at 12 kHz
+// (program only; LUFS-I, re-hearing and the marks): the busy island, a
+// needs-you at 20:00 answered at 26:00 (the waiting cadence), arrivals.
+export const TOWN_SESSION = Object.freeze({ seconds: 3600, sampleRate: 12000, waitAt: 1200, answerAt: 1560 });
+export function townSessionScene({ seconds = TOWN_SESSION.seconds } = {}) {
+    const f = workFixture(TOWN_BUSY.map(a => ({ ...a, gap: a.gap * 3 })), { seconds, seed: 67 });
+    const actions = [...f.actions];
+    if (seconds > TOWN_SESSION.answerAt) {
+        actions.push(...laneActions('needsYou', TOWN_SESSION.waitAt, 1));
+        actions.push({ at: TOWN_SESSION.answerAt, status: { index: 1, status: 'working' }, label: 'answered' }, { at: TOWN_SESSION.answerAt + 0.01, ack: { index: 1 } });
+    }
+    return {
+        mode: 'bgm', world: { agents: [...f.world.agents, { status: 'idle' }, { status: 'idle' }] }, atmosphere: DAY,
+        warmup: 2, seconds, sampleRate: TOWN_SESSION.sampleRate, stepFrames: 256, stems: [], lint: false, actions, musicProbe: {},
+    };
+}
+
+// 6.7 MUS-9: the waiting cadence — a needs-you at 10 s, answered at 70 s.
+export const WAIT_CADENCE = Object.freeze({ waitAt: 10, answerAt: 70, seconds: 140 });
+export function waitCadenceScene() {
+    return {
+        mode: 'bgm', world: { counts: { working: 4 } }, atmosphere: DAY, warmup: 2, seconds: WAIT_CADENCE.seconds, sampleRate: 24000, lint: false,
+        actions: [
+            ...laneActions('needsYou', WAIT_CADENCE.waitAt, 0),
+            { at: WAIT_CADENCE.answerAt, status: { index: 0, status: 'working' }, label: 'answered' },
+            { at: WAIT_CADENCE.answerAt + 0.01, ack: { index: 0 } },
+        ],
+        musicProbe: {},
+    };
+}
+
+// 6.9: ten minutes of the Town band while the island's workshop density
+// climbs and falls — two-minute segments of more and busier agents, then
+// nobody working. Agents exist from the start (idle) and work only inside
+// their segment, starting a tool every `gap` s.
+export const PERCUSSION_SEGMENTS = Object.freeze([
+    { from: 0, to: 120, agents: [{ b: 'forge', gap: 9 }, { b: 'archive', gap: 10 }] },
+    { from: 120, to: 240, agents: [{ b: 'forge', gap: 4 }, { b: 'archive', gap: 5 }, { b: 'harbor', gap: 5 }, { b: 'taskboard', gap: 5 }] },
+    { from: 240, to: 360, agents: TOWN_BUSY.map(a => ({ ...a, gap: 2 })) },
+    { from: 360, to: 480, agents: [{ b: 'forge', gap: 6 }, { b: 'command', gap: 7 }, { b: 'observatory', gap: 7 }] },
+    { from: 480, to: 600, agents: [] },
+]);
+export function percussionScene({ segments = PERCUSSION_SEGMENTS, seconds = 600 } = {}) {
+    const rng = lcg(69);
+    const agents = [];
+    const actions = [];
+    for (const seg of segments) {
+        for (const a of seg.agents) {
+            const index = agents.length;
+            let k = 0;
+            agents.push({ status: 'idle' });
+            for (let t = seg.from + a.gap * rng(); t < seg.to - 0.5; t += a.gap * (0.7 + 0.6 * rng())) {
+                actions.push({ at: snapPoll(t), status: { index, status: 'working', fields: WORK_TOOLS[a.b](++k) }, label: `${a.b}#${index} tool` });
+            }
+            actions.push({ at: snapPoll(seg.to - 0.5), status: { index, status: 'idle', fields: { currentTool: null, currentToolInput: null } }, label: `${a.b}#${index} idle` });
+        }
+    }
+    return {
+        mode: 'bgm', world: { agents }, atmosphere: DAY, warmup: 2, seconds, sampleRate: 24000, lint: false,
+        actions: actions.sort((x, y) => x.at - y.at), stems: ['music'], musicProbe: { seatStems: ['lead', 'percussion'] },
+    };
+}
+
+// 6.9 MUS-16: rain arrives at 30 s over a busy Town band.
+export const RAIN_SWITCH_AT = 30;
+export function rainSwitchScene() {
+    const f = workFixture(TOWN_BUSY, { seconds: 70, seed: 71 });
+    return {
+        mode: 'bgm', world: f.world, atmosphere: DAY, warmup: 2, seconds: 70, sampleRate: 24000, lint: false,
+        actions: [...f.actions, { at: RAIN_SWITCH_AT, atmosphere: RAIN, label: 'rain' }], musicProbe: {},
     };
 }

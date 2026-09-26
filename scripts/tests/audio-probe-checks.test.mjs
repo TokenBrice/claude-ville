@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    avSync, compareOnsets, duckedTime, frameCostDelta, judgeAirT60, judgeBank, judgeLane, judgeSceneTargets, judgeSequencer,
-    judgeTransport, laneWindow, limiterGainReduction, maxGrIn, noiseLaneConflicts, onsetNear, pieceOnsets, resumeBurst,
+    avSync, duckedTime, frameCostDelta, judgeAirT60, judgeBank, judgeLane, judgeSceneTargets,
+    judgeTransport, laneWindow, limiterGainReduction, maxGrIn, noiseLaneConflicts, onsetNear, resumeBurst,
     stageOutcome, switchHoleBump,
 } from '../audio/lib/checks.mjs';
 
@@ -88,15 +88,15 @@ test('a criterion owned by a later wave defers at an earlier stage and gates onc
     assert.deepEqual(busy.map(r => [r.scene, r.outcome]), [['anchor', 'PASS'], ['villageBusy', 'FAIL']]);
 });
 
-test('the night program row (music included) defers to Wave 6', () => {
+test('the night program row (music included) holds the night under the session and darker than noon', () => {
     const scenes = { anchor: { lufsI: -38 }, nightProgram: { lufsI: -33, presenceDb: -60 }, noonProgram: { lufsI: -34, presenceDb: -58 } };
     const [, night] = judgeSceneTargets(scenes);
     assert.equal(night.scene, 'nightProgram');
-    assert.equal(night.pass, false);
-    assert.equal(night.outcome, 'DEFER');
-    assert.equal(judgeSceneTargets(scenes, undefined, { stage: 6 })[1].outcome, 'FAIL');
-    // ≤ A + 4 (the session) and 4 dB darker than noon passes.
-    assert.equal(judgeSceneTargets({ ...scenes, nightProgram: { lufsI: -34.5, presenceDb: -63 } }, undefined, { stage: 6 })[1].outcome, 'PASS');
+    assert.equal(night.outcome, 'FAIL');
+    // ≤ A + 4 (the session) and 4 dB darker than noon passes; either alone fails.
+    assert.equal(judgeSceneTargets({ ...scenes, nightProgram: { lufsI: -34.5, presenceDb: -63 } })[1].outcome, 'PASS');
+    assert.equal(judgeSceneTargets({ ...scenes, nightProgram: { lufsI: -34.5, presenceDb: -61 } })[1].outcome, 'FAIL');
+    assert.equal(judgeSceneTargets({ ...scenes, nightProgram: { lufsI: -33.5, presenceDb: -63 } })[1].outcome, 'FAIL');
 });
 
 test('scene targets are relative to the anchor measured in the same run', () => {
@@ -196,28 +196,6 @@ test('the bank fails over a client budget, over the total, or on a long slice', 
     assert.equal(judgeBank({ residentBytes: 60, byClient: { air: 15, noise: 45 } }, 6, budget).pass, false);
     assert.equal(judgeBank({ residentBytes: 10, byClient: { gulls: 10 } }, 1, budget).pass, false);
     assert.equal(judgeBank(null, 1, budget).pass, false);
-});
-
-test('piece onsets: one Village song ends at its first long gap, one Town band loop at its length', () => {
-    const song = pieceOnsets([10.5, 10, 10.25, 10.25, 11, 20, 20.5]);
-    assert.deepEqual(song.onsets, [0, 0.25, 0.5, 1]);
-    const loop = pieceOnsets([3, 4, 5, 6, 7, 8], { loopSec: 4 });
-    assert.deepEqual(loop.onsets, [0, 1, 2, 3]);
-});
-
-test('sequencer equivalence needs identical onsets and the level within 0.5 LU', () => {
-    const ref = { onsets: [0, 0.5, 1, 1.5], lufsI: -40 };
-    // Level drifts against the current baseline, not the Wave-1 render.
-    const same = [0, 0.5, 1, 1.5];
-    assert.equal(judgeSequencer(ref, { onsets: same, lufsI: -41.4 }, { baselineLufs: -41 }).pass, true);
-    assert.equal(judgeSequencer(ref, { onsets: same, lufsI: -41.6 }, { baselineLufs: -41 }).pass, false);
-    assert.equal(judgeSequencer(ref, { onsets: same, lufsI: -40 }).pass, false);
-    const moved = judgeSequencer(ref, { onsets: [0, 0.5, 1.002, 1.5], lufsI: -40 }, { baselineLufs: -40 });
-    assert.equal(moved.pass, false);
-    assert.equal(moved.onsets.firstMismatch.index, 2);
-    // A missing note is a mismatch even when every shared onset agrees.
-    assert.equal(compareOnsets(ref.onsets, [0, 0.5, 1]).identical, false);
-    assert.equal(judgeSequencer({ onsets: [], lufsI: -40 }, { onsets: [], lufsI: -40 }, { baselineLufs: -40 }).pass, false);
 });
 
 test('frame cost compares sound-on and sound-off p95', () => {

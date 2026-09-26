@@ -129,7 +129,8 @@ export const AUDIBILITY_WINDOWS = Object.freeze({
         // Also at least 3 LU under the routine cue it accompanies.
         outcomeMinor: Object.freeze({
             village: Object.freeze({ min: 0, max: 3 }),
-            music: Object.freeze({ min: 0, max: 3 }),
+            // Town band only (Village music is off the bed during cues): a knock may sit 1 LU under the band.
+            music: Object.freeze({ min: -1, max: 3 }),
             weather: Object.freeze({ min: 0, max: 3 }),
             underRoutineLu: 3,
         }),
@@ -205,7 +206,7 @@ export const VOICE_REGISTRY = Object.freeze({
     'cue.release': Object.freeze({ nominalLufsM: -40.0, plr: 8.5 }),
     'cue.dispatch': Object.freeze({ nominalLufsM: -45.0, plr: 10.1 }),
     'cue.hourBell': Object.freeze({ nominalLufsM: -35.6, plr: 10.7 }),
-    'cue.aurora': Object.freeze({ nominalLufsM: -41.3, plr: 6.8 }),
+    'cue.aurora': Object.freeze({ nominalLufsM: -42.8, plr: 6.8 }),
     'cue.linkLost': Object.freeze({ nominalLufsM: -40.1, plr: 15.1 }),
     'cue.linkRestored': Object.freeze({ nominalLufsM: -38.1, plr: 6.1 }),
     'cue.digest': Object.freeze({ nominalLufsM: -36.0, plr: 12.0 }),
@@ -223,6 +224,33 @@ export const VOICE_REGISTRY = Object.freeze({
     'work.portal': Object.freeze({ nominalLufsM: -16.1, plr: 13.1 }),
     'work.command': Object.freeze({ nominalLufsM: -21.2, plr: 18.2 }),
     'work.harbor': Object.freeze({ nominalLufsM: -20.4, plr: 17.4 }),
+    // Wave 6 music instruments (music/Instruments.js, 6.1): one note at vel 1
+    // and gainDb 0 (lead voices A4; counter, engine, harp and pad A3; bass voices
+    // and the tom A2; two beats at 84 bpm; a brushes note that long is a
+    // swish), mono placed centre at equal power, all bakes resident, seed 1.
+    // Every instrument's level is calibrated so its role phrase (a lead
+    // line, a counter line, a walking bass, eighth-note engine, a harp
+    // arpeggio, whole-note pad, a four-bar percussion pattern) reads
+    // INSTRUMENT_REFERENCE_LUFS (−36.9 LUFS-I, today's chip lead) ± 0.2 LU,
+    // so a seat's dB fader is its stem level re the lead (MUSL-2).
+    'music.whistle': Object.freeze({ nominalLufsM: -36.3, plr: 1.2 }),
+    'music.lute': Object.freeze({ nominalLufsM: -35.8, plr: 10.5 }),
+    'music.harp': Object.freeze({ nominalLufsM: -34.3, plr: 4.8 }),
+    'music.upright': Object.freeze({ nominalLufsM: -33.7, plr: 8.1 }),
+    'music.marimba': Object.freeze({ nominalLufsM: -37.3, plr: 8.5 }),
+    'music.musicBox': Object.freeze({ nominalLufsM: -34.7, plr: 3.3 }),
+    'music.brushes': Object.freeze({ nominalLufsM: -32.2, plr: 6.2 }),
+    'music.brush': Object.freeze({ nominalLufsM: -36.8, plr: 20.2 }),
+    'music.shaker': Object.freeze({ nominalLufsM: -35.1, plr: 15.4 }),
+    'music.lowTom': Object.freeze({ nominalLufsM: -34.7, plr: 13.8 }),
+    'music.rim': Object.freeze({ nominalLufsM: -36.6, plr: 20.8 }),
+    'music.chipPulse25': Object.freeze({ nominalLufsM: -36.2, plr: 4.7 }),
+    'music.chipPulse12': Object.freeze({ nominalLufsM: -36.5, plr: 6.4 }),
+    'music.chipArp': Object.freeze({ nominalLufsM: -31.4, plr: 12.3 }),
+    'music.chipTri': Object.freeze({ nominalLufsM: -36.6, plr: 2.8 }),
+    'music.chipFlute': Object.freeze({ nominalLufsM: -34.8, plr: 6.6 }),
+    'music.chipBass': Object.freeze({ nominalLufsM: -36.4, plr: 1.5 }),
+    'music.chipHat': Object.freeze({ nominalLufsM: -34.9, plr: 20.9 }),
 });
 
 // Memory table (S8): resident AudioBuffer bytes per SampleBank client
@@ -236,6 +264,6 @@ export const MEMORY_BUDGET = Object.freeze({
     noise: 8 * MIB,        // noise buffer pool, ≤ 48 kHz
     workshop: 8 * MIB,     // workshop takes, 32 kHz (both phases' sets ≈ 6.1 MiB)
     rareWorld: 5 * MIB,    // gulls, clinks, groans, thunder takes, 32 kHz
-    music: 8 * MIB,        // music instruments (6.1), 32 kHz
+    music: 8 * MIB,        // music instruments (6.1), 12–24 kHz (every bake resident ≈ 7.9 MiB)
     cueStrikes: 2 * MIB,   // optional; the node path is the default, 48 kHz
 });

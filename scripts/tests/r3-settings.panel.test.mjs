@@ -12,9 +12,11 @@ import {
     readCaptionSetting,
     readCountHours,
     readReminderSetting,
+    readTownBandVoice,
     writeCaptionSetting,
     writeCountHours,
     writeReminderSetting,
+    writeTownBandVoice,
 } from '../../claudeville/src/presentation/shared/SoundSettings.js';
 import { STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 
@@ -90,6 +92,7 @@ test('settings review reads every operator preference, sound levels as steps', (
         'claudeville.sound.reminders': 'gentle',
         'claudeville.sound.countHours': '1',
         'claudeville.captions': 'all',
+        'claudeville.sound.townBandVoice': 'chip',
         'cv-auto-camera': '0',
         'claudeville.alerts.desktop': '1',
         'claudeville.sidebarCollapsed': 'true',
@@ -104,6 +107,7 @@ test('settings review reads every operator preference, sound levels as steps', (
         soundReminders: 'gentle',
         soundCountHours: true,
         captions: 'all',
+        soundTownBandVoice: 'chip',
         autoCamera: false,
         desktopAlerts: true,
         sidebarCollapsed: true,
@@ -149,6 +153,14 @@ test('SET writes the preferences its readers take on use', () => {
     assert.equal(writeCaptionSetting(undefined, storage), 'auto');
     assert.equal(readReminderSetting(storage), 'standard');
     assert.equal(readCaptionSetting(storage), 'auto');
+
+    // D2: the Isle Band unless the operator picked Chip restored.
+    assert.equal(readTownBandVoice(storage), 'isle');
+    assert.equal(writeTownBandVoice('chip', storage), 'chip');
+    assert.equal(readTownBandVoice(storage), 'chip');
+    assert.equal(writeTownBandVoice('kazoo', storage), 'isle');
+    storage.setItem('claudeville.sound.townBandVoice', 'console');
+    assert.equal(readTownBandVoice(storage), 'isle');
 });
 
 test('settings defaults hold the standard steps and the calibration key, written after the levels', () => {
@@ -164,6 +176,7 @@ test('settings defaults hold the standard steps and the calibration key, written
         'claudeville.sound.reminders': 'standard',
         'claudeville.sound.countHours': '0',
         'claudeville.captions': 'auto',
+        'claudeville.sound.townBandVoice': 'isle',
         'cv-auto-camera': '1',
         'claudeville.alerts.desktop': '0',
         'claudeville.sidebarCollapsed': 'false',

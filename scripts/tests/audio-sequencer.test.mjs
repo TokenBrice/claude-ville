@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Sequencer } from '../../claudeville/src/presentation/shared/audio/music/Sequencer.js';
+import { Sequencer, nearestVoicing } from '../../claudeville/src/presentation/shared/audio/music/Sequencer.js';
 import { MusicClock } from '../../claudeville/src/presentation/shared/audio/MusicClock.js';
 import { setRngSeed } from '../../claudeville/src/presentation/shared/audio/Rng.js';
 import {
-    PIECES, VILLAGE_TUNES, chordPitchClasses,
+    FRAGMENTS, PIECES, PLAYLISTS, chordPitchClasses,
 } from '../../claudeville/src/presentation/shared/audio/bgm/BgmSongbook.js';
 
-// ── a minimal offline audio graph: enough to schedule, and to hear onsets ──
+// ── a minimal offline audio graph: enough to schedule ──
 
 class FakeParam {
     constructor(value = 0) { this.value = value; }
@@ -16,48 +16,36 @@ class FakeParam {
     setTargetAtTime() { return this; }
     linearRampToValueAtTime() { return this; }
     exponentialRampToValueAtTime() { return this; }
+    setValueCurveAtTime() { return this; }
     cancelScheduledValues() { return this; }
     cancelAndHoldAtTime() { return this; }
 }
 
 class FakeNode {
-    constructor(ctx) {
-        this.ctx = ctx;
-        this.gain = new FakeParam(1);
-        this.pan = new FakeParam(0);
-        this.frequency = new FakeParam(440);
-        this.detune = new FakeParam(0);
-        this.Q = new FakeParam(1);
+    constructor() {
+        for (const name of ['gain', 'pan', 'frequency', 'detune', 'Q', 'playbackRate', 'offset']) this[name] = new FakeParam(1);
     }
     connect(node) { return node; }
     disconnect() {}
     setPeriodicWave() {}
-    start(t) {
-        if (this.isOscillator && !this.isLfo) {
-            this.ctx.onsets.push({ t, hz: this.frequency.value, scheduledAt: this.ctx.currentTime });
-        }
-        if (this.isNoise) this.ctx.hats.push(t);
-    }
+    start() {}
     stop() {}
 }
 
 function makeEngine() {
+    const node = () => new FakeNode();
     const ctx = {
         currentTime: 0,
-        onsets: [],
-        hats: [],
-        createGain() { return new FakeNode(ctx); },
-        createStereoPanner() { return new FakeNode(ctx); },
-        createBiquadFilter() { return new FakeNode(ctx); },
-        createOscillator() {
-            const node = new FakeNode(ctx);
-            node.isOscillator = true;
-            Object.defineProperty(node, 'type', {
-                set(value) { if (value === 'sine') node.isLfo = true; },
-                get() { return 'custom'; },
-            });
-            return node;
-        },
+        sampleRate: 48000,
+        createGain: node,
+        createStereoPanner: node,
+        createBiquadFilter: node,
+        createOscillator: node,
+        createBufferSource: node,
+        createPeriodicWave: () => ({}),
+        createBuffer: (channels, length, sampleRate) => ({
+            length, sampleRate, numberOfChannels: channels, getChannelData: () => new Float32Array(length),
+        }),
     };
     const processes = new Set();
     const engine = {
@@ -68,209 +56,256 @@ function makeEngine() {
             unregister(proc) { processes.delete(proc); },
         },
         now: () => ctx.currentTime,
-        groupInput: () => new FakeNode(ctx),
+        groupInput: node,
         stopGroup: () => ctx.currentTime,
-        airSendFrom: () => new FakeNode(ctx),
+        airSendFrom: node,
         wave: () => null,
-        noiseSource() {
-            const node = new FakeNode(ctx);
-            node.isNoise = true;
-            return node;
-        },
+        noiseSource: node,
     };
     return { engine, ctx };
 }
 
 // Drives the sequencer the way the Transport does: a tick every `step`
-// seconds hands it the window [cursor, now + horizon). `onTick(now)` runs after
-// each window, at the audio time the window was scheduled from.
+// seconds hands it the window [cursor, now + horizon).
 function drive(seq, ctx, { seconds, step = 0.25, horizon = 1.5, onTick = null, until = null }) {
     let cursor = ctx.currentTime;
     const end = ctx.currentTime + seconds;
     for (let now = ctx.currentTime; now < end; now += step) {
         ctx.currentTime = now;
-        const from = Math.max(cursor, now);
-        seq.schedule(from, now + horizon);
+        seq.schedule(Math.max(cursor, now), now + horizon);
         cursor = now + horizon;
         onTick?.(now);
         if (until?.()) break;
     }
 }
 
-function startSequencer(preset, { piece, phase = 'day' } = {}) {
+function startSequencer(preset, { piece = null, phase = 'day', band = null, keyframe = 'noon' } = {}) {
     setRngSeed('music-test');
     const { engine, ctx } = makeEngine();
     const seq = new Sequencer(engine, { preset });
     const marks = [];
     seq.observe(mark => marks.push(mark));
-    if (piece) assert.equal(seq.pin({ piece }), true);
+    if (piece || band != null) assert.equal(seq.pin({ piece, band }), true);
     seq.setPhase(phase);
+    seq.setArrangement({ weather: 'clear', season: 'summer', keyframe });
     seq.start();
     seq.setLevel(1, 0.1);
     return { seq, ctx, engine, marks };
 }
 
-const latest = (marks, t, kinds) => {
-    let found = null;
-    for (const mark of marks) if (kinds.includes(mark.kind) && mark.t <= t + 1e-9) found = mark;
-    return found;
-};
+const notes = (marks, from = -Infinity, to = Infinity) => marks.filter(m => m.kind === 'note' && m.t >= from && m.t < to);
 
-function townBandChordAtBeat(piece, beat) {
-    const entry = piece.chords[Math.floor(beat / 4)];
-    return Array.isArray(entry) ? entry[beat % 4 >= 2 ? 1 : 0] : entry;
+function writtenChordAtBeat(piece, beat) {
+    const bpb = piece.beatsPerBar || 4;
+    const entry = piece.chords[Math.floor(beat / bpb)];
+    return Array.isArray(entry) ? entry[beat % bpb >= bpb / 2 ? 1 : 0] : entry;
 }
 
-test('Town band: the MusicClock chord matches the song at every beat of every piece, and the bar nowPlaying shows', () => {
+test('Town band: the MusicClock chord follows the written chords through every pass, and the bar nowPlaying shows', () => {
     for (const piece of PIECES) {
-        const phase = piece.family === 'night' ? 'night' : 'day';
-        const { seq, ctx, engine, marks } = startSequencer('townBand', { piece: piece.name, phase });
-        const beatSec = 60 / piece.bpm;
-        const totalBeats = piece.chords.length * 4;
-        let checkedBeats = 0;
-        let checkedBars = 0;
+        const night = piece.family === 'night';
+        const { seq, ctx, engine, marks } = startSequencer('townBand', {
+            piece: piece.name, phase: night ? 'night' : 'day', keyframe: night ? 'night' : 'noon',
+        });
+        const bpb = piece.beatsPerBar || 4;
+        let checked = 0;
         drive(seq, ctx, {
-            seconds: 3 + 2 * totalBeats * beatSec,
+            seconds: 150,
+            until: () => marks.some(m => m.kind === 'pieceEnd'),
             onTick(now) {
-                // Every beat point that sounds in this tick.
-                const loop = latest(marks, now + 0.25, ['loop']);
-                if (!loop) return;
-                for (let b = 0; b < totalBeats; b++) {
-                    const t = loop.loopStart + b * beatSec;
-                    if (t < now || t >= now + 0.25) continue;
-                    assert.deepEqual(engine.musicClock.chordAt(t), chordPitchClasses(townBandChordAtBeat(piece, b)),
-                        `${piece.name} beat ${b}`);
-                    checkedBeats++;
-                }
                 const playing = seq.nowPlaying;
-                if (!playing) return;
+                const loop = [...marks].reverse().find(m => m.kind === 'loop' && m.t <= now);
+                if (!playing || !loop) return;
+                const inPass = [...marks].reverse().find(m => ['loop', 'chunk', 'pieceEnd'].includes(m.kind) && m.t <= now);
+                if (inPass.segment && inPass.segment !== 'pass') return;
                 const snapshot = engine.musicClock.snapshot(now);
-                assert.equal(playing.piece, piece.name);
                 assert.equal(snapshot.bar, playing.bar, `${piece.name} bar at ${now}`);
-                const barChord = piece.chords[playing.bar - 1];
-                const expected = Array.isArray(barChord) ? barChord[snapshot.beat >= 3 ? 1 : 0] : barChord;
-                assert.deepEqual(snapshot.chord, chordPitchClasses(expected));
-                checkedBars++;
+                const beat = (playing.bar - 1) * bpb + snapshot.beat - 1;
+                if (playing.bar >= piece.chords.length - 1) return; // colour and tag bars
+                assert.deepEqual(snapshot.chord, chordPitchClasses(writtenChordAtBeat(piece, beat)), `${piece.name} beat ${beat}`);
+                checked++;
             },
         });
-        assert.ok(checkedBeats >= totalBeats, `${piece.name}: every beat of a loop checked (${checkedBeats})`);
-        assert.ok(checkedBars > 0);
+        assert.ok(checked > 10, `${piece.name}: ${checked} beats checked`);
         seq.stop();
         assert.equal(engine.musicClock.playing(ctx.currentTime), false, 'stop clears the clock');
     }
 });
 
-test('Village: the MusicClock chord matches the tune at every beat of every section of every tune', () => {
-    for (const tune of VILLAGE_TUNES) {
-        const phase = tune.mode === 'minor' ? 'night' : 'day';
-        const { seq, ctx, engine, marks } = startSequencer('village', { piece: tune.name, phase });
-        const beatSec = 60 / tune.bpm; // day and night play at written tempo
-        const tonic = tune.sections.A.chords[0];
-        const checked = new Set();
-        drive(seq, ctx, {
-            seconds: 120,
-            until: () => marks.some(mark => mark.kind === 'songEnd' && mark.t < ctx.currentTime),
-            onTick(now) {
-                // Every beat point of every section (and of the rest after
-                // the song) that sounds in this tick.
-                const spans = marks.filter(mark => mark.kind === 'section' || mark.kind === 'songEnd');
-                spans.forEach((span, i) => {
-                    // The next mark is always known 1.5 s before it sounds.
-                    const next = Math.min(spans[i + 1]?.t ?? Infinity, now + 0.25);
-                    for (let k = 0; span.t + k * beatSec < next - 1e-6; k++) {
-                        const t = span.t + k * beatSec;
-                        if (t < now || t >= now + 0.25) continue;
-                        checked.add(`${span.t}:${k}`);
-                        if (span.kind === 'songEnd') {
-                            assert.deepEqual(engine.musicClock.chordAt(t), chordPitchClasses(tonic), 'idle after the song');
-                            assert.equal(engine.musicClock.playing(t), false);
-                            continue;
-                        }
-                        const expected = span.step === 'pickup' || span.step === 'outro'
-                            ? tonic
-                            : tune.sections[span.step].chords[Math.floor(k / 4)];
-                        assert.deepEqual(engine.musicClock.chordAt(t), chordPitchClasses(expected),
-                            `${tune.name} ${span.step} beat ${k}`);
-                    }
-                });
-            },
-        });
-        const steps = marks.filter(mark => mark.kind === 'section').map(mark => mark.step);
-        assert.deepEqual([steps[0], steps.at(-1)], ['pickup', 'outro'], `${tune.name} performed whole`);
-        // pickup 4 + four sections × 16 + outro 6 beats.
-        assert.ok(checked.size >= 4 + 4 * 16 + 6, `${tune.name}: ${checked.size} beats checked`);
-        seq.stop();
-    }
-});
-
-function onsetsFor(preset, piece, phase, windows) {
-    const { seq, ctx } = startSequencer(preset, { piece, phase });
+function noteKeys(preset, piece, windows) {
+    const { seq, ctx, marks } = startSequencer(preset, { piece });
+    if (preset === 'village') seq.playFragment(null, { reason: 'test' });
     drive(seq, ctx, { seconds: 70, ...windows });
     seq.stop();
-    // Every run has committed at least up to 70 s.
-    return ctx.onsets.filter(o => o.t < 70).map(o => `${o.t.toFixed(6)}@${o.hz.toFixed(3)}`).sort();
+    return notes(marks, 0, 60).map(m => `${m.t.toFixed(6)}@${m.seat}:${m.midi}`).sort();
 }
 
 test('the window size never changes the notes: per-window emission is exact', () => {
-    for (const [preset, piece, phase] of [['townBand', 'cobblemarket', 'day'], ['village', 'lanternway', 'night']]) {
-        const reference = onsetsFor(preset, piece, phase, { step: 0.25, horizon: 1.5 });
-        assert.ok(reference.length > 100);
-        assert.deepEqual(onsetsFor(preset, piece, phase, { step: 1, horizon: 1.5 }), reference, `${piece} 1 s ticks`);
-        assert.deepEqual(onsetsFor(preset, piece, phase, { step: 0.05, horizon: 0.3 }), reference, `${piece} short horizon`);
+    for (const [preset, piece] of [['townBand', PLAYLISTS.day[0]], ['village', null]]) {
+        const reference = noteKeys(preset, piece, { step: 0.25, horizon: 1.5 });
+        assert.ok(reference.length > 10);
+        assert.deepEqual(noteKeys(preset, piece, { step: 1, horizon: 1.5 }), reference, `${preset} 1 s ticks`);
+        assert.deepEqual(noteKeys(preset, piece, { step: 0.05, horizon: 0.3 }), reference, `${preset} short horizon`);
     }
 });
 
 test('a stalled window drops its late notes and never smears them onto now', () => {
-    const { seq, ctx } = startSequencer('townBand', { piece: 'millwheel' });
+    const { seq, ctx, marks } = startSequencer('townBand', { piece: PLAYLISTS.day[0] });
     drive(seq, ctx, { seconds: 5 });
-    const before = ctx.onsets.length;
-    // The tab stalls 3 s: the next window opens at now, past the cursor.
+    const before = marks.length;
     ctx.currentTime += 3;
     const dropped = seq.schedule(ctx.currentTime, ctx.currentTime + 1.5);
     assert.ok(dropped > 0, 'the notes of the gap are counted');
-    const late = ctx.onsets.slice(before).filter(o => o.t < o.scheduledAt);
-    assert.deepEqual(late, [], 'no note was placed in the past');
+    assert.deepEqual(notes(marks.slice(before)).filter(m => m.t < ctx.currentTime), [], 'no note was placed in the past');
     seq.stop();
 });
 
-test('a Town band section change lands on the next four-bar boundary', () => {
-    const { seq, ctx, marks } = startSequencer('townBand', { piece: 'millwheel' });
+test('a band change and an arrangement change land on the next four-bar boundary', () => {
+    const { seq, ctx, marks } = startSequencer('townBand', { piece: PLAYLISTS.day[0] });
     let askedAt = null;
     drive(seq, ctx, {
-        seconds: 40,
+        seconds: 60,
         onTick(now) {
             if (askedAt === null && now >= 6) {
-                seq.setSection('rest');
+                seq.setBand(0);
+                seq.setArrangement({ weather: 'rain' });
                 askedAt = now;
             }
         },
     });
-    const chunks = marks.filter(mark => mark.kind === 'loop' || mark.kind === 'chunk');
-    const firstRest = chunks.find(mark => mark.section === 'rest');
-    assert.ok(firstRest.t > askedAt, 'never retroactive');
-    assert.ok(chunks.filter(mark => mark.t < firstRest.t).every(mark => mark.section === 'steady'));
-    const beats = (firstRest.t - firstRest.loopStart) / firstRest.beatSec;
+    const chunks = marks.filter(m => m.kind === 'loop' || m.kind === 'chunk');
+    const first = chunks.find(m => m.band === 0);
+    assert.ok(first.t > askedAt, 'never retroactive');
+    const beats = (first.t - first.t0) / first.beatSec;
     assert.ok(Math.abs(beats / 16 - Math.round(beats / 16)) < 1e-9, 'on a four-bar boundary');
-    assert.ok(firstRest.t - askedAt <= 16 * firstRest.beatSec + 1.5, 'within one chunk plus the horizon');
+    assert.ok(first.t - askedAt <= 16 * first.beatSec + 1.5, 'within one chunk plus the horizon');
+    const switched = marks.find(m => m.kind === 'arrangement');
+    assert.equal(switched.weather, 'rain');
+    assert.equal(switched.t, first.t, 'the arrangement lands on the same boundary');
+    assert.deepEqual(notes(marks, first.t).filter(m => m.seat !== 'lead' && m.seat !== 'bass'), [], 'band 0 is the tune and the bass');
     seq.stop();
 });
 
-test('Village: a phase-family change sends the tune to its outro at the next section', () => {
-    const { seq, ctx, marks } = startSequencer('village', { phase: 'day' });
-    let switched = false;
+test('percussion: none while no building works, hits on the grid once they do', () => {
+    const piece = PIECES.find(p => p.percussion && Object.keys(p.percussion).length && p.family === 'day');
+    const { seq, ctx, marks } = startSequencer('townBand', { piece: piece.name, band: 3 });
+    drive(seq, ctx, { seconds: 30 });
+    // The workshop kit (the band's own groove is not the village's work).
+    const kit = m => m.kind === 'perc' && !m.groove;
+    assert.equal(marks.filter(kit).length, 0, 'working === 0 → zero workshop percussion');
+    seq.setWorkshopDensity(Object.fromEntries(Object.keys(piece.percussion).map(b => [b, 1])));
+    const from = ctx.currentTime + 1.5;
+    drive(seq, ctx, { seconds: 40 });
+    const hits = marks.filter(m => kit(m) && m.t >= from);
+    assert.ok(hits.length > 0);
+    const loop = marks.find(m => m.kind === 'loop');
+    const sixteenth = loop.beatSec / 4;
+    for (const hit of hits) {
+        const steps = (hit.t - loop.t0) / sixteenth;
+        assert.ok(Math.abs(steps - Math.round(steps)) < 1e-6, 'on the song grid');
+    }
+    seq.stop();
+});
+
+test('the waiting cadence turns phrase ends deceptive while someone waits and lands home after the answer', () => {
+    const piece = PIECES.find(p => p.phraseEnds?.length >= 2 && p.family === 'day');
+    const { seq, ctx, marks, engine } = startSequencer('townBand', { piece: piece.name });
+    seq.setWaiting(true);
+    let answered = false;
+    const heard = [];
     drive(seq, ctx, {
-        seconds: 90,
-        until: () => marks.some(mark => mark.kind === 'songEnd'),
+        seconds: 200,
+        until: () => marks.some(m => m.kind === 'cadence' && m.type === 'home'),
         onTick() {
-            if (!switched && marks.some(mark => mark.kind === 'section' && mark.step !== 'pickup')) {
-                seq.setPhase('night');
-                switched = true;
+            const cadences = marks.filter(m => m.kind === 'cadence');
+            // What the clock says at each cadence bar, while its frame is live.
+            for (const m of cadences.slice(heard.length)) heard.push(engine.musicClock.chordAt(m.t + 0.01));
+            if (!answered && cadences.length >= 2) {
+                seq.setWaiting(false);
+                answered = true;
             }
         },
     });
-    const steps = marks.filter(mark => mark.kind === 'section').map(mark => mark.step);
-    assert.equal(steps[0], 'pickup');
-    assert.ok(steps.length <= 4, `${steps.join(' ')}`);
-    assert.equal(steps.at(-1), 'outro');
+    const cadences = marks.filter(m => m.kind === 'cadence');
+    assert.ok(cadences.slice(0, 2).every(m => m.type === 'deceptive'), cadences.map(m => m.type).join(' '));
+    assert.equal(cadences.at(-1).type, 'home');
+    // The deceptive bar sounds its written alternative in the clock.
+    const end = piece.phraseEnds.find(e => e.bar + 1 === cadences[0].bar);
+    assert.deepEqual(heard[0], chordPitchClasses(end.chord));
     seq.stop();
+});
+
+test('no identical rendition of a piece comes back within an hour of the Town band', () => {
+    const { seq, ctx, marks } = startSequencer('townBand');
+    drive(seq, ctx, { seconds: 3600, step: 1 });
+    const seen = new Map();
+    for (const m of marks.filter(x => x.kind === 'rendition')) {
+        assert.ok(!seen.has(m.key) || m.t - seen.get(m.key) >= 3600, `${m.key} again after ${m.t - seen.get(m.key)} s`);
+        seen.set(m.key, m.t);
+    }
+    // Rotation: no piece restarts within 6 min of its end (4 min in a small set).
+    const ends = new Map();
+    for (const m of marks) {
+        if (m.kind === 'pieceEnd' && m.what === 'piece') ends.set(m.piece, m.t);
+        if (m.kind === 'start' && m.what === 'piece' && ends.has(m.piece)) {
+            const gap = PLAYLISTS.day.length >= 4 ? 360 : 240;
+            assert.ok(m.t - ends.get(m.piece) >= gap - 1e-6, `${m.piece} back after ${m.t - ends.get(m.piece)} s`);
+        }
+    }
+    // A true breath before every next first note.
+    for (const breath of marks.filter(m => m.kind === 'breath')) {
+        const next = notes(marks, breath.t).find(Boolean);
+        if (next) assert.ok(next.t >= breath.until - 0.0071, `breath ${next.t - breath.t} s`);
+    }
+    seq.stop();
+});
+
+test('Village plays nothing until asked, then one closed fragment with its reason', () => {
+    const { seq, ctx, marks } = startSequencer('village');
+    drive(seq, ctx, { seconds: 20 });
+    assert.equal(notes(marks).length, 0);
+    const fragment = FRAGMENTS.find(f => !f.night);
+    const started = seq.playFragment(fragment.id, { reason: 'fragment: busy village' });
+    assert.equal(started.ok, true);
+    assert.equal(seq.playFragment(null).ok, false, 'one at a time');
+    drive(seq, ctx, { seconds: 30, until: () => !seq.busy });
+    const played = notes(marks);
+    assert.ok(played.length > 0);
+    assert.ok(played[0].t >= started.startsAt - 0.0071);
+    assert.ok(played.at(-1).t < started.endsAt);
+    const start = marks.find(m => m.kind === 'start');
+    assert.equal(start.reason, 'fragment: busy village');
+    assert.ok(marks.some(m => m.kind === 'end'));
+    seq.stop();
+});
+
+test('a faded release ends the visit at the fade and nothing sounds after it', () => {
+    const { seq, ctx, marks } = startSequencer('village');
+    const started = seq.playOccasion('noon', { reason: 'noon' });
+    assert.equal(started.ok, true);
+    drive(seq, ctx, { seconds: 8 });
+    assert.equal(seq.release({ reason: 'rain', fadeSec: 0.4 }), true);
+    const placed = marks.length;
+    drive(seq, ctx, { seconds: 10 });
+    assert.equal(seq.busy, false);
+    assert.equal(seq.nowPlaying, null);
+    assert.deepEqual(notes(marks.slice(placed)), [], 'nothing is placed after the release');
+    assert.equal(marks.filter(m => m.kind === 'end').at(-1).reason, 'rain');
+    seq.stop();
+});
+
+test('nearest-inversion comp moves a few semitones per change inside its window', () => {
+    let prev = null;
+    let total = 0;
+    let changes = 0;
+    for (const name of ['A', 'E', 'F#m', 'D', 'A', 'D', 'Bm', 'E', 'A']) {
+        const { semis, moves } = nearestVoicing(name, prev);
+        assert.ok(semis[0] >= -17 && semis.at(-1) <= -3, `${name} ${semis}`);
+        if (prev) {
+            total += moves;
+            changes++;
+        }
+        prev = semis;
+    }
+    assert.ok(total / changes <= 4, `mean ${total / changes}`);
 });

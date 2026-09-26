@@ -15,131 +15,131 @@
       "stMax": -34.45
     },
     "margin:village:needsYou": {
-      "margin": 11.72
+      "margin": 11.8
     },
     "margin:village:error": {
-      "margin": 9.38
+      "margin": 9.78
     },
     "margin:village:limit": {
-      "margin": 7.99
+      "margin": 8.08
     },
     "margin:village:routine": {
-      "margin": 5.16
+      "margin": 5.02
     },
     "margin:village:scenery": {
-      "margin": 4.79
+      "margin": 4.31
     },
     "margin:music:needsYou": {
-      "margin": 9.19
+      "margin": 9.73
     },
     "margin:music:error": {
-      "margin": 8.05
+      "margin": 6.9
     },
     "margin:music:limit": {
-      "margin": 6.12
+      "margin": 7.4
     },
     "margin:music:routine": {
-      "margin": 5.27
+      "margin": 4.24
     },
     "margin:music:scenery": {
-      "margin": 3.88
+      "margin": 4.22
     },
     "scene:villageBusy": {
-      "lufsI": -33.85,
-      "stMax": -28.85
+      "lufsI": -35.48,
+      "stMax": -29.6
     },
     "margin:rain:needsYou": {
-      "margin": 8.65
+      "margin": 8.95
     },
     "margin:rain:error": {
-      "margin": 8.29
+      "margin": 8.84
     },
     "margin:rain:limit": {
-      "margin": 6.37
+      "margin": 6.71
     },
     "margin:rain:routine": {
-      "margin": 4.99
+      "margin": 5.65
     },
     "margin:rain:scenery": {
-      "margin": 4.28
+      "margin": 3.93
     },
     "scene:townBand": {
-      "lufsI": -31.16,
-      "stMax": -26.98
+      "lufsI": -31.28,
+      "stMax": -27.61
     },
     "margin:storm:needsYou": {
-      "margin": 7.72
+      "margin": 7.55
     },
     "margin:storm:error": {
-      "margin": 7.43
+      "margin": 7.9
     },
     "margin:storm:limit": {
-      "margin": 6.39
+      "margin": 6.37
     },
     "margin:storm:routine": {
-      "margin": 4.88
+      "margin": 5.71
     },
     "margin:storm:scenery": {
-      "margin": 3.14
+      "margin": 3.72
     },
     "scene:rain": {
       "lufsI": -37.78,
-      "stMax": -36.4
+      "stMax": -36.43
     },
     "scene:storm": {
-      "lufsI": -33.02,
-      "stMax": -30.3
+      "lufsI": -33.01,
+      "stMax": -30.21
     },
     "scene:resting": {
-      "lufsI": -47.26,
+      "lufsI": -47.27,
       "stMax": -44.62
     },
     "margin:music:outcomeMinor": {
-      "margin": 0.75
+      "margin": -0.57
     },
     "margin:music:outcomeMedium": {
-      "margin": 5.51
+      "margin": 3.83
     },
     "margin:music:outcomeMajor": {
-      "margin": 4.87
+      "margin": 4.57
     },
     "margin:village:outcomeMinor": {
-      "margin": 0.84
+      "margin": 0.55
     },
     "margin:village:outcomeMedium": {
-      "margin": 5.15
+      "margin": 5.16
     },
     "margin:village:outcomeMajor": {
-      "margin": 6.39
+      "margin": 6.86
     },
     "margin:rain:outcomeMinor": {
-      "margin": 1.02
+      "margin": 0.51
     },
     "margin:rain:outcomeMedium": {
-      "margin": 5.18
+      "margin": 5.46
     },
     "margin:rain:outcomeMajor": {
-      "margin": 6.3
+      "margin": 6.65
     },
     "margin:storm:outcomeMinor": {
-      "margin": 0.69
+      "margin": 0.23
     },
     "margin:storm:outcomeMedium": {
-      "margin": 4.99
+      "margin": 5.54
     },
     "margin:storm:outcomeMajor": {
-      "margin": 6.31
+      "margin": 6.62
     },
     "scene:nightProgram": {
-      "lufsI": -36.52,
-      "stMax": -34.52
+      "lufsI": -36.58,
+      "stMax": -30.13
     },
     "map:dawn:clear:resting": {
       "lufsI": -48.4
     },
     "scene:noonProgram": {
-      "lufsI": -34.77,
-      "stMax": -32.69
+      "lufsI": -36.13,
+      "stMax": -31.95
     },
     "map:dawn:clear:w3": {
       "lufsI": -38.61
@@ -226,7 +226,7 @@
       "lufsI": -37.91
     },
     "map:dawn:storm:resting": {
-      "lufsI": -47.06
+      "lufsI": -47.09
     },
     "map:day:fog:w12": {
       "lufsI": -37.91
@@ -238,7 +238,7 @@
       "lufsI": -33.42
     },
     "map:day:storm:resting": {
-      "lufsI": -47.13
+      "lufsI": -47.15
     },
     "map:day:storm:w3": {
       "lufsI": -33.47
@@ -334,7 +334,7 @@
       "lufsI": -39.56
     },
     "map:dusk:storm:resting": {
-      "lufsI": -47.2
+      "lufsI": -47.23
     },
     "map:night:fog:w12": {
       "lufsI": -39.56
@@ -346,7 +346,7 @@
       "lufsI": -33.54
     },
     "map:night:storm:resting": {
-      "lufsI": -46.71
+      "lufsI": -46.73
     },
     "map:night:storm:w3": {
       "lufsI": -33.31
@@ -358,49 +358,22 @@
       "margin": 6.14
     },
     "thunder:0.3": {
-      "margin": 2.78
+      "margin": 2.8
     },
     "thunder:0.7": {
-      "margin": 6.38
+      "margin": 5.66
     },
     "thunder:0.5": {
-      "margin": 4.73
+      "margin": 4.33
     },
     "thunder:1": {
-      "margin": 6.96
+      "margin": 6.35
     },
     "thunder:0.6": {
-      "margin": 5.55
+      "margin": 5.36
     },
     "sea:day": {
       "lufsI": -42.77
-    },
-    "sequencer:townBand:willowbrook": {
-      "lufsI": -28.19
-    },
-    "sequencer:townBand:cobblemarket": {
-      "lufsI": -28.87
-    },
-    "sequencer:townBand:millwheel": {
-      "lufsI": -29.11
-    },
-    "sequencer:townBand:starfall": {
-      "lufsI": -30.49
-    },
-    "sequencer:townBand:moonwell": {
-      "lufsI": -30.2
-    },
-    "sequencer:village:hearthfire": {
-      "lufsI": -31.2
-    },
-    "sequencer:village:millbrook": {
-      "lufsI": -31.13
-    },
-    "sequencer:village:lanternway": {
-      "lufsI": -29.73
-    },
-    "sequencer:village:starwake": {
-      "lufsI": -29.73
     },
     "work:reference:day": {
       "lufsI": -51.41

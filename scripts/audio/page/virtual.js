@@ -24,10 +24,10 @@ import { AudioEngine } from '/src/presentation/shared/audio/AudioEngine.js';
 import { cueScoreDiagnostics, scheduleAccent } from '/src/presentation/shared/audio/CueScore.js';
 import { laneForCueKind } from '/src/presentation/shared/audio/cues/CueKit.js';
 import { PROGRAM_TRIM_DB } from '/src/presentation/shared/audio/Loudness.js';
-import { PIECES } from '/src/presentation/shared/audio/bgm/BgmSongbook.js';
 import {
     LAYERS, atmosphereFor, atmosphereSummary, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
 } from './scene.js';
+import { installMusicProbe, stopLintRows } from './music.js';
 import { installRitualConductor, scriptedCamera } from './workshop.js';
 
 const vc = window.__vc;
@@ -87,22 +87,35 @@ function sceneContext({ seconds, stems, sampleRate }) {
     return ctx;
 }
 
-function attachStems(ctx, engine, stems) {
-    if (!stems.length) return;
+// Stem pairs ride one merger into the destination: channels 2k, 2k + 1 for
+// pair k (the program is pair 0). Bus stems attach after the enable; seat
+// stems (`seat:<name>`, Wave 6) attach as the sequencer builds its seats.
+function stemMerger(ctx, names) {
+    if (!names.length) return null;
     const merger = ctx.createChannelMerger(ctx.destination.channelCount);
-    stems.forEach((name, i) => {
-        const pick = STEM_SOURCES[name];
-        if (!pick) throw new Error(`unknown stem ${name}`);
-        const source = pick(engine);
-        if (!source) throw new Error(`the engine exposes no ${name} tap`);
+    merger.connect(ctx.destination);
+    const connect = (name, source) => {
+        const i = names.indexOf(name);
+        if (i < 0) return;
         // A mono source must reach both channels of its pair.
         const up = new GainNode(ctx, { channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' });
         const split = ctx.createChannelSplitter(2);
         source.connect(up).connect(split);
         split.connect(merger, 0, 2 + 2 * i);
         split.connect(merger, 1, 3 + 2 * i);
-    });
-    merger.connect(ctx.destination);
+    };
+    return { connect };
+}
+
+function attachStems(merger, engine, stems) {
+    for (const name of stems) {
+        if (name.startsWith('seat:')) continue;
+        const pick = STEM_SOURCES[name];
+        if (!pick) throw new Error(`unknown stem ${name}`);
+        const source = pick(engine);
+        if (!source) throw new Error(`the engine exposes no ${name} tap`);
+        merger.connect(name, source);
+    }
 }
 
 // Renders the context with the clock stepping; resolves the AudioBuffer.
@@ -177,8 +190,7 @@ async function pumpUntil(ready, what) {
 
 // Seeded streams (S6): the probe seed reaches Rng.js when the tree has it;
 // `rng: { constant }` pins every draw (Rng.js streams and Math.random) to
-// one value, which is how the sequencer-equivalence renders make two
-// implementations with different stream layouts make the same choices.
+// one value.
 async function setupRng(spec) {
     const rng = await import('/src/presentation/shared/audio/Rng.js').catch(() => null);
     const constant = spec.rng?.constant;
@@ -189,35 +201,6 @@ async function setupRng(spec) {
         rng.setRngSeed(Number(window.__HAR_SEED) >>> 0);
     }
     return rng ? { module: true, seed: rng.rngSeed?.() ?? null, constant: constant ?? null } : { module: false, constant: constant ?? null };
-}
-
-// The Village tunes' siblings (the Wave-1 pin excludes the sibling).
-const VILLAGE_SIBLING = { hearthfire: 'millbrook', millbrook: 'hearthfire', lanternway: 'starwake', starwake: 'lanternway' };
-
-// Pin one piece: the sequencer's `pin()`; the Wave-1 hooks (`_playlist`,
-// `_lastSongName`) only for rendering the sequencer check's reference from
-// the Wave-1 tree.
-function pinPiece(controller, spec) {
-    if (spec.bgm?.piece) {
-        const player = controller.directors?.bgm?.player;
-        if (!player) return 'no Town band player';
-        if (typeof player.pin === 'function') { player.pin({ piece: spec.bgm.piece }); return 'pin'; }
-        const only = PIECES.filter(p => p.name === spec.bgm.piece);
-        if (!only.length) throw new Error(`unknown BGM piece ${spec.bgm.piece}`);
-        player._playlist = () => only;
-        return 'playlist';
-    }
-    if (spec.music?.piece) {
-        const layer = controller.director?.layers?.music;
-        if (!layer) return 'no Village music layer';
-        // A held level from the start: the first song slot (3.75 s at
-        // rng 0.5) finds the level settled in both implementations.
-        if (spec.music.level != null) controller.director.forceLayer('music', spec.music.level, 1e9);
-        if (typeof layer.pin === 'function') { layer.pin({ piece: spec.music.piece }); return 'pin'; }
-        layer._lastSongName = VILLAGE_SIBLING[spec.music.piece];
-        return 'sibling';
-    }
-    return null;
 }
 
 // Whether a node's graph reaches `target` (node → node edges only;
@@ -454,13 +437,28 @@ function scheduleActions(actions, { world, mark, controller, captions, at, onAcc
     }
 }
 
+// The Village sequencer refuses every occasion and fragment (the clock hears
+// a refusal and tries again later), so no Village music starts.
+async function holdVillageMusic() {
+    const mod = await import('/src/presentation/shared/audio/music/Sequencer.js').catch(() => null);
+    const proto = mod?.Sequencer?.prototype;
+    if (!proto) return;
+    for (const name of ['playOccasion', 'playFragment']) {
+        const orig = proto[name];
+        if (typeof orig !== 'function') continue;
+        proto[name] = function held(...a) {
+            return this.preset === 'village' ? { ok: false, why: 'probe: no music' } : orig.apply(this, a);
+        };
+    }
+}
+
 // spec: { name, mode, volumeStep, layerSteps, world:{counts},
-//         atmosphere:{phase,progress,weather,hour}, bgm:{piece}, warmup, seconds,
+//         atmosphere:{phase,progress,weather,hour}, bgm:{piece, band, voice}, warmup, seconds,
 //         actions:[scene.js runAction | {atmosphere} | {accent:{kind, leadMs}}, …],
 //         stems:[STEM_SOURCES keys], stepFrames, noWorklets, sampleRate,
-//         rng:{constant}, music:{piece, level}, lint:false (skip the HAR-4
-//         stack capture: timing scenes), trace:'music' (onsets of every
-//         source reaching the music bus), collect:['starts'], airOff,
+//         rng:{constant}, lint:false (skip the HAR-4 stack capture: timing
+//         scenes), musicProbe:{seatStems, countNodes, stopLint} (page/music.js),
+//         collect:['starts'], airOff,
 //         freezeOnSuspend, rituals:true (a stand-in ritual conductor for the
 //         World path, page/workshop.js), camera:{viewportW, viewportH, zoom,
 //         path:[{at, cx, cy}]} (a scripted camera through the director's
@@ -471,7 +469,10 @@ function scheduleActions(actions, { world, mark, controller, captions, at, onAcc
 // seconds from the start of the render.
 export async function runVirtual(spec) {
     const sampleRate = spec.sampleRate || 48000;
-    const stems = spec.stems || [];
+    // Wave 6: `musicProbe: { seatStems: [seat], countNodes, stopLint }` adds
+    // one stem pair per seat (`seat:<name>`) after the bus stems.
+    const probeSpec = spec.musicProbe || null;
+    const stems = [...(spec.stems || []), ...(probeSpec?.seatStems || []).map(s => `seat:${s}`)];
     const warmup = spec.warmup ?? 0;
     const total = warmup + spec.seconds;
     if (spec.noWorklets) globalThis.__claudevilleAudioNoWorklets = true;
@@ -479,6 +480,7 @@ export async function runVirtual(spec) {
     vc.audio.keepNodes = true;
     const rngInfo = await setupRng(spec);
     const ctx = sceneContext({ seconds: total, stems, sampleRate });
+    const merger = stemMerger(ctx, stems);
     const workletNodes = logWorkletNodes(ctx);
 
     seedSoundStorage(spec);
@@ -500,12 +502,25 @@ export async function runVirtual(spec) {
     logCues(log, () => ctx.currentTime, kitOf);
     const captions = await installCaptions(spec.captions, true);
 
-    // The Town band chooses its first piece as it starts: pin it there (a
-    // tree without the sequencer pins after the enable, below).
-    const pinAtStart = spec.bgm?.piece && await pinSequencer({ preset: 'townBand', piece: spec.bgm.piece }) ? 'pin at start' : null;
+    // The Town band chooses its first piece as it starts: pin it there. The
+    // music probe pins piece, band and voice itself.
+    const music = probeSpec ? await installMusicProbe({ ...probeSpec, mode: spec.mode, bgm: spec.bgm, village: spec.village }, { connectSeat: (seat, node) => merger?.connect(`seat:${seat}`, node) }) : null;
+    const pinAtStart = music?.available && (spec.bgm || spec.village) ? 'probe pin'
+        : (spec.bgm?.piece && await pinSequencer({ preset: 'townBand', piece: spec.bgm.piece }) ? 'pin at start' : null);
+    // `force: { music: 0 }` is S2's "no music" (and `isolate` of another
+    // layer holds music at 0 too): Village music at level 0 would still play
+    // (Wave 6: the occasion clock starts the first-ever enable's occasion),
+    // and a silent occasion still runs the MusicClock — it holds the held
+    // note back (3.3) and puts cues on its grid (3.5). The Village sequencer
+    // refuses every start instead, so none plays.
+    if (spec.force?.music === 0 || (spec.isolate && spec.isolate !== 'music')) await holdVillageMusic();
     controller = new AmbientAudioController({ world });
-    let pinned = pinAtStart;
+    const pinned = pinAtStart;
+    // The directors follow `atmosphere:updated`; the scene's snapshot reaches
+    // them before the enable starts any music (the world's own update would).
+    eventBus.emit('atmosphere:updated', snapshot);
     controller.activateFromUser(true);
+    eventBus.emit('atmosphere:updated', snapshot);
     await pumpUntil(() => controller.isRunning(), 'the enable');
     const engine = controller.engine;
     const perfBase = vc.now - ctx.currentTime * 1000;
@@ -531,9 +546,8 @@ export async function runVirtual(spec) {
         }
         return token;
     };
-    attachStems(ctx, engine, stems);
+    if (merger) attachStems(merger, engine, stems);
     const bakes = logBakes(engine, ctx);
-    if (!pinned || pinned.startsWith('no ')) pinned = pinPiece(controller, spec);
     // airOff: 'all' (no air: both send sums cut) | 'bed' (dry bed, so the wet
     // return carries the cue sends only). Taps on `wet` stay connected.
     let airOff = null;
@@ -549,7 +563,7 @@ export async function runVirtual(spec) {
         for (const name of LAYERS) if (name !== spec.isolate) controller.director.forceLayer(name, 0, 1e9);
     }
     // force: { layer: level } pinned for the whole scene (Village music at 0
-    // is "no music": the sequencer starts no song and publishes nothing).
+    // also starts nothing: holdVillageMusic above).
     for (const [name, level] of Object.entries(spec.force || {})) controller.directors.ambient.forceLayer(name, level, 1e9);
 
     const { markers, mark } = makeMarker(() => ctx);
@@ -557,7 +571,7 @@ export async function runVirtual(spec) {
     setInterval(() => {
         const snap = window.__claudevilleAudio?.();
         if (!snap) return;
-        stateLog.push(plain({ t: ctx.currentTime, perf: vc.now, mode: snap.mode, state: snap.state, running: snap.running, levels: snap.levels, nowPlaying: snap.nowPlaying, quietMix: snap.quietMix ?? null, ...signalState(controller, snap) }));
+        stateLog.push(plain({ t: ctx.currentTime, perf: vc.now, mode: snap.mode, state: snap.state, running: snap.running, levels: snap.levels, nowPlaying: snap.nowPlaying, quietMix: snap.quietMix ?? null, music: snap.music ? { nowPlaying: snap.music.nowPlaying ?? null, lastStart: snap.music.lastStart ?? null, occasion: snap.music.occasion ?? null } : null, ...signalState(controller, snap) }));
     }, 1000);
     const perfAt = sec => perfBase + sec * 1000;
     setTimeout(() => mark('rec-start'), Math.max(0, perfAt(warmup) - vc.now));
@@ -578,8 +592,7 @@ export async function runVirtual(spec) {
     const starts = vc.audio.starts;
     const toCue = reacherOf(engine.busInput('cue'));
     for (const s of starts) s.cue = toCue(s.node);
-    const toMusic = spec.trace === 'music' ? reacherOf(engine.busInput('music')) : null;
-    const traced = toMusic ? starts.filter(s => toMusic(s.node)).map(s => s.t) : null;
+    const toMusic = probeSpec ? reacherOf(engine.busInput('music')) : null;
     return {
         sampleRate,
         frames: buffer.length,
@@ -617,7 +630,16 @@ export async function runVirtual(spec) {
         cameraSeam,
         bakes,
         workletNodes,
-        musicOnsets: traced,
+        // Wave 6 (musicProbe): every sequencer mark, node constructions per
+        // note, the stop lint's raw rows and the sequencer snapshots.
+        music: music ? {
+            available: music.available,
+            marks: plain(music.marks),
+            perNote: music.perNote,
+            frames: music.frames,
+            stops: probeSpec.stopLint ? stopLintRows(starts, toMusic, { from: warmup }) : null,
+            snapshots: music.instances.map(s => ({ preset: s.preset, snapshot: (() => { try { return plain(s.snapshot?.()); } catch (err) { return { error: String(err?.message || err) }; } })() })),
+        } : null,
         starts: (spec.collect || []).includes('starts')
             ? starts.map(({ node, ...s }) => ({ ...s, e: Number.isFinite(s.e) ? s.e : null }))
             : null,
@@ -689,7 +711,7 @@ export async function runEngineUnit(spec) {
     await pumpUntil(() => ok, 'ensureContext');
     engine.fadeGain.gain.value = 1;
     engine.started = true;
-    attachStems(ctx, engine, stems);
+    attachStems(stemMerger(ctx, stems), engine, stems);
     const bus = engine.busInput(spec.bus || 'cue');
     for (const s of spec.signals || []) {
         const amp = Math.pow(10, (s.dbAtLimiter - PROGRAM_TRIM_DB) / 20);
@@ -744,7 +766,7 @@ export async function runAirUnit(spec) {
     engine.start?.();
     await pumpUntil(() => Boolean(engine.air?.buffers?.().day && engine.air.buffers().night), 'the Island Air bake');
     engine.setAirPhase?.(spec.phase || 'day');
-    attachStems(ctx, engine, stems);
+    attachStems(stemMerger(ctx, stems), engine, stems);
     const placements = [];
     const bus = spec.bus || 'world';
     for (const b of spec.bursts || []) {

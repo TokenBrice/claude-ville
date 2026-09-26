@@ -1,6 +1,7 @@
-// The persisted sound levels and preferences (plan 1.2, 3.8, MIX-9, UX-8,
-// UX-12, decisions D5–D7): one owner for the storage keys, the step laws, the
-// caption, reminder and hour-count choices, and the one-time recalibration. TopBar
+// The persisted sound levels and preferences (plan 1.2, 3.8, 6.6, MIX-9, UX-8,
+// UX-12, decisions D2, D5–D7): one owner for the storage keys, the step laws,
+// the caption, reminder, hour-count and Town band voice choices, the Village
+// occasion ledger, and the one-time recalibration. TopBar
 // and SET read it at boot; the sound controller reads and writes it once the
 // idle build lands. Pure and DOM-free: it loads no audio module beyond the
 // Loudness table, so the v0.37 boot deferral holds.
@@ -36,6 +37,17 @@ export const DEFAULT_CAPTIONS = 'auto';
 // D7: the hour bell plays its phrase; counting the strokes is opt-in.
 export const SOUND_COUNT_HOURS_KEY = 'claudeville.sound.countHours';
 export const DEFAULT_SOUND_COUNT_HOURS = '0';
+
+// D2: the Town band plays as the Isle Band; Chip restored is its one-click
+// alternative voicing. The Village always plays the Isle Band.
+export const TOWN_BAND_VOICE_KEY = 'claudeville.sound.townBandVoice';
+export const TOWN_BAND_VOICES = Object.freeze(['isle', 'chip']);
+export const DEFAULT_TOWN_BAND_VOICE = 'isle';
+
+// The Village occasion clock's once-per-day record (6.6, S7): the first-ever
+// occasion of this profile, the calendar day of the last welcome fragment
+// and the phase occasions the current island day has already heard.
+export const MUSIC_LEDGER_KEY = 'claudeville.sound.musicLedger';
 
 // The mixer channels are the engine's group faders, one to one, each at its
 // default trim step. Workshops sits one step down (plan 5.3's −3 dB on the
@@ -156,4 +168,30 @@ export function readCountHours(storage = globalThis.window?.localStorage) {
 export function writeCountHours(on, storage = globalThis.window?.localStorage) {
     storageSet(storage, SOUND_COUNT_HOURS_KEY, on ? '1' : '0');
     return Boolean(on);
+}
+
+export function readTownBandVoice(storage = globalThis.window?.localStorage) {
+    return storedChoice(storage, TOWN_BAND_VOICE_KEY, TOWN_BAND_VOICES, DEFAULT_TOWN_BAND_VOICE);
+}
+
+export function writeTownBandVoice(value, storage = globalThis.window?.localStorage) {
+    const next = TOWN_BAND_VOICES.includes(value) ? value : DEFAULT_TOWN_BAND_VOICE;
+    storageSet(storage, TOWN_BAND_VOICE_KEY, next);
+    return next;
+}
+
+/** The occasion ledger as stored, or null when absent or unreadable. */
+export function readMusicLedger(storage = globalThis.window?.localStorage) {
+    const raw = storageGet(storage, MUSIC_LEDGER_KEY);
+    if (raw === null) return null;
+    try {
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+export function writeMusicLedger(ledger, storage = globalThis.window?.localStorage) {
+    storageSet(storage, MUSIC_LEDGER_KEY, JSON.stringify(ledger ?? {}));
 }

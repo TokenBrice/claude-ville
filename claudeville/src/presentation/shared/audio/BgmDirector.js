@@ -5,11 +5,19 @@
 // the phase comes from the renderer's atmosphere broadcast, with a pure
 // local-clock fallback when the World loop is stopped.
 //
-// 5.3 — the score has a working section. The village's real working count
-// picks an arrangement density, applied at the band's next four-bar boundary;
-// music never replaces the visible counts, and a real wait is never hidden
-// behind a busy section. The band is the one music Sequencer, Town band
-// preset.
+// The village's real working count picks a working band (MUSL-3: each band
+// adds a player), applied at the band's next four-bar boundary; music never
+// replaces the visible counts, and a real wait is never hidden behind a busy
+// band. The band is the one music Sequencer, Town band preset, in the voice
+// the operator chose (D2: the Isle Band by default, Chip restored on request).
+//
+// Wave 6 (D4) — the band carries the village without adding a layer: the
+// workshop model's per-building densities drive the band's percussion (6.9),
+// weather, season and the grade keyframe pick its arrangement (MUS-16,
+// MUSL-8), and while anyone waits each phrase ends on a deceptive cadence
+// that lands home after the answer (MUS-9). A verified release rings its
+// fanfare inside the tune after the gold peal (6.8). The work stratum itself
+// stays out of Town band.
 //
 // Wave 3 — while the band owns the signals it rings the same outcomes and
 // hours as the Village (the routing is shared: ActionableRouting,
@@ -27,7 +35,8 @@ import {
     verifiedOutcomeFact,
 } from '../../../application/OutcomeSignals.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
-import { readCountHours } from '../SoundSettings.js';
+import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
+import { readCountHours, readTownBandVoice } from '../SoundSettings.js';
 import {
     ActionableCueRouter,
     attentionStatus,
@@ -35,8 +44,11 @@ import {
     hourChimeFor,
 } from './ActionableRouting.js';
 import { audibleAgents, isAudibleAgent } from './AudibleWorld.js';
+import { arrangementKeyframeAt } from './DayArc.js';
 import { Sequencer } from './music/Sequencer.js';
+import { arrangementWeatherFor } from './music/Voicings.js';
 import { resolveCueSpot } from './SpatialField.js';
+import { ACCENT_CAP_PER_MIN, BUILDING_IDS, buildWorkshopState, createWorkshopMemory } from './WorkshopModel.js';
 
 const TICK_MS = 1000;
 const ATMO_FRESH_MS = 3000;
@@ -44,14 +56,21 @@ const ATMO_FRESH_MS = 3000;
 const PAUSE_CLOSE_SEC = 0.08;
 const RESUME_OPEN_SEC = 0.25;
 
-// Four count bands. The label beside the music control always states the exact
-// counts, so the bands never have to.
+// Four working bands (MUS-8), shared with the Village director. The label
+// beside the music control always states the exact counts, so the bands never
+// have to.
 const SECTION_BANDS = Object.freeze([
     Object.freeze({ section: 'rest', maxWorking: 0 }),
     Object.freeze({ section: 'light', maxWorking: 3 }),
     Object.freeze({ section: 'steady', maxWorking: 11 }),
     Object.freeze({ section: 'full', maxWorking: Infinity }),
 ]);
+const SECTION_NAMES = Object.freeze(SECTION_BANDS.map(entry => entry.section));
+// A building's percussion density (6.9): a working building plays a sparse
+// floor, and its tool-start accent rate fills the groove up to 1.
+const PERCUSSION_FLOOR = 0.3;
+// The release fanfare waits for the gold peal (a Major outcome, ≤ 2.5 s).
+const RELEASE_AFTER_PEAL_SEC = 2.5;
 // Entering the resting section takes the same 30s quiet hold the ambient
 // director already uses; every other change takes 4s, so a poll-to-poll
 // flutter can never rewrite the arrangement.
@@ -59,8 +78,10 @@ const SECTION_ENTER_REST_MS = 30000;
 const SECTION_CHANGE_MS = 4000;
 const BGM_LEVEL = 0.9;
 // The engine's music attention stage while a person has to act (S3): the band
-// leans back and stays there, composing with the per-cue ducks.
-const ATTENTION_DB = -4;
+// leans back and stays there, composing with the per-cue ducks. Shallow
+// enough that a wait-heavy stretch and an ordinary hour both sit in S2's
+// −31 ± 1 (the waiting cadence, not the level, carries the wait).
+const ATTENTION_DB = -2;
 
 /**
  * The counts the working section and its label are made of, from the same
@@ -84,8 +105,30 @@ export function workingSectionLabel({ working = 0, waiting = 0 } = {}) {
     return `Working ${working} · Waiting ${waiting}`;
 }
 
+/** The working band (0 rest … 3 full) for an audible working count. */
+export function bandForWorking(working = 0) {
+    const n = Math.max(0, Number(working) || 0);
+    return SECTION_BANDS.findIndex(entry => n <= entry.maxWorking);
+}
+
+/**
+ * Per-building percussion densities (0..1) from the workshop model: zero for
+ * an idle building, `PERCUSSION_FLOOR` for a working one, rising with its
+ * accent rate. Pure.
+ */
+export function percussionDensities(state) {
+    const out = {};
+    for (const id of BUILDING_IDS) {
+        const building = state?.buildings?.[id];
+        if (!(building?.working > 0)) continue;
+        const rate = Math.max(0, Math.min(1, (Number(building.accentRate) || 0) / ACCENT_CAP_PER_MIN));
+        out[id] = PERCUSSION_FLOOR + (1 - PERCUSSION_FLOOR) * rate;
+    }
+    return out;
+}
+
 export function sectionForCounts({ working = 0, actionable = 0 } = {}) {
-    const band = SECTION_BANDS.find(entry => working <= entry.maxWorking).section;
+    const band = SECTION_NAMES[bandForWorking(working)];
     // A real wait never hides behind a triumphant busy section.
     if (actionable > 0 && (band === 'steady' || band === 'full')) return 'light';
     return band;
@@ -147,6 +190,17 @@ export class BgmDirector {
         this._outcomeTracker = null;
         this._outcomes = null;
         this._harborFailures = null;
+        this._voice = readTownBandVoice();
+        this._workshopMemory = createWorkshopMemory();
+        this._densities = {};
+        // The sky is followed from construction (boot), so a band that starts
+        // at night opens in its night arrangement, not the fallback clock's.
+        this._atmosphereOff = eventBus.on('atmosphere:updated', (snapshot) => {
+            if (!snapshot) return;
+            this._atmosphere = snapshot;
+            this._atmosphereAt = Date.now();
+            this._atmosphereSource = 'world';
+        });
     }
 
     start() {
@@ -156,7 +210,15 @@ export class BgmDirector {
         // A rebuild after a long absence starts on a paused Transport.
         this.engine.transport.resume();
 
-        this.player = new Sequencer(this.engine, { preset: 'townBand', director: 'bgm' });
+        this._workshopMemory = createWorkshopMemory();
+        this.player = new Sequencer(this.engine, { preset: 'townBand', director: 'bgm', voice: this._voice });
+        // Everything the first chunk reads is in place before the band starts:
+        // the sky, and the band the counts want now (the hysteresis is for
+        // changes, not for the start).
+        this._applyAtmosphere(this._currentAtmosphere());
+        const counts = workingSectionCounts(audibleAgents(this.world, Date.now()));
+        this._section = { applied: sectionForCounts(counts), pending: null, pendingSince: 0 };
+        this._applyWorkingSection();
         this.player.start();
         this.player.setLevel(BGM_LEVEL, 0.5);
 
@@ -219,6 +281,15 @@ export class BgmDirector {
 
     destroy() {
         this.stop();
+        this._atmosphereOff?.();
+        this._atmosphereOff = null;
+    }
+
+    // D2: the Town band voice ('isle' | 'chip'); kept across rebuilds, and
+    // a live band switches at its next four-bar boundary.
+    setVoice(voice) {
+        this._voice = voice === 'chip' ? 'chip' : 'isle';
+        this.player?.setVoice(this._voice);
     }
 
     // S7: an entry summons while the operator is looking plays the L2 voice.
@@ -248,12 +319,6 @@ export class BgmDirector {
         const on = (event, handler) => {
             this._unsubscribes.push(eventBus.on(event, handler));
         };
-        on('atmosphere:updated', (snapshot) => {
-            if (!snapshot) return;
-            this._atmosphere = snapshot;
-            this._atmosphereAt = Date.now();
-            this._atmosphereSource = 'world';
-        });
         on('village:scene', (scene) => {
             if (scene?.kind === 'arrival') {
                 const details = cuePayload(scene);
@@ -325,6 +390,10 @@ export class BgmDirector {
 
     _playOutcome(outcome) {
         const agentId = outcome.agentId ?? null;
+        // 6.8: the band's release fanfare follows the gold peal, at a bar.
+        if (outcome.kind === 'release' && this._ownsSignals()) {
+            this.player?.playOccasion('release', { reason: 'release', at: this.engine.now() + RELEASE_AFTER_PEAL_SEC });
+        }
         return this.cue(outcome.kind, {
             agentId,
             label: agentId != null ? this.world?.agents?.get?.(agentId)?.name ?? null : null,
@@ -373,10 +442,7 @@ export class BgmDirector {
     _tick() {
         if (!this.running) return;
         const atmosphere = this._currentAtmosphere();
-        this._phase = atmosphere.phase || 'day';
-        this.player.setPhase(this._phase);
-        // The band's lead and counter ring in the Island Air of the hour.
-        this.engine.setAirPhase(this._phase);
+        this._applyAtmosphere(atmosphere);
         this._applyWorkingSection();
 
         // The hour chime (D7), on the same schedule as the Village.
@@ -396,8 +462,35 @@ export class BgmDirector {
     _applyWorkingSection(now = Date.now()) {
         this._counts = workingSectionCounts(audibleAgents(this.world, now));
         this._section = updateWorkingSection(this._section, { counts: this._counts, now });
-        this.player?.setSection(this._section.applied);
+        this.player?.setBand(SECTION_NAMES.indexOf(this._section.applied));
+        this.player?.setWaiting(this._counts.actionable > 0);
+        this._densities = percussionDensities(buildWorkshopState({
+            agents: this.world?.agents ?? [],
+            now,
+            memory: this._workshopMemory,
+        }));
+        this.player?.setWorkshopDensity(this._densities);
         this._setAttention(this._counts.actionable > 0 ? ATTENTION_DB : 0);
+    }
+
+    _applyAtmosphere(atmosphere) {
+        this._phase = atmosphere.phase || 'day';
+        this.player.setPhase(this._phase);
+        // The band's lead and counter ring in the Island Air of the hour.
+        this.engine.setAirPhase?.(this._phase);
+        this._applyArrangement(atmosphere);
+    }
+
+    // MUS-16 / MUSL-8: weather, season and the grade keyframe pick the
+    // arrangement; the band applies a change at its next chunk.
+    _applyArrangement(atmosphere) {
+        const season = seasonTokenForAtmosphere(atmosphere) || 'summer';
+        const minute = Number(atmosphere.clock?.minuteOfDay);
+        this.player?.setArrangement({
+            weather: arrangementWeatherFor(atmosphere.weather, season),
+            season,
+            keyframe: arrangementKeyframeAt({ minuteOfDay: Number.isFinite(minute) ? minute : 12 * 60, season }),
+        });
     }
 
     _setAttention(db) {
@@ -418,12 +511,15 @@ export class BgmDirector {
             levels: { bgm: this.player?.level ?? 0 },
             lastCue: this.cueKit?.lastCue || null,
             nowPlaying: this.player?.nowPlaying || null,
+            music: this.player?.snapshot() ?? null,
+            voice: this._voice,
+            percussion: { ...this._densities },
             ceremonies: this.governor?.snapshot().ceremonies ?? null,
-            // The section actually playing plus the one the counts want next.
+            // The band actually playing plus the one the counts want next.
             section: {
-                applied: this.player?.section ?? this._section.applied,
+                applied: this.player ? SECTION_NAMES[this.player.band] : this._section.applied,
                 requested: this._section.applied,
-                pending: this.player?.pendingSection ?? this._section.pending,
+                pending: this.player?.pendingBand != null ? SECTION_NAMES[this.player.pendingBand] : this._section.pending,
                 counts: { ...this._counts },
                 label: workingSectionLabel(this._counts),
             },
