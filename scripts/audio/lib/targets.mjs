@@ -32,26 +32,46 @@ export function buildTargets() {
     t.push(cue('cue-recovery', 'recovery', {}));
     t.push(cue('cue-council-3', 'council', { teamSize: 3 }, { seconds: 5 }));
     t.push(cue('cue-council-5', 'council', { teamSize: 5 }, { seconds: 6 }));
-    t.push(cue('cue-hourBell', 'hourBell', {}, { seconds: 6 }));
+    t.push(cue('cue-hourBell', 'hourBell', { hour: 9, count: false }, { seconds: 6 }));
+    t.push(cue('cue-hourBell-counted-12', 'hourBell', { hour: 12, count: true }, { seconds: 16 }));
+    t.push(cue('cue-hourBell-counted-15', 'hourBell', { hour: 15, count: true }, { seconds: 10 }));
     t.push(cue('cue-aurora', 'aurora', {}, { seconds: 5 }));
     t.push(cue('cue-summons-calm', 'summons', { status: 'waiting_on_user', waitingCount: 1, oldestWaitMs: 0 }));
     t.push(cue('cue-summons-urgent', 'summons', { status: 'waiting_on_user', waitingCount: 5, oldestWaitMs: 20 * 60000 }));
+    // Wave 3: the ladder's reminders (the needs-you family voice), the
+    // Signals-preset answer, the outcome stratum and the scenery additions.
+    for (const level of [2, 3, 4]) t.push(cue(`cue-reminder-L${level}`, 'reminder', { level, family: 'needsYou', count: 1, oldestMs: 6 * 60000 }, { seconds: 6 }));
+    t.push(cue('cue-reminder-errors-L3', 'reminder', { level: 3, family: 'errors', count: 1, oldestMs: 6 * 60000 }, { seconds: 6 }));
+    t.push(cue('cue-answered', 'answered', {}, { seconds: 3 }));
+    for (const kind of ['turnDone', 'subagentReturn', 'toolFailed', 'commit', 'push', 'pushFailed']) t.push(cue(`cue-${kind}`, kind, { count: 1 }, { seconds: 4 }));
+    t.push(cue('cue-dispatch', 'dispatch', { count: 3 }, { seconds: 4 }));
+    t.push(cue('cue-release', 'release', {}, { seconds: 7 }));
+    t.push(cue('cue-linkLost', 'linkLost', {}, { seconds: 4 }));
+    t.push(cue('cue-linkRestored', 'linkRestored', {}, { seconds: 4 }));
+    t.push(cue('cue-digest', 'digest', { notes: ['gold', 'stone', 'red', 'amber'] }, { seconds: 5 }));
     t.push(cue('cue-thunder-0.3', 'thunder', { intensity: 0.3 }, { seconds: 6 }));
     t.push(cue('cue-thunder-0.6', 'thunder', { intensity: 0.6 }, { seconds: 6 }));
     t.push(cue('cue-thunder-1.0', 'thunder', { intensity: 1 }, { seconds: 6 }));
     t.push(cue('cue-thunder-1.0-vol100', 'thunder', { intensity: 1 }, { seconds: 6, volumeStep: 10 }));
     // Night borrows the minor third: every pitched cue whose notes change.
-    for (const kind of ['arrival', 'recovery', 'council', 'aurora', 'summons']) {
-        t.push(cue(`cue-${kind}-night`, kind, { phase: 'night', teamSize: 5, status: kind === 'summons' ? 'waiting_on_user' : undefined }, { seconds: kind === 'council' ? 6 : 5 }));
+    for (const kind of ['arrival', 'recovery', 'council', 'aurora', 'summons', 'hourBell']) {
+        t.push(cue(`cue-${kind}-night`, kind, { phase: 'night', teamSize: 5, hour: 21, status: kind === 'summons' ? 'waiting_on_user' : undefined }, { seconds: kind === 'council' || kind === 'hourBell' ? 6 : 5 }));
     }
     // One gallery strip with every kind, 4.5 s apart, for side-by-side reading.
-    const gallery = ['arrival', 'departure', 'recovery', 'council', 'aurora', 'hourBell', 'distress', 'limit', 'summons', 'thunder'];
+    const gallery = [
+        'arrival', 'departure', 'recovery', 'council', 'aurora', 'hourBell', 'distress', 'limit', 'summons', 'reminder', 'answered',
+        'turnDone', 'subagentReturn', 'toolFailed', 'commit', 'push', 'release', 'pushFailed', 'dispatch', 'linkLost', 'linkRestored', 'digest', 'thunder',
+    ];
     t.push({
         name: 'cue-gallery', category: 'cues', method: 'offline', seconds: gallery.length * 4.5 + 3,
-        cues: gallery.map((kind, i) => ({ at: 0.5 + i * 4.5, kind, label: kind, payload: { status: CUE_STATUS[kind], teamSize: 4, intensity: 0.7 } })),
+        cues: gallery.map((kind, i) => ({
+            at: 0.5 + i * 4.5, kind, label: kind,
+            payload: { status: CUE_STATUS[kind], teamSize: 4, intensity: 0.7, hour: 9, count: kind === 'dispatch' ? 3 : kind === 'hourBell' ? false : 1, level: kind === 'reminder' ? 3 : 1, family: 'needsYou', notes: ['gold', 'red', 'amber'] },
+        })),
     });
-    // Provider voicings for provider-sensitive cues.
-    for (const kind of ['arrival', 'summons', 'distress']) {
+    // Alloys (3.5): the provider tints the routine chimes only; signals are
+    // never provider-tinted.
+    for (const kind of ['arrival', 'departure', 'recovery']) {
         t.push({
             name: `cue-${kind}-providers`, category: 'cues-providers', method: 'offline', seconds: PROVIDERS.length * 3.2 + 2.5,
             cues: PROVIDERS.map((provider, i) => ({

@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 
 import { AudioDirector } from '../../claudeville/src/presentation/shared/audio/AudioDirector.js';
 import { CueGovernor } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
-import { CueKit } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
-import { bellVoicingForProvider } from '../../claudeville/src/presentation/shared/audio/MusicalScale.js';
+import { CueKit, laneForCueKind } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 
 class FakeNode {
@@ -25,7 +24,9 @@ function fakeAudioKit() {
     const param = value => ({
         value,
         setValueAtTime() {},
+        linearRampToValueAtTime() {},
         exponentialRampToValueAtTime() {},
+        setTargetAtTime() {},
     });
     const context = {
         createBiquadFilter() {
@@ -193,12 +194,35 @@ test('tile position is a graceful World-mode placement fallback', () => {
     }
 });
 
-test('provider bell voicings are distinct and council bell count follows team size', () => {
-    const providers = ['claude', 'codex', 'gemini', 'grok', 'kimi', 'omp', 'opencode', 'deepseek', 'zai'];
-    const signatures = providers.map((provider) => JSON.stringify(bellVoicingForProvider(provider)));
-    assert.equal(new Set(signatures).size, providers.length);
-    assert.notEqual(bellVoicingForProvider('claude').register, bellVoicingForProvider('codex').register);
+test('a provider tints the routine chime only: same pitches, four alloys, signal voices untouched', async () => {
+    const strikes = (kind, provider, payload = {}) => {
+        const kit = new CueKit({
+            context: { createGain: () => ({ gain: { value: 1 }, connect() {}, disconnect() {} }) },
+            started: true,
+            now: () => 0,
+            connectVoice: () => ({ dispose() {} }),
+            bedLoudness: () => null,
+            duck: () => ({ cancel() {} }),
+        }, new CueGovernor({ maxPerMinute: 60, minSpacingMs: 0 }));
+        const struck = [];
+        kit._strike = (sink, t, hz, recipe) => { struck.push({ hz, recipe }); return hz; };
+        kit._playAccepted({ kind, lane: laneForCueKind(kind), provider, ...payload });
+        return struck;
+    };
+    const providers = ['claude', 'codex', 'gemini', 'grok', 'kimi', 'omp', 'opencode', 'deepseek', 'zai', null];
+    const councils = providers.map(provider => strikes('council', provider, { teamSize: 3 }));
+    for (const struck of councils) {
+        assert.deepEqual(struck.map(s => s.hz), councils[0].map(s => s.hz), 'register and pitches never follow the provider');
+    }
+    assert.equal(new Set(councils.map(struck => struck[0].recipe)).size, 4, 'four alloys');
 
+    const calls = providers.map(provider => strikes('summons', provider));
+    for (const struck of calls) {
+        assert.deepEqual(struck, calls[0], 'the needs-you figure is the same bronze handbell for everyone');
+    }
+});
+
+test('council bell count follows team size', () => {
     const bellCount = (teamSize) => {
         const kit = new CueKit({
             context: { createGain: () => ({ gain: { value: 1 }, connect() {}, disconnect() {} }) },
@@ -209,7 +233,7 @@ test('provider bell voicings are distinct and council bell count follows team si
             duck: () => ({ cancel() {} }),
         }, new CueGovernor({ maxPerMinute: 6, minSpacingMs: 0 }));
         const bells = [];
-        kit._bell = (...args) => bells.push(args);
+        kit._strike = (...args) => bells.push(args);
         kit.play('council', { teamSize });
         return bells.length;
     };

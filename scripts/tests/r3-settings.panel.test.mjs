@@ -8,6 +8,14 @@ import {
     readPersistedSettings,
     resetPersistedSettings,
 } from '../../claudeville/src/presentation/shared/TopBar.js';
+import {
+    readCaptionSetting,
+    readCountHours,
+    readReminderSetting,
+    writeCaptionSetting,
+    writeCountHours,
+    writeReminderSetting,
+} from '../../claudeville/src/presentation/shared/SoundSettings.js';
 import { STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 
 class MemoryStorage {
@@ -79,6 +87,9 @@ test('settings review reads every operator preference, sound levels as steps', (
             wind: 1, rain: 2, wildlife: 3, hum: 4, music: 5,
         }),
         'claudeville.sound.calibration': '2',
+        'claudeville.sound.reminders': 'gentle',
+        'claudeville.sound.countHours': '1',
+        'claudeville.captions': 'all',
         'cv-auto-camera': '0',
         'claudeville.alerts.desktop': '1',
         'claudeville.sidebarCollapsed': 'true',
@@ -90,6 +101,9 @@ test('settings review reads every operator preference, sound levels as steps', (
         soundMode: 'bgm',
         soundBackground: 'signals',
         soundLayers: { wind: 1, rain: 2, wildlife: 3, hum: 4, music: 5 },
+        soundReminders: 'gentle',
+        soundCountHours: true,
+        captions: 'all',
         autoCamera: false,
         desktopAlerts: true,
         sidebarCollapsed: true,
@@ -105,6 +119,38 @@ test('an uncalibrated profile reads as the standard level before the controller 
     assert.deepEqual(settings.soundLayers, { wind: 10, rain: 10, wildlife: 10, hum: 10, music: 10 });
 });
 
+test('reminder, caption and hour-count preferences read their defaults and reject unknown values', () => {
+    const fresh = readPersistedSettings(new MemoryStorage());
+    assert.equal(fresh.soundReminders, 'standard');
+    assert.equal(fresh.captions, 'auto');
+    assert.equal(fresh.soundCountHours, false);
+
+    const odd = readPersistedSettings(new MemoryStorage({
+        'claudeville.sound.reminders': 'loud',
+        'claudeville.captions': 'everything',
+        'claudeville.sound.countHours': 'true',
+    }));
+    assert.equal(odd.soundReminders, 'standard');
+    assert.equal(odd.captions, 'auto');
+    assert.equal(odd.soundCountHours, false);
+});
+
+test('SET writes the preferences its readers take on use', () => {
+    const storage = new MemoryStorage();
+    assert.equal(writeReminderSetting('off', storage), 'off');
+    assert.equal(writeCaptionSetting('signals', storage), 'signals');
+    assert.equal(writeCountHours(true, storage), true);
+    assert.equal(readReminderSetting(storage), 'off');
+    assert.equal(readCaptionSetting(storage), 'signals');
+    assert.equal(readCountHours(storage), true);
+    assert.equal(storage.getItem('claudeville.sound.countHours'), '1');
+
+    assert.equal(writeReminderSetting('shout', storage), 'standard', 'an unknown choice writes the default');
+    assert.equal(writeCaptionSetting(undefined, storage), 'auto');
+    assert.equal(readReminderSetting(storage), 'standard');
+    assert.equal(readCaptionSetting(storage), 'auto');
+});
+
 test('settings defaults hold the standard steps and the calibration key, written after the levels', () => {
     assert.deepEqual(PERSISTED_SETTING_DEFAULTS, {
         'claudeville.sound.enabled': 'false',
@@ -115,6 +161,9 @@ test('settings defaults hold the standard steps and the calibration key, written
             wind: 10, rain: 10, wildlife: 10, hum: 10, music: 10,
         }),
         'claudeville.sound.calibration': '2',
+        'claudeville.sound.reminders': 'standard',
+        'claudeville.sound.countHours': '0',
+        'claudeville.captions': 'auto',
         'cv-auto-camera': '1',
         'claudeville.alerts.desktop': '0',
         'claudeville.sidebarCollapsed': 'false',
@@ -140,6 +189,9 @@ test('reset writes defaults in place without clearing unrelated local data', () 
     assert.equal(result.soundEnabled, false);
     assert.equal(result.soundBackground, 'play');
     assert.equal(result.autoCamera, true);
+    assert.equal(result.soundReminders, 'standard');
+    assert.equal(result.soundCountHours, false);
+    assert.equal(result.captions, 'auto');
 });
 
 test('reset returns a user-changed profile to the standard step', () => {

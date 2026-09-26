@@ -22,6 +22,7 @@ import { AmbientAudioController } from '/src/presentation/shared/AmbientAudioCon
 import { eventBus } from '/src/domain/events/DomainEvent.js';
 import { AudioEngine } from '/src/presentation/shared/audio/AudioEngine.js';
 import { cueScoreDiagnostics, scheduleAccent } from '/src/presentation/shared/audio/CueScore.js';
+import { laneForCueKind } from '/src/presentation/shared/audio/cues/CueKit.js';
 import { PROGRAM_TRIM_DB } from '/src/presentation/shared/audio/Loudness.js';
 import { PIECES } from '/src/presentation/shared/audio/bgm/BgmSongbook.js';
 import {
@@ -46,6 +47,9 @@ export const STEM_SOURCES = {
     // Island Air (S5): the wet return before its program trim — the same
     // staging as the cue and bus taps above.
     airWet: engine => engine.airReturns?.wet ?? null,
+    // The held note's own path (S3, 3.3), post-duck: what it adds to the
+    // program before its PROGRAM_TRIM.
+    signalBed: (engine) => { try { return engine._busOut('signalBed'); } catch { return null; } },
 };
 
 function sceneContext({ seconds, stems, sampleRate }) {
@@ -60,7 +64,7 @@ function sceneContext({ seconds, stems, sampleRate }) {
     const setState = (next) => {
         if (state === next || state === 'closed') return;
         state = next;
-        stateLog.push({ t: ctx.currentTime, state: next });
+        stateLog.push({ t: ctx.currentTime, perf: vc.now, state: next });
         ctx.dispatchEvent(new Event('statechange'));
     };
     ctx.__vcStateLog = stateLog;
@@ -280,6 +284,127 @@ function setHidden(value) {
     document.dispatchEvent(new Event('visibilitychange'));
 }
 
+// Every discrete cue as the page saw it: `audio:cue-played` (captions: the
+// Wave-3 payload fields a probe judges) and `audio:cue-scheduled` (the
+// published notes, with each note's pitch when the tree publishes it).
+// `now()` → the scene's time in seconds; `perf` is the virtual clock.
+function logCues(log, now, kitOf) {
+    eventBus.on('audio:cue-played', (p) => {
+        log.cues.push({
+            t: now(), perf: vc.now, kind: p?.kind ?? null, agentId: p?.agentId ?? null, label: p?.label ?? null,
+            level: p?.level ?? p?.payload?.level ?? null, family: p?.family ?? null, count: p?.count ?? null,
+            soundOnly: Boolean(p?.soundOnly), flock: Boolean(p?.flock), cluster: Array.isArray(p?.cluster) ? p.cluster.length : null,
+            notes: Array.isArray(p?.notes) ? p.notes.slice() : null, silent: Boolean(p?.silent),
+        });
+        const level = kitOf()?.lastLevel;
+        if (level) log.levels.push({ t: now(), kind: p?.kind ?? null, ...plain(level) });
+    });
+    eventBus.on('audio:cue-scheduled', (p) => {
+        const notes = p?.notes || [];
+        log.scheduled.push({
+            t: now(), perf: vc.now, kind: p?.kind ?? null, agentId: p?.agentId ?? null, silent: Boolean(p?.silent),
+            notesMs: notes.map(n => n.atMs), hz: notes.map(n => (Number.isFinite(n.hz) ? n.hz : null)),
+        });
+    });
+}
+
+// HAR-13: one real Toast per caption setting, each reading its own storage
+// (that setting, and sound on or off) through the `storage` option, every
+// rendered caption recorded. `clear()` empties every stack so the next cue
+// is judged alone (Toast caps and coalesces a visible stack).
+async function installCaptions(settings, soundOn) {
+    if (!settings?.length) return null;
+    const { Toast } = await import('/src/presentation/shared/Toast.js');
+    let container = document.getElementById('toastContainer');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toastContainer';
+        document.body.appendChild(container);
+    }
+    const shown = [];
+    const toasts = settings.map((setting) => {
+        const storage = {
+            getItem: (key) => {
+                if (key === 'claudeville.captions') return setting;
+                if (key === 'claudeville.sound.enabled') return soundOn ? 'true' : 'false';
+                return localStorage.getItem(key);
+            },
+            setItem() {},
+            removeItem() {},
+        };
+        const toast = new Toast({ storage });
+        const show = toast._show.bind(toast);
+        toast._show = (message, type, opts = {}) => {
+            shown.push({ setting, perf: vc.now, message: String(message ?? ''), type, cueKind: opts.cueKind ?? null, agentId: opts.agentId ?? opts.attentionAgentId ?? null });
+            return show(message, type, opts);
+        };
+        return toast;
+    });
+    return {
+        shown,
+        clear: () => { for (const toast of toasts) for (const entry of [...toast.toasts]) toast._remove(entry); },
+        destroy: () => { for (const toast of toasts) toast.destroy?.(); },
+    };
+}
+
+// The Wave-3 state a scene may judge: the ladder (`__claudevilleAudio().ladder`)
+// and the held note's snapshot, when the tree has them.
+function signalState(controller, snap) {
+    let held = null;
+    try { const d = controller?.directors?.ambient; held = (d?.layers?.heldNote ?? d?._heldNote)?.snapshot?.() ?? null; } catch { held = null; }
+    return { ladder: snap?.ladder ?? null, heldNote: held };
+}
+
+// Every scripted action on the virtual clock at `at(sec)` (a perf time).
+// Beyond scene.js runAction: {visibility}, {window}, {atmosphere},
+// {accent:{kind, leadMs}} (declared before the action's cue, as the
+// renderer does), {input} (a pointerdown: the operator is looking). With
+// captions installed each action starts from empty caption stacks.
+function scheduleActions(actions, { world, mark, controller, captions, at, onAccent, onAtmosphere }) {
+    for (const action of actions || []) {
+        setTimeout(() => {
+            captions?.clear();
+            if (action.visibility) {
+                setHidden(action.visibility === 'hidden');
+                mark(action.label || `visibility:${action.visibility}`, { kind: 'action' });
+                return;
+            }
+            if (action.window) {
+                window.dispatchEvent(new Event(action.window));
+                mark(action.label || `window:${action.window}`, { kind: 'action' });
+                return;
+            }
+            if (action.input) {
+                document.dispatchEvent(new Event(action.input, { bubbles: true }));
+                mark(action.label || `input:${action.input}`, { kind: 'action' });
+                return;
+            }
+            if (action.atmosphere) {
+                const { snapshot } = atmosphereFor(action.atmosphere);
+                onAtmosphere?.(snapshot);
+                eventBus.emit('atmosphere:updated', snapshot);
+                mark(action.label || 'atmosphere', { kind: 'action' });
+                if (!action.emit && !action.cue) return;
+            }
+            if (action.accent) {
+                const agent = [...world.agents.values()][action.agentIndex ?? 0];
+                const drawAt = scheduleAccent(agent?.id ?? null, performance.now() + (action.accent.leadMs ?? 400), action.accent.kind);
+                onAccent?.({ kind: action.accent.kind, agentId: agent?.id ?? null }, drawAt);
+            }
+            if (action.play) {
+                // Governor-free (the capture tool's path): what the voice
+                // sounds like once admitted — the discrimination gallery.
+                const agent = action.agentIndex != null ? [...world.agents.values()][action.agentIndex] : null;
+                const payload = { phase: 'day', ...(agent ? { agentId: agent.id, provider: agent.provider } : {}), ...(action.play.payload || {}) };
+                mark(action.label || `play:${action.play.kind}`, { kind: 'event', cueKind: action.play.kind, agentId: agent?.id ?? null, voice: action.voice ?? null });
+                controller.cues.kit._playAccepted({ ...payload, kind: action.play.kind, lane: laneForCueKind(action.play.kind) }, {});
+                return;
+            }
+            runAction(action, { world, mark, controller });
+        }, Math.max(0, at(action.at) - vc.now));
+    }
+}
+
 // spec: { name, mode, volumeStep, layerSteps, world:{counts},
 //         atmosphere:{phase,progress,weather,hour}, bgm:{piece}, warmup, seconds,
 //         actions:[scene.js runAction | {atmosphere} | {accent:{kind, leadMs}}, …],
@@ -312,14 +437,8 @@ export async function runVirtual(spec) {
     const log = { cues: [], scheduled: [], ducks: [], accents: [], levels: [] };
     let controller = null;
     const kitOf = () => controller?.cues?.kit ?? null;
-    eventBus.on('audio:cue-played', (p) => {
-        log.cues.push({ t: ctx.currentTime, kind: p?.kind ?? null, agentId: p?.agentId ?? null, label: p?.label ?? null });
-        const level = kitOf()?.lastLevel;
-        if (level) log.levels.push({ t: ctx.currentTime, kind: p?.kind ?? null, ...plain(level) });
-    });
-    eventBus.on('audio:cue-scheduled', (p) => {
-        log.scheduled.push({ t: ctx.currentTime, kind: p?.kind ?? null, agentId: p?.agentId ?? null, silent: Boolean(p?.silent), notesMs: (p?.notes || []).map(n => n.atMs) });
-    });
+    logCues(log, () => ctx.currentTime, kitOf);
+    const captions = await installCaptions(spec.captions, true);
 
     // The Town band chooses its first piece as it starts: pin it there (a
     // tree without the sequencer pins after the enable, below).
@@ -362,43 +481,24 @@ export async function runVirtual(spec) {
     if (spec.isolate) {
         for (const name of LAYERS) if (name !== spec.isolate) controller.director.forceLayer(name, 0, 1e9);
     }
+    // force: { layer: level } pinned for the whole scene (Village music at 0
+    // is "no music": the sequencer starts no song and publishes nothing).
+    for (const [name, level] of Object.entries(spec.force || {})) controller.directors.ambient.forceLayer(name, level, 1e9);
 
     const { markers, mark } = makeMarker(() => ctx);
     const stateLog = [];
     setInterval(() => {
         const snap = window.__claudevilleAudio?.();
         if (!snap) return;
-        stateLog.push(plain({ t: ctx.currentTime, mode: snap.mode, state: snap.state, running: snap.running, levels: snap.levels, nowPlaying: snap.nowPlaying }));
+        stateLog.push(plain({ t: ctx.currentTime, perf: vc.now, mode: snap.mode, state: snap.state, running: snap.running, levels: snap.levels, nowPlaying: snap.nowPlaying, ...signalState(controller, snap) }));
     }, 1000);
     const perfAt = sec => perfBase + sec * 1000;
     setTimeout(() => mark('rec-start'), Math.max(0, perfAt(warmup) - vc.now));
-    for (const action of spec.actions || []) {
-        setTimeout(() => {
-            if (action.visibility) {
-                setHidden(action.visibility === 'hidden');
-                mark(action.label || `visibility:${action.visibility}`, { kind: 'action' });
-                return;
-            }
-            if (action.window) {
-                window.dispatchEvent(new Event(action.window));
-                mark(action.label || `window:${action.window}`, { kind: 'action' });
-                return;
-            }
-            if (action.atmosphere) {
-                ({ snapshot } = atmosphereFor(action.atmosphere));
-                eventBus.emit('atmosphere:updated', snapshot);
-                mark(action.label || 'atmosphere', { kind: 'action' });
-                if (!action.emit && !action.cue) return;
-            }
-            if (action.accent) {
-                const agent = [...world.agents.values()][action.agentIndex ?? 0];
-                const atMs = performance.now() + (action.accent.leadMs ?? 400);
-                const drawAt = scheduleAccent(agent?.id ?? null, atMs, action.accent.kind);
-                log.accents.push({ kind: action.accent.kind, agentId: agent?.id ?? null, t: ctx.currentTime, accentT: (drawAt - perfBase) / 1000 });
-            }
-            runAction(action, { world, mark, controller });
-        }, Math.max(0, perfAt(warmup + action.at) - vc.now));
-    }
+    scheduleActions(spec.actions, {
+        world, mark, controller, captions, at: sec => perfAt(warmup + sec),
+        onAccent: (a, drawAt) => log.accents.push({ ...a, t: ctx.currentTime, accentT: (drawAt - perfBase) / 1000 }),
+        onAtmosphere: (s) => { snapshot = s; },
+    });
 
     const wallStart = vc.real.performanceNow();
     const buffer = await renderStepped(ctx, { perfBase, stepFrames: spec.stepFrames || 512, freeze: Boolean(spec.freezeOnSuspend) });
@@ -406,6 +506,7 @@ export async function runVirtual(spec) {
     clearInterval(pump);
     const names = publishPcm(buffer, stems);
     const toT = ms => (ms - perfBase) / 1000;
+    const wall = rows => rows.map(({ perf, ...r }) => ({ ...r, wall: perf != null ? toT(perf) : null }));
     const snap = plain(window.__claudevilleAudio?.());
     const starts = vc.audio.starts;
     const toCue = reacherOf(engine.busInput('cue'));
@@ -425,19 +526,20 @@ export async function runVirtual(spec) {
         programTrimDb: PROGRAM_TRIM_DB,
         volumeStep: snap?.volumeStep ?? null,
         markers,
-        cues: log.cues,
-        scheduled: log.scheduled.map(s => ({ ...s, notes: s.notesMs.map(toT) })),
+        cues: wall(log.cues),
+        scheduled: wall(log.scheduled).map(s => ({ ...s, notes: s.notesMs.map(toT) })),
         ducks: log.ducks,
         accents: log.accents,
         levels: log.levels,
-        stateLog,
+        stateLog: wall(stateLog),
+        captions: captions ? wall(captions.shown) : null,
         finalSnapshot: snap,
         cueScore: plain(cueScoreDiagnostics()),
         clock: { fired: vc.fired, errors: vc.errors.slice(0, 20), timersLeft: vc.timers() },
         rng: rngInfo,
         pinned,
         airOff,
-        contextStates: ctx.__vcStateLog.slice(),
+        contextStates: wall(ctx.__vcStateLog),
         timers: timerReport(),
         diagnostics: engineDiagnostics(engine),
         musicOnsets: traced,
@@ -445,6 +547,53 @@ export async function runVirtual(spec) {
             ? starts.map(({ node, ...s }) => ({ ...s, e: Number.isFinite(s.e) ? s.e : null }))
             : null,
         startCount: starts.length,
+    };
+}
+
+// Sound off (3.3, 3.8): the controller built as TopBar builds it at boot and
+// never enabled — no AudioContext — with the virtual clock stepped to the
+// end. What remains is the signal route: captions (`audio:cue-played`), the
+// published scores, the ladder's state and, with `captions: [settings]`,
+// what a real Toast renders per caption setting. Every time is seconds from
+// the start. spec: { mode, world, atmosphere, seconds, actions, storage,
+// captions, stepMs }.
+export async function runSilent(spec) {
+    const rngInfo = await setupRng(spec);
+    seedSoundStorage({ ...spec, soundOff: true });
+    const world = makeWorld(spec.world);
+    let { snapshot } = atmosphereFor(spec.atmosphere);
+    eventBus.emit('atmosphere:updated', snapshot);
+    const pump = setInterval(() => eventBus.emit('atmosphere:updated', snapshot), 400);
+    const perfBase = vc.now;
+    const toT = ms => (ms - perfBase) / 1000;
+    const log = { cues: [], scheduled: [], levels: [] };
+    let controller = null;
+    logCues(log, () => toT(vc.now), () => controller?.cues?.kit ?? null);
+    const captions = await installCaptions(spec.captions, false);
+    controller = new AmbientAudioController({ world });
+    const { markers, mark } = makeMarker(() => ({ currentTime: toT(vc.now) }));
+    const stateLog = [];
+    setInterval(() => {
+        const snap = window.__claudevilleAudio?.();
+        const s = signalState(controller, snap);
+        if (s.ladder || s.heldNote) stateLog.push(plain({ t: toT(vc.now), state: snap?.state ?? null, ...s }));
+    }, 1000);
+    scheduleActions(spec.actions, { world, mark, controller, captions, at: sec => perfBase + sec * 1000, onAtmosphere: (s) => { snapshot = s; } });
+    const end = perfBase + spec.seconds * 1000;
+    const wallStart = vc.real.performanceNow();
+    while (vc.now < end) await vc.advanceTo(Math.min(end, vc.now + (spec.stepMs || 1000)));
+    clearInterval(pump);
+    const snap = plain(window.__claudevilleAudio?.());
+    const shown = captions ? captions.shown.map(({ perf, ...r }) => ({ ...r, t: toT(perf) })) : null;
+    captions?.destroy();
+    return {
+        seconds: spec.seconds, renderMs: vc.real.performanceNow() - wallStart,
+        markers,
+        cues: log.cues.map(({ perf, ...r }) => r),
+        scheduled: log.scheduled.map(({ perf, ...s }) => ({ ...s, notes: s.notesMs.map(toT) })),
+        captions: shown, stateLog, finalSnapshot: snap,
+        contextCreated: Boolean(controller.engine?.context),
+        clock: { fired: vc.fired, errors: vc.errors.slice(0, 20) }, rng: rngInfo,
     };
 }
 
@@ -553,6 +702,6 @@ export async function runAirUnit(spec) {
     };
 }
 
-window.__vcRender = { runVirtual, runEngineUnit, runAirUnit, stage };
+window.__vcRender = { runVirtual, runSilent, runEngineUnit, runAirUnit, stage };
 
 window.__vcReady = true;

@@ -5,6 +5,12 @@
 // event bus and become one-shot cues through the engine-owned cue arbiter
 // (`cues = { kit, governor }`, injected; never built or destroyed here).
 //
+// Honest silence (plan 3.7): every continuous mapping follows only audible
+// (non-stale) agents, and a lost feed fades the work stratum and the held
+// note and says so once. The feed's link cues and the return digest are
+// this director's in both presets — it is the one alive from boot — and play
+// in the Town band's context while that band owns the signals.
+//
 // Atmosphere source: the World renderer broadcasts its per-frame snapshot as
 // `atmosphere:updated` (so debug overrides and village weather influence are
 // heard, not just seen). When that stream goes quiet — Dashboard mode stops
@@ -12,20 +18,35 @@
 // is pure local-clock, so ambience keeps tracking time and weather anywhere.
 
 import { eventBus } from '../../../domain/events/DomainEvent.js';
-import { actionableAgents, bucketCounts } from '../../../domain/services/SignalLedger.js';
+import { UNATTENDED_DIGEST_THRESHOLD_MS } from '../../../application/AttentionService.js';
+import {
+    OutcomeRouter,
+    OutcomeTracker,
+    failedPushFacts,
+    toolFailedFact,
+    verifiedOutcomeFact,
+} from '../../../application/OutcomeSignals.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
+import { readCountHours } from '../SoundSettings.js';
 import { clamp01, rand } from './AudioEngine.js';
 import { rngStream } from './Rng.js';
 import { cueLifecycleDecision, updateQuietFloor } from './CueGovernor.js';
 import { cuePlacementKind, laneForCueKind } from './cues/CueKit.js';
 import { buildingOf, explicitSpot, resolveCueSpot } from './SpatialField.js';
-import { ActionableCueRouter, attentionStatus } from './ActionableRouting.js';
+import {
+    ActionableCueRouter,
+    attentionStatus,
+    familyCuePayload,
+    hourChimeFor,
+} from './ActionableRouting.js';
+import { LinkHealth, audibleCounts, digestNotes, isAudibleAgent, waitState } from './AudibleWorld.js';
 import { WindLayer } from './layers/WindLayer.js';
 import { RainLayer } from './layers/RainLayer.js';
 import { BirdsLayer } from './layers/BirdsLayer.js';
 import { CricketsLayer } from './layers/CricketsLayer.js';
 import { VillageHumLayer } from './layers/VillageHumLayer.js';
+import { HeldNote } from './layers/HeldNote.js';
 import { Sequencer } from './music/Sequencer.js';
 
 const TICK_MS = 1000;
@@ -63,6 +84,8 @@ const VILLAGE_MUSIC_LEVEL = 0.375;
 // Slew (s) of the first tick after start(): layers reach their targets under
 // the director crossfade instead of trailing it by their slow time constants.
 const PRIME_TIME_CONSTANT = 0.05;
+// A lost feed fades the work stratum over ~3 s (SIG-9): τ 1 s is 95 % there.
+const LINK_FADE_TIME_CONSTANT = 1;
 
 const BIRD_SEASON = { winter: 0.25, spring: 1, summer: 1, autumn: 0.7 };
 const CRICKET_SEASON = { winter: 0, spring: 0.45, summer: 1, autumn: 0.55 };
@@ -176,10 +199,37 @@ export class AudioDirector {
         this._mode = 'character';
         this._quietFloor = { mode: 'active', calmSince: null, activeSince: null };
         this._framePressureLevel = 0;
+        // The held note (3.3) exists only while the Village plays.
+        this._heldNote = null;
+        // Audible actionable agents (3.3): the wait the held note carries and
+        // whose last answer resolves it; the family of the oldest one.
+        this._waiting = 0;
+        this._waitFamily = null;
+        this._waitCheckQueued = false;
+        this._waitAnswered = false;
+        this._audible = { agents: 0, working: 0, stale: 0 };
+        this._operatorLooking = null;
+        // Link health (3.7): one loss timer, created only while a loss is due.
+        this._link = new LinkHealth();
+        this._linkTimer = null;
+        // Outcomes (3.4): World-model transitions become facts; the router
+        // gates and aggregates them into one cue with its exact count.
+        this._outcomeTracker = new OutcomeTracker({
+            hasAgent: id => Boolean(this.world?.agents?.has?.(id)),
+            isAudible: agent => isAudibleAgent(agent, Date.now()),
+        });
+        this._outcomeTracker.prime(this.world?.agents?.values?.() ?? []);
+        this._outcomes = new OutcomeRouter({ emit: outcome => this._playOutcome(outcome) });
+        this._harborFailures = null;
 
         // Cue signals stay subscribed while audio is disabled so the
         // accessibility event stream remains useful without an AudioContext.
         this._subscribeSignals();
+    }
+
+    /** True while the feed has been lost (3.7): the ladder freezes on it. */
+    get linkLost() {
+        return this._link.lost;
     }
 
     start() {
@@ -201,6 +251,8 @@ export class AudioDirector {
             music: new Sequencer(this.engine, { ...options, preset: 'village' }),
         };
         for (const layer of Object.values(this.layers)) layer.start();
+        this._heldNote = new HeldNote(this.engine, options);
+        this._heldNote.start();
 
         this._subscribeRuntime();
         this._interval = setInterval(() => this._tick(), TICK_MS);
@@ -218,6 +270,8 @@ export class AudioDirector {
         this._unsubscribes = [];
         for (const layer of Object.values(this.layers)) layer.stop();
         this.layers = {};
+        this._heldNote?.stop();
+        this._heldNote = null;
     }
 
     // Pause in place (2.1, ENG-2): stop waking the Transport and the 1 Hz
@@ -256,6 +310,10 @@ export class AudioDirector {
         this.stop();
         for (const unsubscribe of this._signalUnsubscribes) unsubscribe();
         this._signalUnsubscribes = [];
+        clearTimeout(this._linkTimer);
+        this._linkTimer = null;
+        this._outcomes.destroy();
+        this._outcomeTracker.clear();
         this.cueKit = null;
         this.governor = null;
         this._actionable.clear();
@@ -275,6 +333,25 @@ export class AudioDirector {
         this._hiddenSummonsHandler = typeof handler === 'function' ? handler : null;
     }
 
+    // S7: an entry summons while the operator is looking plays the L2 voice.
+    setOperatorLooking(fn) {
+        this._operatorLooking = typeof fn === 'function' ? fn : null;
+    }
+
+    /**
+     * A ladder reminder (3.3) in its wait's family voice. Only the director
+     * that owns signal routing plays it; a hidden page hands it to the wake.
+     */
+    playReminder(reminder = {}) {
+        if (!this._signalRouting) return false;
+        const agentId = reminder?.agentId ?? null;
+        return this._signalCue('reminder', {
+            ...familyCuePayload(reminder),
+            agentId,
+            label: this._agentLabel(reminder, agentId),
+        });
+    }
+
     _subscribeSignals() {
         const on = (event, handler) => {
             this._signalUnsubscribes.push(eventBus.on(event, handler));
@@ -284,11 +361,60 @@ export class AudioDirector {
             this._mode = mode === 'dashboard' ? 'dashboard' : 'character';
             this.governor?.clearRoutine();
         });
-        on('agent:added', (agent) => this._rememberAgentAudioContext(agent));
-        on('agent:updated', (agent) => this._rememberAgentAudioContext(agent));
+        // The World model's own transitions carry the outcomes that must work
+        // in Dashboard too (turn ends, dispatches, returns) and the wait the
+        // held note follows; the tracker observes even while another director
+        // owns the signals, so it always knows each agent's previous state.
+        on('agent:added', (agent) => {
+            this._rememberAgentAudioContext(agent);
+            this._submitOutcomes(this._outcomeTracker.added(agent));
+            this._queueWaitCheck();
+        });
+        on('agent:updated', (agent) => {
+            this._rememberAgentAudioContext(agent);
+            this._submitOutcomes(this._outcomeTracker.updated(agent));
+            this._queueWaitCheck();
+        });
         // Keep the last position/provider through the synchronous removal →
         // village:scene sequence so departures can retain their identity.
-        on('agent:removed', (agent) => this._rememberAgentAudioContext(agent));
+        on('agent:removed', (agent) => {
+            this._rememberAgentAudioContext(agent);
+            this._submitOutcomes(this._outcomeTracker.removed(agent));
+            this._queueWaitCheck();
+        });
+        // The renderer's own dispatch and return events (World only); the
+        // tracker hears each child once, whichever source reports it first.
+        on('subagent:dispatched', (event) => {
+            this._submitOutcomes(this._outcomeTracker.dispatched(event ?? {}));
+        });
+        on('subagent:completed', (event) => {
+            this._submitOutcomes(this._outcomeTracker.completed(event ?? {}));
+        });
+        // Gold only from verified outcomes (S6).
+        on('outcome:verified', (outcome) => {
+            const fact = verifiedOutcomeFact(outcome);
+            if (fact) this._submitOutcomes([fact]);
+        });
+        // World only: AgentEventStream (its producer) runs only in World mode,
+        // so Dashboard never hears a failed command.
+        on('tool:result', (event) => {
+            const fact = toolFailedFact(event);
+            if (fact) this._submitOutcomes([fact]);
+        });
+        // World only (the renderer's harbor summary): a repo whose failed
+        // pushes grew is a failed push; the first summary is a baseline.
+        on('harbor:updated', (repos) => {
+            const { facts, state } = failedPushFacts(this._harborFailures, repos);
+            this._harborFailures = state;
+            this._submitOutcomes(facts);
+        });
+
+        // The feed's health (3.7), in its own vocabulary.
+        on('ws:state', (payload) => this._observeLink('ws:state', payload));
+        on('ws:disconnected', () => this._observeLink('ws:disconnected'));
+        on('watcher:state', (payload) => this._observeLink('watcher:state', payload));
+        // The return digest's phrase: sound-only, its toast is the caption.
+        on('attention:digest', (payload) => this._playDigest(payload));
 
         on('village:scene', (scene) => {
             if (!this._signalRouting) return;
@@ -341,14 +467,11 @@ export class AudioDirector {
                 supersedes: members,
             });
         });
+        // A release's aurora is the release itself, which rings its own peal
+        // from `outcome:verified` (3.4): one sound per fact.
         on('chronicle:aurora', (payload) => {
-            if (!this._signalRouting) return;
-            this.cue('aurora', {
-                agentId: payload?.agentId ?? null,
-                // A release's aurora is its ceremony; the push it absorbs has
-                // no voice until the outcome stratum (3.4).
-                ...(payload?.reason === 'release' ? { supersedes: [] } : {}),
-            });
+            if (!this._signalRouting || payload?.reason === 'release') return;
+            this.cue('aurora', { agentId: payload?.agentId ?? null });
         });
         // The one cue that is about the listener rather than the world.
         on('attention:raised', (payload) => {
@@ -416,17 +539,24 @@ export class AudioDirector {
     // Both actionable events land here; the router picks the voice from the
     // bucket and spends one cue per agent entry. A hidden page hands the
     // routed cue to the controller's wake path instead of the suspended mix.
+    // A stale observation raises nothing (S6).
     _playActionable(payload, status) {
         const agentId = payload?.agentId ?? payload?.agent?.id ?? null;
-        return this._actionable.route({ agentId, status }, (kind) => {
+        const agent = this.world?.agents?.get?.(agentId) ?? payload?.agent ?? null;
+        if (agent && !isAudibleAgent(agent, Date.now())) return false;
+        return this._actionable.route({ agentId, status }, (kind, family) => {
             const details = {
                 ...spatialFields(payload),
                 agentId,
                 label: this._agentLabel(payload, agentId),
                 provider: this._agentProvider(payload, agentId),
                 status,
+                family,
                 waitingCount: payload?.waitingCount,
                 oldestWaitMs: payload?.oldestWaitMs,
+                // The ladder's L1 is the entry call; to an operator who is
+                // already looking it rings as L2 (S7).
+                ...(kind === 'summons' ? { level: this._operatorLooking?.() ? 2 : 1 } : {}),
             };
             if (this.hidden && this._hiddenSummonsHandler) {
                 this._hiddenSummonsHandler({ ...payload, ...details, audioCueKind: kind });
@@ -445,6 +575,132 @@ export class AudioDirector {
             || null;
     }
 
+    // A signal-route cue that must reach a hidden page (reminders, the
+    // answered strike, link cues) goes through the wake; otherwise it plays.
+    _signalCue(kind, details) {
+        if (this.hidden && this._hiddenSummonsHandler) {
+            this._hiddenSummonsHandler({ ...details, audioCueKind: kind });
+            return true;
+        }
+        return this.cue(kind, details);
+    }
+
+    // The mix a cue this director plays on the Town band's behalf lands in:
+    // the band's ducks and its bed window.
+    _presetDetails() {
+        return this._signalRouting ? {} : { preset: 'townBand', bed: 'music' };
+    }
+
+    _submitOutcomes(facts) {
+        if (!this._signalRouting) return;
+        for (const fact of facts) this._outcomes.submit(fact);
+    }
+
+    // One aggregated outcome → one cue with its exact count. A batch that
+    // closes after the Town band took the signals still plays, in its mix.
+    _playOutcome(outcome) {
+        const agentId = outcome.agentId ?? null;
+        const details = {
+            agentId,
+            label: agentId != null ? this._agentLabel(null, agentId) : null,
+            count: outcome.count,
+            repo: outcome.repo,
+            version: outcome.version,
+            ...(outcome.building ? { building: outcome.building } : {}),
+            ...this._presetDetails(),
+        };
+        details.spot = this._spotFor(details, agentId);
+        return this.cue(outcome.kind, details);
+    }
+
+    _spotFor(payload, agentId) {
+        return resolveCueSpot(payload, {
+            agentId,
+            dashboard: this._mode === 'dashboard',
+            world: this.world,
+            remembered: this._agentAudioContext.get(agentId),
+        });
+    }
+
+    // Agent events arrive a poll at a time: count the wait once per batch.
+    _queueWaitCheck() {
+        if (this._waitCheckQueued) return;
+        this._waitCheckQueued = true;
+        queueMicrotask(() => {
+            this._waitCheckQueued = false;
+            this._applyWaiting(waitState(this.world, Date.now()));
+        });
+    }
+
+    // The last answer ends the wait audibly (S6): the Village resolves its
+    // held note; the signals-only route rings the `answered` strike. A wait
+    // that only went stale was not answered: it fades without resolving.
+    _applyWaiting({ waiting = 0, unheard = 0, family = null } = {}) {
+        const was = this._waiting;
+        this._waiting = waiting;
+        if (family) this._waitFamily = family;
+        if (was === waiting) return;
+        this._waitAnswered = waiting === 0 && unheard === 0;
+        if (was > 0 && this._waitAnswered && this.hidden && this._signalRouting) {
+            this._signalCue('answered', familyCuePayload({ family: this._waitFamily }));
+        }
+        this._syncHeldNote();
+    }
+
+    // Open while an audible agent waits, no music plays, the feed is live
+    // and the Village is heard; the reason it closes tells the note whether
+    // to resolve (answered) or only fade.
+    _syncHeldNote() {
+        if (!this._heldNote) return;
+        const music = Boolean(this.engine.musicClock?.playing?.(this.engine.now()));
+        const open = this._waiting > 0 && !music && !this._link.lost && !this.paused;
+        let reason = null;
+        if (!open) {
+            if (this._link.lost) reason = 'link';
+            else if (this._waiting === 0) reason = this._waitAnswered ? 'answered' : 'stale';
+            else if (music) reason = 'music';
+            else reason = 'paused';
+        }
+        this._heldNote.setState({ open, reason, phase: this._phase });
+    }
+
+    _observeLink(event, payload = {}) {
+        const change = this._link.observe(event, payload, Date.now());
+        if (change === 'restored') this._linkChanged('linkRestored');
+        this._armLinkTimer();
+    }
+
+    // A timer only decides that the loss is due; the cue is placed on the
+    // audio clock like any other (S4).
+    _armLinkTimer() {
+        clearTimeout(this._linkTimer);
+        this._linkTimer = null;
+        const due = this._link.dueAt();
+        if (due == null) return;
+        this._linkTimer = setTimeout(() => {
+            this._linkTimer = null;
+            if (this._link.check(Date.now()) === 'lost') this._linkChanged('linkLost');
+            else this._armLinkTimer();
+        }, Math.max(0, due - Date.now()));
+    }
+
+    // The work stratum and the held note follow the feed at once (the wind
+    // stays), and the change is said once.
+    _linkChanged(kind) {
+        this._syncHeldNote();
+        if (kind === 'linkLost') this.layers.hum?.setLevel(0, LINK_FADE_TIME_CONSTANT);
+        this._signalCue(kind, this._presetDetails());
+    }
+
+    // The return digest (SIG-15): a bounded phrase, past first and the open
+    // wait last; nothing when nothing happened.
+    _playDigest(payload) {
+        if (!(Number(payload?.awayMs) >= UNATTENDED_DIGEST_THRESHOLD_MS)) return false;
+        const notes = digestNotes(payload);
+        if (!notes.length) return false;
+        return this.cue('digest', { notes, soundOnly: true, ...this._presetDetails() });
+    }
+
     cue(kind, extra = {}) {
         if (!this.cueKit) return false;
         const payload = { phase: this._phase, ...extra };
@@ -454,14 +710,7 @@ export class AudioDirector {
         }
         // Placed once, here, when the cue is raised; CueKit turns the spot
         // into pan, distance and air at schedule time (plan S5).
-        if (cuePlacementKind(kind)) {
-            payload.spot ??= resolveCueSpot(payload, {
-                agentId,
-                dashboard: this._mode === 'dashboard',
-                world: this.world,
-                remembered: this._agentAudioContext.get(agentId),
-            });
-        }
+        if (cuePlacementKind(kind)) payload.spot ??= this._spotFor(payload, agentId);
         payload.lane = laneForCueKind(kind);
         if (cueLifecycleDecision({ lane: payload.lane, hidden: this.hidden }) !== 'play') {
             return false;
@@ -500,14 +749,17 @@ export class AudioDirector {
         const phase = atmosphere.phase || 'day';
         const phaseProgress = clamp01(atmosphere.phaseProgress);
         const season = seasonTokenForAtmosphere(atmosphere) || 'summer';
-        const counts = bucketCounts(this.world);
+        // Only audible (non-stale) agents feed a continuous mapping (S6).
+        const now = Date.now();
+        const counts = audibleCounts(this.world, now);
         const working = Number(counts.working) || 0;
-        const calm = actionableAgents(this.world).length === 0
+        this._audible = { agents: counts.audible.length, working, stale: counts.stale };
+        const calm = counts.actionable === 0
             && working === 0
             && Number(counts.watchlist) === 0;
         this._quietFloor = updateQuietFloor(this._quietFloor, {
             calm,
-            now: Date.now(),
+            now,
             enterAfterMs: QUIET_ENTER_MS,
             leaveAfterMs: QUIET_LEAVE_MS,
         });
@@ -535,7 +787,8 @@ export class AudioDirector {
                 * (BIRD_SEASON[season] ?? 1),
             ),
             crickets: cricketLevel({ phase, phaseProgress, season, precipitation, storm }),
-            hum: clamp01(working / 6) * (0.25 + 0.75 * light),
+            // The work stratum: silent while the feed is lost (SIG-9).
+            hum: this._link.lost ? 0 : clamp01(working / 6) * (0.25 + 0.75 * light),
             music: VILLAGE_MUSIC_LEVEL * (phase === 'night' ? 0.7 : 1),
         };
 
@@ -574,17 +827,22 @@ export class AudioDirector {
         this.layers.rain.setStorm(storm, prime ?? 6);
         this.layers.birds.setLevel(levels.birds, prime ?? 3);
         this.layers.crickets.setLevel(levels.crickets, prime ?? 3);
-        this.layers.hum.setLevel(levels.hum, prime ?? 3);
+        this.layers.hum.setLevel(levels.hum, prime ?? (this._link.lost ? LINK_FADE_TIME_CONSTANT : 3));
         this.layers.music.setLevel(levels.music, prime ?? 3);
         this.layers.music.setPhase(phase);
         this.layers.music.setRestScale(1 - clamp01(working / 8) * 0.35);
         this._levels = levels;
+        this._applyWaiting(waitState(this.world, now));
+        this._syncHeldNote();
 
-        // Hour bell during waking hours.
-        const clock = atmosphere.clock || {};
-        if (clock.minutes === 0 && clock.hours >= 8 && clock.hours <= 20
-            && this._lastBellHour !== clock.hours) {
-            if (this.cue('hourBell')) this._lastBellHour = clock.hours;
+        // The hour chime (D7): the phrase by day, a soft chime at 21:00; the
+        // count only when the operator asked for it.
+        const chime = hourChimeFor(atmosphere.clock);
+        if (chime && this._lastBellHour !== chime.hour) {
+            const count = !chime.soft && readCountHours();
+            if (this.cue('hourBell', { hour: chime.hour, soft: chime.soft, count })) {
+                this._lastBellHour = chime.hour;
+            }
         }
 
         // Storm thunder fallback when the World loop (and its flash events)
@@ -608,6 +866,11 @@ export class AudioDirector {
             lastCue: this.cueKit?.lastCue || null,
             nowPlaying: this.layers.music?.nowPlaying || null,
             ceremonies: this.governor?.snapshot().ceremonies ?? null,
+            // Honest silence (3.7): what the continuous strata may follow.
+            audible: { ...this._audible, waiting: this._waiting },
+            link: this._link.snapshot(Date.now()),
+            heldNote: this._heldNote?.snapshot?.() ?? null,
+            outcomes: this._outcomes.pending(),
         };
     }
 

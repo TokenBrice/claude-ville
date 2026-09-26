@@ -15,72 +15,72 @@
       "stMax": -35.47
     },
     "margin:village:needsYou": {
-      "margin": 9.57
+      "margin": 11.06
     },
     "margin:village:error": {
-      "margin": 8.94
+      "margin": 8.35
     },
     "margin:village:limit": {
-      "margin": 8.08
+      "margin": 8.4
     },
     "margin:village:routine": {
-      "margin": 5.49
+      "margin": 5.05
     },
     "margin:village:scenery": {
-      "margin": 2.68
+      "margin": 4.98
     },
     "margin:music:needsYou": {
-      "margin": 10.61
+      "margin": 9.09
     },
     "margin:music:error": {
-      "margin": 10.33
+      "margin": 7.93
     },
     "margin:music:limit": {
-      "margin": 10.63
+      "margin": 6.12
     },
     "margin:music:routine": {
-      "margin": 5.62
+      "margin": 5.27
     },
     "margin:music:scenery": {
-      "margin": 3.9
+      "margin": 3.88
     },
     "scene:villageBusy": {
-      "lufsI": -30.83,
-      "stMax": -25.98
+      "lufsI": -30.88,
+      "stMax": -26.87
     },
     "margin:rain:needsYou": {
-      "margin": 10.45
+      "margin": 7.69
     },
     "margin:rain:error": {
-      "margin": 11.26
+      "margin": 6.96
     },
     "margin:rain:limit": {
-      "margin": 10.23
+      "margin": 6.38
     },
     "margin:rain:routine": {
-      "margin": 4.91
+      "margin": 4.97
     },
     "margin:rain:scenery": {
-      "margin": 4.16
+      "margin": 3.36
     },
     "scene:townBand": {
-      "lufsI": -30.84,
-      "stMax": -26
+      "lufsI": -30.91,
+      "stMax": -26.88
     },
     "margin:storm:needsYou": {
-      "margin": 9.03
+      "margin": 7.19
     },
     "margin:storm:error": {
-      "margin": 9.53
+      "margin": 5.68
     },
     "margin:storm:limit": {
-      "margin": 8.7
+      "margin": 5.98
     },
     "margin:storm:routine": {
-      "margin": 4.94
+      "margin": 4.95
     },
     "margin:storm:scenery": {
-      "margin": 2.81
+      "margin": 3.28
     },
     "scene:rain": {
       "lufsI": -34.09,
@@ -93,6 +93,42 @@
     "scene:resting": {
       "lufsI": -48.2,
       "stMax": -46.24
+    },
+    "margin:music:outcomeMinor": {
+      "margin": 2.19
+    },
+    "margin:music:outcomeMedium": {
+      "margin": 5.51
+    },
+    "margin:music:outcomeMajor": {
+      "margin": 6.66
+    },
+    "margin:village:outcomeMinor": {
+      "margin": 1.31
+    },
+    "margin:village:outcomeMedium": {
+      "margin": 5.24
+    },
+    "margin:village:outcomeMajor": {
+      "margin": 6.64
+    },
+    "margin:rain:outcomeMinor": {
+      "margin": 1.19
+    },
+    "margin:rain:outcomeMedium": {
+      "margin": 5.1
+    },
+    "margin:rain:outcomeMajor": {
+      "margin": 6.09
+    },
+    "margin:storm:outcomeMinor": {
+      "margin": 0.88
+    },
+    "margin:storm:outcomeMedium": {
+      "margin": 5.05
+    },
+    "margin:storm:outcomeMajor": {
+      "margin": 5.97
     }
   }
 }

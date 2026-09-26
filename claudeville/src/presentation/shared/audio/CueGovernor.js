@@ -1,11 +1,20 @@
 // One priority arbiter for every one-shot cue. Urgent state signals sound
-// immediately; routine/scenery bursts share a short aggregation window so a
+// immediately (a same-lane burst becomes one call and a flock); ladder
+// reminders keep their own caps; outcomes share the routine budget with a
+// reserve; routine/scenery bursts share a short aggregation window so a
 // busy poll becomes one intelligible answer instead of a wall of beeps.
+
+import { REMINDER_CAPS } from './UrgencyLadder.js';
 
 export const CUE_LANES = Object.freeze({
     NEEDS_YOU: 'needsYou',
     ERRORS: 'errors',
     QUOTA: 'quota',
+    // The signal stratum's non-urgent voices: ladder reminders, the Signals
+    // `answered` strike and the link cues. They play while the page is away
+    // (through the wake) and never enter the routine budget.
+    REMINDER: 'reminder',
+    OUTCOME: 'outcome',
     ROUTINE: 'routine',
     SCENERY: 'scenery',
 });
@@ -17,12 +26,47 @@ export const URGENT_CUE_LANES = Object.freeze([
 ]);
 
 const LANE_PRIORITY = Object.freeze({
-    [CUE_LANES.NEEDS_YOU]: 5,
-    [CUE_LANES.ERRORS]: 4,
-    [CUE_LANES.QUOTA]: 3,
+    [CUE_LANES.NEEDS_YOU]: 6,
+    [CUE_LANES.ERRORS]: 5,
+    [CUE_LANES.QUOTA]: 4,
+    [CUE_LANES.REMINDER]: 3,
+    [CUE_LANES.OUTCOME]: 2,
     [CUE_LANES.ROUTINE]: 2,
     [CUE_LANES.SCENERY]: 1,
 });
+
+// Outcome tiers (C4, plan 3.4): Minor one onset, Medium two, Major ≤ 2.5 s
+// and one active globally. A cue may name its own `tier`.
+export const OUTCOME_TIERS = Object.freeze({
+    turnDone: 'minor',
+    subagentReturn: 'minor',
+    dispatch: 'minor',
+    toolFailed: 'medium',
+    commit: 'medium',
+    push: 'medium',
+    pushFailed: 'medium',
+    release: 'major',
+});
+
+export function outcomeTier(kind) {
+    return OUTCOME_TIERS[kind] ?? null;
+}
+
+// Outcomes share the routine cues' per-minute budget; this many of it are
+// reserved for outcomes, so routine chatter can never starve them (S7).
+export const OUTCOME_RESERVED_PER_MINUTE = 2;
+// The span a Major outcome holds the stage when it names none (C4: ≤ 2.5 s).
+const MAJOR_ACTIVE_MS = 2500;
+
+// Same-lane urgent cues this close to the first become its flock (SIG-10):
+// the first rings at once, up to MAX_FLOCK followers add one soft strike
+// each, and every one of them keeps its caption.
+export const URGENT_CLUSTER_WINDOW_MS = 400;
+export const MAX_FLOCK = 4;
+
+function isSignalLane(lane) {
+    return isUrgentCueLane(lane) || lane === CUE_LANES.REMINDER;
+}
 
 const KIND_LABELS = Object.freeze({
     arrival: ['arrival', 'arrivals'],
@@ -110,9 +154,11 @@ export function updateQuietFloor(state = {}, {
     return { mode: 'resting', calmSince: state.calmSince ?? null, activeSince };
 }
 
+// Away from the page only the signal stratum plays (through the wake);
+// everything else describes a moment the listener is not in.
 export function cueLifecycleDecision({ lane, hidden = false, returning = false } = {}) {
     if (returning) return 'discard';
-    if (hidden && !isUrgentCueLane(lane)) return 'suppress';
+    if (hidden && !isSignalLane(lane)) return 'suppress';
     return 'play';
 }
 
@@ -147,8 +193,10 @@ export class CueGovernor {
         minSpacingMs = 4000,
         aggregationWindowMs = 180,
         teamHoldMs = TEAM_HOLD_MS,
+        outcomeReservePerMinute = OUTCOME_RESERVED_PER_MINUTE,
     } = {}) {
         this.maxPerMinute = maxPerMinute;
+        this.outcomeReservePerMinute = outcomeReservePerMinute;
         this.minSpacingMs = minSpacingMs;
         this.aggregationWindowMs = aggregationWindowMs;
         this.teamHoldMs = teamHoldMs;
@@ -164,19 +212,31 @@ export class CueGovernor {
         this._announced = null;
         this._urgentUntil = 0;
         this._ceremonies = { superseded: 0, last: null };
+        // The live same-lane urgent burst per lane: { until, followers }.
+        this._clusters = new Map();
+        // Heard ladder reminders (ms), for the S7 backstop caps.
+        this._reminders = [];
+        this._majorUntil = 0;
     }
 
-    allow(kind, cooldownMs = 15000, { budget = true, key = kind, bypassSpacing = false } = {}) {
+    // `outcome` spends the shared per-minute budget without the spacing rule;
+    // routine and scenery cues keep the spacing rule and may use all but the
+    // outcome reserve.
+    allow(kind, cooldownMs = 15000, { budget = true, key = kind, bypassSpacing = false, outcome = false } = {}) {
         const now = Date.now();
         const last = this._lastByKind.get(key) || 0;
         if (now - last < cooldownMs) return false;
 
         if (budget) {
-            this._recent = this._recent.filter(t => now - t < 60000);
+            this._recent = this._recent.filter(entry => now - entry.at < 60000);
             if (this._recent.length >= this.maxPerMinute) return false;
-            const newest = this._recent[this._recent.length - 1];
-            if (!bypassSpacing && newest && now - newest < this.minSpacingMs) return false;
-            this._recent.push(now);
+            if (!outcome) {
+                const routine = this._recent.filter(entry => !entry.outcome);
+                if (routine.length >= this.maxPerMinute - this.outcomeReservePerMinute) return false;
+                const newest = routine[routine.length - 1];
+                if (!bypassSpacing && newest && now - newest.at < this.minSpacingMs) return false;
+            }
+            this._recent.push({ at: now, outcome });
         }
 
         this._lastByKind.set(key, now);
@@ -185,18 +245,14 @@ export class CueGovernor {
 
     submit(cue, play) {
         if (!cue?.lane || typeof play !== 'function') return false;
-        if (isUrgentCueLane(cue.lane)) {
-            this.clearRoutine();
-            const key = cue.agentId == null ? cue.kind : `${cue.kind}:${cue.agentId}`;
-            if (!this.allow(cue.kind, cue.cooldownMs, { budget: false, key })) return false;
-            this._urgentUntil = Date.now() + Math.max(0, Number(cue.guardMs) || 3000);
-            play(cue);
-            return true;
-        }
+        if (isUrgentCueLane(cue.lane)) return this._submitUrgent(cue, play);
 
         // Routine information is momentary. Drop it during an urgent voice
         // instead of delaying it until the state it described has gone stale.
+        // A reminder in that span is spent, not queued (SIG-2).
         if (Date.now() < this._urgentUntil) return false;
+        if (cue.lane === CUE_LANES.REMINDER) return this._submitReminder(cue, play);
+        if (cue.lane === CUE_LANES.OUTCOME) return this._submitOutcome(cue, play);
         if (Array.isArray(cue.supersedes)) return this._submitCeremony(cue, play);
         if (cue.aggregate === false) {
             if (!this.allow(cue.kind, cue.cooldownMs, { budget: cue.budget !== false })) {
@@ -230,6 +286,64 @@ export class CueGovernor {
         }
         this._routine.push(queued);
         if (extend) this._armFlush();
+        return true;
+    }
+
+    // The first urgent cue of a lane rings at once. Same-lane urgents inside
+    // its micro-window join it as flock strikes (`flock: true`,
+    // `clusterIndex` 1…MAX_FLOCK), then as captions only: one call at the
+    // loudness of one call, every agent still named (SIG-10).
+    _submitUrgent(cue, play) {
+        const now = Date.now();
+        const key = cue.agentId == null ? cue.kind : `${cue.kind}:${cue.agentId}`;
+        const cluster = this._clusters.get(cue.lane);
+        if (cluster && now < cluster.until) {
+            if (!this.allow(cue.kind, cue.cooldownMs, { budget: false, key })) return false;
+            cluster.followers += 1;
+            if (cluster.followers <= MAX_FLOCK) play({ ...cue, flock: true, clusterIndex: cluster.followers });
+            else play(cue, { announceOnly: true });
+            return true;
+        }
+        this.clearRoutine();
+        if (!this.allow(cue.kind, cue.cooldownMs, { budget: false, key })) return false;
+        this._clusters.set(cue.lane, { until: now + URGENT_CLUSTER_WINDOW_MS, followers: 0 });
+        this._urgentUntil = now + Math.max(0, Number(cue.guardMs) || 3000);
+        play(cue);
+        return true;
+    }
+
+    // The ladder spaces its reminders itself (UrgencyLadder.js); the S7 caps
+    // are held here too, so no second source can out-talk them.
+    _submitReminder(cue, play) {
+        const now = Date.now();
+        const capped = cue.kind === 'reminder';
+        if (capped) {
+            this._reminders = this._reminders.filter(at => now - at < REMINDER_CAPS.windowMs);
+            const last = this._reminders[this._reminders.length - 1];
+            if (last != null && now - last < REMINDER_CAPS.minGapMs) return false;
+            if (this._reminders.length >= REMINDER_CAPS.perHour) return false;
+        }
+        const key = cue.cooldownKey ?? cue.kind;
+        if (!this.allow(cue.kind, capped ? 0 : cue.cooldownMs, { budget: false, key })) return false;
+        if (capped) this._reminders.push(now);
+        if (Number(cue.guardMs) > 0) this._urgentUntil = Math.max(this._urgentUntil, now + Number(cue.guardMs));
+        play(cue);
+        return true;
+    }
+
+    // Outcomes never aggregate here (Minor kinds are counted upstream); they
+    // spend the shared budget, and one Major holds the stage at a time.
+    _submitOutcome(cue, play) {
+        const now = Date.now();
+        const major = (cue.tier ?? outcomeTier(cue.kind)) === 'major';
+        if (major && now < this._majorUntil) return false;
+        if (!this.allow(cue.kind, cue.cooldownMs, {
+            budget: cue.budget !== false,
+            key: cue.cooldownKey ?? cue.kind,
+            outcome: true,
+        })) return false;
+        if (major) this._majorUntil = now + Math.max(0, Number(cue.activeMs) || MAJOR_ACTIVE_MS);
+        play(cue);
         return true;
     }
 
@@ -345,6 +459,9 @@ export class CueGovernor {
         this.clearRoutine();
         this._recent = [];
         this._urgentUntil = 0;
+        this._majorUntil = 0;
+        this._reminders = [];
+        this._clusters.clear();
         this._lastByKind.clear();
     }
 }

@@ -18,11 +18,22 @@ import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { eventShapeSvgPath } from './EventShapes.js';
 import {
     AUDIO_MIXER_DEFAULTS,
+    CAPTIONS_KEY,
+    DEFAULT_CAPTIONS,
+    DEFAULT_SOUND_COUNT_HOURS,
+    DEFAULT_SOUND_REMINDERS,
     SOUND_CALIBRATION,
     SOUND_CALIBRATION_KEY,
+    SOUND_COUNT_HOURS_KEY,
+    SOUND_ENABLED_KEY,
     SOUND_LAYERS_KEY,
+    SOUND_REMINDERS_KEY,
     SOUND_STEP_MAX,
     SOUND_VOLUME_KEY,
+    readCaptionSetting,
+    readCountHours,
+    readReminderSetting,
+    readStoredSoundEnabled,
     readStoredTrimSteps,
     readStoredVolumeStep,
 } from './SoundSettings.js';
@@ -78,12 +89,15 @@ export function connectionReasonText(code) {
 // Sound levels are whole steps (1.2); the calibration key follows the volume
 // and trims so a reset writes it last and never needs the D5 recalibration.
 export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
-    'claudeville.sound.enabled': 'false',
+    [SOUND_ENABLED_KEY]: 'false',
     [SOUND_VOLUME_KEY]: String(STANDARD_VOLUME_STEP),
     'claudeville.sound.mode': 'ambient',
     'claudeville.sound.background': 'play',
     [SOUND_LAYERS_KEY]: JSON.stringify(AUDIO_MIXER_DEFAULTS),
     [SOUND_CALIBRATION_KEY]: SOUND_CALIBRATION,
+    [SOUND_REMINDERS_KEY]: DEFAULT_SOUND_REMINDERS,
+    [SOUND_COUNT_HOURS_KEY]: DEFAULT_SOUND_COUNT_HOURS,
+    [CAPTIONS_KEY]: DEFAULT_CAPTIONS,
     'cv-auto-camera': '1',
     'claudeville.alerts.desktop': '0',
     'claudeville.sidebarCollapsed': 'false',
@@ -101,11 +115,14 @@ function focusWithoutScroll(element) {
 export function readPersistedSettings(storage = globalThis.window?.localStorage) {
     const rawMode = storageValue(storage, 'claudeville.sound.mode');
     return {
-        soundEnabled: storageValue(storage, 'claudeville.sound.enabled') === 'true',
+        soundEnabled: readStoredSoundEnabled(storage),
         soundVolume: readStoredVolumeStep(storage),
         soundMode: rawMode === 'bgm' ? 'bgm' : 'ambient',
         soundBackground: storageValue(storage, 'claudeville.sound.background') === 'signals' ? 'signals' : 'play',
         soundLayers: readStoredTrimSteps(storage),
+        soundReminders: readReminderSetting(storage),
+        soundCountHours: readCountHours(storage),
+        captions: readCaptionSetting(storage),
         autoCamera: storageValue(storage, 'cv-auto-camera') !== '0',
         desktopAlerts: storageValue(storage, 'claudeville.alerts.desktop') === '1',
         sidebarCollapsed: storageValue(storage, 'claudeville.sidebarCollapsed') === 'true',

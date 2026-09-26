@@ -14,8 +14,8 @@ dev dependencies). No ffmpeg, sox, scipy, or extra install. Dev-only: nothing he
 
 A **local maintainer gate**, not part of `validate:quick` or CI (CI installs with `--ignore-scripts`
 and has no browser). Run it at the end of every audio wave; it exits non-zero on any FAIL and writes
-nothing unless `--out` or `--update` is given. **Status:** the Wave 2 gate; the default run takes
-about 5–6 minutes (the virtual-clock checks ≈ 1 min with `--jobs 2`, the rest is the live app, the
+nothing unless `--out` or `--update` is given. **Status:** the Wave 3 gate; the default run takes
+about 6–7 minutes (the virtual-clock checks ≈ 1.5 min with `--jobs 2`, the rest is the live app, the
 frame-cost run and the lint).
 
 ```sh
@@ -33,7 +33,7 @@ Each line prints `PASS`/`FAIL`/`INFO`/`DEFER`, the check, and its numbers.
 
 ### Plan stage and deferred checks
 
-`PLAN_STAGE` in `lib/checks.mjs` is the wave the probe gates (now **2**); bump it at each wave's exit.
+`PLAN_STAGE` in `lib/checks.mjs` is the wave the probe gates (now **3**); bump it at each wave's exit.
 A criterion whose owner lands in a later wave is listed in `GATED_FROM` with that wave: it is measured
 and printed as `DEFER` with the same numbers and the wave that gates it, counted in the summary line,
 and never fails the run. Once `PLAN_STAGE` reaches its wave it gates like everything else. Every
@@ -42,13 +42,13 @@ lines only; the committed baselines detect drift and can never turn a failed tar
 
 | deferred criterion | gated from | why |
 |---|---|---|
-| urgent band rule for **error** and **limit** (`margins`: presence rise over music, ⅓-octave rise elsewhere) | Wave 3 | today's distress voice (A2) has no 0.5–4 kHz energy and urgent trims never go below 0 dB; the cracked bell and the escapement ticks (3.2) carry it |
-| lane ceilings for **error** (+12) and **limit** (+10) | Wave 3 | the same voices: an urgent trim floored at 0 dB cannot pull an over-bright old voice under its ceiling |
 | **village busy** at A + 4 ± 2, LRA ≤ 8 (`scenes`) | Wave 4, re-checked at Wave 6 | the bed is wind + birds until the sea (4.1); Village music becomes the occasion clock (6.6); `PROGRAM_TRIM_DB` is re-measured at both |
 | **storm** at S2's ≤ A + 6 with ST max ≤ −27 (`scenes`) | Wave 4 | thunder with distance and the sea (4.1, 4.2) reshape the storm; until then its numbers print as DEFER |
+| **error over the storm** (`margins`: floor +6, band rule, GR ≤ 3 dB) | Wave 4 | S2 buys the error its headroom from the smaller storm of 4.1/4.2; Wave 3 measured +5.7 LU with the urgent trim at its limiter cap (+2.1 dB), GR 2.5 dB. Error over rain, and every other storm lane, gate now |
 
-The needs-you band rule, every lane floor, urgent GR ≤ 3 dB, rain ≤ A + 5 and every other scene
-target gate now.
+Since Wave 3 every lane gates at its full S2 window (Wave 1's interim floors for needs-you and error
+are retired), and the error and limit band rule and ceilings gate with the Wave-3 signal voices;
+urgent GR ≤ 3 dB, rain ≤ A + 5 and every other scene target gate too.
 
 ### The virtual clock (HAR-1)
 
@@ -71,8 +71,29 @@ audio clock stops as a real suspended context's does while the virtual clock (ti
 page) runs on. Stems (HAR-5) ride extra destination channels through a channel
 merger, sample-aligned with the program: `world`/`work`/`music` post-duck (`engine._busOut`), `cue`
 (`engine.busInput('cue')`, before its trim), `limiterIn`/`limiterOut` (`engine._limiterIn`/`_limiterOut`),
-and `airWet` (`engine.airReturns.wet`, Island Air's return before its trim).
+`airWet` (`engine.airReturns.wet`, Island Air's return before its trim) and `signalBed` (the held
+note's own path post-duck, `engine._busOut('signalBed')`, before its trim).
 Stem levels are reported "at the output": plus `PROGRAM_TRIM_DB` and the volume step's gain.
+
+**Sound off and captions (Wave 3).** `runSilent` (`lib/virtual.mjs` `renderSilent`) builds the
+controller as TopBar does at boot and never enables it — no `AudioContext` — then steps the virtual
+clock to the end: what remains is the signal route (the ladder's 1 Hz timer, captions, published
+scores), so an hour of ladder runs in about a second. A scene's `captions: ['auto', 'signals', …]`
+installs one real `Toast` per caption setting, each reading its own storage (that setting, and sound
+on or off) through Toast's `storage` option, and records every caption it renders; each scripted
+action starts from empty caption stacks so every cue is judged alone. Every `audio:cue-played` is
+logged with its Wave-3 fields (`level`, `family`, `count`, `soundOnly`) and every published score with
+each note's pitch (`hz`), plus the page-clock time (`wall`) beside the audio time; `wallToAudio`
+(`lib/probe-wave3.mjs`) maps a page time into a frozen render through the context's state changes.
+
+Scene vocabulary added for Wave 3 (`page/scene.js`, `page/virtual.js`): `world.agents` (explicit
+agents with fields such as `signalStale` or `lastTurnDurationMs`; an actionable agent starts its wait
+at creation), `status.fields`, `addAgent.parentIndex` (a sub-agent), `remove`, `ack`
+(`attention:acknowledged`), `emit` with `raw` (payloads that are not objects), `input` (a document
+event), `play` (a governor-free cue through `CueKit._playAccepted`, the capture tool's path), `force`
+(layer levels pinned for the scene; `{ music: 0 }` is "no music": the sequencer starts no song), and
+`storage` (Wave-3 settings). A scripted `cue` goes to the director that owns the signal route: the
+active one while it plays, else the ambient director.
 
 **Seeded streams and accounting (Wave 2).** Every virtual page calls `Rng.js` `setRngSeed(seed)`
 before the app starts, so each world, work, music and cue stream is deterministic per probe seed; a
@@ -89,19 +110,21 @@ source that reaches the music bus.
 Scenes (`lib/scenes.mjs`) start from stored settings the controller loads as a calibrated profile
 (standard volume step, trims at 10 unless the scene says otherwise, `claudeville.sound.calibration = 2`);
 `warmup` seconds settle the enable fade and the level slews and are discarded. The harness page has no
-AttentionService or VillageDirector, so scenes emit their events (`attention:raised`,
-`distress:watchtower`, `village:scene`, `chronicle:aurora`, `team:gather`, `weather:storm-flash`) after
-setting the agent's status, which is what bucket routing reads. Cue placements respect CueKit's per-kind
-cooldowns and the governor's spacing and rate, so every placement is admitted.
+AttentionService, VillageDirector or AgentEventStream, so scenes emit their events (`attention:raised`,
+`attention:acknowledged`, `distress:watchtower`, `village:scene`, `chronicle:aurora`, `team:gather`,
+`weather:storm-flash`, `outcome:verified`, `tool:result`, `agent:added`/`agent:updated`/`agent:removed`,
+`mode:changed`) after setting the agent's status, which is what bucket routing and the ladder read. Cue placements respect CueKit's per-kind
+cooldowns and the governor's spacing and rate (the routine lane is 4/min since outcomes reserve
+2 of its 6), so every placement is admitted.
 
 | check | what it asserts |
 |---|---|
 | `scenes` | S2 targets from `Loudness.js` at the standard step (village busy and storm deferred to Wave 4, above), relative ones against the anchor measured in the same run: **anchor** (calm clear July day, 4 working, work and music trims off) −38 ± 1 LUFS-I; **village busy** (6 working, 3 minutes of arrivals, a needs-you, an error, a recovery, a rate limit) A + 4 ± 2 and LRA ≤ 8; **Town band** −31 ± 1 with the band stem's ST max ≤ −28; **rain** ≤ A + 5; **storm** (three flashes) ≤ A + 6 and ST max ≤ −27; **resting** ST mean A − 10 ± 3, never below −55 LUFS-S. INFO rows: TP, LRA, limiter GR (storm), HAR-5 stem levels and shares, and the village level map (2–5 kHz share, S/M, correlation, mono fold, laptop loss) |
-| `margins` | HAR-3: every lane (needs-you, error, limit, routine arrival, scenery aurora) over four beds (village busy day, Town band, rain, storm), 3 placements each (the aurora once: its cooldown is 120 s). Margin = max momentary in [t, t + 2.5 s] over the energy mean of the 3 s before, t = the cue's first published note. The median must sit in the lane's S2 window — Wave 1 accepts needs-you and error at their floors **minus 2 LU** (1.3, today's voices; the full floors gate at the Wave-3 exit) — and urgent lanes (needs-you, error, limit) must also pass the band rule (over music: 0.5–4 kHz energy of [t, t + 1.2 s) ≥ 6 dB over [t − 3, t); elsewhere: ≥ 2 third-octave bands rising ≥ 6 dB) and limiter GR ≤ 3 dB within 2.5 s of the onset (error and limit band rule and ceilings deferred to Wave 3, above) |
+| `margins` | HAR-3: every lane (needs-you, error, limit, routine arrival, scenery aurora, outcome Minor turn done, Medium push, Major release) over four beds (Village with its music held at 0 — S2's "Village bed (no music)" —, Town band, rain, storm), 3 placements each (the aurora and the release once: a 120 s cooldown, one Major active). Margin = max momentary in [t, t + 2.5 s] over the energy mean of the 3 s before, t = the cue's first published note. The median must sit in the lane's full S2 window, urgent lanes (needs-you, error, limit) must also pass the band rule (over music: 0.5–4 kHz energy of [t, t + 1.2 s) ≥ 6 dB over [t − 3, t); elsewhere: ≥ 2 third-octave bands rising ≥ 6 dB) and limiter GR ≤ 3 dB within 2.5 s of the onset, and the Minor outcome's median sits ≥ 3 LU under routine's on the same bed |
 | `limiter` | 1.1: at full slider, a +12 dBFS burst at the limiter input (1 kHz sine, then noise) leaves the worklet at `Loudness.js` `LIMITER_CEILING_DBFS` (+0.1 dB) and ≤ −1 dBTP, and the native fallback (`__claudevilleAudioNoWorklets`: `DynamicsCompressor` + tanh, an emergency path) at ≤ −0.9 dBFS sample peak; a −20 dBFS sine passes both at 0 ± 0.2 dB |
 | `switch` | must-never 12: AMBIENT → BGM and back; the momentary loudness of the 4 s after each switch never falls more than 3 dB under the quieter steady side's p10 (before: [t − 8, t); after: [t + 6, t + 14]) nor rises 3 dB over the louder side's p90 |
 | `ducks` | 1.3: every `engine.duck` window (recorded with its cancellation), attack and release included, unioned per bus: ≤ 5 % of the village busy and Town band scenes on every bus, with at least one window |
-| `avsync` | HAR-12: every published note of every sounding cue score vs the first onset heard on the cue stem near it (a 1 ms frame ≥ 6 dB over the 10 ms before it; a pair's second note struck over the first's ring reads ≈ 8–17 ms late), and four arrivals whose accent is declared 450–800 ms ahead, as the renderer does, vs their heard carrying note: median \|error\| ≤ 20 ms, p95 ≤ 40 ms |
+| `avsync` | HAR-12: every published note of every sounding cue score vs the first onset heard on the cue stem near it (a 1 ms frame ≥ 6 dB over the 10 ms before it; a pair's second note struck over the first's ring reads ≈ 8–17 ms late), and four arrivals whose accent is declared 450–800 ms ahead, as the renderer does, vs their heard carrying note: median \|error\| ≤ 20 ms, p95 ≤ 40 ms (no music plays: C-CUE-5's shipped offsets). The release crown (3.4): the peal's published carrying note (`CUE_ACCENT_NOTE.release`) within ±15 ms of the accent the renderer declared 900 ms ahead (the `outcomes` fixture) |
 | `determinism` | the anchor and the village busy scene rendered twice agree within 0.2 LU |
 | `baseline` | every scene LUFS-I and ST max and every lane's median margin within ±1.5 of the committed `baselines/scenes.json`; `--update` rewrites the numbers it measured (merged with the rest) and prints the deltas. Drift only: every target above is judged on its own, so a baseline never passes a failed target. Re-baseline, reviewed, when `PROGRAM_TRIM_DB` is re-measured (end of Waves 1, 4 and 6) or a reviewed change moves a scene |
 | `transport` | 2.1 (S4, ENG-8), a 10-minute village on the virtual clock (three busy stretches, rain at 5:00, the Town band 7:00–9:00; the lint's stack capture off so timer costs are the app's): `engine.transport.diagnostics()` shows 0 underruns and every process's furthest committed window ≤ 1.5 s ahead (work processes ≤ 0.35 s); among the app's timer call sites exactly one started continuous or stochastic sources (layers, the sequencer, bank playback), and it is `Transport.js`'s — discrete cue voices (sources reaching the cue bus, traced through the node graph), control-rate decisions placed on the audio clock with a lead, are listed apart and exempt; its tick costs ≤ 0.5 ms p95 and ≤ 2 ms max of real main-thread time (the page clock resolves 0.1 ms). INFO: starts from the harness's own actions and the 2 Hz atmosphere pump (event-driven), lateness on the virtual clock (bounded by its 10.7 ms steps), other timers over 2 ms |
@@ -110,6 +133,13 @@ cooldowns and the governor's spacing and rate, so every placement is admitted.
 | `noise` | 2.5 (AMB-3): each continuous texture alone (wind, rain, the hum; 60 s) has its autocorrelation peak over 0.5–20 s lags < 0.05; the world bed's ICC (anchor, rain) is 0.15–0.5; program mono fold loss (anchor, rain, village busy) ≤ 2 LU; no two lanes reading one pool buffer (≥ 10 s long) come within 5 s of buffer time while both play (read heads advanced at each lane's start rate, across the anchor, rain, storm and texture scenes); the pool's resident bytes ≤ `MEMORY_BUDGET.noise` |
 | `bank` | 2.6 (S8): `engine.bank.stats()` after the air bake and after the village busy scene — every client within its `MEMORY_BUDGET` row, the total within `totalBytes` — and every SampleBank idle slice ≤ 5 ms of real main-thread time (the idle callback's synchronous part — plan, offline graph, render start — timed by the virtual clock; the bank's own `sliceMsMax` reads the frozen virtual clock there and is only meaningful live) |
 | `sequencer` | 2.3: every shipped piece (five Town band pieces, one loop each; four Village tunes, one song each at a held level) rendered with every random draw pinned to 0.5 and the music bus traced, against `baselines/sequencer-wave1.json` — the same renders of the Wave-1 tree (`f4a71e3`, exported read-only with `git archive`): identical onsets (every distinct source start reaching the music bus, relative to the piece's first, 0.1 ms grid) and program LUFS-I within 0.5 LU. Hats are noise from a pinned stream in both trees, hence silent: their onsets compare, the level compares the pitched voices |
+| `discrim` | 3.1–3.5, S1 (CUE-9): 27 voices — every signal family, the L4 reminder, `answered`, every outcome, four routine alloys, departure, recovery, council, the hour phrase and the counted noon, aurora, the link cues, the digest and thunder — each played governor-free over a silent island (every layer at 0) on the cue stem. Contour and rhythm come from the published score (onsets and each note's resolved `hz`; unpitched notes take the last pitch, a tree without `hz` falls back to the pitch measured at the onset), timbre from the render (`metrics/discrim.mjs`). Gates: every signal voice vs every other voice ≥ 2 of contour, rhythm, timbre (a reminder is not judged against its own family's entry; `answered` plays only in Signals and is judged against signal voices); needs-you, error, limit pairwise ≥ 2/3; every outcome vs needs-you ≥ 2/3 with its 3/3 count reported (3.4 asks 3/3, written for the door chime; a single strike cannot differ in contour from the ship's bell's flat opening under S1's opening-interval rule); no non-signal cue opens with a quick (< 1 s) same-pitch pair. INFO: every voice's notes, brightness, strike, ring and output M-max; openings that quote a call |
+| `ladder` | 3.3 (D6, S7): sound off (`runSilent`, no `AudioContext`), one wait per family opened 5 s in and never answered, 61 min: the calls (entry + reminders, from `audio:cue-played`) match the schedule — needs-you L1 → L2 at 2 min → L3 at 6 → L4 at 15 and 30 → L2 at 60; errors the same capped at L3; quota L1 and one L2 — within one late tick, none unexpected; reminders ≥ 120 s apart and ≤ 12 in any hour; each captioned by a real Toast at the default setting. Acknowledged at 3.4 min: no call for 10 min. Sound on (Village, no music): L1, L2, L3 keep the entry trim, L2 ≥ 4 LU under L1, L3 GR ≤ 3 dB. Hidden tab with sound on (frozen clock) from 25 s: the reminders due at 2, 6 and 15 min each render on the cue stem within 60 s of their time |
+| `cluster` | SIG-10: six needs-you raised on one tick vs one: program M-max over the 4 s after within +1 LU of the single call, all six agents captioned, urgent GR ≤ 3 dB; INFO: sounding scores (the lead and its flock strikes) |
+| `heldnote` | 3.3 (SIG-3): a wait opened by status alone (no entry call) in Village with no music at W = 1 and W = 15 working, answered 45 s later: the program's 270–310 Hz band rises ≥ 6 dB within 6 s and is back within 3 dB within 5 s of the answer (1 s windows, 0.1 s hop); the held stem's 270–310 Hz envelope swings ≤ 3 dB (beating); its short-term level is bed − 8 ± 1 LU (world + work + music stems, same staging). Absent (held stem ST max ≤ −80 LUFS at the output): under Village music (while `nowPlaying`), in the Town band, and with the window blurred on *Signals only* (the signal route alone) |
+| `outcomes` | 3.4 through the producers: `outcome:verified {push}` → one push cue with published notes; ten exit-0 `tool:result`s → silence; ten failures from one agent in 60 s → 1–2 cues; a ≥ 20 s turn ending, a sub-agent dispatched and returning (`parentSessionId`, `agent:removed`) and a verified release each → one sounding cue; a Dashboard fixture (`mode:changed` → dashboard, `agent:*` transitions only) still yields turn done and the return |
+| `captions` | 3.8 (HAR-13): 21 kinds through the director's cue path, 12 s apart, in Village and the Town band, sound on (rendered) and off (`runSilent`), four Toasts (auto, signals, events, all): a caption shows exactly when S6/3.8 says — signals always; outcome and routine with *events* or *all*, and by default only while sound is on; scenery only with *all* and sound on; the digest never (sound-only) — never without a played cue, and with sound on every captioned cue had a sounding score. Sound off at the default setting shows no outcome or scenery caption |
+| `honesty` | must-never 3: a 6-min wait in Village with no music keeps the held note's band ≥ 6 dB over the level before the wait in every 10 s window until the answer. Must-never 13: no two urgent scores for different agents share two note times within 5 ms (the six-raise cluster render), and stale agents (`signalStale`, `freshness.state: 'stale'`, `resident`) raising a needs-you and an error produce no sounding signal score and no held note |
 | `lint` | HAR-4 envelope lint (below) finds no hazard, and each unit started at least one source: every cue kind (`cue-gallery` and the `*-night` cues, offline), `layer-crickets-night`, and `bgm-night-to-ambient` (a BGM night piece, then a switch to the ambient preset); INFO: the app session's hazards |
 | `routing` | must-never 2: an errored agent's `audio:cue-played` kinds are all `distress`, a rate-limited agent's all `limit`, never `summons` — with `attention:raised` first, with `distress:watchtower` first, and through the live producers (a sim status step) |
 | `away` | must-never 4: after a real TopBar click (`--autoplay-policy=user-gesture-required`), a needs-you raised 5 s into an absence sounds. Hidden tab and blur with `claudeville.sound.background = signals` close the bed, so the call must stand the `Loudness.js` needs-you minimum (+10 LU) over the preceding `bedWindowSec` (3 s) of what the listener heard — a suspended context counts as silence, scored at −80 LUFS. A plain blur keeps the full mix (decision D3), so there the call must reach the cue bus (≥ −60 dBFS) with the context running; its margin over the bed is must-never 1, gated on the virtual clock by `margins` |
@@ -160,7 +190,7 @@ channels, not files, so the probe and later waves' acceptance lines call them di
 | `metrics/musl-measure.mjs` | `musl-snippets/measure.mjs` | `musicMeasure`: LUFS, laptop Δ, 2–5 kHz share, holes per minute, momentary spread |
 | `metrics/dsp.mjs` | — | the FFT, RBJ biquads, Welch PSD and helpers the libraries share |
 | `fixtures/scn-plans.mjs` | `scn-snippets/plans.mjs` | SCN's session and moment plans (`busySessionActions`, `PLANS`) |
-| `fixtures/cue-scores.mjs` | the discrim tables | designed note scores: today's shipped cues and the Wave-3 figures |
+| `fixtures/cue-scores.mjs` | the discrim tables | the evidence round's designed Wave-3 figures (reference; `discrim` reads the shipped voices' published scores) |
 
 ## Listening harness
 

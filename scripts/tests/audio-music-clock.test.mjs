@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { MusicClock } from '../../claudeville/src/presentation/shared/audio/MusicClock.js';
-import { chordCueTones, cueTones } from '../../claudeville/src/presentation/shared/audio/MusicalScale.js';
+import { CUE_ROLES, noteHz, phaseKey, roleSemi, tonicTriad } from '../../claudeville/src/presentation/shared/audio/MusicalScale.js';
 
 const cents = (a, b) => 1200 * Math.log2(a / b);
 const hzFromA4 = semi => 440 * 2 ** (semi / 12);
@@ -33,11 +33,12 @@ test('an idle clock reproduces the legacy cue pitches to the cent, by day and at
     for (const phase of ['dawn', 'day', 'dusk', 'night']) {
         clock.setPhase(phase);
         const legacy = LEGACY_CUE_SEMIS[phase === 'night' ? 'night' : 'day'];
-        const fromClock = chordCueTones(clock.chordAt(123.4));
-        const fromPhase = cueTones(phase);
+        assert.deepEqual(Object.keys(legacy).sort(), [...CUE_ROLES].sort());
         for (const [role, semi] of Object.entries(legacy)) {
-            assert.ok(Math.abs(cents(fromClock[role], hzFromA4(semi))) < 0.01, `${phase} ${role} (clock)`);
-            assert.ok(Math.abs(cents(fromPhase[role], hzFromA4(semi))) < 0.01, `${phase} ${role} (phase)`);
+            const fromClock = noteHz(roleSemi(role, clock.chordAt(123.4)));
+            const fromPhase = noteHz(roleSemi(role, tonicTriad(phaseKey(phase))));
+            assert.ok(Math.abs(cents(fromClock, hzFromA4(semi))) < 0.01, `${phase} ${role} (clock)`);
+            assert.ok(Math.abs(cents(fromPhase, hzFromA4(semi))) < 0.01, `${phase} ${role} (phase)`);
         }
         assert.equal(clock.keyAt(123.4).mode, phase === 'night' ? 'minor' : 'major');
     }

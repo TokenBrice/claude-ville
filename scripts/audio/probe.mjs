@@ -13,15 +13,18 @@
 // FAIL exits 1):
 //   scenes       S2 scene targets (Loudness.js) at the standard step: anchor,
 //                village busy, Town band, rain, storm, resting; HAR-5 stems
-//   margins      cue lanes over the village, music, rain and storm beds:
-//                median of 3 placements in the lane window (Wave 1 interim
-//                floors), the band rule and urgent limiter GR ≤ 3 dB
+//   margins      cue lanes (needs-you, error, limit, routine, scenery, the
+//                three outcome tiers) over the village (no music), music,
+//                rain and storm beds: median of 3 placements in the full S2
+//                window, the band rule and urgent limiter GR ≤ 3 dB; the
+//                Minor outcome ≥ 3 LU under routine
 //   limiter      a +12 dBFS burst → the worklet's LIMITER_CEILING_DBFS (+0.1)
 //                and ≤ −1 dBTP, the native fallback ≤ −0.9 dBFS; static gain
 //                0 ± 0.2 dB on both
 //   switch       must-never 12: preset switch hole/bump ≤ 3 dB, both ways
 //   ducks        ducked time ≤ 5 % per bus (village busy, Town band)
-//   avsync       HAR-12: published note and accent times vs heard onsets
+//   avsync       HAR-12: published note and accent times vs heard onsets;
+//                the release crown's accent vs its peal note (± 15 ms)
 //   determinism  two renders of one scene agree within 0.2 LU
 //   baseline     scene and margin numbers within tolerance of the committed
 //                baselines/scenes.json (--update rewrites it); drift only —
@@ -38,6 +41,21 @@
 //   sequencer    2.3: every piece vs its Wave-1 reference render
 //                (baselines/sequencer-wave1.json; --update --ref-rev REV
 //                re-renders it from REV's tree): identical onsets, ≤ 0.5 LU
+//   discrim      3.1–3.5 (S1): every cue voice governor-free — signal vs
+//                every other voice ≥ 2/3, urgent pairwise ≥ 2/3, outcomes
+//                vs needs-you, no quick same-pitch opening outside signals
+//   ladder       3.3: 61 min sound off per family (D6 schedule, S7 caps,
+//                Toast captions), acknowledgement, held trim (sound on),
+//                hidden-tab wakes within 60 s
+//   cluster      SIG-10: six same-tick raises within +1 LU of one call
+//   heldnote     3.3: band rise at W = 1 and 15, beating, bed − 8 LU,
+//                absent under music, in Town band and signals-only
+//   outcomes     3.4: push, exit 0 silence, failure cap, turn done, dispatch,
+//                return, release; a Dashboard fixture
+//   captions     3.8 (HAR-13): caption/sound parity per caption setting,
+//                both presets, sound on and off
+//   honesty      must-never 3 (a wait audible while it lasts) and 13
+//                (phase-locked urgent bells, stale-data sound)
 //   lint, routing, away (+ resume), ceremony   the Wave-0 checks (live app)
 //   continuity   2.1: blur 3 s → focus keeps the Town band piece and level
 //   fps          2.4: app frame total p95, sound on vs off (realtime)
@@ -51,12 +69,20 @@ import { writeWavFloat } from './lib/analyze.mjs';
 import { BACKGROUND_ARGS, DEFAULT_SEED, HARNESS_CHROME_ARGS } from './lib/capture.mjs';
 import { fmt, signed } from './lib/format.mjs';
 import {
-    BASELINE_TOLERANCE, ISLAND_AIR, NOISE_LIMITS, PLAN_STAGE, compareBaseline, judgeAirT60, judgeBank,
-    judgeDuckedTime, judgeLane, judgeSceneTargets, judgeSequencer, judgeTransport, median, noiseLaneConflicts,
+    BASELINE_TOLERANCE, CROWN_SYNC_MS, CUE_STRATUM, HELD_NOTE, ISLAND_AIR, LADDER, NOISE_LIMITS, PLAN_STAGE, compareBaseline, expectedLadder, heldNoteRise,
+    beatingDepthDb, judgeAirT60, judgeBank, judgeCaptionParity, judgeCluster, judgeDiscrimination, judgeDuckedTime, judgeHeldTrim, judgeLadder, judgeLane,
+    judgeSceneTargets, judgeSequencer, judgeTransport, judgeWakes, median, noiseLaneConflicts, onsetNear, waitAudibleWindows,
 } from './lib/checks.mjs';
 import {
-    AIR_CUE_SCENE, MARGIN_BEDS, MARGIN_LANES, TEXTURE_SCENES, TRANSPORT_SCENE, VILLAGE_DRY_SCENE, hiddenScene,
+    AIR_CUE_SCENE, CAPTION_SETTINGS, DASHBOARD_SCENE, GALLERY_VOICES, HELD_ANSWER_SEC, HELD_OPEN_SEC, LADDER_OPEN_SEC, LADDER_SECONDS, LADDER_TRIM_SCENE,
+    LONG_WAIT_SCENE, LONG_WAIT_SECONDS, MARGIN_BEDS, MARGIN_LANES, OUTCOME_SCENE, STALE_SCENE, TEXTURE_SCENES, TRANSPORT_SCENE,
+    VILLAGE_DRY_SCENE, WAKE_SCENE, captionScene, clusterScene, galleryScene, heldNoteScene, hiddenScene, ladderSilentScene,
 } from './lib/scenes.mjs';
+import {
+    captionRows, clusterRow, crownRow, galleryRows, heldNoteRows, heldWhileMusic, ladderCalls, ladderCaptioned, ladderTrimRows, laneEvents, wakeRows,
+} from './lib/probe-wave3.mjs';
+import { renderSilent } from './lib/virtual.mjs';
+import { discriminationMatrix } from './metrics/discrim.mjs';
 import {
     avSyncRows, duckRows, limiterUnitRows, makeRenderer, marginRows, renderLimiterUnit, sceneLevelMap,
     sceneMetrics, sceneSpec, stemReport, switchRows,
@@ -99,7 +125,7 @@ const JOBS = Math.max(1, Number(args.jobs || 2));
 const SEED = args.seed != null ? Number(args.seed) : DEFAULT_SEED;
 const NO_WORKLETS = Boolean(args['no-worklets']);
 const UPDATE = Boolean(args.update);
-const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'noise', 'bank', 'sequencer'];
+const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'noise', 'bank', 'sequencer', 'discrim', 'ladder', 'cluster', 'heldnote', 'outcomes', 'captions', 'honesty'];
 const APP_CHECKS = ['lint', 'routing', 'away', 'ceremony', 'continuity', 'fps'];
 const ALL_CHECKS = [...VIRTUAL_CHECKS, ...APP_CHECKS];
 const ONLY = args.only ? String(args.only).split(',').map(s => s.trim()) : ALL_CHECKS;
@@ -186,9 +212,11 @@ function virtualUnits(render, browser, baseUrl) {
                 async run() {
                     const r = await scene(`margin:${bedName}`);
                     const rows = marginRows(r, bedName);
+                    const medians = {};
                     for (const lane of MARGIN_LANES) {
                         const placements = rows.filter(x => x.lane === lane);
-                        const j = judgeLane(lane, MARGIN_BEDS[bedName].bed, placements);
+                        const j = judgeLane(lane, MARGIN_BEDS[bedName].bed, placements, { probeBed: bedName });
+                        medians[lane] = j.margin;
                         summary[`margin:${bedName}:${lane}`] = { margin: j.margin };
                         if (!has('margins')) continue;
                         const win = `${j.window.min != null ? `≥ ${signed(j.window.min, 0)}` : ''}${j.window.min != null && j.window.max != null ? ', ' : ''}${j.window.max != null ? `≤ ${signed(j.window.max, 0)}` : ''}`;
@@ -196,7 +224,12 @@ function virtualUnits(render, browser, baseUrl) {
                         const trims = placements.map(p => signed(p.trimDb)).join(' / ');
                         const extra = j.gr != null ? `; ${MARGIN_BEDS[bedName].bed === 'music' ? `presence rise ${fmt(j.band)} dB` : `${fmt(j.band, 0)} bands ≥ +6 dB`}, GR ${fmt(j.gr)} dB` : '';
                         const why = j.failures.map(f => (f.gatedFrom > PLAN_STAGE ? `${f.what} (Wave ${f.gatedFrom})` : f.what)).join(', ');
-                        outcome('margins', j.outcome, `${lane} over ${bedName}: median ${signed(j.margin)} LU (${each}; cue trims ${trims} dB), want ${win}${extra}${why ? ` — ${why}` : ''}`, Math.max(...j.failures.map(f => f.gatedFrom), 0));
+                        outcome('margins', j.outcome, `${lane} over ${bedName}: median ${signed(j.margin)} LU (${each}; cue trims ${trims} dB, ${j.n} admitted), want ${win}${extra}${why ? ` — ${why}` : ''}`, Math.max(...j.failures.map(f => f.gatedFrom), 0));
+                    }
+                    // S2: a Minor outcome also sits ≥ 3 LU under the routine cue.
+                    if (has('margins')) {
+                        const under = medians.outcomeMinor != null && medians.routine != null ? medians.routine - medians.outcomeMinor : null;
+                        verdict('margins', under != null && under >= 3, `outcome Minor under routine over ${bedName}: ${fmt(under)} LU (turn done ${signed(medians.outcomeMinor)} vs arrival ${signed(medians.routine)}); want ≥ 3`);
                     }
                     if (r.errors.length) info('margins', `${bedName}: page errors: ${r.errors.slice(0, 3).join(' | ')}`);
                 },
@@ -289,6 +322,7 @@ function virtualUnits(render, browser, baseUrl) {
         });
     }
     units.push(...wave2Units(render, browser, baseUrl, scene));
+    units.push(...wave3Units(render, browser, baseUrl));
     return units;
 }
 
@@ -428,6 +462,238 @@ function wave2Units(render, browser, baseUrl, scene) {
     }
     return units;
 }
+
+// ------------------------------------------------------------ Wave 3 units ----
+const URGENT_LABELS = ['needs you', 'error', 'rate limit'];
+const lufs = v => (Number.isFinite(v) ? fmt(v) : '—');
+
+function wave3Units(render, browser, baseUrl) {
+    const units = [];
+    const renderOff = (key, spec) => (wave3.silent[key] ||= renderSilent(browser, baseUrl, spec, { seed: SEED }));
+    if (has('discrim')) {
+        units.push({
+            name: 'discrim (every cue voice, governor-free)',
+            async run() {
+                const r = await render('gallery', galleryScene());
+                const rows = galleryRows(r);
+                const ok = rows.filter(x => !x.missing);
+                const missing = rows.filter(x => x.missing).map(x => x.label);
+                const pitched = ok.filter(x => x.pitchSource === 'published').length;
+                verdict('discrim', missing.length === 0, `${ok.length}/${rows.length} gallery voices sounded${missing.length ? ` (silent: ${missing.join(', ')})` : ''}; pitches from the published scores for ${pitched}, measured at onsets for ${ok.length - pitched}; want every voice`);
+                for (const x of ok) {
+                    const f = x.features;
+                    info('discrim', `${x.label} [${x.stratum}]: ${x.notes.map(n => `${n.ms}:${n.name ?? '·'}`).join(' ')}; brightness ${fmt(f.bright, 2)}, strike ${fmt(f.strike)} dB, ring ${fmt(f.ring, 2)} s, M-max ${lufs(x.momentaryMaxLufs)} LUFS at the output`);
+                }
+                const stratum = Object.fromEntries(ok.map(x => [x.label, x.stratum]));
+                const family = Object.fromEntries(ok.map(x => [x.label, x.family ?? x.label]));
+                const signals = ok.filter(x => x.stratum === 'signal').map(x => x.features);
+                const others = ok.filter(x => x.stratum !== 'signal').map(x => x.features);
+                const signalsOnly = new Set(ok.filter(x => x.signalsOnly).map(x => x.label));
+                const matrix = discriminationMatrix(signals, others)
+                    .filter(m => family[m.signal] !== family[m.other])
+                    .filter(m => !signalsOnly.has(m.signal) || stratum[m.other] === 'signal');
+                const j = judgeDiscrimination(matrix, { stratum, urgent: URGENT_LABELS, needsYou: 'needs you' });
+                verdict('discrim', j.rows > 0 && j.below === 0, `signal vs every other cue voice: ${j.rows} pairs, ${j.three} × 3/3, ${j.two} × 2/3, ${j.below} below 2/3${j.failures.length ? `: ${j.failures.slice(0, 8).join('; ')}` : ''}; want every pair ≥ 2/3 (S1)`);
+                const urgent = matrix.filter(m => URGENT_LABELS.includes(m.signal) && URGENT_LABELS.includes(m.other));
+                verdict('discrim', urgent.length === 6 && urgent.every(m => m.n >= 2), `needs-you / error / limit pairwise: ${urgent.map(m => `${m.signal} vs ${m.other} ${m.n}/3 (${m.dims.join('+') || 'none'})`).join('; ') || 'not rendered'}; want each ≥ 2/3 (3.2)`);
+                const outcomes = matrix.filter(m => m.signal === 'needs you' && stratum[m.other] === 'outcome');
+                verdict('discrim', outcomes.length > 0 && j.outcomeShort.length === 0, `every outcome vs needs-you: ${outcomes.length} outcomes, ${j.outcomeFull} × 3/3${j.outcomeNot3.length ? ` (under 3/3: ${j.outcomeNot3.join('; ')})` : ''}${j.outcomeShort.length ? `; below 2/3: ${j.outcomeShort.join('; ')}` : ''}; want ≥ 2/3 (3.4's 3/3 is unreachable for a single strike against the ship's bell's flat opening; checks.mjs DISCRIM_LIMITS)`);
+                const quick = ok.filter(x => x.quickPair).map(x => `${x.label} (${x.notes.slice(0, 2).map(n => `${n.ms}:${n.name}`).join(' ')})`);
+                verdict('discrim', quick.length === 0, `non-signal cues opening with a quick same-pitch pair (< 1 s on one pitch; the ship's bell's figure): ${quick.length ? quick.join(', ') : 'none'}; want none (S1)`);
+                // S1: signal pitches and rhythm are fixed, the same by day and night.
+                const signalVoices = GALLERY_VOICES.filter(v => v.stratum === 'signal');
+                const night = galleryRows(await render('gallery:night', galleryScene(signalVoices, { night: true })), signalVoices);
+                const moved = night.map((n) => {
+                    const d = ok.find(x => x.label === n.label);
+                    if (!d || n.missing) return `${n.label}: not sounded`;
+                    const same = d.notes.length === n.notes.length && d.notes.every((x, i) => x.ms === n.notes[i].ms && x.name === n.notes[i].name);
+                    return same ? null : `${n.label}: ${d.notes.map(x => `${x.ms}:${x.name}`).join(' ')} → ${n.notes.map(x => `${x.ms}:${x.name}`).join(' ')}`;
+                }).filter(Boolean);
+                verdict('discrim', moved.length === 0, `signal voices by night vs day (${night.length}): ${moved.length ? moved.join('; ') : 'identical notes and times'}; want the same (S1: fixed pitches, never phase-dependent)`);
+                const quoting = matrix.filter(m => m.sameOpening).map(m => `${m.signal} ~ ${m.other}`);
+                info('discrim', `same opening interval on the same pitch class (quotes the call): ${quoting.join(', ') || 'none'}`);
+                if (r.errors.length) info('discrim', `page errors: ${r.errors.slice(0, 3).join(' | ')}`);
+            },
+        });
+    }
+    if (has('ladder')) {
+        for (const family of ['needsYou', 'errors', 'quota']) {
+            units.push({
+                name: `ladder (${family}, sound off, 61 min)`,
+                async run() {
+                    const r = await renderOff(`ladder:${family}`, ladderSilentScene(family));
+                    const calls = ladderCalls(r.meta);
+                    const expected = expectedLadder(family, LADDER_SECONDS - LADDER_OPEN_SEC).map(e => ({ ...e, atSec: e.atSec + LADDER_OPEN_SEC }));
+                    const j = judgeLadder(calls, expected);
+                    const captioned = ladderCaptioned(r.meta, calls);
+                    const line = xs => xs.map(c => `L${c.level}@${fmt(c.atSec / 60, 2)}m`).join(' ') || 'none';
+                    verdict('ladder', j.pass && calls.length > 0 && captioned === calls.length && !r.meta.contextCreated,
+                        `${family}, sound off: calls ${line(calls)}; expected ${line(expected)}${j.missing.length ? `; missing ${line(j.missing)}` : ''}${j.extra.length ? `; unexpected ${line(j.extra)}` : ''}; reminders ≥ ${fmt(j.minGapSec, 0)} s apart, ${j.perHour} in the busiest hour (≤ ${LADDER.perHour}); ${captioned}/${calls.length} captioned by Toast (auto); AudioContext ${r.meta.contextCreated ? 'created' : 'never created'}; want the D6 schedule, S7 caps, every call captioned`);
+                    if (r.errors.length) info('ladder', `${family}: page errors: ${r.errors.slice(0, 3).join(' | ')}`);
+                },
+            });
+        }
+        units.push({
+            name: 'ladder (acknowledged, sound off)',
+            async run() {
+                const ackAt = LADDER_OPEN_SEC + 200;
+                const r = await renderOff('ladder:ack', ladderSilentScene('needsYou', { ackAt, seconds: ackAt + 620 }));
+                const calls = ladderCalls(r.meta);
+                const quiet = calls.filter(c => c.atSec > ackAt && c.atSec < ackAt + 600);
+                const before = calls.filter(c => c.atSec <= ackAt);
+                verdict('ladder', before.length === 2 && quiet.length === 0, `acknowledged at ${fmt(ackAt / 60, 2)} min: ${before.length} calls before (want L1 + L2), ${quiet.length} in the 10 min after${quiet.length ? ` (${quiet.map(c => `L${c.level}@${fmt(c.atSec / 60, 2)}m`).join(' ')})` : ''}; want 0 (SIG-2 acknowledgement)`);
+            },
+        });
+        units.push({
+            name: 'ladder (sound on, held trim)',
+            async run() {
+                const r = await render('ladder:trim', LADDER_TRIM_SCENE);
+                const calls = ladderTrimRows(r);
+                const j = judgeHeldTrim(calls);
+                verdict('ladder', j.pass, `Village, sound on: ${calls.map(c => `L${c.level} ${signed(c.margin)} LU (trim ${signed(c.trimDb)} dB, GR ${fmt(c.grDb)} dB)`).join(', ') || 'no calls'}; L2 ${fmt(j.l2UnderL1Lu)} LU under L1, trims spread ${fmt(j.trimSpreadDb, 2)} dB${j.failures.length ? ` — ${j.failures.join(', ')}` : ''}; want L2 ≥ 4 LU under L1, one trim held, L3 GR ≤ ${LOUDNESS_TARGETS.ceiling.urgentGrMaxDb} dB`);
+            },
+        });
+        units.push({
+            name: 'ladder (hidden tab, sound on, wakes)',
+            async run() {
+                const r = await render('ladder:hidden', WAKE_SCENE);
+                const w = wakeRows(r);
+                const due = [120, 360, 900].map(x => r.meta.warmup + LADDER_OPEN_SEC + x);
+                const j = judgeWakes(due, w.rows.filter(x => x.heard).map(x => x.wall));
+                verdict('ladder', j.pass, `hidden from ${WAKE_SCENE.actions.find(a => a.visibility === 'hidden').at} s: ${j.rows.map(x => `due ${fmt((x.due - r.meta.warmup) / 60, 2)}m → ${x.heard != null ? `heard +${fmt(x.lagSec, 1)} s` : 'not heard'}`).join(', ')}; reminders scheduled ${w.rows.length} (cue-stem peaks ${w.rows.map(x => fmt(x.peakDb)).join(' / ') || '—'} dBFS), context resumed ${w.wakes}× / suspended ${w.suspensions}×; want each within 60 s of its time`);
+                if (r.errors.length) info('ladder', `hidden: page errors: ${r.errors.slice(0, 3).join(' | ')}`);
+            },
+        });
+    }
+    if (has('cluster') || has('honesty')) {
+        for (const family of ['needsYou', 'errors']) {
+            units.push({
+                name: `cluster (${family}: one raise vs six same-tick)`,
+                async run() {
+                    const one = clusterRow(await render(`cluster:${family}:1`, clusterScene(1, family)), family);
+                    const six = clusterRow(await render(`cluster:${family}:6`, clusterScene(6, family)), family);
+                    wave3.cluster[family] = six;
+                    if (!has('cluster')) return;
+                    const j = judgeCluster({ oneMaxLufs: one.mMaxLufs, manyMaxLufs: six.mMaxLufs, agents: six.agents, captionedAgents: six.captioned });
+                    verdict('cluster', j.pass && six.grDb <= LOUDNESS_TARGETS.ceiling.urgentGrMaxDb,
+                        `${family}, six same-tick raises: M-max ${lufs(six.mMaxLufs)} vs one call ${lufs(one.mMaxLufs)} LUFS (${signed(j.overLu)} LU); ${six.sounding} sounding score(s) (the lead and ${six.flock} flock strike(s)); captions ${six.captioned.length}/${six.agents.length} agents${j.missing.length ? ` (missing ${j.missing.join(', ')})` : ''}; GR ${fmt(six.grDb)} dB (one call ${fmt(one.grDb)} dB); want ≤ +1 LU over one call, every agent captioned, GR ≤ ${LOUDNESS_TARGETS.ceiling.urgentGrMaxDb} dB`);
+                },
+            });
+        }
+    }
+    if (has('heldnote')) {
+        for (const working of [1, 15]) {
+            units.push({
+                name: `heldnote (W = ${working})`,
+                async run() {
+                    const r = await render(`held:${working}`, heldNoteScene({ working }));
+                    const h = heldNoteRows(r, { openSec: HELD_OPEN_SEC, answerSec: HELD_ANSWER_SEC });
+                    const rise = heldNoteRise(h.programBand, h.open, h.answer);
+                    const beat = beatingDepthDb(h.heldBandDb);
+                    const levelOk = h.underBedLu != null && Math.abs(h.underBedLu - HELD_NOTE.underBedLu) <= HELD_NOTE.levelTolLu;
+                    verdict('heldnote', rise.pass, `W = ${working}: 270–310 Hz on the program ${fmt(rise.preDb)} dB before the wait; +${HELD_NOTE.riseDb} dB reached ${rise.riseAtSec != null ? `${fmt(rise.riseAtSec, 1)} s` : 'never'} after it opened (held ${signed(rise.heldRiseDb)} dB), back within ${HELD_NOTE.backTolDb} dB ${rise.backAtSec != null ? `${fmt(rise.backAtSec, 1)} s` : 'never'} after the answer; want ≤ ${HELD_NOTE.riseWithinSec} s and ≤ ${HELD_NOTE.backWithinSec} s (states ${[...new Set(h.snapshots)].join('→') || '—'})`);
+                    verdict('heldnote', beat != null && beat <= HELD_NOTE.beatingMaxDb, `W = ${working}: beating depth of the held D (270–310 Hz on the held stem, 0.1 s hop) ${fmt(beat, 2)} dB over the steady wait; want ≤ ${HELD_NOTE.beatingMaxDb}`);
+                    verdict('heldnote', levelOk, `W = ${working}: held note ${lufs(h.heldLufs)} vs bed ${lufs(h.bedLufs)} LUFS-S (stems, same staging): ${signed(h.underBedLu)} LU; want ${HELD_NOTE.underBedLu} ± ${HELD_NOTE.levelTolLu}`);
+                    if (r.errors.length) info('heldnote', `W = ${working}: page errors: ${r.errors.slice(0, 3).join(' | ')}`);
+                },
+            });
+        }
+        units.push({
+            name: 'heldnote absent (music, Town band, signals only)',
+            async run() {
+                const open = r => r.meta.warmup + HELD_OPEN_SEC;
+                const music = await render('held:music', heldNoteScene({ working: 4, music: { piece: 'hearthfire', level: 0.6 }, answerAt: null, seconds: 50 }));
+                const m = heldWhileMusic(music, open(music));
+                verdict('heldnote', m != null && m.seconds > 0 && m.stMaxOut <= HELD_NOTE.absentMaxLufs, `Village under music: held stem ST max ${lufs(m?.stMaxOut)} LUFS at the output over ${m?.seconds ?? 0} s of music after the wait opened; want music playing and ≤ ${HELD_NOTE.absentMaxLufs}`);
+                for (const [key, spec, label] of [['held:bgm', heldNoteScene({ working: 4, mode: 'bgm', answerAt: null, seconds: 40 }), 'Town band'], ['held:signals', heldNoteScene({ working: 4, signals: true, answerAt: null, seconds: 40 }), 'signals only (blurred)']]) {
+                    const r = await render(key, spec);
+                    const h = heldNoteRows(r, { openSec: HELD_OPEN_SEC, answerSec: null });
+                    verdict('heldnote', h.heldStMaxOut != null && h.heldStMaxOut <= HELD_NOTE.absentMaxLufs, `${label}: held stem ST max ${lufs(h.heldStMaxOut)} LUFS at the output while the wait is open; want ≤ ${HELD_NOTE.absentMaxLufs} (absent)`);
+                }
+            },
+        });
+    }
+    if (has('outcomes') || has('avsync')) {
+        units.push({
+            name: 'outcomes (World fixture, Dashboard fixture)',
+            async run() {
+                const r = await render('outcomes', OUTCOME_SCENE);
+                wave3.crown = crownRow(r, onsetNear);
+                if (has('avsync')) {
+                    const c = wave3.crown;
+                    verdict('avsync', c != null && c.publishedMs != null && Math.abs(c.publishedMs) <= CROWN_SYNC_MS, `release crown (HAR-12): peal note ${c?.index ?? '—'} published ${c?.publishedMs != null ? `${signed(c.publishedMs, 1)} ms` : '—'} from the crown's accent, heard ${c?.heardMs != null ? `${signed(c.heardMs, 1)} ms` : '—'}; want the published note within ±${CROWN_SYNC_MS} ms`);
+                }
+                if (!has('outcomes')) return;
+                const w = r.meta.warmup;
+                const push = laneEvents(r, 'push');
+                const pushNotes = push.scores.filter(s => !s.silent).flatMap(s => s.notes).length;
+                const pushCaption = (r.meta.captions || []).some(c => c.cueKind === 'push' && push.cues.some(p => Math.abs(p.t - c.wall) < 1));
+                verdict('outcomes', push.cues.length === 1 && pushNotes > 0 && pushCaption, `outcome:verified {push} → ${push.cues.length} push cue(s) "${push.cues[0]?.label ?? ''}", ${pushNotes} published note(s), Toast caption ${pushCaption ? 'shown' : 'missing'} (auto, sound on); want one cue with notes and its caption`);
+                const quiet = r.meta.cues.filter(c => c.t >= w + 12 && c.t < w + 25);
+                verdict('outcomes', quiet.length === 0, `10 × exit 0: ${quiet.length} cue(s) in the 13 s after (${quiet.map(c => c.kind).join(', ') || 'none'}); want silence`);
+                const failed = laneEvents(r, 'toolFailed');
+                verdict('outcomes', failed.cues.length >= 1 && failed.cues.length <= 2, `10 non-zero exits from one agent in 60 s → ${failed.cues.length} toolFailed cue(s) (${failed.cues.map(c => `"${c.label}"`).join(', ')}); want 1–2`);
+                for (const lane of ['turnDone', 'dispatch', 'subagentReturn', 'release']) {
+                    const e = laneEvents(r, lane, { withinSec: 5 });
+                    verdict('outcomes', e.cues.length === 1 && e.scores.some(s => !s.silent), `World: ${lane} → ${e.cues.length} cue(s)${e.cues[0] ? ` "${e.cues[0].label}"` : ''}, ${e.scores.filter(s => !s.silent).length} sounding score(s); want one`);
+                }
+                const d = await render('outcomes:dashboard', DASHBOARD_SCENE);
+                for (const lane of ['turnDone', 'subagentReturn']) {
+                    const e = laneEvents(d, lane, { withinSec: 5 });
+                    verdict('outcomes', e.cues.length === 1 && e.scores.some(s => !s.silent), `Dashboard (agent:* transitions only): ${lane} → ${e.cues.length} cue(s)${e.cues[0] ? ` "${e.cues[0].label}"` : ''}; want one`);
+                }
+                const errs = [...r.errors, ...d.errors];
+                if (errs.length) info('outcomes', `page errors: ${errs.slice(0, 3).join(' | ')}`);
+            },
+        });
+    }
+    if (has('captions')) {
+        for (const mode of ['ambient', 'bgm']) {
+            for (const soundOn of [true, false]) {
+                units.push({
+                    name: `captions (${mode}, sound ${soundOn ? 'on' : 'off'})`,
+                    async run() {
+                        const spec = captionScene(mode, { soundOn });
+                        const meta = soundOn ? (await render(`captions:${mode}`, spec)).meta : (await renderOff(`captions:${mode}`, spec)).meta;
+                        const rows = captionRows(meta, { settings: CAPTION_SETTINGS, soundOn });
+                        const j = judgeCaptionParity(rows);
+                        const kinds = [...new Set(rows.map(x => x.kind))];
+                        const unplayed = kinds.filter(k => !rows.some(x => x.kind === k && x.played));
+                        const shownBy = CAPTION_SETTINGS.map(s => `${s} ${rows.filter(x => x.setting === s && x.shown).length}`).join(', ');
+                        verdict('captions', j.pass, `${mode}, sound ${soundOn ? 'on' : 'off'}: ${kinds.length - unplayed.length}/${kinds.length} kinds played${unplayed.length ? ` (not played: ${unplayed.join(', ')})` : ''}; captions shown per setting: ${shownBy}; ${j.failures.length} parity failure(s)${j.failures.length ? `: ${j.failures.slice(0, 6).join('; ')}` : ''}; want captions exactly per S6/3.8 (HAR-13)`);
+                        if (!soundOn && mode === 'ambient') {
+                            const leaked = rows.filter(x => x.setting === 'auto' && x.shown && CUE_STRATUM[x.kind] !== 'signal').map(x => x.kind);
+                            verdict('captions', leaked.length === 0, `sound off, default setting: outcome or scenery captions shown: ${leaked.join(', ') || 'none'}; want none (3.8)`);
+                        }
+                    },
+                });
+            }
+        }
+    }
+    if (has('honesty')) {
+        units.push({
+            name: 'honesty (must-never 3 and 13)',
+            async run() {
+                const r = await render('honesty:long-wait', LONG_WAIT_SCENE);
+                const h = heldNoteRows(r, { openSec: HELD_OPEN_SEC, answerSec: LONG_WAIT_SECONDS - 12 });
+                const a = waitAudibleWindows(h.programBand, h.open, h.answer);
+                verdict('honesty', a.pass, `must-never 3: a ${fmt((h.answer - h.open) / 60, 1)}-min wait in Village with no music — the held note's band over the level before the wait in every 10 s window: worst ${signed(a.worstRiseDb)} dB over ${a.rows.length} windows; want ≥ +${HELD_NOTE.riseDb} throughout`);
+                const clusters = Object.values(wave3.cluster);
+                const locked = clusters.flatMap(c => c.phaseLocked);
+                verdict('honesty', clusters.length === 2 && locked.length === 0, `must-never 13 (SIG-10): phase-locked urgent bells among six same-tick needs-you and six errors: ${clusters.length < 2 ? 'not measured' : locked.length ? locked.map(p => `${p.kind} ${p.a}/${p.b} ×${p.hits}`).join(', ') : 'none'}; want none`);
+                const s = await render('honesty:stale', STALE_SCENE);
+                const sounding = s.meta.scheduled.filter(x => !x.silent && ['summons', 'distress', 'reminder'].includes(x.kind));
+                const hs = heldNoteRows(s, { openSec: 5, answerSec: null });
+                const captions = s.meta.cues.filter(c => ['summons', 'distress', 'reminder'].includes(c.kind)).length;
+                verdict('honesty', sounding.length === 0 && hs.heldStMaxOut <= HELD_NOTE.absentMaxLufs, `must-never 13 (SIG-9): stale agents raising a needs-you and an error → ${sounding.length} sounding signal score(s), held stem ST max ${lufs(hs.heldStMaxOut)} LUFS at the output (${captions} caption(s)); want no sound`);
+            },
+        });
+    }
+    return units;
+}
+
+// Wave-3 numbers shared between units (the cluster render feeds must-never 13).
+const wave3 = { silent: {}, cluster: {} };
 
 // Wave-2 numbers shared between units (bank reads the air and noise renders).
 const wave2 = {};

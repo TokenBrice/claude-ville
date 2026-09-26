@@ -10,11 +10,31 @@
 // music never replaces the visible counts, and a real wait is never hidden
 // behind a busy section. The band is the one music Sequencer, Town band
 // preset.
+//
+// Wave 3 — while the band owns the signals it rings the same outcomes and
+// hours as the Village (the routing is shared: ActionableRouting,
+// OutcomeSignals). It never plays the held note: in Town band a wait is
+// carried by the band's own cadence (D4). The feed's link cues and the
+// return digest stay with the ambient director, alive from boot.
 
 import { eventBus } from '../../../domain/events/DomainEvent.js';
 import { bucketCounts } from '../../../domain/services/SignalLedger.js';
+import {
+    OutcomeRouter,
+    OutcomeTracker,
+    failedPushFacts,
+    toolFailedFact,
+    verifiedOutcomeFact,
+} from '../../../application/OutcomeSignals.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
-import { ActionableCueRouter, attentionStatus } from './ActionableRouting.js';
+import { readCountHours } from '../SoundSettings.js';
+import {
+    ActionableCueRouter,
+    attentionStatus,
+    familyCuePayload,
+    hourChimeFor,
+} from './ActionableRouting.js';
+import { audibleAgents, isAudibleAgent } from './AudibleWorld.js';
 import { Sequencer } from './music/Sequencer.js';
 import { resolveCueSpot } from './SpatialField.js';
 
@@ -122,6 +142,11 @@ export class BgmDirector {
         this._section = { applied: 'steady', pending: null, pendingSince: 0 };
         this._counts = workingSectionCounts(null);
         this._attentionDb = 0;
+        this._operatorLooking = null;
+        // Outcomes (3.4) while this band owns the signals: built on start.
+        this._outcomeTracker = null;
+        this._outcomes = null;
+        this._harborFailures = null;
     }
 
     start() {
@@ -134,6 +159,15 @@ export class BgmDirector {
         this.player = new Sequencer(this.engine, { preset: 'townBand', director: 'bgm' });
         this.player.start();
         this.player.setLevel(BGM_LEVEL, 0.5);
+
+        // The agents already here are history, not outcomes.
+        this._outcomeTracker = new OutcomeTracker({
+            hasAgent: id => Boolean(this.world?.agents?.has?.(id)),
+            isAudible: agent => isAudibleAgent(agent, Date.now()),
+        });
+        this._outcomeTracker.prime(this.world?.agents?.values?.() ?? []);
+        this._outcomes = new OutcomeRouter({ emit: outcome => this._playOutcome(outcome) });
+        this._harborFailures = null;
 
         this._subscribe();
         this._startTicking();
@@ -178,6 +212,36 @@ export class BgmDirector {
         this.player = null;
         this._setAttention(0);
         this._actionable.clear();
+        this._outcomes?.destroy();
+        this._outcomes = null;
+        this._outcomeTracker = null;
+    }
+
+    destroy() {
+        this.stop();
+    }
+
+    // S7: an entry summons while the operator is looking plays the L2 voice.
+    setOperatorLooking(fn) {
+        this._operatorLooking = typeof fn === 'function' ? fn : null;
+    }
+
+    /** A ladder reminder (3.3) in its wait's family voice, while the band plays. */
+    playReminder(reminder = {}) {
+        if (!this._ownsSignals()) return false;
+        return this.cue('reminder', {
+            ...familyCuePayload(reminder),
+            agentId: reminder?.agentId ?? null,
+            label: reminder?.label
+                ?? this.world?.agents?.get?.(reminder?.agentId)?.name
+                ?? null,
+        });
+    }
+
+    // Paused (a hidden page), the ambient director's signal route carries
+    // every signal; the band speaks only while it is heard.
+    _ownsSignals() {
+        return this.running && !this.paused;
     }
 
     _subscribe() {
@@ -220,22 +284,71 @@ export class BgmDirector {
                 : payload?.teamSize ?? payload?.size,
             supersedes: Array.isArray(payload?.members) ? payload.members : [],
         }));
-        on('chronicle:aurora', (payload) => this.cue('aurora', {
-            ...cuePayload(payload),
-            ...(payload?.reason === 'release' ? { supersedes: [] } : {}),
-        }));
+        // A release's aurora is the release itself, which rings its own peal
+        // from `outcome:verified` (3.4): one sound per fact.
+        on('chronicle:aurora', (payload) => {
+            if (payload?.reason !== 'release') this.cue('aurora', cuePayload(payload));
+        });
         // The one cue that is about the listener rather than the world.
         on('attention:raised', (payload) => {
             this._playActionable(cuePayload(payload), attentionStatus(payload, this.world));
         });
+
+        // Outcomes (3.4), the same sources and policy as the Village.
+        const track = facts => this._submitOutcomes(facts);
+        on('agent:added', agent => track(this._outcomeTracker?.added(agent) ?? []));
+        on('agent:updated', agent => track(this._outcomeTracker?.updated(agent) ?? []));
+        on('agent:removed', agent => track(this._outcomeTracker?.removed(agent) ?? []));
+        on('subagent:dispatched', event => track(this._outcomeTracker?.dispatched(event ?? {}) ?? []));
+        on('subagent:completed', event => track(this._outcomeTracker?.completed(event ?? {}) ?? []));
+        on('outcome:verified', (outcome) => {
+            const fact = verifiedOutcomeFact(outcome);
+            if (fact) track([fact]);
+        });
+        // World only (AgentEventStream runs only in World mode).
+        on('tool:result', (event) => {
+            const fact = toolFailedFact(event);
+            if (fact) track([fact]);
+        });
+        // World only (the renderer's harbor summary); the first is a baseline.
+        on('harbor:updated', (repos) => {
+            const { facts, state } = failedPushFacts(this._harborFailures, repos);
+            this._harborFailures = state;
+            track(facts);
+        });
+    }
+
+    _submitOutcomes(facts) {
+        if (!this._ownsSignals() || !this._outcomes) return;
+        for (const fact of facts) this._outcomes.submit(fact);
+    }
+
+    _playOutcome(outcome) {
+        const agentId = outcome.agentId ?? null;
+        return this.cue(outcome.kind, {
+            agentId,
+            label: agentId != null ? this.world?.agents?.get?.(agentId)?.name ?? null : null,
+            count: outcome.count,
+            repo: outcome.repo,
+            version: outcome.version,
+            ...(outcome.building ? { building: outcome.building } : {}),
+        });
     }
 
     // The same bucket routing and per-agent dedupe as the ambient director,
-    // so an error never wears the needs-you voice in Town band either.
+    // so an error never wears the needs-you voice in Town band either; a
+    // stale observation raises nothing (S6).
     _playActionable(payload, status) {
+        const agent = this.world?.agents?.get?.(payload.agentId) ?? payload.agent ?? null;
+        if (agent && !isAudibleAgent(agent, Date.now())) return false;
         return this._actionable.route(
             { agentId: payload.agentId, status },
-            kind => this.cue(kind, { ...payload, status }),
+            (kind, family) => this.cue(kind, {
+                ...payload,
+                status,
+                family,
+                ...(kind === 'summons' ? { level: this._operatorLooking?.() ? 2 : 1 } : {}),
+            }),
         );
     }
 
@@ -266,18 +379,22 @@ export class BgmDirector {
         this.engine.setAirPhase(this._phase);
         this._applyWorkingSection();
 
-        const clock = atmosphere.clock || {};
-        if (clock.minutes === 0 && clock.hours >= 8 && clock.hours <= 20
-            && this._lastBellHour !== clock.hours) {
-            if (this.cue('hourBell')) this._lastBellHour = clock.hours;
+        // The hour chime (D7), on the same schedule as the Village.
+        const chime = hourChimeFor(atmosphere.clock);
+        if (chime && this._lastBellHour !== chime.hour) {
+            const count = !chime.soft && readCountHours();
+            if (this.cue('hourBell', { hour: chime.hour, soft: chime.soft, count })) {
+                this._lastBellHour = chime.hour;
+            }
         }
     }
 
     // The arrangement follows the counts, not the poll: the density change is
     // handed to the band, which applies it at its next four-bar boundary. The
     // one immediate move is the attention stage an actionable agent earns.
+    // Only audible (non-stale) agents move the band (S6).
     _applyWorkingSection(now = Date.now()) {
-        this._counts = workingSectionCounts(this.world);
+        this._counts = workingSectionCounts(audibleAgents(this.world, now));
         this._section = updateWorkingSection(this._section, { counts: this._counts, now });
         this.player?.setSection(this._section.applied);
         this._setAttention(this._counts.actionable > 0 ? ATTENTION_DB : 0);

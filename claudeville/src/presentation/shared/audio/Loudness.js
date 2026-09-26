@@ -48,7 +48,8 @@ export function trimStepGain(step) {
 export const DUCK_DEPTHS = Object.freeze({
     village: Object.freeze({ world: -2, work: -3, music: 0 }),
     townBand: Object.freeze({ world: 0, work: 0, music: -2 }),
-    urgent: Object.freeze({ world: -7, work: -6, music: -9 }),
+    // The held note (its own `signalBed` bus) ducks only under urgent cues.
+    urgent: Object.freeze({ world: -7, work: -6, music: -9, signalBed: -6 }),
     // Thunder is weather: it ducks nothing.
     thunder: Object.freeze({ world: 0, work: 0, music: 0 }),
 });
@@ -166,18 +167,37 @@ export const AUDIBILITY_WINDOWS = Object.freeze({
 //                 before PROGRAM_TRIM, fade and volume
 //   plr           peak-to-loudness ratio (dB): sample peak dBFS minus nominalLufsM; null until measured
 // Entries arrive with the voices that own them (Waves 1, 3, 5, 6).
-// Today's cue voices (Wave 1): MIX's mix-v2-nominal renders (program trim 0,
-// volume 1, the cue's fixed 0.72 stage included); `limit` borrows distress.
+// Wave 3 cue voices: the struck palette (cues/Materials.js) with each
+// voice's level (CueKit VOICE_LEVEL_DB), rendered one at a time on an
+// offline context at trim 0 and read at the cue bus input (the 0.72 stage
+// included, Island Air's return excluded), day, Claude's clay alloy for the
+// routine chimes (the other alloys read −0.7…+1.2 LU of it). `summons` is
+// the L1 ship's bell (L2 −45.1, L3/L4 −39.2); a reminder is levelled on its
+// family's entry voice and the Signals `answered` on the call; `hourBell` is
+// the phrase (the soft 21:00 chime −40.0); `digest` four notes
+// (red, amber, gold, stone). Thunder is unchanged since Wave 1.
 export const VOICE_REGISTRY = Object.freeze({
-    'cue.summons': Object.freeze({ nominalLufsM: -36.7, plr: null }),
-    'cue.distress': Object.freeze({ nominalLufsM: -36.4, plr: null }),
-    'cue.arrival': Object.freeze({ nominalLufsM: -38.5, plr: null }),
-    'cue.departure': Object.freeze({ nominalLufsM: -39.1, plr: null }),
-    'cue.recovery': Object.freeze({ nominalLufsM: -40.0, plr: null }),
-    'cue.council': Object.freeze({ nominalLufsM: -39.4, plr: null }),
-    'cue.hourBell': Object.freeze({ nominalLufsM: -33.5, plr: null }),
-    // Wave 2: the aurora rendered with its Island Air send (0.35), voice −2 dB.
-    'cue.aurora': Object.freeze({ nominalLufsM: -38.7, plr: null }),
+    'cue.summons': Object.freeze({ nominalLufsM: -39.8, plr: 7.7 }),
+    'cue.distress': Object.freeze({ nominalLufsM: -40.2, plr: 9.4 }),
+    'cue.limit': Object.freeze({ nominalLufsM: -44.0, plr: 9.2 }),
+    'cue.answered': Object.freeze({ nominalLufsM: -46.4, plr: 14.0 }),
+    'cue.arrival': Object.freeze({ nominalLufsM: -39.7, plr: 7.7 }),
+    'cue.departure': Object.freeze({ nominalLufsM: -40.3, plr: 8.0 }),
+    'cue.recovery': Object.freeze({ nominalLufsM: -38.8, plr: 9.7 }),
+    'cue.council': Object.freeze({ nominalLufsM: -37.6, plr: 6.7 }),
+    'cue.turnDone': Object.freeze({ nominalLufsM: -47.1, plr: 17.5 }),
+    'cue.subagentReturn': Object.freeze({ nominalLufsM: -47.5, plr: 20.6 }),
+    'cue.toolFailed': Object.freeze({ nominalLufsM: -38.7, plr: 11.5 }),
+    'cue.pushFailed': Object.freeze({ nominalLufsM: -38.7, plr: 11.5 }),
+    'cue.commit': Object.freeze({ nominalLufsM: -45.0, plr: 4.8 }),
+    'cue.push': Object.freeze({ nominalLufsM: -39.3, plr: 8.0 }),
+    'cue.release': Object.freeze({ nominalLufsM: -36.0, plr: 8.5 }),
+    'cue.dispatch': Object.freeze({ nominalLufsM: -47.5, plr: 10.1 }),
+    'cue.hourBell': Object.freeze({ nominalLufsM: -35.6, plr: 10.7 }),
+    'cue.aurora': Object.freeze({ nominalLufsM: -41.3, plr: 6.8 }),
+    'cue.linkLost': Object.freeze({ nominalLufsM: -40.1, plr: 15.1 }),
+    'cue.linkRestored': Object.freeze({ nominalLufsM: -38.1, plr: 6.1 }),
+    'cue.digest': Object.freeze({ nominalLufsM: -36.0, plr: 12.0 }),
     'cue.thunder': Object.freeze({ nominalLufsM: -33.7, plr: null }),
 });
 

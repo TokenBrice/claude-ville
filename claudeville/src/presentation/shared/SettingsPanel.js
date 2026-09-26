@@ -2,7 +2,13 @@ import { snapshotAgeMs, linkStatusText } from '../../application/VillageState.js
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { getClientPerfMetrics } from './ClientPerfMetrics.js';
-import { SOUND_STEP_MAX, soundStep } from './SoundSettings.js';
+import {
+    SOUND_STEP_MAX,
+    soundStep,
+    writeCaptionSetting,
+    writeCountHours,
+    writeReminderSetting,
+} from './SoundSettings.js';
 
 export const REDUCED_MOTION_OVERRIDE_KEY = 'claudeville.motion.reduce';
 const HOOK_LIVE_WINDOW_MS = 15_000;
@@ -13,6 +19,20 @@ const SOUND_LAYERS = Object.freeze([
     ['wildlife', 'Wildlife'],
     ['hum', 'Village hum'],
     ['music', 'Music'],
+]);
+// Captions (3.8): internal ids stay in storage; SET shows what each choice
+// captions. Automatic follows the sound: signals while it is off, signals
+// and events while it is on.
+const CAPTION_CHOICES = Object.freeze([
+    ['auto', 'Automatic'],
+    ['signals', 'Signals only'],
+    ['events', 'Signals and events'],
+    ['all', 'Everything I can hear'],
+]);
+const REMINDER_CHOICES = Object.freeze([
+    ['standard', 'Standard'],
+    ['gentle', 'Gentle'],
+    ['off', 'Off'],
 ]);
 
 let motionOverrideController = null;
@@ -154,6 +174,9 @@ export class SettingsPanel {
         onSoundBackground,
         onSoundVolume,
         onSoundLayer,
+        onSoundReminders,
+        onSoundCountHours,
+        onCaptions,
         onAutoCamera,
         onDesktopAlerts,
         onSidebarCollapsed,
@@ -166,6 +189,7 @@ export class SettingsPanel {
         unknownModelSeenToday,
         alertsAvailable = true,
         fetchImpl = globalThis.fetch,
+        storage = globalThis.window?.localStorage,
     } = {}) {
         this.readSettings = readSettings;
         this.onSoundEnabled = onSoundEnabled;
@@ -173,6 +197,11 @@ export class SettingsPanel {
         this.onSoundBackground = onSoundBackground;
         this.onSoundVolume = onSoundVolume;
         this.onSoundLayer = onSoundLayer;
+        // Preferences no audio object needs to apply: SET persists them and
+        // their readers take them on use.
+        this.onSoundReminders = onSoundReminders || (value => writeReminderSetting(value, storage));
+        this.onSoundCountHours = onSoundCountHours || (on => writeCountHours(on, storage));
+        this.onCaptions = onCaptions || (value => writeCaptionSetting(value, storage));
         this.onAutoCamera = onAutoCamera;
         this.onDesktopAlerts = onDesktopAlerts;
         this.onSidebarCollapsed = onSidebarCollapsed;
@@ -244,6 +273,12 @@ export class SettingsPanel {
                 ['signals', 'Signals only'],
             ], settings.soundBackground, this.onSoundBackground),
             this._range('soundVolume', 'Master volume', settings.soundVolume, this.onSoundVolume),
+            this._select('soundReminders', 'Reminders', 'Ring again while an agent is still waiting.',
+                REMINDER_CHOICES, settings.soundReminders, this.onSoundReminders),
+            this._checkbox('soundCountHours', 'Count the hours', 'The tower bell strikes the hour after its phrase.',
+                settings.soundCountHours, this.onSoundCountHours),
+            this._select('captions', 'Captions', 'Short notes for what the village signals.',
+                CAPTION_CHOICES, settings.captions, this.onCaptions),
             this._checkbox('autoCamera', 'Automatic camera', 'Frame live action while the World is idle.', settings.autoCamera, this.onAutoCamera),
             this._checkbox('desktopAlerts', 'Desktop alerts', this.alertsAvailable
                 ? 'Notify when an agent needs you.'
@@ -516,7 +551,7 @@ export class SettingsPanel {
 
     syncControls() {
         const settings = this.readSettings?.() || {};
-        for (const key of ['soundEnabled', 'autoCamera', 'desktopAlerts', 'sidebarCollapsed', 'reducedMotion']) {
+        for (const key of ['soundEnabled', 'soundCountHours', 'autoCamera', 'desktopAlerts', 'sidebarCollapsed', 'reducedMotion']) {
             const input = this.controls.get(key);
             if (input) input.checked = Boolean(settings[key]);
         }
@@ -524,6 +559,10 @@ export class SettingsPanel {
         if (mode) mode.value = settings.soundMode || 'ambient';
         const background = this.controls.get('soundBackground');
         if (background) background.value = settings.soundBackground || 'play';
+        const reminders = this.controls.get('soundReminders');
+        if (reminders) reminders.value = settings.soundReminders || 'standard';
+        const captions = this.controls.get('captions');
+        if (captions) captions.value = settings.captions || 'auto';
         this._syncRange('soundVolume', settings.soundVolume);
         for (const [name] of SOUND_LAYERS) this._syncRange(`soundLayer:${name}`, settings.soundLayers?.[name]);
         this._refreshOperationalRows();

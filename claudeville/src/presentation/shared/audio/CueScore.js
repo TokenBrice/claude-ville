@@ -20,6 +20,7 @@
 // collapsed announcement.
 
 import { eventBus } from '../../../domain/events/DomainEvent.js';
+import { AURORA_FIGURE, HOUR_FIGURE } from './Motifs.js';
 
 // P2 caps: eight admitted scores and forty note accents live at once. Expired
 // beats are dropped, never replayed after a hidden tab.
@@ -37,48 +38,61 @@ const SNAP_WINDOW_MS = 200;
 const MAX_ANCHOR_LEAD_MS = 3500;
 const MAX_LAG_SAMPLES = 16;
 
-const MAX_SUMMONS_WAIT_MS = 20 * 60 * 1000;
 const COUNCIL_NOTE_SPACING_MS = 280;
-const SUMMONS_BASE_GAP_MS = 180;
-const SUMMONS_URGENT_GAP_LIFT_MS = 35;
 
 // Fixed note offsets, in milliseconds from the cue's first note. These are the
 // offsets CueKit synthesises with — one table, so a published time can never
-// disagree with the bell that plays.
+// disagree with the bell that plays. They are the offsets with no music; while
+// music plays CueKit moves routine and outcome notes onto the band's grid and
+// publishes the notes it really struck.
 const NOTE_OFFSETS_MS = Object.freeze({
     arrival: Object.freeze([0, 220]),
     departure: Object.freeze([0, 240]),
-    distress: Object.freeze([0]),
     recovery: Object.freeze([0, 200]),
-    hourBell: Object.freeze([0]),
-    aurora: Object.freeze([0, 160, 320, 480]),
+    aurora: Object.freeze(AURORA_FIGURE.notes.map(note => note.atMs)),
     thunder: Object.freeze([0]),
+    // Signal: the cracked bell's fall (its grace strike sits inside the start
+    // lead, an ornament, not a note); three escapement ticks slowing down;
+    // the Signals-only answer.
+    distress: Object.freeze([0, 400]),
+    limit: Object.freeze([0, 260, 620]),
+    answered: Object.freeze([0]),
+    // Outcomes (C4 tiers: Minor one onset, Medium two, Major ≤ 2.5 s).
+    turnDone: Object.freeze([0]),
+    subagentReturn: Object.freeze([0, 60]),
+    toolFailed: Object.freeze([0, 110]),
+    pushFailed: Object.freeze([0, 110]),
+    commit: Object.freeze([0]),
+    push: Object.freeze([0, 140]),
+    release: Object.freeze([0, 120, 240, 360, 720]),
+    dispatch: Object.freeze([0]),
+    // Scenery: the lantern goes out; relit is two notes.
+    linkLost: Object.freeze([0]),
+    linkRestored: Object.freeze([0, 180]),
 });
 
+// The ship's bell (needs-you, S1): strikes at 0 and 150 ms, the pair repeated
+// every 650 ms. Ladder L2 rings one pair, L1 two, L3 and L4 three.
+const SHIP_PAIR_MS = 150;
+const SHIP_REPEAT_MS = 650;
+// An errors reminder at L3 rings the cracked bell's figure twice.
+const ERROR_REPEAT_MS = 1200;
+// Hour count (D7): the great bell stands for six; single strikes ≥ 1 s apart.
+const HOUR_COUNT_START_MS = 4200;
+const HOUR_GREAT_BELL_GAP_MS = 1800;
+const HOUR_STRIKE_GAP_MS = 1400;
+// The return digest: ≤ 5 notes, 220 ms apart (≤ 1.2 s).
+export const DIGEST_MAX_NOTES = 5;
+const DIGEST_SPACING_MS = 220;
+
 // The note a body-led accent claims, for cues whose visual mark belongs to a
-// moving body rather than to the moment the cue was admitted.
+// moving body rather than to the moment the cue was admitted. The release
+// peal lands its closing chord on the crown's cream frame.
 export const CUE_ACCENT_NOTE = Object.freeze({
     arrival: 1,
     departure: 1,
+    release: 4,
 });
-
-function clamp01(value) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return 0;
-    return Math.max(0, Math.min(1, n));
-}
-
-export function summonsUrgency(waitingCount, oldestWaitMs) {
-    const count = Number(waitingCount);
-    const waitMs = Number(oldestWaitMs);
-    const countLift = Number.isFinite(count)
-        ? clamp01((Math.max(1, count) - 1) / 4)
-        : 0;
-    const waitLift = Number.isFinite(waitMs)
-        ? clamp01(Math.max(0, waitMs) / MAX_SUMMONS_WAIT_MS)
-        : 0;
-    return clamp01(countLift * 0.55 + waitLift * 0.45);
-}
 
 export function councilBellCount(teamSize) {
     const size = Number(teamSize);
@@ -86,19 +100,92 @@ export function councilBellCount(teamSize) {
     return Math.max(2, Math.min(5, Math.round(size)));
 }
 
-// The note times of one cue kind, relative to its first note. Council length
-// follows the real team size; the summons gap tightens with real urgency.
-export function cueNoteOffsetsMs(kind, { teamSize, waitingCount, oldestWaitMs } = {}) {
+/** A ladder level 1–4 (L1 = entry) from a cue payload. */
+export function ladderLevel(level) {
+    const n = Math.round(Number(level));
+    return Number.isFinite(n) ? Math.max(1, Math.min(4, n)) : 1;
+}
+
+// Families stop climbing: errors hold at L3, quota stops at L2 (SIG-2).
+const FAMILY_TOP_LEVEL = Object.freeze({ needsYou: 4, errors: 3, quota: 2 });
+
+/** The entry kind a reminder family rings, and the level it may ring at. */
+export function reminderVoice({ family, level } = {}) {
+    const top = FAMILY_TOP_LEVEL[family] ?? FAMILY_TOP_LEVEL.needsYou;
+    const kind = family === 'errors' ? 'distress' : family === 'quota' ? 'limit' : 'summons';
+    return { kind, level: Math.min(top, ladderLevel(level ?? 2)) };
+}
+
+export function shipBellPairs(level) {
+    const L = ladderLevel(level);
+    return L === 2 ? 1 : L >= 3 ? 3 : 2;
+}
+
+/** The 12-hour count for an hour 0–23 (noon and midnight are 12). */
+export function hourCount(hour) {
+    const h = Math.trunc(Number(hour));
+    return Number.isFinite(h) ? (((h % 12) + 11) % 12) + 1 : 12;
+}
+
+// Whether an hour cue counts: only when asked, never soft or at night.
+export function hourCounts({ count = false, soft = false, phase = 'day' } = {}) {
+    return Boolean(count) && !soft && phase !== 'night';
+}
+
+function hourOffsets(cue) {
+    const offsets = HOUR_FIGURE.notes.map(note => note.atMs);
+    if (!hourCounts(cue)) return offsets;
+    const h = hourCount(cue.hour);
+    let at = HOUR_COUNT_START_MS;
+    let singles = h;
+    if (h >= 6) {
+        offsets.push(at);
+        at += HOUR_GREAT_BELL_GAP_MS;
+        singles = h - 6;
+    }
+    for (let i = 0; i < singles; i++) {
+        offsets.push(at);
+        at += HOUR_STRIKE_GAP_MS;
+    }
+    return offsets;
+}
+
+function signalOffsets(kind, level) {
+    if (kind === 'summons') {
+        const offsets = [];
+        for (let k = 0; k < shipBellPairs(level); k++) {
+            offsets.push(k * SHIP_REPEAT_MS, k * SHIP_REPEAT_MS + SHIP_PAIR_MS);
+        }
+        return offsets;
+    }
+    if (kind === 'distress' && ladderLevel(level) >= 3) {
+        const figure = NOTE_OFFSETS_MS.distress;
+        return [...figure, ...figure.map(ms => ms + ERROR_REPEAT_MS)];
+    }
+    return [...NOTE_OFFSETS_MS[kind]];
+}
+
+// The note times of one cue kind, relative to its first note, with no music.
+// Council length follows the real team size, the needs-you figure its ladder
+// level, a reminder its family's entry voice at its level, the hour its count
+// and the digest its notes.
+export function cueNoteOffsetsMs(kind, cue = {}) {
     if (kind === 'council') {
-        const count = councilBellCount(teamSize);
+        const count = councilBellCount(cue.teamSize);
         const offsets = new Array(count);
         for (let i = 0; i < count; i++) offsets[i] = i * COUNCIL_NOTE_SPACING_MS;
         return offsets;
     }
-    if (kind === 'summons') {
-        const gap = SUMMONS_BASE_GAP_MS
-            - summonsUrgency(waitingCount, oldestWaitMs) * SUMMONS_URGENT_GAP_LIFT_MS;
-        return [0, gap];
+    if (kind === 'summons') return signalOffsets(kind, cue.level);
+    if (kind === 'reminder') {
+        const voice = reminderVoice(cue);
+        return signalOffsets(voice.kind, voice.level);
+    }
+    if (kind === 'hourBell') return hourOffsets(cue);
+    if (kind === 'digest') {
+        const count = Math.min(DIGEST_MAX_NOTES, Array.isArray(cue.notes) ? cue.notes.length : 0);
+        if (!count) return null;
+        return Array.from({ length: count }, (_, i) => i * DIGEST_SPACING_MS);
     }
     const fixed = NOTE_OFFSETS_MS[kind];
     return fixed ? [...fixed] : null;
@@ -186,7 +273,9 @@ function recordLag(lagMs) {
 /**
  * Publish one admitted cue's real note times. `startMs` is the first note on
  * the monotonic (`performance.now`) clock; `silent` marks a score that will not
- * sound, whose notes are therefore already due.
+ * sound, whose notes are therefore already due. `pitches[i]` is note i's
+ * struck fundamental (Hz; an array for a chord, melody first; null when
+ * unpitched), published with its time for the score analyzers.
  */
 export function publishCueScore({
     kind,
@@ -195,6 +284,7 @@ export function publishCueScore({
     sourceEventId = null,
     startMs = nowMs(),
     offsetsMs = null,
+    pitches = null,
     silent = false,
 } = {}) {
     const offsets = Array.isArray(offsetsMs) ? offsetsMs : null;
@@ -219,10 +309,18 @@ export function publishCueScore({
         kind: score.kind,
         agentId: score.agentId,
         sourceEventId: score.sourceEventId,
-        notes: score.notes.map(note => ({ atMs: note.atMs })),
+        notes: score.notes.map((note, i) => notePitch(note.atMs, pitches?.[i])),
         silent: score.silent,
     });
     return score;
+}
+
+// `{ atMs, hz }`, plus `chordHz` (the other struck pitches) for a chord.
+function notePitch(atMs, pitch) {
+    const list = (Array.isArray(pitch) ? pitch : [pitch]).filter(Number.isFinite);
+    const out = { atMs, hz: list[0] ?? null };
+    if (list.length > 1) out.chordHz = list.slice(1);
+    return out;
 }
 
 /**

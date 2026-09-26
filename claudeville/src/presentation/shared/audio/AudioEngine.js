@@ -10,7 +10,13 @@
 //     programSum (tilt = circadian high shelf on world + music only)
 //       ─► bedGate ─► PROGRAM_TRIM ─► HPF 30 Hz ─┐
 //   cue ───────────► PROGRAM_TRIM ───────────────┤
-//   Island Air wet ► PROGRAM_TRIM ───────────────┴─► LP 14 kHz ─► limiter (−1.5 dBFS) ─► volume ─► fade ─► out
+//   Island Air wet ► PROGRAM_TRIM ───────────────┤
+//   signalBed ─► signalBedDuck ─► signalGate ─► PROGRAM_TRIM ─┴─► LP 14 kHz ─► limiter (−1.5 dBFS) ─► volume ─► fade ─► out
+//
+// `signalBed` carries the held note (S3, plan 3.3): no presence dip, no
+// attention stage, no music duck, outside the bed tap; it ducks only under
+// urgent cues (DUCK_DEPTHS.urgent.signalBed) and its gate moves with bedGate,
+// so a hidden-tab wake sounds the cue alone.
 //
 // Island Air (IslandAir.js, S5): layer sends enter per (director, group)
 // wet inputs that follow the director crossfade and the group fader, then
@@ -48,9 +54,9 @@ export const MIN_GAIN = 0.0001;
 
 // Mixer groups with a persistent fader each; layers name theirs via BaseLayer's `group`.
 export const AUDIO_GROUPS = Object.freeze(['wind', 'rain', 'wildlife', 'hum', 'music']);
-export const AUDIO_BUSES = Object.freeze(['world', 'work', 'music', 'cue']);
+export const AUDIO_BUSES = Object.freeze(['world', 'work', 'music', 'cue', 'signalBed']);
 const GROUP_BUS = Object.freeze({ wind: 'world', rain: 'world', wildlife: 'world', hum: 'work', music: 'music' });
-const DUCKED_BUSES = Object.freeze(['world', 'work', 'music']);
+const DUCKED_BUSES = Object.freeze(['world', 'work', 'music', 'signalBed']);
 
 // Circadian high shelf at 3 kHz on world + music (SOTA-14, MIX-5), dB by phase.
 export const TILT_DB = Object.freeze({ dawn: 1, day: 0, dusk: -1.5, night: -3 });
@@ -282,6 +288,7 @@ export class AudioEngine {
         this.air = null;
         this._airBedGate = null;
         this._airWetTrim = null;
+        this._signalGate = null;
         this._airPhase = 'day';
         this._airWeather = { rain: 0, fog: 0 };
         this._noiseWorklet = false;
@@ -446,6 +453,15 @@ export class AudioEngine {
         this._airBedGate = this.air.bedGate;
         this._airWetTrim = gain(dbToGain(PROGRAM_TRIM_DB));
         this.air.output.connect(this._airWetTrim).connect(masterSum);
+
+        // The held note's own path (S3): its duck, then a gate that mirrors
+        // bedGate, then the same program trim as the bed it sits over.
+        this._signalGate = gain();
+        this._buses.get('signalBed').connect(this._busOuts.get('signalBed'));
+        this._busOuts.get('signalBed')
+            .connect(this._signalGate)
+            .connect(gain(dbToGain(PROGRAM_TRIM_DB)))
+            .connect(masterSum);
 
         // Master: LP 14 kHz → limiter → volume → fade → out.
         this._limiterIn = makeFilter(ctx, 'lowpass', 14000);
@@ -730,9 +746,10 @@ export class AudioEngine {
         return node;
     }
 
-    // bedGate and the air's bed gate move together (start / wake).
+    // bedGate, the air's bed gate and the signal-bed gate move together
+    // (start / wake).
     _bedGateParams() {
-        return [this.bedGate.gain, this._airBedGate?.gain].filter(Boolean);
+        return [this.bedGate.gain, this._airBedGate?.gain, this._signalGate?.gain].filter(Boolean);
     }
 
     // Cached console-style timbres: band-limited pulse waves (NES duty
@@ -859,14 +876,30 @@ export class AudioEngine {
         return volumeStepGain(this.volumeStep);
     }
 
-    // The persistent input of a bus: 'world' | 'work' | 'music' | 'cue'.
-    busInput(name) {
+    // The persistent input of a bus: 'world' | 'work' | 'music' | 'cue' |
+    // 'signalBed'. With `director`, a gain into that bus that carries the
+    // director's crossfade (and pause), for a voice a director owns outside
+    // the mixer groups (the held note).
+    busInput(name, director = null) {
         const bus = this._buses.get(name);
         if (!bus) throw new Error(`Unknown audio bus: ${name}`);
-        return bus;
+        if (!director) return bus;
+        let inputs = this._directorGroups.get(director);
+        if (!inputs) {
+            inputs = new Map();
+            this._directorGroups.set(director, inputs);
+        }
+        const key = `bus:${name}`;
+        let node = inputs.get(key);
+        if (!node) {
+            node = this._directorNode(director);
+            node.connect(bus);
+            inputs.set(key, node);
+        }
+        return node;
     }
 
-    // Probe tap: a ducked bus after its duck ('world' | 'work' | 'music').
+    // Probe tap: a ducked bus after its duck ('world' | 'work' | 'music' | 'signalBed').
     _busOut(name) {
         const out = this._busOuts.get(name);
         if (!out) throw new Error(`Unknown ducked bus: ${name}`);
@@ -1259,6 +1292,7 @@ export class AudioEngine {
         this.air = null;
         this._airBedGate = null;
         this._airWetTrim = null;
+        this._signalGate = null;
         this._tilt = null;
         this._attention = null;
         this._weatherCeiling = null;

@@ -50,16 +50,22 @@ export function makeAgent(status, provider = 'claude', extra = {}) {
     };
 }
 
+// spec: { counts: { status: n }, providers, agents: [{ status, provider,
+// ...fields }] } — `agents` adds explicit agents (stale flags, turn
+// durations) after the counted ones. An actionable agent starts its wait now.
+const ACTIONABLE = new Set(['waiting_on_user', 'errored', 'rate_limited']);
 export function makeWorld(spec = {}) {
     const agents = new Map();
     const providers = spec.providers || ['claude', 'codex', 'gemini', 'kimi'];
     let p = 0;
+    const add = (agent) => {
+        if (ACTIONABLE.has(agent.status) && agent.awaitingSince == null) agent.awaitingSince = Date.now();
+        agents.set(agent.id, agent);
+    };
     for (const [status, count] of Object.entries(spec.counts || {})) {
-        for (let i = 0; i < count; i++) {
-            const agent = makeAgent(status, providers[p++ % providers.length]);
-            agents.set(agent.id, agent);
-        }
+        for (let i = 0; i < count; i++) add(makeAgent(status, providers[p++ % providers.length]));
     }
+    for (const { status = 'working', provider, ...fields } of spec.agents || []) add(makeAgent(status, provider || providers[p++ % providers.length], fields));
     return { agents };
 }
 
@@ -126,37 +132,67 @@ export function makeMarker(getCtx) {
 // loads them as a calibrated profile instead of resetting them.
 export function seedSoundStorage(spec = {}) {
     try {
-        localStorage.setItem('claudeville.sound.enabled', 'true');
+        localStorage.setItem('claudeville.sound.enabled', spec.soundOff ? 'false' : 'true');
         localStorage.setItem('claudeville.sound.mode', spec.mode || 'ambient');
         localStorage.setItem('claudeville.sound.volume', String(spec.volumeStep ?? STANDARD_VOLUME_STEP));
         localStorage.setItem('claudeville.sound.layers', JSON.stringify(spec.layerSteps || {}));
         localStorage.setItem('claudeville.sound.calibration', '2');
         localStorage.setItem('claudeville.sound.background', 'play');
+        // Wave 3 settings (reminders, captions, hour count), when a scene sets them.
+        for (const [key, value] of Object.entries(spec.storage || {})) localStorage.setItem(key, String(value));
     } catch { /* storage optional */ }
 }
 
 // -------------------------------------------------------------- actions ----
-// {status:{index,status}} | {addAgent} | {emit, payload, agentIndex} |
+// {status:{index,status,fields}} | {addAgent:{status,provider,parentIndex,fields}} |
+// {remove:{index}} | {ack:{index}} | {emit, payload, agentIndex, raw} |
 // {mode} | {cue, payload, agentIndex}. Returns the marker it recorded.
+// `raw` emits the payload as given (arrays, strings); otherwise it is copied
+// and the agent attached.
 export function runAction(action, { world, mark, controller }) {
     const agents = [...world.agents.values()];
     const agentFor = index => (index != null ? agents[index] : null);
     if (action.status) {
         const agent = agentFor(action.status.index ?? 0);
         if (agent) {
+            const was = agent.status;
             agent.status = action.status.status;
-            if (action.status.status === 'waiting_on_user') agent.awaitingSince = Date.now();
+            if (ACTIONABLE.has(agent.status) && agent.status !== was) agent.awaitingSince = Date.now();
+            if (!ACTIONABLE.has(agent.status)) delete agent.awaitingSince;
+            Object.assign(agent, action.status.fields || {});
             eventBus.emit('agent:updated', agent);
         }
-        return mark(`status:${action.status.status}`, { kind: 'action', agentId: agent?.id ?? null });
+        return mark(action.label || `status:${action.status.status}`, { kind: 'action', agentId: agent?.id ?? null, lane: action.lane ?? null });
     }
     if (action.addAgent) {
-        const agent = makeAgent(action.addAgent.status || 'working', action.addAgent.provider || 'claude');
+        const parent = agentFor(action.addAgent.parentIndex);
+        const agent = makeAgent(action.addAgent.status || 'working', action.addAgent.provider || 'claude', {
+            ...(parent ? { parentSessionId: parent.id } : {}),
+            ...(action.addAgent.fields || {}),
+        });
         world.agents.set(agent.id, agent);
         eventBus.emit('agent:added', agent);
-        return mark(`add:${agent.id}`, { kind: 'action', agentId: agent.id });
+        return mark(action.label || `add:${agent.id}`, { kind: 'action', agentId: agent.id, lane: action.lane ?? null });
+    }
+    if (action.remove) {
+        const agent = agentFor(action.remove.index);
+        if (agent) {
+            world.agents.delete(agent.id);
+            eventBus.emit('agent:removed', agent);
+        }
+        return mark(action.label || `remove:${agent?.id}`, { kind: 'action', agentId: agent?.id ?? null, lane: action.lane ?? null });
+    }
+    if (action.ack) {
+        const agent = agentFor(action.ack.index);
+        eventBus.emit('attention:acknowledged', { agentId: agent?.id ?? null });
+        return mark(action.label || `ack:${agent?.id}`, { kind: 'action', agentId: agent?.id ?? null });
     }
     if (action.emit) {
+        if (action.raw) {
+            const marker = mark(action.label || action.emit, { kind: 'event', lane: action.lane ?? null, agentId: null });
+            eventBus.emit(action.emit, action.payload);
+            return marker;
+        }
         const payload = { ...(action.payload || {}) };
         const agent = agentFor(action.agentIndex);
         if (agent) {
@@ -181,7 +217,11 @@ export function runAction(action, { world, mark, controller }) {
             payload.provider = payload.provider || agent.provider;
         }
         const marker = mark(action.label || `debug-cue:${action.cue}`, { kind: 'event', lane: action.lane ?? null, cueKind: action.cue, agentId: payload.agentId ?? null });
-        controller.director.cue(action.cue, payload);
+        // The director that owns the signal route: the active one while it
+        // plays, else the ambient director (sound off, or before the Town
+        // band starts), as the producers' events would reach them.
+        const director = controller.director.running ? controller.director : controller.directors.ambient;
+        director.cue(action.cue, payload);
         return marker;
     }
     return null;

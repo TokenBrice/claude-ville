@@ -441,12 +441,16 @@ async function runBootAudioRouteProbe(page) {
     const observer = new MutationObserver((records) => {
       for (const entry of records) {
         for (const node of entry.addedNodes) {
-          if ((node.textContent || '').includes('The team is gathering')) captioned = true;
+          if ((node.textContent || '').includes('lifecycle-probe gathered')) captioned = true;
         }
       }
     });
     if (container) observer.observe(container, { childList: true, subtree: true });
     eventBus.on('audio:cue-played', record);
+    // Sound is off on a fresh profile, so the default caption setting shows
+    // signals only (plan 3.8); ask for event captions for this probe.
+    const previousCaptions = localStorage.getItem('claudeville.captions');
+    localStorage.setItem('claudeville.captions', 'events');
     const startedAt = performance.now();
     try {
       eventBus.emit('team:gather', { teamName: 'lifecycle-probe', teamSize: 3 });
@@ -458,6 +462,8 @@ async function runBootAudioRouteProbe(page) {
     } finally {
       observer.disconnect();
       eventBus.off('audio:cue-played', record);
+      if (previousCaptions === null) localStorage.removeItem('claudeville.captions');
+      else localStorage.setItem('claudeville.captions', previousCaptions);
     }
   });
   return {

@@ -5,7 +5,10 @@
 // chain, group faders, per-director crossfade gains, the Transport) and the
 // two directors in ./audio/, which share the one cue arbiter this controller
 // creates per engine. TopBar builds it at boot idle without an AudioContext,
-// so the signal route and captions exist before any click.
+// so the signal route and captions exist before any click. The signal route
+// also carries the urgency ladder (plan 3.3): a 1 Hz timer, alive from boot
+// whether or not sound is on, reminds an unanswered wait — as a caption with
+// sound off, through the wake on a hidden page.
 
 import { AudioEngine } from './audio/AudioEngine.js';
 import { AudioDirector } from './audio/AudioDirector.js';
@@ -18,11 +21,19 @@ import { CueGovernor } from './audio/CueGovernor.js';
 import { CueKit } from './audio/cues/CueKit.js';
 import { cueNoteCount, cueNoteTime } from './audio/CueScore.js';
 import { trimStepGain } from './audio/Loudness.js';
+import { audibleAgents } from './audio/AudibleWorld.js';
+import {
+    LOOKING_L1_IDLE_MS,
+    REMINDER_CAPS,
+    isOperatorLooking,
+    next as nextReminder,
+} from './audio/UrgencyLadder.js';
 import {
     AUDIO_MIXER_DEFAULTS,
     SOUND_RECALIBRATED_MESSAGE,
     SOUND_STEP_MAX,
     readStoredTrimSteps,
+    readReminderSetting,
     readStoredVolumeStep,
     recalibrateStoredSound,
     soundStep,
@@ -57,6 +68,14 @@ const UNSCORED_LAST_NOTE_SEC = 0.4;
 const RESUME_RESTART_MS = 10 * 60 * 1000;
 // The context suspends once the groups' 80 ms close has certainly finished.
 const PAUSE_SUSPEND_MARGIN_MS = 20;
+// The signal route's ladder clock. A hidden tab's timers are throttled to
+// about once a minute, which bounds a hidden reminder's lateness (≤ 60 s).
+const SIGNAL_TICK_MS = 1000;
+// Input that marks the operator as looking (reminders defer; L1 speaks softly).
+const PRESENCE_INPUT_EVENTS = Object.freeze(['pointerdown', 'keydown', 'wheel']);
+// An entry cue's trim is the wait's held trim when it was placed this recently.
+const ENTRY_TRIM_WINDOW_SEC = 1;
+const ENTRY_CUE_KINDS = new Set(['summons', 'distress', 'limit']);
 
 function phaseFamily(phase) {
     return phase === 'night' ? 'night' : 'day';
@@ -167,6 +186,14 @@ export class AmbientAudioController {
         this._destroyPromise = null;
         this._destroyed = false;
         this._windowBlurred = false;
+        // The urgency ladder's inputs: acknowledgements (agentId → ms), the
+        // reminders spent this wait, the wait's held cue trim, presence.
+        this._acks = new Map();
+        this._ladderHistory = [];
+        this._ladderWait = null;
+        this._ladder = null;
+        this._lastInputAt = 0;
+        this._bellRings = null;
         // The working-section label lives beside the music control; the topbar
         // markup owns the element, this controller owns its counts.
         this.sectionLabel = typeof document !== 'undefined'
@@ -192,6 +219,9 @@ export class AmbientAudioController {
         this.directors.ambient.setHiddenSummonsHandler?.((payload) => {
             this._handleHiddenSummons(payload);
         });
+        // S7: an entry cue while the operator is looking plays the L2 voice.
+        const looking = () => this._operatorLooking(LOOKING_L1_IDLE_MS);
+        for (const director of Object.values(this.directors)) director.setOperatorLooking?.(looking);
         this._inactive = this._pageInactive();
         this.directors.ambient.setHidden(this._inactive);
         this.directors.ambient.setSignalRouting(true);
@@ -226,6 +256,20 @@ export class AmbientAudioController {
         for (const event of ['agent:added', 'agent:updated', 'agent:removed']) {
             eventBus.on(event, this._onWorldCountsChanged);
         }
+        this._onPresenceInput = () => { this._lastInputAt = Date.now(); };
+        if (typeof document !== 'undefined') {
+            for (const type of PRESENCE_INPUT_EVENTS) {
+                document.addEventListener(type, this._onPresenceInput, { capture: true, passive: true });
+            }
+        }
+        this._onAcknowledged = (payload) => {
+            if (payload?.agentId != null) this._acks.set(payload.agentId, Date.now());
+        };
+        eventBus.on('attention:acknowledged', this._onAcknowledged);
+        // Subscribed after the directors, so the entry cue has been placed.
+        this._onAttentionRaised = () => this._openLadderWait();
+        eventBus.on('attention:raised', this._onAttentionRaised);
+        this._signalTimer = setInterval(() => this._signalTick(), SIGNAL_TICK_MS);
 
         this._renderControls();
         if (this.enabled) {
@@ -623,6 +667,100 @@ export class AmbientAudioController {
         return lastNote + URGENT_TAIL_SEC + WAKE_RELEASE_MARGIN_SEC;
     }
 
+    // ─── The urgency ladder (plan 3.3) ────────────────────────────────────
+
+    _presence() {
+        const doc = typeof document !== 'undefined' ? document : null;
+        return {
+            visible: doc ? !doc.hidden : false,
+            focused: typeof doc?.hasFocus === 'function' ? doc.hasFocus() : !this._windowBlurred,
+            lastInputAt: this._lastInputAt,
+        };
+    }
+
+    _operatorLooking(idleMs) {
+        return isOperatorLooking(this._presence(), Date.now(), idleMs);
+    }
+
+    // A wait begins with its entry cue; that cue's bed-aware trim is held
+    // for every reminder of the wait (S2), so L2 stays under L1 however the
+    // bed swells. Without a heard entry the first reminder's trim is held.
+    _openLadderWait() {
+        if (this._destroyed || this._ladderWait) return;
+        const level = this.cues.kit.lastLevel;
+        const heard = level
+            && ENTRY_CUE_KINDS.has(level.kind)
+            && Number.isFinite(level.trimDb)
+            && Math.abs(level.at - this.engine.now()) <= ENTRY_TRIM_WINDOW_SEC;
+        this._ladderWait = { heldTrimDb: heard ? level.trimDb : null };
+    }
+
+    _closeLadderWait() {
+        this._ladderWait = null;
+        this._ladderHistory = [];
+        this._acks.clear();
+    }
+
+    // Once a second, sound or no sound: never from stale data, never while
+    // the feed is lost (SIG-9), never for a wait nobody is in.
+    _signalTick() {
+        if (this._destroyed) return;
+        const now = Date.now();
+        if (this.directors.ambient.linkLost) return;
+        const agents = audibleAgents(this.world, now);
+        const ladder = nextReminder(now, agents, this._acks, {
+            reminders: readReminderSetting(),
+            presence: this._presence(),
+        }, this._ladderHistory);
+        this._ladder = ladder;
+        if (!ladder.count) {
+            if (this._ladderWait) this._closeLadderWait();
+            return;
+        }
+        this._openLadderWait();
+        const present = new Set(agents.map(agent => agent.id));
+        for (const agentId of this._acks.keys()) if (!present.has(agentId)) this._acks.delete(agentId);
+        this._ladderHistory = this._ladderHistory.filter((entry, index, all) => (
+            index === all.length - 1 || now - entry.at < REMINDER_CAPS.windowMs
+        ));
+        if (ladder.level > 0 && ladder.due <= now) this._playReminder(ladder, agents, now);
+    }
+
+    // The director that owns the signal route plays it (a hidden page hands
+    // it to the wake). A reminder refused inside an urgent guard is spent,
+    // not queued: it covers its step without counting toward the caps.
+    _playReminder(ladder, agents, now) {
+        const agent = agents.find(candidate => candidate.id === ladder.agentId);
+        const reminder = {
+            level: ladder.level,
+            family: ladder.family,
+            count: ladder.count,
+            oldestMs: ladder.oldestMs,
+            agentId: ladder.agentId,
+            label: agent?.name || agent?.agentName || null,
+            heldTrimDb: this._ladderWait?.heldTrimDb ?? null,
+        };
+        const played = Boolean(
+            this.directors.ambient.playReminder?.(reminder)
+            || this.directors.bgm.playReminder?.(reminder),
+        );
+        this._ladderHistory.push({ at: now, level: ladder.level, dropped: !played });
+        const level = this.cues.kit.lastLevel;
+        if (played && this._ladderWait?.heldTrimDb == null && level?.kind === 'reminder'
+            && Number.isFinite(level.trimDb) && Math.abs(level.at - this.engine.now()) <= ENTRY_TRIM_WINDOW_SEC) {
+            this._ladderWait.heldTrimDb = level.trimDb;
+        }
+    }
+
+    // Whether a hidden page's urgent cue will be heard from the village
+    // itself; desktop alerts go silent when it will (UX-13).
+    _emitBellState() {
+        const rings = Boolean(this.available && this.enabled && this.userActivated);
+        if (rings === this._bellRings) return;
+        this._bellRings = rings;
+        eventBus.emit('audio:bell-state', { rings });
+    }
+
     _armUnlockListeners() {
         if (!this.enabled || this.unlockArmed || !this.available || typeof document === 'undefined') return;
         document.addEventListener('pointerdown', this._onUnlockGesture, true);
@@ -677,6 +815,7 @@ export class AmbientAudioController {
         }
         for (const name of Object.keys(AUDIO_MIXER_DEFAULTS)) this._renderLayerControl(name);
         this._renderSectionLabel();
+        this._emitBellState();
     }
 
     _scheduleSectionLabel() {
@@ -765,6 +904,12 @@ export class AmbientAudioController {
             background: this.background,
             blurred: this._windowBlurred,
             wakeCount: this._wakeCount,
+            ladder: this._ladder ? {
+                ...this._ladder,
+                heldTrimDb: this._ladderWait?.heldTrimDb ?? null,
+                fired: this._ladderHistory.map(entry => ({ ...entry })),
+                acknowledged: [...this._acks.keys()],
+            } : null,
             setVolumeStep: (step) => this.setVolumeStep(step),
             setLayerStep: (name, step) => this.setLayerStep(name, step),
             setMode: (m) => this.setMode(m),
@@ -788,6 +933,11 @@ export class AmbientAudioController {
             this._suspendTimer = null;
         }
         this._hiddenSummonsPending.clear();
+        clearInterval(this._signalTimer);
+        this._signalTimer = null;
+        eventBus.off('attention:acknowledged', this._onAcknowledged);
+        eventBus.off('attention:raised', this._onAttentionRaised);
+        this._closeLadderWait();
         clearTimeout(this._sectionLabelTimer);
         this._sectionLabelTimer = null;
         for (const event of ['agent:added', 'agent:updated', 'agent:removed']) {
@@ -806,6 +956,9 @@ export class AmbientAudioController {
         this._layerInputHandlers.clear();
         if (typeof document !== 'undefined') {
             document.removeEventListener('visibilitychange', this._onVisibility);
+            for (const type of PRESENCE_INPUT_EVENTS) {
+                document.removeEventListener(type, this._onPresenceInput, { capture: true });
+            }
         }
         if (typeof window !== 'undefined') {
             window.removeEventListener('blur', this._onWindowBlur);

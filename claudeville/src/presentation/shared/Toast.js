@@ -1,4 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { CAPTION_SETTINGS, readCaptionSetting, readStoredSoundEnabled } from './SoundSettings.js';
 
 const MAX_TOASTS = 5;
 const AUTO_DISMISS_MS = 3000;
@@ -9,22 +10,106 @@ const PRIMARY_CUE_DISMISS_MS = 8000;
 const DIGEST_DISMISS_MS = 12000;
 const CUE_CONTEXT_MAX_AGE_MS = 1500;
 const ATTENTION_NOTICE_GRACE_MS = 1500;
-const PRIMARY_CUES = new Set(['distress', 'limit', 'summons']);
+const PRIMARY_CUES = new Set(['distress', 'limit', 'summons', 'reminder']);
+// The cues a direct attention notice for the same agent folds into.
+const ATTENTION_CUES = new Set(['distress', 'limit', 'summons']);
+// A newer caption of these kinds replaces the older one instead of counting
+// it: the village-wide reminder restates the current wait.
+const SUPERSEDING_CUES = new Set(['reminder']);
 
-const CUE_PRESENTATION = Object.freeze({
-    arrival: { action: 'arrived', type: 'info' },
-    departure: { action: 'departed', type: 'info' },
-    distress: { action: 'hit an error', type: 'error' },
-    limit: { action: 'is rate limited', type: 'warning' },
-    recovery: { action: 'recovered', type: 'success' },
-    summons: { action: 'needs you', type: 'warning' },
+// Every cue kind by stratum (S1). The caption setting (3.8, S6) chooses the
+// strata: signals always caption; events (outcomes and routine) follow the
+// setting; scenery captions only what can be heard. The return digest is
+// sound-only: the `attention:digest` notice is its one caption.
+const CUE_STRATUM = Object.freeze({
+    summons: 'signal',
+    distress: 'signal',
+    limit: 'signal',
+    reminder: 'signal',
+    answered: 'signal',
+    turnDone: 'event',
+    subagentReturn: 'event',
+    toolFailed: 'event',
+    commit: 'event',
+    push: 'event',
+    release: 'event',
+    pushFailed: 'event',
+    dispatch: 'event',
+    arrival: 'event',
+    departure: 'event',
+    recovery: 'event',
+    council: 'event',
+    aggregate: 'event',
+    hourBell: 'scenery',
+    aurora: 'scenery',
+    thunder: 'scenery',
+    linkLost: 'scenery',
+    linkRestored: 'scenery',
+    digest: 'soundOnly',
 });
 
-const GLOBAL_CUE_COPY = Object.freeze({
-    council: 'The team is gathering',
-    hourBell: 'The hour bell is ringing',
-    aurora: 'A village milestone was reached',
-    thunder: 'Thunder nearby',
+export function cueStratum(kind) {
+    return CUE_STRATUM[kind] || 'event';
+}
+
+// Pure caption policy: caption setting × sound on/off × cue → shown?
+// `auto` is signals only while sound is off and signals and events while it
+// is on; scenery needs `all` and sound on.
+export function cueCaptionShown(payload, { setting = 'auto', soundOn = false } = {}) {
+    if (!payload || typeof payload !== 'object' || payload.soundOnly === true) return false;
+    const choice = CAPTION_SETTINGS.includes(setting) ? setting : 'auto';
+    switch (cueStratum(cleanLabel(payload.kind))) {
+        case 'signal': return true;
+        case 'event': return choice === 'events' || choice === 'all' || (choice === 'auto' && Boolean(soundOn));
+        case 'scenery': return choice === 'all' && Boolean(soundOn);
+        default: return false;
+    }
+}
+
+// Agent-scoped cues: `<name> <action>`.
+const AGENT_CUE_ACTIONS = Object.freeze({
+    arrival: 'arrived',
+    departure: 'departed',
+    distress: 'hit an error',
+    limit: 'is rate limited',
+    recovery: 'recovered',
+    summons: 'needs you',
+    answered: 'was answered',
+});
+
+const CUE_TYPES = Object.freeze({
+    arrival: 'info',
+    departure: 'info',
+    distress: 'error',
+    limit: 'warning',
+    recovery: 'success',
+    summons: 'warning',
+    reminder: 'warning',
+    answered: 'success',
+    turnDone: 'info',
+    subagentReturn: 'info',
+    dispatch: 'info',
+    toolFailed: 'warning',
+    pushFailed: 'warning',
+    commit: 'success',
+    push: 'success',
+    release: 'success',
+    council: 'warning',
+    hourBell: 'warning',
+    linkLost: 'warning',
+    linkRestored: 'success',
+});
+
+// Reminders restate the village's oldest wait by its family (SIG-2).
+const REMINDER_GROUP_COPY = Object.freeze({
+    needsYou: 'waiting',
+    errors: 'with errors',
+    quota: 'rate limited',
+});
+const REMINDER_ONE_COPY = Object.freeze({
+    needsYou: 'still needs you',
+    errors: 'still has an error',
+    quota: 'is still rate limited',
 });
 
 const ATTENTION_REASON_COPY = Object.freeze({
@@ -48,12 +133,90 @@ function cleanDigestMessage(value) {
 }
 
 function labelAlreadyDescribesCue(label) {
-    return /\b(arrived|departed|left|needs|waiting|distress|recovered|gathering|rang|ringing|reached|thunder|error|rate[- ]limited)\b/i.test(label);
+    return /\b(arrived|departed|left|needs|waiting|distress|recovered|answered|gathering|rang|ringing|reached|thunder|error|rate[- ]limited)\b/i.test(label);
 }
 
 function labelIsPredicate(label) {
     return /^(?:is|has|was|hit|reached)\b/i.test(label);
 }
+
+// An exact count (aggregates, dispatch fans); a missing count is one.
+function cueCount(payload) {
+    const count = Math.floor(Number(payload?.count));
+    return Number.isFinite(count) && count > 0 ? count : 1;
+}
+
+function reminderCaption(payload, name) {
+    const count = cueCount(payload);
+    const family = cleanLabel(payload.family);
+    const oldestMs = Number(payload.oldestMs);
+    const minutes = Number.isFinite(oldestMs) && oldestMs > 0 ? Math.max(1, Math.round(oldestMs / 60_000)) : 0;
+    if (count > 1) {
+        const age = minutes ? ` · oldest ${minutes} min` : '';
+        return `${count} ${REMINDER_GROUP_COPY[family] || REMINDER_GROUP_COPY.needsYou}${age}`;
+    }
+    const age = minutes ? ` · ${minutes} min` : '';
+    return `${name || 'An agent'} ${REMINDER_ONE_COPY[family] || REMINDER_ONE_COPY.needsYou}${age}`;
+}
+
+// 0–23 → the tower's 12-hour count ("3 o'clock"); anything else → no hour.
+function hourBellCaption(payload) {
+    const hour = Number(payload.hour);
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) return 'Hour bell';
+    return `Hour bell · ${hour % 12 || 12} o'clock`;
+}
+
+function councilCaption(payload) {
+    const team = cleanLabel(payload.teamName);
+    const size = Math.floor(Number(payload.teamSize));
+    const members = Number.isFinite(size) && size > 0 ? ` (${size})` : '';
+    return `${team || 'A team'} gathered${members}`;
+}
+
+// Cues whose caption states a fact beyond the agent's name: counts, repos,
+// versions, the hour. `name` is the agent's display name, or '' when the cue
+// names none. Thunder makes no location claim.
+const FACT_CUE_COPY = Object.freeze({
+    reminder: reminderCaption,
+    turnDone: (payload, name) => (cueCount(payload) > 1
+        ? `${cueCount(payload)} turns finished`
+        : `${name || 'An agent'} finished a turn`),
+    subagentReturn: (payload, name) => (cueCount(payload) > 1
+        ? `${cueCount(payload)} sub-agents returned`
+        : (name ? `A sub-agent returned to ${name}` : 'A sub-agent returned')),
+    toolFailed: (payload, name) => (cueCount(payload) > 1
+        ? `${cueCount(payload)} commands failed`
+        : (name ? `${name}: a command failed` : 'A command failed')),
+    commit: (payload, name) => {
+        const repo = cleanLabel(payload.repo);
+        const into = repo ? ` to ${repo}` : '';
+        return cueCount(payload) > 1
+            ? `${cueCount(payload)} commits${into}`
+            : `${name || 'An agent'} committed${into}`;
+    },
+    push: (payload, name) => {
+        const repo = cleanLabel(payload.repo);
+        return cueCount(payload) > 1
+            ? `${cueCount(payload)} pushes${repo ? ` to ${repo}` : ''}`
+            : `${name || 'An agent'} pushed${repo ? ` ${repo}` : ''}`;
+    },
+    release: (payload) => {
+        const version = cleanLabel(payload.version);
+        const repo = cleanLabel(payload.repo);
+        return `${version || repo || 'A release'} released`;
+    },
+    pushFailed: (payload, name) => (name ? `${name}: git push failed` : 'Git push failed'),
+    dispatch: (payload, name) => {
+        const count = cueCount(payload);
+        return `${name || 'An agent'} dispatched ${count === 1 ? 'a sub-agent' : `${count} sub-agents`}`;
+    },
+    council: councilCaption,
+    hourBell: hourBellCaption,
+    aurora: () => 'Village milestone reached',
+    thunder: () => 'Thunder',
+    linkLost: () => 'Live feed lost',
+    linkRestored: () => 'Live feed restored',
+});
 
 function attentionAgentId(payload) {
     const value = payload?.agentId ?? payload?.agent?.id;
@@ -109,16 +272,22 @@ function cueMessage(payload, observedAgentLabel) {
         return `${observedName} ${label}`;
     }
 
-    const presentation = CUE_PRESENTATION[kind];
-    if (presentation) {
+    const action = AGENT_CUE_ACTIONS[kind];
+    if (action) {
         const producerSuppliedCopy = label && labelAlreadyDescribesCue(label);
-        if (observedName) return `${observedName} ${presentation.action}`;
+        if (observedName) return `${observedName} ${action}`;
         if (producerSuppliedCopy) {
             return labelIsPredicate(label) ? `An agent ${label}` : label;
         }
-        return `${label || 'An agent'} ${presentation.action}`;
+        return `${label || 'An agent'} ${action}`;
     }
-    if (GLOBAL_CUE_COPY[kind]) return GLOBAL_CUE_COPY[kind];
+    const fact = FACT_CUE_COPY[kind];
+    if (fact) {
+        // The label names the agent only on an agent-scoped cue; a bare kind
+        // is the cue kit's fallback, not a name.
+        const labelName = payload.agentId != null && label !== kind ? label : '';
+        return fact(payload, observedName || labelName);
+    }
     return label || '';
 }
 
@@ -129,8 +298,15 @@ function cueCaptionKey(kind, agentId, message) {
 }
 
 export class Toast {
-    constructor({ eventTarget = eventBus, documentRef = globalThis.document } = {}) {
+    constructor({
+        eventTarget = eventBus,
+        documentRef = globalThis.document,
+        storage = globalThis.window?.localStorage,
+    } = {}) {
         this.documentRef = documentRef;
+        // The caption setting and the sound switch are read per cue, so a SET
+        // change applies to the next caption with no event of its own.
+        this._storage = storage;
         this.container = documentRef?.getElementById?.('toastContainer') || null;
         this.toasts = [];
         this._destroyed = false;
@@ -251,6 +427,10 @@ export class Toast {
 
     showCue(payload) {
         if (this._destroyed || !this.container) return;
+        if (!cueCaptionShown(payload, {
+            setting: readCaptionSetting(this._storage),
+            soundOn: readStoredSoundEnabled(this._storage),
+        })) return;
 
         const kind = cleanLabel(payload?.kind) || 'unknown';
         const context = this._cueContextFor(kind);
@@ -264,11 +444,16 @@ export class Toast {
         // AttentionService's direct notice is more specific than the generic
         // summons caption. Reuse either an event-owned notice or a direct
         // notice that was already shown for the same agent.
-        const attention = [...this.toasts]
-            .reverse()
-            .find(entry => entry.attentionAgentId === agentId && entry.attentionAt
-                && Date.now() - entry.attentionAt <= ATTENTION_NOTICE_GRACE_MS);
-        if (attention) return attention;
+        if (ATTENTION_CUES.has(kind)) {
+            const attention = [...this.toasts]
+                .reverse()
+                .find(entry => entry.attentionAgentId === agentId && entry.attentionAt
+                    && Date.now() - entry.attentionAt <= ATTENTION_NOTICE_GRACE_MS);
+            if (attention) return attention;
+        }
+        if (SUPERSEDING_CUES.has(kind)) {
+            for (const entry of this.toasts.filter(entry => entry.cueKind === kind)) this._remove(entry);
+        }
 
         const key = cueCaptionKey(kind, agentId, message);
         const duplicate = this.toasts.find(entry => entry.cueKey === key);
@@ -292,8 +477,7 @@ export class Toast {
             else if (!isPrimary) return;
         }
 
-        const type = CUE_PRESENTATION[kind]?.type
-            || (kind === 'council' || kind === 'hourBell' ? 'warning' : 'info');
+        const type = CUE_TYPES[kind] || 'info';
         return this._show(message, type, {
             dismissMs,
             cueKey: key,
@@ -330,7 +514,7 @@ export class Toast {
         if (!agentId) return null;
         const existing = [...this.toasts]
             .reverse()
-            .find(entry => (PRIMARY_CUES.has(entry.cueKind) || entry.attentionAgentId === agentId)
+            .find(entry => (ATTENTION_CUES.has(entry.cueKind) || entry.attentionAgentId === agentId)
                 && (entry.agentId === agentId || entry.attentionAgentId === agentId));
         if (!existing) return null;
         existing.attentionAgentId = agentId;

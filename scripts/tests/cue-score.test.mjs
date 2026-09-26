@@ -23,10 +23,44 @@ test('a council cue carries one note per gathered member, capped at five', () =>
     assert.deepEqual(cueNoteOffsetsMs('recovery'), [0, 200]);
 });
 
-test('a more urgent summons closes the gap between its two notes', () => {
-    const calm = cueNoteOffsetsMs('summons', { waitingCount: 1, oldestWaitMs: 0 });
-    const urgent = cueNoteOffsetsMs('summons', { waitingCount: 5, oldestWaitMs: 20 * 60 * 1000 });
-    assert.ok(urgent[1] < calm[1]);
+test('the needs-you ladder rings the ship\'s bell by repetition: L2 one pair, L1 two, L3 and L4 three', () => {
+    assert.deepEqual(cueNoteOffsetsMs('summons', { level: 2 }), [0, 150]);
+    assert.deepEqual(cueNoteOffsetsMs('summons', {}), [0, 150, 650, 800]);
+    assert.deepEqual(cueNoteOffsetsMs('summons', { level: 3 }), [0, 150, 650, 800, 1300, 1450]);
+    assert.deepEqual(cueNoteOffsetsMs('summons', { level: 4 }), cueNoteOffsetsMs('summons', { level: 3 }));
+});
+
+test('a reminder rings its family\'s entry voice, and each family stops at its own top level', () => {
+    assert.deepEqual(cueNoteOffsetsMs('reminder', { family: 'needsYou', level: 2 }), [0, 150]);
+    // Errors hold at L3: the cracked bell's figure twice, 1.2 s apart.
+    assert.deepEqual(cueNoteOffsetsMs('reminder', { family: 'errors', level: 4 }), [0, 400, 1200, 1600]);
+    assert.deepEqual(cueNoteOffsetsMs('reminder', { family: 'errors', level: 2 }), [0, 400]);
+    // Quota stops at L2: one set of ticks.
+    assert.deepEqual(cueNoteOffsetsMs('reminder', { family: 'quota', level: 4 }), [0, 260, 620]);
+});
+
+test('the hour counts only when asked: the great bell stands for six, singles ≥ 1 s apart', () => {
+    const phrase = cueNoteOffsetsMs('hourBell', { hour: 15 });
+    assert.equal(phrase.length, 4);
+    const count = (hour, extra = {}) => cueNoteOffsetsMs('hourBell', { hour, count: true, ...extra }).slice(phrase.length);
+    assert.equal(count(12).length, 7, 'noon: the great bell + six');
+    assert.equal(count(9).length, 4, 'nine: the great bell + three');
+    assert.equal(count(15).length, 3, 'three: three singles');
+    assert.equal(count(18).length, 1, 'six: the great bell alone');
+    for (const hour of [9, 12, 15]) {
+        const strikes = count(hour);
+        assert.ok(strikes[0] - phrase[phrase.length - 1] >= 1000, 'the count waits for the phrase to ring');
+        for (let i = 1; i < strikes.length; i++) assert.ok(strikes[i] - strikes[i - 1] >= 1000, `${hour}:00 strike ${i}`);
+    }
+    assert.equal(count(12, { soft: true }).length, 0, 'the soft 21:00 chime never counts');
+    assert.equal(count(12, { phase: 'night' }).length, 0);
+});
+
+test('the return digest plays at most five notes within 1.2 s, and an empty digest plays nothing', () => {
+    const notes = cueNoteOffsetsMs('digest', { notes: ['red', 'red', 'amber', 'gold', 'gold', 'stone', 'stone'] });
+    assert.equal(notes.length, 5);
+    assert.ok(notes[notes.length - 1] <= 1200);
+    assert.equal(cueNoteOffsetsMs('digest', { notes: [] }), null);
 });
 
 test('with no admitted cue every accent is already due', () => {

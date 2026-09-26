@@ -34,19 +34,25 @@ test('ducked time includes the attack before the note and the release after the 
     assert.ok(Math.abs(f.world - 0.16) < 1e-9);
 });
 
-test('needs-you and error take the Wave-1 interim floor; other lanes keep their S2 window', () => {
-    assert.deepEqual(laneWindow('needsYou', 'village'), { min: 8, max: 12 });
-    assert.deepEqual(laneWindow('error', 'music'), { min: 4, max: 12 });
+test('every lane is held to its full S2 window per bed', () => {
+    assert.deepEqual(laneWindow('needsYou', 'village'), { min: 10, max: 12 });
+    assert.deepEqual(laneWindow('needsYou', 'music'), { min: 8, max: 12 });
+    assert.deepEqual(laneWindow('error', 'music'), { min: 6, max: 12 });
+    assert.deepEqual(laneWindow('error', 'weather'), { min: 6, max: 12 });
     assert.deepEqual(laneWindow('limit', 'weather'), { min: 4, max: 10 });
     assert.deepEqual(laneWindow('routine', 'music'), { min: 3, max: 6 });
+    assert.deepEqual(laneWindow('outcomeMinor', 'village'), { min: 0, max: 3 });
+    assert.deepEqual(laneWindow('outcomeMajor', 'weather'), { min: 4, max: 8 });
 });
 
 test('a lane is judged on the median placement, and an urgent lane also on the band rule and GR', () => {
     const ok = { bandsOver6dB: 3, presenceRiseDb: 9, grDb: 1 };
-    const pass = judgeLane('needsYou', 'village', [{ ...ok, margin: 7 }, { ...ok, margin: 9 }, { ...ok, margin: 12 }]);
-    assert.equal(pass.margin, 9);
+    const pass = judgeLane('needsYou', 'village', [{ ...ok, margin: 9 }, { ...ok, margin: 11 }, { ...ok, margin: 12 }]);
+    assert.equal(pass.margin, 11);
     assert.equal(pass.pass, true);
-    const gr = judgeLane('needsYou', 'village', [{ ...ok, margin: 9 }, { ...ok, margin: 9, grDb: 3.5 }, { ...ok, margin: 9 }]);
+    // +9 passed Wave 1's interim floor; the full Village floor is +10.
+    assert.equal(judgeLane('needsYou', 'village', [{ ...ok, margin: 9 }]).pass, false);
+    const gr = judgeLane('needsYou', 'village', [{ ...ok, margin: 11 }, { ...ok, margin: 11, grDb: 3.5 }, { ...ok, margin: 11 }]);
     assert.equal(gr.pass, false);
     assert.match(gr.failures.map(f => f.what).join(), /GR/);
     const band = judgeLane('needsYou', 'music', [{ ...ok, margin: 9, presenceRiseDb: 4 }]);
@@ -63,16 +69,20 @@ test('a criterion owned by a later wave defers at an earlier stage and gates onc
     assert.equal(stageOutcome([{ what: 'band', gatedFrom: 3 }], 3), 'FAIL');
     // A failure gated now outweighs any deferred one.
     assert.equal(stageOutcome([{ what: 'band', gatedFrom: 3 }, { what: 'GR', gatedFrom: 0 }], 1), 'FAIL');
-    const placements = [{ margin: 10.6, presenceRiseDb: -3, grDb: 0.5 }];
-    const early = judgeLane('limit', 'music', placements, { stage: 1 });
-    assert.equal(early.outcome, 'DEFER');
-    assert.equal(early.pass, true);
-    assert.deepEqual(early.failures.map(f => [f.what, f.gatedFrom]), [['margin > 10', 3], ['presence rise < 6 dB', 3]]);
-    assert.equal(judgeLane('limit', 'music', placements, { stage: 3 }).outcome, 'FAIL');
-    // The needs-you band rule and every lane's floor gate now.
-    assert.equal(judgeLane('needsYou', 'music', [{ margin: 9, presenceRiseDb: -3, grDb: 0 }], { stage: 1 }).outcome, 'FAIL');
-    assert.equal(judgeLane('error', 'music', [{ margin: 2, presenceRiseDb: 9, grDb: 0 }], { stage: 1 }).outcome, 'FAIL');
-    const busy = judgeSceneTargets({ anchor: { lufsI: -38 }, villageBusy: { lufsI: -31, lra: 4 } }, undefined, { stage: 1 });
+    // The error and limit band rule and ceilings gate from Wave 3 on.
+    const limit = judgeLane('limit', 'music', [{ margin: 10.6, presenceRiseDb: -3, grDb: 0.5 }]);
+    assert.equal(limit.outcome, 'FAIL');
+    assert.deepEqual(limit.failures.map(f => f.what), ['margin > 10', 'presence rise < 6 dB']);
+    // The error over the storm defers as a whole row until the Wave-4 storm;
+    // the same numbers over rain gate now.
+    const stormError = [{ margin: 5.7, bandsOver6dB: 3, grDb: 3.4 }];
+    const storm = judgeLane('error', 'weather', stormError, { probeBed: 'storm' });
+    assert.equal(storm.outcome, 'DEFER');
+    assert.deepEqual(storm.failures.map(f => f.gatedFrom), [4, 4]);
+    assert.equal(judgeLane('error', 'weather', stormError, { probeBed: 'storm', stage: 4 }).outcome, 'FAIL');
+    assert.equal(judgeLane('error', 'weather', stormError, { probeBed: 'rain' }).outcome, 'FAIL');
+    assert.equal(judgeLane('limit', 'weather', [{ margin: 3, bandsOver6dB: 3, grDb: 1 }], { probeBed: 'storm' }).outcome, 'FAIL');
+    const busy = judgeSceneTargets({ anchor: { lufsI: -38 }, villageBusy: { lufsI: -31, lra: 4 } });
     assert.deepEqual(busy.map(r => [r.scene, r.outcome]), [['anchor', 'PASS'], ['villageBusy', 'DEFER']]);
     assert.equal(judgeSceneTargets({ anchor: { lufsI: -38 }, villageBusy: { lufsI: -31, lra: 4 } }, undefined, { stage: 4 })[1].outcome, 'FAIL');
 });

@@ -1,21 +1,9 @@
 // Designed note scores for the discrimination metric (metrics/discrim.mjs),
-// ported from the CUE notes (cue-snippets/discrim.mjs, discrim2.mjs).
+// ported from the CUE notes (cue-snippets/discrim.mjs, discrim2.mjs): the
+// evidence-round figures the shipped voices were built from. The probe's
+// `discrim` check reads the shipped voices' published scores instead.
 // [label, notes: [[ms, note], …]]; several notes at one ms are a chord whose
 // first entry is the melody.
-
-// Today's shipped cue voices (the Wave-1 set; 3.1–3.5 replace them).
-export const SHIPPED_CUE_SCORES = Object.freeze([
-    ['arrival', [[0, 'A3'], [220, 'E4']]],
-    ['departure', [[0, 'E4'], [240, 'A3']]],
-    ['recovery', [[0, 'C#4'], [200, 'A4']]],
-    ['council-3', [[0, 'A3'], [280, 'E4'], [560, 'A4']]],
-    ['aurora', [[0, 'A3'], [160, 'E4'], [320, 'A4'], [480, 'C#5']]],
-    ['hourBell', [[0, 'A3']]],
-    ['error', [[0, 'A2']]],
-    ['rate limit', [[0, 'A2']]],
-    ['needs you', [[0, 'E4'], [180, 'A4']]],
-    ['thunder', [[0, 'A2']]],
-]);
 
 // The designed Wave-3 figures (evidence round 2): the three signal families,
 // the routine alloys, scenery, outcomes and the music-box quote that round 2

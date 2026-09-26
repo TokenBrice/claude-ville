@@ -21,6 +21,14 @@ export const UNATTENDED_DIGEST_MIN_AWAY_MS = UNATTENDED_DIGEST_THRESHOLD_MS;
 export const UNATTENDED_DIGEST_EVENT = 'attention:digest';
 export const ATTENTION_DIGEST_EVENT = UNATTENDED_DIGEST_EVENT;
 
+// Acknowledgement (plan 3.3, SIG-2): selecting an agent that needs a person
+// — by click, the `A` key or its desktop notification — tells the audio
+// ladder the operator has seen it. Ack never clears the state itself.
+export const ATTENTION_ACKNOWLEDGED_EVENT = 'attention:acknowledged';
+// The audio controller reports whether the village will ring its own bell
+// for a hidden page; a desktop alert then stays silent (UX-13).
+export const AUDIO_BELL_STATE_EVENT = 'audio:bell-state';
+
 const DIGEST_NAME_LIMIT = 3;
 const DESKTOP_NOTIFICATION_MATCH_GRACE_MS = 5_000;
 
@@ -194,6 +202,7 @@ export class AttentionService {
         this._desktopNotificationTimes = new Map();
         this._awaySince = null;
         this._digestGeneration = 0;
+        this._villageRings = false;
 
         this._onChronicleReady = (log) => {
             if (!this._chronicleLogExplicit && log?.readDigest) this.chronicleLog = log;
@@ -219,6 +228,11 @@ export class AttentionService {
         this.window?.addEventListener?.('focus', this._onWindowFocus);
         if (this.doc?.visibilityState === 'hidden') this._markAway();
 
+        this._onAgentSelected = (agent) => this._acknowledge(agent);
+        eventBus.on('agent:selected', this._onAgentSelected);
+        this._onBellState = (state) => { this._villageRings = state?.rings === true; };
+        eventBus.on(AUDIO_BELL_STATE_EVENT, this._onBellState);
+
         this._onWorldChanged = () => this.refresh();
         eventBus.on('agent:added', this._onWorldChanged);
         eventBus.on('agent:updated', this._onWorldChanged);
@@ -235,6 +249,8 @@ export class AttentionService {
         eventBus.off('agent:removed', this._onWorldChanged);
         eventBus.off('chronicle:log-ready', this._onChronicleReady);
         eventBus.off('chronicle:log-stopped', this._onChronicleStopped);
+        eventBus.off('agent:selected', this._onAgentSelected);
+        eventBus.off(AUDIO_BELL_STATE_EVENT, this._onBellState);
         this.doc?.removeEventListener?.('visibilitychange', this._onVisibilityChange);
         this.window?.removeEventListener?.('blur', this._onWindowBlur);
         this.window?.removeEventListener?.('focus', this._onWindowFocus);
@@ -287,6 +303,12 @@ export class AttentionService {
         });
         this.toast?.show(`${agent.name} ${label}`, 'warning');
         this._notify(agent, label);
+    }
+
+    _acknowledge(agentOrId) {
+        const agentId = agentOrId && typeof agentOrId === 'object' ? agentOrId.id : agentOrId;
+        if (this._destroyed || agentId == null || !this._known.has(agentId)) return;
+        eventBus.emit(ATTENTION_ACKNOWLEDGED_EVENT, { agentId });
     }
 
     _selectAgent(agentOrId) {
@@ -467,6 +489,8 @@ export class AttentionService {
                 body: agent.projectPath || 'ClaudeVille',
                 tag: `claudeville-${agentId}`,
                 icon: FAVICON_ALERT,
+                // The village's own bell carries the sound; the alert stays quiet.
+                silent: this._villageRings,
             });
             this._notifications.set(agentId, note);
             note.onclose = () => {

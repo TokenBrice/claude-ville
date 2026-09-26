@@ -5,6 +5,10 @@ import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 import { AudioDirector } from '../../claudeville/src/presentation/shared/audio/AudioDirector.js';
 import { CueGovernor } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
 import { CueKit } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
+import {
+    familyCuePayload,
+    hourChimeFor,
+} from '../../claudeville/src/presentation/shared/audio/ActionableRouting.js';
 
 const SILENT_ENGINE = Object.freeze({ context: null, started: false });
 
@@ -108,7 +112,7 @@ test('a recovered agent that fails again inside the dedupe window is heard again
     }
 });
 
-test('governor-approved cues emit the four-field contract without audio', () => {
+test('governor-approved cues emit the caption contract without audio', () => {
     const director = directorWithoutAudio();
     const capture = captureCues();
     try {
@@ -120,13 +124,40 @@ test('governor-approved cues emit the four-field contract without audio', () => 
         });
 
         assert.equal(capture.cues.length, 1);
-        assert.deepEqual(Object.keys(capture.cues[0]).sort(), ['agentId', 'at', 'kind', 'label']);
         assert.equal(capture.cues[0].kind, 'summons');
         assert.equal(capture.cues[0].agentId, 'agent-caption');
         assert.equal(capture.cues[0].label, 'Cora');
         assert.equal(Number.isFinite(capture.cues[0].at), true);
+        // The caption names the wait's family (plan 3.8), whichever event came first.
+        assert.equal(capture.cues[0].family, 'needsYou');
     } finally {
         capture.unsubscribe();
         director.destroy();
     }
+});
+
+test('reminders and the answered strike keep their wait\'s family voice', () => {
+    assert.deepEqual(
+        ['needsYou', 'errors', 'quota', 'bogus', undefined].map(family => familyCuePayload({ family, level: 3 })),
+        [
+            { family: 'needsYou', voice: 'summons', level: 3 },
+            { family: 'errors', voice: 'distress', level: 3 },
+            { family: 'quota', voice: 'limit', level: 3 },
+            { family: 'needsYou', voice: 'summons', level: 3 },
+            { family: 'needsYou', voice: 'summons', level: 3 },
+        ],
+    );
+});
+
+test('the hour chime rings the phrase 07:00–20:00, softly at 21:00, and never at night', () => {
+    const heard = [];
+    for (let hours = 0; hours < 24; hours++) {
+        const chime = hourChimeFor({ hours, minutes: 0 });
+        if (chime) heard.push(chime.soft ? `${hours} soft` : `${hours}`);
+    }
+    assert.deepEqual(heard, [
+        '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21 soft',
+    ]);
+    assert.equal(hourChimeFor({ hours: 9, minutes: 30 }), null);
+    assert.equal(hourChimeFor({}), null);
 });

@@ -1,5 +1,6 @@
-// The persisted sound levels (plan 1.2, MIX-9, UX-8, decision D5): one owner
-// for the storage keys, the step laws and the one-time recalibration. TopBar
+// The persisted sound levels and preferences (plan 1.2, 3.8, MIX-9, UX-8,
+// UX-12, decisions D5–D7): one owner for the storage keys, the step laws, the
+// caption, reminder and hour-count choices, and the one-time recalibration. TopBar
 // and SET read it at boot; the sound controller reads and writes it once the
 // idle build lands. Pure and DOM-free: it loads no audio module beyond the
 // Loudness table, so the v0.37 boot deferral holds.
@@ -10,6 +11,7 @@
 
 import { STANDARD_VOLUME_STEP } from './audio/Loudness.js';
 
+export const SOUND_ENABLED_KEY = 'claudeville.sound.enabled';
 export const SOUND_VOLUME_KEY = 'claudeville.sound.volume';
 export const SOUND_LAYERS_KEY = 'claudeville.sound.layers';
 export const SOUND_CALIBRATION_KEY = 'claudeville.sound.calibration';
@@ -18,6 +20,22 @@ export const SOUND_CALIBRATION_KEY = 'claudeville.sound.calibration';
 export const SOUND_CALIBRATION = '2';
 export const SOUND_STEP_MAX = 10;
 export const SOUND_RECALIBRATED_MESSAGE = 'Sound was recalibrated to a new standard level.';
+
+// Signal reminders (D6): Standard follows the capped ladder, Gentle and Off
+// are the operator's quieter choices.
+export const SOUND_REMINDERS_KEY = 'claudeville.sound.reminders';
+export const SOUND_REMINDER_SETTINGS = Object.freeze(['standard', 'gentle', 'off']);
+export const DEFAULT_SOUND_REMINDERS = 'standard';
+
+// Captions (3.8, S6): `auto` shows signals only while sound is off and
+// signals and events while it is on.
+export const CAPTIONS_KEY = 'claudeville.captions';
+export const CAPTION_SETTINGS = Object.freeze(['auto', 'signals', 'events', 'all']);
+export const DEFAULT_CAPTIONS = 'auto';
+
+// D7: the hour bell plays its phrase; counting the strokes is opt-in.
+export const SOUND_COUNT_HOURS_KEY = 'claudeville.sound.countHours';
+export const DEFAULT_SOUND_COUNT_HOURS = '0';
 
 // The mixer channels are the engine's group faders, one to one, each at its
 // default trim step.
@@ -98,4 +116,42 @@ export function recalibrateStoredSound(storage = globalThis.window?.localStorage
     }
     const marked = storageSet(storage, SOUND_CALIBRATION_KEY, SOUND_CALIBRATION);
     return legacy && marked;
+}
+
+function storedChoice(storage, key, choices, fallback) {
+    const value = storageGet(storage, key);
+    return choices.includes(value) ? value : fallback;
+}
+
+export function readStoredSoundEnabled(storage = globalThis.window?.localStorage) {
+    return storageGet(storage, SOUND_ENABLED_KEY) === 'true';
+}
+
+export function readReminderSetting(storage = globalThis.window?.localStorage) {
+    return storedChoice(storage, SOUND_REMINDERS_KEY, SOUND_REMINDER_SETTINGS, DEFAULT_SOUND_REMINDERS);
+}
+
+export function writeReminderSetting(value, storage = globalThis.window?.localStorage) {
+    const next = SOUND_REMINDER_SETTINGS.includes(value) ? value : DEFAULT_SOUND_REMINDERS;
+    storageSet(storage, SOUND_REMINDERS_KEY, next);
+    return next;
+}
+
+export function readCaptionSetting(storage = globalThis.window?.localStorage) {
+    return storedChoice(storage, CAPTIONS_KEY, CAPTION_SETTINGS, DEFAULT_CAPTIONS);
+}
+
+export function writeCaptionSetting(value, storage = globalThis.window?.localStorage) {
+    const next = CAPTION_SETTINGS.includes(value) ? value : DEFAULT_CAPTIONS;
+    storageSet(storage, CAPTIONS_KEY, next);
+    return next;
+}
+
+export function readCountHours(storage = globalThis.window?.localStorage) {
+    return storageGet(storage, SOUND_COUNT_HOURS_KEY) === '1';
+}
+
+export function writeCountHours(on, storage = globalThis.window?.localStorage) {
+    storageSet(storage, SOUND_COUNT_HOURS_KEY, on ? '1' : '0');
+    return Boolean(on);
 }

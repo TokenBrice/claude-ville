@@ -92,7 +92,7 @@ export function marginRows(r, bedName) {
     const lou = loudness(L, R, r.sr);
     const gr = limiterGainReduction(r.stems.limiterIn.L, r.stems.limiterIn.R, r.stems.limiterOut.L, r.stems.limiterOut.R, r.sr);
     const rows = [];
-    for (const m of r.meta.markers.filter(x => x.kind === 'event' && x.lane)) {
+    for (const m of r.meta.markers.filter(x => x.lane && LANE_CUE_KIND[x.lane])) {
         const hit = onsetFor(m, r.meta.scheduled, [LANE_CUE_KIND[m.lane]]);
         if (!hit) { rows.push({ lane: m.lane, bed, label: m.label, at: m.t, margin: null }); continue; }
         const t = hit.onset;

@@ -1,7 +1,8 @@
-// Pure judges for the audio probe (Wave 2 gate): the S2 scene targets, the
-// cue lane windows with Wave 1's interim floors, limiter gain reduction from
-// the limiter's two taps, the preset-switch hole/bump, ducked time, the
-// AV-sync pairing, and Wave 2's clock, air, noise, bank and sequencer
+// Pure judges for the audio probe (Wave 3 gate): the S2 scene targets, the
+// cue lane windows at their full S2 floors, limiter gain reduction from the
+// limiter's two taps, the preset-switch hole/bump, ducked time, the AV-sync
+// pairing, Wave 2's clock, air, noise, bank and sequencer judges, and Wave
+// 3's discrimination, ladder, cluster, held-note, caption and honesty
 // judges. No I/O; every function takes plain arrays and numbers. Targets
 // come from Loudness.js or the plan's acceptance lines, never from a
 // baseline: a baseline only detects drift, it cannot pass a failure.
@@ -36,20 +37,19 @@ export function energyMeanLufs(values) {
 // plan is measured and printed as DEFER (never a failure) until PLAN_STAGE
 // reaches its wave; bump PLAN_STAGE at each wave's exit. Keys not listed are
 // gated now.
-export const PLAN_STAGE = 2;
+export const PLAN_STAGE = 3;
 export const GATED_FROM = Object.freeze({
-    // Today's distress voice (A2) has no 0.5–4 kHz energy and urgent trims
-    // never go below 0 dB; the cracked bell and escapement ticks (3.2) fix it.
-    'band:error': 3,
-    'band:limit': 3,
-    'ceiling:error': 3,
-    'ceiling:limit': 3,
     // The bed is wind + birds until the sea (4.1), and Village music becomes
     // the occasion clock in 6.6; PROGRAM_TRIM_DB is re-measured at both.
     'scene:villageBusy': 4,
     // S2's storm (≤ A + 6, ST max ≤ −27) needs thunder with distance and the
     // sea (4.1, 4.2); until then it prints DEFER with its numbers.
     'scene:storm': 4,
+    // The error call over the storm (`margins`, every criterion of that row):
+    // S2 buys the error its headroom from the smaller storm of 4.1/4.2 (at
+    // A + 7.5 the reel's error needed 3.8 dB of limiter for +6.1 LU). Wave 3
+    // measured +5.7 LU with the trim at its limiter cap (+2.1 dB), GR 2.5 dB.
+    'margin:storm:error': 4,
 });
 
 export function gatedFrom(key, table = GATED_FROM) {
@@ -130,31 +130,32 @@ export function judgeSceneTargets(scenes, targets = LOUDNESS_TARGETS, { stage = 
 }
 
 // --------------------------------------------------------- lane windows ----
-// Wave 1 plays today's cue voices; the new signal voices arrive in 3.2, so
-// 1.3 accepts needs-you and error at their S2 floors minus 2 LU. Every other
-// lane is held to its full S2 window.
-export const WAVE1_INTERIM_FLOOR_LU = Object.freeze({ needsYou: -2, error: -2 });
+// Every lane is held to its full S2 window per bed (the Wave-1 interim
+// floors retired with the Wave-3 signal voices).
 export const URGENT_LANES = Object.freeze(['needsYou', 'error', 'limit']);
 
 // bed: 'village' | 'music' | 'weather'. → { min, max } (either may be null).
-export function laneWindow(lane, bed, { interim = WAVE1_INTERIM_FLOOR_LU, windows = AUDIBILITY_WINDOWS } = {}) {
+export function laneWindow(lane, bed, { windows = AUDIBILITY_WINDOWS } = {}) {
     const spec = windows.lanes[lane];
     if (!spec) throw new Error(`unknown lane ${lane}`);
     const ctx = spec[bed] || {};
-    const min = ctx.min != null ? ctx.min + (interim[lane] || 0) : null;
+    const min = ctx.min ?? null;
     const max = ctx.max ?? spec.ceiling ?? null;
     return { min, max };
 }
 
 // placements: [{ margin, bandsOver6dB, presenceRiseDb, grDb }] for one lane
 // over one bed. Median of placements against the window; the band rule and
-// the GR limit apply to urgent lanes only.
-export function judgeLane(lane, bed, placements, { grMaxDb = LOUDNESS_TARGETS.ceiling.urgentGrMaxDb, bandRule = AUDIBILITY_WINDOWS.urgentBandRule, stage = PLAN_STAGE } = {}) {
+// the GR limit apply to urgent lanes only. `probeBed` names the probe's bed
+// (MARGIN_BEDS key): a `margin:<probeBed>:<lane>` GATED_FROM row defers every
+// criterion of that lane on that bed.
+export function judgeLane(lane, bed, placements, { grMaxDb = LOUDNESS_TARGETS.ceiling.urgentGrMaxDb, bandRule = AUDIBILITY_WINDOWS.urgentBandRule, stage = PLAN_STAGE, probeBed = null } = {}) {
     const win = laneWindow(lane, bed);
     const margin = median(placements.map(p => p.margin));
     // Every failure carries the wave that gates it (GATED_FROM).
     const failures = [];
-    const fail = (what, key) => failures.push({ what, gatedFrom: gatedFrom(key ? `${key}:${lane}` : '') });
+    const row = probeBed ? gatedFrom(`margin:${probeBed}:${lane}`) : 0;
+    const fail = (what, key) => failures.push({ what, gatedFrom: Math.max(row, gatedFrom(key ? `${key}:${lane}` : '')) });
     if (margin == null) fail('no admitted cue');
     else {
         if (win.min != null && margin < win.min) fail(`margin < ${win.min}`);
@@ -558,3 +559,258 @@ export function frameCostDelta(onMs, offMs) {
     const delta = on != null && off != null ? on - off : null;
     return { onP95: on, offP95: off, delta, pass: delta != null && delta <= FRAME_COST_MAX_DELTA_MS };
 }
+
+// ========================================================== Wave 3 =========
+
+// ------------------------------------------------------ discrimination ----
+// S1 / 3.2 / 3.4: every signal voice differs from every other cue voice in
+// ≥ 2 of contour, rhythm and timbre (metrics/discrim.mjs `differs`); the
+// three urgent families pairwise ≥ 2. 3.4 asks every outcome to differ from
+// needs-you in all 3, written for the door chime's falling opening: the
+// ship's bell (the binding needs-you decision) opens flat, which S1's
+// opening-interval rule scores the same as any single strike, so a
+// one-strike outcome can reach 2/3 at most. Outcomes are gated at the S1
+// rule and their 3/3 count reported. `stratum` maps a feature's label to
+// signal | outcome | routine | scenery. `rows`: discrim.mjs
+// `discriminationMatrix` rows.
+export const DISCRIM_LIMITS = Object.freeze({ minDims: 2, outcomeVsNeedsYouDims: 2 });
+
+export function judgeDiscrimination(rows, { stratum, urgent, needsYou }, limits = DISCRIM_LIMITS) {
+    const signalRows = rows.filter(r => stratum[r.signal] === 'signal');
+    const failures = signalRows.filter(r => r.n < limits.minDims).map(r => `${r.signal} vs ${r.other} ${r.n}/3`);
+    const urgentRows = signalRows.filter(r => urgent.includes(r.signal) && urgent.includes(r.other));
+    const outcomeRows = signalRows.filter(r => r.signal === needsYou && stratum[r.other] === 'outcome');
+    const outcomeShort = outcomeRows.filter(r => r.n < limits.outcomeVsNeedsYouDims).map(r => `${r.other} ${r.n}/3 (${r.dims.join('+') || 'none'})`);
+    const outcomeNot3 = outcomeRows.filter(r => r.n < 3).map(r => `${r.other} ${r.n}/3 (${r.dims.join('+') || 'none'})`);
+    const count = n => signalRows.filter(r => r.n === n).length;
+    return {
+        rows: signalRows.length, three: count(3), two: count(2), below: failures.length, failures,
+        urgentMin: urgentRows.length ? Math.min(...urgentRows.map(r => r.n)) : null,
+        outcomeShort, outcomeNot3, outcomeFull: outcomeRows.filter(r => r.n === 3).length, outcomes: outcomeRows.length,
+        pass: signalRows.length > 0 && failures.length === 0 && urgentRows.length > 0 && outcomeShort.length === 0,
+    };
+}
+
+// S1: the needs-you ship's bell is the only quick same-pitch pair. A
+// non-signal cue fails when its opening two onsets are < `minGapMs` apart
+// on one pitch (within half a semitone); unpitched notes (hz null) have no
+// pitch and never pair. `notes`: [{ ms, hz }] with chords collapsed to their
+// melody note.
+export const SAME_PITCH_MIN_GAP_MS = 1000;
+
+export function quickSamePitchOpening(notes, { minGapMs = SAME_PITCH_MIN_GAP_MS } = {}) {
+    const [a, b] = notes;
+    if (!a || !b || !(a.hz > 0) || !(b.hz > 0)) return false;
+    return b.ms - a.ms < minGapMs && Math.abs(12 * Math.log2(b.hz / a.hz)) < 0.5;
+}
+
+// --------------------------------------------------------------- ladder ----
+// D6 / SIG-2 as the plan states it: L1 at entry, L2 at 2 min, L3 at 6, L4
+// at 15 and 30, then one L2 every 30 min until acknowledged; errors hold at
+// L3; quota plays one L2 only. → [{ atSec, level }] up to `endSec`.
+export const LADDER = Object.freeze({
+    steps: Object.freeze([[0, 1], [120, 2], [360, 3], [900, 4], [1800, 4]]),
+    postEverySec: 1800,
+    maxLevel: Object.freeze({ needsYou: 4, errors: 3, quota: 2 }),
+    minGapSec: 120,
+    perHour: 12,
+});
+
+export function expectedLadder(family, endSec, ladder = LADDER) {
+    const cap = ladder.maxLevel[family];
+    if (cap == null) throw new Error(`unknown family ${family}`);
+    if (family === 'quota') return ladder.steps.slice(0, 2).filter(([t]) => t <= endSec).map(([atSec, level]) => ({ atSec, level }));
+    const out = ladder.steps.map(([atSec, level]) => ({ atSec, level: Math.min(level, cap) }));
+    const last = ladder.steps[ladder.steps.length - 1][0];
+    for (let t = last + ladder.postEverySec; t <= endSec; t += ladder.postEverySec) out.push({ atSec: t, level: 2 });
+    return out.filter(x => x.atSec <= endSec);
+}
+
+// Observed calls [{ atSec, level }] against the expected list: each expected
+// call matches the first unused observed call at its level within
+// [at − earlySec, at + lateSec] (the 1 Hz route may run a tick late); any
+// observed call left over is unexpected. Reminders (every call after the
+// entry) also keep S7's caps: ≥ 120 s apart and ≤ 12 in any hour.
+export function judgeLadder(observed, expected, { earlySec = 1, lateSec = 3, ladder = LADDER } = {}) {
+    const used = new Set();
+    const rows = expected.map((e) => {
+        const i = observed.findIndex((o, k) => !used.has(k) && o.level === e.level && o.atSec >= e.atSec - earlySec && o.atSec <= e.atSec + lateSec);
+        if (i >= 0) used.add(i);
+        return { ...e, observedSec: i >= 0 ? observed[i].atSec : null };
+    });
+    const missing = rows.filter(r => r.observedSec == null);
+    const extra = observed.filter((_, k) => !used.has(k));
+    const reminders = observed.filter(o => o.reminder ?? o.level > 1).map(o => o.atSec).sort((a, b) => a - b);
+    const gaps = reminders.slice(1).map((t, i) => t - reminders[i]);
+    const minGap = gaps.length ? Math.min(...gaps) : null;
+    let perHour = 0;
+    for (let i = 0; i < reminders.length; i++) perHour = Math.max(perHour, reminders.filter(t => t >= reminders[i] && t < reminders[i] + 3600).length);
+    const capsOk = (minGap == null || minGap >= ladder.minGapSec - earlySec) && perHour <= ladder.perHour;
+    return { rows, missing, extra, minGapSec: minGap, perHour, pass: missing.length === 0 && extra.length === 0 && capsOk };
+}
+
+// 3.3 held trim: the ladder takes its cue trim once, at entry, and holds it
+// for every reminder of that wait, so L2 lands ≥ 4 LU under L1 and L3 keeps
+// urgent GR ≤ 3 dB. `calls`: [{ level, margin, grDb, trimDb }] in order.
+export const LADDER_TRIM = Object.freeze({ l2UnderL1Lu: 4, trimTolDb: 0.05 });
+
+export function judgeHeldTrim(calls, { grMaxDb = LOUDNESS_TARGETS.ceiling.urgentGrMaxDb, limits = LADDER_TRIM } = {}) {
+    const at = level => calls.find(c => c.level === level) ?? null;
+    const l1 = at(1);
+    const l2 = at(2);
+    const l3 = at(3);
+    const under = l1 && l2 && Number.isFinite(l1.margin) && Number.isFinite(l2.margin) ? l1.margin - l2.margin : null;
+    const trims = calls.map(c => c.trimDb).filter(Number.isFinite);
+    const spread = trims.length ? Math.max(...trims) - Math.min(...trims) : null;
+    const failures = [];
+    if (!l1 || !l2 || !l3) failures.push('missing L1, L2 or L3');
+    if (under == null || under < limits.l2UnderL1Lu) failures.push(`L2 not ${limits.l2UnderL1Lu} LU under L1`);
+    if (!(l3?.grDb <= grMaxDb)) failures.push(`L3 GR > ${grMaxDb} dB`);
+    if (spread == null || trims.length < calls.length || spread > limits.trimTolDb) failures.push('trim re-taken');
+    return { l2UnderL1Lu: under, l3GrDb: l3?.grDb ?? null, trimSpreadDb: spread, failures, pass: failures.length === 0 };
+}
+
+// Hidden tab with sound on: every due reminder is heard (its cue sounded
+// with the context running) within `withinSec` of its due time.
+export function judgeWakes(dueSec, heardSec, { withinSec = 60 } = {}) {
+    const rows = dueSec.map((due) => {
+        const heard = heardSec.find(h => h >= due - 1 && h <= due + withinSec);
+        return { due, heard: heard ?? null, lagSec: heard != null ? heard - due : null };
+    });
+    return { rows, pass: rows.length > 0 && rows.every(r => r.heard != null) };
+}
+
+// -------------------------------------------------------------- cluster ----
+// SIG-10 / 3.3: six same-tick raises ring one call — M-max within +1 LU of
+// a single call — and every agent keeps its caption.
+export const CLUSTER_MAX_OVER_ONE_LU = 1;
+
+export function judgeCluster({ oneMaxLufs, manyMaxLufs, agents, captionedAgents }) {
+    const over = Number.isFinite(oneMaxLufs) && Number.isFinite(manyMaxLufs) ? manyMaxLufs - oneMaxLufs : null;
+    const missing = agents.filter(a => !captionedAgents.includes(a));
+    return { overLu: over, missing, pass: over != null && over <= CLUSTER_MAX_OVER_ONE_LU && missing.length === 0 };
+}
+
+// Must-never 13 (SIG-10): N identical phase-locked urgent bells. Two urgent
+// scores of one kind for different agents are phase-locked when ≥ 2 of
+// their notes coincide within `tolMs`. `scores`: [{ kind, agentId, notes: [s] }].
+export function phaseLockedPairs(scores, { tolMs = 5 } = {}) {
+    const pairs = [];
+    for (let i = 0; i < scores.length; i++) {
+        for (let j = i + 1; j < scores.length; j++) {
+            const a = scores[i];
+            const b = scores[j];
+            if (a.kind !== b.kind || a.agentId === b.agentId) continue;
+            const hits = a.notes.filter(t => b.notes.some(u => Math.abs(u - t) * 1000 <= tolMs)).length;
+            if (hits >= 2) pairs.push({ kind: a.kind, a: a.agentId, b: b.agentId, hits });
+        }
+    }
+    return pairs;
+}
+
+// ------------------------------------------------------------ held note ----
+// 3.3: the 270–310 Hz band (the held D4) rises ≥ 6 dB within 6 s of a wait
+// opening and is back (within `backTolDb` of the level before the wait)
+// within 5 s of the answer; beating depth ≤ 3 dB; level bed − 8 ± 1 LU.
+// `curve`: [[t, dB], …] of band power on a fixed hop.
+export const HELD_NOTE = Object.freeze({
+    bandHz: Object.freeze([270, 310]), riseDb: 6, riseWithinSec: 6, backWithinSec: 5, backTolDb: 3,
+    beatingMaxDb: 3, underBedLu: -8, levelTolLu: 1,
+    // "Absent": the held stem's short-term max, output-referred, stays under this.
+    absentMaxLufs: -80,
+});
+
+function meanDb(curve, t0, t1) {
+    let e = 0;
+    let n = 0;
+    for (const [t, db] of curve) if (t >= t0 && t < t1) { e += Math.pow(10, db / 10); n++; }
+    return n && e > 0 ? 10 * Math.log10(e / n) : null;
+}
+
+export function heldNoteRise(curve, openSec, answerSec, { preSec = 3, winSec = 1, limits = HELD_NOTE } = {}) {
+    const pre = meanDb(curve, openSec - preSec, openSec);
+    let riseAt = null;
+    let backAt = null;
+    let held = null;
+    if (pre != null) {
+        for (const [t] of curve) {
+            if (t <= openSec || t > openSec + limits.riseWithinSec - winSec) continue;
+            const m = meanDb(curve, t, t + winSec);
+            if (m != null && m - pre >= limits.riseDb) { riseAt = t + winSec - openSec; break; }
+        }
+        held = meanDb(curve, openSec + limits.riseWithinSec, answerSec) - pre;
+        if (answerSec != null) {
+            for (const [t] of curve) {
+                if (t < answerSec || t > answerSec + limits.backWithinSec - winSec) continue;
+                const m = meanDb(curve, t, t + winSec);
+                if (m != null && m - pre <= limits.backTolDb) { backAt = t + winSec - answerSec; break; }
+            }
+        }
+    }
+    return { preDb: pre, riseAtSec: riseAt, heldRiseDb: Number.isFinite(held) ? held : null, backAtSec: backAt, pass: riseAt != null && (answerSec == null || backAt != null) };
+}
+
+// Peak-to-trough depth of an envelope (dB), robust to one stray block:
+// the 99th minus the 1st percentile.
+export function beatingDepthDb(envDb) {
+    const v = envDb.filter(Number.isFinite);
+    if (v.length < 4) return null;
+    return percentile(v, 0.99) - percentile(v, 0.01);
+}
+
+// Must-never 3: in Village with no music a wait stays audible while it
+// lasts — the held note's band holds ≥ `minRiseDb` over the level before
+// the wait in every `stepSec` window from the rise until the answer.
+export function waitAudibleWindows(curve, openSec, answerSec, { preSec = 3, fromSec = 6, stepSec = 10, minRiseDb = HELD_NOTE.riseDb } = {}) {
+    const pre = meanDb(curve, openSec - preSec, openSec);
+    const rows = [];
+    for (let t = openSec + fromSec; t + stepSec <= answerSec + 1e-9; t += stepSec) {
+        const m = meanDb(curve, t, t + stepSec);
+        rows.push({ t, riseDb: pre != null && m != null ? m - pre : null });
+    }
+    const worst = rows.length ? Math.min(...rows.map(r => r.riseDb ?? -Infinity)) : null;
+    return { rows, worstRiseDb: worst, pass: rows.length > 0 && worst >= minRiseDb };
+}
+
+// ------------------------------------------------------------- captions ----
+// S6 / 3.8 (HAR-13): whether a cue's caption shows, from the plan: signals
+// always; events (outcome and routine) with *Signals and events* or
+// *Everything*, and by default (`auto`) only while sound is on; scenery only
+// with *Everything* while sound is on; the digest is sound-only (its toast is
+// the `attention:digest` notice).
+export const CUE_STRATUM = Object.freeze({
+    summons: 'signal', distress: 'signal', limit: 'signal', reminder: 'signal', answered: 'signal',
+    turnDone: 'outcome', subagentReturn: 'outcome', toolFailed: 'outcome', commit: 'outcome', push: 'outcome',
+    release: 'outcome', pushFailed: 'outcome', dispatch: 'outcome',
+    arrival: 'routine', departure: 'routine', recovery: 'routine', council: 'routine',
+    hourBell: 'scenery', aurora: 'scenery', thunder: 'scenery', linkLost: 'scenery', linkRestored: 'scenery',
+    digest: 'soundOnly',
+});
+
+export function captionExpected(kind, setting, soundOn) {
+    const s = CUE_STRATUM[kind];
+    if (s === 'signal') return true;
+    if (s === 'outcome' || s === 'routine') return setting === 'events' || setting === 'all' || (setting === 'auto' && soundOn);
+    if (s === 'scenery') return setting === 'all' && soundOn;
+    return false;
+}
+
+// rows: [{ kind, setting, soundOn, played, shown, heard }] — `played` a
+// cue-played event, `shown` a caption Toast rendered for it, `heard` a
+// sounding score. Parity: a caption shows exactly when the plan says; no
+// caption without a played cue; with sound on, every played cue sounded
+// (the digest included) — a caption never claims a sound that did not ring.
+export function judgeCaptionParity(rows) {
+    const failures = [];
+    for (const r of rows) {
+        const want = r.played && captionExpected(r.kind, r.setting, r.soundOn);
+        if (r.shown !== want) failures.push(`${r.kind} (${r.setting}, sound ${r.soundOn ? 'on' : 'off'}): caption ${r.shown ? 'shown' : 'hidden'}, want ${want ? 'shown' : 'hidden'}`);
+        if (r.soundOn && r.played && r.heard === false) failures.push(`${r.kind} (sound on): captioned event with no sounding score`);
+    }
+    return { failures, pass: rows.length > 0 && failures.length === 0 };
+}
+
+// ------------------------------------------------------------ crown sync ----
+// 3.4 / HAR-12: the release peal's published carrying note vs the crown's
+// accent timestamp within ±15 ms.
+export const CROWN_SYNC_MS = 15;

@@ -1,11 +1,18 @@
 // Shared pitch vocabulary: note frequencies, the village key per phase, and
-// the provider bell voicings.
+// the cue pitch roles (plan 3.5, S1).
 //
 // The village is in A — major while the sun is up, minor at night — and
-// every tune in the songbook is written in it. Cues take fixed pitches from
-// the key's tonic triad (`cueTones`). That keeps them in key, not out of every
-// clash: over music a cue can still rub against the sounding chord, which the
-// MusicClock publishes for the chord-relative cue resolver (plan 3.5).
+// every tune in the songbook is written in it. Cues name their pitches in
+// three ways:
+//   * signal voices use fixed semitones (never chord-relative, never moved);
+//   * routine cues use chord roles (`root`, `third`, `fifth`, `octave`,
+//     `high`, `low`) resolved against the chord sounding at the note, in the
+//     register the cue was written in, so with no music (the phase key's
+//     tonic triad) every role is exactly the pitch it always was;
+//   * motif-derived scenery uses key degrees (`degreeSemi`).
+// While music plays, a fixed or degree pitch that would form a semitone or a
+// tritone with the sounding chord moves to the nearest chord tone
+// (`guardSemi`); a role pitch is a chord tone already.
 
 const A4 = 440;
 
@@ -31,133 +38,74 @@ export function tonicTriad({ tonicPc, mode } = PHASE_KEYS.day) {
     return { rootPc: tonicPc, pcs: [tonicPc, (tonicPc + third) % 12, (tonicPc + 7) % 12] };
 }
 
-function bellPartial(ratio, gain, decay) {
-    return Object.freeze({ ratio, gain, decay });
+const A_PC = 9;
+const mod12 = n => ((n % 12) + 12) % 12;
+const pcOfSemi = semi => mod12(A_PC + semi);
+
+// Every cue role in the register it was written in over the A tonic (semitones
+// from A4): A2, A3, the third (C♯4 / C4), E4, A4, the upper third (C♯5 / C5).
+const ROLE_SEMIS = Object.freeze({
+    low: -24,
+    root: -12,
+    third: -12, // + the chord's third
+    fifth: -5,
+    octave: 0,
+    high: 0, // + the chord's third
+});
+export const CUE_ROLES = Object.freeze(Object.keys(ROLE_SEMIS));
+
+function chordThird({ rootPc, pcs }) {
+    return pcs.includes(mod12(rootPc + 3)) && !pcs.includes(mod12(rootPc + 4)) ? 3 : 4;
 }
 
-// Provider voices keep the fundamental on the cue pitch, then add partials
-// for colour: integer harmonics for the named providers (so two providers
-// ringing together stay consonant), a single inharmonic 2.756 bell partial
-// for the default. Register and recipe make each house recognizable without
-// samples.
-const BELL_VOICINGS = Object.freeze({
-    default: Object.freeze({
-        register: 1,
-        partials: Object.freeze([
-            bellPartial(1, 1, 1),
-            bellPartial(2.756, 0.3, 0.5),
-        ]),
-    }),
-    claude: Object.freeze({
-        register: 1,
-        partials: Object.freeze([
-            bellPartial(1, 1, 1),
-            bellPartial(2, 0.3, 0.5),
-            bellPartial(4, 0.14, 0.34),
-        ]),
-    }),
-    codex: Object.freeze({
-        register: 2,
-        partials: Object.freeze([
-            bellPartial(1, 1, 1),
-            bellPartial(3, 0.22, 0.42),
-            bellPartial(5, 0.1, 0.27),
-        ]),
-    }),
-    gemini: Object.freeze({
-        register: 1,
-        partials: Object.freeze([
-            bellPartial(1, 1, 1),
-            bellPartial(2, 0.24, 0.5),
-            bellPartial(5, 0.1, 0.28),
-        ]),
-    }),
-    grok: Object.freeze({
-        register: 0.5,
-        partials: Object.freeze([
-            bellPartial(1, 1, 1),
-            bellPartial(3, 0.24, 0.44),
-            bellPartial(4, 0.12, 0.32),
-        ]),
-    }),
-    kimi: Object.freeze({
-        register: 1,
-        partials: Object.freeze([
-            bellPartial(1, 1, 1),
-            bellPartial(4, 0.2, 0.38),
-            bellPartial(6, 0.08, 0.24),
-        ]),
-    }),
-    omp: Object.freeze({
-        register: 0.5,
-        partials: Object.freeze([
-            bellPartial(1, 1, 1),
-            bellPartial(2, 0.28, 0.5),
-            bellPartial(3, 0.16, 0.4),
-        ]),
-    }),
-    opencode: Object.freeze({
-        register: 2,
-        partials: Object.freeze([
-            bellPartial(1, 1, 1),
-            bellPartial(4, 0.18, 0.36),
-            bellPartial(5, 0.1, 0.27),
-        ]),
-    }),
-    deepseek: Object.freeze({
-        register: 1,
-        partials: Object.freeze([
-            bellPartial(1, 1, 1),
-            bellPartial(3, 0.2, 0.43),
-            bellPartial(6, 0.08, 0.24),
-        ]),
-    }),
-    zai: Object.freeze({
-        register: 2,
-        partials: Object.freeze([
-            bellPartial(1, 1, 1),
-            bellPartial(2, 0.26, 0.48),
-            bellPartial(6, 0.09, 0.25),
-        ]),
-    }),
+// How far the chord's root sits from A, as the nearest move (−5 … +6), so a
+// role keeps the register it was written in.
+function rootShift(rootPc) {
+    const up = mod12(rootPc - A_PC);
+    return up > 6 ? up - 12 : up;
+}
+
+/** A chord role's pitch (semitones from A4) over `chord` `{ rootPc, pcs }`. */
+export function roleSemi(role, chord) {
+    const base = ROLE_SEMIS[role];
+    if (base == null) throw new RangeError(`Unknown cue role: ${role}`);
+    const third = role === 'third' || role === 'high' ? chordThird(chord) : 0;
+    return base + third + rootShift(chord.rootPc);
+}
+
+const SCALE_STEPS = Object.freeze({
+    major: Object.freeze([0, 2, 4, 5, 7, 9, 11]),
+    minor: Object.freeze([0, 2, 3, 5, 7, 8, 10]),
 });
 
-function providerFamily(provider) {
-    const key = String(provider || '').toLowerCase();
-    if (key.includes('deepseek')) return 'deepseek';
-    if (key.includes('zai') || key.includes('glm') || key.includes('zhipu')) return 'zai';
-    if (key.includes('opencode')) return 'opencode';
-    if (key === 'omp' || key.includes('open-model')) return 'omp';
-    if (key.includes('codex') || key.includes('openai') || key.includes('gpt')) return 'codex';
-    if (key.includes('gemini')) return 'gemini';
-    if (key.includes('grok')) return 'grok';
-    if (key.includes('kimi')) return 'kimi';
-    if (key.includes('claude') || key.includes('anthropic')) return 'claude';
-    return 'default';
+/**
+ * A key degree's pitch (semitones from A4): `degree` 1–7 in `key`
+ * `{ tonicPc, mode }`, `octave` 0 = the octave from the tonic nearest A4.
+ */
+export function degreeSemi(degree, key, octave = 0) {
+    const steps = SCALE_STEPS[key?.mode === 'minor' ? 'minor' : 'major'];
+    const d = Math.trunc(Number(degree)) - 1;
+    const step = steps[((d % 7) + 7) % 7] + 12 * Math.floor(d / 7);
+    return rootShift(key?.tonicPc ?? A_PC) + step + 12 * octave;
 }
 
-export function bellVoicingForProvider(provider) {
-    return BELL_VOICINGS[providerFamily(provider)] || BELL_VOICINGS.default;
+// A semitone (or major seventh) or a tritone against any chord tone.
+const CLASH_INTERVALS = new Set([1, 6, 11]);
+
+export function clashesWithChord(semi, chord) {
+    const pc = pcOfSemi(semi);
+    return chord.pcs.some(tone => CLASH_INTERVALS.has(mod12(pc - tone)));
 }
 
-// The cue pitch set of a triad `{ rootPc, pcs }` in the register the cues
-// were written in: the root sits at or above A (A2, A3, A4 for the tonic).
-// The chord-relative resolver of plan 3.5 grows from here.
-export function chordCueTones({ rootPc, pcs }) {
-    const root = (((rootPc - 9) % 12) + 12) % 12;
-    const third = pcs.includes((rootPc + 3) % 12) && !pcs.includes((rootPc + 4) % 12) ? 3 : 4;
-    return {
-        low: noteHz(root - 24),
-        root: noteHz(root - 12),
-        third: noteHz(root - 12 + third),
-        fifth: noteHz(root - 5),
-        octave: noteHz(root),
-        high: noteHz(root + third),
-    };
-}
-
-// One-shot cue pitches for a phase: the tonic triad of the phase key — A2,
-// A3, C♯4 (C4 at night), E4, A4, C♯5 (C5).
-export function cueTones(phase) {
-    return chordCueTones(tonicTriad(phaseKey(phase)));
+/**
+ * The clash guard: `semi` unchanged unless it forms a semitone or a tritone
+ * with the chord, else the nearest chord tone (the lower one on a tie).
+ */
+export function guardSemi(semi, chord) {
+    if (!clashesWithChord(semi, chord)) return semi;
+    for (let step = 1; step <= 6; step++) {
+        if (chord.pcs.includes(pcOfSemi(semi - step))) return semi - step;
+        if (chord.pcs.includes(pcOfSemi(semi + step))) return semi + step;
+    }
+    return semi;
 }

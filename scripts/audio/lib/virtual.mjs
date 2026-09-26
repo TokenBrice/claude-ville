@@ -40,6 +40,18 @@ export async function renderVirtual(browser, baseUrl, spec, { seed }) {
     }
 }
 
+// Sound off on the virtual clock (page/virtual.js runSilent): no audio, only
+// the signal route's captions, scores, ladder state and Toast captions.
+export async function renderSilent(browser, baseUrl, spec, { seed }) {
+    const h = await openVirtual(browser, baseUrl, seed);
+    try {
+        const meta = await h.page.evaluate(s => window.__vcRender.runSilent(s), spec);
+        return { meta, errors: [...h.errors, ...meta.clock.errors] };
+    } finally {
+        await h.context.close();
+    }
+}
+
 export async function renderEngineUnit(browser, baseUrl, spec, { seed }) {
     const h = await openVirtual(browser, baseUrl, seed);
     try {
