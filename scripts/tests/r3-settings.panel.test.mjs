@@ -84,7 +84,7 @@ test('settings review reads every operator preference, sound levels as steps', (
         'claudeville.sound.mode': 'bgm',
         'claudeville.sound.background': 'signals',
         'claudeville.sound.layers': JSON.stringify({
-            wind: 1, rain: 2, wildlife: 3, hum: 4, music: 5,
+            wind: 1, rain: 2, wildlife: 3, hum: 4, workshops: 6, music: 5,
         }),
         'claudeville.sound.calibration': '2',
         'claudeville.sound.reminders': 'gentle',
@@ -100,7 +100,7 @@ test('settings review reads every operator preference, sound levels as steps', (
         soundVolume: 7,
         soundMode: 'bgm',
         soundBackground: 'signals',
-        soundLayers: { wind: 1, rain: 2, wildlife: 3, hum: 4, music: 5 },
+        soundLayers: { wind: 1, rain: 2, wildlife: 3, hum: 4, workshops: 6, music: 5 },
         soundReminders: 'gentle',
         soundCountHours: true,
         captions: 'all',
@@ -116,7 +116,7 @@ test('an uncalibrated profile reads as the standard level before the controller 
         'claudeville.sound.layers': JSON.stringify({ wind: 0.1, rain: 0.2, wildlife: 0.3, hum: 0.4, music: 0.5 }),
     }));
     assert.equal(settings.soundVolume, STANDARD_VOLUME_STEP);
-    assert.deepEqual(settings.soundLayers, { wind: 10, rain: 10, wildlife: 10, hum: 10, music: 10 });
+    assert.deepEqual(settings.soundLayers, { wind: 10, rain: 10, wildlife: 10, hum: 10, workshops: 9, music: 10 });
 });
 
 test('reminder, caption and hour-count preferences read their defaults and reject unknown values', () => {
@@ -158,7 +158,7 @@ test('settings defaults hold the standard steps and the calibration key, written
         'claudeville.sound.mode': 'ambient',
         'claudeville.sound.background': 'play',
         'claudeville.sound.layers': JSON.stringify({
-            wind: 10, rain: 10, wildlife: 10, hum: 10, music: 10,
+            wind: 10, rain: 10, wildlife: 10, hum: 10, workshops: 9, music: 10,
         }),
         'claudeville.sound.calibration': '2',
         'claudeville.sound.reminders': 'standard',
@@ -202,7 +202,7 @@ test('reset returns a user-changed profile to the standard step', () => {
     });
     const result = resetPersistedSettings(storage);
     assert.equal(result.soundVolume, STANDARD_VOLUME_STEP);
-    assert.deepEqual(result.soundLayers, { wind: 10, rain: 10, wildlife: 10, hum: 10, music: 10 });
+    assert.deepEqual(result.soundLayers, { wind: 10, rain: 10, wildlife: 10, hum: 10, workshops: 9, music: 10 });
     assert.equal(storage.getItem('claudeville.sound.calibration'), '2');
 });
 

@@ -28,6 +28,7 @@ import { PIECES } from '/src/presentation/shared/audio/bgm/BgmSongbook.js';
 import {
     LAYERS, atmosphereFor, atmosphereSummary, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
 } from './scene.js';
+import { installRitualConductor, scriptedCamera } from './workshop.js';
 
 const vc = window.__vc;
 if (!vc) throw new Error('virtual.js needs page/virtual-clock.js as an init script');
@@ -361,6 +362,12 @@ function seaState(controller) {
     try { return plain(controller?.directors?.ambient?.layers?.sea?.snapshot?.() ?? null); } catch (err) { return { error: String(err?.message || err) }; }
 }
 
+// The workshop layer's own account (5.1–5.8): strikes, guard hits, node
+// creations, placements and the quota lane, when the tree has the layer.
+function workshopState(controller) {
+    try { return plain(controller?.directors?.ambient?.layers?.workshops?.snapshot?.() ?? null); } catch (err) { return { error: String(err?.message || err) }; }
+}
+
 // When each baked buffer lands, in audio time (SampleBank `_store`: the
 // Island Air IRs and the rare takes; the noise pool's `_complete`): a bake
 // that lands at a different audio time in two renders of one scene is the
@@ -454,7 +461,10 @@ function scheduleActions(actions, { world, mark, controller, captions, at, onAcc
 //         rng:{constant}, music:{piece, level}, lint:false (skip the HAR-4
 //         stack capture: timing scenes), trace:'music' (onsets of every
 //         source reaching the music bus), collect:['starts'], airOff,
-//         freezeOnSuspend }
+//         freezeOnSuspend, rituals:true (a stand-in ritual conductor for the
+//         World path, page/workshop.js), camera:{viewportW, viewportH, zoom,
+//         path:[{at, cx, cy}]} (a scripted camera through the director's
+//         setCameraSource) }
 // Every start is traced to the cue bus: `cue` marks discrete cue voices.
 // Actions also take {visibility:'hidden'|'visible'} and {window:'blur'|'focus'}.
 // Action `at` is seconds after warmup. Every returned time is audio time in
@@ -477,7 +487,14 @@ export async function runVirtual(spec) {
     eventBus.emit('atmosphere:updated', snapshot);
     const pump = setInterval(() => eventBus.emit('atmosphere:updated', snapshot), 400);
 
-    const log = { cues: [], scheduled: [], ducks: [], accents: [], levels: [] };
+    // World's renderer stand-ins (5.1, 5.8): rituals before the controller,
+    // so the conductor sees the first tool start the director sees.
+    const conductor = spec.rituals ? installRitualConductor() : null;
+    const log = { cues: [], scheduled: [], ducks: [], accents: [], levels: [], work: [], workCancelled: [] };
+    // Every workshop strike as the layer publishes it at booking (5.1), and
+    // the booked strikes it stopped before they sounded.
+    eventBus.on('audio:work-scheduled', (p) => { log.work.push({ ...plain(p), bookedAt: ctx.currentTime }); });
+    eventBus.on('audio:work-cancelled', (p) => { log.workCancelled.push({ ...plain(p), cancelledAt: ctx.currentTime }); });
     let controller = null;
     const kitOf = () => controller?.cues?.kit ?? null;
     logCues(log, () => ctx.currentTime, kitOf);
@@ -492,6 +509,12 @@ export async function runVirtual(spec) {
     await pumpUntil(() => controller.isRunning(), 'the enable');
     const engine = controller.engine;
     const perfBase = vc.now - ctx.currentTime * 1000;
+    let cameraSeam = null;
+    if (spec.camera) {
+        const ambient = controller.directors?.ambient;
+        cameraSeam = typeof ambient?.setCameraSource === 'function';
+        if (cameraSeam) ambient.setCameraSource(scriptedCamera(spec.camera, () => (vc.now - perfBase) / 1000 - warmup));
+    }
 
     // Note-timed ducks (1.3): every window the engine is asked for, and when
     // its cue cancelled it.
@@ -534,7 +557,7 @@ export async function runVirtual(spec) {
     setInterval(() => {
         const snap = window.__claudevilleAudio?.();
         if (!snap) return;
-        stateLog.push(plain({ t: ctx.currentTime, perf: vc.now, mode: snap.mode, state: snap.state, running: snap.running, levels: snap.levels, nowPlaying: snap.nowPlaying, ...signalState(controller, snap) }));
+        stateLog.push(plain({ t: ctx.currentTime, perf: vc.now, mode: snap.mode, state: snap.state, running: snap.running, levels: snap.levels, nowPlaying: snap.nowPlaying, quietMix: snap.quietMix ?? null, ...signalState(controller, snap) }));
     }, 1000);
     const perfAt = sec => perfBase + sec * 1000;
     setTimeout(() => mark('rec-start'), Math.max(0, perfAt(warmup) - vc.now));
@@ -587,6 +610,11 @@ export async function runVirtual(spec) {
         timers: timerReport(),
         diagnostics: engineDiagnostics(engine),
         sea: seaState(controller),
+        work: log.work,
+        workCancelled: log.workCancelled,
+        workshops: workshopState(controller),
+        rituals: conductor ? conductor.drawn() : null,
+        cameraSeam,
         bakes,
         workletNodes,
         musicOnsets: traced,

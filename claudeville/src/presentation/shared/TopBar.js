@@ -745,6 +745,7 @@ export class TopBar {
             ['rain', 'RAIN'],
             ['wildlife', 'WILDLIFE'],
             ['hum', 'VILLAGE HUM'],
+            ['workshops', 'WORKSHOPS'],
             ['music', 'MUSIC'],
         ];
         for (const [name, label] of layers) {

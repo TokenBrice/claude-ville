@@ -51,9 +51,24 @@ const MODES = ['ambient', 'bgm'];
 // and the outgoing one stops only once its gain has reached zero.
 const MODE_CROSSFADE_SEC = 2.5;
 const CROSSFADE_STOP_MARGIN_MS = 50;
-// What a visible but unfocused window plays (D3, Wave 0): the full mix, or
+// What a visible but unfocused window plays (D3): the quiet mix below, or
 // the hidden-tab signals-only route.
 const BACKGROUNDS = ['play', 'signals'];
+// D3's quiet mix (5.6): with "Keep playing", a blurred window's mixer faders
+// take these factors on top of their trims, per preset. The Village drops
+// its music and halves its world and work (the workshops keep their accents
+// only; AudioDirector.setQuietMix); the Town band plays on at −3 dB. The cue
+// bus and the held note (signalBed) have no fader here, and the engine's bed
+// compensation (BLUR_BED_DB below) keeps their bed-aware levels: signals are
+// unchanged.
+export const BLUR_MIX = Object.freeze({
+    ambient: Object.freeze({ wind: 0.5, rain: 0.5, wildlife: 0.5, hum: 0.5, workshops: 0.5, music: 0 }),
+    bgm: Object.freeze({ music: 10 ** (-3 / 20) }),
+});
+// The bed each quiet mix leaves, in dB under the full one: the Village's
+// world and work at half, the Town band at −3 dB. The engine adds it back to
+// its bed reading, so cue trims and the held note level against the full bed.
+const BLUR_BED_DB = Object.freeze({ ambient: 20 * Math.log10(2), bgm: 3 });
 // A hidden-tab wake holds until the urgent cue has rung out (S8): its last
 // note, plus the longest urgent bell decay in CueKit (distress, 3 s), plus the
 // 80 ms margin before the fade closes.
@@ -186,6 +201,8 @@ export class AmbientAudioController {
         this._destroyPromise = null;
         this._destroyed = false;
         this._windowBlurred = false;
+        // D3 (5.6): the quiet mix a blurred "Keep playing" window hears.
+        this._quietMix = { active: false, preset: null, factors: {} };
         // The urgency ladder's inputs: acknowledgements (agentId → ms), the
         // reminders spent this wait, the wait's held cue trim, presence.
         this._acks = new Map();
@@ -343,7 +360,7 @@ export class AmbientAudioController {
         this.layerSteps[name] = soundStep(step, this.layerSteps[name]);
         writeStoredTrimSteps(this.layerSteps);
         this._renderLayerControl(name);
-        this.engine.setGroupLevel(name, trimStepGain(this.layerSteps[name]));
+        this._applyGroupLevel(name);
         return true;
     }
 
@@ -376,6 +393,7 @@ export class AmbientAudioController {
             // signal-only route for captions and disabled-sound cues.
             this.directors.ambient.setSignalRouting(true);
         }
+        this._syncQuietMix();
         this._renderControls();
     }
 
@@ -419,10 +437,29 @@ export class AmbientAudioController {
 
     // The stored trims drive the engine's group faders; the engine keeps them
     // across context rebuilds, so layers keep their own world-driven levels.
+    // The quiet mix (D3) scales a fader without touching its stored step.
     _applyGroupLevels() {
-        for (const [name, step] of Object.entries(this.layerSteps)) {
-            this.engine.setGroupLevel(name, trimStepGain(step));
-        }
+        for (const name of Object.keys(this.layerSteps)) this._applyGroupLevel(name);
+    }
+
+    _applyGroupLevel(name) {
+        const factor = this._quietMix.factors[name] ?? 1;
+        this.engine.setGroupLevel(name, trimStepGain(this.layerSteps[name]) * factor);
+    }
+
+    // D3 (5.6): a visible window without focus and with "Keep playing"
+    // hears the quiet mix of the current preset; focus restores the trims
+    // at the faders' 50 ms glide. "Signals only" pauses instead (hidden).
+    _syncQuietMix() {
+        const active = this._windowBlurred
+            && this.background === 'play'
+            && !(typeof document !== 'undefined' && document.hidden);
+        const preset = active ? this.mode : null;
+        if (active === this._quietMix.active && preset === this._quietMix.preset) return;
+        this._quietMix = { active, preset, factors: active ? (BLUR_MIX[preset] ?? {}) : {} };
+        this._applyGroupLevels();
+        this.engine.setBedCompensation(active ? (BLUR_BED_DB[preset] ?? 0) : 0);
+        this.directors.ambient.setQuietMix(active && preset === 'ambient');
     }
 
     async _activate() {
@@ -510,9 +547,10 @@ export class AmbientAudioController {
     // One presence transition for tab visibility, window focus and the
     // background setting. Hidden (or blurred with "Signals only") pauses a
     // playing village in place and routes urgent cues through the wake;
-    // returning resumes it.
+    // returning resumes it. Blurred with "Keep playing" is the quiet mix.
     _syncPresence() {
         if (this._destroyed) return;
+        this._syncQuietMix();
         const inactive = this._pageInactive();
         if (inactive === this._inactive) return;
         this._inactive = inactive;
@@ -903,6 +941,8 @@ export class AmbientAudioController {
             soundState: this._soundState(),
             background: this.background,
             blurred: this._windowBlurred,
+            // D3 (5.6): the faders' quiet mix, `{ active, preset, factors }`.
+            quietMix: { ...this._quietMix, factors: { ...this._quietMix.factors } },
             wakeCount: this._wakeCount,
             ladder: this._ladder ? {
                 ...this._ladder,

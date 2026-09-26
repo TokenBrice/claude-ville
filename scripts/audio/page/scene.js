@@ -129,8 +129,8 @@ export function makeMarker(getCtx) {
 
 // The stored sound settings a scene starts from: enabled, the preset, the
 // master step (default: the standard step), per-group trim steps (missing
-// groups stay at 10 = unity) and the calibration marker, so the controller
-// loads them as a calibrated profile instead of resetting them.
+// groups take SoundSettings' default step) and the calibration marker, so
+// the controller loads them as a calibrated profile instead of resetting them.
 export function seedSoundStorage(spec = {}) {
     try {
         localStorage.setItem('claudeville.sound.enabled', spec.soundOff ? 'false' : 'true');
@@ -146,8 +146,9 @@ export function seedSoundStorage(spec = {}) {
 
 // -------------------------------------------------------------- actions ----
 // {status:{index,status,fields}} | {addAgent:{status,provider,parentIndex,fields}} |
-// {remove:{index}} | {ack:{index}} | {emit, payload, agentIndex, raw} |
-// {mode} | {cue, payload, agentIndex}. Returns the marker it recorded.
+// {remove:{index}} | {ack:{index}} | {select:{index}} | {deselect:true} |
+// {emit, payload, agentIndex, raw} | {mode} | {cue, payload, agentIndex}.
+// Returns the marker it recorded.
 // `raw` emits the payload as given (arrays, strings); otherwise it is copied
 // and the agent attached.
 export function runAction(action, { world, mark, controller }) {
@@ -187,6 +188,15 @@ export function runAction(action, { world, mark, controller }) {
         const agent = agentFor(action.ack.index);
         eventBus.emit('attention:acknowledged', { agentId: agent?.id ?? null });
         return mark(action.label || `ack:${agent?.id}`, { kind: 'action', agentId: agent?.id ?? null });
+    }
+    if (action.select) {
+        const agent = agentFor(action.select.index);
+        eventBus.emit('agent:selected', agent);
+        return mark(action.label || `select:${agent?.id}`, { kind: 'action', agentId: agent?.id ?? null });
+    }
+    if (action.deselect) {
+        eventBus.emit('agent:deselected');
+        return mark(action.label || 'deselect', { kind: 'action' });
     }
     if (action.emit) {
         if (action.raw) {

@@ -18,6 +18,7 @@ const SOUND_LAYERS = Object.freeze([
     ['rain', 'Rain'],
     ['wildlife', 'Wildlife'],
     ['hum', 'Village hum'],
+    ['workshops', 'Workshops'],
     ['music', 'Music'],
 ]);
 // Captions (3.8): internal ids stay in storage; SET shows what each choice

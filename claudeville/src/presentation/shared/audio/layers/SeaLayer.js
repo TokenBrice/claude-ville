@@ -23,6 +23,11 @@
 //
 // The sea leaves the held note's lane open (plan 3.3, S1): dry and wet pass
 // a fixed cut at the D (HELD_SLOT), so the surf's low roar never covers it.
+//
+// The harbor and the coast follow the camera (5.8, D8): each is one
+// persistent balance → low-pass → level chain, re-placed by
+// `setCameraPlacement` with τ 0.25 s only when a value changed. Without a
+// camera (Dashboard, before the first frame) they keep their fixed homes.
 
 import { eventBus } from '../../../../domain/events/DomainEvent.js';
 import { BaseLayer } from './BaseLayer.js';
@@ -31,6 +36,7 @@ import { makeFilter } from '../Filters.js';
 import { heldSlot } from './HeldNote.js';
 import { renewalProcess } from '../Transport.js';
 import { rngStream } from '../Rng.js';
+import { OPEN_LOWPASS_HZ } from '../SpatialField.js';
 
 const TAU = Math.PI * 2;
 
@@ -65,8 +71,16 @@ const AIR = Object.freeze({ roar: 0.25, crash: 0.18, wash: 0.12, harbor: 0.22, g
 // lane is darker than AMB-1's pink one, so it is lifted to keep the
 // crest-to-floor swing near the prototype's ≈ 6 dB).
 const ROAR_GAIN = 1.6;
-// Harbor lanes sit where the Harbor is drawn (right of the default camera).
+// Harbor lanes sit where the Harbor is drawn (right of the default camera)
+// until a camera places them.
 const HARBOR_PAN = 0.33;
+// Camera placement (5.8): the time constant of every move, and the harbor's
+// level by the SpatialField gain (AMB-14: close on the jetty it is up to
+// +2 dB, across the island no lower than −7 dB). The coast takes the gain
+// as is (the SpatialField floors it at −6 dB).
+export const PLACEMENT_TAU = 0.25;
+const HARBOR_LEVEL = Object.freeze({ base: 0.3, perGain: 0.95, min: 0.45, max: 1.25 });
+const PLACEMENT_LOG = 600;
 // Rare-voice levels, relative to the lanes.
 const TAKE_GAIN = Object.freeze({ gull: 0.2, clink: 0.04, groan: 0.9 });
 // Rare voices never sound in the first seconds after start (their bakes land
@@ -77,6 +91,30 @@ const TAKES = Object.freeze({ gull: 4, clink: 4, groan: 3 });
 // Kept for snapshot().
 const CREST_LOG = 256;
 const RARE_LOG = 64;
+
+// The applied harbor lane for a SpatialField placement (null: its home).
+export function harborLane(placement = null) {
+    if (!placement) return { pan: HARBOR_PAN, lowpassHz: OPEN_LOWPASS_HZ, level: 1, send: AIR.harbor };
+    const level = HARBOR_LEVEL.base + HARBOR_LEVEL.perGain * (Number(placement.gain) || 0);
+    return {
+        pan: Math.max(-1, Math.min(1, Number(placement.pan) || 0)),
+        lowpassHz: Number(placement.lowpassHz) || OPEN_LOWPASS_HZ,
+        level: Math.round(Math.max(HARBOR_LEVEL.min, Math.min(HARBOR_LEVEL.max, level)) * 1000) / 1000,
+        // Farther is wetter, never drier than the harbor's own send.
+        send: Math.max(AIR.harbor, Number(placement.air) || 0),
+    };
+}
+
+// The applied coast lane (crash and wash lanes together; their Air sends
+// stay where they are, so a far shore is wetter by its quieter direct path).
+export function coastLane(placement = null) {
+    if (!placement) return { pan: 0, lowpassHz: OPEN_LOWPASS_HZ, level: 1 };
+    return {
+        pan: Math.max(-1, Math.min(1, Number(placement.pan) || 0)),
+        lowpassHz: Number(placement.lowpassHz) || OPEN_LOWPASS_HZ,
+        level: Math.max(0, Math.min(1, Number(placement.gain) || 0)),
+    };
+}
 
 // Gull calls per minute by phase on a calm day (they roost at night, in
 // storms and in real rain), and the foam by phase: its colour (`dark`,
@@ -328,6 +366,10 @@ export class SeaLayer extends BaseLayer {
         this._weather = { wind: 0, precipitation: 0, storm: 0 };
         this._phase = 'day';
         this._P = seaParams(this._weather, this._phase);
+        // Applied camera placements (5.8): kept across restarts, so a chain
+        // built later starts where the camera last put it.
+        this._placement = { harbor: null, coast: null };
+        this._lanes = { harbor: harborLane(null), coast: coastLane(null) };
         this._resetState();
     }
 
@@ -341,6 +383,9 @@ export class SeaLayer extends BaseLayer {
         this._roarSwell = null;
         this._fizz = null;
         this._harbor = null;
+        this._placed = null;
+        this._placementWrites = 0;
+        this._placementLog = [];
         this._gull = null;
         this._pending = null;
         this._future = [];
@@ -451,9 +496,14 @@ export class SeaLayer extends BaseLayer {
         this._fizz = node(0.9 + 0.5 * P.size);
         brown.connect(filter('lowpass', 22, 'butterworth')).connect(this._fizz);
 
+        // The coast: every crash and wash lane meets in one placed chain
+        // (balance → low-pass → level); their Air sends are taken before it.
+        const coastIn = this._placedChain(this._lanes.coast, balance, filter, node);
+        coastIn.dry.connect(this._bedDry);
+
         // Crash lanes: brown → per-lane resonant low-pass → gain → balance.
         const crashSum = node(1);
-        crashSum.connect(this._bedDry);
+        crashSum.connect(coastIn.pan.input);
         send(crashSum, AIR.crash);
         for (let k = 0; k < SEA_LANES.crash; k++) {
             const lp = filter('lowpass', 350, 2);
@@ -466,7 +516,7 @@ export class SeaLayer extends BaseLayer {
 
         // Wash lanes: white → band-pass → gain → AM (fizz) → balance.
         const washSum = node(1);
-        washSum.connect(this._bedDry);
+        washSum.connect(coastIn.pan.input);
         send(washSum, AIR.wash);
         for (let k = 0; k < SEA_LANES.wash; k++) {
             const bp = filter('bandpass', 4000, 0.6);
@@ -481,15 +531,18 @@ export class SeaLayer extends BaseLayer {
 
         // Harbor: lapping lanes (brown, two band-pass chains), and the clinks
         // and groans, all placed at the Harbor. Mono takes are up-mixed to
-        // both channels before the balance.
+        // both channels before the balance; the camera's low-pass and level
+        // are on the direct path, its Air send after the balance.
         this._harbor = node(1);
         this._harbor.channelCount = 2;
         this._harbor.channelCountMode = 'explicit';
         this._harbor.channelInterpretation = 'speakers';
-        const harborPan = balance(HARBOR_PAN);
-        this._harbor.connect(harborPan.input);
-        harborPan.output.connect(this._bedDry);
-        send(harborPan.output, AIR.harbor);
+        const harbor = this._placedChain(this._lanes.harbor, balance, filter, node);
+        this._harbor.connect(harbor.pan.input);
+        harbor.dry.connect(this._bedDry);
+        harbor.send = node(this._lanes.harbor.send);
+        harbor.pan.output.connect(harbor.send).connect(this._bedWet);
+        this._placed = { harbor, coast: coastIn };
         for (let k = 0; k < SEA_LANES.lap; k++) {
             const bp = filter('bandpass', 380, 3.5);
             const gain = node(0);
@@ -564,6 +617,59 @@ export class SeaLayer extends BaseLayer {
         if (phase === this._phase) return;
         this._phase = Object.hasOwn(PHASE_DARK, phase) ? phase : 'day';
         this._applyParams(null);
+    }
+
+    // Where the camera puts the harbor and the coast (5.8): SpatialField
+    // placements `{ pan, lowpassHz, gain, air }` from `placeFromCamera` /
+    // `placeCoastFromCamera`; null returns a lane to its fixed home
+    // (Dashboard), an omitted lane is left alone. Only changed values are
+    // written, each with setTargetAtTime(τ 0.25 s): a still camera writes
+    // nothing.
+    setCameraPlacement({ harbor, coast } = {}) {
+        let writes = 0;
+        if (harbor !== undefined) writes += this._placeLane('harbor', harbor ?? null, harborLane(harbor ?? null));
+        if (coast !== undefined) writes += this._placeLane('coast', coast ?? null, coastLane(coast ?? null));
+        return writes;
+    }
+
+    _placeLane(name, placement, lane) {
+        const prev = this._lanes[name];
+        const changed = Object.keys(lane).filter(key => lane[key] !== prev[key]);
+        this._placement[name] = placement ? { pan: placement.pan, lowpassHz: placement.lowpassHz, gain: placement.gain, air: placement.air } : null;
+        if (!changed.length) return 0;
+        this._lanes[name] = lane;
+        const chain = this._placed?.[name];
+        if (!this.running || !chain) return 0;
+        const at = this.engine.now();
+        for (const key of changed) {
+            if (key === 'pan') balanceTo(chain.pan, lane.pan, at, PLACEMENT_TAU);
+            else if (key === 'lowpassHz') chain.lp.frequency.setTargetAtTime(lane.lowpassHz, at, PLACEMENT_TAU);
+            else if (key === 'level') chain.dry.gain.setTargetAtTime(lane.level, at, PLACEMENT_TAU);
+            else if (key === 'send') chain.send.gain.setTargetAtTime(lane.send, at, PLACEMENT_TAU);
+        }
+        this._placementWrites++;
+        this._placementLog.push({
+            lane: name,
+            at,
+            pan: lane.pan,
+            lowpassHz: lane.lowpassHz,
+            gain: placement?.gain ?? null,
+            air: placement?.air ?? null,
+            level: lane.level,
+            send: lane.send ?? null,
+            tc: PLACEMENT_TAU,
+        });
+        if (this._placementLog.length > PLACEMENT_LOG) this._placementLog.shift();
+        return 1;
+    }
+
+    // One persistent placed chain: balance → low-pass → level.
+    _placedChain(lane, balance, filter, node) {
+        const pan = balance(lane.pan);
+        const lp = filter('lowpass', lane.lowpassHz, 'butterworth');
+        const dry = node(lane.level);
+        pan.output.connect(lp).connect(dry);
+        return { pan, lp, dry, send: null };
     }
 
     _applyParams(timeConstant) {
@@ -848,6 +954,10 @@ export class SeaLayer extends BaseLayer {
             nodeCreations: this._nodeCreations,
             rare: this._rareLog.map(e => ({ kind: e.kind, t: e.t, hz: [...e.hz] })),
             guards: this.protectedWindows(),
+            placement: { ...this._placement },
+            lanesPlaced: { harbor: { ...this._lanes.harbor }, coast: { ...this._lanes.coast } },
+            placementWrites: this._placementWrites,
+            placementLog: this._placementLog.map(e => ({ ...e })),
         };
     }
 }

@@ -78,6 +78,28 @@
 //                and over rain keep their S2 floors
 //   crest        4.6: a cue whose first note lands on a sea crest keeps its
 //                S2 margin (night Village bed, storm)
+//   workshops    5.1: the FOL reference scene's Forge (longest gap, stop vs
+//                the first non-working observation, no accent from a stale
+//                smith), zero onsets from stale agents, idle and a lost
+//                link, strikes vs drawn downbeats in World (median / p95)
+//                and the poll-lock pulse index, node creations per take,
+//                main-thread cost per tick (INFO)
+//   worklevel    5.3: the reference scenes by day (the stratum as ctx − env
+//                of two sample-aligned renders): work bed ≤ program − 8 LU,
+//                program Δ, work TP under the quietest urgent cue, accents
+//                heard per building, onset-weighted 2–5 kHz share, onsets
+//                in any 1 s, routine-cue margin loss
+//   workslots    5.4: two smiths on two pitches, focus +4 dB, a needs-you
+//                from another agent unchanged
+//   worknight    5.5: accents heard per building over the night environment
+//   quietmix     5.6 (D3): blur in Village (music 0, world and work ×0.5,
+//                ghosts off, held note and signals untouched), Town band
+//                −3 dB with no work stratum (D4), focus restores in ≤ 1 s
+//   quota        5.7: the mine's 80–160 Hz band over a 0.7 → 1.0 sweep, no
+//                cue, silent when the quota goes stale
+//   camera       5.8: a pan across the Harbor — its workshop and sea pans
+//                through 0 within 0.6 s of the camera, steps ≤ 0.2, zero
+//                writes while still
 //   lint, routing, away (+ resume), ceremony   the Wave-0 checks (live app)
 //   continuity   2.1: blur 3 s → focus keeps the Town band piece and level
 //   fps          2.4: app frame total p95, sound on vs off (realtime)
@@ -95,6 +117,8 @@ import {
     beatingDepthDb, compareBaseline, expectedLadder, groanViolations, heldNoteRise, judgeAirT60, judgeBank, judgeCaptionParity, judgeCluster, judgeDiscrimination,
     judgeDuckedTime, judgeHeldTrim, judgeLadder, judgeLane, judgeOnsetBudget, judgeSceneTargets, judgeSequencer, judgeThunder, judgeTransport, judgeWakes,
     judgeWorldMap, judgeWorldStem, median, nightWeatherOverDay, noiseLaneConflicts, onsetNear, presenceUnderNoon, waitAudibleWindows, withinRange, worldStemDiffers,
+    WORK_BANDS_DAY, WORK_BANDS_NIGHT, WORK_LIMITS, downbeatSync, judgeCameraPan, judgeFocus, judgeHeard, judgeQuietMix, judgeQuotaSweep, judgeWorkLevel, longestGap,
+    maxOnsetsIn, pulseIndex, quietStemRow, signCrossing, stopTiming, targetTrajectory,
 } from './lib/checks.mjs';
 import {
     AIR_CUE_SCENE, CAPTION_SETTINGS, DASHBOARD_SCENE, GALLERY_VOICES, HELD_ANSWER_SEC, HELD_OPEN_SEC, LADDER_OPEN_SEC, LADDER_SECONDS, LADDER_TRIM_SCENE,
@@ -103,6 +127,8 @@ import {
     CREST_BEDS, CREST_WINDOW, MAP_LOADS, MAP_PHASES, MAP_SECONDS, MAP_WEATHERS, MASKING_SCENE, NIGHT_BED_NO_SEA, SEA_NIGHT_SCENE, SEA_RARE_SCENE,
     SILENT_ISLAND_SCENE, THUNDER_INTENSITIES, THUNDER_SCENE, WORLD_STEM_FIXTURES, WORLD_STEM_SECONDS, crestCalibration, crestPlaced, crestScene,
     worldMapCells, worldStemScene,
+    AUDIBILITY_SECONDS, CAMERA_PAN, QUIET_MIX, QUOTA_STALE_AT, QUOTA_STEPS, WORK_HONESTY, WORK_HONESTY_SCENE, WORK_PATTERNS, WORK_POLL, WORK_SLOTS,
+    audibilityScene, cameraScene, quietMixScene, quotaScene, workDownbeatScene, workSlotsScene, workshopScene,
 } from './lib/scenes.mjs';
 import {
     captionRows, clusterRow, crownRow, galleryRows, heldNoteRows, heldWhileMusic, ladderCalls, ladderCaptioned, ladderTrimRows, laneEvents, wakeRows,
@@ -116,6 +142,10 @@ import {
 import {
     bandLevelDb, concurrentOverBedLu, crestGap, firstDivergenceSec, loudestCrest, maxSampleDiff, seaStemRow, thunderRows, worldBandDb, worldCellRow,
 } from './lib/probe-wave4.mjs';
+import {
+    HARBOR_WORLD, accentGainOffsetDb, cameraPanTarget, downbeatRows, forgeRow, ghostsIn, heardRows, honestyRows, levelDiffCurve, offsetStepDb, onsetShare25, pairedGainDiffs,
+    onsetsOf, placementLogRows, quotaRows, routineLossRows, slotRows, strikesOf, tickRows, urgentTpRows, workLevelRow,
+} from './lib/probe-wave5.mjs';
 import {
     airRows, arrivalDrRows, bedRows, loadPieces, pauseRows, referenceServer, renderAir, sequencerRow, textureRows, transportRows, urgentWetRows,
 } from './lib/probe-wave2.mjs';
@@ -154,7 +184,7 @@ const JOBS = Math.max(1, Number(args.jobs || 2));
 const SEED = args.seed != null ? Number(args.seed) : DEFAULT_SEED;
 const NO_WORKLETS = Boolean(args['no-worklets']);
 const UPDATE = Boolean(args.update);
-const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'noise', 'bank', 'sequencer', 'discrim', 'ladder', 'cluster', 'heldnote', 'outcomes', 'captions', 'honesty', 'worldmap', 'worldstem', 'sea', 'thunder', 'masking', 'crest'];
+const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'noise', 'bank', 'sequencer', 'discrim', 'ladder', 'cluster', 'heldnote', 'outcomes', 'captions', 'honesty', 'worldmap', 'worldstem', 'sea', 'thunder', 'masking', 'crest', 'workshops', 'worklevel', 'workslots', 'worknight', 'quietmix', 'quota', 'camera'];
 const APP_CHECKS = ['lint', 'routing', 'away', 'ceremony', 'continuity', 'fps'];
 const ALL_CHECKS = [...VIRTUAL_CHECKS, ...APP_CHECKS];
 const ONLY = args.only ? String(args.only).split(',').map(s => s.trim()) : ALL_CHECKS;
@@ -386,6 +416,7 @@ function virtualUnits(render, browser, baseUrl) {
         return r;
     };
     units.push(...wave4Units(render, renderOnce, scene));
+    units.push(...wave5Units(render, renderOnce, scene));
     return units;
 }
 
@@ -963,6 +994,256 @@ function judgeWorldMapRows() {
     info('worldmap', `CPU offline proxy (render wall ÷ audio time, the harness and the directors included): median ${fmt(median(cpu), 1)} %, max ${fmt(Math.max(...cpu), 1)} %; day clear ${fmt(cpuOf('clear'), 1)} %, day storm ${fmt(cpuOf('storm'), 1)} %, night clear ${fmt(cpuOf('clear', 'night'), 1)} % (S8: calm ≤ 2.5 %, storm ≤ 3.5 % of a core for the environment on a quiet host; relative only)`);
     const errs = cells.flatMap(c => c.errors || []);
     if (errs.length) info('worldmap', `page errors: ${errs.slice(0, 3).join(' | ')}`);
+}
+
+// ------------------------------------------------------------ Wave 5 units ----
+const pct = x => (Number.isFinite(x) ? `${Math.round(100 * x)} %` : '—');
+const lastWord = s => (s ? s.split('/').pop() : '—');
+
+// The layer must exist and publish before any Wave-5 number means anything.
+function workshopsPresent(check, r, label) {
+    const snap = r.meta.workshops;
+    if (snap && !snap.error) return true;
+    verdict(check, false, `${label}: no workshop layer (director.layers.workshops.snapshot() ${snap?.error ? `threw: ${snap.error}` : 'missing'}); page errors: ${r.errors.slice(0, 2).join(' | ') || 'none'}`);
+    return false;
+}
+
+function wave5Units(render, renderOnce, scene) {
+    const units = [];
+    const L = WORK_LIMITS;
+    const reference = () => render('workRef:day', workshopScene('reference'));
+    if (has('workshops')) {
+        units.push({
+            name: 'workshops (5.1: the reference Forge, nodes, tick cost)',
+            async run() {
+                const r = await reference();
+                if (!workshopsPresent('workshops', r, 'reference day')) return;
+                const f = forgeRow(r, { stopLabel: 'forge#0 idle', staleLabel: 'forge#2 stale', staleAgentIndex: 2 });
+                const gap = longestGap(f.active, { from: r.meta.warmup, to: f.stopSec });
+                verdict('workshops', gap.maxGapSec != null && gap.maxGapSec <= L.forgeMaxGapSec, `reference day: Forge longest gap while working ${fmt(gap.maxGapSec, 2)} s (after ${fmt(gap.at, 2)} s; ${gap.n} strikes in ${fmt(r.meta.warmup)}–${fmt(f.stopSec)} s, one smith stale at ${fmt(f.staleSec, 1)} s); want ≤ ${L.forgeMaxGapSec} s (FOL v3: 2.76 s schedule, 4.15 s heard)`);
+                const stop = stopTiming(f.times, f.stopSec, f.periodSec);
+                verdict('workshops', stop.pass, `reference day: the Forge's last strike ${fmt(stop.lastSec, 2)} s = ${fmt(stop.leadSec, 2)} s before the smiths' first non-working observation (${fmt(f.stopSec, 2)} s); ${stop.late} strike(s) later than P_b ${fmt(f.periodSec, 2)} s after it; want ≤ ${L.stopLeadSec} s before and none after (FOL v3: 0.45 s)`);
+                verdict('workshops', f.staleAccents === 0, `reference day: accents from the smith after it went stale (${fmt(f.staleSec, 1)} s): ${f.staleAccents}; want 0 (S6)`);
+                const snap = r.meta.workshops;
+                const sounded = (r.meta.work || []).length;
+                verdict('workshops', Number.isFinite(snap.nodeCreations) && snap.nodeCreations <= 2 * sounded, `node creations ${snap.nodeCreations ?? '—'} for ${sounded} published strikes (${fmt(snap.nodeCreations / Math.max(1, sounded), 2)} per take; overlap-guard hits ${snap.overlapGuardHits ?? '—'}, cancelled ${snap.cancelled ?? '—'}, dropped ${JSON.stringify(snap.dropped ?? null)}); want ≤ 2 per sounding take (S8)`);
+                const tick = tickRows(r);
+                const line = t => (t ? `${lastWord(t.site)} ×${t.fired}: p95 ${fmt(t.p95Ms, 3)} ms, max ${fmt(t.maxMs, 3)} ms` : '—');
+                info('workshops', `main-thread per tick (real ms on this host, harness included; 5.1 asks ≤ ${L.tickMs} ms for the scheduler): the layer's Transport windows p95 ${fmt(tick.layer?.p95, 3)} ms, max ${fmt(tick.layer?.max, 3)} ms over ${tick.layer?.windows ?? '—'}; director ${line(tick.director)}; Transport ${line(tick.transport)}`);
+            },
+        });
+        units.push({
+            name: 'workshops (5.1 / S6: stale, idle, lost link)',
+            async run() {
+                const r = await renderOnce('work:honesty', WORK_HONESTY_SCENE);
+                if (!workshopsPresent('workshops', r, 'honesty')) return;
+                const h = honestyRows(r, WORK_HONESTY);
+                verdict('workshops', h.staleOnly === 0, `S6: onsets while only stale agents work and one is idle (0–${WORK_HONESTY.freshAt} s): ${h.staleOnly}; want 0`);
+                verdict('workshops', h.fresh > 0 && h.again > 0, `a fresh smith is heard: ${h.fresh} strikes while it works, ${h.again} after it resumes; want > 0 each`);
+                verdict('workshops', h.idle === 0, `S6: onsets with working === 0 (from P_b after the smith goes idle until it resumes): ${h.idle}; want 0`);
+                verdict('workshops', h.lostAt != null && h.afterLost === 0, `S6: onsets after the link is lost (linkLost cue at ${fmt(h.lostAt, 2)} s; the feed dropped at ${fmt(r.meta.warmup + WORK_HONESTY.dropAt, 1)} s), past the 0.35 s work horizon: ${h.afterLost ?? '—'}; work stem ${fmt(h.workLufsBefore)} LUFS before → ${fmt(h.workLufsAfterLost)} LUFS from 4 s after; want 0`);
+            },
+        });
+        units.push({
+            name: 'workshops (5.1 / FOL-5: downbeats in World, the poll in Dashboard)',
+            async run() {
+                const world = await renderOnce('work:downbeats', workDownbeatScene());
+                const dash = await renderOnce('work:downbeats:dashboard', workDownbeatScene({ dashboard: true }));
+                if (!workshopsPresent('workshops', world, 'downbeats (World)')) return;
+                const d = downbeatRows(world);
+                const withBeat = d.accents.filter(s => Number.isFinite(s.downbeatMs));
+                const sync = downbeatSync(withBeat.map(s => s.wallMs), d.drawn.map(x => x.atMs));
+                const own = withBeat.map(s => Math.abs(s.wallMs - s.downbeatMs));
+                verdict('workshops', sync.pass, `World: ${withBeat.length}/${d.accents.length} accents on a drawn downbeat (${d.drawn.length} drawn by the stand-in conductor); published strike vs the drawn beat: median ${fmt(sync.medianAbsMs, 1)} ms, p95 ${fmt(sync.p95AbsMs, 1)} ms, ${sync.unmatched} off every drawn beat (layer's own |wall − downbeat| median ${fmt(median(own), 1)} ms); drawn beats with a strike within ±${L.syncMedianMs} ms: ${sync.covered}/${sync.drawn}; want median ≤ ${L.syncMedianMs}, p95 ≤ ${L.syncP95Ms} ms`);
+                const phase = world.meta.warmup + WORK_POLL.phaseSec;
+                const pw = pulseIndex(d.onsets, { pollPhaseSec: phase });
+                verdict('workshops', pw.index != null && pw.index <= L.pulseIndexMax, `World: poll-lock pulse index ${fmt(pw.index, 2)} over ${d.onsets.length} onsets (poll-phase histogram ${pw.histogram.join(' ')}); want ≤ ${L.pulseIndexMax} (FOL: downbeats-only 2.21); C-FOL-1: ${pct(d.grid)} of strikes on their gesture grid (±15 ms of k·P_b)`);
+                const dd = downbeatRows(dash);
+                const pd = pulseIndex(dd.onsets, { pollPhaseSec: dash.meta.warmup + WORK_POLL.phaseSec });
+                const ratio = d.onsets.length ? dd.onsets.length / d.onsets.length : null;
+                info('workshops', `Dashboard (no ritual; the de-clumped grid): pulse index ${fmt(pd.index, 2)} (histogram ${pd.histogram.join(' ')}), ${dd.onsets.length} onsets vs ${d.onsets.length} in World (${fmt(ratio, 2)}×; FOL-1 asks ±10 %), ${dd.accents.filter(s => Number.isFinite(s.downbeatMs)).length} accents claiming a downbeat (want 0)`);
+            },
+        });
+    }
+    // 5.3 / 5.5 audibility on the dedicated cells (≥ 20 accents a building).
+    const audibilityUnit = (check, pattern, phase) => ({
+        name: `${check} (${phase === 'night' ? '5.5' : '5.3'}: ${pattern} accents heard by ${phase}, ${AUDIBILITY_SECONDS} s cell)`,
+        async run() {
+            const ctx = await renderOnce(`work:audible:${pattern}:${phase}`, audibilityScene(pattern, { phase }));
+            if (!workshopsPresent(check, ctx, `${pattern} ${phase} audibility cell`)) return;
+            const env = await renderOnce(`work:audible:${pattern}:${phase}:env`, audibilityScene(pattern, { phase, env: true }));
+            const accents = strikesOf(ctx, { from: ctx.meta.warmup, to: ctx.meta.warmup + ctx.meta.seconds - 0.3 }).filter(s => s.kind === 'accent' && !s.flam);
+            const heard = heardRows(accents, ctx.program, env.program, ctx.sr, phase === 'night' ? WORK_BANDS_NIGHT : WORK_BANDS_DAY);
+            const h = judgeHeard(heard, Object.keys(heard).sort());
+            const band = phase === 'night' ? '1.2–3 kHz' : "FOL round 2's day bands";
+            verdict(check, h.pass && h.rows.length > 0, `${pattern} ${phase}: accents heard (band rise ≥ ${L.heardRiseDb} dB in context, ${band}) — ${h.rows.map(x => `${x.building} ${pct(x.share)} of ${x.n}${x.enough ? '' : ' (too few)'} (control ${pct(heard[x.building].control / heard[x.building].n)}, median rise ${fmt(heard[x.building].medianRiseDb, 1)} dB)`).join(', ') || 'none'}; want ≥ ${pct(L.heardShare)} on ≥ ${L.heardMinAccents} accents at every staffed building (v3: ${phase === 'night' ? '78' : '86'}–100 %)`);
+            info(check, `${pattern} ${phase} audibility cell: program ${fmt(sceneMetrics(ctx).lufsI)} LUFS-I vs ${fmt(sceneMetrics(env).lufsI)} without the stratum; ${onsetsOf(strikesOf(ctx)).length} onsets in ${ctx.meta.seconds} s; layer night ${ctx.meta.workshops?.night ?? '—'}${phase === 'night' ? `; Forge accent slots ${[...new Set(accents.filter(s => s.building === 'forge').map(s => Math.round(s.hz)))].sort().join('/') || '—'} Hz (C♯7 → C7, F♯7 → G7 at night)` : ''}`);
+        },
+    });
+    if (has('worklevel')) {
+        units.push({
+            name: 'worklevel (5.3: reference scenes by day, ctx vs env)',
+            async run() {
+                const urgent = urgentTpRows(await scene('margin:village'), URGENT_LANES);
+                info('worklevel', `urgent-cue true peaks at the output (margin:village placements, Wave-3 voices at their in-context trims): ${urgent.map(u => `${u.lane} ${fmt(u.tpDbtp)} dBTP (n ${u.n})`).join(', ')}`);
+                for (const pattern of Object.keys(WORK_PATTERNS)) {
+                    const ctx = pattern === 'reference' ? await reference() : await renderOnce(`workOther:day`, workshopScene(pattern));
+                    if (!workshopsPresent('worklevel', ctx, `${pattern} day`)) continue;
+                    const env = await renderOnce(`work:${pattern}:day:env`, workshopScene(pattern, { env: true }));
+                    const row = workLevelRow(ctx, env);
+                    const j = judgeWorkLevel({ ...row, urgentTpDbtp: urgent.map(u => u.tpDbtp) });
+                    summary[`work:${pattern}:day`] = { lufsI: row.workLufs };
+                    verdict('worklevel', j.pass, `${pattern} day: workshop stratum (dry + air, ctx − env) ${fmt(row.workLufs)} LUFS-I (M max ${fmt(row.workMMax)}) = ${fmt(j.underLu)} LU under the program ${fmt(row.programLufs)} (want ≥ ${L.underProgramLu}; v3 13.4); program Δ ${signed(j.deltaLu, 2)} LU vs the environment alone ${fmt(row.envProgramLufs)} (want ≤ +${L.programDeltaMaxLu}); work TP ${fmt(row.workTpDbtp)} dBTP = ${fmt(j.tpMarginDb)} dB under the quietest urgent cue ${fmt(j.urgentFloorDbtp)} (want ≥ ${L.tpUnderUrgentDb})${j.failures.length ? ` — ${j.failures.join('; ')}` : ''}`);
+                    const all = strikesOf(ctx, { from: ctx.meta.warmup, to: ctx.meta.warmup + ctx.meta.seconds - 0.3 });
+                    const times = onsetsOf(all).map(s => s.at);
+                    const share = onsetShare25(ctx.program, ctx.sr, times);
+                    const envShare = onsetShare25(env.program, env.sr, times);
+                    const shareLine = `onset-weighted 2–5 kHz share of the program ${fmt(share, 2)} % over ${times.length} strike windows (environment alone at the same instants ${fmt(envShare, 2)} %, so the stratum adds ${signed(share - envShare, 2)} points; the stratum itself ${fmt(onsetShare25(row.stratum, ctx.sr, times), 1)} %)`;
+                    // The plan's absolute figure is the reference scene's;
+                    // elsewhere the environment differs, so the stratum's
+                    // increment is judged and the absolute share is INFO.
+                    if (pattern === 'reference') verdict('worklevel', share != null && share <= L.share25MaxPct, `${pattern} day: ${shareLine}; want ≤ ${L.share25MaxPct} % (v3: 1.02 %)`);
+                    else verdict('worklevel', share != null && envShare != null && share - envShare <= L.share25IncrementMaxPts, `${pattern} day: ${shareLine}; want the increment ≤ +${L.share25IncrementMaxPts} points (absolute INFO; ≤ ${L.share25MaxPct} % is the reference scene's)`);
+                    const dense = maxOnsetsIn(times, 1);
+                    const accents = all.filter(s => s.kind === 'accent');
+                    verdict('worklevel', dense <= L.maxOnsetsPer1s, `${pattern} day: densest 1 s ${dense} onsets (${times.length} in ${ctx.meta.seconds} s, ${fmt(times.length / ctx.meta.seconds, 2)}/s; ${accents.length} accents, ${times.length - accents.length} ghosts); want ≤ ${L.maxOnsetsPer1s} (S7)`);
+                    const loss = routineLossRows(ctx, env);
+                    const worst = loss.reduce((m, x) => (x.lossLu != null && (m == null || x.lossLu > m) ? x.lossLu : m), null);
+                    verdict('worklevel', loss.length > 0 && loss.every(x => x.lossLu != null) && worst <= L.routineLossMaxLu, `${pattern} day: routine-cue margin with the stratum vs without — ${loss.map(x => `${x.label} ${signed(x.on)} vs ${signed(x.off)} LU`).join(', ') || 'no routine cue admitted'}; worst loss ${signed(worst, 2)} LU; want ≤ ${L.routineLossMaxLu}`);
+                }
+            },
+        });
+        for (const pattern of Object.keys(WORK_PATTERNS)) units.push(audibilityUnit('worklevel', pattern, 'day'));
+    }
+    if (has('workslots')) {
+        units.push({
+            name: 'workslots (5.4: two smiths, focus, a needs-you)',
+            async run() {
+                const on = await renderOnce('work:slots', workSlotsScene());
+                const off = await renderOnce('work:slots:twin', workSlotsScene({ select: false }));
+                if (!workshopsPresent('workslots', on, 'slots')) return;
+                const a = slotRows(on, { selectLabel: 'select smith 1', needsYouAt: WORK_SLOTS.needsYouAt });
+                const b = slotRows(off, { selectLabel: 'select smith 1', needsYouAt: WORK_SLOTS.needsYouAt });
+                const agents = Object.keys(a.byAgent).filter(id => id !== 'null' && id !== 'undefined');
+                // A pitch is its slot (pitchIndex); Hz carries the take's ±0.3 % rate jitter.
+                const pitches = agents.map(id => [...new Set(a.byAgent[id].map(s => s.pitchIndex))]);
+                const hzOf = id => fmt(median(a.byAgent[id].map(s => s.hz)), 0);
+                const distinct = new Set(pitches.flat()).size;
+                verdict('workslots', agents.length === 2 && pitches.every(p => p.length === 1) && distinct === 2, `2 forge agents: accent pitches ${agents.map((id, i) => `${id} slot ${pitches[i].join('/')} ≈ ${hzOf(id)} Hz (${a.byAgent[id].length} accents)`).join(', ') || 'none'}; ${distinct} distinct; want 2 agents, one pitch each, 2 distinct (SIG-11)`);
+                const selected = on.meta.markers.find(m => m.label === 'select smith 1')?.agentId;
+                const other = agents.find(id => id !== selected);
+                // The same accents booked in both renders (one seed), after the
+                // selection: their published gains differ by the focus alone.
+                const t0 = a.selectAt;
+                const paired = pairedGainDiffs(on, off, { from: t0 + 0.5, to: on.meta.warmup + on.meta.seconds });
+                const fo = judgeFocus({ focusDb: paired[selected] || [], otherDb: paired[other] || [] });
+                verdict('workslots', fo.pass, `focus on ${selected ?? '—'} at ${fmt(t0, 1)} s: its accents ${signed(fo.focusDb, 2)} dB over the same accents in the twin without focus (${(paired[selected] || []).length} paired; published gains), the other smith ${signed(fo.otherDb, 2)} dB (${(paired[other] || []).length} paired); want ${signed(L.focusDb, 0)} ± ${L.focusTolDb} and the other unmoved`);
+                const n = a.needsYou;
+                const m = b.needsYou;
+                const pre = x => (x && Number.isFinite(x.trimDb) ? x.mMax - x.trimDb : x?.mMax);
+                const delta = n && m ? pre(n) - pre(m) : null;
+                verdict('workslots', delta != null && Math.abs(delta) <= L.signalTolLu, `a needs-you from the bystander while smith 1 is focused: ${fmt(n?.mMax)} vs ${fmt(m?.mMax)} LUFS-M max without focus (cue trims ${signed(n?.trimDb)} / ${signed(m?.trimDb)} dB), before its bed-aware trim ${signed(delta, 2)} LU; want within ±${L.signalTolLu} (focus never touches the signal stratum)`);
+            },
+        });
+    }
+    if (has('worknight')) {
+        for (const pattern of Object.keys(WORK_PATTERNS)) units.push(audibilityUnit('worknight', pattern, 'night'));
+    }
+    if (has('quietmix')) {
+        units.push({
+            name: 'quietmix (5.6: blur in Village and Town band)',
+            async run() {
+                const { blurAt, focusAt } = QUIET_MIX;
+                const pair = async kind => [await renderOnce(`quiet:${kind}`, quietMixScene(kind)), await renderOnce(`quiet:${kind}:twin`, quietMixScene(kind, { blur: false }))];
+                const at = (r, s) => r.meta.warmup + s;
+                const rowOf = (x, y, stem) => quietStemRow(levelDiffCurve(x.stems[stem], y.stems[stem], x.sr), { blurSec: at(x, blurAt), focusSec: at(x, focusAt) });
+                const stateLine = (r) => {
+                    const q = r.meta.stateLog.find(s => s.t > at(r, blurAt) + 1 && s.t < at(r, focusAt))?.quietMix;
+                    return q ? `quietMix ${q.active ? 'active' : 'inactive'} (${q.preset ?? '—'}: ${Object.entries(q.factors || {}).map(([k, v]) => `${k} ×${fmt(v, 2)}`).join(', ')})` : 'no quietMix state';
+                };
+                const [v, vt] = await pair('village');
+                if (!workshopsPresent('quietmix', v, 'village blur')) return;
+                const musicPlays = levelDiffCurve(vt.stems.music, vt.stems.music, vt.sr).filter(([t]) => t > at(vt, blurAt) && t < at(vt, focusAt)).length;
+                const accIn = accentGainOffsetDb(v, { from: at(v, blurAt) + 1, to: at(v, focusAt) });
+                const accOut = accentGainOffsetDb(v, { from: v.meta.warmup, to: at(v, blurAt) });
+                const acc = { n: accIn.n, medianDb: offsetStepDb(accIn, accOut) };
+                const ghosts = ghostsIn(v, at(v, blurAt) + 0.5, at(v, focusAt));
+                const ghostsTwin = ghostsIn(vt, at(vt, blurAt) + 0.5, at(vt, focusAt));
+                const village = judgeQuietMix({
+                    world: { ...rowOf(v, vt, 'world'), want: L.quietWorldDb },
+                    music: { ...rowOf(v, vt, 'music'), want: -Infinity },
+                    'work accents': { levelDb: acc.medianDb, restoreLagSec: null, restore: false, want: L.quietWorldDb },
+                });
+                for (const x of village.rows) verdict('quietmix', x.pass, `Village blur ${blurAt}–${focusAt} s, ${x.name}: ${signed(x.levelDb)} dB ${x.restore === false ? `(work-stem peak over published gain, ${acc.n} blurred accents vs ${accOut.n} before the blur)` : `vs the twin that never blurred, back within ${L.quietTolDb} dB ${fmt(x.restoreLagSec, 2)} s after focus`}; want ${x.want === -Infinity ? `≤ ${L.musicOffDb} dB (music 0)` : `${signed(x.want)} ± ${L.quietTolDb} dB`}${x.restore === false ? '' : `, restored ≤ ${L.restoreSec} s`}${x.name === 'music' && !musicPlays ? ' (the twin played no music in the window)' : ''}`);
+                verdict('quietmix', ghosts === 0 && ghostsTwin > 0, `Village blur: ghost strikes ${ghosts} (twin ${ghostsTwin} in the same window); want 0 while blurred (accents only); ${stateLine(v)}`);
+                const [h, ht] = await pair('held');
+                const held = judgeQuietMix({ 'held note': { ...rowOf(h, ht, 'signalBed'), want: 0, tolDb: L.heldTolDb, restore: false } });
+                verdict('quietmix', held.pass, `Village blur, the held note (signalBed stem): ${signed(held.rows[0].levelDb, 2)} dB vs the twin; want 0 ± ${L.heldTolDb} dB (untouched); world ${signed(rowOf(h, ht, 'world').levelDb)} dB`);
+                const sh = slotRows(h, { selectLabel: null, needsYouAt: QUIET_MIX.needsYouAt });
+                const st = slotRows(ht, { selectLabel: null, needsYouAt: QUIET_MIX.needsYouAt });
+                const pre = x => (x && Number.isFinite(x.trimDb) ? x.mMax - x.trimDb : x?.mMax);
+                const dn = sh.needsYou && st.needsYou ? pre(sh.needsYou) - pre(st.needsYou) : null;
+                verdict('quietmix', dn != null && Math.abs(dn) <= L.signalTolLu, `Village blur, a needs-you at ${QUIET_MIX.needsYouAt} s: ${fmt(sh.needsYou?.mMax)} vs ${fmt(st.needsYou?.mMax)} LUFS-M max in the twin (trims ${signed(sh.needsYou?.trimDb)} / ${signed(st.needsYou?.trimDb)} dB: the bed-aware trim follows the quieter bed), before its trim ${signed(dn, 2)} LU; want within ±${L.signalTolLu} (the signal path untouched)`);
+                const [t, tt] = await pair('town');
+                const town = judgeQuietMix({ 'Town band music': { ...rowOf(t, tt, 'music'), want: L.quietTownDb } });
+                const x = town.rows[0];
+                verdict('quietmix', x.pass, `Town band blur: music ${signed(x.levelDb, 2)} dB vs the twin, back within ${L.quietTolDb} dB ${fmt(x.restoreLagSec, 2)} s after focus; want ${L.quietTownDb} ± ${L.quietTolDb} dB, restored ≤ ${L.restoreSec} s; ${stateLine(t)}`);
+                const townStrikes = strikesOf(t, { from: 0, to: Infinity }).length + strikesOf(tt, { from: 0, to: Infinity }).length;
+                verdict('quietmix', townStrikes === 0, `D4: workshop strikes in Town band with 4 workers (both renders): ${townStrikes}; want 0 (no work stratum in Town band)`);
+            },
+        });
+    }
+    if (has('quota')) {
+        units.push({
+            name: 'quota (5.7: the mine rumble over a quota sweep)',
+            async run() {
+                const s = await renderOnce('quota:sweep', quotaScene());
+                const tw = await renderOnce('quota:twin', quotaScene({ sweep: false }));
+                if (!workshopsPresent('quota', s, 'quota sweep')) return;
+                const q = quotaRows(s, tw, { ...QUOTA_STEPS, staleAt: QUOTA_STALE_AT });
+                const j = judgeQuotaSweep(q.steps);
+                const lvl = x => (x === -Infinity ? 'silent' : `${fmt(x)} dB`);
+                verdict('quota', j.pass, `mine 80–160 Hz (the quota lane: work stem minus the twin without usage) at ratio ${q.steps.map(x => `${x.ratio} ${lvl(x.levelDb)}`).join(' → ')} (heard work stem ${q.steps.map(x => lvl(x.heardDb)).join(' → ')}; before the sweep ${lvl(q.before)}): rise ${j.riseDb === Infinity ? 'from silence' : `${signed(j.riseDb)} dB`}${j.drops.length ? `; drops ${j.drops.map(d => `${d.from}→${d.to} ${signed(d.deltaDb)}`).join(', ')}` : ''}; want ≥ +${L.quotaRiseDb} dB, monotonic (±${L.quotaMonotonicTolDb})`);
+                verdict('quota', q.cues === 0, `audio:cue-played during the sweep: ${q.cues}; want 0 (continuous textures never caption)`);
+                const top = q.steps.at(-1)?.levelDb;
+                verdict('quota', Number.isFinite(top) && (q.staleDb === -Infinity || q.staleDb <= top + L.quotaSilentDb), `quota unavailable at ${QUOTA_STALE_AT} s: the lane ${lvl(q.staleDb)} from 3 s after vs ${lvl(top)} at 1.0${q.staleDb === -Infinity ? '' : ` (${signed(q.staleDb - top)} dB)`}; want ≤ ${L.quotaSilentDb} dB (silent on stale data)`);
+                info('quota', `layer quota state at the end: ${JSON.stringify(s.meta.workshops?.quota ?? null)}`);
+            },
+        });
+    }
+    if (has('camera')) {
+        units.push({
+            name: 'camera (5.8: a pan across the Harbor)',
+            async run() {
+                const spec = cameraScene(HARBOR_WORLD);
+                const r = await renderOnce('camera:pan', spec);
+                if (!workshopsPresent('camera', r, 'camera pan')) return;
+                if (!r.meta.cameraSeam) { verdict('camera', false, 'director.setCameraSource is missing: the scripted camera cannot reach the director'); return; }
+                const w = r.meta.warmup;
+                const c = CAMERA_PAN;
+                const camCross = signCrossing(t => cameraPanTarget(spec.camera, t), c.stillUntil - 1, c.panUntil + 1);
+                const cameraCrossSec = camCross != null ? w + camCross : null;
+                const end = w + r.meta.seconds;
+                const emitters = [
+                    ['workshop Harbor', r.meta.workshops?.placementLog, 'harbor'],
+                    ['sea harbor lane', r.meta.sea?.placementLog, 'harbor'],
+                ];
+                for (const [label, log, key] of emitters) {
+                    const rows = placementLogRows(log, key, 'pan');
+                    if (!rows.length) { verdict('camera', false, `${label}: no placement writes logged (${log ? 'empty log' : 'no placementLog in the snapshot'})`); continue; }
+                    const traj = targetTrajectory(rows, rows[0].value);
+                    const heardCrossSec = signCrossing(traj, w + c.stillUntil - 1, w + c.panUntil + 3);
+                    const moving = rows.filter(x => x.at >= w + c.stillUntil - 0.5 && x.at <= w + c.panUntil + 2);
+                    const still = rows.filter(x => (x.at >= w + 2 && x.at < w + c.stillUntil - 0.5) || (x.at >= w + c.stillFrom && x.at <= end)).length;
+                    const allWrites = (log || []).filter(x => (x.building ?? x.lane) && ((x.at >= w + 2 && x.at < w + c.stillUntil - 0.5) || x.at >= w + c.stillFrom)).length;
+                    const j = judgeCameraPan({ cameraCrossSec, heardCrossSec, targets: [rows.filter(x => x.at < w + c.stillUntil - 0.5).at(-1)?.value, ...moving.map(x => x.value)].filter(Number.isFinite), stillWrites: still });
+                    verdict('camera', j.pass, `${label}: the camera crosses the Harbor at ${fmt(cameraCrossSec, 2)} s, its pan through 0 at ${fmt(heardCrossSec, 2)} s (${signed(j.lagSec, 2)} s); ${moving.length} writes while panning, largest step ${fmt(j.maxStep, 3)}; writes while the camera is still ${j.stillWrites} (any emitter in that log: ${allWrites}); want ≤ ${L.crossWithinSec} s after, steps ≤ ${L.panStep}, 0 still`);
+                }
+                info('camera', `placement writes: workshops ${r.meta.workshops?.placementWrites ?? '—'}, sea ${r.meta.sea?.placementWrites ?? '—'}; sea coast ${JSON.stringify(r.meta.sea?.placement?.coast ?? null)}`);
+            },
+        });
+    }
+    return units;
 }
 
 // Wave-3 numbers shared between units (the cluster render feeds must-never 13).

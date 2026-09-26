@@ -8,12 +8,20 @@ import {
     YIELD_SLACK_SEC,
     audioTimeForMonotonic,
     balanceGains,
+    coastLane,
     crestClear,
+    harborLane,
     guardWindow,
     seaParams,
     seaState,
     swellSets,
 } from '../../claudeville/src/presentation/shared/audio/layers/SeaLayer.js';
+import {
+    BUILDING_WORLD,
+    OPEN_LOWPASS_HZ,
+    placeCoastFromCamera,
+    placeFromCamera,
+} from '../../claudeville/src/presentation/shared/audio/SpatialField.js';
 
 test('the sets swing between small and big waves and never repeat within an hour', () => {
     let lo = Infinity;
@@ -101,4 +109,23 @@ test('lane balance is equal power and centred at unity', () => {
         assert.ok(pan > 0 ? r > l : l > r);
     }
     assert.deepEqual(balanceGains(3), balanceGains(1));
+});
+
+test('the camera brings the harbor close and loud, and never loses it or the coast across the island', () => {
+    const home = harborLane(null);
+    assert.deepEqual(home, { pan: 0.33, lowpassHz: OPEN_LOWPASS_HZ, level: 1, send: 0.22 });
+    const onTheJetty = harborLane(placeFromCamera('harbor', { x: 800 - BUILDING_WORLD.harbor.x, y: 450 - BUILDING_WORLD.harbor.y, zoom: 1, viewportW: 1600, viewportH: 900 }));
+    assert.ok(onTheJetty.level > home.level && onTheJetty.level <= Math.pow(10, 2 / 20) + 1e-9, `on the jetty ${onTheJetty.level}`);
+    assert.equal(onTheJetty.pan, 0);
+    let previous = Infinity;
+    for (const gain of [1, 0.8, 0.6, 0.4, 0.2, 0.12]) {
+        const lane = harborLane({ pan: 0.5, lowpassHz: 4000, gain, air: 0.3 });
+        assert.ok(lane.level <= previous);
+        assert.ok(lane.level >= Math.pow(10, -7 / 20) - 1e-3, `farthest harbor ${lane.level}`);
+        assert.ok(lane.send >= home.send);
+        previous = lane.level;
+    }
+    assert.deepEqual(coastLane(null), { pan: 0, lowpassHz: OPEN_LOWPASS_HZ, level: 1 });
+    const inland = coastLane(placeCoastFromCamera({ x: 800 / 3, y: 450 / 3 - 624, zoom: 3, viewportW: 1600, viewportH: 900 }));
+    assert.ok(inland.level >= 0.5 && inland.level < 1 && inland.lowpassHz >= 2000);
 });

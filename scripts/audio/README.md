@@ -14,9 +14,9 @@ dev dependencies). No ffmpeg, sox, scipy, or extra install. Dev-only: nothing he
 
 A **local maintainer gate**, not part of `validate:quick` or CI (CI installs with `--ignore-scripts`
 and has no browser). Run it at the end of every audio wave; it exits non-zero on any FAIL and writes
-nothing unless `--out` or `--update` is given. **Status:** the Wave 4 gate; the default run takes
-about 10–12 minutes (the virtual-clock checks ≈ 6 min with `--jobs 2` — the 72-scene world map alone
-≈ 4 min —, the rest is the live app, the frame-cost run and the lint).
+nothing unless `--out` or `--update` is given. **Status:** the Wave 5 gate; the default run takes
+about 12–14 minutes (the virtual-clock checks ≈ 8 min with `--jobs 2` — the 72-scene world map alone
+≈ 4 min, the workshop checks ≈ 1.5 min —, the rest is the live app, the frame-cost run and the lint).
 
 ```sh
 npm run audio:probe                                   # every check (virtual clock + the live-app checks)
@@ -33,7 +33,7 @@ Each line prints `PASS`/`FAIL`/`INFO`/`DEFER`/`WARN`, the check, and its numbers
 
 ### Plan stage and deferred checks
 
-`PLAN_STAGE` in `lib/checks.mjs` is the wave the probe gates (now **4**); bump it at each wave's exit.
+`PLAN_STAGE` in `lib/checks.mjs` is the wave the probe gates (now **5**); bump it at each wave's exit.
 A criterion whose owner lands in a later wave is listed in `GATED_FROM` with that wave: it is measured
 and printed as `DEFER` with the same numbers and the wave that gates it, counted in the summary line,
 and never fails the run. Once `PLAN_STAGE` reaches its wave it gates like everything else. Every
@@ -48,6 +48,13 @@ Wave 4 made the busy village (A + 4 ± 2, LRA ≤ 8; re-checked when music becom
 Wave 6), the storm (≤ A + 6, ST max ≤ −27) and the error over the storm (floor +6, band rule, GR ≤ 3 dB)
 live. Every lane gates at its full S2 window, the error and limit band rule and ceilings with the
 Wave-3 signal voices; urgent GR ≤ 3 dB, rain ≤ A + 5 and every other scene target gate too.
+
+Wave 5 added the workshop checks (`workshops`, `worklevel`, `workslots`, `worknight`, `quietmix`,
+`quota`, `camera`); every one gates now. The workshop stratum is isolated as the difference of two
+renders of one seed — the scene, and the same scene with the *Workshops* fader at 0 (`env`) — on the
+work stem and the air's wet return: the two share every draw, so the difference is the stratum alone,
+sample for sample. The quiet mix and the quota lane are judged the same way against a twin render
+without the blur or without `usage:updated`.
 
 ### The virtual clock (HAR-1)
 
@@ -102,6 +109,20 @@ it; `isolate: 'none'` silences every layer), and every render's meta carries `se
 with their resonances). `storm-flash <intensity>` markers pair with the thunder scores
 (`audio:cue-scheduled` kind `thunder`, first note = the onset) in flash order.
 
+Wave 5 (`page/workshop.js`, `page/scene.js`, `page/virtual.js`): every render's meta carries `work`
+(each `audio:work-scheduled` row: building, agent, `kind` accent/ghost, `flam`, audio `at`, `wallMs`,
+`downbeatMs`, slot `pitchIndex`, `hz`, `gainDb`, `variant`), `workCancelled` (`audio:work-cancelled`)
+and `workshops`, the layer's `snapshot()` (node creations, guard hits, drops, `placementLog`, the
+quota lane). Agents work through `currentTool`/`currentToolInput` (the fixture's one tool per
+building, varied per call) and each tool start is a `status` action on the 2 s poll grid (phase
+0.4 s) that also burns tokens (the Mine). `rituals: true` installs a stand-in ritual conductor at
+`window.__claudeVilleApp.renderer.ritualConductor` — a ritual per observed tool start with
+`RitualConductor`'s durations, pending step and beat origin — so the director's own World path reads
+it; `meta.rituals` lists the downbeats it drew (Date.now ms). `camera: { viewportW, viewportH, zoom,
+path: [{ at, cx, cy }] }` scripts the view centre through `director.setCameraSource`. Actions
+`{ select: { index } }` / `{ deselect: true }` emit `agent:selected` / `agent:deselected`, and every
+state-log row carries `__claudevilleAudio().quietMix`.
+
 **Seeded streams and accounting (Wave 2).** Every virtual page calls `Rng.js` `setRngSeed(seed)`
 before the app starts, so each world, work, music and cue stream is deterministic per probe seed; a
 scene's `rng: { constant }` instead pins every draw (`setRngOverride`, and `Math.random` for older
@@ -115,7 +136,7 @@ the buffer identity, offset and rate. Sources on other contexts (bakes) are not 
 source that reaches the music bus.
 
 Scenes (`lib/scenes.mjs`) start from stored settings the controller loads as a calibrated profile
-(standard volume step, trims at 10 unless the scene says otherwise, `claudeville.sound.calibration = 2`);
+(standard volume step, trims at their `SoundSettings.js` default step unless the scene says otherwise, `claudeville.sound.calibration = 2`);
 `warmup` seconds settle the enable fade and the level slews and are discarded. The harness page has no
 AttentionService, VillageDirector or AgentEventStream, so scenes emit their events (`attention:raised`,
 `attention:acknowledged`, `distress:watchtower`, `village:scene`, `chronicle:aurora`, `team:gather`,
@@ -153,6 +174,13 @@ cooldowns and the governor's spacing and rate (the routine lane is 4/min since o
 | `thunder` | 4.2 (AMB-6): six flashes (0.9, 0.3, 0.7, 0.5, 1.0, 0.6; 18 s apart) over the world-only storm. Each strike, from its onset (the thunder score's first note, paired with the flashes in order): LU over the 3 s before (max momentary over the 8 s roll) in `AUDIBILITY_WINDOWS.lanes.thunder` near (intensity ≥ `storm.thunderNearFrom`) or far; onset `0.4 + 4.5·(1 − i)` s after the flash ± 0.25 s; limiter GR ≤ 6 dB. Across strikes: level monotonic in intensity (a louder-for-less step > 0.5 LU fails); a fresh grain (each strike's reads of a pool buffer — spans of buffer time — ≥ 5 s from the previous two strikes' reads; the brown pool holds ≈ 68 s, so freshness is judged against the last strikes); no duck window; the scene's ST max ≤ −27 |
 | `masking` | must-never 8: in the Village storm a needs-you and an error each placed ≈ 1 s into a full-intensity thunder roll keep the S2 weather window (floor, band rule, GR ≤ 3 dB; INFO: the cue stem over the world stem while both sound); every urgent lane over rain (the `margins` rain render) keeps its floor |
 | `crest` | 4.6 (AMB-9): the loudest crest in 20–60 s of a cue-free render (the night Village bed with no music; the storm); each lane's lead from action to first note from a calibration render (its off-crest margin); then one render per lane with the cue moved so its first note lands on that crest: routine and needs-you at night, the error in the storm, each within its S2 window. INFO: the nearest crest in the placed render (moved or not), the sea's yields, the cue lead (cues < 1.5 s ahead rely on the duck) |
+| `workshops` | 5.1 (FOL-1, FOL-5, FOL-7): the FOL reference scene by day (3 Forge — one goes stale at 34 s, two end their turn at 46 s —, 2 Archive, 1 Harbor with a push and a status, the Mine from everyone's token burn; Village, no music, 60 s): the Forge's longest gap between strikes while it works ≤ 2.8 s; its last strike ≤ 1 s before the smiths' first non-working observation and none later than P_b after it; no accent from the stale smith; node creations ≤ 2 per published take. Honesty (S6): 0 strikes while only stale agents work, 0 from one gesture period after the only worker goes idle until it resumes, 0 later than 0.35 s after the `linkLost` cue (the feed made live, then dropped). World (the stand-in conductor): every accent claiming a downbeat vs the nearest drawn one, median ≤ 15 ms, p95 ≤ 30 ms, none off every drawn beat; the poll-lock pulse index (onsets folded onto the 2 s poll in 8 bins, fullest over mean; flam followers are one onset) ≤ 1.8. INFO: the same village in Dashboard (pulse index, onset parity, no downbeat claimed), strikes on their gesture grid, main-thread cost per tick (the layer's own `scheduleMs`, the director tick and the Transport tick) |
+| `worklevel` | 5.3 (C-FOL-3) over the reference scene and the other four buildings (2 agents each at the Task board, Observatory, Portal, Command, and the Mine), by day, each against its `env` twin: the stratum (work stem + air return, ctx − env, at the output) ≤ program − 8 LU; program Δ ≤ +0.5 LU; its true peak ≥ 2 dB under the quietest urgent cue's (median per lane of the cue stem's TP over [t, t + 2.5 s] in the `margins` Village render — the Wave-3 voices at their in-context trims); onset-weighted 2–5 kHz share of the program (2–5 kHz ÷ full-band energy of the mid over every onset's [t, t + 150 ms]) ≤ 1.5 % in the reference scene (the plan's figure), and elsewhere the stratum's increment over the environment alone at the same instants ≤ +0.3 points (the absolute share printed); ≤ 3 onsets in any 1 s; two routine arrivals lose ≤ 0.3 LU of margin to the stratum. Accents heard ≥ 80 % at every staffed building on ≥ 20 accents each (a 3/4 share is no evidence), judged on 180 s audibility cells of both patterns (every agent working throughout, a tool start every poll or two, two agents git-calling at the Harbor, no cue) against their `env` twins: FOL's band rise ≥ 6 dB in FOL round 2's bands, 40 ms — 200 ms for page, rope, rune, chalk and quill — over the median of [t − 300, t − 30) ms; INFO: the same instants in `env`, the false-positive control |
+| `workslots` | 5.4 (SIG-11, SIG-12): two smiths starting a tool every poll or two: 2 agents, one accent slot each, 2 distinct; the first selected at 45 s — the same accents in a twin without the selection differ by +4 ± 0.5 dB for it and ≤ 0.5 dB for the other; a needs-you from a bystander 17 s later within ±0.5 LU of the twin's (cue stem M max less its bed-aware trim) |
+| `worknight` | 5.5 (FOL-8): the two audibility cells at night against their `env` twins: every staffed building's accents heard ≥ 80 % in 1.2–3 kHz on ≥ 20 accents each. INFO: the program with and without the stratum, the layer's night flag, the Forge's accent slots |
+| `quietmix` | 5.6 (D3, D4): blur 20 s, focus 40 s, each scene against a twin that never blurs, levels in 0.1 s blocks. Village with music playing: world −6 ± 1 dB, music ≤ −40 dB, both back within 1 dB ≤ 1 s after focus; work accents −6 ± 1 dB (each accent's work-stem peak less its published gain, per building, blurred vs before the blur); 0 ghosts while blurred. Village with a wait and no music: the held note (signalBed) 0 ± 0.5 dB; a needs-you at 30 s within ±0.5 LU of the twin's before its bed-aware trim. Town band: music −3 ± 1 dB, restored ≤ 1 s, and 0 workshop strikes (no work stratum in Town band) |
+| `quota` | 5.7 (SIG-13): `usage:updated` with the 5-hour ratio 0.7, 0.8, 0.9, 1.0 every 8 s, then `quotaAvailable: false`, one reader keeping the village awake; the quota lane = the work stem minus a twin without usage, 80–160 Hz over each step's last 4 s: monotonic (±0.2 dB; a silent step is a measured silence) and ≥ 10 dB from 0.7 to 1.0; 0 `audio:cue-played`; 3–7 s after the quota goes unavailable ≥ 40 dB under its 1.0 level |
+| `camera` | 5.8 (D8): a harbor worker; the camera still, then its centre panning 1000 px across the Harbor in 6 s (zoom 1, 1280 × 720), then still. The camera's crossing is where `SpatialField.placeFromCamera` (unstepped) puts the Harbor's pan through 0 on the scripted path; the heard crossing is the pan rebuilt from the `placementLog` writes (`setTargetAtTime`, τ from the log) — for the Harbor workshop chain and the sea's harbor lane, each ≤ 0.6 s after the camera's, no written step > 0.2, 0 writes while the camera is still |
 | `lint` | HAR-4 envelope lint (below) finds no hazard, and each unit started at least one source: every cue kind (`cue-gallery` and the `*-night` cues, offline), `layer-crickets-night`, and `bgm-night-to-ambient` (a BGM night piece, then a switch to the ambient preset); INFO: the app session's hazards |
 | `routing` | must-never 2: an errored agent's `audio:cue-played` kinds are all `distress`, a rate-limited agent's all `limit`, never `summons` — with `attention:raised` first, with `distress:watchtower` first, and through the live producers (a sim status step) |
 | `away` | must-never 4: after a real TopBar click (`--autoplay-policy=user-gesture-required`), a needs-you raised 5 s into an absence sounds. Hidden tab and blur with `claudeville.sound.background = signals` close the bed, so the call must stand the `Loudness.js` needs-you minimum (+10 LU) over the preceding `bedWindowSec` (3 s) of what the listener heard — a suspended context counts as silence, scored at −80 LUFS. A plain blur keeps the full mix (decision D3), so there the call must reach the cue bus (≥ −60 dBFS) with the context running; its margin over the bed is must-never 1, gated on the virtual clock by `margins` |
@@ -377,7 +405,8 @@ dashed white line. Time axis in seconds.
 - `lib/probe-app.mjs` — the live-app checks (routing, away, ceremony, continuity, frame cost) and the lint units
 - `lib/probe-wave2.mjs` — Wave-2 measurements (transport, pause, air, noise, bank, sequencer) and the reference-tree export
 - `lib/soak.mjs` — the realtime soak (`--soak`)
-- `lib/checks.mjs` — pure judges: S2 scene targets, lane windows, limiter GR, switch hole/bump, ducked time, onsets and AV sync, baseline comparison, and Wave 2's transport, resume burst, noise lanes, air T60, bank, sequencer and frame-cost judges (unit-tested in `scripts/tests/audio-probe-checks.test.mjs`)
+- `lib/checks.mjs` — pure judges: S2 scene targets, lane windows, limiter GR, switch hole/bump, ducked time, onsets and AV sync, baseline comparison, Wave 2's transport, resume burst, noise lanes, air T60, bank, sequencer and frame-cost judges, and Wave 5's workshop timing, level, focus, quiet-mix, quota and camera judges (unit-tested in `scripts/tests/audio-probe-*.test.mjs`)
+- `lib/probe-wave5.mjs` — Wave-5 measurements: published strikes, the stratum as ctx − env, audibility and the onset-weighted share, slots and focus, quiet-mix curves, the quota lane, camera crossings
 - `lib/scenes.mjs` — the probe's named scenes and cue placements
 - `lib/virtual.mjs` — Node side of the virtual clock (one page per scene, stems out)
 - `lib/format.mjs` — number formatting for reports
@@ -394,5 +423,6 @@ dashed white line. Time axis in seconds.
 - `page/runtime.js` — in-page scenario runner (realtime, offline cues, snippets)
 - `page/scene.js` — the scenario vocabulary both runners share (worlds, atmosphere, stored settings, actions)
 - `page/virtual-clock.js`, `page/virtual.html`, `page/virtual.js` — the virtual clock (timer attribution, source accounting) and its renderer (scenes, engine and Island Air units)
+- `page/workshop.js` — Wave 5's renderer stand-ins: a ritual conductor that draws downbeats for observed tool starts, a scripted camera
 - `page/probe-app.js` — in-app driver for the probe (sim fixture, away/return, cue-bus watch, blur/focus, frame profile)
 - `snippets/` — example snippets (`example-glass-bell.js` standalone, `example-crickets-softer.js` A/B)

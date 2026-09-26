@@ -5,7 +5,7 @@
 //   layer ─► director group (groupInput(name, director); crossfade gain)
 //         ─► group fader (mixer trim) ─► bus
 //   world (wind, rain, wildlife) ─► presence dip −3 dB @ 3.4 kHz ─► weather ceiling ─► worldDuck ─┐ tilt
-//   work (hum) ────────────────────────────────────────────────────────────────────► workDuck ──┤
+//   work (hum, workshops) ─────────────────────────────────────────────────────────► workDuck ──┤
 //   music ─► low shelf −3 dB @ 160 Hz ─► bass < 300 Hz mono ─► attention ───────────► musicDuck ─┘ tilt
 //     programSum (tilt = circadian high shelf on world + music only)
 //       ─► bedGate ─► PROGRAM_TRIM ─► HPF 30 Hz ─┐
@@ -53,9 +53,16 @@ import { Transport } from './Transport.js';
 export const MIN_GAIN = 0.0001;
 
 // Mixer groups with a persistent fader each; layers name theirs via BaseLayer's `group`.
-export const AUDIO_GROUPS = Object.freeze(['wind', 'rain', 'wildlife', 'hum', 'music']);
+export const AUDIO_GROUPS = Object.freeze(['wind', 'rain', 'wildlife', 'hum', 'workshops', 'music']);
 export const AUDIO_BUSES = Object.freeze(['world', 'work', 'music', 'cue', 'signalBed']);
-const GROUP_BUS = Object.freeze({ wind: 'world', rain: 'world', wildlife: 'world', hum: 'work', music: 'music' });
+const GROUP_BUS = Object.freeze({
+    wind: 'world',
+    rain: 'world',
+    wildlife: 'world',
+    hum: 'work',
+    workshops: 'work',
+    music: 'music',
+});
 const DUCKED_BUSES = Object.freeze(['world', 'work', 'music', 'signalBed']);
 
 // Circadian high shelf at 3 kHz on world + music (SOTA-14, MIX-5), dB by phase.
@@ -298,6 +305,9 @@ export class AudioEngine {
         this._bedTap = null;
         this._bedMeter = null;
         this._bedOpenAt = null;
+        // D3's quiet mix lowers the bed on purpose; its readers hear the full
+        // bed through this compensation (setBedCompensation).
+        this._bedComp = { from: 0, to: 0, at: 0 };
         this._musicPre = null;
         // Mix state outlives the context so a rebuilt graph keeps the mix.
         this._groupLevels = new Map(AUDIO_GROUPS.map(name => [name, 1]));
@@ -605,9 +615,10 @@ export class AudioEngine {
 
     // LUFS of the pre-duck bed (world + work + music) over ~3 s, K-weighted,
     // true-stereo power, in the bus domain: before PROGRAM_TRIM, tilt, fade
-    // and volume (the domain of Loudness.js VOICE_REGISTRY nominals). null
-    // while the bed is paused or unprimed (not started, a wake, a suspended
-    // context, or < 1.5 s since the bed opened); silence reads −70.
+    // and volume (the domain of Loudness.js VOICE_REGISTRY nominals), plus
+    // the bed compensation. null while the bed is paused or unprimed (not
+    // started, a wake, a suspended context, or < 1.5 s since the bed
+    // opened); silence reads −70.
     bedLoudness() {
         const meter = this._bedMeter;
         const ctx = this.context;
@@ -618,7 +629,27 @@ export class AudioEngine {
         for (let i = 0; i < meter.data.length; i++) sum += meter.data[i];
         const meanSquare = sum / meter.data.length;
         if (!(meanSquare > 0)) return BED_FLOOR_LUFS;
-        return Math.max(BED_FLOOR_LUFS, -0.691 + 10 * Math.log10(meanSquare));
+        return Math.max(BED_FLOOR_LUFS, -0.691 + 10 * Math.log10(meanSquare) + this._bedCompensationAt(ctx.currentTime));
+    }
+
+    // D3 (5.6): the blurred window's quiet mix lowers the bed faders by
+    // `db` on purpose; every bed reader (cue trims, the held note) must
+    // still level against the full bed, so signals sound unchanged. The
+    // compensation eases with the tap's own one-pole mean (BED_TAU_SEC),
+    // so a steady bed reads the same across the change.
+    setBedCompensation(db) {
+        const now = this.now();
+        const to = Math.max(0, Number(db) || 0);
+        this._bedComp = { from: this._bedCompensationAt(now), to, at: now };
+    }
+
+    _bedCompensationAt(t) {
+        const { from, to, at } = this._bedComp;
+        // A rebuilt context restarts its clock: the change is long settled.
+        if (from === to || t < at) return to;
+        const g0 = Math.pow(10, -from / 10);
+        const g1 = Math.pow(10, -to / 10);
+        return -10 * Math.log10(g1 + (g0 - g1) * Math.exp(-(t - at) / BED_TAU_SEC));
     }
 
     // A noise lane (AMB-3): an unstarted, looping AudioBufferSourceNode on

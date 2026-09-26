@@ -210,6 +210,19 @@ export const VOICE_REGISTRY = Object.freeze({
     'cue.linkRestored': Object.freeze({ nominalLufsM: -38.1, plr: 6.1 }),
     'cue.digest': Object.freeze({ nominalLufsM: -36.0, plr: 12.0 }),
     'cue.thunder': Object.freeze({ nominalLufsM: -43.4, plr: 11.6 }),
+    // Wave 5 workshop accents (WorkshopVoices.js, 5.2): one accent take of
+    // the building's accent voice at unit gain (every take peaks at 1.0),
+    // mono placed centre at equal power (−3 dBFS a channel), median over
+    // its day slot pitches and variants and three seeds (spread ≤ 0.8 LU).
+    // The layer's per-strike ceiling, not these rows, bounds its peaks.
+    'work.forge': Object.freeze({ nominalLufsM: -15.9, plr: 12.9 }),
+    'work.archive': Object.freeze({ nominalLufsM: -18.1, plr: 15.1 }),
+    'work.mine': Object.freeze({ nominalLufsM: -19.9, plr: 16.9 }),
+    'work.taskboard': Object.freeze({ nominalLufsM: -20.4, plr: 17.4 }),
+    'work.observatory': Object.freeze({ nominalLufsM: -17.7, plr: 14.7 }),
+    'work.portal': Object.freeze({ nominalLufsM: -16.1, plr: 13.1 }),
+    'work.command': Object.freeze({ nominalLufsM: -21.2, plr: 18.2 }),
+    'work.harbor': Object.freeze({ nominalLufsM: -20.4, plr: 17.4 }),
 });
 
 // Memory table (S8): resident AudioBuffer bytes per SampleBank client
@@ -221,7 +234,7 @@ export const MEMORY_BUDGET = Object.freeze({
     totalBytes: 32 * MIB,
     air: 1.5 * MIB,        // Island Air IRs (2), 48 kHz
     noise: 8 * MIB,        // noise buffer pool, ≤ 48 kHz
-    workshop: 8 * MIB,     // workshop takes, 32 kHz
+    workshop: 8 * MIB,     // workshop takes, 32 kHz (both phases' sets ≈ 6.1 MiB)
     rareWorld: 5 * MIB,    // gulls, clinks, groans, thunder takes, 32 kHz
     music: 8 * MIB,        // music instruments (6.1), 32 kHz
     cueStrikes: 2 * MIB,   // optional; the node path is the default, 48 kHz

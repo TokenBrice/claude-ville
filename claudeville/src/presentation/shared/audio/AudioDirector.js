@@ -11,6 +11,15 @@
 // this director's in both presets — it is the one alive from boot — and play
 // in the Town band's context while that band owns the signals.
 //
+// The work stratum (plan Wave 5): the workshop model reads the World model's
+// non-stale working agents each tick (and after each agent burst) and the
+// workshop layer turns their density into strikes — never one per tool call.
+// In World the accents land on the drawn ritual downbeats, read from the
+// renderer's RitualConductor at scheduling time; Dashboard has no drawn beat.
+// The continuous emitters (each workshop, the harbor and coast lanes) follow
+// the camera on `atmosphere:updated`, and only when their placement changed.
+// The work stratum lives only in this director: the Town band carries none.
+//
 // Atmosphere source: the World renderer broadcasts its per-frame snapshot as
 // `atmosphere:updated` (so debug overrides and village weather influence are
 // heard, not just seen). When that stream goes quiet — Dashboard mode stops
@@ -27,13 +36,24 @@ import {
     verifiedOutcomeFact,
 } from '../../../application/OutcomeSignals.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
+import { ritualDownbeat, RITUAL_GESTURE_PERIOD_MS } from '../../character-mode/RitualConductor.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
 import { readCountHours } from '../SoundSettings.js';
 import { clamp01 } from './AudioEngine.js';
 import { rngStream } from './Rng.js';
 import { cueLifecycleDecision, updateQuietFloor } from './CueGovernor.js';
 import { cuePlacementKind, laneForCueKind } from './cues/CueKit.js';
-import { buildingOf, explicitSpot, resolveCueSpot } from './SpatialField.js';
+import {
+    buildingOf,
+    cameraSnapshot,
+    explicitSpot,
+    mapPlacement,
+    placeCoastFromCamera,
+    placeFromCamera,
+    resolveCueSpot,
+    samePlacement,
+} from './SpatialField.js';
+import { BUILDING_IDS, buildWorkshopState, createWorkshopMemory, quotaRumble } from './WorkshopModel.js';
 import {
     ActionableCueRouter,
     attentionStatus,
@@ -48,6 +68,7 @@ import { RainLayer } from './layers/RainLayer.js';
 import { BirdsLayer } from './layers/BirdsLayer.js';
 import { CricketsLayer } from './layers/CricketsLayer.js';
 import { VillageHumLayer } from './layers/VillageHumLayer.js';
+import { WorkshopLayer } from './layers/WorkshopLayer.js';
 import { HeldNote } from './layers/HeldNote.js';
 import { Sequencer } from './music/Sequencer.js';
 
@@ -99,11 +120,38 @@ const VILLAGE_MUSIC_LEVEL = 0.25;
 const PRIME_TIME_CONSTANT = 0.05;
 // A lost feed fades the work stratum over ~3 s (SIG-9): τ 1 s is 95 % there.
 const LINK_FADE_TIME_CONSTANT = 1;
+// Continuous emitters glide to a new camera placement with τ 0.25 s (5.8).
+const PLACEMENT_TIME_CONSTANT = 0.25;
 
 // Thunder trails the drawn flash by its distance (AMB-6): a near strike
 // (intensity 1) 0.4 s after it, a far one (intensity 0) 4.9 s.
 export function thunderLeadMs(intensity) {
     return (0.4 + 4.5 * (1 - clamp01(intensity))) * 1000;
+}
+
+/**
+ * The work downbeats a building's rituals will draw in [fromMs, toMs) on
+ * the wall clock (FOL-5): each one's peak frame, the cream strike, at
+ * `beat × period`. `ritualDownbeat` decides which strikes are beats (its
+ * stride, phase and motion rules), so sound and picture share one oracle; a
+ * ritual's beats end where the ritual does (`remainingMs` from `nowMs`). Read
+ * at scheduling time (S4), never per frame.
+ */
+export function drawnDownbeats(rituals, fromMs, toMs, nowMs = fromMs) {
+    const strikes = [];
+    for (const ritual of rituals ?? []) {
+        const period = RITUAL_GESTURE_PERIOD_MS[ritual?.pose];
+        if (!period) continue;
+        const endMs = nowMs + Math.max(0, Number(ritual.remainingMs) || 0);
+        for (let beat = Math.ceil(fromMs / period); beat * period < toMs; beat++) {
+            const atMs = beat * period;
+            if (atMs >= endMs) break;
+            if (ritualDownbeat(ritual, atMs)?.phase === 'peak') {
+                strikes.push({ atMs, agentId: ritual.agentId ?? null });
+            }
+        }
+    }
+    return strikes.sort((a, b) => a.atMs - b.atMs);
 }
 
 /**
@@ -128,10 +176,17 @@ export function applyWorldBudgets(levels, { precipitation = 0, storm = 0, restin
         levels.birds = 0;
         levels.crickets = 0;
         levels.hum = 0;
+        levels.workshops = 0;
         levels.music = 0;
     }
     const weather = clamp01(Math.max(rain, clamp01(storm)) / WEATHER_FULL);
     return weather > 0 ? WEATHER_CEILING_DB * weather : 0;
+}
+
+// The page's app (World renderer, mode manager): the one seam the audio side
+// reads the renderer through, as SpatialField does for cue spots.
+function worldApp() {
+    return globalThis.window?.__claudeVilleApp ?? null;
 }
 
 function copyPosition(position) {
@@ -196,7 +251,7 @@ export class AudioDirector {
         this._rng = rngStream('weather.thunder');
         this._actionable = new ActionableCueRouter();
         this._agentAudioContext = new Map();
-        this._mode = 'character';
+        this._mode = worldApp()?.modeManager?.getCurrentMode?.() === 'dashboard' ? 'dashboard' : 'character';
         this._quietFloor = { mode: 'active', calmSince: null, activeSince: null };
         this._framePressureLevel = 0;
         // The held note (3.3) exists only while the Village plays.
@@ -221,6 +276,23 @@ export class AudioDirector {
         this._outcomeTracker.prime(this.world?.agents?.values?.() ?? []);
         this._outcomes = new OutcomeRouter({ emit: outcome => this._playOutcome(outcome) });
         this._harborFailures = null;
+        // The work stratum (Wave 5): the model's memory of tool starts and
+        // slots lives with the director; selection brings an agent's own
+        // work forward (5.4); the quota's last reading (5.7); the continuous
+        // emitters' last placements (5.8), so a still camera writes nothing.
+        this._workshopMemory = createWorkshopMemory();
+        this._workshopState = null;
+        this._selectedAgentId = null;
+        this._usage = null;
+        this._quota = null;
+        this._placements = new Map();
+        this._placementSource = null;
+        // D3 (5.6): the blurred Village's quiet mix; the controller moves the
+        // faders, this director turns the ghosts off and stops hearing music.
+        this._quiet = false;
+        // Probe and QA seams: World's drawn downbeats and camera.
+        this._downbeatOverride = null;
+        this._cameraOverride = null;
 
         // Cue signals stay subscribed while audio is disabled so the
         // accessibility event stream remains useful without an AudioContext.
@@ -249,9 +321,20 @@ export class AudioDirector {
             birds: new BirdsLayer(this.engine, options),
             crickets: new CricketsLayer(this.engine, options),
             hum: new VillageHumLayer(this.engine, options),
+            workshops: new WorkshopLayer(this.engine, { ...options, downbeatSource: this._downbeatSource() }),
             music: new Sequencer(this.engine, { ...options, preset: 'village' }),
         };
         for (const layer of Object.values(this.layers)) layer.start();
+        // A build starts the work stratum's memory afresh (tool starts,
+        // slots) and places its emitters before the first strike.
+        this._workshopMemory = createWorkshopMemory();
+        this._workshopState = null;
+        this.layers.workshops.setFocus(this._selectedAgentId);
+        this.layers.workshops.setGhosts(!this._quiet);
+        this._placements.clear();
+        this._placementSource = null;
+        this._placeEmitters();
+        this._applyQuota();
         this._heldNote = new HeldNote(this.engine, options);
         this._heldNote.start();
 
@@ -340,6 +423,43 @@ export class AudioDirector {
     }
 
     /**
+     * D3's quiet mix (5.6): while the Village plays in a blurred window the
+     * controller lowers the faders; here the workshops keep their accents
+     * only (no ghosts) and the muted composer stops counting as music, so a
+     * wait's held note carries it. Signals and the held note keep their level.
+     */
+    setQuietMix(quiet) {
+        const next = Boolean(quiet);
+        if (next === this._quiet) return;
+        this._quiet = next;
+        this.layers.workshops?.setGhosts(!next);
+        this._syncHeldNote();
+    }
+
+    /** Probe/QA seam: World's drawn downbeats, `(buildingId, fromMs, toMs) → [{ atMs, agentId }]`. */
+    setDownbeatSource(fn) {
+        this._downbeatOverride = typeof fn === 'function' ? fn : null;
+        this.layers.workshops?.setDownbeatSource(this._downbeatSource());
+    }
+
+    /** Probe/QA seam: World's camera, `() → { x, y, zoom, viewportW, viewportH } | null`. */
+    setCameraSource(fn) {
+        this._cameraOverride = typeof fn === 'function' ? fn : null;
+        this._placeEmitters();
+    }
+
+    // Dashboard never draws a downbeat: the layer falls back to its grid.
+    _downbeatSource() {
+        if (this._mode === 'dashboard') return null;
+        return this._downbeatOverride ?? ((buildingId, fromMs, toMs) => drawnDownbeats(
+            worldApp()?.renderer?.ritualConductor?.getActiveRitualsForBuilding?.(buildingId),
+            fromMs,
+            toMs,
+            Date.now(),
+        ));
+    }
+
+    /**
      * A ladder reminder (3.3) in its wait's family voice. Only the director
      * that owns signal routing plays it; a hidden page hands it to the wake.
      */
@@ -361,6 +481,18 @@ export class AudioDirector {
         on('mode:changed', (mode) => {
             this._mode = mode === 'dashboard' ? 'dashboard' : 'character';
             this.governor?.clearRoutine();
+            // World draws downbeats and has a camera; Dashboard has neither.
+            this.layers.workshops?.setDownbeatSource(this._downbeatSource());
+            this._placeEmitters();
+        });
+        // Following an agent brings its own work forward (5.4); the signal
+        // stratum never hears the selection.
+        on('agent:selected', (agent) => this._setSelected(agent?.id ?? null));
+        on('agent:deselected', () => this._setSelected(null));
+        // Quota weather in the mine (5.7): a persistent lane, never a cue.
+        on('usage:updated', (usage) => {
+            this._usage = usage ?? null;
+            this._applyQuota();
         });
         // The World model's own transitions carry the outcomes that must work
         // in Dashboard too (turn ends, dispatches, returns) and the wait the
@@ -499,6 +631,8 @@ export class AudioDirector {
             this._atmosphere = snapshot;
             this._atmosphereAt = Date.now();
             this._atmosphereSource = 'world';
+            // ~2 Hz from the World loop: the continuous emitters follow the camera (5.8).
+            this._placeEmitters();
         });
     }
 
@@ -624,14 +758,98 @@ export class AudioDirector {
         });
     }
 
-    // Agent events arrive a poll at a time: count the wait once per batch.
+    // Agent events arrive a poll at a time: count the wait and the work once
+    // per batch.
     _queueWaitCheck() {
         if (this._waitCheckQueued) return;
         this._waitCheckQueued = true;
         queueMicrotask(() => {
             this._waitCheckQueued = false;
-            this._applyWaiting(waitState(this.world, Date.now()));
+            const now = Date.now();
+            this._applyWaiting(waitState(this.world, now));
+            this._syncWorkshops(now);
         });
+    }
+
+    // The workshop model over the World model's audible working agents: zero
+    // workers while the feed is lost (S6). The layer places the strikes.
+    _syncWorkshops(now) {
+        const workshops = this.layers.workshops;
+        if (!workshops || !this.running) return;
+        this._workshopState = buildWorkshopState({
+            agents: this.world?.agents ?? [],
+            now,
+            linkOk: !this._link.lost,
+            selectedAgentId: this._selectedAgentId,
+            memory: this._workshopMemory,
+        });
+        workshops.setState(this._workshopState);
+    }
+
+    _setSelected(agentId) {
+        if (agentId === this._selectedAgentId) return;
+        this._selectedAgentId = agentId;
+        this.layers.workshops?.setFocus(agentId);
+        this._syncWorkshops(Date.now());
+    }
+
+    // The mine's rumble follows the 5-hour quota; stale or unavailable data
+    // and a lost feed are silent (S6). Never a cue and never a caption.
+    _applyQuota() {
+        const quota = this._usage?.quota ?? null;
+        const ratio = Number(quota?.fiveHour ?? quota?.fiveHourRatio ?? quota?.usageRatio);
+        const stale = this._link.lost
+            || this._usage?.quotaAvailable === false
+            || !Number.isFinite(ratio);
+        this._quota = quotaRumble(ratio, stale);
+        this.layers.workshops?.setQuota(this._quota);
+    }
+
+    // 5.8: each workshop chain and the harbor and coast lanes take their
+    // place from the camera (World) or the fixed island map (Dashboard, or a
+    // World with no camera yet). A placement is written only when it moved,
+    // so a still camera changes no parameter.
+    _placeEmitters() {
+        const { workshops, sea } = this.layers;
+        if (!workshops || !sea) return;
+        const camera = this._mode === 'dashboard' ? null : this._camera();
+        if (!camera) {
+            if (this._placementSource === 'map') return;
+            this._placementSource = 'map';
+            this._placements.clear();
+            for (const id of BUILDING_IDS) workshops.setPlacement(id, mapPlacement(id), PLACEMENT_TIME_CONSTANT);
+            sea.setCameraPlacement({ harbor: null, coast: null });
+            return;
+        }
+        if (this._placementSource !== 'camera') this._placements.clear();
+        this._placementSource = 'camera';
+        let harbor;
+        for (const id of BUILDING_IDS) {
+            const next = this._movedPlacement(id, placeFromCamera(id, camera, this._placements.get(id) ?? null));
+            if (!next) continue;
+            workshops.setPlacement(id, next, PLACEMENT_TIME_CONSTANT);
+            // The harbor's workshop and its lapping lane are one place.
+            if (id === 'harbor') harbor = next;
+        }
+        const coast = this._movedPlacement('sea:coast',
+            placeCoastFromCamera(camera, this._placements.get('sea:coast') ?? null)) ?? undefined;
+        // An undefined lane stays where it is.
+        if (harbor || coast) sea.setCameraPlacement({ harbor, coast });
+    }
+
+    // Keeps the whole returned placement (SpatialField reads it back as
+    // `previous` for its pan step) and returns it only when it moved.
+    _movedPlacement(key, next) {
+        if (!next) return null;
+        const previous = this._placements.get(key) ?? null;
+        this._placements.set(key, next);
+        return previous && samePlacement(previous, next) ? null : next;
+    }
+
+    _camera() {
+        if (this._cameraOverride) return this._cameraOverride() ?? null;
+        const camera = worldApp()?.renderer?.camera;
+        return camera ? cameraSnapshot(camera) : null;
     }
 
     // The last answer ends the wait audibly (S6): the Village resolves its
@@ -654,7 +872,8 @@ export class AudioDirector {
     // to resolve (answered) or only fade.
     _syncHeldNote() {
         if (!this._heldNote) return;
-        const music = Boolean(this.engine.musicClock?.playing?.(this.engine.now()));
+        // The quiet mix's muted composer is no music to the listener (5.6).
+        const music = !this._quiet && Boolean(this.engine.musicClock?.playing?.(this.engine.now()));
         const open = this._waiting > 0 && !music && !this._link.lost && !this.paused;
         let reason = null;
         if (!open) {
@@ -690,7 +909,12 @@ export class AudioDirector {
     // stays), and the change is said once.
     _linkChanged(kind) {
         this._syncHeldNote();
-        if (kind === 'linkLost') this.layers.hum?.setLevel(0, LINK_FADE_TIME_CONSTANT);
+        if (kind === 'linkLost') {
+            this.layers.hum?.setLevel(0, LINK_FADE_TIME_CONSTANT);
+            this.layers.workshops?.setLevel(0, LINK_FADE_TIME_CONSTANT);
+        }
+        this._syncWorkshops(Date.now());
+        this._applyQuota();
         this._signalCue(kind, this._presetDetails());
     }
 
@@ -725,7 +949,7 @@ export class AudioDirector {
 
     _bedContext() {
         if (this._weatherBed) return 'weather';
-        return this.layers.music?.nowPlaying ? 'music' : 'village';
+        return this.layers.music?.nowPlaying && !this._quiet ? 'music' : 'village';
     }
 
     // QA hook: pin a layer's level for `holdMs`, overriding the tick mapping.
@@ -799,6 +1023,9 @@ export class AudioDirector {
             // The murmur's gate (4.7: its level follows W inside the layer):
             // silent while the feed is lost (SIG-9).
             hum: this._link.lost ? 0 : 1,
+            // The workshops' gate: their strikes follow the model's working
+            // agents inside the layer; the lost feed fades them (SIG-9).
+            workshops: this._link.lost ? 0 : 1,
             music: VILLAGE_MUSIC_LEVEL * (phase === 'night' ? 0.7 : 1),
         };
 
@@ -851,6 +1078,10 @@ export class AudioDirector {
         // darkens with the night without losing level (4.7, SIG-8).
         this.layers.hum.setMurmur({ working, dark: arc.dark }, prime ?? 3);
         this.layers.hum.setLevel(levels.hum, prime ?? (this._link.lost ? LINK_FADE_TIME_CONSTANT : 3));
+        this.layers.workshops.setPhase(phase);
+        this.layers.workshops.setNight(phase === 'night');
+        this.layers.workshops.setLevel(levels.workshops, prime ?? (this._link.lost ? LINK_FADE_TIME_CONSTANT : 3));
+        this._syncWorkshops(now);
         this.layers.music.setLevel(levels.music, prime ?? 3);
         this.layers.music.setPhase(phase);
         this.layers.music.setRestScale(1 - clamp01(working / 8) * 0.35);
@@ -900,6 +1131,14 @@ export class AudioDirector {
             audible: { ...this._audible, waiting: this._waiting },
             link: this._link.snapshot(Date.now()),
             heldNote: this._heldNote?.snapshot?.() ?? null,
+            // The work stratum (Wave 5): who works where, the quota lane, the
+            // emitters' last placements and the D3 quiet mix.
+            workshops: this._workshopState,
+            quota: this._quota,
+            placements: Object.fromEntries(this._placements),
+            placementSource: this._placementSource,
+            quiet: this._quiet,
+            selectedAgentId: this._selectedAgentId,
             outcomes: this._outcomes.pending(),
         };
     }

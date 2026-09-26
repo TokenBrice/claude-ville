@@ -233,7 +233,7 @@ export function judgeBusy(cap, { only, out, verdict, info }) {
                 // over the bed; must-never 4 asks that it sounds. Its margin
                 // over the bed is must-never 1, gated from Wave 1 (1.3).
                 const sounded = ep.cueBusPeakDb != null && ep.cueBusPeakDb >= CUE_BUS_AUDIBLE_DBFS && ep.stateDuring === 'running';
-                verdict('away', sounded, `${ep.how} (full mix kept, D3): needs-you ${nums}; want cue bus ≥ ${CUE_BUS_AUDIBLE_DBFS} dBFS with the context running (margin is must-never 1, gated from 1.3)`);
+                verdict('away', sounded, `${ep.how} (keeps playing with the quiet mix, D3): needs-you ${nums}; want cue bus ≥ ${CUE_BUS_AUDIBLE_DBFS} dBFS with the context running (margin is must-never 1, gated from 1.3)`);
             }
             const back = ep.how === 'hidden' ? 'hide→show' : 'blur→focus';
             const ms = ep.resumed.contextMs;

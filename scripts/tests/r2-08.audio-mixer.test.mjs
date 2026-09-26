@@ -26,6 +26,10 @@ function mixerHarness(storage = memoryStorage(CALIBRATED)) {
     const controller = Object.create(AmbientAudioController.prototype);
     Object.assign(controller, {
         _destroyed: false,
+        _windowBlurred: false,
+        _quietMix: { active: false, preset: null, factors: {} },
+        background: 'play',
+        mode: 'ambient',
         layerSteps: readStoredTrimSteps(storage),
         layerControls: {},
         engine: new AudioEngine(),
@@ -88,6 +92,8 @@ test('stored trim steps are complete, whole, clamped, and tolerate corrupt data'
         rain: 10,
         wildlife: 0,
         hum: 4,
+        // A channel the profile never stored reads at its own default.
+        workshops: AUDIO_MIXER_DEFAULTS.workshops,
         music: 7,
     });
     assert.deepEqual(
@@ -127,10 +133,10 @@ test('mixer trim steps persist and drive the group faders', async () => {
     });
 });
 
-test('each of the five mixer channels drives the fader of its own group', () => {
+test('each of the six mixer channels drives the fader of its own group', () => {
     const controller = mixerHarness();
     const faders = faderEngine(controller.engine);
-    controller.layerSteps = { wind: 10, rain: 9, wildlife: 5, hum: 1, music: 0 };
+    controller.layerSteps = { wind: 10, rain: 9, wildlife: 5, hum: 1, workshops: 3, music: 0 };
     controller._applyGroupLevels();
 
     for (const [name, step] of Object.entries(controller.layerSteps)) {
@@ -138,6 +144,44 @@ test('each of the five mixer channels drives the fader of its own group', () => 
         if (step === 0) assert.ok(gain >= 0 && gain <= 0.0001, name);
         else assert.ok(Math.abs(gain - trimStepGain(step)) < 1e-9, name);
     }
+});
+
+test('a blurred window keeps playing the D3 quiet mix of its preset; focus restores the trims', () => {
+    const controller = mixerHarness();
+    const faders = faderEngine(controller.engine);
+    const quiet = [];
+    controller.directors = { ambient: { setQuietMix: on => quiet.push(on) } };
+    controller.layerSteps = { ...AUDIO_MIXER_DEFAULTS, wind: 5 };
+    const heard = name => faders[name].at(-1);
+
+    controller._windowBlurred = true;
+    controller._syncQuietMix();
+    assert.ok(heard('music') <= 0.0001, 'the Village music goes out');
+    for (const name of ['wind', 'rain', 'wildlife', 'hum', 'workshops']) {
+        assert.ok(Math.abs(heard(name) - trimStepGain(controller.layerSteps[name]) * 0.5) < 1e-9, name);
+    }
+    assert.deepEqual(quiet, [true], 'the workshops keep their accents only');
+    assert.equal(controller.layerSteps.wind, 5, 'the stored trim is untouched');
+
+    controller.mode = 'bgm';
+    controller._syncQuietMix();
+    assert.ok(Math.abs(20 * Math.log10(heard('music')) + 3) < 1e-9, 'the Town band plays on at −3 dB');
+    assert.equal(heard('wind'), trimStepGain(5));
+    assert.deepEqual(quiet, [true, false]);
+
+    controller.mode = 'ambient';
+    controller._windowBlurred = false;
+    controller._syncQuietMix();
+    for (const [name, step] of Object.entries(controller.layerSteps)) {
+        assert.ok(Math.abs(heard(name) - Math.max(0.0001, trimStepGain(step))) < 1e-9, name);
+    }
+
+    // "Signals only" pauses a blurred window instead: no quiet mix.
+    controller.background = 'signals';
+    controller._windowBlurred = true;
+    controller._syncQuietMix();
+    assert.equal(controller._quietMix.active, false);
+    assert.equal(heard('music'), 1);
 });
 
 test('a legacy profile loads once at the standard step, captions once, then keeps user changes', async () => {
@@ -226,6 +270,7 @@ function crossfadeHarness() {
     Object.assign(controller, {
         _destroyed: false,
         _windowBlurred: false,
+        _quietMix: { active: false, preset: null, factors: {} },
         _crossfadeStops: new Map(),
         background: 'play',
         enabled: true,

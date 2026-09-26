@@ -615,3 +615,256 @@ export function crestCalibration(bedName) {
 export function crestPlaced(bedName, lane, at) {
     return crestScene(bedName, laneActions(lane, at, 0));
 }
+
+// ================================================================ Wave 5 ====
+// The workshop fixtures (FOL-9, FOL round 2). Agents work at a building
+// through their current tool (`classifyTool(currentTool, currentToolInput)`,
+// the World model's own fields); a tool start is a change of that pair,
+// observed on the 2 s poll (phase 0.4 s) as the real feed delivers it. Each
+// start also burns tokens, which keeps the Mine working (WorkshopModel).
+export const WORK_POLL = Object.freeze({ phaseSec: 0.4, periodSec: 2 });
+const snapPoll = t => WORK_POLL.phaseSec + Math.ceil((t - WORK_POLL.phaseSec - 1e-9) / WORK_POLL.periodSec) * WORK_POLL.periodSec;
+
+// One tool per building, varied by call so each start changes the key.
+export const WORK_TOOLS = Object.freeze({
+    forge: k => ({ currentTool: 'Edit', currentToolInput: { file_path: `src/work-${k}.js` } }),
+    archive: k => ({ currentTool: 'Read', currentToolInput: { file_path: `docs/notes-${k}.md` } }),
+    taskboard: k => ({ currentTool: 'TodoWrite', currentToolInput: { todos: [{ content: `step ${k}` }] } }),
+    observatory: k => ({ currentTool: 'WebSearch', currentToolInput: { query: `query ${k}` } }),
+    portal: k => ({ currentTool: 'mcp__playwright__browser_navigate', currentToolInput: { url: `http://localhost:3000/page-${k}` } }),
+    command: k => ({ currentTool: 'Task', currentToolInput: { description: `task ${k}` } }),
+    harbor: k => ({ currentTool: 'Bash', currentToolInput: { command: k % 2 ? 'git status' : 'git push' } }),
+});
+const TOKENS_PER_START = 900;
+
+function lcg(seed) {
+    let s = seed >>> 0;
+    return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296;
+}
+
+// agents: [{ b, gap (median s between starts) | calls: [scene s], to (turn
+// ends), staleAt, tokens (default true) }] after `extra` leading world
+// agents (idle bystanders). → { world, actions, ends: { index: s },
+// stale: { index: s } }. Times are scene seconds (after warmup); the
+// world's initial tool is the first start, observed at the enable.
+export function workFixture(agents, { seconds, seed = 4242, idle = 0, until = Infinity } = {}) {
+    const rng = lcg(seed);
+    const world = { agents: [] };
+    const actions = [];
+    const ends = {};
+    const stale = {};
+    agents.forEach((a, i) => {
+        const tokens = { totalInput: 0, totalOutput: 0 };
+        let k = 0;
+        const start = (at) => {
+            k++;
+            if (a.tokens !== false) { tokens.totalInput += TOKENS_PER_START; tokens.totalOutput += TOKENS_PER_START / 3; }
+            return { ...WORK_TOOLS[a.b](k), tokens: { ...tokens } };
+        };
+        world.agents.push({ status: 'working', ...start(), label: `${a.b}#${i}` });
+        const last = Math.min(a.to ?? Infinity, a.staleAt ?? Infinity, seconds, until);
+        const times = a.calls ? a.calls.map(snapPoll) : [];
+        if (!a.calls) {
+            for (let t = snapPoll(a.gap * (0.3 + 0.7 * rng())); t < last; t = snapPoll(t + a.gap * (0.6 + 0.8 * rng()))) times.push(t);
+        }
+        for (const t of times.filter(x => x < last)) {
+            actions.push({ at: t, status: { index: i, status: 'working', fields: start() }, label: `${a.b}#${i} tool` });
+        }
+        if (a.staleAt != null) {
+            stale[i] = snapPoll(a.staleAt);
+            actions.push({ at: stale[i], status: { index: i, status: 'working', fields: { freshness: { state: 'stale' } } }, label: `${a.b}#${i} stale` });
+        }
+        if (a.to != null) {
+            ends[i] = snapPoll(a.to);
+            actions.push({ at: ends[i], status: { index: i, status: 'idle', fields: { currentTool: null, currentToolInput: null } }, label: `${a.b}#${i} idle` });
+        }
+    });
+    for (let j = 0; j < idle; j++) world.agents.push({ status: 'idle' });
+    return { world, actions: actions.sort((x, y) => x.at - y.at), ends, stale };
+}
+
+// FOL round 2's two reference patterns: the busy day (3 Forge — one goes
+// stale at 34 s, two end their turn at 46 s — 2 Archive, 1 Harbor with a
+// push and a status) and the other four buildings, two agents each; the
+// Mine works from everyone's token burn in both.
+export const WORK_PATTERNS = Object.freeze({
+    reference: [
+        { b: 'forge', gap: 6, to: 46 }, { b: 'forge', gap: 6, to: 46 }, { b: 'forge', gap: 6, staleAt: 34 },
+        { b: 'archive', gap: 5 }, { b: 'archive', gap: 7 }, { b: 'harbor', calls: [6, 40] },
+    ],
+    other: [
+        { b: 'taskboard', gap: 6 }, { b: 'taskboard', gap: 6 }, { b: 'observatory', gap: 6 }, { b: 'observatory', gap: 6 },
+        { b: 'portal', gap: 6 }, { b: 'portal', gap: 6 }, { b: 'command', gap: 6 }, { b: 'command', gap: 6 },
+    ],
+});
+export const WORK_SECONDS = 60;
+// Two routine cues (FOL: arrival and council; both arrivals here, 24 s
+// apart — over CueKit's 20 s arrival cooldown — because the lane measure
+// reads the routine lane's arrival voice) for the margin-loss check.
+const WORK_ROUTINE_AT = Object.freeze([20.2, 44.2]);
+
+// The reference scene (5.1, 5.3, 5.5): `pattern` of WORK_PATTERNS by day or
+// night, Village with no music (S2's Village bed), the two routine cues on
+// two idle bystanders. `env`: the same scene with the Workshops fader at 0 —
+// the environment the stratum is judged in, sample-aligned (one seed), so
+// ctx − env on a stem is the workshop stratum alone.
+export function workshopScene(pattern, { phase = 'day', env = false } = {}) {
+    const agents = WORK_PATTERNS[pattern];
+    const f = workFixture(agents, { seconds: WORK_SECONDS, idle: 2 });
+    const bystander = agents.length;
+    return {
+        mode: 'ambient', world: f.world, atmosphere: phase === 'night' ? NIGHT : DAY, force: { music: 0 },
+        ...(env ? { layerSteps: { workshops: 0 } } : {}),
+        warmup: 10, seconds: WORK_SECONDS, stems: ['work', 'airWet', 'cue', 'limiterIn', 'limiterOut'],
+        actions: [
+            ...f.actions,
+            ...WORK_ROUTINE_AT.map((at, i) => ({ at, emit: 'village:scene', payload: { kind: 'arrival' }, agentIndex: bystander + i, label: `arrival ${i + 1}`, lane: 'routine' })),
+        ],
+        fixture: { ends: f.ends, stale: f.stale },
+    };
+}
+
+// 5.3 / 5.5 audibility cells: a percentage must rest on ≥ 20 accents per
+// building, and accents are density-driven (never one per call), so the
+// audibility fixtures keep every agent working for longer and start tools
+// more often than FOL's 60 s pattern: each building of the pattern, two or
+// three agents starting a tool every poll or two (two at the Harbor, a git
+// call every other poll each), no routine cue, the program alone (and its
+// `env` twin).
+export const AUDIBILITY_SECONDS = 180;
+export const AUDIBILITY_MIN_ACCENTS = 20;
+const AUDIBILITY_PATTERNS = Object.freeze({
+    reference: [
+        { b: 'forge', gap: 2.4 }, { b: 'forge', gap: 2.4 }, { b: 'forge', gap: 2.4 },
+        { b: 'archive', gap: 2.4 }, { b: 'archive', gap: 2.4 },
+        { b: 'harbor', calls: Array.from({ length: 45 }, (_, i) => 2 + 4 * i) },
+        { b: 'harbor', calls: Array.from({ length: 45 }, (_, i) => 4 + 4 * i) },
+    ],
+    other: [
+        { b: 'taskboard', gap: 2.4 }, { b: 'taskboard', gap: 2.4 }, { b: 'observatory', gap: 2.4 }, { b: 'observatory', gap: 2.4 },
+        { b: 'portal', gap: 2.4 }, { b: 'portal', gap: 2.4 }, { b: 'command', gap: 2.4 }, { b: 'command', gap: 2.4 },
+    ],
+});
+export function audibilityScene(pattern, { phase = 'day', env = false } = {}) {
+    const f = workFixture(AUDIBILITY_PATTERNS[pattern], { seconds: AUDIBILITY_SECONDS, seed: 31 });
+    return {
+        mode: 'ambient', world: f.world, atmosphere: phase === 'night' ? NIGHT : DAY, force: { music: 0 },
+        ...(env ? { layerSteps: { workshops: 0 } } : {}),
+        warmup: 10, seconds: AUDIBILITY_SECONDS, stems: [], lint: false, actions: f.actions,
+    };
+}
+
+// S6 / 5.1: zero onsets from stale agents, `working === 0` and a lost link.
+// 0–20 s: two stale working agents and an idle one; 20 s: a fresh smith
+// starts; 36.4 s: it goes idle; 44.4 s: it works again; 50 s: the feed
+// drops (lost after AudibleWorld's LINK_LOST_AFTER_MS, the `linkLost` cue).
+export const WORK_HONESTY = Object.freeze({ freshAt: 20.4, idleAt: 36.4, againAt: 44.4, dropAt: 50 });
+export const WORK_HONESTY_SCENE = {
+    mode: 'ambient', atmosphere: DAY, force: { music: 0 }, warmup: 10, seconds: 75, stems: ['work'],
+    world: {
+        agents: [
+            { status: 'working', ...WORK_TOOLS.forge(1), signalStale: true },
+            { status: 'working', ...WORK_TOOLS.archive(1), freshness: { state: 'stale' } },
+            { status: 'idle' },
+        ],
+    },
+    actions: [
+        // LinkHealth only declares a loss after the feed was live once.
+        { at: -9.5, emit: 'ws:state', raw: true, payload: { state: 'live' }, label: 'feed live' },
+        { at: WORK_HONESTY.freshAt, addAgent: { status: 'working', fields: WORK_TOOLS.forge(2) }, label: 'fresh smith' },
+        { at: WORK_HONESTY.freshAt + 4, status: { index: 3, status: 'working', fields: WORK_TOOLS.forge(3) }, label: 'smith tool' },
+        { at: WORK_HONESTY.idleAt, status: { index: 3, status: 'idle', fields: { currentTool: null, currentToolInput: null } }, label: 'smith idle' },
+        { at: WORK_HONESTY.againAt, status: { index: 3, status: 'working', fields: WORK_TOOLS.forge(4) }, label: 'smith again' },
+        { at: WORK_HONESTY.dropAt, emit: 'ws:disconnected', raw: true, payload: {}, label: 'feed drops' },
+    ],
+};
+
+// 5.1 (FOL-5, HAR-12): accents on the drawn downbeat in World (a stand-in
+// ritual conductor, page/workshop.js) — and the same village in Dashboard,
+// where no ritual exists and the grid de-clumps the poll.
+const DOWNBEAT_AGENTS = [
+    { b: 'forge', gap: 4 }, { b: 'forge', gap: 4 }, { b: 'archive', gap: 5 }, { b: 'portal', gap: 6 },
+    { b: 'command', gap: 6 }, { b: 'observatory', gap: 6 }, { b: 'taskboard', gap: 6 }, { b: 'harbor', calls: [4, 50] },
+];
+export function workDownbeatScene({ dashboard = false } = {}) {
+    const f = workFixture(DOWNBEAT_AGENTS, { seconds: 90, seed: 77 });
+    return {
+        mode: 'ambient', world: f.world, atmosphere: DAY, force: { music: 0 }, warmup: 10, seconds: 90, rituals: !dashboard, lint: false,
+        actions: [
+            ...(dashboard ? [{ at: -9.5, emit: 'mode:changed', raw: true, payload: 'dashboard', label: 'mode:dashboard' }] : []),
+            ...f.actions,
+        ],
+    };
+}
+
+// 5.4: two smiths (slots) starting a tool every poll or two, so each earns
+// accents on both sides of the selection, and a bystander who comes to need
+// you; the first smith is selected at 45 s. `select: false` is the twin.
+export const WORK_SLOTS = Object.freeze({ selectAt: 45.2, needsYouAt: 62 });
+export function workSlotsScene({ select = true } = {}) {
+    const f = workFixture([{ b: 'forge', gap: 2.5, tokens: false }, { b: 'forge', gap: 2.5, tokens: false }], { seconds: 90, seed: 11, idle: 1 });
+    return {
+        mode: 'ambient', world: f.world, atmosphere: DAY, force: { music: 0 }, warmup: 10, seconds: 90, stems: ['work', 'cue'],
+        actions: [
+            ...f.actions,
+            ...(select ? [{ at: WORK_SLOTS.selectAt, select: { index: 0 }, label: 'select smith 1' }] : []),
+            ...laneActions('needsYou', WORK_SLOTS.needsYouAt, 2),
+        ],
+    };
+}
+
+// 5.6 (D3): blur 20 s, focus 40 s, against a twin that never blurs.
+// village: music playing (the fader must take it to 0), workers; held: no
+// music and a waiting agent (the held note sounds; a needs-you at 30 s);
+// town: the Town band (−3 dB) with the same workers (no work stratum, D4).
+export const QUIET_MIX = Object.freeze({ blurAt: 20, focusAt: 40, needsYouAt: 30 });
+const QUIET_WORKERS = [{ b: 'forge', gap: 2.5 }, { b: 'forge', gap: 2.5 }, { b: 'archive', gap: 3 }, { b: 'harbor', calls: [2] }];
+export function quietMixScene(kind, { blur = true } = {}) {
+    const f = workFixture(QUIET_WORKERS, { seconds: 55, seed: 23, idle: 2 });
+    const window = blur ? [{ at: QUIET_MIX.blurAt, window: 'blur' }, { at: QUIET_MIX.focusAt, window: 'focus' }] : [];
+    const base = { atmosphere: DAY, warmup: 10, seconds: 55, world: f.world, actions: [...f.actions, ...window] };
+    if (kind === 'village') return { ...base, mode: 'ambient', music: { piece: 'millbrook', level: 1 }, stems: ['world', 'work', 'music', 'signalBed'] };
+    if (kind === 'held') {
+        return {
+            ...base, mode: 'ambient', force: { music: 0 }, stems: ['world', 'work', 'signalBed', 'cue'],
+            world: { agents: [...f.world.agents.slice(0, -1), { status: 'waiting_on_user' }] },
+            actions: [...base.actions, ...laneActions('needsYou', QUIET_MIX.needsYouAt, f.world.agents.length - 2)],
+        };
+    }
+    if (kind === 'town') return { ...base, mode: 'bgm', bgm: { piece: 'willowbrook' }, stems: ['music', 'work'] };
+    throw new Error(`unknown quiet-mix scene ${kind}`);
+}
+
+// 5.7 (SIG-13): the 5-hour quota ratio stepped 0.7 → 1.0 every 8 s through
+// `usage:updated`, then the quota going unavailable (stale). One reader
+// keeps the village awake. `sweep: false` is the twin without usage.
+export const QUOTA_STEPS = Object.freeze({ ratios: [0.7, 0.8, 0.9, 1.0], firstAt: 5, spacing: 8 });
+export const QUOTA_STALE_AT = QUOTA_STEPS.firstAt + QUOTA_STEPS.ratios.length * QUOTA_STEPS.spacing;
+export function quotaScene({ sweep = true } = {}) {
+    const usage = (at, fiveHour, quotaAvailable = true) => ({ at, emit: 'usage:updated', raw: true, payload: { quota: { fiveHour }, quotaAvailable }, label: `quota ${fiveHour}${quotaAvailable ? '' : ' (stale)'}` });
+    return {
+        mode: 'ambient', atmosphere: DAY, force: { music: 0 }, warmup: 10, seconds: QUOTA_STALE_AT + 8, stems: ['work'],
+        world: { agents: [{ status: 'working', ...WORK_TOOLS.archive(1) }] },
+        actions: sweep ? [
+            ...QUOTA_STEPS.ratios.map((r, i) => usage(QUOTA_STEPS.firstAt + i * QUOTA_STEPS.spacing, r)),
+            usage(QUOTA_STALE_AT, 1, false),
+        ] : [],
+    };
+}
+
+// 5.8 (D8): the camera still, then panning across the Harbor (1000 px of a
+// 1280 px view at zoom 1 in 6 s: W5Spatial's envelope wants ≥ 4 s over 80 %
+// of the viewport), then still again. A smith at the Harbor keeps its chain
+// sounding. Scene seconds; `harbor` is SpatialField.BUILDING_WORLD.harbor.
+export const CAMERA_PAN = Object.freeze({ stillUntil: 8, panUntil: 14, spanPx: 500, viewportW: 1280, viewportH: 720, zoom: 1, stillFrom: 16 });
+export function cameraScene(harbor) {
+    const c = CAMERA_PAN;
+    return {
+        mode: 'ambient', atmosphere: DAY, force: { music: 0 }, warmup: 6, seconds: 30, lint: false,
+        world: { agents: [{ status: 'working', ...WORK_TOOLS.harbor(0) }] },
+        camera: {
+            viewportW: c.viewportW, viewportH: c.viewportH, zoom: c.zoom,
+            path: [{ at: c.stillUntil, cx: harbor.x - c.spanPx, cy: harbor.y }, { at: c.panUntil, cx: harbor.x + c.spanPx, cy: harbor.y }],
+        },
+    };
+}

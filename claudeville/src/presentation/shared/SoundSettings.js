@@ -38,12 +38,14 @@ export const SOUND_COUNT_HOURS_KEY = 'claudeville.sound.countHours';
 export const DEFAULT_SOUND_COUNT_HOURS = '0';
 
 // The mixer channels are the engine's group faders, one to one, each at its
-// default trim step.
+// default trim step. Workshops sits one step down (plan 5.3's −3 dB on the
+// 2.4 dB step law: −2.4 dB; the layer carries the remaining −0.6 dB).
 export const AUDIO_MIXER_DEFAULTS = Object.freeze({
     wind: SOUND_STEP_MAX,
     rain: SOUND_STEP_MAX,
     wildlife: SOUND_STEP_MAX,
     hum: SOUND_STEP_MAX,
+    workshops: SOUND_STEP_MAX - 1,
     music: SOUND_STEP_MAX,
 });
 
