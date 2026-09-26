@@ -2,6 +2,7 @@ import { snapshotAgeMs, linkStatusText } from '../../application/VillageState.js
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { getClientPerfMetrics } from './ClientPerfMetrics.js';
+import { SOUND_STEP_MAX, soundStep } from './SoundSettings.js';
 
 export const REDUCED_MOTION_OVERRIDE_KEY = 'claudeville.motion.reduce';
 const HOOK_LIVE_WINDOW_MS = 15_000;
@@ -21,6 +22,10 @@ let motionOverrideController = null;
 function syncRangeFill(input) {
     const steps = Math.max(0, Math.min(10, Number(input?.value) || 0));
     input?.style?.setProperty?.('--fill', `${steps * 8 + 4}px`);
+}
+
+function rangeStep(value) {
+    return soundStep(value, SOUND_STEP_MAX);
 }
 
 function storageGet(storage, key) {
@@ -308,21 +313,22 @@ export class SettingsPanel {
         return this._settingRow(label, detail, el('span', { className: 'settings-select-wrap' }, [select]));
     }
 
+    // Sound levels are stored as whole steps 0–10 (plan 1.2) and shown as
+    // `n / 10`; the callback receives the step.
     _range(key, label, value, callback, compact = false) {
-        const normalized = Number.isFinite(Number(value)) ? Number(value) : 1;
         const input = el('input', { className: 'settings-range', ariaLabel: `${label} level` });
         input.type = 'range';
         input.min = '0';
         input.max = '10';
         input.step = '1';
-        input.value = String(Math.round(Math.max(0, Math.min(1, normalized)) * 10));
+        input.value = String(rangeStep(value));
         const output = el('output', { className: 'settings-range__value', text: `${input.value} / 10` });
         output.htmlFor = input.id;
         syncRangeFill(input);
         input.addEventListener('input', () => {
             output.textContent = `${input.value} / 10`;
             syncRangeFill(input);
-            callback?.(Number(input.value) / 10);
+            callback?.(Number(input.value));
         });
         this.controls.set(key, { input, output });
         const control = el('div', { className: 'settings-range-wrap' }, [input, output]);
@@ -526,8 +532,7 @@ export class SettingsPanel {
     _syncRange(key, value) {
         const control = this.controls.get(key);
         if (!control) return;
-        const normalized = Number.isFinite(Number(value)) ? Number(value) : 1;
-        control.input.value = String(Math.round(Math.max(0, Math.min(1, normalized)) * 10));
+        control.input.value = String(rangeStep(value));
         control.output.textContent = `${control.input.value} / 10`;
         syncRangeFill(control.input);
     }

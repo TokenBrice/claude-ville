@@ -6,7 +6,6 @@ import {
     CueGovernor,
     collapseCueBurst,
     compareCuePriority,
-    computeCueMix,
     cueLifecycleDecision,
     updateQuietFloor,
 } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
@@ -60,15 +59,6 @@ test('provider-voiced council cues bypass burst aggregation', () => {
 
     assert.equal(collapsed.length, 2);
     assert.deepEqual(collapsed.map(cue => cue.provider), ['claude', 'codex']);
-});
-
-test('urgent ducking preserves headroom and leaves cues above ambience', () => {
-    for (const lane of [CUE_LANES.NEEDS_YOU, CUE_LANES.ERRORS, CUE_LANES.QUOTA]) {
-        const mix = computeCueMix(lane, 1);
-        assert.ok(mix.cueBusGain > mix.ambientBusGain);
-        assert.ok(mix.cueBusGain <= mix.masterCeiling);
-        assert.ok(mix.masterCeiling < 1);
-    }
 });
 
 test('quiet floor requires sustained calm and sustained activity without flutter', () => {

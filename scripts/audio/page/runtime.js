@@ -9,15 +9,17 @@
 import { AmbientAudioController } from '/src/presentation/shared/AmbientAudioController.js';
 import { eventBus } from '/src/domain/events/DomainEvent.js';
 import { createAtmosphereSnapshot } from '/src/presentation/character-mode/AtmosphereState.js';
-import { seasonTokenForAtmosphere } from '/src/presentation/character-mode/SeasonalAmbience.js';
 import { AudioEngine } from '/src/presentation/shared/audio/AudioEngine.js';
 import { AudioDirector } from '/src/presentation/shared/audio/AudioDirector.js';
 import { CueKit, laneForCueKind } from '/src/presentation/shared/audio/cues/CueKit.js';
 import { CueGovernor } from '/src/presentation/shared/audio/CueGovernor.js';
 import { cueNoteOffsetsMs } from '/src/presentation/shared/audio/CueScore.js';
+import { STANDARD_VOLUME_STEP } from '/src/presentation/shared/audio/Loudness.js';
 import { PIECES } from '/src/presentation/shared/audio/bgm/BgmSongbook.js';
+import {
+    LAYERS, atmosphereFor, atmosphereSummary, hourFor, makeMarker, makeWorld, plain, runAction, seedSoundStorage,
+} from './scene.js';
 
-const LAYERS = ['wind', 'rain', 'birds', 'crickets', 'hum', 'bed', 'music'];
 const MUSIC_FAMILY = {
     hearthfire: 'millbrook', millbrook: 'hearthfire',
     lanternway: 'starwake', starwake: 'lanternway',
@@ -29,100 +31,13 @@ export const modules = {
     AudioDirector, CueKit, CueGovernor, cueNoteOffsetsMs, PIECES, laneForCueKind,
 };
 
-// ---------------------------------------------------------------- world ----
-let agentSeq = 0;
-function makeAgent(status, provider = 'claude', extra = {}) {
-    agentSeq++;
-    return {
-        id: `har-${agentSeq}`,
-        name: `Villager ${agentSeq}`,
-        provider,
-        status,
-        position: { tileX: 10 + (agentSeq * 7) % 20, tileY: 12 + (agentSeq * 5) % 16 },
-        ...extra,
-    };
-}
-
-export function makeWorld(spec = {}) {
-    const agents = new Map();
-    const providers = spec.providers || ['claude', 'codex', 'gemini', 'kimi'];
-    let p = 0;
-    for (const [status, count] of Object.entries(spec.counts || {})) {
-        for (let i = 0; i < count; i++) {
-            const agent = makeAgent(status, providers[p++ % providers.length]);
-            agents.set(agent.id, agent);
-        }
-    }
-    return { agents };
-}
-
-// ----------------------------------------------------------- atmosphere ----
-const FIXED_DATE = () => new Date(2026, 6, 15, 12, 0, 0); // mid-July: summer
-
-// Find the hour that lands the requested phase at the requested progress for
-// this weather, scanning the day in 2-minute steps. Minute 0 is avoided so the
-// hour bell never fires inside a render.
-export function hourFor(phase, progress = 0.5, weatherOverride = null) {
-    let best = null;
-    for (let m = 1; m < 1440; m += 2) {
-        if (m % 60 === 0) continue;
-        const snap = createAtmosphereSnapshot({ now: FIXED_DATE(), hourOverride: m / 60, weatherOverride });
-        if (snap.phase !== phase) continue;
-        const d = Math.abs((snap.phaseProgress ?? 0) - progress);
-        if (!best || d < best.d) best = { d, hour: m / 60 };
-    }
-    return best ? best.hour : 12.5;
-}
-
-export function atmosphereFor(spec = {}) {
-    const weatherOverride = spec.weather || { type: 'clear' };
-    const hour = spec.hour ?? hourFor(spec.phase || 'day', spec.progress ?? 0.5, weatherOverride);
-    const snapshot = createAtmosphereSnapshot({ now: FIXED_DATE(), hourOverride: hour, weatherOverride });
-    return { snapshot, hour };
-}
-
-function atmosphereSummary(snapshot) {
-    return {
-        phase: snapshot.phase,
-        phaseProgress: Number((snapshot.phaseProgress ?? 0).toFixed(3)),
-        season: seasonTokenForAtmosphere(snapshot),
-        clock: snapshot.clock ? { hours: snapshot.clock.hours, minutes: snapshot.clock.minutes } : null,
-        weather: snapshot.weather ? {
-            type: snapshot.weather.type,
-            intensity: Number((snapshot.weather.intensity ?? 0).toFixed(3)),
-            precipitation: Number((snapshot.weather.precipitation ?? 0).toFixed(3)),
-            fog: Number((snapshot.weather.fog ?? 0).toFixed(3)),
-            windX: snapshot.weather.windX,
-        } : null,
-    };
-}
-
-// -------------------------------------------------------------- markers ----
-function makeMarker(getCtx) {
-    const markers = [];
-    const mark = (label, extra = {}) => {
-        const ctx = getCtx();
-        markers.push({ label, t: ctx ? ctx.currentTime : null, ...extra });
-    };
-    return { markers, mark };
-}
-
-function plain(value) {
-    return JSON.parse(JSON.stringify(value ?? null, (k, v) => (typeof v === 'function' ? undefined : v)));
-}
-
 // ------------------------------------------------------------ realtime ----
-// spec: { mode, volume, world:{counts}, atmosphere:{phase,progress,weather},
-//         isolate, music:{tune, phase}, bgm:{piece, loop}, warmup, seconds,
-//         actions:[{at, emit, payload} | {at, status:{index,status}} | {at, flash}],
+// spec: { mode, volumeStep, layerSteps, world:{counts},
+//         atmosphere:{phase,progress,weather}, isolate, music:{tune, phase},
+//         bgm:{piece, loop}, warmup, seconds, actions:[see scene.js runAction],
 //         maxSeconds, snippet }
 export async function runRealtime(spec) {
-    try {
-        localStorage.setItem('claudeville.sound.enabled', 'true');
-        localStorage.setItem('claudeville.sound.mode', spec.mode || 'ambient');
-        localStorage.setItem('claudeville.sound.volume', String(spec.volume ?? 0.5));
-        localStorage.removeItem('claudeville.sound.layers');
-    } catch { /* storage optional */ }
+    seedSoundStorage(spec);
 
     const world = makeWorld(spec.world);
     const { snapshot, hour } = atmosphereFor(spec.atmosphere);
@@ -290,52 +205,9 @@ export async function runRealtime(spec) {
     };
 }
 
-function runAction(action, { world, mark, controller }) {
-    if (action.status) {
-        const agents = [...world.agents.values()];
-        const agent = agents[action.status.index ?? 0];
-        if (agent) {
-            agent.status = action.status.status;
-            if (action.status.status === 'waiting_on_user') agent.awaitingSince = Date.now();
-            eventBus.emit('agent:updated', agent);
-        }
-        mark(`status:${action.status.status}`, { kind: 'action' });
-        return;
-    }
-    if (action.addAgent) {
-        const agent = makeAgent(action.addAgent.status || 'working', action.addAgent.provider || 'claude');
-        world.agents.set(agent.id, agent);
-        eventBus.emit('agent:added', agent);
-        mark(`add:${agent.id}`, { kind: 'action' });
-        return;
-    }
-    if (action.emit) {
-        const agents = [...world.agents.values()];
-        const payload = { ...(action.payload || {}) };
-        if (action.agentIndex != null && agents[action.agentIndex]) {
-            const agent = agents[action.agentIndex];
-            payload.agentId = agent.id;
-            payload.agent = agent;
-            payload.provider = payload.provider || agent.provider;
-        }
-        mark(action.label || action.emit, { kind: 'event' });
-        eventBus.emit(action.emit, payload);
-        return;
-    }
-    if (action.mode) {
-        mark(`mode:${action.mode}`, { kind: 'action' });
-        controller.setMode(action.mode);
-        return;
-    }
-    if (action.cue) {
-        mark(`debug-cue:${action.cue}`, { kind: 'event' });
-        controller.director.cue(action.cue, action.payload || {});
-    }
-}
-
 // ------------------------------------------------------------- offline ----
-// A CueKit voice rendered sample-accurately: a real AudioEngine (full master
-// chain: volume² gain, 6.2 kHz tone, limiter, analyser) is built on an
+// A CueKit voice rendered sample-accurately: a real AudioEngine (the full
+// master chain, limiter worklet included) is attached to an
 // OfflineAudioContext and the cue goes through CueKit._playAccepted, i.e. the
 // same schedule/anchor/voice path the governor calls once a cue is admitted.
 // The fade stage is pinned open (engine.start() would fade in over ~1 s).
@@ -345,9 +217,8 @@ export async function runOfflineCues(spec) {
     const ctx = new OfflineAudioContext(2, Math.ceil(seconds * sampleRate), sampleRate);
     if (Array.isArray(window.__harVoiceLog)) window.__harVoiceLog.length = 0;
     const engine = new AudioEngine();
-    engine.setVolume(spec.volume ?? 0.5);
-    engine.context = ctx;
-    engine._buildGraph();
+    engine.setVolumeStep(spec.volumeStep ?? STANDARD_VOLUME_STEP);
+    await engine.attachContext(ctx);
     engine.fadeGain.gain.value = 1;
     engine.started = true;
     const kit = new CueKit(engine, new CueGovernor());
@@ -383,13 +254,14 @@ export async function runOfflineCues(spec) {
 // { context, destination, engine, modules, mark, seconds }. `destination` is
 // the context destination (tapped in realtime, rendered offline); `engine` is
 // a real AudioEngine whose master chain already feeds that destination, so
-// connecting to engine.cueBus / engine.ambienceBus hears the shipped mix.
-export async function runSnippet({ url, seconds = 8, offline = false, sampleRate = 48000, volume = 0.5 }) {
+// connecting to engine.busInput('cue' | 'world' | 'work' | 'music') hears the
+// shipped mix.
+export async function runSnippet({ url, seconds = 8, offline = false, sampleRate = 48000, volumeStep = STANDARD_VOLUME_STEP }) {
     const mod = await import(url);
     const fn = mod.default || mod.render;
     if (typeof fn !== 'function') throw new Error('snippet must export default async function(api)');
     const engine = new AudioEngine();
-    engine.setVolume(volume);
+    engine.setVolumeStep(volumeStep);
     let context;
     if (offline) {
         context = new OfflineAudioContext(2, Math.ceil(seconds * sampleRate), sampleRate);
@@ -397,8 +269,7 @@ export async function runSnippet({ url, seconds = 8, offline = false, sampleRate
         context = new AudioContext({ sampleRate });
         await context.resume();
     }
-    engine.context = context;
-    engine._buildGraph();
+    await engine.attachContext(context);
     engine.fadeGain.gain.value = 1;
     engine.started = true;
     const { markers, mark } = makeMarker(() => context);

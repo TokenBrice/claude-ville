@@ -1,7 +1,7 @@
 // Director for BGM mode: continuous town music instead of the reactive
 // ambience. Music-first by design — no wind/rain/wildlife layers — with
-// village event cues ringing over the score like game jingles (they duck
-// the music through the engine's cue bus). Time of day picks the playlist;
+// village event cues ringing over the score like game jingles (each cue ducks
+// the band on its own notes, in the Town band depths). Time of day picks the playlist;
 // the phase comes from the renderer's atmosphere broadcast, with a pure
 // local-clock fallback when the World loop is stopped.
 //
@@ -13,8 +13,6 @@
 import { eventBus } from '../../../domain/events/DomainEvent.js';
 import { bucketCounts } from '../../../domain/services/SignalLedger.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
-import { CueGovernor } from './CueGovernor.js';
-import { CueKit } from './cues/CueKit.js';
 import { ActionableCueRouter, attentionStatus } from './ActionableRouting.js';
 import { BgmPlayer } from './bgm/BgmPlayer.js';
 
@@ -35,13 +33,15 @@ const SECTION_BANDS = Object.freeze([
 const SECTION_ENTER_REST_MS = 30000;
 const SECTION_CHANGE_MS = 4000;
 const BGM_LEVEL = 0.9;
-const BGM_DUCKED_LEVEL = 0.62;
+// The engine's music attention stage while a person has to act (S3): the band
+// leans back and stays there, composing with the per-cue ducks.
+const ATTENTION_DB = -4;
 
 /**
  * The counts the working section and its label are made of, from the same
  * ledger `AudioDirector._tick` reads. `waiting` counts every agent that is
  * waiting (on a person or on work); `actionable` is the subset a person has to
- * act on, which is what ducks the arrangement.
+ * act on, which is what leans the band back (the attention stage).
  */
 export function workingSectionCounts(world) {
     const counts = bucketCounts(world);
@@ -95,12 +95,15 @@ function cuePayload(payload) {
 }
 
 export class BgmDirector {
-    constructor({ engine, world = null } = {}) {
+    // `cues` is the engine-wide arbiter ({ kit, governor }) the controller owns;
+    // a preset switch keeps its cooldowns, so this director never builds or
+    // destroys it.
+    constructor({ engine, world = null, cues = null } = {}) {
         this.engine = engine;
         this.world = world;
         this.player = null;
-        this.cueKit = null;
-        this.governor = new CueGovernor();
+        this.cueKit = cues?.kit ?? null;
+        this.governor = cues?.governor ?? null;
         this.running = false;
         this._interval = null;
         this._unsubscribes = [];
@@ -112,17 +115,16 @@ export class BgmDirector {
         this._actionable = new ActionableCueRouter();
         this._section = { applied: 'steady', pending: null, pendingSince: 0 };
         this._counts = workingSectionCounts(null);
-        this._level = BGM_LEVEL;
+        this._attentionDb = 0;
     }
 
     start() {
         if (this.running || !this.engine.context) return;
         this.running = true;
 
-        this.player = new BgmPlayer(this.engine);
+        this.player = new BgmPlayer(this.engine, { director: 'bgm' });
         this.player.start();
-        this.player.setLevel(this._level, 0.5);
-        this.cueKit = new CueKit(this.engine, this.governor);
+        this.player.setLevel(BGM_LEVEL, 0.5);
 
         this._subscribe();
         this._interval = setInterval(() => this._tick(), TICK_MS);
@@ -138,7 +140,7 @@ export class BgmDirector {
         this._unsubscribes = [];
         this.player?.stop();
         this.player = null;
-        this.cueKit = null;
+        this._setAttention(0);
         this._actionable.clear();
     }
 
@@ -202,8 +204,8 @@ export class BgmDirector {
     }
 
     cue(kind, extra = {}) {
-        if (!this.cueKit) return false;
-        return this.cueKit.play(kind, { phase: this._phase, ...extra });
+        if (!this.running || !this.cueKit) return false;
+        return this.cueKit.play(kind, { phase: this._phase, preset: 'townBand', ...extra });
     }
 
     _currentAtmosphere() {
@@ -230,16 +232,18 @@ export class BgmDirector {
 
     // The arrangement follows the counts, not the poll: the density change is
     // handed to the player, which applies it at its next four-bar boundary. The
-    // one immediate move is the duck an actionable agent earns.
+    // one immediate move is the attention stage an actionable agent earns.
     _applyWorkingSection(now = Date.now()) {
         this._counts = workingSectionCounts(this.world);
         this._section = updateWorkingSection(this._section, { counts: this._counts, now });
         this.player?.setSection(this._section.applied);
-        const level = this._counts.actionable > 0 ? BGM_DUCKED_LEVEL : BGM_LEVEL;
-        if (level !== this._level) {
-            this._level = level;
-            this.player?.setLevel(level, 0.4);
-        }
+        this._setAttention(this._counts.actionable > 0 ? ATTENTION_DB : 0);
+    }
+
+    _setAttention(db) {
+        if (db === this._attentionDb) return;
+        this._attentionDb = db;
+        this.engine.setAttention(db);
     }
 
     countsSnapshot() {
@@ -254,7 +258,7 @@ export class BgmDirector {
             levels: { bgm: this.player?.level ?? 0 },
             lastCue: this.cueKit?.lastCue || null,
             nowPlaying: this.player?.nowPlaying || null,
-            ceremonies: this.governor.snapshot().ceremonies,
+            ceremonies: this.governor?.snapshot().ceremonies ?? null,
             // The section actually playing plus the one the counts want next.
             section: {
                 applied: this.player?.section ?? this._section.applied,

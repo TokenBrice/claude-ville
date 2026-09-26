@@ -3,10 +3,11 @@
 // speed, muffles under fog. Replaces the old fixed 620 Hz "air" hiss.
 
 import { BaseLayer } from './BaseLayer.js';
+import { makeFilter } from '../Filters.js';
 
 export class WindLayer extends BaseLayer {
-    constructor(engine) {
-        super(engine, { trim: 0.16, group: 'wind' });
+    constructor(engine, options = {}) {
+        super(engine, { trim: 0.16, group: 'wind', ...options });
         this.filter = null;
         this.gustDepth = null;
     }
@@ -16,10 +17,7 @@ export class WindLayer extends BaseLayer {
         source.buffer = this.engine.noise('brown');
         source.loop = true;
 
-        this.filter = ctx.createBiquadFilter();
-        this.filter.type = 'lowpass';
-        this.filter.frequency.value = 420;
-        this.filter.Q.value = 0.6;
+        this.filter = makeFilter(ctx, 'lowpass', 420, { q: 'butterworth' });
 
         // Body gain the gust LFOs breathe against.
         const body = ctx.createGain();
@@ -56,12 +54,14 @@ export class WindLayer extends BaseLayer {
     }
 
     // strength 0..1 overall wind presence; wind = |windX| 0..1.4; fog 0..1.
-    setWind({ strength = 0, wind = 0, fog = 0 } = {}) {
-        this.setLevel(strength, 4);
+    // `timeConstant` overrides the slow slews (a starting director primes
+    // its layers at their targets under its own fade-in).
+    setWind({ strength = 0, wind = 0, fog = 0 } = {}, timeConstant = null) {
+        this.setLevel(strength, timeConstant ?? 4);
         if (!this.filter || !this.engine.context) return;
         const now = this.engine.now();
         const cutoff = 260 + wind * 320 + strength * 300 - fog * 140;
-        this.filter.frequency.setTargetAtTime(Math.max(140, cutoff), now, 5);
-        this.gustDepth.gain.setTargetAtTime(0.08 + strength * 0.28, now, 5);
+        this.filter.frequency.setTargetAtTime(Math.max(140, cutoff), now, timeConstant ?? 5);
+        this.gustDepth.gain.setTargetAtTime(0.08 + strength * 0.28, now, timeConstant ?? 5);
     }
 }

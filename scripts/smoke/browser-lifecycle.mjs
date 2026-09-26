@@ -679,7 +679,8 @@ async function runAudioLifecycleProbe(page) {
     controller.engine = {
       context: { state: 'running' },
       now() { return 0; },
-      setVolume() {},
+      setVolumeStep() {},
+      fadeDirector() { return 0; },
       setGroupLevel() {},
       ensureContext() {
         calls.ensure++;

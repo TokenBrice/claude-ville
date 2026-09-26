@@ -1,7 +1,9 @@
 // The soundscape brain. Once per second it reads the world — atmosphere
 // snapshot (time-of-day phase, weather, season) and agent stats — and steers
-// each ambience layer's intensity with slow slews. Discrete village moments
-// arrive over the event bus and become one-shot cues behind the governor.
+// each ambience layer's intensity with slow slews, the world bus's weather
+// ceiling and the circadian tilt. Discrete village moments arrive over the
+// event bus and become one-shot cues through the engine-owned cue arbiter
+// (`cues = { kit, governor }`, injected; never built or destroyed here).
 //
 // Atmosphere source: the World renderer broadcasts its per-frame snapshot as
 // `atmosphere:updated` (so debug overrides and village weather influence are
@@ -15,20 +17,14 @@ import { MAP_SIZE, TILE_WIDTH } from '../../../config/constants.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
 import { clamp01, rand } from './AudioEngine.js';
-import { scaleForPhase } from './MusicalScale.js';
-import {
-    CueGovernor,
-    cueLifecycleDecision,
-    updateQuietFloor,
-} from './CueGovernor.js';
-import { CueKit, laneForCueKind } from './cues/CueKit.js';
+import { cueLifecycleDecision, updateQuietFloor } from './CueGovernor.js';
+import { laneForCueKind } from './cues/CueKit.js';
 import { ActionableCueRouter, attentionStatus } from './ActionableRouting.js';
 import { WindLayer } from './layers/WindLayer.js';
 import { RainLayer } from './layers/RainLayer.js';
 import { BirdsLayer } from './layers/BirdsLayer.js';
 import { CricketsLayer } from './layers/CricketsLayer.js';
 import { VillageHumLayer } from './layers/VillageHumLayer.js';
-import { TonalBedLayer } from './layers/TonalBedLayer.js';
 import { MusicLayer } from './layers/MusicLayer.js';
 
 const TICK_MS = 1000;
@@ -39,7 +35,33 @@ const SPATIAL_CUES = new Set(['arrival', 'departure', 'distress', 'limit', 'reco
 const WORLD_TILE_SPAN = Math.max(1, MAP_SIZE - 1);
 const WORLD_SCREEN_X_HALF_SPAN = WORLD_TILE_SPAN * (TILE_WIDTH / 2);
 
-const BED_LEVEL_BY_PHASE = { dawn: 0.55, day: 0.15, dusk: 0.6, night: 0.32 };
+// Weather and resting budgets (plan 1.4; MIX-3, SCN-5).
+// The world bus yields up to WEATHER_CEILING_DB as rain or a storm builds,
+// reaching it at WEATHER_FULL (a steady rain already counts as full), so
+// weather swells without taking the urgent bell's headroom. Measured with
+// `node scripts/audio/probe.mjs --only scenes` (PROGRAM_TRIM_DB 28.2,
+// standard step, A = −37.9): −7 dB left the rain scene at A + 5.7; −8 dB
+// reads rain A + 4.9 and storm A + 7.0, urgent-cue GR ≤ 2.7 dB over both.
+export const WEATHER_CEILING_DB = -8;
+const WEATHER_FULL = 0.7;
+// Rain-day wind at 0.4 sat 9 dB over calm; while it rains, wind stays under this.
+export const RAIN_WIND_CAP = 0.3;
+// Precipitation above this counts as audible rain (winter snow is hushed upstream).
+const RAIN_AUDIBLE = 0.05;
+// Resting keeps the world at the S2 pilot light (A − 10 ± 3 LU): weather at
+// 0.3 of its waking level (twice the old 0.15 floor), and never less wind
+// than the pilot level — wind is the only world bed until the sea lands (4.1).
+// Calm-day wind (0.05) carries anchor A on today's bed; 0.018 sits ≈ 9 dB under it.
+const RESTING_WEATHER_SCALE = 0.3;
+export const RESTING_PILOT_WIND = 0.018;
+// The Village composer's level: −6 dB from the pre-calibration 0.75, toward
+// S2's "Village music ≤ bed + 3 LU" (the music stem sat at bed + 7). The
+// occasion clock (6.6) and Wave 4's bed re-measure replace this constant.
+const VILLAGE_MUSIC_LEVEL = 0.375;
+// Slew (s) of the first tick after start(): layers reach their targets under
+// the director crossfade instead of trailing it by their slow time constants.
+const PRIME_TIME_CONSTANT = 0.05;
+
 const BIRD_SEASON = { winter: 0.25, spring: 1, summer: 1, autumn: 0.7 };
 const CRICKET_SEASON = { winter: 0, spring: 0.45, summer: 1, autumn: 0.55 };
 
@@ -62,6 +84,30 @@ export function cricketLevel({ phase, phaseProgress = 0, season = 'summer', prec
     return clamp01(Math.min(p, 1 - p) * 10)
         * (CRICKET_SEASON[season] ?? 0.5)
         * (1 - clamp01(precipitation));
+}
+
+/**
+ * Weather and resting budgets on one tick's layer levels (0..1), in place.
+ * `precipitation` is the heard rain amount (winter snow already hushed) and
+ * `storm` the storm intensity. Wind is capped while it rains, and the
+ * Village music rests through rain and storm (S7: no melodic duty there);
+ * resting keeps only the world stratum, at the pilot light. Returns the
+ * world bus's weather ceiling in dB (≤ 0), scaled by how much weather there is.
+ */
+export function applyWorldBudgets(levels, { precipitation = 0, storm = 0, resting = false } = {}) {
+    const rain = clamp01(precipitation);
+    if (rain > RAIN_AUDIBLE) levels.wind = Math.min(levels.wind, RAIN_WIND_CAP);
+    if (rain > RAIN_AUDIBLE || storm > 0) levels.music = 0;
+    if (resting) {
+        levels.wind = Math.max(levels.wind * RESTING_WEATHER_SCALE, RESTING_PILOT_WIND);
+        levels.rain *= RESTING_WEATHER_SCALE;
+        levels.birds = 0;
+        levels.crickets = 0;
+        levels.hum = 0;
+        levels.music = 0;
+    }
+    const weather = clamp01(Math.max(rain, clamp01(storm)) / WEATHER_FULL);
+    return weather > 0 ? WEATHER_CEILING_DB * weather : 0;
 }
 
 function copyPosition(position) {
@@ -129,12 +175,17 @@ function spatialFields(payload) {
 }
 
 export class AudioDirector {
-    constructor({ engine, world = null } = {}) {
+    // `cues = { kit, governor }` is the engine-wide cue arbiter (one CueKit and
+    // one CueGovernor per engine, owned by the controller): budgets and
+    // cooldowns survive a preset switch. Without it the director stays mute.
+    constructor({ engine, world = null, cues = null } = {}) {
         this.engine = engine;
         this.world = world;
         this.layers = {};
-        this.governor = new CueGovernor();
-        this.cueKit = new CueKit(this.engine, this.governor);
+        this.cueKit = cues?.kit ?? null;
+        this.governor = cues?.governor ?? null;
+        this._weatherBed = false;
+        this._primed = false;
         this.running = false;
         this._interval = null;
         this._unsubscribes = [];
@@ -164,15 +215,18 @@ export class AudioDirector {
     start() {
         if (this.running || !this.engine.context) return;
         this.running = true;
+        this._primed = false;
 
+        // Layers feed this director's own group inputs, so a preset switch
+        // can crossfade the whole director (plan 1.6).
+        const options = { director: 'ambient' };
         this.layers = {
-            wind: new WindLayer(this.engine),
-            rain: new RainLayer(this.engine),
-            birds: new BirdsLayer(this.engine),
-            crickets: new CricketsLayer(this.engine),
-            hum: new VillageHumLayer(this.engine),
-            bed: new TonalBedLayer(this.engine),
-            music: new MusicLayer(this.engine),
+            wind: new WindLayer(this.engine, options),
+            rain: new RainLayer(this.engine, options),
+            birds: new BirdsLayer(this.engine, options),
+            crickets: new CricketsLayer(this.engine, options),
+            hum: new VillageHumLayer(this.engine, options),
+            music: new MusicLayer(this.engine, options),
         };
         for (const layer of Object.values(this.layers)) layer.start();
 
@@ -181,9 +235,10 @@ export class AudioDirector {
         this._tick();
     }
 
+    // The shared governor's prepared routine cue is not this director's to
+    // clear: during a crossfade it may belong to the incoming director.
     stop() {
         this.running = false;
-        this.governor.clearRoutine();
         if (this._interval) clearInterval(this._interval);
         this._interval = null;
         for (const id of this._thunderTimers) clearTimeout(id);
@@ -199,7 +254,7 @@ export class AudioDirector {
         for (const unsubscribe of this._signalUnsubscribes) unsubscribe();
         this._signalUnsubscribes = [];
         this.cueKit = null;
-        this.governor.destroy();
+        this.governor = null;
         this._actionable.clear();
         this._agentAudioContext.clear();
     }
@@ -210,7 +265,7 @@ export class AudioDirector {
 
     setHidden(hidden) {
         this.hidden = Boolean(hidden);
-        this.governor.clearRoutine();
+        this.governor?.clearRoutine();
     }
 
     setHiddenSummonsHandler(handler) {
@@ -224,7 +279,7 @@ export class AudioDirector {
 
         on('mode:changed', (mode) => {
             this._mode = mode === 'dashboard' ? 'dashboard' : 'character';
-            this.governor.clearRoutine();
+            this.governor?.clearRoutine();
         });
         on('agent:added', (agent) => this._rememberAgentAudioContext(agent));
         on('agent:updated', (agent) => this._rememberAgentAudioContext(agent));
@@ -455,7 +510,15 @@ export class AudioDirector {
         if (cueLifecycleDecision({ lane: payload.lane, hidden: this.hidden }) !== 'play') {
             return false;
         }
+        // The S2 window the bed-aware trim aims at: over weather, over the
+        // composer's music, or the plain village bed.
+        payload.bed ??= this._bedContext();
         return this.cueKit.play(kind, payload);
+    }
+
+    _bedContext() {
+        if (this._weatherBed) return 'weather';
+        return this.layers.music?.nowPlaying ? 'music' : 'village';
     }
 
     // QA hook: pin a layer's level for `holdMs`, overriding the tick mapping.
@@ -517,43 +580,42 @@ export class AudioDirector {
             ),
             crickets: cricketLevel({ phase, phaseProgress, season, precipitation, storm }),
             hum: clamp01(working / 6) * (0.25 + 0.75 * light),
-            bed: BED_LEVEL_BY_PHASE[phase] ?? 0.2,
-            music: clamp01(0.75 * (phase === 'night' ? 0.7 : 1) * (storm > 0 ? 0.4 : 1)),
+            music: VILLAGE_MUSIC_LEVEL * (phase === 'night' ? 0.7 : 1),
         };
 
         // Diagnostics only: GPU load never changes what the village sounds
         // like — a busy frame is not a quieter world.
         this._framePressureLevel = this._readFramePressure();
 
-        if (this._quietFloor.mode === 'resting') {
-            levels.wind *= 0.15;
-            levels.rain *= 0.15;
-            levels.birds = 0;
-            levels.crickets = 0;
-            levels.hum = 0;
-            levels.bed *= 0.08;
-            levels.music = 0;
-        }
+        const resting = this._quietFloor.mode === 'resting';
+        // Snow is hushed rain, not weather the wind must yield to.
+        const heardRain = winter ? 0 : levels.rain;
+        const ceilingDb = applyWorldBudgets(levels, { precipitation: heardRain, storm, resting });
+        this._weatherBed = heardRain > RAIN_AUDIBLE || storm > 0;
 
         for (const [name, override] of this._overrides) {
             if (Date.now() > override.until) this._overrides.delete(name);
             else levels[name] = override.level;
         }
 
-        const scale = scaleForPhase(phase);
+        // The first tick after start() sets every layer at its target at once:
+        // the director's own crossfade gain carries the fade-in (plan 1.6),
+        // so slow slews here would leave a hole under the switch.
+        const prime = this._primed ? null : PRIME_TIME_CONSTANT;
+        this._primed = true;
+        this.engine.setWeatherCeiling(ceilingDb, prime ?? 4);
+        this.engine.setTilt(phase);
         this.layers.wind.setWind({
             strength: levels.wind,
             wind: Math.abs(Number(weather.windX) || 0),
             fog: clamp01(weather.fog),
-        });
-        this.layers.rain.setPrecipitation(levels.rain);
-        this.layers.rain.setStorm(storm);
-        this.layers.birds.setLevel(levels.birds);
-        this.layers.crickets.setLevel(levels.crickets);
-        this.layers.hum.setLevel(levels.hum);
-        this.layers.bed.setLevel(levels.bed, 6);
-        this.layers.bed.setScale(scale);
-        this.layers.music.setLevel(levels.music);
+        }, prime);
+        this.layers.rain.setPrecipitation(levels.rain, prime ?? 4);
+        this.layers.rain.setStorm(storm, prime ?? 6);
+        this.layers.birds.setLevel(levels.birds, prime ?? 3);
+        this.layers.crickets.setLevel(levels.crickets, prime ?? 3);
+        this.layers.hum.setLevel(levels.hum, prime ?? 3);
+        this.layers.music.setLevel(levels.music, prime ?? 3);
         this.layers.music.setPhase(phase);
         this.layers.music.setRestScale(1 - clamp01(working / 8) * 0.35);
         this._levels = levels;
@@ -585,7 +647,7 @@ export class AudioDirector {
             levels: { ...this._levels },
             lastCue: this.cueKit?.lastCue || null,
             nowPlaying: this.layers.music?.nowPlaying || null,
-            ceremonies: this.governor.snapshot().ceremonies,
+            ceremonies: this.governor?.snapshot().ceremonies ?? null,
         };
     }
 

@@ -88,21 +88,6 @@ export function collapseCueBurst(cues) {
     return [...bypass, aggregate].sort(compareCuePriority);
 }
 
-// Pure role-bus policy. Cues keep a fixed reserved ceiling; urgency creates
-// contrast by lowering ambience, never by lifting the cue above that ceiling.
-export function computeCueMix(lane, ambientLevel = 1) {
-    const ambient = Math.max(0, Math.min(1, Number(ambientLevel) || 0));
-    const urgent = isUrgentCueLane(lane);
-    const cueBusGain = 0.72;
-    const ambientBusGain = ambient * (urgent ? 0.2 : 0.55);
-    return {
-        ambientBusGain,
-        cueBusGain,
-        duckDepth: 1 - (urgent ? 0.2 : 0.55),
-        masterCeiling: 0.9,
-    };
-}
-
 export function updateQuietFloor(state = {}, {
     calm = false,
     now = 0,

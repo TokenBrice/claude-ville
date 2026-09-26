@@ -16,6 +16,17 @@ import {
 } from '../../application/VillageState.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { eventShapeSvgPath } from './EventShapes.js';
+import {
+    AUDIO_MIXER_DEFAULTS,
+    SOUND_CALIBRATION,
+    SOUND_CALIBRATION_KEY,
+    SOUND_LAYERS_KEY,
+    SOUND_STEP_MAX,
+    SOUND_VOLUME_KEY,
+    readStoredTrimSteps,
+    readStoredVolumeStep,
+} from './SoundSettings.js';
+import { STANDARD_VOLUME_STEP } from './audio/Loudness.js';
 
 const SETTINGS_MODAL_OWNER = 'topbar-settings';
 const UNKNOWN_MODEL_DATE_KEY = 'claudeville.pricing.unknownModelDate';
@@ -26,30 +37,10 @@ const ATTENTION_PARTS = Object.freeze([
     Object.freeze({ key: 'errors', word: 'ERROR', modifier: 'error', noun: 'errored' }),
     Object.freeze({ key: 'quota', word: 'LIMIT', modifier: 'limit', noun: 'rate-limited' }),
 ]);
-const AUDIO_LAYER_LEVELS_KEY = 'claudeville.sound.layers';
-const AUDIO_MIXER_DEFAULTS = Object.freeze({
-    wind: 1,
-    rain: 1,
-    wildlife: 1,
-    hum: 1,
-    music: 1,
-});
 // The boot-idle build of the sound controller: the idle slot's deadline, and
 // the delay where `requestIdleCallback` is missing (Safari).
 const AUDIO_ROUTE_IDLE_TIMEOUT_MS = 4000;
 const AUDIO_ROUTE_FALLBACK_DELAY_MS = 1500;
-
-function readStoredLayerLevels(storage = globalThis.window?.localStorage) {
-    try {
-        const parsed = JSON.parse(storage?.getItem(AUDIO_LAYER_LEVELS_KEY) || '{}');
-        return Object.fromEntries(Object.entries(AUDIO_MIXER_DEFAULTS).map(([name, fallback]) => {
-            const value = Number(parsed?.[name]);
-            return [name, Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : fallback];
-        }));
-    } catch {
-        return { ...AUDIO_MIXER_DEFAULTS };
-    }
-}
 
 const CONNECTION_REASON_COPY = Object.freeze({
     'connection-refused': 'The local session link refused the connection.',
@@ -84,12 +75,15 @@ export function connectionReasonText(code) {
     return CONNECTION_REASON_COPY[normalized] || 'Connection interrupted; ClaudeVille will keep retrying locally.';
 }
 
+// Sound levels are whole steps (1.2); the calibration key follows the volume
+// and trims so a reset writes it last and never needs the D5 recalibration.
 export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
     'claudeville.sound.enabled': 'false',
-    'claudeville.sound.volume': '0.5',
+    [SOUND_VOLUME_KEY]: String(STANDARD_VOLUME_STEP),
     'claudeville.sound.mode': 'ambient',
     'claudeville.sound.background': 'play',
-    'claudeville.sound.layers': JSON.stringify(AUDIO_MIXER_DEFAULTS),
+    [SOUND_LAYERS_KEY]: JSON.stringify(AUDIO_MIXER_DEFAULTS),
+    [SOUND_CALIBRATION_KEY]: SOUND_CALIBRATION,
     'cv-auto-camera': '1',
     'claudeville.alerts.desktop': '0',
     'claudeville.sidebarCollapsed': 'false',
@@ -105,18 +99,13 @@ function focusWithoutScroll(element) {
 }
 
 export function readPersistedSettings(storage = globalThis.window?.localStorage) {
-    const storedVolume = storageValue(storage, 'claudeville.sound.volume');
-    const rawVolume = storedVolume === null ? NaN : Number(storedVolume);
-    const volume = Number.isFinite(rawVolume)
-        ? Math.max(0, Math.min(1, rawVolume))
-        : 0.5;
     const rawMode = storageValue(storage, 'claudeville.sound.mode');
     return {
         soundEnabled: storageValue(storage, 'claudeville.sound.enabled') === 'true',
-        soundVolume: volume,
+        soundVolume: readStoredVolumeStep(storage),
         soundMode: rawMode === 'bgm' ? 'bgm' : 'ambient',
         soundBackground: storageValue(storage, 'claudeville.sound.background') === 'signals' ? 'signals' : 'play',
-        soundLayers: readStoredLayerLevels(storage),
+        soundLayers: readStoredTrimSteps(storage),
         autoCamera: storageValue(storage, 'cv-auto-camera') !== '0',
         desktopAlerts: storageValue(storage, 'claudeville.alerts.desktop') === '1',
         sidebarCollapsed: storageValue(storage, 'claudeville.sidebarCollapsed') === 'true',
@@ -477,11 +466,11 @@ export class TopBar {
         resetPersistedSettings();
         this._setReducedMotion(false);
         this.audio?.setEnabled(false);
-        this.audio?.setVolume(0.5);
+        this.audio?.setVolumeStep(STANDARD_VOLUME_STEP);
         this.audio?.setMode('ambient');
         this.audio?.setBackground('play');
-        for (const [name, value] of Object.entries(AUDIO_MIXER_DEFAULTS)) {
-            this.audio?.setLayerLevel(name, value);
+        for (const [name, step] of Object.entries(AUDIO_MIXER_DEFAULTS)) {
+            this.audio?.setLayerStep(name, step);
         }
         if (!this.audio) this._renderDeferredAudioControl();
         eventBus.emit('camera:auto-camera', { enabled: true });
@@ -528,22 +517,21 @@ export class TopBar {
         }
     }
 
-    async _setSoundVolume(volume) {
+    async _setSoundVolume(step) {
         try {
             const audio = await this._ensureAudio();
-            audio?.setVolume(volume);
-            return audio?.volume ?? 0.5;
+            return audio?.setVolumeStep(step) ?? readPersistedSettings().soundVolume;
         } catch (error) {
             console.warn('[TopBar] Audio unavailable:', error.message);
             return readPersistedSettings().soundVolume;
         }
     }
 
-    async _setSoundLayer(name, value) {
+    async _setSoundLayer(name, step) {
         try {
             const audio = await this._ensureAudio();
-            audio?.setLayerLevel(name, value);
-            return audio?.layerLevels?.[name] ?? value;
+            audio?.setLayerStep(name, step);
+            return audio?.layerSteps?.[name] ?? readPersistedSettings().soundLayers[name];
         } catch (error) {
             console.warn('[TopBar] Audio unavailable:', error.message);
             return readPersistedSettings().soundLayers[name];
@@ -749,10 +737,13 @@ export class TopBar {
             });
             slider.type = 'range';
             slider.min = '0';
-            slider.max = '100';
+            slider.max = String(SOUND_STEP_MAX);
             slider.step = '1';
-            slider.value = '100';
-            const value = el('span', { className: 'topbar__mixer-value', text: '100%' });
+            slider.value = String(AUDIO_MIXER_DEFAULTS[name]);
+            const value = el('span', {
+                className: 'topbar__mixer-value',
+                text: `${AUDIO_MIXER_DEFAULTS[name]} / ${SOUND_STEP_MAX}`,
+            });
             rows.appendChild(el('label', { className: 'topbar__mixer-row' }, [label, slider, value]));
             controls[name] = { slider, value };
         }

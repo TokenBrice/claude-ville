@@ -17,8 +17,8 @@ const BUSY = { working: 5, idle: 2 };
 // The agent status each actionable cue kind stands for (bucket routing, plan 0.3).
 const CUE_STATUS = { distress: 'errored', limit: 'rate_limited', summons: 'waiting_on_user' };
 
-function cue(name, kind, payload = {}, { seconds = 5, at = 0.25, volume } = {}) {
-    return { name, category: 'cues', method: 'offline', seconds, volume, cues: [{ at, kind, payload }] };
+function cue(name, kind, payload = {}, { seconds = 5, at = 0.25, volumeStep } = {}) {
+    return { name, category: 'cues', method: 'offline', seconds, volumeStep, cues: [{ at, kind, payload }] };
 }
 
 export function buildTargets() {
@@ -39,7 +39,7 @@ export function buildTargets() {
     t.push(cue('cue-thunder-0.3', 'thunder', { intensity: 0.3 }, { seconds: 6 }));
     t.push(cue('cue-thunder-0.6', 'thunder', { intensity: 0.6 }, { seconds: 6 }));
     t.push(cue('cue-thunder-1.0', 'thunder', { intensity: 1 }, { seconds: 6 }));
-    t.push(cue('cue-thunder-1.0-vol100', 'thunder', { intensity: 1 }, { seconds: 6, volume: 1 }));
+    t.push(cue('cue-thunder-1.0-vol100', 'thunder', { intensity: 1 }, { seconds: 6, volumeStep: 10 }));
     // Night borrows the minor third: every pitched cue whose notes change.
     for (const kind of ['arrival', 'recovery', 'council', 'aurora', 'summons']) {
         t.push(cue(`cue-${kind}-night`, kind, { phase: 'night', teamSize: 5, status: kind === 'summons' ? 'waiting_on_user' : undefined }, { seconds: kind === 'council' ? 6 : 5 }));
@@ -87,9 +87,6 @@ export function buildTargets() {
     t.push(layer('layer-hum-0-workers', 'hum', { phase: 'day', weather: { type: 'clear' } }, { waiting: 1, idle: 2 }, 20));
     t.push(layer('layer-hum-3-workers', 'hum', { phase: 'day', weather: { type: 'clear' } }, { working: 3, idle: 1 }, 40));
     t.push(layer('layer-hum-6-workers', 'hum', { phase: 'day', weather: { type: 'clear' } }, { working: 6 }, 40));
-    for (const phase of ['dawn', 'day', 'dusk', 'night']) {
-        t.push(layer(`layer-bed-${phase}`, 'bed', { phase, progress: 0.5, weather: { type: 'clear' } }, BUSY, 80, 0));
-    }
 
     // ------------------------------------------------ ambient music layer
     const tune = (name, tuneName, phase, world = BUSY) => ({
@@ -169,10 +166,10 @@ export function buildTargets() {
         ],
     }));
     t.push({ ...mix('mix-night-storm-vol100', { phase: 'night', progress: 0.5, weather: { type: 'storm', intensity: 0.9, windX: 1.2 } }, { working: 2, idle: 2 }, {
-        volume: 1, seconds: 40,
+        volumeStep: 10, seconds: 40,
         actions: [{ at: 10, emit: 'weather:storm-flash', payload: { intensity: 1 }, label: 'storm-flash 1.0' }],
     }), category: 'mix' });
-    t.push({ ...mix('mix-day-clear-busy-vol100', { phase: 'day', progress: 0.5, weather: { type: 'clear', windX: 0.4 } }, { working: 6, idle: 2 }, { volume: 1, seconds: 40 }), category: 'mix' });
+    t.push({ ...mix('mix-day-clear-busy-vol100', { phase: 'day', progress: 0.5, weather: { type: 'clear', windX: 0.4 } }, { working: 6, idle: 2 }, { volumeStep: 10, seconds: 40 }), category: 'mix' });
 
     // --------------------------------------------------------- fidelity
     t.push({ name: 'repeat-mix-day-clear-busy', category: 'fidelity', method: 'realtime', mode: 'ambient', atmosphere: { phase: 'day', progress: 0.5, weather: { type: 'clear', windX: 0.4 } }, world: { counts: { working: 6, idle: 2 } }, warmup: 20, seconds: 60, seedOffset: 0, repeatOf: 'mix-day-clear-busy',

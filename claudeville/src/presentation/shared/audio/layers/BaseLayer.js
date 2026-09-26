@@ -1,18 +1,22 @@
 // Common plumbing for ambience layers: an output gain on the layer's group
-// fader (or the ambience bus), smooth intensity targeting, timer bookkeeping
-// for scheduled layers, and teardown that ramps to silence before anything
-// stops so stops never click.
+// (through its director's crossfade gain), smooth intensity targeting, timer
+// bookkeeping for scheduled layers, and teardown that ramps to silence
+// before anything stops so stops never click.
 
 import { MIN_GAIN } from '../AudioEngine.js';
 
 export class BaseLayer {
     // `group` names the engine fader the layer feeds ('wind', 'rain',
     // 'wildlife', 'hum', 'music'); the mixer trims move that fader, never
-    // `level`, so a quieter group keeps its density.
-    constructor(engine, { trim = 0.1, group = null } = {}) {
+    // `level`, so a quieter group keeps its density. `director` names the
+    // director that owns the layer ('ambient' or 'bgm'), whose group gain
+    // carries the preset crossfade.
+    constructor(engine, { trim = 0.1, group = null, director = 'ambient' } = {}) {
+        if (!group) throw new Error(`${new.target.name} needs a mixer group`);
         this.engine = engine;
         this.trim = trim;
         this.group = group;
+        this.director = director;
         this.level = 0;
         this.running = false;
         this.out = null;
@@ -26,7 +30,7 @@ export class BaseLayer {
         const ctx = this.engine.context;
         this.out = ctx.createGain();
         this.out.gain.value = MIN_GAIN;
-        this.out.connect(this.group ? this.engine.groupInput(this.group) : this.engine.ambienceBus);
+        this.out.connect(this.engine.groupInput(this.group, this.director));
         this.running = true;
         this._start(ctx);
     }

@@ -166,6 +166,12 @@ export class Toast {
         on('attention:digest', (payload) => {
             this.showDigest(payload);
         });
+        // The one-time D5 reset of stored sound levels (plan 1.2) says so once;
+        // SoundSettings owns the copy; the controller emits it only when
+        // stored levels were actually replaced.
+        on('audio:recalibrated', (payload) => {
+            this.showNotice(payload?.message);
+        });
         on('chronicle:read-failed', payload => {
             this.show(payload?.message || 'Could not load the Chronicle day.', 'warning');
         });
@@ -232,6 +238,15 @@ export class Toast {
             cueKind: 'unattended-digest',
             primary: true,
         });
+    }
+
+    // A settings notice: plain, longer-lived than a transient toast, never an
+    // alert and never counted against the cue captions.
+    showNotice(message) {
+        if (this._destroyed || !this.container) return;
+        const text = cleanLabel(message);
+        if (!text) return;
+        return this._show(text, 'info', { dismissMs: PRIMARY_CUE_DISMISS_MS });
     }
 
     showCue(payload) {

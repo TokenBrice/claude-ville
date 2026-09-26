@@ -10,36 +10,129 @@ Nothing in the repository is edited or written: the shipped modules are served r
 All commands run from the repo root. They need only Node, `playwright` and its Chromium (the repo's
 dev dependencies). No ffmpeg, sox, scipy, or extra install. Dev-only: nothing here ships.
 
-## The Wave-0 probe (`npm run audio:probe`)
+## The probe (`npm run audio:probe`)
 
 A **local maintainer gate**, not part of `validate:quick` or CI (CI installs with `--ignore-scripts`
 and has no browser). Run it at the end of every audio wave; it exits non-zero on any FAIL and writes
-nothing unless `--out` is given.
+nothing unless `--out` or `--update` is given. **Status:** the Wave 1 gate; the default run takes
+about 2–3 minutes (the virtual-clock checks ≈ 20 s, the rest is the live app and the lint).
 
 ```sh
-npm run audio:probe                                  # every check, one page at a time (≈ 4–5 min)
-node scripts/audio/probe.mjs --only routing,ceremony # a subset: lint, routing, away, ceremony, report
-node scripts/audio/probe.mjs --jobs 2 --seed 7       # parallel pages (more audio-thread skips), another seed
-node scripts/audio/probe.mjs --out /tmp/probe        # also keep probe-report.json and the app-session WAVs
+npm run audio:probe                                   # every check (virtual clock + the Wave-0 app checks)
+node scripts/audio/probe.mjs --only scenes            # a subset (names below), e.g. to calibrate PROGRAM_TRIM_DB
+node scripts/audio/probe.mjs --only scenes,margins --no-worklets   # the native limiter/meter fallbacks
+node scripts/audio/probe.mjs --update                 # re-measure and rewrite baselines/wave1.json (review the diff)
+node scripts/audio/probe.mjs --jobs 3 --seed 7        # parallel virtual renders, another seed
+node scripts/audio/probe.mjs --out /tmp/probe         # also keep probe-report.json and every scene's WAV
+node scripts/audio/probe.mjs --soak                   # the 20-minute realtime soak instead (below)
 ```
 
-Each line prints `PASS`/`FAIL`/`INFO`, the check, and its numbers:
+Each line prints `PASS`/`FAIL`/`INFO`/`DEFER`, the check, and its numbers.
+
+### Plan stage and deferred checks
+
+`PLAN_STAGE` in `lib/checks.mjs` is the wave the probe gates (now **1**); bump it at each wave's exit.
+A criterion whose owner lands in a later wave is listed in `GATED_FROM` with that wave: it is measured
+and printed as `DEFER` with the same numbers and the wave that gates it, counted in the summary line,
+and never fails the run. Once `PLAN_STAGE` reaches its wave it gates like everything else. Every
+criterion not listed below is gated now.
+
+| deferred criterion | gated from | why |
+|---|---|---|
+| urgent band rule for **error** and **limit** (`margins`: presence rise over music, ⅓-octave rise elsewhere) | Wave 3 | today's distress voice (A2) has no 0.5–4 kHz energy and urgent trims never go below 0 dB; the cracked bell and the escapement ticks (3.2) carry it |
+| lane ceilings for **error** (+12) and **limit** (+10) | Wave 3 | the same voices: an urgent trim floored at 0 dB cannot pull an over-bright old voice under its ceiling |
+| **village busy** at A + 4 ± 2, LRA ≤ 8 (`scenes`) | Wave 4, re-checked at Wave 6 | the bed is wind + birds until the sea (4.1); Village music becomes the occasion clock (6.6); `PROGRAM_TRIM_DB` is re-measured at both |
+
+The needs-you band rule, every lane floor, urgent GR ≤ 3 dB and every other scene target gate now.
+
+### The virtual clock (HAR-1)
+
+The level, margin, switch, duck and sync checks render the **shipped** controller and directors on an
+`OfflineAudioContext` (`page/virtual.html`, `page/virtual.js`, `lib/virtual.mjs`). `page/virtual-clock.js`,
+injected before any app module, replaces `setTimeout`/`setInterval`/`requestIdleCallback` (and their
+clears), `Date.now` and `performance.now` with one virtual millisecond clock; `Math.random` is seeded
+by `page/init.js`. `window.AudioContext` becomes a factory that hands the engine one prepared offline
+context (its `state`/`resume`/`suspend`/`close` shimmed, since an offline context cannot resume before
+it renders), so the real `AmbientAudioController` enables as a click would: `ensureContext` loads the
+limiter worklet and builds the graph. The render then suspends every 512 frames (10.7 ms); each step
+moves the clock to that audio time, fires every timer due by then (each as its own task, so promise
+chains settle between them) and waits for tracked async work — `audioWorklet.addModule`, a second
+offline render (a bake), `decodeAudioData` — before resuming. Timers therefore run up to one step late
+and read the audio clock when they run, as in a realtime page. Two renders with one seed are
+sample-identical (the `determinism` check: Δ LUFS-I 0.000 LU, max sample Δ ≈ 1e-6), and a minute of
+village renders in about a second. Not modelled: suspending the scene's context (a hidden tab), so
+away and resume stay on the live app. Stems (HAR-5) ride extra destination channels through a channel
+merger, sample-aligned with the program: `world`/`work`/`music` post-duck (`engine._busOut`), `cue`
+(`engine.busInput('cue')`, before its trim), `limiterIn`/`limiterOut` (`engine._limiterIn`/`_limiterOut`).
+Stem levels are reported "at the output": plus `PROGRAM_TRIM_DB` and the volume step's gain.
+
+Scenes (`lib/scenes.mjs`) start from stored settings the controller loads as a calibrated profile
+(standard volume step, trims at 10 unless the scene says otherwise, `claudeville.sound.calibration = 2`);
+`warmup` seconds settle the enable fade and the level slews and are discarded. The harness page has no
+AttentionService or VillageDirector, so scenes emit their events (`attention:raised`,
+`distress:watchtower`, `village:scene`, `chronicle:aurora`, `team:gather`, `weather:storm-flash`) after
+setting the agent's status, which is what bucket routing reads. Cue placements respect CueKit's per-kind
+cooldowns and the governor's spacing and rate, so every placement is admitted.
 
 | check | what it asserts |
 |---|---|
-| `lint` | HAR-4 envelope lint (below) finds no hazard, and each unit started at least one source: every cue kind (`cue-gallery` and the `*-night` cues, offline), `layer-crickets-night`, and `bgm-night-to-ambient` (a BGM night piece, then a switch to the ambient preset) |
+| `scenes` | S2 targets from `Loudness.js` at the standard step (village busy deferred to Wave 4, above), relative ones against the anchor measured in the same run: **anchor** (calm clear July day, 4 working, work and music trims off) −38 ± 1 LUFS-I; **village busy** (6 working, 3 minutes of arrivals, a needs-you, an error, a recovery, a rate limit) A + 4 ± 2 and LRA ≤ 8; **Town band** −31 ± 1 with the band stem's ST max ≤ −28; **rain** ≤ A + 5; **storm** (three flashes) ≤ A + 8 (item 1.4; S2's A + 6 and ST max ≤ −27 gate from 4.2); **resting** ST mean A − 10 ± 3, never below −55 LUFS-S. INFO rows: TP, LRA, limiter GR (storm), HAR-5 stem levels and shares, and the village level map (2–5 kHz share, S/M, correlation, mono fold, laptop loss) |
+| `margins` | HAR-3: every lane (needs-you, error, limit, routine arrival, scenery aurora) over four beds (village busy day, Town band, rain, storm), 3 placements each (the aurora once: its cooldown is 120 s). Margin = max momentary in [t, t + 2.5 s] over the energy mean of the 3 s before, t = the cue's first published note. The median must sit in the lane's S2 window — Wave 1 accepts needs-you and error at their floors **minus 2 LU** (1.3, today's voices; the full floors gate at the Wave-3 exit) — and urgent lanes (needs-you, error, limit) must also pass the band rule (over music: 0.5–4 kHz energy of [t, t + 1.2 s) ≥ 6 dB over [t − 3, t); elsewhere: ≥ 2 third-octave bands rising ≥ 6 dB) and limiter GR ≤ 3 dB within 2.5 s of the onset (error and limit band rule and ceilings deferred to Wave 3, above) |
+| `limiter` | 1.1: at full slider, a +12 dBFS burst at the limiter input (1 kHz sine, then noise) leaves the worklet at `Loudness.js` `LIMITER_CEILING_DBFS` (+0.1 dB) and ≤ −1 dBTP, and the native fallback (`__claudevilleAudioNoWorklets`: `DynamicsCompressor` + tanh, an emergency path) at ≤ −0.9 dBFS sample peak; a −20 dBFS sine passes both at 0 ± 0.2 dB |
+| `switch` | must-never 12: AMBIENT → BGM and back; the momentary loudness of the 4 s after each switch never falls more than 3 dB under the quieter steady side's p10 (before: [t − 8, t); after: [t + 6, t + 14]) nor rises 3 dB over the louder side's p90 |
+| `ducks` | 1.3: every `engine.duck` window (recorded with its cancellation), attack and release included, unioned per bus: ≤ 5 % of the village busy and Town band scenes on every bus, with at least one window |
+| `avsync` | HAR-12: every published note of every sounding cue score vs the first onset heard on the cue stem near it (a 1 ms frame ≥ 6 dB over the 10 ms before it; a pair's second note struck over the first's ring reads ≈ 8–17 ms late), and four arrivals whose accent is declared 450–800 ms ahead, as the renderer does, vs their heard carrying note: median \|error\| ≤ 20 ms, p95 ≤ 40 ms |
+| `determinism` | the anchor and the village busy scene rendered twice agree within 0.2 LU |
+| `baseline` | every scene LUFS-I and ST max and every lane's median margin within ±1.5 of the committed `baselines/wave1.json`; `--update` rewrites the numbers it measured (merged with the rest) and prints the deltas. Re-baseline, reviewed, when `PROGRAM_TRIM_DB` is re-measured (end of Waves 1, 4 and 6) or a reviewed change moves a scene |
+| `lint` | HAR-4 envelope lint (below) finds no hazard, and each unit started at least one source: every cue kind (`cue-gallery` and the `*-night` cues, offline), `layer-crickets-night`, and `bgm-night-to-ambient` (a BGM night piece, then a switch to the ambient preset); INFO: the app session's hazards |
 | `routing` | must-never 2: an errored agent's `audio:cue-played` kinds are all `distress`, a rate-limited agent's all `limit`, never `summons` — with `attention:raised` first, with `distress:watchtower` first, and through the live producers (a sim status step) |
-| `away` | must-never 4: after a real TopBar click (`--autoplay-policy=user-gesture-required`), a needs-you raised 5 s into an absence sounds. Hidden tab and blur with `claudeville.sound.background = signals` close the bed, so the call must stand the `Loudness.js` needs-you minimum (+10 LU) over the preceding `bedWindowSec` (3 s) of what the listener heard — a suspended context counts as silence, scored at −80 LUFS. A plain blur keeps the full mix (decision D3), so there the call must reach the cue bus (≥ −60 dBFS) with the context running; its margin over the bed is printed and is must-never 1, gated from Wave 1 (1.3) |
-| `resume` | must-never 5: after each blur→focus and hide→show, `contextState` is `running` within 1 s |
+| `away` | must-never 4: after a real TopBar click (`--autoplay-policy=user-gesture-required`), a needs-you raised 5 s into an absence sounds. Hidden tab and blur with `claudeville.sound.background = signals` close the bed, so the call must stand the `Loudness.js` needs-you minimum (+10 LU) over the preceding `bedWindowSec` (3 s) of what the listener heard — a suspended context counts as silence, scored at −80 LUFS. A plain blur keeps the full mix (decision D3), so there the call must reach the cue bus (≥ −60 dBFS) with the context running; its margin over the bed is must-never 1, gated on the virtual clock by `margins` |
+| `resume` | must-never 5 (runs with `away`): after each blur→focus and hide→show, `contextState` is `running` within 1 s |
 | `ceremony` | must-never 6: the `team-gather` sim fixture, started over an empty island with sound on, yields exactly one `council` cue-played within 15 s |
-| `report` | not gated: program LUFS-I, true peak and ST max of 30 s of a busy clear day (`mixed-tools`, 10:24), the tap's audio-thread skips (`capture.gaps`) in that window and the session, envelope hazards and page errors seen in the app |
 
 The app checks run the full app on `startIsolatedServer()` (ephemeral port) at `/?sim=1`, renderer on,
 with `Math.random` seeded before any app module loads (`page/init.js`) and `page/probe-app.js` driving
 the sim fixture, real `blur`/`focus` window events and a `document.hidden` override with a real
 `visibilitychange`. Captions are recorded from `audio:cue-played` on the event bus, so routing and
 ceremony results hold with any output device. Loudness is measured on the wall clock: every tap chunk
-carries its arrival time, and `lib/timeline.mjs` lays the capture on it (see "The tap").
+carries its arrival time, and `lib/timeline.mjs` lays the capture on it (see "The tap"). They run after
+the virtual renders, one at a time, so render CPU never competes with a live audio thread.
+
+### The soak (`--soak`, SCN-9)
+
+```sh
+node scripts/audio/probe.mjs --soak                    # ≈ 21 min: both presets, 10 min each, realtime
+node scripts/audio/probe.mjs --soak --soak-seconds 60  # a short smoke of the same path (reported, not gated or compared)
+node scripts/audio/probe.mjs --soak --update           # record baselines/soak.json from this soak
+```
+
+The full app on an isolated server records ten real-time minutes of the SCN busy-session fixture
+(`fixtures/scn-plans.mjs`: arrivals, departures, a question left open for four minutes, an error that
+recovers, a push, a failed push, a lull, a rate limit) in AMBIENT and in BGM, sound enabled by a real
+TopBar click, the fixture played through the sim driver. It reports the session metrics
+(`metrics/session-metrics.mjs`: LUFS-I, LRA, silence share, music on-time, tonal re-hearing, cue
+density), gates ducked time ≤ 5 % per bus, and reports HAR-12's renderer lag (drawn accent frame −
+published note, from `cueScoreDiagnostics()`). Against `baselines/soak.json`, two soaks must agree
+within 1 LU (integrated), ±3 points (music on) and ±5 points (re-heard) — 0.8b's acceptance; a soak of
+another length is reported, not compared.
+
+### Metric libraries and fixtures
+
+Ported from the explorers' notes (`output/claudeville-opus55-audio/`) as pure Node libraries that take
+channels, not files, so the probe and later waves' acceptance lines call them directly:
+
+| module | from | functions |
+|---|---|---|
+| `metrics/discrim.mjs` | `cue-snippets/discrim.mjs`, `discrim2.mjs` | `cueFeatures`, `differs` (S1's opening-interval contour rule), `differsRound1`, `discriminationMatrix`, `semitonesFromA4` |
+| `metrics/cuebands.mjs` | `mix-snippets/cuebands.mjs` | `cueBandRise` (⅓-octave rise and duck hole), `presenceRise` (the band rule over music), `thirdOctavePower` |
+| `metrics/levelmap.mjs` | `mix-snippets/levelmap.mjs` | `levelMap`: K-weighted band shares, 2–5 kHz share, S/M, correlation, mono fold, laptop loss, quiet share |
+| `metrics/session-metrics.mjs` | `scn-snippets/session-metrics.mjs` | `sessionMetrics` (silence, tonal and n-gram re-hearing, music on-time, cue density), `writeSsmPng` |
+| `metrics/fol-analyze.mjs` | `fol-snippets/fol-analyze.mjs` | `scheduleStats` (S7 work budgets), `strikeAudibility`, `bandEnvelope`, `riseAt`, `riseCount`, `lineLevelDb`, `WORKSHOP_BANDS` |
+| `metrics/amb-metrics.mjs` | `amb-snippets/metrics.mjs` | `repetition` (autocorrelation lags, ICC), `rt60` (Schroeder T20 per octave, C80), `eventDecay`, `wetDry`, `autocorrelation`, `icc` |
+| `metrics/musl-measure.mjs` | `musl-snippets/measure.mjs` | `musicMeasure`: LUFS, laptop Δ, 2–5 kHz share, holes per minute, momentary spread |
+| `metrics/dsp.mjs` | — | the FFT, RBJ biquads, Welch PSD and helpers the libraries share |
+| `fixtures/scn-plans.mjs` | `scn-snippets/plans.mjs` | SCN's session and moment plans (`busySessionActions`, `PLANS`) |
+| `fixtures/cue-scores.mjs` | the discrim tables | designed note scores: today's shipped cues and the Wave-3 figures |
 
 ## Listening harness
 
@@ -68,7 +161,7 @@ node $T layer-crickets-night --snippet scripts/audio/snippets/example-crickets-s
 `--out dir` (default `<renders>/baseline` for `all`, else `<renders>/scratch`), `--jobs N` (parallel
 realtime pages, default 6), `--seed N` (Math.random seed, default `0x5eed`), `--name id` (rename a
 single target or a snippet render), `--offline` (snippet on an OfflineAudioContext),
-`--volume v` (snippet master volume, default 0.5 = shipped default).
+`--volume-step 0-10` (snippet master volume step, default the standard step 6).
 
 Every render writes `<name>.wav` (32-bit float stereo, context rate — 48 kHz in headless Chromium; float
 because the village plays at -45…-70 LUFS where 16-bit quantisation noise would bias spectral metrics),
@@ -84,7 +177,7 @@ A snippet is an ES module served to the harness page. Two modes:
 |---|---|
 | `context` | an `AudioContext` (realtime, default) or `OfflineAudioContext` (`--offline`) at 48 kHz |
 | `destination` | `context.destination` — tapped in realtime, rendered offline. Connect here to bypass the shipped master chain |
-| `engine` | a real `AudioEngine` built on `context`: `engine.cueBus` / `engine.ambienceBus` → duck → fade (pinned open) → master (volume² × 0.9) → 6.2 kHz low-pass → limiter → destination. Connect here to hear your recipe exactly as a shipped cue/layer would sound |
+| `engine` | a real `AudioEngine` attached to `context` (`engine.attachContext`, limiter worklet loaded), fade pinned open: `engine.busInput('cue' \| 'world' \| 'work' \| 'music')` → program trim → … → limiter → volume step → destination (see the chain in `AudioEngine.js`). Connect there to hear your recipe exactly as a shipped cue/layer would sound |
 | `modules` | the shipped classes: `AmbientAudioController, eventBus, createAtmosphereSnapshot, AudioEngine, AudioDirector, CueKit, CueGovernor, cueNoteOffsetsMs, PIECES` |
 | `mark(label, { t, kind })` | add a marker (default time = `context.currentTime`; `kind: 'event'` gets a cue-margin row in the JSON) |
 | `seconds`, `offline` | render length and mode |
@@ -105,7 +198,7 @@ the baseline render of the same name.
 
 | method | used for | why |
 |---|---|---|
-| `offline` | every `cues*` target | CueKit schedules every note on `ctx.currentTime`, so an `OfflineAudioContext` gives a sample-accurate, jitter-free render. A real `AudioEngine` is built on the offline context (full master chain), then each cue goes through `CueKit._playAccepted` with the lane from `laneForCueKind` — the exact path the governor calls once a cue is admitted (score anchoring, lane mix, `_voice`). Cues are armed at their time with `suspend()/resume()`. The governor itself (cooldowns, budget, aggregation) is bypassed: the render is "what this cue sounds like once admitted". |
+| `offline` | every `cues*` target | CueKit schedules every note on `ctx.currentTime`, so an `OfflineAudioContext` gives a sample-accurate, jitter-free render. A real `AudioEngine` is attached to the offline context (`engine.attachContext`: limiter worklet and full master chain), then each cue goes through `CueKit._playAccepted` with the lane from `laneForCueKind` — the exact path the governor calls once a cue is admitted (score anchoring, lane mix, `_voice`). Cues are armed at their time with `suspend()/resume()`. The governor itself (cooldowns, budget, aggregation) is bypassed: the render is "what this cue sounds like once admitted". |
 | `realtime` | layers, ambient music, BGM, director mixes | The directors, layers and composers are driven by `setInterval`/`setTimeout` and read `ctx.currentTime` at call time, so only real time reproduces them. Headless Chromium runs with `--autoplay-policy=no-user-gesture-required`; the page is `page/harness.html`, which imports the shipped modules and constructs the real `AmbientAudioController` with a synthetic world. The CLI clicks the page first (a real user activation), then the page calls `activateFromUser(true)`, the enable path a TopBar click takes. |
 | `app-realtime` | `fidelity/app-live-sim-day` | The full app from `startIsolatedServer()` (ephemeral port) at `/?sim=1`, renderer running, sound enabled by clicking the real `#topbarSoundToggle`, hour/weather set through `window.__claudeVilleAtmosphere()`. Cross-checks that the renderer-free harness is representative. |
 
@@ -161,8 +254,8 @@ requested phase/progress (minute 0 is skipped so the hour bell never fires), re-
   have settled; bed renders start at audio start (swells begin 3–9 s in). Warmup audio is discarded.
 - **Offline cues bypass the governor** (see above) and always play; `markerMetrics` margins are only
   meaningful for realtime renders, where the cue sits over a bed.
-- **Levels are absolute at the engine output** at the shipped default volume 0.5 (master gain 0.225)
-  unless the target name contains `vol100` (volume 1.0, master 0.9). OS/device gain is not modelled.
+- **Levels are absolute at the engine output** at the standard volume step 6 (−14.4 dB after the
+  limiter) unless the target name contains `vol100` (step 10, unity). OS/device gain is not modelled.
 - **Headless audio.** Chromium's headless audio sink runs at 48 kHz and follows the wall clock
   (measured: 2.98 s of audio clock per 3.00 s wall). Output latency reported by the context is 16 ms.
   Under load it skips quanta (see the tap above); check `capture.gaps` before trusting a fine timing
@@ -203,7 +296,16 @@ dashed white line. Time axis in seconds.
 
 ## Files
 
-- `probe.mjs` — the Wave-0 probe (`npm run audio:probe`)
+- `probe.mjs` — the probe (`npm run audio:probe`): CLI, pool, verdicts, baseline
+- `lib/probe-virtual.mjs` — virtual-clock scene, margin, limiter, switch, duck and sync measurements
+- `lib/probe-app.mjs` — the Wave-0 live-app and lint checks
+- `lib/soak.mjs` — the realtime soak (`--soak`)
+- `lib/checks.mjs` — pure judges: S2 scene targets, lane windows, limiter GR, switch hole/bump, ducked time, onsets and AV sync, baseline comparison (unit-tested in `scripts/tests/audio-probe-checks.test.mjs`)
+- `lib/scenes.mjs` — the probe's named scenes and cue placements
+- `lib/virtual.mjs` — Node side of the virtual clock (one page per scene, stems out)
+- `lib/format.mjs` — number formatting for reports
+- `metrics/`, `fixtures/` — the ported metric libraries and scenario fixtures (table above)
+- `baselines/wave1.json`, `baselines/soak.json` — the reviewed baselines (`--update`, `--soak --update`)
 - `audio-capture.mjs` — harness CLI, pool, capture orchestration, INDEX writer
 - `lib/targets.mjs` — the catalog (edit here to add a target; every cue kind, layer, tune and piece has one)
 - `lib/capture.mjs` — page setup, PCM transfer, underrun-splice mapping, renders root
@@ -213,5 +315,7 @@ dashed white line. Time axis in seconds.
 - `lib/server.mjs` — read-only static server (127.0.0.1, ephemeral port)
 - `page/init.js` — seed, focus guard, destination tap, envelope lint, voice log
 - `page/runtime.js` — in-page scenario runner (realtime, offline cues, snippets)
+- `page/scene.js` — the scenario vocabulary both runners share (worlds, atmosphere, stored settings, actions)
+- `page/virtual-clock.js`, `page/virtual.html`, `page/virtual.js` — the virtual clock and its renderer
 - `page/probe-app.js` — in-app driver for the probe (sim fixture, away/return, cue-bus watch)
 - `snippets/` — example snippets (`example-glass-bell.js` standalone, `example-crickets-softer.js` A/B)

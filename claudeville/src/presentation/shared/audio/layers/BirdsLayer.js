@@ -7,8 +7,8 @@ import { BaseLayer } from './BaseLayer.js';
 import { MIN_GAIN, rand, pick } from '../AudioEngine.js';
 
 export class BirdsLayer extends BaseLayer {
-    constructor(engine) {
-        super(engine, { trim: 0.55, group: 'wildlife' });
+    constructor(engine, options = {}) {
+        super(engine, { trim: 0.55, group: 'wildlife', ...options });
     }
 
     _start(_ctx) {

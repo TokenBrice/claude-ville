@@ -8,6 +8,7 @@ import {
     readPersistedSettings,
     resetPersistedSettings,
 } from '../../claudeville/src/presentation/shared/TopBar.js';
+import { STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 
 class MemoryStorage {
     constructor(entries = {}) {
@@ -68,15 +69,16 @@ test('reduced-motion reads reuse one native query and preserve override notifica
     assert.equal(queryCount, 2);
 });
 
-test('settings review reads every operator preference using its existing encoding', () => {
+test('settings review reads every operator preference, sound levels as steps', () => {
     const storage = new MemoryStorage({
         'claudeville.sound.enabled': 'true',
-        'claudeville.sound.volume': '0.72',
+        'claudeville.sound.volume': '7',
         'claudeville.sound.mode': 'bgm',
         'claudeville.sound.background': 'signals',
         'claudeville.sound.layers': JSON.stringify({
-            wind: 0.1, rain: 0.2, wildlife: 0.3, hum: 0.4, music: 0.5,
+            wind: 1, rain: 2, wildlife: 3, hum: 4, music: 5,
         }),
+        'claudeville.sound.calibration': '2',
         'cv-auto-camera': '0',
         'claudeville.alerts.desktop': '1',
         'claudeville.sidebarCollapsed': 'true',
@@ -84,29 +86,43 @@ test('settings review reads every operator preference using its existing encodin
 
     assert.deepEqual(readPersistedSettings(storage), {
         soundEnabled: true,
-        soundVolume: 0.72,
+        soundVolume: 7,
         soundMode: 'bgm',
         soundBackground: 'signals',
-        soundLayers: { wind: 0.1, rain: 0.2, wildlife: 0.3, hum: 0.4, music: 0.5 },
+        soundLayers: { wind: 1, rain: 2, wildlife: 3, hum: 4, music: 5 },
         autoCamera: false,
         desktopAlerts: true,
         sidebarCollapsed: true,
     });
 });
 
-test('settings defaults retain all established localStorage keys and value formats', () => {
+test('an uncalibrated profile reads as the standard level before the controller resets it', () => {
+    const settings = readPersistedSettings(new MemoryStorage({
+        'claudeville.sound.volume': '0.72',
+        'claudeville.sound.layers': JSON.stringify({ wind: 0.1, rain: 0.2, wildlife: 0.3, hum: 0.4, music: 0.5 }),
+    }));
+    assert.equal(settings.soundVolume, STANDARD_VOLUME_STEP);
+    assert.deepEqual(settings.soundLayers, { wind: 10, rain: 10, wildlife: 10, hum: 10, music: 10 });
+});
+
+test('settings defaults hold the standard steps and the calibration key, written after the levels', () => {
     assert.deepEqual(PERSISTED_SETTING_DEFAULTS, {
         'claudeville.sound.enabled': 'false',
-        'claudeville.sound.volume': '0.5',
+        'claudeville.sound.volume': String(STANDARD_VOLUME_STEP),
         'claudeville.sound.mode': 'ambient',
         'claudeville.sound.background': 'play',
         'claudeville.sound.layers': JSON.stringify({
-            wind: 1, rain: 1, wildlife: 1, hum: 1, music: 1,
+            wind: 10, rain: 10, wildlife: 10, hum: 10, music: 10,
         }),
+        'claudeville.sound.calibration': '2',
         'cv-auto-camera': '1',
         'claudeville.alerts.desktop': '0',
         'claudeville.sidebarCollapsed': 'false',
     });
+    const order = Object.keys(PERSISTED_SETTING_DEFAULTS);
+    const calibration = order.indexOf('claudeville.sound.calibration');
+    assert.ok(calibration > order.indexOf('claudeville.sound.volume'));
+    assert.ok(calibration > order.indexOf('claudeville.sound.layers'));
 });
 
 test('reset writes defaults in place without clearing unrelated local data', () => {
@@ -122,9 +138,20 @@ test('reset writes defaults in place without clearing unrelated local data', () 
     }
     assert.equal(storage.getItem('claudeville.generatedNames'), '["Ada"]');
     assert.equal(result.soundEnabled, false);
-    assert.equal(result.soundVolume, 0.5);
     assert.equal(result.soundBackground, 'play');
     assert.equal(result.autoCamera, true);
+});
+
+test('reset returns a user-changed profile to the standard step', () => {
+    const storage = new MemoryStorage({
+        'claudeville.sound.volume': '2',
+        'claudeville.sound.layers': JSON.stringify({ wind: 3, rain: 0, wildlife: 10, hum: 5, music: 1 }),
+        'claudeville.sound.calibration': '2',
+    });
+    const result = resetPersistedSettings(storage);
+    assert.equal(result.soundVolume, STANDARD_VOLUME_STEP);
+    assert.deepEqual(result.soundLayers, { wind: 10, rain: 10, wildlife: 10, hum: 10, music: 10 });
+    assert.equal(storage.getItem('claudeville.sound.calibration'), '2');
 });
 
 test('opening settings first dismisses both topbar popovers', () => {

@@ -3,14 +3,20 @@ import assert from 'node:assert/strict';
 
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 import { AudioDirector } from '../../claudeville/src/presentation/shared/audio/AudioDirector.js';
+import { CueGovernor } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
+import { CueKit } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
+
+const SILENT_ENGINE = Object.freeze({ context: null, started: false });
+
+// The controller's one arbiter per engine, injected into the director.
+function sharedCues(governorOptions = {}) {
+    const governor = new CueGovernor(governorOptions);
+    return { kit: new CueKit(SILENT_ENGINE, governor), governor };
+}
 
 function directorWithoutAudio() {
-    const director = new AudioDirector({
-        engine: { context: null, started: false },
-    });
     // Exercise the agent dedupe independently of the four-second spacing gate.
-    director.cueKit.governor.minSpacingMs = 0;
-    return director;
+    return new AudioDirector({ engine: SILENT_ENGINE, cues: sharedCues({ minSpacingMs: 0 }) });
 }
 
 function captureCues() {
@@ -72,7 +78,7 @@ for (const { status, kind, name } of ACTIONABLE_CASES) {
 
 test('an attention event without a status reads the agent status from the world', () => {
     const world = { agents: new Map([['agent-world', { id: 'agent-world', status: 'rate_limited' }]]) };
-    const director = new AudioDirector({ engine: { context: null, started: false }, world });
+    const director = new AudioDirector({ engine: SILENT_ENGINE, world, cues: sharedCues() });
     const capture = captureCues();
     try {
         eventBus.emit('attention:raised', { agentId: 'agent-world' });

@@ -11,16 +11,6 @@ export function noteHz(semitonesFromA4) {
     return A4 * Math.pow(2, semitonesFromA4 / 12);
 }
 
-// `tones` are semitone offsets from A4 forming the melodic pool for the
-// music layer. `bass` anchors the tonal bed. `brightness` 0..1 maps to
-// filter cutoffs downstream.
-const SCALES = {
-    dawn: { tones: [0, 2, 4, 7, 9, 12, 14], bass: -24, brightness: 0.85 },
-    day: { tones: [-12, -10, -8, -5, -3, 0, 2], bass: -24, brightness: 1 },
-    dusk: { tones: [-12, -10, -8, -5, -3, 0], bass: -36, brightness: 0.62 },
-    night: { tones: [-12, -9, -7, -5, -2, 0], bass: -36, brightness: 0.4 },
-};
-
 function bellPartial(ratio, gain, decay) {
     return Object.freeze({ ratio, gain, decay });
 }
@@ -123,10 +113,6 @@ function providerFamily(provider) {
     if (key.includes('kimi')) return 'kimi';
     if (key.includes('claude') || key.includes('anthropic')) return 'claude';
     return 'default';
-}
-
-export function scaleForPhase(phase) {
-    return SCALES[phase] || SCALES.day;
 }
 
 export function bellVoicingForProvider(provider) {

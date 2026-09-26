@@ -1,27 +1,45 @@
 // Facade between the top-bar sound controls and the audio system. Owns the
 // opt-in lifecycle — off by default, user-gesture unlock, background policy,
-// hidden-tab wakes, localStorage persistence — and delegates all sound to
-// AudioEngine (mix chain, group faders) and AudioDirector (world-reactive
-// layers and cues) in ./audio/. TopBar builds it at boot idle without an
-// AudioContext, so the signal route and captions exist before any click.
+// hidden-tab wakes, localStorage persistence (through SoundSettings) — and
+// delegates all sound to AudioEngine (mix chain, group faders, per-director
+// crossfade gains) and the two directors in ./audio/, which share the one
+// cue arbiter this controller creates per engine. TopBar builds it at boot
+// idle without an AudioContext, so the signal route and captions exist
+// before any click.
 
-import { AudioEngine, clamp01 } from './audio/AudioEngine.js';
+import { AudioEngine } from './audio/AudioEngine.js';
 import { AudioDirector } from './audio/AudioDirector.js';
 import {
     BgmDirector,
     workingSectionCounts,
     workingSectionLabel,
 } from './audio/BgmDirector.js';
+import { CueGovernor } from './audio/CueGovernor.js';
+import { CueKit } from './audio/cues/CueKit.js';
 import { cueNoteCount, cueNoteTime } from './audio/CueScore.js';
+import { trimStepGain } from './audio/Loudness.js';
+import {
+    AUDIO_MIXER_DEFAULTS,
+    SOUND_RECALIBRATED_MESSAGE,
+    SOUND_STEP_MAX,
+    readStoredTrimSteps,
+    readStoredVolumeStep,
+    recalibrateStoredSound,
+    soundStep,
+    writeStoredTrimSteps,
+    writeStoredVolumeStep,
+} from './SoundSettings.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 
 const STORAGE_KEY = 'claudeville.sound.enabled';
-const VOLUME_KEY = 'claudeville.sound.volume';
 const MODE_KEY = 'claudeville.sound.mode';
-const LAYER_LEVELS_KEY = 'claudeville.sound.layers';
 const BACKGROUND_KEY = 'claudeville.sound.background';
-const DEFAULT_VOLUME = 0.5;
 const MODES = ['ambient', 'bgm'];
+// AMBIENT ↔ BGM is a walk from the square into the tavern (1.6, ENG-15): both
+// directors play through an equal-power crossfade of their director gains,
+// and the outgoing one stops only once its gain has reached zero.
+const MODE_CROSSFADE_SEC = 2.5;
+const CROSSFADE_STOP_MARGIN_MS = 50;
 // What a visible but unfocused window plays (D3, Wave 0): the full mix, or
 // the hidden-tab signals-only route.
 const BACKGROUNDS = ['play', 'signals'];
@@ -43,16 +61,6 @@ const SOUND_CHIP_TITLES = Object.freeze({
     playing: 'Disable sound',
 });
 
-// The mixer channels are the engine's group faders, one to one: each stored
-// trim drives `engine.setGroupLevel(name, trim)`.
-export const AUDIO_MIXER_DEFAULTS = Object.freeze({
-    wind: 1,
-    rain: 1,
-    wildlife: 1,
-    hum: 1,
-    music: 1,
-});
-
 function readStoredPreference() {
     try {
         return window.localStorage?.getItem(STORAGE_KEY) === 'true';
@@ -64,24 +72,6 @@ function readStoredPreference() {
 function writeStoredPreference(enabled) {
     try {
         window.localStorage?.setItem(STORAGE_KEY, enabled ? 'true' : 'false');
-    } catch {
-        // Preference persistence is optional.
-    }
-}
-
-function readStoredVolume() {
-    try {
-        const raw = window.localStorage?.getItem(VOLUME_KEY);
-        if (raw == null) return DEFAULT_VOLUME;
-        return clamp01(Number(raw), DEFAULT_VOLUME);
-    } catch {
-        return DEFAULT_VOLUME;
-    }
-}
-
-function writeStoredVolume(volume) {
-    try {
-        window.localStorage?.setItem(VOLUME_KEY, String(volume));
     } catch {
         // Preference persistence is optional.
     }
@@ -120,26 +110,6 @@ function writeStoredBackground(background) {
     }
 }
 
-export function readStoredLayerLevels(storage = globalThis.window?.localStorage) {
-    try {
-        const parsed = JSON.parse(storage?.getItem(LAYER_LEVELS_KEY) || '{}');
-        return Object.fromEntries(Object.entries(AUDIO_MIXER_DEFAULTS).map(([name, fallback]) => [
-            name,
-            clamp01(parsed?.[name], fallback),
-        ]));
-    } catch {
-        return { ...AUDIO_MIXER_DEFAULTS };
-    }
-}
-
-function writeStoredLayerLevels(levels, storage = globalThis.window?.localStorage) {
-    try {
-        storage?.setItem(LAYER_LEVELS_KEY, JSON.stringify(levels));
-    } catch {
-        // Preference persistence is optional.
-    }
-}
-
 export class AmbientAudioController {
     constructor({
         button,
@@ -159,10 +129,13 @@ export class AmbientAudioController {
         this.world = world || null;
         this.available = this._hasAudioSupport();
         this.enabled = readStoredPreference();
-        this.volume = readStoredVolume();
+        // D5 (1.2): a profile from before the calibrated master is reset once
+        // to the standard level; the caption follows once the route exists.
+        const recalibrated = recalibrateStoredSound();
+        this.volumeStep = readStoredVolumeStep();
         this.mode = readStoredMode();
         this.background = readStoredBackground();
-        this.layerLevels = readStoredLayerLevels();
+        this.layerSteps = readStoredTrimSteps();
         this._gestureSeen = false;
         this.unlockArmed = false;
         this._activationGeneration = 0;
@@ -175,6 +148,9 @@ export class AmbientAudioController {
         this._wakeHoldUntil = 0;
         this._wakeCount = 0;
         this._layerInputHandlers = new Map();
+        // Mode crossfades: the outgoing director's stop, per director id,
+        // pending until its gain has faded to zero.
+        this._crossfadeStops = new Map();
         this._destroyPromise = null;
         this._destroyed = false;
         this._windowBlurred = false;
@@ -187,11 +163,18 @@ export class AmbientAudioController {
         this._sectionLabelTimer = null;
 
         this.engine = new AudioEngine();
-        this.engine.setVolume(this.volume);
+        this.engine.setVolumeStep(this.volumeStep);
         this._applyGroupLevels();
+        // One cue arbiter per engine (1.6): both directors submit through the
+        // same governor and kit, so a mode switch never resets a cooldown and
+        // an agent summoned just before a switch is not summoned again after
+        // it. The controller owns their lifetime; directors never build or
+        // destroy them.
+        const governor = new CueGovernor();
+        this.cues = { kit: new CueKit(this.engine, governor), governor };
         this.directors = {
-            ambient: new AudioDirector({ engine: this.engine, world: this.world }),
-            bgm: new BgmDirector({ engine: this.engine, world: this.world }),
+            ambient: new AudioDirector({ engine: this.engine, world: this.world, cues: this.cues }),
+            bgm: new BgmDirector({ engine: this.engine, world: this.world, cues: this.cues }),
         };
         this.directors.ambient.setHiddenSummonsHandler?.((payload) => {
             this._handleHiddenSummons(payload);
@@ -207,7 +190,7 @@ export class AmbientAudioController {
         this._onWindowBlur = () => this._handleWindowBlur();
         this._onWindowFocus = () => this._handleWindowFocus();
         this._onVolumeInput = (event) => {
-            this.setVolume(Number(event?.target?.value) / 100);
+            this.setVolumeStep(Number(event?.target?.value));
         };
 
         if (this.button) this.button.addEventListener('click', this._onButtonClick);
@@ -215,7 +198,7 @@ export class AmbientAudioController {
         if (this.volumeSlider) this.volumeSlider.addEventListener('input', this._onVolumeInput);
         for (const [name, control] of Object.entries(this.layerControls)) {
             if (!Object.hasOwn(AUDIO_MIXER_DEFAULTS, name) || !control?.slider) continue;
-            const handler = (event) => this.setLayerLevel(name, Number(event?.target?.value) / 100);
+            const handler = (event) => this.setLayerStep(name, Number(event?.target?.value));
             this._layerInputHandlers.set(name, handler);
             control.slider.addEventListener('input', handler);
         }
@@ -243,6 +226,7 @@ export class AmbientAudioController {
             this._debugHelper = () => this._debugSnapshot();
             window.__claudevilleAudio = this._debugHelper;
         }
+        if (recalibrated) eventBus.emit('audio:recalibrated', { message: SOUND_RECALIBRATED_MESSAGE });
     }
 
     // Chrome's sticky activation makes `context.resume()` legal after any
@@ -283,19 +267,24 @@ export class AmbientAudioController {
         return this.engine.context?.state === 'running' && this.director.running === true;
     }
 
-    setVolume(value) {
-        this.volume = clamp01(value, DEFAULT_VOLUME);
-        writeStoredVolume(this.volume);
-        this.engine.setVolume(this.volume);
-        if (this.volumeSlider) this.volumeSlider.value = String(Math.round(this.volume * 100));
+    // Master volume as a whole step 0–10 (1.2): the engine applies the step
+    // law after the ceiling.
+    setVolumeStep(step) {
+        if (this._destroyed) return this.volumeStep;
+        this.volumeStep = soundStep(step, this.volumeStep);
+        writeStoredVolumeStep(this.volumeStep);
+        this.engine.setVolumeStep(this.volumeStep);
+        this._renderVolumeSlider();
+        return this.volumeStep;
     }
 
-    setLayerLevel(name, value) {
+    // A mixer trim as a whole step 0–10: 2.4 dB per step, 10 = unity.
+    setLayerStep(name, step) {
         if (this._destroyed || !Object.hasOwn(AUDIO_MIXER_DEFAULTS, name)) return false;
-        this.layerLevels[name] = clamp01(value, AUDIO_MIXER_DEFAULTS[name]);
-        writeStoredLayerLevels(this.layerLevels);
+        this.layerSteps[name] = soundStep(step, this.layerSteps[name]);
+        writeStoredTrimSteps(this.layerSteps);
         this._renderLayerControl(name);
-        this.engine.setGroupLevel(name, this.layerLevels[name]);
+        this.engine.setGroupLevel(name, trimStepGain(this.layerSteps[name]));
         return true;
     }
 
@@ -311,21 +300,19 @@ export class AmbientAudioController {
         return this.directors[this.mode] || this.directors.ambient;
     }
 
-    // Switch between the reactive ambience and continuous town BGM.
+    // Switch between the reactive ambience and continuous town BGM. A playing
+    // village crossfades into the other director; otherwise only the stored
+    // mode changes and the ambient director stays the signal route.
     setMode(mode) {
         if (this._destroyed || !MODES.includes(mode) || mode === this.mode) return;
-        const wasRunning = this.director.running;
-        if (wasRunning) {
-            this.director.governor?.clearRoutine?.();
-            this.director.stop();
-        }
+        const outgoingMode = this.mode;
+        const outgoing = this.director;
         this.mode = mode;
         writeStoredMode(mode);
-        if (wasRunning && !this._pageInactive()) {
-            this.directors.ambient.setSignalRouting(this.mode !== 'bgm');
-            this.director.start();
-            this._syncSignalRouting();
+        if (outgoing.running && !this._pageInactive()) {
+            this._crossfade(outgoingMode, mode);
         } else {
+            if (outgoing.running) this._stopDirector(outgoingMode);
             // With no active BGM director, the ambient director is the
             // signal-only route for captions and disabled-sound cues.
             this.directors.ambient.setSignalRouting(true);
@@ -333,11 +320,49 @@ export class AmbientAudioController {
         this._renderControls();
     }
 
+    // Equal-power crossfade of the two director gains (engine.fadeDirector).
+    // The incoming director starts silent unless it is still fading out from
+    // a switch moments ago, in which case it turns around from where it is.
+    _crossfade(outgoingMode, incomingMode) {
+        const incoming = this.directors[incomingMode];
+        this._cancelCrossfadeStop(incomingMode);
+        if (!incoming.running) {
+            this.engine.fadeDirector(incomingMode, 0, { duration: 0 });
+            this.directors.ambient.setSignalRouting(incomingMode !== 'bgm');
+            incoming.start();
+        }
+        this.engine.fadeDirector(incomingMode, 1, { duration: MODE_CROSSFADE_SEC });
+        const end = this.engine.fadeDirector(outgoingMode, 0, { duration: MODE_CROSSFADE_SEC });
+        const fadeEnd = Number.isFinite(end) ? end : this.engine.now() + MODE_CROSSFADE_SEC;
+        const delayMs = Math.max(0, (fadeEnd - this.engine.now()) * 1000) + CROSSFADE_STOP_MARGIN_MS;
+        // The timer only wakes the stop; the fade itself lives on the audio
+        // clock, and the director's own stop ramp declicks what is left.
+        this._crossfadeStops.set(outgoingMode, setTimeout(() => {
+            this._crossfadeStops.delete(outgoingMode);
+            if (this._destroyed || this.mode === outgoingMode) return;
+            this.directors[outgoingMode].stop();
+            this._syncSignalRouting();
+        }, delayMs));
+        this._syncSignalRouting();
+    }
+
+    _cancelCrossfadeStop(mode) {
+        const timer = this._crossfadeStops.get(mode);
+        if (timer == null) return;
+        clearTimeout(timer);
+        this._crossfadeStops.delete(mode);
+    }
+
+    _stopDirector(mode) {
+        this._cancelCrossfadeStop(mode);
+        this.directors[mode].stop();
+    }
+
     // The stored trims drive the engine's group faders; the engine keeps them
     // across context rebuilds, so layers keep their own world-driven levels.
     _applyGroupLevels() {
-        for (const [name, level] of Object.entries(this.layerLevels)) {
-            this.engine.setGroupLevel(name, level);
+        for (const [name, step] of Object.entries(this.layerSteps)) {
+            this.engine.setGroupLevel(name, trimStepGain(step));
         }
     }
 
@@ -373,6 +398,9 @@ export class AmbientAudioController {
         }
 
         this.engine.start();
+        // A crossfade interrupted by a disable or a hidden tab may have left
+        // this director's gain part-way; a fresh start plays at full level.
+        if (!this.director.running) this.engine.fadeDirector(this.mode, 1, { duration: 0 });
         this.director.start();
         this._syncSignalRouting();
         this._removeUnlockListeners();
@@ -381,10 +409,9 @@ export class AmbientAudioController {
 
     _deactivate({ forceSuspend = false, visibilityGeneration = this._visibilityGeneration } = {}) {
         this._activationGeneration++;
-        for (const director of Object.values(this.directors)) {
-            director.governor?.clearRoutine?.();
-            director.stop();
-        }
+        for (const mode of MODES) this._stopDirector(mode);
+        // Pending routine cues describe a moment the listener has left.
+        this.cues.governor.clearRoutine();
         this.directors.ambient.setSignalRouting(true);
         this.engine.stop();
         if (this._suspendTimer) clearTimeout(this._suspendTimer);
@@ -567,12 +594,7 @@ export class AmbientAudioController {
             this.button.setAttribute('aria-pressed', this.enabled && this.available ? 'true' : 'false');
             this.button.classList.toggle('topbar__sound-btn--on', state === 'playing');
         }
-        if (this.volumeSlider) {
-            this.volumeSlider.hidden = !(this.enabled && this.available);
-            this.volumeSlider.value = String(Math.round(this.volume * 100));
-            this.volumeSlider.title = 'Master sound volume';
-            this.volumeSlider.setAttribute('aria-label', 'Master sound volume');
-        }
+        this._renderVolumeSlider();
         if (this.modeButton) {
             this.modeButton.hidden = !(this.enabled && this.available);
             const bgm = this.mode === 'bgm';
@@ -622,15 +644,26 @@ export class AmbientAudioController {
             + ` · ${counts.watchlist} waiting on work`;
     }
 
+    // Steps read `n / 10` everywhere (1.2): the top-bar slider, the mixer and
+    // SET share one scale. The slider's 0–10 range and label live in the
+    // markup (index.html).
+    _renderVolumeSlider() {
+        const slider = this.volumeSlider;
+        if (!slider) return;
+        slider.hidden = !(this.enabled && this.available);
+        slider.value = String(this.volumeStep);
+        slider.setAttribute('aria-valuetext', `${this.volumeStep} / ${SOUND_STEP_MAX}`);
+    }
+
     _renderLayerControl(name) {
         const control = this.layerControls[name];
         if (!control) return;
-        const percent = Math.round(this.layerLevels[name] * 100);
+        const text = `${this.layerSteps[name]} / ${SOUND_STEP_MAX}`;
         if (control.slider) {
-            control.slider.value = String(percent);
-            control.slider.setAttribute('aria-valuetext', `${percent}%`);
+            control.slider.value = String(this.layerSteps[name]);
+            control.slider.setAttribute('aria-valuetext', text);
         }
-        if (control.value) control.value.textContent = `${percent}%`;
+        if (control.value) control.value.textContent = text;
     }
 
     _hasAudioSupport() {
@@ -657,8 +690,8 @@ export class AmbientAudioController {
             available: this.available,
             contextState: this.engine.context?.state || null,
             running: this.director.running,
-            volume: this.volume,
-            layerLevels: { ...this.layerLevels },
+            volumeStep: this.volumeStep,
+            layerSteps: { ...this.layerSteps },
             rms: this.engine.rms(),
             mode: this.mode,
             sectionLabel: this._sectionLabelText,
@@ -669,8 +702,8 @@ export class AmbientAudioController {
             background: this.background,
             blurred: this._windowBlurred,
             wakeCount: this._wakeCount,
-            setVolume: (v) => this.setVolume(v),
-            setLayerLevel: (name, level) => this.setLayerLevel(name, level),
+            setVolumeStep: (step) => this.setVolumeStep(step),
+            setLayerStep: (name, step) => this.setLayerStep(name, step),
             setMode: (m) => this.setMode(m),
             setBackground: (b) => this.setBackground(b),
             setLayer: (name, level, holdMs) => this.director.forceLayer?.(name, level, holdMs) ?? false,
@@ -686,10 +719,7 @@ export class AmbientAudioController {
         this._visibilityGeneration++;
         this._wakeToken++;
         this._removeUnlockListeners();
-        for (const director of Object.values(this.directors)) {
-            director.governor?.clearRoutine?.();
-            director.stop();
-        }
+        for (const mode of MODES) this._stopDirector(mode);
         if (this._suspendTimer) {
             clearTimeout(this._suspendTimer);
             this._suspendTimer = null;
@@ -700,7 +730,9 @@ export class AmbientAudioController {
         for (const event of ['agent:added', 'agent:updated', 'agent:removed']) {
             eventBus.off(event, this._onWorldCountsChanged);
         }
-        this.directors.ambient.destroy?.();
+        for (const director of Object.values(this.directors)) director.destroy?.();
+        // The controller owns the shared cue arbiter; directors never destroy it.
+        this.cues.governor.destroy();
 
         if (this.button) this.button.removeEventListener('click', this._onButtonClick);
         if (this.modeButton) this.modeButton.removeEventListener('click', this._onModeClick);

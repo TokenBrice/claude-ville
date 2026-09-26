@@ -27,6 +27,7 @@ function fakeAudioKit() {
             const node = new FakeNode();
             node.frequency = { value: 0 };
             node.Q = { value: 0 };
+            node.gain = { value: 0 };
             return node;
         },
         createStereoPanner() {
@@ -45,27 +46,33 @@ function fakeAudioKit() {
         createGain() {
             const node = new FakeNode();
             node.gain = {
+                value: 1,
                 setValueAtTime() {},
                 exponentialRampToValueAtTime() {},
             };
             return node;
         },
     };
+    const cueBus = new FakeNode();
     const engine = {
         context,
-        cueBus: new FakeNode(),
         started: true,
         now: () => 0,
-        duck() {},
+        busInput: () => cueBus,
+        bedLoudness: () => null,
+        duck: () => ({ cancel() {} }),
     };
     const governor = new CueGovernor({ maxPerMinute: 6, minSpacingMs: 0 });
     return { kit: new CueKit(engine, governor), panners };
 }
 
 function captureDirectorCalls(world = null) {
+    const engine = { context: null, started: false };
+    const governor = new CueGovernor();
     const director = new AudioDirector({
-        engine: { context: null, started: false },
+        engine,
         world,
+        cues: { kit: new CueKit(engine, governor), governor },
     });
     const calls = [];
     director.cueKit.play = (kind, payload) => {
@@ -159,10 +166,12 @@ test('provider bell voicings are distinct and council bell count follows team si
 
     const bellCount = (teamSize) => {
         const kit = new CueKit({
-            context: {},
+            context: { createGain: () => ({ gain: { value: 1 }, connect() {}, disconnect() {} }) },
             started: true,
             now: () => 0,
-            duck() {},
+            busInput: () => null,
+            bedLoudness: () => null,
+            duck: () => ({ cancel() {} }),
         }, new CueGovernor({ maxPerMinute: 6, minSpacingMs: 0 }));
         const bells = [];
         kit._bell = (...args) => bells.push(args);

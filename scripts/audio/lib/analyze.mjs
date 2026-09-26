@@ -223,7 +223,7 @@ const tpKernel = (() => {
     return phases;
 })();
 
-function peaks(x) {
+export function peaks(x) {
     let sp = 0;
     for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > sp) sp = a; }
     let tp = sp;

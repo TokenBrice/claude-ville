@@ -5,10 +5,13 @@
 
 import { BaseLayer } from './BaseLayer.js';
 import { MIN_GAIN, rand } from '../AudioEngine.js';
+import { makeFilter } from '../Filters.js';
 
 export class RainLayer extends BaseLayer {
-    constructor(engine) {
-        super(engine, { trim: 0.2, group: 'rain' });
+    // Trim 0.07 is ×0.35 of the pre-calibration 0.2 (plan 1.4, MIX-3): the
+    // storm swells without blasting and leaves the urgent bell its headroom.
+    constructor(engine, options = {}) {
+        super(engine, { trim: 0.07, group: 'rain', ...options });
         this.precipitation = 0;
         this.patterGain = null;
         this.rumbleGain = null;
@@ -23,15 +26,8 @@ export class RainLayer extends BaseLayer {
         patterSrc.buffer = this.engine.noise('white');
         patterSrc.loop = true;
 
-        const hp = ctx.createBiquadFilter();
-        hp.type = 'highpass';
-        hp.frequency.value = 1500;
-        hp.Q.value = 0.5;
-
-        const lp = ctx.createBiquadFilter();
-        lp.type = 'lowpass';
-        lp.frequency.value = 6800;
-        lp.Q.value = 0.4;
+        const hp = makeFilter(ctx, 'highpass', 1500, { q: 'butterworth' });
+        const lp = makeFilter(ctx, 'lowpass', 6800, { q: 'butterworth' });
 
         this.patterGain = ctx.createGain();
         this.patterGain.gain.value = MIN_GAIN;
@@ -40,10 +36,7 @@ export class RainLayer extends BaseLayer {
         rumbleSrc.buffer = this.engine.noise('brown');
         rumbleSrc.loop = true;
 
-        const rumbleLp = ctx.createBiquadFilter();
-        rumbleLp.type = 'lowpass';
-        rumbleLp.frequency.value = 120;
-        rumbleLp.Q.value = 0.5;
+        const rumbleLp = makeFilter(ctx, 'lowpass', 120, { q: 'butterworth' });
 
         this.rumbleGain = ctx.createGain();
         this.rumbleGain.gain.value = MIN_GAIN;
@@ -60,17 +53,19 @@ export class RainLayer extends BaseLayer {
         this._scheduleDroplet();
     }
 
-    setPrecipitation(p) {
+    // `timeConstant` overrides the slow slews (a starting director primes
+    // its layers at their targets under its own fade-in).
+    setPrecipitation(p, timeConstant = 4) {
         this.precipitation = Math.max(0, Math.min(1, Number(p) || 0));
         if (!this.patterGain || !this.engine.context) return;
         const target = this.precipitation > 0.02 ? this.precipitation * 0.55 : MIN_GAIN;
-        this.patterGain.gain.setTargetAtTime(Math.max(MIN_GAIN, target), this.engine.now(), 4);
+        this.patterGain.gain.setTargetAtTime(Math.max(MIN_GAIN, target), this.engine.now(), timeConstant);
     }
 
-    setStorm(intensity) {
+    setStorm(intensity, timeConstant = 6) {
         if (!this.rumbleGain || !this.engine.context) return;
         const v = Math.max(0, Math.min(1, Number(intensity) || 0));
-        this.rumbleGain.gain.setTargetAtTime(Math.max(MIN_GAIN, v * 0.4), this.engine.now(), 6);
+        this.rumbleGain.gain.setTargetAtTime(Math.max(MIN_GAIN, v * 0.4), this.engine.now(), timeConstant);
     }
 
     _scheduleDroplet() {

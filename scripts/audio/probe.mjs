@@ -1,55 +1,59 @@
 #!/usr/bin/env node
-// The Wave-0 audio probe: a LOCAL maintainer gate (not part of
-// validate:quick or CI). Realtime, headless Chromium; see
-// scripts/audio/README.md "The Wave-0 probe".
+// The audio probe: a LOCAL maintainer gate (not part of validate:quick or
+// CI). See scripts/audio/README.md "The probe".
 //
 //   npm run audio:probe
-//   node scripts/audio/probe.mjs [--jobs N] [--seed N] [--only lint,routing,away,ceremony,report] [--out dir]
+//   node scripts/audio/probe.mjs [--only a,b] [--jobs N] [--seed N] [--out dir]
+//                                [--no-worklets] [--update] [--soak [--soak-seconds N]]
 //
-// Checks (each prints PASS/FAIL with its numbers; any FAIL exits 1):
-//   lint      envelope-hazard lint (HAR-4) over every cue kind, the night
-//             crickets layer, a BGM night piece and a BGM → ambient switch
-//   routing   must-never 2: errored → `distress`, rate limited → `limit`,
-//             never `summons`, in both event orders and through the live producers
-//   away      must-never 4: after a real TopBar enable, a needs-you while
-//             blurred and while hidden sounds (≥ the needs-you lane minimum
-//             over the preceding bed window when the bed is closed);
-//             must-never 5: blur→focus and hide→show run again within 1 s
-//   ceremony  must-never 6: the team-gather fixture yields exactly one council
-//   report    (not gated) program LUFS-I / true peak of 30 s of a busy day,
-//             and the tap's audio-thread skips
+// Default: the gate at PLAN_STAGE (lib/checks.mjs; criteria owned by a later
+// wave print DEFER and never fail) on the virtual clock (HAR-1: the shipped
+// controller rendered on an OfflineAudioContext, sample-identical per seed)
+// plus the Wave-0 checks on the live app. Checks (PASS/FAIL/INFO lines; any
+// FAIL exits 1):
+//   scenes       S2 scene targets (Loudness.js) at the standard step: anchor,
+//                village busy, Town band, rain, storm, resting; HAR-5 stems
+//   margins      cue lanes over the village, music, rain and storm beds:
+//                median of 3 placements in the lane window (Wave 1 interim
+//                floors), the band rule and urgent limiter GR ≤ 3 dB
+//   limiter      a +12 dBFS burst → the worklet's LIMITER_CEILING_DBFS (+0.1)
+//                and ≤ −1 dBTP, the native fallback ≤ −0.9 dBFS; static gain
+//                0 ± 0.2 dB on both
+//   switch       must-never 12: preset switch hole/bump ≤ 3 dB, both ways
+//   ducks        ducked time ≤ 5 % per bus (village busy, Town band)
+//   avsync       HAR-12: published note and accent times vs heard onsets
+//   determinism  two renders of one scene agree within 0.2 LU
+//   baseline     scene and margin numbers within tolerance of the committed
+//                baselines/wave1.json (--update rewrites it)
+//   lint, routing, away (+ resume), ceremony   the Wave-0 checks (live app)
+// --soak: the realtime app session instead (SCN-9, 10 min, both presets);
+// see lib/soak.mjs.
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { startStaticServer, AUDIO_DIR } from './lib/server.mjs';
-import { analyze, loudness, writeWavFloat } from './lib/analyze.mjs';
-import { buildTargets } from './lib/targets.mjs';
+import { writeWavFloat } from './lib/analyze.mjs';
+import { BACKGROUND_ARGS, DEFAULT_SEED, HARNESS_CHROME_ARGS } from './lib/capture.mjs';
+import { fmt, signed } from './lib/format.mjs';
 import {
-    BACKGROUND_ARGS, DEFAULT_SEED, HARNESS_CHROME_ARGS,
-    newHarnessPage, openHarness, pullPcm, readHazards,
-} from './lib/capture.mjs';
-import { startIsolatedServer } from '../smoke/support/isolated-server.mjs';
-import { marginAt, wallTimeline } from './lib/timeline.mjs';
-import { AUDIBILITY_WINDOWS } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
+    BASELINE_TOLERANCE, PLAN_STAGE, compareBaseline, judgeDuckedTime, judgeLane, judgeSceneTargets, median,
+} from './lib/checks.mjs';
+import { MARGIN_BEDS, MARGIN_LANES } from './lib/scenes.mjs';
+import {
+    avSyncRows, duckRows, limiterUnitRows, makeRenderer, marginRows, renderLimiterUnit, sceneLevelMap,
+    sceneMetrics, sceneSpec, stemReport, switchRows,
+} from './lib/probe-virtual.mjs';
+import { appBusyUnit, appCeremonyUnit, judgeBusy, judgeCeremony, lintUnits } from './lib/probe-app.mjs';
+import { runSoak } from './lib/soak.mjs';
+import { LIMITER_CEILING_DBFS, LOUDNESS_TARGETS, PROGRAM_TRIM_DB, STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 
-const PROBE_APP_JS = fs.readFileSync(path.join(AUDIO_DIR, 'page/probe-app.js'), 'utf8');
-// The app checks enable sound the way a person does: a real click, with
-// Chromium's default gesture requirement in force.
 const APP_CHROME_ARGS = ['--autoplay-policy=user-gesture-required', ...BACKGROUND_ARGS];
-
-const NEEDS_YOU_MIN_LU = AUDIBILITY_WINDOWS.lanes.needsYou.village.min;
-// A bed window that is pure silence (context suspended) is scored at the
-// floor, so "+10 LU over silence" means the cue clears BS.1770's -70 LUFS
-// absolute gate.
-const MARGIN = { bedWindowSec: AUDIBILITY_WINDOWS.bedWindowSec, cueWindowSec: 2.5, silenceFloorLufs: -80 };
-// A cue bus that peaks below this carried no audible voice.
-const CUE_BUS_AUDIBLE_DBFS = -60;
-const RESUME_LIMIT_MS = 1000;
-const AWAY_SETTLE_MS = 5000;
-const AWAY_LISTEN_MS = 3000;
-const BUSY_WARMUP_MS = 8000;
-const BUSY_SECONDS = 30;
-const CEREMONY_WINDOW_MS = 15000;
+const BASELINE_FILE = path.join(AUDIO_DIR, 'baselines/wave1.json');
+const DETERMINISM_LU = 0.2;
+const AV_SYNC = { medianAbsMs: 20, p95AbsMs: 40 };
+const SWITCH_LIMIT_DB = 3;
+// 1.1: a +12 dBFS burst leaves the native fallback at or under this.
+const FALLBACK_MAX_DBFS = -0.9;
 
 // ------------------------------------------------------------------ cli ----
 function parseArgs(argv) {
@@ -65,12 +69,17 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const JOBS = Math.max(1, Number(args.jobs || 1));
+const JOBS = Math.max(1, Number(args.jobs || 2));
 const SEED = args.seed != null ? Number(args.seed) : DEFAULT_SEED;
-const ALL_CHECKS = ['lint', 'routing', 'away', 'ceremony', 'report'];
+const NO_WORKLETS = Boolean(args['no-worklets']);
+const UPDATE = Boolean(args.update);
+const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline'];
+const APP_CHECKS = ['lint', 'routing', 'away', 'ceremony'];
+const ALL_CHECKS = [...VIRTUAL_CHECKS, ...APP_CHECKS];
 const ONLY = args.only ? String(args.only).split(',').map(s => s.trim()) : ALL_CHECKS;
 for (const name of ONLY) if (!ALL_CHECKS.includes(name)) throw new Error(`unknown check "${name}" (known: ${ALL_CHECKS.join(', ')})`);
 const OUT = args.out ? path.resolve(String(args.out)) : null;
+const has = name => ONLY.includes(name);
 
 const t0 = Date.now();
 const stamp = () => `${((Date.now() - t0) / 1000).toFixed(0).padStart(4)} s`;
@@ -84,274 +93,176 @@ function info(check, detail) {
     results.push({ check, pass: null, detail });
     console.log(`${stamp()} INFO  ${check}  ${detail}`);
 }
-const fmt = (v, digits = 1) => (v == null || !Number.isFinite(v) ? '—' : v.toFixed(digits));
-const signed = v => (v == null || !Number.isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}`);
-const shortSite = site => site.replace(/^at\s+/, '').replace(/https?:\/\/[^/]+/g, '').slice(0, 110);
+// A criterion gated in a later wave (checks.mjs GATED_FROM): measured and
+// printed, never a failure until PLAN_STAGE reaches `wave`.
+function defer(check, wave, detail) {
+    results.push({ check, pass: null, deferred: wave, detail });
+    console.log(`${stamp()} DEFER ${check}  ${detail} [gated from Wave ${wave}; stage ${PLAN_STAGE}]`);
+}
+function outcome(check, result, detail, wave) {
+    if (result === 'DEFER') defer(check, wave, detail);
+    else verdict(check, result === 'PASS', detail);
+}
+const reporter = { seed: SEED, only: ONLY, out: OUT, verdict, info, log };
 
-// ---------------------------------------------------------------- lint ----
-// HAR-4's runtime half: a source that starts while the GainNode it feeds
-// still sits at its default gain of 1 (init.js). A unit that did not
-// exercise its subject proves nothing, so it fails too: no source started,
-// an isolated layer below its sounding threshold, or a mode switch that did
-// not happen.
-async function lintUnits(browser, server) {
-    const catalog = buildTargets();
-    const byName = name => {
-        const t = catalog.find(x => x.name === name);
-        if (!t) throw new Error(`catalog target ${name} missing`);
-        return t;
+// Numbers kept in the baseline, keyed `scene:<name>` / `margin:<bed>:<lane>`.
+const summary = {};
+
+// With --out, every rendered scene's program is kept as a WAV.
+const kept = new Set();
+function keep(name, r) {
+    if (!OUT || kept.has(name)) return;
+    kept.add(name);
+    fs.mkdirSync(OUT, { recursive: true });
+    writeWavFloat(path.join(OUT, `scene-${name.replace(/[^\w-]+/g, '-')}.wav`), r.program.L, r.program.R, r.sr);
+}
+
+// --------------------------------------------------------- virtual units ----
+const SCENE_TARGET_NAMES = ['anchor', 'villageBusy', 'townBand', 'rain', 'storm', 'resting'];
+
+function virtualUnits(render, browser, baseUrl) {
+    const units = [];
+    const scene = async (name) => {
+        const r = await render(name, sceneSpec(name));
+        keep(name, r);
+        return r;
     };
-    const offline = catalog.filter(t => t.name === 'cue-gallery' || (t.category === 'cues' && t.name.endsWith('-night')));
-    const realtime = [
-        { ...byName('layer-crickets-night'), warmup: 3, seconds: 12 },
-        byName('bgm-night-to-ambient'),
-    ];
-    const kinds = [...new Set(offline.flatMap(t => t.cues.map(c => c.kind)))];
-    const units = [{
-        name: `lint offline cues (${kinds.join(', ')})`,
-        run: async () => {
-            const h = await openHarness(browser, server.baseUrl, SEED);
-            try {
-                const rows = [];
-                for (const t of offline) {
-                    await h.page.evaluate(s => window.__har.runOfflineCues(s), t);
-                    const voices = await h.page.evaluate(() => window.__harVoiceLog.length);
-                    rows.push({ name: t.name, voices, hazards: await readHazards(h.page, { clear: true }) });
-                }
-                return { rows, errors: h.errors };
-            } finally {
-                await h.context.close();
-            }
-        },
-    }];
-    for (const t of realtime) {
+    const wantScenes = has('scenes') || has('baseline');
+    if (wantScenes) {
         units.push({
-            name: `lint ${t.name}`,
-            run: async () => {
-                const h = await openHarness(browser, server.baseUrl, SEED);
-                try {
-                    const res = await h.page.evaluate(s => window.__har.runRealtime(s), t);
-                    const voices = await h.page.evaluate(() => window.__harVoiceLog.length);
-                    const snap = res.finalSnapshot || {};
-                    const covered = [];
-                    let exercised = true;
-                    if (t.isolate) {
-                        const level = snap.levels?.[t.isolate];
-                        // The layer's own sounding threshold (CricketsLayer chirrups above 0.03).
-                        exercised &&= Number(level) > 0.03;
-                        covered.push(`${t.isolate} level ${fmt(Number(level), 2)}`);
+            name: 'scenes (anchor, village busy, Town band, rain, storm, resting)',
+            async run() {
+                const measured = {};
+                for (const name of SCENE_TARGET_NAMES) {
+                    const r = await scene(name);
+                    const m = sceneMetrics(r);
+                    if (r.stems.music && name === 'townBand') {
+                        m.bandStemStMax = stemReport(r).stems.music.stMax;
                     }
-                    const switchTo = (t.actions || []).filter(a => a.mode).at(-1)?.mode;
-                    if (switchTo) {
-                        exercised &&= snap.mode === switchTo;
-                        covered.push(`final mode ${snap.mode ?? '—'} (switched to ${switchTo})`);
+                    measured[name] = m;
+                    summary[`scene:${name}`] = { lufsI: m.lufsI, stMax: m.stMax };
+                    info('scenes', `${name}: LUFS-I ${fmt(m.lufsI)}, ST max ${fmt(m.stMax)}, LRA ${fmt(m.lra)} LU, TP ${fmt(m.truePeakDbtp)} dBTP${m.grMaxDb != null ? `, limiter GR max ${fmt(m.grMaxDb)} dB` : ''} (${m.limiterKind}, rendered ${fmt(m.renderMs / 1000)} s); errors ${r.errors.length}${r.errors.length ? `: ${r.errors.slice(0, 2).join(' | ')}` : ''}`);
+                }
+                if (!has('scenes')) return;
+                for (const row of judgeSceneTargets(measured)) outcome('scenes', row.outcome, `${row.scene}: ${row.detail}`, row.gatedFrom);
+                const busy = await scene('villageBusy');
+                const stems = stemReport(busy);
+                info('scenes', `HAR-5 stems, village busy (LUFS-I at the output; share of program energy): ${Object.entries(stems.stems).map(([k, v]) => `${k} ${fmt(v.lufsI)} (${signed(v.shareOfProgramDb)} dB)`).join(', ')}`);
+                const lm = sceneLevelMap(busy);
+                info('scenes', `village busy level map: 2–5 kHz ${fmt(lm.presenceSharePct)} % of K-weighted energy, S/M ${fmt(lm.sideMidDB)} dB, corr ${fmt(lm.corr, 2)}, mono fold ${fmt(lm.monoLossLU)} LU, laptop ${fmt(lm.speakerLossLU)} LU`);
+            },
+        });
+    }
+    if (has('margins') || has('baseline')) {
+        for (const bedName of Object.keys(MARGIN_BEDS)) {
+            units.push({
+                name: `margins over ${bedName}`,
+                async run() {
+                    const r = await scene(`margin:${bedName}`);
+                    const rows = marginRows(r, bedName);
+                    for (const lane of MARGIN_LANES) {
+                        const placements = rows.filter(x => x.lane === lane);
+                        const j = judgeLane(lane, MARGIN_BEDS[bedName].bed, placements);
+                        summary[`margin:${bedName}:${lane}`] = { margin: j.margin };
+                        if (!has('margins')) continue;
+                        const win = `${j.window.min != null ? `≥ ${signed(j.window.min, 0)}` : ''}${j.window.min != null && j.window.max != null ? ', ' : ''}${j.window.max != null ? `≤ ${signed(j.window.max, 0)}` : ''}`;
+                        const each = placements.map(p => signed(p.margin)).join(' / ');
+                        const trims = placements.map(p => signed(p.trimDb)).join(' / ');
+                        const extra = j.gr != null ? `; ${MARGIN_BEDS[bedName].bed === 'music' ? `presence rise ${fmt(j.band)} dB` : `${fmt(j.band, 0)} bands ≥ +6 dB`}, GR ${fmt(j.gr)} dB` : '';
+                        const why = j.failures.map(f => (f.gatedFrom > PLAN_STAGE ? `${f.what} (Wave ${f.gatedFrom})` : f.what)).join(', ');
+                        outcome('margins', j.outcome, `${lane} over ${bedName}: median ${signed(j.margin)} LU (${each}; cue trims ${trims} dB), want ${win}${extra}${why ? ` — ${why}` : ''}`, Math.max(...j.failures.map(f => f.gatedFrom), 0));
                     }
-                    return { rows: [{ name: t.name, voices, exercised, covered: covered.join(', '), hazards: await readHazards(h.page) }], errors: h.errors };
-                } finally {
-                    await h.context.close();
+                    if (r.errors.length) info('margins', `${bedName}: page errors: ${r.errors.slice(0, 3).join(' | ')}`);
+                },
+            });
+        }
+    }
+    if (has('limiter')) {
+        for (const noWorklets of [false, true]) {
+            units.push({
+                name: `limiter unit (${noWorklets ? 'fallback' : 'worklet'})`,
+                async run() {
+                    const u = await renderLimiterUnit(browser, baseUrl, { seed: SEED, noWorklets });
+                    const m = limiterUnitRows(u);
+                    const want = noWorklets ? 'fallback' : 'worklet';
+                    // The worklet holds LIMITER_CEILING_DBFS (sample peak) and so
+                    // −1 dBTP; the fallback is an emergency path held to 1.1's
+                    // −0.9 dBFS sample peak only.
+                    const ceilingOk = noWorklets
+                        ? m.burstOutDbfs <= FALLBACK_MAX_DBFS
+                        : m.burstOutDbfs <= LIMITER_CEILING_DBFS + 0.1 && m.burstOutDbtp <= LOUDNESS_TARGETS.ceiling.truePeakDbtp;
+                    const wantPeak = noWorklets
+                        ? `≤ ${FALLBACK_MAX_DBFS} dBFS`
+                        : `≤ ${fmt(LIMITER_CEILING_DBFS + 0.1, 1)} dBFS and ≤ ${LOUDNESS_TARGETS.ceiling.truePeakDbtp} dBTP`;
+                    verdict('limiter', m.limiterKind === want && ceilingOk && Math.abs(m.staticGainDb) <= 0.2,
+                        `${m.limiterKind} (asked ${want}): burst ${signed(m.burstInDbfs)} dBFS in → ${fmt(m.burstOutDbfs, 2)} dBFS out (TP ${fmt(m.burstOutDbtp, 2)} dBTP), want ${wantPeak}; static gain ${signed(m.staticGainDb, 2)} dB at −20 dBFS, want 0 ± 0.2`);
+                },
+            });
+        }
+    }
+    if (has('switch')) {
+        units.push({
+            name: 'preset switch',
+            async run() {
+                const r = await scene('presetSwitch');
+                const rows = switchRows(r);
+                if (rows.length < 2) verdict('switch', false, `expected 2 switches, saw ${rows.length}`);
+                for (const row of rows) {
+                    if (row.holeDb == null) { verdict('switch', false, `${row.label} at ${fmt(row.t)} s: not measurable`); continue; }
+                    verdict('switch', row.holeDb <= SWITCH_LIMIT_DB && row.bumpDb <= SWITCH_LIMIT_DB,
+                        `${row.label} at ${fmt(row.t)} s: old ${fmt(row.oldLufs)} → new ${fmt(row.newLufs)} LUFS-M; hole ${fmt(row.holeDb)} dB, bump ${fmt(row.bumpDb)} dB (switch window M ${fmt(row.minDuring)}…${fmt(row.maxDuring)}); want ≤ ${SWITCH_LIMIT_DB} dB each`);
                 }
             },
         });
     }
-    return units.map(u => ({
-        name: u.name,
-        async run() {
-            const { rows, errors } = await u.run();
-            for (const row of rows) {
-                const count = row.hazards.reduce((n, hz) => n + hz.count, 0);
-                const sites = row.hazards.map(hz => `x${hz.count} ${hz.maxLeadMs} ms ${shortSite(hz.site)}`).join(' | ');
-                verdict('lint', count === 0 && row.voices > 0 && row.exercised !== false,
-                    `${row.name}: ${count} hazard(s), ${row.voices} sources started${row.covered ? `, ${row.covered}` : ''}${sites ? ` — ${sites}` : ''}`);
-            }
-            if (errors.length) info('lint', `${u.name}: page errors: ${errors.slice(0, 3).join(' | ')}`);
-        },
-    }));
-}
-
-// ------------------------------------------------------------ app pages ----
-async function openApp(browser, server, scenario, hour) {
-    const h = await newHarnessPage(browser, SEED, { width: 1440, height: 900 });
-    await h.page.addInitScript({ content: PROBE_APP_JS });
-    await h.page.goto(`${server.baseUrl}/?sim=1&scenario=${scenario}`, { waitUntil: 'domcontentloaded' });
-    await h.page.waitForFunction(() => Boolean(window.__claudeVilleApp?.agentSimulator)
-        && Boolean(document.querySelector('#topbarSoundToggle'))
-        && Boolean(window.__claudeVilleAtmosphere), null, { timeout: 45000 });
-    await h.page.evaluate(() => window.__probe.install());
-    await h.page.waitForTimeout(3000);
-    await h.page.evaluate(([hr]) => window.__probe.setAtmosphere(hr, 'clear'), [hour]);
-    return h;
-}
-
-// The real TopBar enable: one click on the sound chip.
-async function enableSound(h) {
-    await h.page.click('#topbarSoundToggle');
-    const ms = await h.page.evaluate(() => window.__probe.enableWait(15000));
-    if (ms == null) {
-        const snap = await h.page.evaluate(() => window.__probe.snapshot());
-        throw new Error(`sound did not start after the TopBar click (contextState ${snap?.contextState}, running ${snap?.running}, enabled ${snap?.enabled})`);
+    if (has('ducks')) {
+        units.push({
+            name: 'ducked time',
+            async run() {
+                for (const name of ['villageBusy', 'townBand']) {
+                    const r = await scene(name);
+                    const d = duckRows(r);
+                    const j = judgeDuckedTime(d.fractions);
+                    const pct = Object.entries(d.fractions).map(([k, v]) => `${k} ${fmt(100 * v)} %`).join(', ');
+                    verdict('ducks', j.pass && d.windows > 0, `${name} (${r.meta.seconds} s, ${d.windows} duck windows, ${d.cancelled} cancelled): ${pct}; want ≥ 1 window and ≤ ${fmt(100 * j.budget, 0)} % per bus`);
+                }
+            },
+        });
     }
-    return ms;
-}
-
-async function appBusyUnit(browser) {
-    const app = await startIsolatedServer();
-    const h = await openApp(browser, app, 'mixed-tools', 10.4);
-    try {
-        // Probe-owned agents, added before sound is on so their arrivals do
-        // not land inside any measured window.
-        const ids = {
-            errAttention: 'probe-err-a', errDistress: 'probe-err-b', errLive: 'probe-err-live',
-            rlAttention: 'probe-rl-a', rlDistress: 'probe-rl-b', rlLive: 'probe-rl-live',
-            blur: 'probe-wait-blur', signals: 'probe-wait-signals', hidden: 'probe-wait-hidden',
-        };
-        const names = { 'probe-err-a': 'Ash', 'probe-err-b': 'Birch', 'probe-err-live': 'Cedar', 'probe-rl-a': 'Dune', 'probe-rl-b': 'Elm', 'probe-rl-live': 'Fir', 'probe-wait-blur': 'Gorse', 'probe-wait-signals': 'Heath', 'probe-wait-hidden': 'Ivy' };
-        await h.page.evaluate((specs) => window.__probe.addAgents(specs), Object.values(ids).map((id, i) => ({
-            id, name: names[id], provider: i % 2 ? 'codex' : 'claude', status: 'working',
-            currentTool: 'Read', currentToolInput: 'file_path=/README.md', position: { tileX: 14 + i, tileY: 22 + (i % 3) },
-        })));
-        await h.page.waitForTimeout(1500);
-
-        const enableMs = await enableSound(h);
-        log(`app: sound running ${enableMs.toFixed(0)} ms after the TopBar click`);
-
-        // Busy day, the reported scene (the warmup also settles the bed the
-        // later checks play over).
-        await h.page.waitForTimeout(BUSY_WARMUP_MS);
-        const busyStart = await h.page.evaluate(() => performance.now());
-        if (ONLY.includes('report')) await h.page.waitForTimeout(BUSY_SECONDS * 1000);
-        const busyEnd = await h.page.evaluate(() => performance.now());
-
-        // Must-never 2: bucket routing, both event orders, then the live producers.
-        const routing = [
-            { id: ids.errAttention, status: 'errored', order: 'attention-first', want: 'distress' },
-            { id: ids.errDistress, status: 'errored', order: 'distress-first', want: 'distress' },
-            { id: ids.rlAttention, status: 'rate_limited', order: 'attention-first', want: 'limit' },
-            { id: ids.rlDistress, status: 'rate_limited', order: 'distress-first', want: 'limit' },
-            { id: ids.errLive, status: 'errored', order: 'live', want: 'distress' },
-            { id: ids.rlLive, status: 'rate_limited', order: 'live', want: 'limit' },
-        ];
-        if (ONLY.includes('routing')) {
-            for (const r of routing) {
-                r.at = await h.page.evaluate(([id, status, order]) => window.__probe.signal(id, status, order), [r.id, r.status, r.order]);
-                await h.page.waitForTimeout(1000);
-            }
-            await h.page.waitForTimeout(3000);
-        }
-
-        // Must-never 4 and 5: away and back, three ways.
-        const away = [];
-        if (ONLY.includes('away')) {
-            for (const [how, agentId] of [['blur', ids.blur], ['blur-signals', ids.signals], ['hidden', ids.hidden]]) {
-                away.push(await h.page.evaluate(o => window.__probe.away(o), {
-                    how, agentId, settleMs: AWAY_SETTLE_MS, listenMs: AWAY_LISTEN_MS, returnTimeoutMs: 3000,
-                }));
-                await h.page.waitForTimeout(3000);
-            }
-        }
-
-        const logRows = await h.page.evaluate(() => window.__probe.log);
-        const hazards = await readHazards(h.page);
-        const snapshot = await h.page.evaluate(() => window.__probe.snapshot());
-        const tap = await h.page.evaluate(() => window.__harTap.collect());
-        const pcm = await pullPcm(h.page, tap.frames * 2);
-        return { ids, names, routing, away, logRows, hazards, snapshot, tap, pcm, busyStart, busyEnd, errors: h.errors };
-    } finally {
-        await h.context.close();
-        await app.stop();
+    if (has('avsync')) {
+        units.push({
+            name: 'AV sync',
+            async run() {
+                const r = await scene('avSync');
+                const a = avSyncRows(r);
+                const line = (s) => `${s.n} notes, ${s.missed} unheard, median |err| ${fmt(s.medianAbsMs)} ms, p95 ${fmt(s.p95AbsMs)} ms (signed median ${signed(s.medianMs)} ms)`;
+                verdict('avsync', a.notes.n > 0 && a.notes.missed === 0 && a.notes.medianAbsMs <= AV_SYNC.medianAbsMs && a.notes.p95AbsMs <= AV_SYNC.p95AbsMs,
+                    `published vs heard: ${line(a.notes)}; want median ≤ ${AV_SYNC.medianAbsMs}, p95 ≤ ${AV_SYNC.p95AbsMs}`);
+                verdict('avsync', a.accents.n > 0 && a.accents.missed === 0 && a.accents.medianAbsMs <= AV_SYNC.medianAbsMs && a.accents.p95AbsMs <= AV_SYNC.p95AbsMs,
+                    `accent vs heard carrying note: ${line(a.accents)}; carrying note − accent ${a.accentVsPublishedMs.join(', ')} ms`);
+                info('avsync', `cue score: ${r.meta.cueScore.published} published, ${r.meta.cueScore.anchored} anchored, ${r.meta.cueScore.snapped} snapped, ${r.meta.cueScore.dropped} dropped`);
+            },
+        });
     }
-}
-
-function judgeBusy(cap) {
-    const { tap, pcm, routing, away, logRows, names } = cap;
-    const tl = wallTimeline(tap, pcm);
-    const toT = wallMs => wallMs / 1000 - tl.wall0;
-    const allGaps = tap.gapList || [];
-
-    if (ONLY.includes('report')) {
-        const a = Math.max(0, Math.round(toT(cap.busyStart) * tl.sr));
-        const b = Math.min(tl.L.length, Math.round(toT(cap.busyEnd) * tl.sr));
-        const { metrics } = analyze(tl.L.subarray(a, b), tl.R.subarray(a, b), tl.sr);
-        const inWindow = tl.chunks.filter(c => c.start >= cap.busyStart / 1000 && c.start <= cap.busyEnd / 1000);
-        const f0 = inWindow[0]?.frame ?? 0;
-        const f1 = inWindow.length ? inWindow[inWindow.length - 1].frame + inWindow[inWindow.length - 1].frames : 0;
-        const gaps = allGaps.filter(([at]) => at >= f0 && at <= f1);
-        info('report', `busy day (mixed-tools, 10:24 clear, ${BUSY_SECONDS} s): LUFS-I ${fmt(metrics.loudness.integratedLUFS)}, TP ${fmt(metrics.peak.truePeakDBTP)} dBTP, ST max ${fmt(metrics.loudness.shortTermMaxLUFS)}, capture.gaps ${gaps.length} (${gaps.reduce((n, [, lost]) => n + Math.max(0, lost), 0)} frames) in window, ${allGaps.length} in session`);
-        if (OUT) {
-            fs.mkdirSync(OUT, { recursive: true });
-            writeWavFloat(path.join(OUT, 'probe-busy-day.wav'), tl.L.subarray(a, b), tl.R.subarray(a, b), tl.sr);
-        }
+    if (has('determinism')) {
+        units.push({
+            name: 'determinism',
+            async run() {
+                for (const name of ['anchor', 'villageBusy']) {
+                    const a = await scene(name);
+                    const b = await render(`${name}#2`, sceneSpec(name));
+                    const ma = sceneMetrics(a);
+                    const mb = sceneMetrics(b);
+                    let maxDiff = 0;
+                    const n = Math.min(a.program.L.length, b.program.L.length);
+                    for (let i = 0; i < n; i++) maxDiff = Math.max(maxDiff, Math.abs(a.program.L[i] - b.program.L[i]), Math.abs(a.program.R[i] - b.program.R[i]));
+                    const d = Math.abs(ma.lufsI - mb.lufsI);
+                    verdict('determinism', d <= DETERMINISM_LU, `${name}: LUFS-I ${fmt(ma.lufsI, 2)} vs ${fmt(mb.lufsI, 2)} (Δ ${fmt(d, 3)} LU), max sample Δ ${maxDiff.toExponential(2)}; want Δ ≤ ${DETERMINISM_LU} LU`);
+                }
+            },
+        });
     }
-
-    const cues = logRows.filter(r => r.type === 'cue');
-    if (ONLY.includes('routing')) {
-        for (const r of routing) {
-            const heard = cues.filter(c => c.agentId === r.id && c.wall >= r.at && ['summons', 'distress', 'limit'].includes(c.kind));
-            const kinds = heard.map(c => c.kind);
-            const pass = kinds.length > 0 && kinds.every(k => k === r.want);
-            verdict('routing', pass, `${names[r.id]} ${r.status} (${r.order}): cue-played [${kinds.join(', ') || 'none'}], want ${r.want}${heard.length ? `; caption "${heard[0].label}"` : ''}`);
-        }
-    }
-
-    if (ONLY.includes('away')) {
-        const { momentaryCurve } = loudness(tl.L, tl.R, tl.sr);
-        for (const ep of away) {
-            const cue = cues.find(c => c.agentId === ep.agentId && c.kind === 'summons' && c.wall >= ep.summonsAt);
-            const at = cue ? toT(cue.wall) : toT(ep.summonsAt);
-            const m = marginAt(momentaryCurve, at, MARGIN);
-            const bedClosed = ep.how !== 'blur';
-            const nums = `margin ${signed(m.margin)} LU (cue M max ${fmt(m.cueMax)} LUFS over bed ${Number.isFinite(m.bed) ? `${fmt(m.bed)} LUFS` : 'silence'}), cue bus peak ${fmt(ep.cueBusPeakDb)} dBFS, context ${ep.stateBefore}→${ep.stateDuring}, wakes ${ep.wakeCount ?? '—'}`;
-            if (!cue) {
-                verdict('away', false, `${ep.how}: no summons cue-played for ${names[ep.agentId]}; ${nums}`);
-            } else if (bedClosed) {
-                // Bed closed (signals-only background, hidden tab): the call
-                // must stand the needs-you lane minimum over what was playing.
-                verdict('away', m.margin >= NEEDS_YOU_MIN_LU, `${ep.how}: needs-you ${nums}; want ≥ +${NEEDS_YOU_MIN_LU} LU`);
-            } else {
-                // D3: a blurred window keeps the full mix, so the call plays
-                // over the bed; must-never 4 asks that it sounds. Its margin
-                // over the bed is must-never 1, gated from Wave 1 (1.3).
-                const sounded = ep.cueBusPeakDb != null && ep.cueBusPeakDb >= CUE_BUS_AUDIBLE_DBFS && ep.stateDuring === 'running';
-                verdict('away', sounded, `${ep.how} (full mix kept, D3): needs-you ${nums}; want cue bus ≥ ${CUE_BUS_AUDIBLE_DBFS} dBFS with the context running (margin is must-never 1, gated from 1.3)`);
-            }
-            const back = ep.how === 'hidden' ? 'hide→show' : 'blur→focus';
-            const ms = ep.resumed.contextMs;
-            verdict('resume', ms != null && ms <= RESUME_LIMIT_MS,
-                `${ep.how} ${back}: context running after ${ms == null ? 'never (3 s)' : `${ms.toFixed(0)} ms`}, director after ${ep.resumed.directorMs == null ? 'never (3 s)' : `${ep.resumed.directorMs.toFixed(0)} ms`}; want ≤ ${RESUME_LIMIT_MS} ms`);
-        }
-        if (OUT) {
-            fs.mkdirSync(OUT, { recursive: true });
-            writeWavFloat(path.join(OUT, 'probe-app-session.wav'), tl.L, tl.R, tl.sr);
-        }
-    }
-
-    const hz = cap.hazards.reduce((n, x) => n + x.count, 0);
-    info('report', `app session: ${hz} envelope hazard(s)${hz ? ` — ${cap.hazards.map(x => `x${x.count} ${shortSite(x.site)}`).join(' | ')}` : ''}; wakes ${cap.snapshot?.wakeCount ?? '—'}; page errors ${cap.errors.length}${cap.errors.length ? `: ${cap.errors.slice(0, 3).join(' | ')}` : ''}`);
-}
-
-async function appCeremonyUnit(browser) {
-    const app = await startIsolatedServer();
-    const h = await openApp(browser, app, 'no-agents', 11.3);
-    try {
-        await enableSound(h);
-        await h.page.waitForTimeout(6000);
-        const startedAt = await h.page.evaluate(() => window.__probe.restartScenario('team-gather'));
-        await h.page.waitForTimeout(CEREMONY_WINDOW_MS);
-        const rows = (await h.page.evaluate(() => window.__probe.log)).filter(r => r.wall >= startedAt);
-        return { rows, errors: h.errors };
-    } finally {
-        await h.context.close();
-        await app.stop();
-    }
-}
-
-function judgeCeremony({ rows }) {
-    const gathers = rows.filter(r => r.type === 'team:gather');
-    const cues = rows.filter(r => r.type === 'cue');
-    const councils = cues.filter(c => c.kind === 'council');
-    const others = cues.filter(c => c.kind !== 'council').map(c => `${c.kind} "${c.label}"`);
-    const replaced = councils.find(c => c.replaces)?.replaces;
-    verdict('ceremony', councils.length === 1,
-        `team-gather: ${gathers.length} team:gather, ${councils.length} council cue-played${councils[0] ? ` ("${councils[0].label}")` : ''}${replaced ? `, replaces ${replaced.kind} ×${replaced.count ?? '?'}` : ''}; other cues: ${others.join(', ') || 'none'}; want exactly 1 council`);
+    return units;
 }
 
 // ---------------------------------------------------------------- pool ----
@@ -364,48 +275,102 @@ async function pool(units, jobs) {
             try {
                 await unit.run();
             } catch (e) {
-                verdict(unit.check || 'probe', false, `${unit.name}: ${e.message || e}`);
+                verdict(unit.check || 'probe', false, `${unit.name}: ${e.stack || e.message || e}`);
             }
         }
     });
     await Promise.all(workers);
 }
 
+function judgeBaseline() {
+    const current = Object.fromEntries(Object.entries(summary).map(([k, v]) => [k, Object.fromEntries(Object.entries(v).map(([m, x]) => [m, Number.isFinite(x) ? Number(x.toFixed(2)) : null]))]));
+    if (UPDATE) {
+        const previous = fs.existsSync(BASELINE_FILE) ? JSON.parse(fs.readFileSync(BASELINE_FILE, 'utf8')) : null;
+        const merged = { ...(previous?.summary || {}), ...current };
+        const doc = {
+            note: 'Reviewed baseline for scripts/audio/probe.mjs (virtual clock). Regenerate with `node scripts/audio/probe.mjs --update` after a reviewed audio change; the plan re-baselines at the end of Waves 1, 4 and 6.',
+            generatedAt: new Date().toISOString().slice(0, 10),
+            seed: SEED, programTrimDb: PROGRAM_TRIM_DB, standardVolumeStep: STANDARD_VOLUME_STEP,
+            tolerance: BASELINE_TOLERANCE, summary: merged,
+        };
+        fs.mkdirSync(path.dirname(BASELINE_FILE), { recursive: true });
+        fs.writeFileSync(BASELINE_FILE, `${JSON.stringify(doc, null, 2)}\n`);
+        for (const row of compareBaseline(current, previous?.summary)) {
+            info('baseline', `${row.key} ${row.metric}: ${fmt(row.baseline, 2)} → ${fmt(row.current, 2)} (${signed(row.delta, 2)})`);
+        }
+        info('baseline', `wrote ${path.relative(process.cwd(), BASELINE_FILE)} (${Object.keys(current).length} rows updated)`);
+        return;
+    }
+    if (!fs.existsSync(BASELINE_FILE)) {
+        verdict('baseline', false, `no ${path.relative(process.cwd(), BASELINE_FILE)}; run with --update and review it`);
+        return;
+    }
+    const base = JSON.parse(fs.readFileSync(BASELINE_FILE, 'utf8'));
+    if (base.programTrimDb !== PROGRAM_TRIM_DB) info('baseline', `baseline taken at PROGRAM_TRIM_DB ${base.programTrimDb}, tree has ${PROGRAM_TRIM_DB}`);
+    const rows = compareBaseline(current, base.summary, base.tolerance || BASELINE_TOLERANCE);
+    for (const row of rows) {
+        if (!row.pass) verdict('baseline', false, `${row.key} ${row.metric}: ${fmt(row.current, 2)} vs baseline ${fmt(row.baseline, 2)} (${signed(row.delta, 2)}), want within ±${row.tolerance}`);
+    }
+    const drift = rows.length ? Math.max(...rows.map(r => Math.abs(r.delta))) : null;
+    verdict('baseline', rows.length > 0 && rows.every(r => r.pass), `${rows.length} numbers vs baselines/wave1.json (${base.generatedAt}); largest drift ${fmt(drift, 2)}`);
+}
+
 // ---------------------------------------------------------------- main ----
 async function main() {
+    if (args.soak) {
+        await runSoak({ ...reporter, seconds: args['soak-seconds'] != null ? Number(args['soak-seconds']) : null, update: UPDATE });
+        return finish();
+    }
     let server = null;
     let harnessBrowser = null;
     let appBrowser = null;
     const harness = async () => (harnessBrowser ||= await chromium.launch({ headless: true, args: HARNESS_CHROME_ARGS }));
     const appB = async () => (appBrowser ||= await chromium.launch({ headless: true, args: APP_CHROME_ARGS }));
     try {
+        server = await startStaticServer();
         const units = [];
-        if (ONLY.some(c => ['routing', 'away', 'report'].includes(c))) {
-            units.push({ name: 'app busy day (report, routing, away)', check: 'app', run: async () => judgeBusy(await appBusyUnit(await appB())) });
-        }
-        if (ONLY.includes('ceremony')) {
-            units.push({ name: 'app team-gather (ceremony)', check: 'ceremony', run: async () => judgeCeremony(await appCeremonyUnit(await appB())) });
-        }
-        if (ONLY.includes('lint')) {
-            server = await startStaticServer();
-            for (const u of await lintUnits(await harness(), server)) units.push({ ...u, check: 'lint' });
+        if (VIRTUAL_CHECKS.some(has)) {
+            const browser = await harness();
+            const render = makeRenderer(browser, server.baseUrl, { seed: SEED, noWorklets: NO_WORKLETS });
+            for (const u of virtualUnits(render, browser, server.baseUrl)) units.push({ ...u, check: u.name.split(' ')[0] });
+            log(`virtual clock: seed ${SEED}, PROGRAM_TRIM_DB ${PROGRAM_TRIM_DB}, standard step ${STANDARD_VOLUME_STEP}${NO_WORKLETS ? ', worklets disabled (native fallbacks)' : ''}`);
         }
         await pool(units, JOBS);
+        if (has('baseline')) judgeBaseline();
+        const appUnits = [];
+        if (['routing', 'away'].some(has)) {
+            appUnits.push({ name: 'app busy day (routing, away)', check: 'app', run: async () => judgeBusy(await appBusyUnit(await appB(), reporter), reporter) });
+        }
+        if (has('ceremony')) {
+            appUnits.push({ name: 'app team-gather (ceremony)', check: 'ceremony', run: async () => judgeCeremony(await appCeremonyUnit(await appB(), reporter), reporter) });
+        }
+        if (has('lint')) {
+            for (const u of await lintUnits(await harness(), server, reporter)) appUnits.push({ ...u, check: 'lint' });
+        }
+        // The realtime units run after the renders so render CPU never
+        // competes with a live audio thread.
+        await pool(appUnits, 1);
     } finally {
         await harnessBrowser?.close().catch(() => {});
         await appBrowser?.close().catch(() => {});
         await server?.close();
     }
+    return finish();
+}
 
+function finish() {
     const failed = results.filter(r => r.pass === false);
     const passed = results.filter(r => r.pass === true);
+    const deferred = results.filter(r => r.deferred != null);
     if (OUT) {
         fs.mkdirSync(OUT, { recursive: true });
-        fs.writeFileSync(path.join(OUT, 'probe-report.json'), JSON.stringify({ seed: SEED, jobs: JOBS, only: ONLY, seconds: (Date.now() - t0) / 1000, results }, null, 2));
+        fs.writeFileSync(path.join(OUT, 'probe-report.json'), JSON.stringify({ seed: SEED, planStage: PLAN_STAGE, jobs: JOBS, only: ONLY, soak: Boolean(args.soak), seconds: (Date.now() - t0) / 1000, programTrimDb: PROGRAM_TRIM_DB, targets: LOUDNESS_TARGETS, summary, results }, null, 2));
     }
-    console.log(`\naudio:probe ${failed.length ? 'FAILED' : 'passed'}: ${passed.length} pass, ${failed.length} fail in ${((Date.now() - t0) / 1000).toFixed(0)} s (seed ${SEED}, --jobs ${JOBS})`);
+    console.log(`\naudio:probe ${failed.length ? 'FAILED' : 'passed'} at plan stage ${PLAN_STAGE}: ${passed.length} pass, ${failed.length} fail, ${deferred.length} deferred in ${((Date.now() - t0) / 1000).toFixed(0)} s (seed ${SEED}, --jobs ${JOBS}${args.soak ? ', --soak' : ''})`);
     for (const f of failed) console.log(`  FAIL ${f.check}: ${f.detail}`);
+    for (const d of deferred) console.log(`  DEFER ${d.check} (Wave ${d.deferred}): ${d.detail}`);
     process.exitCode = failed.length ? 1 : 0;
 }
 
 main().catch((e) => { console.error(e); process.exitCode = 1; });
+

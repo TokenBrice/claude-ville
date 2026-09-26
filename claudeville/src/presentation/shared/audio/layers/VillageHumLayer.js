@@ -4,10 +4,11 @@
 
 import { BaseLayer } from './BaseLayer.js';
 import { MIN_GAIN, rand } from '../AudioEngine.js';
+import { makeFilter } from '../Filters.js';
 
 export class VillageHumLayer extends BaseLayer {
-    constructor(engine) {
-        super(engine, { trim: 0.15, group: 'hum' });
+    constructor(engine, options = {}) {
+        super(engine, { trim: 0.15, group: 'hum', ...options });
         this.murmurGain = null;
     }
 
@@ -16,10 +17,7 @@ export class VillageHumLayer extends BaseLayer {
         src.buffer = this.engine.noise('brown');
         src.loop = true;
 
-        const bp = ctx.createBiquadFilter();
-        bp.type = 'bandpass';
-        bp.frequency.value = 300;
-        bp.Q.value = 0.7;
+        const bp = makeFilter(ctx, 'bandpass', 300, { q: 0.7 });
 
         this.murmurGain = ctx.createGain();
         this.murmurGain.gain.value = 0.12;
@@ -56,10 +54,7 @@ export class VillageHumLayer extends BaseLayer {
         const src = ctx.createBufferSource();
         src.buffer = this.engine.noise('white');
 
-        const bp = ctx.createBiquadFilter();
-        bp.type = 'bandpass';
-        bp.frequency.value = centerHz;
-        bp.Q.value = 6;
+        const bp = makeFilter(ctx, 'bandpass', centerHz, { q: 6 });
 
         const gain = ctx.createGain();
         gain.gain.setValueAtTime(MIN_GAIN, t);

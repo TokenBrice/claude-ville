@@ -3,7 +3,7 @@
 //
 //   node scripts/audio/audio-capture.mjs list
 //   node scripts/audio/audio-capture.mjs <target|category|all> [--seconds N] [--out dir] [--jobs N] [--seed N] [--snippet file.js]
-//   node scripts/audio/audio-capture.mjs snippet --snippet file.js [--seconds N] [--offline] [--name id] [--out dir]
+//   node scripts/audio/audio-capture.mjs snippet --snippet file.js [--seconds N] [--offline] [--volume-step 0-10] [--name id] [--out dir]
 //   node scripts/audio/audio-capture.mjs analyze file.wav [--markers markers.json] [--out dir]
 //   node scripts/audio/audio-capture.mjs index [--out dir]
 import fs from 'node:fs';
@@ -13,6 +13,7 @@ import { startStaticServer, AUDIO_DIR, REPO_ROOT } from './lib/server.mjs';
 import { analyze, readWav, writeWavFloat } from './lib/analyze.mjs';
 import { openPlotter } from './lib/plot.mjs';
 import { buildTargets } from './lib/targets.mjs';
+import { STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 import {
     DEFAULT_SEED, HARNESS_CHROME_ARGS, RENDERS,
     cutWindow, newHarnessPage, openHarness, pullPcm, readHazards, readVoiceLog,
@@ -65,7 +66,7 @@ async function captureRealtime(browser, server, target, opts) {
                     state: result.finalSnapshot?.state, mode: result.finalSnapshot?.mode,
                     levels: result.finalSnapshot?.levels, framePressureLevel: result.finalSnapshot?.framePressureLevel,
                     atmosphereSource: result.finalSnapshot?.atmosphereSource, section: result.finalSnapshot?.section,
-                    volume: result.finalSnapshot?.volume,
+                    volumeStep: result.finalSnapshot?.volumeStep,
                 },
                 pageErrors: h.errors,
             },
@@ -131,7 +132,7 @@ async function captureApp(browser, target) {
                 finalState: {
                     state: result.final?.state, mode: result.final?.mode, levels: result.final?.levels,
                     framePressureLevel: result.final?.framePressureLevel, atmosphereSource: result.final?.atmosphereSource,
-                    phase: result.final?.phase, sectionCounts: result.final?.sectionCounts, volume: result.final?.volume,
+                    phase: result.final?.phase, sectionCounts: result.final?.sectionCounts, volumeStep: result.final?.volumeStep,
                 },
                 pageErrors: h.errors.slice(0, 20),
             },
@@ -144,8 +145,8 @@ async function captureApp(browser, target) {
 
 // ----------------------------------------------------------- write out ----
 function summarizeTarget(target) {
-    const { name, category, method, mode, isolate, atmosphere, world, music, bgm, actions, cues, volume, warmup, seconds } = target;
-    return { name, category, method, mode, isolate, atmosphere, world, music, bgm, actions, cues, volume: volume ?? 0.5, warmup, seconds };
+    const { name, category, method, mode, isolate, atmosphere, world, music, bgm, actions, cues, volumeStep, warmup, seconds } = target;
+    return { name, category, method, mode, isolate, atmosphere, world, music, bgm, actions, cues, volumeStep: volumeStep ?? STANDARD_VOLUME_STEP, warmup, seconds };
 }
 
 function notable(m, target, capture = null) {
@@ -205,7 +206,7 @@ async function finalizeRender(plotter, rec) {
     fs.writeFileSync(`${base}.json`, JSON.stringify(json, null, 2));
     await plotter.plot(`${base}.png`, {
         title: `${target.name}  [${target.category}]`,
-        subtitle: subtitleFor(metrics, method, target.volume ?? 0.5),
+        subtitle: subtitleFor(metrics, method, target.volumeStep ?? STANDARD_VOLUME_STEP),
         plot,
         markers: rec.markers,
         integrated: metrics.loudness.integratedLUFS,
@@ -217,12 +218,12 @@ async function writeRender(plotter, outDir, target, cap, method) {
     return finalizeRender(plotter, saveRender(outDir, target, cap, method));
 }
 
-function subtitleFor(metrics, method, volume) {
+function subtitleFor(metrics, method, volumeStep) {
     const L = metrics.loudness;
     const duration = metrics.durationSeconds;
     return [
         [
-            `${method}`, `${duration} s`, `vol ${volume}`,
+            `${method}`, `${duration} s`, `step ${volumeStep}`,
             `LUFS-I ${L.integratedLUFS ?? '—'}`, `ST max ${L.shortTermMaxLUFS ?? '—'}`, `M max ${L.momentaryMaxLUFS ?? '—'}`,
             `LRA ${L.loudnessRangeLU ?? '—'} LU`, `TP ${metrics.peak.truePeakDBTP} dBTP`, `crest ${metrics.crestFactorDB} dB`,
         ].join('  ·  '),
@@ -256,8 +257,8 @@ function writeIndex(outRoot) {
         '# ClaudeVille listening harness — render index',
         '',
         `Generated ${new Date().toISOString()} by \`node scripts/audio/audio-capture.mjs index\`. ${rows.length} renders.`,
-        'All renders at the shipped default volume 0.5 (master gain 0.225) unless the name says `vol100`. Levels are measured at the',
-        'engine output (after tone filter + limiter), i.e. what the speaker receives. LUFS = BS.1770-4 integrated (gated); TP = 4x-oversampled',
+        `All renders at the standard volume step ${STANDARD_VOLUME_STEP} unless the name says \`vol100\` (step 10, unity). Levels are measured at the`,
+        'engine output (after the limiter and the volume), i.e. what the speaker receives. LUFS = BS.1770-4 integrated (gated); TP = 4x-oversampled',
         'true peak; crest = sample peak / RMS; centroid = mean±sd over active frames (> -70 dBFS). PNG/WAV/JSON share the base name.',
         '',
         '| target | category | method | dur s | LUFS-I | ST max | TP dBTP | crest dB | centroid Hz | notable |',
@@ -359,7 +360,7 @@ async function main() {
                 fs.writeFileSync(file, JSON.stringify(j, null, 2));
                 await plotter.plot(file.replace(/\.json$/, '.png'), {
                     title: `${j.name}  [${j.category}]`,
-                    subtitle: subtitleFor(metrics, j.method, j.target?.volume ?? 0.5),
+                    subtitle: subtitleFor(metrics, j.method, j.target?.volumeStep ?? STANDARD_VOLUME_STEP),
                     plot, markers: j.markers || [], integrated: metrics.loudness.integratedLUFS,
                 });
             }
@@ -379,7 +380,7 @@ async function main() {
             const h = await openHarness(browser, server.baseUrl, args.seed ?? DEFAULT_SEED);
             let cap;
             try {
-                const res = await h.page.evaluate(o => window.__har.runSnippet(o), { url: snippetUrl, seconds, offline: Boolean(args.offline), volume: Number(args.volume ?? 0.5) });
+                const res = await h.page.evaluate(o => window.__har.runSnippet(o), { url: snippetUrl, seconds, offline: Boolean(args.offline), volumeStep: Number(args['volume-step'] ?? STANDARD_VOLUME_STEP) });
                 let L, R, sr, start, gapInfo = null;
                 if (res.offline) {
                     ({ L, R } = await pullPcm(h.page, res.frames * 2));
@@ -404,7 +405,7 @@ async function main() {
             } finally {
                 await h.context.close();
             }
-            const target = { name, category: 'snippets', method: cap.meta.offline ? 'offline' : 'realtime', volume: Number(args.volume ?? 0.5) };
+            const target = { name, category: 'snippets', method: cap.meta.offline ? 'offline' : 'realtime', volumeStep: Number(args['volume-step'] ?? STANDARD_VOLUME_STEP) };
             const row = await writeRender(plotter, outDir, target, cap, `snippet-${target.method}`);
             console.log(JSON.stringify({ out: path.join(outDir, 'snippets', name), loudness: row.metrics.loudness, peak: row.metrics.peak, notable: row.notable, pageErrors: cap.meta.pageErrors }, null, 2));
             return;

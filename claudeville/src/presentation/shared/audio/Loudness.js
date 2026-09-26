@@ -7,10 +7,53 @@
 // field says otherwise. "A" is the Anchor A scene below.
 
 // Gain (dB) on the program sum that makes Anchor A true on the current bed.
-// Wave 0 ships no trim stage, so this stays 0 until Wave 1 (item 1.1)
-// measures it with the probe on the retired-tonal-bed village; it is then
-// re-measured and the probe re-baselined at the end of Waves 1, 4 and 6.
-export const PROGRAM_TRIM_DB = 0;
+// Applied twice in the master (S3): on the bed sum and on the cue sum, so a
+// cue keeps the level relation it was measured with. Re-measured and the
+// probe re-baselined at the end of Waves 1, 4 and 6.
+// Wave 1 (tonal bed retired, wind-led world stratum; the sea lands in 4.1):
+// the virtual-clock anchor scene (scripts/audio/lib/scenes.mjs `anchor`:
+// seed 0x5eed, July day progress 0.5, clear, 4 working + 1 idle, hum and
+// music trims at step 0, standard volume step 6, worklet limiter; LUFS-I
+// over the 60 s after a 10 s warmup, `node scripts/audio/probe.mjs --only
+// scenes`) read −38.17 LUFS-I at 28 dB (−66.04 at 0 dB), sample peak
+// −25.5 dBFS, no limiter gain reduction; 28.2 dB makes it −37.97.
+export const PROGRAM_TRIM_DB = 28.2;
+
+// Slider law (UX-8, S2 "Slider semantics"): steps 0-10, 0 = off.
+// Master volume: 3.6 dB per step, step 10 = unity, the last gain before the
+// fade (after the limiter), so a step changes level only.
+export const VOLUME_STEP_DB = 3.6;
+export const STANDARD_VOLUME_STEP = 6;
+// Mixer trims (group faders): 2.4 dB per step, step 10 = unity.
+export const TRIM_STEP_DB = 2.4;
+
+function stepGain(step, dbPerStep) {
+    const s = Math.max(0, Math.min(10, Math.round(Number(step))));
+    if (!Number.isFinite(s) || s === 0) return 0;
+    return Math.pow(10, (s - 10) * dbPerStep / 20);
+}
+
+export function volumeStepGain(step) {
+    return stepGain(step, VOLUME_STEP_DB);
+}
+
+export function trimStepGain(step) {
+    return stepGain(step, TRIM_STEP_DB);
+}
+
+// Note-timed duck depths per cue class (S3), dB per bus; 0 = no duck on that
+// bus. `village` covers routine, outcome and scenery cues in Village,
+// `townBand` the same classes over the Town band. The engine floors every
+// window at DUCK_FLOOR_DB (−9, DuckScheduler.js).
+export const DUCK_DEPTHS = Object.freeze({
+    village: Object.freeze({ world: -2, work: -3, music: 0 }),
+    townBand: Object.freeze({ world: 0, work: 0, music: -2 }),
+    urgent: Object.freeze({ world: -7, work: -6, music: -9 }),
+    // Thunder is weather: it ducks nothing.
+    thunder: Object.freeze({ world: 0, work: 0, music: 0 }),
+});
+// Total ducked time per bus, as a fraction of an hour (C-MIX-5).
+export const DUCKED_TIME_BUDGET = 0.05;
 
 // Scene-keyed targets, keyed to the probe's named scenes. Relative fields
 // name their reference in the key: `overA` is LU over Anchor A's LUFS-I,
@@ -36,6 +79,14 @@ export const LOUDNESS_TARGETS = Object.freeze({
     // At full slider.
     ceiling: Object.freeze({ truePeakDbtp: -1, urgentGrMaxDb: 3, thunderGrMaxDb: 6 }),
 });
+
+// The program limiter's sample ceiling (dBFS). The worklet detects sample
+// peaks, not true peaks; 0.5 dB under the −1 dBTP ceiling above covers the
+// inter-sample overshoot of a worst-case burst (the probe's +14 dBFS limiter
+// unit read −0.64 dBTP at a −1 dBFS sample ceiling). The no-AudioWorklet
+// fallback (emergency path only) is not bound by this: its true peak can
+// pass −1 dBTP.
+export const LIMITER_CEILING_DBFS = -1.5;
 
 // Audibility lane windows: LU of the cue over the `bedWindowSec` of bed
 // before it. Per bed context a lane has `min` and/or `max`; `ceiling` caps
@@ -110,7 +161,21 @@ export const AUDIBILITY_WINDOWS = Object.freeze({
 // nominal loudness so trims and the probe can predict where it lands.
 // Shape: { [voiceId]: { nominalLufsM, plr } }
 //   voiceId       stable id, e.g. 'cue.needsYou', 'work.forge.anvil', 'music.isle.lead'
-//   nominalLufsM  momentary max (LUFS-M) of one voice render at unit gain, pre-trim
-//   plr           peak-to-loudness ratio (dB): sample peak dBFS minus nominalLufsM
+//   nominalLufsM  momentary max (LUFS-M) of one voice render at unit gain,
+//                 pre-trim, in the bedLoudness() domain: at the bus stage,
+//                 before PROGRAM_TRIM, fade and volume
+//   plr           peak-to-loudness ratio (dB): sample peak dBFS minus nominalLufsM; null until measured
 // Entries arrive with the voices that own them (Waves 1, 3, 5, 6).
-export const VOICE_REGISTRY = {};
+// Today's cue voices (Wave 1): MIX's mix-v2-nominal renders (program trim 0,
+// volume 1, the cue's fixed 0.72 stage included); `limit` borrows distress.
+export const VOICE_REGISTRY = Object.freeze({
+    'cue.summons': Object.freeze({ nominalLufsM: -36.7, plr: null }),
+    'cue.distress': Object.freeze({ nominalLufsM: -36.4, plr: null }),
+    'cue.arrival': Object.freeze({ nominalLufsM: -38.5, plr: null }),
+    'cue.departure': Object.freeze({ nominalLufsM: -39.1, plr: null }),
+    'cue.recovery': Object.freeze({ nominalLufsM: -40.0, plr: null }),
+    'cue.council': Object.freeze({ nominalLufsM: -39.4, plr: null }),
+    'cue.hourBell': Object.freeze({ nominalLufsM: -33.5, plr: null }),
+    'cue.aurora': Object.freeze({ nominalLufsM: -38.2, plr: null }),
+    'cue.thunder': Object.freeze({ nominalLufsM: -33.7, plr: null }),
+});

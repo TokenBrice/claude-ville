@@ -21,11 +21,11 @@ export const RENDERS = path.join(tempRoot(), 'claudeville-audio-renders');
 export const BACKGROUND_ARGS = ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'];
 export const HARNESS_CHROME_ARGS = ['--autoplay-policy=no-user-gesture-required', ...BACKGROUND_ARGS];
 
-export async function pullPcm(page, floats) {
+export async function pullPcm(page, floats, name = '__harPcm') {
     const parts = [];
     const step = 1 << 20;
     for (let off = 0; off < floats; off += step) {
-        const b64 = await page.evaluate(([o, n]) => window.__harPull(o, n), [off, step]);
+        const b64 = await page.evaluate(([o, n, k]) => window.__harPull(o, n, k), [off, step, name]);
         parts.push(Buffer.from(b64, 'base64'));
     }
     const buf = Buffer.concat(parts);
@@ -37,11 +37,12 @@ export async function pullPcm(page, floats) {
 }
 
 // A browser context with the tap init script (seeded Math.random when `seed`
-// is not null) and page-error collection.
-export async function newHarnessPage(browser, seed, viewport = { width: 1280, height: 800 }) {
+// is not null), any extra init scripts after it, and page-error collection.
+export async function newHarnessPage(browser, seed, viewport = { width: 1280, height: 800 }, extraInit = []) {
     const context = await browser.newContext({ viewport });
     const seedLine = seed == null ? '' : `window.__HAR_SEED = ${Number(seed)};\n`;
     await context.addInitScript({ content: seedLine + INIT_JS });
+    for (const content of extraInit) await context.addInitScript({ content });
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', e => errors.push(String(e?.message || e)));

@@ -42,8 +42,9 @@
             let peak = 0;
             const poll = () => {
                 const engine = controller()?.engine;
-                const bus = engine?.cueBus;
-                if (!bus || !engine.context) return;
+                if (!engine?.context) return;
+                const bus = engine.busInput('cue');
+                if (!bus) return;
                 let tap = taps.get(bus);
                 if (!tap) {
                     const analyser = engine.context.createAnalyser();

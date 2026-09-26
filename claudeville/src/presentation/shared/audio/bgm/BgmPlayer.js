@@ -11,6 +11,7 @@
 
 import { BaseLayer } from '../layers/BaseLayer.js';
 import { MIN_GAIN, pick } from '../AudioEngine.js';
+import { makeFilter } from '../Filters.js';
 import { noteHz } from '../MusicalScale.js';
 import { PIECES, CHORDS, PLAYLISTS } from './BgmSongbook.js';
 
@@ -36,6 +37,12 @@ const GAINS = {
 // voice stops only after seven of them, when the tail is 60 dB down.
 const PAD_RELEASE_TAU = 0.3;
 const PAD_TAIL_SEC = PAD_RELEASE_TAU * 7;
+// Interim stereo seats (plan 1.5, MUSL seats) until the Isle Band lands:
+// lead a little right with its echo on the left, the counter line (and the
+// night pad in its seat) on the left, the eighth-note engine on the right,
+// brushes-side hats, the bass centred. One persistent panner per seat keeps
+// the image mono-safe.
+const SEATS = Object.freeze({ lead: 0.1, echo: -0.45, counter: -0.35, arp: 0.38, bass: 0, perc: 0.22 });
 
 // 5.3 — arrangement sections. Each band admits one more of the piece's already
 // compiled voices: no extra oscillators, no transposition, no tempo change. A
@@ -50,8 +57,10 @@ const SECTION_VOICES = Object.freeze({
 export const BGM_SECTIONS = Object.freeze(Object.keys(SECTION_VOICES));
 
 export class BgmPlayer extends BaseLayer {
-    constructor(engine) {
-        super(engine, { trim: 0.55, group: 'music' });
+    constructor(engine, options = {}) {
+        // 0.49 ≈ 0.55 − 1 dB: puts the Town band at −31 LUFS-I with its stem
+        // short-term max under −28 at the standard step (S2, probe `townBand`).
+        super(engine, { trim: 0.49, group: 'music', ...options });
         this.phase = 'day';
         this.nowPlaying = null;
         this.section = 'steady';
@@ -82,40 +91,38 @@ export class BgmPlayer extends BaseLayer {
     }
 
     _start(ctx) {
-        const mk = (cutoff) => {
-            const tone = ctx.createBiquadFilter();
-            tone.type = 'lowpass';
-            tone.frequency.value = cutoff;
-            tone.Q.value = 0.4;
+        // A seat panner feeding the player output (the output itself where
+        // StereoPanner is missing).
+        const toSeat = (pan) => {
+            if (!ctx.createStereoPanner) return this.out;
+            const panner = ctx.createStereoPanner();
+            panner.pan.value = pan;
+            panner.connect(this.out);
+            this.track(panner);
+            return panner;
+        };
+        // One voice bus per seat: gain → tone filter → seat panner → out.
+        const seat = (type, cutoff, pan) => {
             const bus = ctx.createGain();
-            bus.connect(tone).connect(this.out);
+            const tone = makeFilter(ctx, type, cutoff, { q: 'butterworth' });
+            bus.connect(tone).connect(toSeat(pan));
             this.track(bus, tone);
             return bus;
         };
         this._buses = {
-            lead: mk(2800),
-            counter: mk(1800),
-            bass: mk(800),
+            lead: seat('lowpass', 2800, SEATS.lead),
+            counter: seat('lowpass', 1800, SEATS.counter),
+            arp: seat('lowpass', 1800, SEATS.arp),
+            bass: seat('lowpass', 800, SEATS.bass),
+            perc: seat('highpass', 3500, SEATS.perc),
         };
-
-        const percTone = ctx.createBiquadFilter();
-        percTone.type = 'highpass';
-        percTone.frequency.value = 3500;
-        percTone.Q.value = 0.5;
-        const percBus = ctx.createGain();
-        percBus.connect(percTone).connect(this.out);
-        this._buses.perc = percBus;
-        this.track(percBus, percTone);
 
         // Echo on the lead; per-piece send level (night bells ring long).
         const delay = ctx.createDelay(1.5);
         delay.delayTime.value = 0.36;
         const feedback = ctx.createGain();
         feedback.gain.value = 0.16;
-        const delayTone = ctx.createBiquadFilter();
-        delayTone.type = 'lowpass';
-        delayTone.frequency.value = 2000;
-        delayTone.Q.value = 0.3;
+        const delayTone = makeFilter(ctx, 'lowpass', 2000, { q: 'butterworth' });
         const delayReturn = ctx.createGain();
         delayReturn.gain.value = 0.13;
         this._delaySend = ctx.createGain();
@@ -123,7 +130,7 @@ export class BgmPlayer extends BaseLayer {
 
         this._buses.lead.connect(this._delaySend).connect(delay);
         delay.connect(delayTone).connect(feedback).connect(delay);
-        delayTone.connect(delayReturn).connect(this.out);
+        delayTone.connect(delayReturn).connect(toSeat(SEATS.echo));
         this.track(delay, feedback, delayTone, delayReturn, this._delaySend);
 
         this.timer(() => this._startPiece(ctx.currentTime + 0.2), 400);
@@ -291,7 +298,7 @@ export class BgmPlayer extends BaseLayer {
                 this._note(this._buses.counter, t, ev.semi, dur * 0.95, 'pulse12', GAINS.counter, {});
                 break;
             case 'arp':
-                this._note(this._buses.counter, t, ev.semi, dur, 'pulse12', GAINS.arp, {
+                this._note(this._buses.arp, t, ev.semi, dur, 'pulse12', GAINS.arp, {
                     pluckDecay: dur,
                 });
                 break;

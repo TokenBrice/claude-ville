@@ -292,7 +292,7 @@
 
 .topbar__mixer-row {
     display: grid;
-    grid-template-columns: 88px 1fr 5ch;
+    grid-template-columns: 88px 1fr 7ch;
     gap: 8px;
     align-items: center;
     min-height: 32px;
@@ -621,7 +621,7 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     white-space: nowrap;
 }
 
-/* Ambience volume slider — visible only while sound is on. */
+/* Volume slider (steps 0–10) — visible only while sound is on. */
 .topbar__sound-vol {
     width: 72px;
     height: 4px;

@@ -4,6 +4,7 @@
 
 import { BaseLayer } from './BaseLayer.js';
 import { MIN_GAIN, rand } from '../AudioEngine.js';
+import { makeFilter } from '../Filters.js';
 
 const VOICES = [
     { hz: 4150, intervalMs: 560, pan: -0.45 },
@@ -11,16 +12,13 @@ const VOICES = [
 ];
 
 export class CricketsLayer extends BaseLayer {
-    constructor(engine) {
-        super(engine, { trim: 0.7, group: 'wildlife' });
+    constructor(engine, options = {}) {
+        super(engine, { trim: 0.7, group: 'wildlife', ...options });
     }
 
     _start(ctx) {
         for (const voice of VOICES) {
-            const filter = ctx.createBiquadFilter();
-            filter.type = 'bandpass';
-            filter.frequency.value = voice.hz;
-            filter.Q.value = 7;
+            const filter = makeFilter(ctx, 'bandpass', voice.hz, { q: 7 });
             const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
             if (pan) {
                 pan.pan.value = voice.pan;

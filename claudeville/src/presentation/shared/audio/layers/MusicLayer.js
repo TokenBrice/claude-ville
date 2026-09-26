@@ -21,6 +21,7 @@
 
 import { BaseLayer } from './BaseLayer.js';
 import { MIN_GAIN, rand, pick } from '../AudioEngine.js';
+import { makeFilter } from '../Filters.js';
 import { noteHz } from '../MusicalScale.js';
 
 // Chord voicings (semitones from A4, mid-low register) and bass roots.
@@ -171,15 +172,22 @@ const ARRANGEMENTS = {
 
 const BEATS_PER_BAR = 4;
 const SECTION_BARS = 4;
+// Interim stereo seats (plan 1.5, MUSL seats) until the Isle Band lands:
+// the tune a little right with its echo across the square on the left,
+// chord stabs on the counter side, plucked arpeggios on the engine side, the
+// bass (and everything under 300 Hz) centred. Each seat is one persistent
+// panner, so the image is mono-safe.
+const SEATS = Object.freeze({ melody: 0.1, echo: -0.45, chords: -0.35, arp: 0.38, bass: 0 });
 
 export class MusicLayer extends BaseLayer {
-    constructor(engine) {
-        super(engine, { trim: 0.5, group: 'music' });
+    constructor(engine, options = {}) {
+        super(engine, { trim: 0.5, group: 'music', ...options });
         this.phase = 'day';
         this.restScale = 1;
         this.nowPlaying = null;
         this.melodyBus = null;
-        this.accompBus = null;
+        this.arpBus = null;
+        this.chordBus = null;
         this.bassBus = null;
         this._waves = null;
         this._songSources = new Set();
@@ -194,36 +202,35 @@ export class MusicLayer extends BaseLayer {
             flute: this.engine.wave('flute'),
         };
 
-        const melodyTone = ctx.createBiquadFilter();
-        melodyTone.type = 'lowpass';
-        melodyTone.frequency.value = 2600;
-        melodyTone.Q.value = 0.4;
-        this.melodyBus = ctx.createGain();
-        this.melodyBus.connect(melodyTone).connect(this.out);
-
-        const accompTone = ctx.createBiquadFilter();
-        accompTone.type = 'lowpass';
-        accompTone.frequency.value = 1700;
-        accompTone.Q.value = 0.4;
-        this.accompBus = ctx.createGain();
-        this.accompBus.connect(accompTone).connect(this.out);
-
-        const bassTone = ctx.createBiquadFilter();
-        bassTone.type = 'lowpass';
-        bassTone.frequency.value = 800;
-        bassTone.Q.value = 0.4;
-        this.bassBus = ctx.createGain();
-        this.bassBus.connect(bassTone).connect(this.out);
+        // A seat panner feeding the layer output (the output itself where
+        // StereoPanner is missing).
+        const toSeat = (pan) => {
+            if (!ctx.createStereoPanner) return this.out;
+            const panner = ctx.createStereoPanner();
+            panner.pan.value = pan;
+            panner.connect(this.out);
+            this.track(panner);
+            return panner;
+        };
+        // One voice bus per seat: gain → tone low-pass → seat panner → out.
+        const seat = (cutoff, pan) => {
+            const bus = ctx.createGain();
+            const tone = makeFilter(ctx, 'lowpass', cutoff, { q: 'butterworth' });
+            bus.connect(tone).connect(toSeat(pan));
+            this.track(bus, tone);
+            return bus;
+        };
+        this.melodyBus = seat(2600, SEATS.melody);
+        this.arpBus = seat(1700, SEATS.arp);
+        this.chordBus = seat(1700, SEATS.chords);
+        this.bassBus = seat(800, SEATS.bass);
 
         // Echo on the lead for "heard across the square" distance.
         const delay = ctx.createDelay(1.5);
         delay.delayTime.value = 0.38;
         const feedback = ctx.createGain();
         feedback.gain.value = 0.14;
-        const delayTone = ctx.createBiquadFilter();
-        delayTone.type = 'lowpass';
-        delayTone.frequency.value = 1900;
-        delayTone.Q.value = 0.3;
+        const delayTone = makeFilter(ctx, 'lowpass', 1900, { q: 'butterworth' });
         const delayReturn = ctx.createGain();
         delayReturn.gain.value = 0.11;
         const delaySend = ctx.createGain();
@@ -231,10 +238,9 @@ export class MusicLayer extends BaseLayer {
 
         this.melodyBus.connect(delaySend).connect(delay);
         delay.connect(delayTone).connect(feedback).connect(delay);
-        delayTone.connect(delayReturn).connect(this.out);
+        delayTone.connect(delayReturn).connect(toSeat(SEATS.echo));
 
-        this.track(melodyTone, this.melodyBus, accompTone, this.accompBus,
-            bassTone, this.bassBus, delay, feedback, delayTone, delayReturn, delaySend);
+        this.track(delay, feedback, delayTone, delayReturn, delaySend);
         this._scheduleSong(rand(2500, 5000));
     }
 
@@ -414,14 +420,14 @@ export class MusicLayer extends BaseLayer {
             const pattern = [0, 1, 2, 1];
             for (let i = 0; i < count; i++) {
                 const semi = tones[pattern[i % pattern.length]];
-                this._playNote(this.accompBus, t0 + i * stepSec, noteHz(semi),
+                this._playNote(this.arpBus, t0 + i * stepSec, noteHz(semi),
                     Math.min(0.3, stepSec * 0.9), 'pulse12', gain, { pluck: true });
             }
         } else {
             const hits = style === 'block1' ? [0] : [0, 2];
             for (const beatIndex of hits) {
                 for (const semi of tones) {
-                    this._playNote(this.accompBus, t0 + beatIndex * beatSec, noteHz(semi),
+                    this._playNote(this.chordBus, t0 + beatIndex * beatSec, noteHz(semi),
                         beatSec * 0.5, 'pulse12', gain * 0.8, { pluck: true });
                 }
             }

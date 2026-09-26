@@ -1,0 +1,98 @@
+{
+  "note": "Reviewed baseline for scripts/audio/probe.mjs (virtual clock). Regenerate with `node scripts/audio/probe.mjs --update` after a reviewed audio change; the plan re-baselines at the end of Waves 1, 4 and 6.",
+  "generatedAt": "2026-09-26",
+  "seed": 24301,
+  "programTrimDb": 28.2,
+  "standardVolumeStep": 6,
+  "tolerance": {
+    "lufsI": 1.5,
+    "margin": 1.5,
+    "stMax": 1.5
+  },
+  "summary": {
+    "scene:anchor": {
+      "lufsI": -37.93,
+      "stMax": -35.45
+    },
+    "margin:village:needsYou": {
+      "margin": 9.35
+    },
+    "margin:village:error": {
+      "margin": 8.35
+    },
+    "margin:village:limit": {
+      "margin": 7.95
+    },
+    "margin:village:routine": {
+      "margin": 5.17
+    },
+    "margin:village:scenery": {
+      "margin": 3.68
+    },
+    "margin:music:needsYou": {
+      "margin": 9.8
+    },
+    "margin:music:error": {
+      "margin": 9.18
+    },
+    "margin:music:limit": {
+      "margin": 9.55
+    },
+    "margin:music:routine": {
+      "margin": 5.24
+    },
+    "margin:music:scenery": {
+      "margin": 3.96
+    },
+    "scene:villageBusy": {
+      "lufsI": -31.13,
+      "stMax": -27.47
+    },
+    "margin:rain:needsYou": {
+      "margin": 7.91
+    },
+    "margin:rain:error": {
+      "margin": 9.07
+    },
+    "margin:rain:limit": {
+      "margin": 7.56
+    },
+    "margin:rain:routine": {
+      "margin": 5.25
+    },
+    "margin:rain:scenery": {
+      "margin": 3.68
+    },
+    "scene:townBand": {
+      "lufsI": -30.05,
+      "stMax": -25.18
+    },
+    "margin:storm:needsYou": {
+      "margin": 6.98
+    },
+    "margin:storm:error": {
+      "margin": 7.12
+    },
+    "margin:storm:limit": {
+      "margin": 6.13
+    },
+    "margin:storm:routine": {
+      "margin": 5.25
+    },
+    "margin:storm:scenery": {
+      "margin": 2.89
+    },
+    "scene:rain": {
+      "lufsI": -32.23,
+      "stMax": -30.88
+    },
+    "scene:storm": {
+      "lufsI": -30.12,
+      "stMax": -28.26
+    },
+    "scene:resting": {
+      "lufsI": -48.27,
+      "stMax": -46.11
+    }
+  }
+}

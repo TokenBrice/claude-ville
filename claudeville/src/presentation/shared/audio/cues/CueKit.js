@@ -1,10 +1,14 @@
 // One-shot cue voices. Every pitched cue draws from the shared tonal center
 // (MusicalScale.cueTones) so cues can never clash with the ambient layers.
-// All cues route through the engine's cue bus and gently duck the ambience.
+// Each accepted cue gets its own bed-aware trim into the engine's cue bus
+// and one note-timed duck of the bed (plan S3), cancelled with the cue.
 
 import { MIN_GAIN, rand } from '../AudioEngine.js';
 import { bellVoicingForProvider, cueTones } from '../MusicalScale.js';
-import { CUE_LANES, computeCueMix } from '../CueGovernor.js';
+import { CUE_LANES, isUrgentCueLane } from '../CueGovernor.js';
+import { URGENT_TRIM_MEMORY_MS, cueTrimDb, isUrgentLevelLane } from '../CueLevel.js';
+import { makeFilter } from '../Filters.js';
+import { DUCK_DEPTHS, VOICE_REGISTRY } from '../Loudness.js';
 import {
     CUE_ACCENT_NOTE,
     anchoredCueDelayMs,
@@ -56,6 +60,46 @@ const VOICE_BY_KIND = Object.freeze({
     limit: 'distress',
 });
 
+// The S2 audibility lane each kind is levelled against (CueLevel.js).
+const LEVEL_LANE_BY_KIND = Object.freeze({
+    arrival: 'routine',
+    departure: 'routine',
+    recovery: 'routine',
+    council: 'routine',
+    distress: 'error',
+    limit: 'limit',
+    summons: 'needsYou',
+    hourBell: 'scenery',
+    aurora: 'scenery',
+    thunder: 'thunder',
+});
+
+// The fixed cue stage the registry's nominal loudness was measured through
+// (mix-v2-nominal: trim 0 behind a 0.72 cue bus). Each cue's own trim gain
+// carries it, so a registry value stays the level the voice really has.
+const CUE_STAGE_GAIN = 0.72;
+
+// The bed stays ducked this long past the last note, so it returns as the
+// bell rings out rather than under its strike (S3).
+const DUCK_HOLD_AFTER_LAST_NOTE_SEC = 0.35;
+
+// A cue's trim gain outlives its last note by the longest tail it may carry.
+const SINK_RELEASE_PAD_SEC = 0.5;
+
+const dbToGain = db => Math.pow(10, db / 20);
+
+// Thunder is weather and ducks nothing; urgent cues carve the deepest room;
+// the rest depend on the preset (Village ducks the bed, Town band the band).
+function duckDepthsFor(kind, lane, preset) {
+    if (kind === 'thunder') return DUCK_DEPTHS.thunder;
+    if (isUrgentCueLane(lane)) return DUCK_DEPTHS.urgent;
+    return preset === 'townBand' ? DUCK_DEPTHS.townBand : DUCK_DEPTHS.village;
+}
+
+function ducksAnything(depths) {
+    return Boolean(depths) && Object.values(depths).some(db => Number(db) < 0);
+}
+
 const CUE_LABELS = {
     arrival: 'Agent arrived',
     departure: 'Agent departed',
@@ -82,6 +126,12 @@ const URGENT_GUARD_MS = Object.freeze({
 // A superseded note that has not sounded yet is released over this ramp, so
 // cancelling it can never click (S8: every stop is a ≥ 60 ms ramp).
 const CANCEL_RELEASE_SEC = 0.06;
+
+// The bed context a cue is levelled against when the director names none.
+function bedContextFor(cue) {
+    if (cue.bed === 'village' || cue.bed === 'music' || cue.bed === 'weather') return cue.bed;
+    return cue.preset === 'townBand' ? 'music' : 'village';
+}
 
 function panForScreenX(screenX) {
     const x = Number(screenX);
@@ -128,6 +178,9 @@ export class CueKit {
         this.engine = engine;
         this.governor = governor;
         this.lastCue = null;
+        this.lastLevel = null;
+        // Foreground urgent trims ({ at, trimDb }) for a wake with no bed read.
+        this._urgentTrims = [];
     }
 
     // Returns true when the governor accepted the cue. Routine cues sound
@@ -193,9 +246,10 @@ export class CueKit {
                 heardLeadMs(this.engine),
             );
             const t = this.engine.now() + (START_LEAD_MS + anchoredDelayMs) / 1000;
-            this._capturedCancellations = cancels;
-            this._voice(kind, t, offsetsMs, cue, lane);
-            this._capturedCancellations = null;
+            const sink = this._openSink(kind, cue, t, cancels);
+            this._voice(kind, t, offsetsMs, cue, sink);
+            this._closeSink(sink);
+            this._duck(kind, lane, cue, t, offsetsMs, cancels);
             publishCueScore({
                 ...identity,
                 startMs: monotonicTimeForAudioTime(this.engine, t),
@@ -227,29 +281,18 @@ export class CueKit {
         intensity = 1,
         provider = null,
         screenX = 0.5,
-    } = {}, lane) {
-        const mix = computeCueMix(lane);
-        const cueGain = this.engine.cueBus?.gain;
-        if (cueGain) {
-            if (typeof cueGain.setTargetAtTime === 'function') {
-                cueGain.setTargetAtTime(mix.cueBusGain, this.engine.now(), 0.02);
-            } else {
-                cueGain.value = mix.cueBusGain;
-            }
-        }
+    } = {}, sink) {
         const notes = cueTones(phase);
         const at = index => t + (offsetsMs[Math.min(index, offsetsMs.length - 1)] || 0) / 1000;
         const agentBell = { pan: panForScreenX(screenX), provider };
         switch (kind) {
             case 'arrival':
-                this.engine.duck(mix.duckDepth, 0.5);
-                this._bell(at(0), notes.root, { gain: 0.035, decay: 1.6, ...agentBell });
-                this._bell(at(1), notes.fifth, { gain: 0.03, decay: 2, ...agentBell });
+                this._bell(sink, at(0), notes.root, { gain: 0.035, decay: 1.6, ...agentBell });
+                this._bell(sink, at(1), notes.fifth, { gain: 0.03, decay: 2, ...agentBell });
                 break;
             case 'departure':
-                this.engine.duck(mix.duckDepth, 0.5);
-                this._bell(at(0), notes.fifth, { gain: 0.03, decay: 1.6, ...agentBell });
-                this._bell(at(1), notes.root, { gain: 0.032, decay: 2.2, ...agentBell });
+                this._bell(sink, at(0), notes.fifth, { gain: 0.03, decay: 1.6, ...agentBell });
+                this._bell(sink, at(1), notes.root, { gain: 0.032, decay: 2.2, ...agentBell });
                 break;
             // The error toll sounds at one fixed register for every provider:
             // a provider register shift would move it into other cues' ranges
@@ -257,20 +300,17 @@ export class CueKit {
             // its own voice lands (plan 3.2).
             case 'distress':
             case 'limit':
-                this.engine.duck(mix.duckDepth, 0.8);
-                this._bell(at(0), notes.low, { gain: 0.05, decay: 3, cutoff: 900, pan: agentBell.pan });
+                this._bell(sink, at(0), notes.low, { gain: 0.05, decay: 3, cutoff: 900, pan: agentBell.pan });
                 break;
             case 'recovery':
-                this.engine.duck(mix.duckDepth, 0.5);
-                this._bell(at(0), notes.third, { gain: 0.028, decay: 1.4, ...agentBell });
-                this._bell(at(1), notes.octave, { gain: 0.026, decay: 2, ...agentBell });
+                this._bell(sink, at(0), notes.third, { gain: 0.028, decay: 1.4, ...agentBell });
+                this._bell(sink, at(1), notes.octave, { gain: 0.026, decay: 2, ...agentBell });
                 break;
             case 'council': {
-                this.engine.duck(mix.duckDepth, 1);
                 const pattern = [notes.root, notes.fifth, notes.octave, notes.third, notes.high];
                 const count = offsetsMs.length;
                 for (let i = 0; i < count; i++) {
-                    this._bell(at(i), pattern[i], {
+                    this._bell(sink, at(i), pattern[i], {
                         gain: Math.max(0.022, 0.03 - i * 0.002),
                         decay: i === count - 1 ? 2.4 : 1.8,
                         provider,
@@ -279,14 +319,12 @@ export class CueKit {
                 break;
             }
             case 'hourBell':
-                this.engine.duck(mix.duckDepth, 1.2);
-                this._bell(at(0), 220, { gain: 0.06, decay: 4, cutoff: 1600 });
+                this._bell(sink, at(0), 220, { gain: 0.06, decay: 4, cutoff: 1600 });
                 break;
             case 'aurora': {
                 const run = [notes.root, notes.fifth, notes.octave, notes.high];
-                this.engine.duck(mix.duckDepth, 1);
                 run.forEach((hz, i) => {
-                    this._bell(at(i), hz, { gain: 0.022, decay: 2.6, cutoff: 3200 });
+                    this._bell(sink, at(i), hz, { gain: 0.022, decay: 2.6, cutoff: 3200 });
                 });
                 break;
             }
@@ -294,14 +332,13 @@ export class CueKit {
             // brighter than distress and deliberately unlike any scenery cue,
             // so it reads as "you" rather than "weather".
             case 'summons':
-                this.engine.duck(mix.duckDepth, 0.7);
-                this._bell(at(0), notes.fifth, {
+                this._bell(sink, at(0), notes.fifth, {
                     gain: 0.038,
                     decay: 1.2,
                     cutoff: 3000,
                     ...agentBell,
                 });
-                this._bell(at(1), notes.octave, {
+                this._bell(sink, at(1), notes.octave, {
                     gain: 0.042,
                     decay: 2.4,
                     cutoff: 3400,
@@ -309,9 +346,62 @@ export class CueKit {
                 });
                 break;
             case 'thunder':
-                this._thunder(at(0), intensity, mix.duckDepth);
+                this._thunder(sink, at(0), intensity);
                 break;
         }
+    }
+
+    // One trim gain per cue into the cue bus, so overlapping cues each keep
+    // their own bed-aware level. The sink also collects the cue's cancels and
+    // the end of its longest tail.
+    _openSink(kind, cue, t, cancels) {
+        const trimDb = this._levelDb(kind, cue);
+        const out = this.engine.context.createGain();
+        out.gain.value = CUE_STAGE_GAIN * dbToGain(trimDb);
+        out.connect(this.engine.busInput('cue'));
+        this.lastLevel = { kind, trimDb, at: t };
+        return { out, cancels, endAt: t };
+    }
+
+    _closeSink(sink) {
+        const leadSec = Math.max(0, sink.endAt - this.engine.now());
+        setTimeout(() => {
+            try { sink.out.disconnect(); } catch { /* gone */ }
+        }, (leadSec + SINK_RELEASE_PAD_SEC) * 1000);
+    }
+
+    // One read of the pre-duck bed at schedule time (S3). Urgent trims taken
+    // over a known bed are remembered for a wake that has none to read.
+    _levelDb(kind, cue) {
+        const lane = LEVEL_LANE_BY_KIND[kind];
+        const nominalLufsM = VOICE_REGISTRY[`cue.${VOICE_BY_KIND[kind] ?? kind}`]?.nominalLufsM;
+        const bedLufs = this.engine.bedLoudness();
+        const urgent = isUrgentLevelLane(lane);
+        const now = monotonicNow();
+        if (urgent) this._urgentTrims = this._urgentTrims.filter(entry => now - entry.at < URGENT_TRIM_MEMORY_MS);
+        const trimDb = cueTrimDb({
+            lane,
+            nominalLufsM,
+            bedLufs,
+            recentUrgentTrims: this._urgentTrims.map(entry => entry.trimDb),
+            bed: bedContextFor(cue),
+        });
+        if (urgent && Number.isFinite(bedLufs)) this._urgentTrims.push({ at: now, trimDb });
+        return trimDb;
+    }
+
+    // The bed yields from the first note to the last note + 0.35 s. A cue
+    // withdrawn before its first note sounds withdraws its duck with it, so
+    // the bed never dips for a cue that did not play.
+    _duck(kind, lane, cue, t, offsetsMs, cancels) {
+        const depths = duckDepthsFor(kind, lane, cue.preset);
+        if (!ducksAnything(depths)) return;
+        const from = t + (offsetsMs[0] || 0) / 1000;
+        const until = t + (offsetsMs[offsetsMs.length - 1] || 0) / 1000 + DUCK_HOLD_AFTER_LAST_NOTE_SEC;
+        const token = this.engine.duck({ from, until, depths });
+        cancels.push(() => {
+            if (this.engine.now() < from) token?.cancel?.();
+        });
     }
 
     // A ceremony that absorbed an announced aggregate names it in `replaces`
@@ -332,7 +422,7 @@ export class CueKit {
 
     // A small bell: the fundamental stays in the shared pentatonic scale;
     // provider voicings add quiet harmonic partials and a register shift.
-    _bell(t, hz, {
+    _bell(sink, t, hz, {
         gain = 0.04,
         decay = 2,
         cutoff = 2400,
@@ -340,10 +430,7 @@ export class CueKit {
         provider = null,
     } = {}) {
         const ctx = this.engine.context;
-        const tone = ctx.createBiquadFilter();
-        tone.type = 'lowpass';
-        tone.frequency.value = cutoff;
-        tone.Q.value = 0.3;
+        const tone = makeFilter(ctx, 'lowpass', cutoff, { q: 'butterworth' });
         const panner = typeof ctx.createStereoPanner === 'function'
             ? ctx.createStereoPanner()
             : null;
@@ -351,9 +438,9 @@ export class CueKit {
         if (panner) {
             if (typeof panner.pan?.setValueAtTime === 'function') panner.pan.setValueAtTime(safePan, t);
             else if (panner.pan) panner.pan.value = safePan;
-            tone.connect(panner).connect(this.engine.cueBus);
+            tone.connect(panner).connect(sink.out);
         } else {
-            tone.connect(this.engine.cueBus);
+            tone.connect(sink.out);
         }
 
         const voicing = bellVoicingForProvider(provider);
@@ -365,6 +452,7 @@ export class CueKit {
         }));
         const nodes = panner ? [tone, panner] : [tone];
         const voices = [];
+        let endAt = t;
         for (const partial of partials) {
             const osc = ctx.createOscillator();
             const env = ctx.createGain();
@@ -378,7 +466,9 @@ export class CueKit {
             osc.stop(t + partial.decay + 0.1);
             nodes.push(osc, env);
             voices.push({ osc, env });
+            endAt = Math.max(endAt, t + partial.decay + 0.1);
         }
+        sink.endAt = Math.max(sink.endAt, endAt);
         const cleanup = () => {
             for (const node of nodes) {
                 try { node.disconnect(); } catch { /* gone */ }
@@ -400,26 +490,24 @@ export class CueKit {
                 this.engine.releaseVoice({ sources: [osc], env, at: now, sec: CANCEL_RELEASE_SEC });
             }
         };
-        if (this._capturedCancellations) this._capturedCancellations.push(cancel);
+        sink.cancels.push(cancel);
         return cancel;
     }
 
     // Thunder: a swept low-pass burst of brown noise with a secondary rumble
     // bump, so strikes roll instead of thump.
-    _thunder(t, intensity = 1, duckDepth = 0.45) {
+    _thunder(sink, t, intensity = 1) {
         const ctx = this.engine.context;
         const level = Math.max(0.2, Math.min(1, intensity));
-        this.engine.duck(duckDepth, 1.5);
 
         const src = ctx.createBufferSource();
         src.buffer = this.engine.noise('brown');
         src.playbackRate.value = rand(0.65, 0.95);
 
-        const lp = ctx.createBiquadFilter();
-        lp.type = 'lowpass';
-        lp.frequency.setValueAtTime(rand(260, 380), t);
+        const startHz = rand(260, 380);
+        const lp = makeFilter(ctx, 'lowpass', startHz, { q: 'butterworth' });
+        lp.frequency.setValueAtTime(startHz, t);
         lp.frequency.exponentialRampToValueAtTime(75, t + rand(2, 3));
-        lp.Q.value = 0.6;
 
         const env = ctx.createGain();
         const peak = 0.1 + level * 0.14;
@@ -430,9 +518,10 @@ export class CueKit {
         env.gain.exponentialRampToValueAtTime(peak * 0.5, t + 1.3); // secondary roll
         env.gain.exponentialRampToValueAtTime(MIN_GAIN, t + tail);
 
-        src.connect(lp).connect(env).connect(this.engine.cueBus);
+        src.connect(lp).connect(env).connect(sink.out);
         src.start(t);
         src.stop(t + tail + 0.2);
+        sink.endAt = Math.max(sink.endAt, t + tail + 0.2);
         src.onended = () => {
             try { src.disconnect(); lp.disconnect(); env.disconnect(); } catch { /* gone */ }
         };
@@ -441,7 +530,7 @@ export class CueKit {
             if (t <= now) return;
             this.engine.releaseVoice({ sources: [src], env, at: now, sec: CANCEL_RELEASE_SEC });
         };
-        if (this._capturedCancellations) this._capturedCancellations.push(cancel);
+        sink.cancels.push(cancel);
         return cancel;
     }
 }
