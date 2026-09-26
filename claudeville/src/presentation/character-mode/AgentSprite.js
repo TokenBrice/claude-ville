@@ -2,18 +2,37 @@ import { resolveObservation } from './ObservationCertainty.js';
 import { drawEventShape, clearEventShapeCache } from '../shared/EventShapes.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { modelBehaviorProfile, moodBehaviorMultiplier } from '../../domain/value-objects/AgentMood.js';
-import { bucketForStatus } from '../../domain/services/SignalLedger.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
-import { THEME, STATUS_VISUALS, MOOD_ACCENTS, MODEL_TIER_COLORS, PROVIDER_HUES, WORLD_BODY_FONT } from '../../config/theme.js';
+import { THEME, STATUS_VISUALS, PROVIDER_HUES, WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { agentSignature, drawAgentSignature, clearAgentSignatureCache, getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
-import { repoProfile } from '../shared/RepoColor.js';
 import { getTeamColor } from '../shared/TeamColor.js';
 import { SpriteSheet, dirFromVelocity, resolveActionFrame, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS, DEFAULT_CELL } from './SpriteSheet.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { RITUAL_GESTURE_PERIOD_MS, SCENIC_POINT_POSTURE } from './RitualConductor.js';
-import { pulseAlpha } from './PulsePolicy.js';
+import { drawWorkDownbeat } from './WorkDownbeats.js';
+import { pulseAlpha, pulseBand01Frame } from './PulsePolicy.js';
 import { drawToolGlyphBadge, toolGlyphKey } from './ToolGlyphBadge.js';
-import { Compositor } from './Compositor.js';
+import { isAttentionStatus } from './AttentionPlates.js';
+import {
+    IDENTITY_LABEL,
+    LABEL_INK,
+    WALNUT,
+    drawOutlinedMotif,
+    fitLabelText,
+    identityLabelTop,
+    measureLabelText,
+    paintOutlinedText,
+    snapScreenOrigin,
+} from './WorldLabelKit.js';
+import { Compositor, bakeSpriteOutline } from './Compositor.js';
+import { fillPixelEllipse } from './PixelShapes.js';
+import {
+    drawGroundMarks,
+    drawSelectionChevron,
+    groundMarkDepth,
+    resolveGroundMarks,
+    selectionChevronClearance,
+} from './AgentGroundMarks.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
 import { classifyTool } from '../../domain/services/ToolIdentity.js';
 import { dialogueSourceLabel } from '../../config/dialogue.js';
@@ -32,14 +51,27 @@ import { AgentGpuOverlayRenderer, departedTableau } from './AgentGpuOverlayRende
 import { codexWeaponPose, drawCodexGauntlet } from './CodexWeaponPose.js';
 import { clearDetachedCodexWrench } from './CodexEngineerGrips.js';
 import { clampDt, inDutyPause, IDLE_STRIDE_PERIOD_MS, IDLE_STRIDE_PAUSE_FRACTION } from './MotionClock.js';
+import { gradeTone } from './EffectStamps.js';
 
-// Keep villagers visually authoritative beside the newer hero-scale buildings.
-// This multiplier applies to every authored body through _spriteDrawScale and
-// to the matching interaction bounds below.
-const AGENT_WORLD_SCALE = 1.32;
-const SPRITE_HIT_HALF_WIDTH = 24 * AGENT_WORLD_SCALE;
-const SPRITE_HIT_TOP = -72 * AGENT_WORLD_SCALE;
-const SPRITE_HIT_BOTTOM = 24;
+// Plan 2.1 (C3): villagers draw at exactly one world texel per authored pixel,
+// the same density as buildings, trees and tiles. Hit bounds come from the
+// body actually drawn (`_bodyBox`); these are only the pre-first-draw default,
+// sized to a median 1:1 body (~56 px tall, ~34 px wide).
+const DEFAULT_BODY_BOX = Object.freeze({ left: -17, right: 17, top: -58, bottom: 3 });
+const HIT_PAD = 3;
+// S12 — the model signature clasp is a detail mark (z >= 3 or selected).
+const SIGNATURE_MIN_ZOOM = 3;
+// Plan 2.7 — crowd-pressure bodies use the baked 0.5x LOD sheet at world scale 1.
+const CROWD_LOD_SCALE = 0.5;
+// Impostor token (plan 2.1/2.7 retune): a whole-pixel provider diamond sized
+// against the 1:1 body (48–75 world px) — about a third of its height, as the
+// old kite was of the 82–120 px bodies. Half-widths per row from the apex
+// (y = -16) to the toe (y = 2); the feet anchor is y = 0.
+const IMPOSTOR_TOP = -16;
+const IMPOSTOR_HALF_WIDTHS = Object.freeze([1, 2, 3, 3, 4, 5, 5, 6, 6, 7, 7, 6, 6, 5, 4, 3, 3, 2, 1]);
+const IMPOSTOR_OUTLINE = '#070a0c';
+// Stamp box (feet-relative) covering shadow, outline and the apex status cell.
+const IMPOSTOR_BOX = Object.freeze({ left: -9, top: -22, width: 18, height: 28 });
 const WALK_PIXELS_PER_FRAME = 4.5;
 const DIRECTION_HOLD_MS = 70;
 const IDLE_FRAME_TICK_MS = 500;
@@ -50,11 +82,6 @@ const THINK_DOT_PHASE_FRAMES = 60;
 const FOOTFALL_FRAMES = new Set([0, Math.floor(WALK_FRAMES / 2)]);
 // Status visuals, mood tones, and model-tier crests now live in theme.js (#1
 // House Palette) so World and Dashboard share one color authority.
-// #32 — arrival ceremony: a ~300ms scale-up "pop" with a portal-rune ring +
-// dust-puff the instant a villager lands (the ArrivalDeparture approach
-// finishes and setArrivalState flips pending → visible). Reduced motion skips
-// the ceremony entirely (instant appear).
-const ARRIVAL_CEREMONY_MS = 300;
 // 2.5 — how long the parent holds its static receive mark after a child's
 // return lands. Bounded to the lifecycle cue window; no pulse is allocated, so
 // reduced motion shows the identical held mark.
@@ -99,21 +126,7 @@ function easeOutCubic(t) {
     const c = Math.max(0, Math.min(1, t));
     return 1 - Math.pow(1 - c, 3);
 }
-// #15 — one-shot particle fired on each building work-gesture downbeat. Offsets
-// are relative to the agent anchor (feet at 0,0; the gesture prop sits near
-// y -18). Presets are the shared ParticleSystem palette so each gesture lands a
-// theme-matched mark (forge spark, archive mote, mine dust, …).
-const RITUAL_GESTURE_PARTICLE = Object.freeze({
-    hammer: { preset: 'forgeSpark', dx: 0, dy: -18, count: 3 },
-    page: { preset: 'archiveMote', dx: 0, dy: -16, count: 2 },
-    pick: { preset: 'mineDust', dx: 0, dy: -14, count: 3 },
-    scroll: { preset: 'questPing', dx: 0, dy: -18, count: 2 },
-    gaze: { preset: 'archiveMote', dx: 0, dy: -22, count: 1 },
-    conjure: { preset: 'portalRune', dx: 0, dy: -20, count: 2 },
-    signal: { preset: 'beaconMote', dx: 0, dy: -24, count: 1 },
-    haul: { preset: 'questPing', dx: 0, dy: -14, count: 1 },
-    scan: { preset: 'beaconMote', dx: 0, dy: -24, count: 1 },
-});
+
 // 3.13 — congestion treatment: gait slowdown when the destination/current
 // building is over visit capacity.
 const CONGESTION_GAIT_SCALE = 0.6;
@@ -151,37 +164,9 @@ const PROVIDER_HOME_BUILDINGS = {
     deepseek: 'observatory',
     zai: 'archive',
 };
-const TARGET_AGENT_CONTENT_HEIGHT = 92 * AGENT_WORLD_SCALE;
-const MIN_AGENT_DRAW_SCALE = AGENT_WORLD_SCALE;
-const MAX_AGENT_DRAW_SCALE = 1.25 * AGENT_WORLD_SCALE;
 const ACTION_TRAIL_LIMIT = 2;
 const ACTIVITY_BUBBLE_TTL_MS = 12000;
 const ACTION_TRAIL_TTL_MS = ACTIVITY_BUBBLE_TTL_MS;
-// World body face: the shared WORLD_BODY_FONT token imported from theme.js
-// (plan 1.6) — one stack for every canvas label, so it can never fork.
-const NAME_TAG_FONT_PX = 11;
-const NAME_TAG_MAX_TEXT_WIDTH = 134;
-const NAME_TAG_MAX_WIDTH = 152;
-const NAME_TAG_PADDING_X = 20;
-const NAME_TAG_SINGLE_HEIGHT = 16;
-const NAME_TAG_DOUBLE_HEIGHT = 23;
-const NAME_TAG_GLYPH_SIZE = 6;
-// 3.4 — name pills use a near-opaque dark panel with parchment text (repo
-// accent survives on glyph/border only) so names read on any ground.
-const NAME_TAG_PANEL = 'rgba(24, 18, 14, 0.95)';
-const NAME_TAG_TEXT = '#f3e2bd';
-const COMPACT_NAME_FONT_PX = 11;
-const COMPACT_NAME_MAX_TEXT_WIDTH = 135;
-const COMPACT_NAME_MAX_WIDTH = 180;
-const COMPACT_NAME_MIN_WIDTH = 54;
-const COMPACT_NAME_EXTRA_WIDTH = 38;
-const COMPACT_NAME_HEIGHT = 17;
-const COMPACT_NAME_GLYPH_SIZE = 6;
-const COMPACT_NAME_SLOT_BASE_Y = 22;
-const COMPACT_NAME_SLOT_STEP_Y = 12;
-// #9 — compact activity glyph badge emblem size (the ~9x9 illuminated icon
-// that replaces the dark name pill when not selected and zoomed out).
-const TOOL_GLYPH_BADGE_SIZE = 9;
 const STATUS_BUBBLE_MAIN_MAX_WIDTH = Object.freeze({
     anchored: 232,
     floating: 360,
@@ -285,9 +270,6 @@ function sharedResourceEstimateLeaves() {
 }
 
 registerRendererResourceEstimateProvider(sharedResourceEstimateLeaves);
-// Selection-ring asset recolored per provider accent; keyed by accent color.
-const TINTED_SELECTION_RING_CACHE = new Map();
-const TINTED_SELECTION_RING_CACHE_LIMIT = 24;
 // Vertical step per stacked bubble slot, in screen pixels. Must match
 // IsometricRenderer AGENT_BUBBLE_STACK_STEP so the crowd de-collision slot the
 // renderer assigns lines up with the offset drawn here.
@@ -383,30 +365,6 @@ export const CODEX_WEAPON_ASSETS = Object.freeze({
         hands: 'single',
     },
 });
-const EFFORT_FLOOR_RING_VISUALS = Object.freeze({
-    low: { stroke: '#d7a456', highlight: '#ffe0a0', glow: 'rgba(215, 164, 86, 0.18)', bands: 1, rx: 17, ry: 5 },
-    medium: { stroke: '#b8c4cc', highlight: '#eef7ff', glow: 'rgba(184, 196, 204, 0.18)', bands: 2, rx: 19, ry: 6 },
-    high: { stroke: '#f2d36b', highlight: '#fff1b8', glow: 'rgba(242, 211, 107, 0.22)', bands: 3, rx: 21, ry: 7 },
-});
-// 4.6 — effort-tier aura around the sprite body. Tier resolves from the
-// model's reasoning effort (mythic-tier models always shimmer; max folds into
-// xhigh). Colors echo the floor-ring metals so both effort cues read as one
-// family. Drawn before the grounding pass so the aura sits behind the sprite
-// while the floor/status rings stay in front. Pulse bands per
-// docs/motion-budget.md: glow breathing claims `slow`, mote orbit claims
-// `medium` (permitted claimant).
-const EFFORT_AURA_VISUALS = Object.freeze({
-    low: { kind: 'motes', color: '#d7a456', motes: 3 },
-    medium: { kind: 'glow', color: '#cfd9e4' },
-    high: { kind: 'corona', color: '#f2d36b' },
-    xhigh: { kind: 'field', color: '#ffe9a8' },
-    ultra: { kind: 'field', color: '#fff6d8' },
-    mythic: { kind: 'shimmer', colors: [MODEL_TIER_COLORS.mythic, '#ffe7a8', '#c8a3ff'], motes: 4 },
-});
-const EFFORT_AURA_MAX_MOTES = 6;
-// Idle/waiting agents keep a dimmed (~35%) aura; full intensity while working.
-const EFFORT_AURA_IDLE_INTENSITY = 0.35;
-const EFFORT_AURA_CENTER_Y = -26; // body-center offset above the feet anchor
 const INTENT_SOURCE_MOTION = Object.freeze({
     chat: { dwell: 1.0, speed: 1.2, stableMs: 3000 },
     alert: { dwell: 1.15, speed: 1.18, stableMs: 9000 },
@@ -461,130 +419,15 @@ function memoizedToolClassification(tool, input) {
     return classified;
 }
 
-// Compact incident marks at overview zoom. Frozen descriptors so the common
-// (non-actionable) case allocates nothing, and an actionable sprite never
-// builds a per-frame object. Shape is the primary encoding; colour is secondary.
-const COMPACT_INCIDENT_SLOT = 'incident';
-const COMPACT_INCIDENT_SLOT_Y = -26;
-const COMPACT_INCIDENT_BOX = 12;
-const COMPACT_INCIDENT_MARKS = Object.freeze({
-    errors: Object.freeze({
-        shapeId: 'alert',
-        slot: COMPACT_INCIDENT_SLOT,
-        primary: true,
-        bucket: 'errors',
-        color: '#ff5a5a',
-        static: true,
-    }),
-    quota: Object.freeze({
-        shapeId: 'hourglass',
-        slot: COMPACT_INCIDENT_SLOT,
-        primary: true,
-        bucket: 'quota',
-        color: '#ffa64d',
-        static: true,
-    }),
-    needsYou: Object.freeze({
-        shapeId: 'beacon',
-        slot: COMPACT_INCIDENT_SLOT,
-        primary: true,
-        bucket: 'needsYou',
-        color: THEME.waitingOnUser || '#facc15',
-        static: true,
-    }),
-});
-
-/**
- * Status -> compact incident-mark descriptor.
- * `needsYou` keeps the existing waiting beacon (drawn separately); errors
- * get a fixed alert; quota gets an hourglass. Working/idle/completed/waiting
- * return null so overview costs nothing for the quiet majority.
- *
- * @param {string} status
- * @param {{ motionScale?: number }} [options]
- * @returns {{ shapeId: string, slot: string, primary: boolean, bucket: string, color: string, static: boolean } | null}
- */
-export function compactIncidentMark(status, options = {}) {
-    const mark = COMPACT_INCIDENT_MARKS[bucketForStatus(status)] || null;
-    if (!mark) return null;
-    // Compact marks are static primitives. Callers pass motionScale so reduced
-    // motion is explicit at the call site; it never adds an animation phase.
-    void options.motionScale;
-    return mark;
-}
-
-function drawHourglassGlyph(ctx, box, color) {
-    const half = box / 2;
-    ctx.fillStyle = color;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(-half, -half);
-    ctx.lineTo(half, -half);
-    ctx.lineTo(0, 0);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(-half, half);
-    ctx.lineTo(half, half);
-    ctx.lineTo(0, 0);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(8, 5, 4, 0.8)';
-    ctx.beginPath();
-    ctx.moveTo(-half, -half);
-    ctx.lineTo(half, -half);
-    ctx.moveTo(-half, half);
-    ctx.lineTo(half, half);
-    ctx.stroke();
-}
-
-function drawAlertCircleGlyph(ctx, box, color, mark) {
-    const r = box / 2;
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#1a1208';
-    ctx.font = `bold ${Math.round(box - 2)}px "Press Start 2P", monospace`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(mark, 0, 1);
-}
-
-/**
- * Draw one compact incident mark in the fixed slot above the impostor.
- * `beacon` is a no-op: the waiting-on-user pillar already occupies this
- * grammar at overview and must not be double-drawn.
- */
-export function drawCompactIncidentMark(ctx, mark, { x = 0, y = 0, zoom = 1 } = {}) {
-    if (!ctx || !mark || mark.shapeId === 'beacon') return;
-    const s = 1 / (zoom || 1);
-    ctx.save();
-    ctx.translate(Math.round(x), Math.round(y));
-    ctx.scale(s, s);
-    ctx.translate(0, COMPACT_INCIDENT_SLOT_Y);
-    if (mark.shapeId === 'hourglass') {
-        drawHourglassGlyph(ctx, COMPACT_INCIDENT_BOX, mark.color);
-    } else if (mark.shapeId === 'alert') {
-        drawAlertCircleGlyph(ctx, COMPACT_INCIDENT_BOX, mark.color, '!');
-    }
-    ctx.restore();
-}
-
 export class AgentSprite {
     static sharedCacheStats() {
         // Canvas implementations do not expose allocation sizes. All byte
         // values below estimate RGBA backing from dimensions; cache entries
         // are counted once here regardless of how many sprites reference them.
-        let tintedSelectionRingPixels = 0;
         let gpuEquippedAlbedoPixels = 0;
         let gpuEquippedMaterialPixels = 0;
         let gpuEquippedEmissivePixels = 0;
         let gpuEquippedOccluderPixels = 0;
-        for (const canvas of TINTED_SELECTION_RING_CACHE.values()) {
-            tintedSelectionRingPixels += (canvas?.width || 0) * (canvas?.height || 0);
-        }
         for (const entry of GPU_EQUIPPED_SHEET_CACHE.values()) {
             gpuEquippedAlbedoPixels += (entry.albedo?.width || 0) * (entry.albedo?.height || 0);
             gpuEquippedMaterialPixels += (entry.material?.width || 0) * (entry.material?.height || 0);
@@ -632,12 +475,10 @@ export class AgentSprite {
         // Despite the cache name, these are Canvas source backings. Their GL
         // uploads remain separate GPU-owned leaves in the renderer ledger.
         const gpuEquippedSheetEstimateBytes = gpuEquippedSheetCachePixels * 4;
-        const tintedSelectionRingEstimateBytes = tintedSelectionRingPixels * 4;
         const cpuDerivedEstimateBytes = compositorEstimateBytes
             + processedSpriteEstimateBytes
             + codexEquipmentEstimateBytes
             + gpuEquippedSheetEstimateBytes
-            + tintedSelectionRingEstimateBytes
             + privateDerivedEstimateBytes
             + gpuAgentMaterialAtlasEstimateBytes
             + gpuAgentEmissiveAtlasEstimateBytes
@@ -658,9 +499,6 @@ export class AgentSprite {
             gpuEquippedEmissiveEstimateBytes: gpuEquippedEmissivePixels * 4,
             gpuEquippedOccluderEstimateBytes: gpuEquippedOccluderPixels * 4,
             gpuEquippedSheetPixelLimit: GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT,
-            tintedSelectionRings: TINTED_SELECTION_RING_CACHE.size,
-            tintedSelectionRingPixels,
-            tintedSelectionRingEstimateBytes,
             processedSpriteEstimateBytes,
             compositorEstimateBytes,
             privateDerivedEstimateBytes,
@@ -696,10 +534,6 @@ export class AgentSprite {
                 gpuEquippedEmissiveSheets: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
                     estimateBytes: gpuEquippedEmissivePixels * 4,
-                },
-                tintedSelectionRings: {
-                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
-                    estimateBytes: tintedSelectionRingEstimateBytes,
                 },
                 perSpriteEffectCells: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
@@ -749,9 +583,6 @@ export class AgentSprite {
         for (const [key, entry] of GPU_EQUIPPED_SHEET_CACHE) {
             candidates.push({ key: `gpu-equipped:${key}`, cacheKey: key, cache: GPU_EQUIPPED_SHEET_CACHE, entry, estimateBytes: gpuEquippedSheetEntryPixels(entry) * 4 });
         }
-        for (const [key, canvas] of TINTED_SELECTION_RING_CACHE) {
-            candidates.push({ key: `selection-ring:${key}`, cacheKey: key, cache: TINTED_SELECTION_RING_CACHE, entry: canvas, estimateBytes: canvasEstimateBytes(canvas) });
-        }
         let residentEstimateBytes = candidates.reduce((sum, entry) => sum + entry.estimateBytes, 0);
         if (!shouldEvictAtHighWater(residentEstimateBytes, highWaterEstimateBytes)) {
             return { evicted: [], residentEstimateBytes };
@@ -794,7 +625,6 @@ export class AgentSprite {
         PROCESSED_SPRITE_CACHE.clear();
         CODEX_EQUIPMENT_CACHE.clear();
         GPU_EQUIPPED_SHEET_CACHE.clear();
-        TINTED_SELECTION_RING_CACHE.clear();
         TOOL_CLASSIFICATION_CACHE.clear();
         AgentSprite.clearOverlayStampCache();
         clearAgentSignatureCache();
@@ -906,6 +736,7 @@ export class AgentSprite {
         // renderer from AgentBiographyService; rendered as a name-tag suffix.
         this.nickname = null;
         this.labelAlpha = 1;
+        this.plateOffFrame = false;
         this.gpuActionOverlay = false;
         this.bumpFlash = 0;
         // #28 — handoff acknowledgement bob. A child agent gives a short upward
@@ -914,13 +745,6 @@ export class AgentSprite {
         this._handoffAckStart = 0;
         this.teamPlazaPreference = false;
         this._arrivalState = 'visible';
-        // #32 — arrival ceremony. `_arrivalCeremonyAt` timestamps the landing
-        // (pending → visible) so draw() can play the scale-up pop + rune ring;
-        // `_arrivalBurstPending` defers the one-shot dust/rune particle burst to
-        // update() where the shared ParticleSystem pool is available. Both stay
-        // inert under reduced motion (the transition never arms them).
-        this._arrivalCeremonyAt = 0;
-        this._arrivalBurstPending = false;
 
         // Chat system
         this.chatPartner = null;     // Chat partner AgentSprite
@@ -930,10 +754,9 @@ export class AgentSprite {
 
         // Active pose-bearing tool ritual record from RitualConductor (per
         // building work gesture: hammer / page / pick / scroll / …), synced by
-        // the renderer per frame. `_ritualDownbeat` is the last gesture-cycle
-        // index a one-shot particle was fired on, so each downbeat fires once.
+        // the renderer per frame. Its 6.6 work beat is a pure function of the
+        // ritual and the clock (WorkDownbeats), so no per-sprite beat state.
         this._toolRitual = null;
-        this._ritualDownbeat = -1;
         // #13 — last mood-mote cadence cycle a fret/sparkle was emitted on, so
         // each distressed/proud beat fires a single mote (never under reduced
         // motion, never while moving — the static posture carries the cue then).
@@ -1002,7 +825,11 @@ export class AgentSprite {
         this.spriteCanvas = null;
         this.spriteSheet = null;     // cached SpriteSheet wrapper, set on first draw
         this._spriteProfileKey = '';
-        this._silhouetteCellCache = new Map();
+        // Plan 2.1 — the body actually laid out this frame, relative to the
+        // feet anchor, in world texels. Drives hit-testing, head-anchored
+        // particles and the resident overlay's label clearance.
+        this._bodyBox = null;
+        this._groundMarks = null;
         this._frozenTintCellCache = new Map();
         this._cellBoundsCache = new Map();
         // Accessory hysteresis state (D2). `undefined` means no accessory has
@@ -1010,17 +837,10 @@ export class AgentSprite {
         this._committedAccessory = undefined;
         this._accessoryCandidate = null;
         this._accessoryCandidateSince = 0;
-        this._nameTagLayoutCacheKey = '';
-        this._nameTagLayoutCache = null;
         this._bubbleLayoutCacheKey = '';
         this._bubbleLayoutCache = null;
-        this._compactNameStatusCacheKey = '';
-        this._compactNameStatusCache = null;
         this._activityTrail = [];
         this._activitySnapshot = this._captureActivitySnapshot(agent);
-        // 4.6 — pre-allocated effort-aura mote state, built lazily on the
-        // first animated aura draw (never under reduced motion).
-        this._auraMotes = null;
 
         this._pickTarget();
     }
@@ -1029,7 +849,6 @@ export class AgentSprite {
         // Sprite sheets are shared with the compositor and Dashboard avatars, so
         // drop our references without zeroing their backing stores. Cell effects
         // are private to this AgentSprite and can be released immediately.
-        releaseCanvasMap(this._silhouetteCellCache);
         releaseCanvasMap(this._frozenTintCellCache);
         this._cellBoundsCache.clear();
         this.spriteCanvas = null;
@@ -1042,12 +861,8 @@ export class AgentSprite {
         this._gpuEquippedMaterialSheet = null;
         this._gpuEquippedEmissiveSheet = null;
         this._gpuEquippedOccluderSheet = null;
-        this._nameTagLayoutCacheKey = '';
-        this._nameTagLayoutCache = null;
         this._bubbleLayoutCacheKey = '';
         this._bubbleLayoutCache = null;
-        this._compactNameStatusCacheKey = '';
-        this._compactNameStatusCache = null;
         this._releaseProfileOwnership();
         PRIVATE_DERIVED_CACHE_ESTIMATES.delete(this._resourceOwnerKey);
         GPU_AGENT_CHANNEL_ATLAS_RECORDS.delete(this._resourceOwnerKey);
@@ -1110,9 +925,6 @@ export class AgentSprite {
 
     _updatePrivateDerivedEstimate() {
         let pixels = 0;
-        for (const canvas of this._silhouetteCellCache.values()) {
-            pixels += (canvas?.width || 0) * (canvas?.height || 0);
-        }
         for (const canvas of this._frozenTintCellCache.values()) {
             pixels += (canvas?.width || 0) * (canvas?.height || 0);
         }
@@ -1975,15 +1787,6 @@ export class AgentSprite {
         return this.agent?.status === AgentStatus.ERRORED ? 3 : 2;
     }
 
-    _moodShadowTint() {
-        if (this.motionScale <= 0 || this.agent?.status === AgentStatus.ERRORED) return null;
-        const mood = this.agent?.mood;
-        const intensity = this._clamp(Number(mood?.intensity) || 0, 0, 1);
-        const color = MOOD_ACCENTS[mood?.type];
-        if (!color || intensity <= 0) return null;
-        return this._rgba(color, 0.06 * intensity);
-    }
-
     /** 3.13 — slower gait while heading to/standing in a congested building. */
     _congestionGaitMultiplier() {
         return this._congestedBuilding() ? CONGESTION_GAIT_SCALE : 1;
@@ -2032,15 +1835,11 @@ export class AgentSprite {
 
     setMotionScale(scale) {
         this.motionScale = scale;
-        // Arming guards (setHandoffAck, setArrivalState) reject reduced motion, but
-        // they only run once. An effect already in flight kept reading wall-clock
-        // time, so switching reduced motion ON mid-animation did not stop it.
-        // Cancel in-flight one-shots here so the gate holds in both directions.
-        if (!(scale > 0)) {
-            this._handoffAckStart = 0;
-            this._arrivalCeremonyAt = 0;
-            this._arrivalBurstPending = false;
-        }
+        // Arming guards (setHandoffAck) reject reduced motion, but they only run
+        // once. An effect already in flight kept reading wall-clock time, so
+        // switching reduced motion ON mid-animation did not stop it. Cancel
+        // in-flight one-shots here so the gate holds in both directions.
+        if (!(scale > 0)) this._handoffAckStart = 0;
     }
 
     // 3.7 — hover affordance. Driven by the renderer's mousemove hit-test
@@ -2068,7 +1867,6 @@ export class AgentSprite {
     }
 
     setArrivalState(state) {
-        const wasPending = this._arrivalState === 'pending';
         this._arrivalState = state === 'pending' ? 'pending' : 'visible';
         if (this._arrivalState === 'pending') {
             this._releaseVisitReservation();
@@ -2077,12 +1875,6 @@ export class AgentSprite {
             this.waitTimer = 0;
             this.waypoints = [];
             this._lastPathTileKey = null;
-        } else if (wasPending && this.motionScale > 0) {
-            // #32 — the approach just finished and the villager is materializing
-            // at its landing tile: arm the arrival ceremony (scale-up pop + rune
-            // ring in draw(), one-shot dust/rune burst on the next update()).
-            this._arrivalCeremonyAt = Date.now();
-            this._arrivalBurstPending = true;
         }
     }
 
@@ -2215,11 +2007,9 @@ export class AgentSprite {
         const frameScale = Math.max(0, Math.min(3, dt / 16));
         this.statusAnim += 0.05 * this.motionScale * frameScale;
         this.bumpFlash = Math.max(0, this.bumpFlash - 0.08 * frameScale);
-        this._advanceToolRitualGesture(particleSystem);
         this._advanceMoodPostureMotes(particleSystem);
         this._advanceContextStrainSweat(particleSystem);
         this._advanceDistressRecovery(particleSystem);
-        this._advanceArrivalCeremony(particleSystem);
         this._advanceTokenFlowMotes(particleSystem, frameScale);
 
         // Handle chatting state
@@ -2413,8 +2203,8 @@ export class AgentSprite {
             previousFrame !== this.frame &&
             FOOTFALL_FRAMES.has(this.frame)
         ) {
-            const footSide = this.frame === 0 ? -5 : 5;
-            particleSystem.spawn(this._footfallPresetForSurface(), this.x + footSide, this._visualAnchorY() + 7, 1);
+            const footSide = this.frame === 0 ? -3 : 3;
+            particleSystem.spawn(this._footfallPresetForSurface(), this.x + footSide, this._visualAnchorY() + 3, 1);
         }
     }
 
@@ -2624,7 +2414,6 @@ export class AgentSprite {
     // Renderer-synced tool ritual pose (see RitualConductor.getAgentPoses).
     setToolRitualPose(ritual) {
         const next = ritual && ritual.pose ? ritual : null;
-        if ((next?.id || null) !== (this._toolRitual?.id || null)) this._ritualDownbeat = -1;
         this._toolRitual = next;
     }
 
@@ -2748,9 +2537,7 @@ export class AgentSprite {
         if (budgetMode && !this.gpuWorldEnabled) {
             this._drawBudgetImpostor(ctx);
             if (departedTableau(this)) this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
-            if (this.overlaySlot != null) {
-                this._drawCompactNameStatus(ctx);
-            }
+            this._drawNameTag(ctx);
             if (archivePushed) ctx.restore();
             return;
         }
@@ -2786,8 +2573,14 @@ export class AgentSprite {
 
         if (!this.spriteCanvas || this._spriteProfileKey !== profileKey) {
             const profileRefs = ACTIVE_PROFILE_REFS.get(profileKey);
+            // Plan 2.4 — the shared rim is baked into the sheet both backends
+            // sample. Sheets that get their baked weapon scrubbed take the rim
+            // after the scrub (_prepareSpriteCanvas), so no ghost outline is
+            // left where the weapon was.
             const baseCanvas = profileRefs?.baseCanvas
-                || this.compositor.spriteFor(spriteId, paletteKey, variant, accessory, teamTrim);
+                || this.compositor.spriteFor(spriteId, paletteKey, variant, accessory, teamTrim, {
+                    outline: !this._shouldScrubBakedCodexWeapon(identity),
+                });
             if (baseCanvas) {
                 baseCanvas.__cvProfileKeys ||= new Set();
                 baseCanvas.__cvProfileKeys.add(profileKey);
@@ -2803,7 +2596,6 @@ export class AgentSprite {
             if (this.spriteCanvas) {
                 this.spriteSheet = new SpriteSheet(this.spriteCanvas);
                 this._spriteProfileKey = profileKey;
-                releaseCanvasMap(this._silhouetteCellCache);
                 releaseCanvasMap(this._frozenTintCellCache);
                 this._updatePrivateDerivedEstimate();
                 this._cellBoundsCache.clear();
@@ -2824,72 +2616,67 @@ export class AgentSprite {
             ? 'idle'
             : this.moving && this.motionScale > 0 ? 'walk' : 'idle';
 
-        // Compact GPU bodies retain provider silhouettes at a bounded 28 world
-        // pixels. Selected, hovered, and action-needed agents remain full size.
+        // Plan 2.7 — crowd-pressure GPU bodies sample the baked 0.5x LOD sheet
+        // at world scale 1, so they stay on the world's texel grid instead of
+        // a fractional nearest minification. Selected, hovered and
+        // action-needed agents never take this branch and stay 1:1.
         if (budgetMode) {
             const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
             const bounds = this._getCellContentBounds(cell);
-            const drawScale = Math.min(this._spriteDrawScale(this._scaleBounds(cell, bounds)),
-                28 / Math.max(1, bounds.maxY - bounds.minY));
-            const drawX = this._snapWorldToScreenPixel(this.x);
-            const drawY = this._snapWorldToScreenPixel(this.y);
-            const contentCenterX = (bounds.minX + bounds.maxX) / 2;
-            const dx = drawX - contentCenterX * drawScale;
-            const dy = drawY - bounds.maxY * drawScale + 2;
+            const drawX = Math.round(this.x);
+            const drawY = Math.round(this.y);
+            const dx = drawX - Math.round((bounds.minX + bounds.maxX) * CROWD_LOD_SCALE / 2);
+            const dy = drawY + 2 - Math.floor(bounds.maxY * CROWD_LOD_SCALE);
+            const contentTopY = dy + Math.floor(bounds.minY * CROWD_LOD_SCALE);
+            this._setBodyBox(
+                drawX,
+                drawY,
+                dx + Math.floor(bounds.minX * CROWD_LOD_SCALE),
+                contentTopY,
+                dx + Math.ceil((bounds.maxX + 1) * CROWD_LOD_SCALE),
+                drawY + 3,
+            );
+            this._layoutGroundMarks(this._stableContentWidth() * CROWD_LOD_SCALE);
             const frameGeometry = {
                 cell,
                 dx,
                 dy,
                 bounds,
-                drawScale,
+                drawScale: CROWD_LOD_SCALE,
                 cacheEquipment: true,
+                lod: true,
             };
             this._setGpuFrameRecord({
                 cell,
                 dx,
                 dy,
-                drawScale,
+                drawScale: CROWD_LOD_SCALE,
                 profileKey,
                 spriteId,
                 alpha: 1,
-                contentTopY: dy + bounds.minY * drawScale,
+                contentTopY,
                 identity,
                 frameGeometry,
+                lod: true,
             });
             this._drawBudgetImpostor(ctx);
-            if (this.overlaySlot != null) {
-                this._drawCompactAgentBadge(ctx);
-            }
+            this._drawNameTag(ctx);
             if (archivePushed) ctx.restore();
             return;
         }
 
-        // Strong ground language keeps agents readable against dense pixel-art terrain.
-        // 4.6 — effort aura first so it stays behind the sprite and rings.
-        if (!departedTableau(this)) this._drawEffortAura(ctx, identity);
-        this._drawGrounding(ctx);
-        if (!departedTableau(this)) {
-            this._drawEffortFloorRing(ctx, identity);
-            this._drawContextPressureRing(ctx);
-        }
-
         if (!this.selected && zoom < 1) {
-            this._drawLowZoomImpostor(ctx);
+            // Plan 2.3 — the overview keeps the same single contact shadow.
+            this._layoutGroundMarks(this._stableContentWidth());
+            if (!this.gpuWorldEnabled) drawGroundMarks(ctx, this._groundMarks);
+
+            this._drawLowZoomImpostor(ctx, zoom);
             if (departedTableau(this) && !this.gpuWorldEnabled) {
                 this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
             }
-            // #4 — the beacon must survive the low-zoom busy overview, the exact
-            // scene where a waiting agent is otherwise lost in the cluster.
-            if (this.agent?.status === AgentStatus.WAITING_ON_USER) {
-                this._drawWaitingOnUserBeacon(ctx, null);
-            }
-            // Overview incident marks: errors (alert) and quota (hourglass).
-            // needsYou is the beacon above — the helper no-ops that shape.
-            // PRIMARY: never governor-gated. Common case is a null descriptor.
-            const incidentMark = compactIncidentMark(this.agent?.status, { motionScale: this.motionScale });
-            if (incidentMark) {
-                drawCompactIncidentMark(ctx, incidentMark, { x: this.x, y: this.y, zoom });
-            }
+            // T1 — waiting, errored and rate-limited agents are marked by the
+            // overlay's attention beacon and plate (AttentionPlates.js), which
+            // hold at every zoom, including this overview.
             this._drawToolGlyphBadge(ctx);
             if (archivePushed) ctx.restore();
             return;
@@ -2932,9 +2719,6 @@ export class AgentSprite {
         };
         const cellSize = this.spriteSheet?.cellSize || 92;
         const bounds = this._getCellContentBounds(cell);
-        // Scale the body from accessory-free bounds so a hat's extra height does
-        // not shrink the villager (D3); positioning keeps hat-inclusive bounds.
-        const drawScale = this._spriteDrawScale(this._scaleBounds(cell, bounds));
         // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
         // IDLE-status agents bob slower and shallower to read as "resting".
         const isIdleStatus = this.agent?.status === AgentStatus.IDLE;
@@ -2968,47 +2752,37 @@ export class AgentSprite {
                 this._handoffAckStart = 0;
             }
         }
-        const drawX = this._snapWorldToScreenPixel(this.x);
-        const drawY = this._snapWorldToScreenPixel(this.y);
+        // Plan 2.1 / C3 — scale 1 and whole world texels, the same grid the
+        // buildings and terrain blit on (a fractional anchor would sit the body
+        // half an art pixel off the ground at zoom 2).
+        const drawX = Math.round(this.x);
+        const drawY = Math.round(this.y);
         // #36 — context-strain tremble: a tiny ±1px horizontal shiver once the
         // context window is nearly full (ratio >= 0.85), so the body language
-        // reads as strain alongside the gauge arc. Reduced motion (motionScale 0)
-        // skips the shiver — the static arc + chip carry the cue instead.
+        // reads as strain. Reduced motion (motionScale 0) skips the shiver.
         const trembleX = this._contextStrainTremble();
-        const contentCenterX = (bounds.minX + bounds.maxX) / 2;
-        const dx = drawX - contentCenterX * drawScale + trembleX;
-        const dy = drawY - bounds.maxY * drawScale + 2 + bobY + ackBobY;
-        const contentTopY = dy + bounds.minY * drawScale;
-        // #32 — arrival ceremony scale-up "pop": the body springs from ~0.6→1.0
-        // over ~300ms, anchored at the feet so it grows up out of the landing
-        // tile. Wraps only the body blit (silhouette + sprite + tints +
-        // equipment) so rings/labels/beacons keep their normal scale. Reduced
-        // motion never arms the ceremony, so this is a no-op then.
-        const arrivalProgress = this._arrivalCeremonyProgress();
-        let arrivalPushed = false;
-        if (arrivalProgress > 0) {
-            const popScale = 0.6 + 0.4 * easeOutCubic(arrivalProgress);
-            ctx.save();
-            ctx.translate(drawX, drawY);
-            ctx.scale(popScale, popScale);
-            ctx.translate(-drawX, -drawY);
-            arrivalPushed = true;
-        }
+        const dx = drawX - Math.round((bounds.minX + bounds.maxX) / 2) + trembleX;
+        const dy = drawY - bounds.maxY + 2 + bobY + ackBobY;
+        const contentTopY = dy + bounds.minY;
+        this._setBodyBox(drawX, drawY, dx + bounds.minX, contentTopY, dx + bounds.maxX + 1, dy + bounds.maxY + 1);
+        // Plan 2.3 — one contact shadow, plus a ring only when it means
+        // something. Painted before the body so the body covers the back arc.
+        this._layoutGroundMarks(this._stableContentWidth());
+        if (!this.gpuWorldEnabled) drawGroundMarks(ctx, this._groundMarks);
         const frameGeometry = {
             cell,
             dx,
             dy,
             bounds,
             cellSize,
-            drawScale,
-            cacheEquipment: arrivalProgress <= 0 && archiveProgress <= 0,
+            drawScale: 1,
+            cacheEquipment: archiveProgress <= 0,
         };
-        const popScale = arrivalProgress > 0 ? 0.6 + 0.4 * easeOutCubic(arrivalProgress) : 1;
         this._setGpuFrameRecord({
             cell,
-            dx: drawX + (dx - drawX) * popScale,
-            dy: drawY + (dy - drawY) * popScale,
-            drawScale: drawScale * popScale,
+            dx,
+            dy,
+            drawScale: 1,
             profileKey,
             spriteId,
             alpha: archiveProgress > 0 ? Math.max(0, 1 - archiveProgress) : 1,
@@ -3033,22 +2807,21 @@ export class AgentSprite {
         const sheathed = Boolean(pose && pose.strip?.meta?.grip?.sheathe);
         if (canvasBody) {
             if (!sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'back');
-            this._drawSpriteSilhouette(ctx, bodyCell, dx, dy, drawScale, poseSource);
+            // Plan 2.4 — the rim is baked into the sheet, identical to the
+            // resident atlas; no per-frame halo pass.
             ctx.drawImage(
                 bodySource,
                 bodyCell.sx, bodyCell.sy, bodyCell.sw, bodyCell.sh,
-                dx, dy, bodyCell.sw * drawScale, bodyCell.sh * drawScale
+                dx, dy, bodyCell.sw, bodyCell.sh
             );
         }
         // Frozen/darkened body tint while rate-limited — static overlay, so it
         // reads identically under reduced motion. No GPU channel owns this tint.
         if (this.agent?.status === AgentStatus.RATE_LIMITED) {
-            this._drawFrozenTint(ctx, bodyCell, dx, dy, drawScale, poseSource);
+            this._drawFrozenTint(ctx, bodyCell, dx, dy, poseSource);
         }
         if (canvasBody && !sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
         if (departedBody) ctx.restore();
-        if (arrivalPushed) ctx.restore();
-        if (arrivalProgress > 0) this._drawArrivalRuneRing(ctx, arrivalProgress);
         // These five marks belong to the body frame and have exactly one owner
         // per backend: this Canvas pass, or the resident renderer's ungraded
         // overlay (AgentGpuOverlayRenderer.draw), which replays the identical
@@ -3056,62 +2829,36 @@ export class AgentSprite {
         // twice on the GPU path — compounded alpha on any frame where the
         // Canvas layer shows through, and double the annotation work always.
         if (!departedTableau(this) && !this.gpuWorldEnabled) {
-            this._drawSignatureMark(ctx, { dx, dy, bounds, drawScale });
-            this._drawReceiveBeat(ctx, { dx, dy, bounds, drawScale });
-            this._drawStanceOverlay(ctx, { dx, dy, bounds, drawScale });
-            this._drawActionPoseOverlay(ctx, { dx, dy, bounds, drawScale });
-            this._drawToolRitualOverlay(ctx, { dx, dy, bounds, drawScale });
+            this._drawSignatureMark(ctx, frameGeometry);
+            this._drawReceiveBeat(ctx, frameGeometry);
+            this._drawStanceOverlay(ctx, frameGeometry);
+            this._drawActionPoseOverlay(ctx, frameGeometry);
+            this._drawToolRitualOverlay(ctx, frameGeometry);
         }
         if (departedTableau(this) && !this.gpuWorldEnabled) {
             this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
         }
 
-        // #4 — waiting-on-user amber beacon pillar. PRIMARY tier (never culled):
-        // the action-demanding state must be visible from across the map even
-        // when buried in a cluster. Drawn before the selection focus pillar so a
-        // selected, waiting agent shows both.
-        if (this.agent?.status === AgentStatus.WAITING_ON_USER) {
-            this._drawWaitingOnUserBeacon(ctx, contentTopY);
-        }
+        // Plan 2.5 — selection frames the character, never veils it: the pixel
+        // ring is on the ground (above) and a small chevron floats over the
+        // head. The resident renderer draws the chevron on its ungraded overlay.
+        if (this.selected && !this.gpuWorldEnabled) this._drawSelectionChevron(ctx, contentTopY);
 
-        // Selection halo (if selected) — outer glow + pulsed ring at feet level,
-        // tinted with the provider accent so selection reads identity at a glance.
-        if (this.selected) {
-            ctx.save();
-            // 3.2 — soft dark backing ellipse beneath the glow so the ring
-            // survives bright ground (sunlit grass, pale roads).
-            ctx.fillStyle = 'rgba(10, 8, 6, 0.42)';
-            ctx.beginPath();
-            ctx.ellipse(Math.round(this.x), Math.round(this.y - 2), 25, 9.5, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = this._rgba(this._providerAccentColor(), 0.18);
-            ctx.beginPath();
-            ctx.ellipse(Math.round(this.x), Math.round(this.y - 2), 22, 8, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-            this._drawFocusPillar(ctx, contentTopY);
-            this._drawSelectionRing(ctx);
-        } else if (this.hovered) {
-            // 3.7 — static hover ring (no pulse claim): quieter than selection,
-            // reads identically under reduced motion.
-            this._drawHoverRing(ctx);
-        }
-
-        // Chat bubble overlay (if chatting).
-        // Per-agent floating text bubbles are deferred to Phase 4; the chat
-        // ellipsis animation already handled by _drawChatEffect below.
+        // Everything anchored over the head clears the chevron, so no label
+        // ever crosses the body.
+        const labelTopY = this._labelTopY(contentTopY);
         if (this.chatting && !departedTableau(this)) {
-            this._drawChatEffect(ctx);
+            this._drawChatEffect(ctx, labelTopY);
         } else if (!departedTableau(this)) {
-            this._drawStatus(ctx, contentTopY);
+            this._drawStatus(ctx, labelTopY);
         }
-        if (!departedTableau(this)) this._drawStatusEmote(ctx, contentTopY);
+        if (!departedTableau(this)) this._drawStatusEmote(ctx, labelTopY);
         // Plan-mode and retry glyphs sit above the silhouette. The status
         // emote (kind != null) wins the slot; otherwise plan-mode glyph renders
         // slightly higher. Retry glyph renders to the right.
         if (!departedTableau(this)) {
-            this._drawPlanModeGlyph(ctx, contentTopY);
-            this._drawRetryGlyph(ctx, contentTopY);
+            this._drawPlanModeGlyph(ctx, labelTopY);
+            this._drawRetryGlyph(ctx, labelTopY);
         }
         this._drawNameTag(ctx);
 
@@ -3141,9 +2888,8 @@ export class AgentSprite {
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(baseCanvas, 0, 0);
         this._clearBakedCodexSidearmPixels(ctx, canvas.width, canvas.height, identity.modelClass);
-        // Carry the compositor's accessory-free content bounds onto the scrubbed
-        // canvas so body draw-scale still reads hat-free measurements (D3).
-        if (baseCanvas.__cvBaseBounds) canvas.__cvBaseBounds = baseCanvas.__cvBaseBounds;
+        // Plan 2.4 — the rim follows the scrub so it traces only what remains.
+        bakeSpriteOutline(ctx, canvas.width, canvas.height, Math.round(canvas.width / DIRECTIONS.length) || DEFAULT_CELL);
         PROCESSED_SPRITE_CACHE.set(cacheKey, canvas);
         canvas.__cvProfileKey = cacheKey;
         processedSpriteCachePixels += canvas.width * canvas.height;
@@ -3297,245 +3043,6 @@ export class AgentSprite {
         }
     }
 
-    _drawEffortFloorRing(ctx, identity) {
-        const effortRingId = this._runtimeEffortFloorRing(identity);
-        if (!effortRingId) return;
-        const effortRing = this.assets?.get(effortRingId);
-        if (!effortRing) {
-            const effortTier = this._effortFloorRingTier(identity, effortRingId);
-            if (effortTier) this._drawProceduralEffortFloorRing(ctx, effortTier);
-            return;
-        }
-        const dims = this.assets.getDims(effortRingId);
-        const [ax, ay] = this.assets.getAnchor(effortRingId);
-        const pulse = 0.76 + 0.24 * Math.sin(this.statusAnim * 1.8);
-        ctx.save();
-        ctx.globalAlpha = pulse;
-        ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(
-            effortRing,
-            Math.round(this.x - ax),
-            Math.round(this.y + 4 - ay),
-            dims.w,
-            dims.h
-        );
-        ctx.restore();
-    }
-
-    _effortFloorRingTier(identity, effortRingId) {
-        const effortTier = String(identity?.effortTier || '').toLowerCase();
-        if (EFFORT_FLOOR_RING_VISUALS[effortTier]) return effortTier;
-        const id = String(effortRingId || '').toLowerCase();
-        if (id.includes('effortlow')) return 'low';
-        if (id.includes('effortmedium')) return 'medium';
-        if (id.includes('efforthigh')) return 'high';
-        return null;
-    }
-
-    _drawProceduralEffortFloorRing(ctx, effortTier) {
-        const visual = EFFORT_FLOOR_RING_VISUALS[effortTier];
-        if (!visual) return;
-        const pulse = 0.72 + 0.28 * Math.sin(this.statusAnim * 1.8);
-        ctx.save();
-        ctx.imageSmoothingEnabled = false;
-        ctx.translate(Math.round(this.x), Math.round(this.y + 4));
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = pulse;
-        ctx.fillStyle = visual.glow;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, visual.rx + 3, visual.ry + 2, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalCompositeOperation = 'source-over';
-        for (let band = 0; band < visual.bands; band++) {
-            const inset = band * 3;
-            const yOffset = (band - (visual.bands - 1) / 2) * 1.5;
-            ctx.globalAlpha = (0.52 + band * 0.11) * pulse;
-            ctx.strokeStyle = band === visual.bands - 1 ? visual.highlight : visual.stroke;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.ellipse(0, yOffset, Math.max(8, visual.rx - inset), Math.max(3, visual.ry - band), 0, 0, Math.PI * 2);
-            ctx.stroke();
-        }
-        ctx.globalAlpha = 0.78 * pulse;
-        ctx.fillStyle = visual.highlight;
-        const ticks = effortTier === 'high'
-            ? [[-14, -1], [0, -6], [14, -1], [-7, 4], [7, 4]]
-            : effortTier === 'medium'
-                ? [[-12, -1], [12, -1], [0, 5]]
-                : [[0, -5], [0, 5]];
-        for (const [x, y] of ticks) {
-            ctx.fillRect(Math.round(x), Math.round(y), 2, 1);
-        }
-        ctx.restore();
-    }
-
-    // 4.6 — aura tier for this agent: mythic-tier models always shimmer,
-    // otherwise the reasoning-effort tier picks the visual (max → xhigh).
-    // Returns null when no aura applies.
-    _effortAuraTier(identity) {
-        if (identity?.modelTier === 'mythic') return 'mythic';
-        const tier = String(identity?.effortTier || '').toLowerCase();
-        const resolved = tier === 'max' ? 'xhigh' : tier;
-        return EFFORT_AURA_VISUALS[resolved] ? resolved : null;
-    }
-
-    // Pre-allocated drifting-mote state: built once per mote count (rebuilds
-    // only if the tier's count changes), so the per-frame path allocates
-    // nothing. Reduced motion never reaches this.
-    _effortAuraMotes(count) {
-        const capped = Math.min(Number(count) || 0, EFFORT_AURA_MAX_MOTES);
-        if (!this._auraMotes || this._auraMotes.length !== capped) {
-            const seed = Math.abs(this._hash(`${this.agent.id}:aura`));
-            this._auraMotes = [];
-            for (let i = 0; i < capped; i++) {
-                this._auraMotes.push({
-                    phase: this._noise(seed, i * 7) * Math.PI * 2,
-                    speed: 0.5 + this._noise(seed, i * 13) * 0.7,
-                    radiusX: 13 + this._noise(seed, i * 19) * 7,
-                    radiusY: 9 + this._noise(seed, i * 23) * 6,
-                    size: 1 + (i % 2),
-                });
-            }
-        }
-        return this._auraMotes;
-    }
-
-    // 4.6 — effort-tier aura dispatcher. Full intensity while WORKING, dimmed
-    // to ~35% otherwise. Off-screen sprites never reach draw() (the renderer
-    // culls depth-sorted drawables), so the aura skips automatically outside
-    // the viewport. Reduced motion (motionScale 0) renders a static tint ring
-    // at fixed alpha instead of animated particles.
-    _drawEffortAura(ctx, identity) {
-        const tier = this._effortAuraTier(identity);
-        if (!tier) return;
-        const visual = EFFORT_AURA_VISUALS[tier];
-        let intensity = this.agent?.status === AgentStatus.WORKING ? 1 : EFFORT_AURA_IDLE_INTENSITY;
-        // #2 — the effort aura is an AMBIENT mark: it dims, then culls, first in
-        // dense regions so the eye lands on PRIMARY agents (errored / waiting-on-
-        // user / selected), whose auras bypass the governor and stay full.
-        const isPrimary = this.selected
-            || this.agent?.status === AgentStatus.ERRORED
-            || this.agent?.status === AgentStatus.WAITING_ON_USER;
-        if (!isPrimary) {
-            const governor = getActiveMarkGovernor();
-            if (governor) {
-                const gate = governor.admit(MarkTier.AMBIENT, this.x, this.y);
-                if (!gate.draw) return;
-                intensity *= gate.alpha;
-            }
-        }
-        ctx.save();
-        ctx.translate(Math.round(this.x), Math.round(this.y + EFFORT_AURA_CENTER_Y));
-        if (this.motionScale <= 0) {
-            ctx.globalAlpha = 0.34 * intensity;
-            ctx.strokeStyle = visual.color || visual.colors[0];
-            ctx.lineWidth = 1.2;
-            ctx.beginPath();
-            ctx.ellipse(0, 0, 17, 23, 0, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-            return;
-        }
-        if (visual.kind === 'motes') this._drawAuraMotes(ctx, visual, intensity);
-        else if (visual.kind === 'glow') this._drawAuraGlow(ctx, visual, intensity);
-        else if (visual.kind === 'corona') this._drawAuraCorona(ctx, visual, intensity);
-        else if (visual.kind === 'field') this._drawAuraField(ctx, visual, intensity);
-        else this._drawAuraShimmer(ctx, visual, intensity);
-        ctx.restore();
-    }
-
-    // low — a few dim motes drifting around the body (medium band: mote orbit).
-    _drawAuraMotes(ctx, visual, intensity) {
-        const motes = this._effortAuraMotes(visual.motes);
-        ctx.fillStyle = visual.color;
-        for (const mote of motes) {
-            const t = this.statusAnim * 0.7 * mote.speed + mote.phase;
-            const mx = Math.cos(t) * mote.radiusX;
-            const my = Math.sin(t * 0.8) * mote.radiusY - Math.sin(t * 0.31) * 4;
-            ctx.globalAlpha = (0.16 + 0.10 * Math.sin(t * 1.7)) * intensity;
-            ctx.fillRect(Math.round(mx), Math.round(my), mote.size, mote.size);
-        }
-    }
-
-    // medium — steady soft glow behind the body (static band: no pulse).
-    _drawAuraGlow(ctx, visual, intensity) {
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.15 * intensity;
-        ctx.fillStyle = visual.color;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 18, 24, 0, 0, Math.PI * 2);
-        ctx.fill();
-    }
-
-    // high — brighter corona: stacked glow + rim, breathing in the slow band.
-    _drawAuraCorona(ctx, visual, intensity) {
-        const breath = 0.82 + 0.18 * Math.sin(this.statusAnim * 1.1);
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.22 * breath * intensity;
-        ctx.fillStyle = visual.color;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 21, 27, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 0.30 * breath * intensity;
-        ctx.strokeStyle = visual.color;
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 18, 24, 0, 0, Math.PI * 2);
-        ctx.stroke();
-    }
-
-    // xhigh — pulsing energy field (medium band): breathing glow plus an
-    // expanding ring that fades as it grows.
-    _drawAuraField(ctx, visual, intensity) {
-        const pulse = 0.5 + 0.5 * Math.sin(this.statusAnim * 2.6);
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = (0.20 + 0.14 * pulse) * intensity;
-        ctx.fillStyle = visual.color;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 20 + pulse * 3, 26 + pulse * 3, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = (0.42 - 0.30 * pulse) * intensity;
-        ctx.strokeStyle = visual.color;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 15 + pulse * 9, 20 + pulse * 9, 0, 0, Math.PI * 2);
-        ctx.stroke();
-    }
-
-    // mythic — iridescent shimmer: glow crossfades through the tier palette
-    // (slow band) with small color-cycling highlights orbiting the body
-    // (medium band: mote orbit).
-    _drawAuraShimmer(ctx, visual, intensity) {
-        const cycle = this.statusAnim * 0.45;
-        const idx = Math.floor(cycle) % visual.colors.length;
-        const next = (idx + 1) % visual.colors.length;
-        const fade = cycle - Math.floor(cycle);
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.20 * (1 - fade) * intensity;
-        ctx.fillStyle = visual.colors[idx];
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 20, 26, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 0.20 * fade * intensity;
-        ctx.fillStyle = visual.colors[next];
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 20, 26, 0, 0, Math.PI * 2);
-        ctx.fill();
-        const motes = this._effortAuraMotes(visual.motes);
-        for (let i = 0; i < motes.length; i++) {
-            const mote = motes[i];
-            const t = this.statusAnim * 0.8 * mote.speed + mote.phase;
-            ctx.globalAlpha = (0.30 + 0.22 * Math.sin(t * 1.6)) * intensity;
-            ctx.fillStyle = visual.colors[(idx + i) % visual.colors.length];
-            ctx.fillRect(
-                Math.round(Math.cos(t) * (mote.radiusX + 4)),
-                Math.round(Math.sin(t * 0.9) * (mote.radiusY + 6)),
-                mote.size + 1,
-                mote.size + 1,
-            );
-        }
-    }
-
     // Context-window pressure: mirrors contextRatio() in LandmarkActivity.js /
     // VisitIntentManager.js. Returns the matching CONTEXT_PRESSURE_LEVELS entry
     // or null when fullness is unknown or below the lowest threshold.
@@ -3551,84 +3058,10 @@ export class AgentSprite {
         return null;
     }
 
-    // #36 — context-window pressure as a filling gauge: a thin radial arc at the
-    // agent's feet sweeping clockwise from 12 o'clock through `ratio` of the full
-    // circle (0→100%), tinted amber at 0.75 → red at 0.95. A faint backing track
-    // shows the unfilled remainder so the fill reads as a gauge, not a stray mark.
-    // Pulse band: `alert` (pulseAlpha) — declared so the budget stays accounted.
-    // Reduced motion (motionScale 0) holds the band base alpha, so the arc is a
-    // static gauge with no throb. The selected agent also gets a `78%` chip.
-    _drawContextPressureRing(ctx) {
-        const level = this._contextPressureLevel();
-        if (!level) return;
-        const pulse = pulseAlpha('alert', this.frame, this.motionScale, 0.7, 1);
-        const ratio = level.ratio;
-        const rx = 27;
-        const ry = 10;
-        const start = -Math.PI / 2;            // 12 o'clock
-        const sweep = Math.PI * 2 * ratio;     // clockwise fill proportional to fullness
-        ctx.save();
-        ctx.translate(Math.round(this.x), Math.round(this.y + 4));
-        // Soft inner glow behind the filled portion so the gauge reads on busy terrain.
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.42 * pulse;
-        ctx.strokeStyle = level.glow;
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, rx, ry, 0, start, start + sweep);
-        ctx.stroke();
-        ctx.globalCompositeOperation = 'source-over';
-        // Unfilled remainder — a dim full track so the fill ratio is legible.
-        ctx.globalAlpha = 0.22;
-        ctx.strokeStyle = 'rgba(180, 188, 200, 0.6)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        // Filled arc — the gauge needle made line.
-        ctx.globalAlpha = 0.55 + 0.4 * pulse;
-        ctx.strokeStyle = level.color;
-        ctx.lineWidth = 1.8;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, rx, ry, 0, start, start + sweep);
-        ctx.stroke();
-        ctx.restore();
-
-        // Percentage chip for the selected agent only, so the exact pressure is
-        // legible on demand without cluttering every villager. Static (no pulse).
-        if (this.selected) {
-            const pct = `${Math.round(ratio * 100)}%`;
-            ctx.save();
-            ctx.translate(Math.round(this.x), Math.round(this.y + 4));
-            ctx.font = `bold 8px ${WORLD_BODY_FONT}`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            const w = ctx.measureText(pct).width + 8;
-            const h = 11;
-            const cy = ry + 8;
-            ctx.globalAlpha = 0.9;
-            ctx.fillStyle = 'rgba(12, 16, 22, 0.78)';
-            ctx.beginPath();
-            if (ctx.roundRect) {
-                ctx.roundRect(-w / 2, cy - h / 2, w, h, 3);
-            } else {
-                ctx.rect(-w / 2, cy - h / 2, w, h);
-            }
-            ctx.fill();
-            ctx.lineWidth = 1;
-            ctx.strokeStyle = level.color;
-            ctx.stroke();
-            ctx.globalAlpha = 1;
-            ctx.fillStyle = level.color;
-            ctx.fillText(pct, 0, cy + 0.5);
-            ctx.restore();
-        }
-    }
-
     // #36 — strain body language: once context pressure crosses 0.85 the body
     // gains a tiny ±1px horizontal shiver, deepening slightly toward 1.0. Driven
     // by `statusAnim` so it freezes (returns 0) under reduced motion (motionScale
-    // 0), where the static arc + chip carry the cue instead.
+    // 0), where the held posture and the panel's context gauge carry the cue.
     _contextStrainTremble() {
         if (this.motionScale <= 0) return 0;
         const level = this._contextPressureLevel();
@@ -3640,7 +3073,7 @@ export class AgentSprite {
     // #36 — sweat-drop emission at context-pressure ratio >= 0.85: a single cool
     // bead beads off the brow on a slow stagger, faster as fullness rises. Runs in
     // update() (pool live). Reduced motion (motionScale 0) emits nothing — the
-    // static arc + chip + held posture are the strain cue then.
+    // held posture is the strain cue then.
     _advanceContextStrainSweat(particleSystem) {
         if (!particleSystem || this.motionScale <= 0) return;
         if (this.moving || this.chatting) return;
@@ -3654,211 +3087,63 @@ export class AgentSprite {
         const beat = Math.floor((Date.now() + offset) / period);
         if (beat === this._strainSweatBeat) return;
         this._strainSweatBeat = beat;
-        // Bead off the temple (slightly off-centre, head height).
-        particleSystem.spawn('sweatDrop', this.x + 5, this._visualAnchorY() - 30, 1, { spread: 1.5 });
+        // Bead off the temple (slightly off-centre, just under the head top).
+        particleSystem.spawn('sweatDrop', this.x + 4, this._headTopY() + 8, 1, { spread: 1.5 });
     }
 
-    _drawGrounding(ctx) {
-        const visual = this._statusVisual();
-        const trim = this._providerTrimColor();
-        const pulse = 0.75 + 0.25 * Math.sin(this.statusAnim * 2.2);
-        const walking = this.animState === 'walk' && this.motionScale > 0;
-        const strideCompression = walking
-            ? Math.abs(Math.sin((this.frame % WALK_FRAMES) / WALK_FRAMES * Math.PI * 2))
-            : 0;
-        const shadowRadiusX = 20 + strideCompression * 1.6;
-        const shadowRadiusY = 7 - strideCompression * 0.9;
-        ctx.save();
-        ctx.translate(Math.round(this.x), Math.round(this.y));
-
-        // #37 — Directional sun shadow from the shared atmosphere lighting
-        // state: a skewed sprite-shaped parallelogram cast along the sun angle,
-        // elongated and tilted at dawn/dusk, tight at noon, gone at night
-        // (ambientLight 0). Reads the same shadowAngleRad/shadowLength/
-        // shadowAlpha fields the building shadows use, so agents and buildings
-        // agree on sun direction. The cast pools darker where villagers crowd
-        // because it composites with `multiply`. No per-frame animation: the
-        // angle is driven entirely by the (already eased) lighting snapshot, so
-        // the reduced-motion path is the same fixed-angle skew.
-        const lighting = this.lightingState;
-        const sunStrength = lighting ? this._clamp(lighting.ambientLight ?? 0, 0, 1) : 0;
-        if (sunStrength > 0.04) {
-            const sunAngle = lighting.shadowAngleRad ?? 0.28;
-            const sunLength = lighting.shadowLength ?? 1;
-            const sunAlpha = Math.min(0.3, lighting.shadowAlpha ?? 0.22) * sunStrength;
-            // Cast vector: foot anchor (0,6) → tip offset along the sun angle.
-            const tipX = Math.cos(sunAngle) * 9 * sunLength;
-            const tipY = Math.sin(sunAngle) * 3.5 * sunLength;
-            // Half-width of the body footprint at the feet; the tip tapers in so
-            // the cast reads as a body silhouette rather than a slab.
-            const baseHalf = shadowRadiusX * 0.6;
-            const tipHalf = baseHalf * 0.5;
-            // Perpendicular to the cast direction, foreshortened on Y for iso.
-            const perpAngle = sunAngle + Math.PI / 2;
-            const px = Math.cos(perpAngle);
-            const py = Math.sin(perpAngle) * 0.4;
-            ctx.save();
-            ctx.globalCompositeOperation = 'multiply';
-            ctx.fillStyle = `rgba(15, 22, 30, ${sunAlpha.toFixed(3)})`;
-            ctx.beginPath();
-            ctx.moveTo(px * baseHalf, 6 + py * baseHalf);
-            ctx.lineTo(-px * baseHalf, 6 - py * baseHalf);
-            ctx.lineTo(tipX - px * tipHalf, 6 + tipY - py * tipHalf);
-            ctx.lineTo(tipX + px * tipHalf, 6 + tipY + py * tipHalf);
-            ctx.closePath();
-            ctx.fill();
-            ctx.restore();
-        }
-
-        ctx.fillStyle = 'rgba(5, 8, 12, 0.56)';
-        ctx.beginPath();
-        ctx.ellipse(0, 6, shadowRadiusX, shadowRadiusY, 0, 0, Math.PI * 2);
-        ctx.fill();
-        const moodShadowTint = this._moodShadowTint();
-        if (moodShadowTint) {
-            ctx.globalCompositeOperation = 'screen';
-            ctx.fillStyle = moodShadowTint;
-            ctx.beginPath();
-            ctx.ellipse(0, 6, shadowRadiusX, shadowRadiusY, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.globalCompositeOperation = 'source-over';
-        }
-
-        ctx.fillStyle = 'rgba(246, 218, 130, 0.10)';
-        ctx.beginPath();
-        ctx.ellipse(0, 2, 17, 5, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Home colors — a faint repo-tinted ring ties each villager on the
-        // mainland to its offshore anchorage. Drawn below the status glow so it
-        // never masks state.
-        const repoProject = this.agent?.projectPath || this.agent?.project;
-        if (repoProject) {
-            const repo = this._repoGroundProfile(repoProject);
-            ctx.save();
-            ctx.globalAlpha = 0.28;
-            ctx.strokeStyle = repo.accent;
-            ctx.lineWidth = 1.2;
-            ctx.beginPath();
-            ctx.ellipse(0, 3, 19, 6, 0, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-        }
-
-        if (visual) {
-            const isWorking = this.agent?.status === AgentStatus.WORKING;
-            const isWaiting = this.agent?.status === AgentStatus.WAITING;
-            const isErrored = this.agent?.status === AgentStatus.ERRORED;
-            const flash = this.bumpFlash ? this.bumpFlash * 0.26 : 0;
-            let workingAlpha = 0.30 + 0.22 * pulse + flash;
-            if (isWorking) {
-                const totalTokens = Number(this.agent?.tokens?.total) || 0;
-                const burnMul = Math.max(0.6, Math.min(1.4, 0.6 + Math.log10(Math.max(1, totalTokens)) / 6));
-                workingAlpha *= burnMul;
-            }
-            if (isErrored) {
-                // Red pulsing glow at the feet so failures read at a glance.
-                // `pulse` derives from statusAnim, which freezes under reduced
-                // motion (motionScale 0) — the glow then holds a fixed alpha.
-                ctx.globalAlpha = 0.30 + 0.34 * pulse + flash;
-                ctx.fillStyle = visual.glow;
-                ctx.beginPath();
-                ctx.ellipse(0, 4, this.selected ? 26 : 21, this.selected ? 9 : 7, 0, 0, Math.PI * 2);
-                ctx.fill();
-            }
-            ctx.globalAlpha = this.selected
-                ? 0.95
-                : isErrored
-                    ? 0.40 + 0.30 * pulse + flash
-                    : isWorking
-                        ? workingAlpha
-                        : isWaiting
-                            ? 0.30 + flash
-                            : 0.18 + flash;
-            ctx.strokeStyle = visual.color;
-            ctx.lineWidth = this.selected ? 2 : 1.2;
-            ctx.beginPath();
-            ctx.ellipse(0, 4, this.selected ? 24 : 18, this.selected ? 8 : 6, 0, 0, Math.PI * 2);
-            ctx.stroke();
-        }
-        ctx.globalAlpha = this.selected ? 0.85 : 0.42;
-        ctx.strokeStyle = trim;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.ellipse(0, 4, this.selected ? 17 : 12, this.selected ? 5 : 4, 0, Math.PI * 0.12, Math.PI * 0.88);
-        ctx.stroke();
-        ctx.restore();
+    // Plan 2.1 — records the body laid out this frame, relative to the feet
+    // anchor, so hit-testing and head-anchored marks follow the real 1:1 body.
+    _setBodyBox(anchorX, anchorY, left, top, right, bottom) {
+        const box = this._bodyBox || (this._bodyBox = { left: 0, right: 0, top: 0, bottom: 0 });
+        box.left = left - anchorX;
+        box.right = right - anchorX;
+        box.top = top - anchorY;
+        box.bottom = bottom - anchorY;
     }
 
-    _drawFocusPillar(ctx, contentTopY) {
-        const visual = this._statusVisual();
-        const trim = this._providerTrimColor();
-        const top = contentTopY - 6;
-        const gradient = ctx.createLinearGradient(this.x, top, this.x, this.y + 8);
-        gradient.addColorStop(0, this._rgba(trim, 0));
-        gradient.addColorStop(0.34, this._rgba(trim, 0.22));
-        gradient.addColorStop(1, this._rgba(visual?.color || '#f2d36b', 0.08));
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.moveTo(this.x - 13, this.y + 8);
-        ctx.lineTo(this.x - 4, top);
-        ctx.lineTo(this.x + 4, top);
-        ctx.lineTo(this.x + 13, this.y + 8);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
+    // Top of the head in world texels (bridge lift included), from the last
+    // laid-out body; the median 1:1 body before the first draw.
+    _headTopY() {
+        return this._visualAnchorY() + (this._bodyBox || DEFAULT_BODY_BOX).top;
     }
 
-    // #4 — a tall amber light-pillar topped with a `!` pennant above any
-    // WAITING_ON_USER agent, rising over the crowd so the action-demanding read
-    // is never lost in a cluster. PRIMARY tier (never culled). Height and
-    // brightness scale with wait duration. Pulse: 'alert' band (medium).
-    // Reduced motion (motionScale 0): pulseAlpha returns the band base, so the
-    // pillar holds a fixed alpha at fixed height — a static amber beacon.
-    _drawWaitingOnUserBeacon(ctx, contentTopY) {
-        const governor = getActiveMarkGovernor();
-        // PRIMARY always admits at full alpha; consulted for contract symmetry.
-        if (governor && !governor.admit(MarkTier.PRIMARY, this.x, this.y).draw) return;
+    // Contact-shadow width follows the body's idle silhouette for its current
+    // facing, so the shadow does not shimmer with swinging arms mid-stride.
+    _stableContentWidth() {
+        if (!this.spriteSheet) return DEFAULT_BODY_BOX.right - DEFAULT_BODY_BOX.left;
+        const bounds = this._getCellContentBounds(this.spriteSheet.cell('idle', this.direction, 0));
+        return bounds.maxX - bounds.minX + 1;
+    }
 
-        const amber = THEME.waitingOnUser || '#facc15';
-        // Wait-duration ramp: a fresh wait is a modest pillar; a long wait grows
-        // taller and brighter so a stale prompt visibly looms.
-        const age = Number(this.agent?.activityAgeMs);
-        const waitT = Number.isFinite(age) ? Math.max(0, Math.min(1, age / 120_000)) : 0;
-        const headY = Number.isFinite(contentTopY) ? contentTopY : this.y - 36;
-        const baseHeight = 46 + waitT * 40;
-        const top = headY - 10 - baseHeight;
-        const brightness = pulseAlpha('alert', this.frame, this.motionScale, 0.55, 1);
-        const peakAlpha = (0.30 + waitT * 0.22) * brightness;
-        const halfW = 5 + waitT * 2;
+    // Plan 2.3 — the ground mark set both backends paint: one contact shadow,
+    // a status ring only for waiting-on-you / errored / rate-limited, and the
+    // selection or hover ring. Working and idle villagers get the shadow alone.
+    _layoutGroundMarks(contentWidth) {
+        this._groundMarks = resolveGroundMarks({
+            x: this.x,
+            y: this.y,
+            contentWidth,
+            status: departedTableau(this) ? null : this.agent?.status,
+            selected: this.selected,
+            hovered: this.hovered,
+            accent: this._providerAccentColor(),
+            trim: this._providerTrimColor(),
+        });
+        return this._groundMarks;
+    }
 
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        const gradient = ctx.createLinearGradient(this.x, top, this.x, headY - 6);
-        gradient.addColorStop(0, this._rgba(amber, 0));
-        gradient.addColorStop(0.5, this._rgba(amber, peakAlpha));
-        gradient.addColorStop(1, this._rgba(amber, peakAlpha * 0.45));
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.moveTo(this.x - 2, headY - 6);
-        ctx.lineTo(this.x - halfW, top);
-        ctx.lineTo(this.x + halfW, top);
-        ctx.lineTo(this.x + 2, headY - 6);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
+    // Plan 2.5 — the selected agent's chevron over the head. It lifts one
+    // texel on the `selection` pulse band (the claimant the old ring used) and
+    // holds still under reduced motion.
+    _drawSelectionChevron(ctx, contentTopY) {
+        const lift = pulseBand01Frame('selection', this.statusAnim * 20, this.motionScale) > 0.5 ? 1 : 0;
+        drawSelectionChevron(ctx, this.x, contentTopY, this._zoom || 1, this.motionScale > 0 ? lift : 0);
+    }
 
-        // `!` pennant cap at the pillar's tip — solid amber so it reads against
-        // the sky regardless of the screen-blend gradient below it.
-        ctx.save();
-        ctx.translate(Math.round(this.x), Math.round(top));
-        ctx.globalAlpha = 0.7 + 0.3 * brightness;
-        ctx.fillStyle = amber;
-        ctx.fillRect(-1, -7, 2, 4);
-        ctx.fillRect(-1, -1, 2, 2);
-        ctx.restore();
+    // Top edge for head-anchored labels (bubbles, emotes, glyphs). The
+    // selected agent's labels clear its chevron so nothing crosses the body.
+    _labelTopY(contentTopY) {
+        return this.selected ? contentTopY - selectionChevronClearance(this._zoom || 1) - 1 : contentTopY;
     }
 
     // X-ray pass: blits the current animation cell with alpha so a selected
@@ -3873,19 +3158,17 @@ export class AgentSprite {
         if (!this.spriteCanvas || !this.spriteSheet) return;
         const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
         const bounds = this._getCellContentBounds(cell);
-        const drawScale = this._spriteDrawScale(this._scaleBounds(cell, bounds));
-        const drawX = this._snapWorldToScreenPixel(this.x);
-        const drawY = this._snapWorldToScreenPixel(this.y);
-        const contentCenterX = (bounds.minX + bounds.maxX) / 2;
-        const dx = drawX - contentCenterX * drawScale;
-        const dy = drawY - bounds.maxY * drawScale + 2;
+        const drawX = Math.round(this.x);
+        const drawY = Math.round(this.y);
+        const dx = drawX - Math.round((bounds.minX + bounds.maxX) / 2);
+        const dy = drawY - bounds.maxY + 2;
         ctx.save();
         ctx.imageSmoothingEnabled = false;
         ctx.globalAlpha = 0.65;
         ctx.drawImage(
             this.spriteCanvas,
             cell.sx, cell.sy, cell.sw, cell.sh,
-            dx, dy, cell.sw * drawScale, cell.sh * drawScale
+            dx, dy, cell.sw, cell.sh
         );
         ctx.restore();
     }
@@ -3902,6 +3185,12 @@ export class AgentSprite {
 
     getGpuWorldRecords() {
         return this.gpuOverlayRenderer.getRecords();
+    }
+
+    // Plan 2.3 — ground marks (contact shadow + meaningful rings) for the
+    // resident depth pass; painted just before this body's record.
+    getGpuGroundRecords(sequence = 0) {
+        return this.gpuOverlayRenderer.getGroundRecords(sequence);
     }
 
     drawGpuWorldOverlay(ctx, zoom = 1, annotationMode = 'full') {
@@ -4061,62 +3350,12 @@ export class AgentSprite {
         this._gpuEquippedOccluderSheet = entry.occluder;
     }
 
-    // `source` lets a C2 action-strip pose reuse the same outline treatment;
-    // the base sheet passes nothing.
-    _drawSpriteSilhouette(ctx, cell, dx, dy, drawScale = 1, source = null) {
-        const silhouette = this._getSilhouetteCell(cell, source);
-        if (!silhouette) return;
-        ctx.drawImage(
-            silhouette,
-            dx - 2 * drawScale,
-            dy - 2 * drawScale,
-            silhouette.width * drawScale,
-            silhouette.height * drawScale
-        );
-    }
-
-    _getSilhouetteCell(cell, source = null) {
-        const sheet = source || this.spriteCanvas;
-        if (!sheet) return null;
-        const key = `${source ? 'strip' : 'base'}:${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
-        const cached = this._silhouetteCellCache.get(key);
-        if (cached) return cached;
-
-        const pad = 2;
-        const black = document.createElement('canvas');
-        black.width = cell.sw + pad * 2;
-        black.height = cell.sh + pad * 2;
-        const blackCtx = black.getContext('2d');
-        blackCtx.imageSmoothingEnabled = false;
-        blackCtx.drawImage(sheet, cell.sx, cell.sy, cell.sw, cell.sh, pad, pad, cell.sw, cell.sh);
-        blackCtx.globalCompositeOperation = 'source-in';
-        blackCtx.fillStyle = 'black';
-        blackCtx.fillRect(0, 0, black.width, black.height);
-
-        const outline = document.createElement('canvas');
-        outline.width = black.width;
-        outline.height = black.height;
-        const outlineCtx = outline.getContext('2d');
-        outlineCtx.imageSmoothingEnabled = false;
-        outlineCtx.globalAlpha = 0.54;
-        const offsets = [
-            [-2, 0], [2, 0], [0, -2], [0, 2],
-            [-1, -1], [1, -1], [-1, 1], [1, 1],
-        ];
-        for (const [ox, oy] of offsets) {
-            outlineCtx.drawImage(black, ox, oy);
-        }
-        this._silhouetteCellCache.set(key, outline);
-        this._updatePrivateDerivedEstimate();
-        return outline;
-    }
-
-    _drawFrozenTint(ctx, cell, dx, dy, drawScale = 1, source = null) {
+    _drawFrozenTint(ctx, cell, dx, dy, source = null) {
         const tinted = this._getFrozenTintCell(cell, source);
         if (!tinted) return;
         ctx.save();
         ctx.globalAlpha *= 0.38;
-        ctx.drawImage(tinted, dx, dy, cell.sw * drawScale, cell.sh * drawScale);
+        ctx.drawImage(tinted, dx, dy, cell.sw, cell.sh);
         ctx.restore();
     }
 
@@ -4150,24 +3389,6 @@ export class AgentSprite {
         return bounds;
     }
 
-    _spriteDrawScale(bounds) {
-        const height = Math.max(1, bounds.maxY - bounds.minY + 1);
-        const scale = TARGET_AGENT_CONTENT_HEIGHT / height;
-        return Math.max(MIN_AGENT_DRAW_SCALE, Math.min(MAX_AGENT_DRAW_SCALE, scale));
-    }
-
-    // Accessory-free content bounds for the cell, published by the compositor
-    // when an accessory was baked in. Falls back to the measured (hat-inclusive)
-    // bounds when none is present. Used only for body draw-scale (D3).
-    _scaleBounds(cell, fallback) {
-        const map = this.spriteCanvas?.__cvBaseBounds;
-        if (map) {
-            const b = map.get(`${cell.sx},${cell.sy},${cell.sw},${cell.sh}`);
-            if (b) return b;
-        }
-        return fallback;
-    }
-
     _statusVisual() {
         return this._statusVisualFor(this.agent);
     }
@@ -4179,101 +3400,6 @@ export class AgentSprite {
         const rawStatus = agent?.status;
         const status = typeof rawStatus === 'string' ? rawStatus : (rawStatus?.value || AgentStatus.IDLE);
         return STATUS_VISUALS[status] || STATUS_VISUALS[AgentStatus.IDLE];
-    }
-
-    _drawSelectionRing(ctx) {
-        if (!this.assets) return;
-        // Pulse alpha so the ring breathes (0.7 .. 1.0 sinusoidal).
-        const pulseAlpha = 0.7 + 0.3 * Math.sin(this.frame * 0.15);
-        const accent = this._providerAccentColor();
-        const ring = this.assets.get('overlay.status.selected');
-        if (ring) {
-            const tinted = this._getTintedSelectionRing(ring, accent) || ring;
-            const dx = Math.round(this.x - tinted.width / 2);
-            const dy = Math.round(this.y - 6);     // just under feet
-            ctx.save();
-            // 3.2 — double-stamp with a 1px offset: the ring's stroke reads
-            // twice as heavy and holds up on bright ground.
-            ctx.globalAlpha = pulseAlpha * 0.55;
-            ctx.drawImage(tinted, dx, dy + 1);
-            ctx.globalAlpha = pulseAlpha;
-            ctx.drawImage(tinted, dx, dy);
-            ctx.restore();
-            return;
-        }
-        // Fallback: draw a simple ellipse when the overlay asset is not loaded.
-        ctx.save();
-        ctx.globalAlpha = pulseAlpha;
-        ctx.beginPath();
-        ctx.ellipse(this.x, this.y + 21, 28, 10, 0, 0, Math.PI * 2);
-        ctx.fillStyle = this._rgba(accent, 0.24);
-        ctx.fill();
-        // 3.2 — dark under-stroke + doubled weight so the fallback ring also
-        // survives bright ground.
-        ctx.strokeStyle = 'rgba(10, 8, 6, 0.55)';
-        ctx.lineWidth = 4.2;
-        ctx.stroke();
-        ctx.strokeStyle = accent;
-        ctx.lineWidth = 2.8;
-        ctx.stroke();
-        ctx.restore();
-    }
-
-    // 3.7 — static hover affordance: a thin trim-colored ring at the feet,
-    // dimmer than the selection ring and never pulsed (no motion-budget
-    // claim; reduced motion shows the same mark). The name pill side of the
-    // affordance rides the existing _drawNameTag path via `this.hovered`.
-    _drawHoverRing(ctx) {
-        const trim = this._providerTrimColor();
-        ctx.save();
-        ctx.strokeStyle = 'rgba(10, 8, 6, 0.5)';
-        ctx.lineWidth = 2.6;
-        ctx.beginPath();
-        ctx.ellipse(Math.round(this.x), Math.round(this.y - 2), 20, 7.5, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.strokeStyle = this._rgba(trim, 0.85);
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.ellipse(Math.round(this.x), Math.round(this.y - 2), 20, 7.5, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
-    }
-
-    // Recolors the golden selection-ring asset toward the provider accent while
-    // keeping its luminance/shading ('color' composite), then restores the
-    // original alpha. Cached per accent color — the base asset is shared.
-    _getTintedSelectionRing(ring, accent) {
-        if (!ring?.width || !ring?.height) return null;
-        const cached = TINTED_SELECTION_RING_CACHE.get(accent);
-        if (cached) {
-            cached.__cvProfileKeys ||= new Set();
-            cached.__cvProfileKeys.add(this._spriteProfileKey);
-            TINTED_SELECTION_RING_CACHE.delete(accent);
-            TINTED_SELECTION_RING_CACHE.set(accent, cached);
-            return cached;
-        }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = ring.width;
-        canvas.height = ring.height;
-        const tintCtx = canvas.getContext('2d');
-        tintCtx.imageSmoothingEnabled = false;
-        tintCtx.drawImage(ring, 0, 0);
-        tintCtx.globalCompositeOperation = 'color';
-        tintCtx.fillStyle = accent;
-        tintCtx.fillRect(0, 0, canvas.width, canvas.height);
-        tintCtx.globalCompositeOperation = 'destination-in';
-        tintCtx.drawImage(ring, 0, 0);
-        TINTED_SELECTION_RING_CACHE.set(accent, canvas);
-        canvas.__cvProfileKeys = new Set([this._spriteProfileKey]);
-        while (TINTED_SELECTION_RING_CACHE.size > TINTED_SELECTION_RING_CACHE_LIMIT) {
-            const oldestKey = oldestUnpinnedCacheKey(TINTED_SELECTION_RING_CACHE);
-            if (oldestKey == null) break;
-            const oldest = TINTED_SELECTION_RING_CACHE.get(oldestKey);
-            TINTED_SELECTION_RING_CACHE.delete(oldestKey);
-            releaseSharedEntry(oldest);
-        }
-        return canvas;
     }
 
     _drawCodexEquipment(ctx, identity, frameGeometry, layer = 'front', directionOverride = null) {
@@ -4384,11 +3510,6 @@ export class AgentSprite {
         this._accessoryCandidate = id;
         this._accessoryCandidateSince = Date.now();
         return id;
-    }
-
-    _runtimeEffortFloorRing(identity) {
-        if (identity?.allowRuntimeEffortFloorRing === false) return null;
-        return identity?.effortFloorRing ?? null;
     }
 
     _runtimeCodexEquipment(identity) {
@@ -5173,6 +4294,7 @@ export class AgentSprite {
             runtimeAccessory: this._runtimeHeadAccessory(identity, this.agent),
             teamTrim: this._teamTrimAccent(),
             cellSize,
+            outline: true,
         }) || strip.image;
         return { group, cell, source, strip };
     }
@@ -5238,15 +4360,18 @@ export class AgentSprite {
     }
 
     // 2.4 — one stamp for every distance. Screen-fixed cell size (1 px at
-    // overview, 2 px from zoom 2) so the same mark reads on a hero body, on the
-    // 28 px compact GPU body, and beside the impostor diamond. Static band: no
-    // pulse, no timer, identical under reduced motion.
+    // overview, 2 px from zoom 2). Static band: no pulse, no timer, identical
+    // under reduced motion. Plan 2.5 / S12 — the clasp is a detail mark: only
+    // at z >= 3 or on the selected body, so clustered bodies never stack
+    // 3–4 chips; on the ungraded resident overlay it takes the C2 grade.
     _drawSignatureMark(ctx, frameGeometry) {
         const { dx, dy, bounds, drawScale } = frameGeometry || {};
         if (!bounds || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+        const zoom = this._zoom || 1;
+        if (zoom < SIGNATURE_MIN_ZOOM && !this.selected) return;
         const width = Math.max(1, bounds.maxX - bounds.minX);
         const height = Math.max(1, bounds.maxY - bounds.minY);
-        const zoom = this._zoom || 1;
+        const grade = this.gpuWorldEnabled ? this.overlayLightGrade : null;
         ctx.save();
         ctx.translate(
             Math.round(dx + (bounds.minX + width * 0.3) * drawScale),
@@ -5257,7 +4382,8 @@ export class AgentSprite {
             x: 0,
             y: 0,
             pixel: zoom >= 2 ? 2 : 1,
-            accent: this.signatureAccent(),
+            ink: gradeTone('#150f0c', grade),
+            accent: gradeTone(this.signatureAccent(), grade),
         });
         ctx.restore();
     }
@@ -5302,6 +4428,7 @@ export class AgentSprite {
             this._hashVariant(),
             this._runtimeHeadAccessory(identity, this.agent),
             this._teamTrimAccent(),
+            { outline: !this._shouldScrubBakedCodexWeapon(identity) },
         );
     }
 
@@ -5363,6 +4490,9 @@ export class AgentSprite {
 
     _drawStatus(ctx, contentTopY = null) {
         if (this.decisionFocusMuted) return;
+        // T1 — an action-needed head carries its beacon and attention plate;
+        // the Activity Panel carries its words.
+        if (isAttentionStatus(this.agent?.status)) return;
         const visual = this._statusVisual();
         const thread = this._activityThread();
         // The long-wait clock is a glyph, not speech: it reports how long this
@@ -5484,7 +4614,7 @@ export class AgentSprite {
 
         // Measure text size and auto-truncate
         const anchored = Number.isFinite(contentTopY);
-        ctx.font = `${anchored ? 10 : 13}px ${WORLD_BODY_FONT}`;
+        ctx.font = WORLD_BODY_FONT_11;
         const maxWidth = anchored ? STATUS_BUBBLE_MAIN_MAX_WIDTH.anchored : STATUS_BUBBLE_MAIN_MAX_WIDTH.floating;
         const confidenceValue = Number(confidence);
         const lowConfidence = Number.isFinite(confidenceValue) && confidenceValue < TOOL_CONFIDENCE_THRESHOLD;
@@ -5550,8 +4680,8 @@ export class AgentSprite {
         const mergedCount = this.bubbleMergedCount || 1;
         if (mergedCount > 1) {
             const label = `x${mergedCount}`;
-            ctx.font = 'bold 6px "Press Start 2P", monospace';
-            const chipW = 6 + label.length * 6;
+            ctx.font = WORLD_DISPLAY_FONT_8;
+            const chipW = 6 + label.length * 8;
             const chipX = halfW + 2;
             const chipY = -bubbleH / 2 - 2;
             ctx.fillStyle = 'rgba(20, 14, 10, 0.92)';
@@ -5597,10 +4727,9 @@ export class AgentSprite {
         const s = 1 / (this._zoom || 1);
         const anchored = Number.isFinite(contentTopY);
         const maxWidth = anchored ? STATUS_BUBBLE_HISTORY_MAX_WIDTH.anchored : STATUS_BUBBLE_HISTORY_MAX_WIDTH.floating;
-        const fontPx = anchored ? 9 : 11;
         ctx.translate(this.x, Number.isFinite(contentTopY) ? contentTopY : this.y);
         ctx.scale(s, s);
-        ctx.font = `${fontPx}px ${WORLD_BODY_FONT}`;
+        ctx.font = WORLD_BODY_FONT_11;
 
         let offsetY = (anchored ? -32 : -66) + stackShift;
         const shown = entries.slice(0, ACTION_TRAIL_LIMIT);
@@ -5724,17 +4853,19 @@ export class AgentSprite {
         }
     }
 
-    _drawChatEffect(ctx) {
+    // Anchored over the head (plan 2.5: never across the body). `labelTopY`
+    // is the head top, already raised past the selection chevron.
+    _drawChatEffect(ctx, labelTopY = null) {
         if (this.decisionFocusMuted) return;
         ctx.save();
         const s = 1 / (this._zoom || 1);
-        ctx.translate(this.x, this.y);
+        ctx.translate(this.x, Number.isFinite(labelTopY) ? labelTopY : this._headTopY());
         ctx.scale(s, s);
 
         // A conversation is always a message, not a tool invocation.
         const visual = this._statusVisual();
         const accent = visual?.color || '#72d071';
-        const bubbleY = -50;
+        const bubbleY = -20;
         const w = 30;
         const h = 24;
         const r = 5;
@@ -5767,255 +4898,130 @@ export class AgentSprite {
         ctx.restore();
     }
 
+    // C5 identity (plan 5.2; maintainer decision D2). One entry point for both
+    // backends:
+    //   T2 plate — selected or renderer-marked (hovered / camera focus);
+    //   T4 name  — text only, and only when the renderer admitted it
+    //              (overlaySlot): the top-N most recent actors per screen
+    //              region at zoom >= 1.6, or every verb while READ is held;
+    //   nothing  — otherwise.
+    // This replaces the old rule that identity never disappears at overview
+    // LOD: below 1.6 a routine name hid the body it named. Identity stays one
+    // hover away and in the Sidebar, and an agent that needs the operator is
+    // always named by its T1 attention plate (AttentionPlates.js).
     _drawNameTag(ctx) {
-        if (this.decisionFocusRoutine) return;
-        // 3.7 — hover affordance: a hovered (unselected) agent shows the full
-        // pill, same as selection, so the click target identifies itself.
-        const emphasized = this.selected || this.hovered;
-        // Full pills are reserved for emphasis/detail zoom. The compact form
-        // still carries the name, so identity never disappears at overview LOD.
-        if (!emphasized && this._zoom < 1.5) {
-            this._drawCompactNameStatus(ctx);
+        if (this.decisionFocusRoutine || this.isArrivalPending()) return;
+        const plate = this.selected || this.labelPlate === true;
+        if (plate) {
+            // S13 — `plateOffFrame`: the body is outside the visible canvas,
+            // so no plate floats at the edge (the T1 edge plate or the panel
+            // carries its identity).
+            if (!this.plateOffFrame) this._drawNamePlate(ctx);
             return;
         }
-        if (!emphasized && this.nameTagSlot == null) {
-            this._drawCompactNameStatus(ctx);
-            return;
-        }
+        if (isAttentionStatus(this.agent?.status)) return;
+        if (this.overlaySlot == null || !((this.labelAlpha ?? 1) > 0)) return;
+        this._drawRoutineName(ctx);
+    }
+
+    // Screen px from the feet to the T2/T4 label top: below this body's own
+    // ground marks (shadow, status ring, selection/hover ring) plus a 2 px gap,
+    // so a label never sits on the robe hem or the ring (plan 2.5).
+    identityLabelTopPx(zoom = this._zoom || 1) {
+        return identityLabelTop(zoom, groundMarkDepth({
+            contentWidth: this._stableContentWidth(),
+            status: departedTableau(this) ? null : this.agent?.status,
+            selected: this.selected,
+            hovered: this.hovered,
+        }));
+    }
+
+    // T2 — square plate: parchment Departure Mono on dark walnut, 1 px
+    // outline, 2 px bar and 1 px top in gold (selected) or brass (hover).
+    // `labelShiftX/Y` (screen px, set by the renderer's label pass) keep the
+    // plate inside the visible canvas when the body stands at its edge.
+    _drawNamePlate(ctx) {
+        const baseName = String(this.agent?.name || this.agent?.displayName || '').trim() || 'Agent';
+        // 4.8 — an earned nickname renders as a title suffix on the plate.
+        const text = this.nickname ? `${baseName} ${this.nickname}` : baseName;
+        const zoom = this._zoom || 1;
+        const trim = this.selected ? LABEL_INK.gold : LABEL_INK.brass;
         ctx.save();
-        ctx.globalAlpha *= emphasized ? 1 : (this.labelAlpha ?? 1);
-        const s = 1 / (this._zoom || 1); // inverse zoom correction
         ctx.translate(this.x, this.y);
-        ctx.scale(s, s); // fixed size in screen space
-        ctx.translate(0, 38 + this._nameTagSlotYOffset());
-        const baseName = String(this.agent.name || this.agent.displayName || '').trim() || this.agent.displayName;
-        // 4.8 — earned nickname renders as a title suffix on the full tag
-        // (compact labels stay nickname-free to avoid clutter).
-        const rawName = this.readVerb || (this.nickname ? `${baseName} ${this.nickname}` : baseName);
-        ctx.font = `${NAME_TAG_FONT_PX}px ${WORLD_BODY_FONT}`;
-        const layout = this._nameTagLayout(ctx, rawName);
-        const lines = layout.lines;
-        const contentW = layout.contentW;
-        const w = Math.min(NAME_TAG_MAX_WIDTH, contentW + NAME_TAG_PADDING_X);
-        const repo = this._repoNameTagProfile();
-        // 3.4 — near-opaque dark panel + parchment text; the repo hue survives
-        // on the glyph and border only, so names stay legible on any ground.
-        const h = lines.length > 1 ? NAME_TAG_DOUBLE_HEIGHT : NAME_TAG_SINGLE_HEIGHT;
-        const r = 4;
-        const stampKey = `name|${rawName.length}:${rawName}|${w}|${h}|${repo.accent}|${repo.panelBorder}|${this.selected}`;
-        this._drawOverlayStamp(ctx, stampKey, -w / 2 - 3, -h / 2 - 3, w + 6, h + 7, (ctx) => {
-            ctx.fillStyle = NAME_TAG_PANEL;
-            ctx.beginPath();
-            ctx.moveTo(-w/2 + r, -h/2);
-            ctx.lineTo(w/2 - r, -h/2);
-            ctx.quadraticCurveTo(w/2, -h/2, w/2, -h/2 + r);
-            ctx.lineTo(w/2, h/2 - r);
-            ctx.quadraticCurveTo(w/2, h/2, w/2 - r, h/2);
-            ctx.lineTo(-w/2 + r, h/2);
-            ctx.quadraticCurveTo(-w/2, h/2, -w/2, h/2 - r);
-            ctx.lineTo(-w/2, -h/2 + r);
-            ctx.quadraticCurveTo(-w/2, -h/2, -w/2 + r, -h/2);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = repo.panelBorder || repo.accent;
-            ctx.lineWidth = this.selected ? 2 : 1.25;
-            ctx.stroke();
-            if (this.selected) {
-                ctx.strokeStyle = repo.panelBorder || repo.accent;
-                ctx.lineWidth = 1;
-                ctx.strokeRect(Math.round(-w / 2 + 3) + 0.5, Math.round(-h / 2 + 3) + 0.5, Math.max(1, Math.round(w - 6)), Math.max(1, Math.round(h - 6)));
-            }
-            this._drawRepoLabelGlyph(ctx, -w / 2 + 8, 0, NAME_TAG_GLYPH_SIZE, repo);
-            ctx.fillStyle = NAME_TAG_TEXT;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            this._applyReadableTextShadow(ctx);
-            ctx.shadowOffsetX = 0; // vertical-only: avoid doubling Departure Mono's hairlines
-            if (lines.length === 1) {
-                ctx.fillText(lines[0], 3, 0.5);
-            } else {
-                ctx.fillText(lines[0], 3, -4);
-                ctx.fillText(lines[1], 3, 5);
-            }
+        ctx.scale(1 / zoom, 1 / zoom);
+        ctx.shadowColor = 'transparent';
+        ctx.font = WORLD_BODY_FONT_11;
+        const shown = fitLabelText(ctx, text, IDENTITY_LABEL.maxTextWidth);
+        const width = measureLabelText(ctx, shown) + IDENTITY_LABEL.platePadLeft + IDENTITY_LABEL.platePadRight;
+        const height = IDENTITY_LABEL.plateHeight;
+        const left = -Math.round(width / 2) + Math.round(this.labelShiftX || 0);
+        const top = this.identityLabelTopPx(zoom) + Math.round(this.labelShiftY || 0);
+        this._drawOverlayStamp(ctx, `plate|${shown}|${trim}`, left, top, width, height, (c) => {
+            c.fillStyle = LABEL_INK.plateOutline;
+            c.fillRect(left, top, width, height);
+            c.fillStyle = LABEL_INK.plate;
+            c.fillRect(left + 1, top + 1, width - 2, height - 2);
+            c.fillStyle = trim;
+            c.fillRect(left + 1, top + 1, width - 2, 1);
+            c.fillRect(left + 1, top + 1, 2, height - 2);
+            c.font = WORLD_BODY_FONT_11;
+            c.textAlign = 'left';
+            c.textBaseline = 'alphabetic';
+            c.fillStyle = LABEL_INK.text;
+            c.fillText(shown, left + IDENTITY_LABEL.platePadLeft, top + IDENTITY_LABEL.plateBaseline);
         });
         ctx.restore();
     }
 
-    _nameTagSlotYOffset() {
-        const offsets = [0, -10, 10, -18, 18, -26, 26, -34, 34];
-        return offsets[Math.min(this.nameTagSlot || 0, offsets.length - 1)];
-    }
-
-    _drawCompactAgentBadge(ctx) {
-        const visual = this._statusVisual();
-        const trim = this._providerTrimColor();
-        const s = 1 / (this._zoom || 1);
+    // T4 — text only: no panel, border or glyph specks; an 8-tap one-pixel
+    // outline keeps it legible on any ground. READ verbs wear plaque gold.
+    _drawRoutineName(ctx) {
+        const baseName = String(this.agent?.name || this.agent?.displayName || '').trim() || 'Agent';
+        const text = this.readVerb || baseName;
+        const color = this.readVerb ? WALNUT.text : LABEL_INK.text;
+        const zoom = this._zoom || 1;
         ctx.save();
-        ctx.globalAlpha *= this.selected ? 1 : (this.labelAlpha ?? 1);
         ctx.translate(this.x, this.y);
-        ctx.scale(s, s);
-        ctx.translate(0, 16 + (this.overlaySlot || 0) * 9);
-        ctx.fillStyle = 'rgba(20, 14, 10, 0.78)';
-        ctx.strokeStyle = trim;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        if (ctx.roundRect) {
-            ctx.roundRect(-9, -5, 18, 10, 3);
-        } else {
-            ctx.rect(-9, -5, 18, 10);
-        }
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = visual?.color || trim;
-        ctx.font = 'bold 6px "Press Start 2P", monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(visual?.mark || '.', 0, 0.5);
-        ctx.restore();
-    }
-
-    _drawCompactNameStatus(ctx) {
-        if (this.decisionFocusRoutine) return;
-        const repo = this._repoNameTagProfile();
-        const rawName = this.readVerb || String(this.agent?.name || this.agent?.displayName || '').trim() || 'Agent';
-        const s = 1 / (this._zoom || 1);
-        const slot = this.overlaySlot ?? this.nameTagSlot ?? 0;
-        const providerKey = this._providerKey();
-        const providerColor = PROVIDER_BADGE_COLORS[providerKey] || PROVIDER_BADGE_COLORS.default;
-        const identity = getModelVisualIdentity(this.agent?.model, this.agent?.effort, this.agent?.provider);
-        const tierColor = MODEL_TIER_COLORS[identity?.modelTier] || MODEL_TIER_COLORS.balanced;
-
-        ctx.save();
-        ctx.globalAlpha *= this.selected ? 1 : (this.labelAlpha ?? 1);
-        // Identity stays below the feet; thoughts and current actions use the
-        // separate head-space bubble zone. This stable grammar makes a dense
-        // crowd scannable without confusing a name for spoken/tool content.
-        ctx.translate(this.x, this.y);
-        ctx.scale(s, s);
-        ctx.translate(0, COMPACT_NAME_SLOT_BASE_Y + slot * COMPACT_NAME_SLOT_STEP_Y);
-        ctx.font = `${COMPACT_NAME_FONT_PX}px ${WORLD_BODY_FONT}`;
-        const layout = this._compactNameStatusLayout(ctx, rawName);
-        const text = layout.text;
-        const w = layout.width;
-        const h = COMPACT_NAME_HEIGHT;
-        const stampKey = `compact-name|${text.length}:${text}|${w}|${repo.panel}|${repo.panelBorder}|${repo.accent}|${repo.labelText}|${providerColor}|${tierColor}`;
-        this._drawOverlayStamp(ctx, stampKey, -w / 2 - 3, -h / 2 - 3, w + 6, h + 7, (ctx) => {
-
-            ctx.fillStyle = repo.panel;
-            ctx.strokeStyle = repo.panelBorder || repo.accent;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            if (ctx.roundRect) {
-                ctx.roundRect(-w / 2, -h / 2, w, h, 4);
-            } else {
-                ctx.rect(-w / 2, -h / 2, w, h);
-            }
-            ctx.fill();
-            ctx.stroke();
-
-            const glyphLeft = -w / 2 + 5;
-            this._drawProviderMarkGlyph(ctx, glyphLeft, 0, COMPACT_NAME_GLYPH_SIZE, providerColor);
-            this._drawModelTierDotGlyph(ctx, glyphLeft + 7, 0, COMPACT_NAME_GLYPH_SIZE, tierColor);
-            this._drawRepoLabelGlyph(ctx, glyphLeft + 14, 0, COMPACT_NAME_GLYPH_SIZE, repo);
-
-            const textAreaLeft = glyphLeft + 18 + 3;
-            const textAreaRight = w / 2 - 4;
-            const textCenter = (textAreaLeft + textAreaRight) / 2;
-            ctx.fillStyle = repo.labelText || repo.accent;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            this._applyReadableTextShadow(ctx);
-            ctx.shadowOffsetX = 0; // vertical-only: avoid doubling Departure Mono's hairlines
-            ctx.fillText(text, Math.round(textCenter), 0.5);
+        ctx.scale(1 / zoom, 1 / zoom);
+        ctx.shadowColor = 'transparent';
+        ctx.font = WORLD_BODY_FONT_11;
+        const shown = fitLabelText(ctx, text, IDENTITY_LABEL.maxTextWidth);
+        const width = measureLabelText(ctx, shown) + 2;
+        const height = IDENTITY_LABEL.textHeight;
+        const left = -Math.round(width / 2);
+        const top = this.identityLabelTopPx(zoom) + (this.overlaySlot || 0) * IDENTITY_LABEL.slotStep;
+        this._drawOverlayStamp(ctx, `name|${shown}|${color}`, left, top, width, height, (c) => {
+            c.font = WORLD_BODY_FONT_11;
+            c.textAlign = 'left';
+            c.textBaseline = 'alphabetic';
+            paintOutlinedText(c, shown, left + 1, top + IDENTITY_LABEL.textBaseline, color);
         });
         ctx.restore();
     }
 
-    // #9 — Activity glyph badge: the compact replacement for the dark name pill.
-    // A tiny illuminated tool-category emblem tinted by status, so a busy scene
-    // reads as a constellation of glowing trade-icons that never overlap into
-    // mush. Pills are reserved for the selected agent and zoom >= 1.5 (the full
-    // tag path); this draws in the otherwise-compact case. The emblem itself is
-    // SECONDARY (status color carries the read) and never overlaps text.
-    // Reduced-motion: the glyph's lit glow freezes to a steady mid-intensity.
+    // 5.6 — the overview trade glyph: the authored 8×8 EventShapes motif of
+    // the current tool, in the status colour with a one-pixel dark outline,
+    // just under the feet. Quiet agents (no tool) carry nothing. Static.
     _drawToolGlyphBadge(ctx) {
-        const visual = this._statusVisual();
-        const repo = this._repoNameTagProfile();
         const tool = String(this.agent?.currentTool || '').trim();
+        if (!tool) return;
         // Reuse the live tool classification so the glyph picks the same building
         // the agent is routing toward (web -> globe, mine -> pick, etc.).
-        const building = tool
-            ? (memoizedToolClassification(tool, this.agent?.currentToolInput)?.building || null)
-            : null;
-        const glyph = toolGlyphKey(tool, building);
-        const s = 1 / (this._zoom || 1);
-        const slot = this.overlaySlot ?? this.nameTagSlot ?? 0;
-
+        const building = memoizedToolClassification(tool, this.agent?.currentToolInput)?.building || null;
+        const zoom = this._zoom || 1;
         ctx.save();
-        ctx.globalAlpha *= this.selected ? 1 : (this.labelAlpha ?? 1);
         ctx.translate(this.x, this.y);
-        ctx.scale(s, s);
-        ctx.translate(0, COMPACT_NAME_SLOT_BASE_Y + slot * COMPACT_NAME_SLOT_STEP_Y);
+        ctx.scale(1 / zoom, 1 / zoom);
         drawToolGlyphBadge(ctx, {
-            glyph,
-            color: visual?.color || repo.accent || '#f2d36b',
-            panel: repo.panel,
-            border: repo.panelBorder || repo.accent,
-            size: TOOL_GLYPH_BADGE_SIZE,
-            frame: this.frame,
-            motionScale: this.motionScale,
+            glyph: toolGlyphKey(tool, building),
+            color: this._statusVisual()?.color || LABEL_INK.text,
+            x: -4,
+            y: this.identityLabelTopPx(zoom),
         });
         ctx.restore();
-    }
-
-    _drawProviderMarkGlyph(ctx, x, y, size, color) {
-        const r = size / 2;
-        ctx.save();
-        ctx.shadowColor = 'rgba(8, 5, 4, 0.7)';
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetX = 1;
-        ctx.shadowOffsetY = 1;
-        ctx.fillStyle = color;
-        ctx.strokeStyle = 'rgba(255, 242, 190, 0.6)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.rect(x - r, y - r, size, size);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-    }
-
-    _drawModelTierDotGlyph(ctx, x, y, size, color) {
-        const r = size / 2;
-        ctx.save();
-        ctx.shadowColor = 'rgba(8, 5, 4, 0.7)';
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetX = 1;
-        ctx.shadowOffsetY = 1;
-        ctx.fillStyle = color;
-        ctx.strokeStyle = 'rgba(255, 242, 190, 0.7)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-    }
-
-    _repoNameTagProfile() {
-        const project = this.agent?.projectPath || this.agent?.project || this.agent?.teamName || this.agent?.provider || 'unknown';
-        return repoProfile(project);
     }
 
     /** Repo color profile for the home-color ground ring, cached per projectPath. */
-    _repoGroundProfile(project) {
-        if (this._repoGroundProfileKey !== project) {
-            this._repoGroundProfileKey = project;
-            this._repoGroundProfileCache = repoProfile(project);
-        }
-        return this._repoGroundProfileCache;
-    }
-
     // Returns the team accent (#rrggbb) used as the secondary trim/sash swap
     // target, or null when the agent is not part of any team (skip swap).
     _teamTrimAccent() {
@@ -6062,36 +5068,6 @@ export class AgentSprite {
             ctx.beginPath();
             ctx.arc(sx, sy, size, 0, Math.PI * 2);
             ctx.fill();
-        }
-        ctx.restore();
-    }
-
-    // #32 — arrival rune ring. A portal-cyan ring of rune ticks expanding at the
-    // feet over the ceremony window, fading as it grows. Procedural and self-
-    // contained (no ParticleSystem access from draw), mirroring _drawArchiveSparkle.
-    _drawArrivalRuneRing(ctx, progress) {
-        const eased = easeOutCubic(progress);
-        const cx = Math.round(this.x);
-        const cy = Math.round(this.y - 2);
-        const radius = 8 + eased * 20;
-        const alpha = (1 - progress) * 0.8;
-        if (alpha <= 0) return;
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        ctx.globalAlpha = alpha;
-        ctx.strokeStyle = '#8feaff';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, radius, radius * 0.5, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        // Rune ticks around the ring spinning slowly as it rises.
-        ctx.fillStyle = '#d7b8ff';
-        const spin = progress * 1.4;
-        for (let i = 0; i < 6; i++) {
-            const angle = (i / 6) * Math.PI * 2 + spin;
-            const rx = cx + Math.cos(angle) * radius;
-            const ry = cy + Math.sin(angle) * radius * 0.5;
-            ctx.fillRect(rx - 1, ry - 1, 2, 2);
         }
         ctx.restore();
     }
@@ -6261,20 +5237,6 @@ export class AgentSprite {
         });
     }
 
-    _nameTagLayout(ctx, rawName) {
-        const fontStatus = typeof document !== 'undefined' ? document.fonts?.status || 'unknown' : 'unknown';
-        const key = `${rawName}|${ctx.font}|${fontStatus}`;
-        if (this._nameTagLayoutCacheKey === key && this._nameTagLayoutCache) {
-            return this._nameTagLayoutCache;
-        }
-        const lines = this._wrapNameTagLines(ctx, rawName);
-        const contentW = Math.max(...lines.map(line => ctx.measureText(line).width));
-        const layout = { lines, contentW };
-        this._nameTagLayoutCacheKey = key;
-        this._nameTagLayoutCache = layout;
-        return layout;
-    }
-
     _bubbleLayout(ctx, text, maxWidth, anchored) {
         const source = String(text || '');
         const fontStatus = typeof document !== 'undefined' ? document.fonts?.status || 'unknown' : 'unknown';
@@ -6314,23 +5276,6 @@ export class AgentSprite {
         return layout;
     }
 
-    _compactNameStatusLayout(ctx, rawName) {
-        const fontStatus = typeof document !== 'undefined' ? document.fonts?.status || 'unknown' : 'unknown';
-        const key = `${rawName}|${ctx.font}|${COMPACT_NAME_MAX_TEXT_WIDTH}|${fontStatus}`;
-        if (this._compactNameStatusCacheKey === key && this._compactNameStatusCache) {
-            return this._compactNameStatusCache;
-        }
-        const text = this._fitText(ctx, rawName, COMPACT_NAME_MAX_TEXT_WIDTH);
-        const width = Math.min(
-            COMPACT_NAME_MAX_WIDTH,
-            Math.max(COMPACT_NAME_MIN_WIDTH, ctx.measureText(text).width + COMPACT_NAME_EXTRA_WIDTH),
-        );
-        const layout = { text, width };
-        this._compactNameStatusCacheKey = key;
-        this._compactNameStatusCache = layout;
-        return layout;
-    }
-
     _applyReadableTextShadow(ctx) {
         ctx.shadowColor = 'rgba(8, 5, 4, 0.86)';
         ctx.shadowBlur = 0;
@@ -6338,32 +5283,12 @@ export class AgentSprite {
         ctx.shadowOffsetY = 1;
     }
 
-    _drawRepoLabelGlyph(ctx, x, y, size, repo) {
-        const r = size / 2;
-        ctx.save();
-        ctx.shadowColor = 'rgba(8, 5, 4, 0.7)';
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetX = 1;
-        ctx.shadowOffsetY = 1;
-        ctx.fillStyle = repo.accent || '#f6d384';
-        ctx.strokeStyle = 'rgba(255, 242, 190, 0.88)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(x, y - r);
-        ctx.lineTo(x + r, y);
-        ctx.lineTo(x, y + r);
-        ctx.lineTo(x - r, y);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-    }
-
+    // Head emotes for the quiet states only. Waiting-on-user, errored and
+    // rate-limited heads belong to the T1 beacon and attention plate
+    // (AttentionPlates.js), so those states return null here.
     _statusEmoteKind() {
         const status = this.agent?.status;
-        if (status === AgentStatus.RATE_LIMITED) return 'rate_limited';
-        if (status === AgentStatus.ERRORED) return 'errored';
-        if (status === AgentStatus.WAITING_ON_USER) return 'waiting_on_user';
+        if (isAttentionStatus(status)) return null;
         if (status === AgentStatus.COMPLETED && this._completedAtMs > 0 && Date.now() - this._completedAtMs < 4000) {
             return 'completed';
         }
@@ -6371,14 +5296,6 @@ export class AgentSprite {
             return 'thinking';
         }
         return null;
-    }
-
-    // True when the authored held palm is carrying this wait's subtype, so the
-    // duplicate generic mark can stand down.
-    _waitSubtypeOnBody() {
-        return this._poseCell?.source === 'strip'
-            && this._poseCell.group === 'wait'
-            && ['question', 'approval', 'plan_review'].includes(this.agent?.waitReason);
     }
 
     _drawStatusEmote(ctx, contentTopY) {
@@ -6390,32 +5307,22 @@ export class AgentSprite {
         ctx.translate(this.x, contentTopY);
         ctx.scale(s, s);
         ctx.translate(0, -14);
-        const box = 12;
-        const incident = compactIncidentMark(this.agent?.status, { motionScale: this.motionScale });
-        if (incident?.shapeId === 'hourglass') {
-            drawHourglassGlyph(ctx, box, incident.color);
-        } else if (incident?.shapeId === 'alert') {
-            drawAlertCircleGlyph(ctx, box, incident.color, '!');
-        } else if (kind === 'waiting_on_user') {
-            // 2.3 — an authored palm already holding the letter, the slip, or
-            // the plan says the same thing more truthfully; only an unknown
-            // wait reason keeps the generic mark.
-            if (!this._waitSubtypeOnBody()) drawAlertCircleGlyph(ctx, box, '#ffd13a', '?');
-        } else if (kind === 'completed') {
+        snapScreenOrigin(ctx);
+        if (kind === 'completed') {
             // 0.4 — the small-victory check wears the completed status's own
             // soft gold (STATUS_VISUALS.completed), not a foreign green.
-            this._drawCheckGlyph(ctx, box, STATUS_VISUALS.completed?.color || '#ffd873');
+            drawOutlinedMotif(ctx, 'check', -4, -4, { color: STATUS_VISUALS.completed?.color || '#ffd873' });
         } else if (kind === 'thinking') {
-            this._drawThinkingDotsGlyph(ctx, box, '#cfd6df');
+            this._drawThinkingDotsGlyph(ctx, '#cfd6df');
         }
         ctx.restore();
     }
 
     _drawPlanModeGlyph(ctx, contentTopY) {
-        // Hide when a status emote is rendering — status emote wins the slot.
+        // Hide when a status emote or the T1 beacon owns the slot.
         if (!Number.isFinite(contentTopY)) return;
         if (!this.behavior?.planMode) return;
-        if (this._statusEmoteKind()) return;
+        if (this._statusEmoteKind() || isAttentionStatus(this.agent?.status)) return;
         ctx.save();
         const s = 1 / (this._zoom || 1);
         ctx.translate(this.x, contentTopY);
@@ -6465,25 +5372,13 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    _drawCheckGlyph(ctx, box, color) {
-        const half = box / 2;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.8;
-        ctx.beginPath();
-        ctx.moveTo(-half + 1, 0);
-        ctx.lineTo(-1, half - 1);
-        ctx.lineTo(half - 1, -half + 2);
-        ctx.stroke();
-    }
-
-    _drawThinkingDotsGlyph(ctx, box, color) {
-        const dotSize = 2;
-        const gap = 3;
+    // Three 2 px pixel dots on the snapped screen grid (no arcs).
+    _drawThinkingDotsGlyph(ctx, color) {
         const animated = this.motionScale > 0;
         const moodScale = moodBehaviorMultiplier(this.agent?.mood, 'thinkDuration');
         const duration = this._modelBehavior.thinkDuration * moodScale;
+        ctx.fillStyle = color;
         for (let i = 0; i < 3; i++) {
-            ctx.fillStyle = color;
             // Pulse band: `intrinsic` (slow). Heavy models hold each thought
             // beat longer; reduced motion keeps the complete three-dot glyph.
             ctx.globalAlpha = animated
@@ -6495,12 +5390,9 @@ export class AgentSprite {
                     1,
                 )
                 : 1;
-            ctx.beginPath();
-            ctx.arc(-gap + i * gap, 0, dotSize / 2, 0, Math.PI * 2);
-            ctx.fill();
+            ctx.fillRect(-5 + i * 4, -1, 2, 2);
         }
         ctx.globalAlpha = 1;
-        void box;
     }
 
     _drawStanceOverlay(ctx, frameGeometry) {
@@ -6515,7 +5407,9 @@ export class AgentSprite {
         const directionKey = DIRECTIONS[this.direction] || 's';
         const sideSign = ['sw', 'w', 'nw', 'n'].includes(directionKey) ? -1 : 1;
         const handX = centerX + sideSign * contentWidth * 0.30 * drawScale;
-        const phase = this.motionScale > 0 ? Math.floor(this.frame * 0.1) % 2 : 0;
+        // Pixel grammar: snapped texel stamps, no AA arcs or strokes.
+        const px = Math.round(handX);
+        const py = Math.round(handY);
 
         if (this.chatting) {
             const wavePhase = this.motionScale > 0 ? Math.floor(Date.now() / 600) % 2 : 0;
@@ -6528,27 +5422,21 @@ export class AgentSprite {
         }
 
         if (status === AgentStatus.WORKING && this.agent?.isToolFresh) {
+            // Static 2×2 work dot in the status hue, no blink.
             ctx.save();
             ctx.fillStyle = this._statusVisual()?.color || '#7be39a';
-            ctx.globalAlpha = 0.7 + (phase ? 0.3 : 0);
-            ctx.beginPath();
-            ctx.arc(handX, handY, 1.6, 0, Math.PI * 2);
-            ctx.fill();
+            ctx.fillRect(px - 1, py - 1, 2, 2);
             ctx.restore();
             return;
         }
 
         if (status === AgentStatus.WAITING && !this._statusEmoteKind()) {
+            // A 7-texel stepped chevron above the head.
             ctx.save();
-            ctx.strokeStyle = this._statusVisual()?.color || '#df8c3f';
-            ctx.lineWidth = 1.2;
-            ctx.globalAlpha = 0.85;
-            const baseY = dy + (bounds.minY - 4) * drawScale;
-            ctx.beginPath();
-            ctx.moveTo(centerX - 3, baseY);
-            ctx.lineTo(centerX, baseY + 3);
-            ctx.lineTo(centerX + 3, baseY);
-            ctx.stroke();
+            ctx.fillStyle = this._statusVisual()?.color || '#df8c3f';
+            const baseX = Math.round(centerX);
+            const baseY = Math.round(dy + (bounds.minY - 4) * drawScale);
+            for (let i = -3; i <= 3; i++) ctx.fillRect(baseX + i, baseY + (3 - Math.abs(i)), 1, 1);
             ctx.restore();
             return;
         }
@@ -6570,9 +5458,10 @@ export class AgentSprite {
 
         let preset = null;
         let period = 0;
-        let dy = -28;
-        if (mood.type === 'distressed') { preset = 'fretMote'; period = 2200; dy = -34; }
-        else if (mood.type === 'proud') { preset = 'sparkle'; period = 3400; dy = -40; }
+        // Offsets from the top of the 1:1 head (plan 2.1), not the feet.
+        let dy = 10;
+        if (mood.type === 'distressed') { preset = 'fretMote'; period = 2200; dy = 4; }
+        else if (mood.type === 'proud') { preset = 'sparkle'; period = 3400; dy = -4; }
         else return;
 
         // Stagger beats per agent so a crowd does not pulse in unison.
@@ -6580,7 +5469,7 @@ export class AgentSprite {
         const beat = Math.floor((Date.now() + offset) / period);
         if (beat === this._moodMoteBeat) return;
         this._moodMoteBeat = beat;
-        particleSystem.spawn(preset, this.x, this._visualAnchorY() + dy, 1);
+        particleSystem.spawn(preset, this.x, this._headTopY() + dy, 1);
     }
 
     // #34 — token-flow motes. While the villager is WORKING and parked, recent
@@ -6627,7 +5516,7 @@ export class AgentSprite {
         // Drift toward the bound building centre (world space). The mote rises
         // off the chest, so bias velocity along the chest→building vector.
         const originX = this.x;
-        const originY = this._visualAnchorY() - 24;
+        const originY = this._headTopY() + 18;
         let driftX = 0;
         let driftY = -0.18; // gentle default rise when the building is unknown
         const center = this._tokenFlowBuildingCenter();
@@ -6676,54 +5565,9 @@ export class AgentSprite {
         const storming = this._isStorming();
         if (this._stormingLast && !storming && this.motionScale > 0 && particleSystem) {
             this._reliefSparkAt = Date.now();
-            particleSystem.spawn('distressRelief', this.x, this._visualAnchorY() - 30, 7);
+            particleSystem.spawn('distressRelief', this.x, this._headTopY() + 8, 7);
         }
         this._stormingLast = storming;
-    }
-
-    // #32 — arrival ceremony particle burst. Fires once when the villager lands
-    // (setArrivalState armed `_arrivalBurstPending`): a portal-rune ring rising
-    // around the feet plus a low dust puff kicked up by the materialization.
-    // Runs in update() where the pool is live; reduced motion never arms it.
-    _advanceArrivalCeremony(particleSystem) {
-        if (!this._arrivalBurstPending) return;
-        this._arrivalBurstPending = false;
-        if (!particleSystem || this.motionScale <= 0) return;
-        const visualY = this._visualAnchorY();
-        particleSystem.spawn('portalRune', this.x, visualY - 14, 6, { spread: 10 });
-        particleSystem.spawn('footstep', this.x, visualY + 6, 5, { spread: 9 });
-    }
-
-    // Arrival ceremony progress in [0, 1] over ARRIVAL_CEREMONY_MS, or 0 when
-    // inactive. Drives the draw() scale-up pop + rune ring.
-    _arrivalCeremonyProgress(now = Date.now()) {
-        if (!this._arrivalCeremonyAt) return 0;
-        const elapsed = now - this._arrivalCeremonyAt;
-        if (elapsed < 0) return 0;
-        if (elapsed >= ARRIVAL_CEREMONY_MS) {
-            this._arrivalCeremonyAt = 0;
-            return 0;
-        }
-        return elapsed / ARRIVAL_CEREMONY_MS;
-    }
-
-    // Building work-gesture downbeat: spawn one particle per gesture cycle so
-    // the swing/turn/unfurl lands a spark, page mote, dust puff, etc. on its
-    // peak. Runs in update() (where the pool is available); reduced motion
-    // (motionScale 0 / paused ritual) fires nothing — the draw path shows a
-    // static posed frame instead.
-    _advanceToolRitualGesture(particleSystem) {
-        const ritual = this._toolRitual;
-        if (this.observation?.state === 'stale' || !ritual?.pose || !particleSystem || this.chatting || this.moving) return;
-        if (this.motionScale <= 0 || ritual.motionEnabled === false || ritual.phase === 'fading') return;
-        const period = RITUAL_GESTURE_PERIOD_MS[ritual.pose];
-        if (!period) return;
-        const cycle = Math.floor(Date.now() / period);
-        if (cycle === this._ritualDownbeat) return;
-        this._ritualDownbeat = cycle;
-        const emit = RITUAL_GESTURE_PARTICLE[ritual.pose];
-        if (!emit) return;
-        particleSystem.spawn(emit.preset, this.x + (emit.dx || 0), this._visualAnchorY() + (emit.dy || 0), emit.count || 2);
     }
 
     // Tool ritual pose overlay driven by RitualConductor: a small procedural
@@ -6731,7 +5575,7 @@ export class AgentSprite {
     // the archive, pick-swing at the mine, scroll-unfurl at the taskboard, plus
     // a gaze (observatory), conjure (portal), signal (command), haul (harbor),
     // and scan (watchtower). No new image assets; reduced motion renders each
-    // gesture as a single static frame (no swing offset, no particle).
+    // gesture as a single static frame (no swing offset, no work beat).
     _drawToolRitualOverlay(ctx, frameGeometry) {
         const ritual = this._toolRitual;
         if (this.observation?.state === 'stale' || !ritual?.pose || this.chatting || this.moving) return;
@@ -6786,6 +5630,15 @@ export class AgentSprite {
                 this._drawGestureScaled(ctx, centerX, headY, gestureScale, () => this._drawScanGesture(ctx, 0, 0, sideSign, swing));
                 break;
         }
+        // 6.6 — the Minor-tier work beat lands on the gesture's strike (every
+        // third one); the static pose under reduced motion strikes nothing.
+        if (animated) {
+            const atHead = ritual.pose === 'gaze' || ritual.pose === 'signal' || ritual.pose === 'scan';
+            drawWorkDownbeat(ctx, ritual, Math.round(centerX), Math.round(atHead ? headY : handY), {
+                side: sideSign,
+                scale: gestureScale,
+            });
+        }
         ctx.restore();
     }
 
@@ -6796,7 +5649,8 @@ export class AgentSprite {
         const gate = getActiveMarkGovernor()?.admit(emphasized ? MarkTier.PRIMARY : MarkTier.SECONDARY, this.x, this.y);
         if (gate && !gate.draw) return;
         ctx.save();
-        ctx.translate(Math.round(this.x + 20), Math.round(this._visualAnchorY() - 28));
+        const box = this._bodyBox || DEFAULT_BODY_BOX;
+        ctx.translate(Math.round(this.x + box.right + 6), Math.round(this.y + box.top + 12));
         ctx.scale(1 / (this._zoom || 1), 1 / (this._zoom || 1));
         ctx.globalAlpha *= gate?.alpha ?? 1;
         drawEventShape(ctx, 'stale-seal', -8, -8, 1, '#d4c9ae');
@@ -6807,7 +5661,7 @@ export class AgentSprite {
                 const at = this.observation.observedAt;
                 this._observationLabel = at === null ? 'Last observed time unknown' : `Last observed ${Math.max(0, second - Math.floor(at / 1000))}s ago`;
             }
-            ctx.font = `12px ${WORLD_BODY_FONT}`;
+            ctx.font = WORLD_BODY_FONT_11;
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
             ctx.fillText(this._observationLabel, 12, 0);
@@ -6842,12 +5696,13 @@ export class AgentSprite {
         const gate = getActiveMarkGovernor()?.admit(emphasized ? MarkTier.PRIMARY : MarkTier.SECONDARY, this.x, this.y);
         if (gate && !gate.draw) return;
         ctx.save();
-        ctx.translate(Math.round(this.x + 26), Math.round(this._visualAnchorY() - 12));
+        const box = this._bodyBox || DEFAULT_BODY_BOX;
+        ctx.translate(Math.round(this.x + box.right + 8), Math.round(this.y + box.bottom - 14));
         ctx.scale(1 / (this._zoom || 1), 1 / (this._zoom || 1));
         ctx.fillStyle = '#e7d3a0';
         if (emphasized) {
             drawEventShape(ctx, 'turn-sand', -8, -8, 1, '#e7d3a0');
-            ctx.font = `12px ${WORLD_BODY_FONT}`;
+            ctx.font = WORLD_BODY_FONT_11;
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
             ctx.fillText(this._turnSandText, 10, 0);
@@ -7074,96 +5929,71 @@ export class AgentSprite {
         }
     }
 
-    _snapWorldToScreenPixel(value) {
-        const zoom = this._zoom || 1;
-        return Math.round(value * zoom) / zoom;
+    // One pixel stamp for both impostors: a snapped contact shadow, the
+    // provider diamond with a 1 px dark outline, the agent signature, and the
+    // status cell on the apex as the topmost mark. fillRect only — no arcs,
+    // no strokes, nothing anti-aliased.
+    _paintImpostorStamp(ctx, { provider, statusColor, signature, accent }) {
+        fillPixelEllipse(ctx, 0, 3, 7, 2, 'rgba(7, 10, 12, 0.5)');
+        ctx.fillStyle = IMPOSTOR_OUTLINE;
+        ctx.fillRect(-1, IMPOSTOR_TOP - 1, 2, 1);
+        IMPOSTOR_HALF_WIDTHS.forEach((half, index) => {
+            ctx.fillRect(-half - 1, IMPOSTOR_TOP + index, (half + 1) * 2, 1);
+        });
+        ctx.fillRect(-1, IMPOSTOR_TOP + IMPOSTOR_HALF_WIDTHS.length, 2, 1);
+        ctx.fillStyle = provider;
+        IMPOSTOR_HALF_WIDTHS.forEach((half, index) => {
+            ctx.fillRect(-half, IMPOSTOR_TOP + index, half * 2, 1);
+        });
+        drawAgentSignature(ctx, signature, { x: 0, y: -7, pixel: 1, accent });
+        ctx.fillStyle = IMPOSTOR_OUTLINE;
+        ctx.fillRect(-3, IMPOSTOR_TOP - 5, 6, 6);
+        ctx.fillStyle = statusColor;
+        ctx.fillRect(-2, IMPOSTOR_TOP - 4, 4, 4);
     }
 
-    _drawLowZoomImpostor(ctx) {
+    _impostorStampArgs() {
         const visual = this._statusVisual();
         const trim = this._providerTrimColor();
-        const provider = this._providerAccentColor();
-        const signature = this.signature();
-        const accent = this.signatureAccent();
-        const statusColor = visual?.color || trim;
-        ctx.save();
-        ctx.translate(Math.round(this.x), Math.round(this.y));
-        const paint = (ctx) => {
-            // 3.6 — provider-filled diamond: the zoomed-out village reads as a
-            // provider constellation matching the sidebar glyph hues, instead of a
-            // field of identical dark kites. Dark backing keeps the fill legible
-            // on bright ground; the status dot stays the topmost mark.
-            ctx.fillStyle = 'rgba(7, 10, 12, 0.55)';
-            ctx.beginPath();
-            ctx.ellipse(0, -4, 12, 15, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = provider;
-            ctx.strokeStyle = 'rgba(7, 10, 12, 0.85)';
-            ctx.lineWidth = 1.3;
-            ctx.beginPath();
-            ctx.moveTo(0, -17);
-            ctx.lineTo(9, 1);
-            ctx.lineTo(0, 8);
-            ctx.lineTo(-9, 1);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            // 2.4 — the same signature plate the hero and compact bodies carry, so
-            // an agent stays recognisable after the body collapses to a kite. The
-            // status dot keeps the apex and stays the topmost mark.
-            drawAgentSignature(ctx, signature, { x: 0, y: -1, pixel: 1, accent });
-            ctx.fillStyle = statusColor;
-            ctx.beginPath();
-            ctx.arc(0, -9, 3, 0, Math.PI * 2);
-            ctx.fill();
+        return {
+            trim,
+            provider: this._providerAccentColor(),
+            statusColor: visual?.color || trim,
+            signature: this.signature(),
+            accent: this.signatureAccent(),
         };
+    }
+
+    // Overview (zoom < 1): no body is drawn and world texels are smaller than
+    // screen pixels, so the token is stamped screen-fixed in whole screen
+    // pixels at the feet — minifying it would blur every edge.
+    _drawLowZoomImpostor(ctx, zoom = 1) {
+        const args = this._impostorStampArgs();
+        const z = zoom > 0 ? zoom : 1;
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.scale(1 / z, 1 / z);
+        snapScreenOrigin(ctx);
+        const paint = (target) => this._paintImpostorStamp(target, args);
         if (this.gpuWorldEnabled) {
-            const key = `impostor-low-zoom|${provider}|${trim}|${signature.key}|${accent}|${statusColor}`;
-            this._drawOverlayStamp(ctx, key, -13, -20, 26, 32, paint);
+            const key = `impostor-low-zoom|${args.provider}|${args.trim}|${args.signature.key}|${args.accent}|${args.statusColor}`;
+            this._drawOverlayStamp(ctx, key, IMPOSTOR_BOX.left, IMPOSTOR_BOX.top, IMPOSTOR_BOX.width, IMPOSTOR_BOX.height, paint);
         } else {
             paint(ctx);
         }
         ctx.restore();
     }
 
+    // Crowd pressure (budget mode): world-scaled on the texel grid beside
+    // the 0.5× LOD bodies, so integer zoom tiers land it on whole pixels.
     _drawBudgetImpostor(ctx) {
-        const visual = this._statusVisual();
-        const trim = this._providerTrimColor();
-        const provider = this._providerAccentColor();
-        const signature = this.signature();
-        const accent = this.signatureAccent();
-        const statusColor = visual?.color || trim;
-        const x = Math.round(this.x);
-        const y = Math.round(this.y);
+        const args = this._impostorStampArgs();
         ctx.save();
-        ctx.translate(x, y);
-        const paint = (ctx) => {
-            ctx.fillStyle = 'rgba(5, 8, 12, 0.48)';
-            ctx.beginPath();
-            ctx.ellipse(0, 5, 13, 4, 0, 0, Math.PI * 2);
-            ctx.fill();
-            // 3.6 — provider-filled diamond (same constellation language as the
-            // low-zoom impostor); the separate provider chip is absorbed into it.
-            ctx.fillStyle = provider;
-            ctx.strokeStyle = 'rgba(7, 10, 12, 0.85)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(0, -13);
-            ctx.lineTo(8, 0);
-            ctx.lineTo(0, 7);
-            ctx.lineTo(-8, 0);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            drawAgentSignature(ctx, signature, { x: 0, y: 0, pixel: 1, accent });
-            ctx.fillStyle = statusColor;
-            ctx.beginPath();
-            ctx.arc(0, -7, 2.5, 0, Math.PI * 2);
-            ctx.fill();
-        };
+        ctx.translate(Math.round(this.x), Math.round(this.y));
+        const paint = (target) => this._paintImpostorStamp(target, args);
         if (this.gpuWorldEnabled) {
-            const key = `impostor-budget|${provider}|${trim}|${signature.key}|${accent}|${statusColor}`;
-            this._drawOverlayStamp(ctx, key, -14, -14, 28, 24, paint);
+            const key = `impostor-budget|${args.provider}|${args.trim}|${args.signature.key}|${args.accent}|${args.statusColor}`;
+            this._drawOverlayStamp(ctx, key, IMPOSTOR_BOX.left, IMPOSTOR_BOX.top, IMPOSTOR_BOX.width, IMPOSTOR_BOX.height, paint);
         } else {
             paint(ctx);
         }
@@ -7189,69 +6019,16 @@ export class AgentSprite {
         return color;
     }
 
-    _wrapNameTagLines(ctx, rawName) {
-        const name = String(rawName || '').trim();
-        if (!name) return ['Agent'];
-        if (ctx.measureText(name).width <= NAME_TAG_MAX_TEXT_WIDTH) return [name];
-
-        const parts = name
-            .replace(/-/g, '- ')
-            .split(/\s+/)
-            .filter(Boolean);
-
-        const lines = [];
-        let current = '';
-        for (const part of parts) {
-            const joiner = current && !current.endsWith('-') ? ' ' : '';
-            const candidate = `${current}${joiner}${part}`;
-            if (!current || ctx.measureText(candidate).width <= NAME_TAG_MAX_TEXT_WIDTH) {
-                current = candidate;
-                continue;
-            }
-            lines.push(current.trim());
-            current = part;
-            if (lines.length === 1) break;
-        }
-        if (current && lines.length < 2) lines.push(current.trim());
-
-        if (lines.length === 0) return [this._truncateNameTagLine(ctx, name, NAME_TAG_MAX_TEXT_WIDTH)];
-        if (lines.length === 1) return [this._truncateNameTagLine(ctx, lines[0], NAME_TAG_MAX_TEXT_WIDTH)];
-
-        const consumed = lines.join(' ').replace(/- /g, '-');
-        const normalized = name.replace(/\s+/g, ' ');
-        if (consumed.length < normalized.length) {
-            const remaining = normalized.slice(consumed.length).trim();
-            lines[1] = this._truncateNameTagLine(ctx, `${lines[1]} ${remaining}`.trim(), NAME_TAG_MAX_TEXT_WIDTH);
-        } else {
-            lines[1] = this._truncateNameTagLine(ctx, lines[1], NAME_TAG_MAX_TEXT_WIDTH);
-        }
-        return lines.slice(0, 2).map(line => line.replace(/- /g, '-'));
-    }
-
-    _truncateNameTagLine(ctx, text, maxWidth) {
-        let out = String(text || '').trim().replace(/- /g, '-');
-        if (ctx.measureText(out).width <= maxWidth) return out;
-        while (out.length > 1 && ctx.measureText(`${out}…`).width > maxWidth) {
-            out = out.slice(0, -1);
-        }
-        return `${out}…`;
-    }
-
-    _fitText(ctx, text, maxWidth) {
-        let out = String(text || '').trim();
-        if (!out) return '';
-        if (ctx.measureText(out).width <= maxWidth) return out;
-        while (out.length > 1 && ctx.measureText(`${out}…`).width > maxWidth) {
-            out = out.slice(0, -1);
-        }
-        return `${out}…`;
-    }
-
+    // Plan 2.1 — the hit box is the 1:1 body actually drawn (plus a small
+    // pad and the contact shadow under the feet), so a click lands on the
+    // villager, not on the air where the old 1.65x giant used to stand.
     hitTest(screenX, screenY) {
         if (this.isArrivalPending()) return false;
+        const box = this._bodyBox || DEFAULT_BODY_BOX;
         const dx = screenX - this.x;
         const dy = screenY - (this.y - this._currentBridgeLift());
-        return Math.abs(dx) < SPRITE_HIT_HALF_WIDTH && dy > SPRITE_HIT_TOP && dy < SPRITE_HIT_BOTTOM;
+        return dx > box.left - HIT_PAD && dx < box.right + HIT_PAD
+            && dy > box.top - HIT_PAD && dy < Math.max(box.bottom, 4) + HIT_PAD;
     }
 }
 
@@ -7480,17 +6257,11 @@ export function drawFamiliarMotes(ctx, {
         ctx.lineWidth = 1;
         const x = 18;
         const y = -38;
-        if (ctx.roundRect) {
-            ctx.beginPath();
-            ctx.roundRect(x - 9, y - 7, 18, 12, 3);
-            ctx.fill();
-            ctx.stroke();
-        } else {
-            ctx.fillRect(x - 9, y - 7, 18, 12);
-            ctx.strokeRect(x - 9, y - 7, 18, 12);
-        }
+        const w = 6 + String(hiddenCount).length * 8 + 8;
+        ctx.fillRect(x - w / 2, y - 7, w, 13);
+        ctx.strokeRect(x - w / 2 + 0.5, y - 6.5, w - 1, 12);
         ctx.fillStyle = '#f8ead1';
-        ctx.font = 'bold 6px "Press Start 2P", monospace';
+        ctx.font = WORLD_DISPLAY_FONT_8;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(`+${hiddenCount}`, x, y);

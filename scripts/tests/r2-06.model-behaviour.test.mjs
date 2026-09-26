@@ -66,9 +66,7 @@ test('reduced motion keeps the complete static thinking glyph and allocates no f
     const ctx = {
         fillStyle: '',
         globalAlpha: 1,
-        beginPath() {},
-        arc() {},
-        fill() { fillAlphas.push(this.globalAlpha); },
+        fillRect() { fillAlphas.push(this.globalAlpha); },
     };
     const sprite = {
         motionScale: 0,
@@ -77,7 +75,7 @@ test('reduced motion keeps the complete static thinking glyph and allocates no f
         _modelBehavior: MODEL_BEHAVIOR_PROFILES[ModelBehaviorTier.DELIBERATE],
     };
 
-    AgentSprite.prototype._drawThinkingDotsGlyph.call(sprite, ctx, 12, '#fff');
+    AgentSprite.prototype._drawThinkingDotsGlyph.call(sprite, ctx, '#fff');
     AgentSprite.prototype._advanceFidget.call(sprite, 16);
 
     assert.deepEqual(fillAlphas, [1, 1, 1]);

@@ -1,6 +1,7 @@
 import { resolveObservation } from './ObservationCertainty.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
+import { defineMoment, momentPhase } from './EffectStamps.js';
 
 const MAX_CONCURRENT_RITUALS = 6;
 const COALESCE_WINDOW_MS = 250;
@@ -22,9 +23,10 @@ const RITUAL_META = {
 // buildings gets a small repeated gesture (hammer-tick at the forge,
 // page-turn at the archive, pick-swing at the mine, scroll-unfurl at the
 // taskboard, …) drawn procedurally by AgentSprite._drawToolRitualOverlay.
-// `period` is the gesture cadence in ms; AgentSprite fires one downbeat
-// particle per cycle. Consumed via getAgentPoses(); reduced motion draws
-// the static posed frame and emits no particle.
+// `period` is the gesture cadence in ms; every gesture strikes on its cycle
+// boundary, and `ritualDownbeat` below turns some of those strikes into C4
+// Minor-tier work beats. Consumed via getAgentPoses(); reduced motion draws
+// the static posed frame and no beat (a Minor moment has no residue).
 const RITUAL_POSE_BY_BUILDING = {
     forge: 'hammer',
     archive: 'page',
@@ -38,7 +40,7 @@ const RITUAL_POSE_BY_BUILDING = {
 };
 
 // Gesture cadence (ms per downbeat) keyed by pose. AgentSprite reads this to
-// time both the procedural animation and the one-shot particle on the peak.
+// time the procedural animation; `ritualDownbeat` reads it to time the beat.
 const RITUAL_GESTURE_PERIOD_MS = {
     hammer: 460,
     page: 900,
@@ -50,6 +52,34 @@ const RITUAL_GESTURE_PERIOD_MS = {
     haul: 980,
     scan: 1300,
 };
+
+// 6.6 — work downbeats. A gesture strikes on every cycle boundary; only the
+// ritual's first strike and every third after it lands a C4 Minor beat
+// (wind-up -> one cream strike frame -> stepped ember decay, 400 ms in all, no
+// residue), roughly halving the old one-mark-per-cycle metronome. The beat is
+// a pure function of the wall clock the gesture animation already uses, so
+// the stamp and the drawn strike can never drift apart.
+export const DOWNBEAT_MOMENT = defineMoment('minor', { anticipation: 120, peak: 70, follow: 210 });
+const DOWNBEAT_STRIDE = 3;
+
+// The beat on screen for `ritual` at `now` (Date.now clock), or null. Only a
+// playing ritual (a real tool:invoked event the agent is visibly performing)
+// strikes; a fading ritual finishes a beat that has already struck.
+export function ritualDownbeat(ritual, now = Date.now()) {
+    if (!ritual?.pose || ritual.motionEnabled === false) return null;
+    if (ritual.phase !== 'playing' && ritual.phase !== 'fading') return null;
+    const period = RITUAL_GESTURE_PERIOD_MS[ritual.pose];
+    const origin = ritual.beatOrigin;
+    if (!period || !Number.isFinite(origin)) return null;
+    const lead = DOWNBEAT_MOMENT.anticipation;
+    const beat = Math.floor((now + lead) / period);
+    const index = beat - origin;
+    if (index < 0 || index % DOWNBEAT_STRIDE !== 0) return null;
+    const age = now - (beat * period - lead);
+    if (ritual.phase === 'fading' && age < lead) return null;
+    const phase = momentPhase(age, DOWNBEAT_MOMENT);
+    return phase.phase === 'done' ? null : { index, age, ...phase };
+}
 
 // #41 — place-specific idle posture for villagers loitering at a scenic point.
 // Keyed by AMBIENT_SCENIC_POINTS id; AgentSprite consults this while parked-idle
@@ -467,7 +497,13 @@ export class RitualConductor {
             ritual.motionEnabled = this.motionScale > 0 && resolveObservation(agent, Date.now()).state !== 'stale';
             ritual.elapsedMs += delta;
             ritual.remainingMs -= delta;
-            if (ritual.elapsedMs >= 180 && ritual.phase === 'pending') ritual.phase = 'playing';
+            if (ritual.elapsedMs >= 180 && ritual.phase === 'pending') {
+                ritual.phase = 'playing';
+                // 6.6 — the first strike whose wind-up starts after the ritual
+                // is on screen is beat 0; a coalesced repeat keeps its origin.
+                const period = RITUAL_GESTURE_PERIOD_MS[ritual.pose];
+                if (period) ritual.beatOrigin = Math.floor((Date.now() + DOWNBEAT_MOMENT.anticipation) / period) + 1;
+            }
             if (ritual.remainingMs <= 280 && ritual.phase !== 'done') ritual.phase = 'fading';
             if (ritual.remainingMs <= 0) ritual.phase = 'done';
         }

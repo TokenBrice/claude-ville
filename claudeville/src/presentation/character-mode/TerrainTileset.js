@@ -1,74 +1,54 @@
-// TerrainTileset maps a (tileX, tileY, classId) + neighbor mask to a Wang tile cell.
+// Land Wang sheets as texture sources for the ground bake (GroundBake.js).
+//
+// Each sheet is a 4×4 grid of 32×32 cells indexed by the 4-bit edge mask
+// (bit 0 = N, 1 = E, 2 = S, 3 = W); cell 0 is all lower class, cell 15 all
+// upper class. The bake no longer stamps cells per tile (a square top-down
+// cell stretched unrotated into the 64×32 diamond put its transition art on
+// the diamond's vertices). It reads a full-class cell's luminance drawing
+// and samples it in true 2:1 axonometric orientation: cell (u, v) maps to
+// tile coordinates (tileX − 0.5 + u/32, tileY − 0.5 + v/32), so the cell's
+// NW corner sits on the tile's top vertex and one cell texel is a 2×1 rhombus.
 
-import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+const TILESET_GRID_COLS = 4;
+const TILESET_CELL = 32;
 
-// Wang 4-bit edge mask: bit 0 = N same, 1 = E same, 2 = S same, 3 = W same.
-// Index 0..15 maps to a 4x4 grid of 32x32 cells in a 128x128 tileset PNG.
+const cache = new WeakMap();
 
-const TILESET_GRID_COLS = 4;          // 4x4 grid of 16 Wang variants
-const TILESET_CELL = 32;              // each variant is 32x32
-
-export class TerrainTileset {
-    constructor(assets) {
-        this.assets = assets;
-        this.cell = TILESET_CELL;
+// Luminance of one cell as z-scores (mean 0, unit deviation), row-major
+// 32×32. Colour is discarded: the bake re-tones the drawing onto the C1
+// ground ramps. Cached per image.
+export function readTerrainCellLuma(image, cell) {
+    let perImage = cache.get(image);
+    if (!perImage) {
+        perImage = new Map();
+        cache.set(image, perImage);
     }
-
-    // isClass(tx, ty) → boolean: tile belongs to upper class.
-    drawTile(ctx, sheetId, tileX, tileY, isClass) {
-        const sheet = this.assets.get(sheetId);
-        if (!sheet) return;
-        const mask = (isClass(tileX, tileY - 1) ? 1 : 0)
-                   | (isClass(tileX + 1, tileY) ? 2 : 0)
-                   | (isClass(tileX, tileY + 1) ? 4 : 0)
-                   | (isClass(tileX - 1, tileY) ? 8 : 0);
-        const sx = (mask % TILESET_GRID_COLS) * this.cell;
-        const sy = Math.floor(mask / TILESET_GRID_COLS) * this.cell;
-        const screenX = (tileX - tileY) * (TILE_WIDTH / 2);
-        const screenY = (tileX + tileY) * (TILE_HEIGHT / 2);
-        // Stretch the 32x32 source cell into the 64x32 iso slot, anchored on
-        // the diamond center, then clip to the diamond so corners don't bleed
-        // into neighbours and create a patchwork seam.
-        const dx = Math.round(screenX - TILE_WIDTH / 2);
-        const dy = Math.round(screenY - TILE_HEIGHT / 2);
-        ctx.save();
-        ctx.beginPath();
-        ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
-        ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
-        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
-        ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
-        ctx.closePath();
-        ctx.clip();
-        // There is one source cell per Wang mask, so every fully-interior tile
-        // used to blit the identical 32x32 image — which is why a field of dirt
-        // or grass reads as a stamped, regularly repeating texture at tile
-        // frequency. Mirroring interior tiles on a per-tile hash doubles the
-        // variety for free.
-        //
-        // Only mask 15 (all four neighbours the same class) is mirrored: any
-        // other mask encodes which edges are transitions, and flipping those
-        // would put the transition on the wrong side. Mirroring is horizontal
-        // only, so the tileset art keeps its top-left light direction.
-        const interior = mask === 15;
-        if (interior && (hashTile(tileX, tileY) & 1)) {
-            // Mirror about the diamond centre: after translate(screenX)+scale(-1,1)
-            // a draw at local x spans screen [screenX - x - w, screenX - x], so
-            // x = -TILE_WIDTH/2 lands the image exactly on the tile.
-            ctx.translate(screenX, 0);
-            ctx.scale(-1, 1);
-            ctx.drawImage(sheet, sx, sy, this.cell, this.cell,
-                -TILE_WIDTH / 2, dy, TILE_WIDTH, TILE_HEIGHT);
-        } else {
-            ctx.drawImage(sheet, sx, sy, this.cell, this.cell, dx, dy, TILE_WIDTH, TILE_HEIGHT);
-        }
-        ctx.restore();
+    if (perImage.has(cell)) return perImage.get(cell);
+    const canvas = document.createElement('canvas');
+    canvas.width = TILESET_CELL;
+    canvas.height = TILESET_CELL;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(
+        image,
+        (cell % TILESET_GRID_COLS) * TILESET_CELL,
+        Math.floor(cell / TILESET_GRID_COLS) * TILESET_CELL,
+        TILESET_CELL, TILESET_CELL,
+        0, 0, TILESET_CELL, TILESET_CELL,
+    );
+    const data = ctx.getImageData(0, 0, TILESET_CELL, TILESET_CELL).data;
+    const n = TILESET_CELL * TILESET_CELL;
+    const luma = new Float32Array(n);
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+        const l = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
+        luma[i] = l;
+        sum += l;
     }
-}
-
-// Deterministic per-tile hash — the same tile always picks the same variant, so
-// the terrain cache stays stable across re-bakes.
-function hashTile(tileX, tileY) {
-    let h = (Math.imul(tileX | 0, 73856093) ^ Math.imul(tileY | 0, 19349663)) >>> 0;
-    h = Math.imul(h ^ (h >>> 13), 1274126177);
-    return (h ^ (h >>> 16)) >>> 0;
+    const mean = sum / n;
+    let variance = 0;
+    for (let i = 0; i < n; i++) variance += (luma[i] - mean) ** 2;
+    const sd = Math.sqrt(Math.max(1, variance / n));
+    for (let i = 0; i < n; i++) luma[i] = (luma[i] - mean) / sd;
+    perImage.set(cell, luma);
+    return luma;
 }

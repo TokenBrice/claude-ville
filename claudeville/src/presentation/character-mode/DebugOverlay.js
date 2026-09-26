@@ -1,5 +1,5 @@
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
-import { WORLD_BODY_FONT } from '../../config/theme.js';
+import { WORLD_BODY_FONT_11 } from '../../config/theme.js';
 import { CANVAS_BUDGET } from './CanvasBudget.js';
 
 export class DebugOverlay {
@@ -105,7 +105,7 @@ export class DebugOverlay {
         const reservations = Array.isArray(visitReservations?.reservations) ? visitReservations.reservations : [];
         ctx.save();
         ctx.lineWidth = 1.5;
-        ctx.font = `10px ${WORLD_BODY_FONT}`;
+        ctx.font = WORLD_BODY_FONT_11;
         ctx.textBaseline = 'bottom';
         for (const reservation of reservations) {
             const point = this._tileToScreen(reservation.tileX, reservation.tileY);
@@ -245,7 +245,7 @@ export class DebugOverlay {
         const padding = 8;
         const lineHeight = 14;
         ctx.save();
-        ctx.font = `11px ${WORLD_BODY_FONT}`;
+        ctx.font = WORLD_BODY_FONT_11;
         // Per-pass timing rows are wider than the old 420 px cap, and fillText's
         // maxWidth squeezes rather than wraps: too narrow a panel makes the
         // numbers unreadable instead of merely cropped. 560 px still leaves the

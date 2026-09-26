@@ -24,23 +24,25 @@ export class ModeManager {
     }
 
     _applyMode(mode) {
-        let shownEl = null;
         if (mode === 'character') {
             if (this.characterEl) this.characterEl.style.display = '';
             if (this.dashboardEl) this.dashboardEl.style.display = 'none';
             this.btnCharacter?.classList.add('topbar__mode-btn--active');
             this.btnDashboard?.classList.remove('topbar__mode-btn--active');
-            shownEl = this.characterEl;
-        } else {
-            if (this.characterEl) this.characterEl.style.display = 'none';
-            if (this.dashboardEl) this.dashboardEl.style.display = '';
-            this.btnDashboard?.classList.add('topbar__mode-btn--active');
-            this.btnCharacter?.classList.remove('topbar__mode-btn--active');
-            shownEl = this.dashboardEl;
+            // 0.5 — the World container is the sky from its first paint and
+            // its canvases fade in on the renderer's first presented frame; a
+            // container fade on top would dip the sky through the page black.
+            this.characterEl?.classList.remove('content__mode--enter');
+            return;
         }
-        // 4.9 — fade the incoming container (CSS `cv-mode-fade-in`, 180ms).
+        if (this.characterEl) this.characterEl.style.display = 'none';
+        if (this.dashboardEl) this.dashboardEl.style.display = '';
+        this.btnDashboard?.classList.add('topbar__mode-btn--active');
+        this.btnCharacter?.classList.remove('topbar__mode-btn--active');
+        // 4.9 — fade the incoming Dashboard (CSS `cv-mode-fade-in`, 180ms).
         // Reduced motion: the CSS media query disables the animation, so this
         // stays an instant cut with no extra JS branching.
+        const shownEl = this.dashboardEl;
         if (shownEl) {
             shownEl.classList.remove('content__mode--enter');
             void shownEl.offsetWidth;

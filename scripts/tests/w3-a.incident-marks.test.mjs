@@ -1,91 +1,63 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
-import { compactIncidentMark } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
+import { layoutAttentionPlates } from '../../claudeville/src/presentation/character-mode/AttentionPlates.js';
 
-const CHARACTER_MODE = '../../claudeville/src/presentation/character-mode/';
+// T1 (plan 5.1): action-needed agents stay unmissable. Layout is pure given a
+// measuring context and a camera, so it runs in plain Node.
+const ctx = { font: '', measureText: text => ({ width: String(text).length * 7 }) };
+const camera = { worldToScreen: (x, y) => ({ x, y: y + 300 }) };
+const viewport = { width: 1600, height: 900 };
 
-function readSource(file) {
-    return readFileSync(new URL(CHARACTER_MODE + file, import.meta.url), 'utf8');
+function sprite(id, status, x, since = null) {
+    return { x, y: 0, agent: { id, name: id, status, statusSince: since } };
 }
 
-test('errored, rate_limited and waiting_on_user yield distinct primary incident shapes', () => {
-    const errored = compactIncidentMark(AgentStatus.ERRORED);
-    const quota = compactIncidentMark(AgentStatus.RATE_LIMITED);
-    const needsYou = compactIncidentMark(AgentStatus.WAITING_ON_USER);
-
-    assert.equal(errored.primary, true);
-    assert.equal(quota.primary, true);
-    assert.equal(needsYou.primary, true);
-    assert.equal(errored.slot, 'incident');
-    assert.equal(quota.slot, 'incident');
-    assert.equal(needsYou.slot, 'incident');
-    assert.equal(errored.shapeId, 'alert');
-    assert.equal(quota.shapeId, 'hourglass');
-    assert.equal(needsYou.shapeId, 'beacon');
-    assert.notEqual(errored.shapeId, quota.shapeId);
-    assert.notEqual(errored.shapeId, needsYou.shapeId);
-    assert.notEqual(quota.shapeId, needsYou.shapeId);
+test('every action-needed agent gets a beacon and a plate; quiet agents get neither', () => {
+    const now = 100_000;
+    const layout = layoutAttentionPlates(ctx, {
+        sprites: [
+            sprite('w', AgentStatus.WAITING_ON_USER, 100, now - 13_000),
+            sprite('e', AgentStatus.ERRORED, 600),
+            sprite('q', AgentStatus.RATE_LIMITED, 1100, now - 5_000),
+            sprite('k', AgentStatus.WORKING, 1400),
+            sprite('i', AgentStatus.IDLE, 1500),
+        ],
+        camera, viewport, now,
+    });
+    assert.equal(layout.count, 3);
+    assert.equal(layout.beacons.length, 3);
+    const byName = Object.fromEntries(layout.plates.map(plate => [plate.text, plate]));
+    assert.equal(byName.w.word, 'NEEDS YOU');
+    assert.equal(byName.w.age, '13s');
+    assert.equal(byName.e.word, 'ERROR');
+    assert.equal(byName.q.word, 'LIMIT');
+    // Rate limit shows its age.
+    assert.equal(byName.q.age, '5s');
 });
 
-test('working, idle, completed and waiting yield no incident mark', () => {
-    for (const status of [
-        AgentStatus.WORKING,
-        AgentStatus.IDLE,
-        AgentStatus.COMPLETED,
-        AgentStatus.WAITING,
-        'unknown',
-        null,
-    ]) {
-        assert.equal(compactIncidentMark(status), null, String(status));
-    }
+test('three or more colliding plates collapse to one exact group plate; each body keeps its beacon', () => {
+    const now = 100_000;
+    const sprites = Array.from({ length: 9 }, (_, index) =>
+        sprite(`Wait ${index + 1}`, AgentStatus.WAITING_ON_USER, 400 + index * 6, now - (20_000 - index * 1000)));
+    const layout = layoutAttentionPlates(ctx, { sprites, camera, viewport, now });
+    assert.equal(layout.beacons.length, 9);
+    assert.equal(layout.plates.length, 1);
+    assert.equal(layout.plates[0].members, 9);
+    assert.equal(layout.plates[0].text, '9 · oldest Wait 1');
+    assert.equal(layout.plates[0].age, '20s');
 });
 
-test('reduced motion yields a static descriptor with no animation phase', () => {
-    for (const status of [
-        AgentStatus.ERRORED,
-        AgentStatus.RATE_LIMITED,
-        AgentStatus.WAITING_ON_USER,
-    ]) {
-        const reduced = compactIncidentMark(status, { motionScale: 0 });
-        const moving = compactIncidentMark(status, { motionScale: 1 });
-        assert.equal(reduced.static, true);
-        assert.equal('animationPhase' in reduced, false);
-        assert.equal(reduced.animationPhase, undefined);
-        // Same frozen descriptor either way: overview never allocates a pulse.
-        assert.equal(reduced, moving);
-    }
-});
-
-// AgentSprite.js and AgentGpuOverlayRenderer.js are canvas-coupled: importing
-// them exercises module init, but the draw() paths cannot be executed in
-// plain Node without a DOM stub. Source-contract assertions are the check
-// that overview zoom actually *calls* the helper. Technique: read the files
-// as text, extract the `zoom < 1` early-return block, and require the shared
-// helper name to appear before that `return` — the previous defect was that
-// the branch returned after the impostor/beacon/tool glyph and skipped the
-// status emotes defined later in the full-body path.
-test('low-zoom canvas branch draws incident marks before returning, and both paths share the helper', () => {
-    const spriteSource = readSource('AgentSprite.js');
-    const overlaySource = readSource('AgentGpuOverlayRenderer.js');
-
-    assert.match(spriteSource, /bucketForStatus/);
-    assert.match(spriteSource, /export function compactIncidentMark/);
-    assert.match(spriteSource, /export function drawCompactIncidentMark/);
-
-    const lowZoom = spriteSource.match(
-        /if\s*\(\s*!this\.selected\s*&&\s*zoom\s*<\s*1\s*\)\s*\{[\s\S]*?\n            return;/,
-    );
-    assert.ok(lowZoom, 'low-zoom early-return branch must still exist');
-    assert.match(lowZoom[0], /compactIncidentMark/);
-    assert.match(lowZoom[0], /drawCompactIncidentMark/);
-    assert.doesNotMatch(lowZoom[0], /_drawStatusEmote/);
-    const helperAt = lowZoom[0].indexOf('drawCompactIncidentMark');
-    const returnAt = lowZoom[0].lastIndexOf('return');
-    assert.ok(helperAt >= 0 && helperAt < returnAt, 'incident marks must be drawn before the low-zoom return');
-
-    assert.match(overlaySource, /compactIncidentMark/);
-    assert.match(overlaySource, /drawCompactIncidentMark/);
+test('stacked plates never overlap, and an arriving agent has no plate yet', () => {
+    const sprites = [
+        sprite('a', AgentStatus.ERRORED, 400),
+        sprite('b', AgentStatus.ERRORED, 430),
+        { ...sprite('c', AgentStatus.ERRORED, 900), isArrivalPending: () => true },
+    ];
+    const layout = layoutAttentionPlates(ctx, { sprites, camera, viewport });
+    assert.equal(layout.plates.length, 2);
+    const [a, b] = layout.plates.map(plate => plate.rect);
+    const overlap = a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    assert.equal(overlap, false);
 });

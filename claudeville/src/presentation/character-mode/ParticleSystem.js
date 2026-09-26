@@ -11,8 +11,8 @@ const PARTICLE_GRAVITY = 0.05;
 const MAX_PARTICLES = 240;
 
 export const PARTICLE_ROLES = Object.freeze({
-    fauna: Object.freeze(['butterfly', 'dragonfly', 'firefly']),
-    ambient: Object.freeze(['sparkle', 'leaf']),
+    fauna: Object.freeze(['butterfly', 'dragonfly']),
+    ambient: Object.freeze(['sparkle', 'leaf', 'petal', 'snow']),
 });
 
 export function particleRole(type) {
@@ -37,19 +37,6 @@ export function particleSpawnAllowed(type, {
     return true;
 }
 
-// C6 — parse a `#rrggbb` string into an `rgba()` string at the given alpha.
-// Used for the firefly halo gradient stops; falls back to a warm glow tint for
-// any non-hex color so custom-palette callers never throw.
-function hexToRgba(hex, a) {
-    const h = String(hex).replace('#', '');
-    if (h.length !== 6) return `rgba(255,241,168,${a})`;
-    const r = parseInt(h.slice(0, 2), 16);
-    const g = parseInt(h.slice(2, 4), 16);
-    const b = parseInt(h.slice(4, 6), 16);
-    if (!Number.isFinite(r + g + b)) return `rgba(255,241,168,${a})`;
-    return `rgba(${r},${g},${b},${a})`;
-}
-
 // C6 — halve a `#rrggbb` color to a darker `rgb()` for the butterfly body seam.
 function darkenHex(hex) {
     const h = String(hex).replace('#', '');
@@ -59,34 +46,6 @@ function darkenHex(hex) {
     const b = (parseInt(h.slice(4, 6), 16) * 0.5) | 0;
     if (!Number.isFinite(r + g + b)) return 'rgb(40,30,20)';
     return `rgb(${r},${g},${b})`;
-}
-
-// 5.8 — firefly glow-stamp cache. The glow branch used to allocate a fresh
-// radial gradient per particle per frame (~240 gradient allocs/frame at the
-// particle cap); now one stamp canvas is baked per glow color and blitted.
-// Bounded LRU — glow colors come from the small preset palettes.
-const GLOW_STAMP_SIZE = 24;
-const GLOW_STAMP_CACHE_LIMIT = 32;
-const _glowStampCache = new Map();
-
-function glowStamp(color) {
-    let stamp = _glowStampCache.get(color);
-    if (stamp) return stamp;
-    const canvas = document.createElement('canvas');
-    canvas.width = GLOW_STAMP_SIZE;
-    canvas.height = GLOW_STAMP_SIZE;
-    const stampCtx = canvas.getContext('2d');
-    const half = GLOW_STAMP_SIZE / 2;
-    const gradient = stampCtx.createRadialGradient(half, half, 0, half, half, half);
-    gradient.addColorStop(0, hexToRgba(color, 0.9));
-    gradient.addColorStop(1, hexToRgba(color, 0));
-    stampCtx.fillStyle = gradient;
-    stampCtx.fillRect(0, 0, GLOW_STAMP_SIZE, GLOW_STAMP_SIZE);
-    if (_glowStampCache.size >= GLOW_STAMP_CACHE_LIMIT) {
-        _glowStampCache.delete(_glowStampCache.keys().next().value);
-    }
-    _glowStampCache.set(color, canvas);
-    return canvas;
 }
 
 class Particle {
@@ -102,14 +61,25 @@ class Particle {
         this.gravity = gravity;
         this.alpha = alpha;
         this.layer = layer;
-        // C6 — shaped-insect draw hints. `shape`/`glow` key the draw branch;
+        // C6 — shaped-insect draw hints. `shape` keys the draw branch;
         // `phase`/`animRate` give each insect a deterministic, per-particle wing
-        // flap / halo pulse cycle seeded once at spawn (never in draw).
+        // flap cycle seeded once at spawn (never in draw).
         this.shape = opts.shape || null;
-        this.glow = !!opts.glow;
         this.phase = opts.phase || 0;
         this.animRate = opts.animRate || 0;
         this.bodyColor = this.shape === 'butterfly' ? darkenHex(color) : null;
+        // 0.1 — non-emissive presets (smoke, dust) take the scene's light when
+        // replayed on an ungraded layer; emissive ones keep their colour.
+        this.lit = !!opts.lit;
+        // 6.7 — `tag` lets an emitter count its own live particles (seasonal
+        // drift caps); `baseColor` is an emissive tone a smoke puff wears only
+        // on its first step (a fire-lit underside at the chimney mouth).
+        this.tag = opts.tag || null;
+        this.baseColor = opts.baseColor || null;
+        // A lit particle whose emitter already graded it for the ungraded
+        // overlay (night chimney smoke: moonlit soot held above the dark)
+        // wears this instead of the generic lit re-tint.
+        this.overlayColor = opts.overlayColor || null;
     }
 
     update(dt = 16) {
@@ -126,13 +96,19 @@ class Particle {
         return this.life > 0;
     }
 
-    draw(ctx, motionEnabled = true) {
+    // 0.1 — every particle lands on whole art pixels: position, size, wing and
+    // halo are rounded to the world texel grid so no sub-pixel square blurs or
+    // mixes under the camera zoom. `litColor` (optional) re-tints lit presets.
+    draw(ctx, motionEnabled = true, litColor = null) {
         const baseAlpha = (this.life / this.maxLife) * this.alpha;
         const age = this.maxLife - this.life;
+        const color = litColor && this.lit ? (this.overlayColor || litColor(this.color)) : this.color;
+        const cx = Math.round(this.x);
+        const cy = Math.round(this.y);
 
         if (EVENT_SHAPES[this.shape]) {
             ctx.globalAlpha = baseAlpha;
-            drawEventShape(ctx, this.shape, this.x - 8, this.y - 8, 1, this.color);
+            drawEventShape(ctx, this.shape, cx - 8, cy - 8, 1, color);
             ctx.globalAlpha = 1;
             return;
         }
@@ -142,43 +118,64 @@ class Particle {
         // mid-flap pose stands in when motion is disabled.
         if (this.shape === 'butterfly') {
             const scale = motionEnabled ? Math.abs(Math.sin(age * this.animRate + this.phase)) : 0.6;
-            const wingW = Math.max(0.5, this.size * scale);
-            const wingH = Math.max(1, this.size * 0.85);
-            const top = this.y - wingH / 2;
+            const wingW = Math.max(1, Math.round(this.size * scale));
+            const wingH = Math.max(1, Math.round(this.size * 0.85));
+            const top = cy - (wingH >> 1);
             ctx.globalAlpha = baseAlpha;
-            ctx.fillStyle = this.color;
-            ctx.fillRect(this.x - wingW, top, wingW, wingH);
-            ctx.fillRect(this.x, top, wingW, wingH);
+            ctx.fillStyle = color;
+            ctx.fillRect(cx - wingW, top, wingW, wingH);
+            ctx.fillRect(cx + 1, top, wingW, wingH);
             ctx.fillStyle = this.bodyColor;
-            ctx.fillRect(this.x - 0.5, top, 1, wingH);
+            ctx.fillRect(cx, top, 1, wingH);
             ctx.globalAlpha = 1;
             return;
         }
 
-        // C6 — firefly: bright core pixel plus a soft radial halo whose alpha
-        // pulses; a constant mid-alpha halo stands in when motion is disabled.
-        // 5.8 — the halo blits a per-color cached stamp (no per-frame gradient
-        // allocations).
-        if (this.glow) {
-            const pulse = motionEnabled
-                ? 0.3 + 0.4 * Math.sin(age * this.animRate + this.phase)
-                : 0.5;
-            const haloR = 3;
-            ctx.globalAlpha = baseAlpha * Math.max(0, pulse);
-            ctx.drawImage(glowStamp(this.color), this.x - haloR, this.y - haloR, haloR * 2, haloR * 2);
+        // 6.7 — a leaf or petal tumbles: a 2×1 / 1×2 art-pixel pair that
+        // alternates every few frames (held flat when motion is off).
+        if (this.shape === 'tumble') {
+            const upright = motionEnabled && Math.floor(age * this.animRate + this.phase) % 2 === 1;
             ctx.globalAlpha = baseAlpha;
-            ctx.fillStyle = this.color;
-            ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
+            ctx.fillStyle = color;
+            ctx.fillRect(cx, cy, upright ? 1 : 2, upright ? 2 : 1);
             ctx.globalAlpha = 1;
             return;
         }
 
-        ctx.globalAlpha = baseAlpha;
-        ctx.fillStyle = this.color;
-        ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
+        // 6.7 — a smoke puff grows 2 -> 3 -> 4 -> 3 art pixels over its life
+        // and thins in four alpha steps instead of a smooth fade; the first
+        // step may wear the fire-lit base tone, which is light and so skips
+        // the scene grade.
+        let size = Math.max(1, Math.round(this.size));
+        let fill = color;
+        let alpha = baseAlpha;
+        if (this.shape === 'puff') {
+            const step = Math.min(3, Math.floor((age / this.maxLife) * 4));
+            size = PUFF_STEP_SIZES[step] + (this.size >= 3 ? 1 : 0);
+            alpha = PUFF_STEP_ALPHA[step] * this.alpha;
+            if (step === 0 && this.baseColor) fill = this.baseColor;
+        }
+        const left = cx - (size >> 1);
+        const top = cy - (size >> 1);
+
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = fill;
+        if (size >= 3) {
+            // A puff, not a tile: the four corner pixels drop out so smoke and
+            // dust read as rounded pixel blobs. Three disjoint rects keep the
+            // alpha even across the blob.
+            ctx.fillRect(left + 1, top, size - 2, size);
+            ctx.fillRect(left, top + 1, 1, size - 2);
+            ctx.fillRect(left + size - 1, top + 1, 1, size - 2);
+        } else {
+            ctx.fillRect(left, top, size, size);
+        }
         ctx.globalAlpha = 1;
     }
 }
+
+const PUFF_STEP_SIZES = Object.freeze([2, 3, 4, 3]);
+const PUFF_STEP_ALPHA = Object.freeze([0.9, 0.75, 0.5, 0.25]);
 
 const PARTICLE_PRESETS = {
     // Default dirt-path footfall: a low brown dust kick (the fallback when no
@@ -259,28 +256,19 @@ const PARTICLE_PRESETS = {
         gravity: false,
         direction: 'up',
     },
-    // #33 — volumetric chimney/forge smoke. A taller, longer-lived column than
-    // the legacy puff so density reads as heat. Callers pass `windX` (a signed
-    // drift velocity) so the column leans downwind, and may override `colors`
-    // with warmer soot tints when the forge runs hot. `warmColors` is the
-    // forge-heat ramp, exported below for BuildingSprite's heat scaling.
+    // #33 / 6.7 — chimney smoke: pixel puffs (shape 'puff' steps 2->3->4->3
+    // art px) on a cool soot ramp. Callers pass `windX` (a signed drift
+    // velocity) so the column leans downwind, may shorten `life` in rain, and
+    // may override `colors` with warmer soot tints when a forge runs hot.
     smoke: {
-        colors: ['#555555', '#777777', '#999999'],
-        size: [3, 6.5],
-        life: [50, 100],
-        speed: [0.12, 0.34],
+        colors: ['#6b6f78', '#8d919a', '#b3b5ba'],
+        size: [2, 3.6],
+        life: [90, 140],
+        speed: [0.22, 0.36],
+        lateral: 0.05,
         gravity: false,
         direction: 'up',
-    },
-    firefly: {
-        colors: ['#fff1a8', '#f6da82', '#b8f58a'],
-        size: [1, 2.4],
-        life: [34, 72],
-        speed: [0.08, 0.28],
-        gravity: false,
-        direction: 'random',
-        // C6 — opt in to the pulsing radial halo in the draw branch.
-        glow: true,
+        shape: 'puff',
     },
     // Daytime ambient insects. Longer life + slow wander so they linger and
     // drift like butterflies rather than sparking like fireflies.
@@ -310,13 +298,25 @@ const PARTICLE_PRESETS = {
         gravity: false,
         direction: 'down',
     },
+    // 6.7 — autumn leaves and spring petals tumble down from canopies as a
+    // 2×1 / 1×2 art-pixel pair (shape 'tumble').
     leaf: {
-        colors: ['#8fbf58', '#b8914b', '#6f8f3e'],
-        size: [1.4, 3],
-        life: [30, 58],
-        speed: [0.18, 0.45],
+        colors: ['#c0703a', '#d9a441', '#8a5a2b'],
+        size: [1, 1],
+        life: [110, 180],
+        speed: [0.14, 0.3],
         gravity: false,
         direction: 'down',
+        shape: 'tumble',
+    },
+    petal: {
+        colors: ['#f2b8c6', '#e89aae'],
+        size: [1, 1],
+        life: [110, 180],
+        speed: [0.12, 0.26],
+        gravity: false,
+        direction: 'down',
+        shape: 'tumble',
     },
     portalRune: {
         shape: 'child-return',
@@ -449,13 +449,63 @@ const PARTICLE_PRESETS = {
     },
 };
 
+// 0.1 — particle layers. `effects` particles live in the world's depth stream:
+// the Canvas renderer draws them in the frame; the resident WebGL path defers
+// them (not drawn) until GPU particle records exist, because they sit at foot
+// or hand height where the ungraded, unsorted overlay would paint them over
+// building fronts and bodies. `air` particles rise above roofs or hang in open
+// air, so the resident path replays them on the overlay. `screen` particles are
+// drawn in screen space on the overlay by both renderers.
+export const PARTICLE_LAYER_EFFECTS = 'effects';
+export const PARTICLE_LAYER_AIR = 'air';
+export const PARTICLE_LAYER_SCREEN = 'screen';
+
+// The admitted open-air set: presets whose every emitter sits at a chimney,
+// torch, hearth mouth or in open air. Presets shared with foot/hand-height
+// sources (footfalls, rain splashes, token motes) stay `effects`; an emitter
+// that is itself open-air (a roof glint, a lantern crown) may opt a spawn in
+// with `{ layer: PARTICLE_LAYER_AIR }`. Seasonal drift (leaves, petals, snow,
+// butterflies) hangs in open air above the lawns.
+export const AIR_PARTICLE_PRESETS = Object.freeze([
+    'smoke',
+    'torch',
+    'buoyTorch',
+    'forgeEmber',
+    'leaf',
+    'petal',
+    'snow',
+    'butterfly',
+]);
+
+// Presets that are matter, not light: they take the scene's light when
+// replayed on the ungraded overlay. Everything else is emissive.
+export const LIT_PARTICLE_PRESETS = Object.freeze([
+    'smoke',
+    'mineDust',
+    'footstep',
+    'cobbleScuff',
+    'crowdBump',
+    'leaf',
+    'petal',
+    'snow',
+    'butterfly',
+]);
+
+const AIR_PRESET_SET = new Set(AIR_PARTICLE_PRESETS);
+const LIT_PRESET_SET = new Set(LIT_PARTICLE_PRESETS);
+
+export function particleLayerFor(type, requested = null) {
+    if (requested) return String(requested);
+    return AIR_PRESET_SET.has(type) ? PARTICLE_LAYER_AIR : PARTICLE_LAYER_EFFECTS;
+}
+
 // #18 — exported so HarborTraffic's inline buoy flame stays colour-matched to
 // the shared `buoyTorch` preset without owning a particle pool.
 export const BUOY_TORCH_COLORS = Object.freeze([...PARTICLE_PRESETS.buoyTorch.colors]);
 
-// #33 — cool baseline soot and a warm forge-heat ramp. BuildingSprite blends
-// toward the warm tints as `_forgeGlow` rises so a hot hearth pushes browner,
-// ember-lit smoke while a banked forge stays grey.
+// #33 — cool baseline soot and a warm forge-heat ramp. ChimneySmoke blends
+// toward the warm tints as the forge hearth heats, so a hot hearth pushes
+// browner, ember-lit smoke while a banked forge stays grey.
 export const SMOKE_COOL_COLORS = Object.freeze([...PARTICLE_PRESETS.smoke.colors]);
 export const SMOKE_WARM_COLORS = Object.freeze(['#6b5240', '#8a6a4c', '#a8806b']);
 
@@ -494,10 +544,6 @@ function seededRandom(seed, index) {
 
 function randFrom(rng, min, max) {
     return min + rng() * (max - min);
-}
-
-function pickFrom(rng, arr) {
-    return arr[Math.floor(rng() * arr.length)] || arr[0];
 }
 
 export class ParticleSystem {
@@ -555,13 +601,21 @@ export class ParticleSystem {
         const spreadRange = normalizeRange(options.spread, [3, 3]);
         const gravity = options.gravity ?? preset.gravity;
         const direction = options.direction || preset.direction;
-        const layer = options.layer || preset.layer || 'effects';
-        // C6 — shaped-insect draw hints carried from the preset. When set, each
-        // particle gets a deterministic flap/pulse phase seeded from its rng
-        // below so animation never calls Math.random in draw.
+        // 6.7 — sideways jitter for up/down presets (a chimney column wants
+        // almost none; the legacy default is ±0.3).
+        const lateral = Number.isFinite(preset.lateral) ? preset.lateral : 0.3;
+        const layer = particleLayerFor(type, options.layer);
+        const lit = LIT_PRESET_SET.has(type);
+        // C6 / 6.7 — drawn-shape hints carried from the preset (butterfly
+        // wings, tumbling leaves, smoke puffs).
         const shape = options.shape || preset.shape || null;
-        const glow = !!preset.glow;
         const seed = options.seed;
+        const tag = options.tag || null;
+        const baseColor = typeof options.baseColor === 'string' ? options.baseColor : null;
+        // `overlayColors[i]` is the pre-graded overlay tone of `colors[i]`.
+        const overlayColors = Array.isArray(options.overlayColors) && options.overlayColors.length === colors.length
+            ? options.overlayColors
+            : null;
         // #33 — signed horizontal drift (world units / 16ms) added to every
         // particle's vx so a rising smoke column leans downwind. Defaults to 0
         // so existing callers are unaffected.
@@ -579,7 +633,8 @@ export class ParticleSystem {
             const size = randFrom(rng, sizeRange[0], sizeRange[1]);
             const life = Math.floor(randFrom(rng, lifeRange[0], lifeRange[1]));
             const speed = randFrom(rng, speedRange[0], speedRange[1]);
-            const color = pickFrom(rng, colors);
+            const colorIndex = Math.min(colors.length - 1, Math.floor(rng() * colors.length));
+            const color = colors[colorIndex];
             const alpha = randFrom(rng, alphaRange[0], alphaRange[1]);
             const spread = randFrom(rng, spreadRange[0], spreadRange[1]);
 
@@ -588,11 +643,11 @@ export class ParticleSystem {
 
             switch (direction) {
                 case 'up':
-                    vx = randFrom(rng, -0.3, 0.3);
+                    vx = randFrom(rng, -lateral, lateral);
                     vy = -speed;
                     break;
                 case 'down':
-                    vx = randFrom(rng, -0.3, 0.3);
+                    vx = randFrom(rng, -lateral, lateral);
                     vy = speed * 0.3;
                     break;
                 case 'random':
@@ -605,14 +660,13 @@ export class ParticleSystem {
             vx += windDrift;
             vy += driftY;
 
-            let opts;
-            if (shape === 'butterfly' || glow) {
-                opts = {
-                    shape,
-                    glow,
-                    phase: rng() * Math.PI * 2,
-                    animRate: (shape === 'butterfly' ? 0.35 : 0.14) * (0.85 + 0.3 * rng()),
-                };
+            // Drawn shapes get a deterministic flap/tumble phase seeded from
+            // the spawn rng so animation never calls Math.random in draw.
+            const opts = { lit, tag, baseColor, overlayColor: overlayColors ? overlayColors[colorIndex] : null };
+            if (shape === 'butterfly' || shape === 'tumble' || shape === 'puff') {
+                opts.shape = shape;
+                opts.phase = rng() * Math.PI * 2;
+                opts.animRate = (shape === 'butterfly' ? 0.35 : 0.12) * (0.85 + 0.3 * rng());
             }
 
             this.particles.push(new Particle(
@@ -643,16 +697,25 @@ export class ParticleSystem {
         this.particles.length = next;
     }
 
-    draw(ctx, { layer = null, excludeLayer = null } = {}) {
+    // `litColor` (optional) maps a lit particle's authored hex to the colour
+    // it should take on an ungraded layer; emissive particles ignore it.
+    draw(ctx, { layer = null, excludeLayer = null, litColor = null } = {}) {
         if (this.particles.length === 0) return;
         const wantedLayer = layer == null ? null : String(layer);
         const excludedLayer = excludeLayer == null ? null : String(excludeLayer);
         for (const p of this.particles) {
-            const particleLayer = p.layer || 'effects';
+            const particleLayer = p.layer || PARTICLE_LAYER_EFFECTS;
             if (wantedLayer && particleLayer !== wantedLayer) continue;
             if (excludedLayer && particleLayer === excludedLayer) continue;
-            p.draw(ctx, this.motionEnabled);
+            p.draw(ctx, this.motionEnabled, litColor);
         }
+    }
+
+    // 6.7 — live particles an emitter spawned under `tag` (visible caps).
+    countTagged(tag) {
+        let count = 0;
+        for (const p of this.particles) if (p.tag === tag) count++;
+        return count;
     }
 
     clear() {

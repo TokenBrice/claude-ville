@@ -2,6 +2,7 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { bucketAgents, bucketCounts, bucketForStatus } from '../../domain/services/SignalLedger.js';
 import { toolCategory } from '../../domain/services/ToolIdentity.js';
 import { AvatarCanvas } from './AvatarCanvas.js';
+import { ObservedCallTapeStore, paintTape, TAPE_BUCKET_MS, TAPE_HEIGHT, TAPE_WIDTH } from './ObservedCallTape.js';
 import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
@@ -10,8 +11,8 @@ import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import {
     collisionsForAgent,
     formatCost,
+    formatElapsed,
     formatRelative,
-    formatStatusElapsed,
     formatTokens,
     formatToolDetail,
     normalizeStatus,
@@ -24,7 +25,6 @@ import {
 import { AgentSelectionMirror, emitAgentDeselected, emitAgentSelected } from '../shared/AgentSelection.js';
 import { operatorStatusLabel } from '../shared/SemanticTriage.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
-import { phaseNameForDate } from '../character-mode/AtmosphereState.js';
 import { attentionAgentIds, isKeyboardEditTarget, nextCardId, recoveryCardId } from './DashboardKeyboardNavigation.js';
 import {
     pixelIcon,
@@ -50,11 +50,21 @@ const PROMPT_DETAIL_MAX_LENGTH = 200;
 const DASHBOARD_FILTER_EVENT = 'dashboard:filter-changed';
 const DASHBOARD_FILTER_REQUEST_EVENT = 'dashboard:filter-requested';
 const ROW_STATUS_FILTERS = Object.freeze([
-    { key: 'needsYou', label: 'Needs you' },
-    { key: 'errors', label: 'Errors' },
-    { key: 'quota', label: 'Quota' },
-    { key: 'working', label: 'Working' },
+    { key: 'needsYou', label: 'Needs you', shape: 'needs-you' },
+    { key: 'errors', label: 'Errors', shape: 'errored' },
+    { key: 'quota', label: 'Quota', shape: 'quota' },
+    { key: 'working', label: 'Working', shape: 'working' },
+    { key: 'watchlist', label: 'Waiting', shape: 'watchlist' },
+    { key: 'quiet', label: 'Idle', shape: 'idle' },
 ]);
+// 7.9 — buckets that leave their project list for the bell lane.
+const BELL_BUCKETS = new Set(['needsYou', 'errors', 'quota']);
+const BELL_STATUS_WORD = Object.freeze({
+    waiting_on_user: 'NEEDS YOU',
+    errored: 'ERROR',
+    rate_limited: 'QUOTA',
+});
+const GAUGE_SEGMENTS = 12;
 const ROW_STATUS_RANK = Object.freeze({
     waiting_on_user: 0,
     errored: 1,
@@ -83,11 +93,6 @@ function safePromptDetail(agent, limit = PROMPT_DETAIL_MAX_LENGTH) {
     return `${clean.slice(0, limit - 1).trimEnd()}…`;
 }
 
-function waitProvenance(agent) {
-    const certainty = agent?.signalCertainty || (agent?.signalSource === 'hook' ? 'observed' : 'inferred');
-    return `${certainty}${agent?.signalStale ? ' · stale' : ''}`.toUpperCase();
-}
-
 function rowWaitAnchor(agent) {
     return Number(agent?.awaitingSince
         || agent?.pendingSince
@@ -98,9 +103,68 @@ function rowWaitAnchor(agent) {
 
 function rowPhase(agent) {
     if (agent?.currentTool) return agent.currentTool;
+    const status = normalizeStatus(agent?.status);
+    if (status === 'idle' || status === 'completed') return statusPresentation(status, i18n).label;
     return TURN_STATE_LABELS[agent?.turnState]
-        || operatorStatusLabel(agent?.status)
+        || operatorStatusLabel(status)
         || 'Unknown';
+}
+
+function cleanMessage(text, max = 140) {
+    const clean = String(text || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean;
+}
+
+function blockerText(agent, reason = waitReasonLabel(agent)) {
+    const status = normalizeStatus(agent?.status);
+    if (reason) return reason;
+    if (status === 'waiting_on_user') return 'Waiting for input';
+    if (status === 'errored') return cleanMessage(agent?.lastMessage, 90) || 'Session error';
+    if (status === 'rate_limited') return cleanMessage(agent?.lastMessage, 90) || 'Quota limit';
+    return '';
+}
+
+/**
+ * 7.7 — the NOW column: the blocker for an exception, else the live tool
+ * call, else the status word with the last observed message (labelled
+ * `last:` so it never reads as current work).
+ */
+function rowNow(agent) {
+    const status = normalizeStatus(agent?.status);
+    if (BELL_STATUS_WORD[status]) {
+        return { kind: 'blocker', lead: BELL_STATUS_WORD[status], detail: blockerText(agent) };
+    }
+    if (agent?.currentTool) {
+        return {
+            kind: 'tool',
+            lead: agent.currentTool,
+            // Drop the leading `key=` of the first argument: `npm run dev`,
+            // not `command=npm run dev`. The raw input stays in the tooltip.
+            detail: formatToolDetail(agent.currentToolInput || '', { max: 96, projectPath: agent.projectPath || '' })
+                .replace(/^(?:command|cmd|file_path|path|url|pattern|query|description|prompt)=/, ''),
+            title: agent.currentToolInput || '',
+        };
+    }
+    const last = cleanMessage(agent?.lastMessage);
+    return {
+        kind: 'status',
+        lead: rowPhase(agent),
+        detail: last ? `· last: ${last}` : (status === 'waiting' ? '· no tool running' : ''),
+        title: last ? `Last observed message: ${last}` : '',
+    };
+}
+
+function formatClock(ms) {
+    const total = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const seconds = String(total % 60).padStart(2, '0');
+    return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}` : `${minutes}:${seconds}`;
+}
+
+function statusSinceMs(agent, now = Date.now()) {
+    const since = Number(agent?.statusSince);
+    return Number.isFinite(since) && since > 0 ? Math.max(0, now - since) : null;
 }
 
 function rowExceptionRank(agent) {
@@ -407,19 +471,6 @@ function hasOpenSurface(documentRef = globalThis.document) {
     });
 }
 
-// 1.8 — dashboard ambience follows the same local clock as the World sky.
-// Phase resolution (bounds + seasonal day-length offsets) is shared with the
-// world-side atmosphere stack via phaseNameForDate, so the two clocks cannot
-// drift. Static per phase (no motion), re-stamped at minute scale.
-const AMBIENCE_TINTS = Object.freeze({
-    dawn: { tint: 'rgba(255, 196, 138, 0.05)', hearth: 'rgba(255, 176, 102, 0.15)' },
-    day: { tint: 'rgba(255, 226, 138, 0.02)', hearth: 'rgba(245, 171, 75, 0.13)' },
-    dusk: { tint: 'rgba(214, 120, 64, 0.06)', hearth: 'rgba(240, 140, 60, 0.16)' },
-    // Cooler parchment after dark: steel-blue veil + dimmer, cooler hearth.
-    night: { tint: 'rgba(104, 132, 190, 0.08)', hearth: 'rgba(122, 108, 168, 0.10)' },
-});
-const AMBIENCE_SYNC_INTERVAL = 60_000;
-
 export class DashboardRenderer {
     constructor(world, { toast = null } = {}) {
         this.world = world;
@@ -455,10 +506,13 @@ export class DashboardRenderer {
         this._sectionEls = new Map(); // projectPath → section element
         this._pendingAvatarDraws = new Set();
         this._avatarDrawFrame = null;
-        this._ambienceEl = document.getElementById('dashboardMode');
-        this._ambiencePhase = '';
-        this._ambienceTimer = null;
         this._flipTimers = new Set();
+        // 7.12 — observation starts when the Dashboard module loads; every
+        // earlier bucket paints hatched. Fed in every mode, O(1) per update.
+        this._tapes = new ObservedCallTapeStore();
+        for (const agent of world?.agents?.values?.() || []) this._tapes.observe(agent);
+        this._tapeTimer = null;
+        this._bellEl = null;
         this._motionQuery = typeof window !== 'undefined'
             ? window.matchMedia?.('(prefers-reduced-motion: reduce)')
             : null;
@@ -471,8 +525,12 @@ export class DashboardRenderer {
             },
         });
 
-        this._onAgentAdded = () => { if (this.active) this.render(); };
+        this._onAgentAdded = (agent) => {
+            this._tapes?.observe(agent);
+            if (this.active) this.render();
+        };
         this._onAgentUpdated = (agent) => {
+            this._tapes?.observe(agent);
             if (this.active) {
                 this._renderAgentUpdate(agent);
                 const parentId = String(agent?.parentSessionId || '');
@@ -484,6 +542,7 @@ export class DashboardRenderer {
         };
         this._onAgentRemoved = (agent) => {
             this._executionChildIdsByParent.delete(String(agent.id));
+            this._tapes?.forget(agent.id);
             sessionDetailsService.deleteForAgent(agent);
             if (this.active) this.render();
         };
@@ -492,17 +551,16 @@ export class DashboardRenderer {
             if (this.active) {
                 this.render();
                 this._startDetailFetching();
-                this._startAmbienceSync();
+                this._startTapeClock();
             } else {
                 this._stopDetailFetching();
-                this._stopAmbienceSync();
+                this._stopTapeClock();
             }
         };
         // Pause detail polling while the tab is hidden; refresh once on return.
         this._onVisibilityChange = () => {
             if (document.hidden || !this.active) return;
             this._fetchAllDetails();
-            this._syncAmbience();
         };
         this._onDashboardKeyDown = (event) => this._handleDashboardKeyboardCommand(event);
         this._onDashboardFocusIn = (event) => {
@@ -553,11 +611,36 @@ export class DashboardRenderer {
         const visibleAgents = this._filteredAgents(agents);
         this._setFilteredEmpty(visibleAgents.length === 0);
 
-        const groups = [...groupAgentsByProject(visibleAgents)];
+        // 7.9 — needs-you, error and quota agents leave their project list
+        // for the bell lane; each project header keeps an honest `+N` count.
+        const laneAgents = this._sortAgentsExceptionFirst(
+            visibleAgents.filter(agent => BELL_BUCKETS.has(bucketForStatus(agent.status))),
+        );
+        const laneIds = new Set(laneAgents.map(agent => agent.id));
+        const laneByProject = new Map();
+        for (const agent of laneAgents) {
+            const project = agent.projectPath || '_unknown';
+            if (!laneByProject.has(project)) laneByProject.set(project, []);
+            laneByProject.get(project).push(agent);
+        }
+
+        const groups = [...groupAgentsByProject(visibleAgents.filter(agent => !laneIds.has(agent.id)))];
         this._sortProjectGroups(groups);
 
         const existingIds = new Set();
         const existingSections = new Set();
+
+        const bellEl = this._ensureBellLane();
+        const laneCards = [];
+        for (const agent of laneAgents) {
+            existingIds.add(agent.id);
+            const cardEl = this._cardFor(agent);
+            if (cardEl.parentElement !== bellEl) bellEl.appendChild(cardEl);
+            laneCards.push(cardEl);
+            this._updateCard(cardEl, agent);
+        }
+        this._placeCardsInOrder(bellEl, laneCards);
+        bellEl.hidden = laneCards.length === 0;
 
         for (const [projectPath, groupAgents] of groups) {
             existingSections.add(projectPath);
@@ -570,19 +653,14 @@ export class DashboardRenderer {
                 this._sectionEls.set(projectPath, sectionEl);
             }
             this.gridEl.appendChild(sectionEl);
-            this._updateSectionHeader(sectionEl, projectPath, groupAgents);
+            this._updateSectionHeader(sectionEl, projectPath, groupAgents, laneByProject.get(projectPath) || []);
 
             const gridInner = sectionEl._sectionRefs?.grid || sectionEl.querySelector('.dashboard__section-grid');
 
             const orderedCards = [];
             for (const agent of groupAgents) {
                 existingIds.add(agent.id);
-                let cardEl = this.cards.get(agent.id);
-
-                if (!cardEl) {
-                    cardEl = this._createCard(agent);
-                    this.cards.set(agent.id, cardEl);
-                }
+                const cardEl = this._cardFor(agent);
 
                 // Move the card if it is not in this section
                 if (cardEl.parentElement !== gridInner) {
@@ -614,6 +692,54 @@ export class DashboardRenderer {
         }
         sessionDetailsService.sweep(agents);
         this._syncCardTabStops();
+    }
+
+    _cardFor(agent) {
+        let cardEl = this.cards.get(agent.id);
+        if (!cardEl) {
+            cardEl = this._createCard(agent);
+            this.cards.set(agent.id, cardEl);
+        }
+        return cardEl;
+    }
+
+    _ensureBellLane() {
+        if (!this._bellEl) {
+            this._bellEl = document.createElement('div');
+            this._bellEl.className = 'dashboard__bell';
+            this._bellEl.setAttribute('role', 'group');
+            this._bellEl.setAttribute('aria-label', 'Needs you: agents waiting on you, errored or rate-limited');
+        }
+        if (this.gridEl && this.gridEl.firstChild !== this._bellEl) this.gridEl.prepend(this._bellEl);
+        return this._bellEl;
+    }
+
+    // 7.12 — repaint tapes on 15 s bucket boundaries while the Dashboard is
+    // visible; no rAF loop, and each tape repaints only if its key changed.
+    _startTapeClock() {
+        this._stopTapeClock();
+        const tick = () => {
+            this._tapeTimer = setTimeout(tick, TAPE_BUCKET_MS - (Date.now() % TAPE_BUCKET_MS) + 20);
+            for (const card of this.cards.values()) this._paintCardTape(card);
+        };
+        this._tapeTimer = setTimeout(tick, TAPE_BUCKET_MS - (Date.now() % TAPE_BUCKET_MS) + 20);
+    }
+
+    _stopTapeClock() {
+        if (this._tapeTimer) {
+            clearTimeout(this._tapeTimer);
+            this._tapeTimer = null;
+        }
+    }
+
+    _paintCardTape(cardEl, now = Date.now()) {
+        const canvas = cardEl?._elements?.tapeCanvas;
+        const id = cardEl?.dataset?.agentId;
+        if (!canvas || !id || !this._tapes) return;
+        const signature = this._tapes.signature(id, now);
+        if (canvas._tapeSignature === signature) return;
+        canvas._tapeSignature = signature;
+        paintTape(canvas, this._tapes.cells(id, now));
     }
 
     _rememberStableOrder(agents) {
@@ -751,57 +877,36 @@ export class DashboardRenderer {
         }
     }
 
-    // 1.8 — ambience sync: stamp --cv-ambient-tint / --cv-ambient-hearth on the
-    // dashboard container from the local-clock phase, re-checked once a minute
-    // while dashboard mode is active. Static tints (no motion), so no
-    // reduced-motion fallback is required.
-    _startAmbienceSync() {
-        this._stopAmbienceSync();
-        this._syncAmbience();
-        this._ambienceTimer = setInterval(() => this._syncAmbience(), AMBIENCE_SYNC_INTERVAL);
-    }
-
-    _stopAmbienceSync() {
-        if (this._ambienceTimer) {
-            clearInterval(this._ambienceTimer);
-            this._ambienceTimer = null;
-        }
-    }
-
-    _syncAmbience(now = new Date()) {
-        if (!this._ambienceEl || this._destroyed) return;
-        const phase = this._ambiencePhaseFor(now);
-        if (phase === this._ambiencePhase) return;
-        this._ambiencePhase = phase;
-        const tints = AMBIENCE_TINTS[phase] || AMBIENCE_TINTS.day;
-        this._ambienceEl.style.setProperty('--cv-ambient-tint', tints.tint);
-        this._ambienceEl.style.setProperty('--cv-ambient-hearth', tints.hearth);
-    }
-
-    _ambiencePhaseFor(date) {
-        return phaseNameForDate(date);
-    }
-
     _createSection(projectPath) {
         const section = document.createElement('div');
         section.className = 'dashboard__section';
         section.dataset.project = projectPath;
 
-        const profile = projectProfile(projectPath);
         section.innerHTML = `
-            <div class="dashboard__section-header" style="border-left-color: ${profile.panelBorder || profile.accent}; background: ${profile.panel}">
-                <span class="dashboard__section-dot" style="background: ${profile.accent}; box-shadow: 0 0 8px ${profile.glow}"></span>
-                <span class="dashboard__label-icon">#</span>
-                <span class="dashboard__section-name" style="color: ${profile.labelText || profile.accent}"></span>
+            <div class="dashboard__section-header">
+                <span class="dashboard__pennant" aria-hidden="true"></span>
+                <span class="dashboard__section-name"></span>
                 <span class="dashboard__section-path"></span>
                 <span class="dashboard__section-health" aria-label="Project health"></span>
-                <span class="dashboard__section-count" style="color: ${profile.labelText || profile.accent}"></span>
+                <span class="dashboard__section-lift" hidden></span>
+                <span class="dashboard__section-count"></span>
             </div>
             <div class="dashboard__section-healthbar" aria-hidden="true">
                 ${SECTION_HEALTH_ORDER.map(bucket => {
                     const className = SECTION_HEALTH_PRESENTATION[bucket].className;
                     return `<span class="dashboard__healthbar-seg dashboard__healthbar-seg--${className}" style="display: none"></span>`;
                 }).join('')}
+            </div>
+            <div class="dashboard__cols" aria-hidden="true">
+                <span></span>
+                <span>AGENT</span>
+                <span>NOW</span>
+                <span title="Tool calls observed by this tab, 15 s per tick">LAST 10 MIN</span>
+                <span class="dashboard__col--num">FOR</span>
+                <span class="dashboard__col--num">TOKENS</span>
+                <span class="dashboard__col--num">COST</span>
+                <span class="dashboard__col--work">WORKING SET</span>
+                <span class="dashboard__col--kids">CHILDREN</span>
             </div>
             <div class="dashboard__section-grid"></div>
         `;
@@ -810,6 +915,7 @@ export class DashboardRenderer {
             name: section.querySelector('.dashboard__section-name'),
             path: section.querySelector('.dashboard__section-path'),
             count: section.querySelector('.dashboard__section-count'),
+            lift: section.querySelector('.dashboard__section-lift'),
             grid: section.querySelector('.dashboard__section-grid'),
             health,
             healthStats: Object.fromEntries(SECTION_HEALTH_ORDER.map(bucket => {
@@ -830,17 +936,47 @@ export class DashboardRenderer {
         return section;
     }
 
-    _updateSectionHeader(sectionEl, projectPath, agents) {
+    _updateSectionHeader(sectionEl, projectPath, agents, laneAgents = []) {
         const refs = sectionEl._sectionRefs;
         const name = shortProjectName(projectPath, i18n.t('unknownProject'));
         refs.name.textContent = name;
-        refs.count.textContent = i18n.t('nAgents')(agents.length);
+        refs.count.textContent = String(agents.length);
+        refs.count.title = i18n.t('nAgents')(agents.length);
+
+        // 7.10 — identity is a status-free pennant, not a coloured panel.
+        // Re-read each update: the shared repo registry may move a repo to
+        // another pennant slot once sibling repos are live.
+        const profile = projectProfile(projectPath);
+        this._setCustomProperty(sectionEl, '--pennant', profile.accent || 'var(--ink-3)');
+        this._setCustomProperty(sectionEl, '--pennant-ink', profile.labelText || profile.accent || 'var(--ink-1)');
 
         // Display shortened path
         const shortPath = projectPath === '_unknown' ? '' : shortenHomePath(projectPath);
         refs.path.textContent = shortPath;
 
-        this._updateSectionHealth(sectionEl, refs, agents);
+        const lifted = laneAgents.length;
+        refs.lift.hidden = lifted === 0;
+        this._setText(refs.lift, lifted ? `+${lifted} in Need Action ↑` : '');
+        refs.lift.title = lifted ? laneAgents.map(agent => agent.name || agent.id).join(', ') : '';
+
+        // 7.7 — optional columns exist only while some row has data for them.
+        const hasWork = agents.some(agent => workingSetForAgent(agent).length || collisionsForAgent(agent).length);
+        const hasKids = agents.some(agent => this._hasChildProgress(agent));
+        sectionEl.classList.toggle('dashboard__section--has-work', hasWork);
+        sectionEl.classList.toggle('dashboard__section--has-kids', hasKids);
+
+        this._updateSectionHealth(sectionEl, refs, [...agents, ...laneAgents]);
+    }
+
+    _hasChildProgress(agent) {
+        const id = String(agent?.id ?? '');
+        for (const candidate of this.world?.agents?.values?.() || []) {
+            if (String(candidate.parentSessionId || '') === id) return true;
+        }
+        const supplied = Number(agent?.taskProgress?.total);
+        return (Number.isFinite(supplied) && supplied > 0)
+            || (String(agent?.provider || 'claude').toLowerCase() === 'claude'
+                && Array.isArray(agent?.tasks) && agent.tasks.length > 0);
     }
 
     // Health rollup: six SignalLedger buckets for the section's agents.
@@ -851,15 +987,17 @@ export class DashboardRenderer {
         const descriptions = orderedBuckets.map(bucket => healthDescription(bucket, counts[bucket]));
         refs.health.title = descriptions.join('; ');
         refs.health.setAttribute('aria-label', `Project health: ${descriptions.join('; ')}`);
+        // Lane buckets are stated by the `+N in Need Action` lift instead.
+        const statBuckets = orderedBuckets.filter(bucket => !BELL_BUCKETS.has(bucket));
         for (const bucket of SECTION_HEALTH_ORDER) {
             const el = refs.healthStats[bucket];
             const count = counts[bucket];
             if (!el) continue;
-            if (visibleBuckets.has(bucket)) {
+            if (statBuckets.includes(bucket)) {
                 this._setText(el, healthCounterText(bucket, count));
                 const description = healthDescription(bucket, count);
                 el.title = description;
-                el.dataset.separator = String(bucket !== orderedBuckets.at(-1));
+                el.dataset.separator = String(bucket !== statBuckets.at(-1));
                 el.setAttribute('aria-label', description);
                 el.setAttribute('aria-hidden', 'false');
                 this._setStyle(el, 'display', '');
@@ -905,60 +1043,50 @@ export class DashboardRenderer {
         card.className = `dash-card dash-card--${agent.status}`;
         card.dataset.agentId = agent.id;
 
+        // 7.7/7.8/7.11 — one flat instrument row: status spine (card ::before),
+        // a static portrait niche, then only the columns the section shows.
         card.innerHTML = `
             <button type="button" class="dash-card__select dash-card__row">
-                <span class="dash-card__status">
-                    <span class="dash-card__status-dot"></span>
-                    <span class="dash-card__status-label"></span>
-                    <span class="dash-card__status-elapsed"></span>
-                </span>
+                <span class="dash-card__niche"></span>
                 <span class="dash-card__identity">
                     <span class="dash-card__name"></span>
-                    <span class="dash-card__role"></span>
+                    <span class="dash-card__meta-line">
+                        <span class="dash-card__provider-badge"></span>
+                        <span class="dash-card__model"></span>
+                        <span class="dash-card__role"></span>
+                        <span class="dash-card__workflow-badge" style="display: none"></span>
+                    </span>
                 </span>
-                <span class="dash-card__model-cell">
-                    <span class="dash-card__provider-badge"></span>
-                    <span class="dash-card__model"></span>
-                    <span class="dash-card__signal-source"></span>
+                <span class="dash-card__now">
+                    <span class="dash-card__now-icon" aria-hidden="true"></span>
+                    <span class="dash-card__phase"></span>
+                    <span class="dash-card__phase-detail"></span>
                 </span>
-                <span class="dash-card__row-cell dash-card__phase-cell">
-                    <span class="dash-card__row-label">PHASE / TOOL</span>
-                    <span class="dash-card__row-value dash-card__phase"></span>
-                    <span class="dash-card__row-detail dash-card__phase-detail"></span>
-                </span>
-                <span class="dash-card__row-cell dash-card__blocker-cell">
-                    <span class="dash-card__row-label">BLOCKER</span>
-                    <span class="dash-card__row-value dash-card__blocker"></span>
-                    <span class="dash-card__row-detail dash-card__prompt-detail"></span>
-                </span>
-                <span class="dash-card__row-cell dash-card__work-cell">
-                    <span class="dash-card__row-label">WORKING SET</span>
-                    <span class="dash-card__row-value dash-card__work-summary"></span>
-                </span>
-                <span class="dash-card__usage">
-                    <span class="dash-card__usage-tokens"></span>
-                    <span class="dash-card__usage-cost"></span>
-                    <span class="dash-card__usage-source"></span>
-                </span>
-                <span class="dash-card__row-cell dash-card__children-cell">
-                    <span class="dash-card__row-label">CHILDREN</span>
-                    <span class="dash-card__row-value dash-card__children"></span>
+                <span class="dash-card__tape"></span>
+                <span class="dash-card__for"></span>
+                <span class="dash-card__usage-tokens"></span>
+                <span class="dash-card__usage-cost"></span>
+                <span class="dash-card__work-cell"><span class="dash-card__work-summary"></span></span>
+                <span class="dash-card__children-cell">
+                    <span class="dash-card__children"></span>
                     <span class="dash-card__children-source"></span>
                 </span>
                 <span class="dash-card__search-context" style="display: none"></span>
             </button>
+            <div class="dash-card__kids" hidden></div>
             <div class="dash-card__detail" aria-hidden="true">
                 <div class="dash-card__header">
-                    <span class="dash-card__building-emblem" aria-hidden="true" style="display: none"></span>
-                    <span class="dash-card__avatar"></span>
+                    <span class="dash-card__hero-slot"></span>
                     <span class="dash-card__info">
+                        <span class="dash-card__detail-status"></span>
                         <span class="dash-card__meta">
-                            <span class="dash-card__workflow-badge"></span>
+                            <span class="dash-card__building-emblem" aria-hidden="true" style="display: none"></span>
+                            <span class="dash-card__signal-source"></span>
                             <span class="dash-card__team-badge" style="display: none"></span>
                             <span class="dash-card__activity-age" style="display: none"></span>
+                            <button type="button" class="dash-card__parent-chip" style="display: none"></button>
                         </span>
                     </span>
-                    <button type="button" class="dash-card__parent-chip" style="display: none"></button>
                     <button type="button" class="dash-card__copy-id" title="Copy session ID" aria-label="Copy session ID">ID</button>
                     <span class="dash-card__stale-badge" style="display: none" title="Showing cached data; latest refresh did not complete">STALE</span>
                 </div>
@@ -987,12 +1115,23 @@ export class DashboardRenderer {
         `;
         card.dataset.loading = 'true';
 
-        // Avatar canvas
-        const avatarContainer = card.querySelector('.dash-card__avatar');
-        const avatarCanvas = new AvatarCanvas(agent);
-        avatarContainer.appendChild(avatarCanvas.canvas);
+        // 7.8 — static portrait niche (integer scale, idle frame, never animated).
+        const avatarCanvas = new AvatarCanvas(agent, 'niche');
+        avatarCanvas.canvas.setAttribute('aria-hidden', 'true');
+        card.querySelector('.dash-card__niche').appendChild(avatarCanvas.canvas);
         card._avatarCanvas = avatarCanvas;
+        card._heroCanvas = null;
         card._avatarSignature = '';
+
+        // 7.12 — observed-call tape, painted on whole pixels.
+        const tapeCanvas = document.createElement('canvas');
+        tapeCanvas.width = TAPE_WIDTH;
+        tapeCanvas.height = TAPE_HEIGHT;
+        tapeCanvas.className = 'dash-card__tape-canvas';
+        tapeCanvas.setAttribute('aria-hidden', 'true');
+        const tapeEl = card.querySelector('.dash-card__tape');
+        tapeEl.appendChild(tapeCanvas);
+        tapeEl.title = this._tapes?.title() || '';
 
         // Copy session ID without triggering card selection
         const copyBtn = card.querySelector('.dash-card__copy-id');
@@ -1034,19 +1173,21 @@ export class DashboardRenderer {
             role: card.querySelector('.dash-card__role'),
             activityAge: card.querySelector('.dash-card__activity-age'),
             providerBadge: card.querySelector('.dash-card__provider-badge'),
-            status: card.querySelector('.dash-card__status'),
-            statusLabel: card.querySelector('.dash-card__status-label'),
-            statusElapsed: card.querySelector('.dash-card__status-elapsed'),
+            detailStatus: card.querySelector('.dash-card__detail-status'),
             signalSource: card.querySelector('.dash-card__signal-source'),
             staleBadge: card.querySelector('.dash-card__stale-badge'),
             detail: card.querySelector('.dash-card__detail'),
+            heroSlot: card.querySelector('.dash-card__hero-slot'),
+            now: card.querySelector('.dash-card__now'),
+            nowIcon: card.querySelector('.dash-card__now-icon'),
             phase: card.querySelector('.dash-card__phase'),
             phaseDetail: card.querySelector('.dash-card__phase-detail'),
-            blocker: card.querySelector('.dash-card__blocker'),
-            promptDetail: card.querySelector('.dash-card__prompt-detail'),
+            tapeCanvas,
+            forCell: card.querySelector('.dash-card__for'),
             workSummary: card.querySelector('.dash-card__work-summary'),
             childrenSource: card.querySelector('.dash-card__children-source'),
             children: card.querySelector('.dash-card__children'),
+            kids: card.querySelector('.dash-card__kids'),
             searchContext: card.querySelector('.dash-card__search-context'),
             currentTool: card.querySelector('.dash-card__current-tool'),
             toolIcon: card.querySelector('.dash-card__tool-icon'),
@@ -1056,19 +1197,130 @@ export class DashboardRenderer {
             workingSet: card.querySelector('.dash-card__working-set'),
             tools: card.querySelector('.dash-card__tools'),
             toolList: card.querySelector('.dash-card__tool-list'),
-            usage: card.querySelector('.dash-card__usage'),
             usageTokens: card.querySelector('.dash-card__usage-tokens'),
             usageCost: card.querySelector('.dash-card__usage-cost'),
-            usageSource: card.querySelector('.dash-card__usage-source'),
             buildingEmblem: card.querySelector('.dash-card__building-emblem'),
+            call: null,
         };
-        card._elapsedUnsubscribe = subscribeElapsedText(card._elements.statusElapsed, () => {
+        card._elapsedUnsubscribe = subscribeElapsedText(card._elements.forCell, (now) => {
             const current = this.world.agents.get(card.dataset.agentId);
-            const text = current ? formatStatusElapsed(current) : '';
-            return text ? ` · ${text}` : '';
+            const ms = statusSinceMs(current, now);
+            return ms == null ? '—' : formatElapsed(ms);
         });
+        this._paintCardTape(card);
 
         return card;
+    }
+
+    // 7.8 — the 96 px hero portrait is created on demand: for the selected
+    // row's detail and for bell-lane call cards, never for every row.
+    _heroCanvasFor(cardEl, agent) {
+        if (!cardEl._heroCanvas) {
+            cardEl._heroCanvas = new AvatarCanvas(agent, 'hero');
+            cardEl._heroCanvas.canvas.setAttribute('aria-hidden', 'true');
+        }
+        return cardEl._heroCanvas;
+    }
+
+    _mountHero(cardEl, agent, slot) {
+        const hero = this._heroCanvasFor(cardEl, agent);
+        if (slot && hero.canvas.parentElement !== slot) slot.appendChild(hero.canvas);
+    }
+
+    // 7.9 — bell-lane call card body, built the first time a card enters the lane.
+    _ensureCallBlock(cardEl) {
+        if (cardEl._elements.call) return cardEl._elements.call;
+        const call = document.createElement('span');
+        call.className = 'dash-card__call';
+        call.innerHTML = `
+            <span class="dash-card__call-hero"></span>
+            <span class="dash-card__call-body">
+                <span class="dash-card__call-head">
+                    <span class="dash-card__call-name"></span>
+                    <span class="dash-card__call-meta"></span>
+                </span>
+                <span class="dash-card__call-blocker"><span class="dash-card__call-glyph" aria-hidden="true"></span><span class="dash-card__call-blocker-text"></span></span>
+                <span class="dash-card__call-quote"></span>
+                <span class="dash-card__call-gauge" hidden>
+                    <span class="dash-card__gauge-segs" aria-hidden="true">${'<i></i>'.repeat(GAUGE_SEGMENTS)}</span>
+                    <span class="dash-card__gauge-label"></span>
+                </span>
+                <span class="dash-card__call-usage"></span>
+                <span class="dash-card__call-prov"></span>
+            </span>
+            <span class="dash-card__call-side">
+                <span class="dash-card__call-elapsed"></span>
+            </span>
+        `;
+        cardEl._elements.select.appendChild(call);
+        const refs = {
+            root: call,
+            hero: call.querySelector('.dash-card__call-hero'),
+            name: call.querySelector('.dash-card__call-name'),
+            meta: call.querySelector('.dash-card__call-meta'),
+            blocker: call.querySelector('.dash-card__call-blocker-text'),
+            quote: call.querySelector('.dash-card__call-quote'),
+            gauge: call.querySelector('.dash-card__call-gauge'),
+            gaugeSegs: [...call.querySelectorAll('.dash-card__gauge-segs i')],
+            gaugeLabel: call.querySelector('.dash-card__gauge-label'),
+            usage: call.querySelector('.dash-card__call-usage'),
+            elapsed: call.querySelector('.dash-card__call-elapsed'),
+            prov: call.querySelector('.dash-card__call-prov'),
+        };
+        cardEl._elements.call = refs;
+        cardEl._callElapsedUnsubscribe = subscribeElapsedText(refs.elapsed, (now) => {
+            const ms = statusSinceMs(this.world.agents.get(cardEl.dataset.agentId), now);
+            return ms == null ? '—' : formatClock(ms);
+        });
+        return refs;
+    }
+
+    _updateCallBlock(cardEl, agent) {
+        const refs = this._ensureCallBlock(cardEl);
+        this._mountHero(cardEl, agent, refs.hero);
+        const model = modelPresentation(agent);
+        const provider = providerPresentation(agent.provider, model.identity);
+        const project = shortProjectName(agent.projectPath || '_unknown', i18n.t('unknownProject'));
+        this._setText(refs.name, agent.name || agent.id);
+        const providerEl = document.createElement('span');
+        providerEl.className = 'dash-card__call-provider';
+        providerEl.textContent = provider.badge.label;
+        providerEl.style.color = provider.badge.color;
+        refs.meta.replaceChildren(
+            providerEl,
+            document.createTextNode([model.label === provider.badge.label ? '' : model.label, agent.role || '', project]
+                .filter(Boolean).map(text => ` · ${text}`).join('')),
+        );
+        refs.meta.title = `${provider.badge.label} · ${model.title || agent.model || ''} · ${agent.projectPath || ''}`;
+
+        const status = normalizeStatus(agent.status);
+        this._setText(refs.blocker, `${BELL_STATUS_WORD[status] || operatorStatusLabel(status)} — ${blockerText(agent)}`);
+        const quote = safePromptDetail(agent);
+        this._setText(refs.quote, quote ? `“${quote}”` : '');
+        refs.quote.hidden = !quote;
+        refs.quote.title = quote;
+
+        const usage = TokenUsage.normalize(agent.tokens || null);
+        const max = Number(usage.contextWindowMax) || 0;
+        const used = Math.max(0, Number(usage.contextWindow) || 0);
+        const showGauge = status === 'rate_limited' && max > 0;
+        refs.gauge.hidden = !showGauge;
+        if (showGauge) {
+            const lit = Math.min(GAUGE_SEGMENTS, Math.round((used / max) * GAUGE_SEGMENTS));
+            refs.gaugeSegs.forEach((seg, index) => {
+                seg.className = index < lit ? (index >= lit - 2 ? 'on hot' : 'on') : '';
+            });
+            this._setText(refs.gaugeLabel, `context ${formatTokens(used)} / ${formatTokens(max)}`);
+        }
+        const footer = this._usageFooterFor(agent, null);
+        const usageText = status === 'rate_limited' && footer.tokensShort !== '—'
+            ? `${footer.tokensShort} tokens · ${footer.costShort} this session`
+            : '';
+        this._setText(refs.usage, usageText);
+        refs.usage.hidden = !usageText;
+
+        this._setText(refs.prov, signalProvenance(agent).toUpperCase());
+        refs.prov.title = signalProvenance(agent);
     }
 
     _renderAttentionQueue(agents) {
@@ -1096,15 +1348,18 @@ export class DashboardRenderer {
         const focusedKey = this.attentionEl.contains(document.activeElement)
             ? document.activeElement?.dataset?.filterKey
             : null;
+        // 0.6/7.9 — one quiet instrument line: `ALL QUIET` when nothing needs
+        // action, zero counts recede to --ink-4, exceptions keep a tinted rim.
         const heading = document.createElement('div');
-        heading.className = 'dashboard-attention__heading';
-        heading.textContent = `EXCEPTIONS FIRST · ${counts.actionable} NEED ACTION`;
+        heading.className = `dashboard-attention__heading${counts.actionable ? '' : ' dashboard-attention__heading--quiet'}`;
+        heading.textContent = counts.actionable ? `${counts.actionable} NEED ACTION` : 'ALL QUIET';
         const list = document.createElement('div');
         list.className = 'dashboard-attention__list';
-        for (const { key, label } of ROW_STATUS_FILTERS) {
-            list.appendChild(this._filterButton({
+        for (const { key, label, shape } of ROW_STATUS_FILTERS) {
+            const count = counts[key] || 0;
+            const button = this._filterButton({
                 key: `status:${key}`,
-                label: `${label} ${counts[key] || 0}`,
+                label: '',
                 pressed: this._statusFilters.has(key),
                 onClick: () => {
                     if (this._statusFilters.has(key)) this._statusFilters.delete(key);
@@ -1112,12 +1367,23 @@ export class DashboardRenderer {
                     this._controlsSignature = '';
                     this.render();
                 },
-            }));
+            });
+            button.classList.add(`dashboard-attention__item--${shape}`);
+            button.classList.toggle('dashboard-attention__item--zero', count === 0);
+            button.title = `${count} ${label.toLowerCase()} · click to filter`;
+            const pip = document.createElement('i');
+            pip.className = `dashboard-attention__pip dashboard-attention__pip--${shape}`;
+            pip.setAttribute('aria-hidden', 'true');
+            const number = document.createElement('b');
+            number.textContent = String(count);
+            button.append(pip, number, document.createTextNode(` ${label}`));
+            list.appendChild(button);
         }
         const providerLabel = document.createElement('span');
         providerLabel.className = 'dashboard-attention__provider-label';
         providerLabel.textContent = 'Provider';
-        list.appendChild(providerLabel);
+        providerLabel.setAttribute('role', 'separator');
+        if (providers.length) list.appendChild(providerLabel);
         for (const provider of providers) {
             list.appendChild(this._filterButton({
                 key: `provider:${provider}`,
@@ -1150,7 +1416,12 @@ export class DashboardRenderer {
             search.textContent = `Search "${truncateText(this._searchQuery, 32)}" · ${this._searchMatches?.size || 0} matches`;
             list.appendChild(search);
         }
-        replaceChildren(this.attentionEl, [heading, list]);
+        // 7.11 — one legend replaces the per-row ESTIMATE / UNAVAILABLE pills.
+        const legend = document.createElement('span');
+        legend.className = 'dashboard-attention__legend';
+        legend.textContent = '≈ estimate · — unavailable';
+        legend.title = '≈ cost estimated from token counts and published rates; — no usage reported';
+        replaceChildren(this.attentionEl, [heading, list, legend]);
         if (focusedKey) {
             [...this.attentionEl.querySelectorAll('[data-filter-key]')]
                 .find(button => button.dataset.filterKey === focusedKey)
@@ -1176,8 +1447,10 @@ export class DashboardRenderer {
         const provider = providerPresentation(agent.provider, model.identity);
         const statusInfo = statusPresentation(status, i18n);
         const building = buildingClassForAgent(agent);
+        const inLane = Boolean(this._bellEl) && cardEl.parentElement === this._bellEl;
         const signature = [
             building || '',
+            inLane,
             agent.name || '',
             agent.model || '',
             agent.effort || '',
@@ -1197,6 +1470,8 @@ export class DashboardRenderer {
             agent.currentTool || '',
             agent.currentToolInput || '',
             agent.lastMessage || '',
+            agent.projectPath || '',
+            JSON.stringify(agent.tokens || null),
             i18n.lang || '',
         ].join('|');
 
@@ -1205,17 +1480,19 @@ export class DashboardRenderer {
         if (this._cardRenderSignatures.get(agent.id) !== signature) {
             this._cardRenderSignatures.set(agent.id, signature);
 
-            const selectedClass = this.selection.isSelected(agent.id) ? ' dash-card--selected' : '';
-            const nextClass = `dash-card dash-card--${status}${selectedClass}`;
+            const selected = this.selection.isSelected(agent.id);
+            const nextClass = `dash-card dash-card--${status}${inLane ? ' dash-card--call' : ''}${selected ? ' dash-card--selected' : ''}`;
             if (cardEl.className !== nextClass) cardEl.className = nextClass;
-            refs.select.setAttribute('aria-label', `Select agent ${agent.name || agent.id}, ${statusInfo.label}`);
-            refs.select.setAttribute('aria-pressed', String(this.selection.isSelected(agent.id)));
-            refs.select.setAttribute('aria-expanded', String(this.selection.isSelected(agent.id)));
-            refs.detail?.setAttribute('aria-hidden', String(!this.selection.isSelected(agent.id)));
+            const now = rowNow(agent);
+            refs.select.setAttribute('aria-label', `Select agent ${agent.name || agent.id}, ${statusInfo.label}: ${now.lead} ${now.detail}`.trim());
+            refs.select.setAttribute('aria-pressed', String(selected));
+            refs.select.setAttribute('aria-expanded', String(selected));
+            refs.select.title = signalProvenance(agent);
+            refs.detail?.setAttribute('aria-hidden', String(!selected));
 
             this._setText(refs.name, agent.name);
-            this._setText(refs.model, model.label);
-            this._setStyle(refs.model, 'color', model.color);
+            // Codex-style labels repeat the provider; say it once.
+            this._setText(refs.model, model.label === provider.badge.label ? '' : model.label);
             refs.model.title = model.title;
 
             // Workflow swarm members read as one unit via a shared workflow chip;
@@ -1235,53 +1512,40 @@ export class DashboardRenderer {
                 this._setText(refs.teamBadge, `⚑ ${shortTeamName(agent.teamName)}`);
                 refs.teamBadge.title = `Team: ${agent.teamName}`;
                 this._setStyle(refs.teamBadge, 'color', team.accent);
-                this._setStyle(refs.teamBadge, 'borderColor', team.glow);
-                this._setStyle(refs.teamBadge, 'background', team.panel);
                 this._setStyle(refs.teamBadge, 'display', '');
             } else {
                 this._setStyle(refs.teamBadge, 'display', 'none');
             }
 
+            // Provider identity is text in its trim hue, not a filled pill.
             const badge = provider.badge;
             this._setText(refs.providerBadge, badge.label);
             this._setStyle(refs.providerBadge, 'color', badge.color);
-            this._setStyle(refs.providerBadge, 'background', badge.bg);
-            this._setText(refs.signalSource, waitProvenance(agent));
-            refs.signalSource.title = signalProvenance(agent);
+            // A lane card already states status and provenance in its call
+            // block; its selected detail does not repeat them.
+            this._setText(refs.signalSource, inLane ? '' : signalProvenance(agent).toUpperCase());
+            this._setStyle(refs.signalSource, 'display', inLane ? 'none' : '');
+            refs.signalSource.title = 'Signal source and certainty';
 
-            const nextStatusClass = `dash-card__status dash-card__status--${status}`;
-            if (refs.status.className !== nextStatusClass) refs.status.className = nextStatusClass;
             const reason = waitReasonLabel(agent);
-            this._setText(refs.statusLabel, operatorStatusLabel(status));
-            refs.status.title = reason ? `${statusInfo.label} — ${reason}` : '';
+            this._setText(refs.detailStatus, inLane ? '' : `${operatorStatusLabel(status)}${reason ? ` — ${reason}` : ''}`);
+            this._setStyle(refs.detailStatus, 'display', inLane ? 'none' : '');
+            refs.detailStatus.dataset.status = status;
 
             const tool = currentToolPresentation(agent, i18n);
             refs.currentTool.classList.toggle('dash-card__current-tool--idle', tool.isIdle);
             refs.toolIcon.replaceChildren(pixelIcon(toolCategory(agent.currentTool)));
             this._setText(refs.toolName, tool.name);
             replaceDetailRows(refs.toolDetail, tool.detail ? [inspectableText(tool.detail, { summary: formatToolDetail(tool.detail, { max: 80 }), key: 'current-tool' })] : []);
-            this._setText(refs.phase, rowPhase(agent));
-            this._setText(refs.phaseDetail, formatToolDetail(tool.detail, {
-                max: 54,
-                projectPath: agent.projectPath || '',
-            }));
-            refs.phaseDetail.title = tool.detail || '';
+
+            // 7.7 — NOW merges the old PHASE / BLOCKER / message cells.
+            refs.now.className = `dash-card__now dash-card__now--${now.kind}`;
+            refs.nowIcon.replaceChildren(...(now.kind === 'tool' ? [pixelIcon(toolCategory(agent.currentTool))] : []));
+            this._setText(refs.phase, now.lead);
+            this._setText(refs.phaseDetail, now.detail);
+            refs.now.title = now.title || `${now.lead} ${now.detail}`.trim();
 
             const promptDetail = safePromptDetail(agent);
-            const blocker = reason
-                || (status === 'waiting_on_user' ? 'Waiting for input' : '')
-                || (status === 'errored' ? 'Session error' : '')
-                || (status === 'rate_limited' ? 'Quota limit' : '')
-                || '—';
-            this._setText(refs.blocker, blocker);
-            refs.blocker.title = blocker === '—' ? 'No blocker observed' : blocker;
-            this._setText(refs.promptDetail, promptDetail);
-            refs.promptDetail.title = promptDetail;
-            refs.blocker.parentElement?.classList.toggle(
-                'dash-card__blocker-cell--active',
-                Boolean(reason || ['waiting_on_user', 'errored', 'rate_limited'].includes(status)),
-            );
-
             const searchContext = this._searchContexts.get(String(agent.id)) || '';
             this._setText(refs.searchContext, searchContext);
             this._setStyle(refs.searchContext, 'display', searchContext ? '' : 'none');
@@ -1289,20 +1553,26 @@ export class DashboardRenderer {
             if (agent.lastMessage) {
                 replaceDetailRows(refs.message, [inspectableText(agent.lastMessage, { summary: truncateText(agent.lastMessage, 100), key: 'latest-message', truncated: agent.lastMessageTruncated === true })]);
                 this._setStyle(refs.message, 'display', '');
+            } else if (promptDetail && inLane) {
+                // The call card quotes the request; only a truncated quote
+                // earns a disclosure, and it does not restate the blocker.
+                const fullPrompt = safePromptDetail(agent, Infinity);
+                const truncated = fullPrompt !== promptDetail;
+                replaceDetailRows(refs.message, truncated ? [inspectableText(fullPrompt, { summary: 'Full request', key: 'blocked-request' })] : []);
+                this._setStyle(refs.message, 'display', truncated ? '' : 'none');
             } else if (promptDetail) {
-                replaceDetailRows(refs.message, [inspectableText(safePromptDetail(agent, Infinity), { summary: `${blocker} · available request`, key: 'blocked-request' })]);
+                replaceDetailRows(refs.message, [inspectableText(safePromptDetail(agent, Infinity), { summary: `${blockerText(agent) || 'Request'} · available request`, key: 'blocked-request' })]);
                 this._setStyle(refs.message, 'display', '');
             } else {
                 this._setStyle(refs.message, 'display', 'none');
             }
 
-            // #30 — district identity: faint radial wash + emblem glyph echoing
-            // the World building this agent works in (no motion).
+            // #30 — district identity lives only in the selected detail now
+            // (7.10): an emblem glyph, no row wash.
             const buildingInfo = buildingPresentation(building);
             if (buildingInfo) {
                 cardEl.dataset.building = buildingInfo.building;
                 cardEl.style.setProperty('--cv-building', buildingInfo.accent);
-                cardEl.style.setProperty('--cv-building-rgb', buildingInfo.accentRgb);
                 if (refs.buildingEmblem) {
                     refs.buildingEmblem.replaceChildren(pixelIcon(buildingInfo.building));
                     refs.buildingEmblem.title = `${buildingInfo.building.charAt(0).toUpperCase()}${buildingInfo.building.slice(1)} district`;
@@ -1311,15 +1581,18 @@ export class DashboardRenderer {
             } else {
                 delete cardEl.dataset.building;
                 cardEl.style.removeProperty('--cv-building');
-                cardEl.style.removeProperty('--cv-building-rgb');
                 if (refs.buildingEmblem) this._setStyle(refs.buildingEmblem, 'display', 'none');
             }
+
+            if (inLane) this._updateCallBlock(cardEl, agent);
         }
 
+        this._syncHero(cardEl, agent);
         this._updateParentChip(cardEl, agent);
         this._updateActivityAge(cardEl, agent);
         this._renderWorkingSet(cardEl, agent);
         this._updateChildProgress(cardEl, agent);
+        this._paintCardTape(cardEl);
 
         const appearance = agent.appearance || {};
         const avatarSignature = [
@@ -1338,6 +1611,7 @@ export class DashboardRenderer {
         if (cardEl._avatarCanvas && cardEl._avatarSignature !== avatarSignature) {
             cardEl._avatarSignature = avatarSignature;
             cardEl._avatarCanvas.agent = agent;
+            if (cardEl._heroCanvas) cardEl._heroCanvas.agent = agent;
             this._scheduleAvatarDraw(cardEl);
         }
 
@@ -1354,6 +1628,14 @@ export class DashboardRenderer {
             : this._usageFooterFor(agent, null));
 
         this._updateStaleBadge(cardEl, agent);
+    }
+
+    // The hero portrait lives in the call card while the agent is in the bell
+    // lane, otherwise in the selected row's detail header.
+    _syncHero(cardEl, agent) {
+        if (cardEl.classList.contains('dash-card--call')) return;
+        if (!this.selection?.isSelected(agent.id)) return;
+        this._mountHero(cardEl, agent, cardEl._elements?.heroSlot);
     }
 
     _renderWorkingSet(cardEl, agent) {
@@ -1430,6 +1712,7 @@ export class DashboardRenderer {
             || (String(agent.provider || 'claude').toLowerCase() === 'claude'
                 && Array.isArray(agent.tasks)
                 && agent.tasks.length > 0);
+        this._renderKidStrip(cardEl, agent, children);
         if (!hasTaskProgress) {
             this._setText(target, agent.parentSessionId ? 'Child agent' : '—');
             target.title = agent.parentSessionId ? `Parent ${agent.parentSessionId}` : 'No child agents';
@@ -1438,7 +1721,7 @@ export class DashboardRenderer {
             sourceEl?.classList.remove('dash-card__children-source--exact', 'dash-card__children-source--inferred');
             return;
         }
-        this._setText(target, `${progress.done}/${progress.total} children done`);
+        this._setText(target, `${progress.done}/${progress.total} done`);
         target.title = children.length
             ? children.map(child => `${child.name || child.id}: ${child.isDeparted ? 'Unknown' : operatorStatusLabel(child.status)}`).join('; ')
             : 'Task-store progress';
@@ -1450,6 +1733,72 @@ export class DashboardRenderer {
                 ? 'Exact progress from the Claude task store'
                 : 'Inferred from observed child sessions; disappearance is unknown';
         }
+    }
+
+    // 7.12 — children read under their parent, even across projects. Each
+    // child keeps its own row in its own project; this strip is a pointer.
+    _renderKidStrip(cardEl, agent, children) {
+        const strip = cardEl._elements?.kids;
+        if (!strip) return;
+        const signature = JSON.stringify(children.map(child => [
+            child.id, child.name, child.role, child.agentType, normalizeStatus(child.status), child.isDeparted === true,
+            child.currentTool || '', child.currentToolInput || '', child.projectPath || '',
+        ]).concat([[agent.projectPath || '']]));
+        if (strip._kidSignature === signature) return;
+        strip._kidSignature = signature;
+        const chips = cardEl._kidChips || (cardEl._kidChips = new Map());
+        const liveIds = new Set(children.map(child => String(child.id)));
+        for (const [id, chip] of chips) {
+            if (!liveIds.has(id)) {
+                chip.destroy?.();
+                chips.delete(id);
+            }
+        }
+        strip.hidden = children.length === 0;
+        const rows = children.map(child => {
+            const id = String(child.id);
+            let chip = chips.get(id);
+            if (!chip) {
+                chip = new AvatarCanvas(child, 'chip');
+                chip.canvas.setAttribute('aria-hidden', 'true');
+                chips.set(id, chip);
+            } else {
+                chip.agent = child;
+                chip.draw();
+            }
+            const status = child.isDeparted ? 'unknown' : normalizeStatus(child.status);
+            const now = rowNow(child);
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = `dash-card__kid dash-card__kid--${status}`;
+            row.dataset.childId = id;
+            const hook = Object.assign(document.createElement('span'), { className: 'dash-card__kid-hook', textContent: '↳' });
+            const face = Object.assign(document.createElement('span'), { className: 'dash-card__kid-face' });
+            face.appendChild(chip.canvas);
+            const name = Object.assign(document.createElement('span'), { className: 'dash-card__kid-name', textContent: child.name || id });
+            const otherProject = (child.projectPath || '') !== (agent.projectPath || '');
+            const facts = [
+                child.role || child.agentType || '',
+                `${now.lead}${now.detail ? ` ${now.detail}` : ''}`,
+                otherProject ? `in ${shortProjectName(child.projectPath || '_unknown', i18n.t('unknownProject'))}` : '',
+            ].filter(Boolean).join(' · ');
+            const detail = Object.assign(document.createElement('span'), { className: 'dash-card__kid-detail', textContent: facts });
+            const state = Object.assign(document.createElement('span'), {
+                className: 'dash-card__kid-status',
+                textContent: child.isDeparted ? 'unknown' : operatorStatusLabel(child.status).toLowerCase(),
+            });
+            row.append(hook, face, name, detail, state);
+            row.title = `Select ${child.name || id}`;
+            row.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const current = this.world.agents.get(id);
+                if (!current) return;
+                emitAgentSelected(current);
+                this.cards.get(id)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            });
+            return row;
+        });
+        replaceChildren(strip, rows);
     }
 
     _updateParentChip(cardEl, agent) {
@@ -1488,6 +1837,7 @@ export class DashboardRenderer {
             const agent = this.world.agents.get(id);
             const card = this.cards.get(id);
             if (agent && card) {
+                if (selected) this._syncHero(card, agent);
                 this._renderUsageFooter(card, selected
                     ? (this.usageFooters.get(id) || this._usageFooterFor(agent, null))
                     : this._usageFooterFor(agent, null));
@@ -1613,7 +1963,9 @@ export class DashboardRenderer {
             const pending = this._pendingAvatarDraws;
             this._pendingAvatarDraws = new Set();
             for (const el of pending) {
-                if (el.isConnected) el._avatarCanvas?.draw();
+                if (!el.isConnected) continue;
+                el._avatarCanvas?.draw();
+                el._heroCanvas?.draw();
             }
         });
     }
@@ -1626,10 +1978,15 @@ export class DashboardRenderer {
         const cost = reported || TokenUsage.estimateCost(usage, agent.model, agent.provider);
         const source = reported ? 'provider' : 'estimate';
         const revision = cost.rateRevision || TokenUsage.rateRevision;
+        const unavailableUsage = usage.availability === 'unavailable';
         return {
-            tokens: usage.availability === 'unavailable' ? 'Usage unavailable'
+            tokens: unavailableUsage ? 'Usage unavailable'
                 : `${formatTokens(totalTokens)} tokens${usage.availability === 'partial' ? ' · partial' : ''}`,
             cost: cost.usd == null ? 'Cost unavailable' : `${source === 'estimate' ? '~' : ''}${formatCost(cost.usd)}`,
+            // 7.11 — row cells: `≈` marks an estimate, `—` means unavailable.
+            tokensShort: unavailableUsage ? '—' : formatTokens(totalTokens),
+            partial: usage.availability === 'partial',
+            costShort: cost.usd == null ? '—' : `${source === 'estimate' ? '≈' : ''}${formatCost(cost.usd)}`,
             costTitle: source === 'provider'
                 ? `Reported by ${agent.provider || 'provider'}`
                 : `Estimated using ${cost.rateMatch || 'default'} rates, revision ${revision}`,
@@ -1640,22 +1997,15 @@ export class DashboardRenderer {
 
     _renderUsageFooter(cardEl, footer) {
         const refs = cardEl._elements;
-        if (!refs?.usage) return;
-        if (!footer) {
-            this._setStyle(refs.usage, 'display', 'none');
-            return;
-        }
-        this._setText(refs.usageTokens, footer.tokens);
-        this._setText(refs.usageSource, footer.source === 'unavailable' ? '' : footer.source === 'provider' ? 'reported' : 'estimate');
-        refs.usageCost.title = footer.costTitle;
-        refs.usageCost.replaceChildren(
-            document.createTextNode(footer.cost),
-            ...(footer.unknownModel ? [document.createTextNode(' '), Object.assign(document.createElement('span'), {
-                className: 'dash-card__provider-badge',
-                textContent: 'default rate',
-            })] : []),
-        );
-        this._setStyle(refs.usage, 'display', '');
+        if (!refs?.usageTokens || !footer) return;
+        this._setText(refs.usageTokens, footer.tokensShort ?? footer.tokens);
+        refs.usageTokens.classList.toggle('dash-card__usage-tokens--partial', footer.partial === true);
+        refs.usageTokens.title = footer.tokens;
+        this._setText(refs.usageCost, footer.costShort ?? footer.cost);
+        refs.usageCost.classList.toggle('dash-card__usage-cost--default-rate', footer.unknownModel === true);
+        refs.usageCost.title = footer.unknownModel
+            ? `${footer.costTitle} (unknown model: default rate)`
+            : footer.source === 'unavailable' ? 'Cost unavailable' : footer.costTitle;
     }
 
     _renderDetailError(cardEl, agentId) {
@@ -1824,8 +2174,14 @@ export class DashboardRenderer {
             if (cardEl._parentFlashTimer) clearTimeout(cardEl._parentFlashTimer);
             cardEl._elapsedUnsubscribe?.();
             cardEl._elapsedUnsubscribe = null;
+            cardEl._callElapsedUnsubscribe?.();
+            cardEl._callElapsedUnsubscribe = null;
             cardEl._avatarCanvas?.destroy?.();
             cardEl._avatarCanvas = null;
+            cardEl._heroCanvas?.destroy?.();
+            cardEl._heroCanvas = null;
+            for (const chip of cardEl._kidChips?.values() || []) chip.destroy?.();
+            cardEl._kidChips?.clear();
             cardEl.remove();
             this.cards.delete(agentId);
         }
@@ -1895,12 +2251,16 @@ export class DashboardRenderer {
         if (el && el.style[prop] !== value) el.style[prop] = value;
     }
 
+    _setCustomProperty(el, prop, value) {
+        if (el && el.style.getPropertyValue(prop) !== value) el.style.setProperty(prop, value);
+    }
+
     destroy() {
         if (this._destroyed) return;
         this._destroyed = true;
         this.active = false;
         this._stopDetailFetching();
-        this._stopAmbienceSync();
+        this._stopTapeClock();
         for (const timer of this._flipTimers) clearTimeout(timer);
         this._flipTimers.clear();
         if (this._avatarDrawFrame !== null) {

@@ -200,7 +200,7 @@ export function taskboardBoardLayout(todos, { maxItemRows = 6 } = {}) {
             });
         }
         if (items.length > limit) {
-            rows.push({ kind: 'more', text: `+${items.length - limit} more` });
+            rows.push({ kind: 'more', text: `+${items.length - limit} more`, count: items.length - limit });
         }
         return { done, total, rows };
     }
@@ -227,7 +227,7 @@ export function taskboardBoardLayout(todos, { maxItemRows = 6 } = {}) {
             });
         }
         if (group.items.length > limit) {
-            rows.push({ kind: 'more', text: `+${group.items.length - limit} more` });
+            rows.push({ kind: 'more', text: `+${group.items.length - limit} more`, count: group.items.length - limit });
         }
     });
     return { done, total, rows };

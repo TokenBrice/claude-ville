@@ -1,6 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { fitAttentionFrame } from './AttentionFraming.js';
+import { SURVEY_TIER } from './Camera.js';
 
 const SCORE_INTERVAL_MS = 3000;
 const ORDINARY_IDLE_MS = 30000;
@@ -31,11 +32,11 @@ const AMBIENT_CHAPTERS_PER_WIDE = 2;
 const AMBIENT_WIDE_PADDING_PX = 200;
 const AMBIENT_COHORT_PADDING_PX = 220;
 const AMBIENT_CHAPTER_PADDING_PX = 230;
-// Long lateral moves, never a zoom drum: the resting tier is whatever the
-// existing automatic cap allows and every ambient glide keeps it.
-const AMBIENT_WIDE_GLIDE_MS = 6000;
-const AMBIENT_COHORT_GLIDE_MS = 7000;
-const AMBIENT_CHAPTER_GLIDE_MS = 4200;
+// Long lateral moves in the ambient motion family (8.1: easeInOutSine, the
+// distance-scaled duration ×2.2). The wide is the survey tier where the
+// backing store has one (8.3); cohorts and chapters rest at tier 1 at most.
+// Automatic moves never rest above tier 1.
+const AUTO_MAX_TIER = 1;
 // 5.2 — the chapter's bars stay up this long after the move settles.
 const AMBIENT_CHAPTER_LETTERBOX_MS = 3000;
 const AMBIENT_CHAPTER_GRADE = Object.freeze({ vignette: 0.34, worldTint: '#c0392b' });
@@ -380,7 +381,7 @@ export class CameraDirector {
             return null;
         }
         // Chrome panels are flex siblings: the canvas is already the usable viewport.
-        const pixelScale = camera.zoomSteps?.[0] || 1;
+        const pixelScale = camera.tierZoom?.(1) || 1;
         const viewport = {
             width: camera._viewportWidth() / pixelScale,
             height: camera._viewportHeight() / pixelScale,
@@ -390,7 +391,7 @@ export class CameraDirector {
         camera.glideToWorld({
             minX: frame.center.x, maxX: frame.center.x,
             minY: frame.center.y, maxY: frame.center.y,
-        }, { maxZoom: frame.zoom, paddingPx: 0, duration: 700, owner: 'user', userAdjustedOnComplete: true });
+        }, { maxZoom: frame.zoom, paddingPx: 0, owner: 'user', userAdjustedOnComplete: true });
         this.attentionFrame = {
             ...frame,
             focusedAgentId: frame.included[0] || frame.excluded[0],
@@ -450,7 +451,7 @@ export class CameraDirector {
         const distance = this._distanceFromCurrentCenter(boxCenter(box));
         if (distance > ORDINARY_MAX_DISTANCE) return;
 
-        const options = this._ordinaryGlideOptions(distance);
+        const options = this._ordinaryGlideOptions();
         if (!this._wouldMoveEnough(box, options)) return;
         if (!this._canCameraMove(now, { snapshot, ordinary: true })) return;
 
@@ -520,8 +521,8 @@ export class CameraDirector {
         if (!validBox(box)) return;
         // Under reduced motion glideToWorld cuts directly — this is the cut.
         const started = this.camera.glideToWorld(box, {
-            duration: 1,
-            maxZoom: this._currentMaxZoom(),
+            maxZoom: SURVEY_TIER,
+            minZoom: SURVEY_TIER,
             paddingPx: AMBIENT_WIDE_PADDING_PX,
             owner: 'ambient:wide',
             composition: { x: 0.5, y: 0.55 },
@@ -567,12 +568,15 @@ export class CameraDirector {
         state.holdUntil = now + AMBIENT_HOLD_MIN_MS;
     }
 
-    _ambientGlideOptions(owner, { duration, paddingPx, composition, grade = null, letterboxHoldMs = 0 }) {
+    _ambientGlideOptions(owner, { paddingPx, composition, grade = null, letterboxHoldMs = 0, wide = false }) {
+        // Leaving the survey wide for a cohort or chapter is the one ambient
+        // zoom: a single tier step in at the end of the pan (8.1).
+        const fromSurvey = !wide && this.camera?.currentZoomTier?.() === SURVEY_TIER;
         return {
-            duration,
-            // The existing automatic cap, and only resting tiers: ambient pans,
-            // it does not drum the zoom.
-            maxZoom: this._currentMaxZoom(),
+            motion: 'ambient',
+            // Only resting tiers: ambient pans, it does not drum the zoom.
+            maxZoom: wide ? SURVEY_TIER : (fromSurvey ? AUTO_MAX_TIER : this._currentMaxZoom()),
+            minZoom: wide ? SURVEY_TIER : 1,
             paddingPx,
             owner,
             composition,
@@ -580,8 +584,8 @@ export class CameraDirector {
             letterboxHoldMs,
             letterbox: letterboxHoldMs > 0,
             preferPan: true,
-            allowZoomIn: false,
-            zoomHysteresis: 1.35,
+            allowZoomIn: fromSurvey,
+            zoomHysteresis: fromSurvey ? 0 : 1.35,
             // Ambient's composition survives a relayout instead of being
             // re-framed to content behind the broadcast's back.
             userAdjustedOnComplete: true,
@@ -592,9 +596,9 @@ export class CameraDirector {
         const camera = this.camera;
         const key = ambientWideKey(cohorts);
         const options = this._ambientGlideOptions('ambient:wide', {
-            duration: AMBIENT_WIDE_GLIDE_MS,
             paddingPx: AMBIENT_WIDE_PADDING_PX,
             composition: { x: 0.5, y: 0.55 },
+            wide: true,
         });
 
         // The same wide, exactly: the saved pose, while the districts and the
@@ -603,8 +607,8 @@ export class CameraDirector {
             && state.wideKey === key
             && state.wideEpoch === camera.inputEpoch;
         let started = canReturn && camera.glideToPose(state.wide, {
-            duration: AMBIENT_WIDE_GLIDE_MS,
             owner: 'ambient:wide',
+            motion: 'ambient',
         });
 
         if (!started) {
@@ -657,7 +661,6 @@ export class CameraDirector {
         }
         const shotKey = `cohort:${candidate.contextKey}`;
         const options = this._ambientGlideOptions('ambient:cohort', {
-            duration: AMBIENT_COHORT_GLIDE_MS,
             paddingPx: AMBIENT_COHORT_PADDING_PX,
             composition: { x: 0.5, y: 0.55 },
         });
@@ -703,7 +706,6 @@ export class CameraDirector {
         }
 
         const options = this._ambientGlideOptions('ambient:chapter', {
-            duration: AMBIENT_CHAPTER_GLIDE_MS,
             paddingPx: AMBIENT_CHAPTER_PADDING_PX,
             composition: { x: 0.5, y: 0.53 },
             grade: AMBIENT_CHAPTER_GRADE,
@@ -747,8 +749,7 @@ export class CameraDirector {
         if (now - (this._lastEventKindAt.get(kind) ?? -Infinity) < kindCooldown) return;
         if (this._isFrameComfortable(cue.box, { event: true })) return;
 
-        const distance = this._distanceFromCurrentCenter(boxCenter(cue.box));
-        const options = this._eventGlideOptions(kind, distance, cue.grade || null);
+        const options = this._eventGlideOptions(kind, cue.grade || null);
         if (!this._wouldMoveEnough(cue.box, options)) return;
         if (!this._canCameraMove(now, { snapshot: this._latestSnapshot, event: true })) return;
 
@@ -789,9 +790,10 @@ export class CameraDirector {
         return true;
     }
 
-    _ordinaryGlideOptions(distance) {
+    // 8.1 — glide durations come from CameraCurves (screen distance and zoom
+    // ratio), so the options carry only framing.
+    _ordinaryGlideOptions() {
         return {
-            duration: distance > 560 ? 6500 : distance > 320 ? 5500 : 4500,
             maxZoom: this._currentMaxZoom(),
             paddingPx: ORDINARY_PADDING_PX,
             owner: 'idle-auto',
@@ -802,9 +804,8 @@ export class CameraDirector {
         };
     }
 
-    _eventGlideOptions(kind, distance, grade) {
+    _eventGlideOptions(kind, grade) {
         return {
-            duration: distance > 720 ? 7000 : distance > 420 ? 5600 : 3800,
             maxZoom: this._currentMaxZoom(),
             paddingPx: EVENT_PADDING_PX[kind] || EVENT_PADDING_PX.default,
             grade,
@@ -816,13 +817,10 @@ export class CameraDirector {
         };
     }
 
+    // The automatic cap: the current resting tier, never above tier 1.
     _currentMaxZoom() {
-        const camera = this.camera;
-        if (typeof camera?.currentZoomTier === 'function') return Math.min(1.5, camera.currentZoomTier());
-        const minZoom = camera?.minZoom || 1;
-        const maxZoom = Math.min(1.5, camera?.maxZoom || 3);
-        const zoom = Number(camera?.zoom);
-        return Math.max(minZoom, Math.min(maxZoom, Number.isFinite(zoom) ? zoom : minZoom));
+        const tier = this.camera?.currentZoomTier?.();
+        return Number.isFinite(tier) ? Math.min(AUTO_MAX_TIER, tier) : AUTO_MAX_TIER;
     }
 
     _distanceFromCurrentCenter(point) {

@@ -4,7 +4,14 @@ import {
     gpuResourceAccounting,
     unifiedRendererResourceAccounting,
 } from '../CanvasBudget.js';
-import { localLightPhaseForLighting, worldPhaseGrade } from '../gpu/GpuWorldPolicy.js';
+import {
+    GRADE_GLSL,
+    GRADE_UNIFORM_NAMES,
+    isAttentionLight,
+    localLightPhaseForLighting,
+    uploadGradeUniforms,
+} from '../gpu/GpuWorldPolicy.js';
+import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import { sourceEnergyFor } from '../AtmosphereState.js';
 
 const MAX_LIGHTS = 48;
@@ -45,12 +52,12 @@ uniform vec2 u_rayTexel;
 uniform vec2 u_flow;
 uniform vec3 u_sun;
 uniform vec4 u_pulse;
-uniform vec3 u_gradeBase;
-uniform vec3 u_gradeEdge;
-uniform float u_edgeAlpha;
-uniform vec3 u_tint;
-uniform float u_tintAlpha;
-uniform float u_lightGlowScale;
+${GRADE_GLSL}
+// Backing pixels per art pixel (zoom x dpr): light pools step on this grid.
+uniform float u_artPixel;
+// Where that grid starts (backing px, 0..u_artPixel): the camera's snapped
+// render offset, so per-texel terms land on the texels the world drew.
+uniform vec2 u_artOrigin;
 uniform float u_time;
 uniform float u_motionScale;
 uniform bool u_reducedMotion;
@@ -62,6 +69,8 @@ uniform bool u_pulseEnabled;
 uniform bool u_grainEnabled;
 uniform int u_hazeCount;
 uniform int u_lightCount;
+// Slots [0, u_attentionCount) are action-needed lights.
+uniform int u_attentionCount;
 uniform vec4 u_haze[8];
 uniform vec4 u_lights[48];
 uniform vec4 u_lightColors[48];
@@ -76,9 +85,12 @@ vec4 sourceAt(vec2 uv) {
     return texture(u_source, clamp(uv, vec2(0.0), vec2(1.0)));
 }
 
+// Offsets are in art pixels (texels, the contract's +/-2 / +/-1 envelopes):
+// each is rounded to whole texels and scaled to backing pixels, so a
+// displaced texel moves as one block and the art grid never shears.
 vec2 quantizedPixels(vec2 px) {
     vec2 a = floor(abs(px) + 0.5);
-    return sign(px) * a * u_sourceTexel;
+    return sign(px) * a * max(1.0, u_artPixel) * u_sourceTexel;
 }
 
 float waterAt(vec2 uv) {
@@ -91,6 +103,17 @@ vec2 scenePixels() {
     return vec2(v_uv.x * u_resolution.x, (1.0 - v_uv.y) * u_resolution.y);
 }
 
+// The art-pixel cell under this fragment (index), and its centre in scene
+// pixels.
+vec2 artCell() {
+    return floor((scenePixels() - u_artOrigin) / max(1.0, u_artPixel));
+}
+
+vec2 artCellPixels() {
+    float art = max(1.0, u_artPixel);
+    return (artCell() + 0.5) * art + u_artOrigin;
+}
+
 vec2 animatedPhase() {
     float phase = u_reducedMotion ? 0.37 : u_time * 0.001 * u_motionScale;
     return vec2(phase, phase * 1.6180339 + 0.7);
@@ -101,11 +124,13 @@ vec2 effectOffset(vec2 uv) {
     vec2 px = vec2(0.0);
     vec2 hazePx = vec2(0.0);
     vec2 phase = animatedPhase();
+    // One displacement per art-pixel cell, never per backing pixel.
+    vec2 cellPx = artCellPixels();
     float water = waterAt(uv);
     if (water > 0.001) {
         vec2 wave = vec2(
-            sin(scenePixels().y * 0.065 + phase.x * 2.2),
-            cos(scenePixels().x * 0.052 + phase.y * 1.7)
+            sin(cellPx.y * 0.065 + phase.x * 2.2),
+            cos(cellPx.x * 0.052 + phase.y * 1.7)
         );
         // Flow is capped to the contract's +/-2 texel displacement envelope.
         px += clamp(wave * u_flow * 2.0, vec2(-2.0), vec2(2.0)) * water;
@@ -113,7 +138,7 @@ vec2 effectOffset(vec2 uv) {
     for (int i = 0; i < 8; i++) {
         if (i >= u_hazeCount) break;
         vec4 anchor = u_haze[i];
-        vec2 delta = scenePixels() - anchor.xy;
+        vec2 delta = cellPx - anchor.xy;
         float radius = max(1.0, anchor.z);
         float influence = (1.0 - smoothstep(0.0, radius, length(delta))) * anchor.w;
         float shimmer = sin(dot(delta, vec2(0.071, 0.053)) + phase.x * 3.0 + float(i));
@@ -124,49 +149,55 @@ vec2 effectOffset(vec2 uv) {
     return quantizedPixels(clamp(px, vec2(-2.0), vec2(2.0)));
 }
 
-vec3 applyGrade(vec3 color) {
-    vec2 p = scenePixels();
-    vec2 centre = vec2(u_resolution.x * 0.5, u_resolution.y * (1.0 - 0.46));
-    float inner = min(u_resolution.x, u_resolution.y) * 0.18;
-    float outer = max(u_resolution.x, u_resolution.y) * 0.72;
-    float t = clamp((distance(p, centre) - inner) / max(1.0, outer - inner), 0.0, 1.0);
-    float vignetteAlpha = t <= 0.62
-        ? mix(0.0, u_edgeAlpha * 0.4, t / 0.62)
-        : mix(u_edgeAlpha * 0.4, u_edgeAlpha, (t - 0.62) / 0.38);
-    color *= u_gradeBase;
-    color *= mix(vec3(1.0), u_gradeEdge, vignetteAlpha);
-
-    // A restrained three-band refinement follows the authored world tint. It
-    // is intentionally tiny so E1 parity remains obvious at every phase.
-    float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    float shadows = (1.0 - smoothstep(0.0, 0.48, luminance)) * 0.020;
-    float mids = (1.0 - abs(luminance - 0.5) * 2.0) * 0.012;
-    float highlights = smoothstep(0.58, 1.0, luminance) * 0.008;
-    float refine = (shadows + mids + highlights) * u_tintAlpha;
-    color += (u_tint - vec3(0.5)) * refine;
-    return max(color, vec3(0.0));
+float bayer2(vec2 a) {
+    a = floor(a);
+    return fract(dot(a, vec2(0.5, a.y * 0.75)));
 }
 
-vec3 applyGlows(vec3 color) {
-    vec2 p = scenePixels();
+float bayer4(vec2 p) {
+    return bayer2(0.5 * p) * 0.25 + bayer2(p);
+}
+
+// C2 — the same grade the resident renderer runs on its albedo. The hybrid
+// source already carries the sky, so the whole frame is graded.
+vec3 applyGrade(vec3 color) {
+    color = applyTimeGrade(color, true);
+    return max(applyGradeVignette(color, scenePixels(), u_resolution), vec3(0.0));
+}
+
+// 1.2 parity — the resident renderer's stepped multiplicative pools: each
+// light is stepped on its own falloff per art pixel, in iso ground space
+// (screen y doubled, a 2:1 ellipse), the courses accumulate, and the pool
+// multiplies the ungraded source colour on the C1 ramp. Action-needed lights
+// take the same courses, but the strongest one at the pixel wins (no sum).
+vec3 applyPools(vec3 graded, vec3 albedo) {
+    vec2 cell = artCell();
+    vec2 p = artCellPixels();
+    float order = bayer4(cell);
+    vec3 acc = vec3(0.0);
+    float depth = 0.0;
+    vec3 attention = vec3(0.0);
+    float attentionLuma = 0.0;
     for (int i = 0; i < 48; i++) {
         if (i >= u_lightCount) break;
         vec4 light = u_lights[i];
         float radius = max(1.0, light.z);
-        float t = distance(p, light.xy) / radius;
+        float t = length((p - light.xy) * vec2(1.0, 2.0)) / radius;
         if (t >= 1.0) continue;
-        // 2D parity: _getLightGlowStamp's radial gradient — alpha 0.5 at the
-        // core, 0.25 at t=0.35, fading to 0 at the rim, with the core hue
-        // mixed 60% toward white so lanterns read incandescent.
-        float a = mix(mix(0.5, 0.25, t / 0.35), mix(0.25, 0.0, (t - 0.35) / 0.65), step(0.35, t));
-        vec3 base = u_lightColors[i].rgb;
-        vec3 hue = mix(mix(base, vec3(1.0), 0.6), base, smoothstep(0.0, 0.35, t));
-        // u_lightColors[i].a carries the per-light scale: 1 for ambient
-        // sources (day-visible, 2D parity), lantern night factor for baked
-        // prop halos.
-        color += hue * a * light.w * u_lightGlowScale * u_lightColors[i].a;
+        float steps = poolSteps(1.0 - smoothstep(0.0, 1.0, t), order);
+        vec3 lit = u_lightColors[i].rgb * poolWeight(steps) * light.w * u_lightColors[i].a;
+        if (i < u_attentionCount) {
+            float litLuma = dot(lit, GRADE_LUMA);
+            if (litLuma > attentionLuma) {
+                attention = lit;
+                attentionLuma = litLuma;
+            }
+        } else {
+            acc += lit;
+        }
+        depth = max(depth, steps);
     }
-    return color;
+    return stepPool(graded, acc + attention, depth, albedo);
 }
 
 vec3 applyGodRays(vec3 color, vec2 uv) {
@@ -215,16 +246,19 @@ void main() {
         scene.rgb += reflection * upperEdge * 0.08;
     }
 
+    vec3 albedo = scene.rgb;
     scene.rgb = applyGrade(scene.rgb);
-    scene.rgb = applyGlows(scene.rgb);
+    scene.rgb = applyPools(scene.rgb, albedo);
     scene.rgb = applyGodRays(scene.rgb, sceneUv);
 
     // Static phase under reduced motion; otherwise the grain term advances only
-    // through motionScale, matching the renderer's motion policy.
+    // through motionScale, matching the renderer's motion policy. Both terms
+    // step per art-pixel cell, so a flat texel stays one colour.
     if (u_grainEnabled) {
+        vec2 grainCell = artCell();
         float grainPhase = u_reducedMotion ? 0.37 : u_time * 0.00013 * u_motionScale;
-        float grain = hash21(gl_FragCoord.xy + vec2(grainPhase * 37.0, grainPhase * 19.0)) - 0.5;
-        float ordered = (mod(floor(gl_FragCoord.x) + 2.0 * floor(gl_FragCoord.y), 4.0) - 1.5) / 255.0;
+        float grain = hash21(grainCell + vec2(grainPhase * 37.0, grainPhase * 19.0)) - 0.5;
+        float ordered = (mod(grainCell.x + 2.0 * grainCell.y, 4.0) - 1.5) / 255.0;
         scene.rgb += grain * 0.006 + ordered * 0.35;
     }
     outColor = vec4(max(scene.rgb, vec3(0.0)), 1.0);
@@ -283,30 +317,6 @@ function finite(value, fallback = 0) {
 
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
-}
-
-function parseColor(value, fallback = [1, 1, 1]) {
-    if (Array.isArray(value) && value.length >= 3) {
-        return value.slice(0, 3).map(channel => clamp(finite(channel, 255) / 255, 0, 1));
-    }
-    const text = String(value || '');
-    const rgb = text.match(/rgba?\(([^)]+)\)/i);
-    if (rgb) {
-        const parts = rgb[1].split(',').map(Number);
-        return parts.slice(0, 3).map(channel => clamp(finite(channel, 255) / 255, 0, 1));
-    }
-    const hex = text.match(/^#([0-9a-f]{6})$/i);
-    if (hex) {
-        return [0, 1, 2].map(index => parseInt(hex[1].slice(index * 2, index * 2 + 2), 16) / 255);
-    }
-    return fallback.slice();
-}
-
-function parseColorAlpha(value) {
-    const match = String(value || '').match(/rgba?\(([^)]+)\)/i);
-    if (!match) return 1;
-    const parts = match[1].split(',').map(Number);
-    return clamp(finite(parts[3], 1), 0, 1);
 }
 
 function compileShader(gl, type, source) {
@@ -481,11 +491,11 @@ class PostFxInstance {
         }, {});
         this.mainUniforms = locations(this.mainProgram, [
             'u_source', 'u_waterMask', 'u_resolution', 'u_sourceTexel', 'u_maskTexel', 'u_rayTexel',
-            'u_flow', 'u_sun', 'u_pulse', 'u_gradeBase', 'u_gradeEdge', 'u_edgeAlpha',
-            'u_tint', 'u_tintAlpha', 'u_lightGlowScale', 'u_time', 'u_motionScale',
+            'u_flow', 'u_sun', 'u_pulse', ...GRADE_UNIFORM_NAMES, 'u_artPixel', 'u_artOrigin',
+            'u_time', 'u_motionScale',
             'u_reducedMotion', 'u_waterEnabled', 'u_displacementEnabled',
             'u_reflectionEnabled', 'u_godRaysEnabled', 'u_pulseEnabled',
-            'u_grainEnabled', 'u_hazeCount', 'u_lightCount',
+            'u_grainEnabled', 'u_hazeCount', 'u_lightCount', 'u_attentionCount',
             'u_haze[0]', 'u_lights[0]', 'u_lightColors[0]',
         ]);
         this.bloomUniforms = locations(this.bloomProgram, ['u_input', 'u_texel', 'u_extract']);
@@ -782,14 +792,9 @@ class PostFxInstance {
         const uniforms = this.mainUniforms;
         const reducedMotion = Boolean(feed?.reducedMotion);
         const motionScale = reducedMotion ? 0 : clamp(finite(feed?.motionScale, 1), 0, 2);
-        const phase = typeof feed?.phase === 'string' ? feed.phase : 'day';
-        // 3.4 — the hybrid path selects the same reviewed night moon course.
         const lighting = feed?.lighting || {};
-        const phaseGrade = worldPhaseGrade(phase, lighting.moonFill);
-        const grade = feed?.grade || {};
-        const worldTint = parseColor(grade.worldTint, [0.5, 0.5, 0.5]);
-        const edge = phaseGrade.edge;
-        const base = phaseGrade.base;
+        // C2 — the one evaluated grade, shared with the resident renderer.
+        const lightGrade = feed?.lightGrade || NEUTRAL_GRADE;
         const flow = feed?.water
             ? [clamp(finite(feed.water.flowX), -1, 1), clamp(finite(feed.water.flowY), -1, 1)]
             : [0, 0];
@@ -818,26 +823,19 @@ class PostFxInstance {
         gl.uniform2f(uniforms.u_flow, flow[0], flow[1]);
         gl.uniform3f(uniforms.u_sun, sunValues[0], sunValues[1], sunValues[2]);
         gl.uniform4f(uniforms.u_pulse, pulseValues[0], pulseValues[1], pulseValues[2], pulseStrength);
-        gl.uniform3f(uniforms.u_gradeBase, base[0], base[1], base[2]);
-        gl.uniform3f(uniforms.u_gradeEdge, edge[0], edge[1], edge[2]);
-        gl.uniform1f(uniforms.u_edgeAlpha, clamp(finite(phaseGrade.edgeAlpha), 0, 1));
-        gl.uniform3f(uniforms.u_tint, worldTint[0], worldTint[1], worldTint[2]);
-        gl.uniform1f(uniforms.u_tintAlpha, parseColorAlpha(grade.worldTint));
-        // 3.1 — one exposure envelope: the hybrid glow spends the same core
-        // share as the Canvas stamps it must match, and nothing multiplies
-        // lightBoost, the beacon factor, and the glow scale together any more.
-        const core = clamp(finite(sourceEnergyFor(lighting).core, 1), 0, 2);
+        uploadGradeUniforms(gl, uniforms, lightGrade);
+        const viewport = feed?.viewport || {};
+        gl.uniform1f(uniforms.u_artPixel, Math.max(1, finite(viewport.zoom, 1) * finite(viewport.dpr, 1)));
+        gl.uniform2f(uniforms.u_artOrigin, finite(viewport.artOriginX, 0), finite(viewport.artOriginY, 0));
+        // 3.1 — one exposure envelope: the hybrid pools spend the same spill
+        // share as the resident pools they must match.
+        this._poolEnergy = clamp(finite(sourceEnergyFor(lighting).spill, 1), 0, 2);
         const beacon = Number(lighting.beaconIntensity);
         const ambient = Number(lighting.ambientLight);
         const nightFactor = clamp(Number.isFinite(beacon) ? beacon
             : (Number.isFinite(ambient) ? 1 - ambient : 0), 0, 1);
         this._glowNightFactor = nightFactor;
         this._localLightPhase = localLightPhaseForLighting(lighting);
-        // 2D parity: `_drawLightGlowStamps` composites at 0.14 * core over a
-        // stamp whose stop alphas already carry the same core — hence squared.
-        const glowScale = 0.14 * core * core;
-        this._glowScale = glowScale;
-        gl.uniform1f(uniforms.u_lightGlowScale, glowScale);
         gl.uniform1f(uniforms.u_time, finite(feed?.timeMs));
         gl.uniform1f(uniforms.u_motionScale, motionScale);
         gl.uniform1i(uniforms.u_reducedMotion, reducedMotion ? 1 : 0);
@@ -866,30 +864,40 @@ class PostFxInstance {
         this.lightColors.fill(0);
         const lights = Array.isArray(feed?.lights) ? feed.lights : [];
         let lightCount = 0;
-        // Lantern-prop halos replicate _drawLanternGlows: globalAlpha
-        // 0.42 * nightFactor over a near-unity stamp. Cancel the ambient
-        // glow scale and substitute the lantern envelope in the alpha slot.
-        const lanternScale = (0.42 * (this._glowNightFactor ?? 0)) / Math.max(0.02, this._glowScale ?? 0.14);
+        let attentionCount = 0;
+        // 1.2 parity with the resident pools: night-only prop lights spend
+        // the beacon factor, every pool spends the envelope's spill share.
+        // Action-needed lights go first, so the cap never drops one; the
+        // shader takes their per-pixel max instead of a sum, and they stay
+        // outside the envelope, as on the GPU.
+        const poolEnergy = this._poolEnergy ?? 1;
         const lanternsVisible = (this._glowNightFactor ?? 0) > 0.05;
-        for (let i = 0; i < lights.length && lightCount < MAX_LIGHTS; i++) {
-            const light = lights[i] || {};
-            if (light.kind === 'beam') continue; // beam wedges are not radial stamps in the 2D path
-            if (light.night && !lanternsVisible) continue; // 2D gate: prop halos only after dusk
-            if (!light.night && this._localLightPhase <= 0.04) continue;
-            if (!Number.isFinite(Number(light.x)) || !Number.isFinite(Number(light.y))) continue;
-            const offset = lightCount * 4;
-            this.lightValues[offset] = finite(light.x);
-            this.lightValues[offset + 1] = finite(light.y);
-            this.lightValues[offset + 2] = Math.max(1, finite(light.radius, 1));
-            this.lightValues[offset + 3] = Math.max(0, finite(light.intensity, 1));
-            this.lightColors[offset] = clamp(finite(light.r, 255) / 255, 0, 1);
-            this.lightColors[offset + 1] = clamp(finite(light.g, 255) / 255, 0, 1);
-            this.lightColors[offset + 2] = clamp(finite(light.b, 255) / 255, 0, 1);
-            this.lightColors[offset + 3] = light.night ? lanternScale : this._localLightPhase;
-            lightCount++;
+        for (let pass = 0; pass < 2; pass++) {
+            if (pass === 1) attentionCount = lightCount;
+            for (let i = 0; i < lights.length && lightCount < MAX_LIGHTS; i++) {
+                const light = lights[i] || {};
+                const attention = isAttentionLight(light);
+                if (attention !== (pass === 0)) continue;
+                if (light.kind === 'beam') continue; // beam wedges are not radial stamps in the 2D path
+                if (light.night && !lanternsVisible) continue; // 2D gate: prop halos only after dusk
+                if (!light.night && this._localLightPhase <= 0.04) continue;
+                if (!Number.isFinite(Number(light.x)) || !Number.isFinite(Number(light.y))) continue;
+                const offset = lightCount * 4;
+                this.lightValues[offset] = finite(light.x);
+                this.lightValues[offset + 1] = finite(light.y);
+                this.lightValues[offset + 2] = Math.max(1, finite(light.radius, 1));
+                this.lightValues[offset + 3] = Math.max(0, finite(light.intensity, 1));
+                this.lightColors[offset] = clamp(finite(light.r, 255) / 255, 0, 1);
+                this.lightColors[offset + 1] = clamp(finite(light.g, 255) / 255, 0, 1);
+                this.lightColors[offset + 2] = clamp(finite(light.b, 255) / 255, 0, 1);
+                this.lightColors[offset + 3] = (light.night ? this._glowNightFactor ?? 0 : 1)
+                    * (attention ? 1 : poolEnergy);
+                lightCount++;
+            }
         }
         this.lightCount = lightCount;
         gl.uniform1i(uniforms.u_lightCount, lightCount);
+        gl.uniform1i(uniforms.u_attentionCount, attentionCount);
         gl.uniform4fv(uniforms['u_lights[0]'], this.lightValues);
         gl.uniform4fv(uniforms['u_lightColors[0]'], this.lightColors);
     }

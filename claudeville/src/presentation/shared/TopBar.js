@@ -12,12 +12,20 @@ import {
     LinkState,
     linkStatusText,
     snapshotAgeMs,
+    VillagePhase,
 } from '../../application/VillageState.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { eventShapeSvgPath } from './EventShapes.js';
 
 const SETTINGS_MODAL_OWNER = 'topbar-settings';
 const UNKNOWN_MODEL_DATE_KEY = 'claudeville.pricing.unknownModelDate';
+// The actionable buckets in display precedence (SignalLedger ACTIONABLE_BUCKETS
+// order), with the same words the World's attention plates use.
+const ATTENTION_PARTS = Object.freeze([
+    Object.freeze({ key: 'needsYou', word: 'NEEDS YOU', modifier: 'needs-you', noun: 'waiting for you' }),
+    Object.freeze({ key: 'errors', word: 'ERROR', modifier: 'error', noun: 'errored' }),
+    Object.freeze({ key: 'quota', word: 'LIMIT', modifier: 'limit', noun: 'rate-limited' }),
+]);
 const AUDIO_LAYER_LEVELS_KEY = 'claudeville.sound.layers';
 const AUDIO_MIXER_DEFAULTS = Object.freeze({
     wind: 1,
@@ -125,6 +133,40 @@ export function usageCoverage(agents = []) {
     return counts;
 }
 
+/**
+ * Counts are unknown (not zero) until the first snapshot lands, and stay
+ * unknown while a source is unreadable and nothing was read: a failed read
+ * is not evidence of an empty village.
+ */
+export function countsPending(state) {
+    const phase = state?.phase;
+    if (phase === VillagePhase.STARTING || phase === VillagePhase.SYNCING) return true;
+    if (phase === VillagePhase.DEGRADED) return !(Number(state?.agentCount) > 0);
+    return phase === VillagePhase.FAILED && !state?.link?.lastSnapshotAt;
+}
+
+/**
+ * The connection chip follows the village phase: it never says LIVE (or
+ * lights green) while the village is still syncing, and says DEGRADED while
+ * the world says a watchtower is unreadable.
+ */
+export function connectionChip(state, now = Date.now()) {
+    const phase = state?.phase;
+    if (phase === VillagePhase.STARTING || phase === VillagePhase.SYNCING) {
+        return { label: 'SYNCING', state: LinkState.SYNCING, stale: false };
+    }
+    if (phase === VillagePhase.DEGRADED) {
+        return { label: 'DEGRADED', state: LinkState.RECONNECTING, stale: false };
+    }
+    const stale = isStale(state, now);
+    return {
+        label: linkStatusText(state, now),
+        state: stale ? LinkState.STALE
+            : state?.source === 'simulator' ? LinkState.LIVE : state?.link?.state,
+        stale,
+    };
+}
+
 export class TopBar {
     constructor(world, { modal, attention, chronicle, spendLedger, frameAttention } = {}) {
         this._motionOverride = installReducedMotionOverride();
@@ -154,13 +196,24 @@ export class TopBar {
             rateWrap: document.getElementById('statRateWrap'),
             fps: document.getElementById('statFps'),
         };
-        this.els.needsYou = el('span', {
-            className: 'topbar__seg topbar__seg--needs-you',
-            title: 'Agents waiting for your input or approval',
-        });
-        this.els.needsYou.id = 'badgeNeedsYou';
-        this.els.needsYou.hidden = true;
-        this.els.waiting?.parentElement?.parentElement?.prepend(this.els.needsYou);
+        this.els.center = this.els.root?.querySelector('.topbar__center') || null;
+        // The one loud slot counts every agent that needs action — needs-you,
+        // errored and rate-limited — one exact numeral per non-zero bucket, in
+        // the bucket's status colour, inside a single lit frame.
+        this.els.attentionParts = Object.fromEntries(ATTENTION_PARTS.map(({ key, word, modifier }) => {
+            const num = el('span', { className: 'topbar__kpi-num', text: '0' });
+            const part = el('span', { className: `topbar__attn-part topbar__attn-part--${modifier}` }, [
+                num,
+                el('span', { className: 'topbar__kpi-cap', text: word }),
+            ]);
+            part.hidden = true;
+            return [key, { part, num }];
+        }));
+        this.els.attention = el('span', { className: 'topbar__seg topbar__seg--attention' },
+            ATTENTION_PARTS.map(({ key }) => this.els.attentionParts[key].part));
+        this.els.attention.id = 'badgeAttention';
+        this.els.attention.hidden = true;
+        this.els.waiting?.parentElement?.parentElement?.prepend(this.els.attention);
         this._usage = null;
         this.timeInterval = null;
         this._lastFps = null;
@@ -219,6 +272,8 @@ export class TopBar {
                     && [LinkState.LIVE, LinkState.POLLING].includes(state.link.state));
             this._applyConnectionChrome(connected);
             this._renderConnection();
+            // The first snapshot turns the count placeholders into real numbers.
+            if (this._countsPending !== countsPending(state)) this.render();
         };
         eventBus.on('village:state', this._onVillageState);
         this._onChronicleStatus = (payload = {}) => {
@@ -594,7 +649,6 @@ export class TopBar {
             text: 'MIX',
             title: 'Open soundscape mixer',
             ariaLabel: 'Open soundscape mixer',
-            style: { padding: '6px 7px', letterSpacing: '0.5px' },
         });
         button.type = 'button';
         button.hidden = true;
@@ -606,19 +660,7 @@ export class TopBar {
         const panel = el('div', {
             className: 'topbar__mixer-panel',
             ariaLabel: 'Soundscape mixer',
-            style: {
-                position: 'fixed',
-                display: 'none',
-                zIndex: '1200',
-                boxSizing: 'border-box',
-                width: '308px',
-                padding: '11px',
-                border: '1px solid var(--cv-gold-warm, #c79d4c)',
-                borderRadius: '2px',
-                background: 'linear-gradient(180deg, var(--cv-panel, #211811), #17100c)',
-                boxShadow: '0 0 0 2px rgba(28, 17, 11, 0.96), var(--cv-elev-2)',
-                color: 'var(--cv-tan, #d6c09c)',
-            },
+            style: { display: 'none' },
         });
         panel.id = 'audioMixerPanel';
         panel.setAttribute('role', 'dialog');
@@ -632,11 +674,7 @@ export class TopBar {
             className: 'topbar__mixer-note',
             text: 'Layer trims · master volume still applies',
         });
-        const rows = el('div', {
-            style: {
-                borderTop: '1px solid rgba(199, 157, 76, 0.22)',
-            },
-        });
+        const rows = el('div', { className: 'topbar__mixer-rows' });
         const controls = {};
         const layers = [
             ['wind', 'WIND'],
@@ -649,28 +687,14 @@ export class TopBar {
             const slider = el('input', {
                 className: 'topbar__sound-vol',
                 ariaLabel: `${label.toLowerCase()} level`,
-                style: { width: '142px' },
             });
             slider.type = 'range';
             slider.min = '0';
             slider.max = '100';
             slider.step = '1';
             slider.value = '100';
-            const value = el('span', {
-                text: '100%',
-                style: { color: 'var(--cv-text-muted)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
-            });
-            rows.appendChild(el('label', {
-                className: 'topbar__mixer-row',
-                style: {
-                    display: 'grid',
-                    gridTemplateColumns: '78px 1fr 34px',
-                    gap: '7px',
-                    alignItems: 'center',
-                    minHeight: '32px',
-                    borderBottom: '1px solid rgba(199, 157, 76, 0.12)',
-                },
-            }, [label, slider, value]));
+            const value = el('span', { className: 'topbar__mixer-value', text: '100%' });
+            rows.appendChild(el('label', { className: 'topbar__mixer-row' }, [label, slider, value]));
             controls[name] = { slider, value };
         }
         panel.append(heading, note, rows);
@@ -808,36 +832,66 @@ export class TopBar {
         for (const agent of this.world?.agents?.values?.() || []) this._observeHookSignal(agent);
         this._unknownModelSeenToday();
 
-        this._renderSpend();
-        this.els.working.textContent = stats.working;
-        this.els.idle.textContent = stats.idle;
-        this.els.waiting.textContent = stats.waiting;
-        if (this.els.needsYou) {
-            this.els.needsYou.hidden = !(stats.needsYou > 0);
-            this.els.needsYou.textContent = `${stats.needsYou || 0} NEEDS YOU`;
-        }
+        // Until the first snapshot the counts are unknown, not zero: show '–'.
+        const pending = countsPending(this._villageState);
+        this._countsPending = pending;
+        this.els.center?.classList.toggle('topbar--pending', pending);
+        this._renderSpend(pending);
+        this._renderCount(this.els.working, stats.working, pending);
+        this._renderCount(this.els.idle, stats.idle, pending);
+        this._renderCount(this.els.waiting, stats.waiting, pending);
+        this._renderAttention(stats, pending);
 
         this._renderActivityRail(stats);
+    }
+
+    // Before the first snapshot the slot claims nothing it has not seen. The
+    // frame takes the colour of the first lit bucket; every numeral is exact.
+    _renderAttention(stats, pending) {
+        const frame = this.els.attention;
+        if (!frame) return;
+        const lit = [];
+        for (const { key, noun } of ATTENTION_PARTS) {
+            const count = pending ? 0 : Math.max(0, Number(stats?.[key]) || 0);
+            const refs = this.els.attentionParts?.[key];
+            if (refs) {
+                refs.part.hidden = count <= 0;
+                refs.num.textContent = String(count);
+            }
+            if (count > 0) lit.push({ key, count, noun });
+        }
+        frame.hidden = lit.length === 0;
+        if (!lit.length) return;
+        frame.dataset.lead = lit[0].key;
+        frame.title = `Needs action: ${lit.map(({ count, noun }) => `${count} ${noun}`).join(' · ')}. Press A to frame them.`;
+    }
+
+    _renderCount(node, value, pending) {
+        if (!node) return;
+        const count = Number(value) || 0;
+        node.textContent = pending ? '–' : String(count);
+        node.parentElement?.classList.toggle('topbar__seg--zero', !pending && count === 0);
     }
 
     // Today's observed spend, the live burn rate, and quota headroom — the
     // three numbers that answer "am I burning tokens?". The old readout summed
     // the lifetime cost of whichever sessions happened to be resident, which
     // moved for reasons that had nothing to do with spending.
-    _renderSpend() {
+    _renderSpend(pending = this._countsPending) {
         const now = Date.now();
         const today = this.spendLedger?.sample?.(now) || { tokens: 0, cacheRead: 0, cost: 0 };
         const coverage = usageCoverage(this.world?.agents?.values?.() || []);
         const incomplete = coverage.partial + coverage.unavailable;
         this._coverageNote = incomplete ? `Partial coverage: ${coverage.partial} partial, ${coverage.unavailable} unavailable among current sessions.` : '';
-        this.els.tokens.textContent = `${formatNumber(today.tokens)}${incomplete ? ' · partial' : ''}`;
+        this.els.tokens.textContent = pending ? '–' : formatNumber(today.tokens);
+        this.els.rateWrap?.classList.toggle('topbar__seg-stat--zero', !pending && !(today.tokens > 0));
 
-
-        // The rate rides alongside today's total in one cell — two numbers
-        // about the same thing, and the topbar has no width to spare.
+        // The rate and the coverage caveat ride beside today's total — two
+        // facts about the same number, and the topbar has no width to spare.
         const rate = this.spendLedger?.burnRate?.(now);
         this._spendRollups = this.spendLedger?.rollups?.(now) || { projects: [], providers: [] };
-        this.els.rate.textContent = rate ? `${formatNumber(Math.round(rate.tokensPerHour))}/h` : '';
+        const rateText = rate ? `${formatNumber(Math.round(rate.tokensPerHour))}/h` : '';
+        this.els.rate.textContent = pending ? '' : [rateText, incomplete ? 'partial' : ''].filter(Boolean).join(' · ');
         if (this.els.rateWrap) {
             this.els.rateWrap.title = rate
                 ? `Tokens observed today, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates. Rate match: mixed session models; revision ${TokenUsage.rateRevision}. Click for project and provider detail.`
@@ -1009,29 +1063,14 @@ export class TopBar {
         return labels[provider] || String(provider || 'Unknown');
     }
 
-    // Living activity rail: a 2px strip along the topbar bottom whose hue and
-    // intensity echo the fleet's status mix. Mostly-working reads as a warm
-    // gold; any errored agent bleeds red in from the left, weighted by how much
-    // of the fleet is failing. Driven by CSS custom props the rail strip reads.
+    // Fault rail: a static 1px red strip on the bar's bevel whose length is the
+    // errored share of the fleet. A calm village shows nothing; there is no
+    // decorative shimmer.
     _renderActivityRail(stats) {
         if (!this.els.root) return;
         const total = stats.total || 0;
-        const erroredRatio = total > 0 ? stats.errored / total : 0;
-        const activeRatio = total > 0 ? (stats.working + stats.waiting) / total : 0;
-
-        // Hue: 45deg warm gold by default, pulled toward 8deg red as the
-        // errored fraction climbs. Alpha rises with both trouble and activity
-        // so an idle/empty village rests dim.
-        const hue = Math.round(45 - 37 * erroredRatio);
-        const alpha = (0.18 + 0.42 * activeRatio + 0.4 * erroredRatio).toFixed(3);
-        // Red bleed origin: 100% (offscreen right) when calm, sliding left as
-        // more agents error so the red enters from the left edge.
-        const bleed = Math.round(100 - 100 * erroredRatio);
-
-        const style = this.els.root.style;
-        style.setProperty('--cv-rail-hue', `${hue}`);
-        style.setProperty('--cv-rail-alpha', `${alpha}`);
-        style.setProperty('--cv-rail-bleed', `${bleed}%`);
+        const erroredRatio = total > 0 ? Math.min(1, (stats.errored || 0) / total) : 0;
+        this.els.root.style.setProperty('--cv-rail-errored', `${Math.round(erroredRatio * 100)}%`);
     }
 
     _initConnectionInstrument() {
@@ -1081,10 +1120,7 @@ export class TopBar {
     _renderConnection(now = Date.now()) {
         const chip = this.els.connection;
         if (!chip) return;
-        const label = linkStatusText(this._villageState, now);
-        const stale = isStale(this._villageState, now);
-        const state = stale ? LinkState.STALE
-            : this._villageState.source === 'simulator' ? LinkState.LIVE : this._villageState.link.state;
+        const { label, state, stale } = connectionChip(this._villageState, now);
         chip.textContent = label;
         chip.classList.toggle('topbar__conn--connected', state === LinkState.LIVE);
         chip.classList.toggle('topbar__conn--disconnected', state === LinkState.RECONNECTING);
@@ -1324,7 +1360,7 @@ export class TopBar {
         if (this._destroyed) return this._destroyPromise;
         this._destroyed = true;
         eventBus.off('atmosphere:updated', this._onAtmosphere);
-        this.els.needsYou?.remove();
+        this.els.attention?.remove();
         if (this.timeInterval) {
             clearInterval(this.timeInterval);
             this.timeInterval = null;

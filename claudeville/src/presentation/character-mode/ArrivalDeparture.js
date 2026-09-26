@@ -1,10 +1,37 @@
 import { tileToWorld } from './Projection.js';
+import { SpriteSheet } from './SpriteSheet.js';
 import { agentSignature, drawAgentSignature, getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
+import {
+    MAGIC_RAMP,
+    PEAK,
+    STONE_RAMP,
+    DUST_TONES,
+    chips,
+    column,
+    comet,
+    defineMoment,
+    diamond,
+    momentPhase,
+    quantStep,
+    ringDots,
+    runeNotch,
+    snap,
+    steppedDecay,
+} from './EffectStamps.js';
 
-const ARRIVAL_MS = 3000;
-const DISPATCH_MS = 600;
-const MERGE_MS = 400;
-const ORPHAN_RETURN_MS = 1200;
+// 6.2 — arrival materialize beat (Medium): anticipation column + rune ring,
+// one cream silhouette frame, the true body with a 3-step column collapse and
+// dust chips, then a static rune notch while the villager walks in the gate.
+const ARRIVAL = defineMoment('medium', { anticipation: 200, peak: 80, follow: 520, residue: 2000 });
+// 6.3 — dispatch / merge comet (Medium): gather at the sender, a comet flight
+// with the child miniature as its head, one cream impact frame, a chip splash.
+const COMET_GATHER_MS = 150;
+const COMET_FLIGHT_MS = 500;
+const COMET_IMPACT_MS = 80;
+const COMET_SPLASH_MS = 400;
+const COMET_TOTAL_MS = COMET_GATHER_MS + COMET_FLIGHT_MS + COMET_IMPACT_MS + COMET_SPLASH_MS;
+const ORPHAN_FLIGHT_MS = 700;
+const COMET_LIFT = 24;
 const DEPARTURE_SIGIL_MS = 12000;
 const REDUCED_SIGIL_MS = 6000;
 const SUBAGENT_COMPLETION_MS = 2200;
@@ -12,11 +39,15 @@ const REDUCED_COMPLETION_MS = 3600;
 const MAX_SIGILS = 6;
 const MAX_COMPLETION_CUES = 8;
 const MAX_ORPHAN_RETURNS = 6;
+const MAX_ARRIVALS = 6;
 // 2.5 — snapshot pixels of a child's idle row travel with its dispatch and its
 // return. Bounded so the cache can never grow with the session: 24 crops of at
 // most 14 px stay far under the 64 KiB the proposal budgeted.
 const MINIATURE_PX = 14;
 const MAX_MINIATURES = 24;
+// Launch/landing heights above the feet, in world texels.
+const PARENT_LAUNCH_LIFT = 40;
+const ARRIVAL_COLUMN_HEIGHT = 44;
 
 const PROVIDER_COLORS = {
     claude: '#a78bfa',
@@ -29,21 +60,6 @@ const PROVIDER_COLORS = {
     default: '#f2d36b',
 };
 
-const PROVIDER_INITIALS = {
-    claude: 'C',
-    codex: 'X',
-    gemini: 'G',
-    git: '#',
-    kimi: 'K',
-    omp: 'M',
-    opencode: 'O',
-    default: '?',
-};
-
-const COMMAND_ARRIVAL = { tileX: 16, tileY: 24 };
-const COMMAND_APPROACH = { tileX: 11, tileY: 29 };
-const HARBOR_ARRIVAL = { tileX: 31, tileY: 27 };
-const HARBOR_APPROACH = { tileX: 39, tileY: 31 };
 // Mirrors PORTAL_SPAWN_TILE in IsometricRenderer.js (Portal Gate footprint
 // center). Used as the fallback target when the renderer cannot project a
 // screen point for an orphan subagent's return.
@@ -62,10 +78,6 @@ function providerColor(provider) {
     return PROVIDER_COLORS[String(provider || '').toLowerCase()] || PROVIDER_COLORS.default;
 }
 
-function providerInitial(provider) {
-    return PROVIDER_INITIALS[String(provider || '').toLowerCase()] || PROVIDER_INITIALS.default;
-}
-
 // 2.5 — the child's stable signature (plan 2.4) resolved from the agent record
 // alone, so a return still identifies its child after the sprite is disposed.
 function agentSignatureFor(agent) {
@@ -75,65 +87,200 @@ function agentSignatureFor(agent) {
     return agentSignature(agent.id, family);
 }
 
-// One miniature: the snapshot crop when one was captured while the child was
-// alive, always the signature plate, and an exact count when a burst folded.
-function drawChildMiniature(ctx, { miniature = null, signature = null, accent = '#f2d36b', count = 1 }) {
+// One miniature standing on (x, y) in world texels: the snapshot crop when one
+// was captured while the child was alive, always the signature plate, and an
+// exact count when a burst folded. The crop draws 1:1 on the world grid.
+function drawChildMiniature(ctx, x, y, { miniature = null, signature = null, accent = '#f2d36b', count = 1, zoom = 1 }) {
     const canvas = miniature?.canvas || null;
     const mark = miniature?.signature || signature || null;
     const tone = miniature?.accent || accent;
+    const ox = snap(x);
+    const oy = snap(y);
     if (canvas) {
         ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(canvas, Math.round(-canvas.width / 2), Math.round(-canvas.height), canvas.width, canvas.height);
+        ctx.drawImage(canvas, ox - (canvas.width >> 1), oy - canvas.height, canvas.width, canvas.height);
     }
-    if (mark) drawAgentSignature(ctx, mark, { x: 0, y: canvas ? 4 : 0, pixel: 1, accent: tone });
+    if (mark) drawAgentSignature(ctx, mark, { x: ox, y: canvas ? oy + 4 : oy, pixel: 1, accent: tone });
     if (count > 1) {
-        // Exact child count, never a percentage. Dark backing so the number
-        // survives foliage and night grade at overview distance.
+        // Exact child count, never a percentage: C5 label type (PS2P 8 px,
+        // screen-fixed, never bold) on a dark backing so the number survives
+        // foliage and the night grade.
+        const z = Math.max(0.01, zoom || 1);
         const text = `x${count}`;
-        const y = canvas ? -2 : 0;
+        ctx.save();
+        ctx.translate(ox + 6, oy - 8);
+        ctx.scale(1 / z, 1 / z);
         ctx.fillStyle = 'rgba(12, 9, 7, 0.86)';
-        ctx.fillRect(6, y - 6, 6 + text.length * 6, 12);
-        ctx.fillStyle = '#f4e7c8';
-        ctx.font = 'bold 7px "Press Start 2P", monospace';
+        ctx.fillRect(0, -6, 6 + text.length * 8, 12);
+        ctx.fillStyle = '#eee3cb';
+        ctx.font = '8px "Press Start 2P", monospace';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText(text, 9, y + 0.5);
+        ctx.fillText(text, 3, 0);
+        ctx.restore();
     }
 }
 
-function easeOutCubic(t) {
-    return 1 - Math.pow(1 - t, 3);
+// ---------------------------------------------------------------------------
+// Silhouette frame — the body's alpha mask filled cream, cached per sheet and
+// facing. Built once from the sprite's composed sheet; null until it loads.
+// ---------------------------------------------------------------------------
+
+const SILHOUETTES = new WeakMap();
+
+function bodySilhouette(sprite) {
+    if (!sprite || typeof document === 'undefined') return null;
+    const source = sprite.spriteCanvas || sprite._composeBaseSheet?.() || null;
+    if (!source || !source.width || !source.height) return null;
+    const dir = Number.isInteger(sprite.direction) ? sprite.direction : 0;
+    let byDir = SILHOUETTES.get(source);
+    if (!byDir) {
+        byDir = new Map();
+        SILHOUETTES.set(source, byDir);
+    }
+    if (byDir.has(dir)) return byDir.get(dir);
+    const sheet = source === sprite.spriteCanvas && sprite.spriteSheet ? sprite.spriteSheet : new SpriteSheet(source);
+    const cell = sheet.cell('idle', dir, 0);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, cell.sw);
+    canvas.height = Math.max(1, cell.sh);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(source, cell.sx, cell.sy, cell.sw, cell.sh, 0, 0, cell.sw, cell.sh);
+    let minX = canvas.width;
+    let minY = canvas.height;
+    let maxX = -1;
+    let maxY = -1;
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let y = 0; y < canvas.height; y++) {
+        for (let x = 0; x < canvas.width; x++) {
+            if (data[(y * canvas.width + x) * 4 + 3] < 24) continue;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+    }
+    if (maxX < 0) return null;
+    // S16 — the cream peak frame is the body's 1-texel rim, not a filled
+    // blob: keep opaque pixels with a transparent 4-neighbour (or the cell
+    // edge) and clear the interior.
+    const w = canvas.width;
+    const h = canvas.height;
+    const opaque = (x, y) => x >= 0 && y >= 0 && x < w && y < h && data[(y * w + x) * 4 + 3] >= 24;
+    const rim = ctx.createImageData(w, h);
+    const cream = Number.parseInt(PEAK.slice(1), 16);
+    for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+            if (!opaque(x, y)) continue;
+            if (opaque(x - 1, y) && opaque(x + 1, y) && opaque(x, y - 1) && opaque(x, y + 1)) continue;
+            const i = (y * w + x) * 4;
+            rim.data[i] = (cream >> 16) & 0xff;
+            rim.data[i + 1] = (cream >> 8) & 0xff;
+            rim.data[i + 2] = cream & 0xff;
+            rim.data[i + 3] = 255;
+        }
+    }
+    ctx.putImageData(rim, 0, 0);
+    const silhouette = { canvas, minX, minY, maxX, maxY };
+    byDir.set(dir, silhouette);
+    return silhouette;
 }
 
-function mix(a, b, t) {
-    return a + (b - a) * t;
+// Draw the cream frame with its feet on (x, y) at the 1:1 body scale (C3/D1).
+function drawSilhouette(ctx, silhouette, x, y) {
+    if (!silhouette) return;
+    const centerX = (silhouette.minX + silhouette.maxX) / 2;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(silhouette.canvas, snap(x - centerX), snap(y - silhouette.maxY + 2));
 }
 
-function pointOnPath(start, end, t, lift = 0) {
-    const eased = easeOutCubic(Math.max(0, Math.min(1, t)));
+// ---------------------------------------------------------------------------
+// Comet timeline shared by dispatch, merge and orphan returns.
+// ---------------------------------------------------------------------------
+
+function cometPhase(age, flightMs = COMET_FLIGHT_MS) {
+    if (age < 0) return { phase: 'gather', t: 0, step: 0 };
+    if (age < COMET_GATHER_MS) {
+        const t = age / COMET_GATHER_MS;
+        return { phase: 'gather', t, step: quantStep(t, 3) };
+    }
+    const flight = age - COMET_GATHER_MS;
+    if (flight < flightMs) return { phase: 'flight', t: flight / flightMs, step: 0 };
+    const impact = flight - flightMs;
+    if (impact < COMET_IMPACT_MS) return { phase: 'impact', t: impact / COMET_IMPACT_MS, step: 0 };
+    const splash = impact - COMET_IMPACT_MS;
+    if (splash < COMET_SPLASH_MS) {
+        const t = splash / COMET_SPLASH_MS;
+        return { phase: 'splash', t, step: quantStep(t, 3) };
+    }
+    return { phase: 'done', t: 1, step: 0 };
+}
+
+function cometDuration(flightMs = COMET_FLIGHT_MS) {
+    return COMET_GATHER_MS + flightMs + COMET_IMPACT_MS + COMET_SPLASH_MS;
+}
+
+// Launch eased out, landing eased in: the comet leaves quickly and drops in.
+function easeInOutQuad(t) {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+function pointOnArc(start, end, t, lift = 0) {
+    const u = Math.max(0, Math.min(1, t));
+    const eased = easeInOutQuad(u);
     return {
-        x: mix(start.x, end.x, eased),
-        y: mix(start.y, end.y, eased) - Math.sin(Math.PI * eased) * lift,
+        x: start.x + (end.x - start.x) * eased,
+        y: start.y + (end.y - start.y) * eased - Math.sin(Math.PI * eased) * lift,
     };
 }
 
-function hasGitActivity(agent) {
-    return Array.isArray(agent?.gitEvents) && agent.gitEvents.length > 0;
+function cometHead(item, t) {
+    const head = pointOnArc(item.start, item.end, t, COMET_LIFT);
+    const prev = pointOnArc(item.start, item.end, Math.max(0, t - 0.06), COMET_LIFT);
+    let dx = head.x - prev.x;
+    let dy = head.y - prev.y;
+    if (Math.abs(dx) + Math.abs(dy) < 0.01) {
+        dx = item.end.x - item.start.x;
+        dy = item.end.y - item.start.y;
+    }
+    return { x: head.x, y: head.y, dx, dy };
 }
 
-function hasHarborActivity(agent) {
-    if (!agent) return false;
-    if (hasGitActivity(agent)) return true;
-    return agent.targetBuildingType === 'harbor'
-        || agent.lastKnownBuildingType === 'harbor'
-        || agent.currentBuildingType === 'harbor';
+// S8 — one comet flight frame. The head (the child miniature, or the plus
+// stamp without one) is screen-fixed at 2 px per texel at z ≤ 2: world scale
+// is the integer 2/zoom, so a z1 flight is a 2×-texel sprite, never a speck.
+// The tail is a stepped dot trace of the arc already flown (same scale), so the
+// launch point stays readable for the whole flight.
+const COMET_TRAIL_DOTS = 7;
+const COMET_TRAIL_STEP = 0.05;
+
+function drawCometFlight(ctx, arc, t, { zoom = 1, ramp = MAGIC_RAMP, miniature = null, signature = null } = {}) {
+    const scale = Math.max(1, Math.round(2 / Math.max(0.25, Number(zoom) || 1)));
+    for (let i = COMET_TRAIL_DOTS; i >= 1; i--) {
+        const u = t - i * COMET_TRAIL_STEP;
+        if (u < 0) continue;
+        const p = pointOnArc(arc.start, arc.end, u, COMET_LIFT);
+        const size = (i <= 2 ? 2 : 1) * scale;
+        ctx.fillStyle = i <= 2 ? ramp[2] : (i <= 4 ? ramp[1] : ramp[0]);
+        ctx.fillRect(snap(p.x) - (size >> 1), snap(p.y - 3 * scale) - (size >> 1), size, size);
+    }
+    const head = cometHead(arc, t);
+    const hasMiniature = Boolean(miniature || signature);
+    ctx.save();
+    ctx.translate(snap(head.x), snap(head.y));
+    ctx.scale(scale, scale);
+    comet(ctx, 0, -3, head.dx, head.dy, { length: 5, spacing: 3, ramp, head: !hasMiniature });
+    if (hasMiniature) drawChildMiniature(ctx, 0, 4, { miniature, signature, accent: ramp[1] });
+    ctx.restore();
 }
 
-function arrivalModeForAgent(agent) {
-    const provider = String(agent?.provider || '').toLowerCase();
-    if (hasHarborActivity(agent)) return 'boat';
-    if (provider === 'claude' || provider.includes('claude')) return 'carriage';
-    return 'boat';
+function hashId(value) {
+    const text = String(value || '');
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+    return h >>> 0;
 }
 
 export class ArrivalDepartureController {
@@ -154,34 +301,47 @@ export class ArrivalDepartureController {
         this.motionScale = scale === 0 ? 0 : 1;
     }
 
-    beginAgentArrival(agent, sprite, { parentAlive = false, now = nowMs() } = {}) {
+    // 6.2 — the arrival no longer rides a carriage or boat glyph. The renderer
+    // has already placed the sprite at the gate's outside tile; the body stays
+    // hidden through the anticipation and the one cream silhouette frame, then
+    // `onLanded` hands it back to the gate walk-in. Reduced motion keeps the
+    // body where the renderer put it and leaves only the static rune notch.
+    beginAgentArrival(agent, sprite, { parentAlive = false, now = nowMs(), onLanded = null } = {}) {
         if (!agent || !sprite || parentAlive) return null;
-        if (this.motionScale === 0) {
-            sprite.setArrivalState?.('visible');
-            return null;
-        }
-
-        const mode = arrivalModeForAgent(agent);
-        const start = tileToScreen(mode === 'boat' ? HARBOR_APPROACH : COMMAND_APPROACH);
-        const end = tileToScreen(mode === 'boat' ? HARBOR_ARRIVAL : COMMAND_ARRIVAL);
-        sprite.setArrivalState?.('pending');
-        sprite.x = end.x;
-        sprite.y = end.y;
-        this.arrivals.set(agent.id, {
+        this._landArrival(this.arrivals.get(agent.id));
+        this.arrivals.delete(agent.id);
+        // At most six materialize beats at once (a restart can land two dozen
+        // sessions in one frame); the rest simply walk in through the gate.
+        if (this.arrivals.size >= MAX_ARRIVALS) return null;
+        const point = { x: Number(sprite.x) || 0, y: Number(sprite.y) || 0 };
+        const reduced = this.motionScale === 0;
+        if (!reduced) sprite.setArrivalState?.('pending');
+        const arrival = {
             id: agent.id,
-            agent,
             sprite,
-            mode,
-            start,
-            end,
+            point,
             startedAt: now,
-            duration: ARRIVAL_MS,
-            color: providerColor(agent.provider),
-        });
-        return this.arrivals.get(agent.id);
+            reduced,
+            landed: reduced,
+            onLanded: reduced ? null : onLanded,
+            seed: hashId(agent.id),
+            silhouette: reduced ? null : bodySilhouette(sprite),
+        };
+        this.arrivals.set(agent.id, arrival);
+        return reduced ? null : arrival;
     }
 
-    beginSubagentDispatch(parentSprite, childSprite, { now = nowMs(), portalScreenPoint = null } = {}) {
+    // Truth for label gating: a name must not float over an empty spot. True
+    // while the body is still hidden behind an arrival or a dispatch comet.
+    isArrivalPending(agentId) {
+        if (!agentId) return false;
+        const arrival = this.arrivals.get(agentId);
+        if (arrival && !arrival.landed) return true;
+        const dispatch = this.dispatches.get(agentId);
+        return Boolean(dispatch && !dispatch.landed);
+    }
+
+    beginSubagentDispatch(parentSprite, childSprite, { now = nowMs(), onLanded = null } = {}) {
         if (!parentSprite || !childSprite) return null;
         const childId = childSprite.agent?.id;
         if (!childId) return null;
@@ -190,25 +350,26 @@ export class ArrivalDepartureController {
             return null;
         }
 
-        const start = portalScreenPoint && Number.isFinite(portalScreenPoint.x) && Number.isFinite(portalScreenPoint.y)
-            ? { x: portalScreenPoint.x, y: portalScreenPoint.y - 24 }
-            : { x: parentSprite.x, y: parentSprite.y - 34 };
-
         childSprite.setArrivalState?.('pending');
         this.dispatches.set(childId, {
             id: childId,
             parentSprite,
             childSprite,
-            start,
-            end: { x: childSprite.x, y: childSprite.y - 20 },
+            start: { x: parentSprite.x, y: parentSprite.y - PARENT_LAUNCH_LIFT },
+            end: { x: childSprite.x, y: childSprite.y },
             startedAt: now,
-            duration: DISPATCH_MS,
-            color: providerColor(childSprite.agent?.provider),
-            // The wisp core is the child itself: snapshot pixels plus its 2.4
+            duration: COMET_TOTAL_MS,
+            flightMs: COMET_FLIGHT_MS,
+            landed: false,
+            seed: hashId(childId),
+            // The comet head is the child itself: snapshot pixels plus its 2.4
             // signature. Capture can fail before the sheet loads; update()
             // retries while the dispatch is in flight.
             miniature: this.rememberMiniature(childSprite),
             signature: agentSignatureFor(childSprite.agent),
+            silhouette: bodySilhouette(childSprite),
+            ramp: MAGIC_RAMP,
+            onLanded,
         });
         return this.dispatches.get(childId);
     }
@@ -229,6 +390,9 @@ export class ArrivalDepartureController {
         return captured;
     }
 
+    // 6.3 — the merge mirrors the dispatch in neutral stone: the child gathers
+    // where it stood, flies into its parent, one cream rim frame lands, and the
+    // parent takes its static receive beat. A return is never gold.
     beginSubagentMerge(childAgent, childPoint, parentSprite, { now = nowMs() } = {}) {
         if (!childAgent || !childPoint || !parentSprite) return null;
         if (this.motionScale === 0) return null;
@@ -236,15 +400,17 @@ export class ArrivalDepartureController {
         this.merges.set(childAgent.id, {
             id: childAgent.id,
             parentSprite,
-            start: { x: childPoint.x, y: childPoint.y - 20 },
-            end: { x: parentSprite.x, y: parentSprite.y - 34 },
+            origin: { x: childPoint.x, y: childPoint.y },
+            start: { x: childPoint.x, y: childPoint.y },
+            end: { x: parentSprite.x, y: parentSprite.y },
             startedAt: now,
-            duration: MERGE_MS,
-            color: providerColor(childAgent.provider),
-            // The same miniature that left returns; the parent takes its static
-            // receive beat when the path lands (update()).
+            duration: COMET_TOTAL_MS,
+            flightMs: COMET_FLIGHT_MS,
+            landed: false,
+            seed: hashId(childAgent.id),
             miniature: this.miniatures.get(childAgent.id) || null,
             signature: agentSignatureFor(childAgent),
+            ramp: STONE_RAMP,
         });
         return this.merges.get(childAgent.id);
     }
@@ -252,8 +418,8 @@ export class ArrivalDepartureController {
     recordSubagentCompletion(childAgent, childPoint, parentSprite, { now = nowMs() } = {}) {
         if (!childAgent || !parentSprite) return null;
         const anchor = childPoint && Number.isFinite(childPoint.x) && Number.isFinite(childPoint.y)
-            ? { x: childPoint.x, y: childPoint.y - 20 }
-            : { x: parentSprite.x, y: parentSprite.y - 34 };
+            ? { x: childPoint.x, y: childPoint.y }
+            : { x: parentSprite.x, y: parentSprite.y };
         const parentId = parentSprite.agent?.id || null;
         const duration = this.motionScale === 0 ? REDUCED_COMPLETION_MS : SUBAGENT_COMPLETION_MS;
         parentSprite.setReceiveBeat?.();
@@ -276,10 +442,11 @@ export class ArrivalDepartureController {
             id: `${childAgent.id || 'subagent'}:${Math.round(now)}`,
             agentId: childAgent.id || null,
             parentId,
+            parentSprite,
             start: anchor,
-            end: { x: parentSprite.x, y: parentSprite.y - 34 },
+            end: { x: parentSprite.x, y: parentSprite.y },
             x: parentSprite.x,
-            y: parentSprite.y - 34,
+            y: parentSprite.y,
             startedAt: now,
             duration,
             color: providerColor(childAgent.provider),
@@ -309,11 +476,14 @@ export class ArrivalDepartureController {
             : tileToScreen(PORTAL_SPAWN_TILE);
         const entry = {
             id: `${child.id || 'orphan'}:${Math.round(now)}`,
-            start: { x: start.x, y: start.y - 20 },
-            end: { x: end.x, y: end.y - 24 },
+            origin: { x: start.x, y: start.y },
+            start: { x: start.x, y: start.y },
+            end: { x: end.x, y: end.y },
             startedAt: now,
-            duration: ORPHAN_RETURN_MS,
-            color: providerColor(child.provider),
+            duration: cometDuration(ORPHAN_FLIGHT_MS),
+            flightMs: ORPHAN_FLIGHT_MS,
+            seed: hashId(child.id),
+            ramp: STONE_RAMP,
         };
         this.orphanReturns.push(entry);
         if (this.orphanReturns.length > MAX_ORPHAN_RETURNS) {
@@ -336,7 +506,6 @@ export class ArrivalDepartureController {
             startedAt: now,
             duration: this.motionScale === 0 ? REDUCED_SIGIL_MS : DEPARTURE_SIGIL_MS,
             color: providerColor(agent.provider),
-            initial: providerInitial(agent.provider),
         };
         this.sigils.push(sigil);
         if (this.sigils.length > MAX_SIGILS) this.sigils.splice(0, this.sigils.length - MAX_SIGILS);
@@ -345,27 +514,41 @@ export class ArrivalDepartureController {
 
     update(now = nowMs()) {
         for (const [id, arrival] of this.arrivals.entries()) {
-            const progress = this.motionScale === 0 ? 1 : (now - arrival.startedAt) / arrival.duration;
-            if (progress >= 1) {
-                arrival.sprite.setArrivalState?.('visible');
-                this.arrivals.delete(id);
+            const age = now - arrival.startedAt;
+            if (!arrival.landed) {
+                if (!arrival.silhouette) arrival.silhouette = bodySilhouette(arrival.sprite);
+                if (age >= ARRIVAL.anticipation + ARRIVAL.peak) this._landArrival(arrival);
             }
+            const phase = momentPhase(age, ARRIVAL, { reduced: arrival.reduced });
+            if (phase.phase === 'done') this.arrivals.delete(id);
         }
         for (const [id, dispatch] of this.dispatches.entries()) {
             // The character sheet may still be loading when a child is
             // dispatched; keep trying until it leaves as itself.
             if (!dispatch.miniature) dispatch.miniature = this.rememberMiniature(dispatch.childSprite);
-            const progress = this.motionScale === 0 ? 1 : (now - dispatch.startedAt) / dispatch.duration;
-            if (progress >= 1) {
+            if (!dispatch.silhouette) dispatch.silhouette = bodySilhouette(dispatch.childSprite);
+            const age = this.motionScale === 0 ? dispatch.duration : now - dispatch.startedAt;
+            if (!dispatch.landed && age >= COMET_GATHER_MS + dispatch.flightMs + COMET_IMPACT_MS) {
+                dispatch.landed = true;
                 dispatch.childSprite.setArrivalState?.('visible');
                 this.rememberMiniature(dispatch.childSprite);
+                const onLanded = dispatch.onLanded;
+                dispatch.onLanded = null;
+                if (typeof onLanded === 'function') onLanded();
+            }
+            if (age >= dispatch.duration) {
+                if (!dispatch.landed) dispatch.childSprite.setArrivalState?.('visible');
                 this.dispatches.delete(id);
             }
         }
         for (const [id, merge] of this.merges.entries()) {
-            if ((now - merge.startedAt) / merge.duration < 1) continue;
-            // The return has landed: the parent holds one static receive beat.
-            merge.parentSprite?.setReceiveBeat?.();
+            const age = now - merge.startedAt;
+            if (!merge.landed && age >= COMET_GATHER_MS + merge.flightMs) {
+                // The return has landed: the parent holds one static receive beat.
+                merge.landed = true;
+                merge.parentSprite?.setReceiveBeat?.();
+            }
+            if (age < merge.duration) continue;
             this.miniatures.delete(id);
             this.merges.delete(id);
         }
@@ -374,40 +557,57 @@ export class ArrivalDepartureController {
         this.orphanReturns = this.orphanReturns.filter(entry => now - entry.startedAt <= entry.duration);
     }
 
-    draw(ctx, { zoom = 1, now = nowMs(), lighting = null } = {}) {
+    _landArrival(arrival) {
+        if (!arrival || arrival.landed) return;
+        arrival.landed = true;
+        arrival.sprite?.setArrivalState?.('visible');
+        const onLanded = arrival.onLanded;
+        arrival.onLanded = null;
+        if (typeof onLanded === 'function') onLanded();
+    }
+
+    draw(ctx, { zoom = 1, now = nowMs() } = {}) {
         if (!ctx) return;
-        for (const arrival of this.arrivals.values()) this._drawArrival(ctx, arrival, zoom, now);
-        for (const dispatch of this.dispatches.values()) this._drawWisp(ctx, dispatch, zoom, now, lighting);
-        for (const merge of this.merges.values()) this._drawWisp(ctx, merge, zoom, now, lighting);
-        for (const entry of this.orphanReturns) this._drawWisp(ctx, entry, zoom, now, lighting, { fadeOut: true });
-        for (const sigil of this.sigils) drawDepartureSigil(ctx, sigil, { zoom, now, motionScale: this.motionScale, lighting });
-        for (const cue of this.completionCues) drawSubagentCompletionCue(ctx, cue, { zoom, now, motionScale: this.motionScale, lighting });
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.globalCompositeOperation = 'source-over';
+        for (const arrival of this.arrivals.values()) this._drawArrival(ctx, arrival, now);
+        for (const dispatch of this.dispatches.values()) this._drawDispatch(ctx, dispatch, now, zoom);
+        for (const merge of this.merges.values()) this._drawReturn(ctx, merge, now, zoom);
+        for (const entry of this.orphanReturns) this._drawReturn(ctx, entry, now, zoom);
+        for (const sigil of this.sigils) drawDepartureSigil(ctx, sigil, { now, motionScale: this.motionScale });
+        for (const cue of this.completionCues) drawSubagentCompletionCue(ctx, cue, { zoom, now, motionScale: this.motionScale });
+        ctx.restore();
     }
 
     getLightSources({ now = nowMs() } = {}) {
         const sources = [];
         for (const arrival of this.arrivals.values()) {
-            const progress = (now - arrival.startedAt) / arrival.duration;
-            const point = pointOnPath(arrival.start, arrival.end, progress, arrival.mode === 'boat' ? 4 : 0);
+            if (arrival.reduced) continue;
+            const phase = momentPhase(now - arrival.startedAt, ARRIVAL);
+            if (phase.phase === 'residue' || phase.phase === 'done') continue;
             sources.push({
                 id: `arrival:${arrival.id}`,
                 kind: 'point',
-                x: point.x,
-                y: point.y,
-                color: arrival.color,
+                x: arrival.point.x,
+                y: arrival.point.y - ARRIVAL_COLUMN_HEIGHT / 2,
+                color: MAGIC_RAMP[1],
                 radius: 42,
-                alpha: 0.18,
-                intensity: 0.18,
+                alpha: 0.18 * phase.alpha,
+                intensity: 0.2 * phase.alpha,
             });
         }
         for (const dispatch of this.dispatches.values()) {
-            sources.push(wispLightSource(dispatch, `dispatch:${dispatch.id}`, now));
+            const source = cometLightSource(dispatch, `dispatch:${dispatch.id}`, now);
+            if (source) sources.push(source);
         }
         for (const merge of this.merges.values()) {
-            sources.push(wispLightSource(merge, `merge:${merge.id}`, now));
+            const source = cometLightSource(merge, `merge:${merge.id}`, now);
+            if (source) sources.push(source);
         }
         for (const entry of this.orphanReturns) {
-            sources.push(wispLightSource(entry, `orphan-return:${entry.id}`, now));
+            const source = cometLightSource(entry, `orphan-return:${entry.id}`, now);
+            if (source) sources.push(source);
         }
         for (const sigil of this.sigils) {
             sources.push({
@@ -415,81 +615,137 @@ export class ArrivalDepartureController {
                 kind: 'point',
                 x: sigil.x,
                 y: sigil.y,
-                color: sigil.color,
-                radius: 48,
-                alpha: 0.24,
-                intensity: 0.22,
+                color: MAGIC_RAMP[0],
+                radius: 36,
+                alpha: 0.16,
+                intensity: 0.14,
                 ttl: sigil.duration,
                 createdAt: sigil.startedAt,
-            });
-        }
-        for (const cue of this.completionCues) {
-            const progress = this.motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - cue.startedAt) / cue.duration));
-            const point = pointOnPath(cue.start, cue.end, progress, 10);
-            sources.push({
-                id: `subagent-complete:${cue.id}`,
-                kind: 'spark',
-                x: point.x,
-                y: point.y,
-                color: cue.color,
-                radius: 34,
-                alpha: this.motionScale === 0 ? 0.26 : 0.26 * (1 - progress * 0.55),
-                intensity: this.motionScale === 0 ? 0.24 : 0.28 * (1 - progress * 0.45),
-                ttl: cue.duration,
-                createdAt: cue.startedAt,
             });
         }
         return sources;
     }
 
-    _drawArrival(ctx, arrival, zoom, now) {
-        const progress = Math.max(0, Math.min(1, (now - arrival.startedAt) / arrival.duration));
-        const point = pointOnPath(arrival.start, arrival.end, progress, arrival.mode === 'boat' ? 8 : 0);
-        if (arrival.mode === 'boat') {
-            drawBoat(ctx, point, arrival.color, zoom);
-        } else {
-            drawCarriage(ctx, point, arrival.color, zoom);
+    _drawArrival(ctx, arrival, now) {
+        const phase = momentPhase(now - arrival.startedAt, ARRIVAL, { reduced: arrival.reduced });
+        const { x, y } = arrival.point;
+        switch (phase.phase) {
+        case 'anticipation': {
+            // The eye gets a cue: a cream rune ring on the ground and a violet
+            // column rising out of it in three held steps.
+            ringDots(ctx, x, y, 12, { count: 8, dot: 2, color: PEAK, phase: Math.PI / 8 });
+            column(ctx, x, y, { height: [12, 24, 36][phase.step], width: 7, ramp: MAGIC_RAMP });
+            break;
+        }
+        case 'peak': {
+            // One cream frame: the column at full height with a cream core, and
+            // the body as a flat cream silhouette.
+            ringDots(ctx, x, y, 12, { count: 8, dot: 2, color: PEAK, phase: Math.PI / 8 });
+            column(ctx, x, y, { height: ARRIVAL_COLUMN_HEIGHT, width: 9, ramp: MAGIC_RAMP, core: PEAK });
+            drawSilhouette(ctx, arrival.silhouette, x, y);
+            break;
+        }
+        case 'follow': {
+            // The true body is back; the column sinks into the ground in three
+            // steps (a stub at the feet, never a bar across the body) and dust
+            // kicks out. The ring dims one ramp step each.
+            const ringTone = [MAGIC_RAMP[1], MAGIC_RAMP[0], null][phase.step];
+            if (ringTone) ringDots(ctx, x, y, 12 + phase.step * 2, { count: 8, dot: 1, color: ringTone, phase: Math.PI / 8 });
+            column(ctx, x, y + 1, { height: [9, 5, 2][phase.step], width: [11, 9, 7][phase.step], ramp: MAGIC_RAMP });
+            chips(ctx, x, y + 1, phase.t, { count: 6, seed: arrival.seed, spread: 14, lift: 5, tones: DUST_TONES });
+            break;
+        }
+        case 'residue':
+            runeNotch(ctx, x, y, { ramp: MAGIC_RAMP });
+            break;
+        default:
+            break;
         }
     }
 
-    _drawWisp(ctx, item, zoom, now, lighting, { fadeOut = false } = {}) {
-        const progress = Math.max(0, Math.min(1, (now - item.startedAt) / item.duration));
-        const point = pointOnPath(item.start, item.end, progress, 24);
-        const lightBoost = lighting?.lightBoost ?? 1;
-        const fade = fadeOut ? Math.max(0, 1 - progress) : 1;
-        ctx.save();
-        ctx.translate(point.x, point.y);
-        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
-        ctx.globalAlpha = Math.min(1, 0.9 * lightBoost * fade);
-        if (item.miniature || item.signature) {
-            // 2.5 — the traveller is the child: its own pixels and its stable
-            // signature, not an anonymous dot.
-            drawChildMiniature(ctx, { miniature: item.miniature, signature: item.signature, accent: item.color });
-        } else {
-            ctx.fillStyle = item.color;
-            ctx.beginPath();
-            ctx.arc(0, 0, 4, 0, Math.PI * 2);
-            ctx.fill();
+    _drawDispatch(ctx, item, now, zoom) {
+        const phase = cometPhase(now - item.startedAt, item.flightMs);
+        const parent = item.parentSprite;
+        switch (phase.phase) {
+        case 'gather': {
+            // The violet ring contracts at the parent's feet in three steps.
+            if (parent) {
+                ringDots(ctx, parent.x, parent.y, [14, 10, 6][phase.step], {
+                    count: 8, dot: 2, color: item.ramp[phase.step === 2 ? 2 : 1],
+                });
+            }
+            break;
         }
-        ctx.globalAlpha = 0.42 * fade;
-        ctx.strokeStyle = item.color;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(0, 0, 8 + Math.sin(progress * Math.PI) * 4, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
+        case 'flight': {
+            // Launch from where the parent stands now; land on the child.
+            if (parent) item.start = { x: parent.x, y: parent.y - PARENT_LAUNCH_LIFT };
+            drawCometFlight(ctx, item, phase.t, { zoom, ramp: item.ramp, miniature: item.miniature, signature: item.signature });
+            break;
+        }
+        case 'impact': {
+            ringDots(ctx, item.end.x, item.end.y, 9, { count: 8, dot: 2, color: PEAK });
+            if (item.silhouette) drawSilhouette(ctx, item.silhouette, item.end.x, item.end.y);
+            else diamond(ctx, item.end.x, item.end.y - 12, 6, { color: PEAK, filled: true });
+            break;
+        }
+        case 'splash':
+            chips(ctx, item.end.x, item.end.y + 1, phase.t, {
+                count: 6, seed: item.seed, spread: 12, lift: 6, tones: item.ramp,
+            });
+            break;
+        default:
+            break;
+        }
+    }
+
+    // Merge and orphan returns: stone comet from where the child stood.
+    _drawReturn(ctx, item, now, zoom) {
+        const phase = cometPhase(now - item.startedAt, item.flightMs);
+        const parent = item.parentSprite || null;
+        if (parent) item.end = { x: parent.x, y: parent.y };
+        switch (phase.phase) {
+        case 'gather': {
+            ringDots(ctx, item.origin.x, item.origin.y, [12, 8, 5][phase.step], {
+                count: 8, dot: 2, color: item.ramp[phase.step === 2 ? 2 : 1],
+            });
+            if (item.miniature || item.signature) {
+                drawChildMiniature(ctx, item.origin.x, item.origin.y, { miniature: item.miniature, signature: item.signature, accent: item.ramp[1], zoom });
+            }
+            break;
+        }
+        case 'flight': {
+            const landing = { x: item.end.x, y: item.end.y - (parent ? PARENT_LAUNCH_LIFT : 0) };
+            drawCometFlight(ctx, { start: { x: item.origin.x, y: item.origin.y - 8 }, end: landing }, phase.t, {
+                zoom, ramp: item.ramp, miniature: item.miniature, signature: item.signature,
+            });
+            break;
+        }
+        case 'impact':
+            // One cream rim frame at the receiver.
+            ringDots(ctx, item.end.x, item.end.y, 11, { count: 12, dot: 1, color: PEAK });
+            diamond(ctx, item.end.x, item.end.y - (parent ? PARENT_LAUNCH_LIFT : 12), 4, { color: PEAK });
+            break;
+        case 'splash':
+            chips(ctx, item.end.x, item.end.y + 1, phase.t, {
+                count: 5, seed: item.seed, spread: 10, lift: 5, tones: item.ramp,
+            });
+            break;
+        default:
+            break;
+        }
     }
 }
 
-function wispLightSource(item, id, now) {
-    const progress = Math.max(0, Math.min(1, (now - item.startedAt) / item.duration));
-    const point = pointOnPath(item.start, item.end, progress, 24);
+function cometLightSource(item, id, now) {
+    const phase = cometPhase(now - item.startedAt, item.flightMs);
+    if (phase.phase !== 'flight' && phase.phase !== 'impact') return null;
+    const point = phase.phase === 'impact' ? item.end : pointOnArc(item.start, item.end, phase.t, COMET_LIFT);
     return {
         id,
         kind: 'spark',
         x: point.x,
         y: point.y,
-        color: item.color,
+        color: item.ramp?.[1] || MAGIC_RAMP[1],
         radius: 30,
         alpha: 0.24,
         intensity: 0.28,
@@ -498,139 +754,67 @@ function wispLightSource(item, id, now) {
     };
 }
 
+// 2.5/6.3 — a child returned without a live sprite to fly from. Neutral stone
+// throughout: the miniature arcs home, lands with one cream frame, then holds
+// with the exact count in stepped alpha. Returning is not succeeding.
 export function drawSubagentCompletionCue(ctx, cue, {
     zoom = 1,
     now = nowMs(),
     motionScale = 1,
-    lighting = null,
 } = {}) {
     if (!ctx || !cue) return;
     const age = now - cue.startedAt;
-    const progress = Math.max(0, Math.min(1, age / cue.duration));
-    const scale = 1 / (zoom || 1);
-    const point = motionScale === 0
-        ? cue.end
-        : pointOnPath(cue.start, cue.end, progress, 10);
-    const lightBoost = lighting?.lightBoost ?? 1;
-    const alpha = motionScale === 0 ? 0.74 : Math.max(0, 0.74 * (1 - progress));
+    if (age < 0 || age > cue.duration) return;
+    const parent = cue.parentSprite || null;
+    const end = parent ? { x: parent.x, y: parent.y } : cue.end;
+    const count = Number(cue.count) || 1;
+    const reduced = motionScale === 0;
+    const flightEnd = COMET_GATHER_MS + COMET_FLIGHT_MS;
+    let point = end;
+    if (!reduced && age < flightEnd) {
+        const t = Math.max(0, (age - COMET_GATHER_MS) / COMET_FLIGHT_MS);
+        const head = cometHead({ start: cue.start, end }, t);
+        point = head;
+        if (age >= COMET_GATHER_MS) comet(ctx, head.x, head.y - 8, head.dx, head.dy, { length: 3, ramp: STONE_RAMP, head: false });
+    }
+    const holdAge = reduced ? 0 : Math.max(0, age - flightEnd);
+    const holdSpan = Math.max(1, cue.duration - (reduced ? 0 : flightEnd));
+    const alpha = reduced ? 0.66 : steppedDecay(holdAge, holdSpan);
     if (alpha <= 0) return;
-
     ctx.save();
-    ctx.translate(point.x, point.y);
-    ctx.scale(scale, scale);
-    ctx.globalAlpha = Math.min(1, alpha * lightBoost);
-    // 2.5 — the returning child, not a provider letter: its snapshot pixels and
-    // its stable signature, with an exact count when several returned at once.
-    // Neutral vocabulary throughout: a child returned, which is not a claim
-    // that it succeeded.
-    drawChildMiniature(ctx, {
+    ctx.globalAlpha = alpha;
+    const peakFrame = !reduced && age >= flightEnd && age < flightEnd + COMET_IMPACT_MS;
+    diamond(ctx, point.x, point.y - 30, 6, { color: peakFrame ? PEAK : STONE_RAMP[1] });
+    drawChildMiniature(ctx, point.x, point.y - 16, {
         miniature: cue.miniature,
         signature: cue.signature,
-        accent: cue.color,
-        count: Number(cue.count) || 1,
+        accent: STONE_RAMP[1],
+        count,
+        zoom,
     });
-    ctx.globalAlpha = Math.min(1, (alpha + 0.12) * lightBoost);
-    ctx.strokeStyle = '#fff3bf';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, -16);
-    ctx.lineTo(12, -3);
-    ctx.lineTo(0, 10);
-    ctx.lineTo(-12, -3);
-    ctx.closePath();
-    ctx.stroke();
     ctx.restore();
 }
 
+// Departure sigil: a static ground mark where a session left — a violet rune
+// ring with a stone diamond, fading in four held alpha steps. Reduced motion
+// holds one fixed step for its shorter window.
 export function drawDepartureSigil(ctx, sigil, {
-    zoom = 1,
     now = nowMs(),
     motionScale = 1,
-    lighting = null,
 } = {}) {
     if (!ctx || !sigil) return;
     const age = now - sigil.startedAt;
-    const progress = Math.max(0, Math.min(1, age / sigil.duration));
-    const alpha = motionScale === 0 ? (age <= REDUCED_SIGIL_MS ? 0.45 : 0) : 0.45 * (1 - progress);
+    const alpha = motionScale === 0
+        ? (age >= 0 && age <= REDUCED_SIGIL_MS ? 0.66 : 0)
+        : steppedDecay(age, sigil.duration);
     if (alpha <= 0) return;
-    const lightBoost = lighting?.lightBoost ?? 1;
-    const scale = 1 / (zoom || 1);
-
     ctx.save();
-    ctx.translate(sigil.x, sigil.y);
-    ctx.scale(scale, scale);
-    ctx.globalAlpha = Math.min(1, alpha * lightBoost);
-    ctx.fillStyle = sigil.color;
-    ctx.beginPath();
-    ctx.ellipse(0, -3, 16, 6, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#fff3bf';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, -15);
-    ctx.lineTo(10, -3);
-    ctx.lineTo(0, 9);
-    ctx.lineTo(-10, -3);
-    ctx.closePath();
-    ctx.stroke();
-    ctx.fillStyle = '#21160f';
-    ctx.font = 'bold 8px "Press Start 2P", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(sigil.initial || '?', 0, -3);
+    ctx.globalAlpha = alpha;
+    ringDots(ctx, sigil.x, sigil.y, 11, { count: 8, dot: 2, color: MAGIC_RAMP[0], phase: Math.PI / 8 });
+    diamond(ctx, sigil.x, sigil.y - 7, 5, { color: STONE_RAMP[1], fill: STONE_RAMP[0] });
+    ctx.fillStyle = sigil.color || MAGIC_RAMP[1];
+    ctx.fillRect(snap(sigil.x) - 1, snap(sigil.y - 7) - 1, 2, 2);
     ctx.restore();
 }
 
-function drawBoat(ctx, point, color, zoom) {
-    ctx.save();
-    ctx.translate(point.x, point.y);
-    ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
-    ctx.fillStyle = 'rgba(28, 18, 10, 0.92)';
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(-16, 2);
-    ctx.lineTo(12, 2);
-    ctx.lineTo(18, -5);
-    ctx.lineTo(-12, -8);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = color;
-    ctx.fillRect(-2, -22, 3, 18);
-    ctx.beginPath();
-    ctx.moveTo(1, -21);
-    ctx.lineTo(13, -10);
-    ctx.lineTo(1, -7);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-}
-
-function drawCarriage(ctx, point, color, zoom) {
-    ctx.save();
-    ctx.translate(point.x, point.y);
-    ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
-    ctx.fillStyle = 'rgba(43, 28, 16, 0.94)';
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    if (ctx.roundRect) {
-        ctx.roundRect(-14, -15, 28, 16, 3);
-    } else {
-        ctx.rect(-14, -15, 28, 16);
-    }
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = color;
-    ctx.fillRect(-7, -11, 5, 5);
-    ctx.fillRect(3, -11, 5, 5);
-    ctx.strokeStyle = '#21160f';
-    ctx.beginPath();
-    ctx.arc(-9, 3, 5, 0, Math.PI * 2);
-    ctx.arc(9, 3, 5, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-}
-
-export { arrivalModeForAgent, hasHarborActivity, providerColor, providerInitial, tileToScreen };
+export { providerColor, tileToScreen };

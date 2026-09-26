@@ -113,21 +113,51 @@ test('usage coverage distinguishes observed zero, partial counts and unavailable
     ]), { observed: 1, partial: 1, unavailable: 1 });
 });
 
-test('needs-you status stays separate from generic waiting and hides when empty', () => {
-    let stats = { working: 4, idle: 2, waiting: 0, needsYou: 1 };
-    const bar = {
+test('the lit slot counts needs-you, errored and rate-limited agents exactly, hides when empty, and waits for the first snapshot', () => {
+    let stats = { working: 4, idle: 2, waiting: 0, needsYou: 1, errors: 0, quota: 0 };
+    const part = () => ({ part: {}, num: {} });
+    const bar = Object.assign(Object.create(TopBar.prototype), {
         world: { getStats: () => stats },
-        els: { working: {}, idle: {}, waiting: {}, needsYou: {} },
+        els: {
+            working: {}, idle: {}, waiting: {},
+            attention: { dataset: {} },
+            attentionParts: { needsYou: part(), errors: part(), quota: part() },
+        },
+        _villageState: { phase: 'ready-live', link: { lastSnapshotAt: 1 } },
         _unknownModelSeenToday() {}, _renderSpend() {}, _renderActivityRail() {},
-    };
+    });
+    const { attention, attentionParts } = bar.els;
     TopBar.prototype.render.call(bar);
-    assert.equal(bar.els.waiting.textContent, 0);
-    assert.equal(bar.els.needsYou.textContent, '1 NEEDS YOU');
-    assert.equal(bar.els.needsYou.hidden, false);
-    stats = { ...stats, waiting: 1, needsYou: 0 };
+    assert.equal(bar.els.waiting.textContent, '0');
+    assert.equal(attention.hidden, false);
+    assert.equal(attentionParts.needsYou.num.textContent, '1');
+    assert.equal(attentionParts.errors.part.hidden, true);
+
+    // A rate-limited or errored agent alone still lights the slot, in its own
+    // bucket, never folded into generic waiting.
+    stats = { ...stats, waiting: 1, needsYou: 0, quota: 1 };
     TopBar.prototype.render.call(bar);
-    assert.equal(bar.els.waiting.textContent, 1);
-    assert.equal(bar.els.needsYou.hidden, true);
+    assert.equal(bar.els.waiting.textContent, '1');
+    assert.equal(attention.hidden, false);
+    assert.equal(attention.dataset.lead, 'quota');
+    assert.equal(attentionParts.needsYou.part.hidden, true);
+    assert.equal(attentionParts.quota.num.textContent, '1');
+    stats = { ...stats, quota: 0, errors: 2 };
+    TopBar.prototype.render.call(bar);
+    assert.equal(attention.dataset.lead, 'errors');
+    assert.equal(attentionParts.errors.num.textContent, '2');
+    stats = { ...stats, errors: 0 };
+    TopBar.prototype.render.call(bar);
+    assert.equal(attention.hidden, true);
+
+    // Before the first snapshot a count is unknown, not zero, and the loud
+    // slot never claims an agent it has not seen.
+    stats = { working: 0, idle: 0, waiting: 0, needsYou: 3, errors: 1, quota: 1 };
+    bar._villageState = { phase: 'syncing', link: { lastSnapshotAt: null } };
+    TopBar.prototype.render.call(bar);
+    assert.equal(bar.els.working.textContent, '–');
+    assert.equal(bar.els.waiting.textContent, '–');
+    assert.equal(attention.hidden, true);
 });
 
 // Exercise the real sampler with deterministic frame pacing and suspension.

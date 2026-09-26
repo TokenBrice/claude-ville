@@ -4,26 +4,31 @@ import { i18n } from '../config/i18n.js';
 export class NotificationService {
     constructor(toast) {
         this.toast = toast;
-        this.knownAgents = new Set();
         this.wsEverConnected = false;
+        // Agents present in the first snapshot are the village as it already
+        // was, not arrivals: joins stay silent until that snapshot has been
+        // applied (village:state carries its lastSnapshotAt).
+        this.snapshotApplied = false;
 
-        this._onAgentAdded = (agent) => {
-            if (this.knownAgents.size > 0) {
-                const msg = i18n.t('agentJoined');
-                this.toast.show(typeof msg === 'function' ? msg(agent.name) : msg, 'info');
-            }
-            this.knownAgents.add(agent.id);
+        this._onVillageState = (state) => {
+            if (state?.link?.lastSnapshotAt) this.snapshotApplied = true;
         };
 
+        this._onAgentAdded = (agent) => {
+            if (!this.snapshotApplied) return;
+            const msg = i18n.t('agentJoined');
+            this.toast.show(typeof msg === 'function' ? msg(agent.name) : msg, 'info');
+        };
+
+        // A session ending is routine news, not a warning.
         this._onAgentRemoved = (agent) => {
             const msg = i18n.t('agentLeft');
-            this.toast.show(typeof msg === 'function' ? msg(agent.name) : msg, 'warning');
-            this.knownAgents.delete(agent.id);
+            this.toast.show(typeof msg === 'function' ? msg(agent.name) : msg, 'info');
         };
 
         this._onWsConnected = () => {
             // Suppress the toast on the first connection of the page load; only
-            // announce genuine reconnections (mirrors _onAgentAdded).
+            // announce genuine reconnections.
             if (this.wsEverConnected) {
                 this.toast.show(i18n.t('serverConnected'), 'success');
             }
@@ -36,23 +41,18 @@ export class NotificationService {
             }
         };
 
-        this._onModeChanged = (mode) => {
-            const key = mode === 'character' ? 'modeSwitchWorld' : 'modeSwitchDashboard';
-            this.toast.show(i18n.t(key), 'info');
-        };
-
+        eventBus.on('village:state', this._onVillageState);
         eventBus.on('agent:added', this._onAgentAdded);
         eventBus.on('agent:removed', this._onAgentRemoved);
         eventBus.on('ws:connected', this._onWsConnected);
         eventBus.on('ws:disconnected', this._onWsDisconnected);
-        eventBus.on('mode:changed', this._onModeChanged);
     }
 
     destroy() {
+        eventBus.off('village:state', this._onVillageState);
         eventBus.off('agent:added', this._onAgentAdded);
         eventBus.off('agent:removed', this._onAgentRemoved);
         eventBus.off('ws:connected', this._onWsConnected);
         eventBus.off('ws:disconnected', this._onWsDisconnected);
-        eventBus.off('mode:changed', this._onModeChanged);
     }
 }

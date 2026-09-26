@@ -89,7 +89,7 @@ function isIncidentStatus(status) {
 }
 
 function incidentLabel(status) {
-    if (status === AgentStatus.WAITING_ON_USER) return 'Bell waiting';
+    if (status === AgentStatus.WAITING_ON_USER) return 'Needs you';
     if (status === AgentStatus.RATE_LIMITED) return 'Rate limited';
     if (status === AgentStatus.ERRORED) return 'Error';
     return String(status || 'Incident').replace(/_/g, ' ');
@@ -408,7 +408,7 @@ export class VillageDirector {
         this._addScene({
             ...banner,
             type: 'release',
-            kind: 'biography-banner',
+            kind: banner.kind || 'biography-banner',
             intensity: 0.68,
             startedAt: now,
             expiresAt: now + BIOGRAPHY_BANNER_TTL_MS,
@@ -652,7 +652,7 @@ export class VillageDirector {
 
         // Release parade: frame the harbor as a ship sets sail.
         const release = snapshot.releaseParade;
-        if (release?.center && Number.isFinite(release.center.x)) {
+        if (release?.kind === 'parade' && release.center && Number.isFinite(release.center.x)) {
             const sig = `release:${release.id || release.label || ''}`;
             this._fireCue('release', sig, now, {
                 box: this._boxForPoints([release.center], 120),
@@ -891,6 +891,21 @@ export class VillageDirector {
             label: 'Returned',
             startedAt: Date.now(),
             expiresAt: Date.now() + SOCIAL_TTL_MS,
+        });
+        // S7 / plan 5.5 — a sub-agent's return is neutral stone: the caption
+        // names who came back to whom (`RETURNED — Review → Prime`) and claims
+        // no success; the execution tree owns whether the work was done.
+        const child = this.world?.agents?.get?.(event?.childId)
+            || this.scenes.find(scene => scene.kind === 'departure' && scene.agentId === event?.childId)
+            || null;
+        const parent = this.world?.agents?.get?.(event?.parentId) || null;
+        const childName = child ? (child.label || displayName(child)) : '';
+        if (!childName || !parent) return;
+        this._pendingBiographyBanners.push({
+            kind: 'return-banner',
+            agentId: parent.id,
+            building: agentBuilding(parent) || 'command',
+            label: `${childName} → ${displayName(parent)}`.slice(0, 42),
         });
     }
 
@@ -1482,7 +1497,7 @@ export function narrativeFeedEntries(snapshot) {
     const out = [];
 
     const release = snapshot.releaseParade;
-    if (release?.label) {
+    if (release?.label && release.kind === 'parade') {
         out.push({
             id: release.id || `parade:${release.label}`,
             kind: 'parade',

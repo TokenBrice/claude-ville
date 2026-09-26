@@ -149,6 +149,8 @@ export class App {
         this._loadRendererRetryHandle = null;
         this._loadRendererRetryScheduled = false;
         this._centerCameraHandle = null;
+        this._worldRevealRoot = null;
+        this._worldReturnPose = null;
         this._onWindowResize = null;
         this._watchDevicePixelRatio = null;
         this._onDevicePixelRatioChange = null;
@@ -445,6 +447,7 @@ export class App {
         this._initFirstRunHint();
         this._initReadControl();
         this._initAmbientControl();
+        this._initWorldReveal();
 
         // 4. Initialize application services
         if (!this.agentManager) {
@@ -793,11 +796,14 @@ export class App {
 
     _ensureBootStatus() {
         if (this._bootStatusEl?.isConnected) return;
+        // The banner speaks only while no empty-state card does, and it is
+        // centred on the world area (the content column), not the viewport.
+        const host = document.querySelector('.main__body > .content');
         const wrap = el('div', {
             className: 'boot-status-wrap',
             style: {
-                position: 'fixed',
-                top: '58px',
+                position: host ? 'absolute' : 'fixed',
+                top: host ? '16px' : '64px',
                 left: '50%',
                 transform: 'translateX(-50%)',
                 zIndex: '90',
@@ -848,7 +854,11 @@ export class App {
         action.addEventListener('click', this._onBootRetry);
 
         wrap.append(status, failure, action);
-        document.body.append(wrap, announcement);
+        (host || document.body).append(wrap);
+        document.body.append(announcement);
+        // The visible card depends on the mode, so the failure detail and the
+        // retry button follow a mode switch.
+        this._eventUnsubscribers.push(eventBus.on('mode:changed', () => this._renderVillageSurfaces()));
         this._bootStatusWrap = wrap;
         this._bootStatusEl = status;
         this._bootAnnouncementEl = announcement;
@@ -867,12 +877,6 @@ export class App {
         }
         this._setTextIfChanged(this._bootStatusEl, status);
         this._setTextIfChanged(this._bootAnnouncementEl, status);
-        if (this._bootStatusWrap) {
-            const settled = phase === VillagePhase.READY_LIVE
-                || phase === VillagePhase.READY_EMPTY
-                || phase === VillagePhase.READY_NO_PROVIDERS;
-            this._bootStatusWrap.hidden = settled && state.storage?.chronicle !== 'degraded';
-        }
 
         const retryable = isRetryable(state);
         const failureCode = state.failureCode || (phase === VillagePhase.DEGRADED ? state.link?.lastErrorCode : null);
@@ -892,6 +896,25 @@ export class App {
         const copy = EMPTY_SURFACE_COPY[phase] || EMPTY_SURFACE_COPY[VillagePhase.SYNCING];
         const occupied = (state.agentCount || 0) > 0 || (this.world?.agents?.size || 0) > 0;
         const showEmpty = phase !== VillagePhase.READY_LIVE && !occupied;
+        // One voice: while an empty-state card is up it carries the words, the
+        // failure detail and the retry button; the banner only speaks when no
+        // card does (a degraded source behind a populated village, or a
+        // degraded chronicle). The live region announces either way.
+        const settled = phase === VillagePhase.READY_LIVE
+            || phase === VillagePhase.READY_EMPTY
+            || phase === VillagePhase.READY_NO_PROVIDERS;
+        const card = showEmpty
+            ? document.getElementById(this.modeManager?.getCurrentMode() === 'dashboard' ? 'dashboardEmpty' : 'worldEmpty')
+            : null;
+        const tailHost = card || this._bootStatusWrap;
+        if (tailHost) {
+            for (const node of [this._bootFailureEl, this._bootActionEl]) {
+                if (node && node.parentElement !== tailHost) tailHost.append(node);
+            }
+        }
+        if (this._bootStatusWrap) {
+            this._bootStatusWrap.hidden = Boolean(card) || (settled && state.storage?.chronicle !== 'degraded');
+        }
         this._paintEmptySurface(document.getElementById('worldEmpty'), {
             titleSel: '.world-empty__title',
             copySel: '.world-empty__copy',
@@ -1043,6 +1066,52 @@ export class App {
         apply('off');
     }
 
+    // 0.5 — the World surface never shows a black or half-built frame. The
+    // world canvases stay transparent over a sky-coloured container until the
+    // renderer reports a presented frame (`world:first-frame`), then fade in
+    // with a compositor-only CSS transition: 360 ms on boot, 220 ms on the
+    // way back from Dashboard. Reduced motion drops the fade in CSS. A
+    // Dashboard trip keeps the camera pose it left with.
+    _initWorldReveal() {
+        const root = document.getElementById('characterMode');
+        if (!root || this._worldRevealRoot) return;
+        this._worldRevealRoot = root;
+        this._paintWorldSky(null);
+        this._eventUnsubscribers.push(eventBus.on('world:first-frame', (payload = {}) => {
+            if (payload.sky) this._paintWorldSky(payload.sky);
+            this._worldReturnPose = null;
+            root.dataset.worldReady = payload.reason === 'return' ? 'return' : 'boot';
+        }));
+        this._eventUnsubscribers.push(eventBus.on('mode:changed', mode => {
+            const renderer = this.renderer;
+            if (mode === 'dashboard') {
+                this._worldReturnPose = renderer?.camera?.capturePose?.() || null;
+                renderer?.camera?.setPresented?.(false);
+                delete root.dataset.worldReady;
+                const sky = renderer?._lastAtmosphere?.sky?.palette;
+                if (sky) this._paintWorldSky(sky);
+                return;
+            }
+            if (!renderer) return;
+            renderer.armFirstFrameSignal?.('return');
+        }));
+    }
+
+    // The container sky: the live atmosphere palette once a renderer has one,
+    // before that a local-clock band whose colours live in character.css.
+    _paintWorldSky(palette) {
+        const root = this._worldRevealRoot;
+        if (!root) return;
+        const stops = palette
+            ? [palette.zenith, palette.upperBand, palette.midBand, palette.horizon]
+            : null;
+        if (stops?.every(color => typeof color === 'string' && color)) {
+            stops.forEach((color, index) => root.style.setProperty(`--cv-world-sky-${index}`, color));
+            return;
+        }
+        paintBootSkyBand(root);
+    }
+
     _initFirstRunHint() {
         const hint = document.getElementById('firstRunHint');
         const dismiss = document.getElementById('firstRunHintDismiss');
@@ -1056,6 +1125,17 @@ export class App {
             this._markFirstRunHintSeen();
         };
         dismiss.addEventListener('click', this._onFirstRunHintDismiss);
+        // Opening the compass is what the hint asks for: once the controls are
+        // open it has done its job. (While a modal, the controls or an agent
+        // panel is open, character.css keeps it folded away.)
+        const grammar = document.getElementById('worldGrammar');
+        if (grammar) {
+            const onGrammarToggle = (event) => {
+                if (event.newState === 'open' && !hint.hidden) this._onFirstRunHintDismiss?.();
+            };
+            grammar.addEventListener('toggle', onGrammarToggle);
+            this._eventUnsubscribers.push(() => grammar.removeEventListener('toggle', onGrammarToggle));
+        }
     }
 
     _syncFirstRunHint() {
@@ -1423,24 +1503,37 @@ export class App {
             this.renderer = candidate;
             previous?.hide?.();
             this._installPerfDebugHelper();
-            if (!scenarioApplied || !scenarioMetadata?.camera) {
-                this._centerCameraHandle = requestAnimationFrame(() => {
-                    this._centerCameraHandle = null;
-                    if (this.renderer === candidate && candidate.camera) {
-                        if (typeof candidate.frameContent === 'function') {
-                            candidate.frameContent();
-                        } else {
-                            candidate.camera.centerOnMap();
-                        }
-                    }
-                });
-            }
+            // Framing waits one frame so the first update has placed the agent
+            // sprites the content box is built from; that first frame is still
+            // behind the transparent canvas (0.5), so the opening is what shows.
+            this._centerCameraHandle = requestAnimationFrame(() => {
+                this._centerCameraHandle = null;
+                if (this.renderer !== candidate || !candidate.camera) return;
+                this._openWorld(candidate, scenarioApplied ? scenarioMetadata : null);
+            });
 
             console.log('[App] IsometricRenderer loaded');
         } catch (err) {
             candidate?.hide?.();
             if (this.renderer === candidate) this.renderer = null;
             console.warn('[App] IsometricRenderer not available yet (waiting on canvas-artist work):', err.message);
+        }
+    }
+
+    // 8.3 — the opening shot. A scenario that authors a camera pose opens on
+    // the island and settles on that pose (metadata `camera.opening: false`
+    // keeps a deterministic first frame); otherwise it settles on live work.
+    _openWorld(renderer, scenarioMetadata = null) {
+        const cameraMeta = scenarioMetadata?.camera || null;
+        if (cameraMeta) {
+            if (cameraMeta.opening === false) return;
+            renderer.playOpeningShot?.({ targetPose: renderer.camera.capturePose() });
+            return;
+        }
+        if (typeof renderer.frameContent === 'function') {
+            renderer.frameContent();
+        } else {
+            renderer.camera.centerOnMap();
         }
     }
 
@@ -1650,9 +1743,15 @@ export class App {
             if (this.renderer && this.renderer.camera) {
                 const cam = this.renderer.camera;
                 cam.onViewportResize();
-                // Re-frame to the live village on relayout, unless the user has
-                // taken manual control of the camera or is following an agent.
-                if (!cam._userAdjusted && !cam.followTarget && typeof this.renderer.frameContent === 'function') {
+                // 0.5 — the relayout a Dashboard→World switch causes restores
+                // the pose the World was left in; it is not a reason to re-frame.
+                const returnPose = this._worldReturnPose;
+                this._worldReturnPose = null;
+                if (returnPose) {
+                    cam.resumeViewPose(returnPose);
+                } else if (!cam._userAdjusted && !cam.followTarget && typeof this.renderer.frameContent === 'function') {
+                    // Re-frame to the live village on relayout, unless the user has
+                    // taken manual control of the camera or is following an agent.
                     this.renderer.frameContent();
                 }
             }
@@ -2044,6 +2143,19 @@ export class App {
         if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
     }
 }
+
+// 0.5 — the World container shows the local-clock sky band from the first
+// paint after this module runs, before `load` boots the App.
+function paintBootSkyBand(root) {
+    if (!root) return;
+    const hour = new Date().getHours();
+    root.dataset.skyBand = hour >= 5 && hour < 7 ? 'dawn'
+        : hour >= 7 && hour < 17 ? 'day'
+            : hour >= 17 && hour < 20 ? 'dusk'
+                : 'night';
+}
+
+if (typeof document !== 'undefined') paintBootSkyBand(document.getElementById('characterMode'));
 
 // Boot
 window.addEventListener('load', () => {

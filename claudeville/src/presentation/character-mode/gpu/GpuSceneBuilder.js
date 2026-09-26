@@ -5,6 +5,9 @@ import {
     shouldUseAtlasForCategory,
 } from '../AssetManager.js';
 import { getBuildingVisual } from '../BuildingVisualRegistry.js';
+import { paintCoastWaterMaterial } from '../CoastBake.js';
+import { GROUND_CLASS, paintGroundMaterial } from '../GroundBake.js';
+import { castLightingFor, structureCast, treeCast, TREE_CAST_ALPHA } from '../RakingLight.js';
 
 const PILOT_PROP_IDS = Object.freeze(['prop.lantern', 'prop.runeBrazier']);
 const TERRAIN_TILE_SOURCES = Object.freeze([
@@ -199,6 +202,30 @@ function paintTerrainClassMap(ctx, renderer, cached, scale, sources) {
     }
 }
 
+// 3.2 — land classes follow the ground bake's organic edges (paving →
+// cobble, earth and grass → earth, sand keeps the shore sheet's class).
+function paintGroundClass(ctx, renderer, cached, scale, sandMaterial) {
+    const earth = materialClassId('earth');
+    const cobble = materialClassId('cobble');
+    const sand = materialClassId(sandMaterial);
+    const idForClass = {
+        [GROUND_CLASS.GRASS]: earth,
+        [GROUND_CLASS.DIRT]: earth,
+        [GROUND_CLASS.ROAD]: cobble,
+        [GROUND_CLASS.PLAZA]: cobble,
+        [GROUND_CLASS.SAND]: sand,
+    };
+    paintGroundMaterial(ctx, renderer, cached, scale, idForClass);
+}
+
+// 3.4 — the water class follows the coast field, not the tile diamonds, so
+// GPU shimmer, night mood and reflections stop at the organic shoreline.
+function paintCoastWaterClass(ctx, renderer, cached, scale) {
+    const water = materialClassId('water');
+    const earth = materialClassId('earth');
+    paintCoastWaterMaterial(ctx, renderer, cached, scale, water, earth, [earth, materialClassId('foliage')]);
+}
+
 function composeProceduralTerrainMaterial(renderer, cached) {
     const scale = 0.25;
     const canvas = document.createElement('canvas');
@@ -212,6 +239,8 @@ function composeProceduralTerrainMaterial(renderer, cached) {
         { tiles: 'waterTiles', materialClass: 'water' },
         { tiles: 'bridgeTiles', materialClass: 'timber' },
     ]);
+    paintGroundClass(ctx, renderer, cached, scale, 'earth');
+    paintCoastWaterClass(ctx, renderer, cached, scale);
     return canvas;
 }
 
@@ -223,6 +252,9 @@ function composeAuthoredTerrainMaterial(renderer, cached) {
     const ctx = canvas.getContext('2d', { alpha: true });
     ctx.imageSmoothingEnabled = false;
     paintTerrainClassMap(ctx, renderer, cached, scale, TERRAIN_TILE_SOURCES);
+    paintGroundClass(ctx, renderer, cached, scale,
+        renderer.assets?.getMaterialMetadata?.('terrain.grass-shore')?.materialClass || 'earth');
+    paintCoastWaterClass(ctx, renderer, cached, scale);
     return canvas;
 }
 
@@ -337,128 +369,25 @@ function recordForHaze(renderer) {
     };
 }
 
-let sharedBuildingShadow = null;
-const towerBuildingShadows = new Map();
-
-function buildingShadowStamp() {
-    if (sharedBuildingShadow || typeof document === 'undefined') return sharedBuildingShadow;
-    const canvas = document.createElement('canvas');
-    canvas.width = 64;
-    canvas.height = 28;
-    const ctx = canvas.getContext('2d', { alpha: true });
-    ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = '#0f161e';
-    const rx = 32;
-    const ry = 14;
-    for (let y = -ry; y < ry; y += 2) {
-        const normalized = y / ry;
-        const half = rx * Math.sqrt(Math.max(0, 1 - normalized * normalized));
-        ctx.fillRect(
-            Math.round(32 - half),
-            Math.round(14 + y),
-            Math.max(1, Math.round(half * 2)),
-            2,
-        );
-    }
-    sharedBuildingShadow = canvas;
-    return sharedBuildingShadow;
-}
-
-function buildingShadowAngle(lighting = {}) {
-    if (Number.isFinite(lighting.shadowAngleRad)) return lighting.shadowAngleRad;
-    const sunX = Number(lighting.sunDirIso?.x);
-    const sunY = Number(lighting.sunDirIso?.y);
-    if (Number.isFinite(sunX) && Number.isFinite(sunY) && Math.hypot(sunX, sunY) > 0) {
-        return Math.atan2(-sunY, -sunX);
-    }
-    return 0.28;
-}
-
-function towerBuildingShadow(stamp, buildingId, contact, shadowAngle, shadowLength) {
-    const castLength = finite(contact.castLength) * Math.max(0.45, shadowLength);
-    const stampCount = Math.max(3, Math.min(4, Math.round(finite(contact.castLength) / 28) + 1));
-    const stamps = [];
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (let index = 0; index < stampCount; index++) {
-        const t = index / stampCount;
-        const width = Math.max(1, Math.round(contact.width * (index ? 1 - t * 0.68 : 1)));
-        const height = Math.max(4, Math.round(contact.depth * (index ? 1 - t * 0.76 : 1)));
-        const x = Math.round(index ? Math.cos(shadowAngle) * castLength * t : 0);
-        const y = Math.round(index ? Math.sin(shadowAngle) * castLength * 0.55 * t : 0);
-        const alpha = index ? (1 - t) * 0.48 : 1;
-        stamps.push({ x, y, width, height, alpha });
-        minX = Math.min(minX, x - Math.ceil(width / 2));
-        minY = Math.min(minY, y - Math.ceil(height / 2));
-        maxX = Math.max(maxX, x + Math.ceil(width / 2));
-        maxY = Math.max(maxY, y + Math.ceil(height / 2));
-    }
-    const revision = stamps
-        .map(({ x, y, width, height, alpha }) => `${x},${y},${width},${height},${alpha.toFixed(3)}`)
-        .join('|');
-    let cached = towerBuildingShadows.get(buildingId);
-    if (!cached) {
-        cached = { canvas: document.createElement('canvas'), revision: '' };
-        towerBuildingShadows.set(buildingId, cached);
-    }
-    const width = Math.max(1, maxX - minX);
-    const height = Math.max(1, maxY - minY);
-    if (cached.revision !== revision || cached.canvas.width !== width || cached.canvas.height !== height) {
-        cached.canvas.width = width;
-        cached.canvas.height = height;
-        const ctx = cached.canvas.getContext('2d', { alpha: true });
-        ctx.imageSmoothingEnabled = false;
-        for (const course of stamps) {
-            ctx.globalAlpha = course.alpha;
-            ctx.drawImage(
-                stamp,
-                Math.round(course.x - course.width / 2 - minX),
-                Math.round(course.y - course.height / 2 - minY),
-                course.width,
-                course.height,
-            );
-        }
-        ctx.globalAlpha = 1;
-        cached.revision = revision;
-    }
-    cached.offsetX = minX;
-    cached.offsetY = minY;
-    return cached;
-}
-
+// 1.5 — building ground casts: one stepped stamp per building, baked by
+// RakingLight per sun bucket (longer and violet at golden hour and sunrise)
+// and shared with the Canvas fallback. `textureRevision` is the bucket key,
+// so the texture uploads only when the sun moves a bucket.
 function buildingShadowRecords(renderer, drawable, sequence) {
     if (drawable?.kind === 'building-front') return [];
-    const stamp = buildingShadowStamp();
     const building = drawable?.building;
     const grounding = getBuildingVisual(building?.type)?.grounding;
     const contact = grounding?.contact;
-    if (!stamp || grounding?.shadow === 'none' || !(contact?.width > 0) || !(contact?.depth > 0)) return [];
-
-    const lighting = renderer?._lastAtmosphere?.lighting || renderer?.buildingRenderer?.lightingState || {};
-    const shadowLength = finite(lighting.shadowLength, 1);
-    const shadowAngle = buildingShadowAngle(lighting);
-    const shadowAlpha = finite(lighting.shadowAlpha, 0.22) * finite(contact.opacity, 0.75);
-    const towerCast = grounding.shadow === 'tower-cast' && contact.castLength > 0;
-    const offsetScale = towerCast ? 0.72 : 0.3;
-    const baseX = finite(drawable.wx)
-        + finite(contact.offsetX)
-        + Math.cos(shadowAngle) * 12 * shadowLength * offsetScale;
-    const baseY = finite(drawable.wy)
-        + finite(contact.offsetY)
-        + Math.sin(shadowAngle) * 7 * shadowLength * offsetScale;
+    if (grounding?.shadow === 'none' || !(contact?.width > 0) || !(contact?.depth > 0)) return [];
+    const cast = castLightingFor(renderer?._lastAtmosphere);
     const buildingId = String(building?.type || drawable?.entry?.id || sequence).replace(/^building\./, '');
-    const towerSource = towerCast
-        ? towerBuildingShadow(stamp, buildingId, contact, shadowAngle, shadowLength)
-        : null;
-    const source = towerSource?.canvas || stamp;
-    const width = towerSource?.canvas.width || contact.width;
-    const height = towerSource?.canvas.height || contact.depth;
+    const baked = structureCast(buildingId, grounding, contact, cast);
+    if (!baked) return [];
+    const source = baked.canvas;
     return [{
         id: `ground:building:${buildingId}`,
         stableKey: `ground:building:${buildingId}`,
-        textureKey: towerCast ? `building-ground-shadow:${buildingId}` : 'building-ground-shadow',
+        textureKey: `building-ground-shadow:${buildingId}`,
         source,
         sourceWidth: source.width,
         sourceHeight: source.height,
@@ -466,17 +395,58 @@ function buildingShadowRecords(renderer, drawable, sequence) {
         sy: 0,
         sw: source.width,
         sh: source.height,
-        x: Math.round(baseX + (towerSource?.offsetX ?? -width / 2)),
-        y: Math.round(baseY + (towerSource?.offsetY ?? -height / 2)),
-        width,
-        height,
-        alpha: shadowAlpha,
+        x: Math.round(finite(drawable.wx) + finite(contact.offsetX) + baked.offsetX),
+        y: Math.round(finite(drawable.wy) + finite(contact.offsetY) + baked.offsetY),
+        width: source.width,
+        height: source.height,
+        alpha: cast.alpha * finite(contact.opacity, 0.75),
         material: materialClassId('default'),
         elevation: 0,
         occluder: 0,
         emissive: 0,
         sequence: sequence - 0.5,
-        textureRevision: towerSource?.revision || null,
+        textureRevision: baked.key,
+        sourceKind: 'individual',
+    }];
+}
+
+// 1.5 — a tree's ground cast from its trunk base (RakingLight `treeCast`),
+// emitted with the tree's back (or whole) record. Trees of one sprite size
+// share a texture keyed by that size (not the canvas size: two tree sizes
+// can rasterize to the same canvas and would ping-pong one texture every
+// frame); it re-uploads only when the sun moves a bucket.
+
+function treeCastRecords(renderer, sprite, part, sequence) {
+    if (sprite?.id !== 'fantasy.tree' || part === 'front') return [];
+    const bounds = sprite.bounds || {};
+    const width = finite(bounds.right) - finite(bounds.left);
+    const height = -finite(bounds.top);
+    const cast = castLightingFor(renderer?._lastAtmosphere);
+    const baked = treeCast(width, height, cast);
+    if (!baked) return [];
+    const source = baked.canvas;
+    return [{
+        id: `ground:tree:${sprite.tileX},${sprite.tileY}`,
+        stableKey: `ground:tree:${sprite.tileX},${sprite.tileY}`,
+        textureKey: `tree-ground-cast:${baked.sizeKey}`,
+        source,
+        sourceWidth: source.width,
+        sourceHeight: source.height,
+        sx: 0,
+        sy: 0,
+        sw: source.width,
+        sh: source.height,
+        x: Math.round(sprite.x) + baked.offsetX,
+        y: Math.round(sprite.y) + baked.offsetY,
+        width: source.width,
+        height: source.height,
+        alpha: cast.alpha * TREE_CAST_ALPHA,
+        material: materialClassId('default'),
+        elevation: 0,
+        occluder: 0,
+        emissive: 0,
+        sequence: sequence - 0.5,
+        textureRevision: baked.key,
         sourceKind: 'individual',
     }];
 }
@@ -677,7 +647,7 @@ function recordForProp(renderer, drawable, sequence) {
     const emissiveSource = (useAtlas
         ? assets?.getAtlas?.(atlasFrame.atlas, 'emissive')
         : (isPilot && resolved?.origin !== 'fallback' ? resolved.emissive : null)) || null;
-    return {
+    const record = {
         id: `prop:${propId || `${sprite.tileX},${sprite.tileY}`}:${part}`,
         stableKey: drawable.stableKey || propId || `${sprite.tileX},${sprite.tileY}`,
         textureKey,
@@ -708,6 +678,8 @@ function recordForProp(renderer, drawable, sequence) {
         sequence,
         sourceKind,
     };
+    const casts = treeCastRecords(renderer, sprite, part, sequence);
+    return casts.length ? [...casts, record] : record;
 }
 
 function recordsForAgent(drawable, sequence) {
@@ -726,57 +698,11 @@ function recordsForAgent(drawable, sequence) {
         sequence: sequence + index / 100,
     }));
     if (!baseRecords.length) return baseRecords;
-    const shadow = groundShadowRecord(sprite, sequence - 0.01);
-    return shadow ? [shadow, ...baseRecords] : baseRecords;
-}
-
-let sharedGroundShadow = null;
-
-function groundShadowRecord(sprite, sequence) {
-    if (typeof document === 'undefined') return null;
-    if (!sharedGroundShadow) {
-        const canvas = document.createElement('canvas');
-        canvas.width = 64;
-        canvas.height = 24;
-        const ctx = canvas.getContext('2d', { alpha: true });
-        ctx.imageSmoothingEnabled = false;
-        // Stepped, contact-heavy shadow: dense core at the feet and two
-        // quantized falloff courses. It belongs to the GPU scene so the body
-        // no longer reads as a sticker floating over the terrain.
-        ctx.fillStyle = 'rgba(9, 8, 7, 0.14)';
-        ctx.fillRect(8, 7, 48, 10);
-        ctx.fillRect(13, 4, 38, 16);
-        ctx.fillStyle = 'rgba(8, 7, 6, 0.24)';
-        ctx.fillRect(15, 7, 34, 10);
-        ctx.fillRect(20, 5, 24, 14);
-        ctx.fillStyle = 'rgba(6, 5, 4, 0.32)';
-        ctx.fillRect(22, 8, 20, 8);
-        sharedGroundShadow = canvas;
-    }
-    const status = sprite.agent?.status;
-    const primary = status === 'waiting_on_user' || status === 'errored' || sprite.selected;
-    return {
-        id: `ground:${sprite.agent?.id || sequence}`,
-        stableKey: `ground:${sprite.agent?.id || sequence}`,
-        textureKey: 'agent-ground-shadow',
-        source: sharedGroundShadow,
-        sourceWidth: sharedGroundShadow.width,
-        sourceHeight: sharedGroundShadow.height,
-        sx: 0,
-        sy: 0,
-        sw: sharedGroundShadow.width,
-        sh: sharedGroundShadow.height,
-        x: Math.round(sprite.x - sharedGroundShadow.width / 2),
-        y: Math.round(sprite.y - sharedGroundShadow.height / 2 + 2),
-        width: sharedGroundShadow.width,
-        height: sharedGroundShadow.height,
-        alpha: primary ? 1 : 0.82,
-        material: materialClassId('default'),
-        elevation: 0,
-        occluder: 0,
-        emissive: 0,
-        sequence,
-    };
+    // Plan 2.3 — the sprite owns its ground marks (one baked contact shadow
+    // plus a ring only for selection/hover/action-needed), shared pixel for
+    // pixel with the Canvas fallback and painted just before the body.
+    const ground = sprite.getGpuGroundRecords?.(sequence - 0.01) || [];
+    return ground.length ? [...ground, ...baseRecords] : baseRecords;
 }
 
 function ensureAgentChannelAtlas(renderer, property, width, height, state) {

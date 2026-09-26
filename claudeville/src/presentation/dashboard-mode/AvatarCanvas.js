@@ -150,19 +150,24 @@ export function fitAvatarFrame(width, height, maxWidth, maxHeight, integer = fal
 // Canvas box and the frame area the sprite is fitted into, per size.
 const AVATAR_SIZES = Object.freeze({
     hero: { w: 96, h: 96, bodyW: 88, bodyH: 82, portraitW: 92, portraitH: 92 },
-    card: { w: 44, h: 52, bodyW: 40, bodyH: 46, portraitW: 44, portraitH: 48 },
-    // 2.6 — the full-body identity witness that stays beside the name when the
-    // hero niche shows a head-and-shoulders portrait, so held weapons and
-    // effort crowns are not erased by the crop.
-    witness: { w: 26, h: 32, bodyW: 24, bodyH: 29, portraitW: 0, portraitH: 0 },
+    // 7.8 — Dashboard row niche and child-strip chip. `crisp` sizes blit the
+    // portrait at an exact integer scale (1x clipped when the crop is larger
+    // than the box), with no vector ground ellipse and no effort crest: a
+    // static face on the art-pixel grid, nothing that implies motion.
+    niche: { w: 44, h: 40, bodyW: 44, bodyH: 40, portraitW: 44, portraitH: 40, crisp: true },
+    chip: { w: 26, h: 26, bodyW: 26, bodyH: 26, portraitW: 26, portraitH: 26, crisp: true },
+    // 7.4 — Activity Panel character-sheet portrait: a 32x32 top-anchored
+    // window of the authored crop drawn at exactly 2x (64x64), crisp.
+    sheet: { w: 64, h: 64, bodyW: 64, bodyH: 64, portraitW: 64, portraitH: 64, crisp: true, cropScale: 2 },
 });
 
 export class AvatarCanvas {
-    // size: 'card' (44x52 dashboard chip) | 'hero' (96x96 Activity Panel
-    // portrait, #46) | 'witness' (26x32 full-body witness, always full body).
-    constructor(agent, size = 'card') {
+    // size: 'niche' (44x40 Dashboard row) | 'chip' (26x26 child strip) |
+    // 'hero' (96x96 Dashboard call card / selected detail) | 'sheet' (64x64
+    // Activity Panel).
+    constructor(agent, size = 'niche') {
         this.agent = agent;
-        this.size = AVATAR_SIZES[size] ? size : 'card';
+        this.size = AVATAR_SIZES[size] ? size : 'niche';
         this.canvas = document.createElement('canvas');
         const dim = AVATAR_SIZES[this.size];
         this.canvas.width = dim.w;
@@ -177,8 +182,6 @@ export class AvatarCanvas {
         // 2.6 — last painted identity signature; repeated draw() calls from the
         // 1 Hz panel refresh repaint nothing while the signature holds.
         this._paintedKey = null;
-        this._portrait = false;
-        this._districtValue = null;
         AVATAR_CANVASES.add(this);
         // 1.7 — redraw once the world's shared Compositor registers (avatars
         // can be created before the world renderer boots); the composited
@@ -187,13 +190,6 @@ export class AvatarCanvas {
             if (AVATAR_CANVASES.has(this)) this.redraw();
         });
         this.draw();
-    }
-
-    // True when the last paint was a head-and-shoulders portrait (crop or
-    // bust) rather than the full body. The Activity Panel mounts its witness
-    // on this.
-    isPortrait() {
-        return this._portrait;
     }
 
     // Force the next draw to repaint even if the identity signature is
@@ -218,7 +214,6 @@ export class AvatarCanvas {
 
         ctx.clearRect(0, 0, w, h);
         ctx.imageSmoothingEnabled = false;
-        this._portrait = false;
 
         if (this._drawGeneratedSprite(ctx, identity, accent)) {
             return;
@@ -338,10 +333,7 @@ export class AvatarCanvas {
     _drawGeneratedSprite(ctx, identity, accent) {
         const spriteId = identity.spriteId;
         if (!spriteId || this.spriteFailed) return false;
-        if (this._drawPortrait(ctx, identity, accent, spriteId)) {
-            this._portrait = true;
-            return true;
-        }
+        if (this._drawPortrait(ctx, identity, accent, spriteId)) return true;
         const source = this._avatarSheetSource(identity, spriteId);
         if (!source) return false;
 
@@ -351,6 +343,20 @@ export class AvatarCanvas {
         const bounds = this._spriteFrameBounds(source, cellSize, IDLE_SOUTH_ROW);
         const sourceW = bounds.maxX - bounds.minX + 1;
         const sourceH = bounds.maxY - bounds.minY + 1;
+        if (AVATAR_SIZES[this.size].crisp) {
+            // 7.8 — no crop metadata: show the body's top (head and shoulders)
+            // at an exact integer scale instead of a fractional full-body fit.
+            const box = AVATAR_SIZES[this.size];
+            const fit = Math.min(box.bodyW / sourceW, box.bodyH / sourceH);
+            const scale = Math.max(1, Math.min(4, Math.floor(fit)));
+            const drawW = sourceW * scale;
+            const drawH = sourceH * scale;
+            const dx = Math.round((this.canvas.width - drawW) / 2);
+            const dy = drawH > this.canvas.height ? 1 : Math.round((this.canvas.height - drawH) / 2);
+            ctx.drawImage(source.image, bounds.minX, IDLE_SOUTH_ROW * cellSize + bounds.minY,
+                sourceW, sourceH, dx, dy, drawW, drawH);
+            return true;
+        }
         const hero = this.size === 'hero';
         const box = AVATAR_SIZES[this.size];
         const { width: targetW, height: targetH } = fitAvatarFrame(
@@ -366,16 +372,6 @@ export class AvatarCanvas {
         const ellipseRx = hero ? 24 : Math.round(box.bodyW * 0.35);
         const ellipseRy = hero ? 6 : 4;
         const ellipseY = this.canvas.height - (hero ? 7 : 5);
-        // 4.4 — district ground tint: the card stamps --cv-building-rgb (#30),
-        // so the avatar stands on its district's color beneath the warm shadow.
-        // Read once per draw by the render key; reused here.
-        const districtRgb = this._districtValue;
-        if (districtRgb) {
-            ctx.fillStyle = `rgba(${districtRgb}, 0.22)`;
-            ctx.beginPath();
-            ctx.ellipse(this.canvas.width / 2, ellipseY, ellipseRx + 2.5, ellipseRy + 1.5, 0, 0, Math.PI * 2);
-            ctx.fill();
-        }
         ctx.fillStyle = 'rgba(20, 12, 6, 0.34)';
         ctx.beginPath();
         ctx.ellipse(this.canvas.width / 2, ellipseY, ellipseRx, ellipseRy, 0, 0, Math.PI * 2);
@@ -391,7 +387,7 @@ export class AvatarCanvas {
             targetW,
             targetH
         );
-        if (this.size !== 'witness') this._drawEffortCrest(ctx, identity, accent);
+        this._drawEffortCrest(ctx, identity, accent);
         ctx.restore();
         return true;
     }
@@ -400,7 +396,7 @@ export class AvatarCanvas {
     // manifest carries one, else the authored crop of the composed south idle
     // frame at integer enlargement. The crop is taken from the accessory-free
     // composite so a runtime effort crown can never be sliced in half — the
-    // crown stays on the full-body witness and the corner crest states the
+    // crown stays on the full body in the World and the corner crest states the
     // tier. Returns false whenever no portrait metadata resolves, which
     // leaves the full-body avatar exactly as it was.
     _drawPortrait(ctx, identity, accent, spriteId) {
@@ -424,6 +420,18 @@ export class AvatarCanvas {
         // trusted; fall back to the full body rather than blit garbage.
         if (crop.x + crop.w > cellSize || crop.y + crop.h > cellSize) return false;
 
+        if (box.cropScale) {
+            // 7.4 — fixed integer enlargement: clip the crop to the window the
+            // box holds at that scale (centred, top-anchored), bottom-aligned.
+            const winW = Math.min(crop.w, Math.floor(box.w / box.cropScale));
+            const winH = Math.min(crop.h, Math.floor(box.h / box.cropScale));
+            const sx = crop.x + Math.floor((crop.w - winW) / 2);
+            const drawW = winW * box.cropScale;
+            const drawH = winH * box.cropScale;
+            ctx.drawImage(source.image, sx, IDLE_SOUTH_ROW * cellSize + crop.y, winW, winH,
+                Math.round((this.canvas.width - drawW) / 2), this.canvas.height - drawH, drawW, drawH);
+            return true;
+        }
         this._drawPortraitImage(
             ctx,
             source.image,
@@ -438,7 +446,12 @@ export class AvatarCanvas {
     }
 
     _drawPortraitImage(ctx, image, sx, sy, sw, sh, box) {
-        const { width: targetW, height: targetH } = fitAvatarFrame(sw, sh, box.portraitW, box.portraitH, true);
+        let { width: targetW, height: targetH } = fitAvatarFrame(sw, sh, box.portraitW, box.portraitH, true);
+        if (box.crisp && (targetW < sw || targetH < sh)) {
+            // 7.8 — never downscale a crisp portrait: 1x, centred, clipped.
+            targetW = sw;
+            targetH = sh;
+        }
         const dx = Math.round((this.canvas.width - targetW) / 2);
         const dy = Math.round((this.canvas.height - targetH) / 2);
         ctx.save();
@@ -507,14 +520,6 @@ export class AvatarCanvas {
         return /^#?[0-9a-fA-F]{6}$/.test(accent.trim()) ? accent.trim() : null;
     }
 
-    // 4.4 — the dashboard card carries --cv-building-rgb (DashboardRenderer,
-    // #30); read it at draw time so the niche ground wears the district hue.
-    _districtRgb() {
-        if (typeof getComputedStyle !== 'function' || !this.canvas.isConnected) return null;
-        const value = getComputedStyle(this.canvas).getPropertyValue('--cv-building-rgb').trim();
-        return /^\d{1,3},\s*\d{1,3},\s*\d{1,3}$/.test(value) ? value : null;
-    }
-
     _ensureSpriteImage(spriteId) {
         if (this.spriteImage && this.spriteId === spriteId && this.spriteAssetVersion === SPRITE_ASSET_VERSION) return true;
         this.spriteId = spriteId;
@@ -550,8 +555,6 @@ export class AvatarCanvas {
         const spriteId = identity.spriteId || '';
         const portrait = spriteId ? portraitSourceFor(spriteId) : { crop: null, bust: null };
         const crop = portrait.crop;
-        // One style read per draw, shared with the ground-tint paint below.
-        this._districtValue = this._districtRgb();
         return [
             this.size,
             SPRITE_ASSET_VERSION,
@@ -562,7 +565,6 @@ export class AvatarCanvas {
             identity.modelClass || '',
             this._paletteVariant(providerPaletteKey(this.agent)),
             this._teamTrimAccent() || '',
-            this._districtValue || '',
             Compositor.shared() ? 'composited' : 'sheet',
             this.spriteFailed ? 'failed' : '',
             portrait.bust || '',
@@ -620,6 +622,7 @@ export class AvatarCanvas {
 
     _drawEffortCrest(ctx, identity, accent) {
         if (identity.showDashboardEffortCrest === false) return;
+        if (AVATAR_SIZES[this.size]?.crisp) return;
         if (!identity.effortTier || identity.effortTier === 'none') return;
         const cx = this.canvas.width - 9;
         const cy = 10;

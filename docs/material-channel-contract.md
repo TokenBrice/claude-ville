@@ -75,12 +75,13 @@ All fields are optional for ordinary assets:
 ```yaml
 materialClass: stone
 atlasFrame: { atlas: world-pilot, key: building.command }
-elevation: { base: 0, top: 208, unit: sprite-px }
+elevation: { base: 0, top: 240, unit: sprite-px }
 emissive:
   strength: 1
   sources:
     - { id: emissive.command.windows, kind: windows, geometry: registry.windowRects, strength: 0.72 }
-occluder: { mode: alpha-silhouette, strength: 1, horizonY: 130 }
+    - { id: emissive.command.braziers, kind: fire, geometry: emitters.torch, strength: 1 }
+occluder: { mode: alpha-silhouette, strength: 1, horizonY: 112 }
 
 # Only add these after the companion PNG exists and was reviewed:
 materialSidecar: true
@@ -126,9 +127,35 @@ update cadence as albedo, including padded equipped Codex frames.
 Generated emissive defaults come only from named semantic sources and existing
 window/light anchors. The tooling does not infer emission from luminance.
 
+Every building except the Portal now ships an authored `base.emissive.png`
+(Command, Observatory, Archive, Forge, Mine, Task board, Harbor, and the
+Lighthouse `building.watchtower`); lit panes live only in the sidecar and the
+albedo keeps dark glass, so a building is never lit by day or by an empty
+night. Prefer an authored sidecar: `scripts/sprites/atlas-bake.mjs` reads a
+`registry.windowRects` entry's `at` as the rectangle's top-left corner, while
+`BuildingSprite` and the window tests treat it as the centre, so generated
+window emission lands off the panes for any building without a sidecar.
+
 Each frame has a two-pixel extruded gutter to prevent atlas bleeding. Runtime
 sampling is still nearest; gutters protect edge texels when future passes sample
 near frame boundaries.
+
+## Grade, Light Pools, and Emission
+
+The direct GPU renderer applies the time-of-day and weather grade (contract C2
+of the aesthetic plan, `GradeEvaluator.evaluateGrade`, shader `GRADE_GLSL`) to
+each albedo fragment in the scene pass, before the light loop. Local lights then
+multiply the graded albedo in three stepped courses (rim, mid, core on each
+light's own falloff; warm lights take the reserved emissive ramp), and authored
+emission is added after both. Emissive pixels and lit pools are therefore exempt
+from the night desaturation without a separate lit mask, and `fire` pixels keep
+their authored colour at every hour. The Canvas fallback reproduces the same
+order with composite fills (`CanvasGrade.js`). Emission sidecars are gated at
+runtime by `NightOccupancyGate`, so a lit window means real work inside.
+
+The offline analyzer (`npm run art:analyze`) treats pixels lit in an
+`.emissive.png` sidecar, and `fire`/unlit/light layers, as allowed Tier-A
+brightness; any other Tier-A pixel is reported as palette misuse.
 
 ## Frame Contracts
 

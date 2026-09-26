@@ -223,6 +223,16 @@ export function createPostFxFeed() {
         viewportObj.width = backingW;
         viewportObj.height = backingH;
         viewportObj.dpr = dpr;
+        // 1.2 — the hybrid light pools snap to the art-pixel grid.
+        viewportObj.zoom = Math.max(0.01, finite(renderer?.camera?.zoom, 1));
+        // W-F9 — where that grid starts in backing pixels (the camera's
+        // snapped render offset modulo one art pixel), so per-texel effects
+        // step on the texels the world was drawn on.
+        const art = Math.max(1, viewportObj.zoom * dpr);
+        const originX = finite(renderer?.camera?.renderOffsetX, 0) * dpr;
+        const originY = finite(renderer?.camera?.renderOffsetY, 0) * dpr;
+        viewportObj.artOriginX = ((originX % art) + art) % art;
+        viewportObj.artOriginY = ((originY % art) + art) % art;
         return viewportObj;
     }
 
@@ -349,7 +359,7 @@ export function createPostFxFeed() {
                 slot.x = sx * dpr;
                 slot.y = sy * dpr;
                 slot.radius = lanternRadius;
-                // Lantern token #ffd56a — matches _getLanternGlowStamp's core.
+                // Lantern token #ffd56a — the same hue as the Canvas lantern pools.
                 setGpuLightColor(slot, lanternColor);
                 slot.intensity = 1;
                 slot.night = true;
@@ -686,6 +696,7 @@ export function createPostFxFeed() {
                 viewportObj.dpr = 1;
                 feed.phase = safe.phase;
                 feed.grade = null;
+                feed.lightGrade = null;
                 feed.lighting = null;
                 feed.sun = null;
                 lightsOut.length = 0;
@@ -727,6 +738,7 @@ export function createPostFxFeed() {
             // WHY: verbatim refs — PostFx grades with the same objects the 2D
             // path authored this frame; cloning would desync mid-frame tweaks.
             feed.grade = atmosphere?.grade ?? null;
+            feed.lightGrade = atmosphere?.lightGrade ?? null;
             feed.lighting = atmosphere?.lighting ?? null;
             feed.sun = fillSun(atmosphere, viewport);
             feed.lights = lightsOut;

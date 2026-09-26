@@ -9,8 +9,16 @@ import {
     isAttentionLight,
     localLightPhaseForLighting,
     selectGpuTimingMetrics,
-    worldPhaseGrade,
+    GRADE_GLSL,
+    GRADE_UNIFORM_NAMES,
+    uploadGradeUniforms,
+    buildCloudShadowTile,
+    CLOUD_TILE_SIZE,
+    CLOUD_TILE_WORLD_SCALE,
+    aerialPerspectiveStrength,
 } from './GpuWorldPolicy.js';
+import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
+import { waterMoodFor } from '../CoastBake.js';
 import {
     createPostFxLadder,
     POST_FX_LEVELS,
@@ -45,19 +53,21 @@ const DEFAULT_LIGHT_COLOR = Object.freeze([1, 0.78, 0.42]);
 const GPU_PASS_NAMES = ['upload', 'occlusion', 'scene', 'bloom', 'present'];
 const PASS_RING_CAPACITY = 32;
 
-function writeGpuVertex(vertices, offset, x, y, u, v, record) {
-    vertices[offset++] = x;
-    vertices[offset++] = y;
-    vertices[offset++] = u;
-    vertices[offset++] = v;
-    vertices[offset++] = record.alpha;
-    vertices[offset++] = record.material;
-    vertices[offset++] = record.elevation;
-    vertices[offset++] = record.emissive;
-    vertices[offset++] = record.occluder;
-    vertices[offset++] = record.emissiveGate ?? 1;
-    vertices[offset++] = record.paletteRamp ? 1 : 0;
-    return offset;
+// The seven per-record attributes are read once per quad and replayed into all
+// six vertices; thousands of small ground-cue records stage every frame.
+function writeGpuVertex(vertices, offset, x, y, u, v, alpha, material, elevation, emissive, occluder, gate, ramp) {
+    vertices[offset] = x;
+    vertices[offset + 1] = y;
+    vertices[offset + 2] = u;
+    vertices[offset + 3] = v;
+    vertices[offset + 4] = alpha;
+    vertices[offset + 5] = material;
+    vertices[offset + 6] = elevation;
+    vertices[offset + 7] = emissive;
+    vertices[offset + 8] = occluder;
+    vertices[offset + 9] = gate;
+    vertices[offset + 10] = ramp;
+    return offset + 11;
 }
 
 function writeGpuRecordVertices(vertices, offset, record) {
@@ -65,16 +75,25 @@ function writeGpuRecordVertices(vertices, offset, record) {
     const y0 = record.y;
     const x1 = x0 + record.width;
     const y1 = y0 + record.height;
-    const u0 = record.sx / record.sourceWidth;
-    const v0 = record.sy / record.sourceHeight;
-    const u1 = (record.sx + record.sw) / record.sourceWidth;
-    const v1 = (record.sy + record.sh) / record.sourceHeight;
-    offset = writeGpuVertex(vertices, offset, x0, y0, u0, v0, record);
-    offset = writeGpuVertex(vertices, offset, x1, y0, u1, v0, record);
-    offset = writeGpuVertex(vertices, offset, x0, y1, u0, v1, record);
-    offset = writeGpuVertex(vertices, offset, x0, y1, u0, v1, record);
-    offset = writeGpuVertex(vertices, offset, x1, y0, u1, v0, record);
-    offset = writeGpuVertex(vertices, offset, x1, y1, u1, v1, record);
+    const sourceWidth = record.sourceWidth;
+    const sourceHeight = record.sourceHeight;
+    const u0 = record.sx / sourceWidth;
+    const v0 = record.sy / sourceHeight;
+    const u1 = (record.sx + record.sw) / sourceWidth;
+    const v1 = (record.sy + record.sh) / sourceHeight;
+    const alpha = record.alpha;
+    const material = record.material;
+    const elevation = record.elevation;
+    const emissive = record.emissive;
+    const occluder = record.occluder;
+    const gate = record.emissiveGate ?? 1;
+    const ramp = record.paletteRamp ? 1 : 0;
+    offset = writeGpuVertex(vertices, offset, x0, y0, u0, v0, alpha, material, elevation, emissive, occluder, gate, ramp);
+    offset = writeGpuVertex(vertices, offset, x1, y0, u1, v0, alpha, material, elevation, emissive, occluder, gate, ramp);
+    offset = writeGpuVertex(vertices, offset, x0, y1, u0, v1, alpha, material, elevation, emissive, occluder, gate, ramp);
+    offset = writeGpuVertex(vertices, offset, x0, y1, u0, v1, alpha, material, elevation, emissive, occluder, gate, ramp);
+    offset = writeGpuVertex(vertices, offset, x1, y0, u1, v0, alpha, material, elevation, emissive, occluder, gate, ramp);
+    offset = writeGpuVertex(vertices, offset, x1, y1, u1, v1, alpha, material, elevation, emissive, occluder, gate, ramp);
     return offset;
 }
 
@@ -137,13 +156,18 @@ uniform bool u_hasOccluderMap;
 uniform bool u_hasEmissiveMap;
 uniform vec2 u_resolution;
 uniform vec2 u_occlusionResolution;
-uniform vec3 u_gradeBase;
-uniform vec3 u_gradeEdge;
-uniform float u_edgeAlpha;
+// The vertex stage's camera, read here to snap light pools to art pixels.
+uniform vec3 u_camera;
 uniform vec3 u_fogColor;
 uniform vec4 u_weather;
+// xy: iso sun direction, z: warmth, w: C2 sun-band share (0 at night and
+// under overcast, so lit faces stop reading sunny).
 uniform vec4 u_sun;
-uniform vec4 u_cloudShadow[3];
+// C2 overcast flattening (cloudCover 0.7 -> 0.9): calms water shimmer.
+uniform float u_overcast;
+// Additive batches (the ground haze field) are graded without the lift so a
+// full-viewport field never lifts the void.
+uniform bool u_additive;
 uniform float u_time;
 uniform float u_motionScale;
 uniform bool u_useOcclusion;
@@ -159,6 +183,10 @@ uniform float u_coreEnergy;
 // course reads it in the scene pass; the ambient course is a grade selection.
 uniform float u_moonFill;
 uniform bool u_waterSilver;
+// 3.4 — water mood (x: night, y: storm), CoastBake.waterMoodFor: night sits
+// shallow water below lit ground in value, storm reads grey-green. The
+// terrain bake stays phase-free; this recolour is the only time-of-day term.
+uniform vec2 u_waterMood;
 // 3.2 — accumulated surface wetness from real precipitation history, and how
 // many admitted sources may carry a wet reflection at this ladder level.
 uniform float u_wetness;
@@ -172,6 +200,9 @@ uniform bool u_hasPaletteLut;
 // Action-needed lights are outside the exposure budget and outside the ramp:
 // bit i is set when admitted light i is an attention source.
 uniform uint u_attentionMask;
+// 3.2 — bit i is set when admitted light i lays a wet-ground reflection: the
+// first u_wetReflectionCount non-attention lights in admission order.
+uniform uint u_wetMask;
 
 float materialNear(float value, float target) {
     return 1.0 - step(0.45, abs(value - target));
@@ -198,9 +229,20 @@ float occlusionBetween(vec2 fromPx, vec2 toPx, float elevation) {
 }
 
 ${glslMaterialWeatherFunctions()}
+${GRADE_GLSL}
 
 float orderedDither4(vec2 px) {
     return mod(floor(px.x) + 2.0 * floor(px.y), 4.0) / 3.0;
+}
+
+float bayer2(vec2 a) {
+    a = floor(a);
+    return fract(dot(a, vec2(0.5, a.y * 0.75)));
+}
+
+// 4x4 ordered threshold in [0, 1) on whatever grid p is on.
+float bayer4(vec2 p) {
+    return bayer2(0.5 * p) * 0.25 + bayer2(p);
 }
 
 vec3 applyMaterialWeather(vec3 color, float material, vec2 px) {
@@ -225,22 +267,57 @@ vec3 applyMaterialWeather(vec3 color, float material, vec2 px) {
     return color;
 }
 
+// CPU mirror: CoastBake.applyWaterMood (the Canvas twin and the outer ocean).
+vec3 applyWaterMood(vec3 color) {
+    if (u_waterMood.y > 0.0) {
+        float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        color = mix(color, l * vec3(0.90, 1.04, 0.97), u_waterMood.y * 0.72);
+    }
+    if (u_waterMood.x > 0.0) {
+        float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        color = mix(color, l * vec3(0.78, 0.94, 1.10), u_waterMood.x * 0.55);
+        color *= 1.0 - u_waterMood.x * 0.2;
+    }
+    return clamp(color, 0.0, 1.0);
+}
+
 vec3 applyWaterState(vec3 color, vec2 px) {
+    // The material map is quarter resolution: a coast block can hold sand or
+    // foam pixels. Water stops are teal/blue-dominant; anything else keeps
+    // its land response.
+    if (color.b < color.r + 0.02 || color.g < color.r) return color;
+    // The baked depth stop, read from its (day) value before the mood.
+    float depthLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    color = applyWaterMood(color);
     float phase = u_motionScale <= 0.0 ? 0.0 : floor(u_time * 0.004 * u_motionScale);
     float storm = step(0.5, u_weather.z);
-    vec2 calmCell = floor(px / 3.0);
-    vec2 roughCell = floor(px / 2.0);
-    float calmCourse = mod(calmCell.x + 2.0 * calmCell.y + phase, 4.0);
-    float roughCourse = mod(3.0 * roughCell.x + roughCell.y + phase * 2.0, 4.0);
-    float shimmer = step(2.0, mix(calmCourse, roughCourse, storm));
-    float contrast = mix(0.07, 0.13, storm);
-    vec3 phaseTint = mix(vec3(0.82, 0.94, 1.08), u_gradeBase, 0.22);
-    vec3 tinted = color * phaseTint * mix(1.0 - contrast, 1.0 + contrast, shimmer);
-    // 3.4 — FULL only, bright moon only: one extra silver course on the same
-    // world cells as the palette cycle. A new-moon night never receives it.
+    // 3.4 — sparse 2:1 ripple dashes, never a lattice: each 8x4 world-px
+    // cell (6x3 in a storm) may hold one 3x1 dash, and a dash is lit on one
+    // palette-cycle phase in four. Stop interiors stay flat between them;
+    // reduced motion freezes the phase.
+    vec2 cellSize = mix(vec2(8.0, 4.0), vec2(6.0, 3.0), storm);
+    vec2 cell = floor(px / cellSize);
+    vec2 local = floor(px) - cell * cellSize;
+    float seed = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
+    float dashX = floor(seed * (cellSize.x - 2.0));
+    float dashY = floor(fract(seed * 7.13) * cellSize.y);
+    float present = step(fract(seed * 31.7), mix(0.30, 0.55, storm));
+    float onDash = present * step(dashX, local.x) * step(local.x, dashX + 2.0) * (1.0 - step(0.5, abs(local.y - dashY)));
+    float lit = 1.0 - step(0.5, mod(floor(seed * 4.0) + phase, 4.0));
+    float contrast = mix(0.10, 0.16, storm);
+    // An overcast sky has no sun sparkle; storm chop keeps its dashes.
+    contrast = mix(contrast, min(contrast, 0.06), u_overcast * (1.0 - storm));
+    // 3.4 — deep water is calm: the dashes fade with the baked depth stop,
+    // so the deepest stop meets the flat outer ocean seamlessly and the
+    // shallows carry the sparkle.
+    contrast *= clamp((depthLuma - 0.27) / 0.15, mix(0.15, 0.35, storm), 1.0);
+    // The time-of-day hue is the C2 grade's job; water keeps a light cool
+    // cast (CPU mirror: CoastBake WATER_CAST).
+    vec3 tinted = color * vec3(0.94, 0.98, 1.03) * (1.0 + contrast * onDash * lit);
+    // 3.4 — FULL only, bright moon only: every dash turns silver at once, a
+    // moonlit path of the same marks. A new-moon night never receives it.
     if (u_waterSilver && u_moonFill >= 0.5) {
-        float silver = step(3.0, mod(calmCell.x + 3.0 * calmCell.y, 5.0));
-        tinted = mix(tinted, tinted * vec3(1.10, 1.14, 1.20), silver * 0.5);
+        tinted = mix(tinted, tinted * vec3(1.10, 1.14, 1.20), onDash * 0.5);
     }
     return tinted;
 }
@@ -259,34 +336,6 @@ vec3 applyAuthoredSunBand(vec3 color, float material) {
     // Two restrained material-wide bands preserve the baked upper-left key.
     float quantized = rawBand < 0.93 ? 0.86 : 1.0;
     return color * mix(1.0, quantized, clamp(u_sun.w, 0.0, 1.0));
-}
-
-vec3 applyGrade(vec3 color, vec2 topLeftPx, float material) {
-    vec2 centre = vec2(u_resolution.x * 0.5, u_resolution.y * 0.46);
-    float inner = min(u_resolution.x, u_resolution.y) * 0.18;
-    float outer = max(u_resolution.x, u_resolution.y) * 0.72;
-    float t = clamp((distance(topLeftPx, centre) - inner) / max(1.0, outer - inner), 0.0, 1.0);
-    float edge = u_edgeAlpha * (
-        step(0.62, t) * 0.4
-        + step(0.84, t) * 0.6
-    );
-    color *= u_gradeBase;
-    color *= mix(vec3(1.0), u_gradeEdge, edge);
-    float cloudReceiver = max(
-        materialNear(material, 4.0),
-        max(materialNear(material, 6.0), materialNear(material, 7.0))
-    );
-    for (int i = 0; i < 3; i++) {
-        vec4 shadow = u_cloudShadow[i];
-        if (shadow.w <= 0.0) continue;
-        vec2 delta = (topLeftPx - shadow.xy) / vec2(max(1.0, shadow.z), max(1.0, shadow.z * 0.5));
-        float distanceSquared = dot(delta, delta);
-        float course = step(distanceSquared, 1.0) * 0.34
-            + step(distanceSquared, 0.49) * 0.33
-            + step(distanceSquared, 0.16) * 0.33;
-        color *= 1.0 - shadow.w * course * cloudReceiver;
-    }
-    return color;
 }
 
 void main() {
@@ -321,10 +370,19 @@ void main() {
     // Clear weather is the overwhelmingly common case. Avoid the ordered
     // glint/material classification work when every weather contribution is
     // mathematically zero; rainy output remains byte-for-byte equivalent.
-    if (u_weather.x > 0.001 || u_wetness > 0.001) color = applyMaterialWeather(color, material, v_world);
-    if (materialNear(material, 8.0) > 0.5) color = applyWaterState(color, v_world);
+    // Water is never "wet": its storm/rain look is the water mood (mirrored
+    // by the outer ocean), so the island's sea and the ocean stay one value.
+    bool waterMaterial = materialNear(material, 8.0) > 0.5;
+    if (!waterMaterial && (u_weather.x > 0.001 || u_wetness > 0.001)) color = applyMaterialWeather(color, material, v_world);
+    if (waterMaterial) color = applyWaterState(color, v_world);
     color = applyAuthoredSunBand(color, material);
-    color = applyGrade(color, px, material);
+    // 1.2 — the pools light the ungraded surface, so warm light shows the real
+    // cobble, grass and wall texture instead of a desaturated night albedo.
+    vec3 poolAlbedo = color;
+    // 1.1 — C2 time-of-day and weather grade, before any local light or
+    // authored emission: lit and emissive pixels are exempt by construction.
+    color = applyTimeGrade(color, !u_additive);
+    color = applyGradeVignette(color, px, u_resolution);
 
     // 3.2 — the approved wet receiver is classified lazily: only a fragment
     // that a reflecting source actually reaches pays for the classification,
@@ -337,20 +395,56 @@ void main() {
     // light does to this material.
     bool rampPixel = u_hasPaletteLut && v_ramp > 0.5;
     float admitted = 0.0;
+    // 1.2 — ambient light pools: each light is stepped on its own falloff
+    // (poolSteps), accumulated, and lands once after the loop. Distances are
+    // measured from the art-pixel centre so course edges sit on the world
+    // texel grid, in iso ground space (screen y doubled): a pool is a 2:1
+    // ellipse on the ground, and a wall or figure above the light's ground
+    // line gets a short wash, never a camera-facing disc.
+    vec3 poolLight = vec3(0.0);
+    float poolDepth = 0.0;
+    // Action-needed lights take the same stepped courses, but the strongest
+    // one at the pixel wins instead of summing: a crowd of waiting agents
+    // reads as one warm ground course under the bodies, never a bloom that
+    // washes them out. Their beacon and plate carry the salience.
+    vec3 attentionLight = vec3(0.0);
+    float attentionLuma = 0.0;
+    float attentionDepth = 0.0;
+    vec2 artCell = floor(v_world);
+    float poolOrder = bayer4(artCell);
+    vec2 artTopLeftPx = (artCell + 0.5 + u_camera.xy) * u_camera.z;
+    vec2 poolPx = vec2(artTopLeftPx.x, u_resolution.y - artTopLeftPx.y);
     for (int i = 0; i < 32; i++) {
         if (i >= u_lightCount) break;
         vec4 light = u_lights[i];
         float radius = max(1.0, light.z);
         float distanceToLight = distance(glPx, light.xy);
-        if (distanceToLight >= radius) continue;
-        float falloff = 1.0 - smoothstep(0.0, radius, distanceToLight);
-        float blocked = u_useOcclusion ? occlusionBetween(glPx, light.xy, elevation) : 0.0;
-        float amount = falloff * light.w * (1.0 - blocked * 0.88);
+        if (distanceToLight >= radius + u_camera.z) continue;
         bool attention = (u_attentionMask & (1u << uint(i))) != 0u;
-        if (rampPixel && !attention) {
+        vec2 isoDelta = (poolPx - light.xy) * vec2(1.0, 2.0);
+        float falloff = 1.0 - smoothstep(0.0, radius, length(isoDelta));
+        float blocked = u_useOcclusion ? occlusionBetween(glPx, light.xy, elevation) : 0.0;
+        float shape = falloff * (1.0 - blocked * 0.88);
+        if (attention) {
+            // Outside the exposure budget (colour alpha is 1), inside the
+            // courses; no water or wet reflection streak.
+            float steps = poolSteps(shape, poolOrder);
+            vec3 lit = u_lightColors[i].rgb * poolWeight(steps) * light.w * u_lightColors[i].a;
+            float litLuma = dot(lit, GRADE_LUMA);
+            if (litLuma > attentionLuma) {
+                attentionLight = lit;
+                attentionLuma = litLuma;
+            }
+            attentionDepth = max(attentionDepth, steps);
+            continue;
+        }
+        float amount = shape * light.w;
+        if (rampPixel) {
             admitted += amount * u_lightColors[i].a;
         } else {
-            color += u_lightColors[i].rgb * amount * u_lightColors[i].a * 0.34;
+            float steps = poolSteps(shape, poolOrder);
+            poolLight += u_lightColors[i].rgb * poolWeight(steps) * light.w * u_lightColors[i].a;
+            poolDepth = max(poolDepth, steps);
         }
         float reflectionX = 1.0 - smoothstep(0.0, radius * 0.30, abs(glPx.x - light.x));
         float reflectionY = 1.0 - smoothstep(0.0, radius * 1.70, abs(glPx.y - light.y));
@@ -360,7 +454,8 @@ void main() {
         // The source's own hue lies in a world-space downward footprint below
         // the lantern or window, broken on the world grid and clipped by the
         // same occluders as its direct light, so it never crosses a roof.
-        if (i < u_wetReflectionCount) {
+        // Action-needed lights never spend one of these slots (u_wetMask).
+        if ((u_wetMask & (1u << uint(i))) != 0u) {
             if (wetReceiver < 0.0) {
                 wetReceiver = max(
                     materialNear(material, 7.0),
@@ -377,6 +472,10 @@ void main() {
             }
         }
     }
+    if (attentionDepth > 0.5) {
+        poolLight += attentionLight;
+        poolDepth = max(poolDepth, attentionDepth);
+    }
     // 3.5 — two reviewed thresholds pick the dark / mid / light course. The
     // ramp multiplies the authored albedo and adds one authored lift, so slate
     // stays slate and gold reaches its own highlight instead of bleaching.
@@ -388,10 +487,17 @@ void main() {
         ));
         color = color * (ramp.rgb * 2.0) + vec3(ramp.a * 0.25) * step(0.14, admitted);
     }
+    // 1.2 — the pools land once, stepped, multiplying the ungraded albedo.
+    color = stepPool(color, poolLight, poolDepth, poolAlbedo);
 
     float fog = clamp(u_weather.y, 0.0, 1.0);
     float groundFog = fog * (1.0 - elevation * 0.72) * smoothstep(0.18, 0.98, gl_FragCoord.y / max(1.0, u_resolution.y));
-    color = mix(color, u_fogColor, groundFog * 0.48);
+    // Fog veils toward the C2 haze colour but may raise a pixel's luma by at
+    // most 0.06: storm fog no longer lifts the blacks.
+    vec3 fogged = mix(color, u_fogColor, groundFog * 0.48);
+    float fogRise = dot(fogged - color, GRADE_LUMA);
+    if (fogRise > 0.06) fogged = mix(color, fogged, 0.06 / fogRise);
+    color = fogged;
     vec3 emission = emissionColor * emissive;
     color += emission * 0.42;
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
@@ -465,12 +571,60 @@ in vec2 v_uv;
 layout(location = 0) out vec4 outColor;
 uniform sampler2D u_scene;
 uniform sampler2D u_bloom;
+uniform sampler2D u_cloudTile;
 uniform float u_bloomStrength;
+uniform vec3 u_camera;
+uniform vec2 u_resolution;
+// 1.4 — xy: world-space drift offset (world px), z: darkening per course
+// (0 = off), w: unused.
+uniform vec4 u_cloud;
+// Noise thresholds for course 1/2/3 at the current cover.
+uniform vec3 u_cloudThresholds;
+// 1.6 — rgb: C2 horizon haze, a: strength at the top of the frame (0 = off).
+uniform vec4 u_haze;
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+float bayer2(vec2 a) {
+    a = floor(a);
+    return fract(dot(a, vec2(0.5, a.y * 0.75)));
+}
+float bayer4(vec2 p) {
+    return bayer2(0.5 * p) * 0.25 + bayer2(p);
+}
 void main() {
     vec4 scene = texture(u_scene, clamp(v_uv, vec2(0.0), vec2(1.0)));
     vec3 bloom = texture(u_bloom, clamp(v_uv, vec2(0.0), vec2(1.0))).rgb;
-    vec3 color = scene.rgb + bloom * u_bloomStrength;
-    outColor = vec4(color, scene.a);
+    vec3 color = scene.rgb;
+    if (scene.a > 0.0 && (u_cloud.z > 0.0 || u_haze.a > 0.0)) {
+        vec2 px = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
+        // One art pixel of the world under this screen pixel.
+        vec2 world = floor(px / max(0.0001, u_camera.z) - u_camera.xy);
+        float order = bayer4(world);
+        if (u_cloud.z > 0.0) {
+            // World-locked: the field is sampled in world space and drifts
+            // with the wind (frozen under reduced motion). Three courses with
+            // an ordered dither on their edges, on the art-pixel grid.
+            vec2 cloudUv = fract((world + 0.5 + u_cloud.xy) / ${CLOUD_TILE_WORLD_SCALE.toFixed(1)} / ${CLOUD_TILE_SIZE.toFixed(1)});
+            float n = texture(u_cloudTile, cloudUv).r + (order - 0.5) * 0.018;
+            float course = step(u_cloudThresholds.x, n) + step(u_cloudThresholds.y, n) + step(u_cloudThresholds.z, n);
+            // Slightly cool shade: blue loses less than red.
+            color *= vec3(1.0) - course * u_cloud.z * vec3(1.0, 0.96, 0.84);
+        }
+        if (u_haze.a > 0.0) {
+            // Screen-Y aerial perspective toward the C2 horizon haze, world
+            // layer only, stepped in 1/48 courses with an ordered dither.
+            float yTop = px.y / max(1.0, u_resolution.y);
+            float haze = pow(clamp((0.55 - yTop) / 0.55, 0.0, 1.0), 1.4) * u_haze.a;
+            haze = floor(haze * 48.0 + order) / 48.0;
+            if (haze > 0.0) {
+                vec3 straight = color / scene.a;
+                float l = dot(straight, LUMA);
+                straight = mix(straight, mix(vec3(l), straight, 0.8), min(1.0, haze * 8.0));
+                straight = mix(straight, u_haze.rgb, haze);
+                color = straight * scene.a;
+            }
+        }
+    }
+    outColor = vec4(color + bloom * u_bloomStrength, scene.a);
 }`;
 
 function finite(value, fallback = 0) {
@@ -523,9 +677,27 @@ function uniformLocations(gl, program, names) {
     }, {});
 }
 
-function phaseGrade(feed = {}) {
-    const phase = String(feed.phase || feed.atmosphere?.phase || 'day').toLowerCase();
-    return worldPhaseGrade(phase, feed.lighting?.moonFill ?? feed.atmosphere?.lighting?.moonFill ?? 0);
+function frameGrade(feed = {}) {
+    return feed.atmosphere?.lightGrade || feed.lightGrade || NEUTRAL_GRADE;
+}
+
+// The baked field plus its sorted values, so a cover fraction maps to an
+// exact noise threshold (the covered share of the ground equals the cover).
+let _cloudTile = null;
+function cloudTile() {
+    if (_cloudTile) return _cloudTile;
+    const data = buildCloudShadowTile(CLOUD_TILE_SIZE);
+    const sorted = new Uint8Array(CLOUD_TILE_SIZE * CLOUD_TILE_SIZE);
+    for (let index = 0; index < sorted.length; index++) sorted[index] = data[index * 4];
+    sorted.sort();
+    _cloudTile = { data, sorted };
+    return _cloudTile;
+}
+
+function cloudThreshold(coveredShare) {
+    const { sorted } = cloudTile();
+    const index = Math.round(clamp(1 - coveredShare, 0, 1) * (sorted.length - 1));
+    return sorted[index] / 255;
 }
 
 function weatherUniform(feed = {}) {
@@ -538,45 +710,6 @@ function weatherUniform(feed = {}) {
         type === 'storm' ? 1 : 0,
         clamp(finite(weather.intensity), 0, 1),
     ];
-}
-
-function writeCloudShadowUniforms(target, ranked, feed, width, height) {
-    target.fill(0);
-    ranked.fill(null);
-    const atmosphere = feed.atmosphere || {};
-    const layers = atmosphere.sky?.cloudLayers;
-    const cloudCover = clamp(finite(atmosphere.weather?.cloudCover), 0, 1);
-    if (!Array.isArray(layers) || !layers.length || cloudCover <= 0.04) return target;
-
-    for (let index = 0; index < layers.length; index++) {
-        const layer = layers[index];
-        const scale = finite(layer?.scale);
-        for (let slot = 0; slot < ranked.length; slot++) {
-            if (ranked[slot] && finite(ranked[slot].scale) >= scale) continue;
-            for (let shift = ranked.length - 1; shift > slot; shift--) ranked[shift] = ranked[shift - 1];
-            ranked[slot] = layer;
-            break;
-        }
-    }
-
-    const span = Math.max(1, width + height);
-    const windX = finite(atmosphere.motion?.windX, 1);
-    const driftTime = feed.reducedMotion || finite(feed.motionScale, 1) <= 0
-        ? 0
-        : finite(feed.timeMs) * 0.012;
-    for (let slot = 0; slot < ranked.length; slot++) {
-        const layer = ranked[slot];
-        if (!layer) continue;
-        const parallax = finite(layer.parallax, 0.5);
-        const rawX = finite(layer.xFrac) * span + windX * driftTime * parallax;
-        const wrappedX = ((rawX % span) + span) % span;
-        const offset = slot * 4;
-        target[offset] = wrappedX - height * 0.5;
-        target[offset + 1] = finite(layer.yFrac, 0.3) * height;
-        target[offset + 2] = Math.max(48, finite(layer.scale, 1) * width * 0.22);
-        target[offset + 3] = 0.12 * cloudCover * (0.6 + finite(layer.alpha, 0.3));
-    }
-    return target;
 }
 
 export class GpuWorldRenderer {
@@ -654,8 +787,8 @@ export class GpuWorldRenderer {
         this._singleLightColorScratch = [0, 0, 0];
         this._lightScratch = new Float32Array(MAX_LIGHTS * 4);
         this._lightColorScratch = new Float32Array(MAX_LIGHTS * 4);
-        this._cloudShadowScratch = new Float32Array(12);
-        this._cloudShadowLayers = [null, null, null];
+        this.cloudCourses = 0;
+        this.aerialHaze = 0;
         this._occlusionRecords = [];
         this._occlusionBatch = {
             key: '',
@@ -729,13 +862,14 @@ export class GpuWorldRenderer {
         this.timerExtension = gl.getExtension?.('EXT_disjoint_timer_query_webgl2') || null;
         this.sceneUniforms = uniformLocations(gl, this.sceneProgram, [
             'u_camera', 'u_resolution', 'u_albedo', 'u_materialMap', 'u_emissiveMap', 'u_occlusion',
-            'u_hasMaterialMap', 'u_occluderMap', 'u_hasOccluderMap', 'u_hasEmissiveMap', 'u_occlusionResolution', 'u_gradeBase', 'u_gradeEdge',
-            'u_edgeAlpha', 'u_fogColor', 'u_weather', 'u_time', 'u_motionScale',
-            'u_sun', 'u_cloudShadow[0]',
+            'u_hasMaterialMap', 'u_occluderMap', 'u_hasOccluderMap', 'u_hasEmissiveMap', 'u_occlusionResolution',
+            ...GRADE_UNIFORM_NAMES,
+            'u_fogColor', 'u_weather', 'u_time', 'u_motionScale',
+            'u_sun', 'u_overcast', 'u_additive',
             'u_lightCount', 'u_lights[0]', 'u_lightColors[0]',
-            'u_useOcclusion', 'u_coreEnergy', 'u_moonFill', 'u_waterSilver',
+            'u_useOcclusion', 'u_coreEnergy', 'u_moonFill', 'u_waterSilver', 'u_waterMood',
             'u_wetness', 'u_wetReflectionCount',
-            'u_paletteLut', 'u_hasPaletteLut', 'u_attentionMask',
+            'u_paletteLut', 'u_hasPaletteLut', 'u_attentionMask', 'u_wetMask',
         ]);
         this.occlusionUniforms = uniformLocations(gl, this.occlusionProgram, [
             'u_camera', 'u_resolution', 'u_albedo', 'u_materialMap',
@@ -743,7 +877,8 @@ export class GpuWorldRenderer {
         ]);
         this.bloomUniforms = uniformLocations(gl, this.bloomProgram, ['u_input', 'u_texel', 'u_blur']);
         this.compositeUniforms = uniformLocations(gl, this.compositeProgram, [
-            'u_scene', 'u_bloom', 'u_bloomStrength',
+            'u_scene', 'u_bloom', 'u_bloomStrength', 'u_cloudTile', 'u_camera', 'u_resolution',
+            'u_cloud', 'u_cloudThresholds', 'u_haze',
         ]);
         this.vao = gl.createVertexArray();
         this.vertexBuffer = gl.createBuffer();
@@ -767,6 +902,16 @@ export class GpuWorldRenderer {
             data: new Uint8Array([0, 0, 0, 0]),
             filter: gl.NEAREST,
         });
+        // 1.4 — the baked cloud field. Linear sampling of a smooth noise
+        // value; the composite quantizes it into dithered art-pixel courses.
+        this.cloudTileTexture = this._createTexture(CLOUD_TILE_SIZE, CLOUD_TILE_SIZE, {
+            data: cloudTile().data,
+            filter: gl.LINEAR,
+        });
+        gl.bindTexture(gl.TEXTURE_2D, this.cloudTileTexture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+        gl.bindTexture(gl.TEXTURE_2D, null);
         this._textureEntries.clear();
     }
 
@@ -839,12 +984,14 @@ export class GpuWorldRenderer {
         this._cachedTextureBytes = 0;
         this._textureCacheNeedsTrim = false;
         if (this.emptyMaterialTexture) gl.deleteTexture(this.emptyMaterialTexture);
+        if (this.cloudTileTexture) gl.deleteTexture(this.cloudTileTexture);
         if (this.vertexBuffer) gl.deleteBuffer(this.vertexBuffer);
         if (this.vao) gl.deleteVertexArray(this.vao);
         for (const program of [this.sceneProgram, this.occlusionProgram, this.bloomProgram, this.compositeProgram]) {
             if (program) gl.deleteProgram(program);
         }
         this.emptyMaterialTexture = null;
+        this.cloudTileTexture = null;
         this.vertexBuffer = null;
         this.vao = null;
         this.sceneProgram = null;
@@ -864,6 +1011,7 @@ export class GpuWorldRenderer {
         this.occlusionTarget = null;
         this._textureEntries?.clear?.();
         this.emptyMaterialTexture = null;
+        this.cloudTileTexture = null;
         this.vertexBuffer = null;
         this.vao = null;
         this.sceneProgram = null;
@@ -1322,7 +1470,7 @@ export class GpuWorldRenderer {
     _setSceneUniforms(feed, camera, qualityLevel = POST_FX_LEVELS.FULL) {
         const gl = this.gl;
         const uniforms = this.sceneUniforms;
-        const grade = phaseGrade(feed);
+        const grade = frameGrade(feed);
         const weather = weatherUniform(feed);
         const weatherMode = effectBudgetMode('weather-amplitude', qualityLevel);
         if (weatherMode === 'reduced') {
@@ -1337,10 +1485,11 @@ export class GpuWorldRenderer {
         this._setCameraUniforms(uniforms, camera, 1);
         gl.uniform2f(uniforms.u_resolution, this.width, this.height);
         gl.uniform2f(uniforms.u_occlusionResolution, this.occlusionTarget.width, this.occlusionTarget.height);
-        gl.uniform3fv(uniforms.u_gradeBase, grade.base);
-        gl.uniform3fv(uniforms.u_gradeEdge, grade.edge);
-        gl.uniform1f(uniforms.u_edgeAlpha, grade.edgeAlpha);
-        gl.uniform3fv(uniforms.u_fogColor, grade.fog);
+        uploadGradeUniforms(gl, uniforms, grade);
+        gl.uniform3fv(uniforms.u_fogColor, grade.fogColor);
+        gl.uniform1i(uniforms.u_additive, 0);
+        const cloudCover = clamp(finite(feed.atmosphere?.weather?.cloudCover, 0), 0, 1);
+        gl.uniform1f(uniforms.u_overcast, clamp((cloudCover - 0.7) / 0.2, 0, 1));
         gl.uniform4fv(uniforms.u_weather, weather);
         const sun = feed.lighting?.sunDirIso || {};
         gl.uniform4f(
@@ -1348,20 +1497,12 @@ export class GpuWorldRenderer {
             finite(sun.x, -0.7071),
             finite(sun.y, -0.7071),
             clamp(finite(feed.lighting?.sunWarmth), 0, 1),
-            clamp(finite(feed.lighting?.ambientLight, 1), 0, 1),
+            // C2 owns the sun band: flat at night and under a covered sky.
+            clamp(finite(grade.sunBand, 1), 0, 1),
         );
-        gl.uniform4fv(
-            uniforms['u_cloudShadow[0]'],
-            effectBudgetMode('cloud-courses', qualityLevel) === 'off'
-                ? this._cloudShadowScratch.fill(0)
-                : writeCloudShadowUniforms(
-                    this._cloudShadowScratch,
-                    this._cloudShadowLayers,
-                    feed,
-                    this.width,
-                    this.height,
-                ),
-        );
+        this._frameGradeForComposite = grade;
+        this._compositeCloudCover = cloudCover;
+        this._compositeQualityLevel = qualityLevel;
         // 3.1 — one envelope, three consumers: the core here, the spill on each
         // admitted light below, and the bloom share in `_present`.
         const energy = sourceEnergyFor(feed.lighting);
@@ -1372,6 +1513,8 @@ export class GpuWorldRenderer {
         const moonFill = clamp(finite(feed.lighting?.moonFill, 0), 0, 1);
         gl.uniform1f(uniforms.u_moonFill, moonFill);
         gl.uniform1i(uniforms.u_waterSilver, qualityLevel <= POST_FX_LEVELS.FULL ? 1 : 0);
+        const mood = waterMoodFor({ lightGrade: grade, weather: feed.weather || feed.atmosphere?.weather });
+        gl.uniform2f(uniforms.u_waterMood, mood.night, mood.storm);
         // 3.2 — real accumulated wetness; FULL reflects eight admitted sources,
         // REDUCED four, MINIMAL none (the static wet darkening still reads).
         const wetness = clamp(finite(feed.wetness, 0), 0, 1);
@@ -1422,6 +1565,8 @@ export class GpuWorldRenderer {
         lightValues.fill(0);
         lightColors.fill(0);
         let attentionMask = 0;
+        let wetMask = 0;
+        let wetSlots = this.wetReflectionCount;
         for (let index = 0; index < lights.length; index++) {
             const light = lights[index];
             const color = gpuLightColorForShader(light, DEFAULT_LIGHT_COLOR, this._singleLightColorScratch);
@@ -1431,7 +1576,12 @@ export class GpuWorldRenderer {
             lightValues[offset + 2] = Math.max(1, finite(light.radius, 64));
             lightValues[offset + 3] = clamp(finite(light.intensity, 1), 0, 3);
             const attention = isAttentionLight(light);
-            if (attention) attentionMask |= (1 << index) >>> 0;
+            if (attention) {
+                attentionMask |= (1 << index) >>> 0;
+            } else if (wetSlots > 0) {
+                wetMask |= (1 << index) >>> 0;
+                wetSlots--;
+            }
             lightColors[offset] = color[0];
             lightColors[offset + 1] = color[1];
             lightColors[offset + 2] = color[2];
@@ -1446,6 +1596,7 @@ export class GpuWorldRenderer {
         gl.uniform4fv(uniforms['u_lights[0]'], lightValues);
         gl.uniform4fv(uniforms['u_lightColors[0]'], lightColors);
         gl.uniform1ui(uniforms.u_attentionMask, attentionMask >>> 0);
+        gl.uniform1ui(uniforms.u_wetMask, wetMask >>> 0);
     }
 
     _renderScene(batches, camera, feed, qualityLevel = POST_FX_LEVELS.FULL) {
@@ -1461,9 +1612,15 @@ export class GpuWorldRenderer {
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.useProgram(this.sceneProgram);
         this._setSceneUniforms(feed, camera, qualityLevel);
+        let additive = false;
         for (const batch of batches) {
-            if (batch.blend === 'add') gl.blendFunc(gl.ONE, gl.ONE);
+            const add = batch.blend === 'add';
+            if (add) gl.blendFunc(gl.ONE, gl.ONE);
             else gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+            if (add !== additive) {
+                additive = add;
+                gl.uniform1i(this.sceneUniforms.u_additive, add ? 1 : 0);
+            }
             this._bindBatch(this.sceneProgram, this.sceneUniforms, batch);
         }
         return bloomEnabled;
@@ -1490,7 +1647,7 @@ export class GpuWorldRenderer {
         gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
-    _present(qualityLevel = POST_FX_LEVELS.FULL) {
+    _present(qualityLevel = POST_FX_LEVELS.FULL, camera = null, feed = {}) {
         const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.drawBuffers([gl.BACK]);
@@ -1509,12 +1666,63 @@ export class GpuWorldRenderer {
             this.compositeUniforms.u_bloomStrength,
             this.lightCount > 0 ? bloomStrength * bloomEnergy : 0,
         );
+        this._setCompositeUniforms(qualityLevel, camera, feed);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.textures[0]);
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, this.bloomB.textures[0]);
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, this.cloudTileTexture);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    // 1.4 + 1.6 — world-locked cloud-shadow courses and screen-Y aerial
+    // perspective, both in the one composite read of the scene.
+    _setCompositeUniforms(qualityLevel, camera, feed) {
+        const gl = this.gl;
+        const uniforms = this.compositeUniforms;
+        const grade = this._frameGradeForComposite || frameGrade(feed);
+        gl.uniform1i(uniforms.u_cloudTile, 2);
+        this._setCameraUniforms(uniforms, camera, 1);
+        gl.uniform2f(uniforms.u_resolution, this.width, this.height);
+
+        // Cover sets the covered share (clear ~15 %, partly cloudy ~35 %);
+        // overcast/rain get none (the grade flattens instead) and the night
+        // has no sun to cast them. Darkening per course is 8.5 %: three
+        // courses reach ~25 % at the thickest core (course 1 ~0.92).
+        const cover = clamp(finite(this._compositeCloudCover, 0), 0, 1);
+        const cloudMode = effectBudgetMode('cloud-courses', qualityLevel);
+        const cloudStrength = cloudMode === 'off' ? 0 : clamp(finite(grade.cloudShadow, 0), 0, 1);
+        const covered = clamp(0.1 + cover * 0.62, 0, 0.45);
+        this.cloudCourses = cloudStrength > 0.02 ? 3 : 0;
+        if (this.cloudCourses) {
+            const windX = clamp(finite(feed.atmosphere?.motion?.windX ?? feed.atmosphere?.weather?.windX, 0.6), -1.4, 1.4) || 0.6;
+            const moving = !feed.reducedMotion && finite(feed.motionScale, 1) > 0;
+            // ~6 world px/s along the wind, a little down-screen; frozen under
+            // reduced motion. Wrapped to one tile period for float precision.
+            const period = CLOUD_TILE_SIZE * CLOUD_TILE_WORLD_SCALE;
+            const seconds = moving ? finite(feed.timeMs, 0) / 1000 : 0;
+            const driftX = ((-windX * 6 * seconds) % period + period) % period;
+            const driftY = ((-Math.abs(windX) * 2 * seconds) % period + period) % period;
+            gl.uniform4f(uniforms.u_cloud, driftX, driftY, 0.085 * cloudStrength, 0);
+            gl.uniform3f(
+                uniforms.u_cloudThresholds,
+                cloudThreshold(covered),
+                cloudThreshold(covered * 0.55),
+                cloudThreshold(covered * 0.22),
+            );
+        } else {
+            gl.uniform4f(uniforms.u_cloud, 0, 0, 0, 0);
+            gl.uniform3f(uniforms.u_cloudThresholds, 2, 2, 2);
+        }
+
+        const hazeMode = effectBudgetMode('aerial-perspective', qualityLevel);
+        const fog = clamp(finite(feed.atmosphere?.weather?.fog, 0), 0, 1);
+        const haze = hazeMode === 'off' ? 0 : aerialPerspectiveStrength(finite(camera?.zoom, 1), fog);
+        this.aerialHaze = haze;
+        const hazeColor = grade.fogColor || [0.6, 0.7, 0.78];
+        gl.uniform4f(uniforms.u_haze, hazeColor[0], hazeColor[1], hazeColor[2], haze);
     }
 
     prepareFrame(feed = {}) {
@@ -1611,7 +1819,7 @@ export class GpuWorldRenderer {
                 bloomEnabled && this.lightCount > 0 ? this.bloomA.width * this.bloomA.height * 8 : 0);
             gl.enable(gl.BLEND);
             this._beginPass('present');
-            this._present(qualityLevel);
+            this._present(qualityLevel, camera, feed);
             this._endPass('present', 1, this.width * this.height * 4);
             this._endGpuTimer(gpuTimer);
             gpuTimer = null;
@@ -1679,6 +1887,12 @@ export class GpuWorldRenderer {
             // 3.1/3.2 receipts an operator can read in Shift-D beside the bands.
             exposureBucket: this.sourceEnergy?.bucket ?? 'unreviewed',
             wetReflections: this.wetReflectionCount,
+            // C2 / 1.4 / 1.6 receipts: which grade keys are blending, and
+            // whether the composite spent its cloud fetch and haze mix.
+            gradeKey: this._frameGradeForComposite?.key ?? null,
+            gradeExposure: this._frameGradeForComposite?.exposure ?? null,
+            cloudCourses: this.cloudCourses,
+            aerialHaze: this.aerialHaze,
             uploads: this.uploads,
             uploadBytes: this.uploadBytes,
             skippedOccluderUploads: this.skippedOccluderUploads,

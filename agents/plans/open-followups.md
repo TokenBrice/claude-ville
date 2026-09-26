@@ -2,7 +2,7 @@
 
 **Status:** `live checklist`
 
-**As of:** 2026-09-10, release `v0.45.5` — The Ranger's Bow
+**As of:** 2026-09-26, release `v0.46.0` — The Painted Isle
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs
@@ -79,11 +79,11 @@ linked from each source plan below.
 
   - **ID:** `OF-006`
   - **Added:** 2026-07-28
-  - **Last reviewed:** 2026-09-05
+  - **Last reviewed:** 2026-09-26
   - **Trigger:** Before a release push, run and pass the long pressure soak against the correct server process.
   - **Source:** [post-OOM plan — Definition of done](claudeville-post-oom-reliability-performance-plan.md#definition-of-done) and [release verification gate](claudeville-post-oom-reliability-performance-plan.md#package-9--release-verification-gate).
   - **Reopen when:** before a release push, run the long pressure soak against the correct server process and pass both the JavaScript heap/RSS gates and deduplicated native-resource gates.
-  - **Current status:** Satisfied for v0.42.0; recurring before the next release push. The final 10-minute browser run passed, and the immutable 30-minute trace from an identical backend was independently revalidated after correcting the RSS baseline. [Release evidence](../research/claudeville-astra-refinement/README.md#v0420-release-verification) records the separate processes, measurement repairs, and unchanged limits.
+  - **Current status:** Satisfied for v0.46.0; recurring before the next release push. The first 10/30-minute run against an isolated server failed `DOM listener count changed during World soak` (116 vs 114). The count was not climbing: it spiked at the 300 s and 600 s checkpoints and was back at the floor within 1 s. Cause: the 5-minute Chronicle prune ran as seven chained IndexedDB transactions, and the soak's quiescence barrier only waited for the one in flight, so each checkpoint sampled the chain's request handlers mid-flight. `ChronicleStore.prune()` now runs as one atomic readwrite transaction over all pruned stores. The soak and its assertion are unchanged. Re-run exit 0: listeners flat at 114 at every checkpoint; browser heap projected growth 1.57 MB against the 8 MiB limit; server RSS slope ≤ 0. Earlier evidence for v0.42.0: [release evidence](../research/claudeville-astra-refinement/README.md#v0420-release-verification).
   - **Current gate values:** **8 MiB** browser-heap projected-growth limit, **64 MiB** server-RSS allowance above the second-half median, with steady and trailing growth-slope limits, **250 ms** event-loop p95 limit, plus native canvas/asset drift checks in `scripts/smoke/performance-soak.mjs`.
 
 ### Additional conditional follow-ups from the semantic rendering plan
@@ -128,6 +128,22 @@ implementation checklist is not otherwise treated as open work.
   - **Trigger:** The scene-shader apply path for the spill field produces a pixel-measurable warm gain on the Command doorstep; then the C3 protocol (3× 30 s on/off, forced FULL, `dense-24-agents` hour 23) resolves a band inside `[0.4, 1.2]` ms on a quiet host.
   - **Source:** [frontier visual plan — 3.3 window light that reaches the street](claudeville-frontier-visual-plan.md#33-window-light-that-reaches-the-street-pilot-conditional).
   - **Current status:** Open — cut twice, for two different reasons, and the tree carries none of it. First attempt (Wave 3, shared host): seven concurrent capture agents put the per-pass noise floor at 0.35–1.5 ms, wider than the band, so nothing was landed. Second attempt (quiet host): the full pipeline was built and ran — `EFFECT_BUDGET` row, aperture descriptor in `LightSourceRegistry`, `spillSource` on the Command record, seed + one-hop shaders over a cached 256×144 RGBA8 ping-pong field, a `spill` pass in the Shift-D ring, a clipped stepped Canvas stamp — and the field read back a correct world-anchored shaft that rose and fell with the occupancy gate. But the **scene-pass apply produced no visible output**: an in-page on/off screenshot A/B over the expected patch rect measured mean warm gain −0.59 vs 8.39 for the control, so the receiver branch consumes the field and discards it. Root cause not isolated; the implementation was removed entirely because an effect without a measured receipt is not admitted. Retry hints from that run: check the terrain fragments' `materialNear` id at the patch (1/6/7) and the `smoothstep(0.22, 0.5, elevation)` gate — one of these is likely eating the contribution on the cobble apron; the hop pass must scatter alpha only (scattering colour saturated the aperture toward white); reseed keys on `records.length` (≈4 reseeds / 9 s with 4 agents). Only the `SPILL_FIELD_*` byte-offset constants remain in `GpuWorldRenderer.js`.
+
+- [ ] **Resident GPU ladder budget calibration at dense-100**
+
+  - **ID:** `OF-011`
+  - **Added:** 2026-09-26
+  - **Trigger:** A dense-100 session at tier 1 sheds below FULL on a quiet host while its per-pass work is unchanged, or a user reports the village dropping to MINIMAL on a large roster.
+  - **Source:** [Opus 5.5 aesthetic plan — Performance](claudeville-opus55-aesthetic-plan.md#performance).
+  - **Current status:** Open — measured, not caused by v0.46.0. In a 150 s soak of dense-100 at tier 1 and DPR 1, the ladder shed FULL → REDUCED → MINIMAL within about 50 s and never recovered. The GPU timer drifted to about 4 ms regardless of workload, right at the ladder's 4 ms budget in `GpuWorldRenderer.js`. The frontier research already recorded dense-100 never reaching FULL. Next step: A/B against a HEAD worktree, then recalibrate the budget or add hysteresis tied to session-age drift rather than shedding.
+
+- [ ] **GPU-owned and source-texture memory above their caps at DPR 2**
+
+  - **ID:** `OF-012`
+  - **Added:** 2026-09-26
+  - **Trigger:** Memory pressure is reproduced, or the diagnostic ceilings are enforced rather than advisory.
+  - **Source:** [Opus 5.5 aesthetic plan — Performance](claudeville-opus55-aesthetic-plan.md#performance).
+  - **Current status:** Open. At DPR 2, GPU-owned bytes were about 173 MB against the 128 MiB diagnostic ceiling at every zoom tier. The source-texture cache was about 105 MB against its 47.7 MiB cap, which was already over before v0.46.0. Candidates: count the rimmed world body sheets and the crowd LOD sheets against `CACHE_PIXEL_LIMIT`, and evict per-bucket bake textures (sky plate, ocean band, tree casts) more aggressively.
 
 ## Already landed; do not carry forward as open
 

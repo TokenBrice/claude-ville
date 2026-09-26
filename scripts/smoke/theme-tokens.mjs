@@ -13,12 +13,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { STATUS_VISUALS, STATUS_CSS_VARS } from '../../claudeville/src/config/theme.js';
+import { STATUS_VISUALS, STATUS_CSS_VARS, TOOL_CATEGORY_COLORS } from '../../claudeville/src/config/theme.js';
 
 const SCRIPT_NAME = 'theme-tokens.mjs';
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const RESET_CSS = path.join(REPO_ROOT, 'claudeville/css/reset.css');
-const LAYOUT_CSS = path.join(REPO_ROOT, 'claudeville/css/layout.css');
 const TOPBAR_CSS = path.join(REPO_ROOT, 'claudeville/css/topbar.css');
 const CSS_DIR = path.join(REPO_ROOT, 'claudeville/css');
 const SRC_DIR = path.join(REPO_ROOT, 'claudeville/src');
@@ -38,26 +37,9 @@ const CSS_STATUS_FALLBACK_OVERRIDES = Object.freeze({
 });
 
 const EXPECTED_HOUSE_TOKENS = Object.freeze({
-    '--cv-tool-read': '#7eb7d6',
-    '--cv-tool-write': '#d8843a',
-    '--cv-tool-exec': '#e06c5b',
-    '--cv-tool-search': '#b79ae6',
-    '--cv-tool-task': '#72d071',
     '--cv-purple': '#b79ae6',
     '--cv-warn-yellow': '#e8d44d',
 });
-
-const EXPECTED_LAYOUT_TOKENS = Object.freeze({
-    '--cv-dash-detail': '#a08a68',
-});
-
-const DASHBOARD_TEXT_TOKEN_NAMES = Object.freeze([
-    '--cv-dash-amber',
-    '--cv-dash-gilt',
-    '--cv-dash-tan-warm',
-    '--cv-dash-tool-name',
-    '--cv-dash-error-text',
-]);
 
 const CONTRAST_TOKEN_NAMES = Object.freeze([
     ...Object.values(STATUS_CSS_VARS),
@@ -138,12 +120,32 @@ function readCustomProperty(css, name) {
     return match[1].trim();
 }
 
+// Follow `var(--token)` aliases through the given stylesheets (first match
+// wins per lookup) down to a literal colour value.
+function resolveCustomProperty(sources, name, seen = new Set()) {
+    assert.ok(!seen.has(name), `${name} has a circular var() reference`);
+    seen.add(name);
+    const pattern = new RegExp(`(?<![\\w-])${escapeRegExp(name)}\\s*:\\s*([^;]+);`);
+    const css = [].concat(sources).find((text) => pattern.test(text));
+    assert.ok(css, `${name} is not defined`);
+    const value = css.match(pattern)[1].trim();
+    const alias = value.match(/^var\(\s*(--[a-z0-9-]+)\s*\)$/i);
+    return alias ? resolveCustomProperty(sources, alias[1], seen) : value;
+}
+
+function resolveValue(sources, value) {
+    const alias = String(value).trim().match(/^var\(\s*(--[a-z0-9-]+)\s*\)$/i);
+    return alias ? resolveCustomProperty(sources, alias[1]) : value;
+}
+
+// Finds `declaration` in the first rule whose selector list contains
+// `selector` as a complete member (`.a, .b {` matches `.a` and `.b`).
 function readRuleDeclaration(css, selector, declaration) {
     const declarationPattern = new RegExp(
         `(?:^|\\s)${escapeRegExp(declaration)}\\s*:\\s*([^;]+);`,
     );
     const rulePattern = new RegExp(
-        `${escapeRegExp(selector)}\\s*\\{([\\s\\S]*?)\\}`,
+        `(?:^|[\\s,}])${escapeRegExp(selector)}\\s*(?:,[^{}]*)?\\{([^}]*)\\}`,
         'g',
     );
     for (const ruleMatch of css.matchAll(rulePattern)) {
@@ -227,20 +229,26 @@ function assertContrast(label, foreground, background) {
     assert.ok(ratio >= 4.5, `${label} is ${ratio.toFixed(2)}:1`);
 }
 
+// The four chrome surfaces (--bg-0..3) plus the legacy surface aliases, all
+// resolved through var() and pre-blended over the palette-review base.
 function readSurfaceTokens(resetCss) {
     const base = parseColor(CONTRAST_BASE);
+    const surface = (name) => blendOver(parseColor(resolveCustomProperty(resetCss, name)), base);
     return {
         base,
-        'surface-1': blendOver(parseColor(readCustomProperty(resetCss, '--cv-surface-1')), base),
-        'surface-2': blendOver(parseColor(readCustomProperty(resetCss, '--cv-surface-2')), base),
-        'surface-3': blendOver(parseColor(readCustomProperty(resetCss, '--cv-surface-3')), base),
-        panel: blendOver(parseColor(readCustomProperty(resetCss, '--cv-panel')), base),
+        'bg-0': surface('--bg-0'),
+        'bg-1': surface('--bg-1'),
+        'bg-2': surface('--bg-2'),
+        'bg-3': surface('--bg-3'),
+        'surface-1': surface('--cv-surface-1'),
+        'surface-2': surface('--cv-surface-2'),
+        'surface-3': surface('--cv-surface-3'),
+        panel: surface('--cv-panel'),
     };
 }
 
 function run() {
     const resetCss = fs.readFileSync(RESET_CSS, 'utf8');
-    const layoutCss = fs.readFileSync(LAYOUT_CSS, 'utf8');
     const topbarCss = fs.readFileSync(TOPBAR_CSS, 'utf8');
 
     check('STATUS_CSS_VARS covers exactly the STATUS_VISUALS keys', () => {
@@ -276,50 +284,46 @@ function run() {
 
     for (const [token, expected] of Object.entries(EXPECTED_HOUSE_TOKENS)) {
         check(`reset.css ${token} uses the house-ramp color`, () => {
-            assert.equal(normalizeHex(readCustomProperty(resetCss, token)), expected);
+            assert.equal(normalizeHex(resolveCustomProperty(resetCss, token)), expected);
         });
     }
 
-    for (const [token, expected] of Object.entries(EXPECTED_LAYOUT_TOKENS)) {
-        check(`layout.css ${token} uses the dashboard detail color`, () => {
-            assert.equal(normalizeHex(readCustomProperty(layoutCss, token)), expected);
+    // Tool colours: theme.js is the authority, reset.css mirrors it.
+    for (const [tool, expected] of Object.entries(TOOL_CATEGORY_COLORS)) {
+        check(`reset.css --cv-tool-${tool} == TOOL_CATEGORY_COLORS.${tool}`, () => {
+            assert.equal(
+                normalizeHex(resolveCustomProperty(resetCss, `--cv-tool-${tool}`)),
+                normalizeHex(expected),
+            );
         });
     }
+
+    check('tool colours never reuse a status colour', () => {
+        const statusColors = new Set(Object.values(STATUS_VISUALS).map((visual) => normalizeHex(visual.color)));
+        const reused = Object.entries(TOOL_CATEGORY_COLORS)
+            .filter(([, color]) => statusColors.has(normalizeHex(color)))
+            .map(([tool]) => tool);
+        assert.deepEqual(reused, []);
+    });
 
     const surfaces = readSurfaceTokens(resetCss);
     check('dark text tokens meet 4.5:1 on every declared dark surface', () => {
         for (const token of CONTRAST_TOKEN_NAMES) {
-            const color = parseColor(readCustomProperty(resetCss, token));
+            const color = parseColor(resolveCustomProperty(resetCss, token));
             for (const [surface, background] of Object.entries(surfaces)) {
                 assertContrast(`${token} on ${surface}`, color, background);
             }
         }
     });
 
-    check('--cv-dash-detail meets 4.5:1 on dashboard surfaces', () => {
-        const detail = parseColor(readCustomProperty(layoutCss, '--cv-dash-detail'));
-        for (const surface of ['surface-1', 'surface-2']) {
-            assertContrast(`--cv-dash-detail on ${surface}`, detail, surfaces[surface]);
-        }
-    });
-
-    check('dashboard text tokens meet 4.5:1 on every declared dark surface', () => {
-        for (const token of DASHBOARD_TEXT_TOKEN_NAMES) {
-            const color = parseColor(readCustomProperty(layoutCss, token));
-            for (const [surface, background] of Object.entries(surfaces)) {
-                assertContrast(`${token} on ${surface}`, color, background);
-            }
-        }
-    });
-
-    // The upper stop is the brightest recurring topbar backdrop and the tag
-    // stop is the brightest ledger backdrop. Both are pre-blended over the
-    // same #0d0a0c base used by the palette review.
+    // Resting top-bar text sits on the bar (--bg-1), inside a tab well
+    // (--bg-0) and on a hover plate (--bg-2); it must stay legible on all three.
     const topbarSurfaces = {
-        topbar: blendOver(parseColor('rgba(58, 36, 22, 0.99)'), surfaces.base),
-        tag: blendOver(parseColor('rgba(66, 43, 25, 0.96)'), surfaces.base),
+        bar: surfaces['bg-1'],
+        well: surfaces['bg-0'],
+        hover: surfaces['bg-2'],
     };
-    check('topbar text declarations meet 4.5:1 and muted alpha is 0.9', () => {
+    check('topbar text declarations meet 4.5:1 on the bar, wells and hover plates', () => {
         const selectors = [
             '.topbar__sound-btn',
             '.topbar__cinema-btn',
@@ -329,12 +333,10 @@ function run() {
             '.topbar__mode-btn',
         ];
         for (const selector of selectors) {
-            const color = parseColor(readRuleDeclaration(topbarCss, selector, 'color'));
+            const declared = readRuleDeclaration(topbarCss, selector, 'color');
+            const color = parseColor(resolveValue(resetCss, declared));
             for (const [surface, background] of Object.entries(topbarSurfaces)) {
                 assertContrast(`${selector} on ${surface}`, color, background);
-            }
-            if (selector === '.topbar__uptime' || selector === '.topbar__stat-rate') {
-                assert.equal(color.a, 0.9, `${selector} alpha should be 0.9`);
             }
         }
     });

@@ -9,11 +9,13 @@ import {
   isAttentionLight,
   localLightPhaseForLighting,
   materialClassId,
-  nightMoonCourse,
   resolveGpuWorldRendererMode,
-  worldPhaseGrade,
-  WORLD_PHASE_GRADES,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
+import {
+  applyGradeToRgb,
+  evaluateGrade,
+  GRADE_EXPOSURE_FLOOR,
+} from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
 import {
   buildGpuWorldRecords,
   gpuMaterialNameForBuilding,
@@ -52,19 +54,45 @@ test('material ids and light admission are deterministic', () => {
   assert.equal(admitted[0].id, 'a');
 });
 
-test('the moon selects one reviewed night course and never relights the day', () => {
-  assert.equal(nightMoonCourse(0), 'night-new-moon');
-  assert.equal(nightMoonCourse(0.3), 'night');
-  assert.equal(nightMoonCourse(0.9), 'night-moonlit');
-  const dark = worldPhaseGrade('night', 0);
-  const shipped = worldPhaseGrade('night', 0.3);
-  const moonlit = worldPhaseGrade('night', 0.95);
-  assert.ok(dark.base[2] < shipped.base[2] && shipped.base[2] < moonlit.base[2]);
-  // A dark night still has to be readable ground, not a black screen.
-  assert.ok(dark.base[0] >= 0.4);
-  // Daylight phases ignore the moon entirely.
-  assert.equal(worldPhaseGrade('day', 1), WORLD_PHASE_GRADES.day);
-  assert.equal(worldPhaseGrade('dusk', 1), WORLD_PHASE_GRADES.dusk);
+test('the moon brightens the night grade and never relights the day', () => {
+  const night = moonFill => evaluateGrade({ minuteOfDay: 23 * 60, moonFill });
+  const dark = night(0);
+  const half = night(0.4);
+  const moonlit = night(0.95);
+  assert.ok(dark.exposure < half.exposure && half.exposure < moonlit.exposure);
+  // A dark storm night still has to be readable ground, not a black screen.
+  const stormNight = evaluateGrade({ minuteOfDay: 2 * 60, moonFill: 0, weather: { type: 'storm', intensity: 1, cloudCover: 1 } });
+  assert.ok(stormNight.exposure >= GRADE_EXPOSURE_FLOOR);
+  // Daylight ignores the moon entirely.
+  assert.deepEqual(evaluateGrade({ minuteOfDay: 12 * 60, moonFill: 1 }), evaluateGrade({ minuteOfDay: 12 * 60, moonFill: 0 }));
+});
+
+test('the grade tells the time and the weather apart', () => {
+  const at = (hour, weather = { type: 'clear', cloudCover: 0.08 }) => evaluateGrade({ minuteOfDay: hour * 60, weather });
+  const noon = at(12);
+  const night = at(22);
+  // Representative world albedo: grass, stone, slate roof, water, timber.
+  const albedo = [[0.34, 0.46, 0.22], [0.58, 0.55, 0.50], [0.30, 0.36, 0.46], [0.18, 0.32, 0.38], [0.48, 0.33, 0.20]];
+  const graded = grade => albedo.map(rgb => applyGradeToRgb(rgb, grade));
+  const meanSat = grade => graded(grade).reduce((sum, [r, g, b]) => {
+    const max = Math.max(r, g, b);
+    return sum + (max > 0 ? (max - Math.min(r, g, b)) / max : 0);
+  }, 0) / albedo.length;
+  const meanRedMinusBlue = grade => graded(grade).reduce((sum, [r, , b]) => sum + r - b, 0) / albedo.length;
+  // Night is darker than noon but keeps colour: a moonlit blue, neither
+  // black-and-white nor as colourful as day.
+  assert.ok(night.exposure < noon.exposure * 0.8);
+  const satRatio = meanSat(night) / meanSat(noon);
+  assert.ok(satRatio >= 0.5 && satRatio <= 0.85, `night/noon saturation ${satRatio.toFixed(2)}`);
+  assert.ok(meanRedMinusBlue(night) < meanRedMinusBlue(noon));
+  // Golden hour is warmer than noon.
+  const warmth = grade => grade.gain[0] * grade.highlightTint[0] - grade.gain[2] * grade.highlightTint[2];
+  assert.ok(warmth(at(17)) > warmth(noon));
+  // Rain and storm at noon are flatter and less colourful than clear, storm most.
+  const rain = at(12, { type: 'rain', intensity: 0.8, cloudCover: 0.92 });
+  const storm = at(12, { type: 'storm', intensity: 1, cloudCover: 1 });
+  assert.ok(storm.saturation < rain.saturation && rain.saturation < noon.saturation);
+  assert.ok(storm.sunBand === 0 && rain.sunBand === 0 && noon.sunBand === 1);
 });
 
 test('action-needed lights are recognised so the exposure budget can skip them', () => {

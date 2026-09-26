@@ -1,5 +1,6 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { THEME } from '../../config/theme.js';
+import { THEME, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { measureLabelText, snapScreenOrigin } from './WorldLabelKit.js';
 import { getTeamColor } from '../shared/TeamColor.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
@@ -7,6 +8,7 @@ import { tileToWorld, worldToTile } from './Projection.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { pulseBand01 } from './PulsePolicy.js';
 import { gradeColor } from './AtmosphereState.js';
+import { dottedCurve } from './EffectStamps.js';
 import { cueNoteDue } from '../shared/audio/CueScore.js';
 
 const MAX_TALK_ARCS = 8;
@@ -20,7 +22,6 @@ const TEAM_GATHER_RADIUS_TILES = 12;
 // roll call clears again so the default frame keeps only the quiet outline.
 const COUNCIL_CEREMONY_HOLD_MS = 8000;
 const COUNCIL_NOTCH_SIZE = 4;
-const COUNCIL_MARK_FONT = 'bold 7px "Press Start 2P", monospace';
 // Clear of the gathered bodies: the mark sits above the huddle, not inside it.
 const COUNCIL_MARK_LIFT = 96;
 let _councilCeremony = null;
@@ -260,22 +261,24 @@ function drawGatherRollCall(ctx, {
             { x: 0, y: 0 },
         );
         const text = `${teamName} · ${total}`;
-        const width = 12 + text.length * 7;
         ctx.translate(
             (centroid.x * 0.75) + (plaza.x * 0.25),
             (centroid.y * 0.75) + (plaza.y * 0.25) - COUNCIL_MARK_LIFT,
         );
         ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
-        ctx.font = COUNCIL_MARK_FONT;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = 'rgba(20, 14, 10, 0.85)';
-        ctx.fillRect(-width / 2, -7, width, 14);
-        ctx.strokeStyle = rgba(color, 0.8);
-        ctx.lineWidth = 1;
-        ctx.strokeRect(-width / 2, -7, width, 14);
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_DISPLAY_FONT_8;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+        const width = measureLabelText(ctx, text) + 12;
+        const left = -Math.round(width / 2);
+        // Square plate: a 1 px team-colour rim around a dark face, all fills.
+        ctx.fillStyle = rgba(color, 0.8);
+        ctx.fillRect(left, -7, width, 14);
+        ctx.fillStyle = '#140e0a';
+        ctx.fillRect(left + 1, -6, width - 2, 12);
         ctx.fillStyle = rgba(color, Math.min(1, 0.95 * gate.alpha + 0.05));
-        ctx.fillText(text, 0, 0);
+        ctx.fillText(text, left + 6, 4);
     }
     ctx.restore();
 }
@@ -632,28 +635,20 @@ export function drawTalkArcs(ctx, {
 
         const arcColor = gradeColor(THEME.chatting || '#f2d36b', grade);
 
+        // W-F14 — snapped art-pixel dots along the arc (EffectStamps), not an
+        // AA stroke; the travelling mote is a 2×2 texel that steps along it.
+        // Reduced motion keeps the static dotted arc.
         ctx.save();
-        ctx.strokeStyle = rgba(arcColor, alpha * gate.alpha);
-        ctx.lineWidth = 1.4 / (zoom || 1);
-        if (motionScale === 0) ctx.setLineDash([2 / (zoom || 1), 4 / (zoom || 1)]);
-        ctx.beginPath();
-        ctx.moveTo(start.x, start.y);
-        ctx.quadraticCurveTo(control.x, control.y, end.x, end.y);
-        ctx.stroke();
-
-        // #27 — a travelling mote runs along the arc so the live conversation is
-        // visible: the dot shows which way the talk is flowing. Skipped entirely
-        // under reduced motion (the dashed static arc already reads as "talking").
+        ctx.globalAlpha = Math.min(1, alpha * gate.alpha);
+        dottedCurve(ctx, start.x, start.y, control.x, control.y, end.x, end.y, { step: 4, color: arcColor });
         if (motionScale !== 0) {
-            const t = (now % TALK_MOTE_PERIOD_MS) / TALK_MOTE_PERIOD_MS;
+            const t = Math.floor(((now % TALK_MOTE_PERIOD_MS) / TALK_MOTE_PERIOD_MS) * 12) / 12;
             const mt = 1 - t;
             const mx = mt * mt * start.x + 2 * mt * t * control.x + t * t * end.x;
             const my = mt * mt * start.y + 2 * mt * t * control.y + t * t * end.y;
-            ctx.setLineDash([]);
-            ctx.fillStyle = rgba(arcColor, Math.min(1, (0.55 + alpha) * gate.alpha));
-            ctx.beginPath();
-            ctx.arc(mx, my, 1.8 / (zoom || 1), 0, Math.PI * 2);
-            ctx.fill();
+            ctx.globalAlpha = Math.min(1, (0.55 + alpha) * gate.alpha);
+            ctx.fillStyle = arcColor;
+            ctx.fillRect(Math.round(mx) - 1, Math.round(my) - 1, 2, 2);
         }
         ctx.restore();
     }

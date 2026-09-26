@@ -2,6 +2,8 @@ import { drawEventShape } from '../shared/EventShapes.js';
 import { buildingForTool } from '../../domain/services/ToolIdentity.js';
 import { formatElapsed } from '../shared/Formatters.js';
 import { pulseValueMs } from './PulsePolicy.js';
+import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { measureLabelText } from './WorldLabelKit.js';
 
 // 5.4 — work as a spatial score.
 //
@@ -57,8 +59,10 @@ const BADGE_TEXT = '#f8e7bd';
 const SCORE_GOLD = '#f2d36b';
 const SCORE_MUTED = '#b6a781';
 const SCORE_TEXT = '#f6da82';
-const FONT_BADGE = 'bold 10px "Press Start 2P", monospace';
-const FONT_LINE = '9px "Press Start 2P", monospace';
+// C5 type grid (5.4): the badge in 8 px Press Start 2P, the counts in 11 px
+// Departure Mono. Never bold.
+const FONT_BADGE = WORLD_DISPLAY_FONT_8;
+const FONT_LINE = WORLD_BODY_FONT_11;
 
 // C5 shape grammar. One family per event kind; tool nodes resolve their family
 // from the canonical tool classifier's district, never from colour alone.
@@ -514,35 +518,39 @@ export function drawWorkScoreScreen(ctx, viewport, {
     if (!score || !viewport?.width) return false;
     const lines = workScoreBadgeLines(score, { cursorAt, geometry, playing, cameraOwner });
     ctx.save();
-    ctx.textBaseline = 'top';
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
     ctx.font = FONT_LINE;
-    const widths = lines.map(line => ctx.measureText(line).width);
+    const widths = lines.map(line => measureLabelText(ctx, line));
     ctx.font = FONT_BADGE;
     const badgeLabel = 'REPLAY · WORK SCORE';
-    const badgeWidth = ctx.measureText(badgeLabel).width;
+    const badgeWidth = measureLabelText(ctx, badgeLabel);
     const contentWidth = Math.max(badgeWidth, ...widths);
-    const plateWidth = Math.ceil(contentWidth) + 24;
+    const plateWidth = contentWidth + 24;
     const plateHeight = 28 + lines.length * 13 + 10;
     const left = Math.round((viewport.width - plateWidth) / 2);
     const top = 16;
 
     ctx.fillStyle = PLATE_FILL;
     ctx.fillRect(left, top, plateWidth, plateHeight);
-    ctx.strokeStyle = PLATE_EDGE;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(left + 0.5, top + 0.5, plateWidth - 1, plateHeight - 1);
+    // 1 px rim as four fills.
+    ctx.fillStyle = PLATE_EDGE;
+    ctx.fillRect(left, top, plateWidth, 1);
+    ctx.fillRect(left, top + plateHeight - 1, plateWidth, 1);
+    ctx.fillRect(left, top + 1, 1, plateHeight - 2);
+    ctx.fillRect(left + plateWidth - 1, top + 1, 1, plateHeight - 2);
 
     // The badge is unmistakable: this frame is history, not the live village.
     ctx.fillStyle = BADGE_FILL;
-    ctx.fillRect(left + 8, top + 8, Math.ceil(badgeWidth) + 12, 18);
+    ctx.fillRect(left + 8, top + 8, badgeWidth + 12, 18);
     ctx.fillStyle = BADGE_TEXT;
     ctx.font = FONT_BADGE;
-    ctx.fillText(badgeLabel, left + 14, top + 12);
+    ctx.fillText(badgeLabel, left + 14, top + 21);
 
     ctx.font = FONT_LINE;
     lines.forEach((line, index) => {
         ctx.fillStyle = index === 1 ? SCORE_TEXT : SCORE_MUTED;
-        ctx.fillText(line, left + 12, top + 32 + index * 13);
+        ctx.fillText(line, left + 12, top + 41 + index * 13);
     });
     ctx.restore();
     return true;

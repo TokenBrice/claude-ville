@@ -60,6 +60,7 @@ test('the resident overlay strikes every body-frame mark exactly once, in Canvas
         _drawRetryGlyph: () => {},
         _drawCompactNameStatus: () => {},
         _drawNameTag: () => {},
+        _labelTopY: (topY) => topY,
     };
     const renderer = new AgentGpuOverlayRenderer(host);
 
@@ -75,6 +76,13 @@ test('the resident overlay strikes every body-frame mark exactly once, in Canvas
     // Every mark reads the record's own frame geometry, so the resident body
     // and the Canvas body place the identical mark.
     assert.ok(marks.every(([, geometry]) => geometry === frameGeometry));
+
+    // A half-scale crowd body keeps its identity and evidence marks, in the
+    // same order, but never wears the 1:1-sized gestures.
+    marks.length = 0;
+    host._gpuFrameRecord = { frameGeometry: { ...frameGeometry, drawScale: 0.5, lod: true }, contentTopY: 40 };
+    renderer.draw({}, 2, 'full');
+    assert.deepEqual(marks.map(([name]) => name), ['signature', 'receive-beat', 'action-pose']);
 });
 
 test('departed GPU records are dim, non-emissive, and retain the same source geometry', () => {
@@ -120,10 +128,16 @@ test('departed plaque is an explicit static cue with a complete reduced-motion f
 
     renderer.drawDepartedTreatment(ctx);
 
+    // Snapped anchor under the feet, screen-fixed scale, and a plate wide
+    // enough for the word in 8 px Press Start 2P (8 px per glyph, C5).
     assert.deepEqual(calls[0], ['translate', 100, 60]);
     assert.deepEqual(calls[1], ['scale', 1, 1]);
-    assert.deepEqual(calls[2], ['roundRect', -29, 0, 58, 14, 3]);
-    assert.deepEqual(calls[3], ['fillText', 'DEPARTED', 0, 7.5]);
+    const plate = calls.find(call => call[0] === 'roundRect');
+    assert.ok(plate && plate[3] >= 'DEPARTED'.length * 8 + 4, 'plate fits the 8 px word');
+    assert.equal(plate[1], -plate[3] / 2);
+    const text = calls.filter(call => call[0] === 'fillText');
+    assert.deepEqual(text.map(call => call[1]), ['DEPARTED']);
+    assert.ok(Number.isInteger(text[0][2]) && Number.isInteger(text[0][3]), 'text on whole pixels');
 });
 
 test('departed sprites settle once and allocate no ongoing animation work', () => {

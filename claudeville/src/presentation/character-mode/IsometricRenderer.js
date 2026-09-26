@@ -1,21 +1,14 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
-import { INCIDENT_COLORS_RGB, THEME, WORLD_BODY_FONT } from '../../config/theme.js';
-import { AUTHORED_KEY_LIGHT } from './MaterialRegistry.js';
-
+import { INCIDENT_COLORS_RGB, THEME, WORLD_BODY_FONT_11 } from '../../config/theme.js';
 import { drawPixelFlame, fillPixelEllipse, fillTileDiamond } from './PixelShapes.js';
 import { normalizeBuildingType } from '../../config/buildings.js';
-import { PORTAL_SPAWN_TILE, TOWN_ROAD_ROUTES, VILLAGE_GATE, VILLAGE_GATE_BOUNDS, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
+import { PORTAL_SPAWN_TILE, TOWN_ROAD_ROUTES, VILLAGE_GATE, VILLAGE_GATE_BOUNDS, VILLAGE_WALL_ROUTES, YARD_MATERIALS } from '../../config/townPlan.js';
 import {
     AMBIENT_GROUND_PROPS,
     AMBIENT_SCENIC_POINTS,
     ANCIENT_RUINS,
     DISTRICT_PROPS,
-    DISTRICT_WASHES,
-    FOREST_FLOOR_REGIONS,
     SCENIC_POINT_PROPS,
-    TROPICAL_BROADLEAF_TREES,
-    TROPICAL_PALMS,
-    TROPICAL_WATERFALLS,
     WATCHTOWER_BEACON_BUOY_TILES,
 } from '../../config/scenery.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
@@ -41,12 +34,15 @@ import { Pathfinder } from './Pathfinder.js';
 import { constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
-import { AtmosphereState, sourceEnergyFor } from './AtmosphereState.js';
+import { AtmosphereState, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
 import { WeatherRenderer } from './WeatherRenderer.js';
 import { WildlifeRenderer } from './WildlifeRenderer.js';
 import { FoliageRenderer } from './FoliageRenderer.js';
 import { SeasonalAmbience, seasonTokenForAtmosphere } from './SeasonalAmbience.js';
-import { TerrainTileset } from './TerrainTileset.js';
+import { ChimneySmoke } from './ChimneySmoke.js';
+import { openGroundTiles } from './AmbientGround.js';
+import { installGroundBake } from './GroundBake.js';
+import { drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
 import { BridgeLanterns } from './BridgeLanterns.js';
@@ -75,6 +71,8 @@ import { Chronicler } from './Chronicler.js';
 import { VillageDirector } from './VillageDirector.js';
 import { tileToWorld, worldToTile, buildingCenterToWorld } from './Projection.js';
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
+import { attentionScreenRects, isAttentionStatus, layoutAttentionPlates } from './AttentionPlates.js';
+import { IDENTITY_LABEL, identityLabelTop, identityLabelWidth } from './WorldLabelKit.js';
 import { buildStaticPropDrawables } from './StaticPropDrawables.js';
 import { createDepthDrawable, propDepthDrawable } from './DrawablePass.js';
 import {
@@ -90,8 +88,14 @@ import {
     GPU_ATTENTION_LIGHT_PRIORITY,
     localLightPhaseForLighting,
     resolveGpuWorldRendererMode,
-    worldPhaseGrade,
 } from './gpu/GpuWorldPolicy.js';
+import { NEUTRAL_GRADE } from './GradeEvaluator.js';
+import {
+    buildPoolDodgeStamp,
+    drawCanvasGradeLift,
+    drawCanvasGradeSaturation,
+} from './CanvasGrade.js';
+import { drawCloudShadowCourses } from './CloudShadowCourses.js';
 import {
     CANVAS_BUDGET,
     canvasMapPixelCount,
@@ -107,15 +111,6 @@ const STATIC_WATER_SHIMMER = 0.08;
 // B1 — river-flow streak cadence: fraction of a full along-tile travel cycle
 // advanced per unit of `waterFrame` (~1.8/s at 60fps → ~1.1s per streak pass).
 const RIVER_FLOW_SPEED = 0.5;
-// Staggered foam-line bands for the animated coastline surf wash (item #23).
-// Band 0 is the innermost crest (also the reduced-motion static line); outer
-// bands sit further into the water with lower base alpha and offset phases so
-// crests roll rather than pulse in unison.
-const SURF_WASH_BANDS = Object.freeze([
-    { inset: 4, alpha: 0.16, width: 1.2, phase: 0, seedFloor: 0 },
-    { inset: 9, alpha: 0.11, width: 1.0, phase: 9, seedFloor: 0.22 },
-    { inset: 14, alpha: 0.08, width: 1.0, phase: 18, seedFloor: 0.48 },
-]);
 const CURRENT_WAVE_SCREEN_X = (0.42 - (-0.28)) * TILE_WIDTH / 2;
 const CURRENT_WAVE_SCREEN_Y = (0.42 + (-0.28)) * TILE_HEIGHT / 2;
 const CURRENT_WAVE_SCREEN_LENGTH = Math.hypot(CURRENT_WAVE_SCREEN_X, CURRENT_WAVE_SCREEN_Y) || 1;
@@ -148,15 +143,18 @@ const FAST_PROP_SCREEN_MARGIN = 96;
 // this screen-space apron cannot contribute pixels to the viewport.
 const AGENT_SCREEN_CULL_MARGIN = 420;
 const AGENT_OVERLAY_GRID_CELL = 96;
+// S1 — an action-needed light is a warm ground course under the body, on the
+// same stepped pool courses as every lamp and capped per pixel (max, not
+// sum): a crowd of waiting agents never blooms white over the bodies. The T1
+// beacon and plate carry the salience; radius is world px (2:1 on the ground).
 const ATTENTION_LIGHT_STYLES = Object.freeze({
-    needsYou: Object.freeze({ color: THEME.waitingOnUser, radius: 88, intensity: 2.15 }),
-    errors: Object.freeze({ color: THEME.error, radius: 78, intensity: 1.55 }),
-    quota: Object.freeze({ color: `rgb(${INCIDENT_COLORS_RGB.quota})`, radius: 68, intensity: 0.85 }),
+    needsYou: Object.freeze({ color: THEME.waitingOnUser, radius: 40, intensity: 0.6 }),
+    errors: Object.freeze({ color: THEME.error, radius: 38, intensity: 0.6 }),
+    quota: Object.freeze({ color: `rgb(${INCIDENT_COLORS_RGB.quota})`, radius: 34, intensity: 0.45 }),
 });
 const TERRAIN_CACHE_MARGIN = 360;
 const TERRAIN_CACHE_CHUNK_SIZE = 16;
 const TERRAIN_CACHE_MAX_SINGLE_SURFACE_PIXELS = CANVAS_BUDGET.maxWorldCachePixels;
-const ACTIVE_BUILDING_EMITTER_GATE = 'active-building-agents';
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
 const KEYBOARD_PAN_STEP = 90;
@@ -177,11 +175,32 @@ const LOCAL_AVOIDANCE = Object.freeze({
     bucketPx: 40,
 });
 
-// 3.4 — the Canvas grade uses the same night moon courses as the resident and
-// hybrid paths, so a full-moon night is one authored course lighter in every
-// backend. `moonFill` is 0 outside night.
-function phaseGradeForCanvas(phase = 'day', moonFill = 0) {
-    return worldPhaseGrade(phase, moonFill);
+// C2 — the Canvas fallback grades with the same evaluated grade as the
+// resident and hybrid paths. A multiply overlay carries the ambient (exposure
+// x gain, with the split tone folded to its mid-weight), the stepped edge and
+// the vignette; `_drawAtmosphere` adds the desaturation and lift fills.
+function canvasGradeFor(atmosphere = null) {
+    const grade = atmosphere?.lightGrade || NEUTRAL_GRADE;
+    const base = [0, 1, 2].map(channel => Math.min(1, grade.exposure * grade.gain[channel]
+        * Math.sqrt(grade.shadowTint[channel] * grade.highlightTint[channel])));
+    return { grade, base, edge: grade.vignetteEdge, edgeAlpha: grade.vignetteAlpha };
+}
+
+// The overlay is rebuilt only when its visible colours move a 1/64 step.
+function canvasGradeOverlayKey(atmosphere = null) {
+    const { base, edge, edgeAlpha } = canvasGradeFor(atmosphere);
+    return [...base, ...edge, edgeAlpha].map(value => Math.round(value * 64)).join(',');
+}
+
+// The resident vignette's two hard courses (t >= 0.62 at 40 %, t >= 0.84 at
+// 100 %), as duplicate gradient stops: stepped, never a smooth ramp.
+function addSteppedVignetteStops(gradient, colorAt, edgeAlpha) {
+    gradient.addColorStop(0, colorAt(0));
+    gradient.addColorStop(0.619, colorAt(0));
+    gradient.addColorStop(0.62, colorAt(edgeAlpha * 0.4));
+    gradient.addColorStop(0.839, colorAt(edgeAlpha * 0.4));
+    gradient.addColorStop(0.84, colorAt(edgeAlpha));
+    gradient.addColorStop(1, colorAt(edgeAlpha));
 }
 
 function gradeColorForCanvas(channels = []) {
@@ -216,23 +235,25 @@ function agentBodyRenderMode(count, viewport, zoom) {
     }
     return 'full';
 }
-const AGENT_NAME_TAG_MAX_WIDTH = 152;
-const AGENT_NAME_TAG_MIN_WIDTH = 40;
-// Must track the real name-tag pill in AgentSprite._drawNameTag: Departure Mono
-// at NAME_TAG_FONT_PX (11) is ~7px/char monospace, and NAME_TAG_PADDING_X is 20.
-// The old 4.5/9 estimate was ~60% of the real width, so the de-overlap rects
-// were too narrow and horizontally-close name tags collided on the same slot.
-const AGENT_NAME_TAG_CHAR_WIDTH = 7;
-const AGENT_NAME_TAG_PADDING_X = 20;
-const AGENT_NAME_TAG_SINGLE_HEIGHT = 16;
-const AGENT_NAME_TAG_DOUBLE_HEIGHT = 23;
-const AGENT_COMPACT_NAME_MAX_WIDTH = 180;
-const AGENT_COMPACT_NAME_MIN_WIDTH = 54;
-const AGENT_COMPACT_NAME_CHAR_WIDTH = 5.5;
-const AGENT_COMPACT_NAME_EXTRA_WIDTH = 38;
-const AGENT_COMPACT_NAME_HEIGHT = 17;
-const AGENT_COMPACT_NAME_SLOT_BASE_Y = 22;
-const AGENT_COMPACT_NAME_SLOT_STEP_Y = 12;
+// C5 identity labels (plan 5.2). Selected/hovered/focused agents get the T2
+// plate; routine names (T4) are text only, admitted for the top-N most recent
+// actors per 200 px screen region at zoom >= 1.6, and dropped — never slotted
+// sideways — when they would overlap an admitted label. Action-needed agents
+// are named by their T1 attention plate instead. Geometry: WorldLabelKit.
+const ROUTINE_NAME_MIN_ZOOM = 1.6;
+const ROUTINE_NAME_REGION_PX = 200;
+const ROUTINE_NAMES_PER_REGION = 3;
+const ROUTINE_NAMES_PER_REGION_DETAIL = 6;
+const ROUTINE_NAME_DETAIL_ZOOM = 3;
+// READ (hold B) shows every verb, so it may stack a label downward instead
+// of dropping it.
+const READ_MODE_NAME_SLOTS = 3;
+// A tool change this recent wins a routine name slot.
+const LABEL_TOOL_CHANGE_MS = 8000;
+// Median 1:1 body footprint (plan 2.1: 48–75 texels tall) for the overlay
+// pressure estimate in _agentRenderMode.
+const AGENT_BODY_AREA_W = 34;
+const AGENT_BODY_AREA_H = 62;
 // 3.4 — cell size (world px) for the static prop footprint index that keeps
 // name-tag de-collision slots from landing on prop art.
 const NAME_SLOT_PROP_CELL = 96;
@@ -242,16 +263,18 @@ const NAME_SLOT_PROP_CELL = 96;
 const AGENT_BUBBLE_SLOT_CAP = 3;
 // Floor for the reservation estimate (short status labels).
 const AGENT_BUBBLE_EST_WIDTH = 104;
-// Departure Mono advance at the anchored 10px body size, plus bubble padding.
+// Departure Mono advance at the anchored 11 px body size, plus bubble padding.
 // Measured against the sprite's own layout, not guessed: AgentSprite adds 18px
 // of horizontal padding around the measured text at this size.
-const AGENT_BUBBLE_CHAR_WIDTH = 5.4;
+const AGENT_BUBBLE_CHAR_WIDTH = 7;
 const AGENT_BUBBLE_PADDING = 18;
 // Mirrors STATUS_BUBBLE_MAIN_MAX_WIDTH.anchored in AgentSprite.js, which is
 // where the text is actually truncated to fit.
 const AGENT_BUBBLE_MAX_WIDTH = 232;
 const AGENT_BUBBLE_HEIGHT = 22;
-const AGENT_BUBBLE_ANCHOR_Y = 58;
+// Bubble centre above the head (AgentSprite._drawBubble anchors at the
+// label top and lifts 18 screen px), not a fixed height above the feet.
+const AGENT_BUBBLE_HEAD_OFFSET = 18;
 // Vertical step per stacked slot, in screen pixels; must match AgentSprite
 // STATUS_BUBBLE_STACK_STEP so assigned slots line up with the drawn offset.
 const AGENT_BUBBLE_STACK_STEP = 24;
@@ -340,25 +363,6 @@ const VILLAGE_STONE_PALETTE = Object.freeze({
 const VILLAGE_GATE_TOWER_HALF_TILES = 1.55;
 const VILLAGE_GATE_TOWER_SPRITE_ID = 'prop.villageGateTower';
 const VILLAGE_GATE_ARCH_SPRITE_ID = 'prop.villageGateArch';
-// Sample a colour ramp at t in [0,1], returning an rgba string. Used to
-// quantise what were smooth linear gradients into discrete pixel-art courses.
-function sampleRamp(stops, t) {
-    const clamped = Math.max(0, Math.min(1, t));
-    let lo = stops[0];
-    let hi = stops[stops.length - 1];
-    for (let i = 0; i < stops.length - 1; i++) {
-        if (clamped >= stops[i].t && clamped <= stops[i + 1].t) {
-            lo = stops[i];
-            hi = stops[i + 1];
-            break;
-        }
-    }
-    const span = hi.t - lo.t || 1;
-    const k = (clamped - lo.t) / span;
-    const ch = (i) => Math.round(lo.c[i] + (hi.c[i] - lo.c[i]) * k);
-    const alpha = (lo.c[3] + (hi.c[3] - lo.c[3]) * k).toFixed(3);
-    return `rgba(${ch(0)}, ${ch(1)}, ${ch(2)}, ${alpha})`;
-}
 // Canvas counterpart to the GPU wetness shader's four-pixel ordered dither.
 // Keep the same 2x2 Bayer ordering so the two paths share the same stepped
 // visual grammar without introducing a second pattern.
@@ -368,39 +372,6 @@ export function orderedDither4(x = 0, y = 0) {
     return ((px + 2 * py) & 3) / 3;
 }
 
-const CLIFF_REFLECTION_DEPTH = 60;
-const CLIFF_REFLECTION_BAND_COUNT = 8;
-// Three fixed alpha steps keep the reflection readable without becoming a
-// translucent gradient. They are all exact 1/32 values for _withAlpha().
-const CLIFF_REFLECTION_ALPHA_STEPS = Object.freeze([0.1875, 0.125, 0.0625]);
-const CLIFF_REFLECTION_PHASE_PALETTES = Object.freeze({
-    day: Object.freeze(['#2c4c59', '#3f5f65', '#5b706d', '#846f55']),
-    dawn: Object.freeze(['#394f64', '#5a6070', '#806f76', '#a37d68']),
-    dusk: Object.freeze(['#35465f', '#554f68', '#795c72', '#986a5c']),
-    night: Object.freeze(['#182d49', '#283e5b', '#3b5066', '#5a4d57']),
-});
-const WATERLINE_DITHER_PALETTES = Object.freeze({
-    day: Object.freeze([
-        'rgba(208, 246, 227, 0.78)',
-        'rgba(126, 202, 203, 0.66)',
-        'rgba(62, 137, 150, 0.54)',
-    ]),
-    dawn: Object.freeze([
-        'rgba(224, 237, 231, 0.78)',
-        'rgba(151, 190, 203, 0.66)',
-        'rgba(82, 126, 157, 0.54)',
-    ]),
-    dusk: Object.freeze([
-        'rgba(226, 212, 220, 0.78)',
-        'rgba(169, 151, 178, 0.66)',
-        'rgba(93, 102, 144, 0.54)',
-    ]),
-    night: Object.freeze([
-        'rgba(168, 206, 224, 0.72)',
-        'rgba(91, 151, 181, 0.60)',
-        'rgba(43, 93, 133, 0.50)',
-    ]),
-});
 
 
 const VILLAGE_GATE_ARCH_COLUMN_SPAN = 104;
@@ -412,6 +383,20 @@ const VILLAGE_GATE_ARCH_BAND_HEIGHT = 8;
 const VILLAGE_GATE_INSCRIPTION = 'CLAUDEVILLE';
 const VILLAGE_GATE_INSCRIPTION_INK = '#e2bd6b';
 const VILLAGE_GATE_INSCRIPTION_SHADOW = 'rgba(38, 16, 28, 0.85)';
+// The inscription is carved art, not type: a 5-row pixel alphabet laid on the
+// band's own texel grid, so it lands on whole pixels wherever the masonry does
+// (a font face cannot fit an 8-texel band on the C5 8/11 px grid).
+const VILLAGE_GATE_GLYPHS = Object.freeze({
+    A: ['.##.', '#..#', '####', '#..#', '#..#'],
+    C: ['.###', '#...', '#...', '#...', '.###'],
+    D: ['###.', '#..#', '#..#', '#..#', '###.'],
+    E: ['####', '#...', '###.', '#...', '####'],
+    I: ['###', '.#.', '.#.', '.#.', '###'],
+    L: ['#...', '#...', '#...', '#...', '####'],
+    U: ['#..#', '#..#', '#..#', '#..#', '.##.'],
+    V: ['#...#', '#...#', '.#.#.', '.#.#.', '..#..'],
+});
+const VILLAGE_GATE_GLYPH_ROWS = 5;
 const VILLAGE_WALL_SEA_TOWER_SPRITE_ID = 'prop.villageWallSeaTower';
 class StaticPropSprite {
     constructor({ tileX, tileY, drawFn, id = null, bounds = null, splitForOcclusion = false, sortY = null }) {
@@ -519,7 +504,8 @@ export class IsometricRenderer {
         this.world = world;
         this.assets = options.assets || null;
         this.sprites = this.assets ? new SpriteRenderer(this.assets) : null;
-        this.terrain = this.assets ? new TerrainTileset(this.assets) : null;
+        installGroundBake(this);
+        registerCoastBake(this);
         this.compositor = this.assets ? new Compositor(this.assets) : null;
         this.canvas = null;
         this.ctx = null;
@@ -566,9 +552,11 @@ export class IsometricRenderer {
             // screen (the celebratory gull scatter window) so it doesn't compete
             // with the live event.
             suppressGetter: () => this._gullScatterActive(),
-            // C2 — anchor leaf/petal drift to visible tree canopies and
-            // butterflies to flower tiles; snow keeps its viewport-wide fall.
+            // C2 — anchor petal/leaf drift to visible tree canopies and
+            // butterflies to flower tiles; snow falls anywhere in view. The
+            // camera maps them into world space and gates the zoom budget.
             anchorsProvider: (kind) => this._seasonalDriftAnchors(kind),
+            cameraGetter: () => this.camera,
         });
         this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
         this.chronicleStore = options.chronicleStore || null;
@@ -619,11 +607,12 @@ export class IsometricRenderer {
         this._overlayBubbleClusterCount = 0;
         this._overlayBubbleGroups = new Map();
         this._agentLabelHitRects = [];
-        this._overlayCompactRects = [];
+        this._overlayRegionCounts = new Map();
+        this._attentionWorldRects = [];
+        this._attentionLayout = null;
         this._overlayNameRects = [];
         this._overlayReservedRects = [];
         this._overlayBubbleOccupiedRects = [];
-        this._overlayCompactGrid = this._createRectGrid();
         this._overlayNameGrid = this._createRectGrid();
         this._overlayBubbleGrid = this._createRectGrid();
         this._overlayClusterGrid = this._createRectGrid();
@@ -680,6 +669,9 @@ export class IsometricRenderer {
         this.atmosphereVignetteCacheKey = '';
         this._fastVignetteStamp = null;
         this._fastVignetteStampKey = '';
+        this._poolLayer = null;
+        this._poolShadeLayer = null;
+        this._poolLayerRect = null;
         this.lightGradientCache = new Map();
         this.lightFadeColorCache = new Map();
         this.lightColorRgbCache = new Map();
@@ -790,16 +782,19 @@ export class IsometricRenderer {
         for (const key of this.bridgeTiles.keys()) {
             this.pathTiles.add(key);
         }
-        // Re-classify so newly-pathified bridge tiles inherit avenue style.
-        // CRITICAL: _classifyRoadMaterials *adds* to mainAvenueTiles and
-        // dirtPathTiles without clearing them, so a tile could end up in
-        // BOTH sets and break _drawTile's mutually-exclusive styling.
-        // Clear first.
+        this._generateFrontageSpurs();
+        // Re-classify so newly-pathified bridge and spur tiles take their
+        // material. _classifyRoadMaterials *adds* to mainAvenueTiles and
+        // dirtPathTiles, so clear first to keep the two sets exclusive.
         this.mainAvenueTiles.clear();
         this.dirtPathTiles.clear();
         const command = this._getCommandBuilding();
         const plazaHub = this._commandPlazaHub(command);
         this._classifyRoadMaterials(plazaHub.x, plazaHub.y);
+        // 3.3 — scenery keeps the whole old building ring clear even though
+        // only the frontage is road now, so trees/boulders/props place exactly
+        // as before and never crowd a wall.
+        this.sceneryClearTiles = new Set([...this.pathTiles, ...this.yardClearTiles]);
 
         // Now that bridges are in pathTiles, generate terrain features so
         // bridges don't get tagged with reeds/flowers/stones/mushrooms.
@@ -808,75 +803,40 @@ export class IsometricRenderer {
 
         // Flat vegetation (bushes, grass tufts) — populated after terrain features
         // so noise samples don't compete and after bridges so they're skipped.
-        this.scenery.generateFlatVegetation(this.pathTiles, this.bridgeTiles);
+        this.scenery.generateFlatVegetation(this.sceneryClearTiles, this.bridgeTiles);
         this.bushTiles = this.scenery.getBushTiles();
         this.grassTuftTiles = this.scenery.getGrassTuftTiles();
         this.flowerTiles = this.scenery.getFlowerTiles();
 
-        // Trees (Y-sorted props)
-        this.scenery.generateTrees(this.pathTiles, this.bridgeTiles);
-        const generatedTrees = this.scenery.getTreeProps();
-        const canPlaceAuthoredTree = (p) => !this.scenery.isBlockedForTallScenery(
-            p.tileX,
-            p.tileY,
-            this.pathTiles,
+        // Trees (Y-sorted props): clumped 1× trees from SceneryEngine, all drawn
+        // through the foliage caches (plinth-free sprites, one pixel grid).
+        this.scenery.generateTrees(
+            this.sceneryClearTiles,
             this.bridgeTiles,
+            (tileX, tileY) => this._isInBridgeTreeExclusion(tileX, tileY),
         );
-        const authoredPalms = TROPICAL_PALMS.filter(canPlaceAuthoredTree).map((p) => ({
-            ...p,
-            variant: 2,
-            tropical: true,
-        }));
-        const authoredBroadleafTrees = TROPICAL_BROADLEAF_TREES.filter(canPlaceAuthoredTree).map((p) => ({
-            ...p,
-            variant: 3,
-            tropical: true,
-            canopy: true,
-        }));
-        this.treePropSprites = [...generatedTrees, ...authoredPalms, ...authoredBroadleafTrees]
-            .filter((t) => !this._isInBridgeTreeExclusion(t.tileX, t.tileY))
-            .map((t) => {
+        this.treePropSprites = this.scenery.getTreeProps().map((t) => {
             // Deterministic per-tree phase seed for wind sway. Anchored to
-            // tile coordinates + variant so the visual offset is stable across
+            // tile coordinates + species so the visual offset is stable across
             // reloads but each tree drifts on its own phase.
             const swaySeed = this.foliageRenderer.windSwaySeed(t);
-            if (t.canopy || t.tropical) {
-                const bounds = this.foliageRenderer.fantasyTreePropBounds(t);
-                return new StaticPropSprite({
-                    tileX: t.tileX,
-                    tileY: t.tileY,
-                    id: 'fantasy.tree',
-                    bounds,
-                    splitForOcclusion: true,
-                    drawFn: (ctx, x, y) => this.foliageRenderer.withTreeSway(
-                        ctx,
-                        swaySeed,
-                        () => this.foliageRenderer.drawFantasyForestTree(ctx, x, y, t),
-                        t.tileX,
-                    ),
-                });
-            }
-            // variant 0 -> oak, 1 -> pine, 2 -> willow; size driven by scale threshold.
-            const species = ['oak', 'pine', 'willow'][(t.variant ?? 0) % 3];
-            const size = (t.scale ?? 1) >= 1.0 ? 'large' : 'small';
-            const id = `veg.tree.${species}.${size}`;
             return new StaticPropSprite({
                 tileX: t.tileX,
                 tileY: t.tileY,
-                id,
-                bounds: this._assetPropBounds(id),
+                id: 'fantasy.tree',
+                bounds: this.foliageRenderer.fantasyTreePropBounds(t),
                 splitForOcclusion: true,
                 drawFn: (ctx, x, y) => this.foliageRenderer.withTreeSway(
                     ctx,
                     swaySeed,
-                    () => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y); },
+                    () => this.foliageRenderer.drawFantasyForestTree(ctx, x, y, t),
                     t.tileX,
                 ),
             });
         });
 
         // Boulders (Y-sorted props)
-        this.scenery.generateBoulders(this.pathTiles, this.bridgeTiles);
+        this.scenery.generateBoulders(this.sceneryClearTiles, this.bridgeTiles);
         this.boulderPropSprites = this.scenery.getBoulderProps().map((b) => {
             // variant 'a' → mossy, 'b' → granite; size driven by scale threshold.
             const species = b.variant === 'b' ? 'granite' : 'mossy';
@@ -920,10 +880,11 @@ export class IsometricRenderer {
         this.ambientEmitters = [];
         this._generateAmbientEmitters();
         // Latest building presence tiers, refreshed via building:active-agents
-        // and consulted by gated emitters. Map<type, { count, recencyScore, tier }>.
+        // and consulted by ChimneySmoke. Map<type, { count, recencyScore, tier }>.
         this._buildingPresenceMap = new Map();
-        // Per-emitter interval timestamps for gated/intervaled emitters.
-        this._emitterIntervalLastMs = new Map();
+        // 6.7 — occupancy-gated chimney smoke from the registry's chimney
+        // anchors (one owner for every chimney column).
+        this.chimneySmoke = new ChimneySmoke();
 
         // Event subscriptions
         this._unsubscribers = [];
@@ -935,16 +896,51 @@ export class IsometricRenderer {
         const buildingDefs = Array.from(this.world.buildings.values());
         const command = this._getCommandBuilding();
         const plazaHub = this._commandPlazaHub(command);
+        // 3.3 — a building no longer paves its footprint plus a one-tile ring
+        // (that made 41% of the land "yard"). The ring stays clear of scenery
+        // (`yardClearTiles`), but only the authored frontage — the ring side
+        // the entrance faces, plus the entrance and visit tiles — is road.
+        // `yardTiles` maps those frontage tiles to their building so the
+        // ground bake can lay each district's yard material (4.7).
+        this.yardTiles = new Map();
+        this.yardClearTiles = new Set();
+        this.roadMaterialTiles = new Map();
         for (const b of buildingDefs) {
-            // Paths around buildings
-            for (let x = b.position.tileX - 1; x <= b.position.tileX + b.width; x++) {
-                for (let y = b.position.tileY - 1; y <= b.position.tileY + b.height; y++) {
-                    if (x >= 0 && x < MAP_SIZE && y >= 0 && y < MAP_SIZE) {
-                        this.pathTiles.add(`${x},${y}`);
-                    }
+            const x0 = b.position.tileX;
+            const y0 = b.position.tileY;
+            const x1 = x0 + b.width - 1;
+            const y1 = y0 + b.height - 1;
+            for (let x = x0 - 1; x <= x1 + 1; x++) {
+                for (let y = y0 - 1; y <= y1 + 1; y++) {
+                    if (this._inMapBounds(x, y)) this.yardClearTiles.add(`${x},${y}`);
                 }
             }
+            if (b === command) continue;
+            for (const key of this._buildingFrontageKeys(b)) {
+                this.pathTiles.add(key);
+                this.yardTiles.set(key, b.type);
+            }
             for (const tile of this._buildingApproachTiles(b)) {
+                if (!this._inMapBounds(tile.tileX, tile.tileY)) continue;
+                const tx = Math.round(tile.tileX);
+                const ty = Math.round(tile.tileY);
+                const key = `${tx},${ty}`;
+                this.pathTiles.add(key);
+                const reach = Math.max(x0 - tx, tx - x1, y0 - ty, ty - y1);
+                if (reach <= 2 && !this.yardTiles.has(key)) this.yardTiles.set(key, b.type);
+            }
+        }
+        // 4.2 — the Command plaza wraps the keep on all four sides: dressed
+        // limestone right up to the walls, meeting the town square in front.
+        if (command) {
+            for (let x = command.position.tileX - 1; x <= command.position.tileX + command.width; x++) {
+                for (let y = command.position.tileY - 1; y <= command.position.tileY + command.height; y++) {
+                    if (!this._inMapBounds(x, y)) continue;
+                    this.townSquareTiles.add(`${x},${y}`);
+                    this.pathTiles.add(`${x},${y}`);
+                }
+            }
+            for (const tile of this._buildingApproachTiles(command)) {
                 if (this._inMapBounds(tile.tileX, tile.tileY)) {
                     this.pathTiles.add(`${Math.round(tile.tileX)},${Math.round(tile.tileY)}`);
                 }
@@ -963,6 +959,79 @@ export class IsometricRenderer {
             }
         }
         this._classifyRoadMaterials(plazaHub.x, plazaHub.y);
+    }
+
+    // The ring tiles on the side(s) of the footprint the entrance faces: one
+    // tile deep along that face, plus the corner when the door sits diagonal.
+    _buildingFrontageKeys(building) {
+        const entrance = building?.entrance;
+        if (!entrance) return [];
+        const x0 = building.position.tileX;
+        const y0 = building.position.tileY;
+        const x1 = x0 + building.width - 1;
+        const y1 = y0 + building.height - 1;
+        const dx = entrance.tileX < x0 ? -1 : entrance.tileX > x1 ? 1 : 0;
+        const dy = entrance.tileY < y0 ? -1 : entrance.tileY > y1 ? 1 : 0;
+        const keys = [];
+        const push = (x, y) => { if (this._inMapBounds(x, y)) keys.push(`${x},${y}`); };
+        if (dy) for (let x = x0; x <= x1; x++) push(x, dy > 0 ? y1 + 1 : y0 - 1);
+        if (dx) for (let y = y0; y <= y1; y++) push(dx > 0 ? x1 + 1 : x0 - 1, y);
+        if (dx && dy) push(dx > 0 ? x1 + 1 : x0 - 1, dy > 0 ? y1 + 1 : y0 - 1);
+        return keys;
+    }
+
+    // 3.3 — every door connects to the road network by a short worn spur
+    // (the yard ring used to do this implicitly). Runs once water is known:
+    // a breadth-first walk from the entrance over dry, unbuilt tiles to the
+    // nearest authored road, plaza or bridge tile. Spur tiles are real path
+    // tiles, so routing and the painted ground agree.
+    _generateFrontageSpurs() {
+        this.frontageSpurs = [];
+        const footprints = new Set();
+        for (const b of this.world.buildings.values()) {
+            for (let x = b.position.tileX; x < b.position.tileX + b.width; x++) {
+                for (let y = b.position.tileY; y < b.position.tileY + b.height; y++) footprints.add(`${x},${y}`);
+            }
+        }
+        const isNetwork = (key) => this.roadMaterialTiles.has(key)
+            || this.townSquareTiles.has(key)
+            || this.bridgeTiles?.has(key);
+        for (const b of this.world.buildings.values()) {
+            const entrance = b.entrance;
+            if (!entrance || !this._inMapBounds(entrance.tileX, entrance.tileY)) continue;
+            const start = `${Math.round(entrance.tileX)},${Math.round(entrance.tileY)}`;
+            if (isNetwork(start)) {
+                this.frontageSpurs.push({ type: b.type, tiles: [this._parseTileKey(start)] });
+                continue;
+            }
+            const previous = new Map([[start, null]]);
+            const queue = [start];
+            let found = null;
+            for (let head = 0; head < queue.length && !found; head++) {
+                const key = queue[head];
+                const tile = this._parseTileKey(key);
+                for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                    const nx = tile.tileX + ox;
+                    const ny = tile.tileY + oy;
+                    const next = `${nx},${ny}`;
+                    if (previous.has(next) || !this._inMapBounds(nx, ny)) continue;
+                    if (footprints.has(next)) continue;
+                    if (this.waterTiles.has(next) && !this.bridgeTiles?.has(next)) continue;
+                    previous.set(next, key);
+                    if (isNetwork(next)) { found = next; break; }
+                    if (Math.abs(nx - entrance.tileX) + Math.abs(ny - entrance.tileY) < 10) queue.push(next);
+                }
+            }
+            if (!found) continue;
+            const tiles = [];
+            for (let key = found; key; key = previous.get(key)) {
+                tiles.unshift(this._parseTileKey(key));
+                if (key === found) continue;
+                this.pathTiles.add(key);
+                if (!this.roadMaterialTiles.has(key)) this.roadMaterialTiles.set(key, 'dirt');
+            }
+            this.frontageSpurs.push({ type: b.type, tiles });
+        }
     }
 
     _buildingApproachTiles(building) {
@@ -1176,13 +1245,16 @@ export class IsometricRenderer {
         const [fromX, fromY] = from;
         const [toX, toY] = to;
         const steps = Math.max(Math.abs(toX - fromX), Math.abs(toY - fromY), 1) * 2;
-        const radius = Math.max(0, Math.floor(width / 2));
+        // Brush spans [lo, hi] tiles: width 1 → the tile, width 2 → a 2×2
+        // brush (the radiating civic arms), width 3 → centred 3×3.
+        const lo = -Math.floor((Math.max(1, width) - 1) / 2);
+        const hi = Math.floor(Math.max(1, width) / 2);
         for (let i = 0; i <= steps; i++) {
             const t = i / steps;
             const x = Math.round(fromX + (toX - fromX) * t);
             const y = Math.round(fromY + (toY - fromY) * t);
-            for (let ox = -radius; ox <= radius; ox++) {
-                for (let oy = -radius; oy <= radius; oy++) {
+            for (let ox = lo; ox <= hi; ox++) {
+                for (let oy = lo; oy <= hi; oy++) {
                     const tx = x + ox;
                     const ty = y + oy;
                     if (!this._inMapBounds(tx, ty)) continue;
@@ -1206,12 +1278,13 @@ export class IsometricRenderer {
         }
     }
 
+    // Records the authored material of a route tile. Where routes cross the
+    // paved one wins (avenue > dock > dirt), so material changes only at
+    // junctions; `_classifyRoadMaterials` turns this into the tile sets.
     _markRoadMaterial(key, material) {
-        if (material === 'avenue' || material === 'dock') {
-            this.mainAvenueTiles.add(key);
-        } else {
-            this.dirtPathTiles.add(key);
-        }
+        const current = this.roadMaterialTiles.get(key);
+        const rank = (m) => (m === 'avenue' ? 3 : m === 'dock' ? 2 : m ? 1 : 0);
+        if (rank(material) > rank(current)) this.roadMaterialTiles.set(key, material);
         if (material === 'avenue') {
             this.commandCenterRoadTiles.add(key);
         }
@@ -1279,6 +1352,10 @@ export class IsometricRenderer {
         }
     }
 
+    // 3.3 — material follows the authored route that laid the tile (see
+    // `_markRoadMaterial`), so it changes only at junctions: no noise field,
+    // no (x + y) stripe. Tiles around the plaza hub, bridges and paved yards
+    // are avenue; yards, frontage spurs and fallback links are earth.
     _classifyRoadMaterials(plazaHubX, plazaHubY) {
         for (const key of this.pathTiles) {
             if (this.townSquareTiles.has(key)) continue;
@@ -1288,14 +1365,13 @@ export class IsometricRenderer {
             const dx = (x - plazaHubX) / 4.2;
             const dy = (y - plazaHubY) / 3.0;
             const nearPlaza = (dx * dx + dy * dy) <= 1.0;
-            // Smooth route material field (2.1): avenue/dirt assignment forms
-            // coherent stretches of road instead of per-tile confetti.
-            const routeNoise = this._smoothNoise(x + 73, y + 29, 5);
-            if (this.commandCenterRoadTiles?.has(key) || nearPlaza || routeNoise > 0.72) {
-                this.mainAvenueTiles.add(key);
-            } else if (routeNoise < 0.34 || ((x + y) % 5 === 0)) {
-                this.dirtPathTiles.add(key);
-            }
+            const material = this.roadMaterialTiles.get(key);
+            const yard = material ? null : this.yardTiles?.get(key);
+            const paved = material === 'avenue' || material === 'dock' || nearPlaza
+                || this.bridgeTiles?.has(key)
+                || Boolean(yard && YARD_MATERIALS[yard]?.paved);
+            if (paved) this.mainAvenueTiles.add(key);
+            else this.dirtPathTiles.add(key);
         }
     }
 
@@ -1303,7 +1379,7 @@ export class IsometricRenderer {
         for (let y = 0; y < MAP_SIZE; y++) {
             for (let x = 0; x < MAP_SIZE; x++) {
                 const key = `${x},${y}`;
-                if (this.waterTiles.has(key) || this.pathTiles.has(key)) continue;
+                if (this.waterTiles.has(key) || this.sceneryClearTiles.has(key)) continue;
                 // Low-frequency feature field (2.1): reeds form shoreline beds
                 // and stones/mushrooms clump instead of peppering single tiles.
                 const noise = this._smoothNoise(x + 41, y + 17, 3.5);
@@ -1353,10 +1429,10 @@ export class IsometricRenderer {
         this.commandCenterRoadTiles.add(`${cx - 2},${southY + 1}`);
         this.commandCenterRoadTiles.add(`${cx - 2},${southY - 1}`);
 
-        // Reinforce the ceremonial entrance and northern gate with visible guard-posts.
+        // Guard-posts mark the plaza's west approach and the northern gate. The
+        // ceremonial entrance itself is the Command sprite's gate steps and
+        // braziers (row southY), so nothing is placed on them.
         this.commandCenterGroundProps.push(
-            { tileX: southGateX - 0.35, tileY: southY + 0.2, type: 'guardpost', phase: 0.2 },
-            { tileX: southGateX + 0.25, tileY: southY + 0.2, type: 'guardpost', phase: 1.1 },
             { tileX: cx - 2.2, tileY: southY + 0.6, type: 'guardpost', phase: 2.8 },
             { tileX: cx + w + 2.2, tileY: northY + 0.4, type: 'guardpost', phase: 3.9 },
         );
@@ -1433,29 +1509,13 @@ export class IsometricRenderer {
             { tileX: 5.8, tileY: 21.2, particleType: 'sparkle', chance: 0.012 },
             { tileX: 28.0, tileY: 29.2, particleType: 'sparkle', chance: 0.016 },
             { tileX: 8.5, tileY: 12.0, particleType: 'sparkle', chance: 0.01 },
-            { tileX: 33.0, tileY: 19.5, particleType: 'smoke', chance: 0.012 },
             { tileX: 13.4, tileY: 34.3, particleType: 'mineDust', chance: 0.016 },
-            { tileX: 13.4, tileY: 34.0, particleType: 'firefly', chance: 0.014 },
             { tileX: 27.8, tileY: 29.2, particleType: 'forgeEmber', chance: 0.02 },
             { tileX: 4.8, tileY: 32.2, particleType: 'portalRune', chance: 0.022 },
             { tileX: 22.4, tileY: 33.1, particleType: 'questPing', chance: 0.014 },
             { tileX: 8.5, tileY: 16.8, particleType: 'archiveMote', chance: 0.022 },
             { tileX: 23.4, tileY: 17.8, particleType: 'sparkle', chance: 0.012 },
             { tileX: 32.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
-            { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
-            // E7 — extra dusk/night firefly swarms along grass/water edges away
-            // from buildings: the south bank of the central moat and the grassy
-            // fringe of the northwest lagoon stream.
-            { tileX: 13.0, tileY: 27.5, particleType: 'firefly', chance: 0.012 },
-            { tileX: 5.5, tileY: 11.5, particleType: 'firefly', chance: 0.012 },
-            // Building-activity gated smoke plumes. Roof anchors raise the
-            // spawn point (worldY -= 22) above each building footprint and
-            // the active-building gate tells _updateAmbientEffects
-            // to consult the presence map (occupied/busy => spawn ~every 600ms).
-            { tileX: 28, tileY: 27, particleType: 'smoke', intervalMs: 600,
-              gatedBy: ACTIVE_BUILDING_EMITTER_GATE, building: 'forge', worldYOffset: -22 },
-            { tileX: 12, tileY: 32, particleType: 'smoke', intervalMs: 600,
-              gatedBy: ACTIVE_BUILDING_EMITTER_GATE, building: 'mine', worldYOffset: -22 },
         ];
 
         for (const prop of this.commandCenterGroundProps) {
@@ -1500,19 +1560,6 @@ export class IsometricRenderer {
         const top = n00 + (n10 - n00) * sx;
         const bottom = n01 + (n11 - n01) * sx;
         return top + (bottom - top) * sy;
-    }
-
-    // Lerp two '#rrggbb'/'rgb(r,g,b)' colours by t, memoized in the shared
-    // colour cache (same style as _withAlpha / _mixToWhite).
-    _lerpColor(a, b, t) {
-        const mixAmount = this._quantizedColorMix(t);
-        const key = `lc|${a}|${b}|${mixAmount}`;
-        if (this.lightFadeColorCache.has(key)) return this.lightFadeColorCache.get(key);
-        const [ar, ag, ab] = this._parseLightColor(a);
-        const [br, bg, bb] = this._parseLightColor(b);
-        const mix = (u, v) => Math.round(u + (v - u) * mixAmount);
-        const out = `rgb(${mix(ar, br)}, ${mix(ag, bg)}, ${mix(ab, bb)})`;
-        return this._cacheLightFadeColor(key, out);
     }
 
     _installDebugGlobal(name, value) {
@@ -1636,6 +1683,9 @@ export class IsometricRenderer {
         this.weatherRenderer?.setDistrictContext?.({
             camera: this.camera,
             agentSprites: this.agentSprites,
+            // 6.7 — open ground the overlay may splash rain on (no building
+            // art covers it); static per village, classified once.
+            openGroundTiles: () => openGroundTiles(this),
         });
         // #21 — cinematic director listens for VillageDirector camera cues and
         // drives time-boxed glides on the camera (abort-on-input is in Camera).
@@ -1966,11 +2016,9 @@ export class IsometricRenderer {
         this._overlayBubbleOrder.length = 0;
         this._overlayBubbleBaseRects.length = 0;
         this._agentLabelHitRects.length = 0;
-        this._overlayCompactRects.length = 0;
         this._overlayNameRects.length = 0;
         this._overlayReservedRects.length = 0;
         this._overlayBubbleOccupiedRects.length = 0;
-        this._overlayCompactGrid.buckets.clear();
         this._overlayNameGrid.buckets.clear();
         this._overlayBubbleGrid.buckets.clear();
         this._overlayClusterGrid.buckets.clear();
@@ -2005,7 +2053,6 @@ export class IsometricRenderer {
         this.visitTileAllocator?.dispose?.();
         this._crowdBumpCooldowns.clear();
         this._buildingPresenceMap.clear();
-        this._emitterIntervalLastMs.clear();
         this.foliageRenderer?.clear?.();
         this._atmosphereEffectSpriteCache.clear();
         this.weatherRenderer?.dispose?.();
@@ -2109,6 +2156,11 @@ export class IsometricRenderer {
         releaseCanvasBackingStore(this._fastVignetteStamp);
         this._fastVignetteStamp = null;
         this._fastVignetteStampKey = '';
+        releaseCanvasBackingStore(this._poolLayer);
+        releaseCanvasBackingStore(this._poolShadeLayer);
+        this._poolLayer = null;
+        this._poolShadeLayer = null;
+        this._poolLayerRect = null;
         releaseCanvasMap(this.lightGradientCache);
         this.lightFadeColorCache?.clear?.();
         this.lightColorRgbCache?.clear?.();
@@ -2123,6 +2175,11 @@ export class IsometricRenderer {
         releaseCanvasBackingStore(this._semanticGroundCanvas);
         this._semanticGroundCanvas = null;
         this._semanticGroundKey = null;
+        // 0.2 — the ground-cue stamp atlas (and the pooled records that point
+        // at it) rebuilds from the first painted cue after release.
+        releaseCanvasBackingStore(this._groundCueRecorder?.atlas?.canvas);
+        this._groundCueRecorder = null;
+        this._groundCueRecords = null;
         releaseCanvasBackingStore(this._gpuAgentOccluderAtlas);
         this._gpuAgentOccluderAtlas = null;
         this._gpuAgentOccluderAtlasState = null;
@@ -2550,6 +2607,9 @@ export class IsometricRenderer {
 
     setCameraPose({ x, y, camX, camY, zoom } = {}) {
         if (!this.camera) return false;
+        // An explicit pose (scenario metadata, capture tooling) ends any glide
+        // in flight, such as the opening shot, instead of being overwritten.
+        this.camera.abortDirectorGlide?.();
         const nextZoom = Number(zoom);
         if (Number.isFinite(nextZoom) && nextZoom > 0) {
             this.camera.zoom = this.camera.resolveRestingZoom?.(nextZoom)
@@ -2686,23 +2746,29 @@ export class IsometricRenderer {
             return;
         }
 
-        // #45 — first World paint gets a cinematic establishing shot: hold the
-        // island-wide frame, then glide+zoom in to settle on the active cluster.
-        // The flag is set only when the shot actually starts (5.7), so a failed
-        // attempt (e.g. missing viewport) retries on the next re-frame.
-        if (!this._didEstablishingShot) {
-            if (this.camera.establishingShot(this._fullIslandWorldBox(), targetBox, { maxZoom: 1.5 })) {
-                this._didEstablishingShot = true;
-                return;
-            }
-        }
+        // #45/8.3 — the first World paint opens on the whole island. The flag
+        // is set only when the shot actually starts (5.7), so a failed attempt
+        // (e.g. missing viewport) retries on the next re-frame.
+        if (!this._didEstablishingShot && this.playOpeningShot({ targetBox })) return;
 
-        // 5.7 — subsequent re-frames (resize, the F key) take a short glide
-        // instead of an instant snap; glideToWorld cuts directly under reduced
-        // motion, and fitToWorldBox stays as the no-viewport fallback.
-        if (this.camera.glideToWorld(targetBox, { duration: 700, owner: 'system', maxZoom: 1.5 })) return;
-        this.camera.fitToWorldBox(targetBox, { maxZoom: 1.5 });
+        // 5.7/8.1 — later re-frames (relayout, the F key) glide in the director
+        // vocabulary and settle on the default frame tier; a box spanning most
+        // of the island widens to the survey tier instead of being cropped.
+        const maxZoom = this.camera.defaultFrameTier;
+        const minZoom = this.camera.frameTierFloorForBox(targetBox);
+        if (this.camera.glideToWorld(targetBox, { owner: 'system', maxZoom, minZoom })) return;
+        this.camera.fitToWorldBox(targetBox, { maxZoom, minZoom });
         this.camera._userAdjusted = false;
+    }
+
+    // 8.3 — the opening shot: whole island at the survey tier, hold, then one
+    // move onto the content box or an authored pose (scenario metadata). Never
+    // fights a follow that already owns the frame.
+    playOpeningShot({ targetBox = null, targetPose = null } = {}) {
+        if (this._didEstablishingShot || !this.camera || this.camera.followTarget) return false;
+        const started = this.camera.establishingShot(this._fullIslandWorldBox(), { targetBox, targetPose });
+        if (started) this._didEstablishingShot = true;
+        return started;
     }
 
     // #45 — the full island's axis-aligned world box, framing the whole iso
@@ -2722,6 +2788,25 @@ export class IsometricRenderer {
             minY: Math.min(...ys),
             maxY: Math.max(...ys),
         };
+    }
+
+    // 0.5 — one `world:first-frame` per World activation: the page opening
+    // ('boot') and every return from Dashboard ('return'). The shell keeps the
+    // world canvases transparent over a sky-coloured container until it fires,
+    // so nothing black or half-built is ever shown. `_firstFrameReason` is
+    // undefined until the first frame (boot), a reason string while armed,
+    // and null once reported.
+    armFirstFrameSignal(reason = 'return') {
+        this._firstFrameReason = reason;
+        this.camera?.setPresented?.(false);
+    }
+
+    _signalFirstFrame() {
+        const reason = this._firstFrameReason === undefined ? 'boot' : this._firstFrameReason;
+        if (!reason) return;
+        this._firstFrameReason = null;
+        this.camera?.setPresented?.(true);
+        eventBus.emit('world:first-frame', { reason, sky: this._lastAtmosphere?.sky?.palette || null });
     }
 
 
@@ -3100,6 +3185,11 @@ export class IsometricRenderer {
         releaseCanvasBackingStore(this._fastVignetteStamp);
         this._fastVignetteStamp = null;
         this._fastVignetteStampKey = '';
+        releaseCanvasBackingStore(this._poolLayer);
+        releaseCanvasBackingStore(this._poolShadeLayer);
+        this._poolLayer = null;
+        this._poolShadeLayer = null;
+        this._poolLayerRect = null;
         releaseCanvasMap(this.lightGradientCache);
         this.skyRenderer?.releaseCache?.();
         this.trailRenderer?.releaseCache?.();
@@ -3309,19 +3399,126 @@ export class IsometricRenderer {
         const sprite = this.agentSprites.get(agent?.id);
         if (!sprite || !this.arrivalDeparture) return false;
         const parentSprite = this._parentSpriteFor(agent);
-        const portalScreenPoint = this._tileToWorld(PORTAL_SPAWN_TILE.tileX, PORTAL_SPAWN_TILE.tileY);
-        const started = parentSprite
-            ? this.arrivalDeparture.beginSubagentDispatch(parentSprite, sprite, {
-                now: performance.now(),
-                portalScreenPoint,
-            })
-            : this.arrivalDeparture.beginAgentArrival(agent, sprite, { parentAlive: false, now: performance.now() });
-        if (started || this.motionScale <= 0) {
-            this.gateTransits.delete(agent.id);
-            this._markSpritesDirty();
-            return true;
+        const now = performance.now();
+        if (parentSprite) {
+            // 6.3 — the dispatch comet flies 2–3 tiles from the parent to a
+            // free visit tile, so the arc reads and the bodies never stack.
+            // Reduced motion lands the child on the same tile without a comet.
+            const landing = this._subagentLandingTile(agent, parentSprite);
+            if (landing) sprite.setTilePosition?.(landing.tileX, landing.tileY);
+            const started = this.arrivalDeparture.beginSubagentDispatch(parentSprite, sprite, {
+                now,
+                onLanded: () => this._resolveLandingOverlap(sprite),
+            });
+            // The pending state dropped any reservation; hold the landing visit
+            // tile for the child so its first visit pick keeps it there instead
+            // of walking back into its parent's cluster.
+            if (landing?.building && landing.tile) {
+                this.visitTileAllocator?.allocate?.({ agent, sprite, building: landing.building, candidates: [landing.tile] });
+            }
+            if (started || this.motionScale <= 0) {
+                this.gateTransits.delete(agent.id);
+                if (!started) this._resolveLandingOverlap(sprite);
+                this._markSpritesDirty();
+                return true;
+            }
+            return false;
         }
-        return false;
+        // 6.2 — top-level sessions keep the gate walk-in: _beginAgentGateArrival
+        // placed the body outside the gate, the materialize beat plays there,
+        // and the walk resumes when the body lands. Reduced motion leaves the
+        // body inside the gate with the static rune notch only.
+        const started = this.arrivalDeparture.beginAgentArrival(agent, sprite, {
+            now,
+            onLanded: () => {
+                if (this.agentSprites.get(agent.id) !== sprite || sprite.leaving) return;
+                if (this._isGateTransit(sprite, 'departure')) return;
+                this._walkInThroughGate(agent, sprite);
+                this._markSpritesDirty();
+            },
+        });
+        if (started) this._markSpritesDirty();
+        return Boolean(started);
+    }
+
+    // Where a dispatched child lands: a free tile 2–3 tiles from its parent.
+    // Building visit tiles in that band come first (the child lands where work
+    // happens); otherwise a walkable tile on a 2.5-tile ring. A tile is free
+    // when no live body stands within 0.9 tiles and no other agent holds a
+    // visit reservation on it.
+    _subagentLandingTile(agent, parentSprite) {
+        const parentTile = typeof parentSprite?._screenToTile === 'function'
+            ? parentSprite._screenToTile(parentSprite.x, parentSprite.y)
+            : null;
+        if (!parentTile || !Number.isFinite(parentTile.tileX) || !Number.isFinite(parentTile.tileY)) return null;
+        const bodies = [];
+        for (const other of this.agentSprites.values()) {
+            if (!other || other.agent?.id === agent?.id || other.leaving) continue;
+            const tile = other._screenToTile?.(other.x, other.y);
+            if (tile && Number.isFinite(tile.tileX) && Number.isFinite(tile.tileY)) bodies.push(tile);
+        }
+        const reservations = this.visitTileAllocator?.reservations;
+        const isFree = (tileX, tileY) => {
+            if (this.pathfinder && !this.pathfinder.isWalkable(Math.round(tileX), Math.round(tileY))) return false;
+            for (const body of bodies) {
+                if (Math.hypot(body.tileX - tileX, body.tileY - tileY) < 0.9) return false;
+            }
+            if (reservations) {
+                for (const reservation of reservations.values()) {
+                    if (reservation.agentId === agent?.id) continue;
+                    if (Math.hypot(reservation.tileX - tileX, reservation.tileY - tileY) < 0.6) return false;
+                }
+            }
+            return true;
+        };
+        const jitter = this._gateJitter(agent, 'land-side', 1) + 0.5;
+        // The child joins its parent's work, so the parent's building wins a
+        // tie; any building's visit tile in the band beats open ground.
+        const parentBuilding = parentSprite.getBehaviorDebugSnapshot?.()?.building || null;
+        let best = null;
+        let bestScore = Infinity;
+        for (const building of this.world?.buildings?.values?.() || []) {
+            for (const tile of building?.visitTiles || []) {
+                const tileX = Number(tile?.tileX);
+                const tileY = Number(tile?.tileY);
+                if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) continue;
+                const dist = Math.hypot(tileX - parentTile.tileX, tileY - parentTile.tileY);
+                if (dist < 2 || dist > 3.25) continue;
+                if (!isFree(tileX, tileY)) continue;
+                const score = Math.abs(dist - 2.5)
+                    + (building.type === parentBuilding ? 0 : 1)
+                    + ((this._gateJitter(agent, `land:${tileX},${tileY}`, 1) + 0.5) * 0.3);
+                if (score < bestScore) {
+                    best = { tileX, tileY, building, tile };
+                    bestScore = score;
+                }
+            }
+        }
+        if (best) return best;
+        const steps = 12;
+        const first = Math.floor(jitter * steps) % steps;
+        for (const radius of [2.5, 2, 3]) {
+            for (let i = 0; i < steps; i++) {
+                const angle = ((first + i) % steps) / steps * Math.PI * 2;
+                const tileX = parentTile.tileX + Math.cos(angle) * radius;
+                const tileY = parentTile.tileY + Math.sin(angle) * radius;
+                if (isFree(tileX, tileY)) return { tileX, tileY };
+            }
+        }
+        return null;
+    }
+
+    // After a dispatched child lands, a body that walked onto its tile during
+    // the flight sends the child to its own visit instead of stacking.
+    _resolveLandingOverlap(sprite) {
+        if (!sprite || sprite.leaving || this.agentSprites.get(sprite.agent?.id) !== sprite) return;
+        for (const other of this.agentSprites.values()) {
+            if (other === sprite || other.leaving || other.isArrivalPending?.()) continue;
+            if (Math.hypot(other.x - sprite.x, other.y - sprite.y) < 20) {
+                if (sprite.retargetVisit?.()) this._markSpritesDirty();
+                return;
+            }
+        }
     }
 
     _beginRelationshipDeparture(agent) {
@@ -3385,8 +3582,8 @@ export class IsometricRenderer {
     _beginAgentGateArrival(agent, sprite) {
         if (!sprite) return;
 
-        // Subagents step out of the Portal Gate toward their parent rather than
-        // riding the carriage/boat arrival used for top-level sessions.
+        // Subagents step out of the Portal Gate toward their parent; with
+        // motion, the dispatch comet (6.3) relocates them beside the parent.
         const parentRef = agent?.parentSessionId || agent?.parentId || agent?.parentAgentId;
         if (parentRef) {
             const parentSprite = this.agentSprites.get(parentRef);
@@ -3424,6 +3621,10 @@ export class IsometricRenderer {
             VILLAGE_GATE.outside.tileX + this._gateJitter(agent, 'outside-x', 0.28),
             VILLAGE_GATE.outside.tileY + this._gateJitter(agent, 'outside-y', 0.18),
         );
+        this._walkInThroughGate(agent, sprite);
+    }
+
+    _walkInThroughGate(agent, sprite) {
         sprite.walkToTile?.(
             VILLAGE_GATE.inside.tileX + this._gateJitter(agent, 'inside-x', 0.42),
             VILLAGE_GATE.inside.tileY + this._gateJitter(agent, 'inside-y', 0.28),
@@ -3870,6 +4071,7 @@ export class IsometricRenderer {
             const afterRender = performance.now();
             renderMs = afterRender - renderStart;
             this._recordIdleRenderState();
+            this._signalFirstFrame();
             if (renderToken) {
                 perf.endRenderStage(renderToken);
                 renderToken = null;
@@ -4341,6 +4543,7 @@ export class IsometricRenderer {
         this.buildingRenderer?.setAgentSprites(allSpritesSnapshot);
         this.buildingRenderer?.update(dt);
         this._updateAmbientEffects(dt);
+        this._updateChimneySmoke();
 
         // Reap any agent sprites whose 800ms archive-fade window has expired
         // before the particle update so the next frame draws the final state.
@@ -4883,43 +5086,44 @@ export class IsometricRenderer {
 
         const particleBudget = Math.max(0.22, 1 - activeParticles / maxParticles);
         let spawned = 0;
-        const now = performance.now();
         for (const emitter of this.ambientEmitters) {
-            // Active-building emitters use interval timing and
-            // are not subject to the single-spawn-per-frame cap below.
-            if (emitter.gatedBy === ACTIVE_BUILDING_EMITTER_GATE) {
-                const presence = emitter.building
-                    ? this._buildingPresenceMap?.get(emitter.building)
-                    : null;
-                const tier = presence?.tier;
-                if (tier !== 'occupied' && tier !== 'busy') continue;
-                const interval = Math.max(120, emitter.intervalMs || 600);
-                const last = this._emitterIntervalLastMs.get(emitter) || 0;
-                if (now - last < interval) continue;
-                this._emitterIntervalLastMs.set(emitter, now);
-                const yOffset = Number.isFinite(emitter.worldYOffset) ? emitter.worldYOffset : -18;
-                this.particleSystem.spawn(emitter.particleType, emitter.x, emitter.y + yOffset, 1);
-                continue;
-            }
-
-            if (spawned >= 1) continue;
-
-            // E7 — fireflies only emerge after dusk and swarm hardest at night.
-            let chanceScale = 1;
-            if (emitter.particleType === 'firefly') {
-                const phase = this._lastAtmosphere?.phase;
-                if (phase !== 'dusk' && phase !== 'night') continue;
-                if (phase === 'night') chanceScale = 3;
-            }
-
+            if (spawned >= 1) break;
             const localBudget = this._ambientEmitterBudget(emitter);
             const frameScale = Math.max(0, Math.min(3, dt / 16));
-            const chance = 1 - Math.pow(1 - Math.max(0, Math.min(1, emitter.chance * particleBudget * localBudget * chanceScale)), frameScale);
+            const chance = 1 - Math.pow(1 - Math.max(0, Math.min(1, emitter.chance * particleBudget * localBudget)), frameScale);
             if (Math.random() < chance) {
                 this.particleSystem.spawn(emitter.particleType, emitter.x, emitter.y - 18, 1);
                 spawned++;
             }
         }
+    }
+
+    // 6.7 — chimney smoke rides its own interval (not the one-ambient-spawn
+    // cap above): occupancy-gated, wind-leaned, flattened by rain.
+    _updateChimneySmoke() {
+        if (!this.motionScale || !this.chimneySmoke) return;
+        this.chimneySmoke.update({
+            now: performance.now(),
+            buildings: this.world?.buildings,
+            assets: this.assets,
+            presence: this._buildingPresenceMap,
+            particleSystem: this.particleSystem,
+            atmosphere: this._lastAtmosphere,
+            windX: smokeWindDrift(this.atmosphereState),
+            heatFor: type => (type === 'forge' ? this.buildingRenderer?._forgeGlowIntensity?.() ?? 0 : 0),
+        });
+    }
+
+    // Reduced motion: the chimneys that would be smoking show a static wisp.
+    // `lightGrade` is passed only for the ungraded resident overlay.
+    _drawChimneySmokeStatic(ctx, lightGrade = null) {
+        if (this.motionScale > 0 || !this.chimneySmoke) return;
+        this.chimneySmoke.drawStatic(ctx, {
+            buildings: this.world?.buildings,
+            assets: this.assets,
+            presence: this._buildingPresenceMap,
+            lightGrade,
+        });
     }
 
     // Weather→agent response: while rain or storm is active, tiny splash
@@ -5091,7 +5295,7 @@ export class IsometricRenderer {
             const point = this.camera.worldToScreen(sprite.x, sprite.y);
             if (point.x < -60 * zoom || point.x > viewport.width + 60 * zoom
                 || point.y < 0 || point.y > viewport.height + 100 * zoom) continue;
-            projectedArea += 48 * 72 * zoom * zoom;
+            projectedArea += AGENT_BODY_AREA_W * AGENT_BODY_AREA_H * zoom * zoom;
         }
         const overlayArea = Math.max(count * (zoom >= 3 ? 3900 : 2100), projectedArea);
         const collisions = Number(this._crowdStats?.congestedAgents) || 0;
@@ -5154,31 +5358,6 @@ export class IsometricRenderer {
         }
     }
 
-    _rectGridOverlapCount(grid, rect) {
-        if (!grid || !rect) return 0;
-        const seen = grid.seen;
-        seen.clear();
-        const size = grid.cellSize;
-        const x0 = Math.floor(rect.x / size);
-        const x1 = Math.floor((rect.x + rect.w) / size);
-        const y0 = Math.floor(rect.y / size);
-        const y1 = Math.floor((rect.y + rect.h) / size);
-        let overlaps = 0;
-        for (let x = x0; x <= x1; x++) {
-            for (let y = y0; y <= y1; y++) {
-                const bucket = grid.buckets.get((x + 32768) * 65536 + y + 32768);
-                if (!bucket || bucket.generation !== grid.generation) continue;
-                for (const item of bucket.items) {
-                    if (seen.has(item)) continue;
-                    seen.add(item);
-                    const itemRect = item.rect || item;
-                    if (this._rectsOverlap(rect, itemRect)) overlaps++;
-                }
-            }
-        }
-        return overlaps;
-    }
-
     _rectGridHasOverlap(grid, rect) {
         if (!grid || !rect) return false;
         const size = grid.cellSize;
@@ -5196,14 +5375,6 @@ export class IsometricRenderer {
             }
         }
         return false;
-    }
-
-    _rectListOverlapCount(items, rect) {
-        let overlaps = 0;
-        for (const item of items) {
-            if (this._rectsOverlap(rect, item.rect || item)) overlaps++;
-        }
-        return overlaps;
     }
 
     _rectListHasOverlap(items, rect) {
@@ -5239,16 +5410,12 @@ export class IsometricRenderer {
     }
 
     _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1, { agentRenderMode = 'full' } = {}) {
-        const compactGrid = this._overlayCompactGrid;
         const nameGrid = this._overlayNameGrid;
         const bubbleGrid = this._overlayBubbleGrid;
-        const compactRects = this._overlayCompactRects;
         const nameRects = this._overlayNameRects;
         const reservedRects = this._overlayReservedRects;
-        compactRects.length = 0;
         nameRects.length = 0;
         reservedRects.length = 0;
-        // Dense crowd badges carry routine identities; primary agents stay named.
         // Action labels retain a cap because they are secondary detail.
         const actionLabelCap = agentRenderMode === 'minimal'
             ? 3
@@ -5256,9 +5423,6 @@ export class IsometricRenderer {
                 ? 4
                 : Infinity;
         let actionLabels = 0;
-        const namedCrowdCells = new Set();
-        const denseCrowdCells = new Set(agentRenderMode === 'full' ? []
-            : (this._crowdStats?.clusters || []).filter(cluster => cluster.count > 5).map(cluster => cluster.id));
         // Cull before priority sorting or allocating any label geometry. The
         // input is normally already the visible painter snapshot, but keeping
         // this guard here makes the layout contract safe for other callers.
@@ -5268,136 +5432,145 @@ export class IsometricRenderer {
         for (const sprite of sprites || []) {
             if (sprite.agent && this._agentVisibleOnScreen(sprite, viewport)) prioritized.push(sprite);
         }
-        prioritized.sort((a, b) => this._agentLabelPriority(b) - this._agentLabelPriority(a));
+        const now = performance.now();
+        for (const sprite of prioritized) this._noteLabelToolChange(sprite, now);
+        prioritized.sort((a, b) => this._agentLabelPriority(b, now) - this._agentLabelPriority(a, now));
         // A direct scan is faster for small visible sets. Above that, the grid
         // bounds each query to spatial neighbours instead of the full crowd.
         const useSpatialGrid = prioritized.length > 32;
-        this._beginRectGridFrame(compactGrid);
         this._beginRectGridFrame(nameGrid);
         this._beginRectGridFrame(bubbleGrid);
+        const reserve = (rect) => {
+            if (useSpatialGrid) {
+                this._insertRectGridItem(nameGrid, rect);
+                this._insertRectGridItem(bubbleGrid, rect);
+            } else {
+                nameRects.push(rect);
+                reservedRects.push(rect);
+            }
+        };
+        const collides = rect => (useSpatialGrid
+            ? this._rectGridHasOverlap(nameGrid, rect)
+            : this._rectListHasOverlap(nameRects, rect));
 
-        // Primary agents reserve their label envelope before buildings and
-        // routine agents request overlay space later in the frame.
-        for (const sprite of prioritized) {
-            const status = sprite.agent?.status;
-            if (!sprite.selected && ![AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(status)) continue;
-            this.markGovernor.reserve(this._agentCompactSlotRect(sprite, 0), 'primary', `agent:${sprite.agent.id}`);
+        // T1 — attention plates are laid out first, from live status, and
+        // every other label yields to them. Their rects are PRIMARY in the
+        // mark governor, so ambient marks in the region dim around them.
+        this._attentionLayout = layoutAttentionPlates(this.overlayCtx, {
+            // Every agent, not the visible snapshot: off-view action-needed
+            // agents get an edge plate instead of vanishing (T1 truth).
+            sprites: this.agentSprites.values(),
+            camera: this.camera,
+            viewport,
+            now: Date.now(),
+        });
+        const attentionWorldRects = this._attentionWorldRects;
+        attentionWorldRects.length = 0;
+        for (const rect of attentionScreenRects(this._attentionLayout)) {
+            const worldRect = this._screenRectToWorld(rect);
+            if (!worldRect) continue;
+            attentionWorldRects.push(worldRect);
+            reserve(worldRect);
+            this.markGovernor.reserve(worldRect, 'primary', 'attention');
         }
+        // S4/S5 — building ledgers and assay furniture give way to T1.
+        if (this.buildingRenderer) this.buildingRenderer.attentionWorldRects = attentionWorldRects;
 
+        const focusId = this.selectedAgent?.id || this.cameraDirector?.attentionFrame?.focusedAgentId;
+        const readMode = this.getReadMode();
+        const routineZoom = zoom >= ROUTINE_NAME_MIN_ZOOM;
+        const perRegion = zoom >= ROUTINE_NAME_DETAIL_ZOOM ? ROUTINE_NAMES_PER_REGION_DETAIL : ROUTINE_NAMES_PER_REGION;
+        const regionCounts = this._overlayRegionCounts;
+        regionCounts.clear();
         for (const sprite of prioritized) {
-            if (!sprite.agent) continue;
-            const focusId = this.selectedAgent?.id || this.cameraDirector?.attentionFrame?.focusedAgentId;
-            const primary = sprite.selected || sprite.agent.id === focusId
-                || [AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(sprite.agent.status);
+            const attention = isAttentionStatus(sprite.agent.status);
+            const focused = sprite.selected || sprite.agent.id === focusId;
+            const primary = focused || attention;
             sprite.decisionFocusMuted = Boolean(focusId && sprite.agent.id !== focusId);
             sprite.decisionFocusRoutine = sprite.decisionFocusMuted && !primary;
-            sprite.readVerb = this.getReadMode() && !primary ? sprite.readToolVerb || 'OTHER' : null;
+            sprite.readVerb = readMode && !primary ? sprite.readToolVerb || 'OTHER' : null;
 
             sprite.overlaySlot = null;
             sprite.nameTagSlot = null;
+            sprite.labelPlate = false;
+            sprite.labelShiftX = 0;
+            sprite.labelShiftY = 0;
             sprite.gpuActionOverlay = false;
-            sprite.labelAlpha = this._agentLabelAlpha(sprite, zoom);
+            sprite.labelAlpha = 1;
             sprite.foldedIntoBuilding = false;
+            sprite.plateOffFrame = false;
 
-            if (sprite.selected || sprite.agent.id === focusId) {
-                const compactRect = this._agentCompactSlotRect(sprite, 0);
-                const nameRect = this._agentNameSlotRect(sprite, 0);
-                if (useSpatialGrid) {
-                    this._insertRectGridItem(compactGrid, compactRect);
-                    this._insertRectGridItem(nameGrid, nameRect);
-                    this._insertRectGridItem(bubbleGrid, compactRect);
-                    this._insertRectGridItem(bubbleGrid, nameRect);
-                } else {
-                    compactRects.push(compactRect);
-                    nameRects.push(nameRect);
-                    reservedRects.push(compactRect, nameRect);
-                }
+            // T2 — selected, camera-focused and hovered agents wear the plate.
+            // A hovered action-needed agent is already named by its T1 plate.
+            if (focused || (sprite.hovered && !attention)) {
+                sprite.labelPlate = true;
                 sprite.overlaySlot = 0;
                 sprite.nameTagSlot = 0;
                 sprite.gpuActionOverlay = true;
+                // S13 — clamped inside the canvas while the body is in view;
+                // no plate at all once the body has left the frame.
+                if (!this._clampIdentityPlate(sprite, viewport, zoom)) {
+                    sprite.plateOffFrame = true;
+                    sprite.overlaySlot = null;
+                    sprite.nameTagSlot = null;
+                    continue;
+                }
+                reserve(this._agentIdentityRect(sprite, 0));
                 continue;
             }
-
+            // T1 owns the identity of every action-needed agent.
+            if (attention) continue;
             if (sprite.decisionFocusRoutine) {
                 sprite.labelAlpha = 0;
                 continue;
             }
-            if (denseCrowdCells.size && this._isRoutineFoldCandidate(sprite)) {
-                const tile = worldToTile(sprite.x, sprite.y);
-                const cell = `${Math.floor(tile.tileX / CROWD_CLUSTER_TILE_SIZE)},${Math.floor(tile.tileY / CROWD_CLUSTER_TILE_SIZE)}`;
-                if (denseCrowdCells.has(cell)) {
-                    if (namedCrowdCells.has(cell)) {
-                        sprite.labelAlpha = 0;
-                        continue;
-                    }
-                    namedCrowdCells.add(cell);
-                }
-            }
-
-            const compactSlot = this._leastOverlappedCompactSlot(
-                sprite,
-                useSpatialGrid ? compactGrid : compactRects,
-            );
-            sprite.overlaySlot = compactSlot;
-            const compactRect = this._agentCompactSlotRect(sprite, compactSlot);
-            if (useSpatialGrid) {
-                this._insertRectGridItem(compactGrid, compactRect);
-                this._insertRectGridItem(bubbleGrid, compactRect);
-            } else {
-                compactRects.push(compactRect);
-                reservedRects.push(compactRect);
+            // W-F16 — a body the depth pass hid behind a building carries no
+            // routine name or action marks on the building's face.
+            if (sprite._behindBuilding) {
+                sprite.labelAlpha = 0;
+                continue;
             }
             if (sprite.agent?.currentTool && actionLabels < actionLabelCap) {
                 sprite.gpuActionOverlay = true;
                 actionLabels++;
             }
+            // Plan 6.2 — the name waits for the walk-in to land.
+            if (sprite.isArrivalPending?.()) continue;
 
-            if (agentRenderMode !== 'full' || zoom < 3) {
-                sprite.nameTagSlot = null;
-                continue;
+            // T4 — routine names: top-N per screen region at z >= 1.6 (every
+            // name while READ is held), dropped rather than offset.
+            let regionKey = null;
+            if (!readMode) {
+                if (!routineZoom) continue;
+                const point = this.camera.worldToScreen(sprite.x, sprite.y);
+                regionKey = `${Math.floor(point.x / ROUTINE_NAME_REGION_PX)},${Math.floor(point.y / ROUTINE_NAME_REGION_PX)}`;
+                if ((regionCounts.get(regionKey) || 0) >= perRegion) continue;
             }
-
-            let nameSlot = 0;
-            let nameRect = this._agentNameSlotRect(sprite, nameSlot);
-            // 3.4 — a slot is usable only when it clears both already-placed
-            // tags and static prop footprints (tags stay off prop art).
-            while (
-                nameSlot < 7 &&
-                ((useSpatialGrid
-                    ? this._rectGridHasOverlap(nameGrid, nameRect)
-                    : this._rectListHasOverlap(nameRects, nameRect))
-                    || this._nameSlotRectHitsProp(nameRect, sprite.y))
-            ) {
-                nameSlot++;
-                nameRect = this._agentNameSlotRect(sprite, nameSlot);
+            const slotCap = readMode ? READ_MODE_NAME_SLOTS : 1;
+            let slot = 0;
+            let rect = this._agentIdentityRect(sprite, slot);
+            // 3.4 — Canvas bodies paint names in depth order, so a label under
+            // a prop's front band would be covered; the resident overlay is not.
+            const propCheck = !sprite.gpuWorldEnabled;
+            // Plan 2.5 — a routine name never crosses another body: if it
+            // would, it is dropped (identity stays one hover away).
+            while (slot < slotCap && (collides(rect)
+                || this._nameRectHitsOtherBody(rect, sprite, prioritized)
+                || (propCheck && this._nameSlotRectHitsProp(rect, sprite.y)))) {
+                slot++;
+                if (slot < slotCap) rect = this._agentIdentityRect(sprite, slot);
             }
-            if (nameSlot >= 7) {
-                sprite.nameTagSlot = null;
-            } else {
-                sprite.nameTagSlot = nameSlot;
-                if (useSpatialGrid) {
-                    this._insertRectGridItem(nameGrid, nameRect);
-                    this._insertRectGridItem(bubbleGrid, nameRect);
-                } else {
-                    nameRects.push(nameRect);
-                    reservedRects.push(nameRect);
-                }
-            }
+            if (slot >= slotCap) continue;
+            sprite.overlaySlot = slot;
+            reserve(rect);
+            if (regionKey) regionCounts.set(regionKey, (regionCounts.get(regionKey) || 0) + 1);
         }
 
         const bubbleSprites = this._overlayBubbleSprites;
         bubbleSprites.length = 0;
         for (const sprite of prioritized) {
-            if (sprite.decisionFocusMuted) continue;
-            if (agentRenderMode === 'full') {
-                bubbleSprites.push(sprite);
-            } else {
-                const status = sprite.agent?.status;
-                if (sprite.gpuActionOverlay || sprite.selected
-                    || status === AgentStatus.WAITING_ON_USER
-                    || status === AgentStatus.ERRORED
-                    || status === AgentStatus.RATE_LIMITED) bubbleSprites.push(sprite);
-            }
+            if (sprite.decisionFocusMuted || (sprite._behindBuilding && !sprite.selected)) continue;
+            if (agentRenderMode === 'full' || sprite.gpuActionOverlay || sprite.selected) bubbleSprites.push(sprite);
         }
         this._assignAgentBubbleSlots(
             bubbleSprites,
@@ -5407,21 +5580,12 @@ export class IsometricRenderer {
         );
     }
 
-    _leastOverlappedCompactSlot(sprite, occupiedGrid, slotCount = 4) {
-        let bestSlot = 0;
-        let bestOverlapCount = Infinity;
-        for (let slot = 0; slot < slotCount; slot++) {
-            const rect = this._agentCompactSlotRect(sprite, slot);
-            const overlapCount = Array.isArray(occupiedGrid)
-                ? this._rectListOverlapCount(occupiedGrid, rect)
-                : this._rectGridOverlapCount(occupiedGrid, rect);
-            if (overlapCount === 0) return slot;
-            if (overlapCount < bestOverlapCount) {
-                bestSlot = slot;
-                bestOverlapCount = overlapCount;
-            }
-        }
-        return bestSlot;
+    _screenRectToWorld(rect) {
+        const camera = this.camera;
+        if (!camera?.screenToWorld || !rect) return null;
+        const topLeft = camera.screenToWorld(rect.left, rect.top);
+        const bottomRight = camera.screenToWorld(rect.right, rect.bottom);
+        return { x: topLeft.x, y: topLeft.y, w: bottomRight.x - topLeft.x, h: bottomRight.y - topLeft.y };
     }
 
     // Crowd bubble de-collision. Reuses the overlay-slot rect-overlap technique:
@@ -5637,6 +5801,9 @@ export class IsometricRenderer {
     _spriteWantsBubble(sprite) {
         if (!sprite || sprite.chatting) return false;
         if (sprite.isArrivalPending?.()) return false;
+        // T1 — an action-needed agent's head space belongs to its beacon and
+        // attention plate; the Activity Panel carries its words.
+        if (isAttentionStatus(sprite.agent?.status)) return false;
         // A silent villager draws nothing, so it must not reserve a slot and
         // push a speaking neighbour into a higher one. Reads the snapshot the
         // sprite already computed rather than rebuilding its activity thread.
@@ -5648,7 +5815,10 @@ export class IsometricRenderer {
         const s = 1 / ((this.camera?.zoom) || 1);
         const halfW = (this._agentBubbleWidth(sprite) / 2) * s;
         const halfH = (AGENT_BUBBLE_HEIGHT / 2) * s;
-        const centerY = sprite.y - (AGENT_BUBBLE_ANCHOR_Y + slot * AGENT_BUBBLE_STACK_STEP) * s;
+        const headY = typeof sprite._headTopY === 'function'
+            ? (typeof sprite._labelTopY === 'function' ? sprite._labelTopY(sprite._headTopY()) : sprite._headTopY())
+            : sprite.y;
+        const centerY = headY - (AGENT_BUBBLE_HEAD_OFFSET + slot * AGENT_BUBBLE_STACK_STEP) * s;
         return {
             x: sprite.x - halfW,
             y: centerY - halfH,
@@ -5660,7 +5830,7 @@ export class IsometricRenderer {
     // Reservation width for de-collision. Dialogue lines are real model text of
     // varying length, so a single fixed estimate would under-reserve for long
     // lines and let bubbles overlap. Estimating from character count at the
-    // anchored 10px body font keeps this allocation-free and off the
+    // anchored 11px body font keeps this allocation-free and off the
     // measureText path, while STATUS_BUBBLE_MAIN_MAX_WIDTH caps it exactly as
     // the sprite's own pixel truncation does.
     _agentBubbleWidth(sprite) {
@@ -5670,88 +5840,119 @@ export class IsometricRenderer {
         return Math.min(AGENT_BUBBLE_MAX_WIDTH, Math.max(AGENT_BUBBLE_EST_WIDTH, estimate));
     }
 
-    _agentLabelPriority(sprite) {
+    // Routine-name admission order: a recent tool change or a fresh arrival
+    // earns the slot first, then ordinary work, then everyone else.
+    _agentLabelPriority(sprite, now = performance.now()) {
         if (sprite.selected) return 1000;
         const status = sprite.agent?.status;
-        const age = performance.now() - (sprite.addedAt || 0);
+        const age = now - (sprite.addedAt || 0);
         const recentSpawn = age >= 0 && age < 12000;
-        if (status === AgentStatus.WORKING && recentSpawn) return 760;
-        if (recentSpawn) return 620;
+        const toolAge = now - (sprite._labelToolChangedAt || -Infinity);
+        const recentTool = toolAge >= 0 && toolAge < LABEL_TOOL_CHANGE_MS;
+        if (status === AgentStatus.WORKING && (recentSpawn || recentTool)) return 760;
+        if (recentSpawn || recentTool) return 620;
         if (status === AgentStatus.WORKING) return 520;
         if (status === AgentStatus.WAITING) return 360;
         return 120;
     }
 
-    // Identity labels remain fully opaque at every zoom and crowd density.
-    _agentLabelAlpha() {
-        return 1;
+    _noteLabelToolChange(sprite, now = performance.now()) {
+        const tool = sprite.agent?.currentTool || '';
+        if (sprite._labelToolKey === tool) return;
+        // The first observation is not a change: an agent that was already
+        // mid-tool when it came into view has no claim on "recent".
+        if (sprite._labelToolKey !== undefined && tool) sprite._labelToolChangedAt = now;
+        sprite._labelToolKey = tool;
     }
 
+    // Every drawn identity label (T2 plate or T4 name), in world units, so the
+    // building plaques step aside from them — and, one frame on, the ledgers
+    // and landmark chits drawn in the depth pass (S12).
     _collectAgentLabelHitRects(sprites) {
-        const zoom = this.camera?.zoom || 1;
         const out = this._agentLabelHitRects;
         out.length = 0;
         for (const sprite of sprites) {
-            if (!sprite.agent) continue;
-
-            const usesNameTag = (sprite.selected || zoom >= 3) && sprite.nameTagSlot != null;
-            if (usesNameTag) {
-                out.push(this._agentNameSlotRect(sprite, sprite.nameTagSlot || 0));
-                continue;
-            }
-            if (sprite.overlaySlot == null) continue;
-            out.push(this._agentCompactSlotRect(sprite, sprite.overlaySlot || 0));
+            if (!sprite.agent || sprite.overlaySlot == null) continue;
+            out.push(this._agentIdentityRect(sprite, sprite.overlaySlot || 0));
         }
+        for (const rect of this._attentionWorldRects) out.push(rect);
+        if (this.buildingRenderer) this.buildingRenderer.identityWorldRects = out;
         return out;
     }
 
-    _agentImpostorSlotRect(sprite) {
-        const s = 1 / ((this.camera?.zoom) || 1);
-        const halfW = 11 * s;
-        const halfH = 13 * s;
-        return {
-            x: sprite.x - halfW,
-            y: sprite.y - 17 * s,
-            w: halfW * 2,
-            h: halfH * 2,
-        };
+    _agentIdentityText(sprite) {
+        const baseName = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
+        if (sprite.labelPlate) return sprite.nickname ? `${baseName} ${sprite.nickname}` : baseName;
+        return sprite.readVerb || baseName;
     }
 
-    _agentCompactSlotRect(sprite, slot) {
-        const s = 1 / ((this.camera?.zoom) || 1);
-        const offsetX = sprite.x;
-        const offsetY = sprite.y
-            + (AGENT_COMPACT_NAME_SLOT_BASE_Y + slot * AGENT_COMPACT_NAME_SLOT_STEP_Y) * s;
-        const pad = 2 * s;
-        const halfW = (this._estimateCompactNameTagWidth(sprite) / 2) * s;
-        const halfH = (AGENT_COMPACT_NAME_HEIGHT / 2) * s;
+    // World rect of the T2 plate or T4 name under the feet (screen-fixed
+    // pixels divided back into the world), matching AgentSprite's paint.
+    _agentIdentityRect(sprite, slot = 0) {
+        const zoom = this.camera?.zoom || 1;
+        const s = 1 / zoom;
+        const plate = Boolean(sprite.labelPlate);
+        const width = identityLabelWidth(this._agentIdentityText(sprite), { plate });
+        const height = plate ? IDENTITY_LABEL.plateHeight : IDENTITY_LABEL.textHeight;
+        const labelTop = typeof sprite.identityLabelTopPx === 'function'
+            ? sprite.identityLabelTopPx(zoom)
+            : identityLabelTop(zoom);
+        const shiftX = plate ? Math.round(sprite.labelShiftX || 0) : 0;
+        const top = labelTop + (plate ? Math.round(sprite.labelShiftY || 0) : 0) + slot * IDENTITY_LABEL.slotStep;
+        const pad = 2;
         return {
-            x: offsetX - halfW - pad,
-            y: offsetY - halfH - pad,
-            w: halfW * 2 + pad * 2,
-            h: halfH * 2 + pad * 2,
-        };
-    }
-
-    _agentNameSlotRect(sprite, slot) {
-        const s = 1 / ((this.camera?.zoom) || 1);
-        const offsetY = sprite.y + (38 + this._nameTagSlotYOffset(slot)) * s;
-        const anchorX = sprite.x;
-        const pad = 2 * s;
-        const width = this._estimateNameTagWidth(sprite) * s;
-        const height = this._estimateNameTagHeight(sprite) * s;
-        return {
-            x: anchorX - width / 2 - pad,
-            y: offsetY - height / 2 - pad,
-            w: width + pad * 2,
-            h: height + pad * 2,
+            x: sprite.x + (shiftX - width / 2 - pad) * s,
+            y: sprite.y + (top - pad) * s,
+            w: (width + pad * 2) * s,
+            h: (height + pad * 2) * s,
             slot,
         };
     }
 
-    _nameTagSlotYOffset(slot) {
-        const offsets = [0, -10, 10, -18, 18, -26, 26, -34];
-        return offsets[Math.min(slot, offsets.length - 1)];
+    // S13 — the T2 plate stays inside the visible canvas: a body at the edge
+    // keeps its plate whole (shifted along the edge), never cut by the frame
+    // or the Activity Panel beside it. Screen px, applied by AgentSprite.
+    // Returns false when no part of the body is in the canvas: a plate held
+    // at the edge for an unseen body would be an orphan.
+    _clampIdentityPlate(sprite, viewport, zoom) {
+        if (!this.camera?.worldToScreen || !viewport?.width) return true;
+        const point = this.camera.worldToScreen(sprite.x, sprite.y);
+        const box = sprite._bodyBox;
+        const bodyLeft = point.x + (box ? box.left : -12) * zoom;
+        const bodyRight = point.x + (box ? box.right : 12) * zoom;
+        const bodyTop = point.y + (box ? box.top : -48) * zoom;
+        const bodyBottom = point.y + (box ? box.bottom : 0) * zoom;
+        if (bodyRight <= 0 || bodyLeft >= viewport.width || bodyBottom <= 0 || bodyTop >= viewport.height) return false;
+        const width = identityLabelWidth(this._agentIdentityText(sprite), { plate: true });
+        const top = point.y + (typeof sprite.identityLabelTopPx === 'function' ? sprite.identityLabelTopPx(zoom) : identityLabelTop(zoom));
+        const left = point.x - Math.round(width / 2);
+        const margin = 4;
+        let shiftX = 0;
+        if (left < margin) shiftX = margin - left;
+        else if (left + width > viewport.width - margin) shiftX = viewport.width - margin - (left + width);
+        let shiftY = 0;
+        const bottom = top + IDENTITY_LABEL.plateHeight;
+        if (bottom > viewport.height - margin) shiftY = viewport.height - margin - bottom;
+        sprite.labelShiftX = Math.round(shiftX);
+        sprite.labelShiftY = Math.round(shiftY);
+        return true;
+    }
+
+    // True when a T4 name rect (world units) crosses the drawn body of any
+    // other visible villager.
+    _nameRectHitsOtherBody(rect, owner, sprites) {
+        for (const other of sprites) {
+            if (other === owner) continue;
+            const box = other._bodyBox;
+            if (!box) continue;
+            const left = other.x + box.left;
+            const top = other.y + box.top;
+            if (rect.x < left + (box.right - box.left)
+                && rect.x + rect.w > left
+                && rect.y < top + (box.bottom - box.top)
+                && rect.y + rect.h > top) return true;
+        }
+        return false;
     }
 
     // 3.4 — coarse world-space index over static prop footprints (trees,
@@ -5819,35 +6020,6 @@ export class IsometricRenderer {
         return false;
     }
 
-    _estimateNameTagWidth(sprite) {
-        const baseName = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
-        // Match the real pill: nickname renders as a suffix on the full tag.
-        const fullName = sprite.nickname ? `${baseName} ${sprite.nickname}` : baseName;
-        const rawLen = Math.min(fullName.length, 28);
-        return Math.min(
-            AGENT_NAME_TAG_MAX_WIDTH,
-            Math.max(AGENT_NAME_TAG_MIN_WIDTH, rawLen * AGENT_NAME_TAG_CHAR_WIDTH + AGENT_NAME_TAG_PADDING_X),
-        );
-    }
-
-    _estimateNameTagHeight(sprite) {
-        const baseName = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
-        const fullName = sprite.nickname ? `${baseName} ${sprite.nickname}` : baseName;
-        // The real pill wraps to two lines once it exceeds ~MAX_WIDTH (≈21 chars
-        // at 7px/char), matching AgentSprite._nameTagLayout.
-        const lines = fullName.length > 21 ? 2 : 1;
-        return lines === 1 ? AGENT_NAME_TAG_SINGLE_HEIGHT : AGENT_NAME_TAG_DOUBLE_HEIGHT;
-    }
-
-    _estimateCompactNameTagWidth(sprite) {
-        const name = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
-        const rawLen = Math.min(name.length, 24);
-        return Math.min(
-            AGENT_COMPACT_NAME_MAX_WIDTH,
-            Math.max(AGENT_COMPACT_NAME_MIN_WIDTH, rawLen * AGENT_COMPACT_NAME_CHAR_WIDTH + AGENT_COMPACT_NAME_EXTRA_WIDTH),
-        );
-    }
-
     _rectsOverlap(a, b) {
         return a.x < b.x + b.w
             && a.x + a.w > b.x
@@ -5870,37 +6042,6 @@ export class IsometricRenderer {
         profileMark?.('weather-puddles');
         this._drawSurfaceWetnessMarks(ctx, 'ground');
         profileMark?.('surface-wetness');
-        this._drawStaticBuildingSmoke(ctx);
-        profileMark?.('static-building-smoke');
-    }
-
-    // Static fallback: when motionScale === 0 the particle system is disabled,
-    // so we draw a single deterministic puff per occupied building.
-    _drawStaticBuildingSmoke(ctx) {
-        if (this.motionScale > 0) return;
-        if (!this.ambientEmitters?.length) return;
-        ctx.save();
-        for (const emitter of this.ambientEmitters) {
-            if (emitter.gatedBy !== ACTIVE_BUILDING_EMITTER_GATE) continue;
-            const presence = emitter.building
-                ? this._buildingPresenceMap?.get(emitter.building)
-                : null;
-            const tier = presence?.tier;
-            if (tier !== 'occupied' && tier !== 'busy') continue;
-            const yOffset = Number.isFinite(emitter.worldYOffset) ? emitter.worldYOffset : -18;
-            const cx = emitter.x;
-            const cy = emitter.y + yOffset;
-            ctx.globalAlpha = tier === 'busy' ? 0.40 : 0.28;
-            ctx.fillStyle = '#888888';
-            ctx.beginPath();
-            ctx.ellipse(cx, cy, 6, 3.2, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.globalAlpha *= 0.6;
-            ctx.beginPath();
-            ctx.ellipse(cx + 2, cy - 4, 4.5, 2.4, 0, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        ctx.restore();
     }
 
     _getVisibleTileBounds(margin = 5) {
@@ -5985,15 +6126,10 @@ export class IsometricRenderer {
         const dpr = 1;
         // C1 — a season token keyed into the cache so the ground decals rebake
         // only when the season actually changes (four discrete values), never
-        // per frame. Stored for _drawGroundDecals / _drawTile to branch on.
+        // per frame. Stored for the GroundBake decals to branch on.
         const season = this._currentSeasonToken();
         this._terrainSeason = season;
-        // The reflection is world-anchored, so camera panning follows it through
-        // the existing transform. A resting zoom tier is enough camera input to
-        // preserve the pixel grammar without rebaking during a smooth glide.
-        const cameraZoomTier = this.camera?.currentZoomTier?.() || 1;
-        const phase = this._lastAtmosphere?.phase || 'day';
-        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|edge|atmo-persp|season:${season}|camera:${cameraZoomTier}|phase:${phase}`;
+        const key = this._terrainBakeKey(bounds, dpr, season);
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
         }
@@ -6015,32 +6151,70 @@ export class IsometricRenderer {
         return { canvas, bounds };
     }
 
+    // 0.3 — the bake is keyed only on what changes its pixels: the cache
+    // bounds, asset availability, the season, the scenery revision and each
+    // registered bake pass's own revision. Time of day is owned by the grade
+    // (C2) on both backends and nothing in the bake reads the camera, so a
+    // phase boundary or a zoom step reuses the 26 MB surface instead of
+    // rebaking and re-uploading it.
+    _terrainBakeKey(bounds, dpr, season) {
+        let passes = '';
+        for (const pass of this._terrainBakePasses || []) {
+            passes += `${pass.id}:${pass.revision?.(this) ?? 0},`;
+        }
+        return `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|season:${season}|scenery:${this._terrainSceneryRevision || 0}|passes:${passes}`;
+    }
+
+    // Anything that changes what the static terrain paints (scenery edits, a
+    // re-authored tileset) calls this once; the next frame rebakes.
+    invalidateTerrainBake() {
+        this._terrainSceneryRevision = (this._terrainSceneryRevision || 0) + 1;
+    }
+
+    // The plug-in point for later terrain bakes (splat ground, coast field).
+    // A pass is `{ id, stage, draw(ctx, renderer), revision?(renderer) }`:
+    // `stage` is 'ground' (after the tile stamps), 'coast' (right after the
+    // ground: water, shore and the land-only island cliff, before bridges,
+    // foundations and props draw over them) or 'finish' (last). Its revision
+    // joins the cache key, so a pass rebakes only when its own inputs change.
+    // Passes paint at 1 texel per world pixel and must not read phase, weather
+    // or the camera: the grade owns time of day.
+    registerTerrainBakePass(pass) {
+        if (!pass?.id || typeof pass.draw !== 'function') return () => {};
+        const passes = this._terrainBakePasses || (this._terrainBakePasses = []);
+        const index = passes.findIndex(entry => entry.id === pass.id);
+        if (index >= 0) passes[index] = pass;
+        else passes.push(pass);
+        return () => {
+            const at = passes.indexOf(pass);
+            if (at >= 0) passes.splice(at, 1);
+        };
+    }
+
+    _runTerrainBakePasses(ctx, stage) {
+        for (const pass of this._terrainBakePasses || []) {
+            if (pass.stage === stage) pass.draw(ctx, this);
+        }
+    }
+
     _drawStaticTerrainSurface(ctx) {
         const previousMotionScale = this.motionScale;
         try {
             this.motionScale = 0;
-            this._drawDioramaBackdrop(ctx);
-            this._drawWorldBaseShadow(ctx);
 
-            for (let y = 0; y < MAP_SIZE; y++) {
-                for (let x = 0; x < MAP_SIZE; x++) {
-                    this._drawTile(ctx, x, y);
-                }
-            }
-
-            this._drawOpenWaterDepthWash(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-            this._drawStaticOpenSeaStructure(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-            this._drawOpenSeaBasinGradient(ctx);
-            this._drawDistrictAtmosphere(ctx);
-            this._drawRiverContourLines(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-            this._drawWaterFoamLines(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-            this._drawOpenSeaSurfBreaks(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+            // 3.2 — GroundBake paints every land texel (class field, C1 ramps,
+            // AO, thresholds, yards, decals) in one cached image.
+            this._runTerrainBakePasses(ctx, 'ground');
+            // 3.4/3.5 — CoastBake: one continuous coast field paints wet sand,
+            // foam and every water pixel, then the stratified cliff under land
+            // edge tiles only (the sea meets the cached outer ocean).
+            this._runTerrainBakePasses(ctx, 'coast');
+            this._drawTerrainOverlayTiles(ctx);
             this._drawLandmarkBridgeSpans(ctx);
             this.buildingRenderer?.drawGroundFoundations?.(ctx);
             this._drawAmbientGroundProps(ctx);
-            this._drawWorldEdgeRim(ctx);
-            this._bakePerimeterCliffShelf(ctx);
             this._bakeAtmosphericPerspective(ctx);
+            this._runTerrainBakePasses(ctx, 'finish');
         } finally {
             this.motionScale = previousMotionScale;
         }
@@ -6090,7 +6264,7 @@ export class IsometricRenderer {
         sprites.push(...this._buildWatchtowerBeaconBuoySprites());
         sprites.push(...DISTRICT_PROPS
             .filter((prop) => prop.layer === 'sorted')
-            .filter((prop) => !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.pathTiles, this.bridgeTiles))
+            .filter((prop) => !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.sceneryClearTiles, this.bridgeTiles))
             .map((prop) => {
                 const dims = this.assets?.getDims?.(prop.id);
                 // 2.9 — precomputed so the per-frame drawFn does no lookup work:
@@ -6642,31 +6816,36 @@ export class IsometricRenderer {
     // The town's name, carved into the gate band.
     //
     // Called inside the same sheared space as the arch masonry, so the baseline
-    // follows the band while every glyph stem stays vertical. That distinction
-    // is the whole fix: the old code used ctx.rotate(), which tips the stems off
-    // the pixel grid and reduces a five-pixel cap height to mush. A shear keeps
-    // verticals on whole columns, and because canvas text is rasterised after
-    // the transform rather than resampled from a bitmap, it stays sharp at
-    // every zoom. Coordinates here are sprite pixels, not screen pixels.
+    // follows the band while every glyph stem stays vertical (the old
+    // ctx.rotate() tipped stems off the grid). The letters are
+    // VILLAGE_GATE_GLYPHS cells in sprite pixels — the same texel grid as the
+    // masonry around them — so they scale with the arch exactly as its stone
+    // does, never a bold font squeezed to fit.
     _drawGateInscription(ctx, { centerX, centerY, bandWidth, bandHeight }) {
-        if (!(bandWidth > 8) || !(bandHeight > 3)) return;
+        if (!(bandWidth > 8) || !(bandHeight > VILLAGE_GATE_GLYPH_ROWS)) return;
+        const glyphs = [...VILLAGE_GATE_INSCRIPTION].map((letter) => VILLAGE_GATE_GLYPHS[letter]).filter(Boolean);
+        if (!glyphs.length) return;
+        const width = glyphs.reduce((sum, rows) => sum + rows[0].length, 0) + glyphs.length - 1;
+        if (width > bandWidth - 3) return;
+        const left = Math.round(centerX - width / 2);
+        const top = Math.round(centerY - VILLAGE_GATE_GLYPH_ROWS / 2);
 
         ctx.save();
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        // Fit the name to the band: never taller than the band, never wider.
-        let size = Math.max(5, Math.round(bandHeight * 0.9));
-        for (; size > 4; size--) {
-            ctx.font = `700 ${size}px ${WORLD_BODY_FONT}`;
-            if (ctx.measureText(VILLAGE_GATE_INSCRIPTION).width <= bandWidth - 3) break;
-        }
-
         // A one-pixel dark drop reads as a chiselled edge and keeps the gold
         // legible against the burgundy at every time of day.
-        ctx.fillStyle = VILLAGE_GATE_INSCRIPTION_SHADOW;
-        ctx.fillText(VILLAGE_GATE_INSCRIPTION, centerX, centerY + 1);
-        ctx.fillStyle = VILLAGE_GATE_INSCRIPTION_INK;
-        ctx.fillText(VILLAGE_GATE_INSCRIPTION, centerX, centerY);
+        for (const [color, dy] of [[VILLAGE_GATE_INSCRIPTION_SHADOW, 1], [VILLAGE_GATE_INSCRIPTION_INK, 0]]) {
+            ctx.fillStyle = color;
+            let x = left;
+            for (const rows of glyphs) {
+                for (let row = 0; row < rows.length; row++) {
+                    const line = rows[row];
+                    for (let col = 0; col < line.length; col++) {
+                        if (line[col] === '#') ctx.fillRect(x + col, top + row + dy, 1, 1);
+                    }
+                }
+                x += rows[0].length + 1;
+            }
+        }
         ctx.restore();
     }
 
@@ -7515,14 +7694,15 @@ export class IsometricRenderer {
                 if ((tile.x * 3 + tile.y * 5) % 3 === 0) detailTiles.push(tile);
             }
         }
-        this._drawPhaseWaterTint(ctx, waterTiles);
+        // 3.4 — night/storm water: a mood-recoloured copy of the baked coast
+        // water, rebuilt per mood bucket (the Canvas twin of the GPU shader).
+        drawCanvasWaterMood(ctx, this, this._lastAtmosphere);
         this._drawWeatherWaterRipples(ctx, waterTiles);
         this._drawWaterFogEdgeWash(ctx, shoreEdges);
         this._drawHarborWakeWaterDescriptors(ctx);
         this._drawNightWaterReflections(ctx, detailTiles);
         this._drawSeaGlitter(ctx, detailTiles);
         this._drawBuildingLightReflections(ctx, waterTiles);
-        this._drawSurfWashBands(ctx, shoreEdges);
         // B1 — river-flow streaks carry their own reduced-motion static fallback,
         // so they draw before the motion gate below.
         this._drawRiverFlowStreaks(ctx, waterTiles);
@@ -7540,15 +7720,40 @@ export class IsometricRenderer {
             const shimmer = 0.035 + Math.max(0, Math.sin(shimmerT)) * 0.045;
             const warm = this._atmosphereReactions?.warmGlint || 0;
             const glintColor = warm > 0.15 ? '255, 212, 142' : tile.token.glint;
-            ctx.strokeStyle = `rgba(${glintColor}, ${shimmer * (1 + warm * 0.42)})`;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(tile.screenX - 12, tile.screenY - 2);
-            ctx.lineTo(tile.screenX + 10, tile.screenY - 6);
-            ctx.stroke();
+            ctx.fillStyle = `rgba(${glintColor}, ${shimmer * (1 + warm * 0.42)})`;
+            this._fillSteppedDash(ctx, tile.screenX - 12, tile.screenY - 2, tile.screenX + 10, tile.screenY - 6);
         }
-        this._drawShorelineReflectionShimmer(ctx, shoreEdges);
         ctx.restore();
+    }
+
+    // W-F9 — Canvas water marks stay on the art-pixel grid (the resident
+    // path's water has no anti-aliased strokes): a line becomes one flat
+    // run of whole world texels per row (per column when steep), filled in
+    // the current fillStyle. Rows never overlap, so a translucent screen
+    // fill stays one colour.
+    _fillSteppedDash(ctx, x0, y0, x1, y1, thickness = 1) {
+        const ax = Math.round(x0);
+        const ay = Math.round(y0);
+        const bx = Math.round(x1);
+        const by = Math.round(y1);
+        const dx = bx - ax;
+        const dy = by - ay;
+        const size = Math.max(1, Math.round(thickness));
+        if (Math.abs(dx) >= Math.abs(dy)) {
+            const rows = Math.abs(dy) + 1;
+            for (let s = 0; s < rows; s++) {
+                const from = ax + Math.round((dx * s) / rows);
+                const to = ax + Math.round((dx * (s + 1)) / rows);
+                ctx.fillRect(Math.min(from, to), ay + Math.sign(dy) * s, Math.max(1, Math.abs(to - from)), size);
+            }
+            return;
+        }
+        const cols = Math.abs(dx) + 1;
+        for (let s = 0; s < cols; s++) {
+            const from = ay + Math.round((dy * s) / cols);
+            const to = ay + Math.round((dy * (s + 1)) / cols);
+            ctx.fillRect(ax + Math.sign(dx) * s, Math.min(from, to), size, Math.max(1, Math.abs(to - from)));
+        }
     }
 
     _drawWeatherPuddles(ctx) {
@@ -7860,9 +8065,6 @@ export class IsometricRenderer {
         for (const tile of shoreEdges) {
             if ((this._waterWeather?.rain || 0) > 0.65 && (tile.x + tile.y) % 2 !== 0) continue;
             const profileAlpha = tile.profile === 'openSea' ? 0.54 : tile.profile === 'harbor' ? 1.05 : 1.16;
-            ctx.strokeStyle = `rgba(${tile.token.fogWash}, ${Math.min(0.20, fogAlpha * profileAlpha * (0.34 + tile.seed * 0.44))})`;
-            ctx.lineWidth = 2;
-            this._strokeInsetDiamondEdges(ctx, tile.screenX, tile.screenY, tile.edge, 3 + tile.seed * 4);
             if (tile.seed > 0.58) {
                 this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.fogWisp, {
                     x: tile.screenX + (tile.seed - 0.5) * 24,
@@ -7878,58 +8080,6 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    // Phase-coupled water palette. Tint base water toward the active phase
-    // palette's horizon (warm dusk/dawn) or zenith-darkened (night). At noon
-    // both reactions are ~0 so this method is a near-noop and water stays teal.
-    _drawPhaseWaterTint(ctx, waterTiles) {
-        const reactions = this._atmosphereReactions || {};
-        const warmGlint = reactions.warmGlint || 0;
-        const nightReflection = reactions.nightReflection || 0;
-        const warmActive = warmGlint > 0.05;
-        const nightActive = nightReflection > 0.10;
-        if ((!warmActive && !nightActive) || !waterTiles?.length) return;
-        const palette = this._lastAtmosphere?.sky?.palette;
-        if (!palette) return;
-        const cap = THEME.waterTint?.alphaCap ?? 0.22;
-        const tints = [];
-        if (warmActive && palette.horizon) {
-            const horizonMix = THEME.waterTint?.horizonMix ?? 0.55;
-            tints.push({
-                color: palette.horizon,
-                alpha: Math.min(cap, warmGlint * horizonMix),
-            });
-        }
-        if (nightActive && palette.zenith) {
-            // Halve the zenith RGB to darken (palette.zenith * 0.5).
-            const zenithMix = THEME.waterTint?.zenithMix ?? 0.45;
-            tints.push({
-                color: this._halfHex(palette.zenith),
-                alpha: Math.min(cap, nightReflection * zenithMix),
-            });
-        }
-        if (!tints.length) return;
-        ctx.save();
-        // source-over: this is a base tint, not an additive highlight.
-        for (const tile of waterTiles) {
-            for (const tint of tints) {
-                ctx.fillStyle = this._withAlpha(tint.color, tint.alpha);
-                this._drawDiamond(ctx, tile.screenX, tile.screenY);
-                ctx.fill();
-            }
-        }
-        ctx.restore();
-    }
-
-    // Halve a #rrggbb hex toward black; used for night water zenith darkening.
-    _halfHex(hex) {
-        if (typeof hex !== 'string' || hex.length !== 7 || hex[0] !== '#') return hex;
-        const r = Math.max(0, Math.min(255, Math.round(parseInt(hex.slice(1, 3), 16) * 0.5)));
-        const g = Math.max(0, Math.min(255, Math.round(parseInt(hex.slice(3, 5), 16) * 0.5)));
-        const b = Math.max(0, Math.min(255, Math.round(parseInt(hex.slice(5, 7), 16) * 0.5)));
-        const hh = (n) => n.toString(16).padStart(2, '0');
-        return `#${hh(r)}${hh(g)}${hh(b)}`;
-    }
-
     _drawNightWaterReflections(ctx, waterTiles) {
         const nightReflection = this._atmosphereReactions?.nightReflection || 0;
         if (nightReflection <= 0.05 || !waterTiles?.length) return;
@@ -7940,12 +8090,14 @@ export class IsometricRenderer {
             if (tile.profile === 'lagoon' && tile.seed < 0.68) continue;
             const width = 8 + tile.seed * (tile.profile === 'openSea' ? 20 : 14);
             const alpha = Math.min(0.16, nightReflection * (0.032 + tile.seed * 0.052));
-            ctx.strokeStyle = `rgba(${tile.token.glint}, ${alpha})`;
-            ctx.lineWidth = tile.profile === 'openSea' ? 1.4 : 1;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(tile.screenX - width), Math.round(tile.screenY - 7 + tile.seed * 3));
-            ctx.lineTo(Math.round(tile.screenX + width * 0.72), Math.round(tile.screenY - 10 - tile.seed * 2));
-            ctx.stroke();
+            ctx.fillStyle = `rgba(${tile.token.glint}, ${alpha})`;
+            this._fillSteppedDash(
+                ctx,
+                tile.screenX - width,
+                tile.screenY - 7 + tile.seed * 3,
+                tile.screenX + width * 0.72,
+                tile.screenY - 10 - tile.seed * 2,
+            );
         }
         ctx.restore();
     }
@@ -8000,19 +8152,14 @@ export class IsometricRenderer {
             const bottom = Math.round(tile.screenY + 8);
             // Lateral sway tracks the same shimmer so the column wavers on water.
             const sway = (shimmer - 0.55) * 6 * (this.motionScale ? 1 : 0);
-            const grad = ctx.createLinearGradient(colX, top, colX + sway, bottom);
-            grad.addColorStop(0, this._withAlpha(source.color, alpha));
-            grad.addColorStop(0.55, this._withAlpha(source.color, alpha * 0.6));
-            grad.addColorStop(1, this._withAlpha(source.color, 0));
-            ctx.fillStyle = grad;
-            const halfW = 2.2 + reach * 3.4;
-            ctx.beginPath();
-            ctx.moveTo(colX - halfW, top);
-            ctx.lineTo(colX + halfW, top);
-            ctx.lineTo(colX + halfW + sway, bottom);
-            ctx.lineTo(colX - halfW + sway, bottom);
-            ctx.closePath();
-            ctx.fill();
+            // Three flat courses fading down the column (alpha 1, 0.6, 0.25)
+            // on whole texels, each shifted by its share of the sway.
+            const halfW = Math.round(2.2 + reach * 3.4);
+            const course = Math.max(1, Math.round((bottom - top) / 3));
+            [1, 0.6, 0.25].forEach((share, k) => {
+                ctx.fillStyle = this._withAlpha(source.color, alpha * share);
+                ctx.fillRect(Math.round(colX - halfW + sway * (k / 2)), top + course * k, halfW * 2, k === 2 ? bottom - top - course * 2 : course);
+            });
             drawn++;
         }
         ctx.restore();
@@ -8151,254 +8298,6 @@ export class IsometricRenderer {
         });
     }
 
-    _drawShorelineReflectionShimmer(ctx, shoreEdges) {
-        if (!shoreEdges?.length) return;
-        for (const tile of shoreEdges) {
-            if (tile.seed < 0.32) continue;
-            const frame = this.motionScale ? this.waterFrame : 0;
-            const alpha = 0.05 + Math.max(0, Math.sin(frame * 1.9 + tile.seed * 6.28)) * 0.08;
-            ctx.strokeStyle = `rgba(197, 252, 236, ${alpha})`;
-            ctx.lineWidth = 1;
-            this._strokeInsetDiamondEdges(ctx, tile.screenX, tile.screenY, tile.edge, 9);
-        }
-    }
-
-    // Animated surf wash: 2-3 staggered foam-line bands hug each shore tile's
-    // water-facing edges, pulsing in/out on PulsePolicy's slow `intrinsic` band
-    // (one phase-offset per band so crests stagger). Crest brightness scales
-    // with `reactions.stormRoughness` so troubled fleets get heavier surf.
-    // Reduced motion (`motionScale<=0`) collapses `pulseValue` to its band base,
-    // so only the innermost static foam line draws (`SURF_WASH_BANDS[0]`).
-    _drawSurfWashBands(ctx, shoreEdges) {
-        if (!shoreEdges?.length) return;
-        const stormRoughness = this._atmosphereReactions?.stormRoughness || 0;
-        const reduced = !this.motionScale;
-        const bands = reduced ? SURF_WASH_BANDS.slice(0, 1) : SURF_WASH_BANDS;
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        ctx.lineCap = 'round';
-        for (let b = 0; b < bands.length; b++) {
-            const band = bands[b];
-            // Per-band phase offset staggers crests; slow `intrinsic` band.
-            const frame = this.waterFrame + band.phase;
-            const pulse = pulseValue('intrinsic', frame, this.motionScale);
-            for (const tile of shoreEdges) {
-                if (tile.seed < band.seedFloor) continue;
-                // Phase the pulse per tile so the wash never strobes in unison.
-                const tilePulse = this.motionScale
-                    ? Math.max(0, Math.sin(frame * 0.04 + tile.seed * 6.28)) * pulse
-                    : pulse;
-                const crest = band.alpha * (0.55 + 0.45 * tilePulse) * (1 + stormRoughness * 0.9);
-                const alpha = Math.min(0.34, crest);
-                if (alpha <= 0.012) continue;
-                ctx.strokeStyle = `rgba(232, 252, 255, ${alpha})`;
-                ctx.lineWidth = band.width + stormRoughness * 0.6;
-                this._strokeInsetDiamondEdges(ctx, tile.screenX, tile.screenY, tile.edge, band.inset);
-            }
-        }
-        ctx.restore();
-    }
-
-    _drawOpenWaterDepthWash(ctx, startX, endX, startY, endY) {
-        ctx.save();
-        ctx.globalCompositeOperation = 'multiply';
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                const openness = this._waterOpenness(x, y);
-                const openSea = this._isOpenSeaTile(x, y, openness);
-                if (openness < 0.42) continue;
-                const isDeep = this.deepWaterTiles.has(key);
-                const harbor = this._isHarborWater(x, y);
-                const alpha = Math.min(
-                    openSea ? 0.36 : 0.22,
-                    (isDeep ? (openSea ? 0.22 : 0.12) : 0.055) * openness + (harbor ? 0.035 : 0)
-                );
-                ctx.fillStyle = isDeep
-                    ? `rgba(0, ${openSea ? 7 : 9}, ${openSea ? 38 : 28}, ${alpha})`
-                    : `rgba(4, 39, 62, ${alpha})`;
-                this._drawDiamond(ctx, screenX, screenY);
-                ctx.fill();
-            }
-        }
-        ctx.restore();
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (let y = Math.max(0, startY); y <= Math.min(MAP_SIZE - 1, endY); y++) {
-            for (let x = Math.max(0, startX); x <= Math.min(MAP_SIZE - 1, endX); x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key) || !this._isHarborWater(x, y)) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                ctx.fillStyle = 'rgba(87, 185, 205, 0.045)';
-                this._drawDiamond(ctx, screenX, screenY);
-                ctx.fill();
-            }
-        }
-        ctx.restore();
-    }
-
-    _drawStaticOpenSeaStructure(ctx, startX, endX, startY, endY) {
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const openness = this._waterOpenness(x, y);
-                if (!this._isOpenSeaTile(x, y, openness)) continue;
-                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                ctx.fillStyle = `rgba(2, ${28 + Math.floor(seed * 8)}, ${82 + Math.floor(openness * 28)}, ${0.26 + openness * 0.12})`;
-                this._drawDiamond(ctx, screenX, screenY);
-                ctx.fill();
-            }
-        }
-        ctx.restore();
-
-        ctx.save();
-        ctx.lineCap = 'round';
-        ctx.globalCompositeOperation = 'multiply';
-        ctx.lineWidth = 2;
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const openness = this._waterOpenness(x, y);
-                const openSea = this._isOpenSeaTile(x, y, openness);
-                const bigLagoon = !openSea && this._isBigLagoonWaterTile(x, y, openness);
-                if (!openSea && !bigLagoon) continue;
-                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                // 2.4 — iso-diagonal wavelets baked on big water: short strokes
-                // aligned to the two iso axes on a smooth anisotropic band field
-                // (2.1), breaking the old horizontal banding into a woven drift.
-                const band = this._smoothNoise((x - y) * 0.5 + 211, (x + y) * 0.25 + 97, 3);
-                if (band < 0.55) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                const drift = (seed - 0.5) * 4;
-                const half = TILE_WIDTH * (0.13 + seed * 0.07);
-                // Iso axis unit directions: (32, 16) and (-32, 16) normalized.
-                const ux = seed > 0.5 ? 0.894 : -0.894;
-                const uy = 0.447;
-                ctx.strokeStyle = openSea
-                    ? `rgba(0, 18, 58, ${0.07 + band * 0.07})`
-                    : `rgba(3, 52, 62, ${0.06 + band * 0.06})`;
-                ctx.beginPath();
-                ctx.moveTo(screenX - ux * half, screenY - uy * half - 3 + drift * 0.4);
-                ctx.lineTo(screenX + ux * half, screenY + uy * half - 3 + drift * 0.4);
-                ctx.stroke();
-            }
-        }
-        ctx.restore();
-
-        ctx.save();
-        ctx.lineCap = 'round';
-        ctx.globalCompositeOperation = 'screen';
-        ctx.lineWidth = 1.2;
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const openness = this._waterOpenness(x, y);
-                if (!this._isOpenSeaTile(x, y, openness)) continue;
-                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                const cap = this._tileNoise(x + 617, y + 389);
-                if (cap < 0.82 || openness < 0.78) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                const width = TILE_WIDTH * (0.16 + cap * 0.12);
-                ctx.strokeStyle = `rgba(224, 249, 255, ${0.12 + seed * 0.10})`;
-                ctx.beginPath();
-                ctx.moveTo(screenX - width, screenY - 10 + seed * 3);
-                ctx.quadraticCurveTo(screenX, screenY - 14, screenX + width, screenY - 11 - seed * 2);
-                ctx.stroke();
-            }
-        }
-        ctx.restore();
-    }
-
-    // 2.3 — one-mass deep-sea gradient: a single baked radial multiply over the
-    // whole sea basin, clipped to the sea tiles, so the open water reads as one
-    // body deepening toward its middle instead of a grid of per-tile washes.
-    _drawOpenSeaBasinGradient(ctx) {
-        if (!this.waterTiles?.size) return;
-        const seaTiles = [];
-        let sumX = 0;
-        let sumY = 0;
-        for (const key of this.waterTiles) {
-            if (this.bridgeTiles?.has(key)) continue;
-            const comma = key.indexOf(',');
-            const x = Number(key.slice(0, comma));
-            const y = Number(key.slice(comma + 1));
-            const region = this._waterRegionAt(x, y, key);
-            if (region !== 'sea' && region !== 'openSea') continue;
-            const screenX = (x - y) * TILE_WIDTH / 2;
-            const screenY = (x + y) * TILE_HEIGHT / 2;
-            seaTiles.push({ screenX, screenY });
-            sumX += screenX;
-            sumY += screenY;
-        }
-        if (seaTiles.length < 8) return;
-        const cx = sumX / seaTiles.length;
-        const cy = sumY / seaTiles.length;
-        let radius = 0;
-        for (const tile of seaTiles) {
-            radius = Math.max(radius, Math.hypot(tile.screenX - cx, tile.screenY - cy));
-        }
-        if (radius <= 0) return;
-        radius += TILE_WIDTH * 0.75;
-
-        ctx.save();
-        ctx.beginPath();
-        for (const tile of seaTiles) {
-            ctx.moveTo(tile.screenX, tile.screenY - TILE_HEIGHT / 2);
-            ctx.lineTo(tile.screenX + TILE_WIDTH / 2, tile.screenY);
-            ctx.lineTo(tile.screenX, tile.screenY + TILE_HEIGHT / 2);
-            ctx.lineTo(tile.screenX - TILE_WIDTH / 2, tile.screenY);
-            ctx.closePath();
-        }
-        ctx.clip();
-        ctx.globalCompositeOperation = 'multiply';
-        const gradient = ctx.createRadialGradient(cx, cy, radius * 0.12, cx, cy, radius);
-        gradient.addColorStop(0, 'rgb(148, 172, 208)');
-        gradient.addColorStop(0.55, 'rgb(198, 216, 234)');
-        gradient.addColorStop(1, 'rgb(255, 255, 255)');
-        ctx.fillStyle = gradient;
-        ctx.globalAlpha = 0.5;
-        ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
-        ctx.restore();
-    }
-
-    _drawOpenSeaSurfBreaks(ctx, startX, endX, startY, endY) {
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        ctx.lineCap = 'round';
-        ctx.lineWidth = 1.5;
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const openness = this._waterOpenness(x, y);
-                if (!this._isOpenSeaTile(x, y, openness)) continue;
-                const edge = this._waterEdgeMask(x, y);
-                if (edge === 0) continue;
-                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                if (seed < 0.18) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                ctx.strokeStyle = `rgba(229, 253, 255, ${0.18 + seed * 0.14})`;
-                this._strokeInsetDiamondEdges(ctx, screenX, screenY, edge, 5 + seed * 5);
-            }
-        }
-        ctx.restore();
-    }
-
     _drawAnimatedCurrentBands(ctx, waterTiles) {
         if (!waterTiles?.length) return;
         const slideRange = 0.35 * TILE_HEIGHT;
@@ -8406,7 +8305,6 @@ export class IsometricRenderer {
         const warm = this._atmosphereReactions?.warmGlint || 0;
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
-        ctx.lineCap = 'round';
         for (const tile of waterTiles) {
             if (!tile.animatedCurrentEligible) continue;
             if (roughness > 0.65 && (tile.x + tile.y) % 2 !== 0) continue;
@@ -8428,18 +8326,20 @@ export class IsometricRenderer {
             );
             const drift = Math.sin(this.waterFrame * 0.45 + tile.seed * 6.28) * 2;
             const glintColor = warm > 0.18 ? '255, 210, 136' : tile.token.glint;
-            ctx.strokeStyle = `rgba(${glintColor}, ${alpha})`;
+            ctx.fillStyle = `rgba(${glintColor}, ${alpha})`;
             const baseWidth = tile.isOpenSea ? 1.7 + roughness * 0.6 : (tile.isDeep ? 1.4 : 1);
-            ctx.lineWidth = baseWidth * (1 + crestStrength * 0.6);
-            ctx.beginPath();
-            ctx.moveTo(anchorX - TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40), anchorY - 2 + drift);
-            ctx.quadraticCurveTo(
-                anchorX - TILE_WIDTH * 0.02,
-                anchorY - (tile.isOpenSea ? 10 : 8) + drift * 0.35,
-                anchorX + TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40),
-                anchorY - 5 - drift * 0.25
-            );
-            ctx.stroke();
+            const thickness = baseWidth * (1 + crestStrength * 0.6) >= 1.8 ? 2 : 1;
+            // The crest arch as two stepped runs through the curve's midpoint.
+            const x0 = anchorX - TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40);
+            const y0 = anchorY - 2 + drift;
+            const cx = anchorX - TILE_WIDTH * 0.02;
+            const cy = anchorY - (tile.isOpenSea ? 10 : 8) + drift * 0.35;
+            const x2 = anchorX + TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40);
+            const y2 = anchorY - 5 - drift * 0.25;
+            const mx = (x0 + 2 * cx + x2) / 4;
+            const my = (y0 + 2 * cy + y2) / 4;
+            this._fillSteppedDash(ctx, x0, y0, mx, my, thickness);
+            this._fillSteppedDash(ctx, mx + 1, my, x2, y2, thickness);
         }
         ctx.restore();
     }
@@ -8454,7 +8354,6 @@ export class IsometricRenderer {
         const warm = this._atmosphereReactions?.warmGlint || 0;
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
-        ctx.lineCap = 'round';
         for (const tile of waterTiles) {
             if (!tile.isCurrent) continue;
             const fx = tile.flowDirX;
@@ -8479,12 +8378,8 @@ export class IsometricRenderer {
                 if (alpha <= 0.012) continue;
                 const cx = tile.screenX + ux * (frac - 0.5) * span + px * laneOff;
                 const cy = tile.screenY - 3 + uy * (frac - 0.5) * span + py * laneOff;
-                ctx.strokeStyle = `rgba(${glint}, ${alpha})`;
-                ctx.lineWidth = 1.1;
-                ctx.beginPath();
-                ctx.moveTo(cx - ux * half, cy - uy * half);
-                ctx.lineTo(cx + ux * half, cy + uy * half);
-                ctx.stroke();
+                ctx.fillStyle = `rgba(${glint}, ${alpha})`;
+                this._fillSteppedDash(ctx, cx - ux * half, cy - uy * half, cx + ux * half, cy + uy * half);
             }
         }
         ctx.restore();
@@ -8528,303 +8423,35 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _drawTile(ctx, tileX, tileY) {
-        const screenX = (tileX - tileY) * TILE_WIDTH / 2;
-        const screenY = (tileX + tileY) * TILE_HEIGHT / 2;
-        const key = `${tileX},${tileY}`;
-        const seed = this.terrainSeed[tileY * MAP_SIZE + tileX] || 0;
-
-        if (this.terrain) {
-            const sheetId = this._terrainSheetIdAt(tileX, tileY);
-            this.terrain.drawTile(ctx, sheetId, tileX, tileY,
-                (tx, ty) => this._sameTerrainClass(tileX, tileY, tx, ty));
-        } else {
-            // Fallback: solid diamond (no-assets defensive path).
-            ctx.fillStyle = '#33403c';
-            ctx.beginPath();
-            ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
-            ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
-            ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
-            ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
-            ctx.closePath();
-            ctx.fill();
+    // Structures that sit on the baked ground and water: dock/causeway decks
+    // and plank crossings. Land and water surfaces themselves come from the
+    // GroundBake and CoastBake passes.
+    _drawTerrainOverlayTiles(ctx) {
+        const tiles = [];
+        for (const [key, bInfo] of this.bridgeTiles || []) {
+            const tile = this._parseTileKey(key);
+            if (tile) tiles.push({ ...tile, bInfo });
         }
-
-        this._drawTerrainTone(ctx, screenX, screenY, key, seed, tileX, tileY);
-        this._drawGroundDecals(ctx, screenX, screenY, key, tileX, tileY);
-
-        if (!this.bridgeTiles?.has(key)) {
-            if (this.commandCenterRoadTiles.has(key) && this.pathTiles.has(key)) {
-                this._drawCommandApproachRoadDetail(ctx, screenX, screenY, seed, tileX, tileY);
-            } else if (!this.waterTiles.has(key)) {
-                if (this.bushTiles?.has(key)) {
-                    const bInfo = this.bushTiles.get(key);
-                    const bushId = ['veg.bush.a', 'veg.bush.b', 'veg.bush.c'][(bInfo?.variant ?? 0) % 3];
-                    if (this.sprites) this.sprites.drawSprite(ctx, bushId, screenX, screenY);
-                }
-                if (this.grassTuftTiles?.has(key)) {
-                    const gInfo = this.grassTuftTiles.get(key);
-                    const tuftId = ['veg.grassTuft.a', 'veg.grassTuft.b'][(gInfo?.variant ?? 0) % 2];
-                    if (this.sprites) this.sprites.drawSprite(ctx, tuftId, screenX, screenY);
-                }
-                if (this.flowerTiles?.has(key)) {
-                    const fInfo = this.flowerTiles.get(key);
-                    const flowerId = ['veg.flower.a', 'veg.flower.b', 'veg.flower.c'][(fInfo?.variant ?? 0) % 3];
-                    if (this.sprites) this.sprites.drawSprite(ctx, flowerId, screenX, screenY);
-                }
-                const feature = this.featureTiles?.get(key);
-                if (feature === 'reeds') {
-                    const reedId = seed > 0.58 ? 'veg.reed.a' : 'veg.reed.b';
-                    if (this.sprites) this.sprites.drawSprite(ctx, reedId, screenX, screenY);
-                } else if (feature === 'stones') {
-                    this._drawFeatureStones(ctx, screenX, screenY, tileX, tileY);
-                } else if (feature === 'mushrooms') {
-                    this._drawFeatureMushrooms(ctx, screenX, screenY, tileX, tileY);
-                }
-            }
-        }
-
-        if (!this.pathTiles.has(key) && this.commandCenterRoadTiles.has(key) && !this.waterTiles.has(key)) {
-            this._drawCommandGuardpost(ctx, screenX + (seed - 0.5) * 3, screenY + (seed - 0.5) * 2);
-        }
-
-        // Water shimmer / bridge deck
-        if (this.bridgeTiles?.has(key)) {
-            const bInfo = this.bridgeTiles.get(key);
-            const isDoc = bInfo?.kind === 'dock';
-            if (isDoc) {
-                if (bInfo?.style === 'causeway') {
+        // Row-major, as the per-tile loop drew them, so decks overlap alike.
+        tiles.sort((a, b) => a.tileY - b.tileY || a.tileX - b.tileX);
+        for (const { tileX, tileY, bInfo } of tiles) {
+            const screenX = (tileX - tileY) * TILE_WIDTH / 2;
+            const screenY = (tileX + tileY) * TILE_HEIGHT / 2;
+            if (bInfo?.kind === 'dock') {
+                if (bInfo.style === 'causeway') {
+                    const seed = this.terrainSeed[tileY * MAP_SIZE + tileX] || 0;
                     this._drawHarborCausewayTile(ctx, screenX, screenY, bInfo.orientation || 'EW', seed);
                 } else {
-                    const orientation = (bInfo?.orientation || 'EW').toLowerCase();
+                    const orientation = (bInfo.orientation || 'EW').toLowerCase();
                     if (this.sprites) this.sprites.drawSprite(ctx, `dock.${orientation}`, screenX, screenY);
                 }
             } else if (bInfo?.kind === 'plank') {
                 // 2.8 — single-file plank crossings use the per-tile bridge.ew/ns
                 // assets, mirroring the dock tile path.
-                const orientation = (bInfo?.orientation || 'EW').toLowerCase();
+                const orientation = (bInfo.orientation || 'EW').toLowerCase();
                 if (this.sprites) this.sprites.drawSprite(ctx, `bridge.${orientation}`, screenX, screenY);
             }
-        } else if (this.waterTiles.has(key) && !this.terrain) {
-            const shimmer = this.motionScale ? Math.sin(this.waterFrame * 2 + tileX * 0.5 + tileY * 0.3) * 0.055 + 0.055 : STATIC_WATER_SHIMMER;
-            ctx.fillStyle = `rgba(185, 229, 224, ${shimmer})`;
-            ctx.fill();
         }
-    }
-
-    // Procedural ground micro-detail baked into the terrain cache: pebble/soil
-    // flecks on grass, moss in cobble joints, leaf litter under the northern
-    // canopy, and worn dirt where grass meets a road. Deterministic — no motion,
-    // no per-frame cost. Breaks up the flat terrain diamonds between buildings.
-    _drawGroundDecals(ctx, screenX, screenY, key, tileX, tileY) {
-        if (this.waterTiles?.has(key)) return;
-        if (this.bridgeTiles?.has(key)) return;
-        const isPath = this.pathTiles?.has(key);
-        const isRoad = isPath || this.commandCenterRoadTiles?.has(key);
-
-        // Place a speck inside the iso diamond; returns null if it would spill out.
-        const place = (salt, spanX, spanY) => {
-            const u = this._decalRand(tileX, tileY, salt);
-            const v = this._decalRand(tileX, tileY, salt + 911);
-            const ox = (u - 0.5) * spanX;
-            const oy = (v - 0.5) * spanY;
-            if (Math.abs(ox) / 30 + Math.abs(oy) / 14 > 0.92) return null;
-            return { ox: Math.round(screenX + ox), oy: Math.round(screenY + oy) };
-        };
-
-        ctx.save();
-        if (isRoad) {
-            // Moss creeping into cobble/flagstone joints.
-            const mossCount = this._decalRand(tileX, tileY, 17) > 0.55 ? 2 : 1;
-            ctx.fillStyle = 'rgba(86, 120, 52, 0.26)';
-            for (let i = 0; i < mossCount; i++) {
-                const p = place(31 + i * 7, 46, 22);
-                if (p) ctx.fillRect(p.ox, p.oy, 2, 1);
-            }
-
-            // 2.7 — road verges and corner wear. Grass tufts encroach where a
-            // road tile borders open ground; corners and ends (no straight
-            // through-axis) pick up extra center wear.
-            const isRoadKey = (k) => this.pathTiles?.has(k) || this.commandCenterRoadTiles?.has(k);
-            const straight = (isRoadKey(`${tileX + 1},${tileY}`) && isRoadKey(`${tileX - 1},${tileY}`))
-                || (isRoadKey(`${tileX},${tileY + 1}`) && isRoadKey(`${tileX},${tileY - 1}`));
-            if (!straight) {
-                ctx.fillStyle = 'rgba(94, 72, 44, 0.12)';
-                ctx.beginPath();
-                ctx.ellipse(Math.round(screenX), Math.round(screenY + 1), 11, 5, 0, 0, Math.PI * 2);
-                ctx.fill();
-            }
-            for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-                if (isRoadKey(`${tileX + dx},${tileY + dy}`)) continue;
-                const count = this._decalRand(tileX, tileY, 501 + (dx + 2) * 3 + (dy + 2) * 7) > 0.45 ? 2 : 1;
-                ctx.fillStyle = 'rgba(76, 106, 44, 0.30)';
-                for (let i = 0; i < count; i++) {
-                    const u = this._decalRand(tileX, tileY, 511 + i * 5 + (dx + 2) * 17 + (dy + 2) * 29);
-                    const v = this._decalRand(tileX, tileY, 523 + i * 7 + (dx + 2) * 31 + (dy + 2) * 13);
-                    const ox = dx * (14 + u * 9) + (dy !== 0 ? (u - 0.5) * 22 : 0);
-                    const oy = dy * (6 + v * 5) + (dx !== 0 ? (v - 0.5) * 10 : 0);
-                    if (Math.abs(ox) / 30 + Math.abs(oy) / 14 > 0.92) continue;
-                    ctx.fillRect(Math.round(screenX + ox), Math.round(screenY + oy), 2, 1);
-                }
-            }
-        } else {
-            // Season drives which flecks/litter/blooms bake into the grass. The
-            // token only flips on season boundaries, so this stays a rebake, not
-            // a per-frame cost. Summer keeps the original look.
-            const season = this._terrainSeason || 'summer';
-
-            // Land grass/dirt: pebble + tonal flecks so each diamond varies.
-            const fleckNoise = this._decalRand(tileX, tileY, 3);
-            const fleckCount = fleckNoise > 0.72 ? 4 : fleckNoise > 0.4 ? 3 : 2;
-            for (let i = 0; i < fleckCount; i++) {
-                const p = place(40 + i * 13, 48, 24);
-                if (!p) continue;
-                const tone = this._decalRand(tileX, tileY, 200 + i);
-                if (season === 'winter' && tone > 0.5) {
-                    // Pale snow flecks settling over the grass.
-                    ctx.fillStyle = tone > 0.78
-                        ? 'rgba(232, 242, 252, 0.34)'
-                        : 'rgba(206, 222, 238, 0.24)';
-                } else {
-                    ctx.fillStyle = tone > 0.66
-                        ? 'rgba(150, 152, 120, 0.20)'   // light pebble
-                        : tone > 0.33
-                            ? 'rgba(44, 40, 30, 0.24)'  // dark soil pebble
-                            : 'rgba(58, 84, 30, 0.20)'; // deep grass fleck
-                }
-                ctx.fillRect(p.ox, p.oy, tone > 0.85 ? 2 : 1, 1);
-            }
-
-            // Leaf litter under the northern canopy — autumn spreads it across
-            // the whole map and lays it down more often, thickened with a second
-            // flake; other seasons keep it to the northern treeline.
-            const litterEverywhere = season === 'autumn';
-            const litterThreshold = litterEverywhere ? 0.42 : 0.62;
-            if ((litterEverywhere || tileY <= 14) && this._decalRand(tileX, tileY, 71) > litterThreshold) {
-                ctx.fillStyle = this._decalRand(tileX, tileY, 72) > 0.5
-                    ? 'rgba(156, 112, 48, 0.22)'
-                    : 'rgba(116, 82, 40, 0.20)';
-                const p = place(73, 44, 22);
-                if (p) {
-                    ctx.fillRect(p.ox, p.oy, 2, 1);
-                    if (litterEverywhere && this._decalRand(tileX, tileY, 74) > 0.5) {
-                        const p2 = place(75, 46, 22);
-                        if (p2) ctx.fillRect(p2.ox, p2.oy, 1, 1);
-                    }
-                }
-            }
-
-            // Wildflower dabs — tiny color pops scattered through the grass.
-            // Spring blooms harder with a blossom-forward palette; winter keeps
-            // only a few frost-muted survivors.
-            const wildflowerThreshold = season === 'spring' ? 0.70
-                : season === 'winter' ? 0.93
-                : 0.84;
-            if (this._decalRand(tileX, tileY, 90) > wildflowerThreshold) {
-                const fc = this._decalRand(tileX, tileY, 91);
-                if (season === 'winter') {
-                    ctx.fillStyle = fc > 0.6
-                        ? 'rgba(214, 220, 228, 0.72)'
-                        : 'rgba(198, 186, 214, 0.66)';
-                } else if (season === 'spring') {
-                    ctx.fillStyle = fc > 0.66 ? 'rgba(248, 206, 224, 0.90)'   // blossom pink
-                        : fc > 0.33 ? 'rgba(240, 242, 246, 0.88)'             // white petal
-                        : 'rgba(246, 234, 122, 0.90)';                        // buttercup yellow
-                } else {
-                    ctx.fillStyle = fc > 0.75 ? 'rgba(246, 234, 122, 0.90)'   // buttercup yellow
-                        : fc > 0.50 ? 'rgba(238, 240, 244, 0.88)'             // white daisy
-                        : fc > 0.25 ? 'rgba(228, 150, 198, 0.84)'             // pink clover
-                        : 'rgba(178, 150, 228, 0.84)';                        // violet
-                }
-                const p = place(92, 42, 20);
-                if (p) {
-                    ctx.fillRect(p.ox, p.oy, 1, 1);
-                    if (fc > 0.60) ctx.fillRect(p.ox + 1, p.oy, 1, 1);
-                    if (fc > 0.90) ctx.fillRect(p.ox, p.oy - 1, 1, 1);
-                    // Spring adds an extra blossom dab for fuller bloom.
-                    if (season === 'spring' && fc > 0.4) {
-                        const pb = place(93, 40, 20);
-                        if (pb) ctx.fillRect(pb.ox, pb.oy, 1, 1);
-                    }
-                }
-            }
-
-            // Worn dirt where grass meets a road (threshold wear).
-            if (this._neighborsRoad(tileX, tileY)) {
-                ctx.fillStyle = 'rgba(120, 95, 60, 0.15)';
-                ctx.beginPath();
-                ctx.ellipse(Math.round(screenX), Math.round(screenY + 2), 13, 6, 0, 0, Math.PI * 2);
-                ctx.fill();
-            }
-        }
-        ctx.restore();
-    }
-
-    // C5 — pebble clusters on 'stones' feature tiles. 3-4 small grey rects with
-    // a highlight pixel, styled like the ground flecks. Baked into the terrain
-    // cache; deterministic via the per-tile decal seed.
-    _drawFeatureStones(ctx, screenX, screenY, tileX, tileY) {
-        const count = this._decalRand(tileX, tileY, 301) > 0.5 ? 4 : 3;
-        ctx.save();
-        for (let i = 0; i < count; i++) {
-            const u = this._decalRand(tileX, tileY, 310 + i * 3);
-            const v = this._decalRand(tileX, tileY, 311 + i * 3);
-            const ox = Math.round(screenX + (u - 0.5) * 26);
-            const oy = Math.round(screenY + (v - 0.5) * 12);
-            const w = this._decalRand(tileX, tileY, 312 + i * 3) > 0.6 ? 2 : 1;
-            ctx.fillStyle = 'rgba(118, 120, 116, 0.85)';   // stone body
-            ctx.fillRect(ox, oy, w, 1);
-            ctx.fillStyle = 'rgba(150, 152, 148, 0.90)';   // top highlight
-            ctx.fillRect(ox, oy - 1, 1, 1);
-            ctx.fillStyle = 'rgba(66, 68, 66, 0.60)';      // grounding shadow
-            ctx.fillRect(ox, oy + 1, w, 1);
-        }
-        ctx.restore();
-    }
-
-    // C5 — tiny mushrooms on 'mushrooms' feature tiles: stem + red/tan cap, with
-    // a faint cyan glow dot under the northern canopy (tileY <= 14). Baked;
-    // deterministic via the per-tile decal seed.
-    _drawFeatureMushrooms(ctx, screenX, screenY, tileX, tileY) {
-        const count = this._decalRand(tileX, tileY, 401) > 0.55 ? 3 : 2;
-        const underCanopy = tileY <= 14;
-        ctx.save();
-        for (let i = 0; i < count; i++) {
-            const u = this._decalRand(tileX, tileY, 410 + i * 4);
-            const v = this._decalRand(tileX, tileY, 411 + i * 4);
-            const ox = Math.round(screenX + (u - 0.5) * 22);
-            const oy = Math.round(screenY + (v - 0.5) * 10);
-            ctx.fillStyle = 'rgba(226, 214, 190, 0.90)';   // stem
-            ctx.fillRect(ox, oy, 1, 2);
-            const red = this._decalRand(tileX, tileY, 412 + i * 4) > 0.5;
-            ctx.fillStyle = red ? 'rgba(178, 58, 46, 0.92)' : 'rgba(180, 138, 92, 0.90)'; // cap
-            ctx.fillRect(ox - 1, oy - 1, 3, 1);
-            if (red) {
-                ctx.fillStyle = 'rgba(238, 224, 210, 0.85)'; // cap fleck
-                ctx.fillRect(ox, oy - 1, 1, 1);
-            }
-            if (underCanopy) {
-                ctx.fillStyle = 'rgba(150, 243, 255, 0.50)'; // faint bioluminescent glow
-                ctx.fillRect(ox, oy - 2, 1, 1);
-            }
-        }
-        ctx.restore();
-    }
-
-    // Deterministic per-tile, per-salt value in [0,1) for decal placement.
-    _decalRand(tileX, tileY, salt) {
-        let h = (Math.imul(tileX | 0, 73856093) ^ Math.imul(tileY | 0, 19349663) ^ Math.imul(salt | 0, 83492791)) >>> 0;
-        h = Math.imul(h ^ (h >>> 13), 1274126177);
-        return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-    }
-
-    _neighborsRoad(tileX, tileY) {
-        const p = this.pathTiles;
-        if (!p) return false;
-        return p.has(`${tileX + 1},${tileY}`)
-            || p.has(`${tileX - 1},${tileY}`)
-            || p.has(`${tileX},${tileY + 1}`)
-            || p.has(`${tileX},${tileY - 1}`);
     }
 
     _drawHarborCausewayTile(ctx, screenX, screenY, orientation = 'EW', seed = 0) {
@@ -9120,434 +8747,16 @@ export class IsometricRenderer {
         ];
     }
 
-    _drawWorldBaseShadow(ctx) {
-        const points = this._worldDiamondPoints();
-        ctx.save();
-        ctx.translate(0, 34);
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.46)';
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.72)';
-        ctx.shadowBlur = 48;
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.translate(0, 18);
-        ctx.fillStyle = 'rgba(30, 17, 9, 0.22)';
-        ctx.shadowColor = 'rgba(83, 50, 18, 0.28)';
-        ctx.shadowBlur = 18;
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-    }
-
-    _drawWorldEdgeRim(ctx) {
-        const points = this._worldDiamondPoints();
-        ctx.save();
-        const sideGradient = ctx.createLinearGradient(0, points[0].y, 0, points[2].y + 44);
-        sideGradient.addColorStop(0, 'rgba(87, 62, 31, 0.10)');
-        sideGradient.addColorStop(0.55, 'rgba(44, 28, 16, 0.34)');
-        sideGradient.addColorStop(1, 'rgba(13, 9, 7, 0.62)');
-        ctx.fillStyle = sideGradient;
-        ctx.beginPath();
-        ctx.moveTo(points[1].x, points[1].y);
-        ctx.lineTo(points[2].x, points[2].y);
-        ctx.lineTo(points[2].x, points[2].y + 38);
-        ctx.lineTo(points[1].x - 26, points[1].y + 24);
-        ctx.closePath();
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(points[2].x, points[2].y);
-        ctx.lineTo(points[3].x, points[3].y);
-        ctx.lineTo(points[3].x + 26, points[3].y + 24);
-        ctx.lineTo(points[2].x, points[2].y + 38);
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = 'rgba(238, 191, 94, 0.24)';
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-        ctx.closePath();
-        ctx.stroke();
-
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.52)';
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y + 2);
-        ctx.lineTo(points[1].x - 2, points[1].y + 1);
-        ctx.lineTo(points[2].x, points[2].y - 1);
-        ctx.lineTo(points[3].x + 2, points[3].y + 1);
-        ctx.closePath();
-        ctx.stroke();
-        ctx.restore();
-    }
-
-    // #25 — baked sand/cliff shelf along the two lower-facing diamond edges
-    // (SE and SW). Turns the hard void cut into a sunlit sand strip dropping
-    // into a shaded cliff face, so the island reads as resting on a coastline
-    // rather than being sliced off. Baked into the terrain cache — zero
-    // per-frame cost, and static by construction (reduced-motion safe).
-    _bakePerimeterCliffShelf(ctx) {
-        const points = this._worldDiamondPoints();
-        const east = points[1];
-        const south = points[2];
-        const west = points[3];
-        const sandH = 16;   // sunlit beach lip
-        const cliffH = 46;   // shaded face dropping to the void
-        const phase = this._lastAtmosphere?.phase || 'day';
-
-        // Both faces are drawn as stepped bands rather than linear gradients.
-        // A smooth vertical ramp is the one thing a pixel-art coastline cannot
-        // do: it reads as an airbrushed slab against terrain made of discrete
-        // tones. Quantising into courses keeps the same silhouette and colour
-        // ramp while putting the cliff in the same idiom as the rock and
-        // masonry above it. Baked, so the extra fills cost nothing per frame.
-        // `vTop` is the drop from the diamond edge line to the top of this
-        // group of bands; both endpoints of the edge move together.
-        const bandedFace = (side, vTop, height, bandCount, offsetTop, offsetBottom, ramp) => {
-            for (let k = 0; k < bandCount; k++) {
-                const t0 = k / bandCount;
-                const t1 = (k + 1) / bandCount;
-                const dy0 = vTop + height * t0;
-                const dy1 = vTop + height * t1;
-                const o0 = side.dir * (offsetTop + (offsetBottom - offsetTop) * t0);
-                const o1 = side.dir * (offsetTop + (offsetBottom - offsetTop) * t1);
-                ctx.fillStyle = sampleRamp(ramp, (t0 + t1) / 2);
-                ctx.beginPath();
-                ctx.moveTo(side.a.x + o0, Math.round(side.a.y + dy0));
-                ctx.lineTo(side.b.x + o0, Math.round(side.b.y + dy0));
-                ctx.lineTo(side.b.x + o1, Math.round(side.b.y + dy1));
-                ctx.lineTo(side.a.x + o1, Math.round(side.a.y + dy1));
-                ctx.closePath();
-                ctx.fill();
-            }
-        };
-
-        const SAND_RAMP = [
-            { t: 0, c: [226, 196, 142, 0.92] },
-            { t: 1, c: [196, 162, 108, 0.85] },
-        ];
-        const CLIFF_RAMP = [
-            { t: 0, c: [120, 92, 58, 0.82] },
-            { t: 0.6, c: [70, 52, 34, 0.62] },
-            { t: 1, c: [34, 24, 17, 0] },
-        ];
-
-        for (const side of [{ a: east, b: south, dir: -1 }, { a: south, b: west, dir: 1 }]) {
-            // Reflection is drawn first, so the face and its waterline sit over
-            // the reflected edge instead of receiving an overlaid stripe.
-            this._drawBakedCliffReflection(ctx, side, phase, sandH + cliffH);
-            ctx.save();
-            // Sunlit sand lip hugging the diamond edge — 4 courses.
-            bandedFace(side, 0, sandH, 4, 0, 6, SAND_RAMP);
-            // Shaded cliff face beneath, dissolving into the distant-sea void.
-            bandedFace(side, sandH, cliffH, 8, 6, 14, CLIFF_RAMP);
-            this._drawDitheredWaterline(ctx, side, phase, sandH + cliffH);
-            ctx.restore();
-        }
-    }
-
-    // Reflect the lower 60px of the cliff shelf into the water. Each reflected
-    // course reverses the source order, selects one of the four authored
-    // key-light response bands, and then uses one of exactly three alpha steps.
-    // It is part of the terrain bake, never a per-frame water pass.
-    _drawBakedCliffReflection(ctx, side, phase = 'day', waterlineOffset = 62) {
-        const palette = CLIFF_REFLECTION_PHASE_PALETTES[phase] || CLIFF_REFLECTION_PHASE_PALETTES.day;
-        const responseBands = AUTHORED_KEY_LIGHT.responseBands;
-        const bandHeight = CLIFF_REFLECTION_DEPTH / CLIFF_REFLECTION_BAND_COUNT;
-        const sourceBottom = CLIFF_REFLECTION_BAND_COUNT - 1;
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        for (let k = 0; k < CLIFF_REFLECTION_BAND_COUNT; k++) {
-            const t0 = k / CLIFF_REFLECTION_BAND_COUNT;
-            const t1 = (k + 1) / CLIFF_REFLECTION_BAND_COUNT;
-            const sourceBand = sourceBottom - k;
-            const keyBand = Math.min(
-                responseBands.length - 1,
-                Math.floor((sourceBottom - sourceBand) * responseBands.length / CLIFF_REFLECTION_BAND_COUNT),
-            );
-            const response = responseBands[keyBand] ?? 1;
-            const alphaBand = response >= 1.12 ? 2 : response >= 1 ? 1 : 0;
-            const offsetNear = side.dir * 14;
-            const offsetFar = side.dir * 0;
-            const o0 = offsetNear + (offsetFar - offsetNear) * t0;
-            const o1 = offsetNear + (offsetFar - offsetNear) * t1;
-            const y0 = waterlineOffset + bandHeight * k;
-            const y1 = waterlineOffset + bandHeight * (k + 1);
-
-            const alpha = CLIFF_REFLECTION_ALPHA_STEPS[alphaBand] ?? CLIFF_REFLECTION_ALPHA_STEPS.at(-1);
-            ctx.fillStyle = this._withAlpha(palette[keyBand], alpha);
-            ctx.beginPath();
-            ctx.moveTo(side.a.x + o0, Math.round(side.a.y + y0));
-            ctx.lineTo(side.b.x + o0, Math.round(side.b.y + y0));
-            ctx.lineTo(side.b.x + o1, Math.round(side.b.y + y1));
-            ctx.lineTo(side.a.x + o1, Math.round(side.a.y + y1));
-            ctx.closePath();
-            ctx.fill();
-        }
-        ctx.restore();
-    }
-
-    // The 2px blocks make the island/sea seam a stepped waterline. Bucket 3 is
-    // intentionally omitted, matching the GPU wetness shader's four-cell
-    // ordered dither rather than inventing another Canvas pattern.
-    _drawDitheredWaterline(ctx, side, phase = 'day', waterlineOffset = 62) {
-        const palette = WATERLINE_DITHER_PALETTES[phase] || WATERLINE_DITHER_PALETTES.day;
-        const length = Math.hypot(side.b.x - side.a.x, side.b.y - side.a.y);
-        if (!(length > 0)) return;
-        const ux = (side.b.x - side.a.x) / length;
-        const uy = (side.b.y - side.a.y) / length;
-        const startX = side.a.x + side.dir * 14;
-        const startY = side.a.y + waterlineOffset;
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        SpriteRenderer.disableSmoothing(ctx);
-        for (let distance = 0; distance < length; distance += 2) {
-            const x = Math.round(startX + ux * distance);
-            const y = Math.round(startY + uy * distance);
-            const bucket = Math.round(orderedDither4(x, y) * 3);
-            if (bucket >= 3) continue;
-            ctx.fillStyle = palette[bucket];
-            ctx.fillRect(x, y, 2, 2);
-        }
-        ctx.restore();
-    }
-
-    // Distant sea + horizon beyond the island. Drawn per-frame in world space,
-    // BEHIND the terrain (which is opaque over it), so it only fills the void
-    // around and below the diamond — turning the flat edge into a coastline.
-    // Phase-tinted: the top fades out of the sky's own horizon colour so sea
-    // and sky meet seamlessly. Static under reduced motion (pure gradient).
-    _drawDistantSeaHorizon(ctx, atmosphere) {
-        const points = this._worldDiamondPoints();
-        const equatorY = points[1].y;          // diamond's widest screen row
-        const seaTop = equatorY - 60;          // horizon a touch above the equator
-        const seaBottom = points[2].y + 560;   // deep into the void below the south wall
-        const leftX = points[3].x - 1400;
-        const rightX = points[1].x + 1400;
-
-        const phase = atmosphere?.phase || 'day';
-        const deep = phase === 'night'
-            ? { shallow: '#1a3a5e', deep: '#0a1c34' }
-            : phase === 'dusk'
-                ? { shallow: '#6a6390', deep: '#3b3860' }
-                : phase === 'dawn'
-                    ? { shallow: '#6f8fb8', deep: '#445e8a' }
-                    : { shallow: '#5aa0c8', deep: '#2f6e9b' };
-        const horizon = atmosphere?.sky?.palette?.horizon || '#8fb9cf';
-
-        ctx.save();
-        const grad = ctx.createLinearGradient(0, seaTop, 0, seaBottom);
-        grad.addColorStop(0, horizon);
-        grad.addColorStop(0.16, deep.shallow);
-        grad.addColorStop(1, deep.deep);
-        ctx.fillStyle = grad;
-        ctx.fillRect(leftX, seaTop, rightX - leftX, seaBottom - seaTop);
-
-        // Soft horizon haze band where sea meets sky.
-        const haze = ctx.createLinearGradient(0, seaTop - 30, 0, seaTop + 30);
-        haze.addColorStop(0, 'rgba(255, 255, 255, 0)');
-        haze.addColorStop(0.5, phase === 'night' ? 'rgba(120, 150, 190, 0.18)' : 'rgba(240, 250, 255, 0.34)');
-        haze.addColorStop(1, 'rgba(255, 255, 255, 0)');
-        ctx.fillStyle = haze;
-        ctx.fillRect(leftX, seaTop - 30, rightX - leftX, 60);
-
-        // B5 — a few faint distant swell lines for depth. Motion-on: 3-segment
-        // quadratics whose control-point y bobs and whose x offset drifts, so the
-        // horizon rolls slowly. Reduced motion falls back to the flat lines.
-        ctx.strokeStyle = phase === 'night' ? 'rgba(150, 180, 215, 0.10)' : 'rgba(235, 248, 255, 0.16)';
-        ctx.lineWidth = 2;
-        const swellReduced = !this.motionScale;
-        const span = rightX - leftX;
-        const x1 = leftX + span / 3;
-        const x2 = leftX + (2 * span) / 3;
-        const c0 = leftX + span / 6;
-        const c1 = leftX + span * 0.5;
-        const c2 = leftX + (5 * span) / 6;
-        for (let i = 0; i < 4; i++) {
-            const ly = seaTop + 40 + i * 70;
-            ctx.beginPath();
-            if (swellReduced) {
-                ctx.moveTo(leftX, ly);
-                ctx.lineTo(rightX, ly);
-            } else {
-                const drift = Math.sin(this.waterFrame * 0.12 + i * 1.3) * 60;
-                const bob1 = Math.sin(this.waterFrame * 0.18 + i * 0.9) * 10;
-                const bob2 = Math.sin(this.waterFrame * 0.16 - i * 1.1) * 10;
-                ctx.moveTo(leftX, ly);
-                ctx.quadraticCurveTo(c0 + drift, ly - 12 + bob1, x1 + drift, ly + bob1 * 0.3);
-                ctx.quadraticCurveTo(c1 + drift, ly + 12 + bob2, x2 + drift, ly + bob2 * 0.3);
-                ctx.quadraticCurveTo(c2 + drift, ly - 12 + bob1, rightX, ly);
-            }
-            ctx.stroke();
-        }
-
-        // B5 — faint vertical glitter column under the sun/moon's horizontal
-        // position, tinted warm by day and pale blue at night, fading with fog.
-        const glitterBody = atmosphere?.sky?.sun?.visible
-            ? atmosphere.sky.sun
-            : atmosphere?.sky?.moon?.visible
-                ? atmosphere.sky.moon
-                : null;
-        if (glitterBody) {
-            const colFog = Math.max(0, Math.min(1, atmosphere?.weather?.fog ?? 0));
-            const colAlpha = (phase === 'night' ? 0.06 : 0.09) * (1 - colFog * 0.7) * (glitterBody.alpha ?? 0);
-            if (colAlpha > 0.008) {
-                const colColor = phase === 'night' ? '150, 190, 235' : '255, 236, 190';
-                const colX = leftX + (glitterBody.xFrac ?? 0.5) * span;
-                const colW = 46;
-                const colGrad = ctx.createLinearGradient(colX, seaTop, colX, seaBottom);
-                colGrad.addColorStop(0, `rgba(${colColor}, 0)`);
-                colGrad.addColorStop(0.2, `rgba(${colColor}, ${colAlpha})`);
-                colGrad.addColorStop(1, `rgba(${colColor}, 0)`);
-                ctx.fillStyle = colGrad;
-                ctx.fillRect(colX - colW / 2, seaTop, colW, seaBottom - seaTop);
-            }
-        }
-
-        // #25 — stacked haze bands dissolve the hard void boundary into
-        // atmospheric distance. 3–4 staggered bands fade up toward the sky's
-        // own horizon colour, deepening with weather fog so a foggy day melts
-        // the diamond edge further into the white. Pure stacked gradients —
-        // already static, so the reduced-motion fallback is identical.
-        const fog = Math.max(0, Math.min(1, atmosphere?.weather?.fog ?? 0));
-        const bands = 4;
-        const bandSpan = 150;
-        const baseAlpha = (phase === 'night' ? 0.07 : 0.12) + fog * 0.26;
-        for (let i = 0; i < bands; i++) {
-            const top = seaTop + 24 + i * (bandSpan * 0.62);
-            const alpha = baseAlpha * (1 - i / bands) * 0.9;
-            if (alpha <= 0.004) continue;
-            const band = ctx.createLinearGradient(0, top, 0, top + bandSpan);
-            band.addColorStop(0, this._withAlpha(horizon, 0));
-            band.addColorStop(0.5, this._withAlpha(horizon, alpha));
-            band.addColorStop(1, this._withAlpha(horizon, 0));
-            ctx.fillStyle = band;
-            ctx.fillRect(leftX, top, rightX - leftX, bandSpan);
-        }
-        ctx.restore();
-    }
-
-    _drawDioramaBackdrop(ctx) {
-        const points = this._worldDiamondPoints();
-        const gradient = ctx.createLinearGradient(0, points[0].y - 80, 0, points[2].y + 120);
-        gradient.addColorStop(0, 'rgba(33, 58, 59, 0.16)');
-        gradient.addColorStop(0.42, 'rgba(77, 52, 26, 0.08)');
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
-        ctx.save();
-        ctx.translate(0, 12);
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y - 44);
-        ctx.lineTo(points[1].x + 78, points[1].y + 18);
-        ctx.lineTo(points[2].x, points[2].y + 86);
-        ctx.lineTo(points[3].x - 78, points[3].y + 18);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-    }
-
-    _drawDistrictAtmosphere(ctx) {
-        const zoom = this.camera?.zoom || 1;
-        const intensity = Math.max(0.38, Math.min(1, (3.4 - zoom) / 2.2));
-        ctx.save();
-        ctx.globalCompositeOperation = 'multiply';
-        for (const wash of DISTRICT_WASHES) {
-            const x = (wash.x - wash.y) * TILE_WIDTH / 2;
-            const y = (wash.x + wash.y) * TILE_HEIGHT / 2;
-            const radius = Math.max(wash.radiusX * TILE_WIDTH, wash.radiusY * TILE_HEIGHT);
-            const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
-            gradient.addColorStop(0, this._withAlpha(wash.color, wash.alpha * intensity));
-            gradient.addColorStop(0.62, this._withAlpha(wash.color, wash.alpha * 0.38 * intensity));
-            gradient.addColorStop(1, this._withAlpha(wash.color, 0));
-            ctx.fillStyle = gradient;
-            ctx.beginPath();
-            ctx.ellipse(x, y, wash.radiusX * TILE_WIDTH / 2, wash.radiusY * TILE_HEIGHT / 2, 0, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        ctx.restore();
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        ctx.strokeStyle = `rgba(247, 205, 116, ${0.04 * intensity})`;
-        ctx.lineWidth = 1;
-        const points = this._worldDiamondPoints();
-        for (let i = 1; i <= 4; i++) {
-            const inset = i * 34;
-            ctx.beginPath();
-            ctx.moveTo(points[0].x, points[0].y + inset);
-            ctx.lineTo(points[1].x - inset * 0.7, points[1].y + inset * 0.34);
-            ctx.lineTo(points[2].x, points[2].y - inset);
-            ctx.lineTo(points[3].x + inset * 0.7, points[3].y + inset * 0.34);
-            ctx.closePath();
-            ctx.stroke();
-        }
-        ctx.restore();
-    }
-
-    _drawRiverContourLines(ctx, startX, endX, startY, endY) {
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const edge = this._waterEdgeMask(x, y);
-                if (edge === 0) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                ctx.strokeStyle = this.deepWaterTiles.has(key) ? 'rgba(5, 19, 42, 0.42)' : 'rgba(124, 205, 232, 0.30)';
-                ctx.lineWidth = this.deepWaterTiles.has(key) ? 2 : 1;
-                this._strokeDiamondEdges(ctx, screenX, screenY, edge);
-            }
-        }
-        ctx.restore();
-    }
-
-    _drawWaterFoamLines(ctx, startX, endX, startY, endY) {
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        ctx.lineCap = 'round';
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const edge = this._waterEdgeMask(x, y);
-                if (edge === 0) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                ctx.strokeStyle = `rgba(221, 249, 255, ${0.18 + seed * 0.09})`;
-                ctx.lineWidth = this.deepWaterTiles.has(key) ? 1.4 : 1;
-                this._strokeDiamondEdges(ctx, screenX, screenY, edge);
-            }
-        }
-
-        if (this.bridgeTiles) {
-            for (const [key, info] of this.bridgeTiles.entries()) {
-                if (info?.kind !== 'dock') continue;
-                const comma = key.indexOf(',');
-                const x = Number(key.slice(0, comma));
-                const y = Number(key.slice(comma + 1));
-                if (x < startX || x > endX || y < startY || y > endY) continue;
-                const edge = this._dockWaterEdgeMask(x, y);
-                if (edge === 0) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                ctx.strokeStyle = 'rgba(238, 252, 238, 0.28)';
-                ctx.lineWidth = 1.6;
-                this._strokeDiamondEdges(ctx, screenX, screenY, edge);
-            }
-        }
-        ctx.restore();
+    // 3.4 — the outer ocean beyond the island: one cached, quarter-resolution
+    // canvas of dithered depth bands (deepest at the island, lighter only
+    // toward the horizon, three static swell rows), scaled nearest-neighbour
+    // with the camera. Rebaked by CoastBake only when the quantized grade,
+    // water mood, horizon haze or glint bucket changes; one drawImage per
+    // frame replaces the old per-frame gradients and animated swells. On the
+    // resident path the 2D canvas is ungraded, so the palette arrives
+    // pre-graded; Canvas grades the whole frame afterwards.
+    _drawDistantSeaHorizon(ctx, atmosphere, { gpuGraded = false } = {}) {
+        drawOuterOcean(ctx, this, atmosphere, { gpuGraded });
     }
 
     // Shoreline mask: which edges of this water tile face something that is not
@@ -9572,15 +8781,6 @@ export class IsometricRenderer {
     }
 
     _shoreWaterEdgeMask(tileX, tileY) {
-        let mask = 0;
-        if (this._isOpenWaterTile(tileX, tileY - 1)) mask |= 1;
-        if (this._isOpenWaterTile(tileX + 1, tileY)) mask |= 2;
-        if (this._isOpenWaterTile(tileX, tileY + 1)) mask |= 4;
-        if (this._isOpenWaterTile(tileX - 1, tileY)) mask |= 8;
-        return mask;
-    }
-
-    _dockWaterEdgeMask(tileX, tileY) {
         let mask = 0;
         if (this._isOpenWaterTile(tileX, tileY - 1)) mask |= 1;
         if (this._isOpenWaterTile(tileX + 1, tileY)) mask |= 2;
@@ -9626,375 +8826,6 @@ export class IsometricRenderer {
         return region === 'openSea' || region === 'sea' || profile === 'openSea';
     }
 
-    // Interior tiles of the big lagoon bodies — the "big water" class that
-    // gets baked wavelets alongside the open sea (2.4).
-    _isBigLagoonWaterTile(tileX, tileY, openness = null) {
-        const key = `${tileX},${tileY}`;
-        if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) return false;
-        if (!this._isLagoonWaterTile(tileX, tileY, key)) return false;
-        return (openness ?? this._waterOpenness(tileX, tileY)) >= 0.75;
-    }
-
-    _strokeDiamondEdges(ctx, screenX, screenY, mask) {
-        const top = { x: screenX, y: screenY - TILE_HEIGHT / 2 };
-        const right = { x: screenX + TILE_WIDTH / 2, y: screenY };
-        const bottom = { x: screenX, y: screenY + TILE_HEIGHT / 2 };
-        const left = { x: screenX - TILE_WIDTH / 2, y: screenY };
-        if (mask & 1) this._strokeSegment(ctx, left, top);
-        if (mask & 2) this._strokeSegment(ctx, top, right);
-        if (mask & 4) this._strokeSegment(ctx, right, bottom);
-        if (mask & 8) this._strokeSegment(ctx, bottom, left);
-    }
-
-    _strokeInsetDiamondEdges(ctx, screenX, screenY, mask, inset = 6) {
-        const top = { x: screenX, y: screenY - TILE_HEIGHT / 2 + inset * 0.45 };
-        const right = { x: screenX + TILE_WIDTH / 2 - inset, y: screenY };
-        const bottom = { x: screenX, y: screenY + TILE_HEIGHT / 2 - inset * 0.45 };
-        const left = { x: screenX - TILE_WIDTH / 2 + inset, y: screenY };
-        if (mask & 1) this._strokeSegment(ctx, left, top);
-        if (mask & 2) this._strokeSegment(ctx, top, right);
-        if (mask & 4) this._strokeSegment(ctx, right, bottom);
-        if (mask & 8) this._strokeSegment(ctx, bottom, left);
-    }
-
-    _strokeSegment(ctx, a, b) {
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-    }
-
-    // Depth reads as a continuous ramp from the shore rim to the basin centre.
-    //
-    // This used to shade only the lower half of each tile diamond, with a hard
-    // seam across the middle and a binary deep/shallow alpha. Tiled across a
-    // body of water that is exactly a light/dark checkerboard — the artefact
-    // v0.26 removed from the *classification* was still being drawn back in by
-    // the accent pass. Shading the whole diamond, with alpha following the
-    // already-computed BFS shore distance, gives one coherent mass instead.
-    _drawWaterDepthAccent(ctx, screenX, screenY, seed, tileX, tileY) {
-        const key = `${tileX},${tileY}`;
-        const openSea = this._isOpenSeaTile(tileX, tileY);
-        const token = this._waterTokenAt(tileX, tileY, key);
-        const meta = this._waterMetaAt(tileX, tileY, key);
-        const isDeep = this.deepWaterTiles.has(key);
-
-        const shoreDistance = Number.isFinite(Number(meta?.shoreDistance))
-            ? Number(meta.shoreDistance)
-            : (isDeep ? 3 : 0);
-        const span = openSea ? 6 : 4;
-        const t = Math.max(0, Math.min(1, shoreDistance / span));
-        const eased = t * t * (3 - 2 * t); // smoothstep: gentle rim, settled centre
-        const alpha = (openSea ? 0.10 : 0.08) + eased * (openSea ? 0.34 : 0.25);
-
-        // Scanline diamond, not a path fill. A path diamond antialiases along
-        // its diagonals, and with a translucent tint that leaves a hairline
-        // where neighbours meet — overscanning to close it composites twice and
-        // draws a dark lattice instead. The scanline decomposition tiles
-        // exactly, so a body of water comes out as one clean mass.
-        fillTileDiamond(ctx, screenX, screenY, TILE_WIDTH, TILE_HEIGHT,
-            `rgba(0, ${openSea ? 8 : 12}, ${openSea ? 42 : 34}, ${alpha.toFixed(3)})`);
-
-        // Shelf drop-off. The base art switches between the shallow and deep
-        // tilesets at a tile boundary, so the edge of a basin reads as a hard
-        // staircase however smoothly the depth tint ramps over it. A darker rim
-        // on the deep side of that boundary turns the step into a reef edge
-        // falling away, which is what the geometry is actually describing.
-        if (isDeep) this._drawShelfDropoff(ctx, screenX, screenY, tileX, tileY, openSea);
-
-        const glint = this.motionScale
-            ? 0.04 + Math.max(0, Math.sin(this.waterFrame * 1.6 + tileX * 0.7 - tileY * 0.4 + seed * 5)) * 0.09
-            : 0.055;
-        const light = `rgb(${token.glint})`;
-        ctx.strokeStyle = this._withAlpha(light, Math.min(openSea ? 0.22 : 0.18, glint + (isDeep ? 0.02 : 0.05)));
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(screenX - 18 + seed * 6, screenY - 6);
-        ctx.lineTo(screenX + 3 + seed * 10, screenY - 10);
-        ctx.stroke();
-    }
-
-    // Darkened rim along the edges of a deep tile that face shallower water,
-    // inset into the tile so it never doubles up with the neighbour's own rim.
-    _drawShelfDropoff(ctx, screenX, screenY, tileX, tileY, openSea) {
-        const shallower = (x, y) => {
-            const k = `${x},${y}`;
-            return this.waterTiles.has(k) && !this.deepWaterTiles.has(k);
-        };
-        let mask = 0;
-        if (shallower(tileX, tileY - 1)) mask |= 1;
-        if (shallower(tileX + 1, tileY)) mask |= 2;
-        if (shallower(tileX, tileY + 1)) mask |= 4;
-        if (shallower(tileX - 1, tileY)) mask |= 8;
-        if (mask === 0) return;
-
-        const hw = TILE_WIDTH / 2;
-        const hh = TILE_HEIGHT / 2;
-        const inset = 0.42;                       // fraction of the half-diagonal
-        const top = { x: screenX, y: screenY - hh };
-        const right = { x: screenX + hw, y: screenY };
-        const bottom = { x: screenX, y: screenY + hh };
-        const left = { x: screenX - hw, y: screenY };
-        const centre = { x: screenX, y: screenY };
-        const toward = (p) => ({
-            x: p.x + (centre.x - p.x) * inset,
-            y: p.y + (centre.y - p.y) * inset,
-        });
-
-        // Bit order matches _waterEdgeMask: N, E, S, W.
-        const edges = [
-            [top, right], [right, bottom], [bottom, left], [left, top],
-        ];
-        ctx.fillStyle = `rgba(0, ${openSea ? 6 : 9}, ${openSea ? 30 : 26}, 0.20)`;
-        for (let bit = 0; bit < 4; bit++) {
-            if (!(mask & (1 << bit))) continue;
-            const [a, b] = edges[bit];
-            const ai = toward(a);
-            const bi = toward(b);
-            ctx.beginPath();
-            ctx.moveTo(a.x, a.y);
-            ctx.lineTo(b.x, b.y);
-            ctx.lineTo(bi.x, bi.y);
-            ctx.lineTo(ai.x, ai.y);
-            ctx.closePath();
-            ctx.fill();
-        }
-    }
-
-    _drawShoreCrest(ctx, screenX, screenY, seed, tileX, tileY) {
-        const adjacentWater = this.waterTiles.has(`${tileX},${tileY - 1}`)
-            || this.waterTiles.has(`${tileX + 1},${tileY}`)
-            || this.waterTiles.has(`${tileX},${tileY + 1}`)
-            || this.waterTiles.has(`${tileX - 1},${tileY}`);
-
-        // B1: foam wash only where the adjacent water is lagoon-kind.
-        if (adjacentWater) {
-            const adjacentLagoon = this._isLagoonWaterTile(tileX, tileY - 1)
-                || this._isLagoonWaterTile(tileX + 1, tileY)
-                || this._isLagoonWaterTile(tileX, tileY + 1)
-                || this._isLagoonWaterTile(tileX - 1, tileY);
-            if (adjacentLagoon) {
-                ctx.save();
-                ctx.globalCompositeOperation = 'lighter';
-                const drewFoamSprite = this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.shoreFoam, {
-                    x: screenX + (seed - 0.5) * 10,
-                    y: screenY - 2 + (seed - 0.5) * 5,
-                    alpha: 0.18 + seed * 0.10,
-                    scaleX: 0.68 + seed * 0.24,
-                    scaleY: 0.58 + seed * 0.18,
-                    rotation: -0.45 + seed * 0.9,
-                    flipX: seed > 0.5,
-                });
-                if (!drewFoamSprite) {
-                    const foamRadius = TILE_WIDTH * 0.7;
-                    const foamGrad = ctx.createRadialGradient(screenX, screenY, 0, screenX, screenY, foamRadius);
-                    foamGrad.addColorStop(0, 'rgba(220, 240, 250, 0.22)');
-                    foamGrad.addColorStop(1, 'rgba(220, 240, 250, 0)');
-                    ctx.fillStyle = foamGrad;
-                    ctx.beginPath();
-                    ctx.arc(screenX, screenY, foamRadius, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-                ctx.restore();
-            }
-        }
-
-        ctx.fillStyle = adjacentWater
-            ? `rgba(226, 190, 102, ${0.08 + seed * 0.06})`
-            : `rgba(87, 70, 36, ${0.07 + seed * 0.04})`;
-        ctx.beginPath();
-        ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2 + 2);
-        ctx.lineTo(screenX + TILE_WIDTH / 2 - 5, screenY);
-        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2 - 3);
-        ctx.lineTo(screenX - TILE_WIDTH / 2 + 5, screenY);
-        ctx.closePath();
-        ctx.fill();
-
-        // 2.2 — wet-sand crescent: a darker, damp band along the water-facing
-        // edges of the shore tile, between the dry sand and the waterline.
-        if (adjacentWater) {
-            const wetMask = this._shoreWaterEdgeMask(tileX, tileY);
-            if (wetMask) {
-                ctx.strokeStyle = `rgba(116, 86, 50, ${0.14 + seed * 0.06})`;
-                ctx.lineWidth = 5;
-                ctx.lineCap = 'round';
-                this._strokeInsetDiamondEdges(ctx, screenX, screenY, wetMask, 6);
-                ctx.strokeStyle = `rgba(88, 66, 40, ${0.10 + seed * 0.04})`;
-                ctx.lineWidth = 2;
-                this._strokeInsetDiamondEdges(ctx, screenX, screenY, wetMask, 3);
-            }
-        }
-    }
-
-    _drawPathInsetShadow(ctx, screenX, screenY, seed, tileX, tileY) {
-        const isSquare = this.townSquareTiles.has(`${tileX},${tileY}`);
-        ctx.strokeStyle = isSquare
-            ? `rgba(26, 18, 11, ${0.10 + seed * 0.04})`
-            : `rgba(20, 13, 7, ${0.08 + seed * 0.035})`;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(screenX - 18, screenY + 1);
-        ctx.lineTo(screenX, screenY + 9);
-        ctx.lineTo(screenX + 18, screenY + 1);
-        ctx.stroke();
-    }
-
-    _drawTerrainTone(ctx, screenX, screenY, key, seed, tileX, tileY) {
-        let fill = null;
-        let alpha = 0;
-        const visualWater = this._isVisualWaterTile(tileX, tileY, key);
-
-        const isLagoon = this._isLagoonWaterTile(tileX, tileY, key);
-        const waterToken = visualWater ? this._waterTokenAt(tileX, tileY, key) : null;
-        if (this.deepWaterTiles.has(key)) {
-            const openSea = this._isOpenSeaTile(tileX, tileY);
-            if (isLagoon) {
-                // Stable cached base; weather-specific water response lives in dynamic passes.
-                fill = waterToken.deep;
-                alpha = 0.48;
-            } else {
-                // Smooth tonal drift across the deep mass (0.2): the fill lerps
-                // between the two deep tones on a low-frequency field, so depth
-                // reads as coherent patches instead of alternating diamonds.
-                const drift = this._smoothNoise(tileX + 31, tileY + 47, 5);
-                fill = this._lerpColor(waterToken.deep, openSea ? '#03244a' : '#0b6c8d', drift * 0.85);
-                alpha = openSea ? 0.58 : 0.48;
-            }
-        } else if (visualWater) {
-            if (isLagoon) {
-                // Stable cached base; weather-specific water response lives in dynamic passes.
-                fill = waterToken.shallow;
-            } else {
-                const drift = this._smoothNoise(tileX + 31, tileY + 47, 5);
-                fill = this._lerpColor(waterToken.shallow, WATER_TOKENS.water.shallow, drift * 0.7);
-            }
-            // 2.2 — sandy bed: the tile of water right at the waterline warms
-            // toward the shore sand so shallows read as wading depth.
-            const shoreDistance = this._waterMetaAt(tileX, tileY, key)?.shoreDistance;
-            if (shoreDistance === 0) fill = this._lerpColor(fill, '#c9a35e', 0.30);
-            alpha = this.waterTiles.has(key) ? 0.42 : 0.54;
-        } else if (this.shoreTiles.has(key)) {
-            fill = seed > 0.45 ? '#c29a55' : '#ad8346';
-            alpha = 0.15;
-        } else if (this.townSquareTiles.has(key)) {
-            fill = '#2d2219';
-            alpha = 0.09;
-        } else if (this.mainAvenueTiles?.has(key)) {
-            fill = '#3a2a18';
-            alpha = 0.07;
-        } else if (this.pathTiles.has(key) || this.dirtPathTiles?.has(key)) {
-            fill = '#2f2818';
-            alpha = 0.055;
-        } else {
-            const forestFloor = this._forestFloorAt(tileX, tileY);
-            if (forestFloor) {
-                const mix = this._tileNoise(tileX + 709, tileY + 431);
-                fill = mix > 0.56 ? forestFloor.accent : forestFloor.base;
-                alpha = 0.18 + forestFloor.strength * 0.20;
-            } else {
-                // Broad grass greens drift in coherent masses on the low-frequency
-                // field (2.1) instead of flipping per 5x5 hash cell.
-                const broad = this._smoothNoise(tileX + 97, tileY + 131, 7);
-                fill = broad > 0.66 ? '#537339' : broad < 0.30 ? '#6d8742' : '#5d7c3c';
-                alpha = 0.11;
-            }
-        }
-
-        if (!fill || alpha <= 0) return;
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.fillStyle = this._withAlpha(fill, alpha);
-        this._drawDiamond(ctx, screenX, screenY);
-        ctx.fill();
-
-        const allowRegionTint = !visualWater && !this.shoreTiles.has(key);
-        const regionTone = allowRegionTint ? this._terrainRegionTint(fill, tileX, tileY, seed) : null;
-        if (regionTone && regionTone !== fill) {
-            const regionAlpha = Math.min(0.08, alpha * 0.45);
-            ctx.fillStyle = this._withAlpha(regionTone, regionAlpha);
-            this._drawDiamond(ctx, screenX, screenY);
-            ctx.fill();
-        }
-
-        const forestFloor = allowRegionTint ? this._forestFloorAt(tileX, tileY) : null;
-        if (forestFloor) {
-            this._drawForestFloorTexture(ctx, screenX, screenY, seed, forestFloor);
-        }
-
-        if (visualWater && this.motionScale && seed > 0.72) {
-            const shimmer = 0.05 + Math.max(0, Math.sin(this.waterFrame * 2.2 + seed * 10)) * 0.06;
-            // A3: warm tropical teal shimmer for lagoon, cool blue-white for sea.
-            ctx.strokeStyle = isLagoon
-                ? `rgba(120, 230, 200, ${shimmer})`
-                : `rgba(188, 253, 246, ${shimmer})`;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(screenX - 12, screenY - 2);
-            ctx.lineTo(screenX + 10, screenY - 6);
-            ctx.stroke();
-        }
-        if (visualWater) {
-            this._drawWaterDepthAccent(ctx, screenX, screenY, seed, tileX, tileY);
-        } else if (this.shoreTiles.has(key)) {
-            this._drawShoreCrest(ctx, screenX, screenY, seed, tileX, tileY);
-        } else if (this.pathTiles.has(key) || this.dirtPathTiles?.has(key)) {
-            this._drawPathInsetShadow(ctx, screenX, screenY, seed, tileX, tileY);
-        }
-        ctx.restore();
-    }
-
-    _forestFloorAt(tileX, tileY) {
-        let strongest = null;
-        for (const region of FOREST_FLOOR_REGIONS) {
-            const dx = (tileX + 0.5 - region.centerX) / region.radiusX;
-            const dy = (tileY + 0.5 - region.centerY) / region.radiusY;
-            const distance = dx * dx + dy * dy;
-            if (distance > 1) continue;
-            const edge = 1 - distance;
-            const ragged = (this._tileNoise(tileX + 593, tileY + 277) - 0.5) * 0.18;
-            const strength = Math.max(0, Math.min(1, (edge + ragged) * region.strength));
-            if (strength <= 0.05) continue;
-            if (!strongest || strength > strongest.strength) {
-                strongest = {
-                    base: region.base,
-                    accent: region.accent,
-                    strength,
-                };
-            }
-        }
-        return strongest;
-    }
-
-    _drawForestFloorTexture(ctx, screenX, screenY, seed, forestFloor) {
-        ctx.save();
-        ctx.globalCompositeOperation = 'multiply';
-        ctx.fillStyle = `rgba(34, 52, 12, ${0.035 + forestFloor.strength * 0.075})`;
-        this._drawDiamond(ctx, screenX, screenY);
-        ctx.fill();
-
-        if (seed > 0.34) {
-            ctx.globalCompositeOperation = 'screen';
-            ctx.lineCap = 'round';
-            ctx.lineWidth = 1;
-            const alpha = 0.035 + forestFloor.strength * 0.07;
-            ctx.strokeStyle = `rgba(209, 236, 104, ${alpha})`;
-            ctx.beginPath();
-            ctx.moveTo(screenX - 17 + seed * 5, screenY - 3);
-            ctx.quadraticCurveTo(screenX - 5, screenY - 9 - seed * 2, screenX + 14 - seed * 3, screenY - 6);
-            ctx.stroke();
-        }
-
-        if (seed > 0.78) {
-            ctx.globalCompositeOperation = 'source-over';
-            ctx.fillStyle = `rgba(252, 216, 118, ${0.09 + forestFloor.strength * 0.06})`;
-            ctx.fillRect(Math.round(screenX - 2), Math.round(screenY - 9), 2, 2);
-            ctx.fillStyle = `rgba(153, 221, 82, ${0.11 + forestFloor.strength * 0.08})`;
-            ctx.fillRect(Math.round(screenX + 7), Math.round(screenY - 4), 2, 1);
-        }
-        ctx.restore();
-    }
-
     _drawFishSchools(ctx) {
         this.wildlifeRenderer.drawFishSchools(ctx);
     }
@@ -10017,181 +8848,6 @@ export class IsometricRenderer {
 
     _drawOpenSeaGulls(ctx) {
         this.wildlifeRenderer.drawOpenSeaGulls(ctx);
-    }
-
-    _drawDiamond(ctx, screenX, screenY) {
-        ctx.beginPath();
-        ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
-        ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
-        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
-        ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
-        ctx.closePath();
-    }
-
-    // Map a tile's class to the appropriate Wang tileset id.
-    // Priority: water (deep > shallow) > shore > town square > main avenue > path > grass.
-    _terrainSheetIdAt(x, y) {
-        const key = `${x},${y}`;
-        if (this.deepWaterTiles.has(key)) return 'terrain.shallow-deep';
-        if (this._isVisualWaterTile(x, y, key)) return 'terrain.shore-shallow';
-        if (this.shoreTiles.has(key)) return 'terrain.grass-shore';
-        if (this.townSquareTiles.has(key)) return 'terrain.cobble-square';
-        if (this.mainAvenueTiles?.has(key)) return 'terrain.grass-cobble';
-        if (this.pathTiles.has(key) || this.dirtPathTiles?.has(key)) return 'terrain.grass-dirt';
-        // Pure grass: any tileset works since mask = 0 paints the lower (grass) variant.
-        return 'terrain.grass-dirt';
-    }
-
-    // True if the neighbour tile (tx, ty) belongs to the same "upper" class
-    // as the tileset chosen for the origin tile (originX, originY).
-    _sameTerrainClass(originX, originY, tx, ty) {
-        const id = this._terrainSheetIdAt(originX, originY);
-        const tkey = `${tx},${ty}`;
-        if (id === 'terrain.shallow-deep') return this.deepWaterTiles.has(tkey);
-        // Shallow water treats deep water as same-class: the Wang mask then
-        // reads the whole water body as one mass and no transition cell is
-        // drawn along the deep/shallow boundary (checkerboard fix, 0.2).
-        if (id === 'terrain.shore-shallow') return this._isVisualWaterTile(tx, ty, tkey);
-        if (id === 'terrain.grass-shore') return this.shoreTiles.has(tkey);
-        if (id === 'terrain.cobble-square') return this.townSquareTiles.has(tkey);
-        if (id === 'terrain.grass-cobble') return this.mainAvenueTiles?.has(tkey);
-        if (id === 'terrain.grass-dirt') return this.pathTiles.has(tkey) || (this.dirtPathTiles?.has(tkey) ?? false);
-        return false;
-    }
-
-    _terrainRegionTint(baseColor, tileX, tileY, seed) {
-        // Smooth low-frequency washes (2.1): region tint reads as large
-        // authored patches instead of 4x4 hash cells.
-        const broad = this._smoothNoise(tileX + 11, tileY + 19, 7);
-        const wash = this._smoothNoise(tileX + tileY + 37, tileY - tileX + 43, 9);
-        if (broad > 0.72) return seed > 0.42 ? '#6e873e' : '#5f7f39';
-        if (broad < 0.22) return seed > 0.54 ? '#557438' : '#617b3b';
-        if (wash > 0.78) return '#718a43';
-        if (wash < 0.16) return '#59783a';
-        return baseColor;
-    }
-
-    _drawTropicalWaterfalls(ctx) {
-        if (!TROPICAL_WATERFALLS.length) return;
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        for (const fall of TROPICAL_WATERFALLS) {
-            const x = (fall.tileX - fall.tileY) * TILE_WIDTH / 2;
-            const y = (fall.tileX + fall.tileY) * TILE_HEIGHT / 2;
-            const scale = fall.scale ?? 1;
-            const shimmer = this.motionScale
-                ? Math.sin(this.waterFrame * 5.2 + (fall.phase ?? 0)) * 2.5
-                : 0;
-
-            ctx.save();
-            ctx.translate(x, y);
-            ctx.scale(scale, scale);
-
-            ctx.fillStyle = 'rgba(91, 68, 39, 0.68)';
-            ctx.beginPath();
-            ctx.moveTo(-fall.width * 0.58, 2);
-            ctx.lineTo(-fall.width * 0.28, -fall.height * 0.66);
-            ctx.lineTo(0, -fall.height - 10);
-            ctx.lineTo(fall.width * 0.42, -fall.height * 0.58);
-            ctx.lineTo(fall.width * 0.58, 4);
-            ctx.lineTo(0, 12);
-            ctx.closePath();
-            ctx.fill();
-
-            ctx.fillStyle = 'rgba(180, 126, 66, 0.42)';
-            ctx.beginPath();
-            ctx.moveTo(-fall.width * 0.42, -4);
-            ctx.lineTo(-fall.width * 0.18, -fall.height * 0.62);
-            ctx.lineTo(5, -fall.height - 4);
-            ctx.lineTo(fall.width * 0.34, -fall.height * 0.50);
-            ctx.lineTo(fall.width * 0.42, -3);
-            ctx.closePath();
-            ctx.fill();
-
-            const stream = ctx.createLinearGradient(0, -fall.height, 0, 8);
-            stream.addColorStop(0, 'rgba(202, 255, 250, 0.88)');
-            stream.addColorStop(0.52, 'rgba(71, 211, 229, 0.72)');
-            stream.addColorStop(1, 'rgba(216, 255, 250, 0.46)');
-            ctx.fillStyle = stream;
-            ctx.beginPath();
-            ctx.moveTo(-fall.width * 0.16 + shimmer, -fall.height + 2);
-            ctx.bezierCurveTo(-fall.width * 0.30, -fall.height * 0.54, -fall.width * 0.14, -fall.height * 0.28, -fall.width * 0.22, 4);
-            ctx.lineTo(fall.width * 0.18, 6);
-            ctx.bezierCurveTo(fall.width * 0.24, -fall.height * 0.28, fall.width * 0.12, -fall.height * 0.58, fall.width * 0.18 + shimmer, -fall.height + 2);
-            ctx.closePath();
-            ctx.fill();
-
-            ctx.strokeStyle = 'rgba(235, 255, 246, 0.72)';
-            ctx.lineWidth = 1.2;
-            for (let i = -1; i <= 1; i++) {
-                ctx.beginPath();
-                ctx.moveTo(i * 8 + shimmer * 0.35, -fall.height * 0.86);
-                ctx.bezierCurveTo(i * 4 - shimmer, -fall.height * 0.56, i * 7 + shimmer, -fall.height * 0.24, i * 5, 2);
-                ctx.stroke();
-            }
-
-            // A2: animated expanding ripple ring in the pool.
-            if (this.motionScale) {
-                const poolBaseRadius = fall.width * 0.46;
-                const t = (this.waterFrame % 60) / 60;
-                const ringR = t * poolBaseRadius * 1.25;
-                const ringAlpha = 0.45 * (1 - t);
-                ctx.save();
-                ctx.strokeStyle = `rgba(226, 255, 246, ${ringAlpha})`;
-                ctx.lineWidth = 1.5;
-                ctx.beginPath();
-                ctx.ellipse(0, 7, ringR, ringR * (8 / (fall.width * 0.46)), 0, 0, Math.PI * 2);
-                ctx.stroke();
-                ctx.restore();
-            }
-            // Static pool fill.
-            ctx.fillStyle = 'rgba(226, 255, 246, 0.48)';
-            ctx.beginPath();
-            ctx.ellipse(0, 7, fall.width * 0.46, 8, 0, 0, Math.PI * 2);
-            ctx.fill();
-
-            // B4 — spray mist + pool churn. Two radial mist ellipses breathe on
-            // offset phases, three seed-hashed foam dabs jitter at the plunge
-            // point, and a second ripple ring runs half a cycle behind the first.
-            // Reduced motion keeps the mist + dabs static and drops the rings.
-            const reduced = !this.motionScale;
-            const poolW = fall.width * 0.46;
-            const hashFrac = (v) => v - Math.floor(v);
-            for (let m = 0; m < 2; m++) {
-                const mp = (fall.phase ?? 0) + m * 1.7;
-                const breathe = reduced ? 0.5 : (Math.sin(this.waterFrame * 0.9 + mp) * 0.5 + 0.5);
-                const mr = poolW * (0.7 + m * 0.35) * (0.85 + breathe * 0.3);
-                const ma = Math.min(0.16, (0.10 + m * 0.03) * (reduced ? 0.8 : (0.6 + breathe * 0.5)));
-                const mist = ctx.createRadialGradient(0, 4, 0, 0, 4, mr);
-                mist.addColorStop(0, `rgba(255, 255, 255, ${ma})`);
-                mist.addColorStop(1, 'rgba(255, 255, 255, 0)');
-                ctx.fillStyle = mist;
-                ctx.beginPath();
-                ctx.ellipse(0, 4, mr, mr * 0.5, 0, 0, Math.PI * 2);
-                ctx.fill();
-            }
-            for (let d = 0; d < 3; d++) {
-                const hs = hashFrac(Math.sin((fall.phase ?? 0) * 12.9 + d * 78.233) * 43758.5453);
-                const jitter = reduced ? 0 : Math.sin(this.waterFrame * 2.1 + d * 2 + (fall.phase ?? 0)) * 2;
-                const dx = (hs - 0.5) * poolW * 1.2 + jitter;
-                const dy = 7 + (hashFrac(hs * 7.3) - 0.5) * 4;
-                ctx.fillStyle = `rgba(240, 255, 250, ${0.26 + hs * 0.2})`;
-                ctx.beginPath();
-                ctx.ellipse(dx, dy, 1.6 + hs * 1.4, 1.0 + hs * 0.7, 0, 0, Math.PI * 2);
-                ctx.fill();
-            }
-            if (!reduced) {
-                const t2 = ((this.waterFrame + 30) % 60) / 60;
-                const ringR2 = t2 * poolW * 1.25;
-                ctx.strokeStyle = `rgba(226, 255, 246, ${0.4 * (1 - t2)})`;
-                ctx.lineWidth = 1.2;
-                ctx.beginPath();
-                ctx.ellipse(0, 7, ringR2, ringR2 * (8 / poolW), 0, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-            ctx.restore();
-        }
-        ctx.restore();
     }
 
     _drawSkyCanopy(ctx, atmosphere = null, dt = 16, motionScale = null) {
@@ -10325,7 +8981,7 @@ export class IsometricRenderer {
                 kind: 'point',
                 x: source.x,
                 y: source.y + 10,
-                color: isBrazier ? '#ffb457' : '#ffd56a',
+                color: isBrazier ? '#ffa94a' : '#ffc95e',
                 radius: Math.min(isBrazier ? 62 : 52, SOURCE_HALO_RADIUS_CAP),
                 intensity: (isBrazier ? 0.94 : 0.82) * core,
             });
@@ -10548,6 +9204,17 @@ export class IsometricRenderer {
         return ambient;
     }
 
+    // 1.4 Canvas parity — called from the Canvas terrain pass with the world
+    // transform applied. Motion time matches the resident composite's clock.
+    _drawCloudShadowCourses(ctx, atmosphere = null, perfNow = 0) {
+        return drawCloudShadowCourses(ctx, {
+            atmosphere,
+            diamond: this._worldDiamondPoints?.(),
+            timeMs: this.motionTimeMs ?? perfNow,
+            reducedMotion: !((this.motionScale ?? 1) > 0),
+        });
+    }
+
     _drawAtmosphere(ctx, atmosphere = null, dt = 16, ambientLightSources = null, profileMark = null) {
         const canvas = this._screenViewport();
         if (this._shouldUseFastAtmosphere()) {
@@ -10564,48 +9231,48 @@ export class IsometricRenderer {
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
 
-        // E1 — grade the scene by multiplying the cached brightness-multiplier
-        // overlay in. Wrapped in its own composite so the passes below stay
-        // source-over / screen.
+        // C2 — grade the finished world layer with the evaluated grade: the
+        // night desaturation, the cached ambient multiply (with its stepped
+        // vignette) and the lift floor, in the resident shader's order.
+        const { grade } = canvasGradeFor(atmosphere);
+        drawCanvasGradeSaturation(ctx, canvas.width, canvas.height, grade);
         ctx.save();
         ctx.globalCompositeOperation = 'multiply';
         ctx.drawImage(this._getAtmosphereVignette(canvas, atmosphere), 0, 0, canvas.width, canvas.height);
         ctx.restore();
+        drawCanvasGradeLift(ctx, canvas.width, canvas.height, grade);
         profileMark?.('atmosphere-grade');
 
         // 3.2 — source-coloured wet reflections come before the halos: the
         // patch below a lamp belongs to the ground, the halo to the air.
         this._drawWetSourceReflections(ctx, canvas, atmosphere);
-        // E2/E3 — additive building light glows, shared with the fast path so
-        // both draw lanterns identically.
-        this._drawLightGlowStamps(ctx, canvas, atmosphere, ambientLightSources);
-
-        this._drawLanternGlows(ctx, canvas, atmosphere);
+        // 1.2 — stepped multiplicative pools at the real emitters, shared with
+        // the fast path, landed once through the pool layer.
+        const pools = this._beginPoolLayer(ctx, canvas);
+        this._drawLightGlowStamps(pools, canvas, atmosphere, ambientLightSources);
+        this._drawLanternGlows(pools, canvas, atmosphere);
+        this._landPoolLayer(ctx);
         profileMark?.('atmosphere-lights');
 
         ctx.restore();
     }
 
-    // E2/E3 — additive building light-glow pass, extracted so both the full
-    // atmosphere path and the fast-atmosphere wash can stamp lanterns. Screen
-    // composite plus a low alpha cap keeps the warm cores incandescent against
-    // the multiply-graded night without washing out the sprites underneath.
-    // `maxCount` bounds the stamp count; the fast path pre-selects the nearest
-    // lights and passes them in, the full path passes them all.
+    // 1.2 — the light pools, extracted so both the full atmosphere path and
+    // the fast-atmosphere wash stamp them. Each pool is a cached `color-dodge`
+    // stamp in three dithered art-pixel courses: it multiplies the graded
+    // surface in the light's hue (texture shows through) instead of pasting a
+    // screen-blended disc. `maxCount` bounds the stamp count; the fast path
+    // pre-selects the nearest lights and passes them in. `ctx` is the pool
+    // layer from `_beginPoolLayer`.
     _drawLightGlowStamps(ctx, canvas, atmosphere = null, ambientLightSources = null, maxCount = Infinity) {
         if (!this.buildingRenderer) return;
         // `localLightPhase` stays the admission gate (no lamps at noon); 3.1's
-        // exposure envelope is the only energy authority, so the halo alpha no
-        // longer multiplies lightBoost, the beacon, and the glow scale together.
+        // exposure envelope spill share is the pool energy, as on the GPU.
+        // Action-needed lights stay outside the envelope (their own stepped,
+        // capped course), as on the GPU.
         const localLightPhase = localLightPhaseForLighting(atmosphere?.lighting);
         if (localLightPhase <= 0.04) return;
-        const zoom = this.camera?.zoom || 1;
-        const glowScale = sourceEnergyFor(atmosphere?.lighting).core;
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        // Quantized alpha + the stamp cache key keep this a small, reused set
-        // of stepped stamps rather than a per-frame gradient rebuild.
-        ctx.globalAlpha = this._quantizedAlpha((zoom < 1 ? 0.10 : 0.14) * glowScale);
+        const spill = sourceEnergyFor(atmosphere?.lighting).spill;
         let drawn = 0;
         for (const light of ambientLightSources || this._ambientLightSources(atmosphere)) {
             if (drawn >= maxCount) break;
@@ -10613,44 +9280,134 @@ export class IsometricRenderer {
             const p = this.camera.worldToScreen(light.x, light.y);
             if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
             const radius = light.radius * this.camera.zoom;
-            const stamp = this._getLightGlowStamp(light, radius, glowScale * (light.intensity || 1), atmosphere);
-            ctx.drawImage(stamp, p.x - radius, p.y - radius, radius * 2, radius * 2);
+            const energy = (light.attention ? 1 : spill) * (light.intensity || 1);
+            const stamp = this._getLightGlowStamp(light, radius, energy, atmosphere);
+            this._stampPool(ctx, stamp, p.x, p.y);
             drawn++;
         }
+    }
+
+    // 1.2 — Canvas pools land like the resident sum-then-cap: every stamp's
+    // dodge block is drawn into one pool layer with `lighten` (the strongest
+    // course wins, so overlapping lamps never compound into a bleached white
+    // disc) and its multiply block, when it has one, into a white shade
+    // layer with `darken`. The shade lands with `multiply`, then the pools
+    // with `color-dodge`. Only the stamped rectangle is reset and composited.
+    _poolLayerCanvas(key, canvas, fill) {
+        let layer = this[key];
+        if (layer && layer.width === canvas.width && layer.height === canvas.height) return layer;
+        releaseCanvasBackingStore(layer);
+        layer = document.createElement('canvas');
+        layer.width = canvas.width;
+        layer.height = canvas.height;
+        if (fill) {
+            const layerCtx = layer.getContext('2d');
+            layerCtx.fillStyle = fill;
+            layerCtx.fillRect(0, 0, layer.width, layer.height);
+        }
+        this[key] = layer;
+        this._poolLayerRect = null;
+        return layer;
+    }
+
+    _beginPoolLayer(ctx, canvas) {
+        const dodge = this._poolLayerCanvas('_poolLayer', canvas, null).getContext('2d');
+        const shade = this._poolLayerCanvas('_poolShadeLayer', canvas, '#ffffff').getContext('2d');
+        const stale = this._poolLayerRect;
+        const transform = ctx.getTransform();
+        for (const layerCtx of [dodge, shade]) {
+            layerCtx.setTransform(1, 0, 0, 1, 0, 0);
+            layerCtx.globalCompositeOperation = 'source-over';
+            if (stale) {
+                if (layerCtx === shade) {
+                    layerCtx.fillStyle = '#ffffff';
+                    layerCtx.fillRect(stale.x0, stale.y0, stale.x1 - stale.x0, stale.y1 - stale.y0);
+                } else {
+                    layerCtx.clearRect(stale.x0, stale.y0, stale.x1 - stale.x0, stale.y1 - stale.y0);
+                }
+            }
+            layerCtx.setTransform(transform);
+            layerCtx.imageSmoothingEnabled = false;
+        }
+        dodge.globalCompositeOperation = 'lighten';
+        shade.globalCompositeOperation = 'darken';
+        this._poolLayerRect = null;
+        this._poolShadeUsed = false;
+        const pools = this._poolLayerContexts || (this._poolLayerContexts = {});
+        pools.dodge = dodge;
+        pools.shade = shade;
+        return pools;
+    }
+
+    _stampPool(pools, stamp, x, y) {
+        const cells = stamp._poolCells || stamp.width;
+        const rows = stamp._poolRows || stamp.height;
+        const width = cells * stamp._poolCellPx;
+        const height = rows * stamp._poolCellPx;
+        const left = Math.round(x - width / 2);
+        const top = Math.round(y - height / 2);
+        pools.dodge.drawImage(stamp, 0, 0, cells, rows, left, top, width, height);
+        if (stamp._poolShade) {
+            pools.shade.drawImage(stamp, cells, 0, cells, rows, left, top, width, height);
+            this._poolShadeUsed = true;
+        }
+        const m = pools.dodge.getTransform();
+        const x0 = Math.max(0, Math.floor(left * m.a + m.e));
+        const y0 = Math.max(0, Math.floor(top * m.d + m.f));
+        const x1 = Math.min(pools.dodge.canvas.width, Math.ceil((left + width) * m.a + m.e));
+        const y1 = Math.min(pools.dodge.canvas.height, Math.ceil((top + height) * m.d + m.f));
+        if (x1 <= x0 || y1 <= y0) return;
+        const rect = this._poolLayerRect;
+        this._poolLayerRect = rect
+            ? { x0: Math.min(rect.x0, x0), y0: Math.min(rect.y0, y0), x1: Math.max(rect.x1, x1), y1: Math.max(rect.y1, y1) }
+            : { x0, y0, x1, y1 };
+    }
+
+    _landPoolLayer(ctx) {
+        const rect = this._poolLayerRect;
+        if (!rect || !this._poolLayer) return;
+        const w = rect.x1 - rect.x0;
+        const h = rect.y1 - rect.y0;
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        if (this._poolShadeUsed) {
+            ctx.globalCompositeOperation = 'multiply';
+            ctx.drawImage(this._poolShadeLayer, rect.x0, rect.y0, w, h, rect.x0, rect.y0, w, h);
+        }
+        ctx.globalCompositeOperation = 'color-dodge';
+        ctx.drawImage(this._poolLayer, rect.x0, rect.y0, w, h, rect.x0, rect.y0, w, h);
         ctx.restore();
     }
 
-    // C3 — warm halos on the baked lantern/brazier props. They darken with the
-    // terrain cache at night, so a small radial glow per visible prop restores
-    // the torchlight after dusk. Alpha tracks the beacon (night) factor; a faint
-    // deterministic flicker plays under motion, static alpha under reduced
-    // motion. Only runs in the full atmosphere path (the fast path drops glows
-    // by design — that's E3's territory).
+    // C3 — torchlight at the baked lantern/brazier props, as the same stepped
+    // multiplicative pools as every other emitter (1.2). Energy tracks the
+    // beacon (night) factor x the envelope spill; a faint deterministic
+    // flicker steps the energy under motion, static under reduced motion.
+    // Only runs in the full atmosphere path (the fast path drops them by
+    // design — that's E3's territory). `ctx` is the pool layer.
     _drawLanternGlows(ctx, canvas, atmosphere = null) {
-        // The night factor is the gate; the envelope core is the energy (3.1).
         const nightFactor = this._lanternNightFactor(atmosphere);
         if (nightFactor <= 0.05) return;
-        const core = sourceEnergyFor(atmosphere?.lighting).core;
+        const spill = sourceEnergyFor(atmosphere?.lighting).spill;
         const sources = this._lanternGlowSources();
         if (!sources.length) return;
 
-        const stamp = this._getLanternGlowStamp();
         const zoom = this.camera?.zoom || 1;
         const radius = Math.max(9, Math.round(14 * zoom));
         const t = this.waterFrame;
         const flickerOn = (this.motionScale ?? 1) > 0;
+        const light = this._lanternPoolLight || (this._lanternPoolLight = {
+            id: 'prop-lantern', kind: 'point', color: '#ffd56a', radius: 14,
+        });
 
-        ctx.save();
-        // E2 — additive so the warm prop halos punch through the multiply grade.
-        ctx.globalCompositeOperation = 'screen';
         for (const src of sources) {
             const p = this.camera.worldToScreen(src.x, src.y);
             if (p.x < -radius || p.y < -radius || p.x > canvas.width + radius || p.y > canvas.height + radius) continue;
-            const flick = flickerOn ? 0.86 + 0.14 * Math.sin(t * 5 + src.phase) : 1;
-            ctx.globalAlpha = this._quantizedAlpha(Math.min(0.5, 0.42 * core * flick));
-            ctx.drawImage(stamp, p.x - radius, p.y - radius, radius * 2, radius * 2);
+            const flick = flickerOn ? (Math.sin(t * 5 + src.phase) > 0.4 ? 1 : 0.86) : 1;
+            const stamp = this._getLightGlowStamp(light, radius, nightFactor * spill * flick, atmosphere);
+            this._stampPool(ctx, stamp, p.x, p.y);
         }
-        ctx.restore();
     }
 
     // Night factor from the atmosphere's beacon intensity (0 in daylight, rising
@@ -10693,28 +9450,6 @@ export class IsometricRenderer {
         return out;
     }
 
-    // Small cached warm-glow stamp reused for every lantern/brazier halo. Core
-    // matches the existing lantern token (#ffd56a) so it reads as torchlight.
-    _getLanternGlowStamp() {
-        if (this._lanternGlowStamp) return this._lanternGlowStamp;
-        const size = 48;
-        const stamp = document.createElement('canvas');
-        stamp.width = size;
-        stamp.height = size;
-        const sctx = stamp.getContext('2d');
-        const r = size / 2;
-        const glow = sctx.createRadialGradient(r, r, 0, r, r, r);
-        glow.addColorStop(0, 'rgba(255, 213, 106, 0.90)');  // #ffd56a warm core
-        glow.addColorStop(0.5, 'rgba(255, 190, 92, 0.32)');
-        glow.addColorStop(1, 'rgba(255, 190, 92, 0)');
-        sctx.fillStyle = glow;
-        sctx.beginPath();
-        sctx.arc(r, r, r, 0, Math.PI * 2);
-        sctx.fill();
-        this._lanternGlowStamp = stamp;
-        return stamp;
-    }
-
     _shouldUseFastAtmosphere() {
         const cssPixels = this._screenWidth() * this._screenHeight();
         return cssPixels >= FAST_ATMOSPHERE_CSS_PIXELS && (this.camera?.zoom || 1) >= 1.5;
@@ -10731,16 +9466,17 @@ export class IsometricRenderer {
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
 
-        // E1 (fast path) — the same multiply grade + radial vignette as the
-        // cached overlay path, blitted from a small quarter-size cached stamp
-        // (5.1) instead of flat fills + a linear fade, so the frame keeps the
-        // same character when the fast path engages mid-zoom. The stamp is
-        // stretched with smoothing on: it is a gradient, not pixel art.
+        // E1 (fast path) — the same C2 grade as the cached overlay path: the
+        // desaturation and lift fills around a small quarter-size multiply
+        // stamp (5.1) whose stepped vignette survives the nearest stretch.
+        const { grade } = canvasGradeFor(atmosphere);
+        drawCanvasGradeSaturation(ctx, canvas.width, canvas.height, grade);
         ctx.save();
         ctx.globalCompositeOperation = 'multiply';
-        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingEnabled = false;
         ctx.drawImage(this._getFastVignetteStamp(canvas, atmosphere), 0, 0, canvas.width, canvas.height);
         ctx.restore();
+        drawCanvasGradeLift(ctx, canvas.width, canvas.height, grade);
         profileMark?.('atmosphere-grade');
 
         // 3.2 — the fast path keeps the same capped, cached wet reflections.
@@ -10760,7 +9496,7 @@ export class IsometricRenderer {
     _getFastVignetteStamp(canvas, atmosphere = null) {
         const width = Math.max(1, Math.round(canvas.width / 4));
         const height = Math.max(1, Math.round(canvas.height / 4));
-        const cacheKey = `${width}x${height}|${atmosphere?.cacheKey || 'fallback'}`;
+        const cacheKey = `${width}x${height}|${canvasGradeOverlayKey(atmosphere)}`;
         if (this._fastVignetteStamp && this._fastVignetteStampKey === cacheKey) {
             return this._fastVignetteStamp;
         }
@@ -10770,8 +9506,7 @@ export class IsometricRenderer {
         stamp.width = width;
         stamp.height = height;
         const stampCtx = stamp.getContext('2d');
-        const phase = atmosphere?.phase || 'day';
-        const grade = phaseGradeForCanvas(phase, atmosphere?.lighting?.moonFill);
+        const grade = canvasGradeFor(atmosphere);
         const gradeBase = gradeColorForCanvas(grade.base);
         const gradeEdge = gradeColorForCanvas(grade.edge);
         stampCtx.fillStyle = gradeBase;
@@ -10784,9 +9519,7 @@ export class IsometricRenderer {
             height * 0.5,
             Math.max(width, height) * 0.72,
         );
-        vignette.addColorStop(0, this._withAlpha(gradeEdge, 0));
-        vignette.addColorStop(0.62, this._withAlpha(gradeEdge, this._quantizedAlpha(grade.edgeAlpha * 0.4)));
-        vignette.addColorStop(1, this._withAlpha(gradeEdge, this._quantizedAlpha(grade.edgeAlpha)));
+        addSteppedVignetteStops(vignette, (alpha) => this._withAlpha(gradeEdge, this._quantizedAlpha(alpha)), grade.edgeAlpha);
         stampCtx.fillStyle = vignette;
         stampCtx.fillRect(0, 0, width, height);
 
@@ -10819,17 +9552,25 @@ export class IsometricRenderer {
         let protectedCount = 0;
         while (protectedCount < visible.length && visible[protectedCount].light.attention) protectedCount++;
         const nearest = visible.slice(0, Math.max(12, protectedCount)).map(v => v.light);
-        this._drawLightGlowStamps(ctx, canvas, atmosphere, nearest);
+        const pools = this._beginPoolLayer(ctx, canvas);
+        this._drawLightGlowStamps(pools, canvas, atmosphere, nearest);
+        this._landPoolLayer(ctx);
     }
 
-    _getLightGlowStamp(light, radius, glowScale = 1, atmosphere = null) {
-        const dpr = this._screenDpr();
-        const phaseBucket = atmosphere?.cacheKey || 'fallback';
+    // 1.2 — one cached stepped `color-dodge` pool stamp per light, zoom (the
+    // art-pixel cell), energy and grade bucket. The stamp is one texel per art
+    // pixel and is drawn nearest-neighbour at `cell` CSS px per texel.
+    _getLightGlowStamp(light, radius, energy = 1, atmosphere = null) {
+        const { grade } = canvasGradeFor(atmosphere);
+        const cell = Math.max(1, Math.round(this.camera?.zoom || 1));
+        const ambientTint = grade.ambientTint || [1, 1, 1];
         const key = [
-            lightSourceCacheKey(light, phaseBucket),
+            lightSourceCacheKey(light, 'pool'),
             Math.round(radius),
-            this._quantizedAlpha(glowScale),
-            dpr,
+            cell,
+            this._quantizedAlpha(energy),
+            ambientTint.map(channel => Math.round(channel * 32)).join(','),
+            Math.round((grade.poolGain ?? 1) * 32),
         ].join('|');
         const cached = this.lightGradientCache.get(key);
         if (cached) {
@@ -10838,17 +9579,16 @@ export class IsometricRenderer {
             return cached;
         }
 
-        const size = Math.max(2, Math.ceil(radius * 2));
-        const stampDpr = Math.max(
-            0.1,
-            Math.min(dpr, Math.sqrt(MAX_LIGHT_GRADIENT_STAMP_PIXELS / Math.max(1, size * size))),
-        );
-        const stamp = document.createElement('canvas');
-        stamp.width = Math.max(1, Math.round(size * stampDpr));
-        stamp.height = Math.max(1, Math.round(size * stampDpr));
+        const stamp = buildPoolDodgeStamp({
+            rgb: this._parseLightColor(light.color),
+            radius,
+            cell,
+            energy: this._quantizedAlpha(energy),
+            ambientTint,
+            poolGain: grade.poolGain ?? 1,
+        });
         const stampPixels = canvasPixelCount(stamp);
-        const shouldCache = stampPixels <= MAX_LIGHT_GRADIENT_STAMP_PIXELS;
-        if (shouldCache) {
+        if (stampPixels <= MAX_LIGHT_GRADIENT_STAMP_PIXELS) {
             let retainedPixels = canvasMapPixelCount(this.lightGradientCache);
             while (
                 this.lightGradientCache.size > 0 &&
@@ -10861,21 +9601,8 @@ export class IsometricRenderer {
                 releaseCanvasBackingStore(oldest);
                 this.lightGradientCache.delete(oldestKey);
             }
+            this.lightGradientCache.set(key, stamp);
         }
-        const stampCtx = stamp.getContext('2d');
-        stampCtx.setTransform(stampDpr, 0, 0, stampDpr, 0, 0);
-        const glow = stampCtx.createRadialGradient(radius, radius, 0, radius, radius, radius);
-        // E2 — hot near-white core so the lantern reads incandescent through the
-        // multiply-graded night, fading to the light's own hue and out.
-        const core = this._mixToWhite(light.color, 0.6);
-        glow.addColorStop(0, this._withAlpha(core, this._quantizedAlpha(0.5 * glowScale)));
-        glow.addColorStop(0.35, this._withAlpha(light.color, this._quantizedAlpha(0.25 * glowScale)));
-        glow.addColorStop(1, this._withAlpha(light.color, 0));
-        stampCtx.fillStyle = glow;
-        stampCtx.beginPath();
-        stampCtx.arc(radius, radius, radius, 0, Math.PI * 2);
-        stampCtx.fill();
-        if (shouldCache) this.lightGradientCache.set(key, stamp);
         return stamp;
     }
 
@@ -11062,7 +9789,7 @@ export class IsometricRenderer {
 
     _getAtmosphereVignette(canvas, atmosphere = null) {
         const dpr = this._screenDpr();
-        const cacheKey = `${canvas.width}x${canvas.height}@${dpr}|${atmosphere?.cacheKey || 'fallback'}`;
+        const cacheKey = `${canvas.width}x${canvas.height}@${dpr}|${canvasGradeOverlayKey(atmosphere)}`;
         if (this.atmosphereVignetteCache && this.atmosphereVignetteCacheKey === cacheKey) {
             return this.atmosphereVignetteCache;
         }
@@ -11073,7 +9800,6 @@ export class IsometricRenderer {
         overlay.height = Math.max(1, Math.round(canvas.height * dpr));
         const overlayCtx = overlay.getContext('2d');
         overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        const phase = atmosphere?.phase || 'day';
 
         // E1 — the overlay is a brightness *multiplier*, blitted with a
         // `multiply` composite in _drawAtmosphere. Every pixel is an opaque
@@ -11081,7 +9807,7 @@ export class IsometricRenderer {
         // values grade it. Painting the opaque base first, then a
         // transparent→dark radial, keeps the whole overlay opaque while
         // darkening toward the edges (the vignette).
-        const grade = phaseGradeForCanvas(phase, atmosphere?.lighting?.moonFill);
+        const grade = canvasGradeFor(atmosphere);
         const gradeBase = gradeColorForCanvas(grade.base);
         const gradeEdge = gradeColorForCanvas(grade.edge);
         overlayCtx.fillStyle = gradeBase;
@@ -11095,9 +9821,7 @@ export class IsometricRenderer {
             canvas.height * 0.5,
             Math.max(canvas.width, canvas.height) * 0.72,
         );
-        vignette.addColorStop(0, this._withAlpha(gradeEdge, 0));
-        vignette.addColorStop(0.62, this._withAlpha(gradeEdge, this._quantizedAlpha(grade.edgeAlpha * 0.4)));
-        vignette.addColorStop(1, this._withAlpha(gradeEdge, this._quantizedAlpha(grade.edgeAlpha)));
+        addSteppedVignetteStops(vignette, (alpha) => this._withAlpha(gradeEdge, this._quantizedAlpha(alpha)), grade.edgeAlpha);
         overlayCtx.fillStyle = vignette;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -11189,6 +9913,7 @@ export class IsometricRenderer {
             gpuAgentEmissiveAtlas: canvasPixelCount(this._gpuAgentEmissiveAtlas),
             gpuAgentOccluderAtlas: canvasPixelCount(this._gpuAgentOccluderAtlas),
             semanticGround: canvasPixelCount(this._semanticGroundCanvas),
+            groundCueAtlas: canvasPixelCount(this._groundCueRecorder?.atlas?.canvas),
             gpuAgentAtlasUpdateSlots: canvasMapPixelCount(this._gpuAgentAlbedoUpdateCanvases)
                 + canvasMapPixelCount(this._gpuAgentMaterialUpdateCanvases)
                 + canvasMapPixelCount(this._gpuAgentEmissiveUpdateCanvases)
@@ -11255,15 +9980,18 @@ export class IsometricRenderer {
         ];
         const panelHeight = 16 + lines.length * 14;
         ctx.save();
-        ctx.font = '10px "Press Start 2P", monospace';
-        ctx.textBaseline = 'top';
+        ctx.font = WORLD_BODY_FONT_11;
+        ctx.textBaseline = 'alphabetic';
         ctx.fillStyle = 'rgba(4, 10, 18, 0.72)';
         ctx.fillRect(12, 58, 520, panelHeight);
-        ctx.strokeStyle = 'rgba(142, 204, 255, 0.48)';
-        ctx.strokeRect(12.5, 58.5, 520, panelHeight);
+        ctx.fillStyle = 'rgba(142, 204, 255, 0.48)';
+        ctx.fillRect(12, 58, 520, 1);
+        ctx.fillRect(12, 58 + panelHeight - 1, 520, 1);
+        ctx.fillRect(12, 59, 1, panelHeight - 2);
+        ctx.fillRect(531, 59, 1, panelHeight - 2);
         ctx.fillStyle = '#cce9ff';
         for (let i = 0; i < lines.length; i++) {
-            ctx.fillText(lines[i], 20, 66 + i * 14);
+            ctx.fillText(lines[i], 20, 77 + i * 14);
         }
         ctx.restore();
     }
@@ -11415,28 +10143,6 @@ export class IsometricRenderer {
         ctx.ellipse(Math.round(x), Math.round(y + 1), halfW, halfW * 0.42, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
-    }
-
-    _drawCommandApproachRoadDetail(ctx, screenX, screenY, seed, tileX, tileY) {
-        const sweep = (tileX + tileY + seed * 8) * 0.35;
-        ctx.strokeStyle = `rgba(255, 224, 126, ${0.16 + Math.sin(this.waterFrame * 0.8 + sweep) * 0.05 + 0.06})`;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(screenX - 9, screenY - 1 + Math.sin(sweep) * 0.8);
-        ctx.lineTo(screenX + 9, screenY - 2 - Math.sin(sweep) * 0.7);
-        ctx.stroke();
-        if (this.motionScale > 0 && ((tileX + tileY + seed) % 2.8) < 1.2) {
-            ctx.fillStyle = 'rgba(255, 191, 91, 0.18)';
-            ctx.beginPath();
-            ctx.arc(screenX, screenY - 4, 1.6, 0, Math.PI * 2);
-            ctx.fill();
-        }
-
-        if (this.motionScale > 0 && ((tileX + tileY) % 8 === 0)) {
-            const x = screenX + ((seed - 0.5) * 4);
-            const y = screenY + ((seed - 0.5) * 2);
-            this._drawCommandGuardpost(ctx, x, y);
-        }
     }
 
     _drawCommandWatchfire(ctx, x, y, phase = 0) {

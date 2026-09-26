@@ -50,12 +50,31 @@ export const EFFECT_BUDGET = Object.freeze({
         staticFallback: 'direct-light',
         canvas: 'authored-shading',
     }),
+    // 1.4 — world-locked cloud shadows: one baked 256x256 noise tile
+    // (262,144 B) fetched once per pixel in the composite, cut into three
+    // dithered courses. Replaces the three uniform ellipses the scene pass
+    // tested per fragment. MINIMAL sheds it (the grade still reads weather).
+    // Paired in-session A/B of the present pass (courses + haze on vs both
+    // forced off) on `ANGLE Metal Renderer: Apple M5 Pro`, 1920x1080, forced
+    // FULL, dense-24, 12:00 partly cloudy, zoom 1, 2026-09-25, 26-28 samples
+    // per arm, host shared with ten agents: on 1.853 / 2.129, off 3.280 /
+    // 1.889. The branch never resolved above the noise floor; the band is the
+    // largest on-minus-off seen, an upper bound for both composite rows.
     'cloud-courses': Object.freeze({
         id: 'cloud-courses',
-        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'on' }),
-        cost: Object.freeze({ gpuMsBand: [1.392, 2.155], cpuMsBand: [0.100, 0.150], bytes: 0, scope: 'shared-scene-envelope' }),
-        staticFallback: 'phase-grade',
-        canvas: 'retained-cloud-shadow',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.24], cpuMsBand: [0, 0.01], bytes: 262144, scope: 'shared-composite-envelope' }),
+        staticFallback: 'frozen-offset',
+        canvas: 'cached-course-tile',
+    }),
+    // 1.6 — screen-Y aerial perspective toward the C2 horizon haze; ALU only,
+    // in the composite, world layer only. Same rig as `cloud-courses`.
+    'aerial-perspective': Object.freeze({
+        id: 'aerial-perspective',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.24], cpuMsBand: [0, 0.005], bytes: 0, scope: 'shared-composite-envelope' }),
+        staticFallback: 'none',
+        canvas: 'cached-haze-stamp',
     }),
     'water-reflection': Object.freeze({
         id: 'water-reflection',
@@ -86,15 +105,29 @@ export const EFFECT_BUDGET = Object.freeze({
         staticFallback: 'same-envelope',
         canvas: 'same-envelope',
     }),
-    // 3.4 picks one of three authored night grade courses and, at FULL only,
-    // one extra stepped water course. No band separable from the scene
-    // envelope: it is a uniform selection, not new per-fragment work.
+    // 3.4 — the moon is now a continuous night term inside the C2 grade
+    // (every level); this row prices the FULL-only extra stepped water silver
+    // course. No band separable from the scene envelope.
     'moon-course': Object.freeze({
         id: 'moon-course',
         levels: Object.freeze({ FULL: 'on', REDUCED: 'ambient-course-only', MINIMAL: 'ambient-course-only' }),
         cost: Object.freeze({ gpuMsBand: [0, 0.05], cpuMsBand: [0, 0.005], bytes: 0, scope: 'shared-scene-envelope' }),
         staticFallback: 'ambient-course-only',
         canvas: 'ambient-course-only',
+    }),
+    // 1.1/1.2 — the C2 keyframed grade (~20 ALU on the albedo before the
+    // light loop) and the multiplicative stepped light pools replace the
+    // constant phase multiply and the additive flat discs in the same scene
+    // pass. Not optional: every level grades the world by the clock. There is
+    // no in-session A/B (the grade is not switchable); scene pass after the
+    // change, same rig as `cloud-courses`: 1.763 / 1.835 at noon. The band is
+    // the noise-floor ceiling used for other unresolved scene branches.
+    'time-grade': Object.freeze({
+        id: 'time-grade',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'on' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.35], cpuMsBand: [0, 0.01], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'same-grade',
+        canvas: 'same-grade',
     }),
     // 3.2 lays the real source hue on approved wet cobble/stone/earth. Paired
     // in-session A/B at storm 23:00 forced FULL (`storm-night-reduced-motion`):
@@ -146,69 +179,198 @@ export function shedEffectsForLevel(level) {
     return shed;
 }
 
-// One authored grade contract for the direct GPU world, hybrid PostFx, and
-// Canvas fallback. Normalized channels can be uploaded as uniforms directly;
-// the Canvas path converts the same values to byte-space CSS colors.
-export const WORLD_PHASE_GRADES = Object.freeze({
-    day: Object.freeze({
-        base: Object.freeze([1, 0.996, 0.98]),
-        edge: Object.freeze([0.84, 0.88, 0.91]),
-        edgeAlpha: 0.28,
-        fog: Object.freeze([0.55, 0.68, 0.74]),
-    }),
-    // 3.4 — `night` is the middle of three reviewed night ambient courses;
-    // `moonFill` picks between them (see `worldPhaseGrade`). The courses differ
-    // by one authored step in base/edge/fog, never by a continuous fade, and
-    // the darkest keeps enough base to read unlit ground.
-    night: Object.freeze({
-        base: Object.freeze([0.50, 0.59, 0.77]),
-        edge: Object.freeze([0.32, 0.42, 0.60]),
-        edgeAlpha: 0.46,
-        fog: Object.freeze([0.08, 0.12, 0.22]),
-    }),
-    'night-new-moon': Object.freeze({
-        base: Object.freeze([0.43, 0.51, 0.69]),
-        edge: Object.freeze([0.28, 0.37, 0.55]),
-        edgeAlpha: 0.50,
-        fog: Object.freeze([0.06, 0.10, 0.19]),
-    }),
-    'night-moonlit': Object.freeze({
-        base: Object.freeze([0.58, 0.68, 0.85]),
-        edge: Object.freeze([0.37, 0.48, 0.66]),
-        edgeAlpha: 0.42,
-        fog: Object.freeze([0.11, 0.16, 0.27]),
-    }),
-    dusk: Object.freeze({
-        base: Object.freeze([0.93, 0.75, 0.62]),
-        edge: Object.freeze([0.59, 0.38, 0.38]),
-        edgeAlpha: 0.42,
-        fog: Object.freeze([0.38, 0.29, 0.34]),
-    }),
-    dawn: Object.freeze({
-        base: Object.freeze([0.89, 0.79, 0.78]),
-        edge: Object.freeze([0.49, 0.46, 0.59]),
-        edgeAlpha: 0.40,
-        fog: Object.freeze([0.44, 0.46, 0.58]),
-    }),
-});
+// C2 — the grade is no longer six constant phase rows. `GradeEvaluator`
+// interpolates eight authored daily keys plus weather and moon rows on the
+// CPU; every backend runs this one GLSL block on the unpremultiplied albedo
+// (resident scene pass, hybrid PostFx) or its CPU mirror (Canvas), then adds
+// local light pools and authored emission after it, so lit pixels are exempt
+// from the night desaturation.
+export const GRADE_UNIFORM_NAMES = Object.freeze([
+    'u_gradeExposure', 'u_gradeSaturation', 'u_gradeGain', 'u_gradeLift',
+    'u_gradeGamma', 'u_gradePurkinje', 'u_gradeShadow', 'u_gradeHighlight',
+    'u_gradeEdge', 'u_edgeAlpha', 'u_poolGain',
+]);
 
-// 3.4 — reviewed night courses keyed by `lighting.moonFill`. Two thresholds,
-// no interpolation: a full moon reads one course brighter and a new moon one
-// course darker than the shipped night, and every backend selects with this
-// function so resident, hybrid, and Canvas agree.
-export const NIGHT_MOON_COURSE_THRESHOLDS = Object.freeze({ dark: 0.14, bright: 0.5 });
+export const GRADE_GLSL = `
+uniform float u_gradeExposure;
+uniform float u_gradeSaturation;
+uniform vec3 u_gradeGain;
+uniform vec3 u_gradeLift;
+uniform vec3 u_gradeGamma;
+uniform vec3 u_gradePurkinje;
+uniform vec3 u_gradeShadow;
+uniform vec3 u_gradeHighlight;
+uniform vec3 u_gradeEdge;
+uniform float u_edgeAlpha;
+// 1.2 — pool multiply strength from the grade (falls as the ambient rises).
+uniform float u_poolGain;
 
-export function nightMoonCourse(moonFill = 0) {
-    const fill = Math.max(0, Math.min(1, finite(moonFill, 0)));
-    if (fill < NIGHT_MOON_COURSE_THRESHOLDS.dark) return 'night-new-moon';
-    if (fill >= NIGHT_MOON_COURSE_THRESHOLDS.bright) return 'night-moonlit';
-    return 'night';
+const vec3 GRADE_LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+// Night desaturates toward a Purkinje-blue grey, the key light and weather
+// set the ambient, the lift keeps a floor, and a luminance-keyed split tone
+// gives golden hour warm highlights over violet shadows. \`lift\` is false for
+// additive batches so a full-viewport additive field never lifts the void.
+vec3 applyTimeGrade(vec3 albedo, bool lift) {
+    float lin = dot(albedo, GRADE_LUMA);
+    vec3 c = mix(vec3(lin) * u_gradePurkinje, albedo, u_gradeSaturation);
+    c = max(c, vec3(0.0)) * u_gradeGain * u_gradeExposure;
+    if (lift) c = u_gradeLift + c * (1.0 - u_gradeLift);
+    c = pow(max(c, vec3(0.0)), u_gradeGamma);
+    float sh = 1.0 - smoothstep(0.06, 0.42, lin);
+    float hi = smoothstep(0.38, 0.82, lin);
+    c *= mix(mix(vec3(1.0), u_gradeShadow, sh), u_gradeHighlight, hi);
+    // Highlight protection: a channel pushed past 1 scales the pixel down
+    // instead of clipping to a flat hue.
+    return c / max(1.0, max(c.r, max(c.g, c.b)));
 }
 
-/** The authored grade for a phase, including the night moon course. */
-export function worldPhaseGrade(phase = 'day', moonFill = 0) {
-    if (phase === 'night') return WORLD_PHASE_GRADES[nightMoonCourse(moonFill)];
-    return WORLD_PHASE_GRADES[phase] || WORLD_PHASE_GRADES.day;
+// 1.2 — stepped light pools. Each light is stepped on its own falloff
+// \`shape\` (0..1, occlusion applied): three courses at 0.12 / 0.40 / 0.75
+// with an ordered dither (\`order\` in [0, 1)) on the edges, so every pool has
+// a rim, a mid ring and a core at ~0.8 / 0.54 / 0.33 of its radius whatever
+// its intensity (a bright brazier no longer fills its disc with one flat
+// core). The caller accumulates \`colour x poolWeight(steps) x energy\` and the
+// deepest step at the pixel.
+float poolSteps(float shape, float order) {
+    float q = shape + (order - 0.5) * 0.08;
+    return step(0.12, q) + step(0.40, q) + step(0.75, q);
+}
+
+float poolWeight(float steps) {
+    return steps < 0.5 ? 0.0 : steps < 1.5 ? 0.30 : steps < 2.5 ? 0.54 : 0.76;
+}
+
+// Warm sources (lanterns, braziers, windows) land on the C1 emissive ramp —
+// #ff9d4a rim, #ffcf7a mid, #ffe9b8 core, luma-normalised — so each course
+// reads as its own amber step; cool/rune lights keep 70 % of their own hue.
+// The light multiplies the albedo's luminance with a tenth of its chroma,
+// so a lantern on grass reads amber on the grass texture, never
+// yellow-green. Under a warm light the graded ambient trades its blue night
+// cast for the course's own hue (blue + amber would grey the pool into
+// peach), then the pool is added. Returns the lit colour.
+const vec3 POOL_RIM = vec3(1.484, 0.914, 0.430);
+const vec3 POOL_MID = vec3(1.208, 0.981, 0.577);
+const vec3 POOL_CORE = vec3(1.089, 0.995, 0.786);
+vec3 stepPool(vec3 graded, vec3 light, float steps, vec3 albedo) {
+    float l = dot(light, GRADE_LUMA);
+    if (steps < 0.5 || l <= 0.01) return graded;
+    vec3 hue = light / l;
+    float warm = clamp((hue.r - hue.b) * 1.25, 0.0, 1.0);
+    vec3 ramp = steps < 1.5 ? POOL_RIM : steps < 2.5 ? POOL_MID : POOL_CORE;
+    float strength = min(l, 1.0);
+    vec3 tint = mix(mix(vec3(1.0), hue, 0.7), ramp, warm);
+    vec3 pool = tint * strength;
+    vec3 base = mix(vec3(dot(albedo, GRADE_LUMA)), albedo, 0.1);
+    // Only once the pools carry the frame (poolGain rises as the ambient falls).
+    float adapt = min(1.0, strength * 1.5) * warm * 0.85 * clamp((u_poolGain - 0.15) / 1.05, 0.0, 1.0);
+    vec3 ambient = mix(graded, dot(graded, GRADE_LUMA) * tint, adapt);
+    return ambient + base * pool * u_poolGain + pool * 0.035 * u_poolGain;
+}
+
+// The stepped edge darkening. \`topLeftPx\` is in top-left screen pixels.
+vec3 applyGradeVignette(vec3 color, vec2 topLeftPx, vec2 resolution) {
+    vec2 centre = vec2(resolution.x * 0.5, resolution.y * 0.46);
+    float inner = min(resolution.x, resolution.y) * 0.18;
+    float outer = max(resolution.x, resolution.y) * 0.72;
+    float t = clamp((distance(topLeftPx, centre) - inner) / max(1.0, outer - inner), 0.0, 1.0);
+    float edge = u_edgeAlpha * (step(0.62, t) * 0.4 + step(0.84, t) * 0.6);
+    return color * mix(vec3(1.0), u_gradeEdge, edge);
+}
+`;
+
+/** Upload one evaluated C2 grade to a program that includes GRADE_GLSL. */
+export function uploadGradeUniforms(gl, uniforms, grade) {
+    gl.uniform1f(uniforms.u_gradeExposure, grade.exposure);
+    gl.uniform1f(uniforms.u_gradeSaturation, grade.saturation);
+    gl.uniform3fv(uniforms.u_gradeGain, grade.gain);
+    gl.uniform3fv(uniforms.u_gradeLift, grade.lift);
+    gl.uniform3fv(uniforms.u_gradeGamma, grade.gamma);
+    gl.uniform3fv(uniforms.u_gradePurkinje, grade.purkinje);
+    gl.uniform3fv(uniforms.u_gradeShadow, grade.shadowTint);
+    gl.uniform3fv(uniforms.u_gradeHighlight, grade.highlightTint);
+    gl.uniform3fv(uniforms.u_gradeEdge, grade.vignetteEdge);
+    gl.uniform1f(uniforms.u_edgeAlpha, grade.vignetteAlpha);
+    gl.uniform1f(uniforms.u_poolGain, grade.poolGain ?? 1);
+}
+
+// 1.4 — world-locked cloud shadows. One tileable 256x256 value-noise field
+// (two octaves plus a detail octave), baked once, sampled in world space in
+// the composite and cut into three dithered courses there. Pure: no DOM.
+export const CLOUD_TILE_SIZE = 256;
+// World pixels per tile texel: the field repeats every 1024 world px, larger
+// than any view at the crisp zoom tiers.
+export const CLOUD_TILE_WORLD_SCALE = 4;
+
+export function buildCloudShadowTile(size = CLOUD_TILE_SIZE, seed = 0x5eed) {
+    const data = new Uint8Array(size * size * 4);
+    const hash = (x, y, octave) => {
+        let h = (x * 374761393 + y * 668265263 + octave * 2147483647 + seed) | 0;
+        h = Math.imul(h ^ (h >>> 13), 1274126177);
+        return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+    };
+    const fade = t => t * t * (3 - 2 * t);
+    const octaves = [
+        { cells: 4, weight: 0.58 },
+        { cells: 8, weight: 0.28 },
+        { cells: 16, weight: 0.14 },
+    ];
+    const field = new Float32Array(size * size);
+    let min = Infinity;
+    let max = -Infinity;
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            let value = 0;
+            for (let index = 0; index < octaves.length; index++) {
+                const { cells, weight } = octaves[index];
+                const fx = (x / size) * cells;
+                const fy = (y / size) * cells;
+                const x0 = Math.floor(fx);
+                const y0 = Math.floor(fy);
+                const tx = fade(fx - x0);
+                const ty = fade(fy - y0);
+                // Lattice indices wrap on the cell count, so the tile repeats.
+                const a = hash(x0 % cells, y0 % cells, index);
+                const b = hash((x0 + 1) % cells, y0 % cells, index);
+                const c = hash(x0 % cells, (y0 + 1) % cells, index);
+                const d = hash((x0 + 1) % cells, (y0 + 1) % cells, index);
+                value += weight * ((a + (b - a) * tx) + ((c + (d - c) * tx) - (a + (b - a) * tx)) * ty);
+            }
+            field[y * size + x] = value;
+            if (value < min) min = value;
+            if (value > max) max = value;
+        }
+    }
+    const span = Math.max(1e-6, max - min);
+    for (let index = 0; index < field.length; index++) {
+        const value = Math.round(((field[index] - min) / span) * 255);
+        const offset = index * 4;
+        data[offset] = value;
+        data[offset + 1] = value;
+        data[offset + 2] = value;
+        data[offset + 3] = 255;
+    }
+    return data;
+}
+
+// 1.6 — screen-Y aerial perspective strength by zoom (survey 0.18, tier 1
+// 0.14, tier 2 0.08, tier 3 0.04), raised by fog.
+export function aerialPerspectiveStrength(zoom = 1, fog = 0) {
+    const z = Math.max(0.25, Number(zoom) || 1);
+    const stops = [[0.5, 0.18], [1, 0.14], [2, 0.08], [3, 0.04]];
+    let strength = stops[stops.length - 1][1];
+    if (z <= stops[0][0]) strength = stops[0][1];
+    else {
+        for (let index = 1; index < stops.length; index++) {
+            const [z1, s1] = stops[index];
+            const [z0, s0] = stops[index - 1];
+            if (z <= z1) {
+                strength = s0 + (s1 - s0) * ((z - z0) / (z1 - z0));
+                break;
+            }
+        }
+    }
+    return strength * (1 + Math.max(0, Math.min(1, Number(fog) || 0)));
 }
 
 // Ambient sources currently use the registry default (0). Keeping attention
@@ -400,13 +562,25 @@ export function validGpuRecord(record) {
     );
 }
 
+// A producer that emits many small records per frame (0.2 ground cues) may
+// hand them over already normalized: `prenormalized: true` promises every
+// field normalizeGpuRecord would write is present, finite and in range, and
+// that the record is valid. Those records skip the per-record copy and are
+// batched as-is.
 export function buildStableGpuBatches(records = [], batches = [], normalizedRecords = []) {
     let batchCount = 0;
     let current = null;
     for (let index = 0; index < records.length; index++) {
-        const normalized = normalizedRecords[index] || (normalizedRecords[index] = {});
-        const record = normalizeGpuRecord(records[index], index, normalized);
-        if (!validGpuRecord(record)) continue;
+        const raw = records[index];
+        let record;
+        if (raw?.prenormalized === true) {
+            if (!raw.source) continue;
+            record = raw;
+        } else {
+            const normalized = normalizedRecords[index] || (normalizedRecords[index] = {});
+            record = normalizeGpuRecord(raw, index, normalized);
+            if (!validGpuRecord(record)) continue;
+        }
         if (!current || current.textureKey !== record.textureKey
             || current.sidecarKey !== record.sidecarKey
             || current.blend !== record.blend

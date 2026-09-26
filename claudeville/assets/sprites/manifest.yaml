@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-09-10-deepseek-scout-ladder"
+  assetVersion: "2026-09-25-opus55-painted-isle"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -49,10 +49,10 @@ atlases:
 # Optional `required_equipment` entries are validated in every walk and idle
 # cell for baked-equipment characters. Prefer runtime equipment overlays when
 # pose consistency matters across generated animation frames.
-# Optional `paletteSource` pins the per-sheet robe/pants/trim pixel colors the
-# Compositor's palette swap keys on (sampled from the actual PNG; up to two
-# garment families per role). Entries without it fall back to the palette
-# family's first ramp color.
+# Optional `paletteSource` pins the per-sheet garment pixel colors the
+# Compositor keys on (sampled from the actual PNG; up to two garment families
+# per role): `trim` takes the provider trim ramp, `robe` takes the variant's
+# value step, `pants` is informational. A role without a source is untouched.
 characters:
   # Pro mode fixed cross-direction consistency (standard mode produced
   # different outfits per angle). Avoid ambiguous color language like
@@ -869,34 +869,23 @@ characters:
 # ─── PALETTES ────────────────────────────────────────────────────────────────
 # Canonical palette definitions. claudeville/assets/sprites/palettes.yaml mirrors
 # this block for standalone tooling — keep both in sync if you edit either.
+# Provider hue lives in trim only (plan 2.6): the compositor recolours each
+# sheet's declared `paletteSource.trim` to this ramp; authored robes keep their
+# colours and take a per-variant value step.
 palettes:
   claude:
-    robe: ['#8f4f21', '#a85f24', '#7b3f1c']
-    pants: ['#3b2418', '#4b2c1a', '#33231a']
-    trim: ['#f2d36b', '#e9b85f', '#ffd98a']
+    trim: ['#d97757', '#e08a64', '#c86a4a']
   codex:
-    robe: ['#116466', '#167d86', '#1f6f8b']
-    pants: ['#102f3a', '#12353b', '#18334a']
     trim: ['#7be3d7', '#55c7f0', '#8ee88e']
   gemini:
-    robe: ['#4f46a5', '#5d65c8', '#44528e']
-    pants: ['#201c43', '#27244d', '#1f2d55']
     trim: ['#b7ccff', '#d6b7ff', '#7bdff2']
   kimi:
-    robe: ['#f2e4df', '#fff2ee', '#e8d6d2']
-    pants: ['#8f4150', '#6f2f42', '#4d1f24']
     trim: ['#f5c36a', '#ff8da8', '#ffeff3']
   deepseek:
-    robe: ['#2f7d5b', '#3a9e72', '#276547']
-    pants: ['#1c3a2e', '#243f33', '#18302a']
     trim: ['#7cf4c8', '#45dca8', '#c8fff0']
   grok:
-    robe: ['#14141f', '#1c1c2e', '#0a0a14']
-    pants: ['#101018', '#181822', '#0c0c14']
     trim: ['#7df9ff', '#22d3ee', '#e8f7ff']
   zai:
-    robe: ['#b8382c', '#d24a3b', '#8e2a21']
-    pants: ['#3a1c18', '#48231f', '#2b1311']
     trim: ['#ffb28c', '#ff8c5f', '#ffe0cf']
 
 # ─── EQUIPMENT ───────────────────────────────────────────────────────────────
@@ -1015,82 +1004,80 @@ statusOverlays:
 # style contract (docs/building-style-contract.md): true 2:1 iso, slate-blue roofs,
 # structure-only land art or a named structural platform exception, ≤400px.
 # Terrain aprons are baked into the static world cache. Overlay layers
-# (watchfire/banner/beacon/portalGlow) sit beside base.png.
+# (beacon/portalGlow, the inspection aperture layers) sit beside base.png.
 
 buildings:
-  # ── HERO: Command Center ── (single-image; was composeGrid [3,2], converted losslessly)
+  # ── HERO: Command Center ── 4.2 re-authored (Observatory family, cool grey).
+  # Pro model with the Observatory as style image and the pre-4.2 keep as
+  # reference (c1), recoloured from cream to the family's cool grey, then the
+  # gate inpainted taller: the oak leaf is ~71 px (~87 px with the steps), so
+  # the door clears 1.2x the 48–75 px villagers. The building fills its 5x4
+  # footprint (the front plinth corner sits on the SE footprint corner), and
+  # the gate steps land on the entrance row. The two braziers are baked; the
+  # old watchfire layer is retired. Sidecars are re-derived from reviewed
+  # glass, fire, oak, cloth and gold colours, never from luminance; the
+  # emissive sidecar is only the window glass and brazier flames, gated by
+  # NightOccupancyGate.
   - id: building.command
-    tool: map_object
-    prompt: "epic command center castle keep, grand stone walls with arched gates, dual dragon banners on parapets, golden flame torches, imposing isometric fortress with a flat irregular cobble threshold broken by grass intrusions; no raised slab, plinth, retaining lip, complete perimeter, or baked cast shadow"
-    width: 312
-    height: 208
-    anchor: [156, 182]
+    tool: generate-image-v2
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, the Command Center, the grandest building in town: a heroic castle keep with a tall central hall crowned by a large slate-blue tiled dome with a gold ring and gold finial, a tall square stone tower with a slate-blue spire and a small gold flag on the left, a round crenellated stone tower on the right, two lower side wings with slate-blue roofs, the right wing has a long plain right-facing wall with three small windows, one huge arched main gate with heavy oak double doors in the front wall facing the lower-left, as tall as a third of the keep, reached by two broad stone steps and flanked by two lit iron braziers, crimson banners with gold emblems on the walls, cream limestone ashlar walls with a darker stone base course, small arched windows with warm amber glass. Warm light from the upper left. Structure only on a transparent background: no ground tile, no paved floor, no cobble plaza, no lawn, no platform, no plinth, no cast shadow, no text."
+    provenance: { item: '4.2', endpoint: generate-image-v2, jobId: 42f7aab2-6e0a-45c8-b335-1afcd25448a0, styleImage: building.observatory, referenceImage: 'building.command (pre-4.2)', generationSize: 360x240, generations: 25, pilotGenerations: 145, recolor: 'cream -> family cool grey (hand, not generated)', edit: { endpoint: inpaint-v3, jobId: 1c219d8c-5bce-48be-88f8-7dea9c1690a9, seed: 1234, crop: 200x200, generations: 20, note: 'gate leaf ~45 -> ~71 px; seam patches beside the steps hand-recoloured to the stone ramp' }, generatedAt: '2026-09-25' }
+    width: 360
+    height: 240
+    anchor: [199, 164]
     materialClass: stone
     materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.command }
-    elevation: { base: 0, top: 208, unit: sprite-px }
+    elevation: { base: 0, top: 240, unit: sprite-px }
     emissive:
       strength: 1
       sources:
         - { id: emissive.command.windows, kind: windows, geometry: registry.windowRects, strength: 0.72 }
-        - { id: emissive.command.watchfire, kind: fire, geometry: layer.watchfire, strength: 1 }
-    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 130 }
+        - { id: emissive.command.braziers, kind: fire, geometry: emitters.torch, strength: 1 }
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 112 }
     splitForOcclusion: true
-    horizonY: 130
-    # 0.1 (visual-quality plan): the banner layer was a block-cube mis-generation
-    # (the magenta box beside the keep); base.png already has banners baked in,
-    # so the layer is retired rather than rebaked.
+    horizonY: 112
     layers:
-      watchfire:
-        tool: isometric_tile
-        prompt: "isolated roaring golden watchfire flame in a small stone brazier bowl, dancing amber-orange pixel flames with warm ember sparks, thin tile, transparent background only, no ground tile, no square base, no platform, no cube block, empty transparent corners"
-        size: 64
-        anchor: [40, 52]
-        animation: pulse
-        materialClass: fire
-        emissive:
-          strength: 1
-          sources:
-            - { id: emissive.command.watchfire, kind: fire, geometry: authored-albedo, strength: 1 }
-        occluder: { mode: alpha-silhouette, strength: 0.65 }
       # 4.1 — inspection aperture (plan claudeville-frontier-visual-plan §4.1).
-      # Hand-authored at the base's own 312x208 pixel scale and clipped to the
-      # east wing's right-facing wall cut. BuildingSprite draws these three
-      # itself, only while Command is the explicitly selected building at
-      # resting zoom >= 2, in the fixed order aperture -> occupants ->
+      # Hand-authored at the base's own 360x240 pixel scale and clipped to the
+      # east wing's plain right-facing wall (x 228–312), measured per column
+      # from the art's cornice and plinth outlines. BuildingSprite draws these
+      # three itself, only while Command is the explicitly selected building
+      # at resting zoom >= 2, in the fixed order aperture -> occupants ->
       # interior -> slot marks -> foreground; the generic manifest-layer pass
       # skips them, so they never appear on the default frame.
       aperture:
         tool: hand-authored
-        prompt: "sectional cut through the Command east wing wall: sawn masonry edge with exposed wall thickness, stone back wall with course lines, a single wall sconce, cool stone floor; authored, not generated"
-        width: 312
-        height: 208
-        anchor: [156, 182]
+        prompt: "sectional cut through the Command east wing wall: shaded ceiling, stone back wall with course lines, a single wall sconce, cool stone floor; authored, not generated"
+        width: 360
+        height: 240
+        anchor: [199, 164]
         materialClass: stone
       interior:
         tool: hand-authored
-        prompt: "Command inspection interior dressing composed from the prop.interior kit: reading desk, planning table, archive shelf, pinned parchment; authored, not generated"
-        width: 312
-        height: 208
-        anchor: [156, 182]
+        prompt: "Command inspection interior dressing composed from the prop.interior kit: reading desk, planning table, instrument stand, pinned parchment; authored, not generated"
+        width: 360
+        height: 240
+        anchor: [199, 164]
         materialClass: timber
       foreground:
         tool: hand-authored
-        prompt: "near frame of the Command aperture: sill course and jamb pillar that occlude the presented occupant; authored, not generated"
-        width: 312
-        height: 208
-        anchor: [156, 182]
+        prompt: "near frame of the Command aperture: sawn floor-slab sill, near jamb outline and the far jamb's exposed wall thickness that occlude the presented occupant; authored, not generated"
+        width: 360
+        height: 240
+        anchor: [199, 164]
         materialClass: stone
+    # The two gate braziers (architectural fires) and the gold finial/crest.
     emitters:
-      torch: [64, 28]
-      torch2: [176, 28]
-      torch3: [64, 140]
-      torch4: [176, 140]
-      sparkle: [120, 18]
-      sparkle2: [200, 18]
+      torch: [94, 180]
+      torch2: [148, 204]
+      sparkle: [174, 10]
+      sparkle2: [133, 122]
     # Phase 2.5.5: light-reflection compositing reads these to additively
-    # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [120, 30]
+    # tint nearby water tiles. Anchor is sprite-local pixels (the gate foot).
+    lightSource: [124, 196]
     lightColor: '#ffcc66'
     lightRadius: 80
 
@@ -1098,6 +1085,11 @@ buildings:
   # Single-image (was composeGrid [4,3]); narrow/tall Pharos per the building
   # style contract. Beacon flame is the procedural _drawWatchtowerFire +
   # beacon.png overlay anchored at the dark lantern crown (144,68).
+  # QAWorld F8 — the baked blue grid-tile plinth is cleared to alpha (the
+  # terrain/coast bakes paint the ground around it); a hand-authored 7 px
+  # limestone footing on the tower's own stone colours replaces it, the stair
+  # landing on the ground. The emissive sidecar is the six window glasses
+  # (alpha 0.68), measured on base.png, never luminance.
   - id: building.watchtower
     tool: map_object
     prompt: "Pharos Lighthouse — tall narrow heroic cool-grey stone lighthouse tower with strong light-to-shadow contrast, tapering stacked circular stages, small arched windows, bronze lantern crown with the flame area left dark for the beacon overlay, lower structural stone quay with a connected short stair and localized wet water-contact edge. Narrow vertical silhouette, much taller than wide. No generic square ground tile, no unsupported platform, no pale pastel, no modern beam."
@@ -1105,6 +1097,7 @@ buildings:
     height: 384
     anchor: [144, 320]
     materialClass: stone
+    emissiveSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.watchtower }
     elevation: { base: 0, top: 384, unit: sprite-px }
     emissive:
@@ -1138,6 +1131,10 @@ buildings:
     lightOverlay: 'atmosphere.light.lighthouse-beam'
 
   # ── STANDARD: Harbor Master (commit ships / push departures) ──
+  # 4.6 (QAWorld F6) — the baked amber panes are repainted to dark slate glass
+  # in base.png (hand remap onto the building's own glass/roof colours); the
+  # emissive sidecar carries the original pane hues (alpha 0.66, 0.82 at the
+  # lantern), so at night the windows burn only through NightOccupancyGate.
   - id: building.harbor
     tool: map_object
     prompt: "Grand compact high-fantasy steampunk Harbor Masters Guild landmark, designed as a wide readable isometric RPG sprite. A stacked three-level half-timbered guildhall rises directly from a structural timber quay and stone tide-gate pilings, with blue-black slate roofs, warm amber windows, dark oak galleries, stone lower arches, copper steam pipes, narrow smokestacks, brass pressure gauges, gear housings, iron catwalks, and one large ornate clockwork loading crane with chain hoist and suspended cargo crate. Several dock fingers, mooring posts, rope coils, cargo barrels, and visible supports terminate directly in the water. Strong asymmetrical crane-and-chimney silhouette, intricate but readable pixel clusters, medieval fantasy architecture fused with functional Victorian steam machinery. Structure and attached quay only, transparent empty space around and between pilings; no filled water tile, ship, airship, surrounding city, ground slab, cast shadow, text, letters, logo, or watermark."
@@ -1145,6 +1142,7 @@ buildings:
     height: 232
     anchor: [176, 204]
     materialClass: timber
+    emissiveSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.harbor }
     elevation: { base: 0, top: 232, unit: sprite-px }
     emissive:
@@ -1173,6 +1171,9 @@ buildings:
     height: 288
     anchor: [128, 252]
     materialClass: stone
+    # 4.6 — authored lit-window sidecar: only the dark glass of the three
+    # windows, stepped amber rim / pale core; gated by NightOccupancyGate.
+    emissiveSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.observatory }
     elevation: { base: 0, top: 288, unit: sprite-px }
     emissive:
@@ -1231,12 +1232,20 @@ buildings:
     lightRadius: 70
 
   # ── STANDARD: Code Forge ──
+  # 4.5 (aesthetic plan, D3) — re-authored on the Observatory grid: REST
+  # generate-image-v2 (Pro), style image building.observatory, the previous
+  # forge as a massing reference (furnace arch on the SW gable, chimney at the
+  # back right, anvil and quench trough in the yard); alpha-thresholded, placed
+  # 8 px right and snapped to the family palette (55 colours). Two candidates
+  # (f1/f2, 40 generations), f2 chosen. Sidecars and the banked mask are
+  # re-derived from the reviewed fire/glass/timber colours.
   - id: building.forge
-    tool: map_object
-    prompt: "Code Forge — compact medieval stone blacksmith's forge landmark, soot-darkened cool-grey stone walls, oversized glowing orange arched furnace mouth spilling warm firelight, tall dark iron chimney with a crown wisping smoke, dark slate-grey tiled roof, rune anvil and blacksmith tools beside the wall, molten sparks, true wall footings only. Transparent ground around the structure; no lawn tile, raised slab, plinth, retaining lip, complete perimeter, or baked cast shadow. Bold readable landmark, no terracotta-red roof, no plain cottage."
+    tool: generate-image-v2
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a Code Forge landmark: a compact stone blacksmith forge hall with soot-darkened grey stone walls and a steep dark blue-grey slate roof, one tall square stone chimney with a dark iron cap rising at the back right, a tall open arched workshop doorway on the left end wall with a glowing orange furnace fire inside spilling warm light, an iron anvil on a stone block and a stone quench trough beside the front wall, a timber tool rack with hammers and tongs, two small warm-lit windows. Warm light from the upper left. Structure only on a transparent background: no ground tile, no lawn, no platform, no plinth, no cast shadow, no text."
+    provenance: { item: '4.5', endpoint: generate-image-v2, jobId: 59af4d9e-b105-4769-8e3f-c16a14f26090, styleImage: building.observatory, referenceImage: 'building.forge (pre-4.5)', generationSize: 256x232, generations: 20, pilotGenerations: 40, generatedAt: '2026-09-25' }
     width: 256
     height: 232
-    anchor: [128, 203]
+    anchor: [128, 169]
     materialClass: stone
     materialSidecar: true
     emissiveSidecar: true
@@ -1249,32 +1258,41 @@ buildings:
         - { id: emissive.forge.furnace, kind: fire, geometry: registry.windowRects, strength: 1 }
     occluder: { mode: alpha-silhouette, strength: 1 }
     emitters:
-      smoke: [185, 35]
-      forgeEmber: [72, 150]
-      forgeSpark: [78, 132]
-      sparkle: [210, 160]
-    lightSource: [72, 150]
+      smoke: [183, 6]
+      forgeEmber: [80, 150]
+      forgeSpark: [104, 198]
+      sparkle: [150, 165]
+    lightSource: [80, 165]
     lightColor: '#ff8a33'
     lightRadius: 80
     lightOverlay: 'atmosphere.light.fire-glow'
     layers:
       # 4.6 — the hearth fire is baked into base.png, so the sleeping-town rest
       # state needs an authored mask: this restates exactly those pixels as
-      # stepped charcoal over one ember course. BuildingSprite draws it only on
-      # canonical VillagePhase.READY_EMPTY; the generic manifest-layer pass
-      # skips it.
+      # stepped charcoal over one ember course (the fire-lit jamb returns to
+      # stone). BuildingSprite draws it only at canonical rest or a banked
+      # workload; the generic manifest-layer pass skips it.
       banked:
         tool: hand-authored
         prompt: "banked forge hearth mask: the authored furnace fire restated as stepped charcoal with a single ember course at the bed; authored, not generated"
         width: 256
         height: 232
-        anchor: [128, 203]
+        anchor: [128, 169]
         materialClass: stone
 
   # ── STANDARD: Token Mine ──
+  # 4.5 (aesthetic plan, D3) — re-authored on the Observatory grid: REST
+  # generate-image-v2 (Pro) with building.observatory as the style image
+  # (m1, 60 colours; tunnel on the SW face toward the entrance tile), then the
+  # baked ore cart was inpainted out (inpaint-v3, opaque pixels only) so the
+  # track is empty and the ritual cart is the only cart. Alpha-thresholded and
+  # snapped to the family palette. Sidecars are re-derived from the reviewed
+  # crystal/lantern/timber colours. Rails are baked: BuildingSprite reads the
+  # registry `railsBaked` flag and draws none of its own.
   - id: building.mine
-    tool: map_object
-    prompt: "Token Mine — craggy cool grey-blue mountain mine-gate landmark with deep but not black shadows, heavy timber headframe with a pulley wheel over an amber-lit arched cave mouth, a small mine cart on rails emerging, glowing cyan crystal token-ore veins and clusters, hanging iron lanterns with warm glow, irregular embedded rock footings and loose rubble only. Transparent ground around the structure; no lawn tile, raised slab, plinth, retaining lip, complete perimeter, or baked cast shadow. Bold readable landmark, no hexagonal base, no pure-black rock, no sci-fi pod."
+    tool: generate-image-v2
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a Token Mine landmark: a craggy cool grey-blue rock outcrop hill with faceted stone planes, a tall timber-framed mine tunnel entrance on its lower-left face, as tall as a third of the hill, with dark wooden posts and lintel, a tall timber headframe with a large iron pulley wheel above the tunnel, a small iron ore cart on short rails rolling out of the tunnel, crystal ore clusters of varied size and shape embedded in the rock in cyan, pale mint and a few small amber ones, two hanging iron lanterns with warm amber glow at the tunnel mouth, loose rubble at the rock footings. Warm light from the upper left. Structure only on a transparent background."
+    provenance: { item: '4.5', endpoint: generate-image-v2, jobId: a8e6f176-34fb-4707-831b-3a5608f73a6a, styleImage: building.observatory, generationSize: 256x232, generations: 20, pilotGenerations: 40, edit: { endpoint: inpaint-v3, jobId: 816caf64-97d6-49c6-8500-6eb87a60a934, seed: 11, generations: 20, note: 'baked ore cart removed; empty track' }, generatedAt: '2026-09-25' }
     width: 256
     height: 232
     anchor: [128, 203]
@@ -1291,18 +1309,29 @@ buildings:
         - { id: emissive.mine.crystals, kind: rune, geometry: emitters.sparkle, strength: 0.62 }
     occluder: { mode: alpha-silhouette, strength: 1 }
     emitters:
-      sparkle: [90, 95]
-      sparkle2: [60, 120]
-      mining: [138, 165]
-    lightSource: [188, 115]
+      sparkle: [165, 68]
+      sparkle2: [127, 104]
+      mining: [70, 194]
+    lightSource: [76, 178]
     lightColor: '#ffb84d'
     lightRadius: 80
     lightOverlay: 'atmosphere.light.lantern-glow'
 
   # ── HERO: Task Board (Town Quest Board) ──
+  # 4.5 (aesthetic plan, D3) — re-authored as a true-isometric board: REST
+  # generate-image-v2 (Pro), style image building.observatory, a mirrored
+  # earlier candidate as the orientation reference so the slate faces the
+  # lower-left entrance tile and the key light stays upper-left (53 colours).
+  # The slate is an exact 2:1 plane; BuildingSprite shears the chalk onto it in
+  # whole-pixel column steps (TASKBOARD_SLATE).
+  # QAWorld F17 — faint erased-chalk ghost strokes (two slate tones, 1 texel,
+  # sheared along the board's 2:1 slope) are hand-painted into the slate so an
+  # empty board reads as a chalkboard, not a dark screen. Deliberately no
+  # notices or pins: only live tasks may put marks on the board.
   - id: building.taskboard
-    tool: map_object
-    prompt: "Quest Notice Board — grand open-air timber quest board landmark, weathered grey-brown oak frame with crossed support beams, the board face a flat empty dark green-grey slate chalkboard panel with straight clean edges, completely blank and free of pinned parchment, notices, paper, or wax seals, a small slate-blue tiled roof cap, carved corner posts topped with crimson-and-gold guild pennants, two hanging iron lanterns with warm amber glow, individual stone post footings only. Transparent ground between and around the posts; no lawn tile, raised slab, plinth, retaining lip, complete perimeter, or baked cast shadow. Bold readable landmark, taller than wide, no enclosed house, no walls, no door."
+    tool: generate-image-v2
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a grand open-air town Quest Board landmark: one wide rectangular dark green-grey slate chalkboard panel in a heavy weathered oak timber frame, the board running diagonally from the upper-left down to the lower-right so its broad slate face looks toward the lower-left, standing on two thick carved oak posts with grey stone footings, a small slate-blue tiled gable roof cap along the top of the board, one hanging iron lantern with warm amber glass at each end of the roof beam, small crimson guild banners on the posts, a narrow wooden chalk ledge under the slate. The slate is completely blank and empty: no writing, no paper, no pins. Warm key light from the upper left, the slate face in soft light. Structure only on a transparent background."
+    provenance: { item: '4.5', endpoint: generate-image-v2, jobId: f6f270cd-6b3a-4e06-8f2c-a408359c0ef7, seed: 777, styleImage: building.observatory, referenceImage: 'taskboard t1 candidate, mirrored', generationSize: 256x232, generations: 20, pilotGenerations: 100, generatedAt: '2026-09-25' }
     width: 256
     height: 232
     anchor: [128, 203]
@@ -1316,48 +1345,61 @@ buildings:
       strength: 0.76
       sources:
         - { id: emissive.taskboard.lanterns, kind: lantern, geometry: registry.windowRects, strength: 0.76 }
-    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 150 }
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 162 }
     splitForOcclusion: true
-    horizonY: 150
+    horizonY: 162
     emitters:
-      torch: [55, 80]
-      torch2: [200, 80]
-      sparkle: [128, 90]
-      sparkle2: [128, 70]
+      torch: [46, 55]
+      torch2: [203, 125]
+      sparkle: [124, 100]
+      sparkle2: [110, 84]
     # Phase 2.5.5: light-reflection compositing reads these to additively
     # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [128, 95]
+    lightSource: [124, 108]
     lightColor: '#ffb347'
     lightRadius: 80
     lightOverlay: 'atmosphere.light.fire-glow'
 
   # ── STANDARD: Lore Archive ──
+  # 4.5 (aesthetic plan, D3) — re-authored on the Observatory grid: REST
+  # generate-image-v2 (Pro) with building.observatory as the style image, then
+  # alpha-thresholded at 128, placed 4 px down on the canvas and snapped to the
+  # Observatory/Command/C1 family palette (52 colours). The long nave faces the
+  # 5-tile side of the footprint and the portal sits on the SE gable, facing the
+  # entrance tile; the rose window replaces the old glowing book crest. Pilot:
+  # six candidates (a1–a6, 102 generations), a5 chosen. Sidecars are re-derived
+  # from the reviewed glass/lantern/timber/cloth colours, never from luminance.
+  # QAWorld F10 — the SE portal was inpainted into one tall lancet (oak leaf
+  # ~83 px, ≥ 1.2× the 1:1 body; the rose window gave way), generator palette
+  # snapped to this sprite's own colours, baked lantern wall-glow repainted to
+  # wall stone; emissive/material sidecars re-authored in that region only.
   - id: building.archive
-    tool: isometric_tile
-    prompt: "old-school 16-bit fantasy RPG grand lore archive exterior, monumental stone fortress-library keep with two short bookend towers, tall central stained-glass arched window glowing gold-green, blue slate roof, carved open-book crest above entrance, scroll banners, broad attached stone steps, side buttresses, true wall footings only, transparent ground around the structure; no flagstone apron, raised slab, plinth, retaining lip, complete perimeter, or baked cast shadow; no exposed interior wall, no giant bookshelf cutaway"
+    tool: generate-image-v2
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a grand medieval Lore Archive library hall: one long rectangular stone library nave with a steep slate-blue tiled gable roof running along its length, a single tall square stone bell tower with a slate-blue pyramid spire rising at the left end, tall narrow pointed lancet windows with warm amber stained glass between stone buttresses along the long wall, one very large arched oak double door, one third as tall as the wall, set in a deep carved stone portal on the right gable end with three stone steps, a round amber rose window in the gable above the door, a small bronze lantern beside the portal, grey limestone ashlar walls, brass trim, small crimson banners. Warm light from the upper left. Structure only on a transparent background: no ground tile, no lawn, no platform, no plinth, no cast shadow, no text, no book emblem."
+    provenance: { item: '4.5', endpoint: generate-image-v2, jobId: 8b5fb6f3-476b-4b7e-b670-4e863c6528d0, seed: 4242, styleImage: building.observatory, generationSize: 336x232, generations: 25, pilotGenerations: 102, generatedAt: '2026-09-25', edit: { endpoint: inpaint-v3, jobId: e973d087-17ab-4409-87c5-49a04c510945, seed: 4242, crop: 200x200, generations: 20, pilotGenerations: 40, note: 'QAWorld F10 — SE portal re-authored as a tall lancet (leaf ~52 -> ~83 px); rose window removed; palette snapped to the sprite; lantern wall-glow repainted by hand' } }
     width: 336
-    height: 224
-    anchor: [168, 196]
+    height: 240
+    anchor: [167, 182]
     materialClass: stone
     materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.archive }
-    elevation: { base: 0, top: 224, unit: sprite-px }
+    elevation: { base: 0, top: 240, unit: sprite-px }
     emissive:
       strength: 0.74
       sources:
         - { id: emissive.archive.windows, kind: windows, geometry: registry.windowRects, strength: 0.68 }
         - { id: emissive.archive.door-spill, kind: lantern, geometry: lightSource, strength: 0.74 }
-    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 145 }
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 130 }
     splitForOcclusion: true
-    horizonY: 145
+    horizonY: 130
     emitters:
-      sparkle: [168, 82]
-      sparkle2: [142, 128]
-      sparkle3: [194, 128]
-    lightSource: [168, 88]
-    lightColor: '#b3d68c'
+      sparkle: [242, 113]
+      sparkle2: [124, 105]
+      sparkle3: [170, 130]
+    lightSource: [245, 178]
+    lightColor: '#ffcf7a'
     lightRadius: 108
     lightOverlay: 'atmosphere.light.lantern-glow'
 
@@ -1440,6 +1482,9 @@ props:
     height: 96
     anchor: [48, 88]
 
+  # QAWorld F8 — the generator's baked iso water tile (teal/navy squares with
+  # contour lines) is keyed out to alpha by hue, leaving legs, braces and rock
+  # footings; CoastBake paints the sea and foam around the stilts.
   - id: prop.villageWallSeaTower
     tool: map_object
     prompt: "wooden sea watchtower at the end of a fantasy village wall, square timber tower over rocky shoreline, dark wooden legs and cross braces, covered lookout platform with teal slate roof, palisade wall socket on left side, rope ladder, amber lantern, crimson pennant, mossy stone footings, transparent background, no text, no characters, no water tile, no ground tile"
@@ -1582,12 +1627,6 @@ props:
     size: 48
     anchor: [24, 36]
 
-  - id: prop.harborCrane
-    tool: isometric_tile
-    prompt: "harbor loading crane, timber A-frame, pulley and rope, iron hook, isometric"
-    size: 64
-    anchor: [32, 56]
-
   - id: prop.runeBrazier
     tool: isometric_tile
     prompt: "ancient stone rune brazier, blue-gold magical flame, carved dragon feet, heroic fantasy RPG prop, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
@@ -1614,40 +1653,46 @@ props:
     size: 32
     anchor: [16, 18]
 
+  # 6.7 — gulls re-authored by hand at 16 px (wingspan about a third of a
+  # villager) on one 8-colour ramp with a consistent right-facing silhouette;
+  # the renderer mirrors them. No generations.
   - id: prop.gullFlight
-    tool: map_object
-    prompt: "tiny white seagull in flight, wings level fully spread gliding pose, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
-    size: 32
-    anchor: [16, 18]
+    tool: hand-authored
+    prompt: "16 px seagull gliding, wings level in a shallow gull-wing M, grey wings with dark tips, white body, amber beak; authored, not generated"
+    size: 16
+    anchor: [8, 10]
 
   - id: prop.gullFlight.up
-    tool: map_object
-    prompt: "tiny white seagull in flight, wings raised high upward flap pose, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
-    size: 32
-    anchor: [16, 18]
+    tool: hand-authored
+    prompt: "16 px seagull flap-up frame, wings raised in a deep V, dark tips; authored, not generated"
+    size: 16
+    anchor: [8, 10]
 
   - id: prop.gullFlight.level
-    tool: map_object
-    prompt: "tiny white seagull in flight, wings level fully spread gliding pose, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
-    size: 32
-    anchor: [16, 18]
-    # Duplicate-frame dedupe (visual-quality plan cross-cutting): the level-glide
-    # frame was byte-identical to prop.gullFlight.png, so it now aliases that
-    # PNG instead of shipping a second file. Code references to this id are
-    # untouched; the alias keeps them loading the same art.
+    tool: hand-authored
+    prompt: "16 px seagull gliding, wings level; the same frame as prop.gullFlight; authored, not generated"
+    size: 16
+    anchor: [8, 10]
+    # Alias: the level-glide frame is the base gull frame, so it loads that PNG.
     assetPath: assets/sprites/props/prop.gullFlight.png
 
   - id: prop.gullFlight.down
-    tool: map_object
-    prompt: "tiny white seagull in flight, wings swept downward flap pose, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
-    size: 32
-    anchor: [16, 18]
+    tool: hand-authored
+    prompt: "16 px seagull flap-down frame and fishing dive, wings swept below the body; authored, not generated"
+    size: 16
+    anchor: [8, 10]
 
   - id: prop.gullFlight.bank
-    tool: map_object
-    prompt: "tiny white seagull banking turn in flight, one wing high one wing low, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
-    size: 32
-    anchor: [16, 18]
+    tool: hand-authored
+    prompt: "16 px seagull banking turn, far wing high, near wing low; authored, not generated"
+    size: 16
+    anchor: [8, 10]
+
+  - id: prop.gullPerch
+    tool: hand-authored
+    prompt: "16 px seagull perched with wings folded, grey back, white head and breast, amber beak, two dark legs; the storm and reduced-motion roost frame; authored, not generated"
+    size: 16
+    anchor: [8, 14]
 
   # Birdsong & Bloom (v0.16): land + water fauna.
   - id: prop.songbird
@@ -1802,11 +1847,9 @@ vegetation:
     size: 64
     anchor: [32, 80]
 
-  - id: veg.tree.pine.small
-    tool: isometric_tile
-    prompt: "small pine tree, compact cone shape, bright needle clusters with snow-free tips, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no baked shadow, empty transparent corners"
-    size: 32
-    anchor: [16, 40]
+  # veg.tree.pine.small retired to output/attic (Opus 5.5 dead-inventory
+  # sweep): pines always draw large (FoliageRenderer/SceneryEngine never pick
+  # a small pine).
 
   - id: veg.tree.willow.large
     tool: isometric_tile
@@ -1844,47 +1887,9 @@ vegetation:
     size: 32
     anchor: [16, 20]
 
-  - id: veg.bush.a
-    tool: isometric_tile
-    prompt: "dense round shrub, lush deep-green leaf clusters in one solid bushy mass, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no dirt mound, no soil patch, no grass fringe, no platform, no baked shadow, empty transparent corners"
-    size: 32
-    anchor: [16, 20]
-
-  - id: veg.bush.b
-    tool: isometric_tile
-    prompt: "wild briar bush, tangled thorned dark branches with small red flowers, loose scraggly silhouette, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no grass fringe, no platform, no baked shadow, empty transparent corners"
-    size: 32
-    anchor: [16, 20]
-
-  - id: veg.bush.c
-    tool: isometric_tile
-    prompt: "flowering hedge bush, soft rounded green dome covered in tiny white blossoms, leafy shrub growing from bare transparency, thin tile, transparent background only, isolated sprite, no pot, no planter, no urn, no ground tile, no square base, no dirt mound, no grass fringe, no platform, no baked shadow, empty transparent corners"
-    size: 32
-    anchor: [16, 20]
-
-  - id: veg.grassTuft.a
-    tool: isometric_tile
-    prompt: "clump of long wild grass, bright green blades with wind-bent pale tips, soft leafy tuft, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no black spikes, no platform, empty transparent corners"
-    size: 32
-    anchor: [16, 16]
-
-  - id: veg.grassTuft.b
-    tool: isometric_tile
-    prompt: "sparse dry grass tuft, yellowed straw blades with green base growing from bare transparency, soft leafy tuft, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no soil, no dirt clod, no grass square, no black spikes, no platform, empty transparent corners"
-    size: 32
-    anchor: [16, 16]
-
-  - id: veg.reed.a
-    tool: isometric_tile
-    prompt: "single small clump of tall reeds, brown seed-heads, slender green blades, plant only, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no water tile, no sky, no sun, no landscape, no baked shadow, empty transparent corners"
-    size: 32
-    anchor: [16, 24]
-
-  - id: veg.reed.b
-    tool: isometric_tile
-    prompt: "sparse slender green reed stalks with fine leaves, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no water tile, no baked shadow, empty transparent corners"
-    size: 32
-    anchor: [16, 24]
+  # veg.bush.a/b/c, veg.grassTuft.a/b and veg.reed.a/b retired to output/attic
+  # (Opus 5.5 dead-inventory sweep): zero code references — shrubs, tufts and
+  # reeds are painted procedurally into the 3.2 splat ground bake (GroundBake).
 
   - id: veg.lilypad
     tool: map_object
@@ -2160,6 +2165,9 @@ bridges:
     height: 208
     anchor: [132, 124]
 
+  # QAWorld F18 — both plank tiles re-toned offline from plum onto the C1
+  # timber ramp (artPalette.js ART_RAMPS.timber): OKLab lightness kept per
+  # colour, hue/chroma taken from the ramp at that lightness.
   - id: bridge.ew
     tool: isometric_tile
     # Referenced by scenery.js PLANK_BRIDGES command-pond-plank and drawn

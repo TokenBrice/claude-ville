@@ -15,6 +15,8 @@
 //   atmosphere.weather                              — type + intensity + wind
 //   atmosphere.sky / lighting / grade / motion      — render-time tints, tones,
 //                                                     and motion budget
+//   atmosphere.lightGrade                           — C2 world grade
+//                                                     (GradeEvaluator)
 //
 // The semantic phase fields exist at both the top level (canonical) AND nested
 // under `clock` (alias). Prefer the top-level fields inside this module's
@@ -23,6 +25,8 @@
 
 import { seasonTokenForMonth } from './SeasonalAmbience.js';
 import { AUTHORED_KEY_LIGHT } from './MaterialRegistry.js';
+import { applyGradeToRgb, evaluateGrade, lampCourseAt } from './GradeEvaluator.js';
+import { ART_RAMPS } from '../../config/artPalette.js';
 
 const DAY_MINUTES = 24 * 60;
 const WEATHER_TIMELINE_KNOTS = 6;
@@ -148,45 +152,6 @@ export const WEATHER_PRESETS = {
         fog: 0.18,
         starOcclusion: 1,
         sunOcclusion: 0.82,
-    },
-};
-
-const PALETTES = {
-    dawn: {
-        zenith: '#203c66',
-        upperBand: '#537aa4',
-        midBand: '#9eb7cf',
-        horizon: '#e8b99f',
-        horizonGlow: '234, 185, 159',
-        starWarm: '#eaf3ff',
-        starHot: '#b9d8ff',
-    },
-    day: {
-        zenith: '#236eb8',
-        upperBand: '#4aa0dd',
-        midBand: '#86cdf0',
-        horizon: '#d5f3ff',
-        horizonGlow: '196, 235, 255',
-        starWarm: '#eaf3ff',
-        starHot: '#ffffff',
-    },
-    dusk: {
-        zenith: '#1d325a',
-        upperBand: '#566487',
-        midBand: '#9b8199',
-        horizon: '#d7a98e',
-        horizonGlow: '215, 169, 142',
-        starWarm: '#dbeaff',
-        starHot: '#a9c7ff',
-    },
-    night: {
-        zenith: '#040913',
-        upperBand: '#08162d',
-        midBand: '#102642',
-        horizon: '#1d3f60',
-        horizonGlow: '86, 139, 180',
-        starWarm: '#c9ddff',
-        starHot: '#f2f7ff',
     },
 };
 
@@ -574,15 +539,6 @@ function hexToRgb(hex) {
     };
 }
 
-function rgbStringToRgb(value) {
-    const parts = String(value || '').split(',').map(part => Number(part.trim()));
-    return {
-        r: Number.isFinite(parts[0]) ? parts[0] : 255,
-        g: Number.isFinite(parts[1]) ? parts[1] : 255,
-        b: Number.isFinite(parts[2]) ? parts[2] : 255,
-    };
-}
-
 function blendChannel(from, to, weight) {
     return Math.round(interpolateNumber(from, to, clamp(weight)));
 }
@@ -599,12 +555,10 @@ function blendRgb(from, to, weight) {
     };
 }
 
-// #29 — Weather-coupled sky palette. Under rain/storm the zenith bruises
-// toward purple-grey and the horizon turns sickly olive, weighted by how much
-// of the sky the storm actually covers. Pure color transform, no time
-// component, so it is identical under prefers-reduced-motion.
-const STORM_ZENITH = '#3d3050';
-const STORM_HORIZON = '#8a8b5c';
+// #29 — Weather-coupled world tint (the overlay-tint contract): under
+// rain/storm the tint leans toward the storm cast, weighted by how much of the
+// sky the storm actually covers. The sky itself is greyed by the C2 grade's
+// weather row (skyPaletteFor).
 const STORM_WORLD_TINT = 'rgba(60, 45, 80, 0.28)';
 const STORM_BIAS = { rain: 0.42, storm: 0.62 };
 
@@ -629,23 +583,135 @@ function lerpRgbaString(from, to, weight) {
     return `rgba(${r}, ${g}, ${bl}, ${al})`;
 }
 
-function blendPalette(phase, phaseProgress, weather) {
-    const transition = phaseTransition(phase, phaseProgress);
-    const from = PALETTES[transition.from] || PALETTES[phase] || PALETTES.day;
-    const to = PALETTES[transition.to] || PALETTES[phase] || PALETTES.day;
-    const weight = transition.weight;
-    const storm = stormPaletteShift(weather);
-    const zenith = blendRgb(hexToRgb(from.zenith), hexToRgb(to.zenith), weight);
-    const horizon = blendRgb(hexToRgb(from.horizon), hexToRgb(to.horizon), weight);
-    return {
-        zenith: rgbToHex(storm > 0 ? blendRgb(zenith, hexToRgb(STORM_ZENITH), storm) : zenith),
-        upperBand: rgbToHex(blendRgb(hexToRgb(from.upperBand), hexToRgb(to.upperBand), weight)),
-        midBand: rgbToHex(blendRgb(hexToRgb(from.midBand), hexToRgb(to.midBand), weight)),
-        horizon: rgbToHex(storm > 0 ? blendRgb(horizon, hexToRgb(STORM_HORIZON), storm) : horizon),
-        horizonGlow: Object.values(blendRgb(rgbStringToRgb(from.horizonGlow), rgbStringToRgb(to.horizonGlow), weight)).join(', '),
-        starWarm: rgbToHex(blendRgb(hexToRgb(from.starWarm), hexToRgb(to.starWarm), weight)),
-        starHot: rgbToHex(blendRgb(hexToRgb(from.starHot), hexToRgb(to.starHot), weight)),
-    };
+// 1.3 — the sky palette is the C2 grade's own sky, void and haze, so the
+// backdrop is graded with the island on every backend. These are final
+// (already graded) colours: the resident path paints them as-is behind the
+// GPU canvas, the Canvas/PostFx paths paint their preimage (CanvasGrade
+// `ungradeRgb`) because the whole 2D frame is graded after it is drawn, and
+// App writes the first four stops as the boot sky CSS vars so the boot fade
+// meets the first frame. Salience (C1): the sky may not out-shout the island
+// (HSV S <= 0.42); the void is a luma ramp in the C1 void ratios, tinted by
+// the phase's voidColor and never lighter than the graded deep water.
+const SKY_SATURATION_CAP = 0.42;
+const VOID_LUMA_RATIOS = [1, 0.70, 0.53];
+const STAR_COLORS = { starWarm: '#c9ddff', starHot: '#f2f7ff' };
+const DEEP_WATER_ALBEDO = hexToRgb01(ART_RAMPS.deepWater[1]);
+
+let _skyPaletteGrade = null;
+let _skyPalette = null;
+
+function hexToRgb01(hex) {
+    const { r, g, b } = hexToRgb(hex);
+    return [r / 255, g / 255, b / 255];
+}
+
+function rgb01ToHex(rgb) {
+    return rgbToHex({ r: clamp(rgb[0]) * 255, g: clamp(rgb[1]) * 255, b: clamp(rgb[2]) * 255 });
+}
+
+function rgbLuma(rgb) {
+    return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+}
+
+function hsvSaturation(rgb) {
+    const max = Math.max(rgb[0], rgb[1], rgb[2]);
+    return max <= 0 ? 0 : (max - Math.min(rgb[0], rgb[1], rgb[2])) / max;
+}
+
+function capSaturation(rgb, cap = SKY_SATURATION_CAP) {
+    if (hsvSaturation(rgb) <= cap) return rgb;
+    const luma = rgbLuma(rgb);
+    const toward = k => rgb.map(channel => luma + (channel - luma) * k);
+    let lo = 0;
+    let hi = 1;
+    for (let step = 0; step < 10; step++) {
+        const mid = (lo + hi) / 2;
+        if (hsvSaturation(toward(mid)) > cap) hi = mid;
+        else lo = mid;
+    }
+    return toward(lo);
+}
+
+function rgbToHsv(rgb) {
+    const max = Math.max(rgb[0], rgb[1], rgb[2]);
+    const min = Math.min(rgb[0], rgb[1], rgb[2]);
+    const d = max - min;
+    let h = 0;
+    if (d > 1e-6) {
+        if (max === rgb[0]) h = ((rgb[1] - rgb[2]) / d) % 6;
+        else if (max === rgb[1]) h = (rgb[2] - rgb[0]) / d + 2;
+        else h = (rgb[0] - rgb[1]) / d + 4;
+        h = ((h * 60) + 360) % 360;
+    }
+    return [h, max <= 0 ? 0 : d / max, max];
+}
+
+function hsvToRgb([h, s, v]) {
+    const c = v * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = v - c;
+    const sector = Math.floor((((h % 360) + 360) % 360) / 60);
+    const [r, g, b] = [[c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x]][sector];
+    return [r + m, g + m, b + m];
+}
+
+/**
+ * A colour at `t` (0..1) along a ladder of 0..1 RGB stops, interpolated in
+ * HSV. A straight RGB mix of a blue zenith and a warm horizon falls through
+ * grey; when the ends are far apart in hue the ramp goes the way that passes
+ * through violet and rose (never through green), as a real dusk sky does.
+ */
+export function sampleSkyLadder(ladder, t) {
+    const span = (ladder.length - 1) * clamp(t);
+    const index = Math.min(ladder.length - 2, Math.floor(span));
+    const local = span - index;
+    const a = rgbToHsv(ladder[index]);
+    const b = rgbToHsv(ladder[index + 1]);
+    // A near-grey end has no hue of its own: borrow the other end's.
+    if (a[1] < 0.04) a[0] = b[0];
+    if (b[1] < 0.04) b[0] = a[0];
+    let dh = ((b[0] - a[0] + 540) % 360) - 180;
+    const long = Math.abs(dh) > 110;
+    if (long) {
+        const mid = (((a[0] + dh / 2) % 360) + 360) % 360;
+        if (mid < 200 && mid > 60) dh = dh > 0 ? dh - 360 : dh + 360;
+    }
+    // The long way round stays dusty (lilac and rose, not neon violet).
+    const dust = long ? 1 - 0.45 * Math.sin(Math.PI * local) : 1;
+    return hsvToRgb([
+        a[0] + dh * local,
+        (a[1] + (b[1] - a[1]) * local) * dust,
+        a[2] + (b[2] - a[2]) * local,
+    ]).map(channel => clamp(channel));
+}
+
+export function skyPaletteFor(grade) {
+    if (!grade) return null;
+    if (grade === _skyPaletteGrade && _skyPalette) return _skyPalette;
+    const top = capSaturation(hexToRgb01(grade.skyTop));
+    const horizon = capSaturation(hexToRgb01(grade.skyHorizon));
+    const haze = capSaturation(hexToRgb01(grade.horizonHaze));
+    let voidNear = hexToRgb01(grade.voidColor);
+    const deepLuma = rgbLuma(applyGradeToRgb(DEEP_WATER_ALBEDO, grade));
+    const voidLuma = rgbLuma(voidNear);
+    if (voidLuma > deepLuma * 0.92) voidNear = voidNear.map(channel => channel * (deepLuma * 0.92) / voidLuma);
+    const voidStops = VOID_LUMA_RATIOS.map(ratio => rgb01ToHex(voidNear.map(channel => channel * ratio)));
+    const hazeHex = rgb01ToHex(haze);
+    const hazeRgb = hexToRgb(hazeHex);
+    _skyPaletteGrade = grade;
+    _skyPalette = Object.freeze({
+        zenith: rgb01ToHex(top),
+        upperBand: rgb01ToHex(sampleSkyLadder([top, horizon], 0.38)),
+        midBand: rgb01ToHex(sampleSkyLadder([top, horizon], 0.72)),
+        horizon: rgb01ToHex(horizon),
+        haze: hazeHex,
+        horizonGlow: `${hazeRgb.r}, ${hazeRgb.g}, ${hazeRgb.b}`,
+        voidNear: voidStops[0],
+        voidMid: voidStops[1],
+        voidFar: voidStops[2],
+        ...STAR_COLORS,
+    });
+    return _skyPalette;
 }
 
 function applyHourOverride(date, hourNumber) {
@@ -864,11 +930,10 @@ function phaseLight(phase, phaseProgress) {
     return 0;
 }
 
-function starAlpha(phase, phaseProgress, weather) {
-    let base = 0;
-    if (phase === 'night') base = 0.92;
-    else if (phase === 'dawn') base = 0.78 * (1 - smoothstep(phaseProgress));
-    else if (phase === 'dusk') base = 0.78 * smoothstep(phaseProgress);
+// 1.3 — stars only at real night: they follow the C2 grade's night weight
+// (0 through golden and blue hour, full from ~21:30), not the phase name.
+function starAlpha(lightGrade, weather) {
+    const base = 0.9 * smoothstep(((lightGrade?.night ?? 0) - 0.6) / 0.35);
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     return clamp(base * (1 - preset.starOcclusion * clamp(weather.intensity + 0.22)));
 }
@@ -1118,21 +1183,55 @@ const SOURCE_ENERGY_ORDER = ['daylight', 'settling', 'lamplight', 'deep-night'];
 /**
  * Pick one reviewed exposure bucket. `nightWindowGate`'s dusk shoulder stays
  * the authority on *when* working windows light up; this only decides how much
- * energy each consumer may spend once they do. Heavy weather promotes the
- * bucket by exactly one step (never past `lamplight`) because the sky really is
- * that much darker — it is a step, not another multiplier.
+ * energy each consumer may spend once they do. The bucket is keyed to the same
+ * minutes as the C2 grade keys (`lampCourseAt`): at dusk the ambient falls
+ * first and the lamps take over second. Heavy weather promotes the bucket by
+ * exactly one step (never past `lamplight`) because the sky really is that
+ * much darker — it is a step, not another multiplier.
  */
-export function sourceEnergyEnvelope(phase, phaseProgress = 0, weather = null) {
-    const progress = clamp(phaseProgress);
-    let index;
-    if (phase === 'night') index = progress <= 0.2 ? 2 : 3;
-    else if (phase === 'dusk') index = progress >= 0.8 ? 2 : progress >= 0.5 ? 1 : 0;
-    else if (phase === 'dawn') index = progress <= 0.4 ? 2 : progress <= 0.7 ? 1 : 0;
-    else index = 0;
+export function sourceEnergyEnvelope(minuteOfDay, weather = null, seasonShift = null) {
+    let index = lampCourseAt(minuteOfDay, seasonShift || undefined);
     if (index < 2 && OVERCAST_WEATHER_TYPES.has(weather?.type) && clamp(weather?.intensity) >= 0.5) {
         index += 1;
     }
     return SOURCE_ENERGY_BUCKETS[SOURCE_ENERGY_ORDER[index]];
+}
+
+function seasonShiftFor(seasonToken) {
+    const offsets = SEASONAL_DAY_LENGTH_OFFSETS[seasonToken];
+    return offsets
+        ? { sunriseShift: offsets.sunrise, sunsetShift: offsets.sunset }
+        : { sunriseShift: 0, sunsetShift: 0 };
+}
+
+// C2 — one evaluated grade per distinct (quarter-minute, weather, moon,
+// season) state. Snapshots are rebuilt every frame; the grade only changes
+// when one of its inputs moves a bucket.
+let _lightGradeKey = '';
+let _lightGrade = null;
+
+function lightGradeFor(minute, weather, moonFill, seasonToken) {
+    const key = [
+        Math.round(minute * 4),
+        weather.type,
+        Math.round(clamp(weather.intensity ?? 0) * 20),
+        Math.round(clamp(weather.cloudCover ?? 0) * 20),
+        Math.round(clamp(weather.fog ?? 0) * 20),
+        Math.round(moonFill * 20),
+        seasonToken,
+    ].join('|');
+    if (_lightGrade && key === _lightGradeKey) return _lightGrade;
+    _lightGradeKey = key;
+    _lightGrade = Object.freeze({
+        ...evaluateGrade({
+            minuteOfDay: minute,
+            weather,
+            moonFill,
+            ...seasonShiftFor(seasonToken),
+        }),
+        cacheKey: key,
+    });
+    return _lightGrade;
 }
 
 /** The envelope a lighting state carries, or today's neutral response. */
@@ -1188,7 +1287,7 @@ function buildLighting(minute, seasonToken, phase, phaseProgress, weather, moon 
         sunBloomScale: clamp(0.85 + sunWarmth * 0.95 - weatherDim * 0.35, 0.65, 1.85),
         beaconIntensity: clamp(dark * 0.9 + sunWarmth * 0.25 + weatherDim * 0.25, 0, 1),
         waterGlintScale: clamp(0.64 + light * 0.28 + sunWarmth * 0.48 - weatherDim * 0.22, 0.32, 1.42),
-        sourceEnergy: sourceEnergyEnvelope(phase, phaseProgress, weather),
+        sourceEnergy: sourceEnergyEnvelope(minute, weather, seasonShiftFor(seasonToken)),
         moonFill: moonFillFor(phase, moon, weather),
     });
 }
@@ -1327,6 +1426,7 @@ export function createAtmosphereSnapshot({
     const effectiveMotionScale = preferredMotionScale(motionScale);
     const driftEnabled = effectiveMotionScale > 0;
     const clockDriftPx = Math.round(dayProgress * 4096) * weather.windX;
+    const lightGrade = lightGradeFor(minute, weather, lighting.moonFill, seasonToken);
 
     return {
         phase,
@@ -1344,17 +1444,21 @@ export function createAtmosphereSnapshot({
         // renderers may paint these feathered effects around project occupants.
         districtAtmosphere,
         sky: {
-            palette: blendPalette(phase, phaseProgress, weather),
+            palette: skyPaletteFor(lightGrade),
             assetIds,
             sun: buildSun(minute, phase, phaseProgress, weather, phases),
             moon,
-            starsAlpha: starAlpha(phase, phaseProgress, weather),
+            starsAlpha: starAlpha(lightGrade, weather),
             cloudAlpha,
             cloudDensity,
             cloudCover,
             cloudLayers: cloudLayerBlend,
         },
         grade: buildGrade(phase, phaseProgress, weather),
+        // C2 — the one world grade (time keys + weather + moon). Every backend
+        // grades the island with it; `grade` above stays the overlay-tint
+        // contract for marks and tethers.
+        lightGrade,
         lighting,
         reactions: buildReactions(phase, phaseProgress, weather, lighting),
         motion: {

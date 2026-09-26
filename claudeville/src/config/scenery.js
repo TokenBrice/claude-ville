@@ -261,71 +261,47 @@ export const FOREST_FLOOR_REGIONS = [
     { name: 'central-isle', centerX: 17, centerY: 22, radiusX: 7, radiusY: 6, base: '#2c5a32', accent: '#54753f', strength: 0.55 },
 ];
 
-// Tree clusters: anchor tile + radius (tiles) + density (0..1).
-// Density is multiplied against per-tile noise; trees only spawn on
-// non-water, non-path, non-shore, non-building-footprint tiles.
-// SceneryEngine MUST clamp iteration to [0, MAP_SIZE-1] — corner clusters
-// (4,4) and (36,36) intentionally extend past map edges to thicken the
-// fringe forest.
+// Tree clusters: procedural woodland regions around the settlement. Each
+// region seeds clumps rather than single trees (SceneryEngine.generateTrees):
+// `density` (0..1) is the chance a candidate tile becomes a clump centre,
+// `clump` is the [min, max] tree count per clump (at least 3 must stand or the
+// clump is dropped), `spacing` the minimum tiles between clump centres, and
+// `species` the dominant-species weights. Willow is never listed: any tree
+// within one tile of fresh water may turn willow, and a willow never stands
+// away from water. SceneryEngine clamps iteration to [0, MAP_SIZE-1], so
+// regions may overhang the map edge.
 export const TREE_CLUSTERS = [
-    // North crown: contiguous layered woodland with a few intentional glades.
-    { centerX: 4, centerY: 5, radiusX: 8.4, radiusY: 6.2, density: 0.84, palmBias: 0.62 },
-    { centerX: 14, centerY: 5, radiusX: 10.6, radiusY: 5.6, density: 0.80, palmBias: 0.54 },
-    { centerX: 24, centerY: 5, radiusX: 8.8, radiusY: 5.4, density: 0.76, palmBias: 0.42 },
-    { centerX: 28, centerY: 8, radiusX: 5.4, radiusY: 5.8, density: 0.58, palmBias: 0.42 },
-    { centerX: 13, centerY: 12, radiusX: 6.8, radiusY: 4.6, density: 0.68, palmBias: 0.50 },
-    { centerX: 22, centerY: 12, radiusX: 5.6, radiusY: 4.0, density: 0.56, palmBias: 0.54 },
-    { centerX: 4, centerY: 35, radiusX: 7.6, radiusY: 5.6, density: 0.68, palmBias: 0.52 },
-    { centerX: 35, centerY: 4, radiusX: 4.8, radiusY: 5.8, density: 0.52, palmBias: 0.44 },
-    { centerX: 36, centerY: 36, radiusX: 7, radiusY: 5.8, density: 0.68, palmBias: 0.68 },
-    // The settlement keeps a lighter canopy than the northern forest.
-    { centerX: 7, centerY: 31, radiusX: 6.8, radiusY: 4.6, density: 0.40, palmBias: 0.50 },
-    { centerX: 17, centerY: 32, radiusX: 5.8, radiusY: 3.6, density: 0.35, palmBias: 0.42 },
-    { centerX: 28, centerY: 32, radiusX: 6.2, radiusY: 3.8, density: 0.35, palmBias: 0.48 },
-    { centerX: 33, centerY: 22, radiusX: 3.0, radiusY: 4.4, density: 0.30, palmBias: 0.58 },
-    { centerX: 6, centerY: 20, radiusX: 4.8, radiusY: 4.8, density: 0.39, palmBias: 0.44 },
-    { centerX: 18, centerY: 23, radiusX: 7.2, radiusY: 3.2, density: 0.28, palmBias: 0.61 },
-    { centerX: 26, centerY: 23, radiusX: 5.6, radiusY: 3.6, density: 0.25, palmBias: 0.57 },
-    { centerX: 35, centerY: 15, radiusX: 4.8, radiusY: 5.2, density: 0.34, palmBias: 0.61 },
-    { centerX: 14, centerY: 21, radiusX: 4.6, radiusY: 4.0, density: 0.28, palmBias: 0.55 },
-    { centerX: 20, centerY: 22, radiusX: 4.4, radiusY: 4.0, density: 0.25, palmBias: 0.50 },
-    { centerX: 17, centerY: 19, radiusX: 5.2, radiusY: 3.4, density: 0.30, palmBias: 0.48 },
+    // North-west elderwood above the lagoon: the densest mass on the island.
+    { name: 'elderwood', centerX: 8, centerY: 2.2, radiusX: 10.5, radiusY: 4.4, density: 0.9, clump: [5, 7], spacing: 2.9, species: { oak: 0.5, pine: 0.5 } },
+    { name: 'west-cliff', centerX: 1.2, centerY: 9, radiusX: 2.4, radiusY: 4.2, density: 0.7, clump: [3, 5], spacing: 2.6, species: { pine: 0.6, oak: 0.4 } },
+    // South wildwood along the island's lower rim, clear of the gate avenue.
+    { name: 'south-wildwood', centerX: 9.5, centerY: 37.8, radiusX: 11, radiusY: 2.8, density: 0.8, clump: [4, 7], spacing: 2.9, species: { oak: 0.6, pine: 0.4 } },
+    { name: 'south-rim', centerX: 27, centerY: 38.4, radiusX: 4.6, radiusY: 1.8, density: 0.55, clump: [3, 5], spacing: 3.0, species: { oak: 0.55, pine: 0.45 } },
+    // Sea-facing pine windbreak on the south-east coast.
+    { name: 'coast-windbreak', centerX: 32, centerY: 35, radiusX: 3.4, radiusY: 4.8, density: 0.6, clump: [3, 6], spacing: 2.8, species: { pine: 0.75, oak: 0.25 } },
 ];
 
-export const TROPICAL_PALMS = [
-    { tileX: 2.8, tileY: 8.6, scale: 1.34, seed: 0.62 },
-    { tileX: 4.5, tileY: 4.8, scale: 1.26, seed: 0.23 },
-    { tileX: 5.8, tileY: 11.8, scale: 1.30, seed: 0.77 },
-    { tileX: 8.6, tileY: 5.7, scale: 1.38, seed: 0.36 },
-    { tileX: 10.8, tileY: 10.6, scale: 1.24, seed: 0.92 },
-    { tileX: 13.4, tileY: 3.8, scale: 1.32, seed: 0.51 },
-    { tileX: 15.2, tileY: 8.9, scale: 1.20, seed: 0.69 },
-    { tileX: 11.5, tileY: 22.3, scale: 1.22, seed: 0.18 },
-    { tileX: 34.0, tileY: 14.8, scale: 1.18, seed: 0.44 },
-    { tileX: 36.3, tileY: 17.8, scale: 1.14, seed: 0.66 },
-    { tileX: 12.2, tileY: 30.1, scale: 1.20, seed: 0.78 },
-    { tileX: 29.5, tileY: 31.0, scale: 1.18, seed: 0.58 },
-    { tileX: 17.0, tileY: 10.0, scale: 1.28, seed: 0.14 },
-    { tileX: 20.4, tileY: 11.7, scale: 1.22, seed: 0.88 },
-    { tileX: 24.8, tileY: 9.6, scale: 1.18, seed: 0.48 },
-    { tileX: 14.6, tileY: 23.4, scale: 1.22, seed: 0.34 },
-    { tileX: 19.4, tileY: 23.6, scale: 1.18, seed: 0.61 },
-    { tileX: 18.5, tileY: 24.6, scale: 1.20, seed: 0.27 },
-    { tileX: 15.4, tileY: 20.2, scale: 1.16, seed: 0.82 },
-    { tileX: 19.8, tileY: 20.6, scale: 1.24, seed: 0.45 },
-];
-
-export const TROPICAL_BROADLEAF_TREES = [
-    { tileX: 3.8, tileY: 6.8, scale: 1.18, seed: 0.19 },
-    { tileX: 6.4, tileY: 9.9, scale: 1.25, seed: 0.81 },
-    { tileX: 9.4, tileY: 4.3, scale: 1.16, seed: 0.43 },
-    { tileX: 12.1, tileY: 8.1, scale: 1.22, seed: 0.67 },
-    { tileX: 16.0, tileY: 6.3, scale: 1.12, seed: 0.31 },
-    { tileX: 18.6, tileY: 10.8, scale: 1.20, seed: 0.74 },
-    { tileX: 13.8, tileY: 22.8, scale: 1.20, seed: 0.18 },
-    { tileX: 20.6, tileY: 21.4, scale: 1.16, seed: 0.55 },
-    { tileX: 17.6, tileY: 24.4, scale: 1.18, seed: 0.71 },
-    { tileX: 22.5, tileY: 13.8, scale: 1.14, seed: 0.39 },
+// Authored clumps that compose the settlement: they frame districts and water
+// edges and leave the ground around every landmark open. `trees` is the clump
+// size (3–7); `species` the dominant species (willow only stands within one
+// tile of water; elsewhere it falls back to oak); `mix` optional secondary
+// weights.
+export const TREE_CLUMPS = [
+    // Lagoon islet: waterside willows.
+    { tileX: 15.5, tileY: 5.6, trees: 4, species: 'willow' },
+    // West terrace between the lagoon and the Archive (clear of the Archive's
+    // sightline).
+    { tileX: 2.6, tileY: 11.4, trees: 5, species: 'oak', mix: { oak: 0.6, pine: 0.4 } },
+    { tileX: 10.8, tileY: 12.2, trees: 3, species: 'oak' },
+    // River frame: willows on the Archive bank and the east river isle.
+    { tileX: 3.2, tileY: 21.5, trees: 4, species: 'willow', mix: { oak: 1 } },
+    { tileX: 22.6, tileY: 22.0, trees: 3, species: 'willow' },
+    // South meadow copse between the river and the Mine, and the oak clump
+    // that frames the gate avenue's approach to the Forge.
+    { tileX: 9.2, tileY: 27.8, trees: 4, species: 'oak' },
+    { tileX: 22.6, tileY: 28.3, trees: 3, species: 'oak' },
+    // Pines screening the Task board's sea side.
+    { tileX: 30.4, tileY: 31.6, trees: 4, species: 'pine', mix: { oak: 1 } },
 ];
 
 // Static large boulders. Drawn Y-sorted (occlude behind agents).
@@ -392,20 +368,6 @@ export const SCENERY_CLEARINGS = [
     { name: 'isle-bridge-bend', centerX: 19.5, centerY: 22.0, radius: 1.6, strength: 0.5 },
 ];
 
-export const TROPICAL_WATERFALLS = [
-    { tileX: 9.0, tileY: 5.2, height: 40, width: 42, poolTileX: 7.6, poolTileY: 8.3, scale: 1.18, phase: 2.7 },
-    { tileX: 18.0, tileY: 6.1, height: 46, width: 38, poolTileX: 17.4, poolTileY: 10.4, scale: 1.05, phase: 0.1 },
-    { tileX: 24.6, tileY: 6.2, height: 30, width: 28, poolTileX: 24.8, poolTileY: 7.8, scale: 0.78, phase: 1.9 },
-];
-
-export const DISTRICT_WASHES = [
-    { x: 16, y: 22, radiusX: 10, radiusY: 6, color: '#8b5526', alpha: 0.13 },
-    { x: 36, y: 20, radiusX: 10, radiusY: 8, color: '#167178', alpha: 0.14 },
-    { x: 7, y: 28, radiusX: 7, radiusY: 5, color: '#7d4b25', alpha: 0.10 },
-    { x: 14, y: 16, radiusX: 12, radiusY: 6, color: '#476b2c', alpha: 0.11 },
-    { x: 20, y: 28, radiusX: 15, radiusY: 6, color: '#5b5228', alpha: 0.11 },
-];
-
 export const ANCIENT_RUINS = [
     { tileX: 37, tileY: 3, scale: 1.05 },
     { tileX: 2, tileY: 16, scale: 0.82 },
@@ -420,7 +382,6 @@ export const DISTRICT_PROPS = [
     { tileX: 6.2, tileY: 26.5, id: 'veg.standingStone.mossy', layer: 'cache', district: 'elderwood' },
     { tileX: 6.9, tileY: 27.3, id: 'prop.lakeShrine', layer: 'cache', district: 'elderwood' },
     { tileX: 32.3, tileY: 19.6, id: 'prop.netRack', layer: 'cache', district: 'harbor' },
-    { tileX: 31.4, tileY: 20.6, id: 'prop.harborCrane', layer: 'cache', district: 'harbor' },
     { tileX: 33.2, tileY: 22.2, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
     { tileX: 37.1, tileY: 22.0, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
     { tileX: 6.0, tileY: 8.0, id: 'prop.netRack', layer: 'cache', district: 'lagoon' },
@@ -434,7 +395,7 @@ export const DISTRICT_PROPS = [
     { tileX: 15.2, tileY: 8.4, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     { tileX: 14.0, tileY: 9.2, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     { tileX: 15.6, tileY: 9.3, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
-    // Waterfall-pool pair on the east lagoon basin.
+    // Lily pair on the east lagoon basin.
     { tileX: 24.2, tileY: 7.4, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     { tileX: 25.0, tileY: 7.9, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     // Mangrove roots: west shore shallow water.
@@ -444,18 +405,18 @@ export const DISTRICT_PROPS = [
     // Driftwood logs: west shore shallows.
     { tileX: 7.2, tileY: 10.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
     { tileX: 8.6, tileY: 9.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
-    // Central island shrine and restored lily pool composition. Pads and the
-    // buoy sit within the four pond tiles; roots and shrine props ring the dry
-    // west and south banks, clear of the avenue and bridge.
+    // Central island shrine and restored lily pool composition. The pond's
+    // open water (coast field) spans tileX ~15.9-17.1 north of the
+    // command-pond plank row, so pads and the buoy keep to tileX 16.1-17.0,
+    // tileY <= 21.05: in the water, never over the plaza, the planks or the
+    // bridge landing. Roots and shrine props ring the dry west and south
+    // banks, clear of the avenue and bridge.
     { tileX: 15.3, tileY: 22.5, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
-    { tileX: 15.4, tileY: 22.7, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
     { tileX: 14.8, tileY: 22.3, id: 'prop.runeBrazier', layer: 'cache', district: 'civic' },
-    { tileX: 16.4, tileY: 21.5, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 17.3, tileY: 21.4, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 16.6, tileY: 22.4, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 17.4, tileY: 22.6, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 16.2, tileY: 21.2, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 17.6, tileY: 22.2, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'civic' },
+    { tileX: 16.15, tileY: 20.95, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 16.6, tileY: 20.8, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 16.55, tileY: 21.05, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 17.0, tileY: 21.0, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'civic' },
     { tileX: 15.2, tileY: 22.1, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
     { tileX: 14.6, tileY: 22.8, id: 'prop.mangroveRoot.arch', layer: 'sorted', district: 'civic' },
     { tileX: 20.4, tileY: 22.7, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
@@ -472,9 +433,8 @@ export const DISTRICT_PROPS = [
     { tileX: 16.4, tileY: 26.6, id: 'veg.flower.c', layer: 'cache', district: 'civic' },
     { tileX: 19.7, tileY: 26.7, id: 'veg.flowerBed', layer: 'cache', district: 'civic' },
     { tileX: 19.7, tileY: 26.1, id: 'prop.bridgeBannerRune', layer: 'sorted', district: 'civic' },
-    // Workshop district: Code Forge approach and Forge → Task Board handoff.
-    { tileX: 27.0, tileY: 30.2, id: 'prop.scrollCrates', layer: 'cache', district: 'workshop' },
-    { tileX: 30.2, tileY: 28.4, id: 'prop.runestone', layer: 'sorted', district: 'workshop' },
+    // Workshop district: Forge → Task Board handoff yard (brazier, bed, hedge
+    // and the handoff crates at the scenic point below).
     { tileX: 26.2, tileY: 31.5, id: 'prop.runeBrazier', layer: 'cache', district: 'workshop' },
     // Civic north promenade: Command Center → Observatory corridor.
     { tileX: 18.5, tileY: 17.5, id: 'prop.well', layer: 'cache', district: 'civic' },
@@ -482,8 +442,7 @@ export const DISTRICT_PROPS = [
     // Gate-avenue spine between river bridge and village gate.
     { tileX: 17.5, tileY: 30.0, id: 'prop.marketStall', layer: 'sorted', district: 'gate' },
     { tileX: 20.0, tileY: 27.5, id: 'prop.noticePillar', layer: 'sorted', district: 'gate' },
-    // Mine ↔ Portal corridor along west-production-road.
-    { tileX: 9.0, tileY: 31.3, id: 'prop.runestone', layer: 'sorted', district: 'arcane' },
+    // Mine ↔ Portal corridor along west-production-road: one lit waymark.
     { tileX: 10.0, tileY: 32.0, id: 'prop.lantern', layer: 'sorted', district: 'arcane' },
     // Birdsong & Bloom (v0.16): cultivated garden plants in the lived-in
     // districts. layer 'sorted' so any that land on a footprint/path/sightline
@@ -498,31 +457,27 @@ export const DISTRICT_PROPS = [
     { tileX: 28.8, tileY: 30.2, id: 'veg.hedge', layer: 'sorted', district: 'workshop' },
 ];
 
+// Props group by purpose (plan item 4.1): a work yard reads as cart + lantern,
+// never as lone steles on open dirt. Upright stones and crates are rationed
+// island-wide — two runestones (portal ruins, observatory skywatch), one gate
+// notice pillar, three crates (harbor ledger, archive alcove, forge handoff).
 export const AMBIENT_GROUND_PROPS = [
-    // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
+    // Forge and mine work yards: ore carts with their lanterns.
     { tileX: 24.4, tileY: 29.7, type: 'oreCart' },
     { tileX: 25.4, tileY: 29.6, type: 'lantern' },
     { tileX: 13.3, tileY: 34.7, type: 'oreCart' },
-    { tileX: 9.0, tileY: 33.8, type: 'lantern' },
-    { tileX: 15.5, tileY: 34.4, type: 'runestone' },
-    { tileX: 21.4, tileY: 33.6, type: 'noticePillar' },
+    { tileX: 12.5, tileY: 35.4, type: 'lantern' },
 
-    // Civic core: utility props around the square, not scattered through the woods.
-    { tileX: 15.3, tileY: 20.4, type: 'well' },
+    // Civic core: utility props around the square, not scattered through the
+    // woods. The Command gate steps own the front of the plaza (row 20); the
+    // square's well is the one on the north promenade (DISTRICT_PROPS).
     { tileX: 12.1, tileY: 20.0, type: 'marketStall' },
     { tileX: 17.8, tileY: 19.4, type: 'signpost' },
-    { tileX: 19.2, tileY: 16.0, type: 'scrollCrates' },
-    { tileX: 24.8, tileY: 18.6, type: 'noticePillar' },
 
-    // Research edges: fewer, quieter accents near knowledge landmarks.
-    { tileX: 5.8, tileY: 18.9, type: 'lantern' },
-    { tileX: 8.9, tileY: 16.1, type: 'scrollCrates' },
-    { tileX: 9.3, tileY: 18.5, type: 'noticePillar' },
-    { tileX: 22.5, tileY: 18.5, type: 'runestone' },
+    // Research edges: a reading lamp beside the Archive alcove's scroll
+    // crates, a skywatch lamp beside the Observatory's runestone.
+    { tileX: 11.2, tileY: 17.3, type: 'lantern' },
     { tileX: 24.5, tileY: 18.9, type: 'lantern' },
-    { tileX: 26.4, tileY: 15.2, type: 'runestone' },
-    { tileX: 5.6, tileY: 25.8, type: 'runestone' },
-    { tileX: 15.0, tileY: 22.2, type: 'runestone' },
 ];
 
 export const AMBIENT_SCENIC_POINTS = Object.freeze([
@@ -551,8 +506,10 @@ export const AMBIENT_SCENIC_POINTS = Object.freeze([
 export const SCENIC_POINT_PROPS = [
     { scenicPoint: 'bridge-west', tileX: 16.5, tileY: 26.4, id: 'prop.lantern', layer: 'cache' },
     { scenicPoint: 'bridge-east', tileX: 19.6, tileY: 21.6, id: 'prop.lantern', layer: 'cache' },
-    { scenicPoint: 'harbor-rail', tileX: 31.5, tileY: 23.4, id: 'prop.netRack', layer: 'cache' },
-    { scenicPoint: 'harbor-ledger', tileX: 33.5, tileY: 24.3, id: 'prop.scrollCrates', layer: 'cache' },
+    // The harbor-rail and harbor-ledger loiter tiles sit in open water; their
+    // props stand on the quay where the causeway meets land, never afloat.
+    { scenicPoint: 'harbor-rail', tileX: 28.0, tileY: 20.8, id: 'prop.netRack', layer: 'cache' },
+    { scenicPoint: 'harbor-ledger', tileX: 26.6, tileY: 20.6, id: 'prop.scrollCrates', layer: 'cache' },
     { scenicPoint: 'portal-ruins', tileX: 4.5, tileY: 35.5, id: 'prop.runestone', layer: 'cache' },
     { scenicPoint: 'mine-cart', tileX: 15.4, tileY: 36.5, id: 'prop.oreCart', layer: 'cache' },
     { scenicPoint: 'forest-edge', tileX: 25.5, tileY: 11.4, id: 'veg.standingStone.mossy', layer: 'cache' },
@@ -583,10 +540,6 @@ export const WATCHTOWER_GULL_ORBIT = Object.freeze({
     radiusTileY: 1.6,
     periodMs: 30000,
     altitudePx: 38,
-});
-export const WATCHTOWER_GULL_FALLBACK_TILE = Object.freeze({
-    tileX: WATCHTOWER_GULL_ORBIT.centerTileX + WATCHTOWER_GULL_ORBIT.radiusTileX,
-    tileY: WATCHTOWER_GULL_ORBIT.centerTileY,
 });
 export const WATCHTOWER_BEACON_BUOY_TILES = Object.freeze([
     { tileX: 29, tileY: 9 },

@@ -30,29 +30,98 @@ test('retention covers today plus thirteen complete local calendar days', () => 
     });
 });
 
-test('pruning applies both the calendar cutoff and hard row ceiling', async () => {
-    const calls = [];
+// Just enough of an IndexedDB readwrite transaction for `prune`: key-range
+// cursors over a store or index (ascending), cursor deletes, count and put.
+// Every request settles on a later macrotask and the transaction completes
+// once no request is pending, matching IndexedDB's auto-commit.
+function memoryDb(tables) {
+    const keyPaths = { manifests: 'id', monuments: 'id', trailSamples: 'id', affinities: 'pairKey', events: 'id', meta: 'key' };
+    let tx = null;
+    let pending = 0;
+    const settle = (request, produce) => {
+        pending++;
+        setImmediate(() => {
+            request.result = produce();
+            request.onsuccess?.();
+            if (--pending === 0) setImmediate(() => { if (pending === 0) tx.oncomplete?.(); });
+        });
+        return request;
+    };
+    const source = (name, keyField) => ({
+        openCursor(range) {
+            const rows = tables[name]
+                .filter(row => !range || row[keyField] <= range.upper)
+                .sort((a, b) => a[keyField] - b[keyField]);
+            const request = {};
+            let position = 0;
+            const next = () => {
+                const value = rows[position++];
+                return value ? {
+                    value,
+                    delete() { tables[name].splice(tables[name].indexOf(value), 1); },
+                    continue() { settle(request, next); },
+                } : null;
+            };
+            return settle(request, next);
+        },
+    });
+    return {
+        transaction() {
+            tx = {
+                objectStore(name) {
+                    return {
+                        ...source(name, keyPaths[name]),
+                        indexNames: { contains: () => true },
+                        index: field => source(name, field),
+                        count() { return settle({}, () => tables[name].length); },
+                        put(record) { return settle({}, () => { tables[name].push(record); return record.key; }); },
+                    };
+                },
+            };
+            return tx;
+        },
+    };
+}
+
+test('pruning applies retention cutoffs and the event row ceiling', async (t) => {
+    const previousKeyRange = globalThis.IDBKeyRange;
+    globalThis.IDBKeyRange = { upperBound: upper => ({ upper }) };
+    t.after(() => { globalThis.IDBKeyRange = previousKeyRange; });
+    const now = localTime(2026, 8, 25, 18);
+    const day = 24 * 60 * 60 * 1000;
+    const cutoff = eventRetentionCutoff(now);
+    const expired = [1, 2, 3].map(index => ({ id: `old${index}`, ts: cutoff - index }));
+    const retained = Array.from({ length: EVENT_RETENTION_MAX_ROWS + 2 }, (_, index) => ({
+        id: `kept${index}`,
+        ts: cutoff + index,
+    }));
+    const tables = {
+        manifests: [
+            { id: 'stale', ts: now - 2 * day },
+            { id: 'pinned', ts: now - 2 * day, pinned: true },
+            { id: 'fresh', ts: now - 1000 },
+        ],
+        monuments: [{ id: 'ancient', plantedAt: now - 31 * day }, { id: 'recent', plantedAt: now - day }],
+        trailSamples: [{ id: 'trail-old', ts: now - 2 * day }, { id: 'trail-new', ts: now }],
+        affinities: [{ pairKey: 'a|b', lastInteractionAt: now - 31 * day }],
+        events: [...retained, ...expired],
+        meta: [],
+    };
     const store = Object.assign(Object.create(ChronicleStore.prototype), {
         eventRetentionDays: EVENT_RETENTION_DAYS,
-        async _deleteWhere(name) { calls.push(['where', name]); return 0; },
-        async deleteRange(name, options) {
-            calls.push(['range', name, options]);
-            return name === 'events' ? 3 : 0;
-        },
-        async _trimOldest(name, limit, index) {
-            calls.push(['trim', name, limit, index]);
-            return 2;
-        },
-        async put(name, row) { calls.push(['put', name, row]); },
+        db: memoryDb(tables),
+        open: async () => {},
     });
-    const now = localTime(2026, 8, 25, 18);
+
     const deleted = await store.prune(now);
-    const eventDelete = calls.find(call => call[0] === 'range' && call[1] === 'events');
-    assert.equal(eventDelete[2].upper, new Date(2026, 7, 12).getTime() - 1);
-    assert.deepEqual(calls.find(call => call[0] === 'trim'), [
-        'trim', 'events', EVENT_RETENTION_MAX_ROWS, 'ts',
-    ]);
-    assert.equal(deleted.events, 5);
+
+    assert.deepEqual(deleted, { manifests: 1, monuments: 1, trailSamples: 1, affinities: 1, events: 5 });
+    assert.deepEqual(tables.manifests.map(row => row.id), ['pinned', 'fresh']);
+    assert.equal(tables.events.length, EVENT_RETENTION_MAX_ROWS);
+    // The ceiling trims the oldest survivors; the calendar cutoff day itself
+    // is otherwise retained.
+    assert.equal(Math.min(...tables.events.map(row => row.ts)), cutoff + 2);
+    assert.deepEqual(tables.meta, [{ key: 'lastPruneAt', value: now }]);
 });
 
 test('schema 7 migration preserves existing events, adds identity indexes, and is idempotent', async () => {

@@ -32,9 +32,13 @@ test('every reviewed exposure bucket spends cores before broad bloom', () => {
 });
 
 test('dusk into night walks up the reviewed buckets, cores first and bloom last', () => {
-  const hours = [17, 19, 21, 23];
-  const seen = hours.map(hour => envelopeAtHour(hour).energy);
+  const hours = [17, 19, 20, 22];
+  const states = hours.map(hour => envelopeAtHour(hour));
+  const seen = states.map(state => state.energy);
   assert.deepEqual(seen.map(energy => energy.bucket), ['daylight', 'settling', 'lamplight', 'deep-night']);
+  // Blue hour: the ambient grade falls first, the lamps take over second.
+  assert.ok(states[2].snapshot.lightGrade.exposure < states[1].snapshot.lightGrade.exposure);
+  assert.ok(states[1].snapshot.lightGrade.exposure < states[0].snapshot.lightGrade.exposure);
   for (let index = 1; index < seen.length; index++) {
     assert.ok(seen[index].core >= seen[index - 1].core, 'core energy never falls as the sky cools');
     assert.ok(seen[index].bloom >= seen[index - 1].bloom, 'bloom follows, never leads');
@@ -45,14 +49,15 @@ test('dusk into night walks up the reviewed buckets, cores first and bloom last'
 });
 
 test('a hundred agents cannot raise the envelope, but heavy weather steps it once', () => {
-  const clearDusk = sourceEnergyEnvelope('dusk', 0.6, CLEAR);
-  const stormyDusk = sourceEnergyEnvelope('dusk', 0.6, { type: 'storm', intensity: 0.9 });
+  const dusk = 19 * 60;
+  const clearDusk = sourceEnergyEnvelope(dusk, CLEAR);
+  const stormyDusk = sourceEnergyEnvelope(dusk, { type: 'storm', intensity: 0.9 });
   assert.equal(clearDusk.bucket, 'settling');
   assert.equal(stormyDusk.bucket, 'lamplight');
   // One step only: a storm never overshoots the deepest night bucket by day.
-  assert.equal(sourceEnergyEnvelope('day', 0.5, { type: 'storm', intensity: 1 }).bucket, 'settling');
+  assert.equal(sourceEnergyEnvelope(12 * 60, { type: 'storm', intensity: 1 }).bucket, 'settling');
   // Night is already at the ceiling and weather cannot push it further.
-  assert.equal(sourceEnergyEnvelope('night', 0.6, { type: 'storm', intensity: 1 }).bucket, 'deep-night');
+  assert.equal(sourceEnergyEnvelope(23 * 60, { type: 'storm', intensity: 1 }).bucket, 'deep-night');
 });
 
 test('a feed authored without an envelope keeps today response', () => {

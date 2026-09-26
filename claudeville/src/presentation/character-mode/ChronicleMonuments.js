@@ -1,9 +1,26 @@
 import { MonumentPlanter, MonumentRules } from '../../application/MonumentRules.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { collectCommitEvents } from './ChronicleEvents.js';
-import { tileToWorld } from './Projection.js';
+import { buildingCenterToWorld, tileToWorld } from './Projection.js';
+import { BUILDING_DEFS } from '../../config/buildings.js';
+import {
+    GOLD_RAMP,
+    PEAK,
+    claimMajorMoment,
+    crown,
+    crownSeal,
+    defineMoment,
+    momentPhase,
+    quantStep,
+    releaseMajorMoment,
+    streak,
+    successGrammarDeferred,
+    suppressHarborGulls,
+} from './EffectStamps.js';
 import { repoProfile } from '../shared/RepoColor.js';
-import { WORLD_BODY_FONT } from '../../config/theme.js';
+import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { LABEL_INK, measureLabelText, snapScreenOrigin } from './WorldLabelKit.js';
+import { fillPixelEllipse } from './PixelShapes.js';
 
 // 4.7 — the selected monument's stone ledger: the last three real records of
 // its district, the exact count of the rest, and the period those records
@@ -57,18 +74,26 @@ function hashText(value) {
     return Math.abs(hash);
 }
 
-// Mirrored from HarborTraffic.js constants (HARBOR_FINALE_TILE and
-// HARBOR_SQUAD_ANCHORAGES[1] "Inner Quay Basin") — kept here so this module
-// stays self-contained without exporting harbor internals.
-const HARBOR_FIREWORKS_TILE = { tileX: 38.2, tileY: 6.6 };
+// 6.4 — the release crown: one Major moment above the Harbor plaque, only for
+// a planted release record (verified by MonumentRules). Rocket anticipation,
+// one cream flash, 8 gold spokes grown in three held steps, a 4-quantum
+// falloff, then a small static crown for 6 s. One at a time; further releases
+// fold into its count. A verified failure on screen defers it.
+const RELEASE_CROWN = defineMoment('major', { anticipation: 200, peak: 80, follow: 1200, residue: 6000 });
+const CROWN_GROW_MS = 300;
+const CROWN_RADIUS = 18;
+const CROWN_ROCKET_RISE = 22;
+const CROWN_DEFER_MAX_MS = 30000;
+const CROWN_MAJOR_ID = 'release-crown';
+// Harbor plaques are screen-fixed: landmark plates sit 28 screen px above the
+// sprite top and run ~26 px tall; the crown hangs a little above that band.
+const HARBOR_PLAQUE_CLEARANCE_PX = 28 + 26 + 8;
+const HARBOR_BUILDING = BUILDING_DEFS.find(building => building.type === 'harbor') || null;
+// Mirrored from HarborTraffic.js HARBOR_SQUAD_ANCHORAGES[1] "Inner Quay Basin"
+// — kept here so this module stays self-contained without exporting harbor
+// internals.
 const INNER_QUAY_BASIN_TILE = { tileX: 35.15, tileY: 22.55 };
 
-const FIREWORKS_RING_COUNT = 3;
-const FIREWORKS_RING_STAGGER_MS = 100;
-const FIREWORKS_RING_DURATION_MS = 5000;
-const FIREWORKS_LIFETIME_MS = 6000;
-const FIREWORKS_MAX_ACTIVE = 8;
-const FIREWORKS_MAX_RADIUS = 110;
 const MAX_PLANTER_SEEN = 4096;
 const MAX_COMMIT_SEEN = 4096;
 const MAX_CHRISTENED_REPOS = 512;
@@ -161,7 +186,8 @@ export class ChronicleMonuments {
         // banner still appears.
         this.auroraGate = auroraGate;
         this._seenCommitIds = new Set();
-        this._activeFireworks = [];
+        // 6.4 — the one release crown (queued, playing, or holding its residue).
+        this._crown = null;
         this._activeBanners = [];
         this._pendingMilestones = [];
         // #18 — christening: HarborTraffic fires `harbor:repo-christened` the
@@ -213,7 +239,7 @@ export class ChronicleMonuments {
         }
         for (const record of planted) this.records.set(record.id, record);
         for (const record of planted) {
-            if (record.kind === 'release') this._scheduleReleaseFireworks(record, now);
+            if (record.kind === 'release') this._scheduleReleaseCrown(record, now);
         }
         await this._processCommitMilestones(gitEvents, now, generation);
         if (this._disposed || generation !== this._lifecycleGeneration) return [];
@@ -268,7 +294,9 @@ export class ChronicleMonuments {
             seenCommitIds: this._seenCommitIds.size,
             planterSeen: this.planter?.seen?.size || 0,
             christenedRepos: this._christenedRepos.size,
-            activeFireworks: this._activeFireworks.length,
+            releaseCrown: this._crown
+                ? { count: this._crown.count, started: this._crown.startedAt != null }
+                : null,
             activeBanners: this._activeBanners.length,
             disposed: this._disposed,
         };
@@ -289,7 +317,8 @@ export class ChronicleMonuments {
         this._seenCommitIds.clear();
         this.planter?.seen?.clear?.();
         this._christenedRepos.clear();
-        this._activeFireworks.length = 0;
+        if (this._crown?.startedAt != null) releaseMajorMoment(CROWN_MAJOR_ID);
+        this._crown = null;
         this._activeBanners.length = 0;
         this._pendingMilestones.length = 0;
         this.store = null;
@@ -330,16 +359,9 @@ export class ChronicleMonuments {
                 };
             });
 
-        // Append overlays (fireworks rings, milestone banners) — drawn at a sortY
-        // above their anchor so they paint on top of nearby monuments.
-        for (const firework of this._activeFireworks) {
-            const world = toWorld(firework.tileX, firework.tileY);
-            drawables.push({
-                kind: 'chronicle-fireworks',
-                sortY: world.y + 1e6,
-                payload: { ...firework, worldX: world.x, worldY: world.y },
-            });
-        }
+        // Append overlays (milestone banners) — drawn at a sortY above their
+        // anchor so they paint on top of nearby monuments. The release crown
+        // is not a depth drawable: it draws on the upper overlay (drawMoments).
         for (const banner of this._activeBanners) {
             const world = toWorld(banner.tileX, banner.tileY);
             drawables.push({
@@ -354,10 +376,6 @@ export class ChronicleMonuments {
     draw(ctx, drawable, zoom = 1, now = Date.now()) {
         const record = drawable?.payload || drawable;
         if (!record) return;
-        if (drawable?.kind === 'chronicle-fireworks' || record.kind === 'chronicle-fireworks') {
-            this._drawFireworks(ctx, record, zoom, now);
-            return;
-        }
         if (drawable?.kind === 'chronicle-banner' || record.kind === 'chronicle-banner') {
             this._drawBanner(ctx, record, zoom, now);
             return;
@@ -440,7 +458,7 @@ export class ChronicleMonuments {
         // 6.1 — PixelLab sprite path; the vector draws below remain the
         // asset-missing fallback.
         if (this._drawMonumentSprite(ctx, record, world, alpha, color)) {
-            if (selected) this._drawMonumentLedger(ctx, record, world, now);
+            if (selected) this._drawMonumentLedger(ctx, record, world, now, zoom);
             return;
         }
 
@@ -480,7 +498,7 @@ export class ChronicleMonuments {
             ctx.fillRect(-3, -11, 6, 13);
         }
         ctx.restore();
-        if (selected) this._drawMonumentLedger(ctx, record, world, now);
+        if (selected) this._drawMonumentLedger(ctx, record, world, now, zoom);
     }
 
     // 4.7 — the low stone ledger. Rows are real retained records of this
@@ -510,44 +528,53 @@ export class ChronicleMonuments {
         };
     }
 
-    _drawMonumentLedger(ctx, record, world, now) {
+    // Screen-fixed 11 px Departure Mono on 12-row courses (5.4): the tablet is
+    // anchored beside the stone in world space but never scales with it.
+    _drawMonumentLedger(ctx, record, world, now, zoom = 1) {
         const ledger = this.ledgerFor(record, now);
         if (!ledger?.rows.length) return;
-        const x = Math.round((world.worldX ?? world.x) + 14);
-        const y = Math.round((world.worldY ?? world.y) - 2);
-        const rowH = 8;
-        const height = ledger.rows.length * rowH + (ledger.overflow > 0 ? rowH : 0) + 12;
+        const z = zoom > 0 ? zoom : 1;
+        const rowH = 12;
         ctx.save();
-        ctx.font = `6px ${WORLD_BODY_FONT}`;
-        ctx.textBaseline = 'middle';
+        ctx.translate((world.worldX ?? world.x) + 8, (world.worldY ?? world.y) - 2);
+        ctx.scale(1 / z, 1 / z);
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_BODY_FONT_11;
+        ctx.textBaseline = 'alphabetic';
         ctx.textAlign = 'left';
-        let width = 0;
         const lines = ledger.rows.map((entry) => ({
             text: `${entry.kind} · ${String(entry.label || '').slice(0, 22)} · ${ledgerDate(entry.plantedAt || entry.ts)}`,
             crest: repoProfile(entry.project).accent || '#d8b96d',
         }));
         const header = `${ledger.district} · last 30 days`;
-        width = Math.ceil(ctx.measureText(header).width);
-        for (const line of lines) width = Math.max(width, Math.ceil(ctx.measureText(line.text).width) + 6);
+        const overflowText = ledger.overflow > 0 ? `+${ledger.overflow} recorded` : '';
+        let width = measureLabelText(ctx, header);
+        for (const line of lines) width = Math.max(width, measureLabelText(ctx, line.text) + 6);
+        if (overflowText) width = Math.max(width, measureLabelText(ctx, overflowText) + 6);
         width += 8;
+        const rows = 1 + lines.length + (overflowText ? 1 : 0);
+        const height = rows * rowH + 4;
+        const top = -height;
         // A low tablet, not a floating card: one stone face with a lit top
-        // course, sitting on the plinth beside the stone.
-        ctx.fillStyle = 'rgba(28, 25, 20, 0.9)';
-        ctx.fillRect(x, y - height, width, height);
-        ctx.fillStyle = 'rgba(155, 138, 107, 0.9)';
-        ctx.fillRect(x, y - height, width, 1);
-        ctx.fillStyle = 'rgba(216, 185, 109, 0.9)';
-        ctx.fillText(header, x + 4, y - height + 6);
+        // course and a dark outline, sitting on the plinth beside the stone.
+        ctx.fillStyle = LABEL_INK.plateOutline;
+        ctx.fillRect(-1, top - 1, width + 2, height + 2);
+        ctx.fillStyle = '#1c1914';
+        ctx.fillRect(0, top, width, height);
+        ctx.fillStyle = '#9b8a6b';
+        ctx.fillRect(0, top, width, 1);
+        ctx.fillStyle = '#d8b96d';
+        ctx.fillText(header, 4, top + 11);
         lines.forEach((line, index) => {
-            const rowY = y - height + 14 + index * rowH;
+            const baseline = top + 11 + (index + 1) * rowH;
             ctx.fillStyle = line.crest;
-            ctx.fillRect(x + 4, rowY - 2, 3, 4);
-            ctx.fillStyle = 'rgba(232, 228, 216, 0.94)';
-            ctx.fillText(line.text, x + 10, rowY);
+            ctx.fillRect(4, baseline - 7, 3, 5);
+            ctx.fillStyle = '#e8e4d8';
+            ctx.fillText(line.text, 10, baseline);
         });
-        if (ledger.overflow > 0) {
-            ctx.fillStyle = 'rgba(198, 190, 172, 0.88)';
-            ctx.fillText(`+${ledger.overflow} recorded`, x + 10, y - height + 14 + lines.length * rowH);
+        if (overflowText) {
+            ctx.fillStyle = '#c6beac';
+            ctx.fillText(overflowText, 10, top + 11 + (lines.length + 1) * rowH);
         }
         ctx.restore();
     }
@@ -575,23 +602,17 @@ export class ChronicleMonuments {
         ctx.save();
         ctx.translate(wx, wy);
         ctx.globalAlpha = alpha;
-        ctx.fillStyle = 'rgba(26, 22, 18, 0.35)';
-        ctx.beginPath();
-        ctx.ellipse(0, 11, 13, 5, 0, 0, Math.PI * 2);
-        ctx.fill();
+        fillPixelEllipse(ctx, 0, 11, 13, 5, 'rgba(26, 22, 18, 0.35)');
         ctx.drawImage(img, Math.round(-ax), Math.round(-ay));
-        // Gem glow overlay (screen composite) at the calibrated sprite spot.
+        // Gem glow overlay (screen composite) at the calibrated sprite spot:
+        // two stepped pixel discs, not a radial gradient (pixel grammar).
         const gx = Math.round(-ax + dims.w * gem.fx);
         const gy = Math.round(-ay + dims.h * gem.fy);
         ctx.globalCompositeOperation = 'screen';
-        const gradient = ctx.createRadialGradient(gx, gy, 0, gx, gy, gem.r);
-        gradient.addColorStop(0, color);
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        ctx.globalAlpha = alpha * 0.5;
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(gx, gy, gem.r, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.globalAlpha = alpha * 0.2;
+        fillPixelEllipse(ctx, gx, gy, gem.r, gem.r, color);
+        ctx.globalAlpha = alpha * 0.3;
+        fillPixelEllipse(ctx, gx, gy, gem.r * 0.5, gem.r * 0.5, color);
         ctx.restore();
         return true;
     }
@@ -680,30 +701,121 @@ export class ChronicleMonuments {
         }
     }
 
-    _scheduleReleaseFireworks(record, now) {
+    _scheduleReleaseCrown(record, now) {
         const color = KIND_COLORS[record.kind] || KIND_COLORS.release;
-        const anchor = HARBOR_FIREWORKS_TILE;
         this.eventBus?.emit?.('harbor:release-burst', {
             project: record.project,
             label: record.label,
             ts: now,
             color,
         });
-        this._pushFirework({
-            startedAt: now,
-            expiresAt: now + FIREWORKS_LIFETIME_MS,
-            tileX: anchor.tileX,
-            tileY: anchor.tileY,
-            color,
-        });
+        // Max one crown: a release landing while one is up folds into it.
+        if (this._crown) {
+            this._crown.count += 1;
+            return;
+        }
+        this._crown = {
+            queuedAt: now,
+            startedAt: null,
+            reduced: false,
+            count: 1,
+            project: record.project || null,
+            label: record.label || null,
+        };
     }
 
-    _pushFirework(firework) {
-        this._activeFireworks.push(firework);
-        if (this._activeFireworks.length > FIREWORKS_MAX_ACTIVE) {
-            // Drop oldest to honour cap.
-            this._activeFireworks.splice(0, this._activeFireworks.length - FIREWORKS_MAX_ACTIVE);
+    // 6.4 — drawn on the upper overlay (both backends) in world space. The
+    // crown waits while a verified failure holds success grammar, and for the
+    // single Major slot; a crown that cannot start within 30 s is dropped (the
+    // monument and the parade plate still record the release).
+    drawMoments(ctx, zoom = 1, now = Date.now()) {
+        const state = this._crown;
+        if (!ctx || !state) return;
+        if (state.startedAt == null) {
+            if (successGrammarDeferred()) {
+                if (now - state.queuedAt > CROWN_DEFER_MAX_MS) this._crown = null;
+                return;
+            }
+            const reduced = reducedMotionPreferred();
+            if (!reduced && !claimMajorMoment(CROWN_MAJOR_ID, RELEASE_CROWN.active)) {
+                if (now - state.queuedAt > CROWN_DEFER_MAX_MS) this._crown = null;
+                return;
+            }
+            state.startedAt = now;
+            state.reduced = reduced;
+            suppressHarborGulls((reduced ? 0 : RELEASE_CROWN.active) + RELEASE_CROWN.residue);
         }
+        const phase = momentPhase(now - state.startedAt, RELEASE_CROWN, { reduced: state.reduced });
+        if (phase.phase === 'done') {
+            releaseMajorMoment(CROWN_MAJOR_ID);
+            this._crown = null;
+            return;
+        }
+        const anchor = this._harborCrownAnchor(zoom);
+        if (!anchor) return;
+        const { x, y } = anchor;
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        switch (phase.phase) {
+        case 'anticipation': {
+            // A gold rocket rises from the quay in three held steps.
+            const rise = CROWN_ROCKET_RISE * (1 - (phase.step + 1) / 3);
+            streak(ctx, x, y + rise, { length: 4, color: GOLD_RAMP[1], head: GOLD_RAMP[2] });
+            ctx.fillStyle = GOLD_RAMP[0];
+            ctx.fillRect(Math.round(x), Math.round(y + rise) + 6, 1, 1);
+            ctx.fillRect(Math.round(x), Math.round(y + rise) + 9, 1, 1);
+            break;
+        }
+        case 'peak':
+            // The one cream frame.
+            crown(ctx, x, y, { radius: 7, inner: 1, ramp: [PEAK, PEAK, PEAK], core: PEAK });
+            break;
+        case 'follow': {
+            const ms = phase.t * RELEASE_CROWN.follow;
+            if (ms < CROWN_GROW_MS) {
+                const step = quantStep(ms / CROWN_GROW_MS, 3);
+                crown(ctx, x, y, {
+                    radius: [8, 13, CROWN_RADIUS][step],
+                    inner: 3,
+                    ramp: GOLD_RAMP,
+                    core: step === 0 ? PEAK : GOLD_RAMP[2],
+                });
+            } else {
+                // Falloff: the spokes open outward as they step down in alpha.
+                const u = (ms - CROWN_GROW_MS) / Math.max(1, RELEASE_CROWN.follow - CROWN_GROW_MS);
+                const step = quantStep(u, 3);
+                ctx.globalAlpha = [1, 0.66, 0.33][step];
+                crown(ctx, x, y, { radius: CROWN_RADIUS + step * 2, inner: [4, 8, 12][step], ramp: GOLD_RAMP });
+            }
+            break;
+        }
+        case 'residue':
+            crownSeal(ctx, x, y, { radius: 5, ramp: GOLD_RAMP });
+            break;
+        default:
+            break;
+        }
+        ctx.restore();
+    }
+
+    // Harbor crown anchor in world space: above the screen-fixed Harbor plaque
+    // band, which sits over the Harbor sprite's first opaque row.
+    _harborCrownAnchor(zoom = 1) {
+        if (!HARBOR_BUILDING) return null;
+        const center = buildingCenterToWorld(HARBOR_BUILDING);
+        const id = 'building.harbor';
+        const dims = this.assets?.getDims?.(id);
+        const anchor = this.assets?.getAnchor?.(id);
+        let spriteTop = center.y - 110;
+        if (dims && anchor) {
+            const first = this.assets.getMask?.(id)?.indexOf?.(1) ?? 0;
+            spriteTop = Math.round(center.y - anchor[1]) + Math.floor(Math.max(0, first) / dims.w);
+        }
+        const z = Math.max(0.01, Number(zoom) || 1);
+        return {
+            x: Math.round(center.x),
+            y: Math.round(spriteTop - HARBOR_PLAQUE_CLEARANCE_PX / z - CROWN_RADIUS - 2),
+        };
     }
 
     async _processCommitMilestones(gitEvents, now, generation = this._lifecycleGeneration) {
@@ -836,41 +948,6 @@ export class ChronicleMonuments {
         }
     }
 
-    _drawFireworks(ctx, payload, zoom, now) {
-        const reduced = reducedMotionPreferred();
-        const elapsed = Math.max(0, now - Number(payload.startedAt || now));
-        const lineWidth = Math.max(1, 1.5 / Math.max(1, zoom));
-        ctx.save();
-        ctx.translate(Math.round(payload.worldX), Math.round(payload.worldY));
-        ctx.lineWidth = lineWidth;
-        ctx.strokeStyle = payload.color || KIND_COLORS.release;
-        if (reduced) {
-            // Static three concentric outlines — no expansion.
-            ctx.globalAlpha = 0.85;
-            for (let i = 0; i < FIREWORKS_RING_COUNT; i++) {
-                const radius = 28 + i * 20;
-                ctx.beginPath();
-                ctx.arc(0, 0, radius, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-        } else {
-            ctx.globalCompositeOperation = 'lighter';
-            for (let i = 0; i < FIREWORKS_RING_COUNT; i++) {
-                const ringStart = i * FIREWORKS_RING_STAGGER_MS;
-                const ringElapsed = elapsed - ringStart;
-                if (ringElapsed < 0) continue;
-                if (ringElapsed > FIREWORKS_RING_DURATION_MS) continue;
-                const t = ringElapsed / FIREWORKS_RING_DURATION_MS;
-                const radius = 6 + t * FIREWORKS_MAX_RADIUS;
-                ctx.globalAlpha = Math.max(0, 0.85 * (1 - t));
-                ctx.beginPath();
-                ctx.arc(0, 0, radius, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-        }
-        ctx.restore();
-    }
-
     _drawBanner(ctx, payload, zoom, now) {
         const reduced = reducedMotionPreferred();
         const elapsed = Math.max(0, now - Number(payload.startedAt || now));
@@ -887,39 +964,36 @@ export class ChronicleMonuments {
                 : tier === 'ribbon'
                     ? '#ffea9b'
                     : '#e8f6c8';
-        const scale = 1 / Math.max(1, zoom);
+        // Screen-fixed square plate, 8 px Press Start 2P (5.4): 1 px accent
+        // rim, integer geometry, no stroke or blur.
+        const z = zoom > 0 ? zoom : 1;
         ctx.save();
-        ctx.translate(Math.round(payload.worldX), Math.round(payload.worldY));
+        ctx.translate(payload.worldX, payload.worldY);
+        ctx.scale(1 / z, 1 / z);
+        snapScreenOrigin(ctx);
         ctx.globalAlpha = fade;
-        ctx.font = `${Math.round(14 * scale)}px "Press Start 2P", system-ui, sans-serif`;
-        ctx.textAlign = 'center';
+        ctx.font = WORLD_DISPLAY_FONT_8;
+        ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
         const lift = tier === 'flagship' ? -84 : tier === 'ribbon' ? -56 : -48;
-        const measure = ctx.measureText(text);
-        const padX = 10 * scale;
-        const padY = 6 * scale;
-        const bgW = measure.width + padX * 2;
-        const bgH = 18 * scale + padY * 2;
-        ctx.fillStyle = 'rgba(16, 12, 24, 0.78)';
-        ctx.strokeStyle = accent;
-        ctx.lineWidth = Math.max(1, 1.5 * scale);
-        ctx.beginPath();
-        const x = -bgW / 2;
-        const y = lift * scale - bgH;
-        ctx.rect(x, y, bgW, bgH);
-        ctx.fill();
-        ctx.stroke();
+        const bgW = measureLabelText(ctx, text) + 16;
+        const bgH = 18;
+        const x = -Math.round(bgW / 2);
+        const y = lift - bgH;
+        ctx.fillStyle = LABEL_INK.plateOutline;
+        ctx.fillRect(x - 1, y - 1, bgW + 2, bgH + 2);
         ctx.fillStyle = accent;
-        ctx.fillText(text, 0, lift * scale - padY);
+        ctx.fillRect(x, y, bgW, bgH);
+        ctx.fillStyle = '#100c18';
+        ctx.fillRect(x + 1, y + 1, bgW - 2, bgH - 2);
+        ctx.fillStyle = accent;
+        ctx.fillText(text, x + 8, y + 13);
         if (!reduced && tier === 'ribbon') {
-            // Small flag-ribbon flourish over the squad flagship anchor.
-            ctx.fillStyle = accent;
-            ctx.beginPath();
-            ctx.moveTo(bgW / 2, y + bgH / 2);
-            ctx.lineTo(bgW / 2 + 12 * scale, y + bgH / 2 - 6 * scale);
-            ctx.lineTo(bgW / 2 + 12 * scale, y + bgH / 2 + 6 * scale);
-            ctx.closePath();
-            ctx.fill();
+            // Small stepped pennant off the plate's right edge.
+            for (let col = 0; col < 12; col++) {
+                const half = Math.max(0, 6 - Math.floor(col / 2));
+                if (half) ctx.fillRect(x + bgW + col, y + bgH / 2 - half, 1, half * 2);
+            }
         }
         ctx.restore();
     }
@@ -947,9 +1021,6 @@ export class ChronicleMonuments {
     }
 
     _dropExpiredOverlays(now) {
-        if (this._activeFireworks.length) {
-            this._activeFireworks = this._activeFireworks.filter(f => Number(f.expiresAt || 0) > now);
-        }
         if (this._activeBanners.length) {
             this._activeBanners = this._activeBanners.filter(b => Number(b.expiresAt || 0) > now);
         }

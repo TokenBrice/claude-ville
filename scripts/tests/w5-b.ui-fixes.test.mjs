@@ -215,9 +215,8 @@ test('one attention event keeps the specific direct notice and cue caption in on
 });
 
 test('Chronicle date selection stays committed on a failed read and export failures surface', async () => {
-    const input = { value: '2026-08-25' };
     const modal = {
-        contentEl: { querySelector: () => input },
+        contentEl: { querySelector: () => null },
         isRequestCurrent: request => request === 1,
     };
     const failures = [];
@@ -228,11 +227,9 @@ test('Chronicle date selection stays committed on a failed read and export failu
     });
     panel._request = 1;
     panel._selectedDateKey = '2026-08-25';
-    input.value = '2026-08-24';
 
     await panel._showDate('2026-08-24', 1);
     assert.equal(panel._selectedDateKey, '2026-08-25');
-    assert.equal(input.value, '2026-08-25');
     assert.deepEqual(failures, [{ message: 'Could not load that Chronicle day.', type: 'warning' }]);
 
     panel._readExportData = async () => { throw new Error('read failed'); };

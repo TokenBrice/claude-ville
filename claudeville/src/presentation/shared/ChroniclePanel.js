@@ -161,11 +161,19 @@ export function foldTimeline(events = []) {
     return rows;
 }
 
-function ledgerRow(label, value) {
-    return el('div', { className: 'chronicle__stat' }, [
+// `raw` is the number behind a formatted value; zeros recede to --ink-4.
+function ledgerRow(label, value, raw = value) {
+    const zero = Number(raw) === 0;
+    return el('div', { className: zero ? ['chronicle__stat', 'chronicle__stat--zero'] : 'chronicle__stat' }, [
         el('span', { className: 'chronicle__stat-label' }, label),
         el('span', { className: 'chronicle__stat-value' }, String(value)),
     ]);
+}
+
+// One line, fixed shape: `Fri 25 Sep 2026`.
+function chronicleDayHeading(date) {
+    const part = options => date.toLocaleDateString('en-US', options);
+    return `${part({ weekday: 'short' })} ${date.getDate()} ${part({ month: 'short' })} ${date.getFullYear()}`;
 }
 
 function openingLine(summary, isToday = true) {
@@ -457,12 +465,7 @@ export class ChroniclePanel {
 
     async _showDate(dateKey, request) {
         if (!dateKey || dateKey === this._selectedDateKey) return;
-        const previousDateKey = this._selectedDateKey;
         const readSeq = ++this._dateReadSeq;
-        // The native date input changes before its async handler runs. Keep it
-        // on the committed day while the new page is loading so it cannot show
-        // a new date beside the old timeline.
-        this._setDatePickerValue(previousDateKey);
         let page;
         try {
             page = await this._readPage(dateKey);
@@ -473,7 +476,6 @@ export class ChroniclePanel {
                 && readSeq === this._dateReadSeq
                 && this.modal.isRequestCurrent(request)
             ) {
-                this._setDatePickerValue(previousDateKey);
                 this._reportFailure(
                     CHRONICLE_READ_FAILURE_EVENT,
                     'Could not load that Chronicle day.',
@@ -492,11 +494,6 @@ export class ChroniclePanel {
         // request. The rendered controls then receive the same committed key.
         this._selectedDateKey = dateKey;
         this._renderPage(page, dateKey, request);
-    }
-
-    _setDatePickerValue(dateKey) {
-        const input = this.modal?.contentEl?.querySelector?.('.chronicle__date-input');
-        if (input && dateKey) input.value = dateKey;
     }
 
     _reportFailure(eventName, message, details = {}) {
@@ -598,9 +595,9 @@ export class ChroniclePanel {
             && ['max', 'pro', 'team', 'enterprise'].includes(subscription.toLowerCase());
 
         const nodes = [el('div', { className: 'chronicle__ledger' }, [
-            ledgerRow('NEW TOKENS', formatNumber(today.tokens)),
-            ledgerRow('CACHE READS', formatNumber(today.cacheRead)),
-            ledgerRow(onPlan ? 'API EQUIVALENT' : 'EST. COST', formatCost(today.cost)),
+            ledgerRow('NEW TOKENS', formatNumber(today.tokens), today.tokens),
+            ledgerRow('CACHE READS', formatNumber(today.cacheRead), today.cacheRead),
+            ledgerRow(onPlan ? 'API EQUIVALENT' : 'EST. COST', formatCost(today.cost), today.cost),
         ])];
         nodes.push(el('p', { className: 'chronicle__note' }, onPlan
             ? `Counted while ClaudeVille was open. Your ${subscription} plan bills on quota, not on this figure — it is what today's tokens would have cost at API rates.`
@@ -618,16 +615,9 @@ export class ChroniclePanel {
         };
         const previousKey = shiftDate(-1);
         const nextKey = shiftDate(1);
-        const input = el('input', {
-            className: 'chronicle__date-input',
-            ariaLabel: 'Chronicle date',
-        });
-        input.type = 'date';
-        input.value = dateKey;
-        input.min = window.min;
-        input.max = window.max;
-        input.addEventListener('change', () => onDateChange?.(input.value));
-
+        // 7.6 — one line of text controls: PREVIOUS · the day · NEXT · TODAY.
+        // No native date field: the retention window is a couple of weeks,
+        // and the stepped buttons walk all of it.
         const previousButton = el('button', {
             className: 'chronicle__date-button',
             text: 'Previous',
@@ -673,24 +663,14 @@ export class ChroniclePanel {
         });
         csvButton.type = 'button';
         csvButton.addEventListener('click', () => this._export('csv'));
-        const selected = chronicleDateFromKey(dateKey);
-        const heading = selected.toLocaleDateString(undefined, {
-            weekday: 'long',
-            month: 'long',
-            day: 'numeric',
-            year: 'numeric',
-        });
+        const heading = chronicleDayHeading(chronicleDateFromKey(dateKey));
         return el('div', { className: 'chronicle__date-controls' }, [
             el('div', { className: 'chronicle__date-navigation' }, [
                 previousButton,
-                el('label', { className: 'chronicle__date-label' }, [
-                    el('span', { className: 'chronicle__date-label-text' }, 'Day'),
-                    input,
-                ]),
+                el('span', { className: 'chronicle__date-heading' }, heading),
                 nextButton,
                 todayButton,
             ]),
-            el('span', { className: 'chronicle__date-heading' }, heading),
             el('span', { className: 'chronicle__export-actions' }, [markdownButton, csvButton]),
         ]);
     }

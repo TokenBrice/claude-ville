@@ -56,7 +56,7 @@ function positionFromSpec(value) {
     return new Position(tileX, tileY);
 }
 
-function buildAgent(spec, timeBase) {
+function buildAgent(spec, timeBase, rebase = value => value) {
     const lastSessionActivity = Number.isFinite(Number(spec.lastSessionActivity))
         ? Number(spec.lastSessionActivity)
         : timeBase;
@@ -77,6 +77,9 @@ function buildAgent(spec, timeBase) {
         cost: spec.cost,
         effort: spec.effort,
         waitReason: spec.waitReason,
+        awaitingSince: Number.isFinite(Number(spec.awaitingSince)) && spec.awaitingSince !== null
+            ? rebase(Number(spec.awaitingSince))
+            : null,
         pendingTool: spec.pendingTool,
         signalSource: spec.signalSource,
         signalCertainty: spec.signalCertainty,
@@ -183,7 +186,7 @@ export default class AgentSimulator {
 
         // Seed the cast immediately.
         for (const spec of scenario.agents || []) {
-            const agent = buildAgent(spec, this._timeBase);
+            const agent = buildAgent(spec, this._timeBase, value => this._rebaseScenarioTimestamp(value));
             this.world.addAgent(agent);
             this._agentIds.add(agent.id);
         }
@@ -242,7 +245,7 @@ export default class AgentSimulator {
 
     _addAgent(spec) {
         if (!spec?.id || this.world.agents.has(spec.id)) return;
-        const agent = buildAgent(spec, this._timeBase);
+        const agent = buildAgent(spec, this._timeBase, value => this._rebaseScenarioTimestamp(value));
         this.world.addAgent(agent);
         this._agentIds.add(agent.id);
     }

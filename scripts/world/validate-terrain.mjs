@@ -338,13 +338,11 @@ const {
     HARBOR_DOCK_TILES,
     FOREST_FLOOR_REGIONS,
     TREE_CLUSTERS,
-    TROPICAL_PALMS,
-    TROPICAL_BROADLEAF_TREES,
+    TREE_CLUMPS,
     BOULDERS,
     VEGETATION_DISTRICTS,
     SHORELINE_VEGETATION,
     SCENERY_CLEARINGS,
-    TROPICAL_WATERFALLS,
     DISTRICT_PROPS,
     MARINE_FISH_SCHOOLS,
     BUSH_DENSITY,
@@ -357,13 +355,11 @@ const {
     'HARBOR_DOCK_TILES',
     'FOREST_FLOOR_REGIONS',
     'TREE_CLUSTERS',
-    'TROPICAL_PALMS',
-    'TROPICAL_BROADLEAF_TREES',
+    'TREE_CLUMPS',
     'BOULDERS',
     'VEGETATION_DISTRICTS',
     'SHORELINE_VEGETATION',
     'SCENERY_CLEARINGS',
-    'TROPICAL_WATERFALLS',
     'DISTRICT_PROPS',
     'MARINE_FISH_SCHOOLS',
     'BUSH_DENSITY',
@@ -381,16 +377,30 @@ validateRegions(reporter, 'FOREST_FLOOR_REGIONS', FOREST_FLOOR_REGIONS, MAP_SIZE
 validateRegions(reporter, 'TREE_CLUSTERS', TREE_CLUSTERS, MAP_SIZE);
 validateRegions(reporter, 'VEGETATION_DISTRICTS', VEGETATION_DISTRICTS, MAP_SIZE);
 validateRegions(reporter, 'SCENERY_CLEARINGS', SCENERY_CLEARINGS, MAP_SIZE);
-validateTileObjects(reporter, 'TROPICAL_PALMS', TROPICAL_PALMS, MAP_SIZE);
-validateTileObjects(reporter, 'TROPICAL_BROADLEAF_TREES', TROPICAL_BROADLEAF_TREES, MAP_SIZE);
+validateTileObjects(reporter, 'TREE_CLUMPS', TREE_CLUMPS, MAP_SIZE);
 validateTileObjects(reporter, 'BOULDERS', BOULDERS, MAP_SIZE);
 validateTileObjects(reporter, 'DISTRICT_PROPS', DISTRICT_PROPS, MAP_SIZE);
 validateTileObjects(reporter, 'MARINE_FISH_SCHOOLS', MARINE_FISH_SCHOOLS, MAP_SIZE);
-validateTileObjects(reporter, 'TROPICAL_WATERFALLS', TROPICAL_WATERFALLS, MAP_SIZE);
 
-for (const [index, waterfall] of TROPICAL_WATERFALLS.entries()) {
-    if (!inTileBounds(waterfall.poolTileX, waterfall.poolTileY, MAP_SIZE)) {
-        reporter.error(`TROPICAL_WATERFALLS[${index}].pool`, `pool tile ${waterfall.poolTileX},${waterfall.poolTileY} is outside 0..${MAP_SIZE - 1}`);
+// Trees stand in clumps of 3–7 (SceneryEngine drops smaller remnants).
+const TREE_SPECIES = new Set(['oak', 'pine', 'willow']);
+for (const [index, clump] of TREE_CLUMPS.entries()) {
+    if (!Number.isInteger(clump.trees) || clump.trees < 3 || clump.trees > 7) {
+        reporter.error(`TREE_CLUMPS[${index}].trees`, 'must be an integer from 3 to 7');
+    }
+    if (!TREE_SPECIES.has(clump.species)) {
+        reporter.error(`TREE_CLUMPS[${index}].species`, `must be one of ${[...TREE_SPECIES].join(', ')}`);
+    }
+}
+for (const [index, cluster] of TREE_CLUSTERS.entries()) {
+    const [min, max] = cluster.clump ?? [3, 5];
+    if (!Number.isInteger(min) || !Number.isInteger(max) || min < 3 || max > 7 || min > max) {
+        reporter.error(`TREE_CLUSTERS[${index}].clump`, 'must be [min, max] integers with 3 <= min <= max <= 7');
+    }
+    for (const species of Object.keys(cluster.species ?? {})) {
+        if (species === 'willow' || !TREE_SPECIES.has(species)) {
+            reporter.error(`TREE_CLUSTERS[${index}].species.${species}`, 'must be oak or pine (willow is chosen only beside water)');
+        }
     }
 }
 

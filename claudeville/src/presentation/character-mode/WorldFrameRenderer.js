@@ -1,7 +1,8 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
-import { WORLD_BODY_FONT } from '../../config/theme.js';
+import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { drawAttentionPlates } from './AttentionPlates.js';
+import { fitLabelText, measureLabelText } from './WorldLabelKit.js';
 import { drawCouncilRings, drawFamilyTethers, drawAdvisorTethers, drawAllyTethers, drawTalkArcs, admitTalkArcMarks } from './CouncilRing.js';
 import { drawCrowdClusterAuras, drawCrowdClusterBadges } from './CrowdClusterOverlay.js';
 import { drawSharedFileKnot, drawSharedFileOverlapLabel } from './SharedFileKnot.js';
@@ -16,7 +17,6 @@ import {
     drawVillageDirectorGround,
     drawVillageDirectorOverlays,
     drawVillageDirectorScreen,
-    drawPrimaryPillRestamp,
     drawOffscreenCueEdges,
 } from './VillageDirectorOverlay.js';
 import { worldSceneCategoryRegistry } from './SceneCategoryRegistry.js';
@@ -24,6 +24,11 @@ import { buildGpuWorldRecords } from './gpu/GpuSceneBuilder.js';
 import { createBoundedRing, writeBoundedRing } from '../shared/ClientPerfMetrics.js';
 import { drawWorkScoreGround, drawWorkScoreScreen } from './SpatialWorkScore.js';
 import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
+import { GroundCueRecorder, insertGroundCueRecords } from './GroundCueRecords.js';
+import { PARTICLE_LAYER_AIR } from './ParticleSystem.js';
+import { gradeColor } from './AtmosphereState.js';
+import { drawCanvasAerialHaze, drawResidentBackdropGrade } from './BackdropGrade.js';
+import { castLightingFor, drawTreeCasts, setFrameCastLighting } from './RakingLight.js';
 
 const FRAME_TIMING_RING_CAPACITY = 90;
 const FRAME_TIMER_MAX_MARKS = 48;
@@ -487,6 +492,10 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.buildingRenderer?.setAtmosphereState?.(atmosphere
         ? { ...atmosphere, reactions }
         : atmosphere);
+    // S12 — albedo marks agents paint on the ungraded overlay (the signature
+    // clasp) take the frame's C2 grade.
+    const overlayLightGrade = atmosphere?.lightGrade || null;
+    for (const sprite of renderer.agentSprites?.values?.() || []) sprite.overlayLightGrade = overlayLightGrade;
     // #3 — grade authority: harbor anchorage glows lerp toward the time-of-day tint.
     renderer.harborTraffic?.setGradeState?.(atmosphere?.grade);
     const perfNow = performance.now();
@@ -496,17 +505,39 @@ export function renderWorldFrame(renderer, dt = 16) {
 
     renderer._resetScreenTransform(ctx);
     ctx.clearRect(0, 0, viewport.width, viewport.height);
+    // 1.5 — this frame's sun bucket for the villager contact stamps.
+    setFrameCastLighting(castLightingFor(atmosphere));
+    // 1.3 — the sky/void plate is graded with the island: on the resident
+    // path nothing grades this canvas afterwards, so it paints the C2 sky
+    // colours as-is; the Canvas/PostFx paths grade the finished frame, so it
+    // paints their preimage.
     renderer.skyRenderer.draw(ctx, {
         canvas: viewport,
         camera: renderer.camera,
         dt,
         atmosphere,
         motionScale: renderer.motionScale,
+        backdropGraded: gpuWorldActive,
     });
     markFrameTiming(frameTimer, 'sky');
 
     renderer.camera.applyTransform(ctx);
-    renderer._drawDistantSeaHorizon(ctx, atmosphere);
+    // 3.4 — cached outer ocean: one drawImage; pre-graded only on the
+    // resident path (Canvas/PostFx grade the finished frame afterwards).
+    renderer._drawDistantSeaHorizon(ctx, atmosphere, { gpuGraded: gpuWorldActive });
+    if (gpuWorldActive) {
+        // 1.3 — the island's stepped vignette and screen-Y aerial haze over
+        // the backdrop (sky plate + outer ocean), so sea and sky meet the
+        // graded island without a seam at the frame edges.
+        renderer._resetScreenTransform(ctx);
+        drawResidentBackdropGrade(ctx, {
+            viewport,
+            atmosphere,
+            zoom: renderer.camera.zoom,
+            hazeStrength: renderer.gpuWorld?.aerialHaze || 0,
+        });
+        renderer.camera.applyTransform(ctx);
+    }
     markFrameTiming(frameTimer, 'horizon');
     renderer._gpuHazeStrength = 0;
     if (!gpuWorldActive) {
@@ -514,8 +545,7 @@ export function renderWorldFrame(renderer, dt = 16) {
             ctx,
             frameTimer ? label => markFrameTiming(frameTimer, label) : null,
         );
-        // #24 — cloud-shadow parallax: feathered shadows slide across the baked
-        // terrain on the wind, giving the flat iso plane depth under the live sky.
+        // 1.4 — world-locked stepped cloud-shadow courses over the terrain.
         drawCloudShadows(renderer, ctx, atmosphere, perfNow);
         // 6.4 — ground haze over water and lowlands, drawn on the ground plane
         // ahead of agents and buildings. The ten wisps are the crest of this
@@ -540,17 +570,22 @@ export function renderWorldFrame(renderer, dt = 16) {
     // the same category above its opaque island.
     markFrameTiming(frameTimer, 'fauna');
     admitTalkArcMarks({ relationship: renderer.relationshipState, agentSprites: renderer.agentSprites });
-    const ground = gpuWorldActive ? prepareSemanticGround(renderer, viewport, villageSnapshot, atmosphere) : null;
-    if (!gpuWorldActive || ground?.dirty) {
-        drawGroundSemantics(renderer, ground?.ctx || ctx, { villageSnapshot, renderNow, perfNow, atmosphere, viewport });
-    }
+    const groundOptions = { villageSnapshot, renderNow, perfNow, atmosphere, viewport };
     if (!gpuWorldActive) {
+        drawGroundSemantics(renderer, ctx, groundOptions, GROUND_CUES_ALL);
         drawBuildingLightReflections(renderer, ctx, atmosphere);
         renderer.buildingRenderer?.drawShadows(ctx);
-    } else if (ground) {
-        renderer._resetScreenTransform(ctx);
-        ctx.drawImage(renderer._semanticGroundCanvas, 0, 0, viewport.width, viewport.height);
-        renderer.camera.applyTransform(ctx);
+        // 1.5 — tree casts on the ground layer (the resident path emits them
+        // as ground records with each tree).
+        drawTreeCasts(ctx, renderer.treePropSprites, castLightingFor(atmosphere), renderer.camera, viewport);
+    } else {
+        // 0.2 — the resident path splits the ground cues: the text-bearing
+        // work score stays in the retained texture (re-uploaded only when it
+        // changes), and every cue that follows an agent becomes native ground
+        // records spliced in after terrain, so moving agents move records.
+        const ground = prepareSemanticGround(renderer, viewport, villageSnapshot, atmosphere);
+        if (ground?.dirty) drawGroundSemantics(renderer, ground.ctx, groundOptions, GROUND_CUES_RETAINED);
+        recordLiveGroundCues(renderer, groundOptions);
     }
     markFrameTiming(frameTimer, 'prelayers');
 
@@ -612,17 +647,27 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawableContext.chronicler = renderer.chronicler;
     drawableContext.agentRenderMode = agentRenderMode;
     drawableContext.gpuWorldActive = gpuWorldActive;
+    drawableContext.overlayCategoryIds = sceneCategoryResolution.overlayCategoryIds;
     drawableContext.paintCounts = paintCounts;
     drawDepthSortedDrawables(ctx, drawables, drawableContext);
     // Direct GPU carries wetness in the material shader; the discrete Canvas
     // damp-mark decoration remains fallback-only and is documented as such.
     if (!gpuWorldActive) renderer._drawSurfaceWetnessMarks?.(ctx, 'roofs');
     markFrameTiming(frameTimer, 'drawables');
-    renderer.particleSystem.draw(ctx, { excludeLayer: 'screen' });
-    renderer.harborTraffic?.drawFinaleEffects(ctx, renderNow);
+    // 0.1 — on the resident path this 2D context sits under the opaque GPU
+    // island, so world particles and the harbor finale replay on the overlay
+    // after the GPU world renders (see drawAirParticles below) instead.
+    if (!gpuWorldActive) {
+        renderer.particleSystem.draw(ctx, { excludeLayer: 'screen' });
+        renderer._drawChimneySmokeStatic?.(ctx);
+        renderer.harborTraffic?.drawFinaleEffects(ctx, renderNow);
+    }
     markFrameTiming(frameTimer, 'world-effects');
 
     renderer._resetScreenTransform(ctx);
+    // 1.6 Canvas parity — the resident composite's stepped screen-Y aerial
+    // haze over the finished Canvas world, before the frame grade.
+    if (!gpuWorldActive) drawCanvasAerialHaze(ctx, { viewport, atmosphere, zoom: renderer.camera.zoom });
     let gpuWorldRendered = false;
     let postFxRendered = false;
     const needsGpuFeed = gpuWorldActive || postFxActive;
@@ -651,7 +696,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         gpuFeed.paletteLut = renderer.assets?.get?.(PALETTE_RAMP_ASSET_ID) || null;
         gpuFeed.paletteLutRevision = renderer.assets?.assetVersion || null;
         gpuBuildContext.occluderChannelEnabled = renderer.gpuWorld.prepareFrame(gpuFeed);
-        const records = buildGpuWorldRecords(renderer, gpuBuildContext);
+        const records = insertGroundCueRecords(buildGpuWorldRecords(renderer, gpuBuildContext), renderer._groundCueRecords);
         const gpuRenderContext = renderer._gpuRenderContext || (renderer._gpuRenderContext = {});
         gpuRenderContext.records = records;
         gpuRenderContext.camera = renderer.camera;
@@ -685,6 +730,14 @@ export function renderWorldFrame(renderer, dt = 16) {
     });
     renderer.camera.applyTransform(overlayCtx);
     if (gpuWorldRendered) {
+        // 0.1 — open-air particles (chimney smoke, forge embers, torch flames,
+        // seasonal drift, roof and lantern motes) replay above the opaque
+        // island, under every mark and label. Ground-level presets stay
+        // deferred here until GPU particle records exist: the overlay has no
+        // depth order. 6.7 — under reduced motion the live chimneys show a
+        // static wisp instead.
+        drawAirParticles(renderer, overlayCtx, atmosphere);
+        renderer._drawChimneySmokeStatic?.(overlayCtx, atmosphere?.lightGrade || null);
         renderer.buildingRenderer?.drawGpuFunctionalOverlays?.(overlayCtx);
     }
     drawTalkArcs(overlayCtx, {
@@ -706,9 +759,9 @@ export function renderWorldFrame(renderer, dt = 16) {
         now: perfNow,
         lighting: atmosphere?.lighting,
     });
-    drawVillageDirectorOverlays(overlayCtx, villageSnapshot, perfNow, atmosphere?.grade, {
-        getBuildingDims: buildingDimsLookup(renderer),
-    });
+    renderer.chronicleMonuments?.drawMoments?.(overlayCtx, zoom, renderNow);
+    renderer.harborTraffic?.drawMoments?.(overlayCtx, zoom, renderNow);
+    drawVillageDirectorOverlays(overlayCtx, villageSnapshot, perfNow, atmosphere?.grade);
 
     if (gpuWorldRendered) {
         const sceneOverlayContext = renderer._sceneOverlayContext || (renderer._sceneOverlayContext = {});
@@ -718,11 +771,15 @@ export function renderWorldFrame(renderer, dt = 16) {
         sceneOverlayContext.paintCounts = paintCounts;
         drawSceneCategoryOverlays(overlayCtx, drawables, sceneCategoryResolution, sceneOverlayContext);
         renderer.harborTraffic?.drawFinaleEffects?.(overlayCtx, renderNow);
+    } else {
+        // 6.7 — fireflies are light: on Canvas they skip the depth stream
+        // (graded after the fact) and land here, after the grade, as on the
+        // resident overlay.
+        renderer.wildlifeRenderer?.drawFireflies?.(overlayCtx, perfNow);
     }
-    // 0.7 — re-stamp the PRIMARY mark set (waiting beacons, selection rings,
-    // incident pills) AFTER the atmosphere multiply so the action-demanding
-    // reads survive the night grade at the same strength the plaques enjoy.
-    drawPrimaryMarksPostAtmosphere(renderer, overlayCtx, villageSnapshot, atmosphere, {
+    // 0.7 — re-strike the selected agent's chevron AFTER the Canvas
+    // atmosphere multiply so it survives the night grade.
+    drawPrimaryMarksPostAtmosphere(renderer, overlayCtx, atmosphere, {
         force: gpuWorldRendered,
     });
     if (gpuWorldRendered) {
@@ -745,14 +802,13 @@ export function renderWorldFrame(renderer, dt = 16) {
     });
     markFrameTiming(frameTimer, 'post-atmosphere-effects');
 
-    if (!renderer.selectedAgent && !renderer.cameraDirector?.attentionFrame) {
-        renderer.buildingRenderer?.drawBubbles(overlayCtx, renderer.world);
-    }
-    // 5.1 — the ambient caption is measured before the label pass so landmark
-    // plates treat its strip as occupied and step aside instead of colliding
+    // 5.3 — the building occupancy count lives on the plaque's count cell
+    // (FORGE │ 8); there is no separate floating bubble.
+    // 5.1/5.5 — the lower-third caption is measured before the label pass so
+    // plaques treat its strip as occupied and step aside instead of colliding
     // with it. Screen rect converted to world space: the label pass runs under
     // the world transform.
-    const ambientCaption = ambientCaptionLayout(overlayCtx, renderer, viewport);
+    const ambientCaption = ambientCaptionLayout(overlayCtx, renderer, viewport, villageSnapshot);
     const captionWorldBox = ambientCaption && renderer.camera?.screenToWorld
         ? (() => {
             const topLeft = renderer.camera.screenToWorld(ambientCaption.rect.left, ambientCaption.rect.top);
@@ -768,6 +824,7 @@ export function renderWorldFrame(renderer, dt = 16) {
             : renderer._collectAgentLabelHitRects(sortedSprites),
         harborPendingRepos,
         readMode: renderer.getReadMode(),
+        selectedType: villageSnapshot?.selectedBuildingSignal?.type || null,
     });
     if (collectStructuralDiagnostics) {
         renderer._lastRenderStats = buildRenderStats(renderer, {
@@ -795,7 +852,6 @@ export function renderWorldFrame(renderer, dt = 16) {
 
     renderer._resetScreenTransform(overlayCtx);
     renderer.particleSystem.draw(overlayCtx, { layer: 'screen' });
-    renderer.seasonalAmbience?.drawStatic?.(overlayCtx);
     renderer.harborTraffic?.drawScreenSummary(overlayCtx, viewport, renderer.camera, renderNow);
     drawVillageDirectorScreen(overlayCtx, villageSnapshot, viewport);
     // 5.4 — the work score's badge and every exact count, once, on the shared
@@ -812,9 +868,12 @@ export function renderWorldFrame(renderer, dt = 16) {
     // glide, and an ambient chapter holds them for a beat after settling so
     // the caption is read at rest. Reduced motion draws none.
     drawCueLetterbox(overlayCtx, renderer.camera, viewport);
-    // 5.1/5.2 — the broadcast's one factual caption, drawn after the bars so
-    // they never cover it: the district and its counts, or the incident
-    // chapter's identity. Static text, no motion of its own.
+    // T1 — attention plates and beacons (plan 5.1), laid out from live status
+    // in _assignAgentOverlaySlots. Drawn once, ungraded, after the letterbox
+    // so no bar, focus or Ambient state can hide an agent that needs you.
+    drawAttentionPlates(overlayCtx, renderer._attentionLayout);
+    // 5.1/5.2/5.5 — the lower-third caption, drawn after the bars so they
+    // never cover it. Static text, no motion of its own.
     drawAmbientCaption(overlayCtx, ambientCaption);
     drawDebugOverlay(renderer, overlayCtx, atmosphere, viewport);
     const timings = finishFrameTiming(renderer, frameTimer);
@@ -824,12 +883,61 @@ export function renderWorldFrame(renderer, dt = 16) {
     }
 }
 
-function drawGroundSemantics(renderer, groundCtx, { villageSnapshot, renderNow, perfNow, atmosphere, viewport }) {
-    renderer.trailRenderer?.draw?.(groundCtx, renderer.camera, viewport, renderNow, true);
+// 0.2 — which ground cues a pass paints. Canvas paints all of them into the
+// frame in one pass. The resident path splits them by how they change: tile-
+// anchored crowd auras and the transient or text-bearing washes (recoveries,
+// the parade, replay, the work score) go into the retained texture, which
+// re-renders only when their quantized state changes (plus the 8 Hz ornament
+// tick while a transient animates); every cue that follows an agent or pulses
+// (building halos, team auras, incidents, council rings, tethers, trails, the
+// hovered/selected building's routes, the shared-file knot) is recorded as
+// native ground records each frame.
+export const GROUND_CUES_ALL = 'all';
+export const GROUND_CUES_RETAINED = 'retained';
+export const GROUND_CUES_LIVE = 'live';
+
+const EMPTY_LIST = Object.freeze([]);
+
+function retainedDirectorSnapshot(renderer, snapshot) {
+    if (!snapshot) return null;
+    const view = renderer._retainedDirectorView || (renderer._retainedDirectorView = {});
+    view.now = snapshot.now;
+    view.perfNow = snapshot.perfNow;
+    view.motionScale = snapshot.motionScale;
+    view.selectedAgentId = snapshot.selectedAgentId;
+    view.selectedBuildingSignal = null;
+    view.hoverBuildingSignal = null;
+    view.incidents = EMPTY_LIST;
+    view.replaySamples = snapshot.replaySamples;
+    view.recoveries = snapshot.recoveries;
+    view.releaseParade = snapshot.releaseParade;
+    return view;
+}
+
+function liveDirectorSnapshot(renderer, snapshot) {
+    if (!snapshot) return null;
+    const view = renderer._liveDirectorView || (renderer._liveDirectorView = {});
+    view.now = snapshot.now;
+    view.perfNow = snapshot.perfNow;
+    view.motionScale = snapshot.motionScale;
+    view.selectedAgentId = snapshot.selectedAgentId;
+    view.selectedBuildingSignal = snapshot.selectedBuildingSignal;
+    view.hoverBuildingSignal = snapshot.hoverBuildingSignal;
+    view.incidents = snapshot.incidents;
+    view.replaySamples = EMPTY_LIST;
+    view.recoveries = EMPTY_LIST;
+    view.releaseParade = null;
+    return view;
+}
+
+function drawGroundSemantics(renderer, groundCtx, { villageSnapshot, renderNow, perfNow, atmosphere, viewport }, layer = GROUND_CUES_ALL) {
+    const live = layer !== GROUND_CUES_RETAINED;
+    const retained = layer !== GROUND_CUES_LIVE;
+    if (live) renderer.trailRenderer?.draw?.(groundCtx, renderer.camera, viewport, renderNow, true);
 
     // 5.4 — the requested work score sits on the retained ground cue texture,
     // so buildings and bodies occlude the diagram like every other ground cue.
-    if (villageSnapshot?.workScore) {
+    if (retained && villageSnapshot?.workScore) {
         drawWorkScoreGround(groundCtx, {
             ...villageSnapshot.workScore,
             zoom: renderer.camera.zoom,
@@ -838,10 +946,18 @@ function drawGroundSemantics(renderer, groundCtx, { villageSnapshot, renderNow, 
         });
     }
 
-    // 3.10 — teams with a live council ring skip the director aura wash.
-    drawVillageDirectorGround(groundCtx, villageSnapshot, renderNow, atmosphere?.grade, {
-        councilTeamNames: collectCouncilTeamNames(renderer, villageSnapshot),
-    });
+    const directorSnapshot = layer === GROUND_CUES_ALL
+        ? villageSnapshot
+        : live ? liveDirectorSnapshot(renderer, villageSnapshot) : retainedDirectorSnapshot(renderer, villageSnapshot);
+    drawVillageDirectorGround(groundCtx, directorSnapshot, renderNow, atmosphere?.grade);
+    if (!live) {
+        drawCrowdClusterAuras(groundCtx, {
+            crowdStats: renderer._crowdStats,
+            zoom: renderer.camera.zoom,
+            lighting: atmosphere?.lighting,
+        });
+        return;
+    }
 
     drawCouncilRings(groundCtx, {
         relationship: renderer.relationshipState,
@@ -878,22 +994,12 @@ function drawGroundSemantics(renderer, groundCtx, { villageSnapshot, renderNow, 
         lighting: atmosphere?.lighting,
         grade: atmosphere?.grade,
     });
-    drawCrowdClusterAuras(groundCtx, {
-        crowdStats: renderer._crowdStats,
-        zoom: renderer.camera.zoom,
-        lighting: atmosphere?.lighting,
-    });
-    if (renderer.gpuWorld?.isActive?.()) {
-        for (const sprite of renderer.agentSprites.values()) {
-            if (!sprite.selected && !sprite.hovered) continue;
-            groundCtx.save();
-            groundCtx.strokeStyle = sprite._providerAccentColor?.() || '#f2d36b';
-            groundCtx.lineWidth = 1.5 / renderer.camera.zoom;
-            groundCtx.beginPath();
-            groundCtx.ellipse(sprite.x, sprite.y - 2, 24, 9, 0, 0, Math.PI * 2);
-            groundCtx.stroke();
-            groundCtx.restore();
-        }
+    if (retained) {
+        drawCrowdClusterAuras(groundCtx, {
+            crowdStats: renderer._crowdStats,
+            zoom: renderer.camera.zoom,
+            lighting: atmosphere?.lighting,
+        });
     }
     // 4.5 — one shared-file thread and knot for the selected agent. Under
     // annotation pressure (a hundred agents) the thread is dropped entirely and
@@ -908,57 +1014,85 @@ function drawGroundSemantics(renderer, groundCtx, { villageSnapshot, renderNow, 
     });
 }
 
+// 0.2 — the per-frame half of the resident ground cues. The same painters the
+// Canvas path calls draw into a GroundCueRecorder, which turns them into ground
+// records on the art-pixel grid; nothing here uploads a texture unless a cue
+// colour is seen for the first time.
+export function recordLiveGroundCues(renderer, options) {
+    const recorder = renderer._groundCueRecorder || (renderer._groundCueRecorder = new GroundCueRecorder());
+    const camera = renderer.camera;
+    const zoom = Math.max(0.01, Number(camera?.zoom) || 1);
+    const viewport = options.viewport;
+    const bounds = renderer._groundCueBounds || (renderer._groundCueBounds = {});
+    bounds.left = Math.floor(-(Number(camera?.renderOffsetX) || 0) / zoom) - 4;
+    bounds.top = Math.floor(-(Number(camera?.renderOffsetY) || 0) / zoom) - 4;
+    bounds.right = Math.ceil(bounds.left + (viewport?.width || 0) / zoom) + 8;
+    bounds.bottom = Math.ceil(bounds.top + (viewport?.height || 0) / zoom) + 8;
+    recorder.begin(bounds);
+    drawGroundSemantics(renderer, recorder, options, GROUND_CUES_LIVE);
+    renderer._groundCueRecords = recorder.end();
+    const stats = renderer._groundCueStats || (renderer._groundCueStats = {});
+    stats.records = renderer._groundCueRecords.length;
+    stats.unsupported = recorder.unsupported;
+    stats.dropped = recorder.dropped;
+    stats.swatchRevision = recorder.atlas.revision;
+    return renderer._groundCueRecords;
+}
+
+export function semanticGroundScale(viewport) {
+    // Integer texel grid only: 1:1, or exactly 2x magnified on wide viewports.
+    return Math.max(Number(viewport?.width) || 0, Number(viewport?.height) || 0) > 1024 ? 0.5 : 1;
+}
+
+function retainedGroundState(renderer, snapshot) {
+    const clusters = [];
+    for (const cluster of renderer._crowdStats?.clusters || EMPTY_LIST) {
+        // Cluster centroids drift in fractional tiles as members shuffle; a
+        // sixteenth of a tile (2 world px) is below what the aura can show.
+        clusters.push(cluster.id, Math.round(cluster.tileX * 16), Math.round(cluster.tileY * 16), cluster.count, cluster.dominantStatus);
+    }
+    const recoveries = [];
+    for (const recovery of snapshot?.recoveries || EMPTY_LIST) {
+        recoveries.push(recovery.agentId ?? recovery.id, Math.round(recovery.center?.x ?? 0), Math.round(recovery.center?.y ?? 0));
+    }
+    const replay = snapshot?.replaySamples?.length
+        ? [snapshot.replaySamples.length, snapshot.replaySamples.at(-1)?.ts ?? 0, snapshot.selectedAgentId ?? null]
+        : null;
+    const parade = snapshot?.releaseParade?.center
+        ? [Math.round(snapshot.releaseParade.center.x), Math.round(snapshot.releaseParade.center.y), snapshot.releaseParade.label ?? '']
+        : null;
+    const workScore = snapshot?.workScore?.score?.nodes?.length && snapshot.workScore.geometry?.placements?.length
+        ? [snapshot.workScore.signature || snapshot.workScore.geometry.signature || '', snapshot.workScore.cursorAt ?? null]
+        : null;
+    const active = clusters.length > 0 || recoveries.length > 0 || replay || parade || workScore;
+    // Fading recoveries, the parade, replay ageing and the score cursor animate
+    // with motion on; crowd auras only change when a cluster does.
+    const animated = (recoveries.length || replay || parade || workScore) && renderer.motionScale > 0;
+    return { active: Boolean(active), animated: Boolean(animated), signature: JSON.stringify([clusters, recoveries, replay, parade, workScore]) };
+}
+
 export function prepareSemanticGround(renderer, viewport, snapshot, atmosphere) {
-    const relationship = renderer.relationshipState?.getSnapshot?.() || renderer.relationshipState;
-    const sprites = [...renderer.agentSprites.values()];
-    const hasCues = sprites.some(sprite => sprite.selected || sprite.hovered || [AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(sprite.agent?.status))
-        || relationship?.teamToMembers?.size || relationship?.parentToChildren?.size
-        || relationship?.advisorPairs?.length || renderer._allyTetherPairs?.length
-        || renderer._crowdStats?.clusters?.length
-        || snapshot?.buildingSignals?.length
-        || snapshot?.replaySamples?.length || snapshot?.selectedBuildingSignal || snapshot?.hoverBuildingSignal
-        || snapshot?.teams?.length || snapshot?.incidents?.length || snapshot?.recoveries?.length || snapshot?.releaseParade
-        // 5.4 — an open work score is a ground cue in its own right.
-        || snapshot?.workScore;
-    renderer._semanticGroundActive = Boolean(hasCues);
-    if (!hasCues) return null;
-    // ponytail: one 1024px-bounded cue texture; cache static frames and quantize
-    // ornament phases to 8 Hz. Native cue records if measured uploads still dominate.
+    const state = retainedGroundState(renderer, snapshot);
+    renderer._semanticGroundActive = state.active;
+    if (!state.active) return null;
     const canvas = renderer._semanticGroundCanvas ||= document.createElement('canvas');
-    const scale = Math.min(1, 1024 / Math.max(viewport.width, viewport.height));
+    const scale = semanticGroundScale(viewport);
     const width = Math.ceil(viewport.width * scale);
     const height = Math.ceil(viewport.height * scale);
-    renderer._semanticGroundViewport = viewport;
+    // The GPU record spans the texture's own footprint, so the texel-to-pixel
+    // ratio stays exactly 1/scale even when the viewport has an odd width.
+    const footprint = renderer._semanticGroundViewport || (renderer._semanticGroundViewport = {});
+    footprint.width = width / scale;
+    footprint.height = height / scale;
+    renderer._semanticGroundScale = scale;
     const camera = renderer.camera;
     const key = [width, height, camera.renderOffsetX, camera.renderOffsetY, camera.zoom,
-        renderer.motionScale > 0 ? Math.floor((renderer.motionTimeMs || 0) / 125) : 0,
+        state.animated ? Math.floor((renderer.motionTimeMs || 0) / 125) : 0,
         renderer.motionScale,
-        // Compare contents, not collection identity: relationship and crowd owners
-        // mutate these in place, including while the visual clock is frozen.
-        JSON.stringify([
-            [...(relationship?.teamToMembers || [])].map(([name, ids]) => [name, [...ids]]),
-            [...(relationship?.parentToChildren || [])].map(([id, children]) => [id, [...children]]),
-            relationship?.advisorPairs,
-            // 4.5 — the overlap edge is drawn into this texture, so a changed
-            // peer, path, kind or availability must invalidate it.
-            relationship?.fileOverlap?.edge
-                ? [relationship.fileOverlap.selectedId, relationship.fileOverlap.edge.peerId,
-                    relationship.fileOverlap.edge.path, relationship.fileOverlap.edge.kind,
-                    relationship.fileOverlap.edge.available]
-                : null,
-            renderer._annotationMode || 'full',
-            renderer._allyTetherPairs?.map(pair => [pair.a?.agent?.id, pair.b?.agent?.id]),
-            renderer._crowdStats?.clusters?.map(cluster => [cluster.id, cluster.tileX, cluster.tileY, cluster.count, cluster.dominantStatus]),
-            // Light boost changes continuously through the day. Sub-byte alpha
-            // drift must not turn a static cue texture into a per-frame upload.
-            Math.round((atmosphere?.lighting?.lightBoost ?? 1) * 64), atmosphere?.grade?.worldTint,
-        ]),
-        JSON.stringify([snapshot?.buildingSignals, snapshot?.selectedBuildingSignal, snapshot?.hoverBuildingSignal,
-            snapshot?.replaySamples, snapshot?.teams, snapshot?.incidents, snapshot?.recoveries, snapshot?.releaseParade,
-            // 5.4 — the scrub cursor and every resolved node position are drawn
-            // into this texture, so both must invalidate it.
-            snapshot?.workScore?.signature || null]),
-        sprites.map(sprite => `${sprite.agent?.id}:${Math.round(sprite.x)}:${Math.round(sprite.y)}:${sprite.selected}:${sprite.hovered}:${sprite.agent?.status}:${sprite.isArrivalPending?.()}:${sprite._providerAccentColor?.()}:${sprite._providerTrimColor?.() || sprite.providerTrimColor}`).join('|'),
+        state.signature,
+        // Light boost changes continuously through the day. Sub-byte alpha
+        // drift must not turn a static cue texture into a per-frame upload.
+        Math.round((atmosphere?.lighting?.lightBoost ?? 1) * 64), atmosphere?.grade?.worldTint,
     ].join(';');
     const ctx = canvas.getContext('2d');
     if (key === renderer._semanticGroundKey) return { ctx, dirty: false };
@@ -969,6 +1103,68 @@ export function prepareSemanticGround(renderer, viewport, snapshot, atmosphere) 
     renderer._semanticGroundKey = key;
     renderer._semanticGroundRevision = (renderer._semanticGroundRevision || 0) + 1;
     return { ctx, dirty: true };
+}
+
+// 0.1 — the open-air particle replay for the resident path. The overlay sits
+// above the graded GPU composite, so lit presets (smoke, dust) take the frame's
+// C2 light here: albedo x ambient light x grade gain, desaturated by the grade,
+// memoized per grade course. Emissive presets (flames, embers, fireflies,
+// motes) are light sources and keep their authored colour. Without a C2 grade
+// the legacy multiply strength stands in.
+function airParticleShade(hex, lightGrade, grade) {
+    // Forge smoke arrives as `rgb(...)` (heat-mixed); presets as `#rrggbb`.
+    const text = String(hex || '');
+    const match = /^rgb\(\s*(\d+),\s*(\d+),\s*(\d+)\s*\)$/.exec(text);
+    const rgb = match
+        ? { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]) }
+        : hexToRgb(lightGrade ? text : gradeColor(text, grade));
+    if (!rgb) return hex;
+    let r = rgb.r;
+    let g = rgb.g;
+    let b = rgb.b;
+    if (lightGrade) {
+        const ambient = lightGrade.ambientTint || [1, 1, 1];
+        const gain = lightGrade.gain || [1, 1, 1];
+        r *= ambient[0] * gain[0];
+        g *= ambient[1] * gain[1];
+        b *= ambient[2] * gain[2];
+        const saturation = Math.max(0, Math.min(1, Number(lightGrade.saturation ?? 1)));
+        const luma = r * 0.2126 + g * 0.7152 + b * 0.0722;
+        r = luma + (r - luma) * saturation;
+        g = luma + (g - luma) * saturation;
+        b = luma + (b - luma) * saturation;
+    } else {
+        const dim = 1 - Math.max(0, Math.min(0.9, Number(grade?.overlayAlpha) || 0));
+        r *= dim;
+        g *= dim;
+        b *= dim;
+    }
+    const channel = value => Math.max(0, Math.min(255, Math.round(value)));
+    return `rgb(${channel(r)}, ${channel(g)}, ${channel(b)})`;
+}
+
+function drawAirParticles(renderer, ctx, atmosphere) {
+    const particles = renderer.particleSystem;
+    if (!particles?.particles?.length) return;
+    const lightGrade = atmosphere?.lightGrade || null;
+    const grade = atmosphere?.grade || null;
+    const key = lightGrade?.cacheKey ?? `${grade?.worldTint || ''}|${grade?.overlayAlpha ?? 0}`;
+    const shade = renderer._airParticleShade || (renderer._airParticleShade = { key: null, cache: new Map(), litColor: null });
+    if (shade.key !== key) {
+        shade.key = key;
+        shade.cache.clear();
+        shade.litColor = (hex) => {
+            let color = shade.cache.get(hex);
+            if (color === undefined) {
+                color = airParticleShade(hex, lightGrade, grade);
+                // Forge smoke blends its palette with heat; bound the memo.
+                if (shade.cache.size >= 256) shade.cache.clear();
+                shade.cache.set(hex, color);
+            }
+            return color;
+        };
+    }
+    particles.draw(ctx, { layer: PARTICLE_LAYER_AIR, litColor: shade.litColor });
 }
 
 function hexToRgb(hex) {
@@ -1061,48 +1257,93 @@ function drawCueLetterbox(ctx, camera, viewport) {
     return barH;
 }
 
-// 5.1/5.2 — the broadcast caption: one short factual line naming the district
-// and its counts ("Forge · 4 working"), or the incident chapter's identity
-// ("Push failed · pharos-watch"). Static: no fade, no motion, identical in
-// Canvas and resident WebGL, and present under reduced motion where it is the
-// only thing the static overview has to say.
-// Measured once per frame, before the label pass, so the plate's strip can be
-// reserved. Returns null whenever Ambient does not own the frame.
-function ambientCaptionLayout(ctx, renderer, viewport) {
-    const caption = renderer?.cameraDirector?.getAmbientCaption?.();
-    const text = String(caption?.text || '').trim();
-    if (!text || !viewport?.width || !viewport?.height) return null;
+// 5.1/5.2/5.5 — the broadcast caption as a bottom-left lower third: an 8 px
+// Press Start 2P eyebrow over one 11 px Departure Mono line, on a dark strip
+// with a 1 px accent rule above and no outline. It carries the Ambient line
+// ("Forge · 4 working"), the incident chapter's identity ("Push failed ·
+// pharos-watch"), and the release parade that used to float as a world pill.
+// Static: no fade, no motion, identical in Canvas and resident WebGL, and
+// present under reduced motion where it is the only thing the static
+// overview has to say. Measured once per frame, before the label pass, so
+// the plaques treat its strip as occupied.
+const CAPTION_LEFT = 24;
+const CAPTION_BOTTOM = 24;
+const CAPTION_PAD_X = 10;
+const CAPTION_HEIGHT = 36;
+const CAPTION_REPLAY_RESERVE = 34;
+const CAPTION_STYLES = Object.freeze({
+    ambient: { eyebrow: 'AMBIENT', accent: '#b8893f', text: '#f3e2bd' },
+    incident: { eyebrow: 'INCIDENT', accent: '#e06c5b', text: '#ffd9d3' },
+    release: { eyebrow: 'RELEASE', accent: '#6db3a5', text: '#f3e2bd' },
+    milestone: { eyebrow: 'MILESTONE', accent: '#b9ad96', text: '#f3e2bd' },
+    returned: { eyebrow: 'RETURNED', accent: '#b9ad96', text: '#f3e2bd' },
+});
+
+function captionSource(renderer, villageSnapshot) {
+    const ambient = renderer?.cameraDirector?.getAmbientCaption?.();
+    const ambientText = String(ambient?.text || '').trim();
+    if (ambientText && ambient.kind === 'chapter') return { style: CAPTION_STYLES.incident, text: ambientText };
+    const parade = villageSnapshot?.releaseParade;
+    const paradeText = String(parade?.label || '').trim();
+    if (paradeText && parade.kind === 'parade') return { style: CAPTION_STYLES.release, text: paradeText };
+    if (ambientText) return { style: CAPTION_STYLES.ambient, text: ambientText };
+    // A biography milestone is a neutral stone line, never a parade, and a
+    // sub-agent's session ending is not celebrated at all: its return is the
+    // neutral RETURNED line (child → parent), with no success wording.
+    if (paradeText && parade.kind === 'return-banner') return { style: CAPTION_STYLES.returned, text: paradeText };
+    if (paradeText && parade.kind === 'biography-banner') {
+        const agent = parade.agentId ? renderer?.world?.agents?.get?.(parade.agentId) : null;
+        if (!agent?.isSubagent) return { style: CAPTION_STYLES.milestone, text: paradeText };
+    }
+    return null;
+}
+
+function ambientCaptionLayout(ctx, renderer, viewport, villageSnapshot = null) {
+    const source = captionSource(renderer, villageSnapshot);
+    if (!source || !viewport?.width || !viewport?.height) return null;
     const bars = renderer.camera?.getLetterboxState?.();
     const barH = bars?.weight > 0.02
         ? Math.round(Math.min(72, viewport.height * 0.08) * Math.min(1, bars.weight))
         : 0;
-    const label = text.toUpperCase();
     ctx.save();
-    ctx.font = `10px ${WORLD_BODY_FONT}`;
-    const width = Math.ceil(ctx.measureText(label).width) + 18;
+    ctx.font = WORLD_BODY_FONT_11;
+    const text = fitLabelText(ctx, source.text, Math.max(120, Math.round(viewport.width * 0.42)));
+    const textWidth = measureLabelText(ctx, text);
+    ctx.font = WORLD_DISPLAY_FONT_8;
+    const eyebrowWidth = measureLabelText(ctx, source.style.eyebrow);
     ctx.restore();
-    const left = Math.round((viewport.width - width) / 2);
-    const top = barH + 12;
+    const width = Math.max(textWidth, eyebrowWidth) + CAPTION_PAD_X * 2;
+    // Over the lower letterbox bar when bars are up; above the replay chip
+    // when the 60 s replay badge holds the corner.
+    const bottomInset = Math.max(barH > CAPTION_HEIGHT ? Math.round((barH - CAPTION_HEIGHT) / 2) : CAPTION_BOTTOM,
+        villageSnapshot?.replayActive ? CAPTION_BOTTOM + CAPTION_REPLAY_RESERVE : 0);
+    const bottom = viewport.height - bottomInset;
+    const left = CAPTION_LEFT;
     return {
-        label,
-        incident: caption.kind === 'chapter',
-        rect: { left, top, right: left + width, bottom: top + 22 },
+        text,
+        style: source.style,
+        rect: { left, top: bottom - CAPTION_HEIGHT, right: left + width, bottom },
     };
 }
 
 function drawAmbientCaption(ctx, layout) {
     if (!layout) return;
-    const { rect, incident, label } = layout;
+    const { rect, style, text } = layout;
+    const width = rect.right - rect.left;
     ctx.save();
-    ctx.font = `10px ${WORLD_BODY_FONT}`;
+    ctx.globalAlpha = 1;
+    ctx.shadowColor = 'transparent';
+    ctx.fillStyle = 'rgba(12, 9, 7, 0.94)';
+    ctx.fillRect(rect.left, rect.top, width, CAPTION_HEIGHT);
+    ctx.fillStyle = style.accent;
+    ctx.fillRect(rect.left, rect.top, width, 1);
     ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = incident ? 'rgba(34, 16, 14, 0.88)' : 'rgba(20, 16, 13, 0.84)';
-    ctx.strokeStyle = incident ? 'rgba(248, 113, 113, 0.72)' : 'rgba(214, 169, 81, 0.6)';
-    ctx.fillRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
-    ctx.strokeRect(rect.left + 0.5, rect.top + 0.5, rect.right - rect.left - 1, rect.bottom - rect.top - 1);
-    ctx.fillStyle = incident ? '#ffd9d3' : '#f4e3bc';
-    ctx.fillText(label, rect.left + 9, (rect.top + rect.bottom) / 2);
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = WORLD_DISPLAY_FONT_8;
+    ctx.fillText(style.eyebrow, rect.left + CAPTION_PAD_X, rect.top + 15);
+    ctx.font = WORLD_BODY_FONT_11;
+    ctx.fillStyle = style.text;
+    ctx.fillText(text, rect.left + CAPTION_PAD_X, rect.top + 28);
     ctx.restore();
 }
 
@@ -1120,86 +1361,27 @@ function combineWeatherInfluence(a, b) {
     };
 }
 
-// 3.10 — names of teams that currently have a live council ring (2+ gathered,
-// non-arriving members). The director aura wash skips these so the triple team
-// mark (aura + ring + orbit light) dedupes to ring + light. Only computed when
-// the snapshot actually has team clusters to filter.
-function collectCouncilTeamNames(renderer, villageSnapshot) {
-    if (!villageSnapshot?.teams?.length) return null;
-    const relationship = renderer.relationshipState;
-    const snapshot = typeof relationship?.getSnapshot === 'function' ? relationship.getSnapshot() : relationship;
-    const teams = snapshot?.teamToMembers;
-    if (!teams?.entries || !renderer.agentSprites) return null;
-    const names = new Set();
-    for (const [teamName, memberIds] of teams.entries()) {
-        let live = 0;
-        for (const id of memberIds) {
-            const sprite = renderer.agentSprites.get(id);
-            if (sprite && !sprite.isArrivalPending?.()) live++;
-            if (live >= 2) {
-                names.add(teamName);
-                break;
-            }
-        }
-    }
-    return names;
-}
-
-// 5.8 — stable dims accessor handed to the director overlay so pills can stack
-// above the building plaque zone. Cached on the renderer: no per-frame closure.
-function buildingDimsLookup(renderer) {
-    if (!renderer._buildingDimsLookup) {
-        renderer._buildingDimsLookup = (type) => renderer.assets?.getDims?.(`building.${type}`) || null;
-    }
-    return renderer._buildingDimsLookup;
-}
-
-// 0.7 — PRIMARY marks survive night. Everything drawn before _drawAtmosphere
-// is dimmed by the multiply grade (~50% at night) while plaques/glows drawn
-// after stay bright — the legibility hierarchy inverts exactly when the scene
-// is darkest. Re-stamp the PRIMARY set here, post-atmosphere, scaled by the
-// same beacon night factor the lantern glows use (drawSelectedAgentXray is the
-// pass-shape precedent). Daylight (factor ~0) draws nothing, so marks are
-// never double-stamped at full strength. Reduced motion: identical — the
-// re-stamp carries no motion of its own.
-function drawPrimaryMarksPostAtmosphere(renderer, ctx, villageSnapshot, atmosphere, { force = false } = {}) {
-    const nightFactor = force ? 1 : primaryRestampNightFactor(renderer, atmosphere);
+// 0.7 — PRIMARY marks survive night. On the Canvas backend everything drawn
+// before _drawAtmosphere is dimmed by the multiply grade, so the selected
+// agent's pixel chevron is re-struck here, scaled by the beacon night factor
+// the lantern glows use. The resident overlay is ungraded and needs nothing.
+// Action-needed agents need no re-stamp on either backend: their T1 plates
+// and beacons are drawn once, at full strength, on the ungraded overlay.
+// Reduced motion: identical — the re-stamp carries no motion of its own.
+function drawPrimaryMarksPostAtmosphere(renderer, ctx, atmosphere, { force = false } = {}) {
+    if (force) return;
+    const sprite = renderer.selectedAgent?.id ? renderer.agentSprites?.get?.(renderer.selectedAgent.id) : null;
+    if (!sprite?.selected || !sprite._bodyBox) return;
+    const nightFactor = primaryRestampNightFactor(renderer, atmosphere);
     if (nightFactor <= 0.06) return;
-
-    for (const sprite of renderer.agentSprites?.values?.() || []) {
-        if (!sprite) continue;
-        const drawMarks = () => {
-            // Waiting-on-user beacon pillar. The outer alpha scales the gradient
-            // body; the method's own save/restore keeps state clean (its tiny `!`
-            // pennant sets its own alpha — acceptable, it is the top-priority read).
-            if (sprite.agent?.status === AgentStatus.WAITING_ON_USER
-                && typeof sprite._drawWaitingOnUserBeacon === 'function') {
-                ctx.save();
-                ctx.globalAlpha = (force ? 1 : 0.55) * nightFactor;
-                sprite._drawWaitingOnUserBeacon(ctx, null);
-                ctx.restore();
-            }
-            // Selection ring: a soft additive echo of the asset ring at the feet,
-            // in the provider accent so it still reads identity at a glance.
-            if (sprite.selected && !force) {
-                const accent = hexToRgb(sprite._providerAccentColor?.() || '#f2d36b') || { r: 242, g: 211, b: 107 };
-                ctx.save();
-                ctx.globalCompositeOperation = 'screen';
-                ctx.beginPath();
-                ctx.ellipse(sprite.x, sprite.y - 2, 24, 9, 0, 0, Math.PI * 2);
-                ctx.fillStyle = `rgba(${accent.r}, ${accent.g}, ${accent.b}, ${0.10 * nightFactor})`;
-                ctx.fill();
-                ctx.strokeStyle = `rgba(${accent.r}, ${accent.g}, ${accent.b}, ${0.5 * nightFactor})`;
-                ctx.lineWidth = 1.4;
-                ctx.stroke();
-                ctx.restore();
-            }
-        };
-        if (typeof sprite.withBridgeLift === 'function') sprite.withBridgeLift(drawMarks);
-        else drawMarks();
-    }
-
-    drawPrimaryPillRestamp(ctx, villageSnapshot, nightFactor, buildingDimsLookup(renderer));
+    const drawChevron = () => {
+        ctx.save();
+        ctx.globalAlpha = nightFactor;
+        sprite._drawSelectionChevron?.(ctx, sprite.y + sprite._bodyBox.top);
+        ctx.restore();
+    };
+    if (typeof sprite.withBridgeLift === 'function') sprite.withBridgeLift(drawChevron);
+    else drawChevron();
 }
 
 function primaryRestampNightFactor(renderer, atmosphere) {
@@ -1445,76 +1627,10 @@ function drawGroundFog(renderer, ctx, atmosphere, perfNow) {
     ctx.restore();
 }
 
-// #24 — slow band. 2–3 feathered dark ellipses drift across the baked terrain
-// at a fractional parallax of the wind, so cloud shadows visibly slide over the
-// village. Clipped to the iso diamond so shadows only fall on land/water, and
-// folded under a `multiply` composite at ~12% alpha. Reduced motion (motionScale
-// === 0) freezes the drift to static positions rather than dropping the layer.
-const CLOUD_SHADOW_MAX = 3;
-const CLOUD_SHADOW_DRIFT_RATE = 0.012; // world-px per ms at parallax 1, windX 1
-const CLOUD_SHADOW_ALPHA = 0.12;
-
+// 1.4 — world-locked dithered cloud-shadow courses from the same baked field
+// as the resident composite (IsometricRenderer → CloudShadowCourses).
 function drawCloudShadows(renderer, ctx, atmosphere, perfNow) {
-    const layers = atmosphere?.sky?.cloudLayers;
-    if (!Array.isArray(layers) || !layers.length) return;
-    const cloudCover = Math.max(0, Math.min(1, Number(atmosphere?.weather?.cloudCover) || 0));
-    if (cloudCover <= 0.04) return; // a clear sky casts no shadows
-    const points = renderer._worldDiamondPoints?.();
-    if (!points || points.length < 4) return;
-
-    const top = points[0];
-    const right = points[1];
-    const bottom = points[2];
-    const left = points[3];
-    const boundsW = right.x - left.x;
-    const boundsH = bottom.y - top.y;
-    if (!(boundsW > 0) || !(boundsH > 0)) return;
-
-    // The widest, lowest layers read best as ground shadows — take the largest.
-    const ranked = [...layers].sort((a, b) => (b.scale || 0) - (a.scale || 0));
-    const count = Math.min(CLOUD_SHADOW_MAX, ranked.length);
-    const windX = Number(atmosphere?.motion?.windX) || 1;
-    const drifting = renderer.motionScale > 0;
-    // A generous span so shadows wrap fully off either edge before reappearing.
-    const span = boundsW + boundsH;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(top.x, top.y);
-    ctx.lineTo(right.x, right.y);
-    ctx.lineTo(bottom.x, bottom.y);
-    ctx.lineTo(left.x, left.y);
-    ctx.closePath();
-    ctx.clip();
-    ctx.globalCompositeOperation = 'multiply';
-
-    for (let i = 0; i < count; i++) {
-        const layer = ranked[i];
-        const parallax = Number(layer.parallax) || 0.5;
-        const drift = drifting
-            ? windX * perfNow * CLOUD_SHADOW_DRIFT_RATE * parallax
-            : 0;
-        // Wrap the layer's seeded fraction + drift across the bounding span.
-        const baseX = left.x + (((Number(layer.xFrac) || 0) * span + drift) % span + span) % span;
-        const cy = top.y + (Number(layer.yFrac) || 0.3) * boundsH;
-        const rx = Math.max(48, (Number(layer.scale) || 1) * boundsW * 0.22);
-        const ry = rx * 0.5;
-        const alpha = CLOUD_SHADOW_ALPHA * cloudCover * (0.6 + (Number(layer.alpha) || 0.3));
-
-        // Draw at the wrapped position and one span to the left so a shadow
-        // crossing the seam is never clipped to a hard edge.
-        for (const cx of [baseX - span, baseX]) {
-            const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, rx);
-            grad.addColorStop(0, `rgba(28, 32, 46, ${alpha.toFixed(3)})`);
-            grad.addColorStop(0.7, `rgba(28, 32, 46, ${(alpha * 0.5).toFixed(3)})`);
-            grad.addColorStop(1, 'rgba(28, 32, 46, 0)');
-            ctx.fillStyle = grad;
-            ctx.beginPath();
-            ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
-    ctx.restore();
+    renderer._drawCloudShadowCourses?.(ctx, atmosphere, perfNow);
 }
 
 function drawBuildingLightReflections(renderer, ctx, atmosphere) {

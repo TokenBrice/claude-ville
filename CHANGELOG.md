@@ -2,6 +2,23 @@
 
 ---
 
+## v0.46.0 — *The Painted Isle* · Sep 26, 2026
+
+ClaudeVille had plenty of effects but no correct base image: the default renderer never showed the time of day or the weather, the ground was a checkerboard of mis-mapped tiles, three pixel densities stood side by side, and the effect layer was invisible while the labels shouted. This release repairs the picture from the ground up.
+
+- **One light.** One grade (`GradeEvaluator.js`) turns the real clock, weather, moon and season into the whole world's colour on both the WebGL and Canvas renderers. Noon, golden hour, blue hour and night now look different, and rain and storm read at a glance. Night is moonlit rather than grey: grass stays green, stone turns slate-blue, the sea stays blue. Lamps pool as small, warm, stepped rings on the ground, clouds cast world-locked shadows, and low sun throws long violet casts.
+- **One pixel grid.** Villagers stand at integer 1:1 (48–75 world px instead of 82–120), trees draw at 1×, and every effect, ring and mark sits on the art-pixel grid; the soft anti-aliased ellipses and glows are gone from the overlay. Bodies share one baked rim and one contact shadow; rings appear only for selection, hover and agents that need you.
+- **A baked ground and sea.** The land is one splat bake on a master palette with district yards and worn doorsteps. The coast comes from one continuous field with foam, five depth stops and a stratified cliff, and the island now sits in open sea on every side, with the horizon above its far shore. Inland water is still, with sparse ripple dashes instead of a checker.
+- **Coherent architecture.** Archive, Task board, Mine and Forge were re-authored on the Observatory's clean grid, and Command is the hero. Windows light only when someone works inside, including the Harbor and the Lighthouse. Props are fewer and grouped, trees grow in clumps by biome, and the unsourced waterfalls are gone.
+- **A calm signal layer.** One attention plate per waiting, errored or rate-limited agent, grouped only with others of the same kind and docked at the frame edge when the agent is out of view. Rate-limited has its own orchid colour instead of the idle blue. District plaques state the exact count of agents routed there (`FORGE │ 8`); routine names appear at closer zoom for the most recent actors, and every label sits on the 8/11 px type grid.
+- **Moments with a grammar.** Arrivals rise as a violet column at the gate. Sub-agents fly out as comets and land a few tiles from their parent; their return is captioned `RETURNED`, in stone, never gold. A verified release crowns the Harbor, a failed push leaves a red broken bracket on the jetty, and real tool work strikes small downbeats. Gulls, fireflies, rain, chimney smoke and seasonal drift follow a budget and a static reduced-motion frame.
+- **A quieter frame.** The chrome moved to a parchment ink ramp on four flat surfaces, with gold reserved for light. The 48 px top bar has one lit slot for `NEEDS YOU`, `ERROR` and `LIMIT`; the Activity Panel is a character sheet, and the sidebar rows are 44 px. Boot no longer announces every existing session. The Dashboard sits on flat dark ground with one header row per project, a `NOW` column, a portrait on every row, a bell lane of call cards for agents that need you, and a `LAST 10 MIN` observed-call tape that understands every provider's tool names. Sibling repos always get different pennants.
+- **Camera.** One motion vocabulary: log-space zoom, a pan at a resting tier, then unhurried 450 ms zoom steps. The follow window uses a critically damped spring, high-DPI screens get a survey tier for the opening and Ambient wide shots, and boot fades in from the sky instead of flashing black.
+
+Validation: 906 tests passed; `validate:full`, `gate:release`, render and server smokes clean; the 10-minute World and 30-minute server pressure soak passed with flat listeners and heap (the 5-minute Chronicle prune now runs as one atomic IndexedDB transaction); a quiet-host soak kept 100 agents at full quality in the survey view; the before/after contact sheet was reviewed and signed off by the maintainer.
+
+---
+
 ## v0.45.5 — *The Ranger's Bow* · Sep 10, 2026
 
 DeepSeek Flash used to arrive as a bare-armed rogue that faded next to the other villagers. It now walks in as a hooded forest scout in the Reasoner's teal-runed cloak, and strings a bow as its thinking deepens.

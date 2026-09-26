@@ -1,5 +1,5 @@
 import { drawEventShape } from '../shared/EventShapes.js';
-import { BUILDING_ACCENTS_RGB, INCIDENT_COLORS_RGB, WORLD_BODY_FONT } from '../../config/theme.js';
+import { BUILDING_ACCENTS_RGB, INCIDENT_COLORS_RGB, WORLD_BODY_FONT_11 } from '../../config/theme.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { pulseBand01 } from './PulsePolicy.js';
 import { strokeAgedTrailSegments } from './TrailRenderer.js';
@@ -85,10 +85,6 @@ function motionPulse(now, scale, phase = 0, band = 'intrinsic') {
     return pulseBand01(band, now, scale, phase);
 }
 
-function textWidth(ctx, text) {
-    return Math.ceil(ctx.measureText(String(text || '')).width);
-}
-
 function hashText(value) {
     const text = String(value || '');
     let hash = 0;
@@ -112,65 +108,43 @@ function agentTrailColor(point = {}) {
     return palette[hashText(point.teamName || point.provider || point.id) % palette.length];
 }
 
-function drawWorldPill(ctx, x, y, text, rgb = '226, 232, 240', alpha = 1) {
-    const label = String(text || '').trim();
-    if (!label) return;
+// S19 — the one ring grammar: a one-texel iso ellipse outline on the world
+// texel grid (snapped fillRect runs, no anti-aliasing, no fill wash). Static:
+// the caller never animates the radius, so reduced motion is identical.
+function drawIsoRing(ctx, x, y, radius, rgb, alpha, skew = 0.45) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !(alpha > 0)) return;
+    const rx = Math.max(2, Math.round(radius));
+    const ry = Math.max(1, Math.round(radius * skew));
+    const cx = Math.round(x);
+    const cy = Math.round(y);
+    const half = dy => Math.round(rx * Math.sqrt(Math.max(0, 1 - (dy / ry) ** 2)));
     ctx.save();
-    ctx.font = `9px ${WORLD_BODY_FONT}`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const width = Math.max(30, textWidth(ctx, label) + 12);
-    const height = 14;
-    const left = Math.round(x - width / 2);
-    const top = Math.round(y - height / 2);
-    ctx.globalAlpha = clamp(alpha);
-    ctx.fillStyle = 'rgba(21, 18, 15, 0.78)';
-    ctx.strokeStyle = rgba(rgb, 0.72);
-    ctx.lineWidth = 1;
-    ctx.fillRect(left, top, width, height);
-    ctx.strokeRect(left + 0.5, top + 0.5, width - 1, height - 1);
-    ctx.fillStyle = '#fff4cf';
-    ctx.fillText(label.toUpperCase(), Math.round(x), Math.round(y + 0.5));
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = rgba(rgb, alpha);
+    for (let dy = -ry; dy <= ry; dy++) {
+        const h = half(dy);
+        if (Math.abs(dy) === ry) {
+            ctx.fillRect(cx - h, cy + dy, h * 2 + 1, 1);
+            continue;
+        }
+        // Span from this row's edge in to the next row outward, so the stair
+        // stays connected on the flat top and bottom arcs.
+        const outer = half(dy < 0 ? dy - 1 : dy + 1);
+        const run = Math.max(1, h - outer);
+        ctx.fillRect(cx - h, cy + dy, run, 1);
+        ctx.fillRect(cx + h - run + 1, cy + dy, run, 1);
+    }
     ctx.restore();
 }
 
-function drawIsoRing(ctx, x, y, radius, rgb, alpha, lineWidth = 2, skew = 0.45) {
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    ctx.save();
-    ctx.strokeStyle = rgba(rgb, alpha);
-    ctx.lineWidth = lineWidth;
-    ctx.beginPath();
-    ctx.ellipse(x, y, radius, radius * skew, -0.04, 0, TAU);
-    ctx.stroke();
-    ctx.restore();
-}
-
-function drawSignalHalo(ctx, signal, now, motionScale, grade = null) {
+// The selected (or hovered) building's ring — the selection mark, drawn once
+// in the district colour. Unselected buildings carry no halo: their activity
+// reads from the plaque count, windows and pennant, not a pulsing wash.
+function drawSignalHalo(ctx, signal, grade = null, { alpha = 0.72 } = {}) {
     if (!signal?.center) return;
     const rgb = gradeRgb(signalColor(signal.type), grade);
     const heat = clamp(signal.heat ?? 0.35);
-    // #2 — building signal halos are AMBIENT (selected halos stay PRIMARY).
-    const governor = getActiveMarkGovernor();
-    const tier = signal.selected ? MarkTier.PRIMARY : MarkTier.AMBIENT;
-    const gate = governor
-        ? governor.admit(tier, signal.center.x, signal.center.y)
-        : { draw: true, alpha: 1 };
-    if (!gate.draw) return;
-    const markAlpha = gate.alpha;
-    const pulse = motionPulse(now, motionScale, heat * 3.1);
-    const radius = 28 + heat * 26 + pulse * 5;
-    ctx.save();
-    ctx.globalCompositeOperation = 'screen';
-    ctx.globalAlpha = markAlpha;
-    ctx.fillStyle = rgba(rgb, 0.055 + heat * 0.07);
-    ctx.beginPath();
-    ctx.ellipse(signal.center.x, signal.center.y + 4, radius, radius * 0.42, -0.04, 0, TAU);
-    ctx.fill();
-    drawIsoRing(ctx, signal.center.x, signal.center.y + 4, radius, rgb, 0.22 + heat * 0.18, 1.4 + heat * 1.6);
-    if (heat > 0.48 || signal.selected) {
-        drawIsoRing(ctx, signal.center.x, signal.center.y + 4, radius + 10, rgb, 0.08 + heat * 0.12, 1);
-    }
-    ctx.restore();
+    drawIsoRing(ctx, signal.center.x, signal.center.y + 4, 30 + heat * 24, rgb, alpha);
 }
 
 function drawReplay(ctx, samples, now, selectedAgentId = null) {
@@ -252,41 +226,17 @@ function drawSignalRoutes(ctx, selected, { alphaScale = 1, dash = [6, 7], lineWi
     ctx.restore();
 }
 
-function drawTeams(ctx, teams, now, motionScale, grade = null, councilTeamNames = null) {
-    if (!teams?.length) return;
-    // #2 — team aura washes are AMBIENT: the first marks to dim in a busy region.
-    const governor = getActiveMarkGovernor();
-    const teamRgb = gradeRgb('125, 211, 252', grade);
-    ctx.save();
-    ctx.globalCompositeOperation = 'screen';
-    for (const team of teams) {
-        // 3.10 — a team with a live council ring already carries a team mark
-        // (ring + orbit light); drop the aura wash so the triple mark dedupes
-        // to ring + light.
-        if (councilTeamNames?.has?.(team.id)) continue;
-        const gate = governor
-            ? governor.admit(MarkTier.AMBIENT, team.x, team.y)
-            : { draw: true, alpha: 1 };
-        if (!gate.draw) continue;
-        const pulse = motionPulse(now, motionScale, team.members?.length || 1, 'intrinsic');
-        const radius = (team.radius || 36) + pulse * 4;
-        ctx.fillStyle = rgba(teamRgb, 0.055 * gate.alpha);
-        ctx.beginPath();
-        ctx.ellipse(team.x, team.y + 4, radius, radius * 0.46, -0.03, 0, TAU);
-        ctx.fill();
-        drawIsoRing(ctx, team.x, team.y + 4, radius, teamRgb, (0.16 + pulse * 0.08) * gate.alpha, 1.2);
-    }
-    ctx.restore();
-}
+// S19 — teams carry no ground ring or aura wash: the council ring and the
+// team trim on the robes already say who belongs together, and the ring
+// grammar is reserved for selection and incidents.
 
-function drawIncidents(ctx, incidents, now, motionScale, grade = null) {
+function drawIncidents(ctx, incidents, grade = null) {
     if (!incidents?.length) return;
     // 3.9 — incidents are PRIMARY: the action-demanding reads the operator
     // must never lose. PRIMARY bypasses region culling by contract; the admit
-    // call is kept for symmetry with the other governor clients.
+    // call is kept for symmetry with the other governor clients. One static
+    // pixel ring in the incident colour, at full strength while it holds.
     const governor = getActiveMarkGovernor();
-    ctx.save();
-    ctx.globalCompositeOperation = 'screen';
     for (const incident of incidents) {
         const center = incident.agent || incident.center;
         if (!center) continue;
@@ -294,15 +244,8 @@ function drawIncidents(ctx, incidents, now, motionScale, grade = null) {
         const rgb = gradeRgb(incidentColor(incident.kind), grade);
         const intensity = clamp(incident.intensity ?? 0.7, 0.2, 1);
         const fade = 1 - clamp(incident.progress ?? 0);
-        const pulse = motionPulse(now, motionScale, intensity * 8, 'alert');
-        const radius = 24 + intensity * 32 + pulse * 7;
-        ctx.fillStyle = rgba(rgb, (0.08 + intensity * 0.06) * fade);
-        ctx.beginPath();
-        ctx.ellipse(center.x, center.y - 6, radius, radius * 0.44, -0.08, 0, TAU);
-        ctx.fill();
-        drawIsoRing(ctx, center.x, center.y - 6, radius, rgb, (0.24 + intensity * 0.22) * fade, 2.2);
+        drawIsoRing(ctx, center.x, center.y - 6, 24 + intensity * 32, rgb, 0.8 * fade, 0.44);
     }
-    ctx.restore();
 }
 
 // Handoff retains its message identity at both travel and landing.
@@ -366,6 +309,10 @@ function drawRecoveries(ctx, recoveries, motionScale, grade = null) {
     ctx.restore();
 }
 
+// Handoff arcs leave and land at mid-body of the 1:1 villager (plan 2.1:
+// 48–75 texels tall), not at the knees of the old 1.65× giant.
+const HANDOFF_LIFT = 28;
+
 function drawHandoffs(ctx, handoffs, now, motionScale, grade = null, wallNow = 0) {
     if (!handoffs?.length) return;
     const handoffRgb = gradeRgb('244, 196, 93', grade);
@@ -400,20 +347,20 @@ function drawHandoffs(ctx, handoffs, now, motionScale, grade = null, wallNow = 0
         const leanY = (to.y - from.y);
         const leanLen = Math.hypot(leanX, leanY) || 1;
         const fromX = from.x + (leanX / leanLen) * lean;
-        const fromY = (from.y - 16) + (leanY / leanLen) * lean;
+        const fromY = (from.y - HANDOFF_LIFT) + (leanY / leanLen) * lean;
         ctx.strokeStyle = rgba(handoffRgb, 0.38 * fade);
         ctx.lineWidth = 1.2 + pulse * 0.8;
         ctx.setLineDash([4, 5]);
         const midX = (fromX + to.x) / 2;
-        const midY = Math.min(fromY, to.y - 16) - 22;
+        const midY = Math.min(fromY, to.y - HANDOFF_LIFT) - 22;
         ctx.beginPath();
         ctx.moveTo(fromX, fromY);
-        ctx.quadraticCurveTo(midX, midY, to.x, to.y - 16);
+        ctx.quadraticCurveTo(midX, midY, to.x, to.y - HANDOFF_LIFT);
         ctx.stroke();
         ctx.setLineDash([]);
         const inv = 1 - t;
         const x = inv * inv * fromX + 2 * inv * t * midX + t * t * to.x;
-        const y = inv * inv * fromY + 2 * inv * t * midY + t * t * (to.y - 16);
+        const y = inv * inv * fromY + 2 * inv * t * midY + t * t * (to.y - HANDOFF_LIFT);
         drawScrollMote(ctx, x, y, handoffRgb, fade);
         // Terminal spark as the baton lands (last stretch of travel). Under
         // reduced motion t is pinned at 1, so the spark holds as a static frame.
@@ -421,39 +368,16 @@ function drawHandoffs(ctx, handoffs, now, motionScale, grade = null, wallNow = 0
             ? clamp((t - 0.82) / 0.18) * fade
             : fade;
         if (sparkAlpha > 0.02) {
-            drawHandoffSpark(ctx, to.x, to.y - 16, handoffRgb, sparkAlpha);
+            drawHandoffSpark(ctx, to.x, to.y - HANDOFF_LIFT, handoffRgb, sparkAlpha);
         }
     }
     ctx.restore();
 }
 
-function drawLifecycle(ctx, lifecycle, now, motionScale, grade = null) {
-    if (!lifecycle?.length) return;
-    // 3.9 — arrival/departure rings are SECONDARY.
-    const governor = getActiveMarkGovernor();
-    ctx.save();
-    ctx.globalCompositeOperation = 'screen';
-    for (const scene of lifecycle) {
-        const center = scene.center;
-        if (!center) continue;
-        const gate = governor
-            ? governor.admit(MarkTier.SECONDARY, center.x, center.y)
-            : { draw: true, alpha: 1 };
-        if (!gate.draw) continue;
-        const fade = (1 - clamp(scene.progress ?? 0)) * gate.alpha;
-        const rgb = gradeRgb(scene.kind === 'arrival' ? '134, 239, 172' : '216, 180, 254', grade);
-        const pulse = motionPulse(now, motionScale, ((scene.startedAt || 0) / 1000) % TAU, 'recent');
-        drawIsoRing(ctx, center.x, center.y - 4, 16 + pulse * 9, rgb, 0.25 * fade, 1.4);
-        ctx.fillStyle = rgba(rgb, 0.18 * fade);
-        ctx.beginPath();
-        ctx.ellipse(center.x, center.y - 4, 6 + pulse * 2, 3.5, 0, 0, TAU);
-        ctx.fill();
-    }
-    ctx.restore();
-}
-
 function drawReleaseParade(ctx, parade, now, motionScale, grade = null) {
-    if (!parade?.center) return;
+    // Biography milestones and sub-agent returns ride the same scene slot but
+    // are never a parade: they earn only the neutral lower-third caption.
+    if (!parade?.center || parade.kind !== 'parade') return;
     // 3.9 — the release parade is SECONDARY (a celebration, not an alert).
     const governor = getActiveMarkGovernor();
     const gate = governor
@@ -484,102 +408,41 @@ function drawReleaseParade(ctx, parade, now, motionScale, grade = null) {
     ctx.restore();
 }
 
-// 5.8 — pill/plaque reconcile. The building's own plaque (drawn by
-// BuildingSprite.drawLabels) floats at roughly center.y - dims.h - 24..34.
-// Anchor director pills just above that zone when the asset dims are known so
-// the two labels stack as one cluster instead of floating in two unrelated
-// spots; fall back to the legacy fixed offsets when dims are unavailable.
-function signalPillY(signal, getBuildingDims, fallbackLift) {
-    const dims = getBuildingDims?.(signal?.type);
-    if (dims?.h > 0) return signal.center.y - dims.h - 58;
-    return signal.center.y - fallbackLift;
-}
-
-export function drawVillageDirectorGround(ctx, snapshot, now = Date.now(), grade = null, { councilTeamNames = null } = {}) {
+export function drawVillageDirectorGround(ctx, snapshot, now = Date.now(), grade = null) {
     if (!ctx || !snapshot) return;
     drawReplay(ctx, snapshot.replaySamples, now, snapshot.selectedAgentId);
-    const selectedType = snapshot.selectedBuildingSignal?.type || null;
-    for (const signal of snapshot.buildingSignals || []) {
-        // 0.10 — the selected building's halo is drawn boosted below; skip its
-        // base-loop stamp so the same halo is not drawn twice.
-        if (selectedType && signal?.type === selectedType) continue;
-        drawSignalHalo(ctx, signal, now, snapshot.motionScale, grade);
-    }
+    // S19 — the ring is the selection mark: only the selected building wears
+    // one (hover keeps the footprint and the lit plaque).
     if (snapshot.hoverBuildingSignal) {
-        drawSignalHalo(ctx, snapshot.hoverBuildingSignal, now, snapshot.motionScale, grade);
         drawSignalRoutes(ctx, snapshot.hoverBuildingSignal, { alphaScale: 0.52, dash: [3, 9], lineWidth: 1, grade });
     }
     if (snapshot.selectedBuildingSignal) {
-        drawSignalHalo(ctx, { ...snapshot.selectedBuildingSignal, heat: Math.max(0.52, snapshot.selectedBuildingSignal.heat || 0) }, now, snapshot.motionScale, grade);
+        drawSignalHalo(ctx, { ...snapshot.selectedBuildingSignal, heat: Math.max(0.52, snapshot.selectedBuildingSignal.heat || 0) }, grade);
         drawSignalRoutes(ctx, snapshot.selectedBuildingSignal, { grade });
     }
-    drawTeams(ctx, snapshot.teams, snapshot.perfNow || now, snapshot.motionScale, grade, councilTeamNames);
-    drawIncidents(ctx, snapshot.incidents, snapshot.perfNow || now, snapshot.motionScale, grade);
+    drawIncidents(ctx, snapshot.incidents, grade);
     drawRecoveries(ctx, snapshot.recoveries, snapshot.motionScale, grade);
     drawReleaseParade(ctx, snapshot.releaseParade, snapshot.perfNow || now, snapshot.motionScale, grade);
 }
 
-export function drawVillageDirectorOverlays(ctx, snapshot, now = Date.now(), grade = null, { getBuildingDims = null } = {}) {
+// World-space director marks only. Every word the director used to float as
+// a world pill now has a screen-fixed home (plan 5.1/5.5): incidents are T1
+// attention plates drawn from live status (AttentionPlates.js), the release
+// parade is the lower-third caption, and the selected/hovered building is the
+// plaque's own selected/hover state. Arrival and departure are the 6.2
+// ArrivalDeparture stamps; they carry no ring here (S19).
+export function drawVillageDirectorOverlays(ctx, snapshot, now = Date.now(), grade = null) {
     if (!ctx || !snapshot) return;
     drawHandoffs(ctx, snapshot.handoffs, now, snapshot.motionScale, grade, snapshot.now);
-    drawLifecycle(ctx, snapshot.lifecycle, now, snapshot.motionScale, grade);
-
-    const governor = getActiveMarkGovernor();
-    const selected = snapshot.selectedBuildingSignal;
-    if (selected?.center) {
-        const rgb = signalColor(selected.type);
-        drawWorldPill(ctx, selected.center.x, signalPillY(selected, getBuildingDims, 56), selected.label || selected.type, rgb, 0.92);
-    }
-    const hover = snapshot.hoverBuildingSignal;
-    if (hover?.center) {
-        const rgb = signalColor(hover.type);
-        drawWorldPill(ctx, hover.center.x, signalPillY(hover, getBuildingDims, 48), hover.label || hover.type, rgb, 0.58);
-    }
-
-    for (const incident of snapshot.incidents || []) {
-        const center = incident.agent || incident.center;
-        if (!center || !incident.label) continue;
-        // 3.9 — incident pills are PRIMARY (never culled); admit for contract
-        // symmetry with the beacon's governor call.
-        if (governor && !governor.admit(MarkTier.PRIMARY, center.x, center.y).draw) continue;
-        const rgb = incidentColor(incident.kind);
-        drawWorldPill(ctx, center.x, center.y - 62, incident.label, rgb, 0.88 * (1 - clamp(incident.progress ?? 0)));
-    }
-
-    const parade = snapshot.releaseParade;
-    if (parade?.center) {
-        drawWorldPill(ctx, parade.center.x, parade.center.y - 92, `Parade ${parade.label || ''}`, '94, 234, 212', 0.92);
-    }
-}
-
-// 0.7 — PRIMARY marks survive night. Post-atmosphere re-stamp of the PRIMARY
-// pill set (incident labels + the selected-building pill), alpha-scaled by
-// the night factor so the restore stays proportional to how dark the multiply
-// grade actually made the scene. Called from WorldFrameRenderer's
-// drawPrimaryMarksPostAtmosphere; in daylight (factor ~0) it draws nothing.
-// Reduced motion: identical — the re-stamp carries no motion of its own.
-export function drawPrimaryPillRestamp(ctx, snapshot, nightFactor = 0, getBuildingDims = null) {
-    if (!ctx || !snapshot || !(nightFactor > 0.06)) return;
-    for (const incident of snapshot.incidents || []) {
-        const center = incident.agent || incident.center;
-        if (!center || !incident.label) continue;
-        const rgb = incidentColor(incident.kind);
-        drawWorldPill(ctx, center.x, center.y - 62, incident.label, rgb, 0.88 * (1 - clamp(incident.progress ?? 0)) * nightFactor);
-    }
-    const selected = snapshot.selectedBuildingSignal;
-    if (selected?.center) {
-        const rgb = signalColor(selected.type);
-        drawWorldPill(ctx, selected.center.x, signalPillY(selected, getBuildingDims, 56), selected.label || selected.type, rgb, 0.92 * nightFactor);
-    }
 }
 
 export function drawVillageDirectorScreen(ctx, snapshot, viewport) {
     if (!ctx || !snapshot || !viewport) return;
     if (!snapshot.replayActive && !(snapshot.sceneOverflow?.count > 0)) return;
     ctx.save();
-    ctx.font = `10px ${WORLD_BODY_FONT}`;
+    ctx.font = WORLD_BODY_FONT_11;
     ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
+    ctx.textBaseline = 'alphabetic';
     const y = Math.max(76, Math.round(viewport.height - 34));
     if (snapshot.replayActive) {
         const text = `REPLAY 60S · ${snapshot.replayAgentCount || 0} AGENTS`;
@@ -590,7 +453,7 @@ export function drawVillageDirectorScreen(ctx, snapshot, viewport) {
         ctx.fillRect(x, y - 12, width, 22);
         ctx.strokeRect(x + 0.5, y - 11.5, width - 1, 21);
         ctx.fillStyle = '#dff7ff';
-        ctx.fillText(text, x + 9, y);
+        ctx.fillText(text, x + 9, y + 4);
     }
 
     // Overflow is one static, screen-space PRIMARY mark. It does not join the
@@ -606,7 +469,7 @@ export function drawVillageDirectorScreen(ctx, snapshot, viewport) {
         ctx.fillRect(x, y - 12, width, 22);
         ctx.strokeRect(x + 0.5, y - 11.5, width - 1, 21);
         ctx.fillStyle = '#fff4cf';
-        ctx.fillText(text, x + 9, y);
+        ctx.fillText(text, x + 9, y + 4);
     }
     ctx.restore();
 }
@@ -730,7 +593,7 @@ export function drawOffscreenCueEdges(ctx, renderer, viewport, now = Date.now())
             const noun = waiting === count ? 'waiting' : 'need attention';
             const text = `${count} ${noun} outside view ${arrow}`;
             ctx.save();
-            ctx.font = '12px monospace';
+            ctx.font = WORLD_BODY_FONT_11;
             const width = ctx.measureText(text).width + 20;
             const x = Math.max(16, Math.min(viewport.width - width - 16, point.x - width / 2));
             const y = Math.max(24, Math.min(viewport.height - 40, point.y));

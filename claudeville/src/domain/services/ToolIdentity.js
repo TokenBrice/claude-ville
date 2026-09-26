@@ -604,11 +604,66 @@ export function toolIcon(tool) {
     return toolMetadata(name)?.icon || '🔧';
 }
 
+// Category aliases for tool names outside TOOL_METADATA: Codex, Gemini CLI,
+// Kimi and other providers name the same actions differently. Keys are
+// lower-case with any `functions.` namespace stripped. Only the category
+// (glyph, call-tape class) is aliased; building classification is unchanged.
+const TOOL_CATEGORY_ALIASES = Object.freeze({
+    apply_patch: 'write',
+    write_file: 'write',
+    writefile: 'write',
+    edit_file: 'write',
+    replace: 'write',
+    strreplacefile: 'write',
+    str_replace: 'write',
+    str_replace_editor: 'write',
+    create_file: 'write',
+    update_file: 'write',
+    delete_file: 'write',
+
+    exec_command: 'exec',
+    write_stdin: 'exec',
+    shell: 'exec',
+    local_shell: 'exec',
+    exec: 'exec',
+    run_shell_command: 'exec',
+    command_execution: 'exec',
+
+    readfile: 'read',
+    read_file: 'read',
+    read_many_files: 'read',
+    readmediafile: 'read',
+    view_image: 'read',
+    list_directory: 'read',
+    ls: 'read',
+
+    web_search: 'search',
+    google_web_search: 'search',
+    searchweb: 'search',
+    web_fetch: 'search',
+    fetchurl: 'search',
+    'web.run': 'search',
+    search_file_content: 'search',
+
+    update_plan: 'task',
+    settodolist: 'task',
+    enterplanmode: 'task',
+    exitplanmode: 'task',
+    spawn_agent: 'task',
+    send_input: 'task',
+    wait_agent: 'task',
+    close_agent: 'task',
+    resume_agent: 'task',
+    list_agents: 'task',
+});
+
 export function toolCategory(tool) {
     if (!tool) return 'other';
     const name = String(tool);
     if (name.startsWith('mcp__')) return 'exec';
-    return toolMetadata(name)?.category || 'other';
+    const category = toolMetadata(name)?.category;
+    if (category) return category;
+    return TOOL_CATEGORY_ALIASES[name.toLowerCase().replace(/^functions\./, '')] || 'other';
 }
 
 export function shortToolName(name) {
@@ -623,6 +678,68 @@ export function toolActionLabel(tool, options) {
         return count >= 2 ? `Coordinating ×${count}` : 'Coordinating';
     }
     return toolMetadata(name)?.actionLabel || name || '';
+}
+
+// One humanised verb per canonical classifier reason, for world chits and
+// ledgers: short, lower-case, never a raw tool id. Unknown reasons fall back
+// to the tool's last name segment with camelCase and underscores opened up.
+const TOOL_VERBS = Object.freeze({
+    'message-agent': 'message',
+    'send-agent-input': 'reply',
+    'spawn-agent': 'spawn agent',
+    'wait-agent': 'wait on agent',
+    'close-agent': 'close agent',
+    'resume-agent': 'resume agent',
+    'list-agents': 'list agents',
+    'delegate-task': 'delegate',
+    'form-team': 'form team',
+    'coordinate-team': 'coordinate',
+    'agent-orchestration': 'coordinate',
+    'ask-decision': 'ask',
+    'edit-file': 'edit',
+    'write-file': 'write',
+    'patch-file': 'patch',
+    'modify-files': 'edit',
+    'edit-notebook': 'edit notebook',
+    'edit-docs': 'edit docs',
+    'generate-asset': 'generate',
+    'read-local': 'read',
+    'search-local': 'search',
+    'find-local': 'find',
+    'list-local': 'list',
+    'inspect-code': 'inspect',
+    'inspect-validation': 'check',
+    'web-search': 'search web',
+    'web-fetch': 'fetch',
+    'web-tool': 'browse',
+    'external-research': 'research',
+    'browser-preview': 'preview',
+    'portal-active': 'browse',
+    'portal-preview': 'preview',
+    'plan-task': 'plan',
+    'update-task': 'update tasks',
+    'review-tasks': 'review tasks',
+    'plan-work': 'plan',
+    'plan-mode-enter': 'plan',
+    'plan-mode-exit': 'plan',
+    verify: 'verify',
+    'run-shell': 'run',
+    'git-flow': 'git',
+    'github-flow': 'github',
+});
+
+export function toolVerbLabel(tool, input = '') {
+    const name = String(tool || '').trim();
+    if (!name) return '';
+    const reason = classifyTool(name, input)?.reason;
+    if (reason && TOOL_VERBS[reason]) return TOOL_VERBS[reason];
+    const segment = name.split(/[.:/]/).filter(Boolean).at(-1) || name;
+    return segment
+        .replace(/^mcp__\w+?__/, '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/[_-]+/g, ' ')
+        .trim()
+        .toLowerCase();
 }
 
 export function isTaskCommandInput(input) {

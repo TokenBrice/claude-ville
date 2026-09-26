@@ -31,6 +31,8 @@ test('resident effects shed in declared order as the ladder steps down', () => {
         { id: 'bloom', mode: 'off' },
         { id: 'weather-amplitude', mode: 'off' },
         { id: 'occlusion', mode: 'off' },
+        { id: 'cloud-courses', mode: 'off' },
+        { id: 'aerial-perspective', mode: 'off' },
         { id: 'moon-course', mode: 'ambient-course-only' },
         { id: 'wet-reflection', mode: 'static-wet-darkening' },
         { id: 'palette-ramp', mode: 'off' },
@@ -73,7 +75,10 @@ test('MINIMAL admits no optional GPU pass and no optional resident bytes', () =>
         // `[0, ceiling]` is an honest noise-floor upper bound; a zero-width band is not a measurement.
         const [low, high] = gpuMsBand || gpuMsSavedBand;
         assert.ok(low >= 0 && high > low, `${effect.id} needs a measured band`);
-        assert.ok(scope === 'own-pass' || scope === 'shared-scene-envelope', `${effect.id} needs a band scope`);
+        assert.ok(
+            ['own-pass', 'shared-scene-envelope', 'shared-composite-envelope'].includes(scope),
+            `${effect.id} needs a band scope`,
+        );
         assert.ok(effect.staticFallback && effect.canvas, `${effect.id} needs both fallbacks`);
     }
 });

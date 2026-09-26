@@ -22,21 +22,43 @@
 }
 
 :root {
-    --cv-bg: #08070b;
-    --cv-panel: rgba(20, 15, 18, 0.96);
-    --cv-panel-deep: rgba(13, 9, 11, 0.98);
-    --cv-panel-warm: rgba(31, 22, 18, 0.72);
-    --cv-gold: #f2d36b;
-    --cv-gold-deep: #c79d4c;
-    --cv-gold-bright: #ffe58d;
-    --cv-gold-warm: #f6da82;
-    --cv-gold-soft: #d7b979;
+    /* ─── Chrome palette (plan 7.1/7.2, contract C5). One warm frame around the
+       cool world: four surfaces, two lines, one brass, a four-step parchment
+       ink ramp, and gold reserved for light (wordmark, selected, active tab,
+       focus). Every chrome colour should resolve to one of these. ─── */
+    --bg-0: #0b0908;    /* void, inputs, tab wells */
+    --bg-1: #15100d;    /* panel body */
+    --bg-2: #1d1612;    /* hover row, toast, modal body */
+    --bg-3: #2a2019;    /* selected row, lit icon plate */
+    --line-1: #3a2c20;  /* internal dividers */
+    --line-2: #5a4330;  /* outer bevel (1px lit edge) */
+    --seam: #000;       /* 1px black seam against the world */
+    --brass: #b8893f;
+    --ink-1: #eee3cb;   /* primary text */
+    --ink-2: #bfae8f;   /* secondary text, counts */
+    --ink-3: #97876e;   /* labels, captions, meta (>= 4.5:1 on every --bg-*) */
+    --ink-4: #5f5344;   /* zeros, dashes, disabled (non-essential only) */
+    --gold: #f2c75c;    /* light: wordmark, selected, active tab */
+    --gold-hi: #ffe08a; /* light: hover on interactive text, focus */
+    --bevel-top: inset 0 1px 0 var(--line-2), 0 -1px 0 var(--seam);
+    --bevel-bottom: inset 0 -1px 0 var(--line-2), 0 1px 0 var(--seam);
+
+    /* Legacy names now resolve onto the ramp above; new code uses the ramp. */
+    --cv-bg: var(--bg-0);
+    --cv-panel: var(--bg-1);
+    --cv-panel-deep: var(--bg-0);
+    --cv-panel-warm: var(--bg-2);
+    --cv-gold: var(--gold);
+    --cv-gold-deep: var(--brass);
+    --cv-gold-bright: var(--gold-hi);
+    --cv-gold-warm: var(--gold);
+    --cv-gold-soft: var(--ink-2);
     --cv-yellow: #e8d44d;
-    --cv-tan: #c6b08a;
-    --cv-text-muted: #a89476;
-    --cv-text-gray: #8b8b9e;
-    --cv-border: rgba(199, 157, 76, 0.42);
-    --cv-border-soft: rgba(199, 157, 76, 0.16);
+    --cv-tan: var(--ink-2);
+    --cv-text-muted: var(--ink-3);
+    --cv-text-gray: var(--ink-3);
+    --cv-border: var(--line-2);
+    --cv-border-soft: var(--line-1);
     --cv-shadow: rgba(0, 0, 0, 0.38);
     --cv-active-ink: #241812;
     --cv-active-top: #fff0b0;
@@ -49,19 +71,21 @@
     --cv-status-working: #79d975;
     --cv-status-idle: #86bfe0;
     --cv-status-waiting: #df8c3f;
-    --cv-status-rate-limited: #8fa6bd;
+    --cv-status-rate-limited: #f06ae0;
     --cv-status-errored: #e06c5b;
     --cv-status-waiting-user: #e8d44d;
     --cv-status-chatting: #f2d36b;
     --cv-status-completed: #ffd873;
 
-    /* Tool category colors (tool history items) */
-    --cv-tool-read: #7eb7d6;
-    --cv-tool-write: #d8843a;
-    --cv-tool-exec: #e06c5b;
-    --cv-tool-search: #b79ae6;
-    --cv-tool-task: #72d071;
-    --cv-tool-other: #a89476;
+    /* Tool category colors (tool history items). Authority: TOOL_CATEGORY_COLORS
+       in src/config/theme.js (status-free hues, plan 7.10); keep in sync — the
+       theme-tokens smoke checks equality. */
+    --cv-tool-read: #6db3a5;
+    --cv-tool-write: #d0879f;
+    --cv-tool-exec: #9d8fe3;
+    --cv-tool-search: #c27fcc;
+    --cv-tool-task: #608cc0;
+    --cv-tool-other: var(--ink-3);
 
     /* Accents */
     --cv-green-soft: #72d071;
@@ -70,41 +94,50 @@
     --cv-warn-yellow: #e8d44d;
     --cv-amber-deep: #d8843a;
 
-    /* ─── Type system (two-face: pixel display + legible companion) ─── */
-    --font-display: 'Press Start 2P', monospace;                 /* brand face: short labels, >=10px only */
+    /* ─── Type grid (contract C5). Both faces are bitmap fonts on fixed grids:
+       Press Start 2P = 8px/em, Departure Mono = 11px/em. Sizes are integer
+       multiples only (PS2P 8/16/24, DM 11/22/33); line-heights are integer px;
+       never bold (each face ships one weight, bold is a synthesized smear). ─── */
+    --font-display: 'Press Start 2P', monospace;                 /* PS2P: labels, wordmark, titles */
     --font-pixel: var(--font-display);                           /* legacy display alias */
-    --font-body: 'Departure Mono', ui-monospace, SFMono-Regular, Menlo, monospace; /* data/body face */
-    --fs-title: 12px;   /* section + card headings */
-    --fs-body: 13px;    /* prose and primary body copy */
-    --fs-data: 12px;    /* paths, values, and dense data */
-    --fs-label: 10px;   /* labels / eyebrows (floor — nothing smaller) */
-    --lh-body: 1.45;
+    --font-body: 'Departure Mono', ui-monospace, SFMono-Regular, Menlo, monospace; /* DM: everything readable */
+    --fs-label: 8px;    --lh-label: 8px;     /* PS2P 1x, UPPERCASE, letter-spacing 1px */
+    --fs-display: 16px; --lh-display: 16px;  /* PS2P 2x: wordmark, panel name, modal title */
+    --fs-body: 11px;    --lh-body: 16px;     /* DM 1x: prose, data, paths, names, inputs */
+    --fs-numeral: 22px; --lh-numeral: 22px;  /* DM 2x: hero numbers only */
+    --fs-data: var(--fs-body);   /* legacy alias: DM data text */
+    --fs-title: var(--fs-label); /* legacy alias: PS2P section headings */
 
     /* ─── Spacing scale ─── */
     --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px;
 
     /* ─── Surfaces / elevation (one treatment per surface; replaces the
        duplicated per-file "refinement layer" stacks) ─── */
-    --cv-surface-1: rgba(33, 22, 16, 0.96);
-    --cv-surface-2: rgba(48, 31, 22, 0.98);
-    --cv-surface-3: rgba(20, 13, 11, 0.58);
-    --cv-elev-1: 0 6px 16px rgba(0, 0, 0, 0.2);
-    --cv-elev-2: 0 8px 22px rgba(0, 0, 0, 0.25);
-    --cv-divider: rgba(214, 169, 81, 0.16);
-    --cv-focus: rgba(255, 229, 141, 0.85);   /* global focus ring color */
-    --cv-texture: repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.03) 0 1px, transparent 1px 18px); /* brand surfaces only */
+    --cv-surface-1: var(--bg-2);
+    --cv-surface-2: var(--bg-3);
+    --cv-surface-3: var(--bg-1);
+    --cv-elev-1: 0 1px 0 var(--seam);
+    --cv-elev-2: 0 1px 0 var(--seam), 0 4px 0 rgba(0, 0, 0, 0.25);
+    --cv-divider: var(--line-1);
+    --cv-focus: var(--gold-hi);   /* global focus ring color */
+    --cv-texture: none;           /* 7.2: the 18px stripe texture is retired */
 }
 
 html, body {
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background:
-        radial-gradient(circle at 50% 12%, rgba(95, 67, 33, 0.16), transparent 36%),
-        linear-gradient(180deg, #09070a 0%, #110c0d 100%);
-    color: var(--cv-gold);
+    background: var(--bg-0);
+    color: var(--ink-1);
     font-family: var(--font-body);
+    font-size: var(--fs-body);
+    line-height: var(--lh-body);
     image-rendering: pixelated;
+    /* Bitmap faces at integer grid sizes: smoothing off once, here. */
+    -webkit-font-smoothing: none;
+    -moz-osx-font-smoothing: unset;
+    font-smooth: never;
+    font-synthesis: none;
 }
 
 button {
@@ -135,7 +168,7 @@ a {
    its ::-webkit-scrollbar path when those rules match). */
 * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(199, 157, 76, 0.45) #130d0f;
+    scrollbar-color: var(--line-2) var(--bg-0);
 }
 
 ::-webkit-scrollbar {
@@ -143,22 +176,21 @@ a {
 }
 
 ::-webkit-scrollbar-track {
-    background: #130d0f;
+    background: var(--bg-0);
 }
 
 ::-webkit-scrollbar-thumb {
-    background: rgba(199, 157, 76, 0.45);
-    border-radius: 3px;
+    background: var(--line-2);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(242, 211, 107, 0.65);
+    background: var(--ink-3);
 }
 
 /* Shared native disclosures keep complete available details keyboard-accessible. */
 .cv-pixel-icon { width: 16px; height: 16px; display: inline-block; vertical-align: middle; flex-shrink: 0; shape-rendering: crispEdges; }
-.cv-inspection { display: block; min-width: 0; color: var(--cv-tan); }
+.cv-inspection { display: block; min-width: 0; color: var(--ink-2); }
 .cv-inspection > summary { cursor: pointer; line-height: var(--lh-body); overflow-wrap: anywhere; }
-.cv-inspection[open] > summary { color: var(--cv-gold-bright); }
-.cv-inspection__text { margin-top: 8px; padding: 8px; background: var(--cv-panel-deep); color: #dfcfb8; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: var(--fs-body)/var(--lh-body) var(--font-body); }
-.cv-inspection__note { margin-top: 4px; color: var(--cv-text-muted); font: var(--fs-data)/var(--lh-body) var(--font-body); }
+.cv-inspection[open] > summary { color: var(--ink-1); }
+.cv-inspection__text { margin-top: 8px; padding: 8px; background: var(--bg-0); color: var(--ink-1); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: var(--fs-body)/var(--lh-body) var(--font-body); }
+.cv-inspection__note { margin-top: 4px; color: var(--ink-3); font: var(--fs-body)/var(--lh-body) var(--font-body); }

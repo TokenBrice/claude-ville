@@ -33,7 +33,8 @@ const FIXED_POSITION_ALLOWLIST = new Map([
   ['character.css', new Set(['.first-run-hint', '.world-grammar'])],
   ['layout.css', new Set(['.toast-container'])],
   ['modal.css', new Set(['.modal-overlay'])],
-  ['topbar.css', new Set(['.topbar__connection-panel', '.topbar__spend-panel'])],
+  // Top-bar popovers escape the bar's overflow clip; the mixer panel's fixed position moved from inline style to CSS.
+  ['topbar.css', new Set(['.topbar__connection-panel', '.topbar__spend-panel', '.topbar__mixer-panel'])],
 ]);
 
 const failures = [];

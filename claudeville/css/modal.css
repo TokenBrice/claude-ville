@@ -1,29 +1,30 @@
+/* ── Modal family (plan 7.6): Settings, Chronicle, Changelog ──
+   Same system as the frame: --bg-1 body, 1px --line-2 bevel + 1px black seam,
+   --line-1 dividers, the parchment ink ramp, and type on the C5 grid only
+   (PS2P 8/16, DM 11/22; never bold). Gold is reserved for focus and the
+   engaged state of a control. */
 .modal-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(9, 6, 5, 0.74);
+    background: color-mix(in srgb, var(--bg-0) 78%, transparent);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1000;
-    animation: modal-overlay-in 0.16s ease;
+    animation: modal-overlay-in 160ms steps(4, end);
 }
 
-/* Parchment/bronze dialog — same framed-tag treatment as the topbar ledger. */
 .modal {
-    background: linear-gradient(180deg, rgba(58, 36, 22, 0.99), rgba(15, 10, 10, 0.99));
-    border: 1px solid rgba(236, 187, 89, 0.46);
-    border-radius: 6px;
     width: 90%;
     max-width: 500px;
     max-height: 80vh;
     display: flex;
     flex-direction: column;
-    box-shadow:
-        inset 0 1px 0 rgba(255, 231, 150, 0.08),
-        inset 0 -2px 0 rgba(0, 0, 0, 0.26),
-        0 8px 32px rgba(0, 0, 0, 0.55);
-    animation: modal-in 0.16s ease;
+    color: var(--ink-2);
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+    box-shadow: 0 0 0 1px var(--seam);
+    animation: modal-overlay-in 160ms steps(4, end);
 }
 
 .modal--wide {
@@ -35,51 +36,39 @@
     to { opacity: 1; }
 }
 
-@keyframes modal-in {
-    from { opacity: 0; transform: translateY(6px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
 .modal__header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 16px;
-    border-bottom: 1px solid var(--cv-border);
-    background: rgba(20, 13, 11, 0.46);
-    box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.22);
+    gap: 16px;
+    padding: 12px 12px 12px 16px;
+    border-bottom: 1px solid var(--line-1);
 }
 
 .modal__title {
-    font-size: 12px;
-    color: var(--cv-gold-bright);
-    letter-spacing: 1px;
-    font-family: var(--font-display);
-    text-shadow: 1px 1px 0 #2d1a12;
+    color: var(--ink-1);
+    font: var(--fs-display)/var(--lh-display) var(--font-display);
 }
 
 .modal__close {
-    font-size: 11px;
-    color: var(--cv-tan);
-    padding: 4px 8px;
-    background: rgba(25, 17, 15, 0.86);
-    border: 1px solid rgba(199, 157, 76, 0.48);
-    border-radius: 3px;
-    transition: all 0.15s;
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
 }
 
 .modal__close:hover {
-    color: var(--cv-status-errored);
-    border-color: var(--cv-status-errored);
+    color: var(--ink-1);
+    background: var(--bg-2);
 }
 
 .modal__content {
     padding: 16px;
     overflow-y: auto;
-    font-size: var(--fs-body);
-    color: var(--cv-tan);
-    line-height: var(--lh-body);
-    font-family: var(--font-body);
+    color: var(--ink-2);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
 }
 
 /* Reduced motion: dialogs appear and vanish instantly. */
@@ -90,112 +79,123 @@
     }
 }
 
+/* Shared small control: a bordered ghost chip on the well colour. */
+.chronicle__date-button,
+.chronicle__export-button,
+.settings-actions__reset {
+    min-height: 28px;
+    padding: 0 10px;
+    color: var(--ink-2);
+    background: var(--bg-0);
+    border: 0;
+    box-shadow: inset 0 0 0 1px var(--line-2);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.chronicle__date-button:hover:not(:disabled),
+.chronicle__export-button:hover,
+.settings-actions__reset:hover:not(:disabled) {
+    color: var(--ink-1);
+    background: var(--bg-2);
+}
+
+.chronicle__date-button:disabled {
+    cursor: not-allowed;
+    color: var(--ink-4);
+    box-shadow: inset 0 0 0 1px var(--line-1);
+}
+
 /* ── Changelog ──────────────────────────────────────────────── */
 
 .cl-release {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 14px 0 8px;
-    border-bottom: 1px solid var(--cv-divider);
-    margin-bottom: 10px;
+    gap: 12px;
+    padding: 16px 0 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--line-1);
 }
 
-.cl-release + .cl-release {
-    margin-top: 6px;
+.cl-release:first-child {
+    padding-top: 0;
 }
 
 .cl-release--hotfix {
-    opacity: 0.65;
     padding: 8px 0 4px;
 }
 
 .cl-ver {
-    font-size: var(--fs-label);
-    color: var(--cv-gold-bright);
-    border: 1px solid rgba(242, 211, 107, 0.45);
-    background: rgba(36, 24, 17, 0.9);
-    padding: 2px 6px;
-    border-radius: 2px;
+    padding: 4px 6px;
+    color: var(--ink-1);
+    background: var(--bg-0);
+    box-shadow: inset 0 0 0 1px var(--line-2);
     white-space: nowrap;
-    font-family: var(--font-display);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
 }
 
 .cl-release--hotfix .cl-ver {
-    color: #c0a172;
-    border-color: rgba(192, 161, 114, 0.35);
+    color: var(--ink-3);
+    box-shadow: inset 0 0 0 1px var(--line-1);
 }
 
 .cl-name {
-    font-size: 11px;
-    color: #e8d4a0;
-    letter-spacing: 0.3px;
-    font-family: var(--font-display);
+    color: var(--ink-1);
 }
 
 .cl-date {
-    font-size: var(--fs-data);
-    color: #7a6a52;
     margin-left: auto;
+    color: var(--ink-3);
     white-space: nowrap;
-    font-style: italic;
-    font-family: var(--font-body);
 }
 
 .cl-hotfix-badge {
-    font-size: 10px;
-    color: #c0a172;
-    border: 1px solid rgba(192, 161, 114, 0.35);
-    padding: 1px 5px;
-    border-radius: 2px;
+    padding: 4px 6px;
+    color: var(--ink-3);
+    box-shadow: inset 0 0 0 1px var(--line-1);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
     letter-spacing: 1px;
     text-transform: uppercase;
-    font-family: var(--font-display);
 }
 
 .cl-list {
-    margin: 0 0 8px 4px;
+    margin: 0 0 8px;
     padding: 0;
     list-style: none;
 }
 
 .cl-list li {
     position: relative;
-    padding-left: 14px;
-    margin-bottom: 3px;
-    line-height: 1.6;
-    font-family: var(--font-body);
+    padding-left: 16px;
+    margin-bottom: 4px;
 }
 
 .cl-list li::before {
     content: '—';
     position: absolute;
     left: 0;
-    color: rgba(192, 161, 114, 0.4);
+    color: var(--ink-4);
 }
 
 .modal__content p {
-    margin: 0 0 6px;
-    line-height: 1.7;
-    font-family: var(--font-body);
+    margin: 0 0 8px;
 }
 
-.modal__content strong {
-    color: #c0a172;
-}
-
+.modal__content strong,
 .modal__content em {
-    color: #e8d4a0;
-    font-style: italic;
+    color: var(--ink-1);
+    font-weight: normal;
+    font-style: normal;
 }
 
 .modal__content code {
-    font-family: var(--font-body);
-    font-size: var(--fs-data);
-    color: #9fc78a;
-    background: rgba(0, 0, 0, 0.35);
-    padding: 0 3px;
-    border-radius: 2px;
+    padding: 0 4px;
+    color: var(--ink-1);
+    background: var(--bg-0);
+    font: inherit;
 }
 
 /* ── Settings & health ─────────────────────────────────────── */
@@ -203,7 +203,7 @@
 .settings-panel {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 12px;
+    gap: 16px;
 }
 
 .settings-panel__intro,
@@ -214,44 +214,48 @@
 
 .settings-panel__intro {
     margin: 0;
-    color: var(--cv-text-muted);
-    font: var(--fs-data)/var(--lh-body) var(--font-body);
+    color: var(--ink-3);
 }
 
 .settings-section {
     min-width: 0;
-    padding: 11px 12px 12px;
-    border: 1px solid var(--cv-border);
-    border-radius: 2px;
-    background: rgba(8, 6, 6, 0.22);
-    box-shadow: inset 0 1px 0 rgba(255, 231, 150, 0.035);
+    padding: 16px;
+    box-shadow: inset 0 0 0 1px var(--line-1);
 }
 
-.settings-section__heading {
-    margin: 0 0 9px;
-    color: var(--cv-gold-soft);
-    font: 10px/1.4 var(--font-display);
+.settings-section__heading,
+.settings-soundscape__legend {
+    margin: 0 0 8px;
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
     letter-spacing: 1px;
 }
 
 .settings-controls {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 1px 16px;
+    gap: 0 24px;
 }
 
+/* Label and control share the first line; the description takes the whole
+   row width under them instead of wrapping in a narrow column. */
 .settings-control {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 10px;
-    min-height: 43px;
-    border-bottom: 1px solid var(--cv-border-soft);
+    column-gap: 12px;
+    min-height: 44px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line-1);
 }
 
 .settings-control__copy {
-    display: grid;
-    gap: 2px;
+    display: contents;
+}
+
+.settings-control__label {
+    grid-column: 1;
+    grid-row: 1;
     min-width: 0;
 }
 
@@ -259,14 +263,13 @@
 .settings-fact-row__label,
 .settings-ledger dt,
 .settings-provider__name {
-    color: var(--cv-tan);
-    font-size: var(--fs-data);
+    color: var(--ink-1);
 }
 
 .settings-control__detail {
-    color: var(--cv-text-muted);
-    font-size: var(--fs-data);
-    line-height: 1.25;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    color: var(--ink-3);
 }
 
 .settings-switch {
@@ -287,75 +290,140 @@
 
 .settings-switch__track {
     position: relative;
-    width: 38px;
+    width: 36px;
     height: 20px;
-    border: 1px solid rgba(199, 157, 76, 0.48);
-    border-radius: 2px;
-    background: rgba(13, 10, 12, 0.88);
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.55);
+    background: var(--bg-0);
+    box-shadow: inset 0 0 0 1px var(--line-2);
 }
 
 .settings-switch__track::after {
     content: '';
     position: absolute;
-    top: 3px;
-    left: 3px;
+    top: 4px;
+    left: 4px;
     width: 12px;
     height: 12px;
-    border-radius: 1px;
-    background: var(--cv-text-muted);
-    transition: transform 0.12s ease, background 0.12s ease;
+    background: var(--ink-3);
 }
 
+/* One rim rule for every switch; on reads by the lit well and the gold knob. */
 .settings-switch__input:checked + .settings-switch__track {
-    border-color: var(--cv-gold-warm);
-    background: rgba(88, 57, 27, 0.62);
+    background: var(--bg-3);
 }
 
 .settings-switch__input:checked + .settings-switch__track::after {
-    background: var(--cv-gold-bright);
-    transform: translateX(18px);
+    background: var(--gold-hi);
+    transform: translateX(16px);
 }
 
-.settings-switch__input:focus-visible + .settings-switch__track,
-.settings-select:focus-visible,
-.settings-range:focus-visible,
-.settings-actions__reset:focus-visible {
-    outline: 2px solid var(--cv-gold-bright);
+.settings-switch__input:focus-visible + .settings-switch__track {
+    outline: 2px solid var(--cv-focus);
     outline-offset: 2px;
 }
 
 .settings-switch__input:disabled + .settings-switch__track {
     cursor: not-allowed;
-    opacity: 0.46;
+    background: var(--bg-1);
+    box-shadow: inset 0 0 0 1px var(--line-1);
+}
+
+.settings-switch__input:disabled + .settings-switch__track::after {
+    background: var(--ink-4);
+}
+
+.settings-select-wrap {
+    position: relative;
+    display: inline-flex;
+}
+
+/* Stepped 8x4 chevron in place of the OS arrow. */
+.settings-select-wrap::after {
+    content: '';
+    position: absolute;
+    top: calc(50% - 2px);
+    right: 8px;
+    width: 8px;
+    height: 4px;
+    background: var(--ink-2);
+    clip-path: polygon(0 0, 8px 0, 8px 1px, 7px 1px, 7px 2px, 6px 2px, 6px 3px, 5px 3px, 5px 4px, 3px 4px, 3px 3px, 2px 3px, 2px 2px, 1px 2px, 1px 1px, 0 1px);
+    pointer-events: none;
 }
 
 .settings-select {
+    appearance: none;
     max-width: 190px;
-    min-height: 30px;
-    padding: 4px 25px 4px 7px;
-    color: var(--cv-tan);
-    border: 1px solid rgba(199, 157, 76, 0.48);
-    border-radius: 2px;
-    background: var(--cv-panel-deep);
-    font: var(--fs-data)/1.3 var(--font-body);
+    min-height: 28px;
+    padding: 4px 24px 4px 8px;
+    color: var(--ink-1);
+    background: var(--bg-0);
+    border: 0;
+    border-radius: 0;
+    box-shadow: inset 0 0 0 1px var(--line-2);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    cursor: pointer;
+}
+
+.settings-select:hover {
+    box-shadow: inset 0 0 0 1px var(--ink-3);
 }
 
 .settings-range-wrap {
     display: grid;
-    grid-template-columns: 96px 42px;
+    grid-template-columns: 88px 7ch;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
 }
 
+/* Pixel slider: a 2px track, gold up to the thumb (hard stop, whole pixels
+   via --fill from SettingsPanel), and a square 8px thumb. */
 .settings-range {
-    width: 96px;
-    accent-color: var(--cv-gold-warm);
+    appearance: none;
+    width: 88px;
+    height: 16px;
+    margin: 0;
+    background: transparent;
+    cursor: pointer;
 }
 
+.settings-range::-webkit-slider-runnable-track {
+    height: 2px;
+    background: linear-gradient(90deg, var(--gold) 0 var(--fill, 0px), var(--line-2) var(--fill, 0px) 100%);
+}
+
+.settings-range::-moz-range-track {
+    height: 2px;
+    background: linear-gradient(90deg, var(--gold) 0 var(--fill, 0px), var(--line-2) var(--fill, 0px) 100%);
+}
+
+.settings-range::-webkit-slider-thumb {
+    appearance: none;
+    width: 8px;
+    height: 8px;
+    margin-top: -3px;
+    border: 0;
+    border-radius: 0;
+    background: var(--gold-hi);
+    box-shadow: 0 0 0 1px var(--seam);
+}
+
+.settings-range::-moz-range-thumb {
+    width: 8px;
+    height: 8px;
+    border: 0;
+    border-radius: 0;
+    background: var(--gold-hi);
+    box-shadow: 0 0 0 1px var(--seam);
+}
+
+.settings-range:focus-visible {
+    outline: 2px solid var(--cv-focus);
+    outline-offset: 2px;
+}
+
+/* Readouts never wrap and never jitter: tabular, right-aligned, fixed width. */
 .settings-range__value {
-    color: var(--cv-text-muted);
-    font: var(--fs-data)/1 var(--font-body);
+    color: var(--ink-2);
+    white-space: nowrap;
     font-variant-numeric: tabular-nums;
     text-align: right;
 }
@@ -364,19 +432,19 @@
     grid-column: 1 / -1;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 1px 16px;
+    gap: 0 24px;
     min-width: 0;
-    margin: 10px 0 0;
-    padding: 8px 0 0;
+    margin: 16px 0 0;
+    padding: 0;
     border: 0;
-    border-top: 1px solid var(--cv-border);
 }
 
 .settings-soundscape__legend {
-    padding-right: 8px;
-    color: var(--cv-gold-soft);
-    font: 10px/1.4 var(--font-display);
-    letter-spacing: 1px;
+    float: left;
+    width: 100%;
+    grid-column: 1 / -1;
+    margin: 0;
+    padding-bottom: 8px;
 }
 
 .settings-roster,
@@ -384,17 +452,22 @@
 .settings-section--health,
 .settings-section--pricing {
     display: grid;
-    gap: 6px;
+    gap: 8px;
+}
+
+.settings-section--health,
+.settings-section--pricing {
+    align-content: start;
 }
 
 .settings-provider,
 .settings-fact-row {
     display: grid;
-    grid-template-columns: minmax(105px, auto) minmax(0, 1fr);
-    gap: 10px;
+    grid-template-columns: minmax(104px, auto) minmax(0, 1fr);
+    gap: 12px;
     align-items: baseline;
-    padding-bottom: 5px;
-    border-bottom: 1px solid var(--cv-border-soft);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line-1);
 }
 
 .settings-provider:last-child,
@@ -406,8 +479,8 @@
 .settings-provider__name::before {
     content: '·';
     display: inline-block;
-    width: 12px;
-    color: var(--cv-text-muted);
+    width: 1.5ch;
+    color: var(--ink-4);
 }
 
 .settings-provider--ready .settings-provider__name::before {
@@ -426,13 +499,13 @@
 .settings-empty,
 .settings-storage__notice,
 .settings-actions__note {
-    color: var(--cv-text-muted);
-    font: var(--fs-data)/1.35 var(--font-body);
+    color: var(--ink-3);
 }
 
 .settings-provider__state,
 .settings-fact-row__value {
     text-align: right;
+    font-variant-numeric: tabular-nums;
 }
 
 .settings-provider--degraded .settings-provider__state,
@@ -455,8 +528,8 @@
 .settings-ledger dt,
 .settings-ledger dd {
     margin: 0;
-    padding-bottom: 5px;
-    border-bottom: 1px solid var(--cv-border-soft);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line-1);
 }
 
 .settings-ledger dd {
@@ -465,31 +538,14 @@
 
 .settings-storage__notice {
     margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid var(--cv-border);
 }
 
 .settings-actions {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding-top: 12px;
-    border-top: 1px solid var(--cv-border);
-}
-
-.settings-actions__reset {
-    min-height: 31px;
-    padding: 7px 9px;
-    color: var(--cv-tan);
-    border: 1px solid rgba(199, 157, 76, 0.48);
-    border-radius: 2px;
-    background: linear-gradient(180deg, rgba(43, 28, 20, 0.86), rgba(18, 12, 11, 0.9));
-    font: 10px/1.2 var(--font-display);
-}
-
-.settings-actions__reset:hover:not(:disabled) {
-    color: var(--cv-gold-bright);
-    border-color: var(--cv-gold-warm);
+    gap: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line-1);
 }
 
 /* ── Village Chronicle: the day's recap ─────────────────────────────────
@@ -497,124 +553,90 @@
    Chronicle is read on purpose, so it never competes with the live view. */
 
 .chronicle__opening {
-    font-family: var(--font-display);
-    font-size: 10px;
-    line-height: var(--lh-body);
-    color: var(--cv-gold-soft);
-    margin: 0 0 12px;
+    margin: 0 0 16px;
+    color: var(--ink-1);
 }
 
 .chronicle__date-controls {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin: 0 0 12px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid rgba(199, 157, 76, 0.2);
+    margin: 0 0 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--line-1);
 }
+
 .chronicle__date-navigation {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
 }
 
-.chronicle__date-button {
-    min-height: 28px;
-    padding: 5px 8px;
-    color: var(--cv-gold-soft);
-    background: rgba(25, 17, 15, 0.9);
-    border: 1px solid rgba(199, 157, 76, 0.28);
-    border-radius: 3px;
-    cursor: pointer;
-    font-family: var(--font-display);
-    font-size: var(--fs-label);
-    line-height: 1.2;
-    letter-spacing: 0.5px;
-}
-
-.chronicle__date-button:hover:not(:disabled) {
-    color: var(--cv-gold-bright);
-    border-color: rgba(199, 157, 76, 0.5);
-}
-
-.chronicle__date-button:focus-visible {
-    outline: 1px solid var(--cv-gold-soft);
-    outline-offset: 2px;
-}
-
-.chronicle__date-button:disabled {
-    cursor: not-allowed;
-    opacity: 0.42;
-}
-
-.chronicle__today-button {
-    border-color: rgba(199, 157, 76, 0.5);
-}
-
-
-.chronicle__date-label {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-family: var(--font-display);
-    font-size: var(--fs-label);
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    color: rgba(187, 161, 122, 0.7);
-}
-
-.chronicle__date-input {
-    font-family: var(--font-display);
-    font-size: 10px;
-    color: var(--cv-gold-bright);
-    background: rgba(25, 17, 15, 0.9);
-    border: 1px solid rgba(199, 157, 76, 0.28);
-    border-radius: 3px;
-    padding: 5px 7px;
-    letter-spacing: normal;
-    text-transform: none;
-}
-
-.chronicle__date-input:focus-visible {
-    outline: 1px solid var(--cv-gold-soft);
-    outline-offset: 1px;
-}
-
-.chronicle__date-label-text {
-    font-size: var(--fs-label);
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    color: rgba(187, 161, 122, 0.7);
-}
-
+/* The day sits between PREVIOUS and NEXT, one line, never wrapping. */
 .chronicle__date-heading {
-    margin-left: auto;
-    font-family: var(--font-display);
-    font-size: 10px;
-    letter-spacing: 1px;
-    color: var(--cv-gold-soft);
+    min-width: 17ch;
+    color: var(--ink-1);
+    text-align: center;
+    white-space: nowrap;
 }
 
 .chronicle__export-actions {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin: 0;
+    gap: 4px;
+    margin: 0 0 0 auto;
+}
+
+.chronicle__ledger {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    margin-bottom: 16px;
+    background: var(--line-1);
+    border: 1px solid var(--line-1);
+}
+
+/* Stat: 22px numeral over an 8px caption, like the top-bar KPIs. The DOM
+   keeps caption-then-value for screen readers. */
+.chronicle__stat {
+    display: flex;
+    flex-direction: column-reverse;
+    justify-content: flex-end;
+    gap: 4px;
+    padding: 8px 12px 12px;
+    background: var(--bg-1);
+}
+
+.chronicle__stat-label {
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+}
+
+.chronicle__stat-value {
+    color: var(--ink-1);
+    font: var(--fs-numeral)/var(--lh-numeral) var(--font-body);
+    font-variant-numeric: tabular-nums;
+}
+
+.chronicle__stat--zero .chronicle__stat-value {
+    color: var(--ink-4);
+}
+
+.chronicle__note {
+    margin: 0 0 16px;
+    color: var(--ink-3);
 }
 
 .chronicle__project-subtotals {
-    display: grid;
-    gap: 0;
-    margin: 0 0 12px;
-    border: 1px solid rgba(199, 157, 76, 0.28);
-    border-radius: 3px;
-    background: rgba(199, 157, 76, 0.12);
+    margin: 0 0 16px;
+    border: 1px solid var(--line-1);
 }
 
 .chronicle__project-heading {
-    padding: 8px 10px 6px;
-    color: var(--cv-gold-soft);
-    font: var(--fs-label)/1.4 var(--font-display);
+    padding: 8px 12px;
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
     letter-spacing: 1px;
 }
 
@@ -623,10 +645,8 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 12px;
-    padding: 6px 10px;
-    border-top: 1px solid rgba(199, 157, 76, 0.12);
-    background: rgba(25, 17, 15, 0.9);
-    font: var(--fs-data)/var(--lh-body) var(--font-body);
+    padding: 4px 12px;
+    border-top: 1px solid var(--line-1);
 }
 
 .chronicle__project-name {
@@ -634,136 +654,42 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--cv-tan);
+    color: var(--ink-1);
 }
 
 .chronicle__project-count {
     flex-shrink: 0;
-    color: var(--cv-gold-soft);
+    color: var(--ink-3);
     font-variant-numeric: tabular-nums;
-}
-
-
-.chronicle__export-button {
-    font-family: var(--font-display);
-    font-size: var(--fs-label);
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    color: var(--cv-gold-soft);
-    background: rgba(25, 17, 15, 0.9);
-    border: 1px solid rgba(199, 157, 76, 0.28);
-    border-radius: 3px;
-    padding: 5px 9px;
-    cursor: pointer;
-}
-
-.chronicle__export-button:hover {
-    color: var(--cv-gold-bright);
-    border-color: rgba(199, 157, 76, 0.5);
-}
-
-.chronicle__export-button:focus-visible {
-    outline: 1px solid var(--cv-gold-soft);
-    outline-offset: 2px;
-}
-
-.chronicle__ledger {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 1px;
-    background: rgba(199, 157, 76, 0.18);
-    border: 1px solid rgba(199, 157, 76, 0.28);
-    border-radius: 3px;
-    margin-bottom: 12px;
-}
-
-.chronicle__stat {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 8px 10px;
-    background: rgba(25, 17, 15, 0.9);
-}
-
-.chronicle__stat-label {
-    font-family: var(--font-display);
-    font-size: var(--fs-label);
-    letter-spacing: 1px;
-    color: rgba(187, 161, 122, 0.7);
-}
-
-.chronicle__stat-value {
-    font-family: var(--font-display);
-    font-size: 13px;
-    color: var(--cv-gold-bright);
-}
-
-.chronicle__note {
-    font-size: var(--fs-body);
-    line-height: var(--lh-body);
-    color: rgba(187, 161, 122, 0.82);
-    margin: 0 0 12px;
 }
 
 .chronicle__timeline {
     list-style: none;
     margin: 0;
     padding: 0;
-    border-top: 1px solid rgba(199, 157, 76, 0.2);
+    border-top: 1px solid var(--line-1);
+}
+
+.chronicle__entry {
+    display: grid;
+    grid-template-columns: 5ch 2ch minmax(0, 1fr);
+    gap: 8px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--line-1);
 }
 
 .chronicle__time {
-    font-family: var(--font-body);
-    font-size: var(--fs-data);
-    color: rgba(187, 161, 122, 0.62);
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
 }
 
-.settings-panel__note,
-.settings-panel__key,
-.settings-panel__value {
-    font-family: var(--font-body);
-    font-size: var(--fs-data);
-    line-height: var(--lh-body);
-}
-
-.settings-panel__note,
-.settings-panel__key {
-    color: var(--cv-text-muted);
-}
-
-.settings-panel__value {
-    color: var(--cv-tan);
-}
-
-.settings-panel__heading {
-    margin-bottom: 6px;
-    color: var(--cv-gold-bright, #f2d36b);
-    font: var(--fs-label)/1.4 var(--font-display);
-    letter-spacing: 1px;
-}
-
-:where(
-    .modal__title,
-    .cl-ver,
-    .cl-name,
-    .cl-hotfix-badge,
-    .chronicle__opening,
-    .chronicle__date-label,
-    .chronicle__date-input,
-    .chronicle__date-button,
-    .chronicle__date-heading,
-    .chronicle__export-button,
-    .chronicle__stat-label,
-    .chronicle__stat-value,
-    .chronicle__project-heading,
-    .settings-panel__heading
-) {
-    -webkit-font-smoothing: none;
+.chronicle__text {
+    color: var(--ink-1);
 }
 
 .chronicle__glyph {
     text-align: center;
-    color: rgba(187, 161, 122, 0.6);
+    color: var(--ink-3);
 }
 
 /* One meaning per colour, matching the status ramp used everywhere else. */

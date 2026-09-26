@@ -86,6 +86,33 @@ const BUILDING_PAYLOAD_SCAN_LIMIT = 512;
 const BUILDING_PAYLOAD_ENTRY_LIMIT = 64;
 const PROMPT_DETAIL_MAX_LENGTH = 200;
 
+// 7.4 — header ghost buttons carry 8x8 art-pixel glyphs drawn at 2x (16px),
+// so the chrome never falls back to a third typeface for ⧉ or a pin.
+const PIN_ICON_PATH = 'M2 0h4v1H2zM3 1h2v2H3zM1 3h6v1H1zM3 4h2v2H3zM3 6h1v2H3z';
+const COPY_ICON_PATH = 'M0 0h5v1H0zM0 1h1v4H0zM4 1h1v1H4zM1 4h1v1H1zM2 2h6v1H2zM2 3h1v5H2zM7 3h1v5H7zM3 7h4v1H3z';
+function chromeIcon(pathData) {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 8 8');
+    svg.setAttribute('class', 'activity-panel__icon');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    svg.setAttribute('shape-rendering', 'crispEdges');
+    const path = document.createElementNS(ns, 'path');
+    path.setAttribute('d', pathData);
+    path.setAttribute('fill', 'currentColor');
+    svg.appendChild(path);
+    return svg;
+}
+
+// i18n status labels arrive as `WORKING` or `Waiting for you`; the status
+// line reads in one voice, sentence case.
+function sentenceCase(text) {
+    const value = String(text || '');
+    if (!value || value !== value.toUpperCase()) return value;
+    return value.charAt(0) + value.slice(1).toLowerCase();
+}
+
 const ROMAN_NUMERALS = Object.freeze([
     [1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'],
     [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'],
@@ -452,19 +479,21 @@ export class ActivityPanel {
         this.dom = {
             panelAgentName: document.getElementById('panelAgentName'),
             panelAgentStatus: document.getElementById('panelAgentStatus'),
-            panelModel: document.getElementById('panelModel'),
-            panelProvider: document.getElementById('panelProvider'),
-            panelRole: document.getElementById('panelRole'),
+            panelProvenance: document.getElementById('panelProvenance'),
+            panelLevelRow: document.getElementById('panelLevelRow'),
             panelLevel: document.getElementById('panelLevel'),
+            panelTeamRow: document.getElementById('panelTeamRow'),
             panelTeam: document.getElementById('panelTeam'),
             panelMoodRow: document.getElementById('panelMoodRow'),
             panelMood: document.getElementById('panelMood'),
+            panelLastActiveRow: document.getElementById('panelLastActiveRow'),
             panelLastActive: document.getElementById('panelLastActive'),
             panelModeRow: document.getElementById('panelModeRow'),
             panelMode: document.getElementById('panelMode'),
             panelCurrentTool: document.getElementById('panelCurrentTool'),
             panelToolHistory: document.getElementById('panelToolHistory'),
             panelMessages: document.getElementById('panelMessages'),
+            panelContextNumeral: document.getElementById('panelContextNumeral'),
             panelContextSize: document.getElementById('panelContextSize'),
             panelContextBar: document.getElementById('panelContextBar'),
             panelTokenGrid: document.getElementById('panelTokenGrid'),
@@ -484,8 +513,10 @@ export class ActivityPanel {
         this.dom.panelAgentName?.setAttribute('role', 'heading');
         this.dom.panelAgentName?.setAttribute('aria-level', '2');
         if (this.dom.panelAgentName) this.dom.panelAgentName.tabIndex = -1;
+        // 7.4 — the status line reads `■ Waiting for you · 13s`: the short
+        // time-in-state rides after the status label on the same line.
         this._statusElapsedEl = el('span', {
-            className: 'activity-panel__value activity-panel__status-age',
+            className: 'activity-panel__status-age',
         });
         this.dom.panelAgentStatus?.parentNode?.insertBefore(
             this._statusElapsedEl,
@@ -503,11 +534,12 @@ export class ActivityPanel {
                 display: 'none',
             },
         }, [this._blockedPromptEl, this._blockedProvenanceEl]);
-        this._elapsedUnsubscribe = subscribeElapsedText(this._statusElapsedEl, () => (
-            this._mode === 'agent' && this.currentAgent
-                ? resolveObservation(this.currentAgent, Date.now()).state === 'stale' ? '' : formatStatusElapsed(this.currentAgent)
-                : ''
-        ));
+        this._elapsedUnsubscribe = subscribeElapsedText(this._statusElapsedEl, () => {
+            if (this._mode !== 'agent' || !this.currentAgent) return '';
+            if (resolveObservation(this.currentAgent, Date.now()).state === 'stale') return '';
+            const since = Number(this.currentAgent.statusSince);
+            return Number.isFinite(since) && since > 0 ? `\u00a0·\u00a0${formatElapsed(Math.max(0, Date.now() - since))}` : '';
+        });
         this._toolEls = {
             icon: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-icon'),
             name: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-name'),
@@ -981,11 +1013,11 @@ export class ActivityPanel {
         }
         if (!this._pinToggleBtn && this.closeBtn?.parentNode) {
             const button = el('button', {
-                className: 'activity-panel__pin-toggle',
-                text: 'Pin',
+                className: ['activity-panel__icon-btn', 'activity-panel__pin-toggle'],
                 title: 'Pin agent for comparison',
+                ariaLabel: 'Pin agent for comparison',
                 style: { display: 'none' },
-            });
+            }, [chromeIcon(PIN_ICON_PATH)]);
             button.type = 'button';
             button.setAttribute('aria-pressed', 'false');
             this.closeBtn.parentNode.insertBefore(button, this.closeBtn);
@@ -1000,20 +1032,18 @@ export class ActivityPanel {
 
         const value = el('span', { className: 'activity-panel__value' });
         const copyButton = el('button', {
-            className: 'activity-panel__pin-toggle',
-            text: '⧉',
+            className: ['activity-panel__icon-btn', 'activity-panel__copy-btn'],
             title: 'Copy cd command',
             style: {
                 opacity: '0',
-                transition: 'opacity 0.15s, color 0.15s, border-color 0.15s',
             },
-        });
+        }, [chromeIcon(COPY_ICON_PATH)]);
         copyButton.type = 'button';
         copyButton.setAttribute('aria-label', 'Copy working directory cd command');
 
         const row = el('div', {
             className: 'activity-panel__meta-row',
-            style: { display: 'none', gridColumn: '1 / -1' },
+            style: { display: 'none' },
         }, [
             el('span', { className: 'activity-panel__label', text: 'Workdir' }),
             value,
@@ -1028,7 +1058,9 @@ export class ActivityPanel {
         copyButton.addEventListener('focus', reveal);
         copyButton.addEventListener('blur', conceal);
 
-        meta.appendChild(row);
+        // Workdir leads the Session block, right under its eyebrow.
+        const eyebrow = meta.querySelector('.activity-panel__section-title');
+        meta.insertBefore(row, eyebrow ? eyebrow.nextSibling : meta.firstChild);
         this._workingDirectoryRowEl = row;
         this._workingDirectoryValueEl = value;
         this._workingDirectoryCopyBtn = copyButton;
@@ -1093,12 +1125,13 @@ export class ActivityPanel {
         }
         const pinned = this._pinned.has(agent.id);
         this._pinToggleBtn.style.display = '';
-        this._pinToggleBtn.textContent = pinned ? 'Pinned' : 'Pin';
         this._pinToggleBtn.classList.toggle('activity-panel__pin-toggle--active', pinned);
         this._pinToggleBtn.setAttribute('aria-pressed', pinned ? 'true' : 'false');
-        this._pinToggleBtn.title = pinned
-            ? 'Remove agent from comparison'
+        const label = pinned
+            ? 'Pinned: remove agent from comparison'
             : 'Pin agent for comparison';
+        this._pinToggleBtn.title = label;
+        this._pinToggleBtn.setAttribute('aria-label', label);
     }
 
     async _fetchPinnedDetails() {
@@ -1369,26 +1402,38 @@ export class ActivityPanel {
         const observation = resolveObservation(agent, Date.now());
         statusEl.textContent = observation.state === 'stale'
             ? observation.ageMs === null ? 'Last observed time unknown' : `Last observed ${Math.floor(observation.ageMs / 1000)}s ago`
-            : (reason || statusInfo.label).toUpperCase();
-        statusEl.style.color = statusInfo.color;
+            : (reason || sentenceCase(statusInfo.label));
+        // The whole status line (square, label, time) wears the status colour.
+        const statusLine = statusEl.parentElement || statusEl;
+        statusLine.style.color = statusInfo.color;
+        statusLine.dataset.status = statusInfo.status;
         statusEl.title = reason ? statusInfo.label : '';
         this._updateBlockedBanner(agent, reason);
 
+        // 7.4 — provenance line `Model · provider · role` in quiet ink; the
+        // model's identity accent no longer tints text (colour reads as status).
         const model = modelPresentation(agent);
-        this.dom.panelModel.textContent = model.label;
-        this.dom.panelModel.style.color = model.color;
-        this.dom.panelModel.title = model.title;
-        this.dom.panelProvider.textContent = agent.provider || 'claude';
-        this.dom.panelRole.textContent = agent.role || 'general';
-        this.dom.panelLevel.textContent = this._formatAgentLevel(model.identity);
-        this.dom.panelLevel.style.color = model.identity.accent?.[1] || model.identity.accent?.[0] || '';
-        this.dom.panelTeam.textContent = agent.teamName || '-';
+        if (this.dom.panelProvenance) {
+            this.dom.panelProvenance.textContent = [
+                model.label || agent.model || '',
+                agent.provider || 'claude',
+                agent.role || 'general',
+            ].filter(Boolean).join(' · ');
+            this.dom.panelProvenance.title = model.title;
+        }
+        // Session rows show known facts only: an empty row is hidden, never
+        // printed as a dash.
+        const level = this._formatAgentLevel(model.identity);
+        this.dom.panelLevel.textContent = level;
+        this._setMetaRowVisible(this.dom.panelLevelRow, level !== '-');
+        this.dom.panelTeam.textContent = agent.teamName || '';
+        this._setMetaRowVisible(this.dom.panelTeamRow, Boolean(agent.teamName));
         const moodLabel = this._formatMood(agent.mood);
         this.dom.panelMood.textContent = moodLabel;
-        if (this.dom.panelMoodRow) {
-            this.dom.panelMoodRow.style.display = moodLabel === '-' ? 'none' : '';
-        }
-        this.dom.panelLastActive.textContent = this._formatLastActive(agent);
+        this._setMetaRowVisible(this.dom.panelMoodRow, moodLabel !== '-');
+        const lastActive = this._formatLastActive(agent);
+        this.dom.panelLastActive.textContent = lastActive;
+        this._setMetaRowVisible(this.dom.panelLastActiveRow, Boolean(lastActive) && lastActive !== '-');
         this._updateWorkingDirectory(agent);
         const modeLabel = this._formatPermissionMode(agent.permissionMode);
         if (modeLabel) {
@@ -1404,6 +1449,10 @@ export class ActivityPanel {
             this.dom.panelMode.textContent = '';
             this.dom.panelMode.className = 'activity-panel__value';
         }
+    }
+
+    _setMetaRowVisible(row, visible) {
+        if (row) row.style.display = visible ? '' : 'none';
     }
 
     _updateBlockedBanner(agent, reason = waitReasonLabel(agent)) {
@@ -1423,25 +1472,23 @@ export class ActivityPanel {
         this._blockedBannerEl.style.display = 'flex';
     }
 
-    // ─── Hero portrait (#46, portrait crop 2.6) ─────────
-    // A 96×96 integer-scaled pixel avatar in the panel header, framed by an
-    // effort-aura color and a status-tinted ground. Created on open, destroyed
-    // on close, so only the watched villager ever holds a canvas. When the
-    // hero niche shows a head-and-shoulders portrait, a small full-body
-    // witness joins the name row so held weapons and effort crowns stay
-    // visible.
+    // ─── Character-sheet portrait (#46, 2.6, 7.4) ─────────
+    // A 64×64 portrait: the authored 32 px bust window at exactly 2×, nearest
+    // neighbour, inside a 1px line + 1px black double frame with a status-
+    // tinted outer ring. Created on open, destroyed on close, so only the
+    // watched villager ever holds a canvas. The sheet is the one likeness in
+    // the header (7.4); the full body is on screen in the World.
 
     _mountHeroPortrait(agent) {
         const info = this.panelEl?.querySelector('.activity-panel__agent-info');
         if (!info) return;
         this._teardownHeroPortrait();
         const frame = el('div', { className: 'activity-panel__hero-portrait' });
-        this._heroAvatar = new AvatarCanvas(agent, 'hero');
+        this._heroAvatar = new AvatarCanvas(agent, 'sheet');
         frame.appendChild(this._heroAvatar.canvas);
         // Sit the portrait ahead of the name/status text.
         info.insertBefore(frame, info.firstChild);
         this._heroPortraitEl = frame;
-        this._syncHeroWitness(agent);
     }
 
     _refreshHeroPortrait(agent, statusInfo = statusPresentation(agent.status)) {
@@ -1455,47 +1502,9 @@ export class ActivityPanel {
         this._heroPortraitEl.style.setProperty('--cv-hero-aura', aura);
         this._heroPortraitEl.className =
             `activity-panel__hero-portrait activity-panel__hero-portrait--${statusInfo.status}`;
-        this._syncHeroWitness(agent);
-    }
-
-    // The witness exists only while the hero is a portrait; a full-body hero
-    // is already its own witness. Portrait availability can arrive with the
-    // sheet or the manifest, so this is re-checked on every refresh.
-    _syncHeroWitness(agent) {
-        const wanted = Boolean(this._heroAvatar?.isPortrait());
-        if (!wanted) {
-            this._teardownHeroWitness();
-            return;
-        }
-        if (this._witnessAvatar) {
-            this._witnessAvatar.agent = agent;
-            this._witnessAvatar.draw();
-            return;
-        }
-        const nameRow = this.panelEl?.querySelector('.activity-panel__name-row');
-        if (!nameRow) return;
-        const frame = el('span', { className: 'activity-panel__witness' });
-        this._witnessAvatar = new AvatarCanvas(agent, 'witness');
-        this._witnessAvatar.canvas.setAttribute('role', 'img');
-        this._witnessAvatar.canvas.setAttribute('aria-label', 'Full body');
-        frame.appendChild(this._witnessAvatar.canvas);
-        nameRow.insertBefore(frame, nameRow.firstChild);
-        this._witnessEl = frame;
-    }
-
-    _teardownHeroWitness() {
-        if (this._witnessAvatar) {
-            this._witnessAvatar.destroy();
-            this._witnessAvatar = null;
-        }
-        if (this._witnessEl) {
-            this._witnessEl.remove();
-            this._witnessEl = null;
-        }
     }
 
     _teardownHeroPortrait() {
-        this._teardownHeroWitness();
         if (this._heroAvatar) {
             this._heroAvatar.destroy();
             this._heroAvatar = null;
@@ -2263,7 +2272,9 @@ export class ActivityPanel {
         const normalizedUsage = TokenUsage.normalize(usage);
         if (normalizedUsage.availability === 'unavailable') {
             this._clearTokenUsage('Usage unavailable');
-            if (normalizedUsage.contextWindow > 0) this.dom.panelContextSize.textContent = `${formatTokens(normalizedUsage.contextWindow)} context · billing unavailable`;
+            if (normalizedUsage.contextWindow > 0) {
+                this._setContextStat(formatTokens(normalizedUsage.contextWindow), 'context · billing unavailable');
+            }
             return;
         }
         const cost = this._costForUsage(normalizedUsage);
@@ -2277,9 +2288,11 @@ export class ActivityPanel {
         );
         const contextPct = maxContext ? Math.min(100, (normalizedUsage.contextWindow / maxContext) * 100) : 0;
 
-        // Context size (human-readable form)
-        this.dom.panelContextSize.textContent =
-            formatTokens(normalizedUsage.contextWindow) + ` / ${formatTokens(maxContext)}`;
+        // Context size: the 22px numeral, then its ceiling as the caption.
+        this._setContextStat(
+            formatTokens(normalizedUsage.contextWindow),
+            maxContext ? `of ${formatTokens(maxContext)} context` : 'context',
+        );
 
         // Context bar
         const bar = this.dom.panelContextBar;
@@ -2287,6 +2300,7 @@ export class ActivityPanel {
         bar.className = 'activity-panel__context-bar';
         if (contextPct > 80) bar.classList.add('activity-panel__context-bar--danger');
         else if (contextPct > 50) bar.classList.add('activity-panel__context-bar--warning');
+        bar.parentElement?.removeAttribute('hidden');
         this.dom.panelTokenGrid.hidden = false;
         this.dom.panelCostRow.hidden = false;
         this.dom.panelNoUsage.hidden = normalizedUsage.availability !== 'partial';
@@ -2333,29 +2347,42 @@ export class ActivityPanel {
         };
     }
 
+    // 7.4 — the cost numeral leads; its provenance (`estimate` / `provider`,
+    // `partial`, `default rate`) is the caption under it, verbatim.
     _renderCost(cost) {
+        const numeral = this.dom.panelEstCost;
         if (!cost || cost.usd == null || !Number.isFinite(Number(cost.usd))) {
             this.dom.panelCostRow.hidden = false;
-            this.dom.panelEstCost.textContent = 'Unavailable';
-            this.dom.panelEstCost.title = 'No billable usage or provider-reported cost is available';
+            numeral.textContent = '-';
+            numeral.classList.add('activity-panel__stat-value--empty');
+            numeral.title = 'No billable usage or provider-reported cost is available';
+            this.dom.panelCostLabel.textContent = 'cost unavailable';
             return;
         }
         const estimated = cost.source !== 'provider';
         this.dom.panelCostRow.hidden = false;
-        this.dom.panelCostLabel.textContent = 'Cost';
-        this.dom.panelEstCost.title = estimated
+        numeral.classList.remove('activity-panel__stat-value--empty');
+        numeral.title = estimated
             ? `Estimated using ${cost.rateMatch || 'default'} rates, revision ${cost.rateRevision || TokenUsage.rateRevision}`
             : 'Provider-reported cost';
-        replaceChildren(this.dom.panelEstCost, [
-            `${estimated ? '~' : ''}${formatCost(cost.usd)}`,
-            ' ',
+        numeral.textContent = `${estimated ? '~' : ''}${formatCost(cost.usd)}`;
+        replaceChildren(this.dom.panelCostLabel, [
             el('span', {
                 className: 'activity-panel__cost-source',
                 text: `${estimated ? 'estimate' : 'provider'}${cost.availability === 'partial' ? ' · partial' : ''}`,
             }),
-            cost.unknownModel ? ' ' : null,
+            cost.unknownModel ? ' · ' : null,
             cost.unknownModel ? el('span', { className: 'activity-panel__cost-source', text: 'default rate' }) : null,
         ]);
+    }
+
+    _setContextStat(numeralText, caption) {
+        const numeral = this.dom.panelContextNumeral;
+        if (numeral) {
+            numeral.textContent = numeralText;
+            numeral.classList.toggle('activity-panel__stat-value--empty', numeralText === '-');
+        }
+        this.dom.panelContextSize.textContent = caption;
     }
 
     _setDetailState(activityText, usageText) {
@@ -2371,9 +2398,12 @@ export class ActivityPanel {
 
     _clearTokenUsage(label = 'No usage data') {
         this._renderSignatures.tokenUsage = `state:${label}`;
-        this.dom.panelContextSize.textContent = label;
+        this._setContextStat('-', label);
         this.dom.panelContextBar.style.transform = 'scaleX(0)';
         this.dom.panelContextBar.className = 'activity-panel__context-bar';
+        // An empty context bar implies a measurement of zero; with no usage
+        // there is nothing to fill, so the track goes.
+        this.dom.panelContextBar.parentElement?.setAttribute('hidden', '');
         this.dom.panelTokenGrid.hidden = true;
         this.dom.panelCostRow.hidden = true;
         this.dom.panelNoUsage.hidden = true;
@@ -2384,7 +2414,18 @@ export class ActivityPanel {
         this.dom.panelCacheCreate.textContent = '-';
         this.dom.panelCacheHit.textContent = '-';
         this.dom.panelTurnCount.textContent = '-';
-        this._renderCost(this._costForUsage(this.currentAgent?.tokens || null));
+        // Only a measured cost may show a numeral: a provider-reported figure,
+        // a non-zero adapter estimate, or an estimate from tokens the agent
+        // actually reported. An estimate of nothing is not "$0.00", it is
+        // unknown.
+        const tokens = this.currentAgent?.tokens || null;
+        const supplied = this.currentAgent?.cost;
+        const suppliedUsd = Number(supplied?.usd);
+        const measured = (supplied && supplied.usd != null && Number.isFinite(suppliedUsd)
+                && supplied.availability !== 'unavailable'
+                && (supplied.source === 'provider' || suppliedUsd > 0))
+            || (tokens && TokenUsage.totalTokens(TokenUsage.normalize(tokens)) > 0);
+        this._renderCost(measured ? this._costForUsage(tokens) : null);
     }
 
     _emptyState(text) {
@@ -3132,7 +3173,13 @@ export class ActivityPanel {
         playBtn.type = 'button';
         playBtn.addEventListener('click', () => this._toggleWorkScorePlayback());
 
-        const controls = el('div', { className: 'activity-panel__score-controls' }, [openBtn, liveBtn, playBtn]);
+        // 7.4 — one segmented well, LIVE | SCORE (+ PLAY while a score is
+        // open): the lit segment is the mode the village is actually in.
+        const controls = el('div', {
+            className: 'activity-panel__score-controls',
+            ariaLabel: 'Work score mode',
+        }, [liveBtn, openBtn, playBtn]);
+        controls.setAttribute('role', 'group');
         const strip = el('div', { className: 'activity-panel__score-strip' });
         const range = document.createElement('input');
         range.type = 'range';
@@ -3166,7 +3213,9 @@ export class ActivityPanel {
         this._workScoreOverflowEl = overflow;
         this._workScoreOverflowBodyEl = overflowBody;
         this._workScoreScrubEl = scrub;
-        return el('div', { className: 'activity-panel__score' }, [controls, scrub]);
+        const score = el('div', { className: 'activity-panel__score' }, [controls, scrub]);
+        this._renderWorkScoreControl();
+        return score;
     }
 
     // Reduced motion means manual scrub only: the playback control is not
@@ -3286,8 +3335,10 @@ export class ActivityPanel {
         const score = this._workScore;
         const active = Boolean(score);
         const reduced = this._workScoreReducedMotion();
-        this._workScoreOpenBtn.style.display = active ? 'none' : '';
-        this._workScoreLiveBtn.style.display = active ? '' : 'none';
+        this._workScoreOpenBtn.style.display = '';
+        this._workScoreLiveBtn.style.display = '';
+        this._workScoreOpenBtn.setAttribute('aria-pressed', String(active));
+        this._workScoreLiveBtn.setAttribute('aria-pressed', String(!active));
         this._workScorePlayBtn.style.display = active && !reduced ? '' : 'none';
         this._workScorePlayBtn.textContent = this._workScorePlaying ? 'PAUSE' : 'PLAY';
         this._workScoreScrubEl.style.display = active ? '' : 'none';
@@ -3711,7 +3762,13 @@ export class ActivityPanel {
         this.dom.panelAgentName.textContent = iconText ? `${iconText}  ${labelText}` : labelText;
         const statusEl = this.dom.panelAgentStatus;
         statusEl.textContent = (building.district || 'BUILDING').toUpperCase();
-        statusEl.style.color = '';
+        const statusLine = statusEl.parentElement || statusEl;
+        statusLine.style.color = '';
+        delete statusLine.dataset.status;
+        if (this.dom.panelProvenance) {
+            this.dom.panelProvenance.textContent = '';
+            this.dom.panelProvenance.removeAttribute('title');
+        }
 
         this._renderBuildingBody();
         this._renderBuildingSignal();

@@ -6,6 +6,7 @@ import {
     PLANK_BRIDGES,
     HARBOR_DOCK_TILES,
     TREE_CLUSTERS,
+    TREE_CLUMPS,
     BOULDERS,
     VEGETATION_DISTRICTS,
     SHORELINE_VEGETATION,
@@ -16,6 +17,13 @@ import {
 } from '../../config/scenery.js';
 
 const CARDINAL_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+// Tree clumps: spiral probe count, ring step (tiles) and minimum trunk
+// spacing². At 1× a large canopy is ~0.8 tile wide, so trunks ~0.7 tile apart
+// knit into one crown mass without stacking on the same pixels.
+const TREE_CLUMP_PROBES = 20;
+const TREE_CLUMP_STEP = 0.72;
+const TREE_TRUNK_SPACING_SQ = 0.5;
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
 export class SceneryEngine {
     constructor({ world, terrainSeed, tileNoise, smoothNoise = null }) {
@@ -37,7 +45,7 @@ export class SceneryEngine {
         this.grassTuftTiles = new Map(); // key -> { variant: 0..1 }
         this.flowerTiles = new Map();  // key -> { variant: 0..2 }
         this.smallRockTiles = new Set();
-        this.treeProps = [];           // { tileX, tileY, variant, scale }
+        this.treeProps = [];           // { tileX, tileY, species, size }
         this.boulderProps = [];        // { tileX, tileY, variant, scale }
 
         this._buildingFootprints = this._collectBuildingFootprints();
@@ -343,8 +351,10 @@ export class SceneryEngine {
     }
 
     // Multi-source BFS over the water mask. Distance 0 = water tile touching
-    // land (or the map edge); each step inward increments. Drives depth
-    // classification and shoreline tints.
+    // land; each step inward increments. Drives depth classification and
+    // shoreline tints. 3.4 — the map edge is open ocean for sea/openSea/harbor
+    // tiles (the island sits IN the sea), so the east sea no longer grows a
+    // shallow rim along the map edge; lagoon and river keep the edge as bank.
     _computeWaterShoreDistances() {
         const distances = new Map();
         const queue = [];
@@ -352,11 +362,18 @@ export class SceneryEngine {
             const comma = key.indexOf(',');
             const x = Number(key.slice(0, comma));
             const y = Number(key.slice(comma + 1));
+            const region = this.waterMeta.get(key)?.region;
+            const edgeIsSea = region === 'sea' || region === 'openSea' || region === 'harbor';
             let touchesLand = false;
             for (const [dx, dy] of CARDINAL_DIRS) {
                 const nx = x + dx;
                 const ny = y + dy;
-                if (nx < 0 || nx >= MAP_SIZE || ny < 0 || ny >= MAP_SIZE || !this.waterTiles.has(`${nx},${ny}`)) {
+                if (nx < 0 || nx >= MAP_SIZE || ny < 0 || ny >= MAP_SIZE) {
+                    if (edgeIsSea) continue;
+                    touchesLand = true;
+                    break;
+                }
+                if (!this.waterTiles.has(`${nx},${ny}`)) {
                     touchesLand = true;
                     break;
                 }
@@ -563,11 +580,11 @@ export class SceneryEngine {
         return this.tileNoise(cellX + (kind === 'bush' ? 401 : 503), cellY + 607) > 0.24;
     }
 
-    _passesTreeSpacing(tileX, tileY) {
+    _passesTreeSpacing(x, y) {
         for (const tree of this.treeProps) {
-            const dx = tree.tileX - (tileX + 0.5);
-            const dy = tree.tileY - (tileY + 0.5);
-            if ((dx * dx + dy * dy) < 1.45) return false;
+            const dx = tree.tileX - x;
+            const dy = tree.tileY - y;
+            if ((dx * dx + dy * dy) < TREE_TRUNK_SPACING_SQ) return false;
         }
         return true;
     }
@@ -712,67 +729,108 @@ export class SceneryEngine {
         }
     }
 
-    generateTrees(pathTiles, bridgeTiles) {
-        for (const cluster of TREE_CLUSTERS) {
+    // Trees grow in clumps of 3–7 (varied species and size) instead of an even
+    // per-tile sprinkle, so woods read as masses and the ground between them
+    // breathes. Authored TREE_CLUMPS compose the settlement (framing districts
+    // and water edges); TREE_CLUSTERS seed the outer woodlands procedurally.
+    // Species follow the biome: willow only within one tile of water, oak for
+    // the civic and scholars' ground, pine for the windbreaks.
+    generateTrees(pathTiles, bridgeTiles, isExcluded = null) {
+        this.treeProps = [];
+        const clumpCentres = [];
+        const ctx = { pathTiles, bridgeTiles, isExcluded };
+        for (const anchor of TREE_CLUMPS) {
+            const placed = this._growTreeClump(anchor.tileX, anchor.tileY, anchor.trees, anchor.species, anchor.mix ?? null, ctx);
+            if (placed) clumpCentres.push({ x: anchor.tileX, y: anchor.tileY, spacing: 2.2 });
+        }
+        for (const [clusterIndex, cluster] of TREE_CLUSTERS.entries()) {
             const rx = cluster.radiusX ?? cluster.radius;
             const ry = cluster.radiusY ?? cluster.radius;
+            const candidates = [];
             for (let dy = -Math.ceil(ry); dy <= Math.ceil(ry); dy++) {
                 for (let dx = -Math.ceil(rx); dx <= Math.ceil(rx); dx++) {
-                    const tx = cluster.centerX + dx;
-                    const ty = cluster.centerY + dy;
+                    const tx = Math.floor(cluster.centerX + dx);
+                    const ty = Math.floor(cluster.centerY + dy);
                     if (tx < 0 || tx >= MAP_SIZE || ty < 0 || ty >= MAP_SIZE) continue;
-                    if (((dx * dx) / (rx * rx)) + ((dy * dy) / (ry * ry)) > 1) continue;
-                    const key = `${tx},${ty}`;
-                    if (this.isBlockedForTallScenery(tx, ty, pathTiles, bridgeTiles)) continue;
-                    if (this.bushTiles.has(key)) continue;
-                    if (!this._passesTreeSpacing(tx, ty)) continue;
-
-                    const noise = this.tileNoise(tx + 251, ty + 137);
-                    const districtBoost = this._districtBias(tx, ty, 'treeBoost');
-                    const shorelineBoost = this._shorelineBias(tx, ty, 'treeBoost');
-                    const authoredClearing = this._clearingBias(tx, ty);
-                    if (authoredClearing >= 0.62) continue;
-                    const clearing = authoredClearing + this._nearPathNegativeSpace(tx, ty, pathTiles, bridgeTiles);
-                    const density = Math.min(0.78, Math.max(0.05, cluster.density + districtBoost + shorelineBoost - clearing));
-                    if (noise > 1 - density) {
-                        const jx = (this.tileNoise(tx + 11, ty + 3) - 0.5) * 0.6;
-                        const jy = (this.tileNoise(tx + 5, ty + 19) - 0.5) * 0.6;
-                        if (this.isBlockedForTallScenery(tx + 0.5 + jx, ty + 0.5 + jy, pathTiles, bridgeTiles)) continue;
-                        const variantNoise = this.tileNoise(tx + 41, ty + 91);
-                        const palmNoise = this.tileNoise(tx + 73, ty + 211);
-                        const northernCanopy = ty <= 13;
-                        const palmBias = cluster.palmBias ?? (ty > 13 ? 0.42 : 0);
-                        const shorelinePalm = this._distanceToWater(tx, ty) !== Infinity ? 0.34 : 0;
-                        const villagePalm = ty >= 14 && ty <= 30 ? 0.30 : 0;
-                        const isPalm = palmNoise < Math.min(0.98, palmBias + shorelinePalm + villagePalm);
-                        const isNorthwestJungle = tx <= 20 && ty <= 13;
-                        const isBroadleaf = !isPalm && isNorthwestJungle && variantNoise > 0.28;
-                        const variant = isPalm
-                            ? 2
-                            : isBroadleaf
-                            ? 3
-                            : northernCanopy
-                            ? (variantNoise > 0.72 ? 0 : 1)
-                            : Math.floor(variantNoise * 3);
-                        const scaleNoise = this.tileNoise(tx + 17, ty + 71);
-                        const scale = isPalm
-                            ? 0.96 + scaleNoise * 0.34
-                            : northernCanopy
-                            ? 1.02 + scaleNoise * 0.34
-                            : 0.85 + scaleNoise * 0.4;
-                        this.treeProps.push({
-                            tileX: tx + 0.5 + jx,
-                            tileY: ty + 0.5 + jy,
-                            variant,
-                            scale,
-                            canopy: (northernCanopy && !isPalm) || isBroadleaf,
-                            tropical: isPalm || isBroadleaf,
-                            seed: variantNoise,
-                        });
-                    }
+                    const nx = (tx + 0.5 - cluster.centerX) / rx;
+                    const ny = (ty + 0.5 - cluster.centerY) / ry;
+                    if (nx * nx + ny * ny > 1) continue;
+                    candidates.push({ tx, ty, order: this.tileNoise(tx + 251 + clusterIndex * 13, ty + 137) });
+                }
+            }
+            // Deterministic shuffled visit order so clump centres do not march
+            // across the region in scanline order.
+            candidates.sort((a, b) => a.order - b.order);
+            const [minTrees, maxTrees] = cluster.clump ?? [3, 5];
+            const spacing = cluster.spacing ?? 3;
+            for (const { tx, ty } of candidates) {
+                const cx = tx + 0.5;
+                const cy = ty + 0.5;
+                if (clumpCentres.some((c) => Math.hypot(c.x - cx, c.y - cy) < Math.max(spacing, c.spacing))) continue;
+                if (this.isBlockedForTallScenery(tx, ty, pathTiles, bridgeTiles)) continue;
+                const clearing = this._clearingBias(tx, ty) + this._nearPathNegativeSpace(tx, ty, pathTiles, bridgeTiles);
+                const chance = cluster.density + this._districtBias(tx, ty, 'treeBoost') - clearing;
+                if (this.tileNoise(tx + 31, ty + 97) > chance) continue;
+                const count = minTrees + Math.floor(this.tileNoise(tx + 67, ty + 43) * (maxTrees - minTrees + 1));
+                const dominant = this._pickWeighted(cluster.species, this.tileNoise(tx + 89, ty + 17));
+                if (this._growTreeClump(cx, cy, count, dominant, cluster.species, ctx)) {
+                    clumpCentres.push({ x: cx, y: cy, spacing });
                 }
             }
         }
+    }
+
+    // Grow one clump around (cx, cy) along a golden-angle spiral. Returns true
+    // when at least three trees stood; smaller remnants are removed so no lone
+    // tree or pair is left standing on open ground.
+    _growTreeClump(cx, cy, count, dominant, mix, { pathTiles, bridgeTiles, isExcluded }) {
+        const start = this.treeProps.length;
+        const turn = this.tileNoise(Math.floor(cx) + 7, Math.floor(cy) + 211) * Math.PI * 2;
+        for (let k = 0; k < TREE_CLUMP_PROBES && this.treeProps.length - start < count; k++) {
+            const radius = k === 0 ? 0 : TREE_CLUMP_STEP * Math.sqrt(k);
+            const angle = turn + k * GOLDEN_ANGLE;
+            const x = cx + Math.cos(angle) * radius;
+            const y = cy + Math.sin(angle) * radius;
+            const tx = Math.floor(x);
+            const ty = Math.floor(y);
+            if (this.isBlockedForTallScenery(x, y, pathTiles, bridgeTiles)) continue;
+            if (isExcluded?.(x, y)) continue;
+            if (this.bushTiles.has(`${tx},${ty}`)) continue;
+            if (this._clearingBias(tx, ty) >= 0.45) continue;
+            if (!this._passesTreeSpacing(x, y)) continue;
+            const nearWater = this._distanceToWater(tx, ty) <= 1;
+            const pick = this.tileNoise(tx * 3 + k, ty * 5 + 29);
+            let species = pick < 0.72 || !mix ? dominant : this._pickWeighted(mix, this.tileNoise(tx + 131, ty + k));
+            // Willows are waterside trees: fresh-water banks turn half the
+            // clump to willow, and a willow never stands away from water.
+            if (nearWater && this._nearFreshWater(tx, ty) && this.tileNoise(tx + 61, ty + 157) < 0.5) species = 'willow';
+            if (species === 'willow' && !nearWater) species = 'oak';
+            const size = k >= 2 && species !== 'pine' && this.tileNoise(tx + 17, ty + 71 + k) < 0.4 ? 'small' : 'large';
+            this.treeProps.push({ tileX: x, tileY: y, species, size });
+        }
+        if (this.treeProps.length - start >= 3) return true;
+        this.treeProps.length = start;
+        return false;
+    }
+
+    _pickWeighted(weights, noise) {
+        const entries = Object.entries(weights || { oak: 1 });
+        const total = entries.reduce((sum, [, w]) => sum + w, 0) || 1;
+        let acc = 0;
+        for (const [species, w] of entries) {
+            acc += w / total;
+            if (noise < acc) return species;
+        }
+        return entries[entries.length - 1][0];
+    }
+
+    _nearFreshWater(tileX, tileY) {
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                if (this.lagoonWaterTiles.has(`${tileX + dx},${tileY + dy}`)) return true;
+            }
+        }
+        return false;
     }
 
     generateBoulders(pathTiles, bridgeTiles) {

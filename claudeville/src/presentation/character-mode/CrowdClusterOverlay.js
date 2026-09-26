@@ -1,6 +1,12 @@
 import { TILE_HALF_WIDTH, TILE_HALF_HEIGHT } from './Projection.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
+import { WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { worldToTile } from './Projection.js';
+import { isAttentionStatus } from './AttentionPlates.js';
+import { paintWalnutBoard, snapScreenOrigin } from './WorldLabelKit.js';
+import { fillPixelEllipse } from './PixelShapes.js';
+import { ringDots } from './EffectStamps.js';
 
 // Crowd cluster group visuals: when CrowdClusters reports a dense group
 // (3+ agents in a cell), draw one subtle shared ground aura under the group
@@ -24,9 +30,9 @@ const AURA_STROKE = 'rgba(214, 169, 81, 1)';
 const BADGE_PANEL = 'rgba(20, 14, 10, 0.85)';
 const BADGE_BORDER = 'rgba(214, 169, 81, 0.8)';
 const BADGE_TEXT = '#f6da82';
-const BADGE_FONT = 'bold 7px "Press Start 2P", monospace';
+const BADGE_FONT = WORLD_DISPLAY_FONT_8;
 const BADGE_HEIGHT = 13;
-const BADGE_CHAR_WIDTH = 7;
+const BADGE_CHAR_WIDTH = 8;
 const BADGE_PADDING_X = 8;
 
 const STATUS_AURA_FALLBACK = Object.freeze({
@@ -72,7 +78,7 @@ const _badgeTextCache = new Map();
 function badgeText(count) {
     let text = _badgeTextCache.get(count);
     if (!text) {
-        text = `×${count}`;
+        text = `+${count}`;
         _badgeTextCache.set(count, text);
     }
     return text;
@@ -113,9 +119,10 @@ function statusAura(status) {
     return STATUS_AURA[status] || STATUS_AURA_FALLBACK;
 }
 
-// Ground pass: one soft isometric ellipse per dense cluster, drawn with the
-// other pre-sprite relationship layers so agents render on top of it.
-export function drawCrowdClusterAuras(ctx, { crowdStats, zoom = 1, lighting = null } = {}) {
+// Ground pass: one faint scanline isometric ellipse per dense cluster, rimmed
+// with a dotted ring (pixel grammar: whole-texel fills, no AA path), drawn with
+// the other pre-sprite relationship layers so agents render on top of it.
+export function drawCrowdClusterAuras(ctx, { crowdStats, lighting = null } = {}) {
     const clusters = crowdStats?.clusters;
     if (!ctx || !clusters || clusters.length === 0) return;
 
@@ -125,7 +132,6 @@ export function drawCrowdClusterAuras(ctx, { crowdStats, zoom = 1, lighting = nu
     const strokeAlpha = Math.min(0.3, 0.18 * boost);
 
     ctx.save();
-    ctx.lineWidth = 1.2 / (zoom || 1);
     for (let i = 0; i < clusters.length; i++) {
         const cluster = clusters[i];
         const x = clusterWorldX(cluster);
@@ -135,17 +141,12 @@ export function drawCrowdClusterAuras(ctx, { crowdStats, zoom = 1, lighting = nu
             : { draw: true, alpha: 1 };
         if (!gate.draw) continue;
         const rx = auraRadiusX(cluster);
-        const ry = rx * 0.5;
         const aura = statusAura(cluster.dominantStatus);
 
-        ctx.beginPath();
-        ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
         ctx.globalAlpha = fillAlpha * gate.alpha;
-        ctx.fillStyle = aura.fill;
-        ctx.fill();
+        fillPixelEllipse(ctx, x, y, rx, rx * 0.5, aura.fill);
         ctx.globalAlpha = strokeAlpha * gate.alpha;
-        ctx.strokeStyle = aura.stroke;
-        ctx.stroke();
+        ringDots(ctx, x, y, rx, { count: Math.round(rx / 5), dot: 2, color: aura.stroke });
     }
     ctx.restore();
 }
@@ -156,7 +157,9 @@ export function drawCrowdClusterAuras(ctx, { crowdStats, zoom = 1, lighting = nu
 // overflow agents are summarized by colour rather than silently dropped. Scaled
 // by 1/zoom so the standard keeps a constant on-screen size. Static — no motion,
 // so the prefers-reduced-motion rendering is identical.
-export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1, agentSprites } = {}) {
+const _namedPerCell = new Map();
+
+export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1, agentSprites, cellSize = 4 } = {}) {
     // At dense load remembered residents share one exact building count.
     const staleGroups = new Map();
     for (const sprite of agentSprites?.values?.() || []) {
@@ -194,15 +197,28 @@ export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1, agentSprites
     const clusters = crowdStats?.clusters;
     if (!ctx || !clusters || clusters.length === 0) return;
 
+    // T5 (plan 5.2/C5) — the tab counts the members the world is not already
+    // naming: routine names admitted this frame, T2 plates and T1 attention
+    // plates are excluded, so `+N` is exactly the unnamed remainder.
+    const named = _namedPerCell;
+    named.clear();
+    for (const sprite of agentSprites?.values?.() || []) {
+        const shown = sprite.overlaySlot != null || sprite.selected || isAttentionStatus(sprite.agent?.status);
+        if (!shown || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
+        const tile = worldToTile(sprite.x, sprite.y);
+        const key = `${Math.floor(tile.tileX / cellSize)},${Math.floor(tile.tileY / cellSize)}`;
+        named.set(key, (named.get(key) || 0) + 1);
+    }
     const s = 1 / (zoom || 1);
     ctx.save();
     ctx.font = BADGE_FONT;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.lineWidth = 1;
     for (let i = 0; i < clusters.length; i++) {
         const cluster = clusters[i];
-        const text = badgeText(cluster.count || 0);
+        const hidden = (cluster.count || 0) - (named.get(cluster.id) || 0);
+        if (hidden <= 0) continue;
+        const text = badgeText(hidden);
         const pips = topStatusPips(cluster.statuses);
         const pipCount = pips ? pips.length : 0;
         const countWidth = BADGE_PADDING_X + text.length * BADGE_CHAR_WIDTH;
@@ -220,33 +236,27 @@ export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1, agentSprites
         ctx.save();
         ctx.translate(x, y);
         ctx.scale(s, s);
-        ctx.fillStyle = BADGE_PANEL;
-        ctx.strokeStyle = aura.badge;
-        ctx.beginPath();
-        if (ctx.roundRect) {
-            ctx.roundRect(-w / 2, -h / 2, w, h, 4);
-        } else {
-            ctx.rect(-w / 2, -h / 2, w, h);
-        }
-        ctx.fill();
-        ctx.stroke();
+        snapScreenOrigin(ctx);
+        paintWalnutBoard(ctx, -Math.round(w / 2), -Math.round(h / 2), Math.round(w), Math.round(h));
 
-        const countY = pipCount > 0 ? -h / 2 + BADGE_HEIGHT / 2 : 0.5;
+        const countY = pipCount > 0 ? -Math.round(h / 2) + BADGE_HEIGHT / 2 : 0;
         ctx.fillStyle = BADGE_TEXT;
-        ctx.fillText(text, 0, countY);
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText(text, 0, Math.round(countY) + 4);
+        ctx.textBaseline = 'middle';
 
         if (pipCount > 0) {
-            const pipY = h / 2 - PIP_ROW_HEIGHT / 2;
-            let pipX = -pipRowWidth / 2 + PIP_RADIUS;
+            // Square pixel pips: a 1 px status-stroke border around the fill.
+            const size = PIP_RADIUS * 2;
+            const pipY = Math.round(h / 2 - PIP_ROW_HEIGHT / 2) - PIP_RADIUS;
+            let pipX = Math.round(-pipRowWidth / 2);
             for (let p = 0; p < pipCount; p++) {
                 const pip = pips[p];
-                ctx.beginPath();
-                ctx.arc(pipX, pipY, PIP_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = pip.stroke;
+                ctx.fillRect(pipX, pipY, size, size);
                 ctx.fillStyle = pip.fill;
-                ctx.fill();
-                ctx.strokeStyle = pip.stroke;
-                ctx.stroke();
-                pipX += PIP_RADIUS * 2 + PIP_GAP;
+                ctx.fillRect(pipX + 1, pipY + 1, size - 2, size - 2);
+                pipX += size + PIP_GAP;
             }
         }
         ctx.restore();

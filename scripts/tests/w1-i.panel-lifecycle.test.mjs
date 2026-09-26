@@ -109,9 +109,38 @@ test('activity panel close initiated by the panel emits once and restores focus 
     assert.equal(bus.emissions, 1);
 });
 
-test('sidebar status dots stop pulsing under reduced motion without viewport media queries', async () => {
+test('every animated sidebar status dot is stilled under reduced motion, with no viewport media queries', async () => {
     const css = await readFile(new URL('../../claudeville/css/sidebar.css', import.meta.url), 'utf8');
-    assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\.sidebar__agent-dot--working,\s*\.sidebar__agent-dot--waiting,\s*\.sidebar__agent-dot--rate_limited,\s*\.sidebar__agent-dot--errored,\s*\.sidebar__agent-dot--waiting_on_user\s*\{\s*animation:\s*none\s*;\s*\}\s*\}/);
+    const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+    // Split into top-level chunks: `@media (prefers-reduced-motion: reduce) { … }` bodies
+    // versus everything else, by walking brace depth.
+    const reducedBodies = [];
+    let base = '';
+    for (let i = 0; i < stripped.length;) {
+        const media = /^@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{/.exec(stripped.slice(i));
+        if (!media) { base += stripped[i++]; continue; }
+        let depth = 1;
+        let j = i + media[0].length;
+        const start = j;
+        while (depth > 0 && j < stripped.length) {
+            if (stripped[j] === '{') depth++;
+            else if (stripped[j] === '}') depth--;
+            j++;
+        }
+        reducedBodies.push(stripped.slice(start, j - 1));
+        i = j;
+    }
+    const selectorsWithDecl = (text, declPattern) => [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .filter(([, , body]) => declPattern.test(body))
+        .flatMap(([, selectors]) => selectors.split(',').map(s => s.trim()));
+
+    const animatedDots = selectorsWithDecl(base, /animation\s*:\s*(?!none\b)[^;]*infinite/)
+        .filter(selector => selector.includes('sidebar__agent-dot'));
+    const stilled = new Set(reducedBodies.flatMap(body => selectorsWithDecl(body, /animation\s*:\s*none\b/)));
+    assert.ok(animatedDots.length > 0, 'expected the attention dots to declare their blink in sidebar.css');
+    for (const selector of animatedDots) {
+        assert.ok(stilled.has(selector), `${selector} animates but is not stilled under prefers-reduced-motion`);
+    }
     assert.doesNotMatch(css, /@media[^\{]*\b(?:width|min-width|max-width)\b/i);
 });
 
@@ -188,7 +217,7 @@ test('the attention shelf renders exceptions while rows are suspended and hides 
         Sidebar.prototype.render.call(sidebar);
         assert.equal(shelfEl.hidden, false);
         const [heading, list] = shelfEl.children;
-        assert.equal(heading.textContent, '1 NEED YOU · 1 ERROR');
+        assert.equal(heading.textContent, '1 NEEDS YOU · 1 ERROR');
         assert.deepEqual(list.children.map(row => row.children[0].textContent), ['One', 'Two']);
 
         agents.clear();

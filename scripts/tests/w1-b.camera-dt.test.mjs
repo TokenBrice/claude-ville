@@ -2,40 +2,43 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { Camera } from '../../claudeville/src/presentation/character-mode/Camera.js';
-import { REF_DT_MS, dtAlpha } from '../../claudeville/src/presentation/character-mode/MotionClock.js';
 
-const TARGET_X = 100;
-const TARGET_Y = 80;
+const VIEW_W = 1200;
+const VIEW_H = 800;
 
-function createFollowCamera({ x = 0, y = 0 } = {}) {
+function createFollowCamera(sprite, { centerX = 400, centerY = 300 } = {}) {
     // Camera's module imports are pure. Avoid its browser-only constructor while
     // exercising the real updateFollow implementation without a DOM or canvas.
     const camera = Object.create(Camera.prototype);
-    camera.x = x;
-    camera.y = y;
     camera.zoom = 1;
-    camera.followTarget = {};
-    camera.followSmoothing = 0.08;
+    camera.followTarget = sprite;
     camera._reducedMotion = false;
     camera._followEase = null;
-    camera._viewportWidth = () => TARGET_X * 2;
-    camera._viewportHeight = () => TARGET_Y * 2;
-    camera._followFocusPoint = () => ({ x: 0, y: 0 });
+    camera._followSpring = { vx: 0, vy: 0 };
+    camera._followTrack = null;
+    camera._viewportWidth = () => VIEW_W;
+    camera._viewportHeight = () => VIEW_H;
     camera._clampToBounds = () => {};
+    camera.x = VIEW_W / 2 - centerX;
+    camera.y = VIEW_H / 2 - centerY;
     return camera;
 }
 
-function simulateFollow(dtMs) {
-    const camera = createFollowCamera();
-    const steps = Math.round(1000 / dtMs);
-    for (let index = 0; index < steps; index++) camera.updateFollow(dtMs);
-    return { x: camera.x, y: camera.y };
+function simulate(dtMs, { durationMs = 1000, moving = false, speedPxPerMs = 0 } = {}) {
+    const sprite = { x: 0, y: 0, moving };
+    const camera = createFollowCamera(sprite);
+    const steps = Math.round(durationMs / dtMs);
+    for (let index = 0; index < steps; index++) {
+        sprite.x += speedPxPerMs * dtMs;
+        camera.updateFollow(dtMs);
+    }
+    return { camera, sprite, center: camera.currentCenterWorld() };
 }
 
-test('Camera follow converges to the same position at 30, 60, and 120 Hz', () => {
-    const at30 = simulateFollow(1000 / 30);
-    const at60 = simulateFollow(1000 / 60);
-    const at120 = simulateFollow(1000 / 120);
+test('Camera follow relaxes to the same frame at 30, 60, and 120 Hz', () => {
+    const at30 = simulate(1000 / 30).center;
+    const at60 = simulate(1000 / 60).center;
+    const at120 = simulate(1000 / 120).center;
 
     assert.ok(Math.abs(at30.x - at60.x) < 0.5);
     assert.ok(Math.abs(at30.y - at60.y) < 0.5);
@@ -43,24 +46,51 @@ test('Camera follow converges to the same position at 30, 60, and 120 Hz', () =>
     assert.ok(Math.abs(at120.y - at60.y) < 0.5);
 });
 
-test('Camera follow preserves the legacy step at the reference frame duration', () => {
-    const camera = createFollowCamera({ x: 25, y: -10 });
-    const expectedX = camera.x + (TARGET_X - camera.x) * camera.followSmoothing;
-    const expectedY = camera.y + (TARGET_Y - camera.y) * camera.followSmoothing;
+test('Camera follow tracks a walking villager the same way at 30, 60, and 120 Hz', () => {
+    const walk = { durationMs: 3000, moving: true, speedPxPerMs: 0.12 };
+    const at30 = simulate(1000 / 30, walk).center;
+    const at60 = simulate(1000 / 60, walk).center;
+    const at120 = simulate(1000 / 120, walk).center;
+    // Window-edge decisions are per frame, so rates may differ by less than
+    // one 30 Hz frame of walking (4 px), never by a visible drift.
+    const oneFrameOfWalk = walk.speedPxPerMs * (1000 / 30);
 
-    camera.updateFollow(REF_DT_MS);
+    assert.ok(Math.abs(at30.x - at60.x) < oneFrameOfWalk);
+    assert.ok(Math.abs(at120.x - at60.x) < oneFrameOfWalk);
+});
 
-    assert.ok(Math.abs(camera.x - expectedX) < 1e-12);
-    assert.ok(Math.abs(camera.y - expectedY) < 1e-12);
+test('Camera follow keeps a steadily walking villager inside the composition window', () => {
+    const { camera, sprite } = simulate(1000 / 60, { durationMs: 4000, moving: true, speedPxPerMs: 0.12 });
+    const screen = camera.worldToScreen(sprite.x, sprite.y);
+    const halfW = (VIEW_W * 0.28) / 2;
+
+    // The spring matches the walking speed, so the villager rides the window
+    // edge instead of trailing out of frame.
+    assert.ok(Math.abs(screen.x - VIEW_W / 2) <= halfW + 4);
+});
+
+test('Camera follow does not scroll the world while the villager walks inside the window', () => {
+    const sprite = { x: 0, y: 0, moving: true };
+    const camera = createFollowCamera(sprite, { centerX: 0, centerY: -0.06 * VIEW_H });
+    const before = camera.currentCenterWorld();
+    for (let index = 0; index < 30; index++) {
+        sprite.x += 2;
+        camera.updateFollow(1000 / 60);
+    }
+    const after = camera.currentCenterWorld();
+
+    assert.ok(Math.abs(after.x - before.x) < 1e-9);
+    assert.ok(Math.abs(after.y - before.y) < 1e-9);
 });
 
 test('Camera follow does not overshoot after a 5000 ms stall', () => {
-    const camera = createFollowCamera();
-    const alpha = dtAlpha(camera.followSmoothing, 5000);
+    const sprite = { x: 0, y: 0, moving: false };
+    const camera = createFollowCamera(sprite, { centerX: 400, centerY: 300 });
+    const aimY = -0.06 * VIEW_H;
 
     camera.updateFollow(5000);
+    const center = camera.currentCenterWorld();
 
-    assert.ok(alpha <= 1);
-    assert.ok(camera.x >= 0 && camera.x <= TARGET_X);
-    assert.ok(camera.y >= 0 && camera.y <= TARGET_Y);
+    assert.ok(center.x >= 0 && center.x <= 400);
+    assert.ok(center.y >= aimY && center.y <= 300);
 });

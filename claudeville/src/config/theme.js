@@ -8,7 +8,10 @@ export const THEME = {
     idle: '#86bfe0',
     waiting: '#df8c3f',
     error: '#e06c5b',
-    rateLimited: '#8fa6bd',
+    // Magenta-orchid: Tier A (HSL S 0.82) and 105° from idle sky, so a quota
+    // hold never reads as "nothing is happening"; OKLab dE >= 0.09 from every
+    // tool, accent and pennant hue.
+    rateLimited: '#f06ae0',
     waitingOnUser: '#e8d44d',
     chatting: '#f2d36b',
     // 0.4 — completed is a first-class status: soft-gold "small victory" tone.
@@ -48,12 +51,20 @@ export const THEME = {
 };
 
 // Companion/body face for mixed-case world canvas text (names, bubbles,
-// ledgers, overlay pills, debug readouts). Departure Mono stays legible far
-// below Press Start 2P's ~10px floor and is narrower per glyph, so labels
-// read cleaner AND pack tighter when dezoomed. Single-weight face: never
-// request "bold" (synthetic bold smears the pixels). Every world-canvas
-// `ctx.font` imports this token (plan 1.6) so the stack can never fork.
+// ledgers, overlay pills, debug readouts). Departure Mono is narrower per
+// glyph than Press Start 2P, so labels pack tighter when dezoomed.
+// Single-weight face: never request "bold" (synthetic bold smears the pixels).
 export const WORLD_BODY_FONT = '"Departure Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
+export const WORLD_DISPLAY_FACE = '"Press Start 2P", monospace';
+
+// C5 type grid (plan 5.4). Both faces are bitmap fonts on fixed grids — Press
+// Start 2P is 8 px/em, Departure Mono 11 px/em — so every canvas `ctx.font`
+// uses one of these four tokens: native size or its exact double, never bold,
+// never world-scaled. Anything else drops or doubles glyph rows.
+export const WORLD_DISPLAY_FONT_8 = `8px ${WORLD_DISPLAY_FACE}`;
+export const WORLD_DISPLAY_FONT_16 = `16px ${WORLD_DISPLAY_FACE}`;
+export const WORLD_BODY_FONT_11 = `11px ${WORLD_BODY_FONT}`;
+export const WORLD_BODY_FONT_22 = `22px ${WORLD_BODY_FONT}`;
 
 // --- House Palette (item #1): one tokenized color authority --------------
 // Every surface imports from here instead of keeping a private RGB/hex table,
@@ -68,7 +79,7 @@ export const STATUS_VISUALS = Object.freeze({
     waiting: { color: THEME.waiting, glow: 'rgba(223, 140, 63, 0.34)', label: 'WAIT', mark: '~' },
     idle: { color: THEME.idle, glow: 'rgba(134, 191, 224, 0.22)', label: 'IDLE', mark: 'I' },
     errored: { color: THEME.error, glow: 'rgba(239, 68, 68, 0.40)', label: 'ERROR', mark: '!' },
-    rate_limited: { color: THEME.rateLimited, glow: 'rgba(143, 166, 189, 0.24)', label: 'RATELIMIT', mark: 'R' },
+    rate_limited: { color: THEME.rateLimited, glow: 'rgba(240, 106, 224, 0.30)', label: 'RATELIMIT', mark: 'R' },
     waiting_on_user: { color: THEME.waitingOnUser, glow: 'rgba(250, 204, 21, 0.34)', label: 'INPUT', mark: '?' },
     chatting: { color: THEME.chatting, glow: 'rgba(242, 211, 107, 0.30)', label: 'CHAT', mark: 'C' },
     completed: { color: THEME.completed, glow: 'rgba(255, 216, 115, 0.30)', label: 'DONE', mark: '*' },
@@ -89,59 +100,95 @@ export const STATUS_CSS_VARS = Object.freeze({
     completed: '--cv-status-completed',
 });
 
-// Nine building accents (hex), one per village building. `*_RGB` mirrors are
-// the `'r, g, b'` form the world-overlay `rgba()` helper expects.
-export const BUILDING_ACCENTS = Object.freeze({
-    command: '#f4c45d',
-    taskboard: '#7dd3fc',
-    archive: '#c084fc',
-    mine: '#fb923c',
-    forge: '#f87171',
-    harbor: '#5eead4',
-    watchtower: '#facc15',
-    observatory: '#818cf8',
-    portal: '#c084fc',
-});
-export const BUILDING_ACCENTS_RGB = Object.freeze({
-    command: '244, 196, 93',
-    taskboard: '125, 211, 252',
-    archive: '192, 132, 252',
-    mine: '251, 146, 60',
-    forge: '248, 113, 113',
-    harbor: '94, 234, 212',
-    watchtower: '250, 204, 21',
-    observatory: '129, 140, 248',
-    portal: '192, 132, 252',
+// Tool-category colours (tool history chips; plan 7.10). Status-free hues:
+// every entry is OKLab dE >= 0.07 from every STATUS_VISUALS colour and
+// >= 0.045 from its siblings, and keeps >= 4.5:1 on every chrome surface
+// (--bg-0..3), so a tool chip never reads as working, idle, waiting or
+// errored. reset.css mirrors these as --cv-tool-<key> for its CSS-only
+// consumers; scripts/smoke/theme-tokens.mjs keeps the two equal.
+export const TOOL_CATEGORY_COLORS = Object.freeze({
+    read: '#6db3a5',   // sea teal
+    write: '#d0879f',  // dusty rose
+    exec: '#9d8fe3',   // violet
+    search: '#c27fcc', // plum
+    task: '#608cc0',   // deep azure
 });
 
-// Incident signal hues (`'r, g, b'` form for world overlays).
+// --- Accent palette v2 (plan 4.3, contract C1) -----------------------------
+// Building, provider and team accents are painted colours from the same
+// earthy world as the ramps in config/artPalette.js, not screen neons. They
+// sit at OKLab lightness 0.58-0.76 and chroma <= 0.105 (HSV S <= 0.55), so
+// only the status hues (STATUS_VISUALS: okL 0.67-0.90, mostly chroma >= 0.13)
+// ever reach Tier A (L > 0.70 or S > 0.65). Status stays the loudest colour on
+// every chip, ring and plaque. Every accent keeps >= 4.5:1 contrast on the
+// chrome's --bg-1 (#15100d), so painted never means illegible.
+//
+// De-collision contract (check with OKLab distance dE when editing):
+//   - every building/provider/team accent is dE >= 0.07 from every status
+//     hue, and red/orange/yellow/green/sky families are either absent or held
+//     well below status lightness (forge brick, mine umber, command gilt,
+//     watchtower lichen, taskboard steel);
+//   - accents inside one table are dE >= 0.045 apart (no duplicates: Archive
+//     violet and Portal orchid are split);
+//   - team hues stay dE >= 0.04 from every provider hue because a team badge
+//     and a provider pill can sit on the same row.
+// `npm run art:analyze` reports Tier-A pixels in sprites; this table is the
+// hand-checked half of the same rule.
+
+// 'r, g, b' form the world-overlay `rgba()` helpers expect.
+const rgbTriplet = (hex) => {
+    const value = parseInt(String(hex).slice(1), 16);
+    return `${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}`;
+};
+
+// Nine building accents (hex), one per village building. `*_RGB` mirrors are
+// derived, so the two forms cannot fork.
+export const BUILDING_ACCENTS = Object.freeze({
+    command: '#bfb17e', // pale gilt limestone (the hero, not status gold)
+    taskboard: '#568599', // steel blue, darker than idle sky
+    archive: '#a08abb', // lavender violet
+    mine: '#a27459', // raw umber, not waiting orange
+    forge: '#b86765', // brick rose, darker and cooler than error coral
+    harbor: '#589a95', // sea teal
+    watchtower: '#8d9062', // lichen olive, not needs-you yellow
+    observatory: '#7978b7', // night indigo
+    portal: '#ac678b', // orchid, split from archive
+});
+export const BUILDING_ACCENTS_RGB = Object.freeze(Object.fromEntries(
+    Object.entries(BUILDING_ACCENTS).map(([key, hex]) => [key, rgbTriplet(hex)]),
+));
+
+// Incident signal hues (`'r, g, b'` form for world overlays). These are the
+// status tokens themselves, never private copies: quota and rate limits read
+// as the rate-limit orchid, needs-you as the beacon yellow, failures as error coral.
 export const INCIDENT_COLORS_RGB = Object.freeze({
-    quota: '251, 146, 60',
-    'failed-push': '248, 113, 113',
-    rate_limited: '250, 204, 21',
-    waiting_on_user: '250, 204, 21',
-    errored: '248, 113, 113',
+    quota: rgbTriplet(THEME.rateLimited),
+    'failed-push': rgbTriplet(THEME.error),
+    rate_limited: rgbTriplet(THEME.rateLimited),
+    waiting_on_user: rgbTriplet(THEME.waitingOnUser),
+    errored: rgbTriplet(THEME.error),
 });
 
 // One hue per provider CLI, shared by trim (world sprite accent), badge (UI
-// chip), and the dashboard/sidebar glyph (plan 1.5 — trim may be a lighter
-// tint of the badge hue for sprite legibility). Hues are de-collided from the
-// STATUS_VISUALS ramp (plan 1.3): codex left working-green for sprite teal,
-// gemini left idle-blue for indigo, deepseek split from opencode's mint; zai
-// takes vermilion, the one warm hue no status/incident uses exactly (errored
-// is #e06c5b coral, quota is orange #fb923c).
+// chip), and the dashboard/sidebar glyph (plan 1.5). Trim may be a lighter
+// tint of the badge hue for sprite legibility; both stay painted (v2). Hues
+// are de-collided from STATUS_VISUALS (plan 1.3): codex is sea teal and
+// opencode jade, both far below working green; gemini indigo and deepseek
+// deep blue sit well below idle sky and rate-limit slate; git is brass, not
+// needs-you yellow; zai keeps its vermilion identity as a darker terracotta,
+// clear of error coral; omp is lichen instead of chatting gold.
 export const PROVIDER_HUES = Object.freeze({
-    claude: { trim: '#a78bfa', badge: '#a78bfa', badgeBg: 'rgba(167,139,250,0.15)' },
-    codex: { trim: '#7be3d7', badge: '#2dd4bf', badgeBg: 'rgba(45,212,191,0.15)' },
-    gemini: { trim: '#a5b4fc', badge: '#818cf8', badgeBg: 'rgba(129,140,248,0.15)' },
-    git: { trim: '#f6cf60', badge: '#f6cf60', badgeBg: 'rgba(246,207,96,0.15)' },
-    grok: { trim: '#7df9ff', badge: '#7df9ff', badgeBg: 'rgba(125,249,255,0.15)' },
-    kimi: { trim: '#ff8da8', badge: '#ff8da8', badgeBg: 'rgba(255,141,168,0.15)' },
-    omp: { trim: '#f2d36b', badge: '#f2d36b', badgeBg: 'rgba(242,211,107,0.15)' },
-    opencode: { trim: '#7cf4c8', badge: '#7cf4c8', badgeBg: 'rgba(124,244,200,0.15)' },
-    deepseek: { trim: '#9ec1ff', badge: '#5b8def', badgeBg: 'rgba(91,141,239,0.15)' },
-    zai: { trim: '#ffa585', badge: '#ff7a55', badgeBg: 'rgba(255,122,85,0.15)' },
-    default: { trim: '#f2d36b', badge: '#8b8b9e', badgeBg: 'rgba(139,139,158,0.15)' },
+    claude: { trim: '#977bb5', badge: '#977bb5', badgeBg: 'rgba(151,123,181,0.15)' },
+    codex: { trim: '#5ba49c', badge: '#5ba49c', badgeBg: 'rgba(91,164,156,0.15)' },
+    gemini: { trim: '#868ec3', badge: '#868ec3', badgeBg: 'rgba(134,142,195,0.15)' },
+    git: { trim: '#bba66c', badge: '#bba66c', badgeBg: 'rgba(187,166,108,0.15)' },
+    grok: { trim: '#4f8e9b', badge: '#4f8e9b', badgeBg: 'rgba(79,142,155,0.15)' },
+    kimi: { trim: '#b9758c', badge: '#b9758c', badgeBg: 'rgba(185,117,140,0.15)' },
+    omp: { trim: '#829063', badge: '#829063', badgeBg: 'rgba(130,144,99,0.15)' },
+    opencode: { trim: '#589271', badge: '#589271', badgeBg: 'rgba(88,146,113,0.15)' },
+    deepseek: { trim: '#5781ac', badge: '#5781ac', badgeBg: 'rgba(87,129,172,0.15)' },
+    zai: { trim: '#b36b51', badge: '#b36b51', badgeBg: 'rgba(179,107,81,0.15)' },
+    default: { trim: '#b9ad96', badge: '#8a857e', badgeBg: 'rgba(138,133,126,0.15)' },
 });
 
 // Mood bubble tones and model-tier crest hues.
@@ -162,10 +209,12 @@ export const MODEL_TIER_COLORS = Object.freeze({
 });
 
 // Categorical team ramp (dashboard team badge, sidebar grouping, world
-// council ring) folded in from TeamColor.js (plan 1.11). Curated against the
-// house palette: keep future edits de-collided from STATUS_VISUALS and
-// PROVIDER_HUES.
+// council ring) folded in from TeamColor.js (plan 1.11). Painted v2 set under
+// the accent de-collision contract above: no yellow, green or orange that
+// could read as needs-you, working or waiting. Order is the hash order.
+// rose-plum, olive, rosewater, deep jade, orchid, ochre, umber clay, slate
+// indigo, linen, sandstone.
 export const TEAM_HUES = Object.freeze([
-    '#e8d44d', '#4ade80', '#60a5fa', '#f97316', '#a78bfa',
-    '#f472b6', '#34d399', '#fb923c', '#818cf8', '#22d3ee',
+    '#a26e88', '#8a814f', '#da9fa5', '#4d897e', '#c294b4',
+    '#b38e5c', '#9c775e', '#7b7ba6', '#bcab92', '#bb9587',
 ]);

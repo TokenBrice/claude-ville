@@ -6,6 +6,7 @@ import { AgentSearchIndex } from './SearchIndex.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { bucketAgents, waitAnchor } from '../../domain/services/SignalLedger.js';
+import { VillagePhase } from '../../application/VillageState.js';
 import {
     formatElapsed,
     formatRelative,
@@ -25,7 +26,19 @@ import {
     modelPresentation,
     projectProfile,
     providerPresentation,
+    statusPresentation,
+    waitReasonLabel,
 } from './AgentPresentation.js';
+
+const SIDEBAR_EMPTY_COPY = Object.freeze({
+    [VillagePhase.STARTING]: Object.freeze({ title: 'LISTENING…', cta: 'Reading local sessions. Agents appear here as each one is read.' }),
+    [VillagePhase.SYNCING]: Object.freeze({ title: 'LISTENING…', cta: 'Reading local sessions. Agents appear here as each one is read.' }),
+    [VillagePhase.DEGRADED]: Object.freeze({ title: 'SOURCES UNREADABLE', cta: 'A local session source could not be read, so this list may be incomplete.' }),
+    [VillagePhase.FAILED]: Object.freeze({ title: 'NOT OPENED', cta: 'The village did not finish opening; no sessions have been read.' }),
+    [VillagePhase.READY_NO_PROVIDERS]: Object.freeze({ title: 'NO PROVIDERS FOUND', cta: 'No supported coding CLI is installed on this machine.' }),
+    [VillagePhase.READY_EMPTY]: Object.freeze({ title: 'THE VILLAGE AWAITS', cta: 'Start a coding session to populate the village.' }),
+    [VillagePhase.READY_LIVE]: Object.freeze({ title: 'THE VILLAGE AWAITS', cta: 'Start a coding session to populate the village.' }),
+});
 
 // Preserve a workflow's expanded/collapsed choice through brief ingestion gaps,
 // while bounding remembered state to live workflows plus a small recent tail.
@@ -51,6 +64,19 @@ function safeStorageSet(key, value) {
         // usable for the current page even when it cannot be persisted.
     }
 }
+
+// Right-aligned age column: time in the current status, short form ("13s").
+function shortStatusAge(agent, now = Date.now()) {
+    const since = Number(agent?.statusSince);
+    if (!Number.isFinite(since) || since <= 0) return '';
+    return formatElapsed(Math.max(0, now - since));
+}
+
+function lowerFirst(text) {
+    const value = String(text || '');
+    return value ? value.charAt(0).toLowerCase() + value.slice(1) : '';
+}
+
 export function buildHarborLedgerRows(repos = [], now = Date.now()) {
     return [...(Array.isArray(repos) ? repos : [])]
         .filter(repo => (Number(repo.pendingCommits ?? repo.count) || 0) > 0)
@@ -155,6 +181,14 @@ export class Sidebar {
             }
         };
         this._onSharedFilterRequest = () => this._publishSharedFilter(null, true);
+        this._villagePhase = null;
+        this._onVillageState = (state) => {
+            const phase = state?.phase || null;
+            if (phase === this._villagePhase) return;
+            this._villagePhase = phase;
+            if (this._emptyLegendEl) this._paintEmptyLegend(this._emptyLegendEl);
+        };
+        eventBus.on('village:state', this._onVillageState);
         eventBus.on('agent:added', this._onAgentUpdate);
         eventBus.on('agent:updated', this._onAgentUpdate);
         eventBus.on('agent:removed', this._onAgentRemoved);
@@ -516,7 +550,16 @@ export class Sidebar {
             };
             this.shelfEl.append(this._shelfHeading, this._shelfList, this._shelfExpand);
         }
-        this._setText(this._shelfHeading, `${buckets.needsYou.length} NEED YOU · ${buckets.errors.length} ERROR${buckets.quota.length ? ` · ${buckets.quota.length} QUOTA` : ''}`);
+        // Only non-zero buckets speak (0.6: zeros dim or go), with the same
+        // words as the World plates and the top bar's lit slot.
+        const heading = [
+            [buckets.needsYou.length, 'NEEDS YOU'],
+            [buckets.errors.length, 'ERROR'],
+            [buckets.quota.length, 'LIMIT'],
+        ].filter(([count]) => count > 0).map(([count, word]) => `${count} ${word}`).join(' · ');
+        this._setText(this._shelfHeading, heading);
+        const lead = buckets.needsYou.length ? 'needsYou' : buckets.errors.length ? 'errors' : 'quota';
+        if (this.shelfEl.dataset) this.shelfEl.dataset.lead = lead;
         const liveIds = new Set(exceptions.map(agent => agent.id));
         for (const [id, row] of this._shelfRows) {
             if (liveIds.has(id)) continue;
@@ -603,6 +646,8 @@ export class Sidebar {
                     agent.id,
                     agent.name,
                     agent.status,
+                    agent.waitReason,
+                    agent.pendingTool,
                     agent.model,
                     agent.effort,
                     agent.provider,
@@ -665,7 +710,8 @@ export class Sidebar {
                 groupEl = this._createProjectGroup();
                 this._projectGroups.set(projectPath, groupEl);
             }
-            this._patchProjectGroup(groupEl, projectName, visible.length, profile);
+            const teamNames = [...new Set(visible.map(agent => agent.teamName).filter(Boolean))];
+            this._patchProjectGroup(groupEl, projectName, visible.length, profile, teamNames);
             const groupNodes = [groupEl._sidebarRefs.header];
 
             for (const agent of topLevel) {
@@ -795,17 +841,22 @@ export class Sidebar {
         }, Math.max(0, nextAt - now));
     }
 
-    // Empty-world onboarding: name the village and teach the building metaphor.
+    // Empty-list copy follows the village phase: an empty list while syncing
+    // or while a source is unreadable is not an empty village.
     _emptyLegendNodes() {
-        return [
-            el('div', { className: 'sidebar__empty' }, [
-                el('div', { className: 'sidebar__empty-title', text: 'THE VILLAGE AWAITS' }),
-                el('div', {
-                    className: 'sidebar__empty-cta',
-                    text: 'Start a coding session to populate the village.',
-                }),
-            ]),
-        ];
+        const root = el('div', { className: 'sidebar__empty' }, [
+            el('div', { className: 'sidebar__empty-title' }),
+            el('div', { className: 'sidebar__empty-cta' }),
+        ]);
+        this._paintEmptyLegend(root);
+        return [root];
+    }
+
+    _paintEmptyLegend(root) {
+        const [title, cta] = root.children;
+        const copy = SIDEBAR_EMPTY_COPY[this._villagePhase] || SIDEBAR_EMPTY_COPY[VillagePhase.SYNCING];
+        this._setText(title, copy.title);
+        this._setText(cta, copy.cta);
     }
 
     _isRenderHidden() {
@@ -919,30 +970,44 @@ export class Sidebar {
         const dot = el('span', {
             className: ['sidebar__project-dot', 'sidebar__project-dot--repo'],
         });
+        dot.setAttribute('aria-hidden', 'true');
         const name = el('span', { className: 'sidebar__project-name' });
+        const teams = el('span', { className: 'sidebar__project-teams' });
         const count = el('span', { className: 'sidebar__project-count' });
         const header = el('div', { className: 'sidebar__project-header' }, [
             dot,
-            el('span', { className: 'sidebar__label-icon', text: '#' }),
             name,
+            teams,
             count,
         ]);
         const group = el('div', { className: 'sidebar__project-group' }, [header]);
-        group._sidebarRefs = { header, dot, name, count };
+        group._sidebarRefs = { header, dot, name, teams, count };
         return group;
     }
 
-    _patchProjectGroup(group, projectName, count, profile) {
+    // 7.5 — the header is a quiet eyebrow: an 8x8 repo swatch, the name, one
+    // 8x8 swatch per team present in the group (team identity left the rows),
+    // and the count. Repo colour never lands on text.
+    _patchProjectGroup(group, projectName, count, profile, teamNames = []) {
         const refs = group._sidebarRefs;
-        const labelColor = profile.labelText || profile.accent;
-        this._setStyle(refs.header, 'borderLeftColor', profile.panelBorder || profile.accent);
-        this._setStyle(refs.header, 'background', profile.panel);
         this._setStyle(refs.dot, 'background', profile.accent);
-        this._setStyle(refs.dot, 'boxShadow', `0 0 6px ${profile.glow}`);
         this._setText(refs.name, projectName);
-        this._setStyle(refs.name, 'color', labelColor);
         this._setText(refs.count, count);
-        this._setStyle(refs.count, 'color', labelColor);
+        const teamKey = teamNames.join('\u0001');
+        if (refs.teams._sidebarTeamKey !== teamKey) {
+            refs.teams._sidebarTeamKey = teamKey;
+            replaceChildren(refs.teams, teamNames.map((teamName) => {
+                const label = `Team ${shortTeamName(teamName)}`;
+                const swatch = el('span', {
+                    className: 'sidebar__team-swatch',
+                    title: label,
+                    ariaLabel: label,
+                    style: { background: getTeamColor(teamName).accent },
+                });
+                swatch.setAttribute('role', 'img');
+                return swatch;
+            }));
+        }
     }
 
     _createWorkflowGroup(workflowId) {
@@ -986,6 +1051,8 @@ export class Sidebar {
         const signature = [
             agent.name,
             agent.status,
+            agent.waitReason,
+            agent.pendingTool,
             agent.model,
             agent.effort,
             agent.provider,
@@ -1005,27 +1072,28 @@ export class Sidebar {
         return row;
     }
 
+    // 7.5 — one row on a 16px rhythm: `8px status square | name / Model · state
+    // | age`. Provider and team left the row; both stay in the row title.
     _createAgentRow(agentId) {
         const nameText = document.createTextNode('');
-        const team = el('span', { className: 'sidebar__team-icon', text: 'T' });
         const workflow = el('span', { className: 'sidebar__workflow-icon', text: 'W' });
         const name = el('span', { className: 'sidebar__agent-name' }, [nameText]);
-        const provider = el('span', { style: { fontWeight: 'bold' } });
         const modelText = document.createTextNode('');
-        const age = el('span');
-        const model = el('span', { className: 'sidebar__agent-model' }, [provider, modelText]);
+        const state = el('span', { className: 'sidebar__agent-state' });
+        // State leads the sub-line so a narrow column clips the model, never
+        // the one word that matters.
+        const model = el('span', { className: 'sidebar__agent-model' }, [state, modelText]);
         const match = el('span', {
             className: ['sidebar__agent-model', 'sidebar__agent-match'],
         });
         const info = el('span', { className: 'sidebar__agent-info' }, [name, model]);
         const dot = el('span', { className: 'sidebar__agent-dot' });
-        const caret = el('span', { className: 'sidebar__working-caret' });
-        caret.setAttribute('aria-hidden', 'true');
-        const rail = el('span', { className: 'sidebar__agent-rail' }, [dot]);
+        dot.setAttribute('aria-hidden', 'true');
+        const age = el('span', { className: 'sidebar__agent-age' });
         const select = el('button', {
             className: 'sidebar__agent-select',
             dataset: { agentId },
-        }, [rail, info]);
+        }, [dot, info, age]);
         select.type = 'button';
         select.tabIndex = -1;
         const parent = el('button', { className: 'sidebar__agent-parent' });
@@ -1035,13 +1103,12 @@ export class Sidebar {
             dataset: { agentId },
         }, [select]);
         row._sidebarRefs = {
-            nameText, team, workflow, name, provider, modelText, age, model,
-            match, info, dot, caret, rail, select, parent,
+            nameText, workflow, name, modelText, state, age, model,
+            match, info, dot, select, parent,
         };
         row._elapsedUnsubscribe = subscribeElapsedText(age, () => {
             const current = this.world.agents.get(agentId);
-            const text = current ? formatStatusElapsed(current) : '';
-            return text ? ` · ${text}` : '';
+            return current ? shortStatusAge(current) : '';
         });
         return row;
     }
@@ -1049,7 +1116,6 @@ export class Sidebar {
     _patchAgentRow(row, agent, profile, extras, parentAgent) {
         const model = modelPresentation(agent);
         const provider = providerPresentation(agent.provider, model.identity);
-        const team = agent.teamName ? getTeamColor(agent.teamName) : null;
         const teamLabel = agent.teamName ? `Team ${shortTeamName(agent.teamName)}` : '';
         const status = statusClass(agent.status);
         const agentClasses = ['sidebar__agent', `sidebar__agent--${status}`];
@@ -1062,32 +1128,21 @@ export class Sidebar {
             row._sidebarRepoColor = profile.accent;
         }
         this._setNodeText(refs.nameText, agent.name || '');
-        this._setStyle(refs.name, 'color', profile.accent);
 
-        this._toggleOptional(refs.name, refs.team, Boolean(team), refs.workflow.parentNode === refs.name
-            ? refs.workflow
-            : refs.nameText);
-        if (team) {
-            this._setAttribute(refs.team, 'title', teamLabel);
-            this._setAttribute(refs.team, 'aria-label', teamLabel);
-            this._setStyle(refs.team, 'background', team.accent);
-            this._setStyle(refs.team, 'boxShadow', `0 0 6px ${team.glow}`);
-        }
         this._toggleOptional(refs.name, refs.workflow, Boolean(agent.workflowName), refs.nameText);
-        if (agent.workflowName) {
-            const workflowLabel = `Workflow ${agent.workflowName}`;
+        const workflowLabel = agent.workflowName ? `Workflow ${agent.workflowName}` : '';
+        if (workflowLabel) {
             this._setAttribute(refs.workflow, 'title', workflowLabel);
             this._setAttribute(refs.workflow, 'aria-label', workflowLabel);
         }
 
-        this._setText(refs.provider, provider.icon);
-        this._setStyle(refs.provider, 'color', provider.color);
-        this._setNodeText(refs.modelText, ` ${model.label}`);
-        this._toggleOptional(refs.model, refs.age, Boolean(extras.ageText));
-        if (extras.ageText) {
-            this._setText(refs.age, ` · ${extras.ageText}`);
-            this._setAttribute(refs.age, 'title', `Last active ${extras.ageText}`);
-        }
+        // Sub-line: `state · Model`. The adapter's wait reason, when known, is
+        // the state ("waiting for approval — Bash").
+        const reason = waitReasonLabel(agent);
+        const stateText = reason ? lowerFirst(reason) : statusPresentation(agent.status).label.toLowerCase();
+        this._setNodeText(refs.modelText, model.label ? ` · ${model.label}` : '');
+        this._setText(refs.state, stateText);
+        this._setAttribute(refs.age, 'title', extras.ageText || '');
         this._toggleOptional(refs.info, refs.match, Boolean(extras.searchContext));
         if (extras.searchContext) {
             this._setText(refs.match, extras.searchContext);
@@ -1110,7 +1165,17 @@ export class Sidebar {
 
         const dotClass = `sidebar__agent-dot sidebar__agent-dot--${status}`;
         if (refs.dot.className !== dotClass) refs.dot.className = dotClass;
-        this._toggleOptional(refs.rail, refs.caret, status === 'working');
+        this._setAttribute(
+            refs.select,
+            'title',
+            [
+                agent.name || agent.id,
+                [provider.badge.label, model.label].filter(Boolean).join(' '),
+                extras.ageText || stateText,
+                teamLabel,
+                workflowLabel,
+            ].filter(Boolean).join(' · '),
+        );
         this._setAttribute(
             refs.select,
             'aria-label',
@@ -1190,46 +1255,36 @@ export class Sidebar {
 
         if (repos.length === 0) {
             replaceChildren(this.harborListEl, [
-                el('div', { className: ['sidebar__agent', 'sidebar__harbor-empty'], text: 'No pending commits' }),
+                el('div', { className: 'sidebar__harbor-empty', text: 'No pending commits' }),
             ]);
             return;
         }
 
+        // Harbor rows share the agent row grid: repo swatch | repo / branch ·
+        // oldest | pending-commit count. Repo colour stays on the rail + swatch.
         const nodes = repos.map(repo => {
             const { profile } = repo;
             const disclosure = `best-effort scan - newest 120 commits per branch - repo-watch window 7 days${repo.countCapped ? ' - count capped' : ''}`;
             const sourceTitle = repo.branch ? `${repo.project} (${repo.branch})` : repo.project;
-            const infoChildren = [
-                el('span', {
-                    className: 'sidebar__agent-name',
-                    text: repo.name,
-                    style: { color: profile.labelText || profile.accent },
-                }),
-                el('span', { className: 'sidebar__agent-model', text: repo.detailText }),
-            ];
-            return el('div', {
+            const sub = `${repo.branch || 'unknown branch'}${repo.ageLabel ? ` · oldest ${repo.ageLabel}` : ''}`;
+            const row = el('div', {
                 className: ['sidebar__agent', 'sidebar__harbor-row'],
-                title: `${sourceTitle} - ${disclosure}`,
-                style: {
-                    borderLeftColor: profile.panelBorder || profile.accent,
-                    background: profile.panel,
-                },
+                title: `${sourceTitle} - ${repo.detailText} - ${disclosure}`,
             }, [
-                el('span', {
-                    className: ['sidebar__agent-dot', 'sidebar__harbor-dot'],
-                    style: {
-                        background: profile.accent,
-                        boxShadow: `0 0 6px ${profile.glow}`,
-                    },
-                }),
-                el('span', { className: 'sidebar__label-icon', text: repo.branch ? 'br' : '#' }),
-                el('div', { className: 'sidebar__agent-info' }, infoChildren),
-                el('span', {
-                    className: ['sidebar__project-count', 'sidebar__harbor-count'],
-                    text: repo.count,
-                    style: { color: profile.labelText || profile.accent },
-                }),
+                el('div', { className: 'sidebar__agent-select' }, [
+                    el('span', { className: ['sidebar__agent-dot', 'sidebar__harbor-dot'] }),
+                    el('span', { className: 'sidebar__agent-info' }, [
+                        el('span', { className: 'sidebar__agent-name', text: repo.name }),
+                        el('span', { className: 'sidebar__agent-model', text: sub }),
+                    ]),
+                    el('span', {
+                        className: ['sidebar__agent-age', 'sidebar__harbor-count'],
+                        text: repo.countCapped ? `${repo.count}+` : repo.count,
+                    }),
+                ]),
             ]);
+            if (profile.accent) row.style.setProperty('--cv-repo-color', profile.accent);
+            return row;
         });
         replaceChildren(this.harborListEl, nodes);
     }
@@ -1249,6 +1304,7 @@ export class Sidebar {
         eventBus.off('agent:removed', this._onAgentRemoved);
         eventBus.off('harbor:updated', this._onHarborUpdate);
         eventBus.off(DASHBOARD_FILTER_REQUEST_EVENT, this._onSharedFilterRequest);
+        eventBus.off('village:state', this._onVillageState);
         if (typeof document !== 'undefined') {
             document.removeEventListener('visibilitychange', this._onVisibilityChange);
         }

@@ -5,7 +5,9 @@ export function attentionCandidateBounds(candidate) {
     if (candidate.bounds) return candidate.bounds;
     return {
         minX: candidate.x - 44, maxX: candidate.x + 44,
-        minY: candidate.y - 96, maxY: candidate.y + 12,
+        // Tallest 1:1 body (plan 2.1: ≤ 76 texels) plus the screen-fixed T1
+        // beacon and attention plate (~42 px, i.e. ~28 texels at zoom 1.5).
+        minY: candidate.y - 104, maxY: candidate.y + 12,
     };
 }
 

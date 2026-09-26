@@ -1,6 +1,8 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { VERIFIED_OUTCOME_EVENT } from './ChronicleEvents.js';
+import { fillConvex } from './EffectStamps.js';
+import { fillPixelEllipse } from './PixelShapes.js';
 
 export const CHRONICLER_HOME = Object.freeze({ tileX: 8, tileY: 17 });
 export const CHRONICLER_QUEUE_LIMIT = 4;
@@ -14,6 +16,10 @@ const LANDMARKS = Object.freeze({
 });
 const SPEED_TILES_PER_FRAME = 0.018;
 const SPRITE_ID = 'character.chronicler';
+// Procedural fallback body in world texels (pixel grammar: scanline fills
+// only). The outline polygon is the robe grown by one texel.
+const ROBE_OUTLINE = Object.freeze([[0, -30], [11, -7], [6, 6], [-7, 6], [-11, -7]]);
+const ROBE = Object.freeze([[0, -28], [10, -7], [5, 5], [-6, 5], [-10, -7]]);
 
 function finiteTarget(event, fallback) {
     const tileX = event?.tileX == null || event?.tileX === '' ? NaN : Number(event.tileX);
@@ -189,7 +195,7 @@ export class Chronicler {
         }];
     }
 
-    draw(ctx, drawable, zoom = 1) {
+    draw(ctx, drawable) {
         const payload = drawable?.payload || drawable || {};
         const x = Math.round(payload.x || 0);
         const y = Math.round(payload.y || 0);
@@ -199,45 +205,29 @@ export class Chronicler {
             ctx.drawImage(img, Math.round(x - dims.w / 2), Math.round(y - dims.h + 10));
             return;
         }
-        this._drawProcedural(ctx, x, y, zoom);
+        this._drawProcedural(ctx, x, y);
     }
 
-    _drawProcedural(ctx, x, y, zoom) {
+    _drawProcedural(ctx, x, y) {
         const walking = this.phase === 'outbound' || this.phase === 'returning';
-        const bob = this.motionScale && walking ? Math.sin(this.frame) * 1.2 : 0;
+        const bob = this.motionScale && walking ? Math.round(Math.sin(this.frame) * 1.2) : 0;
         ctx.save();
         ctx.translate(x, y + bob);
-        ctx.fillStyle = 'rgba(20, 16, 12, 0.28)';
-        ctx.beginPath();
-        ctx.ellipse(0, 6, 10, 4, 0, 0, Math.PI * 2);
-        ctx.fill();
+        fillPixelEllipse(ctx, 0, 6, 10, 4, 'rgba(20, 16, 12, 0.28)');
+        ctx.fillStyle = '#2f2638';
+        fillConvex(ctx, ROBE_OUTLINE);
         ctx.fillStyle = '#5b4a68';
-        ctx.strokeStyle = '#2f2638';
-        ctx.lineWidth = 1 / Math.max(1, zoom);
-        ctx.beginPath();
-        ctx.moveTo(0, -28);
-        ctx.lineTo(10, -7);
-        ctx.lineTo(5, 5);
-        ctx.lineTo(-6, 5);
-        ctx.lineTo(-10, -7);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+        fillConvex(ctx, ROBE);
         ctx.fillStyle = '#d7b979';
         ctx.fillRect(3, -9, 9, 6);
         ctx.fillStyle = '#f1dfae';
         ctx.fillRect(4, -8, 7, 4);
-        ctx.strokeStyle = '#33283a';
-        ctx.beginPath();
-        ctx.moveTo(-8, -5);
-        ctx.lineTo(-12, -24);
-        ctx.stroke();
+        // Staff: a one-texel stepped line from the hand up to the scroll.
+        ctx.fillStyle = '#33283a';
+        for (let row = -24; row <= -5; row++) ctx.fillRect(Math.round(-12 + (row + 24) * 4 / 19), row, 1, 1);
         ctx.fillStyle = '#d7b979';
         ctx.fillRect(-13, -25, 3, 7);
-        ctx.fillStyle = '#f2d9a0';
-        ctx.beginPath();
-        ctx.arc(0, -20, 6, 0, Math.PI * 2);
-        ctx.fill();
+        fillPixelEllipse(ctx, 0, -20, 6, 6, '#f2d9a0');
         ctx.restore();
     }
 }

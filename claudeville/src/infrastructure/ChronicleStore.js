@@ -42,6 +42,38 @@ function txDone(tx) {
     });
 }
 
+// Walks a cursor inside the caller's transaction, deleting rows `shouldDelete`
+// accepts until `limit` deletions. `onDone(deleted)` runs from the final
+// success event, so follow-up requests stay inside the still-active
+// transaction. A failed request aborts the transaction, which rejects the
+// caller's `txDone`.
+function deleteByCursor(source, range, { shouldDelete = null, limit = Infinity } = {}, onDone = () => {}) {
+    let deleted = 0;
+    if (limit <= 0) {
+        onDone(deleted);
+        return;
+    }
+    const request = source.openCursor(range);
+    request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor || deleted >= limit) {
+            onDone(deleted);
+            return;
+        }
+        if (!shouldDelete || shouldDelete(cursor.value)) {
+            cursor.delete();
+            deleted++;
+        }
+        cursor.continue();
+    };
+}
+
+function indexOrStore(store, index) {
+    return index && store.indexNames.contains(index) ? store.index(index) : store;
+}
+
+const PRUNE_STORES = ['manifests', 'monuments', 'trailSamples', 'affinities', 'events', 'meta'];
+
 function randomToken() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
     return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -368,31 +400,6 @@ export class ChronicleStore {
         return accumulator;
     }
 
-    async deleteRange(storeName, { index = 'ts', lower = null, upper = null } = {}) {
-        await this.open();
-        const tx = this.db.transaction(storeName, 'readwrite');
-        const store = tx.objectStore(storeName);
-        const source = index && store.indexNames.contains(index) ? store.index(index) : store;
-        const range = this._range(lower, upper);
-        let deleted = 0;
-        await new Promise((resolve, reject) => {
-            const request = source.openCursor(range);
-            request.onerror = () => reject(request.error);
-            request.onsuccess = () => {
-                const cursor = request.result;
-                if (!cursor) {
-                    resolve();
-                    return;
-                }
-                cursor.delete();
-                deleted++;
-                cursor.continue();
-            };
-        });
-        await txDone(tx);
-        return deleted;
-    }
-
     async count(storeName, indexName = null, range = null) {
         await this.open();
         const tx = this.db.transaction(storeName, 'readonly');
@@ -404,27 +411,55 @@ export class ChronicleStore {
     async prune(now = nowMs()) {
         const manifestCutoff = now - RETENTION_MS.manifests;
         const pinnedCutoff = now - RETENTION_MS.pinnedManifest;
-        const monumentCutoff = now - RETENTION_MS.monuments;
-        const trailCutoff = now - RETENTION_MS.trailSamples;
-        const deleted = {
-            manifests: await this._deleteWhere('manifests', record => (
-                Number(record.ts || 0) < (record.pinned ? pinnedCutoff : manifestCutoff)
-            )),
-            monuments: await this.deleteRange('monuments', { index: 'plantedAt', upper: monumentCutoff }),
-            trailSamples: await this.deleteRange('trailSamples', { upper: trailCutoff }),
-            affinities: await this.deleteRange('affinities', {
-                index: 'lastInteractionAt',
-                upper: now - RETENTION_MS.affinities,
-            }),
-            // Keep complete local calendar days rather than a rolling duration:
-            // yesterday should not disappear part-way through the afternoon.
-            events: await this.deleteRange('events', {
-                upper: eventRetentionCutoff(now, this.eventRetentionDays) - 1,
-            }),
-        };
-        const overflowEvents = await this._trimOldest('events', EVENT_RETENTION_MAX_ROWS, 'ts');
-        deleted.events += overflowEvents;
-        await this.put('meta', { key: 'lastPruneAt', value: now });
+        const deleted = { manifests: 0, monuments: 0, trailSamples: 0, affinities: 0, events: 0 };
+        await this.open();
+        // One readwrite transaction keeps the prune atomic and makes any later
+        // transaction on these stores wait for all of it, instead of slipping
+        // in between a chain of per-store transactions (and their in-flight
+        // request listeners) that runs for up to a second on a busy page.
+        const tx = this.db.transaction(PRUNE_STORES, 'readwrite');
+        const done = txDone(tx);
+        deleteByCursor(tx.objectStore('manifests'), null, {
+            shouldDelete: record => Number(record.ts || 0) < (record.pinned ? pinnedCutoff : manifestCutoff),
+        }, count => { deleted.manifests = count; });
+        deleteByCursor(
+            indexOrStore(tx.objectStore('monuments'), 'plantedAt'),
+            this._range(null, now - RETENTION_MS.monuments),
+            {},
+            count => { deleted.monuments = count; },
+        );
+        deleteByCursor(
+            indexOrStore(tx.objectStore('trailSamples'), 'ts'),
+            this._range(null, now - RETENTION_MS.trailSamples),
+            {},
+            count => { deleted.trailSamples = count; },
+        );
+        deleteByCursor(
+            indexOrStore(tx.objectStore('affinities'), 'lastInteractionAt'),
+            this._range(null, now - RETENTION_MS.affinities),
+            {},
+            count => { deleted.affinities = count; },
+        );
+        // Keep complete local calendar days rather than a rolling duration:
+        // yesterday should not disappear part-way through the afternoon. The
+        // hard row ceiling then trims the oldest survivors.
+        const events = tx.objectStore('events');
+        deleteByCursor(
+            indexOrStore(events, 'ts'),
+            this._range(null, eventRetentionCutoff(now, this.eventRetentionDays) - 1),
+            {},
+            (expired) => {
+                deleted.events = expired;
+                const countRequest = events.count();
+                countRequest.onsuccess = () => {
+                    deleteByCursor(indexOrStore(events, 'ts'), null, {
+                        limit: Math.max(0, countRequest.result - EVENT_RETENTION_MAX_ROWS),
+                    }, (overflow) => { deleted.events += overflow; });
+                };
+            },
+        );
+        tx.objectStore('meta').put({ key: 'lastPruneAt', value: now });
+        await done;
         return deleted;
     }
 
@@ -729,59 +764,6 @@ export class ChronicleStore {
         if (lower != null) return IDBKeyRange.lowerBound(lower);
         if (upper != null) return IDBKeyRange.upperBound(upper);
         return null;
-    }
-
-    async _deleteWhere(storeName, predicate) {
-        await this.open();
-        const tx = this.db.transaction(storeName, 'readwrite');
-        const store = tx.objectStore(storeName);
-        let deleted = 0;
-        await new Promise((resolve, reject) => {
-            const request = store.openCursor();
-            request.onerror = () => reject(request.error);
-            request.onsuccess = () => {
-                const cursor = request.result;
-                if (!cursor) {
-                    resolve();
-                    return;
-                }
-                if (predicate(cursor.value)) {
-                    cursor.delete();
-                    deleted++;
-                }
-                cursor.continue();
-            };
-        });
-        await txDone(tx);
-        return deleted;
-    }
-
-    async _trimOldest(storeName, maxRows, index = 'ts') {
-        const total = await this.count(storeName);
-        let remaining = Math.max(0, total - maxRows);
-        if (!remaining) return 0;
-        await this.open();
-        const tx = this.db.transaction(storeName, 'readwrite');
-        const store = tx.objectStore(storeName);
-        const source = index && store.indexNames.contains(index) ? store.index(index) : store;
-        let deleted = 0;
-        await new Promise((resolve, reject) => {
-            const request = source.openCursor();
-            request.onerror = () => reject(request.error);
-            request.onsuccess = () => {
-                const cursor = request.result;
-                if (!cursor || remaining <= 0) {
-                    resolve();
-                    return;
-                }
-                cursor.delete();
-                deleted++;
-                remaining--;
-                cursor.continue();
-            };
-        });
-        await txDone(tx);
-        return deleted;
     }
 
     _readLease() {

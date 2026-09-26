@@ -113,16 +113,16 @@ test('mine ritual functional overlay draws once per frame in Canvas and GPU back
         _roomInstrumentFor: () => null,
         _mineSeamColor: () => '#ffc15a',
         _mineReserveRatio: () => 0.64,
-        _mineRailSpan: mouth => ({
-            railA: mouth,
-            railB: { x: mouth.x + 20, y: mouth.y },
+        _mineRailSpan: () => ({
+            railA: { x: 128, y: 158 },
+            railB: { x: 148, y: 158 },
             railLen: 20,
             ux: 1,
             uy: 0,
             nx: 0,
             ny: 1,
         }),
-        _drawMineRitual: (_ctx, _mouth, record) => {
+        _drawMineRitual: (_ctx, _mouth, _rail, record) => {
             assert.strictEqual(record, ritual);
             ritualDraws++;
         },

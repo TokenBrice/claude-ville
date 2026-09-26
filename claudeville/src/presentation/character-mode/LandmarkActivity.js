@@ -1,9 +1,12 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { WORLD_BODY_FONT } from '../../config/theme.js';
+import { WORLD_BODY_FONT_11 } from '../../config/theme.js';
+import { measureLabelText } from './WorldLabelKit.js';
 import { tileToWorld, worldToTile } from './Projection.js';
-import { compactToolLabel, isCommandToolName, isTaskCommandInput } from '../../domain/services/ToolIdentity.js';
+import { compactToolLabel, isCommandToolName, isTaskCommandInput, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
 import { providerColor } from './ArrivalDeparture.js';
 import { resolveObservation } from './ObservationCertainty.js';
+import { diamond, dottedCurve, gradeTone, snap } from './EffectStamps.js';
+import { fillPixelEllipse } from './PixelShapes.js';
 
 const MAX_ITEMS_PER_KIND = 10;
 const SNAPSHOT_TTL_MS = 18000;
@@ -61,27 +64,22 @@ const FORGE_BILLET_THRESHOLDS = [1, 4, 10];
 // workshop.
 const FORGE_BANK_IDLE_MS = 600000;
 
-const BUILDING_OFFSETS = {
-    command: [
-        { x: -42, y: -48 }, { x: -16, y: -62 }, { x: 20, y: -58 }, { x: 44, y: -36 },
-    ],
-    forge: [
-        { x: -28, y: -30 }, { x: -6, y: -42 }, { x: 20, y: -30 }, { x: 38, y: -12 },
-    ],
-    mine: [
-        { x: -34, y: -24 }, { x: -10, y: -36 }, { x: 22, y: -30 }, { x: 42, y: -12 },
-    ],
-    taskboard: [
-        { x: -36, y: -34 }, { x: -12, y: -46 }, { x: 14, y: -40 }, { x: 38, y: -24 },
-    ],
-};
-
-const TOOL_LABELS = {
-    forge: 'PATCH',
-    taskboard: 'CHECK',
-    command: 'SEND',
-    mine: 'TOK',
-};
+// Activity chips stand on the ground in front of the building's door, never on
+// its face: world-texel offsets from the centre of the tile one step out from
+// the entrance, fanned across the apron.
+const CHIP_SLOTS = 4;
+const ENTRANCE_CHIP_OFFSETS = [
+    { x: -24, y: 0 }, { x: -8, y: 4 }, { x: 8, y: 4 }, { x: 24, y: 0 },
+];
+// 4.5 — the re-authored mine's yard: the end of the baked track, then along
+// the rubble foot toward the SE (sprite-local [56,209] … [140,229]). The ore
+// carts are yard objects, so they keep their building-centre offsets.
+const MINE_CART_OFFSETS = [
+    { x: -72, y: 6 }, { x: -44, y: 14 }, { x: -16, y: 20 }, { x: 12, y: 26 },
+];
+// A chit shows `verb · detail` only while it fits this many screen pixels;
+// past that it shows the verb alone, never a word cut in half (S14).
+const CHIT_MAX_TEXT_PX = 132;
 
 function toWorld(tileX, tileY) {
     return tileToWorld(tileX, tileY);
@@ -117,7 +115,7 @@ function mixHex(a, b, ratio) {
     const from = parse(a);
     const to = parse(b);
     const t = Math.max(0, Math.min(1, Number(ratio) || 0));
-    return `rgb(${from.map((value, i) => Math.round(value + (to[i] - value) * t)).join(', ')})`;
+    return `#${from.map((value, i) => Math.round(value + (to[i] - value) * t).toString(16).padStart(2, '0')).join('')}`;
 }
 
 function cargoFromTokenBeat(current, previous, deltaTotal) {
@@ -241,10 +239,11 @@ function isCommandTool(agent) {
     return isCommandToolName(agent?.currentTool);
 }
 
-function commandActivityLabel(agent) {
-    if (agent?.currentTool === 'SendMessage') return 'MSG';
-    if (agent?.currentTool === 'Task') return 'SUMMON';
-    return compactToolLabel(agent?.currentTool, TOOL_LABELS.command, 10);
+// The file an edit touched, as its whole base name (no truncation here; the
+// chit drops it rather than cut it).
+function fileBaseName(input) {
+    const name = compactToolLabel(input, '', 80);
+    return /[./\\]/.test(String(input || '')) ? name : '';
 }
 
 const LANDMARK_ACTIVITY_SCENE_ITEMS = [];
@@ -263,7 +262,11 @@ export const LANDMARK_ACTIVITY_SCENE_CATEGORY = Object.freeze({
     },
     canvasFallback(ctx, drawable, zoom, context = {}) {
         const landmarkActivity = context.renderer?.landmarkActivity || context.landmarkActivity;
-        landmarkActivity?.draw?.(ctx, drawable, zoom);
+        const buildingRenderer = context.buildingRenderer || context.renderer?.buildingRenderer || null;
+        // On the ungraded overlay the chips take the frame's C2 grade here;
+        // the Canvas depth pass is graded after the draw.
+        const lightGrade = context.ungradedOverlay ? buildingRenderer?.atmosphereState?.lightGrade || null : null;
+        landmarkActivity?.draw?.(ctx, drawable, zoom, buildingRenderer, lightGrade);
     },
     unsupported: 'overlay-safe',
     overlayBand: 60,
@@ -317,6 +320,8 @@ export class LandmarkActivity {
         this._countByType = new Map();
         this._lastPresenceEmit = 0;
         this._disposed = false;
+        this._chitRenderer = null;
+        this._chitRects = [];
     }
 
     setMotionScale(scale) {
@@ -419,6 +424,8 @@ export class LandmarkActivity {
     enumerateDrawables(now = Date.now()) {
         if (this._disposed) return [];
         const drawables = [];
+        // Chit collision rects are per frame; enumeration starts the frame.
+        this._chitRects.length = 0;
         for (const item of this.items.values()) {
             const pos = this._itemPosition(item, now);
             if (!pos) continue;
@@ -460,19 +467,45 @@ export class LandmarkActivity {
         return `${formatExactCount(cargo.input)} input · ${formatExactCount(cargo.cacheRead)} cache read · ${scope}`;
     }
 
-    draw(ctx, drawable, zoom = 1) {
+    // `buildingRenderer` supplies the 5.6 face-chit grammar: its visibility
+    // gate (selection, hover or zoom >= 3) and its screen-fixed 11 px plate.
+    // Every item here is a snapped art-pixel stamp on the ground in front of
+    // the door, shown only under that gate; connection paths only while one
+    // of their endpoints is selected. `lightGrade` is the C2 grade to apply
+    // when drawing to the ungraded overlay (null where the frame is graded
+    // afterwards). The Mine's ore carts are yard objects and always draw.
+    draw(ctx, drawable, zoom = 1, buildingRenderer = null, lightGrade = null) {
         const item = drawable?.payload || drawable;
         if (!item) return;
-        if (item.type === 'forge') return this._drawForgeItem(ctx, item, zoom);
-        if (item.type === 'handoff') return this._drawHandoffItem(ctx, item, zoom);
-        if (item.type === 'task') return this._drawTaskItem(ctx, item, zoom);
-        if (item.type === 'chat') return this._drawChatItem(ctx, item, zoom);
-        if (item.type === 'chat-line') {
-            return this._drawConnection(ctx, item, item.color || '#f2d36b', zoom, { arrow: true, alphaScale: 0.55 });
+        this._chitRenderer = buildingRenderer;
+        this._lightGrade = lightGrade;
+        if (item.type === 'token') return this._drawTokenItem(ctx, item);
+        if (item.type === 'chat-line' || item.type === 'dispatch-line') {
+            if (!this._connectionVisible(item)) return;
+            const color = item.type === 'chat-line' ? item.color || '#f2d36b' : '#f6c85f';
+            return this._drawConnection(ctx, item, color);
         }
-        if (item.type === 'token') return this._drawTokenItem(ctx, item, zoom);
-        if (item.type === 'command') return this._drawCommandItem(ctx, item, zoom);
-        if (item.type === 'dispatch-line') return this._drawConnection(ctx, item, '#f6c85f', zoom);
+        if (!this._chipVisible(item)) return;
+        if (item.type === 'forge') return this._drawForgeItem(ctx, item);
+        if (item.type === 'handoff') return this._drawHandoffItem(ctx, item);
+        if (item.type === 'task') return this._drawTaskItem(ctx, item);
+        if (item.type === 'command') return this._drawCommandItem(ctx, item);
+    }
+
+    _tone(hex) {
+        return gradeTone(hex, this._lightGrade);
+    }
+
+    _chipVisible(item) {
+        const plates = this._chitRenderer;
+        if (typeof plates?._chitsVisible !== 'function') return false;
+        if (item.type === 'handoff') return plates._chitsVisible('forge') || plates._chitsVisible('taskboard');
+        return plates._chitsVisible(item.building || null);
+    }
+
+    _connectionVisible(item) {
+        const selected = this._selectedAgentId;
+        return Boolean(selected) && (selected === item.agentId || selected === item.partnerId);
     }
 
     _observeToolActivity(agent, now) {
@@ -773,7 +806,7 @@ export class LandmarkActivity {
             expiresAt: now + TOKEN_ITEM_TTL_MS,
             delta,
             cargo,
-            slot: stableHash(id) % BUILDING_OFFSETS.mine.length,
+            slot: stableHash(id) % MINE_CART_OFFSETS.length,
             sortOffset: 4,
         });
         this._recencyByType.set('mine', now);
@@ -794,19 +827,20 @@ export class LandmarkActivity {
             const id = `dispatch-line:${agent.parentSessionId}:${agent.id}:${agent.lastSessionActivity || 'live'}`;
             if (this.seenSnapshots.has(id)) continue;
             this.seenSnapshots.add(id);
-            const command = this._buildingCenter('command');
+            const command = this._entranceGround('command');
             if (!command) continue;
             this.items.set(id, {
                 id,
                 type: 'dispatch-line',
                 building: 'command',
+                agentId: agent.id,
+                partnerId: agent.parentSessionId,
                 createdAt: now,
                 expiresAt: now + 3500,
                 startX: command.x,
-                startY: command.y - 68,
+                startY: command.y,
                 endX: sprite.x,
                 endY: sprite.y - 42,
-                label: 'SUB',
                 sortOffset: -80,
             });
             this._capKind('dispatch-line', MAX_ITEMS_PER_KIND, id);
@@ -837,6 +871,8 @@ export class LandmarkActivity {
                         id,
                         type: 'chat-line',
                         building: 'command',
+                        agentId: agent.id,
+                        partnerId: sprite.chatPartner.agent?.id || null,
                         createdAt: now,
                         expiresAt: now + 2500,
                         messageAt: now,
@@ -846,7 +882,6 @@ export class LandmarkActivity {
                         endX: sprite.chatPartner.x,
                         endY: sprite.chatPartner.y - 48,
                         color: providerColor(agent.provider),
-                        label: 'MSG',
                         sortOffset: -60,
                     });
                 }
@@ -858,7 +893,7 @@ export class LandmarkActivity {
         const id = activityKey(agent, 'forge');
         if (this.seenSnapshots.has(id)) return;
         this.seenSnapshots.add(id);
-        const slot = stableHash(id) % BUILDING_OFFSETS.forge.length;
+        const slot = stableHash(id) % CHIP_SLOTS;
         this.items.set(id, {
             id,
             type: 'forge',
@@ -867,7 +902,8 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + SNAPSHOT_TTL_MS,
             slot,
-            label: compactToolLabel(agent.currentToolInput, TOOL_LABELS.forge, 10),
+            label: toolVerbLabel(agent.currentTool, agent.currentToolInput),
+            detail: fileBaseName(agent.currentToolInput),
             sortOffset: 6,
         });
         this.lastForgeByAgent.set(agent.id, { id, at: now });
@@ -879,7 +915,7 @@ export class LandmarkActivity {
         const id = activityKey(agent, 'task');
         if (this.seenSnapshots.has(id)) return;
         this.seenSnapshots.add(id);
-        const slot = stableHash(id) % BUILDING_OFFSETS.taskboard.length;
+        const slot = stableHash(id) % CHIP_SLOTS;
         this.items.set(id, {
             id,
             type: 'task',
@@ -888,7 +924,7 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + SNAPSHOT_TTL_MS,
             slot,
-            label: isTaskCommand(agent) ? 'VERIFY' : compactToolLabel(agent.currentTool, TOOL_LABELS.taskboard, 10),
+            label: isTaskCommand(agent) ? 'verify' : toolVerbLabel(agent.currentTool, agent.currentToolInput),
             isCheck: isTaskCommand(agent),
             sortOffset: 5,
         });
@@ -902,7 +938,6 @@ export class LandmarkActivity {
                 agentId: agent.id,
                 createdAt: now,
                 expiresAt: now + 14000,
-                label: 'READY',
                 sortOffset: 2,
             });
         }
@@ -914,7 +949,7 @@ export class LandmarkActivity {
         const id = activityKey(agent, 'command');
         if (this.seenSnapshots.has(id)) return;
         this.seenSnapshots.add(id);
-        const slot = stableHash(id) % BUILDING_OFFSETS.command.length;
+        const slot = stableHash(id) % CHIP_SLOTS;
         this.items.set(id, {
             id,
             type: 'command',
@@ -923,7 +958,7 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + COMMAND_ITEM_TTL_MS,
             slot,
-            label: commandActivityLabel(agent),
+            label: toolVerbLabel(agent.currentTool, agent.currentToolInput),
             sortOffset: -2,
         });
         this._recencyByType.set('command', now);
@@ -1028,8 +1063,8 @@ export class LandmarkActivity {
 
     _itemPosition(item, now) {
         if (item.type === 'handoff') {
-            const start = this._buildingCenter('forge');
-            const end = this._buildingCenter('taskboard');
+            const start = this._entranceGround('forge');
+            const end = this._entranceGround('taskboard');
             if (!start || !end) return null;
             const progress = this.motionScale === 0
                 ? 1
@@ -1037,21 +1072,22 @@ export class LandmarkActivity {
             const eased = 1 - Math.pow(1 - progress, 3);
             return {
                 x: start.x + (end.x - start.x) * eased,
-                y: start.y - 34 + (end.y - start.y) * eased,
+                y: start.y + (end.y - start.y) * eased,
                 progress,
             };
         }
 
-        const center = this._buildingCenter(item.building);
-        if (!center) return null;
-        const offsets = BUILDING_OFFSETS[item.building] || [{ x: 0, y: -32 }];
-        const offset = offsets[item.slot % offsets.length] || offsets[0];
+        const mine = item.building === 'mine';
+        const anchor = mine ? this._buildingCenter('mine') : this._entranceGround(item.building);
+        if (!anchor) return null;
+        const offsets = mine ? MINE_CART_OFFSETS : ENTRANCE_CHIP_OFFSETS;
+        const offset = offsets[(item.slot || 0) % offsets.length] || offsets[0];
         const age = now - item.createdAt;
-        const bob = this.motionScale ? Math.sin(this.frame * 0.09 + item.slot) * 2 : 0;
-        const settle = this.motionScale ? Math.min(1, age / 700) : 1;
+        // A chip drops onto its spot in two steps, then holds still.
+        const drop = this.motionScale && age < 350 ? (age < 175 ? 4 : 2) : 0;
         return {
-            x: center.x + offset.x,
-            y: center.y + offset.y - (1 - settle) * 10 + bob,
+            x: anchor.x + offset.x,
+            y: anchor.y + offset.y - drop,
             progress: Math.max(0, Math.min(1, age / Math.max(1, item.expiresAt - item.createdAt))),
         };
     }
@@ -1064,6 +1100,18 @@ export class LandmarkActivity {
         return toWorld(cx, cy);
     }
 
+    // The centre of the tile one step out from the building's door: open
+    // ground in front of the face, where the activity chips stand.
+    _entranceGround(type) {
+        const building = this.world?.buildings?.get(type);
+        if (!building) return null;
+        const entrance = building.entrance;
+        if (!entrance) return toWorld(building.position.tileX + building.width / 2, building.position.tileY + building.height + 0.5);
+        return toWorld(entrance.tileX + 0.5, entrance.tileY + 1.5);
+    }
+
+    // C4 stepped follow-through: the envelope lands on 1 / .66 / .33 quanta
+    // instead of a continuous fade.
     _itemAlpha(item, now) {
         const ttl = Math.max(1, item.expiresAt - item.createdAt);
         const age = Math.max(0, now - item.createdAt);
@@ -1075,238 +1123,192 @@ export class LandmarkActivity {
             const messageAge = Math.max(0, now - item.messageAt);
             alpha *= Math.max(0, 1 - messageAge / CHAT_LINE_MESSAGE_FADE_MS);
         }
-        return alpha;
+        return Math.ceil(alpha * 3 - 0.001) / 3;
     }
 
-    _drawForgeItem(ctx, item, zoom) {
-        const s = 1 / Math.max(1, zoom || 1);
+    // Forge: a billet on the apron, dark rim and a lit top edge.
+    _drawForgeItem(ctx, item) {
+        const x = snap(item.x);
+        const y = snap(item.y);
         ctx.save();
         ctx.globalAlpha = item.alpha;
-        ctx.fillStyle = 'rgba(255, 137, 66, 0.28)';
-        ctx.beginPath();
-        ctx.ellipse(item.x, item.y + 4 * s, 20 * s, 10 * s, -0.2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#f08a4b';
-        ctx.strokeStyle = '#3d2517';
-        ctx.lineWidth = Math.max(1, Math.round(2 * s));
-        ctx.beginPath();
-        ctx.moveTo(item.x - 12 * s, item.y - 4 * s);
-        ctx.lineTo(item.x + 8 * s, item.y - 10 * s);
-        ctx.lineTo(item.x + 16 * s, item.y);
-        ctx.lineTo(item.x - 5 * s, item.y + 8 * s);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        this._drawTinyLabel(ctx, item, item.x, item.y - 17 * s, s, '#ffd88a');
+        ctx.fillStyle = this._tone('#3d2517');
+        ctx.fillRect(x - 5, y - 3, 10, 5);
+        ctx.fillStyle = this._tone('#c8682e');
+        ctx.fillRect(x - 4, y - 2, 8, 3);
+        ctx.fillStyle = this._tone('#f08a4b');
+        ctx.fillRect(x - 4, y - 2, 8, 1);
+        this._drawTinyLabel(ctx, item, x, y - 12, '#ffd88a');
         ctx.restore();
     }
 
-    _drawHandoffItem(ctx, item, zoom) {
-        const s = 1 / Math.max(1, zoom || 1);
+    // Forge → Task board: a crate walking the dotted path between the doors.
+    _drawHandoffItem(ctx, item) {
+        const start = this._entranceGround('forge');
+        const end = this._entranceGround('taskboard');
         ctx.save();
-        ctx.globalAlpha = item.alpha;
-        ctx.strokeStyle = 'rgba(242, 211, 107, 0.48)';
-        ctx.lineWidth = Math.max(1, Math.round(2 * s));
-        const start = this._buildingCenter('forge');
-        const end = this._buildingCenter('taskboard');
+        ctx.globalAlpha = item.alpha * 0.66;
         if (start && end) {
-            ctx.beginPath();
-            ctx.moveTo(start.x, start.y - 36);
-            ctx.lineTo(end.x, end.y - 28);
-            ctx.stroke();
+            dottedCurve(ctx, start.x, start.y, (start.x + end.x) / 2, (start.y + end.y) / 2, end.x, end.y, {
+                step: 6,
+                color: this._tone('#f2d36b'),
+            });
         }
-        ctx.fillStyle = '#8a5530';
-        ctx.strokeStyle = '#2d1c12';
-        ctx.fillRect(Math.round(item.x - 10 * s), Math.round(item.y - 10 * s), Math.round(20 * s), Math.round(14 * s));
-        ctx.strokeRect(Math.round(item.x - 10 * s) + 0.5, Math.round(item.y - 10 * s) + 0.5, Math.round(20 * s), Math.round(14 * s));
-        ctx.fillStyle = '#f2d36b';
-        ctx.fillRect(Math.round(item.x - 2 * s), Math.round(item.y - 10 * s), Math.max(1, Math.round(4 * s)), Math.round(14 * s));
+        const x = snap(item.x);
+        const y = snap(item.y);
+        ctx.globalAlpha = item.alpha;
+        ctx.fillStyle = this._tone('#2d1c12');
+        ctx.fillRect(x - 4, y - 6, 9, 7);
+        ctx.fillStyle = this._tone('#8a5530');
+        ctx.fillRect(x - 3, y - 5, 7, 5);
+        ctx.fillStyle = this._tone('#f2d36b');
+        ctx.fillRect(x, y - 5, 1, 5);
         ctx.restore();
     }
 
-    _drawTaskItem(ctx, item, zoom) {
-        const s = 1 / Math.max(1, zoom || 1);
+    // Task board: a pinned note, with a pixel tick when the call is a check.
+    _drawTaskItem(ctx, item) {
+        const x = snap(item.x);
+        const y = snap(item.y);
         ctx.save();
         ctx.globalAlpha = item.alpha;
-        ctx.fillStyle = item.isCheck ? '#f2d36b' : '#e2c48a';
-        ctx.strokeStyle = item.isCheck ? '#5f4321' : '#4a3420';
-        ctx.lineWidth = 1;
-        ctx.fillRect(Math.round(item.x - 13 * s), Math.round(item.y - 12 * s), Math.round(26 * s), Math.round(18 * s));
-        ctx.strokeRect(Math.round(item.x - 13 * s) + 0.5, Math.round(item.y - 12 * s) + 0.5, Math.round(26 * s), Math.round(18 * s));
-        ctx.strokeStyle = 'rgba(68, 44, 24, 0.55)';
-        for (let i = 0; i < 3; i++) {
-            ctx.beginPath();
-            ctx.moveTo(item.x - 8 * s, item.y - (6 - i * 5) * s);
-            ctx.lineTo(item.x + 8 * s, item.y - (6 - i * 5) * s);
-            ctx.stroke();
-        }
+        ctx.fillStyle = this._tone(item.isCheck ? '#5f4321' : '#4a3420');
+        ctx.fillRect(x - 4, y - 8, 9, 9);
+        ctx.fillStyle = this._tone(item.isCheck ? '#f2d36b' : '#e2c48a');
+        ctx.fillRect(x - 3, y - 7, 7, 7);
+        ctx.fillStyle = this._tone('#8a6a48');
+        ctx.fillRect(x - 2, y - 5, 5, 1);
+        ctx.fillRect(x - 2, y - 3, 5, 1);
         if (item.isCheck) {
-            ctx.strokeStyle = '#2c6b45';
-            ctx.lineWidth = Math.max(1, Math.round(2 * s));
-            ctx.beginPath();
-            ctx.moveTo(item.x - 5 * s, item.y + 8 * s);
-            ctx.lineTo(item.x - 1 * s, item.y + 12 * s);
-            ctx.lineTo(item.x + 8 * s, item.y + 2 * s);
-            ctx.stroke();
+            ctx.fillStyle = this._tone('#2c6b45');
+            ctx.fillRect(x - 2, y - 2, 1, 1);
+            ctx.fillRect(x - 1, y - 1, 1, 1);
+            ctx.fillRect(x, y - 2, 1, 1);
+            ctx.fillRect(x + 1, y - 3, 1, 1);
+            ctx.fillRect(x + 2, y - 4, 1, 1);
         }
+        this._drawTinyLabel(ctx, item, x, y - 15, '#ffe7a3');
         ctx.restore();
     }
 
-    _drawChatItem(ctx, item, zoom) {
-        const s = 1 / Math.max(1, zoom || 1);
-        ctx.save();
-        ctx.globalAlpha = item.alpha;
-        ctx.fillStyle = '#f4d28b';
-        ctx.strokeStyle = '#50351e';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(item.x - 14 * s, item.y - 8 * s);
-        ctx.lineTo(item.x + 14 * s, item.y - 8 * s);
-        ctx.lineTo(item.x + 11 * s, item.y + 9 * s);
-        ctx.lineTo(item.x - 11 * s, item.y + 9 * s);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        ctx.strokeStyle = 'rgba(80, 53, 30, 0.65)';
-        ctx.beginPath();
-        ctx.moveTo(item.x - 13 * s, item.y - 7 * s);
-        ctx.lineTo(item.x, item.y + 1 * s);
-        ctx.lineTo(item.x + 13 * s, item.y - 7 * s);
-        ctx.stroke();
-        this._drawTinyLabel(ctx, item, item.x, item.y - 18 * s, s, '#ffeb8f');
-        ctx.restore();
-    }
-
-    _drawTokenItem(ctx, item, zoom) {
-        const actualZoom = Math.max(0, Number(zoom) || 1);
-        const s = 1 / Math.max(1, actualZoom);
+    // Mine: the ore cart with its cargo heaped in art pixels — crystal for
+    // cache reads, ore for fresh input, in the observed proportion.
+    _drawTokenItem(ctx, item) {
         const cargo = item.cargo || null;
         const ratio = cargo ? Math.max(0, Math.min(1, cargo.ratio)) : null;
         const fill = Math.max(0.18, Math.min(1, item.delta / 40000));
+        const x = snap(item.x);
+        const y = snap(item.y);
         ctx.save();
         ctx.globalAlpha = item.alpha;
         if (this.sprites?.assets?.get('prop.oreCart')) {
-            this.sprites.drawSprite(ctx, 'prop.oreCart', item.x, item.y);
+            this.sprites.drawSprite(ctx, 'prop.oreCart', x, y);
         } else {
-            ctx.fillStyle = '#5a3927';
-            ctx.fillRect(Math.round(item.x - 15 * s), Math.round(item.y - 10 * s), Math.round(30 * s), Math.round(14 * s));
+            ctx.fillStyle = this._tone('#5a3927');
+            ctx.fillRect(x - 15, y - 10, 30, 14);
         }
-        ctx.globalAlpha = item.alpha * (0.28 + fill * 0.62);
-        ctx.fillStyle = cargo ? mixHex(CACHE_CARGO_ORE, CACHE_CARGO_CRYSTAL, ratio) : '#f2d36b';
-        ctx.beginPath();
-        ctx.ellipse(item.x, item.y - 15 * s, (10 + fill * 8) * s, (5 + fill * 3) * s, -0.15, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = item.alpha;
-        if (cargo && actualZoom >= 1) this._drawTokenCargoHeap(ctx, item.x, item.y, s, ratio);
+        // The load: a pixel mound whose size steps with the delta.
+        const mound = cargo
+            ? mixHex(CACHE_CARGO_ORE, CACHE_CARGO_CRYSTAL, Math.round(ratio * 8) / 8)
+            : '#f2d36b';
+        fillPixelEllipse(ctx, x, y - 15, Math.round(8 + fill * 8), Math.round(3 + fill * 3), this._tone(mound));
+        if (cargo) this._drawTokenCargoHeap(ctx, x, y, ratio);
         // No percentage on the Mine: the crystal/ore mix carries the class
         // split, and the exact counts live on the selected bench (4.3).
         ctx.restore();
     }
 
-    _drawTokenCargoHeap(ctx, x, y, s, ratio) {
+    _drawTokenCargoHeap(ctx, x, y, ratio) {
         const bucket = Math.round(Math.max(0, Math.min(1, ratio)) * 8) / 8;
         const crystalSlots = Math.round(6 * bucket);
         for (let i = 0; i < 6; i++) {
             const row = i < 3 ? 0 : 1;
             const col = i % 3;
-            const px = x + (col - 1) * 7 * s + row * 3 * s;
-            const py = y - (12 + row * 6) * s;
+            const px = x + (col - 1) * 7 + row * 3;
+            const py = y - (12 + row * 6);
             const crystal = i < crystalSlots;
             const palette = crystal ? CACHE_CARGO_CRYSTAL_COLORS : CACHE_CARGO_ORE_COLORS;
-            ctx.globalCompositeOperation = 'source-over';
-            ctx.fillStyle = palette[i % palette.length];
-            ctx.strokeStyle = crystal ? '#e6f8ff' : '#7e6a50';
-            ctx.lineWidth = Math.max(0.7, s);
-            ctx.beginPath();
             if (crystal) {
-                ctx.moveTo(px, py - 4 * s);
-                ctx.lineTo(px + 4 * s, py);
-                ctx.lineTo(px, py + 4 * s);
-                ctx.lineTo(px - 4 * s, py);
-            } else {
-                ctx.moveTo(px - 4 * s, py + 2 * s);
-                ctx.lineTo(px - 2 * s, py - 3 * s);
-                ctx.lineTo(px + 3 * s, py - 4 * s);
-                ctx.lineTo(px + 5 * s, py + 2 * s);
-            }
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            if (crystal) {
-                ctx.globalCompositeOperation = 'screen';
+                diamond(ctx, px, py, 3, { color: this._tone('#e6f8ff'), fill: this._tone(palette[i % palette.length]) });
                 ctx.fillStyle = '#e6f8ff';
-                ctx.fillRect(Math.round(px - s), Math.round(py - 3 * s), Math.max(1, Math.round(s)), Math.max(1, Math.round(2 * s)));
+                ctx.fillRect(px - 1, py - 2, 1, 2);
+            } else {
+                ctx.fillStyle = this._tone('#7e6a50');
+                ctx.fillRect(px - 3, py - 2, 7, 4);
+                ctx.fillStyle = this._tone(palette[i % palette.length]);
+                ctx.fillRect(px - 2, py - 1, 5, 3);
             }
         }
-        ctx.globalCompositeOperation = 'source-over';
     }
 
-    _drawCommandItem(ctx, item, zoom) {
-        const s = 1 / Math.max(1, zoom || 1);
-        const pulse = this.motionScale ? 0.65 + Math.sin(this.frame * 0.12 + item.slot) * 0.22 : 0.72;
+    // Command: a sealed letter with a wax dot.
+    _drawCommandItem(ctx, item) {
+        const x = snap(item.x);
+        const y = snap(item.y);
         ctx.save();
         ctx.globalAlpha = item.alpha;
-        ctx.strokeStyle = `rgba(246, 200, 95, ${pulse})`;
-        ctx.fillStyle = 'rgba(87, 48, 25, 0.88)';
-        ctx.lineWidth = Math.max(1, Math.round(2 * s));
-        ctx.beginPath();
-        ctx.ellipse(item.x, item.y, 20 * s, 9 * s, -0.22, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(item.x - 9 * s, item.y - 2 * s);
-        ctx.lineTo(item.x, item.y - 11 * s);
-        ctx.lineTo(item.x + 9 * s, item.y - 2 * s);
-        ctx.stroke();
-        this._drawTinyLabel(ctx, item, item.x, item.y - 22 * s, s, '#ffe7a3');
+        ctx.fillStyle = this._tone('#50351e');
+        ctx.fillRect(x - 5, y - 6, 11, 7);
+        ctx.fillStyle = this._tone('#f1ead0');
+        ctx.fillRect(x - 4, y - 5, 9, 5);
+        ctx.fillStyle = this._tone('#b9ab8a');
+        ctx.fillRect(x - 3, y - 4, 1, 1);
+        ctx.fillRect(x - 2, y - 3, 1, 1);
+        ctx.fillRect(x + 2, y - 3, 1, 1);
+        ctx.fillRect(x + 3, y - 4, 1, 1);
+        ctx.fillStyle = this._tone('#b3372c');
+        ctx.fillRect(x, y - 3, 2, 2);
+        this._drawTinyLabel(ctx, item, x, y - 13, '#ffe7a3');
         ctx.restore();
     }
 
-    _drawConnection(ctx, item, color, zoom, { arrow = false, alphaScale = 0.82 } = {}) {
-        const s = 1 / Math.max(1, zoom || 1);
-        ctx.save();
-        ctx.globalAlpha = item.alpha * alphaScale;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = Math.max(1, Math.round(2 * s));
-        ctx.setLineDash([Math.max(3, 6 * s), Math.max(2, 4 * s)]);
-        ctx.lineDashOffset = this.motionScale ? -this.frame * 0.55 : 0;
-        ctx.beginPath();
+    // Sender → recipient as snapped dots on a gentle arc with a 3×3 terminal
+    // at the recipient. Dots march on the slow band; static under reduced
+    // motion.
+    _drawConnection(ctx, item, color) {
         const mx = (item.startX + item.endX) / 2;
-        const my = Math.min(item.startY, item.endY) - 24 * s;
-        ctx.moveTo(item.startX, item.startY);
-        ctx.quadraticCurveTo(mx, my, item.endX, item.endY);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        if (arrow) {
-            // Arrowhead aligned with the curve tangent at the recipient end
-            // (end minus control point), pointing sender → recipient.
-            const angle = Math.atan2(item.endY - my, item.endX - mx);
-            const ah = 7 * s;
-            ctx.moveTo(item.endX, item.endY);
-            ctx.lineTo(item.endX - ah * Math.cos(angle - 0.45), item.endY - ah * Math.sin(angle - 0.45));
-            ctx.lineTo(item.endX - ah * Math.cos(angle + 0.45), item.endY - ah * Math.sin(angle + 0.45));
-            ctx.closePath();
-        } else {
-            ctx.arc(item.endX, item.endY, 3 * s, 0, Math.PI * 2);
-        }
-        ctx.fill();
+        const my = Math.min(item.startY, item.endY) - 24;
+        ctx.save();
+        ctx.globalAlpha = item.alpha;
+        dottedCurve(ctx, item.startX, item.startY, mx, my, item.endX, item.endY, {
+            step: 5,
+            color: this._tone(color),
+            phase: this.motionScale ? Math.floor(this.frame * 0.12) : 0,
+            end: true,
+        });
         ctx.restore();
     }
 
-    _drawTinyLabel(ctx, item, x, y, s, color) {
-        const label = String(item.label || '').toUpperCase();
-        if (!label) return;
-        ctx.font = `${Math.max(5, Math.round(6 * s))}px ${WORLD_BODY_FONT}`;
-        const width = Math.min(64 * s, Math.max(22 * s, ctx.measureText(label).width + 8 * s));
-        ctx.fillStyle = 'rgba(38, 26, 16, 0.86)';
-        ctx.fillRect(Math.round(x - width / 2), Math.round(y - 6 * s), Math.round(width), Math.round(11 * s));
-        ctx.strokeStyle = color;
-        ctx.strokeRect(Math.round(x - width / 2) + 0.5, Math.round(y - 6 * s) + 0.5, Math.round(width) - 1, Math.round(11 * s) - 1);
-        ctx.fillStyle = color;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(label.slice(0, 10), Math.round(x), Math.round(y));
+    // Building-front chit: the same screen-fixed 11 px Departure Mono plate as
+    // BuildingSprite's chits (its gate already passed in `draw`). The text is
+    // one humanised verb, plus the file when the whole `verb · file` fits;
+    // never a raw tool id and never a word cut in half (S14). Chits that would
+    // overlap one already drawn this frame, a body, a name or a T1 plate step
+    // up one plate row (up to three times), then yield rather than print over
+    // them (S12: the T5 chit is the lowest tier on the ground).
+    _drawTinyLabel(ctx, item, x, y, color) {
+        const plates = this._chitRenderer;
+        const verb = String(item.label || '').toUpperCase();
+        if (!verb || typeof plates?._drawInstrumentPlate !== 'function') return;
+        const type = item.building || null;
+        const unit = 1 / (plates._zoom > 0 ? plates._zoom : 1);
+        ctx.save();
+        ctx.font = WORLD_BODY_FONT_11;
+        const full = item.detail ? `${verb} · ${item.detail}` : verb;
+        const text = measureLabelText(ctx, full) <= CHIT_MAX_TEXT_PX ? full : verb;
+        const halfWidth = (measureLabelText(ctx, text) + 10) * unit / 2;
+        ctx.restore();
+        const rowHeight = 17 * unit;
+        for (let step = 0; step < 4; step++) {
+            const cy = y - step * rowHeight;
+            const rect = { id: item.id, cy, left: x - halfWidth, right: x + halfWidth, top: cy - rowHeight / 2, bottom: cy + rowHeight / 2 };
+            const hit = this._chitRects.some(other => rect.left < other.right && rect.right > other.left
+                && rect.top < other.bottom && rect.bottom > other.top)
+                || plates._rectHitsSignalOrBody?.({ x: rect.left, y: rect.top, w: rect.right - rect.left, h: rect.bottom - rect.top });
+            if (hit) continue;
+            this._chitRects.push(rect);
+            plates._drawInstrumentPlate(ctx, x, cy, text, { color, border: color, type });
+            return;
+        }
     }
 }

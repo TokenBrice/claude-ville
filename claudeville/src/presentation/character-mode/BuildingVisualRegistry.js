@@ -11,11 +11,11 @@ export const DEFAULT_BUILDING_OCCUPANCY_THRESHOLDS = Object.freeze({
 // window/light/effect anchors. Geometry stays in this registry; light records
 // stay authoritative in LightSourceRegistry/BuildingSprite.
 export const BUILDING_MATERIAL_REGISTRY = Object.freeze({
-    command: landmarkMaterial('command', 'stone', 208, 130, [
+    command: landmarkMaterial('command', 'stone', 240, 112, [
         emissiveSource('emissive.command.windows', 'windows', 'windowRects', 0.72),
-        emissiveSource('emissive.command.watchfire', 'fire', 'layers.watchfire', 1),
+        emissiveSource('emissive.command.braziers', 'fire', 'emitters.torch', 1),
     ]),
-    taskboard: landmarkMaterial('taskboard', 'timber', 232, 150, [
+    taskboard: landmarkMaterial('taskboard', 'timber', 232, 162, [
         emissiveSource('emissive.taskboard.lanterns', 'lantern', 'windowRects', 0.76),
     ]),
     forge: landmarkMaterial('forge', 'stone', 232, null, [
@@ -25,7 +25,7 @@ export const BUILDING_MATERIAL_REGISTRY = Object.freeze({
         emissiveSource('emissive.mine.cave', 'fire', 'windowRects', 0.82),
         emissiveSource('emissive.mine.crystals', 'rune', 'emitters.sparkle', 0.62),
     ]),
-    archive: landmarkMaterial('archive', 'stone', 224, 145, [
+    archive: landmarkMaterial('archive', 'stone', 240, 130, [
         emissiveSource('emissive.archive.windows', 'windows', 'windowRects', 0.68),
         emissiveSource('emissive.archive.door-spill', 'lantern', 'lightSource', 0.74),
     ]),
@@ -59,53 +59,69 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.45, busyMax: 0.8 },
         labelPriority: 'landmark',
         beaconBase: 0.85,
-        // 6.2 — sprite-local lit-window spots (calibrated against base.png).
+        // 6.2 — sprite-local lit-window spots (`at` is the pane centre).
+        // 4.2 — measured on the re-authored keep: the three dome-drum panes,
+        // the lower left-tower pane and the hall pane beside the right tower.
+        // The east wing's panes are left out: they sit inside the 4.1 cut.
         windowRects: [
-            { at: [80, 127], w: 7, h: 10 },
-            { at: [210, 120], w: 7, h: 10 },
-            { at: [150, 90], w: 8, h: 8, shape: 'ellipse' },
+            { at: [143, 103], w: 5, h: 12 },
+            { at: [175, 110], w: 6, h: 11 },
+            { at: [207, 103], w: 3, h: 11 },
+            { at: [72, 120], w: 3, h: 6 },
+            { at: [236, 121], w: 4, h: 10 },
         ],
         // #53 — sprite-local pole base for the occupancy pennant (right turret).
-        pennant: { at: [240, 56] },
+        pennant: { at: [254, 60] },
+        // 4.2 — drawing anchors on the re-authored keep: `keep` is the dome
+        // crown under the finial (activity rings, carrier-bird source),
+        // `standard` the finial tip the ritual standard rises from, `hall`
+        // the gate threshold (the hall-activity glow lands as a pool at the
+        // foot of the steps, below the occlusion horizon, not on the door).
+        effectAnchors: {
+            keep: [174, 24],
+            standard: [174, 4],
+            hall: [122, 210],
+        },
         // 4.1 — the inspection aperture. The authored sectional view swaps the
         // east wing's front wall for a cut room on explicit selection at
         // resting zoom >= `minZoom`. `cut` is the sprite-local parallelogram
-        // the three layers were authored inside (2:1 iso, rising to the
-        // right): it spans the wing's whole right-facing bay, from the course
-        // under the eave down to the plinth and from the corner quoin to the
-        // tower pilaster, so the room is a full storey rather than a slot.
-        // `slots` are the bottom-centre anchors of the authored desks, front
-        // to back, and `occupant.h` is the presented body height in sprite
-        // pixels — two thirds of the room's height, so an occupant reads as a
-        // person standing in a room at 2x. The exterior silhouette, footprint,
-        // door anchor, hit target and pathfinding are untouched.
+        // the three layers were authored inside (rising to the right at the
+        // art's own ~2:1 wall slope): it spans the wing's plain right-facing
+        // wall between the corner pillar and the right pilaster, from the
+        // cornice down through the upper plinth (the floor slab is the sawn
+        // sill), so the room is a full storey rather than a slot. `slots` are
+        // the bottom-centre anchors of the authored desks, front to back, and
+        // `occupant.h` is the presented body height in sprite pixels — two
+        // thirds of the room's height, so an occupant reads as a person
+        // standing in a room at 2x. The exterior silhouette, footprint, door
+        // anchor, hit target and pathfinding are untouched.
         aperture: {
             minZoom: 2,
             layers: ['aperture', 'interior', 'foreground'],
-            cut: { x0: 196, x1: 242, top: 118, bottom: 156, slope: -0.5 },
+            cut: { x0: 228, x1: 312, top: 181, bottom: 219, slope: -0.52 },
             // The open aperture's legend: the working/waiting count and one
             // row per presented session, on the apron under the cut. Sized in
             // sprite pixels so it scales with the building, never with the
             // viewport.
-            legend: { at: [196, 160], w: 84, rowH: 8 },
-            occupant: { h: 26 },
+            legend: { at: [228, 222], w: 84, rowH: 8 },
+            occupant: { h: 24 },
             slots: [
-                { at: [205, 146] },
-                { at: [220, 139] },
-                { at: [235, 131] },
+                { at: [246, 202] },
+                { at: [270, 190] },
+                { at: [294, 177] },
             ],
         },
         // 4.2 — the hall's work rooms: one authored window per room, lit for
-        // one real working occupant each. Distinct from `windowRects` (the
-        // dusk warmth stamps) and from the gate/tower safety lights, and
-        // deliberately outside the 4.1 cut so an open aperture never argues
-        // with a lit window about the same room.
+        // one real working occupant each — the three dome-drum panes. Distinct
+        // from `windowRects` (the dusk warmth stamps) and from the gate
+        // braziers, and deliberately outside the 4.1 cut so an open aperture
+        // never argues with a lit window about the same room.
         rooms: {
-            countAt: [216, 168],
+            countAt: [186, 236],
             slots: [
-                { at: [133, 114], w: 9, h: 8 },
-                { at: [155, 116], w: 9, h: 8 },
-                { at: [177, 114], w: 9, h: 8 },
+                { at: [143, 104], w: 5, h: 9 },
+                { at: [175, 110], w: 6, h: 10 },
+                { at: [207, 104], w: 3, h: 9 },
             ],
         },
     },
@@ -120,22 +136,23 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
         beaconBase: 0.8,
-        // 6.2 — the two eave lanterns, not mid-wall blobs.
+        // 6.2 — the two eave lanterns, not mid-wall blobs. 4.5 — glass
+        // measured on the re-authored board (NW and SE ends of the roof beam).
         windowRects: [
-            { at: [48, 62], w: 6, h: 8, shape: 'ellipse' },
-            { at: [182, 62], w: 6, h: 8, shape: 'ellipse' },
+            { at: [46, 55], w: 6, h: 10, shape: 'ellipse' },
+            { at: [203, 125], w: 6, h: 10, shape: 'ellipse' },
         ],
-        pennant: { at: [128, 34] },
-        // 4.7 — plan tabs on the slate's wooden frame: one project-coloured
-        // tab per concurrent plan owner, stacked down the left stile with the
-        // exact overflow beneath them. Hit targets, not decoration.
+        // On the roof ridge, above the middle of the slate.
+        pennant: { at: [124, 33] },
+        // 4.7 — plan tabs hang off the slate's left frame edge (x82 on the
+        // 2:1 art, from just under the slate's top-left corner): one
+        // project-coloured tab per concurrent plan owner, right edge flush to
+        // the slate, stacked downward, with the exact `+N plans` beneath.
+        // Screen-fixed type; hit targets, not decoration.
         planTabs: {
-            at: [62, 84],
-            w: 26,
-            h: 10,
-            gap: 3,
+            at: [82, 62],
+            gap: 2,
             max: 3,
-            overflowAt: [62, 124],
         },
     },
     forge: {
@@ -149,9 +166,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
         beaconBase: 1,
+        // 4.5 — the two warm panes over the tool rack (re-authored base.png).
         windowRects: [
-            { at: [157, 143], w: 9, h: 10 },
-            { at: [172, 143], w: 9, h: 10 },
+            { at: [140, 157], w: 8, h: 21 },
+            { at: [153, 152], w: 8, h: 21 },
         ],
         // 4.6 — the hearth fire is painted into base.png, so rest needs an
         // authored mask: `banked.png` restates exactly those pixels as stepped
@@ -164,10 +182,21 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         // lands, and `countAt` carries the exact edit-call count on
         // inspection. The chimney anchor is the one the smoke column uses.
         workload: {
-            billets: { at: [176, 178], step: [10, -4], w: 8, h: 4 },
-            chimney: { at: [175, 28] },
-            countAt: [172, 208],
-            shelf: { at: [140, 152], step: 11, w: 9, h: 8, max: 4 },
+            billets: { at: [114, 214], step: [10, -4], w: 8, h: 4 },
+            chimney: { at: [183, 8] },
+            countAt: [150, 222],
+            shelf: { at: [136, 184], step: 11, w: 9, h: 8, max: 4 },
+        },
+        // 4.5 — art-coupled points of the re-authored forge: the furnace arch
+        // on the SW gable, the molten spill in front of it, the chimney crown
+        // (smoke source; `smokeTop` is where a column leaves the cap) and the
+        // anvil stump in the yard.
+        effectAnchors: {
+            hearth: [80, 160],
+            spill: [80, 190],
+            chimney: [183, 8],
+            smokeTop: [183, 4],
+            anvil: [104, 200],
         },
     },
     mine: {
@@ -182,34 +211,50 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.55, busyMax: 0.9 },
         labelPriority: 'landmark',
         beaconBase: 0.78,
-        // The timber-framed cave mouth, calibrated against the 256x232 pilot.
+        // 4.5 — the re-authored tunnel on the SW face: three columns of the
+        // dark timber-framed opening, measured on base.png.
         windowColor: '#ffb84d',
         windowRects: [
-            { at: [157, 137], w: 6, h: 28 },
-            { at: [168, 135], w: 7, h: 32 },
-            { at: [178, 139], w: 5, h: 24 },
+            { at: [67, 164], w: 6, h: 30 },
+            { at: [76, 162], w: 7, h: 34 },
+            { at: [84, 160], w: 5, h: 24 },
         ],
+        // Lantern light pooling on the plank threshold and running out along
+        // the track toward the lower-left.
         doorSpill: {
-            at: [163, 163],
+            at: [74, 197],
             color: '#ffb84d',
             maxAlpha: 0.22,
             steps: [
                 { offset: [-7, 0], w: 14, h: 1 },
-                { offset: [-10, 1], w: 20, h: 2 },
-                { offset: [-14, 3], w: 28, h: 1 },
+                { offset: [-12, 1], w: 18, h: 2 },
+                { offset: [-18, 3], w: 22, h: 1 },
             ],
         },
+        // 4.5 — art-coupled points of the re-authored mine: `mouth` is the
+        // plank floor just inside the tunnel, `railFrom`→`railTo` is the baked
+        // track's centre line from the threshold out to its last sleeper (the
+        // ritual cart rolls out along it), `railsBaked` retires the drawn
+        // rails, and `reserve` is where the quota stockpile sits on the
+        // rubble with its gauge below.
+        effectAnchors: {
+            mouth: [76, 186],
+            railFrom: [77, 194],
+            railTo: [47, 209],
+            railsBaked: true,
+            reserve: [176, 190],
+        },
         // 4.3 — the assay bench: two shallow trays and the coin-stamp rack,
-        // standing in the authored yard in front of the cave mouth, below the
-        // cart rails and clear of the reserve gauge and the visitor slots.
+        // standing on the open yard below the rubble foot, east of the
+        // cottage that sits in front of the track, clear of the reserve gauge.
         assay: {
             trays: [
-                { at: [100, 202], w: 26, h: 10, kind: 'input' },
-                { at: [130, 202], w: 26, h: 10, kind: 'cacheRead' },
+                { at: [104, 236], w: 26, h: 10, kind: 'input' },
+                { at: [134, 244], w: 26, h: 10, kind: 'cacheRead' },
             ],
-            rack: { at: [164, 200], w: 30, h: 12 },
-            countAt: [128, 220],
-            costAt: [128, 229],
+            rack: { at: [166, 250], w: 30, h: 12 },
+            countAt: [150, 267],
+            costAt: [150, 276],
         },
     },
     archive: {
@@ -223,21 +268,35 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.82 },
         labelPriority: 'landmark',
         beaconBase: 0.82,
-        // 6.2 — the two niches flanking the door arch; the crest window above
-        // is already baked glowing and needs no warmth stamp.
+        // 4.5 — the re-authored hall's five ground-floor lancets (the reading
+        // rooms), glass bounds measured on base.png. The clerestory row is
+        // emissive art only. (QAWorld F10: the SE gable is now one tall lancet
+        // portal, so the rose window and its rect are gone.)
         windowRects: [
-            { at: [139, 130], w: 5, h: 9 },
-            { at: [204, 130], w: 5, h: 9 },
+            { at: [90, 137], w: 8, h: 30 },
+            { at: [113, 148], w: 5, h: 25 },
+            { at: [135, 159], w: 5, h: 26 },
+            { at: [157, 169], w: 5, h: 28 },
+            { at: [179, 182], w: 5, h: 26 },
         ],
-        pennant: { at: [48, 30] },
-        // 4.2 — the archive has exactly two reading rooms in its art. A third
+        pennant: { at: [68, 14] },
+        // 4.2 — two reading rooms (the second and fourth lancet bays). A third
         // working occupant is a count, never an invented third window.
         rooms: {
-            countAt: [168, 186],
+            countAt: [140, 216],
             slots: [
-                { at: [139, 130], w: 5, h: 9 },
-                { at: [204, 130], w: 5, h: 9 },
+                { at: [113, 148], w: 5, h: 25 },
+                { at: [157, 169], w: 5, h: 28 },
             ],
+        },
+        // QAWorld F10 — the SE portal was re-authored (inpaint) into a lancet
+        // whose oak leaf runs ~y 120–203 (≈83 px, ≥ 1.2× the 1:1 body), so the
+        // points move with it: the leaf centre and the foot of its steps. The
+        // lanterns are authored art plus emissive sidecar; the old decorative
+        // aura, crest, window and lamp anchors are retired (no readers).
+        effectAnchors: {
+            doorway: [242, 162],
+            step: [247, 219],
         },
     },
     observatory: {
@@ -251,10 +310,13 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.86 },
         labelPriority: 'landmark',
         beaconBase: 0.7,
+        // 4.6 — centres of the three glazed windows, measured on base.png
+        // (the old rects were top-left corners): tower lancet, gable window,
+        // porch window.
         windowRects: [
-            { at: [74, 182], w: 13, h: 27 },
-            { at: [169, 149], w: 20, h: 29 },
-            { at: [137, 203], w: 13, h: 20 },
+            { at: [80, 206], w: 12, h: 40 },
+            { at: [167, 175], w: 10, h: 28 },
+            { at: [121, 222], w: 8, h: 22 },
         ],
         pennant: { at: [108, 20] },
         effectAnchors: {
@@ -319,12 +381,15 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.9 },
         labelPriority: 'landmark',
         beaconBase: 1,
-        // 6.2 — the shaft's three arched windows; lifts the drab daylight
-        // watchtower (its warmth used to pool at the lantern fire alone).
+        // Centres of the five arched windows up the lit (SW) face of the
+        // shaft, measured on base.png glass (the old rects sat on blank wall).
+        // The emissive sidecar lights the same glass plus the SE-face window.
         windowRects: [
-            { at: [145, 168], w: 9, h: 13 },
-            { at: [153, 219], w: 9, h: 13 },
-            { at: [140, 270], w: 9, h: 13 },
+            { at: [131, 122], w: 6, h: 15 },
+            { at: [129, 148], w: 6, h: 15 },
+            { at: [129, 179], w: 4, h: 17 },
+            { at: [125, 218], w: 6, h: 15 },
+            { at: [118, 258], w: 5, h: 14 },
         ],
         pennant: { at: [166, 80] },
         effectAnchors: {
@@ -374,13 +439,12 @@ const WATCHTOWER_LANTERN_FIRE = BUILDING_VISUAL_REGISTRY.watchtower.effectAnchor
 
 export const BUILDING_EMITTER_FALLBACKS = {
     forge: [
-        { type: 'forgeEmber', at: [75, 118], chance: 0.06, count: 1 },
-        { type: 'forgeSpark', at: [76, 112], chance: 0.032, count: 1 },
-        { type: 'smoke', at: [175, 28], chance: 0.035, count: 1 },
+        { type: 'forgeEmber', at: [80, 150], chance: 0.06, count: 1 },
+        { type: 'forgeSpark', at: [104, 196], chance: 0.032, count: 1 },
     ],
     mine: [
-        { type: 'mineDust', at: [128, 158], chance: 0.035, count: 1 },
-        { type: 'mining', at: [138, 165], chance: 0.026, count: 1 },
+        { type: 'mineDust', at: [76, 186], chance: 0.035, count: 1 },
+        { type: 'mining', at: [70, 194], chance: 0.026, count: 1 },
     ],
     portal: [
         { type: 'portalRune', at: [144, 60], chance: 0.05, count: 1 },
@@ -394,20 +458,20 @@ export const BUILDING_EMITTER_FALLBACKS = {
         { type: 'sparkle', at: [249, 88], chance: 0.014, count: 1 },
     ],
     taskboard: [
-        { type: 'questPing', at: [128, 90], chance: 0.024, count: 1 },
+        { type: 'questPing', at: [124, 100], chance: 0.024, count: 1 },
     ],
     archive: [
-        { type: 'archiveMote', at: [168, 82], chance: 0.034, count: 1 },
-        { type: 'archiveMote', at: [142, 128], chance: 0.018, count: 1 },
-        { type: 'archiveMote', at: [194, 128], chance: 0.018, count: 1 },
+        { type: 'archiveMote', at: [241, 118], chance: 0.034, count: 1 },
+        { type: 'archiveMote', at: [245, 170], chance: 0.018, count: 1 },
+        { type: 'archiveMote', at: [170, 130], chance: 0.018, count: 1 },
     ],
 };
 
 export const BUILDING_LIGHT_FALLBACKS = {
-    forge: { at: [75, 118], color: '#ff8a33', radius: 80, overlay: 'atmosphere.light.fire-glow' },
-    mine: { at: [128, 158], color: '#ffb84d', radius: 80, overlay: 'atmosphere.light.lantern-glow' },
-    taskboard: { at: [128, 95], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
-    archive: { at: [168, 88], color: '#b3d68c', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
+    forge: { at: [80, 165], color: '#ff8a33', radius: 80, overlay: 'atmosphere.light.fire-glow' },
+    mine: { at: [76, 186], color: '#ffb84d', radius: 80, overlay: 'atmosphere.light.lantern-glow' },
+    taskboard: { at: [124, 108], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
+    archive: { at: [245, 178], color: '#ffcf7a', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
     harbor: { at: [181, 156], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
 };
 

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { CameraDirector } from '../../claudeville/src/presentation/character-mode/CameraDirector.js';
-import { prepareSemanticGround } from '../../claudeville/src/presentation/character-mode/WorldFrameRenderer.js';
+import { prepareSemanticGround, recordLiveGroundCues } from '../../claudeville/src/presentation/character-mode/WorldFrameRenderer.js';
 import { Camera } from '../../claudeville/src/presentation/character-mode/Camera.js';
 import { GpuWorldRenderer } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
 import { buildStableGpuBatches, normalizeGpuRecord, clampGpuLights } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
@@ -119,7 +119,11 @@ test('crowd congestion tightens annotations but never shrinks bodies below the p
     const mode = modeAt(large);
     assert.notEqual(mode.body, 'full');
     assert.notEqual(mode.annotation, 'full');
-    assert.equal(CameraDirector.prototype._currentMaxZoom.call({ camera: { currentZoomTier: () => 3 } }), 1.5);
+    // Automatic camera moves never rest above tier 1, and never zoom in past a
+    // wider tier the operator is already on (the survey tier stays survey).
+    const autoCap = (tier) => CameraDirector.prototype._currentMaxZoom.call({ camera: { currentZoomTier: () => tier } });
+    assert.equal(autoCap(3), 1);
+    assert.equal(autoCap(0.5), 0.5);
 });
 
 test('selected, hovered and action-needed agents never enter the compact body branch', () => {
@@ -133,67 +137,111 @@ test('selected, hovered and action-needed agents never enter the compact body br
     }
 });
 
-test('dense crowd labels keep one routine identity and expand every primary identity', () => {
+test('crowd labels follow D2: plates for emphasis, top-N routine names at z >= 1.6, every action-needed agent on a T1 plate', () => {
+    // 0 selected, 1 waiting on the user, 2 hovered, 3..7 routine workers,
+    // all inside one 200 px screen region and far enough apart not to collide.
     const sprites = Array.from({ length: 8 }, (_, index) => ({
-        x: 0, y: 0, agent: { id: String(index), status: index === 1 ? 'waiting_on_user' : 'working' },
-        selected: index === 0, hovered: index === 2,
+        x: index * 10, y: 0,
+        agent: { id: String(index), name: `A${index}`, status: index === 1 ? 'waiting_on_user' : 'working' },
+        selected: index === 0, hovered: index === 2, gpuWorldEnabled: true,
     }));
+    const camera = {
+        zoom: 1,
+        worldToScreen(x, y) { return { x: x * this.zoom + 10, y: y * this.zoom + 400 }; },
+        screenToWorld(x, y) { return { x: (x - 10) / this.zoom, y: (y - 400) / this.zoom }; },
+    };
+    const ctx = { font: '', measureText: text => ({ width: String(text).length * 7 }) };
     const renderer = Object.assign(Object.create(IsometricRenderer.prototype), {
-        agentSprites: new Map(Array.from({ length: 24 }, (_, index) => [index, {}])),
-        _crowdStats: { clusters: [{ id: '0,0', count: 8 }] },
-        _overlayCompactRects: [], _overlayNameRects: [], _overlayReservedRects: [],
-        _overlayPrioritizedSprites: [], _overlayBubbleSprites: [],
-        _overlayCompactGrid: IsometricRenderer.prototype._createRectGrid(),
+        camera, overlayCtx: ctx,
+        agentSprites: new Map(sprites.map(sprite => [sprite.agent.id, sprite])),
+        _overlayNameRects: [], _overlayReservedRects: [], _overlayRegionCounts: new Map(),
+        _attentionWorldRects: [], _overlayPrioritizedSprites: [], _overlayBubbleSprites: [],
         _overlayNameGrid: IsometricRenderer.prototype._createRectGrid(),
         _overlayBubbleGrid: IsometricRenderer.prototype._createRectGrid(),
-        _screenViewport: () => ({}), _agentVisibleOnScreen: () => true,
-        _agentLabelPriority: () => 0, _agentLabelAlpha: () => 1,
-        _agentCompactSlotRect: () => ({}), _agentNameSlotRect: () => ({}),
-        _leastOverlappedCompactSlot: () => 0, _assignAgentBubbleSlots() {},
+        _screenViewport: () => ({ width: 1600, height: 900 }), _agentVisibleOnScreen: () => true,
+        _assignAgentBubbleSlots() {}, getReadMode: () => false,
         markGovernor: { reserve() {} },
     });
+    const named = () => sprites.filter(sprite => sprite.overlaySlot != null).map(sprite => sprite.agent.id);
+
+    // Overview: no routine names; selection and hover keep their plates.
     renderer._assignAgentOverlaySlots(sprites, 1, { agentRenderMode: 'compact' });
-    assert.deepEqual(sprites.filter(sprite => sprite.overlaySlot != null).map(sprite => sprite.agent.id), ['0', '1', '2', '3']);
-    sprites[7].selected = true;
-    renderer._assignAgentOverlaySlots(sprites, 1, { agentRenderMode: 'compact' });
-    assert.equal(sprites[7].overlaySlot, 0);
-    assert.equal(sprites[7].labelAlpha, 1);
+    assert.deepEqual(named(), ['0', '2']);
+    assert.equal(sprites[0].labelPlate, true);
+    assert.equal(sprites[2].labelPlate, true);
+    // The waiting agent carries no routine name but is named by its T1 plate.
+    assert.equal(sprites[1].overlaySlot, null);
+    const plates = renderer._attentionLayout.plates;
+    assert.equal(renderer._attentionLayout.beacons.length, 1);
+    assert.deepEqual(plates.map(plate => [plate.word, plate.text]), [['NEEDS YOU', 'A1']]);
+
+    // Detail: the top three routine actors in the region are named, the rest
+    // are dropped rather than slotted elsewhere.
+    camera.zoom = 2;
+    renderer._assignAgentOverlaySlots(sprites, 2, { agentRenderMode: 'full' });
+    const routine = named().filter(id => !['0', '2'].includes(id));
+    assert.equal(routine.length, 3);
+    assert.ok(sprites.filter(sprite => sprite.agent.id > '2' && !routine.includes(sprite.agent.id))
+        .every(sprite => sprite.overlaySlot == null));
+
+    // An arriving agent stays unnamed until its walk-in lands.
+    const arriving = sprites[Number(routine[0])];
+    arriving.isArrivalPending = () => true;
+    renderer._assignAgentOverlaySlots(sprites, 2, { agentRenderMode: 'full' });
+    assert.equal(arriving.overlaySlot, null);
 });
 
 
-test('frozen semantic ground invalidates for in-place relationships, crowd and lighting changes', () => {
+test('agent-following ground cues move as records; the retained cue texture re-renders only for its own state', () => {
     const previousDocument = globalThis.document;
     let created = 0;
-    const ctx = { setTransform() {}, clearRect() {} };
+    const ctx = { setTransform() {}, clearRect() {}, fillRect() {}, fillStyle: '' };
     globalThis.document = { createElement: () => { created++; return { width: 0, height: 0, getContext: () => ctx }; } };
     try {
         const a = { x: 10, y: 20, agent: { id: 'a', status: 'idle' } };
-        const b = { x: 30, y: 40, agent: { id: 'b', status: 'idle' } };
-        const relationship = { teamToMembers: new Map(), parentToChildren: new Map(), advisorPairs: [] };
+        const b = { x: 130, y: 60, agent: { id: 'b', status: 'idle' } };
+        const relationship = { teamToMembers: new Map([['team', ['a', 'b']]]), parentToChildren: new Map(), advisorPairs: [] };
         const renderer = { agentSprites: new Map([['a', a], ['b', b]]),
             relationshipState: { getSnapshot: () => relationship }, _allyTetherPairs: [],
             _crowdStats: { clusters: [] }, motionScale: 0, motionTimeMs: 500,
-            camera: { renderOffsetX: 0, renderOffsetY: 0, zoom: 1 } };
+            camera: { renderOffsetX: 400, renderOffsetY: 100, zoom: 1 } };
         const viewport = { width: 2048, height: 1200 };
         const atmosphere = { lighting: { lightBoost: 1 }, grade: { worldTint: 'rgba(0,0,0,0)' } };
-        const prepare = () => prepareSemanticGround(renderer, viewport, {}, atmosphere);
+        const prepare = (snapshot = {}) => prepareSemanticGround(renderer, viewport, snapshot, atmosphere);
+        const record = () => recordLiveGroundCues(renderer, { villageSnapshot: null, renderNow: 0, perfNow: 0, atmosphere, viewport })
+            .map(cue => [cue.x, cue.y, cue.width, cue.height]);
+
+        // A council ring follows its members: whole-art-pixel records, no texture.
         assert.equal(prepare(), null);
-        assert.equal(created, 0);
-        relationship.teamToMembers.set('team', ['a', 'b']);
+        const ring = record();
+        assert.ok(ring.length > 0);
+        assert.ok(ring.flat().every(Number.isInteger));
+        const atlasRevision = renderer._groundCueRecorder.atlas.revision;
+        a.x += 7;
+        b.y += 3;
+        const moved = record();
+        assert.notDeepEqual(moved, ring);
+        assert.equal(renderer._groundCueRecorder.atlas.revision, atlasRevision, 'moving agents never touch cue texels');
+        assert.equal(prepare(), null);
+        assert.equal(created, 1, 'only the shared cue atlas exists');
+
+        // Crowd auras stay retained, at an exact 2x texel magnification.
+        renderer._crowdStats.clusters.push({ id: '0,0', tileX: 1, tileY: 2, count: 6, dominantStatus: 'idle' });
         assert.equal(prepare().dirty, true);
         assert.equal(renderer._semanticGroundCanvas.width, 1024);
+        assert.equal(renderer._semanticGroundViewport.width, 2048);
         assert.equal(prepare().dirty, false);
+        a.x += 40;
+        relationship.teamToMembers.get('team').pop();
+        assert.equal(prepare().dirty, false, 'agent motion and relationships are record-side');
+        renderer._crowdStats.clusters[0].tileX += 0.01;
+        assert.equal(prepare().dirty, false, 'sub-pixel centroid drift is invisible');
         const mutations = [
-            () => relationship.teamToMembers.get('team').pop(),
-            () => relationship.parentToChildren.set('a', new Set(['b'])),
-            () => relationship.parentToChildren.get('a').clear(),
-            () => relationship.advisorPairs.push({ advisorId: 'b', parentId: 'a' }),
-            () => renderer._allyTetherPairs.push({ a, b }),
-            () => renderer._crowdStats.clusters.push({ id: '0,0', tileX: 1, tileY: 2, count: 6, dominantStatus: 'idle' }),
             () => renderer._crowdStats.clusters[0].dominantStatus = 'working',
+            () => renderer._crowdStats.clusters[0].count = 7,
+            () => renderer._crowdStats.clusters.push({ id: '1,0', tileX: 4, tileY: 2, count: 5, dominantStatus: 'idle' }),
             () => atmosphere.lighting.lightBoost = .5,
             () => atmosphere.grade.worldTint = 'rgba(50,92,140,.22)',
-            () => a.isArrivalPending = () => true,
         ];
         for (const mutate of mutations) {
             mutate();
@@ -202,14 +250,16 @@ test('frozen semantic ground invalidates for in-place relationships, crowd and l
         }
         atmosphere.lighting.lightBoost += .0001;
         assert.equal(prepare().dirty, false);
-        renderer.motionTimeMs += 1000;
-        assert.equal(prepare().dirty, false);
         renderer.motionScale = 1;
         assert.equal(prepare().dirty, true);
+        renderer.motionTimeMs += 1000;
+        assert.equal(prepare().dirty, false, 'static auras ignore the ornament tick');
+        const recovering = { recoveries: [{ agentId: 'a', center: { x: 10, y: 20 }, progress: 0.2 }] };
+        assert.equal(prepare(recovering).dirty, true);
         renderer.motionTimeMs += 16;
-        assert.equal(prepare().dirty, false);
+        assert.equal(prepare(recovering).dirty, false);
         renderer.motionTimeMs += 125;
-        assert.equal(prepare().dirty, true);
-        assert.equal(created, 1);
+        assert.equal(prepare(recovering).dirty, true, 'a fading recovery animates on the 8 Hz tick');
+        assert.equal(created, 2, 'the retained texture reuses one canvas');
     } finally { globalThis.document = previousDocument; }
 });

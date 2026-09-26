@@ -29,9 +29,13 @@ const WEATHER_TYPE_SET = new Set(WEATHER_TYPES);
 
 const LOOP_MS = 60000;
 const MAX_FRAME_DT = 80;
-const RAIN_AREA_DENSITY = 5200;
-const RAIN_MAX_STREAKS = 180;
-const RAIN_MIN_STREAKS = 24;
+// 6.7 — rain streak budget at a 1920×1080 view (scaled by area): the grade
+// carries the weather's mood, so a legible field of pixel streaks is enough.
+const RAIN_REFERENCE_AREA = 1920 * 1080;
+const RAIN_STREAKS = 100;
+const STORM_STREAKS = 150;
+const RAIN_WIDE_STREAKS = 64;
+const RAIN_WIDE_ZOOM = 1.5;
 const SNOW_AREA_DENSITY = 3200;
 const SNOW_MAX_FLAKES = 420;
 const SNOW_MIN_FLAKES = 24;
@@ -40,13 +44,25 @@ const FOG_MIN_BANDS = 3;
 // Aerial fog only. Spatial ground haze is WorldFrameRenderer's field.
 export const FOG_BAND_Y_RANGE = Object.freeze({ min: 0.10, max: 0.40 });
 
-const RAIN_SPLASH_SPRITE_ID = 'atmosphere.rain.splash';
 const RAIN_RIPPLE_SPRITE_ID = 'atmosphere.water.ripple.rain';
 const SPLASH_PRECIP_THRESHOLD = 0.15;
 const SPLASH_STAMP_INTERVAL_MS = 120;
-const SPLASH_STAMP_MIN_COUNT = 6;
-const SPLASH_STAMP_MAX_COUNT = 18;
-const SPLASH_STATIC_GRID_COUNT = 12;
+const SPLASH_STAMP_MIN_COUNT = 4;
+const SPLASH_STAMP_MAX_COUNT = 10;
+const SPLASH_FRAME_MS = 90;
+// Reduced motion keeps this share of the visible open-ground tiles as static,
+// world-anchored splash rings.
+const SPLASH_STATIC_SHARE = 0.05;
+// 6.7 — a splash is a 7×4 art-pixel crown in three frames (impact, crown,
+// ring), anchored bottom-centre on the tile's ground point. `#` light, `+`
+// dim rain tone.
+const SPLASH_FRAMES = Object.freeze([
+    Object.freeze(['.......', '.......', '...#...', '..+++..']),
+    Object.freeze(['.#...#.', '.......', '.......', '.+...+.']),
+    Object.freeze(['.......', '.......', '.......', '+.....+']),
+]);
+const RAIN_LIGHT = '#c4d6e2';
+const RAIN_DIM = '#96aabb';
 const RIPPLE_TILE_THROTTLE_MS = 2000;
 const RIPPLE_TILE_TRACK_LIMIT = 256;
 const DISTRICT_TEXTURE_SIZE = 128;
@@ -78,16 +94,15 @@ function districtLightingStrength(band) {
     return Math.abs(1 - band);
 }
 
-// Parallax rain: the streak budget is split across three depth layers so rain
-// stops reading as one rigid sheet. Fractions sum to 1 so total segment count
-// stays ~equal to the old single-layer pass. Each layer scrolls on its own
-// fall offset (speedMul) with distinct length/alpha/lineWidth and a slightly
-// different wind multiplier. saltOffset keeps the seeded streak positions
-// disjoint between layers.
+// Parallax rain on the art-pixel grid: three depth layers, each a field of
+// streaks built from whole art-pixel cells (cell = round(zoom) CSS px) that
+// step sideways with the wind. Far streaks are short, dim and dashed; near
+// ones long, light and solid. saltOffset keeps each layer's streak positions
+// disjoint.
 const RAIN_LAYERS = [
-    { frac: 0.45, speedMul: 0.72, lengthMul: 0.78, alphaMul: 0.56, lineWidth: 1, windMul: 0.82, saltOffset: 0 },
-    { frac: 0.35, speedMul: 1.0, lengthMul: 1.0, alphaMul: 0.82, lineWidth: 1, windMul: 1.0, saltOffset: 1300 },
-    { frac: 0.2, speedMul: 1.4, lengthMul: 1.34, alphaMul: 1.0, lineWidth: 1.6, windMul: 1.18, saltOffset: 2600 },
+    { frac: 0.45, speedMul: 0.72, cells: [5, 7], color: RAIN_DIM, alpha: 0.5, dashed: true, windMul: 0.82, saltOffset: 0 },
+    { frac: 0.35, speedMul: 1.0, cells: [6, 8], color: '#aebfcc', alpha: 0.62, dashed: false, windMul: 1.0, saltOffset: 1300 },
+    { frac: 0.2, speedMul: 1.4, cells: [8, 11], color: RAIN_LIGHT, alpha: 0.78, dashed: false, windMul: 1.18, saltOffset: 2600 },
 ];
 
 export class WeatherRenderer {
@@ -102,6 +117,8 @@ export class WeatherRenderer {
         this.elapsedMs = 0;
         this._lastSplashStamp = 0;
         this._splashStampSeed = 0;
+        this._splashes = [];
+        this._lightGrade = null;
         this._rippleStampTimes = new Map();
         this._washStrip = null;
         this._washStripKey = '';
@@ -131,6 +148,7 @@ export class WeatherRenderer {
 
         const weather = normalizeWeather(atmosphere);
         if (!weather) return;
+        this._lightGrade = atmosphere?.lightGrade || null;
 
         const precipitation = clamp(weather.precipitation, 0, 1);
         const fog = clamp(weather.fog, 0, 1);
@@ -215,6 +233,7 @@ export class WeatherRenderer {
         this.elapsedMs = 0;
         this._lastSplashStamp = 0;
         this._splashStampSeed = 0;
+        this._splashes.length = 0;
         this._rippleStampTimes.clear();
         for (const ratios of this._districtWashTextures.values()) {
             for (const texture of ratios.values()) {
@@ -518,118 +537,98 @@ export class WeatherRenderer {
 
     _drawRain(ctx, canvas, weather, phaseMs, seed, particleEnabled) {
         const intensity = clamp(weather.intensity, 0, 1);
-        const area = canvas.width * canvas.height;
-        const density = weather.type === 'storm' ? 1.28 : 1;
-        const animatedScale = particleEnabled ? 1 : 0.42;
-        const embellishScale = this._allowEmbellishment ? 1 : 0.62;
-        const count = Math.min(
-            RAIN_MAX_STREAKS,
-            Math.max(
-                RAIN_MIN_STREAKS,
-                Math.floor((area / RAIN_AREA_DENSITY) * (0.35 + intensity * 0.95) * density * animatedScale * embellishScale),
-            ),
-        );
+        const storm = weather.type === 'storm';
+        const grid = this._artGrid();
+        const areaScale = (canvas.width * canvas.height) / RAIN_REFERENCE_AREA;
+        let count = Math.round((storm ? STORM_STREAKS : RAIN_STREAKS) * areaScale * (0.45 + intensity * 0.55));
+        if (grid.zoom <= RAIN_WIDE_ZOOM) count = Math.min(count, RAIN_WIDE_STREAKS);
+        if (!particleEnabled) count = Math.round(count * 0.5);
+        if (!this._allowEmbellishment) count = Math.round(count * 0.62);
 
         const windValue = Number(weather.windX);
         const windX = clamp(Number.isFinite(windValue) ? windValue : -0.46, -1.4, 1.4);
         const pad = 48;
         const travel = canvas.height + pad * 2;
         const speed = particleEnabled ? (0.42 + intensity * 0.34) : 0;
-        const alpha = (particleEnabled ? 0.22 : 0.14) + intensity * (weather.type === 'storm' ? 0.18 : 0.12);
-        const strokeAlpha = Math.min(0.48, alpha);
+        // The overlay is ungraded: rain at night keeps the hue and gives up
+        // some value so it never outshines the lamps.
+        const night = clamp(Number(this._lightGrade?.night) || 0, 0, 1);
+        const alphaScale = (0.8 + intensity * 0.2) * (1 - night * 0.4);
 
         ctx.save();
-        if (!particleEnabled) {
-            // Reduced motion: a single static streak layer (no parallax).
-            this._drawRainStreakLayer(ctx, canvas, {
-                count, seed, windX, pad, travel, fall: 0,
-                lengthMul: 1, windMul: 1, lineWidth: 1, strokeAlpha, saltOffset: 0,
+        const layers = particleEnabled ? RAIN_LAYERS : RAIN_LAYERS.slice(1, 2);
+        for (const layer of layers) {
+            const layerCount = particleEnabled ? Math.round(count * layer.frac) : count;
+            if (layerCount <= 0) continue;
+            this._drawRainStreakLayer(ctx, canvas, grid, {
+                count: layerCount,
+                seed,
+                windX: windX * layer.windMul,
+                pad,
+                travel,
+                fall: (phaseMs * speed * layer.speedMul) % travel,
+                layer,
+                alpha: layer.alpha * alphaScale,
             });
-        } else {
-            for (const layer of RAIN_LAYERS) {
-                const layerCount = Math.round(count * layer.frac);
-                if (layerCount <= 0) continue;
-                this._drawRainStreakLayer(ctx, canvas, {
-                    count: layerCount,
-                    seed,
-                    windX,
-                    pad,
-                    travel,
-                    fall: (phaseMs * speed * layer.speedMul) % travel,
-                    lengthMul: layer.lengthMul,
-                    windMul: layer.windMul,
-                    lineWidth: layer.lineWidth,
-                    strokeAlpha: Math.min(0.48, strokeAlpha * layer.alphaMul),
-                    saltOffset: layer.saltOffset,
-                });
-            }
         }
-
-        if (this._allowEmbellishment && weather.type === 'storm' && intensity > 0.55) {
-            const fall = (phaseMs * speed) % travel;
-            ctx.lineWidth = 1;
-            ctx.strokeStyle = `rgba(220, 236, 244, ${Math.min(0.34, intensity * 0.18)})`;
-            ctx.beginPath();
-            const highlightCount = Math.floor(count * 0.18);
-            for (let i = 0; i < highlightCount; i++) {
-                const idx = i * 5 + 3;
-                const length = 12 + Math.floor(random01(seed, idx + 317) * 12);
-                const xRand = random01(seed, idx + 419);
-                const yRand = random01(seed, idx + 521);
-                const y = ((yRand * travel + fall * 1.12) % travel) - pad;
-                const rawX = xRand * (canvas.width + pad * 2) - pad + fall * windX * 0.42;
-                const x = wrap(rawX, -pad, canvas.width + pad);
-                ctx.moveTo(Math.round(x), Math.round(y));
-                ctx.lineTo(Math.round(x + windX * length), Math.round(y + length));
-            }
-            ctx.stroke();
-        }
-
         ctx.restore();
 
-        // Traveling rain curtains: a few broad translucent sheets drifting on
-        // the wind, only in heavy storms. `intensity` here is already scaled
-        // by the legibility gate (legibility.rain), so a pressured/foggy scene
-        // drops below the 0.7 threshold and the curtains never draw — keeping
-        // the busy scene legible. Reduced motion skips this whole branch
-        // (caller gates _drawStormFlash & curtains on particleEnabled).
-        if (this._allowEmbellishment && weather.type === 'storm' && intensity > 0.7 && particleEnabled) {
+        // Storm fronts: a few darker sheets of heavier air drifting on the
+        // wind, only in heavy storms and only with motion (the caller gates
+        // the flash the same way). `intensity` is already legibility-gated, so
+        // a pressured scene drops below the threshold and keeps its labels.
+        if (this._allowEmbellishment && storm && intensity > 0.7 && particleEnabled) {
             this._drawRainCurtains(ctx, canvas, { intensity, windX, phaseMs, seed });
         }
 
         if (this._allowEmbellishment && (weather.precipitation > SPLASH_PRECIP_THRESHOLD || intensity > SPLASH_PRECIP_THRESHOLD)) {
-            this._drawRainSplashes(ctx, canvas, {
+            this._drawRainSplashes(ctx, grid, {
                 intensity,
                 precipitation: clamp(weather.precipitation, 0, 1),
                 particleEnabled,
                 seed,
+                alphaScale,
             });
         }
     }
 
-    // One parallax streak layer: seeded streaks strokd with the layer's own
-    // fall offset, length, wind drift, lineWidth and alpha. saltOffset keeps
-    // each layer's streak positions disjoint from the others.
-    _drawRainStreakLayer(ctx, canvas, { count, seed, windX, pad, travel, fall, lengthMul, windMul, lineWidth, strokeAlpha, saltOffset }) {
-        ctx.lineWidth = lineWidth;
-        ctx.strokeStyle = `rgba(190, 218, 230, ${strokeAlpha})`;
-        ctx.beginPath();
+    // The world's art-pixel grid on screen (CSS px): one cell per art pixel,
+    // phased to the camera so weather cells line up with the world's texels.
+    _artGrid() {
+        const camera = this.districtContext?.camera || null;
+        const zoom = Math.max(0.1, Number(camera?.zoom) || 1);
+        const cell = Math.max(1, Math.round(zoom));
+        const ox = mod(Number(camera?.renderOffsetX) || 0, cell);
+        const oy = mod(Number(camera?.renderOffsetY) || 0, cell);
+        return { camera, zoom, cell, ox, oy };
+    }
+
+    // One parallax layer: seeded streaks falling on the layer's own offset,
+    // each a run of whole cells that steps one cell sideways per 1/|wind|
+    // cells down. All cells go into one path, filled once.
+    _drawRainStreakLayer(ctx, canvas, grid, { count, seed, windX, pad, travel, fall, layer, alpha }) {
+        const { cell, ox, oy } = grid;
         const xSpan = canvas.width + pad * 2;
+        const [minCells, maxCells] = layer.cells;
+        const lean = windX * 0.8;
+        ctx.globalAlpha = clamp(alpha, 0, 1);
+        ctx.fillStyle = layer.color;
+        ctx.beginPath();
         for (let i = 0; i < count; i++) {
-            const s = i + saltOffset;
-            const length = (8 + Math.floor(random01(seed, s + 17) * 13)) * lengthMul;
-            const xRand = random01(seed, s + 101);
-            const yRand = random01(seed, s + 211);
-            const y = ((yRand * travel + fall) % travel) - pad;
-            const drift = fall * windX * 0.34 * windMul;
-            const rawX = xRand * xSpan - pad + drift;
+            const s = i + layer.saltOffset;
+            const cells = minCells + Math.floor(random01(seed, s + 17) * (maxCells - minCells + 1));
+            const y = ((random01(seed, s + 211) * travel + fall) % travel) - pad;
+            const rawX = random01(seed, s + 101) * xSpan - pad + fall * windX * 0.34;
             const x = wrap(rawX, -pad, canvas.width + pad);
-            const dx = Math.round(windX * length);
-            const dy = length;
-            ctx.moveTo(Math.round(x), Math.round(y));
-            ctx.lineTo(Math.round(x + dx), Math.round(y + dy));
+            const headX = ox + Math.floor((x - ox) / cell) * cell;
+            const headY = oy + Math.floor((y - oy) / cell) * cell;
+            for (let k = 0; k < cells; k++) {
+                if (layer.dashed && k % 2 === 1) continue;
+                ctx.rect(headX + Math.round(k * lean) * cell, headY + k * cell, cell, cell);
+            }
         }
-        ctx.stroke();
+        ctx.fill();
+        ctx.globalAlpha = 1;
     }
 
     // Winter precipitation: deterministic drifting flakes with a per-flake
@@ -658,6 +657,8 @@ export class WeatherRenderer {
 
         ctx.save();
         ctx.fillStyle = `rgba(238, 246, 255, ${alpha})`;
+        // 6.7 — flakes are one or two whole art-pixel cells.
+        const { cell, ox, oy } = this._artGrid();
         for (let i = 0; i < count; i++) {
             const xRand = random01(seed, i + 101);
             const yRand = random01(seed, i + 211);
@@ -671,24 +672,26 @@ export class WeatherRenderer {
             const drift = fall * windX * 0.06;
             const rawX = xRand * xSpan - pad + sway + drift;
             const x = wrap(rawX, -pad, canvas.width + pad);
-            ctx.fillRect(Math.round(x), Math.round(y), size, size);
+            ctx.fillRect(ox + Math.round((x - ox) / cell) * cell, oy + Math.round((y - oy) / cell) * cell, size * cell, size * cell);
         }
         ctx.restore();
     }
 
-    // 2–3 broad, soft vertical sheets drifting horizontally on the wind, each
-    // phase-offset, to give a storm a sense of moving weather fronts crossing
-    // the viewport. Cheap (one gradient fill per curtain), screen-composited,
-    // alpha-capped to stay under the labels. Storm-only, animated-only.
+    // 2–3 sheets of heavier air drifting on the wind, each phase-offset, so a
+    // storm reads as weather fronts crossing the view. Each sheet is two
+    // stepped courses (a dense core inside a thinner band) of source-over
+    // darkening: storm air gets heavier, never milkier. Storm-only,
+    // animated-only; the courses' alpha stays under the labels' contrast.
     _drawRainCurtains(ctx, canvas, { intensity, windX, phaseMs, seed }) {
         const count = intensity > 0.86 ? 3 : 2;
-        const baseAlpha = Math.min(0.12, 0.05 + (intensity - 0.7) * 0.22);
+        const baseAlpha = Math.min(0.1, 0.04 + (intensity - 0.7) * 0.2);
         if (baseAlpha <= 0.005) return;
         const span = canvas.width + canvas.width * 0.6;
         const drift = clamp(Number.isFinite(windX) ? windX : -0.46, -1.4, 1.4);
+        const { cell } = this._artGrid();
 
         ctx.save();
-        ctx.globalCompositeOperation = 'screen';
+        ctx.fillStyle = 'rgb(18, 26, 38)';
         for (let i = 0; i < count; i++) {
             const curtainSeed = i * 311;
             const width = canvas.width * (0.32 + random01(seed, curtainSeed + 7) * 0.22);
@@ -697,109 +700,96 @@ export class WeatherRenderer {
             // Move with the wind; wrap across an extended span so a curtain
             // re-enters from the upwind edge.
             const travel = (phaseMs * speed * drift) + phase * span;
-            const cx = wrap(travel, -width, span) - width * 0.5;
+            const left = Math.round((wrap(travel, -width, span) - width * 0.5) / cell) * cell;
             const alpha = baseAlpha * (0.7 + random01(seed, curtainSeed + 29) * 0.5);
-            const grad = ctx.createLinearGradient(cx, 0, cx + width, 0);
-            grad.addColorStop(0, 'rgba(186, 210, 230, 0)');
-            grad.addColorStop(0.5, `rgba(196, 218, 236, ${alpha})`);
-            grad.addColorStop(1, 'rgba(186, 210, 230, 0)');
-            ctx.fillStyle = grad;
-            ctx.fillRect(Math.round(cx), 0, Math.round(width), canvas.height);
+            const outer = Math.round(width / cell) * cell;
+            const inner = Math.round(width * 0.5 / cell) * cell;
+            ctx.globalAlpha = alpha * 0.5;
+            ctx.fillRect(left, 0, outer, canvas.height);
+            ctx.fillRect(left + Math.round((outer - inner) / 2 / cell) * cell, 0, inner, canvas.height);
         }
         ctx.restore();
     }
 
-    _drawRainSplashes(ctx, canvas, { intensity, precipitation, particleEnabled, seed }) {
-        if (!this._hasSplashSprite()) {
-            this._drawProceduralSplashFallback(ctx, canvas, { intensity, precipitation, particleEnabled, seed });
-            return;
-        }
+    // 6.7 — splashes land on open ground the viewer can see: tiles that are
+    // walkable, dry, and not behind a building's opaque art (the overlay has
+    // no depth). Each is a three-frame pixel crown in world-anchored cells, so
+    // it pans with the ground. Water keeps its own rain ripples.
+    _drawRainSplashes(ctx, grid, { intensity, precipitation, particleEnabled, seed, alphaScale }) {
+        const camera = grid.camera;
+        const tiles = this.districtContext?.openGroundTiles?.() || null;
+        if (!camera?.worldToScreen || !camera?.screenToWorld || !tiles?.length) return;
+        const view = this._visibleWorldRect(camera);
+        const driveT = Math.min(1, Math.max(intensity, precipitation));
+        const alpha = clamp((0.35 + driveT * 0.3) * alphaScale, 0, 1);
 
         if (!particleEnabled) {
-            this._drawStaticSplashGrid(ctx, canvas, seed);
+            // Reduced motion: a static ring on a fixed share of the visible
+            // open tiles, chosen by each tile's own hash so it never re-rolls.
+            for (const tile of tiles) {
+                if (tile.seed >= SPLASH_STATIC_SHARE || !inRect(tile, view)) continue;
+                this._stampSplash(ctx, grid, tile.x, tile.y, 2, alpha);
+            }
             return;
         }
 
-        if (this.elapsedMs - this._lastSplashStamp < SPLASH_STAMP_INTERVAL_MS) return;
-        this._lastSplashStamp = this.elapsedMs;
-        this._splashStampSeed = (this._splashStampSeed + 1) >>> 0;
-
-        const driveT = Math.min(1, Math.max(intensity, precipitation));
-        const count = Math.round(
-            SPLASH_STAMP_MIN_COUNT + (SPLASH_STAMP_MAX_COUNT - SPLASH_STAMP_MIN_COUNT) * driveT,
-        );
-        const stampSeed = (seed + Math.imul(this._splashStampSeed + 1, 0x85ebca6b)) >>> 0;
-        const alpha = Math.min(0.42, 0.18 + driveT * 0.28);
-
-        for (let i = 0; i < count; i++) {
-            const x = random01(stampSeed, i + 11) * canvas.width;
-            // Bias into the lower band so splashes land on the ground rather
-            // than floating in the sky.
-            const y = (0.35 + random01(stampSeed, i + 29) * 0.65) * canvas.height;
-            const scale = 0.55 + random01(stampSeed, i + 53) * 0.45;
-            const rotation = (random01(stampSeed, i + 71) - 0.5) * 0.5;
-            this._stampSpriteAt(ctx, RAIN_SPLASH_SPRITE_ID, {
-                x,
-                y,
-                alpha,
-                scale,
-                rotation,
-            });
-        }
-    }
-
-    _drawStaticSplashGrid(ctx, canvas, seed) {
-        const cols = 4;
-        const rows = 3;
-        const colStep = canvas.width / (cols + 1);
-        const rowStep = canvas.height / (rows + 1);
-        let drawn = 0;
-        for (let r = 1; r <= rows; r++) {
-            for (let c = 1; c <= cols; c++) {
-                if (drawn >= SPLASH_STATIC_GRID_COUNT) break;
-                const idx = drawn;
-                drawn++;
-                const jitterX = (random01(seed, idx + 113) - 0.5) * colStep * 0.18;
-                const jitterY = (random01(seed, idx + 191) - 0.5) * rowStep * 0.18;
-                // Ground the grid into the lower band (rows map to 0.40–0.95 of
-                // canvas height) so static splashes read as sitting on terrain.
-                const y = canvas.height * (0.4 + (r / (rows + 1)) * 0.55) + jitterY;
-                this._stampSpriteAt(ctx, RAIN_SPLASH_SPRITE_ID, {
-                    x: c * colStep + jitterX,
-                    y,
-                    alpha: 0.22,
-                    scale: 0.62,
-                    rotation: -0.12,
-                });
+        const now = this.elapsedMs;
+        if (now < this._lastSplashStamp) this._lastSplashStamp = now;
+        if (now - this._lastSplashStamp >= SPLASH_STAMP_INTERVAL_MS) {
+            this._lastSplashStamp = now;
+            this._splashStampSeed = (this._splashStampSeed + 1) >>> 0;
+            const visible = [];
+            for (const tile of tiles) if (inRect(tile, view)) visible.push(tile);
+            if (visible.length) {
+                const count = Math.round(SPLASH_STAMP_MIN_COUNT + (SPLASH_STAMP_MAX_COUNT - SPLASH_STAMP_MIN_COUNT) * driveT);
+                const stampSeed = (seed + Math.imul(this._splashStampSeed + 1, 0x85ebca6b)) >>> 0;
+                for (let i = 0; i < count; i++) {
+                    const tile = visible[Math.floor(random01(stampSeed, i + 11) * visible.length)];
+                    // Anywhere near the middle of the tile's diamond.
+                    const u = random01(stampSeed, i + 29) - 0.5;
+                    const v = random01(stampSeed, i + 53) - 0.5;
+                    this._splashes.push({
+                        x: Math.round(tile.x + (u - v) * TILE_WIDTH / 2 * 0.6),
+                        y: Math.round(tile.y + (u + v) * TILE_HEIGHT / 2 * 0.6),
+                        born: now,
+                    });
+                }
             }
         }
+        let next = 0;
+        for (const splash of this._splashes) {
+            const frame = Math.floor((now - splash.born) / SPLASH_FRAME_MS);
+            if (frame < 0 || frame >= SPLASH_FRAMES.length) continue;
+            this._splashes[next++] = splash;
+            this._stampSplash(ctx, grid, splash.x, splash.y, frame, alpha);
+        }
+        this._splashes.length = next;
     }
 
-    _drawProceduralSplashFallback(ctx, canvas, { intensity, precipitation, particleEnabled, seed }) {
-        const driveT = Math.min(1, Math.max(intensity, precipitation));
-        const count = particleEnabled
-            ? Math.round(SPLASH_STAMP_MIN_COUNT + (SPLASH_STAMP_MAX_COUNT - SPLASH_STAMP_MIN_COUNT) * driveT)
-            : SPLASH_STATIC_GRID_COUNT;
-        if (count <= 0) return;
-        const stampSeed = particleEnabled
-            ? (seed + Math.floor(this.elapsedMs / SPLASH_STAMP_INTERVAL_MS) * 0x9e3779b1) >>> 0
-            : seed;
-        if (particleEnabled && this.elapsedMs - this._lastSplashStamp < SPLASH_STAMP_INTERVAL_MS) return;
-        if (particleEnabled) this._lastSplashStamp = this.elapsedMs;
-        const alpha = Math.min(0.32, 0.14 + driveT * 0.22);
-
+    _stampSplash(ctx, grid, worldX, worldY, frame, alpha) {
+        const { camera, cell, zoom } = grid;
+        const p = camera.worldToScreen(worldX - 3, worldY - 3);
+        const rows = SPLASH_FRAMES[frame];
         ctx.save();
-        ctx.strokeStyle = `rgba(204, 232, 240, ${alpha})`;
-        ctx.lineWidth = 1;
-        for (let i = 0; i < count; i++) {
-            const x = random01(stampSeed, i + 37) * canvas.width;
-            const y = (0.35 + random01(stampSeed, i + 59) * 0.65) * canvas.height;
-            const radius = 2 + random01(stampSeed, i + 83) * 2;
-            ctx.beginPath();
-            ctx.ellipse(Math.round(x), Math.round(y), radius, radius * 0.42, 0, 0, Math.PI * 2);
-            ctx.stroke();
+        ctx.globalAlpha = alpha;
+        for (let row = 0; row < rows.length; row++) {
+            const line = rows[row];
+            for (let col = 0; col < line.length; col++) {
+                const mark = line[col];
+                if (mark === '.') continue;
+                ctx.fillStyle = mark === '#' ? RAIN_LIGHT : RAIN_DIM;
+                ctx.fillRect(Math.round(p.x + col * zoom), Math.round(p.y + row * zoom), cell, cell);
+            }
         }
         ctx.restore();
+    }
+
+    _visibleWorldRect(camera) {
+        const width = camera._viewportWidth?.() || 0;
+        const height = camera._viewportHeight?.() || 0;
+        const a = camera.screenToWorld(0, 0);
+        const b = camera.screenToWorld(width, height);
+        return { left: a.x - 8, top: a.y - 8, right: b.x + 8, bottom: b.y + 8 };
     }
 
     // Public stamp helper for IsometricRenderer's water draw loop. Stamps a
@@ -822,10 +812,6 @@ export class WeatherRenderer {
             scale: 1,
         });
         return true;
-    }
-
-    _hasSplashSprite() {
-        return Boolean(this.assets?.has?.(RAIN_SPLASH_SPRITE_ID));
     }
 
     _hasRippleSprite() {
@@ -1168,4 +1154,12 @@ function wrap(value, min, max) {
 
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
+}
+
+function mod(value, size) {
+    return ((value % size) + size) % size;
+}
+
+function inRect(point, rect) {
+    return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
 }

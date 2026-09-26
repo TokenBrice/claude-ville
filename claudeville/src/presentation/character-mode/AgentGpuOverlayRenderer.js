@@ -1,8 +1,10 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { WORLD_BODY_FONT } from '../../config/theme.js';
+import { WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { agentFrameKeyFromCell } from './AssetManager.js';
 import { gpuMaterialNameForProvider } from './gpu/GpuSceneBuilder.js';
-import { compactIncidentMark, drawCompactIncidentMark } from './AgentSprite.js';
+import { materialClassId } from './gpu/GpuWorldPolicy.js';
+import { isAttentionStatus } from './AttentionPlates.js';
+import { DEFAULT_CELL } from './SpriteSheet.js';
 
 // Owns the GPU-world base-sprite record and the ungraded Canvas annotation
 // pass. The host remains authoritative for animation, identity, and all shared
@@ -35,28 +37,25 @@ export class AgentGpuOverlayRenderer {
         const host = this.host;
         if (!host.gpuWorldEnabled || !ctx) return;
         host._zoom = zoom;
-        const status = host.agent?.status;
-        const incident = compactIncidentMark(status, { motionScale: host.motionScale });
-        const primary = host.selected || Boolean(incident);
+        // W-F16 — a body the depth pass hid behind a building keeps its marks
+        // and name hidden with it; the selected one is x-rayed, so keeps both.
+        if (host._behindBuilding && !host.selected) return;
+        // Action-needed agents are marked by the overlay's T1 beacon and
+        // attention plate (AttentionPlates.js) at every zoom, not here.
+        const primary = host.selected || isAttentionStatus(host.agent?.status);
         const overview = !host.selected && zoom < 1;
-
-        // Additive overview annotation: the compact helper is PRIMARY and does
-        // not need a GPU body record. needsYou is a no-op (beacon already drawn).
-        if (overview && !departedTableau(host) && incident) {
-            drawCompactIncidentMark(ctx, incident, { x: host.x, y: host.y, zoom });
-        }
 
         const record = host._gpuFrameRecord;
         if (!record) return;
         const contentTopY = Number.isFinite(record.contentTopY)
             ? record.contentTopY
-            : host.y - 48;
+            : host._headTopY();
 
-        if (host.selected) {
-            host._drawFocusPillar(ctx, contentTopY);
-        } else if (host.hovered) {
-            host._drawHoverRing(ctx);
-        }
+        // Plan 2.5 — the selected agent is framed, never veiled: its pixel ring
+        // rides the ground records (getGroundRecords) and the chevron floats
+        // over the head here, ungraded, so it holds at night. Hover is a
+        // ground ring only.
+        if (host.selected) host._drawSelectionChevron(ctx, contentTopY);
 
         // Modular action props stay in the ungraded overlay. They add to the
         // complete GPU body frame and can never punch holes in its alpha. The
@@ -71,31 +70,31 @@ export class AgentGpuOverlayRenderer {
         if (record.frameGeometry && !departedTableau(host)) {
             host._drawSignatureMark(ctx, record.frameGeometry);
             host._drawReceiveBeat(ctx, record.frameGeometry);
-            host._drawStanceOverlay(ctx, record.frameGeometry);
+            // Plan 2.7 — a half-scale crowd body keeps its identity plate and
+            // evidence seals but sheds the 1:1-sized procedural gestures,
+            // which would be twice its proportion and read as noise.
+            const fullBody = !record.frameGeometry.lod;
+            if (fullBody) host._drawStanceOverlay(ctx, record.frameGeometry);
             host._drawActionPoseOverlay(ctx, record.frameGeometry);
-            host._drawToolRitualOverlay(ctx, record.frameGeometry);
+            if (fullBody) host._drawToolRitualOverlay(ctx, record.frameGeometry);
         }
 
         // Static-band cue: departed agents never pulse or allocate animation
         // state, so reduced motion receives the complete visual treatment.
         if (departedTableau(host)) this.drawDepartedTreatment(ctx);
 
-        const admitted = host.overlaySlot != null || host.nameTagSlot != null || primary;
         if (!departedTableau(host) && (primary || host.selected || annotationMode === 'full' || host.gpuActionOverlay)) {
-            if (host.chatting) host._drawChatEffect(ctx);
-            else host._drawStatus(ctx, contentTopY);
-            // Overview already used the compact helper; skip the close-zoom
-            // emote so one incident mark occupies the slot.
-            if (!overview) host._drawStatusEmote(ctx, contentTopY);
-            host._drawPlanModeGlyph(ctx, contentTopY);
-            host._drawRetryGlyph(ctx, contentTopY);
+            // Head-anchored labels clear the chevron: nothing crosses the body.
+            const labelTopY = host._labelTopY(contentTopY);
+            if (host.chatting) host._drawChatEffect(ctx, labelTopY);
+            else host._drawStatus(ctx, labelTopY);
+            if (!overview) host._drawStatusEmote(ctx, labelTopY);
+            host._drawPlanModeGlyph(ctx, labelTopY);
+            host._drawRetryGlyph(ctx, labelTopY);
         }
 
-        if (host.selected || (annotationMode === 'full' && host.nameTagSlot != null)) {
-            host._drawNameTag(ctx);
-        } else if (admitted) {
-            host._drawCompactNameStatus(ctx);
-        }
+        // C5 identity: _drawNameTag gates the T2 plate / T4 name itself.
+        host._drawNameTag(ctx);
     }
 
     // Lingering-departure cue. This deliberately claims the `static` motion
@@ -105,7 +104,7 @@ export class AgentGpuOverlayRenderer {
     drawDepartedTreatment(ctx) {
         const centerX = Math.round(this.host.x);
         const y = Math.round(this.host.y + 10);
-        const width = 58;
+        const width = 74;
         const height = 14;
         const scale = 1 / (this.host._zoom || 1);
         ctx.save();
@@ -121,11 +120,52 @@ export class AgentGpuOverlayRenderer {
         ctx.fill();
         ctx.stroke();
         ctx.fillStyle = '#d8dde3';
-        ctx.font = `700 8px ${WORLD_BODY_FONT}`;
+        ctx.font = WORLD_DISPLAY_FONT_8;
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('DEPARTED', 0, height / 2 + 0.5);
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText('DEPARTED', 0, 11);
         ctx.restore();
+    }
+
+    // Plan 2.3 — the host's ground mark set (contact shadow, action-needed
+    // ring, selection/hover ring) as resident ground records: the same cached
+    // pixel stamps the Canvas fallback blits, painted before the body in the
+    // depth pass so bodies and buildings occlude them. Record objects are
+    // reused per mark slot; only the positions move each frame.
+    getGroundRecords(sequence = 0) {
+        const host = this.host;
+        const marks = host._groundMarks;
+        if (!host.gpuWorldEnabled || !host._gpuFrameRecord || !marks?.length) return [];
+        const records = this._groundRecords || (this._groundRecords = []);
+        records.length = marks.length;
+        const id = host.agent?.id || sequence;
+        for (let index = 0; index < marks.length; index++) {
+            const mark = marks[index];
+            const stamp = mark.stamp;
+            const record = records[index] || (records[index] = {
+                material: materialClassId('default'),
+                elevation: 0,
+                occluder: 0,
+                emissive: 0,
+                alpha: 1,
+                sx: 0,
+                sy: 0,
+            });
+            record.id = `ground:${id}:${mark.kind}`;
+            record.stableKey = record.id;
+            record.textureKey = `agent-ground:${stamp.__cvGroundKey || `${mark.kind}:${stamp.width}x${stamp.height}`}`;
+            record.source = stamp;
+            record.sourceWidth = stamp.width;
+            record.sourceHeight = stamp.height;
+            record.sw = stamp.width;
+            record.sh = stamp.height;
+            record.width = stamp.width;
+            record.height = stamp.height;
+            record.x = mark.x;
+            record.y = mark.y;
+            record.sequence = sequence + index * 0.001;
+        }
+        return records;
     }
 
     setFrameRecord({
@@ -139,6 +179,7 @@ export class AgentGpuOverlayRenderer {
         contentTopY = null,
         frameGeometry = null,
         pose = null,
+        lod = false,
     }) {
         const host = this.host;
         if (!host.gpuWorldEnabled || !host.spriteCanvas || !cell) {
@@ -148,7 +189,7 @@ export class AgentGpuOverlayRenderer {
         // 2.2 — an authored C2 pose replaces both the sampled sheet and the
         // source rect, so the resident body shows the same hands the Canvas
         // body does. Equipment padding never applies: the strip owns its grip.
-        const source = pose ? pose.source : (host._gpuBaseSpriteCanvas || host.spriteCanvas);
+        let source = pose ? pose.source : (host._gpuBaseSpriteCanvas || host.spriteCanvas);
         const status = host.agent?.status;
         // Equipped codex sheets are re-laid on a padded cell grid so baked
         // blade tips survive past the 92px body cell; remap the cell UVs and
@@ -162,9 +203,18 @@ export class AgentGpuOverlayRenderer {
         const row = pad ? Math.floor(cell.sy / cellSize) : 0;
         const bodyCell = pose ? pose.cell : cell;
         const frameKey = agentFrameKeyFromCell(bodyCell);
-        const equippedMaterial = pad ? host._gpuEquippedMaterialSheet : null;
-        const equippedEmissive = pad ? host._gpuEquippedEmissiveSheet : null;
-        const resolved = (equippedMaterial || equippedEmissive || pose)
+        // Plan 2.7 — a crowd body samples the baked 0.5x LOD sheet at world
+        // scale 1: source rects halve, and with drawScale 0.5 the quad keeps
+        // one LOD texel per world texel. Authored channel sidecars describe
+        // the full-resolution cells, so the LOD body uses record defaults.
+        const lodSheet = lod && !pose
+            ? host.compositor?.halfScaleSheet?.(source, pad ? padded : (host.spriteSheet?.cellSize || DEFAULT_CELL))
+            : null;
+        const sourceScale = lodSheet ? 0.5 : 1;
+        if (lodSheet) source = lodSheet;
+        const equippedMaterial = pad && !lodSheet ? host._gpuEquippedMaterialSheet : null;
+        const equippedEmissive = pad && !lodSheet ? host._gpuEquippedEmissiveSheet : null;
+        const resolved = (equippedMaterial || equippedEmissive || pose || lodSheet)
             ? null
             : host.assets?.resolveMaterialChannels?.(spriteId, frameKey, {
                 kind: 'agent',
@@ -175,38 +225,47 @@ export class AgentGpuOverlayRenderer {
         const resolvedReady = resolved?.ready && resolved.origin !== 'fallback';
         // A strip carries its own optional material companions; it never
         // borrows the base sheet's, whose cells describe a different pose.
-        const materialSource = pose
-            ? pose.strip?.channels?.material || null
-            : equippedMaterial
-                || (resolvedReady ? resolved.material : null)
-                || (pad ? null : host.assets?.getSidecar?.(spriteId, 'material')
-                    || host.assets?.getMaterialSidecar?.(spriteId, 'material'))
-                || null;
-        const emissiveSource = pose
-            ? pose.strip?.channels?.emissive || null
-            : equippedEmissive
-                || (resolvedReady ? resolved.emissive : null)
-                || (pad ? null : host.assets?.getSidecar?.(spriteId, 'emissive')
-                    || host.assets?.getMaterialSidecar?.(spriteId, 'emissive'))
-                || null;
+        const materialSource = lodSheet
+            ? null
+            : pose
+                ? pose.strip?.channels?.material || null
+                : equippedMaterial
+                    || (resolvedReady ? resolved.material : null)
+                    || (pad ? null : host.assets?.getSidecar?.(spriteId, 'material')
+                        || host.assets?.getMaterialSidecar?.(spriteId, 'material'))
+                    || null;
+        const emissiveSource = lodSheet
+            ? null
+            : pose
+                ? pose.strip?.channels?.emissive || null
+                : equippedEmissive
+                    || (resolvedReady ? resolved.emissive : null)
+                    || (pad ? null : host.assets?.getSidecar?.(spriteId, 'emissive')
+                        || host.assets?.getMaterialSidecar?.(spriteId, 'emissive'))
+                    || null;
+        const occluderSource = lodSheet
+            ? null
+            : pose
+                ? pose.strip?.channels?.occluder || null
+                : pad ? host._gpuEquippedOccluderSheet : resolved?.occluder || host.assets?.getSidecar?.(spriteId, 'occluder') || null;
         host._gpuFrameRecord = {
             id: `agent:${host.agent?.id || profileKey}`,
             stableKey: host.agent?.id || profileKey,
-            textureKey: pose ? `agent-strip:${profileKey}:${pose.group}` : `agent-sheet:${profileKey}`,
+            textureKey: pose
+                ? `agent-strip:${profileKey}:${pose.group}`
+                : `agent-sheet${lodSheet ? '-lod' : ''}:${profileKey}`,
             sidecarKey: materialSource || emissiveSource ? `${spriteId}:${pose ? 'strip' : 'channels'}` : '',
             source,
             materialSource,
             emissiveSource,
-            occluderSource: pose
-                ? pose.strip?.channels?.occluder || null
-                : pad ? host._gpuEquippedOccluderSheet : resolved?.occluder || host.assets?.getSidecar?.(spriteId, 'occluder') || null,
+            occluderSource,
             channelRevision: resolved?.revision || host.assets?.assetVersion || null,
             sourceWidth: source.width,
             sourceHeight: source.height,
-            sx: pad ? col * padded : bodyCell.sx,
-            sy: pad ? row * padded : bodyCell.sy,
-            sw: pad ? padded : bodyCell.sw,
-            sh: pad ? padded : bodyCell.sh,
+            sx: (pad ? col * padded : bodyCell.sx) * sourceScale,
+            sy: (pad ? row * padded : bodyCell.sy) * sourceScale,
+            sw: (pad ? padded : bodyCell.sw) * sourceScale,
+            sh: (pad ? padded : bodyCell.sh) * sourceScale,
             x: dx - pad * drawScale,
             y: dy - pad * drawScale,
             width: (pad ? padded : bodyCell.sw) * drawScale,
@@ -228,7 +287,7 @@ export class AgentGpuOverlayRenderer {
             // asset arriving after a fallback-vector bake re-uploads the sheet.
             textureRevision: pose
                 ? `strip:${profileKey}:${pose.group}`
-                : host._gpuEquippedSheetKey || profileKey,
+                : `${lodSheet ? 'lod:' : ''}${host._gpuEquippedSheetKey || profileKey}`,
             sidecarRevision: resolved?.revision || host.assets?.assetVersion || null,
             contentTopY,
             poseKey: `${pose ? `${pose.group}:${bodyCell.sy}` : host.animState}:${host.direction}:${host.agent?.currentTool || ''}`,

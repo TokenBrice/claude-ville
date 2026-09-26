@@ -41,12 +41,33 @@ export const VILLAGE_WALL_ROUTES = Object.freeze([
     },
 ]);
 
+// `width` is in tiles (1 or 2). The three arms that leave the Command plaza
+// are 2-wide so the civic core reads as a hub with radiating avenues; the
+// rest of the network stays single-file.
 export const TOWN_ROAD_ROUTES = Object.freeze([
     {
         id: 'north-bank-promenade',
         material: 'avenue',
         width: 1,
-        points: [[7, 23], [10, 20], [14, 21], [16, 20], [23, 18], [28, 16], [29, 13]],
+        points: [[7, 23], [10, 20]],
+    },
+    {
+        id: 'civic-west-arm',
+        material: 'avenue',
+        width: 2,
+        points: [[10, 20], [14, 21]],
+    },
+    {
+        id: 'civic-east-arm',
+        material: 'avenue',
+        width: 2,
+        points: [[16, 20], [23, 18]],
+    },
+    {
+        id: 'observatory-promenade',
+        material: 'avenue',
+        width: 1,
+        points: [[23, 18], [28, 16], [29, 13]],
     },
     {
         id: 'production-row',
@@ -61,10 +82,16 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         points: [[6, 34], [14, 31], [18, 27]],
     },
     {
+        id: 'civic-south-arm',
+        material: 'avenue',
+        width: 2,
+        points: [[16, 20], [18, 21]],
+    },
+    {
         id: 'central-river-bridge',
         material: 'avenue',
         width: 1,
-        points: [[16, 20], [18, 21], [18, 26], [22, 31], [22, 37]],
+        points: [[18, 21], [18, 26], [22, 31], [22, 37]],
     },
     {
         id: 'archive-walk',
@@ -97,3 +124,24 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         points: [[18, 26], [18, 32], [19, 36], [19, 39]],
     },
 ]);
+
+// District identity through yard materials (plan item 4.7). Each building's
+// frontage apron — the ring side its entrance faces plus nearby visit tiles —
+// is laid in its district's material by the ground bake (GroundBake.js), not
+// tinted by an alpha wash. `surface` picks the ground ramp and texture,
+// `edge` the low baked edging where the yard meets grass, and `paved` whether
+// footfall/lane material reads it as stone (avenue) or earth (dirt).
+//   flag    dressed flagstone (plaza ramp, one step darker than Command's)
+//   gravel  crushed stone (road ramp, fine texture)
+//   cinder  packed dark earth with slag flecks (dirt ramp, low)
+//   earth   trodden yard earth (dirt ramp)
+export const YARD_MATERIALS = Object.freeze({
+    archive: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
+    observatory: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
+    portal: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
+    forge: Object.freeze({ surface: 'cinder', edge: 'wattle', paved: false }),
+    mine: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
+    taskboard: Object.freeze({ surface: 'earth', edge: 'wattle', paved: false }),
+    watchtower: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
+    harbor: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
+});

@@ -1,55 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import yaml from 'js-yaml';
+import { PNG } from 'pngjs';
 
 import {
     BUILDING_VISUAL_REGISTRY,
     getBuildingDoorSpillDescriptor,
     getBuildingWindowRects,
 } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
-
-const EXISTING_WINDOW_RECTS = {
-    command: [
-        { at: [80, 127], w: 7, h: 10 },
-        { at: [210, 120], w: 7, h: 10 },
-        { at: [150, 90], w: 8, h: 8, shape: 'ellipse' },
-    ],
-    taskboard: [
-        { at: [48, 62], w: 6, h: 8, shape: 'ellipse' },
-        { at: [182, 62], w: 6, h: 8, shape: 'ellipse' },
-    ],
-    forge: [
-        { at: [157, 143], w: 9, h: 10 },
-        { at: [172, 143], w: 9, h: 10 },
-    ],
-    archive: [
-        { at: [139, 130], w: 5, h: 9 },
-        { at: [204, 130], w: 5, h: 9 },
-    ],
-    observatory: [
-        { at: [74, 182], w: 13, h: 27 },
-        { at: [169, 149], w: 20, h: 29 },
-        { at: [137, 203], w: 13, h: 20 },
-    ],
-    watchtower: [
-        { at: [145, 168], w: 9, h: 13 },
-        { at: [153, 219], w: 9, h: 13 },
-        { at: [140, 270], w: 9, h: 13 },
-    ],
-    harbor: [
-        { at: [155, 70], w: 4, h: 8 },
-        { at: [181, 80], w: 4, h: 8 },
-        { at: [195, 89], w: 8, h: 7 },
-        { at: [222, 90], w: 4, h: 7 },
-        { at: [102, 110], w: 4, h: 9 },
-        { at: [179, 107], w: 4, h: 7 },
-        { at: [232, 110], w: 4, h: 8 },
-        { at: [122, 129], w: 4, h: 8 },
-        { at: [180, 136], w: 4, h: 8 },
-        { at: [167, 148], w: 4, h: 8 },
-        { at: [183, 155], w: 4, h: 8 },
-        { at: [190, 158], w: 4, h: 7 },
-    ],
-};
 
 test('mine and portal windows stay inside their native sprite dimensions', () => {
     for (const type of ['mine', 'portal']) {
@@ -65,9 +24,36 @@ test('mine and portal windows stay inside their native sprite dimensions', () =>
     }
 });
 
-test('existing calibrated building windows remain unchanged', () => {
-    for (const [type, rects] of Object.entries(EXISTING_WINDOW_RECTS)) {
-        assert.deepEqual(BUILDING_VISUAL_REGISTRY[type].windowRects, rects, type);
+// Window rects are art-coupled and move whenever a sprite is re-authored, so
+// the contract is not their literal values: each lit window must sit on the
+// building's own opaque art (a stamp over empty canvas lights thin air) and
+// inside its native canvas.
+function loadBaseArt(type) {
+    const manifest = yaml.load(readFileSync(new URL('../../claudeville/assets/sprites/manifest.yaml', import.meta.url), 'utf8'));
+    const entry = manifest.buildings.find((building) => building.id === `building.${type}`);
+    const png = PNG.sync.read(readFileSync(new URL(`../../claudeville/assets/sprites/buildings/building.${type}/base.png`, import.meta.url)));
+    return { entry, png };
+}
+
+test('every calibrated window sits on its building\'s opaque art', () => {
+    for (const [type, visual] of Object.entries(BUILDING_VISUAL_REGISTRY)) {
+        const { entry, png } = loadBaseArt(type);
+        assert.equal(png.width, entry.width, `${type} manifest width matches base.png`);
+        assert.equal(png.height, entry.height, `${type} manifest height matches base.png`);
+        const alphaAt = (x, y) => png.data[(y * png.width + x) * 4 + 3];
+        for (const rect of visual.windowRects) {
+            const [cx, cy] = rect.at;
+            const left = Math.round(cx - rect.w / 2);
+            const top = Math.round(cy - rect.h / 2);
+            assert.ok(left >= 0 && top >= 0 && left + rect.w <= png.width && top + rect.h <= png.height,
+                `${type} window ${cx},${cy} leaves the canvas`);
+            let opaque = 0;
+            for (let y = top; y < top + rect.h; y++) {
+                for (let x = left; x < left + rect.w; x++) if (alphaAt(x, y) >= 128) opaque++;
+            }
+            assert.ok(alphaAt(Math.round(cx), Math.round(cy)) >= 128, `${type} window ${cx},${cy} is centred off the art`);
+            assert.ok(opaque >= rect.w * rect.h * 0.6, `${type} window ${cx},${cy} is mostly off the art`);
+        }
     }
 });
 

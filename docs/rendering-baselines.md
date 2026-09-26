@@ -68,16 +68,24 @@ The census is deliberately descriptive. It freezes the current vocabulary until 
 
 ## Canvas and WebGL2 effect parity
 
-The ground-truth signals below must be present in both renderer modes. WebGL2 keeps them inside existing scene records, overlay-safe categories, or the scene-grade shader; it does not add a pass.
+The ground-truth signals below must be present in both renderer modes. WebGL2 keeps them inside existing scene records, overlay-safe categories, or the scene/composite shaders; it does not add a pass.
 
 | Effect | Canvas path | WebGL2 path |
 | --- | --- | --- |
-| Building sun/contact shadows | Stepped structure shadows | One `ground:building:<id>` stepped-ellipse record per building; tower textures bake three or four fading stamps into that record |
+| Time-of-day and weather grade | `CanvasGrade` composite fills over the finished frame from the same C2 `lightGrade` | `GRADE_GLSL` on each albedo fragment before the light loop |
+| Local light pools | Stepped colour-dodge stamps on 2:1 ground ellipses, accumulated into one pool layer per frame (the hybrid PostFx path runs the same 2:1 `applyPools`) | Multiplicative stepped pools per light after the grade, as 2:1 ground ellipses whose overlapping courses take the brightest; authored emission added after both |
+| Attention lights (waiting, errored, rate-limited) | The same stepped pool courses at small radii (34–40 world px, intensity ≤ 0.6), brightest-wins | The same courses; they never take a wet-reflection slot (`u_wetMask`) |
+| Building, tree, and villager casts | `RakingLight` stamps blitted per building, per tree (`drawTreeCasts`), and in villager contact stamps | The same stamps as `ground:building:<id>`, `ground:tree:<x>,<y>`, and villager ground records; uploaded only when the sun bucket changes |
 | Coherent ground haze | Quarter-resolution haze field | One additive `ground:haze` record using the same cached field and live strength |
-| Cloud shadows | Terrain-clipped cloud ellipses | Three stepped `u_cloudShadow` courses in `applyGrade`, restricted to earth, foliage, and cobble |
-| Water state and night reflection | Canvas water animation and light-reflection layer | Material `8.0` ordered-dither shimmer plus the existing local-light reflection branch; reduced motion holds a fixed phase |
+| Cloud shadows | `CloudShadowCourses`: three dithered world-locked courses from the shared noise tile, as a cached multiply pattern | Three courses from the same 256² tile in the composite (`u_cloudTile`), scaled by cloud cover |
+| Aerial perspective | `BackdropGrade.drawCanvasAerialHaze`: the stepped screen-Y haze before the frame grade, in the haze colour's preimage | Screen-Y haze in the composite; `BackdropGrade.drawResidentBackdropGrade` lays the same haze and vignette courses over the 2D backdrop |
+| Outer ocean and horizon | `CoastBake.drawOuterOcean` on the 2D backdrop in the grade's preimage: horizon band four tiles above the north vertex, sun/moon glitter column, deep fill to every view edge | The same backdrop draw in final graded colours under the GPU canvas |
+| Coast, water ramp, and night/storm water | The baked coast in the terrain cache plus a mood-recoloured copy of the baked water at night or in storm (`drawCanvasWaterMood`) | The same baked terrain, with water mood applied to water-material fragments (`u_waterMood`); the water material sidecar is painted from the baked coast cells |
+| Water state and night reflection | Canvas water highlights and light reflections as whole-texel stepped dashes (`_fillSteppedDash`: glints, current bands, river streaks, night reflections; building-light columns as three flat stepped courses); PostFx water displacement and grain move in whole art pixels | Flat depth stops with sparse 2:1 ripple dashes (one 3×1 dash per 8×4 world-px cell, lit one phase in four, brightening only; the bright-moon silver rides the same dashes) plus the existing local-light reflection branch; reduced motion holds a fixed phase |
 | Surface wetness | Material darkening plus discrete damp marks | Material weather response on authored material pixels, including terrain and water |
-| Fish, waterfowl, gulls, land birds, waterfalls, and harbor traffic | Overlay-safe category in the Canvas depth stream | The same category is replayed above the GPU island |
+| Fish, waterfowl, gulls, land birds, landmark activity, and harbor traffic | Overlay-safe category in the Canvas depth stream | Skipped in the depth pass and replayed once above the GPU island |
+| Fireflies (zoom ≥ 3 only) | Drawn on the upper overlay after the grade | Drawn on the upper overlay |
+| Open-air particles (chimney smoke, torch and forge embers, seasonal drift) | In the Canvas frame, graded with it | Replayed on the upper overlay with the frame's C2 light applied to lit presets |
 
 The following decorations are intentionally Canvas-only and must not be mistaken for a missing state signal during paired review:
 
@@ -85,7 +93,7 @@ The following decorations are intentionally Canvas-only and must not be mistaken
 - discrete ground and roof damp-mark stamps; WebGL2 carries material wetness instead;
 - building activity and hover ground-footprint decoration;
 - the directional lighthouse beam; WebGL2 retains the lighthouse local light and water reflection;
-- baked quantised cliff reflection and stepped, four-pixel dithered waterline; both are decorative composition cues, so WebGL2 intentionally omits them rather than treating them as operator signal.
+- ground-level particle presets (footfall motes, rain-splash particles, token motes), which wait for GPU particle records because the overlay has no depth order.
 
 ## Trail camera benchmark
 

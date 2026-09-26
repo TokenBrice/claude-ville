@@ -35,8 +35,6 @@ const STRINGS = {
     agentLeft: (name) => `${name} left the village`,
     serverConnected: 'Server connected',
     serverDisconnected: 'Server disconnected, retrying...',
-    modeSwitchWorld: 'Switched to World mode',
-    modeSwitchDashboard: 'Switched to Dashboard mode',
 };
 
 export const i18n = {

@@ -1,6 +1,8 @@
 import { TILE_HALF_WIDTH, TILE_HALF_HEIGHT } from './Projection.js';
 import { gradeColor } from './AtmosphereState.js';
 import { drawEventShape } from '../shared/EventShapes.js';
+import { WORLD_BODY_FONT_11 } from '../../config/theme.js';
+import { measureLabelText, snapScreenOrigin } from './WorldLabelKit.js';
 
 // 4.5 — the shared-file knot.
 //
@@ -27,8 +29,8 @@ const KNOT_READ = '#b8b0c2';
 const PLATE_FILL = 'rgba(20, 14, 10, 0.85)';
 const PLATE_TEXT = '#f6da82';
 const PLATE_MUTED = '#cbbfa4';
-const PLATE_FONT = 'bold 7px "Press Start 2P", monospace';
-const PLATE_CHAR_WIDTH = 7;
+// 11 px Departure Mono on 12-row lines (5.4), measured, never bold.
+const PLATE_FONT = WORLD_BODY_FONT_11;
 const PLATE_LINE_HEIGHT = 12;
 const PLATE_PADDING_X = 8;
 const PLATE_PADDING_Y = 5;
@@ -200,27 +202,33 @@ export function drawSharedFileOverlapLabel(ctx, {
     const anchorX = geometry ? geometry.bend.x : selected.x;
     const anchorY = geometry ? geometry.bend.y - KNOT_CELL : selected.y - 46;
 
-    const width = PLATE_PADDING_X * 2
-        + Math.max(...lines.map(line => line.text.length)) * PLATE_CHAR_WIDTH;
-    const height = PLATE_PADDING_Y * 2 + lines.length * PLATE_LINE_HEIGHT;
     const scale = 1 / (zoom || 1);
 
     ctx.save();
     ctx.translate(anchorX, anchorY);
     ctx.scale(scale, scale);
+    snapScreenOrigin(ctx);
     ctx.font = PLATE_FONT;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    const width = PLATE_PADDING_X * 2
+        + Math.max(...lines.map(line => measureLabelText(ctx, line.text)));
+    const height = PLATE_PADDING_Y * 2 + lines.length * PLATE_LINE_HEIGHT;
+    const left = -Math.round(width / 2);
+    const top = -height;
     ctx.fillStyle = PLATE_FILL;
-    ctx.fillRect(-width / 2, -height, width, height);
-    ctx.strokeStyle = rgba(overlap.edge.kind === 'write-write' ? KNOT_WRITE : KNOT_READ, 0.8);
-    ctx.lineWidth = 1;
-    ctx.strokeRect(-width / 2, -height, width, height);
-    let y = -height + PLATE_PADDING_Y + PLATE_LINE_HEIGHT / 2;
+    ctx.fillRect(left, top, width, height);
+    // 1 px rim as four fills: no stroked half-pixel edge.
+    ctx.fillStyle = rgba(overlap.edge.kind === 'write-write' ? KNOT_WRITE : KNOT_READ, 0.8);
+    ctx.fillRect(left, top, width, 1);
+    ctx.fillRect(left, -1, width, 1);
+    ctx.fillRect(left, top + 1, 1, height - 2);
+    ctx.fillRect(left + width - 1, top + 1, 1, height - 2);
+    let baseline = top + PLATE_PADDING_Y + 9;
     for (const line of lines) {
         ctx.fillStyle = line.muted ? PLATE_MUTED : PLATE_TEXT;
-        ctx.fillText(line.text, 0, y);
-        y += PLATE_LINE_HEIGHT;
+        ctx.fillText(line.text, left + PLATE_PADDING_X, baseline);
+        baseline += PLATE_LINE_HEIGHT;
     }
     ctx.restore();
     return true;

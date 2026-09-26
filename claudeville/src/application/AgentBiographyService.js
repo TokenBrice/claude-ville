@@ -309,9 +309,12 @@ export class AgentBiographyService {
         if (!session || session.completed || !this._holdsWriteLease()) return;
         session.completed = true;
         const now = Date.now();
+        // S7 / plan 5.5 — a sub-agent leaving is a return to its parent, not a
+        // completed session: it is seen, never counted or celebrated.
+        const subagent = Boolean(agent.isSubagent || agent.parentSessionId || agent.parentId);
         this._mutate(session.identityKey, (biography) => {
             biography.noteSeen(now);
-            return biography.recordSessionCompleted(now);
+            return subagent ? [] : biography.recordSessionCompleted(now);
         });
     }
 

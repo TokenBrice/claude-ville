@@ -31,36 +31,38 @@
                 <span class="topbar__logo">ClaudeVille</span>
                 <div class="topbar__meta">
                     <span id="topbarConnection" class="topbar__conn topbar__conn--syncing" title="Connection state and data freshness">SYNCING</span>
-                    <span class="topbar__version" tabindex="0" role="button">v0.45</span>
+                    <span class="topbar__version" tabindex="0" role="button">v0.46</span>
                     <span id="statFps" class="topbar__fps" title="World render loop is idle">FPS idle</span>
                     <span id="statTime" class="topbar__uptime" title="Village uptime" hidden>00:00:00</span>
                     <span id="villageClock" class="topbar__clock" title="Modeled village weather" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor"></path></svg><span class="topbar__clock-time"></span><span class="topbar__clock-phase"></span><span class="topbar__clock-override" hidden></span></span>
                 </div>
             </div>
         </div>
-        <div class="topbar__center">
-            <div class="topbar__ledger topbar__tag" id="topbarLedger">
-                <span class="topbar__seg-stat" id="statRateWrap">
-                    <span class="topbar__stat-label">TODAY</span>
-                    <span id="statTokens" class="topbar__stat-value">0</span>
-                    <span id="statRate" class="topbar__stat-rate"></span>
-                </span>
-            </div>
+        <div class="topbar__center topbar--pending">
             <div class="topbar__badges">
-                <div class="topbar__status topbar__tag">
+                <div class="topbar__status">
                     <span class="topbar__seg topbar__seg--working">
-                        <span class="topbar__badge-dot"></span>
-                        <span id="badgeWorking">0</span> <span data-i18n="working">WORKING</span>
+                        <span id="badgeWorking" class="topbar__kpi-num">–</span>
+                        <span class="topbar__kpi-cap" data-i18n="working">WORKING</span>
                     </span>
                     <span class="topbar__seg topbar__seg--idle">
-                        <span class="topbar__badge-dot"></span>
-                        <span id="badgeIdle">0</span> <span data-i18n="idle">IDLE</span>
+                        <span id="badgeIdle" class="topbar__kpi-num">–</span>
+                        <span class="topbar__kpi-cap" data-i18n="idle">IDLE</span>
                     </span>
                     <span class="topbar__seg topbar__seg--waiting">
-                        <span class="topbar__badge-dot"></span>
-                        <span id="badgeWaiting">0</span> <span data-i18n="waiting">WAITING</span>
+                        <span id="badgeWaiting" class="topbar__kpi-num">–</span>
+                        <span class="topbar__kpi-cap" data-i18n="waiting">WAITING</span>
                     </span>
                 </div>
+            </div>
+            <div class="topbar__ledger" id="topbarLedger">
+                <span class="topbar__seg-stat" id="statRateWrap">
+                    <span class="topbar__kpi-row">
+                        <span id="statTokens" class="topbar__stat-value">–</span>
+                        <span id="statRate" class="topbar__stat-rate"></span>
+                    </span>
+                    <span class="topbar__stat-label" title="New tokens this page has seen sessions spend today (cache reads excluded); a session's lifetime total is on its row">TOKENS SEEN TODAY</span>
+                </span>
             </div>
         </div>
         <div class="topbar__right">
@@ -90,13 +92,17 @@
                     <path fill="currentColor" d="M6 1h4v3h3v2h2v4h-2v2h-3v3H6v-3H3v-2H1V6h2V4h3V1Zm1 2v3H4v4h3v3h2v-3h3V6H9V3H7Zm0 4h2v2H7V7Z"/>
                 </svg>
             </button>
-            <button id="worldRead" class="topbar__sound-btn world-read" type="button" aria-label="Hold to read the village (B)" aria-pressed="false" title="Hold B or this button to read work labels">READ <kbd>B</kbd></button>
-            <button id="worldAmbient" class="topbar__sound-btn world-ambient" type="button" aria-pressed="false" data-state="off" title="Ambient camera: a patient broadcast of the work that is actually happening. Any camera input or selection hands the frame back.">AMBIENT CAM</button>
             <button id="topbarSoundMode" class="topbar__sound-btn" type="button" aria-pressed="false" title="Reactive ambience mode — click for continuous town music" hidden>AMBIENT</button>
             <span id="topbarSoundSection" class="topbar__sound-section" title="Village work behind the music" hidden></span>
             <input id="topbarSoundVolume" class="topbar__sound-vol" type="range" min="0" max="100" value="50" title="Ambience volume" aria-label="Ambience volume" hidden>
-            <button id="btnModeCharacter" data-i18n="world" class="topbar__mode-btn topbar__mode-btn--active">WORLD</button>
-            <button id="btnModeDashboard" data-i18n="dashboard" class="topbar__mode-btn">DASHBOARD</button>
+            <div class="topbar__well" role="group" aria-label="World view">
+                <button id="worldRead" class="topbar__sound-btn world-read" type="button" aria-label="Hold to read the village (B)" aria-pressed="false" title="Hold B or this button to read work labels">READ <kbd>B</kbd></button>
+                <button id="worldAmbient" class="topbar__sound-btn world-ambient" type="button" aria-pressed="false" data-state="off" title="Ambient camera: a patient broadcast of the work that is actually happening. Any camera input or selection hands the frame back.">AMBIENT CAM</button>
+            </div>
+            <div class="topbar__well" role="group" aria-label="Mode">
+                <button id="btnModeCharacter" data-i18n="world" class="topbar__mode-btn topbar__mode-btn--active">WORLD</button>
+                <button id="btnModeDashboard" data-i18n="dashboard" class="topbar__mode-btn">DASHBOARD</button>
+            </div>
         </div>
     </header>
 
@@ -145,8 +151,8 @@
                     <canvas id="worldOverlayCanvas" class="content__canvas" aria-hidden="true"></canvas>
                     <div id="worldEmpty" class="world-empty" role="status">
                         <span class="world-empty__crest" aria-hidden="true">⌂</span>
-                        <span class="world-empty__title">NO ACTIVE AGENTS</span>
-                        <span class="world-empty__copy">Start a coding CLI session to see agents here</span>
+                        <span class="world-empty__title">OPENING THE VILLAGE</span>
+                        <span class="world-empty__copy">Preparing the local watchtowers.</span>
                         <dl class="world-empty__legend" hidden></dl>
                     </div>
                     <div id="worldGrammar" class="world-grammar" popover>
@@ -178,40 +184,36 @@
             <!-- right-side live activity panel -->
             <aside id="activityPanel" class="activity-panel" style="display: none;">
                 <div class="activity-panel__header">
-                    <div class="activity-panel__name-row">
-                        <span id="panelAgentName" class="activity-panel__name"></span>
-                        <button id="panelClose" class="activity-panel__close" type="button" aria-label="Close activity panel">X</button>
-                    </div>
                     <div class="activity-panel__agent-info">
-                        <span id="panelAgentStatus" class="activity-panel__status"></span>
+                        <div class="activity-panel__ident">
+                            <div class="activity-panel__name-row">
+                                <span id="panelAgentName" class="activity-panel__name"></span>
+                                <span class="activity-panel__actions">
+                                    <button id="panelClose" class="activity-panel__icon-btn activity-panel__close" type="button" aria-label="Close activity panel" title="Close"><svg class="activity-panel__icon" viewBox="0 0 8 8" aria-hidden="true" focusable="false" shape-rendering="crispEdges"><path d="M1 1h1v1H1zM2 2h1v1H2zM3 3h2v2H3zM5 2h1v1H5zM6 1h1v1H6zM2 5h1v1H2zM1 6h1v1H1zM5 5h1v1H5zM6 6h1v1H6z" fill="currentColor"/></svg></button>
+                                </span>
+                            </div>
+                            <div class="activity-panel__status-line">
+                                <span id="panelAgentStatus" class="activity-panel__status"></span>
+                            </div>
+                            <div id="panelProvenance" class="activity-panel__provenance"></div>
+                        </div>
                     </div>
                 </div>
                 <div class="activity-panel__meta">
-                    <div class="activity-panel__meta-row">
-                        <span class="activity-panel__label" data-i18n="model">MODEL</span>
-                        <span id="panelModel" class="activity-panel__value"></span>
-                    </div>
-                    <div class="activity-panel__meta-row">
-                        <span class="activity-panel__label">Provider</span>
-                        <span id="panelProvider" class="activity-panel__value"></span>
-                    </div>
-                    <div class="activity-panel__meta-row">
-                        <span class="activity-panel__label" data-i18n="role">ROLE</span>
-                        <span id="panelRole" class="activity-panel__value"></span>
-                    </div>
-                    <div class="activity-panel__meta-row">
-                        <span class="activity-panel__label">EFFORT</span>
+                    <div class="activity-panel__section-title">Session</div>
+                    <div id="panelLevelRow" class="activity-panel__meta-row">
+                        <span class="activity-panel__label">Effort</span>
                         <span id="panelLevel" class="activity-panel__value"></span>
                     </div>
-                    <div class="activity-panel__meta-row">
-                        <span class="activity-panel__label" data-i18n="team">TEAM</span>
+                    <div id="panelTeamRow" class="activity-panel__meta-row">
+                        <span class="activity-panel__label" data-i18n="team">Team</span>
                         <span id="panelTeam" class="activity-panel__value"></span>
                     </div>
                     <div id="panelMoodRow" class="activity-panel__meta-row">
                         <span class="activity-panel__label">Mood</span>
                         <span id="panelMood" class="activity-panel__value">-</span>
                     </div>
-                    <div class="activity-panel__meta-row">
+                    <div id="panelLastActiveRow" class="activity-panel__meta-row">
                         <span class="activity-panel__label">Last active</span>
                         <span id="panelLastActive" class="activity-panel__value">-</span>
                     </div>
@@ -223,9 +225,15 @@
                 <div class="activity-panel__section" data-section="cost-tokens">
                     <div class="activity-panel__section-title">Cost &amp; Tokens</div>
                     <div id="panelTokenUsage" class="activity-panel__token-usage">
-                        <div class="activity-panel__token-row">
-                            <span class="activity-panel__token-label">Context</span>
-                            <span id="panelContextSize" class="activity-panel__token-value">-</span>
+                        <div class="activity-panel__token-lead">
+                            <div class="activity-panel__stat">
+                                <span id="panelContextNumeral" class="activity-panel__stat-value activity-panel__stat-value--empty">-</span>
+                                <span id="panelContextSize" class="activity-panel__stat-caption">context</span>
+                            </div>
+                            <div id="panelCostRow" class="activity-panel__stat">
+                                <span id="panelEstCost" class="activity-panel__stat-value">$0.00</span>
+                                <span id="panelCostLabel" class="activity-panel__stat-caption">cost</span>
+                            </div>
                         </div>
                         <div class="activity-panel__context-bar-wrap">
                             <div id="panelContextBar" class="activity-panel__context-bar"></div>
@@ -257,10 +265,6 @@
                             </div>
                         </div>
                         <div id="panelNoUsage" class="activity-panel__no-usage" hidden>No usage data</div>
-                        <div id="panelCostRow" class="activity-panel__token-row">
-                            <span id="panelCostLabel" class="activity-panel__token-label">Cost</span>
-                            <span id="panelEstCost" class="activity-panel__token-value activity-panel__token-value--cost">$0.00</span>
-                        </div>
                     </div>
                 </div>
                 <div class="activity-panel__section" data-section="current-tool">

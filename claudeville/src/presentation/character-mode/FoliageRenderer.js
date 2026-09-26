@@ -1,6 +1,28 @@
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { canvasMapPixelCount, releaseCanvasMap } from './CanvasBudget.js';
 
+// Tree sprites are drawn at 1× (contract C3: one pixel grid). The PNGs are
+// plinth-free since the foliage pass (`scripts/sprites/foliage-pass.mjs`);
+// `height` is the trunk-base row + 1, so the cache crops the empty rows below
+// the roots and the anchor sits on the lowest root pixel. Three species × two
+// sizes caps the cache at six canvases.
+const TREE_SPRITES = Object.freeze({
+    'oak.large': { id: 'veg.tree.oak.large', width: 64, height: 51 },
+    'oak.small': { id: 'veg.tree.oak.small', width: 32, height: 28 },
+    'pine.large': { id: 'veg.tree.pine.large', width: 64, height: 52 },
+    'willow.large': { id: 'veg.tree.willow.large', width: 64, height: 53 },
+    'willow.small': { id: 'veg.tree.willow.small', width: 32, height: 27 },
+});
+const TREE_SPECIES = Object.freeze(['oak', 'pine', 'willow']);
+
+// Resolve a tree record to a sprite key. The small pine sheet is a snow-tipped
+// winter sprite, so pines always use the large sheet.
+function treeSpriteKey(tree) {
+    const species = TREE_SPECIES.includes(tree?.species) ? tree.species : 'oak';
+    const size = tree?.size === 'small' && species !== 'pine' ? 'small' : 'large';
+    return `${species}.${size}`;
+}
+
 // Owns fantasy-tree caches and foliage drawing. The host supplies only the
 // live atmosphere and motion values shared with the world frame.
 export class FoliageRenderer {
@@ -37,12 +59,12 @@ export class FoliageRenderer {
     }
 
     // Deterministic per-tree phase for wind sway. Mixes tile position and
-    // variant into [0, 2π) so neighbouring trees don't pulse in lockstep.
+    // species into [0, 2π) so neighbouring trees don't pulse in lockstep.
     windSwaySeed(tree) {
         const tx = Number(tree?.tileX) || 0;
         const ty = Number(tree?.tileY) || 0;
-        const variant = Number(tree?.variant) || 0;
-        const n = Math.sin(tx * 12.9898 + ty * 78.233 + variant * 7.131) * 43758.5453;
+        const species = Math.max(0, TREE_SPECIES.indexOf(tree?.species));
+        const n = Math.sin(tx * 12.9898 + ty * 78.233 + species * 7.131) * 43758.5453;
         return (n - Math.floor(n)) * Math.PI * 2;
     }
 
@@ -92,24 +114,19 @@ export class FoliageRenderer {
     }
 
     _getFantasyForestTreeCache(tree) {
-        // Reuse the authored pixel trees. The lower rows are legacy site tiles;
-        // crop those off so each trunk meets the terrain rather than a plinth.
-        const species = ['oak', 'pine', 'willow', 'oak'][tree.variant ?? 1] || 'oak';
-        const id = { oak: 'veg.tree.oak.large', pine: 'veg.tree.pine.large', willow: 'veg.tree.willow.large' }[species];
-        const sourceHeight = { oak: 54, pine: 57, willow: 53 }[species];
-        const scale = (tree.scale ?? 1) >= 0.85 ? 2 : 1;
-        const key = `${id}:${scale}`;
+        const key = treeSpriteKey(tree);
         const existing = this.cache.get(key);
         if (existing) return existing;
 
+        const sprite = TREE_SPRITES[key];
         const canvas = document.createElement('canvas');
-        canvas.width = 64 * scale;
-        canvas.height = sourceHeight * scale;
+        canvas.width = sprite.width;
+        canvas.height = sprite.height;
         const ctx = canvas.getContext('2d');
         SpriteRenderer.disableSmoothing(ctx);
-        const source = this.host.assets.get(id);
-        if (source) ctx.drawImage(source, 0, 0, 64, sourceHeight, 0, 0, canvas.width, canvas.height);
-        const cached = { canvas, anchorX: canvas.width / 2, anchorY: canvas.height - scale };
+        const source = this.host.assets.get(sprite.id);
+        if (source) ctx.drawImage(source, 0, 0, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
+        const cached = { canvas, anchorX: sprite.width / 2, anchorY: sprite.height - 1 };
         if (source) this.cache.set(key, cached);
         return cached;
     }

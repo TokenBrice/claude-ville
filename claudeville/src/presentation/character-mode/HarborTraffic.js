@@ -1,8 +1,9 @@
 import { MAP_SIZE } from '../../config/constants.js';
-import { WORLD_BODY_FONT } from '../../config/theme.js';
+import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { pulseValue, pulseAlpha } from './PulsePolicy.js';
 import { BUOY_TORCH_COLORS } from './ParticleSystem.js';
+import { fitLabelText, measureLabelText, snapScreenOrigin } from './WorldLabelKit.js';
 import { normalizeRepoBranch, repoBranchProfile, repoProfile } from '../shared/RepoColor.js';
 import {
     cleanCommitSubject,
@@ -14,6 +15,23 @@ import {
 } from '../shared/GitEventIdentity.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { WILDLIFE_SCENE_CATEGORY } from './WildlifeRenderer.js';
+import {
+    FAILURE,
+    FAILURE_OUTLINE,
+    PEAK,
+    bracket,
+    defineMoment,
+    diamond,
+    dottedCurve,
+    ellipseArcDots,
+    fillConvex,
+    holdSuccessGrammar,
+    momentPhase,
+    quantStep,
+    releaseSuccessGrammar,
+    snap,
+} from './EffectStamps.js';
+import { drawPixelFlame, fillPixelEllipse } from './PixelShapes.js';
 
 export { normalizeGitEvent } from '../shared/GitEventIdentity.js';
 
@@ -49,6 +67,13 @@ const HARBOR_CRATE_TTL_MS = 30000;
 const MAX_LABEL_CHARS = 30;
 const COMMIT_EQUIVALENCE_WINDOW_MS = 10 * 60 * 1000;
 const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
+// 6.5 — failed-push bracket: a 120 ms convergence, one cream flash frame, a
+// three-step shake of the stamp only, then a static red broken bracket for as
+// long as the failure stands. Replays older than the window arrive static.
+const FAILURE_BRACKET = defineMoment('medium', { anticipation: 120, peak: 80, follow: 180 });
+const FAILURE_BRACKET_FRESH_MS = 15000;
+const FAILURE_BRACKET_MAX = 4;
+const FAILURE_SHAKE = Object.freeze([2, -2, 1]);
 const HARBOR_SUMMARY_TILE = { tileX: 35.2, tileY: 21.5 };
 const FORCE_DEPARTURE_MS = 12000;
 const CAST_OFF_MS = 1500;
@@ -150,6 +175,15 @@ const BERTHS = [
     { tileX: 36.8, tileY: 20.5 },
     { tileX: 35.4, tileY: 20.0 },
 ];
+// S9 — the Harbor jetty's tie-up posts (the timber deck south of the master's
+// office), one per quay group, where a failed push with no docked ship is
+// bracketed.
+const HARBOR_JETTY_SLIPS = Object.freeze([
+    Object.freeze({ tileX: 32.4, tileY: 20.0 }),
+    Object.freeze({ tileX: 31.7, tileY: 20.3 }),
+    Object.freeze({ tileX: 32.9, tileY: 19.6 }),
+    Object.freeze({ tileX: 31.1, tileY: 20.6 }),
+]);
 
 const QUAY_GROUPS = [
     { name: 'West Quay', berthIndexes: [0, 1, 2] },
@@ -557,9 +591,7 @@ function trafficIdentity(project, branch = '') {
     return `${String(project || 'unknown')}\x1f${normalizeRepoBranch(branch)}`;
 }
 
-const HARBOR_PROFILE_CACHE_LIMIT = 256;
 const HARBOR_CLEAN_LABEL_CACHE_LIMIT = 512;
-const _trafficProfileCache = new Map();
 const _cleanCommitLabelCache = new Map();
 
 function boundedCacheValue(cache, key, create, limit) {
@@ -570,20 +602,11 @@ function boundedCacheValue(cache, key, create, limit) {
     return value;
 }
 
-function cachedRepoProfile(project) {
-    const key = String(project || 'unknown');
-    return boundedCacheValue(_trafficProfileCache, `${key}\x1f`, () => repoProfile(key), HARBOR_PROFILE_CACHE_LIMIT);
-}
-
+// Repo profiles resolve live: RepoColor's visible-repo registry can move a
+// repo's pennant when the on-screen set changes, so a private cache would
+// keep a stale slot after a repo leaves and returns.
 function trafficProfile(project, branch = '') {
-    const normalizedBranch = normalizeRepoBranch(branch);
-    const key = `${String(project || 'unknown')}\x1f${normalizedBranch}`;
-    return boundedCacheValue(
-        _trafficProfileCache,
-        key,
-        () => repoBranchProfile(project, normalizedBranch),
-        HARBOR_PROFILE_CACHE_LIMIT,
-    );
+    return repoBranchProfile(project, normalizeRepoBranch(branch));
 }
 
 function cachedCleanCommitSubject(value) {
@@ -3212,6 +3235,8 @@ export class HarborTraffic {
         this.waterRouteData = null;
         // #3 — active atmosphere grade; anchorage glows lerp toward worldTint.
         this._grade = null;
+        // 6.5 — first sighting of each repo's failure bracket: { firstSeen, fresh }.
+        this._failureBrackets = new Map();
         // #18 — repos seen at least once, so a brand-new repo's first anchorage
         // can fire a one-time christening (maiden banner) and skip it thereafter.
         this._repoFirstSeen = new Map();
@@ -3415,8 +3440,6 @@ export class HarborTraffic {
             activeRepoAnchorages: this._activeRepoAnchorages?.size || 0,
             repoFirstSeen: this._repoFirstSeen.size,
             maxRepoFirstSeen: MAX_REPO_FIRST_SEEN,
-            profileCache: _trafficProfileCache.size,
-            profileCacheLimit: HARBOR_PROFILE_CACHE_LIMIT,
             cleanLabelCache: _cleanCommitLabelCache.size,
             cleanLabelCacheLimit: HARBOR_CLEAN_LABEL_CACHE_LIMIT,
         };
@@ -3458,6 +3481,8 @@ export class HarborTraffic {
         this._enumeratedFrame = -1;
         this.waterRouteData = null;
         this._grade = null;
+        this._failureBrackets.clear();
+        releaseSuccessGrammar(this);
         this.sprites = null;
     }
 
@@ -3471,7 +3496,7 @@ export class HarborTraffic {
         for (const agent of agents || []) {
             const project = agent?.projectPath || agent?.project;
             if (!project) continue;
-            const profile = cachedRepoProfile(project);
+            const profile = repoProfile(project);
             if (!profile?.key) continue;
             active.set(profile.key, { project, profile, lastActive: now });
         }
@@ -3865,7 +3890,7 @@ export class HarborTraffic {
             if (marker.payload?.type !== 'repo-quay') continue;
             const profile = marker.payload.profile || trafficProfile(marker.payload.project, marker.payload.branch);
             if (profile.key) this._markerByRepoCache.set(profile.key, marker.payload);
-            const baseKey = cachedRepoProfile(marker.payload.project).key;
+            const baseKey = repoProfile(marker.payload.project).key;
             if (baseKey && !this._markerByRepoCache.has(baseKey)) {
                 this._markerByRepoCache.set(baseKey, marker.payload);
             }
@@ -4195,7 +4220,7 @@ export class HarborTraffic {
     _observeHarborCrates(agents, events, now) {
         for (const event of events || []) {
             if (event?.type !== 'push') continue;
-            const key = cachedRepoProfile(event.project).key;
+            const key = repoProfile(event.project).key;
             this.harborCrates.delete(key);
         }
 
@@ -4204,7 +4229,7 @@ export class HarborTraffic {
             if (!isHarborCrateTool(agent)) continue;
             if (agent.targetBuildingType !== 'harbor' && agent.lastKnownBuildingType !== 'harbor') continue;
             const project = agent.projectPath || agent.project || agent.teamName || 'unknown';
-            const profile = cachedRepoProfile(project);
+            const profile = repoProfile(project);
             this.harborCrates.set(profile.key, {
                 project,
                 profile,
@@ -4326,7 +4351,7 @@ export class HarborTraffic {
                     type: 'commit-lagoon-sign',
                     project: leader?.project || '',
                     branch: leader?.branch || '',
-                    profile: leader?.profile || cachedRepoProfile(leader?.project),
+                    profile: leader?.profile || repoProfile(leader?.project),
                     count: total,
                     repoName: leader ? trafficLabel(leader.project, leader.branch) : '',
                     x: lagoonAnchor.x,
@@ -4390,7 +4415,7 @@ export class HarborTraffic {
             });
         }
         for (const summary of repoSummaries.values()) {
-            const profile = cachedRepoProfile(summary.project);
+            const profile = repoProfile(summary.project);
             const key = profile.key;
             const existing = repos.get(key) || {
                 key,
@@ -4593,7 +4618,7 @@ export class HarborTraffic {
             return;
         }
         if (drawable.payload.type === 'crate') {
-            const profile = drawable.payload.profile || cachedRepoProfile(drawable.payload.project);
+            const profile = drawable.payload.profile || repoProfile(drawable.payload.project);
             this._drawHarborCrate(ctx, drawable.payload, zoom, 1, profile);
             return;
         }
@@ -4606,7 +4631,116 @@ export class HarborTraffic {
 
     drawFinaleEffects(ctx, now = Date.now()) {
         for (const effect of this.activeFinaleEffects(now)) {
+            // 6.5 — failure is marked by the static bracket (drawMoments).
+            if (effect.status === 'failed' || effect.status === 'rejected') continue;
             this._drawFinaleEffect(ctx, effect);
+        }
+    }
+
+    // 6.5 — a verified failed (or remote-rejected) push is marked where it
+    // happened: a static red broken bracket over the repo's slip, preceded by
+    // one cream flash and a three-step shake of the stamp only — never the
+    // camera. Drawn on the upper overlay for both backends. While any bracket
+    // stands, success grammar (the release crown) is deferred.
+    drawMoments(ctx, zoom = 1, now = Date.now()) {
+        if (!ctx) return;
+        const marks = this._failureBracketMarks(now);
+        if (!marks.length) {
+            releaseSuccessGrammar(this);
+            return;
+        }
+        holdSuccessGrammar(this, 400);
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        for (const mark of marks) this._drawFailureBracket(ctx, mark, now);
+        ctx.restore();
+    }
+
+    // One mark per repo: the docked failed/rejected ship's slip when commits
+    // are waiting, else the repo's quay for a failed push with nothing docked.
+    // Only verified outcomes (success:false or a non-zero exit) reach here.
+    _failureBracketMarks(now = Date.now()) {
+        const marks = new Map();
+        for (const ship of this.state.ships.values()) {
+            if (ship.status !== 'docked') continue;
+            if (ship.pushStatus !== 'failed' && ship.pushStatus !== 'rejected') continue;
+            const key = String(ship.project || 'unknown');
+            if (marks.has(key)) continue;
+            marks.set(key, {
+                key,
+                tile: this._shipStartTile(ship),
+                onShip: true,
+                eventTime: Number(ship.failedAt || ship.rejectedAt || 0),
+            });
+        }
+        for (const push of this.state.pushEvents.values()) {
+            const status = push.status || 'unknown';
+            if ((status !== 'failed' && status !== 'rejected') || push.batchId || !push.project) continue;
+            const key = String(push.project);
+            if (marks.has(key)) continue;
+            marks.set(key, {
+                key,
+                tile: this._repoSlipTile(push.project),
+                onShip: false,
+                eventTime: Number(push.eventTime || 0),
+            });
+        }
+        for (const key of this._failureBrackets.keys()) {
+            if (!marks.has(key)) this._failureBrackets.delete(key);
+        }
+        const list = [];
+        for (const mark of marks.values()) {
+            if (list.length >= FAILURE_BRACKET_MAX) break;
+            let seen = this._failureBrackets.get(mark.key);
+            if (!seen) {
+                seen = {
+                    firstSeen: now,
+                    fresh: mark.eventTime > 0 && now - mark.eventTime < FAILURE_BRACKET_FRESH_MS,
+                };
+                this._failureBrackets.set(mark.key, seen);
+            }
+            mark.firstSeen = seen.firstSeen;
+            mark.fresh = seen.fresh;
+            list.push(mark);
+        }
+        return list;
+    }
+
+    // A failure with nothing docked is marked on the Harbor's own jetty, where
+    // a repo's ships tie up — never out on open water. Each quay group has its
+    // own post along the jetty so up to four failing repos do not stack.
+    _repoSlipTile(project) {
+        const key = String(project || 'unknown');
+        const assigned = this.state.repoQuays?.get?.(key);
+        const index = Number.isFinite(assigned) ? assigned : stableHash(key) % QUAY_GROUPS.length;
+        return HARBOR_JETTY_SLIPS[index % HARBOR_JETTY_SLIPS.length];
+    }
+
+    _drawFailureBracket(ctx, mark, now) {
+        if (!mark.tile) return;
+        const point = toWorld(mark.tile.tileX, mark.tile.tileY);
+        const size = mark.onShip ? { width: 30, height: 20, lift: 12 } : { width: 22, height: 14, lift: 6 };
+        const x = point.x;
+        const y = point.y - size.lift;
+        const animated = mark.fresh && this.motionScale > 0;
+        const phase = animated ? momentPhase(now - mark.firstSeen, FAILURE_BRACKET) : null;
+        const options = { width: size.width, height: size.height, broken: true, color: FAILURE, outline: FAILURE_OUTLINE };
+        switch (phase?.phase) {
+        case 'anticipation':
+            // The two halves close in from either side in two held steps.
+            ctx.globalAlpha = 0.66;
+            bracket(ctx, x, y, { ...options, splitX: [4, 2][quantStep(phase.t, 2)] });
+            ctx.globalAlpha = 1;
+            break;
+        case 'peak':
+            bracket(ctx, x, y, { ...options, color: PEAK });
+            break;
+        case 'follow':
+            bracket(ctx, x + FAILURE_SHAKE[phase.step], y, options);
+            break;
+        default:
+            bracket(ctx, x, y, options);
+            break;
         }
     }
 
@@ -4633,7 +4767,16 @@ export class HarborTraffic {
             ? ` -> ${summary.targetRef}`
             : '';
         const detail = `${project}${target}`;
-        const width = Math.min(500, Math.max(344, Math.max(title.length, detail.length) * 7.2 + 76));
+        const titleLine = shortGitLabel(title, 56, '…');
+        const detailLine = shortGitLabel(detail, 60, '…');
+        const statusLine = (PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown).shortLabel.toUpperCase();
+        ctx.save();
+        ctx.font = WORLD_DISPLAY_FONT_8;
+        const titleWidth = measureLabelText(ctx, titleLine);
+        ctx.font = WORLD_BODY_FONT_11;
+        const detailWidth = measureLabelText(ctx, detailLine);
+        ctx.restore();
+        const width = Math.min(500, Math.max(344, Math.max(titleWidth, detailWidth) + 76));
         const height = 82;
         const origin = this._batchOrigin(summary);
         const screen = camera?.worldToScreen
@@ -4646,18 +4789,19 @@ export class HarborTraffic {
 
         ctx.save();
         ctx.globalAlpha = fade;
-        ctx.shadowColor = 'rgba(14, 8, 5, 0.46)';
-        ctx.shadowBlur = 10;
-        ctx.shadowOffsetY = 3;
+        // C5 — hard 2 px offset block replaces the blurred drop shadow.
+        ctx.fillStyle = 'rgba(14, 8, 5, 0.46)';
+        ctx.fillRect(x + 2, y + 2, width, height);
         ctx.fillStyle = style.panel;
         ctx.fillRect(x, y, width, height);
-        ctx.shadowColor = 'transparent';
-        ctx.strokeStyle = 'rgba(255, 224, 150, 0.34)';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x - 1.5, y - 1.5, width + 3, height + 3);
-        ctx.strokeStyle = style.panelBorder || style.accent;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+        // C5 — integer fillRect rims replace the 0.5-offset lineWidth-2 strokes.
+        ctx.fillStyle = 'rgba(255, 224, 150, 0.34)';
+        ctx.fillRect(x - 1, y - 1, width + 2, height + 2);
+        ctx.fillStyle = style.panelBorder || style.accent;
+        ctx.fillRect(x, y, width, 1);
+        ctx.fillRect(x, y + height - 1, width, 1);
+        ctx.fillRect(x, y + 1, 1, height - 2);
+        ctx.fillRect(x + width - 1, y + 1, 1, height - 2);
         ctx.fillStyle = style.accent;
         ctx.fillRect(x, y, 7, height);
         ctx.fillStyle = profile.accent;
@@ -4666,20 +4810,20 @@ export class HarborTraffic {
         ctx.fillRect(x + 15, y + 6, width - 22, 1);
         ctx.fillRect(x + 15, y + height - 7, width - 22, 1);
 
-        ctx.font = `700 14px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
+        ctx.textBaseline = 'alphabetic';
+        ctx.font = WORLD_DISPLAY_FONT_8;
         ctx.fillStyle = '#fff0b8';
-        this._fillReadableText(ctx, shortGitLabel(title, 56, '…'), x + 26, y + 14);
+        this._fillReadableText(ctx, titleLine, x + 26, y + 20);
         this._drawRepoLabelIcon(ctx, x + 27, y + 44, 8, profile);
         ctx.fillStyle = profile.labelText || profile.accent;
-        ctx.font = `700 11px ${WORLD_BODY_FONT}`;
-        this._fillReadableText(ctx, shortGitLabel(detail, 60, '…'), x + 38, y + 38);
+        ctx.font = WORLD_BODY_FONT_11;
+        this._fillReadableText(ctx, detailLine, x + 38, y + 48);
         ctx.fillStyle = 'rgba(244, 232, 190, 0.62)';
-        ctx.font = `700 9px ${WORLD_BODY_FONT}`;
-        this._fillReadableText(ctx, (PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown).shortLabel.toUpperCase(), x + 26, y + 62);
+        ctx.font = WORLD_DISPLAY_FONT_8;
+        this._fillReadableText(ctx, statusLine, x + 26, y + 66);
         ctx.fillStyle = 'rgba(244, 232, 190, 0.42)';
-        ctx.fillRect(x + 94, y + 61, Math.max(34, width - 114), 1);
+        ctx.fillRect(x + 94, y + 56, Math.max(34, width - 114), 1);
         ctx.restore();
     }
 
@@ -4898,10 +5042,7 @@ export class HarborTraffic {
             ctx.save();
             ctx.globalAlpha = 0.42 * (1 - amendFlashElapsed / 400);
             ctx.globalCompositeOperation = 'lighter';
-            ctx.fillStyle = profile.accent;
-            ctx.beginPath();
-            ctx.ellipse(ship.x, ship.y - 2, 26 * (shipClass.scale || 1), 14 * (shipClass.scale || 1), 0, 0, Math.PI * 2);
-            ctx.fill();
+            fillPixelEllipse(ctx, ship.x, ship.y - 2, 26 * (shipClass.scale || 1), 14 * (shipClass.scale || 1), profile.accent);
             ctx.restore();
         }
         if (this.sprites) {
@@ -4909,7 +5050,7 @@ export class HarborTraffic {
         } else {
             this._drawFallbackBoat(ctx, ship.x, ship.y, forceSinkAlpha, shipClass, profile);
         }
-        this._drawShipClassOverlay(ctx, ship, forceSinkAlpha, profile, shipClass);
+        this._drawShipClassOverlay(ctx, ship, forceSinkAlpha, profile, shipClass, zoom);
         this._drawRepoFlag(ctx, ship, zoom, forceSinkAlpha, profile, shipClass);
         // 4.17: procedural repo heraldry shield on the squad flagship. Drawn
         // alongside (not replacing) the existing pennant/flag — the small
@@ -4962,9 +5103,6 @@ export class HarborTraffic {
                 shrink: 1 - Math.min(1, Number(ship.elapsed || 0) / CAST_OFF_MS),
                 puff: true,
             });
-        }
-        if (ship.status === 'docked' && ship.pushStatus === 'failed') {
-            this._drawFailedPushMark(ctx, ship, zoom, shipClass);
         }
         // Rejected ships docked back with caution flag overlay.
         if (ship.status === 'docked' && ship.pushStatus === 'rejected') {
@@ -5088,10 +5226,10 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    _drawShipClassOverlay(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
+    _drawShipClassOverlay(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), zoom = 1) {
         if (shipClass.spriteId && this.sprites?.assets?.has?.(shipClass.spriteId)) {
             if (shipClass.key === 'skiff') this._drawSkiffDetails(ctx, ship, alpha, profile, shipClass);
-            this._drawShipTierBadge(ctx, ship, alpha, profile, shipClass);
+            this._drawShipTierBadge(ctx, ship, alpha, profile, shipClass, zoom);
             return;
         }
 
@@ -5170,7 +5308,7 @@ export class HarborTraffic {
             ctx.fillRect(Math.round(mastX + 3 * scale), Math.round(mastTop + (12 + i * 2) * scale), Math.max(5, Math.round(11 * scale)), Math.max(1, Math.round(2 * scale)));
         }
 
-        this._drawShipTierBadge(ctx, ship, alpha, profile, shipClass);
+        this._drawShipTierBadge(ctx, ship, alpha, profile, shipClass, zoom);
 
         if (shipClass.key === 'galleon' || shipClass.key === 'dreadnought' || shipClass.key === 'flagship') {
             const railY = ship.y - (3 + bob) * scale;
@@ -5193,60 +5331,67 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    _drawShipTierBadge(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
+    _drawShipTierBadge(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), zoom = 1) {
         // v0.23 A7 — the repo's lead docked ship shows a single fleet-count banner
         // in place of its class tier badge. Titan packs keep their exact `Nx`
         // badge instead (a 57-commit fleet reads 29x + 28x; the buoy label
         // carries the fleet total), so per-hull counts never disagree.
         if (this._isFleetLead(ship) && !(Number(ship.visualPackSize) > 1)) {
-            this._drawFleetBanner(ctx, ship, alpha, profile, shipClass);
+            this._drawFleetBanner(ctx, ship, alpha, profile, shipClass, zoom);
             return;
         }
         if (!shipClass.badge) return;
         const scale = Math.max(0.85, Number(shipClass.scale || 1));
         const bob = this._shipBob(ship);
         const badge = shipClass.badge;
-        const badgeW = Math.max(18, badge.length * 6 + 8) * scale;
-        const badgeH = 12 * scale;
-        const x = Math.round(ship.x - badgeW / 2);
-        const y = Math.round(ship.y - (40 + Math.max(0, Number(shipClass.labelLift || 0)) + bob) * scale);
         ctx.save();
         ctx.globalAlpha = 0.94 * alpha;
+        // C5 — screen-fixed plate: zoom cancelled, integer screen-pixel layout.
+        ctx.translate(ship.x, ship.y);
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_DISPLAY_FONT_8;
+        const width = Math.max(18, measureLabelText(ctx, badge) + 8);
+        const height = 14;
+        const left = -Math.round(width / 2);
+        const top = -Math.round((40 + Math.max(0, Number(shipClass.labelLift || 0)) + bob) * scale);
+        ctx.fillStyle = profile.accent;
+        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = 'rgba(24, 33, 36, 0.92)';
-        ctx.fillRect(x, y, Math.round(badgeW), Math.round(badgeH));
-        ctx.strokeStyle = profile.accent;
-        ctx.strokeRect(x + 0.5, y + 0.5, Math.round(badgeW) - 1, Math.round(badgeH) - 1);
+        ctx.fillRect(left, top, width, height);
         ctx.fillStyle = '#f4df9f';
-        ctx.font = `${Math.max(8, Math.round(9 * scale))}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(badge, Math.round(ship.x), Math.round(y + badgeH / 2 + 0.5));
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText(badge, 0, top + 11);
         ctx.restore();
     }
 
     // v0.23 A7 — one fleet-count banner (N⚓, repo accent) above the lead ship,
     // reusing the tier-badge style so the whole flock reads as a single fleet.
-    _drawFleetBanner(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
+    _drawFleetBanner(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), zoom = 1) {
         const count = harborFleetCount(ship);
         const scale = Math.max(0.85, Number(shipClass.scale || 1));
         const bob = this._shipBob(ship);
         const badge = `${count}⚓`;
-        const badgeW = Math.max(20, badge.length * 6 + 10) * scale;
-        const badgeH = 13 * scale;
-        const x = Math.round(ship.x - badgeW / 2);
-        const y = Math.round(ship.y - (42 + Math.max(0, Number(shipClass.labelLift || 0)) + bob) * scale);
         ctx.save();
         ctx.globalAlpha = 0.96 * alpha;
-        ctx.fillStyle = 'rgba(20, 29, 32, 0.94)';
-        ctx.fillRect(x, y, Math.round(badgeW), Math.round(badgeH));
-        ctx.strokeStyle = profile.accent;
-        ctx.lineWidth = Math.max(1, Math.round(1.4 * scale));
-        ctx.strokeRect(x + 0.5, y + 0.5, Math.round(badgeW) - 1, Math.round(badgeH) - 1);
+        // C5 — screen-fixed plate: zoom cancelled, integer screen-pixel layout.
+        ctx.translate(ship.x, ship.y);
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_DISPLAY_FONT_8;
+        const width = Math.max(20, measureLabelText(ctx, badge) + 10);
+        const height = 14;
+        const left = -Math.round(width / 2);
+        const top = -Math.round((42 + Math.max(0, Number(shipClass.labelLift || 0)) + bob) * scale);
         ctx.fillStyle = profile.accent;
-        ctx.font = `${Math.max(8, Math.round(9 * scale))}px ${WORLD_BODY_FONT}`;
+        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
+        ctx.fillStyle = 'rgba(20, 29, 32, 0.94)';
+        ctx.fillRect(left, top, width, height);
+        ctx.fillStyle = profile.accent;
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        this._fillReadableText(ctx, badge, Math.round(ship.x), Math.round(y + badgeH / 2 + 0.5), badgeW - 4 * scale);
+        ctx.textBaseline = 'alphabetic';
+        this._fillReadableText(ctx, badge, 0, top + 11);
         ctx.restore();
     }
 
@@ -5284,26 +5429,23 @@ export class HarborTraffic {
         return Math.max(0, Math.min(1, 1 - (elapsed - fadeStart) / fadeDuration));
     }
 
+    // Docked berth mark in pixel grammar: a static dotted ring over a scanline
+    // pool in the repo glow (no breathing, no AA ellipse).
     _drawDockedShipWake(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch)) {
         const s = 1 / Math.max(1, zoom || 1);
-        const pulse = this.motionScale > 0
-            ? 0.55 + 0.25 * Math.sin(this.frame * 0.08 + ship.berthIndex)
-            : 0.62;
+        const x = Math.round(ship.x);
         ctx.save();
-        ctx.globalAlpha = pulse;
-        ctx.strokeStyle = profile.accent;
-        ctx.lineWidth = Math.max(1, Math.round(2 * s));
-        ctx.beginPath();
-        ctx.ellipse(Math.round(ship.x), Math.round(ship.y + 4 * s), 30 * s, 16 * s, -0.18, 0, Math.PI * 2);
-        ctx.stroke();
         ctx.globalAlpha = 0.45;
-        ctx.fillStyle = profile.glow;
-        ctx.beginPath();
-        ctx.ellipse(Math.round(ship.x), Math.round(ship.y + 5 * s), 26 * s, 13 * s, -0.18, 0, Math.PI * 2);
-        ctx.fill();
+        fillPixelEllipse(ctx, x, Math.round(ship.y + 5 * s), 26 * s, 13 * s, profile.glow);
+        ctx.globalAlpha = 0.62;
+        ellipseArcDots(ctx, x, Math.round(ship.y + 4 * s), 30 * s, 16 * s, {
+            step: 3, dot: Math.max(1, Math.round(2 * s)), color: profile.accent,
+        });
         ctx.restore();
     }
 
+    // Moving wake: three dotted quadratic trails (one-texel dots on the art
+    // grid) instead of AA curve strokes.
     _drawWake(ctx, ship, alpha = 1) {
         const phase = this.frame * 0.18 + ship.berthIndex;
         const dx = ship.x - (ship.tailX ?? ship.x - 1);
@@ -5315,22 +5457,21 @@ export class HarborTraffic {
         const py = ux;
         ctx.save();
         ctx.globalAlpha = Math.max(0.12, 0.34 * (1 - ship.progress)) * alpha;
-        ctx.strokeStyle = 'rgba(198, 236, 241, 0.7)';
-        ctx.lineWidth = 1;
         for (let i = 0; i < 3; i++) {
             const offset = i * 8 + Math.sin(phase + i) * 2;
             const spread = 4 + i * 2;
             const startBack = 14 + offset;
             const endBack = 30 + offset;
-            ctx.beginPath();
-            ctx.moveTo(ship.x - ux * startBack + px * spread, ship.y - uy * startBack + py * spread);
-            ctx.quadraticCurveTo(
+            dottedCurve(
+                ctx,
+                ship.x - ux * startBack + px * spread,
+                ship.y - uy * startBack + py * spread,
                 ship.x - ux * ((startBack + endBack) / 2) + px * Math.sin(phase + i) * 3,
                 ship.y - uy * ((startBack + endBack) / 2) + py * Math.sin(phase + i) * 3,
                 ship.x - ux * endBack - px * spread,
-                ship.y - uy * endBack - py * spread
+                ship.y - uy * endBack - py * spread,
+                { step: 2, dot: 1, color: 'rgba(198, 236, 241, 0.7)' },
             );
-            ctx.stroke();
         }
         ctx.restore();
     }
@@ -5409,18 +5550,17 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    // Sea-mist fade gradient at the ship's last position.
+    // Sea-mist fade at the ship's last position: three stepped scanline
+    // courses (outer haze to dense core) instead of a radial gradient.
     _drawMistFade(ctx, x, y, t) {
         const radius = 38 + t * 18;
-        const grd = ctx.createRadialGradient(x, y, 0, x, y, radius);
-        grd.addColorStop(0, `rgba(220, 224, 230, ${0.62 * t})`);
-        grd.addColorStop(0.6, `rgba(214, 222, 228, ${0.32 * t})`);
-        grd.addColorStop(1, 'rgba(214, 222, 228, 0)');
         ctx.save();
-        ctx.fillStyle = grd;
-        ctx.beginPath();
-        ctx.ellipse(x, y, radius, radius * 0.55, 0, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.globalAlpha = 0.16 * t;
+        fillPixelEllipse(ctx, x, y, radius, radius * 0.55, 'rgb(214, 222, 228)');
+        ctx.globalAlpha = 0.2 * t;
+        fillPixelEllipse(ctx, x, y, radius * 0.6, radius * 0.6 * 0.55, 'rgb(214, 222, 228)');
+        ctx.globalAlpha = 0.26 * t;
+        fillPixelEllipse(ctx, x, y, radius * 0.3, radius * 0.3 * 0.55, 'rgb(220, 224, 230)');
         ctx.restore();
     }
 
@@ -5467,11 +5607,7 @@ export class HarborTraffic {
     _drawCollisionFlare(ctx, x, y, t) {
         ctx.save();
         ctx.globalAlpha = Math.max(0.4, 0.95 * (1 - t));
-        ctx.strokeStyle = '#ff5a3c';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(x, y - 12, 8 + t * 12, 0, Math.PI * 2);
-        ctx.stroke();
+        ellipseArcDots(ctx, x, y - 12, 8 + t * 12, 8 + t * 12, { step: 3, dot: 2, color: '#ff5a3c' });
         ctx.fillStyle = '#ff7a55';
         for (let i = 0; i < 6; i++) {
             const angle = (i / 6) * Math.PI * 2;
@@ -5519,19 +5655,20 @@ export class HarborTraffic {
 
     // 3.6 — small superscript on the flag indicating amend count (²).
     _drawAmendSuperscript(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
-        const s = 1 / Math.max(1, zoom || 1);
         const count = Math.max(1, Number(ship.amendCount || 0));
         if (count <= 0) return;
         const labels = ['', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
         const text = count > 1 ? (labels[count] || `^${count}`) : '¹';
-        const x = Math.round(ship.x + (26 + (shipClass.flagOffsetX || 0)) * s);
-        const y = Math.round(ship.y - (33 + (shipClass.flagOffsetY || 0)) * s);
+        // C5 — screen-fixed: whole screen pixels at the flag's world anchor.
         ctx.save();
+        ctx.translate(ship.x, ship.y);
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
         ctx.fillStyle = '#f6cf60';
-        ctx.font = `${Math.max(7, Math.round(8 * s))}px ${WORLD_BODY_FONT}`;
+        ctx.font = WORLD_DISPLAY_FONT_8;
         ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
-        this._fillReadableText(ctx, text, x, y);
+        ctx.textBaseline = 'alphabetic';
+        this._fillReadableText(ctx, text, Math.round(26 + (shipClass.flagOffsetX || 0)), Math.round(-33 - (shipClass.flagOffsetY || 0)) + 7);
         ctx.restore();
     }
 
@@ -5582,35 +5719,27 @@ export class HarborTraffic {
         ctx.globalAlpha = Math.min(1, pulse * 1.2);
         ctx.fillStyle = muted ? 'rgba(140, 149, 160, 0.6)' : 'rgba(255, 246, 200, 0.9)';
         ctx.fillRect(x - 2 * s, y - 9 * s, 4 * s, 5 * s);
-        // Glow halo when active.
+        // Glow halo when active: two stepped pixel discs, additive.
         if (!muted) {
             ctx.globalCompositeOperation = 'lighter';
-            ctx.globalAlpha = 0.32 * pulse;
-            const grd = ctx.createRadialGradient(x, y - 7 * s, 0, x, y - 7 * s, 22 * s);
-            grd.addColorStop(0, accent);
-            grd.addColorStop(1, 'rgba(0,0,0,0)');
-            ctx.fillStyle = grd;
-            ctx.beginPath();
-            ctx.arc(x, y - 7 * s, 22 * s, 0, Math.PI * 2);
-            ctx.fill();
+            ctx.globalAlpha = 0.13 * pulse;
+            fillPixelEllipse(ctx, x, y - 7 * s, 22 * s, 22 * s, accent);
+            ctx.globalAlpha = 0.19 * pulse;
+            fillPixelEllipse(ctx, x, y - 7 * s, 11 * s, 11 * s, accent);
             ctx.globalCompositeOperation = 'source-over';
         }
-        // v0.23 A5 — cast-off flare: an additive ring in the departing push's
-        // accent, even when the buoy is otherwise idle. Reduced motion leaves
-        // castOff at 0 so nothing is drawn.
+        // v0.23 A5 — cast-off flare: an additive stepped disc in the departing
+        // push's accent, even when the buoy is otherwise idle. Reduced motion
+        // leaves castOff at 0 so nothing is drawn.
         const castOff = Math.max(0, Number(payload.castOff) || 0);
         if (castOff > 0) {
             const ringAccent = payload.castOffAccent || accent;
             const r = (16 + 18 * castOff) * s;
             ctx.globalCompositeOperation = 'lighter';
-            ctx.globalAlpha = 0.5 * castOff;
-            const grd = ctx.createRadialGradient(x, y - 7 * s, 0, x, y - 7 * s, r);
-            grd.addColorStop(0, ringAccent);
-            grd.addColorStop(1, 'rgba(0,0,0,0)');
-            ctx.fillStyle = grd;
-            ctx.beginPath();
-            ctx.arc(x, y - 7 * s, r, 0, Math.PI * 2);
-            ctx.fill();
+            ctx.globalAlpha = 0.2 * castOff;
+            fillPixelEllipse(ctx, x, y - 7 * s, r, r, ringAccent);
+            ctx.globalAlpha = 0.3 * castOff;
+            fillPixelEllipse(ctx, x, y - 7 * s, r * 0.5, r * 0.5, ringAccent);
             ctx.globalCompositeOperation = 'source-over';
         }
         ctx.restore();
@@ -5684,30 +5813,6 @@ export class HarborTraffic {
         return { state: 'idle' };
     }
 
-    _drawFailedPushMark(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
-        const s = 1 / Math.max(1, zoom || 1);
-        const pulse = this.motionScale > 0
-            ? 0.55 + Math.sin(this.frame * 0.16 + ship.berthIndex) * 0.18
-            : 0.62;
-        const lift = Math.max(0, Number(shipClass.labelLift || 0));
-        ctx.save();
-        ctx.globalAlpha = pulse;
-        ctx.strokeStyle = PUSH_STATUS_STYLE.failed.accent;
-        ctx.lineWidth = Math.max(1, Math.round(2 * s));
-        const cx = Math.round(ship.x + (18 + (shipClass.flagOffsetX || 0) * 0.4) * s);
-        const cy = Math.round(ship.y - (36 + lift) * s);
-        ctx.beginPath();
-        ctx.arc(cx, cy, 7 * s, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(cx - 3 * s, cy - 3 * s);
-        ctx.lineTo(cx + 3 * s, cy + 3 * s);
-        ctx.moveTo(cx + 3 * s, cy - 3 * s);
-        ctx.lineTo(cx - 3 * s, cy + 3 * s);
-        ctx.stroke();
-        ctx.restore();
-    }
-
     _drawRepoFlag(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
         const s = 1 / Math.max(1, zoom || 1);
         const bob = this._shipBob(ship);
@@ -5754,18 +5859,25 @@ export class HarborTraffic {
     // in world units; clamped tightly above the ship so it doesn't overlap the
     // commit pennant which sits to the side and below.
     _drawRepoShield(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const s = 1 / Math.max(1, zoom || 1);
-        const w = 18 * s;
-        const h = 24 * s;
-        const cx = Math.round(ship.x);
-        const top = Math.round(ship.y - (44 + (shipClass.flagOffsetY || 0) * 0.6) * s);
-        const left = cx - w / 2;
-        const right = cx + w / 2;
-        const pointY = top + h;
-        const shoulderY = top + h * 0.72;
-
+        const h = 24;
+        // C5 — screen-fixed: zoom cancelled at the ship anchor, whole screen px.
         ctx.save();
         ctx.globalAlpha = Math.max(0, alpha) * 0.94;
+        ctx.translate(ship.x, ship.y);
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_DISPLAY_FONT_8;
+        const shortName = String(profile.shortName || profile.name || '').slice(0, 3).toUpperCase();
+        // The crest widens just enough to carry its label without squeezing
+        // glyphs (C5 measures instead of fillText maxWidth).
+        const w = shortName ? Math.max(18, measureLabelText(ctx, shortName) + 6) : 18;
+        const cx = 0;
+        const top = -Math.round(44 + (shipClass.flagOffsetY || 0) * 0.6);
+        const left = -Math.round(w / 2);
+        const right = left + w;
+        const pointY = top + h;
+        const shoulderY = top + Math.round(h * 0.72);
+
         // Drop shadow behind the shield for legibility against busy water.
         ctx.fillStyle = 'rgba(8, 12, 16, 0.55)';
         ctx.beginPath();
@@ -5774,6 +5886,20 @@ export class HarborTraffic {
         ctx.lineTo(right + 1, shoulderY + 2);
         ctx.lineTo(cx + 1, pointY + 2);
         ctx.lineTo(left + 1, shoulderY + 2);
+        ctx.closePath();
+        ctx.fill();
+
+        // Outer rim — gold on base repos, branch accent on variants; a 1 px
+        // expanded silhouette fill, not a stroke (C5).
+        ctx.fillStyle = profile.isBranchVariant && profile.baseAccent
+            ? profile.baseAccent
+            : 'rgba(255, 240, 184, 0.88)';
+        ctx.beginPath();
+        ctx.moveTo(left - 1, top - 1);
+        ctx.lineTo(right + 1, top - 1);
+        ctx.lineTo(right + 1, shoulderY + 1);
+        ctx.lineTo(cx, pointY + 2);
+        ctx.lineTo(left - 1, shoulderY + 1);
         ctx.closePath();
         ctx.fill();
 
@@ -5788,31 +5914,21 @@ export class HarborTraffic {
         ctx.closePath();
         ctx.fill();
 
-        // Outer rim — gold on base repos, branch accent on variants.
-        ctx.strokeStyle = profile.isBranchVariant && profile.baseAccent
-            ? profile.baseAccent
-            : 'rgba(255, 240, 184, 0.88)';
-        ctx.lineWidth = Math.max(1, 1.2 * s);
-        ctx.stroke();
-
         // Branch variant: thin sash band across the bottom (the band sits just
         // above the point so the chevron still reads as a shield).
         if (profile.isBranchVariant && profile.baseAccent) {
-            const bandTop = top + h * 0.50;
-            const bandH = Math.max(1, Math.round(3 * s));
+            const bandTop = top + Math.round(h * 0.50);
             ctx.fillStyle = profile.baseAccent;
-            ctx.fillRect(left + 1.5 * s, bandTop, w - 3 * s, bandH);
+            ctx.fillRect(left + 2, bandTop, w - 4, 3);
         }
 
         // Short repo label in the upper third of the shield.
-        const shortName = String(profile.shortName || profile.name || '').slice(0, 3).toUpperCase();
         if (shortName) {
             ctx.fillStyle = profile.labelText || 'rgba(20, 14, 10, 0.94)';
-            ctx.font = `${Math.max(7, Math.round(8 * s))}px ${WORLD_BODY_FONT}`;
             ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
+            ctx.textBaseline = 'alphabetic';
             this._applyReadableTextShadow(ctx);
-            ctx.fillText(shortName, cx, top + h * 0.34, w - 4 * s);
+            ctx.fillText(shortName, cx, top + Math.round(h * 0.34) + 4);
         }
         ctx.restore();
     }
@@ -5893,18 +6009,25 @@ export class HarborTraffic {
         if (ship.convoyLeader) {
             const count = Math.max(RELEASE_CONVOY_MIN_SHIPS, Number(ship.convoy?.visibleCount || ship.convoy?.count || 0));
             const label = `CVY ${count}`;
-            const width = Math.max(36 * s, label.length * 6.2 * s + 12 * s);
-            const labelX = Math.round(ship.x - width / 2);
-            const labelY = Math.round(y - 17 * s);
+            // C5 — screen-fixed plate at the ship anchor, whole screen px.
+            ctx.save();
+            ctx.translate(ship.x, ship.y);
+            ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+            snapScreenOrigin(ctx);
+            ctx.font = WORLD_DISPLAY_FONT_8;
+            const width = Math.max(36, measureLabelText(ctx, label) + 12);
+            const height = 14;
+            const left = -Math.round(width / 2);
+            const top = -Math.round(49 + lift * 0.55) - 17;
+            ctx.fillStyle = profile.accent || '#f6d384';
+            ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
             ctx.fillStyle = 'rgba(24, 42, 39, 0.88)';
-            ctx.fillRect(labelX, labelY, Math.round(width), Math.round(13 * s));
-            ctx.strokeStyle = profile.accent || '#f6d384';
-            ctx.strokeRect(labelX + 0.5, labelY + 0.5, Math.round(width) - 1, Math.round(13 * s) - 1);
+            ctx.fillRect(left, top, width, height);
             ctx.fillStyle = profile.labelText || '#fff0b8';
-            ctx.font = `${Math.max(7, Math.round(8 * s))}px ${WORLD_BODY_FONT}`;
             ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            this._fillReadableText(ctx, label, Math.round(ship.x), Math.round(labelY + 7 * s), Math.max(12, width - 4 * s));
+            ctx.textBaseline = 'alphabetic';
+            this._fillReadableText(ctx, label, 0, top + 11);
+            ctx.restore();
         }
         ctx.restore();
     }
@@ -5925,33 +6048,43 @@ export class HarborTraffic {
         const miniY = Math.round(ship.y - (31 + labelLift * 0.55) * s - bob);
 
         const label = shortGitLabel(commitPennantLabel(ship), compact ? 10 : 12, '…');
-        const textSize = Math.max(7, Math.round(8 * s));
-        const maxWidth = compact ? 58 * s : 70 * s;
-        const width = Math.max(42 * s, Math.min(maxWidth + 12 * s, label.length * textSize * 0.62 + 22 * s));
-        const x = Math.round(ship.x - width / 2 + lane * 34 * s);
+        const maxText = compact ? 58 : 70;
         const labelTier = compact ? localIndex % 4 : localIndex % 3;
-        const y = Math.round(ship.y + (22 + labelTier * 10 + Math.min(8, labelLift * 0.18)) * s - bob);
-        const height = 15 * s;
         ctx.save();
         ctx.globalAlpha = 0.92 * alpha;
+        // C5 — screen-fixed plate: zoom cancelled, whole screen px, width
+        // measured (fitLabelText keeps today's 58/70 px cap).
+        ctx.translate(ship.x, ship.y - bob);
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_BODY_FONT_11;
+        const shown = fitLabelText(ctx, label, maxText);
+        const width = Math.max(42, measureLabelText(ctx, shown) + 22);
+        const height = 16;
+        const left = Math.round(lane * 34) - Math.round(width / 2);
+        const top = Math.round(22 + labelTier * 10 + Math.min(8, labelLift * 0.18));
+        ctx.fillStyle = accent;
+        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.9)';
-        ctx.fillRect(x, y, Math.round(width), Math.round(height));
-        ctx.strokeStyle = accent;
-        ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
+        ctx.fillRect(left, top, width, height);
         if (profile.isBranchVariant && profile.baseAccent) {
             ctx.fillStyle = profile.baseAccent;
-            ctx.fillRect(x, y, Math.max(1, Math.round(2 * s)), Math.round(height));
+            ctx.fillRect(left, top, 2, height);
         }
         ctx.fillStyle = profile.accent;
-        ctx.fillRect(x + (profile.isBranchVariant ? Math.max(1, Math.round(2 * s)) : 0), y, Math.max(2, Math.round(4 * s)), Math.round(height));
-        this._drawRepoLabelIcon(ctx, x + 8 * s, y + height / 2, 6 * s, profile);
+        ctx.fillRect(left + (profile.isBranchVariant ? 2 : 0), top, 4, height);
+        this._drawRepoLabelIcon(ctx, left + 8, top + height / 2, 6, profile);
         ctx.fillStyle = ship.pushStatus === 'failed' && statusStyle ? accent : (profile.labelText || accent);
-        ctx.font = `${textSize}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        this._fillReadableText(ctx, label, Math.round(x + 15 * s), Math.round(y + height / 2 + 0.5), Math.max(12, width - 18 * s));
-        // v0.23 A4 — mini pennant on the pole: a small triangle that ripples in
-        // sync with the repo flag. Static under reduced motion.
+        ctx.textBaseline = 'alphabetic';
+        this._fillReadableText(ctx, shown, left + 15, top + 12);
+        ctx.restore();
+        // v0.23 A4 — mini pennant on the pole (world art): re-open the faded
+        // state the plate frame closed above.
+        ctx.save();
+        ctx.globalAlpha = 0.92 * alpha;
+        // Pennant triangle ripples in sync with the repo flag; static under
+        // reduced motion.
         ctx.fillStyle = accent;
         ctx.fillRect(miniX, miniY, Math.max(1, Math.round(3 * s)), Math.max(1, Math.round(11 * s)));
         if (this.motionScale > 0) {
@@ -5979,28 +6112,31 @@ export class HarborTraffic {
         const subject = cachedCleanCommitSubject(ship.label || '');
         const label = shortGitLabel(subject || `commit ${commitPennantLabel(ship)}`, 36, '…');
         if (!label) return;
-        const s = 1 / Math.max(1, zoom || 1);
         const lift = Math.max(0, Number(shipClass.labelLift || 0));
-        const textSize = Math.max(8, Math.round(9 * s));
-        const height = Math.round(17 * s);
-        const width = Math.round(Math.max(54 * s, label.length * textSize * 0.62 + 26 * s));
-        const x = Math.round(ship.x - width / 2);
-        const y = Math.round(ship.y - (56 + lift) * s);
         ctx.save();
         ctx.globalAlpha = Math.min(1, 0.96 * alpha);
+        // C5 — screen-fixed plate: zoom cancelled, whole screen px, width
+        // measured (this label has no cap today, so none is added).
+        ctx.translate(ship.x, ship.y);
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_BODY_FONT_11;
+        const width = Math.max(54, measureLabelText(ctx, label) + 26);
+        const height = 16;
+        const left = -Math.round(width / 2);
+        const top = -Math.round(56 + lift);
+        ctx.fillStyle = profile.accent;
+        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.92)';
-        ctx.fillRect(x, y, width, height);
-        ctx.strokeStyle = profile.accent;
-        ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
-        this._drawRepoLabelIcon(ctx, x + 9 * s, y + height / 2, 6 * s, profile);
+        ctx.fillRect(left, top, width, height);
+        this._drawRepoLabelIcon(ctx, left + 9, top + height / 2, 6, profile);
         ctx.fillStyle = profile.labelText || profile.accent;
-        ctx.font = `${textSize}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        this._fillReadableText(ctx, label, Math.round(x + 17 * s), Math.round(y + height / 2 + 0.5), Math.max(12, width - 22 * s));
+        ctx.textBaseline = 'alphabetic';
+        this._fillReadableText(ctx, label, left + 17, top + 12);
         // Short stem tying the cargo label to its ship.
         ctx.fillStyle = profile.accent;
-        ctx.fillRect(Math.round(ship.x - s), y + height, Math.max(1, Math.round(2 * s)), Math.round(6 * s));
+        ctx.fillRect(-1, top + height, 2, 6);
         ctx.restore();
     }
 
@@ -6017,44 +6153,29 @@ export class HarborTraffic {
         const forceSink = effect.status === 'success' && effect.force === true;
 
         ctx.save();
-        ctx.globalCompositeOperation = (effect.status === 'failed' || effect.status === 'rejected' || effect.status === 'cancelled' || forceSink) ? 'source-over' : 'screen';
+        ctx.globalCompositeOperation = (effect.status === 'cancelled' || forceSink) ? 'source-over' : 'screen';
         ctx.globalAlpha = Math.max(0.18, alpha);
-        ctx.strokeStyle = style.accent;
         ctx.fillStyle = style.glow;
-        ctx.lineWidth = 2;
 
-        if (effect.status === 'failed' || effect.status === 'rejected') {
-            const radius = 20 + wave * 12;
-            ctx.beginPath();
-            ctx.arc(effect.x, effect.y - 24, radius, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(effect.x - 11, effect.y - 35);
-            ctx.lineTo(effect.x + 11, effect.y - 13);
-            ctx.moveTo(effect.x + 11, effect.y - 35);
-            ctx.lineTo(effect.x - 11, effect.y - 13);
-            ctx.stroke();
-        } else if (effect.status === 'cancelled') {
+        if (effect.status === 'cancelled') {
             // 5.11 — soft grey expanding ring, low alpha. Reduced-motion: a single
             //        static ring at mid radius.
             const staticMotion = this.motionScale === 0;
             const radius = staticMotion ? 22 : (16 + progress * 18);
             ctx.globalAlpha = Math.max(0.12, alpha * 0.55);
-            ctx.beginPath();
-            ctx.arc(effect.x, effect.y - 24, radius, 0, Math.PI * 2);
-            ctx.stroke();
+            ellipseArcDots(ctx, effect.x, effect.y - 24, radius, radius, { step: 3, dot: 2, color: style.accent });
         } else if (forceSink) {
-            // 3.1 — whirlpool: concentric inward-spiraling arcs with red spray.
-            ctx.strokeStyle = '#3a4f6a';
-            ctx.lineWidth = 2;
+            // 3.1 — whirlpool: inward-spiraling dotted arcs (each ring's sweep
+            // start turns with its progress) with red spray.
             const spirals = this.motionScale === 0 ? 1 : 3;
             for (let i = 0; i < spirals; i++) {
                 const ringProgress = Math.max(0, Math.min(1, progress - i * 0.18));
                 const ring = Math.max(6, 48 - ringProgress * 36 + i * 6);
+                const start = ringProgress * Math.PI * 1.2 + i * 0.9;
                 ctx.globalAlpha = Math.max(0.10, alpha * (1 - i * 0.22));
-                ctx.beginPath();
-                ctx.ellipse(effect.x, effect.y, ring, ring * 0.36, -0.22 + ringProgress * 0.6, 0, Math.PI * 2);
-                ctx.stroke();
+                ellipseArcDots(ctx, effect.x, effect.y, ring, ring * 0.36, {
+                    start, end: start + Math.PI * 1.6, step: 3, dot: 2, color: '#3a4f6a',
+                });
             }
             // Red spray particles erupting from the whirlpool eye.
             ctx.globalCompositeOperation = 'source-over';
@@ -6074,17 +6195,15 @@ export class HarborTraffic {
                 const ringProgress = Math.max(0, Math.min(1, progress * 1.18 - i * 0.14));
                 const ring = 24 + ringProgress * (54 + intensity * 14);
                 ctx.globalAlpha = Math.max(0.08, alpha * (1 - i * 0.16));
-                ctx.beginPath();
-                ctx.ellipse(effect.x, effect.y, ring, ring * 0.34, -0.22, 0, Math.PI * 2);
-                ctx.stroke();
+                ellipseArcDots(ctx, effect.x, effect.y, ring, ring * 0.34, { step: 4, dot: 2, color: style.accent });
             }
             ctx.globalAlpha = Math.max(0.10, alpha * 0.55);
-            ctx.beginPath();
-            ctx.moveTo(summary.x - 8, summary.y - 72);
-            ctx.lineTo(effect.x + 72, effect.y - 18);
-            ctx.lineTo(effect.x - 18, effect.y + 12);
-            ctx.closePath();
-            ctx.fill();
+            ctx.fillStyle = style.glow;
+            fillConvex(ctx, [
+                [summary.x - 8, summary.y - 72],
+                [effect.x + 72, effect.y - 18],
+                [effect.x - 18, effect.y + 12],
+            ]);
 
             ctx.globalAlpha = Math.max(0.22, alpha * 0.88);
             for (let i = 0; i < burstCount; i++) {
@@ -6100,215 +6219,215 @@ export class HarborTraffic {
 
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = Math.max(0.48, alpha);
+        // C5 — screen-fixed caption: cancel the camera zoom read off the
+        // active transform (drawFinaleEffects receives no zoom argument).
+        ctx.save();
+        const frame = ctx.getTransform();
+        const dpr = ctx.canvas?._claudeVilleDpr || 1;
+        const zoom = Math.abs(frame.a) > 0.01 ? Math.abs(frame.a) / dpr : 1;
+        ctx.translate(effect.x, effect.y);
+        ctx.scale(1 / zoom, 1 / zoom);
+        snapScreenOrigin(ctx);
         ctx.fillStyle = style.accent;
-        ctx.font = `9px ${WORLD_BODY_FONT}`;
+        ctx.font = WORLD_DISPLAY_FONT_8;
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(style.shortLabel, Math.round(effect.x), Math.round(effect.y - 52));
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText(style.shortLabel, 0, -48);
+        ctx.restore();
         ctx.restore();
     }
 
     _drawClusterTag(ctx, payload, zoom) {
-        const s = 1 / Math.max(1, zoom || 1);
         const label = `+${payload.count}`;
-        const width = Math.max(18, label.length * 6 + 8) * s;
-        const height = 13 * s;
-        const x = payload.x - width / 2;
-        const y = payload.y - 34 * s;
-
+        // C5 — screen-fixed tab: zoom cancelled, whole screen px.
         ctx.save();
+        ctx.translate(payload.x, payload.y);
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_DISPLAY_FONT_8;
+        const width = Math.max(18, measureLabelText(ctx, label) + 8);
+        const height = 14;
+        const left = -Math.round(width / 2);
+        const top = -34;
+        ctx.fillStyle = 'rgba(242, 211, 107, 0.82)';
+        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = 'rgba(27, 43, 48, 0.86)';
-        ctx.fillRect(Math.round(x), Math.round(y), Math.round(width), Math.round(height));
-        ctx.strokeStyle = 'rgba(242, 211, 107, 0.82)';
-        ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.round(width) - 1, Math.round(height) - 1);
+        ctx.fillRect(left, top, width, height);
         ctx.fillStyle = '#f2d36b';
-        ctx.font = `${Math.max(8, Math.round(10 * s))}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(label, Math.round(payload.x), Math.round(y + height / 2));
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText(label, 0, top + 11);
         ctx.restore();
     }
 
     _drawCommitLagoonSign(ctx, payload, zoom) {
-        const s = 1 / Math.max(1, zoom || 1);
         const profile = payload.profile || trafficProfile(payload.project, payload.branch);
         const count = Math.max(1, Number(payload.count || 1));
         const detail = `${shortGitLabel(payload.repoName || trafficLabel(payload.project, payload.branch), 20, '…')} (${count})`;
         const title = 'COMMIT LAGOON';
-        const width = Math.max(132 * s, Math.min(204 * s, Math.max(title.length, detail.length) * 6.2 * s + 34 * s));
-        const height = 36 * s;
-        const x = Math.round(payload.x - width / 2);
-        const y = Math.round(payload.y - height / 2);
-
+        // C5 — screen-fixed sign: zoom cancelled, whole screen px, rows sized
+        // from measured text with today's 132–204 px width band.
         ctx.save();
         ctx.globalAlpha = 0.96;
+        ctx.translate(payload.x, payload.y);
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_DISPLAY_FONT_8;
+        const titleWidth = measureLabelText(ctx, title);
+        ctx.font = WORLD_BODY_FONT_11;
+        const detailWidth = measureLabelText(ctx, detail);
+        const width = Math.max(132, Math.min(204, Math.max(titleWidth, detailWidth) + 34));
+        const shownDetail = fitLabelText(ctx, detail, width - 28);
+        const height = 36;
+        const left = -Math.round(width / 2);
+        const top = -Math.round(height / 2);
+        ctx.fillStyle = 'rgba(247, 214, 123, 0.86)';
+        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = 'rgba(50, 42, 25, 0.92)';
-        ctx.fillRect(x, y, Math.round(width), Math.round(height));
-        ctx.strokeStyle = 'rgba(247, 214, 123, 0.86)';
-        ctx.lineWidth = Math.max(1, Math.round(1 * s));
-        ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
+        ctx.fillRect(left, top, width, height);
         ctx.fillStyle = profile.accent;
-        ctx.fillRect(x + Math.round(5 * s), y + Math.round(5 * s), Math.max(2, Math.round(4 * s)), Math.round(height - 10 * s));
+        ctx.fillRect(left + 5, top + 5, 4, height - 10);
+        ctx.font = WORLD_DISPLAY_FONT_8;
         ctx.fillStyle = '#f4df9f';
-        ctx.font = `${Math.max(8, Math.round(10 * s))}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        this._fillReadableText(ctx, title, Math.round(payload.x + 2 * s), Math.round(y + 11 * s));
-        this._drawRepoLabelIcon(ctx, x + 15 * s, y + 25 * s, 7 * s, profile);
+        ctx.textBaseline = 'alphabetic';
+        this._fillReadableText(ctx, title, 2, top + 14);
+        this._drawRepoLabelIcon(ctx, left + 15, top + 25, 7, profile);
+        ctx.font = WORLD_BODY_FONT_11;
         ctx.fillStyle = profile.labelText || profile.accent;
-        ctx.font = `${Math.max(7, Math.round(8 * s))}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'left';
-        this._fillReadableText(ctx, detail, Math.round(x + 23 * s), Math.round(y + 25 * s), Math.max(24, width - 28 * s));
+        this._fillReadableText(ctx, shownDetail, left + 23, top + 29);
         ctx.restore();
     }
 
     _drawRepoQuayMarker(ctx, payload, zoom) {
-        const s = 1 / Math.max(1, zoom || 1);
         const profile = payload.profile || trafficProfile(payload.project, payload.branch);
         const count = Math.max(1, Number(payload.count || 1));
         const name = shortGitLabel(trafficLabel(payload.project, payload.branch), count >= 100 ? 18 : 20, '…');
         const label = `${name} (${count})`;
-        const textSize = Math.max(7, Math.round(9 * s));
-        const width = Math.max(104 * s, Math.min(190 * s, label.length * textSize * 0.58 + 30 * s));
-        const height = 18 * s;
-        const x = Math.round(payload.x - width / 2);
-        const y = Math.round(payload.y - height / 2);
         const failed = Number(payload.failedCount || 0) > 0;
-
+        // C5 — screen-fixed marker: zoom cancelled, whole screen px, width
+        // measured with today's 104–190 px band.
         ctx.save();
         ctx.globalAlpha = 0.94;
+        ctx.translate(payload.x, payload.y);
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_BODY_FONT_11;
+        const width = Math.max(104, Math.min(190, measureLabelText(ctx, label) + 30));
+        const shown = fitLabelText(ctx, label, width - 24);
+        const height = 16;
+        const left = -Math.round(width / 2);
+        const top = -Math.round(height / 2);
+        ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.panelBorder || profile.accent);
+        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = profile.panel || 'rgba(20, 30, 34, 0.88)';
-        ctx.fillRect(x, y, Math.round(width), Math.round(height));
-        ctx.strokeStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.panelBorder || profile.accent);
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
+        ctx.fillRect(left, top, width, height);
         if (profile.isBranchVariant && profile.baseAccent) {
             ctx.fillStyle = profile.baseAccent;
-            ctx.fillRect(x, y, Math.max(2, Math.round(3 * s)), Math.round(height));
+            ctx.fillRect(left, top, 3, height);
         }
         ctx.fillStyle = profile.accent;
-        ctx.fillRect(x + (profile.isBranchVariant ? Math.max(2, Math.round(3 * s)) : 0), y, Math.max(3, Math.round(5 * s)), Math.round(height));
+        ctx.fillRect(left + (profile.isBranchVariant ? 3 : 0), top, 5, height);
 
         ctx.globalAlpha = 1;
-        this._drawRepoLabelIcon(ctx, x + 11 * s, y + height / 2, 7 * s, profile);
+        this._drawRepoLabelIcon(ctx, left + 11, top + height / 2, 7, profile);
         ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.labelText || profile.accent);
-        ctx.font = `${textSize}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        this._fillReadableText(ctx, label, Math.round(x + 20 * s), Math.round(y + height / 2 + 0.5), Math.max(24, width - 24 * s));
+        ctx.textBaseline = 'alphabetic';
+        this._fillReadableText(ctx, shown, left + 20, top + 12);
         ctx.restore();
     }
 
-    // #18 — small flickering flame atop an active repo buoy. A couple of
-    // additive ember layers whose height/offset wobble on `this.frame`; colours
-    // come from ParticleSystem's shared `buoyTorch` palette.
-    // 5.8 — composite is 'screen' (the legacy 'lighter' alias is deprecated),
-    // and reduced motion now draws a single static frame (frozen phase, steady
-    // alpha) instead of suppressing the flame entirely. The per-layer detuned
-    // shape wobble stays local pulse math: snapping it to a shared band would
-    // lockstep every flame in the anchorage.
-    _drawBuoyTorch(ctx, x, topY, s, slot = 0) {
+    // #18 — small flickering flame atop an active repo buoy; colours come
+    // from ParticleSystem's shared `buoyTorch` palette. 5.8 — reduced motion
+    // draws a single static frame instead of suppressing the flame entirely.
+    _drawBuoyTorch(ctx, x, topY, slot = 0) {
+        // A 2-texel pixel flame on the shared buoyTorch palette whose height
+        // steps between three frames; neighbours are phase-offset by slot so
+        // the anchorage never flickers in lockstep. Reduced motion holds one.
         const moving = this.motionScale > 0;
         const phase = (moving ? this.frame * 0.32 : 0) + slot * 1.7;
+        const height = 5 + Math.round(Math.sin(phase));
         ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (let i = 0; i < 3; i++) {
-            const flick = Math.sin(phase + i * 1.9);
-            const h = (5 - i * 1.3 + flick * 1.1) * s;
-            const sway = (moving ? Math.sin(phase * 1.4 + i) * 0.9 : 0) * s;
-            const w = (3.4 - i * 0.9) * s;
-            ctx.globalAlpha = 0.5 - i * 0.12;
-            ctx.fillStyle = BUOY_TORCH_COLORS[i] || BUOY_TORCH_COLORS[BUOY_TORCH_COLORS.length - 1];
-            ctx.beginPath();
-            ctx.ellipse(x + sway, topY - h * 0.5, Math.max(1, w), Math.max(1.5, h), 0, 0, Math.PI * 2);
-            ctx.fill();
-        }
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
+        drawPixelFlame(ctx, x, topY, height, 2, {
+            outer: BUOY_TORCH_COLORS[0],
+            inner: BUOY_TORCH_COLORS[1] || BUOY_TORCH_COLORS[0],
+            tip: BUOY_TORCH_COLORS[2] || BUOY_TORCH_COLORS[BUOY_TORCH_COLORS.length - 1],
+        });
         ctx.restore();
     }
 
     _drawRepoAnchorage(ctx, payload, zoom) {
-        const s = 1 / Math.max(1, zoom || 1);
         const x = payload.x;
         const y = payload.y;
 
         // Overflow chip — repos that did not get their own anchorage slot.
         if (payload.overflowMore) {
             const text = payload.repoName || `+${payload.overflowMore}`;
-            const textSize = Math.max(7, Math.round(8 * s));
-            const w = Math.max(30 * s, text.length * textSize * 0.62 + 12 * s);
-            const h = 13 * s;
+            // C5 — screen-fixed chip: zoom cancelled, whole screen px.
             ctx.save();
+            ctx.translate(x, y);
+            ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+            snapScreenOrigin(ctx);
+            ctx.font = WORLD_BODY_FONT_11;
+            const w = Math.max(30, measureLabelText(ctx, text) + 12);
+            const h = 14;
+            const left = -Math.round(w / 2);
+            const top = -Math.round(h / 2);
             ctx.globalAlpha = 0.78;
+            ctx.fillStyle = 'rgba(159, 185, 181, 0.7)';
+            ctx.fillRect(left - 1, top - 1, w + 2, h + 2);
             ctx.fillStyle = 'rgba(20, 30, 34, 0.82)';
-            ctx.fillRect(Math.round(x - w / 2), Math.round(y - h / 2), Math.round(w), Math.round(h));
-            ctx.strokeStyle = 'rgba(159, 185, 181, 0.7)';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(Math.round(x - w / 2) + 0.5, Math.round(y - h / 2) + 0.5, Math.round(w) - 1, Math.round(h) - 1);
+            ctx.fillRect(left, top, w, h);
             ctx.globalAlpha = 1;
             ctx.fillStyle = '#cdd9d6';
-            ctx.font = `${textSize}px ${WORLD_BODY_FONT}`;
             ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            this._fillReadableText(ctx, text, Math.round(x), Math.round(y + 0.5), w - 6 * s);
+            ctx.textBaseline = 'alphabetic';
+            this._fillReadableText(ctx, fitLabelText(ctx, text, w - 6), 0, top + 11);
             ctx.restore();
             return;
         }
 
-        const profile = payload.profile || cachedRepoProfile(payload.project);
+        const profile = payload.profile || repoProfile(payload.project);
         const lively = payload.lively !== false;
         const failed = Number(payload.failed || 0) > 0;
         const moving = this.motionScale > 0;
 
         // #18 — phase-offset vertical bob so neighbouring buoys never bob in
         // lockstep. Slot index seeds the phase; failed repos sit low ("droop")
-        // and bob with a smaller, slower amplitude. Reduced motion = no bob.
+        // and bob with a smaller amplitude. Whole texels; reduced motion = none.
         const slot = Number(payload.slot) || 0;
         const bobBand = pulseValue('harbor', this.frame + slot * 11, this.motionScale) - 0.62;
         const bobAmp = failed ? 0.7 : 1.6;
-        const bob = moving ? bobBand * bobAmp * s : 0;
-        const droop = failed ? 2.6 * s : 0;
-        const buoyY = y + bob + droop;
+        const bob = moving ? Math.round(bobBand * bobAmp) : 0;
+        const droop = failed ? 3 : 0;
+        const bx = snap(x);
+        const buoyY = snap(y) + bob + droop;
 
         ctx.save();
-        // Tinted water patch — the repo's "sea area". Failed repos lose their
-        // colour: a muted grey wash reads as a sunken, troubled anchorage.
-        const rx = (lively ? 17 : 13) * s;
-        const ry = rx * 0.5;
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, rx);
+        // Tinted water patch — the repo's "sea area", one flat stepped course.
+        // Failed repos lose their colour: a muted grey wash reads as a sunken,
+        // troubled anchorage.
+        const rx = lively ? 17 : 13;
         const waterGlow = failed
             ? 'rgba(96, 104, 110, 0.30)'
             : gradeColorString(profile.glow || 'rgba(122, 200, 216, 0.32)', this._grade);
-        grad.addColorStop(0, waterGlow);
-        grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
         ctx.globalAlpha = failed ? 0.5 : (lively ? 0.85 : 0.45);
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
-        ctx.fill();
+        fillPixelEllipse(ctx, bx, snap(y), rx, Math.round(rx / 2), waterGlow);
         ctx.globalAlpha = 1;
 
         // Mooring buoy post + pennant in the repo accent (rides the bob).
-        const postH = 13 * s;
-        const topY = buoyY - postH;
-        ctx.strokeStyle = 'rgba(24, 16, 10, 0.7)';
-        ctx.lineWidth = Math.max(1, 1.4 * s);
-        ctx.beginPath();
-        ctx.moveTo(x, buoyY);
-        ctx.lineTo(x, topY);
-        ctx.stroke();
+        const topY = buoyY - 13;
+        ctx.fillStyle = 'rgba(24, 16, 10, 0.85)';
+        ctx.fillRect(bx, topY, 1, 13);
         // Failed pennant droops — a slack triangle hanging off the post tip.
         ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : profile.accent;
-        ctx.beginPath();
-        ctx.moveTo(x, topY);
-        if (failed) {
-            ctx.lineTo(x + 6 * s, topY + 6 * s);
-            ctx.lineTo(x, topY + 7 * s);
-        } else {
-            ctx.lineTo(x + 9 * s, topY + 3 * s);
-            ctx.lineTo(x, topY + 6 * s);
-        }
-        ctx.closePath();
-        ctx.fill();
+        fillConvex(ctx, failed
+            ? [[bx + 1, topY], [bx + 7, topY + 6], [bx + 1, topY + 7]]
+            : [[bx + 1, topY], [bx + 10, topY + 3], [bx + 1, topY + 6]]);
 
         // #18 — active-repo signal flame: a small flickering torch atop the post
         // whenever the repo is lively (live agent or fresh push). Drawn inline
@@ -6316,31 +6435,39 @@ export class HarborTraffic {
         // palette. Reduced motion draws a single static flame frame instead of
         // suppressing it (5.8).
         if (lively && !failed) {
-            this._drawBuoyTorch(ctx, x, topY, s, slot);
+            this._drawBuoyTorch(ctx, bx, topY, slot);
         }
 
-        // Crest float at the waterline (rides the bob).
-        this._drawRepoLabelIcon(ctx, x, buoyY - 1.5 * s, (lively ? 9 : 8) * s, profile);
+        // Crest float at the waterline (rides the bob): a rimmed pixel diamond.
+        diamond(ctx, bx, buoyY - 2, lively ? 4 : 3, {
+            color: 'rgba(255, 240, 184, 0.9)',
+            fill: profile.accent || '#f6d384',
+        });
 
         // Name + docked count label.
         const name = payload.repoName || profile.shortName || 'repo';
         const label = payload.docked > 0 ? `${name} (${payload.docked})` : name;
-        const textSize = Math.max(7, Math.round(8 * s));
-        const labelY = y + 9 * s;
-        const w = Math.max(40 * s, label.length * textSize * 0.6 + 12 * s);
-        const h = 13 * s;
+        // C5 screen-fixed plate: zoom cancelled, whole screen px.
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_BODY_FONT_11;
+        const w = Math.max(40, measureLabelText(ctx, label) + 12);
+        const h = 14;
+        const left = -Math.round(w / 2);
+        const top = 9;
         ctx.globalAlpha = lively ? 0.95 : 0.7;
+        ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.panelBorder || profile.accent);
+        ctx.fillRect(left - 1, top - 1, w + 2, h + 2);
         ctx.fillStyle = profile.panel || 'rgba(20, 30, 34, 0.85)';
-        ctx.fillRect(Math.round(x - w / 2), Math.round(labelY), Math.round(w), Math.round(h));
-        ctx.strokeStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.panelBorder || profile.accent);
-        ctx.lineWidth = 1;
-        ctx.strokeRect(Math.round(x - w / 2) + 0.5, Math.round(labelY) + 0.5, Math.round(w) - 1, Math.round(h) - 1);
+        ctx.fillRect(left, top, w, h);
         ctx.globalAlpha = 1;
         ctx.fillStyle = lively ? (profile.labelText || profile.accent) : 'rgba(180, 196, 192, 0.78)';
-        ctx.font = `${textSize}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        this._fillReadableText(ctx, label, Math.round(x), Math.round(labelY + h / 2 + 0.5), w - 8 * s);
+        ctx.textBaseline = 'alphabetic';
+        this._fillReadableText(ctx, fitLabelText(ctx, label, w - 8), 0, top + 11);
+        ctx.restore();
         ctx.restore();
     }
 

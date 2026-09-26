@@ -1,3 +1,4 @@
+import { TILE_HALF_WIDTH, worldToTile } from './Projection.js';
 import { normalizeMaterialMetadata } from './MaterialRegistry.js';
 
 function finiteSortY(value) {
@@ -232,8 +233,9 @@ export function appendDepthSortedDrawables(target, {
     for (const drawable of propDrawables) {
         pushDepthDrawable(target, drawable);
     }
+    const splitBuildings = collectSplitBuildings(buildingDrawables);
     for (const sprite of agentSprites) {
-        pushDepthDrawable(target, pooledDepthDrawable(target, 'agent', sprite.y, sprite, drawAgent));
+        pushDepthDrawable(target, pooledDepthDrawable(target, 'agent', agentSortY(sprite, splitBuildings), sprite, drawAgent));
     }
     for (const entry of sceneCategoryFrame?.entries || []) {
         const category = entry.category;
@@ -267,6 +269,59 @@ export function appendDepthSortedDrawables(target, {
     target.sort(compareDepthDrawables);
 }
 
+// W-F16 — a split building paints its back half (upper sprite rows: roofs,
+// spires, the tall corner towers) at the back footprint depth and its front
+// half at the front. A body whose feet fall between those depths while it
+// stands behind the footprint (not south or east of it) would paint over the
+// back half — a villager on the roof. Such a body sorts just before the back
+// half instead, so the whole building occludes it (the selected-agent x-ray
+// keeps a hidden selection visible). `sprite._behindBuilding` records the
+// verdict so the ungraded overlay and the label pass do not float a hidden
+// body's name and marks on the building's face.
+const _splitBuildingScratch = [];
+function collectSplitBuildings(buildingDrawables) {
+    const out = _splitBuildingScratch;
+    out.length = 0;
+    for (const drawable of buildingDrawables) {
+        if (drawable?.kind !== 'building-back' || !drawable.building) continue;
+        const building = drawable.building;
+        const front = buildingDrawables.find(entry => entry?.kind === 'building-front' && entry.building === building);
+        if (!front) continue;
+        const x0 = Number(building.x ?? building.position?.tileX);
+        const y0 = Number(building.y ?? building.position?.tileY);
+        const x1 = x0 + (Number(building.width) || 1);
+        const y1 = y0 + (Number(building.height) || 1);
+        if (!Number.isFinite(x0) || !Number.isFinite(y0)) continue;
+        out.push({
+            backSortY: drawable.sortY,
+            frontSortY: front.sortY,
+            x1,
+            y1,
+            // Screen-x span of the footprint (W corner to E corner), padded by
+            // one tile for eaves and towers that overhang it.
+            left: (x0 - y1 - 1) * TILE_HALF_WIDTH,
+            right: (x1 - y0 + 1) * TILE_HALF_WIDTH,
+        });
+    }
+    return out;
+}
+
+function agentSortY(sprite, splitBuildings) {
+    const y = sprite.y;
+    sprite._behindBuilding = false;
+    if (!splitBuildings.length || !Number.isFinite(sprite.x) || !Number.isFinite(y)) return y;
+    for (const split of splitBuildings) {
+        if (!(y > split.backSortY && y <= split.frontSortY)) continue;
+        if (sprite.x < split.left || sprite.x > split.right) continue;
+        const tile = worldToTile(sprite.x, y);
+        if (tile.tileX < split.x1 && tile.tileY < split.y1) {
+            sprite._behindBuilding = true;
+            return split.backSortY - 0.5;
+        }
+    }
+    return y;
+}
+
 function clearPooledDrawable(drawable) {
     drawable.kind = null;
     drawable.stableKey = '';
@@ -290,6 +345,10 @@ function clearPooledDrawable(drawable) {
 export function drawDepthSortedDrawables(ctx, drawables, context = {}) {
     const zoom = context.zoom || 1;
     const paintCounts = context.paintCounts;
+    // On the resident path this context is the hidden pre-composite canvas
+    // under the opaque GPU island. Overlay-safe scene categories replay once
+    // on the overlay (drawSceneCategoryOverlays), so their copy here is waste.
+    const overlayCategoryIds = context.gpuWorldActive ? context.overlayCategoryIds : null;
     for (const drawable of drawables) {
         if (paintCounts) {
             paintCounts.lower[drawable.kind] ??= 0;
@@ -301,6 +360,7 @@ export function drawDepthSortedDrawables(ctx, drawables, context = {}) {
         ) {
             continue;
         }
+        if (overlayCategoryIds?.has?.(drawable.sceneCategory?.id)) continue;
         if (drawable.draw) {
             drawable.draw(ctx, zoom, context);
             if (paintCounts) paintCounts.lower[drawable.kind] += 1;
@@ -336,6 +396,9 @@ export function drawSceneCategoryOverlays(ctx, drawables, resolution, context = 
     selected.sort(compareOverlayBands);
     const zoom = context.zoom || 1;
     const paintCounts = context.paintCounts?.upper;
+    // Categories read this to take the C2 grade themselves: nothing grades
+    // this canvas after the draw, unlike the Canvas depth pass.
+    context.ungradedOverlay = true;
     for (const drawable of selected) {
         if (drawable.draw) {
             drawable.draw(ctx, zoom, context);

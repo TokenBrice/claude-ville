@@ -3,9 +3,14 @@ import { DEFAULT_CELL, DIRECTIONS, WALK_FRAMES, IDLE_FRAMES } from './SpriteShee
 
 // Compositor produces per-agent character bitmaps by:
 // 1. selecting a model/provider base sheet,
-// 2. palette-swapping it using palettes.yaml,
-// 3. compositing an allowed runtime effort/accessory overlay over the head pixels.
-// Result is cached per (base sprite, paletteVariant, runtimeAccessory) tuple.
+// 2. recolouring provider trim from palettes.yaml (plan 2.6: provider hue lives
+//    in trim only; authored robes keep their colours and take a per-variant
+//    value step),
+// 3. compositing an allowed runtime effort/accessory overlay over the head pixels,
+// 4. optionally baking the shared 1-texel warm rim (plan 2.4) that both the
+//    Canvas and resident WebGL bodies sample.
+// Result is cached per (base sprite, paletteVariant, runtimeAccessory, outline) tuple.
+// halfScaleSheet() bakes the 0.5x crowd LOD copy of any composed sheet (plan 2.7).
 
 const CACHE_ENTRY_LIMIT = 24;
 const CACHE_PIXEL_LIMIT = 12_500_000;
@@ -23,6 +28,20 @@ const DEFAULT_BACK_CROP = 0.6;
 // accessories can opt into a custom crop.
 const ACCESSORY_BACK_CROP = {};
 
+// Plan 2.4 — one baked rim for both backends: 4-neighbour, 1 texel, warm
+// near-black at half alpha, so the authored dark outline gains ground
+// separation without doubling into a heavy line.
+const OUTLINE_RGB = [28, 20, 16];
+const OUTLINE_ALPHA = 128;
+const OPAQUE_ALPHA = 16;
+// Plan 2.6 — variant identity inside a family is a value step on the authored
+// robe, never a hue swap. Indexed by the historical 0..3 variant.
+const ROBE_VALUE_STEPS = Object.freeze([1, 1.1, 0.9, 1.2]);
+// Plan 2.7 — LOD downsample: pixels at or above this alpha vote; the baked
+// rim (OUTLINE_ALPHA) never does, and is re-baked at half resolution.
+const LOD_VOTE_ALPHA = 160;
+const LOD_DARK_LUMA = 70;
+const LOD_CACHE = new WeakMap();
 export class Compositor {
     // 1.7 — the world's compositor registers itself here so DOM-side consumers
     // (dashboard AvatarCanvas) can request the exact composited bitmap the
@@ -56,7 +75,7 @@ export class Compositor {
         for (const cb of Compositor._sharedListeners.splice(0)) cb(this);
     }
 
-    spriteFor(baseSpriteId, paletteKey, paletteVariant, runtimeAccessory, teamTrim = null) {
+    spriteFor(baseSpriteId, paletteKey, paletteVariant, runtimeAccessory, teamTrim = null, { outline = false } = {}) {
         const baseId = baseSpriteId?.startsWith('agent.')
             ? baseSpriteId
             : `agent.${baseSpriteId || 'claude'}.base`;
@@ -65,7 +84,7 @@ export class Compositor {
         // cache independently from solo agents using the same palette variant.
         const teamHash = teamTrim ? String(teamTrim).toLowerCase() : '_';
         const variantKey = this._resolvedVariantKey(palette, paletteVariant, teamTrim);
-        const key = `${baseId}|${palette}|${variantKey}|${runtimeAccessory ?? '_'}|${teamHash}`;
+        const key = `${baseId}|${palette}|${variantKey}|${runtimeAccessory ?? '_'}|${teamHash}|${outline ? 'rim' : '_'}`;
         if (this.cache.has(key)) {
             const cached = this.cache.get(key);
             this.cache.delete(key);
@@ -93,7 +112,7 @@ export class Compositor {
         if (baseId === 'agent.codex.gpt54') clearDetachedCodexWrench(ctx, canvas.width, canvas.height);
         this._applyPaletteSwap(ctx, canvas.width, canvas.height, palette, paletteVariant, teamTrim, sheetSource);
         if (runtimeAccessory) this._compositeAccessory(ctx, baseId, runtimeAccessory, palette);
-
+        if (outline) bakeSpriteOutline(ctx, canvas.width, canvas.height, dims.w / DIRECTIONS.length || DEFAULT_CELL);
         this.cache.set(key, canvas);
         this.cachePixels += canvas.width * canvas.height;
         this._trimCache();
@@ -111,13 +130,14 @@ export class Compositor {
         runtimeAccessory = null,
         teamTrim = null,
         cellSize = DEFAULT_CELL,
+        outline = false,
     } = {}) {
         if (!stripImage) return null;
         const baseId = baseSpriteId?.startsWith('agent.') ? baseSpriteId : `agent.${baseSpriteId || 'claude'}.base`;
         const palette = paletteKey || baseId.split('.')[1] || 'claude';
         const teamHash = teamTrim ? String(teamTrim).toLowerCase() : '_';
         const variantKey = this._resolvedVariantKey(palette, paletteVariant, teamTrim);
-        const key = `strip|${stripKey}|${palette}|${variantKey}|${runtimeAccessory ?? '_'}|${teamHash}`;
+        const key = `strip|${stripKey}|${palette}|${variantKey}|${runtimeAccessory ?? '_'}|${teamHash}|${outline ? 'rim' : '_'}`;
         if (this.cache.has(key)) {
             const cached = this.cache.get(key);
             this.cache.delete(key);
@@ -142,6 +162,7 @@ export class Compositor {
                 cellSize: cellSize || DEFAULT_CELL,
             });
         }
+        if (outline) bakeSpriteOutline(ctx, width, height, cellSize || DEFAULT_CELL);
         this.cache.set(key, canvas);
         this.cachePixels += width * height;
         this._trimCache();
@@ -149,15 +170,12 @@ export class Compositor {
     }
 
     _resolvedVariantKey(paletteKey, variant, teamTrim) {
-        const palette = this.assets.palettes?.[paletteKey];
-        if (!palette) return String(variant);
         const index = Math.max(0, Number(variant) || 0);
-        const robe = palette.robe?.[index % Math.max(1, palette.robe.length)] || '_';
-        const pants = palette.pants?.[index % Math.max(1, palette.pants.length)] || '_';
+        const trimRamp = this.assets.palettes?.[paletteKey]?.trim || [];
         const trim = parseTrimColor(teamTrim)
             ? String(teamTrim).toLowerCase()
-            : (palette.trim?.[index % Math.max(1, palette.trim.length)] || '_');
-        return `${robe},${pants},${trim}`;
+            : (trimRamp[index % Math.max(1, trimRamp.length)] || '_');
+        return `${ROBE_VALUE_STEPS[index % ROBE_VALUE_STEPS.length]},${trim}`;
     }
 
     _trimCache() {
@@ -194,47 +212,54 @@ export class Compositor {
         if (Compositor._shared === this) Compositor._shared = null;
     }
 
+    // Plan 2.6 — provider hue lives in trim only. The sheet's declared trim
+    // source (manifest `paletteSource.trim`) takes the provider trim ramp or a
+    // team sash; declared robe sources keep their authored hue and take the
+    // variant's value step so four family members stay distinguishable. Sheets
+    // that declare no source for a role are left exactly as authored — there is
+    // no guessed fallback colour that could catch skin or hair.
     _applyPaletteSwap(ctx, w, h, provider, variant, teamTrim = null, sheetSource = null) {
-        const palette = this.assets.palettes[provider];
-        if (!palette) return;
-        const targetRobe = palette.robe[variant % palette.robe.length];
-        const targetPants = palette.pants[variant % palette.pants.length];
-        // 4.14: when teamTrim is supplied (rgb hex), override the variant-derived
-        // trim color so the sash band reads as a team marker. Skip cleanly when
-        // teamTrim is null/invalid — the >50% of solo agents see no change.
+        const index = Math.max(0, Number(variant) || 0);
+        const trimRamp = this.assets.palettes?.[provider]?.trim || [];
+        // 4.14: a team accent overrides the variant-derived trim so the sash
+        // band reads as a team marker.
         const trimOverride = parseTrimColor(teamTrim);
         const targetTrim = trimOverride
             ? rgbToHex(trimOverride)
-            : palette.trim[variant % palette.trim.length];
-        // 0.5: sheet-sampled sources win over the palette family's first ramp
-        // color (which only matches a handful of the generated sheets). Each
-        // role may list up to two sampled garment families — painterly sheets
-        // spread one garment across several hue buckets that ±12 misses.
-        const sourceRobe = sourceList(sheetSource?.robe, palette.robe[0]);
-        const sourcePants = sourceList(sheetSource?.pants, palette.pants[0]);
-        const sourceTrim = sourceList(sheetSource?.trim, palette.trim[0]);
+            : trimRamp[index % Math.max(1, trimRamp.length)] || null;
+        const robeStep = ROBE_VALUE_STEPS[index % ROBE_VALUE_STEPS.length];
+        const sourceRobe = robeStep !== 1 ? sourceList(sheetSource?.robe) : [];
+        const sourceTrim = targetTrim ? sourceList(sheetSource?.trim) : [];
+        if (!sourceRobe.length && !sourceTrim.length) return;
+        const robe = sourceRobe.map(hexToRgb);
+        const trimSwap = sourceTrim.map((src) => [hexToRgb(src), hexToRgb(targetTrim)]);
 
         const img = ctx.getImageData(0, 0, w, h);
         const data = img.data;
-        const swap = [
-            ...sourceRobe.map((src) => [hexToRgb(src), hexToRgb(targetRobe)]),
-            ...sourcePants.map((src) => [hexToRgb(src), hexToRgb(targetPants)]),
-            ...sourceTrim.map((src) => [hexToRgb(src), hexToRgb(targetTrim)]),
-        ];
-        // ΔE bucket: tolerate ±12 per channel so painterly anti-aliased pixels
-        // also recolor. Without this tolerance, only fully-saturated marker
-        // pixels swap and the result looks half-painted.
+        // ΔE bucket: tolerate ±12 per channel so painterly shading steps of the
+        // same garment also match. Without it only marker pixels change.
         const TOL = 12;
+        const near = (r, g, b, src) => Math.abs(r - src[0]) <= TOL && Math.abs(g - src[1]) <= TOL && Math.abs(b - src[2]) <= TOL;
         for (let i = 0; i < data.length; i += 4) {
-            const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
-            if (a < 16) continue;
-            for (const [src, dst] of swap) {
-                if (Math.abs(r - src[0]) <= TOL && Math.abs(g - src[1]) <= TOL && Math.abs(b - src[2]) <= TOL) {
-                    data[i]   = Math.max(0, Math.min(255, dst[0] + (r - src[0])));
-                    data[i+1] = Math.max(0, Math.min(255, dst[1] + (g - src[1])));
-                    data[i+2] = Math.max(0, Math.min(255, dst[2] + (b - src[2])));
-                    break;
-                }
+            const r = data[i], g = data[i + 1], b = data[i + 2];
+            if (data[i + 3] < OPAQUE_ALPHA) continue;
+            let done = false;
+            for (let k = 0; k < robe.length; k++) {
+                if (!near(r, g, b, robe[k])) continue;
+                data[i] = Math.min(255, Math.round(r * robeStep));
+                data[i + 1] = Math.min(255, Math.round(g * robeStep));
+                data[i + 2] = Math.min(255, Math.round(b * robeStep));
+                done = true;
+                break;
+            }
+            if (done) continue;
+            for (let k = 0; k < trimSwap.length; k++) {
+                const [src, dst] = trimSwap[k];
+                if (!near(r, g, b, src)) continue;
+                data[i] = Math.max(0, Math.min(255, dst[0] + (r - src[0])));
+                data[i + 1] = Math.max(0, Math.min(255, dst[1] + (g - src[1])));
+                data[i + 2] = Math.max(0, Math.min(255, dst[2] + (b - src[2])));
+                break;
             }
         }
         ctx.putImageData(img, 0, 0);
@@ -261,13 +286,11 @@ export class Compositor {
         const cropFrac = ACCESSORY_BACK_CROP[accessory] ?? DEFAULT_BACK_CROP;
 
         // Single composite-time read of the palette-swapped, accessory-free
-        // sheet: locates each cell's head apex (D1), records accessory-free
-        // content bounds for body draw-scale (D3), and paints the contact
+        // sheet: locates each cell's head apex (D1) and paints the contact
         // shadow (D4) before the overlay is stamped on top.
         const sheet = ctx.getImageData(0, 0, dims.w, dims.h);
         const sdata = sheet.data;
         const width = dims.w;
-        const baseBounds = new Map();
         const stamps = [];
 
         for (let r = 0; r < rows; r++) {
@@ -276,7 +299,6 @@ export class Compositor {
                 const cellY = r * cellSize;
                 const isBack = BACK_DIRECTIONS.has(DIRECTIONS[c]);
                 const apex = this._cellHeadApex(sdata, width, cellX, cellY, cellSize);
-                baseBounds.set(`${cellX},${cellY},${cellSize},${cellSize}`, apex.bounds);
 
                 const anchorX = apex.found ? apex.centroidX : cellX + Math.floor(cellSize / 2);
                 const anchorY = apex.found ? apex.topY + ACCESSORY_TOP_INSET : cellY + Math.floor(cellSize * 0.22);
@@ -326,16 +348,11 @@ export class Compositor {
             }
             ctx.restore();
         }
-
-        // Expose accessory-free per-cell content bounds so AgentSprite can scale
-        // the body from hat-free measurements (D3). Cached on the canvas, which
-        // is itself cached per (base, palette, accessory) tuple.
-        ctx.canvas.__cvBaseBounds = baseBounds;
     }
 
-    // Scans one cell of the accessory-free sheet: topmost opaque row, the
+    // Scans one cell of the accessory-free sheet: topmost opaque row and the
     // alpha-weighted centroid X of the top ~6 opaque rows (the head apex the
-    // overlay anchors to), and the cell-local content bounds.
+    // overlay anchors to).
     _cellHeadApex(data, width, cellX, cellY, cellSize) {
         let topY = -1;
         let minX = cellSize;
@@ -357,9 +374,7 @@ export class Compositor {
             }
             if (rowHas && topY < 0) topY = y;
         }
-        if (!found) {
-            return { found: false, bounds: { minX: 24, minY: 12, maxX: cellSize - 24, maxY: cellSize - 18 } };
-        }
+        if (!found) return { found: false };
         let sumA = 0;
         let sumAX = 0;
         const bandEnd = Math.min(cellSize, topY + 6);
@@ -377,7 +392,6 @@ export class Compositor {
             found: true,
             topY: cellY + topY,
             centroidX: cellX + localCx,
-            bounds: { minX, minY, maxX, maxY },
         };
     }
 
@@ -427,17 +441,154 @@ export class Compositor {
         }
         return { front, back, colBottom };
     }
+
+    // Plan 2.7 — the 0.5x crowd LOD copy of a composed sheet, baked once per
+    // source canvas. Each 2x2 block votes: the most common opaque colour wins
+    // (so the result is snapped to the sheet's own palette); ties at a
+    // silhouette edge keep the darker pixel so the outline survives; interior
+    // ties take the pixel nearest the block mean. The rim is then re-baked at
+    // half resolution instead of being averaged away. Drawn at world scale 1,
+    // the LOD body sits on the same texel grid as everything else.
+    halfScaleSheet(source, cellSize = DEFAULT_CELL) {
+        if (!source?.width || !source?.height || typeof document === 'undefined') return null;
+        const cell = Math.round(Number(cellSize) || DEFAULT_CELL);
+        if (cell % 2 !== 0) return null;
+        let bySize = LOD_CACHE.get(source);
+        const cached = bySize?.get(cell);
+        if (cached && cached.width === Math.floor(source.width / 2)) return cached;
+        const canvas = document.createElement('canvas');
+        const width = Math.floor(source.width / 2);
+        const height = Math.floor(source.height / 2);
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.imageSmoothingEnabled = false;
+        const src = source.getContext?.('2d', { willReadFrequently: true })
+            ?.getImageData(0, 0, width * 2, height * 2);
+        if (!src) return null;
+        const out = ctx.createImageData(width, height);
+        downsampleMajority(src.data, width * 2, out.data, width, height);
+        ctx.putImageData(out, 0, 0);
+        bakeSpriteOutline(ctx, width, height, cell / 2);
+        if (!bySize) {
+            bySize = new Map();
+            LOD_CACHE.set(source, bySize);
+        }
+        bySize.set(cell, canvas);
+        return canvas;
+    }
 }
 
 Compositor._shared = null;
 Compositor._sharedListeners = [];
 
 // 0.5 — normalize a manifest paletteSource role (string or short string list)
-// to a source color list, falling back to the palette family's first color.
-function sourceList(value, fallback) {
+// to a source color list. A role the sheet does not declare swaps nothing.
+function sourceList(value) {
     const list = Array.isArray(value) ? value : [value];
-    const valid = list.filter((v) => /^#[0-9a-fA-F]{6}$/.test(String(v || '')));
-    return valid.length ? valid.slice(0, 3) : [fallback];
+    return list.filter((v) => /^#[0-9a-fA-F]{6}$/.test(String(v || ''))).slice(0, 3);
+}
+
+// Plan 2.4 — bakes the shared 1-texel warm rim into every cell of a sheet in
+// place: each transparent texel with an opaque 4-neighbour in the same cell
+// becomes OUTLINE_RGB at OUTLINE_ALPHA. Cell edges are respected so a rim can
+// never become a neighbouring frame's false feet.
+export function bakeSpriteOutline(ctx, width, height, cellSize = DEFAULT_CELL) {
+    const cell = Math.max(1, Math.round(Number(cellSize) || DEFAULT_CELL));
+    const image = ctx.getImageData(0, 0, width, height);
+    const data = image.data;
+    const solid = new Uint8Array(width * height);
+    for (let i = 0; i < solid.length; i++) solid[i] = data[i * 4 + 3] >= OPAQUE_ALPHA ? 1 : 0;
+    for (let y = 0; y < height; y++) {
+        const cellTop = y - (y % cell);
+        for (let x = 0; x < width; x++) {
+            const index = y * width + x;
+            if (solid[index]) continue;
+            const cellLeft = x - (x % cell);
+            const touches = (x > cellLeft && solid[index - 1])
+                || (x + 1 < cellLeft + cell && x + 1 < width && solid[index + 1])
+                || (y > cellTop && solid[index - width])
+                || (y + 1 < cellTop + cell && y + 1 < height && solid[index + width]);
+            if (!touches) continue;
+            const offset = index * 4;
+            data[offset] = OUTLINE_RGB[0];
+            data[offset + 1] = OUTLINE_RGB[1];
+            data[offset + 2] = OUTLINE_RGB[2];
+            data[offset + 3] = OUTLINE_ALPHA;
+        }
+    }
+    ctx.putImageData(image, 0, 0);
+}
+
+function lodLuma(data, offset) {
+    return data[offset] * 0.299 + data[offset + 1] * 0.587 + data[offset + 2] * 0.114;
+}
+
+function downsampleMajority(src, srcWidth, dst, width, height) {
+    const picks = [0, 0, 0, 0];
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const base = ((y * 2) * srcWidth + x * 2) * 4;
+            const block = [base, base + 4, base + srcWidth * 4, base + srcWidth * 4 + 4];
+            let count = 0;
+            for (let k = 0; k < 4; k++) {
+                if (src[block[k] + 3] >= LOD_VOTE_ALPHA) picks[count++] = block[k];
+            }
+            const out = (y * width + x) * 4;
+            if (count === 0) continue;
+            if (count === 1 && lodLuma(src, picks[0]) >= LOD_DARK_LUMA) continue;
+            let best = picks[0];
+            let bestVotes = 0;
+            let tied = false;
+            for (let a = 0; a < count; a++) {
+                let votes = 0;
+                for (let b = 0; b < count; b++) {
+                    if (src[picks[a]] === src[picks[b]] && src[picks[a] + 1] === src[picks[b] + 1]
+                        && src[picks[a] + 2] === src[picks[b] + 2]) votes++;
+                }
+                if (votes > bestVotes) {
+                    bestVotes = votes;
+                    best = picks[a];
+                    tied = false;
+                } else if (votes === bestVotes && !(src[picks[a]] === src[best]
+                    && src[picks[a] + 1] === src[best + 1] && src[picks[a] + 2] === src[best + 2])) {
+                    tied = true;
+                }
+            }
+            if (tied) {
+                if (count < 4) {
+                    for (let a = 0; a < count; a++) {
+                        if (lodLuma(src, picks[a]) < lodLuma(src, best)) best = picks[a];
+                    }
+                } else {
+                    let mr = 0, mg = 0, mb = 0;
+                    for (let a = 0; a < count; a++) {
+                        mr += src[picks[a]];
+                        mg += src[picks[a] + 1];
+                        mb += src[picks[a] + 2];
+                    }
+                    mr /= count;
+                    mg /= count;
+                    mb /= count;
+                    let bestDistance = Infinity;
+                    for (let a = 0; a < count; a++) {
+                        const dr = src[picks[a]] - mr;
+                        const dg = src[picks[a] + 1] - mg;
+                        const db = src[picks[a] + 2] - mb;
+                        const distance = dr * dr + dg * dg + db * db;
+                        if (distance < bestDistance) {
+                            bestDistance = distance;
+                            best = picks[a];
+                        }
+                    }
+                }
+            }
+            dst[out] = src[best];
+            dst[out + 1] = src[best + 1];
+            dst[out + 2] = src[best + 2];
+            dst[out + 3] = 255;
+        }
+    }
 }
 
 function hexToRgb(hex) {

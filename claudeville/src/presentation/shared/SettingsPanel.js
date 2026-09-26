@@ -16,6 +16,13 @@ const SOUND_LAYERS = Object.freeze([
 
 let motionOverrideController = null;
 
+// The 0–10 sliders are 88px wide with an 8px square thumb: 8px per step, so
+// the gold fill always ends on a whole pixel at the thumb's centre.
+function syncRangeFill(input) {
+    const steps = Math.max(0, Math.min(10, Number(input?.value) || 0));
+    input?.style?.setProperty?.('--fill', `${steps * 8 + 4}px`);
+}
+
 function storageGet(storage, key) {
     try { return storage?.getItem(key) ?? null; } catch { return null; }
 }
@@ -291,7 +298,8 @@ export class SettingsPanel {
         }
         select.addEventListener('change', () => callback?.(select.value));
         this.controls.set(key, select);
-        return this._settingRow(label, detail, select);
+        // appearance:none drops the OS chevron; the wrap draws a pixel one.
+        return this._settingRow(label, detail, el('span', { className: 'settings-select-wrap' }, [select]));
     }
 
     _range(key, label, value, callback, compact = false) {
@@ -304,8 +312,10 @@ export class SettingsPanel {
         input.value = String(Math.round(Math.max(0, Math.min(1, normalized)) * 10));
         const output = el('output', { className: 'settings-range__value', text: `${input.value} / 10` });
         output.htmlFor = input.id;
+        syncRangeFill(input);
         input.addEventListener('input', () => {
             output.textContent = `${input.value} / 10`;
+            syncRangeFill(input);
             callback?.(Number(input.value) / 10);
         });
         this.controls.set(key, { input, output });
@@ -511,6 +521,7 @@ export class SettingsPanel {
         const normalized = Number.isFinite(Number(value)) ? Number(value) : 1;
         control.input.value = String(Math.round(Math.max(0, Math.min(1, normalized)) * 10));
         control.output.textContent = `${control.input.value} / 10`;
+        syncRangeFill(control.input);
     }
 
     destroy() {

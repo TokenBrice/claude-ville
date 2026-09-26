@@ -1,51 +1,33 @@
 // claudeville/src/presentation/character-mode/SeasonalAmbience.js
 //
-// Seasonal ambient particles for World mode. Maps the current month from the
-// atmosphere snapshot's local-date string to a season and feeds drift particles
-// into the shared ParticleSystem at a capped rate. Reduced-motion: emits a
-// deterministic, static set of placeholder particles once and then idles.
+// Seasonal drift for World mode: the current month (from the atmosphere
+// snapshot's local date) picks a season and a drift type, spawned into the
+// shared ParticleSystem in WORLD space on the open-air layer, so the drift is
+// on the art-pixel grid, pans with the world, and replays above the resident
+// WebGL island like chimney smoke.
 //
-// Wiring is intentionally minimal so IsometricRenderer can construct and call
-// update(dt) with no other coupling:
-//   this.seasonalAmbience = new SeasonalAmbience({
-//       particleSystem: this.particleSystem,
-//       atmosphereStateGetter: () => this._currentAtmosphereSnapshot,
-//       motionScaleGetter: () => this.motionScale,
-//       viewportProvider: () => ({ x: ..., y: ..., width: ..., height: ... }),
-//   });
-//   this.seasonalAmbience.update(dt);
+// Drift per season:
+//   winter (Dec–Feb): 'snow'       flurries anywhere in view
+//   spring (Mar–May): 'petal'      pink cherry petals from tree canopies
+//   summer (Jun–Aug): 'butterfly'  by day, rising from flower tiles
+//   autumn (Sep–Nov): 'leaf'       rust and gold leaves from tree canopies
+// Summer nights carry fireflies instead (fauna; WildlifeRenderer's own budget).
 //
-// `viewportProvider` is optional. When omitted, spawn coordinates fall back to
-// (0, 0). Seasonal particles use ParticleSystem's screen layer because the
-// supplied (x, y) coordinates are canvas-space pixels.
-//
-// Particle types per season:
-//   winter (Dec–Feb): 'snow'
-//   spring (Mar–May): 'leaf'    (proxy for cherry petals; no color override)
-//   summer (Jun–Aug): 'firefly'
-//   autumn (Sep–Nov): 'leaf'
-//
-// We pass `type: 'snow'` / `'leaf'` / `'firefly'` directly. ParticleSystem supports
-// per-spawn overrides, but the seasonal palettes stay restrained until a
-// stronger art direction lands.
+// 6.7 ambient budget: none at z < 2 (the wide shot keeps its silhouette), at
+// most 6 live at z >= 2, none at night, none in rain or storm, and none under
+// reduced motion — the season already lives in the terrain rebake, so the
+// honest static fallback is nothing (no screen-locked specks).
 
-const SPAWNS_PER_SECOND = 4;
-const STATIC_FALLBACK_COUNT = 14;
-const FALLBACK_SCATTER_W = 1280;
-const FALLBACK_SCATTER_H = 720;
+const SPAWNS_PER_SECOND = 2;
+const SEASONAL_TAG = 'seasonal-drift';
+export const SEASONAL_DRIFT_CAP = 6;
+export const SEASONAL_DRIFT_MIN_ZOOM = 2;
 
-// Under reduced motion the shared ParticleSystem is muted, so the static
-// fallback can't go through spawn(). Each season carries a representative
-// color + size pair used by the direct-canvas drawStatic() pass.
 const SEASONS = {
-    winter: { type: 'snow',    label: 'snow',        staticColor: '#d0eaff', staticSize: 2, token: 'winter' },
-    spring: { type: 'leaf',    label: 'cherryPetal', staticColor: '#8fbf58', staticSize: 2, token: 'spring' },
-    summer: { type: 'firefly', label: 'firefly',     staticColor: '#fff1a8', staticSize: 2, token: 'summer' },
-    autumn: { type: 'leaf',    label: 'leaf',        staticColor: '#b8914b', staticSize: 2, token: 'autumn' },
-    // Daytime variant of summer: butterflies by day, fireflies after dark. The
-    // base season stays `summer`; _effectiveSeason swaps to this when the
-    // atmosphere phase is not night.
-    summerDay: { type: 'butterfly', label: 'butterfly', staticColor: '#f4a93c', staticSize: 3, token: 'summer' },
+    winter: { type: 'snow', token: 'winter' },
+    spring: { type: 'petal', token: 'spring' },
+    summer: { type: 'butterfly', token: 'summer' },
+    autumn: { type: 'leaf', token: 'autumn' },
 };
 
 // Season token for the current atmosphere, sharing this module's month→season
@@ -64,6 +46,11 @@ export function seasonTokenForMonth(monthIndex) {
     return seasonForMonth(monthIndex)?.token || '';
 }
 
+// 6.7 — month index (0–11) of the atmosphere's local date, or null.
+export function monthIndexForAtmosphere(atmosphere) {
+    return monthFromAtmosphere(atmosphere);
+}
+
 export class SeasonalAmbience {
     constructor({
         particleSystem = null,
@@ -72,6 +59,7 @@ export class SeasonalAmbience {
         viewportProvider = null,
         suppressGetter = null,
         anchorsProvider = null,
+        cameraGetter = null,
     } = {}) {
         this.particleSystem = particleSystem;
         this.atmosphereStateGetter = typeof atmosphereStateGetter === 'function'
@@ -90,91 +78,80 @@ export class SeasonalAmbience {
             ? suppressGetter
             : () => false;
         // C2 — world-anchored drift. Given a kind ('canopy' | 'flower'), returns
-        // screen-space candidate points (tree canopies / flower tiles). Leaves
-        // and petals emit from canopies, butterflies from flowers; snow and any
-        // type with no visible anchors fall back to viewport-random spawning.
+        // screen-space candidate points (tree canopies / flower tiles). Petals
+        // and leaves fall from canopies, butterflies rise from flowers; snow
+        // (and any type with no visible anchor) falls anywhere in view.
         this.anchorsProvider = typeof anchorsProvider === 'function'
             ? anchorsProvider
             : null;
+        // The camera maps those screen points (and the viewport) into world
+        // space, and its zoom gates the budget.
+        this.cameraGetter = typeof cameraGetter === 'function'
+            ? cameraGetter
+            : () => null;
         this.enabled = true;
         this._spawnAccumulator = 0;
-        this._lastSeasonKey = '';
-        this._staticFallbackSeeded = false;
-        this._staticFallbackSeasonKey = '';
-        this._staticFallbackDots = [];
     }
 
     setEnabled(flag) {
         this.enabled = Boolean(flag);
-        if (!this.enabled) {
-            this._spawnAccumulator = 0;
-            this._staticFallbackSeeded = false;
-            this._staticFallbackDots = [];
-        }
+        if (!this.enabled) this._spawnAccumulator = 0;
     }
 
     update(dt = 16) {
         if (!this.enabled || !this.particleSystem) return;
-
-        const atmosphere = this.atmosphereStateGetter() || null;
-        const month = monthFromAtmosphere(atmosphere);
-        const baseSeason = seasonForMonth(month);
-        if (!baseSeason) return;
-        const season = this._effectiveSeason(baseSeason, atmosphere);
-
-        const seasonKey = `${season.type}|${season.label}`;
-        if (seasonKey !== this._lastSeasonKey) {
-            this._lastSeasonKey = seasonKey;
-            this._staticFallbackSeeded = false;
-        }
-
+        const season = this._driftSeason();
         const motionScale = clamp01(Number(this.motionScaleGetter()) || 0);
-
-        if (motionScale === 0) {
-            this._seedStaticFallback(season, seasonKey);
-            return;
-        }
-
         // suppressDuringEvents — a live git reward (the celebratory gull
         // scatter) is on screen; hold off decorative spawns and drain the
         // accumulator so nothing bursts when suppression lifts.
-        if (this.suppressGetter()) {
+        if (!season || motionScale === 0 || this.suppressGetter()) {
             this._spawnAccumulator = 0;
             return;
         }
 
         const frameDt = Math.max(0, Math.min(120, Number(dt) || 0));
-        const seconds = frameDt / 1000;
-        this._spawnAccumulator += SPAWNS_PER_SECOND * motionScale * seconds;
-
+        this._spawnAccumulator += SPAWNS_PER_SECOND * motionScale * (frameDt / 1000);
         while (this._spawnAccumulator >= 1) {
             this._spawnAccumulator -= 1;
+            if (this.particleSystem.countTagged(SEASONAL_TAG) >= SEASONAL_DRIFT_CAP) continue;
             this._spawnDriftParticle(season);
         }
     }
 
-    // Summer splits by time of day: butterflies while the sun is up,
-    // fireflies once it is night. Other seasons pass through unchanged.
-    _effectiveSeason(season, atmosphere) {
-        if (season !== SEASONS.summer) return season;
+    // The season whose drift may fall this frame, or null when the budget
+    // says none: wide zoom, night, rain or storm.
+    _driftSeason() {
+        const camera = this.cameraGetter();
+        if (!camera || !(Number(camera.zoom) >= SEASONAL_DRIFT_MIN_ZOOM)) return null;
+        const atmosphere = this.atmosphereStateGetter() || null;
+        const season = seasonForMonth(monthFromAtmosphere(atmosphere));
+        if (!season) return null;
         const phase = atmosphere?.phase || atmosphere?.clock?.phase || 'day';
-        return phase === 'night' ? SEASONS.summer : SEASONS.summerDay;
+        if (phase === 'night') return null;
+        const weather = atmosphere?.weather?.type;
+        if (weather === 'rain' || weather === 'storm') return null;
+        return season;
     }
 
     _spawnDriftParticle(season) {
-        const anchor = this._sampleAnchor(season.type);
-        const { x, y } = anchor || this._sampleViewport();
-        this.particleSystem.spawn(season.type, x, y, 1, { layer: 'screen' });
+        const camera = this.cameraGetter();
+        const screen = this._sampleAnchor(season.type) || this._sampleViewport();
+        const world = camera.screenToWorld(screen.x, screen.y);
+        this.particleSystem.spawn(season.type, Math.round(world.x), Math.round(world.y), 1, {
+            tag: SEASONAL_TAG,
+            spread: 2,
+        });
     }
 
-    // Pick a world-anchored spawn point for types that read as coming from the
-    // scenery: leaves/petals from tree canopies, butterflies from flower tiles.
-    // Returns null (→ viewport-random) for snow/fireflies or when no anchor of
-    // the requested kind is currently visible.
+    // Pick a screen-space anchor for types that read as coming from the
+    // scenery: petals/leaves from tree canopies, butterflies from flower tiles.
+    // Returns null (→ anywhere in view) for snow or when no anchor of the
+    // requested kind is currently visible.
     _sampleAnchor(type) {
         if (!this.anchorsProvider) return null;
         let kind = null;
-        if (type === 'leaf') kind = 'canopy';
+        if (type === 'leaf' || type === 'petal') kind = 'canopy';
         else if (type === 'butterfly') kind = 'flower';
         else return null;
 
@@ -188,59 +165,14 @@ export class SeasonalAmbience {
 
         const p = points[Math.floor(Math.random() * points.length)];
         if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
-        return { x: Math.round(p.x), y: Math.round(p.y) };
-    }
-
-    // Reduced motion: ParticleSystem.spawn() is gated by motionEnabled and
-    // would no-op. Build a deterministic dot list instead and let
-    // drawStatic(ctx) render it via direct canvas calls, mirroring the
-    // static-smoke fallback pattern in IsometricRenderer.
-    _seedStaticFallback(season, seasonKey) {
-        if (this._staticFallbackSeeded && this._staticFallbackSeasonKey === seasonKey) return;
-
-        const viewport = this._viewport();
-        const width = viewport.width || FALLBACK_SCATTER_W;
-        const height = viewport.height || FALLBACK_SCATTER_H;
-        const seedBase = hashString(seasonKey);
-        const dots = [];
-
-        for (let i = 0; i < STATIC_FALLBACK_COUNT; i++) {
-            const u = random01(seedBase, i * 2 + 1);
-            const v = random01(seedBase, i * 2 + 2);
-            dots.push({
-                x: viewport.x + Math.round(u * width),
-                y: viewport.y + Math.round(v * height),
-                color: season.staticColor || '#fff1a8',
-                size: season.staticSize || 2,
-            });
-        }
-
-        this._staticFallbackDots = dots;
-        this._staticFallbackSeeded = true;
-        this._staticFallbackSeasonKey = seasonKey;
-    }
-
-    drawStatic(ctx) {
-        if (!this.enabled) return;
-        const motionScale = clamp01(Number(this.motionScaleGetter()) || 0);
-        if (motionScale > 0) return;
-        if (!this._staticFallbackDots.length) return;
-        ctx.save();
-        ctx.globalAlpha = 0.72;
-        for (const dot of this._staticFallbackDots) {
-            ctx.fillStyle = dot.color;
-            ctx.fillRect(dot.x - dot.size / 2, dot.y - dot.size / 2, dot.size, dot.size);
-        }
-        ctx.restore();
+        return { x: p.x, y: p.y };
     }
 
     _sampleViewport() {
         const viewport = this._viewport();
-        const u = Math.random();
-        const v = Math.random();
         return {
-            x: viewport.x + Math.round(u * viewport.width),
-            y: viewport.y + Math.round(v * viewport.height),
+            x: viewport.x + Math.random() * viewport.width,
+            y: viewport.y + Math.random() * viewport.height,
         };
     }
 
@@ -256,7 +188,7 @@ export class SeasonalAmbience {
                 };
             }
         }
-        return { x: 0, y: 0, width: FALLBACK_SCATTER_W, height: FALLBACK_SCATTER_H };
+        return { x: 0, y: 0, width: 0, height: 0 };
     }
 }
 
@@ -288,24 +220,6 @@ function seasonForMonth(monthIndex) {
     if (monthIndex >= 5 && monthIndex <= 7) return SEASONS.summer;
     if (monthIndex >= 8 && monthIndex <= 10) return SEASONS.autumn;
     return null;
-}
-
-function hashString(value) {
-    let hash = 2166136261;
-    const text = String(value || '');
-    for (let i = 0; i < text.length; i++) {
-        hash ^= text.charCodeAt(i);
-        hash = Math.imul(hash, 16777619);
-    }
-    return hash >>> 0;
-}
-
-function random01(seed, salt) {
-    let value = (seed + Math.imul(salt + 1, 0x9e3779b1)) >>> 0;
-    value ^= value << 13;
-    value ^= value >>> 17;
-    value ^= value << 5;
-    return (value >>> 0) / 4294967296;
 }
 
 function clamp01(value) {

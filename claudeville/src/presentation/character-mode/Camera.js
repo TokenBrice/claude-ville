@@ -1,7 +1,17 @@
 import { MAP_SIZE } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { dtAlpha } from './MotionClock.js';
+import {
+    FOLLOW_ENTRY_MS,
+    WHEEL_STEP_MS,
+    ZOOM_STEP_MS,
+    criticalSpringStep,
+    easeInOutCubic,
+    easeOutCubic,
+    logZoom,
+    planGlide,
+    sampleGlide,
+} from './CameraCurves.js';
 import { mapWorldCorners, tileToWorld, worldToTile } from './Projection.js';
 
 // #50 — idle Ken-Burns drift tuning. Begins after this much input-free time,
@@ -18,7 +28,6 @@ const IDLE_DRIFT_PERIOD_Y_MS = 47000;
 // vignette still settles over the empty village (the item's RM fallback).
 const TOUR_EMPTY_DELAY_MS = 20000;
 const TOUR_USER_IDLE_MS = 40000;
-const TOUR_GLIDE_MS = 9000;
 const TOUR_DWELL_MS = 7000;
 const TOUR_GRADE_RAMP_MS = 3200;
 const TOUR_VIGNETTE = 0.34;
@@ -37,6 +46,44 @@ const TOUR_STOP_ORDER = Object.freeze([
 // The 150ms tween may pass through fractional values; every settled pose is
 // display-pixel aligned.
 const NOMINAL_ZOOM_STEPS = Object.freeze([1, 2, 3]);
+
+// 8.3 — the survey tier: the logical label for `1 / backingDpr`, one backing
+// pixel per authored world pixel. It exists only where the backing store is at
+// least 2× (at DPR 1 a 0.5 zoom would drop every other texel), so nothing is
+// ever resampled. Wheel/keyboard can reach it; automatic framing uses it only
+// where asked (the opening, the Ambient wide, the tour's island stop, `F` on a
+// box spanning most of the island).
+export const SURVEY_TIER = 0.5;
+const SURVEY_MIN_BACKING_DPR = 2;
+
+// 8.3 — the resting tier content re-frames, the opening shot and a follow
+// settle on. D1 put villagers at 1:1; tier 3 is the crisp detail framing the
+// bodies are drawn for (a box too large for it falls back to 2, then 1).
+export const DEFAULT_FRAME_TIER = 3;
+
+// 8.3 — the opening: survey hold, then one authored dolly to the content.
+// Each rung of the dolly is a full ZOOM_STEP_MS step; the hold (at the
+// survey tier) and the dolly together stay ≥ 75 % pixel-exact, and
+// `planGlide` lengthens the dolly past this when the ladder has more rungs.
+const OPENING_HOLD_MS = 1600;
+const OPENING_DOLLY_MS = 2400;
+// The island's centre sits 4 % below screen centre, leaving sky room above.
+const OPENING_COMPOSITION = Object.freeze({ x: 0.5, y: 0.54 });
+// `F` widens to the survey tier once the content box covers this share of
+// the island's width or height.
+const SURVEY_BOX_SHARE = 0.6;
+
+// 8.2 — follow-cam composition window. The target walks freely inside a
+// 28 % × 22 % box whose centre is the aim point; the aim sits 6 % below
+// screen centre so the camera looks 6 % above the villager's feet and the
+// head and bubble keep their air. Leaving the box pulls the camera back to
+// the box edge on a critically damped spring; a standing target relaxes to
+// the aim point on a slower one.
+const FOLLOW_WINDOW_W = 0.28;
+const FOLLOW_WINDOW_H = 0.22;
+const FOLLOW_AIM_Y = 0.56;
+const FOLLOW_OMEGA = 3.5;
+const FOLLOW_RELAX_OMEGA = 1.2;
 
 // The surface's own ratio, never re-clamped: CanvasBudget already picked a rung
 // on the device grid, and a second, different floor here would align the zoom
@@ -63,16 +110,35 @@ export function displayPixelZoomSteps(dpr) {
     return Object.freeze(NOMINAL_ZOOM_STEPS.map((step) => step * scale));
 }
 
+// 8.3 — the full resting ladder: the survey tier (when the backing store
+// supports it) below the display-pixel tiers. `tiers` are the logical labels
+// callers ask for; `steps` the camera zooms they resolve to.
+export function zoomTierLadder(dpr) {
+    const steps = [...displayPixelZoomSteps(dpr)];
+    const tiers = [...NOMINAL_ZOOM_STEPS];
+    const backing = Number(dpr);
+    if (Number.isFinite(backing) && backing >= SURVEY_MIN_BACKING_DPR) {
+        steps.unshift(1 / backing);
+        tiers.unshift(SURVEY_TIER);
+    }
+    return { steps: Object.freeze(steps), tiers: Object.freeze(tiers) };
+}
+
 export class Camera {
     constructor(canvas) {
         this.canvas = canvas;
         this.x = 0;
         this.y = 0;
-        this.zoomSteps = displayPixelZoomSteps(backingDpr(canvas));
-        this._displayPixelZoomScale = this.zoomSteps[0];
-        this.minZoom = this.zoomSteps[0];
-        this.maxZoom = this.zoomSteps[this.zoomSteps.length - 1];
-        this.zoom = this.minZoom;
+        this._applyTierLadder(zoomTierLadder(backingDpr(canvas)));
+        this.zoom = this.tierZoom(1);
+        // 8.3 — the tier content re-frames and the opening settle on.
+        this.defaultFrameTier = DEFAULT_FRAME_TIER;
+        // 8.2 — false until the renderer reports a presented World frame (and
+        // again while the World is hidden), so a follow that begins before
+        // anything is on screen snaps instead of whipping into view.
+        this._presented = false;
+        this._followSpring = { vx: 0, vy: 0 };
+        this._followTrack = null;
         this._zoomAnimation = null;
         this._reducedMotion = false;
         try {
@@ -88,8 +154,7 @@ export class Camera {
 
         // Follow mechanism
         this.followTarget = null;      // AgentSprite reference
-        this.followSmoothing = 0.08;   // lerp factor (lower is smoother)
-        this._followEase = null;       // timed ease-out glide when follow starts
+        this._followEase = null;       // timed entry glide when follow starts
         this._snapZoom = null;         // zoom-in animation on far-zoom selection
 
         // #21 — director-driven cinematic glide. A time-boxed cubic-ease move to
@@ -159,7 +224,7 @@ export class Camera {
         const tx = 33, ty = 18;
         const screen = tileToWorld(tx, ty);
         this._idleDrift = null;
-        this.zoom = this.minZoom;
+        this.zoom = this.tierZoom(1);
         if (!this.canvas) return;
         this.x = -screen.x + this._viewportWidth() / (2 * this.zoom);
         this.y = -screen.y + this._viewportHeight() / (2 * this.zoom);
@@ -171,33 +236,63 @@ export class Camera {
         this._clampToBounds();
     }
 
+    _applyTierLadder({ steps, tiers }) {
+        this.zoomSteps = steps;
+        this.zoomTiers = tiers;
+        this.minZoom = steps[0];
+        this.maxZoom = steps[steps.length - 1];
+        this.surveyZoom = tiers[0] === SURVEY_TIER ? steps[0] : null;
+        this._displayPixelZoomScale = this.tierZoom(1);
+    }
+
+    // The camera zoom for a logical tier label (SURVEY_TIER, 1, 2, 3). A survey
+    // request where no survey tier exists resolves to tier 1.
+    tierZoom(tier) {
+        const index = this.zoomTiers.findIndex((label) => Math.abs(label - tier) < 1e-6);
+        if (index >= 0) return this.zoomSteps[index];
+        return tier < 1 ? this.zoomSteps[this.zoomTiers.indexOf(1)] : this.maxZoom;
+    }
+
+    hasSurveyTier() {
+        return this.surveyZoom != null;
+    }
+
     _syncDisplayPixelZoom() {
-        const nextSteps = displayPixelZoomSteps(backingDpr(this.canvas));
+        const next = zoomTierLadder(backingDpr(this.canvas));
         const currentSteps = this.zoomSteps;
-        if (nextSteps.every((step, index) => Math.abs(step - currentSteps[index]) < 1e-6)) return false;
+        const currentTiers = this.zoomTiers;
+        if (next.steps.length === currentSteps.length
+            && next.steps.every((step, index) => Math.abs(step - currentSteps[index]) < 1e-6)) return false;
 
         // A pose already resting on a tier moves to the SAME tier on the new
         // grid; only mid-tween values are scaled. Scaling a resting pose by the
         // tier-1 ratio would land it between the new tiers, off the pixel grid.
-        const ratio = nextSteps[0] / (this._displayPixelZoomScale || currentSteps[0] || 1);
+        // A survey pose on a grid without a survey tier lands on tier 1.
+        const previousTierOne = this._displayPixelZoomScale || 1;
+        this._applyTierLadder(next);
+        const ratio = this._displayPixelZoomScale / previousTierOne;
         const remap = (value) => {
             if (!Number.isFinite(value)) return value;
-            const tier = currentSteps.findIndex((step) => Math.abs(step - value) < 1e-6);
-            return tier >= 0 ? nextSteps[tier] : value * ratio;
+            const index = currentSteps.findIndex((step) => Math.abs(step - value) < 1e-6);
+            return index >= 0 ? this.tierZoom(currentTiers[index]) : value * ratio;
         };
-        this._displayPixelZoomScale = nextSteps[0];
-        this.zoomSteps = nextSteps;
-        this.minZoom = this.zoomSteps[0];
-        this.maxZoom = this.zoomSteps[this.zoomSteps.length - 1];
         this.zoom = remap(this.zoom);
 
         // Preserve in-flight camera motion across a live browser-zoom change.
-        // CSS viewport dimensions change by the inverse ratio, so x/y remain
-        // centered while every stored zoom endpoint needs the same remapping.
+        // CSS viewport dimensions change by the inverse ratio, so the centre
+        // stays put while every stored zoom endpoint needs the same remapping.
         for (const motion of [this._zoomAnimation, this._snapZoom, this._directorGlide]) {
             if (!motion) continue;
             motion.fromZoom = remap(motion.fromZoom);
             motion.toZoom = remap(motion.toZoom);
+            if (motion.plan) {
+                motion.plan.from.zoom = motion.fromZoom;
+                motion.plan.to.zoom = motion.toZoom;
+                for (const segment of motion.plan.segments) {
+                    if (segment.fromZoom != null) segment.fromZoom = remap(segment.fromZoom);
+                    if (segment.toZoom != null) segment.toZoom = remap(segment.toZoom);
+                }
+            }
         }
         return true;
     }
@@ -205,8 +300,8 @@ export class Camera {
     // Frame an axis-aligned world box so it fits the viewport, centered on the
     // box, at the largest display-pixel-aligned zoom up to `maxZoom`. Used for
     // the initial "overview of my active agents" framing.
-    fitToWorldBox(box, { paddingPx = 96, maxZoom = 2, owner = 'system', composition = null } = {}) {
-        const pose = this._poseForWorldBox(box, { paddingPx, maxZoom, composition });
+    fitToWorldBox(box, { paddingPx = 96, maxZoom = 2, minZoom = 1, owner = 'system', composition = null } = {}) {
+        const pose = this._poseForWorldBox(box, { paddingPx, maxZoom, minZoom, composition });
         if (!pose) return;
         this._endVillageTour({ restore: false });
         this._zoomAnimation = null;
@@ -222,29 +317,33 @@ export class Camera {
     }
 
     // #21 — solve the largest resting zoom that fits a world box, shared by
-    // fitToWorldBox and the director glide so framing stays consistent.
-    _zoomForWorldBox(box, paddingPx = 96, maxZoom = 2) {
+    // fitToWorldBox and the director glide so framing stays consistent. The
+    // search stops at `minZoom` (a tier label; tier 1 by default), so only a
+    // caller that asks for it ever lands on the survey tier.
+    _zoomForWorldBox(box, paddingPx = 96, maxZoom = 2, minZoom = 1) {
+        const hi = this._zoomStepIndexForLimit(maxZoom);
+        const lo = Math.min(hi, this._zoomStepIndexForLimit(minZoom));
         const w = this._viewportWidth();
         const h = this._viewportHeight();
-        if (!w || !h || !box) return this.minZoom;
+        if (!w || !h || !box) return this.zoomSteps[lo];
         const boxW = Math.max(1, box.maxX - box.minX);
         const boxH = Math.max(1, box.maxY - box.minY);
-        const hi = this._zoomStepIndexForLimit(maxZoom);
-        for (let index = hi; index >= 0; index--) {
+        for (let index = hi; index >= lo; index--) {
             const z = this.zoomSteps[index];
             if (boxW * z + paddingPx * 2 <= w && boxH * z + paddingPx * 2 <= h) return z;
         }
-        return this.minZoom;
+        return this.zoomSteps[lo];
     }
 
     _zoomStepIndexForLimit(maxZoom = 2) {
         const limit = Number(maxZoom);
         if (!Number.isFinite(limit)) return this.zoomSteps.length - 1;
 
-        // Integer call-site limits are logical tiers. Non-integer limits are
-        // accepted for capture/debug callers that already hold a camera zoom.
-        const nominalIndex = NOMINAL_ZOOM_STEPS.findIndex((step) => Math.abs(step - limit) < 1e-6);
-        if (nominalIndex >= 0) return nominalIndex;
+        // Tier labels (SURVEY_TIER, 1, 2, 3) are logical tiers. Other limits
+        // are accepted for capture/debug callers that already hold a zoom.
+        const tierIndex = this.zoomTiers.findIndex((label) => Math.abs(label - limit) < 1e-6);
+        if (tierIndex >= 0) return tierIndex;
+        if (limit < 1) return this.zoomTiers.indexOf(1);
 
         for (let index = this.zoomSteps.length - 1; index >= 0; index--) {
             if (this.zoomSteps[index] <= limit + 1e-6) return index;
@@ -258,24 +357,25 @@ export class Camera {
 
     resolveRestingZoom(zoom) {
         const requested = Number(zoom);
-        if (!Number.isFinite(requested)) return this.minZoom;
+        if (!Number.isFinite(requested)) return this.tierZoom(1);
 
         const aligned = this.zoomSteps.find((step) => Math.abs(step - requested) < 1e-6);
         if (aligned != null) return aligned;
-        const nominalIndex = NOMINAL_ZOOM_STEPS.findIndex((step) => Math.abs(step - requested) < 1e-6);
-        if (nominalIndex >= 0) return this.zoomSteps[nominalIndex];
+        const tierIndex = this.zoomTiers.findIndex((label) => Math.abs(label - requested) < 1e-6);
+        if (tierIndex >= 0) return this.zoomSteps[tierIndex];
         return this.zoomSteps.reduce((nearest, step) => (
             Math.abs(step - requested) < Math.abs(nearest - requested) ? step : nearest
         ), this.minZoom);
     }
 
+    // The logical tier label nearest the current zoom (SURVEY_TIER, 1, 2, 3).
     currentZoomTier() {
         const currentIndex = this.zoomSteps.reduce((nearestIndex, step, index) => (
             Math.abs(step - this.zoom) < Math.abs(this.zoomSteps[nearestIndex] - this.zoom)
                 ? index
                 : nearestIndex
         ), 0);
-        return NOMINAL_ZOOM_STEPS[currentIndex];
+        return this.zoomTiers[currentIndex];
     }
 
     // C6 — the frame owner an operator can reason about: 'user' while their own
@@ -350,13 +450,18 @@ export class Camera {
     // viewport) cuts directly. The move releases `_userAdjusted` only while it
     // runs, then re-frames cleanly. `grade` is a {vignette, worldTint} hint the
     // frame renderer fades in/out with the glide.
+    //
+    // 8.1 — the duration is never authored per call site: CameraCurves derives
+    // it from the screen distance and zoom ratio. `motion` picks the family
+    // ('director' easeInOutCubic; 'ambient' easeInOutSine, slower).
     glideToWorld(box, {
-        duration = 1400,
         paddingPx = 96,
         maxZoom = 2,
+        minZoom = 1,
         grade = null,
         holdMs = 0,
         owner = 'director',
+        motion = 'director',
         userAdjustedOnComplete = false,
         composition = null,
         preferPan = false,
@@ -370,6 +475,7 @@ export class Camera {
         const pose = this._poseForWorldBox(box, {
             paddingPx,
             maxZoom,
+            minZoom,
             composition,
             preferPan,
             zoomHysteresis,
@@ -378,14 +484,76 @@ export class Camera {
         if (!pose) return false;
         // Anything but the tour's own stops ends the tour (cues, attract moves).
         if (owner !== 'village-tour') this._endVillageTour({ restore: false });
+        return this._startGlide(pose, {
+            owner,
+            motion,
+            holdMs,
+            grade,
+            letterbox,
+            letterboxHoldMs,
+            userAdjustedOnComplete,
+        });
+    }
 
+    // C6 — glide back to an exact saved pose (5.2's return address). A box glide
+    // would re-solve the framing; a chapter has to land on the composition the
+    // operator was already reading.
+    glideToPose(pose, { owner = 'director', motion = 'director', grade = null, letterbox = false, letterboxHoldMs = 0 } = {}) {
+        const target = this._restingPose(pose);
+        if (!target) return false;
+        this._endVillageTour({ restore: false });
+        // A restored composition is deliberate: a relayout must keep it
+        // instead of re-framing to content behind the caller's back.
+        return this._startGlide(target, {
+            owner,
+            motion,
+            grade,
+            letterbox,
+            letterboxHoldMs,
+            userAdjustedOnComplete: true,
+        });
+    }
+
+    // A saved pose on the current resting ladder. Poses carrying the screen
+    // centre (`cx`/`cy`, see capturePose) keep that centre across a viewport
+    // change; older poses fall back to their offsets.
+    _restingPose(pose) {
+        if (!pose || ![pose.x, pose.y, pose.zoom].every(Number.isFinite)) return null;
+        const zoom = this.resolveRestingZoom(pose.zoom);
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        if (w && h && Number.isFinite(pose.cx) && Number.isFinite(pose.cy)) {
+            return { zoom, x: w / (2 * zoom) - pose.cx, y: h / (2 * zoom) - pose.cy };
+        }
+        return { zoom, x: pose.x, y: pose.y };
+    }
+
+    // 8.1 — one glide in the shared vocabulary: the screen-centre world point
+    // travels a straight line, zoom moves in log space, and a zoom change is
+    // one 450 ms step per resting rung, taken at the end (zooming in) or start
+    // (zooming out) of a pan held at a resting tier; the glide grows to keep
+    // it ≥ 75 % pixel-exact. `durationMs` is only for the authored opening.
+    _startGlide(pose, {
+        owner = 'director',
+        motion = 'director',
+        holdMs = 0,
+        durationMs = null,
+        stepped = false,
+        grade = null,
+        letterbox = false,
+        letterboxHoldMs = 0,
+        userAdjustedOnComplete = false,
+    } = {}) {
         this.stopFollow();
         this._momentum = null;
         this._zoomAnimation = null;
         this._snapZoom = null;
+        this._idleDrift = null;
 
-        if (this._reducedMotion) {
-            // Reduced-motion: cut directly to the framed view, no glide, no grade.
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        if (this._reducedMotion || !w || !h) {
+            // Reduced motion: cut directly to the framed view, no glide, no grade.
             this.zoom = pose.zoom;
             this.x = pose.x;
             this.y = pose.y;
@@ -396,21 +564,33 @@ export class Camera {
             return true;
         }
 
+        const toCenter = this._clampedCenter(w / (2 * pose.zoom) - pose.x, h / (2 * pose.zoom) - pose.y, pose.zoom);
+        const fromCenter = this.currentCenterWorld();
+        // A hold spent at a resting tier is part of the shot's pixel-exact time.
+        const fromResting = this.zoomSteps.some((step) => Math.abs(step - this.zoom) < 1e-6);
+        const plan = planGlide(
+            { cx: fromCenter.x, cy: fromCenter.y, zoom: this.zoom },
+            { cx: toCenter.x, cy: toCenter.y, zoom: pose.zoom },
+            {
+                family: motion,
+                duration: durationMs,
+                stepped,
+                tiers: this.zoomSteps,
+                restingLeadMs: fromResting ? Math.max(0, Number(holdMs) || 0) : 0,
+            },
+        );
         this._cameraOwner = owner;
         this._userAdjusted = false;
         this._directorGlide = {
-            fromX: this.x,
-            fromY: this.y,
+            plan,
             fromZoom: this.zoom,
-            toX: pose.x,
-            toY: pose.y,
             toZoom: pose.zoom,
             elapsed: 0,
-            duration: Math.max(1, Number(duration) || 1400),
+            duration: plan.total,
             owner,
             userAdjustedOnComplete: Boolean(userAdjustedOnComplete),
-            // #45 — optional hold (the establishing shot lingers on the wide frame
-            // before the glide begins). Counts down before `elapsed` advances.
+            // #45 — optional hold (the opening lingers on the wide frame before
+            // the move begins). Counts down before `elapsed` advances.
             hold: Math.max(0, Number(holdMs) || 0),
             grade: grade || null,
             letterbox: Boolean(letterbox) || letterboxHoldMs > 0,
@@ -419,66 +599,58 @@ export class Camera {
         return true;
     }
 
-    // C6 — glide back to an exact saved pose (5.2's return address). A box glide
-    // would re-solve the framing; a chapter has to land on the composition the
-    // operator was already reading.
-    glideToPose(pose, { duration = 4200, owner = 'director', grade = null, letterbox = false, letterboxHoldMs = 0 } = {}) {
-        if (!pose || ![pose.x, pose.y, pose.zoom].every(Number.isFinite)) return false;
-        const zoom = this.resolveRestingZoom(pose.zoom);
-        this._endVillageTour({ restore: false });
-        this.stopFollow();
-        this._momentum = null;
-        this._zoomAnimation = null;
-        this._snapZoom = null;
-        if (this._reducedMotion) {
-            this.zoom = zoom;
-            this.x = pose.x;
-            this.y = pose.y;
-            this._directorGlide = null;
-            this._cameraOwner = owner;
-            this._userAdjusted = true;
-            this._clampToBounds();
-            return true;
-        }
-        this._cameraOwner = owner;
-        this._userAdjusted = false;
-        this._directorGlide = {
-            fromX: this.x,
-            fromY: this.y,
-            fromZoom: this.zoom,
-            toX: pose.x,
-            toY: pose.y,
-            toZoom: zoom,
-            elapsed: 0,
-            duration: Math.max(1, Number(duration) || 4200),
-            owner,
-            // A restored composition is deliberate: a relayout must keep it
-            // instead of re-framing to content behind the caller's back.
-            userAdjustedOnComplete: true,
-            hold: 0,
-            grade: grade || null,
-            letterbox: Boolean(letterbox) || letterboxHoldMs > 0,
-            letterboxHoldMs: Math.max(0, Number(letterboxHoldMs) || 0),
-        };
-        return true;
-    }
-
-    // #45 — opening establishing shot on first World paint. Snap to the wide
-    // full-island frame, hold it ~1.2s, then cubic-ease glide+zoom in to settle
-    // on the active cluster over ~2.8s. Reduced motion (or a missing viewport)
-    // cuts directly to the target frame, matching the prior instant behavior.
-    establishingShot(wideBox, targetBox, { holdMs = 1200, glideMs = 2800, maxZoom = 2 } = {}) {
+    // 8.3 — the opening shot. The first presented frame is the whole island at
+    // the survey tier (tier 1 where the backing store has no survey tier),
+    // centred with sky room above; it holds 1.6 s, then one ≥ 2.4 s move settles
+    // on the target: a content box, or an authored pose (scenario metadata).
+    // The move is a stepped dolly (C3): the pan runs the whole move while the
+    // zoom climbs the resting ladder one 450 ms step per rung (survey → 1 → 2),
+    // so ≥ 75 % of hold + dolly is pixel-exact; at DPR 1 with a tier-1 target
+    // it is a pure pan. Reduced motion cuts straight to the target frame.
+    establishingShot(wideBox, { targetBox = null, targetPose = null, maxZoom = this.defaultFrameTier } = {}) {
         const w = this._viewportWidth();
         const h = this._viewportHeight();
-        if (!w || !h || !targetBox) return false;
+        if (!w || !h) return false;
+        const target = targetPose
+            ? this._restingPose(targetPose)
+            : this._poseForWorldBox(targetBox, { maxZoom });
+        if (!target) return false;
+        this._endVillageTour({ restore: false });
         if (this._reducedMotion) {
-            this.fitToWorldBox(targetBox, { maxZoom, owner: 'system' });
-            this._userAdjusted = false;
-            return true;
+            return this._startGlide(target, { owner: 'system' });
         }
-        // Snap to the island-wide overview so the glide departs from it.
-        this.fitToWorldBox(wideBox || targetBox, { maxZoom: 1, owner: 'system' });
-        return this.glideToWorld(targetBox, { duration: glideMs, maxZoom, holdMs, owner: 'system' });
+        const openTier = this.hasSurveyTier() ? SURVEY_TIER : 1;
+        const wide = this._poseForWorldBox(wideBox || targetBox, {
+            paddingPx: 0,
+            maxZoom: openTier,
+            minZoom: openTier,
+            composition: OPENING_COMPOSITION,
+        });
+        if (wide) {
+            this.stopFollow();
+            this.zoom = wide.zoom;
+            this.x = wide.x;
+            this.y = wide.y;
+            this._clampToBounds();
+        }
+        return this._startGlide(target, {
+            owner: 'system',
+            holdMs: OPENING_HOLD_MS,
+            durationMs: OPENING_DOLLY_MS,
+            stepped: true,
+        });
+    }
+
+    // 8.3 — `F`: a content box that spans most of the island widens to the
+    // survey tier instead of cropping it at tier 1.
+    frameTierFloorForBox(box) {
+        if (!this.hasSurveyTier() || !box) return 1;
+        const corners = mapWorldCorners(MAP_SIZE);
+        const islandW = Math.max(...corners.map(p => p.x)) - Math.min(...corners.map(p => p.x));
+        const islandH = Math.max(...corners.map(p => p.y)) - Math.min(...corners.map(p => p.y));
+        const wide = (box.maxX - box.minX) >= islandW * SURVEY_BOX_SHARE
+            || (box.maxY - box.minY) >= islandH * SURVEY_BOX_SHARE;
+        return wide ? SURVEY_TIER : 1;
     }
 
     abortDirectorGlide() {
@@ -491,6 +663,13 @@ export class Camera {
 
     isDirectorGliding() {
         return Boolean(this._directorGlide);
+    }
+
+    // 8.2 — the renderer reports its first presented frame after boot or a
+    // return from Dashboard (`world:first-frame`); the World being hidden
+    // clears it. Only the follow entry reads it.
+    setPresented(presented) {
+        this._presented = Boolean(presented);
     }
 
     // #attract — record genuine operator input and report how long since the last.
@@ -601,13 +780,22 @@ export class Camera {
         this._cameraOwner = 'follow';
         this.followTarget = sprite;
         this._momentum = null;
-        const detailZoom = this.zoomSteps[1] || this.maxZoom;
+        this._followSpring = { vx: 0, vy: 0 };
+        const detailZoom = this.tierZoom(this.defaultFrameTier);
         const farZoomedOut = this.zoom < detailZoom - 1e-6;
-        if (this._reducedMotion) {
-            if (farZoomedOut) this._setZoomAboutCenter(detailZoom);
+        if (this._reducedMotion || !this._presented) {
+            // 8.2 — nothing on screen yet (or reduced motion): cut to the
+            // composed frame so the first visible frames never whip-pan.
+            this._followEase = null;
+            this._snapZoom = null;
+            this._zoomAnimation = null;
+            if (farZoomedOut) this.zoom = detailZoom;
+            const aim = this._followAimCenter(sprite);
+            if (aim) this._setCenter(aim.x, aim.y);
             return;
         }
-        this._followEase = { fromX: this.x, fromY: this.y, elapsed: 0, duration: 650 };
+        const from = this.currentCenterWorld();
+        this._followEase = { fromCx: from.x, fromCy: from.y, elapsed: 0, duration: FOLLOW_ENTRY_MS };
         if (farZoomedOut) {
             this._zoomAnimation = null;
             this._snapZoom = { fromZoom: this.zoom, toZoom: detailZoom, elapsed: 0, duration: 380 };
@@ -619,14 +807,21 @@ export class Camera {
         this._followEase = null;
         this._snapZoom = null;
         this._momentum = null;
+        this._followSpring = { vx: 0, vy: 0 };
     }
 
     capturePose() {
+        const center = this.currentCenterWorld();
         return {
             x: this.x,
             y: this.y,
             zoom: this.zoom,
+            // The screen-centre world point, so a pose survives a viewport
+            // change (the Dashboard round trip, a sidebar toggle).
+            cx: center.x,
+            cy: center.y,
             owner: this._cameraOwner,
+            userAdjusted: this._userAdjusted,
             inputAt: this._lastUserInputAt,
             // C6 — the exact "nothing happened since" test for a saved shot.
             frameOwner: this.owner,
@@ -635,15 +830,32 @@ export class Camera {
     }
 
     restorePose(pose) {
-        if (!pose || ![pose.x, pose.y, pose.zoom].every(Number.isFinite)) return false;
+        const target = this._restingPose(pose);
+        if (!target) return false;
         this.stopFollow();
         this._zoomAnimation = null;
         this._directorGlide = null;
-        this.x = pose.x;
-        this.y = pose.y;
-        this.zoom = this.resolveRestingZoom(pose.zoom);
+        this.zoom = target.zoom;
+        this.x = target.x;
+        this.y = target.y;
         this._cameraOwner = pose.owner || 'system';
         this._userAdjusted = false;
+        this._clampToBounds();
+        return true;
+    }
+
+    // 0.5 — put the World back exactly as it was before a Dashboard trip:
+    // same centre, zoom, owner and manual-control flag. Follow and any
+    // in-flight glide are left alone (they own the frame already).
+    resumeViewPose(pose) {
+        if (this.followTarget || this._directorGlide) return false;
+        const target = this._restingPose(pose);
+        if (!target) return false;
+        this.zoom = target.zoom;
+        this.x = target.x;
+        this.y = target.y;
+        this._cameraOwner = pose.owner || this._cameraOwner;
+        this._userAdjusted = Boolean(pose.userAdjusted);
         this._clampToBounds();
         return true;
     }
@@ -663,34 +875,100 @@ export class Camera {
         }
     }
 
+    // 8.2 — the screen-centre world point that puts the follow target on the
+    // aim point of the composition window.
+    _followAimCenter(sprite = this.followTarget) {
+        const h = this._viewportHeight();
+        if (!sprite || !h || !(this.zoom > 0)) return null;
+        return {
+            x: Number(sprite.x) || 0,
+            y: (Number(sprite.y) || 0) - ((FOLLOW_AIM_Y - 0.5) * h) / this.zoom,
+        };
+    }
+
+    // 8.2 — composition window, not a leash. The villager walks freely inside
+    // the window; leaving it pulls the camera back to the window edge on a
+    // critically damped spring (ω 3.5/s) that also matches the villager's
+    // walking speed on that axis, so a steady walk rides the window edge
+    // instead of trailing 2v/ω behind it; standing still relaxes it to the
+    // aim point (ω 1.2/s, ~2 s). Reduced motion keeps the hard lock.
     updateFollow(dt = 16) {
-        if (!this.followTarget) return;
-        const focus = this._followFocusPoint(dt);
-        const targetX = -focus.x + this._viewportWidth() / (2 * this.zoom);
-        const targetY = -focus.y + this._viewportHeight() / (2 * this.zoom);
+        const sprite = this.followTarget;
+        if (!sprite) return;
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        const aim = this._followAimCenter(sprite);
+        if (!w || !h || !aim) return;
+        const frameDt = Math.max(0, Math.min(50, Number(dt) || 16));
+        const track = this._trackFollowVelocity(aim, frameDt);
         if (this._reducedMotion) {
-            this.x = targetX;
-            this.y = targetY;
-            this._clampToBounds();
+            this._setCenter(aim.x, aim.y);
             return;
         }
         if (this._followEase) {
-            // Timed glide: covers the initial distance in a fixed duration
-            // with cubic ease-out, then hands off to the steady lerp.
+            // 500 ms entry, easeInOutCubic, onto the aim point; the spring
+            // takes over from rest.
             const ease = this._followEase;
             ease.elapsed += dt;
             const t = Math.min(1, ease.elapsed / ease.duration);
-            const eased = 1 - Math.pow(1 - t, 3);
-            this.x = ease.fromX + (targetX - ease.fromX) * eased;
-            this.y = ease.fromY + (targetY - ease.fromY) * eased;
-            if (t >= 1) this._followEase = null;
-            this._clampToBounds();
+            const eased = easeInOutCubic(t);
+            this._setCenter(
+                ease.fromCx + (aim.x - ease.fromCx) * eased,
+                ease.fromCy + (aim.y - ease.fromCy) * eased,
+            );
+            if (t >= 1) {
+                this._followEase = null;
+                this._followSpring = { vx: 0, vy: 0 };
+            }
             return;
         }
-        const alpha = dtAlpha(this.followSmoothing, dt);
-        this.x += (targetX - this.x) * alpha;
-        this.y += (targetY - this.y) * alpha;
-        this._clampToBounds();
+        const center = this.currentCenterWorld();
+        let targetX = aim.x;
+        let targetY = aim.y;
+        let targetVx = 0;
+        let targetVy = 0;
+        let omega = FOLLOW_RELAX_OMEGA;
+        if (sprite.moving) {
+            omega = FOLLOW_OMEGA;
+            const halfW = (w * FOLLOW_WINDOW_W) / (2 * this.zoom);
+            const halfH = (h * FOLLOW_WINDOW_H) / (2 * this.zoom);
+            const dx = aim.x - center.x;
+            const dy = aim.y - center.y;
+            targetX = center.x;
+            targetY = center.y;
+            if (Math.abs(dx) > halfW) {
+                targetX += dx - Math.sign(dx) * halfW;
+                targetVx = track.vx;
+            }
+            if (Math.abs(dy) > halfH) {
+                targetY += dy - Math.sign(dy) * halfH;
+                targetVy = track.vy;
+            }
+        }
+        const spring = this._followSpring;
+        const stepX = criticalSpringStep(center.x, spring.vx, targetX, omega, frameDt, targetVx);
+        const stepY = criticalSpringStep(center.y, spring.vy, targetY, omega, frameDt, targetVy);
+        this._setCenter(stepX.x, stepY.x);
+        const settled = this.currentCenterWorld();
+        // Velocity absorbed by the world bounds is dropped, not stored.
+        spring.vx = Math.abs(settled.x - stepX.x) > 0.5 ? 0 : stepX.v;
+        spring.vy = Math.abs(settled.y - stepY.x) > 0.5 ? 0 : stepY.v;
+    }
+
+    // Smoothed walking velocity of the follow target (world px/ms), so waypoint
+    // corners do not kick the camera.
+    _trackFollowVelocity(point, dt) {
+        const track = this._followTrack;
+        if (!track || track.target !== this.followTarget || !(dt > 0)) {
+            this._followTrack = { target: this.followTarget, x: point.x, y: point.y, vx: 0, vy: 0 };
+            return this._followTrack;
+        }
+        const alpha = 1 - Math.exp(-dt / 120);
+        track.vx += ((point.x - track.x) / dt - track.vx) * alpha;
+        track.vy += ((point.y - track.y) / dt - track.vy) * alpha;
+        track.x = point.x;
+        track.y = point.y;
+        return track;
     }
 
     update(dt = 16, renderNow = performance.now()) {
@@ -706,19 +984,15 @@ export class Camera {
         this._updateSnapZoom(dt);
         this._updateIdleDrift(dt, renderNow);
         if (!this._zoomAnimation) return;
+        // 8.1 — the wheel keeps its 150 ms easeOutCubic tier step, about the
+        // cursor, with the zoom moving in log space.
         const anim = this._zoomAnimation;
         anim.elapsed += dt;
         const t = Math.min(1, anim.elapsed / anim.duration);
-        const eased = 1 - Math.pow(1 - t, 3);
-        this.zoom = anim.fromZoom + (anim.toZoom - anim.fromZoom) * eased;
+        this.zoom = t >= 1 ? anim.toZoom : logZoom(anim.fromZoom, anim.toZoom, easeOutCubic(t));
         this.x = (anim.mouseX / this.zoom) - anim.worldBeforeX;
         this.y = (anim.mouseY / this.zoom) - anim.worldBeforeY;
-        if (t >= 1) {
-            this.zoom = anim.toZoom;
-            this.x = (anim.mouseX / this.zoom) - anim.worldBeforeX;
-            this.y = (anim.mouseY / this.zoom) - anim.worldBeforeY;
-            this._zoomAnimation = null;
-        }
+        if (t >= 1) this._zoomAnimation = null;
         this._clampToBounds();
     }
 
@@ -821,7 +1095,7 @@ export class Camera {
             worldBeforeX,
             worldBeforeY,
             elapsed: 0,
-            duration: 150,
+            duration: WHEEL_STEP_MS,
         };
     }
 
@@ -912,7 +1186,9 @@ export class Camera {
         this.stopFollow();
         this._momentum = null;
         this._zoomAnimation = null;
-        this._snapZoom = null;
+        // Its own tier step (below) survives the per-frame call; anything else's
+        // zoom move yields to it.
+        if (this._snapZoom?.source !== 'soft-follow') this._snapZoom = null;
         this._idleDrift = null;
         this._cameraOwner = owner;
         this._userAdjusted = false;
@@ -941,11 +1217,16 @@ export class Camera {
         this.x += dx * step;
         this.y += dy * step;
 
-        // Zoom drifts even more slowly than pan, and only when hysteresis decided
-        // that a zoom change is genuinely needed.
-        if (Math.abs(pose.zoom - this.zoom) >= 0.01) {
-            const zoomStep = Math.min(0.006 * frameDt, Math.abs(pose.zoom - this.zoom));
-            this.zoom += Math.sign(pose.zoom - this.zoom) * zoomStep;
+        // 8.1 — once hysteresis decides a zoom change is genuinely needed, it is
+        // one 450 ms tier step, never a slow crawl through fractional zooms.
+        if (Math.abs(pose.zoom - this.zoom) >= 0.01 && !this._snapZoom) {
+            this._snapZoom = {
+                fromZoom: this.zoom,
+                toZoom: pose.zoom,
+                elapsed: 0,
+                duration: ZOOM_STEP_MS,
+                source: 'soft-follow',
+            };
         }
         this._clampToBounds();
         return true;
@@ -982,6 +1263,7 @@ export class Camera {
     _poseForWorldBox(box, {
         paddingPx = 96,
         maxZoom = 2,
+        minZoom = 1,
         composition = null,
         preferPan = false,
         zoomHysteresis = 0.85,
@@ -992,7 +1274,7 @@ export class Camera {
         if (!w || !h || !box) return null;
         const centerX = (box.minX + box.maxX) / 2;
         const centerY = (box.minY + box.maxY) / 2;
-        let zoom = this._zoomForWorldBox(box, paddingPx, maxZoom);
+        let zoom = this._zoomForWorldBox(box, paddingPx, maxZoom, minZoom);
         if (preferPan) {
             zoom = this._stableZoomForWorldBox(box, {
                 idealZoom: zoom,
@@ -1045,19 +1327,38 @@ export class Camera {
         const w = this._viewportWidth();
         const h = this._viewportHeight();
         if (!w || !h || !Number.isFinite(this.zoom) || this.zoom <= 0) return;
+        const clamped = this._clampedCenter(w / (2 * this.zoom) - this.x, h / (2 * this.zoom) - this.y, this.zoom);
+        this.x = w / (2 * this.zoom) - clamped.x;
+        this.y = h / (2 * this.zoom) - clamped.y;
+    }
+
+    // The screen-centre world point kept inside the island bounds for `zoom`.
+    _clampedCenter(centerX, centerY, zoom = this.zoom) {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        if (!w || !h || !(zoom > 0)) return { x: centerX, y: centerY };
         const worldCorners = mapWorldCorners(MAP_SIZE);
-        const padX = Math.max(220, w / (this.zoom * 2.2));
-        const padY = Math.max(160, h / (this.zoom * 2.2));
+        const padX = Math.max(220, w / (zoom * 2.2));
+        const padY = Math.max(160, h / (zoom * 2.2));
         const minX = Math.min(...worldCorners.map(p => p.x)) - padX;
         const maxX = Math.max(...worldCorners.map(p => p.x)) + padX;
         const minY = Math.min(...worldCorners.map(p => p.y)) - padY;
         const maxY = Math.max(...worldCorners.map(p => p.y)) + padY;
-        const centerWorldX = w / (2 * this.zoom) - this.x;
-        const centerWorldY = h / (2 * this.zoom) - this.y;
-        const clampedX = Math.max(minX, Math.min(maxX, centerWorldX));
-        const clampedY = Math.max(minY, Math.min(maxY, centerWorldY));
-        this.x = w / (2 * this.zoom) - clampedX;
-        this.y = h / (2 * this.zoom) - clampedY;
+        return {
+            x: Math.max(minX, Math.min(maxX, centerX)),
+            y: Math.max(minY, Math.min(maxY, centerY)),
+        };
+    }
+
+    // Place the screen centre on a world point at the current (or given) zoom.
+    _setCenter(centerX, centerY, zoom = this.zoom) {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        this.zoom = zoom;
+        if (!w || !h) return;
+        this.x = w / (2 * zoom) - centerX;
+        this.y = h / (2 * zoom) - centerY;
+        this._clampToBounds();
     }
 
     _updateMomentum(dt) {
@@ -1178,24 +1479,41 @@ export class Camera {
         const stop = stops[tour.index % stops.length];
         tour.index += 1;
         const started = this.glideToWorld(stop.box, {
-            duration: TOUR_GLIDE_MS,
             maxZoom: stop.maxZoom,
-            paddingPx: 170,
+            minZoom: stop.minZoom ?? 1,
+            paddingPx: stop.paddingPx ?? 170,
             owner: 'village-tour',
-            composition: { x: 0.5, y: 0.55 },
+            motion: 'ambient',
+            composition: stop.composition || { x: 0.5, y: 0.55 },
             grade: { vignette: TOUR_VIGNETTE, worldTint: TOUR_WORLD_TINT },
         });
-        tour.dwellUntil = renderNow + (started ? TOUR_GLIDE_MS + TOUR_DWELL_MS : 1500);
+        const glideMs = started ? (this._directorGlide?.duration || 0) : 0;
+        tour.dwellUntil = renderNow + (started ? glideMs + TOUR_DWELL_MS : 1500);
     }
 
-    // Landmark circuit: one stop per building, ordered as a scenic loop around
-    // the map. Hero tiers hold the wide frame (zoom 1), majors lean in (zoom 2).
+    // Landmark circuit: the whole island first (8.3 — the survey tier where the
+    // backing store has one), then one stop per building as a scenic loop, so
+    // the circuit opens and closes on the diorama. Hero tiers hold the wide
+    // frame (zoom 1), majors lean in (zoom 2).
     _villageTourStops() {
         if (this._tourStopsCache) return this._tourStopsCache;
         const byType = new Map(BUILDING_DEFS.map((def) => [def.type, def]));
         const ordered = TOUR_STOP_ORDER.map((type) => byType.get(type)).filter(Boolean);
         for (const def of BUILDING_DEFS) if (!ordered.includes(def)) ordered.push(def);
-        this._tourStopsCache = ordered.map((def) => {
+        const corners = mapWorldCorners(MAP_SIZE);
+        const island = {
+            box: {
+                minX: Math.min(...corners.map(p => p.x)),
+                minY: Math.min(...corners.map(p => p.y)),
+                maxX: Math.max(...corners.map(p => p.x)),
+                maxY: Math.max(...corners.map(p => p.y)),
+            },
+            maxZoom: SURVEY_TIER,
+            minZoom: SURVEY_TIER,
+            paddingPx: 0,
+            composition: OPENING_COMPOSITION,
+        };
+        const landmarks = ordered.map((def) => {
             const world = tileToWorld(def.x + def.width / 2, def.y + def.height / 2);
             const hero = def.visualTier === 'hero';
             const padX = hero ? 260 : 220;
@@ -1210,6 +1528,7 @@ export class Camera {
                 maxZoom: hero ? 1 : 2,
             };
         });
+        this._tourStopsCache = [island, ...landmarks];
         return this._tourStopsCache;
     }
 
@@ -1240,18 +1559,11 @@ export class Camera {
             return true;
         }
         glide.elapsed += dt;
-        const t = Math.min(1, glide.elapsed / glide.duration);
-        const eased = 1 - Math.pow(1 - t, 3);
-        this.zoom = glide.fromZoom + (glide.toZoom - glide.fromZoom) * eased;
-        this.x = glide.fromX + (glide.toX - glide.fromX) * eased;
-        this.y = glide.fromY + (glide.toY - glide.fromY) * eased;
+        const sample = sampleGlide(glide.plan, glide.elapsed);
+        this._setCenter(sample.cx, sample.cy, sample.zoom);
         this._userAdjusted = false;
-        this._clampToBounds();
-        if (t >= 1) {
-            this.zoom = glide.toZoom;
-            this.x = glide.toX;
-            this.y = glide.toY;
-            this._clampToBounds();
+        if (sample.done) {
+            this._setCenter(glide.plan.to.cx, glide.plan.to.cy, glide.toZoom);
             // 5.2 — bars that belong to this move keep standing for their hold,
             // so the caption is read at rest instead of at arrival speed.
             this._letterboxHold = glide.letterboxHoldMs > 0
@@ -1273,12 +1585,9 @@ export class Camera {
         const anim = this._snapZoom;
         anim.elapsed += dt;
         const t = Math.min(1, anim.elapsed / anim.duration);
-        const eased = 1 - Math.pow(1 - t, 3);
-        this._setZoomAboutCenter(anim.fromZoom + (anim.toZoom - anim.fromZoom) * eased);
-        if (t >= 1) {
-            this._setZoomAboutCenter(anim.toZoom);
-            this._snapZoom = null;
-        }
+        const curve = anim.source === 'soft-follow' ? easeInOutCubic : easeOutCubic;
+        this._setZoomAboutCenter(t >= 1 ? anim.toZoom : logZoom(anim.fromZoom, anim.toZoom, curve(t)));
+        if (t >= 1) this._snapZoom = null;
     }
 
     _setZoomAboutCenter(zoom) {
@@ -1290,31 +1599,5 @@ export class Camera {
         this.x = w / (2 * zoom) - centerWorldX;
         this.y = h / (2 * zoom) - centerWorldY;
         this._clampToBounds();
-    }
-
-    _followFocusPoint(dt = 16) {
-        const sprite = this.followTarget;
-        const current = {
-            x: Number(sprite?.x) || 0,
-            y: Number(sprite?.y) || 0,
-        };
-        if (!sprite?.moving) return current;
-
-        const next = Array.isArray(sprite.waypoints) && sprite.waypoints.length
-            ? sprite.waypoints[0]
-            : { x: sprite.targetX, y: sprite.targetY };
-        if (!Number.isFinite(Number(next?.x)) || !Number.isFinite(Number(next?.y))) return current;
-
-        const dx = Number(next.x) - current.x;
-        const dy = Number(next.y) - current.y;
-        const distance = Math.hypot(dx, dy);
-        if (distance <= 1) return current;
-
-        const frameScale = Math.max(0.5, Math.min(2, (Number(dt) || 16) / 16));
-        const leadPx = Math.min(180 / Math.max(1, this.zoom), 42 * frameScale + distance * 0.22);
-        return {
-            x: current.x + dx / distance * leadPx,
-            y: current.y + dy / distance * leadPx,
-        };
     }
 }
