@@ -14,12 +14,12 @@ import {
     publishCueScore,
 } from '../CueScore.js';
 import { eventBus } from '../../../../domain/events/DomainEvent.js';
-import { bucketForStatus } from '../../../../domain/services/SignalLedger.js';
 
 const COOLDOWNS_MS = {
     arrival: 20000,
     departure: 20000,
     distress: 30000,
+    limit: 30000,
     recovery: 30000,
     council: 60000,
     hourBell: 55 * 60000,
@@ -31,10 +31,13 @@ const COOLDOWNS_MS = {
 // Weather/clock cues are scenery, exempt from the global chatter budget.
 const UNBUDGETED = new Set(['thunder', 'hourBell']);
 
+// The kind decides the lane: the directors already chose the kind from the
+// agent's bucket (ActionableRouting), so status is never consulted again here.
 const LANE_BY_KIND = Object.freeze({
     arrival: CUE_LANES.ROUTINE,
     departure: CUE_LANES.ROUTINE,
     distress: CUE_LANES.ERRORS,
+    limit: CUE_LANES.QUOTA,
     recovery: CUE_LANES.ROUTINE,
     council: CUE_LANES.ROUTINE,
     hourBell: CUE_LANES.SCENERY,
@@ -43,19 +46,21 @@ const LANE_BY_KIND = Object.freeze({
     summons: CUE_LANES.NEEDS_YOU,
 });
 
-function laneForCue(kind, status) {
-    if (kind === 'distress') {
-        const bucket = bucketForStatus(status);
-        if (bucket === 'quota') return CUE_LANES.QUOTA;
-        if (bucket === 'needsYou') return CUE_LANES.NEEDS_YOU;
-    }
-    return LANE_BY_KIND[kind];
+export function laneForCueKind(kind) {
+    return LANE_BY_KIND[kind] || null;
 }
+
+// Until the signal families get their own instruments (plan 3.2), the rate
+// limit borrows the error voice and its score; its caption stays its own.
+const VOICE_BY_KIND = Object.freeze({
+    limit: 'distress',
+});
 
 const CUE_LABELS = {
     arrival: 'Agent arrived',
     departure: 'Agent departed',
-    distress: 'Agent in distress',
+    distress: 'hit an error',
+    limit: 'is rate limited',
     recovery: 'Agent recovered',
     council: 'Council gathering',
     hourBell: 'Hour bell',
@@ -70,8 +75,13 @@ const START_LEAD_MS = 30;
 
 const URGENT_GUARD_MS = Object.freeze({
     distress: 3300,
+    limit: 3300,
     summons: 2800,
 });
+
+// A superseded note that has not sounded yet is released over this ramp, so
+// cancelling it can never click (S8: every stop is a ≥ 60 ms ramp).
+const CANCEL_RELEASE_SEC = 0.06;
 
 function panForScreenX(screenX) {
     const x = Number(screenX);
@@ -124,7 +134,7 @@ export class CueKit {
     // after the short aggregation window; urgent lanes sound immediately.
     play(kind, options = {}) {
         const cooldownMs = COOLDOWNS_MS[kind];
-        const lane = options.lane || laneForCue(kind, options.status || options.kind);
+        const lane = laneForCueKind(kind);
         if (cooldownMs == null || !lane) return false;
         return this.governor.submit({
             ...options,
@@ -146,13 +156,13 @@ export class CueKit {
         announceOnly = false,
         delayMs = 0,
     } = {}) {
-        const { kind, eventKind = kind, lane, agentId = null, label = null } = cue;
+        const { kind, eventKind = kind, lane, agentId = null, label = null, replaces = null } = cue;
         if (announceOnly) {
             this._emitCue({ kind, eventKind, lane, agentId, label });
             return true;
         }
 
-        const offsetsMs = cueNoteOffsetsMs(kind, cue);
+        const offsetsMs = cueNoteOffsetsMs(VOICE_BY_KIND[kind] ?? kind, cue);
         if (!offsetsMs) return false;
         const identity = {
             kind,
@@ -168,7 +178,7 @@ export class CueKit {
             // permission that may never arrive.
             publishCueScore({ ...identity, startMs: monotonicNow(), offsetsMs, silent: true });
             if (prepare) return () => {};
-            return this._emitCue({ kind, eventKind, lane, agentId, label });
+            return this._emitCue({ kind, eventKind, lane, agentId, label, replaces });
         }
 
         const cancels = [];
@@ -208,7 +218,7 @@ export class CueKit {
                 for (const cancel of cancels) cancel();
             };
         }
-        return this._emitCue({ kind, eventKind, lane, agentId, label });
+        return this._emitCue({ kind, eventKind, lane, agentId, label, replaces });
     }
 
     // One voice per cue kind, struck at the score's own note offsets.
@@ -241,9 +251,14 @@ export class CueKit {
                 this._bell(at(0), notes.fifth, { gain: 0.03, decay: 1.6, ...agentBell });
                 this._bell(at(1), notes.root, { gain: 0.032, decay: 2.2, ...agentBell });
                 break;
+            // The error toll sounds at one fixed register for every provider:
+            // a provider register shift would move it into other cues' ranges
+            // (grok and omp put it at 55 Hz). The rate limit shares it until
+            // its own voice lands (plan 3.2).
             case 'distress':
+            case 'limit':
                 this.engine.duck(mix.duckDepth, 0.8);
-                this._bell(at(0), notes.low, { gain: 0.05, decay: 3, cutoff: 900, ...agentBell });
+                this._bell(at(0), notes.low, { gain: 0.05, decay: 3, cutoff: 900, pan: agentBell.pan });
                 break;
             case 'recovery':
                 this.engine.duck(mix.duckDepth, 0.5);
@@ -299,7 +314,10 @@ export class CueKit {
         }
     }
 
-    _emitCue({ kind, eventKind = kind, lane, agentId = null, label = null }) {
+    // A ceremony that absorbed an announced aggregate names it in `replaces`
+    // (its caption identity plus the count it keeps), so the caption surface
+    // swaps the aggregate's caption for the ceremony instead of stacking both.
+    _emitCue({ kind, eventKind = kind, lane, agentId = null, label = null, replaces = null }) {
         const at = Date.now();
         this.lastCue = { kind: eventKind, lane, at };
         eventBus.emit('audio:cue-played', {
@@ -307,6 +325,7 @@ export class CueKit {
             agentId: agentId ?? null,
             label: String(label || CUE_LABELS[kind] || kind),
             at,
+            ...(replaces ? { replaces } : {}),
         });
         return true;
     }
@@ -345,6 +364,7 @@ export class CueKit {
             decay: decay * partial.decay,
         }));
         const nodes = panner ? [tone, panner] : [tone];
+        const voices = [];
         for (const partial of partials) {
             const osc = ctx.createOscillator();
             const env = ctx.createGain();
@@ -357,24 +377,28 @@ export class CueKit {
             osc.start(t);
             osc.stop(t + partial.decay + 0.1);
             nodes.push(osc, env);
+            voices.push({ osc, env });
         }
-        let cancelled = false;
         const cleanup = () => {
             for (const node of nodes) {
                 try { node.disconnect(); } catch { /* gone */ }
             }
         };
-        const cleanupTimer = setTimeout(cleanup, (decay + 0.5) * 1000);
+        // Timed from the note, not from now: a held (prepared) note may sit
+        // up to a routine hold ahead of the clock.
+        const leadSec = Math.max(0, t - this.engine.now());
+        setTimeout(cleanup, (leadSec + decay + 0.5) * 1000);
+        let cancelled = false;
+        // A note already heard rings out; only a note still ahead of the
+        // audio clock is released, and never without a ramp.
         const cancel = () => {
             if (cancelled) return;
             cancelled = true;
-            clearTimeout(cleanupTimer);
-            for (const node of nodes) {
-                if (typeof node.stop === 'function') {
-                    try { node.stop(this.engine.now()); } catch { /* already stopped */ }
-                }
+            const now = this.engine.now();
+            if (t <= now) return;
+            for (const { osc, env } of voices) {
+                this.engine.releaseVoice({ sources: [osc], env, at: now, sec: CANCEL_RELEASE_SEC });
             }
-            cleanup();
         };
         if (this._capturedCancellations) this._capturedCancellations.push(cancel);
         return cancel;
@@ -413,8 +437,9 @@ export class CueKit {
             try { src.disconnect(); lp.disconnect(); env.disconnect(); } catch { /* gone */ }
         };
         const cancel = () => {
-            try { src.stop(this.engine.now()); } catch { /* already stopped */ }
-            try { src.disconnect(); lp.disconnect(); env.disconnect(); } catch { /* gone */ }
+            const now = this.engine.now();
+            if (t <= now) return;
+            this.engine.releaseVoice({ sources: [src], env, at: now, sec: CANCEL_RELEASE_SEC });
         };
         if (this._capturedCancellations) this._capturedCancellations.push(cancel);
         return cancel;

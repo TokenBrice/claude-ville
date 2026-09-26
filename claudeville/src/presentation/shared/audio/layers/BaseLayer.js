@@ -1,13 +1,18 @@
-// Common plumbing for ambience layers: an output gain on the ambience bus,
-// smooth intensity targeting, timer bookkeeping for scheduled layers, and
-// teardown that fades before disconnecting so stops never click.
+// Common plumbing for ambience layers: an output gain on the layer's group
+// fader (or the ambience bus), smooth intensity targeting, timer bookkeeping
+// for scheduled layers, and teardown that ramps to silence before anything
+// stops so stops never click.
 
 import { MIN_GAIN } from '../AudioEngine.js';
 
 export class BaseLayer {
-    constructor(engine, { trim = 0.1 } = {}) {
+    // `group` names the engine fader the layer feeds ('wind', 'rain',
+    // 'wildlife', 'hum', 'music'); the mixer trims move that fader, never
+    // `level`, so a quieter group keeps its density.
+    constructor(engine, { trim = 0.1, group = null } = {}) {
         this.engine = engine;
         this.trim = trim;
+        this.group = group;
         this.level = 0;
         this.running = false;
         this.out = null;
@@ -21,7 +26,7 @@ export class BaseLayer {
         const ctx = this.engine.context;
         this.out = ctx.createGain();
         this.out.gain.value = MIN_GAIN;
-        this.out.connect(this.engine.ambienceBus);
+        this.out.connect(this.group ? this.engine.groupInput(this.group) : this.engine.ambienceBus);
         this.running = true;
         this._start(ctx);
     }
@@ -56,28 +61,31 @@ export class BaseLayer {
         return id;
     }
 
+    // Declicked stop (S8): hold the output where it is, ramp it linearly to
+    // silence over 80 ms, stop every source just after silence, and
+    // disconnect once the ramp is certainly done. Returns the audio time at
+    // which the output is silent, so subclasses can stop their own transient
+    // voices there too.
     stop() {
-        if (!this.running) return;
+        if (!this.running) return undefined;
         this.running = false;
         for (const id of this._timers) clearTimeout(id);
         this._timers.clear();
 
-        const now = this.engine.now();
-        if (this.out) {
-            this.out.gain.cancelScheduledValues(now);
-            this.out.gain.setTargetAtTime(MIN_GAIN, now, 0.15);
-        }
+        const silentAt = this.out ? this.engine.stopGroup(this.out, 0.08) : this.engine.now();
         for (const source of this._sources) {
-            try { source.stop(now + 0.6); } catch { /* already stopped */ }
+            try { source.stop(silentAt + 0.01); } catch { /* already stopped */ }
         }
         const doomed = [...this._sources, ...this._nodes, this.out];
+        const disconnectMs = Math.max(0, (silentAt - this.engine.now() + 0.2) * 1000);
         setTimeout(() => {
             for (const node of doomed) {
                 try { node?.disconnect?.(); } catch { /* already disconnected */ }
             }
-        }, 900);
+        }, disconnectMs);
         this._sources = [];
         this._nodes = [];
         this.out = null;
+        return silentAt;
     }
 }

@@ -33,6 +33,7 @@ These checks complement `node:test`. Most are deterministic Node programs; brows
 | `world-visit-paths.mjs` | Visit slots are unique, walkable, and gate-reachable. | `node_modules`, Playwright, server on 4000/`CLAUDEVILLE_URL` | Seconds | None |
 | `support/isolated-server.mjs` | Imported helper reserves a loopback socket, isolates HOME, starts and cleans a server. | Temp dir; sockets; not directly executable | N/A | None |
 | `../models/resolve.mjs` | Server/browser resolution, pricing, identity, context window, and sprite assets agree. | `node_modules` (`js-yaml`); no server | <1 s | `models:resolve` |
+| `../audio/probe.mjs` | Local maintainer gate for audio waves, not part of `validate:quick` or CI: envelope-hazard lint over every cue kind, night crickets, a BGM night piece and a BGM → ambient switch; errors/limits never route to the needs-you cue; after a real TopBar enable a blurred/hidden needs-you sounds and blur/hide return runs within 1 s; one council per team gather; reports busy-day LUFS-I/TP. Usage in `scripts/audio/README.md`. | `node_modules`, Playwright Chromium, isolated socket, loopback static server | ~4–5 min | `audio:probe` |
 
 Executable smokes exit nonzero on failed assertions or budgets. Temp-backed scripts clean unique fixture directories on normal success/failure paths.
 

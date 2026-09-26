@@ -34,6 +34,10 @@ const AUDIO_MIXER_DEFAULTS = Object.freeze({
     hum: 1,
     music: 1,
 });
+// The boot-idle build of the sound controller: the idle slot's deadline, and
+// the delay where `requestIdleCallback` is missing (Safari).
+const AUDIO_ROUTE_IDLE_TIMEOUT_MS = 4000;
+const AUDIO_ROUTE_FALLBACK_DELAY_MS = 1500;
 
 function readStoredLayerLevels(storage = globalThis.window?.localStorage) {
     try {
@@ -84,6 +88,7 @@ export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
     'claudeville.sound.enabled': 'false',
     'claudeville.sound.volume': '0.5',
     'claudeville.sound.mode': 'ambient',
+    'claudeville.sound.background': 'play',
     'claudeville.sound.layers': JSON.stringify(AUDIO_MIXER_DEFAULTS),
     'cv-auto-camera': '1',
     'claudeville.alerts.desktop': '0',
@@ -110,6 +115,7 @@ export function readPersistedSettings(storage = globalThis.window?.localStorage)
         soundEnabled: storageValue(storage, 'claudeville.sound.enabled') === 'true',
         soundVolume: volume,
         soundMode: rawMode === 'bgm' ? 'bgm' : 'ambient',
+        soundBackground: storageValue(storage, 'claudeville.sound.background') === 'signals' ? 'signals' : 'play',
         soundLayers: readStoredLayerLevels(storage),
         autoCamera: storageValue(storage, 'cv-auto-camera') !== '0',
         desktopAlerts: storageValue(storage, 'claudeville.alerts.desktop') === '1',
@@ -241,7 +247,11 @@ export class TopBar {
             layerControls: audioMixer.controls,
             world: this.world,
         };
+        this._audioIdleHandle = null;
+        this._audioIdleTimer = null;
+        this._deferredAudioClickPending = false;
         this._bindDeferredAudio();
+        this._scheduleAudioRoute();
         this._initCinemaToggle();
         this._initAttentionControls();
         this._initChronicleButton();
@@ -445,6 +455,7 @@ export class TopBar {
             }),
             onSoundEnabled: (enabled) => this._setSoundEnabled(enabled),
             onSoundMode: (mode) => this._setSoundMode(mode),
+            onSoundBackground: (background) => this._setSoundBackground(background),
             onSoundVolume: (volume) => this._setSoundVolume(volume),
             onSoundLayer: (name, value) => this._setSoundLayer(name, value),
             onAutoCamera: (enabled) => this._setAutoCamera(enabled),
@@ -468,6 +479,7 @@ export class TopBar {
         this.audio?.setEnabled(false);
         this.audio?.setVolume(0.5);
         this.audio?.setMode('ambient');
+        this.audio?.setBackground('play');
         for (const [name, value] of Object.entries(AUDIO_MIXER_DEFAULTS)) {
             this.audio?.setLayerLevel(name, value);
         }
@@ -486,12 +498,22 @@ export class TopBar {
     async _setSoundEnabled(enabled) {
         try {
             const audio = await this._ensureAudio();
-            audio?.setEnabled(Boolean(enabled));
+            audio?.activateFromUser(Boolean(enabled));
             return Boolean(audio?.enabled);
         } catch (error) {
             console.warn('[TopBar] Audio unavailable:', error.message);
             this._renderDeferredAudioControl();
             return false;
+        }
+    }
+
+    async _setSoundBackground(background) {
+        try {
+            const audio = await this._ensureAudio();
+            return audio?.setBackground(background) ?? readPersistedSettings().soundBackground;
+        } catch (error) {
+            console.warn('[TopBar] Audio unavailable:', error.message);
+            return readPersistedSettings().soundBackground;
         }
     }
 
@@ -591,19 +613,23 @@ export class TopBar {
     _bindDeferredAudio() {
         const button = this.els.soundToggle;
         if (!button) return;
+        // A click that lands before the boot-idle build (or while it is in
+        // flight) waits for the controller and then goes through the same
+        // activation rule as the chip itself.
         this._onDeferredAudioClick = (event) => {
             event.preventDefault();
-            if (this._audioLoadPromise) return;
+            if (this._deferredAudioClickPending) return;
+            this._deferredAudioClickPending = true;
             button.disabled = true;
             button.setAttribute('aria-busy', 'true');
             void this._ensureAudio().then((audio) => {
-                if (audio && !this._destroyed) return audio.setEnabled(!audio.enabled);
-                return null;
+                if (audio && !this._destroyed) audio.activateFromUser(!audio.enabled);
             }).catch((error) => {
                 console.warn('[TopBar] Audio unavailable:', error.message);
             }).finally(() => {
+                this._deferredAudioClickPending = false;
                 if (!button.isConnected) return;
-                button.disabled = false;
+                button.disabled = this.audio ? !this.audio.available : false;
                 button.removeAttribute('aria-busy');
             });
         };
@@ -611,13 +637,46 @@ export class TopBar {
         this._renderDeferredAudioControl();
     }
 
+    // Before the controller exists no context can be running, so a stored
+    // "on" is armed, never playing.
     _renderDeferredAudioControl() {
         const button = this.els.soundToggle;
         if (!button) return;
         const enabled = storageValue(globalThis.window?.localStorage, 'claudeville.sound.enabled') === 'true';
         button.setAttribute('aria-pressed', String(enabled));
-        button.classList.toggle('topbar__sound-btn--on', enabled);
-        button.title = enabled ? 'Disable sound' : 'Enable sound';
+        button.setAttribute('data-sound-state', enabled ? 'armed' : 'off');
+        button.classList.remove('topbar__sound-btn--on');
+        button.title = enabled ? 'Sound on — click anywhere to start it' : 'Enable sound';
+    }
+
+    // The signal route (captions, the returning-user unlock, hidden-tab
+    // wakes) exists from boot: the controller is built in the first idle
+    // slot, at most 4 s after boot. It creates no AudioContext, and the
+    // audio modules stay off the critical path (the v0.37 deferral).
+    _scheduleAudioRoute() {
+        const build = () => {
+            this._audioIdleHandle = null;
+            this._audioIdleTimer = null;
+            if (this._destroyed) return;
+            void this._ensureAudio().catch((error) => {
+                console.warn('[TopBar] Audio unavailable:', error.message);
+                this._renderDeferredAudioControl();
+            });
+        };
+        if (typeof requestIdleCallback === 'function') {
+            this._audioIdleHandle = requestIdleCallback(build, { timeout: AUDIO_ROUTE_IDLE_TIMEOUT_MS });
+        } else {
+            this._audioIdleTimer = setTimeout(build, AUDIO_ROUTE_FALLBACK_DELAY_MS);
+        }
+    }
+
+    _cancelAudioRoute() {
+        if (this._audioIdleHandle != null && typeof cancelIdleCallback === 'function') {
+            cancelIdleCallback(this._audioIdleHandle);
+        }
+        if (this._audioIdleTimer != null) clearTimeout(this._audioIdleTimer);
+        this._audioIdleHandle = null;
+        this._audioIdleTimer = null;
     }
 
     _ensureAudio() {
@@ -1451,6 +1510,7 @@ export class TopBar {
         this._mixerPanelEl = null;
         this.chronicle?.destroy?.();
         this.chronicle = null;
+        this._cancelAudioRoute();
         if (this._onDeferredAudioClick) {
             this.els.soundToggle?.removeEventListener('click', this._onDeferredAudioClick);
             this._onDeferredAudioClick = null;

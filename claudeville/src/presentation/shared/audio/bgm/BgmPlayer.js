@@ -16,16 +16,26 @@ import { PIECES, CHORDS, PLAYLISTS } from './BgmSongbook.js';
 
 const BEATS_PER_BAR = 4;
 const CHUNK_BEATS = 16; // 4 bars per scheduling chunk
-const PIECE_GAP_MS = 1400; // one breath between tunes
+const PIECE_BREATH_SEC = 1.4; // one breath of silence between tunes, on the audio clock
+// Stem balance (MUSL-2): the melody is the loudest stem. Measured on the
+// shipped stems the bass sat 4.0–5.2 LU *over* the lead, the counter 8.6 LU
+// and the arp ~19 LU under it, the night pad level with the bell. Relative to
+// the lead these gains aim at bass −3.5 LU, counter −6, arp (the engine) −8…−9,
+// pad (the night harp's seat) −8…−9. The hats stay at their level; the top
+// octave they live in opens with the Wave-1 output stage.
 const GAINS = {
     lead: 0.05,
     bell: 0.042,
-    counter: 0.02,
-    arp: 0.016,
-    pad: 0.02,
-    bass: 0.055,
+    counter: 0.027,
+    arp: 0.051,
+    pad: 0.007,
+    bass: 0.022,
     perc: 0.005,
 };
+// A slow (pad) release is a setTarget decay with this time constant; the
+// voice stops only after seven of them, when the tail is 60 dB down.
+const PAD_RELEASE_TAU = 0.3;
+const PAD_TAIL_SEC = PAD_RELEASE_TAU * 7;
 
 // 5.3 — arrangement sections. Each band admits one more of the piece's already
 // compiled voices: no extra oscillators, no transposition, no tempo change. A
@@ -41,7 +51,7 @@ export const BGM_SECTIONS = Object.freeze(Object.keys(SECTION_VOICES));
 
 export class BgmPlayer extends BaseLayer {
     constructor(engine) {
-        super(engine, { trim: 0.55 });
+        super(engine, { trim: 0.55, group: 'music' });
         this.phase = 'day';
         this.nowPlaying = null;
         this.section = 'steady';
@@ -90,7 +100,7 @@ export class BgmPlayer extends BaseLayer {
 
         const percTone = ctx.createBiquadFilter();
         percTone.type = 'highpass';
-        percTone.frequency.value = 6500;
+        percTone.frequency.value = 3500;
         percTone.Q.value = 0.5;
         const percBus = ctx.createGain();
         percBus.connect(percTone).connect(this.out);
@@ -144,7 +154,7 @@ export class BgmPlayer extends BaseLayer {
             loop: 0,
             loopsPlanned: 2 + (Math.random() < 0.4 ? 1 : 0),
         };
-        this._delaySend.gain.setTargetAtTime(piece.delaySend ?? 0.15, this.engine.now(), 0.5);
+        this._delaySend.gain.setTargetAtTime(piece.delaySend ?? 0.15, t0, 0.5);
         this._chunkAt(t0, 0);
     }
 
@@ -225,9 +235,9 @@ export class BgmPlayer extends BaseLayer {
         // Generous lookahead: browsers clamp timers in throttled tabs to ~1 s,
         // and a late timer must never punch a hole in the music.
         const chunkDur = (chunkEnd - chunkStart) * cur.beatSec;
-        const waitMs = Math.max(50, (t0 + chunkDur - ctx.currentTime - 1.75) * 1000);
+        const endT = t0 + chunkDur;
+        const waitMs = Math.max(50, (endT - ctx.currentTime - 1.75) * 1000);
         this.timer(() => {
-            const endT = t0 + chunkDur;
             if (chunkEnd < cur.totalBeats) {
                 this._chunkAt(endT, chunkEnd); // next chunk, gap-free
                 return;
@@ -239,9 +249,11 @@ export class BgmPlayer extends BaseLayer {
             if (cur.loop < cur.loopsPlanned && !playlistChanged) {
                 this._chunkAt(endT, 0);
             } else {
+                // The next tune is placed on the audio clock a breath after
+                // this one's written end — not "now + a timer delay", which
+                // started it before the last bar had finished (MUS-7).
                 this._current = null;
-                this.timer(() => this._startPiece(this.engine.context.currentTime + 0.1),
-                    PIECE_GAP_MS);
+                this._startPiece(Math.max(endT + PIECE_BREATH_SEC, ctx.currentTime + 0.1));
             }
         }, waitMs);
     }
@@ -304,16 +316,22 @@ export class BgmPlayer extends BaseLayer {
         osc.frequency.value = noteHz(semi);
 
         env.gain.setValueAtTime(MIN_GAIN, t);
+        let stopAt;
         if (pluckDecay > 0) {
             env.gain.exponentialRampToValueAtTime(gain, t + 0.008);
             env.gain.exponentialRampToValueAtTime(MIN_GAIN, t + pluckDecay);
+            stopAt = t + pluckDecay + 0.08;
         } else if (slow) {
+            // Decay toward true zero and stop only once the tail is 60 dB
+            // down; stopping 0.48 s into a 0.3 s decay cut it at 20 % (ENG-4).
             env.gain.setTargetAtTime(gain, t, 0.4);
-            env.gain.setTargetAtTime(MIN_GAIN, t + dur - 0.4, 0.3);
+            env.gain.setTargetAtTime(0, t + dur - 0.4, PAD_RELEASE_TAU);
+            stopAt = t + dur - 0.4 + PAD_TAIL_SEC;
         } else {
             env.gain.exponentialRampToValueAtTime(gain, t + 0.012);
             env.gain.setValueAtTime(gain, t + Math.max(0.02, dur - 0.05));
             env.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+            stopAt = t + dur + 0.08;
         }
 
         const extras = [];
@@ -330,7 +348,6 @@ export class BgmPlayer extends BaseLayer {
             extras.push(lfo, depth);
         }
 
-        const stopAt = t + Math.max(dur, pluckDecay) + 0.08;
         osc.connect(env).connect(bus);
         osc.start(t);
         osc.stop(stopAt);
@@ -364,14 +381,15 @@ export class BgmPlayer extends BaseLayer {
         };
     }
 
+    // The layer's own stop ramps the output to silence first (S8); every
+    // scheduled note is then stopped just after it, never while audible.
     stop() {
-        const now = this.engine.now();
+        const silentAt = super.stop() ?? this.engine.now();
         for (const src of this._songSources) {
-            try { src.stop(now + 0.25); } catch { /* already stopped */ }
+            try { src.stop(silentAt + 0.01); } catch { /* already stopped */ }
         }
         this._songSources.clear();
         this._current = null;
         this.nowPlaying = null;
-        super.stop();
     }
 }

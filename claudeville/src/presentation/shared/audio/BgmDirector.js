@@ -15,11 +15,11 @@ import { bucketCounts } from '../../../domain/services/SignalLedger.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { CueGovernor } from './CueGovernor.js';
 import { CueKit } from './cues/CueKit.js';
+import { ActionableCueRouter, attentionStatus } from './ActionableRouting.js';
 import { BgmPlayer } from './bgm/BgmPlayer.js';
 
 const TICK_MS = 1000;
 const ATMO_FRESH_MS = 3000;
-const AGENT_CUE_DEDUPE_MS = 2500;
 
 // Four count bands. The label beside the music control always states the exact
 // counts, so the bands never have to.
@@ -109,7 +109,7 @@ export class BgmDirector {
         this._atmosphereSource = 'none';
         this._phase = 'day';
         this._lastBellHour = null;
-        this._recentAgentCues = new Map();
+        this._actionable = new ActionableCueRouter();
         this._section = { applied: 'steady', pending: null, pendingSince: 0 };
         this._counts = workingSectionCounts(null);
         this._level = BGM_LEVEL;
@@ -139,7 +139,7 @@ export class BgmDirector {
         this.player?.stop();
         this.player = null;
         this.cueKit = null;
-        this._recentAgentCues.clear();
+        this._actionable.clear();
     }
 
     _subscribe() {
@@ -153,50 +153,52 @@ export class BgmDirector {
             this._atmosphereSource = 'world';
         });
         on('village:scene', (scene) => {
-            if (scene?.kind === 'arrival') this.cue('arrival', cuePayload(scene));
-            else if (scene?.kind === 'departure') this.cue('departure', cuePayload(scene));
+            if (scene?.kind === 'arrival') {
+                const details = cuePayload(scene);
+                this.cue('arrival', {
+                    ...details,
+                    teamName: scene?.agent?.teamName
+                        || this.world?.agents?.get?.(details.agentId)?.teamName
+                        || null,
+                });
+            } else if (scene?.kind === 'departure') this.cue('departure', cuePayload(scene));
         });
         on('distress:watchtower', (payload) => {
             const kind = payload?.kind;
             if (kind === 'errored' || kind === 'rate_limited') {
-                this._playAgentCue('distress', cuePayload(payload));
+                this._playActionable(cuePayload(payload), kind);
             } else if (kind === 'recovered') {
                 const details = cuePayload(payload);
-                this._recentAgentCues.delete(details.agentId);
+                this._actionable.forget(details.agentId);
                 this.cue('recovery', details);
             }
         });
+        // A gathering supersedes its members' arrival aggregate (SCN-6).
         on('team:gather', (payload) => this.cue('council', {
             ...cuePayload(payload),
             teamName: payload?.teamName ?? null,
             teamSize: Array.isArray(payload?.members)
                 ? payload.members.length
                 : payload?.teamSize ?? payload?.size,
+            supersedes: Array.isArray(payload?.members) ? payload.members : [],
         }));
-        on('chronicle:aurora', (payload) => this.cue('aurora', cuePayload(payload)));
+        on('chronicle:aurora', (payload) => this.cue('aurora', {
+            ...cuePayload(payload),
+            ...(payload?.reason === 'release' ? { supersedes: [] } : {}),
+        }));
         // The one cue that is about the listener rather than the world.
-        on('attention:raised', payload => this._playAgentCue('summons', cuePayload(payload)));
+        on('attention:raised', (payload) => {
+            this._playActionable(cuePayload(payload), attentionStatus(payload, this.world));
+        });
     }
 
-    _agentCueIsRecent(agentId) {
-        if (agentId == null || agentId === '') return false;
-        const recent = this._recentAgentCues.get(agentId);
-        if (!recent) return false;
-        if (Date.now() - recent.at >= AGENT_CUE_DEDUPE_MS) {
-            this._recentAgentCues.delete(agentId);
-            return false;
-        }
-        return true;
-    }
-
-    _playAgentCue(kind, payload) {
-        const agentId = payload?.agentId ?? payload?.agent?.id ?? null;
-        if (this._agentCueIsRecent(agentId)) return false;
-        const played = this.cue(kind, payload);
-        if (played && agentId != null && agentId !== '') {
-            this._recentAgentCues.set(agentId, { kind, at: Date.now() });
-        }
-        return played;
+    // The same bucket routing and per-agent dedupe as the ambient director,
+    // so an error never wears the needs-you voice in Town band either.
+    _playActionable(payload, status) {
+        return this._actionable.route(
+            { agentId: payload.agentId, status },
+            kind => this.cue(kind, { ...payload, status }),
+        );
     }
 
     cue(kind, extra = {}) {
@@ -252,6 +254,7 @@ export class BgmDirector {
             levels: { bgm: this.player?.level ?? 0 },
             lastCue: this.cueKit?.lastCue || null,
             nowPlaying: this.player?.nowPlaying || null,
+            ceremonies: this.governor.snapshot().ceremonies,
             // The section actually playing plus the one the counts want next.
             section: {
                 applied: this.player?.section ?? this._section.applied,

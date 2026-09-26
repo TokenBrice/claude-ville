@@ -9,12 +9,13 @@ const PRIMARY_CUE_DISMISS_MS = 8000;
 const DIGEST_DISMISS_MS = 12000;
 const CUE_CONTEXT_MAX_AGE_MS = 1500;
 const ATTENTION_NOTICE_GRACE_MS = 1500;
-const PRIMARY_CUES = new Set(['distress', 'summons']);
+const PRIMARY_CUES = new Set(['distress', 'limit', 'summons']);
 
 const CUE_PRESENTATION = Object.freeze({
     arrival: { action: 'arrived', type: 'info' },
     departure: { action: 'departed', type: 'info' },
-    distress: { action: 'needs attention', type: 'error' },
+    distress: { action: 'hit an error', type: 'error' },
+    limit: { action: 'is rate limited', type: 'warning' },
     recovery: { action: 'recovered', type: 'success' },
     summons: { action: 'needs you', type: 'warning' },
 });
@@ -91,7 +92,14 @@ function attentionMessageSpecificity(message) {
 // Agent-scoped producers may send either a display name or a short reason.
 // Prefer the locally observed name when available, while accepting complete
 // producer copy without doubling its verb ("Aurora needs you needs you").
+// A ceremony that absorbed routine parts keeps their count ("· 5 arrivals").
 export function formatCueCaption(payload, observedAgentLabel = '') {
+    const message = cueMessage(payload, observedAgentLabel);
+    const parts = cleanLabel(payload?.replaces?.parts);
+    return message && parts ? `${message} · ${parts}` : message;
+}
+
+function cueMessage(payload, observedAgentLabel) {
     if (!payload || typeof payload !== 'object') return '';
     const kind = cleanLabel(payload.kind);
     const label = cleanLabel(payload.label);
@@ -112,6 +120,12 @@ export function formatCueCaption(payload, observedAgentLabel = '') {
     }
     if (GLOBAL_CUE_COPY[kind]) return GLOBAL_CUE_COPY[kind];
     return label || '';
+}
+
+// One caption key for both showing a cue and finding the caption a ceremony
+// replaces: the agent when the cue names one, else the caption text.
+function cueCaptionKey(kind, agentId, message) {
+    return `${kind}:${agentId || message}`;
 }
 
 export class Toast {
@@ -230,6 +244,7 @@ export class Toast {
         const observedLabel = this._agentLabels.get(agentId) || context?.label;
         const message = formatCueCaption(payload, observedLabel);
         if (!message) return;
+        if (payload.replaces) this._removeReplacedCue(payload.replaces);
 
         // AttentionService's direct notice is more specific than the generic
         // summons caption. Reuse either an event-owned notice or a direct
@@ -240,7 +255,7 @@ export class Toast {
                 && Date.now() - entry.attentionAt <= ATTENTION_NOTICE_GRACE_MS);
         if (attention) return attention;
 
-        const key = `${kind}:${agentId || message}`;
+        const key = cueCaptionKey(kind, agentId, message);
         const duplicate = this.toasts.find(entry => entry.cueKey === key);
         const isPrimary = PRIMARY_CUES.has(kind);
         const dismissMs = isPrimary ? PRIMARY_CUE_DISMISS_MS : ROUTINE_CUE_DISMISS_MS;
@@ -273,6 +288,18 @@ export class Toast {
         });
     }
 
+    // A ceremony supersedes the routine caption of its own parts: the parts'
+    // caption leaves and the ceremony's caption carries their count.
+    _removeReplacedCue(replaces) {
+        const kind = cleanLabel(replaces?.kind);
+        if (!kind) return;
+        const agentId = replaces.agentId == null ? '' : cleanLabel(String(replaces.agentId));
+        const message = cueMessage(replaces, this._agentLabels.get(agentId));
+        const key = cueCaptionKey(kind, agentId, message);
+        const replaced = this.toasts.find(entry => entry.cueKey === key);
+        if (replaced) this._remove(replaced);
+    }
+
     _collapseDirectAttention(message, type) {
         if (!message || !isAttentionNotice(message) || (type !== 'warning' && type !== 'error')) return null;
 
@@ -288,7 +315,7 @@ export class Toast {
         if (!agentId) return null;
         const existing = [...this.toasts]
             .reverse()
-            .find(entry => (entry.cueKind === 'summons' || entry.attentionAgentId === agentId)
+            .find(entry => (PRIMARY_CUES.has(entry.cueKind) || entry.attentionAgentId === agentId)
                 && (entry.agentId === agentId || entry.attentionAgentId === agentId));
         if (!existing) return null;
         existing.attentionAgentId = agentId;

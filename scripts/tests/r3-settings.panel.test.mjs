@@ -73,6 +73,7 @@ test('settings review reads every operator preference using its existing encodin
         'claudeville.sound.enabled': 'true',
         'claudeville.sound.volume': '0.72',
         'claudeville.sound.mode': 'bgm',
+        'claudeville.sound.background': 'signals',
         'claudeville.sound.layers': JSON.stringify({
             wind: 0.1, rain: 0.2, wildlife: 0.3, hum: 0.4, music: 0.5,
         }),
@@ -85,6 +86,7 @@ test('settings review reads every operator preference using its existing encodin
         soundEnabled: true,
         soundVolume: 0.72,
         soundMode: 'bgm',
+        soundBackground: 'signals',
         soundLayers: { wind: 0.1, rain: 0.2, wildlife: 0.3, hum: 0.4, music: 0.5 },
         autoCamera: false,
         desktopAlerts: true,
@@ -97,6 +99,7 @@ test('settings defaults retain all established localStorage keys and value forma
         'claudeville.sound.enabled': 'false',
         'claudeville.sound.volume': '0.5',
         'claudeville.sound.mode': 'ambient',
+        'claudeville.sound.background': 'play',
         'claudeville.sound.layers': JSON.stringify({
             wind: 1, rain: 1, wildlife: 1, hum: 1, music: 1,
         }),
@@ -120,6 +123,7 @@ test('reset writes defaults in place without clearing unrelated local data', () 
     assert.equal(storage.getItem('claudeville.generatedNames'), '["Ada"]');
     assert.equal(result.soundEnabled, false);
     assert.equal(result.soundVolume, 0.5);
+    assert.equal(result.soundBackground, 'play');
     assert.equal(result.autoCamera, true);
 });
 

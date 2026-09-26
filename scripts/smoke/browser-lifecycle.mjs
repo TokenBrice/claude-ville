@@ -392,6 +392,271 @@ async function runSessionDetailsAbortProbe(page) {
   });
 }
 
+// The boot-idle build (0.1) must deliver the audio route; a missing helper is
+// a failure, never a silent `{ available: false }`.
+const AUDIO_ROUTE_TIMEOUT_MS = 8000;
+
+async function waitForAudioRoute(page) {
+  await page.waitForFunction(() => typeof window.__claudevilleAudio === 'function', null, {
+    timeout: AUDIO_ROUTE_TIMEOUT_MS,
+  });
+  return page.evaluate(() => window.__claudevilleAudio());
+}
+
+async function waitForAudio(page, predicate, arg = null, timeout = 5000) {
+  await page.waitForFunction(predicate, arg, { timeout });
+  return page.evaluate(() => window.__claudevilleAudio());
+}
+
+// Fresh profile, no interaction: the route exists from boot idle with no
+// AudioContext, and a council gathering is played (captioned) exactly once.
+// A live or simulated village has its own cue traffic, and the governor
+// rightly refuses a council inside its cooldown, spacing, budget or urgent
+// guard; the probe waits for a window in which the governor would admit one,
+// so any council cue after the emit is the probe's own.
+async function runBootAudioRouteProbe(page) {
+  const route = await waitForAudioRoute(page);
+  const caption = await page.evaluate(async () => {
+    const { eventBus } = await import('/src/domain/events/DomainEvent.js');
+    const governor = window.__claudeVilleApp?.topBar?.audio?.directors?.ambient?.governor;
+    const admits = () => {
+      if (!governor) return true;
+      const now = Date.now();
+      const recent = (governor._recent || []).filter(t => now - t < 60_000);
+      return now - (governor._lastByKind?.get('council') || 0) >= 60_000
+        && recent.length < governor.maxPerMinute
+        && (recent.length === 0 || now - recent[recent.length - 1] >= governor.minSpacingMs)
+        && now >= governor._urgentUntil
+        && !governor._routine?.length;
+    };
+    const quietDeadline = performance.now() + 75_000;
+    while (!admits() && performance.now() < quietDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    const played = [];
+    const record = (payload) => { if (payload?.kind === 'council') played.push(payload); };
+    const container = document.getElementById('toastContainer');
+    let captioned = false;
+    const observer = new MutationObserver((records) => {
+      for (const entry of records) {
+        for (const node of entry.addedNodes) {
+          if ((node.textContent || '').includes('The team is gathering')) captioned = true;
+        }
+      }
+    });
+    if (container) observer.observe(container, { childList: true, subtree: true });
+    eventBus.on('audio:cue-played', record);
+    const startedAt = performance.now();
+    try {
+      eventBus.emit('team:gather', { teamName: 'lifecycle-probe', teamSize: 3 });
+      while (performance.now() - startedAt < 1000) {
+        if (captioned && played.length > 0) break;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      return { cuesPlayed: played.length, captioned };
+    } finally {
+      observer.disconnect();
+      eventBus.off('audio:cue-played', record);
+    }
+  });
+  return {
+    available: route.available,
+    enabled: route.enabled,
+    contextState: route.contextState,
+    soundState: route.soundState,
+    ...caption,
+  };
+}
+
+// A returning user (sound stored on) with no gesture yet: the chip is armed
+// with no context, and the first click on it starts the village instead of
+// turning sound off; a second click on the playing chip turns it off.
+//
+// It runs in its own browser context because Playwright evaluates scripts
+// with a synthetic user gesture, which sets Chrome's sticky activation — and
+// a controller built after any activation rightly starts on its own (0.1),
+// so the armed state would never be observable. The init script reports
+// `navigator.userActivation` from trusted input only, as for a real visitor.
+async function runArmedChipProbe(browser, url, timeoutMs) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  try {
+    await context.addInitScript(() => {
+      window.localStorage.setItem('claudeville.sound.enabled', 'true');
+      let active = false;
+      const mark = (event) => { if (event.isTrusted) active = true; };
+      window.addEventListener('pointerdown', mark, true);
+      window.addEventListener('keydown', mark, true);
+      Object.defineProperty(Navigator.prototype, 'userActivation', {
+        configurable: true,
+        get: () => ({ hasBeenActive: active, isActive: active }),
+      });
+    });
+    const page = await context.newPage();
+    page.setDefaultTimeout(timeoutMs);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    await page.waitForFunction(() => {
+      const state = window.__claudeVilleApp?._bootState;
+      return state === 'ready' || state === 'failed';
+    });
+    const armed = await waitForAudioRoute(page);
+    const chipState = await page.getAttribute('#topbarSoundToggle', 'data-sound-state');
+
+    const clickedAt = Date.now();
+    await page.click('#topbarSoundToggle');
+    const started = await waitForAudio(page, () => {
+      const audio = window.__claudevilleAudio?.();
+      return audio?.contextState === 'running' && audio?.running === true;
+    });
+    const startMs = Date.now() - clickedAt;
+
+    await page.click('#topbarSoundToggle');
+    const stopped = await waitForAudio(page, () => window.__claudevilleAudio?.()?.enabled === false);
+    return {
+      bootState: await page.evaluate(() => window.__claudeVilleApp?._bootState),
+      armed: {
+        enabled: armed.enabled,
+        contextState: armed.contextState,
+        soundState: armed.soundState,
+        chipState,
+      },
+      firstClick: {
+        enabled: started.enabled,
+        contextState: started.contextState,
+        soundState: started.soundState,
+        withinOneSecond: startMs <= 1000,
+      },
+      secondClickDisabled: stopped.enabled === false,
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+// The real TopBar enable path through blur, the background setting, a hidden
+// tab, a hidden-tab summons, and return.
+async function runActualAudioLifecycleProbe(page) {
+  const initial = await waitForAudioRoute(page);
+  if (!initial.available) throw new Error('AudioContext unavailable in the smoke browser');
+  if (!initial.enabled) await page.click('#topbarSoundToggle');
+  const running = await waitForAudio(page, () => {
+    const audio = window.__claudevilleAudio?.();
+    return audio?.contextState === 'running' && audio?.running === true;
+  });
+
+  // Blur with the default background keeps the full mix (past the 800 ms
+  // suspend delay a signals-only blur would use).
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await page.waitForTimeout(1200);
+  const blurred = await page.evaluate(() => window.__claudevilleAudio());
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  const focused = await waitForAudio(page, () => {
+    const audio = window.__claudevilleAudio?.();
+    return audio?.blurred === false && audio?.contextState === 'running' && audio?.running === true;
+  });
+
+  // "Signals only" makes a blur behave like a hidden tab; focus rebuilds.
+  await page.evaluate(() => {
+    window.localStorage.setItem('claudeville.sound.background', 'signals');
+    window.dispatchEvent(new Event('blur'));
+  });
+  const signalsBlur = await waitForAudio(page, () => window.__claudevilleAudio?.()?.contextState === 'suspended');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  const signalsFocus = await waitForAudio(page, () => {
+    const audio = window.__claudevilleAudio?.();
+    return audio?.contextState === 'running' && audio?.running === true;
+  });
+  await page.evaluate(() => window.__claudevilleAudio().setBackground('play'));
+
+  await page.evaluate(() => {
+    window.__cvOriginalHiddenDescriptor = Object.getOwnPropertyDescriptor(document, 'hidden') || null;
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  const hidden = await waitForAudio(page, () => window.__claudevilleAudio?.()?.contextState === 'suspended');
+
+  // A summons while hidden wakes the context for the bell, then suspends.
+  const wake = await page.evaluate(async () => {
+    const { eventBus } = await import('/src/domain/events/DomainEvent.js');
+    const context = window.__claudeVilleApp?.topBar?.audio?.engine?.context;
+    const states = [];
+    const onState = () => states.push(context.state);
+    context?.addEventListener('statechange', onState);
+    const cues = [];
+    const onCue = (payload) => cues.push(payload?.kind);
+    eventBus.on('audio:cue-played', onCue);
+    const before = window.__claudevilleAudio().wakeCount;
+    const agentId = `__lifecycle_hidden_summons_${Date.now()}__`;
+    try {
+      eventBus.emit('attention:raised', {
+        agentId,
+        agent: { id: agentId, name: 'Lifecycle Probe', status: 'waiting_on_user' },
+        status: 'waiting_on_user',
+        reason: 'lifecycle probe',
+        waitingCount: 1,
+        oldestWaitMs: 0,
+      });
+      const startedAt = performance.now();
+      let resuspended = false;
+      while (performance.now() - startedAt < 10_000) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        const audio = window.__claudevilleAudio();
+        resuspended = audio.wakeCount > before && audio.contextState === 'suspended' && states.includes('running');
+        if (resuspended) break;
+      }
+      return {
+        woke: window.__claudevilleAudio().wakeCount === before + 1,
+        ranDuringWake: states.includes('running'),
+        resuspended,
+        summonsPlayed: cues.includes('summons'),
+      };
+    } finally {
+      context?.removeEventListener('statechange', onState);
+      eventBus.off('audio:cue-played', onCue);
+    }
+  });
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  const visible = await waitForAudio(page, () => {
+    const audio = window.__claudevilleAudio?.();
+    return audio?.contextState === 'running' && audio?.running === true;
+  });
+  await page.evaluate(() => {
+    if (window.__cvOriginalHiddenDescriptor) {
+      Object.defineProperty(document, 'hidden', window.__cvOriginalHiddenDescriptor);
+    } else {
+      delete document.hidden;
+    }
+    delete window.__cvOriginalHiddenDescriptor;
+  });
+  if (!initial.enabled) {
+    await page.click('#topbarSoundToggle');
+    await waitForAudio(page, () => window.__claudevilleAudio?.()?.enabled === false);
+  }
+
+  return {
+    available: true,
+    runningState: running.contextState,
+    runningSoundState: running.soundState,
+    blurState: blurred.contextState,
+    blurRunning: blurred.running,
+    focusState: focused.contextState,
+    signalsBlurState: signalsBlur.contextState,
+    signalsFocusRunning: signalsFocus.running,
+    hiddenState: hidden.contextState,
+    hiddenRunning: hidden.running,
+    hiddenSoundState: hidden.soundState,
+    wake,
+    visibleState: visible.contextState,
+    visibleRunning: visible.running,
+  };
+}
+
+// Races the real browser cannot schedule on demand: a stubbed engine behind a
+// throwaway controller, driven through the public enable path.
 async function runAudioLifecycleProbe(page) {
   return page.evaluate(async () => {
     const { AmbientAudioController } = await import('/src/presentation/shared/AmbientAudioController.js');
@@ -399,15 +664,23 @@ async function runAudioLifecycleProbe(page) {
     const hiddenDescriptor = Object.getOwnPropertyDescriptor(document, 'hidden');
     let hidden = false;
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+    const storedEnabled = window.localStorage.getItem('claudeville.sound.enabled');
 
     const calls = { ensure: 0, start: 0, stop: 0, suspend: 0, dispose: 0, directorStart: 0 };
     let delayedResolve = null;
     let delayEnsure = false;
     const controller = new AmbientAudioController();
+    // Retire the real graph owners the constructor built before stubbing.
+    controller.directors.ambient.destroy();
+    await controller.engine.dispose();
     controller.available = true;
+    // The throwaway controller must not write the app's section label.
+    controller.sectionLabel = null;
     controller.engine = {
       context: { state: 'running' },
+      now() { return 0; },
       setVolume() {},
+      setGroupLevel() {},
       ensureContext() {
         calls.ensure++;
         if (!delayEnsure) return Promise.resolve(true);
@@ -423,19 +696,28 @@ async function runAudioLifecycleProbe(page) {
       running: false,
       start() { this.running = true; calls.directorStart++; },
       stop() { this.running = false; },
+      setHidden() {},
+      setSignalRouting() {},
       snapshot() { return {}; },
       cue() {},
     };
     controller.directors = { ambient: director, bgm: { ...director } };
-    controller.enabled = true;
-    controller.userActivated = true;
 
     try {
-      await controller._activate();
+      controller.activateFromUser(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      const startedOnce = calls.start === 1 && calls.directorStart === 1;
+
+      window.dispatchEvent(new Event('blur'));
+      await new Promise(resolve => setTimeout(resolve, 850));
+      const blurKeptPlaying = calls.suspend === 0 && calls.stop === 0 && director.running === true;
+      window.dispatchEvent(new Event('focus'));
+
       hidden = true;
       document.dispatchEvent(new Event('visibilitychange'));
       await new Promise(resolve => setTimeout(resolve, 850));
-      const suspendedWhileHidden = calls.suspend === 1 && controller.director.running === false;
+      const suspendedWhileHidden = calls.suspend === 1 && director.running === false;
 
       hidden = false;
       document.dispatchEvent(new Event('visibilitychange'));
@@ -450,6 +732,8 @@ async function runAudioLifecycleProbe(page) {
       delayedResolve(true);
       await Promise.all([pendingActivation, destroy]);
       return {
+        startedOnce,
+        blurKeptPlaying,
         suspendedWhileHidden,
         resumedOnce,
         noStartAfterDestroy: calls.start === 2 && calls.directorStart === 2,
@@ -461,57 +745,11 @@ async function runAudioLifecycleProbe(page) {
       else delete document.hidden;
       if (previousDebug) window.__claudevilleAudio = previousDebug;
       else delete window.__claudevilleAudio;
+      // The throwaway controller persisted its enable; the app's stays.
+      if (storedEnabled === null) window.localStorage.removeItem('claudeville.sound.enabled');
+      else window.localStorage.setItem('claudeville.sound.enabled', storedEnabled);
     }
   });
-}
-
-async function runActualAudioLifecycleProbe(page) {
-  const initial = await page.evaluate(() => window.__claudevilleAudio?.() || null);
-  if (!initial?.available) return { available: false };
-  if (!initial.enabled) await page.click('#topbarSoundToggle');
-  await page.waitForFunction(() => {
-    const audio = window.__claudevilleAudio?.();
-    return audio?.contextState === 'running' && audio?.running === true;
-  });
-  const running = await page.evaluate(() => window.__claudevilleAudio?.() || null);
-
-  await page.evaluate(() => {
-    window.__cvOriginalHiddenDescriptor = Object.getOwnPropertyDescriptor(document, 'hidden') || null;
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
-    document.dispatchEvent(new Event('visibilitychange'));
-  });
-  await page.waitForFunction(() => window.__claudevilleAudio?.()?.contextState === 'suspended', null, {
-    timeout: 5000,
-  });
-  const hidden = await page.evaluate(() => window.__claudevilleAudio?.() || null);
-
-  await page.evaluate(() => {
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
-    document.dispatchEvent(new Event('visibilitychange'));
-  });
-  await page.waitForFunction(() => {
-    const audio = window.__claudevilleAudio?.();
-    return audio?.contextState === 'running' && audio?.running === true;
-  });
-  const visible = await page.evaluate(() => window.__claudevilleAudio?.() || null);
-  await page.evaluate(() => {
-    if (window.__cvOriginalHiddenDescriptor) {
-      Object.defineProperty(document, 'hidden', window.__cvOriginalHiddenDescriptor);
-    } else {
-      delete document.hidden;
-    }
-    delete window.__cvOriginalHiddenDescriptor;
-  });
-  if (!initial.enabled) await page.click('#topbarSoundToggle');
-
-  return {
-    available: true,
-    runningState: running.contextState,
-    hiddenState: hidden.contextState,
-    hiddenRunning: hidden.running,
-    visibleState: visible.contextState,
-    visibleRunning: visible.running,
-  };
 }
 
 async function runFrameFailureProbe(page) {
@@ -1050,6 +1288,12 @@ async function sameDocumentReboot(page) {
     const stablePromise = first === app.boot();
     await first;
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    // The audio route is built at boot idle; compare listeners once it exists.
+    const routeDeadline = performance.now() + 8000;
+    while (typeof window.__claudevilleAudio !== 'function') {
+      if (performance.now() > routeDeadline) throw new Error('audio route was not built after reboot');
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
     return { stablePromise, state: app._bootState };
   });
   const ready = await runtimeSnapshot(page);
@@ -1157,7 +1401,12 @@ async function runBootFailureProbe(page) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const browserErrors = [];
-  const browser = await chromium.launch({ headless: !options.headed });
+  // Autoplay needs a real gesture, as for a fresh user: every enable path
+  // must count as one.
+  const browser = await chromium.launch({
+    headless: !options.headed,
+    args: ['--autoplay-policy=user-gesture-required'],
+  });
   const context = await browser.newContext({
     viewport: { width: 1440, height: 1000 },
     deviceScaleFactor: 1,
@@ -1179,6 +1428,23 @@ async function main() {
     });
     const state = await page.evaluate(() => window.__claudeVilleApp?._bootState);
     assert.equal(state, 'ready', `app boot state was ${state}`);
+
+    const bootAudioProbe = await runBootAudioRouteProbe(page);
+    assert.deepEqual(bootAudioProbe, {
+      available: true,
+      enabled: false,
+      contextState: null,
+      soundState: 'off',
+      cuesPlayed: 1,
+      captioned: true,
+    }, 'the signal route and captions must exist from boot idle, with no AudioContext');
+    const armedChipProbe = await runArmedChipProbe(browser, options.url, options.timeoutMs);
+    assert.deepEqual(armedChipProbe, {
+      bootState: 'ready',
+      armed: { enabled: true, contextState: null, soundState: 'armed', chipState: 'armed' },
+      firstClick: { enabled: true, contextState: 'running', soundState: 'playing', withinOneSecond: true },
+      secondClickDisabled: true,
+    }, 'the first click on an armed chip must start sound, never turn it off');
     await page.waitForFunction(() => typeof window.__claudeVillePerf?.canvasBudget === 'function');
 
     const bootIdentity = await page.evaluate(() => {
@@ -1217,13 +1483,28 @@ async function main() {
     assert.deepEqual(actualAudioProbe, {
       available: true,
       runningState: 'running',
+      runningSoundState: 'playing',
+      blurState: 'running',
+      blurRunning: true,
+      focusState: 'running',
+      signalsBlurState: 'suspended',
+      signalsFocusRunning: true,
       hiddenState: 'suspended',
       hiddenRunning: false,
+      hiddenSoundState: 'armed',
+      wake: {
+        woke: true,
+        ranDuringWake: true,
+        resuspended: true,
+        summonsPlayed: true,
+      },
       visibleState: 'running',
       visibleRunning: true,
     });
     const audioProbe = await runAudioLifecycleProbe(page);
     assert.deepEqual(audioProbe, {
+      startedOnce: true,
+      blurKeptPlaying: true,
       suspendedWhileHidden: true,
       resumedOnce: true,
       noStartAfterDestroy: true,
@@ -1454,6 +1735,8 @@ async function main() {
       },
       sessionDetails: before.sessionDetails,
       sessionDetailsProbe,
+      bootAudioProbe,
+      armedChipProbe,
       actualAudioProbe,
       audioProbe,
       frameProbe,

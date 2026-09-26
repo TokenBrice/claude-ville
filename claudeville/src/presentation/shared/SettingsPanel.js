@@ -146,6 +146,7 @@ export class SettingsPanel {
         readSettings,
         onSoundEnabled,
         onSoundMode,
+        onSoundBackground,
         onSoundVolume,
         onSoundLayer,
         onAutoCamera,
@@ -164,6 +165,7 @@ export class SettingsPanel {
         this.readSettings = readSettings;
         this.onSoundEnabled = onSoundEnabled;
         this.onSoundMode = onSoundMode;
+        this.onSoundBackground = onSoundBackground;
         this.onSoundVolume = onSoundVolume;
         this.onSoundLayer = onSoundLayer;
         this.onAutoCamera = onAutoCamera;
@@ -232,6 +234,10 @@ export class SettingsPanel {
                 ['ambient', 'Reactive ambience'],
                 ['bgm', 'Town music'],
             ], settings.soundMode, this.onSoundMode),
+            this._select('soundBackground', 'In the background', 'When ClaudeVille is visible but another app has focus.', [
+                ['play', 'Keep playing'],
+                ['signals', 'Signals only'],
+            ], settings.soundBackground, this.onSoundBackground),
             this._range('soundVolume', 'Master volume', settings.soundVolume, this.onSoundVolume),
             this._checkbox('autoCamera', 'Automatic camera', 'Frame live action while the World is idle.', settings.autoCamera, this.onAutoCamera),
             this._checkbox('desktopAlerts', 'Desktop alerts', this.alertsAvailable
@@ -510,6 +516,8 @@ export class SettingsPanel {
         }
         const mode = this.controls.get('soundMode');
         if (mode) mode.value = settings.soundMode || 'ambient';
+        const background = this.controls.get('soundBackground');
+        if (background) background.value = settings.soundBackground || 'play';
         this._syncRange('soundVolume', settings.soundVolume);
         for (const [name] of SOUND_LAYERS) this._syncRange(`soundLayer:${name}`, settings.soundLayers?.[name]);
         this._refreshOperationalRows();

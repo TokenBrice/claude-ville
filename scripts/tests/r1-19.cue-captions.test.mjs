@@ -72,7 +72,10 @@ function harness() {
 test('cue copy names agents and translates internal cue kinds', () => {
     assert.equal(formatCueCaption({ kind: 'summons', agentId: 'a-1', label: 'Aurora' }), 'Aurora needs you');
     assert.equal(formatCueCaption({ kind: 'arrival', agentId: 'a-1', label: 'Aurora' }), 'Aurora arrived');
-    assert.equal(formatCueCaption({ kind: 'distress', agentId: 'a-1', label: 'Aurora' }), 'Aurora needs attention');
+    assert.equal(formatCueCaption({ kind: 'distress', agentId: 'a-1', label: 'Aurora' }), 'Aurora hit an error');
+    assert.equal(formatCueCaption({ kind: 'limit', agentId: 'a-1', label: 'Aurora' }), 'Aurora is rate limited');
+    assert.equal(formatCueCaption({ kind: 'limit', agentId: null, label: 'is rate limited' }), 'An agent is rate limited');
+    assert.equal(formatCueCaption({ kind: 'distress', agentId: 'a-1', label: 'hit an error' }, 'Aurora'), 'Aurora hit an error');
     assert.equal(formatCueCaption({ kind: 'hourBell', agentId: null, label: '' }), 'The hour bell is ringing');
     assert.equal(formatCueCaption({ kind: 'summons', label: 'Aurora needs you' }), 'Aurora needs you');
     assert.equal(formatCueCaption({ kind: 'summons', label: 'is waiting for approval' }), 'An agent is waiting for approval');
@@ -138,6 +141,37 @@ test('nullable lifecycle cue ids use synchronous village context to retain the a
         });
 
         assert.equal(view.container.children[0].textContent, 'Aurora arrived');
+    } finally {
+        view.cleanup();
+    }
+});
+
+test('a ceremony replaces the caption of the aggregate it absorbed and keeps its count', () => {
+    const view = harness();
+    try {
+        view.eventTarget.emit('audio:cue-played', {
+            kind: 'aggregate',
+            agentId: null,
+            label: 'Routine activity: 5 arrivals',
+        });
+        view.eventTarget.emit('audio:cue-played', { kind: 'thunder', agentId: null, label: '' });
+        view.eventTarget.emit('audio:cue-played', {
+            kind: 'council',
+            agentId: null,
+            label: 'Council gathering',
+            replaces: {
+                kind: 'aggregate',
+                agentId: null,
+                label: 'Routine activity: 5 arrivals',
+                count: 5,
+                parts: '5 arrivals',
+            },
+        });
+
+        assert.deepEqual(
+            view.container.children.map(child => child.textContent),
+            ['Thunder nearby', 'The team is gathering · 5 arrivals'],
+        );
     } finally {
         view.cleanup();
     }

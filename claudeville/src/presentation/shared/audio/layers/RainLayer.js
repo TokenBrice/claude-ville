@@ -8,7 +8,7 @@ import { MIN_GAIN, rand } from '../AudioEngine.js';
 
 export class RainLayer extends BaseLayer {
     constructor(engine) {
-        super(engine, { trim: 0.2 });
+        super(engine, { trim: 0.2, group: 'rain' });
         this.precipitation = 0;
         this.patterGain = null;
         this.rumbleGain = null;

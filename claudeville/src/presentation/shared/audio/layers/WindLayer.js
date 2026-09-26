@@ -6,7 +6,7 @@ import { BaseLayer } from './BaseLayer.js';
 
 export class WindLayer extends BaseLayer {
     constructor(engine) {
-        super(engine, { trim: 0.16 });
+        super(engine, { trim: 0.16, group: 'wind' });
         this.filter = null;
         this.gustDepth = null;
     }

@@ -19,49 +19,83 @@ function captureCues() {
     return { cues, unsubscribe };
 }
 
-test('distress and attention for one agent spend one cue', () => {
-    const director = directorWithoutAudio();
+// One actionable entry reaches audio through two events whose order depends on
+// subscriber order. The voice follows the agent's bucket in either order.
+const ACTIONABLE_CASES = [
+    { status: 'errored', kind: 'distress', name: 'Ada' },
+    { status: 'rate_limited', kind: 'limit', name: 'Bram' },
+    { status: 'waiting_on_user', kind: 'summons', name: 'Cora' },
+];
+
+function emitWatchtower(agentId, status) {
+    // The watchtower only reports incidents; a question has no tower event.
+    if (status === 'waiting_on_user') return;
+    eventBus.emit('distress:watchtower', { agentId, kind: status });
+}
+
+function emitAttention(agentId, status, name) {
+    eventBus.emit('attention:raised', {
+        agentId,
+        status,
+        agent: { id: agentId, name, status },
+        reason: status,
+        waitingCount: 1,
+        oldestWaitMs: 0,
+    });
+}
+
+for (const { status, kind, name } of ACTIONABLE_CASES) {
+    for (const order of ['watchtower first', 'attention first']) {
+        test(`${status} spends one ${kind} cue with the ${order}`, () => {
+            const director = directorWithoutAudio();
+            const capture = captureCues();
+            const agentId = `agent-${status}`;
+            try {
+                if (order === 'watchtower first') {
+                    emitWatchtower(agentId, status);
+                    emitAttention(agentId, status, name);
+                } else {
+                    emitAttention(agentId, status, name);
+                    emitWatchtower(agentId, status);
+                }
+
+                assert.equal(capture.cues.length, 1);
+                assert.equal(capture.cues[0].kind, kind);
+                assert.equal(capture.cues[0].agentId, agentId);
+            } finally {
+                capture.unsubscribe();
+                director.destroy();
+            }
+        });
+    }
+}
+
+test('an attention event without a status reads the agent status from the world', () => {
+    const world = { agents: new Map([['agent-world', { id: 'agent-world', status: 'rate_limited' }]]) };
+    const director = new AudioDirector({ engine: { context: null, started: false }, world });
     const capture = captureCues();
     try {
-        eventBus.emit('distress:watchtower', {
-            agentId: 'agent-error',
-            kind: 'errored',
-            label: 'Ada',
-        });
-        eventBus.emit('attention:raised', {
-            agentId: 'agent-error',
-            agent: { id: 'agent-error', name: 'Ada', status: 'errored' },
-            reason: 'errored',
-            waitingCount: 1,
-            oldestWaitMs: 0,
-        });
-
+        eventBus.emit('attention:raised', { agentId: 'agent-world' });
         assert.equal(capture.cues.length, 1);
-        assert.equal(capture.cues[0].kind, 'distress');
-        assert.equal(capture.cues[0].agentId, 'agent-error');
+        assert.equal(capture.cues[0].kind, 'limit');
     } finally {
         capture.unsubscribe();
         director.destroy();
     }
 });
 
-test('attention and distress dedupe in either event order', () => {
+test('a recovered agent that fails again inside the dedupe window is heard again', () => {
     const director = directorWithoutAudio();
     const capture = captureCues();
     try {
-        eventBus.emit('attention:raised', {
-            agentId: 'agent-rate-limit',
-            agent: { id: 'agent-rate-limit', name: 'Bram', status: 'rate_limited' },
-            reason: 'rate_limited',
-        });
-        eventBus.emit('distress:watchtower', {
-            agentId: 'agent-rate-limit',
-            kind: 'rate_limited',
-        });
+        eventBus.emit('distress:watchtower', { agentId: 'agent-flap', kind: 'errored' });
+        eventBus.emit('distress:watchtower', { agentId: 'agent-flap', kind: 'recovered' });
+        eventBus.emit('distress:watchtower', { agentId: 'agent-flap', kind: 'rate_limited' });
 
-        assert.equal(capture.cues.length, 1);
-        assert.equal(capture.cues[0].kind, 'summons');
-        assert.equal(capture.cues[0].agentId, 'agent-rate-limit');
+        assert.deepEqual(
+            capture.cues.filter(cue => cue.kind !== 'recovery').map(cue => cue.kind),
+            ['distress', 'limit'],
+        );
     } finally {
         capture.unsubscribe();
         director.destroy();

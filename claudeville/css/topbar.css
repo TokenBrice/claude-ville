@@ -567,6 +567,24 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     color: var(--ink-4);
 }
 
+/* Armed: sound is on, but the browser has not started it yet — it waits for
+   a click. One ink step brighter than off, with a hollow gold pip; static. */
+#topbarSoundToggle[data-sound-state="armed"] {
+    position: relative;
+    color: var(--ink-1);
+}
+
+#topbarSoundToggle[data-sound-state="armed"]::after {
+    content: '';
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    box-sizing: border-box;
+    width: 3px;
+    height: 3px;
+    border: 1px solid var(--gold);
+}
+
 .topbar__icon-btn {
     display: inline-grid;
     place-items: center;

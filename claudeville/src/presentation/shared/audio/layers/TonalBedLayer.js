@@ -8,7 +8,7 @@ import { noteHz, scaleForPhase } from '../MusicalScale.js';
 
 export class TonalBedLayer extends BaseLayer {
     constructor(engine) {
-        super(engine, { trim: 0.09 });
+        super(engine, { trim: 0.09, group: 'music' });
         this.scale = scaleForPhase('day');
         this.filter = null;
     }

@@ -7,7 +7,7 @@ import { MIN_GAIN, rand } from '../AudioEngine.js';
 
 export class VillageHumLayer extends BaseLayer {
     constructor(engine) {
-        super(engine, { trim: 0.15 });
+        super(engine, { trim: 0.15, group: 'hum' });
         this.murmurGain = null;
     }
 

@@ -1,7 +1,9 @@
 // Facade between the top-bar sound controls and the audio system. Owns the
-// opt-in lifecycle — off by default, user-gesture unlock, tab-hidden suspend,
-// localStorage persistence — and delegates all sound to AudioEngine (mix
-// chain) and AudioDirector (world-reactive layers and cues) in ./audio/.
+// opt-in lifecycle — off by default, user-gesture unlock, background policy,
+// hidden-tab wakes, localStorage persistence — and delegates all sound to
+// AudioEngine (mix chain, group faders) and AudioDirector (world-reactive
+// layers and cues) in ./audio/. TopBar builds it at boot idle without an
+// AudioContext, so the signal route and captions exist before any click.
 
 import { AudioEngine, clamp01 } from './audio/AudioEngine.js';
 import { AudioDirector } from './audio/AudioDirector.js';
@@ -10,20 +12,39 @@ import {
     workingSectionCounts,
     workingSectionLabel,
 } from './audio/BgmDirector.js';
+import { cueNoteCount, cueNoteTime } from './audio/CueScore.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 
 const STORAGE_KEY = 'claudeville.sound.enabled';
 const VOLUME_KEY = 'claudeville.sound.volume';
 const MODE_KEY = 'claudeville.sound.mode';
 const LAYER_LEVELS_KEY = 'claudeville.sound.layers';
+const BACKGROUND_KEY = 'claudeville.sound.background';
 const DEFAULT_VOLUME = 0.5;
 const MODES = ['ambient', 'bgm'];
-const HIDDEN_SUMMONS_HOLD_MS = 3200;
+// What a visible but unfocused window plays (D3, Wave 0): the full mix, or
+// the hidden-tab signals-only route.
+const BACKGROUNDS = ['play', 'signals'];
+// A hidden-tab wake holds until the urgent cue has rung out (S8): its last
+// note, plus the longest urgent bell decay in CueKit (distress, 3 s), plus the
+// 80 ms margin before the fade closes.
+const URGENT_TAIL_SEC = 3;
+const WAKE_RELEASE_MARGIN_SEC = 0.08;
+// A cue with no published score (an anonymous agent the score cannot key)
+// still gets the summons' two-note span.
+const UNSCORED_LAST_NOTE_SEC = 0.4;
 // Agent updates arrive in bursts; one coalesced read per burst keeps the label
 // within a beat of the world, and it is written only when its counts actually
 // change, so a busy poll never touches the DOM.
 const SECTION_LABEL_COALESCE_MS = 150;
+const SOUND_CHIP_TITLES = Object.freeze({
+    off: 'Enable sound',
+    armed: 'Sound on — click anywhere to start it',
+    playing: 'Disable sound',
+});
 
+// The mixer channels are the engine's group faders, one to one: each stored
+// trim drives `engine.setGroupLevel(name, trim)`.
 export const AUDIO_MIXER_DEFAULTS = Object.freeze({
     wind: 1,
     rain: 1,
@@ -83,6 +104,22 @@ function writeStoredMode(mode) {
     }
 }
 
+function readStoredBackground() {
+    try {
+        return window.localStorage?.getItem(BACKGROUND_KEY) === 'signals' ? 'signals' : 'play';
+    } catch {
+        return 'play';
+    }
+}
+
+function writeStoredBackground(background) {
+    try {
+        window.localStorage?.setItem(BACKGROUND_KEY, background);
+    } catch {
+        // Preference persistence is optional.
+    }
+}
+
 export function readStoredLayerLevels(storage = globalThis.window?.localStorage) {
     try {
         const parsed = JSON.parse(storage?.getItem(LAYER_LEVELS_KEY) || '{}');
@@ -124,15 +161,19 @@ export class AmbientAudioController {
         this.enabled = readStoredPreference();
         this.volume = readStoredVolume();
         this.mode = readStoredMode();
+        this.background = readStoredBackground();
         this.layerLevels = readStoredLayerLevels();
-        this.userActivated = false;
+        this._gestureSeen = false;
         this.unlockArmed = false;
         this._activationGeneration = 0;
         this._visibilityGeneration = 0;
         this._suspendTimer = null;
-        this._hiddenSummonsTimer = null;
         this._hiddenSummonsPending = new Set();
-        this._layerBindings = new WeakMap();
+        // Hidden-tab wakes: the newest token owns the release, which holds
+        // until the latest scheduled urgent note has rung out.
+        this._wakeToken = 0;
+        this._wakeHoldUntil = 0;
+        this._wakeCount = 0;
         this._layerInputHandlers = new Map();
         this._destroyPromise = null;
         this._destroyed = false;
@@ -147,6 +188,7 @@ export class AmbientAudioController {
 
         this.engine = new AudioEngine();
         this.engine.setVolume(this.volume);
+        this._applyGroupLevels();
         this.directors = {
             ambient: new AudioDirector({ engine: this.engine, world: this.world }),
             bgm: new BgmDirector({ engine: this.engine, world: this.world }),
@@ -154,15 +196,14 @@ export class AmbientAudioController {
         this.directors.ambient.setHiddenSummonsHandler?.((payload) => {
             this._handleHiddenSummons(payload);
         });
-        this.directors.ambient.setHidden(
-            typeof document !== 'undefined' && document.hidden,
-        );
+        this._inactive = this._pageInactive();
+        this.directors.ambient.setHidden(this._inactive);
         this.directors.ambient.setSignalRouting(true);
 
-        this._onButtonClick = () => this._handleToggle();
+        this._onButtonClick = () => this.activateFromUser(!this.enabled);
         this._onModeClick = () => this.setMode(this.mode === 'ambient' ? 'bgm' : 'ambient');
         this._onUnlockGesture = (event) => this._handleUnlockGesture(event);
-        this._onVisibility = () => this._handleVisibility();
+        this._onVisibility = () => this._syncPresence();
         this._onWindowBlur = () => this._handleWindowBlur();
         this._onWindowFocus = () => this._handleWindowFocus();
         this._onVolumeInput = (event) => {
@@ -191,7 +232,12 @@ export class AmbientAudioController {
         }
 
         this._renderControls();
-        if (this.enabled) this._armUnlockListeners();
+        if (this.enabled) {
+            this._armUnlockListeners();
+            // A returning user who already clicked before the idle build
+            // (sticky activation) starts the village without a second click.
+            if (this.userActivated) void this._activate();
+        }
 
         if (typeof window !== 'undefined') {
             this._debugHelper = () => this._debugSnapshot();
@@ -199,9 +245,20 @@ export class AmbientAudioController {
         }
     }
 
-    _handleToggle() {
-        this.userActivated = true;
-        this.setEnabled(!this.enabled);
+    // Chrome's sticky activation makes `context.resume()` legal after any
+    // earlier gesture on the page, not only one this controller observed.
+    get userActivated() {
+        return this._gestureSeen
+            || globalThis.navigator?.userActivation?.hasBeenActive === true;
+    }
+
+    // Every enable path — the chip, the deferred first click, the SET switch —
+    // is a user activation. A control that is on but not yet playing (armed)
+    // starts the village when clicked; only a playing control turns sound off.
+    activateFromUser(on) {
+        if (!this.available || this._destroyed) return;
+        this._gestureSeen = true;
+        this.setEnabled(Boolean(on) || (this.enabled && !this.isRunning()));
     }
 
     setEnabled(enabled) {
@@ -210,10 +267,20 @@ export class AmbientAudioController {
         this.enabled = Boolean(enabled);
         writeStoredPreference(this.enabled);
         this._renderControls();
-        this._removeUnlockListeners();
 
-        if (this.enabled) void this._activate();
-        else this._deactivate();
+        if (this.enabled) {
+            this._armUnlockListeners();
+            void this._activate();
+        } else {
+            this._removeUnlockListeners();
+            this._deactivate();
+        }
+    }
+
+    // Playing, as the listener would hear it: the context runs and the active
+    // director is running. Anything less is armed or off.
+    isRunning() {
+        return this.engine.context?.state === 'running' && this.director.running === true;
     }
 
     setVolume(value) {
@@ -228,8 +295,16 @@ export class AmbientAudioController {
         this.layerLevels[name] = clamp01(value, AUDIO_MIXER_DEFAULTS[name]);
         writeStoredLayerLevels(this.layerLevels);
         this._renderLayerControl(name);
-        this._reapplyLayerMix(name);
+        this.engine.setGroupLevel(name, this.layerLevels[name]);
         return true;
+    }
+
+    setBackground(background) {
+        if (this._destroyed || !BACKGROUNDS.includes(background)) return this.background;
+        this.background = background;
+        writeStoredBackground(background);
+        this._syncPresence();
+        return this.background;
     }
 
     get director() {
@@ -246,16 +321,23 @@ export class AmbientAudioController {
         }
         this.mode = mode;
         writeStoredMode(mode);
-        this._renderControls();
         if (wasRunning && !this._pageInactive()) {
             this.directors.ambient.setSignalRouting(this.mode !== 'bgm');
             this.director.start();
-            this._installActiveLayerMix();
             this._syncSignalRouting();
         } else {
             // With no active BGM director, the ambient director is the
             // signal-only route for captions and disabled-sound cues.
             this.directors.ambient.setSignalRouting(true);
+        }
+        this._renderControls();
+    }
+
+    // The stored trims drive the engine's group faders; the engine keeps them
+    // across context rebuilds, so layers keep their own world-driven levels.
+    _applyGroupLevels() {
+        for (const [name, level] of Object.entries(this.layerLevels)) {
+            this.engine.setGroupLevel(name, level);
         }
     }
 
@@ -265,10 +347,9 @@ export class AmbientAudioController {
             clearTimeout(this._suspendTimer);
             this._suspendTimer = null;
         }
-        if (this._hiddenSummonsTimer) {
-            clearTimeout(this._hiddenSummonsTimer);
-            this._hiddenSummonsTimer = null;
-        }
+        // A pending hidden-tab wake no longer owns the release.
+        this._wakeToken++;
+        this._wakeHoldUntil = 0;
         this.directors.ambient.setHidden(false);
         this.directors.ambient.setSignalRouting(this.mode !== 'bgm');
         const activationGeneration = ++this._activationGeneration;
@@ -293,58 +374,9 @@ export class AmbientAudioController {
 
         this.engine.start();
         this.director.start();
-        this._installActiveLayerMix();
         this._syncSignalRouting();
-    }
-
-    // Scale each director's live target instead of pinning a fixed level. This
-    // preserves weather/time-of-day slews while giving the listener a durable
-    // trim. Instances are recreated on every mode switch/resume, so bindings
-    // are installed immediately after each start.
-    _installActiveLayerMix() {
-        const ambient = this.directors.ambient;
-        if (ambient.running) {
-            this._bindLayerMix(ambient.layers.wind, 'wind');
-            this._bindLayerMix(ambient.layers.rain, 'rain');
-            this._bindLayerMix(ambient.layers.birds, 'wildlife');
-            this._bindLayerMix(ambient.layers.crickets, 'wildlife');
-            this._bindLayerMix(ambient.layers.hum, 'hum');
-            this._bindLayerMix(ambient.layers.bed, 'music');
-            this._bindLayerMix(ambient.layers.music, 'music');
-        }
-        if (this.directors.bgm.running) {
-            this._bindLayerMix(this.directors.bgm.player, 'music');
-        }
-    }
-
-    _bindLayerMix(layer, mixName) {
-        if (!layer?.setLevel || this._layerBindings.has(layer)) return;
-        const originalSetLevel = layer.setLevel.bind(layer);
-        let liveTarget = clamp01(layer.level);
-        const binding = {
-            mixName,
-            reapply: (timeConstant = 0.25) => originalSetLevel(
-                liveTarget * this.layerLevels[mixName],
-                timeConstant,
-            ),
-        };
-        layer.setLevel = (value, timeConstant) => {
-            liveTarget = clamp01(value);
-            return originalSetLevel(liveTarget * this.layerLevels[mixName], timeConstant);
-        };
-        this._layerBindings.set(layer, binding);
-        binding.reapply();
-    }
-
-    _reapplyLayerMix(name) {
-        const candidates = [
-            ...Object.values(this.directors.ambient.layers || {}),
-            this.directors.bgm.player,
-        ];
-        for (const layer of candidates) {
-            const binding = layer && this._layerBindings.get(layer);
-            if (binding?.mixName === name) binding.reapply();
-        }
+        this._removeUnlockListeners();
+        this._renderControls();
     }
 
     _deactivate({ forceSuspend = false, visibilityGeneration = this._visibilityGeneration } = {}) {
@@ -366,53 +398,54 @@ export class AmbientAudioController {
             );
             if (!this.enabled || hiddenGenerationMatches) void this.engine.suspend();
         }, 800);
+        this._renderControls();
     }
 
     _handleUnlockGesture(event) {
-        if (!this.enabled || this.userActivated) return;
+        if (!this.enabled || this.isRunning()) return;
+        // The chip's own click decides through activateFromUser.
         if (this.button && event?.target && this.button.contains(event.target)) return;
 
-        this.userActivated = true;
-        this._removeUnlockListeners();
+        this._gestureSeen = true;
         void this._activate();
     }
 
-    _handleVisibility() {
-        if (typeof document === 'undefined') return;
+    // One presence transition for tab visibility, window focus and the
+    // background setting. Hidden (or blurred with "Signals only") stops the
+    // village and routes urgent cues through the wake; returning rebuilds it.
+    _syncPresence() {
+        if (this._destroyed) return;
+        const inactive = this._pageInactive();
+        if (inactive === this._inactive) return;
+        this._inactive = inactive;
         const visibilityGeneration = ++this._visibilityGeneration;
-        if (document.hidden) {
+        if (inactive) {
             this.directors.ambient.setHidden(true);
             this._deactivate({ forceSuspend: true, visibilityGeneration });
-        } else if (!this._windowBlurred && this.enabled && this.userActivated) {
-            this.directors.ambient.setHidden(false);
-            void this._activate();
-        } else if (!this._windowBlurred) {
-            this.directors.ambient.setHidden(false);
-            this.directors.ambient.setSignalRouting(true);
+            return;
         }
-    }
-
-    _handleWindowBlur() {
-        if (this._destroyed || this._windowBlurred) return;
-        this._windowBlurred = true;
-        const visibilityGeneration = ++this._visibilityGeneration;
-        this.directors.ambient.setHidden(true);
-        this._deactivate({ forceSuspend: true, visibilityGeneration });
-    }
-
-    _handleWindowFocus() {
-        if (this._destroyed || !this._windowBlurred) return;
-        this._windowBlurred = false;
-        ++this._visibilityGeneration;
-        if (typeof document !== 'undefined' && document.hidden) return;
         this.directors.ambient.setHidden(false);
         if (this.enabled && this.userActivated) void this._activate();
         else this.directors.ambient.setSignalRouting(true);
     }
 
+    _handleWindowBlur() {
+        if (this._destroyed || this._windowBlurred) return;
+        this._windowBlurred = true;
+        // Re-read on every blur so a change made in another tab applies.
+        this.background = readStoredBackground();
+        this._syncPresence();
+    }
+
+    _handleWindowFocus() {
+        if (this._destroyed || !this._windowBlurred) return;
+        this._windowBlurred = false;
+        this._syncPresence();
+    }
+
     _pageInactive() {
-        return this._windowBlurred
-            || (typeof document !== 'undefined' && document.hidden);
+        return (typeof document !== 'undefined' && document.hidden)
+            || (this._windowBlurred && this.background === 'signals');
     }
 
     _syncSignalRouting() {
@@ -421,81 +454,90 @@ export class AmbientAudioController {
         this.directors.ambient.setSignalRouting(!bgmOwnsSignals);
     }
 
+    // An urgent cue while the village is away: wake the cue path at full
+    // level (the bed and music stay closed), play the cue, hold until it has
+    // rung out, then suspend. Without sound it is still captioned.
     _handleHiddenSummons(payload) {
         if (this._destroyed) return;
-        const agentId = payload?.agentId ?? payload?.agent?.id ?? '__anonymous__';
-        if (this._hiddenSummonsPending.has(agentId)) return;
-        this._hiddenSummonsPending.add(agentId);
+        const agentId = payload?.agentId ?? payload?.agent?.id ?? null;
+        const pendingKey = agentId ?? '__anonymous__';
+        if (this._hiddenSummonsPending.has(pendingKey)) return;
+        this._hiddenSummonsPending.add(pendingKey);
 
         const generation = this._visibilityGeneration;
-        const finish = () => this._hiddenSummonsPending.delete(agentId);
+        const finish = () => this._hiddenSummonsPending.delete(pendingKey);
         if (!this.enabled || !this.available || !this.userActivated) {
             this._playHiddenUrgent(payload);
             finish();
             return;
         }
 
+        // The wake owns suspension from here.
         if (this._suspendTimer) {
             clearTimeout(this._suspendTimer);
             this._suspendTimer = null;
         }
 
         void (async () => {
-            let ready = false;
+            let woke = false;
             try {
-                ready = await this.engine.ensureContext();
+                woke = await this.engine.wake();
             } catch {
-                ready = false;
+                woke = false;
             }
-
             if (this._destroyed) {
                 finish();
                 return;
             }
-            if (generation !== this._visibilityGeneration) {
-                // The event still deserves an accessibility caption if the
-                // user returned while resume was in flight.
-                this._playHiddenUrgent(payload);
-                finish();
-                return;
-            }
-            if (!ready) {
-                this._playHiddenUrgent(payload);
-                finish();
-                return;
-            }
-
-            this.engine.start();
+            // If the user returned while resume was in flight, the cue still
+            // plays through whichever path now owns the audio, for its caption.
+            const kind = this._urgentKind(payload);
             this._playHiddenUrgent(payload);
-            this._scheduleHiddenSummonsSuspend(generation);
             finish();
+            if (!woke || generation !== this._visibilityGeneration) return;
+
+            this._wakeCount++;
+            this._wakeHoldUntil = Math.max(this._wakeHoldUntil, this._urgentReleaseTime(kind, agentId));
+            const token = ++this._wakeToken;
+            // Let every wake that resumed in the same turn play first, so the
+            // release is scheduled once, after the latest note.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (this._destroyed || token !== this._wakeToken) return;
+            const owns = await this.engine.endWake(this._wakeHoldUntil);
+            if (
+                !owns
+                || this._destroyed
+                || token !== this._wakeToken
+                || generation !== this._visibilityGeneration
+                || !this._pageInactive()
+            ) return;
+            this._wakeHoldUntil = 0;
+            await this.engine.suspend();
         })();
     }
 
-    _scheduleHiddenSummonsSuspend(generation) {
-        if (this._hiddenSummonsTimer) clearTimeout(this._hiddenSummonsTimer);
-        this._hiddenSummonsTimer = setTimeout(() => {
-            this._hiddenSummonsTimer = null;
-            if (
-                this._destroyed
-                || typeof document === 'undefined'
-                || !this._pageInactive()
-                || generation !== this._visibilityGeneration
-            ) return;
-            this.engine.stop();
-            void this.engine.suspend();
-        }, HIDDEN_SUMMONS_HOLD_MS);
+    _urgentKind(payload) {
+        return payload?.audioCueKind || 'summons';
     }
 
     _playHiddenUrgent(payload) {
-        if (payload?.audioCueKind === 'distress') {
-            return this.directors.ambient.cue('distress', payload);
-        }
-        return this.directors.ambient.playSummons(payload);
+        return this.directors.ambient.cue(this._urgentKind(payload), payload);
+    }
+
+    // Audio time at which the wake may start closing: the cue's last
+    // published note (CueScore, heard time) plus the urgent tail and margin.
+    _urgentReleaseTime(kind, agentId) {
+        const now = this.engine.now();
+        const count = cueNoteCount(kind, agentId);
+        const lastMs = count > 0 ? cueNoteTime(kind, agentId, count - 1) : null;
+        const lastNote = Number.isFinite(lastMs)
+            ? now + Math.max(0, (lastMs - performance.now()) / 1000)
+            : now + UNSCORED_LAST_NOTE_SEC;
+        return lastNote + URGENT_TAIL_SEC + WAKE_RELEASE_MARGIN_SEC;
     }
 
     _armUnlockListeners() {
-        if (!this.enabled || this.userActivated || this.unlockArmed || !this.available) return;
+        if (!this.enabled || this.unlockArmed || !this.available || typeof document === 'undefined') return;
         document.addEventListener('pointerdown', this._onUnlockGesture, true);
         document.addEventListener('keydown', this._onUnlockGesture, true);
         this.unlockArmed = true;
@@ -508,14 +550,22 @@ export class AmbientAudioController {
         this.unlockArmed = false;
     }
 
+    // off | armed | playing. Armed is on but not yet heard: the browser is
+    // waiting for a click, or the page is away. The chip never claims playing
+    // before the context runs.
+    _soundState() {
+        if (!this.available || !this.enabled) return 'off';
+        return this.isRunning() ? 'playing' : 'armed';
+    }
+
     _renderControls() {
         if (this.button) {
+            const state = this._soundState();
             this.button.disabled = !this.available;
-            this.button.title = this.available
-                ? (this.enabled ? 'Disable sound' : 'Enable sound')
-                : 'Sound unavailable';
+            this.button.title = this.available ? SOUND_CHIP_TITLES[state] : 'Sound unavailable';
+            this.button.setAttribute('data-sound-state', state);
             this.button.setAttribute('aria-pressed', this.enabled && this.available ? 'true' : 'false');
-            this.button.classList.toggle('topbar__sound-btn--on', this.enabled && this.available);
+            this.button.classList.toggle('topbar__sound-btn--on', state === 'playing');
         }
         if (this.volumeSlider) {
             this.volumeSlider.hidden = !(this.enabled && this.available);
@@ -587,12 +637,23 @@ export class AmbientAudioController {
         return Boolean(window.AudioContext || window.webkitAudioContext);
     }
 
+    // Loudness meters exist only while enabled (0.8a): `{ enable: true }`
+    // builds them once a context exists and resolves to the first reading,
+    // `{ enable: false }` tears them down, and a bare call reads them.
+    _meters({ enable } = {}) {
+        if (enable === false) {
+            this.engine.disableMeters();
+            return null;
+        }
+        if (enable === true) return this.engine.enableMeters().then(() => this.engine.readMeters());
+        return this.engine.readMeters();
+    }
+
     // Debug/QA surface: state readout plus handles to force layer levels,
     // fire cues, and set volume from the console or a headless browser.
     _debugSnapshot() {
         return {
             enabled: this.enabled,
-            userActivated: this.userActivated,
             available: this.available,
             contextState: this.engine.context?.state || null,
             running: this.director.running,
@@ -603,11 +664,18 @@ export class AmbientAudioController {
             sectionLabel: this._sectionLabelText,
             sectionCounts: workingSectionCounts(this.world),
             ...this.director.snapshot(),
+            userActivated: this.userActivated,
+            soundState: this._soundState(),
+            background: this.background,
+            blurred: this._windowBlurred,
+            wakeCount: this._wakeCount,
             setVolume: (v) => this.setVolume(v),
             setLayerLevel: (name, level) => this.setLayerLevel(name, level),
             setMode: (m) => this.setMode(m),
+            setBackground: (b) => this.setBackground(b),
             setLayer: (name, level, holdMs) => this.director.forceLayer?.(name, level, holdMs) ?? false,
             cue: (kind) => this.director.cue(kind),
+            meters: (opts) => this._meters(opts),
         };
     }
 
@@ -616,6 +684,7 @@ export class AmbientAudioController {
         this._destroyed = true;
         this._activationGeneration++;
         this._visibilityGeneration++;
+        this._wakeToken++;
         this._removeUnlockListeners();
         for (const director of Object.values(this.directors)) {
             director.governor?.clearRoutine?.();
@@ -624,10 +693,6 @@ export class AmbientAudioController {
         if (this._suspendTimer) {
             clearTimeout(this._suspendTimer);
             this._suspendTimer = null;
-        }
-        if (this._hiddenSummonsTimer) {
-            clearTimeout(this._hiddenSummonsTimer);
-            this._hiddenSummonsTimer = null;
         }
         this._hiddenSummonsPending.clear();
         clearTimeout(this._sectionLabelTimer);

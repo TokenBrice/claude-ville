@@ -12,7 +12,7 @@ const VOICES = [
 
 export class CricketsLayer extends BaseLayer {
     constructor(engine) {
-        super(engine, { trim: 0.7 });
+        super(engine, { trim: 0.7, group: 'wildlife' });
     }
 
     _start(ctx) {
@@ -45,7 +45,11 @@ export class CricketsLayer extends BaseLayer {
         const ctx = this.engine.context;
         if (!ctx) return;
         const pulses = 3 + (Math.random() < 0.35 ? 1 : 0);
-        let t = ctx.currentTime + 0.02;
+        // The oscillator starts at the envelope's first event: an untimed
+        // start() plays at full envelope-default gain until that event lands,
+        // a blip 15.8 dB over the chirrup itself (ENG-4).
+        const startAt = ctx.currentTime + 0.02;
+        let t = startAt;
 
         const osc = ctx.createOscillator();
         osc.type = 'triangle';
@@ -58,7 +62,7 @@ export class CricketsLayer extends BaseLayer {
             t += 0.045;
         }
         osc.connect(gain).connect(filter);
-        osc.start();
+        osc.start(startAt);
         osc.stop(t + 0.05);
         osc.onended = () => {
             try { osc.disconnect(); gain.disconnect(); } catch { /* gone */ }

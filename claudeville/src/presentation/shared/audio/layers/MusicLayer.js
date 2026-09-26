@@ -8,8 +8,9 @@
 // bass in root–fifth motion, and closes with a ring-out outro. Between songs
 // it rests, then plays a different tune.
 //
-// Voices are classic console timbres built with PeriodicWave: 25%/12.5%
-// duty pulse leads, a flute-ish sine stack for night, triangle bass. Held
+// Voices are classic console timbres built with PeriodicWave: a 25% duty
+// pulse lead by day, a flute-ish sine stack at night (never the buzzy 12.5%
+// pulse, which only plucks the accompaniment), triangle bass. Held
 // notes get delayed-onset vibrato; note timing and velocity are humanized.
 // Day songs are major-pentatonic over I-IV-V-vi harmony; night songs are
 // minor-pentatonic lullabies — always inside the shared tonal center so the
@@ -101,7 +102,7 @@ const SONGS = {
     minor: [
         {
             name: 'lanternway', bpm: 56,
-            lead: 'flute', leadAlt: 'pulse12',
+            lead: 'flute', leadAlt: 'flute',
             sections: {
                 A: {
                     chords: ['Am', 'Am', 'C', 'Em'], accomp: 'block1',
@@ -125,7 +126,7 @@ const SONGS = {
         },
         {
             name: 'starwake', bpm: 60,
-            lead: 'flute', leadAlt: 'pulse12',
+            lead: 'flute', leadAlt: 'flute',
             sections: {
                 A: {
                     chords: ['Am', 'C', 'G', 'Am'], accomp: 'arpQ',
@@ -156,11 +157,16 @@ const FORMS = [
     ['A', 'A', 'B', 'B'],
 ];
 
+// Dusk slows the band and nothing else: every voice keeps its written
+// register. Dropping only the melody an octave put it under its own chords
+// (97 % of Hearthfire's melody time); dropping the whole band would keep the
+// same melody/chord relation but sink the bass to E1–A1 (41–55 Hz), below
+// what the bass voice carries (MUS-13).
 const ARRANGEMENTS = {
-    dawn: { family: 'major', tempoScale: 0.9, octave: 0, gain: 0.8 },
-    day: { family: 'major', tempoScale: 1, octave: 0, gain: 1 },
-    dusk: { family: 'major', tempoScale: 0.8, octave: -12, gain: 0.9 },
-    night: { family: 'minor', tempoScale: 1, octave: 0, gain: 0.85 },
+    dawn: { family: 'major', tempoScale: 0.9, gain: 0.8 },
+    day: { family: 'major', tempoScale: 1, gain: 1 },
+    dusk: { family: 'major', tempoScale: 0.8, gain: 0.9 },
+    night: { family: 'minor', tempoScale: 1, gain: 0.85 },
 };
 
 const BEATS_PER_BAR = 4;
@@ -168,7 +174,7 @@ const SECTION_BARS = 4;
 
 export class MusicLayer extends BaseLayer {
     constructor(engine) {
-        super(engine, { trim: 0.5 });
+        super(engine, { trim: 0.5, group: 'music' });
         this.phase = 'day';
         this.restScale = 1;
         this.nowPlaying = null;
@@ -333,8 +339,8 @@ export class MusicLayer extends BaseLayer {
         this._playNote(this.bassBus, t0, noteHz(root), barSec * 1.3, 'triangle', 0.055 * arrangement.gain, { staccato: 1 });
         // Lead holds root + fifth, letting the echo tail ring out.
         const lead = this._waves[song.lead] ? song.lead : 'flute';
-        this._playNote(this.melodyBus, t0, noteHz(root + 24 + arrangement.octave), barSec * 1.2, lead, 0.035 * arrangement.gain, { vibrato: true, staccato: 1 });
-        this._playNote(this.melodyBus, t0 + beatSec, noteHz(root + 31 + arrangement.octave), barSec, lead, 0.024 * arrangement.gain, { vibrato: true, staccato: 1 });
+        this._playNote(this.melodyBus, t0, noteHz(root + 24), barSec * 1.2, lead, 0.035 * arrangement.gain, { vibrato: true, staccato: 1 });
+        this._playNote(this.melodyBus, t0 + beatSec, noteHz(root + 31), barSec, lead, 0.024 * arrangement.gain, { vibrato: true, staccato: 1 });
     }
 
     _scheduleSection(t0, beatSec, song, arrangement, step) {
@@ -377,7 +383,7 @@ export class MusicLayer extends BaseLayer {
                 const t = t0 + beat * beatSec + rand(-0.007, 0.007);
                 const onDownbeat = beat % BEATS_PER_BAR === 0;
                 const gain = 0.042 * arrangement.gain * (onDownbeat ? 1.12 : rand(0.85, 1));
-                this._playNote(this.melodyBus, t, noteHz(semi + arrangement.octave),
+                this._playNote(this.melodyBus, t, noteHz(semi),
                     beats * beatSec, timbre, gain,
                     { vibrato: beats >= 1.5, staccato: 0.92 });
             }
@@ -385,13 +391,15 @@ export class MusicLayer extends BaseLayer {
         }
     }
 
+    // Root on beat 1, fifth on beat 3, each held (almost) to the next: a bass
+    // released at 1.6 beats left a hole every half bar (MUS-7).
     _bassBar(t0, beatSec, chord, arrangement, { rootOnly = false } = {}) {
         const root = BASS_ROOT[chord];
         if (root == null) return;
         const gain = 0.055 * arrangement.gain;
-        this._playNote(this.bassBus, t0, noteHz(root), beatSec * 1.7, 'triangle', gain, { staccato: 0.95 });
+        this._playNote(this.bassBus, t0, noteHz(root), beatSec * 1.98, 'triangle', gain, { staccato: 0.99 });
         if (!rootOnly) {
-            this._playNote(this.bassBus, t0 + 2 * beatSec, noteHz(root + 7), beatSec * 1.7, 'triangle', gain * 0.85, { staccato: 0.95 });
+            this._playNote(this.bassBus, t0 + 2 * beatSec, noteHz(root + 7), beatSec * 1.98, 'triangle', gain * 0.85, { staccato: 0.99 });
         }
     }
 
@@ -473,14 +481,15 @@ export class MusicLayer extends BaseLayer {
         };
     }
 
+    // The layer's own stop ramps the output to silence first (S8); every
+    // scheduled note is then stopped just after it, never while audible.
     stop() {
-        const now = this.engine.now();
+        const silentAt = super.stop() ?? this.engine.now();
         for (const osc of this._songSources) {
-            try { osc.stop(now + 0.3); } catch { /* already stopped */ }
+            try { osc.stop(silentAt + 0.01); } catch { /* already stopped */ }
         }
         this._songSources.clear();
         this._plan = null;
         this.nowPlaying = null;
-        super.stop();
     }
 }

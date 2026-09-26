@@ -56,5 +56,6 @@ Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when the normal temporary 
 | Focused verification | `verify:architecture`, `verify:server`, `verify:render` |
 | Gates | `validate:quick`, `validate:full`, `gate:release` |
 | Release | `release:check`, `release:prepare`, `release:verify` |
+| Audio (local maintainer gate) | `audio:probe` — realtime headless-Chromium probe of the Wave-0 audio must-nevers and envelope lint; run by the maintainer at the end of each audio wave, not part of `validate:quick`, `validate:full` or CI (see `scripts/audio/README.md`) |
 
 The smoke catalog details focused runtime requirements. `validate:quick` is the deterministic pre-push loop; `validate:full` adds integration, server, World, and sprite validation; `gate:release` also verifies release metadata.

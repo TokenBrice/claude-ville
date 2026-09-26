@@ -55,6 +55,7 @@
     "verify:architecture": "node scripts/smoke/architecture.mjs",
     "verify:server": "NODE_NO_WARNINGS=1 node scripts/smoke/boot-contract.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/server-security.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/server-fatal.mjs",
     "verify:render": "NODE_NO_WARNINGS=1 node scripts/smoke/render-smoke.mjs",
+    "audio:probe": "NODE_NO_WARNINGS=1 node scripts/audio/probe.mjs",
     "art:analyze": "node scripts/sprites/art-analyze.mjs",
     "sprites:audit-ids": "node scripts/sprites/manifest-id-audit.mjs",
     "sprites:audit-refresh": "sh -c 'npm run sprites:audit-ids; ids=$?; npm run sprites:validate; manifest=$?; node scripts/sprites/author-roster-channels.mjs --check; roster=$?; npm run sprites:channels-validate; channels=$?; exit $((ids || manifest || roster || channels))'",
