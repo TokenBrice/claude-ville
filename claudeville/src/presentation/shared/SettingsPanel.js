@@ -14,7 +14,7 @@ export const REDUCED_MOTION_OVERRIDE_KEY = 'claudeville.motion.reduce';
 const HOOK_LIVE_WINDOW_MS = 15_000;
 const HEALTH_REFRESH_MS = 1_000;
 const SOUND_LAYERS = Object.freeze([
-    ['wind', 'Wind'],
+    ['wind', 'Weather & sea'],
     ['rain', 'Rain'],
     ['wildlife', 'Wildlife'],
     ['hum', 'Village hum'],

@@ -484,13 +484,21 @@ async function runBootAudioRouteProbe(page) {
 // a controller built after any activation rightly starts on its own (0.1),
 // so the armed state would never be observable. The init script reports
 // `navigator.userActivation` from trusted input only, as for a real visitor.
+//
+// The one-second budget runs in the page, from the trusted gesture to the
+// first poll that sees the village running, so Playwright's actionability
+// checks before it dispatches the click are not charged to the start.
 async function runArmedChipProbe(browser, url, timeoutMs) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   try {
     await context.addInitScript(() => {
       window.localStorage.setItem('claudeville.sound.enabled', 'true');
       let active = false;
-      const mark = (event) => { if (event.isTrusted) active = true; };
+      const mark = (event) => {
+        if (!event.isTrusted) return;
+        if (!active) window.__armedGestureAt = performance.now();
+        active = true;
+      };
       window.addEventListener('pointerdown', mark, true);
       window.addEventListener('keydown', mark, true);
       Object.defineProperty(Navigator.prototype, 'userActivation', {
@@ -508,13 +516,14 @@ async function runArmedChipProbe(browser, url, timeoutMs) {
     const armed = await waitForAudioRoute(page);
     const chipState = await page.getAttribute('#topbarSoundToggle', 'data-sound-state');
 
-    const clickedAt = Date.now();
     await page.click('#topbarSoundToggle');
     const started = await waitForAudio(page, () => {
       const audio = window.__claudevilleAudio?.();
-      return audio?.contextState === 'running' && audio?.running === true;
+      const running = audio?.contextState === 'running' && audio?.running === true;
+      if (running && window.__armedRunningAt === undefined) window.__armedRunningAt = performance.now();
+      return running;
     });
-    const startMs = Date.now() - clickedAt;
+    const startMs = await page.evaluate(() => window.__armedRunningAt - window.__armedGestureAt);
 
     await page.click('#topbarSoundToggle');
     const stopped = await waitForAudio(page, () => window.__claudevilleAudio?.()?.enabled === false);

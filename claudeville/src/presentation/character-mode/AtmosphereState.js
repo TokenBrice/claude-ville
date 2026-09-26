@@ -1197,7 +1197,7 @@ export function sourceEnergyEnvelope(minuteOfDay, weather = null, seasonShift = 
     return SOURCE_ENERGY_BUCKETS[SOURCE_ENERGY_ORDER[index]];
 }
 
-function seasonShiftFor(seasonToken) {
+export function seasonShiftFor(seasonToken) {
     const offsets = SEASONAL_DAY_LENGTH_OFFSETS[seasonToken];
     return offsets
         ? { sunriseShift: offsets.sunrise, sunsetShift: offsets.sunset }

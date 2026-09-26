@@ -9,7 +9,6 @@ import {
     cueLifecycleDecision,
     updateQuietFloor,
 } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
-import { cricketLevel } from '../../claudeville/src/presentation/shared/audio/AudioDirector.js';
 
 test('an urgent cue preempts a routine cue', () => {
     const urgent = { kind: 'summons', lane: CUE_LANES.NEEDS_YOU };
@@ -334,11 +333,3 @@ test('outcomes keep a reserve of the routine budget; one Major at a time', () =>
     assert.deepEqual(events.map(event => event.kind), ['r0', 'r1', 'r2', 'r3', 'release', 'commit']);
     governor.destroy();
 }));
-
-test('crickets fall silent as rain arrives and stop in a storm', () => {
-    const midnight = { phase: 'night', phaseProgress: 0.5, season: 'summer' };
-    assert.equal(cricketLevel({ ...midnight, precipitation: 0 }), 1);
-    assert.ok(cricketLevel({ ...midnight, precipitation: 0.5 }) <= 0.5);
-    assert.equal(cricketLevel({ ...midnight, precipitation: 0.6, storm: 0.8 }), 0);
-    assert.equal(cricketLevel({ ...midnight, phase: 'day' }), 0);
-});

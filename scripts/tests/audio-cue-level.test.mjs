@@ -7,6 +7,7 @@ import { BgmDirector } from '../../claudeville/src/presentation/shared/audio/Bgm
 import { CueGovernor } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
 import {
     URGENT_FALLBACK_TRIM_DB,
+    URGENT_MIN_TRIM_DB,
     URGENT_PEAK_MAX_DBFS,
     cueTrimDb,
     urgentTrimCapDb,
@@ -16,15 +17,27 @@ import { CueKit } from '../../claudeville/src/presentation/shared/audio/cues/Cue
 
 // --- cueTrimDb: S2 trim rules per class --------------------------------------
 
-test('an urgent cue aims at its floor + 2 LU and is never trimmed below 0 dB', () => {
+test('an urgent cue aims at its floor + 2 LU and is not cut to reach it', () => {
     // needs-you over a Village bed: floor +10, aim +12.
     assert.equal(cueTrimDb({ lane: 'needsYou', nominalLufsM: -36, bedLufs: -45 }), 3);
     // Over music the floor is +8, so the same bed asks 2 dB less.
     assert.equal(cueTrimDb({ lane: 'needsYou', nominalLufsM: -36, bedLufs: -45, bed: 'music' }), 1);
-    // A near-silent bed would ask for a cut; urgent cues never take one.
-    assert.equal(cueTrimDb({ lane: 'error', nominalLufsM: -36, bedLufs: -70 }), 0);
+    // A bed that puts an error call over its aim (+10) but under its ceiling keeps 0 dB.
+    assert.equal(cueTrimDb({ lane: 'error', nominalLufsM: -36, bedLufs: -46.5 }), 0);
     // A loud bed lifts to the +12 dB ceiling and no further.
     assert.equal(cueTrimDb({ lane: 'limit', nominalLufsM: -36, bedLufs: -20 }), 12);
+});
+
+test('over a bed so quiet a call at 0 dB would pass its ceiling, it comes down to 1 LU under, at most 4 dB', () => {
+    // needs-you ceiling +12: at 0 dB this call would read +13 over a -49 bed.
+    assert.equal(cueTrimDb({ lane: 'needsYou', nominalLufsM: -36, bedLufs: -49 }), -2);
+    // limit ceiling +10.
+    assert.equal(cueTrimDb({ lane: 'limit', nominalLufsM: -44, bedLufs: -55 }), -2);
+    // A near-silent bed takes the most it may: 4 dB.
+    assert.equal(cueTrimDb({ lane: 'error', nominalLufsM: -36, bedLufs: -70 }), URGENT_MIN_TRIM_DB);
+    assert.equal(URGENT_MIN_TRIM_DB, -4);
+    // With no bed to read the wake trim is never a cut.
+    assert.equal(cueTrimDb({ lane: 'needsYou', nominalLufsM: -36, bedLufs: null, recentUrgentTrims: [-3] }), 0);
 });
 
 test('an urgent lift stops where the limiter would take it back, never below 0 dB', () => {
@@ -69,8 +82,8 @@ test('Minor outcomes, scenery and thunder are never lifted', () => {
     }
     // Scenery floor 0, aim +1: a -33.5 bell over a -40 bed comes down 5.5 dB.
     assert.equal(cueTrimDb({ lane: 'scenery', nominalLufsM: -33.5, bedLufs: -40 }), -5.5);
-    // A Minor outcome aims 3 LU under its floor: the knock sits under the bed.
-    assert.equal(cueTrimDb({ lane: 'outcomeMinor', nominalLufsM: -43, bedLufs: -45 }), -5);
+    // A Minor outcome aims just under its floor: the knock sits at the bed's level.
+    assert.ok(Math.abs(cueTrimDb({ lane: 'outcomeMinor', nominalLufsM: -43, bedLufs: -45 }) + 2.2) < 1e-9);
 });
 
 // --- CueKit: note-timed ducks that leave with their cue -----------------------

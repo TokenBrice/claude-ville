@@ -8,11 +8,13 @@
 //
 // Default: the gate at PLAN_STAGE (lib/checks.mjs; criteria owned by a later
 // wave print DEFER and never fail) on the virtual clock (HAR-1: the shipped
-// controller rendered on an OfflineAudioContext, sample-identical per seed)
+// controller rendered on an OfflineAudioContext, identical per seed to within
+// the renderer's jitter)
 // plus the Wave-0 checks on the live app. Checks (PASS/FAIL/INFO lines; any
-// FAIL exits 1):
+// FAIL exits 1; WARN flags a finding that is not a verdict):
 //   scenes       S2 scene targets (Loudness.js) at the standard step: anchor,
-//                village busy, Town band, rain, storm, resting; HAR-5 stems
+//                village busy, Town band, rain, storm, resting, the night
+//                program vs noon (Wave 6); HAR-5 stems
 //   margins      cue lanes (needs-you, error, limit, routine, scenery, the
 //                three outcome tiers) over the village (no music), music,
 //                rain and storm beds: median of 3 placements in the full S2
@@ -35,12 +37,14 @@
 //                first second after resume ≤ steady rate + 1, same piece
 //   air          2.4: IR T60 at 1/4 kHz day and night, D/R at d = 0 / 1,
 //                urgent wet re dry, what the air adds to the program
-//   noise        2.5: texture autocorrelation, bed ICC, mono fold, lanes
+//   noise        2.5 / C-AMB-3: texture autocorrelation (the sea too), bed
+//                ICC and mono fold (night and storm too), lanes
 //                on one pool buffer ≥ 5 s apart, the pool's budget
 //   bank         2.6: resident bytes vs MEMORY_BUDGET, bake slices ≤ 5 ms
-//   sequencer    2.3: every piece vs its Wave-1 reference render
+//   sequencer    2.3: every piece's onsets vs its Wave-1 reference render
 //                (baselines/sequencer-wave1.json; --update --ref-rev REV
-//                re-renders it from REV's tree): identical onsets, ≤ 0.5 LU
+//                re-renders it from REV's tree), identical; its level within
+//                ±0.5 LU of the current baselines/scenes.json
 //   discrim      3.1–3.5 (S1): every cue voice governor-free — signal vs
 //                every other voice ≥ 2/3, urgent pairwise ≥ 2/3, outcomes
 //                vs needs-you, no quick same-pitch opening outside signals
@@ -56,6 +60,24 @@
 //                both presets, sound on and off
 //   honesty      must-never 3 (a wait audible while it lasts) and 13
 //                (phase-locked urgent bells, stale-data sound)
+//   worldmap     4.5 / S2 / S7: the 72-scene world map (4 phases × 6 weathers ×
+//                resting / 3 / 12 working, 30 s, the program = the world
+//                stratum) vs its S2 rows relative to A and the day arc's
+//                share; must-never 7 (night/weather ≤ day + 6 LU); night
+//                2–5 kHz ≥ 4 dB under noon; ambient onsets ≤ 180/min; the
+//                world stem at 3 vs 12 and the CPU offline proxy (INFO)
+//   worldstem    S6 / C-AMB-1: the world stem at 0 vs 12 working, one seed,
+//                identical within renderer noise (max |Δ| ≤ 1e-6 or ≤ a
+//                same-count repeat's)
+//   sea          4.1: the day sea 2–6 LU under A, ICC and r(4 s), breaks per
+//                minute, the night bed's 250 Hz–1 kHz gain, gulls roost,
+//                hull groans off 500–700 Hz, nodes only per rare take
+//   thunder      4.2: near/far LU from the onset, onset delay after the
+//                flash, monotonic in intensity, GR, fresh grain, no duck
+//   masking      must-never 8: needs-you and error inside a thunder roll
+//                and over rain keep their S2 floors
+//   crest        4.6: a cue whose first note lands on a sea crest keeps its
+//                S2 margin (night Village bed, storm)
 //   lint, routing, away (+ resume), ceremony   the Wave-0 checks (live app)
 //   continuity   2.1: blur 3 s → focus keeps the Town band piece and level
 //   fps          2.4: app frame total p95, sound on vs off (realtime)
@@ -69,24 +91,31 @@ import { writeWavFloat } from './lib/analyze.mjs';
 import { BACKGROUND_ARGS, DEFAULT_SEED, HARNESS_CHROME_ARGS } from './lib/capture.mjs';
 import { fmt, signed } from './lib/format.mjs';
 import {
-    BASELINE_TOLERANCE, CROWN_SYNC_MS, CUE_STRATUM, HELD_NOTE, ISLAND_AIR, LADDER, NOISE_LIMITS, PLAN_STAGE, compareBaseline, expectedLadder, heldNoteRise,
-    beatingDepthDb, judgeAirT60, judgeBank, judgeCaptionParity, judgeCluster, judgeDiscrimination, judgeDuckedTime, judgeHeldTrim, judgeLadder, judgeLane,
-    judgeSceneTargets, judgeSequencer, judgeTransport, judgeWakes, median, noiseLaneConflicts, onsetNear, waitAudibleWindows,
+    BASELINE_TOLERANCE, CROWN_SYNC_MS, CUE_STRATUM, HELD_NOTE, ISLAND_AIR, LADDER, MUST_NEVER_7_LU, NOISE_LIMITS, PLAN_STAGE, SEA_LIMITS, THUNDER_LIMITS, URGENT_LANES, WORLD_STEM_MAX_ABS, bakeLandingDiffs,
+    beatingDepthDb, compareBaseline, expectedLadder, groanViolations, heldNoteRise, judgeAirT60, judgeBank, judgeCaptionParity, judgeCluster, judgeDiscrimination,
+    judgeDuckedTime, judgeHeldTrim, judgeLadder, judgeLane, judgeOnsetBudget, judgeSceneTargets, judgeSequencer, judgeThunder, judgeTransport, judgeWakes,
+    judgeWorldMap, judgeWorldStem, median, nightWeatherOverDay, noiseLaneConflicts, onsetNear, presenceUnderNoon, waitAudibleWindows, withinRange, worldStemDiffers,
 } from './lib/checks.mjs';
 import {
     AIR_CUE_SCENE, CAPTION_SETTINGS, DASHBOARD_SCENE, GALLERY_VOICES, HELD_ANSWER_SEC, HELD_OPEN_SEC, LADDER_OPEN_SEC, LADDER_SECONDS, LADDER_TRIM_SCENE,
     LONG_WAIT_SCENE, LONG_WAIT_SECONDS, MARGIN_BEDS, MARGIN_LANES, OUTCOME_SCENE, STALE_SCENE, TEXTURE_SCENES, TRANSPORT_SCENE,
     VILLAGE_DRY_SCENE, WAKE_SCENE, captionScene, clusterScene, galleryScene, heldNoteScene, hiddenScene, ladderSilentScene,
+    CREST_BEDS, CREST_WINDOW, MAP_LOADS, MAP_PHASES, MAP_SECONDS, MAP_WEATHERS, MASKING_SCENE, NIGHT_BED_NO_SEA, SEA_NIGHT_SCENE, SEA_RARE_SCENE,
+    SILENT_ISLAND_SCENE, THUNDER_INTENSITIES, THUNDER_SCENE, WORLD_STEM_FIXTURES, WORLD_STEM_SECONDS, crestCalibration, crestPlaced, crestScene,
+    worldMapCells, worldStemScene,
 } from './lib/scenes.mjs';
 import {
     captionRows, clusterRow, crownRow, galleryRows, heldNoteRows, heldWhileMusic, ladderCalls, ladderCaptioned, ladderTrimRows, laneEvents, wakeRows,
 } from './lib/probe-wave3.mjs';
-import { renderSilent } from './lib/virtual.mjs';
+import { renderSilent, renderVirtual } from './lib/virtual.mjs';
 import { discriminationMatrix } from './metrics/discrim.mjs';
 import {
-    avSyncRows, duckRows, limiterUnitRows, makeRenderer, marginRows, renderLimiterUnit, sceneLevelMap,
+    avSyncRows, duckRows, laneMarginRows, limiterUnitRows, makeRenderer, marginRows, renderLimiterUnit, sceneLevelMap,
     sceneMetrics, sceneSpec, stemReport, switchRows,
 } from './lib/probe-virtual.mjs';
+import {
+    bandLevelDb, concurrentOverBedLu, crestGap, firstDivergenceSec, loudestCrest, maxSampleDiff, seaStemRow, thunderRows, worldBandDb, worldCellRow,
+} from './lib/probe-wave4.mjs';
 import {
     airRows, arrivalDrRows, bedRows, loadPieces, pauseRows, referenceServer, renderAir, sequencerRow, textureRows, transportRows, urgentWetRows,
 } from './lib/probe-wave2.mjs';
@@ -125,7 +154,7 @@ const JOBS = Math.max(1, Number(args.jobs || 2));
 const SEED = args.seed != null ? Number(args.seed) : DEFAULT_SEED;
 const NO_WORKLETS = Boolean(args['no-worklets']);
 const UPDATE = Boolean(args.update);
-const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'noise', 'bank', 'sequencer', 'discrim', 'ladder', 'cluster', 'heldnote', 'outcomes', 'captions', 'honesty'];
+const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'noise', 'bank', 'sequencer', 'discrim', 'ladder', 'cluster', 'heldnote', 'outcomes', 'captions', 'honesty', 'worldmap', 'worldstem', 'sea', 'thunder', 'masking', 'crest'];
 const APP_CHECKS = ['lint', 'routing', 'away', 'ceremony', 'continuity', 'fps'];
 const ALL_CHECKS = [...VIRTUAL_CHECKS, ...APP_CHECKS];
 const ONLY = args.only ? String(args.only).split(',').map(s => s.trim()) : ALL_CHECKS;
@@ -140,6 +169,11 @@ const results = [];
 function verdict(check, pass, detail) {
     results.push({ check, pass, detail });
     console.log(`${stamp()} ${pass ? 'PASS' : 'FAIL'}  ${check}  ${detail}`);
+}
+// A finding that is not a verdict on the gate (e.g. renderer nondeterminism).
+function warn(check, detail) {
+    results.push({ check, pass: null, warn: true, detail });
+    console.log(`${stamp()} WARN  ${check}  ${detail}`);
 }
 function info(check, detail) {
     results.push({ check, pass: null, detail });
@@ -195,6 +229,15 @@ function virtualUnits(render, browser, baseUrl) {
                     summary[`scene:${name}`] = { lufsI: m.lufsI, stMax: m.stMax };
                     info('scenes', `${name}: LUFS-I ${fmt(m.lufsI)}, ST max ${fmt(m.stMax)}, LRA ${fmt(m.lra)} LU, TP ${fmt(m.truePeakDbtp)} dBTP${m.grMaxDb != null ? `, limiter GR max ${fmt(m.grMaxDb)} dB` : ''} (${m.limiterKind}, rendered ${fmt(m.renderMs / 1000)} s); errors ${r.errors.length}${r.errors.length ? `: ${r.errors.slice(0, 2).join(' | ')}` : ''}`);
                 }
+                // S2's night row with its occasion: the program at night and
+                // at noon, same load, music at its default (Wave 6 owns it).
+                for (const name of ['nightProgram', 'noonProgram']) {
+                    const r = await scene(name);
+                    const m = sceneMetrics(r);
+                    const presenceDb = bandLevelDb({ L: r.program.L.subarray(Math.round(r.meta.warmup * r.sr)), R: r.program.R.subarray(Math.round(r.meta.warmup * r.sr)) }, r.sr, 2000, 5000);
+                    measured[name] = { lufsI: m.lufsI, presenceDb };
+                    summary[`scene:${name}`] = { lufsI: m.lufsI, stMax: m.stMax };
+                }
                 if (!has('scenes')) return;
                 for (const row of judgeSceneTargets(measured)) outcome('scenes', row.outcome, `${row.scene}: ${row.detail}`, row.gatedFrom);
                 const busy = await scene('villageBusy');
@@ -226,10 +269,22 @@ function virtualUnits(render, browser, baseUrl) {
                         const why = j.failures.map(f => (f.gatedFrom > PLAN_STAGE ? `${f.what} (Wave ${f.gatedFrom})` : f.what)).join(', ');
                         outcome('margins', j.outcome, `${lane} over ${bedName}: median ${signed(j.margin)} LU (${each}; cue trims ${trims} dB, ${j.n} admitted), want ${win}${extra}${why ? ` — ${why}` : ''}`, Math.max(...j.failures.map(f => f.gatedFrom), 0));
                     }
-                    // S2: a Minor outcome also sits ≥ 3 LU under the routine cue.
+                    // S2: a Minor outcome also sits ≥ 3 LU under the routine cue,
+                    // both as the cue's own level over the bed stems.
                     if (has('margins')) {
-                        const under = medians.outcomeMinor != null && medians.routine != null ? medians.routine - medians.outcomeMinor : null;
-                        verdict('margins', under != null && under >= 3, `outcome Minor under routine over ${bedName}: ${fmt(under)} LU (turn done ${signed(medians.outcomeMinor)} vs arrival ${signed(medians.routine)}); want ≥ 3`);
+                        const stemMedian = lane => median(rows.filter(x => x.lane === lane).map(x => x.stemMargin));
+                        const minor = stemMedian('outcomeMinor');
+                        const routine = stemMedian('routine');
+                        const under = minor != null && routine != null ? routine - minor : null;
+                        verdict('margins', under != null && under >= 3, `outcome Minor under routine over ${bedName} (cue stem over the bed stems): ${fmt(under)} LU (turn done ${signed(minor)} vs arrival ${signed(routine)}); want ≥ 3`);
+                        // Would the stem measure flip any other lane's verdict?
+                        const flips = MARGIN_LANES.filter(l => l !== 'outcomeMinor').map((lane) => {
+                            const placements = rows.filter(x => x.lane === lane);
+                            const a = judgeLane(lane, MARGIN_BEDS[bedName].bed, placements, { probeBed: bedName }).outcome;
+                            const b = judgeLane(lane, MARGIN_BEDS[bedName].bed, placements.map(p => ({ ...p, margin: p.stemMargin })), { probeBed: bedName }).outcome;
+                            return a !== b ? `${lane} ${a}→${b} (${signed(median(placements.map(p => p.margin)))} → ${signed(median(placements.map(p => p.stemMargin)))} LU)` : null;
+                        }).filter(Boolean);
+                        info('margins', `${bedName}: the cue-stem-over-bed-stems margin for every lane (judged for Minor outcomes only): ${MARGIN_LANES.map(l => `${l} ${signed(stemMedian(l))}`).join(', ')}; verdicts it would flip: ${flips.join('; ') || 'none'}`);
                     }
                     if (r.errors.length) info('margins', `${bedName}: page errors: ${r.errors.slice(0, 3).join(' | ')}`);
                 },
@@ -323,6 +378,14 @@ function virtualUnits(render, browser, baseUrl) {
     }
     units.push(...wave2Units(render, browser, baseUrl, scene));
     units.push(...wave3Units(render, browser, baseUrl));
+    // Uncached renders (the 72-cell map and one-off scenes): each is reduced
+    // to numbers inside its unit, so its PCM never outlives it.
+    const renderOnce = async (key, spec) => {
+        const r = await renderVirtual(browser, baseUrl, { ...spec, name: key, noWorklets: NO_WORKLETS }, { seed: SEED });
+        keep(key, r);
+        return r;
+    };
+    units.push(...wave4Units(render, renderOnce, scene));
     return units;
 }
 
@@ -407,7 +470,7 @@ function wave2Units(render, browser, baseUrl, scene) {
             async run() {
                 const renders = {};
                 for (const [name, t] of Object.entries(TEXTURE_SCENES)) renders[`texture:${name}`] = await render(`texture:${name}`, t.spec);
-                for (const name of ['anchor', 'rain', 'storm', 'villageBusy']) renders[name] = await scene(name);
+                for (const name of ['anchor', 'rain', 'storm', 'nightClear', 'villageBusy']) renders[name] = await scene(name);
                 wave2.noiseBank = renders.rain.meta.diagnostics?.bank ?? null;
                 wave2.busyBank = renders.villageBusy.meta.diagnostics?.bank ?? null;
                 wave2.bakeTimers = Object.values(renders).flatMap(r => r.meta.timers);
@@ -418,11 +481,13 @@ function wave2Units(render, browser, baseUrl, scene) {
                     if (!Number.isFinite(x.lufsI) || x.lufsI < -110) { info('noise', `${name}: silent on the ${t.stem} stem (layer absent or at 0), not judged`); continue; }
                     verdict('noise', x.peak.r < NOISE_LIMITS.autocorrMax, `${name} texture: autocorrelation peak ${fmt(x.peak.r, 3)} at ${fmt(x.peak.lagS, 2)} s over 0.5–20 s lags (stem ${fmt(x.lufsI)} LUFS-I, ICC ${fmt(x.icc, 2)}); want < ${NOISE_LIMITS.autocorrMax}`);
                 }
-                for (const name of ['anchor', 'rain']) {
+                // C-AMB-3 (2.5, 4.3): the world bed by day, at night (the sea
+                // forward), in rain and in the storm.
+                for (const name of ['anchor', 'nightClear', 'rain', 'storm']) {
                     const b = bedRows(renders[name]);
                     verdict('noise', b.worldIcc >= NOISE_LIMITS.icc.min && b.worldIcc <= NOISE_LIMITS.icc.max, `${name} world bed ICC ${fmt(b.worldIcc, 3)} on 60 s; want ${NOISE_LIMITS.icc.min}–${NOISE_LIMITS.icc.max}`);
                 }
-                for (const name of ['anchor', 'rain', 'villageBusy']) {
+                for (const name of ['anchor', 'nightClear', 'rain', 'storm', 'villageBusy']) {
                     const b = bedRows(renders[name]);
                     verdict('noise', b.monoLossLU <= NOISE_LIMITS.monoLossMaxLu, `${name} program mono fold loss ${fmt(b.monoLossLU, 2)} LU; want ≤ ${NOISE_LIMITS.monoLossMaxLu}`);
                 }
@@ -449,13 +514,18 @@ function wave2Units(render, browser, baseUrl, scene) {
                 if (UPDATE && (args['ref-rev'] || !fs.existsSync(SEQUENCER_FILE))) await renderSequencerReference(browser, String(args['ref-rev'] || SEQUENCER_REFERENCE_REV));
                 if (!fs.existsSync(SEQUENCER_FILE)) { verdict('sequencer', false, `no ${path.relative(process.cwd(), SEQUENCER_FILE)}; run --only sequencer --update`); return; }
                 const ref = JSON.parse(fs.readFileSync(SEQUENCER_FILE, 'utf8'));
+                // Levels drift against the current baseline (scenes.json);
+                // with --update the new numbers are written and reported.
+                const base = fs.existsSync(BASELINE_FILE) ? JSON.parse(fs.readFileSync(BASELINE_FILE, 'utf8')).summary || {} : {};
                 for (const p of await loadPieces()) {
                     const want = ref.pieces[p.key];
                     if (!want) { verdict('sequencer', false, `${p.key}: no Wave-1 reference`); continue; }
                     const cur = sequencerRow(await render(`sequencer:${p.key}`, p.spec), p);
-                    const j = judgeSequencer(want, cur);
+                    summary[`sequencer:${p.key}`] = { lufsI: cur.lufsI };
+                    const baselineLufs = UPDATE ? cur.lufsI : base[`sequencer:${p.key}`]?.lufsI ?? null;
+                    const j = judgeSequencer(want, cur, { baselineLufs });
                     const mm = j.onsets.firstMismatch;
-                    verdict('sequencer', j.pass, `${p.key} (pinned by ${cur.pinned ?? '—'}): ${j.onsets.curCount} onsets vs ${j.onsets.refCount}, max Δ ${fmt(j.onsets.maxDeltaMs, 3)} ms${mm ? `, first mismatch #${mm.index} (${mm.ref ?? '—'} vs ${mm.cur ?? '—'} s)` : ''}; LUFS-I ${fmt(cur.lufsI, 2)} vs ${fmt(want.lufsI, 2)} (${signed(j.lufsDelta, 2)} LU); want identical onsets and ≤ 0.5 LU${cur.errors.length ? `; page errors: ${cur.errors.slice(0, 2).join(' | ')}` : ''}`);
+                    verdict('sequencer', j.pass, `${p.key} (pinned by ${cur.pinned ?? '—'}): ${j.onsets.curCount} onsets vs ${j.onsets.refCount} in the Wave-1 reference, max Δ ${fmt(j.onsets.maxDeltaMs, 3)} ms${mm ? `, first mismatch #${mm.index} (${mm.ref ?? '—'} vs ${mm.cur ?? '—'} s)` : ''}; LUFS-I ${fmt(cur.lufsI, 2)} vs baseline ${UPDATE ? `${fmt(base[`sequencer:${p.key}`]?.lufsI, 2)} (rewritten)` : fmt(baselineLufs, 2)} (${signed(j.lufsDelta, 2)} LU; Wave 1 read ${fmt(want.lufsI, 2)}); want identical onsets and level within ±0.5 LU of the current baseline${baselineLufs == null ? ' (no baseline row: run --only sequencer --update)' : ''}${cur.errors.length ? `; page errors: ${cur.errors.slice(0, 2).join(' | ')}` : ''}`);
                 }
             },
         });
@@ -692,6 +762,209 @@ function wave3Units(render, browser, baseUrl) {
     return units;
 }
 
+// ------------------------------------------------------------ Wave 4 units ----
+// Wave-4 numbers shared between units: the map's cells (judged after the
+// pool, when every phase has landed) and the anchor they are relative to.
+const wave4 = { cells: [], A: null };
+const cellLabel = c => `${c.phase} ${c.weather} ${c.load === 'resting' ? 'resting' : c.load.slice(1)}`;
+
+function wave4Units(render, renderOnce, scene) {
+    const units = [];
+    const anchorA = async () => (wave4.A ??= sceneMetrics(await scene('anchor')).lufsI);
+    if (has('worldmap')) {
+        const cells = worldMapCells();
+        for (const phase of MAP_PHASES) {
+            units.push({
+                name: `worldmap (${phase}: ${Object.keys(MAP_WEATHERS).length} weathers × ${Object.keys(MAP_LOADS).length} loads, ${MAP_SECONDS} s each)`,
+                async run() {
+                    await anchorA();
+                    // S6 across the map: each 12-working cell's world stem
+                    // against the 3-working render of its phase and weather.
+                    let three = null;
+                    for (const c of cells.filter(x => x.phase === phase)) {
+                        const r = await renderOnce(c.key, c.spec);
+                        const row = { phase: c.phase, weather: c.weather, load: c.load, ...worldCellRow(r) };
+                        if (c.load === 'w3') three = r.stems.world;
+                        if (c.load === 'w12') { row.worldMaxAbs = three ? maxSampleDiff(three, r.stems.world) : null; three = null; }
+                        wave4.cells.push(row);
+                        summary[c.key] = { lufsI: row.lufsI };
+                    }
+                },
+            });
+        }
+    }
+    if (has('worldstem')) {
+        for (const fixture of Object.keys(WORLD_STEM_FIXTURES)) {
+            units.push({
+                name: `worldstem (${fixture}: 0 vs 12 working)`,
+                async run() {
+                    const none = await renderOnce(`worldstem:${fixture}:0`, worldStemScene(fixture, 0));
+                    const busy = await renderOnce(`worldstem:${fixture}:12`, worldStemScene(fixture, 12));
+                    const again = await renderOnce(`worldstem:${fixture}:12#2`, worldStemScene(fixture, 12));
+                    const d = maxSampleDiff(none.stems.world, busy.stems.world);
+                    const noise = maxSampleDiff(busy.stems.world, again.stems.world);
+                    const j = judgeWorldStem(d, { noise });
+                    const work = sceneMetrics(busy).lufsI - sceneMetrics(none).lufsI;
+                    const e = x => (x === Infinity ? 'length differs' : x.toExponential(2));
+                    verdict('worldstem', j.pass, `S6 / C-AMB-1, ${fixture}: world stem at 0 vs 12 working agents (same seed, no cue scheduled, ${WORLD_STEM_SECONDS + 2} s from the enable — before the empty village rests): ${j.identical ? 'bit-identical' : `max |Δ| ${e(d)}`}; the renderer's own noise (12 vs 12 again) ${e(noise)}; program Δ ${signed(work, 2)} LU from the work stratum; want identical within renderer noise, max |Δ| ≤ ${j.max.toExponential(0)} (−120 dBFS) or ≤ the repeat's. The sea's yield to scheduled cues (4.6, AMB-9) is the sanctioned cue coupling, not agent state`);
+                    // Where two renders part, and which bakes landed at other
+                    // audio times: the renderer's known nondeterminism.
+                    const attribute = (x, y) => {
+                        const from = firstDivergenceSec(x.stems.world, y.stems.world, x.sr, WORLD_STEM_MAX_ABS);
+                        const landed = bakeLandingDiffs(x.meta.bakes || [], y.meta.bakes || []);
+                        const live = (x.meta.workletNodes || []).filter(w => w.t > 0);
+                        const liveLine = live.length ? `AudioWorkletNodes built mid-render (their processors start on an audio-thread race): ${live.slice(0, 6).map(w => `${w.name} at ${fmt(w.t, 3)} s`).join(', ')}` : 'no AudioWorkletNode built mid-render';
+                        return `first over ${WORLD_STEM_MAX_ABS.toExponential(0)} at ${fmt(from, 3)} s; bakes landing at different audio times: ${landed.length ? landed.slice(0, 6).map(b => `${b.key} ${fmt(b.a, 3)} vs ${fmt(b.b, 3)} s`).join(', ') : `none of ${(x.meta.bakes || []).length}`}; ${liveLine}`;
+                    };
+                    if (noise > WORLD_STEM_MAX_ABS) warn('worldstem', `${fixture}: two renders of one scene (12 working, one seed) differ by max |Δ| ${e(noise)} (${fmt(20 * Math.log10(noise))} dBFS) — renderer nondeterminism, not float noise; ${attribute(busy, again)}`);
+                    if (!j.pass) info('worldstem', `${fixture}, 0 vs 12: ${attribute(none, busy)}`);
+                },
+            });
+        }
+    }
+    if (has('sea')) {
+        units.push({
+            name: 'sea (4.1: stem, texture, crests, rare voices)',
+            async run() {
+                const A = await anchorA();
+                const day = seaStemRow(await render('texture:sea', TEXTURE_SCENES.sea.spec));
+                const storm = seaStemRow(await render('texture:seaStorm', TEXTURE_SCENES.seaStorm.spec));
+                const night = seaStemRow(await renderOnce('sea:night', SEA_NIGHT_SCENE));
+                const rare = seaStemRow(await renderOnce('sea:rare', SEA_RARE_SCENE));
+                const silentCpu = seaStemRow(await renderOnce('sea:silent', SILENT_ISLAND_SCENE)).cpuPct;
+                const bed = await scene('nightClear');
+                const [lo, hi] = SEA_LIMITS.nightGainBandHz;
+                const gainDb = worldBandDb(bed, lo, hi) - worldBandDb(await renderOnce('sea:night-no-sea', NIGHT_BED_NO_SEA), lo, hi);
+                const all = { day, night, storm, rare };
+                const missing = Object.entries(all).filter(([, s]) => !s.snapshot).map(([k]) => k);
+                verdict('sea', missing.length === 0, `SeaLayer snapshot (director.layers.sea.snapshot()) in ${4 - missing.length}/4 renders${missing.length ? `; missing in ${missing.join(', ')}` : ''}; want every render`);
+                summary['sea:day'] = { lufsI: day.lufsOut };
+                const under = A - day.lufsOut;
+                verdict('sea', withinRange(under, SEA_LIMITS.underA), `day sea stem ${fmt(day.lufsOut)} LUFS-I at the output = ${fmt(under)} LU under A (${fmt(A)}); want ${SEA_LIMITS.underA.join('–')} under (ground, not figure)`);
+                for (const [name, s] of [['day', day], ['night', night], ['storm', storm]]) {
+                    verdict('sea', withinRange(s.icc, SEA_LIMITS.icc) && s.r4 < SEA_LIMITS.r4Max, `${name} sea (60 s alone): ICC ${fmt(s.icc, 3)}, r(4 s) ${fmt(s.r4, 3)} (peak ${fmt(s.peak?.r, 3)} at ${fmt(s.peak?.lagS, 2)} s), ${fmt(s.lufsOut)} LUFS-I at the output; want ICC ${SEA_LIMITS.icc.join('–')}, r(4 s) < ${SEA_LIMITS.r4Max}`);
+                }
+                verdict('sea', withinRange(day.breaksPerMin, SEA_LIMITS.breaksPerMin), `breaking waves by day: ${fmt(day.breaksPerMin)}/min (crests committed in the 60 s); want ${SEA_LIMITS.breaksPerMin.join('–')} (4.1: ~5)`);
+                info('sea', `breaking waves: night ${fmt(night.breaksPerMin)}/min, storm ${fmt(storm.breaksPerMin)}/min (AMB-1 asks ${SEA_LIMITS.stormBreaksPerMin.join('–')} in a storm)`);
+                verdict('sea', withinRange(gainDb, SEA_LIMITS.nightGainDb), `night bed, aggregate ${lo} Hz–${hi / 1000} kHz band energy, with the sea vs without it (nightClear, the sea forced to 0): ${signed(gainDb)} dB; want ${SEA_LIMITS.nightGainDb.map(v => `+${v}`).join('…')}`);
+                const gulls = [night, storm].flatMap(s => s.rare.filter(v => v.kind === 'gull'));
+                verdict('sea', gulls.length === 0, `gulls at night and in the storm: ${gulls.length}; want 0 (C-AMB-7: gulls roost)`);
+                const rareAll = Object.values(all).flatMap(s => s.rare);
+                const kinds = ['gull', 'clink', 'groan'].map(k => `${k} ${rareAll.filter(v => v.kind === k).length}`).join(', ');
+                const groans = rareAll.filter(v => v.kind === 'groan');
+                const bad = groanViolations(rareAll);
+                if (groans.length) verdict('sea', bad.length === 0, `hull groans: ${groans.length}, resonances ${[...new Set(groans.flatMap(g => g.hz || []).map(h => Math.round(h)))].join(', ')} Hz; ${bad.length} inside ${SEA_LIMITS.groanForbiddenHz.join('–')} Hz; want none (S1, C-AMB-8)`);
+                else info('sea', `no hull groan sounded in ${60 * 3 + 240} s of sea (the resonance rule is unexercised)`);
+                const nodeRows = Object.entries(all).map(([k, s]) => ({ k, nodes: s.nodeCreations, takes: s.rare.length }));
+                const over = nodeRows.filter(x => !(Number.isFinite(x.nodes) && x.nodes <= SEA_LIMITS.nodesPerTake * x.takes));
+                verdict('sea', over.length === 0, `node creations after start: ${nodeRows.map(x => `${x.k} ${x.nodes ?? '—'} for ${x.takes} rare take(s)`).join(', ')} (rare voices: ${kinds}); want ≤ ${SEA_LIMITS.nodesPerTake} per take and 0 per wave (C-AMB-4)`);
+                info('sea', `CPU offline proxy (render wall ÷ audio time, harness included): sea alone ${fmt(day.cpuPct, 2)} % by day, ${fmt(storm.cpuPct, 2)} % in the storm vs an island with every layer at 0 ${fmt(silentCpu, 2)} % → the sea ≈ ${fmt(day.cpuPct - silentCpu, 2)} / ${fmt(storm.cpuPct - silentCpu, 2)} % (4.1: ≤ 2 % on a quiet host; relative only)`);
+            },
+        });
+    }
+    if (has('thunder')) {
+        units.push({
+            name: `thunder (4.2: ${THUNDER_INTENSITIES.length} strikes over the storm)`,
+            async run() {
+                const r = await renderOnce('thunder', THUNDER_SCENE);
+                const t = thunderRows(r);
+                const j = judgeThunder(t.rows);
+                for (const row of j.rows) {
+                    summary[`thunder:${row.intensity}`] = { margin: row.margin };
+                    verdict('thunder', row.pass, `intensity ${row.intensity} (${row.near ? 'near' : 'far'}): onset ${fmt(row.delaySec, 2)} s after the flash (want ${fmt(row.expectedDelaySec, 2)}), ${signed(row.margin)} LU over the storm from the onset (bed ${fmt(row.bedLufs)} LUFS), GR ${fmt(row.grDb)} dB, grain ${row.grains.map(g => `buf ${g.buf} ${fmt(g.off, 2)}–${fmt(g.end, 2)} s`).join(' + ') || 'none seen'}; want +${row.window.min}…+${row.window.max} LU, GR ≤ ${LOUDNESS_TARGETS.ceiling.thunderGrMaxDb} dB${row.failures.length ? ` — ${row.failures.join('; ')}` : ''}`);
+                }
+                const order = j.rows.filter(x => Number.isFinite(x.margin)).sort((a, b) => a.intensity - b.intensity).map(x => `${x.intensity} ${signed(x.margin)}`).join(' < ');
+                verdict('thunder', j.monotonic, `level vs intensity: ${order || 'none heard'}${j.drops.length ? `; louder for less: ${j.drops.map(d => `${d.from}→${d.to} ${signed(d.deltaLu)} LU`).join(', ')}` : ''}; want monotonic (tolerance ${THUNDER_LIMITS.monotonicTolLu} LU)`);
+                verdict('thunder', j.reused.length === 0 && j.rows.every(x => x.grains.length > 0), `fresh noise grain per strike: ${j.reused.length} reused pair(s)${j.reused.length ? ` (${j.reused.map(x => `#${x.a}/#${x.b} buf ${x.buf} ${signed(x.gapSec, 2)} s apart`).join(', ')})` : ''}, ${j.rows.filter(x => !x.grains.length).length} strike(s) with no pool read seen; want each strike's reads ≥ ${THUNDER_LIMITS.grainSepSec} s of buffer from the previous ${THUNDER_LIMITS.grainRecent} strikes'`);
+                verdict('thunder', t.ducks.length === 0, `ducks during the thunder scene: ${t.ducks.length}; want none (S3: thunder ducks nothing)`);
+                verdict('thunder', t.stMax <= LOUDNESS_TARGETS.storm.stMax, `storm with ${j.rows.length} strikes (world only): ST max ${fmt(t.stMax)}, LUFS-I ${fmt(t.lufsI)}, GR max ${fmt(t.grMaxDb)} dB; want ST max ≤ ${LOUDNESS_TARGETS.storm.stMax}${t.extraScores ? ` (${t.extraScores} thunder score(s) with no flash: the fallback?)` : ''}`);
+            },
+        });
+    }
+    if (has('masking')) {
+        units.push({
+            name: 'masking (must-never 8: thunder and rain)',
+            async run() {
+                const r = await renderOnce('masking:storm', MASKING_SCENE);
+                const onsets = thunderRows(r).rows.map(x => x.onset).filter(Number.isFinite);
+                for (const row of laneMarginRows(r, 'weather')) {
+                    const j = judgeLane(row.lane, 'weather', [row]);
+                    const onset = onsets.filter(o => o <= row.at).pop();
+                    const concurrent = row.at != null ? concurrentOverBedLu(r, row.at) : null;
+                    outcome('masking', j.outcome, `must-never 8: ${row.lane} ${onset != null ? `${fmt(row.at - onset, 2)} s into a full thunder roll` : '(no thunder before it)'}: ${signed(row.margin)} LU over the 3 s before (${fmt(j.band, 0)} bands ≥ +6 dB, GR ${fmt(j.gr)} dB); cue stem ${signed(concurrent)} LU over the world stem while both sound; want ≥ +${j.window.min}${j.failures.length ? ` — ${j.failures.map(f => f.what).join(', ')}` : ''}`, Math.max(0, ...j.failures.map(f => f.gatedFrom)));
+                }
+                const rain = marginRows(await render('margin:rain', sceneSpec('margin:rain')), 'rain');
+                for (const lane of URGENT_LANES) {
+                    const j = judgeLane(lane, 'weather', rain.filter(x => x.lane === lane), { probeBed: 'rain' });
+                    outcome('masking', j.outcome, `must-never 8: ${lane} over rain: median ${signed(j.margin)} LU (${j.n} placements, GR ${fmt(j.gr)} dB); want ≥ +${j.window.min}${j.failures.length ? ` — ${j.failures.map(f => f.what).join(', ')}` : ''}`, Math.max(0, ...j.failures.map(f => f.gatedFrom)));
+                }
+            },
+        });
+    }
+    if (has('crest')) {
+        for (const [bedName, b] of Object.entries(CREST_BEDS)) {
+            units.push({
+                name: `crest (4.6: ${b.lanes.join(', ')} on a crest over the ${bedName} bed)`,
+                async run() {
+                    const free = await renderOnce(`crest:${bedName}:free`, crestScene(bedName));
+                    const crest = loudestCrest(free, free.meta.warmup + CREST_WINDOW[0], free.meta.warmup + CREST_WINDOW[1]);
+                    if (!crest) { verdict('crest', false, `${bedName}: no crest committed in [${CREST_WINDOW.join(', ')}] s of a cue-free render (sea snapshot ${free.meta.sea ? 'present' : 'missing'})`); return; }
+                    const cal = crestCalibration(bedName);
+                    const c = await renderOnce(`crest:${bedName}:cal`, cal.spec);
+                    const offRows = laneMarginRows(c, b.bed);
+                    for (const lane of b.lanes) {
+                        const off = offRows.find(x => x.lane === lane);
+                        if (!off || off.margin == null) { verdict('crest', false, `${lane} over the ${bedName} bed: the calibration cue was not admitted`); continue; }
+                        const lead = off.at - (c.meta.warmup + cal.at[lane]);
+                        const p = await renderOnce(`crest:${bedName}:${lane}`, crestPlaced(bedName, lane, crest.t - free.meta.warmup - lead));
+                        const on = laneMarginRows(p, b.bed).find(x => x.lane === lane);
+                        const j = judgeLane(lane, b.bed, on ? [on] : []);
+                        const gap = on ? crestGap(p, on.at) : null;
+                        outcome('crest', j.outcome, `${lane} over the ${bedName} bed, first note ${on ? `${signed(on.at - crest.t, 2)} s` : '—'} from the loudest crest of the cue-free render (${fmt(crest.t)} s, amp ${fmt(crest.amp, 2)}): ${signed(on?.margin)} LU on the crest vs ${signed(off.margin)} off it (GR ${fmt(on?.grDb)} dB); nearest crest in this render ${gap ? `${fmt(gap.gapSec, 2)} s away${gap.moved ? ', moved for the cue' : ''}` : '—'}, sea yields ${p.meta.sea?.yields ?? '—'} (cue lead ${fmt(lead, 2)} s: under 1.5 s the duck alone covers it); want ${j.window.min != null ? `≥ ${signed(j.window.min, 0)}` : ''}${j.window.max != null ? ` ≤ ${signed(j.window.max, 0)}` : ''}${j.failures.length ? ` — ${j.failures.map(f => f.what).join(', ')}` : ''}`, Math.max(0, ...j.failures.map(f => f.gatedFrom)));
+                    }
+                },
+            });
+        }
+    }
+    return units;
+}
+
+// 4.5 and S2/S6/S7 over the whole map, once every phase unit has landed.
+function judgeWorldMapRows() {
+    const order = (c) => [MAP_PHASES.indexOf(c.phase), Object.keys(MAP_WEATHERS).indexOf(c.weather), Object.keys(MAP_LOADS).indexOf(c.load)];
+    const cells = wave4.cells.slice().sort((a, b) => { const x = order(a); const y = order(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; });
+    const want = MAP_PHASES.length * Object.keys(MAP_WEATHERS).length * Object.keys(MAP_LOADS).length;
+    const A = wave4.A;
+    if (!Number.isFinite(A) || cells.length !== want) { verdict('worldmap', false, `${cells.length}/${want} cells rendered, A ${fmt(A)}; want every cell`); return; }
+    const j = judgeWorldMap(cells, A);
+    for (const phase of MAP_PHASES) {
+        for (const weather of Object.keys(MAP_WEATHERS)) {
+            const rows = j.rows.filter(r => r.phase === phase && r.weather === weather);
+            info('worldmap', `${phase} ${weather} [${rows[0].row}${rows.some(r => r.row !== rows[0].row) ? `/${rows.find(r => r.row !== rows[0].row).row}` : ''}]: ${rows.map(r => `${r.load === 'resting' ? 'resting' : `${r.load.slice(1)} working`} ${fmt(r.load === 'resting' ? r.stMean : r.lufsI)} (A ${signed(r.over)}${r.pass ? '' : ' ✗'})`).join(' · ')}; 2–5 kHz ${rows.map(r => fmt(r.presenceDb)).join('/')} dB, onsets ${rows.map(r => fmt(r.onsetsPerMin, 0)).join('/')}/min, CPU proxy ${rows.map(r => fmt(r.cpuPct, 1)).join('/')} %${rows[0].dayArc ? `, grade ${rows[0].dayArc}` : ''}`);
+        }
+    }
+    verdict('worldmap', j.failures.length === 0, `${cells.length} world scenes vs their S2 rows relative to A ${fmt(A)} (resting: pilot light; rain ≤ A + ${LOUDNESS_TARGETS.rain.maxOverA}; storm ≤ A + ${LOUDNESS_TARGETS.storm.maxOverA} with ST max ≤ ${LOUDNESS_TARGETS.storm.stMax}; night ≤ A + ${LOUDNESS_TARGETS.night.maxOverA ?? '—'}): ${j.failures.length} failing${j.failures.length ? `: ${j.failures.slice(0, 8).map(r => `${cellLabel(r)} A ${signed(r.over)} (want ${r.want})`).join('; ')}` : ''}`);
+    const arcOut = j.rows.filter(r => r.row === 'dayArc' && !r.inArc);
+    verdict('worldmap', j.arc.pass, `day arc (4.5, AMB-12): ${j.arc.within}/${j.arc.n} waking dry-weather scenes within A ${signed(LOUDNESS_TARGETS.dayArc?.overA, 0)} ± ${LOUDNESS_TARGETS.dayArc?.toleranceLu ?? '—'} (${fmt(100 * (j.arc.share ?? NaN), 0)} %)${arcOut.length ? `; outside: ${arcOut.slice(0, 8).map(r => `${cellLabel(r)} ${signed(r.over)}`).join(', ')}` : ''}; want ≥ ${fmt(100 * (j.arc.minShare ?? NaN), 0)} %`);
+    const mn7 = nightWeatherOverDay(cells);
+    verdict('worldmap', mn7.pass, `must-never 7: loudest night/weather scene over the clear day at the same load: ${mn7.worst ? `${cellLabel(mn7.worst)} ${signed(mn7.worst.overDay)} LU` : '—'}${mn7.failures.length ? `; over: ${mn7.failures.map(r => `${cellLabel(r)} ${signed(r.overDay)}`).join(', ')}` : ''}; want ≤ +${MUST_NEVER_7_LU} LU`);
+    for (const load of ['w3', 'w12']) {
+        const cell = (phase) => cells.find(c => c.phase === phase && c.weather === 'clear' && c.load === load);
+        const p = presenceUnderNoon(cell('night').presenceDb, cell('day').presenceDb);
+        verdict('worldmap', p.pass, `S2 night row, world stratum (${load.slice(1)} working, clear): 2–5 kHz ${fmt(p.underDb)} dB under noon (program = world); want ≥ ${p.minDb} dB darker`);
+    }
+    const ob = judgeOnsetBudget(cells);
+    verdict('worldmap', ob.pass, `ambient onsets (S7, band-rise detector on the program): busiest ${ob.worst ? `${cellLabel(ob.worst)} ${fmt(ob.worst.onsetsPerMin, 0)}/min` : '—'}${ob.over.length ? `; over: ${ob.over.map(c => `${cellLabel(c)} ${fmt(c.onsetsPerMin, 0)}`).join(', ')}` : ''}; want ≤ ${ob.max}/min everywhere`);
+    const s6 = worldStemDiffers(cells);
+    const worstAbs = s6.pairs.reduce((w, p) => (p.maxAbs != null && (w == null || p.maxAbs > w) ? p.maxAbs : w), null);
+    info('worldmap', `S6 / C-AMB-1 across the map (the gate is \`worldstem\`, which measures the renderer's noise beside it): world stem at 3 vs 12 working identical within renderer noise in ${s6.pairs.length - s6.differing.length}/${s6.pairs.length} phase × weather pairs (${s6.pairs.filter(p => p.identical).length} bit-identical, worst max |Δ| ${worstAbs != null ? worstAbs.toExponential(2) : '—'})${s6.differing.length ? `; differ: ${s6.differing.map(d => `${d.phase} ${d.weather} ${d.maxAbs != null ? d.maxAbs.toExponential(2) : '—'}`).join(', ')}` : ''}; ≤ ${WORLD_STEM_MAX_ABS.toExponential(0)} is the noise-free bar (storm cells carry a flash, no cue)`);
+    const cpu = cells.map(c => c.cpuPct).filter(Number.isFinite);
+    const cpuOf = (weather, phase = 'day') => cells.find(c => c.phase === phase && c.weather === weather && c.load === 'w3')?.cpuPct;
+    info('worldmap', `CPU offline proxy (render wall ÷ audio time, the harness and the directors included): median ${fmt(median(cpu), 1)} %, max ${fmt(Math.max(...cpu), 1)} %; day clear ${fmt(cpuOf('clear'), 1)} %, day storm ${fmt(cpuOf('storm'), 1)} %, night clear ${fmt(cpuOf('clear', 'night'), 1)} % (S8: calm ≤ 2.5 %, storm ≤ 3.5 % of a core for the environment on a quiet host; relative only)`);
+    const errs = cells.flatMap(c => c.errors || []);
+    if (errs.length) info('worldmap', `page errors: ${errs.slice(0, 3).join(' | ')}`);
+}
+
 // Wave-3 numbers shared between units (the cluster render feeds must-never 13).
 const wave3 = { silent: {}, cluster: {} };
 
@@ -808,6 +1081,7 @@ async function main() {
         await pool(units, JOBS);
         if (has('baseline')) judgeBaseline();
         if (has('bank')) judgeBankRows();
+        if (has('worldmap')) judgeWorldMapRows();
         const appUnits = [];
         if (['routing', 'away'].some(has)) {
             appUnits.push({ name: 'app busy day (routing, away)', check: 'app', run: async () => judgeBusy(await appBusyUnit(await appB(), reporter), reporter) });
@@ -839,13 +1113,15 @@ function finish() {
     const failed = results.filter(r => r.pass === false);
     const passed = results.filter(r => r.pass === true);
     const deferred = results.filter(r => r.deferred != null);
+    const warned = results.filter(r => r.warn);
     if (OUT) {
         fs.mkdirSync(OUT, { recursive: true });
         fs.writeFileSync(path.join(OUT, 'probe-report.json'), JSON.stringify({ seed: SEED, planStage: PLAN_STAGE, jobs: JOBS, only: ONLY, soak: Boolean(args.soak), seconds: (Date.now() - t0) / 1000, programTrimDb: PROGRAM_TRIM_DB, targets: LOUDNESS_TARGETS, summary, results }, null, 2));
     }
-    console.log(`\naudio:probe ${failed.length ? 'FAILED' : 'passed'} at plan stage ${PLAN_STAGE}: ${passed.length} pass, ${failed.length} fail, ${deferred.length} deferred in ${((Date.now() - t0) / 1000).toFixed(0)} s (seed ${SEED}, --jobs ${JOBS}${args.soak ? ', --soak' : ''})`);
+    console.log(`\naudio:probe ${failed.length ? 'FAILED' : 'passed'} at plan stage ${PLAN_STAGE}: ${passed.length} pass, ${failed.length} fail, ${deferred.length} deferred, ${warned.length} warned in ${((Date.now() - t0) / 1000).toFixed(0)} s (seed ${SEED}, --jobs ${JOBS}${args.soak ? ', --soak' : ''})`);
     for (const f of failed) console.log(`  FAIL ${f.check}: ${f.detail}`);
     for (const d of deferred) console.log(`  DEFER ${d.check} (Wave ${d.deferred}): ${d.detail}`);
+    for (const w of warned) console.log(`  WARN ${w.check}: ${w.detail}`);
     process.exitCode = failed.length ? 1 : 0;
 }
 

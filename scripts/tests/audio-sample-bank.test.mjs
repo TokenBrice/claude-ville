@@ -7,12 +7,16 @@ import {
     NOISE_ICC,
     NOISE_POOL,
     NoiseBuild,
+    NoisePool,
     SampleBank,
     bufferBytes,
     laneMargin,
     loopDistance,
     pickLane,
+    placeOneShot,
+    spanGap,
 } from '../../claudeville/src/presentation/shared/audio/SampleBank.js';
+import { thunderPlan } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
 import { MEMORY_BUDGET } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 import { rngStream, setRngSeed } from '../../claudeville/src/presentation/shared/audio/Rng.js';
 
@@ -141,6 +145,106 @@ test('continuous lanes take their own buffers; a one-shot keeps 5 s clear for it
             assert.ok(laneMargin(placed, other, periods[index]) >= LANE_SEPARATION_SEC);
         }
     }
+});
+
+// A fresh grain per strike: two strikes' reads on one pool buffer are
+// compared as spans on the loop.
+test('read spans on one loop: overlap is 0 apart, and the gap wraps around the loop', () => {
+    const P = 22;
+    assert.equal(spanGap({ offset: 3, span: 6 }, { offset: 5, span: 6 }, P), 0);
+    assert.equal(spanGap({ offset: 5, span: 6 }, { offset: 3, span: 6 }, P), 0);
+    assert.equal(spanGap({ offset: 0, span: 6 }, { offset: 10, span: 6 }, P), 4);
+    // [20, 26) wraps to [20, 22) ∪ [0, 4): 1 s clear of [5, 11).
+    assert.equal(spanGap({ offset: 20, span: 6 }, { offset: 5, span: 6 }, P), 1);
+    assert.equal(spanGap({ offset: 5, span: 6 }, { offset: 20, span: 6 }, P), 1);
+});
+
+const BROWN_PERIODS = NOISE_POOL.brown.frames.map(f => f / NOISE_POOL.brown.sampleRate);
+
+// The clearance a placed read keeps: its head to every lane on its buffer
+// over its life, its span to every avoided read there.
+function clearance(placed, read, lanes, avoid, periods) {
+    const period = periods[placed.index];
+    let min = Infinity;
+    for (const other of lanes) if (other !== placed && other.index === placed.index) min = Math.min(min, laneMargin(placed, other, period));
+    for (const prior of avoid) if (prior.index === placed.index) min = Math.min(min, spanGap(read, prior, period));
+    return min;
+}
+
+test('a storm of strikes: every roll keeps 5 s from each live lane and from the last two strikes\' reads', () => {
+    for (let seed = 0; seed < 20; seed++) {
+        const rng = rngStream(`test.storm.${seed}`);
+        // Wind, rain, murmur and sea: four continuous brown lanes on three buffers.
+        const lanes = [];
+        for (let i = 0; i < 4; i++) {
+            const lane = { start: 0, rate: 1, end: Infinity, oneShot: false };
+            lanes.push({ ...lane, ...pickLane(rng, BROWN_PERIODS, lanes, lane) });
+        }
+        const reads = [];
+        [0.9, 0.3, 0.7, 0.5, 1, 0.6, 0.8, 0.4].forEach((intensity, k) => {
+            const plan = thunderPlan(intensity, rng);
+            const start = 4 + 18 * k;
+            const seconds = plan.lengthSec + 0.05;
+            const life = { start, end: start + seconds, rate: plan.rate, oneShot: true };
+            const avoid = reads.slice(-2);
+            const placed = { ...life, ...placeOneShot(BROWN_PERIODS, lanes, life, avoid) };
+            const read = { index: placed.index, offset: placed.offset, span: seconds * plan.rate };
+            const clear = clearance(placed, read, lanes, avoid, BROWN_PERIODS);
+            assert.ok(clear >= LANE_SEPARATION_SEC, `seed ${seed}, strike ${k}: ${clear.toFixed(2)} s clear`);
+            lanes.push(placed);
+            reads.push(read);
+        });
+    }
+});
+
+test('a placed one-shot packs against what is there and keeps an unused buffer whole', () => {
+    const periods = [22, 22, 22];
+    const wind = { index: 1, offset: 0, start: 0, rate: 1, end: Infinity };
+    const shot = { start: 10, end: 16, rate: 1 };
+    const placed = { ...shot, ...placeOneShot(periods, [wind], shot) };
+    assert.equal(placed.index, 1, 'the buffer already read has room, so the empty ones stay empty');
+    const margin = laneMargin(placed, wind, 22);
+    assert.ok(margin >= LANE_SEPARATION_SEC && margin < LANE_SEPARATION_SEC + 0.2, `packed ${margin.toFixed(2)} s from the head`);
+    // An avoided read fences its buffer off for a span that cannot fit beside it.
+    const avoid = [{ index: 1, offset: 12, span: 8 }];
+    assert.notEqual(placeOneShot(periods, [wind], shot, avoid).index, 1);
+});
+
+test('with no clear offset anywhere, a one-shot takes the clearest', () => {
+    const periods = [9];
+    const lanes = [{ index: 0, offset: 0, start: 0, rate: 1, end: Infinity }];
+    const shot = { start: 0, end: 2, rate: 1 };
+    const { offset } = placeOneShot(periods, lanes, shot);
+    assert.ok(Math.abs(offset - 4.5) < 1e-9, 'opposite the head on a loop too short for 5 s either side');
+});
+
+test('a reserved one-shot holds its lane before it starts, so the next reservation keeps clear of it', () => {
+    const period = 22;
+    const fakeBuffer = { duration: period, length: period * 5000, numberOfChannels: 2 };
+    const pool = new NoisePool(null, () => null);
+    pool.buffers = () => [fakeBuffer];
+    const starts = [];
+    const ctx = {
+        currentTime: 3,
+        createBufferSource: () => ({
+            playbackRate: { value: 1 },
+            start(when, offset) { starts.push({ when, offset }); },
+            stop() {},
+            addEventListener() {},
+        }),
+    };
+    // Reserved 2 s ahead of the clock, as a strike trails its flash.
+    const roll = pool.reserveOneShot(ctx, 'brown', 6, { rate: 0.9, at: 5 });
+    assert.equal(roll.playbackRate.value, 0.9);
+    assert.equal(roll.buffer, fakeBuffer);
+    assert.ok(Math.abs(roll.read.span - 5.4) < 1e-9);
+    const next = pool.reserveOneShot(ctx, 'brown', 6, { at: 5 });
+    const a = { start: 5, end: 11, rate: 0.9, offset: roll.read.offset };
+    const b = { start: 5, end: 11, rate: 1, offset: next.read.offset };
+    assert.ok(laneMargin(a, b, period) >= LANE_SEPARATION_SEC);
+    // Started when it was placed for, it reads from its reserved offset.
+    roll.start(5);
+    assert.deepEqual(starts, [{ when: 5, offset: roll.read.offset }]);
 });
 
 test('a pool build is deterministic per seed, seamless at the loop and carries the stereo correlation', () => {

@@ -14,23 +14,39 @@
 //
 // The director decides when it is open (Village, no music, link live, a
 // non-stale actionable agent) and calls `setState` on its 1 Hz tick;
-// repeated calls with the same state only re-level it. Its sources start
-// with the director, silent, and stop with it: nothing here places a sound
-// from a timer.
+// repeated calls with the same state only re-level it, and every call reads
+// the bed, so the note opens on a settled bed rather than the instant's
+// swell. Its sources start with the director, silent, and stop with it:
+// nothing here places a sound from a timer.
+//
+// The held note's lane (S1, like the needs-you lane): the world bed (wind
+// and sea) and the murmur carry a permanent narrow cut centred on the D
+// (HELD_SLOT, `heldSlot`), so a note 8 LU under the bed still lifts the
+// 270–310 Hz band ≥ 6 dB over the bed before the wait. The slot never
+// moves: the bed sounds the same with or without a wait.
 
 import { MIN_GAIN, holdAt } from '../AudioEngine.js';
+import { makeFilter } from '../Filters.js';
 
 export const HELD_NOTE_HZ = Object.freeze({ low: 220, open: 293.66 }); // A3, D4
 export const RESOLVED_HZ = Object.freeze({ day: 277.18, night: 261.63 }); // C♯4, C4
 export const HELD_UNDER_BED_LU = 8;
+// The lane's cut in the world bed and the murmur (peaking, at the D).
+export const HELD_SLOT = Object.freeze({ hz: HELD_NOTE_HZ.open, q: 4, gainDb: -6 });
+
+/** One persistent HELD_SLOT filter for a bed voice's chain (the caller tracks it). */
+export function heldSlot(ctx) {
+    return makeFilter(ctx, 'peaking', HELD_SLOT.hz, { q: HELD_SLOT.q, gain: HELD_SLOT.gainDb });
+}
 // The A sits this far under the D: the suspended note carries the tension
 // and most of the pair's energy, inside the band a listener (and the probe's
 // 270–310 Hz rise) hears it by.
 export const LOW_UNDER_OPEN_DB = -4;
-// K-weighting at 220–294 Hz (RLB high-pass at 38 Hz: −0.2 dB) plus the
-// offset measured on the rendered pair against the bed tap (virtual clock,
-// Village W = 1 and 15: −0.5 LU), so the note lands on bed − 8.
-const PAIR_WEIGHT_DB = -0.7;
+// K-weighting of the pair at 220 and 294 Hz, energy-weighted (RLB high-pass
+// at 38 Hz −0.26 / −0.15 dB, the shelf stage ≈ 0): the rendered pair on
+// the signalBed stem measures this against its sine amplitudes (virtual
+// clock, Village W = 1 and 15: −0.1 / −0.15 LU).
+const PAIR_WEIGHT_DB = -0.15;
 // The bed before any tap reading exists (a wake, the first 1.5 s): anchor A
 // in the bus domain (−38 LUFS at the output, PROGRAM_TRIM_DB +28.2).
 const DEFAULT_BED_LUFS = -66;
@@ -38,14 +54,15 @@ const DEFAULT_BED_LUFS = -66;
 const DRIFT_CENTS = 0.9;
 const DRIFT_HZ = Object.freeze({ low: 0.031, open: 0.043 });
 const ATTACK_TAU_SEC = 1.2;
-// The bed reading is smoothed (an energy mean, τ 20 s) and the note follows
-// it only past ±1 dB, slowly: a gusting bed must not modulate the note (its
-// level tolerance is ±1 LU; beating depth ≤ 3 dB). A reading older than
+// The bed reading is smoothed (an energy mean, τ 20 s, read on every tick
+// so it is settled when a wait opens) and the note follows it only past
+// ±0.5 dB, slowly: a gusting bed must not modulate the note (its level
+// tolerance is ±1 LU; beating depth ≤ 3 dB). A reading older than
 // BED_STALE_SEC restarts the mean.
 const BED_SMOOTH_TAU_SEC = 20;
 const BED_STALE_SEC = 30;
 const RELEVEL_TAU_SEC = 6;
-const RELEVEL_MIN_DB = 1;
+const RELEVEL_MIN_DB = 0.5;
 const RESOLVE_SEC = 1.2;
 const RELEASE_TAU_SEC = 0.45;
 const FADE_TAU_SEC = 0.8;
@@ -128,6 +145,7 @@ export class HeldNote {
         if (phase) this.phase = phase;
         if (!this.running) return;
         const now = this.engine.now();
+        this._readBed(now);
         if (this.state !== 'closed' && this.state !== 'open' && now >= this._silentAt) this.state = 'closed';
         if (open) {
             this._level(now);
@@ -139,7 +157,6 @@ export class HeldNote {
     }
 
     _level(now) {
-        this._readBed(now);
         const gain = heldNoteGain(this._bedLufs);
         const env = this._env.gain;
         if (this.state !== 'open') {

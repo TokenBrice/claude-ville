@@ -29,7 +29,7 @@ import {
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
 import { readCountHours } from '../SoundSettings.js';
-import { clamp01, rand } from './AudioEngine.js';
+import { clamp01 } from './AudioEngine.js';
 import { rngStream } from './Rng.js';
 import { cueLifecycleDecision, updateQuietFloor } from './CueGovernor.js';
 import { cuePlacementKind, laneForCueKind } from './cues/CueKit.js';
@@ -41,6 +41,8 @@ import {
     hourChimeFor,
 } from './ActionableRouting.js';
 import { LinkHealth, audibleCounts, digestNotes, isAudibleAgent, waitState } from './AudibleWorld.js';
+import { cricketLevel, cricketTemperature, dayArcAt, weatherBirdRates } from './DayArc.js';
+import { SeaLayer } from './layers/SeaLayer.js';
 import { WindLayer } from './layers/WindLayer.js';
 import { RainLayer } from './layers/RainLayer.js';
 import { BirdsLayer } from './layers/BirdsLayer.js';
@@ -62,53 +64,46 @@ const QUIET_LEAVE_MS = 4000;
 // The world bus yields up to WEATHER_CEILING_DB as rain or a storm builds,
 // reaching it at WEATHER_FULL (a steady rain already counts as full), so
 // weather swells without taking the urgent bell's headroom. Measured with
-// `node scripts/audio/probe.mjs --only scenes` (PROGRAM_TRIM_DB 28.2,
-// standard step, A = −37.9): −7 dB left the rain scene at A + 5.7; −8 dB
-// reads rain A + 4.9 and storm A + 7.0, urgent-cue GR ≤ 2.7 dB over both.
+// `node scripts/audio/probe.mjs --only scenes` on the Wave-4 bed
+// (PROGRAM_TRIM_DB 26.7, standard step, A = −38.0): rain A + 0.2, storm
+// A + 5.2 with its thunder (ST max −29.2), urgent-cue GR ≤ 2.7 dB over both.
 export const WEATHER_CEILING_DB = -8;
 const WEATHER_FULL = 0.7;
+// The fair-weather wind law: strength at calm and its rise per unit of
+// weather intensity (a clear day's 0.18 reads 0.136, overcast's 0.68 0.18):
+// cloud is not wind, so fair weather moves the breeze ≈ 2.5 dB. A storm
+// adds its gale on top, up to the rain cap below.
+const WIND_CALM = 0.12;
+const WIND_PER_INTENSITY = 0.09;
+const WIND_PER_STORM = 0.3;
 // Rain-day wind at 0.4 sat 9 dB over calm; while it rains, wind stays under this.
 export const RAIN_WIND_CAP = 0.3;
 // Precipitation above this counts as audible rain (winter snow is hushed upstream).
 const RAIN_AUDIBLE = 0.05;
-// Resting keeps the world at the S2 pilot light (A − 10 ± 3 LU): weather at
-// 0.3 of its waking level (twice the old 0.15 floor), and never less wind
-// than the pilot level — wind is the only world bed until the sea lands (4.1).
-// Calm-day wind (0.05) carries anchor A on today's bed; 0.018 sits ≈ 9 dB under it.
+// Resting keeps the world at the S2 pilot light (A − 10 ± 3 LU): the sea
+// at 0.42 of its waking level (−7.5 dB) carries it, weather reads through at 0.3 of its
+// waking level, and nothing else of the world sings.
+export const RESTING_SEA_SCALE = 0.42;
 const RESTING_WEATHER_SCALE = 0.3;
-export const RESTING_PILOT_WIND = 0.018;
-// The Village composer's level: −6 dB from the pre-calibration 0.75, toward
-// S2's "Village music ≤ bed + 3 LU" (the music stem sat at bed + 7). The
-// occasion clock (6.6) and Wave 4's bed re-measure replace this constant.
-const VILLAGE_MUSIC_LEVEL = 0.375;
+// A storm (its sea, rain, rumble and thunder) reads through a resting
+// village at a smaller share: with its rain and strikes at 0.3 the resting
+// storm sat at A − 6.7 (S2 wants A − 10 ± 3).
+const RESTING_STORM_SCALE = 0.1;
+// The Village composer's level, re-measured on the Wave-4 bed: at 0.375 the
+// continuous composer carried the busy session to A + 7.2 (music the loudest
+// stem, 3.3 dB under the program's energy); 0.25 puts it at bed level.
+// The occasion clock (6.6) replaces this constant.
+const VILLAGE_MUSIC_LEVEL = 0.25;
 // Slew (s) of the first tick after start(): layers reach their targets under
 // the director crossfade instead of trailing it by their slow time constants.
 const PRIME_TIME_CONSTANT = 0.05;
 // A lost feed fades the work stratum over ~3 s (SIG-9): τ 1 s is 95 % there.
 const LINK_FADE_TIME_CONSTANT = 1;
 
-const BIRD_SEASON = { winter: 0.25, spring: 1, summer: 1, autumn: 0.7 };
-const CRICKET_SEASON = { winter: 0, spring: 0.45, summer: 1, autumn: 0.55 };
-
-// Daylight 0..1: 1 through the day, ramping through dawn/dusk, 0 at night.
-function daylight(phase, phaseProgress) {
-    if (phase === 'day') return 1;
-    if (phase === 'dawn') return phaseProgress;
-    if (phase === 'dusk') return 1 - phaseProgress;
-    return 0;
-}
-
-/**
- * Crickets sing through the night, fading in and out at its edges, follow the
- * season, and fall silent as rain arrives — a storm silences them outright
- * (storm precipitation can sit near 0.6, which would otherwise leave a chorus).
- */
-export function cricketLevel({ phase, phaseProgress = 0, season = 'summer', precipitation = 0, storm = 0 } = {}) {
-    if (phase !== 'night' || storm > 0) return 0;
-    const p = clamp01(phaseProgress);
-    return clamp01(Math.min(p, 1 - p) * 10)
-        * (CRICKET_SEASON[season] ?? 0.5)
-        * (1 - clamp01(precipitation));
+// Thunder trails the drawn flash by its distance (AMB-6): a near strike
+// (intensity 1) 0.4 s after it, a far one (intensity 0) 4.9 s.
+export function thunderLeadMs(intensity) {
+    return (0.4 + 4.5 * (1 - clamp01(intensity))) * 1000;
 }
 
 /**
@@ -116,16 +111,20 @@ export function cricketLevel({ phase, phaseProgress = 0, season = 'summer', prec
  * `precipitation` is the heard rain amount (winter snow already hushed) and
  * `storm` the storm intensity. Wind is capped while it rains, and the
  * Village music rests through rain and storm (S7: no melodic duty there);
- * resting keeps only the world stratum, at the pilot light. Returns the
- * world bus's weather ceiling in dB (≤ 0), scaled by how much weather there is.
+ * resting keeps only the world stratum, at the pilot light: the sea, with
+ * the weather (rain and the storm the sea and rain play) scaled down. The sea's own weather physics live in SeaLayer.
+ * Returns the world bus's weather ceiling in dB (≤ 0), scaled by how much
+ * weather there is.
  */
 export function applyWorldBudgets(levels, { precipitation = 0, storm = 0, resting = false } = {}) {
     const rain = clamp01(precipitation);
     if (rain > RAIN_AUDIBLE) levels.wind = Math.min(levels.wind, RAIN_WIND_CAP);
     if (rain > RAIN_AUDIBLE || storm > 0) levels.music = 0;
     if (resting) {
-        levels.wind = Math.max(levels.wind * RESTING_WEATHER_SCALE, RESTING_PILOT_WIND);
-        levels.rain *= RESTING_WEATHER_SCALE;
+        levels.sea *= RESTING_SEA_SCALE;
+        levels.wind *= RESTING_WEATHER_SCALE;
+        levels.rain *= levels.storm > 0 ? RESTING_STORM_SCALE : RESTING_WEATHER_SCALE;
+        levels.storm *= RESTING_STORM_SCALE;
         levels.birds = 0;
         levels.crickets = 0;
         levels.hum = 0;
@@ -189,6 +188,7 @@ export class AudioDirector {
         this._atmosphereAt = 0;
         this._atmosphereSource = 'none';
         this._phase = 'day';
+        this._arcKey = null;
         this._levels = {};
         this._overrides = new Map();
         this._lastBellHour = null;
@@ -243,6 +243,7 @@ export class AudioDirector {
         // can crossfade the whole director (plan 1.6).
         const options = { director: DIRECTOR_ID };
         this.layers = {
+            sea: new SeaLayer(this.engine, options),
             wind: new WindLayer(this.engine, options),
             rain: new RainLayer(this.engine, options),
             birds: new BirdsLayer(this.engine, options),
@@ -478,12 +479,13 @@ export class AudioDirector {
             if (this._signalRouting) this._playActionable(payload, attentionStatus(payload, this.world));
         });
 
-        // Thunder trails the visible lightning by a beat, like real distance;
-        // the lag lives on the audio clock (the cue's lead), never a timer.
+        // Thunder trails the visible lightning by its distance (4.2): the
+        // lag lives on the audio clock (the cue's lead), never a timer. A
+        // resting village hears it as the rest of its weather, scaled down.
         on('weather:storm-flash', (payload) => {
             if (!this._signalRouting) return;
             const intensity = clamp01(payload?.intensity, 0.6);
-            this.cue('thunder', { intensity, leadMs: rand(this._rng, 300, 1200) });
+            this.cue('thunder', { intensity: this._heardThunder(intensity), leadMs: thunderLeadMs(intensity) });
         });
     }
 
@@ -765,7 +767,6 @@ export class AudioDirector {
         });
 
         this._phase = phase;
-        const light = daylight(phase, phaseProgress);
         const intensity = clamp01(weather.intensity);
         const winter = season === 'winter';
         // Winter precipitation falls as snow on screen: hush the rain layer
@@ -774,21 +775,30 @@ export class AudioDirector {
             ? clamp01(weather.precipitation) * 0.12
             : clamp01(weather.precipitation);
         const storm = weather.type === 'storm' ? intensity : 0;
+        const windX = Math.abs(Number(weather.windX) || 0);
+        // Place and time (4.5): the grade's two keys around the local minute,
+        // eased like the picture, with the season applied. Weather and sea
+        // read the atmosphere only; agents never reach them (S6).
+        const minute = Number(atmosphere.clock?.minuteOfDay);
+        const arc = dayArcAt({ minuteOfDay: Number.isFinite(minute) ? minute : 12 * 60, season });
+        this._arcKey = arc.key;
+        // A storm keeps its wind at night: the diurnal stillness is for fair weather.
+        const diurnalWind = arc.wind + (1 - arc.wind) * storm;
 
         const levels = {
-            wind: clamp01(0.05 + intensity * 0.5 + (winter && weather.precipitation > 0.1 ? 0.1 : 0)),
+            sea: arc.sea,
+            wind: clamp01((WIND_CALM + intensity * WIND_PER_INTENSITY + storm * WIND_PER_STORM) * diurnalWind
+                + arc.windFloor
+                + (winter && weather.precipitation > 0.1 ? 0.1 : 0)),
             rain: precipitation,
-            birds: clamp01(
-                (phase === 'dawn' ? 0.55 + phaseProgress * 0.45
-                    : phase === 'day' ? 0.3
-                        : phase === 'dusk' ? 0.12 * (1 - phaseProgress) : 0)
-                * (1 - precipitation * 0.9)
-                * (1 - intensity * 0.35)
-                * (BIRD_SEASON[season] ?? 1),
-            ),
-            crickets: cricketLevel({ phase, phaseProgress, season, precipitation, storm }),
-            // The work stratum: silent while the feed is lost (SIG-9).
-            hum: this._link.lost ? 0 : clamp01(working / 6) * (0.25 + 0.75 * light),
+            // The storm the sea and the rain's rumble play (the world bus
+            // ceiling below follows the real one).
+            storm,
+            birds: arc.birds,
+            crickets: cricketLevel(arc.crickets, { precipitation, storm }),
+            // The murmur's gate (4.7: its level follows W inside the layer):
+            // silent while the feed is lost (SIG-9).
+            hum: this._link.lost ? 0 : 1,
             music: VILLAGE_MUSIC_LEVEL * (phase === 'night' ? 0.7 : 1),
         };
 
@@ -818,15 +828,28 @@ export class AudioDirector {
         // night rooms) and lets rain and fog colour its return (S5).
         this.engine.setAirPhase(phase);
         this.engine.setAirWeather({ rain: precipitation, fog: clamp01(weather.fog) });
+        this.layers.sea.setWeather({ wind: windX, precipitation, storm: levels.storm }, prime);
+        this.layers.sea.setPhase(phase, phaseProgress);
+        this.layers.sea.setLevel(levels.sea, prime ?? 3);
         this.layers.wind.setWind({
             strength: levels.wind,
-            wind: Math.abs(Number(weather.windX) || 0),
+            wind: windX,
+            windX: Number(weather.windX) || 0,
             fog: clamp01(weather.fog),
+            winter,
         }, prime);
         this.layers.rain.setPrecipitation(levels.rain, prime ?? 4);
-        this.layers.rain.setStorm(storm, prime ?? 6);
+        this.layers.rain.setStorm(levels.storm, prime ?? 6);
         this.layers.birds.setLevel(levels.birds, prime ?? 3);
+        // A silenced bird layer (resting, a forced 0) sings no phrases either.
+        this.layers.birds.setCast(levels.birds > 0
+            ? weatherBirdRates(arc.rates, { precipitation, storm })
+            : weatherBirdRates(null), prime);
         this.layers.crickets.setLevel(levels.crickets, prime ?? 3);
+        this.layers.crickets.setTemperature(cricketTemperature(season, phase === 'night' ? phaseProgress : 0));
+        // The murmur follows the audible working count on the work bus and
+        // darkens with the night without losing level (4.7, SIG-8).
+        this.layers.hum.setMurmur({ working, dark: arc.dark }, prime ?? 3);
         this.layers.hum.setLevel(levels.hum, prime ?? (this._link.lost ? LINK_FADE_TIME_CONSTANT : 3));
         this.layers.music.setLevel(levels.music, prime ?? 3);
         this.layers.music.setPhase(phase);
@@ -846,10 +869,16 @@ export class AudioDirector {
         }
 
         // Storm thunder fallback when the World loop (and its flash events)
-        // is not running — Poisson-ish, roughly one strike per 15–25 ticks.
+        // is not running — Poisson-ish, roughly one strike per 15–25 ticks,
+        // at the same distance lag as a drawn flash.
         if (storm > 0 && this._atmosphereSource === 'local' && this._rng() < 0.03 + storm * 0.04) {
-            this.cue('thunder', { intensity: storm });
+            this.cue('thunder', { intensity: this._heardThunder(storm), leadMs: thunderLeadMs(storm) });
         }
+    }
+
+    // The strike's level: its own intensity, or the resting share of it.
+    _heardThunder(intensity) {
+        return this._quietFloor.mode === 'resting' ? intensity * RESTING_STORM_SCALE : intensity;
     }
 
     snapshot() {
@@ -860,6 +889,7 @@ export class AudioDirector {
                 : (this.running ? this._quietFloor.mode : 'stopped'),
             resting: this.running && this._quietFloor.mode === 'resting',
             phase: this._phase,
+            dayArc: this._arcKey,
             framePressureLevel: this._framePressureLevel,
             atmosphereSource: this._atmosphereSource,
             levels: { ...this._levels },

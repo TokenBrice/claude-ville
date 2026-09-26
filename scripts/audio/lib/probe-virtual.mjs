@@ -87,9 +87,43 @@ function onsetFor(marker, scheduled, kinds) {
 // HAR-3: every lane's placements over one bed: LU margin (max momentary in
 // [t, t + 2.5] over the 3 s before), the band rule inputs and the limiter GR.
 export function marginRows(r, bedName) {
-    const bed = MARGIN_BEDS[bedName].bed;
+    return laneMarginRows(r, MARGIN_BEDS[bedName].bed);
+}
+
+// The cue's own level over the bed (Minor outcomes, the Wave-4 ruling): the
+// cue stem's max momentary in [t, t + 2.5 s] over the energy mean of the
+// bed stems (world + work + music, summed; same bus staging as the cue tap)
+// in the 3 s before — so a sea swell under a quiet knock cannot lift it.
+// null without bed stems.
+const BED_STEMS = ['world', 'work', 'music'];
+function stemMarginRows(r) {
+    const beds = BED_STEMS.filter(k => r.stems[k]);
+    if (!r.stems.cue || !beds.length) return null;
+    const n = r.stems.cue.L.length;
+    const L = new Float32Array(n);
+    const R = new Float32Array(n);
+    for (const k of beds) {
+        const s = r.stems[k];
+        for (let i = 0; i < n; i++) { L[i] += s.L[i]; R[i] += s.R[i]; }
+    }
+    const bedCurve = loudness(L, R, r.sr).momentaryCurve;
+    const cueCurve = loudness(r.stems.cue.L, r.stems.cue.R, r.sr).momentaryCurve;
+    return (t) => {
+        const bed = marginAt(bedCurve, t, MARGIN).bed;
+        const cue = marginAt(cueCurve, t, MARGIN).cueMax;
+        return Number.isFinite(cue) ? cue - Math.max(bed, MARGIN.silenceFloorLufs) : null;
+    };
+}
+
+// The same for any render whose lane actions carry `lane` markers and whose
+// stems include both limiter taps; `bed` is the S2 bed context. Every row
+// carries `programMargin` (cue + bed over the bed, on the program) and,
+// with bed stems, `stemMargin`; `margin` is the program margin, except for
+// Minor outcomes, judged on `stemMargin` (the Wave-4 ruling).
+export function laneMarginRows(r, bed) {
     const { L, R } = r.program;
     const lou = loudness(L, R, r.sr);
+    const stemMargin = stemMarginRows(r);
     const gr = limiterGainReduction(r.stems.limiterIn.L, r.stems.limiterIn.R, r.stems.limiterOut.L, r.stems.limiterOut.R, r.sr);
     const rows = [];
     for (const m of r.meta.markers.filter(x => x.lane && LANE_CUE_KIND[x.lane])) {
@@ -98,9 +132,11 @@ export function marginRows(r, bedName) {
         const t = hit.onset;
         const mg = marginAt(lou.momentaryCurve, t, MARGIN);
         const bands = cueBandRise(L, R, r.sr, t);
+        const sm = stemMargin ? stemMargin(t) : null;
         rows.push({
             lane: m.lane, bed, label: m.label, at: t,
-            margin: mg.margin, bedLufs: mg.bed, cueMaxLufs: mg.cueMax,
+            margin: m.lane === 'outcomeMinor' && sm != null ? sm : mg.margin, programMargin: mg.margin, stemMargin: sm,
+            bedLufs: mg.bed, cueMaxLufs: mg.cueMax,
             bandsOver6dB: bands.bandsOver6dB, bestRiseDb: bands.bestRiseDb,
             presenceRiseDb: presenceRise(L, R, r.sr, t),
             grDb: maxGrIn(gr, t, t + MARGIN.cueWindowSec),

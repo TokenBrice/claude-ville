@@ -80,9 +80,10 @@ const OUTRO_ROOT_VEL = 0.035 / 0.042;
 const OUTRO_FIFTH_VEL = 0.024 / 0.042;
 
 const PRESETS = Object.freeze({
-    // 0.49 ≈ 0.55 − 1 dB: puts the Town band at −31 LUFS-I with its stem
-    // short-term max under −28 at the standard step (S2, probe `townBand`).
-    townBand: Object.freeze({ trim: 0.49, director: 'bgm' }),
+    // Puts the Town band at −31 LUFS-I with its stem short-term max under
+    // −28 at the standard step (S2, probe `townBand`): 0.49 on the Wave-1
+    // program trim, 0.565 (+1.2 dB) on Wave 4's 26.7 dB.
+    townBand: Object.freeze({ trim: 0.565, director: 'bgm' }),
     village: Object.freeze({ trim: 0.5, director: 'ambient' }),
 });
 

@@ -10,14 +10,14 @@
 // Applied twice in the master (S3): on the bed sum and on the cue sum, so a
 // cue keeps the level relation it was measured with. Re-measured and the
 // probe re-baselined at the end of Waves 1, 4 and 6.
-// Wave 1 (tonal bed retired, wind-led world stratum; the sea lands in 4.1):
-// the virtual-clock anchor scene (scripts/audio/lib/scenes.mjs `anchor`:
-// seed 0x5eed, July day progress 0.5, clear, 4 working + 1 idle, hum and
-// music trims at step 0, standard volume step 6, worklet limiter; LUFS-I
-// over the 60 s after a 10 s warmup, `node scripts/audio/probe.mjs --only
-// scenes`) read −38.17 LUFS-I at 28 dB (−66.04 at 0 dB), sample peak
-// −25.5 dBFS, no limiter gain reduction; 28.2 dB makes it −37.97.
-export const PROGRAM_TRIM_DB = 28.2;
+// Wave 4 (the world stratum: sea + wind + birds, the day arc): the
+// virtual-clock anchor scene (scripts/audio/lib/scenes.mjs `anchor`: seed
+// 0x5eed, July day progress 0.5, clear, 4 working + 1 idle, hum and music
+// trims at step 0, standard volume step 6, worklet limiter; LUFS-I over the
+// 60 s after a 10 s warmup, `node scripts/audio/probe.mjs --only scenes`)
+// read −36.8 LUFS-I at 27.9 dB with the sea in (sea A − 4.2, wind A − 2.6,
+// birds A − 4.7 alone); 26.7 dB makes it −38.0.
+export const PROGRAM_TRIM_DB = 26.7;
 
 // Slider law (UX-8, S2 "Slider semantics"): steps 0-10, 0 = off.
 // Master volume: 3.6 dB per step, step 10 = unity, the last gain before the
@@ -70,11 +70,18 @@ export const LOUDNESS_TARGETS = Object.freeze({
     // band is meant to lift the program ST max past it.
     townBand: Object.freeze({ lufsI: -31, toleranceLu: 1, bandStemStMax: -28 }),
     // Night, clear, with its occasion: no louder than the Village session,
-    // and the 2-5 kHz band at least 4 dB under noon.
-    night: Object.freeze({ maxOverVillageSession: 0, presenceUnderNoonDb: 4, presenceBandHz: Object.freeze([2000, 5000]) }),
+    // and the 2-5 kHz band at least 4 dB under noon. Its world stratum alone
+    // is quieter than the day's (Decisions: night is darker and quieter).
+    night: Object.freeze({ maxOverVillageSession: 0, maxOverA: 0, presenceUnderNoonDb: 4, presenceBandHz: Object.freeze([2000, 5000]) }),
+    // The day arc (4.5, AMB-12): every non-precipitating waking world scene
+    // (clear, partly cloudy, overcast, fog; any hour and season) within
+    // A ± 2, at least `withinShare` of the map's cells; rain, storm and
+    // resting cells answer to their own rows.
+    dayArc: Object.freeze({ overA: 0, toleranceLu: 2, withinShare: 0.9 }),
     rain: Object.freeze({ maxOverA: 5 }),
-    // Storm, thunder included.
-    storm: Object.freeze({ maxOverA: 6, stMax: -27 }),
+    // Storm, thunder included. A strike at intensity ≥ `thunderNearFrom` is
+    // near (AUDIBILITY_WINDOWS thunder `near`), below it far.
+    storm: Object.freeze({ maxOverA: 6, stMax: -27, thunderNearFrom: 0.7 }),
     // Resting (the pilot light).
     resting: Object.freeze({ overA: -10, toleranceLu: 3, lufsSFloor: -55 }),
     // At full slider.
@@ -171,34 +178,38 @@ export const AUDIBILITY_WINDOWS = Object.freeze({
 // voice's level (CueKit VOICE_LEVEL_DB), rendered one at a time on an
 // offline context at trim 0 and read at the cue bus input (the 0.72 stage
 // included, Island Air's return excluded), day, Claude's clay alloy for the
-// routine chimes (the other alloys read −0.7…+1.2 LU of it). `summons` is
+// routine chimes (the other alloys read −0.7…+1.2 LU of it; routine and release rows shifted by their Wave-4 voice-level cuts, −3 / −4 dB). `summons` is
 // the L1 ship's bell (L2 −45.1, L3/L4 −39.2); a reminder is levelled on its
 // family's entry voice and the Signals `answered` on the call; `hourBell` is
 // the phrase (the soft 21:00 chime −40.0); `digest` four notes
-// (red, amber, gold, stone). Thunder is unchanged since Wave 1.
+// (red, amber, gold, stone). Thunder (4.2) is levelled at its far/near
+// seam: the strike at intensity 0.55 (M max over the roll), so the
+// bed-aware trim puts that strike at the far floor + 1 LU and the
+// intensity law spreads the rest monotonically around it (near strikes
+// ≈ +4.5 dB over it, intensity 0.3 ≈ −3.7 dB).
 export const VOICE_REGISTRY = Object.freeze({
     'cue.summons': Object.freeze({ nominalLufsM: -39.8, plr: 7.7 }),
     'cue.distress': Object.freeze({ nominalLufsM: -40.2, plr: 9.4 }),
     'cue.limit': Object.freeze({ nominalLufsM: -44.0, plr: 9.2 }),
     'cue.answered': Object.freeze({ nominalLufsM: -46.4, plr: 14.0 }),
-    'cue.arrival': Object.freeze({ nominalLufsM: -39.7, plr: 7.7 }),
-    'cue.departure': Object.freeze({ nominalLufsM: -40.3, plr: 8.0 }),
-    'cue.recovery': Object.freeze({ nominalLufsM: -38.8, plr: 9.7 }),
-    'cue.council': Object.freeze({ nominalLufsM: -37.6, plr: 6.7 }),
-    'cue.turnDone': Object.freeze({ nominalLufsM: -47.1, plr: 17.5 }),
-    'cue.subagentReturn': Object.freeze({ nominalLufsM: -47.5, plr: 20.6 }),
+    'cue.arrival': Object.freeze({ nominalLufsM: -42.7, plr: 7.7 }),
+    'cue.departure': Object.freeze({ nominalLufsM: -43.3, plr: 8.0 }),
+    'cue.recovery': Object.freeze({ nominalLufsM: -41.8, plr: 9.7 }),
+    'cue.council': Object.freeze({ nominalLufsM: -40.6, plr: 6.7 }),
+    'cue.turnDone': Object.freeze({ nominalLufsM: -44.6, plr: 17.5 }),
+    'cue.subagentReturn': Object.freeze({ nominalLufsM: -45.0, plr: 20.6 }),
     'cue.toolFailed': Object.freeze({ nominalLufsM: -38.7, plr: 11.5 }),
     'cue.pushFailed': Object.freeze({ nominalLufsM: -38.7, plr: 11.5 }),
     'cue.commit': Object.freeze({ nominalLufsM: -45.0, plr: 4.8 }),
     'cue.push': Object.freeze({ nominalLufsM: -39.3, plr: 8.0 }),
-    'cue.release': Object.freeze({ nominalLufsM: -36.0, plr: 8.5 }),
-    'cue.dispatch': Object.freeze({ nominalLufsM: -47.5, plr: 10.1 }),
+    'cue.release': Object.freeze({ nominalLufsM: -40.0, plr: 8.5 }),
+    'cue.dispatch': Object.freeze({ nominalLufsM: -45.0, plr: 10.1 }),
     'cue.hourBell': Object.freeze({ nominalLufsM: -35.6, plr: 10.7 }),
     'cue.aurora': Object.freeze({ nominalLufsM: -41.3, plr: 6.8 }),
     'cue.linkLost': Object.freeze({ nominalLufsM: -40.1, plr: 15.1 }),
     'cue.linkRestored': Object.freeze({ nominalLufsM: -38.1, plr: 6.1 }),
     'cue.digest': Object.freeze({ nominalLufsM: -36.0, plr: 12.0 }),
-    'cue.thunder': Object.freeze({ nominalLufsM: -33.7, plr: null }),
+    'cue.thunder': Object.freeze({ nominalLufsM: -43.4, plr: 11.6 }),
 });
 
 // Memory table (S8): resident AudioBuffer bytes per SampleBank client

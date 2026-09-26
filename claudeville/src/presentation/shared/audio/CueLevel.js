@@ -11,11 +11,11 @@
 // The aim over the floor depends on the class. Urgent cues aim 2 LU over:
 // they must also clear the band rule over music (≥ +6 dB in 0.5–4 kHz), and
 // their ceilings (+12 / +10) leave the room. Routine cues aim 2 LU over too
-// (window +3…+6), so a Minor outcome can sit ≥ 3 LU under them: it aims
-// 3 LU under its floor, because the lane is heard as bed + cue — a knock
-// that far under the bed reads ≈ +0.9…+2.2 LU over it, inside 0…+3 (S2;
-// probe margins: village +1.3, music +2.2, rain +1.2, storm +0.9). Every
-// other lane aims 1 LU over.
+// (window +3…+6). A Minor outcome aims just under its floor (−0.2 LU): its
+// short knock reads ≈ +0.7…+1 LU over the bed on its own stem, inside 0…+3,
+// and ≥ 3 LU under a routine cue on the same measure (S2; Wave-4 probe,
+// cue stem over the bed stems: routine +4.2…+4.3). Every other lane aims
+// 1 LU over.
 //
 // An urgent trim is also capped by the limiter: the voice's predicted peak
 // (nominal + trim + its registry PLR, raised by PROGRAM_TRIM_DB to the limiter
@@ -24,6 +24,12 @@
 // on the probe's beds: the bed adds 1.5–1.7 dB of GR over the cue's own
 // peak). A lift the limiter would take back is not a lift; the cap never
 // takes an urgent cue below 0 dB.
+//
+// Urgent cues are not cut to reach their floor + aim. Over a very quiet bed
+// (a still night), though, a call at 0 dB would pass its lane ceiling, so
+// there, and only there, it comes down to 1 LU under the ceiling, never
+// more than URGENT_MIN_TRIM_DB. With no bed to read (a hidden-tab wake, an
+// unprimed tap) urgent trims stay ≥ 0 dB.
 
 import { AUDIBILITY_WINDOWS, LIMITER_CEILING_DBFS, LOUDNESS_TARGETS, PROGRAM_TRIM_DB } from './Loudness.js';
 
@@ -34,7 +40,7 @@ const AIM_OVER_FLOOR_BY_LANE = Object.freeze({
     error: URGENT_AIM_OVER_FLOOR_LU,
     limit: URGENT_AIM_OVER_FLOOR_LU,
     routine: 2,
-    outcomeMinor: -3,
+    outcomeMinor: -0.2,
 });
 
 // The highest peak (dBFS, in the bedLoudness domain) an urgent voice may
@@ -47,6 +53,8 @@ export const URGENT_PEAK_MAX_DBFS = LIMITER_CEILING_DBFS
 // wake, an unprimed tap) they take the median of the recent foreground urgent
 // trims, else this lift.
 export const URGENT_FALLBACK_TRIM_DB = 6;
+export const URGENT_MIN_TRIM_DB = -4;
+const UNDER_CEILING_LU = 1;
 export const URGENT_TRIM_MEMORY_MS = 60000;
 
 const URGENT_LANES = new Set(['needsYou', 'error', 'limit']);
@@ -136,5 +144,9 @@ export function cueTrimDb({
     const floor = laneFloorLu(lane, bed);
     if (!Number.isFinite(nominalLufsM) || floor == null) return clamp(0, capped);
     const aim = AIM_OVER_FLOOR_BY_LANE[lane] ?? CUE_AIM_OVER_FLOOR_LU;
-    return clamp(bedLufs + floor + aim - nominalLufsM, capped);
+    const trim = clamp(bedLufs + floor + aim - nominalLufsM, capped);
+    const ceiling = AUDIBILITY_WINDOWS.lanes[lane]?.ceiling;
+    if (!urgent || !Number.isFinite(ceiling)) return trim;
+    const underCeiling = bedLufs + ceiling - UNDER_CEILING_LU - nominalLufsM;
+    return underCeiling < 0 ? Math.max(URGENT_MIN_TRIM_DB, underCeiling) : trim;
 }

@@ -1,11 +1,12 @@
-// Pure judges for the audio probe (Wave 3 gate): the S2 scene targets, the
+// Pure judges for the audio probe (Wave 4 gate): the S2 scene targets, the
 // cue lane windows at their full S2 floors, limiter gain reduction from the
 // limiter's two taps, the preset-switch hole/bump, ducked time, the AV-sync
-// pairing, Wave 2's clock, air, noise, bank and sequencer judges, and Wave
-// 3's discrimination, ladder, cluster, held-note, caption and honesty
-// judges. No I/O; every function takes plain arrays and numbers. Targets
-// come from Loudness.js or the plan's acceptance lines, never from a
-// baseline: a baseline only detects drift, it cannot pass a failure.
+// pairing, Wave 2's clock, air, noise, bank and sequencer judges, Wave 3's
+// discrimination, ladder, cluster, held-note, caption and honesty judges,
+// and Wave 4's world scene map, sea, thunder and must-never 7/8 judges. No
+// I/O; every function takes plain arrays and numbers. Targets come from
+// Loudness.js or the plan's acceptance lines, never from a baseline: a
+// baseline only detects drift, it cannot pass a failure.
 import { AUDIBILITY_WINDOWS, DUCKED_TIME_BUDGET, LOUDNESS_TARGETS, MEMORY_BUDGET } from '../../../claudeville/src/presentation/shared/audio/Loudness.js';
 
 export function median(values) {
@@ -37,19 +38,13 @@ export function energyMeanLufs(values) {
 // plan is measured and printed as DEFER (never a failure) until PLAN_STAGE
 // reaches its wave; bump PLAN_STAGE at each wave's exit. Keys not listed are
 // gated now.
-export const PLAN_STAGE = 3;
+export const PLAN_STAGE = 4;
 export const GATED_FROM = Object.freeze({
-    // The bed is wind + birds until the sea (4.1), and Village music becomes
-    // the occasion clock in 6.6; PROGRAM_TRIM_DB is re-measured at both.
-    'scene:villageBusy': 4,
-    // S2's storm (≤ A + 6, ST max ≤ −27) needs thunder with distance and the
-    // sea (4.1, 4.2); until then it prints DEFER with its numbers.
-    'scene:storm': 4,
-    // The error call over the storm (`margins`, every criterion of that row):
-    // S2 buys the error its headroom from the smaller storm of 4.1/4.2 (at
-    // A + 7.5 the reel's error needed 3.8 dB of limiter for +6.1 LU). Wave 3
-    // measured +5.7 LU with the trim at its limiter cap (+2.1 dB), GR 2.5 dB.
-    'margin:storm:error': 4,
+    // S2's night row with its occasion (the program, music included): ≤ the
+    // Village session and 2–5 kHz ≥ 4 dB under noon. The world stratum's
+    // half is gated now (worldmap); the music half needs the night voicing
+    // and the occasion clock (6.3, 6.6).
+    'scene:nightProgram': 6,
 });
 
 export function gatedFrom(key, table = GATED_FROM) {
@@ -69,8 +64,10 @@ export function stageOutcome(failures, stage = PLAN_STAGE) {
 // against the anchor as measured in the same run.
 
 // scenes: { anchor, villageBusy, townBand, rain, storm, resting }, each
-// { lufsI, lra, stMax, stMean, stMin, bandStemStMax? } (missing scenes skip).
-export function judgeSceneTargets(scenes, targets = LOUDNESS_TARGETS, { stage = PLAN_STAGE } = {}) {
+// { lufsI, lra, stMax, stMean, stMin, bandStemStMax? }, and optionally
+// nightProgram / noonProgram { lufsI, presenceDb } (S2's night row with its
+// occasion; presenceDb the 2–5 kHz band level). Missing scenes skip.
+export function judgeSceneTargets(scenes, targets = LOUDNESS_TARGETS, { stage = PLAN_STAGE, gated = GATED_FROM } = {}) {
     const rows = [];
     const f = v => (Number.isFinite(v) ? v.toFixed(1) : '—');
     const A = scenes.anchor?.lufsI;
@@ -122,9 +119,20 @@ export function judgeSceneTargets(scenes, targets = LOUDNESS_TARGETS, { stage = 
             detail: `ST mean ${f(s.stMean)} = A ${over >= 0 ? '+' : ''}${f(over)}, ST min ${f(s.stMin)}; want A ${t.overA} ± ${t.toleranceLu}, never below ${t.lufsSFloor} LUFS-S`,
         });
     }
+    if (scenes.nightProgram && scenes.noonProgram) {
+        const t = targets.night;
+        const s = scenes.nightProgram;
+        const session = A + targets.villageSession.overA;
+        const under = scenes.noonProgram.presenceDb - s.presenceDb;
+        rows.push({
+            scene: 'nightProgram',
+            pass: s.lufsI - session <= t.maxOverVillageSession && under >= t.presenceUnderNoonDb,
+            detail: `LUFS-I ${f(s.lufsI)} vs the Village session target ${f(session)} (A + ${targets.villageSession.overA}); 2–5 kHz ${f(under)} dB under noon; want ≤ the session + ${t.maxOverVillageSession} and ≥ ${t.presenceUnderNoonDb} dB under noon`,
+        });
+    }
     // Each row: pass (the criterion itself), gatedFrom, and outcome at `stage`.
     return rows.map((row) => {
-        const from = gatedFrom(`scene:${row.scene}`);
+        const from = gatedFrom(`scene:${row.scene}`, gated);
         return { ...row, gatedFrom: from, outcome: stageOutcome(row.pass ? [] : [{ what: row.scene, gatedFrom: from }], stage) };
     });
 }
@@ -149,13 +157,13 @@ export function laneWindow(lane, bed, { windows = AUDIBILITY_WINDOWS } = {}) {
 // the GR limit apply to urgent lanes only. `probeBed` names the probe's bed
 // (MARGIN_BEDS key): a `margin:<probeBed>:<lane>` GATED_FROM row defers every
 // criterion of that lane on that bed.
-export function judgeLane(lane, bed, placements, { grMaxDb = LOUDNESS_TARGETS.ceiling.urgentGrMaxDb, bandRule = AUDIBILITY_WINDOWS.urgentBandRule, stage = PLAN_STAGE, probeBed = null } = {}) {
+export function judgeLane(lane, bed, placements, { grMaxDb = LOUDNESS_TARGETS.ceiling.urgentGrMaxDb, bandRule = AUDIBILITY_WINDOWS.urgentBandRule, stage = PLAN_STAGE, probeBed = null, gated = GATED_FROM } = {}) {
     const win = laneWindow(lane, bed);
     const margin = median(placements.map(p => p.margin));
     // Every failure carries the wave that gates it (GATED_FROM).
     const failures = [];
-    const row = probeBed ? gatedFrom(`margin:${probeBed}:${lane}`) : 0;
-    const fail = (what, key) => failures.push({ what, gatedFrom: Math.max(row, gatedFrom(key ? `${key}:${lane}` : '')) });
+    const row = probeBed ? gatedFrom(`margin:${probeBed}:${lane}`, gated) : 0;
+    const fail = (what, key) => failures.push({ what, gatedFrom: Math.max(row, gatedFrom(key ? `${key}:${lane}` : '', gated)) });
     if (margin == null) fail('no admitted cue');
     else {
         if (win.min != null && margin < win.min) fail(`margin < ${win.min}`);
@@ -509,7 +517,8 @@ export function judgeBank(stats, sliceMaxMs, budget = MEMORY_BUDGET) {
 // 2.3: every shipped piece through the one sequencer (chip voicing) against
 // the Wave-1 reference render of the same piece at the same pinned random
 // draws: identical onsets (relative to the piece's first; `onsetTolMs`
-// absorbs float rounding only) and level within 0.5 LU.
+// absorbs float rounding only); its level within 0.5 LU of the current
+// baseline (scenes.json `sequencer:<piece>`).
 export const SEQUENCER_LIMITS = Object.freeze({ lufsTolLu: 0.5, onsetTolMs: 0.5 });
 
 export function compareOnsets(ref, cur, tolMs = SEQUENCER_LIMITS.onsetTolMs) {
@@ -525,9 +534,12 @@ export function compareOnsets(ref, cur, tolMs = SEQUENCER_LIMITS.onsetTolMs) {
     return { refCount: ref.length, curCount: cur.length, maxDeltaMs, firstMismatch, identical: firstMismatch == null };
 }
 
-export function judgeSequencer(ref, cur, limits = SEQUENCER_LIMITS) {
+// Onsets against the Wave-1 reference (they guard the sequencer); level as
+// drift against the current baseline's program LUFS-I (`baselineLufs`), since
+// Village music levels and PROGRAM_TRIM_DB move on purpose after Wave 2.
+export function judgeSequencer(ref, cur, { baselineLufs = null, limits = SEQUENCER_LIMITS } = {}) {
     const onsets = compareOnsets(ref.onsets, cur.onsets, limits.onsetTolMs);
-    const lufsDelta = finite(ref.lufsI) && finite(cur.lufsI) ? cur.lufsI - ref.lufsI : null;
+    const lufsDelta = finite(baselineLufs) && finite(cur.lufsI) ? cur.lufsI - baselineLufs : null;
     const pass = onsets.identical && onsets.refCount > 0 && lufsDelta != null && Math.abs(lufsDelta) <= limits.lufsTolLu;
     return { pass, onsets, lufsDelta };
 }
@@ -814,3 +826,280 @@ export function judgeCaptionParity(rows) {
 // 3.4 / HAR-12: the release peal's published carrying note vs the crown's
 // accent timestamp within ±15 ms.
 export const CROWN_SYNC_MS = 15;
+
+// ========================================================== Wave 4 =========
+
+// ------------------------------------------------------- world scene map ----
+// 4.5 (AMB-12, HAR-9): every world scene — work and music faders at 0, so
+// the program is the world stratum as in Anchor A — against its S2 row,
+// relative to A as measured in the same run. Resting (any weather) is the
+// pilot light, judged on its short-term mean and floor; rain and storm
+// (thunder included) have their own rows; every other waking scene is the
+// day arc: within A ± `dayArc.toleranceLu`, with at least
+// `dayArc.withinShare` of those cells inside it, and night (the Decision:
+// darker and quieter than day) never over A + `night.maxOverA`.
+export function worldSceneRow({ weather, load }) {
+    if (load === 'resting') return 'resting';
+    if (weather === 'rain') return 'rain';
+    if (weather === 'storm') return 'storm';
+    return 'dayArc';
+}
+
+// cell: { phase, weather, load, lufsI, stMax, stMean, stMin }; A the anchor's
+// LUFS-I. → { row, over (LU over A), pass (the hard criterion), inArc (day
+// arc cells: inside the band), want }
+export function judgeWorldCell(cell, A, targets = LOUDNESS_TARGETS) {
+    const row = worldSceneRow(cell);
+    if (row === 'resting') {
+        const t = targets.resting;
+        const over = cell.stMean - A;
+        return { row, over, pass: Math.abs(over - t.overA) <= t.toleranceLu && cell.stMin >= t.lufsSFloor, want: `ST mean A ${t.overA} ± ${t.toleranceLu}, ST min ≥ ${t.lufsSFloor}` };
+    }
+    const over = cell.lufsI - A;
+    if (row === 'rain') return { row, over, pass: over <= targets.rain.maxOverA, want: `≤ A + ${targets.rain.maxOverA}` };
+    if (row === 'storm') {
+        const t = targets.storm;
+        return { row, over, pass: over <= t.maxOverA && cell.stMax <= t.stMax, want: `≤ A + ${t.maxOverA}, ST max ≤ ${t.stMax}` };
+    }
+    const arc = targets.dayArc;
+    if (!arc) return { row, over, inArc: false, pass: false, want: 'a Loudness.js dayArc row' };
+    const nightMax = cell.phase === 'night' ? targets.night?.maxOverA ?? null : null;
+    return {
+        row, over,
+        inArc: Math.abs(over - arc.overA) <= arc.toleranceLu,
+        pass: nightMax == null || over <= nightMax,
+        want: `A ${arc.overA >= 0 ? '+' : ''}${arc.overA} ± ${arc.toleranceLu}${nightMax != null ? `, night ≤ A + ${nightMax}` : ''}`,
+    };
+}
+
+// → { rows: [{ ...cell, ...judgement }], arc: { n, within, share, minShare,
+// pass }, failures: rows failing their hard criterion, pass }
+export function judgeWorldMap(cells, A, targets = LOUDNESS_TARGETS) {
+    const rows = cells.map(c => ({ ...c, ...judgeWorldCell(c, A, targets) }));
+    const arcRows = rows.filter(r => r.row === 'dayArc');
+    const within = arcRows.filter(r => r.inArc).length;
+    const share = arcRows.length ? within / arcRows.length : null;
+    const minShare = targets.dayArc?.withinShare ?? null;
+    const arc = { n: arcRows.length, within, share, minShare, pass: share != null && minShare != null && share >= minShare };
+    const failures = rows.filter(r => !r.pass);
+    return { rows, arc, failures, pass: rows.length > 0 && arc.pass && failures.length === 0 };
+}
+
+// Must-never 7: night or weather louder than the day by more than 6 LU at
+// one slider setting — every cell against the clear day at the same load.
+export const MUST_NEVER_7_LU = 6;
+
+export function nightWeatherOverDay(cells, { maxLu = MUST_NEVER_7_LU, reference = { phase: 'day', weather: 'clear' } } = {}) {
+    const rows = [];
+    for (const c of cells) {
+        const ref = cells.find(r => r.load === c.load && r.phase === reference.phase && r.weather === reference.weather);
+        if (!ref || ref === c) continue;
+        rows.push({ ...c, overDay: c.lufsI - ref.lufsI });
+    }
+    const worst = rows.reduce((w, r) => (w == null || r.overDay > w.overDay ? r : w), null);
+    const failures = rows.filter(r => !(r.overDay <= maxLu));
+    return { rows, worst, failures, pass: rows.length > 0 && failures.length === 0 };
+}
+
+// S2 night row, world stratum (4.4): the night bed's 2–5 kHz band at least
+// `minDb` under noon's. Levels in dB of the same band on the same stem.
+export function presenceUnderNoon(nightDb, noonDb, { minDb = LOUDNESS_TARGETS.night.presenceUnderNoonDb } = {}) {
+    const underDb = Number.isFinite(nightDb) && Number.isFinite(noonDb) ? noonDb - nightDb : null;
+    return { underDb, minDb, pass: underDb != null && underDb >= minDb };
+}
+
+// S7: ambient non-musical onsets ≤ 180/min island-wide, crickets included.
+// cells: [{ onsetsPerMin }] → { worst, over, pass }
+export const AMBIENT_ONSETS_PER_MIN = 180;
+
+export function judgeOnsetBudget(cells, { max = AMBIENT_ONSETS_PER_MIN } = {}) {
+    const measured = cells.filter(c => Number.isFinite(c.onsetsPerMin));
+    const worst = measured.reduce((w, c) => (w == null || c.onsetsPerMin > w.onsetsPerMin ? c : w), null);
+    const over = measured.filter(c => c.onsetsPerMin > max);
+    return { worst, over, max, pass: measured.length === cells.length && measured.length > 0 && over.length === 0 };
+}
+
+// S6 / C-AMB-1: the world stem at two agent counts, one seed, is the same
+// stem. The virtual clock is not bit-exact run to run: two renders of one
+// scene differ by max |Δ| ≈ 1e-9…1e-8 (Chrome's offline renderer), so
+// "bit-identical" is judged as identical within renderer noise: max |Δ| ≤
+// 1e-6 (−120 dBFS) or ≤ the same-count repeat's max |Δ| measured beside it
+// (a repeat over 1e-6 is real nondeterminism and prints a WARN; the last
+// one, 5e-4 in the wind, was an unvirtualized `new Date()`). A world that
+// followed agents — a level step, a moved event — differs by orders of
+// magnitude more. The sea's yield to scheduled cues (4.6, AMB-9) is a
+// sanctioned coupling to cues, not to agent state; the fixtures schedule
+// no cue.
+export const WORLD_STEM_MAX_ABS = 1e-6;
+
+// maxAbs: the largest sample difference across agent counts (0 when
+// bit-identical), null when unmeasured, Infinity when the stems differ in
+// length; noise: the same-count repeat's max |Δ| (optional).
+export function judgeWorldStem(maxAbs, { max = WORLD_STEM_MAX_ABS, noise = null } = {}) {
+    const limit = Math.max(max, Number.isFinite(noise) ? noise : 0);
+    return { identical: maxAbs === 0, pass: maxAbs != null && maxAbs <= limit, max, limit };
+}
+
+// Bakes that land at different audio times in two renders of one scene
+// (the renderer's known source of run-to-run difference: a bake finishing
+// a step earlier or later). bakes: [{ key, t }] per render, in order; the
+// n-th landing of a key pairs with the n-th. → [{ key, a, b }] (a/b null
+// when one render never landed it)
+export function bakeLandingDiffs(a, b, { tolSec = 0.001 } = {}) {
+    const index = (list) => {
+        const n = new Map();
+        return (list || []).map((x) => {
+            const k = n.get(x.key) ?? 0;
+            n.set(x.key, k + 1);
+            return { ...x, id: `${x.key}#${k}` };
+        });
+    };
+    const B = new Map(index(b).map(x => [x.id, x]));
+    const diffs = [];
+    for (const x of index(a)) {
+        const y = B.get(x.id);
+        B.delete(x.id);
+        if (!y || Math.abs(x.t - y.t) > tolSec) diffs.push({ key: x.key, a: x.t, b: y ? y.t : null });
+    }
+    for (const y of B.values()) diffs.push({ key: y.key, a: null, b: y.t });
+    return diffs;
+}
+
+// Map cells: the `b`-load row of each phase × weather carries the max |Δ|
+// of its world stem against the `a`-load render. → { pairs, differing, pass }
+export function worldStemDiffers(cells, { b = 'w12', max = WORLD_STEM_MAX_ABS } = {}) {
+    const pairs = cells.filter(c => c.load === b).map(c => ({ phase: c.phase, weather: c.weather, maxAbs: c.worldMaxAbs ?? null, ...judgeWorldStem(c.worldMaxAbs ?? null, { max }) }));
+    const differing = pairs.filter(p => !p.pass);
+    return { pairs, differing, pass: pairs.length > 0 && differing.length === 0 };
+}
+
+// --------------------------------------------------------------------- sea ----
+// 4.1 (AMB-1) acceptance: the day sea stem 2–6 LU under A; ICC 0.1–0.4 and
+// r(4 s) < 0.05 on a 60 s capture; about five breaking waves a minute by day
+// (AMB-1: 4–7 clear, 7–10 in a storm); the night bed +7…+20 dB in
+// 250 Hz–1 kHz with the sea against without it; no gulls at night or in a
+// storm (C-AMB-7: gulls roost); hull groans out of 500–700 Hz (every
+// resonance ≤ 450 or ≥ 800 Hz); zero nodes per wave (only rare-voice takes
+// create nodes, ≤ 2 each: C-AMB-4).
+export const SEA_LIMITS = Object.freeze({
+    underA: Object.freeze([2, 6]),
+    icc: Object.freeze([0.1, 0.4]),
+    r4Max: 0.05,
+    breaksPerMin: Object.freeze([4, 7]),
+    stormBreaksPerMin: Object.freeze([7, 10]),
+    nightGainDb: Object.freeze([7, 20]),
+    nightGainBandHz: Object.freeze([250, 1000]),
+    groanForbiddenHz: Object.freeze([450, 800]),
+    nodesPerTake: 2,
+});
+
+// Whether `v` lies in [lo, hi] (a finite number only).
+export function withinRange(v, [lo, hi]) {
+    return Number.isFinite(v) && v >= lo && v <= hi;
+}
+
+// Breaking waves per minute: the sea's committed crests (each is one wave
+// breaking on one of its crash lanes) in [t0, t1).
+export function crestRate(crests, t0, t1) {
+    if (!(t1 > t0)) return null;
+    const n = (crests || []).filter(c => c.t >= t0 && c.t < t1).length;
+    return (60 * n) / (t1 - t0);
+}
+
+// The crest nearest `t` → { t, lane, gapSec, moved } | null.
+export function nearestCrest(crests, t) {
+    let best = null;
+    for (const c of crests || []) {
+        const gapSec = Math.abs(c.t - t);
+        if (!best || gapSec < best.gapSec) best = { t: c.t, lane: c.lane ?? null, gapSec, moved: Boolean(c.moved) };
+    }
+    return best;
+}
+
+// Groan resonances inside the forbidden band (exclusive of its edges).
+export function groanViolations(rare, [lo, hi] = SEA_LIMITS.groanForbiddenHz) {
+    return (rare || []).filter(r => r.kind === 'groan').flatMap(r => (r.hz || []).filter(hz => hz > lo && hz < hi).map(hz => ({ t: r.t, hz })));
+}
+
+// ---------------------------------------------------------------- thunder ----
+// 4.2 (AMB-6): each strike's LU over its storm bed from the thunder onset —
+// near (intensity ≥ nearAt) and far windows from Loudness.js; the level
+// monotonic in intensity (a louder-for-less step beyond `monotonicTolLu`
+// fails); the onset `0.4 + 4.5·(1 − intensity)` s after the flash; limiter
+// GR ≤ ceiling.thunderGrMaxDb; a fresh noise grain per strike (its reads
+// ≥ `grainSepSec` of buffer from the last `grainRecent` strikes'); no duck.
+export const THUNDER_LIMITS = Object.freeze({ delayTolSec: 0.25, monotonicTolLu: 0.5, grainSepSec: 5, grainRecent: 2 });
+
+export function thunderDelaySec(intensity) {
+    return 0.4 + 4.5 * (1 - Math.min(1, Math.max(0, intensity)));
+}
+
+// Loudness.js: the windows in AUDIBILITY_WINDOWS.lanes.thunder ({ near, far }),
+// the near/far split in LOUDNESS_TARGETS.storm.thunderNearFrom (intensity at
+// or above it is near). → { near: {min,max}, far, nearAt }
+export function thunderWindows(targets = LOUDNESS_TARGETS, windows = AUDIBILITY_WINDOWS) {
+    const w = windows.lanes.thunder;
+    return { near: w.near, far: w.far, nearAt: targets.storm?.thunderNearFrom ?? null };
+}
+
+// A strike whose read of a pool buffer — a span [off, end] of buffer time —
+// comes closer than `sepSec` to (or overlaps) a read of one of the `recent`
+// strikes before it reuses a grain (the pool's brown buffers hold ≈ 68 s,
+// so freshness is audible against the last strikes, not the whole storm);
+// `end` defaults to `off`. strikes: [{ grains: [{ buf, off, end }] }] in
+// strike order → [{ a, b, buf, gapSec }]
+export function grainReuse(strikes, { sepSec = THUNDER_LIMITS.grainSepSec, recent = THUNDER_LIMITS.grainRecent } = {}) {
+    const reused = [];
+    const gap = (x, y) => Math.max(x.off ?? 0, y.off ?? 0) - Math.min(x.end ?? x.off ?? 0, y.end ?? y.off ?? 0);
+    for (let i = 0; i < strikes.length; i++) {
+        for (let j = i + 1; j < Math.min(strikes.length, i + 1 + recent); j++) {
+            let hit = null;
+            for (const x of strikes[i].grains || []) {
+                if (x.buf == null) continue;
+                for (const y of strikes[j].grains || []) {
+                    if (y.buf === x.buf && gap(x, y) < sepSec && (!hit || gap(x, y) < hit.gapSec)) hit = { a: i, b: j, buf: x.buf, gapSec: gap(x, y) };
+                }
+            }
+            if (hit) reused.push(hit);
+        }
+    }
+    return reused;
+}
+
+// strikes: [{ intensity, margin, delaySec, grDb, grains }] in flash order.
+export function judgeThunder(strikes, { windows = thunderWindows(), grMaxDb = LOUDNESS_TARGETS.ceiling.thunderGrMaxDb, limits = THUNDER_LIMITS } = {}) {
+    const rows = strikes.map((s) => {
+        const near = windows.nearAt != null && s.intensity >= windows.nearAt;
+        const win = near ? windows.near : windows.far;
+        const expected = thunderDelaySec(s.intensity);
+        const failures = [];
+        if (windows.nearAt == null) failures.push('no near/far boundary in Loudness.js');
+        if (!Number.isFinite(s.margin)) failures.push('no thunder heard');
+        else if (s.margin < win.min || s.margin > win.max) failures.push(`${near ? 'near' : 'far'} margin outside +${win.min}…+${win.max}`);
+        if (!Number.isFinite(s.delaySec) || Math.abs(s.delaySec - expected) > limits.delayTolSec) failures.push(`onset ${Number.isFinite(s.delaySec) ? s.delaySec.toFixed(2) : '—'} s after the flash, want ${expected.toFixed(2)} ± ${limits.delayTolSec}`);
+        if (Number.isFinite(s.grDb) && s.grDb > grMaxDb) failures.push(`GR > ${grMaxDb} dB`);
+        return { ...s, near, window: win, expectedDelaySec: expected, failures, pass: failures.length === 0 };
+    });
+    const sorted = rows.filter(r => Number.isFinite(r.margin)).sort((a, b) => a.intensity - b.intensity);
+    const drops = [];
+    for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i].intensity > sorted[i - 1].intensity && sorted[i].margin < sorted[i - 1].margin - limits.monotonicTolLu) {
+            drops.push({ from: sorted[i - 1].intensity, to: sorted[i].intensity, deltaLu: sorted[i].margin - sorted[i - 1].margin });
+        }
+    }
+    const reused = grainReuse(strikes, { sepSec: limits.grainSepSec, recent: limits.grainRecent });
+    return {
+        rows, drops, reused,
+        monotonic: sorted.length === rows.length && drops.length === 0,
+        pass: rows.length > 0 && rows.every(r => r.pass) && drops.length === 0 && reused.length === 0 && sorted.length === rows.length,
+    };
+}
+
+// ------------------------------------------------------------- CPU proxy ----
+// S8 / 4.1 / 4.3 (INFO): the offline-render proxy of one core — wall ms of
+// the stepped render over audio ms, in percent. It includes the harness's
+// virtual clock and the app's director work, so it reads high; compare
+// scenes relatively.
+export function cpuProxyPct(renderMs, audioSec) {
+    return Number.isFinite(renderMs) && audioSec > 0 ? (100 * renderMs) / (audioSec * 1000) : null;
+}

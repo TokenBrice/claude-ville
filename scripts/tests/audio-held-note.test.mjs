@@ -11,9 +11,9 @@ import {
 } from '../../claudeville/src/presentation/shared/audio/layers/HeldNote.js';
 
 // BS.1770 loudness of the pair (D at g, A at LOW_UNDER_OPEN_DB under it, both
-// output channels, with the −0.7 dB measured pair weighting).
+// output channels, with the pair's −0.15 dB K-weighting).
 const r = Math.pow(10, LOW_UNDER_OPEN_DB / 20);
-const pairLufs = g => -0.691 + 10 * Math.log10(g * g * (1 + r * r)) - 0.7;
+const pairLufs = g => -0.691 + 10 * Math.log10(g * g * (1 + r * r)) - 0.15;
 
 test('the held note sits 8 LU under the bed it is measured against, by loudness', () => {
     for (const bed of [-70, -66, -58, -50]) {

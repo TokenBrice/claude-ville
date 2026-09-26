@@ -355,6 +355,48 @@ function signalState(controller, snap) {
     return { ladder: snap?.ladder ?? null, heldNote: held };
 }
 
+// The sea's own account (4.1, 4.6) at the end of a render: committed crest
+// times, yields to cues, node creations after start and the rare voices.
+function seaState(controller) {
+    try { return plain(controller?.directors?.ambient?.layers?.sea?.snapshot?.() ?? null); } catch (err) { return { error: String(err?.message || err) }; }
+}
+
+// When each baked buffer lands, in audio time (SampleBank `_store`: the
+// Island Air IRs and the rare takes; the noise pool's `_complete`): a bake
+// that lands at a different audio time in two renders of one scene is the
+// renderer's known source of run-to-run difference.
+function logBakes(engine, ctx) {
+    const bakes = [];
+    const hook = (owner, name) => {
+        const fn = owner?.[name];
+        if (typeof fn !== 'function') return;
+        owner[name] = function loggedBake(key, ...rest) {
+            bakes.push({ key: String(key), t: ctx.currentTime });
+            return fn.call(this, key, ...rest);
+        };
+    };
+    hook(engine.bank, '_store');
+    hook(engine.noisePool, '_complete');
+    return bakes;
+}
+
+// Every AudioWorkletNode built on the scene context, with the audio time it
+// was built at. Chrome constructs the processor on the audio thread
+// asynchronously, so a node built while the render runs starts at a
+// render quantum that can differ between two renders of one scene.
+function logWorkletNodes(ctx) {
+    const nodes = [];
+    const Base = window.AudioWorkletNode;
+    if (typeof Base !== 'function') return nodes;
+    window.AudioWorkletNode = class LoggedAudioWorkletNode extends Base {
+        constructor(context, name, options) {
+            super(context, name, options);
+            if (context === ctx) nodes.push({ name, t: context.currentTime });
+        }
+    };
+    return nodes;
+}
+
 // Every scripted action on the virtual clock at `at(sec)` (a perf time).
 // Beyond scene.js runAction: {visibility}, {window}, {atmosphere},
 // {accent:{kind, leadMs}} (declared before the action's cue, as the
@@ -427,6 +469,7 @@ export async function runVirtual(spec) {
     vc.audio.keepNodes = true;
     const rngInfo = await setupRng(spec);
     const ctx = sceneContext({ seconds: total, stems, sampleRate });
+    const workletNodes = logWorkletNodes(ctx);
 
     seedSoundStorage(spec);
     const world = makeWorld(spec.world);
@@ -466,6 +509,7 @@ export async function runVirtual(spec) {
         return token;
     };
     attachStems(ctx, engine, stems);
+    const bakes = logBakes(engine, ctx);
     if (!pinned || pinned.startsWith('no ')) pinned = pinPiece(controller, spec);
     // airOff: 'all' (no air: both send sums cut) | 'bed' (dry bed, so the wet
     // return carries the cue sends only). Taps on `wet` stay connected.
@@ -542,6 +586,9 @@ export async function runVirtual(spec) {
         contextStates: wall(ctx.__vcStateLog),
         timers: timerReport(),
         diagnostics: engineDiagnostics(engine),
+        sea: seaState(controller),
+        bakes,
+        workletNodes,
         musicOnsets: traced,
         starts: (spec.collect || []).includes('starts')
             ? starts.map(({ node, ...s }) => ({ ...s, e: Number.isFinite(s.e) ? s.e : null }))

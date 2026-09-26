@@ -741,7 +741,7 @@ export class TopBar {
         const rows = el('div', { className: 'topbar__mixer-rows' });
         const controls = {};
         const layers = [
-            ['wind', 'WIND'],
+            ['wind', 'WEATHER & SEA'],
             ['rain', 'RAIN'],
             ['wildlife', 'WILDLIFE'],
             ['hum', 'VILLAGE HUM'],

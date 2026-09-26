@@ -351,6 +351,10 @@ export const ONE_SHOT_LIFE_SEC = 8;
 const LANE_CANDIDATES = 16;
 // An allocated, unstarted lane holds its head this long (≥ the Transport horizon).
 const LANE_RESERVE_SEC = 2;
+// Placed one-shots (placeOneShot): the offset grid, and the clearance kept
+// beyond LANE_SEPARATION_SEC against rounding in the heads' rates and starts.
+const PLACE_STEP_SEC = 0.05;
+const PLACE_SLACK_SEC = 0.1;
 const CHUNK_FRAMES = 65536;
 
 function xorshiftSeed(rng) {
@@ -465,6 +469,15 @@ export function laneMargin(a, b, period) {
     return Math.min(x0, period - x0, x1, period - x1);
 }
 
+// Buffer seconds between two read spans ({ offset, span }) on a loop of
+// `period` s; 0 when they overlap.
+export function spanGap(a, b, period) {
+    const mod = x => ((x % period) + period) % period;
+    const aheadOfB = mod(a.offset - b.offset);
+    const aheadOfA = mod(b.offset - a.offset);
+    return Math.max(0, Math.min(aheadOfB - b.span, aheadOfA - a.span));
+}
+
 // Choose { index, offset } for a new lane among `periods` (one per buffer):
 // the first of LANE_CANDIDATES rng draws whose margin to every lane it must
 // avoid stays ≥ LANE_SEPARATION_SEC, else the best draw. Continuous lanes
@@ -495,6 +508,44 @@ export function pickLane(rng, periods, lanes, lane) {
         }
     }
     return best;
+}
+
+// Place a one-shot read without drawing. `life` is { start, end, rate }
+// (audio s); its span is (end − start)·rate buffer seconds. Every offset on
+// a PLACE_STEP_SEC grid of every buffer is scored by its clearance: the
+// least of its head's margin to each lane on that buffer (laneMargin) and
+// its span's gap to each `avoid` read there ({ index, offset, span },
+// spanGap). Of the offsets clear by LANE_SEPARATION_SEC + PLACE_SLACK_SEC,
+// the tightest fit wins: packed against what is already there, it leaves
+// the widest free arcs (and any unused buffer) whole for the next read.
+// With none clear, the clearest offset. → { index, offset }
+export function placeOneShot(periods, lanes, life, avoid = []) {
+    const need = LANE_SEPARATION_SEC + PLACE_SLACK_SEC;
+    const read = { offset: 0, span: (life.end - life.start) * life.rate };
+    const candidate = { ...life, offset: 0 };
+    let fit = null;
+    let clearest = null;
+    periods.forEach((period, index) => {
+        const others = lanes.filter(l => l.index === index);
+        const reads = avoid.filter(r => r.index === index);
+        for (let k = 0; k * PLACE_STEP_SEC < period; k++) {
+            candidate.offset = read.offset = k * PLACE_STEP_SEC;
+            let clearance = Infinity;
+            for (const other of others) clearance = Math.min(clearance, laneMargin(candidate, other, period));
+            for (const prior of reads) clearance = Math.min(clearance, spanGap(read, prior, period));
+            if (!clearest || clearance > clearest.clearance) clearest = { index, offset: read.offset, clearance };
+            if (clearance >= need && !(fit?.clearance <= clearance)) fit = { index, offset: read.offset, clearance };
+        }
+    });
+    const { index, offset } = fit ?? clearest;
+    return { index, offset };
+}
+
+// Unstarted lanes past their reservation hold nothing.
+function dropExpired(lanes, at) {
+    for (const lane of lanes) {
+        if (lane.reservedUntil !== null && at > lane.reservedUntil) lanes.delete(lane);
+    }
 }
 
 export class NoisePool {
@@ -551,41 +602,37 @@ export class NoisePool {
         if (buffers.some(b => !b)) return null;
         const lanes = this._lanesOf(color);
         const src = ctx.createBufferSource();
-        src.loop = true;
-        let lane = null;
-        const allocate = (at) => {
-            if (lane) return lane;
-            for (const other of lanes) {
-                if (other.reservedUntil !== null && at > other.reservedUntil) lanes.delete(other);
-            }
+        return this._laneSource(ctx, src, lanes, (at) => {
+            dropExpired(lanes, at);
             const rate = src.playbackRate.value;
             const life = { start: at, rate, end: oneShot ? at + ONE_SHOT_LIFE_SEC / Math.max(rate, 0.1) : Infinity, oneShot };
             const { index, offset } = pickLane(rng, buffers.map(b => b.duration), [...lanes], life);
-            lane = { ...life, index, offset, reservedUntil: at + LANE_RESERVE_SEC };
-            lanes.add(lane);
             src.buffer = buffers[index];
-            return lane;
-        };
-        Object.defineProperty(src, 'startOffset', { get: () => allocate(ctx.currentTime).offset });
-        const nativeStart = src.start;
-        const nativeStop = src.stop;
-        src.start = (when = 0, startOffset, duration) => {
-            const at = Math.max(ctx.currentTime, Number(when) || 0);
-            const own = allocate(at);
-            own.offset = startOffset ?? own.offset;
-            own.start = at;
-            own.rate = src.playbackRate.value;
-            if (duration !== undefined) own.end = Math.min(own.end, at + Number(duration) / Math.max(own.rate, 0.1));
-            own.reservedUntil = null;
-            src.addEventListener('ended', () => lanes.delete(own), { once: true });
-            if (duration === undefined) nativeStart.call(src, when, own.offset);
-            else nativeStart.call(src, when, own.offset, duration);
-        };
-        src.stop = (when = 0) => {
-            if (lane) lane.end = Math.min(lane.end, Math.max(ctx.currentTime, Number(when) || 0));
-            nativeStop.call(src, when);
-        };
-        return src;
+            return { ...life, index, offset, reservedUntil: at + LANE_RESERVE_SEC };
+        });
+    }
+
+    // A one-shot source of `color` for a read of `seconds` at `rate` that
+    // starts at audio time `at` (start it then; it stops by `at + seconds`),
+    // placed now by placeOneShot: ≥ 5 s from every live lane's head for its
+    // whole read and from each `avoid` read ({ index, offset, span }).
+    // `src.read` is its own read, for the caller's next `avoid`. Null while
+    // the pool cannot be built.
+    reserveOneShot(ctx, color, seconds, { rate = 1, at = ctx.currentTime, avoid = [] } = {}) {
+        const buffers = this.buffers(color);
+        if (buffers.some(b => !b)) return null;
+        const lanes = this._lanesOf(color);
+        const start = Math.max(ctx.currentTime, at);
+        dropExpired(lanes, ctx.currentTime);
+        const life = { start, rate, end: start + seconds, oneShot: true };
+        const { index, offset } = placeOneShot(buffers.map(b => b.duration), [...lanes], life, avoid);
+        const lane = { ...life, index, offset, reservedUntil: start + LANE_RESERVE_SEC };
+        lanes.add(lane);
+        const src = ctx.createBufferSource();
+        src.buffer = buffers[index];
+        src.playbackRate.value = rate;
+        src.read = { index, offset, span: seconds * rate };
+        return this._laneSource(ctx, src, lanes, () => lane);
     }
 
     residentBytes() {
@@ -601,6 +648,43 @@ export class NoisePool {
         this._builds.clear();
         this._buffers.clear();
         this._lanes.clear();
+    }
+
+    // Loops `src` on a lane of `lanes`: `allocate(at)` makes the lane the
+    // first time it is needed (reading `startOffset`, or `start()`); the
+    // lane is held until started, then lives until the source stops.
+    _laneSource(ctx, src, lanes, allocate) {
+        src.loop = true;
+        let lane = null;
+        const own = (at) => {
+            if (!lane) {
+                lane = allocate(at);
+                lanes.add(lane);
+            }
+            return lane;
+        };
+        Object.defineProperty(src, 'startOffset', { get: () => own(ctx.currentTime).offset });
+        const nativeStart = src.start;
+        const nativeStop = src.stop;
+        src.start = (when = 0, startOffset, duration) => {
+            const at = Math.max(ctx.currentTime, Number(when) || 0);
+            const started = own(at);
+            started.offset = startOffset ?? started.offset;
+            started.start = at;
+            started.rate = src.playbackRate.value;
+            if (duration !== undefined) started.end = Math.min(started.end, at + Number(duration) / Math.max(started.rate, 0.1));
+            // Started, it is live however long its reservation was.
+            started.reservedUntil = null;
+            lanes.add(started);
+            src.addEventListener('ended', () => lanes.delete(started), { once: true });
+            if (duration === undefined) nativeStart.call(src, when, started.offset);
+            else nativeStart.call(src, when, started.offset, duration);
+        };
+        src.stop = (when = 0) => {
+            if (lane) lane.end = Math.min(lane.end, Math.max(ctx.currentTime, Number(when) || 0));
+            nativeStop.call(src, when);
+        };
+        return src;
     }
 
     _lanesOf(color) {

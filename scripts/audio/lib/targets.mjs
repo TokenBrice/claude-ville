@@ -96,6 +96,10 @@ export function buildTargets() {
     const layer = (name, isolate, atmosphere, world = BUSY, seconds = 30, warmup = 15) => ({
         name, category: 'layers', method: 'realtime', mode: 'ambient', isolate, atmosphere, world: { counts: world }, seconds, warmup,
     });
+    // 4.1: the sea (group 'wind', *Weather & sea*) by day, at night and in a storm.
+    t.push(layer('layer-sea-day', 'sea', { phase: 'day', weather: { type: 'clear', windX: 0.3 } }, BUSY, 60));
+    t.push(layer('layer-sea-night-clear', 'sea', { phase: 'night', weather: { type: 'clear', windX: 0.3 } }, BUSY, 60));
+    t.push(layer('layer-sea-storm', 'sea', { phase: 'night', weather: { type: 'storm', intensity: 0.95, windX: 1.4 } }, BUSY, 60));
     t.push(layer('layer-wind-calm', 'wind', { phase: 'day', weather: { type: 'clear', windX: 0.3 } }));
     t.push(layer('layer-wind-overcast', 'wind', { phase: 'day', weather: { type: 'overcast', windX: 0.8 } }));
     t.push(layer('layer-wind-storm', 'wind', { phase: 'night', weather: { type: 'storm', intensity: 0.95, windX: 1.4 } }));

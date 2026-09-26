@@ -80,6 +80,12 @@ export const SCENES = {
     // Nobody working, nothing actionable: the quiet floor enters resting after
     // 30 s, so the recording starts after 40.
     resting: { mode: 'ambient', world: { counts: { idle: 3 } }, atmosphere: DAY, warmup: 40, seconds: 30, stems: ['world'] },
+    // The anchor's staging at night (C-AMB-3's night bed; 4.1's sea at night).
+    nightClear: { mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, layerSteps: { hum: 0, music: 0 }, atmosphere: NIGHT, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] },
+    // S2's night row with its occasion (the program, music at its default)
+    // against noon at the same load (gated from Wave 6: scene:nightProgram).
+    nightProgram: { mode: 'ambient', world: { counts: { working: 3, idle: 1 } }, atmosphere: NIGHT, warmup: 10, seconds: 60 },
+    noonProgram: { mode: 'ambient', world: { counts: { working: 3, idle: 1 } }, atmosphere: DAY, warmup: 10, seconds: 60 },
     // Must-never 12: AMBIENT → BGM at 15 s, back at 45 s.
     presetSwitch: {
         mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: DAY, warmup: 15, seconds: 65,
@@ -134,7 +140,7 @@ export function marginScene(bedName) {
     const seconds = 3 + slot * MARGIN_SPACING + 2;
     return {
         mode: bed.mode, world: { counts: { working: agent + 2 } }, atmosphere: bed.atmosphere, force: bed.force,
-        warmup: 10, seconds, actions, stems: ['cue', 'limiterIn', 'limiterOut'],
+        warmup: 10, seconds, actions, stems: ['cue', 'world', 'work', 'music', 'limiterIn', 'limiterOut'],
     };
 }
 
@@ -186,6 +192,9 @@ export const TEXTURE_SCENES = {
     wind: { stem: 'world', spec: { mode: 'ambient', isolate: 'wind', world: { counts: { working: 4 } }, atmosphere: { ...DAY, weather: { type: 'clear', windX: 1.0 } }, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] } },
     rain: { stem: 'world', spec: { mode: 'ambient', isolate: 'rain', world: { counts: { working: 4 } }, atmosphere: RAIN, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] } },
     hum: { stem: 'work', spec: { mode: 'ambient', isolate: 'hum', world: { counts: { working: 8 } }, atmosphere: DAY, warmup: 10, seconds: 60, stems: ['work'], collect: ['starts'] } },
+    // 4.1: the sea alone by day and in a storm (C-AMB-3: sea ICC ≤ 0.4).
+    sea: { stem: 'world', spec: { mode: 'ambient', isolate: 'sea', world: { counts: { working: 4 } }, atmosphere: DAY, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] } },
+    seaStorm: { stem: 'world', spec: { mode: 'ambient', isolate: 'sea', world: { counts: { working: 4 } }, atmosphere: STORM, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] } },
 };
 
 // 2.4 Island Air on the engine alone: the two baked IRs (T60), and an 8 ms
@@ -481,4 +490,128 @@ export function captionScene(mode, { soundOn }) {
     const seconds = 2 + CAPTION_KINDS.length * CAPTION_SPACING + 4;
     const base = { mode, world: { counts: { working: CAPTION_KINDS.length + 2 } }, atmosphere: DAY, seconds, actions, captions: CAPTION_SETTINGS };
     return soundOn ? { ...base, warmup: 6, stems: ['cue'], lint: false } : base;
+}
+
+// ================================================================ Wave 4 ====
+
+const flash = (at, intensity) => ({ at, emit: 'weather:storm-flash', payload: { intensity }, label: `storm-flash ${intensity}` });
+
+// 4.5 (AMB-12, HAR-9): the 72-scene world map — four phases (mid-phase) ×
+// the six weather types × resting / 3 / 12 working, 30 s each, work and
+// music faders at 0 so the program is the world stratum (Anchor A's
+// staging). Resting cells warm up 40 s (the quiet floor rests after 30 s);
+// storm cells carry one flash (S2: storm is judged with its thunder).
+export const MAP_PHASES = ['dawn', 'day', 'dusk', 'night'];
+export const MAP_WEATHERS = Object.freeze({
+    clear: { type: 'clear', windX: 0.3 },
+    'partly-cloudy': { type: 'partly-cloudy', windX: 0.4 },
+    overcast: { type: 'overcast', windX: 0.5 },
+    rain: RAIN.weather,
+    fog: { type: 'fog', windX: 0.1 },
+    storm: STORM.weather,
+});
+export const MAP_LOADS = Object.freeze({ resting: { idle: 3 }, w3: { working: 3, idle: 1 }, w12: { working: 12 } });
+export const MAP_SECONDS = 30;
+export const MAP_FLASH = Object.freeze({ at: 4, intensity: 0.9 });
+
+export function worldMapCells() {
+    const cells = [];
+    for (const phase of MAP_PHASES) {
+        for (const [weather, w] of Object.entries(MAP_WEATHERS)) {
+            for (const [load, counts] of Object.entries(MAP_LOADS)) {
+                cells.push({
+                    key: `map:${phase}:${weather}:${load}`, phase, weather, load,
+                    spec: {
+                        mode: 'ambient', world: { counts }, layerSteps: { hum: 0, music: 0 },
+                        atmosphere: { phase, progress: 0.5, weather: w },
+                        warmup: load === 'resting' ? 40 : 10, seconds: MAP_SECONDS, stems: ['world'],
+                        actions: weather === 'storm' ? [flash(MAP_FLASH.at, MAP_FLASH.intensity)] : [],
+                    },
+                });
+            }
+        }
+    }
+    return cells;
+}
+
+// S6: 0 vs 12 working agents at one seed → a bit-identical world stem. Both
+// renders end before the quiet floor could rest the empty village (30 s:
+// the pilot light is SCN-5's designed response to nobody working).
+export const WORLD_STEM_SECONDS = 26;
+export const WORLD_STEM_FIXTURES = Object.freeze({
+    'dawn clear': { atmosphere: { phase: 'dawn', progress: 0.5, weather: MAP_WEATHERS.clear }, actions: [] },
+    'night storm': { atmosphere: { ...STORM, phase: 'night' }, actions: [flash(6, 0.8)] },
+});
+
+export function worldStemScene(fixture, working) {
+    const f = WORLD_STEM_FIXTURES[fixture];
+    return {
+        mode: 'ambient', world: { counts: working ? { working } : {} }, atmosphere: f.atmosphere,
+        warmup: 2, seconds: WORLD_STEM_SECONDS, stems: ['world'], actions: f.actions,
+    };
+}
+
+// 4.1: the sea alone at night (TEXTURE_SCENES carries day and storm), four
+// minutes of it by day for the rare voices, the night bed with and without
+// the sea (250 Hz–1 kHz), and nothing at all (the CPU proxy's floor).
+export const SEA_NIGHT_SCENE = { ...TEXTURE_SCENES.sea.spec, atmosphere: NIGHT };
+export const SEA_RARE_SCENE = { ...TEXTURE_SCENES.sea.spec, atmosphere: { ...DAY, weather: { type: 'partly-cloudy', windX: 0.8 } }, seconds: 240, collect: [] };
+export const NIGHT_BED_NO_SEA = { ...SCENES.nightClear, force: { sea: 0 }, collect: [] };
+export const SILENT_ISLAND_SCENE = { ...TEXTURE_SCENES.sea.spec, isolate: 'none', collect: [] };
+
+// 4.2: strikes across near and far intensities in shuffled order, 18 s
+// apart (a far onset lands ≤ 3.6 s after its flash and rolls ≤ 8 s), over
+// the world-only storm; stems for the bed, the thunder and the limiter.
+export const THUNDER_INTENSITIES = Object.freeze([0.9, 0.3, 0.7, 0.5, 1.0, 0.6]);
+export const THUNDER_SPACING = 18;
+export const THUNDER_FIRST = 4;
+export const THUNDER_SCENE = {
+    mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, layerSteps: { hum: 0, music: 0 }, atmosphere: STORM,
+    warmup: 10, seconds: THUNDER_FIRST + THUNDER_INTENSITIES.length * THUNDER_SPACING + 2,
+    stems: ['world', 'cue', 'limiterIn', 'limiterOut'], collect: ['starts'],
+    actions: THUNDER_INTENSITIES.map((intensity, i) => flash(THUNDER_FIRST + i * THUNDER_SPACING, intensity)),
+};
+
+// Must-never 8: a needs-you and an error each placed 1 s into a full-
+// intensity thunder roll (onset 0.4 s after the flash) in the Village storm.
+export const MASKING_SCENE = {
+    mode: 'ambient', world: { counts: { working: 6 } }, atmosphere: STORM, warmup: 10, seconds: 40,
+    stems: ['world', 'cue', 'limiterIn', 'limiterOut'],
+    actions: [flash(4, 1), ...laneActions('needsYou', 5.4, 0), flash(22, 1), ...laneActions('error', 23.4, 1)],
+};
+
+// 4.6 (AMB-9): a cue whose first note lands on a sea crest. Per bed: one
+// render without cues (the crests), one with each lane's cue early (its
+// lead from the action to the first note, and its margin off the crest),
+// then one render per lane with the cue moved onto the loudest crash crest
+// in the window. The night Village bed has no music (the sea is forward at
+// night); the storm carries the sea at its biggest.
+export const CREST_BEDS = Object.freeze({
+    night: { bed: 'village', lanes: ['routine', 'needsYou'], atmosphere: NIGHT },
+    storm: { bed: 'weather', lanes: ['error'], atmosphere: STORM },
+});
+export const CREST_WINDOW = Object.freeze([20, 60]);
+const CREST_CAL_AT = 5;
+const CREST_CAL_SPACING = 14;
+
+export function crestScene(bedName, actions = []) {
+    const b = CREST_BEDS[bedName];
+    return {
+        mode: 'ambient', world: { counts: { working: 6 } }, atmosphere: b.atmosphere, force: { music: 0 },
+        warmup: 10, seconds: 70, stems: ['world', 'cue', 'limiterIn', 'limiterOut'], actions,
+    };
+}
+
+// → { spec, at: { lane: action time } }
+export function crestCalibration(bedName) {
+    const at = {};
+    const actions = CREST_BEDS[bedName].lanes.flatMap((lane, i) => {
+        at[lane] = CREST_CAL_AT + i * CREST_CAL_SPACING;
+        return laneActions(lane, at[lane], i);
+    });
+    return { spec: crestScene(bedName, actions), at };
+}
+
+export function crestPlaced(bedName, lane, at) {
+    return crestScene(bedName, laneActions(lane, at, 0));
 }

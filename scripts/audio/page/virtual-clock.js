@@ -141,6 +141,15 @@
     window.cancelIdleCallback = cancel;
     performance.now = () => vc.now;
     Date.now = () => DATE_EPOCH_MS + (vc.now - PERF_EPOCH_MS);
+    // `new Date()` reads the same virtual clock (a real wall-clock read made
+    // two renders of one scene differ by how far apart they ran).
+    const RealDate = Date;
+    window.Date = class VirtualDate extends RealDate {
+        constructor(...args) {
+            if (args.length) super(...args);
+            else super(RealDate.now());
+        }
+    };
 
     // Async work the clock must not run ahead of: worklet modules, offline
     // bakes (a second OfflineAudioContext rendering) and decoding.

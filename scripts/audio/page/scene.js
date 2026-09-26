@@ -7,8 +7,9 @@ import { createAtmosphereSnapshot } from '/src/presentation/character-mode/Atmos
 import { seasonTokenForAtmosphere } from '/src/presentation/character-mode/SeasonalAmbience.js';
 import { STANDARD_VOLUME_STEP } from '/src/presentation/shared/audio/Loudness.js';
 
-// Every layer the ambient director owns (its forceLayer() names).
-export const LAYERS = ['wind', 'rain', 'birds', 'crickets', 'hum', 'music'];
+// Every layer the ambient director owns (its forceLayer() names); the sea
+// (4.1) plays on the wind group (*Weather & sea*).
+export const LAYERS = ['sea', 'wind', 'rain', 'birds', 'crickets', 'hum', 'music'];
 
 // ------------------------------------------------------------ sequencer ----
 // Selection pins on the one music sequencer (2.3). The Town band chooses its

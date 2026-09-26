@@ -73,18 +73,30 @@ test('a criterion owned by a later wave defers at an earlier stage and gates onc
     const limit = judgeLane('limit', 'music', [{ margin: 10.6, presenceRiseDb: -3, grDb: 0.5 }]);
     assert.equal(limit.outcome, 'FAIL');
     assert.deepEqual(limit.failures.map(f => f.what), ['margin > 10', 'presence rise < 6 dB']);
-    // The error over the storm defers as a whole row until the Wave-4 storm;
-    // the same numbers over rain gate now.
+    // A `margin:<bed>:<lane>` row defers every criterion of that lane on
+    // that bed until its wave, and only on that bed.
+    const gated = { 'margin:storm:error': 5 };
     const stormError = [{ margin: 5.7, bandsOver6dB: 3, grDb: 3.4 }];
-    const storm = judgeLane('error', 'weather', stormError, { probeBed: 'storm' });
+    const storm = judgeLane('error', 'weather', stormError, { probeBed: 'storm', stage: 4, gated });
     assert.equal(storm.outcome, 'DEFER');
-    assert.deepEqual(storm.failures.map(f => f.gatedFrom), [4, 4]);
-    assert.equal(judgeLane('error', 'weather', stormError, { probeBed: 'storm', stage: 4 }).outcome, 'FAIL');
-    assert.equal(judgeLane('error', 'weather', stormError, { probeBed: 'rain' }).outcome, 'FAIL');
-    assert.equal(judgeLane('limit', 'weather', [{ margin: 3, bandsOver6dB: 3, grDb: 1 }], { probeBed: 'storm' }).outcome, 'FAIL');
+    assert.deepEqual(storm.failures.map(f => f.gatedFrom), [5, 5]);
+    assert.equal(judgeLane('error', 'weather', stormError, { probeBed: 'storm', stage: 5, gated }).outcome, 'FAIL');
+    assert.equal(judgeLane('error', 'weather', stormError, { probeBed: 'rain', stage: 4, gated }).outcome, 'FAIL');
+    // From Wave 4 the storm's error row and the busy village gate.
+    assert.equal(judgeLane('error', 'weather', stormError, { probeBed: 'storm' }).outcome, 'FAIL');
     const busy = judgeSceneTargets({ anchor: { lufsI: -38 }, villageBusy: { lufsI: -31, lra: 4 } });
-    assert.deepEqual(busy.map(r => [r.scene, r.outcome]), [['anchor', 'PASS'], ['villageBusy', 'DEFER']]);
-    assert.equal(judgeSceneTargets({ anchor: { lufsI: -38 }, villageBusy: { lufsI: -31, lra: 4 } }, undefined, { stage: 4 })[1].outcome, 'FAIL');
+    assert.deepEqual(busy.map(r => [r.scene, r.outcome]), [['anchor', 'PASS'], ['villageBusy', 'FAIL']]);
+});
+
+test('the night program row (music included) defers to Wave 6', () => {
+    const scenes = { anchor: { lufsI: -38 }, nightProgram: { lufsI: -33, presenceDb: -60 }, noonProgram: { lufsI: -34, presenceDb: -58 } };
+    const [, night] = judgeSceneTargets(scenes);
+    assert.equal(night.scene, 'nightProgram');
+    assert.equal(night.pass, false);
+    assert.equal(night.outcome, 'DEFER');
+    assert.equal(judgeSceneTargets(scenes, undefined, { stage: 6 })[1].outcome, 'FAIL');
+    // ≤ A + 4 (the session) and 4 dB darker than noon passes.
+    assert.equal(judgeSceneTargets({ ...scenes, nightProgram: { lufsI: -34.5, presenceDb: -63 } }, undefined, { stage: 6 })[1].outcome, 'PASS');
 });
 
 test('scene targets are relative to the anchor measured in the same run', () => {
@@ -99,18 +111,18 @@ test('scene targets are relative to the anchor measured in the same run', () => 
     assert.deepEqual(by, { anchor: true, villageBusy: true, rain: false, storm: true, resting: false });
 });
 
-test('a scene over its Loudness.js target fails unless its stage is deferred', () => {
+test('a scene over its Loudness.js target fails, or defers while its row is gated later', () => {
     const anchor = { lufsI: -38 };
-    // Rain at A + 5.7 is over S2's A + 5 and gated now.
-    const rain = judgeSceneTargets({ anchor, rain: { lufsI: -32.3 } }, undefined, { stage: 2 });
+    // Rain at A + 5.7 is over S2's A + 5.
+    const rain = judgeSceneTargets({ anchor, rain: { lufsI: -32.3 } });
     assert.equal(rain[1].outcome, 'FAIL');
-    // Storm at A + 7.8 is over S2's A + 6: deferred to Wave 4, failing there.
+    // Storm at A + 7.8 is over S2's A + 6.
     const storm = { lufsI: -30.2, stMax: -27.5 };
-    assert.equal(judgeSceneTargets({ anchor, storm }, undefined, { stage: 2 })[1].outcome, 'DEFER');
-    assert.equal(judgeSceneTargets({ anchor, storm }, undefined, { stage: 4 })[1].outcome, 'FAIL');
+    assert.equal(judgeSceneTargets({ anchor, storm })[1].outcome, 'FAIL');
+    assert.equal(judgeSceneTargets({ anchor, storm }, undefined, { stage: 4, gated: { 'scene:storm': 5 } })[1].outcome, 'DEFER');
     // Its short-term ceiling fails on its own.
-    assert.equal(judgeSceneTargets({ anchor, storm: { lufsI: -33, stMax: -26.5 } }, undefined, { stage: 4 })[1].outcome, 'FAIL');
-    assert.equal(judgeSceneTargets({ anchor, storm: { lufsI: -33, stMax: -27.5 } }, undefined, { stage: 4 })[1].outcome, 'PASS');
+    assert.equal(judgeSceneTargets({ anchor, storm: { lufsI: -33, stMax: -26.5 } })[1].outcome, 'FAIL');
+    assert.equal(judgeSceneTargets({ anchor, storm: { lufsI: -33, stMax: -27.5 } })[1].outcome, 'PASS');
 });
 
 const TICK = { site: 'Transport.js:88', fired: 2400, p95Ms: 0.2, maxMs: 1.1, starts: 900 };
@@ -195,14 +207,17 @@ test('piece onsets: one Village song ends at its first long gap, one Town band l
 
 test('sequencer equivalence needs identical onsets and the level within 0.5 LU', () => {
     const ref = { onsets: [0, 0.5, 1, 1.5], lufsI: -40 };
-    assert.equal(judgeSequencer(ref, { onsets: [0, 0.5, 1, 1.5], lufsI: -40.4 }).pass, true);
-    assert.equal(judgeSequencer(ref, { onsets: [0, 0.5, 1, 1.5], lufsI: -40.6 }).pass, false);
-    const moved = judgeSequencer(ref, { onsets: [0, 0.5, 1.002, 1.5], lufsI: -40 });
+    // Level drifts against the current baseline, not the Wave-1 render.
+    const same = [0, 0.5, 1, 1.5];
+    assert.equal(judgeSequencer(ref, { onsets: same, lufsI: -41.4 }, { baselineLufs: -41 }).pass, true);
+    assert.equal(judgeSequencer(ref, { onsets: same, lufsI: -41.6 }, { baselineLufs: -41 }).pass, false);
+    assert.equal(judgeSequencer(ref, { onsets: same, lufsI: -40 }).pass, false);
+    const moved = judgeSequencer(ref, { onsets: [0, 0.5, 1.002, 1.5], lufsI: -40 }, { baselineLufs: -40 });
     assert.equal(moved.pass, false);
     assert.equal(moved.onsets.firstMismatch.index, 2);
     // A missing note is a mismatch even when every shared onset agrees.
     assert.equal(compareOnsets(ref.onsets, [0, 0.5, 1]).identical, false);
-    assert.equal(judgeSequencer({ onsets: [], lufsI: -40 }, { onsets: [], lufsI: -40 }).pass, false);
+    assert.equal(judgeSequencer({ onsets: [], lufsI: -40 }, { onsets: [], lufsI: -40 }, { baselineLufs: -40 }).pass, false);
 });
 
 test('frame cost compares sound-on and sound-off p95', () => {
