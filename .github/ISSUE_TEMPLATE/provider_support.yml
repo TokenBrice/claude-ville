@@ -15,10 +15,10 @@ body:
         - Claude Code
         - Codex CLI
         - Gemini CLI
-        - Grok
-        - Kimi
-        - OMP
+        - Grok CLI
+        - Kimi (incl. Kimi Code)
         - OpenCode
+        - OMP (Oh My Pi)
         - Other
     validations:
       required: true

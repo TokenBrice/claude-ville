@@ -3,7 +3,7 @@
 ## When to read this
 
 - You are picking a PixelLab tool to bake or edit a sprite and the choice is not obvious.
-- You hit a parameter enum (`outline`, `shading`, `detail`, `view`, `isometric_tile_shape`, `tile_type`) and need the valid values.
+- You hit a parameter enum (`outline`, `shading`, `detail`, `view`, `tile_shape`, `tile_type`) and need the valid values.
 - You see an unfamiliar HTTP status (423, 429) or an unexpected ZIP layout and need to know what's normal.
 - You need to know whether a capability lives in the MCP server or only in the REST API.
 
@@ -19,14 +19,16 @@ Approximate cost per asset family (so an agent can sanity-check before kicking o
 
 | Operation | Cost |
 | --- | --- |
-| `create_character` standard mode (8 directions) | ~1 generation + ~8 for the rotation rig |
+| `create_character` standard mode (4 or 8 directions) | 1 generation |
 | `create_character` pro mode | 20–40 generations |
+| `create_character` v3 mode | 2–9 generations |
 | `animate_character` template mode (per animation, full 8-direction rig) | 1 generation per direction, 8 total |
-| `animate_character` v3 mode | `ceil(width * height * frames / 65536)` per direction, at verified source dimensions |
+| `animate_character` v3 mode | `ceil(width * height * frames / 65536)` per direction on the generated canvas, which the silhouette can grow past the source size |
+| `animate_character` skeleton-v3 mode | 2–4 generations per direction |
 | `animate_character` pro mode | 20–40 generations per direction |
 | `create_isometric_tile` | 1–2 generations |
 | `create_tiles_pro` | 20 (small/medium) or 25 (larger sizes) |
-| `create_topdown_tileset` / `create_sidescroller_tileset` | 16 tiles or 23 with full transition |
+| `create_topdown_tileset` standard mode | 1–4 generations, usually 3–4 |
 | `create_map_object` | 1 generation |
 | REST `create-image-pixflux` | 1 generation |
 
@@ -48,22 +50,26 @@ Re-fetch when an MCP call returns an error you do not recognize, when a paramete
 
 ## MCP vs REST boundary
 
-The PixelLab MCP server (configured via `claude mcp add --transport http pixellab https://api.pixellab.ai/mcp --header "Authorization: Bearer YOUR_TOKEN"`) exposes a curated **asset-creation** subset. ClaudeVille uses both surfaces.
+The PixelLab MCP server (configured via `claude mcp add --transport http pixellab https://api.pixellab.ai/mcp --header "Authorization: Bearer YOUR_TOKEN"`; the repo's Codex config mounts it from `.codex/config.toml`) exposes an asset-creation and editing subset. ClaudeVille uses both surfaces. Tool names and parameters below were rechecked against the mounted server's schemas on 2026-09-27; re-read a tool's schema before a paid call.
 
 **Available via MCP (`mcp__pixellab__*`):**
 
 | Tool | Purpose | Canvas range |
 | --- | --- | --- |
-| `create_character` | 4- or 8-direction character | 16-128 px (`size`; pro mode returns frames at exactly that size) |
-| `animate_character` | Animate an existing character (template / v3 / pro) | inherits character size |
-| `create_isometric_tile` | Single isometric tile | 16-64 px (24+ recommended) |
-| `create_map_object` | Transparent-BG prop | 32-400 px |
-| `create_topdown_tileset` | Wang tileset for top-down terrain | 16 or 32 px tiles |
+| `create_character` | 4- or 8-direction character (standard / pro / v3) | `size` 16-128 px (v3 up to 256; pro returns frames at exactly that size) |
+| `animate_character` | Animate an existing character (template / skeleton-v3 / v3 / pro) | inherits character size |
+| `create_isometric_tile` | Single isometric tile | `size` 16-64 px (24+ recommended) |
+| `create_map_object` | Transparent-BG prop | `width`/`height` 32-400 px |
+| `create_topdown_tileset` | Wang tileset for top-down terrain | 16 or 32 px tiles (64 in pro mode) |
 | `create_sidescroller_tileset` | Sidescroller platform tileset | 16 or 32 px tiles |
 | `create_tiles_pro` | Multi-shape tile grid (hex / hex_pointy / isometric / octagon / square_topdown) | 16-256 px tiles |
+| `create_image_pixflux`, `create_image_pixen`, `create_image_pro` | Freeform images (no rig) | per model |
+| `edit_image`, `edit_image_pixen`, `inpaint_image` | Edit or inpaint an existing image | per model |
+| `image_to_pixelart`, `reduce_colors`, `unzoom_image`, `correct_pixelart` | Image cleanup and conversion | n/a |
+| `get_balance`, `list_jobs`, `wait_for_jobs` | Balance and job lifecycle | n/a |
 | `get_*` / `list_*` / `delete_*` | One per asset family above | n/a |
 
-**Only via REST (`https://api.pixellab.ai/v2/*`):**
+**REST (`https://api.pixellab.ai/v2/*`)**, some of which now also have the MCP counterparts listed above:
 
 - General image generation: `create-image-pixflux`, `create-image-pixen`, `create-image-bitforge`, `generate-image-v2`, `generate-with-style-v2`, `generate-ui-v2`
 - Edit / inpaint: `inpaint-v3`, `inpaint`, `edit-image`, `edit-images-v2`, `edit-animation-v2`
@@ -73,7 +79,7 @@ The PixelLab MCP server (configured via `claude mcp add --transport http pixella
 - Maps: `create-map`, `create-map-new`, `extend-map`, `extend-map-v2`, `create-large-image`, `create-texture`
 - Other: `create-instant-character`, `create-ui-elements`, `create-ui-elements-pro`, `create-sl-image-pro`, `create-character-with-4-directions`, `create-character-with-8-directions` (the MCP `create_character` wraps these last two)
 
-**Why ClaudeVille uses both:** MCP `create_isometric_tile` caps at 64 px. Hero buildings such as `building.watchtower` (400×300) need REST `create-image-pixflux`. Equipment and props that need transparent backgrounds up to 400 px should prefer MCP `create_map_object`. `scripts/sprites/generate-pixellab-revamp.mjs` calls REST directly and reads `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` from `.dev.vars`, but its bake list is still code-defined and only checked against the manifest. Run it only with an explicit, reviewed `--ids` list until it is fully manifest-driven.
+**Why ClaudeVille uses both:** MCP `create_isometric_tile` caps at 64 px, and the repo's bake scripts call REST directly. The Painted Isle landmarks (Command, Archive, Task Board, Forge, Mine) were re-authored with REST `generate-image-v2` using `building.observatory` as the style image; Harbor, Observatory, Watchtower (288×384), and Portal are single `create_map_object` images (manifest `tool: map_object`). `scripts/sprites/generate-pixellab-revamp.mjs` calls REST directly and reads `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` from `.dev.vars`; its building specs come from the manifest, but its character/prop inventories are still code-defined. Run it only with an explicit, reviewed `--ids` list.
 
 ## Tool catalog
 
@@ -81,7 +87,7 @@ Per-tool quick reference. Inputs list the most-used parameters, not every option
 
 ### `create_character`
 
-- Inputs: `description`, `name`, `size` (16-128; replaces the former `image_size` object, which the tool rejects since 2026-09), `n_directions` (4 or 8; pro is always 8), `view`, `outline`, `shading`, `detail`, `mode` (`standard` / `pro` / `v3`), `proportions`, `body_type` + `template` (`bear`/`cat`/`dog`/`horse`/`lion` for quadrupeds), `style_character_id` (pro only), `seed`.
+- Inputs: `description`, `name`, `size` (16-128, up to 256 in v3; replaces the former `image_size` object, which the tool rejects since 2026-09), `n_directions` (4 or 8; pro and v3 are always 8), `view` (`low top-down` / `high top-down` / `side` / `oblique` beta), `outline`, `shading`, `detail`, `mode` (`standard` / `pro` / `v3`), `proportions`, `body_type` + `template` (`bear`/`cat`/`dog`/`horse`/`lion` for quadrupeds), `style_character_id` (pro only), `reference_image_url` / `reference_image_base64` (v3 only: rotates an existing south-facing sprite into 8 directions).
 - Output: `character_id` + URLs for the 4 or 8 rotation images. **Async.**
 - Older exports padded the canvas ~40% around the requested size; pro mode (verified 2026-09-02) returns frames at exactly `generationSize`. `generate-character-mcp.mjs` centres either shape in the 92px cell.
 - Generation size vs engine cell size: character manifest `generationSize` supplies `size` to `create_character`; `size: 92` in the manifest is the separate engine-cell contract read by `SpriteSheet.js`. A generation size below 92 leaves margin inside the cell for animation overshoot.
@@ -89,27 +95,27 @@ Per-tool quick reference. Inputs list the most-used parameters, not every option
 
 ### `animate_character`
 
-- Inputs: `character_id`, `template_animation_id` (template mode), `action_description` + `frame_count` (v3 mode), `mode` (`template` / `v3` / `pro`), `directions` (defaults to all character directions in template mode, south only in custom).
+- Inputs: `character_id`, `template_animation_id` (template and skeleton-v3 modes), `action_description` + `frame_count` (v3 mode, 4-16 even), `mode` (`template` / `skeleton-v3` / `v3` / `pro`), `directions` (defaults to all character directions in template mode, south only in v3), `animation_group_id` + `animation_name` (append directions to an existing group; repeat the group's name), `keep_first_frame` (v3).
 - Output: per-direction frame URLs attached to the character record. **Async.**
 - Repo usage: walking + idle animations applied to each character; assembly handled by `scripts/sprites/generate-character-mcp.mjs`.
 
 ### `create_isometric_tile`
 
-- Inputs: `description`, `image_size` (16-64 px), `isometric_tile_shape` (`thin tile` / `thick tile` / `block`, default `block`), `outline`, `shading`, `detail`, `init_image`, `init_image_strength`, `seed`.
+- Inputs: `description`, `size` (16-64 px), `tile_shape` (`thin tile` / `thick tile` / `block`), `outline`, `shading`, `detail`, `text_guidance_scale`, `seed`.
 - Output: tile image. **Async.**
 - Repo usage: floor rings, status overlays, head accessories. Pass `thin tile` for icons; `block` clips small assets.
 
 ### `create_map_object`
 
-- Inputs: `description`, `image_size` (32-400 px, max area 400×400 basic / 192×192 with inpainting), `view` (default `high top-down`), `outline`, `shading`, `detail`, `init_image`, `background_image` (style match), `inpainting`.
+- Inputs: `description`, `width` + `height` (32-400 px; max 400×400 basic, 192×192 with inpainting), `view` (`low top-down` / `high top-down` / `side`), `outline`, `shading`, `detail`, `background_image` (base64, style match; width/height then come from it), `inpainting` (oval, rectangle, or mask).
 - Output: object image with transparent background. **Async.**
 - Repo usage: runtime equipment under `claudeville/assets/sprites/equipment/` and any prop that exceeds 64 px and needs transparency.
 
 ### `create_topdown_tileset`
 
-- Inputs: `lower_description`, `upper_description`, `transition_description`, `tile_size` (16 or 32), `transition_size` (0.0 / 0.25 / 0.5 / 0.75 / 1.0), `view` (`low top-down` / `high top-down`), `outline`, `shading`, `detail`, references for `lower`/`upper`/`transition`/`color`.
-- Output: 16 tiles (no transition) or 23 tiles (full transition) as a Wang set. **Async.**
-- Repo usage: terrain tilesets in `claudeville/assets/sprites/terrain/`.
+- Inputs: `lower_description`, `upper_description`, `transition_description`, `tile_size` (16 or 32; 64 needs `mode: pro`), `transition_size` (0.0 / 0.25 / 0.5 / 1.0), `mode` (`standard` / `pro`), `view` (`low top-down` / `high top-down`), `outline`, `shading`, `detail`, `lower_base_tile_id` / `upper_base_tile_id` to chain connected sets.
+- Output: 16 tiles (4×4) or, at full transition, 25 tiles (4×8) as a Wang set. **Async.**
+- Repo usage: terrain tilesets in `claudeville/assets/sprites/terrain/`. Since v0.46 they are luminance sources for the ground bake (`GroundBake.js`), not stamped tiles.
 - **Confirmed REST shape (2026-07-17, `scripts/sprites/pixellab-rest.mjs` `createTopdownTileset()`):** `POST /v2/create-tileset` → 202 `{tileset_id, background_job_id}`; poll `GET /tilesets/{tileset_id}` until 200. Response carries **16 individual 32×32 tiles** (`wang_0..15` with `corners` metadata, bit packing SE=1/SW=2/NE=4/NW=8) — no assembled sheet; stitch client-side (app cells are edge-mask indexed N=1/E=2/S=4/W=8; corner = OR of adjacent edges). `lower_reference_image`/`upper_reference_image` (`{type:'base64',...}`) strongly steers texture+hue and was the winning lever against off-family results (brick/mosaic motifs); water sets want detailed shading + "smooth continuous water surface" language. Driver: `scripts/sprites/bake-terrain.mjs` (cache-aware, `--force/--dry-run/--ids/--seed-offset`).
 
 ### `create_sidescroller_tileset`
@@ -128,14 +134,14 @@ Per-tool quick reference. Inputs list the most-used parameters, not every option
 You need to bake or edit X. Use this branching:
 
 - **New character with directional walk + idle:** follow the canonical [Add One Character](../scripts/sprites/generate.md#add-one-character) procedure. Its manifest `generationSize` and optional `generationMode` are the request source of truth.
-- **Building (single-image, ≤400 px):** MCP `create_map_object` (`view: low top-down`, `outline: selective outline`, `shading: detailed shading`, `detail: high detail`) per the building style contract (`docs/building-style-contract.md`); or REST `create-image-pixflux` via `scripts/sprites/generate-pixellab-revamp.mjs`. `create_map_object` downloads arrive flattened on grey — run `node scripts/sprites/key-out-bg.mjs <base.png>` to key out the background. `composeGrid` tile-slicing is retired; every building is one `base.png`.
-- **Floor ring / status overlay (small isometric icon, transparent BG):** MCP `create_isometric_tile` size 32-64, `isometric_tile_shape: thin tile`. Use shape language in the description ("single-band ring", "triple-band").
-- **Head accessory overlay (32 px, on top of head):** MCP `create_isometric_tile` size 32, `isometric_tile_shape: thin tile`. Differentiate with explicit shape words ("vertical pillar", "wreath", "halo") so overlays read distinctly at small size.
+- **Building (single-image, ≤400 px):** per the building style contract (`docs/building-style-contract.md`), REST `generate-image-v2` (Pro) with `building.observatory` as the style image, or MCP `create_map_object` (`view: low top-down`, `outline: selective outline`, `shading: detailed shading`, `detail: high detail`). `create_map_object` downloads arrive flattened on grey — run `node scripts/sprites/key-out-bg.mjs <base.png>` to key out the background. `composeGrid` tile-slicing is retired; every building is one `base.png`.
+- **Floor ring / status overlay (small isometric icon, transparent BG):** MCP `create_isometric_tile` `size` 32-64, `tile_shape: thin tile`. Use shape language in the description ("single-band ring", "triple-band").
+- **Head accessory overlay (32 px, on top of head):** MCP `create_isometric_tile` `size` 32, `tile_shape: thin tile`. Differentiate with explicit shape words ("vertical pillar", "wreath", "halo") so overlays read distinctly at small size.
 - **Terrain transition (Wang):** MCP `create_topdown_tileset` with `lower_description` + `upper_description` + optional `transition_description`. Pick `tile_size: 32` for 24+px legibility.
 - **Multi-shape terrain set (hex, octagon, square at angle):** MCP `create_tiles_pro`. Use `tile_view_angle` for fine control.
 - **Map concept image / freeform scene:** REST `create-image-pixflux` with `isometric: true`, `view: 'low top-down'`. Used in `generate-pixellab-revamp.mjs` for the town concept.
 - **Equipment or prop with transparent BG, larger than 64 px:** MCP `create_map_object`.
-- **Edit/inpaint an existing PNG:** REST only. Decide whether the cost of a one-off REST call is worth it vs. regenerating from scratch.
+- **Edit/inpaint an existing PNG:** MCP `edit_image`, `edit_image_pixen`, or `inpaint_image`, or the REST edit/inpaint endpoints (the Command gate was re-cut with REST `inpaint-v3`). Decide whether the cost of an edit is worth it vs. regenerating from scratch.
 
 ## Async / job lifecycle
 
@@ -144,8 +150,8 @@ Most MCP creation tools and several REST `v2/*` endpoints are asynchronous, but 
 Common patterns:
 
 - REST `create-image-pixflux` / `pixen` / `bitforge`: usually `200` with image data inline.
-- Character creation and animation: persistent character or animation records; poll `get_character`, and use the ZIP export when all required animations are complete.
-- MCP isometric tiles, map objects, tilesets, and tiles-pro: usually return an ID or job handle; poll the matching `get_*` tool until the image payload is ready.
+- Character creation and animation: persistent character or animation records; poll `get_character` (or block on MCP `wait_for_jobs`), and use the ZIP export when all required animations are complete.
+- MCP isometric tiles, map objects, tilesets, and tiles-pro: usually return an ID or job handle; poll the matching `get_*` tool (or `wait_for_jobs`) until the image payload is ready.
 
 Status codes:
 
@@ -162,7 +168,7 @@ Poll cadence:
 - Characters and full animation rigs: every 60s; full bake takes 5–10 min.
 - Isometric tiles, map objects, single-image jobs: every 10–15s.
 
-Character ZIP layout (verified 2026-04-27 in `scripts/sprites/generate-character-mcp.mjs`):
+Character ZIP layout (read by `scripts/sprites/generate-character-mcp.mjs`):
 
 ```
 metadata.json
@@ -170,47 +176,48 @@ rotations/<dir>.png                                         (S × S, S = source 
 animations/animating-<uuid>/<dir>/frame_NNN.png             (S × S each)
 ```
 
-`metadata.json` has a `frames.animations[<anim_id>][<dir>]` map of frame paths. Identify walk vs idle by frame count (6 frames = walk, 4 frames = idle in the current ClaudeVille rig).
+`metadata.json` has a `frames.animations[<anim_id>][<dir>]` map of frame paths. Exports since the 2026-09 schema bump nest `character` and `frames` under `states[0]`; the assembler reads both shapes. Select walk and idle by explicit exported animation ID, never by frame count.
 
 ## Parameter reference
 
-Exact enums and ranges. Source: `https://api.pixellab.ai/v2/llms.txt` and the `docs/options/*` pages, verified 2026-04-27.
+Exact enums and ranges. Source: `https://api.pixellab.ai/v2/llms.txt` and the `docs/options/*` pages, verified 2026-04-27; MCP enums rechecked against the mounted server's schemas on 2026-09-27. MCP enums differ per tool, so read the tool's schema before a call.
 
 | Parameter | Values / range | Notes |
 | --- | --- | --- |
-| `outline` | `single color black outline` \| `single color outline` \| `selective outline` \| `lineless` | Strong as param; weak in description. |
-| `shading` | `flat shading` \| `basic shading` \| `medium shading` \| `detailed shading` \| `highly detailed shading` | More shading = more colors used. |
-| `detail` | `low detail` \| `medium detail` \| `high detail` (MCP tools) / `low detail` \| `medium detail` \| `highly detailed` (REST pixflux) | Enum split 422-verified 2026-07-17: REST `create-image-pixflux` **requires** `'highly detailed'`; the MCP tools take `'high detail'`. |
+| `outline` | `single color black outline` \| `single color outline` \| `selective outline` \| `lineless` | Strong as param; weak in description. MCP `create_character` accepts all four; MCP `create_isometric_tile`, `create_map_object`, and `create_topdown_tileset` omit `single color black outline`. |
+| `shading` | `flat shading` \| `basic shading` \| `medium shading` \| `detailed shading` \| `highly detailed shading` | More shading = more colors used. MCP `create_character` and `create_map_object` stop at `detailed shading`. |
+| `detail` | `low detail` \| `medium detail` \| `high detail` / `low detail` \| `medium detail` \| `highly detailed` | Split by tool: MCP `create_character` and `create_map_object` take `'high detail'`; MCP `create_isometric_tile`, `create_topdown_tileset`, and REST `create-image-pixflux` take `'highly detailed'` (pixflux 422-verified 2026-07-17). |
 | `view` | `side` \| `low top-down` \| `high top-down` | ClaudeVille uses `low top-down`. |
 | `tile_view` (tiles_pro) | `top-down` \| `high top-down` \| `low top-down` \| `side` | `top-down` = no depth, `low top-down` ≈ 30%. |
-| `isometric_tile_shape` | `thin tile` (~15%) \| `thick tile` (~25%) \| `block` (~50%, default) | Floor rings and overlays need `thin tile`. |
+| `tile_shape` (MCP isometric tile; REST `isometric_tile_shape`) | `thin tile` (~10%) \| `thick tile` (~25%) \| `block` (~50%) | Floor rings and overlays need `thin tile`. |
 | `tile_type` (tiles_pro) | `hex` \| `hex_pointy` \| `isometric` \| `octagon` \| `square_topdown` | Default `isometric`. |
-| `transition_size` (tilesets) | 0.0 \| 0.25 \| 0.5 \| 0.75 \| 1.0 | 0.0 = no transition (16 tiles), 1.0 = full transition (23 tiles). |
+| `transition_size` (tilesets) | 0.0 \| 0.25 \| 0.5 \| 1.0 | Standard mode: up to 0.5 = 16 tiles; 1.0 = full transition (25 tiles). Pro mode returns 25 tiles from 0.5. |
 | `text_guidance_scale` | 1.0 – 20.0, default 8.0 | Higher = more literal; over-saturation past ~12. |
 | `init_image_strength` | 1 – 999 | 0–300 rough color, 300–400 rough shape, 400–600 medium, 600–900 detailed (use when refining nearly-finished art). |
 | `seed` | integer; 0 = random | Reuse a seed to get a near-identical regeneration. |
 | `no_background` | bool | Transparent output. Saying "transparent background" in the prompt is redundant. |
-| `mode` (`create_character` 8-dir) | `standard` (1 gen) \| `pro` (20–40 gens) | Pro ignores outline/shading/detail/proportions/text_guidance_scale. |
-| `mode` (`animate_character`) | `template` (1 gen/dir) \| `v3` (custom from `action_description`, `frame_count` 4–16) \| `pro` (20–40 gen/dir) | Auto-detected: template if `template_animation_id` provided, else v3. |
+| `mode` (`create_character`) | `standard` (1 gen) \| `pro` (20–40 gens) \| `v3` (2–9 gens) | Pro ignores outline/shading/detail/proportions/text_guidance_scale; v3 ignores shading/proportions/text_guidance_scale. Pro and v3 are always 8 directions. |
+| `mode` (`animate_character`) | `template` (1 gen/dir) \| `skeleton-v3` (2–4 gen/dir, beta) \| `v3` (custom from `action_description`, `frame_count` 4–16) \| `pro` (20–40 gen/dir; frame count fixed by size, 4 frames above 64 px) | Auto-detected: template if `template_animation_id` provided, else v3. |
 | `direction` (camera) | `north` \| `north-east` \| `east` \| `south-east` \| `south` \| `south-west` \| `west` \| `north-west` | Weak guidance; pair with init image for reliability. |
 
 ## Animation templates
 
-Known `template_animation_id` values, confirmed across docs and repo as of 2026-04-27. The API documentation truncates the enum with `...`; for the complete current list, open `https://www.pixellab.ai/create-character` and read the animation dropdown.
+Humanoid `template_animation_id` values are enumerated in the MCP `animate_character` schema (rechecked 2026-09-27); quadruped templates vary by body template, so read them from `get_character`. The groups below are a subset.
 
 | Group | Templates | ClaudeVille usage |
 | --- | --- | --- |
-| Idle | `breathing-idle` | active (rows 6–9 in character sheet) |
-| Walk / run | `walking-4-frames`, `walking-6-frames`, `crouched-walking` | `walking-6-frames` active (rows 0–5) |
-| Attack | `attack`, `attack-back`, `attack-left`, `attack-right`, `cross-punch` | unused |
-| Reaction | `angry`, `bark` | unused |
-| Acrobatic | `backflip` | unused |
+| Idle | `breathing-idle`, `fight-stance-idle-8-frames` | `breathing-idle` active (rows 6–9 in character sheet) |
+| Walk / run | `walking-4-frames`, `walking-6-frames`, `walking-8-frames`, `crouched-walking`, `running-4-frames`, `running-6-frames`, `running-8-frames` | `walking-6-frames` active (rows 0–5) |
+| Strike | `cross-punch`, `lead-jab`, `high-kick`, `roundhouse-kick`, `fireball`, `throw-object` | unused |
+| Work | `picking-up`, `pushing`, `pull-heavy-object`, `drinking` | unused |
+| Acrobatic | `backflip`, `front-flip`, `running-jump`, `two-footed-jump` | unused |
 
 `animate_character` modes:
 
-- `template` — skeleton-based from `template_animation_id`, 1 generation per direction, fastest path. **Default for ClaudeVille.**
-- `v3` — custom animation from `action_description` text + `frame_count` (4–16, even).
-- `pro` — generates directions sequentially using completed sides as reference, 20–40 generations per direction, highest quality.
+- `template` — skeleton-based from `template_animation_id`, 1 generation per direction, fastest path. **Default for ClaudeVille base-sheet walk and idle.**
+- `skeleton-v3` — the same template posed onto the character by the skeleton video model; steadier identity, 2–4 generations per direction, beta, Tier 1 or higher.
+- `v3` — custom animation from `action_description` text + `frame_count` (4–16, even). ClaudeVille action strips use it (`scripts/sprites/generate-action-strip.mjs`).
+- `pro` — generates directions sequentially using completed sides as reference, 20–40 generations per direction, highest quality; requires a cost confirmation call.
 
 ## Style anchor and prompt building
 
@@ -241,10 +248,10 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 1. **Character frames are not always padded.** Older `create_character` exports padded ~40% (a 64 px request returned ~90×90); pro mode now returns exactly the requested `size`. `generate-character-mcp.mjs` crops or pads to 92×92 accordingly. Do not substitute engine `size` for manifest `generationSize`; the fields have different contracts.
 2. **Isometric tiles cap at 64 px.** Above 64 px you must use REST `create-image-pixflux` or MCP `create_map_object` (32–400 px, but not the isometric tile model).
 3. **Tile sizes <24 px give weaker results** even though 16 is allowed. Prefer 32+ for production assets.
-4. **`'highly detailed'` is mandatory for REST pixflux `detail`.** The pixflux endpoint 422s on `'high detail'` (verified 2026-07-17); the MCP tools use the shorter enum. `scripts/sprites/pixellab-rest.mjs` passes the pixflux-canonical string.
+4. **`'highly detailed'` is mandatory for REST pixflux `detail`.** The pixflux endpoint 422s on `'high detail'` (verified 2026-07-17); MCP `create_character` and `create_map_object` take `'high detail'` instead. `scripts/sprites/pixellab-rest.mjs` passes the pixflux-canonical string.
 5. **Background bleed.** REST `create-image-pixflux` with `no_background: true` can return near-transparent gray pixels at edges. `generate-pixellab-revamp.mjs` handles this with `keyOutEdgeBackground` + `trimAlphaFringe`. Re-use that logic when writing new REST callers.
 6. **MCP returns a job; REST `pixflux` returns the image.** Plan async polling for MCP and synchronous handling for REST. Don't mix patterns.
-7. **`isometric_tile_shape` defaults to `block`.** That gives ~50% canvas height of "depth" and clips small icons. For overlays and floor rings, pass `thin tile` explicitly.
+7. **`tile_shape` defaults to `block`.** That gives ~50% canvas height of "depth" and clips small icons. For overlays and floor rings, pass `thin tile` explicitly.
 8. **Direction set must match across `create_character` and `animate_character`.** If create was 8-directional, animate must request the same 8 directions, or the sheet is incomplete.
 9. **Cache busting / `assetVersion` policy.** Bump `style.assetVersion` in `manifest.yaml` only when PNGs on disk actually change. Manifest-only edits (prompts, `# NOTE:` comments, anchors, palette tweaks that don't touch images) must not bump it — every bump invalidates the browser cache for all sprites. Browsers cache aggressively; agents should never claim "the change is live" without confirming the version bump.
 10. **Response wrapper shape varies.** The API standard wrapper is `{ success, data, error, usage }`, but some endpoints return image data at top level while others put it under `data`. `generate-pixellab-revamp.mjs` handles common variants in `pixflux()` with the fallback chain `json?.image || json?.data?.image || json?.images?.[0] || json?.data?.images?.[0]`. Re-use that pattern for new REST callers.
@@ -253,7 +260,7 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 
 | Script | Path used | Authentication | When to invoke |
 | --- | --- | --- | --- |
-| `scripts/sprites/generate-pixellab-revamp.mjs` | REST `/v2/create-image-pixflux` | `.dev.vars` → `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` | Legacy/code-defined bake helper. It asserts selected IDs exist in `manifest.yaml`, but it does not read per-entry prompts, sizes, anchors, or tool fields. Use only with explicit reviewed `--ids`; do not run broadly until it becomes fully manifest-driven. |
+| `scripts/sprites/generate-pixellab-revamp.mjs` | REST `/v2/create-image-pixflux` | `.dev.vars` → `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` | Legacy bake helper. Building specs (subject-only prompts, dims from the on-disk `base.png`) come from `manifest.yaml`; character/prop inventories remain code-defined. It asserts selected IDs exist in `manifest.yaml`. Use only with explicit reviewed `--ids`. |
 | `scripts/sprites/bake-manifest.mjs` | REST `/v2/create-image-pixflux` | same | Manifest-driven bulk bake (prompt/dims/path from `manifest.yaml`, building-layer addressing via `building.<id>.<layer>`, raw cache in `output/pixellab-cache/bake/`). The supported rebake path for props/veg/overlays/layers/atmosphere. |
 | `scripts/sprites/pixellab-rest.mjs` | shared module | same | Shared pixflux call + edge-background key-out + token read for bake scripts; do not copy/paste these into new scripts. |
 | `scripts/sprites/contact-sheet.mjs` | None (filesystem) | n/a | One montage PNG per sprite family in `output/sprite-contact-sheets/` for bake-review evidence. |
@@ -268,14 +275,14 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 ```text
 1. mcp__pixellab__create_isometric_tile(
      description="<style anchor>, <subject>",
-     image_size={"width": 32, "height": 32},
-     isometric_tile_shape="thin tile",
-     outline="single color black outline",
+     size=32,
+     tile_shape="thin tile",
+     outline="single color outline",
      shading="medium shading",
-     detail="high detail",
+     detail="highly detailed",
    )
    → returns tile_id
-2. Poll mcp__pixellab__get_isometric_tile(tile_id) until ready (typically <30s)
+2. Poll mcp__pixellab__get_isometric_tile(tile_id) until ready (or block on mcp__pixellab__wait_for_jobs)
 3. curl --fail -o claudeville/assets/sprites/.../<id>.png "<image_url_from_response>"
 4. file <path>   # confirm PNG dimensions
 5. npm run sprites:validate
@@ -299,26 +306,26 @@ curl --fail -X POST https://api.pixellab.ai/v2/create-image-pixflux \
     "view": "low top-down",
     "outline": "single color black outline",
     "shading": "medium shading",
-    "detail": "high detail",
+    "detail": "highly detailed",
     "seed": 12345
   }' | jq -r '.image.base64 // .data.image.base64' | base64 -d > out.png
 ```
 
-For the full revamp script that handles edge-color cleanup and grid composition, see `scripts/sprites/generate-pixellab-revamp.mjs`.
+For the full revamp script that handles edge-colour cleanup, see `scripts/sprites/generate-pixellab-revamp.mjs`.
 
 ## Known issues / TODO
 
-- MCP `create_character` + `animate_character` polling is currently manual (call `get_character` every 60s). A small helper that polls and writes the ZIP path on completion would remove a tedious step from every character bake.
+- Character bakes still need the ZIP fetched and assembled by hand once `get_character` reports every animation complete; MCP `wait_for_jobs` removes the sleep-and-poll loop but not the download/assembly step.
 - ~~`generate-pixellab-revamp.mjs` and the MCP character path duplicate the style-anchor logic.~~ New bake scripts import the shared helpers in `scripts/sprites/pixellab-rest.mjs` (pixflux call, key-out, token read, anchor-prepend lives in `bake-manifest.mjs`). The legacy revamp script keeps its own copies intentionally.
-- The `detail` enum for REST pixflux is 422-verified (2026-07-17): `low detail` / `medium detail` / **`highly detailed`** — the generic MCP docs' `high detail` is rejected by `create-image-pixflux`. `scripts/sprites/pixellab-rest.mjs` passes the canonical string.
+- The `detail` enum for REST pixflux is 422-verified (2026-07-17): `low detail` / `medium detail` / **`highly detailed`** — `high detail` is rejected by `create-image-pixflux`. `scripts/sprites/pixellab-rest.mjs` passes the canonical string.
 - ~~No automated check that on-disk PNG dimensions match the manifest `size` field.~~ `manifest-validator.mjs` now warns on dimension drift, block-cube fill ratios, and unreferenced ids.
 
 ## Glossary
 
 - **PixFlux** — primary text-to-image model, larger canvases up to 400×400, weak text-guidance.
 - **BitForge** — small-medium image model (max 200 px) with style-transfer support.
-- **Pixen** — newer image model, default `highly detailed` detail level (the only place that string is canonical).
-- **Wang tileset** — 16- or 23-tile arrangement that connects in any direction. Output of `create_topdown_tileset` and `create_sidescroller_tileset`.
+- **Pixen** — newer image model, default `highly detailed` detail level.
+- **Wang tileset** — 16- or 25-tile arrangement that connects in any direction. Output of `create_topdown_tileset` and `create_sidescroller_tileset`.
 - **Dual-grid 15-tileset** — alternative tileset packing exposed by `create-tileset`.
 - **Oblique projection** — non-isometric angled projection (Tibia-style); not used in ClaudeVille.
 - **Isometric (PixelLab semantics)** — true isometric (120° axes); set `view: 'low top-down', isometric: true` for the ClaudeVille look.

@@ -1,8 +1,9 @@
 # Semantic Drawable, Material, and Atlas Contract
 
-This contract prepares World mode for a GPU-resident renderer without changing
-the current Canvas-2D result. Albedo PNGs remain authoritative. Material data,
-sidecars, atlases, and GPU records are optional and use deterministic defaults.
+This contract feeds the GPU-resident WebGL2 World renderer, which is the default;
+`?renderer=canvas` selects the Canvas-2D fallback.
+Albedo PNGs remain authoritative. Material data, sidecars, atlases, and GPU
+records are optional and use deterministic defaults.
 
 ## Runtime Invariants
 
@@ -194,7 +195,7 @@ actionStrip:
 - `SpriteSheet.resolveActionFrame(sheetMeta, group, direction, frame)` returns
   `{sx, sy, sw, sh}` or **null**; `frame` is group-relative and wraps, or the
   literal `'hold'`. `AssetManager.getActionStrip(id)` returns
-  `{ image, meta, path, channels }` or **null**. Null on either seam means the
+  `{ image, meta, path, channels, generation }` or **null**. Null on either seam means the
   caller keeps its existing procedural overlay, so a strip-less character renders
   byte-identically.
 - Strips load lazily per demanded character through the existing character-demand

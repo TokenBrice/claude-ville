@@ -8,9 +8,9 @@ For tool selection, parameter enums, animation templates, async lifecycle, and p
 
 | File | Purpose |
 | --- | --- |
-| `claudeville/assets/sprites/manifest.yaml` | Canonical sprite IDs, prompts, tool names, sizes, anchors, composed-building layers, style anchor, asset version, and palette block. |
+| `claudeville/assets/sprites/manifest.yaml` | Canonical sprite IDs, prompts, tool names, sizes, anchors, building overlay layers, provenance, style anchor, asset version, and palette block. |
 | `claudeville/assets/sprites/palettes.yaml` | Standalone palette mirror for tooling. Keep it in sync with the `palettes` block in `manifest.yaml`. |
-| `claudeville/src/presentation/character-mode/AssetManager.js` | Runtime path mapping, manifest flattening, composed building loading, cache busting, and placeholder fallback. |
+| `claudeville/src/presentation/character-mode/AssetManager.js` | Runtime path mapping, manifest flattening, building layer loading, cache busting, and placeholder fallback. |
 | `claudeville/src/presentation/character-mode/SpriteSheet.js` | Character sheet layout contract. Current sheets are 8 columns by 10 rows of 92px cells. |
 | `scripts/sprites/manifest-validator.mjs` | Manifest-to-PNG validation and character-sheet motion checks. |
 | `docs/material-channel-contract.md` | Semantic drawable fields, material classes, sidecar paths, atlas metadata, and channel encodings. |
@@ -25,7 +25,7 @@ Runtime does not need npm packages, but the sprite tools do:
 npm install
 ```
 
-Pixellab generation requires the MCP server and an API token:
+PixelLab generation requires the MCP server and an API token:
 
 ```bash
 claude mcp add --transport http pixellab https://api.pixellab.ai/mcp \
@@ -33,7 +33,7 @@ claude mcp add --transport http pixellab https://api.pixellab.ai/mcp \
 claude mcp list
 ```
 
-Expected: `pixellab` is connected.
+Expected: `pixellab` is connected. Codex mounts the same server from the project-scoped `.codex/config.toml`, reading the token from `PIXELLAB_TOKEN`. The REST scripts read `.dev.vars` instead (see below).
 
 ## Path Contract
 
@@ -53,16 +53,16 @@ Every generated PNG must land at the path implied by its manifest ID:
 
 If the runtime cannot load an image, `AssetManager` falls back to `assets/sprites/_placeholder/checker-64.png`. Checkerboard output in the browser usually means a manifest/path/PNG problem.
 
-## Procedural Grok characters
+## Procedural Grok fallback
 
-When PixelLab is unavailable, Grok agent sheets can be baked without external services:
+The shipped Grok sheets are PixelLab bakes (manifest `tool: create_character`). When PixelLab is unavailable, an offline procedural baker remains:
 
 ```bash
 npm run sprites:generate-grok
-# or: node scripts/sprites/generate-grok-procedural.mjs --preview
+# or: node scripts/sprites/generate-grok-procedural.mjs --id=agent.grok.base --preview
 ```
 
-This writes `agent.grok.base` and `agent.grok.composer` sheets (8×10 × 92px). Manifest `tool: procedural` marks these entries. Prefer a full PixelLab pro bake later using the stored prompts when credits are active.
+It overwrites the `agent.grok.base` and `agent.grok.composer` sheets (8×10 × 92px; `--id=` limits it to one) and `--preview` also writes `output/grok-procedural-preview-<variant>.png`. Use it only as a stand-in; review the diff before committing over the PixelLab sheets.
 
 ## Generation Rules
 
@@ -86,9 +86,9 @@ This is the canonical character procedure. PixelLab parameter definitions and li
 
 1. Add the `agent.*` entry to `manifest.yaml` before generating. Include the subject-only `prompt`, `tool: create_character`, `n_directions: 8`, engine `size: 92`, integer `generationSize` from 32 through 128, optional `generationMode`, animations, palette, anchor, and reviewed material metadata. Use `generationSize: 92 # generation size unverified — inherited default` only when generation history is unknown.
 2. Preview the manifest-backed request: `node scripts/sprites/plan.mjs --ids=<sprite-id> --group read --frames 4`. Confirm its anchored prompt, generation size/mode, 92px engine cell, expected 736x920 sheet, output path, direction jobs and live `/v2/balance` before **any** bake. Inherited sizes yield provisional costs, not verified production quotes.
-3. Call `mcp__pixellab__create_character` with `description` (`style.anchor` plus the entry prompt), `name`, `size` (equal to `generationSize`; the former `image_size` object is rejected since 2026-09), `n_directions=8`, `view="low top-down"`, `outline="single color black outline"`, `shading="basic shading"`, `detail="medium detail"`, `mode` from `generationMode` (default `standard`), and an optional reviewed `seed`. Pro mode ignores the outline/shading/detail hints. Save the returned `character_id`.
+3. Call `mcp__pixellab__create_character` with `description` (`style.anchor` plus the entry prompt), `name`, `size` (equal to `generationSize`; the former `image_size` object is rejected since 2026-09), `n_directions=8`, `view="low top-down"`, `outline="single color black outline"`, `shading="basic shading"`, `detail="medium detail"`, and `mode` from `generationMode` (default `standard`). The MCP tool takes no `seed`. Pro mode ignores the outline/shading/detail hints. Save the returned `character_id`.
 4. Call `mcp__pixellab__animate_character` twice with that `character_id`, `mode="template"`, all eight `directions`, and `template_animation_id="walking-6-frames"` then `template_animation_id="breathing-idle"`.
-5. Call `mcp__pixellab__get_character` with `character_id` every 60 seconds until both animations report 100%. Download the completed ZIP URL to `output/character-mcp-cache/<sprite-id>.zip` with `curl --fail`.
+5. Call `mcp__pixellab__get_character` with `character_id` every 60 seconds (or block on `mcp__pixellab__wait_for_jobs` between checks) until both animations report 100%. Download the completed ZIP URL to `output/character-mcp-cache/<sprite-id>.zip` with `curl --fail`.
 6. Assemble the runtime sheet with explicit animation IDs, never frame-count inference: `node scripts/sprites/generate-character-mcp.mjs --id=<sprite-id> --zip=<path> --character-id=<id> --walk=<animation-id> --breathingIdle=<animation-id>`. To replace only a named base-sheet group, use `--group=breathingIdle --animation-group-id=<id>` instead of the two group flags. Assembly requires eight directions, centres each frame in the 92px cell (cropping padded exports), and writes the 736x920 sheet plus ledger metadata only after all frames assemble. Supply `--generation-size=<verified-size>` when the entry has an inherited default.
 7. Confirm the artifact: `file claudeville/assets/sprites/characters/<sprite-id>/sheet.png`. The result must be a 736x920 PNG.
 8. Select or add `palette_layer`. Change both palette mirrors only for a shared palette change. Add reviewed material/emissive/occluder metadata and a `PROFILES` entry in `author-roster-channels.mjs` whenever required by sidecar declarations; never infer emission from brightness. Then run `node scripts/sprites/author-roster-channels.mjs`.
@@ -100,13 +100,13 @@ Every character may declare `animationGroups: { walk: { rows: [0, 5] }, breathin
 
 For a reviewed direction repair, add `--directions=north,north-east,north-west` to a named-group assembly. Other columns and groups remain untouched. If v3 exported an extra leading reference frame, explicitly pass `--skip-reference`; frame counts are still validated after that selection. When the repair's verified PNG canvas differs from the original rig metadata, pass `--source-size=<actual-size>`; this controls centering/cropping, not generation size. The ledger records `repairedDirections`, `skippedReference`, and `animationSourceSize` for this partial assembly. Keep the original and repair group IDs in the execution record so the mixed-source sheet can be reproduced.
 
-The planner quotes v3 animation generations as `ceil(width * height * frames / 65536)` per direction using the source generation size, and template animation as one generation per direction when a matching template exists. These animation costs are separate from the character rig's `generationMode`. It parses `.dev.vars` with the shared token loader (`PIXELLAB_API_TOKEN`, or unquoted `PIXELLAB_AUTHORIZATION`); never source that file or print credentials. Tier 1 / 2,000 generations was verified on 2026-09-05 with 1,403 remaining and a September 9 reset; only the live balance authorizes a new batch.
+The planner quotes v3 animation generations as `ceil(width * height * frames / 65536)` per direction using the source generation size, and template animation as one generation per direction when a matching template exists. These animation costs are separate from the character rig's `generationMode`. It parses `.dev.vars` with the shared token loader (`PIXELLAB_API_TOKEN`, or `PIXELLAB_AUTHORIZATION`, quoted or bare, with an optional `Bearer ` prefix); never source that file or print credentials. Tier 1 / 2,000 generations was verified on 2026-09-05 with 1,403 remaining and a September 9 reset; only the live balance authorizes a new batch.
 
 ## Add An Action Strip
 
 An action strip is the optional second PNG beside a character sheet
-(`characters/<id>/actions.png`, 8 direction columns × 5 rows of the 92px engine
-cell) that carries authored poses the base sheet has no rows for. The full field
+(`characters/<id>/actions.png`, 8 direction columns × N rows of the 92px engine
+cell; the shipped `read`-only strips are 4 rows, 736×368) that carries authored poses the base sheet has no rows for. The full field
 contract is in [`docs/material-channel-contract.md`](../../docs/material-channel-contract.md)
 §Action Strips (contract C2).
 
@@ -117,7 +117,7 @@ contract is in [`docs/material-channel-contract.md`](../../docs/material-channel
 2. Quote before spending: `node scripts/sprites/generate-action-strip.mjs --ids=<id> --plan`
    prints the live `/v2/balance`, the rig's export canvas, and
    `ceil(canvas² × frames / 65536) × 8` generations per named group. The canvas
-   is the rig's real export size (76–152px across this roster), not the entry's
+   is the rig's real export size (76–144px across this roster), not the entry's
    `generationSize`; several rigs therefore cost 2 generations per direction.
 3. Generate and assemble: the same command without `--plan`. Groups are
    requested one at a time because Tier 1 allows **8 concurrent background jobs**

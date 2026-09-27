@@ -32,8 +32,9 @@ These checks complement `node:test`. Most are deterministic Node programs; brows
 | `world-state-bounds.mjs` | Monuments, activity, relationships, trails, visits stay bounded. | No dependencies/server | <1 s | None |
 | `world-visit-paths.mjs` | Visit slots are unique, walkable, and gate-reachable. | `node_modules`, Playwright, server on 4000/`CLAUDEVILLE_URL` | Seconds | None |
 | `support/isolated-server.mjs` | Imported helper reserves a loopback socket, isolates HOME, starts and cleans a server. | Temp dir; sockets; not directly executable | N/A | None |
+| `r1-18.server-bootstrap.cjs` | Child-process bootstrap that redirects only that child's first `listen` to port 0, so the replay harness and `support/isolated-server.mjs` never bind port 4000. | Loaded by its callers; not directly executable | N/A | None |
 | `../models/resolve.mjs` | Server/browser resolution, pricing, identity, context window, and sprite assets agree. | `node_modules` (`js-yaml`); no server | <1 s | `models:resolve` |
-| `../audio/probe.mjs` | Local maintainer gate for audio waves, not part of `validate:quick` or CI, at the plan stage in `scripts/audio/lib/checks.mjs` (`PLAN_STAGE` 7): the virtual-clock loudness, margin, music, workshop and Wave-7 front-door checks (the Signals floor, the awakening, output/tone/soften) plus the live-app checks through the real TopBar (envelope lint, routing, away/resume, ceremony, continuity, frame cost, the awakening's first onset, captions with sound off). Usage and every check in `scripts/audio/README.md`. | `node_modules`, Playwright Chromium, isolated socket, loopback static server | ~17–20 min (`--jobs 2`) | `audio:probe` |
+| `../audio/probe.mjs` | Local maintainer gate for audio waves, not part of `validate:quick` or CI, at the plan stage in `scripts/audio/lib/checks.mjs` (`PLAN_STAGE` 7) over the two sound presets, Signals and the Town band: the virtual-clock loudness, margin, music and Wave-7 front-door checks (the Signals floor, the awakening, output/tone/soften) plus the live-app checks through the real TopBar (envelope lint, routing, away/resume, ceremony, continuity, frame cost, the awakening's first onset, captions with sound off). Usage and every check in `scripts/audio/README.md`. | `node_modules`, Playwright Chromium, isolated socket, loopback static server | ~12–15 min (`--jobs 2`) | `audio:probe` |
 
 Executable smokes exit nonzero on failed assertions or budgets. Temp-backed scripts clean unique fixture directories on normal success/failure paths.
 
@@ -48,6 +49,7 @@ Executable smokes exit nonzero on failed assertions or budgets. Temp-backed scri
 | Adapter parsing | `npm run check:adapters`; `npm run check:adapter-fixtures`; `npm run test:unit`; `node scripts/smoke/adapters.mjs` |
 | Server API/WebSocket | `npm run check:server`; `npm run test:integration`; `npm run verify:server` |
 | Pricing | `npm run models:check`; `npm run test:unit`; `npm run models:resolve -- <provider> <model>` |
+| Sound/audio | `npm run test:unit`; `npm run verify:render` (the sound control); `npm run audio:probe` (local gate, not in CI) |
 | Docs/catalogs | `node --test scripts/tests/catalog-check.test.mjs`; review the diff |
 
 Use `npm run validate:quick` for the broad deterministic loop, `npm run validate:full` for integration/server/World validation, and `npm run gate:release` for release metadata plus gates. Playwright checks are opt-in and require installed dev dependencies.

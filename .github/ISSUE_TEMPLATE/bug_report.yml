@@ -15,6 +15,7 @@ body:
         - World mode
         - Dashboard mode
         - Sidebar or activity panel
+        - Sound
         - Server or API
         - Provider adapter
         - Documentation

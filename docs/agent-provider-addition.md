@@ -4,7 +4,7 @@ Use this runbook when adding a new CLI provider, a new model for an existing pro
 
 ## Common Contract
 
-Every adapter-backed session should normalize unsupported features to `null`, `[]`, or `{}` instead of omitting fields where possible.
+Every adapter-backed session should normalize unsupported features to `null`, `[]`, or `{}` instead of omitting fields where possible. `normalizeSession` in `claudeville/adapters/index.js` is the final API-shape gate and fills the defaults below; the full field list is in `claudeville/adapters/README.md`.
 
 Required session-list fields:
 
@@ -13,13 +13,16 @@ Required session-list fields:
 | `provider` | required | Stable id consumed by registry, UI, and visual identity. |
 | `sessionId` | required | Unique across providers; prefix if provider ids can collide. |
 | `project` | `null` | Absolute path when available. |
-| `model` | `'unknown'` or provider fallback | Free-form provider model string. |
+| `model` | provider id | Free-form provider model string; the registry resolves identity and pricing from it. |
 | `status` | `'active'` | Client may infer idle/ended states later. |
-| `lastActivity` | file mtime or `Date.now()` fallback | Millisecond epoch; sort key. |
+| `lastActivity` | `0` | Millisecond epoch (latest of file mtime and in-file timestamps); sort key. |
 | `lastTool` | `null` | Most recent tool name. |
 | `lastMessage` | `null` | Short assistant/user-facing summary. |
 | `tokenUsage` | `null` | Use normalized aliases documented in `claudeville/adapters/README.md`. |
 | `gitEvents` | `[]` | Commit/push events only; omit dry-runs. |
+| `turnState` | `'unknown'` | Derive through `turnState.js` from recorded lifecycle only; never guess from elapsed time. |
+| `dialogue` / `observedSources` | `null` / all `false` | Only text the model wrote, built with `dialogue.js`; nothing invented. |
+| `lastResults` | `[]` | Only outcomes the provider recorded (see `toolResults.js`); never synthesized. |
 
 Detail payloads should return `{ sessionId, toolHistory, messages, tokenUsage }` with empty arrays or `null` for unsupported sections.
 
@@ -28,20 +31,20 @@ Detail payloads should return `{ sessionId, toolHistory, messages, tokenUsage }`
 1. Add `claudeville/adapters/<provider>.js` implementing the adapter contract from `claudeville/adapters/README.md`.
 2. Register it in `claudeville/adapters/index.js` and confirm `/api/providers` reports the provider only when its local source directory exists.
 3. Normalize session fields at the adapter boundary. Provider-specific record shapes should not leak into UI components.
-4. Add watch paths for live updates. Prefer directory watches with filters over one watcher per file.
-5. Add a provider entry under `defaults` in `claudeville/src/config/models.json`. It is the fallback pricing, context-window, mood, and visual identity used when no model row matches that provider.
-6. Add a registry row for each initially supported model, then run `npm run models:generate` and resolve representative raw model strings with `npm run models:resolve <provider> <model>`.
+4. Add watch paths for live updates. The server watches shallowly: return exact active files and their parent directories with `filters`, not one watcher per historical file.
+5. Registry `defaults` in `claudeville/src/config/models.json` are keyed by model family (`claude`, `codex`, `gemini`, `grok`, `kimi`, `deepseek`, `zai`), not by CLI. If the provider brings a new family, add a `defaults` entry for it (fallback pricing, context window, mood, and visual identity when no row matches) and teach the family keyword to `pricingProvider` in `scripts/models/resolver.template.js`, `inferredRegistryProvider` in `claudeville/adapters/sessionPresentation.js`, and `inferredRegistryProvider`/`providerPaletteKey` in `claudeville/src/presentation/shared/ModelVisualIdentity.js`. A CLI that only hosts existing families (OpenCode, OMP) needs no `defaults` entry; its sessions resolve by model string.
+6. Add a registry row for each initially supported model, then run `npm run models:generate` and resolve representative raw model strings with `npm run models:resolve -- <provider> <model>`.
 7. Check `claudeville/src/application/AgentManager.js` handling for provider id, role, project grouping, status fallback, and parent/child relationships.
 8. Update rendering policy in `claudeville/src/presentation/shared/ModelVisualIdentity.js` or `claudeville/src/domain/value-objects/AgentMood.js` only when the provider introduces a new `modelClass`, effort tier, equipment rule, or insignia rule. Registry-backed labels, colors, sprites, context windows, and mood values belong in `models.json`.
-9. Add provider fixtures and tests, then smoke Dashboard cards, Sidebar rows, Activity Panel detail, and World sprites.
-10. Update docs: `README.md`, `claudeville/adapters/README.md`, and this runbook when the contract changes.
+9. Add redacted synthetic fixtures under `scripts/adapters/fixtures/<provider>/` (see its README), extend `scripts/adapters/validate-fixtures.cjs` or a focused test, then smoke Dashboard cards, Sidebar rows, Activity Panel detail, and World sprites.
+10. Update docs and intake surfaces: `README.md`, `claudeville/adapters/README.md`, this runbook when the contract changes, the provider list in `CONTRIBUTING.md`, the provider dropdown in `.github/ISSUE_TEMPLATE/provider_support.yml`, and `package.json` `description`/`keywords`.
 
 ## Track B: New Model For Existing Provider
 
 1. Confirm the adapter already passes the model string through unchanged.
 2. Add one ordered row to `claudeville/src/config/models.json`. Include a unique `id`, provider, ordered match aliases, one representative raw `sample`, display identity, model class/tier, mood, sprite/palette data, context window, and all four per-million-token pricing fields. Put a specific match before any broader family match because first match wins.
 3. Run `npm run models:generate` to refresh the committed ESM and CommonJS modules. Do not edit `claudeville/src/config/models.generated.js` or `claudeville/src/config/models.generated.cjs` directly.
-4. Run `npm run models:resolve <provider> <model>` with the raw model string and inspect the selected row, identity, context window, and rates before continuing.
+4. Run `npm run models:resolve -- <provider> <model>` with the raw model string and inspect the selected row, identity, context window, and rates before continuing.
 5. Add the raw model string as a fixture line for the relevant adapter. Keep aliases on the same registry row rather than creating duplicate identities.
 6. Run the registry, pricing, behavior, and adapter checks from the Validation Matrix. Add focused assertions when the new row introduces behavior that existing registry-completeness coverage does not exercise.
 7. If the row uses a new `modelClass` or effort policy, update the rendering-policy code in `claudeville/src/presentation/shared/ModelVisualIdentity.js` or `claudeville/src/domain/value-objects/AgentMood.js`. If it needs a new sprite, follow Track C.
@@ -62,18 +65,20 @@ Backend/provider changes:
 ```bash
 npm run check:adapters
 npm run check:services
+npm run check:adapter-fixtures
 node --check claudeville/adapters/<provider>.js
 node --check claudeville/adapters/index.js
 node scripts/smoke/adapters.mjs
+npm run verify:server
 ```
 
-The adapter smoke currently covers Claude fixture behavior, not every provider. Run `npm run check:git-events` when provider changes affect git command extraction.
+The adapter smoke covers Claude fixture behavior only; `check:adapter-fixtures` covers registry normalization plus Codex, Kimi, and OpenCode synthetic state. Run `npm run check:git-events` when provider changes affect git command extraction.
 
 Model registry changes:
 
 ```bash
 npm run models:check
-npm run models:resolve <provider> <model>
+npm run models:resolve -- <provider> <model>
 node --test scripts/tests/model-registry.test.mjs
 node --test scripts/tests/r2-02.pricing.test.mjs
 npm run verify:render
@@ -94,6 +99,7 @@ npm run sprites:visual-diff
 Docs-only changes:
 
 ```bash
+npm run verify:architecture
 git diff -- docs README.md AGENTS.md CLAUDE.md claudeville/CLAUDE.md
 git status --short
 ```

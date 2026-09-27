@@ -41,7 +41,7 @@ This prevents the metaphor from becoming decoration. Every visual element should
 
 ## 3. Separate Canvas And DOM Responsibilities
 
-Use canvas for the embodied, spatial, animated layer:
+Use canvas (2D or WebGL) for the embodied, spatial, animated layer:
 
 - terrain
 - buildings
@@ -49,7 +49,7 @@ Use canvas for the embodied, spatial, animated layer:
 - motion
 - depth sorting
 - particles
-- minimap or camera overlays
+- camera overlays and off-screen attention markers
 - low-level hit testing
 
 Use DOM for structured information:
@@ -82,7 +82,7 @@ Recommended rules:
 - Shape identifies kind: buildings, people, paths, effects, panels.
 - Color identifies family or provider, not every possible state.
 - Motion identifies active behavior.
-- Glow identifies attention or freshness.
+- One attention mark (a ring, plate, or bell) identifies what needs the user; glow belongs to real light sources, not to status.
 - Size identifies importance only when importance is real.
 - Labels are sparse and reserved for landmarks or selected objects.
 - Depth order follows world position, usually lower Y draws later.
@@ -120,12 +120,12 @@ Useful constraints:
 - Use a limited palette with strong outlines.
 - Favor simple geometric construction over photorealism.
 - Keep sprites small and exaggerated.
-- Use pixel/crisp rendering where appropriate.
+- Keep every sprite, effect, and mark on one pixel grid at integer zoom; mixed pixel densities and anti-aliased glows break the style.
 - Let tiny props carry meaning.
 - Build landmarks with recognizable silhouettes.
 - Add ambient details sparingly: grass specks, water shimmer, torches, smoke, footsteps.
 - Use a fixed camera grammar: pan, zoom, follow selected entity.
-- Use a minimap when the world can exceed one screen.
+- When the world exceeds one screen, give it an overview zoom and dock off-screen attention markers at the frame edge rather than adding a minimap.
 
 This style tolerates abstraction. A "forge" does not need to literally be a software compiler, but users can quickly learn that it means active production work. A "mine" can mean quota, resource extraction, backlog excavation, or capacity burn if the rest of the system reinforces that meaning.
 
@@ -181,9 +181,9 @@ Tactics:
 - cap visible particles
 - aggregate low-priority entities into clusters
 - let the user follow or pin one entity
-- fade labels until selected or hovered
+- show counts on landmarks at overview zoom and reserve names for selected, hovered, or recently active entities
 - sort by Y for depth
-- draw only visible terrain tiles
+- bake static terrain once and draw only the visible region
 - keep hit testing simple and predictable
 - use a detail panel instead of crowding text into the canvas
 
@@ -200,7 +200,7 @@ Build the visual experience in layers:
 5. Add deterministic identity variation.
 6. Add movement that reflects real state.
 7. Add status cues and recent-event effects.
-8. Add camera controls and minimap.
+8. Add camera controls: pan, zoom tiers, follow, and a whole-world overview.
 9. Add dashboard/card mode for dense scanning.
 10. Tune the palette, spacing, labels, and empty states.
 
@@ -288,7 +288,7 @@ Use this as a starting blueprint:
 - Define stable visual profiles for each provider, entity family, or source family.
 - Add deterministic variant selection from stable ids.
 - Build a canvas renderer with explicit update and render phases.
-- Keep terrain, buildings, entities, particles, camera, and minimap as separate modules.
+- Keep terrain, buildings, entities, particles, camera, and signal overlays as separate modules.
 - Sort moving entities by screen Y before drawing.
 - Add hit testing for selectable entities and landmarks.
 - Keep dense information in DOM cards, panels, or tables.

@@ -316,9 +316,9 @@ If you renamed an agent in code and the rename was overwritten, check that the c
 
 `server.js` resolves the request URL inside `STATIC_DIR` and rejects anything outside that directory with `403 Forbidden`. Do not add symlinks pointing outside `claudeville/`; they will be refused.
 
-## Required runtime: Node 18+, no Windows path support in adapters
+## Required runtime: Node 22.7+, no Windows path support in adapters
 
-The server uses `fs.watch({ recursive: true })`, `Buffer.readBigUInt64BE`, and built-in `URL`. Node 18+ is the practical floor.
+`package.json` declares `"node": ">=22.7.0"` and CI runs Node 22 and 24. The server alone uses only Node built-ins, but the browser modules are `.js` ES modules, so the syntax checks and the unit suite need Node's unflagged module-syntax detection (22.7+).
 
 The adapters target POSIX path conventions and have no `process.platform === 'win32'` branches. Linux and macOS are tested. Windows path normalization is not implemented today.
 

@@ -35,7 +35,7 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>`.
 
 ## Director Incidents And Signals
 
-- `waiting-on-user`: Command-side amber wait state appears as an input/attention scene and remains inspectable in the Activity Panel.
+- `waiting-on-user`: the waiting agent carries one `NEEDS YOU` attention plate (docked at the frame edge when the agent is out of view), the top bar lights `NEEDS YOU`, and the agent remains inspectable in the Activity Panel.
 - `quota-rate-limit`: mine-side quota/rate-limit pressure creates a Director incident, building Signal rows, and a subtle work-weather nudge.
 - Building hover should show a light signal/route preview; clicking the building should promote that to the full selected-building route treatment and Signal panel.
 - Press `R` in any World scenario to toggle the last-minute replay badge and trails; `building-inspection-replay` starts with replay already enabled.
@@ -50,7 +50,7 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>`.
 
 - Run `npm run world:validate-buildings` and confirm all nine types have valid grounding profiles.
 - Run `npm run sprites:capture-baseline` and `npm run sprites:capture-fresh`; every named day/night closeup must assert its target near frame center before `npm run sprites:visual-diff`.
-- Press `Shift+D`: cyan is the logical footprint, white is the sprite anchor/world center, magenta is the sprite canvas, yellow is `horizonY`, red is structural contact/shadow extent, and green is the entrance-to-contact line.
+- Press `Shift+D`: cyan is the logical footprint, white is the sprite anchor/world center, magenta is the sprite canvas, yellow is `horizonY`, red is structural contact/shadow extent, and green is the entrance marker and its line to the anchor.
 - At zoom 1 and 2, no land building shows a continuous raised lawn/stone perimeter or a renderer pad outside its site.
 - Roads meet the physical threshold, stairs, rails, or posts. Terrain texture remains visible between sparse apron marks and reaches structure footings.
 - Shadows begin under structural mass, not at the footprint edge. Harbor uses piling/water contacts; Lighthouse keeps a supported quay; Portal keeps a stair-connected dais.
@@ -79,7 +79,7 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>`.
 - Empty village (`no-agents` at noon): canonical `READY_EMPTY` shows the banked Forge ember and no work effects; degraded-provider fixtures keep the degraded treatment, not rest.
 - Atmosphere: dusk/night frames must read cores-first (window cores before spill, halo never outgrowing the work); at hour 1, a full-moon and a new-moon date differ by one reviewed night course and both keep the waiting beacon as the brightest pool; rain shows source-coloured wet reflections under admitted lights only, contracting as rain stops.
 - Shift-D on the resident GPU world: the shed list names each effect and mode, pass timings report for `upload`, `occlusion`, `scene`, `bloom`, `present` after `renderer.gpuWorld.setPassSamplingEnabled(true)`, and texture bytes split pinned/evictable.
-- Top bar witness clock matches the forced hour and shows `FIXED`/`SIM` when overridden; the Sidebar exception shelf shows exact `N NEED YOU · N ERROR · N QUOTA` counts, the two oldest names, and hides at zero.
+- Top bar witness clock matches the forced hour and shows `FIXED`/`SIM` when overridden; the Sidebar exception shelf shows exact `N NEEDS YOU · N ERROR · N LIMIT` counts, the two oldest names, and hides at zero.
 
 ## Terrain Cache Scalability
 

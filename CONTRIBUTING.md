@@ -4,9 +4,10 @@ ClaudeVille is a local-first dashboard for watching AI coding CLI sessions. Smal
 
 ## Good Contribution Lanes
 
-- Provider adapter fixes with redacted fixtures or clear reproduction notes.
+- Provider adapter fixes (Claude Code, Codex CLI, Gemini CLI, Grok CLI, Kimi, OpenCode, OMP) with redacted fixtures under `scripts/adapters/fixtures/` or clear reproduction notes.
 - Documentation fixes, setup notes, and API examples.
 - World, Dashboard, and sprite visual fixes with screenshots.
+- Sound fixes (Signals and Town band presets) with `npm run audio:probe` results.
 - Focused UI quality improvements that preserve the current design language.
 - New provider proposals after the data source, privacy boundary, and maintenance cost are clear.
 
@@ -28,7 +29,7 @@ npm run dev
 
 Open `http://localhost:4000`.
 
-The runtime does not need installed packages. Run `npm install` only when you intentionally need development scripts that import packages, such as sprite validation, visual diffs, or Playwright capture.
+The runtime does not need installed packages. Run `npm install` only when you intentionally need development scripts that import packages, such as sprite validation, visual diffs, Playwright capture, or the audio probe. Repository checks need Node 22.7 or newer; CI runs `npm ci` and `npm run validate:full` on Node 22 and 24.
 
 ## Validation
 
@@ -42,7 +43,7 @@ npm run verify:server
 npm run verify:render
 ```
 
-For UI or canvas changes, keep the screenshot and console evidence from `verify:render`, then use the operator-maintained server for visual judgment in World and Dashboard modes. The canonical routing table is in [`AGENTS.md`](AGENTS.md#validation).
+For UI or canvas changes, keep the screenshot and console evidence from `verify:render`, then use the operator-maintained server for visual judgment in World and Dashboard modes. Sound changes also need `npm run audio:probe`, a local gate that CI does not run. The canonical routing table is in [`AGENTS.md`](AGENTS.md#validation).
 
 ## Pull Requests
 
@@ -72,7 +73,7 @@ When publication is explicitly requested:
 
 1. Commit the release files and push `main`.
 2. From a clean committed tree, create the annotated tag with `npm run release:prepare -- <version> --tag` and push `v<version>` to `origin`. The tag must point at the release commit; `--target` does not accept a raw SHA, so push the tag first.
-3. Run the exact `gh release create` command printed by the helper. Its notes file contains the top `CHANGELOG.md` section verbatim.
+3. Run the exact `gh release create` command printed by the helper, adding `-R TokenBrice/claude-ville` if `gh` resolves a different default repository. Its notes file contains the top `CHANGELOG.md` section verbatim.
 4. When backfilling an older version, add `--latest=false` so the newest release remains marked Latest.
 5. Verify the remote tag and GitHub release. Every pushed version must have both; no gaps (v0.20.0 was once pushed without one).
 

@@ -19,6 +19,7 @@ Start the maintained local server with `npm run dev` at `http://localhost:4000`.
 | World mode | `claudeville/src/presentation/character-mode/` | [`character-mode/README.md`](claudeville/src/presentation/character-mode/README.md) |
 | Dashboard mode | `claudeville/src/presentation/dashboard-mode/` | [`dashboard-mode/README.md`](claudeville/src/presentation/dashboard-mode/README.md) |
 | Shared UI | `claudeville/src/presentation/shared/` | [`shared/README.md`](claudeville/src/presentation/shared/README.md) |
+| Sound | `claudeville/src/presentation/shared/AmbientAudioController.js` + `claudeville/src/presentation/shared/audio/` | [`shared/README.md`](claudeville/src/presentation/shared/README.md), [`scripts/audio/README.md`](scripts/audio/README.md) |
 | Domain / application / config / infra | `claudeville/src/{domain,application,config,infrastructure}/` | [`claudeville/CLAUDE.md`](claudeville/CLAUDE.md) |
 | Sprite assets | `claudeville/assets/sprites/` | [`generate.md`](scripts/sprites/generate.md), [`pixellab-reference.md`](docs/pixellab-reference.md) |
 | Contributor workflows | `.claude/skills/` | `add-model`, `add-provider`, `sprite-character`, `release`, `verify-architecture`, `verify-server`, `verify-ui` |
@@ -45,6 +46,7 @@ Match the command to the change:
 | Integration replay | `npm run test:integration` |
 | Sprite assets / `manifest.yaml` | `npm run sprites:audit-refresh`; visuals: `npm run sprites:capture-fresh` then `npm run sprites:visual-diff` |
 | World buildings / terrain config | `npm run world:validate-buildings`; `npm run world:validate-terrain` |
+| Sound / audio | `npm run audio:probe` (local gate; not in CI) |
 | Broad regression | `npm run validate:quick` (fast); `npm run validate:full` (CI) |
 | Release gate | `npm run gate:release` |
 

@@ -28,6 +28,7 @@ body:
       options:
         - World mode
         - Dashboard mode
+        - Sound
         - Provider adapter
         - Server or API
         - Documentation

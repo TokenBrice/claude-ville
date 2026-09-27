@@ -15,7 +15,7 @@ ClaudeVille's World mode uses motion to communicate state. New motion-bearing wo
 World mode exposes shared pulse helpers in `claudeville/src/presentation/character-mode/PulsePolicy.js`. Before adding another repeating sine cadence, use `pulseValue()` or `pulseAlpha()` when possible. The helper:
 
 - accepts `motionScale` and returns fixed fallback values when motion is disabled
-- exposes named bands matching the table below
+- exposes named bands (`selection`, `working`, `recent`, `alert`, `harbor`, `intrinsic`); an unknown name falls back to `intrinsic`. The `slow`/`medium`/`fast`/`static` cadences in the table below are the budget taxonomy (and the `pulseBand` labels in `RitualConductor.js`), not `pulseValue()` arguments
 - keeps band choice visible at the call site
 - avoids allocating timers, particles, paths, or offscreen caches when `motionScale <= 0`
 

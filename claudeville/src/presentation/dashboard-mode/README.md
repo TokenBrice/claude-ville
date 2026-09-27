@@ -11,10 +11,11 @@ Desktop-only constraint: validate at browser widths of 1280px or wider. Do not a
 | `DashboardRenderer.js` | Project grouping, the bell lane, row creation/reuse, active-mode detail polling, row click selection, child strips, and tool-history rendering. |
 | `AvatarCanvas.js` | Static per-agent canvas portraits: `niche` (44×40 Dashboard row, the default), `chip` (26×26 child strip), `hero` (96×96 call card and selected detail), and `sheet` (64×64 Activity Panel character sheet: a 32×32 top-anchored window of the authored crop at exactly 2×). `crisp` sizes blit the authored `portraitCrop` or generated `portrait` bust at an integer scale; a crop larger than its box draws at 1× and is clipped, never downscaled. Characters without portrait metadata keep the full-body avatar. Avatars can request the exact composited bitmap the World draws from `character-mode/Compositor.shared()` (un-rimmed) instead of re-loading raw sheet frames. |
 | `ObservedCallTape.js` | The `LAST 10 MIN` tape: a browser-local ring of 40 × 15 s buckets per agent, fed by tool-call transitions this tab observed on `agent:added`/`agent:updated` in every mode. Height encodes call class (tall for write/run/task, short for read/search/other) in the ink ramp, never hue. The class comes from `domain/services/ToolIdentity.toolCategory`, whose alias table (lower-cased, `functions.` prefix stripped) also covers the Codex, Gemini, Kimi and other providers' tool names (`apply_patch`, `exec_command`, `shell`, `ReadFile`, `web_search`, `update_plan`, the agent tools, …), so those paint as their real class instead of `other`; buckets that ended before observation began are hatched ("not observed"), never backfilled. |
+| `DashboardKeyboardNavigation.js` | Pure keyboard helpers: wrapping card traversal (`nextCardId`), focus recovery when a card disappears (`recoveryCardId`), the longest-waiting attention order (`attentionAgentIds`), and edit-target detection. |
 
 ## Lifecycle
 
-- `App.js` constructs `DashboardRenderer` after World mode is initialized.
+- `App.js` loads `DashboardRenderer.js` and its stylesheet during boot, concurrently with the World renderer module, and constructs the renderer before boot reports ready, so a mode switch right after boot paints on the next frame.
 - `ModeManager` emits `mode:changed`.
 - `DashboardRenderer` sets `active = true` only for `dashboard`.
 - Detail polling starts when Dashboard mode becomes active and stops when leaving Dashboard mode.

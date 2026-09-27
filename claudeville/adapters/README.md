@@ -1,6 +1,6 @@
 # Provider Adapters
 
-Read-only readers that pull active session data from local CLI provider stores (`~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.grok/`, `~/.kimi-code/`, `~/.local/share/opencode/`, and `~/.omp/`) and normalize it into a single shape the rest of ClaudeVille consumes.
+Read-only readers that pull active session data from local CLI provider stores (`~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.grok/`, `~/.kimi/` and `~/.kimi-code/`, `~/.local/share/opencode/`, and `~/.omp/`) and normalize it into a single shape the rest of ClaudeVille consumes.
 
 ## Purpose
 
@@ -19,6 +19,11 @@ Adapters never write. Provider session files are inputs; do not mutate them.
 - `omp.js`: `~/.omp/agent/sessions/` parent and nested-agent JSONL transcripts. `workingSet` uses observed `read`/`write` tool-call `arguments.path` and successful `edit` tool-result `details.perFileResults[].path` (not patch or result prose). Read selectors are removed; URI/device/archive targets and directories are excluded. Like Claude, it retains the latest 64 path observations and returns at most 16 distinct canonical paths, newest first, with `{ path, op, at, source: 'transcript' }`; the latest observation wins for repeated paths. Relative paths resolve against the recorded session cwd; paths inside the project are project-relative and other home paths use `~/`. Calls describe observed access intent, not proof of successful file I/O. The redacted local-store shape fixture is `scripts/adapters/fixtures/omp/working-set.jsonl`.
 - `turnState.js`: provider-neutral `working`, `tool_pending`, `awaiting_input`, and `unknown` derivation plus pending-tool classification.
 - `gitEvents.js`: best-effort commit/push extraction and repository-only `provider: 'git'` synthesis.
+- `dialogue.js`: provenance-tagged `dialogue` and `observedSources`; only model-written text, with trimming and redaction disclosed.
+- `toolResults.js`: bounded, provider-reported `lastResults` (see "Command results").
+- `hooks.js`: the transient in-memory overlay fed by `POST /api/ingest/hook`; it never writes to disk and never replaces transcript discovery.
+- `sessionPresentation.js`: server-side model identity, display label, sprite id, token normalization, and cost estimate attached to every normalized session.
+- `shared.js`: bounded JSONL tail readers, parse diagnostics, read-failure tracking, and shared detail/summary helpers.
 
 Adapter availability is automatic; empty provider output is not necessarily an error. `adapters/index.js` caches lists for 2000 ms and details for 5000 ms. A detail failure returns stale cached data when available, otherwise an empty detail shape.
 
@@ -44,8 +49,8 @@ The registry also exposes provider metadata (`provider`, display `name`, `suppor
 `adapters/index.js` is the aggregation layer used by `server.js`; the server does not read provider files directly.
 
 - `getAllSessions(activeThresholdMs)` skips unavailable adapters, isolates per-adapter failures, merges results, sorts by `lastActivity` descending, and caches the full list briefly.
-- `getSessionDetailByProvider(provider, sessionId, project)` dispatches to the matching adapter, caches successful detail payloads briefly, and returns stale cached details after an adapter error when possible.
-- `getAllWatchPaths()` merges active adapter watch paths and ignores adapter watch-path errors.
+- `getSessionDetailByProvider(provider, sessionId, project)` dispatches to the matching adapter, caches successful detail payloads briefly, and returns stale cached details after an adapter error when possible. `getSessionDetailsBatch(items)` serves `POST /api/session-details` through the same path.
+- `getAllWatchPaths({ sessions, activeThresholdMs })` passes each adapter its own current sessions, tags every returned path with the adapter's `provider`, and records watch failures in provider health instead of throwing.
 - `getActiveProviders()` surfaces provider display names and home directories for `/api/providers`.
 - `normalizeSession(session)` and `normalizeDetail(detail, context)` are the final API-shape gate. Adapters should still return the documented shape, but the registry supplies safe defaults for nullable fields before data reaches `server.js`.
 
@@ -108,6 +113,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `gitBranch` | string \| null | Provider-recorded git branch when present, capped at 256 characters. |
 | `tokenUsage` | object \| null | See "Token normalization" below. Registry normalization sets this to null when adapters omit token data. |
 | `parentSessionId` | string \| null | Set on subagent / spawned-thread sessions. |
+| `underlyingProvider` | string \| null | OMP-only. The hosted model provider (for example `'zai'`), from `model_change` records and assistant `message.provider`. |
 | `reasoningEffort` | string \| null | Codex pulls it from `turn_context` / `event_msg`; OMP takes the latest `thinking_level_change` record (`low` / `medium` / `high` / `max`). Registry normalization sets this to null when adapters omit it. |
 | `workflowId` | string \| null | Claude-only. Workflow run id (`wf_<id>`) for sub-agents spawned by the Workflow tool; null otherwise. |
 | `workflowName` | string \| null | Claude-only. Human workflow name recovered from the persisted run-script filename; null otherwise. |
@@ -117,7 +123,14 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `pendingSince` | number \| null | ms epoch the pending call was issued. Orders unresolved calls; elapsed time never proves an approval prompt. |
 | `waitReason` | string \| null | Why the session is blocked on a person: `'question'`, `'approval'`, or `'plan_review'`. Null when a pending tool is judged to be merely executing. |
 | `awaitingSince` | number \| null | ms epoch the session started waiting on the user (or closed its turn). Orders the attention queue. |
+| `turnStartedAt` | number \| null | ms epoch the current turn started, when the transcript records it. |
+| `lastTurnDurationMs` | number \| null | Claude-only. Duration of the last completed turn from `system` `turn_duration` records. |
 | `resident` | boolean | True when the server is serving a frozen snapshot of a session that has left the active window (see `services/sessionResidency.js`). |
+| `dialogue` | object \| null | Provenance-tagged speech built by `dialogue.js`: `{ text, full, kind, source, authorship, fidelity, redacted, observedAt, actionId }`. `kind` is `intent`, `plan`, `thinking`, or `assistant`; `text` is capped at 80 characters and `full` at 400. Only model-written text qualifies; lines older than 90 seconds are dropped. Null when nothing qualifies — the world stays silent rather than inventing a line. |
+| `observedSources` | object | `{ toolIntent, planStep, thinkingPlaintext, assistantText }` booleans: what the bounded tail scan actually saw, not a capability claim. All `false` when omitted. |
+| `workingSet` | array | Up to 16 `{ path, op, at, source }` file observations (`op` is `read` or `write`, `source` is `transcript` or `hook`), newest first. Claude, Codex, and OMP populate it; see the `omp.js` note above. `[]` when omitted. |
+| `taskProgress` | object \| null | Claude-only `{ done, total, source }`: `source: 'exact'` from the `~/.claude/tasks/` group of the session, `'inferred'` from its child sessions. |
+| `tasks` | array | Claude-only task summary, up to 12 `{ subject, status }` items. `[]` when omitted. |
 | `sendMessages` | array | Claude-only sender→recipient edges from `SendMessage` tool calls; the carrying session is the sender. Up to 10 most recent edges of `{ recipient, messageType, summary, ts }`: `recipient` is the raw alias from the tool input (match against `agentName`/`name`/`agentId`), `messageType` is the tool input `type` (default `'message'`), `summary` is truncated to 80 chars or null, `ts` is the transcript entry timestamp. Edges without a resolvable recipient (e.g. `shutdown_response` replies keyed by `request_id`) are skipped. Registry normalization sets this to `[]` when adapters omit it. |
 | `gitEvents` | array | Backend-extracted git `commit` / `push` events from raw tool records. Registry normalization sets this to `[]` when adapters omit it. Dry-run events are omitted. Events include `id`, `type`, `project`, `provider`, `sessionId`, `sourceId`, `ts`, and `commandHash`; `command`, `targetRef`, `success`, `exitCode`, and `completedAt` are optional metadata when the adapter can derive them. |
 | `lastResults` | array | Up to 5 most recent provider-reported outcomes of calls that already finished, newest first: `{ id, tool, detail, exitCode, durationMs, completedAt, source }`. See "Command results" below. Registry normalization sets this to `[]` when adapters omit it. |
@@ -204,20 +217,30 @@ Adapters pass provider model strings into the canonical registry at `../src/conf
 
 ## `getWatchPaths()` shape
 
-Returns an array of:
+`getWatchPaths({ sessions, activeThresholdMs })` receives the adapter's current sessions and returns an array of:
 
 ```js
-{ type: 'file' | 'directory', path: string, recursive?: boolean, filter?: string }
+{
+  type: 'file' | 'directory',
+  path: string,
+  filter?: string, filters?: string[],     // directory events: filename must end with one of these
+  scope?: 'active' | 'recent' | 'discovery' | 'static', // default 'discovery'
+  kind?: string, sessionId?: string, project?: string, // targets dirty-cache invalidation
+  probe?: boolean,                         // also stat-probe this path every scheduler tick
+  dynamic?: boolean,                       // default: true for active/recent scope
+  priority?: number, activity?: number,    // order dynamic paths under the cap
+}
 ```
 
-`server.js` consumes the array in `startFileWatcher()` as follows:
+`server.js` canonicalizes and merges descriptors per `type:path` in `canonicalizeWatchDescriptors()`, then:
 
-- `type === 'file'`: `fs.watch(path)` is attached; any `change` event triggers a debounced broadcast.
-- `type === 'directory'`: `fs.watch(path, { recursive })` is attached; `filter` (if provided) requires the changed filename to end with that suffix (e.g. `.jsonl`, `.json`).
-- Missing paths are silently skipped (`fs.existsSync` guard).
-- Watch errors are swallowed so a single broken path does not prevent other watchers from registering.
+- Every path gets a shallow `fs.watch`; `recursive` is ignored. Return the exact active files and their parent directories instead of a deep root.
+- Stable (`discovery`/`static`) paths are always watched. Dynamic (`active`/`recent`) paths are watched only while a WebSocket client is connected, retire 15 seconds after the last one leaves, and are capped at 512 by priority, then activity (`CLAUDEVILLE_WATCH_DYNAMIC_CAP`).
+- `probe: true` paths are compared by `stat` signature on every 2-second scheduler tick while a client is connected (cap 1024, `CLAUDEVILLE_WATCH_PROBE_CAP`); a change marks the matching provider data dirty.
+- A missing path is retried with backoff (200 ms doubling to 5 s, eight attempts); a watcher that errors falls back to bounded signature scans.
+- Directory events whose filename matches no filter are ignored; relevant events mark provider data dirty and trigger a debounced (100 ms) broadcast.
 
-The 2-second polling interval in `startFileWatcher` is independent of these watches and runs even if no path could be attached; the broadcast itself no-ops when no WebSocket clients are connected.
+The 2-second scheduler in `startFileWatcher()` also runs git-state scans and a 30-second watch-topology reconciliation; it broadcasts only when WebSocket clients are connected.
 
 ## How to add a provider
 
@@ -225,12 +248,13 @@ The 2-second polling interval in `startFileWatcher` is independent of these watc
 2. Register the new instance in `claudeville/adapters/index.js`. Add the require and append to the `adapters` array.
 3. Confirm the registry metadata exposes the provider's detail/watch support. `server.js` derives valid detail providers from the registry.
 4. Confirm `isAvailable()` returns `true` only when the provider's home directory exists. Do not throw on missing files — return `false` or an empty array.
-5. Confirm `getWatchPaths()` returns valid `{ type, path, recursive?, filter? }` entries. Prefer `type: 'directory'` with a `filter` over watching every file individually.
-6. Validate:
+5. Confirm `getWatchPaths()` returns valid descriptors (shape above). Prefer exact active files and shallow directories with `filters` over deep roots or one watcher per historical file.
+6. Add redacted synthetic fixtures under `scripts/adapters/fixtures/<name>/` and follow Track A in [`docs/agent-provider-addition.md`](../../docs/agent-provider-addition.md) for registry, identity, and doc surfaces.
+7. Validate:
    - `node --check claudeville/adapters/<name>.js`
-   - `npm run dev`
-   - `curl http://localhost:4000/api/providers` — confirm the new provider appears.
-   - `curl http://localhost:4000/api/sessions` — confirm normalized session objects come through.
+   - `npm run check:adapter-fixtures`
+   - `npm run verify:server`
+   - With the server running (`npm run dev`), `curl http://localhost:4000/api/providers` lists the provider and `curl http://localhost:4000/api/sessions` returns its normalized sessions.
 
 ## Per-provider mini-fixtures
 
@@ -375,3 +399,18 @@ The adapter discovers sessions under `~/.grok/sessions/`, uses `summary.json` fo
 ```
 
 OpenCode support is SQLite read-only. It uses `node:sqlite` with read-only mode when available and falls back to `sqlite3 -readonly` when the CLI is present. It never mutates provider config files and does not issue writes, migrations, checkpoints, or vacuum commands against OpenCode's database. DeepSeek-backed sessions are represented as `provider: 'opencode'` with `model: 'deepseek/<model-id>'`, which lets the UI keep the source CLI distinct from the model family.
+
+### OMP — `~/.omp/agent/sessions/<project>/<timestamp>_<uuid>.jsonl` (one line per record)
+
+```jsonc
+// shape only — fields the adapter reads
+{"type":"session","id":"0f6c2a9e-...","cwd":"/Users/me/code/proj","title":"Refactor","timestamp":"2026-09-01T12:00:00.000Z"}
+{"type":"model_change","model":"zai/glm-5.3"}
+{"type":"thinking_level_change","thinkingLevel":"high"}
+{"type":"message","timestamp":"2026-09-01T12:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Fix the parser."}]}}
+{"type":"message","message":{"role":"assistant","provider":"zai","model":"glm-5.3","timestamp":1788264002000,"usage":{"input":1200,"output":80,"cacheRead":4000},"content":[{"type":"thinking","thinking":"..."},{"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"src/parser.js","i":"Reading parser"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call-1","toolName":"read","isError":false,"content":[]}}
+{"type":"custom","customType":"session_exit"}
+```
+
+Session ids are prefixed `omp-`. Nested task agents live in a sibling directory named like the parent transcript, `<project>/<timestamp>_<uuid>/<agent-name>.jsonl`; the uuid suffix becomes `parentSessionId` and the file name the `agentName`. A tool call's `arguments.i` intent is a `dialogue` candidate; `todo` tool calls fold into `todos`. The adapter reads the first 32 and last 2,500 lines of each transcript (5,000 for details).

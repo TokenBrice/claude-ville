@@ -1060,6 +1060,75 @@ export const MULTI_PROVIDER_SHOWCASE_SCENARIO = {
     metadata: { selectedAgentId: 'showcase-codex', qaTags: ['multi-provider', 'hosted-model', 'availability', 'stale-approval'], camera: { centerTile: { tileX: 21, tileY: 24 }, zoom: 2 } },
 };
 
+const README_PROJECTS = {
+    village: '/sim/repos/claude-ville',
+    harbor: '/sim/repos/harbor-ledger',
+    lantern: '/sim/repos/lantern-docs',
+    tidepool: '/sim/repos/tidepool-app',
+};
+
+const README_ASTRA_TODOS = [
+    { subject: 'Map the bridge lantern states', status: 'completed', phase: 'Survey' },
+    { subject: 'Split ledger rows by branch', status: 'completed', phase: 'Build' },
+    { subject: 'Patch the harbor manifest renderer', status: 'in_progress', phase: 'Build' },
+    { subject: 'Run the render baseline', status: 'pending', phase: 'Verify' },
+];
+
+const readmeAgent = (spec) => agentSpec({
+    status: AgentStatus.WORKING,
+    signalCertainty: 'observed',
+    ...spec,
+});
+
+export const README_SHOWCASE_SCENARIO = {
+    id: 'readme-showcase',
+    label: 'README showcase',
+    description: 'Thirty-one agents across all seven CLIs and four projects for the README and social-card captures.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        readmeAgent({ id: 'readme-rowan', name: 'Rowan', model: 'claude-fable-5-1', teamName: 'Ledger Crew', currentTool: 'Task', currentToolInput: 'description=Plan the harbor ledger rewrite', tokens: { input: 412000, output: 38600, cacheRead: 1820000, availability: 'observed' }, projectPath: README_PROJECTS.harbor, position: { tileX: 15, tileY: 21 } }),
+        readmeAgent({ id: 'readme-sage', name: 'Sage', model: 'claude-sonnet-5', agentType: 'code-reviewer', role: 'code-reviewer', parentId: 'readme-rowan', teamName: 'Ledger Crew', currentTool: 'Read', currentToolInput: 'file_path=src/ledger/BranchRows.js', tokens: { input: 64000, output: 5200, availability: 'observed' }, projectPath: README_PROJECTS.harbor, position: { tileX: 8, tileY: 17 } }),
+        readmeAgent({ id: 'readme-finch', name: 'Finch', model: 'claude-haiku-4-5', agentType: 'researcher', role: 'researcher', parentId: 'readme-rowan', teamName: 'Ledger Crew', currentTool: 'WebSearch', currentToolInput: 'query=git ls-remote ahead behind counts', tokens: { input: 22000, output: 2100, availability: 'observed' }, projectPath: README_PROJECTS.harbor, position: { tileX: 22, tileY: 19 } }),
+        readmeAgent({ id: 'readme-wren', name: 'Wren', model: 'claude-opus-5', currentTool: 'Edit', currentToolInput: 'file_path=src/world/BridgeLanterns.js', tokens: { input: 286000, output: 41200, cacheRead: 960000, availability: 'observed' }, projectPath: README_PROJECTS.village, position: { tileX: 25, tileY: 30 } }),
+        readmeAgent({ id: 'readme-hazel', name: 'Hazel', model: 'claude-sonnet-5', currentTool: 'Read', currentToolInput: 'file_path=docs/architecture.md', tokens: { input: 138000, output: 9400, availability: 'observed' }, projectPath: README_PROJECTS.lantern, position: { tileX: 7, tileY: 18 } }),
+        readmeAgent({ id: 'readme-pip', name: 'Pip', model: 'claude-haiku-4-5', currentTool: 'Grep', currentToolInput: 'pattern=lanternState', tokens: { input: 31000, output: 2600, availability: 'observed' }, projectPath: README_PROJECTS.village, position: { tileX: 9, tileY: 18 } }),
+        readmeAgent({ id: 'readme-moss', name: 'Moss', model: 'claude-opus-4-8', status: AgentStatus.WAITING_ON_USER, waitReason: 'approval', pendingTool: 'Bash', promptDetail: 'Allow `git push origin release/0.9`?', signalSource: 'hook', awaitingSince: SCENARIO_TIME_BASE - 95_000, tokens: { input: 198000, output: 17800, availability: 'observed' }, projectPath: README_PROJECTS.tidepool, position: { tileX: 18, tileY: 22 } }),
+        readmeAgent({ id: 'readme-astra', name: 'Astra', provider: 'codex', model: 'gpt-6-astra', effort: 'high', currentTool: 'apply_patch', currentToolInput: 'src/harbor/ManifestRenderer.js', lastPrompt: 'Rewrite the harbor manifest so each branch gets its own ledger row, then run the render baseline.', todos: README_ASTRA_TODOS, gitBranch: 'feat/ledger-rows', tokens: { input: 356000, output: 28400, cacheRead: 1410000, contextWindow: 142000, contextWindowMax: 258400, turnCount: 37, availability: 'observed' }, projectPath: README_PROJECTS.harbor, position: { tileX: 28, tileY: 30 } }),
+        readmeAgent({ id: 'readme-vega', name: 'Vega', provider: 'codex', model: 'gpt-6-astra', effort: 'xhigh', currentTool: 'exec_command', currentToolInput: 'npm run test', tokens: { input: 244000, output: 19600, availability: 'observed' }, projectPath: README_PROJECTS.village, position: { tileX: 25, tileY: 37 } }),
+        readmeAgent({ id: 'readme-sol', name: 'Sol', provider: 'codex', model: 'gpt-5.6-sol', currentTool: 'exec_command', currentToolInput: 'rg -n "ledger" docs', tokens: { input: 88000, output: 6100, availability: 'observed' }, projectPath: README_PROJECTS.lantern, position: { tileX: 8, tileY: 16 } }),
+        readmeAgent({ id: 'readme-terra', name: 'Terra', provider: 'codex', model: 'gpt-5.6-terra', currentTool: 'apply_patch', currentToolInput: 'src/app/TidepoolList.tsx', tokens: { input: 121000, output: 14800, availability: 'observed' }, projectPath: README_PROJECTS.tidepool, position: { tileX: 27, tileY: 31 } }),
+        readmeAgent({ id: 'readme-luna', name: 'Luna', provider: 'codex', model: 'gpt-5.6-luna', currentTool: 'web.run', currentToolInput: 'search the WebGL2 texture budget notes', tokens: { input: 54000, output: 3900, availability: 'observed' }, projectPath: README_PROJECTS.village, position: { tileX: 23, tileY: 18 } }),
+        readmeAgent({ id: 'readme-juniper', name: 'Juniper', provider: 'codex', model: 'gpt-5.5', status: AgentStatus.WAITING_ON_USER, waitReason: 'approval', pendingTool: 'exec_command', promptDetail: 'Run `npm publish --dry-run` outside the sandbox?', signalSource: 'hook', awaitingSince: SCENARIO_TIME_BASE - 40_000, tokens: { input: 97000, output: 8300, availability: 'observed' }, projectPath: README_PROJECTS.lantern, position: { tileX: 14, tileY: 22 } }),
+        readmeAgent({ id: 'readme-quill', name: 'Quill', provider: 'codex', model: 'gpt-5.4', status: AgentStatus.IDLE, tokens: { input: 46000, output: 4100, availability: 'observed' }, projectPath: README_PROJECTS.lantern, position: { tileX: 20, tileY: 25 } }),
+        readmeAgent({ id: 'readme-spark', name: 'Spark', provider: 'codex', model: 'gpt-5.3-codex-spark', currentTool: 'exec_command', currentToolInput: 'git push origin feat/ledger-rows', tokens: { input: 38000, output: 2900, availability: 'observed' }, projectPath: README_PROJECTS.harbor, position: { tileX: 28, tileY: 19 } }),
+        readmeAgent({ id: 'readme-lyra', name: 'Lyra', provider: 'gemini', model: 'gemini-3.1-pro', currentTool: 'google_web_search', currentToolInput: 'isometric pixel art water shading', tokens: { input: 172000, output: 12500, availability: 'observed' }, projectPath: README_PROJECTS.village, position: { tileX: 22, tileY: 18 } }),
+        readmeAgent({ id: 'readme-iris', name: 'Iris', provider: 'gemini', model: 'gemini-3.5-flash', currentTool: 'read_file', currentToolInput: 'docs/providers.md', tokens: { input: 69000, output: 4700, availability: 'observed' }, projectPath: README_PROJECTS.lantern, position: { tileX: 6, tileY: 18 } }),
+        readmeAgent({ id: 'readme-orin', name: 'Orin', provider: 'gemini', model: 'gemini-2.5-pro', currentTool: 'run_shell_command', currentToolInput: 'npm run lint', tokens: { input: 83000, output: 5600, availability: 'observed' }, projectPath: README_PROJECTS.tidepool, position: { tileX: 23, tileY: 37 } }),
+        readmeAgent({ id: 'readme-moon', name: 'Moon', provider: 'kimi', model: 'kimi-for-coding', currentTool: 'Edit', currentToolInput: 'file_path=src/components/TideChart.tsx', tokens: { input: 104000, output: 11200, availability: 'observed' }, projectPath: README_PROJECTS.tidepool, position: { tileX: 25, tileY: 31 } }),
+        readmeAgent({ id: 'readme-tomo', name: 'Tomo', provider: 'kimi', model: 'kimi-for-coding', currentTool: 'Read', currentToolInput: 'file_path=README.md', tokens: { input: 41000, output: 3300, availability: 'observed' }, projectPath: README_PROJECTS.lantern, position: { tileX: 9, tileY: 17 } }),
+        readmeAgent({ id: 'readme-ember', name: 'Ember', provider: 'grok', model: 'grok-4.5', currentTool: 'edit_file', currentToolInput: 'src/ledger/Push.js', tokens: { input: 133000, output: 15900, availability: 'observed' }, projectPath: README_PROJECTS.harbor, position: { tileX: 30, tileY: 29 } }),
+        readmeAgent({ id: 'readme-flint', name: 'Flint', provider: 'grok', model: 'grok-composer', currentTool: 'SendMessage', currentToolInput: 'recipient_name=Rowan, message=Push lane is clear', tokens: { input: 27000, output: 2400, availability: 'observed' }, projectPath: README_PROJECTS.harbor, position: { tileX: 14, tileY: 21 } }),
+        readmeAgent({ id: 'readme-cinder', name: 'Cinder', provider: 'grok', model: 'grok-4', status: AgentStatus.IDLE, tokens: { input: 18000, output: 1600, availability: 'observed' }, projectPath: README_PROJECTS.tidepool, position: { tileX: 21, tileY: 27 } }),
+        readmeAgent({ id: 'readme-jade', name: 'Jade', provider: 'omp', underlyingProvider: 'deepseek', model: 'deepseek-flash', effort: 'low', currentTool: 'Bash', currentToolInput: 'npm run verify:render', tokens: { input: 76000, output: 5100, availability: 'observed' }, projectPath: README_PROJECTS.village, position: { tileX: 27, tileY: 37 } }),
+        readmeAgent({ id: 'readme-onyx', name: 'Onyx', provider: 'omp', underlyingProvider: 'deepseek', model: 'deepseek-flash', effort: 'high', currentTool: 'Read', currentToolInput: 'file_path=src/gpu/GroundPass.js', tokens: { input: 118000, output: 8800, availability: 'observed' }, projectPath: README_PROJECTS.village, position: { tileX: 8, tileY: 15 } }),
+        readmeAgent({ id: 'readme-basalt', name: 'Basalt', provider: 'omp', underlyingProvider: 'deepseek', model: 'deepseek-flash', effort: 'max', currentTool: 'Edit', currentToolInput: 'file_path=src/gpu/SeaPass.js', tokens: { input: 162000, output: 21400, availability: 'observed' }, projectPath: README_PROJECTS.village, position: { tileX: 25, tileY: 29 } }),
+        readmeAgent({ id: 'readme-delphi', name: 'Delphi', provider: 'omp', underlyingProvider: 'deepseek', model: 'deepseek-reasoner', currentTool: 'WebFetch', currentToolInput: 'url=https://developer.mozilla.org/docs/Web/API/WebGL2RenderingContext', tokens: { input: 92000, output: 13700, availability: 'observed' }, projectPath: README_PROJECTS.village, position: { tileX: 24, tileY: 18 } }),
+        readmeAgent({ id: 'readme-kestrel', name: 'Kestrel', provider: 'omp', underlyingProvider: 'zai', model: 'glm-5.3', currentTool: 'Task', currentToolInput: 'description=Audit the tidepool release notes', tokens: { input: 149000, output: 10900, availability: 'observed' }, projectPath: README_PROJECTS.tidepool, position: { tileX: 18, tileY: 21 } }),
+        readmeAgent({ id: 'readme-lark', name: 'Lark', provider: 'omp', underlyingProvider: 'zai', model: 'glm-5.3-flash', status: AgentStatus.WAITING_ON_USER, waitReason: 'approval', pendingTool: 'Bash', promptDetail: 'Allow `rm -rf dist` before the rebuild?', signalSource: 'hook', awaitingSince: SCENARIO_TIME_BASE - 20_000, tokens: { input: 36000, output: 2700, availability: 'observed' }, projectPath: README_PROJECTS.tidepool, position: { tileX: 15, tileY: 22 } }),
+        readmeAgent({ id: 'readme-sable', name: 'Sable', provider: 'opencode', underlyingProvider: 'anthropic', model: 'claude-sonnet-5', currentTool: 'TodoWrite', currentToolInput: 'Plan the lantern docs pass', todos: [{ subject: 'Rewrite the quick start', status: 'in_progress' }, { subject: 'Check every flag', status: 'pending' }], tokens: { input: 58000, output: 4400, availability: 'observed' }, projectPath: README_PROJECTS.lantern, position: { tileX: 24, tileY: 38 } }),
+        readmeAgent({ id: 'readme-tansy', name: 'Tansy', provider: 'opencode', underlyingProvider: 'openai', model: 'gpt-5.5', currentTool: 'Write', currentToolInput: 'file_path=src/app/TidepoolStore.ts', tokens: { input: 71000, output: 9600, availability: 'observed' }, projectPath: README_PROJECTS.tidepool, position: { tileX: 28, tileY: 31 } }),
+    ],
+    timeline: [],
+    metadata: {
+        qaTags: ['readme', 'marketing', 'multi-provider', 'dense'],
+        atmosphere: {
+            clock: { hours: 10, minutes: 30, seconds: 0, label: '10:30', phase: 'day' },
+            weather: { type: 'clear', intensity: 0, windX: 0.2, seed: 4242 },
+        },
+        camera: { centerTile: { tileX: 18, tileY: 24 }, zoom: 2 },
+    },
+};
+
 export const MATERIAL_PILOT_SCENARIO = {
     id: 'material-pilot',
     label: 'Command material study',
@@ -1347,6 +1416,7 @@ export const WORLD_SCENARIOS = [
     TEAM_GATHER_SCENARIO,
     MIXED_TOOLS_SCENARIO,
     MULTI_PROVIDER_SHOWCASE_SCENARIO,
+    README_SHOWCASE_SCENARIO,
     MATERIAL_PILOT_SCENARIO,
     GIT_HARBOR_SCENARIO,
     FAILED_PUSH_SCENARIO,
