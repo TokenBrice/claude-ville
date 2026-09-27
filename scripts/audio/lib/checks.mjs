@@ -149,6 +149,16 @@ export function laneWindow(lane, bed, { windows = AUDIBILITY_WINDOWS } = {}) {
     return { min, max };
 }
 
+// S2's band rule, lowered at closure for one context: the error call over a
+// busy Town band clears the presence band by ≥ +5 dB (its trim at the
+// limiter cap; one more dB would pass the 3 dB GR budget). The probe's busy
+// Town band beds (lib/scenes.mjs MARGIN_BEDS `busy`) judge their error rows
+// with it; every other lane and bed keeps S2's ≥ +6.
+export const BUSY_BAND_ERROR_BAND_RULE = Object.freeze({
+    ...AUDIBILITY_WINDOWS.urgentBandRule,
+    overMusic: Object.freeze({ ...AUDIBILITY_WINDOWS.urgentBandRule.overMusic, minRiseDb: 5 }),
+});
+
 // placements: [{ margin, bandsOver6dB, presenceRiseDb, grDb }] for one lane
 // over one bed. Median of placements against the window; the band rule and
 // the GR limit apply to urgent lanes only. `probeBed` names the probe's bed

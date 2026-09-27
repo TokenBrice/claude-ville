@@ -145,6 +145,30 @@ implementation checklist is not otherwise treated as open work.
   - **Source:** [Opus 5.5 aesthetic plan — Performance](claudeville-opus55-aesthetic-plan.md#performance).
   - **Current status:** Open. At DPR 2, GPU-owned bytes were about 173 MB against the 128 MiB diagnostic ceiling at every zoom tier. The source-texture cache was about 105 MB against its 47.7 MiB cap, which was already over before v0.46.0. Candidates: count the rimmed world body sheets and the crowd LOD sheets against `CACHE_PIXEL_LIMIT`, and evict per-bucket bake textures (sky plate, ocean band, tree casts) more aggressively.
 
+
+- [ ] **Audio listening sign-off and working-day soaks**
+
+  - **ID:** `OF-013`
+  - **Added:** 2026-09-27
+  - **Trigger:** Before the next release that ships the Opus 5.5 audio plan.
+  - **Source:** [Opus 5.5 audio plan — Execution record](claudeville-opus55-audio-plan.md#execution-record).
+  - **Current status:** Open. Waves 0–7 are implemented and pass the local probe (`npm run audio:probe`, stage 7, 480 checks), but no one has listened. Pending: the Wave-3 listener battery (T1 idle/light/busy, T2 family ID ≥ 90 %, T5 "is anyone waiting?" ≥ 8/10, also in Town band for the waiting cadence) and the "bell, not beep" pass; a sea, weather and storm listening pass; a full working-day soak in each preset (log what got turned down or off); the reel v3 in `output/claudeville-opus55-audio/reel/` (local only) is the starting point.
+
+- [ ] **Top-bar centre overflows at 1280 with three attention buckets**
+
+  - **ID:** `OF-014`
+  - **Added:** 2026-09-27
+  - **Trigger:** A maintainer decision on top-bar density at 1280 (the graphics plan's territory).
+  - **Source:** [Opus 5.5 audio plan — Wave 7](claudeville-opus55-audio-plan.md#wave-7--shipped).
+  - **Current status:** Open — measured, not caused by sound. With needs-you, error and limit buckets all showing at 1280, `.topbar__center` overflows 146 px in every sound state (130 px at the pre-Wave-7 HEAD; the 44 px sound group adds 16) and clips *WORKING* mid-glyph; 1440 is clean. Not fixed in the audio plan because AGENTS.md forbids responsive shrinking.
+
+- [ ] **Audio frame and CPU cost on a quiet host**
+
+  - **ID:** `OF-015`
+  - **Added:** 2026-09-27
+  - **Trigger:** A quiet-host run of `npm run audio:probe -- --only fps` and the world-scene CPU proxy.
+  - **Source:** [Opus 5.5 audio plan — Waves 4 and 5](claudeville-opus55-audio-plan.md#execution-record).
+  - **Current status:** Open — reported as INFO. On a loaded host the app frame total p95 reads +0.1…+0.3 ms with sound on (the gate is ≤ 0.1 ms; off-vs-off noise was 0.0–0.5 ms; the same at Wave-4 HEAD), and the world-scene CPU proxy a median 6.8 % of a core against the ≤ 2 % sea / ≤ 3.5 % storm budgets.
 ## Already landed; do not carry forward as open
 
 - [x] **Change-driven Git enrichment:** scoped signatures, cache reuse, nested-remote handling, ref invalidation, and zero-command unchanged warm refresh are implemented. This does not close the async-worker item above.

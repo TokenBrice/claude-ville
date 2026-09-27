@@ -116,10 +116,17 @@ export function wakeRows(r) {
 }
 
 // Sound on: every sounding ladder call (the L1 entry summons, then the
-// reminders) with its margin over the bed, limiter GR and cue trim.
+// reminders) with its margin over the bed, limiter GR and cue trim, and
+// the call's own level: the cue stem's M max over [t, t + 2.5 s] at the
+// output (over music a quiet reminder's program margin reads the band).
 export function ladderTrimRows(r) {
     const lou = loudness(r.program.L, r.program.R, r.sr);
     const gr = limiterGainReduction(r.stems.limiterIn.L, r.stems.limiterIn.R, r.stems.limiterOut.L, r.stems.limiterOut.R, r.sr);
+    const cueMax = (t) => {
+        if (!r.stems.cue) return null;
+        const cut = slice(r.stems.cue, r.sr, t, t + MARGIN.cueWindowSec);
+        return loudness(cut.L, cut.R, r.sr).momentaryMax + outputGainDb(r);
+    };
     return r.meta.scheduled.filter(s => !s.silent && (s.kind === 'summons' || s.kind === 'reminder')).map((s) => {
         const t = s.notes[0];
         const cue = r.meta.cues.filter(c => c.kind === s.kind).sort((a, b) => Math.abs(a.t - s.t) - Math.abs(b.t - s.t))[0];
@@ -127,6 +134,7 @@ export function ladderTrimRows(r) {
         return {
             kind: s.kind, t, level: s.kind === 'reminder' ? cue?.level ?? null : (cue?.level ?? 1),
             margin: marginAt(lou.momentaryCurve, t, MARGIN).margin, grDb: maxGrIn(gr, t, t + MARGIN.cueWindowSec),
+            cueMaxLufs: cueMax(t),
             trimDb: level && Math.abs(level.t - s.t) < 0.5 ? level.trimDb ?? null : null,
         };
     });

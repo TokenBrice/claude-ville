@@ -75,11 +75,16 @@ test('routine and Medium/Major outcomes move within -6…+12 dB; unknown beds le
     assert.equal(cueTrimDb({ lane: 'routine', nominalLufsM: -38, bedLufs: null, recentUrgentTrims: [9] }), 0);
 });
 
-test('Minor outcomes, scenery and thunder are never lifted', () => {
+test('Minor outcomes, scenery and thunder are never lifted; the knock comes down furthest', () => {
     for (const lane of ['outcomeMinor', 'scenery', 'thunder']) {
         assert.equal(cueTrimDb({ lane, nominalLufsM: -34, bedLufs: -20 }), 0, `${lane} over a loud bed`);
+    }
+    for (const lane of ['scenery', 'thunder']) {
         assert.equal(cueTrimDb({ lane, nominalLufsM: -34, bedLufs: -70 }), -6, `${lane} over a quiet bed`);
     }
+    assert.equal(cueTrimDb({ lane: 'outcomeMinor', nominalLufsM: -34, bedLufs: -70 }), -9);
+    // A light bed that wants the knock 7 dB down gets it (under the −6 of scenery).
+    assert.ok(Math.abs(cueTrimDb({ lane: 'outcomeMinor', nominalLufsM: -43, bedLufs: -49.5 }) + 7) < 1e-9);
     // Scenery floor 0, aim +1: a -33.5 bell over a -40 bed comes down 5.5 dB.
     assert.equal(cueTrimDb({ lane: 'scenery', nominalLufsM: -33.5, bedLufs: -40 }), -5.5);
     // A Minor outcome aims just under its floor: the knock sits at the bed's level.

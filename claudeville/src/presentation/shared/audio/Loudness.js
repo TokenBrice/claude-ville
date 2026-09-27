@@ -182,31 +182,41 @@ export const AUDIBILITY_WINDOWS = Object.freeze({
 // routine chimes (the other alloys read −0.7…+1.2 LU of it; routine and release rows shifted by their Wave-4 voice-level cuts, −3 / −4 dB). `summons` is
 // the L1 ship's bell (L2 −45.1, L3/L4 −39.2); a reminder is levelled on its
 // family's entry voice and the Signals `answered` on the call; `hourBell` is
-// the phrase (the soft 21:00 chime −40.0); `digest` four notes
+// the phrase (the soft 21:00 chime −48.0); `digest` four notes
 // (red, amber, gold, stone). Thunder (4.2) is levelled at its far/near
 // seam: the strike at intensity 0.55 (M max over the roll), so the
 // bed-aware trim puts that strike at the far floor + 1 LU and the
 // intensity law spreads the rest monotonically around it (near strikes
 // ≈ +4.5 dB over it, intensity 0.3 ≈ −3.7 dB).
+// Closure (reel v3): the hour bell, the push and the aurora are shifted
+// with their voice-level cuts (−8 / −4 / −2 dB), so an unclamped trim can
+// place them on a 3–6-worker Village; council and departure are corrected
+// to what they read in context against the routine aim (council +1.6,
+// departure +0.5 LU: on the margins beds they read +1.1…+1.6 / +0.6…+0.8
+// LU over it in Village and over the band alike), council also shifted with
+// its −2 dB voice-level cut. The distress and limit PLRs are their
+// in-context peaks (+0.4 / +0.9 dB): capped over the busy Town band their
+// calls took that much more limiter reduction than the ship's bell at the
+// same predicted peak (CueLevel's urgent cap).
 export const VOICE_REGISTRY = Object.freeze({
     'cue.summons': Object.freeze({ nominalLufsM: -39.8, plr: 7.7 }),
-    'cue.distress': Object.freeze({ nominalLufsM: -40.2, plr: 9.4 }),
-    'cue.limit': Object.freeze({ nominalLufsM: -44.0, plr: 9.2 }),
+    'cue.distress': Object.freeze({ nominalLufsM: -40.2, plr: 9.8 }),
+    'cue.limit': Object.freeze({ nominalLufsM: -44.0, plr: 10.1 }),
     'cue.answered': Object.freeze({ nominalLufsM: -46.4, plr: 14.0 }),
     'cue.arrival': Object.freeze({ nominalLufsM: -42.7, plr: 7.7 }),
-    'cue.departure': Object.freeze({ nominalLufsM: -43.3, plr: 8.0 }),
+    'cue.departure': Object.freeze({ nominalLufsM: -42.8, plr: 8.0 }),
     'cue.recovery': Object.freeze({ nominalLufsM: -41.8, plr: 9.7 }),
-    'cue.council': Object.freeze({ nominalLufsM: -40.6, plr: 6.7 }),
+    'cue.council': Object.freeze({ nominalLufsM: -41.0, plr: 6.7 }),
     'cue.turnDone': Object.freeze({ nominalLufsM: -44.6, plr: 17.5 }),
     'cue.subagentReturn': Object.freeze({ nominalLufsM: -45.0, plr: 20.6 }),
     'cue.toolFailed': Object.freeze({ nominalLufsM: -38.7, plr: 11.5 }),
     'cue.pushFailed': Object.freeze({ nominalLufsM: -38.7, plr: 11.5 }),
     'cue.commit': Object.freeze({ nominalLufsM: -45.0, plr: 4.8 }),
-    'cue.push': Object.freeze({ nominalLufsM: -39.3, plr: 8.0 }),
+    'cue.push': Object.freeze({ nominalLufsM: -43.3, plr: 8.0 }),
     'cue.release': Object.freeze({ nominalLufsM: -40.0, plr: 8.5 }),
     'cue.dispatch': Object.freeze({ nominalLufsM: -45.0, plr: 10.1 }),
-    'cue.hourBell': Object.freeze({ nominalLufsM: -35.6, plr: 10.7 }),
-    'cue.aurora': Object.freeze({ nominalLufsM: -42.8, plr: 6.8 }),
+    'cue.hourBell': Object.freeze({ nominalLufsM: -43.6, plr: 10.7 }),
+    'cue.aurora': Object.freeze({ nominalLufsM: -44.8, plr: 6.8 }),
     'cue.linkLost': Object.freeze({ nominalLufsM: -40.1, plr: 15.1 }),
     'cue.linkRestored': Object.freeze({ nominalLufsM: -38.1, plr: 6.1 }),
     'cue.digest': Object.freeze({ nominalLufsM: -36.0, plr: 12.0 }),

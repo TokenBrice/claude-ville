@@ -19,11 +19,14 @@
 //
 // An urgent trim is also capped by the limiter: the voice's predicted peak
 // (nominal + trim + its registry PLR, raised by PROGRAM_TRIM_DB to the limiter
-// input) stays within the urgent gain-reduction budget (S2 ceiling row:
-// ≤ 3 dB), less a guard for the ducked bed that shares the limiter (measured
-// on the probe's beds: the bed adds 1.5–1.7 dB of GR over the cue's own
-// peak). A lift the limiter would take back is not a lift; the cap never
-// takes an urgent cue below 0 dB.
+// input) may overshoot the ceiling by the urgent gain-reduction budget (S2
+// ceiling row: ≤ 3 dB), less what the rest of the program adds to the
+// limiter's reduction under the call. That share is measured, not assumed:
+// over the busy Town band (the loudest bed a capped call meets; reel v3 and
+// its closure renders, Isle and Chip) capped calls took their predicted
+// overshoot + 0.3 dB of reduction, and the L3 bell that rings on the held
+// entry trim (0.6 LU over L1) + 0.5 dB. A lift the limiter would take back
+// is not a lift; the cap never takes an urgent cue below 0 dB.
 //
 // Urgent cues are not cut to reach their floor + aim. Over a very quiet bed
 // (a still night), though, a call at 0 dB would pass its lane ceiling, so
@@ -60,10 +63,11 @@ const AIM_OVER_FLOOR_OVER_MUSIC = Object.freeze({
 });
 
 // The highest peak (dBFS, in the bedLoudness domain) an urgent voice may
-// reach: the limiter ceiling plus the urgent GR budget, less the bed's guard.
-const URGENT_PEAK_GUARD_DB = 2;
+// reach: the limiter ceiling plus the urgent GR budget, less the measured
+// share above (0.5 dB) and 0.3 dB so a capped call and its L3 stay ≤ 3 dB.
+const URGENT_BED_GR_DB = 0.8;
 export const URGENT_PEAK_MAX_DBFS = LIMITER_CEILING_DBFS
-    + LOUDNESS_TARGETS.ceiling.urgentGrMaxDb - URGENT_PEAK_GUARD_DB - PROGRAM_TRIM_DB;
+    + LOUDNESS_TARGETS.ceiling.urgentGrMaxDb - URGENT_BED_GR_DB - PROGRAM_TRIM_DB;
 
 // Urgent cues are never trimmed below 0 dB; with no bed to read (a hidden-tab
 // wake, an unprimed tap) they take the median of the recent foreground urgent
@@ -77,9 +81,14 @@ const URGENT_LANES = new Set(['needsYou', 'error', 'limit']);
 
 // Trim range per S2 lane, in dB. Minor outcomes, scenery and thunder are
 // never lifted: a short knock or a far rumble must not jump out of a quiet bed.
+// The Minor knock may come further down than the rest: over a 3–6-worker
+// Village it wants ≈ −7 dB (at −6 it read +1.6 and sat only 2.7 LU under
+// routine), while over the Town band and the storm it needs its full level
+// (trim 0), so its voice cannot come down instead.
 const RANGE_URGENT = Object.freeze([0, 12]);
 const RANGE_LIFTED = Object.freeze([-6, 12]);
 const RANGE_UNLIFTED = Object.freeze([-6, 0]);
+const RANGE_KNOCK = Object.freeze([-9, 0]);
 const TRIM_RANGE_BY_LANE = Object.freeze({
     needsYou: RANGE_URGENT,
     error: RANGE_URGENT,
@@ -87,7 +96,7 @@ const TRIM_RANGE_BY_LANE = Object.freeze({
     routine: RANGE_LIFTED,
     outcomeMedium: RANGE_LIFTED,
     outcomeMajor: RANGE_LIFTED,
-    outcomeMinor: RANGE_UNLIFTED,
+    outcomeMinor: RANGE_KNOCK,
     scenery: RANGE_UNLIFTED,
     thunder: RANGE_UNLIFTED,
 });

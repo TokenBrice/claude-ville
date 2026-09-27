@@ -242,6 +242,47 @@ rg '^(Rss|Pss|Pss_Anon|Private_Dirty|Swap):' "/proc/$RUNTIME_PID/smaps_rollup"
 
 `/api/perf.runtime.memory.rss` covers the Node server. Browser canvas, decoded-image, compositor, and GPU allocations belong to the browser process and must be recorded separately with `window.__claudeVillePerf.canvasBudget()` and the browser task manager. A kernel table showing another process with materially larger anonymous RSS is evidence against attributing the system OOM to ClaudeVille.
 
+## Sound does not come back
+
+Sound is off by default and browsers only start audio after a click or key press, so first read the sound note in the top bar (`#topbarSoundToggle`). Its tooltip and `data-sound-state` name the state; the chevron beside it (`#topbarSoundMenu`) opens the SOUND popover, whose now line says what is happening.
+
+| State | What it means | What to do |
+| --- | --- | --- |
+| `off` | The preset is *Off*. | Click the note (it turns the last preset back on) or press `M`. A profile's very first click on the note opens the presets instead; pick one. |
+| `armed` | Sound is on but not heard yet: the browser is waiting for a gesture, or the page is away. The popover says `Waiting for a click — browsers start sound on your first click`. | Click the note or press `M`. Until sound has started once in this page, any click or key press on the page starts it. |
+| `resting` | Village with nobody working or waiting: the island drops to a quiet shore on purpose. | Nothing; sound returns when work starts. |
+| `hushed` | `HUSH FOR 1 HOUR` or SET *Quiet hours* is active; the village plays Signals only (quiet hours also a little softer) until the time the tooltip names. | `RESUME NOW` in the popover, the *Hush* row in SET, or change *Quiet hours*. |
+| `playing` | Sound is running. | If it still seems silent, see below. |
+
+`M` works anywhere except in a text field or while a modal is open. The tooltip `Sound unavailable in this browser` means the browser has no Web Audio.
+
+Silent or quiet on purpose while `playing`:
+
+- **Signals** plays only when an agent needs you, errors or hits a limit; between calls it is silent, and other events are captioned instead.
+- **Village** music is an occasion, not a loop: one tune per phase of the day and short fragments between, never while resting, in rain or a storm, near an urgent call or over a long wait. The popover's line says when the next tune is due. Choose *Town band* for continuous music.
+- **Volume** is kept per preset, and the MIX sliders (Village: *Weather & sea*, *Wildlife*, *Workshops*, *Band*; Town band: *Band*) sit in the popover and SET; any slider at 0 is silent.
+- **A lost feed** silences the workshops and the held note while the wind and sea continue; stale agents make no sound.
+- **A blurred window** (ClaudeVille visible, another app focused) follows SET *In the background*: *Keep playing* (default) drops the Village to a quiet mix (music out, world and work at half) and the Town band 3 dB, restored on focus; *Signals only* pauses as a hidden tab does.
+
+A hidden tab pauses in place and suspends the audio context; needs-you, error and limit calls still wake it to ring. Showing the tab again resumes the same piece within about a second (after more than 10 minutes away, or across day and night, the village restarts instead). If it stays `armed` after returning, the browser refused to resume without a new gesture: click the note or press `M`.
+
+For a readout, open the browser console. `window.__claudevilleAudio` exists once the sound controller is built, at most about 4 seconds after page load; before that it is `undefined`.
+
+```js
+const a = window.__claudevilleAudio?.();
+a && { enabled: a.enabled, available: a.available, contextState: a.contextState, running: a.running,
+  soundState: a.soundState, preset: a.preset, mode: a.mode, storedMode: a.storedMode,
+  userActivated: a.userActivated, paused: a.paused, blurred: a.blurred, background: a.background,
+  quietMix: a.quietMix, hushedUntil: a.hushedUntil, quietActive: a.quietActive, volumeStep: a.volumeStep,
+  layerSteps: a.layerSteps, resting: a.resting, link: a.link };
+```
+
+- `contextState` other than `running` with `enabled: true`: the context is waiting for a gesture (`userActivated: false`) or the page is away (`paused: true` while hidden).
+- `mode: 'signals'` while `storedMode` is `ambient` or `bgm`: a hush (`hushedUntil`) or quiet hours (`quietActive`) are in force.
+- `quietMix.active: true`: the blurred-window quiet mix, with its fader factors.
+- `layerSteps` and `volumeStep`: the stored steps (0 is silent). `resting` and `link` come from the Village director and are present while Village or Signals plays.
+- The returned object also carries handles: `a.setPreset('village')`, `a.resumeFromHush()`, `a.testCall('summons')` (the needs-you bell at the current volume, only while sound plays), and `a.meters({ enable: true })` for loudness readings. They go through the same controller as the UI; a browser that has not seen a click on the page may still refuse to start the context.
+
 ## Browser console errors after editing
 
 There is no transpiler, bundler, or app test runner. A typo in any module aborts page startup with a console error pointing at the failing module. Run a server-side syntax check first:

@@ -214,6 +214,16 @@ const CUE_STAGE_GAIN = 0.72;
 // quiet enough that a trim ≥ 0 never pushes it past its lane ceiling over a
 // calm bed, an unlifted one (Minor outcomes, scenery) loud enough for its
 // window floor over a busy bed. A reminder takes its family's voice level.
+// Closure (reel v3): the hour bell sat 7–8 LU over the aurora, so even at
+// the scenery trim floor (−6 dB) it read +8…+10 over a Village bed (window
+// 0…+5); 8 dB down, its trim spans a 3-worker Village (≈ −6) to the busy
+// Town band (≈ −2). The push reached the Medium trim floor on a 3–6-worker
+// Village; 4 dB down, that bed trims it ≈ −3 instead. The aurora (never
+// lifted either) sat at the −6 floor on that bed and read +5.2, over its
+// window; 2 dB down, over the Town band it still reaches its floor. The
+// council, 1.6 LU hotter in context than its registry row said, comes 2 dB
+// down so its corrected trim stays clear of the routine floor on a light
+// Village.
 const VOICE_LEVEL_DB = Object.freeze({
     summons: -10.3,
     distress: -15.0,
@@ -221,17 +231,17 @@ const VOICE_LEVEL_DB = Object.freeze({
     arrival: -8,
     departure: -8,
     recovery: -8,
-    council: -8,
+    council: -10,
     toolFailed: -4,
     pushFailed: -4,
     commit: -4,
-    push: -4,
+    push: -8,
     release: -9,
     turnDone: -1.8,
     subagentReturn: 0.2,
     dispatch: 5.7,
-    hourBell: -3,
-    aurora: -1.5,
+    hourBell: -11,
+    aurora: -3.5,
     linkLost: 3,
     // 7.4: 11.4 dB under its palette balance puts the awakening ≈ 14 LU under
     // the needs-you call at trim 0 (acceptance: ≥ 12 LU under).

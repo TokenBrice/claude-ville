@@ -27,7 +27,7 @@
       "margin": 5.11
     },
     "margin:village:scenery": {
-      "margin": 4.33
+      "margin": 4.19
     },
     "margin:music:needsYou": {
       "margin": 9.73
@@ -42,7 +42,7 @@
       "margin": 4.24
     },
     "margin:music:scenery": {
-      "margin": 4.22
+      "margin": 3.27
     },
     "scene:villageBusy": {
       "lufsI": -35.51,
@@ -64,8 +64,8 @@
       "margin": 3.9
     },
     "scene:townBand": {
-      "lufsI": -31.28,
-      "stMax": -27.61
+      "lufsI": -31.25,
+      "stMax": -27.09
     },
     "margin:storm:needsYou": {
       "margin": 7.61
@@ -116,7 +116,7 @@
       "margin": 0.39
     },
     "margin:rain:outcomeMedium": {
-      "margin": 4.86
+      "margin": 4.29
     },
     "margin:rain:outcomeMajor": {
       "margin": 6.65
@@ -380,6 +380,93 @@
     },
     "work:other:day": {
       "lufsI": -53.49
+    },
+    "margin:village:routine:council": {
+      "margin": 5.6
+    },
+    "margin:village:routine:departure": {
+      "margin": 4.81
+    },
+    "margin:village:scenery:hourBell": {
+      "margin": 2.3
+    },
+    "margin:villageLight:needsYou": {
+      "margin": 10.62
+    },
+    "margin:villageLight:error": {
+      "margin": 9.97
+    },
+    "margin:villageLight:limit": {
+      "margin": 8.06
+    },
+    "margin:villageLight:routine": {
+      "margin": 5.03
+    },
+    "margin:villageLight:routine:council": {
+      "margin": 5.75
+    },
+    "margin:villageLight:routine:departure": {
+      "margin": 4.74
+    },
+    "margin:villageLight:scenery": {
+      "margin": 4.22
+    },
+    "margin:music:routine:council": {
+      "margin": 3.95
+    },
+    "margin:villageLight:scenery:hourBell": {
+      "margin": 2.31
+    },
+    "margin:villageLight:outcomeMinor": {
+      "margin": 0.61
+    },
+    "margin:villageLight:outcomeMedium": {
+      "margin": 5.58
+    },
+    "margin:villageLight:outcomeMajor": {
+      "margin": 6.91
+    },
+    "margin:music:routine:departure": {
+      "margin": 4.07
+    },
+    "margin:bandBusy:needsYou": {
+      "margin": 8.84
+    },
+    "margin:bandBusy:error": {
+      "margin": 6.86
+    },
+    "margin:bandBusy:limit": {
+      "margin": 5.97
+    },
+    "margin:music:scenery:hourBell": {
+      "margin": 2.74
+    },
+    "margin:bandBusyChip:needsYou": {
+      "margin": 8.53
+    },
+    "margin:bandBusyChip:error": {
+      "margin": 7.21
+    },
+    "margin:bandBusyChip:limit": {
+      "margin": 6.51
+    },
+    "margin:rain:routine:council": {
+      "margin": 5.08
+    },
+    "margin:storm:routine:council": {
+      "margin": 5.19
+    },
+    "margin:rain:routine:departure": {
+      "margin": 5.37
+    },
+    "margin:rain:scenery:hourBell": {
+      "margin": 2.25
+    },
+    "margin:storm:routine:departure": {
+      "margin": 5.24
+    },
+    "margin:storm:scenery:hourBell": {
+      "margin": 2.57
     }
   }
 }

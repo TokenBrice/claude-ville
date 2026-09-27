@@ -279,8 +279,13 @@ export class AmbientAudioController {
             if (payload?.agentId != null) this._acks.set(payload.agentId, Date.now());
         };
         eventBus.on('attention:acknowledged', this._onAcknowledged);
-        // Subscribed after the directors, so the entry cue has been placed.
-        this._onAttentionRaised = () => this._openLadderWait();
+        // The wait opens here; its entry call may be placed by a director
+        // subscribed after this one, so the capture runs again once the
+        // event has reached every subscriber.
+        this._onAttentionRaised = () => {
+            this._openLadderWait();
+            queueMicrotask(() => this._captureEntryTrim());
+        };
         eventBus.on('attention:raised', this._onAttentionRaised);
         // D2: SET's Town band voice lands at the band's next chunk.
         this._onTownBandVoice = () => this.directors.bgm?.setVoice?.(readTownBandVoice());
@@ -978,12 +983,26 @@ export class AmbientAudioController {
     // bed swells. Without a heard entry the first reminder's trim is held.
     _openLadderWait() {
         if (this._destroyed || this._ladderWait) return;
+        this._ladderWait = { heldTrimDb: null, openedAt: this.engine.now() };
+        this._captureEntryTrim();
+    }
+
+    // The entry call is taken whenever its director places it: in Village
+    // before this controller hears `attention:raised`, in the Town band
+    // after (BgmDirector subscribes later), so the capture is retried once
+    // the event has reached every subscriber and on the next ladder ticks,
+    // until a trim is held. Only an entry voice scheduled within
+    // ENTRY_TRIM_WINDOW_SEC of the opening counts.
+    _captureEntryTrim() {
+        const wait = this._ladderWait;
+        if (!wait || wait.heldTrimDb != null) return;
         const level = this.cues.kit.lastLevel;
-        const heard = level
+        if (level
             && ENTRY_CUE_KINDS.has(level.kind)
             && Number.isFinite(level.trimDb)
-            && Math.abs(level.at - this.engine.now()) <= ENTRY_TRIM_WINDOW_SEC;
-        this._ladderWait = { heldTrimDb: heard ? level.trimDb : null };
+            && Math.abs(level.at - wait.openedAt) <= ENTRY_TRIM_WINDOW_SEC) {
+            wait.heldTrimDb = level.trimDb;
+        }
     }
 
     _closeLadderWait() {
@@ -1009,6 +1028,7 @@ export class AmbientAudioController {
             return;
         }
         this._openLadderWait();
+        this._captureEntryTrim();
         const present = new Set(agents.map(agent => agent.id));
         for (const agentId of this._acks.keys()) if (!present.has(agentId)) this._acks.delete(agentId);
         this._ladderHistory = this._ladderHistory.filter((entry, index, all) => (

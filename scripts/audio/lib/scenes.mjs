@@ -33,7 +33,9 @@ const LANE_STATUS = { needsYou: 'waiting_on_user', error: 'errored', limit: 'rat
 // A long turn (≥ 20 s, 3.4) ends: the agent is seen working, then idle.
 const LONG_TURN_MS = 25000;
 
-export function laneActions(lane, at, agentIndex) {
+// `voice` (MARGIN_VOICES) picks one of the lane's cue kinds; `atmosphere` is
+// the bed's, which an hour bell's clock step must keep.
+export function laneActions(lane, at, agentIndex, { voice = null, atmosphere = DAY } = {}) {
     const tag = { lane, label: `${lane}#${agentIndex}` };
     if (lane === 'needsYou') {
         return [
@@ -47,8 +49,27 @@ export function laneActions(lane, at, agentIndex) {
             { at: at + 0.01, emit: 'distress:watchtower', payload: { kind: LANE_STATUS[lane] }, agentIndex, ...tag },
         ];
     }
-    if (lane === 'routine') return [{ at, emit: 'village:scene', payload: { kind: 'arrival' }, agentIndex, ...tag }];
-    if (lane === 'scenery') return [{ at, emit: 'chronicle:aurora', payload: {}, ...tag }];
+    if (lane === 'routine') {
+        const v = voice ?? 'arrival';
+        const vtag = { ...tag, voice: v, label: `${lane}:${v}#${agentIndex}` };
+        if (v === 'arrival' || v === 'departure') return [{ at, emit: 'village:scene', payload: { kind: v }, agentIndex, ...vtag }];
+        if (v === 'council') return [{ at, emit: 'team:gather', payload: { teamName: `probe-${agentIndex}`, members: COUNCIL_MEMBERS }, ...vtag }];
+        throw new Error(`unknown routine voice ${v}`);
+    }
+    if (lane === 'scenery') {
+        const v = voice ?? 'aurora';
+        const vtag = { ...tag, voice: v, label: `${lane}:${v}#${agentIndex}` };
+        if (v === 'aurora') return [{ at, emit: 'chronicle:aurora', payload: {}, ...vtag }];
+        // The hour bell rings on the director's own tick when the scene's
+        // clock reaches the hour (D7: the phrase, count off), then moves on.
+        if (v === 'hourBell') {
+            return [
+                { at, atmosphere: { ...atmosphere, hour: CHIME_HOUR }, ...vtag },
+                { at: at + 1.5, atmosphere: { ...atmosphere, hour: CHIME_HOUR + 0.02 }, label: 'clock past the hour' },
+            ];
+        }
+        throw new Error(`unknown scenery voice ${v}`);
+    }
     if (lane === 'outcomeMinor') {
         return [
             { at: at - 1, status: { index: agentIndex, status: 'working' } },
@@ -142,37 +163,101 @@ export const SCENES = {
 // outcome, so each is placed once. The Village bed is S2's "Village bed (no
 // music)": its music is held at 0.
 export const MARGIN_LANES = ['needsYou', 'error', 'limit', 'routine', 'scenery', 'outcomeMinor', 'outcomeMedium', 'outcomeMajor'];
+const URGENT_MARGIN_LANES = ['needsYou', 'error', 'limit'];
+// Every cue kind a lane carries that S2's row names, each judged on its own
+// placements (reel v3: council, departure and the hour bell sat over their
+// windows where the lane's one voice passed). The first is the lane's
+// default voice (the `margin:<bed>:<lane>` render); the others render as
+// `margin:<bed>:<lane>:<voice>`.
+export const MARGIN_VOICES = Object.freeze({
+    routine: Object.freeze(['arrival', 'council', 'departure']),
+    scenery: Object.freeze(['aurora', 'hourBell']),
+});
+export function marginVoices(lane) {
+    return MARGIN_VOICES[lane] ?? [LANE_CUE_KIND[lane]];
+}
+// The beds: `village` is the busy Village (a counted crowd at work, 22 at
+// the full lane grid) and `villageLight` a 3–6-worker Village (4 at work):
+// reel v3 found the lighter bed 1.2 LU quieter, where the push reached its
+// −6 dB trim floor. `bandBusy` / `bandBusyChip` are the Town band over the
+// busy island (every building working, so the arrangement and percussion
+// play; Willowbrook pinned, the reel's piece), in the Isle voice and in
+// Chip, for the urgent lanes; the probe prints the band each placement meets.
 export const MARGIN_BEDS = {
     village: { bed: 'village', mode: 'ambient', atmosphere: DAY, force: { music: 0 } },
+    villageLight: { bed: 'village', mode: 'ambient', atmosphere: DAY, force: { music: 0 }, working: 4 },
     music: { bed: 'music', mode: 'bgm', atmosphere: DAY },
+    bandBusy: { bed: 'music', mode: 'bgm', atmosphere: DAY, busy: true, piece: 'willowbrook', voice: 'isle', lanes: URGENT_MARGIN_LANES },
+    bandBusyChip: { bed: 'music', mode: 'bgm', atmosphere: DAY, busy: true, piece: 'willowbrook', voice: 'chip', lanes: URGENT_MARGIN_LANES },
     rain: { bed: 'weather', mode: 'ambient', atmosphere: RAIN },
     storm: { bed: 'weather', mode: 'ambient', atmosphere: STORM },
 };
+export function marginLanes(bedName) {
+    return MARGIN_BEDS[bedName]?.lanes ?? MARGIN_LANES;
+}
 export const MARGIN_PLACEMENTS = 3;
 const MARGIN_SPACING = 7;
 const PLACEMENTS_BY_LANE = { scenery: 1, outcomeMajor: 1 };
+// Voices whose CueKit cooldown outlasts the lane grid: the council (60 s)
+// keeps its three placements 63 s apart; the hour bell (55 min) renders one
+// placement per scene (`margin:<bed>:scenery:hourBell#<p>`), at its slot.
+const VOICE_SPACING = Object.freeze({ council: 63 });
+export const PER_RENDER_VOICES = Object.freeze(['hourBell']);
+const PLACEMENTS_BY_VOICE = Object.freeze({ aurora: 1, hourBell: MARGIN_PLACEMENTS });
+const COUNCIL_MEMBERS = Object.freeze(['probe-a', 'probe-b', 'probe-c', 'probe-d']);
+const CHIME_HOUR = 13;
 // After a lane's last placement: its onset (≤ 5 s after the marker when
 // the score waits for a beat) and the 2.5 s margin window.
 const MARGIN_TAIL_SEC = 8;
 
-export function marginScene(bedName, lane) {
+// The margin render keys of one lane's voice over one bed.
+export function marginKeys(bedName, lane, voice = marginVoices(lane)[0]) {
+    const base = voice === marginVoices(lane)[0] ? `margin:${bedName}:${lane}` : `margin:${bedName}:${lane}:${voice}`;
+    if (!PER_RENDER_VOICES.includes(voice)) return [base];
+    return Array.from({ length: PLACEMENTS_BY_VOICE[voice] ?? MARGIN_PLACEMENTS }, (_, p) => `${base}#${p}`);
+}
+
+export function marginScene(bedName, lane, voice = null, only = null) {
     const bed = MARGIN_BEDS[bedName];
-    if (!bed || !MARGIN_LANES.includes(lane)) throw new Error(`unknown margin scene ${bedName}:${lane}`);
-    const actions = [];
+    if (!bed || !marginLanes(bedName).includes(lane)) throw new Error(`unknown margin scene ${bedName}:${lane}`);
+    const v = voice ?? marginVoices(lane)[0];
+    if (!marginVoices(lane).includes(v)) throw new Error(`unknown margin voice ${lane}:${v}`);
+    const lanes = marginLanes(bedName);
+    const placements = [];
     let agent = 0;
     let slot = 0;
     for (let p = 0; p < MARGIN_PLACEMENTS; p++) {
-        for (const l of MARGIN_LANES) {
+        for (const l of lanes) {
             if (p >= (PLACEMENTS_BY_LANE[l] ?? MARGIN_PLACEMENTS)) continue;
-            if (l === lane) actions.push(...laneActions(l, 3 + slot * MARGIN_SPACING, agent));
+            if (l === lane) placements.push({ p, at: 3 + slot * MARGIN_SPACING, agent });
             slot++;
             agent++;
         }
     }
+    // A voice keeps its lane's slots (and agents) unless its cooldown or
+    // placement count says otherwise; a per-render voice (the hour bell)
+    // takes the p-th slot of the 7 s grid in its own render.
+    const n = PLACEMENTS_BY_VOICE[v] ?? placements.length;
+    const spots = Array.from({ length: n }, (_, p) => placements[p] ?? { p, at: 3 + p * MARGIN_SPACING * lanes.length, agent: placements[0].agent + p })
+        .map(s => (VOICE_SPACING[v] ? { ...s, at: 3 + s.p * VOICE_SPACING[v] } : s))
+        .map(s => (PER_RENDER_VOICES.includes(v) ? { ...s, at: 3 + s.p * MARGIN_SPACING } : s))
+        .filter(s => only == null || s.p === only);
+    // The busy Town band: the island's tool fixture (every building working)
+    // leads the world; the lane's agents are idle bystanders after it.
+    const lead = bed.busy ? workFixture(TOWN_BUSY, { seconds: Math.max(...spots.map(s => s.at)) + MARGIN_TAIL_SEC, seed: 71 }) : null;
+    const offset = lead ? lead.world.agents.length : 0;
+    const actions = spots.flatMap(s => laneActions(lane, s.at, s.agent + offset, { voice: v, atmosphere: bed.atmosphere }));
     const seconds = Math.max(...actions.map(a => a.at)) + MARGIN_TAIL_SEC;
+    const crowd = agent + 2;
+    const world = lead ? { agents: [...lead.world.agents, ...Array.from({ length: crowd }, () => ({ status: 'idle' }))] }
+        : bed.working != null ? { counts: { working: bed.working, idle: Math.max(0, crowd - bed.working) } }
+            : { counts: { working: crowd } };
     return {
-        mode: bed.mode, world: { counts: { working: agent + 2 } }, atmosphere: bed.atmosphere, force: bed.force,
-        warmup: 10, seconds, actions, stems: ['cue', 'world', 'work', 'music', 'limiterIn', 'limiterOut'],
+        mode: bed.mode, world, atmosphere: bed.atmosphere, force: bed.force,
+        ...(bed.voice ? { storage: { [TOWN_BAND_VOICE_KEY]: bed.voice } } : {}),
+        ...(bed.piece ? { bgm: { piece: bed.piece } } : {}),
+        warmup: 10, seconds, actions: [...(lead?.actions ?? []), ...actions].sort((a, b) => a.at - b.at),
+        stems: ['cue', 'world', 'work', 'music', 'limiterIn', 'limiterOut'],
     };
 }
 
@@ -374,6 +459,10 @@ export const LADDER_TRIM_SCENE = {
     stems: ['cue', 'limiterIn', 'limiterOut'], lint: false,
     actions: openWait('needsYou', LADDER_OPEN_SEC, 0),
 };
+
+// The same wait over the Town band (reel v3: there the ladder held its first
+// reminder's trim, not the entry's). The band's own world: no music force.
+export const LADDER_TRIM_BAND_SCENE = (({ force, ...rest }) => ({ ...rest, mode: 'bgm' }))(LADDER_TRIM_SCENE);
 
 // SIG-10 cluster: one raise vs six same-tick raises over one Village bed,
 // needs-you or errors.

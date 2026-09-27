@@ -418,7 +418,7 @@ function scheduleActions(actions, { world, mark, controller, captions, at, onAcc
                 const { snapshot } = atmosphereFor(action.atmosphere);
                 onAtmosphere?.(snapshot);
                 eventBus.emit('atmosphere:updated', snapshot);
-                mark(action.label || 'atmosphere', { kind: 'action' });
+                mark(action.label || 'atmosphere', { kind: 'action', ...(action.lane ? { lane: action.lane, agentId: null } : {}), ...(action.voice ? { laneVoice: action.voice } : {}) });
                 if (!action.emit && !action.cue) return;
             }
             if (action.accent) {
@@ -435,7 +435,9 @@ function scheduleActions(actions, { world, mark, controller, captions, at, onAcc
                 controller.cues.kit._playAccepted({ ...payload, kind: action.play.kind, lane: laneForCueKind(action.play.kind) }, {});
                 return;
             }
-            runAction(action, { world, mark, controller });
+            // A lane placement names its cue kind (`voice`, lib/scenes.mjs
+            // MARGIN_VOICES) on its markers, for the margin rows.
+            runAction(action, { world, mark: action.voice ? (label, extra = {}) => mark(label, { ...extra, laneVoice: action.voice }) : mark, controller });
         }, Math.max(0, at(action.at) - vc.now));
     }
 }

@@ -21,7 +21,7 @@ ClaudeVille documentation stays current, task-oriented, and close to the code it
 | [`docs/motion-budget.md`](motion-budget.md) | Current | Contract | Defines animation allocation gates, pulse bands, and reduced-motion fallbacks. |
 | [`docs/pixellab-reference.md`](pixellab-reference.md) | Current | Reference | Covers PixelLab capabilities, parameters, lifecycle, and API pitfalls; the generation runbook remains under `scripts/sprites/`. |
 | [`docs/rendering-baselines.md`](rendering-baselines.md) | Current | Reference | Defines deterministic renderer evidence, capture metadata, scenario matrix, and performance comparisons. |
-| [`docs/troubleshooting.md`](troubleshooting.md) | Current | Runbook | Diagnoses first-hour setup, providers, APIs, graphics, and opt-in hook ingestion. |
+| [`docs/troubleshooting.md`](troubleshooting.md) | Current | Runbook | Diagnoses first-hour setup, providers, APIs, graphics, sound, and opt-in hook ingestion. |
 | [`docs/visual-experience-crafting.md`](visual-experience-crafting.md) | Current | Reference | Explains how to adapt ClaudeVille's world-metaphor method to other domains. |
 | [`docs/world-visual-qa-checklist.md`](world-visual-qa-checklist.md) | Current | Checklist | Reviews deterministic World scenes, visual hierarchy, effects, materials, and regressions. |
 
@@ -30,6 +30,7 @@ ClaudeVille documentation stays current, task-oriented, and close to the code it
 | Workflow | Authoritative route |
 | --- | --- |
 | Hook ingestion | [Permission prompts are inferred or arrive late](troubleshooting.md#permission-prompts-are-inferred-or-arrive-late) documents the payload schema and opt-in Claude Code dogfood setup. |
+| Sound | [Sound does not come back](troubleshooting.md#sound-does-not-come-back) diagnoses the sound control; audio changes are gated locally by `npm run audio:probe` ([`scripts/audio/README.md`](../scripts/audio/README.md)), with decisions in [`design-decisions.md`](design-decisions.md). |
 | Screenshot capture | Run `npm run verify:render` for UI screenshot and console evidence. Use `npm run sprites:capture-baseline` or `npm run sprites:capture-fresh`, followed by `npm run sprites:visual-diff`, for sprite comparisons. |
 | Sprite generation | Follow [`scripts/sprites/generate.md`](../scripts/sprites/generate.md); use the PixelLab reference only for tool/API specifics. |
 | Retained proofs and plans | Check [`agents/README.md`](../agents/README.md) before adding or relying on an artifact. |
@@ -51,4 +52,4 @@ ClaudeVille documentation stays current, task-oriented, and close to the code it
 | [`claudeville/adapters/README.md`](../claudeville/adapters/README.md) | Adapter contract and per-provider source formats. |
 | [World mode README](../claudeville/src/presentation/character-mode/README.md) | Renderer pipeline, selection, draw order, and canvas contracts. |
 | [Dashboard mode README](../claudeville/src/presentation/dashboard-mode/README.md) | Card lifecycle, details, and keyboard behavior. |
-| [Shared presentation README](../claudeville/src/presentation/shared/README.md) | Shared chrome, Activity Panel, model identity, selection, and detail cache. |
+| [Shared presentation README](../claudeville/src/presentation/shared/README.md) | Shared chrome, Activity Panel, model identity, selection, detail cache, and the sound system. |

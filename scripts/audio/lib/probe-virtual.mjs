@@ -127,14 +127,15 @@ export function laneMarginRows(r, bed) {
     const gr = limiterGainReduction(r.stems.limiterIn.L, r.stems.limiterIn.R, r.stems.limiterOut.L, r.stems.limiterOut.R, r.sr);
     const rows = [];
     for (const m of r.meta.markers.filter(x => x.lane && LANE_CUE_KIND[x.lane])) {
-        const hit = onsetFor(m, r.meta.scheduled, [LANE_CUE_KIND[m.lane]]);
-        if (!hit) { rows.push({ lane: m.lane, bed, label: m.label, at: m.t, margin: null }); continue; }
+        const voice = m.laneVoice ?? LANE_CUE_KIND[m.lane];
+        const hit = onsetFor(m, r.meta.scheduled, [voice]);
+        if (!hit) { rows.push({ lane: m.lane, voice, bed, label: m.label, at: m.t, margin: null }); continue; }
         const t = hit.onset;
         const mg = marginAt(lou.momentaryCurve, t, MARGIN);
         const bands = cueBandRise(L, R, r.sr, t);
         const sm = stemMargin ? stemMargin(t) : null;
         rows.push({
-            lane: m.lane, bed, label: m.label, at: t,
+            lane: m.lane, voice, bed, label: m.label, at: t,
             margin: m.lane === 'outcomeMinor' && sm != null ? sm : mg.margin, programMargin: mg.margin, stemMargin: sm,
             bedLufs: mg.bed, cueMaxLufs: mg.cueMax,
             bandsOver6dB: bands.bandsOver6dB, bestRiseDb: bands.bestRiseDb,
@@ -209,8 +210,9 @@ export async function renderLimiterUnit(browser, baseUrl, { seed, noWorklets }) 
 
 export function sceneSpec(name) {
     if (SCENES[name]) return SCENES[name];
-    const m = /^margin:(\w+):(\w+)$/.exec(name);
-    if (m) return marginScene(m[1], m[2]);
+    // margin:<bed>:<lane>[:<voice>][#<placement>] (lib/scenes.mjs marginKeys)
+    const m = /^margin:(\w+):(\w+)(?::(\w+))?(?:#(\d+))?$/.exec(name);
+    if (m) return marginScene(m[1], m[2], m[3] ?? null, m[4] != null ? Number(m[4]) : null);
     throw new Error(`unknown scene ${name}`);
 }
 

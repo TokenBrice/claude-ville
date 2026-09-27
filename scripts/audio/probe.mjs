@@ -109,8 +109,8 @@ import { writeWavFloat } from './lib/analyze.mjs';
 import { BACKGROUND_ARGS, DEFAULT_SEED, HARNESS_CHROME_ARGS } from './lib/capture.mjs';
 import { fmt, signed } from './lib/format.mjs';
 import {
-    BASELINE_TOLERANCE, CROWN_SYNC_MS, CUE_STRATUM, HELD_NOTE, ISLAND_AIR, LADDER, MUST_NEVER_7_LU, NOISE_LIMITS, PLAN_STAGE, SEA_LIMITS, THUNDER_LIMITS, URGENT_LANES, WORLD_STEM_MAX_ABS, bakeLandingDiffs,
-    beatingDepthDb, compareBaseline, expectedLadder, groanViolations, heldNoteRise, judgeAirT60, judgeBank, judgeCaptionParity, judgeCluster, judgeDiscrimination,
+    BASELINE_TOLERANCE, BUSY_BAND_ERROR_BAND_RULE, CROWN_SYNC_MS, CUE_STRATUM, HELD_NOTE, ISLAND_AIR, LADDER, MUST_NEVER_7_LU, NOISE_LIMITS, PLAN_STAGE, SEA_LIMITS, THUNDER_LIMITS, URGENT_LANES, WORLD_STEM_MAX_ABS, bakeLandingDiffs,
+    beatingDepthDb, compareBaseline, energyMeanLufs, expectedLadder, groanViolations, heldNoteRise, judgeAirT60, judgeBank, judgeCaptionParity, judgeCluster, judgeDiscrimination,
     judgeDuckedTime, judgeHeldTrim, judgeLadder, judgeLane, judgeOnsetBudget, judgeSceneTargets, judgeThunder, judgeTransport, judgeWakes,
     judgeWorldMap, judgeWorldStem, median, nightWeatherOverDay, noiseLaneConflicts, onsetNear, presenceUnderNoon, waitAudibleWindows, withinRange, worldStemDiffers,
     WORK_BANDS_DAY, WORK_BANDS_NIGHT, WORK_LIMITS, downbeatSync, judgeCameraPan, judgeFocus, judgeHeard, judgeQuietMix, judgeQuotaSweep, judgeWorkLevel, longestGap,
@@ -120,9 +120,9 @@ import {
     WAVE7_LIMITS,
 } from './lib/checks.mjs';
 import {
-    AIR_CUE_SCENE, CAPTION_SETTINGS, DASHBOARD_SCENE, GALLERY_VOICES, HELD_ANSWER_SEC, HELD_OPEN_SEC, LADDER_OPEN_SEC, LADDER_SECONDS, LADDER_TRIM_SCENE,
-    LONG_WAIT_SCENE, LONG_WAIT_SECONDS, MARGIN_BEDS, MARGIN_LANES, OUTCOME_SCENE, STALE_SCENE, TEXTURE_SCENES, TRANSPORT_SCENE,
-    VILLAGE_DRY_SCENE, WAKE_SCENE, captionScene, clusterScene, galleryScene, heldNoteScene, hiddenScene, ladderSilentScene,
+    AIR_CUE_SCENE, CAPTION_SETTINGS, DASHBOARD_SCENE, GALLERY_VOICES, HELD_ANSWER_SEC, HELD_OPEN_SEC, LADDER_OPEN_SEC, LADDER_SECONDS, LADDER_TRIM_BAND_SCENE,
+    LADDER_TRIM_SCENE, LONG_WAIT_SCENE, LONG_WAIT_SECONDS, MARGIN_BEDS, OUTCOME_SCENE, STALE_SCENE, TEXTURE_SCENES, TRANSPORT_SCENE,
+    VILLAGE_DRY_SCENE, WAKE_SCENE, captionScene, clusterScene, galleryScene, heldNoteScene, hiddenScene, ladderSilentScene, marginKeys, marginLanes, marginVoices,
     CREST_BEDS, CREST_WINDOW, MAP_LOADS, MAP_PHASES, MAP_SECONDS, MAP_WEATHERS, MASKING_SCENE, NIGHT_BED_NO_SEA, SEA_NIGHT_SCENE, SEA_RARE_SCENE,
     SILENT_ISLAND_SCENE, THUNDER_INTENSITIES, THUNDER_SCENE, WORLD_STEM_FIXTURES, WORLD_STEM_SECONDS, crestCalibration, crestPlaced, crestScene,
     worldMapCells, worldStemScene,
@@ -306,57 +306,83 @@ function virtualUnits(render, browser, baseUrl) {
     // under a placement depends on the cues before it; lib/scenes.mjs
     // marginScene), reduced to its rows and, for urgent lanes, the cue's true
     // peak at the output; shared by margins, masking, worklevel and townband.
+    // A lane's other voices (MARGIN_VOICES: council, departure, the hour
+    // bell) render apart; the hour bell one placement per render (its 55-min
+    // cooldown).
     const laneMemo = new Map();
-    const marginLane = (bedName, lane) => {
-        const key = `margin:${bedName}:${lane}`;
+    const bandBefore = (r, rows) => rows.filter(x => Number.isFinite(x.at)).map((x) => {
+        const m = r.stems.music;
+        const lou = loudness(m.L.subarray(Math.round((x.at - 3) * r.sr), Math.round(x.at * r.sr)), m.R.subarray(Math.round((x.at - 3) * r.sr), Math.round(x.at * r.sr)), r.sr);
+        return energyMeanLufs(lou.momentaryCurve.map(([, v]) => v)) + outputGainDb(r);
+    });
+    const marginRender = (bedName, lane, key) => {
         if (!laneMemo.has(key)) {
             laneMemo.set(key, renderOnce(key, sceneSpec(key)).then(r => ({
                 rows: marginRows(r, bedName), errors: r.errors,
                 urgentTp: URGENT_LANES.includes(lane) ? urgentTpRows(r, [lane])[0] : null,
+                // The band each placement meets: the music stem's energy mean
+                // over the 3 s before its onset, at the output.
+                bandLufs: MARGIN_BEDS[bedName].bed === 'music' && r.stems.music ? bandBefore(r, marginRows(r, bedName)) : [],
             })));
         }
         return laneMemo.get(key);
     };
-    const marginBed = async (bedName, lanes = MARGIN_LANES) => {
+    const marginLane = async (bedName, lane, voice = marginVoices(lane)[0]) => {
+        const parts = [];
+        for (const key of marginKeys(bedName, lane, voice)) parts.push(await marginRender(bedName, lane, key));
+        return { rows: parts.flatMap(x => x.rows), errors: parts.flatMap(x => x.errors), urgentTp: parts[0].urgentTp, bandLufs: parts.flatMap(x => x.bandLufs).filter(Number.isFinite) };
+    };
+    // Each lane's default voice (the rows the other checks share).
+    const marginBed = async (bedName, lanes = marginLanes(bedName)) => {
         const each = [];
         for (const lane of lanes) each.push(await marginLane(bedName, lane));
-        return { rows: each.flatMap(x => x.rows), errors: each.flatMap(x => x.errors), urgentTp: each.map(x => x.urgentTp).filter(Boolean) };
+        return { rows: each.flatMap(x => x.rows), errors: each.flatMap(x => x.errors), urgentTp: each.map(x => x.urgentTp).filter(Boolean), bandLufs: each.flatMap(x => x.bandLufs) };
     };
     if (has('margins') || has('baseline')) {
         for (const bedName of Object.keys(MARGIN_BEDS)) {
             units.push({
                 name: `margins over ${bedName}`,
                 async run() {
-                    const { rows, errors } = await marginBed(bedName);
-                    for (const lane of MARGIN_LANES) {
-                        const placements = rows.filter(x => x.lane === lane);
-                        const j = judgeLane(lane, MARGIN_BEDS[bedName].bed, placements, { probeBed: bedName });
-                        summary[`margin:${bedName}:${lane}`] = { margin: j.margin };
-                        if (!has('margins')) continue;
-                        const win = `${j.window.min != null ? `≥ ${signed(j.window.min, 0)}` : ''}${j.window.min != null && j.window.max != null ? ', ' : ''}${j.window.max != null ? `≤ ${signed(j.window.max, 0)}` : ''}`;
-                        const each = placements.map(p => signed(p.margin)).join(' / ');
-                        const trims = placements.map(p => signed(p.trimDb)).join(' / ');
-                        const extra = j.gr != null ? `; ${MARGIN_BEDS[bedName].bed === 'music' ? `presence rise ${fmt(j.band)} dB` : `${fmt(j.band, 0)} bands ≥ +6 dB`}, GR ${fmt(j.gr)} dB` : '';
-                        const why = j.failures.map(f => (f.gatedFrom > PLAN_STAGE ? `${f.what} (Wave ${f.gatedFrom})` : f.what)).join(', ');
-                        outcome('margins', j.outcome, `${lane} over ${bedName}: median ${signed(j.margin)} LU (${each}; cue trims ${trims} dB, ${j.n} admitted), want ${win}${extra}${why ? ` — ${why}` : ''}`, Math.max(...j.failures.map(f => f.gatedFrom), 0));
+                    const lanes = marginLanes(bedName);
+                    const ctx = MARGIN_BEDS[bedName].bed;
+                    const { rows, errors, bandLufs } = await marginBed(bedName);
+                    for (const lane of lanes) {
+                        const voices = marginVoices(lane);
+                        for (const voice of voices) {
+                            const own = voice === voices[0];
+                            const placements = own ? rows.filter(x => x.lane === lane) : (await marginLane(bedName, lane, voice)).rows;
+                            // S2 at closure: the error over a busy Town band clears ≥ +5 dB of presence.
+                            const bandRule = MARGIN_BEDS[bedName].busy && lane === 'error' ? BUSY_BAND_ERROR_BAND_RULE : undefined;
+                            const j = judgeLane(lane, ctx, placements, { probeBed: bedName, ...(bandRule ? { bandRule } : {}) });
+                            summary[own ? `margin:${bedName}:${lane}` : `margin:${bedName}:${lane}:${voice}`] = { margin: j.margin };
+                            if (!has('margins')) continue;
+                            const win = `${j.window.min != null ? `≥ ${signed(j.window.min, 0)}` : ''}${j.window.min != null && j.window.max != null ? ', ' : ''}${j.window.max != null ? `≤ ${signed(j.window.max, 0)}` : ''}`;
+                            const each = placements.map(p => signed(p.margin)).join(' / ');
+                            const trims = placements.map(p => signed(p.trimDb)).join(' / ');
+                            const extra = j.gr != null ? `; ${ctx === 'music' ? `presence rise ${fmt(j.band)} dB (≥ ${(bandRule ?? AUDIBILITY_WINDOWS.urgentBandRule).overMusic.minRiseDb})` : `${fmt(j.band, 0)} bands ≥ +6 dB`}, GR ${fmt(j.gr)} dB` : '';
+                            const why = j.failures.map(f => (f.gatedFrom > PLAN_STAGE ? `${f.what} (Wave ${f.gatedFrom})` : f.what)).join(', ');
+                            const name = voices.length > 1 ? `${lane} (${voice})` : lane;
+                            outcome('margins', j.outcome, `${name} over ${bedName}: median ${signed(j.margin)} LU (${each}; cue trims ${trims} dB, ${j.n} admitted), want ${win}${extra}${why ? ` — ${why}` : ''}`, Math.max(...j.failures.map(f => f.gatedFrom), 0));
+                        }
                     }
                     // S2: a Minor outcome also sits ≥ 3 LU under the routine cue,
                     // both as the cue's own level over the bed stems.
-                    if (has('margins')) {
+                    if (has('margins') && lanes.includes('outcomeMinor') && lanes.includes('routine')) {
                         const stemMedian = lane => median(rows.filter(x => x.lane === lane).map(x => x.stemMargin));
                         const minor = stemMedian('outcomeMinor');
                         const routine = stemMedian('routine');
                         const under = minor != null && routine != null ? routine - minor : null;
                         verdict('margins', under != null && under >= 3, `outcome Minor under routine over ${bedName} (cue stem over the bed stems): ${fmt(under)} LU (turn done ${signed(minor)} vs arrival ${signed(routine)}); want ≥ 3`);
                         // Would the stem measure flip any other lane's verdict?
-                        const flips = MARGIN_LANES.filter(l => l !== 'outcomeMinor').map((lane) => {
+                        const flips = lanes.filter(l => l !== 'outcomeMinor').map((lane) => {
                             const placements = rows.filter(x => x.lane === lane);
-                            const a = judgeLane(lane, MARGIN_BEDS[bedName].bed, placements, { probeBed: bedName }).outcome;
-                            const b = judgeLane(lane, MARGIN_BEDS[bedName].bed, placements.map(p => ({ ...p, margin: p.stemMargin })), { probeBed: bedName }).outcome;
+                            const a = judgeLane(lane, ctx, placements, { probeBed: bedName }).outcome;
+                            const b = judgeLane(lane, ctx, placements.map(p => ({ ...p, margin: p.stemMargin })), { probeBed: bedName }).outcome;
                             return a !== b ? `${lane} ${a}→${b} (${signed(median(placements.map(p => p.margin)))} → ${signed(median(placements.map(p => p.stemMargin)))} LU)` : null;
                         }).filter(Boolean);
-                        info('margins', `${bedName}: the cue-stem-over-bed-stems margin for every lane (judged for Minor outcomes only): ${MARGIN_LANES.map(l => `${l} ${signed(stemMedian(l))}`).join(', ')}; verdicts it would flip: ${flips.join('; ') || 'none'}`);
+                        info('margins', `${bedName}: the cue-stem-over-bed-stems margin for every lane (judged for Minor outcomes only): ${lanes.map(l => `${l} ${signed(stemMedian(l))}`).join(', ')}; verdicts it would flip: ${flips.join('; ') || 'none'}`);
                     }
+                    if (has('margins') && bandLufs.length) info('margins', `${bedName}: the band each placement meets (music stem, 3 s before the onset, at the output) ${fmt(Math.min(...bandLufs))}…${fmt(Math.max(...bandLufs))} LUFS, median ${fmt(median(bandLufs))} (${bandLufs.length} placements)`);
                     if (errors.length) info('margins', `${bedName}: page errors: ${errors.slice(0, 3).join(' | ')}`);
                 },
             });
@@ -665,6 +691,24 @@ function wave3Units(render, browser, baseUrl) {
                 const calls = ladderTrimRows(r);
                 const j = judgeHeldTrim(calls);
                 verdict('ladder', j.pass, `Village, sound on: ${calls.map(c => `L${c.level} ${signed(c.margin)} LU (trim ${signed(c.trimDb)} dB, GR ${fmt(c.grDb)} dB)`).join(', ') || 'no calls'}; L2 ${fmt(j.l2UnderL1Lu)} LU under L1, trims spread ${fmt(j.trimSpreadDb, 2)} dB${j.failures.length ? ` — ${j.failures.join(', ')}` : ''}; want L2 ≥ 4 LU under L1, one trim held, L3 GR ≤ ${LOUDNESS_TARGETS.ceiling.urgentGrMaxDb} dB`);
+            },
+        });
+        units.push({
+            name: 'ladder (sound on, held trim, Town band)',
+            async run() {
+                // Over music a quiet reminder's program margin reads the band
+                // itself (reel v3: equal trims read L1 − L2 +2.7 LU), so the
+                // band's L2-under-L1 is the calls' own levels: the cue stem's
+                // M max, the same staging for both.
+                const r = await render('ladder:trim:band', LADDER_TRIM_BAND_SCENE);
+                const calls = ladderTrimRows(r);
+                const j = judgeHeldTrim(calls.map(c => ({ ...c, margin: c.cueMaxLufs })));
+                const programGap = (() => {
+                    const l1 = calls.find(c => c.level === 1);
+                    const l2 = calls.find(c => c.level === 2);
+                    return l1 && l2 ? l1.margin - l2.margin : null;
+                })();
+                verdict('ladder', j.pass, `Town band, sound on: ${calls.map(c => `L${c.level} ${fmt(c.cueMaxLufs)} LUFS M max (margin ${signed(c.margin)} LU, trim ${signed(c.trimDb)} dB, GR ${fmt(c.grDb)} dB)`).join(', ') || 'no calls'}; L2 ${fmt(j.l2UnderL1Lu)} LU under L1 on the cue stem (program margins ${fmt(programGap)} LU apart), trims spread ${fmt(j.trimSpreadDb, 2)} dB${j.failures.length ? ` — ${j.failures.join(', ')}` : ''}; want L2 ≥ 4 LU under L1, one trim held (the entry's), L3 GR ≤ ${LOUDNESS_TARGETS.ceiling.urgentGrMaxDb} dB`);
             },
         });
         units.push({
