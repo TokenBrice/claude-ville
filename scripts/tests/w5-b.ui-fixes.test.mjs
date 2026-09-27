@@ -257,8 +257,8 @@ test('the SOUND popover opens on the checked preset, closes the Spend Map, and r
         const topbar = {
             _destroyed: false,
             els: { soundMenu: chevron },
-            _soundEls: { panel, radios: { off: radio('off'), village: radio('village') } },
-            _soundView: { preset: 'village' },
+            _soundEls: { panel, radios: { off: radio('off'), townBand: radio('townBand') } },
+            _soundView: { preset: 'townBand' },
             _renderSoundPanel() {},
             _hideSpendPanel: () => { spendClosed++; },
             _soundPanelOpen: TopBar.prototype._soundPanelOpen,
@@ -267,7 +267,7 @@ test('the SOUND popover opens on the checked preset, closes the Spend Map, and r
         assert.equal(panel.hidden, false);
         assert.equal(spendClosed, 1, 'never shares the screen with the Spend Map');
         assert.equal(attributes.get('aria-expanded'), 'true');
-        assert.equal(focused, 'village', 'focus lands on the checked radio');
+        assert.equal(focused, 'townBand', 'focus lands on the checked radio');
         // Right-anchored under the chevron.
         assert.equal(panel.style.left, `${900 - 308}px`);
 

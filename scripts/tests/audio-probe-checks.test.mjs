@@ -2,47 +2,44 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    avSync, duckedTime, frameCostDelta, judgeAirT60, judgeBank, judgeLane, judgeSceneTargets,
-    judgeTransport, laneWindow, limiterGainReduction, maxGrIn, noiseLaneConflicts, onsetNear, resumeBurst,
-    stageOutcome, switchHoleBump,
+    avSync, duckedTime, frameCostDelta, judgeAirT60, judgeBank, judgeLane, judgeQuietMix, judgeSceneTargets,
+    judgeTransport, laneWindow, limiterGainReduction, maxGrIn, onsetNear, quietStemRow, resumeBurst,
+    stageOutcome, presetSwitch,
 } from '../audio/lib/checks.mjs';
 
 const SR = 48000;
 
-test('ducked time unions overlapping windows per bus and counts only buses that dip', () => {
+test('ducked time unions overlapping windows on the music bus and ignores ducks that leave it', () => {
     const ducks = [
-        { from: 10, until: 11, attack: 0, release: 0, depths: { world: -2, work: -3, music: 0 } },
-        { from: 10.5, until: 12, attack: 0, release: 0, depths: { world: -7, work: -6, music: -9 } },
+        { from: 10, until: 11, attack: 0, release: 0, depths: { music: 0 } },
+        { from: 10.5, until: 12, attack: 0, release: 0, depths: { music: -9 } },
+        { from: 11, until: 13, attack: 0, release: 0, depths: { music: -2 } },
     ];
-    const f = duckedTime(ducks, 0, 100);
-    assert.equal(f.world, 0.02);
-    assert.equal(f.work, 0.02);
-    assert.equal(f.music, 0.015);
+    assert.deepEqual(duckedTime(ducks, 0, 100), { music: 0.025 });
 });
 
 test('a duck cancelled before it opens adds no ducked time; one cancelled midway stops there', () => {
     const f = duckedTime([
-        { from: 5, until: 6, attack: 0.04, release: 0.6, depths: { world: -2 }, cancelledAt: 4 },
-        { from: 20, until: 30, attack: 0, release: 0, depths: { world: -2 }, cancelledAt: 22 },
-    ], 0, 100, { buses: ['world'] });
-    assert.equal(f.world, 0.02);
+        { from: 5, until: 6, attack: 0.04, release: 0.6, depths: { music: -2 }, cancelledAt: 4 },
+        { from: 20, until: 30, attack: 0, release: 0, depths: { music: -2 }, cancelledAt: 22 },
+    ], 0, 100);
+    assert.equal(f.music, 0.02);
 });
 
 test('ducked time includes the attack before the note and the release after the window, clipped to the scene', () => {
-    const f = duckedTime([{ from: 0.02, until: 1, depths: { world: -2 } }], 0, 10, { buses: ['world'] });
+    const f = duckedTime([{ from: 0.02, until: 1, depths: { music: -2 } }], 0, 10);
     // Attack (0.04 s) is clipped at the scene start; release defaults to 0.6 s.
-    assert.ok(Math.abs(f.world - 0.16) < 1e-9);
+    assert.ok(Math.abs(f.music - 0.16) < 1e-9);
 });
 
 test('every lane is held to its full S2 window per bed', () => {
     assert.deepEqual(laneWindow('needsYou', 'village'), { min: 10, max: 12 });
     assert.deepEqual(laneWindow('needsYou', 'music'), { min: 8, max: 12 });
     assert.deepEqual(laneWindow('error', 'music'), { min: 6, max: 12 });
-    assert.deepEqual(laneWindow('error', 'weather'), { min: 6, max: 12 });
-    assert.deepEqual(laneWindow('limit', 'weather'), { min: 4, max: 10 });
+    assert.deepEqual(laneWindow('limit', 'village'), { min: 6, max: 10 });
     assert.deepEqual(laneWindow('routine', 'music'), { min: 3, max: 6 });
     assert.deepEqual(laneWindow('outcomeMinor', 'village'), { min: 0, max: 3 });
-    assert.deepEqual(laneWindow('outcomeMajor', 'weather'), { min: 4, max: 8 });
+    assert.deepEqual(laneWindow('outcomeMajor', 'music'), { min: 4, max: 8 });
 });
 
 test('a lane is judged on the median placement, and an urgent lane also on the band rule and GR', () => {
@@ -63,6 +60,15 @@ test('a lane is judged on the median placement, and an urgent lane also on the b
     assert.equal(judgeLane('scenery', 'village', [{ margin: null }]).pass, false);
 });
 
+test('over the Signals silence a lane keeps its floor and GR limit but not its ceiling', () => {
+    const call = { bandsOver6dB: 5, grDb: 1 };
+    // A call over silence reads its level over the −80 LUFS floor: far past +12.
+    assert.equal(judgeLane('needsYou', 'village', [{ ...call, margin: 40 }]).pass, false);
+    assert.equal(judgeLane('needsYou', 'village', [{ ...call, margin: 40 }], { ceilingExempt: true }).pass, true);
+    assert.equal(judgeLane('needsYou', 'village', [{ ...call, margin: 40, grDb: 3.5 }], { ceilingExempt: true }).pass, false);
+    assert.equal(judgeLane('needsYou', 'village', [{ ...call, margin: 9 }], { ceilingExempt: true }).pass, false);
+});
+
 test('a criterion owned by a later wave defers at an earlier stage and gates once the stage reaches it', () => {
     assert.equal(stageOutcome([]), 'PASS');
     assert.equal(stageOutcome([{ what: 'band', gatedFrom: 3 }], 1), 'DEFER');
@@ -75,75 +81,43 @@ test('a criterion owned by a later wave defers at an earlier stage and gates onc
     assert.deepEqual(limit.failures.map(f => f.what), ['margin > 10', 'presence rise < 6 dB']);
     // A `margin:<bed>:<lane>` row defers every criterion of that lane on
     // that bed until its wave, and only on that bed.
-    const gated = { 'margin:storm:error': 5 };
-    const stormError = [{ margin: 5.7, bandsOver6dB: 3, grDb: 3.4 }];
-    const storm = judgeLane('error', 'weather', stormError, { probeBed: 'storm', stage: 4, gated });
-    assert.equal(storm.outcome, 'DEFER');
-    assert.deepEqual(storm.failures.map(f => f.gatedFrom), [5, 5]);
-    assert.equal(judgeLane('error', 'weather', stormError, { probeBed: 'storm', stage: 5, gated }).outcome, 'FAIL');
-    assert.equal(judgeLane('error', 'weather', stormError, { probeBed: 'rain', stage: 4, gated }).outcome, 'FAIL');
-    // From Wave 4 the storm's error row and the busy village gate.
-    assert.equal(judgeLane('error', 'weather', stormError, { probeBed: 'storm' }).outcome, 'FAIL');
-    const busy = judgeSceneTargets({ anchor: { lufsI: -38 }, villageBusy: { lufsI: -31, lra: 4 } });
-    assert.deepEqual(busy.map(r => [r.scene, r.outcome]), [['anchor', 'PASS'], ['villageBusy', 'FAIL']]);
+    const gated = { 'margin:bandBusy:error': 8 };
+    const busyError = [{ margin: 5.7, presenceRiseDb: 7, grDb: 3.4 }];
+    const busy = judgeLane('error', 'music', busyError, { probeBed: 'bandBusy', stage: 7, gated });
+    assert.equal(busy.outcome, 'DEFER');
+    assert.deepEqual(busy.failures.map(f => f.gatedFrom), [8, 8]);
+    assert.equal(judgeLane('error', 'music', busyError, { probeBed: 'bandBusy', stage: 8, gated }).outcome, 'FAIL');
+    assert.equal(judgeLane('error', 'music', busyError, { probeBed: 'music', stage: 7, gated }).outcome, 'FAIL');
 });
 
-test('the night program row (music included) holds the night under the session and darker than noon', () => {
-    const scenes = { anchor: { lufsI: -38 }, nightProgram: { lufsI: -33, presenceDb: -60 }, noonProgram: { lufsI: -34, presenceDb: -58 } };
-    const [, night] = judgeSceneTargets(scenes);
-    assert.equal(night.scene, 'nightProgram');
-    assert.equal(night.outcome, 'FAIL');
-    // ≤ A + 4 (the session) and 4 dB darker than noon passes; either alone fails.
-    assert.equal(judgeSceneTargets({ ...scenes, nightProgram: { lufsI: -34.5, presenceDb: -63 } })[1].outcome, 'PASS');
-    assert.equal(judgeSceneTargets({ ...scenes, nightProgram: { lufsI: -34.5, presenceDb: -61 } })[1].outcome, 'FAIL');
-    assert.equal(judgeSceneTargets({ ...scenes, nightProgram: { lufsI: -33.5, presenceDb: -63 } })[1].outcome, 'FAIL');
-});
-
-test('scene targets are relative to the anchor measured in the same run', () => {
-    const rows = judgeSceneTargets({
-        anchor: { lufsI: -38.4 },
-        villageBusy: { lufsI: -33.9, lra: 6 },
-        rain: { lufsI: -33.3 },
-        storm: { lufsI: -33.0, stMax: -28 },
-        resting: { stMean: -48, stMin: -56 },
-    });
-    const by = Object.fromEntries(rows.map(r => [r.scene, r.pass]));
-    assert.deepEqual(by, { anchor: true, villageBusy: true, rain: false, storm: true, resting: false });
-});
-
-test('a scene over its Loudness.js target fails, or defers while its row is gated later', () => {
-    const anchor = { lufsI: -38 };
-    // Rain at A + 5.7 is over S2's A + 5.
-    const rain = judgeSceneTargets({ anchor, rain: { lufsI: -32.3 } });
-    assert.equal(rain[1].outcome, 'FAIL');
-    // Storm at A + 7.8 is over S2's A + 6.
-    const storm = { lufsI: -30.2, stMax: -27.5 };
-    assert.equal(judgeSceneTargets({ anchor, storm })[1].outcome, 'FAIL');
-    assert.equal(judgeSceneTargets({ anchor, storm }, undefined, { stage: 4, gated: { 'scene:storm': 5 } })[1].outcome, 'DEFER');
-    // Its short-term ceiling fails on its own.
-    assert.equal(judgeSceneTargets({ anchor, storm: { lufsI: -33, stMax: -26.5 } })[1].outcome, 'FAIL');
-    assert.equal(judgeSceneTargets({ anchor, storm: { lufsI: -33, stMax: -27.5 } })[1].outcome, 'PASS');
+test('the Town band scene holds S2 LUFS-I and its band stem short-term ceiling, or defers while gated later', () => {
+    assert.equal(judgeSceneTargets({ townBand: { lufsI: -31.4, bandStemStMax: -29 } })[0].outcome, 'PASS');
+    assert.equal(judgeSceneTargets({ townBand: { lufsI: -29.8, bandStemStMax: -29 } })[0].outcome, 'FAIL');
+    assert.equal(judgeSceneTargets({ townBand: { lufsI: -31, bandStemStMax: -27.5 } })[0].outcome, 'FAIL');
+    const late = judgeSceneTargets({ townBand: { lufsI: -29.8 } }, undefined, { stage: 7, gated: { 'scene:townBand': 8 } });
+    assert.equal(late[0].outcome, 'DEFER');
+    assert.deepEqual(judgeSceneTargets({}), []);
 });
 
 const TICK = { site: 'Transport.js:88', fired: 2400, p95Ms: 0.2, maxMs: 1.1, starts: 900 };
 
 test('the transport passes only when its own timer is the one that placed sound', () => {
-    const diag = { underruns: 0, processes: [{ name: 'music', maxAheadSec: 1.5 }, { name: 'birds', maxAheadSec: 1.2 }] };
+    const diag = { underruns: 0, processes: [{ name: 'music', maxAheadSec: 1.5 }] };
     const harness = { site: 'harness', fired: 40, starts: 30 };
     assert.equal(judgeTransport(diag, [TICK, harness]).pass, true);
-    const layerTimer = { site: 'layers/BaseLayer.js:55', fired: 300, p95Ms: 0.1, maxMs: 0.3, starts: 12 };
-    const two = judgeTransport(diag, [TICK, layerTimer]);
+    const otherTimer = { site: 'music/Sequencer.js:55', fired: 300, p95Ms: 0.1, maxMs: 0.3, starts: 12 };
+    const two = judgeTransport(diag, [TICK, otherTimer]);
     assert.equal(two.pass, false);
-    assert.deepEqual(two.soundSites.map(s => s.site), ['Transport.js:88', 'layers/BaseLayer.js:55']);
+    assert.deepEqual(two.soundSites.map(s => s.site), ['Transport.js:88', 'music/Sequencer.js:55']);
     // A lone sound-placing timer that is not the Transport fails too.
-    assert.equal(judgeTransport(diag, [{ ...TICK, starts: 0 }, layerTimer]).pass, false);
+    assert.equal(judgeTransport(diag, [{ ...TICK, starts: 0 }, otherTimer]).pass, false);
 });
 
-test('the transport holds each process to its horizon, work to 350 ms, and counts underruns and tick cost', () => {
+test('the transport holds each process to its horizon and counts underruns and tick cost', () => {
     const ok = { underruns: 0, processes: [{ name: 'music', maxAheadSec: 1.4 }] };
+    assert.equal(judgeTransport(ok, [TICK]).pass, true);
     assert.equal(judgeTransport({ ...ok, underruns: 1 }, [TICK]).pass, false);
-    assert.equal(judgeTransport({ underruns: 0, processes: [{ name: 'workshop', maxAheadSec: 0.5 }] }, [TICK]).pass, false);
-    assert.equal(judgeTransport({ underruns: 0, processes: [{ name: 'wind', maxAheadSec: 1.6 }] }, [TICK]).pass, false);
+    assert.equal(judgeTransport({ underruns: 0, processes: [{ name: 'music', maxAheadSec: 1.6 }] }, [TICK]).pass, false);
     assert.equal(judgeTransport(ok, [{ ...TICK, p95Ms: 0.7 }]).pass, false);
     assert.equal(judgeTransport(ok, [{ ...TICK, maxMs: 2.5 }]).pass, false);
     assert.equal(judgeTransport(null, [TICK]).pass, false);
@@ -163,22 +137,6 @@ test('resume after a hidden stretch: nothing starts while suspended, no catch-up
     // A start while suspended, and a note placed in the past after resume.
     assert.equal(resumeBurst([...steady, { t: 90, at: 90, suspended: true }], { hideT: 30, resumeT: 150 }).pass, false);
     assert.equal(resumeBurst([...steady, { t: 149.5, at: 150.1, suspended: false }], { hideT: 30, resumeT: 150 }).smeared, 1);
-});
-
-test('noise lanes on one pool buffer conflict when their read heads come within 5 s', () => {
-    const lane = (t, off, extra = {}) => ({ t, e: null, buf: 1, len: 21.3, off, rate: 1, ...extra });
-    // Same rate, offsets 8 s apart: always 8 s apart.
-    assert.equal(noiseLaneConflicts([lane(0, 0), lane(0, 8)], { end: 60 }).conflicts.length, 0);
-    // Started 3 s later at the same offset: 3 s behind for the whole overlap.
-    const late = noiseLaneConflicts([lane(0, 0), lane(3, 0)], { end: 60 });
-    assert.equal(late.conflicts.length, 1);
-    assert.ok(Math.abs(late.conflicts[0].closestSec - 3) < 1e-6);
-    // Distance wraps around the buffer end (0 vs 19 s is 2.3 s apart).
-    assert.equal(noiseLaneConflicts([lane(0, 0), lane(0, 19)], { end: 60 }).conflicts.length, 1);
-    // Lanes that never overlap in time, other buffers and short buffers do not count.
-    assert.equal(noiseLaneConflicts([lane(0, 0, { e: 10 }), lane(11, 0)], { end: 60 }).conflicts.length, 0);
-    assert.equal(noiseLaneConflicts([lane(0, 0), lane(0, 0, { buf: 2 })], { end: 60 }).conflicts.length, 0);
-    assert.equal(noiseLaneConflicts([lane(0, 0, { len: 4 }), lane(0, 0, { len: 4 })], { end: 60 }).lanes, 0);
 });
 
 test('Island Air T60 is judged per phase and needs the 4 kHz tail shorter than 0.8 of 1 kHz', () => {
@@ -226,18 +184,46 @@ test('limiter GR is the input peak over the delayed output peak', () => {
     assert.ok(Math.abs(maxGrIn(gr, 0.55, 0.95) - 6.02) < 0.05);
 });
 
-test('switch hole and bump compare the switch window with both steady states', () => {
-    const curve = [];
-    for (let t = 0.4; t < 30; t += 0.1) {
-        let v = t < 10 ? -40 : -36;
-        if (t >= 10.5 && t < 11.5) v = -46;
-        curve.push([t, v]);
+// A 1 kHz tone at -20 dBFS until `offAt` (a linear fade over `fadeSec`
+// before it), from `onAt` on; its momentary curve is read off the tone.
+function switchProgram({ seconds = 30, onAt = 0, offAt = Infinity, fadeSec = 0.8 }) {
+    const L = new Float32Array(seconds * SR);
+    for (let i = 0; i < L.length; i++) {
+        const t = i / SR;
+        const g = t < onAt ? 0 : (t >= offAt ? 0 : Math.min(1, (offAt - t) / fadeSec));
+        L[i] = 0.1 * g * Math.sin(2 * Math.PI * 1000 * i / SR);
     }
-    const r = switchHoleBump(curve, 10.2);
-    assert.equal(Math.round(r.holeDb), 6);
-    assert.equal(r.bumpDb, 0);
-    const flat = switchHoleBump(curve.map(([t]) => [t, -40]), 10.2);
-    assert.equal(flat.holeDb, 0);
+    const curve = [];
+    for (let t = 0.4; t < seconds; t += 0.1) {
+        const sounding = t - 0.4 >= onAt && t <= offAt - fadeSec;
+        curve.push([t, sounding ? -23 : -Infinity]);
+    }
+    return { L, R: L, sr: SR, curve };
+}
+
+test('a switch into Signals passes a fade to silence and catches a click after the fade', () => {
+    const p = switchProgram({ offAt: 10.8 });
+    const r = presetSwitch(p.curve, p, 10, { fadeSec: 0.8 });
+    assert.equal(r.direction, 'out');
+    assert.ok(r.pass, JSON.stringify(r));
+    assert.equal(r.clickDb, 0);
+    // A 5 ms pop at 11.5 s, after the band has gone.
+    for (let i = Math.round(11.5 * SR); i < Math.round(11.505 * SR); i++) p.L[i] = 0.05;
+    const click = presetSwitch(p.curve, p, 10, { fadeSec: 0.8 });
+    assert.ok(!click.pass && click.clickDb > 6, JSON.stringify(click));
+});
+
+test('a switch into the Town band wants the band heard by the fade\'s end, and a band louder than it settles fails as a bump', () => {
+    const on = switchProgram({ onAt: 10.6 });
+    const r = presetSwitch(on.curve, on, 10, { fadeSec: 0.8 });
+    assert.equal(r.direction, 'in');
+    assert.ok(r.pass && Math.abs(r.entryAfter - 0.6) < 0.011, JSON.stringify(r));
+    const late = switchProgram({ onAt: 11.2 });
+    assert.ok(!presetSwitch(late.curve, late, 10, { fadeSec: 0.8 }).pass);
+    const bump = on.curve.map(([t, v]) => [t, t > 11 && t < 12 ? -17 : v]);
+    assert.ok(!presetSwitch(bump, on, 10, { fadeSec: 0.8 }).pass);
+    // Both sides sounding is not a Town band ↔ Signals switch.
+    assert.equal(presetSwitch(on.curve.map(([t]) => [t, -23]), on, 10, { fadeSec: 0.8 }), null);
 });
 
 test('onsetNear reads a note from silence at its first millisecond and over a ring within its attack', () => {
@@ -266,4 +252,16 @@ test('AV sync reports absolute error statistics and counts unheard notes', () =>
     assert.equal(s.missed, 1);
     assert.ok(Math.abs(s.medianAbsMs - 7) < 1e-6);
     assert.ok(Math.abs(s.p95AbsMs - 10) < 1e-6);
+});
+
+test('the Town band quiet mix is judged on its blur level and on how fast focus restores it', () => {
+    const curve = [];
+    for (let t = 0; t < 30; t += 0.1) curve.push([t, t >= 10 && t < 20.4 ? -3 : 0]);
+    const row = quietStemRow(curve, { blurSec: 10, focusSec: 20 });
+    assert.equal(row.levelDb, -3);
+    assert.ok(Math.abs(row.restoreLagSec - 0.4) < 1e-6);
+    assert.equal(judgeQuietMix({ music: { ...row, want: -3 } }).pass, true);
+    assert.equal(judgeQuietMix({ music: { levelDb: -3, restoreLagSec: 1.4, want: -3 } }).pass, false);
+    assert.equal(judgeQuietMix({ music: { levelDb: -6, restoreLagSec: 0.2, want: -3 } }).pass, false);
+    assert.equal(judgeQuietMix({ music: { levelDb: -3, restoreLagSec: null, want: -3 } }).pass, false);
 });

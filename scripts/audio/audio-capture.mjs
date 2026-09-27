@@ -60,7 +60,7 @@ async function captureRealtime(browser, server, target, opts) {
             meta: {
                 seed, ...cut.gapInfo, hazards, firstFrame: info.firstFrame, timedOut: result.timedOut,
                 loopSeconds: result.loopSeconds, hour: result.hour, atmosphere: result.atmosphere,
-                worldCounts: result.worldCounts,
+                sectionCounts: result.worldCounts,
                 stateLog: result.stateLog.map(s => ({ ...s, t: Number((s.t - start).toFixed(2)) })),
                 finalState: {
                     state: result.finalSnapshot?.state, mode: result.finalSnapshot?.mode,
@@ -97,7 +97,12 @@ async function captureApp(browser, target) {
             atmo?.setHour?.(hour);
             atmo?.setWeather?.(weather);
         }, { hour: target.hour, weather: target.weather });
+        // The real enable (7.1): a fresh profile's first click on the note
+        // opens the SOUND panel's presets; the Town band is picked there.
         await h.page.click('#topbarSoundToggle');
+        await h.page.locator('#soundPanel').waitFor({ state: 'visible', timeout: 10000 });
+        await h.page.click('#soundPresets [role="radio"][data-preset="townBand"]');
+        await h.page.keyboard.press('Escape');
         await h.page.waitForFunction(() => {
             const a = window.__claudevilleAudio?.();
             return a?.contextState === 'running' && a?.running === true;
@@ -108,7 +113,7 @@ async function captureApp(browser, target) {
             const stateLog = [];
             const timer = setInterval(() => {
                 const s = window.__claudevilleAudio?.();
-                if (s) stateLog.push({ t: ctx.currentTime, state: s.state, levels: s.levels, framePressureLevel: s.framePressureLevel, atmosphereSource: s.atmosphereSource, phase: s.phase, nowPlaying: s.nowPlaying, sectionCounts: s.sectionCounts });
+                if (s) stateLog.push({ t: ctx.currentTime, levels: s.levels, framePressureLevel: s.framePressureLevel, atmosphereSource: s.atmosphereSource, phase: s.phase, nowPlaying: s.nowPlaying, section: s.section?.applied });
             }, 1000);
             await sleep(warmup * 1000);
             const start = ctx.currentTime;
@@ -130,9 +135,9 @@ async function captureApp(browser, target) {
                 hazards,
                 stateLog: result.stateLog.map(s => ({ ...s, t: Number((s.t - result.start).toFixed(2)) })),
                 finalState: {
-                    state: result.final?.state, mode: result.final?.mode, levels: result.final?.levels,
+                    mode: result.final?.mode, levels: result.final?.levels,
                     framePressureLevel: result.final?.framePressureLevel, atmosphereSource: result.final?.atmosphereSource,
-                    phase: result.final?.phase, sectionCounts: result.final?.sectionCounts, volumeStep: result.final?.volumeStep,
+                    phase: result.final?.phase, section: result.final?.section, volumeStep: result.final?.volumeStep,
                 },
                 pageErrors: h.errors.slice(0, 20),
             },
@@ -145,8 +150,8 @@ async function captureApp(browser, target) {
 
 // ----------------------------------------------------------- write out ----
 function summarizeTarget(target) {
-    const { name, category, method, mode, isolate, atmosphere, world, music, bgm, actions, cues, volumeStep, warmup, seconds } = target;
-    return { name, category, method, mode, isolate, atmosphere, world, music, bgm, actions, cues, volumeStep: volumeStep ?? STANDARD_VOLUME_STEP, warmup, seconds };
+    const { name, category, method, mode, atmosphere, world, bgm, actions, cues, volumeStep, warmup, seconds } = target;
+    return { name, category, method, mode, atmosphere, world, bgm, actions, cues, volumeStep: volumeStep ?? STANDARD_VOLUME_STEP, warmup, seconds };
 }
 
 function notable(m, target, capture = null) {
@@ -251,7 +256,7 @@ function writeIndex(outRoot) {
         }
     };
     if (fs.existsSync(outRoot)) walk(outRoot);
-    const order = ['cues', 'cues-providers', 'cues-pan', 'layers', 'music-layer', 'bgm', 'mix', 'fidelity', 'adhoc', 'snippets'];
+    const order = ['cues', 'cues-providers', 'cues-pan', 'bgm', 'signals', 'fidelity', 'adhoc', 'snippets'];
     rows.sort((a, b) => (order.indexOf(a.j.category) - order.indexOf(b.j.category)) || a.j.name.localeCompare(b.j.name));
     const lines = [
         '# ClaudeVille listening harness — render index',
@@ -445,7 +450,7 @@ async function main() {
         };
 
         // Realtime: longest first, N pages in parallel.
-        const est = t => (t.warmup ?? 0) + (t.seconds ?? 0) + (t.bgm ? 120 : 0) + (t.music ? 100 : 0);
+        const est = t => (t.warmup ?? 0) + (t.seconds ?? 0) + (t.bgm ? 120 : 0);
         const ordered = [...realtime].sort((a, b) => est(b) - est(a));
         const pending = [];
         const realtimeRun = pool(ordered, jobs, async (t) => {

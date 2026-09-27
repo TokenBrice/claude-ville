@@ -25,9 +25,6 @@ import {
     SOUND_RECALIBRATED_MESSAGE,
     SOUND_SETTING_DEFAULTS,
     SOUND_STEP_MAX,
-    channelStep,
-    channelTrimSteps,
-    mixChannelsFor,
     presetForMode,
     readPresetVolumeStep,
     readSoundChipSeen,
@@ -130,9 +127,8 @@ function storedSoundView(storage = globalThis.window?.localStorage) {
         lastPreset,
         soundState: armed ? 'armed' : 'off',
         volumeStep: readPresetVolumeStep(preset, storage),
-        trims: settings.soundLayers,
         nowLine: armed ? SOUND_ARMED_LINE : '',
-        chipTitle: armed ? SOUND_ARMED_TITLE : `Sound off — click to turn on ${SOUND_PRESET_LABELS[lastPreset] || 'Village'}`,
+        chipTitle: armed ? SOUND_ARMED_TITLE : `Sound off — click to turn on ${SOUND_PRESET_LABELS[lastPreset]}`,
         hushedUntil: null,
         quietActive: false,
         recalibrated: false,
@@ -516,10 +512,6 @@ export class TopBar {
                     : this._writePresetVolume(preset, step)),
                 () => this._writePresetVolume(preset, step),
             ),
-            onSoundLayer: (name, step) => sound(
-                audio => audio.setLayerStep(name, step),
-                settings => settings.soundLayers[name],
-            ),
             onSoundBackground: (value) => sound(audio => audio.setBackground(value), settings => settings.soundBackground),
             onSoundOutput: (value) => sound(audio => audio.setOutput(value), settings => settings.soundOutput),
             onSoundTone: (value) => sound(audio => audio.setTone(value), settings => settings.soundTone),
@@ -561,7 +553,6 @@ export class TopBar {
             audio.setTone(defaults.soundTone);
             audio.setSoften(defaults.soundSoften);
             audio.setQuietHours(defaults.soundQuietHours);
-            for (const [name, step] of Object.entries(defaults.soundLayers)) audio.setLayerStep(name, step);
         } else {
             this._applySoundView(storedSoundView());
         }
@@ -715,7 +706,6 @@ export class TopBar {
     _initSound() {
         this._soundView = storedSoundView();
         this._soundChipKey = null;
-        this._soundMixKey = null;
         this._soundTogglePending = false;
         // 7.4: a hand approaching the note or a preset warms the context and
         // worklets (suspended, silent) once the controller exists, so the
@@ -835,9 +825,9 @@ export class TopBar {
 
     // The SOUND popover (UX-2): heading, the `Listen to` radiogroup, volume,
     // the now line, the recalibration note (D5), the needs-you preview and
-    // hush, the mix for the current preset, and a link to SET. Fixed and
-    // right-anchored under the chevron, so it escapes the bar's overflow
-    // clipping and never covers the NEEDS YOU slot.
+    // hush, and a link to SET. Fixed and right-anchored under the chevron, so
+    // it escapes the bar's overflow clipping and never covers the NEEDS YOU
+    // slot.
     _buildSoundPanel() {
         const trigger = this.els.soundMenu;
         if (!trigger || !document.body) return;
@@ -883,20 +873,12 @@ export class TopBar {
         const hush = this._soundAction('soundHush', 'HUSH FOR 1 HOUR');
         const actions = el('div', { className: 'topbar__sound-actions' }, [preview, hush]);
 
-        const mixRows = el('div');
-        const mix = el('div', { className: 'topbar__sound-mix' }, [
-            el('div', { className: 'topbar__sound-subheading', text: 'MIX' }),
-            mixRows,
-        ]);
-        mix.id = 'soundMix';
-        mix.hidden = true;
-
         const more = this._soundAction('soundMore', 'MORE IN SETTINGS');
         const footer = el('div', { className: 'topbar__sound-footer' }, [more]);
 
-        panel.append(heading, presets, volume.row, now, note, actions, mix, footer);
+        panel.append(heading, presets, volume.row, now, note, actions, footer);
         document.body.appendChild(panel);
-        this._soundEls = { panel, presets, radios, volume, now, note, preview, hush, mix, mixRows, more, mixSliders: [] };
+        this._soundEls = { panel, presets, radios, volume, now, note, actions, preview, hush, more };
 
         this._onSoundMenuClick = (event) => {
             event.stopPropagation();
@@ -1023,8 +1005,9 @@ export class TopBar {
         // the same button resumes. Quiet hours end on their own.
         const hushable = hushed ? !view.quietActive : on && view.preset !== 'signals';
         setHidden(els.hush, !hushable);
+        // Off with nothing to resume: no empty action row under the presets.
+        setHidden(els.actions, !on && !hushable);
         setText(els.hush, hushed ? 'RESUME NOW' : 'HUSH FOR 1 HOUR');
-        this._renderSoundMix(view);
     }
 
     // A real radiogroup with a roving tab stop on the checked preset.
@@ -1035,25 +1018,6 @@ export class TopBar {
             const tabIndex = on ? 0 : -1;
             if (radio.tabIndex !== tabIndex) radio.tabIndex = tabIndex;
         }
-    }
-
-    // The mix shows only the trims that affect the current preset (7.8),
-    // named for what you hear; Off and Signals have none.
-    _renderSoundMix(view) {
-        const els = this._soundEls;
-        const channels = mixChannelsFor(view.preset);
-        const key = channels.map(channel => channel.id).join('|');
-        if (key !== this._soundMixKey) {
-            this._soundMixKey = key;
-            els.mixSliders = channels.map((channel) => {
-                const slider = this._soundSlider(`${channel.label} level`, channel.label);
-                slider.channel = channel;
-                return slider;
-            });
-            replaceChildren(els.mixRows, els.mixSliders.map(slider => slider.row));
-        }
-        setHidden(els.mix, channels.length === 0);
-        for (const slider of els.mixSliders) setSliderStep(slider, channelStep(slider.channel, view.trims || {}));
     }
 
     _onSoundPresetKey(event) {
@@ -1083,18 +1047,9 @@ export class TopBar {
         const els = this._soundEls;
         if (!els || input?.type !== 'range') return;
         const step = Math.max(0, Math.min(SOUND_STEP_MAX, Math.round(Number(input.value) || 0)));
-        if (input === els.volume.input) {
-            setSliderStep(els.volume, step);
-            void this._withAudio(audio => audio.setVolumeStep(step));
-            return;
-        }
-        const slider = els.mixSliders.find(entry => entry.input === input);
-        if (!slider) return;
-        setSliderStep(slider, step);
-        const trims = channelTrimSteps(slider.channel, step);
-        void this._withAudio((audio) => {
-            for (const [name, trimStep] of Object.entries(trims)) audio.setLayerStep(name, trimStep);
-        });
+        if (input !== els.volume.input) return;
+        setSliderStep(els.volume, step);
+        void this._withAudio(audio => audio.setVolumeStep(step));
     }
 
     _toggleHush() {

@@ -2,25 +2,16 @@ import { SEATS } from '../../../claudeville/src/presentation/shared/audio/music/
 
 // The virtual-clock probe's named scenes (page/virtual.js specs). Scene
 // time: `warmup` seconds settle the enable fade and the director's level
-// slews and are discarded; action `at` is seconds after warmup.
+// slews and are discarded; action `at` is seconds after warmup. `mode` is
+// the stored preset: 'bgm' (the Town band) or 'signals' (no music: nothing
+// sounds between the cues).
 // Targets live in Loudness.js (S2); the judges in checks.mjs.
 
 const DAY = Object.freeze({ phase: 'day', progress: 0.5, weather: { type: 'clear', windX: 0.3 } });
 const RAIN = Object.freeze({ phase: 'day', progress: 0.5, weather: { type: 'rain', intensity: 0.7, windX: 0.6 } });
-const STORM = Object.freeze({ phase: 'day', progress: 0.5, weather: { type: 'storm', intensity: 0.9, windX: 1.2 } });
 const NIGHT = Object.freeze({ phase: 'night', progress: 0.5, weather: { type: 'clear', windX: 0.3 } });
 
-// Wave 6: the music ledger (OccasionClock, SoundSettings MUSIC_LEDGER_KEY)
-// on the virtual clock's calendar day (page/virtual-clock.js: 2026-07-15).
-// A settled profile has had its first occasion and today's welcome, so
-// only the phase occasions and fragments remain; no ledger at all is the
-// first-ever enable.
-export const MUSIC_LEDGER_KEY = 'claudeville.sound.musicLedger';
 export const TOWN_BAND_VOICE_KEY = 'claudeville.sound.townBandVoice';
-export const VIRTUAL_DAY = '2026-07-15';
-export function settledLedger(occasions = []) {
-    return JSON.stringify({ firstOccasion: true, welcomeDay: VIRTUAL_DAY, islandDay: VIRTUAL_DAY, occasions });
-}
 
 // One lane's cue through the real producers (the harness page has no
 // AttentionService or VillageDirector, so the probe emits their events):
@@ -103,44 +94,29 @@ function busyActions() {
 const BUSY_WORLD = { counts: { working: 6, idle: 2 } };
 
 export const SCENES = {
-    // Anchor A: calm clear day, world stratum only (work and music trims off).
-    anchor: { mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, layerSteps: { hum: 0, music: 0 }, atmosphere: DAY, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] },
-    // `musicProbe`: the sequencer's marks and the MusicClock frames (6.5's
-    // routine-cue clash reads both).
-    villageBusy: { mode: 'ambient', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 180, actions: busyActions(), stems: ['world', 'work', 'music', 'cue'], musicProbe: {} },
+    // S2's Town band row. `musicProbe`: the sequencer's marks and the
+    // MusicClock frames (6.5's routine-cue clash reads both).
     townBand: { mode: 'bgm', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 180, actions: busyActions(), stems: ['music', 'cue'], musicProbe: {} },
-    rain: { mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: RAIN, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] },
-    storm: {
-        mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: STORM, warmup: 10, seconds: 60, stems: ['world', 'limiterIn', 'limiterOut'], collect: ['starts'],
-        actions: [0.8, 1, 0.5].map((intensity, i) => ({ at: 8 + i * 18, emit: 'weather:storm-flash', payload: { intensity }, label: `storm-flash ${intensity}` })),
-    },
-    // Nobody working, nothing actionable: the quiet floor enters resting after
-    // 30 s, so the recording starts after 40.
-    resting: { mode: 'ambient', world: { counts: { idle: 3 } }, atmosphere: DAY, warmup: 40, seconds: 30, stems: ['world'] },
-    // The anchor's staging at night (C-AMB-3's night bed; 4.1's sea at night).
-    nightClear: { mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, layerSteps: { hum: 0, music: 0 }, atmosphere: NIGHT, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] },
-    // S2's night row with its occasion (the program, music at its default)
-    // against noon at the same load, each with its phase occasion (6.3,
-    // 6.6): a profile that has had its first occasion and today's welcome,
-    // at 22:30 (the night waltz) and 12:30 (noon), so the occasion starts
-    // at the enable and fills the window.
-    nightProgram: { mode: 'ambient', world: { counts: { working: 3, idle: 1 } }, atmosphere: { ...NIGHT, hour: 22.5 }, storage: { [MUSIC_LEDGER_KEY]: settledLedger() }, warmup: 4, seconds: 75, stems: ['world', 'work', 'music'], musicProbe: { stopLint: true } },
-    noonProgram: { mode: 'ambient', world: { counts: { working: 3, idle: 1 } }, atmosphere: { ...DAY, hour: 12.5 }, storage: { [MUSIC_LEDGER_KEY]: settledLedger() }, warmup: 4, seconds: 75, stems: ['world', 'work', 'music'], musicProbe: {} },
-    // Must-never 12: AMBIENT → BGM at 15 s, back at 45 s.
+    // The same busy stretch in Signals: the attention voices over silence.
+    signalsBusy: { mode: 'signals', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 180, actions: busyActions(), stems: ['cue'] },
+    // Must-never 12: Signals → Town band at 15 s, back at 45 s (the
+    // controller's 0.8 s signals fade both ways).
     presetSwitch: {
-        mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: DAY, warmup: 15, seconds: 65,
-        actions: [{ at: 15, mode: 'bgm' }, { at: 45, mode: 'ambient' }],
+        mode: 'signals', world: { counts: { working: 4, idle: 1 } }, atmosphere: DAY, warmup: 15, seconds: 65,
+        actions: [{ at: 15, mode: 'bgm' }, { at: 45, mode: 'signals' }],
     },
     // HAR-12: body-anchored arrivals whose accent the "renderer" declares
     // 450–800 ms ahead (sooner than the cue's own lead, the sound follows the
     // body and lands late by design), plus free cues; published and accent
     // times vs heard. Cues sit 16 s apart — within the routine lane's 4/min
     // (6/min with 2/min reserved for outcomes) — and each kind ≥ its CueKit
-    // cooldown (arrival and departure 20 s), so every one is admitted. No
-    // music plays (C-CUE-5: the shipped offsets hold when no music plays;
-    // with music, 3.5's grid moves body-anchored cues by up to 60 ms).
+    // cooldown (arrival and departure 20 s), so every one is admitted. Over
+    // the Town band (Signals sounds no arrival): 3.5's grid may move a
+    // body-anchored cue by up to 60 ms onto the band's grid, and the
+    // published notes carry it; the MusicClock frames (musicProbe) let the
+    // gate check each move landed on that grid.
     avSync: {
-        mode: 'ambient', world: { counts: { working: 12 } }, atmosphere: DAY, force: { music: 0 }, warmup: 8, seconds: 140, stems: ['cue'],
+        mode: 'bgm', world: { counts: { working: 12 } }, atmosphere: DAY, warmup: 8, seconds: 140, stems: ['cue'], musicProbe: {},
         actions: [
             ...[0, 1, 2, 3].map(i => ({ at: 2 + i * 32, accent: { kind: 'arrival', leadMs: 450 + 110 * i }, emit: 'village:scene', payload: { kind: 'arrival' }, agentIndex: i, label: `arrival (accent +${450 + 110 * i} ms)`, lane: 'routine' })),
             ...[0, 1, 2].map(i => ({ at: 18 + i * 32, emit: 'village:scene', payload: { kind: 'departure' }, agentIndex: 6 + i, label: 'departure', lane: 'routine' })),
@@ -159,9 +135,7 @@ export const SCENES = {
 // lane over one shared render moved whenever another lane's voice changed
 // (limit's presence rise over music read 6.8, then 6.0 dB, its voice
 // untouched). Scenery (the aurora) has a 120 s CueKit cooldown and the
-// release is the one Major
-// outcome, so each is placed once. The Village bed is S2's "Village bed (no
-// music)": its music is held at 0.
+// release is the one Major outcome, so each is placed once.
 export const MARGIN_LANES = ['needsYou', 'error', 'limit', 'routine', 'scenery', 'outcomeMinor', 'outcomeMedium', 'outcomeMajor'];
 const URGENT_MARGIN_LANES = ['needsYou', 'error', 'limit'];
 // Every cue kind a lane carries that S2's row names, each judged on its own
@@ -176,21 +150,20 @@ export const MARGIN_VOICES = Object.freeze({
 export function marginVoices(lane) {
     return MARGIN_VOICES[lane] ?? [LANE_CUE_KIND[lane]];
 }
-// The beds: `village` is the busy Village (a counted crowd at work, 22 at
-// the full lane grid) and `villageLight` a 3–6-worker Village (4 at work):
-// reel v3 found the lighter bed 1.2 LU quieter, where the push reached its
-// −6 dB trim floor. `bandBusy` / `bandBusyChip` are the Town band over the
-// busy island (every building working, so the arrangement and percussion
-// play; Willowbrook pinned, the reel's piece), in the Isle voice and in
-// Chip, for the urgent lanes; the probe prints the band each placement meets.
+// The beds: `signals` is S2's no-music bed (CueLevel's `village` context)
+// as the Signals preset plays it — silence between the attention voices,
+// the only lanes it sounds; each call meets a bed quieter than any S2 row,
+// so its window's ceiling is exempt (S2: a cue that lands into a bed that
+// quiet is gated only by the limiter GR). `music` is the Town band;
+// `bandBusy` / `bandBusyChip` the Town band over the busy island (every
+// building working, so the arrangement and percussion play; Willowbrook
+// pinned, the reel's piece), in the Isle voice and in Chip, for the urgent
+// lanes; the probe prints the band each placement meets.
 export const MARGIN_BEDS = {
-    village: { bed: 'village', mode: 'ambient', atmosphere: DAY, force: { music: 0 } },
-    villageLight: { bed: 'village', mode: 'ambient', atmosphere: DAY, force: { music: 0 }, working: 4 },
+    signals: { bed: 'village', mode: 'signals', atmosphere: DAY, silent: true, lanes: URGENT_MARGIN_LANES },
     music: { bed: 'music', mode: 'bgm', atmosphere: DAY },
     bandBusy: { bed: 'music', mode: 'bgm', atmosphere: DAY, busy: true, piece: 'willowbrook', voice: 'isle', lanes: URGENT_MARGIN_LANES },
     bandBusyChip: { bed: 'music', mode: 'bgm', atmosphere: DAY, busy: true, piece: 'willowbrook', voice: 'chip', lanes: URGENT_MARGIN_LANES },
-    rain: { bed: 'weather', mode: 'ambient', atmosphere: RAIN },
-    storm: { bed: 'weather', mode: 'ambient', atmosphere: STORM },
 };
 export function marginLanes(bedName) {
     return MARGIN_BEDS[bedName]?.lanes ?? MARGIN_LANES;
@@ -250,14 +223,13 @@ export function marginScene(bedName, lane, voice = null, only = null) {
     const seconds = Math.max(...actions.map(a => a.at)) + MARGIN_TAIL_SEC;
     const crowd = agent + 2;
     const world = lead ? { agents: [...lead.world.agents, ...Array.from({ length: crowd }, () => ({ status: 'idle' }))] }
-        : bed.working != null ? { counts: { working: bed.working, idle: Math.max(0, crowd - bed.working) } }
-            : { counts: { working: crowd } };
+        : { counts: { working: crowd } };
     return {
-        mode: bed.mode, world, atmosphere: bed.atmosphere, force: bed.force,
+        mode: bed.mode, world, atmosphere: bed.atmosphere,
         ...(bed.voice ? { storage: { [TOWN_BAND_VOICE_KEY]: bed.voice } } : {}),
         ...(bed.piece ? { bgm: { piece: bed.piece } } : {}),
         warmup: 10, seconds, actions: [...(lead?.actions ?? []), ...actions].sort((a, b) => a.at - b.at),
-        stems: ['cue', 'world', 'work', 'music', 'limiterIn', 'limiterOut'],
+        stems: ['cue', 'music', 'limiterIn', 'limiterOut'],
     };
 }
 
@@ -274,17 +246,17 @@ export const LIMITER_UNIT = {
 
 // ================================================================ Wave 2 ====
 
-// 2.1 (ENG-8): ten minutes of a working village on the Transport, both
+// 2.1 (ENG-8): ten minutes of a working island on the Transport, both
 // presets, a weather change, with the lint's stack capture off so timer
-// costs are the app's. Three busy stretches, rain at 5:00, Town band from
-// 7:00 to 9:00.
+// costs are the app's. Three busy stretches in the Town band, rain at 5:00,
+// Signals from 7:00 to 9:00.
 export const TRANSPORT_SCENE = {
-    mode: 'ambient', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 600, lint: false,
+    mode: 'bgm', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 600, lint: false,
     actions: [
         ...[0, 180, 360].flatMap(offset => busyActions().map(a => ({ ...a, at: a.at + offset }))),
         { at: 300, atmosphere: RAIN, label: 'rain' },
-        { at: 420, mode: 'bgm' },
-        { at: 540, mode: 'ambient' },
+        { at: 420, mode: 'signals' },
+        { at: 540, mode: 'bgm' },
     ],
 };
 
@@ -303,38 +275,27 @@ export function hiddenScene(mode) {
     };
 }
 
-// 2.5: each continuous texture alone (the others forced to 0), 60 s after
-// the level slews settle; `stem` is the bus it plays on.
-export const TEXTURE_SCENES = {
-    wind: { stem: 'world', spec: { mode: 'ambient', isolate: 'wind', world: { counts: { working: 4 } }, atmosphere: { ...DAY, weather: { type: 'clear', windX: 1.0 } }, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] } },
-    rain: { stem: 'world', spec: { mode: 'ambient', isolate: 'rain', world: { counts: { working: 4 } }, atmosphere: RAIN, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] } },
-    hum: { stem: 'work', spec: { mode: 'ambient', isolate: 'hum', world: { counts: { working: 8 } }, atmosphere: DAY, warmup: 10, seconds: 60, stems: ['work'], collect: ['starts'] } },
-    // 4.1: the sea alone by day and in a storm (C-AMB-3: sea ICC ≤ 0.4).
-    sea: { stem: 'world', spec: { mode: 'ambient', isolate: 'sea', world: { counts: { working: 4 } }, atmosphere: DAY, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] } },
-    seaStorm: { stem: 'world', spec: { mode: 'ambient', isolate: 'sea', world: { counts: { working: 4 } }, atmosphere: STORM, warmup: 10, seconds: 60, stems: ['world'], collect: ['starts'] } },
-};
-
 // 2.4 Island Air on the engine alone: the two baked IRs (T60), and an 8 ms
 // burst through connectVoice at raw place() values for d = 0 (screen
 // centre) and d = 1 (the right edge), 4.5 s apart — INFO beside the cue
 // path's D/R below.
 const VIEW = { viewportW: 1440, viewportH: 900 };
 export const AIR_UNIT = {
-    seconds: 10, phase: 'day', kind: 'world', bus: 'world',
+    seconds: 10, phase: 'day', kind: 'world',
     bursts: [
         { at: 0.5, d: 0, screen: { screenX: 720, screenY: 450, ...VIEW } },
         { at: 5, d: 1, screen: { screenX: 1440, screenY: 450, ...VIEW } },
     ],
 };
 
-// Through the real cue path, over a dry bed (the bed's air sends cut, so
-// the wet return carries cue sends only): an arrival placed at d = 0 and
-// one at d = 1 (their direct-to-reverberant ratio), and three needs-you
-// calls (urgent wet re dry). Arrivals sit 28 s apart (CueKit's 20 s
-// arrival cooldown).
+// Through the real cue path over the Town band with its air sends cut (the
+// wet return carries cue sends only): an arrival placed at d = 0 and one at
+// d = 1 (their direct-to-reverberant ratio), and three needs-you calls
+// (urgent wet re dry). Arrivals sit 28 s apart (CueKit's 20 s arrival
+// cooldown).
 export const AIR_ARRIVALS = [{ at: 3, d: 0, x: 0.5 }, { at: 31, d: 1, x: 1 }];
 export const AIR_CUE_SCENE = {
-    mode: 'ambient', world: { counts: { working: 6 } }, atmosphere: DAY, warmup: 10, seconds: 38,
+    mode: 'bgm', world: { counts: { working: 6 } }, atmosphere: DAY, warmup: 10, seconds: 38,
     actions: [
         ...AIR_ARRIVALS.map(a => ({ at: a.at, emit: 'village:scene', payload: { kind: 'arrival', normalizedScreenX: a.x, normalizedScreenY: 0.5 }, agentIndex: 4 + a.d, label: `arrival d = ${a.d}`, lane: 'routine' })),
         ...[0, 1, 2].flatMap(i => laneActions('needsYou', 10 + i * 7, i)),
@@ -342,19 +303,19 @@ export const AIR_CUE_SCENE = {
     stems: ['cue', 'airWet'], airOff: 'bed',
 };
 
-// Air contribution: the village busy scene with every air send cut.
-export const VILLAGE_DRY_SCENE = { ...SCENES.villageBusy, stems: [], airOff: 'all' };
+// Air contribution: the Town band scene with every air send cut.
+export const TOWN_DRY_SCENE = { ...SCENES.townBand, stems: [], airOff: 'all' };
 
 // ================================================================ Wave 3 ====
 
 // 3.1–3.6 / S1: every cue voice once, governor-free (the capture tool's
-// path: what a voice sounds like once admitted), over a silent island
-// (every layer held at 0) on the cue stem, each in its own slot. `stratum`
-// is S1's; `family` groups a reminder with its family's entry voice (the
-// same figure by design, never judged against it); `signalsOnly` marks a
-// voice heard only where nothing but signals plays (`answered`, the Signals
-// preset: judged against the signal voices alone); `sec` the slot (the
-// counted hour needs its strikes ≥ 1 s apart).
+// path: what a voice sounds like once admitted), in Signals (nothing
+// sounds between the cues) on the cue stem, each in its own slot.
+// `stratum` is S1's; `family` groups a reminder with its family's entry
+// voice (the same figure by design, never judged against it);
+// `signalsOnly` marks a voice heard only where nothing but signals plays
+// (`answered`, the Signals preset: judged against the signal voices
+// alone); `sec` the slot (the counted hour needs its strikes ≥ 1 s apart).
 // Providers carry the four routine alloys.
 export const GALLERY_VOICES = Object.freeze([
     { label: 'needs you', kind: 'summons', payload: { level: 1 }, stratum: 'signal' },
@@ -383,7 +344,6 @@ export const GALLERY_VOICES = Object.freeze([
     { label: 'link lost', kind: 'linkLost', stratum: 'scenery' },
     { label: 'link restored', kind: 'linkRestored', stratum: 'scenery' },
     { label: 'digest', kind: 'digest', payload: { notes: ['gold', 'stone', 'red', 'amber'] }, stratum: 'scenery' },
-    { label: 'thunder', kind: 'thunder', payload: { intensity: 0.8 }, stratum: 'scenery', sec: 9 },
 ]);
 const GALLERY_SLOT_SEC = 6;
 
@@ -401,7 +361,7 @@ export function gallerySlots(voices = GALLERY_VOICES) {
 export function galleryScene(voices = GALLERY_VOICES, { night = false } = {}) {
     const slots = gallerySlots(voices);
     return {
-        mode: 'ambient', isolate: 'none', atmosphere: night ? NIGHT : DAY, warmup: 4, seconds: Math.ceil(slots[slots.length - 1].end + 1),
+        mode: 'signals', atmosphere: night ? NIGHT : DAY, warmup: 4, seconds: Math.ceil(slots[slots.length - 1].end + 1),
         world: { agents: slots.map(s => ({ status: 'working', provider: s.provider || 'claude' })) },
         actions: slots.map(s => ({ at: s.at, play: { kind: s.kind, payload: { phase: night ? 'night' : 'day', ...(s.payload || {}), ...(s.provider ? { provider: s.provider } : {}) } }, agentIndex: s.index, label: s.label, voice: s.label })),
         stems: ['cue'],
@@ -426,7 +386,7 @@ function openWait(family, at, index) {
 
 export function ladderSilentScene(family, { ackAt = null, seconds = LADDER_SECONDS } = {}) {
     return {
-        mode: 'ambient', world: { counts: { working: 3 } }, atmosphere: DAY, seconds, captions: ['auto'],
+        mode: 'bgm', world: { counts: { working: 3 } }, atmosphere: DAY, seconds, captions: ['auto'],
         actions: [
             ...openWait(family, LADDER_OPEN_SEC, 0),
             ...(ackAt != null ? [{ at: ackAt, ack: { index: 0 }, label: 'ack' }] : []),
@@ -434,15 +394,15 @@ export function ladderSilentScene(family, { ackAt = null, seconds = LADDER_SECON
     };
 }
 
-// 3.3 hidden tab with sound on: the wait opens while visible, the tab hides
-// 20 s later and stays hidden past the second L4; each reminder must wake
-// the paused context. The audio clock freezes while suspended, so `seconds`
-// is audio time (the visible start and every wake); the tab shows again at
-// the end so the render finishes.
+// 3.3 hidden tab with sound on (Signals): the wait opens while visible, the
+// tab hides 20 s later and stays hidden past the second L4; each reminder
+// must wake the paused context. The audio clock freezes while suspended, so
+// `seconds` is audio time (the visible start and every wake); the tab shows
+// again at the end so the render finishes.
 export const WAKE_HIDE_SEC = 25;
 export const WAKE_SHOW_SEC = 940;
 export const WAKE_SCENE = {
-    mode: 'ambient', world: { counts: { working: 3 } }, atmosphere: DAY, warmup: 10, seconds: 120, freezeOnSuspend: true,
+    mode: 'signals', world: { counts: { working: 3 } }, atmosphere: DAY, warmup: 10, seconds: 120, freezeOnSuspend: true,
     stems: ['cue'], lint: false,
     actions: [
         ...openWait('needsYou', LADDER_OPEN_SEC, 0),
@@ -452,63 +412,35 @@ export const WAKE_SCENE = {
 };
 
 // 3.3 held trim, sound on: one needs-you wait through L1, L2 (2 min) and L3
-// (6 min) in Village with no music; the ladder takes its trim at entry and
-// holds it, so L2 lands ≥ 4 LU under L1 and L3 keeps urgent GR ≤ 3 dB.
+// (6 min) in Signals (the no-music bed); the ladder takes its trim at entry
+// and holds it, so L2 lands ≥ 4 LU under L1 and L3 keeps urgent GR ≤ 3 dB.
 export const LADDER_TRIM_SCENE = {
-    mode: 'ambient', world: { counts: { working: 4 } }, atmosphere: DAY, force: { music: 0 }, warmup: 10, seconds: 380,
+    mode: 'signals', world: { counts: { working: 4 } }, atmosphere: DAY, warmup: 10, seconds: 380,
     stems: ['cue', 'limiterIn', 'limiterOut'], lint: false,
     actions: openWait('needsYou', LADDER_OPEN_SEC, 0),
 };
 
 // The same wait over the Town band (reel v3: there the ladder held its first
-// reminder's trim, not the entry's). The band's own world: no music force.
-export const LADDER_TRIM_BAND_SCENE = (({ force, ...rest }) => ({ ...rest, mode: 'bgm' }))(LADDER_TRIM_SCENE);
+// reminder's trim, not the entry's).
+export const LADDER_TRIM_BAND_SCENE = { ...LADDER_TRIM_SCENE, mode: 'bgm' };
 
-// SIG-10 cluster: one raise vs six same-tick raises over one Village bed,
-// needs-you or errors.
+// SIG-10 cluster: one raise vs six same-tick raises in Signals, needs-you or
+// errors.
 export const CLUSTER_AT = 6;
 export const CLUSTER_KIND = Object.freeze({ needsYou: 'summons', errors: 'distress' });
 export function clusterScene(n, family = 'needsYou') {
     return {
-        mode: 'ambient', world: { counts: { working: 6 + n } }, atmosphere: DAY, force: { music: 0 }, warmup: 10, seconds: 16,
+        mode: 'signals', world: { counts: { working: 6 + n } }, atmosphere: DAY, warmup: 10, seconds: 16,
         stems: ['cue', 'limiterIn', 'limiterOut'],
         actions: Array.from({ length: n }, (_, i) => openWait(family, CLUSTER_AT, 6 + i)).flat(),
     };
 }
 
-// 3.3 held note: a wait opened by status alone (no entry call, so the band
-// is the held note's) at W working agents in Village with no music, then
-// answered. `answerAt` < 120 s keeps the ladder's L2 out of the window.
-export const HELD_OPEN_SEC = 15;
-export const HELD_ANSWER_SEC = 60;
-// `signals`: the window blurred with *In the background: Signals only* — the
-// signal route alone (the plan's Signals preset until 7.2 adds it).
-// `music`: the Village plays (no ledger: the first-ever enable's occasion).
-export function heldNoteScene({ working, mode = 'ambient', music = false, signals = false, seconds = HELD_ANSWER_SEC + 15, answerAt = HELD_ANSWER_SEC } = {}) {
-    return {
-        mode, atmosphere: DAY, warmup: 10, seconds,
-        world: { counts: { working }, agents: [{ status: 'working' }] },
-        ...(music ? {} : { force: mode === 'ambient' ? { music: 0 } : {} }),
-        ...(signals ? { storage: { 'claudeville.sound.background': 'signals' } } : {}),
-        stems: ['signalBed', 'world', 'work', 'music', 'cue'],
-        actions: [
-            ...(signals ? [{ at: 5, window: 'blur', label: 'blur (signals only)' }] : []),
-            { at: HELD_OPEN_SEC, status: { index: working, status: 'waiting_on_user' }, label: 'wait opens' },
-            ...(answerAt != null ? [{ at: answerAt, status: { index: working, status: 'working' }, label: 'answered' }] : []),
-        ],
-    };
-}
-
-// Must-never 3: a six-minute wait in Village with no music, never
-// answered until the end; the held note must hold for all of it.
-export const LONG_WAIT_SECONDS = 390;
-export const LONG_WAIT_SCENE = heldNoteScene({ working: 4, seconds: LONG_WAIT_SECONDS, answerAt: LONG_WAIT_SECONDS - 12 });
-
 // Must-never 13 (SIG-9): stale agents make no sound — a stale waiting, a
 // stale errored and a stale working agent, each flagged by one of the
 // AudibleWorld stale markers, raise their events like fresh ones would.
 export const STALE_SCENE = {
-    mode: 'ambient', atmosphere: DAY, warmup: 10, seconds: 40, force: { music: 0 },
+    mode: 'signals', atmosphere: DAY, warmup: 10, seconds: 40,
     world: {
         counts: { idle: 2 },
         agents: [
@@ -517,7 +449,7 @@ export const STALE_SCENE = {
             { status: 'working', resident: true },
         ],
     },
-    stems: ['signalBed', 'cue'],
+    stems: ['cue'],
     actions: [
         { at: 5, status: { index: 2, status: 'waiting_on_user' } },
         { at: 5.01, emit: 'attention:raised', payload: { waitingCount: 1, oldestWaitMs: 0, status: 'waiting_on_user' }, agentIndex: 2, label: 'stale needs-you' },
@@ -526,11 +458,12 @@ export const STALE_SCENE = {
     ],
 };
 
-// 3.4 outcome fixtures through their producers (World mode, then Dashboard).
+// 3.4 outcome fixtures through their producers (World mode, then
+// Dashboard), over the Town band (Signals only captions outcomes).
 // Agents: 0–3 workers, 4 a parent with sub-agents added below.
 const OUTCOME_WORLD = { counts: { working: 5 } };
 export const OUTCOME_SCENE = {
-    mode: 'ambient', world: OUTCOME_WORLD, atmosphere: DAY, warmup: 10, seconds: 150, force: { music: 0 }, stems: ['cue'], captions: ['auto'],
+    mode: 'bgm', world: OUTCOME_WORLD, atmosphere: DAY, warmup: 10, seconds: 150, stems: ['cue'], captions: ['auto'],
     actions: [
         // A verified push: one push cue, its caption and its published notes.
         { at: 3, emit: 'outcome:verified', payload: { kind: 'push', project: 'probe' }, agentIndex: 0, label: 'push', lane: 'push' },
@@ -550,7 +483,7 @@ export const OUTCOME_SCENE = {
 
 // Dashboard: the World-model transitions only (no tool:result producer).
 export const DASHBOARD_SCENE = {
-    mode: 'ambient', world: OUTCOME_WORLD, atmosphere: DAY, warmup: 10, seconds: 45, force: { music: 0 }, stems: ['cue'],
+    mode: 'bgm', world: OUTCOME_WORLD, atmosphere: DAY, warmup: 10, seconds: 45, stems: ['cue'],
     actions: [
         { at: 1, emit: 'mode:changed', payload: 'dashboard', raw: true, label: 'dashboard' },
         { at: 4, status: { index: 3, status: 'working' } },
@@ -565,6 +498,7 @@ export const DASHBOARD_SCENE = {
 // ones), in both presets, sound on (rendered) and off, four Toasts — one
 // per caption setting. Kinds sit 12 s apart (outcomes share the routine
 // 6/min); each on its own agent.
+export const CAPTION_MODES = Object.freeze(['signals', 'bgm']);
 export const CAPTION_SETTINGS = ['auto', 'signals', 'events', 'all'];
 export const CAPTION_KINDS = Object.freeze([
     ['summons', { level: 1 }], ['distress', {}], ['limit', {}], ['reminder', { level: 2, family: 'needsYou', count: 1, oldestMs: 120000 }],
@@ -583,136 +517,13 @@ export function captionScene(mode, { soundOn }) {
     return soundOn ? { ...base, warmup: 6, stems: ['cue'], lint: false } : base;
 }
 
-// ================================================================ Wave 4 ====
-
-const flash = (at, intensity) => ({ at, emit: 'weather:storm-flash', payload: { intensity }, label: `storm-flash ${intensity}` });
-
-// 4.5 (AMB-12, HAR-9): the 72-scene world map — four phases (mid-phase) ×
-// the six weather types × resting / 3 / 12 working, 30 s each, work and
-// music faders at 0 so the program is the world stratum (Anchor A's
-// staging). Resting cells warm up 40 s (the quiet floor rests after 30 s);
-// storm cells carry one flash (S2: storm is judged with its thunder).
-export const MAP_PHASES = ['dawn', 'day', 'dusk', 'night'];
-export const MAP_WEATHERS = Object.freeze({
-    clear: { type: 'clear', windX: 0.3 },
-    'partly-cloudy': { type: 'partly-cloudy', windX: 0.4 },
-    overcast: { type: 'overcast', windX: 0.5 },
-    rain: RAIN.weather,
-    fog: { type: 'fog', windX: 0.1 },
-    storm: STORM.weather,
-});
-export const MAP_LOADS = Object.freeze({ resting: { idle: 3 }, w3: { working: 3, idle: 1 }, w12: { working: 12 } });
-export const MAP_SECONDS = 30;
-export const MAP_FLASH = Object.freeze({ at: 4, intensity: 0.9 });
-
-export function worldMapCells() {
-    const cells = [];
-    for (const phase of MAP_PHASES) {
-        for (const [weather, w] of Object.entries(MAP_WEATHERS)) {
-            for (const [load, counts] of Object.entries(MAP_LOADS)) {
-                cells.push({
-                    key: `map:${phase}:${weather}:${load}`, phase, weather, load,
-                    spec: {
-                        mode: 'ambient', world: { counts }, layerSteps: { hum: 0, music: 0 },
-                        atmosphere: { phase, progress: 0.5, weather: w },
-                        warmup: load === 'resting' ? 40 : 10, seconds: MAP_SECONDS, stems: ['world'],
-                        actions: weather === 'storm' ? [flash(MAP_FLASH.at, MAP_FLASH.intensity)] : [],
-                    },
-                });
-            }
-        }
-    }
-    return cells;
-}
-
-// S6: 0 vs 12 working agents at one seed → a bit-identical world stem. Both
-// renders end before the quiet floor could rest the empty village (30 s:
-// the pilot light is SCN-5's designed response to nobody working).
-export const WORLD_STEM_SECONDS = 26;
-export const WORLD_STEM_FIXTURES = Object.freeze({
-    'dawn clear': { atmosphere: { phase: 'dawn', progress: 0.5, weather: MAP_WEATHERS.clear }, actions: [] },
-    'night storm': { atmosphere: { ...STORM, phase: 'night' }, actions: [flash(6, 0.8)] },
-});
-
-export function worldStemScene(fixture, working) {
-    const f = WORLD_STEM_FIXTURES[fixture];
-    return {
-        mode: 'ambient', world: { counts: working ? { working } : {} }, atmosphere: f.atmosphere,
-        warmup: 2, seconds: WORLD_STEM_SECONDS, stems: ['world'], actions: f.actions,
-    };
-}
-
-// 4.1: the sea alone at night (TEXTURE_SCENES carries day and storm), four
-// minutes of it by day for the rare voices, the night bed with and without
-// the sea (250 Hz–1 kHz), and nothing at all (the CPU proxy's floor).
-export const SEA_NIGHT_SCENE = { ...TEXTURE_SCENES.sea.spec, atmosphere: NIGHT };
-export const SEA_RARE_SCENE = { ...TEXTURE_SCENES.sea.spec, atmosphere: { ...DAY, weather: { type: 'partly-cloudy', windX: 0.8 } }, seconds: 240, collect: [] };
-export const NIGHT_BED_NO_SEA = { ...SCENES.nightClear, force: { sea: 0 }, collect: [] };
-export const SILENT_ISLAND_SCENE = { ...TEXTURE_SCENES.sea.spec, isolate: 'none', collect: [] };
-
-// 4.2: strikes across near and far intensities in shuffled order, 18 s
-// apart (a far onset lands ≤ 3.6 s after its flash and rolls ≤ 8 s), over
-// the world-only storm; stems for the bed, the thunder and the limiter.
-export const THUNDER_INTENSITIES = Object.freeze([0.9, 0.3, 0.7, 0.5, 1.0, 0.6]);
-export const THUNDER_SPACING = 18;
-export const THUNDER_FIRST = 4;
-export const THUNDER_SCENE = {
-    mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, layerSteps: { hum: 0, music: 0 }, atmosphere: STORM,
-    warmup: 10, seconds: THUNDER_FIRST + THUNDER_INTENSITIES.length * THUNDER_SPACING + 2,
-    stems: ['world', 'cue', 'limiterIn', 'limiterOut'], collect: ['starts'],
-    actions: THUNDER_INTENSITIES.map((intensity, i) => flash(THUNDER_FIRST + i * THUNDER_SPACING, intensity)),
-};
-
-// Must-never 8: a needs-you and an error each placed 1 s into a full-
-// intensity thunder roll (onset 0.4 s after the flash) in the Village storm.
-export const MASKING_SCENE = {
-    mode: 'ambient', world: { counts: { working: 6 } }, atmosphere: STORM, warmup: 10, seconds: 40,
-    stems: ['world', 'cue', 'limiterIn', 'limiterOut'],
-    actions: [flash(4, 1), ...laneActions('needsYou', 5.4, 0), flash(22, 1), ...laneActions('error', 23.4, 1)],
-};
-
-// 4.6 (AMB-9): a cue whose first note lands on a sea crest. Per bed: one
-// render without cues (the crests), one with each lane's cue early (its
-// lead from the action to the first note, and its margin off the crest),
-// then one render per lane with the cue moved onto the loudest crash crest
-// in the window. The night Village bed has no music (the sea is forward at
-// night); the storm carries the sea at its biggest.
-export const CREST_BEDS = Object.freeze({
-    night: { bed: 'village', lanes: ['routine', 'needsYou'], atmosphere: NIGHT },
-    storm: { bed: 'weather', lanes: ['error'], atmosphere: STORM },
-});
-export const CREST_WINDOW = Object.freeze([20, 60]);
-const CREST_CAL_AT = 5;
-const CREST_CAL_SPACING = 14;
-
-export function crestScene(bedName, actions = []) {
-    const b = CREST_BEDS[bedName];
-    return {
-        mode: 'ambient', world: { counts: { working: 6 } }, atmosphere: b.atmosphere, force: { music: 0 },
-        warmup: 10, seconds: 70, stems: ['world', 'cue', 'limiterIn', 'limiterOut'], actions,
-    };
-}
-
-// → { spec, at: { lane: action time } }
-export function crestCalibration(bedName) {
-    const at = {};
-    const actions = CREST_BEDS[bedName].lanes.flatMap((lane, i) => {
-        at[lane] = CREST_CAL_AT + i * CREST_CAL_SPACING;
-        return laneActions(lane, at[lane], i);
-    });
-    return { spec: crestScene(bedName, actions), at };
-}
-
-export function crestPlaced(bedName, lane, at) {
-    return crestScene(bedName, laneActions(lane, at, 0));
-}
-
-// ================================================================ Wave 5 ====
-// The workshop fixtures (FOL-9, FOL round 2). Agents work at a building
-// through their current tool (`classifyTool(currentTool, currentToolInput)`,
-// the World model's own fields); a tool start is a change of that pair,
-// observed on the 2 s poll (phase 0.4 s) as the real feed delivers it. Each
-// start also burns tokens, which keeps the Mine working (WorkshopModel).
+// ======================================================= the busy island ====
+// Agents work at a building through their current tool
+// (`classifyTool(currentTool, currentToolInput)`, the World model's own
+// fields); a tool start is a change of that pair, observed on the 2 s poll
+// (phase 0.4 s) as the real feed delivers it. Each start also burns tokens,
+// which keeps the Mine working (WorkshopModel, the Town band's percussion
+// densities).
 export const WORK_POLL = Object.freeze({ phaseSec: 0.4, periodSec: 2 });
 const snapPoll = t => WORK_POLL.phaseSec + Math.ceil((t - WORK_POLL.phaseSec - 1e-9) / WORK_POLL.periodSec) * WORK_POLL.periodSec;
 
@@ -733,241 +544,30 @@ function lcg(seed) {
     return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296;
 }
 
-// agents: [{ b, gap (median s between starts) | calls: [scene s], to (turn
-// ends), staleAt, tokens (default true) }] after `extra` leading world
-// agents (idle bystanders). → { world, actions, ends: { index: s },
-// stale: { index: s } }. Times are scene seconds (after warmup); the
-// world's initial tool is the first start, observed at the enable.
-export function workFixture(agents, { seconds, seed = 4242, idle = 0, until = Infinity } = {}) {
+// agents: [{ b, gap (median s between starts) }] then `idle` idle
+// bystanders. → { world, actions }. Times are scene seconds (after warmup);
+// the world's initial tool is the first start, observed at the enable.
+export function workFixture(agents, { seconds, seed = 4242, idle = 0 } = {}) {
     const rng = lcg(seed);
     const world = { agents: [] };
     const actions = [];
-    const ends = {};
-    const stale = {};
     agents.forEach((a, i) => {
         const tokens = { totalInput: 0, totalOutput: 0 };
         let k = 0;
-        const start = (at) => {
+        const start = () => {
             k++;
-            if (a.tokens !== false) { tokens.totalInput += TOKENS_PER_START; tokens.totalOutput += TOKENS_PER_START / 3; }
+            tokens.totalInput += TOKENS_PER_START;
+            tokens.totalOutput += TOKENS_PER_START / 3;
             return { ...WORK_TOOLS[a.b](k), tokens: { ...tokens } };
         };
         world.agents.push({ status: 'working', ...start(), label: `${a.b}#${i}` });
-        const last = Math.min(a.to ?? Infinity, a.staleAt ?? Infinity, seconds, until);
-        const times = a.calls ? a.calls.map(snapPoll) : [];
-        if (!a.calls) {
-            for (let t = snapPoll(a.gap * (0.3 + 0.7 * rng())); t < last; t = snapPoll(t + a.gap * (0.6 + 0.8 * rng()))) times.push(t);
-        }
-        for (const t of times.filter(x => x < last)) {
+        for (let t = snapPoll(a.gap * (0.3 + 0.7 * rng())); t < seconds; t = snapPoll(t + a.gap * (0.6 + 0.8 * rng()))) {
             actions.push({ at: t, status: { index: i, status: 'working', fields: start() }, label: `${a.b}#${i} tool` });
-        }
-        if (a.staleAt != null) {
-            stale[i] = snapPoll(a.staleAt);
-            actions.push({ at: stale[i], status: { index: i, status: 'working', fields: { freshness: { state: 'stale' } } }, label: `${a.b}#${i} stale` });
-        }
-        if (a.to != null) {
-            ends[i] = snapPoll(a.to);
-            actions.push({ at: ends[i], status: { index: i, status: 'idle', fields: { currentTool: null, currentToolInput: null } }, label: `${a.b}#${i} idle` });
         }
     });
     for (let j = 0; j < idle; j++) world.agents.push({ status: 'idle' });
-    return { world, actions: actions.sort((x, y) => x.at - y.at), ends, stale };
+    return { world, actions: actions.sort((x, y) => x.at - y.at) };
 }
-
-// FOL round 2's two reference patterns: the busy day (3 Forge — one goes
-// stale at 34 s, two end their turn at 46 s — 2 Archive, 1 Harbor with a
-// push and a status) and the other four buildings, two agents each; the
-// Mine works from everyone's token burn in both.
-export const WORK_PATTERNS = Object.freeze({
-    reference: [
-        { b: 'forge', gap: 6, to: 46 }, { b: 'forge', gap: 6, to: 46 }, { b: 'forge', gap: 6, staleAt: 34 },
-        { b: 'archive', gap: 5 }, { b: 'archive', gap: 7 }, { b: 'harbor', calls: [6, 40] },
-    ],
-    other: [
-        { b: 'taskboard', gap: 6 }, { b: 'taskboard', gap: 6 }, { b: 'observatory', gap: 6 }, { b: 'observatory', gap: 6 },
-        { b: 'portal', gap: 6 }, { b: 'portal', gap: 6 }, { b: 'command', gap: 6 }, { b: 'command', gap: 6 },
-    ],
-});
-export const WORK_SECONDS = 60;
-// Two routine cues (FOL: arrival and council; both arrivals here, 24 s
-// apart — over CueKit's 20 s arrival cooldown — because the lane measure
-// reads the routine lane's arrival voice) for the margin-loss check.
-const WORK_ROUTINE_AT = Object.freeze([20.2, 44.2]);
-
-// The reference scene (5.1, 5.3, 5.5): `pattern` of WORK_PATTERNS by day or
-// night, Village with no music (S2's Village bed), the two routine cues on
-// two idle bystanders. `env`: the same scene with the Workshops fader at 0 —
-// the environment the stratum is judged in, sample-aligned (one seed), so
-// ctx − env on a stem is the workshop stratum alone.
-export function workshopScene(pattern, { phase = 'day', env = false } = {}) {
-    const agents = WORK_PATTERNS[pattern];
-    const f = workFixture(agents, { seconds: WORK_SECONDS, idle: 2 });
-    const bystander = agents.length;
-    return {
-        mode: 'ambient', world: f.world, atmosphere: phase === 'night' ? NIGHT : DAY, force: { music: 0 },
-        ...(env ? { layerSteps: { workshops: 0 } } : {}),
-        warmup: 10, seconds: WORK_SECONDS, stems: ['work', 'airWet', 'cue', 'limiterIn', 'limiterOut'],
-        actions: [
-            ...f.actions,
-            ...WORK_ROUTINE_AT.map((at, i) => ({ at, emit: 'village:scene', payload: { kind: 'arrival' }, agentIndex: bystander + i, label: `arrival ${i + 1}`, lane: 'routine' })),
-        ],
-        fixture: { ends: f.ends, stale: f.stale },
-    };
-}
-
-// 5.3 / 5.5 audibility cells: a percentage must rest on ≥ 20 accents per
-// building, and accents are density-driven (never one per call), so the
-// audibility fixtures keep every agent working for longer and start tools
-// more often than FOL's 60 s pattern: each building of the pattern, two or
-// three agents starting a tool every poll or two (two at the Harbor, a git
-// call every other poll each), no routine cue, the program alone (and its
-// `env` twin).
-export const AUDIBILITY_SECONDS = 180;
-export const AUDIBILITY_MIN_ACCENTS = 20;
-const AUDIBILITY_PATTERNS = Object.freeze({
-    reference: [
-        { b: 'forge', gap: 2.4 }, { b: 'forge', gap: 2.4 }, { b: 'forge', gap: 2.4 },
-        { b: 'archive', gap: 2.4 }, { b: 'archive', gap: 2.4 },
-        { b: 'harbor', calls: Array.from({ length: 45 }, (_, i) => 2 + 4 * i) },
-        { b: 'harbor', calls: Array.from({ length: 45 }, (_, i) => 4 + 4 * i) },
-    ],
-    other: [
-        { b: 'taskboard', gap: 2.4 }, { b: 'taskboard', gap: 2.4 }, { b: 'observatory', gap: 2.4 }, { b: 'observatory', gap: 2.4 },
-        { b: 'portal', gap: 2.4 }, { b: 'portal', gap: 2.4 }, { b: 'command', gap: 2.4 }, { b: 'command', gap: 2.4 },
-    ],
-});
-export function audibilityScene(pattern, { phase = 'day', env = false } = {}) {
-    const f = workFixture(AUDIBILITY_PATTERNS[pattern], { seconds: AUDIBILITY_SECONDS, seed: 31 });
-    return {
-        mode: 'ambient', world: f.world, atmosphere: phase === 'night' ? NIGHT : DAY, force: { music: 0 },
-        ...(env ? { layerSteps: { workshops: 0 } } : {}),
-        warmup: 10, seconds: AUDIBILITY_SECONDS, stems: [], lint: false, actions: f.actions,
-    };
-}
-
-// S6 / 5.1: zero onsets from stale agents, `working === 0` and a lost link.
-// 0–20 s: two stale working agents and an idle one; 20 s: a fresh smith
-// starts; 36.4 s: it goes idle; 44.4 s: it works again; 50 s: the feed
-// drops (lost after AudibleWorld's LINK_LOST_AFTER_MS, the `linkLost` cue).
-export const WORK_HONESTY = Object.freeze({ freshAt: 20.4, idleAt: 36.4, againAt: 44.4, dropAt: 50 });
-export const WORK_HONESTY_SCENE = {
-    mode: 'ambient', atmosphere: DAY, force: { music: 0 }, warmup: 10, seconds: 75, stems: ['work'],
-    world: {
-        agents: [
-            { status: 'working', ...WORK_TOOLS.forge(1), signalStale: true },
-            { status: 'working', ...WORK_TOOLS.archive(1), freshness: { state: 'stale' } },
-            { status: 'idle' },
-        ],
-    },
-    actions: [
-        // LinkHealth only declares a loss after the feed was live once.
-        { at: -9.5, emit: 'ws:state', raw: true, payload: { state: 'live' }, label: 'feed live' },
-        { at: WORK_HONESTY.freshAt, addAgent: { status: 'working', fields: WORK_TOOLS.forge(2) }, label: 'fresh smith' },
-        { at: WORK_HONESTY.freshAt + 4, status: { index: 3, status: 'working', fields: WORK_TOOLS.forge(3) }, label: 'smith tool' },
-        { at: WORK_HONESTY.idleAt, status: { index: 3, status: 'idle', fields: { currentTool: null, currentToolInput: null } }, label: 'smith idle' },
-        { at: WORK_HONESTY.againAt, status: { index: 3, status: 'working', fields: WORK_TOOLS.forge(4) }, label: 'smith again' },
-        { at: WORK_HONESTY.dropAt, emit: 'ws:disconnected', raw: true, payload: {}, label: 'feed drops' },
-    ],
-};
-
-// 5.1 (FOL-5, HAR-12): accents on the drawn downbeat in World (a stand-in
-// ritual conductor, page/workshop.js) — and the same village in Dashboard,
-// where no ritual exists and the grid de-clumps the poll.
-const DOWNBEAT_AGENTS = [
-    { b: 'forge', gap: 4 }, { b: 'forge', gap: 4 }, { b: 'archive', gap: 5 }, { b: 'portal', gap: 6 },
-    { b: 'command', gap: 6 }, { b: 'observatory', gap: 6 }, { b: 'taskboard', gap: 6 }, { b: 'harbor', calls: [4, 50] },
-];
-export function workDownbeatScene({ dashboard = false } = {}) {
-    const f = workFixture(DOWNBEAT_AGENTS, { seconds: 90, seed: 77 });
-    return {
-        mode: 'ambient', world: f.world, atmosphere: DAY, force: { music: 0 }, warmup: 10, seconds: 90, rituals: !dashboard, lint: false,
-        actions: [
-            ...(dashboard ? [{ at: -9.5, emit: 'mode:changed', raw: true, payload: 'dashboard', label: 'mode:dashboard' }] : []),
-            ...f.actions,
-        ],
-    };
-}
-
-// 5.4: two smiths (slots) starting a tool every poll or two, so each earns
-// accents on both sides of the selection, and a bystander who comes to need
-// you; the first smith is selected at 45 s. `select: false` is the twin.
-export const WORK_SLOTS = Object.freeze({ selectAt: 45.2, needsYouAt: 62 });
-export function workSlotsScene({ select = true } = {}) {
-    const f = workFixture([{ b: 'forge', gap: 2.5, tokens: false }, { b: 'forge', gap: 2.5, tokens: false }], { seconds: 90, seed: 11, idle: 1 });
-    return {
-        mode: 'ambient', world: f.world, atmosphere: DAY, force: { music: 0 }, warmup: 10, seconds: 90, stems: ['work', 'cue'],
-        actions: [
-            ...f.actions,
-            ...(select ? [{ at: WORK_SLOTS.selectAt, select: { index: 0 }, label: 'select smith 1' }] : []),
-            ...laneActions('needsYou', WORK_SLOTS.needsYouAt, 2),
-        ],
-    };
-}
-
-// 5.6 (D3): blur 20 s, focus 40 s, against a twin that never blurs.
-// village: music playing (no ledger: the first-ever enable's occasion, which
-// the blur must release), workers; held: no
-// music and a waiting agent (the held note sounds; a needs-you at 30 s);
-// town: the Town band (−3 dB) with the same workers (no work stratum, D4).
-export const QUIET_MIX = Object.freeze({ blurAt: 20, focusAt: 40, needsYouAt: 30 });
-const QUIET_WORKERS = [{ b: 'forge', gap: 2.5 }, { b: 'forge', gap: 2.5 }, { b: 'archive', gap: 3 }, { b: 'harbor', calls: [2] }];
-export function quietMixScene(kind, { blur = true } = {}) {
-    const f = workFixture(QUIET_WORKERS, { seconds: 55, seed: 23, idle: 2 });
-    const window = blur ? [{ at: QUIET_MIX.blurAt, window: 'blur' }, { at: QUIET_MIX.focusAt, window: 'focus' }] : [];
-    const base = { atmosphere: DAY, warmup: 10, seconds: 55, world: f.world, actions: [...f.actions, ...window] };
-    if (kind === 'village') return { ...base, mode: 'ambient', stems: ['world', 'work', 'music', 'signalBed'] };
-    if (kind === 'held') {
-        return {
-            ...base, mode: 'ambient', force: { music: 0 }, stems: ['world', 'work', 'signalBed', 'cue'],
-            world: { agents: [...f.world.agents.slice(0, -1), { status: 'waiting_on_user' }] },
-            actions: [...base.actions, ...laneActions('needsYou', QUIET_MIX.needsYouAt, f.world.agents.length - 2)],
-        };
-    }
-    if (kind === 'town') return { ...base, mode: 'bgm', bgm: { piece: 'willowbrook' }, stems: ['music', 'work'] };
-    throw new Error(`unknown quiet-mix scene ${kind}`);
-}
-
-// 5.7 (SIG-13): the 5-hour quota ratio stepped 0.7 → 1.0 every 8 s through
-// `usage:updated`, then the quota going unavailable (stale). One reader
-// keeps the village awake. `sweep: false` is the twin without usage.
-export const QUOTA_STEPS = Object.freeze({ ratios: [0.7, 0.8, 0.9, 1.0], firstAt: 5, spacing: 8 });
-export const QUOTA_STALE_AT = QUOTA_STEPS.firstAt + QUOTA_STEPS.ratios.length * QUOTA_STEPS.spacing;
-export function quotaScene({ sweep = true } = {}) {
-    const usage = (at, fiveHour, quotaAvailable = true) => ({ at, emit: 'usage:updated', raw: true, payload: { quota: { fiveHour }, quotaAvailable }, label: `quota ${fiveHour}${quotaAvailable ? '' : ' (stale)'}` });
-    return {
-        mode: 'ambient', atmosphere: DAY, force: { music: 0 }, warmup: 10, seconds: QUOTA_STALE_AT + 8, stems: ['work'],
-        world: { agents: [{ status: 'working', ...WORK_TOOLS.archive(1) }] },
-        actions: sweep ? [
-            ...QUOTA_STEPS.ratios.map((r, i) => usage(QUOTA_STEPS.firstAt + i * QUOTA_STEPS.spacing, r)),
-            usage(QUOTA_STALE_AT, 1, false),
-        ] : [],
-    };
-}
-
-// 5.8 (D8): the camera still, then panning across the Harbor (1000 px of a
-// 1280 px view at zoom 1 in 6 s: W5Spatial's envelope wants ≥ 4 s over 80 %
-// of the viewport), then still again. A smith at the Harbor keeps its chain
-// sounding. Scene seconds; `harbor` is SpatialField.BUILDING_WORLD.harbor.
-export const CAMERA_PAN = Object.freeze({ stillUntil: 8, panUntil: 14, spanPx: 500, viewportW: 1280, viewportH: 720, zoom: 1, stillFrom: 16 });
-export function cameraScene(harbor) {
-    const c = CAMERA_PAN;
-    return {
-        mode: 'ambient', atmosphere: DAY, force: { music: 0 }, warmup: 6, seconds: 30, lint: false,
-        world: { agents: [{ status: 'working', ...WORK_TOOLS.harbor(0) }] },
-        camera: {
-            viewportW: c.viewportW, viewportH: c.viewportH, zoom: c.zoom,
-            path: [{ at: c.stillUntil, cx: harbor.x - c.spanPx, cy: harbor.y }, { at: c.panUntil, cx: harbor.x + c.spanPx, cy: harbor.y }],
-        },
-    };
-}
-
-// ================================================================ Wave 6 ====
-
-// Every seat a voicing can admit.
-export const MUSIC_SEATS = SEATS;
-// The night the Town band and the night occasion are judged at: 22:30 (the
-// `night` keyframe, inside the night occasion's 21:00–02:00).
-const NIGHT_2230 = Object.freeze({ ...NIGHT, hour: 22.5 });
 
 // A busy island for the Town band's percussion (6.9): every building
 // staffed, a tool start every couple of seconds.
@@ -976,12 +576,31 @@ const TOWN_BUSY = [
     { b: 'taskboard', gap: 3 }, { b: 'observatory', gap: 3.5 }, { b: 'portal', gap: 3.5 }, { b: 'command', gap: 4 },
 ];
 
+// 5.6 (D3): the Town band (−3 dB while the window is blurred) over the busy
+// island; blur 20 s, focus 40 s, against a twin that never blurs.
+export const QUIET_MIX = Object.freeze({ blurAt: 20, focusAt: 40 });
+export function quietMixScene({ blur = true } = {}) {
+    const f = workFixture(TOWN_BUSY.slice(0, 4), { seconds: 55, seed: 23, idle: 2 });
+    const window = blur ? [{ at: QUIET_MIX.blurAt, window: 'blur' }, { at: QUIET_MIX.focusAt, window: 'focus' }] : [];
+    return {
+        mode: 'bgm', bgm: { piece: 'willowbrook' }, atmosphere: DAY, warmup: 10, seconds: 55, world: f.world,
+        actions: [...f.actions, ...window], stems: ['music'],
+    };
+}
+
+// ================================================================ Wave 6 ====
+
+// Every seat a voicing can admit.
+export const MUSIC_SEATS = SEATS;
+// The night the Town band is judged at: 22:30 (the `night` keyframe).
+const NIGHT_2230 = Object.freeze({ ...NIGHT, hour: 22.5 });
+
 // 6.1 / 6.2 / 6.3: one piece of the Town band pinned in its full band (3)
 // at 13:00 (the `noon` keyframe) or 22:30 (`night`)
 // in one voice, every seat on its own stem (seat content never depends on
 // the band, so each lower band is the sum of the seats it admits), long
 // enough for one 16-bar rendition. `seconds` from the piece's own tempo.
-// The Town band has no world or work stratum (D4), so the air's wet return
+// The Town band is the whole program between cues, so the air's wet return
 // (`airWet`) is the band's own room: the A/B hears music + air.
 export function musicStemScene({ piece, seconds, phase = 'day', voice = 'isle' }) {
     const f = workFixture(TOWN_BUSY, { seconds: seconds + 4, seed: 61 });
@@ -992,64 +611,6 @@ export function musicStemScene({ piece, seconds, phase = 'day', voice = 'isle' }
         musicProbe: { seatStems: MUSIC_SEATS, countNodes: true, stopLint: true },
     };
 }
-
-// 6.6 / S7 / must-never 9 fixtures in Village. Times are scene seconds.
-//   first    the first-ever enable (no ledger): one full occasion, with
-//            its reason, the Village bed under it
-//   rain     rain from the start with the first occasion due; clears at 60
-//   wait     a needs-you 7 min old with the first occasion due; answered at 60
-//   urgent   rain until 20 (so nothing plays), a needs-you at 19: nothing
-//            may start before 24
-//   resting  a light village whose noon occasion is done: everyone idle at
-//            5 (resting from ≈ 35), working again at 150
-//   fragment a light village whose noon occasion is done: fragments only
-export const VILLAGE_FIXTURES = Object.freeze({
-    first: { seconds: 90 },
-    fragment: { seconds: 240 },
-    rain: { seconds: 110, clearAt: 60 },
-    wait: { seconds: 110, answerAt: 60, waitAgeMs: 7 * 60e3 },
-    urgent: { seconds: 90, clearAt: 20, urgentAt: 19 },
-    resting: { seconds: 240, idleAt: 5, workAt: 150 },
-});
-// The virtual clock's epoch (page/virtual-clock.js): Date.now() at the
-// scene's start is this plus the setup's few seconds.
-const VIRTUAL_EPOCH_MS = new Date(2026, 6, 15, 12, 0, 0).getTime();
-
-export function villageMusicScene(kind) {
-    const f = VILLAGE_FIXTURES[kind];
-    const base = { mode: 'ambient', warmup: 2, seconds: f.seconds, stems: ['world', 'work', 'music'], lint: false, musicProbe: {} };
-    const working = { counts: { working: 3, idle: 1 } };
-    if (kind === 'first') return { ...base, world: working, atmosphere: DAY };
-    if (kind === 'fragment') {
-        return { ...base, world: { counts: { working: 2, idle: 1 } }, atmosphere: { ...DAY, hour: 14 }, storage: { [MUSIC_LEDGER_KEY]: settledLedger(['noon']) } };
-    }
-    if (kind === 'rain') {
-        return { ...base, world: working, atmosphere: DAY_RAIN, actions: [{ at: f.clearAt, atmosphere: DAY, label: 'rain clears' }] };
-    }
-    if (kind === 'wait') {
-        return {
-            ...base, atmosphere: DAY,
-            world: { counts: { working: 3 }, agents: [{ status: 'waiting_on_user', awaitingSince: VIRTUAL_EPOCH_MS - f.waitAgeMs }] },
-            actions: [{ at: f.answerAt, status: { index: 3, status: 'working' }, label: 'answered' }, { at: f.answerAt + 0.01, ack: { index: 3 } }],
-        };
-    }
-    if (kind === 'urgent') {
-        return {
-            ...base, world: { counts: { working: 4 } }, atmosphere: DAY_RAIN,
-            actions: [...laneActions('needsYou', f.urgentAt, 3), { at: f.clearAt, atmosphere: DAY, label: 'rain clears' }],
-        };
-    }
-    if (kind === 'resting') {
-        const idle = [0, 1].map(index => ({ at: f.idleAt, status: { index, status: 'idle' }, label: 'idle' }));
-        const again = [0, 1].map(index => ({ at: f.workAt, status: { index, status: 'working' }, label: 'working' }));
-        return {
-            ...base, world: { counts: { working: 2 } }, atmosphere: { ...DAY, hour: 14 },
-            storage: { [MUSIC_LEDGER_KEY]: settledLedger(['noon']) }, actions: [...idle, ...again],
-        };
-    }
-    throw new Error(`unknown village fixture ${kind}`);
-}
-const DAY_RAIN = Object.freeze({ ...RAIN });
 
 // 6.7: an hour of the Town band by day on the virtual clock at 12 kHz
 // (program only; LUFS-I, re-hearing and the marks): the busy island, a
@@ -1129,35 +690,33 @@ export function rainSwitchScene() {
 // 7.2 Signals: the busy stretch (arrivals, a needs-you answered at 70 s, an
 // error that recovers, a limit, a departure) in the Signals preset, captions
 // at the default setting; `openWait` keeps the needs-you open to the end (the
-// ladder's L2 rings at 2 min; no held note in Signals).
+// ladder's L2 rings at 2 min).
 export const SIGNALS_ANSWER_AT = 70;
 export function signalsScene({ openWait: keepOpen = false } = {}) {
     const actions = busyActions().filter(a => !(keepOpen && a.at === SIGNALS_ANSWER_AT && a.status?.index === 0));
     return { mode: 'signals', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 180, actions, stems: ['cue'], captions: ['auto'] };
 }
 
-// 7.4: the first enable of a page session in Village (no ledger: the
-// first-ever enable, so the welcome follows), recorded from the enable; a
-// needs-you at 26 s for the awakening's level; Off at 33 s and Village again
-// at 35 s — the same page session, so no second awakening.
+// 7.4: the first enable of a page session in the Town band (the default
+// preset), recorded from the enable; a needs-you at 26 s for the
+// awakening's level; Off at 33 s and the Town band again at 35 s — the same
+// page session, so no second awakening.
 export const AWAKEN = Object.freeze({ steadyFrom: 10, steadyTo: 25, needsYouAt: 26, offAt: 33, onAt: 35, stAtSec: 4 });
 export const AWAKEN_SCENE = {
     // 10:15, off the hour: no hour bell at the enable (D7) over the awakening.
-    mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: { ...DAY, hour: 10.25 }, warmup: 0, seconds: 40, stems: ['cue', 'music'], musicProbe: {},
+    mode: 'bgm', world: { counts: { working: 4, idle: 1 } }, atmosphere: { ...DAY, hour: 10.25 }, warmup: 0, seconds: 40, stems: ['cue', 'music'], musicProbe: {},
     actions: [
         ...laneActions('needsYou', AWAKEN.needsYouAt, 0),
         { at: AWAKEN.offAt, preset: 'off' },
-        { at: AWAKEN.onAt, preset: 'village' },
+        { at: AWAKEN.onAt, preset: 'townBand' },
     ],
 };
 
 // 7.7 output, tone and soften, through the stored settings the controller
 // applies at the enable (`claudeville.sound.output|tone|soften`).
-// `outputScene`: the Village with no music and no work stratum, cue-free —
-// the program is the world bed (Headphones' ICC, Mono's fold).
-// `outputBusyScene`: the same bed with an arrival and a needs-you (Mono's
-// loudness with cues). `toneScene`: the world bed in Village or the Town
-// band's music, cue-free, for the ±4 dB shelf at 3 kHz.
+// `outputScene`: the Town band (Willowbrook pinned), cue-free — the program
+// is the band (Mono's fold, the tone shelf). `outputBusyScene`: the same
+// band with an arrival and a needs-you (Mono's loudness with cues).
 export function listeningStorage({ output, tone, soften } = {}) {
     return {
         ...(output != null ? { 'claudeville.sound.output': output } : {}),
@@ -1166,30 +725,25 @@ export function listeningStorage({ output, tone, soften } = {}) {
     };
 }
 export function outputScene(listening = {}) {
-    return { mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: DAY, layerSteps: { hum: 0 }, force: { music: 0 }, warmup: 10, seconds: 30, stems: [], storage: listeningStorage(listening) };
+    return { mode: 'bgm', world: { counts: { working: 4, idle: 1 } }, atmosphere: DAY, bgm: { piece: 'willowbrook' }, warmup: 6, seconds: 30, stems: [], storage: listeningStorage(listening) };
 }
 export function outputBusyScene(listening = {}) {
     return {
-        ...outputScene(listening), layerSteps: {},
+        ...outputScene(listening),
         actions: [{ at: 6, emit: 'village:scene', payload: { kind: 'arrival' }, agentIndex: 1, label: 'arrival', lane: 'routine' }, ...laneActions('needsYou', 16, 0)],
     };
 }
-export function toneScene(bed, tone) {
-    if (bed === 'music') return { mode: 'bgm', world: { counts: { working: 4, idle: 1 } }, atmosphere: DAY, bgm: { piece: 'willowbrook' }, warmup: 6, seconds: 30, stems: [], storage: listeningStorage({ tone }) };
-    return outputScene({ tone });
-}
 
-// 7.7 soften: a storm Village (no music) with an arrival (a struck bell), a
-// full-intensity flash (thunder), a needs-you (stays whole) and an error,
-// rendered with Soften on and off.
-export const SOFTEN = Object.freeze({ arrivalAt: 4, flashAt: 10, needsYouAt: 22, errorAt: 32 });
+// 7.7 soften: the Town band with an arrival (a struck bell), a needs-you
+// (stays whole) and an error, rendered with Soften on and off; the band's
+// note-timed ducks under the non-urgent cues carry Soften's duck scale.
+export const SOFTEN = Object.freeze({ arrivalAt: 4, needsYouAt: 22, errorAt: 32 });
 export function softenScene(soften) {
     return {
-        mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: STORM, force: { music: 0 }, warmup: 10, seconds: 42,
+        mode: 'bgm', world: { counts: { working: 4, idle: 1 } }, atmosphere: DAY, warmup: 10, seconds: 42,
         stems: ['cue'], storage: listeningStorage({ soften: soften ? 'on' : 'off' }),
         actions: [
             { at: SOFTEN.arrivalAt, emit: 'village:scene', payload: { kind: 'arrival' }, agentIndex: 3, label: 'arrival', lane: 'routine' },
-            { at: SOFTEN.flashAt, emit: 'weather:storm-flash', payload: { intensity: 1 }, label: 'storm-flash 1' },
             ...laneActions('needsYou', SOFTEN.needsYouAt, 0),
             ...laneActions('error', SOFTEN.errorAt, 1),
         ],

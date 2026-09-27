@@ -1404,8 +1404,10 @@ export class App {
         if (this._onDeferredModalIntent) return;
         this._onDeferredModalIntent = (event) => {
             if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+            // Every way into a modal: the version, the gear, and the SOUND
+            // popover's MORE IN SETTINGS.
             const target = event.target?.closest?.(
-                '.topbar__version, [aria-label="Open settings"]',
+                '.topbar__version, [aria-label="Open settings"], #soundMore',
             );
             if (!target || this._stylesheetLoaded('modal')) return;
             event.preventDefault();

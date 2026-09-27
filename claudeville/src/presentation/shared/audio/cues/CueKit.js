@@ -8,12 +8,12 @@
 // outcome cues land on the band's grid and scenery on its next bar (S4);
 // signal cues never wait.
 
-import { MIN_GAIN, rand } from '../AudioEngine.js';
+import { MIN_GAIN } from '../AudioEngine.js';
 import { degreeSemi, guardSemi, noteHz, phaseKey, roleSemi, tonicTriad } from '../MusicalScale.js';
 import { CUE_LANES, isUrgentCueLane, outcomeTier } from '../CueGovernor.js';
 import { URGENT_TRIM_MEMORY_MS, cueTrimDb, isUrgentLevelLane } from '../CueLevel.js';
 import { makeFilter } from '../Filters.js';
-import { AUDIBILITY_WINDOWS, DUCK_DEPTHS, VOICE_REGISTRY } from '../Loudness.js';
+import { DUCK_DEPTHS, VOICE_REGISTRY } from '../Loudness.js';
 import { ARRIVAL_LEAP, AURORA_FIGURE, HOUR_FIGURE } from '../Motifs.js';
 import {
     CUE_ACCENT_NOTE,
@@ -29,7 +29,6 @@ import {
     shipBellPairs,
 } from '../CueScore.js';
 import { eventBus } from '../../../../domain/events/DomainEvent.js';
-import { rngStream } from '../Rng.js';
 import { place } from '../SpatialField.js';
 import {
     ESCAPEMENT,
@@ -52,7 +51,6 @@ const COOLDOWNS_MS = {
     council: 60000,
     hourBell: 55 * 60000,
     aurora: 120000,
-    thunder: 8000,
     summons: 45000,
     // The ladder and the governor's reminder caps pace reminders (S7).
     reminder: 0,
@@ -96,7 +94,6 @@ const STRATUM_BY_KIND = Object.freeze({
     linkLost: 'scenery',
     linkRestored: 'scenery',
     digest: 'scenery',
-    thunder: 'weather',
 });
 
 // Which cues are located, and how (plan S5): signal cues stay close, dry and
@@ -110,8 +107,7 @@ export function cuePlacementKind(kind) {
 
 // Island Air sends (AMB-2 / ENG-6 table). Signal cues take place()'s cap
 // (0.12; S5 overrides ENG-6's distress 0.2); routine and outcome cues grow
-// wetter with distance; scenery has fixed sends, except thunder, which is
-// wetter the farther the strike (thunderPlan).
+// wetter with distance; scenery has fixed sends.
 const ROUTINE_AIR_NEAR = 0.18;
 const ROUTINE_AIR_PER_DISTANCE = 0.45;
 const SCENERY_AIR = Object.freeze({
@@ -125,20 +121,19 @@ const SCENERY_AIR = Object.freeze({
 
 function cuePlacement(kind, cue = {}) {
     const placementKind = cuePlacementKind(kind);
-    if (kind === 'thunder') return { pan: 0, gain: 1, lowpassHz: null, air: thunderAir(cue.intensity ?? 1) };
     if (!placementKind) return { pan: 0, gain: 1, lowpassHz: null, air: SCENERY_AIR[kind] ?? 0 };
     const placed = place(cue.spot ?? null, { kind: placementKind });
     if (placementKind === 'signal') return placed;
     return { ...placed, air: ROUTINE_AIR_NEAR + ROUTINE_AIR_PER_DISTANCE * Math.min(1, placed.distance) };
 }
 
-// Weather/clock cues and the once-per-return digest are exempt from the
-// global chatter budget.
-const UNBUDGETED = new Set(['thunder', 'hourBell', 'digest']);
+// Clock cues and the once-per-return digest are exempt from the global
+// chatter budget.
+const UNBUDGETED = new Set(['hourBell', 'digest']);
 // Routine and scenery bursts collapse into one representative; everything
 // else carries its own identity (councils, outcomes already aggregated by
 // the director, reminders, link cues, the digest).
-const AGGREGATED = new Set(['arrival', 'departure', 'recovery', 'hourBell', 'aurora', 'thunder']);
+const AGGREGATED = new Set(['arrival', 'departure', 'recovery', 'hourBell', 'aurora']);
 
 // The kind decides the lane: the directors already chose the kind from the
 // agent's bucket (ActionableRouting), so status is never consulted again here.
@@ -167,7 +162,6 @@ const LANE_BY_KIND = Object.freeze({
     dispatch: CUE_LANES.OUTCOME,
     hourBell: CUE_LANES.SCENERY,
     aurora: CUE_LANES.SCENERY,
-    thunder: CUE_LANES.SCENERY,
     digest: CUE_LANES.SCENERY,
 });
 
@@ -176,7 +170,7 @@ export function laneForCueKind(kind) {
 }
 
 // The S2 audibility lane each kind is levelled against (CueLevel.js).
-const LEVEL_LANE_BY_STRATUM = Object.freeze({ routine: 'routine', scenery: 'scenery', weather: 'thunder' });
+const LEVEL_LANE_BY_STRATUM = Object.freeze({ routine: 'routine', scenery: 'scenery' });
 const LEVEL_LANE_BY_SIGNAL = Object.freeze({ summons: 'needsYou', answered: 'needsYou', distress: 'error', limit: 'limit' });
 const OUTCOME_LEVEL_LANE = Object.freeze({ minor: 'outcomeMinor', medium: 'outcomeMedium', major: 'outcomeMajor' });
 
@@ -259,12 +253,10 @@ const LIGHT_DUCK_RELEASE_SEC = 0.4;
 
 const dbToGain = db => Math.pow(10, db / 20);
 
-// Thunder is weather and ducks nothing; urgent cues carve the deepest room;
-// the rest depend on the preset (Village ducks the bed, Town band the band).
-// A reminder ducks as its ladder step does (SIG-2): L2 nothing, L3 like a
-// routine cue, L4 like an urgent call.
+// Urgent cues carve the deepest room; the rest depend on the preset (only
+// the Town band has a bed to duck). A reminder ducks as its ladder step
+// does (SIG-2): L2 nothing, L3 like a routine cue, L4 like an urgent call.
 function duckDepthsFor(kind, lane, cue) {
-    if (kind === 'thunder') return DUCK_DEPTHS.thunder;
     const routine = cue.preset === 'townBand' ? DUCK_DEPTHS.townBand : DUCK_DEPTHS.village;
     if (kind === 'reminder') {
         const { level } = reminderVoice(cue);
@@ -289,23 +281,6 @@ function softenedDepths(depths) {
     const out = {};
     for (const [bus, db] of Object.entries(depths)) out[bus] = Number(db) * SOFTEN_DUCK_SCALE;
     return out;
-}
-
-// Soften for thunder (UX-14): a 250 ms first attack, half the peak, no
-// crack and no secondary bump (the later rolls stay under the first's tail).
-const SOFTEN_THUNDER_ATTACK_SEC = 0.25;
-const SOFTEN_THUNDER_PEAK = 0.5;
-export function softenThunderPlan(plan) {
-    const tail = 0.25 * plan.rolls[0].peak;
-    return {
-        ...plan,
-        amplitude: plan.amplitude * SOFTEN_THUNDER_PEAK,
-        rolls: plan.rolls.map((roll, k) => (k === 0
-            ? { ...roll, attack: Math.max(roll.attack, SOFTEN_THUNDER_ATTACK_SEC) }
-            : { ...roll, peak: Math.min(roll.peak, tail) })),
-        crack: [],
-        crackEndSec: 0,
-    };
 }
 
 // The awakening (7.4, SCN-8): a latch and two small bells rising a fourth,
@@ -335,7 +310,6 @@ const CUE_LABELS = {
     hourBell: 'Hour bell',
     aurora: 'Chronicle milestone',
     summons: 'Agent needs you',
-    thunder: 'Thunder',
     reminder: 'Still waiting',
     answered: 'Answered',
     turnDone: 'Turn finished',
@@ -374,9 +348,10 @@ const CANCEL_RELEASE_SEC = 0.06;
 
 // Grid rules (S4): routine and outcome cues wait ≤ 250 ms for the band's
 // grid; a body-anchored cue keeps the body's time unless a grid point lies
-// within ±60 ms of its carrying note; scenery waits ≤ one bar.
+// within ±60 ms of its carrying note; scenery waits ≤ one bar. The probe's
+// AV-sync gate reads BODY_SNAP_SEC (a moved accent is judged against it).
 const ROUTINE_GRID_WAIT_SEC = 0.25;
-const BODY_SNAP_SEC = 0.06;
+export const BODY_SNAP_SEC = 0.06;
 const GRID_EPS_SEC = 1e-6;
 
 // Flock strikes (SIG-10): after the lead's last note, 70 ms apart, −9 dB.
@@ -470,152 +445,6 @@ function quantizeOffsets(offsetsMs, unitMs) {
     return out;
 }
 
-// Thunder with distance (AMB-6, plan 4.2). Distance d = 1 − intensity. A
-// near strike tears (a crackle of short white-noise bursts) and then rolls
-// bright; a far one arrives later (the director's lead), duller, longer and
-// wetter, with no crack. The strike is one 5–8 s roll that crosses the sky in
-// pan, read from a fresh noise-pool grain, and it ducks nothing. Its level is
-// monotonic in intensity: the first roll peaks at the strike's amplitude and
-// every later roll is smaller.
-export const THUNDER = Object.freeze({
-    lengthSec: Object.freeze([5, 8]),
-    // The crackle sounds for strikes nearer than this distance.
-    crackMaxDistance: 0.6,
-    // The crackle's first burst, relative to the first roll's peak (low
-    // enough that a near strike's limiter GR stays small: its peaks, not
-    // its loudness, would otherwise decide how loud it lands).
-    crackLevel: 0.3,
-    // The last roll's hold ends this long before the strike's end, where
-    // the release has fallen 60 dB.
-    releaseSec: 1.5,
-    // The first roll's fall time at distance 0, as a share of the others'
-    // (rising to all of it at distance 1): a call placed just into a near
-    // roll hears the clap gone, not a held rumble, in its bed (must-never 8).
-    clapFall: 0.25,
-    // Voice level of a strike at intensity 1 into the cue sink (a call
-    // placed ≈ 1 s into a full roll, lifted no further than its trim cap,
-    // must still clear the roll in its bed: must-never 8).
-    gain: 0.065,
-    airNear: 0.2,
-    airPerDistance: 0.3,
-});
-
-const clampUnit = value => Math.max(0, Math.min(1, Number.isFinite(Number(value)) ? Number(value) : 1));
-
-// Fresh grains: each strike's read keeps clear of the last this-many
-// strikes' reads (with three brown pool buffers of ≈ 22 s, the most that
-// still leaves one free for the next roll).
-const THUNDER_READ_STRIKES = 2;
-// The grain stops this long after its envelope has ended.
-const THUNDER_STOP_TAIL_SEC = 0.05;
-// Under an urgent call a roll yields as deep as the world bus does, just
-// before the call's first note, and comes back after its window.
-const THUNDER_YIELD_GAIN = dbToGain(DUCK_DEPTHS.urgent.world);
-const THUNDER_YIELD_LEAD_SEC = 0.05;
-const THUNDER_YIELD_TAU_SEC = 0.03;
-const THUNDER_RETURN_TAU_SEC = 0.25;
-// The intensity the registry's `cue.thunder` nominal was measured at.
-const THUNDER_REFERENCE_INTENSITY = 0.55;
-// Points per second when a roll's recent loudness is estimated from its plan.
-const THUNDER_BED_STEPS_PER_SEC = 8;
-
-// A strike's envelope (linear, 1 = its first roll's peak) `tau` s after its
-// onset, from its plan: the roll sounding (its peak through its hold, a
-// quarter of it after), then the release.
-export function thunderEnvelope(plan, tau) {
-    if (!(tau >= 0) || tau > plan.lengthSec) return 0;
-    let env = 0;
-    for (const roll of plan.rolls) {
-        if (roll.at > tau) break;
-        env = tau <= roll.at + roll.attack + roll.hold ? roll.peak : 0.25 * roll.peak;
-    }
-    if (tau > plan.releaseAt) env *= Math.exp(-(tau - plan.releaseAt) / plan.releaseTau);
-    return env;
-}
-
-// A strike's linear amplitude: 0.18 at intensity 0, 1 at intensity 1,
-// strictly increasing; steeper in dB below the near boundary than above it,
-// so the far strikes spread across their window and the near ones leave a
-// call room over them.
-export function thunderAmplitude(intensity) {
-    return 0.18 + 0.82 * Math.pow(clampUnit(intensity), 1.15);
-}
-
-// Island Air send: far strikes are wetter.
-export function thunderAir(intensity) {
-    return THUNDER.airNear + THUNDER.airPerDistance * (1 - clampUnit(intensity));
-}
-
-// One strike's shape, times in seconds from its onset. Pure: every draw
-// comes from `rng`, in a fixed order.
-export function thunderPlan(intensity, rng) {
-    const i = clampUnit(intensity);
-    const d = 1 - i;
-    const [minLen, maxLen] = THUNDER.lengthSec;
-    const lengthSec = Math.min(maxLen, minLen + 2.4 * d + rand(rng, 0, 0.6));
-    const rate = rand(rng, 0.95, 1.05);
-    const side = rng() < 0.5 ? -1 : 1;
-    const panFrom = side * rand(rng, 0.35, 0.6);
-    const pan = { from: panFrom, to: -panFrom * rand(rng, 0.6, 0.9) };
-
-    const count = d < 0.5 ? 4 + Math.floor(rng() * 3) : 3 + Math.floor(rng() * 2);
-    const rolls = [];
-    let at = 0;
-    let peak = 1;
-    for (let k = 0; k < count; k++) {
-        const attack = k === 0 ? (d < 0.3 ? 0.03 : 0.3 + 0.8 * d) : rand(rng, 0.08, 0.3) + 0.3 * d;
-        // The first roll's hold is fixed: it carries the strike's level.
-        const hold = (k === 0 ? 0.4 : rand(rng, 0.15, 0.5)) + 0.4 * d;
-        const fall = rand(rng, 0.35, 0.8) + 0.5 * d;
-        // A near strike's first roll is a clap that dies fast; a far one's
-        // smears like the rolls after it.
-        const fallTau = k === 0 ? fall * (THUNDER.clapFall + (1 - THUNDER.clapFall) * d) : fall;
-        rolls.push({ at, attack, peak, hold, fallTau });
-        at += attack + hold + rand(rng, 0.4, 1.3) + 0.9 * d;
-        peak *= rand(rng, 0.55, 0.85);
-    }
-    // Squeeze the rolls so the last hold ends `releaseSec` before the end.
-    const last = rolls[rolls.length - 1];
-    const lastEnd = last.at + last.attack + last.hold;
-    const room = lengthSec - THUNDER.releaseSec;
-    if (lastEnd > room) {
-        const k = room / lastEnd;
-        for (const roll of rolls) {
-            roll.at *= k;
-            roll.attack *= k;
-            roll.hold *= k;
-        }
-    }
-    const releaseAt = Math.min(room, lastEnd);
-
-    const crack = [];
-    if (d < THUNDER.crackMaxDistance) {
-        const first = THUNDER.crackLevel * (1 - d / THUNDER.crackMaxDistance);
-        const bursts = 8 + Math.floor(rng() * 7);
-        let burstAt = 0;
-        for (let k = 0; k < bursts; k++) {
-            if (k > 0) burstAt += rand(rng, 0.012, 0.05);
-            const level = k === 0 ? first : first * rand(rng, 0.2, 0.7) * Math.pow(0.9, k);
-            crack.push({ at: burstAt, level, tau: k === 0 ? 0.03 : rand(rng, 0.004, 0.012) });
-        }
-    }
-    return {
-        intensity: i,
-        distance: d,
-        amplitude: thunderAmplitude(i),
-        lengthSec,
-        rate,
-        pan,
-        // The roll's low-pass: bright for a near strike, falling over 0.8 of the roll.
-        lp: { fromHz: 2400 * Math.pow(i, 1.5) + 250 * d, toHz: 140 * i + 100 * d, sweepSec: 0.8 * lengthSec },
-        rolls,
-        releaseAt,
-        releaseTau: (lengthSec - releaseAt) / 6.9,
-        crack,
-        crackEndSec: crack.length ? Math.max(...crack.map(b => b.at + 7 * b.tau)) : 0,
-    };
-}
-
 export class CueKit {
     constructor(engine, governor) {
         this.engine = engine;
@@ -626,18 +455,8 @@ export class CueKit {
         this._urgentTrims = [];
         // The last sounding urgent call per lane, for its flock (SIG-10).
         this._leads = new Map();
-        // Thunder is weather (S6): its plans draw from a stream no agent cue
-        // touches. Cue noise grains draw nothing: the pool places them.
-        this._thunderRng = rngStream('cue.thunder');
         // 7.4's one-time family caption lines, armed by the controller.
         this._familyLines = null;
-        // The last strikes' pool reads ({ index, offset, span }), so the
-        // next strike reads fresh noise.
-        this._strikeReads = [];
-        // Sounding strikes ({ param, level, start, end }) and urgent call
-        // windows ({ from, until }): a roll yields under a call.
-        this._thunders = [];
-        this._urgentWindows = [];
     }
 
     // Returns true when the governor accepted the cue. Routine cues sound
@@ -710,11 +529,8 @@ export class CueKit {
                 baseDelayMs,
                 heardLeadMs(this.engine),
             );
-            // `leadMs` lets a director trail its event on the audio clock
-            // (thunder after the drawn flash) instead of with a timer.
-            const leadMs = Math.max(0, Number(cue.leadMs) || 0);
             const earliest = this.engine.now() + START_LEAD_MS / 1000;
-            const planned = earliest + (anchoredDelayMs + leadMs) / 1000;
+            const planned = earliest + anchoredDelayMs / 1000;
             const { t, offsetsMs: notes } = this._onGrid(kind, planned, offsetsMs, {
                 bodyAnchored: anchoredDelayMs > baseDelayMs,
                 earliest,
@@ -766,8 +582,8 @@ export class CueKit {
         return { ...cue, familyLine: line };
     }
 
-    // The grid (S4). With no music, or for signal cues and thunder, the cue
-    // keeps its time and today's offsets. While music plays a routine or
+    // The grid (S4). With no music, or for signal cues, the cue keeps its
+    // time and today's offsets. While music plays a routine or
     // outcome cue moves to the next grid point ≤ 250 ms away and its notes
     // onto sixteenths; a body-anchored one moves only when a grid point lies
     // within ±60 ms of its carrying note; scenery waits for the next bar.
@@ -951,9 +767,6 @@ export class CueKit {
             }
             case 'digest':
                 this._digest(P, strike, cue.notes, offsetsMs.length);
-                break;
-            case 'thunder':
-                if (sink) this._thunder(sink, at(0), cue.intensity ?? 1);
                 break;
         }
         return pitches;
@@ -1353,10 +1166,7 @@ export class CueKit {
         const lane = levelLane(kind, cue);
         const voice = VOICE_REGISTRY[`cue.${voiceKind(kind, cue)}`];
         const urgent = isUrgentLevelLane(lane);
-        let bedLufs = this.engine.bedLoudness();
-        // A roll sounding now is part of what an urgent call must clear:
-        // the bed tap never hears the cue bus it rides.
-        if (urgent && Number.isFinite(bedLufs)) bedLufs = this._withThunder(bedLufs);
+        const bedLufs = this.engine.bedLoudness();
         const now = monotonicNow();
         if (urgent) this._urgentTrims = this._urgentTrims.filter(entry => now - entry.at < URGENT_TRIM_MEMORY_MS);
         const trimDb = cueTrimDb({
@@ -1388,55 +1198,6 @@ export class CueKit {
         cancels.push(() => {
             if (this.engine.now() < from) token?.cancel?.();
         });
-        if (!light) this._urgentWindow(from, until, cancels);
-    }
-
-    // `bedLufs` (the bed tap's ~3 s mean) with the sounding strikes' mean
-    // power over the same window, estimated from their plans and levels.
-    _withThunder(bedLufs) {
-        const now = this.engine.now();
-        const windowSec = AUDIBILITY_WINDOWS.bedWindowSec;
-        const steps = Math.max(1, Math.round(windowSec * THUNDER_BED_STEPS_PER_SEC));
-        let power = 0;
-        for (const strike of this._thunders) {
-            if (!Number.isFinite(strike.lufs) || strike.start > now || strike.end < now - windowSec) continue;
-            let sum = 0;
-            for (let k = 0; k < steps; k++) {
-                const env = thunderEnvelope(strike.plan, now - windowSec * (k + 0.5) / steps - strike.start);
-                sum += env * env;
-            }
-            power += Math.pow(10, strike.lufs / 10) * sum / steps;
-        }
-        return power > 0 ? 10 * Math.log10(Math.pow(10, bedLufs / 10) + power) : bedLufs;
-    }
-
-    // An urgent call's window (AMB-9: weather never hides a signal). Thunder
-    // ducks nothing, but a roll sounding under a call yields as the world
-    // bus does (DUCK_DEPTHS.urgent.world) and returns after it; a strike
-    // that starts inside a window yields on its own start (_thunder).
-    _urgentWindow(from, until, cancels) {
-        const now = this.engine.now();
-        this._urgentWindows = this._urgentWindows.filter(w => w.until > now);
-        const window = { from, until };
-        this._urgentWindows.push(window);
-        this._thunders = this._thunders.filter(x => x.end > now);
-        const undo = this._thunders.map(strike => this._yieldThunder(strike, from, until)).filter(Boolean);
-        cancels.push(() => {
-            if (this.engine.now() >= from) return;
-            this._urgentWindows = this._urgentWindows.filter(w => w !== window);
-            for (const fn of undo) fn();
-        });
-    }
-
-    // Returns an undo for a yield still ahead of the audio clock.
-    _yieldThunder(strike, from, until) {
-        if (strike.end <= from || strike.start >= until) return null;
-        const down = Math.max(this.engine.now(), from - THUNDER_YIELD_LEAD_SEC);
-        strike.param.setTargetAtTime(strike.level * THUNDER_YIELD_GAIN, down, THUNDER_YIELD_TAU_SEC);
-        strike.param.setTargetAtTime(strike.level, until, THUNDER_RETURN_TAU_SEC);
-        return () => {
-            if (this.engine.now() < down) strike.param.cancelScheduledValues(down);
-        };
     }
 
     // A ceremony that absorbed an announced aggregate names it in `replaces`
@@ -1460,76 +1221,5 @@ export class CueKit {
         if (replaces) payload.replaces = replaces;
         eventBus.emit('audio:cue-played', payload);
         return true;
-    }
-
-    // Thunder (thunderPlan): the roll is a one-shot brown-noise grain through
-    // a low shelf and a falling low-pass, its rolls drawn on one envelope;
-    // the near crackle is the same grain above 1.2 kHz (the pool's brown
-    // reaches 2.5 kHz), so a strike reads one span of the pool. Both cross
-    // the sky on one panner. The grain is a one-shot lane the pool places
-    // (NoisePool.reserveOneShot) ≥ 5 s from every live lane for its whole
-    // read and from the last strikes' reads, so no two strikes share a
-    // texture. The white pool buffer is left to the continuous lanes and
-    // short cue bursts: one live white lane already fences off half of it.
-    _thunder(sink, t, intensity = 1) {
-        const ctx = this.engine.context;
-        const drawn = thunderPlan(intensity, this._thunderRng);
-        const plan = this.engine.softened ? softenThunderPlan(drawn) : drawn;
-        const rollSec = plan.lengthSec + THUNDER_STOP_TAIL_SEC;
-        const roll = this.engine.noisePool?.reserveOneShot(ctx, 'brown', rollSec, { rate: plan.rate, at: t, avoid: this._strikeReads });
-        if (!roll) return;
-        this._strikeReads.push(roll.read);
-        if (this._strikeReads.length > THUNDER_READ_STRIKES) this._strikeReads.shift();
-        const end = t + plan.lengthSec;
-        const level = THUNDER.gain * plan.amplitude;
-        const { voice, nodes } = this._voiceGain(sink, level);
-        const reference = VOICE_REGISTRY['cue.thunder']?.nominalLufsM;
-        const lufs = Number.isFinite(reference)
-            ? reference + sink.trimDb + 20 * Math.log10(plan.amplitude / thunderAmplitude(THUNDER_REFERENCE_INTENSITY))
-            : null;
-        const strike = { param: voice.gain, level, start: t, end, plan, lufs };
-        const now = this.engine.now();
-        this._thunders = this._thunders.filter(x => x.end > now);
-        this._thunders.push(strike);
-        for (const w of this._urgentWindows) if (w.until > now) this._yieldThunder(strike, w.from, w.until);
-
-        const panner = ctx.createStereoPanner();
-        panner.pan.setValueAtTime(plan.pan.from, t);
-        panner.pan.linearRampToValueAtTime(plan.pan.to, end);
-        panner.connect(voice);
-        nodes.push(panner);
-
-        const hp = makeFilter(ctx, 'highpass', 35, { q: 'butterworth' });
-        const shelf = makeFilter(ctx, 'lowshelf', 120, { gain: 6 });
-        const lp = makeFilter(ctx, 'lowpass', plan.lp.fromHz, { q: 'butterworth' });
-        lp.frequency.setValueAtTime(plan.lp.fromHz, t);
-        lp.frequency.exponentialRampToValueAtTime(plan.lp.toHz, t + plan.lp.sweepSec);
-        const env = ctx.createGain();
-        env.gain.value = 0;
-        env.gain.setValueAtTime(0, t);
-        for (const r of plan.rolls) {
-            env.gain.setTargetAtTime(r.peak, t + r.at, r.attack / 2.5);
-            env.gain.setTargetAtTime(0.25 * r.peak, t + r.at + r.attack + r.hold, r.fallTau);
-        }
-        env.gain.setTargetAtTime(0, t + plan.releaseAt, plan.releaseTau);
-        roll.connect(hp).connect(shelf).connect(lp).connect(env).connect(panner);
-        roll.start(t);
-        roll.stop(t + rollSec);
-        nodes.push(roll, hp, shelf, lp, env);
-
-        if (plan.crack.length) {
-            const crackHp = makeFilter(ctx, 'highpass', 1200, { q: 'butterworth' });
-            const crackLp = makeFilter(ctx, 'lowpass', 7000, { q: 'butterworth' });
-            const crackEnv = ctx.createGain();
-            crackEnv.gain.value = 0;
-            crackEnv.gain.setValueAtTime(0, t);
-            for (const b of plan.crack) {
-                crackEnv.gain.setTargetAtTime(b.level, t + b.at, 0.0015);
-                crackEnv.gain.setTargetAtTime(0, t + b.at + 0.003, b.tau);
-            }
-            roll.connect(crackHp).connect(crackLp).connect(crackEnv).connect(panner);
-            nodes.push(crackHp, crackLp, crackEnv);
-        }
-        this._track(sink, t, voice, [roll], nodes);
     }
 }

@@ -7,19 +7,13 @@ import { createAtmosphereSnapshot } from '/src/presentation/character-mode/Atmos
 import { seasonTokenForAtmosphere } from '/src/presentation/character-mode/SeasonalAmbience.js';
 import { STANDARD_VOLUME_STEP } from '/src/presentation/shared/audio/Loudness.js';
 
-// Every layer the ambient director owns (its forceLayer() names); the sea
-// (4.1) plays on the wind group (*Weather & sea*).
-export const LAYERS = ['sea', 'wind', 'rain', 'birds', 'crickets', 'hum', 'music'];
-
 // ------------------------------------------------------------ sequencer ----
 // Selection pins on the one music sequencer (2.3). The Town band chooses its
 // first piece in the Transport window that opens at its start, before any
 // caller can reach the instance, so the pin (and the mark observer) is set
 // in the sequencer's `_start` — the harness's prototype-patch pattern.
-// `holdFirstSec` moves Village's first song slot to at least that long
-// after its start (the level slew settles first). Returns false on a tree
-// without the sequencer.
-export async function pinSequencer({ preset, piece, onMark = null, holdFirstSec = 0 }) {
+// Returns false on a tree without the sequencer.
+export async function pinSequencer({ preset, piece, onMark = null }) {
     const mod = await import('/src/presentation/shared/audio/music/Sequencer.js').catch(() => null);
     if (!mod?.Sequencer) return false;
     const proto = mod.Sequencer.prototype;
@@ -28,11 +22,7 @@ export async function pinSequencer({ preset, piece, onMark = null, holdFirstSec 
         if (this.preset !== preset) return start.apply(this, a);
         if (piece) this.pin({ piece });
         if (onMark) this.observe(onMark);
-        const result = start.apply(this, a);
-        if (holdFirstSec > 0 && this._cur == null && this._nextAt != null) {
-            this._nextAt = Math.max(this._nextAt, this.engine.now() + holdFirstSec);
-        }
-        return result;
+        return start.apply(this, a);
     };
     return true;
 }
@@ -127,16 +117,15 @@ export function makeMarker(getCtx) {
     return { markers, mark };
 }
 
-// The stored sound settings a scene starts from: enabled, the preset, the
-// master step (default: the standard step), per-group trim steps (missing
-// groups take SoundSettings' default step) and the calibration marker, so
-// the controller loads them as a calibrated profile instead of resetting them.
+// The stored sound settings a scene starts from: enabled, the preset
+// (default: the Town band), the master step (default: the standard step)
+// and the calibration marker, so the controller loads them as a calibrated
+// profile instead of resetting them.
 export function seedSoundStorage(spec = {}) {
     try {
         localStorage.setItem('claudeville.sound.enabled', spec.soundOff ? 'false' : 'true');
-        localStorage.setItem('claudeville.sound.mode', spec.mode || 'ambient');
+        localStorage.setItem('claudeville.sound.mode', spec.mode || 'bgm');
         localStorage.setItem('claudeville.sound.volume', String(spec.volumeStep ?? STANDARD_VOLUME_STEP));
-        localStorage.setItem('claudeville.sound.layers', JSON.stringify(spec.layerSteps || {}));
         localStorage.setItem('claudeville.sound.calibration', '2');
         localStorage.setItem('claudeville.sound.background', 'play');
         // Wave 3 settings (reminders, captions, hour count), when a scene sets them.
@@ -145,7 +134,7 @@ export function seedSoundStorage(spec = {}) {
 }
 
 // Stored preset ids (`claudeville.sound.mode`) → the controller's preset names.
-export const PRESET_FOR_MODE = Object.freeze({ signals: 'signals', ambient: 'village', bgm: 'townBand' });
+export const PRESET_FOR_MODE = Object.freeze({ signals: 'signals', bgm: 'townBand' });
 
 // -------------------------------------------------------------- actions ----
 // {status:{index,status,fields}} | {addAgent:{status,provider,parentIndex,fields}} |
@@ -241,9 +230,9 @@ export function runAction(action, { world, mark, controller }) {
         }
         const marker = mark(action.label || `debug-cue:${action.cue}`, { kind: 'event', lane: action.lane ?? null, cueKind: action.cue, agentId: payload.agentId ?? null });
         // The director that owns the signal route: the active one while it
-        // plays, else the ambient director (sound off, or before the Town
+        // plays, else the signals director (sound off, or before the Town
         // band starts), as the producers' events would reach them.
-        const director = controller.director.running ? controller.director : controller.directors.ambient;
+        const director = controller.director.running ? controller.director : controller.directors.signals;
         director.cue(action.cue, payload);
         return marker;
     }

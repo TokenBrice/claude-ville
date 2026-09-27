@@ -86,9 +86,6 @@ test('settings review reads every operator preference, sound levels as steps', (
         'claudeville.sound.volumes': JSON.stringify({ signals: 8, ambient: 4, bgm: 7 }),
         'claudeville.sound.mode': 'bgm',
         'claudeville.sound.background': 'signals',
-        'claudeville.sound.layers': JSON.stringify({
-            wind: 1, rain: 2, wildlife: 3, hum: 4, workshops: 6, music: 5,
-        }),
         'claudeville.sound.calibration': '2',
         'claudeville.sound.reminders': 'gentle',
         'claudeville.sound.countHours': '1',
@@ -110,9 +107,8 @@ test('settings review reads every operator preference, sound levels as steps', (
         soundEnabled: true,
         soundMode: 'bgm',
         soundPreset: 'townBand',
-        soundVolumes: { signals: 8, ambient: 4, bgm: 7 },
+        soundVolumes: { signals: 8, bgm: 7 },
         soundBackground: 'signals',
-        soundLayers: { wind: 1, rain: 2, wildlife: 3, hum: 4, workshops: 6, music: 5 },
         soundReminders: 'gentle',
         soundCountHours: true,
         captions: 'all',
@@ -131,12 +127,8 @@ test('settings review reads every operator preference, sound levels as steps', (
 });
 
 test('an uncalibrated profile reads as the standard level before the controller resets it', () => {
-    const settings = readPersistedSettings(new MemoryStorage({
-        'claudeville.sound.volume': '0.72',
-        'claudeville.sound.layers': JSON.stringify({ wind: 0.1, rain: 0.2, wildlife: 0.3, hum: 0.4, music: 0.5 }),
-    }));
-    assert.deepEqual(settings.soundVolumes, { signals: STANDARD_VOLUME_STEP, ambient: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
-    assert.deepEqual(settings.soundLayers, { wind: 10, rain: 10, wildlife: 10, hum: 10, workshops: 9, music: 10 });
+    const settings = readPersistedSettings(new MemoryStorage({ 'claudeville.sound.volume': '0.72' }));
+    assert.deepEqual(settings.soundVolumes, { signals: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
 });
 
 test('reminder, caption and hour-count preferences read their defaults and reject unknown values', () => {
@@ -185,12 +177,11 @@ test('settings defaults cover every sound key, with the calibration key written 
         assert.equal(PERSISTED_SETTING_DEFAULTS[key], value, key);
     }
     assert.equal(PERSISTED_SETTING_DEFAULTS['claudeville.sound.volume'], undefined, 'the legacy single step is never written again');
+    assert.equal(PERSISTED_SETTING_DEFAULTS['claudeville.sound.layers'], undefined, 'the retired mix is never written again');
     assert.deepEqual(JSON.parse(PERSISTED_SETTING_DEFAULTS['claudeville.sound.volumes']),
-        { signals: STANDARD_VOLUME_STEP, ambient: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
+        { signals: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
     const order = Object.keys(PERSISTED_SETTING_DEFAULTS);
-    const calibration = order.indexOf('claudeville.sound.calibration');
-    assert.ok(calibration > order.indexOf('claudeville.sound.volumes'));
-    assert.ok(calibration > order.indexOf('claudeville.sound.layers'));
+    assert.ok(order.indexOf('claudeville.sound.calibration') > order.indexOf('claudeville.sound.volumes'));
 });
 
 test('reset writes defaults in place without clearing unrelated local data', () => {
@@ -222,12 +213,11 @@ test('reset writes defaults in place without clearing unrelated local data', () 
 test('reset returns a user-changed profile to the standard step in every preset', () => {
     const storage = new MemoryStorage({
         'claudeville.sound.volumes': JSON.stringify({ signals: 9, ambient: 2, bgm: 3 }),
-        'claudeville.sound.layers': JSON.stringify({ wind: 3, rain: 0, wildlife: 10, hum: 5, music: 1 }),
         'claudeville.sound.calibration': '2',
     });
     const result = resetPersistedSettings(storage);
-    assert.deepEqual(result.soundVolumes, { signals: STANDARD_VOLUME_STEP, ambient: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
-    assert.deepEqual(result.soundLayers, { wind: 10, rain: 10, wildlife: 10, hum: 10, workshops: 9, music: 10 });
+    assert.deepEqual(result.soundVolumes, { signals: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
+    assert.deepEqual(JSON.parse(storage.getItem('claudeville.sound.volumes')), { signals: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
     assert.equal(storage.getItem('claudeville.sound.calibration'), '2');
 });
 

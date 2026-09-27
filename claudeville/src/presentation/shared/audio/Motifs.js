@@ -15,9 +15,9 @@
 //     answer's G♯ is left out: it is outside the pentatonic that scenery
 //     fundamentals come from (S1 tuning), so the phrase resolves straight home.
 // In the music the same home phrase is the landing after a wait (every
-// piece's phrase ends) and the second bar of the release stinger; the
-// songbook's fragments name the figure they state, and `MOTIF_SIGNATURES`
-// is how the score analyzer counts statements (≤ 6 an hour, plan 6.5).
+// piece's phrase ends, moved to the piece's key) and the second bar of the
+// release stinger; `MOTIF_SIGNATURES` is how the score analyzer counts
+// statements (≤ 6 an hour, plan 6.5).
 
 import { PIECES } from './bgm/BgmSongbook.js';
 
@@ -103,9 +103,8 @@ export const HOUR_FIGURE = (() => {
 // The motif as the ear finds it in the music: the call (A C♯ E C♯) and the
 // home phrase (E C♯ B A), as pitch classes over the tonic A, in the major
 // and in the minor key (A C E C, E C B A). The score analyzer counts
-// statements by these (plan 6.5: at most six an hour), and a songbook
-// fragment's `motif` names the figure it states. The home phrase is the
-// melody of every phrase end's landing after a wait.
+// statements by these (plan 6.5: at most six an hour). The home phrase is
+// the melody of every phrase end's landing after a wait.
 const MINOR_STEPS = Object.freeze([0, 2, 3, 5, 7, 8, 10]);
 const HOME_SEMIS = [...call.slice(peakIndex).map(note => note.semi), MOTIF_CELL.answer[0].semi, 0];
 const inMinor = semi => MINOR_STEPS[degreeOf(semi).degree - 1];

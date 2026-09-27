@@ -1,13 +1,12 @@
 // The probe's Wave-3 rows (3.1–3.8): the cue gallery's discrimination
-// features, the ladder, wake, cluster, held-note, outcome, caption and
-// honesty measurements. Every function returns numbers; probe.mjs judges
-// them with lib/checks.mjs and prints the lines.
+// features, the ladder, wake, cluster, outcome, caption and honesty
+// measurements. Every function returns numbers; probe.mjs judges them with
+// lib/checks.mjs and prints the lines.
 import { analyze, loudness, noteName, peaks } from './analyze.mjs';
 import { marginAt } from './timeline.mjs';
-import { HELD_NOTE, energyMeanLufs, limiterGainReduction, maxGrIn, phaseLockedPairs, quickSamePitchOpening } from './checks.mjs';
+import { limiterGainReduction, maxGrIn, phaseLockedPairs, quickSamePitchOpening } from './checks.mjs';
 import { CLUSTER_AT, CLUSTER_KIND, GALLERY_VOICES, gallerySlots } from './scenes.mjs';
 import { cueFeatures } from '../metrics/discrim.mjs';
-import { fft, hann } from '../metrics/dsp.mjs';
 import { AUDIBILITY_WINDOWS, PROGRAM_TRIM_DB } from '../../../claudeville/src/presentation/shared/audio/Loudness.js';
 import { CUE_ACCENT_NOTE } from '../../../claudeville/src/presentation/shared/audio/CueScore.js';
 
@@ -159,81 +158,6 @@ export function clusterRow(r, family = 'needsYou') {
     };
 }
 
-// ------------------------------------------------------------- held note ----
-// Band power (dB) of one channel pair on a fixed hop: one Hann FFT of
-// 8192 samples (5.9 Hz bins at 48 kHz) per hop. → [[t (window centre), dB]].
-export function bandCurve(pair, sr, [lo, hi], { hopSec = 0.1, n = 8192, t0 = 0, t1 = pair.L.length / sr } = {}) {
-    const m = mono(pair);
-    const win = hann(n);
-    const re = new Float64Array(n);
-    const im = new Float64Array(n);
-    const k0 = Math.ceil(lo * n / sr);
-    const k1 = Math.floor(hi * n / sr);
-    const out = [];
-    const hop = Math.round(hopSec * sr);
-    for (let s = Math.max(0, Math.round(t0 * sr)); s + n <= Math.min(m.length, Math.round(t1 * sr)); s += hop) {
-        for (let i = 0; i < n; i++) { re[i] = m[s + i] * win[i]; im[i] = 0; }
-        fft(re, im);
-        let p = 0;
-        for (let k = k0; k <= k1; k++) p += re[k] * re[k] + im[k] * im[k];
-        out.push([(s + n / 2) / sr, 10 * Math.log10(p + 1e-30)]);
-    }
-    return out;
-}
-
-// Held-note numbers of a heldNoteScene render: the program's 270–310 Hz
-// band, the held stem's beating depth over the steady wait, its level
-// against the bed (world + work + music stems, same staging), and its
-// loudest short-term level at the output (absent = silent).
-export function heldNoteRows(r, { openSec, answerSec }) {
-    const w = r.meta.warmup;
-    const open = w + openSec;
-    const answer = answerSec != null ? w + answerSec : null;
-    const end = answer ?? (w + r.meta.seconds);
-    const program = bandCurve(r.program, r.sr, HELD_NOTE.bandHz, { t0: open - 5, t1: Math.min(r.program.L.length / r.sr, (answer ?? end) + 8) });
-    const held = r.stems.signalBed;
-    const steady = [open + 8, end - 2];
-    const heldBand = held ? bandCurve(held, r.sr, HELD_NOTE.bandHz, { t0: steady[0], t1: steady[1] }) : [];
-    const stLufs = (pair) => {
-        if (!pair) return null;
-        const cut = slice(pair, r.sr, steady[0], steady[1]);
-        return energyMeanLufs(loudness(cut.L, cut.R, r.sr).shortTermCurve.map(([, v]) => v));
-    };
-    const bed = ['world', 'work', 'music'].map(k => r.stems[k]).filter(Boolean);
-    let bedLufs = null;
-    if (bed.length) {
-        const n = bed[0].L.length;
-        const L = new Float32Array(n);
-        const R = new Float32Array(n);
-        for (const s of bed) for (let i = 0; i < n; i++) { L[i] += s.L[i]; R[i] += s.R[i]; }
-        bedLufs = stLufs({ L, R });
-    }
-    const heldLufs = stLufs(held);
-    let heldStMaxOut = null;
-    if (held) {
-        const cut = slice(held, r.sr, open + 1, w + r.meta.seconds);
-        const st = loudness(cut.L, cut.R, r.sr).shortTermCurve.map(([, v]) => v).filter(Number.isFinite);
-        heldStMaxOut = st.length ? Math.max(...st) + outputGainDb(r) : -Infinity;
-    }
-    return {
-        open, answer, programBand: program, heldBandDb: heldBand.map(([, db]) => db),
-        heldLufs, bedLufs, underBedLu: heldLufs != null && bedLufs != null ? heldLufs - bedLufs : null, heldStMaxOut,
-        snapshots: r.meta.stateLog.map(s => s.heldNote?.state ?? null).filter(Boolean),
-    };
-}
-
-// Under music: the held stem's short-term max at the output over the
-// seconds music plays after the wait opens.
-export function heldWhileMusic(r, openAbs) {
-    const held = r.stems.signalBed;
-    if (!held) return null;
-    const playing = r.meta.stateLog.filter(s => s.t >= openAbs + 1 && s.nowPlaying).map(s => s.t);
-    if (!playing.length) return { seconds: 0, stMaxOut: null };
-    const cut = slice(held, r.sr, playing[0], playing[playing.length - 1]);
-    const st = loudness(cut.L, cut.R, r.sr).shortTermCurve.map(([, v]) => v).filter(Number.isFinite);
-    return { seconds: playing.length, stMaxOut: st.length ? Math.max(...st) + outputGainDb(r) : -Infinity };
-}
-
 // -------------------------------------------------------------- outcomes ----
 // Per fixture lane: the cue-played events and sounding scores after its
 // marker (within `withinSec`), for the outcome acceptance lines.
@@ -267,18 +191,21 @@ export function crownRow(r, onsetNear) {
 }
 
 // -------------------------------------------------------------- captions ----
-// One caption-parity run → rows { kind, setting, soundOn, played, shown, heard }.
+// One caption-parity run → rows { kind, setting, soundOn, played, shown,
+// heard, announceOnly }.
 export function captionRows(meta, { settings, soundOn }) {
     const rows = [];
     const t = x => x.t ?? x.wall;
     for (const m of meta.markers.filter(x => x.kind === 'event' && x.cueKind)) {
         const kind = m.cueKind;
         const inWin = x => t(x) >= m.t - 0.002 && t(x) <= m.t + 6;
-        const played = meta.cues.some(c => c.kind === kind && inWin(c) && (m.agentId == null || c.agentId == null || c.agentId === m.agentId));
+        const cues = meta.cues.filter(c => c.kind === kind && inWin(c) && (m.agentId == null || c.agentId == null || c.agentId === m.agentId));
+        const played = cues.length > 0;
+        const announceOnly = played && cues.every(c => c.announceOnly);
         const heard = soundOn ? meta.scheduled.some(s => s.kind === kind && !s.silent && inWin(s)) : null;
         for (const setting of settings) {
             const shown = (meta.captions || []).some(c => c.setting === setting && inWin(c) && c.cueKind === kind);
-            rows.push({ kind, setting, soundOn, played, shown, heard });
+            rows.push({ kind, setting, soundOn, played, shown, heard, announceOnly });
         }
     }
     return rows;

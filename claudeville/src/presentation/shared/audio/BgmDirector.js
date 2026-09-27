@@ -19,11 +19,11 @@
 // fanfare inside the tune after the gold peal (6.8). The work stratum itself
 // stays out of Town band.
 //
-// Wave 3 — while the band owns the signals it rings the same outcomes and
-// hours as the Village (the routing is shared: ActionableRouting,
-// OutcomeSignals). It never plays the held note: in Town band a wait is
-// carried by the band's own cadence (D4). The feed's link cues and the
-// return digest stay with the ambient director, alive from boot.
+// Wave 3 — while the band owns the signals it rings the same outcomes as
+// the signal route (the routing is shared: ActionableRouting,
+// OutcomeSignals) and the hour chime. In Town band a wait is carried by the
+// band's own cadence (D4). The feed's link cues and the return digest stay
+// with the signals director, alive from boot.
 
 import { eventBus } from '../../../domain/events/DomainEvent.js';
 import { bucketCounts } from '../../../domain/services/SignalLedger.js';
@@ -56,8 +56,8 @@ const ATMO_FRESH_MS = 3000;
 const PAUSE_CLOSE_SEC = 0.08;
 const RESUME_OPEN_SEC = 0.25;
 
-// Four working bands (MUS-8), shared with the Village director. The KPIs in
-// the top bar state the exact counts, so the bands never have to.
+// Four working bands (MUS-8). The KPIs in the top bar state the exact
+// counts, so the bands never have to.
 const SECTION_BANDS = Object.freeze([
     Object.freeze({ section: 'rest', maxWorking: 0 }),
     Object.freeze({ section: 'light', maxWorking: 3 }),
@@ -70,9 +70,8 @@ const SECTION_NAMES = Object.freeze(SECTION_BANDS.map(entry => entry.section));
 const PERCUSSION_FLOOR = 0.3;
 // The release fanfare waits for the gold peal (a Major outcome, ≤ 2.5 s).
 const RELEASE_AFTER_PEAL_SEC = 2.5;
-// Entering the resting section takes the same 30s quiet hold the ambient
-// director already uses; every other change takes 4s, so a poll-to-poll
-// flutter can never rewrite the arrangement.
+// Entering the resting section takes a 30s quiet hold; every other change
+// takes 4s, so a poll-to-poll flutter can never rewrite the arrangement.
 const SECTION_ENTER_REST_MS = 30000;
 const SECTION_CHANGE_MS = 4000;
 const BGM_LEVEL = 0.9;
@@ -83,8 +82,8 @@ const BGM_LEVEL = 0.9;
 const ATTENTION_DB = -2;
 
 /**
- * The counts the working section is made of, from the same ledger
- * `AudioDirector._tick` reads. `waiting` counts every agent that is waiting
+ * The counts the working section is made of, from the same ledger the
+ * signal route reads. `waiting` counts every agent that is waiting
  * (on a person or on work); `actionable` is the subset a person has to act
  * on, which is what leans the band back (the attention stage).
  */
@@ -303,7 +302,7 @@ export class BgmDirector {
         });
     }
 
-    // Paused (a hidden page), the ambient director's signal route carries
+    // Paused (a hidden page), the signals director's route carries
     // every signal; the band speaks only while it is heard.
     _ownsSignals() {
         return this.running && !this.paused;
@@ -353,7 +352,7 @@ export class BgmDirector {
             this._playActionable(cuePayload(payload), attentionStatus(payload, this.world));
         });
 
-        // Outcomes (3.4), the same sources and policy as the Village.
+        // Outcomes (3.4), the same sources and policy as the signal route.
         const track = facts => this._submitOutcomes(facts);
         on('agent:added', agent => track(this._outcomeTracker?.added(agent) ?? []));
         on('agent:updated', agent => track(this._outcomeTracker?.updated(agent) ?? []));
@@ -398,7 +397,7 @@ export class BgmDirector {
         });
     }
 
-    // The same bucket routing and per-agent dedupe as the ambient director,
+    // The same bucket routing and per-agent dedupe as the signals director,
     // so an error never wears the needs-you voice in Town band either; a
     // stale observation raises nothing (S6).
     _playActionable(payload, status) {
@@ -439,7 +438,7 @@ export class BgmDirector {
         this._applyAtmosphere(atmosphere);
         this._applyWorkingSection();
 
-        // The hour chime (D7), on the same schedule as the Village.
+        // The hour chime (D7): the phrase by day, a soft chime at 21:00.
         const chime = hourChimeFor(atmosphere.clock);
         if (chime && this._lastBellHour !== chime.hour) {
             const count = !chime.soft && readCountHours();

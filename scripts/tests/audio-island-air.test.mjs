@@ -89,11 +89,7 @@ test('the day/night crossfade is equal-power at every point', () => {
     assert.equal(airCrossfadeGains(1).day < 1e-12, true);
 });
 
-test('rain and fog dull the return, never below 2.5 kHz; rain shortens it', () => {
+test('night darkens the return; its level stays put', () => {
     assert.deepEqual(airReturnColour(), { lowpassHz: 7000, gain: AIR_RETURN_GAIN });
-    assert.equal(airReturnColour({ night: 1 }).lowpassHz, 5000);
-    const storm = airReturnColour({ rain: 1, fog: 1 });
-    assert.equal(storm.lowpassHz, 3000);
-    assert.equal(airReturnColour({ rain: 1 }).gain, AIR_RETURN_GAIN * 0.7);
-    assert.equal(airReturnColour({ night: 1, rain: 1, fog: 1.5 }).lowpassHz, 2500);
+    assert.deepEqual(airReturnColour({ night: 1 }), { lowpassHz: 5000, gain: AIR_RETURN_GAIN });
 });

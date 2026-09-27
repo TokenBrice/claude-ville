@@ -14,6 +14,12 @@ import {
     timeline,
     tonalReheard,
 } from '../audio/score-analyzer.mjs';
+import * as BOOK from '../../claudeville/src/presentation/shared/audio/bgm/BgmSongbook.js';
+import { CueGovernor } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
+import { CueKit, laneForCueKind } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
+import { resetCueScore } from '../../claudeville/src/presentation/shared/audio/CueScore.js';
+import { MusicClock } from '../../claudeville/src/presentation/shared/audio/MusicClock.js';
+import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 
 const line = notes => timeline(notes);
 
@@ -117,10 +123,9 @@ test('motif statements: the call and the home phrase in the key, not the same sh
 });
 
 test('the songbook passes the composition gate', () => {
-    const { failures, pieces, fragments } = analyzeSongbook();
+    const { failures, pieces } = analyzeSongbook();
     assert.deepEqual(failures, []);
     assert.ok(pieces.length >= 11);
-    assert.ok(fragments.length >= 8);
 });
 
 test('the gate fails a waiting cadence that would have to move the tune', async () => {
@@ -130,4 +135,95 @@ test('the gate fails a waiting cadence that would have to move the tune', async 
     const bad = { ...first, phraseEnds: first.phraseEnds.map(end => ({ ...end, chord: 'E' })) };
     const { failures } = analyzeSongbook({ ...book, PIECES: [bad, ...rest] });
     assert.ok(failures.some(msg => msg === `${first.name}: arrival melody 0 is not in E`), failures.join('\n'));
+});
+
+test('the gate holds a piece to a key its family allows, and to that key\'s tonic', () => {
+    const [first, ...rest] = BOOK.PIECES;
+    const bad = { ...first, key: { tonic: 'E', mode: 'minor' } };
+    const { failures } = analyzeSongbook({ ...BOOK, PIECES: [bad, ...rest] });
+    assert.ok(failures.includes(`${first.name}: key {"tonic":"E","mode":"minor"} is not allowed for ${first.family}`), failures.join('\n'));
+    const moved = { ...first, key: { tonic: 'D', mode: 'major' } };
+    const { failures: tonicFailures } = analyzeSongbook({ ...BOOK, PIECES: [moved, ...rest] });
+    assert.ok(tonicFailures.some(msg => msg.startsWith(`${first.name}: tag does not end home on D`)), tonicFailures.join('\n'));
+});
+
+test('the cadence kit gives every allowed key and meter a tag and a waiting cadence inside the gate', () => {
+    for (const [family, keys] of Object.entries(BOOK.ALLOWED_KEYS)) {
+        const night = family === 'night';
+        for (const key of keys) {
+            const tonic = BOOK.tonicChord(key);
+            const { tonicPc } = BOOK.musicKey(key);
+            for (const meter of BOOK.METERS) {
+                const where = `${tonic} in ${meter}`;
+                const failures = [];
+                const fail = msg => failures.push(msg);
+                const opts = { beatsPerBar: meter, bpm: meter === 6 ? 180 : 80, night, fail };
+                const { tag, deceptive } = BOOK.cadenceKit(key, meter);
+                assert.equal(tag.chords.length, 2, where);
+                assert.equal(tag.chords[1], tonic, where);
+                checkPassage(`${where} tag`, tag, opts);
+                checkPassage(`${where} home`, { chords: [tonic], ...deceptive.home }, opts);
+                // The deceptive chord (vi, VI) holds the tonic, so the arrival's
+                // melody may stay.
+                const turn = BOOK.chordPitchClasses(deceptive.chord);
+                assert.ok(turn?.pcs.includes(tonicPc), `${where}: ${deceptive.chord}`);
+                checkPassage(`${where} deceptive`, { chords: [deceptive.chord], bass: deceptive.bass, melody: [[null, meter]] }, opts);
+                assert.deepEqual(failures, [], where);
+            }
+        }
+    }
+});
+
+// Every note the kit publishes for one cue, on a sounding engine with a
+// frozen clock (as audio-cue-roles.test.mjs drives it).
+function fakeParam(value = 1) {
+    return {
+        value, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {}, setTargetAtTime() {}, cancelScheduledValues() {},
+    };
+}
+const fakeNode = (extra = {}) => ({ connect: node => node, disconnect() {}, ...extra });
+async function publishedNotes(kind) {
+    const engine = {
+        clock: 100,
+        started: true,
+        musicClock: new MusicClock(),
+        now: () => engine.clock,
+        connectVoice: () => ({ output: fakeNode(), dispose() {} }),
+        bedLoudness: () => null,
+        releaseVoice() {},
+        duck: () => ({ cancel() {} }),
+        context: {
+            sampleRate: 48000,
+            get currentTime() { return engine.clock; },
+            createGain: () => fakeNode({ gain: fakeParam() }),
+            createBiquadFilter: () => fakeNode({ type: 'lowpass', frequency: fakeParam(350), Q: fakeParam(1), gain: fakeParam(0) }),
+            createOscillator: () => fakeNode({ frequency: fakeParam(440), type: 'sine', start() {}, stop() {} }),
+        },
+    };
+    resetCueScore();
+    const kit = new CueKit(engine, new CueGovernor({ maxPerMinute: 60, minSpacingMs: 0 }));
+    const scores = [];
+    const off = eventBus.on('audio:cue-scheduled', score => scores.push(score));
+    try {
+        kit._playAccepted({ kind, lane: laneForCueKind(kind), agentId: `a-${kind}` });
+        await new Promise(resolve => { queueMicrotask(resolve); });
+    } finally {
+        off();
+    }
+    assert.equal(scores.length, 1, `${kind} publishes one score`);
+    return scores[0].notes;
+}
+
+test('every allowed key\'s scale holds the pitch classes the signal cues strike', async () => {
+    const heard = new Set();
+    for (const kind of ['summons', 'distress', 'limit', 'answered']) {
+        for (const note of await publishedNotes(kind)) heard.add((((Math.round(12 * Math.log2(note.hz / 440)) + 9) % 12) + 12) % 12);
+    }
+    assert.deepEqual([...heard].sort((a, b) => a - b), [...BOOK.SIGNAL_PITCH_CLASSES].sort((a, b) => a - b));
+    for (const [family, keys] of Object.entries(BOOK.ALLOWED_KEYS)) {
+        assert.ok(keys.length > 0, family);
+        for (const key of keys) {
+            for (const pc of heard) assert.ok(BOOK.scalePitchClasses(key).includes(pc), `${family} ${key.tonic} ${key.mode}: pitch class ${pc}`);
+        }
+    }
 });

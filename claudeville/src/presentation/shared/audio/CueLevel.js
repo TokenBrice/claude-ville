@@ -25,7 +25,9 @@
 // over the busy Town band (the loudest bed a capped call meets; reel v3 and
 // its closure renders, Isle and Chip) capped calls took their predicted
 // overshoot + 0.3 dB of reduction, and the L3 bell that rings on the held
-// entry trim (0.6 LU over L1) + 0.5 dB. A lift the limiter would take back
+// entry trim (0.6 LU over L1) + 0.5 dB; since the bed read hears the band's
+// room (v0.47.1) more calls meet the cap, and an error capped over the busy
+// Isle band took its overshoot + 0.8 dB. A lift the limiter would take back
 // is not a lift; the cap never takes an urgent cue below 0 dB.
 //
 // Urgent cues are not cut to reach their floor + aim. Over a very quiet bed
@@ -64,8 +66,12 @@ const AIM_OVER_FLOOR_OVER_MUSIC = Object.freeze({
 
 // The highest peak (dBFS, in the bedLoudness domain) an urgent voice may
 // reach: the limiter ceiling plus the urgent GR budget, less the measured
-// share above (0.5 dB) and 0.3 dB so a capped call and its L3 stay ≤ 3 dB.
-const URGENT_BED_GR_DB = 0.8;
+// share above (0.8 dB) and 0.1 dB, so a capped call stays ≤ 3 dB. The
+// cushion is narrow on purpose: the capped error over the busy Isle band
+// must also clear its ≥ +5 dB presence rise (S2 at closure), and the probe
+// measured that window as a cap of 4.24…4.39 dB (presence 4.98 at 4.2,
+// 5.04 at 4.3; GR 2.91 at 4.3, 3.01 at 4.4), so the budget sits inside it.
+const URGENT_BED_GR_DB = 0.9;
 export const URGENT_PEAK_MAX_DBFS = LIMITER_CEILING_DBFS
     + LOUDNESS_TARGETS.ceiling.urgentGrMaxDb - URGENT_BED_GR_DB - PROGRAM_TRIM_DB;
 
@@ -79,8 +85,8 @@ export const URGENT_TRIM_MEMORY_MS = 60000;
 
 const URGENT_LANES = new Set(['needsYou', 'error', 'limit']);
 
-// Trim range per S2 lane, in dB. Minor outcomes, scenery and thunder are
-// never lifted: a short knock or a far rumble must not jump out of a quiet bed.
+// Trim range per S2 lane, in dB. Minor outcomes and scenery are never
+// lifted: a short knock or a far bell must not jump out of a quiet bed.
 // The Minor knock may come further down than the rest: over a 3–6-worker
 // Village it wants ≈ −7 dB (at −6 it read +1.6 and sat only 2.7 LU under
 // routine), while over the Town band and the storm it needs its full level
@@ -98,12 +104,7 @@ const TRIM_RANGE_BY_LANE = Object.freeze({
     outcomeMajor: RANGE_LIFTED,
     outcomeMinor: RANGE_KNOCK,
     scenery: RANGE_UNLIFTED,
-    thunder: RANGE_UNLIFTED,
 });
-
-// Thunder has no distance model yet (plan 4.2), so it aims at the far window:
-// over its own storm it is never lifted, and a calm-day strike comes down.
-const THUNDER_CONTEXT = 'far';
 
 function clamp(value, [lo, hi]) {
     return Math.max(lo, Math.min(hi, value));
@@ -124,8 +125,7 @@ export function isUrgentLevelLane(lane) {
 export function laneFloorLu(lane, bed = 'village') {
     const windows = AUDIBILITY_WINDOWS.lanes[lane];
     if (!windows) return null;
-    const context = lane === 'thunder' ? THUNDER_CONTEXT : bed;
-    const floor = (windows[context] ?? windows.village)?.min;
+    const floor = (windows[bed] ?? windows.village)?.min;
     return Number.isFinite(floor) ? floor : null;
 }
 
@@ -139,7 +139,7 @@ export function urgentTrimCapDb(nominalLufsM, plr) {
  * The trim (dB) one cue takes at schedule time.
  * @param {object} args
  * @param {string} args.lane  S2 lane: needsYou | error | limit | routine |
- *   outcomeMinor | outcomeMedium | outcomeMajor | scenery | thunder
+ *   outcomeMinor | outcomeMedium | outcomeMajor | scenery
  * @param {number} args.nominalLufsM  the voice's raw nominal loudness
  * @param {number|null} args.bedLufs  pre-duck bed loudness, null when unknown
  * @param {number[]} [args.recentUrgentTrims]  foreground urgent trims of the

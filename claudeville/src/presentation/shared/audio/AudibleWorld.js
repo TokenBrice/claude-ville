@@ -1,10 +1,10 @@
 // Honest silence (plan S6, 3.7; SIG-9, SIG-15). One gate decides which agents
-// a continuous sound may follow — never a stale observation — and one small
+// a sound may follow — never a stale observation — and one small
 // state machine decides whether the feed itself is live. The return digest's
 // notes are derived here too, so the phrase and the toast read one summary.
 // Pure and DOM-free: time is always passed in.
 
-import { actionableAgents, bucketCounts, bucketForStatus } from '../../../domain/services/SignalLedger.js';
+import { actionableAgents, bucketForStatus } from '../../../domain/services/SignalLedger.js';
 import { resolveObservation } from '../../character-mode/ObservationCertainty.js';
 
 // A feed that stays non-live this long is lost (SIG-9: reconnect flutter
@@ -35,7 +35,7 @@ function agentValues(source) {
 }
 
 /**
- * The agents every continuous mapping may follow: the World's (or a Map's,
+ * The agents every sound mapping may follow: the World's (or a Map's,
  * or an array's) agents whose observation is not stale.
  */
 export function audibleAgents(world, now = Date.now()) {
@@ -43,20 +43,9 @@ export function audibleAgents(world, now = Date.now()) {
 }
 
 /**
- * The village as the continuous strata may hear it: the audible agents'
- * bucket counts, plus how many agents the gate held back. A stale "working"
- * agent adds nothing to the murmur (S6).
- */
-export function audibleCounts(world, now = Date.now()) {
-    const all = agentValues(world);
-    const audible = all.filter(agent => isAudibleAgent(agent, now));
-    return { ...bucketCounts(audible), audible, stale: all.length - audible.length };
-}
-
-/**
- * The wait the held note carries: audible actionable agents, the family of
- * the longest-waiting one, and how many actionable agents are stale (a wait
- * that only went stale was not answered).
+ * The wait the signal route follows: audible actionable agents, the family
+ * of the longest-waiting one, and how many actionable agents are stale (a
+ * wait that only went stale was not answered).
  */
 export function waitState(world, now = Date.now()) {
     const all = agentValues(world);

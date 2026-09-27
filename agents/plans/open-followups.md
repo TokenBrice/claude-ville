@@ -2,7 +2,7 @@
 
 **Status:** `live checklist`
 
-**As of:** 2026-09-27, release `v0.47.0` — The Singing Isle
+**As of:** 2026-09-27, release `v0.47.1`
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs
@@ -83,7 +83,7 @@ linked from each source plan below.
   - **Trigger:** Before a release push, run and pass the long pressure soak against the correct server process.
   - **Source:** [post-OOM plan — Definition of done](claudeville-post-oom-reliability-performance-plan.md#definition-of-done) and [release verification gate](claudeville-post-oom-reliability-performance-plan.md#package-9--release-verification-gate).
   - **Reopen when:** before a release push, run the long pressure soak against the correct server process and pass both the JavaScript heap/RSS gates and deduplicated native-resource gates.
-  - **Current status:** Satisfied for v0.46.0; recurring before the next release push. The first 10/30-minute run against an isolated server failed `DOM listener count changed during World soak` (116 vs 114). The count was not climbing: it spiked at the 300 s and 600 s checkpoints and was back at the floor within 1 s. Cause: the 5-minute Chronicle prune ran as seven chained IndexedDB transactions, and the soak's quiescence barrier only waited for the one in flight, so each checkpoint sampled the chain's request handlers mid-flight. `ChronicleStore.prune()` now runs as one atomic readwrite transaction over all pruned stores. The soak and its assertion are unchanged. Re-run exit 0: listeners flat at 114 at every checkpoint; browser heap projected growth 1.57 MB against the 8 MiB limit; server RSS slope ≤ 0. Earlier evidence for v0.42.0: [release evidence](../research/claudeville-astra-refinement/README.md#v0420-release-verification).
+  - **Current status:** Satisfied for v0.47.1 (default 10/30-minute run against the maintained server, exit 0); recurring before the next release push. v0.46.0 history: The first 10/30-minute run against an isolated server failed `DOM listener count changed during World soak` (116 vs 114). The count was not climbing: it spiked at the 300 s and 600 s checkpoints and was back at the floor within 1 s. Cause: the 5-minute Chronicle prune ran as seven chained IndexedDB transactions, and the soak's quiescence barrier only waited for the one in flight, so each checkpoint sampled the chain's request handlers mid-flight. `ChronicleStore.prune()` now runs as one atomic readwrite transaction over all pruned stores. The soak and its assertion are unchanged. Re-run exit 0: listeners flat at 114 at every checkpoint; browser heap projected growth 1.57 MB against the 8 MiB limit; server RSS slope ≤ 0. Earlier evidence for v0.42.0: [release evidence](../research/claudeville-astra-refinement/README.md#v0420-release-verification).
   - **Current gate values:** **8 MiB** browser-heap projected-growth limit, **64 MiB** server-RSS allowance above the second-half median, with steady and trailing growth-slope limits, **250 ms** event-loop p95 limit, plus native canvas/asset drift checks in `scripts/smoke/performance-soak.mjs`.
 
 ### Additional conditional follow-ups from the semantic rendering plan
@@ -152,7 +152,7 @@ implementation checklist is not otherwise treated as open work.
   - **Added:** 2026-09-27
   - **Trigger:** Before the next release that ships the Opus 5.5 audio plan.
   - **Source:** [Opus 5.5 audio plan — Execution record](claudeville-opus55-audio-plan.md#execution-record).
-  - **Current status:** Open. Waves 0–7 are implemented and pass the local probe (`npm run audio:probe`, stage 7, 480 checks), but no one has listened. Pending: the Wave-3 listener battery (T1 idle/light/busy, T2 family ID ≥ 90 %, T5 "is anyone waiting?" ≥ 8/10, also in Town band for the waiting cadence) and the "bell, not beep" pass; a sea, weather and storm listening pass; a full working-day soak in each preset (log what got turned down or off); the reel v3 in `output/claudeville-opus55-audio/reel/` (local only) is the starting point.
+  - **Current status:** Open. Waves 0–7 are implemented and pass the local probe (`npm run audio:probe`, stage 7), but no one has listened. v0.47.1 retired the Village preset, so its sea, weather and storm pass and its soak no longer apply, and re-arranged the Town band's book (each piece its own players, key, feel, engine and meter) and extended it to 19 pieces; the Town band listening applies to that book. Pending: the Wave-3 listener battery (T1 idle/light/busy, T2 family ID ≥ 90 %, T5 "is anyone waiting?" ≥ 8/10, in Signals and in Town band for the waiting cadence) and the "bell, not beep" pass; a Town band pass over the 19 pieces (distinct at a listen, and their weather and night re-dress); a full working-day soak in Town band and in Signals (log what got turned down or off). The reel v3 in `output/claudeville-opus55-audio/reel/` (local only) predates v0.47.1.
 
 - [ ] **Top-bar centre overflows at 1280 with three attention buckets**
 
@@ -168,7 +168,7 @@ implementation checklist is not otherwise treated as open work.
   - **Added:** 2026-09-27
   - **Trigger:** A quiet-host run of `npm run audio:probe -- --only fps` and the world-scene CPU proxy.
   - **Source:** [Opus 5.5 audio plan — Waves 4 and 5](claudeville-opus55-audio-plan.md#execution-record).
-  - **Current status:** Open — reported as INFO. On a loaded host the app frame total p95 reads +0.1…+0.3 ms with sound on (the gate is ≤ 0.1 ms; off-vs-off noise was 0.0–0.5 ms; the same at Wave-4 HEAD), and the world-scene CPU proxy a median 6.8 % of a core against the ≤ 2 % sea / ≤ 3.5 % storm budgets.
+  - **Current status:** Open — reported as INFO. On a loaded host the app frame total p95 read +0.1…+0.3 ms with sound on (the gate is ≤ 0.1 ms; off-vs-off noise was 0.0–0.5 ms; the same at Wave-4 HEAD). The world-scene CPU proxy (a median 6.8 % of a core against the ≤ 2 % sea / ≤ 3.5 % storm budgets) measured the Village layers, retired in v0.47.1, so that half of the trigger no longer applies. What remains is the frame cost with the Town band playing, from a quiet-host `npm run audio:probe -- --only fps`.
 ## Already landed; do not carry forward as open
 
 - [x] **Change-driven Git enrichment:** scoped signatures, cache reuse, nested-remote handling, ref invalidation, and zero-command unchanged warm refresh are implemented. This does not close the async-worker item above.

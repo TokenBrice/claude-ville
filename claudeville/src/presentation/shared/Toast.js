@@ -45,7 +45,6 @@ const CUE_STRATUM = Object.freeze({
     aggregate: 'event',
     hourBell: 'scenery',
     aurora: 'scenery',
-    thunder: 'scenery',
     linkLost: 'scenery',
     linkRestored: 'scenery',
     digest: 'soundOnly',
@@ -136,7 +135,7 @@ function cleanDigestMessage(value) {
 }
 
 function labelAlreadyDescribesCue(label) {
-    return /\b(arrived|departed|left|needs|waiting|distress|recovered|answered|gathering|rang|ringing|reached|thunder|error|rate[- ]limited)\b/i.test(label);
+    return /\b(arrived|departed|left|needs|waiting|distress|recovered|answered|gathering|rang|ringing|reached|error|rate[- ]limited)\b/i.test(label);
 }
 
 function labelIsPredicate(label) {
@@ -178,7 +177,7 @@ function councilCaption(payload) {
 
 // Cues whose caption states a fact beyond the agent's name: counts, repos,
 // versions, the hour. `name` is the agent's display name, or '' when the cue
-// names none. Thunder makes no location claim.
+// names none.
 const FACT_CUE_COPY = Object.freeze({
     reminder: reminderCaption,
     turnDone: (payload, name) => (cueCount(payload) > 1
@@ -216,7 +215,6 @@ const FACT_CUE_COPY = Object.freeze({
     council: councilCaption,
     hourBell: hourBellCaption,
     aurora: () => 'Village milestone reached',
-    thunder: () => 'Thunder',
     linkLost: () => 'Live feed lost',
     linkRestored: () => 'Live feed restored',
 });

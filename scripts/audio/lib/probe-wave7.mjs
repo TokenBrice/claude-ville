@@ -4,8 +4,7 @@
 // probe.mjs turns them into PASS/FAIL lines.
 import { loudness } from './analyze.mjs';
 import { energyMeanLufs } from './checks.mjs';
-import { bandLevelDb } from './probe-wave4.mjs';
-import { repetition } from '../metrics/amb-metrics.mjs';
+import { bandLevelDb } from './probe-virtual.mjs';
 
 const toDb = x => (x > 0 ? 10 * Math.log10(x) : -Infinity);
 
@@ -68,7 +67,7 @@ function mMax(pair, sr, a, b) {
 // 2 s against the needs-you call's over 2.5 s, and the program's
 // short-term loudness `stAtSec` after the enable against the steady level:
 // the energy mean of the short-term values over [steadyFrom, steadyTo] (the
-// sea's swells and the wind's gusts ride through both).
+// band's phrases ride through both).
 export function awakenRows(r, { steadyFrom, steadyTo, stAtSec }) {
     const plays = r.meta.awakens || [];
     const first = plays[0] ?? null;
@@ -83,14 +82,13 @@ export function awakenRows(r, { steadyFrom, steadyTo, stAtSec }) {
     return { plays: plays.length, presets: plays.map(p => p.preset), enableAt, awakenMMax, callMMax, stAt, steady };
 }
 
-// 7.7 output: program loudness and inter-channel coherence of a render
-// after its warmup; `lrDiffDb` is the largest |L − R| sample (dBFS) — a true
-// mono program has none.
+// 7.7 output: program loudness of a render after its warmup; `lrDiffDb` is
+// the largest |L − R| sample (dBFS) — a true mono program has none.
 export function outputRow(r) {
     const s = slice(r.program, r.sr, r.meta.warmup, r.program.L.length / r.sr);
     let d = 0;
     for (let i = 0; i < s.L.length; i++) d = Math.max(d, Math.abs(s.L[i] - s.R[i]));
-    return { lufsI: loudness(s.L, s.R, r.sr).integrated, icc: repetition(s.L, s.R, r.sr).icc, lrDiffDb: d > 0 ? 20 * Math.log10(d) : -Infinity, output: r.meta.output ?? null };
+    return { lufsI: loudness(s.L, s.R, r.sr).integrated, lrDiffDb: d > 0 ? 20 * Math.log10(d) : -Infinity, output: r.meta.output ?? null };
 }
 
 // 7.7 tone: the program's band levels (dB) after the warmup — above the
@@ -123,13 +121,12 @@ export function attackOf(pair, sr, onset, { spanSec = 0.3, winMs = 5, hopMs = 1 
     return { riseMs: (top - start) * hopMs, peakDb: peak };
 }
 
-// 7.7 soften: the arrival's bell attack, the thunder's attack and peak, the
-// needs-you call's M max, and every duck's depths paired with the cue that
-// asked for it (the scheduled cue nearest its request).
+// 7.7 soften: the arrival's bell attack, the needs-you call's M max, and
+// every duck's depths paired with the cue that asked for it (the scheduled
+// cue nearest its request).
 export function softenRow(r) {
     const first = kind => r.meta.scheduled.find(s => s.kind === kind && !s.silent && s.notes?.length) ?? null;
     const arrival = first('arrival');
-    const thunder = first('thunder');
     const call = first('summons');
     const ducks = r.meta.ducks.map((d) => {
         const cue = r.meta.scheduled.filter(s => !s.silent && Math.abs(s.t - d.at) < 0.1).sort((x, y) => Math.abs(x.t - d.at) - Math.abs(y.t - d.at))[0];
@@ -138,7 +135,6 @@ export function softenRow(r) {
     return {
         // The first strike alone: the window ends before the next note.
         bell: arrival ? attackOf(r.stems.cue, r.sr, arrival.notes[0], { spanSec: arrival.notes.length > 1 ? Math.min(0.3, arrival.notes[1] - arrival.notes[0] - 0.005) : 0.3 }) : null,
-        thunder: thunder ? attackOf(r.stems.cue, r.sr, thunder.notes[0], { spanSec: 1.5, winMs: 20, hopMs: 5 }) : null,
         callMMax: call ? mMax(r.stems.cue, r.sr, call.notes[0], call.notes[0] + 2.5) : null,
         ducks,
         output: r.meta.output ?? null,

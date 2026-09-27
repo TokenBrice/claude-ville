@@ -50,7 +50,6 @@ const NOTE_OFFSETS_MS = Object.freeze({
     departure: Object.freeze([0, 240]),
     recovery: Object.freeze([0, 200]),
     aurora: Object.freeze(AURORA_FIGURE.notes.map(note => note.atMs)),
-    thunder: Object.freeze([0]),
     // Signal: the cracked bell's fall (its grace strike sits inside the start
     // lead, an ornament, not a note); three escapement ticks slowing down;
     // the Signals-only answer.

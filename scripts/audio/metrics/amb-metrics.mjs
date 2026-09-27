@@ -1,8 +1,8 @@
 // Environment metrics (AMB; ported from the AMB notes, amb-snippets/metrics.mjs):
 // repetition (normalised autocorrelation at chosen lags), stereo
 // interchannel correlation (ICC), Schroeder RT60 per octave band for IR
-// renders, per-event decay (thunder), and the wet share of a with/without-air
-// pair. Pure Node on Float32Array channels.
+// renders, and the wet share of a with/without-air pair. Pure Node on
+// Float32Array channels.
 import { biquad, fft, midOf, round } from './dsp.mjs';
 
 // Normalised autocorrelation r(lag) over all lags via FFT on a 4×-decimated
@@ -107,43 +107,6 @@ export function rt60(L, R, fs, { bands = [250, 500, 1000, 2000, 4000] } = {}) {
     out.c80Db = round(10 * Math.log10(early / late));
     out.icc = round(icc(L, R), 3);
     return out;
-}
-
-// Per event at `t`: time from the event's 50 ms peak until the RMS falls
-// 30 dB below it (within `win` s), energy share above 1 kHz and below 150 Hz.
-export function eventDecay(L, R, fs, t, { win = 8 } = {}) {
-    const m = midOf(L, R);
-    const hi = biquad(m, 'hp', 1000, fs);
-    const lo = biquad(m, 'lp', 150, fs);
-    const hop = Math.round(0.05 * fs);
-    const a = Math.round(t * fs);
-    const b = Math.min(m.length, a + Math.round(win * fs));
-    const frames = [];
-    for (let i = a; i + hop <= b; i += hop) {
-        let s = 0;
-        for (let k = i; k < i + hop; k++) s += m[k] * m[k];
-        frames.push(10 * Math.log10(s / hop + 1e-30));
-    }
-    let pi = 0;
-    frames.forEach((v, i) => { if (v > frames[pi]) pi = i; });
-    let j = pi;
-    while (j < frames.length && frames[j] > frames[pi] - 30) j++;
-    let eh = 0;
-    let el = 0;
-    let et = 0;
-    let sl = 0;
-    let sr = 0;
-    let slr = 0;
-    for (let i = a; i < b; i++) {
-        eh += hi[i] * hi[i]; el += lo[i] * lo[i]; et += m[i] * m[i];
-        sl += L[i] * L[i]; sr += R[i] * R[i]; slr += L[i] * R[i];
-    }
-    return {
-        at: t, peakAtS: round(pi * 0.05, 2),
-        decay30S: j >= frames.length ? null : round((j - pi) * 0.05, 2),
-        shareAbove1kDb: round(10 * Math.log10(eh / et)), shareBelow150Db: round(10 * Math.log10(el / et)),
-        icc: round(slr / Math.sqrt(sl * sr), 3),
-    };
 }
 
 // Wet share of a deterministic pair (a = with air, b = dry): energy of

@@ -2,37 +2,35 @@
 // audio modules straight from the repo (served read-only at "/") and drives
 // them through their public surfaces: the real AmbientAudioController, the
 // real event bus, real AtmosphereState snapshots. Nothing here edits
-// synthesis; the only interventions are selection pins (which tune plays,
-// set on the sequencer as it starts), layer isolation through the
-// director's own forceLayer() QA hook, and a later first slot for the
-// Village song (see README "fidelity").
+// synthesis; the only intervention is a selection pin (which Town band piece
+// plays, set on the sequencer as it starts, scene.js pinSequencer).
 
 import { AmbientAudioController } from '/src/presentation/shared/AmbientAudioController.js';
 import { eventBus } from '/src/domain/events/DomainEvent.js';
 import { createAtmosphereSnapshot } from '/src/presentation/character-mode/AtmosphereState.js';
 import { AudioEngine } from '/src/presentation/shared/audio/AudioEngine.js';
-import { AudioDirector } from '/src/presentation/shared/audio/AudioDirector.js';
+import { SignalDirector } from '/src/presentation/shared/audio/SignalDirector.js';
 import { CueKit, laneForCueKind } from '/src/presentation/shared/audio/cues/CueKit.js';
 import { CueGovernor } from '/src/presentation/shared/audio/CueGovernor.js';
 import { cueNoteOffsetsMs } from '/src/presentation/shared/audio/CueScore.js';
 import { STANDARD_VOLUME_STEP } from '/src/presentation/shared/audio/Loudness.js';
 import { PIECES } from '/src/presentation/shared/audio/bgm/BgmSongbook.js';
 import {
-    LAYERS, PRESET_FOR_MODE, atmosphereFor, atmosphereSummary, hourFor, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
+    PRESET_FOR_MODE, atmosphereFor, atmosphereSummary, hourFor, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
 } from './scene.js';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 export const modules = {
     AmbientAudioController, eventBus, createAtmosphereSnapshot, AudioEngine,
-    AudioDirector, CueKit, CueGovernor, cueNoteOffsetsMs, PIECES, laneForCueKind,
+    SignalDirector, CueKit, CueGovernor, cueNoteOffsetsMs, PIECES, laneForCueKind,
 };
 
 // ------------------------------------------------------------ realtime ----
-// spec: { mode, volumeStep, layerSteps, world:{counts},
-//         atmosphere:{phase,progress,weather}, isolate, music:{tune, phase},
-//         bgm:{piece, loop}, warmup, seconds, actions:[see scene.js runAction],
-//         maxSeconds, snippet }
+// spec: { mode ('signals' | 'bgm', default 'bgm'), volumeStep, world:{counts},
+//         atmosphere:{phase,progress,weather}, bgm:{piece, loop}, warmup,
+//         seconds, actions:[see scene.js runAction], maxSeconds, tailSeconds,
+//         snippet }
 export async function runRealtime(spec) {
     seedSoundStorage(spec);
 
@@ -57,32 +55,12 @@ export async function runRealtime(spec) {
     });
     if (snippet?.before) await snippet.before({ ...api(), modules, eventBus, world, mark });
 
-    // Music pins and marks (set before the controller: the sequencer picks
-    // its first piece as it starts). Village: the pinned tune, its first slot
-    // held until the layer's level slew has settled, every section marked.
-    // Town band: the pinned piece, every loop and four-bar chunk marked, done
-    // once the requested loop has finished (`loop: 0` pins only).
+    // Town band pins and marks (set before the controller: the sequencer
+    // picks its first piece as it starts): the pinned piece, every loop and
+    // four-bar chunk marked, done once the requested loop has finished
+    // (`loop: 0` pins only). Signals has no music, so nothing to pin.
     let done = null;
     let resolveDone = null;
-    if (spec.music) {
-        done = new Promise(r => { resolveDone = r; });
-        const ok = await pinSequencer({
-            preset: 'village',
-            piece: spec.music.tune,
-            holdFirstSec: (spec.music.gateMs ?? 9000) / 1000,
-            onMark(m) {
-                if (m.kind === 'section') {
-                    if (m.index === 0) mark('song-start', { t: m.t });
-                    markers.push({ label: `${m.song}:${m.step}${m.variation ? `(${m.variation})` : ''}`, t: m.t, kind: 'section' });
-                } else if (m.kind === 'songEnd') {
-                    markers.push({ label: 'song-end', t: m.t, kind: 'section' });
-                    resolveDone?.({ endT: m.t });
-                    resolveDone = null;
-                }
-            },
-        });
-        if (!ok) throw new Error('the harness pins music through audio/music/Sequencer.js, which this tree lacks');
-    }
     if (spec.bgm) {
         if (!PIECES.some(p => p.name === spec.bgm.piece)) throw new Error(`unknown BGM piece ${spec.bgm.piece}`);
         const wantLoop = spec.bgm.loop ?? 2;
@@ -92,13 +70,13 @@ export async function runRealtime(spec) {
             piece: spec.bgm.piece,
             onMark(m) {
                 if (m.kind === 'loop') {
-                    markers.push({ label: `${m.piece}:loop${m.loop}:${m.section}`, t: m.t, kind: 'loop', loop: m.loop, section: m.section });
+                    markers.push({ label: `${m.piece}:loop${m.loop}:band${m.band}`, t: m.t, kind: 'loop', loop: m.loop, band: m.band });
                     if (m.loop === wantLoop && resolveDone) {
                         resolveDone({ startT: m.t, endT: m.t + m.loopSeconds, loopSeconds: m.loopSeconds });
                         resolveDone = null;
                     }
                 } else if (m.kind === 'chunk' && m.bar > 1) {
-                    markers.push({ label: `bar${m.bar}:${m.section}`, t: m.t, kind: 'chunk', loop: m.loop, section: m.section });
+                    markers.push({ label: `bar${m.bar}:band${m.band}`, t: m.t, kind: 'chunk', loop: m.loop, band: m.band });
                 }
             },
         });
@@ -108,7 +86,7 @@ export async function runRealtime(spec) {
     controller = new AmbientAudioController({ world });
     // The page already holds a real user activation (openHarness clicks it),
     // so this is the same enable a TopBar pick performs.
-    controller.setPreset(PRESET_FOR_MODE[spec.mode || 'ambient'], { fromUser: true });
+    controller.setPreset(PRESET_FOR_MODE[spec.mode || 'bgm'], { fromUser: true });
     const t0 = performance.now();
     while (!(controller.engine.running && controller.director.running)) {
         if (performance.now() - t0 > 10000) throw new Error(`audio did not start: ${controller.engine.context?.state}`);
@@ -116,17 +94,10 @@ export async function runRealtime(spec) {
     }
     mark('audio-started');
 
-    const director = controller.director;
-
-    if (spec.isolate) {
-        for (const name of LAYERS) {
-            if (name !== spec.isolate) director.forceLayer(name, 0, 1e9);
-        }
-    }
-
     if (snippet?.default) await snippet.default(api());
 
-    // Level/state log once per second (audio clock), for the JSON sidecar.
+    // State log once per second (audio clock), for the JSON sidecar: the
+    // Town band's level, piece and section; the Signals director's state.
     const stateLog = [];
     const logTimer = setInterval(() => {
         const snap = window.__claudevilleAudio?.();
@@ -163,10 +134,6 @@ export async function runRealtime(spec) {
         await sleep((spec.seconds ?? 20) * 1000);
         endT = controller.engine.now();
     }
-    if (spec.music) {
-        const first = markers.find(m => m.kind === 'section');
-        if (first) windowStart = Math.max(recStart, first.t - 0.5);
-    }
     markers.push({ label: 'rec-end', t: endT });
     clearInterval(logTimer);
     clearInterval(pump);
@@ -181,7 +148,7 @@ export async function runRealtime(spec) {
         timedOut: Boolean(done && !doneInfo),
         hour,
         atmosphere: atmosphereSummary(snapshot),
-        worldCounts: snap?.sectionCounts,
+        worldCounts: snap?.section?.counts,
         finalSnapshot: snap,
         stateLog,
     };
@@ -236,7 +203,7 @@ export async function runOfflineCues(spec) {
 // { context, destination, engine, modules, mark, seconds }. `destination` is
 // the context destination (tapped in realtime, rendered offline); `engine` is
 // a real AudioEngine whose master chain already feeds that destination, so
-// connecting to engine.busInput('cue' | 'world' | 'work' | 'music') hears the
+// connecting to engine.busInput('cue' | 'music') hears the
 // shipped mix.
 export async function runSnippet({ url, seconds = 8, offline = false, sampleRate = 48000, volumeStep = STANDARD_VOLUME_STEP }) {
     const mod = await import(url);

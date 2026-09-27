@@ -128,7 +128,6 @@ test('fact captions state the exact fact for every Wave-3 kind', () => {
         [{ kind: 'hourBell', agentId: null, label: 'Hour bell', hour: 15 }, "Hour bell · 3 o'clock"],
         [{ kind: 'hourBell', agentId: null, label: 'Hour bell', hour: 0 }, "Hour bell · 12 o'clock"],
         [{ kind: 'aurora', agentId: null, label: 'Chronicle milestone' }, 'Village milestone reached'],
-        [{ kind: 'thunder', agentId: null, label: 'Thunder' }, 'Thunder'],
         [{ kind: 'linkLost', agentId: null, label: '' }, 'Live feed lost'],
         [{ kind: 'linkRestored', agentId: null, label: '' }, 'Live feed restored'],
     ];
@@ -171,13 +170,13 @@ test('caption bursts stay bounded while primary cues displace routine cues first
     try {
         view.eventTarget.emit('audio:cue-played', { kind: 'arrival', agentId: 'a', label: 'Aurora' });
         view.eventTarget.emit('audio:cue-played', { kind: 'departure', agentId: 'b', label: 'Bramble' });
-        view.eventTarget.emit('audio:cue-played', { kind: 'thunder', agentId: null, label: '' });
+        view.eventTarget.emit('audio:cue-played', { kind: 'aurora', agentId: null, label: '' });
         view.eventTarget.emit('audio:cue-played', { kind: 'summons', agentId: 'c', label: 'Cinder' });
 
         assert.equal(view.container.children.length, 3);
         assert.deepEqual(
             view.container.children.map(child => child.textContent),
-            ['Bramble departed', 'Thunder', 'Cinder needs you'],
+            ['Bramble departed', 'Village milestone reached', 'Cinder needs you'],
         );
     } finally {
         view.cleanup();
@@ -208,7 +207,7 @@ test('a ceremony replaces the caption of the aggregate it absorbed and keeps its
             agentId: null,
             label: 'Routine activity: 5 arrivals',
         });
-        view.eventTarget.emit('audio:cue-played', { kind: 'thunder', agentId: null, label: '' });
+        view.eventTarget.emit('audio:cue-played', { kind: 'aurora', agentId: null, label: '' });
         view.eventTarget.emit('audio:cue-played', {
             kind: 'council',
             agentId: null,
@@ -224,7 +223,7 @@ test('a ceremony replaces the caption of the aggregate it absorbed and keeps its
 
         assert.deepEqual(
             view.container.children.map(child => child.textContent),
-            ['Thunder', 'A team gathered · 5 arrivals'],
+            ['Village milestone reached', 'A team gathered · 5 arrivals'],
         );
     } finally {
         view.cleanup();
@@ -246,7 +245,7 @@ test('a newer village reminder restates the wait instead of counting the old one
 test('a sound-off user with default settings sees signals but no outcome or scenery captions', () => {
     const view = harness(new MemoryStorage());
     try {
-        for (const kind of ['turnDone', 'push', 'release', 'arrival', 'council', 'hourBell', 'thunder', 'aurora', 'linkLost']) {
+        for (const kind of ['turnDone', 'push', 'release', 'arrival', 'council', 'hourBell', 'aurora', 'linkLost']) {
             view.eventTarget.emit('audio:cue-played', { kind, agentId: null, label: '', count: 2 });
         }
         assert.equal(view.container.children.length, 0);

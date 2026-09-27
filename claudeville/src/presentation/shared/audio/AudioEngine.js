@@ -1,46 +1,39 @@
-// Web Audio context lifecycle and the master mix for the village soundscape
-// (plan S3: bus map and master).
+// Web Audio context lifecycle and the master mix (plan S3: bus map and
+// master).
 //
 // Graph:
-//   layer ─► director group (groupInput(name, director); crossfade gain)
-//         ─► group fader (mixer trim) ─► bus
-//   world (wind, rain, wildlife) ─► presence dip −3 dB @ 3.4 kHz ─► weather ceiling ─► worldDuck ─┐ tilt
-//   work (hum, workshops) ─────────────────────────────────────────────────────────► workDuck ──┤
-//   music ─► low shelf −3 dB @ 160 Hz ─► bass < 300 Hz mono ─► attention ───────────► musicDuck ─┘ tilt
-//     programSum (tilt = circadian high shelf + the listener's tone on world + music only;
-//     headphones narrow the world bed before it: worldWidth)
+//   player ─► director group (groupInput('music', director); crossfade gain)
+//          ─► music group fader ─► music bus
+//   music ─► low shelf −3 dB @ 160 Hz ─► bass < 300 Hz mono ─► attention ─► musicDuck
+//     ─► tone shelf (the listener's Warm ↔ Bright, 3 kHz)
 //       ─► bedGate ─► PROGRAM_TRIM ─► HPF 30 Hz ─┐
 //   cue ───────────► PROGRAM_TRIM ───────────────┤
-//   Island Air wet ► PROGRAM_TRIM ───────────────┤
-//   signalBed ─► signalBedDuck ─► signalGate ─► PROGRAM_TRIM ─┴─► mono fold ─► LP 14 kHz ─► limiter (−1.5 dBFS) ─► volume ─► fade ─► out
+//   Island Air wet ► PROGRAM_TRIM ───────────────┴─► mono fold ─► LP 14 kHz ─► limiter (−1.5 dBFS) ─► volume ─► fade ─► out
 //
 // The listener's output (7.7, OutputStage.js): Mono folds the whole program
 // to both ears before the limiter (compensated, so it never gets quieter or
-// passes the ceiling); Headphones scales every voice's pan and narrows the
-// world bed; Speakers leaves the mix as made.
+// passes the ceiling); Headphones scales every voice's pan; Speakers leaves
+// the mix as made.
 //
-// `signalBed` carries the held note (S3, plan 3.3): no presence dip, no
-// attention stage, no music duck, outside the bed tap; it ducks only under
-// urgent cues (DUCK_DEPTHS.urgent.signalBed) and its gate moves with bedGate,
-// so a hidden-tab wake sounds the cue alone.
+// Island Air (IslandAir.js, S5): a group voice's sends enter per (director,
+// group) wet inputs that follow the director crossfade and the group fader,
+// then the bed air gate (which mirrors bedGate); cue and one-shot sends
+// enter the cue air input. One convolver pair serves both, and its wet
+// return joins at the cue staging, so a wet path gets exactly the trim its
+// dry path gets.
 //
-// Island Air (IslandAir.js, S5): layer sends enter per (director, group)
-// wet inputs that follow the director crossfade and the group fader, then
-// the bed air gate (which mirrors bedGate); cue and one-shot sends enter the
-// cue air input. One convolver pair serves both, and its wet return joins
-// at the cue staging, so a wet path gets exactly the trim its dry path gets.
-//
-// Every voice joins a bus through `busInput(name)` or a group through
-// `groupInput(name, director)`. The ducks are note-timed windows per bus
-// (`duck()`, DuckScheduler.js). `bedGate` closes the whole program during a
-// hidden-tab wake so only the cue path sounds. The volume is the last gain
-// before the fade, after the limiter, so a slider step changes level only.
-// The limiter is an AudioWorklet (worklets/limiter-processor.js), loaded
-// before the graph is built; without AudioWorklet (or with
+// Every voice joins a bus through `busInput(name)` or the music group
+// through `groupInput('music', director)`. The ducks are note-timed windows
+// on the music bus (`duck()`, DuckScheduler.js). `bedGate` closes the music
+// during a hidden-tab wake so only the cue path sounds. The volume is the
+// last gain before the fade, after the limiter, so a slider step changes
+// level only. The limiter is an AudioWorklet (worklets/limiter-processor.js),
+// loaded before the graph is built; without AudioWorklet (or with
 // `globalThis.__claudevilleAudioNoWorklets = true`) a DynamicsCompressor and
 // a tanh WaveShaper stand in.
 //
-// Side branches (never in series): the pre-duck bed tap that
+// Side branches (never in series): the pre-duck bed tap (attention out
+// plus the Island Air wet return: the bed as heard) that
 // `bedLoudness()` reads (K-weighting IIR ×2 → per-channel square → one-pole
 // mean → a 32-sample analyser), the `rms()` analyser on the output, and the
 // debug meters (ENG-10), which exist only while enabled:
@@ -59,22 +52,12 @@ import { Transport } from './Transport.js';
 
 export const MIN_GAIN = 0.0001;
 
-// Mixer groups with a persistent fader each; layers name theirs via BaseLayer's `group`.
-export const AUDIO_GROUPS = Object.freeze(['wind', 'rain', 'wildlife', 'hum', 'workshops', 'music']);
-export const AUDIO_BUSES = Object.freeze(['world', 'work', 'music', 'cue', 'signalBed']);
-const GROUP_BUS = Object.freeze({
-    wind: 'world',
-    rain: 'world',
-    wildlife: 'world',
-    hum: 'work',
-    workshops: 'work',
-    music: 'music',
-});
-const DUCKED_BUSES = Object.freeze(['world', 'work', 'music', 'signalBed']);
+// Mixer groups with a persistent fader each; players name theirs via BaseLayer's `group`.
+export const AUDIO_GROUPS = Object.freeze(['music']);
+export const AUDIO_BUSES = Object.freeze(['music', 'cue']);
+const GROUP_BUS = Object.freeze({ music: 'music' });
+const DUCKED_BUSES = Object.freeze(['music']);
 
-// Circadian high shelf at 3 kHz on world + music (SOTA-14, MIX-5), dB by phase.
-export const TILT_DB = Object.freeze({ dawn: 1, day: 0, dusk: -1.5, night: -3 });
-const TILT_TAU_SEC = 10;
 const CUE_TRIM_TAU_SEC = 0.017;
 
 const METER_TAPS = Object.freeze(['program', 'bed', 'music', 'cue']);
@@ -303,13 +286,9 @@ export class AudioEngine {
         this.air = null;
         this._airBedGate = null;
         this._airWetTrim = null;
-        this._signalGate = null;
         this._airPhase = 'day';
-        this._airWeather = { rain: 0, fog: 0 };
-        this._noiseWorklet = false;
-        this._tilt = null;
+        this._toneShelf = null;
         this._attention = null;
-        this._weatherCeiling = null;
         this._bedTap = null;
         this._bedMeter = null;
         this._bedOpenAt = null;
@@ -320,7 +299,6 @@ export class AudioEngine {
         // Mix state outlives the context so a rebuilt graph keeps the mix.
         this._groupLevels = new Map(AUDIO_GROUPS.map(name => [name, 1]));
         this._directors = new Map();
-        this._tiltPhase = 'day';
         // The listener's output, tone and soften (7.7); set before or after
         // the graph exists.
         this._output = outputSettings('speakers');
@@ -329,10 +307,8 @@ export class AudioEngine {
         // Quiet hours (UX-11): the cue bus a little softer, dB ≤ 0.
         this._cueTrimDb = 0;
         this._cueTrim = null;
-        this._worldWidth = null;
         this._monoFold = null;
         this._attentionDb = 0;
-        this._weatherCeilingDb = 0;
         this._duckSchedulers = new Map(DUCKED_BUSES.map(name => [name, new DuckScheduler()]));
         this._contextPromise = null;
         this._pendingContext = null;
@@ -399,23 +375,19 @@ export class AudioEngine {
     }
 
     // Build the engine on an existing context (an OfflineAudioContext in the
-    // probe): loads the limiter and noise worklets, then builds the graph.
+    // probe): loads the limiter worklet, then builds the graph.
     attachContext(ctx) {
         if (!this._contextPromise) this._contextPromise = this._attach(ctx);
         return this._contextPromise;
     }
 
     async _attach(ctx) {
-        const [worklet, noiseWorklet] = await Promise.all([
-            this._loadWorklet(ctx, './worklets/limiter-processor.js'),
-            this._loadWorklet(ctx, './worklets/noise-processor.js'),
-        ]);
+        const worklet = await this._loadWorklet(ctx, './worklets/limiter-processor.js');
         if (this._disposed) {
             try { await ctx.close(); } catch { /* already closed */ }
             return false;
         }
         this.context = ctx;
-        this._noiseWorklet = noiseWorklet;
         this._buildGraph(worklet);
         return true;
     }
@@ -443,14 +415,6 @@ export class AudioEngine {
         this._busOuts = new Map(DUCKED_BUSES.map(name => [name, gain()]));
         for (const scheduler of this._duckSchedulers.values()) scheduler.prune(Infinity);
 
-        // world: presence dip, weather ceiling
-        this._weatherCeiling = gain(dbToGain(this._weatherCeilingDb));
-        this._buses.get('world')
-            .connect(makeFilter(ctx, 'peaking', 3400, { q: 0.9, gain: -3 }))
-            .connect(this._weatherCeiling);
-        const worldPre = this._weatherCeiling;
-        const workPre = this._buses.get('work');
-
         // music: low shelf, bass mono, attention
         this._attention = gain(dbToGain(this._attentionDb));
         const bassMono = this._buildBassMono(ctx);
@@ -461,31 +425,22 @@ export class AudioEngine {
         const musicPre = this._attention;
         this._musicPre = musicPre;
 
-        // The pre-duck bed tap (world + work + music), explicit stereo.
+        // The pre-duck bed tap (the music; its room joins below), explicit stereo.
         this._bedTap = gain();
         this._bedTap.channelCount = 2;
         this._bedTap.channelCountMode = 'explicit';
         this._bedTap.channelInterpretation = 'speakers';
-        for (const pre of [worldPre, workPre, musicPre]) pre.connect(this._bedTap);
+        musicPre.connect(this._bedTap);
         this._bedMeter = this._buildBedMeter(ctx, this._bedTap);
         this._bedOpenAt = now;
-
-        this._worldWidth = this._buildWidth(ctx, this._output.worldWidth, this._output.worldMakeupDb);
-        worldPre.connect(this._worldWidth.input);
-        this._worldWidth.output.connect(this._busOuts.get('world'));
-        workPre.connect(this._busOuts.get('work'));
         musicPre.connect(this._busOuts.get('music'));
 
-        // Program: tilt on world + music, then gate, trim, HPF.
-        this._tilt = makeFilter(ctx, 'highshelf', 3000, { gain: this._tiltDb() });
-        const programSum = gain();
-        this._busOuts.get('world').connect(this._tilt);
-        this._busOuts.get('music').connect(this._tilt);
-        this._tilt.connect(programSum);
-        this._busOuts.get('work').connect(programSum);
+        // Program: the tone shelf on the music, then gate, trim, HPF.
+        this._toneShelf = makeFilter(ctx, 'highshelf', 3000, { gain: toneDb(this._tone) });
         this.bedGate = gain();
         const masterSum = gain();
-        programSum
+        this._busOuts.get('music')
+            .connect(this._toneShelf)
             .connect(this.bedGate)
             .connect(gain(dbToGain(PROGRAM_TRIM_DB)))
             .connect(makeFilter(ctx, 'highpass', 30))
@@ -496,19 +451,19 @@ export class AudioEngine {
         // Island Air: one convolver pair; the wet return joins at the cue
         // staging. Its bed gate mirrors bedGate (start / wake).
         this.air?.destroy();
-        this.air = new IslandAir(ctx, this.bank, { phase: this._airPhase, weather: this._airWeather });
+        this.air = new IslandAir(ctx, this.bank, { phase: this._airPhase });
         this._airBedGate = this.air.bedGate;
         this._airWetTrim = gain(dbToGain(PROGRAM_TRIM_DB));
         this.air.output.connect(this._airWetTrim).connect(masterSum);
-
-        // The held note's own path (S3): its duck, then a gate that mirrors
-        // bedGate, then the same program trim as the bed it sits over.
-        this._signalGate = gain();
-        this._buses.get('signalBed').connect(this._busOuts.get('signalBed'));
-        this._busOuts.get('signalBed')
-            .connect(this._signalGate)
-            .connect(gain(dbToGain(PROGRAM_TRIM_DB)))
-            .connect(masterSum);
+        // The bed as heard is the music and its room: the air's wet return
+        // (the band's sends ride the group faders, pre-duck, like the dry
+        // bed) joins the bed tap in the same bus domain. A wet arrangement
+        // lifts the bed by its room — the probe's `margins` needs-you over
+        // Millbrook's harp lead measured the dry tap 2.1 LU under the
+        // heard bed (dry −33.4, room −39.2 LUFS, their sum −31.3), so the
+        // call aimed 2 LU short. A cue's own tail is part of the bed the
+        // next cue meets.
+        this.air.output.connect(this._bedTap);
 
         // Master: LP 14 kHz → limiter → volume → fade → out.
         this._limiterIn = makeFilter(ctx, 'lowpass', 14000);
@@ -537,10 +492,12 @@ export class AudioEngine {
         }
         this._directorGroups.clear();
         this._directorAir.clear();
-        // The noise pool builds in idle slices from here on (a lane that
-        // asks first finishes it synchronously). Queued after the graph so
-        // no idle slice is pending across the worklet loads that enabling
-        // awaits. Nothing that sounds ever waits for it (or for a bake).
+        // The noise pool (the band's noise lanes, the cues' one-shot grains)
+        // builds in idle slices from here on (a voice that asks first
+        // finishes it synchronously).
+        // Queued after the graph so no idle slice is pending across the
+        // worklet load that enabling awaits. Nothing that sounds ever waits
+        // for it (or for a bake).
         this.noisePool.prebuild();
     }
 
@@ -652,12 +609,12 @@ export class AudioEngine {
         return { analyser, data: new Float32Array(analyser.fftSize) };
     }
 
-    // LUFS of the pre-duck bed (world + work + music) over ~3 s, K-weighted,
-    // true-stereo power, in the bus domain: before PROGRAM_TRIM, tilt, fade
-    // and volume (the domain of Loudness.js VOICE_REGISTRY nominals), plus
-    // the bed compensation. null while the bed is paused or unprimed (not
-    // started, a wake, a suspended context, or < 1.5 s since the bed
-    // opened); silence reads −70.
+    // LUFS of the pre-duck bed (the music and its room, the air's wet
+    // return) over ~3 s, K-weighted, true-stereo power, in the bus domain:
+    // before PROGRAM_TRIM, the tone shelf, fade and volume (the domain of
+    // Loudness.js VOICE_REGISTRY nominals), plus the bed compensation. null
+    // while the bed is paused or unprimed (not started, a wake, a suspended
+    // context, or < 1.5 s since the bed opened); silence reads −70.
     bedLoudness() {
         const meter = this._bedMeter;
         const ctx = this.context;
@@ -671,9 +628,9 @@ export class AudioEngine {
         return Math.max(BED_FLOOR_LUFS, -0.691 + 10 * Math.log10(meanSquare) + this._bedCompensationAt(ctx.currentTime));
     }
 
-    // D3 (5.6): the blurred window's quiet mix lowers the bed faders by
-    // `db` on purpose; every bed reader (cue trims, the held note) must
-    // still level against the full bed, so signals sound unchanged. The
+    // D3 (5.6): the blurred window's quiet mix lowers the music fader by
+    // `db` on purpose; every bed reader (cue trims) must still level
+    // against the full bed, so signals sound unchanged. The
     // compensation eases with the tap's own one-pole mean (BED_TAU_SEC),
     // so a steady bed reads the same across the change.
     setBedCompensation(db) {
@@ -694,36 +651,18 @@ export class AudioEngine {
     // A continuous noise lane (AMB-3): an unstarted, looping
     // AudioBufferSourceNode on the colour's stereo pool buffer ('white' |
     // 'brown'); `start(t)` reads from a seeded offset ≥ 5 s from every live
-    // continuous lane (`startOffset`). One-shot grains (knocks, thunder) take
-    // `noisePool.reserveOneShot` instead, which avoids every live lane, so
-    // world offsets never depend on work events.
+    // continuous lane (`startOffset`). One-shot grains (cue knocks) take
+    // `noisePool.reserveOneShot` instead, which avoids every live lane.
     noiseSource(color, { rng } = {}) {
         if (!this.context) return null;
         return this.noisePool.source(this.context, color, { rng });
     }
 
-    // Rain dust or bubbles (worklets/noise-processor.js): a 2-channel
-    // AudioWorkletNode with a k-rate `density` AudioParam (events/s), or
-    // null without AudioWorklet (the caller keeps its native voices).
-    noiseWorklet(kind, { rng, density = 0, gain = 1, fmin, fmax, decayMs, tauMs } = {}) {
-        if (!this.context || !this._noiseWorklet) return null;
-        if (typeof rng !== 'function') throw new Error('noiseWorklet needs an rng stream');
-        const node = new AudioWorkletNode(this.context, 'claudeville-noise', {
-            numberOfInputs: 0,
-            numberOfOutputs: 1,
-            outputChannelCount: [2],
-            processorOptions: { kind, seed: Math.floor(rng() * 4294967295) >>> 0, gain, fmin, fmax, decayMs, tauMs },
-        });
-        node.parameters.get('density').value = density;
-        return node;
-    }
-
     // One voice's placement chain (S3, S5): node → [low-pass] → panner →
-    // bus (or a director's group input), plus an Island Air send of `air`
-    // (linear) tapped after the panner — into the cue air input for cues
-    // and ungrouped one-shots, into the group's wet input for grouped ones.
+    // bus, plus an Island Air send of `air` (linear) tapped after the
+    // panner into the cue air input for cues, the bed air input otherwise.
     // Built once per voice; `dispose()` disconnects it after the last tail.
-    connectVoice(node, { bus = 'cue', group = null, director = 'ambient', pan = 0, air = 0, lowpassHz = null } = {}) {
+    connectVoice(node, { bus = 'cue', pan = 0, air = 0, lowpassHz = null } = {}) {
         const ctx = this.context;
         if (!ctx || !node) return { output: null, dispose() {} };
         const nodes = [];
@@ -738,11 +677,9 @@ export class AudioEngine {
         panner.pan.value = Math.max(-1, Math.min(1, (Number(pan) || 0) * this._output.panScale));
         head.connect(panner);
         nodes.push(panner);
-        panner.connect(group ? this.groupInput(group, director) : this.busInput(bus));
+        panner.connect(this.busInput(bus));
         const amount = Math.max(0, Number(air) || 0);
-        if (amount > 0) {
-            nodes.push(this.airSendFrom(panner, amount, group ? { group, director } : { cue: bus === 'cue' }));
-        }
+        if (amount > 0) nodes.push(this.airSendFrom(panner, amount, { cue: bus === 'cue' }));
         let disposed = false;
         return {
             output: panner,
@@ -755,13 +692,13 @@ export class AudioEngine {
         };
     }
 
-    // An Island Air send (C-AMB-2: tap it after the layer's level gain):
+    // An Island Air send (C-AMB-2: tap it after the player's level gain):
     // `from` → gain(amount) → the air input. With `group` the send lands in
     // that director's wet input for the group, which follows the director
     // crossfade and the group fader like the dry path; `cue: true` feeds the
     // cue air input (no bed gate); otherwise the bed air input. Returns the
     // send gain (automate `.gain`; disconnect it to remove the send).
-    airSendFrom(from, amount, { group = null, director = 'ambient', cue = false } = {}) {
+    airSendFrom(from, amount, { group = null, director = null, cue = false } = {}) {
         if (!this.context || !this.air || !from) return null;
         const send = this.context.createGain();
         send.gain.value = Math.max(0, Number(amount) || 0);
@@ -777,11 +714,6 @@ export class AudioEngine {
         this.air?.setPhase(phase);
     }
 
-    // Rain and fog (0..1) colour only the air's return.
-    setAirWeather({ rain = 0, fog = 0 } = {}) {
-        this._airWeather = { rain, fog };
-        this.air?.setWeather(this._airWeather);
-    }
 
     // Probe taps: the bed and cue send sums and the wet return (pre-trim).
     get airReturns() {
@@ -816,10 +748,9 @@ export class AudioEngine {
         return node;
     }
 
-    // bedGate, the air's bed gate and the signal-bed gate move together
-    // (start / wake).
+    // bedGate and the air's bed gate move together (start / wake).
     _bedGateParams() {
-        return [this.bedGate.gain, this._airBedGate?.gain, this._signalGate?.gain].filter(Boolean);
+        return [this.bedGate.gain, this._airBedGate?.gain].filter(Boolean);
     }
 
     // Cached console-style timbres: band-limited pulse waves (NES duty
@@ -946,40 +877,24 @@ export class AudioEngine {
         return volumeStepGain(this.volumeStep);
     }
 
-    // The persistent input of a bus: 'world' | 'work' | 'music' | 'cue' |
-    // 'signalBed'. With `director`, a gain into that bus that carries the
-    // director's crossfade (and pause), for a voice a director owns outside
-    // the mixer groups (the held note).
-    busInput(name, director = null) {
+    // The persistent input of a bus: 'music' | 'cue'.
+    busInput(name) {
         const bus = this._buses.get(name);
         if (!bus) throw new Error(`Unknown audio bus: ${name}`);
-        if (!director) return bus;
-        let inputs = this._directorGroups.get(director);
-        if (!inputs) {
-            inputs = new Map();
-            this._directorGroups.set(director, inputs);
-        }
-        const key = `bus:${name}`;
-        let node = inputs.get(key);
-        if (!node) {
-            node = this._directorNode(director);
-            node.connect(bus);
-            inputs.set(key, node);
-        }
-        return node;
+        return bus;
     }
 
-    // Probe tap: a ducked bus after its duck ('world' | 'work' | 'music' | 'signalBed').
+    // Probe tap: the music bus after its duck ('music').
     _busOut(name) {
         const out = this._busOuts.get(name);
         if (!out) throw new Error(`Unknown ducked bus: ${name}`);
         return out;
     }
 
-    // A director's input to a mixer group: layers and players connect here.
-    // Each director has its own gain per group so a preset switch can
-    // crossfade the two directors (fadeDirector) under the same faders.
-    groupInput(name, director = 'ambient') {
+    // A director's input to a mixer group: players connect here. Each
+    // director has its own gain per group so a preset switch can crossfade
+    // the two directors (fadeDirector) under the same faders.
+    groupInput(name, director) {
         const fader = this._groups.get(name);
         if (!fader) throw new Error(`Unknown audio group: ${name}`);
         let groups = this._directorGroups.get(director);
@@ -1082,8 +997,8 @@ export class AudioEngine {
         param.setValueAtTime(level, now);
     }
 
-    // Mixer trim as a linear fader gain (the step law lives with the
-    // settings); 0 closes the fader, never a negative or NaN gain.
+    // The group fader as a linear gain (the quiet mix's −3 dB); 0 closes
+    // the fader, never a negative or NaN gain.
     setGroupLevel(name, value) {
         if (!this._groupLevels.has(name)) throw new Error(`Unknown audio group: ${name}`);
         this._groupLevels.set(name, clamp01(value, 1));
@@ -1096,26 +1011,13 @@ export class AudioEngine {
         return Math.max(MIN_GAIN, this._groupLevels.get(name));
     }
 
-    // Circadian tilt (world + music): high shelf at 3 kHz by phase, gliding
-    // with τ 10 s. Repeated calls with the same phase do nothing.
-    setTilt(phase) {
-        const key = Object.hasOwn(TILT_DB, phase) ? phase : 'day';
-        if (key === this._tiltPhase) return;
-        this._tiltPhase = key;
-        if (this._tilt) this._tilt.gain.setTargetAtTime(this._tiltDb(), this.now(), TILT_TAU_SEC);
-    }
-
-    _tiltDb() {
-        return (TILT_DB[this._tiltPhase] ?? 0) + toneDb(this._tone);
-    }
-
-    // Warm ↔ Bright (7.7, SOTA-14): −1…+1 → ±4 dB on the same 3 kHz shelf,
-    // world and music only.
+    // Warm ↔ Bright (7.7, SOTA-14): −1…+1 → ±4 dB on a 3 kHz shelf over the
+    // music only.
     setTone(value) {
         const v = Math.max(-1, Math.min(1, Number(value) || 0));
         if (v === this._tone) return;
         this._tone = v;
-        if (this._tilt) this._tilt.gain.setTargetAtTime(this._tiltDb(), this.now(), TONE_TAU_SEC);
+        if (this._toneShelf) this._toneShelf.gain.setTargetAtTime(toneDb(v), this.now(), TONE_TAU_SEC);
     }
 
     get tone() {
@@ -1123,13 +1025,12 @@ export class AudioEngine {
     }
 
     // Speakers · Headphones · Mono (7.7, UX-10). Pans apply to voices placed
-    // from now on; the world width and the mono fold glide over 0.1 s.
+    // from now on; the mono fold glides over 0.1 s.
     setOutput(mode) {
         const next = outputSettings(mode);
         if (next.output === this._output.output) return;
         this._output = next;
         const now = this.now();
-        this._worldWidth?.set(next.worldWidth, next.worldMakeupDb, now);
         this._monoFold?.set(next.mono ? 0 : 1, next.monoCompDb, now);
     }
 
@@ -1138,7 +1039,7 @@ export class AudioEngine {
     }
 
     // Soften sudden sounds (7.7, UX-14). CueKit reads it at schedule time:
-    // gentler bell attacks and thunder, shallower ducks; the needs-you call
+    // gentler bell attacks, shallower ducks; the needs-you call
     // stays whole. The controller resolves `auto` from Reduce motion.
     setSoften(on) {
         this._softened = Boolean(on);
@@ -1163,11 +1064,9 @@ export class AudioEngine {
         return {
             output: this._output.output,
             panScale: this._output.panScale,
-            worldWidth: this._output.worldWidth,
             monoCompDb: this._output.monoCompDb,
             tone: this._tone,
             toneDb: toneDb(this._tone),
-            tiltDb: TILT_DB[this._tiltPhase] ?? 0,
             softened: this._softened,
             cueTrimDb: this._cueTrimDb,
         };
@@ -1206,15 +1105,6 @@ export class AudioEngine {
         };
     }
 
-    // Weather ceiling on the world bus (1.4), dB ≤ 0, before the duck and
-    // inside the bed-aware tap.
-    setWeatherCeiling(db, timeConstant = 4) {
-        this._weatherCeilingDb = Math.min(0, Number(db) || 0);
-        if (this._weatherCeiling) {
-            this._weatherCeiling.gain.setTargetAtTime(dbToGain(this._weatherCeilingDb), this.now(), timeConstant);
-        }
-    }
-
     // The music bus attention stage (Town band while someone waits), dB ≤ 0;
     // composes with the ducks and the director crossfade.
     setAttention(db, { tau = 0.5 } = {}) {
@@ -1224,12 +1114,12 @@ export class AudioEngine {
         }
     }
 
-    // Note-timed ducks (S3, ENG-5): from `from − attack` the bus ramps to its
-    // depth by `from` (the first heard note), holds to `until` (the last note
-    // + hold), and releases over `release`. `depths` in dB per bus (world,
-    // work, music; 0 or missing = no duck). Deepest wins over overlapping
-    // windows; none is deeper than −9 dB. `cancel()` removes the window (a
-    // pre-empted cue leaves no dip).
+    // Note-timed ducks (S3, ENG-5): from `from − attack` the music bus ramps
+    // to its depth by `from` (the first heard note), holds to `until` (the
+    // last note + hold), and releases over `release`. `depths` in dB per bus
+    // (only `music` is ducked; 0 or missing = no duck). Deepest wins over
+    // overlapping windows; none is deeper than −9 dB. `cancel()` removes the
+    // window (a pre-empted cue leaves no dip).
     duck({ from, until, depths = {}, attack, release } = {}) {
         const entries = [];
         const context = this.context;
@@ -1301,7 +1191,7 @@ export class AudioEngine {
     }
 
     // Post-mix RMS, for QA: lets a headless browser check "is sound actually
-    // playing and does it get louder in a storm" without ears.
+    // playing" without ears.
     rms() {
         if (!this.analyser || !this._analyserData) return 0;
         this.analyser.getFloatTimeDomainData(this._analyserData);
@@ -1463,10 +1353,8 @@ export class AudioEngine {
         this.air = null;
         this._airBedGate = null;
         this._airWetTrim = null;
-        this._signalGate = null;
-        this._tilt = null;
+        this._toneShelf = null;
         this._attention = null;
-        this._weatherCeiling = null;
         this._bedTap = null;
         this._bedMeter = null;
         this._musicPre = null;

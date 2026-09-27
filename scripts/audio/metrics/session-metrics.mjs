@@ -1,7 +1,8 @@
 // SCN long-session metrics for a stereo render (ported from the SCN notes,
 // scn-snippets/session-metrics.mjs): silence ratio, tonal repetition
 // (chroma-sequence self-similarity), melodic n-gram repetition, loudness per
-// minute, music on-time, cue density. Pure Node; used by the probe's --soak.
+// minute, music on-time and the Town band pieces heard, cue density. Pure
+// Node; used by the probe's --soak.
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { loudness, onsets } from '../lib/analyze.mjs';
@@ -34,7 +35,7 @@ function makeFft(n) {
 }
 
 // Tonal chroma per 0.5 s frame: only spectral peaks ≥ 12 dB above the local
-// median (so noise beds, wind and rain contribute ~nothing).
+// median (so broadband noise and the air's reverb tails contribute ~nothing).
 function tonalChromaFrames(mid, fs) {
     const n = 8192, hop = Math.round(fs * 0.5), fft = makeFft(n), binHz = fs / n;
     const kmin = Math.ceil(80 / binHz), kmax = Math.floor(4200 / binHz);
@@ -206,26 +207,25 @@ export function sessionMetrics(L, R, fs, { state = [], timeline = [] } = {}) {
     const { frames, hopS } = tonalChromaFrames(mid, fs);
     const rep = repetition(frames, hopS);
     const ng = ngramRepetition(mid, fs, onsetTimes);
+    // Music is on while the Town band reports a piece; Signals has none.
     const playingStates = state.filter(s => s.running);
-    const musicOn = playingStates.filter(s => (s.mode === 'bgm') ? true : Boolean(s.nowPlaying));
+    const musicOn = playingStates.filter(s => s.nowPlaying?.piece != null);
     const byKind = {};
     for (const e of cueEvents) byKind[e.kind] = (byKind[e.kind] || 0) + 1;
     const cueTimes = cueEvents.map(e => e.t).sort((a, b) => a - b);
     const gaps = cueTimes.slice(1).map((t, i) => t - cueTimes[i]);
-    // Songs heard (ambient composer): distinct nowPlaying runs.
+    // Pieces heard: runs of nowPlaying.piece (null between pieces and under Signals).
     const runs = [];
     for (const s of state) {
-        const npv = s.nowPlaying && typeof s.nowPlaying === 'object' ? (s.nowPlaying.song || s.nowPlaying.name || s.nowPlaying.piece || JSON.stringify(s.nowPlaying)) : s.nowPlaying;
-        const np = s.mode === 'bgm' ? (npv || 'bgm') : (npv || null);
+        const np = s.nowPlaying?.piece ?? null;
         if (!runs.length || runs[runs.length - 1].name !== np) runs.push({ name: np, from: s.t, to: s.t });
         else runs[runs.length - 1].to = s.t;
     }
-    const restingPct = state.length ? Number((100 * state.filter(s => s.state === 'resting').length / state.length).toFixed(1)) : null;
     return {
         durationS: Number(dur.toFixed(1)),
         silence: {
             below60Pct: pct(v => !(v > -60)), below70Pct: pct(v => !(v > -70)), below50Pct: pct(v => !(v > -50)),
-            longestBelow60S: Number((longest / 10).toFixed(1)), restingStatePct: restingPct,
+            longestBelow60S: Number((longest / 10).toFixed(1)),
         },
         repetition: {
             dejaHeardPct: rep.dejaHeardPct, tonalPct: rep.tonalPct, firstRepeatAtS: rep.firstRepeatAtS,

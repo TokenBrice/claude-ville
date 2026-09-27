@@ -4,12 +4,13 @@
 //   method 'realtime' — the real AmbientAudioController running in headless
 //                       Chromium, recorded through the destination tap;
 //   method 'app'      — the full app (isolated server, ?sim=1, renderer on),
-//                       sound enabled by clicking the real topbar toggle.
+//                       sound enabled through the real topbar note (Town band).
 //
 // Realtime world/atmosphere vocabulary (see page/runtime.js):
+//   mode              'bgm' (Town band) | 'signals' (no music, silence between cues)
 //   world.counts      {working, waiting, waiting_on_user, idle, errored, ...}
 //   atmosphere        {phase, progress, weather:{type,intensity,precipitation,fog,windX}}
-//   isolate           layer name; every other ambient layer pinned to 0 via forceLayer()
+//   bgm               {piece, loop}: the pinned Town band piece and the loop recorded
 //   actions[]         {at, emit, payload, agentIndex, label} | {at, status:{index,status}} | {at, addAgent} | {at, mode}
 
 const PROVIDERS = ['default', 'claude', 'codex', 'gemini', 'grok', 'kimi', 'omp', 'opencode', 'deepseek', 'zai'];
@@ -49,10 +50,6 @@ export function buildTargets() {
     t.push(cue('cue-linkLost', 'linkLost', {}, { seconds: 4 }));
     t.push(cue('cue-linkRestored', 'linkRestored', {}, { seconds: 4 }));
     t.push(cue('cue-digest', 'digest', { notes: ['gold', 'stone', 'red', 'amber'] }, { seconds: 5 }));
-    t.push(cue('cue-thunder-0.3', 'thunder', { intensity: 0.3 }, { seconds: 6 }));
-    t.push(cue('cue-thunder-0.6', 'thunder', { intensity: 0.6 }, { seconds: 6 }));
-    t.push(cue('cue-thunder-1.0', 'thunder', { intensity: 1 }, { seconds: 6 }));
-    t.push(cue('cue-thunder-1.0-vol100', 'thunder', { intensity: 1 }, { seconds: 6, volumeStep: 10 }));
     // Night borrows the minor third: every pitched cue whose notes change.
     for (const kind of ['arrival', 'recovery', 'council', 'aurora', 'summons', 'hourBell']) {
         t.push(cue(`cue-${kind}-night`, kind, { phase: 'night', teamSize: 5, hour: 21, status: kind === 'summons' ? 'waiting_on_user' : undefined }, { seconds: kind === 'council' || kind === 'hourBell' ? 6 : 5 }));
@@ -60,13 +57,13 @@ export function buildTargets() {
     // One gallery strip with every kind, 4.5 s apart, for side-by-side reading.
     const gallery = [
         'arrival', 'departure', 'recovery', 'council', 'aurora', 'hourBell', 'distress', 'limit', 'summons', 'reminder', 'answered',
-        'turnDone', 'subagentReturn', 'toolFailed', 'commit', 'push', 'release', 'pushFailed', 'dispatch', 'linkLost', 'linkRestored', 'digest', 'thunder',
+        'turnDone', 'subagentReturn', 'toolFailed', 'commit', 'push', 'release', 'pushFailed', 'dispatch', 'linkLost', 'linkRestored', 'digest',
     ];
     t.push({
         name: 'cue-gallery', category: 'cues', method: 'offline', seconds: gallery.length * 4.5 + 3,
         cues: gallery.map((kind, i) => ({
             at: 0.5 + i * 4.5, kind, label: kind,
-            payload: { status: CUE_STATUS[kind], teamSize: 4, intensity: 0.7, hour: 9, count: kind === 'dispatch' ? 3 : kind === 'hourBell' ? false : 1, level: kind === 'reminder' ? 3 : 1, family: 'needsYou', notes: ['gold', 'red', 'amber'] },
+            payload: { status: CUE_STATUS[kind], teamSize: 4, hour: 9, count: kind === 'dispatch' ? 3 : kind === 'hourBell' ? false : 1, level: kind === 'reminder' ? 3 : 1, family: 'needsYou', notes: ['gold', 'red', 'amber'] },
         })),
     });
     // Alloys (3.5): the provider tints the routine chimes only; signals are
@@ -92,40 +89,7 @@ export function buildTargets() {
         t.push({ ...cue(`cue-summons-pan-${label}`, 'summons', { provider: 'claude', screenX, status: 'waiting_on_user' }, { seconds: 3.5 }), category: 'cues-pan' });
     }
 
-    // -------------------------------------------------------------- layers
-    const layer = (name, isolate, atmosphere, world = BUSY, seconds = 30, warmup = 15) => ({
-        name, category: 'layers', method: 'realtime', mode: 'ambient', isolate, atmosphere, world: { counts: world }, seconds, warmup,
-    });
-    // 4.1: the sea (group 'wind', *Weather & sea*) by day, at night and in a storm.
-    t.push(layer('layer-sea-day', 'sea', { phase: 'day', weather: { type: 'clear', windX: 0.3 } }, BUSY, 60));
-    t.push(layer('layer-sea-night-clear', 'sea', { phase: 'night', weather: { type: 'clear', windX: 0.3 } }, BUSY, 60));
-    t.push(layer('layer-sea-storm', 'sea', { phase: 'night', weather: { type: 'storm', intensity: 0.95, windX: 1.4 } }, BUSY, 60));
-    t.push(layer('layer-wind-calm', 'wind', { phase: 'day', weather: { type: 'clear', windX: 0.3 } }));
-    t.push(layer('layer-wind-overcast', 'wind', { phase: 'day', weather: { type: 'overcast', windX: 0.8 } }));
-    t.push(layer('layer-wind-storm', 'wind', { phase: 'night', weather: { type: 'storm', intensity: 0.95, windX: 1.4 } }));
-    t.push(layer('layer-rain-light', 'rain', { phase: 'day', weather: { type: 'rain', intensity: 0.4, precipitation: 0.25 } }));
-    t.push(layer('layer-rain-heavy-storm', 'rain', { phase: 'night', weather: { type: 'storm', intensity: 0.95, precipitation: 1 } }));
-    t.push(layer('layer-birds-dawn', 'birds', { phase: 'dawn', progress: 0.9, weather: { type: 'clear' } }, BUSY, 45));
-    t.push(layer('layer-birds-day', 'birds', { phase: 'day', weather: { type: 'clear' } }, BUSY, 60));
-    t.push(layer('layer-crickets-night', 'crickets', { phase: 'night', progress: 0.5, weather: { type: 'clear' } }, BUSY, 30));
-    t.push(layer('layer-hum-0-workers', 'hum', { phase: 'day', weather: { type: 'clear' } }, { waiting: 1, idle: 2 }, 20));
-    t.push(layer('layer-hum-3-workers', 'hum', { phase: 'day', weather: { type: 'clear' } }, { working: 3, idle: 1 }, 40));
-    t.push(layer('layer-hum-6-workers', 'hum', { phase: 'day', weather: { type: 'clear' } }, { working: 6 }, 40));
-
-    // ------------------------------------------------ ambient music layer
-    const tune = (name, tuneName, phase, world = BUSY) => ({
-        name, category: 'music-layer', method: 'realtime', mode: 'ambient', isolate: 'music',
-        atmosphere: { phase, progress: 0.5, weather: { type: 'clear' } }, world: { counts: world },
-        music: { tune: tuneName, gateMs: 9000 }, warmup: 0, tailSeconds: 3, maxSeconds: 170,
-    });
-    t.push(tune('music-hearthfire-day', 'hearthfire', 'day'));
-    t.push(tune('music-millbrook-day', 'millbrook', 'day'));
-    t.push(tune('music-hearthfire-dusk', 'hearthfire', 'dusk'));
-    t.push(tune('music-millbrook-dawn', 'millbrook', 'dawn'));
-    t.push(tune('music-lanternway-night', 'lanternway', 'night'));
-    t.push(tune('music-starwake-night', 'starwake', 'night'));
-
-    // ------------------------------------------------------------- BGM
+    // ------------------------------------------------------ Town band (BGM)
     const bgm = (name, piece, phase, world = BUSY, loop = 2) => ({
         name, category: 'bgm', method: 'realtime', mode: 'bgm',
         atmosphere: { phase, progress: 0.5, weather: { type: 'clear' } }, world: { counts: world },
@@ -139,6 +103,8 @@ export function buildTargets() {
     t.push(bgm('bgm-millwheel-full', 'millwheel', 'day', { working: 12 }));
     t.push(bgm('bgm-willowbrook-rest', 'willowbrook', 'day', { idle: 3 }));
     t.push(bgm('bgm-cobblemarket-light', 'cobblemarket', 'day', { working: 2, idle: 1 }));
+    // The fullest band at unity volume (step 10): the limiter and true peak.
+    t.push({ ...bgm('bgm-millwheel-full-vol100', 'millwheel', 'day', { working: 12 }), volumeStep: 10 });
     t.push({
         name: 'bgm-willowbrook-summons-arrival', category: 'bgm', method: 'realtime', mode: 'bgm',
         atmosphere: { phase: 'day', progress: 0.5, weather: { type: 'clear' } }, world: { counts: BUSY },
@@ -151,56 +117,38 @@ export function buildTargets() {
         ],
     });
 
-    // A night piece, then a preset switch back to the reactive ambience: the
-    // player stop and the ambient layers' start in one render.
+    // A night piece, then a preset switch to Signals: the band's fade out
+    // (800 ms, UX-3) and the silence after it (Signals has no bed) in one
+    // render.
     t.push({
-        name: 'bgm-night-to-ambient', category: 'bgm', method: 'realtime', mode: 'bgm',
+        name: 'bgm-night-to-signals', category: 'bgm', method: 'realtime', mode: 'bgm',
         atmosphere: { phase: 'night', progress: 0.5, weather: { type: 'clear' } }, world: { counts: BUSY },
         bgm: { piece: 'moonwell', loop: 0 }, warmup: 2, seconds: 26,
-        actions: [{ at: 16, mode: 'ambient' }],
+        actions: [{ at: 16, mode: 'signals' }],
     });
 
-    // ------------------------------------------------------ director mixes
-    const mix = (name, atmosphere, world, extra = {}) => ({
-        name, category: 'mix', method: 'realtime', mode: 'ambient', atmosphere, world: { counts: world }, warmup: 20, seconds: 60, ...extra,
+    // ------------------------------------------------------------ Signals
+    // The Signals preset sounds only summons/distress/limit/reminder/
+    // answered/recovery and captions every other kind, over no bed at all:
+    // the three signals ring out of silence, and the arrival between them
+    // must stay silent.
+    t.push({
+        name: 'signals-day-urgent', category: 'signals', method: 'realtime', mode: 'signals',
+        atmosphere: { phase: 'day', progress: 0.5, weather: { type: 'clear' } }, world: { counts: { working: 4, idle: 1 } },
+        warmup: 4, seconds: 40,
+        actions: [
+            { at: 4, status: { index: 0, status: 'waiting_on_user' } },
+            { at: 4.05, emit: 'attention:raised', payload: { waitingCount: 1, status: 'waiting_on_user', screenX: 0.8 }, agentIndex: 0, label: 'summons' },
+            { at: 14, emit: 'village:scene', payload: { kind: 'arrival', screenX: 0.3 }, agentIndex: 2, label: 'arrival (captioned only)' },
+            { at: 22, emit: 'distress:watchtower', payload: { kind: 'errored', screenX: 0.2 }, agentIndex: 1, label: 'distress (errored)' },
+            { at: 32, emit: 'distress:watchtower', payload: { kind: 'recovered', screenX: 0.2 }, agentIndex: 1, label: 'recovery' },
+        ],
     });
-    t.push(mix('mix-day-clear-busy', { phase: 'day', progress: 0.5, weather: { type: 'clear', windX: 0.4 } }, { working: 6, idle: 2 }, {
-        actions: [
-            { at: 24, emit: 'village:scene', payload: { kind: 'arrival', screenX: 0.3 }, agentIndex: 6, label: 'arrival' },
-            { at: 44, emit: 'team:gather', payload: { teamName: 'harness', members: [1, 2, 3, 4] }, label: 'council (4)' },
-        ],
-    }));
-    t.push(mix('mix-dawn-chorus', { phase: 'dawn', progress: 0.8, weather: { type: 'clear', windX: 0.3 } }, { working: 2, idle: 3 }));
-    t.push(mix('mix-dusk', { phase: 'dusk', progress: 0.4, weather: { type: 'partly-cloudy', windX: 0.6 } }, { working: 3, idle: 2 }));
-    t.push(mix('mix-night-storm', { phase: 'night', progress: 0.5, weather: { type: 'storm', intensity: 0.9, windX: 1.2 } }, { working: 2, idle: 2 }, {
-        actions: [
-            { at: 8, emit: 'weather:storm-flash', payload: { intensity: 0.8 }, label: 'storm-flash 0.8' },
-            { at: 27, emit: 'weather:storm-flash', payload: { intensity: 1 }, label: 'storm-flash 1.0' },
-            { at: 44, emit: 'weather:storm-flash', payload: { intensity: 0.5 }, label: 'storm-flash 0.5' },
-        ],
-    }));
-    t.push(mix('mix-night-clear', { phase: 'night', progress: 0.5, weather: { type: 'clear', windX: 0.3 } }, { working: 1, idle: 3 }));
-    t.push(mix('mix-resting', { phase: 'day', progress: 0.5, weather: { type: 'clear', windX: 0.3 } }, { idle: 3 }, { warmup: 36, seconds: 40 }));
-    t.push(mix('mix-day-rain-urgent', { phase: 'day', progress: 0.5, weather: { type: 'rain', intensity: 0.7 } }, { working: 4, idle: 1 }, {
-        actions: [
-            { at: 12, status: { index: 0, status: 'waiting_on_user' } },
-            { at: 12.05, emit: 'attention:raised', payload: { waitingCount: 1, status: 'waiting_on_user', screenX: 0.8 }, agentIndex: 0, label: 'summons' },
-            { at: 30, emit: 'distress:watchtower', payload: { kind: 'errored', screenX: 0.2 }, agentIndex: 1, label: 'distress (errored)' },
-            { at: 46, emit: 'distress:watchtower', payload: { kind: 'recovered', screenX: 0.2 }, agentIndex: 1, label: 'recovery' },
-        ],
-    }));
-    t.push({ ...mix('mix-night-storm-vol100', { phase: 'night', progress: 0.5, weather: { type: 'storm', intensity: 0.9, windX: 1.2 } }, { working: 2, idle: 2 }, {
-        volumeStep: 10, seconds: 40,
-        actions: [{ at: 10, emit: 'weather:storm-flash', payload: { intensity: 1 }, label: 'storm-flash 1.0' }],
-    }), category: 'mix' });
-    t.push({ ...mix('mix-day-clear-busy-vol100', { phase: 'day', progress: 0.5, weather: { type: 'clear', windX: 0.4 } }, { working: 6, idle: 2 }, { volumeStep: 10, seconds: 40 }), category: 'mix' });
 
     // --------------------------------------------------------- fidelity
-    t.push({ name: 'repeat-mix-day-clear-busy', category: 'fidelity', method: 'realtime', mode: 'ambient', atmosphere: { phase: 'day', progress: 0.5, weather: { type: 'clear', windX: 0.4 } }, world: { counts: { working: 6, idle: 2 } }, warmup: 20, seconds: 60, seedOffset: 0, repeatOf: 'mix-day-clear-busy',
-        actions: [
-            { at: 24, emit: 'village:scene', payload: { kind: 'arrival', screenX: 0.3 }, agentIndex: 6, label: 'arrival' },
-            { at: 44, emit: 'team:gather', payload: { teamName: 'harness', members: [1, 2, 3, 4] }, label: 'council (4)' },
-        ] });
+    // The same seed twice: realtime timer interleaving makes two runs close,
+    // not identical.
+    t.push({ ...bgm('repeat-bgm-willowbrook-steady', 'willowbrook', 'day'), category: 'fidelity', seedOffset: 0, repeatOf: 'bgm-willowbrook-steady' });
     t.push({ name: 'app-live-sim-day', category: 'fidelity', method: 'app', hour: 13.3, weather: 'clear', warmup: 15, seconds: 40 });
 
     return t;

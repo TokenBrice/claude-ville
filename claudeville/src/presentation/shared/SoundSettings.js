@@ -1,15 +1,14 @@
-// The persisted sound levels and preferences (plan 1.2, 3.8, 6.6, 7.1–7.8,
-// MIX-9, UX-3, UX-8, UX-10–UX-18, decisions D2, D5–D7): one owner for the
-// storage keys, their defaults, the step laws' stored form, the preset
-// vocabulary, the mix each preset shows, and the one-time recalibration and
-// per-preset volume migration. TopBar, SET and the invitation read it at
-// boot; the sound controller reads and writes it once the idle build lands.
-// Pure and DOM-free: it loads no audio module beyond the Loudness table, so
-// the v0.37 boot deferral holds.
+// The persisted sound levels and preferences (plan 1.2, 3.8, 7.1–7.8, UX-3,
+// UX-8, UX-10–UX-18, decisions D2, D5–D7): one owner for the storage keys,
+// their defaults, the volume step's stored form, the preset vocabulary, and
+// the one-time recalibration and per-preset volume migration. TopBar, SET and
+// the invitation read it at boot; the sound controller reads and writes it
+// once the idle build lands. Pure and DOM-free: it loads no audio module
+// beyond the Loudness table, so the v0.37 boot deferral holds.
 //
-// Volume and every mixer trim are stored as whole steps 0–10; the gain laws
-// live in Loudness (`volumeStepGain`, `trimStepGain`), the standard step is
-// its STANDARD_VOLUME_STEP. Each preset keeps its own volume step (UX-18).
+// Volume is stored as whole steps 0–10; the gain law lives in Loudness
+// (`volumeStepGain`), the standard step is its STANDARD_VOLUME_STEP. Each
+// preset keeps its own volume step (UX-18), its only level (v0.47.1).
 
 import { STANDARD_VOLUME_STEP } from './audio/Loudness.js';
 
@@ -20,7 +19,6 @@ export const SOUND_ENABLED_KEY = 'claudeville.sound.enabled';
 // preset's step (`migratePresetVolumes`), never written again.
 export const LEGACY_SOUND_VOLUME_KEY = 'claudeville.sound.volume';
 export const SOUND_VOLUMES_KEY = 'claudeville.sound.volumes';
-export const SOUND_LAYERS_KEY = 'claudeville.sound.layers';
 export const SOUND_CALIBRATION_KEY = 'claudeville.sound.calibration';
 // The level standard the stored steps are calibrated to. A profile without it
 // predates the calibrated master (1.1) and is reset once (D5).
@@ -29,26 +27,25 @@ export const SOUND_STEP_MAX = 10;
 export const SOUND_RECALIBRATED_MESSAGE = 'Sound was recalibrated to a new standard level.';
 
 // Presets (7.2, UX-3): storage keeps `enabled` plus a mode id; the UI names
-// the four ways to listen and never shows a mode id.
+// the three ways to listen and never shows a mode id. A mode id stored by an
+// older build (the retired Village, 'ambient') is not a choice any more and
+// reads as the default, the Town band.
 export const SOUND_MODE_KEY = 'claudeville.sound.mode';
-export const SOUND_MODES = Object.freeze(['signals', 'ambient', 'bgm']);
-export const DEFAULT_SOUND_MODE = 'ambient';
-export const SOUND_PRESETS = Object.freeze(['off', 'signals', 'village', 'townBand']);
+export const SOUND_MODES = Object.freeze(['signals', 'bgm']);
+export const DEFAULT_SOUND_MODE = 'bgm';
+export const SOUND_PRESETS = Object.freeze(['off', 'signals', 'townBand']);
 export const SOUND_PRESET_LABELS = Object.freeze({
     off: 'Off',
     signals: 'Signals',
-    village: 'Village',
     townBand: 'Town band',
 });
-// D1: the Village never promises continuous songs.
 export const SOUND_PRESET_DETAILS = Object.freeze({
     off: 'Silent. Captions still appear.',
     signals: 'Only a bell when an agent needs you, errors, or hits a limit.',
-    village: 'Sea, weather and the village at work, with a tune at its moments.',
-    townBand: 'Continuous town music. Village bells ring over it.',
+    townBand: 'Continuous town music. The signal bells ring over it.',
 });
-const PRESET_MODES = Object.freeze({ signals: 'signals', village: 'ambient', townBand: 'bgm' });
-const MODE_PRESETS = Object.freeze({ signals: 'signals', ambient: 'village', bgm: 'townBand' });
+const PRESET_MODES = Object.freeze({ signals: 'signals', townBand: 'bgm' });
+const MODE_PRESETS = Object.freeze({ signals: 'signals', bgm: 'townBand' });
 
 // What a visible but unfocused window plays (D3, UX-4).
 export const SOUND_BACKGROUND_KEY = 'claudeville.sound.background';
@@ -72,7 +69,7 @@ export const SOUND_COUNT_HOURS_KEY = 'claudeville.sound.countHours';
 export const DEFAULT_SOUND_COUNT_HOURS = '0';
 
 // D2: the Town band plays as the Isle Band; Chip restored is its one-click
-// alternative voicing. The Village always plays the Isle Band.
+// alternative voicing.
 export const TOWN_BAND_VOICE_KEY = 'claudeville.sound.townBandVoice';
 export const TOWN_BAND_VOICES = Object.freeze(['isle', 'chip']);
 export const DEFAULT_TOWN_BAND_VOICE = 'isle';
@@ -106,39 +103,6 @@ export const SOUND_INVITED_KEY = 'claudeville.sound.invited';
 // 7.1: the first-ever click on the sound control opened the presets.
 export const SOUND_CHIP_SEEN_KEY = 'claudeville.sound.chipSeen';
 
-// The Village occasion clock's once-per-day record (6.6, S7): the first-ever
-// occasion of this profile, the calendar day of the last welcome fragment
-// and the phase occasions the current island day has already heard.
-export const MUSIC_LEDGER_KEY = 'claudeville.sound.musicLedger';
-
-// The mixer channels are the engine's group faders, one to one, each at its
-// default trim step. Workshops sits one step down (plan 5.3's −3 dB on the
-// 2.4 dB step law: −2.4 dB; the layer carries the remaining −0.6 dB).
-export const AUDIO_MIXER_DEFAULTS = Object.freeze({
-    wind: SOUND_STEP_MAX,
-    rain: SOUND_STEP_MAX,
-    wildlife: SOUND_STEP_MAX,
-    hum: SOUND_STEP_MAX,
-    workshops: SOUND_STEP_MAX - 1,
-    music: SOUND_STEP_MAX,
-});
-
-// The mix a preset shows (7.8, UX-15), named for what you hear. One slider
-// may drive several group faders: its value is its first trim's step, and
-// the others keep their default offset from it.
-const MIX_CHANNELS = Object.freeze({
-    weather: Object.freeze({ id: 'weather', label: 'Weather & sea', trims: Object.freeze(['wind', 'rain']) }),
-    wildlife: Object.freeze({ id: 'wildlife', label: 'Wildlife', trims: Object.freeze(['wildlife']) }),
-    workshops: Object.freeze({ id: 'workshops', label: 'Workshops', trims: Object.freeze(['workshops', 'hum']) }),
-    band: Object.freeze({ id: 'band', label: 'Band', trims: Object.freeze(['music']) }),
-});
-const PRESET_MIX = Object.freeze({
-    off: Object.freeze([]),
-    signals: Object.freeze([]),
-    village: Object.freeze([MIX_CHANNELS.weather, MIX_CHANNELS.wildlife, MIX_CHANNELS.workshops, MIX_CHANNELS.band]),
-    townBand: Object.freeze([MIX_CHANNELS.band]),
-});
-
 const PRESET_VOLUME_DEFAULTS = Object.freeze(Object.fromEntries(SOUND_MODES.map(mode => [mode, STANDARD_VOLUME_STEP])));
 
 // Every sound key and the value a reset writes. The calibration key comes
@@ -147,7 +111,6 @@ export const SOUND_SETTING_DEFAULTS = Object.freeze({
     [SOUND_ENABLED_KEY]: 'false',
     [SOUND_MODE_KEY]: DEFAULT_SOUND_MODE,
     [SOUND_VOLUMES_KEY]: JSON.stringify(PRESET_VOLUME_DEFAULTS),
-    [SOUND_LAYERS_KEY]: JSON.stringify(AUDIO_MIXER_DEFAULTS),
     [SOUND_BACKGROUND_KEY]: DEFAULT_SOUND_BACKGROUND,
     [SOUND_OUTPUT_KEY]: DEFAULT_SOUND_OUTPUT,
     [SOUND_TONE_KEY]: DEFAULT_SOUND_TONE,
@@ -215,7 +178,7 @@ export function modeForPreset(preset) {
     return PRESET_MODES[preset] ?? null;
 }
 
-/** The UI preset a mode id plays as; an unknown mode reads as the Village. */
+/** The UI preset a mode id plays as; an unknown mode reads as the Town band. */
 export function presetForMode(mode) {
     return MODE_PRESETS[mode] ?? MODE_PRESETS[DEFAULT_SOUND_MODE];
 }
@@ -293,59 +256,18 @@ export function migratePresetVolumes(storage = defaultStorage()) {
     return storageSet(storage, SOUND_VOLUMES_KEY, JSON.stringify(readPresetVolumeSteps(storage)));
 }
 
-export function readStoredTrimSteps(storage = defaultStorage()) {
-    if (!soundCalibrated(storage)) return { ...AUDIO_MIXER_DEFAULTS };
-    const parsed = storedJson(storage, SOUND_LAYERS_KEY);
-    return Object.fromEntries(Object.entries(AUDIO_MIXER_DEFAULTS).map(([name, fallback]) => [
-        name,
-        soundStep(parsed?.[name], fallback),
-    ]));
-}
-
-export function writeStoredTrimSteps(steps, storage = defaultStorage()) {
-    storageSet(storage, SOUND_LAYERS_KEY, JSON.stringify(steps));
-}
-
 // D5: a profile without the calibration key has every preset's volume
-// replaced by the standard step and every trim by its default step; the key
-// is written last, so an interrupted reset repeats rather than leaving legacy
-// values marked calibrated. Returns true when stored levels were actually
-// replaced (the caller captions it once); a fresh profile is only marked.
+// replaced by the standard step; the key is written last, so an interrupted
+// reset repeats rather than leaving legacy values marked calibrated. Returns
+// true when stored levels were actually replaced (the caller captions it
+// once); a fresh profile is only marked.
 export function recalibrateStoredSound(storage = defaultStorage()) {
     if (!storage || soundCalibrated(storage)) return false;
     const legacy = storageGet(storage, LEGACY_SOUND_VOLUME_KEY) !== null
-        || storageGet(storage, SOUND_VOLUMES_KEY) !== null
-        || storageGet(storage, SOUND_LAYERS_KEY) !== null;
-    if (legacy) {
-        storageSet(storage, SOUND_VOLUMES_KEY, JSON.stringify(PRESET_VOLUME_DEFAULTS));
-        writeStoredTrimSteps({ ...AUDIO_MIXER_DEFAULTS }, storage);
-    }
+        || storageGet(storage, SOUND_VOLUMES_KEY) !== null;
+    if (legacy) storageSet(storage, SOUND_VOLUMES_KEY, JSON.stringify(PRESET_VOLUME_DEFAULTS));
     const marked = storageSet(storage, SOUND_CALIBRATION_KEY, SOUND_CALIBRATION);
     return legacy && marked;
-}
-
-// ---------------------------------------------------------------------- mix
-
-/** The mix sliders a preset shows: `[{ id, label, trims }]` (none for Off and Signals). */
-export function mixChannelsFor(preset) {
-    return PRESET_MIX[preset] ?? PRESET_MIX.off;
-}
-
-/** A mix slider's value: its first trim's step. */
-export function channelStep(channel, layerSteps = {}) {
-    const trim = channel?.trims?.[0];
-    return soundStep(layerSteps?.[trim], AUDIO_MIXER_DEFAULTS[trim] ?? SOUND_STEP_MAX);
-}
-
-/** The trim steps one mix slider at `step` sets, each keeping its default offset. */
-export function channelTrimSteps(channel, step) {
-    const trims = channel?.trims ?? [];
-    const lead = soundStep(step, AUDIO_MIXER_DEFAULTS[trims[0]] ?? SOUND_STEP_MAX);
-    if (!trims.length) return {};
-    return Object.fromEntries(trims.map(trim => [
-        trim,
-        lead === 0 ? 0 : soundStep(lead + AUDIO_MIXER_DEFAULTS[trim] - AUDIO_MIXER_DEFAULTS[trims[0]], lead),
-    ]));
 }
 
 // ------------------------------------------------------ listening preferences
@@ -509,7 +431,6 @@ export function readSoundSettings(storage = defaultStorage()) {
         soundPreset: readStoredSoundPreset(storage),
         soundVolumes: readPresetVolumeSteps(storage),
         soundBackground: readSoundBackground(storage),
-        soundLayers: readStoredTrimSteps(storage),
         soundReminders: readReminderSetting(storage),
         soundCountHours: readCountHours(storage),
         captions: readCaptionSetting(storage),
@@ -522,13 +443,4 @@ export function readSoundSettings(storage = defaultStorage()) {
         soundInvited: readSoundInvited(storage),
         soundChipSeen: readSoundChipSeen(storage),
     };
-}
-
-/** The occasion ledger as stored, or null when absent or unreadable. */
-export function readMusicLedger(storage = defaultStorage()) {
-    return storedJson(storage, MUSIC_LEDGER_KEY);
-}
-
-export function writeMusicLedger(ledger, storage = defaultStorage()) {
-    storageSet(storage, MUSIC_LEDGER_KEY, JSON.stringify(ledger ?? {}));
 }

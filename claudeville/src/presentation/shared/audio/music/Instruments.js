@@ -1,5 +1,6 @@
-// The band's instruments (plan 6.1, MUSL-1, MUSL-5): the Isle Band — a
-// breathy wooden whistle; Karplus–Strong lute, harp and pizzicato upright; a
+// The band's instruments (plan 6.1, MUSL-1, MUSL-5, C5): the Isle Band — a
+// breathy wooden whistle; a bowed fiddle and a free-reed concertina;
+// Karplus–Strong lute, harp, hammered dulcimer and pizzicato upright; a
 // modal marimba and a steel-comb music box; brushes and a small kit — and
 // the Chip band's console waves, behind one note API:
 //
@@ -9,20 +10,25 @@
 //
 // `release` silences every sounding note (the instrument plays on after
 // it); `dispose` also closes the instrument's persistent nodes (the
-// whistle's breath lane) for good.
+// whistle's breath lane, the fiddle's bow lane) for good.
 //
 // `dur` is the written sounding length in seconds; articulation is the
-// instrument's own (the whistle sounds 0.95 of it, the lute rings 0.15 s
-// past it and is damped, the upright is muted at 0.96 of it, a harp note
-// with `dur` null or Infinity rings out, bars, tines and drums always ring
-// out). `note` returns the time the voice has stopped, or null when it
-// cannot sound (no context; a percussion take not baked yet).
+// instrument's own (the whistle sounds 0.95 of it, the fiddle 0.97 and the
+// concertina 0.96, each then released in a few tens of ms; the lute rings
+// 0.15 s past it and is damped, the dulcimer 0.5 s past it; the upright is
+// muted at 0.96 of it; a harp or dulcimer note with `dur` null or Infinity
+// rings out, a fiddle or concertina one holds HOLD_MAX_SEC unless released;
+// bars, tines and drums always ring out). `note` returns the time the voice
+// has stopped, or null when it cannot sound (no context; a percussion take
+// not baked yet).
 //   vel     linear velocity, 1 = the instrument's reference level;
 //   bright  0..1, 1 = as built; below 1 a per-note low-pass at
 //           BRIGHT_MIN_HZ · 15^bright (the live waves tilt their harmonics
 //           instead, no node);
-//   soft    0..1, 0 = as built; up to SOFT_ATTACK_SEC more attack, and
-//           bright × (1 − soft/2) (rain and snow arrangements, MUS-16);
+//   soft    0..1, 0 = as built; up to SOFT_ATTACK_SEC more attack (the
+//           fiddle and concertina: their own softAttack, a slower bow or
+//           bellows), and bright × (1 − soft/2) (rain and snow
+//           arrangements, MUS-16);
 //   pan     percussion only: pitched seats pan at the seat (MUSL-5, no
 //           per-note panners).
 //
@@ -33,12 +39,15 @@
 // fader is then its level relative to the lead (MUSL-2).
 //
 // Nodes (S8, ≤ 4 per note): a baked note is BufferSource → Gain (+ the
-// optional low-pass, + a panner on percussion); the whistle is Oscillator →
-// Gain (+ LFO and depth for vibrato), its breath one noise lane per
-// instance, opened by its first note and kept for its life (a release only
-// silences it), whose gain the notes automate; chip notes are Oscillator →
-// Gain (+ vibrato). Each seat's MUSL-1 insert EQ is baked into the takes,
-// so seats carry only gain, pan and air.
+// optional low-pass, + a panner on percussion); the whistle and the fiddle
+// are Oscillator → Gain (+ LFO and depth for vibrato), each with one noise
+// lane per instance (the whistle's breath, the fiddle's bow hair), opened
+// by its first note and kept for its life (a release only silences it),
+// whose gain and band the notes automate; the concertina is two detuned
+// reed Oscillators → one Gain; chip notes are Oscillator → Gain (+
+// vibrato). Each seat's MUSL-1 insert EQ is baked into the takes, and the
+// fiddle's body resonances and every live voice's seat low-pass are folded
+// into its wave, so seats carry only gain, pan and air.
 //
 // Bakes (SampleBank client `music`, MEMORY_BUDGET.music): strings, bars,
 // tines and drums are rendered as pure DSP into mono buffers, one per root,
@@ -50,8 +59,10 @@
 // oscillator with the instrument's decay) and percussion is skipped. The
 // strings are rendered at a band-limited rate with their loop filters mapped
 // from the 48 kHz recipe (the prototype's rate), so the timbre below the
-// stored Nyquist is the prototype's. The music box has no clapper or pin
-// strike and no bell doublet: its shimmer is shallow, never a beating bell.
+// stored Nyquist is the prototype's; the dulcimer's course sums three
+// strings a few cents apart into one take, its shimmer baked in. The music
+// box has no clapper or pin strike and no bell doublet: its shimmer is
+// shallow, never a beating bell.
 
 import { holdAt } from '../AudioEngine.js';
 import { makeFilter } from '../Filters.js';
@@ -96,7 +107,8 @@ const freezeAll = (value) => {
 
 // Extended Karplus–Strong strings (MUSL-1): pick position, pluck shape
 // (`tri` of triangle, the rest pick-combed noise low-passed by `bright`),
-// loop damping, T60 per fundamental, and the seat's insert EQ.
+// loop damping, T60 per fundamental, and the seat's insert EQ; `course`
+// sums several strings struck together, [cents, amp] each.
 const STRINGS = {
     lute: {
         pick: 0.13, bright: 0.42, damp: 0.12, tri: 0.5,
@@ -115,9 +127,23 @@ const STRINGS = {
         t60: () => 3.2,
         eq: [['lowpass', 1600, 0.5], ['peaking', 110, 1, 2]],
     },
+    // Hammered dulcimer (C5): a course of three steel strings a few cents
+    // apart (the slow shimmer of their beating), struck together near the
+    // bridge by one hard hammer (little triangle, bright noise), barely
+    // damped in the loop, so it rings long and far brighter than the harp,
+    // with a metallic presence lift the lute's wooden body lacks.
+    dulcimer: {
+        pick: 0.09, bright: 0.65, damp: 0.015, tri: 0.2,
+        course: [[-2.4, 0.8], [0, 1], [2.4, 0.8]],
+        t60: f0 => clamp(4.2 * (262 / f0) ** 0.45, 2, 4.8),
+        eq: [['highpass', 110, 0.7], ['peaking', 2800, 0.8, 4], ['lowpass', 6500, 0.5]],
+    },
 };
 // The upright's ring from the note: 1.6 s for a half note, up to 3.2 s for a whole.
 const UPRIGHT_T60 = dur => clamp(1.1 * dur + 0.1, 1.6, 3.2);
+// The dulcimer has no dampers: a note rings this long past its written end
+// before the player's hand stills the course.
+const DULCIMER_RING_SEC = 0.5;
 
 // Modal bars, tines and drums: [ratio, amp, t60, detuneHz]; `glide` bends
 // every mode down from +glide (fractional) with τ glideSec (a drum head).
@@ -170,8 +196,12 @@ const SWISH_RISE_SEC = 0.1;
 
 // Live waves (PeriodicWave imag rows). A live voice's seat low-pass is
 // folded into its wave (the harmonics weighted by the 2nd-order response at
-// the note's pitch, one wave per semitone), so it costs no node.
+// the note's pitch, one wave per semitone), so it costs no node; so are the
+// fiddle's body resonances (C5: each a constant-peak band-pass, summed over
+// a floor: an LTI body on a periodic string is exactly a harmonic weight).
 const lowpassGain = (f, fc, q) => 1 / Math.sqrt((1 - (f / fc) ** 2) ** 2 + (f / (fc * q)) ** 2);
+const bandpassGain = (f, fc, q) => 1 / Math.sqrt(1 + (q * (f / fc - fc / f)) ** 2);
+const bodyGain = (f, { floor, peaks }) => peaks.reduce((sum, [fc, q, amp]) => sum + amp * bandpassGain(f, fc, q), floor);
 const pulseRow = duty => Array.from({ length: 24 }, (_, k) => (k ? (2 / (k * Math.PI)) * Math.sin(k * Math.PI * duty) : 0));
 const WAVES = {
     whistle: [0, 1, 0.16, 0.085, 0.03, 0.012],
@@ -181,6 +211,11 @@ const WAVES = {
     // MUSL-2's chip bass: the triangle with a 2nd and 3rd harmonic added.
     chipBass: [0, 1, 0.3, 1 / 9, 0.08, 1 / 25, 0, 1 / 49],
     triangle: Array.from({ length: 16 }, (_, k) => (k % 2 ? ((((k - 1) / 2) % 2 ? -1 : 1) * 8) / (Math.PI * Math.PI * k * k) : 0)),
+    // The bowed string's Helmholtz motion: a sawtooth, 40 harmonics.
+    saw: Array.from({ length: 41 }, (_, k) => (k ? 1 / k : 0)),
+    // A free reed: every harmonic, falling slowly (k^−0.85), the even ones
+    // weaker: the buzzy, slightly hollow squeezebox tone.
+    reed: Array.from({ length: 33 }, (_, k) => (k ? k ** -0.85 * (k % 2 ? 1 : 0.55) : 0)),
 };
 
 // Chip voices: today's Town band envelopes and seat low-passes (Voicings
@@ -203,25 +238,58 @@ const SWELL_TAU = 0.4;
 const SWELL_RELEASE_TAU = 0.3;
 const NOTE_TAIL_SEC = 0.08;
 
-// The whistle (MUSL-1): scoop, chiff and breath, vibrato on long notes,
-// the low-pass at min(4.8 kHz, 6·f0), Q 0.3.
+// The whistle (MUSL-1): scoop, chiff and breath (its noise lane), vibrato
+// on long notes, the low-pass at min(4.8 kHz, 6·f0), Q 0.3.
 const WHISTLE = {
     lp: f0 => [Math.min(4800, 6 * f0), 0.3],
     scale: 0.95, scoopCents: -22, scoopSec: 0.07, attack: 0.045, settle: 0.82, releaseTau: 0.035,
     vibrato: { minSec: 0.55, rate: 5.1, cents: 11, from: 0.28, to: 0.68 },
-    breath: { ratio: 3.1, maxHz: 6000, q: 0.7, chiff: 0.22, rest: 0.05, chiffSec: 0.012, tau: 0.025, releaseTau: 0.03 },
+    lane: { ratio: 3.1, maxHz: 6000, q: 0.7, chiff: 0.22, rest: 0.05, chiffSec: 0.012, tau: 0.025, releaseTau: 0.03 },
 };
 // The pool's white noise (±0.6·√(32/48) uniform, ICC 0.35, folded to one
-// channel) against the prototype's ±1 uniform breath: +7.9 dB.
-const BREATH_NOISE_MATCH = 2.48;
+// channel) against the prototype's ±1 uniform breath: +7.9 dB. Every noise
+// lane (breath, bow hair) is matched the same way.
+const LANE_NOISE_MATCH = 2.48;
+
+// A fiddle or concertina note without a written end (dur null or Infinity)
+// holds this long unless release() cuts it first.
+const HOLD_MAX_SEC = 8;
+const heldSec = dur => (dur == null || dur === Infinity ? HOLD_MAX_SEC : Math.max(0, Number(dur) || 0));
+
+// The fiddle (C5): the sawtooth through the body (the main air resonance,
+// the main wood resonance, the bridge hill) and a gentle low-pass at
+// min(6.5 kHz, 12·f0); a bow attack that grips in 60 ms (soft: up to
+// 120 ms more), eases to 0.88 and sustains while the note is held, a 50 ms
+// release; vibrato 5.5 Hz joining after 150 ms, full by 450 ms, on notes
+// long enough to carry it; a scrape of bow hair on the onset through the
+// bow lane, then a faint rosin hiss while the bow moves.
+const FIDDLE = {
+    wave: 'saw',
+    lp: f0 => [Math.min(6500, 12 * f0), 0.5],
+    body: { floor: 0.3, peaks: [[280, 2.5, 0.5], [460, 2, 0.9], [2800, 1.2, 0.8]] },
+    scale: 0.97, attack: 0.06, softAttack: 0.12, settle: 0.88, settleTau: 0.25, releaseTau: 0.05,
+    vibrato: { minSec: 0.35, rate: 5.5, cents: 12, from: 0.15, to: 0.45 },
+    lane: { ratio: 4, maxHz: 5000, q: 0.8, chiff: 0.12, rest: 0.025, chiffSec: 0.025, tau: 0.05, releaseTau: 0.05 },
+};
+
+// The concertina (C5): two reeds per button, ±7 cents apart (the wet
+// musette beat), the reed wave through a gentle low-pass at min(3.6 kHz,
+// 9·f0); the bellows swell to 0.8 in 70 ms (soft: up to 140 ms more), then
+// on to full with τ 0.2 s, a steady sustain, a 40 ms release.
+const CONCERTINA = {
+    wave: 'reed',
+    lp: f0 => [Math.min(3600, 9 * f0), 0.5],
+    detuneCents: 7,
+    scale: 0.96, attack: 0.07, softAttack: 0.14, swell: 0.8, swellTau: 0.2, releaseTau: 0.04,
+};
 
 // ------------------------------------------------------------------ the table
 
-// kind: pluck | modal | wind | perc | chip. range: the sounding semitones
-// re A4 an instrument plays well (the sequencer folds notes into it by
-// octaves; a baked row's roots cover it); null on unpitched percussion.
-// level: linear gain of vel 1 (the calibration). nodesPerNote: the most a
-// note builds.
+// kind: pluck | modal | wind | bowed | reed | perc | chip. range: the
+// sounding semitones re A4 an instrument plays well (the sequencer folds
+// notes into it by octaves; a baked row's roots cover it); null on
+// unpitched percussion. level: linear gain of vel 1 (the calibration).
+// nodesPerNote: the most a note builds.
 const CHIP_RANGE = [-36, 24];
 const ROWS = {
     whistle: { kind: 'wind', range: [-12, 19], nodesPerNote: 4, level: 0.02653 },
@@ -230,6 +298,9 @@ const ROWS = {
     upright: { kind: 'pluck', range: [-36, -12], bakeRate: 12000, nodesPerNote: 3, level: 0.0755 },
     marimba: { kind: 'modal', range: [-18, 12], bakeRate: 16000, nodesPerNote: 3, level: 0.05089 },
     musicBox: { kind: 'modal', range: [-9, 15], bakeRate: 16000, nodesPerNote: 3, level: 0.03837 },
+    fiddle: { kind: 'bowed', range: [-14, 24], nodesPerNote: 4, level: 0.02758 },
+    concertina: { kind: 'reed', range: [-17, 17], nodesPerNote: 3, level: 0.02838 },
+    dulcimer: { kind: 'pluck', range: [-17, 19], bakeRate: 16000, nodesPerNote: 3, level: 0.1067 },
     brushes: { kind: 'perc', takes: ['brushTap', 'swish'], bakeRate: 24000, nodesPerNote: 4, pannable: true, level: 0.07982 },
     brush: { kind: 'perc', takes: ['brushTap'], bakeRate: 24000, nodesPerNote: 4, pannable: true, level: 0.2095 },
     shaker: { kind: 'perc', takes: ['shaker'], bakeRate: 24000, nodesPerNote: 4, pannable: true, level: 0.1471 },
@@ -262,6 +333,32 @@ export const INSTRUMENTS = freezeAll(Object.fromEntries(Object.entries(ROWS).map
     takes: row.takes || null,
     baked: Boolean(row.bakeRate),
 }])));
+
+// Short lowercase display names (C5: the Town band's Now line names the
+// players), one per instrument; the chip lead and counter pulses read alike.
+export const INSTRUMENT_LABELS = Object.freeze({
+    whistle: 'whistle',
+    lute: 'lute',
+    harp: 'harp',
+    upright: 'bass',
+    marimba: 'marimba',
+    musicBox: 'music box',
+    fiddle: 'fiddle',
+    concertina: 'concertina',
+    dulcimer: 'dulcimer',
+    brushes: 'brushes',
+    brush: 'brush',
+    shaker: 'shaker',
+    lowTom: 'low tom',
+    rim: 'rim',
+    chipPulse25: 'chip pulse',
+    chipPulse12: 'chip pulse',
+    chipArp: 'chip arp',
+    chipTri: 'chip triangle',
+    chipFlute: 'chip flute',
+    chipBass: 'chip bass',
+    chipHat: 'chip hat',
+});
 
 function rowOf(name) {
     const row = INSTRUMENTS[name];
@@ -413,6 +510,25 @@ export function renderString(sr, f0, recipe, rng, seconds = recipe.t60(f0)) {
     return out;
 }
 
+// A recipe's strings struck together: one string, or its `course` summed
+// (one hammer: every string replays the same excitation draws; detuned by
+// its cents, all as long as the root's ring).
+function renderCourse(sr, f0, recipe, rng) {
+    if (!recipe.course) return renderString(sr, f0, recipe, rng);
+    const seconds = recipe.t60(f0);
+    const out = new Float32Array(Math.ceil(seconds * sr));
+    const tape = [];
+    const replay = () => {
+        let i = 0;
+        return () => (i < tape.length ? tape[i++] : (tape[i++] = rng()));
+    };
+    for (const [cents, amp] of recipe.course) {
+        const x = renderString(sr, f0 * 2 ** (cents / 1200), recipe, replay(), seconds);
+        for (let n = 0; n < out.length; n++) out[n] += amp * x[n];
+    }
+    return out;
+}
+
 // A bank of exponentially decaying modes, a soft attack and an optional
 // first-difference noise click.
 export function renderModal(sr, f0, recipe, rng) {
@@ -492,7 +608,7 @@ export function renderBake(spec) {
     if (spec.take) return renderNoiseTake(sr, spec.take, rng);
     const f0 = hzOf(spec.root);
     const string = STRINGS[spec.name];
-    if (string) return finishTake(applyEq(renderString(sr, f0, string, rng), sr, string.eq), sr);
+    if (string) return finishTake(applyEq(renderCourse(sr, f0, string, rng), sr, string.eq), sr);
     const modal = MODAL[spec.name];
     return finishTake(applyEq(renderModal(sr, f0, modal, rng), sr, modal.eq), sr);
 }
@@ -613,16 +729,19 @@ function rowPeak(name) {
 }
 
 // The harmonic amplitudes of a live wave at `hz`: normalised, weighted by
-// the voice's low-pass (lp: f0 → [Hz, Q]) at the semitone's pitch and
-// tilted by k^(−3·(1 − bright)) (bright in quarter steps). Pure.
-export function liveHarmonics(name, hz, { lp = null, bright = 1 } = {}) {
+// the voice's low-pass (lp: f0 → [Hz, Q]) and body (body: { floor, peaks:
+// [[Hz, Q, amp]] }) at the semitone's pitch and tilted by k^(−3·(1 −
+// bright)) (bright in quarter steps). Pure.
+export function liveHarmonics(name, hz, { lp = null, body = null, bright = 1 } = {}) {
     const row = WAVES[name];
     if (!row) throw new Error(`Unknown wave: ${name}`);
     const b = Math.round(clamp(bright, 0, 1) * BRIGHT_STEPS) / BRIGHT_STEPS;
     const f0 = hzOf(Math.round(semiOf(hz)));
     const [fc, q] = lp ? lp(f0) : [0, 0];
     const peak = rowPeak(name);
-    return row.map((v, k) => (k ? (v / peak) * k ** (-3 * (1 - b)) * (fc ? lowpassGain(k * f0, fc, q) : 1) : 0));
+    return row.map((v, k) => (k
+        ? (v / peak) * k ** (-3 * (1 - b)) * (fc ? lowpassGain(k * f0, fc, q) : 1) * (body ? bodyGain(k * f0, body) : 1)
+        : 0));
 }
 
 // The PeriodicWave for liveHarmonics, cached per context.
@@ -631,7 +750,7 @@ function waveFor(ctx, name, hz, opts) {
     let cache = waveCaches.get(ctx);
     if (!cache) { cache = new Map(); waveCaches.set(ctx, cache); }
     const b = Math.round(clamp(opts.bright ?? 1, 0, 1) * BRIGHT_STEPS) / BRIGHT_STEPS;
-    const key = `${name}:${opts.lp ? Math.round(semiOf(hz)) : '-'}:${b}:${opts.tag || ''}`;
+    const key = `${name}:${opts.lp || opts.body ? Math.round(semiOf(hz)) : '-'}:${b}:${opts.tag || ''}`;
     let wave = cache.get(key);
     if (!wave) {
         const imag = new Float32Array(liveHarmonics(name, hz, opts));
@@ -659,7 +778,7 @@ class Instrument {
         this.dest = dest;
         this.rng = typeof rng === 'function' ? rng : rngStream(`music.instrument.${name}`);
         this._voices = new Set();
-        this._breath = null;
+        this._lane = null;
         const bank = engine?.bank;
         this.ready = this.row.baked ? bakeInstrument(bank, name) : Promise.resolve(true);
     }
@@ -676,35 +795,37 @@ class Instrument {
         if (s) s.notes++;
         const kind = this.row.kind;
         if (kind === 'wind') return this._whistle(ctx, t, hz, dur, vel, opts);
+        if (kind === 'bowed') return this._fiddle(ctx, t, hz, dur, vel, opts);
+        if (kind === 'reed') return this._concertina(ctx, t, hz, dur, vel, opts);
         if (kind === 'chip') return this._chip(ctx, t, hz, dur, vel, opts);
         if (kind === 'perc') return this._perc(ctx, bank, s, t, hz, dur, vel, opts);
         return this._pitched(ctx, bank, s, t, hz, dur, vel, opts);
     }
 
-    // Every sounding note and the breath: an 80 ms linear ramp, then the
-    // notes stop. The breath lane stays open, silent, for the next note.
+    // Every sounding note and the noise lane: an 80 ms linear ramp, then the
+    // notes stop. The lane stays open, silent, for the next note.
     release(at = this._ctx?.currentTime ?? 0) {
         const ctx = this._ctx;
         if (!ctx) return;
         const t = Math.max(ctx.currentTime, Number(at) || 0);
         for (const voice of this._voices) this._cut(voice, t);
-        if (this._breath) {
-            holdAt(this._breath.env.gain, t);
-            this._breath.env.gain.linearRampToValueAtTime(0, t + RELEASE_SEC);
+        if (this._lane) {
+            holdAt(this._lane.env.gain, t);
+            this._lane.env.gain.linearRampToValueAtTime(0, t + RELEASE_SEC);
         }
     }
 
-    // release, and the breath lane stops once silent (the instrument is done).
+    // release, and the noise lane stops once silent (the instrument is done).
     dispose(at = this._ctx?.currentTime ?? 0) {
         const ctx = this._ctx;
         if (!ctx) return;
         const t = Math.max(ctx.currentTime, Number(at) || 0);
         this.release(t);
-        if (this._breath) {
-            for (const src of this._breath.sources) {
+        if (this._lane) {
+            for (const src of this._lane.sources) {
                 try { src.stop(t + RELEASE_SEC + 0.01); } catch { /* already stopped */ }
             }
-            this._breath = null;
+            this._lane = null;
         }
     }
 
@@ -796,6 +917,7 @@ class Instrument {
         const finite = Number.isFinite(dur) && dur > 0;
         if (this.name === 'lute') return finite ? { releaseAt: t + dur + 0.15, tau: 0.12 } : {};
         if (this.name === 'harp') return finite ? { releaseAt: t + dur, tau: 0.25 } : {};
+        if (this.name === 'dulcimer') return finite ? { releaseAt: t + dur + DULCIMER_RING_SEC, tau: 0.3 } : {};
         if (this.name === 'upright') {
             if (!finite) return {};
             // Extra decay (dB/s) from the baked 3.2 s ring down to the note's.
@@ -905,38 +1027,102 @@ class Instrument {
         const stopAt = end + W.releaseTau * TAIL_TAUS;
         const sources = [osc];
         const nodes = [env];
-        const vib = W.vibrato;
-        if (sec >= vib.minSec) {
-            const lfo = ctx.createOscillator();
-            const depth = ctx.createGain();
-            lfo.frequency.value = vib.rate;
-            depth.gain.setValueAtTime(0, t);
-            depth.gain.setValueAtTime(0, t + vib.from);
-            depth.gain.linearRampToValueAtTime(vib.cents, t + vib.to);
-            lfo.connect(depth).connect(osc.detune);
-            lfo.start(t);
-            lfo.stop(stopAt);
-            sources.push(lfo);
-            nodes.push(depth);
-        }
+        if (sec >= W.vibrato.minSec) this._delayedVibrato(ctx, osc, t, stopAt, W.vibrato, sources, nodes);
         osc.connect(env).connect(this.dest);
         osc.start(t);
         osc.stop(stopAt);
         this._own(sources, env, nodes);
-        this._breathe(ctx, t, hz, end, level);
+        this._laneNote(ctx, t, hz, end, level, W.lane);
         return stopAt;
     }
 
-    // The whistle's breath: one noise lane per instance, opened by its first
-    // note (a player that never plays holds no lane) and kept, silent between
-    // notes, until dispose(); each note moves its band and chiffs its gain.
-    _openBreath(ctx, at) {
-        const B = WHISTLE.breath;
+    // The fiddle (C5): one bowed string, the bow lane's scrape on its onset.
+    _fiddle(ctx, t, hz, dur, vel, opts) {
+        const F = FIDDLE;
+        const { soft, bright } = effective(opts);
+        const attack = F.attack + soft * F.softAttack;
+        const sec = Math.max(attack + 0.02, heldSec(dur) * F.scale);
+        const level = this.row.level * vel;
+        const osc = ctx.createOscillator();
+        const wave = waveFor(ctx, F.wave, hz, { lp: F.lp, body: F.body, bright, tag: this.name });
+        if (wave && typeof osc.setPeriodicWave === 'function') osc.setPeriodicWave(wave);
+        osc.frequency.value = hz;
+        const env = ctx.createGain();
+        const g = env.gain;
+        const end = t + sec;
+        g.setValueAtTime(0, t);
+        g.linearRampToValueAtTime(level, t + attack);
+        g.setTargetAtTime(F.settle * level, t + attack, F.settleTau);
+        g.setTargetAtTime(0, end, F.releaseTau);
+        const stopAt = end + F.releaseTau * TAIL_TAUS;
+        const sources = [osc];
+        const nodes = [env];
+        if (sec >= F.vibrato.minSec) this._delayedVibrato(ctx, osc, t, stopAt, F.vibrato, sources, nodes);
+        osc.connect(env).connect(this.dest);
+        osc.start(t);
+        osc.stop(stopAt);
+        this._own(sources, env, nodes);
+        this._laneNote(ctx, t, hz, end, level, F.lane);
+        return stopAt;
+    }
+
+    // The concertina (C5): the button's two reeds, ±detuneCents, into one
+    // bellows envelope.
+    _concertina(ctx, t, hz, dur, vel, opts) {
+        const C = CONCERTINA;
+        const { soft, bright } = effective(opts);
+        const attack = C.attack + soft * C.softAttack;
+        const sec = Math.max(attack + 0.02, heldSec(dur) * C.scale);
+        const level = this.row.level * vel;
+        const wave = waveFor(ctx, C.wave, hz, { lp: C.lp, bright, tag: this.name });
+        const env = ctx.createGain();
+        const g = env.gain;
+        const end = t + sec;
+        g.setValueAtTime(0, t);
+        g.linearRampToValueAtTime(C.swell * level, t + attack);
+        g.setTargetAtTime(level, t + attack, C.swellTau);
+        g.setTargetAtTime(0, end, C.releaseTau);
+        const stopAt = end + C.releaseTau * TAIL_TAUS;
+        const sources = [-1, 1].map((side) => {
+            const osc = ctx.createOscillator();
+            if (wave && typeof osc.setPeriodicWave === 'function') osc.setPeriodicWave(wave);
+            osc.frequency.value = hz;
+            osc.detune.value = side * C.detuneCents;
+            osc.connect(env);
+            osc.start(t);
+            osc.stop(stopAt);
+            return osc;
+        });
+        env.connect(this.dest);
+        this._own(sources, env, [env]);
+        return stopAt;
+    }
+
+    // Vibrato that joins late: depth 0 until `from`, full `cents` by `to`.
+    _delayedVibrato(ctx, osc, t, stopAt, vib, sources, nodes) {
+        const lfo = ctx.createOscillator();
+        const depth = ctx.createGain();
+        lfo.frequency.value = vib.rate;
+        depth.gain.setValueAtTime(0, t);
+        depth.gain.setValueAtTime(0, t + vib.from);
+        depth.gain.linearRampToValueAtTime(vib.cents, t + vib.to);
+        lfo.connect(depth).connect(osc.detune);
+        lfo.start(t);
+        lfo.stop(stopAt);
+        sources.push(lfo);
+        nodes.push(depth);
+    }
+
+    // The noise lane (the whistle's breath, the fiddle's bow hair): one per
+    // instance, opened by its first note (a player that never plays holds no
+    // lane) and kept, silent between notes, until dispose(); each note moves
+    // its band and chiffs its gain (L: the recipe's `lane`).
+    _openLane(ctx, at, L) {
         const src = this.engine?.noiseSource?.('white', { rng: this.rng });
         if (!src || typeof ctx.createBiquadFilter !== 'function') return null;
         const bp = ctx.createBiquadFilter();
         bp.type = 'bandpass';
-        bp.Q.value = B.q;
+        bp.Q.value = L.q;
         bp.channelCount = 1;
         bp.channelCountMode = 'explicit';
         const env = ctx.createGain();
@@ -951,17 +1137,16 @@ class Instrument {
         return { sources: [src], env, bp };
     }
 
-    _breathe(ctx, t, hz, end, level) {
-        const B = WHISTLE.breath;
-        if (!this._breath) this._breath = this._openBreath(ctx, t);
-        const breath = this._breath;
-        if (!breath) return;
-        const g = level * BREATH_NOISE_MATCH;
-        breath.bp.frequency.setValueAtTime(Math.min(B.maxHz, B.ratio * hz), t);
-        holdAt(breath.env.gain, t);
-        breath.env.gain.linearRampToValueAtTime(B.chiff * g, t + B.chiffSec);
-        breath.env.gain.setTargetAtTime(B.rest * g, t + B.chiffSec + 0.002, B.tau);
-        breath.env.gain.setTargetAtTime(0, end, B.releaseTau);
+    _laneNote(ctx, t, hz, end, level, L) {
+        if (!this._lane) this._lane = this._openLane(ctx, t, L);
+        const lane = this._lane;
+        if (!lane) return;
+        const g = level * LANE_NOISE_MATCH;
+        lane.bp.frequency.setValueAtTime(Math.min(L.maxHz, L.ratio * hz), t);
+        holdAt(lane.env.gain, t);
+        lane.env.gain.linearRampToValueAtTime(L.chiff * g, t + L.chiffSec);
+        lane.env.gain.setTargetAtTime(L.rest * g, t + L.chiffSec + 0.002, L.tau);
+        lane.env.gain.setTargetAtTime(0, end, L.releaseTau);
     }
 
     _chip(ctx, t, hz, dur, vel, opts) {

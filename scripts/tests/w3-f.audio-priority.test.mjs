@@ -7,7 +7,6 @@ import {
     collapseCueBurst,
     compareCuePriority,
     cueLifecycleDecision,
-    updateQuietFloor,
 } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
 
 test('an urgent cue preempts a routine cue', () => {
@@ -58,66 +57,6 @@ test('provider-voiced council cues bypass burst aggregation', () => {
 
     assert.equal(collapsed.length, 2);
     assert.deepEqual(collapsed.map(cue => cue.provider), ['claude', 'codex']);
-});
-
-test('quiet floor requires sustained calm and sustained activity without flutter', () => {
-    let state = updateQuietFloor(undefined, {
-        calm: true,
-        now: 0,
-        enterAfterMs: 10000,
-        leaveAfterMs: 3000,
-    });
-    state = updateQuietFloor(state, {
-        calm: true,
-        now: 9999,
-        enterAfterMs: 10000,
-        leaveAfterMs: 3000,
-    });
-    assert.equal(state.mode, 'active');
-
-    state = updateQuietFloor(state, {
-        calm: true,
-        now: 10000,
-        enterAfterMs: 10000,
-        leaveAfterMs: 3000,
-    });
-    assert.equal(state.mode, 'resting');
-
-    state = updateQuietFloor(state, {
-        calm: false,
-        now: 11000,
-        enterAfterMs: 10000,
-        leaveAfterMs: 3000,
-    });
-    state = updateQuietFloor(state, {
-        calm: true,
-        now: 12000,
-        enterAfterMs: 10000,
-        leaveAfterMs: 3000,
-    });
-    assert.equal(state.mode, 'resting');
-
-    state = updateQuietFloor(state, {
-        calm: false,
-        now: 13000,
-        enterAfterMs: 10000,
-        leaveAfterMs: 3000,
-    });
-    state = updateQuietFloor(state, {
-        calm: false,
-        now: 15999,
-        enterAfterMs: 10000,
-        leaveAfterMs: 3000,
-    });
-    assert.equal(state.mode, 'resting');
-
-    state = updateQuietFloor(state, {
-        calm: false,
-        now: 16000,
-        enterAfterMs: 10000,
-        leaveAfterMs: 3000,
-    });
-    assert.equal(state.mode, 'active');
 });
 
 test('hidden lifecycle suppresses ambience but permits summons without a return backlog', () => {

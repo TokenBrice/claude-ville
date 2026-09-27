@@ -7,16 +7,54 @@ import { marginAt } from './timeline.mjs';
 import { renderEngineUnit, renderVirtual } from './virtual.mjs';
 import { LANE_CUE_KIND, LIMITER_UNIT, MARGIN_BEDS, SCENES, marginScene } from './scenes.mjs';
 import {
-    avSync, duckedTime, energyMeanLufs, limiterGainReduction, maxGrIn, onsetNear, switchHoleBump,
+    accentSync, avSync, duckedTime, energyMeanLufs, limiterGainReduction, maxGrIn, onsetNear, presetSwitch,
 } from './checks.mjs';
 import { cueBandRise, presenceRise } from '../metrics/cuebands.mjs';
 import { levelMap } from '../metrics/levelmap.mjs';
+import { welch } from '../metrics/dsp.mjs';
 import { AUDIBILITY_WINDOWS, PROGRAM_TRIM_DB } from '../../../claudeville/src/presentation/shared/audio/Loudness.js';
 import { CUE_ACCENT_NOTE } from '../../../claudeville/src/presentation/shared/audio/CueScore.js';
+import { SIGNALS_FADE_SEC } from '../../../claudeville/src/presentation/shared/AmbientAudioController.js';
+import { BODY_SNAP_SEC } from '../../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
 
 const MARGIN = { bedWindowSec: AUDIBILITY_WINDOWS.bedWindowSec, cueWindowSec: 2.5, silenceFloorLufs: -80 };
 const toDb = x => (x > 0 ? 20 * Math.log10(x) : -Infinity);
 const volumeDb = step => (step > 0 ? (step - 10) * 3.6 : -Infinity);
+
+// Output-referred: a bus or cue tap sits before the program trim and volume.
+export const outputGainDb = r => PROGRAM_TRIM_DB + volumeDb(r.meta.volumeStep ?? 6);
+
+// Band level (dB, Welch PSD summed over [lo, hi) Hz, both channels): only
+// differences between two such numbers mean anything.
+export function bandLevelDb({ L, R }, sr, lo, hi) {
+    const psd = welch([L, R]);
+    const N = (psd.length - 1) * 2;
+    let e = 0;
+    for (let k = 1; k < psd.length; k++) {
+        const f = (k * sr) / N;
+        if (f >= lo && f < hi) e += psd[k];
+    }
+    return e > 0 ? 10 * Math.log10(e) : -Infinity;
+}
+
+// A stem's level in `hopSec` blocks, one render minus its twin (dB), as
+// [[t, dB], …]; blocks where the twin is silent are skipped (5.6's quiet mix).
+export function levelDiffCurve(a, b, sr, { hopSec = 0.1, floor = 1e-7 } = {}) {
+    const hop = Math.round(hopSec * sr);
+    const n = Math.min(a.L.length, b.L.length);
+    const out = [];
+    for (let k = 0; (k + 1) * hop <= n; k++) {
+        let ea = 0;
+        let eb = 0;
+        for (let i = k * hop; i < (k + 1) * hop; i++) {
+            ea += a.L[i] * a.L[i] + a.R[i] * a.R[i];
+            eb += b.L[i] * b.L[i] + b.R[i] * b.R[i];
+        }
+        if (eb / hop < floor * floor) continue;
+        out.push([(k + 1) * hopSec, ea > 0 ? 10 * Math.log10(ea / eb) : -120]);
+    }
+    return out;
+}
 
 // Renders are cached per key so several checks share one render.
 export function makeRenderer(browser, baseUrl, { seed, noWorklets }) {
@@ -92,10 +130,10 @@ export function marginRows(r, bedName) {
 
 // The cue's own level over the bed (Minor outcomes, the Wave-4 ruling): the
 // cue stem's max momentary in [t, t + 2.5 s] over the energy mean of the
-// bed stems (world + work + music, summed; same bus staging as the cue tap)
-// in the 3 s before — so a sea swell under a quiet knock cannot lift it.
-// null without bed stems.
-const BED_STEMS = ['world', 'work', 'music'];
+// music stem (the one bed bus; same bus staging as the cue tap) in the 3 s
+// before — so a swell of the band under a quiet knock cannot lift it.
+// null without the music stem.
+const BED_STEMS = ['music'];
 function stemMarginRows(r) {
     const beds = BED_STEMS.filter(k => r.stems[k]);
     if (!r.stems.cue || !beds.length) return null;
@@ -149,7 +187,9 @@ export function laneMarginRows(r, bed) {
 
 export function switchRows(r) {
     const lou = loudness(r.program.L, r.program.R, r.sr);
-    return r.meta.markers.filter(m => m.label?.startsWith('mode:')).map(m => ({ label: m.label, t: m.t, ...switchHoleBump(lou.momentaryCurve, m.t) }));
+    return r.meta.markers.filter(m => m.label?.startsWith('mode:')).map(m => ({
+        label: m.label, t: m.t, ...presetSwitch(lou.momentaryCurve, { L: r.program.L, R: r.program.R, sr: r.sr }, m.t, { fadeSec: SIGNALS_FADE_SEC }),
+    }));
 }
 
 export function duckRows(r) {
@@ -161,8 +201,9 @@ export function duckRows(r) {
 
 // HAR-12 on the virtual clock: every published note of every sounding score
 // against the first onset heard on the cue stem near it; accents declared
-// before their cue against the heard carrying note.
-export function avSyncRows(r) {
+// before their cue against the heard carrying note, which S4's grid may have
+// moved onto the band's grid (lib/checks.mjs accentSync).
+export function avSyncRows(r, { syncMs }) {
     const cue = r.stems.cue;
     const mono = new Float32Array(cue.L.length);
     for (let i = 0; i < mono.length; i++) mono[i] = 0.5 * (cue.L[i] + cue.R[i]);
@@ -180,7 +221,7 @@ export function avSyncRows(r) {
         const note = s?.notes[CUE_ACCENT_NOTE[a.kind] ?? 0];
         return { kind: a.kind, published: a.accentT, carrying: note ?? null, heard: note != null ? onsetNear(mono, r.sr, note) : null };
     });
-    return { notes: avSync(notes), accents: avSync(accents), accentVsPublishedMs: accents.filter(a => a.carrying != null).map(a => Number(((a.carrying - a.published) * 1000).toFixed(2))) };
+    return { notes: avSync(notes), accents: accentSync(accents, r.meta.music?.frames, { snapSec: BODY_SNAP_SEC, syncMs }) };
 }
 
 export function limiterUnitRows(u) {

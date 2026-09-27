@@ -1,14 +1,11 @@
 // The probe's Wave-2 measurements ("one clock, one air"): the Transport and
-// timer attribution, pause in place, Island Air, the noise pool and the
-// SampleBank, on the virtual clock (lib/virtual.mjs). Every function returns
-// numbers; probe.mjs turns them into PASS/FAIL lines through the pure judges
-// in checks.mjs.
-import { loudness } from './analyze.mjs';
+// timer attribution, pause in place and Island Air, on the virtual clock
+// (lib/virtual.mjs). Every function returns numbers; probe.mjs turns them
+// into PASS/FAIL lines through the pure judges in checks.mjs.
 import { renderAirUnit } from './virtual.mjs';
 import { energyRatioDb, resumeBurst } from './checks.mjs';
 import { AIR_ARRIVALS, AIR_UNIT, HIDDEN_AT, HIDDEN_SECONDS } from './scenes.mjs';
-import { repetition, rt60 } from '../metrics/amb-metrics.mjs';
-import { levelMap } from '../metrics/levelmap.mjs';
+import { rt60 } from '../metrics/amb-metrics.mjs';
 
 
 function slice(pair, sr, a, b) {
@@ -51,7 +48,7 @@ export async function renderAir(browser, baseUrl, { seed }) {
 }
 
 // T60 per phase from the IRs themselves; direct-to-reverberant of each
-// burst: dry (world bus) over wet (air return) energy in the burst's 4.4 s.
+// burst: dry (music bus) over wet (air return) energy in the burst's 4.4 s.
 export function airRows(u) {
     const t60 = {};
     for (const phase of ['day', 'night']) {
@@ -59,7 +56,7 @@ export function airRows(u) {
         t60[phase] = ir ? rt60(ir.L, ir.R, u.irRates[phase === 'day' ? 'irDay' : 'irNight'], { bands: [1000, 4000] }) : null;
     }
     const dr = AIR_UNIT.bursts.map((b) => {
-        const dry = slice(u.stems.world, u.sr, b.at, b.at + 4.4);
+        const dry = slice(u.stems.music, u.sr, b.at, b.at + 4.4);
         const wet = slice(u.stems.airWet, u.sr, b.at, b.at + 4.4);
         return { d: b.d, drDb: energyRatioDb(mono(dry), mono(wet)), placed: u.meta.placements.find(p => p.at === b.at) ?? null };
     });
@@ -88,18 +85,3 @@ export function urgentWetRows(r) {
         return { t, wetDb: energyRatioDb(mono(slice(r.stems.airWet, r.sr, t, t + 2.5)), mono(slice(r.stems.cue, r.sr, t, t + 2.5))) };
     });
 }
-
-// ---------------------------------------------------------------- noise ----
-export function textureRows(r, stem) {
-    const pair = slice(r.stems[stem], r.sr, r.meta.warmup, r.meta.warmup + r.meta.seconds);
-    const rep = repetition(pair.L, pair.R, r.sr);
-    const lou = loudness(pair.L, pair.R, r.sr);
-    return { peak: rep.peak, icc: rep.icc, lufsI: lou.integrated };
-}
-
-export function bedRows(r) {
-    const cut = { L: r.program.L.subarray(Math.round(r.meta.warmup * r.sr)), R: r.program.R.subarray(Math.round(r.meta.warmup * r.sr)) };
-    const world = r.stems.world ? slice(r.stems.world, r.sr, r.meta.warmup, r.meta.warmup + r.meta.seconds) : null;
-    return { monoLossLU: levelMap(cut.L, cut.R, r.sr).monoLossLU, worldIcc: world ? repetition(world.L, world.R, r.sr).icc : null };
-}
-

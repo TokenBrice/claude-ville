@@ -211,17 +211,11 @@
 }
 
 .topbar__spend-heading,
-.topbar__sound-heading,
-.topbar__sound-subheading {
+.topbar__sound-heading {
     margin-bottom: 4px;
     color: var(--ink-1);
     font: var(--fs-label)/var(--lh-label) var(--font-display);
     letter-spacing: 1px;
-}
-
-.topbar__sound-subheading {
-    margin-bottom: 0;
-    color: var(--ink-3);
 }
 
 .topbar__spend-note {
@@ -341,13 +335,9 @@
     font: var(--fs-body)/var(--lh-body) var(--font-body);
 }
 
-.topbar__sound-mix {
-    display: grid;
-}
-
-.topbar__sound-mix[hidden],
 .topbar__sound-row[hidden],
 .topbar__sound-action[hidden],
+.topbar__sound-actions[hidden],
 .topbar__sound-note[hidden] {
     display: none;
 }
@@ -375,6 +365,11 @@
 .topbar__sound-now {
     min-height: 16px;
     color: var(--ink-2);
+}
+
+/* Off: no line, no reserved row. */
+.topbar__sound-now:empty {
+    display: none;
 }
 
 .topbar__sound-note {

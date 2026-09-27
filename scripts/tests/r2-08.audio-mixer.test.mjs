@@ -2,13 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { AmbientAudioController } from '../../claudeville/src/presentation/shared/AmbientAudioController.js';
-import {
-    AUDIO_MIXER_DEFAULTS,
-    SOUND_RECALIBRATED_MESSAGE,
-    readStoredTrimSteps,
-} from '../../claudeville/src/presentation/shared/SoundSettings.js';
-import { AUDIO_GROUPS, AudioEngine } from '../../claudeville/src/presentation/shared/audio/AudioEngine.js';
-import { STANDARD_VOLUME_STEP, trimStepGain } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
+import { SOUND_RECALIBRATED_MESSAGE } from '../../claudeville/src/presentation/shared/SoundSettings.js';
+import { AudioEngine } from '../../claudeville/src/presentation/shared/audio/AudioEngine.js';
+import { STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 
 const CALIBRATED = { 'claudeville.sound.calibration': '2' };
@@ -21,30 +17,29 @@ function memoryStorage(initial = {}) {
     };
 }
 
-function mixerHarness(storage = memoryStorage(CALIBRATED)) {
+function mixerHarness() {
     const controller = Object.create(AmbientAudioController.prototype);
     Object.assign(controller, {
         _destroyed: false,
         _windowBlurred: false,
-        _quietMix: { active: false, preset: null, factors: {} },
+        _quietMix: { active: false, preset: null },
         background: 'play',
-        mode: 'ambient',
-        layerSteps: readStoredTrimSteps(storage),
+        mode: 'bgm',
+        enabled: true,
+        hushedUntil: 0,
+        _quietActive: false,
         engine: new AudioEngine(),
         _publishView() {},
     });
     return controller;
 }
 
-// Stand-in faders for a built graph: record every gain target per group.
+// A stand-in fader for a built graph: record every music gain target.
 function faderEngine(engine) {
-    const faders = {};
+    const music = [];
     engine.context = { currentTime: 0 };
-    engine._groups = new Map(AUDIO_GROUPS.map((name) => {
-        faders[name] = [];
-        return [name, { gain: { setTargetAtTime: value => faders[name].push(value) } }];
-    }));
-    return faders;
+    engine._groups = new Map([['music', { gain: { setTargetAtTime: value => music.push(value) } }]]);
+    return music;
 }
 
 async function withWindow(win, run) {
@@ -75,118 +70,40 @@ function collect(event) {
     return { payloads, unsubscribe };
 }
 
-test('stored trim steps are complete, whole, clamped, and tolerate corrupt data', () => {
-    const stored = memoryStorage({
-        ...CALIBRATED,
-        'claudeville.sound.layers': JSON.stringify({
-            wind: 3,
-            rain: 14,
-            wildlife: -2,
-            hum: '4',
-            music: 6.6,
-        }),
-    });
-    assert.deepEqual(readStoredTrimSteps(stored), {
-        wind: 3,
-        rain: 10,
-        wildlife: 0,
-        hum: 4,
-        // A channel the profile never stored reads at its own default.
-        workshops: AUDIO_MIXER_DEFAULTS.workshops,
-        music: 7,
-    });
-    assert.deepEqual(
-        readStoredTrimSteps(memoryStorage({ ...CALIBRATED, 'claudeville.sound.layers': '{oops' })),
-        { ...AUDIO_MIXER_DEFAULTS },
-    );
-});
-
-test('trim steps follow 2.4 dB per step: unity at 10, off at 0', () => {
-    assert.equal(trimStepGain(10), 1);
-    assert.ok(Math.abs(20 * Math.log10(trimStepGain(9)) + 2.4) < 1e-9);
-    assert.ok(Math.abs(20 * Math.log10(trimStepGain(5)) + 12) < 1e-9);
-    assert.ok(Math.abs(20 * Math.log10(trimStepGain(1)) + 21.6) < 1e-9);
-    assert.equal(trimStepGain(0), 0);
-});
-
-test('mixer trim steps persist and drive the group faders', async () => {
-    const storage = memoryStorage(CALIBRATED);
-    await withWindow({ localStorage: storage }, () => {
-        const controller = mixerHarness(storage);
-        const faders = faderEngine(controller.engine);
-
-        assert.equal(controller.setLayerStep('wind', 5), true);
-        assert.ok(Math.abs(faders.wind.at(-1) - 10 ** (-12 / 20)) < 1e-9);
-        assert.equal(JSON.parse(storage.getItem('claudeville.sound.layers')).wind, 5);
-        assert.equal(mixerHarness(storage).layerSteps.wind, 5);
-
-        // Zero is a closed fader, never a negative or NaN gain.
-        controller.setLayerStep('music', 0);
-        assert.ok(faders.music.at(-1) >= 0 && faders.music.at(-1) <= 0.0001);
-        controller.setLayerStep('rain', 17);
-        assert.equal(faders.rain.at(-1), 1);
-        assert.equal(controller.layerSteps.rain, 10);
-
-        assert.equal(controller.setLayerStep('unknown', 0), false);
-        assert.equal(faders.hum.length, 0, 'one channel never moves another fader');
-    });
-});
-
-test('each of the six mixer channels drives the fader of its own group', () => {
+test('a blurred Town band keeps playing at −3 dB with its bed compensated; focus restores it', () => {
     const controller = mixerHarness();
-    const faders = faderEngine(controller.engine);
-    controller.layerSteps = { wind: 10, rain: 9, wildlife: 5, hum: 1, workshops: 3, music: 0 };
-    controller._applyGroupLevels();
-
-    for (const [name, step] of Object.entries(controller.layerSteps)) {
-        const gain = faders[name].at(-1);
-        if (step === 0) assert.ok(gain >= 0 && gain <= 0.0001, name);
-        else assert.ok(Math.abs(gain - trimStepGain(step)) < 1e-9, name);
-    }
-});
-
-test('a blurred window keeps playing the D3 quiet mix of its preset; focus restores the trims', () => {
-    const controller = mixerHarness();
-    const faders = faderEngine(controller.engine);
-    const quiet = [];
-    controller.directors = { ambient: { setQuietMix: on => quiet.push(on) } };
-    controller.layerSteps = { ...AUDIO_MIXER_DEFAULTS, wind: 5 };
-    const heard = name => faders[name].at(-1);
+    const music = faderEngine(controller.engine);
+    const bedDb = () => controller.engine._bedComp.to;
 
     controller._windowBlurred = true;
     controller._syncQuietMix();
-    assert.ok(heard('music') <= 0.0001, 'the Village music goes out');
-    for (const name of ['wind', 'rain', 'wildlife', 'hum', 'workshops']) {
-        assert.ok(Math.abs(heard(name) - trimStepGain(controller.layerSteps[name]) * 0.5) < 1e-9, name);
-    }
-    assert.deepEqual(quiet, [true], 'the workshops keep their accents only');
-    assert.equal(controller.layerSteps.wind, 5, 'the stored trim is untouched');
+    assert.ok(Math.abs(20 * Math.log10(music.at(-1)) + 3) < 1e-9, 'the Town band plays on at −3 dB');
+    assert.equal(bedDb(), 3, 'cues level against the full band');
+
+    // Signals has no bed: the fader and the bed reading stay whole.
+    controller.mode = 'signals';
+    controller._syncQuietMix();
+    assert.equal(music.at(-1), 1);
+    assert.equal(bedDb(), 0);
 
     controller.mode = 'bgm';
     controller._syncQuietMix();
-    assert.ok(Math.abs(20 * Math.log10(heard('music')) + 3) < 1e-9, 'the Town band plays on at −3 dB');
-    assert.equal(heard('wind'), trimStepGain(5));
-    assert.deepEqual(quiet, [true, false]);
-
-    controller.mode = 'ambient';
     controller._windowBlurred = false;
     controller._syncQuietMix();
-    for (const [name, step] of Object.entries(controller.layerSteps)) {
-        assert.ok(Math.abs(heard(name) - Math.max(0.0001, trimStepGain(step))) < 1e-9, name);
-    }
+    assert.equal(music.at(-1), 1);
+    assert.equal(bedDb(), 0);
 
     // "Signals only" pauses a blurred window instead: no quiet mix.
     controller.background = 'signals';
     controller._windowBlurred = true;
     controller._syncQuietMix();
     assert.equal(controller._quietMix.active, false);
-    assert.equal(heard('music'), 1);
+    assert.equal(music.at(-1), 1);
 });
 
 test('a legacy profile loads once at the standard step, captions once, then keeps user changes', async () => {
     const storage = memoryStorage({
         'claudeville.sound.volume': '0.8',
-        'claudeville.sound.layers': JSON.stringify({ wind: 0.2, rain: 1, wildlife: 0.5, hum: 0, music: 0.9 }),
         'claudeville.sound.mode': 'bgm',
     });
     const captions = collect('audio:recalibrated');
@@ -194,7 +111,6 @@ test('a legacy profile loads once at the standard step, captions once, then keep
         await withWindow(browserWindow(storage), async () => {
             const first = new AmbientAudioController();
             assert.equal(first.volumeStep, STANDARD_VOLUME_STEP);
-            assert.deepEqual(first.layerSteps, { ...AUDIO_MIXER_DEFAULTS });
             assert.equal(first.engine.volumeStep, STANDARD_VOLUME_STEP);
             assert.equal(JSON.parse(storage.getItem('claudeville.sound.volumes')).bgm, STANDARD_VOLUME_STEP);
             assert.equal(storage.getItem('claudeville.sound.calibration'), '2');
@@ -203,12 +119,10 @@ test('a legacy profile loads once at the standard step, captions once, then keep
 
             // The Town band's own step (7.8).
             first.setVolumeStep(3);
-            first.setLayerStep('wind', 4);
             await first.destroy();
 
             const second = new AmbientAudioController();
             assert.equal(second.volumeStep, 3);
-            assert.equal(second.layerSteps.wind, 4);
             assert.equal(captions.payloads.length, 1, 'the recalibration captions once');
             await second.destroy();
         });
@@ -239,7 +153,7 @@ test('one shared governor: an agent summoned by one director is not summoned aga
     try {
         await withWindow(browserWindow(storage), async () => {
             const controller = new AmbientAudioController();
-            assert.equal(controller.directors.ambient.cue('summons', { agentId: 'ada' }), true);
+            assert.equal(controller.directors.signals.cue('summons', { agentId: 'ada' }), true);
             // The town band's player needs a live AudioContext; marking the
             // director playing reaches the cue route it uses while it plays.
             const bgm = controller.directors.bgm;
@@ -257,40 +171,51 @@ test('one shared governor: an agent summoned by one director is not summoned aga
     }
 });
 
-function crossfadeHarness() {
+test('the Town band line names the piece and its players, one name when they read alike', () => {
+    const controller = Object.create(AmbientAudioController.prototype);
+    const player = { nowPlaying: null };
+    Object.assign(controller, { _playingMode: 'bgm', directors: { bgm: { player } } });
+    const line = (nowPlaying) => {
+        player.nowPlaying = nowPlaying;
+        return controller._nowLine('playing');
+    };
+    assert.equal(line(null), 'Now · between tunes');
+    assert.equal(line({ piece: 'paintedIsle', title: 'The Painted Isle', lead: 'whistle', counter: 'upright' }),
+        'Now · The Painted Isle · whistle & bass');
+    assert.equal(line({ piece: 'paintedIsle', title: 'The Painted Isle', lead: 'harp', counter: 'harp' }),
+        'Now · The Painted Isle · harp');
+    assert.equal(line({ piece: 'paintedIsle', title: 'The Painted Isle', lead: 'chipPulse25', counter: 'chipPulse12' }),
+        'Now · The Painted Isle · chip pulse');
+    assert.equal(line({ piece: 'paintedIsle', title: 'The Painted Isle' }), 'Now · The Painted Isle');
+
+    controller._playingMode = 'signals';
+    assert.equal(controller._nowLine('playing'), 'Listening for agents that need you');
+});
+
+function crossfadeHarness({ mode = 'signals' } = {}) {
     const log = [];
     const director = (id) => ({
         running: false,
         paused: false,
-        profile: 'village',
         start() { this.running = true; log.push(`${id}:start`); },
         stop() { this.running = false; log.push(`${id}:stop`); },
         setSignalRouting(on) { this.signals = on; },
-        setQuietMix() {},
-        setProfile(profile) {
-            if (profile === this.profile) return false;
-            this.profile = profile;
-            log.push(`${id}:${profile}`);
-            return true;
-        },
     });
     const controller = Object.create(AmbientAudioController.prototype);
     Object.assign(controller, {
         _destroyed: false,
         _windowBlurred: false,
-        _quietMix: { active: false, preset: null, factors: {} },
+        _quietMix: { active: false, preset: null },
         _crossfadeStops: new Map(),
-        _profileTimer: null,
-        _playingMode: 'ambient',
+        _playingMode: mode,
         _quietActive: false,
         hushedUntil: 0,
         available: true,
         background: 'play',
         enabled: true,
-        mode: 'ambient',
+        mode,
         volumeStep: STANDARD_VOLUME_STEP,
-        layerSteps: { ...AUDIO_MIXER_DEFAULTS },
-        directors: { ambient: director('ambient'), bgm: director('bgm') },
+        directors: { signals: director('signals'), bgm: director('bgm') },
         engine: {
             context: { state: 'running' },
             now: () => 0,
@@ -307,64 +232,47 @@ function crossfadeHarness() {
         _publishView() {},
         _emitBellState() {},
     });
-    controller.directors.ambient.running = true;
+    controller.directors[mode === 'bgm' ? 'bgm' : 'signals'].running = true;
     return { controller, log };
 }
 
-test('a preset switch crossfades, and switching back before the fade ends keeps the returning director', async () => {
+test('a preset switch crossfades over 0.8 s, and switching back before the fade ends keeps the returning director', async () => {
     const { controller, log } = crossfadeHarness();
-    const { ambient, bgm } = controller.directors;
+    const { signals, bgm } = controller.directors;
 
     controller.setPreset('townBand');
-    assert.deepEqual(log, ['bgm->0@0', 'bgm:start', 'bgm->1@2.5', 'ambient->0@2.5']);
-    assert.equal(ambient.running, true, 'the outgoing director plays through the fade');
-    assert.equal(ambient.signals, false, 'the town band owns the signals from the switch');
+    assert.deepEqual(log, ['bgm->0@0', 'bgm:start', 'bgm->1@0.8', 'signals->0@0.8']);
+    assert.equal(signals.running, true, 'the outgoing director plays through the fade');
+    assert.equal(signals.signals, false, 'the town band owns the signals from the switch');
 
     log.length = 0;
-    controller.setPreset('village');
-    assert.deepEqual(log, ['ambient->1@2.5', 'bgm->0@2.5'], 'a fading director turns around, never restarts');
+    controller.setPreset('signals');
+    assert.deepEqual(log, ['signals->1@0.8', 'bgm->0@0.8'], 'a fading director turns around, never restarts');
 
     await new Promise(resolve => setTimeout(resolve, 120));
-    assert.equal(ambient.running, true, 'the returning director is never stopped by the earlier fade');
+    assert.equal(signals.running, true, 'the returning director is never stopped by the earlier fade');
     assert.equal(bgm.running, false, 'the outgoing director stops once faded');
     assert.deepEqual(log.slice(2), ['bgm:stop']);
-    assert.equal(ambient.signals, true);
+    assert.equal(signals.signals, true);
 });
 
-test('Signals and a hush fade the island out before its layers go, and back in on return', async () => {
-    const { controller, log } = crossfadeHarness();
-    const { ambient } = controller.directors;
+test('a hush drops the Town band to Signals and its end brings the band back; the preset never changes', async () => {
+    const { controller, log } = crossfadeHarness({ mode: 'bgm' });
+    const { signals, bgm } = controller.directors;
 
-    controller.setPreset('signals');
-    assert.deepEqual(log, ['ambient->0@0.8'], 'the Village plays on through its fade');
-    assert.equal(ambient.profile, 'village');
-    await new Promise(resolve => setTimeout(resolve, 120));
-    assert.deepEqual(log, ['ambient->0@0.8', 'ambient:signals', 'ambient->1@0']);
-    assert.equal(ambient.running, true, 'one director keeps the signal route');
-
-    log.length = 0;
-    controller.setPreset('village');
-    assert.deepEqual(log, ['ambient->0@0', 'ambient:village', 'ambient->1@0.8']);
-
-    // A hush drops the Village to Signals and its end brings it back; the
-    // stored preset never changes.
-    log.length = 0;
     controller.hush(60_000);
-    assert.equal(controller.preset, 'village');
+    assert.equal(controller.preset, 'townBand');
     assert.equal(controller._effectiveMode(), 'signals');
+    assert.deepEqual(log, ['signals->0@0', 'signals:start', 'signals->1@0.8', 'bgm->0@0.8']);
     await new Promise(resolve => setTimeout(resolve, 120));
-    assert.equal(ambient.profile, 'signals');
-    controller.resumeFromHush();
-    assert.equal(ambient.profile, 'village');
-    assert.equal(controller._effectiveMode(), 'ambient');
+    assert.equal(bgm.running, false);
+    assert.equal(signals.signals, true, 'Signals owns the route while hushed');
 
-    // Switching back before the fade into Signals ends keeps the Village.
     log.length = 0;
-    controller.setPreset('signals');
-    controller.setPreset('village');
-    await new Promise(resolve => setTimeout(resolve, 120));
-    assert.equal(ambient.profile, 'village', 'the teardown after the fade is cancelled');
-    assert.deepEqual(log, ['ambient->0@0.8', 'ambient->1@0.8']);
+    controller.resumeFromHush();
+    assert.equal(controller._effectiveMode(), 'bgm');
+    assert.deepEqual(log, ['bgm->0@0', 'bgm:start', 'bgm->1@0.8', 'signals->0@0.8']);
+    assert.equal(signals.signals, false);
 });
 
 test('a click on an armed control starts sound; only a sounding control turns it off', () => {
@@ -380,9 +288,9 @@ test('a click on an armed control starts sound; only a sounding control turns it
         hushedUntil: 0,
         available: true,
         enabled: true,
-        mode: 'ambient',
+        mode: 'signals',
         engine: { context: { state: 'suspended' } },
-        directors: { ambient: director, bgm: { running: false } },
+        directors: { signals: director, bgm: { running: false } },
         _startActivation: () => calls.push('start'),
         setPreset: (preset, options) => calls.push(`${preset}:${options.fromUser}`),
     });
@@ -399,7 +307,7 @@ test('a click on an armed control starts sound; only a sounding control turns it
 
     controller.enabled = false;
     controller.toggleFromUser();
-    assert.equal(calls.at(-1), 'village:true', 'off turns on the last preset');
+    assert.equal(calls.at(-1), 'signals:true', 'off turns on the last preset');
 });
 
 function wakeHarness(events, { enabled = true, gestureSeen = true, owns = true } = {}) {
@@ -425,7 +333,7 @@ function wakeHarness(events, { enabled = true, gestureSeen = true, owns = true }
             start: () => events.push('engine:start'),
         },
         directors: {
-            ambient: { cue: (kind, payload) => events.push(`${kind}:${payload.agentId}`) },
+            signals: { cue: (kind, payload) => events.push(`${kind}:${payload.agentId}`) },
         },
     });
     return controller;

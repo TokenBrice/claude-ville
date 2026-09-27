@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Sequencer, nearestVoicing } from '../../claudeville/src/presentation/shared/audio/music/Sequencer.js';
+import { Sequencer, engineFigure, nearestVoicing, renditionScore } from '../../claudeville/src/presentation/shared/audio/music/Sequencer.js';
+import { voicingFor } from '../../claudeville/src/presentation/shared/audio/music/Voicings.js';
 import { MusicClock } from '../../claudeville/src/presentation/shared/audio/MusicClock.js';
 import { setRngSeed } from '../../claudeville/src/presentation/shared/audio/Rng.js';
 import {
-    FRAGMENTS, PIECES, PLAYLISTS, chordPitchClasses,
+    PIECES, PLAYLISTS, cadenceKit, chordPitchClasses, musicKey, piece as scorePiece,
 } from '../../claudeville/src/presentation/shared/audio/bgm/BgmSongbook.js';
 
 // ── a minimal offline audio graph: enough to schedule ──
@@ -95,17 +96,23 @@ function startSequencer(preset, { piece = null, phase = 'day', band = null, keyf
 
 const notes = (marks, from = -Infinity, to = Infinity) => marks.filter(m => m.kind === 'note' && m.t >= from && m.t < to);
 
+// The written chord over a whole beat, or null when a split bar changes
+// chord inside that beat (a 3/4 or 6/8 bar splits at 1.5 or 3 beats).
 function writtenChordAtBeat(piece, beat) {
     const bpb = piece.beatsPerBar || 4;
     const entry = piece.chords[Math.floor(beat / bpb)];
-    return Array.isArray(entry) ? entry[beat % bpb >= bpb / 2 ? 1 : 0] : entry;
+    if (!Array.isArray(entry)) return entry;
+    const at = beat % bpb;
+    if (at < bpb / 2 && at + 1 > bpb / 2) return null;
+    return entry[at >= bpb / 2 ? 1 : 0];
 }
 
-test('Town band: the MusicClock chord follows the written chords through every pass, and the bar nowPlaying shows', () => {
+test('Town band: the MusicClock follows the piece\'s key and written chords through every pass; nowPlaying names the piece and its players', () => {
     for (const piece of PIECES) {
         const night = piece.family === 'night';
+        const keyframe = night ? 'night' : 'noon';
         const { seq, ctx, engine, marks } = startSequencer('townBand', {
-            piece: piece.name, phase: night ? 'night' : 'day', keyframe: night ? 'night' : 'noon',
+            piece: piece.name, phase: night ? 'night' : 'day', keyframe,
         });
         const bpb = piece.beatsPerBar || 4;
         let checked = 0;
@@ -120,33 +127,43 @@ test('Town band: the MusicClock chord follows the written chords through every p
                 if (inPass.segment && inPass.segment !== 'pass') return;
                 const snapshot = engine.musicClock.snapshot(now);
                 assert.equal(snapshot.bar, playing.bar, `${piece.name} bar at ${now}`);
+                assert.deepEqual(snapshot.key, musicKey(piece.key), `${piece.name} key`);
+                assert.equal(playing.title, piece.title);
                 const beat = (playing.bar - 1) * bpb + snapshot.beat - 1;
                 if (playing.bar >= piece.chords.length - 1) return; // colour and tag bars
-                assert.deepEqual(snapshot.chord, chordPitchClasses(writtenChordAtBeat(piece, beat)), `${piece.name} beat ${beat}`);
+                const written = writtenChordAtBeat(piece, beat);
+                if (written == null) return;
+                assert.deepEqual(snapshot.chord, chordPitchClasses(written), `${piece.name} beat ${beat}`);
                 checked++;
             },
         });
         assert.ok(checked > 10, `${piece.name}: ${checked} beats checked`);
+        // The piece's own players sound it (C4), and the Now line names them.
+        const seats = voicingFor({ keyframe, piece: piece.name }).seats;
+        for (const seat of ['lead', 'counter']) {
+            const heard = new Set(notes(marks).filter(m => m.seat === seat && m.segment === 'pass').map(m => m.instrument));
+            assert.deepEqual([...heard], [seats[seat].instrument], `${piece.name} ${seat}`);
+        }
+        const loop = marks.find(m => m.kind === 'loop');
+        assert.deepEqual([loop.lead, loop.counter], [seats.lead.instrument, seats.counter.instrument], `${piece.name} now line`);
         seq.stop();
         assert.equal(engine.musicClock.playing(ctx.currentTime), false, 'stop clears the clock');
     }
 });
 
-function noteKeys(preset, piece, windows) {
-    const { seq, ctx, marks } = startSequencer(preset, { piece });
-    if (preset === 'village') seq.playFragment(null, { reason: 'test' });
+function noteKeys(piece, windows) {
+    const { seq, ctx, marks } = startSequencer('townBand', { piece });
     drive(seq, ctx, { seconds: 70, ...windows });
     seq.stop();
     return notes(marks, 0, 60).map(m => `${m.t.toFixed(6)}@${m.seat}:${m.midi}`).sort();
 }
 
 test('the window size never changes the notes: per-window emission is exact', () => {
-    for (const [preset, piece] of [['townBand', PLAYLISTS.day[0]], ['village', null]]) {
-        const reference = noteKeys(preset, piece, { step: 0.25, horizon: 1.5 });
-        assert.ok(reference.length > 10);
-        assert.deepEqual(noteKeys(preset, piece, { step: 1, horizon: 1.5 }), reference, `${preset} 1 s ticks`);
-        assert.deepEqual(noteKeys(preset, piece, { step: 0.05, horizon: 0.3 }), reference, `${preset} short horizon`);
-    }
+    const piece = PLAYLISTS.day[0];
+    const reference = noteKeys(piece, { step: 0.25, horizon: 1.5 });
+    assert.ok(reference.length > 10);
+    assert.deepEqual(noteKeys(piece, { step: 1, horizon: 1.5 }), reference, '1 s ticks');
+    assert.deepEqual(noteKeys(piece, { step: 0.05, horizon: 0.3 }), reference, 'short horizon');
 });
 
 test('a stalled window drops its late notes and never smears them onto now', () => {
@@ -235,7 +252,7 @@ test('the waiting cadence turns phrase ends deceptive while someone waits and la
     seq.stop();
 });
 
-test('no identical rendition of a piece comes back within an hour of the Town band', () => {
+test('no identical rendition of a piece comes back within an hour of the Town band; the rotation is a shuffle bag', () => {
     const { seq, ctx, marks } = startSequencer('townBand');
     drive(seq, ctx, { seconds: 3600, step: 1 });
     const seen = new Map();
@@ -252,45 +269,21 @@ test('no identical rendition of a piece comes back within an hour of the Town ba
             assert.ok(m.t - ends.get(m.piece) >= gap - 1e-6, `${m.piece} back after ${m.t - ends.get(m.piece)} s`);
         }
     }
+    // C7: each round plays the whole day playlist once, the rounds in
+    // different orders, and no piece twice in a row (a round boundary too).
+    const order = marks.filter(m => m.kind === 'start' && m.what === 'piece').map(m => m.piece);
+    const size = PLAYLISTS.day.length;
+    const rounds = [];
+    for (let i = 0; i + size <= order.length; i += size) rounds.push(order.slice(i, i + size));
+    assert.ok(rounds.length >= 3, order.join(' '));
+    for (const round of rounds) assert.deepEqual([...round].sort(), [...PLAYLISTS.day].sort(), order.join(' '));
+    assert.notDeepEqual(rounds[1], rounds[0], order.join(' '));
+    for (let i = 1; i < order.length; i++) assert.notEqual(order[i], order[i - 1], order.join(' '));
     // A true breath before every next first note.
     for (const breath of marks.filter(m => m.kind === 'breath')) {
         const next = notes(marks, breath.t).find(Boolean);
         if (next) assert.ok(next.t >= breath.until - 0.0071, `breath ${next.t - breath.t} s`);
     }
-    seq.stop();
-});
-
-test('Village plays nothing until asked, then one closed fragment with its reason', () => {
-    const { seq, ctx, marks } = startSequencer('village');
-    drive(seq, ctx, { seconds: 20 });
-    assert.equal(notes(marks).length, 0);
-    const fragment = FRAGMENTS.find(f => !f.night);
-    const started = seq.playFragment(fragment.id, { reason: 'fragment: busy village' });
-    assert.equal(started.ok, true);
-    assert.equal(seq.playFragment(null).ok, false, 'one at a time');
-    drive(seq, ctx, { seconds: 30, until: () => !seq.busy });
-    const played = notes(marks);
-    assert.ok(played.length > 0);
-    assert.ok(played[0].t >= started.startsAt - 0.0071);
-    assert.ok(played.at(-1).t < started.endsAt);
-    const start = marks.find(m => m.kind === 'start');
-    assert.equal(start.reason, 'fragment: busy village');
-    assert.ok(marks.some(m => m.kind === 'end'));
-    seq.stop();
-});
-
-test('a faded release ends the visit at the fade and nothing sounds after it', () => {
-    const { seq, ctx, marks } = startSequencer('village');
-    const started = seq.playOccasion('noon', { reason: 'noon' });
-    assert.equal(started.ok, true);
-    drive(seq, ctx, { seconds: 8 });
-    assert.equal(seq.release({ reason: 'rain', fadeSec: 0.4 }), true);
-    const placed = marks.length;
-    drive(seq, ctx, { seconds: 10 });
-    assert.equal(seq.busy, false);
-    assert.equal(seq.nowPlaying, null);
-    assert.deepEqual(notes(marks.slice(placed)), [], 'nothing is placed after the release');
-    assert.equal(marks.filter(m => m.kind === 'end').at(-1).reason, 'rain');
     seq.stop();
 });
 
@@ -308,4 +301,48 @@ test('nearest-inversion comp moves a few semitones per change inside its window'
         prev = semis;
     }
     assert.ok(total / changes <= 4, `mean ${total / changes}`);
+});
+
+test('6/8 compiles on the eighth: half bars on the dotted quarters, the jig comp in threes, a tag from the kit', () => {
+    const tag = cadenceKit({ tonic: 'D', mode: 'major' }, 6).tag;
+    const jig = scorePiece({
+        name: 'testJig', family: 'day', bpm: 200, beatsPerBar: 6, feel: 'lilt',
+        chords: [['D', 'G'], 'D'],
+        melody: [[5, 1], [9, 1], [12, 1], [9, 2], [7, 1], [5, 3], [null, 3]],
+        counterNotes: [[-3, 6], [-3, 6]],
+        bass: [[-19, 3], [-14, 3], [-19, 6]],
+        grammar: ['s1'],
+        variations: { s1: [{ melody: [[5, 3], [9, 3], [5, 6]] }] },
+    });
+    const score = renditionScore(jig, [0]);
+    assert.equal(score.bars, 2);
+    assert.deepEqual(score.timeline.map(c => [c.beat, c.name]), [[0, 'D'], [3, 'G'], [6, 'D']]);
+    // A lilt swings eighths of a quarter-note beat; the 6/8 eighths stay even.
+    assert.deepEqual(score.lead.map(n => n.beats), [1, 1, 1, 2, 1, 3]);
+    const voicing = [-19, -15, -12];
+    const figure = engineFigure('jig', voicing, 0, 6, 6, 0);
+    assert.deepEqual(figure.map(n => [n.beat, n.semi]), [[0, -19], [1, -12], [2, -15], [3, -19], [4, -12], [5, -15]]);
+    assert.ok(figure[0].vel > figure[1].vel && figure[3].vel > figure[4].vel, 'each dotted quarter leans');
+    assert.deepEqual([...new Set(engineFigure('block2', voicing, 0, 6, 6, 0).map(n => n.beat))], [0, 3]);
+    // The kit's tag closes a 6/8 piece in two bars on the tonic.
+    assert.deepEqual(tag.chords, [['D', 'G'], 'D']);
+    for (const line of [tag.melody, tag.bass]) assert.equal(line.reduce((s, [, b]) => s + b, 0), 12);
+});
+
+test('a chord strike keeps the comp at its level: a held player\'s tones share one tone-beat, a rung player\'s ring as struck', () => {
+    const voicing = [-19, -15, -12];
+    for (const [pattern, bpb] of [['block2', 4], ['waltz', 3]]) {
+        const rung = engineFigure(pattern, voicing, 0, bpb, bpb, 0);
+        const held = engineFigure(pattern, voicing, 0, bpb, bpb, 0, { held: true });
+        assert.deepEqual(held.map(n => [n.beat, n.semi, n.beats]), rung.map(n => [n.beat, n.semi, n.beats]), pattern);
+        for (const beat of new Set(held.map(n => n.beat))) {
+            const strike = held.filter(n => n.beat === beat);
+            const struck = rung.filter(n => n.beat === beat);
+            assert.ok(strike.length > 1, `${pattern} strikes a chord`);
+            // Held: Σ vel² · beats is one tone of one beat at the struck velocity.
+            const energy = strike.reduce((s, n) => s + n.vel ** 2 * n.beats, 0);
+            assert.ok(Math.abs(energy - struck[0].vel ** 2) < 1e-9, `${pattern} at ${beat}: ${energy}`);
+            assert.ok(struck.every(n => n.vel === struck[0].vel), `${pattern} rung tones at one velocity`);
+        }
+    }
 });

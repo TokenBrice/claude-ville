@@ -226,8 +226,7 @@
     box-shadow: inset 0 0 0 1px var(--line-1);
 }
 
-.settings-section__heading,
-.settings-soundscape__legend {
+.settings-section__heading {
     margin: 0 0 8px;
     color: var(--ink-3);
     font: var(--fs-label)/var(--lh-label) var(--font-display);
@@ -276,8 +275,7 @@
 }
 
 /* SOUND rows that do nothing for the current preset leave the layout. */
-.settings-control[hidden],
-.settings-soundscape[hidden] {
+.settings-control[hidden] {
     display: none;
 }
 
@@ -435,25 +433,6 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
     text-align: right;
-}
-
-.settings-soundscape {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0 24px;
-    min-width: 0;
-    margin: 16px 0 0;
-    padding: 0;
-    border: 0;
-}
-
-.settings-soundscape__legend {
-    float: left;
-    width: 100%;
-    grid-column: 1 / -1;
-    margin: 0;
-    padding-bottom: 8px;
 }
 
 .settings-roster,

@@ -5,21 +5,29 @@
 // (`Instruments.js`). Pure; importable from Node.
 //
 // Two voices (D2): the Isle Band — the island's own acoustic players, the
-// default in both presets — and Chip, the restored console waves, a one-click
-// Town band voicing. Village is always the Isle Band.
+// default — and Chip, the restored console waves, a one-click Town band
+// voicing.
 //
-// One arrangement per (voice, mode, keyframe, weather, season), compiled once
-// and memoised; the working band only admits seats. The day is coloured by
-// instrumentation and register at the eight grade keyframes (MUSL-8, 6.8);
-// the weather and the season re-dress the same tunes (MUS-16, 6.9): rain and
-// snow soften attacks and swap colours, a storm thins the band to a drone.
-// The sequencer applies a changed arrangement at the next chunk boundary and
-// `tempoScale` only at a piece start.
+// One arrangement per (voice, keyframe, weather, season, piece), compiled
+// once and memoised; the working band only admits seats. Precedence (C4):
+// the keyframe row (MUSL-8, 6.8: the day coloured by instrumentation and
+// register at the eight grade keyframes) → the piece's own `arrangement`
+// (the Isle Band only: its players replace the row's lead, counter, engine
+// and descant; the row's global `bright` and `tempoScale` still apply) →
+// the season (the cadence colour) → the weather's re-dress on top (MUS-16,
+// 6.9): rain and snow soften attacks and change the comp's figure (let-ring
+// chords, a high glitter), a storm thins the band to a drone. A piece's
+// players keep their instruments in every weather; only the keyframe rows
+// (Chip, or no piece) swap colours (rain's whistle, snow's music box, a harp
+// comp). At a night keyframe a piece's players then play NIGHT_BRIGHT
+// darker (6.3). Chip stays keyframe-based. The sequencer applies a changed
+// arrangement at the next chunk boundary and `tempoScale` only at a piece
+// start.
 //
 // Seat fields:
 //   instrument   an `INSTRUMENTS` name
 //   octaveShift  semitones (whole octaves) on the written pitch; the night
-//                lead plays at its written octave (MUSL-4: ≤ A5)
+//                lead plays at most at its written octave (MUSL-4: ≤ A5)
 //   stemLu       the MUSL-2 stem target re the lead stem (`STEM_TARGETS`)
 //   gainDb       the seat fader: stemLu + the instrument's calibration trim
 //                (Instruments normalises every role phrase to one reference
@@ -33,9 +41,10 @@
 //                instrument, the weather's colour (rain-stick, sleigh)
 //   steps        groove only: the band's own pattern, see GROOVE_STEPS
 
+import { PIECES } from '../bgm/BgmSongbook.js';
+
 export const VOICES = Object.freeze(['isle', 'chip']);
 export const DEFAULT_VOICE = 'isle';
-export const MODES = Object.freeze(['townBand', 'village']);
 // DayArc's rows, which are GradeEvaluator's GRADE_KEYFRAMES.
 export const KEYFRAMES = Object.freeze(['deep-night', 'pre-dawn', 'sunrise', 'morning', 'noon', 'golden-hour', 'blue-hour', 'night']);
 export const WEATHERS = Object.freeze(['clear', 'rain', 'storm', 'snow', 'fog']);
@@ -44,7 +53,7 @@ export const BANDS = Object.freeze(['rest', 'light', 'steady', 'full']);
 export const SEATS = Object.freeze(['lead', 'counter', 'bass', 'engine', 'percussion', 'descant', 'groove']);
 export const PERCUSSION_VOICES = Object.freeze(['brush', 'shaker', 'lowTom', 'rim']);
 
-// Score voice → seat, for both the Town band pieces and the fragments.
+// Score voice → seat.
 export const SCORE_SEAT = Object.freeze({
     lead: 'lead', bell: 'lead', melody: 'lead',
     counter: 'counter', pad: 'counter', chords: 'counter',
@@ -67,9 +76,26 @@ export const STEM_TARGETS = Object.freeze({
 export const FLOOR_LU = -15;
 // MUSL-4 / 6.3: the night lead never sounds above A5 (MIDI 81).
 export const NIGHT_LEAD_CEILING_MIDI = 81;
+// 6.3: a piece's players carry the day's 2–5 kHz into the night (they are
+// the piece's, not the night row's harps and box), so at a night keyframe
+// every pitched seat of a piece's arrangement plays this much darker than
+// arranged, after the row and the weather: a baked player's low-pass falls
+// from 12 kHz to 3.1 kHz at bright 1 (from 3.1 kHz to 1.8 kHz at an
+// arranged 0.6), a live wave (fiddle, concertina, whistle) tilts two
+// quarter steps (the probe's isleband gate measured 0.6 short for the
+// dulcimer's and the lute's pieces). Keyframe rows (Chip, or no piece) are
+// dark as written.
+export const NIGHT_BRIGHT = 0.5;
+// 6.3: the harp and the dulcimer carry the night's 2–5 kHz (the dulcimer
+// rings at 2.8 kHz); at a night keyframe a piece's harp or dulcimer never
+// plays brighter than this (a 1.6 kHz low-pass), whichever seat it holds.
+export const NIGHT_DARK_BRIGHT = 0.25;
+const NIGHT_DARK = new Set(['harp', 'dulcimer']);
 
 const NIGHT_KEYS = new Set(['deep-night', 'pre-dawn', 'blue-hour', 'night']);
-const DAY_KEYS = new Set(['sunrise', 'morning', 'noon', 'golden-hour']);
+
+// C4: each piece's own Isle Band players, by piece name.
+const PIECE_ARRANGEMENTS = new Map(PIECES.filter(p => p.arrangement).map(p => [p.name, p.arrangement]));
 
 // Calibration: seat fader = stem target + trim. Keys `day:|night:` +
 // `seat:instrument` first, then `seat:instrument`, then `instrument`.
@@ -78,8 +104,8 @@ const DAY_KEYS = new Set(['sunrise', 'morning', 'noon', 'golden-hour']);
 // what the probe's stem gate (`audio:probe --only musicstems`, Town band
 // band 3, day pieces at noon, night pieces at 22:30) measured off target:
 // the written parts are sparser or denser than the reference phrase (long
-// descant notes, the night pieces' quarter-note engines) and the night
-// seats are darkened.
+// descant notes, the night pieces' quarter-note engines, a reel's busy
+// bass under the lead) and the night seats are darkened.
 const TRIM_DB = Object.freeze({
     isle: Object.freeze({
         upright: -2,
@@ -87,6 +113,35 @@ const TRIM_DB = Object.freeze({
         'descant:whistle': 1.6,
         'night:descant:harp': 4.5,
         'night:percussion:brushes': 4.4,
+        // The pieces' own leads (C4), each against its band's bass, counter
+        // and kit: the lute's and the dulcimer's day tunes ring over their
+        // bands, the marimba's march and the concertina's reel sit under;
+        // at night the darkened dulcimer's sparse tune sits far under, the
+        // harp's and the fiddle's a little.
+        'day:lead:lute': -2,
+        'lead:dulcimer': -1,
+        'day:lead:marimba': 1.5,
+        'day:lead:concertina': 0.8,
+        'night:lead:dulcimer': 6,
+        'night:lead:harp': 1.5,
+        'night:lead:fiddle': 0.8,
+        // The darkened night fiddle's long counter notes.
+        'night:counter:fiddle': 1.5,
+        // The pieces' comps: the lute's and the dulcimer's rung arpeggios
+        // and block chords ring over the reference eighths; the harp's
+        // block chords and waltz by day; at night the dulcimer's waltz and
+        // the marimba's quarters sit under.
+        'day:engine:lute': -3.8,
+        'day:engine:dulcimer': -4.8,
+        'day:engine:harp': -1.5,
+        'night:engine:dulcimer': 1.5,
+        'night:engine:marimba': 2,
+        // The fiddle's long descant notes, darkened further at night.
+        'descant:fiddle': 2,
+        'night:descant:fiddle': 5,
+        // The full band's brushes over the workshop kit (MUSL-3: heard
+        // entering at the full band).
+        'groove:brushes': 1.5,
     }),
     chip: Object.freeze({
         chipBass: -0.5,
@@ -104,15 +159,24 @@ const TRIM_DB = Object.freeze({
 
 // MUSL-1/5 chairs. Pitched seats pan at the seat (zero per-note panners).
 const SEAT_PAN = Object.freeze({ lead: 0.1, counter: -0.35, bass: 0, engine: 0.38, percussion: 0.22, descant: -0.18 });
+// The reed and the bow lead a little further off centre, and the descant's
+// whistle and harp sit wide of the counter: the darkened night band
+// narrows (the probe's isleband gate measured S/M under −16 dB at night).
 const PAN_OVERRIDE = Object.freeze({
     'lead:musicBox': 0.15,
+    'lead:concertina': 0.15,
+    'lead:fiddle': 0.15,
     'counter:harp': -0.32,
     'engine:harp': 0.32,
+    'descant:harp': -0.28,
+    'descant:whistle': -0.4,
+    'descant:fiddle': -0.32,
 });
 // Island Air sends per instrument (MUSL-1 seat sends on the ENG-6 scale:
 // bass nearly dry, the music box wettest; Chip keeps the Wave-2 sends).
 const AIR = Object.freeze({
     whistle: 0.18, lute: 0.2, harp: 0.28, upright: 0.05, marimba: 0.18, musicBox: 0.32,
+    fiddle: 0.16, concertina: 0.14, dulcimer: 0.22,
     brushes: 0.14, brush: 0.14, shaker: 0.14, lowTom: 0.08, rim: 0.1,
     chipPulse25: 0.18, chipPulse12: 0.12, chipArp: 0, chipTri: 0.12, chipFlute: 0.22, chipBass: 0, chipHat: 0,
 });
@@ -129,26 +193,30 @@ const KIT_CHIP = Object.freeze({ brush: 'chipHat', shaker: 'chipHat', lowTom: 'c
 // The band's own groove seat (MUSL-3's full row: "+ brushes and a
 // descant"): the workshop kit plays from the light band as the village works
 // (6.9); at the full band, by day, the players' brushes join it on the song
-// grid. Steps: [sixteenth in the bar, length in beats, velocity] per
-// beats-per-bar; `brushes` swishes on notes ≥ 0.4 s and taps under that
-// (MUSL-1: swish on 1 and 3, tap on 2 and 4). Chip: the hat on the eighths,
-// the offbeats softer.
+// grid. Steps: [quarter of a beat in the bar, length in beats, velocity]
+// per beats-per-bar; `brushes` swishes on notes ≥ 0.4 s and taps under that
+// (MUSL-1: swish on 1 and 3, tap on 2 and 4; in 3/4 one swish a bar and in
+// 6/8, whose beat is the eighth, a swish on 1 and taps on the second dotted
+// quarter and its last eighth, their lone swish at full weight so the bar
+// carries the 4/4 groove's level). Chip: the hat on the eighths, the
+// offbeats softer.
 const GROOVE_STEPS = Object.freeze({
     isle: Object.freeze({
         4: Object.freeze([[0, 1.6, 0.8], [4, 0.25, 1], [8, 1.6, 0.8], [12, 0.25, 1]].map(Object.freeze)),
-        3: Object.freeze([[0, 1.6, 0.8], [4, 0.25, 1], [8, 0.25, 0.9]].map(Object.freeze)),
+        3: Object.freeze([[0, 1.6, 1], [4, 0.25, 1], [8, 0.25, 0.9]].map(Object.freeze)),
+        6: Object.freeze([[0, 2.4, 1], [12, 0.5, 1], [20, 0.5, 0.9]].map(Object.freeze)),
     }),
     chip: Object.freeze({
         4: Object.freeze([0, 2, 4, 6, 8, 10, 12, 14].map(step => Object.freeze([step, 0.25, step % 4 === 0 ? 1 : 0.7]))),
         3: Object.freeze([0, 2, 4, 6, 8, 10].map(step => Object.freeze([step, 0.25, step % 4 === 0 ? 1 : 0.7]))),
+        6: Object.freeze([0, 4, 8, 12, 16, 20].map(step => Object.freeze([step, 0.5, step % 12 === 0 ? 1 : 0.7]))),
     }),
 });
 
 // ── Keyframe rows (MUSL-8) ──
-// Each row: seat → [instrument, octaveShift?, overrides?]; `maxBand` caps
-// the working band (Village only: the busker never streams a full band in
-// the small hours), `tempoScale` at a piece start. The seat set is the same
-// in every row, so each band always adds the same player.
+// Each row: seat → [instrument, octaveShift?, overrides?]; `bright` darkens
+// the whole row, `tempoScale` applies at a piece start. The seat set is the
+// same in every row, so each band always adds the same player.
 const ISLE_TOWN = Object.freeze({
     // The box, a harp and a soft lute under it; everything dark.
     'deep-night': { lead: ['musicBox'], counter: ['harp', 0, { bright: 0.66 }], engine: ['lute', 0, { bright: 0.6 }], descant: ['harp', 0, { bright: 0.6 }], bright: 0.75 },
@@ -169,21 +237,6 @@ const ISLE_TOWN = Object.freeze({
     night: { lead: ['musicBox'], counter: ['harp', 0, { bright: 0.5 }], engine: ['harp', 0, { bright: 0.5 }], descant: ['harp', 0, { bright: 0.5 }] },
 });
 
-// Village: the busker (MUSL-7) — lute tune, darkened harp comp, upright.
-// Deep night is the box alone, pre-dawn the box over a harp.
-const ISLE_VILLAGE = Object.freeze({
-    'deep-night': { lead: ['musicBox'], counter: ['harp', 0, { bright: 0.6 }], engine: ['harp'], descant: ['harp'], bright: 0.75, maxBand: 0 },
-    'pre-dawn': { lead: ['musicBox'], counter: ['harp', 0, { bright: 0.6 }], engine: ['harp'], descant: ['harp'], bright: 0.85, maxBand: 1 },
-    // The dawn occasion: whistle over harp, growing to the full band.
-    sunrise: { lead: ['whistle'], counter: ['harp', 0, { bright: 0.7 }], engine: ['harp'], descant: ['lute'], tempoScale: 0.9 },
-    // The busker's lute through MUSL's 2.8 kHz low-pass (LP = 800·15^bright).
-    morning: { lead: ['lute', 0, { bright: 0.46 }], counter: ['harp', 0, { bright: 0.7 }], engine: ['marimba'], descant: ['whistle'] },
-    noon: { lead: ['lute', 0, { bright: 0.46 }], counter: ['harp', 0, { bright: 0.7 }], engine: ['marimba'], descant: ['whistle'] },
-    'golden-hour': { lead: ['whistle', 0, { bright: 0.8 }], counter: ['lute'], engine: ['harp'], descant: ['lute'], tempoScale: 0.85 },
-    'blue-hour': { lead: ['musicBox'], counter: ['harp', 0, { bright: 0.7 }], engine: ['lute', 0, { bright: 0.7 }], descant: ['harp'], bright: 0.9, maxBand: 2 },
-    night: { lead: ['musicBox'], counter: ['harp', 0, { bright: 0.7 }], engine: ['harp'], descant: ['harp'], bright: 0.85, maxBand: 2 },
-});
-
 // Chip restored (MUSL-2/5): pulse lead by day, the flute at its written
 // octave by night (MUS-14: no pulse12 lead at night), the triangle pad.
 const CHIP_TOWN = Object.freeze({
@@ -197,10 +250,7 @@ const CHIP_TOWN = Object.freeze({
     night: { lead: ['chipFlute'], counter: ['chipTri'], engine: ['chipArp', 0, { bright: 0.7 }], descant: ['chipTri'], bright: 0.85 },
 });
 
-const ROWS = Object.freeze({
-    isle: Object.freeze({ townBand: ISLE_TOWN, village: ISLE_VILLAGE }),
-    chip: Object.freeze({ townBand: CHIP_TOWN }),
-});
+const ROWS = Object.freeze({ isle: ISLE_TOWN, chip: CHIP_TOWN });
 
 // Stems per seat that differ from the default target by instrument: the
 // harp engine sits at MUSL-1's harp level (−8…−9); the night percussion
@@ -211,14 +261,12 @@ const STEM_OVERRIDE = Object.freeze({
 
 // MUS-16 season rows: the cadence colour in the last two bars (winter's
 // I → I6 rather than MUS-16's Imaj7, whose G♯ clashes with the cue roles'
-// A) and, by day, the lead seat (SOTA-17 as adjudicated by MUSL: spring
-// whistle, autumn marimba, winter music box; summer keeps each mode's own
-// lead).
+// A). The players are the piece's and the keyframe's.
 const SEASON_ROWS = Object.freeze({
-    spring: { colourRow: 'add9', dayLead: { isle: 'whistle' } },
-    summer: { colourRow: null, dayLead: {} },
-    autumn: { colourRow: 'borrowedIv', dayLead: { isle: 'marimba' } },
-    winter: { colourRow: 'sixth', dayLead: { isle: 'musicBox', chip: 'chipFlute' } },
+    spring: { colourRow: 'add9' },
+    summer: { colourRow: null },
+    autumn: { colourRow: 'borrowedIv' },
+    winter: { colourRow: 'sixth' },
 });
 
 /**
@@ -267,53 +315,44 @@ function makeSeat(voice, night, seat, instrument, { octaveShift = 0, bright = 1,
     return out;
 }
 
-function compile(voice, mode, keyframe, weather, season) {
-    const row = ROWS[voice][mode][keyframe];
+function compile(voice, keyframe, weather, season, pieceName) {
+    const row = ROWS[voice][keyframe];
     const night = NIGHT_KEYS.has(keyframe);
     const rowBright = row.bright ?? 1;
+    // C4: the piece's own players take the Isle Band's seats; the row's
+    // global brightness still darkens them.
+    const own = pieceName ? PIECE_ARRANGEMENTS.get(pieceName) : null;
     const specs = {};
     for (const seat of ['lead', 'counter', 'engine', 'descant']) {
-        const [instrument, octaveShift = 0, over = {}] = row[seat];
+        const [instrument, octaveShift = 0, over = {}] = own?.[seat] ?? row[seat];
         specs[seat] = { instrument, octaveShift, bright: rowBright * (over.bright ?? 1), soft: 0, figure: seat === 'engine' ? 'written' : undefined };
     }
     specs.bass = { instrument: voice === 'chip' ? 'chipBass' : 'upright', octaveShift: 0, bright: 1, soft: 0, figure: 'written' };
-    const percussion = mode === 'townBand';
-    if (percussion) {
-        specs.percussion = {
+    specs.percussion = {
+        instrument: voice === 'chip' ? 'chipHat' : 'brushes',
+        octaveShift: 0,
+        // Night: a dark, soft brushed backbeat (the Isle's brushes sit
+        // in 3–5 kHz); the chip hat is a high-passed tick, left as built.
+        bright: voice === 'isle' && night ? 0.4 : 1,
+        soft: voice === 'isle' && night ? 0.3 : 0,
+        kit: voice === 'chip' ? KIT_CHIP : night ? KIT_NIGHT : KIT_CLEAR,
+        stemLu: night ? -15 : undefined,
+    };
+    if (!night) {
+        specs.groove = {
             instrument: voice === 'chip' ? 'chipHat' : 'brushes',
             octaveShift: 0,
-            // Night: a dark, soft brushed backbeat (the Isle's brushes sit
-            // in 3–5 kHz); the chip hat is a high-passed tick, left as built.
-            bright: voice === 'isle' && night ? 0.4 : 1,
-            soft: voice === 'isle' && night ? 0.3 : 0,
-            kit: voice === 'chip' ? KIT_CHIP : night ? KIT_NIGHT : KIT_CLEAR,
-            stemLu: night ? -15 : undefined,
+            bright: 1,
+            soft: 0,
+            steps: GROOVE_STEPS[voice],
         };
-        if (!night) {
-            specs.groove = {
-                instrument: voice === 'chip' ? 'chipHat' : 'brushes',
-                octaveShift: 0,
-                bright: 1,
-                soft: 0,
-                steps: GROOVE_STEPS[voice],
-            };
-        }
     }
 
-    // Season: the day lead and the cadence colour.
+    // Season: the cadence colour.
     const seasonRow = SEASON_ROWS[season];
-    const dayLead = DAY_KEYS.has(keyframe) && seasonRow.dayLead[voice];
-    if (dayLead && dayLead !== specs.lead.instrument) {
-        const displaced = specs.lead.instrument;
-        specs.lead.instrument = dayLead;
-        // A marimba lead hands the engine to the harp; a music box lead
-        // keeps its written octave like the night box.
-        if (specs.engine.instrument === dayLead) specs.engine.instrument = voice === 'isle' ? 'harp' : 'chipTri';
-        if (specs.descant.instrument === dayLead) specs.descant.instrument = displaced;
-    }
 
     // Weather (MUS-16).
-    let maxBand = row.maxBand ?? BANDS.length - 1;
+    let maxBand = BANDS.length - 1;
     let airAdd = 0;
     const soften = (amount, brightScale) => {
         for (const spec of Object.values(specs)) {
@@ -321,13 +360,16 @@ function compile(voice, mode, keyframe, weather, season) {
             spec.bright *= brightScale;
         }
     };
+    // The keyframe rows swap colours with the weather; a piece's own players
+    // keep their instruments (C4) and take only the figure, softness and air.
+    const swap = !own;
     const rainLead = voice === 'isle' ? 'whistle' : 'chipFlute';
     const padEngine = voice === 'isle' ? 'harp' : 'chipTri';
     if (weather === 'rain' || weather === 'storm') {
         // Rain: a flute-like lead by day, the engine rings chords instead
         // of its pattern, shakers and brushes, softer attacks, wetter.
-        if (!night) specs.lead.instrument = rainLead;
-        specs.engine.instrument = padEngine;
+        if (swap && !night) specs.lead.instrument = rainLead;
+        if (swap) specs.engine.instrument = padEngine;
         specs.engine.figure = 'sustain';
         if (specs.percussion && voice === 'isle') specs.percussion.kit = KIT_RAIN;
         soften(weather === 'storm' ? 0.7 : 0.5, weather === 'storm' ? 0.7 : 0.85);
@@ -342,9 +384,11 @@ function compile(voice, mode, keyframe, weather, season) {
     } else if (weather === 'snow') {
         // Snow: the music box by day at its written octave, a quiet
         // sixteenth glitter an octave up, the sleigh colour.
-        if (!night) specs.lead.instrument = voice === 'isle' ? 'musicBox' : 'chipFlute';
-        specs.lead.octaveShift = 0;
-        specs.engine.instrument = voice === 'isle' ? 'harp' : 'chipArp';
+        if (swap) {
+            if (!night) specs.lead.instrument = voice === 'isle' ? 'musicBox' : 'chipFlute';
+            specs.lead.octaveShift = 0;
+            specs.engine.instrument = voice === 'isle' ? 'harp' : 'chipArp';
+        }
         specs.engine.octaveShift = 12;
         specs.engine.figure = 'glitter';
         specs.engine.bright *= 0.7;
@@ -356,6 +400,19 @@ function compile(voice, mode, keyframe, weather, season) {
         // Fog: a long air and a veiled lead.
         specs.lead.bright *= 0.6;
         airAdd = 0.12;
+    }
+    if (night) {
+        // MUSL-4: the night lead never climbs above its written octave (A5);
+        // 6.3: a piece's players darken with the night (NIGHT_BRIGHT), the
+        // harp and the dulcimer to NIGHT_DARK_BRIGHT at most.
+        specs.lead.octaveShift = Math.min(0, specs.lead.octaveShift);
+        if (own) {
+            for (const seat of ['lead', 'counter', 'engine', 'descant']) {
+                const spec = specs[seat];
+                spec.bright *= NIGHT_BRIGHT;
+                if (NIGHT_DARK.has(spec.instrument)) spec.bright = Math.min(spec.bright, NIGHT_DARK_BRIGHT);
+            }
+        }
     }
 
     const seats = {};
@@ -369,10 +426,9 @@ function compile(voice, mode, keyframe, weather, season) {
         seats[seat] = built;
     }
 
-    // Band admission: rest lead + bass; light the counter (and the
-    // workshop percussion in Town band); steady the engine; full the
-    // descant (and the band's groove by day). The seats never depend on the
-    // band.
+    // Band admission: rest lead + bass; light the counter and the workshop
+    // percussion; steady the engine; full the descant (and the band's
+    // groove by day). The seats never depend on the band.
     const order = [['lead', 'bass'], ['counter', 'percussion'], ['engine'], ['descant', 'groove']];
     const admittedByBand = [];
     let admitted = [];
@@ -382,12 +438,12 @@ function compile(voice, mode, keyframe, weather, season) {
     }
 
     return {
-        key: `${voice}|${mode}|${keyframe}|${weather}|${season}`,
+        key: `${voice}|${keyframe}|${weather}|${season}|${pieceName ?? ''}`,
         voice,
-        mode,
         keyframe,
         weather,
         season,
+        piece: pieceName,
         night,
         maxBand,
         tempoScale: row.tempoScale ?? 1,
@@ -408,24 +464,25 @@ function freezeAll(value) {
 const cache = new Map();
 
 /**
- * The band for a moment: `{ key, voice, mode, keyframe, weather, season,
- * night, band, maxBand, tempoScale, colourRow, seats, admitted }`. `seats`
- * holds every seat of the arrangement (the same object for every band of
- * one arrangement); `admitted` the seats that play at `band` (0..3 or a
- * `BANDS` name), capped by the arrangement. Chip is a Town band voicing:
- * Village always plays the Isle Band. Unknown inputs fall back to the
- * default (isle, townBand, noon, clear, summer, steady).
+ * The band for a moment: `{ key, voice, keyframe, weather, season, piece,
+ * night, band, maxBand, tempoScale, colourRow, seats, admitted }`. `piece`
+ * (a piece name) seats that piece's own Isle Band players (C4); Chip and an
+ * unknown or absent piece play the keyframe row. `seats` holds every seat
+ * of the arrangement (the same object for every band of one arrangement);
+ * `admitted` the seats that play at `band` (0..3 or a `BANDS` name), capped
+ * by the arrangement (a storm's). Unknown inputs fall back to the default
+ * (isle, noon, clear, summer, steady, no piece).
  */
-export function voicingFor({ voice = DEFAULT_VOICE, mode = 'townBand', keyframe = 'noon', weather = 'clear', season = 'summer', band = 2 } = {}) {
-    const m = pick(mode, MODES, 'townBand');
-    const v = m === 'village' ? 'isle' : pick(voice, VOICES, DEFAULT_VOICE);
+export function voicingFor({ voice = DEFAULT_VOICE, keyframe = 'noon', weather = 'clear', season = 'summer', band = 2, piece = null } = {}) {
+    const v = pick(voice, VOICES, DEFAULT_VOICE);
     const k = pick(keyframe, KEYFRAMES, 'noon');
     const s = pick(season, SEASONS, 'summer');
     const w = WEATHERS.includes(weather) ? weather : arrangementWeatherFor(weather, s);
-    const id = `${v}|${m}|${k}|${w}|${s}`;
+    const p = v === 'isle' && PIECE_ARRANGEMENTS.has(piece) ? piece : null;
+    const id = `${v}|${k}|${w}|${s}|${p ?? ''}`;
     let arrangement = cache.get(id);
     if (!arrangement) {
-        arrangement = compile(v, m, k, w, s);
+        arrangement = compile(v, k, w, s, p);
         cache.set(id, arrangement);
     }
     const b = Math.min(bandIndex(band), arrangement.maxBand);

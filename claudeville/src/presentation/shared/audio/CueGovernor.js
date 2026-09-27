@@ -75,7 +75,6 @@ const KIND_LABELS = Object.freeze({
     council: ['council gathering', 'council gatherings'],
     hourBell: ['hour bell', 'hour bells'],
     aurora: ['chronicle milestone', 'chronicle milestones'],
-    thunder: ['thunder cue', 'thunder cues'],
 });
 
 export function lanePriority(lane) {
@@ -130,28 +129,6 @@ export function collapseCueBurst(cues) {
             aggregateCount: routine.length,
         };
     return [...bypass, aggregate].sort(compareCuePriority);
-}
-
-export function updateQuietFloor(state = {}, {
-    calm = false,
-    now = 0,
-    enterAfterMs = 30000,
-    leaveAfterMs = 4000,
-} = {}) {
-    const current = state.mode === 'resting' ? 'resting' : 'active';
-    if (current === 'active') {
-        const calmSince = calm ? (state.calmSince ?? now) : null;
-        if (calm && now - calmSince >= enterAfterMs) {
-            return { mode: 'resting', calmSince, activeSince: null };
-        }
-        return { mode: 'active', calmSince, activeSince: null };
-    }
-
-    const activeSince = calm ? null : (state.activeSince ?? now);
-    if (!calm && now - activeSince >= leaveAfterMs) {
-        return { mode: 'active', calmSince: null, activeSince };
-    }
-    return { mode: 'resting', calmSince: state.calmSince ?? null, activeSince };
 }
 
 // Away from the page only the signal stratum plays (through the wake);

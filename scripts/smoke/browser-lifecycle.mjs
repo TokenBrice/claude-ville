@@ -408,15 +408,15 @@ async function waitForAudio(page, predicate, arg = null, timeout = 5000) {
 }
 
 // The real enable (7.1): a click on the sound note; a profile's first-ever
-// click opens the SOUND panel's presets, so Village is picked there.
-async function enableVillageFromChip(page) {
+// click opens the SOUND panel's presets, so the Town band is picked there.
+async function enableTownBandFromChip(page) {
   await page.click('#topbarSoundToggle');
   const panelOpen = await page.evaluate(() => {
     const panel = document.getElementById('soundPanel');
     return Boolean(panel && !panel.hidden && panel.getBoundingClientRect().width > 0);
   });
   if (panelOpen) {
-    await page.click('#soundPresets [role="radio"][data-preset="village"]');
+    await page.click('#soundPresets [role="radio"][data-preset="townBand"]');
     await page.keyboard.press('Escape');
   }
 }
@@ -431,7 +431,7 @@ async function runBootAudioRouteProbe(page) {
   const route = await waitForAudioRoute(page);
   const caption = await page.evaluate(async () => {
     const { eventBus } = await import('/src/domain/events/DomainEvent.js');
-    const governor = window.__claudeVilleApp?.topBar?.audio?.directors?.ambient?.governor;
+    const governor = window.__claudeVilleApp?.topBar?.audio?.directors?.signals?.governor;
     const admits = () => {
       if (!governor) return true;
       const now = Date.now();
@@ -489,7 +489,7 @@ async function runBootAudioRouteProbe(page) {
 }
 
 // A returning user (sound stored on) with no gesture yet: the chip is armed
-// with no context, and the first click on it starts the village instead of
+// with no context, and the first click on it starts the Town band instead of
 // turning sound off; a second click on the playing chip turns it off.
 //
 // It runs in its own browser context because Playwright evaluates scripts
@@ -499,7 +499,7 @@ async function runBootAudioRouteProbe(page) {
 // `navigator.userActivation` from trusted input only, as for a real visitor.
 //
 // The one-second budget runs in the page, from the trusted gesture to the
-// first poll that sees the village running, so Playwright's actionability
+// first poll that sees the band running, so Playwright's actionability
 // checks before it dispatches the click are not charged to the start.
 async function runArmedChipProbe(browser, url, timeoutMs) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -566,7 +566,7 @@ async function runArmedChipProbe(browser, url, timeoutMs) {
 async function runActualAudioLifecycleProbe(page) {
   const initial = await waitForAudioRoute(page);
   if (!initial.available) throw new Error('AudioContext unavailable in the smoke browser');
-  if (!initial.enabled) await enableVillageFromChip(page);
+  if (!initial.enabled) await enableTownBandFromChip(page);
   const running = await waitForAudio(page, () => {
     const audio = window.__claudevilleAudio?.();
     return audio?.contextState === 'running' && audio?.running === true;
@@ -583,7 +583,7 @@ async function runActualAudioLifecycleProbe(page) {
     return audio?.blurred === false && audio?.contextState === 'running' && audio?.running === true;
   });
 
-  // "Signals only" makes a blur behave like a hidden tab: the village pauses
+  // "Signals only" makes a blur behave like a hidden tab: the band pauses
   // in place and focus resumes it.
   await page.evaluate(() => {
     window.localStorage.setItem('claudeville.sound.background', 'signals');
@@ -703,7 +703,8 @@ async function runAudioLifecycleProbe(page) {
     let delayEnsure = false;
     const controller = new AmbientAudioController();
     // Retire the real graph owners the constructor built before stubbing.
-    controller.directors.ambient.destroy();
+    controller.directors.signals.destroy();
+    controller.directors.bgm.destroy();
     await controller.engine.dispose();
     controller.available = true;
     controller.engine = {
@@ -738,18 +739,18 @@ async function runAudioLifecycleProbe(page) {
       currentPhase() { return 'day'; },
       setHidden() {},
       setSignalRouting() {},
-      setProfile() {},
-      setQuietMix() {},
+      playReminder() { return false; },
       snapshot() { return {}; },
       cue() {},
     };
-    controller.directors = { ambient: director, bgm: { ...director } };
+    // The stub plays the Town band; the signals route rides along idle.
+    controller.directors = { signals: { ...director }, bgm: director };
     // The awakening (7.4) plays on the real kit, which the stub engine has
     // no graph for; these races are about starts and pauses, not its voice.
     controller.cues.kit.playAwaken = () => false;
 
     try {
-      controller.setPreset('village', { fromUser: true });
+      controller.setPreset('townBand', { fromUser: true });
       await Promise.resolve();
       await Promise.resolve();
       const startedOnce = calls.start === 1 && calls.directorStart === 1;

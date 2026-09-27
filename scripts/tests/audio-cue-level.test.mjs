@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
-import { AudioDirector } from '../../claudeville/src/presentation/shared/audio/AudioDirector.js';
+import { SignalDirector } from '../../claudeville/src/presentation/shared/audio/SignalDirector.js';
 import { BgmDirector } from '../../claudeville/src/presentation/shared/audio/BgmDirector.js';
 import { CueGovernor } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
 import {
@@ -18,7 +18,7 @@ import { CueKit } from '../../claudeville/src/presentation/shared/audio/cues/Cue
 // --- cueTrimDb: S2 trim rules per class --------------------------------------
 
 test('an urgent cue aims at its floor + 2 LU and is not cut to reach it', () => {
-    // needs-you over a Village bed: floor +10, aim +12.
+    // needs-you over the no-music bed: floor +10, aim +12.
     assert.equal(cueTrimDb({ lane: 'needsYou', nominalLufsM: -36, bedLufs: -45 }), 3);
     // Over music the floor is +8, so the same bed asks 2 dB less.
     assert.equal(cueTrimDb({ lane: 'needsYou', nominalLufsM: -36, bedLufs: -45, bed: 'music' }), 1);
@@ -75,13 +75,11 @@ test('routine and Medium/Major outcomes move within -6…+12 dB; unknown beds le
     assert.equal(cueTrimDb({ lane: 'routine', nominalLufsM: -38, bedLufs: null, recentUrgentTrims: [9] }), 0);
 });
 
-test('Minor outcomes, scenery and thunder are never lifted; the knock comes down furthest', () => {
-    for (const lane of ['outcomeMinor', 'scenery', 'thunder']) {
+test('Minor outcomes and scenery are never lifted; the knock comes down furthest', () => {
+    for (const lane of ['outcomeMinor', 'scenery']) {
         assert.equal(cueTrimDb({ lane, nominalLufsM: -34, bedLufs: -20 }), 0, `${lane} over a loud bed`);
     }
-    for (const lane of ['scenery', 'thunder']) {
-        assert.equal(cueTrimDb({ lane, nominalLufsM: -34, bedLufs: -70 }), -6, `${lane} over a quiet bed`);
-    }
+    assert.equal(cueTrimDb({ lane: 'scenery', nominalLufsM: -34, bedLufs: -70 }), -6, 'scenery over a quiet bed');
     assert.equal(cueTrimDb({ lane: 'outcomeMinor', nominalLufsM: -34, bedLufs: -70 }), -9);
     // A light bed that wants the knock 7 dB down gets it (under the −6 of scenery).
     assert.ok(Math.abs(cueTrimDb({ lane: 'outcomeMinor', nominalLufsM: -43, bedLufs: -49.5 }) + 7) < 1e-9);
@@ -148,10 +146,10 @@ test('a prepared routine cue pre-empted by an urgent one takes its duck with it'
     const governor = new CueGovernor({ minSpacingMs: 0, aggregationWindowMs: 50 });
     const kit = new CueKit(engine, governor);
     try {
-        assert.equal(kit.play('arrival', { agentId: 'ada' }), true);
+        assert.equal(kit.play('arrival', { agentId: 'ada', preset: 'townBand' }), true);
         await nextTick(); // arrival waits out the dispatch before it schedules
         assert.equal(ducks.length, 1);
-        assert.equal(ducks[0].depths, DUCK_DEPTHS.village);
+        assert.equal(ducks[0].depths, DUCK_DEPTHS.townBand);
         assert.ok(ducks[0].from > engine.now(), 'the prepared bell is still ahead of the clock');
 
         assert.equal(kit.play('summons', { agentId: 'bram' }), true);
@@ -170,7 +168,7 @@ test('a withdrawn cue whose first note already sounded keeps its duck', async ()
     const governor = new CueGovernor({ minSpacingMs: 0, aggregationWindowMs: 50 });
     const kit = new CueKit(engine, governor);
     try {
-        kit.play('recovery', { agentId: 'ada' });
+        kit.play('recovery', { agentId: 'ada', preset: 'townBand' });
         assert.equal(ducks.length, 1);
         engine.clock = ducks[0].from + 0.01;
         governor.clearRoutine();
@@ -180,7 +178,7 @@ test('a withdrawn cue whose first note already sounded keeps its duck', async ()
     }
 });
 
-test('Town band cues duck the band, and thunder ducks nothing', async () => {
+test('Town band cues duck the band; with no band under it a routine cue ducks nothing', async () => {
     const { engine, ducks } = soundingEngine();
     const governor = new CueGovernor({ minSpacingMs: 0, aggregationWindowMs: 5 });
     const kit = new CueKit(engine, governor);
@@ -190,9 +188,10 @@ test('Town band cues duck the band, and thunder ducks nothing', async () => {
         assert.equal(ducks.length, 1);
         assert.equal(ducks[0].depths, DUCK_DEPTHS.townBand);
 
-        kit.play('thunder', { intensity: 1 });
+        assert.equal(kit.play('council', { teamName: 'crew' }), true);
         await wait(20);
-        assert.equal(ducks.length, 1, 'thunder is weather; it carves no room');
+        assert.equal(kit.lastCue?.kind, 'council', 'the council sounded');
+        assert.equal(ducks.length, 1, 'no music, nothing to duck');
     } finally {
         governor.destroy();
     }
@@ -211,13 +210,13 @@ test('a summons, a preset switch, then the same agent within 45 s is rejected', 
         status: 'waiting_on_user',
         agent: { id: agentId, name: agentId, status: 'waiting_on_user' },
     });
-    const village = new AudioDirector({ engine, cues });
+    const signals = new SignalDirector({ engine, cues });
     let band = null;
     try {
         raise('agent-ada');
         assert.deepEqual(heard.map(cue => `${cue.kind}:${cue.agentId}`), ['summons:agent-ada']);
 
-        village.destroy();
+        signals.destroy();
         band = new BgmDirector({ engine, cues });
         band.running = true;
         band._subscribe();
@@ -232,7 +231,7 @@ test('a summons, a preset switch, then the same agent within 45 s is rejected', 
     } finally {
         unsubscribe();
         band?.stop();
-        village.destroy();
+        signals.destroy();
         governor.destroy();
     }
 });

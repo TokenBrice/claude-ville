@@ -146,7 +146,7 @@ window.drawPlot = function drawPlot(d) {
     g.textAlign = 'left';
 
     // Markers: vertical lines through all panels, labels in stacked rows
-    const colors = { event: '#ff5c8a', section: '#6fe3ff', loop: '#b28dff', chunk: 'rgba(178,141,255,0.45)', action: '#ffa94d' };
+    const colors = { event: '#ff5c8a', loop: '#b28dff', chunk: 'rgba(178,141,255,0.45)', action: '#ffa94d' };
     const rowsEnd = new Array(d.markerRows).fill(-1e9);
     font(11);
     for (const m of d.markers) {

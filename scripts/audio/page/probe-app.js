@@ -91,7 +91,7 @@
         async install() {
             ({ eventBus } = await import('/src/domain/events/DomainEvent.js'));
             const push = (type, detail) => log.push({ type, wall: performance.now(), ...detail });
-            eventBus.on('audio:cue-played', p => push('cue', pick(p, ['kind', 'agentId', 'label', 'replaces', 'familyLine', 'announceOnly'])));
+            eventBus.on('audio:cue-played', p => push('cue', pick(p, ['kind', 'agentId', 'label', 'replaces', 'familyLine'])));
             eventBus.on('attention:raised', p => push('attention:raised', pick(p, ['agentId', 'status'])));
             eventBus.on('distress:watchtower', p => push('distress:watchtower', pick(p, ['agentId', 'kind'])));
             eventBus.on('team:gather', p => push('team:gather', { teamName: p?.teamName ?? null, size: p?.members?.length ?? null }));

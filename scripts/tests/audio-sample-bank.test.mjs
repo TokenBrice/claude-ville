@@ -16,7 +16,6 @@ import {
     placeOneShot,
     spanGap,
 } from '../../claudeville/src/presentation/shared/audio/SampleBank.js';
-import { thunderPlan } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
 import { MEMORY_BUDGET } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 import { rngStream, setRngSeed } from '../../claudeville/src/presentation/shared/audio/Rng.js';
 
@@ -118,13 +117,13 @@ test('lane margins follow both heads over their shared life', () => {
     // Same rate: the gap never changes.
     assert.equal(laneMargin({ offset: 12, start: 0, rate: 1, end: Infinity }, { offset: 3, start: 0, rate: 1, end: Infinity }, P), 9);
     // A one-shot starting 1 s from a live head is 1 s clear at best, whatever its drift.
-    const thunder = { offset: 12, start: 10, rate: 0.7, end: 18 };
+    const shot = { offset: 12, start: 10, rate: 0.7, end: 18 };
     const wind = { offset: 3, start: 0, rate: 1, end: Infinity };
-    assert.ok(Math.abs(laneMargin(thunder, wind, P) - 1.0) < 1e-9, 'at t = 10 the wind head is at 13, 1 s from the thunder head');
+    assert.ok(Math.abs(laneMargin(shot, wind, P) - 1.0) < 1e-9, 'at t = 10 the wind head is at 13, 1 s from the one-shot head');
     // Different rates on two open-ended lives eventually meet.
     assert.equal(laneMargin({ ...wind, rate: 1.01 }, wind, P), 0);
     // Lives that never overlap never collide.
-    assert.equal(laneMargin({ ...thunder, start: 0, end: 1 }, { ...thunder, start: 2, end: 3 }, P), Infinity);
+    assert.equal(laneMargin({ ...shot, start: 0, end: 1 }, { ...shot, start: 2, end: 3 }, P), Infinity);
     assert.equal(loopDistance(1, 20.3, 21.3), 2);
 });
 
@@ -160,8 +159,7 @@ test('continuous lanes take their own buffers, then pack 5 s apart and leave the
     assert.deepEqual(a, b);
 });
 
-// A fresh grain per strike: two strikes' reads on one pool buffer are
-// compared as spans on the loop.
+// Two one-shots' reads on one pool buffer are compared as spans on the loop.
 test('read spans on one loop: overlap is 0 apart, and the gap wraps around the loop', () => {
     const P = 22;
     assert.equal(spanGap({ offset: 3, span: 6 }, { offset: 5, span: 6 }, P), 0);
@@ -170,44 +168,6 @@ test('read spans on one loop: overlap is 0 apart, and the gap wraps around the l
     // [20, 26) wraps to [20, 22) ∪ [0, 4): 1 s clear of [5, 11).
     assert.equal(spanGap({ offset: 20, span: 6 }, { offset: 5, span: 6 }, P), 1);
     assert.equal(spanGap({ offset: 5, span: 6 }, { offset: 20, span: 6 }, P), 1);
-});
-
-const BROWN_PERIODS = NOISE_POOL.brown.frames.map(f => f / NOISE_POOL.brown.sampleRate);
-
-// The clearance a placed read keeps: its head to every lane on its buffer
-// over its life, its span to every avoided read there.
-function clearance(placed, read, lanes, avoid, periods) {
-    const period = periods[placed.index];
-    let min = Infinity;
-    for (const other of lanes) if (other !== placed && other.index === placed.index) min = Math.min(min, laneMargin(placed, other, period));
-    for (const prior of avoid) if (prior.index === placed.index) min = Math.min(min, spanGap(read, prior, period));
-    return min;
-}
-
-test('a storm of strikes: every roll keeps 5 s from each live lane and from the last two strikes\' reads', () => {
-    for (let seed = 0; seed < 20; seed++) {
-        const rng = rngStream(`test.storm.${seed}`);
-        // Wind, rain, murmur and sea: four continuous brown lanes on three buffers.
-        const lanes = [];
-        for (let i = 0; i < 4; i++) {
-            const lane = { start: 0, rate: 1, end: Infinity, oneShot: false };
-            lanes.push({ ...lane, ...pickLane(rng, BROWN_PERIODS, lanes, lane) });
-        }
-        const reads = [];
-        [0.9, 0.3, 0.7, 0.5, 1, 0.6, 0.8, 0.4].forEach((intensity, k) => {
-            const plan = thunderPlan(intensity, rng);
-            const start = 4 + 18 * k;
-            const seconds = plan.lengthSec + 0.05;
-            const life = { start, end: start + seconds, rate: plan.rate, oneShot: true };
-            const avoid = reads.slice(-2);
-            const placed = { ...life, ...placeOneShot(BROWN_PERIODS, lanes, life, avoid) };
-            const read = { index: placed.index, offset: placed.offset, span: seconds * plan.rate };
-            const clear = clearance(placed, read, lanes, avoid, BROWN_PERIODS);
-            assert.ok(clear >= LANE_SEPARATION_SEC, `seed ${seed}, strike ${k}: ${clear.toFixed(2)} s clear`);
-            lanes.push(placed);
-            reads.push(read);
-        });
-    }
 });
 
 test('a placed one-shot packs against what is there and keeps an unused buffer whole', () => {

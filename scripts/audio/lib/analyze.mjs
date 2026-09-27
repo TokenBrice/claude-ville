@@ -6,9 +6,10 @@
 import fs from 'node:fs';
 
 // ------------------------------------------------------------------ WAV ----
-// 32-bit float stereo WAV (WAVE_FORMAT_IEEE_FLOAT). The village plays at
-// -45…-70 LUFS, where 16-bit quantisation noise (~-101 dBFS) would sit inside
-// the quiet tails and bias spectral metrics; float keeps renders exact.
+// 32-bit float stereo WAV (WAVE_FORMAT_IEEE_FLOAT). Cue tails and the
+// silence between Signals cues reach -45…-70 LUFS, where 16-bit quantisation
+// noise (~-101 dBFS) would sit inside them and bias spectral metrics; float
+// keeps renders exact.
 export function writeWavFloat(file, L, R, sampleRate) {
     const n = L.length;
     const buf = Buffer.alloc(58 + n * 8);

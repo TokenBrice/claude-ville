@@ -2,6 +2,21 @@
 
 ---
 
+## v0.47.1 — *The Minstrels' Gallery* · Sep 27, 2026
+
+The Town band won, and over a long session it sounded like two tunes: every day piece was the same whistle, lute and marimba over the same arpeggio in A major, and every night piece the same music box and harps in A minor, because the arrangement followed the hour, never the tune. This release keeps one music preset, gives every tune its own players, key and feel, and nearly doubles the book.
+
+- **Three ways to listen.** The SOUND popover is *Off · Signals · Town band*, with one Volume per preset and no mix sliders; the Town band is the default when sound is on, and a profile that listened to the Village now hears the Town band. The Village's sea, weather, wildlife, workshop and thunder layers are retired with their buses; the band already carries the weather, the hour, the village's work and the waiting cadence, and every bell still rings over it. The popover names the tune and its players (`Now · Saltwind Jig · fiddle & concertina`) instead of `loop 2 of 2`, drops its empty rows when sound is off, and `MORE IN SETTINGS` now loads the Settings styles before opening (it used to open an unstyled page).
+- **Every tune its own band.** Each piece names its own lead, counter, comp and descant, a feel (straight, lilting or dotted), a comp figure and a key: A, D or E, major by day and minor by night, only keys that hold the bells' pitches. Rain, snow and storm re-dress a tune without swapping its players; night darkens the whole band; the season changes only the closing cadence colour.
+- **New players.** A fiddle, a concertina and a hammered dulcimer join the Isle Band.
+- **Eight new tunes.** By day *Saltwind Jig* (a 6/8 harbour jig), *Maypole* (a ring-dance waltz), *Shepherd's Hill*, *Tinker's March* and *Greenwood Reel*; by night *Emberwatch*, *Mist Harbor* (a waltz in the fog) and *Owl Lullaby*. The book holds 19 pieces: 11 by day, 8 by night.
+- **No déjà vu.** The rotation is a shuffle bag: the whole playlist plays, in a fresh order each round, before any tune comes back.
+- **A calibrated mix.** Stems were re-measured for every piece's players, held block chords are levelled by chord size, the bed meter hears the band's reverb so a needs-you call lands in its window over any tune, and the mono fold was re-derived for the narrower band.
+
+Validation: 1183 tests passed; `validate:quick` and `gate:release` clean; the score analyzer holds every invariant across all 19 pieces; the local audio probe (`npm run audio:probe`, re-pointed at Signals and the Town band and re-baselined) passed all 511 checks, including per-piece stems, night darkness, cue margins over every tune, the preset switch, captions and the waiting cadence; the render smoke shows the three-preset popover and the new Now line; the 10/30-minute pressure soak passed.
+
+---
+
 ## v0.47.0 — *The Singing Isle* · Sep 27, 2026
 
 ClaudeVille's sound used to lie: it could fail to start, fade out on a busy GPU, ring the wrong bell for an error, stack a dozen chimes for one event, and loop the same tune every half minute. This release rebuilds the audio from the master bus up, so the island sounds like a place, and one bell always means someone needs you.

@@ -1,55 +1,56 @@
-// The one music sequencer (plan 2.3, Wave 6). It plays the one songbook for
-// both presets on the Transport; `Voicings.js` seats the players and
+// The one music sequencer (plan 2.3, Wave 6): the Town band. It plays the
+// songbook on the Transport; `Voicings.js` seats the players and
 // `Instruments.js` plays each note.
 //
-//   Town band (6.7) — continuous: a time-of-day playlist of pieces, each
-//   visited for two loops and closed by its tag, then a true 1.4 s breath
-//   before the next pickup. No piece comes back within 6 min of its end once
-//   the set has ≥ 4 pieces (4 min below that). Every INTERLUDE_EVERY visits
-//   the band plays the last piece's 8-bar interlude cell (MUS-6/MUS-7) at
-//   40–50 % density instead. Expected interlude share from these constants:
-//   one 8-bar interlude (≈ 23 s at 84 bpm) per 3–4 visits of two 16-bar
-//   loops (≈ 95 s each) ≈ 6–8 % of the hour (target ≤ 15 %).
-//
-//   Village (6.6) — silent unless the director's occasion clock asks:
-//   `playOccasion(kind)` (a full piece: pickup, one pass whose players enter
-//   by the occasion's entries, the tag) or `playFragment(id)` (a closed
-//   2–4 bar cell). Every start carries a reason.
+//   A time-of-day playlist of pieces (6.7), each visited for two loops and
+//   closed by its tag, then a true 1.4 s breath before the next pickup. The
+//   rotation is a shuffle bag (C7): each round plays the phase's whole
+//   playlist once in a seeded order, a new round never opens on the piece
+//   that just played, and none comes back within 6 min of its end once the
+//   set has ≥ 4 pieces (4 min below that). Every INTERLUDE_EVERY visits the
+//   band plays the last piece's 8-bar interlude cell (MUS-6/MUS-7) at
+//   40–50 % density instead.
+//   Expected interlude share from these constants: one 8-bar interlude
+//   (≈ 23 s at 84 bpm) per 3–4 visits of two 16-bar loops (≈ 95 s each)
+//   ≈ 6–8 % of the hour (target ≤ 15 %).
 //
 // A rendition is compiled per loop from the piece's grammar of 2-bar cells
 // (MUS-6): the first pass of a piece in an hour is canonical, later passes
 // vary cell by cell from the `choice` stream, and no 16-bar tuple repeats
-// within 60 min. Each four-bar chunk is compiled when it opens, with what is
-// in force then: the working band (MUSL-3), the arrangement (weather, season,
-// keyframe → voicing, MUS-16/MUSL-8), the voice (isle or chip, D2) and the
-// waiting cadence (MUS-9: while someone waits each phrase end turns V→vi
-// with only the bass and chord changing; the next cadence after the answer
-// lands home on the `home` figure). The comp is voiced by nearest inversion
-// (MUS-12). Town band percussion (6.9, D4) admits a hit per building and
-// step when `rand < density_b × pattern_b[step]`, only in bands that admit
+// within 60 min. The lead of every pass plays with the piece's `feel`
+// (straight, lilt or dotted). Each four-bar chunk is compiled when it
+// opens, with what is in force then: the working band (MUSL-3), the
+// arrangement (the piece's own players, weather, season, keyframe →
+// voicing, C4, MUS-16/MUSL-8), the voice (isle or chip, D2) and the waiting
+// cadence (MUS-9: while someone waits each phrase end turns V→vi with only
+// the bass and chord changing; the next cadence after the answer lands home
+// on the `home` figure). The comp is voiced by nearest inversion (MUS-12).
+// Percussion (6.9, D4) admits a hit per building and step when
+// `rand < density_b × pattern_b[step]`, only in bands that admit
 // percussion.
 //
 // Scheduling is per window (S4): the Transport hands the sequencer a window
 // of audio time and it places every note inside it; a note whose time has
-// passed is dropped and counted, never moved to now. What is sounding is
-// published to the MusicClock once per chunk. Randomness comes from the
-// sequencer's own seeded streams: `choice` (pieces, renditions, fragments),
-// `perform` (humanization, instrument takes) and `percussion`.
+// passed is dropped and counted, never moved to now. What is sounding — the
+// piece's key and chord — is published to the MusicClock once per chunk.
+// Randomness comes from the sequencer's own seeded streams: `choice`
+// (pieces, renditions), `perform` (humanization, instrument takes) and
+// `percussion`.
 
 import { eventBus } from '../../../../domain/events/DomainEvent.js';
 import { BaseLayer } from '../layers/BaseLayer.js';
-import { holdAt, pick, rand } from '../AudioEngine.js';
+import { pick, rand } from '../AudioEngine.js';
 import { noteHz } from '../MusicalScale.js';
 import { rngStream } from '../Rng.js';
 import {
-    CHORDS, FRAGMENTS, NIGHTFALL_TAG, OCCASIONS, PERCUSSION_VOICE, PIECES, PLAYLISTS, RELEASE_FANFARE,
-    chordPitchClasses,
+    CHORDS, NIGHTFALL_TAG, PERCUSSION_VOICE, PIECES, PLAYLISTS, RELEASE_FANFARE,
+    applyFeel, chordPitchClasses, musicKey,
 } from '../bgm/BgmSongbook.js';
 import { INSTRUMENTS, createInstrument } from './Instruments.js';
 import { DEFAULT_VOICE, SEATS, voicingFor } from './Voicings.js';
 
 const EPS = 1e-6;
-const TONIC_PC = 9; // every piece is in A
+const A4_PC = 9; // score notes are semitones from A4
 const CHUNK_BARS = 4; // the grain of band, arrangement, voice and cadence changes
 
 // ── Town band (6.7) ──
@@ -68,12 +69,10 @@ const INTERLUDE_BAND_CAP = 1;
 const RENDITION_WINDOW_SEC = 3600;
 const RENDITION_TRIES = 64;
 
-// ── Village (6.6) ──
-const START_LEAD_SEC = 0.15;
-const FRAGMENT_VOICES = Object.freeze(['lead', 'bass', 'counter', 'engine']);
-const FRAGMENT_MEMORY = 3; // a fragment does not come back within the last three
-const MIN_FADE_SEC = 0.06;
-const INSTRUMENT_RELEASE_SEC = 0.1; // an instrument's release ramp (80 ms) plus margin
+// ── stingers ──
+// The release fanfare and the nightfall cadence: the tune, the bass, the
+// counter and the comp.
+const STINGER_VOICES = Object.freeze(['lead', 'bass', 'counter', 'engine']);
 
 // ── performance ──
 const LEAD_JITTER_SEC = 0.007;
@@ -82,23 +81,23 @@ const LENGTH = Object.freeze({ lead: 0.92, counter: 0.95, bass: 0.98, descant: 0
 // The comp's register window (MUS-12): bottom ≥ E3, top ≤ F♯4.
 const COMP_LOW = -17;
 const COMP_HIGH = -3;
+// The comp's velocity where its figure names none.
+const ENGINE_VEL = 0.85;
+// Players whose note sounds its written length (the chip waves, the bow,
+// the bellows, the breath); plucked and struck players ring by their own
+// decay (`engineFigure`'s chord strikes).
+const HELD_KINDS = new Set(['chip', 'bowed', 'reed', 'wind']);
 // Descant (MUS-8): a sixth over the melody, snapped to a chord tone, on notes
 // of at least a beat.
 const DESCANT_INTERVAL = 9;
 const DESCANT_MIN_BEATS = 1;
 const PERC_PER_STEP = 2;
-// Fragment variation (MUS-6): the players that may carry a fragment's tune,
-// the rhythms it may take, and the night lead's ceiling (MUSL-4: A5).
-const FRAGMENT_PLAYER_SEATS = Object.freeze(['lead', 'counter', 'descant', 'engine']);
-const RHYTHM_VARIANTS = Object.freeze(['written', 'lilt', 'dotted', 'anticipate']);
-const NIGHT_LEAD_MAX = 12;
 const PRESETS = Object.freeze({
     // Puts the Town band at −31 LUFS-I with its stem short-term max under
     // −28 at the standard step (S2): the Isle Band measures −31.2 (stem ST
     // max −29.2) in the probe's 3-min `townBand` scene, where a wait leans it
     // back −2 dB for most of it, and −30.3 over the 60-min `townband` session.
-    townBand: Object.freeze({ trim: 0.536, director: 'bgm', mode: 'townBand' }),
-    village: Object.freeze({ trim: 0.5, director: 'ambient', mode: 'village' }),
+    townBand: Object.freeze({ trim: 0.536, director: 'bgm' }),
 });
 
 const byBeat = (a, b) => a.beat - b.beat;
@@ -142,7 +141,7 @@ function canonicalLines(piece) {
     let lines = canonicalCache.get(piece);
     if (!lines) {
         lines = {
-            lead: lineFrom(piece.melody),
+            lead: lineFrom(applyFeel(piece.melody, piece.feel)),
             counter: lineFrom(piece.counterNotes),
             bass: lineFrom(piece.bass),
             descant: lineFrom(piece.descantNotes),
@@ -164,10 +163,10 @@ export function renditionKey(name, tuple) {
 
 /**
  * One rendition of a piece: the grammar's cells at `tuple` (variant per
- * position; all zeros is the canonical piece). A variant without its own
- * bass or counter plays the canonical bars under it (cells share chords);
- * the authored descant is kept over canonical cells (the sequencer adds a
- * sixth over the rest). Pure.
+ * position; all zeros is the canonical piece), the lead with the piece's
+ * feel. A variant without its own bass or counter plays the canonical bars
+ * under it (cells share chords); the authored descant is kept over
+ * canonical cells (the sequencer adds a sixth over the rest). Pure.
  */
 export function renditionScore(piece, tuple = []) {
     const bpb = piece.beatsPerBar || 4;
@@ -182,6 +181,7 @@ export function renditionScore(piece, tuple = []) {
         phraseEnds: piece.phraseEnds || [],
         bands: piece.bands || null,
         key: renditionKey(piece.name, tuple),
+        musicKey: musicKey(piece.key),
     };
     if (!shape.length || !tuple.length || tuple.every(v => v === 0)) {
         return {
@@ -206,7 +206,7 @@ export function renditionScore(piece, tuple = []) {
         const cellChords = variant.chords || v0.chords || [];
         const at = chords.length * bpb;
         const end = at + cellChords.length * bpb;
-        lead.push(...lineFrom(variant.melody, at));
+        lead.push(...lineFrom(applyFeel(variant.melody, piece.feel), at));
         counter.push(...(variant.counterNotes ? lineFrom(variant.counterNotes, at) : sliceLine(canon.counter, at, end)));
         bass.push(...(variant.bass ? lineFrom(variant.bass, at) : sliceLine(canon.bass, at, end)));
         if ((tuple[i] || 0) === 0) descant.push(...sliceLine(canon.descant, at, end));
@@ -215,19 +215,24 @@ export function renditionScore(piece, tuple = []) {
     return { ...base, bars: chords.length, lead, counter, bass, descant, timeline: timelineFrom(chords, bpb) };
 }
 
-/** A cell (`{ chords, melody, bass, counterNotes }`) as a one-off score. */
-export function cellScore(name, cell, { family = 'day', engine = null } = {}) {
+/**
+ * A cell (`{ chords, melody, bass, counterNotes }`) as a one-off score.
+ * `tonality` is the published key (`{ tonicPc, mode }`); a cell without one
+ * — the stingers — is in A, minor at night.
+ */
+export function cellScore(name, cell, { family = 'day', engine = null, tonality = null } = {}) {
     const bpb = cell.beatsPerBar || 4;
     return {
         name,
         family,
         bpb,
         bars: (cell.chords || []).length,
-        engine: engine ?? cell.comp ?? cell.engine ?? null,
+        engine: engine ?? cell.engine ?? null,
         percussion: null,
         phraseEnds: [],
         bands: null,
         key: name,
+        musicKey: tonality ?? { tonicPc: A4_PC, mode: family === 'night' ? 'minor' : 'major' },
         lead: lineFrom(cell.melody),
         counter: lineFrom(cell.counterNotes),
         bass: lineFrom(cell.bass),
@@ -278,9 +283,15 @@ export function nearestVoicing(name, prev = null, { avoidTopPc = null, low = COM
     return { semis: best, moves: prev?.length ? distance(best) : 0 };
 }
 
-// Engine figures over one chord span [b0, b1) (beats), indices into the
-// voicing; `barBeat` anchors the pattern to the bar grid.
-function engineFigure(pattern, voicing, b0, b1, bpb, barBeat) {
+/**
+ * The comp's figure over one chord span [b0, b1) (beats): notes as indices
+ * into the voicing; `barBeat` anchors the pattern to the bar grid. In 6/8
+ * the beat is the eighth: `block2` strikes on the dotted quarters and `jig`
+ * rolls the chord in threes (low, top, middle), leaning on each dotted
+ * quarter. `held`: the comp's player sounds each note for its written
+ * length (HELD_KINDS). Pure.
+ */
+export function engineFigure(pattern, voicing, b0, b1, bpb, barBeat, { held = false } = {}) {
     const out = [];
     const grid = (step, fn) => {
         const first = barBeat + Math.ceil((b0 - barBeat) / step - EPS) * step;
@@ -288,6 +299,12 @@ function engineFigure(pattern, voicing, b0, b1, bpb, barBeat) {
     };
     const arp = [0, 1, 2, 1];
     const at = k => voicing[Math.min(voicing.length - 1, k)];
+    // A chord strike (block2, waltz) plays at the arpeggio's level (MUSL-2):
+    // a rung player's tones decay by their own ring, so n tones struck
+    // together stand in for n of the arpeggio's single strikes as written;
+    // a held player's n tones each sound their whole `beats`, so each plays
+    // at 1/√(n · beats), the energy of one tone of one beat.
+    const strike = (vel, n, beats) => (held ? vel / Math.sqrt(n * beats) : vel);
     switch (pattern) {
         case 'arp8':
             grid(0.5, (g, k) => out.push({ beat: g, semi: at(arp[k % 4]), beats: 0.45 }));
@@ -299,17 +316,28 @@ function engineFigure(pattern, voicing, b0, b1, bpb, barBeat) {
             // The seat's octave shift lifts it (the snow arrangement).
             grid(0.25, (g, k) => out.push({ beat: g, semi: at(arp[k % 4]), beats: 0.2, vel: 0.35 }));
             break;
-        case 'block2':
-            grid(bpb === 3 ? 3 : 2, g => {
-                for (const semi of voicing) out.push({ beat: g, semi, beats: bpb === 3 ? 2.7 : 1.8 });
+        case 'block2': {
+            const step = bpb === 3 || bpb === 6 ? 3 : 2;
+            const beats = step * 0.9;
+            const vel = strike(ENGINE_VEL, voicing.length, beats);
+            grid(step, g => {
+                for (const semi of voicing) out.push({ beat: g, semi, beats, vel });
             });
             break;
+        }
+        case 'jig': {
+            const roll = [0, voicing.length - 1, 1];
+            grid(1, (g, k) => out.push({ beat: g, semi: at(roll[k % 3]), beats: 0.9, vel: k % 3 === 0 ? 0.9 : 0.75 }));
+            break;
+        }
         case 'waltz': {
             // Beat 1 is the bass's; the upper dyad on the others.
+            const dyad = voicing.slice(-2);
+            const vel = strike(0.8, dyad.length, 0.9);
             grid(1, (g) => {
                 const inBar = Math.round(g - barBeat) % bpb;
                 if (inBar === 0) return;
-                for (const semi of voicing.slice(-2)) out.push({ beat: g, semi, beats: 0.9, vel: 0.8 });
+                for (const semi of dyad) out.push({ beat: g, semi, beats: 0.9, vel });
             });
             break;
         }
@@ -320,43 +348,6 @@ function engineFigure(pattern, voicing, b0, b1, bpb, barBeat) {
             break;
         default:
             break;
-    }
-    return out;
-}
-
-/**
- * A pitch-preserving rhythm variant of a melody line (MUS-6 ornaments that
- * never add a pitch): `lilt` swings on-beat eighth pairs 2:1, `dotted` makes
- * them 3:1, `anticipate` pulls a bar's downbeat note half a beat early out
- * of a long note before it. Pure.
- */
-export function rhythmVariant(line, rhythm, beatsPerBar = 4) {
-    if (!rhythm || rhythm === 'written') return line;
-    const out = line.map(n => ({ ...n }));
-    if (rhythm === 'lilt' || rhythm === 'dotted') {
-        const long = rhythm === 'lilt' ? 2 / 3 : 0.75;
-        for (let i = 0; i + 1 < out.length; i++) {
-            const a = out[i];
-            const b = out[i + 1];
-            if (Math.abs(a.beats - 0.5) < EPS && Math.abs(b.beats - 0.5) < EPS
-                && Math.abs(b.beat - a.beat - 0.5) < EPS && Math.abs(a.beat - Math.round(a.beat)) < EPS) {
-                a.beats = long;
-                b.beat = a.beat + long;
-                b.beats = 1 - long;
-                i++;
-            }
-        }
-    } else if (rhythm === 'anticipate') {
-        for (let i = 1; i < out.length; i++) {
-            const prev = out[i - 1];
-            const note = out[i];
-            const onBar = note.beat > 0 && Math.abs(note.beat / beatsPerBar - Math.round(note.beat / beatsPerBar)) < EPS;
-            if (onBar && prev.beats >= 1.5 - EPS && Math.abs(prev.beat + prev.beats - note.beat) < EPS) {
-                prev.beats -= 0.5;
-                note.beat -= 0.5;
-                note.beats += 0.5;
-            }
-        }
     }
     return out;
 }
@@ -379,7 +370,7 @@ export class Sequencer extends BaseLayer {
             trim: config.trim, director: config.director, ...options, group: 'music', rng: `music.${preset}.choice`,
         });
         this.preset = preset;
-        this.mode = config.mode;
+        this._arrangedPiece = null; // whose own players the voicing seats (C4)
         this.name = `music:${preset}`;
         this.phase = 'day';
         this.voice = voice;
@@ -413,11 +404,10 @@ export class Sequencer extends BaseLayer {
         this._lastEnded = new Map(); // piece → audio time its last visit ended
         this._loopStarts = new Map(); // piece → audio times of its loops (last hour)
         this._lastPiece = null;
+        this._round = { phase: null, played: new Set() }; // the shuffle bag (C7)
         this._lastWasInterlude = false;
         this._visitsSinceInterlude = 0;
         this._interludeEvery = INTERLUDE_EVERY[0];
-        this._recentFragments = [];
-        this._fragmentVariations = new Map(); // fragment id → its last variation key
         this._nowPlayingKey = null;
         this._prevTuple = null;
     }
@@ -456,7 +446,7 @@ export class Sequencer extends BaseLayer {
         };
         if (next.weather === current.weather && next.season === current.season && next.keyframe === current.keyframe) return false;
         // Night-fall (MUS-11): the evening's turn into night, once.
-        if (this.preset === 'townBand' && next.keyframe === 'night' && current.keyframe === 'blue-hour') {
+        if (next.keyframe === 'night' && current.keyframe === 'blue-hour') {
             this._nightfallPending = true;
         }
         this._pendingArrangement = next;
@@ -485,9 +475,8 @@ export class Sequencer extends BaseLayer {
     }
 
     // Probe and QA: `{ piece, band, voice }`. `piece` makes that piece the
-    // only Town band candidate (and the only Village occasion piece) from the
-    // next start on; `band` holds the working band against setBand; `null`
-    // releases every pin.
+    // only candidate from the next start on; `band` holds the working band
+    // against setBand; `null` releases every pin.
     pin(spec) {
         if (spec == null) {
             this._pinned = null;
@@ -515,12 +504,8 @@ export class Sequencer extends BaseLayer {
         return out;
     }
 
-    // True while an occasion, fragment or piece is planned or sounding.
-    get busy() {
-        return this._visit !== null;
-    }
-
     // What is sounding now (not what is committed ahead); null when silent.
+    // `lead` and `counter` are the instruments the arrangement seats (C6).
     get nowPlaying() {
         const mark = this._soundingMark();
         if (!mark || mark.kind === 'pieceEnd' || mark.kind === 'breath' || mark.kind === 'end') return null;
@@ -528,11 +513,12 @@ export class Sequencer extends BaseLayer {
         const bar = mark.barSec > 0 ? mark.barOffset + Math.floor((now - mark.t0) / mark.barSec + EPS) + 1 : null;
         return {
             piece: mark.piece,
+            title: mark.title,
+            lead: mark.lead,
+            counter: mark.counter,
             kind: mark.what,
             bar: bar != null ? Math.max(1, Math.min(mark.bars, bar)) : null,
             bars: mark.bars,
-            loop: mark.loop,
-            of: mark.of,
             band: mark.band,
             reason: mark.reason,
         };
@@ -546,10 +532,11 @@ export class Sequencer extends BaseLayer {
             playing: Boolean(playing),
             kind: playing?.kind ?? null,
             piece: playing?.piece ?? null,
+            title: playing?.title ?? null,
+            lead: playing?.lead ?? null,
+            counter: playing?.counter ?? null,
             bar: playing?.bar ?? null,
             bars: playing?.bars ?? null,
-            loop: playing?.loop ?? null,
-            of: playing?.of ?? null,
             band: this.band,
             reason: playing?.reason ?? null,
             arrangement: { ...this.arrangement },
@@ -559,136 +546,13 @@ export class Sequencer extends BaseLayer {
     }
 
     /**
-     * Village: a full occasion (`dawn`, `noon`, `dusk`, `night`, `release`,
-     * `return`, `welcome`, `first`). Town band: `release` interjects the
-     * fanfare at the next bar and the piece resumes. Starts no earlier than
-     * `at` and the Transport's committed horizon. Returns `{ ok, startsAt,
-     * endsAt }` in audio seconds or `{ ok: false, why }`.
+     * `release` (6.8): the fanfare at the next bar that is not yet
+     * committed and not before `at`, then the piece resumes. Returns
+     * `{ ok, startsAt, endsAt }` in audio seconds or `{ ok: false, why }`.
      */
     playOccasion(kind, { reason = kind, at = null } = {}) {
         if (!this.running || !this._seats) return { ok: false, why: 'stopped' };
-        if (this.preset === 'townBand') {
-            return kind === 'release' ? this._interjectFanfare(reason, at) : { ok: false, why: 'preset' };
-        }
-        if (this.busy) return { ok: false, why: 'busy' };
-        // The first-ever enable gets the full occasion of the hour.
-        const name = kind === 'first' && !OCCASIONS?.first
-            ? ({ dawn: 'dawn', day: 'noon', dusk: 'dusk', night: 'night' }[this.phase] ?? 'noon')
-            : kind;
-        const spec0 = OCCASIONS?.[name] ?? null;
-        if (!spec0) return { ok: false, why: 'unknown' };
-        const night = this._isNight();
-        const spec = (spec0.day || spec0.night) ? ((night ? spec0.night : spec0.day) || spec0.day || spec0.night) : spec0;
-        const t = this._startTime(at);
-        const builders = [];
-        let endsAt = t;
-        const fanfare = RELEASE_FANFARE?.[night ? 'night' : 'day'] ?? null;
-        if (spec.prelude === 'releaseFanfare' && fanfare) {
-            const cell = fanfare;
-            const beatSec = 60 / ((cell.bpm || 84) * (this._voicing.tempoScale || 1));
-            builders.push(start => this._cellSegment('releaseFanfare', cell, beatSec, start, {
-                kind: 'fanfare', voices: FRAGMENT_VOICES, family: night ? 'night' : 'day',
-            }));
-            endsAt += cell.chords.length * (cell.beatsPerBar || 4) * beatSec;
-        }
-        const piece = spec.piece ? PIECES.find(p => p.name === (this._pinned?.piece ?? spec.piece)) : null;
-        if (piece) {
-            const tempo = (spec.tempoScale || 1) * (this._voicing.tempoScale || 1);
-            const beatSec = 60 / (piece.bpm * tempo);
-            const pickupBeats = (piece.pickup || []).reduce((s, [, b]) => s + b, 0);
-            if (pickupBeats > 0) builders.push(start => this._pickupSegment(piece, beatSec, start, { entries: spec.entries }));
-            builders.push(start => this._passSegment(piece, beatSec, start, {
-                loop: 1, of: 1, last: true, entries: spec.entries, what: 'occasion',
-            }));
-            const bpb = piece.beatsPerBar || 4;
-            endsAt += (pickupBeats + piece.chords.length * bpb) * beatSec;
-            if (piece.tag) endsAt += bpb * beatSec * ((piece.tag.ritard || 1) * 2 - 1);
-        } else if (spec.fragment) {
-            const frag = FRAGMENTS.find(f => f.id === spec.fragment);
-            if (frag) {
-                const beatSec = 60 / (frag.bpm * (spec.tempoScale || 1) * (this._voicing.tempoScale || 1));
-                builders.push(start => this._fragmentSegment(frag, beatSec, start));
-                endsAt += this._fragmentBeats(frag) * beatSec;
-            }
-        }
-        if (!builders.length) return { ok: false, why: 'unknown' };
-        this._beginVisit({ kind: 'occasion', name: kind, piece: piece?.name ?? spec.fragment ?? kind, reason }, builders, t);
-        return { ok: true, startsAt: t, endsAt };
-    }
-
-    /** Village: one closed fragment (`FRAGMENTS` id, or null for a seeded pick). */
-    playFragment(cellRef = null, { reason = 'fragment', at = null } = {}) {
-        if (!this.running || !this._seats) return { ok: false, why: 'stopped' };
-        if (this.preset !== 'village') return { ok: false, why: 'preset' };
-        if (this.busy) return { ok: false, why: 'busy' };
-        let frag = cellRef ? FRAGMENTS.find(f => f.id === cellRef) : null;
-        if (!frag) {
-            if (cellRef) return { ok: false, why: 'unknown' };
-            const night = this._isNight();
-            const pool = FRAGMENTS.filter(f => Boolean(f.night) === night);
-            const fresh = pool.filter(f => !this._recentFragments.includes(f.id));
-            frag = pick(this._choice, fresh.length ? fresh : pool);
-            if (!frag) return { ok: false, why: 'unknown' };
-        }
-        this._recentFragments = [...this._recentFragments, frag.id].slice(-FRAGMENT_MEMORY);
-        const beatSec = 60 / (frag.bpm * (this._voicing.tempoScale || 1));
-        const t = this._startTime(at);
-        this._beginVisit({ kind: 'fragment', name: frag.id, piece: frag.id, reason }, [
-            start => this._fragmentSegment(frag, beatSec, start),
-        ], t);
-        return { ok: true, startsAt: t, endsAt: t + this._fragmentBeats(frag) * beatSec };
-    }
-
-    /**
-     * Ends what plays. With `fadeSec` the band ramps out from now (S8) and the
-     * visit ends at the fade's end; without it, at the next bar that is not
-     * yet committed.
-     */
-    release({ reason = 'release', fadeSec = null } = {}) {
-        if (!this._visit) return false;
-        const now = this.engine.now();
-        this._queue = [];
-        // A visit whose first note is still ahead is cancelled outright: the
-        // fader closes before it and observers get a `cancel` mark, so no
-        // music starts after the reason to stop (S7 zeros).
-        const notYet = this.preset === 'village' && this._visit.startsAt != null && this._visit.startsAt > now;
-        if ((fadeSec != null || notYet) && this._mix) {
-            const fade = notYet ? Math.min(MIN_FADE_SEC, this._visit.startsAt - now) : Math.max(MIN_FADE_SEC, Number(fadeSec) || 0);
-            const end = now + fade;
-            const g = this._mix.gain;
-            holdAt(g, now);
-            g.linearRampToValueAtTime(0, end);
-            // The players fall silent and play on in the next visit (a
-            // rebuild would open the whistle's breath lane twice).
-            for (const player of this._players.values()) player.release?.(end);
-            // Notes already committed ahead stay under the closed fader; it
-            // reopens only past them, for the next visit.
-            const reopen = Math.max(end, this._committedTo) + INSTRUMENT_RELEASE_SEC;
-            g.setValueAtTime(0, reopen - 0.01);
-            g.linearRampToValueAtTime(1, reopen);
-            this._seg = null;
-            this._nextAt = null;
-            this._skipBefore = reopen;
-            this._committedTo = reopen;
-            // What was committed past the fade never sounds.
-            this._marks = this._marks.filter(mark => mark.t <= end);
-            if (notYet) {
-                const visit = this._visit;
-                this._visit = null;
-                this._mark({ kind: 'cancel', t: now, from: visit.startsAt, what: visit.kind, name: visit.name, reason });
-                return true;
-            }
-            this._endVisit(end, { reason });
-            return true;
-        }
-        if (!this._seg) {
-            this._nextAt = null;
-            this._endVisit(Math.max(now, this._committedTo), { reason });
-            return true;
-        }
-        this._cut(this._seg, this._committedTo);
-        this._visit.releasedBy = reason;
-        return true;
+        return kind === 'release' ? this._interjectFanfare(reason, at) : { ok: false, why: 'unknown' };
     }
 
     // ── layer lifecycle ──
@@ -716,7 +580,7 @@ export class Sequencer extends BaseLayer {
         this._voicing = this._voicingNow();
         this._applySeats(this._voicing, ctx.currentTime, true);
         this._committedTo = ctx.currentTime;
-        if (this.preset === 'townBand') this._planTownBand(ctx.currentTime + FIRST_PIECE_SEC);
+        this._planTownBand(ctx.currentTime + FIRST_PIECE_SEC);
         this.registerProcess(this);
     }
 
@@ -767,8 +631,7 @@ export class Sequencer extends BaseLayer {
             const seg = this._seg;
             while (seg.bar < seg.toBar) {
                 if (seg.openBar !== seg.bar) {
-                    const lead = seg.bar === seg.fromBar ? seg.leadIn : 0;
-                    if (seg.t0 + seg.bar * seg.barSec - lead >= to) return dropped;
+                    if (seg.t0 + seg.bar * seg.barSec >= to) return dropped;
                     this._openChunk(seg);
                     if (this._seg !== seg) break;
                 }
@@ -795,23 +658,12 @@ export class Sequencer extends BaseLayer {
             if (next) {
                 this._seg = next(endT);
             } else {
-                this._endVisit(endT, {});
+                this._endVisit(endT);
             }
         }
     }
 
     // ── visits ──
-
-    _startTime(at) {
-        const now = this.engine.now();
-        return Math.max(Number(at) || 0, now, this._committedTo) + START_LEAD_SEC;
-    }
-
-    _isNight() {
-        const keyframe = (this._pendingArrangement ?? this.arrangement).keyframe;
-        if (keyframe) return ['night', 'deep-night', 'pre-dawn', 'blue-hour'].includes(keyframe);
-        return this.phase === 'night';
-    }
 
     _beginVisit(visit, builders, t) {
         this._visit = { ...visit, startsAt: t };
@@ -820,7 +672,7 @@ export class Sequencer extends BaseLayer {
         this._mark({ kind: 'start', t, what: visit.kind, name: visit.name, piece: visit.piece, reason: visit.reason }, true);
     }
 
-    _endVisit(endT, { reason = null } = {}) {
+    _endVisit(endT) {
         const visit = this._visit;
         this._visit = null;
         this._seg = null;
@@ -837,10 +689,9 @@ export class Sequencer extends BaseLayer {
         }
         this._mark({ kind: 'pieceEnd', t: endT, piece: visit.piece, what: visit.kind }, true);
         this._mark({
-            kind: 'end', t: endT, what: visit.kind, name: visit.name, piece: visit.piece,
-            reason: reason ?? visit.releasedBy ?? visit.reason,
+            kind: 'end', t: endT, what: visit.kind, name: visit.name, piece: visit.piece, reason: visit.reason,
         }, true);
-        if (this.preset === 'townBand' && this.running) {
+        if (this.running) {
             const next = endT + BREATH_SEC;
             this._mark({ kind: 'breath', t: endT, until: next }, true);
             this._planTownBand(next);
@@ -867,8 +718,19 @@ export class Sequencer extends BaseLayer {
         if (this._pinned?.piece) {
             piece = list[0];
         } else {
+            // C7: a shuffle bag per phase. A round plays every piece of the
+            // playlist once, each pick seeded-uniform among the round's
+            // unplayed pieces the gap and the hourly cap allow; the next round
+            // never opens on the piece that just played, and a phase change
+            // opens a fresh round.
+            if (this._round.phase !== this.phase) this._round = { phase: this.phase, played: new Set() };
+            let unplayed = list.filter(p => !this._round.played.has(p.name));
+            if (!unplayed.length) {
+                this._round.played.clear();
+                unplayed = list;
+            }
             const gap = list.length >= SMALL_SET ? NO_RETURN_SEC : NO_RETURN_SMALL_SET_SEC;
-            const eligible = list.filter(p => p.name !== this._lastPiece
+            const eligible = unplayed.filter(p => p.name !== this._lastPiece
                 && t - (this._lastEnded.get(p.name) ?? -Infinity) >= gap
                 && this._loopsWithinHour(p.name, t) + LOOPS_PER_VISIT <= LOOPS_PER_HOUR);
             if (eligible.length) {
@@ -877,14 +739,17 @@ export class Sequencer extends BaseLayer {
                 this._planInterlude(last, t);
                 return;
             } else {
-                // Nothing may return yet: the one that ended longest ago.
-                const others = list.filter(p => p.name !== this._lastPiece);
-                const pool = others.length ? others : list;
+                // Nothing may play yet: the one that ended longest ago, the
+                // round's own first.
+                const pool = [unplayed, list].map(set => set.filter(p => p.name !== this._lastPiece)).find(set => set.length) ?? list;
                 piece = pool.reduce((a, b) => ((this._lastEnded.get(a.name) ?? -Infinity)
                     <= (this._lastEnded.get(b.name) ?? -Infinity) ? a : b));
             }
+            this._round.played.add(piece.name);
         }
         const beatSec = 60 / (piece.bpm * (this._voicingNow().tempoScale || 1));
+        // Its players exist before the pickup (C4: the piece's own seats).
+        this._preparePlayers(voicingFor({ ...this._voicingArgs(), piece: piece.name }));
         const builders = [];
         if (piece.pickup?.length) builders.push(start => this._pickupSegment(piece, beatSec, start));
         for (let loop = 1; loop <= LOOPS_PER_VISIT; loop++) {
@@ -908,7 +773,7 @@ export class Sequencer extends BaseLayer {
         this._beginVisit({ kind: 'interlude', name: `${piece.name}:interlude`, piece: piece.name, reason: 'interlude' }, [
             start => this._cellSegment(`${piece.name}:interlude`, { beatsPerBar: piece.beatsPerBar, ...piece.interlude }, beatSec, start, {
                 kind: 'interlude', voices: INTERLUDE_VOICES, family: piece.family, bandCap: INTERLUDE_BAND_CAP,
-                engine: piece.engine, piece: piece.name,
+                engine: piece.engine, piece: piece.name, tonality: musicKey(piece.key),
             }),
         ], t);
     }
@@ -927,10 +792,8 @@ export class Sequencer extends BaseLayer {
             of: 1,
             last: true,
             cadences: true,
-            entries: null,
             voices: null,
             bandCap: 3,
-            leadIn: 0, // seconds of pickup before bar `fromBar`
             ...fields,
             bpb,
             barSec: bpb * beatSec,
@@ -942,7 +805,7 @@ export class Sequencer extends BaseLayer {
         };
     }
 
-    _passSegment(piece, beatSec, t0, { loop, of, last, entries = null, what }) {
+    _passSegment(piece, beatSec, t0, { loop, of, last, what }) {
         const tuple = this._pickTuple(piece, t0, loop);
         const score = renditionScore(piece, tuple);
         this._renditions.set(score.key, t0);
@@ -950,7 +813,7 @@ export class Sequencer extends BaseLayer {
         this._loopStarts.get(piece.name).push(t0);
         this._prevTuple = { piece: piece.name, tuple };
         const seg = this._segment({
-            kind: 'pass', piece, score, beatSec, t0, loop, of, last, entries, what, tuple,
+            kind: 'pass', piece, score, beatSec, t0, loop, of, last, what, tuple,
         });
         this._mark({
             kind: 'rendition', t: t0, piece: piece.name, loop, key: score.key,
@@ -958,85 +821,28 @@ export class Sequencer extends BaseLayer {
         return seg;
     }
 
-    _pickupSegment(piece, beatSec, start, { entries = null } = {}) {
+    _pickupSegment(piece, beatSec, start) {
         const bpb = piece.beatsPerBar || 4;
         const beats = piece.pickup.reduce((s, [, b]) => s + b, 0);
         const score = {
-            ...cellScore(`${piece.name}:pickup`, { beatsPerBar: bpb, chords: [piece.chords[0]], melody: [] }),
-            family: piece.family,
+            ...cellScore(`${piece.name}:pickup`, { beatsPerBar: bpb, chords: [piece.chords[0]], melody: [] }, {
+                family: piece.family, tonality: musicKey(piece.key),
+            }),
             lead: lineFrom(piece.pickup, bpb - beats),
             timeline: [{ beat: bpb - beats, name: Array.isArray(piece.chords[0]) ? piece.chords[0][0] : piece.chords[0] }],
         };
         return this._segment({
             kind: 'pickup', piece, score, beatSec, t0: start - (bpb - beats) * beatSec, barOffset: -1,
-            what: this._visit?.kind ?? 'piece', entries, voices: ['lead'], cadences: false,
+            what: this._visit?.kind ?? 'piece', voices: ['lead'], cadences: false,
         });
     }
 
-    _cellSegment(name, cell, beatSec, t0, { kind, voices, family = 'day', bandCap = 3, engine = null, piece = null, barOffset = 0 }) {
-        const score = cellScore(name, cell, { family, engine });
+    _cellSegment(name, cell, beatSec, t0, { kind, voices, family = 'day', bandCap = 3, engine = null, piece = null, barOffset = 0, tonality = null }) {
+        const score = cellScore(name, cell, { family, engine, tonality });
         return this._segment({
             kind, piece: piece ? PIECES.find(p => p.name === piece) : null, pieceName: piece ?? name, score, beatSec, t0,
             voices, bandCap, cadences: false, what: this._visit?.kind ?? kind, barOffset,
         });
-    }
-
-    _fragmentBeats(frag) {
-        const bpb = frag.beatsPerBar || 4;
-        return (frag.pickup || []).reduce((s, [, b]) => s + b, 0) + frag.chords.length * bpb;
-    }
-
-    _fragmentSegment(frag, beatSec, start) {
-        const bpb = frag.beatsPerBar || 4;
-        const pickupBeats = (frag.pickup || []).reduce((s, [, b]) => s + b, 0);
-        const score = cellScore(`frag:${frag.id}`, frag, { family: frag.night ? 'night' : 'day', engine: frag.comp });
-        if (pickupBeats > 0) score.lead = [...lineFrom(frag.pickup, -pickupBeats), ...score.lead];
-        const variation = this._fragmentVariation(frag, score.lead);
-        score.lead = rhythmVariant(score.lead, variation.rhythm, bpb);
-        score.key = `frag:${frag.id}:${variation.key}`;
-        this._mark({ kind: 'rendition', t: start, piece: frag.id, loop: 1, key: score.key, variation: { ...variation } });
-        return this._segment({
-            kind: 'fragment', pieceName: frag.id, score, beatSec, t0: start + pickupBeats * beatSec,
-            voices: FRAGMENT_VOICES, cadences: false, what: this._visit?.kind ?? 'fragment',
-            leadSeat: variation.seat === 'lead' ? null : variation.seat, leadOctave: variation.octave,
-            // The pickup's notes sit before bar 1: the first chunk opens with them.
-            leadIn: pickupBeats * beatSec,
-        });
-    }
-
-    // MUS-6 for fragments: a seeded variation per play — which of the
-    // arrangement's Isle players carries the tune, in which octave (only
-    // where the whole line fits the player, and never over A5 at night), and
-    // a rhythm — never the one this cell had last time.
-    _fragmentVariation(frag, lead) {
-        const seats = this._voicing.seats || {};
-        const night = Boolean(frag.night);
-        const players = [];
-        for (const seat of FRAGMENT_PLAYER_SEATS) {
-            const instrument = seats[seat]?.instrument;
-            const range = INSTRUMENTS[instrument]?.range;
-            if (!range || players.some(p => p.instrument === instrument)) continue;
-            players.push({ seat, instrument, range, shift: seats[seat].octaveShift || 0 });
-        }
-        const lo = Math.min(...lead.map(n => n.semi));
-        const hi = Math.max(...lead.map(n => n.semi));
-        const options = [];
-        for (const player of players) {
-            for (const octave of [0, -12, 12]) {
-                const a = lo + player.shift + octave;
-                const b = hi + player.shift + octave;
-                if (a < player.range[0] || b > player.range[1] || (night && b > NIGHT_LEAD_MAX)) continue;
-                for (const rhythm of RHYTHM_VARIANTS) {
-                    options.push({ seat: player.seat, octave, rhythm, key: `${player.instrument}:${octave}:${rhythm}` });
-                }
-            }
-        }
-        if (!options.length) return { seat: 'lead', octave: 0, rhythm: 'written', key: 'lead:0:written' };
-        const last = this._fragmentVariations.get(frag.id);
-        const fresh = options.filter(o => o.key !== last);
-        const chosen = pick(this._choice, fresh.length ? fresh : options);
-        this._fragmentVariations.set(frag.id, chosen.key);
-        return chosen;
     }
 
     // MUS-6: a variant tuple not heard within the hour. The first pass of a
@@ -1080,7 +886,7 @@ export class Sequencer extends BaseLayer {
         return cutBar;
     }
 
-    // Town band release (6.8): the fanfare at the next free bar, then the piece resumes.
+    // Release (6.8): the fanfare, in A, at the next free bar, then the piece resumes.
     _interjectFanfare(reason, at) {
         const seg = this._seg;
         const cell = RELEASE_FANFARE?.[seg?.score.family === 'night' ? 'night' : 'day'] ?? null;
@@ -1097,7 +903,7 @@ export class Sequencer extends BaseLayer {
         const rest = { ...seg };
         this._queue.unshift(
             start => this._cellSegment('releaseFanfare', cell, beatSec, start, {
-                kind: 'fanfare', voices: FRAGMENT_VOICES, family: seg.score.family, piece: seg.piece?.name,
+                kind: 'fanfare', voices: STINGER_VOICES, family: seg.score.family, piece: seg.piece?.name,
             }),
             start => ({
                 ...rest,
@@ -1121,17 +927,22 @@ export class Sequencer extends BaseLayer {
         const arrangement = this._pendingArrangement ?? this.arrangement;
         return voicingFor({
             voice: this._pendingVoice ?? this.voice,
-            mode: this.mode,
             keyframe: arrangement.keyframe,
             weather: arrangement.weather,
             season: arrangement.season,
             band: this._pinned?.band ?? this._pendingBand ?? this.band,
+            piece: this._arrangedPiece,
         });
     }
 
-    // Pending band, voice and arrangement land here (a chunk boundary at `t`).
-    _applyPending(t) {
+    // Pending band, voice and arrangement land here (a chunk boundary at `t`),
+    // and the players of the piece the chunk belongs to (C4).
+    _applyPending(t, piece = this._arrangedPiece) {
         let changed = false;
+        if (piece !== this._arrangedPiece) {
+            this._arrangedPiece = piece;
+            changed = true;
+        }
         if (this._pinned?.band != null) {
             this._pendingBand = null;
             if (this.band !== this._pinned.band) {
@@ -1176,14 +987,6 @@ export class Sequencer extends BaseLayer {
             } else if (spec.instrument) {
                 this._player(name, spec.instrument);
             }
-            // An occasion or a fragment may hand the tune to another player
-            // (MUSL round 2 dawn; fragment variation).
-            if (name === 'lead' && this.mode === 'village') {
-                for (const seat of FRAGMENT_PLAYER_SEATS) {
-                    const instrument = voicing.seats?.[seat]?.instrument;
-                    if (instrument && INSTRUMENTS[instrument]?.range) this._player(name, instrument);
-                }
-            }
         }
     }
 
@@ -1214,7 +1017,7 @@ export class Sequencer extends BaseLayer {
         seg.openBar = fromBar;
         seg.events = [];
         seg.index = 0;
-        this._applyPending(t);
+        this._applyPending(t, seg.piece?.name ?? this._arrangedPiece);
 
         // Night-fall (MUS-11): the next chunk of a Town band pass becomes
         // the lantern-lighting cadence, which closes the visit.
@@ -1224,7 +1027,7 @@ export class Sequencer extends BaseLayer {
             seg.chunkEnd = fromBar;
             const beatSec = NIGHTFALL_TAG.bpm ? 60 / NIGHTFALL_TAG.bpm : seg.beatSec;
             this._queue = [start => this._cellSegment('nightfall', NIGHTFALL_TAG, beatSec, start, {
-                kind: 'nightfall', voices: FRAGMENT_VOICES, family: 'night', piece: seg.piece?.name,
+                kind: 'nightfall', voices: STINGER_VOICES, family: 'night', piece: seg.piece?.name,
             })];
             this._mark({ kind: 'nightfall', t, piece: seg.piece?.name });
             return;
@@ -1237,7 +1040,7 @@ export class Sequencer extends BaseLayer {
         // The visit's last pass: the piece may have left the playlist, and a
         // closed ending takes the tag in place of the final bar (MUS-11); a
         // wait keeps the written final bar, which turns deceptive.
-        if (seg.kind === 'pass' && this.preset === 'townBand' && seg.what === 'piece' && !seg.last
+        if (seg.kind === 'pass' && seg.what === 'piece' && !seg.last
             && toBar >= seg.toBar && !this._playlist().some(p => p.name === piece.name)) {
             seg.last = true;
             this._queue = [];
@@ -1253,6 +1056,7 @@ export class Sequencer extends BaseLayer {
             const offset = score.bars - 1;
             this._queue.unshift(start => this._cellSegment(`${piece.name}:tag`, { beatsPerBar: bpb, ...tag }, beatSec, start, {
                 kind: 'tag', voices: null, family: piece.family, engine: score.engine, piece: piece.name, barOffset: offset,
+                tonality: score.musicKey,
             }));
         }
         seg.chunkEnd = toBar;
@@ -1332,44 +1136,25 @@ export class Sequencer extends BaseLayer {
         const band = Math.min(this.band, seg.bandCap);
         const seats = this._seatsFor(seg, band);
         const events = [];
-        const entryAt = bar => {
-            if (!seg.entries?.length) return null;
-            let entry = null;
-            for (const e of seg.entries) if (e.fromBar <= bar) entry = e;
-            return entry;
-        };
-        // An occasion's entries name who plays from which bar (the dawn
-        // occasion's build); elsewhere the band decides.
-        const playing = (seat, bar) => {
-            const entry = entryAt(bar);
-            if (entry?.voices) return entry.voices.includes(seat) && Boolean(this._voicing.seats?.[seat]);
-            return seats.has(seat);
-        };
 
         // Lead (humanized), counter, bass, descant.
-        for (const note of score.lead) {
-            if (!inChunk(note)) continue;
-            const bar = barOf(note.beat);
-            if (leadAt.has(bar) || !playing('lead', bar)) continue;
-            const entry = entryAt(bar);
-            const event = this._leadEvent(note, bpb, seg.leadSeat ?? (entry?.leadSeat === 'counter' ? 'counter' : null));
-            if (seg.leadOctave) event.octave = seg.leadOctave;
-            events.push(event);
+        if (seats.has('lead')) {
+            for (const note of score.lead) {
+                if (inChunk(note) && !leadAt.has(barOf(note.beat))) events.push(this._leadEvent(note, bpb));
+            }
+            for (const line of leadAt.values()) {
+                for (const note of line) events.push(this._leadEvent(note, bpb));
+            }
         }
-        for (const [bar, line] of leadAt) {
-            if (!playing('lead', bar)) continue;
-            for (const note of line) events.push(this._leadEvent(note, bpb, null));
-        }
-        for (const note of score.counter) {
-            if (inChunk(note) && playing('counter', barOf(note.beat))) {
-                events.push({ ...note, seat: 'counter', vel: note.beat % bpb === 0 ? 0.95 : 0.85 });
+        if (seats.has('counter')) {
+            for (const note of score.counter) {
+                if (inChunk(note)) events.push({ ...note, seat: 'counter', vel: note.beat % bpb === 0 ? 0.95 : 0.85 });
             }
         }
         const bassFigure = this._voicing.seats?.bass?.figure;
-        const rootsOnly = bar => bassFigure === 'drone' || bassFigure === 'sustain' || entryAt(bar)?.bass === 'roots';
-        {
+        const rootsOnly = bassFigure === 'drone' || bassFigure === 'sustain';
+        if (rootsOnly && seats.has('bass')) {
             for (let bar = fromBar; bar < toBar; bar++) {
-                if (!rootsOnly(bar) || !playing('bass', bar)) continue;
                 const chord = [...timeline].reverse().find(c => c.beat <= bar * bpb + EPS) || timeline[0];
                 const root = chord ? CHORDS[chord.name]?.[0] : null;
                 if (root == null) continue;
@@ -1379,15 +1164,14 @@ export class Sequencer extends BaseLayer {
                 events.push({ beat: bar * bpb, semi, beats: bpb, seat: 'bass', vel: 0.9 });
             }
         }
-        {
+        if (!rootsOnly && seats.has('bass')) {
             for (const note of score.bass) {
-                const bar = barOf(note.beat);
-                if (inChunk(note) && !bassAt.has(bar) && !rootsOnly(bar) && playing('bass', bar)) {
+                if (inChunk(note) && !bassAt.has(barOf(note.beat))) {
                     events.push({ ...note, seat: 'bass', vel: note.beat % bpb === 0 ? 1 : 0.9 });
                 }
             }
-            for (const [bar, line] of bassAt) {
-                if (!rootsOnly(bar) && playing('bass', bar)) for (const note of line) events.push({ ...note, seat: 'bass', vel: 1 });
+            for (const line of bassAt.values()) {
+                for (const note of line) events.push({ ...note, seat: 'bass', vel: 1 });
             }
         }
         if (seats.has('descant')) {
@@ -1400,7 +1184,7 @@ export class Sequencer extends BaseLayer {
             ));
             for (const note of descant) {
                 const bar = barOf(note.beat);
-                if (!leadAt.has(bar) && playing('descant', bar)) events.push({ ...note, seat: 'descant', vel: 0.8 });
+                if (!leadAt.has(bar)) events.push({ ...note, seat: 'descant', vel: 0.8 });
             }
         }
 
@@ -1410,6 +1194,7 @@ export class Sequencer extends BaseLayer {
             ? figure
             : (score.engine || (score.family === 'night' ? 'arpQ' : 'arp8'));
         const compPlays = seats.has('engine') && figure !== 'drone';
+        const held = HELD_KINDS.has(INSTRUMENTS[this._voicing.seats?.engine?.instrument]?.kind);
         for (let i = 0; i < timeline.length; i++) {
             const span = timeline[i];
             const b1 = Math.min(timeline[i + 1]?.beat ?? beatTo, beatTo);
@@ -1423,13 +1208,9 @@ export class Sequencer extends BaseLayer {
             this._comp = voiced.semis;
             if (!compPlays) continue;
             const barBeat = barOf(span.beat) * bpb;
-            const spanPattern = figure && figure !== 'written' && figure !== 'drone'
-                ? pattern
-                : (entryAt(barOf(span.beat))?.engine || pattern);
-            for (const ev of engineFigure(spanPattern, voiced.semis, span.beat, b1, bpb, barBeat)) {
-                if (!playing('engine', barOf(ev.beat))) continue;
+            for (const ev of engineFigure(pattern, voiced.semis, span.beat, b1, bpb, barBeat, { held })) {
                 const jitter = ev.rollIndex ? ev.rollIndex * 0.035 : 0;
-                events.push({ ...ev, seat: 'engine', vel: ev.vel ?? 0.85, jitter });
+                events.push({ ...ev, seat: 'engine', vel: ev.vel ?? ENGINE_VEL, jitter });
             }
         }
 
@@ -1437,7 +1218,6 @@ export class Sequencer extends BaseLayer {
         if (seats.has('percussion') && score.percussion) {
             const kit = this._voicing.seats?.percussion?.kit || null;
             for (let bar = fromBar; bar < toBar; bar++) {
-                if (!playing('percussion', bar)) continue;
                 const hitsAt = new Map();
                 for (const [building, voice] of Object.entries(PERCUSSION_VOICE || {})) {
                     const d = this._density[building] || 0;
@@ -1467,7 +1247,6 @@ export class Sequencer extends BaseLayer {
         const grooveSteps = groove?.steps?.[bpb];
         if (groove?.instrument && grooveSteps && band > 0 && seats.has('groove')) {
             for (let bar = fromBar; bar < toBar; bar++) {
-                if (!playing('groove', bar)) continue;
                 for (const [step, beats, vel] of grooveSteps) {
                     events.push({
                         beat: bar * bpb + step / 4, seat: 'groove', semi: 0, beats, vel: vel ?? 0.7,
@@ -1481,11 +1260,13 @@ export class Sequencer extends BaseLayer {
         events.sort(byBeat);
         seg.events = events;
 
-        // The MusicClock frame and the chunk mark.
+        // The MusicClock frame (the piece's key and the sounding chords) and
+        // the chunk mark (what `nowPlaying` reads: the piece's title and the
+        // instruments its lead and counter sound on).
         const until = seg.t0 + toBar * seg.barSec;
         this.engine.musicClock?.publish({
             source: this.preset,
-            key: { tonicPc: TONIC_PC, mode: score.family === 'night' ? 'minor' : 'major' },
+            key: score.musicKey,
             originTime: seg.t0 - seg.barOffset * seg.barSec,
             beatSec: seg.beatSec,
             beatsPerBar: bpb,
@@ -1495,6 +1276,9 @@ export class Sequencer extends BaseLayer {
         const state = {
             t,
             piece: seg.pieceName ?? piece?.name ?? score.name,
+            title: piece?.title ?? null,
+            lead: this._voicing.seats?.lead?.instrument ?? null,
+            counter: this._voicing.seats?.counter?.instrument ?? null,
             what: seg.what,
             segment: seg.kind,
             reason: this._visit?.reason ?? null,
@@ -1502,7 +1286,6 @@ export class Sequencer extends BaseLayer {
             bars: seg.kind === 'tag' ? seg.barOffset + score.bars
                 : seg.kind === 'pickup' ? (piece?.chords.length ?? 1) : score.bars,
             loop: seg.loop,
-            of: seg.of,
             band,
             t0: seg.t0,
             barOffset: seg.barOffset,
@@ -1519,12 +1302,11 @@ export class Sequencer extends BaseLayer {
         else this._mark({ kind: 'chunk', ...state }, true);
     }
 
-    _leadEvent(note, bpb, instrumentSeat) {
+    _leadEvent(note, bpb) {
         const onBar = Math.abs(note.beat / bpb - Math.round(note.beat / bpb)) < EPS;
         return {
             ...note,
             seat: 'lead',
-            instrumentSeat,
             vel: onBar ? 1 : rand(this._perform, 0.85, 0.95),
             jitter: rand(this._perform, -LEAD_JITTER_SEC, LEAD_JITTER_SEC),
         };
@@ -1547,8 +1329,8 @@ export class Sequencer extends BaseLayer {
 
     _voicingArgs() {
         return {
-            voice: this.voice, mode: this.mode, keyframe: this.arrangement.keyframe,
-            weather: this.arrangement.weather, season: this.arrangement.season, band: this.band,
+            voice: this.voice, keyframe: this.arrangement.keyframe, weather: this.arrangement.weather,
+            season: this.arrangement.season, band: this.band, piece: this._arrangedPiece,
         };
     }
 
@@ -1562,8 +1344,8 @@ export class Sequencer extends BaseLayer {
             if (!pcs) continue;
             let semi = note.semi + DESCANT_INTERVAL;
             for (let d = 0; d <= 2; d++) {
-                if (pcs.includes(pcOf(semi - d + TONIC_PC))) { semi -= d; break; }
-                if (pcs.includes(pcOf(semi + d + TONIC_PC))) { semi += d; break; }
+                if (pcs.includes(pcOf(semi - d + A4_PC))) { semi -= d; break; }
+                if (pcs.includes(pcOf(semi + d + A4_PC))) { semi += d; break; }
             }
             out.push({ beat: note.beat, semi, beats: note.beats });
         }
@@ -1591,20 +1373,19 @@ export class Sequencer extends BaseLayer {
         // A building that stopped working stops drumming at once, not at the
         // next chunk (6.9: zero percussion when working === 0).
         if (ev.building && !(this._density[ev.building] > 0)) return;
-        const source = ev.instrumentSeat ? this._voicing.seats?.[ev.instrumentSeat] : spec;
-        const instrument = ev.instrument || source?.instrument;
+        const instrument = ev.instrument || spec.instrument;
         if (!instrument) return;
         const player = this._player(ev.seat, instrument);
         if (!player) return;
         let hz = 0;
         let semi = null;
         if (ev.seat !== 'percussion' && ev.seat !== 'groove') {
-            semi = withinRange(ev.semi + (source.octaveShift || 0) + (ev.octave || 0), INSTRUMENTS[instrument]?.range);
+            semi = withinRange(ev.semi + (spec.octaveShift || 0), INSTRUMENTS[instrument]?.range);
             if (semi == null) return;
             hz = noteHz(semi);
         }
         const dur = ev.beats * seg.beatSec * (ev.exactLength ? 1 : (LENGTH[ev.seat] ?? 1));
-        player.note(t, hz, dur, ev.vel ?? 1, { bright: source.bright, soft: source.soft });
+        player.note(t, hz, dur, ev.vel ?? 1, { bright: spec.bright, soft: spec.soft });
         if (this._listeners.size) {
             this._mark({
                 kind: ev.seat === 'percussion' || ev.seat === 'groove' ? 'perc' : 'note',
@@ -1655,14 +1436,18 @@ export class Sequencer extends BaseLayer {
         return mark;
     }
 
-    // `audio:now-playing` on change only (UX-7).
+    // `audio:now-playing` on change only (UX-7): the piece, its title, and
+    // the players that sound it (a reseat mid-piece is a change).
     _publishNowPlaying(force = false) {
         const playing = force ? null : this.nowPlaying;
-        const key = playing ? `${playing.kind}:${playing.piece}` : null;
+        const key = playing ? `${playing.kind}:${playing.piece}:${playing.lead}:${playing.counter}` : null;
         if (key === this._nowPlayingKey) return;
         this._nowPlayingKey = key;
         eventBus.emit('audio:now-playing', playing
-            ? { preset: this.preset, kind: playing.kind, piece: playing.piece, reason: playing.reason }
-            : { preset: this.preset, kind: null, piece: null, reason: null });
+            ? {
+                preset: this.preset, kind: playing.kind, piece: playing.piece, title: playing.title,
+                lead: playing.lead, counter: playing.counter, reason: playing.reason,
+            }
+            : { preset: this.preset, kind: null, piece: null, title: null, lead: null, counter: null, reason: null });
     }
 }

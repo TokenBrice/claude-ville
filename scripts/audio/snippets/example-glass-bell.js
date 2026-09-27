@@ -9,7 +9,7 @@
 // API: default export receives
 //   { context, destination, engine, modules, mark, seconds, offline }
 // `destination` is the tapped/rendered output; connect there to bypass the
-// shipped master chain, or to engine.busInput('cue' | 'world' | 'work' | 'music') to go through it.
+// shipped master chain, or to engine.busInput('cue' | 'music') to go through it.
 
 export default async function glassBell({ context, engine, mark }) {
     const strike = (t, hz, pan) => {

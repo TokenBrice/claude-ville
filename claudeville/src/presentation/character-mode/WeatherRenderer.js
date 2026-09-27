@@ -9,7 +9,6 @@ import {
     WEATHER_TYPES,
     quantizeDistrictLightingBand,
 } from './AtmosphereState.js';
-import { eventBus } from '../../domain/events/DomainEvent.js';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
 
@@ -919,13 +918,6 @@ export class WeatherRenderer {
         const flashT = 1 - flashAge / windowMs;
         const alpha = flashT * clamp(intensity, 0, 1) * 0.18;
         if (alpha <= 0.005) return;
-
-        // Announce each strike once (on the primary flash of the pair) so the
-        // ambient audio can roll thunder after the visible lightning.
-        if (flashAge === age && this._lastFlashCycle !== cycle) {
-            this._lastFlashCycle = cycle;
-            eventBus.emit('weather:storm-flash', { intensity: clamp(intensity, 0, 1) });
-        }
 
         // 5.5 — fleet-driven storms (weather.cause === 'fleet') flash a subtle
         // violet vs the timeline storm's cool white.

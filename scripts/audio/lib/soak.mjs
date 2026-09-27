@@ -1,8 +1,9 @@
 // The probe's --soak (SCN-9): the full app on an isolated server (?sim=1,
 // renderer on) records ten real-time minutes of a busy village in each
-// preset — the SCN session fixtures (fixtures/scn-plans.mjs) played through
-// the sim driver, sound enabled by a real TopBar click — and reports the
-// session metrics (metrics/session-metrics.mjs), ducked time, and the
+// preset that sounds — Signals and the Town band, the SCN session fixtures
+// (fixtures/scn-plans.mjs) played through the sim driver, sound enabled by a
+// real TopBar click — and reports the session metrics
+// (metrics/session-metrics.mjs), the music bus's ducked time, and the
 // renderer's AV-sync lag from the cue score's own diagnostics (HAR-12:
 // drawn accent frame vs published note). Two soaks agree when integrated
 // loudness is within 1 LU, music-on within ±3 points and re-heard within
@@ -20,7 +21,7 @@ import { PLANS } from '../fixtures/scn-plans.mjs';
 import { sessionMetrics } from '../metrics/session-metrics.mjs';
 import { DUCKED_TIME_BUDGET } from '../../../claudeville/src/presentation/shared/audio/Loudness.js';
 
-export const SOAK_PLANS = ['scn-session-ambient-10min', 'scn-session-bgm-10min'];
+export const SOAK_PLANS = ['scn-session-signals-10min', 'scn-session-bgm-10min'];
 const SOAK_BASELINE = path.join(AUDIO_DIR, 'baselines/soak.json');
 export const SOAK_AGREEMENT = Object.freeze({ lufsI: 1, musicOnPct: 3, reheardPct: 5 });
 const CHROME_ARGS = ['--autoplay-policy=no-user-gesture-required', ...BACKGROUND_ARGS];
@@ -49,7 +50,7 @@ async function captureSession(browser, planName, { seed, seconds, log }) {
         // panel's presets; the plan's preset is picked there.
         await page.click('#topbarSoundToggle');
         await page.locator('#soundPanel').waitFor({ state: 'visible', timeout: 10000 });
-        await page.click(`#soundPresets [role="radio"][data-preset="${plan.mode === 'bgm' ? 'townBand' : 'village'}"]`);
+        await page.click(`#soundPresets [role="radio"][data-preset="${plan.mode === 'bgm' ? 'townBand' : 'signals'}"]`);
         await page.keyboard.press('Escape');
         await page.waitForFunction(() => { const a = window.__claudevilleAudio?.(); return a?.contextState === 'running' && a?.running === true; }, null, { timeout: 20000 });
         // Ducked time: every window the engine is asked for.
@@ -117,7 +118,8 @@ function analyzeSession(cap) {
     const state = result.state.filter(s => s.ct != null).map(s => ({ ...s, t: rel(s.ct) }));
     const lou = loudness(L, R, sr);
     const session = sessionMetrics(L, R, sr, { state, timeline });
-    const ducks = duckedTime(result.ducks, cap.startCt, cap.endCt);
+    // Only the music bus ducks (AudioEngine DUCKED_BUSES); under Signals nothing does.
+    const ducks = duckedTime(result.ducks, cap.startCt, cap.endCt, { buses: ['music'] });
     const lags = result.cueScore?.lags || [];
     const gaps = (tap.gapList || []).filter(([at]) => at / sr >= cap.startCt && at / sr <= cap.endCt);
     return {

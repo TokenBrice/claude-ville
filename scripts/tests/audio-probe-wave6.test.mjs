@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    arrangementSwitch, automationCurve, bandStep, breathsPerWindow, coveredSec, earlyReturns, judgeDuty, judgeIsleArm, judgeStemBalance,
-    loopsPerPieceHour, musicInWindows, nightDarker, perHourMax, spearman,
+    arrangementSwitch, automationCurve, bandStep, breathsPerWindow, coveredSec, earlyReturns, judgeIsleArm, judgeStemBalance,
+    loopsPerPieceHour, nightDarker, spearman,
 } from '../audio/lib/checks.mjs';
-import { densityTrack, noteRows, percussionPerBar, visitRows } from '../audio/lib/probe-wave6.mjs';
+import { noteRows, percussionPerBar, visitRows } from '../audio/lib/probe-wave6.mjs';
 
 test('stem balance holds each admitted seat to its MUSL-2 window, the floor and under the lead', () => {
     const seats = { lead: -40, bass: -43.5, counter: -46, engine: -48, percussion: -54 };
@@ -83,13 +83,9 @@ test('Spearman handles ties and refuses a constant side', () => {
     assert.equal(spearman([1, 2], [1, 2]), null);
 });
 
-test('music inside a forbidden window counts seconds and starts', () => {
+test('covered seconds are the union of intervals clipped to the window', () => {
     assert.equal(coveredSec([{ from: 0, to: 10 }, { from: 5, to: 15 }, { from: 20, to: 25 }], 2, 22), 15);
-    const j = musicInWindows([{ from: 100, to: 130 }], [{ from: 0, to: 90, why: 'rain' }, { from: 120, to: 200, why: 'resting' }], [100]);
-    assert.equal(j.overlapSec, 10);
-    assert.equal(j.starts, 0);
-    assert.equal(j.pass, false);
-    assert.equal(musicInWindows([{ from: 100, to: 130 }], [{ from: 0, to: 90 }]).pass, true);
+    assert.equal(coveredSec([{ from: 30, to: 40 }], 0, 20), 0);
 });
 
 test('an arrangement switch lands on the first boundary the band had not committed', () => {
@@ -135,44 +131,44 @@ test('loops are identical renditions of one piece within a clock hour', () => {
     assert.equal(loopsPerPieceHour(twoHours.map((x, i) => ({ ...x, key: `k${i}` }))).worst.loops, 0);
 });
 
-test('per-hour counts and D1 duty bands', () => {
-    const j = perHourMax([10, 20, 3700, 3710, 3720], 0, 7200, 2);
-    assert.deepEqual(j.perHour, [2, 3]);
-    assert.equal(j.pass, false);
-    assert.equal(judgeDuty(0.08, 'busy').pass, true);
-    assert.equal(judgeDuty(0.05, 'busy').pass, false);
-    assert.equal(judgeDuty(0.21, 'light').pass, false);
-    assert.equal(judgeDuty(0.03, 'deepNight').pass, true);
-    assert.equal(judgeDuty(null, 'night').pass, false);
+test('Town band visits run start to end (a new start closes an open visit) and notes are read in their window', () => {
+    const marks = [
+        { preset: 'townBand', kind: 'start', t: 10, what: 'piece', piece: 'a', name: 'a', reason: 'rotation' },
+        { preset: 'townBand', kind: 'note', t: 10.2, seat: 'lead', midi: 69 },
+        { preset: 'townBand', kind: 'end', t: 18 },
+        { preset: 'townBand', kind: 'breath', t: 18, until: 19.4 },
+        { preset: 'townBand', kind: 'start', t: 19.4, what: 'interlude', piece: 'a', name: 'a:interlude', reason: 'interlude' },
+        { preset: 'townBand', kind: 'perc', t: 20, building: 'forge', voice: 'brush' },
+        { preset: 'townBand', kind: 'start', t: 40, what: 'piece', piece: 'b', name: 'b', reason: 'rotation' },
+        { preset: 'townBand', kind: 'note', t: 60.5, seat: 'lead', midi: 73 },
+    ];
+    const v = visitRows(marks, 90);
+    assert.deepEqual(v.visits.map(x => [x.name, x.from, x.to]), [['a', 10, 18], ['a:interlude', 19.4, 40], ['b', 40, 90]]);
+    assert.deepEqual(v.pieces.map(x => x.piece), ['a', 'b']);
+    assert.deepEqual(v.interludes, [19.4]);
+    assert.deepEqual(v.breaths, [{ t: 18, until: 19.4 }]);
+    assert.deepEqual(noteRows(marks).map(n => [n.seat, n.midi]), [['lead', 69], ['percussion', null], ['lead', 73]]);
+    assert.deepEqual(noteRows(marks, { from: 15, to: 60 }).map(n => n.seat), ['percussion']);
 });
 
-test('visits and sounding notes drop a Village visit released before its first note', () => {
+test('the kit per bar reads the density the band read at its chunk\'s compile and each hit in units of its building\'s row', () => {
+    const rows = { march: { forge: [1, 1, 0.5, 0], archive: [0.25, 0, 0, 0] }, lullaby: { forge: [0.1, 0, 0, 0.1] } };
     const marks = [
-        { preset: 'village', kind: 'start', t: 10, what: 'fragment', name: 'a', reason: 'fragment:busy' },
-        { preset: 'village', kind: 'note', t: 10.2, seat: 'lead', midi: 69 },
-        { preset: 'village', kind: 'end', t: 18 },
-        { preset: 'village', kind: 'start', t: 40, what: 'occasion', name: 'noon', reason: 'occasion:noon' },
-        { preset: 'village', kind: 'cancel', t: 39.5 },
-        { preset: 'village', kind: 'note', t: 40.1, seat: 'lead', midi: 71 },
-        { preset: 'village', kind: 'start', t: 60, what: 'fragment', name: 'b', reason: 'fragment:light' },
-        { preset: 'village', kind: 'note', t: 60.5, seat: 'lead', midi: 73 },
+        { preset: 'townBand', kind: 'call:setWorkshopDensity', t: 0, arg: { forge: 0.5, archive: 1.3 } },
+        { preset: 'townBand', kind: 'loop', t: 1, barSec: 2, band: 1, piece: 'march', segment: 'pass' },
+        // Called after the chunk at 9 was compiled (marked): that chunk plays on the density before it.
+        { preset: 'townBand', kind: 'chunk', t: 9, barSec: 2, band: 1, piece: 'lullaby', segment: 'pass' },
+        { preset: 'townBand', kind: 'call:setWorkshopDensity', t: 8, arg: {} },
+        { preset: 'townBand', kind: 'interlude', t: 13, barSec: 2, band: 1, piece: 'march', segment: 'interlude' },
+        { preset: 'townBand', kind: 'perc', t: 1.5, building: 'forge' }, { preset: 'townBand', kind: 'perc', t: 2.9, building: 'archive' },
+        { preset: 'townBand', kind: 'perc', t: 3.2, building: 'forge' }, { preset: 'townBand', kind: 'perc', t: 9.5, building: 'forge' },
+        // The band's groove seat is not the workshop kit.
+        { preset: 'townBand', kind: 'perc', t: 9.7, seat: 'groove', groove: true },
     ];
-    const v = visitRows(marks, 90, 'village');
-    assert.deepEqual(v.visits.map(x => [x.name, x.from, x.to]), [['a', 10, 18], ['b', 60, 90]]);
-    assert.deepEqual(noteRows(marks).map(n => n.midi), [69, 73]);
-});
-
-test('percussion is counted per bar of the song grid against the density the director fed', () => {
-    const marks = [
-        { preset: 'townBand', kind: 'call:setWorkshopDensity', t: 0, arg: { forge: 0.5, archive: 0.3 } },
-        { preset: 'townBand', kind: 'loop', t: 1, barSec: 2, band: 1 },
-        { preset: 'townBand', kind: 'call:setWorkshopDensity', t: 4.5, arg: {} },
-        { preset: 'townBand', kind: 'chunk', t: 9, barSec: 2, band: 1 },
-        { preset: 'townBand', kind: 'perc', t: 1.5 }, { preset: 'townBand', kind: 'perc', t: 2.9 }, { preset: 'townBand', kind: 'perc', t: 3.2 },
-    ];
-    const density = densityTrack(marks);
-    assert.equal(density(3), 0.8);
-    assert.equal(density(5), 0);
-    const bars = percussionPerBar(marks, density, { from: 0, to: 13 });
-    assert.deepEqual(bars.map(b => [b.from, b.onsets, b.density]), [[1, 2, 0.8], [3, 1, 0.8], [5, 0, 0], [7, 0, 0], [9, 0, 0], [11, 0, 0]]);
+    const bars = percussionPerBar(marks, { from: 0, to: 15, rowsOf: name => rows[name] ?? null });
+    assert.deepEqual(bars.map(b => [b.from, b.onsets, b.density, b.capacity]), [
+        [1, 2, 1.5, 2.75], [3, 1, 1.5, 2.75], [5, 0, 1.5, 2.75], [7, 0, 1.5, 2.75], [9, 1, 1.5, 0.2], [11, 0, 1.5, 0.2], [13, 0, 0, 0],
+    ]);
+    // forge's row plays 2.5 hits per bar at density 1, archive's 0.25, the lullaby's forge 0.2.
+    assert.deepEqual(bars.map(b => Number(b.level.toFixed(2))), [4.4, 0.4, 0, 0, 5, 0, 0]);
 });

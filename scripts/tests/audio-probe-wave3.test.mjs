@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    beatingDepthDb, captionExpected, expectedLadder, heldNoteRise, judgeCaptionParity, judgeCluster, judgeDiscrimination,
-    judgeHeldTrim, judgeLadder, judgeWakes, phaseLockedPairs, quickSamePitchOpening, waitAudibleWindows,
+    captionExpected, expectedLadder, judgeCaptionParity, judgeCluster, judgeDiscrimination,
+    judgeHeldTrim, judgeLadder, judgeWakes, phaseLockedPairs, quickSamePitchOpening,
 } from '../audio/lib/checks.mjs';
 import { wallToAudio } from '../audio/lib/probe-wave3.mjs';
 
@@ -67,36 +67,6 @@ test('two same-kind urgent scores for different agents sharing two note times ar
     assert.equal(phaseLockedPairs([lead, { kind: 'distress', agentId: 'b', notes: [10, 10.15] }]).length, 0);
 });
 
-// A band curve on a 0.1 s hop: `level(t)` in dB.
-const curve = (from, to, level) => Array.from({ length: Math.round((to - from) * 10) }, (_, i) => [from + i / 10, level(from + i / 10)]);
-
-test('the held note must rise 6 dB within 6 s of the wait and fall back within 5 s of the answer', () => {
-    const good = curve(0, 60, t => (t >= 12 && t < 42 ? 10 : 0));
-    const j = heldNoteRise(good, 10, 40);
-    assert.equal(j.preDb, 0);
-    // The step lands 2 s in; the judge reads it at the end of its 1 s window.
-    assert.ok(j.riseAtSec >= 2 && j.riseAtSec <= 3, `rise ${j.riseAtSec}`);
-    assert.ok(j.backAtSec >= 2 && j.backAtSec <= 3, `back ${j.backAtSec}`);
-    assert.equal(j.pass, true);
-    assert.equal(heldNoteRise(curve(0, 60, t => (t >= 17 ? 10 : 0)), 10, 40).pass, false);
-    assert.equal(heldNoteRise(curve(0, 60, t => (t >= 12 && t < 47 ? 10 : 0)), 10, 40).pass, false);
-    assert.equal(heldNoteRise(curve(0, 60, t => (t >= 12 ? 4 : 0)), 10, 40).pass, false);
-});
-
-test('beating depth is the envelope swing, robust to one stray block', () => {
-    assert.equal(beatingDepthDb(Array(50).fill(-40)), 0);
-    const swing = Array.from({ length: 200 }, (_, i) => -40 + 2 * Math.sin(i / 5));
-    assert.ok(Math.abs(beatingDepthDb(swing) - 4) < 0.1);
-    assert.ok(beatingDepthDb([...Array(200).fill(-40), -70]) < 0.1);
-});
-
-test('a wait is audible only if every 10 s window holds the rise until the answer', () => {
-    assert.equal(waitAudibleWindows(curve(0, 100, t => (t >= 10 ? 8 : 0)), 5, 95).pass, true);
-    const gap = waitAudibleWindows(curve(0, 100, t => (t >= 10 && (t < 50 || t >= 60) ? 8 : 0)), 5, 95);
-    assert.equal(gap.pass, false);
-    assert.ok(gap.worstRiseDb < 6);
-});
-
 test('captions per setting: signals always, events per setting and sound, scenery only for everything with sound, the digest never', () => {
     for (const setting of ['auto', 'signals', 'events', 'all']) for (const on of [true, false]) assert.equal(captionExpected('reminder', setting, on), true);
     assert.equal(captionExpected('push', 'auto', false), false);
@@ -115,6 +85,8 @@ test('caption parity fails on a caption shown against its setting, a caption mis
     assert.equal(judgeCaptionParity([{ ...row, soundOn: false, heard: null }]).pass, false);
     assert.equal(judgeCaptionParity([{ ...row, shown: false }]).pass, false);
     assert.equal(judgeCaptionParity([{ ...row, heard: false }]).pass, false);
+    // Signals captions an outcome without sounding it: announced only, no claim of a sound.
+    assert.equal(judgeCaptionParity([{ ...row, heard: false, announceOnly: true }]).pass, true);
     // A cue that never played has nothing to caption.
     assert.equal(judgeCaptionParity([{ ...row, played: false, shown: false }]).pass, true);
 });

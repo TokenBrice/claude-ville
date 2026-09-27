@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { AudioDirector } from '../../claudeville/src/presentation/shared/audio/AudioDirector.js';
+import { SignalDirector } from '../../claudeville/src/presentation/shared/audio/SignalDirector.js';
 import { CueGovernor } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
 import { CueKit, laneForCueKind } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
@@ -67,7 +67,7 @@ function fakeAudioKit() {
 function captureDirectorCalls(world = null) {
     const engine = { context: null, started: false };
     const governor = new CueGovernor();
-    const director = new AudioDirector({
+    const director = new SignalDirector({
         engine,
         world,
         cues: { kit: new CueKit(engine, governor), governor },
@@ -136,7 +136,7 @@ test('scenery cues sound from the island with their fixed sends', () => {
     assert.equal(hour.air, 0.45);
 });
 
-test('AudioDirector threads the scene position and provider, then places Dashboard cues on the island map', () => {
+test('SignalDirector threads the scene position and provider, then places Dashboard cues on the island map', () => {
     const world = {
         agents: new Map([
             ['left-agent', {

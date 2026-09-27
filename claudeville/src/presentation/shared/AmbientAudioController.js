@@ -2,11 +2,11 @@
 // Owns the opt-in lifecycle — off by default, user-gesture unlock, background
 // policy, pause in place while away, hidden-tab wakes — and the listener's
 // choices, persisted through SoundSettings: the preset (Off · Signals ·
-// Village · Town band), a volume step per preset, the mix trims, output,
-// tone, soften, hush and quiet hours. It is DOM-free: the chip, the SOUND
-// popover and SET render `soundView()`, which it emits as `audio:sound-state`
-// only when it changes. All sound is delegated to AudioEngine (mix chain,
-// group faders, per-director crossfade gains, the Transport) and the two
+// Town band), a volume step per preset, output, tone, soften, hush and
+// quiet hours. It is DOM-free: the chip, the SOUND popover and SET render
+// `soundView()`, which it emits as `audio:sound-state` only when it
+// changes. All sound is delegated to AudioEngine (mix chain, the music
+// group fader, per-director crossfade gains, the Transport) and the two
 // directors in ./audio/, which share the one cue arbiter this controller
 // creates per engine. TopBar builds it at boot idle without an AudioContext,
 // so the signal route and captions exist before any click. The signal route
@@ -16,13 +16,12 @@
 // and quiet hours and the popover's line; nothing here runs per frame.
 
 import { AudioEngine } from './audio/AudioEngine.js';
-import { AudioDirector } from './audio/AudioDirector.js';
+import { SignalDirector } from './audio/SignalDirector.js';
 import { BgmDirector } from './audio/BgmDirector.js';
-import { FRAGMENTS } from './audio/bgm/BgmSongbook.js';
 import { CueGovernor } from './audio/CueGovernor.js';
 import { CueKit } from './audio/cues/CueKit.js';
 import { cueNoteCount, cueNoteTime } from './audio/CueScore.js';
-import { trimStepGain } from './audio/Loudness.js';
+import { INSTRUMENT_LABELS } from './audio/music/Instruments.js';
 import { audibleAgents } from './audio/AudibleWorld.js';
 import {
     LOOKING_L1_IDLE_MS,
@@ -31,7 +30,6 @@ import {
     next as nextReminder,
 } from './audio/UrgencyLadder.js';
 import {
-    AUDIO_MIXER_DEFAULTS,
     HUSH_DURATION_MS,
     SOUND_BACKGROUNDS,
     SOUND_PRESETS,
@@ -53,7 +51,6 @@ import {
     readSoundTone,
     readStoredSoundEnabled,
     readStoredSoundMode,
-    readStoredTrimSteps,
     readTownBandVoice,
     recalibrateStoredSound,
     softenActive,
@@ -67,40 +64,29 @@ import {
     writeSoundTone,
     writeStoredSoundEnabled,
     writeStoredSoundMode,
-    writeStoredTrimSteps,
     writeTownBandVoice,
 } from './SoundSettings.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 
-// Two directors: the ambient one plays the Village or, in its `signals`
-// profile, Signals; the bgm one plays the Town band. A mode id is what
-// storage keeps (`signals | ambient | bgm`); the UI names presets.
-const DIRECTOR_IDS = Object.freeze(['ambient', 'bgm']);
+// Two directors: the signals one carries the signal route from boot and,
+// playing, is the Signals preset; the bgm one plays the Town band. A mode id
+// is what storage keeps (`signals | bgm`; a stored legacy `ambient` reads as
+// `bgm` in SoundSettings); the UI names presets.
+const DIRECTOR_IDS = Object.freeze(['signals', 'bgm']);
 function directorFor(mode) {
-    return mode === 'bgm' ? 'bgm' : 'ambient';
+    return mode === 'bgm' ? 'bgm' : 'signals';
 }
-// Village ↔ Town band is a walk from the square into the tavern (1.6,
-// ENG-15): both directors play through an equal-power crossfade of their
-// director gains, and the outgoing one stops only once its gain has reached
-// zero. Into or out of Signals the island fades over 800 ms (UX-3).
-const MODE_CROSSFADE_SEC = 2.5;
-const SIGNALS_FADE_SEC = 0.8;
+// Into or out of Signals the band fades over 800 ms (UX-3): both directors
+// play through an equal-power crossfade of their director gains, and the
+// outgoing one stops only once its gain has reached zero. Exported for the
+// probe's switch gate, which judges each direction against this fade.
+export const SIGNALS_FADE_SEC = 0.8;
 const CROSSFADE_STOP_MARGIN_MS = 50;
-// D3's quiet mix (5.6): with "Keep playing", a blurred window's mixer faders
-// take these factors on top of their trims, per mode. The Village drops its
-// music and halves its world and work (the workshops keep their accents
-// only; AudioDirector.setQuietMix); the Town band plays on at −3 dB; Signals
-// has no bed. The cue bus and the held note (signalBed) have no fader here,
-// and the engine's bed compensation (BLUR_BED_DB below) keeps their
-// bed-aware levels: signals are unchanged.
-export const BLUR_MIX = Object.freeze({
-    ambient: Object.freeze({ wind: 0.5, rain: 0.5, wildlife: 0.5, hum: 0.5, workshops: 0.5, music: 0 }),
-    bgm: Object.freeze({ music: 10 ** (-3 / 20) }),
-});
-// The bed each quiet mix leaves, in dB under the full one: the Village's
-// world and work at half, the Town band at −3 dB. The engine adds it back to
-// its bed reading, so cue trims and the held note level against the full bed.
-const BLUR_BED_DB = Object.freeze({ ambient: 20 * Math.log10(2), bgm: 3 });
+// D3's quiet mix (5.6): with "Keep playing", a blurred window hears the Town
+// band's music group fader at −3 dB; Signals has no bed. The cue bus has no
+// fader here, and the engine's bed compensation (the same 3 dB) keeps the
+// cues' bed-aware levels: signals are unchanged.
+const BLUR_MUSIC_DB = -3;
 // Quiet hours (UX-11): Signals, a little softer.
 const QUIET_HOURS_CUE_DB = -6;
 // 7.4: the first real urgent cue after an enable names its family, once.
@@ -119,7 +105,7 @@ const WAKE_RELEASE_MARGIN_SEC = 0.08;
 // still gets the summons' two-note span.
 const UNSCORED_LAST_NOTE_SEC = 0.4;
 // Pause in place (2.1, ENG-2): an absence longer than this, or one across a
-// phase-family change (day ↔ night), rebuilds the village on return instead
+// phase-family change (day ↔ night), rebuilds the band on return instead
 // of resuming the piece where it stopped.
 const RESUME_RESTART_MS = 10 * 60 * 1000;
 // The context suspends once the groups' 80 ms close has certainly finished.
@@ -137,15 +123,18 @@ function phaseFamily(phase) {
     return phase === 'night' ? 'night' : 'day';
 }
 
-// `paintedIsle` → `Painted Isle`; a fragment reads as the tune it is from.
-const FRAGMENT_SOURCES = new Map(FRAGMENTS.map(fragment => [fragment.id, fragment.source]));
-export function pieceTitle(piece) {
-    const name = FRAGMENT_SOURCES.get(piece) ?? piece;
-    if (!name) return '';
-    return String(name)
-        .replace(/([a-z])([A-Z])/g, '$1 $2')
-        .replace(/[-_]+/g, ' ')
-        .replace(/\b\w/g, letter => letter.toUpperCase());
+// The popover's line for what the band plays (7.3, C6): the piece's title
+// and its two players by their display names — one name when the lead and
+// the counter read alike (the same instrument, or the Chip's two pulses),
+// the title alone when the players are unknown.
+function nowPlayingLine(playing) {
+    if (!playing?.piece) return 'Now · between tunes';
+    const title = playing.title || playing.piece;
+    const lead = INSTRUMENT_LABELS[playing.lead] ?? playing.lead;
+    if (!lead) return `Now · ${title}`;
+    const counter = INSTRUMENT_LABELS[playing.counter] ?? playing.counter;
+    const players = counter && counter !== lead ? `${lead} & ${counter}` : lead;
+    return `Now · ${title} · ${players}`;
 }
 
 function clockTime(ms) {
@@ -176,7 +165,6 @@ export class AmbientAudioController {
         migratePresetVolumes();
         this.mode = readStoredSoundMode();
         this.background = readSoundBackground();
-        this.layerSteps = readStoredTrimSteps();
         this.output = readSoundOutput();
         this.tone = readSoundTone();
         this.soften = readSoundSoften();
@@ -187,7 +175,7 @@ export class AmbientAudioController {
         this._activationGeneration = 0;
         this._visibilityGeneration = 0;
         this._suspendTimer = null;
-        // Set while the village is paused in place: `{ at, family }`.
+        // Set while sound is paused in place: `{ at, family }`.
         this._paused = null;
         this._hiddenSummonsPending = new Set();
         // Hidden-tab wakes: the newest token owns the release, which holds
@@ -196,10 +184,8 @@ export class AmbientAudioController {
         this._wakeHoldUntil = 0;
         this._wakeCount = 0;
         // Mode crossfades: the outgoing director's stop, per director id,
-        // pending until its gain has faded to zero; the Village's teardown
-        // after its fade into Signals.
+        // pending until its gain has faded to zero.
         this._crossfadeStops = new Map();
-        this._profileTimer = null;
         // The mode the directors are set up for (null until sound first plays).
         this._playingMode = null;
         this._activation = null;
@@ -207,7 +193,7 @@ export class AmbientAudioController {
         this._destroyed = false;
         this._windowBlurred = false;
         // D3 (5.6): the quiet mix a blurred "Keep playing" window hears.
-        this._quietMix = { active: false, preset: null, factors: {} };
+        this._quietMix = { active: false, preset: null };
         // 7.4: the awakening plays once per page session; the family line is
         // armed by every enable (a stored-on profile's first start counts).
         this._awakening = { count: 0, at: null, perfAt: null };
@@ -231,7 +217,6 @@ export class AmbientAudioController {
         this.engine.setTone(this.tone);
         this.engine.setCueTrim(this._quietActive ? QUIET_HOURS_CUE_DB : 0);
         this._applySoften();
-        this._applyGroupLevels();
         // One cue arbiter per engine (1.6): both directors submit through the
         // same governor and kit, so a mode switch never resets a cooldown and
         // an agent summoned just before a switch is not summoned again after
@@ -240,23 +225,18 @@ export class AmbientAudioController {
         const governor = new CueGovernor();
         this.cues = { kit: new CueKit(this.engine, governor), governor };
         this.directors = {
-            ambient: new AudioDirector({
-                engine: this.engine,
-                world: this.world,
-                cues: this.cues,
-                profile: this._effectiveMode() === 'signals' ? 'signals' : 'village',
-            }),
+            signals: new SignalDirector({ engine: this.engine, world: this.world, cues: this.cues }),
             bgm: new BgmDirector({ engine: this.engine, world: this.world, cues: this.cues }),
         };
-        this.directors.ambient.setHiddenSummonsHandler?.((payload) => {
+        this.directors.signals.setHiddenSummonsHandler((payload) => {
             this._handleHiddenSummons(payload);
         });
         // S7: an entry cue while the operator is looking plays the L2 voice.
         const looking = () => this._operatorLooking(LOOKING_L1_IDLE_MS);
         for (const director of Object.values(this.directors)) director.setOperatorLooking?.(looking);
         this._inactive = this._pageInactive();
-        this.directors.ambient.setHidden(this._inactive);
-        this.directors.ambient.setSignalRouting(true);
+        this.directors.signals.setHidden(this._inactive);
+        this.directors.signals.setSignalRouting(true);
 
         this._onUnlockGesture = (event) => this._handleUnlockGesture(event);
         this._onVisibility = () => this._syncPresence();
@@ -298,7 +278,7 @@ export class AmbientAudioController {
         if (this.enabled) {
             this._armUnlockListeners();
             // A returning user who already clicked before the idle build
-            // (sticky activation) starts the village without a second click.
+            // (sticky activation) starts sound without a second click.
             if (this.userActivated) this._startActivation();
         }
 
@@ -318,7 +298,7 @@ export class AmbientAudioController {
             || globalThis.navigator?.userActivation?.hasBeenActive === true;
     }
 
-    /** The preset the listener chose: `off | signals | village | townBand`. */
+    /** The preset the listener chose: `off | signals | townBand`. */
     get preset() {
         return this.enabled ? presetForMode(this.mode) : 'off';
     }
@@ -405,16 +385,6 @@ export class AmbientAudioController {
         this.engine.setVolumeStep(this.volumeStep);
         this._publishView();
         return this.volumeStep;
-    }
-
-    // A mixer trim as a whole step 0–10: 2.4 dB per step, 10 = unity.
-    setLayerStep(name, step) {
-        if (this._destroyed || !Object.hasOwn(AUDIO_MIXER_DEFAULTS, name)) return false;
-        this.layerSteps[name] = soundStep(step, this.layerSteps[name]);
-        writeStoredTrimSteps(this.layerSteps);
-        this._applyGroupLevel(name);
-        this._publishView();
-        return true;
     }
 
     setBackground(background) {
@@ -506,7 +476,7 @@ export class AmbientAudioController {
         if (this._destroyed || !TEST_CALL_KINDS.has(kind)) return false;
         if (this._activation) await this._activation;
         if (this._destroyed || !this.engine.started || this.engine.context?.state !== 'running') return false;
-        return this.cues.kit.play(kind, { test: true, phase: this.directors.ambient.currentPhase() });
+        return this.cues.kit.play(kind, { test: true, phase: this.directors.signals.currentPhase() });
     }
 
     playPreviewBell() {
@@ -541,9 +511,9 @@ export class AmbientAudioController {
         this.engine.setVolumeStep(step);
     }
 
-    // Carry a playing village to the mode it should now be heard in: a
-    // preset change, a hush or its end, quiet hours starting or ending. A
-    // village that is not playing only records it; the next start uses it.
+    // Carry playing sound to the mode it should now be heard in: a preset
+    // change, a hush or its end, quiet hours starting or ending. Sound that
+    // is not playing only records it; the next start uses it.
     _applyEffectiveMode() {
         this._applyVolume();
         const next = this._effectiveMode();
@@ -555,64 +525,21 @@ export class AmbientAudioController {
             return;
         }
         this._playingMode = next;
-        const fromId = directorFor(previous);
-        const toId = directorFor(next);
-        if (fromId !== toId) {
-            if (toId === 'ambient') this._setAmbientProfile(next);
-            const seconds = previous === 'signals' || next === 'signals' ? SIGNALS_FADE_SEC : MODE_CROSSFADE_SEC;
-            this._crossfade(fromId, toId, seconds);
-        } else {
-            this._fadeAmbientProfile(next);
-        }
+        this._crossfade(directorFor(previous), directorFor(next));
         this._syncQuietMix();
         this._syncSignalRouting();
-    }
-
-    _setAmbientProfile(mode) {
-        this._cancelProfileTimer();
-        this.directors.ambient.setProfile(mode === 'signals' ? 'signals' : 'village');
-    }
-
-    // Village ↔ Signals inside the one director: the island fades out
-    // before its layers go, or is built silent and fades in.
-    _fadeAmbientProfile(mode) {
-        const ambient = this.directors.ambient;
-        this._cancelProfileTimer();
-        if (mode === 'signals') {
-            const end = this.engine.fadeDirector('ambient', 0, { duration: SIGNALS_FADE_SEC });
-            const fadeEnd = Number.isFinite(end) ? end : this.engine.now() + SIGNALS_FADE_SEC;
-            const delayMs = Math.max(0, (fadeEnd - this.engine.now()) * 1000) + CROSSFADE_STOP_MARGIN_MS;
-            this._profileTimer = setTimeout(() => {
-                this._profileTimer = null;
-                if (this._destroyed || this._playingMode !== 'signals') return;
-                ambient.setProfile('signals');
-                this.engine.fadeDirector('ambient', 1, { duration: 0 });
-            }, delayMs);
-            return;
-        }
-        // Back to the Village: still built mid-fade, it turns around.
-        if (ambient.profile !== 'village') {
-            this.engine.fadeDirector('ambient', 0, { duration: 0 });
-            ambient.setProfile('village');
-        }
-        this.engine.fadeDirector('ambient', 1, { duration: SIGNALS_FADE_SEC });
-    }
-
-    _cancelProfileTimer() {
-        if (this._profileTimer == null) return;
-        clearTimeout(this._profileTimer);
-        this._profileTimer = null;
     }
 
     // Equal-power crossfade of the two director gains (engine.fadeDirector).
     // The incoming director starts silent unless it is still fading out from
     // a switch moments ago, in which case it turns around from where it is.
-    _crossfade(outgoingId, incomingId, seconds = MODE_CROSSFADE_SEC) {
+    _crossfade(outgoingId, incomingId) {
+        const seconds = SIGNALS_FADE_SEC;
         const incoming = this.directors[incomingId];
         this._cancelCrossfadeStop(incomingId);
         if (!incoming.running) {
             this.engine.fadeDirector(incomingId, 0, { duration: 0 });
-            this.directors.ambient.setSignalRouting(incomingId !== 'bgm');
+            this.directors.signals.setSignalRouting(incomingId !== 'bgm');
             incoming.start();
         }
         this.engine.fadeDirector(incomingId, 1, { duration: seconds });
@@ -643,36 +570,25 @@ export class AmbientAudioController {
     }
 
     _stopDirectors() {
-        this._cancelProfileTimer();
         for (const id of DIRECTOR_IDS) this._stopDirector(id);
         this._playingMode = null;
     }
 
-    // The stored trims drive the engine's group faders; the engine keeps them
-    // across context rebuilds, so layers keep their own world-driven levels.
-    // The quiet mix (D3) scales a fader without touching its stored step.
-    _applyGroupLevels() {
-        for (const name of Object.keys(this.layerSteps)) this._applyGroupLevel(name);
-    }
-
-    _applyGroupLevel(name) {
-        const factor = this._quietMix.factors[name] ?? 1;
-        this.engine.setGroupLevel(name, trimStepGain(this.layerSteps[name]) * factor);
-    }
-
     // D3 (5.6): a visible window without focus and with "Keep playing"
-    // hears the quiet mix of the mode it plays; focus restores the trims at
-    // the faders' 50 ms glide. "Signals only" pauses instead (hidden).
+    // hears the quiet mix of the mode it plays — the Town band's music
+    // fader at BLUR_MUSIC_DB, the bed compensated by as much — and focus
+    // restores the fader at its 50 ms glide. "Signals only" pauses instead
+    // (hidden).
     _syncQuietMix() {
         const active = this._windowBlurred
             && this.background === 'play'
             && !(typeof document !== 'undefined' && document.hidden);
         const preset = active ? this._effectiveMode() : null;
         if (active === this._quietMix.active && preset === this._quietMix.preset) return;
-        this._quietMix = { active, preset, factors: active ? (BLUR_MIX[preset] ?? {}) : {} };
-        this._applyGroupLevels();
-        this.engine.setBedCompensation(active ? (BLUR_BED_DB[preset] ?? 0) : 0);
-        this.directors.ambient.setQuietMix(active && preset === 'ambient');
+        this._quietMix = { active, preset };
+        const quiet = preset === 'bgm';
+        this.engine.setGroupLevel('music', quiet ? 10 ** (BLUR_MUSIC_DB / 20) : 1);
+        this.engine.setBedCompensation(quiet ? -BLUR_MUSIC_DB : 0);
     }
 
     // One activation at a time; `testCall` waits for it.
@@ -695,8 +611,8 @@ export class AmbientAudioController {
         // A pending hidden-tab wake no longer owns the release.
         this._wakeToken++;
         this._wakeHoldUntil = 0;
-        this.directors.ambient.setHidden(false);
-        this.directors.ambient.setSignalRouting(this._effectiveMode() !== 'bgm');
+        this.directors.signals.setHidden(false);
+        this.directors.signals.setSignalRouting(this._effectiveMode() !== 'bgm');
         const activationGeneration = ++this._activationGeneration;
         const visibilityGeneration = this._visibilityGeneration;
         let ready = false;
@@ -719,7 +635,7 @@ export class AmbientAudioController {
 
         this.engine.start();
         // The latch goes first, before any director builds (7.4).
-        const awakening = this._awaken();
+        this._awaken();
         // Back from an absence: continue the piece where it stopped, unless
         // the absence was long or crossed day ↔ night, which rebuilds.
         const away = this._paused;
@@ -738,12 +654,11 @@ export class AmbientAudioController {
             const director = this.directors[id];
             // Only the mode's own director plays after a fresh start.
             for (const other of DIRECTOR_IDS) if (other !== id && this.directors[other].running) this._stopDirector(other);
-            if (id === 'ambient') this._setAmbientProfile(mode);
             // A crossfade interrupted by a disable, or a rebuild, may have
             // left this director's gain part-way; a fresh start plays at
             // full level.
             if (!director.running) this.engine.fadeDirector(id, 1, { duration: 0 });
-            director.start({ bloom: awakening });
+            director.start();
         }
         if (this._enablePending) {
             this._enablePending = false;
@@ -755,12 +670,11 @@ export class AmbientAudioController {
     }
 
     // 7.4: the first time sound starts in a page session, a latch and two
-    // small bells within 150 ms; the island then opens world first (the
-    // director's bloom). Never again in this session (later enables only
-    // fade). Returns true when it played.
+    // small bells within 150 ms, then the preset fades in. Never again in
+    // this session (later enables only fade). Returns true when it played.
     _awaken() {
         if (this._awakening.count > 0) return false;
-        const played = this.cues.kit.playAwaken?.({ phase: this.directors.ambient.currentPhase() });
+        const played = this.cues.kit.playAwaken?.({ phase: this.directors.signals.currentPhase() });
         if (!played) return false;
         const contextTime = this.engine.now();
         const perfAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -775,7 +689,7 @@ export class AmbientAudioController {
         this._stopDirectors();
         // Pending routine cues describe a moment the listener has left.
         this.cues.governor.clearRoutine();
-        this.directors.ambient.setSignalRouting(true);
+        this.directors.signals.setSignalRouting(true);
         this.engine.stop();
         if (this._suspendTimer) clearTimeout(this._suspendTimer);
         this._suspendTimer = setTimeout(() => {
@@ -801,8 +715,8 @@ export class AmbientAudioController {
     }
 
     // One presence transition for tab visibility, window focus and the
-    // background setting. Hidden (or blurred with "Signals only") pauses a
-    // playing village in place and routes urgent cues through the wake;
+    // background setting. Hidden (or blurred with "Signals only") pauses
+    // playing sound in place and routes urgent cues through the wake;
     // returning resumes it. Blurred with "Keep playing" is the quiet mix.
     _syncPresence() {
         if (this._destroyed) return;
@@ -812,14 +726,14 @@ export class AmbientAudioController {
         this._inactive = inactive;
         const visibilityGeneration = ++this._visibilityGeneration;
         if (inactive) {
-            this.directors.ambient.setHidden(true);
+            this.directors.signals.setHidden(true);
             if (DIRECTOR_IDS.some((id) => this.directors[id].running)) this._pause(visibilityGeneration);
             else this._deactivate({ forceSuspend: true, visibilityGeneration });
             return;
         }
-        this.directors.ambient.setHidden(false);
+        this.directors.signals.setHidden(false);
         if (this.enabled && this.userActivated) this._startActivation();
-        else this.directors.ambient.setSignalRouting(true);
+        else this.directors.signals.setSignalRouting(true);
         this._publishView();
     }
 
@@ -837,7 +751,7 @@ export class AmbientAudioController {
         }
         this._paused ??= {
             at: Date.now(),
-            family: phaseFamily(this.directors.ambient.currentPhase()),
+            family: phaseFamily(this.directors.signals.currentPhase()),
         };
         this._syncSignalRouting();
         clearTimeout(this._suspendTimer);
@@ -852,7 +766,7 @@ export class AmbientAudioController {
 
     _resumable(away) {
         return Date.now() - away.at <= RESUME_RESTART_MS
-            && phaseFamily(this.directors.ambient.currentPhase()) === away.family;
+            && phaseFamily(this.directors.signals.currentPhase()) === away.family;
     }
 
     _handleWindowBlur() {
@@ -878,12 +792,12 @@ export class AmbientAudioController {
         const hidden = this._pageInactive();
         const bgmOwnsSignals = this.enabled && !hidden
             && directorFor(this._playingMode) === 'bgm' && this.directors.bgm.running;
-        this.directors.ambient.setSignalRouting(!bgmOwnsSignals);
+        this.directors.signals.setSignalRouting(!bgmOwnsSignals);
     }
 
-    // An urgent cue while the village is away: wake the cue path at full
-    // level (the bed and music stay closed), play the cue, hold until it has
-    // rung out, then suspend. Without sound it is still captioned.
+    // An urgent cue while sound is away: wake the cue path at full level
+    // (the bed and music stay closed), play the cue, hold until it has rung
+    // out, then suspend. Without sound it is still captioned.
     _handleHiddenSummons(payload) {
         if (this._destroyed) return;
         const agentId = payload?.agentId ?? payload?.agent?.id ?? null;
@@ -948,7 +862,7 @@ export class AmbientAudioController {
     }
 
     _playHiddenUrgent(payload) {
-        return this.directors.ambient.cue(this._urgentKind(payload), payload);
+        return this.directors.signals.cue(this._urgentKind(payload), payload);
     }
 
     // Audio time at which the wake may start closing: the cue's last
@@ -987,11 +901,11 @@ export class AmbientAudioController {
         this._captureEntryTrim();
     }
 
-    // The entry call is taken whenever its director places it: in Village
-    // before this controller hears `attention:raised`, in the Town band
-    // after (BgmDirector subscribes later), so the capture is retried once
-    // the event has reached every subscriber and on the next ladder ticks,
-    // until a trim is held. Only an entry voice scheduled within
+    // The entry call is taken whenever its director places it: by the
+    // signals director before this controller hears `attention:raised`, by
+    // the Town band after (BgmDirector subscribes later), so the capture is
+    // retried once the event has reached every subscriber and on the next
+    // ladder ticks, until a trim is held. Only an entry voice scheduled within
     // ENTRY_TRIM_WINDOW_SEC of the opening counts.
     _captureEntryTrim() {
         const wait = this._ladderWait;
@@ -1016,7 +930,7 @@ export class AmbientAudioController {
     _ladderTick() {
         if (this._destroyed) return;
         const now = Date.now();
-        if (this.directors.ambient.linkLost) return;
+        if (this.directors.signals.linkLost) return;
         const agents = audibleAgents(this.world, now);
         const ladder = nextReminder(now, agents, this._acks, {
             reminders: readReminderSetting(),
@@ -1052,7 +966,7 @@ export class AmbientAudioController {
             heldTrimDb: this._ladderWait?.heldTrimDb ?? null,
         };
         const played = Boolean(
-            this.directors.ambient.playReminder?.(reminder)
+            this.directors.signals.playReminder(reminder)
             || this.directors.bgm.playReminder?.(reminder),
         );
         this._ladderHistory.push({ at: now, level: ladder.level, dropped: !played });
@@ -1063,8 +977,8 @@ export class AmbientAudioController {
         }
     }
 
-    // Whether a hidden page's urgent cue will be heard from the village
-    // itself; desktop alerts go silent when it will (UX-13).
+    // Whether a hidden page's urgent cue will be heard from the page itself;
+    // desktop alerts go silent when it will (UX-13).
     _emitBellState() {
         const rings = Boolean(this.available && this.enabled && this.userActivated);
         if (rings === this._bellRings) return;
@@ -1087,7 +1001,7 @@ export class AmbientAudioController {
     }
 
     // Once a second, sound or no sound: an expired hush or a quiet-hours
-    // edge crossfades the village to its mode; the ladder ticks; the view
+    // edge crossfades to the chosen mode; the ladder ticks; the view
     // is re-read and emitted only when it changed.
     _signalTick() {
         if (this._destroyed) return;
@@ -1102,15 +1016,13 @@ export class AmbientAudioController {
 
     // ─── The one sound state (C-UX1, 7.3) ─────────────────────────────────
 
-    // off | armed | playing | resting | hushed. Armed is on but not yet
-    // heard: the browser is waiting for a click, or the page is away. The
-    // chip never claims playing before the context runs.
+    // off | armed | playing | hushed. Armed is on but not yet heard: the
+    // browser is waiting for a click, or the page is away. The chip never
+    // claims playing before the context runs.
     _soundState() {
         if (!this.available || !this.enabled) return 'off';
         if (!this.isRunning()) return 'armed';
         if (this.hushed) return 'hushed';
-        const mode = this._playingMode ?? this._effectiveMode();
-        if (mode === 'ambient' && this.directors.ambient.resting) return 'resting';
         return 'playing';
     }
 
@@ -1122,21 +1034,9 @@ export class AmbientAudioController {
             const ends = quietHoursEndsAt(this.quietHours, new Date());
             return ends ? `Quiet hours until ${clockHour(ends)}` : 'Listening for agents that need you';
         }
-        if (state === 'resting') return 'Resting · sound returns when work starts';
         const mode = this._playingMode ?? this._effectiveMode();
-        if (mode === 'signals') return 'Listening for agents that need you';
-        if (mode === 'bgm') {
-            const playing = this.directors.bgm.player?.nowPlaying ?? null;
-            if (!playing?.piece) return 'Now · between tunes';
-            const loop = playing.of > 1 ? `, loop ${playing.loop} of ${playing.of}` : '';
-            return `Now · ${pieceTitle(playing.piece)}${loop}`;
-        }
-        const music = this.directors.ambient.musicStatus(Date.now());
-        if (music.piece) return `Now · ${pieceTitle(music.piece)}`;
-        if (music.held === 'rain') return 'Next · a tune after the rain';
-        if (!Number.isFinite(music.nextAt)) return 'Now · the island and the village at work';
-        const minutes = Math.ceil((music.nextAt - Date.now()) / 60000);
-        return minutes <= 1 ? 'Next · a tune soon' : `Next · a tune in about ${minutes} min`;
+        if (mode === 'bgm') return nowPlayingLine(this.directors.bgm.player?.nowPlaying ?? null);
+        return 'Listening for agents that need you';
     }
 
     _chipTitle(state) {
@@ -1145,7 +1045,6 @@ export class AmbientAudioController {
         switch (state) {
             case 'off': return `Sound off — click to turn on ${label}`;
             case 'armed': return 'Sound on — click anywhere to start it';
-            case 'resting': return 'Sound on · Village is resting — nothing is working or waiting';
             case 'hushed': {
                 if (hushActive(this.hushedUntil, Date.now())) return `Hushed until ${clockTime(this.hushedUntil)} — signals only`;
                 const ends = quietHoursEndsAt(this.quietHours, new Date());
@@ -1165,7 +1064,6 @@ export class AmbientAudioController {
             lastPreset: this.lastPreset,
             soundState,
             volumeStep: this.volumeStep,
-            trims: { ...this.layerSteps },
             nowLine: this._nowLine(soundState),
             chipTitle: this._chipTitle(soundState),
             hushedUntil,
@@ -1206,9 +1104,8 @@ export class AmbientAudioController {
         return this.engine.readMeters();
     }
 
-    // Debug/QA surface: state readout plus handles to choose presets, force
-    // layer levels, fire cues, and set volume from the console or a headless
-    // browser.
+    // Debug/QA surface: state readout plus handles to choose presets, fire
+    // cues, and set volume from the console or a headless browser.
     _debugSnapshot() {
         const view = this.soundView();
         return {
@@ -1217,7 +1114,6 @@ export class AmbientAudioController {
             contextState: this.engine.context?.state || null,
             running: this.director.running,
             volumeStep: this.volumeStep,
-            layerSteps: { ...this.layerSteps },
             rms: this.engine.rms(),
             ...this.director.snapshot(),
             preset: view.preset,
@@ -1242,8 +1138,8 @@ export class AmbientAudioController {
             background: this.background,
             townBandVoice: readTownBandVoice(),
             blurred: this._windowBlurred,
-            // D3 (5.6): the faders' quiet mix, `{ active, preset, factors }`.
-            quietMix: { ...this._quietMix, factors: { ...this._quietMix.factors } },
+            // D3 (5.6): the quiet mix, `{ active, preset }`.
+            quietMix: { ...this._quietMix },
             wakeCount: this._wakeCount,
             ladder: this._ladder ? {
                 ...this._ladder,
@@ -1254,7 +1150,6 @@ export class AmbientAudioController {
             setPreset: (preset) => this.setPreset(preset, { fromUser: true }),
             toggle: () => this.toggleFromUser(),
             setVolumeStep: (step) => this.setVolumeStep(step),
-            setLayerStep: (name, step) => this.setLayerStep(name, step),
             setBackground: (b) => this.setBackground(b),
             setOutput: (o) => this.setOutput(o),
             setTone: (t) => this.setTone(t),
@@ -1271,7 +1166,6 @@ export class AmbientAudioController {
                 eventBus.emit('sound:town-band-voice', { voice: stored });
                 return stored;
             },
-            setLayer: (name, level, holdMs) => this.director.forceLayer?.(name, level, holdMs) ?? false,
             cue: (kind) => this.director.cue(kind),
             meters: (opts) => this._meters(opts),
         };

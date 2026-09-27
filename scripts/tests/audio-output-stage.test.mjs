@@ -2,19 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    HEADPHONE_WORLD_WIDTH,
     OUTPUT_MODES,
-    narrowedIcc,
     outputSettings,
     toneDb,
     widthMatrix,
 } from '../../claudeville/src/presentation/shared/audio/OutputStage.js';
 import { CueGovernor } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
-import { CueKit, softenThunderPlan, thunderPlan } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
+import { CueKit } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 
 test('the width matrix keeps the mid and scales the side', () => {
-    for (const w of [0, 0.3, HEADPHONE_WORLD_WIDTH, 1]) {
+    for (const w of [0, 0.3, 0.6, 1]) {
         const { a, b } = widthMatrix(w);
         // L = 1, R = 1 (pure mid) passes unchanged; L = 1, R = −1 (pure side) scales by w.
         assert.ok(Math.abs(a + b - 1) < 1e-12);
@@ -24,23 +22,14 @@ test('the width matrix keeps the mid and scales the side', () => {
     assert.deepEqual(widthMatrix(-1), widthMatrix(0));
 });
 
-test('headphones narrow any world bed to a coherence of at least 0.4', () => {
-    for (let c = 0; c <= 1.0001; c += 0.05) {
-        assert.ok(narrowedIcc(c, HEADPHONE_WORLD_WIDTH) >= 0.4, `icc ${c.toFixed(2)}`);
-        assert.ok(narrowedIcc(c, HEADPHONE_WORLD_WIDTH) >= c - 1e-12, 'narrowing never widens');
-    }
-    assert.ok(Math.abs(narrowedIcc(0.3, 1) - 0.3) < 1e-12, 'width 1 leaves the bed as made');
-});
-
 test('output modes: speakers as made, headphones narrower, mono folded and lifted; unknown is speakers', () => {
     assert.deepEqual([...OUTPUT_MODES], ['speakers', 'headphones', 'mono']);
     const speakers = outputSettings('speakers');
     assert.equal(speakers.panScale, 1);
-    assert.equal(speakers.worldWidth, 1);
     assert.equal(speakers.mono, false);
     assert.equal(speakers.monoCompDb, 0);
     const phones = outputSettings('headphones');
-    assert.ok(phones.panScale < 1 && phones.worldWidth < 1 && !phones.mono);
+    assert.ok(phones.panScale < 1 && !phones.mono);
     const mono = outputSettings('mono');
     assert.ok(mono.mono && mono.monoCompDb > 0);
     assert.equal(outputSettings('surround').output, 'speakers');
@@ -52,18 +41,6 @@ test('tone maps −1…+1 to ±4 dB and clamps', () => {
     assert.equal(toneDb(-1), -4);
     assert.equal(toneDb(3), 4);
     assert.equal(toneDb('x'), 0);
-});
-
-test('softened thunder: a slower first attack, half the peak, no crack, no secondary bump', () => {
-    let seed = 1;
-    const rng = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
-    const plan = thunderPlan(1, rng);
-    const soft = softenThunderPlan(plan);
-    assert.ok(soft.rolls[0].attack >= 0.25);
-    assert.ok(Math.abs(soft.amplitude - plan.amplitude / 2) < 1e-12);
-    assert.equal(soft.crack.length, 0);
-    for (const roll of soft.rolls.slice(1)) assert.ok(roll.peak <= 0.25 * soft.rolls[0].peak + 1e-12);
-    assert.equal(plan.crack.length > 0, true, 'the original near strike keeps its crack');
 });
 
 // A sounding engine on a frozen clock that records ducks and attacks.

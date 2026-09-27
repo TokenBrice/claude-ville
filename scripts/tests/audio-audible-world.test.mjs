@@ -5,7 +5,6 @@ import {
     LINK_LOST_AFTER_MS,
     LinkHealth,
     audibleAgents,
-    audibleCounts,
     digestNotes,
     waitState,
 } from '../../claudeville/src/presentation/shared/audio/AudibleWorld.js';
@@ -16,7 +15,7 @@ function world(agents) {
     return { agents: new Map(agents.map(agent => [agent.id, agent])) };
 }
 
-test('a stale working agent is not audible and adds nothing to the murmur', () => {
+test('a stale working agent is not audible', () => {
     const village = world([
         { id: 'live', status: 'working', signalObservedAt: NOW - 1_000 },
         { id: 'stale', status: 'working', signalStale: true },
@@ -24,10 +23,6 @@ test('a stale working agent is not audible and adds nothing to the murmur', () =
         { id: 'aged', status: 'working', freshness: { state: 'stale' } },
     ]);
     assert.deepEqual(audibleAgents(village, NOW).map(agent => agent.id), ['live']);
-    const counts = audibleCounts(village, NOW);
-    assert.equal(counts.working, 1);
-    assert.equal(counts.stale, 3);
-    assert.equal(audibleCounts(world([{ id: 's', status: 'working', signalStale: true }]), NOW).working, 0);
 });
 
 test('a wait that only went stale is unheard, not answered', () => {

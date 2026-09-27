@@ -10,24 +10,31 @@
 // wave print DEFER and never fail) on the virtual clock (HAR-1: the shipped
 // controller rendered on an OfflineAudioContext, identical per seed to within
 // the renderer's jitter)
-// plus the Wave-0 checks on the live app. Checks (PASS/FAIL/INFO lines; any
-// FAIL exits 1; WARN flags a finding that is not a verdict):
-//   scenes       S2 scene targets (Loudness.js) at the standard step: anchor,
-//                village busy, Town band, rain, storm, resting, the night
-//                program vs noon (Wave 6); HAR-5 stems
+// plus the Wave-0 checks on the live app. The presets are Signals (the
+// attention voices over silence) and the Town band. Checks (PASS/FAIL/INFO
+// lines; any FAIL exits 1; WARN flags a finding that is not a verdict):
+//   scenes       S2's Town band row (Loudness.js) at the standard step, the
+//                band stem's ST max; HAR-5 stems and the level map
 //   margins      cue lanes (needs-you, error, limit, routine, scenery, the
-//                three outcome tiers) over the village (no music), music,
-//                rain and storm beds: median of 3 placements in the full S2
-//                window, the band rule and urgent limiter GR ≤ 3 dB; the
-//                Minor outcome ≥ 3 LU under routine
+//                three outcome tiers) over the Town band, the busy band (Isle
+//                and Chip; urgent lanes) and the Signals bed (the no-music
+//                bed: urgent lanes, ceiling exempt over its silence): median
+//                of 3 placements in the full S2 window, the band rule and
+//                urgent limiter GR ≤ 3 dB; the Minor outcome ≥ 3 LU under
+//                routine
 //   limiter      a +12 dBFS burst → the worklet's LIMITER_CEILING_DBFS (+0.1)
 //                and ≤ −1 dBTP, the native fallback ≤ −0.9 dBFS; static gain
 //                0 ± 0.2 dB on both
-//   switch       must-never 12: preset switch hole/bump ≤ 3 dB, both ways
-//   ducks        ducked time ≤ 5 % per bus (village busy, Town band)
-//   avsync       HAR-12: published note and accent times vs heard onsets;
-//                the release crown's accent vs its peal note (± 15 ms)
-//   determinism  two renders of one scene agree within 0.2 LU
+//   switch       must-never 12: Signals ↔ Town band over the 0.8 s fade —
+//                out: no bump, faded ≥ 20 dB by its end, silent, no click;
+//                in: no bump, the band heard by the fade's end
+//   ducks        ducked time ≤ 5 % of the music bus (Town band busy)
+//   avsync       HAR-12: published notes vs heard onsets; each accent's
+//                carrying note at the accent or moved ≤ 60 ms onto the
+//                band's grid (S4), heard there; the release crown's accent
+//                vs its peal note (± 15 ms)
+//   determinism  two renders of one scene agree within 0.2 LU (Town band,
+//                Signals)
 //   baseline     scene and margin numbers within tolerance of the committed
 //                baselines/scenes.json (--update rewrites it); drift only —
 //                a baseline never passes a target that failed
@@ -36,69 +43,29 @@
 //   pause        2.1: 120 s hidden → nothing starts while suspended, the
 //                first second after resume ≤ steady rate + 1, same piece
 //   air          2.4: IR T60 at 1/4 kHz day and night, D/R at d = 0 / 1,
-//                urgent wet re dry, what the air adds to the program
-//   noise        2.5 / C-AMB-3: texture autocorrelation (the sea too), bed
-//                ICC and mono fold (night and storm too), lanes
-//                on one pool buffer ≥ 5 s apart, the pool's budget
+//                urgent wet re dry, what the air adds to the Town band
 //   bank         2.6: resident bytes vs MEMORY_BUDGET, bake slices ≤ 5 ms
 //   discrim      3.1–3.5 (S1): every cue voice governor-free — signal vs
 //                every other voice ≥ 2/3, urgent pairwise ≥ 2/3, outcomes
 //                vs needs-you, no quick same-pitch opening outside signals
 //   ladder       3.3: 61 min sound off per family (D6 schedule, S7 caps,
-//                Toast captions), acknowledgement, held trim (sound on),
-//                hidden-tab wakes within 60 s
+//                Toast captions), acknowledgement, held trim (sound on, in
+//                Signals and over the Town band), hidden-tab wakes within 60 s
 //   cluster      SIG-10: six same-tick raises within +1 LU of one call
-//   heldnote     3.3: band rise at W = 1 and 15, beating, bed − 8 LU,
-//                absent under music, in Town band and signals-only
 //   outcomes     3.4: push, exit 0 silence, failure cap, turn done, dispatch,
 //                return, release; a Dashboard fixture
 //   captions     3.8 (HAR-13): caption/sound parity per caption setting,
 //                both presets, sound on and off
-//   honesty      must-never 3 (a wait audible while it lasts) and 13
-//                (phase-locked urgent bells, stale-data sound)
-//   worldmap     4.5 / S2 / S7: the 72-scene world map (4 phases × 6 weathers ×
-//                resting / 3 / 12 working, 30 s, the program = the world
-//                stratum) vs its S2 rows relative to A and the day arc's
-//                share; must-never 7 (night/weather ≤ day + 6 LU); night
-//                2–5 kHz ≥ 4 dB under noon; ambient onsets ≤ 180/min; the
-//                world stem at 3 vs 12 and the CPU offline proxy (INFO)
-//   worldstem    S6 / C-AMB-1: the world stem at 0 vs 12 working, one seed,
-//                identical within renderer noise (max |Δ| ≤ 1e-6 or ≤ a
-//                same-count repeat's)
-//   sea          4.1: the day sea 2–6 LU under A, ICC and r(4 s), breaks per
-//                minute, the night bed's 250 Hz–1 kHz gain, gulls roost,
-//                hull groans off 500–700 Hz, nodes only per rare take
-//   thunder      4.2: near/far LU from the onset, onset delay after the
-//                flash, monotonic in intensity, GR, fresh grain, no duck
-//   masking      must-never 8: needs-you and error inside a thunder roll
-//                and over rain keep their S2 floors
-//   crest        4.6: a cue whose first note lands on a sea crest keeps its
-//                S2 margin (night Village bed, storm)
-//   workshops    5.1: the FOL reference scene's Forge (longest gap, stop vs
-//                the first non-working observation, no accent from a stale
-//                smith), zero onsets from stale agents, idle and a lost
-//                link, strikes vs drawn downbeats in World (median / p95)
-//                and the poll-lock pulse index, node creations per take,
-//                main-thread cost per tick (INFO)
-//   worklevel    5.3: the reference scenes by day (the stratum as ctx − env
-//                of two sample-aligned renders): work bed ≤ program − 8 LU,
-//                program Δ, work TP under the quietest urgent cue, accents
-//                heard per building, onset-weighted 2–5 kHz share, onsets
-//                in any 1 s, routine-cue margin loss
-//   workslots    5.4: two smiths on two pitches, focus +4 dB, a needs-you
-//                from another agent unchanged
-//   worknight    5.5: accents heard per building over the night environment
-//   quietmix     5.6 (D3): blur in Village (music 0, world and work ×0.5,
-//                ghosts off, held note and signals untouched), Town band
-//                −3 dB with no work stratum (D4), focus restores in ≤ 1 s
-//   quota        5.7: the mine's 80–160 Hz band over a 0.7 → 1.0 sweep, no
-//                cue, silent when the quota goes stale
-//   camera       5.8: a pan across the Harbor — its workshop and sea pans
-//                through 0 within 0.6 s of the camera, steps ≤ 0.2, zero
-//                writes while still
+//   honesty      must-never 13 (phase-locked urgent bells, stale-data sound)
+//   quietmix     5.6 (D3): blur in the Town band −3 dB, focus restores in ≤ 1 s
+//   musicstems   6.1–6.3, 6.5: every piece (PIECES) day and night, Isle and
+//                Chip, in its own arrangement; isleband, nightmusic and score
+//                read the same stem matrix
+//   townband, percussion, signals, awaken, listening   Waves 6–7 (below)
 //   lint, routing, away (+ resume), ceremony   the Wave-0 checks (live app)
 //   continuity   2.1: blur 3 s → focus keeps the Town band piece and level
 //   fps          2.4: app frame total p95, sound on vs off (realtime)
+//   awakening, captionprobe   7.4 / 3.8 through the real TopBar (live app)
 // --soak: the realtime app session instead (SCN-9, 10 min, both presets);
 // see lib/soak.mjs.
 import fs from 'node:fs';
@@ -109,77 +76,62 @@ import { writeWavFloat } from './lib/analyze.mjs';
 import { BACKGROUND_ARGS, DEFAULT_SEED, HARNESS_CHROME_ARGS } from './lib/capture.mjs';
 import { fmt, signed } from './lib/format.mjs';
 import {
-    BASELINE_TOLERANCE, BUSY_BAND_ERROR_BAND_RULE, CROWN_SYNC_MS, CUE_STRATUM, HELD_NOTE, ISLAND_AIR, LADDER, MUST_NEVER_7_LU, NOISE_LIMITS, PLAN_STAGE, SEA_LIMITS, THUNDER_LIMITS, URGENT_LANES, WORLD_STEM_MAX_ABS, bakeLandingDiffs,
-    beatingDepthDb, compareBaseline, energyMeanLufs, expectedLadder, groanViolations, heldNoteRise, judgeAirT60, judgeBank, judgeCaptionParity, judgeCluster, judgeDiscrimination,
-    judgeDuckedTime, judgeHeldTrim, judgeLadder, judgeLane, judgeOnsetBudget, judgeSceneTargets, judgeThunder, judgeTransport, judgeWakes,
-    judgeWorldMap, judgeWorldStem, median, nightWeatherOverDay, noiseLaneConflicts, onsetNear, presenceUnderNoon, waitAudibleWindows, withinRange, worldStemDiffers,
-    WORK_BANDS_DAY, WORK_BANDS_NIGHT, WORK_LIMITS, downbeatSync, judgeCameraPan, judgeFocus, judgeHeard, judgeQuietMix, judgeQuotaSweep, judgeWorkLevel, longestGap,
-    maxOnsetsIn, pulseIndex, quietStemRow, signCrossing, stopTiming, targetTrajectory,
-    D1_DUTY, MUSIC_LIMITS, arrangementSwitch, bandStep, breathsPerWindow, coveredSec, earlyReturns, judgeDuty, judgeIsleArm, judgeStemBalance, laneWindow,
-    loopsPerPieceHour, musicInWindows, nightDarker, perHourMax, spearman,
-    WAVE7_LIMITS,
+    BASELINE_TOLERANCE, BUSY_BAND_ERROR_BAND_RULE, CROWN_SYNC_MS, CUE_STRATUM, ISLAND_AIR, LADDER, PLAN_STAGE,
+    compareBaseline, energyMeanLufs, expectedLadder, judgeAirT60, judgeBank, judgeCaptionParity, judgeCluster, judgeDiscrimination,
+    judgeDuckedTime, judgeHeldTrim, judgeLadder, judgeLane, judgeSceneTargets, judgeTransport, judgeWakes, median, onsetNear,
+    QUIET_MIX_LIMITS, judgeQuietMix, quietStemRow,
+    MUSIC_LIMITS, arrangementSwitch, bandStep, breathsPerWindow, earlyReturns, judgeIsleArm, judgeStemBalance, laneWindow,
+    loopsPerPieceHour, nightDarker, spearman,
+    WAVE7_LIMITS, SWITCH_LIMITS,
 } from './lib/checks.mjs';
 import {
-    AIR_CUE_SCENE, CAPTION_SETTINGS, DASHBOARD_SCENE, GALLERY_VOICES, HELD_ANSWER_SEC, HELD_OPEN_SEC, LADDER_OPEN_SEC, LADDER_SECONDS, LADDER_TRIM_BAND_SCENE,
-    LADDER_TRIM_SCENE, LONG_WAIT_SCENE, LONG_WAIT_SECONDS, MARGIN_BEDS, OUTCOME_SCENE, STALE_SCENE, TEXTURE_SCENES, TRANSPORT_SCENE,
-    VILLAGE_DRY_SCENE, WAKE_SCENE, captionScene, clusterScene, galleryScene, heldNoteScene, hiddenScene, ladderSilentScene, marginKeys, marginLanes, marginVoices,
-    CREST_BEDS, CREST_WINDOW, MAP_LOADS, MAP_PHASES, MAP_SECONDS, MAP_WEATHERS, MASKING_SCENE, NIGHT_BED_NO_SEA, SEA_NIGHT_SCENE, SEA_RARE_SCENE,
-    SILENT_ISLAND_SCENE, THUNDER_INTENSITIES, THUNDER_SCENE, WORLD_STEM_FIXTURES, WORLD_STEM_SECONDS, crestCalibration, crestPlaced, crestScene,
-    worldMapCells, worldStemScene,
-    AUDIBILITY_SECONDS, CAMERA_PAN, QUIET_MIX, QUOTA_STALE_AT, QUOTA_STEPS, WORK_HONESTY, WORK_HONESTY_SCENE, WORK_PATTERNS, WORK_POLL, WORK_SLOTS,
-    audibilityScene, cameraScene, quietMixScene, quotaScene, workDownbeatScene, workSlotsScene, workshopScene,
-    PERCUSSION_SEGMENTS, RAIN_SWITCH_AT, TOWN_SESSION, VILLAGE_FIXTURES, VIRTUAL_DAY, WAIT_CADENCE, musicStemScene, percussionScene, rainSwitchScene,
-    townSessionScene, villageMusicScene, waitCadenceScene,
-    AWAKEN, AWAKEN_SCENE, SIGNALS_ANSWER_AT, outputBusyScene, outputScene, signalsScene, softenScene, toneScene,
+    AIR_CUE_SCENE, CAPTION_MODES, CAPTION_SETTINGS, DASHBOARD_SCENE, GALLERY_VOICES, LADDER_OPEN_SEC, LADDER_SECONDS, LADDER_TRIM_BAND_SCENE,
+    LADDER_TRIM_SCENE, MARGIN_BEDS, OUTCOME_SCENE, STALE_SCENE, TOWN_DRY_SCENE, TRANSPORT_SCENE,
+    WAKE_SCENE, captionScene, clusterScene, galleryScene, hiddenScene, ladderSilentScene, marginKeys, marginLanes, marginVoices,
+    QUIET_MIX, quietMixScene,
+    PERCUSSION_SEGMENTS, RAIN_SWITCH_AT, TOWN_SESSION, WAIT_CADENCE, musicStemScene, percussionScene, rainSwitchScene,
+    townSessionScene, waitCadenceScene,
+    AWAKEN, AWAKEN_SCENE, SIGNALS_ANSWER_AT, outputBusyScene, outputScene, signalsScene, softenScene,
 } from './lib/scenes.mjs';
 import {
-    captionRows, clusterRow, crownRow, galleryRows, heldNoteRows, heldWhileMusic, ladderCalls, ladderCaptioned, ladderTrimRows, laneEvents, wakeRows,
+    captionRows, clusterRow, crownRow, galleryRows, ladderCalls, ladderCaptioned, ladderTrimRows, laneEvents, wakeRows,
 } from './lib/probe-wave3.mjs';
 import { renderSilent, renderVirtual } from './lib/virtual.mjs';
 import { discriminationMatrix } from './metrics/discrim.mjs';
 import {
-    avSyncRows, duckRows, laneMarginRows, limiterUnitRows, makeRenderer, marginRows, renderLimiterUnit, sceneLevelMap,
+    avSyncRows, bandLevelDb, duckRows, levelDiffCurve, limiterUnitRows, makeRenderer, marginRows, outputGainDb, renderLimiterUnit, sceneLevelMap,
     sceneMetrics, sceneSpec, stemReport, switchRows,
 } from './lib/probe-virtual.mjs';
 import {
-    bandLevelDb, concurrentOverBedLu, crestGap, firstDivergenceSec, loudestCrest, maxSampleDiff, seaStemRow, thunderRows, worldBandDb, worldCellRow,
-} from './lib/probe-wave4.mjs';
-import {
-    HARBOR_WORLD, accentGainOffsetDb, cameraPanTarget, downbeatRows, forgeRow, ghostsIn, heardRows, honestyRows, levelDiffCurve, offsetStepDb, onsetShare25, pairedGainDiffs,
-    onsetsOf, placementLogRows, quotaRows, routineLossRows, slotRows, strikesOf, tickRows, urgentTpRows, workLevelRow,
-} from './lib/probe-wave5.mjs';
-import {
-    airRows, arrivalDrRows, bedRows, pauseRows, renderAir, textureRows, transportRows, urgentWetRows,
+    airRows, arrivalDrRows, pauseRows, renderAir, transportRows, urgentWetRows,
 } from './lib/probe-wave2.mjs';
 import {
     appAwakeningUnit, appBusyUnit, appCaptionUnit, appCeremonyUnit, appContinuityUnit, appFrameCostUnit, judgeAwakening, judgeBusy, judgeCaption, judgeCeremony,
     judgeContinuity, judgeFrameCost, lintUnits,
 } from './lib/probe-app.mjs';
 import {
-    OCTAVE_CENTERS, bandRows, armRow, densityTrack, dutyOf, heardSpans, nodesPerNoteRow, noteRows, percussionPerBar, seatLufs, seatPairs, stopLevels,
-    sumOf, toOutput, visitRows,
+    bandRows, armRow, dutyOf, nodesPerNoteRow, noteRows, percussionPerBar, seatLufs, seatPairs, stopLevels, visitRows,
 } from './lib/probe-wave6.mjs';
 import { awakenRows, outputRow, signalsRows, softenRow, toneRow } from './lib/probe-wave7.mjs';
-import { townBandHours, villageDay } from './lib/music-sim.mjs';
+import { townBandHours } from './lib/music-sim.mjs';
 import {
     cueClash, identicalRenditionGap, motifStatements, parallelPerfects, phraseReheard, range, renditions, seatLine, tonalReheard,
 } from './score-analyzer.mjs';
 import { loudness } from './lib/analyze.mjs';
 import { marginAt } from './lib/timeline.mjs';
 import { sessionMetrics } from './metrics/session-metrics.mjs';
-import { outputGainDb } from './lib/probe-wave5.mjs';
 import { runSoak } from './lib/soak.mjs';
-import { FRAGMENTS, PIECES, PLAYLISTS } from '../../claudeville/src/presentation/shared/audio/bgm/BgmSongbook.js';
+import { PIECES, PLAYLISTS } from '../../claudeville/src/presentation/shared/audio/bgm/BgmSongbook.js';
 import { voicingFor } from '../../claudeville/src/presentation/shared/audio/music/Voicings.js';
-import { D1_DUTY as OCC_DUTY, RING_OUT_SEC as OCC_RING_OUT_SEC, dutyBandFor } from '../../claudeville/src/presentation/shared/audio/OccasionClock.js';
-import { createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import { AUDIBILITY_WINDOWS, LIMITER_CEILING_DBFS, LOUDNESS_TARGETS, MEMORY_BUDGET, PROGRAM_TRIM_DB, STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
+import { SIGNALS_FADE_SEC } from '../../claudeville/src/presentation/shared/AmbientAudioController.js';
+import { BODY_SNAP_SEC } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
 
 const APP_CHROME_ARGS = ['--autoplay-policy=user-gesture-required', ...BACKGROUND_ARGS];
 const BASELINE_FILE = path.join(AUDIO_DIR, 'baselines/scenes.json');
 const DETERMINISM_LU = 0.2;
 const AV_SYNC = { medianAbsMs: 20, p95AbsMs: 40 };
-const SWITCH_LIMIT_DB = 3;
+const SWITCH_ROWS_WANTED = 2;
 // 1.1: a +12 dBFS burst leaves the native fallback at or under this.
 const FALLBACK_MAX_DBFS = -0.9;
 
@@ -201,7 +153,7 @@ const JOBS = Math.max(1, Number(args.jobs || 2));
 const SEED = args.seed != null ? Number(args.seed) : DEFAULT_SEED;
 const NO_WORKLETS = Boolean(args['no-worklets']);
 const UPDATE = Boolean(args.update);
-const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'noise', 'bank', 'discrim', 'ladder', 'cluster', 'heldnote', 'outcomes', 'captions', 'honesty', 'worldmap', 'worldstem', 'sea', 'thunder', 'masking', 'crest', 'workshops', 'worklevel', 'workslots', 'worknight', 'quietmix', 'quota', 'camera', 'musicstems', 'isleband', 'nightmusic', 'score', 'occasions', 'townband', 'percussion', 'signals', 'awaken', 'listening'];
+const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'bank', 'discrim', 'ladder', 'cluster', 'outcomes', 'captions', 'honesty', 'quietmix', 'musicstems', 'isleband', 'nightmusic', 'score', 'townband', 'percussion', 'signals', 'awaken', 'listening'];
 const APP_CHECKS = ['lint', 'routing', 'away', 'ceremony', 'continuity', 'fps', 'awakening', 'captionprobe'];
 const ALL_CHECKS = [...VIRTUAL_CHECKS, ...APP_CHECKS];
 const ONLY = args.only ? String(args.only).split(',').map(s => s.trim()) : ALL_CHECKS;
@@ -251,7 +203,7 @@ function keep(name, r) {
 }
 
 // --------------------------------------------------------- virtual units ----
-const SCENE_TARGET_NAMES = ['anchor', 'villageBusy', 'townBand', 'rain', 'storm', 'resting'];
+const SCENE_TARGET_NAMES = ['townBand'];
 
 function virtualUnits(render, browser, baseUrl) {
     const units = [];
@@ -263,40 +215,29 @@ function virtualUnits(render, browser, baseUrl) {
     const wantScenes = has('scenes') || has('baseline');
     if (wantScenes) {
         units.push({
-            name: 'scenes (anchor, village busy, Town band, rain, storm, resting)',
+            name: 'scenes (Town band)',
             async run() {
                 const measured = {};
                 for (const name of SCENE_TARGET_NAMES) {
                     const r = await scene(name);
                     const m = sceneMetrics(r);
-                    if (r.stems.music && name === 'townBand') {
-                        m.bandStemStMax = stemReport(r).stems.music.stMax;
-                    }
+                    if (r.stems.music) m.bandStemStMax = stemReport(r).stems.music.stMax;
                     measured[name] = m;
                     summary[`scene:${name}`] = { lufsI: m.lufsI, stMax: m.stMax };
                     info('scenes', `${name}: LUFS-I ${fmt(m.lufsI)}, ST max ${fmt(m.stMax)}, LRA ${fmt(m.lra)} LU, TP ${fmt(m.truePeakDbtp)} dBTP${m.grMaxDb != null ? `, limiter GR max ${fmt(m.grMaxDb)} dB` : ''} (${m.limiterKind}, rendered ${fmt(m.renderMs / 1000)} s); errors ${r.errors.length}${r.errors.length ? `: ${r.errors.slice(0, 2).join(' | ')}` : ''}`);
                 }
-                // S2's night row with its occasion: the program at night and
-                // at noon, same load, music at its default (Wave 6 owns it).
-                for (const name of ['nightProgram', 'noonProgram']) {
-                    const r = await scene(name);
-                    const m = sceneMetrics(r);
-                    const presenceDb = bandLevelDb({ L: r.program.L.subarray(Math.round(r.meta.warmup * r.sr)), R: r.program.R.subarray(Math.round(r.meta.warmup * r.sr)) }, r.sr, 2000, 5000);
-                    measured[name] = { lufsI: m.lufsI, presenceDb };
-                    summary[`scene:${name}`] = { lufsI: m.lufsI, stMax: m.stMax };
-                }
                 if (!has('scenes')) return;
                 for (const row of judgeSceneTargets(measured)) outcome('scenes', row.outcome, `${row.scene}: ${row.detail}`, row.gatedFrom);
-                const busy = await scene('villageBusy');
+                const busy = await scene('townBand');
                 const stems = stemReport(busy);
-                info('scenes', `HAR-5 stems, village busy (LUFS-I at the output; share of program energy): ${Object.entries(stems.stems).map(([k, v]) => `${k} ${fmt(v.lufsI)} (${signed(v.shareOfProgramDb)} dB)`).join(', ')}`);
+                info('scenes', `HAR-5 stems, Town band busy (LUFS-I at the output; share of program energy): ${Object.entries(stems.stems).map(([k, v]) => `${k} ${fmt(v.lufsI)} (${signed(v.shareOfProgramDb)} dB)`).join(', ')}`);
                 const lm = sceneLevelMap(busy);
-                info('scenes', `village busy level map: 2–5 kHz ${fmt(lm.presenceSharePct)} % of K-weighted energy, S/M ${fmt(lm.sideMidDB)} dB, corr ${fmt(lm.corr, 2)}, mono fold ${fmt(lm.monoLossLU)} LU, laptop ${fmt(lm.speakerLossLU)} LU`);
+                info('scenes', `Town band busy level map: 2–5 kHz ${fmt(lm.presenceSharePct)} % of K-weighted energy, S/M ${fmt(lm.sideMidDB)} dB, corr ${fmt(lm.corr, 2)}, mono fold ${fmt(lm.monoLossLU)} LU, laptop ${fmt(lm.speakerLossLU)} LU`);
             },
         });
     }
-    // Uncached renders (the 72-cell map and one-off scenes): each is reduced
-    // to numbers inside its unit, so its PCM never outlives it.
+    // Uncached one-off renders: each is reduced to numbers inside its unit,
+    // so its PCM never outlives it.
     const renderOnce = async (key, spec) => {
         const r = await renderVirtual(browser, baseUrl, { ...spec, name: key, noWorklets: NO_WORKLETS }, { seed: SEED });
         keep(key, r);
@@ -304,8 +245,8 @@ function virtualUnits(render, browser, baseUrl) {
     };
     // HAR-3: each lane over each probe bed from its own render (the bed
     // under a placement depends on the cues before it; lib/scenes.mjs
-    // marginScene), reduced to its rows and, for urgent lanes, the cue's true
-    // peak at the output; shared by margins, masking, worklevel and townband.
+    // marginScene), reduced to its rows and, over the band, the band each
+    // placement meets; shared by margins and townband.
     // A lane's other voices (MARGIN_VOICES: council, departure, the hour
     // bell) render apart; the hour bell one placement per render (its 55-min
     // cooldown).
@@ -319,7 +260,6 @@ function virtualUnits(render, browser, baseUrl) {
         if (!laneMemo.has(key)) {
             laneMemo.set(key, renderOnce(key, sceneSpec(key)).then(r => ({
                 rows: marginRows(r, bedName), errors: r.errors,
-                urgentTp: URGENT_LANES.includes(lane) ? urgentTpRows(r, [lane])[0] : null,
                 // The band each placement meets: the music stem's energy mean
                 // over the 3 s before its onset, at the output.
                 bandLufs: MARGIN_BEDS[bedName].bed === 'music' && r.stems.music ? bandBefore(r, marginRows(r, bedName)) : [],
@@ -330,13 +270,13 @@ function virtualUnits(render, browser, baseUrl) {
     const marginLane = async (bedName, lane, voice = marginVoices(lane)[0]) => {
         const parts = [];
         for (const key of marginKeys(bedName, lane, voice)) parts.push(await marginRender(bedName, lane, key));
-        return { rows: parts.flatMap(x => x.rows), errors: parts.flatMap(x => x.errors), urgentTp: parts[0].urgentTp, bandLufs: parts.flatMap(x => x.bandLufs).filter(Number.isFinite) };
+        return { rows: parts.flatMap(x => x.rows), errors: parts.flatMap(x => x.errors), bandLufs: parts.flatMap(x => x.bandLufs).filter(Number.isFinite) };
     };
     // Each lane's default voice (the rows the other checks share).
     const marginBed = async (bedName, lanes = marginLanes(bedName)) => {
         const each = [];
         for (const lane of lanes) each.push(await marginLane(bedName, lane));
-        return { rows: each.flatMap(x => x.rows), errors: each.flatMap(x => x.errors), urgentTp: each.map(x => x.urgentTp).filter(Boolean), bandLufs: each.flatMap(x => x.bandLufs) };
+        return { rows: each.flatMap(x => x.rows), errors: each.flatMap(x => x.errors), bandLufs: each.flatMap(x => x.bandLufs) };
     };
     if (has('margins') || has('baseline')) {
         for (const bedName of Object.keys(MARGIN_BEDS)) {
@@ -353,7 +293,7 @@ function virtualUnits(render, browser, baseUrl) {
                             const placements = own ? rows.filter(x => x.lane === lane) : (await marginLane(bedName, lane, voice)).rows;
                             // S2 at closure: the error over a busy Town band clears ≥ +5 dB of presence.
                             const bandRule = MARGIN_BEDS[bedName].busy && lane === 'error' ? BUSY_BAND_ERROR_BAND_RULE : undefined;
-                            const j = judgeLane(lane, ctx, placements, { probeBed: bedName, ...(bandRule ? { bandRule } : {}) });
+                            const j = judgeLane(lane, ctx, placements, { probeBed: bedName, ceilingExempt: Boolean(MARGIN_BEDS[bedName].silent), ...(bandRule ? { bandRule } : {}) });
                             summary[own ? `margin:${bedName}:${lane}` : `margin:${bedName}:${lane}:${voice}`] = { margin: j.margin };
                             if (!has('margins')) continue;
                             const win = `${j.window.min != null ? `≥ ${signed(j.window.min, 0)}` : ''}${j.window.min != null && j.window.max != null ? ', ' : ''}${j.window.max != null ? `≤ ${signed(j.window.max, 0)}` : ''}`;
@@ -417,11 +357,17 @@ function virtualUnits(render, browser, baseUrl) {
             async run() {
                 const r = await scene('presetSwitch');
                 const rows = switchRows(r);
-                if (rows.length < 2) verdict('switch', false, `expected 2 switches, saw ${rows.length}`);
+                if (rows.length < SWITCH_ROWS_WANTED) verdict('switch', false, `expected ${SWITCH_ROWS_WANTED} switches, saw ${rows.length}`);
+                const L = SWITCH_LIMITS;
                 for (const row of rows) {
-                    if (row.holeDb == null) { verdict('switch', false, `${row.label} at ${fmt(row.t)} s: not measurable`); continue; }
-                    verdict('switch', row.holeDb <= SWITCH_LIMIT_DB && row.bumpDb <= SWITCH_LIMIT_DB,
-                        `${row.label} at ${fmt(row.t)} s: old ${fmt(row.oldLufs)} → new ${fmt(row.newLufs)} LUFS-M; hole ${fmt(row.holeDb)} dB, bump ${fmt(row.bumpDb)} dB (switch window M ${fmt(row.minDuring)}…${fmt(row.maxDuring)}); want ≤ ${SWITCH_LIMIT_DB} dB each`);
+                    const head = `${row.label} at ${fmt(row.t)} s: old ${fmt(row.oldLufs)} → new ${fmt(row.newLufs)} LUFS-M`;
+                    if (row.direction == null) { verdict('switch', false, `${head}: not measurable (want exactly one side silent — Signals has no bed)`); continue; }
+                    const bump = `bump ${fmt(row.bumpDb)} dB over the band's p90 (switch window M max ${fmt(row.maxDuring)})`;
+                    if (row.direction === 'out') {
+                        verdict('switch', row.pass, `${head} (Town band → Signals): ${bump}; ${fmt(row.fadedDb)} dB down ${fmt(SIGNALS_FADE_SEC)} s in (the fade's end), silent (< ${L.silenceDbfs} dBFS) ${row.silentAfter != null ? `${fmt(row.silentAfter, 2)} s in` : `not within ${fmt(4)} s`}, largest rise after the fade ${fmt(row.clickDb)} dB; want bump ≤ ${L.bumpDb} dB, ≥ ${L.fadedDb} dB down, silent, rise ≤ ${L.clickRiseDb} dB (no click)`);
+                    } else {
+                        verdict('switch', row.pass, `${head} (Signals → Town band): ${bump}; the band heard (> ${L.soundDbfs} dBFS) ${row.entryAfter != null ? `${fmt(row.entryAfter, 2)} s in` : 'never'}; want bump ≤ ${L.bumpDb} dB, heard by the fade's end (${fmt(SIGNALS_FADE_SEC)} s)`);
+                    }
                 }
             },
         });
@@ -430,7 +376,7 @@ function virtualUnits(render, browser, baseUrl) {
         units.push({
             name: 'ducked time',
             async run() {
-                for (const name of ['villageBusy', 'townBand']) {
+                for (const name of ['townBand']) {
                     const r = await scene(name);
                     const d = duckRows(r);
                     const j = judgeDuckedTime(d.fractions);
@@ -445,12 +391,13 @@ function virtualUnits(render, browser, baseUrl) {
             name: 'AV sync',
             async run() {
                 const r = await scene('avSync');
-                const a = avSyncRows(r);
+                const a = avSyncRows(r, { syncMs: AV_SYNC.p95AbsMs });
                 const line = (s) => `${s.n} notes, ${s.missed} unheard, median |err| ${fmt(s.medianAbsMs)} ms, p95 ${fmt(s.p95AbsMs)} ms (signed median ${signed(s.medianMs)} ms)`;
                 verdict('avsync', a.notes.n > 0 && a.notes.missed === 0 && a.notes.medianAbsMs <= AV_SYNC.medianAbsMs && a.notes.p95AbsMs <= AV_SYNC.p95AbsMs,
                     `published vs heard: ${line(a.notes)}; want median ≤ ${AV_SYNC.medianAbsMs}, p95 ≤ ${AV_SYNC.p95AbsMs}`);
-                verdict('avsync', a.accents.n > 0 && a.accents.missed === 0 && a.accents.medianAbsMs <= AV_SYNC.medianAbsMs && a.accents.p95AbsMs <= AV_SYNC.p95AbsMs,
-                    `accent vs heard carrying note: ${line(a.accents)}; carrying note − accent ${a.accentVsPublishedMs.join(', ')} ms`);
+                const accentLine = row => `${row.how}${row.offsetMs != null ? ` ${signed(row.offsetMs, 1)} ms, heard ${signed(row.heardMs, 1)} ms` : ''}`;
+                verdict('avsync', a.accents.length > 0 && a.accents.every(row => row.pass),
+                    `accents over the Town band (carrying note − accent, heard − carrying note): ${a.accents.map(accentLine).join('; ')}; want each carrying note at its accent (C-CUE-5) or moved onto the band's grid within ±${fmt(BODY_SNAP_SEC * 1000, 0)} ms (S4), heard within ±${AV_SYNC.p95AbsMs} ms of it`);
                 info('avsync', `cue score: ${r.meta.cueScore.published} published, ${r.meta.cueScore.anchored} anchored, ${r.meta.cueScore.snapped} snapped, ${r.meta.cueScore.dropped} dropped`);
             },
         });
@@ -459,7 +406,7 @@ function virtualUnits(render, browser, baseUrl) {
         units.push({
             name: 'determinism',
             async run() {
-                for (const name of ['anchor', 'villageBusy']) {
+                for (const name of ['townBand', 'signalsBusy']) {
                     const a = await scene(name);
                     const b = await render(`${name}#2`, sceneSpec(name));
                     const ma = sceneMetrics(a);
@@ -475,8 +422,7 @@ function virtualUnits(render, browser, baseUrl) {
     }
     units.push(...wave2Units(render, browser, baseUrl, scene));
     units.push(...wave3Units(render, browser, baseUrl));
-    units.push(...wave4Units(render, renderOnce, scene, marginBed));
-    units.push(...wave5Units(render, renderOnce, scene, marginBed));
+    units.push(...quietMixUnits(renderOnce));
     units.push(...wave6Units(render, renderOnce, scene, marginBed));
     units.push(...wave7Units(renderOnce));
     return units;
@@ -489,13 +435,13 @@ function wave2Units(render, browser, baseUrl, scene) {
     const units = [];
     if (has('transport')) {
         units.push({
-            name: 'transport (10 min village, both presets)',
+            name: 'transport (10 min, both presets)',
             async run() {
                 const r = await render('transport', TRANSPORT_SCENE);
                 const t = transportRows(r);
                 const j = judgeTransport(t.diag, t.timers);
                 const procs = j.processes.map(p => `${p.name} ${fmt(p.maxAheadSec, 2)}/${p.limit} s${p.dropped ? ` (${p.dropped} dropped)` : ''}`).join(', ') || 'none registered';
-                verdict('transport', j.pass, `underruns ${t.diag?.underruns ?? '—'}, late dropped ${t.diag?.lateDropped ?? '—'}; committed ahead per process: ${procs}; Transport tick ${j.tick ? `${j.tick.fired} ticks, p95 ${fmt(j.tick.p95Ms, 3)} ms, max ${fmt(j.tick.maxMs, 2)} ms (real main-thread time)` : 'never seen'}; app timers that started continuous sources: ${siteLine(j.soundSites)}${j.failures.length ? ` — ${j.failures.join('; ')}` : ''}; want 0 underruns, ≤ 1.5 s ahead (work ≤ 0.35 s), exactly one timer (Transport.js), tick p95 ≤ 0.5 ms and max ≤ 2 ms`);
+                verdict('transport', j.pass, `underruns ${t.diag?.underruns ?? '—'}, late dropped ${t.diag?.lateDropped ?? '—'}; committed ahead per process: ${procs}; Transport tick ${j.tick ? `${j.tick.fired} ticks, p95 ${fmt(j.tick.p95Ms, 3)} ms, max ${fmt(j.tick.maxMs, 2)} ms (real main-thread time)` : 'never seen'}; app timers that started continuous sources: ${siteLine(j.soundSites)}${j.failures.length ? ` — ${j.failures.join('; ')}` : ''}; want 0 underruns, ≤ 1.5 s ahead, exactly one timer (Transport.js), tick p95 ≤ 0.5 ms and max ≤ 2 ms`);
                 const other = t.timers.filter(x => (x.site === 'harness' || x.site === 'untimed') && x.starts > 0);
                 const cues = t.timers.filter(x => x.cueStarts > 0).map(x => `${x.site} ×${x.cueStarts}`).join('; ') || 'none';
                 info('transport', `${t.startCount} source starts; discrete cue voices (exempt) by timer site: ${cues}; continuous sources outside app timers (harness actions, the 2 Hz atmosphere pump, the enable): ${siteLine(other)}; transport lateness p95 ${fmt(t.diag?.tickLatenessP95, 1)} ms on the virtual clock (steps of 10.7 ms), max stall ${fmt(t.diag?.maxStallMs, 1)} ms; page errors ${t.errors.length}${t.errors.length ? `: ${t.errors.slice(0, 2).join(' | ')}` : ''}`);
@@ -505,7 +451,7 @@ function wave2Units(render, browser, baseUrl, scene) {
         });
     }
     if (has('pause')) {
-        for (const mode of ['ambient', 'bgm']) {
+        for (const mode of ['signals', 'bgm']) {
             units.push({
                 name: `pause in place (${mode}, 120 s hidden)`,
                 async run() {
@@ -532,7 +478,7 @@ function wave2Units(render, browser, baseUrl, scene) {
                     verdict('air', Boolean(t) && j.pass, `${phase} IR: T60 1 kHz ${fmt(t?.t60_1000, 2)} s, 4 kHz ${fmt(t?.t60_4000, 2)} s (ratio ${fmt(j.ratio, 2)}); want ${j.want.min}–${j.want.max} s and ratio ≤ ${ISLAND_AIR.hfRatioMax}`);
                 }
                 const place = x => (x.placed ? `pan ${fmt(x.placed.pan, 2)}, gain ${fmt(x.placed.gain, 2)}, LP ${fmt(x.placed.lowpassHz, 0)} Hz, air ${fmt(x.placed.air, 3)}` : 'unplaced');
-                info('air', `raw place() sends on the world bus (8 ms burst through connectVoice): ${a.dr.map(x => `d = ${x.d} D/R ${signed(x.drDb)} dB (${place(x)})`).join('; ')} — the gate is the cue path below`);
+                info('air', `raw place() sends on the music bus (8 ms burst through connectVoice): ${a.dr.map(x => `d = ${x.d} D/R ${signed(x.drDb)} dB (${place(x)})`).join('; ')} — the gate is the cue path below`);
                 if (a.errors.length) info('air', `unit page errors: ${a.errors.slice(0, 3).join(' | ')}`);
             },
         });
@@ -549,54 +495,21 @@ function wave2Units(render, browser, baseUrl, scene) {
                 const wet = urgentWetRows(r);
                 const worst = wet.length && wet.every(w => Number.isFinite(w.wetDb)) ? Math.max(...wet.map(w => w.wetDb)) : null;
                 verdict('air', worst != null && worst <= ISLAND_AIR.urgentWetMaxDb, `needs-you wet re dry: ${wet.map(w => signed(w.wetDb)).join(' / ') || 'no cue'} dB (— = a silent dry or wet tap); want ≤ ${ISLAND_AIR.urgentWetMaxDb} each`);
-                const withAir = sceneMetrics(await scene('villageBusy'));
-                const dry = await render('villageBusy:dry', VILLAGE_DRY_SCENE);
+                const withAir = sceneMetrics(await scene('townBand'));
+                const dry = await render('townBand:dry', TOWN_DRY_SCENE);
                 const without = sceneMetrics(dry);
                 const d = withAir.lufsI - without.lufsI;
-                verdict('air', dry.meta.airOff === true && d <= ISLAND_AIR.programMaxLu, `village busy with air ${fmt(withAir.lufsI, 2)} vs without ${fmt(without.lufsI, 2)} LUFS-I: air adds ${signed(d, 2)} LU${dry.meta.airOff ? '' : ' (air sends not found)'}; want ≤ +${ISLAND_AIR.programMaxLu}`);
+                verdict('air', dry.meta.airOff === true && d <= ISLAND_AIR.programMaxLu, `Town band busy with air ${fmt(withAir.lufsI, 2)} vs without ${fmt(without.lufsI, 2)} LUFS-I: air adds ${signed(d, 2)} LU${dry.meta.airOff ? '' : ' (air sends not found)'}; want ≤ +${ISLAND_AIR.programMaxLu}`);
             },
         });
     }
-    if (has('noise') || has('bank')) {
+    if (has('bank')) {
         units.push({
-            name: 'noise textures, bed and lanes',
+            name: 'bank (the Town band busy)',
             async run() {
-                const renders = {};
-                for (const [name, t] of Object.entries(TEXTURE_SCENES)) renders[`texture:${name}`] = await render(`texture:${name}`, t.spec);
-                for (const name of ['anchor', 'rain', 'storm', 'nightClear', 'villageBusy']) renders[name] = await scene(name);
-                wave2.noiseBank = renders.rain.meta.diagnostics?.bank ?? null;
-                wave2.busyBank = renders.villageBusy.meta.diagnostics?.bank ?? null;
-                wave2.bakeTimers = Object.values(renders).flatMap(r => r.meta.timers);
-                if (!has('noise')) return;
-                for (const [name, t] of Object.entries(TEXTURE_SCENES)) {
-                    const r = renders[`texture:${name}`];
-                    const x = textureRows(r, t.stem);
-                    if (!Number.isFinite(x.lufsI) || x.lufsI < -110) { info('noise', `${name}: silent on the ${t.stem} stem (layer absent or at 0), not judged`); continue; }
-                    verdict('noise', x.peak.r < NOISE_LIMITS.autocorrMax, `${name} texture: autocorrelation peak ${fmt(x.peak.r, 3)} at ${fmt(x.peak.lagS, 2)} s over 0.5–20 s lags (stem ${fmt(x.lufsI)} LUFS-I, ICC ${fmt(x.icc, 2)}); want < ${NOISE_LIMITS.autocorrMax}`);
-                }
-                // C-AMB-3 (2.5, 4.3): the world bed by day, at night (the sea
-                // forward), in rain and in the storm.
-                for (const name of ['anchor', 'nightClear', 'rain', 'storm']) {
-                    const b = bedRows(renders[name]);
-                    verdict('noise', b.worldIcc >= NOISE_LIMITS.icc.min && b.worldIcc <= NOISE_LIMITS.icc.max, `${name} world bed ICC ${fmt(b.worldIcc, 3)} on 60 s; want ${NOISE_LIMITS.icc.min}–${NOISE_LIMITS.icc.max}`);
-                }
-                for (const name of ['anchor', 'nightClear', 'rain', 'storm', 'villageBusy']) {
-                    const b = bedRows(renders[name]);
-                    verdict('noise', b.monoLossLU <= NOISE_LIMITS.monoLossMaxLu, `${name} program mono fold loss ${fmt(b.monoLossLU, 2)} LU; want ≤ ${NOISE_LIMITS.monoLossMaxLu}`);
-                }
-                let lanes = 0;
-                let pairs = 0;
-                const conflicts = [];
-                for (const [name, r] of Object.entries(renders)) {
-                    if (!r.meta.starts) continue;
-                    const c = noiseLaneConflicts(r.meta.starts, { minSepSec: NOISE_LIMITS.laneSepSec, end: r.meta.warmup + r.meta.seconds });
-                    lanes += c.lanes;
-                    pairs += c.pairs;
-                    conflicts.push(...c.conflicts.map(x => `${name}: buffer ${x.buf} lanes from ${fmt(x.a, 1)} s and ${fmt(x.b, 1)} s ${fmt(x.closestSec, 2)} s apart at ${fmt(x.at, 1)} s`));
-                }
-                verdict('noise', lanes > 0 && conflicts.length === 0, `${lanes} pool lanes, ${pairs} concurrent pairs on one buffer across ${Object.keys(renders).filter(k => renders[k].meta.starts).length} scenes; ${conflicts.length} read within ${NOISE_LIMITS.laneSepSec} s${conflicts.length ? `: ${conflicts.slice(0, 3).join('; ')}` : ''}; want 0 (and ≥ 1 lane read)`);
-                const pool = wave2.noiseBank?.byClient?.noise;
-                verdict('noise', Number.isFinite(pool) && pool <= MEMORY_BUDGET.noise, `noise pool resident ${Number.isFinite(pool) ? `${fmt(pool / 1048576, 2)} MiB` : 'unreported'}; want ≤ ${fmt(MEMORY_BUDGET.noise / 1048576, 1)} MiB`);
+                const r = await scene('townBand');
+                wave2.busyBank = r.meta.diagnostics?.bank ?? null;
+                wave2.bakeTimers = r.meta.timers;
             },
         });
     }
@@ -690,7 +603,7 @@ function wave3Units(render, browser, baseUrl) {
                 const r = await render('ladder:trim', LADDER_TRIM_SCENE);
                 const calls = ladderTrimRows(r);
                 const j = judgeHeldTrim(calls);
-                verdict('ladder', j.pass, `Village, sound on: ${calls.map(c => `L${c.level} ${signed(c.margin)} LU (trim ${signed(c.trimDb)} dB, GR ${fmt(c.grDb)} dB)`).join(', ') || 'no calls'}; L2 ${fmt(j.l2UnderL1Lu)} LU under L1, trims spread ${fmt(j.trimSpreadDb, 2)} dB${j.failures.length ? ` — ${j.failures.join(', ')}` : ''}; want L2 ≥ 4 LU under L1, one trim held, L3 GR ≤ ${LOUDNESS_TARGETS.ceiling.urgentGrMaxDb} dB`);
+                verdict('ladder', j.pass, `Signals, sound on: ${calls.map(c => `L${c.level} ${signed(c.margin)} LU (trim ${signed(c.trimDb)} dB, GR ${fmt(c.grDb)} dB)`).join(', ') || 'no calls'}; L2 ${fmt(j.l2UnderL1Lu)} LU under L1, trims spread ${fmt(j.trimSpreadDb, 2)} dB${j.failures.length ? ` — ${j.failures.join(', ')}` : ''}; want L2 ≥ 4 LU under L1, one trim held, L3 GR ≤ ${LOUDNESS_TARGETS.ceiling.urgentGrMaxDb} dB`);
             },
         });
         units.push({
@@ -739,38 +652,6 @@ function wave3Units(render, browser, baseUrl) {
             });
         }
     }
-    if (has('heldnote')) {
-        for (const working of [1, 15]) {
-            units.push({
-                name: `heldnote (W = ${working})`,
-                async run() {
-                    const r = await render(`held:${working}`, heldNoteScene({ working }));
-                    const h = heldNoteRows(r, { openSec: HELD_OPEN_SEC, answerSec: HELD_ANSWER_SEC });
-                    const rise = heldNoteRise(h.programBand, h.open, h.answer);
-                    const beat = beatingDepthDb(h.heldBandDb);
-                    const levelOk = h.underBedLu != null && Math.abs(h.underBedLu - HELD_NOTE.underBedLu) <= HELD_NOTE.levelTolLu;
-                    verdict('heldnote', rise.pass, `W = ${working}: 270–310 Hz on the program ${fmt(rise.preDb)} dB before the wait; +${HELD_NOTE.riseDb} dB reached ${rise.riseAtSec != null ? `${fmt(rise.riseAtSec, 1)} s` : 'never'} after it opened (held ${signed(rise.heldRiseDb)} dB), back within ${HELD_NOTE.backTolDb} dB ${rise.backAtSec != null ? `${fmt(rise.backAtSec, 1)} s` : 'never'} after the answer; want ≤ ${HELD_NOTE.riseWithinSec} s and ≤ ${HELD_NOTE.backWithinSec} s (states ${[...new Set(h.snapshots)].join('→') || '—'})`);
-                    verdict('heldnote', beat != null && beat <= HELD_NOTE.beatingMaxDb, `W = ${working}: beating depth of the held D (270–310 Hz on the held stem, 0.1 s hop) ${fmt(beat, 2)} dB over the steady wait; want ≤ ${HELD_NOTE.beatingMaxDb}`);
-                    verdict('heldnote', levelOk, `W = ${working}: held note ${lufs(h.heldLufs)} vs bed ${lufs(h.bedLufs)} LUFS-S (stems, same staging): ${signed(h.underBedLu)} LU; want ${HELD_NOTE.underBedLu} ± ${HELD_NOTE.levelTolLu}`);
-                    if (r.errors.length) info('heldnote', `W = ${working}: page errors: ${r.errors.slice(0, 3).join(' | ')}`);
-                },
-            });
-        }
-        units.push({
-            name: 'heldnote absent (music, Town band, signals only)',
-            async run() {
-                const open = r => r.meta.warmup + HELD_OPEN_SEC;
-                const music = await render('held:music', heldNoteScene({ working: 4, music: true, answerAt: null, seconds: 50 }));
-                const m = heldWhileMusic(music, open(music));
-                verdict('heldnote', m != null && m.seconds > 0 && m.stMaxOut <= HELD_NOTE.absentMaxLufs, `Village under music: held stem ST max ${lufs(m?.stMaxOut)} LUFS at the output over ${m?.seconds ?? 0} s of music after the wait opened; want music playing and ≤ ${HELD_NOTE.absentMaxLufs}`);
-                for (const [key, spec, label] of [['held:bgm', heldNoteScene({ working: 4, mode: 'bgm', answerAt: null, seconds: 40 }), 'Town band'], ['held:signals', heldNoteScene({ working: 4, signals: true, answerAt: null, seconds: 40 }), 'signals only (blurred)']]) {
-                    const r = await render(key, spec);
-                    const h = heldNoteRows(r, { openSec: HELD_OPEN_SEC, answerSec: null });
-                    verdict('heldnote', h.heldStMaxOut != null && h.heldStMaxOut <= HELD_NOTE.absentMaxLufs, `${label}: held stem ST max ${lufs(h.heldStMaxOut)} LUFS at the output while the wait is open; want ≤ ${HELD_NOTE.absentMaxLufs} (absent)`);
-                }
-            },
-        });
-    }
     if (has('outcomes') || has('avsync')) {
         units.push({
             name: 'outcomes (World fixture, Dashboard fixture)',
@@ -806,7 +687,7 @@ function wave3Units(render, browser, baseUrl) {
         });
     }
     if (has('captions')) {
-        for (const mode of ['ambient', 'bgm']) {
+        for (const mode of CAPTION_MODES) {
             for (const soundOn of [true, false]) {
                 units.push({
                     name: `captions (${mode}, sound ${soundOn ? 'on' : 'off'})`,
@@ -819,7 +700,7 @@ function wave3Units(render, browser, baseUrl) {
                         const unplayed = kinds.filter(k => !rows.some(x => x.kind === k && x.played));
                         const shownBy = CAPTION_SETTINGS.map(s => `${s} ${rows.filter(x => x.setting === s && x.shown).length}`).join(', ');
                         verdict('captions', j.pass, `${mode}, sound ${soundOn ? 'on' : 'off'}: ${kinds.length - unplayed.length}/${kinds.length} kinds played${unplayed.length ? ` (not played: ${unplayed.join(', ')})` : ''}; captions shown per setting: ${shownBy}; ${j.failures.length} parity failure(s)${j.failures.length ? `: ${j.failures.slice(0, 6).join('; ')}` : ''}; want captions exactly per S6/3.8 (HAR-13)`);
-                        if (!soundOn && mode === 'ambient') {
+                        if (!soundOn && mode === CAPTION_MODES[0]) {
                             const leaked = rows.filter(x => x.setting === 'auto' && x.shown && CUE_STRATUM[x.kind] !== 'signal').map(x => x.kind);
                             verdict('captions', leaked.length === 0, `sound off, default setting: outcome or scenery captions shown: ${leaked.join(', ') || 'none'}; want none (3.8)`);
                         }
@@ -830,480 +711,40 @@ function wave3Units(render, browser, baseUrl) {
     }
     if (has('honesty')) {
         units.push({
-            name: 'honesty (must-never 3 and 13)',
+            name: 'honesty (must-never 13)',
             async run() {
-                const r = await render('honesty:long-wait', LONG_WAIT_SCENE);
-                const h = heldNoteRows(r, { openSec: HELD_OPEN_SEC, answerSec: LONG_WAIT_SECONDS - 12 });
-                const a = waitAudibleWindows(h.programBand, h.open, h.answer);
-                verdict('honesty', a.pass, `must-never 3: a ${fmt((h.answer - h.open) / 60, 1)}-min wait in Village with no music — the held note's band over the level before the wait in every 10 s window: worst ${signed(a.worstRiseDb)} dB over ${a.rows.length} windows; want ≥ +${HELD_NOTE.riseDb} throughout`);
                 const clusters = Object.values(wave3.cluster);
                 const locked = clusters.flatMap(c => c.phaseLocked);
                 verdict('honesty', clusters.length === 2 && locked.length === 0, `must-never 13 (SIG-10): phase-locked urgent bells among six same-tick needs-you and six errors: ${clusters.length < 2 ? 'not measured' : locked.length ? locked.map(p => `${p.kind} ${p.a}/${p.b} ×${p.hits}`).join(', ') : 'none'}; want none`);
                 const s = await render('honesty:stale', STALE_SCENE);
                 const sounding = s.meta.scheduled.filter(x => !x.silent && ['summons', 'distress', 'reminder'].includes(x.kind));
-                const hs = heldNoteRows(s, { openSec: 5, answerSec: null });
                 const captions = s.meta.cues.filter(c => ['summons', 'distress', 'reminder'].includes(c.kind)).length;
-                verdict('honesty', sounding.length === 0 && hs.heldStMaxOut <= HELD_NOTE.absentMaxLufs, `must-never 13 (SIG-9): stale agents raising a needs-you and an error → ${sounding.length} sounding signal score(s), held stem ST max ${lufs(hs.heldStMaxOut)} LUFS at the output (${captions} caption(s)); want no sound`);
+                verdict('honesty', sounding.length === 0, `must-never 13 (SIG-9): stale agents raising a needs-you and an error in Signals → ${sounding.length} sounding signal score(s) (${captions} caption(s)); want no sound`);
             },
         });
     }
     return units;
 }
 
-// ------------------------------------------------------------ Wave 4 units ----
-// Wave-4 numbers shared between units: the map's cells (judged after the
-// pool, when every phase has landed) and the anchor they are relative to.
-const wave4 = { cells: [], A: null };
-const cellLabel = c => `${c.phase} ${c.weather} ${c.load === 'resting' ? 'resting' : c.load.slice(1)}`;
-
-function wave4Units(render, renderOnce, scene, marginBed) {
-    const units = [];
-    const anchorA = async () => (wave4.A ??= sceneMetrics(await scene('anchor')).lufsI);
-    if (has('worldmap')) {
-        const cells = worldMapCells();
-        for (const phase of MAP_PHASES) {
-            units.push({
-                name: `worldmap (${phase}: ${Object.keys(MAP_WEATHERS).length} weathers × ${Object.keys(MAP_LOADS).length} loads, ${MAP_SECONDS} s each)`,
-                async run() {
-                    await anchorA();
-                    // S6 across the map: each 12-working cell's world stem
-                    // against the 3-working render of its phase and weather.
-                    let three = null;
-                    for (const c of cells.filter(x => x.phase === phase)) {
-                        const r = await renderOnce(c.key, c.spec);
-                        const row = { phase: c.phase, weather: c.weather, load: c.load, ...worldCellRow(r) };
-                        if (c.load === 'w3') three = r.stems.world;
-                        if (c.load === 'w12') { row.worldMaxAbs = three ? maxSampleDiff(three, r.stems.world) : null; three = null; }
-                        wave4.cells.push(row);
-                        summary[c.key] = { lufsI: row.lufsI };
-                    }
-                },
-            });
-        }
-    }
-    if (has('worldstem')) {
-        for (const fixture of Object.keys(WORLD_STEM_FIXTURES)) {
-            units.push({
-                name: `worldstem (${fixture}: 0 vs 12 working)`,
-                async run() {
-                    const none = await renderOnce(`worldstem:${fixture}:0`, worldStemScene(fixture, 0));
-                    const busy = await renderOnce(`worldstem:${fixture}:12`, worldStemScene(fixture, 12));
-                    const again = await renderOnce(`worldstem:${fixture}:12#2`, worldStemScene(fixture, 12));
-                    const d = maxSampleDiff(none.stems.world, busy.stems.world);
-                    const noise = maxSampleDiff(busy.stems.world, again.stems.world);
-                    const j = judgeWorldStem(d, { noise });
-                    const work = sceneMetrics(busy).lufsI - sceneMetrics(none).lufsI;
-                    const e = x => (x === Infinity ? 'length differs' : x.toExponential(2));
-                    verdict('worldstem', j.pass, `S6 / C-AMB-1, ${fixture}: world stem at 0 vs 12 working agents (same seed, no cue scheduled, ${WORLD_STEM_SECONDS + 2} s from the enable — before the empty village rests): ${j.identical ? 'bit-identical' : `max |Δ| ${e(d)}`}; the renderer's own noise (12 vs 12 again) ${e(noise)}; program Δ ${signed(work, 2)} LU from the work stratum; want identical within renderer noise, max |Δ| ≤ ${j.max.toExponential(0)} (−120 dBFS) or ≤ the repeat's. The sea's yield to scheduled cues (4.6, AMB-9) is the sanctioned cue coupling, not agent state`);
-                    // Where two renders part, and which bakes landed at other
-                    // audio times: the renderer's known nondeterminism.
-                    const attribute = (x, y) => {
-                        const from = firstDivergenceSec(x.stems.world, y.stems.world, x.sr, WORLD_STEM_MAX_ABS);
-                        const landed = bakeLandingDiffs(x.meta.bakes || [], y.meta.bakes || []);
-                        const live = (x.meta.workletNodes || []).filter(w => w.t > 0);
-                        const liveLine = live.length ? `AudioWorkletNodes built mid-render (their processors start on an audio-thread race): ${live.slice(0, 6).map(w => `${w.name} at ${fmt(w.t, 3)} s`).join(', ')}` : 'no AudioWorkletNode built mid-render';
-                        return `first over ${WORLD_STEM_MAX_ABS.toExponential(0)} at ${fmt(from, 3)} s; bakes landing at different audio times: ${landed.length ? landed.slice(0, 6).map(b => `${b.key} ${fmt(b.a, 3)} vs ${fmt(b.b, 3)} s`).join(', ') : `none of ${(x.meta.bakes || []).length}`}; ${liveLine}`;
-                    };
-                    if (noise > WORLD_STEM_MAX_ABS) warn('worldstem', `${fixture}: two renders of one scene (12 working, one seed) differ by max |Δ| ${e(noise)} (${fmt(20 * Math.log10(noise))} dBFS) — renderer nondeterminism, not float noise; ${attribute(busy, again)}`);
-                    if (!j.pass) info('worldstem', `${fixture}, 0 vs 12: ${attribute(none, busy)}`);
-                },
-            });
-        }
-    }
-    if (has('sea')) {
-        units.push({
-            name: 'sea (4.1: stem, texture, crests, rare voices)',
-            async run() {
-                const A = await anchorA();
-                const day = seaStemRow(await render('texture:sea', TEXTURE_SCENES.sea.spec));
-                const storm = seaStemRow(await render('texture:seaStorm', TEXTURE_SCENES.seaStorm.spec));
-                const night = seaStemRow(await renderOnce('sea:night', SEA_NIGHT_SCENE));
-                const rare = seaStemRow(await renderOnce('sea:rare', SEA_RARE_SCENE));
-                const silentCpu = seaStemRow(await renderOnce('sea:silent', SILENT_ISLAND_SCENE)).cpuPct;
-                const bed = await scene('nightClear');
-                const [lo, hi] = SEA_LIMITS.nightGainBandHz;
-                const gainDb = worldBandDb(bed, lo, hi) - worldBandDb(await renderOnce('sea:night-no-sea', NIGHT_BED_NO_SEA), lo, hi);
-                const all = { day, night, storm, rare };
-                const missing = Object.entries(all).filter(([, s]) => !s.snapshot).map(([k]) => k);
-                verdict('sea', missing.length === 0, `SeaLayer snapshot (director.layers.sea.snapshot()) in ${4 - missing.length}/4 renders${missing.length ? `; missing in ${missing.join(', ')}` : ''}; want every render`);
-                summary['sea:day'] = { lufsI: day.lufsOut };
-                const under = A - day.lufsOut;
-                verdict('sea', withinRange(under, SEA_LIMITS.underA), `day sea stem ${fmt(day.lufsOut)} LUFS-I at the output = ${fmt(under)} LU under A (${fmt(A)}); want ${SEA_LIMITS.underA.join('–')} under (ground, not figure)`);
-                for (const [name, s] of [['day', day], ['night', night], ['storm', storm]]) {
-                    verdict('sea', withinRange(s.icc, SEA_LIMITS.icc) && s.r4 < SEA_LIMITS.r4Max, `${name} sea (60 s alone): ICC ${fmt(s.icc, 3)}, r(4 s) ${fmt(s.r4, 3)} (peak ${fmt(s.peak?.r, 3)} at ${fmt(s.peak?.lagS, 2)} s), ${fmt(s.lufsOut)} LUFS-I at the output; want ICC ${SEA_LIMITS.icc.join('–')}, r(4 s) < ${SEA_LIMITS.r4Max}`);
-                }
-                verdict('sea', withinRange(day.breaksPerMin, SEA_LIMITS.breaksPerMin), `breaking waves by day: ${fmt(day.breaksPerMin)}/min (crests committed in the 60 s); want ${SEA_LIMITS.breaksPerMin.join('–')} (4.1: ~5)`);
-                info('sea', `breaking waves: night ${fmt(night.breaksPerMin)}/min, storm ${fmt(storm.breaksPerMin)}/min (AMB-1 asks ${SEA_LIMITS.stormBreaksPerMin.join('–')} in a storm)`);
-                verdict('sea', withinRange(gainDb, SEA_LIMITS.nightGainDb), `night bed, aggregate ${lo} Hz–${hi / 1000} kHz band energy, with the sea vs without it (nightClear, the sea forced to 0): ${signed(gainDb)} dB; want ${SEA_LIMITS.nightGainDb.map(v => `+${v}`).join('…')}`);
-                const gulls = [night, storm].flatMap(s => s.rare.filter(v => v.kind === 'gull'));
-                verdict('sea', gulls.length === 0, `gulls at night and in the storm: ${gulls.length}; want 0 (C-AMB-7: gulls roost)`);
-                const rareAll = Object.values(all).flatMap(s => s.rare);
-                const kinds = ['gull', 'clink', 'groan'].map(k => `${k} ${rareAll.filter(v => v.kind === k).length}`).join(', ');
-                const groans = rareAll.filter(v => v.kind === 'groan');
-                const bad = groanViolations(rareAll);
-                if (groans.length) verdict('sea', bad.length === 0, `hull groans: ${groans.length}, resonances ${[...new Set(groans.flatMap(g => g.hz || []).map(h => Math.round(h)))].join(', ')} Hz; ${bad.length} inside ${SEA_LIMITS.groanForbiddenHz.join('–')} Hz; want none (S1, C-AMB-8)`);
-                else info('sea', `no hull groan sounded in ${60 * 3 + 240} s of sea (the resonance rule is unexercised)`);
-                const nodeRows = Object.entries(all).map(([k, s]) => ({ k, nodes: s.nodeCreations, takes: s.rare.length }));
-                const over = nodeRows.filter(x => !(Number.isFinite(x.nodes) && x.nodes <= SEA_LIMITS.nodesPerTake * x.takes));
-                verdict('sea', over.length === 0, `node creations after start: ${nodeRows.map(x => `${x.k} ${x.nodes ?? '—'} for ${x.takes} rare take(s)`).join(', ')} (rare voices: ${kinds}); want ≤ ${SEA_LIMITS.nodesPerTake} per take and 0 per wave (C-AMB-4)`);
-                info('sea', `CPU offline proxy (render wall ÷ audio time, harness included): sea alone ${fmt(day.cpuPct, 2)} % by day, ${fmt(storm.cpuPct, 2)} % in the storm vs an island with every layer at 0 ${fmt(silentCpu, 2)} % → the sea ≈ ${fmt(day.cpuPct - silentCpu, 2)} / ${fmt(storm.cpuPct - silentCpu, 2)} % (4.1: ≤ 2 % on a quiet host; relative only)`);
-            },
-        });
-    }
-    if (has('thunder')) {
-        units.push({
-            name: `thunder (4.2: ${THUNDER_INTENSITIES.length} strikes over the storm)`,
-            async run() {
-                const r = await renderOnce('thunder', THUNDER_SCENE);
-                const t = thunderRows(r);
-                const j = judgeThunder(t.rows);
-                for (const row of j.rows) {
-                    summary[`thunder:${row.intensity}`] = { margin: row.margin };
-                    verdict('thunder', row.pass, `intensity ${row.intensity} (${row.near ? 'near' : 'far'}): onset ${fmt(row.delaySec, 2)} s after the flash (want ${fmt(row.expectedDelaySec, 2)}), ${signed(row.margin)} LU over the storm from the onset (bed ${fmt(row.bedLufs)} LUFS), GR ${fmt(row.grDb)} dB, grain ${row.grains.map(g => `buf ${g.buf} ${fmt(g.off, 2)}–${fmt(g.end, 2)} s`).join(' + ') || 'none seen'}; want +${row.window.min}…+${row.window.max} LU, GR ≤ ${LOUDNESS_TARGETS.ceiling.thunderGrMaxDb} dB${row.failures.length ? ` — ${row.failures.join('; ')}` : ''}`);
-                }
-                const order = j.rows.filter(x => Number.isFinite(x.margin)).sort((a, b) => a.intensity - b.intensity).map(x => `${x.intensity} ${signed(x.margin)}`).join(' < ');
-                verdict('thunder', j.monotonic, `level vs intensity: ${order || 'none heard'}${j.drops.length ? `; louder for less: ${j.drops.map(d => `${d.from}→${d.to} ${signed(d.deltaLu)} LU`).join(', ')}` : ''}; want monotonic (tolerance ${THUNDER_LIMITS.monotonicTolLu} LU)`);
-                verdict('thunder', j.reused.length === 0 && j.rows.every(x => x.grains.length > 0), `fresh noise grain per strike: ${j.reused.length} reused pair(s)${j.reused.length ? ` (${j.reused.map(x => `#${x.a}/#${x.b} buf ${x.buf} ${signed(x.gapSec, 2)} s apart`).join(', ')})` : ''}, ${j.rows.filter(x => !x.grains.length).length} strike(s) with no pool read seen; want each strike's reads ≥ ${THUNDER_LIMITS.grainSepSec} s of buffer from the previous ${THUNDER_LIMITS.grainRecent} strikes'`);
-                verdict('thunder', t.ducks.length === 0, `ducks during the thunder scene: ${t.ducks.length}; want none (S3: thunder ducks nothing)`);
-                verdict('thunder', t.stMax <= LOUDNESS_TARGETS.storm.stMax, `storm with ${j.rows.length} strikes (world only): ST max ${fmt(t.stMax)}, LUFS-I ${fmt(t.lufsI)}, GR max ${fmt(t.grMaxDb)} dB; want ST max ≤ ${LOUDNESS_TARGETS.storm.stMax}${t.extraScores ? ` (${t.extraScores} thunder score(s) with no flash: the fallback?)` : ''}`);
-            },
-        });
-    }
-    if (has('masking')) {
-        units.push({
-            name: 'masking (must-never 8: thunder and rain)',
-            async run() {
-                const r = await renderOnce('masking:storm', MASKING_SCENE);
-                const onsets = thunderRows(r).rows.map(x => x.onset).filter(Number.isFinite);
-                for (const row of laneMarginRows(r, 'weather')) {
-                    const j = judgeLane(row.lane, 'weather', [row]);
-                    const onset = onsets.filter(o => o <= row.at).pop();
-                    const concurrent = row.at != null ? concurrentOverBedLu(r, row.at) : null;
-                    outcome('masking', j.outcome, `must-never 8: ${row.lane} ${onset != null ? `${fmt(row.at - onset, 2)} s into a full thunder roll` : '(no thunder before it)'}: ${signed(row.margin)} LU over the 3 s before (${fmt(j.band, 0)} bands ≥ +6 dB, GR ${fmt(j.gr)} dB); cue stem ${signed(concurrent)} LU over the world stem while both sound; want ≥ +${j.window.min}${j.failures.length ? ` — ${j.failures.map(f => f.what).join(', ')}` : ''}`, Math.max(0, ...j.failures.map(f => f.gatedFrom)));
-                }
-                const { rows: rain } = await marginBed('rain', URGENT_LANES);
-                for (const lane of URGENT_LANES) {
-                    const j = judgeLane(lane, 'weather', rain.filter(x => x.lane === lane), { probeBed: 'rain' });
-                    outcome('masking', j.outcome, `must-never 8: ${lane} over rain: median ${signed(j.margin)} LU (${j.n} placements, GR ${fmt(j.gr)} dB); want ≥ +${j.window.min}${j.failures.length ? ` — ${j.failures.map(f => f.what).join(', ')}` : ''}`, Math.max(0, ...j.failures.map(f => f.gatedFrom)));
-                }
-            },
-        });
-    }
-    if (has('crest')) {
-        for (const [bedName, b] of Object.entries(CREST_BEDS)) {
-            units.push({
-                name: `crest (4.6: ${b.lanes.join(', ')} on a crest over the ${bedName} bed)`,
-                async run() {
-                    const free = await renderOnce(`crest:${bedName}:free`, crestScene(bedName));
-                    const crest = loudestCrest(free, free.meta.warmup + CREST_WINDOW[0], free.meta.warmup + CREST_WINDOW[1]);
-                    if (!crest) { verdict('crest', false, `${bedName}: no crest committed in [${CREST_WINDOW.join(', ')}] s of a cue-free render (sea snapshot ${free.meta.sea ? 'present' : 'missing'})`); return; }
-                    const cal = crestCalibration(bedName);
-                    const c = await renderOnce(`crest:${bedName}:cal`, cal.spec);
-                    const offRows = laneMarginRows(c, b.bed);
-                    for (const lane of b.lanes) {
-                        const off = offRows.find(x => x.lane === lane);
-                        if (!off || off.margin == null) { verdict('crest', false, `${lane} over the ${bedName} bed: the calibration cue was not admitted`); continue; }
-                        const lead = off.at - (c.meta.warmup + cal.at[lane]);
-                        const p = await renderOnce(`crest:${bedName}:${lane}`, crestPlaced(bedName, lane, crest.t - free.meta.warmup - lead));
-                        const on = laneMarginRows(p, b.bed).find(x => x.lane === lane);
-                        const j = judgeLane(lane, b.bed, on ? [on] : []);
-                        const gap = on ? crestGap(p, on.at) : null;
-                        outcome('crest', j.outcome, `${lane} over the ${bedName} bed, first note ${on ? `${signed(on.at - crest.t, 2)} s` : '—'} from the loudest crest of the cue-free render (${fmt(crest.t)} s, amp ${fmt(crest.amp, 2)}): ${signed(on?.margin)} LU on the crest vs ${signed(off.margin)} off it (GR ${fmt(on?.grDb)} dB); nearest crest in this render ${gap ? `${fmt(gap.gapSec, 2)} s away${gap.moved ? ', moved for the cue' : ''}` : '—'}, sea yields ${p.meta.sea?.yields ?? '—'} (cue lead ${fmt(lead, 2)} s: under 1.5 s the duck alone covers it); want ${j.window.min != null ? `≥ ${signed(j.window.min, 0)}` : ''}${j.window.max != null ? ` ≤ ${signed(j.window.max, 0)}` : ''}${j.failures.length ? ` — ${j.failures.map(f => f.what).join(', ')}` : ''}`, Math.max(0, ...j.failures.map(f => f.gatedFrom)));
-                    }
-                },
-            });
-        }
-    }
-    return units;
-}
-
-// 4.5 and S2/S6/S7 over the whole map, once every phase unit has landed.
-function judgeWorldMapRows() {
-    const order = (c) => [MAP_PHASES.indexOf(c.phase), Object.keys(MAP_WEATHERS).indexOf(c.weather), Object.keys(MAP_LOADS).indexOf(c.load)];
-    const cells = wave4.cells.slice().sort((a, b) => { const x = order(a); const y = order(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; });
-    const want = MAP_PHASES.length * Object.keys(MAP_WEATHERS).length * Object.keys(MAP_LOADS).length;
-    const A = wave4.A;
-    if (!Number.isFinite(A) || cells.length !== want) { verdict('worldmap', false, `${cells.length}/${want} cells rendered, A ${fmt(A)}; want every cell`); return; }
-    const j = judgeWorldMap(cells, A);
-    for (const phase of MAP_PHASES) {
-        for (const weather of Object.keys(MAP_WEATHERS)) {
-            const rows = j.rows.filter(r => r.phase === phase && r.weather === weather);
-            info('worldmap', `${phase} ${weather} [${rows[0].row}${rows.some(r => r.row !== rows[0].row) ? `/${rows.find(r => r.row !== rows[0].row).row}` : ''}]: ${rows.map(r => `${r.load === 'resting' ? 'resting' : `${r.load.slice(1)} working`} ${fmt(r.load === 'resting' ? r.stMean : r.lufsI)} (A ${signed(r.over)}${r.pass ? '' : ' ✗'})`).join(' · ')}; 2–5 kHz ${rows.map(r => fmt(r.presenceDb)).join('/')} dB, onsets ${rows.map(r => fmt(r.onsetsPerMin, 0)).join('/')}/min, CPU proxy ${rows.map(r => fmt(r.cpuPct, 1)).join('/')} %${rows[0].dayArc ? `, grade ${rows[0].dayArc}` : ''}`);
-        }
-    }
-    verdict('worldmap', j.failures.length === 0, `${cells.length} world scenes vs their S2 rows relative to A ${fmt(A)} (resting: pilot light; rain ≤ A + ${LOUDNESS_TARGETS.rain.maxOverA}; storm ≤ A + ${LOUDNESS_TARGETS.storm.maxOverA} with ST max ≤ ${LOUDNESS_TARGETS.storm.stMax}; night ≤ A + ${LOUDNESS_TARGETS.night.maxOverA ?? '—'}): ${j.failures.length} failing${j.failures.length ? `: ${j.failures.slice(0, 8).map(r => `${cellLabel(r)} A ${signed(r.over)} (want ${r.want})`).join('; ')}` : ''}`);
-    const arcOut = j.rows.filter(r => r.row === 'dayArc' && !r.inArc);
-    verdict('worldmap', j.arc.pass, `day arc (4.5, AMB-12): ${j.arc.within}/${j.arc.n} waking dry-weather scenes within A ${signed(LOUDNESS_TARGETS.dayArc?.overA, 0)} ± ${LOUDNESS_TARGETS.dayArc?.toleranceLu ?? '—'} (${fmt(100 * (j.arc.share ?? NaN), 0)} %)${arcOut.length ? `; outside: ${arcOut.slice(0, 8).map(r => `${cellLabel(r)} ${signed(r.over)}`).join(', ')}` : ''}; want ≥ ${fmt(100 * (j.arc.minShare ?? NaN), 0)} %`);
-    const mn7 = nightWeatherOverDay(cells);
-    verdict('worldmap', mn7.pass, `must-never 7: loudest night/weather scene over the clear day at the same load: ${mn7.worst ? `${cellLabel(mn7.worst)} ${signed(mn7.worst.overDay)} LU` : '—'}${mn7.failures.length ? `; over: ${mn7.failures.map(r => `${cellLabel(r)} ${signed(r.overDay)}`).join(', ')}` : ''}; want ≤ +${MUST_NEVER_7_LU} LU`);
-    for (const load of ['w3', 'w12']) {
-        const cell = (phase) => cells.find(c => c.phase === phase && c.weather === 'clear' && c.load === load);
-        const p = presenceUnderNoon(cell('night').presenceDb, cell('day').presenceDb);
-        verdict('worldmap', p.pass, `S2 night row, world stratum (${load.slice(1)} working, clear): 2–5 kHz ${fmt(p.underDb)} dB under noon (program = world); want ≥ ${p.minDb} dB darker`);
-    }
-    const ob = judgeOnsetBudget(cells);
-    verdict('worldmap', ob.pass, `ambient onsets (S7, band-rise detector on the program): busiest ${ob.worst ? `${cellLabel(ob.worst)} ${fmt(ob.worst.onsetsPerMin, 0)}/min` : '—'}${ob.over.length ? `; over: ${ob.over.map(c => `${cellLabel(c)} ${fmt(c.onsetsPerMin, 0)}`).join(', ')}` : ''}; want ≤ ${ob.max}/min everywhere`);
-    const s6 = worldStemDiffers(cells);
-    const worstAbs = s6.pairs.reduce((w, p) => (p.maxAbs != null && (w == null || p.maxAbs > w) ? p.maxAbs : w), null);
-    info('worldmap', `S6 / C-AMB-1 across the map (the gate is \`worldstem\`, which measures the renderer's noise beside it): world stem at 3 vs 12 working identical within renderer noise in ${s6.pairs.length - s6.differing.length}/${s6.pairs.length} phase × weather pairs (${s6.pairs.filter(p => p.identical).length} bit-identical, worst max |Δ| ${worstAbs != null ? worstAbs.toExponential(2) : '—'})${s6.differing.length ? `; differ: ${s6.differing.map(d => `${d.phase} ${d.weather} ${d.maxAbs != null ? d.maxAbs.toExponential(2) : '—'}`).join(', ')}` : ''}; ≤ ${WORLD_STEM_MAX_ABS.toExponential(0)} is the noise-free bar (storm cells carry a flash, no cue)`);
-    const cpu = cells.map(c => c.cpuPct).filter(Number.isFinite);
-    const cpuOf = (weather, phase = 'day') => cells.find(c => c.phase === phase && c.weather === weather && c.load === 'w3')?.cpuPct;
-    info('worldmap', `CPU offline proxy (render wall ÷ audio time, the harness and the directors included): median ${fmt(median(cpu), 1)} %, max ${fmt(Math.max(...cpu), 1)} %; day clear ${fmt(cpuOf('clear'), 1)} %, day storm ${fmt(cpuOf('storm'), 1)} %, night clear ${fmt(cpuOf('clear', 'night'), 1)} % (S8: calm ≤ 2.5 %, storm ≤ 3.5 % of a core for the environment on a quiet host; relative only)`);
-    const errs = cells.flatMap(c => c.errors || []);
-    if (errs.length) info('worldmap', `page errors: ${errs.slice(0, 3).join(' | ')}`);
-}
-
-// ------------------------------------------------------------ Wave 5 units ----
+// ------------------------------------------------------------ quiet mix ----
 const pct = x => (Number.isFinite(x) ? `${Math.round(100 * x)} %` : '—');
-const lastWord = s => (s ? s.split('/').pop() : '—');
 
-// The layer must exist and publish before any Wave-5 number means anything.
-function workshopsPresent(check, r, label) {
-    const snap = r.meta.workshops;
-    if (snap && !snap.error) return true;
-    verdict(check, false, `${label}: no workshop layer (director.layers.workshops.snapshot() ${snap?.error ? `threw: ${snap.error}` : 'missing'}); page errors: ${r.errors.slice(0, 2).join(' | ') || 'none'}`);
-    return false;
-}
-
-function wave5Units(render, renderOnce, scene, marginBed) {
+function quietMixUnits(renderOnce) {
     const units = [];
-    const L = WORK_LIMITS;
-    const reference = () => render('workRef:day', workshopScene('reference'));
-    if (has('workshops')) {
-        units.push({
-            name: 'workshops (5.1: the reference Forge, nodes, tick cost)',
-            async run() {
-                const r = await reference();
-                if (!workshopsPresent('workshops', r, 'reference day')) return;
-                const f = forgeRow(r, { stopLabel: 'forge#0 idle', staleLabel: 'forge#2 stale', staleAgentIndex: 2 });
-                const gap = longestGap(f.active, { from: r.meta.warmup, to: f.stopSec });
-                verdict('workshops', gap.maxGapSec != null && gap.maxGapSec <= L.forgeMaxGapSec, `reference day: Forge longest gap while working ${fmt(gap.maxGapSec, 2)} s (after ${fmt(gap.at, 2)} s; ${gap.n} strikes in ${fmt(r.meta.warmup)}–${fmt(f.stopSec)} s, one smith stale at ${fmt(f.staleSec, 1)} s); want ≤ ${L.forgeMaxGapSec} s (FOL v3: 2.76 s schedule, 4.15 s heard)`);
-                const stop = stopTiming(f.times, f.stopSec, f.periodSec);
-                verdict('workshops', stop.pass, `reference day: the Forge's last strike ${fmt(stop.lastSec, 2)} s = ${fmt(stop.leadSec, 2)} s before the smiths' first non-working observation (${fmt(f.stopSec, 2)} s); ${stop.late} strike(s) later than P_b ${fmt(f.periodSec, 2)} s after it; want ≤ ${L.stopLeadSec} s before and none after (FOL v3: 0.45 s)`);
-                verdict('workshops', f.staleAccents === 0, `reference day: accents from the smith after it went stale (${fmt(f.staleSec, 1)} s): ${f.staleAccents}; want 0 (S6)`);
-                const snap = r.meta.workshops;
-                const sounded = (r.meta.work || []).length;
-                verdict('workshops', Number.isFinite(snap.nodeCreations) && snap.nodeCreations <= 2 * sounded, `node creations ${snap.nodeCreations ?? '—'} for ${sounded} published strikes (${fmt(snap.nodeCreations / Math.max(1, sounded), 2)} per take; overlap-guard hits ${snap.overlapGuardHits ?? '—'}, cancelled ${snap.cancelled ?? '—'}, dropped ${JSON.stringify(snap.dropped ?? null)}); want ≤ 2 per sounding take (S8)`);
-                const tick = tickRows(r);
-                const line = t => (t ? `${lastWord(t.site)} ×${t.fired}: p95 ${fmt(t.p95Ms, 3)} ms, max ${fmt(t.maxMs, 3)} ms` : '—');
-                info('workshops', `main-thread per tick (real ms on this host, harness included; 5.1 asks ≤ ${L.tickMs} ms for the scheduler): the layer's Transport windows p95 ${fmt(tick.layer?.p95, 3)} ms, max ${fmt(tick.layer?.max, 3)} ms over ${tick.layer?.windows ?? '—'}; director ${line(tick.director)}; Transport ${line(tick.transport)}`);
-            },
-        });
-        units.push({
-            name: 'workshops (5.1 / S6: stale, idle, lost link)',
-            async run() {
-                const r = await renderOnce('work:honesty', WORK_HONESTY_SCENE);
-                if (!workshopsPresent('workshops', r, 'honesty')) return;
-                const h = honestyRows(r, WORK_HONESTY);
-                verdict('workshops', h.staleOnly === 0, `S6: onsets while only stale agents work and one is idle (0–${WORK_HONESTY.freshAt} s): ${h.staleOnly}; want 0`);
-                verdict('workshops', h.fresh > 0 && h.again > 0, `a fresh smith is heard: ${h.fresh} strikes while it works, ${h.again} after it resumes; want > 0 each`);
-                verdict('workshops', h.idle === 0, `S6: onsets with working === 0 (from P_b after the smith goes idle until it resumes): ${h.idle}; want 0`);
-                verdict('workshops', h.lostAt != null && h.afterLost === 0, `S6: onsets after the link is lost (linkLost cue at ${fmt(h.lostAt, 2)} s; the feed dropped at ${fmt(r.meta.warmup + WORK_HONESTY.dropAt, 1)} s), past the 0.35 s work horizon: ${h.afterLost ?? '—'}; work stem ${fmt(h.workLufsBefore)} LUFS before → ${fmt(h.workLufsAfterLost)} LUFS from 4 s after; want 0`);
-            },
-        });
-        units.push({
-            name: 'workshops (5.1 / FOL-5: downbeats in World, the poll in Dashboard)',
-            async run() {
-                const world = await renderOnce('work:downbeats', workDownbeatScene());
-                const dash = await renderOnce('work:downbeats:dashboard', workDownbeatScene({ dashboard: true }));
-                if (!workshopsPresent('workshops', world, 'downbeats (World)')) return;
-                const d = downbeatRows(world);
-                const withBeat = d.accents.filter(s => Number.isFinite(s.downbeatMs));
-                const sync = downbeatSync(withBeat.map(s => s.wallMs), d.drawn.map(x => x.atMs));
-                const own = withBeat.map(s => Math.abs(s.wallMs - s.downbeatMs));
-                verdict('workshops', sync.pass, `World: ${withBeat.length}/${d.accents.length} accents on a drawn downbeat (${d.drawn.length} drawn by the stand-in conductor); published strike vs the drawn beat: median ${fmt(sync.medianAbsMs, 1)} ms, p95 ${fmt(sync.p95AbsMs, 1)} ms, ${sync.unmatched} off every drawn beat (layer's own |wall − downbeat| median ${fmt(median(own), 1)} ms); drawn beats with a strike within ±${L.syncMedianMs} ms: ${sync.covered}/${sync.drawn}; want median ≤ ${L.syncMedianMs}, p95 ≤ ${L.syncP95Ms} ms`);
-                const phase = world.meta.warmup + WORK_POLL.phaseSec;
-                const pw = pulseIndex(d.onsets, { pollPhaseSec: phase });
-                verdict('workshops', pw.index != null && pw.index <= L.pulseIndexMax, `World: poll-lock pulse index ${fmt(pw.index, 2)} over ${d.onsets.length} onsets (poll-phase histogram ${pw.histogram.join(' ')}); want ≤ ${L.pulseIndexMax} (FOL: downbeats-only 2.21); C-FOL-1: ${pct(d.grid)} of strikes on their gesture grid (±15 ms of k·P_b)`);
-                const dd = downbeatRows(dash);
-                const pd = pulseIndex(dd.onsets, { pollPhaseSec: dash.meta.warmup + WORK_POLL.phaseSec });
-                const ratio = d.onsets.length ? dd.onsets.length / d.onsets.length : null;
-                info('workshops', `Dashboard (no ritual; the de-clumped grid): pulse index ${fmt(pd.index, 2)} (histogram ${pd.histogram.join(' ')}), ${dd.onsets.length} onsets vs ${d.onsets.length} in World (${fmt(ratio, 2)}×; FOL-1 asks ±10 %), ${dd.accents.filter(s => Number.isFinite(s.downbeatMs)).length} accents claiming a downbeat (want 0)`);
-            },
-        });
-    }
-    // 5.3 / 5.5 audibility on the dedicated cells (≥ 20 accents a building).
-    const audibilityUnit = (check, pattern, phase) => ({
-        name: `${check} (${phase === 'night' ? '5.5' : '5.3'}: ${pattern} accents heard by ${phase}, ${AUDIBILITY_SECONDS} s cell)`,
-        async run() {
-            const ctx = await renderOnce(`work:audible:${pattern}:${phase}`, audibilityScene(pattern, { phase }));
-            if (!workshopsPresent(check, ctx, `${pattern} ${phase} audibility cell`)) return;
-            const env = await renderOnce(`work:audible:${pattern}:${phase}:env`, audibilityScene(pattern, { phase, env: true }));
-            const accents = strikesOf(ctx, { from: ctx.meta.warmup, to: ctx.meta.warmup + ctx.meta.seconds - 0.3 }).filter(s => s.kind === 'accent' && !s.flam);
-            const heard = heardRows(accents, ctx.program, env.program, ctx.sr, phase === 'night' ? WORK_BANDS_NIGHT : WORK_BANDS_DAY);
-            const h = judgeHeard(heard, Object.keys(heard).sort());
-            const band = phase === 'night' ? '1.2–3 kHz' : "FOL round 2's day bands";
-            verdict(check, h.pass && h.rows.length > 0, `${pattern} ${phase}: accents heard (band rise ≥ ${L.heardRiseDb} dB in context, ${band}) — ${h.rows.map(x => `${x.building} ${pct(x.share)} of ${x.n}${x.enough ? '' : ' (too few)'} (control ${pct(heard[x.building].control / heard[x.building].n)}, median rise ${fmt(heard[x.building].medianRiseDb, 1)} dB)`).join(', ') || 'none'}; want ≥ ${pct(L.heardShare)} on ≥ ${L.heardMinAccents} accents at every staffed building (v3: ${phase === 'night' ? '78' : '86'}–100 %)`);
-            info(check, `${pattern} ${phase} audibility cell: program ${fmt(sceneMetrics(ctx).lufsI)} LUFS-I vs ${fmt(sceneMetrics(env).lufsI)} without the stratum; ${onsetsOf(strikesOf(ctx)).length} onsets in ${ctx.meta.seconds} s; layer night ${ctx.meta.workshops?.night ?? '—'}${phase === 'night' ? `; Forge accent slots ${[...new Set(accents.filter(s => s.building === 'forge').map(s => Math.round(s.hz)))].sort().join('/') || '—'} Hz (C♯7 → C7, F♯7 → G7 at night)` : ''}`);
-        },
-    });
-    if (has('worklevel')) {
-        units.push({
-            name: 'worklevel (5.3: reference scenes by day, ctx vs env)',
-            async run() {
-                const urgent = (await marginBed('village', URGENT_LANES)).urgentTp;
-                info('worklevel', `urgent-cue true peaks at the output (the margins' Village placements, each lane on its own render; Wave-3 voices at their in-context trims): ${urgent.map(u => `${u.lane} ${fmt(u.tpDbtp)} dBTP (n ${u.n})`).join(', ')}`);
-                for (const pattern of Object.keys(WORK_PATTERNS)) {
-                    const ctx = pattern === 'reference' ? await reference() : await renderOnce(`workOther:day`, workshopScene(pattern));
-                    if (!workshopsPresent('worklevel', ctx, `${pattern} day`)) continue;
-                    const env = await renderOnce(`work:${pattern}:day:env`, workshopScene(pattern, { env: true }));
-                    const row = workLevelRow(ctx, env);
-                    const j = judgeWorkLevel({ ...row, urgentTpDbtp: urgent.map(u => u.tpDbtp) });
-                    summary[`work:${pattern}:day`] = { lufsI: row.workLufs };
-                    verdict('worklevel', j.pass, `${pattern} day: workshop stratum (dry + air, ctx − env) ${fmt(row.workLufs)} LUFS-I (M max ${fmt(row.workMMax)}) = ${fmt(j.underLu)} LU under the program ${fmt(row.programLufs)} (want ≥ ${L.underProgramLu}; v3 13.4); program Δ ${signed(j.deltaLu, 2)} LU vs the environment alone ${fmt(row.envProgramLufs)} (want ≤ +${L.programDeltaMaxLu}); work TP ${fmt(row.workTpDbtp)} dBTP = ${fmt(j.tpMarginDb)} dB under the quietest urgent cue ${fmt(j.urgentFloorDbtp)} (want ≥ ${L.tpUnderUrgentDb})${j.failures.length ? ` — ${j.failures.join('; ')}` : ''}`);
-                    const all = strikesOf(ctx, { from: ctx.meta.warmup, to: ctx.meta.warmup + ctx.meta.seconds - 0.3 });
-                    const times = onsetsOf(all).map(s => s.at);
-                    const share = onsetShare25(ctx.program, ctx.sr, times);
-                    const envShare = onsetShare25(env.program, env.sr, times);
-                    const shareLine = `onset-weighted 2–5 kHz share of the program ${fmt(share, 2)} % over ${times.length} strike windows (environment alone at the same instants ${fmt(envShare, 2)} %, so the stratum adds ${signed(share - envShare, 2)} points; the stratum itself ${fmt(onsetShare25(row.stratum, ctx.sr, times), 1)} %)`;
-                    // The plan's absolute figure is the reference scene's;
-                    // elsewhere the environment differs, so the stratum's
-                    // increment is judged and the absolute share is INFO.
-                    if (pattern === 'reference') verdict('worklevel', share != null && share <= L.share25MaxPct, `${pattern} day: ${shareLine}; want ≤ ${L.share25MaxPct} % (v3: 1.02 %)`);
-                    else verdict('worklevel', share != null && envShare != null && share - envShare <= L.share25IncrementMaxPts, `${pattern} day: ${shareLine}; want the increment ≤ +${L.share25IncrementMaxPts} points (absolute INFO; ≤ ${L.share25MaxPct} % is the reference scene's)`);
-                    const dense = maxOnsetsIn(times, 1);
-                    const accents = all.filter(s => s.kind === 'accent');
-                    verdict('worklevel', dense <= L.maxOnsetsPer1s, `${pattern} day: densest 1 s ${dense} onsets (${times.length} in ${ctx.meta.seconds} s, ${fmt(times.length / ctx.meta.seconds, 2)}/s; ${accents.length} accents, ${times.length - accents.length} ghosts); want ≤ ${L.maxOnsetsPer1s} (S7)`);
-                    const loss = routineLossRows(ctx, env);
-                    const worst = loss.reduce((m, x) => (x.lossLu != null && (m == null || x.lossLu > m) ? x.lossLu : m), null);
-                    verdict('worklevel', loss.length > 0 && loss.every(x => x.lossLu != null) && worst <= L.routineLossMaxLu, `${pattern} day: routine-cue margin with the stratum vs without — ${loss.map(x => `${x.label} ${signed(x.on)} vs ${signed(x.off)} LU`).join(', ') || 'no routine cue admitted'}; worst loss ${signed(worst, 2)} LU; want ≤ ${L.routineLossMaxLu}`);
-                }
-            },
-        });
-        for (const pattern of Object.keys(WORK_PATTERNS)) units.push(audibilityUnit('worklevel', pattern, 'day'));
-    }
-    if (has('workslots')) {
-        units.push({
-            name: 'workslots (5.4: two smiths, focus, a needs-you)',
-            async run() {
-                const on = await renderOnce('work:slots', workSlotsScene());
-                const off = await renderOnce('work:slots:twin', workSlotsScene({ select: false }));
-                if (!workshopsPresent('workslots', on, 'slots')) return;
-                const a = slotRows(on, { selectLabel: 'select smith 1', needsYouAt: WORK_SLOTS.needsYouAt });
-                const b = slotRows(off, { selectLabel: 'select smith 1', needsYouAt: WORK_SLOTS.needsYouAt });
-                const agents = Object.keys(a.byAgent).filter(id => id !== 'null' && id !== 'undefined');
-                // A pitch is its slot (pitchIndex); Hz carries the take's ±0.3 % rate jitter.
-                const pitches = agents.map(id => [...new Set(a.byAgent[id].map(s => s.pitchIndex))]);
-                const hzOf = id => fmt(median(a.byAgent[id].map(s => s.hz)), 0);
-                const distinct = new Set(pitches.flat()).size;
-                verdict('workslots', agents.length === 2 && pitches.every(p => p.length === 1) && distinct === 2, `2 forge agents: accent pitches ${agents.map((id, i) => `${id} slot ${pitches[i].join('/')} ≈ ${hzOf(id)} Hz (${a.byAgent[id].length} accents)`).join(', ') || 'none'}; ${distinct} distinct; want 2 agents, one pitch each, 2 distinct (SIG-11)`);
-                const selected = on.meta.markers.find(m => m.label === 'select smith 1')?.agentId;
-                const other = agents.find(id => id !== selected);
-                // The same accents booked in both renders (one seed), after the
-                // selection: their published gains differ by the focus alone.
-                const t0 = a.selectAt;
-                const paired = pairedGainDiffs(on, off, { from: t0 + 0.5, to: on.meta.warmup + on.meta.seconds });
-                const fo = judgeFocus({ focusDb: paired[selected] || [], otherDb: paired[other] || [] });
-                verdict('workslots', fo.pass, `focus on ${selected ?? '—'} at ${fmt(t0, 1)} s: its accents ${signed(fo.focusDb, 2)} dB over the same accents in the twin without focus (${(paired[selected] || []).length} paired; published gains), the other smith ${signed(fo.otherDb, 2)} dB (${(paired[other] || []).length} paired); want ${signed(L.focusDb, 0)} ± ${L.focusTolDb} and the other unmoved`);
-                const n = a.needsYou;
-                const m = b.needsYou;
-                const pre = x => (x && Number.isFinite(x.trimDb) ? x.mMax - x.trimDb : x?.mMax);
-                const delta = n && m ? pre(n) - pre(m) : null;
-                verdict('workslots', delta != null && Math.abs(delta) <= L.signalTolLu, `a needs-you from the bystander while smith 1 is focused: ${fmt(n?.mMax)} vs ${fmt(m?.mMax)} LUFS-M max without focus (cue trims ${signed(n?.trimDb)} / ${signed(m?.trimDb)} dB), before its bed-aware trim ${signed(delta, 2)} LU; want within ±${L.signalTolLu} (focus never touches the signal stratum)`);
-            },
-        });
-    }
-    if (has('worknight')) {
-        for (const pattern of Object.keys(WORK_PATTERNS)) units.push(audibilityUnit('worknight', pattern, 'night'));
-    }
+    const L = QUIET_MIX_LIMITS;
     if (has('quietmix')) {
         units.push({
-            name: 'quietmix (5.6: blur in Village and Town band)',
+            name: 'quietmix (5.6: blur in the Town band)',
             async run() {
                 const { blurAt, focusAt } = QUIET_MIX;
-                const pair = async kind => [await renderOnce(`quiet:${kind}`, quietMixScene(kind)), await renderOnce(`quiet:${kind}:twin`, quietMixScene(kind, { blur: false }))];
-                const at = (r, s) => r.meta.warmup + s;
-                const rowOf = (x, y, stem) => quietStemRow(levelDiffCurve(x.stems[stem], y.stems[stem], x.sr), { blurSec: at(x, blurAt), focusSec: at(x, focusAt) });
-                const stateLine = (r) => {
-                    const q = r.meta.stateLog.find(s => s.t > at(r, blurAt) + 1 && s.t < at(r, focusAt))?.quietMix;
-                    return q ? `quietMix ${q.active ? 'active' : 'inactive'} (${q.preset ?? '—'}: ${Object.entries(q.factors || {}).map(([k, v]) => `${k} ×${fmt(v, 2)}`).join(', ')})` : 'no quietMix state';
-                };
-                const [v, vt] = await pair('village');
-                if (!workshopsPresent('quietmix', v, 'village blur')) return;
-                const musicPlays = levelDiffCurve(vt.stems.music, vt.stems.music, vt.sr).filter(([t]) => t > at(vt, blurAt) && t < at(vt, focusAt)).length;
-                const end = v.meta.warmup + v.meta.seconds;
-                const accIn = accentGainOffsetDb(v, [{ from: at(v, blurAt) + 1, to: at(v, focusAt) }]);
-                // The unblurred reference: before the blur and from 1 s after focus.
-                const accOut = accentGainOffsetDb(v, [{ from: v.meta.warmup, to: at(v, blurAt) }, { from: at(v, focusAt) + 1, to: end }]);
-                const acc = { n: accIn.n, medianDb: accOut.n >= L.quietRefAccentsMin ? offsetStepDb(accIn, accOut) : null };
-                const ghosts = ghostsIn(v, at(v, blurAt) + 0.5, at(v, focusAt));
-                const ghostsTwin = ghostsIn(vt, at(vt, blurAt) + 0.5, at(vt, focusAt));
-                const village = judgeQuietMix({
-                    world: { ...rowOf(v, vt, 'world'), want: L.quietWorldDb },
-                    // Wave 6 (D1, D3): the quiet mix releases the Village's
-                    // tune; the occasion clock, not the focus, starts the next.
-                    music: { ...rowOf(v, vt, 'music'), want: -Infinity, restore: false },
-                    'work accents': { levelDb: acc.medianDb, restoreLagSec: null, restore: false, want: L.quietWorldDb },
-                });
-                const how = x => (x.name === 'music' ? 'vs the twin that never blurred (released at the blur, not resumed at focus: D1)'
-                    : x.restore === false ? `(work-stem peak over published gain, ${acc.n} blurred accents vs ${accOut.n} unblurred before the blur and after focus, want ≥ ${L.quietRefAccentsMin})`
-                        : `vs the twin that never blurred, back within ${L.quietTolDb} dB ${fmt(x.restoreLagSec, 2)} s after focus`);
-                for (const x of village.rows) verdict('quietmix', x.pass, `Village blur ${blurAt}–${focusAt} s, ${x.name}: ${signed(x.levelDb)} dB ${how(x)}; want ${x.want === -Infinity ? `≤ ${L.musicOffDb} dB (music 0)` : `${signed(x.want)} ± ${L.quietTolDb} dB`}${x.restore === false ? '' : `, restored ≤ ${L.restoreSec} s`}${x.name === 'music' && !musicPlays ? ' (the twin played no music in the window)' : ''}`);
-                verdict('quietmix', ghosts === 0 && ghostsTwin > 0, `Village blur: ghost strikes ${ghosts} (twin ${ghostsTwin} in the same window); want 0 while blurred (accents only); ${stateLine(v)}`);
-                const [h, ht] = await pair('held');
-                const held = judgeQuietMix({ 'held note': { ...rowOf(h, ht, 'signalBed'), want: 0, tolDb: L.heldTolDb, restore: false } });
-                verdict('quietmix', held.pass, `Village blur, the held note (signalBed stem): ${signed(held.rows[0].levelDb, 2)} dB vs the twin; want 0 ± ${L.heldTolDb} dB (untouched); world ${signed(rowOf(h, ht, 'world').levelDb)} dB`);
-                const sh = slotRows(h, { selectLabel: null, needsYouAt: QUIET_MIX.needsYouAt });
-                const st = slotRows(ht, { selectLabel: null, needsYouAt: QUIET_MIX.needsYouAt });
-                const pre = x => (x && Number.isFinite(x.trimDb) ? x.mMax - x.trimDb : x?.mMax);
-                const dn = sh.needsYou && st.needsYou ? pre(sh.needsYou) - pre(st.needsYou) : null;
-                verdict('quietmix', dn != null && Math.abs(dn) <= L.signalTolLu, `Village blur, a needs-you at ${QUIET_MIX.needsYouAt} s: ${fmt(sh.needsYou?.mMax)} vs ${fmt(st.needsYou?.mMax)} LUFS-M max in the twin (trims ${signed(sh.needsYou?.trimDb)} / ${signed(st.needsYou?.trimDb)} dB: the bed-aware trim follows the quieter bed), before its trim ${signed(dn, 2)} LU; want within ±${L.signalTolLu} (the signal path untouched)`);
-                const [t, tt] = await pair('town');
-                const town = judgeQuietMix({ 'Town band music': { ...rowOf(t, tt, 'music'), want: L.quietTownDb } });
-                const x = town.rows[0];
-                verdict('quietmix', x.pass, `Town band blur: music ${signed(x.levelDb, 2)} dB vs the twin, back within ${L.quietTolDb} dB ${fmt(x.restoreLagSec, 2)} s after focus; want ${L.quietTownDb} ± ${L.quietTolDb} dB, restored ≤ ${L.restoreSec} s; ${stateLine(t)}`);
-                const townStrikes = strikesOf(t, { from: 0, to: Infinity }).length + strikesOf(tt, { from: 0, to: Infinity }).length;
-                verdict('quietmix', townStrikes === 0, `D4: workshop strikes in Town band with 4 workers (both renders): ${townStrikes}; want 0 (no work stratum in Town band)`);
-            },
-        });
-    }
-    if (has('quota')) {
-        units.push({
-            name: 'quota (5.7: the mine rumble over a quota sweep)',
-            async run() {
-                const s = await renderOnce('quota:sweep', quotaScene());
-                const tw = await renderOnce('quota:twin', quotaScene({ sweep: false }));
-                if (!workshopsPresent('quota', s, 'quota sweep')) return;
-                const q = quotaRows(s, tw, { ...QUOTA_STEPS, staleAt: QUOTA_STALE_AT });
-                const j = judgeQuotaSweep(q.steps);
-                const lvl = x => (x === -Infinity ? 'silent' : `${fmt(x)} dB`);
-                verdict('quota', j.pass, `mine 80–160 Hz (the quota lane: work stem minus the twin without usage) at ratio ${q.steps.map(x => `${x.ratio} ${lvl(x.levelDb)}`).join(' → ')} (heard work stem ${q.steps.map(x => lvl(x.heardDb)).join(' → ')}; before the sweep ${lvl(q.before)}): rise ${j.riseDb === Infinity ? 'from silence' : `${signed(j.riseDb)} dB`}${j.drops.length ? `; drops ${j.drops.map(d => `${d.from}→${d.to} ${signed(d.deltaDb)}`).join(', ')}` : ''}; want ≥ +${L.quotaRiseDb} dB, monotonic (±${L.quotaMonotonicTolDb})`);
-                verdict('quota', q.cues === 0, `audio:cue-played during the sweep: ${q.cues}; want 0 (continuous textures never caption)`);
-                const top = q.steps.at(-1)?.levelDb;
-                verdict('quota', Number.isFinite(top) && (q.staleDb === -Infinity || q.staleDb <= top + L.quotaSilentDb), `quota unavailable at ${QUOTA_STALE_AT} s: the lane ${lvl(q.staleDb)} from 3 s after vs ${lvl(top)} at 1.0${q.staleDb === -Infinity ? '' : ` (${signed(q.staleDb - top)} dB)`}; want ≤ ${L.quotaSilentDb} dB (silent on stale data)`);
-                info('quota', `layer quota state at the end: ${JSON.stringify(s.meta.workshops?.quota ?? null)}`);
-            },
-        });
-    }
-    if (has('camera')) {
-        units.push({
-            name: 'camera (5.8: a pan across the Harbor)',
-            async run() {
-                const spec = cameraScene(HARBOR_WORLD);
-                const r = await renderOnce('camera:pan', spec);
-                if (!workshopsPresent('camera', r, 'camera pan')) return;
-                if (!r.meta.cameraSeam) { verdict('camera', false, 'director.setCameraSource is missing: the scripted camera cannot reach the director'); return; }
-                const w = r.meta.warmup;
-                const c = CAMERA_PAN;
-                const camCross = signCrossing(t => cameraPanTarget(spec.camera, t), c.stillUntil - 1, c.panUntil + 1);
-                const cameraCrossSec = camCross != null ? w + camCross : null;
-                const end = w + r.meta.seconds;
-                const emitters = [
-                    ['workshop Harbor', r.meta.workshops?.placementLog, 'harbor'],
-                    ['sea harbor lane', r.meta.sea?.placementLog, 'harbor'],
-                ];
-                for (const [label, log, key] of emitters) {
-                    const rows = placementLogRows(log, key, 'pan');
-                    if (!rows.length) { verdict('camera', false, `${label}: no placement writes logged (${log ? 'empty log' : 'no placementLog in the snapshot'})`); continue; }
-                    const traj = targetTrajectory(rows, rows[0].value);
-                    const heardCrossSec = signCrossing(traj, w + c.stillUntil - 1, w + c.panUntil + 3);
-                    const moving = rows.filter(x => x.at >= w + c.stillUntil - 0.5 && x.at <= w + c.panUntil + 2);
-                    const still = rows.filter(x => (x.at >= w + 2 && x.at < w + c.stillUntil - 0.5) || (x.at >= w + c.stillFrom && x.at <= end)).length;
-                    const allWrites = (log || []).filter(x => (x.building ?? x.lane) && ((x.at >= w + 2 && x.at < w + c.stillUntil - 0.5) || x.at >= w + c.stillFrom)).length;
-                    const j = judgeCameraPan({ cameraCrossSec, heardCrossSec, targets: [rows.filter(x => x.at < w + c.stillUntil - 0.5).at(-1)?.value, ...moving.map(x => x.value)].filter(Number.isFinite), stillWrites: still });
-                    verdict('camera', j.pass, `${label}: the camera crosses the Harbor at ${fmt(cameraCrossSec, 2)} s, its pan through 0 at ${fmt(heardCrossSec, 2)} s (${signed(j.lagSec, 2)} s); ${moving.length} writes while panning, largest step ${fmt(j.maxStep, 3)}; writes while the camera is still ${j.stillWrites} (any emitter in that log: ${allWrites}); want ≤ ${L.crossWithinSec} s after, steps ≤ ${L.panStep}, 0 still`);
-                }
-                info('camera', `placement writes: workshops ${r.meta.workshops?.placementWrites ?? '—'}, sea ${r.meta.sea?.placementWrites ?? '—'}; sea coast ${JSON.stringify(r.meta.sea?.placement?.coast ?? null)}`);
+                const t = await renderOnce('quiet:town', quietMixScene());
+                const tt = await renderOnce('quiet:town:twin', quietMixScene({ blur: false }));
+                const at = s => t.meta.warmup + s;
+                const row = quietStemRow(levelDiffCurve(t.stems.music, tt.stems.music, t.sr), { blurSec: at(blurAt), focusSec: at(focusAt) });
+                const x = judgeQuietMix({ 'Town band music': { ...row, want: L.quietTownDb } }).rows[0];
+                const q = t.meta.stateLog.find(s => s.t > at(blurAt) + 1 && s.t < at(focusAt))?.quietMix;
+                const state = q ? `quietMix ${q.active ? 'active' : 'inactive'} (${q.preset ?? '—'})` : 'no quietMix state';
+                verdict('quietmix', x.pass, `Town band blur ${blurAt}–${focusAt} s: music ${signed(x.levelDb, 2)} dB vs the twin that never blurred, back within ${L.quietTolDb} dB ${fmt(x.restoreLagSec, 2)} s after focus; want ${L.quietTownDb} ± ${L.quietTolDb} dB, restored ≤ ${L.restoreSec} s; ${state}`);
             },
         });
     }
@@ -1311,11 +752,11 @@ function wave5Units(render, renderOnce, scene, marginBed) {
 }
 
 // ------------------------------------------------------------ Wave 6 units ----
-// The music. The stem matrix (every piece × day/night × Isle/Chip, one
-// full-band render each, every seat on its own stem) feeds musicstems (6.2),
-// isleband (6.1) and nightmusic (6.3); each render is reduced to numbers in
-// its unit. The score (6.5) and the occasion clock's day (6.6) also run the
-// shipped Sequencer and OccasionClock headless (lib/music-sim.mjs).
+// The music. The stem matrix (every piece of PIECES × day/night × Isle/Chip,
+// one full-band render each in the piece's own arrangement, every seat on
+// its own stem) feeds musicstems (6.2), isleband (6.1) and nightmusic (6.3);
+// each render is reduced to numbers in its unit. The score (6.5) also runs
+// the shipped Sequencer headless (lib/music-sim.mjs).
 // The headless score run (6.5): the whole seeded working day compiles in
 // well under a second, so the 8 hours always run.
 const SCORE_HOURS = 8;
@@ -1335,9 +776,13 @@ function stemSeconds(piece) {
 }
 
 // A stem-matrix render → numbers: per-seat LUFS-I, the bands (each the
-// admitted seats of Voicings at the arrangement the band actually played),
-// the Isle/Chip arm, nodes per note, the stop lint, the lead's range and
-// the melody–bass parallels.
+// admitted seats of Voicings at the arrangement the band actually played,
+// the piece's own players), the players the voicing seats and those heard
+// per seat, the Isle/Chip arm, nodes per note, the stop lint, the lead's
+// range and the melody–bass parallels.
+// The seats a piece's arrangement names (C4: lead, counter, engine,
+// descant); bass and percussion are the band's own.
+const PLAYER_SEATS = Object.freeze(['lead', 'counter', 'engine', 'descant']);
 function stemRow(r, { piece, phase, voice }) {
     const marks = r.meta.music?.marks || [];
     const first = marks.find(m => m.kind === 'loop' && m.piece === piece);
@@ -1348,72 +793,29 @@ function stemRow(r, { piece, phase, voice }) {
     const pairs = seatPairs(r, win);
     const seats = seatLufs(pairs, r.sr);
     const arr = first?.arrangement ?? {};
-    const admitted = [0, 1, 2, 3].map(band => voicingFor({ voice, mode: 'townBand', keyframe: arr.keyframe, weather: arr.weather, season: arr.season, band }).admitted.filter(s => pairs[s]));
+    const voicing = band => voicingFor({ voice, piece, keyframe: arr.keyframe, weather: arr.weather, season: arr.season, band });
+    const admitted = [0, 1, 2, 3].map(band => voicing(band).admitted.filter(s => pairs[s]));
     const bands = bandRows(r, pairs, admitted, win);
     const notes = noteRows(r, win);
+    // The piece's own passes (and their pickups): stingers, tags and
+    // interludes seat other players by design.
+    const own = notes.filter(n => n.segment === 'pass' || n.segment === 'pickup');
+    const players = Object.fromEntries(PLAYER_SEATS.map(seat => [seat, {
+        want: voicing(3).seats[seat]?.instrument ?? null,
+        heard: [...new Set(own.filter(n => n.seat === seat).map(n => n.instrument).filter(Boolean))],
+    }]));
     const lead = seatLine(notes, 'lead');
     const voicesPlayed = [...new Set(marks.filter(m => m.kind === 'loop' || m.kind === 'chunk').map(m => m.voice))];
     return {
         piece, phase, voice, keyframe: arr.keyframe ?? null, voicesPlayed, window: win, found: Boolean(first),
         presence: Object.fromEntries(Object.entries(pairs).map(([seat, p]) => [seat, bandLevelDb(p, r.sr, 2000, 5000)])),
-        seats, admitted, bands, steps: [1, 2, 3].map(k => bandStep(bands[k - 1], bands[k])),
+        seats, admitted, players, bands, steps: [1, 2, 3].map(k => bandStep(bands[k - 1], bands[k])),
         arm: armRow(r, win),
         nodes: nodesPerNoteRow(r), stops: stopLevels(r, { maxDb: MUSIC_LIMITS.stopMaxDb }),
         lead: range(lead), parallels: parallelPerfects(lead, seatLine(notes, 'bass')),
-        bank: r.meta.diagnostics?.bank ?? null, errors: r.errors,
+        errors: r.errors,
     };
 }
-
-// The Village's working day for the occasion clock (09:00–18:00, minutes
-// of the day): busy most of it, a light hour, rain, a resting spell, a wait
-// that passes 6 min, urgent cues.
-const DAY_PLAN = Object.freeze([
-    { from: 540, to: 630, working: 6 },
-    { from: 630, to: 690, working: 2 },
-    { from: 690, to: 780, working: 7 },
-    { from: 780, to: 820, working: 6, raining: true },
-    { from: 820, to: 870, working: 5 },
-    { from: 870, to: 910, working: 0, resting: true },
-    { from: 910, to: 960, working: 6, waitFrom: 920, waitTo: 940 },
-    { from: 960, to: 1080, working: 8 },
-]);
-const DAY_URGENT = Object.freeze([600, 725, 1000, 1050]);
-function dayPlanAt(minute) {
-    const seg = DAY_PLAN.find(s => minute >= s.from && minute < s.to) || DAY_PLAN[DAY_PLAN.length - 1];
-    const waitMs = seg.waitFrom != null && minute >= seg.waitFrom && minute < seg.waitTo ? (minute - seg.waitFrom) * 60e3 : 0;
-    return { working: seg.working, raining: Boolean(seg.raining), resting: Boolean(seg.resting), oldestWaitMs: waitMs, urgent: DAY_URGENT.some(u => minute >= u && minute < u + 1 / 60) };
-}
-function phaseAt(minute) {
-    const s = createAtmosphereSnapshot({ now: new Date(2026, 6, 15, 12, 0, 0), hourOverride: minute / 60, weatherOverride: { type: 'clear' } });
-    return { phase: s.phase, progress: s.phaseProgress ?? 0 };
-}
-// The day's hard-zero windows in sim seconds (S7).
-function dayZeroWindows(fromMinute) {
-    const sec = m => (m - fromMinute) * 60;
-    const rows = [];
-    for (const s of DAY_PLAN) {
-        if (s.raining) rows.push({ from: sec(s.from), to: sec(s.to), why: 'rain' });
-        if (s.resting) rows.push({ from: sec(s.from), to: sec(s.to), why: 'resting' });
-        if (s.waitFrom != null) rows.push({ from: sec(s.waitFrom + 6), to: sec(s.waitTo), why: 'wait ≥ 6 min' });
-    }
-    for (const u of DAY_URGENT) rows.push({ from: sec(u), to: sec(u) + 5, why: 'urgent + 5 s' });
-    return rows;
-}
-
-let daySimPromise = null;
-function daySim() {
-    daySimPromise ||= Promise.resolve().then(() => {
-        const ledger = { firstOccasion: true, welcomeDay: VIRTUAL_DAY, islandDay: VIRTUAL_DAY, occasions: [] };
-        const t0 = Date.now();
-        const sim = villageDay({ seed: SEED, plan: dayPlanAt, phaseAt, ledger });
-        return { ...sim, wallSec: (Date.now() - t0) / 1000 };
-    });
-    return daySimPromise;
-}
-
-// Heard spans: a visit from its first note to its end plus the ring-out in
-// the air (OccasionClock's own measure of duty).
-const heardVisits = (visits, ring = OCC_RING_OUT_SEC) => visits.map(v => ({ ...v, to: v.to + ring }));
 
 function wave6Units(render, renderOnce, scene, marginBed) {
     const units = [];
@@ -1446,6 +848,9 @@ function wave6Units(render, renderOnce, scene, marginBed) {
                             const b = judgeStemBalance(row.seats, row.admitted[3]);
                             judge('musicstems', b.pass && row.voicesPlayed.length === 1 && row.voicesPlayed[0] === row.voice, `${tag}: MUSL-2 stems re lead ${b.rows.map(x => `${x.seat} ${lu(x.reLead)}${x.window ? ` [${signed(x.window[0], 1)} ± ${x.window[1]}]` : ''}${x.pass ? '' : ' ✗'}`).join(', ')}; want every admitted seat in its window, ≥ ${L.floorLu} LU and under the lead`);
                             const steps = row.steps.map((s, i) => `${i}→${i + 1} onsets ${signed(100 * s.rise, 0)} % / octave max ${lu(s.maxOctaveDb)} dB${s.pass ? '' : ' ✗'}`);
+                            const seated = PLAYER_SEATS.filter(seat => row.admitted[3].includes(seat));
+                            const wrong = seated.filter(seat => row.players[seat].heard.length !== 1 || row.players[seat].heard[0] !== row.players[seat].want);
+                            judge('musicstems', seated.length > 0 && wrong.length === 0, `${tag}: the arrangement's players per seat (want → heard) ${seated.map(seat => `${seat} ${row.players[seat].want} → ${row.players[seat].heard.join('/') || '—'}${wrong.includes(seat) ? ' ✗' : ''}`).join(', ')}; want each seat played by its own player alone (C4)`);
                             judge('musicstems', row.steps.every(s => s.pass), `${tag}: MUSL-3 bands (${row.bands.map(x => x.onsets).join('/')} onsets) ${steps.join('; ')}; want ≥ +${100 * L.bandOnsetRise} % onsets or ≥ ${L.bandOctaveDb} dB in some octave band at every step`);
                         }
                         if (has('isleband')) {
@@ -1476,8 +881,6 @@ function wave6Units(render, renderOnce, scene, marginBed) {
                     if (has('nightmusic')) {
                         info('nightmusic', `${piece.name}: night 2–5 kHz share Isle ${fmt(rows['night:isle'].arm.presenceDb)} dB vs Chip ${fmt(rows['night:chip'].arm.presenceDb)} dB (Chip restored ≈ the shipped night band's timbres): ${fmt(rows['night:chip'].arm.presenceDb - rows['night:isle'].arm.presenceDb)} dB under (6.3 asks ≈ 6)`);
                     }
-                    const bank = rows['day:isle'].bank?.byClient?.music ?? null;
-                    if (has('isleband') && bank) wave6.musicBank.push(bank);
                 },
             });
         }
@@ -1494,30 +897,11 @@ function wave6Units(render, renderOnce, scene, marginBed) {
             },
         });
     }
-    if (has('nightmusic')) {
-        units.push({
-            name: 'nightmusic (6.3: the night occasion over its bed)',
-            async run() {
-                const r = await scene('nightProgram');
-                const vis = visitRows(r.meta.music?.marks || [], r.meta.warmup + r.meta.seconds, 'village');
-                const occ = vis.visits.find(v => v.what === 'occasion');
-                verdict('nightmusic', occ != null, `night 22:30, a settled profile: the Village started ${vis.visits.map(v => `${v.what} ${v.name} (${v.reason}) at ${fmt(v.from, 1)} s`).join(', ') || 'nothing'}; want the night occasion`);
-                if (!occ) return;
-                const over = musicOverBed(r, occ);
-                const t = LOUDNESS_TARGETS.villageMusic;
-                verdict('nightmusic', over.stMaxOverBed != null && over.stMaxOverBed <= t.stMaxOverBed, `night occasion ${occ.name}: music ST max ${fmt(over.musicStMax)} vs the bed (world + work) ${fmt(over.bedLufs)} LUFS over the occasion: ${signed(over.stMaxOverBed)} LU; want ≤ bed + ${t.stMaxOverBed} LU`);
-                const lead = range(seatLine(noteRows(r, { from: occ.from, to: occ.to }), 'lead'));
-                verdict('nightmusic', lead.high != null && lead.high <= L.nightLeadMaxMidi, `night occasion lead ${midiName(lead.low)}–${midiName(lead.high)}; want ≤ A5`);
-                const stops = stopLevels(r, { maxDb: L.stopMaxDb });
-                verdict('nightmusic', stops.over === 0, `night occasion: ${stops.voices} stopped voices, the loudest at its stop ${fmt(stops.worstDb)} dB re its peak; want none above ${L.stopMaxDb} dB`);
-            },
-        });
-    }
     if (has('score')) {
         units.push({
-            name: 'score (6.5: routine cues over the band, Town band and Village)',
+            name: 'score (6.5: routine cues over the Town band)',
             async run() {
-                for (const name of ['townBand', 'villageBusy']) {
+                for (const name of ['townBand']) {
                     const r = await scene(name);
                     const frames = r.meta.music?.frames || [];
                     const chords = frames.flatMap(f => f.chords.map(c => ({ t: c.time, root: c.rootPc, pcs: c.pcs }))).sort((a, b) => a.t - b.t);
@@ -1533,7 +917,7 @@ function wave6Units(render, renderOnce, scene, marginBed) {
             async run() {
                 const t0 = Date.now();
                 const sim = townBandHours({ hours: SCORE_HOURS, seed: SEED });
-                const own = sim.marks.filter(m => m.kind === 'rendition' && m.what !== 'fragment');
+                const own = sim.marks.filter(m => m.kind === 'rendition');
                 const ownGap = identicalRenditionGap(own.map(m => ({ piece: m.piece, t: m.t, key: m.key })));
                 const notes = noteRows(sim.marks).filter(n => n.seat !== 'percussion');
                 const beatSec = Object.fromEntries(sim.marks.filter(m => m.kind === 'loop').map(m => [m.piece, m.beatSec]));
@@ -1551,86 +935,6 @@ function wave6Units(render, renderOnce, scene, marginBed) {
                 info('score', `Town band hour 1 (headless, from notes): tonal re-heard ${fmt(tonal.pct)} % of ${tonal.windows} windows, phrase ${fmt(phrase.pct)} % of ${phrase.grams} grams; motif statements ${motifStatements(hour).count} in the hour (Willowbrook's own opening included)`);
             },
         });
-        units.push({
-            name: 'score (6.5: the Village day — re-hearing over music-on windows, motif per hour)',
-            async run() {
-                const sim = await daySim();
-                const vis = visitRows(sim.marks, sim.seconds, 'village');
-                const notes = noteRows(sim.marks).filter(n => n.seat !== 'percussion');
-                const on = heardVisits(vis.visits);
-                const rows = [];
-                for (let h = 0; h * 3600 < sim.seconds; h++) {
-                    const a = h * 3600;
-                    const b = Math.min(sim.seconds, a + 3600);
-                    const hn = notes.filter(n => n.t >= a && n.t < b).map(n => ({ ...n, t: n.t - a }));
-                    const ho = coveredSpans(on, a, b).map(w => ({ from: w.from - a, to: w.to - a }));
-                    rows.push({ h, tonal: tonalReheard(hn, ho), phrase: phraseReheard(hn, ho) });
-                }
-                const worst = Math.max(...rows.map(x => Math.max(x.tonal.pct, x.phrase.pct)));
-                verdict('score', rows.length > 0 && worst <= L.reheardMaxPct, `Village 09:00–18:00 (seed ${SEED}), re-heard over music-on windows per hour — tonal ${rows.map(x => fmt(x.tonal.pct, 0)).join('/')} %, phrase ${rows.map(x => fmt(x.phrase.pct, 0)).join('/')} %; want ≤ ${L.reheardMaxPct} % in every hour`);
-                const motif = motifStatements(notes);
-                // The hour phrase (D7) is the motif's answer: one statement at
-                // each hour 07:00–20:00; the aurora quotes the call when a
-                // chronicle aurora fires (INFO: not modelled here).
-                const chimes = [];
-                for (let m = Math.ceil(sim.fromMinute / 60) * 60; (m - sim.fromMinute) * 60 < sim.seconds; m += 60) chimes.push((m - sim.fromMinute) * 60);
-                const per = perHourMax([...motif.at.map(x => x.t), ...chimes], 0, sim.seconds);
-                verdict('score', per.pass, `motif statements per hour (fragments and occasions ${motif.count} + hour phrases ${chimes.length}): ${per.perHour.join('/')}; want ≤ ${L.motifPerHour} (S7)`);
-            },
-        });
-    }
-    if (has('occasions')) {
-        units.push({
-            name: 'occasions (6.6: the seeded working day 09:00–18:00, headless)',
-            async run() {
-                const sim = await daySim();
-                const end = sim.seconds;
-                const vis = visitRows(sim.marks, end, 'village');
-                const heard = heardVisits(vis.visits);
-                const minuteOf = t => sim.fromMinute + t / 60;
-                // Duty per regime, over the regime's time outside the hard
-                // zeros, from fragments (occasions are their own budget).
-                const zeros = dayZeroWindows(sim.fromMinute);
-                const regimeTime = { busy: 0, light: 0 };
-                const regimeFrag = { busy: 0, light: 0 };
-                for (let t = 0; t < end; t += 10) {
-                    const p = dayPlanAt(minuteOf(t));
-                    if (zeros.some(z => t >= z.from && t < z.to) || p.working === 0) continue;
-                    const regime = dutyBandFor({ phase: phaseAt(minuteOf(t)).phase, working: p.working }).name;
-                    if (!(regime in regimeTime)) continue;
-                    regimeTime[regime] += 10;
-                    regimeFrag[regime] += coveredSec(heard.filter(v => v.what === 'fragment'), t, t + 10);
-                }
-                const busy = judgeDuty(regimeFrag.busy / regimeTime.busy, 'busy');
-                const light = judgeDuty(regimeFrag.light / regimeTime.light, 'light');
-                const dayFrags = FRAGMENTS.filter(f => !f.night);
-                const fragSec = dayFrags.reduce((s, f) => s + fragmentSeconds(f), 0) / Math.max(1, dayFrags.length) + OCC_RING_OUT_SEC;
-                const expect = regime => fragSec / (fragSec + (OCC_DUTY[regime].gapSec[0] + OCC_DUTY[regime].gapSec[1]) / 2);
-                verdict('occasions', busy.pass && light.pass, `D1 fragment duty (heard, incl. ${OCC_RING_OUT_SEC} s ring-out): busy ${pct(busy.share)} of ${fmt(regimeTime.busy / 60, 0)} min (want ${pct(D1_DUTY.busy[0])}–${pct(D1_DUTY.busy[1])}; the constants give ${pct(expect('busy'))}: ${fmt(fragSec, 1)} s fragments, ${OCC_DUTY.busy.gapSec.join('–')} s gaps), light ${pct(light.share)} of ${fmt(regimeTime.light / 60, 0)} min (want ≤ ${pct(D1_DUTY.light[1])}; constants ${pct(expect('light'))})`);
-                const occ = vis.visits.filter(v => v.what === 'occasion').map(v => `${v.name} ${fmtClock(minuteOf(v.from))}`);
-                info('occasions', `the day: ${vis.visits.length} starts (${vis.visits.filter(v => v.what === 'fragment').length} fragments; occasions ${occ.join(', ') || 'none'}); simulated in ${fmt(sim.wallSec, 1)} s`);
-                // S7 zeros: no start inside a zero; what played when one began
-                // ends within the director's tick (1 s) and fade (0.4 s).
-                const shrink = zeros.map(z => ({ ...z, from: z.from + 1.5 }));
-                const z = musicInWindows(vis.visits, shrink, vis.visits.map(v => v.from));
-                const starts = vis.visits.filter(v => zeros.some(w => v.from >= w.from && v.from < w.to));
-                verdict('occasions', z.overlapSec === 0 && starts.length === 0, `must-never 9 / S7 (headless day): music inside rain, resting, a wait ≥ 6 min or 5 s after an urgent cue ${fmt(z.overlapSec, 1)} s past the 1.5 s release; starts inside ${starts.length}${starts.length ? ` (${starts.slice(0, 3).map(v => `${v.name} at ${fmtClock(minuteOf(v.from))}`).join(', ')})` : ''} (${zeros.map(w => `${w.why} ${fmtClock(minuteOf(w.from))}`).join(', ')}); want 0 and 0`);
-                const noReason = vis.visits.filter(v => !v.reason);
-                verdict('occasions', vis.visits.length > 0 && noReason.length === 0, `every start carries a reason: ${vis.visits.length - noReason.length}/${vis.visits.length} (${[...new Set(vis.visits.map(v => v.reason))].join(', ')})`);
-                const hours = [];
-                for (let a = 0; a < end; a += 3600) hours.push(coveredSec(heard, a, Math.min(end, a + 3600)) / Math.min(3600, end - a));
-                verdict('occasions', Math.max(...hours) <= L.villageOnMax, `must-never 10 (Village): music on per working hour ${hours.map(x => pct(x)).join('/')} (occasions included); want ≤ ${pct(L.villageOnMax)}`);
-            },
-        });
-        for (const kind of Object.keys(VILLAGE_FIXTURES)) {
-            units.push({
-                name: `occasions (6.6: Village fixture ${kind})`,
-                async run() {
-                    const r = await renderOnce(`music:village:${kind}`, villageMusicScene(kind));
-                    judgeVillageFixture(kind, r);
-                },
-            });
-        }
     }
     if (has('townband')) {
         units.push({
@@ -1683,13 +987,25 @@ function wave6Units(render, renderOnce, scene, marginBed) {
                 const r = await renderOnce('music:town:wait', waitCadenceScene());
                 const w = WAIT_CADENCE;
                 const at = x => r.meta.warmup + x;
-                const cad = (r.meta.music?.marks || []).filter(m => m.preset === 'townBand' && m.kind === 'cadence').sort((a, b) => a.t - b.t);
-                // A wait reaches the band on the director's next tick and the
-                // phrase end must not yet be committed: 1 s + 1.5 s.
-                const during = cad.filter(c => c.t >= at(w.waitAt) + 2.5 && c.t < at(w.answerAt));
-                const after = cad.find(c => c.t >= at(w.answerAt) + 2.5);
-                const pass = during.length > 0 && during.every(c => c.deceptive) && after != null && !after.deceptive;
-                verdict('townband', pass, `a needs-you open ${w.waitAt}–${w.answerAt} s: phrase ends while waiting ${during.map(c => `${c.type} (${c.piece} bar ${c.bar})`).join(', ') || 'none'}; the first after the answer ${after ? `${after.type} at ${fmt(after.t - at(w.answerAt), 1)} s` : 'none'}; want every phrase end deceptive while waiting, home after`);
+                // The band decides a phrase end's cadence when it compiles the
+                // phrase end's 4-bar chunk (CHUNK_BARS, 1.5 s ahead of the
+                // chunk), so a wait changes the phrase ends compiled after the
+                // director's setWaiting reached it — up to a chunk and the
+                // horizon later than the wait. The marks are in the order the
+                // band made them: a cadence is judged by the call before it.
+                const marks = (r.meta.music?.marks || []).filter(m => m.preset === 'townBand');
+                const waitCall = marks.findIndex(m => m.kind === 'call:setWaiting' && m.arg === true);
+                const answerCall = waitCall < 0 ? -1 : marks.findIndex((m, i) => i > waitCall && m.kind === 'call:setWaiting' && m.arg === false);
+                const cadences = marks.map((m, i) => ({ ...m, i })).filter(m => m.kind === 'cadence');
+                const before = cadences.filter(c => c.i < waitCall && c.t >= at(w.waitAt));
+                const during = cadences.filter(c => c.i > waitCall && (answerCall < 0 || c.i < answerCall));
+                const after = answerCall < 0 ? null : cadences.find(c => c.i > answerCall);
+                // The director tells the band on its next 1 s tick (a render step of slack).
+                const told = i => (i >= 0 ? marks[i].t - r.meta.warmup : null);
+                const prompt = (i, sec) => told(i) != null && told(i) - sec <= 1.05;
+                const pass = prompt(waitCall, w.waitAt) && prompt(answerCall, w.answerAt) && during.length > 0 && during.every(c => c.deceptive) && after?.type === 'home';
+                const line = c => `${c.type} (${c.piece} bar ${c.bar} at ${fmt(c.t - r.meta.warmup, 1)} s)`;
+                verdict('townband', pass, `a needs-you open ${w.waitAt}–${w.answerAt} s (the band told at ${fmt(told(waitCall), 2)} s, the answer at ${fmt(told(answerCall), 2)} s): phrase ends compiled while waiting ${during.map(line).join(', ') || 'none'}${before.length ? ` (already compiled when the wait came: ${before.map(line).join(', ')})` : ''}; the first compiled after the answer ${after ? line(after) : 'none'}; want the band told within the director's 1 s tick, every phrase end compiled while waiting deceptive, home after`);
             },
         });
     }
@@ -1701,11 +1017,14 @@ function wave6Units(render, renderOnce, scene, marginBed) {
                 const marks = r.meta.music?.marks || [];
                 const from = r.meta.warmup;
                 const end = from + r.meta.seconds;
-                const density = densityTrack(marks);
-                const bars = percussionPerBar(marks, density, { from, to: end });
-                const rho = spearman(bars.map(b => b.onsets), bars.map(b => b.density));
-                const bySeg = PERCUSSION_SEGMENTS.map(s => { const x = bars.filter(b => b.from >= from + s.from && b.from < from + s.to); return `${s.from / 60}–${s.to / 60} min ${fmt(x.reduce((a, b) => a + b.onsets, 0) / Math.max(1, x.length), 1)}/bar at density ${fmt(x.reduce((a, b) => a + b.density, 0) / Math.max(1, x.length), 2)}`; });
-                verdict('percussion', rho != null && rho >= L.spearmanMin, `percussion onsets per bar vs total workshop density over ${bars.length} bars: Spearman ${fmt(rho, 2)} (${bySeg.join('; ')}); want ≥ ${L.spearmanMin}`);
+                // Judged on the bars that can drum (piece passes); each bar's
+                // kit level in units of the piece's own rows (probe-wave6).
+                const all = percussionPerBar(marks, { from, to: end, rowsOf: name => PIECES.find(p => p.name === name)?.percussion ?? null });
+                const bars = all.filter(b => b.capacity > 0);
+                const rho = spearman(bars.map(b => b.level), bars.map(b => b.density));
+                const mean = (x, f) => x.reduce((a, b) => a + f(b), 0) / Math.max(1, x.length);
+                const bySeg = PERCUSSION_SEGMENTS.map(s => { const x = bars.filter(b => b.from >= from + s.from && b.from < from + s.to); return `${s.from / 60}–${s.to / 60} min level ${fmt(mean(x, b => b.level), 2)} (${fmt(mean(x, b => b.onsets), 1)} hits/bar; ${[...new Set(x.map(b => b.piece))].join(', ') || '—'}) at density ${fmt(mean(x, b => b.density), 2)}`; });
+                verdict('percussion', rho != null && rho >= L.spearmanMin, `workshop kit per bar, in units of each building's row in the piece, vs the total workshop density the band read, over ${bars.length} piece bars (${all.length - bars.length} tag/interlude bars play no kit): Spearman ${fmt(rho, 2)} (${bySeg.join('; ')}); want ≥ ${L.spearmanMin}`);
                 // working === 0 from the last segment: the director's first
                 // zero-density call, plus the horizon a chunk was compiled in.
                 const lastSeg = PERCUSSION_SEGMENTS[PERCUSSION_SEGMENTS.length - 1];
@@ -1739,93 +1058,19 @@ function wave6Units(render, renderOnce, scene, marginBed) {
     return units;
 }
 
-const wave6 = { musicBank: [] };
-// Minutes of the day (or of a session) as hh:mm.
-const fmtClock = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(Math.floor(m % 60)).padStart(2, '0')}`;
 const coveredSpans = (visits, a, b) => visits.map(v => ({ from: Math.max(a, v.from), to: Math.min(b, v.to) })).filter(v => v.to > v.from);
-function fragmentSeconds(frag) {
-    const bpb = frag.beatsPerBar || 4;
-    const bars = frag.chords?.length ?? frag.bars ?? 0;
-    const pickup = (frag.pickup || []).reduce((s, [, b]) => s + b, 0);
-    return (bars * bpb + pickup) * 60 / frag.bpm;
-}
-
-// Music ST max over the bed (world + work stems summed) over one visit.
-function musicOverBed(r, visit) {
-    const g = outputGainDb(r);
-    const a = Math.max(0, visit.from);
-    const b = Math.min(r.meta.warmup + r.meta.seconds, visit.to + 1);
-    const cut = pair => ({ L: pair.L.subarray(Math.round(a * r.sr), Math.round(b * r.sr)), R: pair.R.subarray(Math.round(a * r.sr), Math.round(b * r.sr)) });
-    const music = toOutput(cut(r.stems.music), g);
-    const beds = ['world', 'work'].filter(k => r.stems[k]).map(k => toOutput(cut(r.stems[k]), g));
-    const bed = sumOf(beds, music.L.length);
-    const musicStMax = loudness(music.L, music.R, r.sr).shortTermMax;
-    const bedLufs = loudness(bed.L, bed.R, r.sr).integrated;
-    return { musicStMax, bedLufs, stMaxOverBed: Number.isFinite(musicStMax) && Number.isFinite(bedLufs) ? musicStMax - bedLufs : null };
-}
-
-// A Village fixture's heard music (the music stem, output-referred) against
-// its zero windows, its control (music once the zero clears), reasons and
-// level over the bed.
-function judgeVillageFixture(kind, r) {
-    const f = VILLAGE_FIXTURES[kind];
-    const w0 = r.meta.warmup;
-    const end = w0 + r.meta.seconds;
-    const vis = visitRows(r.meta.music?.marks || [], end, 'village');
-    const heard = heardSpans(r.stems.music, r.sr, outputGainDb(r), { floorLufs: -70 });
-    const cueAt = kindName => r.meta.scheduled.filter(s => s.kind === kindName && !s.silent).map(s => s.notes[0]);
-    const startLine = vis.visits.map(v => `${v.what} ${v.name} (${v.reason}) at ${fmt(v.from - w0, 1)} s`).join(', ') || 'none';
-    const zeros = [];
-    let controlFrom = null;
-    if (kind === 'rain') { zeros.push({ from: 0, to: w0 + f.clearAt, why: 'rain' }); controlFrom = w0 + f.clearAt; }
-    if (kind === 'wait') { zeros.push({ from: 0, to: w0 + f.answerAt, why: 'a wait ≥ 6 min' }); controlFrom = w0 + f.answerAt; }
-    if (kind === 'urgent') {
-        zeros.push({ from: 0, to: w0 + f.clearAt, why: 'rain' });
-        for (const t of cueAt('summons')) zeros.push({ from: t, to: t + 5, why: 'urgent + 5 s' });
-        controlFrom = w0 + f.clearAt;
-    }
-    if (kind === 'resting') {
-        const rest = r.meta.stateLog.filter(s => s.state === 'resting').map(s => s.t);
-        if (rest.length) zeros.push({ from: Math.min(...rest), to: Math.max(...rest) + 1, why: 'resting (director state)' });
-        controlFrom = w0 + f.workAt;
-        info('occasions', `resting fixture: director state resting ${rest.length ? `${fmt(Math.min(...rest) - w0, 0)}–${fmt(Math.max(...rest) - w0, 0)} s` : 'never'}`);
-    }
-    if (zeros.length) {
-        // Music already sounding when a zero begins may ring out for the
-        // director's tick, the 0.4 s release and the air (3 s); none may start.
-        const soft = zeros.map(z => ({ ...z, from: z.from === 0 ? 0 : z.from + 3 }));
-        const inside = musicInWindows(heard, soft, vis.visits.map(v => v.from));
-        verdict('occasions', inside.overlapSec === 0 && inside.starts === 0, `must-never 9 / S7, fixture ${kind}: heard music inside ${zeros.map(z => `${z.why} ${fmt(z.from - w0, 1)}–${fmt(z.to - w0, 1)} s`).join(', ')}: ${fmt(inside.overlapSec, 2)} s, starts ${inside.starts}; want 0 (starts: ${startLine})`);
-    }
-    if (controlFrom != null && kind !== 'resting') {
-        const later = vis.visits.find(v => v.from >= controlFrom);
-        verdict('occasions', later != null, `fixture ${kind} control: once the zero clears at ${fmt(controlFrom - w0, 1)} s the due occasion plays: ${later ? `${later.name} at ${fmt(later.from - w0, 1)} s` : 'nothing'} (otherwise the zero proves nothing)`);
-    }
-    if (kind === 'first' || kind === 'fragment') {
-        const want = kind === 'first' ? 'occasion' : 'fragment';
-        const v = vis.visits.find(x => x.what === want);
-        const reasons = r.meta.stateLog.map(s => s.music?.lastStart?.reason).filter(Boolean);
-        verdict('occasions', v != null && Boolean(v.reason) && reasons.length > 0, `fixture ${kind}: starts ${startLine}; snapshot reasons ${[...new Set(reasons)].join(', ') || 'none'}; want a${want === 'occasion' ? 'n' : ''} ${want} with its reason in the snapshot`);
-        if (v) {
-            const over = musicOverBed(r, v);
-            const t = LOUDNESS_TARGETS.villageMusic;
-            const max = kind === 'first' ? t.stMaxOverBed : t.fragmentStMaxOverBed;
-            verdict('occasions', over.stMaxOverBed != null && over.stMaxOverBed <= max, `Village music (${want} ${v.name}): ST max ${fmt(over.musicStMax)} over the bed's ${fmt(over.bedLufs)} LUFS: ${signed(over.stMaxOverBed)} LU; want ≤ bed + ${max} LU (S2)`);
-        }
-    }
-}
 
 // Wave-3 numbers shared between units (the cluster render feeds must-never 13).
 const wave3 = { silent: {}, cluster: {} };
 
-// Wave-2 numbers shared between units (bank reads the air and noise renders).
+// Wave-2 numbers shared between units (bank reads the air and Town band renders).
 const wave2 = {};
 
 function judgeBankRows() {
     const sliceSites = (wave2.bakeTimers || []).concat(wave2.air?.timers || []).filter(t => /SampleBank\.js/.test(t.site));
     const sliceMax = sliceSites.length ? Math.max(...sliceSites.map(t => t.maxMs ?? 0)) : null;
     const slices = sliceSites.reduce((n, t) => n + t.fired, 0);
-    for (const [label, stats] of [['after the air bake (engine unit)', wave2.air?.bank], ['village busy (3 min)', wave2.busyBank]]) {
+    for (const [label, stats] of [['after the air bake (engine unit)', wave2.air?.bank], ['Town band busy (3 min)', wave2.busyBank]]) {
         if (stats === undefined) continue;
         const j = judgeBank(stats, sliceMax);
         const clients = j.clients.map(c => `${c.name} ${fmt(c.bytes / 1048576, 2)}/${c.budget != null ? fmt(c.budget / 1048576, 1) : '—'} MiB`).join(', ');
@@ -1862,11 +1107,11 @@ function wave7Units(renderOnce) {
     }
     if (has('awaken')) {
         units.push({
-            name: 'awaken (7.4: the village awakens, virtual clock)',
+            name: 'awaken (7.4: the island awakens, virtual clock)',
             async run() {
                 const r = await renderOnce('awaken', AWAKEN_SCENE);
                 const x = awakenRows(r, { ...AWAKEN, stAtSec: L.awakenStAtSec });
-                verdict('awaken', x.plays === 1, `awakenings in one page session (enable, then Off at ${AWAKEN.offAt} s and Village at ${AWAKEN.onAt} s): ${x.plays}${x.presets.length ? ` (${x.presets.join(', ')})` : ''}; want 1`);
+                verdict('awaken', x.plays === 1, `awakenings in one page session (enable, then Off at ${AWAKEN.offAt} s and the Town band at ${AWAKEN.onAt} s): ${x.plays}${x.presets.length ? ` (${x.presets.join(', ')})` : ''}; want 1`);
                 const under = x.callMMax != null && x.awakenMMax != null ? x.callMMax - x.awakenMMax : null;
                 verdict('awaken', Number.isFinite(x.awakenMMax) && under != null && under >= L.awakenUnderCallLu, `the awakening's M max ${fmt(x.awakenMMax)} vs the needs-you call's ${fmt(x.callMMax)} LUFS (cue stem): ${fmt(under)} LU under; want ≥ ${L.awakenUnderCallLu}`);
                 const d = x.stAt != null && x.steady != null ? x.stAt - x.steady : null;
@@ -1881,18 +1126,13 @@ function wave7Units(renderOnce) {
                 const busy = {};
                 for (const output of ['speakers', 'mono']) busy[output] = outputRow(await renderOnce(`output:busy:${output}`, outputBusyScene({ output })));
                 const d = busy.mono.lufsI - busy.speakers.lufsI;
-                verdict('listening', Math.abs(d) <= L.monoCompLu && busy.mono.lrDiffDb < -90, `Mono vs Speakers (Village with cues): ${fmt(busy.mono.lufsI)} vs ${fmt(busy.speakers.lufsI)} LUFS-I (${signed(d, 2)} LU; compensation ${fmt(busy.mono.output?.monoCompDb, 2)} dB), mono L−R ${Number.isFinite(busy.mono.lrDiffDb) ? `max ${fmt(busy.mono.lrDiffDb)} dBFS` : 'identical'}; want within ±${L.monoCompLu} LU and L = R`);
-                const bed = {};
-                for (const output of ['speakers', 'headphones']) bed[output] = outputRow(await renderOnce(`output:bed:${output}`, outputScene({ output })));
-                verdict('listening', bed.headphones.icc >= L.headphonesIccMin, `Headphones: the world bed's ICC ${fmt(bed.headphones.icc, 2)} (Speakers ${fmt(bed.speakers.icc, 2)}; pan scale ${fmt(bed.headphones.output?.panScale, 2)}); want ≥ ${L.headphonesIccMin}`);
-                for (const b of ['world', 'music']) {
-                    const t = {};
-                    for (const tone of [-1, 0, 1]) t[tone] = toneRow(await renderOnce(`tone:${b}:${tone}`, toneScene(b, tone)));
-                    for (const tone of [-1, 1]) {
-                        const hi = t[tone].highDb - t[0].highDb;
-                        const lo = t[tone].lowDb - t[0].lowDb;
-                        verdict('listening', Math.abs(hi - tone * L.toneShelfDb) <= L.toneTolDb && Math.abs(lo) <= L.toneLowTolDb, `tone ${signed(tone, 0)} on the ${b === 'world' ? 'Village world bed' : 'Town band'}: 5–10 kHz ${signed(hi, 2)} dB, 100–1000 Hz ${signed(lo, 2)} dB vs tone 0 (engine tone ${fmt(t[tone].output?.toneDb, 1)} dB); want ${signed(tone * L.toneShelfDb, 0)} ± ${L.toneTolDb} dB above the shelf, within ±${L.toneLowTolDb} dB under it`);
-                    }
+                verdict('listening', Math.abs(d) <= L.monoCompLu && busy.mono.lrDiffDb < -90, `Mono vs Speakers (the Town band with cues): ${fmt(busy.mono.lufsI)} vs ${fmt(busy.speakers.lufsI)} LUFS-I (${signed(d, 2)} LU; compensation ${fmt(busy.mono.output?.monoCompDb, 2)} dB), mono L−R ${Number.isFinite(busy.mono.lrDiffDb) ? `max ${fmt(busy.mono.lrDiffDb)} dBFS` : 'identical'}; want within ±${L.monoCompLu} LU and L = R`);
+                const t = {};
+                for (const tone of [-1, 0, 1]) t[tone] = toneRow(await renderOnce(`tone:music:${tone}`, outputScene({ tone })));
+                for (const tone of [-1, 1]) {
+                    const hi = t[tone].highDb - t[0].highDb;
+                    const lo = t[tone].lowDb - t[0].lowDb;
+                    verdict('listening', Math.abs(hi - tone * L.toneShelfDb) <= L.toneTolDb && Math.abs(lo) <= L.toneLowTolDb, `tone ${signed(tone, 0)} on the Town band: 5–10 kHz ${signed(hi, 2)} dB, 100–1000 Hz ${signed(lo, 2)} dB vs tone 0 (engine tone ${fmt(t[tone].output?.toneDb, 1)} dB); want ${signed(tone * L.toneShelfDb, 0)} ± ${L.toneTolDb} dB above the shelf, within ±${L.toneLowTolDb} dB under it`);
                 }
             },
         });
@@ -1902,7 +1142,6 @@ function wave7Units(renderOnce) {
                 const off = softenRow(await renderOnce('soften:off', softenScene(false)));
                 const on = softenRow(await renderOnce('soften:on', softenScene(true)));
                 verdict('listening', on.bell?.riseMs != null && on.bell.riseMs >= L.softBellAttackMinMs, `Soften: the arrival bell's attack ${fmt(on.bell?.riseMs, 0)} ms (off ${fmt(off.bell?.riseMs, 0)} ms, −40 → −1 dB re peak); want ≥ ${L.softBellAttackMinMs} ms`);
-                verdict('listening', on.thunder?.riseMs != null && off.thunder?.riseMs != null && on.thunder.riseMs >= L.softThunderAttackMinMs && on.thunder.riseMs > off.thunder.riseMs, `Soften: the thunder's attack ${fmt(on.thunder?.riseMs, 0)} ms vs ${fmt(off.thunder?.riseMs, 0)} ms off, peak ${signed((on.thunder?.peakDb ?? NaN) - (off.thunder?.peakDb ?? NaN))} dB; want slower, ≥ ${L.softThunderAttackMinMs} ms`);
                 const pairs = on.ducks.map((d, i) => ({ d, o: off.ducks[i] })).filter(p => p.o && p.d.kind === p.o.kind && p.d.kind !== 'summons');
                 const ratios = pairs.flatMap(({ d, o }) => Object.keys(o.depths).filter(k => o.depths[k] < 0).map(k => ({ kind: d.kind, bus: k, ratio: (d.depths[k] ?? 0) / o.depths[k] })));
                 const bad = ratios.filter(x => Math.abs(x.ratio - L.softDuckScale) > L.softDuckTol);
@@ -1988,7 +1227,6 @@ async function main() {
         await pool(units, JOBS);
         if (has('baseline')) judgeBaseline();
         if (has('bank')) judgeBankRows();
-        if (has('worldmap')) judgeWorldMapRows();
         const appUnits = [];
         if (['routing', 'away'].some(has)) {
             appUnits.push({ name: 'app busy day (routing, away)', check: 'app', run: async () => judgeBusy(await appBusyUnit(await appB(), reporter), reporter) });
@@ -2039,4 +1277,3 @@ function finish() {
 }
 
 main().catch((e) => { console.error(e); process.exitCode = 1; });
-

@@ -24,8 +24,6 @@ export const PROGRAM_TRIM_DB = 26.7;
 // fade (after the limiter), so a step changes level only.
 export const VOLUME_STEP_DB = 3.6;
 export const STANDARD_VOLUME_STEP = 6;
-// Mixer trims (group faders): 2.4 dB per step, step 10 = unity.
-export const TRIM_STEP_DB = 2.4;
 
 function stepGain(step, dbPerStep) {
     const s = Math.max(0, Math.min(10, Math.round(Number(step))));
@@ -37,21 +35,15 @@ export function volumeStepGain(step) {
     return stepGain(step, VOLUME_STEP_DB);
 }
 
-export function trimStepGain(step) {
-    return stepGain(step, TRIM_STEP_DB);
-}
-
-// Note-timed duck depths per cue class (S3), dB per bus; 0 = no duck on that
-// bus. `village` covers routine, outcome and scenery cues in Village,
-// `townBand` the same classes over the Town band. The engine floors every
-// window at DUCK_FLOOR_DB (−9, DuckScheduler.js).
+// Note-timed duck depths per cue class (S3), dB on the music bus; 0 = no
+// duck. `village` covers routine, outcome and scenery cues with no music
+// under them (nothing to duck), `townBand` the same classes over the Town
+// band. The engine floors every window at DUCK_FLOOR_DB (−9,
+// DuckScheduler.js).
 export const DUCK_DEPTHS = Object.freeze({
-    village: Object.freeze({ world: -2, work: -3, music: 0 }),
-    townBand: Object.freeze({ world: 0, work: 0, music: -2 }),
-    // The held note (its own `signalBed` bus) ducks only under urgent cues.
-    urgent: Object.freeze({ world: -7, work: -6, music: -9, signalBed: -6 }),
-    // Thunder is weather: it ducks nothing.
-    thunder: Object.freeze({ world: 0, work: 0, music: 0 }),
+    village: Object.freeze({ music: 0 }),
+    townBand: Object.freeze({ music: -2 }),
+    urgent: Object.freeze({ music: -9 }),
 });
 // Total ducked time per bus, as a fraction of an hour (C-MIX-5).
 export const DUCKED_TIME_BUDGET = 0.05;
@@ -79,13 +71,11 @@ export const LOUDNESS_TARGETS = Object.freeze({
     // resting cells answer to their own rows.
     dayArc: Object.freeze({ overA: 0, toleranceLu: 2, withinShare: 0.9 }),
     rain: Object.freeze({ maxOverA: 5 }),
-    // Storm, thunder included. A strike at intensity ≥ `thunderNearFrom` is
-    // near (AUDIBILITY_WINDOWS thunder `near`), below it far.
-    storm: Object.freeze({ maxOverA: 6, stMax: -27, thunderNearFrom: 0.7 }),
+    storm: Object.freeze({ maxOverA: 6, stMax: -27 }),
     // Resting (the pilot light).
     resting: Object.freeze({ overA: -10, toleranceLu: 3, lufsSFloor: -55 }),
     // At full slider.
-    ceiling: Object.freeze({ truePeakDbtp: -1, urgentGrMaxDb: 3, thunderGrMaxDb: 6 }),
+    ceiling: Object.freeze({ truePeakDbtp: -1, urgentGrMaxDb: 3 }),
 });
 
 // The program limiter's sample ceiling (dBFS). The worklet detects sample
@@ -151,11 +141,6 @@ export const AUDIBILITY_WINDOWS = Object.freeze({
             music: Object.freeze({ min: 0, max: 5 }),
             weather: Object.freeze({ min: 0, max: 5 }),
         }),
-        // Over its own storm only, measured from the thunder onset, not the flash.
-        thunder: Object.freeze({
-            near: Object.freeze({ min: 5, max: 10 }),
-            far: Object.freeze({ min: 2, max: 6 }),
-        }),
     }),
     // Urgent cues (needs-you, error) also need spectral room, not just LU.
     urgentBandRule: Object.freeze({
@@ -183,11 +168,7 @@ export const AUDIBILITY_WINDOWS = Object.freeze({
 // the L1 ship's bell (L2 −45.1, L3/L4 −39.2); a reminder is levelled on its
 // family's entry voice and the Signals `answered` on the call; `hourBell` is
 // the phrase (the soft 21:00 chime −48.0); `digest` four notes
-// (red, amber, gold, stone). Thunder (4.2) is levelled at its far/near
-// seam: the strike at intensity 0.55 (M max over the roll), so the
-// bed-aware trim puts that strike at the far floor + 1 LU and the
-// intensity law spreads the rest monotonically around it (near strikes
-// ≈ +4.5 dB over it, intensity 0.3 ≈ −3.7 dB).
+// (red, amber, gold, stone).
 // Closure (reel v3): the hour bell, the push and the aurora are shifted
 // with their voice-level cuts (−8 / −4 / −2 dB), so an unclamped trim can
 // place them on a 3–6-worker Village; council and departure are corrected
@@ -224,20 +205,6 @@ export const VOICE_REGISTRY = Object.freeze({
     // 0), 14.2 LU under the L1 needs-you call in one offline render (M-max
     // −27.9 vs −13.7 at volume step 10; PLR 8.8).
     'cue.awaken': Object.freeze({ nominalLufsM: -54.0, plr: 8.8 }),
-    'cue.thunder': Object.freeze({ nominalLufsM: -43.4, plr: 11.6 }),
-    // Wave 5 workshop accents (WorkshopVoices.js, 5.2): one accent take of
-    // the building's accent voice at unit gain (every take peaks at 1.0),
-    // mono placed centre at equal power (−3 dBFS a channel), median over
-    // its day slot pitches and variants and three seeds (spread ≤ 0.8 LU).
-    // The layer's per-strike ceiling, not these rows, bounds its peaks.
-    'work.forge': Object.freeze({ nominalLufsM: -15.9, plr: 12.9 }),
-    'work.archive': Object.freeze({ nominalLufsM: -18.1, plr: 15.1 }),
-    'work.mine': Object.freeze({ nominalLufsM: -19.9, plr: 16.9 }),
-    'work.taskboard': Object.freeze({ nominalLufsM: -20.4, plr: 17.4 }),
-    'work.observatory': Object.freeze({ nominalLufsM: -17.7, plr: 14.7 }),
-    'work.portal': Object.freeze({ nominalLufsM: -16.1, plr: 13.1 }),
-    'work.command': Object.freeze({ nominalLufsM: -21.2, plr: 18.2 }),
-    'work.harbor': Object.freeze({ nominalLufsM: -20.4, plr: 17.4 }),
     // Wave 6 music instruments (music/Instruments.js, 6.1): one note at vel 1
     // and gainDb 0 (lead voices A4; counter, engine, harp and pad A3; bass voices
     // and the tom A2; two beats at 84 bpm; a brushes note that long is a
@@ -253,6 +220,9 @@ export const VOICE_REGISTRY = Object.freeze({
     'music.upright': Object.freeze({ nominalLufsM: -33.7, plr: 8.1 }),
     'music.marimba': Object.freeze({ nominalLufsM: -37.3, plr: 8.5 }),
     'music.musicBox': Object.freeze({ nominalLufsM: -34.7, plr: 3.3 }),
+    'music.fiddle': Object.freeze({ nominalLufsM: -36.2, plr: 0.8 }),
+    'music.concertina': Object.freeze({ nominalLufsM: -35.4, plr: 3.1 }),
+    'music.dulcimer': Object.freeze({ nominalLufsM: -36.5, plr: 13.2 }),
     'music.brushes': Object.freeze({ nominalLufsM: -32.2, plr: 6.2 }),
     'music.brush': Object.freeze({ nominalLufsM: -36.8, plr: 20.2 }),
     'music.shaker': Object.freeze({ nominalLufsM: -35.1, plr: 15.4 }),
@@ -276,8 +246,6 @@ export const MEMORY_BUDGET = Object.freeze({
     totalBytes: 32 * MIB,
     air: 1.5 * MIB,        // Island Air IRs (2), 48 kHz
     noise: 8 * MIB,        // noise buffer pool, ≤ 48 kHz
-    workshop: 8 * MIB,     // workshop takes, 32 kHz (both phases' sets ≈ 6.1 MiB)
-    rareWorld: 5 * MIB,    // gulls, clinks, groans, thunder takes, 32 kHz
-    music: 8 * MIB,        // music instruments (6.1), 12–24 kHz (every bake resident ≈ 7.9 MiB)
+    music: 10 * MIB,       // music instruments (6.1), 12–24 kHz (every bake resident ≈ 9.4 MiB)
     cueStrikes: 2 * MIB,   // optional; the node path is the default, 48 kHz
 });

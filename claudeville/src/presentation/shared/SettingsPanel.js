@@ -10,11 +10,7 @@ import {
     SOUND_PRESET_LABELS,
     SOUND_STEP_MAX,
     TONE_RANGE_DB,
-    channelStep,
-    channelTrimSteps,
-    mixChannelsFor,
     modeForPreset,
-    readStoredTrimSteps,
     readTownBandVoice,
     soundStep,
     writeCaptionSetting,
@@ -29,7 +25,6 @@ import {
     writeSoundTone,
     writeStoredSoundEnabled,
     writeStoredSoundMode,
-    writeStoredTrimSteps,
     writeTownBandVoice,
 } from './SoundSettings.js';
 
@@ -59,8 +54,6 @@ const SOFTEN_CHOICES = Object.freeze([
     ['on', 'On'],
     ['off', 'Off'],
 ]);
-// The Village's Band slider is the music trim the Town band also plays at.
-const VILLAGE_BAND_DETAIL = 'Also sets the Town band level.';
 // Captions (3.8): Automatic follows the sound: signals while it is off,
 // signals and events while it is on.
 const CAPTION_CHOICES = Object.freeze([
@@ -245,7 +238,6 @@ export class SettingsPanel {
         readSettings,
         onSoundPreset,
         onSoundVolume,
-        onSoundLayer,
         onSoundBackground,
         onSoundOutput,
         onSoundTone,
@@ -280,9 +272,6 @@ export class SettingsPanel {
             return preset;
         });
         this.onSoundVolume = onSoundVolume || ((preset, step) => writePresetVolumeStep(preset, step, storage));
-        this.onSoundLayer = onSoundLayer || ((name, step) => {
-            writeStoredTrimSteps({ ...readStoredTrimSteps(storage), [name]: soundStep(step, SOUND_STEP_MAX) }, storage);
-        });
         this.onSoundBackground = onSoundBackground || (value => writeSoundBackground(value, storage));
         this.onSoundOutput = onSoundOutput || (value => writeSoundOutput(value, storage));
         this.onSoundTone = onSoundTone || (value => writeSoundTone(value, storage));
@@ -365,16 +354,15 @@ export class SettingsPanel {
     }
 
     // SOUND (7.8, UX-16): the popover's model plus the listening preferences,
-    // in the order Listen to, Volume, MIX, then how and when it plays. Volume
-    // and MIX follow the preset: Off shows neither, Signals no MIX, and each
-    // preset keeps its own volume step.
+    // in the order Listen to, Volume, then how and when it plays. Volume
+    // follows the preset: Off hides it, and each preset keeps its own
+    // volume step.
     _buildSound(settings) {
         const preset = presetOf(settings);
         const presetRow = this._select('soundPreset', 'Listen to', SOUND_PRESET_DETAILS[preset], PRESET_CHOICES, preset,
             value => this._choosePreset(value));
         const volumeRow = this._slider('soundVolume', 'Volume', '', null,
             step => this.onSoundVolume?.(this._sound.preset, step));
-        const mix = el('fieldset', { className: 'settings-soundscape' });
         const hushButton = el('button', { className: 'settings-button' });
         hushButton.type = 'button';
         hushButton.addEventListener('click', () => this._toggleHush());
@@ -384,26 +372,24 @@ export class SettingsPanel {
             preset: null,
             presetDetail: presetRow.querySelector('.settings-control__detail'),
             volumeRow,
-            mix,
             hushDetail: hushRow.querySelector('.settings-control__detail'),
             hushUntil: 0,
         };
         const grid = el('div', { className: 'settings-controls' }, [
             presetRow,
             volumeRow,
-            mix,
             this._select('soundBackground', 'In the background', 'When ClaudeVille is visible but another app has focus.',
                 BACKGROUND_CHOICES, settings.soundBackground, this.onSoundBackground),
             this._select('soundOutput', 'Output', 'Headphones narrows left–right placement. Mono plays everything in both ears.',
                 OUTPUT_CHOICES, settings.soundOutput, this.onSoundOutput),
-            this._slider('soundTone', 'Tone', 'Warm ↔ Bright, on the weather, sea and music.', settings.soundTone,
+            this._slider('soundTone', 'Tone', 'Warm ↔ Bright, on the town music.', settings.soundTone,
                 value => this.onSoundTone?.(value), TONE_SCALE),
             this._select('soundQuietHours', 'Quiet hours', 'Signals only, a little softer.',
                 QUIET_HOURS_CHOICES, settings.soundQuietHours, this.onSoundQuietHours),
             hushRow,
             this._select('captions', 'Captions', 'Short notes for what the village signals.',
                 CAPTION_CHOICES, settings.captions, this.onCaptions),
-            this._select('soundSoften', 'Soften sudden sounds', 'Gentler thunder and bells. Follows Reduce motion unless set.',
+            this._select('soundSoften', 'Soften sudden sounds', 'Gentler bells. Follows Reduce motion unless set.',
                 SOFTEN_CHOICES, settings.soundSoften, this.onSoundSoften),
             this._select('soundReminders', 'Reminders', 'Ring again while an agent is still waiting.',
                 REMINDER_CHOICES, settings.soundReminders, this.onSoundReminders),
@@ -458,9 +444,7 @@ export class SettingsPanel {
         if (button && button.textContent !== text) button.textContent = text;
     }
 
-    // The rows that follow the preset: its detail, its own volume step and
-    // the mix of trims it plays through (7.8). The MIX is rebuilt only when
-    // the preset changes.
+    // The rows that follow the preset: its detail and its own volume step.
     _renderPreset(settings) {
         const sound = this._sound;
         if (!sound) return;
@@ -470,30 +454,7 @@ export class SettingsPanel {
         if (sound.presetDetail && sound.presetDetail.textContent !== detail) sound.presetDetail.textContent = detail;
         sound.volumeRow.hidden = !mode;
         if (mode) this._syncRange('soundVolume', settings.soundVolumes?.[mode]);
-        const channels = mixChannelsFor(preset);
-        if (preset !== sound.preset) {
-            sound.preset = preset;
-            for (const key of [...this.controls.keys()]) {
-                if (key.startsWith('soundMix:')) this.controls.delete(key);
-            }
-            replaceChildren(sound.mix, [
-                el('legend', { className: 'settings-soundscape__legend', text: 'MIX' }),
-                ...channels.map(channel => this._slider(
-                    `soundMix:${channel.id}`,
-                    channel.label,
-                    preset === 'village' && channel.id === 'band' ? VILLAGE_BAND_DETAIL : '',
-                    channelStep(channel, settings.soundLayers),
-                    (step) => {
-                        for (const [trim, trimStep] of Object.entries(channelTrimSteps(channel, step))) {
-                            this.onSoundLayer?.(trim, trimStep);
-                        }
-                    },
-                )),
-            ]);
-            sound.mix.hidden = channels.length === 0;
-            return;
-        }
-        for (const channel of channels) this._syncRange(`soundMix:${channel.id}`, channelStep(channel, settings.soundLayers));
+        sound.preset = preset;
     }
 
     /** Scrolls SET to its SOUND section and focuses `Listen to` (the popover's link). */

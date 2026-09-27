@@ -9,8 +9,8 @@
 //     cue clash, ranges, identical renditions, tonal and phrase re-hearing,
 //     motif statements;
 //   * score level — `analyzeSongbook()` checks every piece, cell, phrase
-//     end, interlude, tag, fragment and stinger of `bgm/BgmSongbook.js`
-//     against the composition invariants and returns the failures.
+//     end, interlude, tag and stinger of `bgm/BgmSongbook.js` against the
+//     composition invariants and returns the failures.
 //
 // `node scripts/audio/score-analyzer.mjs` prints the songbook report and
 // exits 1 on any failure.
@@ -19,11 +19,13 @@ import { pathToFileURL } from 'node:url';
 import { CUE_ROLES, clashesWithChord, roleSemi } from '../../claudeville/src/presentation/shared/audio/MusicalScale.js';
 import { MOTIF_SIGNATURES } from '../../claudeville/src/presentation/shared/audio/Motifs.js';
 import * as SONGBOOK from '../../claudeville/src/presentation/shared/audio/bgm/BgmSongbook.js';
+import { RANGES } from '../../claudeville/src/presentation/shared/audio/bgm/ScoreKit.js';
 
 const EPS = 1e-6;
 const mod12 = n => ((n % 12) + 12) % 12;
-const A_PC = 9;
-const pcOfSemi = semi => mod12(A_PC + semi);
+// Score notes are semitones from A4 whatever the piece's key.
+const A4_PC = 9;
+const pcOfSemi = semi => mod12(A4_PC + semi);
 const round = (n, d = 2) => Number(n.toFixed(d));
 
 // ── lines ──
@@ -155,7 +157,7 @@ export function range(line) {
  * Group a rendered stream into renditions: a new one starts when the piece
  * or the segment changes or the bar number goes backwards. Only notes of
  * `segments` count (the sequencer marks a piece's loops `pass`; interludes,
- * tags, pickups and fragments are not 16-bar renditions); notes without a
+ * tags, pickups and stingers are not 16-bar renditions); notes without a
  * `segment` count. The key is every note of `seats` as seat, pitch, bar and
  * sixteenth-grid position, so humanization jitter never makes two equal
  * renditions differ.
@@ -310,28 +312,17 @@ export function motifStatements(notes, { seats = ['lead'], excludePieces = [], m
 
 // ── the songbook ──
 
-// Ranges (semitones from A4). Leads stay in A3…A5 (MUS-5's E4–A5 plus the
-// lullabies' low tonic); night leads sound at the written octave, never
-// above A5 (MUSL-4); the bass stays in C2…D4 (Millwheel's octave bounce
-// reaches D4) and under the lead; counter lines stay in E3…A4 and between.
-export const RANGES = Object.freeze({
-    lead: Object.freeze({ low: -12, high: 12 }),
-    nightLeadHigh: 12,
-    bass: Object.freeze({ low: -33, high: -7 }),
-    counter: Object.freeze({ low: -17, high: 0 }),
-});
 // Onsets per bar of the melody (MUS-5 states 3.75 for The Painted Isle and
 // 2.25 for Lanternlight; every tune stays between a lullaby and an engine).
+// The ranges (`RANGES`) are the songbook's own (ScoreKit), absolute in
+// every key.
 export const MELODY_DENSITY = Object.freeze({ min: 1, max: 6 });
 export const MUS5_DENSITY = Object.freeze({ paintedIsle: 3.75, lanternlight: 2.25 });
 // An interlude plays its melody at 40–50 % of the piece's density (6.7).
 export const INTERLUDE_DENSITY = Object.freeze({ min: 0.4, max: 0.5 });
 // MUSL-3: every band adds a player.
 export const BAND_SIZE_MIN_STEP = 1;
-export const FRAGMENT_SET = Object.freeze([
-    'willowbrook-call-home', 'willowbrook-b', 'willowbrook-a2', 'millbrook-b',
-    'millbrook-a-close', 'hearthfire-a-close', 'isle-call-home', 'lanternway-b-night',
-]);
+const PHASES = Object.freeze(['dawn', 'day', 'dusk', 'night']);
 
 function chordSpans(chords, beatsPerBar, offset = 0) {
     const spans = [];
@@ -431,6 +422,24 @@ export function analyzePiece(piece, { fail, book = SONGBOOK }) {
         range: base.range, onsetsPerBar: round(base.onsetsPerBar, 2),
     };
     if (base.onsetsPerBar < MELODY_DENSITY.min || base.onsetsPerBar > MELODY_DENSITY.max) fail(`${piece.name}: melody density ${report.onsetsPerBar}/bar`);
+    // Identity (C3): a title, a key whose scale holds the signal cues'
+    // pitches, its playlists, a meter, a comp that fits it, a feel and the
+    // Isle Band's players.
+    report.key = piece.key ? `${piece.key.tonic} ${piece.key.mode}` : '?';
+    if (typeof piece.title !== 'string' || !piece.title.trim()) fail(`${piece.name}: no title`);
+    if (!book.keyAllowed(piece.family, piece.key)) fail(`${piece.name}: key ${JSON.stringify(piece.key)} is not allowed for ${piece.family}`);
+    if (!Array.isArray(piece.phases) || !piece.phases.includes(night ? 'night' : 'day') || piece.phases.some(p => !PHASES.includes(p))) {
+        fail(`${piece.name}: phases ${JSON.stringify(piece.phases)} must include ${night ? 'night' : 'day'}`);
+    }
+    if (!book.METERS.includes(bpb)) fail(`${piece.name}: ${bpb} beats per bar`);
+    if (!book.ENGINES.includes(piece.engine)) fail(`${piece.name}: unknown engine ${piece.engine}`);
+    if (piece.engine === 'waltz' && bpb !== 3) fail(`${piece.name}: the waltz comp is 3/4`);
+    if (piece.engine === 'jig' && bpb !== 6) fail(`${piece.name}: the jig comp is 6/8`);
+    if (!book.FEELS.includes(piece.feel)) fail(`${piece.name}: unknown feel ${piece.feel}`);
+    if (['lead', 'counter', 'engine', 'descant'].some(seat => !Array.isArray(piece.arrangement?.[seat]))) {
+        fail(`${piece.name}: the arrangement seats a lead, a counter, an engine and a descant`);
+    }
+    const tonic = piece.key ? book.tonicChord(piece.key) : null;
     if (MUS5_DENSITY[piece.name] != null && Math.abs(base.onsetsPerBar - MUS5_DENSITY[piece.name]) > 0.01) {
         fail(`${piece.name}: melody density ${report.onsetsPerBar}/bar, MUS-5 notates ${MUS5_DENSITY[piece.name]}`);
     }
@@ -476,9 +485,24 @@ export function analyzePiece(piece, { fail, book = SONGBOOK }) {
                 if (i > 0 && JSON.stringify(v.melody) === JSON.stringify(variants[0].melody)) fail(`${piece.name} ${slot}#${i}: same melody as canonical`);
             });
         }
-        for (const { label, passage } of slotJoins(piece)) {
+        const joins = slotJoins(piece);
+        for (const { label, passage } of joins) {
             for (const p of parallelPerfects(timeline(passage.melody), timeline(passage.bass))) {
                 fail(`${label}: parallel ${p.interval}s at beat ${p.at}`);
+            }
+        }
+        // The feel moves eighths, never pitches; the felt lead (every cell and
+        // join) keeps the needs-you rule.
+        if (piece.feel && piece.feel !== 'straight') {
+            const lines = [
+                ['', piece.melody],
+                ...piece.grammar.flatMap(slot => piece.cells[slot].map((v, i) => [` ${slot}#${i}`, v.melody])),
+                ...joins.map(({ label, passage }) => [` ${label.slice(piece.name.length + 1)}`, passage.melody]),
+            ];
+            for (const [label, melody] of lines) {
+                for (const q of quickPairs(timeline(book.applyFeel(melody, piece.feel)), 60 / piece.bpm)) {
+                    fail(`${piece.name}${label}: ${piece.feel} makes a quick same-pitch pair at beat ${q.at}`);
+                }
             }
         }
     }
@@ -488,8 +512,7 @@ export function analyzePiece(piece, { fail, book = SONGBOOK }) {
     if (!piece.phraseEnds?.length) fail(`${piece.name}: no deceptive phrase ends`);
     for (const end of piece.phraseEnds || []) {
         const canon = piece.chords[end.bar];
-        const tonic = night ? 'Am' : 'A';
-        if (canon !== tonic) fail(`${piece.name}: phrase end bar ${end.bar} is ${JSON.stringify(canon)}, not the tonic`);
+        if (canon !== tonic) fail(`${piece.name}: phrase end bar ${end.bar} is ${JSON.stringify(canon)}, not the tonic ${tonic}`);
         const barMelody = sliceNotes(piece.melody, end.bar * bpb, (end.bar + 1) * bpb);
         const deceptive = book.chordPitchClasses(end.chord);
         const barLine = timeline(barMelody, { offset: 0 });
@@ -534,7 +557,7 @@ export function analyzePiece(piece, { fail, book = SONGBOOK }) {
             melody: [...pre.melody, ...piece.tag.melody], bass: [...pre.bass, ...piece.tag.bass],
         }, opts);
         const last = piece.tag.chords[1];
-        if ((Array.isArray(last) ? last[last.length - 1] : last) !== (night ? 'Am' : 'A')) fail(`${piece.name}: tag does not end home`);
+        if ((Array.isArray(last) ? last[last.length - 1] : last) !== tonic) fail(`${piece.name}: tag does not end home on ${tonic}`);
     }
     // Season colours (MUS-16): the last two bars' chords replaced; a replaced
     // chord never rubs (semitone or tritone) against the tune over it.
@@ -571,25 +594,13 @@ export function analyzePiece(piece, { fail, book = SONGBOOK }) {
     return report;
 }
 
-/** The whole songbook: pieces, fragments, stingers, occasions, playlists. */
+/** The whole songbook: pieces, stingers, playlists. */
 export function analyzeSongbook(book = SONGBOOK) {
     const failures = [];
     const fail = msg => failures.push(msg);
     const pieces = book.PIECES.map(piece => analyzePiece(piece, { fail, book }));
     const names = new Set(book.PIECES.map(p => p.name));
-    const fragments = book.FRAGMENTS.map(frag => {
-        if (!names.has(frag.source)) fail(`fragment ${frag.id}: unknown source ${frag.source}`);
-        const bars = frag.chords.length;
-        if (bars < 2 || bars > 4) fail(`fragment ${frag.id}: ${bars} bars, want 2–4`);
-        const r = checkPassage(`fragment ${frag.id}`, frag, { beatsPerBar: frag.beatsPerBar, bpm: frag.bpm, night: frag.night, fail, book });
-        const last = frag.chords[bars - 1];
-        const final = Array.isArray(last) ? last[last.length - 1] : last;
-        if (final !== (frag.night ? 'Am' : 'A')) fail(`fragment ${frag.id}: does not close home`);
-        const seconds = ((frag.pickup ? totalBeats(frag.pickup) : 0) + bars * frag.beatsPerBar) * 60 / frag.bpm;
-        return { id: frag.id, source: frag.source, bars, seconds: round(seconds, 2), night: frag.night, motif: frag.motif, range: r.range };
-    });
-    for (const id of FRAGMENT_SET) if (!book.FRAGMENTS.some(f => f.id === id)) fail(`fragment set: missing ${id}`);
-    for (const piece of book.PIECES) if (!book.FRAGMENTS.some(f => f.source === piece.name)) fail(`${piece.name}: no fragment cell`);
+    if (names.size !== book.PIECES.length) fail('two pieces share a name');
     for (const [label, stinger, night] of [
         ['NIGHTFALL_TAG', book.NIGHTFALL_TAG, true],
         ['RELEASE_FANFARE day', book.RELEASE_FANFARE.day, false],
@@ -597,33 +608,18 @@ export function analyzeSongbook(book = SONGBOOK) {
     ]) {
         checkPassage(label, stinger, { beatsPerBar: stinger.beatsPerBar, bpm: stinger.bpm, night, fail, book });
     }
-    // A fragment's `motif` names exactly the figure its melody states.
-    for (const frag of book.FRAGMENTS) {
-        const notes = timeline(frag.melody).map(n => ({ t: n.start * 60 / frag.bpm, midi: n.pitch + 69, seat: 'lead', piece: frag.id }));
-        const figures = [...new Set(motifStatements(notes).at.map(s => s.figure))];
-        const stated = figures.length ? figures.join('+') : null;
-        if (stated !== frag.motif) fail(`fragment ${frag.id}: motif ${frag.motif} but the melody states ${stated}`);
-    }
-    for (const [kind, occasion] of Object.entries(book.OCCASIONS)) {
-        for (const entry of occasion.day || occasion.night ? [occasion.day, occasion.night] : [occasion]) {
-            if (!entry) continue;
-            if (entry.piece && !names.has(entry.piece)) fail(`occasion ${kind}: unknown piece ${entry.piece}`);
-            if (entry.fragment && !book.FRAGMENTS.some(f => f.id === entry.fragment)) fail(`occasion ${kind}: unknown fragment ${entry.fragment}`);
-        }
-    }
     for (const [phase, list] of Object.entries(book.PLAYLISTS)) {
         for (const name of list) if (!names.has(name)) fail(`playlist ${phase}: unknown piece ${name}`);
     }
     if (book.PLAYLISTS.day.length < 4) fail('playlist day: fewer than four pieces');
-    return { pieces, fragments, failures };
+    return { pieces, failures };
 }
 
-function printReport({ pieces, fragments, failures }) {
-    const rows = pieces.map(p => `${p.name.padEnd(13)} ${p.family.padEnd(5)} ${String(p.bpm).padStart(3)} bpm ${p.beatsPerBar}/4 ${String(p.seconds).padStart(5)} s  lead ${p.range.low}…${p.range.high}  ${String(p.onsetsPerBar).padStart(4)} onsets/bar  alts ${p.alternatives}  renditions ${p.renditions}  interlude ${p.interludeDensity}`);
+function printReport({ pieces, failures }) {
+    const meter = bpb => (bpb === 6 ? '6/8' : `${bpb}/4`);
+    const rows = pieces.map(p => `${p.name.padEnd(13)} ${p.family.padEnd(5)} ${p.key.padEnd(8)} ${String(p.bpm).padStart(3)} bpm ${meter(p.beatsPerBar)} ${String(p.seconds).padStart(5)} s  lead ${p.range.low}…${p.range.high}  ${String(p.onsetsPerBar).padStart(4)} onsets/bar  alts ${p.alternatives}  renditions ${p.renditions}  interlude ${p.interludeDensity}`);
     console.log('pieces');
     for (const row of rows) console.log(`  ${row}`);
-    console.log('fragments');
-    for (const f of fragments) console.log(`  ${f.id.padEnd(24)} ${f.source.padEnd(12)} ${f.bars} bars ${String(f.seconds).padStart(6)} s ${f.night ? 'night' : 'day  '} ${f.motif ?? ''}`);
     console.log(failures.length ? `FAIL: ${failures.length}` : 'OK: 0 parallels, 0 % routine-cue clash, every invariant holds');
     for (const f of failures) console.log(`  ${f}`);
 }

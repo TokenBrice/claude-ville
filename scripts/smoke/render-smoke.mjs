@@ -55,9 +55,9 @@ async function timedStep(name, operation) {
 // ------------------------------------------------------------ sound (7.1) ----
 // The sound control's states at 1280 and 1440 on fresh profiles, in a
 // browser that requires a gesture before audio (so `armed` is real):
-// off → the first-ever click opens the SOUND panel's presets → Village
-// (playing) → hushed; armed (a stored enable, no click yet); resting (no
-// agents, the quiet floor). Every state: a screenshot, `#topbarSoundToggle`
+// off → the first-ever click opens the SOUND panel's presets → Town band
+// (playing) → hushed; armed (a stored enable, no click yet); playing with no
+// agents (the band on an empty island). Every state: a screenshot, `#topbarSoundToggle`
 // at the same box as when off (0 px shift) and `.topbar__center` never
 // overflowing at 1440 with three attention buckets showing. At 1280 the
 // three buckets already overflow the centre at HEAD (130 px; a maintainer
@@ -66,11 +66,10 @@ async function timedStep(name, operation) {
 // 16 px the 44 px group adds over the old 28 px note. Then the keyboard
 // walk (7.6): 14 Tabs from `#topbarAlertsToggle` visit ≥ 5 top-bar controls
 // without changing the selected agent, the presets are a radiogroup
-// "Listen to" of 4 radios, the volume carries `aria-valuetext`, and `M`
+// "Listen to" of 3 radios, the volume carries `aria-valuetext`, and `M`
 // toggles sound in World and Dashboard.
 const SOUND_VIEWPORTS = [1280, 1440];
 const SOUND_GESTURE_ARGS = ['--autoplay-policy=user-gesture-required'];
-const SOUND_STATE_TIMEOUT_MS = 45_000;
 // `.topbar__center` overflow at 1280 with three attention buckets at the
 // Wave-6 HEAD (29fc9ad), and what the fixed 44 px sound group may add to it.
 const CENTER_OVERFLOW_1280_HEAD_PX = 130;
@@ -193,7 +192,7 @@ async function soundStates(browser, baseUrl, width) {
       record('popover open', open, assertSameBox(base, open, `${width} popover open`, width));
       await soundShot(page, `popover-${width}`);
 
-      await page.locator('#soundPresets [role="radio"][data-preset="village"]').click();
+      await page.locator('#soundPresets [role="radio"][data-preset="townBand"]').click();
       await waitSoundState(page, 'playing');
       const playingOpen = await soundGeometry(page);
       record('playing, popover open', playingOpen, assertSameBox(base, playingOpen, `${width} playing (open)`, width));
@@ -217,7 +216,7 @@ async function soundStates(browser, baseUrl, width) {
   }
   {
     // A stored enable before any gesture: armed until the first click.
-    const { context, page } = await soundPage(browser, baseUrl, width, { scenario: 'many-waiting', storage: { 'claudeville.sound.enabled': 'true', 'claudeville.sound.mode': 'ambient' } });
+    const { context, page } = await soundPage(browser, baseUrl, width, { scenario: 'many-waiting', storage: { 'claudeville.sound.enabled': 'true', 'claudeville.sound.mode': 'bgm' } });
     try {
       await showThreeBuckets(page);
       await waitSoundState(page, 'armed');
@@ -229,20 +228,20 @@ async function soundStates(browser, baseUrl, width) {
     }
   }
   {
-    // No agents: the quiet floor rests the Village after its calm.
+    // No agents: the Town band plays on an empty island.
     const { context, page } = await soundPage(browser, baseUrl, width, { scenario: 'no-agents' });
     try {
       await page.locator('#topbarSoundToggle').click();
-      await page.locator('#soundPresets [role="radio"][data-preset="village"]').click();
+      await page.locator('#soundPresets [role="radio"][data-preset="townBand"]').click();
       await page.keyboard.press('Escape');
-      await waitSoundState(page, 'resting', SOUND_STATE_TIMEOUT_MS);
-      const resting = await soundGeometry(page);
+      await waitSoundState(page, 'playing');
+      const empty = await soundGeometry(page);
       // Another fixture (no agents, so no buckets): the toggle's box only.
-      const shift = Math.max(Math.abs(resting.toggle.x - offBase.toggle.x), Math.abs(resting.toggle.y - offBase.toggle.y), Math.abs(resting.toggle.width - offBase.toggle.width));
-      record('resting', resting, shift);
-      assert.equal(shift, 0, `${width}: #topbarSoundToggle moved ${shift} px between off and resting`);
-      assert.ok(resting.centerOverflow <= 0, `${width} resting: .topbar__center overflows by ${resting.centerOverflow} px`);
-      await soundShot(page, `resting-${width}`);
+      const shift = Math.max(Math.abs(empty.toggle.x - offBase.toggle.x), Math.abs(empty.toggle.y - offBase.toggle.y), Math.abs(empty.toggle.width - offBase.toggle.width));
+      record('playing, no agents', empty, shift);
+      assert.equal(shift, 0, `${width}: #topbarSoundToggle moved ${shift} px between off and playing with no agents`);
+      assert.ok(empty.centerOverflow <= 0, `${width} playing, no agents: .topbar__center overflows by ${empty.centerOverflow} px`);
+      await soundShot(page, `playing-no-agents-${width}`);
     } finally {
       await context.close();
     }
@@ -283,7 +282,7 @@ async function keyboardWalk(browser, baseUrl) {
     });
     assert.equal(aria.dialog, 'dialog', 'the SOUND panel is a dialog');
     assert.equal(aria.label, 'Listen to', `the presets radiogroup is labelled ${aria.label}`);
-    assert.equal(aria.radios, 4, `the presets radiogroup has ${aria.radios} radios`);
+    assert.equal(aria.radios, 3, `the presets radiogroup has ${aria.radios} radios`);
     assert.equal(aria.focused, 'radio', 'the panel opens with focus on a preset radio');
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('ArrowDown');

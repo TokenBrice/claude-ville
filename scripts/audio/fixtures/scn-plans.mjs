@@ -1,6 +1,6 @@
 // SCN scenario fixtures (ported from the SCN notes, scn-snippets/plans.mjs):
 // what the village does during each long real-app capture — the probe's
-// `--soak` plays `scn-session-ambient-10min` and `scn-session-bgm-10min`.
+// `--soak` plays `scn-session-signals-10min` and `scn-session-bgm-10min`.
 // Times are seconds after the sound toggle click (t = 0 is the first enable).
 // Every action goes through public/dev surfaces of the real app:
 //   step   → app.agentSimulator._applyStep(step)   (the ?sim=1 fixture driver)
@@ -8,7 +8,7 @@
 //   remove → app.agentSimulator._removeAgent(id)
 //   hour / weather → window.__claudeVilleAtmosphere
 //   scenario → agentSimulator.stop(); agentSimulator.start(id)  (replay a QA fixture with sound on)
-//   mode   → the preset picked in the SOUND panel (#soundPresets) at the enable
+//   mode   → the preset picked in the SOUND panel (#soundPresets) at the enable: 'bgm' (Town band) | 'signals'
 //   blur / focus → the controller's own window handlers (init.js swallows real blur events)
 //   hide / show  → document.hidden override + a real visibilitychange event
 
@@ -25,7 +25,7 @@ function mulberry32(seed) {
 
 const TOOLS = [
     ['Read', 'file_path=/src/world/forge.js'],
-    ['Grep', 'pattern=AudioDirector'],
+    ['Grep', 'pattern=SignalDirector'],
     ['Edit', 'file_path=/src/audio/CueKit.js'],
     ['Bash', 'command=npm test'],
     ['Read', 'file_path=/docs/design-decisions.md'],
@@ -112,39 +112,27 @@ export function busySessionActions(seconds = 600, seed = 0x5c4e) {
 
 export const PLANS = {
     // Two 10-minute sessions over the identical village script.
-    'scn-session-ambient-10min': {
-        scenario: 'mixed-tools', hour: 10.4, weather: 'clear', mode: 'ambient', seconds: 600,
+    'scn-session-signals-10min': {
+        scenario: 'mixed-tools', hour: 10.4, weather: 'clear', mode: 'signals', seconds: 600,
         actions: () => busySessionActions(600),
     },
     'scn-session-bgm-10min': {
         scenario: 'mixed-tools', hour: 10.4, weather: 'clear', mode: 'bgm', seconds: 600,
         actions: () => busySessionActions(600),
     },
-    // A compressed day: the same busy village, one clock hour every 16 s.
-    'scn-dayarc-ambient-5min': {
-        scenario: 'mixed-tools', hour: 5.0, weather: 'clear', mode: 'ambient', seconds: 312,
-        actions: () => {
-            const acts = busySessionActions(312, 0xda7).filter(a => a.quiet || a.add);
-            for (let i = 0; i < 20; i++) acts.push({ t: 4 + i * 16, hour: 5 + i, label: `${5 + i}:00` });
-            acts.push({ t: 196, weather: 'rain', label: 'rain' });
-            acts.push({ t: 244, weather: 'clear', label: 'clear' });
-            return acts.sort((a, b) => a.t - b.t);
-        },
-    },
     // Scenario moments: enable sound over an empty island, then replay the fixture live.
-    'scn-moment-team-gather': { scenario: 'no-agents', hour: 11.3, weather: 'clear', mode: 'ambient', seconds: 60, actions: () => [{ t: 6, scenario: 'team-gather', label: 'team-gather starts' }] },
-    'scn-moment-release-parade': { scenario: 'no-agents', hour: 14.3, weather: 'clear', mode: 'ambient', seconds: 60, actions: () => [{ t: 6, scenario: 'release-parade', label: 'release-parade starts' }] },
-    'scn-moment-failed-push': { scenario: 'no-agents', hour: 16.3, weather: 'clear', mode: 'ambient', seconds: 60, actions: () => [{ t: 6, scenario: 'failed-push', label: 'failed-push starts' }] },
-    'scn-moment-storm-night': { scenario: 'no-agents', hour: 23.2, weather: 'storm', mode: 'ambient', seconds: 60, actions: () => [{ t: 6, scenario: 'storm-night-reduced-motion', label: 'storm-night starts' }] },
-    'scn-moment-waiting-ambient': { scenario: 'no-agents', hour: 10.4, weather: 'clear', mode: 'ambient', seconds: 75, actions: () => [{ t: 6, scenario: 'waiting-on-user', label: 'waiting-on-user starts' }] },
+    'scn-moment-team-gather': { scenario: 'no-agents', hour: 11.3, weather: 'clear', mode: 'bgm', seconds: 60, actions: () => [{ t: 6, scenario: 'team-gather', label: 'team-gather starts' }] },
+    'scn-moment-release-parade': { scenario: 'no-agents', hour: 14.3, weather: 'clear', mode: 'bgm', seconds: 60, actions: () => [{ t: 6, scenario: 'release-parade', label: 'release-parade starts' }] },
+    'scn-moment-failed-push': { scenario: 'no-agents', hour: 16.3, weather: 'clear', mode: 'bgm', seconds: 60, actions: () => [{ t: 6, scenario: 'failed-push', label: 'failed-push starts' }] },
+    'scn-moment-waiting-signals': { scenario: 'no-agents', hour: 10.4, weather: 'clear', mode: 'signals', seconds: 75, actions: () => [{ t: 6, scenario: 'waiting-on-user', label: 'waiting-on-user starts' }] },
     'scn-moment-waiting-bgm': { scenario: 'no-agents', hour: 10.4, weather: 'clear', mode: 'bgm', seconds: 75, actions: () => [{ t: 6, scenario: 'waiting-on-user', label: 'waiting-on-user starts' }] },
     // Lived UX: first enable, mode switch both ways, blur/return, hidden-tab summons, return.
     'scn-ux-journey': {
-        scenario: 'mixed-tools', hour: 10.4, weather: 'clear', mode: 'ambient', seconds: 170,
+        scenario: 'mixed-tools', hour: 10.4, weather: 'clear', mode: 'signals', seconds: 170,
         actions: () => {
             const acts = busySessionActions(170, 0x0e).filter(a => a.quiet);
-            acts.push({ t: 35, mode: 'bgm', label: 'click → BGM' });
-            acts.push({ t: 70, mode: 'ambient', label: 'click → AMBIENT' });
+            acts.push({ t: 35, mode: 'bgm', label: 'click → Town band' });
+            acts.push({ t: 70, mode: 'signals', label: 'click → Signals' });
             acts.push({ t: 95, blur: true, label: 'window blur (terminal)' });
             acts.push({ t: 105, step: { agentId: 'sim2', status: WU, tool: 'AskUserQuestion', input: 'question=Proceed?', lastMessage: 'Proceed?' }, label: 'sim2 needs you (blurred)' });
             acts.push({ t: 120, focus: true, label: 'window focus (return)' });

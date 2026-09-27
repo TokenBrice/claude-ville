@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
-import { AudioDirector } from '../../claudeville/src/presentation/shared/audio/AudioDirector.js';
+import { SignalDirector } from '../../claudeville/src/presentation/shared/audio/SignalDirector.js';
 import { CueGovernor } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
 import { CueKit } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
 import {
@@ -20,7 +20,7 @@ function sharedCues(governorOptions = {}) {
 
 function directorWithoutAudio() {
     // Exercise the agent dedupe independently of the four-second spacing gate.
-    return new AudioDirector({ engine: SILENT_ENGINE, cues: sharedCues({ minSpacingMs: 0 }) });
+    return new SignalDirector({ engine: SILENT_ENGINE, cues: sharedCues({ minSpacingMs: 0 }) });
 }
 
 function captureCues() {
@@ -82,7 +82,7 @@ for (const { status, kind, name } of ACTIONABLE_CASES) {
 
 test('an attention event without a status reads the agent status from the world', () => {
     const world = { agents: new Map([['agent-world', { id: 'agent-world', status: 'rate_limited' }]]) };
-    const director = new AudioDirector({ engine: SILENT_ENGINE, world, cues: sharedCues() });
+    const director = new SignalDirector({ engine: SILENT_ENGINE, world, cues: sharedCues() });
     const capture = captureCues();
     try {
         eventBus.emit('attention:raised', { agentId: 'agent-world' });

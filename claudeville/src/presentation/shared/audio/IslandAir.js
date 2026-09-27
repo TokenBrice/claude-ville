@@ -7,11 +7,11 @@
 // input RMS before the return gain.
 //
 // Return: bed sends ─► bed gate ─┐
-//         cue sends ─────────────┴► HP 140 Hz ─┬► conv day ─► g day ──┬► LP (weather) ─► return gain ─► wet
+//         cue sends ─────────────┴► HP 140 Hz ─┬► conv day ─► g day ──┬► LP (phase) ─► return gain ─► wet
 //                                              └► conv night ─► g night ┘
 // Phase changes cross the two convolvers with an equal-power glide (τ 6 s);
 // once a convolver's gain has settled at zero its input is disconnected so
-// it stops convolving. Rain and fog colour only the return. A convolver's
+// it stops convolving. Night darkens the return a little. A convolver's
 // buffer is set once, when its bake lands, and never replaced.
 
 import { makeFilter } from './Filters.js';
@@ -123,12 +123,9 @@ export function airCrossfadeGains(night) {
     return { day: Math.cos(x), night: Math.sin(x) };
 }
 
-// Return colour: rain and fog dull the air, night darkens it a little; wet
-// air is shorter-sounding (less return), fog carries slightly more.
-export function airReturnColour({ night = 0, rain = 0, fog = 0 } = {}) {
-    const lowpassHz = Math.max(2500, Math.min(7000 - 2000 * night, 7000 - 3500 * rain, 7000 - 4000 * fog));
-    const gain = AIR_RETURN_GAIN * (1 - 0.3 * rain) * (1 + 0.1 * fog);
-    return { lowpassHz, gain };
+// Return colour: night darkens the air a little.
+export function airReturnColour({ night = 0 } = {}) {
+    return { lowpassHz: Math.max(2500, 7000 - 2000 * night), gain: AIR_RETURN_GAIN };
 }
 
 // Build the raw IR parts for one channel on the main thread (sparse: a few
@@ -207,12 +204,11 @@ export function airIrRecipe(mood, sampleRate) {
 // ------------------------------------------------------------------ runtime
 
 export class IslandAir {
-    constructor(ctx, bank, { phase = 'day', weather = {}, timers = globalThis } = {}) {
+    constructor(ctx, bank, { phase = 'day', timers = globalThis } = {}) {
         this.context = ctx;
         this.bank = bank;
         this._timers = timers;
         this._night = AIR_PHASE_NIGHT[phase] ?? 0;
-        this._weather = { rain: clamp01(weather.rain), fog: clamp01(weather.fog) };
         this._idleTimer = null;
         this._destroyed = false;
 
@@ -255,13 +251,6 @@ export class IslandAir {
         const now = this.context.currentTime;
         this._applyMix(now, AIR_CROSSFADE_TAU_SEC);
         this._applyColour(now, AIR_CROSSFADE_TAU_SEC);
-    }
-
-    setWeather({ rain = 0, fog = 0 } = {}) {
-        const next = { rain: clamp01(rain), fog: clamp01(fog) };
-        if (this._destroyed || (next.rain === this._weather.rain && next.fog === this._weather.fog)) return;
-        this._weather = next;
-        this._applyColour(this.context.currentTime, AIR_CROSSFADE_TAU_SEC);
     }
 
     destroy() {
@@ -310,7 +299,7 @@ export class IslandAir {
     }
 
     _applyColour(now, tau) {
-        const { lowpassHz, gain } = airReturnColour({ night: this._night, ...this._weather });
+        const { lowpassHz, gain } = airReturnColour({ night: this._night });
         const lp = this._lowpass.frequency;
         const out = this.output.gain;
         if (tau > 0) {
@@ -326,8 +315,4 @@ export class IslandAir {
         if (this._idleTimer !== null) this._timers.clearTimeout(this._idleTimer);
         this._idleTimer = null;
     }
-}
-
-function clamp01(value) {
-    return Math.max(0, Math.min(1, Number(value) || 0));
 }

@@ -2,14 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    AUDIO_MIXER_DEFAULTS,
     SOUND_SETTING_DEFAULTS,
-    channelStep,
-    channelTrimSteps,
     hushActive,
     inQuietHours,
     migratePresetVolumes,
-    mixChannelsFor,
     quietHoursEndsAt,
     readHushUntil,
     readPresetVolumeStep,
@@ -54,20 +50,18 @@ const CALIBRATED = { 'claudeville.sound.calibration': '2' };
 test('the single stored step seeds every preset once, then each preset keeps its own', () => {
     const storage = new MemoryStorage({ ...CALIBRATED, 'claudeville.sound.volume': '7' });
     // Before the migration every preset reads the legacy step.
-    for (const preset of ['signals', 'village', 'townBand']) assert.equal(readPresetVolumeStep(preset, storage), 7);
+    for (const preset of ['signals', 'townBand']) assert.equal(readPresetVolumeStep(preset, storage), 7);
     assert.equal(migratePresetVolumes(storage), true);
     assert.equal(migratePresetVolumes(storage), false, 'once');
-    assert.deepEqual(JSON.parse(storage.getItem('claudeville.sound.volumes')), { signals: 7, ambient: 7, bgm: 7 });
+    assert.deepEqual(JSON.parse(storage.getItem('claudeville.sound.volumes')), { signals: 7, bgm: 7 });
 
-    assert.equal(writePresetVolumeStep('village', 4, storage), 4);
-    assert.equal(writePresetVolumeStep('signals', 8, storage), 8);
+    assert.equal(writePresetVolumeStep('townBand', 4, storage), 4);
     // A later change to the legacy key (an old tab) no longer moves anything.
     storage.setItem('claudeville.sound.volume', '1');
     const reloaded = new MemoryStorage(Object.fromEntries(storage.values));
-    assert.equal(readPresetVolumeStep('village', reloaded), 4);
-    assert.equal(readPresetVolumeStep('ambient', reloaded), 4, 'a mode id reads the same slot');
-    assert.equal(readPresetVolumeStep('signals', reloaded), 8);
-    assert.equal(readPresetVolumeStep('townBand', reloaded), 7);
+    assert.equal(readPresetVolumeStep('townBand', reloaded), 4);
+    assert.equal(readPresetVolumeStep('bgm', reloaded), 4, 'a mode id reads the same slot');
+    assert.equal(readPresetVolumeStep('signals', reloaded), 7);
     assert.equal(migratePresetVolumes(reloaded), false);
 });
 
@@ -80,34 +74,36 @@ test('Off reads and writes the volume of the preset the toggle turns back on', (
     assert.equal(readPresetVolumeStep('off', storage), 9);
     writePresetVolumeStep('off', 2, storage);
     assert.equal(readPresetVolumeStep('townBand', storage), 2);
-    assert.equal(readPresetVolumeStep('village', storage), 5);
+    assert.equal(readPresetVolumeStep('signals', storage), 3);
+    // A write keeps only the presets that still exist.
+    assert.deepEqual(JSON.parse(storage.getItem('claudeville.sound.volumes')), { signals: 3, bgm: 2 });
 });
 
 test('a first write without a migration keeps the legacy step in the other presets', () => {
     const storage = new MemoryStorage({ ...CALIBRATED, 'claudeville.sound.volume': '3' });
     writePresetVolumeStep('signals', 10, storage);
-    assert.deepEqual(JSON.parse(storage.getItem('claudeville.sound.volumes')), { signals: 10, ambient: 3, bgm: 3 });
+    assert.deepEqual(JSON.parse(storage.getItem('claudeville.sound.volumes')), { signals: 10, bgm: 3 });
 });
 
 test('invalid volume steps fall back or clamp; an uncalibrated profile reads the standard step', () => {
     const corrupt = new MemoryStorage({ ...CALIBRATED, 'claudeville.sound.volumes': '{not json' });
-    assert.equal(readPresetVolumeStep('village', corrupt), STANDARD_VOLUME_STEP);
+    assert.equal(readPresetVolumeStep('townBand', corrupt), STANDARD_VOLUME_STEP);
     const odd = new MemoryStorage({
         ...CALIBRATED,
-        'claudeville.sound.volumes': JSON.stringify({ signals: 14, ambient: 'loud', bgm: -2 }),
+        'claudeville.sound.volumes': JSON.stringify({ signals: 14, bgm: 'loud' }),
     });
     assert.equal(readPresetVolumeStep('signals', odd), 10);
-    assert.equal(readPresetVolumeStep('village', odd), STANDARD_VOLUME_STEP);
-    assert.equal(readPresetVolumeStep('townBand', odd), 0);
-    assert.equal(writePresetVolumeStep('village', 'x', odd), STANDARD_VOLUME_STEP, 'a non-number keeps the slot');
-    assert.equal(writePresetVolumeStep('village', 6.6, odd), 7);
+    assert.equal(readPresetVolumeStep('townBand', odd), STANDARD_VOLUME_STEP);
+    assert.equal(writePresetVolumeStep('townBand', 'x', odd), STANDARD_VOLUME_STEP, 'a non-number keeps the slot');
+    assert.equal(writePresetVolumeStep('townBand', 6.6, odd), 7);
+    assert.equal(writePresetVolumeStep('signals', -2, odd), 0);
 
     const legacy = new MemoryStorage({ 'claudeville.sound.volume': '0.72', 'claudeville.sound.volumes': '{"signals":2}' });
     assert.equal(readPresetVolumeStep('signals', legacy), STANDARD_VOLUME_STEP);
     // D5 resets every preset's slot, then marks the profile.
     assert.equal(recalibrateStoredSound(legacy), true);
     assert.deepEqual(JSON.parse(legacy.getItem('claudeville.sound.volumes')),
-        { signals: STANDARD_VOLUME_STEP, ambient: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
+        { signals: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
     assert.equal(migratePresetVolumes(legacy), false, 'the reset already wrote the per-preset steps');
 });
 
@@ -187,34 +183,12 @@ test('quiet hours wrap midnight on the local clock and say when they end', () =>
     assert.deepEqual(quietHoursEndsAt('22-08', at(2)), new Date(2026, 8, 27, 8));
 });
 
-test('each preset shows only the trims it plays through, named for what you hear', () => {
-    const labels = preset => mixChannelsFor(preset).map(channel => channel.label);
-    assert.deepEqual(labels('off'), []);
-    assert.deepEqual(labels('signals'), []);
-    assert.deepEqual(labels('townBand'), ['Band']);
-    assert.deepEqual(labels('village'), ['Weather & sea', 'Wildlife', 'Workshops', 'Band']);
-    assert.deepEqual(labels('ambient'), [], 'mode ids are not presets');
-    // Every group fader is reachable from the Village mix exactly once.
-    const trims = mixChannelsFor('village').flatMap(channel => channel.trims);
-    assert.deepEqual([...trims].sort(), Object.keys(AUDIO_MIXER_DEFAULTS).sort());
-});
-
-test('one mix slider moves all its trims, keeping their default offsets', () => {
-    const workshops = mixChannelsFor('village').find(channel => channel.id === 'workshops');
-    assert.equal(channelStep(workshops, AUDIO_MIXER_DEFAULTS), AUDIO_MIXER_DEFAULTS.workshops);
-    assert.deepEqual(channelTrimSteps(workshops, AUDIO_MIXER_DEFAULTS.workshops), { workshops: 9, hum: 10 });
-    assert.deepEqual(channelTrimSteps(workshops, 5), { workshops: 5, hum: 6 });
-    assert.deepEqual(channelTrimSteps(workshops, 10), { workshops: 10, hum: 10 });
-    assert.deepEqual(channelTrimSteps(workshops, 0), { workshops: 0, hum: 0 }, 'off is off for every trim');
-    const weather = mixChannelsFor('village')[0];
-    assert.deepEqual(channelTrimSteps(weather, 4), { wind: 4, rain: 4 });
-    assert.equal(channelStep(weather, { wind: 3, rain: 8 }), 3);
-});
-
 test('the preset reads Off while sound is disabled, and the defaults match what a fresh profile reads', () => {
     assert.equal(readStoredSoundPreset(new MemoryStorage({ 'claudeville.sound.mode': 'bgm' })), 'off');
     assert.equal(readStoredSoundPreset(new MemoryStorage({ 'claudeville.sound.enabled': 'true', 'claudeville.sound.mode': 'signals' })), 'signals');
-    assert.equal(readStoredSoundPreset(new MemoryStorage({ 'claudeville.sound.enabled': 'true', 'claudeville.sound.mode': 'chip' })), 'village');
+    assert.equal(readStoredSoundPreset(new MemoryStorage({ 'claudeville.sound.enabled': 'true', 'claudeville.sound.mode': 'chip' })), 'townBand');
+    // The retired Village's stored mode id reads as the Town band.
+    assert.equal(readStoredSoundPreset(new MemoryStorage({ 'claudeville.sound.enabled': 'true', 'claudeville.sound.mode': 'ambient' })), 'townBand');
     const keys = Object.keys(SOUND_SETTING_DEFAULTS);
     assert.equal(keys.at(-1), 'claudeville.sound.calibration', 'written last');
     assert.deepEqual(readSoundSettings(new MemoryStorage(SOUND_SETTING_DEFAULTS)), readSoundSettings(new MemoryStorage(CALIBRATED)));

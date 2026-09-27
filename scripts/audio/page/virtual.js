@@ -1,7 +1,8 @@
 // The virtual-clock renderer (HAR-1). Renders the SHIPPED controller and
 // directors on an OfflineAudioContext while page/virtual-clock.js steps every
 // timer the audio code reads in lock-step with the render: two renders with
-// one seed are sample-identical, and a minute of village renders in seconds.
+// one seed are sample-identical, and a minute of the Town band renders in
+// seconds.
 //
 // How: `window.AudioContext` is replaced by a factory that hands the engine
 // one prepared OfflineAudioContext, whose `state`, `resume`, `suspend` and
@@ -22,13 +23,12 @@ import { AmbientAudioController } from '/src/presentation/shared/AmbientAudioCon
 import { eventBus } from '/src/domain/events/DomainEvent.js';
 import { AudioEngine } from '/src/presentation/shared/audio/AudioEngine.js';
 import { cueScoreDiagnostics, scheduleAccent } from '/src/presentation/shared/audio/CueScore.js';
-import { laneForCueKind } from '/src/presentation/shared/audio/cues/CueKit.js';
+import { CueKit, laneForCueKind } from '/src/presentation/shared/audio/cues/CueKit.js';
 import { PROGRAM_TRIM_DB } from '/src/presentation/shared/audio/Loudness.js';
 import {
-    LAYERS, PRESET_FOR_MODE, atmosphereFor, atmosphereSummary, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
+    PRESET_FOR_MODE, atmosphereFor, atmosphereSummary, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
 } from './scene.js';
 import { installMusicProbe, stopLintRows } from './music.js';
-import { installRitualConductor, scriptedCamera } from './workshop.js';
 
 const vc = window.__vc;
 if (!vc) throw new Error('virtual.js needs page/virtual-clock.js as an init script');
@@ -36,11 +36,9 @@ const realSleep = ms => new Promise(r => vc.real.setTimeout(r, ms));
 const offline = OfflineAudioContext.prototype;
 const SETUP_LIMIT_MS = 20000;
 
-// Stem taps: world/work/music post-duck (what each bus adds to the program
-// sum), the cue sum before its trim, and both sides of the limiter.
+// Stem taps: the music bus post-duck (what it adds to the program sum), the
+// cue sum before its trim, and both sides of the limiter.
 export const STEM_SOURCES = {
-    world: engine => engine._busOut('world'),
-    work: engine => engine._busOut('work'),
     music: engine => engine._busOut('music'),
     cue: engine => engine.busInput('cue'),
     limiterIn: engine => engine._limiterIn,
@@ -48,9 +46,6 @@ export const STEM_SOURCES = {
     // Island Air (S5): the wet return before its program trim — the same
     // staging as the cue and bus taps above.
     airWet: engine => engine.airReturns?.wet ?? null,
-    // The held note's own path (S3, 3.3), post-duck: what it adds to the
-    // program before its PROGRAM_TRIM.
-    signalBed: (engine) => { try { return engine._busOut('signalBed'); } catch { return null; } },
 };
 
 function sceneContext({ seconds, stems, sampleRate }) {
@@ -272,8 +267,22 @@ function setHidden(value) {
 // Wave-3 payload fields a probe judges) and `audio:cue-scheduled` (the
 // published notes, with each note's pitch when the tree publishes it).
 // `now()` → the scene's time in seconds; `perf` is the virtual clock.
+// `announceOnly` is the director's own mark on the submission (Signals'
+// non-signal kinds: captioned, never sounded): the played event carries the
+// fact only, so the page reads the mark off `CueKit.play` and pairs it with
+// the event by kind and agent.
 function logCues(log, now, kitOf) {
+    const announced = new Set();
+    const play = CueKit.prototype.play;
+    CueKit.prototype.play = function recordedPlay(kind, options = {}) {
+        const key = `${kind}|${options?.agentId ?? ''}`;
+        if (options?.announceOnly) announced.add(key);
+        else if (!options?.test) announced.delete(key);
+        return play.call(this, kind, options);
+    };
     eventBus.on('audio:cue-played', (p) => {
+        const key = `${p?.kind ?? null}|${p?.agentId ?? ''}`;
+        const announceOnly = announced.delete(key);
         log.cues.push({
             t: now(), perf: vc.now, kind: p?.kind ?? null, agentId: p?.agentId ?? null, label: p?.label ?? null,
             level: p?.level ?? p?.payload?.level ?? null, family: p?.family ?? null, count: p?.count ?? null,
@@ -281,7 +290,7 @@ function logCues(log, now, kitOf) {
             notes: Array.isArray(p?.notes) ? p.notes.slice() : null, silent: Boolean(p?.silent),
             // Wave 7: captioned without a sound (Signals), and the one-time
             // family line on the first real urgent cue after an enable.
-            announceOnly: Boolean(p?.announceOnly), familyLine: p?.familyLine ?? null,
+            announceOnly, familyLine: p?.familyLine ?? null,
         });
         const level = kitOf()?.lastLevel;
         if (level) log.levels.push({ t: now(), kind: p?.kind ?? null, ...plain(level) });
@@ -334,60 +343,9 @@ async function installCaptions(settings, soundOn) {
     };
 }
 
-// The Wave-3 state a scene may judge: the ladder (`__claudevilleAudio().ladder`)
-// and the held note's snapshot, when the tree has them.
-function signalState(controller, snap) {
-    let held = null;
-    try { const d = controller?.directors?.ambient; held = (d?.layers?.heldNote ?? d?._heldNote)?.snapshot?.() ?? null; } catch { held = null; }
-    return { ladder: snap?.ladder ?? null, heldNote: held };
-}
-
-// The sea's own account (4.1, 4.6) at the end of a render: committed crest
-// times, yields to cues, node creations after start and the rare voices.
-function seaState(controller) {
-    try { return plain(controller?.directors?.ambient?.layers?.sea?.snapshot?.() ?? null); } catch (err) { return { error: String(err?.message || err) }; }
-}
-
-// The workshop layer's own account (5.1–5.8): strikes, guard hits, node
-// creations, placements and the quota lane, when the tree has the layer.
-function workshopState(controller) {
-    try { return plain(controller?.directors?.ambient?.layers?.workshops?.snapshot?.() ?? null); } catch (err) { return { error: String(err?.message || err) }; }
-}
-
-// When each baked buffer lands, in audio time (SampleBank `_store`: the
-// Island Air IRs and the rare takes; the noise pool's `_complete`): a bake
-// that lands at a different audio time in two renders of one scene is the
-// renderer's known source of run-to-run difference.
-function logBakes(engine, ctx) {
-    const bakes = [];
-    const hook = (owner, name) => {
-        const fn = owner?.[name];
-        if (typeof fn !== 'function') return;
-        owner[name] = function loggedBake(key, ...rest) {
-            bakes.push({ key: String(key), t: ctx.currentTime });
-            return fn.call(this, key, ...rest);
-        };
-    };
-    hook(engine.bank, '_store');
-    hook(engine.noisePool, '_complete');
-    return bakes;
-}
-
-// Every AudioWorkletNode built on the scene context, with the audio time it
-// was built at. Chrome constructs the processor on the audio thread
-// asynchronously, so a node built while the render runs starts at a
-// render quantum that can differ between two renders of one scene.
-function logWorkletNodes(ctx) {
-    const nodes = [];
-    const Base = window.AudioWorkletNode;
-    if (typeof Base !== 'function') return nodes;
-    window.AudioWorkletNode = class LoggedAudioWorkletNode extends Base {
-        constructor(context, name, options) {
-            super(context, name, options);
-            if (context === ctx) nodes.push({ name, t: context.currentTime });
-        }
-    };
-    return nodes;
+// The Wave-3 state a scene may judge: the ladder (`__claudevilleAudio().ladder`).
+function signalState(snap) {
+    return { ladder: snap?.ladder ?? null };
 }
 
 // Every scripted action on the virtual clock at `at(sec)` (a perf time).
@@ -442,32 +400,13 @@ function scheduleActions(actions, { world, mark, controller, captions, at, onAcc
     }
 }
 
-// The Village sequencer refuses every occasion and fragment (the clock hears
-// a refusal and tries again later), so no Village music starts.
-async function holdVillageMusic() {
-    const mod = await import('/src/presentation/shared/audio/music/Sequencer.js').catch(() => null);
-    const proto = mod?.Sequencer?.prototype;
-    if (!proto) return;
-    for (const name of ['playOccasion', 'playFragment']) {
-        const orig = proto[name];
-        if (typeof orig !== 'function') continue;
-        proto[name] = function held(...a) {
-            return this.preset === 'village' ? { ok: false, why: 'probe: no music' } : orig.apply(this, a);
-        };
-    }
-}
-
-// spec: { name, mode, volumeStep, layerSteps, world:{counts},
+// spec: { name, mode ('bgm' | 'signals'), volumeStep, world:{counts},
 //         atmosphere:{phase,progress,weather,hour}, bgm:{piece, band, voice}, warmup, seconds,
 //         actions:[scene.js runAction | {atmosphere} | {accent:{kind, leadMs}}, …],
 //         stems:[STEM_SOURCES keys], stepFrames, noWorklets, sampleRate,
 //         rng:{constant}, lint:false (skip the HAR-4 stack capture: timing
 //         scenes), musicProbe:{seatStems, countNodes, stopLint} (page/music.js),
-//         collect:['starts'], airOff,
-//         freezeOnSuspend, rituals:true (a stand-in ritual conductor for the
-//         World path, page/workshop.js), camera:{viewportW, viewportH, zoom,
-//         path:[{at, cx, cy}]} (a scripted camera through the director's
-//         setCameraSource) }
+//         collect:['starts'], airOff, freezeOnSuspend }
 // Every start is traced to the cue bus: `cue` marks discrete cue voices.
 // Actions also take {visibility:'hidden'|'visible'} and {window:'blur'|'focus'}.
 // Action `at` is seconds after warmup. Every returned time is audio time in
@@ -486,7 +425,6 @@ export async function runVirtual(spec) {
     const rngInfo = await setupRng(spec);
     const ctx = sceneContext({ seconds: total, stems, sampleRate });
     const merger = stemMerger(ctx, stems);
-    const workletNodes = logWorkletNodes(ctx);
 
     seedSoundStorage(spec);
     const world = makeWorld(spec.world);
@@ -494,14 +432,7 @@ export async function runVirtual(spec) {
     eventBus.emit('atmosphere:updated', snapshot);
     const pump = setInterval(() => eventBus.emit('atmosphere:updated', snapshot), 400);
 
-    // World's renderer stand-ins (5.1, 5.8): rituals before the controller,
-    // so the conductor sees the first tool start the director sees.
-    const conductor = spec.rituals ? installRitualConductor() : null;
-    const log = { cues: [], scheduled: [], ducks: [], accents: [], levels: [], work: [], workCancelled: [] };
-    // Every workshop strike as the layer publishes it at booking (5.1), and
-    // the booked strikes it stopped before they sounded.
-    eventBus.on('audio:work-scheduled', (p) => { log.work.push({ ...plain(p), bookedAt: ctx.currentTime }); });
-    eventBus.on('audio:work-cancelled', (p) => { log.workCancelled.push({ ...plain(p), cancelledAt: ctx.currentTime }); });
+    const log = { cues: [], scheduled: [], ducks: [], accents: [], levels: [] };
     let controller = null;
     const kitOf = () => controller?.cues?.kit ?? null;
     logCues(log, () => ctx.currentTime, kitOf);
@@ -509,16 +440,9 @@ export async function runVirtual(spec) {
 
     // The Town band chooses its first piece as it starts: pin it there. The
     // music probe pins piece, band and voice itself.
-    const music = probeSpec ? await installMusicProbe({ ...probeSpec, mode: spec.mode, bgm: spec.bgm, village: spec.village }, { connectSeat: (seat, node) => merger?.connect(`seat:${seat}`, node) }) : null;
-    const pinAtStart = music?.available && (spec.bgm || spec.village) ? 'probe pin'
+    const music = probeSpec ? await installMusicProbe({ ...probeSpec, bgm: spec.bgm }, { connectSeat: (seat, node) => merger?.connect(`seat:${seat}`, node) }) : null;
+    const pinAtStart = music?.available && spec.bgm ? 'probe pin'
         : (spec.bgm?.piece && await pinSequencer({ preset: 'townBand', piece: spec.bgm.piece }) ? 'pin at start' : null);
-    // `force: { music: 0 }` is S2's "no music" (and `isolate` of another
-    // layer holds music at 0 too): Village music at level 0 would still play
-    // (Wave 6: the occasion clock starts the first-ever enable's occasion),
-    // and a silent occasion still runs the MusicClock — it holds the held
-    // note back (3.3) and puts cues on its grid (3.5). The Village sequencer
-    // refuses every start instead, so none plays.
-    if (spec.force?.music === 0 || (spec.isolate && spec.isolate !== 'music')) await holdVillageMusic();
     // 7.4: every awakening (`audio:awakened`, once per page session), in
     // audio time.
     const awakens = [];
@@ -529,17 +453,11 @@ export async function runVirtual(spec) {
     // them before the enable starts any music (the world's own update would).
     eventBus.emit('atmosphere:updated', snapshot);
     // The enable a TopBar pick performs: the stored preset, as a user action.
-    controller.setPreset(PRESET_FOR_MODE[spec.mode || 'ambient'], { fromUser: true });
+    controller.setPreset(PRESET_FOR_MODE[spec.mode || 'bgm'], { fromUser: true });
     eventBus.emit('atmosphere:updated', snapshot);
     await pumpUntil(() => controller.isRunning(), 'the enable');
     const engine = controller.engine;
     const perfBase = vc.now - ctx.currentTime * 1000;
-    let cameraSeam = null;
-    if (spec.camera) {
-        const ambient = controller.directors?.ambient;
-        cameraSeam = typeof ambient?.setCameraSource === 'function';
-        if (cameraSeam) ambient.setCameraSource(scriptedCamera(spec.camera, () => (vc.now - perfBase) / 1000 - warmup));
-    }
 
     // Note-timed ducks (1.3): every window the engine is asked for, and when
     // its cue cancelled it.
@@ -557,7 +475,6 @@ export async function runVirtual(spec) {
         return token;
     };
     if (merger) attachStems(merger, engine, stems);
-    const bakes = logBakes(engine, ctx);
     // airOff: 'all' (no air: both send sums cut) | 'bed' (dry bed, so the wet
     // return carries the cue sends only). Taps on `wet` stay connected.
     let airOff = null;
@@ -569,19 +486,13 @@ export async function runVirtual(spec) {
             if (spec.airOff === 'all') returns.cue.disconnect();
         }
     }
-    if (spec.isolate) {
-        for (const name of LAYERS) if (name !== spec.isolate) controller.director.forceLayer(name, 0, 1e9);
-    }
-    // force: { layer: level } pinned for the whole scene (Village music at 0
-    // also starts nothing: holdVillageMusic above).
-    for (const [name, level] of Object.entries(spec.force || {})) controller.directors.ambient.forceLayer(name, level, 1e9);
 
     const { markers, mark } = makeMarker(() => ctx);
     const stateLog = [];
     setInterval(() => {
         const snap = window.__claudevilleAudio?.();
         if (!snap) return;
-        stateLog.push(plain({ t: ctx.currentTime, perf: vc.now, mode: snap.mode, state: snap.state, running: snap.running, levels: snap.levels, nowPlaying: snap.nowPlaying, quietMix: snap.quietMix ?? null, music: snap.music ? { nowPlaying: snap.music.nowPlaying ?? null, lastStart: snap.music.lastStart ?? null, occasion: snap.music.occasion ?? null } : null, ...signalState(controller, snap) }));
+        stateLog.push(plain({ t: ctx.currentTime, perf: vc.now, mode: snap.mode, state: snap.state, running: snap.running, levels: snap.levels, nowPlaying: snap.nowPlaying, quietMix: snap.quietMix ?? null, music: snap.music ? { nowPlaying: snap.music.nowPlaying ?? null, lastStart: snap.music.lastStart ?? null } : null, ...signalState(snap) }));
     }, 1000);
     const perfAt = sec => perfBase + sec * 1000;
     setTimeout(() => mark('rec-start'), Math.max(0, perfAt(warmup) - vc.now));
@@ -634,14 +545,6 @@ export async function runVirtual(spec) {
         contextStates: wall(ctx.__vcStateLog),
         timers: timerReport(),
         diagnostics: engineDiagnostics(engine),
-        sea: seaState(controller),
-        work: log.work,
-        workCancelled: log.workCancelled,
-        workshops: workshopState(controller),
-        rituals: conductor ? conductor.drawn() : null,
-        cameraSeam,
-        bakes,
-        workletNodes,
         // Wave 6 (musicProbe): every sequencer mark, node constructions per
         // note, the stop lint's raw rows and the sequencer snapshots.
         music: music ? {
@@ -684,8 +587,8 @@ export async function runSilent(spec) {
     const stateLog = [];
     setInterval(() => {
         const snap = window.__claudevilleAudio?.();
-        const s = signalState(controller, snap);
-        if (s.ladder || s.heldNote) stateLog.push(plain({ t: toT(vc.now), state: snap?.state ?? null, ...s }));
+        const s = signalState(snap);
+        if (s.ladder) stateLog.push(plain({ t: toT(vc.now), state: snap?.state ?? null, ...s }));
     }, 1000);
     scheduleActions(spec.actions, { world, mark, controller, captions, at: sec => perfBase + sec * 1000, onAtmosphere: (s) => { snapshot = s; } });
     const end = perfBase + spec.seconds * 1000;
@@ -759,11 +662,12 @@ export async function runEngineUnit(spec) {
 // publishes them (`irDay`, `irNight`, at their own rate), then renders
 // decaying 8 ms noise bursts through `engine.connectVoice` at the
 // placements SpatialField gives (world kind): `bursts: [{ at, screen:
-// {screenX, screenY, viewportW, viewportH} }]`. Taps: the world bus (dry)
-// and the air's wet return, both before the program trim.
+// {screenX, screenY, viewportW, viewportH} }]`. Taps: the music bus (dry;
+// the one bus beside the cues) and the air's wet return, both before the
+// program trim.
 export async function runAirUnit(spec) {
     const sampleRate = spec.sampleRate || 48000;
-    const stems = ['world', 'airWet'];
+    const stems = ['music', 'airWet'];
     const rngInfo = await setupRng(spec);
     const ctx = sceneContext({ seconds: spec.seconds, stems, sampleRate });
     const { place } = await import('/src/presentation/shared/audio/SpatialField.js');
@@ -780,7 +684,7 @@ export async function runAirUnit(spec) {
     engine.setAirPhase?.(spec.phase || 'day');
     attachStems(stemMerger(ctx, stems), engine, stems);
     const placements = [];
-    const bus = spec.bus || 'world';
+    const bus = spec.bus || 'music';
     for (const b of spec.bursts || []) {
         const p = place(b.screen, { kind: spec.kind || 'world' });
         placements.push({ at: b.at, ...plain(p) });

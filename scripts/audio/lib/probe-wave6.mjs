@@ -1,11 +1,11 @@
 // The probe's Wave-6 measurements ("the music") on the virtual clock: the
 // sequencer's own marks (page/music.js: notes, pieces, chunks, breaths,
-// cadences, percussion, arrangement switches, Village starts) against the
-// rendered seat stems and program. Every function returns numbers;
-// probe.mjs judges them through checks.mjs.
+// cadences, percussion, arrangement switches) against the rendered seat
+// stems and program. Every function returns numbers; probe.mjs judges them
+// through checks.mjs.
 import { loudness } from './analyze.mjs';
 import { automationCurve, coveredSec } from './checks.mjs';
-import { outputGainDb } from './probe-wave5.mjs';
+import { outputGainDb } from './probe-virtual.mjs';
 import { levelMap } from '../metrics/levelmap.mjs';
 import { musicMeasure } from '../metrics/musl-measure.mjs';
 import { welch } from '../metrics/dsp.mjs';
@@ -73,30 +73,14 @@ export function seatLufs(pairs, sr) {
     return Object.fromEntries(Object.entries(pairs).map(([seat, p]) => [seat, loudness(p.L, p.R, sr).integrated]));
 }
 
-// Notes that never sounded: those of a Village visit released before its
-// first note (`cancel`), from the cancel to the next start.
-function cancelledRanges(marks) {
-    const rows = [];
-    marks.forEach((m, i) => {
-        if (m.kind !== 'cancel') return;
-        const next = marks.slice(i + 1).find(x => x.kind === 'start' && x.preset === m.preset);
-        rows.push({ preset: m.preset, from: m.t, to: next?.t ?? Infinity });
-    });
-    return rows;
-}
-// The marks of `kind` that sounded (cancelled Village visits dropped).
-export function soundingMarks(all, kind) {
-    const gone = cancelledRanges(all);
-    return all.filter(m => m.kind === kind && !gone.some(g => g.preset === m.preset && m.t >= g.from && m.t < g.to));
-}
-
 // Notes and percussion hits in [from, to) as analyzer rows, from a render
 // (`r.meta.music.marks`) or a mark list.
 export function noteRows(source, { from = -Infinity, to = Infinity } = {}) {
     const all = Array.isArray(source) ? source : (source.meta.music?.marks || []);
-    const notes = soundingMarks(all, 'note').filter(m => m.t >= from && m.t < to)
+    const within = kind => all.filter(m => m.kind === kind && m.t >= from && m.t < to);
+    const notes = within('note')
         .map(m => ({ t: m.t, dur: m.dur, midi: m.midi, seat: m.seat, piece: m.piece, bar: m.bar, segment: m.segment, what: m.what, instrument: m.instrument, vel: m.vel, preset: m.preset }));
-    const perc = soundingMarks(all, 'perc').filter(m => m.t >= from && m.t < to)
+    const perc = within('perc')
         .map(m => ({ t: m.t, dur: 0, midi: null, seat: 'percussion', building: m.building, instrument: m.voice ?? m.instrument ?? null, preset: m.preset }));
     return [...notes, ...perc].sort((a, b) => a.t - b.t);
 }
@@ -178,29 +162,8 @@ export function stopLevels(r, { maxDb = -60, tolDb = 0.05 } = {}) {
     return { voices: rows.length, worstDb: finiteDb.length ? Math.max(...finiteDb) : -Infinity, over: rows.filter(x => x.db > maxDb + tolDb).length, rows };
 }
 
-// Heard music from a stem: 400 ms momentary blocks over `floorLufs`
-// (output-referred) → [{ from, to }].
-export function heardSpans(pair, sr, gainDb, { floorLufs = -70, from = 0 } = {}) {
-    const p = toOutput(pair, gainDb);
-    const mom = loudness(p.L, p.R, sr).momentaryCurve;
-    const spans = [];
-    let open = null;
-    for (const [t, v] of mom) {
-        const a = from + t - 0.4;
-        if (v > floorLufs) {
-            if (!open) open = { from: a, to: from + t };
-            else open.to = from + t;
-        } else if (open) {
-            spans.push(open);
-            open = null;
-        }
-    }
-    if (open) spans.push(open);
-    return spans;
-}
-
-// Visits from the sequencer's start/end marks (what: piece, interlude,
-// occasion, fragment), breaths, renditions and cadences of one preset.
+// Visits from the sequencer's start/end marks (what: piece, interlude),
+// breaths, renditions and cadences of one preset.
 export function visitRows(marks, end, preset = 'townBand') {
     const own = marks.filter(m => m.preset === preset);
     const visits = [];
@@ -210,9 +173,8 @@ export function visitRows(marks, end, preset = 'townBand') {
         if (m.kind === 'start') {
             if (open) close(open, m.t);
             open = { what: m.what, piece: m.piece, name: m.name, reason: m.reason ?? null, from: m.t };
-        } else if ((m.kind === 'end' || m.kind === 'cancel') && open) {
-            // A visit released before its first note never sounded (cancel).
-            close(open, m.kind === 'cancel' ? Math.min(m.t, open.from) : m.t);
+        } else if (m.kind === 'end' && open) {
+            close(open, m.t);
             open = null;
         }
     }
@@ -232,31 +194,49 @@ export function dutyOf(spans, from, to) {
     return to > from ? coveredSec(spans, from, to) / (to - from) : null;
 }
 
-// Percussion onsets per bar on the Town band's song grid: bars from the
+// The workshop kit per bar on the Town band's song grid: bars from the
 // chunk marks (loop, chunk, interlude: `t`, `barSec`, `band`), each bar up
-// to the next boundary, against `densityAt(t)` at the bar's middle.
+// to the next boundary. The band reads the directors' densities when it
+// compiles a chunk (Sequencer, 6.9) and marks the chunk as it compiles it,
+// so a bar's `density` is the total of the last `call:setWorkshopDensity`
+// before its chunk's mark (each building capped at 1). Pieces drum on very
+// different rows (a lullaby near silent, a march dense), so a bar's `level`
+// is its kit hits, each in units of its building's row in the piece —
+// Σ min(1, weight) over the row's steps, the hits that row plays per bar at
+// density 1 — and so estimates the density the band played whatever the
+// piece. `capacity` is the sum of those rows; only a piece pass drums (a tag,
+// an interlude or a stinger plays no workshop kit: capacity 0).
+// rowsOf(piece name) → { [building]: [weight per step] } | null
 const BOUNDARY = new Set(['loop', 'chunk', 'interlude']);
-export function percussionPerBar(marks, densityAt, { from, to }) {
-    const chunks = marks.filter(m => m.preset === 'townBand' && BOUNDARY.has(m.kind) && m.barSec > 0).sort((a, b) => a.t - b.t);
+export function percussionPerBar(marks, { from, to, rowsOf }) {
+    const band = marks.filter(m => m.preset === 'townBand');
+    const read = new Map();
+    let density = 0;
+    for (const m of band) {
+        if (m.kind === 'call:setWorkshopDensity') density = Object.values(m.arg || {}).reduce((s, v) => s + (Number(v) > 0 ? Math.min(1, Number(v)) : 0), 0);
+        else if (BOUNDARY.has(m.kind) && m.barSec > 0) read.set(m, density);
+    }
+    const chunks = [...read.keys()].sort((a, b) => a.t - b.t);
+    const kit = band.filter(m => m.kind === 'perc' && m.building);
     const bars = [];
     chunks.forEach((c, i) => {
         const end = Math.min(to, chunks[i + 1]?.t ?? to);
+        const segment = c.segment ?? c.kind;
+        const caps = {};
+        if (segment === 'pass') {
+            for (const [building, row] of Object.entries(rowsOf(c.piece) || {})) {
+                caps[building] = (row || []).reduce((s, w) => s + Math.min(1, Math.max(0, Number(w) || 0)), 0);
+            }
+        }
+        const capacity = Object.values(caps).reduce((s, v) => s + v, 0);
         for (let a = c.t; a + c.barSec <= end + 1e-6; a += c.barSec) {
-            if (a >= from) bars.push({ from: a, to: a + c.barSec, band: c.band, piece: c.piece, segment: c.segment ?? c.kind });
+            if (a < from) continue;
+            const hits = kit.filter(p => p.t >= a - 1e-6 && p.t < a + c.barSec - 1e-6);
+            bars.push({
+                from: a, to: a + c.barSec, band: c.band, piece: c.piece, segment, density: read.get(c), capacity,
+                onsets: hits.length, level: hits.reduce((s, p) => s + (caps[p.building] > 0 ? 1 / caps[p.building] : 0), 0),
+            });
         }
     });
-    const perc = marks.filter(m => m.preset === 'townBand' && m.kind === 'perc');
-    return bars.map(b => ({ ...b, onsets: perc.filter(p => p.t >= b.from - 1e-6 && p.t < b.to - 1e-6).length, density: densityAt((b.from + b.to) / 2) }));
-}
-
-// The total workshop density the director fed the Town band, as a step
-// function of audio time (`call:setWorkshopDensity` marks).
-export function densityTrack(marks) {
-    const calls = marks.filter(m => m.preset === 'townBand' && m.kind === 'call:setWorkshopDensity' && Number.isFinite(m.t)).sort((a, b) => a.t - b.t);
-    const rows = calls.map(c => ({ t: c.t, total: Object.values(c.arg || {}).reduce((s, v) => s + (Number(v) > 0 ? Math.min(1, Number(v)) : 0), 0) }));
-    return (t) => {
-        let v = 0;
-        for (const r of rows) { if (r.t <= t) v = r.total; else break; }
-        return v;
-    };
+    return bars;
 }

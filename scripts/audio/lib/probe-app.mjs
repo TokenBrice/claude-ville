@@ -16,6 +16,9 @@ import { energyMeanLufs, frameCostDelta, FRAME_COST_MAX_DELTA_MS, percentile } f
 
 const PROBE_APP_JS = fs.readFileSync(path.join(AUDIO_DIR, 'page/probe-app.js'), 'utf8');
 
+// The away checks judge this margin only when the band is closed (hidden tab,
+// or blurred with "Signals only"): the call then plays over no music, which
+// CueLevel scores against its no-music bed, id 'village'.
 const NEEDS_YOU_MIN_LU = AUDIBILITY_WINDOWS.lanes.needsYou.village.min;
 // A bed window that is pure silence (context suspended) is scored at the
 // floor, so "+10 LU over silence" means the cue clears BS.1770's -70 LUFS
@@ -35,8 +38,7 @@ const ENABLE_HOVER_MS = 300;
 // HAR-4's runtime half: a source that starts while the GainNode it feeds
 // still sits at its default gain of 1 (init.js). A unit that did not
 // exercise its subject proves nothing, so it fails too: no source started,
-// an isolated layer below its sounding threshold, or a mode switch that did
-// not happen.
+// or a preset switch that did not happen.
 export async function lintUnits(browser, server, { seed, verdict, info }) {
     const catalog = buildTargets();
     const byName = name => {
@@ -45,10 +47,8 @@ export async function lintUnits(browser, server, { seed, verdict, info }) {
         return t;
     };
     const offline = catalog.filter(t => t.name === 'cue-gallery' || (t.category === 'cues' && t.name.endsWith('-night')));
-    const realtime = [
-        { ...byName('layer-crickets-night'), warmup: 3, seconds: 12 },
-        byName('bgm-night-to-ambient'),
-    ];
+    // The Town band, then its switch to Signals (bgm-night-to-signals).
+    const realtime = [byName('bgm-night-to-signals')];
     const kinds = [...new Set(offline.flatMap(t => t.cues.map(c => c.kind)))];
     const units = [{
         name: `lint offline cues (${kinds.join(', ')})`,
@@ -78,12 +78,6 @@ export async function lintUnits(browser, server, { seed, verdict, info }) {
                     const snap = res.finalSnapshot || {};
                     const covered = [];
                     let exercised = true;
-                    if (t.isolate) {
-                        const level = snap.levels?.[t.isolate];
-                        // The layer's own sounding threshold (CricketsLayer chirrups above 0.03).
-                        exercised &&= Number(level) > 0.03;
-                        covered.push(`${t.isolate} level ${fmt(Number(level), 2)}`);
-                    }
                     const switchTo = (t.actions || []).filter(a => a.mode).at(-1)?.mode;
                     if (switchTo) {
                         exercised &&= snap.mode === switchTo;
@@ -130,8 +124,8 @@ async function openApp(browser, server, scenario, hour, seed) {
 
 // The real TopBar enable (7.1): a click on the sound note; the first-ever
 // click of a profile opens the SOUND panel's presets instead, so the preset
-// is then picked there (Village unless asked) and the panel closed.
-async function enableSound(h, preset = 'village') {
+// is then picked there (the Town band unless asked) and the panel closed.
+async function enableSound(h, preset = 'townBand') {
     // A pointer reaches the control before it presses it: the hover prewarms
     // the engine (a suspended context and its worklets), as a visitor's does.
     await h.page.hover('#topbarSoundToggle');
@@ -326,7 +320,7 @@ export function judgeContinuity({ ep, tap, pcm, errors }, { verdict }) {
     const pre = energyMeanLufs(momentaryCurve.filter(([t]) => t >= blurT - 3 && t < blurT).map(([, v]) => v));
     const at = momentaryCurve.find(([t]) => t >= focusT + CONTINUITY.withinSec)?.[1] ?? null;
     const dDb = Number.isFinite(pre) && Number.isFinite(at) ? at - pre : null;
-    const name = np => (np ? `${np.piece ?? np.song ?? '?'} bar ${np.bar ?? '?'}` : 'nothing');
+    const name = np => (np ? `${np.piece ?? '?'} bar ${np.bar ?? '?'}` : 'nothing');
     const same = ep.before?.piece != null && ep.before.piece === ep.after?.piece;
     verdict('continuity', same && dDb != null && Math.abs(dDb) <= CONTINUITY.levelDb,
         `Town band, blur ${CONTINUITY.blurMs / 1000} s → focus: ${name(ep.before)} → ${name(ep.during)} → ${name(ep.after)}; momentary ${fmt(at)} LUFS at focus + ${CONTINUITY.withinSec} s vs ${fmt(pre)} before the blur (${signed(dDb)} dB); context ${ep.contextState}; want the same piece and within ${CONTINUITY.levelDb} dB${errors.length ? `; page errors: ${errors.slice(0, 2).join(' | ')}` : ''}`);
@@ -375,7 +369,7 @@ export function judgeFrameCost({ off1, off2, on1, on2, errors }, { verdict, info
 
 // ------------------------------------------------------ Wave 7 (realtime) ----
 // 7.4 the village awakens, on a fresh profile through the real UI: the
-// first-ever click on the note opens the presets, the press on Village is
+// first-ever click on the note opens the presets, the press on the Town band is
 // the enable's user activation; the tapped program's first sample above
 // `onsetDbfs` must follow the press by ≤ 150 ms, the worklet load included.
 // Then the note twice (off, on): the same page session, so no second
@@ -387,7 +381,7 @@ export async function appAwakeningUnit(browser, { seed }) {
     const app = await startIsolatedServer();
     const h = await openApp(browser, app, 'mixed-tools', 10.4, seed);
     try {
-        await enableSound(h, 'village');
+        await enableSound(h, 'townBand');
         await h.page.waitForTimeout(AWAKENING.settleMs);
         await h.page.click('#topbarSoundToggle');
         await h.page.waitForTimeout(AWAKENING.offOnGapMs);
@@ -404,7 +398,7 @@ export async function appAwakeningUnit(browser, { seed }) {
 }
 
 export function judgeAwakening({ rows, tap, pcm, errors }, { verdict, info }, limits) {
-    const press = rows.find(r => r.type === 'press' && r.preset === 'village') ?? rows.find(r => r.type === 'press' && r.id === 'topbarSoundToggle');
+    const press = rows.find(r => r.type === 'press' && r.preset === 'townBand') ?? rows.find(r => r.type === 'press' && r.id === 'topbarSoundToggle');
     const awakened = rows.filter(r => r.type === 'awakened');
     const tl = wallTimeline(tap, pcm);
     const floor = Math.pow(10, AWAKENING.onsetDbfs / 20);

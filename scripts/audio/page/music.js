@@ -1,12 +1,12 @@
-// The music probe (Wave 6) for page/virtual.js: every sequencer mark from
-// both presets (notes, pieces, chunks, breaths, cadences, percussion,
-// arrangement switches, Village starts), pins (piece, working band, voice),
-// per-seat stem taps, node constructions per note and the stop lint's raw
-// material (each stopped music voice's envelope automation). Everything
-// here attaches through the sequencer's public surface (`observe`, `pin`,
-// `seatOutputs`) plus the harness's prototype-patch pattern (scene.js
-// pinSequencer): the Town band starts its first piece in the window that
-// opens at its start, before any caller can reach the instance.
+// The music probe (Wave 6) for page/virtual.js: every sequencer mark
+// (notes, pieces, chunks, breaths, cadences, percussion, arrangement
+// switches), pins (piece, working band, voice), per-seat stem taps, node
+// constructions per note and the stop lint's raw material (each stopped
+// music voice's envelope automation). Everything here attaches through the
+// sequencer's public surface (`observe`, `pin`, `seatOutputs`) plus the
+// harness's prototype-patch pattern (scene.js pinSequencer): the Town band
+// starts its first piece in the window that opens at its start, before any
+// caller can reach the instance.
 
 const vc = window.__vc;
 
@@ -75,9 +75,9 @@ function installAutomationRecorder() {
     wrap('cancelAndHoldAtTime', t => ({ type: 'cancelHold', t: Number(t) }));
 }
 
-// spec: { bgm: { piece, band, voice }, village: { piece }, seatStems: [seat],
-// countNodes, stopLint }. `connectSeat(seat, node)` wires a seat's output
-// into its stem pair (virtual.js owns the merger).
+// spec: { bgm: { piece, band, voice }, seatStems: [seat], countNodes,
+// stopLint }. `connectSeat(seat, node)` wires a seat's output into its stem
+// pair (virtual.js owns the merger).
 export async function installMusicProbe(spec, { connectSeat }) {
     const mod = await import('/src/presentation/shared/audio/music/Sequencer.js').catch(() => null);
     const clock = await import('/src/presentation/shared/audio/MusicClock.js').catch(() => null);
@@ -105,7 +105,7 @@ export async function installMusicProbe(spec, { connectSeat }) {
     proto._start = function probedStart(...a) {
         const preset = this.preset;
         instances.push(this);
-        const pin = preset === 'townBand' ? spec.bgm : spec.village;
+        const pin = preset === 'townBand' ? spec.bgm : null;
         if (pin && Object.values(pin).some(v => v != null)) this.pin?.(pin);
         this.observe?.((m) => {
             marks.push({ ...m, preset });
@@ -116,8 +116,7 @@ export async function installMusicProbe(spec, { connectSeat }) {
         });
         const result = start.apply(this, a);
         const seats = typeof this.seatOutputs === 'function' ? this.seatOutputs() : null;
-        const wanted = preset === 'townBand' ? spec.mode === 'bgm' : spec.mode !== 'bgm';
-        if (seats && wanted) for (const seat of spec.seatStems || []) if (seats[seat]) connectSeat(seat, seats[seat]);
+        if (seats && preset === 'townBand') for (const seat of spec.seatStems || []) if (seats[seat]) connectSeat(seat, seats[seat]);
         return result;
     };
     if (counter) {

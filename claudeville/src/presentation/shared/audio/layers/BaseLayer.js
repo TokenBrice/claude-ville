@@ -1,21 +1,22 @@
-// Common plumbing for ambience layers: an output gain on the layer's group
-// (through its director's crossfade gain), smooth intensity targeting, a
-// seeded random stream, Transport registration for scheduled layers, Island
-// Air sends taken after the layer's level (C-AMB-2), and teardown that ramps
-// to silence before anything stops so stops never click.
+// Common plumbing for a player layer (the Town band's Sequencer): an output
+// gain on the layer's group (through its director's crossfade gain), smooth
+// intensity targeting, a seeded random stream, Transport registration for
+// scheduled layers, Island Air sends taken after the layer's level
+// (C-AMB-2), and teardown that ramps to silence before anything stops so
+// stops never click.
 
 import { MIN_GAIN } from '../AudioEngine.js';
 import { rngStream } from '../Rng.js';
 
 export class BaseLayer {
-    // `group` names the engine fader the layer feeds ('wind', 'rain',
-    // 'wildlife', 'hum', 'music'); the mixer trims move that fader, never
-    // `level`, so a quieter group keeps its density. `director` names the
-    // director that owns the layer ('ambient' or 'bgm'), whose group gain
+    // `group` names the engine fader the layer feeds ('music'); the fader
+    // moves, never `level`, so a quieter group keeps its density. `director`
+    // names the director that owns the layer ('bgm'), whose group gain
     // carries the preset crossfade. `rng` names the layer's own seeded stream
-    // (S6: a world layer never shares one with work or cue code).
-    constructor(engine, { trim = 0.1, group = null, director = 'ambient', rng = null } = {}) {
+    // (S6: a player never shares one with cue code).
+    constructor(engine, { trim = 0.1, group = null, director = null, rng = null } = {}) {
         if (!group) throw new Error(`${new.target.name} needs a mixer group`);
+        if (!director) throw new Error(`${new.target.name} needs a director`);
         this.engine = engine;
         this.trim = trim;
         this.group = group;
