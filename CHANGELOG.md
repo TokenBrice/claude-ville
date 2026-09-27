@@ -2,6 +2,22 @@
 
 ---
 
+## v0.47.0 — *The Singing Isle* · Sep 27, 2026
+
+ClaudeVille's sound used to lie: it could fail to start, fade out on a busy GPU, ring the wrong bell for an error, stack a dozen chimes for one event, and loop the same tune every half minute. This release rebuilds the audio from the master bus up, so the island sounds like a place, and one bell always means someone needs you.
+
+- **Sound that starts and stays.** The first click starts sound (the very first one opens the presets instead of guessing), a blurred window keeps playing, a hidden tab pauses in place and still wakes for urgent calls, and returning resumes the same piece. Everyone's volume was reset once to a new standard level, with a caption saying so.
+- **One ceiling.** A calibrated limiter-only master with separate world, work, music and cue buses; ducks are timed to the note and cancel with their cue; each cue sets its own level from the bed it lands on, so a call is audible over a storm and never blares over a quiet night.
+- **The village's voice.** Needs-you is a ship's bell, an error a cracked bell, a rate limit an escapement tick. An unanswered wait climbs a capped reminder ladder, and a soft held note sounds under the Village for as long as someone waits. Outcomes speak in oak, stone, iron and gold, and a burst of events rings once. Captions work with sound off and follow one setting.
+- **The island.** A sea with swells, breaking waves, gulls and harbor clinks that steps aside for a bell; gusting wind; rain on roofs, leaves and water; thunder whose distance you can hear; birds by species and hour and a cricket chorus at night; and a day arc that makes night darker and quieter than noon.
+- **Workshops at work.** Every building has its own material voice — anvil, parchment, pick, tack and chalk, telescope, rune stone, flag, crates — driven by how busy its agents are, never one sound per tool call, and struck on the drawn hammer blows. Following an agent brings its work forward, the Mine rumbles as the quota fills, and continuous sounds pan and soften with the camera.
+- **The Isle Band.** The village's own musicians — lute, harp, upright bass, whistle, marimba, music box and brushes — play every tune, and *The Painted Isle* and the night waltz *Lanternlight* join the book. In Village, music is an occasion: a tune at dawn, noon, dusk and night or when something ships, short fragments between, and silence in rain, at rest or over a long wait. The Town band rotates without déjà-vu, breathes between pieces, hangs on an unresolved cadence while someone waits, drums with the village's work, and re-dresses its tunes for rain and snow. The console chip voice stays one click away.
+- **The front door.** A fixed-width sound control opens a SOUND popover: *Off · Signals · Village · Town band*, a volume per preset, what is playing, the mix for the current preset, a test bell and `HUSH FOR 1 HOUR`. `M` toggles sound anywhere. *Signals* is silence until an agent needs you, errors or hits a limit. Settings gain a SOUND section with output (speakers, headphones, mono), tone, quiet hours and *Soften sudden sounds*, and the first time an agent needs you with sound off, a toast offers the bell.
+
+Validation: 1294 tests passed; `validate:full`, `gate:release`, render and lifecycle audio smokes clean; the local audio probe (`npm run audio:probe`, virtual clock) passed all 510 loudness, audibility, timing, honesty and music checks; an audition reel of the before/after scenes was rendered from the shipped code.
+
+---
+
 ## v0.46.0 — *The Painted Isle* · Sep 26, 2026
 
 ClaudeVille had plenty of effects but no correct base image: the default renderer never showed the time of day or the weather, the ground was a checkerboard of mis-mapped tiles, three pixel densities stood side by side, and the effect layer was invisible while the labels shouted. This release repairs the picture from the ground up.

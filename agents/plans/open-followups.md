@@ -2,7 +2,7 @@
 
 **Status:** `live checklist`
 
-**As of:** 2026-09-26, release `v0.46.0` — The Painted Isle
+**As of:** 2026-09-27, release `v0.47.0` — The Singing Isle
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs

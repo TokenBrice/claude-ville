@@ -1,6 +1,6 @@
 # ClaudeVille audio plan — *The Singing Isle*
 
-**Status:** `implemented and probe-verified (Waves 0–7, 2026-09-27); maintainer listening pending`
+**Status:** `shipped as v0.47.0 (Waves 0–7, probe-verified 2026-09-27); maintainer listening pending`
 
 **As of:** 2026-09-26, `main` at `18bc216` (`v0.46.0` *The Painted Isle*), clean tree.
 
@@ -126,7 +126,7 @@ Every +1 LU of storm costs about 1 dB of limiter on a call over it; the GR limit
 | error | ≥ +8 | ≥ +6 | ≥ +6 | +12 |
 | limit | ≥ +6 | ≥ +4 | ≥ +4 | +10 |
 | routine | +3…+6 | +3…+6 | +3…+6 | — |
-| outcome Minor | 0…+3, and ≤ routine − 3 | same | same | — |
+| outcome Minor | 0…+3, and ≤ routine − 3 | −1…+3 on the cue stem over the Town band, and ≤ routine − 3 (closure: the knock at its 0 dB trim top read −1.2 over the Isle Band; Village music is off the bed during cues) | same as Village | — |
 | outcome Medium | +3…+6 | same | same | — |
 | outcome Major (release; one active) | +4…+8 | same | same | — |
 | scenery (hour chime, aurora, link, digest) | 0…+5 (reel v2: 09:00 chime +2.8, 12:00 +4.5 — the bed, not the chime, differs) | same | same | — |
@@ -188,7 +188,7 @@ air return (Island Air, world/work/music sends, taken inside each layer's level)
 
 ### S6 — Honesty
 
-- **Weather and sea never follow agents.** Each world layer draws from its own seeded random stream (SOTA-16 step 1, built in 2.1); a fixture with 0 vs 12 working agents at one seed yields a bit-identical world stem (the murmur is work, not world).
+- **Weather and sea never follow agents.** Each world layer draws from its own seeded random stream (SOTA-16 step 1, built in 2.1); a fixture with 0 vs 12 working agents at one seed yields the same world stem (the murmur is work, not world). Gated since Wave 4 as max |Δ| ≤ max(1e-6, the renderer's same-count repeat): the probe measured 3.7e-9…5.6e-9, equal to its repeat noise, and no render was bit-identical.
 - **No sound from stale data or a lost link.** One gate, `audibleAgents(world, now)` (new `audio/AudibleWorld.js`, non-stale per `ObservationCertainty`), feeds every continuous mapping. On link loss the work stratum and the held note fade and one `linkLost` cue plays.
 - **Gold only from `outcome:verified`.** Never inferred.
 - **One sound per fact; a ceremony supersedes its parts.** An error is the cracked bell, not also a summons; a team gathering is the council figure, not "5 arrivals"; a release absorbs its push (C-SIG-2, C-SCN-7).
@@ -236,7 +236,7 @@ The SCN **must-never list** (`scn-soundtrack.md` §Must never happen, 13 items) 
 
 ## Decisions
 
-**Recorded 2026-09-26 by the maintainer.** The table below keeps the options as they were presented; this list is binding and overrides any item text it contradicts.
+**Recorded 2026-09-26 by the maintainer.** The table below keeps the options as they were presented; this list is binding and overrides any item text it contradicts. Item and contract text written before these answers still reads as the pre-decision plan in places — a Forge pilot before other workshops, camera-coupled emitters off, no work or percussion in Town band, a volume migration rather than the D5 reset, no committed audio assets. Where they conflict, this list and the execution record describe what shipped: every workshop in Wave 5 with camera-following emitters (D8), Town band percussion and arrangements (D4), a one-time reset to the standard step (D5), and procedural sound with no audio files committed.
 
 - **D1 — Village music:** occasions + sparse fragments, as recommended.
 - **D2 — Town band voice:** the Isle Band by default; Chip restored is a one-click Town band voicing.
@@ -474,7 +474,7 @@ Recipes, budgets and renders: `amb-environment.md`, `amb-snippets/src/`.
 **Owner:** new `audio/layers/SeaLayer.js`, `AudioDirector.js:160-168,537-556,581-595`, `AmbientAudioController.js:27-30` (mixer channel *Weather & sea*) · **Size:** M · **IDs:** AMB-1, SOTA-3
 **Hear:** the island finally has a shore: a slow breathing of surf under everything, felt more than heard by day, forward at night, big in a storm; harbor lapping, far gulls, halyard clinks, hull groans. Weather and phase drive it; agents never do.
 **Spec:** 3 crash + 2 wash + 2 lapping lanes shaped by per-wave automation (zero nodes per wave); two incommensurate swell cycles (97.3 s, 41.9 s); rare voices baked (2.6); hull groans moved out of 500–700 Hz (to ≥ 800 or ≤ 450 Hz) and the harbor rigging partitioned from the git-work voice (C-AMB-8).
-**Accept:** by day the sea stem sits 2–6 LU under the anchor A (it is ground, not figure); ICC 0.1–0.4, r(4 s) < 0.05, ~5 breaking waves/min; the night bed gains +7…+20 dB in 250 Hz–1 kHz; the world stem is bit-identical at 0 vs 12 agents; the sea ≤ 2 % of a core on a quiet host.
+**Accept:** by day the sea stem sits 2–6 LU under the anchor A (it is ground, not figure); ICC 0.1–0.4, r(4 s) < 0.05, ~5 breaking waves/min; the night bed gains +7…+20 dB in 250 Hz–1 kHz (aggregate band); the world stem is the same at 0 vs 12 agents within renderer noise (S6); the sea ≤ 2 % of a core on a quiet host (pending: only the loaded-host proxy ran, OF-015).
 
 ### 4.2 Thunder with distance
 **Owner:** `cues/CueKit.js:385-421`, `AudioDirector.js:276-284` · **Size:** S · **IDs:** AMB-6
