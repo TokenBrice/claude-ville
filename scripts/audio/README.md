@@ -14,11 +14,11 @@ dev dependencies). No ffmpeg, sox, scipy, or extra install. Dev-only: nothing he
 
 A **local maintainer gate**, not part of `validate:quick` or CI (CI installs with `--ignore-scripts`
 and has no browser). Run it at the end of every audio wave; it exits non-zero on any FAIL and writes
-nothing unless `--out` or `--update` is given. **Status:** the Wave 6 gate (`PLAN_STAGE` 6); the default
-run takes about 17–19 minutes with `--jobs 2` (1042 s at the Wave-6 exit: the virtual-clock checks
-≈ 13.5 min — the 72-scene world map alone ≈ 3.5 min —, then the live app, the frame-cost run and the
-lint ≈ 3.5 min); `fps` judges only on a quiet host and `bank` slices are real time, so a loaded host can
-fail either.
+nothing unless `--out` or `--update` is given. **Status:** the Wave 7 gate (`PLAN_STAGE` 7); the default
+run takes about 19–20 minutes with `--jobs 2` (1115 s at the Wave-7 exit on a loaded host: the
+virtual-clock checks ≈ 15.5 min — the 72-scene world map alone ≈ 3.5 min —, then the live app, the
+frame-cost run, the awakening, the caption probe and the lint ≈ 4.5 min); `fps` judges only on a quiet
+host and `bank` slices are real time, so a loaded host can fail either.
 
 ```sh
 npm run audio:probe                                   # every check (virtual clock + the live-app checks)
@@ -34,10 +34,10 @@ Each line prints `PASS`/`FAIL`/`INFO`/`DEFER`/`WARN`, the check, and its numbers
 
 ### Plan stage and deferred checks
 
-`PLAN_STAGE` in `lib/checks.mjs` is the wave the probe gates (now **6**); bump it at each wave's exit.
+`PLAN_STAGE` in `lib/checks.mjs` is the wave the probe gates (now **7**); bump it at each wave's exit.
 A criterion whose owner lands in a later wave is listed in `GATED_FROM` with that wave: it is measured
 and printed as `DEFER` with the same numbers and the wave that gates it, counted in the summary line,
-and never fails the run. Once `PLAN_STAGE` reaches its wave it gates like everything else. At stage 6
+and never fails the run. Once `PLAN_STAGE` reaches its wave it gates like everything else. At stage 7
 `GATED_FROM` is empty: every criterion gates. Targets come from `Loudness.js` and the plan's
 acceptance lines only; the committed baselines detect drift and can never turn a failed target into a
 pass.
@@ -63,6 +63,14 @@ the virtual clock; the score (8 hours of the Town band, the Village's 09:00–18
 shipped `Sequencer` and `OccasionClock` compiled headless in Node (`lib/music-sim.mjs`, well under a
 second per simulated day), so every acceptance line runs in the default probe — there is no opt-in
 long mode.
+
+Wave 7 added the front-door checks: `signals` (7.2), `awaken` (7.4) and `listening` (7.7) on the
+virtual clock, and `awakening` (7.4's first onset after a real click) and `captionprobe` (captions on a
+fresh profile that never turns sound on) in the live app. The live-app enable is the real UI: a
+profile's first-ever click on the note opens the SOUND panel's presets (7.1), so the probe picks the
+preset there (`#soundPresets [role=radio][data-preset]`) and closes the panel. The render smoke
+(`npm run verify:render`, `scripts/smoke/README.md`) carries 7.1's and 7.6's UI acceptance: the sound
+states at 1280 and 1440 with screenshots, the 0 px toggle shift and the keyboard walk.
 
 ### The virtual clock (HAR-1)
 
@@ -112,7 +120,12 @@ refuses every occasion and fragment, as with `isolate` of any other layer — at
 first-ever-enable occasion would still play silently, run the MusicClock, hold the held note back and put
 cues on its grid), and
 `storage` (Wave-3 settings). A scripted `cue` goes to the director that owns the signal route: the
-active one while it plays, else the ambient director.
+active one while it plays, else the ambient director. Wave 7: `mode` (a stored preset id: `signals`,
+`ambient`, `bgm`) and `preset` (`off`, `signals`, `village`, `townBand`) go through the controller's
+`setPreset`; the listening options (7.7) are stored settings the controller applies at the enable
+(`lib/scenes.mjs` `listeningStorage`: `claudeville.sound.output`, `.tone`, `.soften`); every
+`audio:awakened` is logged in audio time (`meta.awakens`), every `audio:cue-played` with `announceOnly`
+and the one-time `familyLine`, and `meta.output` is the engine's `outputSnapshot()` at the end.
 
 Wave 4 (`page/scene.js`, `page/virtual.js`): `sea` joins `LAYERS` (so `isolate` and `force` reach
 it; `isolate: 'none'` silences every layer), and every render's meta carries `sea`, the SeaLayer's
@@ -217,6 +230,9 @@ cooldowns and the governor's spacing and rate (the routine lane is 4/min since o
 | `occasions` | 6.6 (D1, S7, must-never 9 and 10): the Village's 09:00–18:00 working day headless (busy, a light hour, rain 13:00–13:40, resting 14:30–15:10, a wait 15:20–15:40, urgent cues) through the real `OccasionClock`: fragment duty (heard, incl. the ring-out) 6–10 % of busy time and ≤ 20 % of light time outside the hard zeros, printed beside the duty the constants predict; no start inside rain, resting, a wait ≥ 6 min or 5 s after an urgent cue, and no music past 1.5 s into one; every start carries a reason; music on ≤ 15 % of every working hour. Virtual-clock fixtures (heard music on the music stem ≥ −70 LUFS-M at the output): the first-ever enable plays an occasion with its reason in the snapshot and its ST max ≤ bed + 3 LU; a fragment ≤ bed + 1 LU; rain, a 7-min wait, rain with a needs-you 1 s before it clears, and a resting village (the director's own `resting` state) — no heard music inside (3 s allowed for a release when a zero begins mid-music), and the due occasion plays once the zero clears (the control) |
 | `townband` | 6.7 (SCN-7, MUS-7, MUS-9, S7, must-never 10): a 60-min Town band session (12 kHz, the busy island, a needs-you at 20:00 answered at 26:00): no piece back within 6 min of its visit's end (4 with < 4 pieces in the day set); ≥ 1 breath or interlude in every 10 min and each breath 1.4 ± 0.05 s; music duty ≥ 85 % and interludes ≤ 15 %; tonal re-heard (`session-metrics` `dejaHeardPct`) ≤ 25 % in each of the session's six consecutive 10-min windows, each measured on its own history (the basis of SCN's 34.5 % baseline; the whole hour's figure prints as INFO); ≤ 12 loops (identical renditions) per piece in the hour; session LUFS-I −31 ± 1; the needs-you over the band in its S2 window (judged on the `margins` needs-you render over music at 48 kHz — the 12 kHz session cuts the bell's upper partials, so its figure is INFO). 8 hours headless: the same loops and returns. The waiting cadence: a needs-you open 10–70 s — every phrase end while it waits is deceptive, the first after the answer lands home |
 | `percussion` | 6.9 (SIG-16, MUS-16, D4): ten Town band minutes while the island's workshop density climbs and falls (two-minute segments, then nobody working): Spearman ≥ 0.7 between percussion hits per bar (the song grid from the chunk marks) and the total density the director fed; no hit once the director's densities empty at working 0 (+1.5 s horizon); the percussion stem −14 ± 3 LU re the lead in the busy segment. Rain at 30 s over the busy band: the arrangement switch lands on a chunk boundary — the first one not yet committed when the rain came (1 s tick + 1.5 s horizon) — and every chunk after it plays the rain arrangement |
+| `signals` | 7.2 (UX-3): the busy stretch (arrivals, a needs-you, an error that recovers, a limit, a departure) in the Signals preset, captions at the default setting, once with the needs-you answered at 70 s and once left open (the ladder's L2 at 2 min): every 400 ms program window after the warmup outside a sounding cue (first published note − 50 ms to its last note + 6 s) < −80 dBFS; the needs-you call's loudest window ≥ 20 dB over the loudest floor window (a silent floor counts at −80 dBFS); every arrival captioned, not sounded, and its 3 s after < −80 dBFS. INFO: the Signals-only `answered` strike |
+| `awaken` | 7.4 (UX-5, SCN-8), virtual clock: the first enable of a page session in Village (no ledger: the welcome follows), a needs-you at 26 s, Off at 33 s and Village at 35 s: exactly one `audio:awakened`; the awakening's cue-stem M max (2 s) ≥ 12 LU under the needs-you call's (2.5 s); the program's short-term 4 s after the enable within ±3 dB of steady (the energy mean of the short-term values over 10–25 s) |
+| `listening` | 7.7 (UX-10, UX-14, SOTA-14), stored settings applied at the enable: Mono vs Speakers on the Village with an arrival and a needs-you — LUFS-I within ±0.5 LU and L = R; Headphones' world bed (Village, no music or work stratum, cue-free) ICC ≥ 0.4; tone ±1 on the Village world bed and on the Town band: 5–10 kHz ±4 ± 1 dB vs tone 0 and 100–1000 Hz within ±0.5 dB; Soften on vs off on a storm Village: the arrival bell's attack (5 ms RMS windows, −40 dB → −1 dB re peak) ≥ 22 ms, the thunder's ≥ 200 ms and slower than off, every non-needs-you duck depth 0.7 ± 0.05 × off, the needs-you call's M max within ±0.2 LU |
 | `lint` | HAR-4 envelope lint (below) finds no hazard, and each unit started at least one source: every cue kind (`cue-gallery` and the `*-night` cues, offline), `layer-crickets-night`, and `bgm-night-to-ambient` (a BGM night piece, then a switch to the ambient preset); INFO: the app session's hazards |
 | `routing` | must-never 2: an errored agent's `audio:cue-played` kinds are all `distress`, a rate-limited agent's all `limit`, never `summons` — with `attention:raised` first, with `distress:watchtower` first, and through the live producers (a sim status step) |
 | `away` | must-never 4: after a real TopBar click (`--autoplay-policy=user-gesture-required`), a needs-you raised 5 s into an absence sounds. Hidden tab and blur with `claudeville.sound.background = signals` close the bed, so the call must stand the `Loudness.js` needs-you minimum (+10 LU) over the preceding `bedWindowSec` (3 s) of what the listener heard — a suspended context counts as silence, scored at −80 LUFS. A plain blur keeps the full mix (decision D3), so there the call must reach the cue bus (≥ −60 dBFS) with the context running; its margin over the bed is must-never 1, gated on the virtual clock by `margins` |
@@ -224,6 +240,8 @@ cooldowns and the governor's spacing and rate (the routine lane is 4/min since o
 | `ceremony` | must-never 6: the `team-gather` sim fixture, started over an empty island with sound on, yields exactly one `council` cue-played within 15 s |
 | `continuity` | 2.1, realtime app: in the Town band, blur 3 s → focus keeps the same piece (`nowPlaying`), and the momentary level 0.3 s after focus is within 6 dB of the 3 s before the blur |
 | `fps` | 2.4, realtime app (`perf-12-agents`): `world:benchmark-fps`'s frame total (`__claudeVillePerf` frame profile, update + render) in alternating 15 s segments, sound off / on / off / on; p95 with sound on − off ≤ 0.1 ms. When the two sound-off segments already differ by the limit (the page clock resolves 0.1 ms; a busy host) the delta prints as INFO, not a verdict — re-run on a quiet host |
+| `awakening` | 7.4, realtime app on a fresh profile: the first click on the note opens the presets and the press on Village enables; the tapped program's first sample over −70 dBFS ≤ 150 ms after that press (the worklet load included); the note off and on again in the same page session emits no second `audio:awakened`. INFO: the realtime short-term 4 s after the press vs steady (judged by `awaken`) |
+| `captionprobe` | C-UX3 / S3, realtime app on a fresh profile that never turns sound on: a needs-you and an error raised through the live producers each show a caption toast naming the agent within 4 s |
 
 The app checks run the full app on `startIsolatedServer()` (ephemeral port) at `/?sim=1`, renderer on,
 with `Math.random` seeded before any app module loads (`page/init.js`) and `page/probe-app.js` driving
@@ -334,7 +352,7 @@ the baseline render of the same name.
 | method | used for | why |
 |---|---|---|
 | `offline` | every `cues*` target | CueKit schedules every note on `ctx.currentTime`, so an `OfflineAudioContext` gives a sample-accurate, jitter-free render. A real `AudioEngine` is attached to the offline context (`engine.attachContext`: limiter worklet and full master chain), then each cue goes through `CueKit._playAccepted` with the lane from `laneForCueKind` — the exact path the governor calls once a cue is admitted (score anchoring, lane mix, `_voice`). Cues are armed at their time with `suspend()/resume()`. The governor itself (cooldowns, budget, aggregation) is bypassed: the render is "what this cue sounds like once admitted". |
-| `realtime` | layers, ambient music, BGM, director mixes | The directors, layers and composers are driven by `setInterval`/`setTimeout` and read `ctx.currentTime` at call time, so only real time reproduces them. Headless Chromium runs with `--autoplay-policy=no-user-gesture-required`; the page is `page/harness.html`, which imports the shipped modules and constructs the real `AmbientAudioController` with a synthetic world. The CLI clicks the page first (a real user activation), then the page calls `activateFromUser(true)`, the enable path a TopBar click takes. |
+| `realtime` | layers, ambient music, BGM, director mixes | The directors, layers and composers are driven by `setInterval`/`setTimeout` and read `ctx.currentTime` at call time, so only real time reproduces them. Headless Chromium runs with `--autoplay-policy=no-user-gesture-required`; the page is `page/harness.html`, which imports the shipped modules and constructs the real `AmbientAudioController` with a synthetic world. The CLI clicks the page first (a real user activation), then the page calls `setPreset(<stored preset>, { fromUser: true })`, the enable path a TopBar pick takes. |
 | `app-realtime` | `fidelity/app-live-sim-day` | The full app from `startIsolatedServer()` (ephemeral port) at `/?sim=1`, renderer running, sound enabled by clicking the real `#topbarSoundToggle`, hour/weather set through `window.__claudeVilleAtmosphere()`. Cross-checks that the renderer-free harness is representative. |
 
 **The tap** (`page/init.js`, injected before any page script): `AudioNode.prototype.connect` is wrapped so

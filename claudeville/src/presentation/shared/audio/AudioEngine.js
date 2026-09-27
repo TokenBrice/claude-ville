@@ -7,11 +7,17 @@
 //   world (wind, rain, wildlife) ─► presence dip −3 dB @ 3.4 kHz ─► weather ceiling ─► worldDuck ─┐ tilt
 //   work (hum, workshops) ─────────────────────────────────────────────────────────► workDuck ──┤
 //   music ─► low shelf −3 dB @ 160 Hz ─► bass < 300 Hz mono ─► attention ───────────► musicDuck ─┘ tilt
-//     programSum (tilt = circadian high shelf on world + music only)
+//     programSum (tilt = circadian high shelf + the listener's tone on world + music only;
+//     headphones narrow the world bed before it: worldWidth)
 //       ─► bedGate ─► PROGRAM_TRIM ─► HPF 30 Hz ─┐
 //   cue ───────────► PROGRAM_TRIM ───────────────┤
 //   Island Air wet ► PROGRAM_TRIM ───────────────┤
-//   signalBed ─► signalBedDuck ─► signalGate ─► PROGRAM_TRIM ─┴─► LP 14 kHz ─► limiter (−1.5 dBFS) ─► volume ─► fade ─► out
+//   signalBed ─► signalBedDuck ─► signalGate ─► PROGRAM_TRIM ─┴─► mono fold ─► LP 14 kHz ─► limiter (−1.5 dBFS) ─► volume ─► fade ─► out
+//
+// The listener's output (7.7, OutputStage.js): Mono folds the whole program
+// to both ears before the limiter (compensated, so it never gets quieter or
+// passes the ceiling); Headphones scales every voice's pan and narrows the
+// world bed; Speakers leaves the mix as made.
 //
 // `signalBed` carries the held note (S3, plan 3.3): no presence dip, no
 // attention stage, no music duck, outside the bed tap; it ducks only under
@@ -46,6 +52,7 @@ import { makeFilter } from './Filters.js';
 import { IslandAir } from './IslandAir.js';
 import { LIMITER_CEILING_DBFS, PROGRAM_TRIM_DB, STANDARD_VOLUME_STEP, volumeStepGain } from './Loudness.js';
 import { MusicClock } from './MusicClock.js';
+import { TONE_TAU_SEC, outputSettings, toneDb, widthMatrix } from './OutputStage.js';
 import { rngStream } from './Rng.js';
 import { NoisePool, SampleBank } from './SampleBank.js';
 import { Transport } from './Transport.js';
@@ -68,6 +75,7 @@ const DUCKED_BUSES = Object.freeze(['world', 'work', 'music', 'signalBed']);
 // Circadian high shelf at 3 kHz on world + music (SOTA-14, MIX-5), dB by phase.
 export const TILT_DB = Object.freeze({ dawn: 1, day: 0, dusk: -1.5, night: -3 });
 const TILT_TAU_SEC = 10;
+const CUE_TRIM_TAU_SEC = 0.017;
 
 const METER_TAPS = Object.freeze(['program', 'bed', 'music', 'cue']);
 const WAKE_OPEN_SEC = 0.015;
@@ -313,10 +321,21 @@ export class AudioEngine {
         this._groupLevels = new Map(AUDIO_GROUPS.map(name => [name, 1]));
         this._directors = new Map();
         this._tiltPhase = 'day';
+        // The listener's output, tone and soften (7.7); set before or after
+        // the graph exists.
+        this._output = outputSettings('speakers');
+        this._tone = 0;
+        this._softened = false;
+        // Quiet hours (UX-11): the cue bus a little softer, dB ≤ 0.
+        this._cueTrimDb = 0;
+        this._cueTrim = null;
+        this._worldWidth = null;
+        this._monoFold = null;
         this._attentionDb = 0;
         this._weatherCeilingDb = 0;
         this._duckSchedulers = new Map(DUCKED_BUSES.map(name => [name, new DuckScheduler()]));
         this._contextPromise = null;
+        this._pendingContext = null;
         // Context-independent services: one Transport (S4), one MusicClock,
         // the bake queue and the noise pool (S8). Torn down in dispose().
         this.transport = new Transport(this);
@@ -348,13 +367,10 @@ export class AudioEngine {
     // the graph, then resume. Memoised; resolves true once running.
     async ensureContext() {
         if (this._disposed) return false;
-        if (!this._contextPromise) {
-            const Ctor = window.AudioContext || window.webkitAudioContext;
-            if (!Ctor) return false;
-            const ctx = new Ctor();
-            Promise.resolve(ctx.resume?.()).catch(() => { /* needs a user gesture */ });
-            this._contextPromise = this._attach(ctx);
-        }
+        if (!this._contextPromise && !this._createContext()) return false;
+        // Resume inside the gesture, before anything is awaited: a context
+        // prewarmed on hover (prewarm) is still suspended here.
+        Promise.resolve(this._pendingContext?.resume?.()).catch(() => { /* needs a user gesture */ });
         if (!(await this._contextPromise)) return false;
         const context = this.context;
         if (!context || this._disposed) return false;
@@ -362,6 +378,24 @@ export class AudioEngine {
             try { await context.resume(); } catch { /* needs a user gesture */ }
         }
         return !this._disposed && this.context === context && context.state === 'running';
+    }
+
+    // Create the (suspended) context and start loading the worklets and
+    // building the graph before the click that enables sound, so the click
+    // only has to resume it (7.4: first sound ≤ 150 ms after the click). Call
+    // on hover or focus of the sound control; no sound, no resume. Idempotent.
+    prewarm() {
+        if (this._disposed || this._contextPromise) return;
+        this._createContext();
+    }
+
+    _createContext() {
+        const Ctor = globalThis.window?.AudioContext || globalThis.window?.webkitAudioContext;
+        if (!Ctor) return false;
+        const ctx = new Ctor();
+        this._pendingContext = ctx;
+        this._contextPromise = this._attach(ctx);
+        return true;
     }
 
     // Build the engine on an existing context (an OfflineAudioContext in the
@@ -436,12 +470,14 @@ export class AudioEngine {
         this._bedMeter = this._buildBedMeter(ctx, this._bedTap);
         this._bedOpenAt = now;
 
-        worldPre.connect(this._busOuts.get('world'));
+        this._worldWidth = this._buildWidth(ctx, this._output.worldWidth, this._output.worldMakeupDb);
+        worldPre.connect(this._worldWidth.input);
+        this._worldWidth.output.connect(this._busOuts.get('world'));
         workPre.connect(this._busOuts.get('work'));
         musicPre.connect(this._busOuts.get('music'));
 
         // Program: tilt on world + music, then gate, trim, HPF.
-        this._tilt = makeFilter(ctx, 'highshelf', 3000, { gain: TILT_DB[this._tiltPhase] ?? 0 });
+        this._tilt = makeFilter(ctx, 'highshelf', 3000, { gain: this._tiltDb() });
         const programSum = gain();
         this._busOuts.get('world').connect(this._tilt);
         this._busOuts.get('music').connect(this._tilt);
@@ -454,7 +490,8 @@ export class AudioEngine {
             .connect(gain(dbToGain(PROGRAM_TRIM_DB)))
             .connect(makeFilter(ctx, 'highpass', 30))
             .connect(masterSum);
-        this._buses.get('cue').connect(gain(dbToGain(PROGRAM_TRIM_DB))).connect(masterSum);
+        this._cueTrim = gain(dbToGain(this._cueTrimDb));
+        this._buses.get('cue').connect(this._cueTrim).connect(gain(dbToGain(PROGRAM_TRIM_DB))).connect(masterSum);
 
         // Island Air: one convolver pair; the wet return joins at the cue
         // staging. Its bed gate mirrors bedGate (start / wake).
@@ -475,7 +512,9 @@ export class AudioEngine {
 
         // Master: LP 14 kHz → limiter → volume → fade → out.
         this._limiterIn = makeFilter(ctx, 'lowpass', 14000);
-        masterSum.connect(this._limiterIn);
+        this._monoFold = this._buildWidth(ctx, this._output.mono ? 0 : 1, this._output.monoCompDb);
+        masterSum.connect(this._monoFold.input);
+        this._monoFold.output.connect(this._limiterIn);
         this._limiterOut = worklet ? this._buildWorkletLimiter(ctx) : this._buildFallbackLimiter(ctx);
         this.volumeGain = gain(this._volumeGainValue());
         this.fadeGain = gain(MIN_GAIN);
@@ -696,7 +735,7 @@ export class AudioEngine {
             nodes.push(lp);
         }
         const panner = ctx.createStereoPanner();
-        panner.pan.value = Math.max(-1, Math.min(1, Number(pan) || 0));
+        panner.pan.value = Math.max(-1, Math.min(1, (Number(pan) || 0) * this._output.panScale));
         head.connect(panner);
         nodes.push(panner);
         panner.connect(group ? this.groupInput(group, director) : this.busInput(bus));
@@ -1063,7 +1102,108 @@ export class AudioEngine {
         const key = Object.hasOwn(TILT_DB, phase) ? phase : 'day';
         if (key === this._tiltPhase) return;
         this._tiltPhase = key;
-        if (this._tilt) this._tilt.gain.setTargetAtTime(TILT_DB[key], this.now(), TILT_TAU_SEC);
+        if (this._tilt) this._tilt.gain.setTargetAtTime(this._tiltDb(), this.now(), TILT_TAU_SEC);
+    }
+
+    _tiltDb() {
+        return (TILT_DB[this._tiltPhase] ?? 0) + toneDb(this._tone);
+    }
+
+    // Warm ↔ Bright (7.7, SOTA-14): −1…+1 → ±4 dB on the same 3 kHz shelf,
+    // world and music only.
+    setTone(value) {
+        const v = Math.max(-1, Math.min(1, Number(value) || 0));
+        if (v === this._tone) return;
+        this._tone = v;
+        if (this._tilt) this._tilt.gain.setTargetAtTime(this._tiltDb(), this.now(), TONE_TAU_SEC);
+    }
+
+    get tone() {
+        return this._tone;
+    }
+
+    // Speakers · Headphones · Mono (7.7, UX-10). Pans apply to voices placed
+    // from now on; the world width and the mono fold glide over 0.1 s.
+    setOutput(mode) {
+        const next = outputSettings(mode);
+        if (next.output === this._output.output) return;
+        this._output = next;
+        const now = this.now();
+        this._worldWidth?.set(next.worldWidth, next.worldMakeupDb, now);
+        this._monoFold?.set(next.mono ? 0 : 1, next.monoCompDb, now);
+    }
+
+    get outputMode() {
+        return this._output.output;
+    }
+
+    // Soften sudden sounds (7.7, UX-14). CueKit reads it at schedule time:
+    // gentler bell attacks and thunder, shallower ducks; the needs-you call
+    // stays whole. The controller resolves `auto` from Reduce motion.
+    setSoften(on) {
+        this._softened = Boolean(on);
+    }
+
+    get softened() {
+        return this._softened;
+    }
+
+    // The cue bus trim (UX-11 quiet hours: −6 dB), dB ≤ 0, glided ~50 ms.
+    // It trims the dry cue path; a cue's Island Air send (≥ 14 dB under its
+    // dry, S5) is left as is. Bed-aware trims never see it: they read the bed.
+    setCueTrim(db) {
+        const next = Math.min(0, Number(db) || 0);
+        if (next === this._cueTrimDb) return;
+        this._cueTrimDb = next;
+        this._cueTrim?.gain.setTargetAtTime(dbToGain(next), this.now(), CUE_TRIM_TAU_SEC);
+    }
+
+    // Plain JSON for the probe and `__claudevilleAudio()`.
+    outputSnapshot() {
+        return {
+            output: this._output.output,
+            panScale: this._output.panScale,
+            worldWidth: this._output.worldWidth,
+            monoCompDb: this._output.monoCompDb,
+            tone: this._tone,
+            toneDb: toneDb(this._tone),
+            tiltDb: TILT_DB[this._tiltPhase] ?? 0,
+            softened: this._softened,
+            cueTrimDb: this._cueTrimDb,
+        };
+    }
+
+    // A stereo width stage (OutputStage.widthMatrix): L' = a·L + b·R,
+    // R' = b·L + a·R, then a make-up gain. Width 1 and 0 dB is transparent.
+    _buildWidth(ctx, width, makeupDb) {
+        const input = ctx.createGain();
+        const split = ctx.createChannelSplitter(2);
+        const merge = ctx.createChannelMerger(2);
+        const output = ctx.createGain();
+        input.channelCount = 2;
+        input.channelCountMode = 'explicit';
+        input.channelInterpretation = 'speakers';
+        const { a, b } = widthMatrix(width);
+        const ll = ctx.createGain(); const rl = ctx.createGain();
+        const lr = ctx.createGain(); const rr = ctx.createGain();
+        ll.gain.value = a; rr.gain.value = a; rl.gain.value = b; lr.gain.value = b;
+        input.connect(split);
+        split.connect(ll, 0); split.connect(lr, 0);
+        split.connect(rl, 1); split.connect(rr, 1);
+        ll.connect(merge, 0, 0); rl.connect(merge, 0, 0);
+        lr.connect(merge, 0, 1); rr.connect(merge, 0, 1);
+        output.gain.value = dbToGain(makeupDb);
+        merge.connect(output);
+        return {
+            input,
+            output,
+            set: (w, db, at) => {
+                const m = widthMatrix(w);
+                for (const [param, v] of [[ll.gain, m.a], [rr.gain, m.a], [rl.gain, m.b], [lr.gain, m.b], [output.gain, dbToGain(db)]]) {
+                    param.setTargetAtTime(v, at, TONE_TAU_SEC);
+                }
+            },
+        };
     }
 
     // Weather ceiling on the world bus (1.4), dB ≤ 0, before the duck and

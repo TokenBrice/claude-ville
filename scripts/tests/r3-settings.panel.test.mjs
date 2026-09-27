@@ -9,6 +9,7 @@ import {
     resetPersistedSettings,
 } from '../../claudeville/src/presentation/shared/TopBar.js';
 import {
+    SOUND_SETTING_DEFAULTS,
     readCaptionSetting,
     readCountHours,
     readReminderSetting,
@@ -82,7 +83,7 @@ test('reduced-motion reads reuse one native query and preserve override notifica
 test('settings review reads every operator preference, sound levels as steps', () => {
     const storage = new MemoryStorage({
         'claudeville.sound.enabled': 'true',
-        'claudeville.sound.volume': '7',
+        'claudeville.sound.volumes': JSON.stringify({ signals: 8, ambient: 4, bgm: 7 }),
         'claudeville.sound.mode': 'bgm',
         'claudeville.sound.background': 'signals',
         'claudeville.sound.layers': JSON.stringify({
@@ -93,6 +94,13 @@ test('settings review reads every operator preference, sound levels as steps', (
         'claudeville.sound.countHours': '1',
         'claudeville.captions': 'all',
         'claudeville.sound.townBandVoice': 'chip',
+        'claudeville.sound.output': 'mono',
+        'claudeville.sound.tone': '-0.5',
+        'claudeville.sound.soften': 'on',
+        'claudeville.sound.hushUntil': '1790000000000',
+        'claudeville.sound.quietHours': '23-07',
+        'claudeville.sound.invited': '1',
+        'claudeville.sound.chipSeen': '1',
         'cv-auto-camera': '0',
         'claudeville.alerts.desktop': '1',
         'claudeville.sidebarCollapsed': 'true',
@@ -100,14 +108,22 @@ test('settings review reads every operator preference, sound levels as steps', (
 
     assert.deepEqual(readPersistedSettings(storage), {
         soundEnabled: true,
-        soundVolume: 7,
         soundMode: 'bgm',
+        soundPreset: 'townBand',
+        soundVolumes: { signals: 8, ambient: 4, bgm: 7 },
         soundBackground: 'signals',
         soundLayers: { wind: 1, rain: 2, wildlife: 3, hum: 4, workshops: 6, music: 5 },
         soundReminders: 'gentle',
         soundCountHours: true,
         captions: 'all',
         soundTownBandVoice: 'chip',
+        soundOutput: 'mono',
+        soundTone: -0.5,
+        soundSoften: 'on',
+        soundHushUntil: 1790000000000,
+        soundQuietHours: '23-07',
+        soundInvited: true,
+        soundChipSeen: true,
         autoCamera: false,
         desktopAlerts: true,
         sidebarCollapsed: true,
@@ -119,7 +135,7 @@ test('an uncalibrated profile reads as the standard level before the controller 
         'claudeville.sound.volume': '0.72',
         'claudeville.sound.layers': JSON.stringify({ wind: 0.1, rain: 0.2, wildlife: 0.3, hum: 0.4, music: 0.5 }),
     }));
-    assert.equal(settings.soundVolume, STANDARD_VOLUME_STEP);
+    assert.deepEqual(settings.soundVolumes, { signals: STANDARD_VOLUME_STEP, ambient: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
     assert.deepEqual(settings.soundLayers, { wind: 10, rain: 10, wildlife: 10, hum: 10, workshops: 9, music: 10 });
 });
 
@@ -128,6 +144,7 @@ test('reminder, caption and hour-count preferences read their defaults and rejec
     assert.equal(fresh.soundReminders, 'standard');
     assert.equal(fresh.captions, 'auto');
     assert.equal(fresh.soundCountHours, false);
+    assert.equal(fresh.soundPreset, 'off');
 
     const odd = readPersistedSettings(new MemoryStorage({
         'claudeville.sound.reminders': 'loud',
@@ -163,27 +180,16 @@ test('SET writes the preferences its readers take on use', () => {
     assert.equal(readTownBandVoice(storage), 'isle');
 });
 
-test('settings defaults hold the standard steps and the calibration key, written after the levels', () => {
-    assert.deepEqual(PERSISTED_SETTING_DEFAULTS, {
-        'claudeville.sound.enabled': 'false',
-        'claudeville.sound.volume': String(STANDARD_VOLUME_STEP),
-        'claudeville.sound.mode': 'ambient',
-        'claudeville.sound.background': 'play',
-        'claudeville.sound.layers': JSON.stringify({
-            wind: 10, rain: 10, wildlife: 10, hum: 10, workshops: 9, music: 10,
-        }),
-        'claudeville.sound.calibration': '2',
-        'claudeville.sound.reminders': 'standard',
-        'claudeville.sound.countHours': '0',
-        'claudeville.captions': 'auto',
-        'claudeville.sound.townBandVoice': 'isle',
-        'cv-auto-camera': '1',
-        'claudeville.alerts.desktop': '0',
-        'claudeville.sidebarCollapsed': 'false',
-    });
+test('settings defaults cover every sound key, with the calibration key written after the levels', () => {
+    for (const [key, value] of Object.entries(SOUND_SETTING_DEFAULTS)) {
+        assert.equal(PERSISTED_SETTING_DEFAULTS[key], value, key);
+    }
+    assert.equal(PERSISTED_SETTING_DEFAULTS['claudeville.sound.volume'], undefined, 'the legacy single step is never written again');
+    assert.deepEqual(JSON.parse(PERSISTED_SETTING_DEFAULTS['claudeville.sound.volumes']),
+        { signals: STANDARD_VOLUME_STEP, ambient: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
     const order = Object.keys(PERSISTED_SETTING_DEFAULTS);
     const calibration = order.indexOf('claudeville.sound.calibration');
-    assert.ok(calibration > order.indexOf('claudeville.sound.volume'));
+    assert.ok(calibration > order.indexOf('claudeville.sound.volumes'));
     assert.ok(calibration > order.indexOf('claudeville.sound.layers'));
 });
 
@@ -200,21 +206,27 @@ test('reset writes defaults in place without clearing unrelated local data', () 
     }
     assert.equal(storage.getItem('claudeville.generatedNames'), '["Ada"]');
     assert.equal(result.soundEnabled, false);
+    assert.equal(result.soundPreset, 'off', 'a reset sets the preset to Off');
     assert.equal(result.soundBackground, 'play');
+    assert.equal(result.soundOutput, 'speakers');
+    assert.equal(result.soundTone, 0);
+    assert.equal(result.soundSoften, 'auto');
+    assert.equal(result.soundHushUntil, 0);
+    assert.equal(result.soundQuietHours, 'off');
     assert.equal(result.autoCamera, true);
     assert.equal(result.soundReminders, 'standard');
     assert.equal(result.soundCountHours, false);
     assert.equal(result.captions, 'auto');
 });
 
-test('reset returns a user-changed profile to the standard step', () => {
+test('reset returns a user-changed profile to the standard step in every preset', () => {
     const storage = new MemoryStorage({
-        'claudeville.sound.volume': '2',
+        'claudeville.sound.volumes': JSON.stringify({ signals: 9, ambient: 2, bgm: 3 }),
         'claudeville.sound.layers': JSON.stringify({ wind: 3, rain: 0, wildlife: 10, hum: 5, music: 1 }),
         'claudeville.sound.calibration': '2',
     });
     const result = resetPersistedSettings(storage);
-    assert.equal(result.soundVolume, STANDARD_VOLUME_STEP);
+    assert.deepEqual(result.soundVolumes, { signals: STANDARD_VOLUME_STEP, ambient: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
     assert.deepEqual(result.soundLayers, { wind: 10, rain: 10, wildlife: 10, hum: 10, workshops: 9, music: 10 });
     assert.equal(storage.getItem('claudeville.sound.calibration'), '2');
 });
@@ -223,7 +235,7 @@ test('opening settings first dismisses both topbar popovers', () => {
     const calls = [];
     const topbar = Object.create(TopBar.prototype);
     topbar._destroyed = false;
-    topbar._hideMixerPanel = () => calls.push('mix');
+    topbar._hideSoundPanel = () => calls.push('sound');
     topbar._hideSpendPanel = () => calls.push('spend');
     topbar._buildSettingsContent = () => ({ node: true });
     topbar.modal = {
@@ -234,7 +246,7 @@ test('opening settings first dismisses both topbar popovers', () => {
 
     topbar._openSettings();
 
-    assert.equal(calls[0], 'mix');
+    assert.equal(calls[0], 'sound');
     assert.equal(calls[1], 'spend');
     assert.deepEqual(calls[2], [
         'modal',
@@ -244,30 +256,15 @@ test('opening settings first dismisses both topbar popovers', () => {
     ]);
 });
 
-test('Spend Map and MIX close settings before either popover becomes visible', () => {
+test('Spend Map closes settings and the SOUND popover before it becomes visible', () => {
     const previousWindow = globalThis.window;
     globalThis.window = { innerWidth: 1280 };
     try {
-        const mixerCalls = [];
-        const mixer = Object.create(TopBar.prototype);
-        mixer._destroyed = false;
-        mixer._closeSettings = () => mixerCalls.push('settings');
-        mixer._hideSpendPanel = () => mixerCalls.push('spend');
-        mixer._mixerButtonEl = {
-            getBoundingClientRect: () => ({ right: 1000, bottom: 40 }),
-            setAttribute: () => {},
-            classList: { add: () => {} },
-        };
-        mixer._mixerPanelEl = { style: { display: 'none' } };
-        mixer._showMixerPanel();
-        assert.deepEqual(mixerCalls, ['settings', 'spend']);
-        assert.equal(mixer._mixerPanelEl.style.display, 'block');
-
         const spendCalls = [];
         const spend = Object.create(TopBar.prototype);
         spend._destroyed = false;
         spend._closeSettings = () => spendCalls.push('settings');
-        spend._hideMixerPanel = () => spendCalls.push('mix');
+        spend._hideSoundPanel = () => spendCalls.push('sound');
         spend._ensureSpendPanel = () => {};
         spend._renderSpendPanel = () => {};
         spend._spendPanelEl = { style: { display: 'none' } };
@@ -278,7 +275,7 @@ test('Spend Map and MIX close settings before either popover becomes visible', (
             },
         };
         spend._showSpendPanel();
-        assert.deepEqual(spendCalls, ['settings', 'mix']);
+        assert.deepEqual(spendCalls, ['settings', 'sound']);
         assert.equal(spend._spendPanelEl.style.display, 'block');
     } finally {
         globalThis.window = previousWindow;

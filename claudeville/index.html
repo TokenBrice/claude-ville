@@ -76,11 +76,18 @@
                     <path fill="currentColor" d="M3 1h10v2h-2v1h1v1h1v5h2v2H1v-2h2V5h1V4h1V3H3V1Zm3 12h4v2H6v-2Z"/>
                 </svg>
             </button>
-            <button id="topbarSoundToggle" class="topbar__sound-btn topbar__icon-btn" type="button" aria-label="Sound" aria-pressed="false" title="Enable sound">
-                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                    <path fill="currentColor" d="M5 2h9v9h-1v2h-2v1H9v-1H8v-2h1v-1h3V5H7v7H6v2H4v1H2v-1H1v-2h1v-1h3V2Zm2 1v1h5V3H7Z"/>
-                </svg>
-            </button>
+            <div class="topbar__sound" role="group" aria-label="Sound">
+                <button id="topbarSoundToggle" class="topbar__sound-btn topbar__icon-btn" type="button" aria-label="Sound" aria-pressed="false" data-sound-state="off" title="Sound off — click to choose what you hear">
+                    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M5 2h9v9h-1v2h-2v1H9v-1H8v-2h1v-1h3V5H7v7H6v2H4v1H2v-1H1v-2h1v-1h3V2Zm2 1v1h5V3H7Z"/>
+                    </svg>
+                </button>
+                <button id="topbarSoundMenu" class="topbar__sound-btn topbar__sound-caret" type="button" aria-label="Sound settings" title="Sound settings" aria-haspopup="dialog" aria-controls="soundPanel" aria-expanded="false">
+                    <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M0 2h2v1H0V2Zm6 0h2v1H6V2ZM1 3h2v1H1V3Zm4 0h2v1H5V3ZM2 4h4v1H2V4Zm1 1h2v1H3V5Z"/>
+                    </svg>
+                </button>
+            </div>
             <button id="topbarCinemaToggle" class="topbar__cinema-btn topbar__icon-btn" type="button" aria-label="Automatic camera" aria-pressed="true" title="Auto-camera on: frames live action when idle">
                 <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                     <path fill="currentColor" fill-rule="evenodd" d="M6 2h4v1h2v1h1v1h2v2h1v2h-1v2h-2v1h-1v1h-2v1H6v-1H4v-1H3v-1H1V9H0V7h1V6h2V5h1V4h2V2Zm0 4v6h4V6H6Z"/>
@@ -92,9 +99,6 @@
                     <path fill="currentColor" d="M6 1h4v3h3v2h2v4h-2v2h-3v3H6v-3H3v-2H1V6h2V4h3V1Zm1 2v3H4v4h3v3h2v-3h3V6H9V3H7Zm0 4h2v2H7V7Z"/>
                 </svg>
             </button>
-            <button id="topbarSoundMode" class="topbar__sound-btn" type="button" aria-pressed="false" title="Reactive ambience mode — click for continuous town music" hidden>AMBIENT</button>
-            <span id="topbarSoundSection" class="topbar__sound-section" title="Village work behind the music" hidden></span>
-            <input id="topbarSoundVolume" class="topbar__sound-vol" type="range" min="0" max="10" step="1" value="6" title="Volume" aria-label="Volume" aria-valuetext="6 / 10" hidden>
             <div class="topbar__well" role="group" aria-label="World view">
                 <button id="worldRead" class="topbar__sound-btn world-read" type="button" aria-label="Hold to read the village (B)" aria-pressed="false" title="Hold B or this button to read work labels">READ <kbd>B</kbd></button>
                 <button id="worldAmbient" class="topbar__sound-btn world-ambient" type="button" aria-pressed="false" data-state="off" title="Ambient camera: a patient broadcast of the work that is actually happening. Any camera input or selection hands the frame back.">AMBIENT CAM</button>
@@ -160,7 +164,7 @@
                             <span>WORLD CONTROLS</span>
                             <button class="world-grammar__close" type="button" popovertarget="worldGrammar" popovertargetaction="hide" aria-label="Close World controls">×</button>
                         </div>
-                        <div class="world-grammar__body"><b>/ or Ctrl/Cmd+K</b> search agents · <b>↑/↓/Home/End</b> move · <b>Enter</b> select and follow · <b>Esc</b> clear search / close panel · <b>A</b> frame attention · <b>F</b> frame village · <b>drag / arrows</b> pan · <b>wheel / +/-</b> zoom · <b>R</b> replay</div>
+                        <div class="world-grammar__body"><b>/ or Ctrl/Cmd+K</b> search agents · <b>↑/↓/Home/End</b> move · <b>Enter</b> select and follow · <b>Esc</b> clear search / close panel · <b>A</b> frame attention · <b>F</b> frame village · <b>drag / arrows</b> pan · <b>wheel / +/-</b> zoom · <b>R</b> replay · <b>M</b> sound on/off</div>
                         <div class="world-grammar__body"><b>Hold B / READ</b> reveal work labels; release to restore names.</div>
                         <div class="world-grammar__body"><b>AMBIENT CAM</b> hands the camera to the working-village broadcast; any pan, zoom, key, or selection hands it straight back.</div>
                     </div>

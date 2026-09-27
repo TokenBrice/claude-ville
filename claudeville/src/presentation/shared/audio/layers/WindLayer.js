@@ -145,9 +145,12 @@ export class WindLayer extends BaseLayer {
 
         source.start(ctx.currentTime);
 
+        // The first gust lands at a steady-state phase of the mean gap (a
+        // 2 s rise plus the exponential wait), so an enable never opens
+        // gustier than the wind runs (7.4, C-UX7): one draw, as before.
         this.registerProcess(renewalProcess({
             name: 'wind',
-            first: () => rand(this.rng, 1, 5),
+            first: () => 1 + this.rng() * (2 + 9 - 5 * this.state.strength),
             gap: () => this._nextGap,
             emit: at => this._gust(at),
         }));

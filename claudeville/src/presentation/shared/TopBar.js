@@ -17,30 +17,24 @@ import {
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { eventShapeSvgPath } from './EventShapes.js';
 import {
-    AUDIO_MIXER_DEFAULTS,
-    CAPTIONS_KEY,
-    DEFAULT_CAPTIONS,
-    DEFAULT_SOUND_COUNT_HOURS,
-    DEFAULT_SOUND_REMINDERS,
     DEFAULT_TOWN_BAND_VOICE,
-    SOUND_CALIBRATION,
-    SOUND_CALIBRATION_KEY,
-    SOUND_COUNT_HOURS_KEY,
-    SOUND_ENABLED_KEY,
-    SOUND_LAYERS_KEY,
-    SOUND_REMINDERS_KEY,
+    HUSH_DURATION_MS,
+    SOUND_PRESETS,
+    SOUND_PRESET_DETAILS,
+    SOUND_PRESET_LABELS,
+    SOUND_RECALIBRATED_MESSAGE,
+    SOUND_SETTING_DEFAULTS,
     SOUND_STEP_MAX,
-    SOUND_VOLUME_KEY,
-    TOWN_BAND_VOICE_KEY,
-    readCaptionSetting,
-    readCountHours,
-    readReminderSetting,
-    readStoredSoundEnabled,
-    readStoredTrimSteps,
-    readStoredVolumeStep,
-    readTownBandVoice,
+    channelStep,
+    channelTrimSteps,
+    mixChannelsFor,
+    presetForMode,
+    readPresetVolumeStep,
+    readSoundChipSeen,
+    readSoundSettings,
+    writePresetVolumeStep,
+    writeSoundChipSeen,
 } from './SoundSettings.js';
-import { STANDARD_VOLUME_STEP } from './audio/Loudness.js';
 
 const SETTINGS_MODAL_OWNER = 'topbar-settings';
 const UNKNOWN_MODEL_DATE_KEY = 'claudeville.pricing.unknownModelDate';
@@ -89,19 +83,10 @@ export function connectionReasonText(code) {
     return CONNECTION_REASON_COPY[normalized] || 'Connection interrupted; ClaudeVille will keep retrying locally.';
 }
 
-// Sound levels are whole steps (1.2); the calibration key follows the volume
-// and trims so a reset writes it last and never needs the D5 recalibration.
+// Every sound key (SoundSettings owns them, the calibration key last, so a
+// reset never needs the D5 recalibration) and the view preferences.
 export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
-    [SOUND_ENABLED_KEY]: 'false',
-    [SOUND_VOLUME_KEY]: String(STANDARD_VOLUME_STEP),
-    'claudeville.sound.mode': 'ambient',
-    'claudeville.sound.background': 'play',
-    [SOUND_LAYERS_KEY]: JSON.stringify(AUDIO_MIXER_DEFAULTS),
-    [SOUND_CALIBRATION_KEY]: SOUND_CALIBRATION,
-    [SOUND_REMINDERS_KEY]: DEFAULT_SOUND_REMINDERS,
-    [SOUND_COUNT_HOURS_KEY]: DEFAULT_SOUND_COUNT_HOURS,
-    [CAPTIONS_KEY]: DEFAULT_CAPTIONS,
-    [TOWN_BAND_VOICE_KEY]: DEFAULT_TOWN_BAND_VOICE,
+    ...SOUND_SETTING_DEFAULTS,
     'cv-auto-camera': '1',
     'claudeville.alerts.desktop': '0',
     'claudeville.sidebarCollapsed': 'false',
@@ -117,21 +102,74 @@ function focusWithoutScroll(element) {
 }
 
 export function readPersistedSettings(storage = globalThis.window?.localStorage) {
-    const rawMode = storageValue(storage, 'claudeville.sound.mode');
     return {
-        soundEnabled: readStoredSoundEnabled(storage),
-        soundVolume: readStoredVolumeStep(storage),
-        soundMode: rawMode === 'bgm' ? 'bgm' : 'ambient',
-        soundBackground: storageValue(storage, 'claudeville.sound.background') === 'signals' ? 'signals' : 'play',
-        soundLayers: readStoredTrimSteps(storage),
-        soundReminders: readReminderSetting(storage),
-        soundCountHours: readCountHours(storage),
-        captions: readCaptionSetting(storage),
-        soundTownBandVoice: readTownBandVoice(storage),
+        ...readSoundSettings(storage),
         autoCamera: storageValue(storage, 'cv-auto-camera') !== '0',
         desktopAlerts: storageValue(storage, 'claudeville.alerts.desktop') === '1',
         sidebarCollapsed: storageValue(storage, 'claudeville.sidebarCollapsed') === 'true',
     };
+}
+
+// ── Sound chip and popover helpers (plan 7.1–7.3, UX-2/UX-7 copy) ──
+const SOUND_PANEL_WIDTH = 308;
+const SOUND_FIRST_TITLE = 'Sound off — click to choose what you hear';
+const SOUND_ARMED_TITLE = 'Sound on — click anywhere to start it';
+const SOUND_ARMED_LINE = 'Waiting for a click — browsers start sound on your first click';
+
+// Before the controller's boot-idle build no context can be running: a
+// stored preset reads armed, never playing. The same shape as the
+// controller's `soundView()`.
+function storedSoundView(storage = globalThis.window?.localStorage) {
+    const settings = readSoundSettings(storage);
+    const preset = settings.soundPreset;
+    const lastPreset = preset !== 'off' ? preset : presetForMode(settings.soundMode);
+    const armed = preset !== 'off';
+    return {
+        available: true,
+        preset,
+        lastPreset,
+        soundState: armed ? 'armed' : 'off',
+        volumeStep: readPresetVolumeStep(preset, storage),
+        trims: settings.soundLayers,
+        nowLine: armed ? SOUND_ARMED_LINE : '',
+        chipTitle: armed ? SOUND_ARMED_TITLE : `Sound off — click to turn on ${SOUND_PRESET_LABELS[lastPreset] || 'Village'}`,
+        hushedUntil: null,
+        quietActive: false,
+        recalibrated: false,
+    };
+}
+
+function isKeyboardEditTarget(target) {
+    const tag = String(target?.tagName || '').toUpperCase();
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(target?.isContentEditable);
+}
+
+function stepReadout(step) {
+    return `${step} / ${SOUND_STEP_MAX}`;
+}
+
+function stepValueText(step) {
+    return step > 0 ? `${step} of ${SOUND_STEP_MAX}` : 'Off';
+}
+
+// DOM writes only when the value changed (no writes while nothing moved).
+function setText(node, text) {
+    if (node && node.textContent !== text) node.textContent = text;
+}
+
+function setAttr(node, name, value) {
+    if (node && node.getAttribute(name) !== value) node.setAttribute(name, value);
+}
+
+function setHidden(node, hidden) {
+    if (node && node.hidden !== hidden) node.hidden = hidden;
+}
+
+function setSliderStep(slider, step) {
+    const value = String(step);
+    if (slider.input.value !== value) slider.input.value = value;
+    setAttr(slider.input, 'aria-valuetext', stepValueText(step));
+    setText(slider.value, stepReadout(step));
 }
 
 export function resetPersistedSettings(storage = globalThis.window?.localStorage) {
@@ -203,9 +241,9 @@ export class TopBar {
             waiting: document.getElementById('badgeWaiting'),
             connection: document.getElementById('topbarConnection'),
             version: document.querySelector('.topbar__version'),
+            soundGroup: document.querySelector('.topbar__sound'),
             soundToggle: document.getElementById('topbarSoundToggle'),
-            soundMode: document.getElementById('topbarSoundMode'),
-            soundVolume: document.getElementById('topbarSoundVolume'),
+            soundMenu: document.getElementById('topbarSoundMenu'),
             cinemaToggle: document.getElementById('topbarCinemaToggle'),
             alertsToggle: document.getElementById('topbarAlertsToggle'),
             chronicleBtn: document.getElementById('topbarChronicle'),
@@ -246,22 +284,21 @@ export class TopBar {
         this._recoveryBaselineSnapshotAt = null;
         this._lastSweptSnapshotAt = null;
         this._staleTimer = null;
-        const audioMixer = this._buildAudioMixer();
         this.audio = null;
         this._audioLoadPromise = null;
+        // The controller is DOM-free (C-UX1): the chip and the popover are
+        // this bar's views of its `audio:sound-state`. A click inside them is
+        // theirs, never an unlock gesture as well.
         this._audioOptions = {
-            button: this.els.soundToggle,
-            modeButton: this.els.soundMode,
-            volumeSlider: this.els.soundVolume,
-            mixerButton: audioMixer.button,
-            mixerPanel: audioMixer.panel,
-            layerControls: audioMixer.controls,
             world: this.world,
+            ownsGesture: (target) => Boolean(target && (
+                this.els.soundGroup?.contains?.(target) || this._soundEls?.panel?.contains?.(target)
+            )),
+            reducedMotion: () => globalThis.window?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true,
         };
         this._audioIdleHandle = null;
         this._audioIdleTimer = null;
-        this._deferredAudioClickPending = false;
-        this._bindDeferredAudio();
+        this._initSound();
         this._scheduleAudioRoute();
         this._initCinemaToggle();
         this._initAttentionControls();
@@ -431,7 +468,7 @@ export class TopBar {
 
     _initSettingsButton() {
         if (!this.modal || !this.els.root) return;
-        const anchor = document.getElementById('topbarWorldControls') || this.els.soundMode;
+        const anchor = document.getElementById('topbarWorldControls');
         if (!anchor?.parentElement) return;
         const button = el('button', {
             className: 'topbar__sound-btn topbar__icon-btn topbar__icon-btn--action',
@@ -447,28 +484,52 @@ export class TopBar {
         this._settingsButtonEl = button;
     }
 
-    _openSettings() {
+    _openSettings({ section = null } = {}) {
         if (!this.modal || this._destroyed) return;
-        this._hideMixerPanel({ restoreFocus: false });
+        this._hideSoundPanel({ restoreFocus: false });
         this._hideSpendPanel({ restoreFocus: false });
         this.modal.openContent('Settings', this._buildSettingsContent(), {
             wide: true,
             owner: SETTINGS_MODAL_OWNER,
         });
+        if (section === 'sound') this._settingsPanel?.focusSound?.();
     }
 
+    // SET's SOUND rows and the popover are two views of one controller
+    // state (C-UX1): every change goes through the controller, and SET
+    // re-reads storage on `audio:sound-state`.
     _buildSettingsContent() {
         this._settingsPanel?.destroy();
+        const sound = (apply, stored) => this._soundSetting(apply, stored);
         this._settingsPanel = new SettingsPanel({
             readSettings: () => ({
                 ...readPersistedSettings(),
                 reducedMotion: readReducedMotionOverride(),
             }),
-            onSoundEnabled: (enabled) => this._setSoundEnabled(enabled),
-            onSoundMode: (mode) => this._setSoundMode(mode),
-            onSoundBackground: (background) => this._setSoundBackground(background),
-            onSoundVolume: (volume) => this._setSoundVolume(volume),
-            onSoundLayer: (name, value) => this._setSoundLayer(name, value),
+            onSoundPreset: (preset) => sound(
+                audio => audio.setPreset(preset, { fromUser: true }),
+                settings => settings.soundPreset,
+            ),
+            onSoundVolume: (preset, step) => sound(
+                audio => (audio.soundView().preset === preset
+                    ? audio.setVolumeStep(step)
+                    : this._writePresetVolume(preset, step)),
+                () => this._writePresetVolume(preset, step),
+            ),
+            onSoundLayer: (name, step) => sound(
+                audio => audio.setLayerStep(name, step),
+                settings => settings.soundLayers[name],
+            ),
+            onSoundBackground: (value) => sound(audio => audio.setBackground(value), settings => settings.soundBackground),
+            onSoundOutput: (value) => sound(audio => audio.setOutput(value), settings => settings.soundOutput),
+            onSoundTone: (value) => sound(audio => audio.setTone(value), settings => settings.soundTone),
+            onSoundSoften: (value) => sound(audio => audio.setSoften(value), settings => settings.soundSoften),
+            onSoundQuietHours: (value) => sound(audio => audio.setQuietHours(value), settings => settings.soundQuietHours),
+            onSoundHush: (on) => sound((audio) => {
+                if (on) audio.hush(HUSH_DURATION_MS);
+                else audio.resumeFromHush();
+                return audio.soundView().hushedUntil ?? 0;
+            }, settings => settings.soundHushUntil),
             onAutoCamera: (enabled) => this._setAutoCamera(enabled),
             onDesktopAlerts: (enabled) => this._setDesktopAlerts(enabled),
             onSidebarCollapsed: (collapsed) => this._setSidebarCollapsed(collapsed),
@@ -484,18 +545,27 @@ export class TopBar {
         return this._settingsPanel.build();
     }
 
+    // Reset writes every default, then brings the live controller to them:
+    // sound Off, every level and listening preference at its default.
     _resetSettings() {
         resetPersistedSettings();
         this._setReducedMotion(false);
-        this.audio?.setEnabled(false);
-        this.audio?.setVolumeStep(STANDARD_VOLUME_STEP);
-        this.audio?.setMode('ambient');
-        this.audio?.setBackground('play');
-        for (const [name, step] of Object.entries(AUDIO_MIXER_DEFAULTS)) {
-            this.audio?.setLayerStep(name, step);
+        const audio = this.audio;
+        if (audio) {
+            const defaults = readSoundSettings();
+            audio.setPreset('off');
+            if (audio.soundView().hushedUntil) audio.resumeFromHush();
+            audio.setVolumeStep(readPresetVolumeStep('off'));
+            audio.setBackground(defaults.soundBackground);
+            audio.setOutput(defaults.soundOutput);
+            audio.setTone(defaults.soundTone);
+            audio.setSoften(defaults.soundSoften);
+            audio.setQuietHours(defaults.soundQuietHours);
+            for (const [name, step] of Object.entries(defaults.soundLayers)) audio.setLayerStep(name, step);
+        } else {
+            this._applySoundView(storedSoundView());
         }
         eventBus.emit('sound:town-band-voice', { voice: DEFAULT_TOWN_BAND_VOICE });
-        if (!this.audio) this._renderDeferredAudioControl();
         eventBus.emit('camera:auto-camera', { enabled: true });
         if (this.attention) {
             void this.attention.setDesktopAlerts(false).then((on) => this._applyAlertsState(on));
@@ -507,58 +577,24 @@ export class TopBar {
         this._settingsPanel?.syncControls();
     }
 
-    async _setSoundEnabled(enabled) {
+    // One SET sound setter: through the controller once it exists (it
+    // persists and applies, returning the stored value), else the stored
+    // value as it stands.
+    async _soundSetting(apply, stored) {
         try {
             const audio = await this._ensureAudio();
-            audio?.activateFromUser(Boolean(enabled));
-            return Boolean(audio?.enabled);
+            if (audio && !this._destroyed) return apply(audio);
         } catch (error) {
             console.warn('[TopBar] Audio unavailable:', error.message);
-            this._renderDeferredAudioControl();
-            return false;
         }
+        return stored(readSoundSettings());
     }
 
-    async _setSoundBackground(background) {
-        try {
-            const audio = await this._ensureAudio();
-            return audio?.setBackground(background) ?? readPersistedSettings().soundBackground;
-        } catch (error) {
-            console.warn('[TopBar] Audio unavailable:', error.message);
-            return readPersistedSettings().soundBackground;
-        }
-    }
-
-    async _setSoundMode(mode) {
-        try {
-            const audio = await this._ensureAudio();
-            audio?.setMode(mode);
-            return audio?.mode || 'ambient';
-        } catch (error) {
-            console.warn('[TopBar] Audio unavailable:', error.message);
-            return readPersistedSettings().soundMode;
-        }
-    }
-
-    async _setSoundVolume(step) {
-        try {
-            const audio = await this._ensureAudio();
-            return audio?.setVolumeStep(step) ?? readPersistedSettings().soundVolume;
-        } catch (error) {
-            console.warn('[TopBar] Audio unavailable:', error.message);
-            return readPersistedSettings().soundVolume;
-        }
-    }
-
-    async _setSoundLayer(name, step) {
-        try {
-            const audio = await this._ensureAudio();
-            audio?.setLayerStep(name, step);
-            return audio?.layerSteps?.[name] ?? readPersistedSettings().soundLayers[name];
-        } catch (error) {
-            console.warn('[TopBar] Audio unavailable:', error.message);
-            return readPersistedSettings().soundLayers[name];
-        }
+    // A preset that is not the current one keeps its own volume step (7.8);
+    // the controller reads it when that preset next plays.
+    _writePresetVolume(preset, step) {
+        writePresetVolumeStep(preset, step);
+        return readPresetVolumeStep(preset);
     }
 
     _setAutoCamera(enabled) {
@@ -590,7 +626,10 @@ export class TopBar {
 
     _setReducedMotion(reduced) {
         this._motionOverride = this._motionOverride || installReducedMotionOverride();
-        return this._motionOverride?.set(Boolean(reduced)) ?? Boolean(reduced);
+        const applied = this._motionOverride?.set(Boolean(reduced)) ?? Boolean(reduced);
+        // Soften sudden sounds follows Reduce motion unless set (7.7).
+        this.audio?.syncReducedMotion?.();
+        return applied;
     }
 
     _observeHookSignal(agent) {
@@ -621,45 +660,6 @@ export class TopBar {
         if (this.modal?.isOpen(SETTINGS_MODAL_OWNER)) this.modal.close();
     }
 
-    _bindDeferredAudio() {
-        const button = this.els.soundToggle;
-        if (!button) return;
-        // A click that lands before the boot-idle build (or while it is in
-        // flight) waits for the controller and then goes through the same
-        // activation rule as the chip itself.
-        this._onDeferredAudioClick = (event) => {
-            event.preventDefault();
-            if (this._deferredAudioClickPending) return;
-            this._deferredAudioClickPending = true;
-            button.disabled = true;
-            button.setAttribute('aria-busy', 'true');
-            void this._ensureAudio().then((audio) => {
-                if (audio && !this._destroyed) audio.activateFromUser(!audio.enabled);
-            }).catch((error) => {
-                console.warn('[TopBar] Audio unavailable:', error.message);
-            }).finally(() => {
-                this._deferredAudioClickPending = false;
-                if (!button.isConnected) return;
-                button.disabled = this.audio ? !this.audio.available : false;
-                button.removeAttribute('aria-busy');
-            });
-        };
-        button.addEventListener('click', this._onDeferredAudioClick);
-        this._renderDeferredAudioControl();
-    }
-
-    // Before the controller exists no context can be running, so a stored
-    // "on" is armed, never playing.
-    _renderDeferredAudioControl() {
-        const button = this.els.soundToggle;
-        if (!button) return;
-        const enabled = storageValue(globalThis.window?.localStorage, 'claudeville.sound.enabled') === 'true';
-        button.setAttribute('aria-pressed', String(enabled));
-        button.setAttribute('data-sound-state', enabled ? 'armed' : 'off');
-        button.classList.remove('topbar__sound-btn--on');
-        button.title = enabled ? 'Sound on — click anywhere to start it' : 'Enable sound';
-    }
-
     // The signal route (captions, the returning-user unlock, hidden-tab
     // wakes) exists from boot: the controller is built in the first idle
     // slot, at most 4 s after boot. It creates no AudioContext, and the
@@ -671,7 +671,7 @@ export class TopBar {
             if (this._destroyed) return;
             void this._ensureAudio().catch((error) => {
                 console.warn('[TopBar] Audio unavailable:', error.message);
-                this._renderDeferredAudioControl();
+                this._applySoundView(storedSoundView());
             });
         };
         if (typeof requestIdleCallback === 'function') {
@@ -695,9 +695,10 @@ export class TopBar {
         if (!this._audioLoadPromise) {
             this._audioLoadPromise = import('./AmbientAudioController.js').then((module) => {
                 if (this._destroyed) return null;
-                this.els.soundToggle?.removeEventListener('click', this._onDeferredAudioClick);
-                this._onDeferredAudioClick = null;
                 this.audio = new module.AmbientAudioController(this._audioOptions);
+                // The views start from the controller's state, not only its
+                // next change.
+                this._applySoundView(this.audio.soundView?.());
                 return this.audio;
             }).catch((error) => {
                 this._audioLoadPromise = null;
@@ -707,145 +708,400 @@ export class TopBar {
         return this._audioLoadPromise;
     }
 
-    // The topbar remains a glance surface: one compact chip opens the deeper
-    // mix below it. The fixed panel is right-anchored, escapes the topbar's
-    // overflow clipping, and never shares the screen with the Spend Map.
-    _buildAudioMixer() {
-        const anchor = this.els.soundVolume;
-        if (!anchor || !document.body) return { button: null, panel: null, controls: {} };
+    // ── Sound (plan 7.1–7.3, 7.5, 7.6): the note, its chevron and the SOUND
+    // popover are views of the controller's one state (`audio:sound-state`,
+    // C-UX1); before the boot-idle build they read storage. The group is a
+    // constant 44 px, so no sound state moves the bar.
+    _initSound() {
+        this._soundView = storedSoundView();
+        this._soundChipKey = null;
+        this._soundMixKey = null;
+        this._soundTogglePending = false;
+        // 7.4: a hand approaching the note or a preset warms the context and
+        // worklets (suspended, silent) once the controller exists, so the
+        // first press sounds within 150 ms. Never at boot: armed keeps no
+        // AudioContext.
+        this._onSoundPrewarm = () => this.audio?.prewarm?.();
+        this._buildSoundPanel();
+        this._onSoundToggleClick = (event) => {
+            event.preventDefault();
+            this._onSoundChip();
+        };
+        this.els.soundToggle?.addEventListener('click', this._onSoundToggleClick);
+        this.els.soundGroup?.addEventListener('pointerenter', this._onSoundPrewarm);
+        this.els.soundGroup?.addEventListener('focusin', this._onSoundPrewarm);
+        this._onSoundState = (view) => this._applySoundView(view);
+        eventBus.on('audio:sound-state', this._onSoundState);
+        // 7.5: the invite's accept runs inside its click, so the activation holds.
+        this._onSoundInviteAccepted = ({ bucket } = {}) => this._withAudio((audio) => {
+            audio.setPreset('signals', { fromUser: true });
+            audio.testCall(bucket);
+        });
+        eventBus.on('sound:invite-accepted', this._onSoundInviteAccepted);
+        // 7.6: `M` turns sound on and off from anywhere (a key press is a
+        // user activation), never from a text field or under a modal.
+        this._onSoundKey = (event) => {
+            if (event.key !== 'm' && event.key !== 'M') return;
+            if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
+            if (isKeyboardEditTarget(event.target) || this.modal?.isOpen?.()) return;
+            event.preventDefault();
+            this._toggleSound({ announce: true });
+        };
+        document.addEventListener('keydown', this._onSoundKey);
+        this._reducedMotionQuery = globalThis.window?.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null;
+        this._onReducedMotionChange = () => this.audio?.syncReducedMotion?.();
+        this._reducedMotionQuery?.addEventListener?.('change', this._onReducedMotionChange);
+        this._renderSoundChip();
+    }
 
-        const button = el('button', {
-            className: 'topbar__sound-btn',
-            text: 'MIX',
-            title: 'Open soundscape mixer',
-            ariaLabel: 'Open soundscape mixer',
-        });
-        button.type = 'button';
-        button.hidden = true;
-        button.setAttribute('aria-haspopup', 'dialog');
-        button.setAttribute('aria-controls', 'audioMixerPanel');
-        button.setAttribute('aria-expanded', 'false');
-        anchor.insertAdjacentElement('afterend', button);
+    _applySoundView(view) {
+        if (!view || this._destroyed) return;
+        this._soundView = view;
+        this._renderSoundChip();
+        if (this._soundPanelOpen()) this._renderSoundPanel();
+    }
 
-        const panel = el('div', {
-            className: 'topbar__mixer-panel',
-            ariaLabel: 'Soundscape mixer',
-            style: { display: 'none' },
-        });
-        panel.id = 'audioMixerPanel';
-        panel.setAttribute('role', 'dialog');
-        panel.tabIndex = -1;
-
-        const heading = el('div', {
-            className: 'topbar__mixer-heading',
-            text: 'SOUNDSCAPE MIXER',
-        });
-        const note = el('div', {
-            className: 'topbar__mixer-note',
-            text: 'Layer trims · master volume still applies',
-        });
-        const rows = el('div', { className: 'topbar__mixer-rows' });
-        const controls = {};
-        const layers = [
-            ['wind', 'WEATHER & SEA'],
-            ['rain', 'RAIN'],
-            ['wildlife', 'WILDLIFE'],
-            ['hum', 'VILLAGE HUM'],
-            ['workshops', 'WORKSHOPS'],
-            ['music', 'MUSIC'],
-        ];
-        for (const [name, label] of layers) {
-            const slider = el('input', {
-                className: 'topbar__sound-vol',
-                ariaLabel: `${label.toLowerCase()} level`,
-            });
-            slider.type = 'range';
-            slider.min = '0';
-            slider.max = String(SOUND_STEP_MAX);
-            slider.step = '1';
-            slider.value = String(AUDIO_MIXER_DEFAULTS[name]);
-            const value = el('span', {
-                className: 'topbar__mixer-value',
-                text: `${AUDIO_MIXER_DEFAULTS[name]} / ${SOUND_STEP_MAX}`,
-            });
-            rows.appendChild(el('label', { className: 'topbar__mixer-row' }, [label, slider, value]));
-            controls[name] = { slider, value };
+    // The first-ever click on the note opens the presets instead of picking
+    // one (7.1); afterwards it turns sound Off ↔ the last preset.
+    _onSoundChip() {
+        if (this._destroyed) return;
+        if (this._soundView.preset === 'off' && !readSoundChipSeen()) {
+            writeSoundChipSeen();
+            this._soundChipKey = null;
+            this._renderSoundChip();
+            this._showSoundPanel();
+            return;
         }
-        panel.append(heading, note, rows);
-        document.body.appendChild(panel);
+        this._toggleSound();
+    }
 
-        this._mixerButtonEl = button;
-        this._mixerPanelEl = panel;
-        this._onMixerClick = (event) => {
-            event.stopPropagation();
-            this._toggleMixerPanel();
+    _toggleSound({ announce = false } = {}) {
+        if (this._soundTogglePending) return;
+        const toggle = (audio) => {
+            audio.toggleFromUser();
+            if (!announce) return;
+            const { preset } = audio.soundView();
+            eventBus.emit('sound:status', {
+                message: preset === 'off' ? 'Sound off' : `Sound on · ${SOUND_PRESET_LABELS[preset]}`,
+            });
         };
-        this._onMixerKeydown = (event) => {
-            if (event.key !== 'Escape') return;
+        if (this.audio) {
+            toggle(this.audio);
+            return;
+        }
+        // A toggle before the boot-idle build waits for the controller; the
+        // page's sticky activation carries the gesture across the load.
+        this._soundTogglePending = true;
+        this.els.soundToggle?.setAttribute('aria-busy', 'true');
+        void this._withAudio(toggle).finally(() => {
+            this._soundTogglePending = false;
+            this.els.soundToggle?.removeAttribute('aria-busy');
+        });
+    }
+
+    _withAudio(fn) {
+        if (this.audio) {
+            fn(this.audio);
+            return Promise.resolve();
+        }
+        return this._ensureAudio().then((audio) => {
+            if (audio && !this._destroyed) fn(audio);
+        }).catch((error) => {
+            console.warn('[TopBar] Audio unavailable:', error.message);
+        });
+    }
+
+    // The chip: `data-sound-state`, its title and pressed state, written
+    // only when one of them changed (no DOM writes while nothing moved).
+    _renderSoundChip() {
+        const button = this.els.soundToggle;
+        if (!button) return;
+        const view = this._soundView;
+        const available = view.available !== false;
+        const state = available ? view.soundState : 'off';
+        const title = !available
+            ? (view.chipTitle || 'Sound unavailable in this browser')
+            : (view.preset === 'off' && !readSoundChipSeen() ? SOUND_FIRST_TITLE : view.chipTitle);
+        const pressed = available && view.preset !== 'off' ? 'true' : 'false';
+        const key = `${state}\u001f${title}\u001f${pressed}\u001f${available}`;
+        if (key === this._soundChipKey) return;
+        this._soundChipKey = key;
+        setAttr(button, 'data-sound-state', state);
+        setAttr(button, 'aria-pressed', pressed);
+        button.title = title;
+        button.disabled = !available;
+        if (this.els.soundMenu) this.els.soundMenu.disabled = !available;
+    }
+
+    // The SOUND popover (UX-2): heading, the `Listen to` radiogroup, volume,
+    // the now line, the recalibration note (D5), the needs-you preview and
+    // hush, the mix for the current preset, and a link to SET. Fixed and
+    // right-anchored under the chevron, so it escapes the bar's overflow
+    // clipping and never covers the NEEDS YOU slot.
+    _buildSoundPanel() {
+        const trigger = this.els.soundMenu;
+        if (!trigger || !document.body) return;
+        const panel = el('div', { className: 'topbar__sound-panel' });
+        panel.id = 'soundPanel';
+        panel.setAttribute('role', 'dialog');
+        panel.setAttribute('aria-labelledby', 'soundPanelHeading');
+        panel.tabIndex = -1;
+        panel.hidden = true;
+
+        const heading = el('div', { className: 'topbar__sound-heading', text: 'SOUND' });
+        heading.id = 'soundPanelHeading';
+
+        const presets = el('div', { className: 'topbar__sound-presets' });
+        presets.id = 'soundPresets';
+        presets.setAttribute('role', 'radiogroup');
+        presets.setAttribute('aria-label', 'Listen to');
+        const radios = {};
+        for (const preset of SOUND_PRESETS) {
+            const radio = el('button', { className: 'topbar__sound-preset' }, [
+                el('span', { className: 'topbar__sound-preset-name', text: SOUND_PRESET_LABELS[preset] }),
+                el('span', { className: 'topbar__sound-preset-detail', text: SOUND_PRESET_DETAILS[preset] }),
+            ]);
+            radio.type = 'button';
+            radio.setAttribute('role', 'radio');
+            radio.setAttribute('aria-checked', 'false');
+            radio.dataset.preset = preset;
+            radio.tabIndex = -1;
+            presets.appendChild(radio);
+            radios[preset] = radio;
+        }
+
+        const volume = this._soundSlider('Volume', 'Volume');
+        volume.input.id = 'soundVolume';
+
+        const now = el('div', { className: 'topbar__sound-now' });
+        now.id = 'soundNow';
+        now.setAttribute('role', 'status');
+        const note = el('div', { className: 'topbar__sound-note', text: SOUND_RECALIBRATED_MESSAGE });
+        note.hidden = true;
+
+        const preview = this._soundAction('soundPreview', 'PLAY THE NEEDS-YOU BELL');
+        const hush = this._soundAction('soundHush', 'HUSH FOR 1 HOUR');
+        const actions = el('div', { className: 'topbar__sound-actions' }, [preview, hush]);
+
+        const mixRows = el('div');
+        const mix = el('div', { className: 'topbar__sound-mix' }, [
+            el('div', { className: 'topbar__sound-subheading', text: 'MIX' }),
+            mixRows,
+        ]);
+        mix.id = 'soundMix';
+        mix.hidden = true;
+
+        const more = this._soundAction('soundMore', 'MORE IN SETTINGS');
+        const footer = el('div', { className: 'topbar__sound-footer' }, [more]);
+
+        panel.append(heading, presets, volume.row, now, note, actions, mix, footer);
+        document.body.appendChild(panel);
+        this._soundEls = { panel, presets, radios, volume, now, note, preview, hush, mix, mixRows, more, mixSliders: [] };
+
+        this._onSoundMenuClick = (event) => {
+            event.stopPropagation();
+            if (this._soundPanelOpen()) this._hideSoundPanel();
+            else this._showSoundPanel();
+        };
+        this._onSoundPanelKeydown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                this._hideSoundPanel();
+                return;
+            }
+            if (presets.contains(event.target)) this._onSoundPresetKey(event);
+        };
+        this._onSoundMenuKeydown = (event) => {
+            if (event.key !== 'Escape' || !this._soundPanelOpen()) return;
             event.preventDefault();
             event.stopPropagation();
-            this._hideMixerPanel();
+            this._hideSoundPanel();
         };
-        this._onMixerPanelKeydown = (event) => {
-            if (event.key !== 'Escape') return;
-            event.preventDefault();
-            event.stopPropagation();
-            this._hideMixerPanel();
+        this._onSoundPanelClick = (event) => {
+            const radio = event.target?.closest?.('[role="radio"]');
+            if (radio && presets.contains(radio)) {
+                this._chooseSoundPreset(radio.dataset.preset);
+                return;
+            }
+            if (preview.contains(event.target)) void this._withAudio(audio => audio.playPreviewBell());
+            else if (hush.contains(event.target)) this._toggleHush();
+            else if (more.contains(event.target)) this._openSettings({ section: 'sound' });
         };
-        this._onMixerFocusOut = (event) => {
-            if (panel.style.display === 'none') return;
+        this._onSoundPanelInput = (event) => this._onSoundSliderInput(event.target);
+        this._onSoundFocusOut = (event) => {
+            if (!this._soundPanelOpen()) return;
             const next = event.relatedTarget;
-            if (next && (panel.contains?.(next) || button.contains?.(next))) return;
-            // Focus is already moving to the next surface; do not steal it
-            // back while dismissing a popover because focus left it.
-            this._hideMixerPanel({ restoreFocus: false });
+            if (next && (panel.contains(next) || this.els.soundGroup?.contains?.(next))) return;
+            // Focus that left for elsewhere dismisses the panel without
+            // pulling focus back.
+            this._hideSoundPanel({ restoreFocus: false });
         };
-        this._onMixerOutside = (event) => {
-            if (panel.style.display === 'none') return;
-            if (!panel.contains(event.target) && !button.contains(event.target)) {
-                this._hideMixerPanel({ restoreFocus: false });
+        this._onSoundOutside = (event) => {
+            if (!this._soundPanelOpen()) return;
+            if (!panel.contains(event.target) && !this.els.soundGroup?.contains?.(event.target)) {
+                this._hideSoundPanel({ restoreFocus: false });
             }
         };
-        this._onMixerResize = () => this._hideMixerPanel({ restoreFocus: false });
-        button.addEventListener('click', this._onMixerClick);
-        button.addEventListener('keydown', this._onMixerKeydown);
-        panel.addEventListener('keydown', this._onMixerPanelKeydown);
-        button.addEventListener('focusout', this._onMixerFocusOut);
-        panel.addEventListener('focusout', this._onMixerFocusOut);
-        document.addEventListener('pointerdown', this._onMixerOutside);
-        window.addEventListener('resize', this._onMixerResize);
-        return { button, panel, controls };
+        this._onSoundResize = () => this._hideSoundPanel({ restoreFocus: false });
+        trigger.addEventListener('click', this._onSoundMenuClick);
+        trigger.addEventListener('keydown', this._onSoundMenuKeydown);
+        trigger.addEventListener('focusout', this._onSoundFocusOut);
+        panel.addEventListener('keydown', this._onSoundPanelKeydown);
+        panel.addEventListener('click', this._onSoundPanelClick);
+        panel.addEventListener('input', this._onSoundPanelInput);
+        panel.addEventListener('focusout', this._onSoundFocusOut);
+        panel.addEventListener('pointerenter', this._onSoundPrewarm);
+        panel.addEventListener('focusin', this._onSoundPrewarm);
+        document.addEventListener('pointerdown', this._onSoundOutside);
+        window.addEventListener('resize', this._onSoundResize);
     }
 
-    _toggleMixerPanel() {
-        if (!this._mixerPanelEl) return;
-        if (this._mixerPanelEl.style.display === 'none') this._showMixerPanel();
-        else this._hideMixerPanel();
+    // A 0–10 step slider row: `n / 10`, `aria-valuetext` `n of 10` or `Off`.
+    _soundSlider(name, label) {
+        const input = el('input', { className: 'topbar__sound-vol', ariaLabel: name });
+        input.type = 'range';
+        input.min = '0';
+        input.max = String(SOUND_STEP_MAX);
+        input.step = '1';
+        const value = el('span', { className: 'topbar__sound-value' });
+        const row = el('label', { className: 'topbar__sound-row' }, [
+            el('span', { className: 'topbar__sound-label', text: label }),
+            input,
+            value,
+        ]);
+        return { row, input, value };
     }
 
-    _showMixerPanel() {
-        if (this._destroyed || !this._mixerButtonEl || !this._mixerPanelEl) return;
+    _soundAction(id, text) {
+        const button = el('button', { className: 'topbar__sound-btn topbar__sound-action', text });
+        button.type = 'button';
+        button.id = id;
+        return button;
+    }
+
+    _soundPanelOpen() {
+        return Boolean(this._soundEls && !this._soundEls.panel.hidden);
+    }
+
+    _showSoundPanel() {
+        if (this._destroyed || !this._soundEls || !this.els.soundMenu) return;
         this._closeSettings?.();
         this._hideSpendPanel({ restoreFocus: false });
-        const rect = this._mixerButtonEl.getBoundingClientRect();
-        const panelWidth = 308;
-        this._mixerPanelEl.style.left = `${Math.max(8, Math.min(rect.right - panelWidth, window.innerWidth - panelWidth - 8))}px`;
-        this._mixerPanelEl.style.top = `${rect.bottom + 7}px`;
-        this._mixerPanelEl.style.display = 'block';
-        this._mixerButtonEl.setAttribute('aria-expanded', 'true');
-        this._mixerButtonEl.classList.add('topbar__sound-btn--on');
-        const firstControl = this._mixerPanelEl.querySelector?.(
-            'input:not([disabled]), button:not([disabled]), select:not([disabled]), textarea:not([disabled])',
-        );
-        focusWithoutScroll(firstControl || this._mixerPanelEl);
+        const { panel } = this._soundEls;
+        const rect = this.els.soundMenu.getBoundingClientRect();
+        panel.style.left = `${Math.max(8, Math.min(rect.right - SOUND_PANEL_WIDTH, window.innerWidth - SOUND_PANEL_WIDTH - 8))}px`;
+        panel.style.top = `${rect.bottom + 7}px`;
+        this._renderSoundPanel();
+        panel.hidden = false;
+        this.els.soundMenu.setAttribute('aria-expanded', 'true');
+        focusWithoutScroll(this._soundEls.radios[this._soundView.preset] || panel);
     }
 
-    _hideMixerPanel({ restoreFocus = true } = {}) {
-        const wasOpen = this._mixerPanelEl?.style.display !== 'none';
-        if (this._mixerPanelEl) this._mixerPanelEl.style.display = 'none';
-        this._mixerButtonEl?.setAttribute('aria-expanded', 'false');
-        this._mixerButtonEl?.classList.remove('topbar__sound-btn--on');
-        if (restoreFocus && wasOpen) focusWithoutScroll(this._mixerButtonEl);
+    _hideSoundPanel({ restoreFocus = true } = {}) {
+        if (!this._soundPanelOpen()) return;
+        this._soundEls.panel.hidden = true;
+        this.els.soundMenu?.setAttribute('aria-expanded', 'false');
+        if (restoreFocus) focusWithoutScroll(this.els.soundMenu);
+    }
+
+    // Written only while open, and then only what changed.
+    _renderSoundPanel() {
+        const els = this._soundEls;
+        if (!els) return;
+        const view = this._soundView;
+        const available = view.available !== false;
+        const on = available && view.preset !== 'off';
+        const hushed = view.soundState === 'hushed';
+        this._renderSoundPresets(view.preset);
+        setHidden(els.volume.row, !on);
+        setSliderStep(els.volume, Number(view.volumeStep) || 0);
+        setText(els.now, view.nowLine || '');
+        setHidden(els.note, !view.recalibrated);
+        setHidden(els.preview, !on);
+        // Hush drops a playing preset to Signals for an hour; while hushed
+        // the same button resumes. Quiet hours end on their own.
+        const hushable = hushed ? !view.quietActive : on && view.preset !== 'signals';
+        setHidden(els.hush, !hushable);
+        setText(els.hush, hushed ? 'RESUME NOW' : 'HUSH FOR 1 HOUR');
+        this._renderSoundMix(view);
+    }
+
+    // A real radiogroup with a roving tab stop on the checked preset.
+    _renderSoundPresets(checked) {
+        for (const [preset, radio] of Object.entries(this._soundEls.radios)) {
+            const on = preset === checked;
+            setAttr(radio, 'aria-checked', on ? 'true' : 'false');
+            const tabIndex = on ? 0 : -1;
+            if (radio.tabIndex !== tabIndex) radio.tabIndex = tabIndex;
+        }
+    }
+
+    // The mix shows only the trims that affect the current preset (7.8),
+    // named for what you hear; Off and Signals have none.
+    _renderSoundMix(view) {
+        const els = this._soundEls;
+        const channels = mixChannelsFor(view.preset);
+        const key = channels.map(channel => channel.id).join('|');
+        if (key !== this._soundMixKey) {
+            this._soundMixKey = key;
+            els.mixSliders = channels.map((channel) => {
+                const slider = this._soundSlider(`${channel.label} level`, channel.label);
+                slider.channel = channel;
+                return slider;
+            });
+            replaceChildren(els.mixRows, els.mixSliders.map(slider => slider.row));
+        }
+        setHidden(els.mix, channels.length === 0);
+        for (const slider of els.mixSliders) setSliderStep(slider, channelStep(slider.channel, view.trims || {}));
+    }
+
+    _onSoundPresetKey(event) {
+        const order = SOUND_PRESETS;
+        const current = order.indexOf(event.target?.closest?.('[role="radio"]')?.dataset?.preset);
+        if (current < 0) return;
+        let next = null;
+        if (event.key === 'ArrowDown' || event.key === 'ArrowRight') next = (current + 1) % order.length;
+        else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') next = (current - 1 + order.length) % order.length;
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = order.length - 1;
+        if (next == null) return;
+        event.preventDefault();
+        const preset = order[next];
+        focusWithoutScroll(this._soundEls.radios[preset]);
+        this._chooseSoundPreset(preset);
+    }
+
+    _chooseSoundPreset(preset) {
+        if (!SOUND_PRESETS.includes(preset)) return;
+        writeSoundChipSeen();
+        this._renderSoundPresets(preset);
+        void this._withAudio(audio => audio.setPreset(preset, { fromUser: true }));
+    }
+
+    _onSoundSliderInput(input) {
+        const els = this._soundEls;
+        if (!els || input?.type !== 'range') return;
+        const step = Math.max(0, Math.min(SOUND_STEP_MAX, Math.round(Number(input.value) || 0)));
+        if (input === els.volume.input) {
+            setSliderStep(els.volume, step);
+            void this._withAudio(audio => audio.setVolumeStep(step));
+            return;
+        }
+        const slider = els.mixSliders.find(entry => entry.input === input);
+        if (!slider) return;
+        setSliderStep(slider, step);
+        const trims = channelTrimSteps(slider.channel, step);
+        void this._withAudio((audio) => {
+            for (const [name, trimStep] of Object.entries(trims)) audio.setLayerStep(name, trimStep);
+        });
+    }
+
+    _toggleHush() {
+        void this._withAudio((audio) => {
+            if (audio.soundView().soundState === 'hushed') audio.resumeFromHush();
+            else audio.hush(HUSH_DURATION_MS);
+        });
     }
 
     // Keep the thin topbar as the glance surface; its TODAY cell opens a
@@ -1000,7 +1256,7 @@ export class TopBar {
     _showSpendPanel() {
         if (this._destroyed || !this.els.rateWrap) return;
         this._closeSettings?.();
-        this._hideMixerPanel({ restoreFocus: false });
+        this._hideSoundPanel({ restoreFocus: false });
         this._ensureSpendPanel();
         this._renderSpendPanel();
         const panel = this._spendPanelEl;
@@ -1506,30 +1762,33 @@ export class TopBar {
         }
         this._spendPanelEl?.remove();
         this._spendPanelEl = null;
-        if (this._onMixerClick && this._mixerButtonEl) {
-            this._mixerButtonEl.removeEventListener('click', this._onMixerClick);
-            this._mixerButtonEl.removeEventListener('keydown', this._onMixerKeydown);
-            this._mixerButtonEl.removeEventListener('focusout', this._onMixerFocusOut);
+        if (this._soundEls) {
+            const { panel } = this._soundEls;
+            this.els.soundMenu?.removeEventListener('click', this._onSoundMenuClick);
+            this.els.soundMenu?.removeEventListener('keydown', this._onSoundMenuKeydown);
+            this.els.soundMenu?.removeEventListener('focusout', this._onSoundFocusOut);
+            panel.removeEventListener('keydown', this._onSoundPanelKeydown);
+            panel.removeEventListener('click', this._onSoundPanelClick);
+            panel.removeEventListener('input', this._onSoundPanelInput);
+            panel.removeEventListener('focusout', this._onSoundFocusOut);
+            panel.removeEventListener('pointerenter', this._onSoundPrewarm);
+            panel.removeEventListener('focusin', this._onSoundPrewarm);
+            document.removeEventListener('pointerdown', this._onSoundOutside);
+            window.removeEventListener('resize', this._onSoundResize);
+            panel.remove();
+            this._soundEls = null;
         }
-        if (this._onMixerPanelKeydown && this._mixerPanelEl) {
-            this._mixerPanelEl.removeEventListener('keydown', this._onMixerPanelKeydown);
-        }
-        if (this._onMixerFocusOut && this._mixerPanelEl) {
-            this._mixerPanelEl.removeEventListener('focusout', this._onMixerFocusOut);
-        }
-        if (this._onMixerOutside) document.removeEventListener('pointerdown', this._onMixerOutside);
-        if (this._onMixerResize) window.removeEventListener('resize', this._onMixerResize);
-        this._mixerButtonEl?.remove();
-        this._mixerPanelEl?.remove();
-        this._mixerButtonEl = null;
-        this._mixerPanelEl = null;
+        this.els.soundToggle?.removeEventListener('click', this._onSoundToggleClick);
+        this.els.soundGroup?.removeEventListener('pointerenter', this._onSoundPrewarm);
+        this.els.soundGroup?.removeEventListener('focusin', this._onSoundPrewarm);
+        document.removeEventListener('keydown', this._onSoundKey);
+        eventBus.off('audio:sound-state', this._onSoundState);
+        eventBus.off('sound:invite-accepted', this._onSoundInviteAccepted);
+        this._reducedMotionQuery?.removeEventListener?.('change', this._onReducedMotionChange);
+        this._reducedMotionQuery = null;
         this.chronicle?.destroy?.();
         this.chronicle = null;
         this._cancelAudioRoute();
-        if (this._onDeferredAudioClick) {
-            this.els.soundToggle?.removeEventListener('click', this._onDeferredAudioClick);
-            this._onDeferredAudioClick = null;
-        }
         this._audioOptions = null;
         document.body?.classList.remove('cv-offline', 'cv-reconnect-sweep');
         this._destroyPromise = Promise.resolve(this.audio?.destroy?.());

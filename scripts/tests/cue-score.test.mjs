@@ -13,7 +13,6 @@ import {
 import {
     sectionForCounts,
     updateWorkingSection,
-    workingSectionLabel,
 } from '../../claudeville/src/presentation/shared/audio/BgmDirector.js';
 
 test('a council cue carries one note per gathered member, capped at five', () => {
@@ -184,9 +183,4 @@ test('a count that flutters back never rewrites the arrangement', () => {
     assert.equal(state.applied, 'steady');
     state = updateWorkingSection(state, { counts: { working: 20 }, now: 7000 });
     assert.equal(state.applied, 'full');
-});
-
-test('the section label states exact counts', () => {
-    assert.equal(workingSectionLabel({ working: 7, waiting: 2 }), 'Working 7 · Waiting 2');
-    assert.equal(workingSectionLabel({}), 'Working 0 · Waiting 0');
 });

@@ -1,6 +1,6 @@
 {
   "note": "Reviewed baseline for scripts/audio/probe.mjs (virtual clock). Regenerate with `node scripts/audio/probe.mjs --update` after a reviewed audio change; the plan re-baselines at the end of Waves 1, 4 and 6.",
-  "generatedAt": "2026-09-26",
+  "generatedAt": "2026-09-27",
   "seed": 24301,
   "programTrimDb": 26.7,
   "standardVolumeStep": 6,
@@ -11,23 +11,23 @@
   },
   "summary": {
     "scene:anchor": {
-      "lufsI": -38.09,
-      "stMax": -34.45
+      "lufsI": -38.27,
+      "stMax": -34.57
     },
     "margin:village:needsYou": {
-      "margin": 11.8
+      "margin": 11.29
     },
     "margin:village:error": {
-      "margin": 9.78
+      "margin": 9.77
     },
     "margin:village:limit": {
-      "margin": 8.08
+      "margin": 8.06
     },
     "margin:village:routine": {
-      "margin": 5.02
+      "margin": 5.11
     },
     "margin:village:scenery": {
-      "margin": 4.31
+      "margin": 4.33
     },
     "margin:music:needsYou": {
       "margin": 9.73
@@ -45,54 +45,54 @@
       "margin": 4.22
     },
     "scene:villageBusy": {
-      "lufsI": -35.48,
-      "stMax": -29.6
+      "lufsI": -35.51,
+      "stMax": -29.59
     },
     "margin:rain:needsYou": {
-      "margin": 8.95
+      "margin": 9.1
     },
     "margin:rain:error": {
-      "margin": 8.84
+      "margin": 8.83
     },
     "margin:rain:limit": {
-      "margin": 6.71
+      "margin": 6.55
     },
     "margin:rain:routine": {
       "margin": 5.65
     },
     "margin:rain:scenery": {
-      "margin": 3.93
+      "margin": 3.9
     },
     "scene:townBand": {
       "lufsI": -31.28,
       "stMax": -27.61
     },
     "margin:storm:needsYou": {
-      "margin": 7.55
+      "margin": 7.61
     },
     "margin:storm:error": {
-      "margin": 7.9
+      "margin": 7.93
     },
     "margin:storm:limit": {
-      "margin": 6.37
+      "margin": 6.32
     },
     "margin:storm:routine": {
-      "margin": 5.71
+      "margin": 5.54
     },
     "margin:storm:scenery": {
       "margin": 3.72
     },
     "scene:rain": {
-      "lufsI": -37.78,
-      "stMax": -36.43
+      "lufsI": -37.84,
+      "stMax": -36.5
     },
     "scene:storm": {
       "lufsI": -33.01,
       "stMax": -30.21
     },
     "scene:resting": {
-      "lufsI": -47.27,
-      "stMax": -44.62
+      "lufsI": -47.39,
+      "stMax": -44.78
     },
     "margin:music:outcomeMinor": {
       "margin": -0.57
@@ -107,93 +107,93 @@
       "margin": 0.55
     },
     "margin:village:outcomeMedium": {
-      "margin": 5.16
+      "margin": 5.5
     },
     "margin:village:outcomeMajor": {
-      "margin": 6.86
+      "margin": 6.85
     },
     "margin:rain:outcomeMinor": {
-      "margin": 0.51
+      "margin": 0.39
     },
     "margin:rain:outcomeMedium": {
-      "margin": 5.46
+      "margin": 4.86
     },
     "margin:rain:outcomeMajor": {
       "margin": 6.65
     },
     "margin:storm:outcomeMinor": {
-      "margin": 0.23
+      "margin": 0.2
     },
     "margin:storm:outcomeMedium": {
-      "margin": 5.54
+      "margin": 4.34
     },
     "margin:storm:outcomeMajor": {
       "margin": 6.62
     },
     "scene:nightProgram": {
-      "lufsI": -36.58,
-      "stMax": -30.13
+      "lufsI": -36.59,
+      "stMax": -30.22
     },
     "map:dawn:clear:resting": {
-      "lufsI": -48.4
+      "lufsI": -48.43
     },
     "scene:noonProgram": {
-      "lufsI": -36.13,
-      "stMax": -31.95
+      "lufsI": -36.14,
+      "stMax": -31.12
     },
     "map:dawn:clear:w3": {
-      "lufsI": -38.61
+      "lufsI": -38.6
     },
     "map:dawn:clear:w12": {
-      "lufsI": -38.61
+      "lufsI": -38.6
     },
     "map:day:clear:resting": {
-      "lufsI": -47.27
+      "lufsI": -47.39
     },
     "map:day:clear:w3": {
-      "lufsI": -38.35
+      "lufsI": -38.34
     },
     "map:dawn:partly-cloudy:resting": {
-      "lufsI": -47.69
+      "lufsI": -47.77
     },
     "map:day:clear:w12": {
-      "lufsI": -38.35
+      "lufsI": -38.34
     },
     "map:dawn:partly-cloudy:w3": {
-      "lufsI": -37.98
+      "lufsI": -37.97
     },
     "map:dawn:partly-cloudy:w12": {
-      "lufsI": -37.98
+      "lufsI": -37.97
     },
     "map:day:partly-cloudy:resting": {
-      "lufsI": -46.21
+      "lufsI": -46.46
     },
     "map:day:partly-cloudy:w3": {
-      "lufsI": -37.41
+      "lufsI": -37.4
     },
     "map:dawn:overcast:resting": {
-      "lufsI": -47.23
+      "lufsI": -47.36
     },
     "map:day:partly-cloudy:w12": {
-      "lufsI": -37.41
+      "lufsI": -37.4
     },
     "map:dawn:overcast:w3": {
-      "lufsI": -37.63
+      "lufsI": -37.62
     },
     "map:dawn:overcast:w12": {
-      "lufsI": -37.63
+      "lufsI": -37.62
     },
     "map:day:overcast:resting": {
-      "lufsI": -45.65
+      "lufsI": -45.94
     },
     "map:day:overcast:w3": {
-      "lufsI": -37.01
+      "lufsI": -36.99
     },
     "map:dawn:rain:resting": {
-      "lufsI": -49.17
+      "lufsI": -49.22
     },
     "map:day:overcast:w12": {
-      "lufsI": -37.01
+      "lufsI": -36.99
     },
     "map:dawn:rain:w3": {
       "lufsI": -38.72
@@ -202,34 +202,34 @@
       "lufsI": -38.72
     },
     "map:day:rain:resting": {
-      "lufsI": -48.93
+      "lufsI": -49.06
     },
     "map:day:rain:w3": {
       "lufsI": -38.52
     },
     "map:dawn:fog:resting": {
-      "lufsI": -48.22
+      "lufsI": -48.31
     },
     "map:day:rain:w12": {
       "lufsI": -38.52
     },
     "map:dawn:fog:w3": {
-      "lufsI": -38.36
+      "lufsI": -38.34
     },
     "map:dawn:fog:w12": {
-      "lufsI": -38.36
+      "lufsI": -38.34
     },
     "map:day:fog:resting": {
-      "lufsI": -46.87
+      "lufsI": -47.14
     },
     "map:day:fog:w3": {
-      "lufsI": -37.91
+      "lufsI": -37.89
     },
     "map:dawn:storm:resting": {
-      "lufsI": -47.09
+      "lufsI": -47.08
     },
     "map:day:fog:w12": {
-      "lufsI": -37.91
+      "lufsI": -37.89
     },
     "map:dawn:storm:w3": {
       "lufsI": -33.42
@@ -241,109 +241,109 @@
       "lufsI": -47.15
     },
     "map:day:storm:w3": {
-      "lufsI": -33.47
+      "lufsI": -33.46
     },
     "map:dusk:clear:resting": {
-      "lufsI": -48.06
+      "lufsI": -48.12
     },
     "map:day:storm:w12": {
-      "lufsI": -33.47
+      "lufsI": -33.46
     },
     "map:dusk:clear:w3": {
-      "lufsI": -39.1
+      "lufsI": -39.08
     },
     "map:night:clear:resting": {
-      "lufsI": -47.69
+      "lufsI": -47.68
     },
     "map:dusk:clear:w12": {
-      "lufsI": -39.1
+      "lufsI": -39.08
     },
     "map:night:clear:w3": {
-      "lufsI": -39.66
+      "lufsI": -39.64
     },
     "map:dusk:partly-cloudy:resting": {
-      "lufsI": -47.27
+      "lufsI": -47.39
     },
     "map:night:clear:w12": {
-      "lufsI": -39.66
+      "lufsI": -39.64
     },
     "map:dusk:partly-cloudy:w3": {
-      "lufsI": -38.27
+      "lufsI": -38.26
     },
     "map:dusk:partly-cloudy:w12": {
-      "lufsI": -38.27
+      "lufsI": -38.26
     },
     "map:night:partly-cloudy:resting": {
       "lufsI": -47.47
     },
     "map:night:partly-cloudy:w3": {
-      "lufsI": -39.36
+      "lufsI": -39.34
     },
     "map:dusk:overcast:resting": {
-      "lufsI": -46.79
+      "lufsI": -46.97
     },
     "map:night:partly-cloudy:w12": {
-      "lufsI": -39.36
+      "lufsI": -39.34
     },
     "map:dusk:overcast:w3": {
-      "lufsI": -37.88
+      "lufsI": -37.87
     },
     "map:dusk:overcast:w12": {
-      "lufsI": -37.88
+      "lufsI": -37.87
     },
     "map:night:overcast:resting": {
-      "lufsI": -47.15
+      "lufsI": -47.16
     },
     "map:night:overcast:w3": {
-      "lufsI": -38.97
+      "lufsI": -38.96
     },
     "map:dusk:rain:resting": {
-      "lufsI": -49.75
+      "lufsI": -49.83
     },
     "map:night:overcast:w12": {
-      "lufsI": -38.97
+      "lufsI": -38.96
     },
     "map:dusk:rain:w3": {
-      "lufsI": -38.68
+      "lufsI": -38.67
     },
     "map:dusk:rain:w12": {
-      "lufsI": -38.68
+      "lufsI": -38.67
     },
     "map:night:rain:resting": {
-      "lufsI": -50.12
+      "lufsI": -50.13
     },
     "map:night:rain:w3": {
-      "lufsI": -39.18
+      "lufsI": -39.17
     },
     "map:dusk:fog:resting": {
-      "lufsI": -47.84
+      "lufsI": -47.99
     },
     "map:night:rain:w12": {
-      "lufsI": -39.18
+      "lufsI": -39.17
     },
     "map:dusk:fog:w3": {
-      "lufsI": -38.8
+      "lufsI": -38.79
     },
     "map:dusk:fog:w12": {
-      "lufsI": -38.8
+      "lufsI": -38.79
     },
     "map:night:fog:resting": {
-      "lufsI": -47.64
+      "lufsI": -47.65
     },
     "map:night:fog:w3": {
-      "lufsI": -39.56
+      "lufsI": -39.55
     },
     "map:dusk:storm:resting": {
-      "lufsI": -47.23
+      "lufsI": -47.22
     },
     "map:night:fog:w12": {
-      "lufsI": -39.56
+      "lufsI": -39.55
     },
     "map:dusk:storm:w3": {
-      "lufsI": -33.54
+      "lufsI": -33.53
     },
     "map:dusk:storm:w12": {
-      "lufsI": -33.54
+      "lufsI": -33.53
     },
     "map:night:storm:resting": {
       "lufsI": -46.73
@@ -355,31 +355,31 @@
       "lufsI": -33.31
     },
     "thunder:0.9": {
-      "margin": 6.14
+      "margin": 6.1
     },
     "thunder:0.3": {
-      "margin": 2.8
+      "margin": 2.76
     },
     "thunder:0.7": {
-      "margin": 5.66
+      "margin": 5.6
     },
     "thunder:0.5": {
-      "margin": 4.33
+      "margin": 4.27
     },
     "thunder:1": {
       "margin": 6.35
     },
     "thunder:0.6": {
-      "margin": 5.36
+      "margin": 5.37
     },
     "sea:day": {
-      "lufsI": -42.77
+      "lufsI": -42.76
     },
     "work:reference:day": {
-      "lufsI": -51.41
+      "lufsI": -52.05
     },
     "work:other:day": {
-      "lufsI": -52.54
+      "lufsI": -53.49
     }
   }
 }

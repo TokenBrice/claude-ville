@@ -1,5 +1,6 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { CAPTION_SETTINGS, readCaptionSetting, readStoredSoundEnabled } from './SoundSettings.js';
+import { INVITE_MAX_SHOW_MS, SOUND_INVITE_COPY, SoundInvite } from './SoundInvite.js';
 
 const MAX_TOASTS = 5;
 const AUTO_DISMISS_MS = 3000;
@@ -9,6 +10,8 @@ const PRIMARY_CUE_DISMISS_MS = 8000;
 // A digest summarises a whole absence, so it needs longer than any single cue.
 const DIGEST_DISMISS_MS = 12000;
 const CUE_CONTEXT_MAX_AGE_MS = 1500;
+// A sound status (the M key) is a glance, not news.
+const SOUND_STATUS_DISMISS_MS = 1500;
 const ATTENTION_NOTICE_GRACE_MS = 1500;
 const PRIMARY_CUES = new Set(['distress', 'limit', 'summons', 'reminder']);
 // The cues a direct attention notice for the same agent folds into.
@@ -302,11 +305,16 @@ export class Toast {
         eventTarget = eventBus,
         documentRef = globalThis.document,
         storage = globalThis.window?.localStorage,
+        invite = new SoundInvite({ storage }),
+        uptimeMs = () => globalThis.performance?.now?.() ?? 0,
     } = {}) {
         this.documentRef = documentRef;
         // The caption setting and the sound switch are read per cue, so a SET
         // change applies to the next caption with no event of its own.
         this._storage = storage;
+        // 7.5: the one-time offer of Signals rides the first eligible notice.
+        this._invite = invite;
+        this._uptimeMs = uptimeMs;
         this.container = documentRef?.getElementById?.('toastContainer') || null;
         this.toasts = [];
         this._destroyed = false;
@@ -348,6 +356,10 @@ export class Toast {
         on('audio:recalibrated', (payload) => {
             this.showNotice(payload?.message);
         });
+        // UX-9: the M key says what it did ("Sound off", "Sound on · Village").
+        on('sound:status', (payload) => {
+            this.showStatus(payload?.message);
+        });
         on('chronicle:read-failed', payload => {
             this.show(payload?.message || 'Could not load the Chronicle day.', 'warning');
         });
@@ -384,9 +396,10 @@ export class Toast {
             .find(entry => entry.attentionAgentId === agentId && entry.attentionEventKey === eventKey);
         if (existing) {
             this._preferMessage(existing, message);
+            this._offerInvite(existing, payload);
             return existing;
         }
-        return this._show(message, 'warning', {
+        const entry = this._show(message, 'warning', {
             dismissMs: PRIMARY_CUE_DISMISS_MS,
             cueKey: `attention:${eventKey}`,
             cueKind: 'attention',
@@ -395,6 +408,106 @@ export class Toast {
             attentionEventKey: eventKey,
             attentionExpectedMessages: [message],
         });
+        this._offerInvite(entry, payload);
+        return entry;
+    }
+
+    // 7.5: sound off, the page open ≥ 2 min and visible, never invited → the
+    // notice gains a second line and two buttons. It waits for an answer (at
+    // most INVITE_MAX_SHOW_MS). Accepting is announced synchronously inside
+    // the click, so the listener that turns on Signals has the user's gesture.
+    _offerInvite(entry, payload) {
+        if (!entry || entry.invite || !this._invite) return;
+        const doc = this.documentRef;
+        const visible = doc?.visibilityState ? doc.visibilityState === 'visible' : doc?.hidden !== true;
+        const trigger = this._invite.offer(payload, {
+            soundOn: readStoredSoundEnabled(this._storage),
+            visible,
+            uptimeMs: this._uptimeMs(),
+        });
+        if (!trigger) return;
+
+        const prompt = this._addLine(entry, SOUND_INVITE_COPY.prompt);
+        const actions = doc.createElement('span');
+        actions.className = 'toast__actions';
+        const button = (label, event, detail) => {
+            const el = doc.createElement('button');
+            el.type = 'button';
+            el.className = 'toast__action';
+            el.textContent = label;
+            el.addEventListener('click', () => {
+                if (!entry.invite) return;
+                this._closeInvite(entry);
+                this._eventTarget?.emit?.(event, detail);
+            });
+            return el;
+        };
+        actions.append(
+            button(SOUND_INVITE_COPY.accept, 'sound:invite-accepted', trigger),
+            button(SOUND_INVITE_COPY.decline, 'sound:invite-declined', { agentId: trigger.agentId }),
+        );
+        entry.el.classList.add('toast--invite');
+        entry.el.append(actions);
+        entry.invite = { prompt, actions };
+        this._restartDismissTimer(entry, INVITE_MAX_SHOW_MS);
+    }
+
+    // Answered: the notice stays a plain notice for its usual time.
+    _closeInvite(entry) {
+        if (!entry?.invite) return;
+        entry.invite.prompt.remove();
+        entry.invite.actions.remove();
+        entry.invite = null;
+        entry.el.classList.remove('toast--invite');
+        this._restartDismissTimer(entry, PRIMARY_CUE_DISMISS_MS);
+    }
+
+    // A notice's text becomes its own span once the notice gains more lines
+    // (the invite, a family line), so later text updates keep them.
+    _wrapText(entry) {
+        if (entry.textEl !== entry.el) return;
+        const text = this.documentRef.createElement('span');
+        text.className = 'toast__text';
+        text.textContent = entry.el.textContent;
+        entry.el.textContent = '';
+        entry.el.removeAttribute('aria-label');
+        entry.el.appendChild(text);
+        entry.textEl = text;
+    }
+
+    _addLine(entry, text) {
+        this._wrapText(entry);
+        const line = this.documentRef.createElement('span');
+        line.className = 'toast__line';
+        line.textContent = text;
+        entry.el.appendChild(line);
+        return line;
+    }
+
+    // The visible text of an entry. A multi-line notice is read whole, so it
+    // carries no aria-label.
+    _setText(entry, text, ariaLabel = text) {
+        entry.textEl.textContent = text;
+        if (entry.textEl === entry.el) entry.el.setAttribute('aria-label', ariaLabel);
+    }
+
+    // 7.4: the first real urgent cue after an enable says once what its
+    // family means, as a second line of whichever notice carries the cue.
+    _addFamilyLine(entry, payload) {
+        const line = cleanLabel(payload?.familyLine);
+        if (!entry || !line || entry.familyLine) return entry;
+        entry.familyLine = this._addLine(entry, line);
+        return entry;
+    }
+
+    // UX-9: a brief sound status (the M key). Polite, not an alert, not a cue
+    // caption; a newer status replaces the one still up.
+    showStatus(message) {
+        if (this._destroyed || !this.container) return;
+        const text = cleanLabel(message);
+        if (!text) return;
+        for (const entry of this.toasts.filter(entry => entry.status)) this._remove(entry);
+        return this._show(text, 'info', { dismissMs: SOUND_STATUS_DISMISS_MS, status: true });
     }
 
     showDigest(payload) {
@@ -449,7 +562,7 @@ export class Toast {
                 .reverse()
                 .find(entry => entry.attentionAgentId === agentId && entry.attentionAt
                     && Date.now() - entry.attentionAt <= ATTENTION_NOTICE_GRACE_MS);
-            if (attention) return attention;
+            if (attention) return this._addFamilyLine(attention, payload);
         }
         if (SUPERSEDING_CUES.has(kind)) {
             for (const entry of this.toasts.filter(entry => entry.cueKind === kind)) this._remove(entry);
@@ -462,10 +575,9 @@ export class Toast {
 
         if (duplicate) {
             duplicate.count += 1;
-            duplicate.el.textContent = `${duplicate.message} ×${duplicate.count}`;
-            duplicate.el.setAttribute('aria-label', `${duplicate.message}, repeated ${duplicate.count} times`);
+            this._setText(duplicate, `${duplicate.message} ×${duplicate.count}`, `${duplicate.message}, repeated ${duplicate.count} times`);
             this._restartDismissTimer(duplicate, dismissMs);
-            return duplicate;
+            return this._addFamilyLine(duplicate, payload);
         }
 
         const visibleCues = this.toasts.filter(entry => entry.cueKey);
@@ -478,13 +590,13 @@ export class Toast {
         }
 
         const type = CUE_TYPES[kind] || 'info';
-        return this._show(message, type, {
+        return this._addFamilyLine(this._show(message, type, {
             dismissMs,
             cueKey: key,
             cueKind: kind,
             primary: isPrimary,
             agentId,
-        });
+        }), payload);
     }
 
     // A ceremony supersedes the routine caption of its own parts: the parts'
@@ -537,8 +649,7 @@ export class Toast {
         if (!entry || !next || entry.message === next) return;
         if (attentionMessageSpecificity(next) < attentionMessageSpecificity(entry.message)) return;
         entry.message = next;
-        entry.el.textContent = next;
-        entry.el.setAttribute('aria-label', next);
+        this._setText(entry, next);
     }
 
     _show(message, type, {
@@ -550,6 +661,7 @@ export class Toast {
         attentionAgentId = '',
         attentionEventKey = '',
         attentionExpectedMessages = [],
+        status = false,
     }) {
         if (!this._makeRoom(primary)) return;
 
@@ -558,6 +670,7 @@ export class Toast {
         el.className = `toast toast--${type}`;
         el.textContent = message;
         if (type === 'error' || primary) el.setAttribute('role', 'alert');
+        else if (status) el.setAttribute('role', 'status');
         if (cueKind) {
             el.classList.add('toast--cue');
             el.dataset.cueKind = cueKind;
@@ -576,6 +689,10 @@ export class Toast {
             attentionEventKey,
             attentionAt: attentionAgentId || attentionEventKey ? Date.now() : 0,
             attentionExpectedMessages: new Set(attentionExpectedMessages),
+            textEl: el,
+            invite: null,
+            familyLine: null,
+            status,
             dismissTimer: null,
             removalTimer: null,
         };

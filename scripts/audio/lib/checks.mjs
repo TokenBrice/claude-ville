@@ -41,7 +41,7 @@ export function energyMeanLufs(values) {
 // plan is measured and printed as DEFER (never a failure) until PLAN_STAGE
 // reaches its wave; bump PLAN_STAGE at each wave's exit. Keys not listed are
 // gated now.
-export const PLAN_STAGE = 6;
+export const PLAN_STAGE = 7;
 export const GATED_FROM = Object.freeze({});
 
 export function gatedFrom(key, table = GATED_FROM) {
@@ -1616,3 +1616,24 @@ export function judgeDuty(share, regime, bands = D1_DUTY) {
     const [lo, hi] = bands[regime];
     return { share, band: [lo, hi], pass: finite(share) && share >= lo - 1e-9 && share <= hi + 1e-9 };
 }
+
+// ------------------------------------------------------------- Wave 7 ----
+// 7.2 Signals: between cues the program stays under the floor, in a busy
+// sim with or without an open wait; the needs-you call stands ≥ 20 dB over
+// the loudest floor window; an arrival captions without raising the floor.
+// 7.4 the awakening: its first onset ≤ 150 ms after the click (realtime,
+// the worklet load included); the program's short-term within 3 dB of steady
+// 4 s after the enable; its M max ≤ the needs-you call's − 12 LU; once per
+// page session. 7.7: Mono's fold compensation within 0.5 LU of Speakers;
+// Headphones' world bed ICC ≥ 0.4; tone ±1 → ±4 dB (± 1) above the 3 kHz
+// shelf and ≤ 0.5 dB under it; Soften: struck-bell attacks ≥ 22 ms (a 25 ms
+// ramp reads 24–25 ms, the 12 ms default ≤ 13), a slower thunder attack (≥ 200 ms),
+// non-needs-you ducks at 0.7 × their depth (± 0.05), the needs-you call whole
+// (M max within 0.2 LU).
+export const WAVE7_LIMITS = Object.freeze({
+    signalsFloorDbfs: -80, callOverFloorDb: 20,
+    awakenOnsetMs: 150, awakenStWithinDb: 3, awakenStAtSec: 4, awakenUnderCallLu: 12,
+    monoCompLu: 0.5, headphonesIccMin: 0.4,
+    toneShelfDb: 4, toneTolDb: 1, toneLowTolDb: 0.5,
+    softBellAttackMinMs: 22, softThunderAttackMinMs: 200, softDuckScale: 0.7, softDuckTol: 0.05, callWholeLu: 0.2,
+});

@@ -169,10 +169,10 @@
     border: 0;
 }
 
-/* ── Popovers anchored to the bar: connection, spend map, mixer ── */
+/* ── Popovers anchored to the bar: connection, spend map, sound ── */
 .topbar__connection-panel,
 .topbar__spend-panel,
-.topbar__mixer-panel {
+.topbar__sound-panel {
     position: fixed;
     z-index: 1200;
     padding: 12px;
@@ -198,21 +198,33 @@
     width: 500px;
 }
 
-.topbar__mixer-panel {
-    display: none;
+/* The SOUND popover (7.1): right-anchored under its chevron, so it never
+   covers the NEEDS YOU slot. Closed = `hidden`. */
+.topbar__sound-panel {
+    display: grid;
+    gap: 8px;
     width: 308px;
 }
 
+.topbar__sound-panel[hidden] {
+    display: none;
+}
+
 .topbar__spend-heading,
-.topbar__mixer-heading {
+.topbar__sound-heading,
+.topbar__sound-subheading {
     margin-bottom: 4px;
     color: var(--ink-1);
     font: var(--fs-label)/var(--lh-label) var(--font-display);
     letter-spacing: 1px;
 }
 
-.topbar__spend-note,
-.topbar__mixer-note {
+.topbar__sound-subheading {
+    margin-bottom: 0;
+    color: var(--ink-3);
+}
+
+.topbar__spend-note {
     margin-bottom: 8px;
     color: var(--ink-3);
 }
@@ -286,13 +298,63 @@
     text-align: right;
 }
 
-.topbar__mixer-rows {
+/* Presets: a real radiogroup, one 16 px-grid row each — the name on ink-1,
+   what it plays on ink-3. */
+.topbar__sound-presets {
+    display: grid;
     border-top: 1px solid var(--line-1);
 }
 
-.topbar__mixer-row {
+.topbar__sound-preset {
     display: grid;
-    grid-template-columns: 88px 1fr 7ch;
+    gap: 0;
+    padding: 4px 8px;
+    color: var(--ink-3);
+    text-align: left;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--line-1);
+    cursor: pointer;
+}
+
+.topbar__sound-preset:hover {
+    background: var(--bg-3);
+}
+
+.topbar__sound-preset[aria-checked="true"] {
+    background: var(--bg-3);
+    box-shadow: inset 2px 0 0 var(--gold);
+}
+
+.topbar__sound-preset-name {
+    color: var(--ink-1);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+}
+
+.topbar__sound-preset[aria-checked="true"] .topbar__sound-preset-name {
+    color: var(--gold-hi);
+}
+
+.topbar__sound-preset-detail {
+    color: var(--ink-3);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+}
+
+.topbar__sound-mix {
+    display: grid;
+}
+
+.topbar__sound-mix[hidden],
+.topbar__sound-row[hidden],
+.topbar__sound-action[hidden],
+.topbar__sound-note[hidden] {
+    display: none;
+}
+
+.topbar__sound-row {
+    display: grid;
+    grid-template-columns: 104px 1fr 7ch;
     gap: 8px;
     align-items: center;
     min-height: 32px;
@@ -301,16 +363,44 @@
     font: var(--fs-label)/var(--lh-label) var(--font-display);
 }
 
-.topbar__mixer-row .topbar__sound-vol {
-    width: 100%;
-}
-
-.topbar__mixer-value {
+.topbar__sound-value {
     color: var(--ink-3);
     text-align: right;
     white-space: nowrap;
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     font-variant-numeric: tabular-nums;
+}
+
+/* What is sounding and why: a status line, written only while open. */
+.topbar__sound-now {
+    min-height: 16px;
+    color: var(--ink-2);
+}
+
+.topbar__sound-note {
+    color: var(--ink-3);
+}
+
+.topbar__sound-label {
+    color: var(--ink-2);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+}
+
+.topbar__sound-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+}
+
+.topbar__sound-panel .topbar__sound-action {
+    box-shadow: inset 0 0 0 1px var(--line-2);
+}
+
+.topbar__sound-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 8px;
+    border-top: 1px solid var(--line-1);
 }
 
 /* ── Connection-loss chrome (#48) ──
@@ -525,9 +615,8 @@
     flex-shrink: 0;
 }
 
-/* Text chips (MIX, the music-mode toggle) and the icon buttons share one
-   ghost treatment: no plate at rest, --bg-2 on hover, --bg-3 + gold glyph
-   while engaged. */
+/* Text chips and the icon buttons share one ghost treatment: no plate at
+   rest, --bg-2 on hover, --bg-3 + gold glyph while engaged. */
 .topbar__sound-btn,
 .topbar__cinema-btn {
     height: 28px;
@@ -567,14 +656,55 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     color: var(--ink-4);
 }
 
-/* Armed: sound is on, but the browser has not started it yet — it waits for
-   a click. One ink step brighter than off, with a hollow gold pip; static. */
-#topbarSoundToggle[data-sound-state="armed"] {
+/* The sound group (7.1): the note and its chevron, a constant 44 px in every
+   sound state, so turning sound on moves nothing in the bar. */
+.topbar__sound {
+    display: inline-flex;
+    flex: none;
+    width: 44px;
+}
+
+.topbar__sound-caret {
+    display: inline-grid;
+    place-items: center;
+    width: 16px;
+    padding: 0;
+}
+
+.topbar__sound-caret svg {
+    display: block;
+    width: 8px;
+    height: 8px;
+    shape-rendering: crispEdges;
+}
+
+.topbar__sound-caret[aria-expanded="true"] {
+    color: var(--gold-hi);
+    background: var(--bg-3);
+}
+
+/* The chip's five static states (7.3, `data-sound-state`); no animation.
+   Off rests at --ink-3; armed (on, but the browser waits for a click) one
+   step brighter with a hollow gold pip; playing lit; resting gold on the
+   quieter plate; hushed (signals only for now) with a filled pip. */
+#topbarSoundToggle[data-sound-state="armed"],
+#topbarSoundToggle[data-sound-state="hushed"] {
     position: relative;
     color: var(--ink-1);
 }
 
-#topbarSoundToggle[data-sound-state="armed"]::after {
+#topbarSoundToggle[data-sound-state="playing"] {
+    color: var(--gold-hi);
+    background: var(--bg-3);
+}
+
+#topbarSoundToggle[data-sound-state="resting"] {
+    color: var(--gold);
+    background: var(--bg-2);
+}
+
+#topbarSoundToggle[data-sound-state="armed"]::after,
+#topbarSoundToggle[data-sound-state="hushed"]::after {
     content: '';
     position: absolute;
     right: 4px;
@@ -583,6 +713,10 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     width: 3px;
     height: 3px;
     border: 1px solid var(--gold);
+}
+
+#topbarSoundToggle[data-sound-state="hushed"]::after {
+    background: var(--gold);
 }
 
 .topbar__icon-btn {
@@ -612,18 +746,9 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
         linear-gradient(currentColor, currentColor) 4px 11px / 3px 5px no-repeat;
 }
 
-/* 5.3 — the working section beside the music control. A static count readout,
-   never a level meter: the music follows these numbers, it never replaces
-   them. */
-.topbar__sound-section {
-    padding: 0 4px;
-    color: var(--ink-3);
-    white-space: nowrap;
-}
-
-/* Volume slider (steps 0–10) — visible only while sound is on. */
+/* Level sliders (steps 0–10) in the SOUND popover. */
 .topbar__sound-vol {
-    width: 72px;
+    width: 100%;
     height: 4px;
     appearance: none;
     -webkit-appearance: none;

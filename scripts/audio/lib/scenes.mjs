@@ -1034,3 +1034,75 @@ export function rainSwitchScene() {
         actions: [...f.actions, { at: RAIN_SWITCH_AT, atmosphere: RAIN, label: 'rain' }], musicProbe: {},
     };
 }
+
+// ================================================================ Wave 7 ====
+
+// 7.2 Signals: the busy stretch (arrivals, a needs-you answered at 70 s, an
+// error that recovers, a limit, a departure) in the Signals preset, captions
+// at the default setting; `openWait` keeps the needs-you open to the end (the
+// ladder's L2 rings at 2 min; no held note in Signals).
+export const SIGNALS_ANSWER_AT = 70;
+export function signalsScene({ openWait: keepOpen = false } = {}) {
+    const actions = busyActions().filter(a => !(keepOpen && a.at === SIGNALS_ANSWER_AT && a.status?.index === 0));
+    return { mode: 'signals', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 180, actions, stems: ['cue'], captions: ['auto'] };
+}
+
+// 7.4: the first enable of a page session in Village (no ledger: the
+// first-ever enable, so the welcome follows), recorded from the enable; a
+// needs-you at 26 s for the awakening's level; Off at 33 s and Village again
+// at 35 s — the same page session, so no second awakening.
+export const AWAKEN = Object.freeze({ steadyFrom: 10, steadyTo: 25, needsYouAt: 26, offAt: 33, onAt: 35, stAtSec: 4 });
+export const AWAKEN_SCENE = {
+    // 10:15, off the hour: no hour bell at the enable (D7) over the awakening.
+    mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: { ...DAY, hour: 10.25 }, warmup: 0, seconds: 40, stems: ['cue', 'music'], musicProbe: {},
+    actions: [
+        ...laneActions('needsYou', AWAKEN.needsYouAt, 0),
+        { at: AWAKEN.offAt, preset: 'off' },
+        { at: AWAKEN.onAt, preset: 'village' },
+    ],
+};
+
+// 7.7 output, tone and soften, through the stored settings the controller
+// applies at the enable (`claudeville.sound.output|tone|soften`).
+// `outputScene`: the Village with no music and no work stratum, cue-free —
+// the program is the world bed (Headphones' ICC, Mono's fold).
+// `outputBusyScene`: the same bed with an arrival and a needs-you (Mono's
+// loudness with cues). `toneScene`: the world bed in Village or the Town
+// band's music, cue-free, for the ±4 dB shelf at 3 kHz.
+export function listeningStorage({ output, tone, soften } = {}) {
+    return {
+        ...(output != null ? { 'claudeville.sound.output': output } : {}),
+        ...(tone != null ? { 'claudeville.sound.tone': String(tone) } : {}),
+        ...(soften != null ? { 'claudeville.sound.soften': soften } : {}),
+    };
+}
+export function outputScene(listening = {}) {
+    return { mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: DAY, layerSteps: { hum: 0 }, force: { music: 0 }, warmup: 10, seconds: 30, stems: [], storage: listeningStorage(listening) };
+}
+export function outputBusyScene(listening = {}) {
+    return {
+        ...outputScene(listening), layerSteps: {},
+        actions: [{ at: 6, emit: 'village:scene', payload: { kind: 'arrival' }, agentIndex: 1, label: 'arrival', lane: 'routine' }, ...laneActions('needsYou', 16, 0)],
+    };
+}
+export function toneScene(bed, tone) {
+    if (bed === 'music') return { mode: 'bgm', world: { counts: { working: 4, idle: 1 } }, atmosphere: DAY, bgm: { piece: 'willowbrook' }, warmup: 6, seconds: 30, stems: [], storage: listeningStorage({ tone }) };
+    return outputScene({ tone });
+}
+
+// 7.7 soften: a storm Village (no music) with an arrival (a struck bell), a
+// full-intensity flash (thunder), a needs-you (stays whole) and an error,
+// rendered with Soften on and off.
+export const SOFTEN = Object.freeze({ arrivalAt: 4, flashAt: 10, needsYouAt: 22, errorAt: 32 });
+export function softenScene(soften) {
+    return {
+        mode: 'ambient', world: { counts: { working: 4, idle: 1 } }, atmosphere: STORM, force: { music: 0 }, warmup: 10, seconds: 42,
+        stems: ['cue'], storage: listeningStorage({ soften: soften ? 'on' : 'off' }),
+        actions: [
+            { at: SOFTEN.arrivalAt, emit: 'village:scene', payload: { kind: 'arrival' }, agentIndex: 3, label: 'arrival', lane: 'routine' },
+            { at: SOFTEN.flashAt, emit: 'weather:storm-flash', payload: { intensity: 1 }, label: 'storm-flash 1' },
+            ...laneActions('needsYou', SOFTEN.needsYouAt, 0),
+            ...laneActions('error', SOFTEN.errorAt, 1),
+        ],
+    };
+}

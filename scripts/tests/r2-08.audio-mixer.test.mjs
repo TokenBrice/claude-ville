@@ -9,7 +9,6 @@ import {
 } from '../../claudeville/src/presentation/shared/SoundSettings.js';
 import { AUDIO_GROUPS, AudioEngine } from '../../claudeville/src/presentation/shared/audio/AudioEngine.js';
 import { STANDARD_VOLUME_STEP, trimStepGain } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
-import { TopBar } from '../../claudeville/src/presentation/shared/TopBar.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 
 const CALIBRATED = { 'claudeville.sound.calibration': '2' };
@@ -31,8 +30,8 @@ function mixerHarness(storage = memoryStorage(CALIBRATED)) {
         background: 'play',
         mode: 'ambient',
         layerSteps: readStoredTrimSteps(storage),
-        layerControls: {},
         engine: new AudioEngine(),
+        _publishView() {},
     });
     return controller;
 }
@@ -197,11 +196,12 @@ test('a legacy profile loads once at the standard step, captions once, then keep
             assert.equal(first.volumeStep, STANDARD_VOLUME_STEP);
             assert.deepEqual(first.layerSteps, { ...AUDIO_MIXER_DEFAULTS });
             assert.equal(first.engine.volumeStep, STANDARD_VOLUME_STEP);
-            assert.equal(storage.getItem('claudeville.sound.volume'), String(STANDARD_VOLUME_STEP));
+            assert.equal(JSON.parse(storage.getItem('claudeville.sound.volumes')).bgm, STANDARD_VOLUME_STEP);
             assert.equal(storage.getItem('claudeville.sound.calibration'), '2');
             assert.equal(first.mode, 'bgm', 'only levels are recalibrated');
             assert.deepEqual(captions.payloads, [{ message: SOUND_RECALIBRATED_MESSAGE }]);
 
+            // The Town band's own step (7.8).
             first.setVolumeStep(3);
             first.setLayerStep('wind', 4);
             await first.destroy();
@@ -233,14 +233,13 @@ test('a fresh profile is marked calibrated without a recalibration caption', asy
     }
 });
 
-test('one shared governor: an agent summoned before a mode switch is not summoned again after it', async () => {
+test('one shared governor: an agent summoned by one director is not summoned again by the other', async () => {
     const storage = memoryStorage(CALIBRATED);
     const played = collect('audio:cue-played');
     try {
         await withWindow(browserWindow(storage), async () => {
             const controller = new AmbientAudioController();
             assert.equal(controller.directors.ambient.cue('summons', { agentId: 'ada' }), true);
-            controller.setMode('bgm');
             // The town band's player needs a live AudioContext; marking the
             // director playing reaches the cue route it uses while it plays.
             const bgm = controller.directors.bgm;
@@ -262,9 +261,18 @@ function crossfadeHarness() {
     const log = [];
     const director = (id) => ({
         running: false,
+        paused: false,
+        profile: 'village',
         start() { this.running = true; log.push(`${id}:start`); },
         stop() { this.running = false; log.push(`${id}:stop`); },
         setSignalRouting(on) { this.signals = on; },
+        setQuietMix() {},
+        setProfile(profile) {
+            if (profile === this.profile) return false;
+            this.profile = profile;
+            log.push(`${id}:${profile}`);
+            return true;
+        },
     });
     const controller = Object.create(AmbientAudioController.prototype);
     Object.assign(controller, {
@@ -272,14 +280,23 @@ function crossfadeHarness() {
         _windowBlurred: false,
         _quietMix: { active: false, preset: null, factors: {} },
         _crossfadeStops: new Map(),
+        _profileTimer: null,
+        _playingMode: 'ambient',
+        _quietActive: false,
+        hushedUntil: 0,
+        available: true,
         background: 'play',
         enabled: true,
         mode: 'ambient',
-        layerControls: {},
+        volumeStep: STANDARD_VOLUME_STEP,
         layerSteps: { ...AUDIO_MIXER_DEFAULTS },
         directors: { ambient: director('ambient'), bgm: director('bgm') },
         engine: {
+            context: { state: 'running' },
             now: () => 0,
+            setVolumeStep() {},
+            setGroupLevel() {},
+            setBedCompensation() {},
             // A 10 ms fade keeps the test fast; the controller waits for the
             // end time the engine reports, whatever the duration.
             fadeDirector: (id, to, { duration }) => {
@@ -287,22 +304,24 @@ function crossfadeHarness() {
                 return 0.01;
             },
         },
+        _publishView() {},
+        _emitBellState() {},
     });
     controller.directors.ambient.running = true;
     return { controller, log };
 }
 
-test('a mode switch crossfades, and switching back before the fade ends keeps the returning director', async () => {
+test('a preset switch crossfades, and switching back before the fade ends keeps the returning director', async () => {
     const { controller, log } = crossfadeHarness();
     const { ambient, bgm } = controller.directors;
 
-    controller.setMode('bgm');
+    controller.setPreset('townBand');
     assert.deepEqual(log, ['bgm->0@0', 'bgm:start', 'bgm->1@2.5', 'ambient->0@2.5']);
     assert.equal(ambient.running, true, 'the outgoing director plays through the fade');
     assert.equal(ambient.signals, false, 'the town band owns the signals from the switch');
 
     log.length = 0;
-    controller.setMode('ambient');
+    controller.setPreset('village');
     assert.deepEqual(log, ['ambient->1@2.5', 'bgm->0@2.5'], 'a fading director turns around, never restarts');
 
     await new Promise(resolve => setTimeout(resolve, 120));
@@ -312,36 +331,75 @@ test('a mode switch crossfades, and switching back before the fade ends keeps th
     assert.equal(ambient.signals, true);
 });
 
-test('a click on an armed control starts sound; only a playing control turns it off', () => {
+test('Signals and a hush fade the island out before its layers go, and back in on return', async () => {
+    const { controller, log } = crossfadeHarness();
+    const { ambient } = controller.directors;
+
+    controller.setPreset('signals');
+    assert.deepEqual(log, ['ambient->0@0.8'], 'the Village plays on through its fade');
+    assert.equal(ambient.profile, 'village');
+    await new Promise(resolve => setTimeout(resolve, 120));
+    assert.deepEqual(log, ['ambient->0@0.8', 'ambient:signals', 'ambient->1@0']);
+    assert.equal(ambient.running, true, 'one director keeps the signal route');
+
+    log.length = 0;
+    controller.setPreset('village');
+    assert.deepEqual(log, ['ambient->0@0', 'ambient:village', 'ambient->1@0.8']);
+
+    // A hush drops the Village to Signals and its end brings it back; the
+    // stored preset never changes.
+    log.length = 0;
+    controller.hush(60_000);
+    assert.equal(controller.preset, 'village');
+    assert.equal(controller._effectiveMode(), 'signals');
+    await new Promise(resolve => setTimeout(resolve, 120));
+    assert.equal(ambient.profile, 'signals');
+    controller.resumeFromHush();
+    assert.equal(ambient.profile, 'village');
+    assert.equal(controller._effectiveMode(), 'ambient');
+
+    // Switching back before the fade into Signals ends keeps the Village.
+    log.length = 0;
+    controller.setPreset('signals');
+    controller.setPreset('village');
+    await new Promise(resolve => setTimeout(resolve, 120));
+    assert.equal(ambient.profile, 'village', 'the teardown after the fade is cancelled');
+    assert.deepEqual(log, ['ambient->0@0.8', 'ambient->1@0.8']);
+});
+
+test('a click on an armed control starts sound; only a sounding control turns it off', () => {
     const controller = Object.create(AmbientAudioController.prototype);
-    const requested = [];
-    const director = { running: false };
+    const calls = [];
+    const director = { running: false, paused: false };
     Object.assign(controller, {
         _destroyed: false,
         _gestureSeen: false,
+        _windowBlurred: false,
+        _playingMode: null,
+        _quietActive: false,
+        hushedUntil: 0,
         available: true,
         enabled: true,
         mode: 'ambient',
         engine: { context: { state: 'suspended' } },
         directors: { ambient: director, bgm: { running: false } },
-        setEnabled: value => requested.push(value),
+        _startActivation: () => calls.push('start'),
+        setPreset: (preset, options) => calls.push(`${preset}:${options.fromUser}`),
     });
 
-    // Stored on, context not yet running (armed): the chip's toggle and an
-    // unchecked SET switch both activate.
-    controller.activateFromUser(!controller.enabled);
-    controller.activateFromUser(false);
-    assert.deepEqual(requested, [true, true]);
+    // Stored on, context not yet running (armed): the chip starts it.
+    controller.toggleFromUser();
+    assert.deepEqual(calls, ['start']);
     assert.equal(controller.userActivated, true, 'the click is recorded as the gesture');
 
     controller.engine.context.state = 'running';
     director.running = true;
-    controller.activateFromUser(!controller.enabled);
-    assert.equal(requested.at(-1), false);
+    controller.toggleFromUser();
+    assert.equal(calls.at(-1), 'off:true');
 
     controller.enabled = false;
-    controller.activateFromUser(true);
-    assert.equal(requested.at(-1), true);
+    controller.toggleFromUser();
+    assert.equal(calls.at(-1), 'village:true', 'off turns on the last preset');
 });
 
 function wakeHarness(events, { enabled = true, gestureSeen = true, owns = true } = {}) {
@@ -408,53 +466,4 @@ test('without a user activation a hidden summons is captioned, never woken', asy
     controller._handleHiddenSummons({ agentId: 'agent-quiet', audioCueKind: 'distress' });
     await settle();
     assert.deepEqual(events, ['distress:agent-quiet']);
-});
-
-test('mixer and Spend Map explicitly close one another before opening', () => {
-    const classNames = new Set();
-    const mixer = {
-        style: { display: 'none' },
-    };
-    const button = {
-        getBoundingClientRect: () => ({ right: 1240, bottom: 48 }),
-        setAttribute() {},
-        classList: {
-            add: name => classNames.add(name),
-            remove: name => classNames.delete(name),
-        },
-    };
-    let spendClosed = 0;
-    const previousWindow = globalThis.window;
-    globalThis.window = { innerWidth: 1280 };
-    try {
-        TopBar.prototype._showMixerPanel.call({
-            _destroyed: false,
-            _mixerButtonEl: button,
-            _mixerPanelEl: mixer,
-            _hideSpendPanel: () => { spendClosed++; },
-        });
-        assert.equal(spendClosed, 1);
-        assert.equal(mixer.style.display, 'block');
-
-        let mixerClosed = 0;
-        const spendPanel = { style: { display: 'none' } };
-        TopBar.prototype._showSpendPanel.call({
-            _destroyed: false,
-            els: {
-                rateWrap: {
-                    getBoundingClientRect: () => ({ left: 300, bottom: 48 }),
-                    setAttribute() {},
-                },
-            },
-            _hideMixerPanel: () => { mixerClosed++; },
-            _ensureSpendPanel() {},
-            _renderSpendPanel() {},
-            _spendPanelEl: spendPanel,
-        });
-        assert.equal(mixerClosed, 1);
-        assert.equal(spendPanel.style.display, 'block');
-    } finally {
-        if (previousWindow === undefined) delete globalThis.window;
-        else globalThis.window = previousWindow;
-    }
 });

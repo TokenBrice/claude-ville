@@ -144,10 +144,13 @@ export function seedSoundStorage(spec = {}) {
     } catch { /* storage optional */ }
 }
 
+// Stored preset ids (`claudeville.sound.mode`) → the controller's preset names.
+export const PRESET_FOR_MODE = Object.freeze({ signals: 'signals', ambient: 'village', bgm: 'townBand' });
+
 // -------------------------------------------------------------- actions ----
 // {status:{index,status,fields}} | {addAgent:{status,provider,parentIndex,fields}} |
 // {remove:{index}} | {ack:{index}} | {select:{index}} | {deselect:true} |
-// {emit, payload, agentIndex, raw} | {mode} | {cue, payload, agentIndex}.
+// {emit, payload, agentIndex, raw} | {mode} | {preset} | {cue, payload, agentIndex}.
 // Returns the marker it recorded.
 // `raw` emits the payload as given (arrays, strings); otherwise it is copied
 // and the agent attached.
@@ -215,9 +218,18 @@ export function runAction(action, { world, mark, controller }) {
         eventBus.emit(action.emit, payload);
         return marker;
     }
+    // A preset by its stored id (`claudeville.sound.mode`), through the
+    // controller's one entry point (7.2).
     if (action.mode) {
         const marker = mark(`mode:${action.mode}`, { kind: 'action' });
-        controller.setMode(action.mode);
+        controller.setPreset(PRESET_FOR_MODE[action.mode] ?? action.mode);
+        return marker;
+    }
+    // 7.2: a preset through the controller's one entry point.
+    if (action.preset) {
+        const marker = mark(action.label || `preset:${action.preset}`, { kind: 'action' });
+        if (typeof controller.setPreset !== 'function') throw new Error('the controller has no setPreset');
+        controller.setPreset(action.preset);
         return marker;
     }
     if (action.cue) {

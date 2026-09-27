@@ -452,7 +452,7 @@ function hasOpenSurface(documentRef = globalThis.document) {
     const modal = documentRef?.getElementById?.('modalOverlay');
     if (modal?.getAttribute?.('aria-hidden') === 'false') return true;
 
-    for (const id of ['audioMixerPanel', 'spendBreakdownPanel']) {
+    for (const id of ['soundPanel', 'spendBreakdownPanel']) {
         const panel = documentRef?.getElementById?.(id);
         if (panel && !panel.hidden && panel.style?.display !== 'none') return true;
     }

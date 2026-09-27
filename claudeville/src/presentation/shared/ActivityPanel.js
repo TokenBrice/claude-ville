@@ -318,7 +318,7 @@ export function resolveClose({ origin = 'panel' } = {}) {
 }
 
 function hasOpenPopover(documentRef = globalThis.document) {
-    for (const id of ['audioMixerPanel', 'spendBreakdownPanel']) {
+    for (const id of ['soundPanel', 'spendBreakdownPanel']) {
         const panel = documentRef?.getElementById?.(id);
         if (panel && !panel.hidden && panel.style?.display !== 'none') return true;
     }

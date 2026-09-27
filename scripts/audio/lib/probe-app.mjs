@@ -28,6 +28,8 @@ const AWAY_SETTLE_MS = 5000;
 const AWAY_LISTEN_MS = 3000;
 const BUSY_WARMUP_MS = 8000;
 const CEREMONY_WINDOW_MS = 15000;
+// The pointer rests on the sound control this long before the press.
+const ENABLE_HOVER_MS = 300;
 
 // ---------------------------------------------------------------- lint ----
 // HAR-4's runtime half: a source that starts while the GainNode it feeds
@@ -114,18 +116,35 @@ async function openApp(browser, server, scenario, hour, seed) {
     const h = await newHarnessPage(browser, seed, { width: 1440, height: 900 });
     await h.page.addInitScript({ content: PROBE_APP_JS });
     await h.page.goto(`${server.baseUrl}/?sim=1&scenario=${scenario}`, { waitUntil: 'domcontentloaded' });
+    // The audio route is built at boot idle (a visitor's first press comes
+    // after it); a press before it would time the lazy import instead.
     await h.page.waitForFunction(() => Boolean(window.__claudeVilleApp?.agentSimulator)
         && Boolean(document.querySelector('#topbarSoundToggle'))
-        && Boolean(window.__claudeVilleAtmosphere), null, { timeout: 45000 });
+        && Boolean(window.__claudeVilleAtmosphere)
+        && typeof window.__claudevilleAudio === 'function', null, { timeout: 45000 });
     await h.page.evaluate(() => window.__probe.install());
     await h.page.waitForTimeout(3000);
     await h.page.evaluate(([hr]) => window.__probe.setAtmosphere(hr, 'clear'), [hour]);
     return h;
 }
 
-// The real TopBar enable: one click on the sound chip.
-async function enableSound(h) {
+// The real TopBar enable (7.1): a click on the sound note; the first-ever
+// click of a profile opens the SOUND panel's presets instead, so the preset
+// is then picked there (Village unless asked) and the panel closed.
+async function enableSound(h, preset = 'village') {
+    // A pointer reaches the control before it presses it: the hover prewarms
+    // the engine (a suspended context and its worklets), as a visitor's does.
+    await h.page.hover('#topbarSoundToggle');
+    await h.page.waitForTimeout(ENABLE_HOVER_MS);
     await h.page.click('#topbarSoundToggle');
+    const panelOpen = await h.page.evaluate(() => {
+        const panel = document.getElementById('soundPanel');
+        return Boolean(panel && !panel.hidden && panel.getBoundingClientRect().width > 0);
+    });
+    if (panelOpen) {
+        await h.page.click(`#soundPresets [role="radio"][data-preset="${preset}"]`);
+        await h.page.keyboard.press('Escape');
+    }
     const ms = await h.page.evaluate(() => window.__probe.enableWait(15000));
     if (ms == null) {
         const snap = await h.page.evaluate(() => window.__probe.snapshot());
@@ -286,8 +305,7 @@ export async function appContinuityUnit(browser, { seed }) {
     const app = await startIsolatedServer();
     const h = await openApp(browser, app, 'mixed-tools', 10.4, seed);
     try {
-        await enableSound(h);
-        await h.page.evaluate(() => window.__probe.setMode('bgm'));
+        await enableSound(h, 'townBand');
         await h.page.waitForTimeout(CONTINUITY.settleMs);
         const ep = await h.page.evaluate(o => window.__probe.blurFocus(o), CONTINUITY);
         const tap = await h.page.evaluate(() => window.__harTap.collect());
@@ -353,4 +371,97 @@ export function judgeFrameCost({ off1, off2, on1, on2, errors }, { verdict, info
     if (!(off1.length && on1.length)) { verdict('fps', false, `no frame profile samples (window.__claudeVillePerf.startFrameProfile); ${errors.slice(0, 2).join(' | ')}`); return; }
     if (!(noise < FRAME_COST_MAX_DELTA_MS - 1e-9)) info('fps', `${line} — the two sound-off segments already differ by the ${FRAME_COST_MAX_DELTA_MS} ms limit or more (the page clock resolves 0.1 ms), so the delta is not judged; re-run on a quiet host`);
     else verdict('fps', d.pass, `${line}; want Δ ≤ ${FRAME_COST_MAX_DELTA_MS} ms`);
+}
+
+// ------------------------------------------------------ Wave 7 (realtime) ----
+// 7.4 the village awakens, on a fresh profile through the real UI: the
+// first-ever click on the note opens the presets, the press on Village is
+// the enable's user activation; the tapped program's first sample above
+// `onsetDbfs` must follow the press by ≤ 150 ms, the worklet load included.
+// Then the note twice (off, on): the same page session, so no second
+// awakening. The short-term level 4 s after the press vs the steady median
+// over [10, 20] s after it is INFO here (judged on the virtual clock).
+const AWAKENING = { onsetDbfs: -70, settleMs: 20000, offOnGapMs: 2000, afterMs: 4000 };
+
+export async function appAwakeningUnit(browser, { seed }) {
+    const app = await startIsolatedServer();
+    const h = await openApp(browser, app, 'mixed-tools', 10.4, seed);
+    try {
+        await enableSound(h, 'village');
+        await h.page.waitForTimeout(AWAKENING.settleMs);
+        await h.page.click('#topbarSoundToggle');
+        await h.page.waitForTimeout(AWAKENING.offOnGapMs);
+        await h.page.click('#topbarSoundToggle');
+        await h.page.waitForTimeout(AWAKENING.afterMs);
+        const rows = await h.page.evaluate(() => window.__probe.log);
+        const tap = await h.page.evaluate(() => window.__harTap.collect());
+        const pcm = await pullPcm(h.page, tap.frames * 2);
+        return { rows, tap, pcm, errors: h.errors };
+    } finally {
+        await h.context.close();
+        await app.stop();
+    }
+}
+
+export function judgeAwakening({ rows, tap, pcm, errors }, { verdict, info }, limits) {
+    const press = rows.find(r => r.type === 'press' && r.preset === 'village') ?? rows.find(r => r.type === 'press' && r.id === 'topbarSoundToggle');
+    const awakened = rows.filter(r => r.type === 'awakened');
+    const tl = wallTimeline(tap, pcm);
+    const floor = Math.pow(10, AWAKENING.onsetDbfs / 20);
+    let onset = null;
+    for (let i = 0; i < tl.L.length; i++) {
+        if (Math.abs(tl.L[i]) > floor || Math.abs(tl.R[i]) > floor) { onset = i; break; }
+    }
+    const onsetWall = onset != null ? (tl.wall0 + onset / tl.sr) * 1000 : null;
+    const lag = press && onsetWall != null ? onsetWall - press.wall : null;
+    verdict('awakening', lag != null && lag <= limits.awakenOnsetMs, `first onset ${lag == null ? 'never' : `${fmt(lag, 0)} ms`} after the press on ${press?.preset ?? press?.id ?? '—'} (fresh profile, the worklet load included; first sample over ${AWAKENING.onsetDbfs} dBFS); want ≤ ${limits.awakenOnsetMs} ms${errors.length ? `; page errors: ${errors.slice(0, 2).join(' | ')}` : ''}`);
+    const a0 = awakened[0];
+    if (press && a0?.perfAt != null) info('awakening', `the latch was scheduled ${fmt(a0.perfAt - press.wall, 0)} ms after the press (context time ${fmt(a0.contextTime, 3)} s); the tapped onset ${onsetWall != null ? `${fmt(onsetWall - a0.perfAt, 0)} ms after that` : 'never'}`);
+    verdict('awakening', awakened.length === 1, `audio:awakened in the page session (enable, then the note off and on): ${awakened.length}${awakened.length ? ` (${awakened.map(a => a.preset ?? '—').join(', ')})` : ''}; want 1`);
+    if (press && onsetWall != null) {
+        const pressT = press.wall / 1000 - tl.wall0;
+        const st = loudness(tl.L, tl.R, tl.sr).shortTermCurve;
+        const at = st.find(([t]) => t >= pressT + limits.awakenStAtSec)?.[1] ?? null;
+        const med = energyMeanLufs(st.filter(([t]) => t >= pressT + 10 && t <= pressT + 20).map(([, v]) => v));
+        info('awakening', `realtime: short-term ${limits.awakenStAtSec} s after the press ${fmt(at)} vs ${fmt(med)} LUFS steady (10–20 s): ${signed(at != null && med != null ? at - med : null)} dB (judged on the virtual clock)`);
+    }
+}
+
+// The caption probe (C-UX3, S3): a fresh profile that never turns sound on
+// captions a needs-you raised through the live producers, and an error.
+const CAPTION_PROBE = { waitMs: 4000 };
+
+export async function appCaptionUnit(browser, { seed }) {
+    const app = await startIsolatedServer();
+    const h = await openApp(browser, app, 'mixed-tools', 10.4, seed);
+    try {
+        const agents = [
+            { id: 'probe-cap-wait', name: 'Juniper', status: 'waiting_on_user' },
+            { id: 'probe-cap-err', name: 'Kestrel', status: 'errored' },
+        ];
+        await h.page.evaluate(specs => window.__probe.addAgents(specs), agents.map((a, i) => ({
+            id: a.id, name: a.name, provider: 'claude', status: 'working', currentTool: 'Read', currentToolInput: 'file_path=/README.md', position: { tileX: 16 + i, tileY: 22 },
+        })));
+        await h.page.waitForTimeout(1500);
+        const raised = [];
+        for (const a of agents) {
+            const at = await h.page.evaluate(([id, status]) => window.__probe.signal(id, status, 'live'), [a.id, a.status]);
+            await h.page.waitForTimeout(CAPTION_PROBE.waitMs);
+            raised.push({ ...a, at });
+        }
+        const rows = await h.page.evaluate(() => window.__probe.log);
+        const snapshot = await h.page.evaluate(() => window.__probe.snapshot());
+        return { raised, rows, snapshot, errors: h.errors };
+    } finally {
+        await h.context.close();
+        await app.stop();
+    }
+}
+
+export function judgeCaption({ raised, rows, snapshot, errors }, { verdict }) {
+    for (const a of raised) {
+        const toast = rows.find(r => r.type === 'toast' && r.wall >= a.at && r.wall <= a.at + CAPTION_PROBE.waitMs && r.text.includes(a.name));
+        const cue = rows.find(r => r.type === 'cue' && r.agentId === a.id && r.wall >= a.at);
+        verdict('captionprobe', toast != null, `sound never enabled (fresh profile, sound state ${snapshot?.soundState ?? (snapshot?.enabled ? 'on' : 'off')}): ${a.name} ${a.status} → cue-played ${cue ? `${cue.kind} "${cue.label}"` : 'none'}, caption ${toast ? `"${toast.text}" after ${fmt(toast.wall - a.at, 0)} ms` : 'none'}; want a caption naming the agent within ${CAPTION_PROBE.waitMs / 1000} s${errors.length ? `; page errors: ${errors.slice(0, 2).join(' | ')}` : ''}`);
+    }
 }

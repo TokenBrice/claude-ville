@@ -120,6 +120,7 @@ const SCENERY_AIR = Object.freeze({
     linkLost: 0.2,
     linkRestored: 0.3,
     digest: 0.15,
+    awaken: 0.15,
 });
 
 function cuePlacement(kind, cue = {}) {
@@ -232,6 +233,9 @@ const VOICE_LEVEL_DB = Object.freeze({
     hourBell: -3,
     aurora: -1.5,
     linkLost: 3,
+    // 7.4: 11.4 dB under its palette balance puts the awakening ≈ 14 LU under
+    // the needs-you call at trim 0 (acceptance: ≥ 12 LU under).
+    awaken: -11.4,
 });
 
 // The bed stays ducked this long past the last note, so it returns as the
@@ -260,6 +264,50 @@ function duckDepthsFor(kind, lane, cue) {
     if (isUrgentCueLane(lane)) return DUCK_DEPTHS.urgent;
     return routine;
 }
+
+// Soften sudden sounds (7.7, UX-14): every duck but the needs-you call's is
+// 30 % shallower, and struck bells open over ≥ 25 ms.
+const SOFTEN_DUCK_SCALE = 0.7;
+const SOFTEN_BELL_ATTACK_SEC = 0.025;
+
+// The needs-you call stays whole under soften: its figure, its duck.
+function isNeedsYouCall(kind, cue) {
+    return kind === 'summons' || (kind === 'reminder' && reminderVoice(cue).kind === 'summons');
+}
+
+function softenedDepths(depths) {
+    const out = {};
+    for (const [bus, db] of Object.entries(depths)) out[bus] = Number(db) * SOFTEN_DUCK_SCALE;
+    return out;
+}
+
+// Soften for thunder (UX-14): a 250 ms first attack, half the peak, no
+// crack and no secondary bump (the later rolls stay under the first's tail).
+const SOFTEN_THUNDER_ATTACK_SEC = 0.25;
+const SOFTEN_THUNDER_PEAK = 0.5;
+export function softenThunderPlan(plan) {
+    const tail = 0.25 * plan.rolls[0].peak;
+    return {
+        ...plan,
+        amplitude: plan.amplitude * SOFTEN_THUNDER_PEAK,
+        rolls: plan.rolls.map((roll, k) => (k === 0
+            ? { ...roll, attack: Math.max(roll.attack, SOFTEN_THUNDER_ATTACK_SEC) }
+            : { ...roll, peak: Math.min(roll.peak, tail) })),
+        crack: [],
+        crackEndSec: 0,
+    };
+}
+
+// The awakening (7.4, SCN-8): a latch and two small bells rising a fourth,
+// as sound comes on. Outside the budgets, no caption, no score, no duck.
+// The latch is two short metal modes, not noise: the first sound after an
+// enable must not wait for the noise pool to build.
+const AWAKEN_LATCH = Object.freeze([Object.freeze([2600, 0.5]), Object.freeze([3900, 0.3])]);
+const AWAKEN_LATCH_T60_SEC = 0.02;
+const AWAKEN_BELLS = Object.freeze([
+    Object.freeze({ atSec: 0.07, semi: 7, gain: 0.5 }),   // E5
+    Object.freeze({ atSec: 0.19, semi: 12, gain: 0.45 }), // A5
+]);
 
 function ducksAnything(depths) {
     return Boolean(depths) && Object.values(depths).some(db => Number(db) < 0);
@@ -296,7 +344,7 @@ const CUE_LABELS = {
 // Cue fields the caption surface reads, forwarded when present.
 const CAPTION_FIELDS = Object.freeze([
     'count', 'level', 'family', 'oldestMs', 'hour', 'teamName', 'teamSize', 'repo', 'version', 'status', 'soundOnly',
-    'flock', 'clusterIndex',
+    'flock', 'clusterIndex', 'familyLine',
 ]);
 
 // Web Audio needs a moment of lead time before the first note; the score is
@@ -571,6 +619,8 @@ export class CueKit {
         // Thunder is weather (S6): its plans draw from a stream no agent cue
         // touches. Cue noise grains draw nothing: the pool places them.
         this._thunderRng = rngStream('cue.thunder');
+        // 7.4's one-time family caption lines, armed by the controller.
+        this._familyLines = null;
         // The last strikes' pool reads ({ index, offset, span }), so the
         // next strike reads fresh noise.
         this._strikeReads = [];
@@ -582,10 +632,14 @@ export class CueKit {
 
     // Returns true when the governor accepted the cue. Routine cues sound
     // after the short aggregation window; urgent lanes sound immediately.
+    // `{ test: true }` (a preview or the invite's sample call) sounds the
+    // voice at once, outside the governor and its cooldowns, and captions
+    // nothing: it is not a fact.
     play(kind, options = {}) {
         const cooldownMs = COOLDOWNS_MS[kind];
         const lane = laneForCueKind(kind);
         if (cooldownMs == null || !lane) return false;
+        if (options.test) return this._playAccepted({ ...options, kind, lane }) !== false;
         return this.governor.submit({
             ...options,
             kind,
@@ -618,8 +672,12 @@ export class CueKit {
             teamName: cue.teamName ?? null,
             sourceEventId: cueSourceEventId(cue),
         };
-        const canSound = Boolean(this.engine?.context && this.engine?.started);
+        // A cue submitted `announceOnly` (the Signals preset's non-signal
+        // kinds) takes the muted route: silent score, caption, no synthesis.
+        const canSound = Boolean(this.engine?.context && this.engine?.started) && !cue.announceOnly;
 
+        // A preview with no sound has nothing to show.
+        if (!canSound && cue.test) return false;
         if (!canSound) {
             // The muted route uses the same score at the monotonic now, so
             // every accent appears at once instead of waiting for an audio
@@ -680,7 +738,22 @@ export class CueKit {
                 for (const cancel of cancels) cancel();
             };
         }
-        return this._emitCue(cue);
+        if (cue.test) return true;
+        return this._emitCue(this._withFamilyLine(cue));
+    }
+
+    // 7.4: after an enable the controller arms one line per urgent family;
+    // the next urgent cue that really sounds carries its family's line in
+    // its caption, then the line is spent. `null` disarms.
+    armFamilyLine(lines) {
+        this._familyLines = lines && typeof lines === 'object' ? { ...lines } : null;
+    }
+
+    _withFamilyLine(cue) {
+        const line = this._familyLines && isUrgentCueLane(cue.lane) ? this._familyLines[cue.kind] : null;
+        if (!line) return cue;
+        this._familyLines = null;
+        return { ...cue, familyLine: line };
     }
 
     // The grid (S4). With no music, or for signal cues and thunder, the cue
@@ -886,8 +959,8 @@ export class CueKit {
         const gain = G.handbell * 0.85 * (L === 2 ? 0.6 : 1);
         const hz = P.signal(SHIP_BELL_SEMI);
         for (let k = 0; k < pairs; k++) {
-            strike(2 * k, hz, handbell, { gain, Dmul: 1 });
-            strike(2 * k + 1, hz, handbell, { gain: gain * 0.85, Dmul: k === pairs - 1 ? LAST_RING_DMUL : 1 });
+            strike(2 * k, hz, handbell, { gain, Dmul: 1, whole: true });
+            strike(2 * k + 1, hz, handbell, { gain: gain * 0.85, Dmul: k === pairs - 1 ? LAST_RING_DMUL : 1, whole: true });
         }
         if (L >= 4) {
             for (const hz of this._horn(sink, P, P.at(0))) note(0, hz);
@@ -958,6 +1031,27 @@ export class CueKit {
         }
     }
 
+    // The awakening (7.4): the latch at once, two small bells after it,
+    // placed centre-front at trim 0 through the cue bus. It bypasses the
+    // governor (outside the budgets), captions nothing and publishes no
+    // score. Returns true when it sounded.
+    playAwaken({ phase = 'day' } = {}) {
+        if (!this.engine?.context || !this.engine.started) return false;
+        const t = this.engine.now() + START_LEAD_MS / 1000;
+        const sink = this._openSink('awaken', {}, t, [], { trimDb: 0 });
+        const { voice, nodes } = this._voiceGain(sink, G.tick * 0.2);
+        const sources = [];
+        for (const [hz, g] of AWAKEN_LATCH) this._mode(t, voice, hz, g, AWAKEN_LATCH_T60_SEC, sources, nodes);
+        this._track(sink, t, voice, sources, nodes);
+        const chime = chimeForProvider(null, phase);
+        for (const bell of AWAKEN_BELLS) {
+            // A soft mallet: no noise transient, so nothing here waits on the noise pool.
+            this._strike(sink, t + bell.atSec, noteHz(bell.semi), chime, { gain: G.chime * bell.gain, Dmul: 0.8, soft: true });
+        }
+        this._closeSink(sink);
+        return true;
+    }
+
     // A follower of an urgent call (SIG-10): its caption, its score, and one
     // soft strike of its family's voice after the lead's last note, placed at
     // its own agent and levelled with the lead.
@@ -982,7 +1076,7 @@ export class CueKit {
         const P = this._pitches(cue, t, [0]);
         let hz = null;
         if (kind === 'summons') {
-            hz = this._strike(sink, t, P.signal(SHIP_BELL_SEMI), material('handbell'), { gain: G.handbell * 0.85 * FLOCK_GAIN, Dmul: 0.5 });
+            hz = this._strike(sink, t, P.signal(SHIP_BELL_SEMI), material('handbell'), { gain: G.handbell * 0.85 * FLOCK_GAIN, Dmul: 0.5, whole: true });
         } else if (kind === 'distress') {
             const semi = ERROR_SEMIS[(index - 1) % ERROR_SEMIS.length];
             hz = this._strike(sink, t, P.signal(semi), material('cracked'), { gain: G.cracked * 0.9 * FLOCK_GAIN, Dmul: 0.5 });
@@ -1081,7 +1175,9 @@ export class CueKit {
     // noise transient and thud on the attack. `gain` is the prime's peak; a
     // `soft` mallet leaves out the transient and rounds the attack.
     // Returns `hz`; with no sink (the muted score) it strikes nothing.
-    _strike(sink, t, hz, recipe, { gain, Dmul = 1, lp = recipe.lp, soft = false } = {}) {
+    // Under soften every bell opens over ≥ 25 ms but the needs-you call's
+    // (`whole`).
+    _strike(sink, t, hz, recipe, { gain, Dmul = 1, lp = recipe.lp, soft = false, whole = false } = {}) {
         if (!sink) return hz;
         const ctx = this.engine.context;
         const plan = strikePlan(recipe, hz, { Dmul, sampleRate: ctx.sampleRate });
@@ -1089,6 +1185,7 @@ export class CueKit {
             plan.transient = null;
             plan.attack = Math.max(plan.attack, SOFT_MALLET_ATTACK_SEC);
         }
+        if (this.engine.softened && !whole) plan.attack = Math.max(plan.attack, SOFTEN_BELL_ATTACK_SEC);
         const { voice, nodes } = this._voiceGain(sink, gain, lp);
         const sources = [];
         for (const partial of plan.partials) {
@@ -1268,9 +1365,10 @@ export class CueKit {
     // withdrawn before its first note sounds withdraws its duck with it, so
     // the bed never dips for a cue that did not play.
     _duck(kind, lane, cue, t, offsetsMs, cancels) {
-        const depths = duckDepthsFor(kind, lane, cue);
-        if (!ducksAnything(depths)) return;
-        const light = depths !== DUCK_DEPTHS.urgent;
+        const table = duckDepthsFor(kind, lane, cue);
+        if (!ducksAnything(table)) return;
+        const light = table !== DUCK_DEPTHS.urgent;
+        const depths = this.engine.softened && !isNeedsYouCall(kind, cue) ? softenedDepths(table) : table;
         const from = t + (offsetsMs[0] || 0) / 1000;
         const hold = light ? LIGHT_DUCK_HOLD_SEC : DUCK_HOLD_AFTER_LAST_NOTE_SEC;
         const until = t + (offsetsMs[offsetsMs.length - 1] || 0) / 1000 + hold;
@@ -1365,7 +1463,8 @@ export class CueKit {
     // short cue bursts: one live white lane already fences off half of it.
     _thunder(sink, t, intensity = 1) {
         const ctx = this.engine.context;
-        const plan = thunderPlan(intensity, this._thunderRng);
+        const drawn = thunderPlan(intensity, this._thunderRng);
+        const plan = this.engine.softened ? softenThunderPlan(drawn) : drawn;
         const rollSec = plan.lengthSec + THUNDER_STOP_TAIL_SEC;
         const roll = this.engine.noisePool?.reserveOneShot(ctx, 'brown', rollSec, { rate: plan.rate, at: t, avoid: this._strikeReads });
         if (!roll) return;

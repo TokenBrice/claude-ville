@@ -114,7 +114,7 @@ body.cv-panel-open .toast-container {
    as a call-card, so attention notices are not repeated on top of it. They
    stay in the live region (screen readers still hear them); only the visual
    duplicate folds away. */
-body:has(#btnModeDashboard.topbar__mode-btn--active) .toast[data-cue-kind="attention"],
+body:has(#btnModeDashboard.topbar__mode-btn--active) .toast[data-cue-kind="attention"]:not(.toast--invite),
 body:has(#btnModeDashboard.topbar__mode-btn--active) .toast[data-cue-kind="summons"] {
     position: absolute;
     width: 1px;
@@ -160,6 +160,43 @@ body:has(#btnModeDashboard.topbar__mode-btn--active) .toast[data-cue-kind="summo
    the warning rail.) */
 .toast[data-cue-kind="summons"] {
     border-left-color: var(--cv-status-waiting-user);
+}
+
+/* A notice can gain lines: the one-time Signals offer (7.5; it stays visible
+   in Dashboard too — it asks a question the bell lane cannot) and the
+   one-time family line on the first urgent cue after an enable (7.4). */
+.toast__text,
+.toast__line {
+    display: block;
+}
+
+.toast__line {
+    color: var(--ink-2);
+}
+
+.toast__actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+.toast__action {
+    padding: 2px 8px;
+    border: 1px solid var(--line-2);
+    background: var(--bg-1);
+    color: var(--ink-1);
+    font: inherit;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+}
+
+.toast__action:hover {
+    border-color: var(--ink-3);
+}
+
+.toast__action:focus-visible {
+    outline: 2px solid var(--cv-status-waiting);
+    outline-offset: 1px;
 }
 
 .toast--fadeout {

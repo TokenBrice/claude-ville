@@ -48,8 +48,11 @@
         dateNow: Date.now,
     };
 
-    // A fixed epoch: mid-July (the harness's summer date), 12:00 local.
-    const DATE_EPOCH_MS = new Date(2026, 6, 15, 12, 0, 0).getTime();
+    // A fixed epoch: mid-July (the harness's summer date), 12:01 local. Off
+    // the hour: a director's first tick at its start reads the local clock
+    // before any `atmosphere:updated` reaches it, and at 12:00 that tick rang
+    // the hour bell (D7) over every enable.
+    const DATE_EPOCH_MS = new Date(2026, 6, 15, 12, 1, 0).getTime();
     const PERF_EPOCH_MS = 1000;
     // Idle callbacks see a generous frame so they always do their work.
     const IDLE_BUDGET_MS = 50;

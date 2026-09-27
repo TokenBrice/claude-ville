@@ -8,7 +8,7 @@
 //   remove → app.agentSimulator._removeAgent(id)
 //   hour / weather → window.__claudeVilleAtmosphere
 //   scenario → agentSimulator.stop(); agentSimulator.start(id)  (replay a QA fixture with sound on)
-//   mode   → a real click on #topbarSoundMode
+//   mode   → the preset picked in the SOUND panel (#soundPresets) at the enable
 //   blur / focus → the controller's own window handlers (init.js swallows real blur events)
 //   hide / show  → document.hidden override + a real visibilitychange event
 

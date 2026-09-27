@@ -31,6 +31,12 @@
 // heard, not just seen). When that stream goes quiet — Dashboard mode stops
 // the render loop — the director computes its own snapshot; AtmosphereState
 // is pure local-clock, so ambience keeps tracking time and weather anywhere.
+//
+// Profiles (7.2): `village` plays the island; `signals` builds no layer, no
+// held note and no music, sounds only the attention voices (the calls, the
+// ladder, recovery and the `answered` strike at the end of a wait) and
+// captions every other kind through the governor without sounding it. It is
+// the same director and the same signal route, so the route has one owner.
 
 import { eventBus } from '../../../domain/events/DomainEvent.js';
 import { UNATTENDED_DIGEST_THRESHOLD_MS } from '../../../application/AttentionService.js';
@@ -91,6 +97,9 @@ const RESUME_OPEN_SEC = 0.25;
 const ATMO_FRESH_MS = 3000;
 const QUIET_ENTER_MS = 30000;
 const QUIET_LEAVE_MS = 4000;
+// What Signals sounds (7.2, UX-3); every other kind only captions.
+const SIGNALS_SOUNDING = new Set(['summons', 'distress', 'limit', 'reminder', 'answered', 'recovery']);
+const PROFILES = Object.freeze(['village', 'signals']);
 
 // Weather and resting budgets (plan 1.4; MIX-3, SCN-5).
 // The world bus yields up to WEATHER_CEILING_DB as rain or a storm builds,
@@ -132,6 +141,10 @@ const MUSIC_RELEASE_SEC = 0.4;
 // Slew (s) of the first tick after start(): layers reach their targets under
 // the director crossfade instead of trailing it by their slow time constants.
 const PRIME_TIME_CONSTANT = 0.05;
+// The awakening's bloom (7.4): on the session's first start the world opens
+// at once under the fade, the work follows (τ 1 s, 95 % by 3 s) and the
+// welcome tune after it — "world, then work, then the welcome".
+const BLOOM_WORK_TIME_CONSTANT = 1;
 // A lost feed fades the work stratum over ~3 s (SIG-9): τ 1 s is 95 % there.
 const LINK_FADE_TIME_CONSTANT = 1;
 // Continuous emitters glide to a new camera placement with τ 0.25 s (5.8).
@@ -244,13 +257,15 @@ export class AudioDirector {
     // `cues = { kit, governor }` is the engine-wide cue arbiter (one CueKit and
     // one CueGovernor per engine, owned by the controller): budgets and
     // cooldowns survive a preset switch. Without it the director stays mute.
-    constructor({ engine, world = null, cues = null } = {}) {
+    constructor({ engine, world = null, cues = null, profile = 'village' } = {}) {
         this.engine = engine;
         this.world = world;
         this.layers = {};
+        this.profile = PROFILES.includes(profile) ? profile : 'village';
         this.cueKit = cues?.kit ?? null;
         this.governor = cues?.governor ?? null;
         this._weatherBed = false;
+        this._bloom = false;
         this._primed = false;
         this.running = false;
         this.paused = false;
@@ -335,15 +350,31 @@ export class AudioDirector {
         return this._link.lost;
     }
 
-    start() {
+    /** The Village at its resting floor: nothing works or waits (7.3). */
+    get resting() {
+        return this.running && this.profile === 'village' && this._quietFloor.mode === 'resting';
+    }
+
+    start({ bloom = false } = {}) {
         if (this.running || !this.engine.context) return;
         this.running = true;
         this.paused = false;
+        this._bloom = Boolean(bloom);
         this._primed = false;
         // A rebuild after a long absence starts on a paused Transport.
         this.engine.transport.resume();
-        // Layers feed this director's own group inputs, so a preset switch
-        // can crossfade the whole director (plan 1.6).
+        if (this.profile === 'village') this._buildVillage();
+        this._noteReturnFromPause();
+
+        this._subscribeRuntime();
+        this._interval = setInterval(() => this._tick(), TICK_MS);
+        this._tick();
+    }
+
+    // The Village's layers, held note and music. Layers feed this director's
+    // own group inputs, so a preset switch can crossfade the whole director
+    // (plan 1.6).
+    _buildVillage() {
         const options = { director: DIRECTOR_ID };
         this.layers = {
             sea: new SeaLayer(this.engine, options),
@@ -377,14 +408,37 @@ export class AudioDirector {
             occasions: OCCASIONS,
         });
         this._occasions.noteEnable(Date.now());
-        this._noteReturnFromPause();
         this._arrangement = null;
         this._band = null;
         this._musicWaiting = null;
+    }
 
-        this._subscribeRuntime();
-        this._interval = setInterval(() => this._tick(), TICK_MS);
-        this._tick();
+    _teardownVillage() {
+        for (const layer of Object.values(this.layers)) layer.stop();
+        this.layers = {};
+        this._heldNote?.stop();
+        this._heldNote = null;
+        this._musicInput = null;
+    }
+
+    /**
+     * `village` or `signals` (7.2). A running director builds or tears down
+     * the Village at once; the controller fades the director gain around the
+     * change. Returns true when the profile changed.
+     */
+    setProfile(profile) {
+        const next = PROFILES.includes(profile) ? profile : 'village';
+        if (next === this.profile) return false;
+        this.profile = next;
+        if (!this.running) return true;
+        if (next === 'signals') {
+            this._teardownVillage();
+        } else {
+            this._primed = false;
+            this._buildVillage();
+            if (!this.paused) this._tick();
+        }
+        return true;
     }
 
     // The shared governor's prepared routine cue is not this director's to
@@ -396,10 +450,7 @@ export class AudioDirector {
         this._interval = null;
         for (const unsubscribe of this._unsubscribes) unsubscribe();
         this._unsubscribes = [];
-        for (const layer of Object.values(this.layers)) layer.stop();
-        this.layers = {};
-        this._heldNote?.stop();
-        this._heldNote = null;
+        this._teardownVillage();
     }
 
     // Pause in place (2.1, ENG-2): stop waking the Transport and the 1 Hz
@@ -922,15 +973,17 @@ export class AudioDirector {
     }
 
     // The last answer ends the wait audibly (S6): the Village resolves its
-    // held note; the signals-only route rings the `answered` strike. A wait
-    // that only went stale was not answered: it fades without resolving.
+    // held note; Signals (7.2) and the hidden signals-only route ring the
+    // `answered` strike. A wait that only went stale was not answered: it
+    // fades without resolving.
     _applyWaiting({ waiting = 0, unheard = 0, family = null } = {}) {
         const was = this._waiting;
         this._waiting = waiting;
         if (family) this._waitFamily = family;
         if (was === waiting) return;
         this._waitAnswered = waiting === 0 && unheard === 0;
-        if (was > 0 && this._waitAnswered && this.hidden && this._signalRouting) {
+        const strikes = this.hidden || (this.profile === 'signals' && this.running);
+        if (was > 0 && this._waitAnswered && strikes && this._signalRouting) {
             this._signalCue('answered', familyCuePayload({ family: this._waitFamily }));
         }
         this._syncHeldNote();
@@ -1065,6 +1118,8 @@ export class AudioDirector {
         if (cueLifecycleDecision({ lane: payload.lane, hidden: this.hidden }) !== 'play') {
             return false;
         }
+        // Signals sounds the attention voices only; the rest caption (7.2).
+        if (this.profile === 'signals' && !SIGNALS_SOUNDING.has(kind)) payload.announceOnly = true;
         // The S2 window the bed-aware trim aims at: over weather, over the
         // composer's music, or the plain village bed.
         payload.bed ??= this._bedContext();
@@ -1115,6 +1170,14 @@ export class AudioDirector {
         });
 
         this._phase = phase;
+        // Signals has no layer to steer: it follows the wait for the
+        // `answered` strike and the phase its calls are voiced in.
+        if (this.profile === 'signals') {
+            this._weatherBed = false;
+            this._levels = {};
+            this._applyWaiting(waitState(this.world, now));
+            return;
+        }
         const intensity = clamp01(weather.intensity);
         const winter = season === 'winter';
         // Winter precipitation falls as snow on screen: hush the rain layer
@@ -1172,7 +1235,9 @@ export class AudioDirector {
         // the director's own crossfade gain carries the fade-in (plan 1.6),
         // so slow slews here would leave a hole under the switch.
         const prime = this._primed ? null : PRIME_TIME_CONSTANT;
+        const workPrime = prime !== null && this._bloom ? BLOOM_WORK_TIME_CONSTANT : prime;
         this._primed = true;
+        this._bloom = false;
         this.engine.setWeatherCeiling(ceilingDb, prime ?? 4);
         this.engine.setTilt(phase);
         // Island Air follows the phase (a 6 s crossfade between the day and
@@ -1200,11 +1265,11 @@ export class AudioDirector {
         this.layers.crickets.setTemperature(cricketTemperature(season, phase === 'night' ? phaseProgress : 0));
         // The murmur follows the audible working count on the work bus and
         // darkens with the night without losing level (4.7, SIG-8).
-        this.layers.hum.setMurmur({ working, dark: arc.dark }, prime ?? 3);
-        this.layers.hum.setLevel(levels.hum, prime ?? (this._link.lost ? LINK_FADE_TIME_CONSTANT : 3));
+        this.layers.hum.setMurmur({ working, dark: arc.dark }, workPrime ?? 3);
+        this.layers.hum.setLevel(levels.hum, workPrime ?? (this._link.lost ? LINK_FADE_TIME_CONSTANT : 3));
         this.layers.workshops.setPhase(phase);
         this.layers.workshops.setNight(phase === 'night');
-        this.layers.workshops.setLevel(levels.workshops, prime ?? (this._link.lost ? LINK_FADE_TIME_CONSTANT : 3));
+        this.layers.workshops.setLevel(levels.workshops, workPrime ?? (this._link.lost ? LINK_FADE_TIME_CONSTANT : 3));
         this._syncWorkshops(now);
         this.layers.music.setLevel(levels.music, prime ?? 3);
         this.layers.music.setPhase(phase);
@@ -1247,6 +1312,19 @@ export class AudioDirector {
         return this._quietFloor.mode === 'resting' ? intensity * RESTING_STORM_SCALE : intensity;
     }
 
+    /**
+     * The Village's music for the popover's line (7.3): the piece sounding
+     * now, or when the next tune may come and what holds it. Read on the
+     * controller's 1 Hz tick, never per frame.
+     */
+    musicStatus(now = Date.now()) {
+        const playing = this.layers.music?.nowPlaying ?? null;
+        if (playing) return { piece: playing.piece, kind: playing.kind, nextAt: null, held: null };
+        if (!this._occasions || !this._musicInput) return { piece: null, kind: null, nextAt: null, held: null };
+        const held = this._musicInput.raining ? 'rain' : (this._quiet ? 'quiet' : null);
+        return { piece: null, kind: null, nextAt: this._occasions.nextTuneAt(now), held };
+    }
+
     snapshot() {
         const occasion = this._occasions?.snapshot(Date.now()) ?? null;
         return {
@@ -1254,7 +1332,8 @@ export class AudioDirector {
             state: this.hidden
                 ? 'hidden'
                 : (this.running ? this._quietFloor.mode : 'stopped'),
-            resting: this.running && this._quietFloor.mode === 'resting',
+            profile: this.profile,
+            resting: this.resting,
             phase: this._phase,
             dayArc: this._arcKey,
             framePressureLevel: this._framePressureLevel,

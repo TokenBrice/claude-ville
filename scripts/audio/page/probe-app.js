@@ -91,10 +91,23 @@
         async install() {
             ({ eventBus } = await import('/src/domain/events/DomainEvent.js'));
             const push = (type, detail) => log.push({ type, wall: performance.now(), ...detail });
-            eventBus.on('audio:cue-played', p => push('cue', pick(p, ['kind', 'agentId', 'label', 'replaces'])));
+            eventBus.on('audio:cue-played', p => push('cue', pick(p, ['kind', 'agentId', 'label', 'replaces', 'familyLine', 'announceOnly'])));
             eventBus.on('attention:raised', p => push('attention:raised', pick(p, ['agentId', 'status'])));
             eventBus.on('distress:watchtower', p => push('distress:watchtower', pick(p, ['agentId', 'kind'])));
             eventBus.on('team:gather', p => push('team:gather', { teamName: p?.teamName ?? null, size: p?.members?.length ?? null }));
+            // Wave 7: the awakening (7.4), every pointer press on the sound
+            // controls (the enable's user activation), and every caption toast.
+            eventBus.on('audio:awakened', p => push('awakened', pick(p, ['contextTime', 'perfAt', 'preset'])));
+            document.addEventListener('pointerdown', (e) => {
+                const el = e.target?.closest?.('#topbarSoundToggle, #topbarSoundMenu, [role="radio"][data-preset]');
+                if (el) push('press', { id: el.id || null, preset: el.getAttribute('data-preset') });
+            }, true);
+            const toasts = document.getElementById('toastContainer');
+            if (toasts) {
+                new MutationObserver((records) => {
+                    for (const r of records) for (const n of r.addedNodes) if (n.nodeType === 1) push('toast', { text: n.textContent.trim().replace(/\s+/g, ' ') });
+                }).observe(toasts, { childList: true });
+            }
         },
 
         setAtmosphere(hour, weather) {
@@ -170,10 +183,6 @@
                 await sleep(20);
             }
             return null;
-        },
-
-        setMode(mode) {
-            controller()?.setMode(mode);
         },
 
         // 2.1 continuity: blur for `blurMs`, focus, and the piece before, at

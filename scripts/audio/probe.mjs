@@ -117,6 +117,7 @@ import {
     maxOnsetsIn, pulseIndex, quietStemRow, signCrossing, stopTiming, targetTrajectory,
     D1_DUTY, MUSIC_LIMITS, arrangementSwitch, bandStep, breathsPerWindow, coveredSec, earlyReturns, judgeDuty, judgeIsleArm, judgeStemBalance, laneWindow,
     loopsPerPieceHour, musicInWindows, nightDarker, perHourMax, spearman,
+    WAVE7_LIMITS,
 } from './lib/checks.mjs';
 import {
     AIR_CUE_SCENE, CAPTION_SETTINGS, DASHBOARD_SCENE, GALLERY_VOICES, HELD_ANSWER_SEC, HELD_OPEN_SEC, LADDER_OPEN_SEC, LADDER_SECONDS, LADDER_TRIM_SCENE,
@@ -129,6 +130,7 @@ import {
     audibilityScene, cameraScene, quietMixScene, quotaScene, workDownbeatScene, workSlotsScene, workshopScene,
     PERCUSSION_SEGMENTS, RAIN_SWITCH_AT, TOWN_SESSION, VILLAGE_FIXTURES, VIRTUAL_DAY, WAIT_CADENCE, musicStemScene, percussionScene, rainSwitchScene,
     townSessionScene, villageMusicScene, waitCadenceScene,
+    AWAKEN, AWAKEN_SCENE, SIGNALS_ANSWER_AT, outputBusyScene, outputScene, signalsScene, softenScene, toneScene,
 } from './lib/scenes.mjs';
 import {
     captionRows, clusterRow, crownRow, galleryRows, heldNoteRows, heldWhileMusic, ladderCalls, ladderCaptioned, ladderTrimRows, laneEvents, wakeRows,
@@ -150,12 +152,14 @@ import {
     airRows, arrivalDrRows, bedRows, pauseRows, renderAir, textureRows, transportRows, urgentWetRows,
 } from './lib/probe-wave2.mjs';
 import {
-    appBusyUnit, appCeremonyUnit, appContinuityUnit, appFrameCostUnit, judgeBusy, judgeCeremony, judgeContinuity, judgeFrameCost, lintUnits,
+    appAwakeningUnit, appBusyUnit, appCaptionUnit, appCeremonyUnit, appContinuityUnit, appFrameCostUnit, judgeAwakening, judgeBusy, judgeCaption, judgeCeremony,
+    judgeContinuity, judgeFrameCost, lintUnits,
 } from './lib/probe-app.mjs';
 import {
     OCTAVE_CENTERS, bandRows, armRow, densityTrack, dutyOf, heardSpans, nodesPerNoteRow, noteRows, percussionPerBar, seatLufs, seatPairs, stopLevels,
     sumOf, toOutput, visitRows,
 } from './lib/probe-wave6.mjs';
+import { awakenRows, outputRow, signalsRows, softenRow, toneRow } from './lib/probe-wave7.mjs';
 import { townBandHours, villageDay } from './lib/music-sim.mjs';
 import {
     cueClash, identicalRenditionGap, motifStatements, parallelPerfects, phraseReheard, range, renditions, seatLine, tonalReheard,
@@ -197,8 +201,8 @@ const JOBS = Math.max(1, Number(args.jobs || 2));
 const SEED = args.seed != null ? Number(args.seed) : DEFAULT_SEED;
 const NO_WORKLETS = Boolean(args['no-worklets']);
 const UPDATE = Boolean(args.update);
-const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'noise', 'bank', 'discrim', 'ladder', 'cluster', 'heldnote', 'outcomes', 'captions', 'honesty', 'worldmap', 'worldstem', 'sea', 'thunder', 'masking', 'crest', 'workshops', 'worklevel', 'workslots', 'worknight', 'quietmix', 'quota', 'camera', 'musicstems', 'isleband', 'nightmusic', 'score', 'occasions', 'townband', 'percussion'];
-const APP_CHECKS = ['lint', 'routing', 'away', 'ceremony', 'continuity', 'fps'];
+const VIRTUAL_CHECKS = ['scenes', 'margins', 'limiter', 'switch', 'ducks', 'avsync', 'determinism', 'baseline', 'transport', 'pause', 'air', 'noise', 'bank', 'discrim', 'ladder', 'cluster', 'heldnote', 'outcomes', 'captions', 'honesty', 'worldmap', 'worldstem', 'sea', 'thunder', 'masking', 'crest', 'workshops', 'worklevel', 'workslots', 'worknight', 'quietmix', 'quota', 'camera', 'musicstems', 'isleband', 'nightmusic', 'score', 'occasions', 'townband', 'percussion', 'signals', 'awaken', 'listening'];
+const APP_CHECKS = ['lint', 'routing', 'away', 'ceremony', 'continuity', 'fps', 'awakening', 'captionprobe'];
 const ALL_CHECKS = [...VIRTUAL_CHECKS, ...APP_CHECKS];
 const ONLY = args.only ? String(args.only).split(',').map(s => s.trim()) : ALL_CHECKS;
 for (const name of ONLY) if (!ALL_CHECKS.includes(name)) throw new Error(`unknown check "${name}" (known: ${ALL_CHECKS.join(', ')})`);
@@ -448,6 +452,7 @@ function virtualUnits(render, browser, baseUrl) {
     units.push(...wave4Units(render, renderOnce, scene, marginBed));
     units.push(...wave5Units(render, renderOnce, scene, marginBed));
     units.push(...wave6Units(render, renderOnce, scene, marginBed));
+    units.push(...wave7Units(renderOnce));
     return units;
 }
 
@@ -1784,6 +1789,88 @@ function judgeBankRows() {
     }
 }
 
+// ------------------------------------------------------------ Wave 7 units ----
+function wave7Units(renderOnce) {
+    const units = [];
+    const L = WAVE7_LIMITS;
+    const db = v => (Number.isFinite(v) ? `${fmt(v)} dBFS` : 'silence');
+    if (has('signals')) {
+        for (const open of [false, true]) {
+            units.push({
+                name: `signals (7.2: the Signals floor, busy${open ? ', a wait left open' : ''})`,
+                async run() {
+                    const r = await renderOnce(`signals:${open ? 'open' : 'answered'}`, signalsScene({ openWait: open }));
+                    const x = signalsRows(r);
+                    const tag = open ? 'busy, a wait left open' : 'busy';
+                    const profile = r.meta.finalSnapshot?.preset ?? r.meta.finalSnapshot?.mode ?? '—';
+                    verdict('signals', x.floorWindows > 0 && x.floorMaxDb < L.signalsFloorDbfs, `Signals (${tag}): loudest 400 ms window between cues ${db(x.floorMaxDb)} over ${x.floorWindows} windows; want < ${L.signalsFloorDbfs} dBFS (preset ${profile}; sounding kinds ${x.kinds.join(', ') || 'none'})`);
+                    const floorRef = Number.isFinite(x.floorMaxDb) ? x.floorMaxDb : L.signalsFloorDbfs;
+                    const call = x.calls[0];
+                    verdict('signals', call != null && call.peakDb - floorRef >= L.callOverFloorDb, `Signals (${tag}): the needs-you call ${call ? db(call.peakDb) : 'never sounded'} (loudest 400 ms), ${call ? fmt(call.peakDb - floorRef) : '—'} dB over the floor (${db(x.floorMaxDb)}, counted at ${L.signalsFloorDbfs} dBFS when silent); want ≥ ${L.callOverFloorDb} dB`);
+                    for (const a of x.arrivals) {
+                        verdict('signals', a.caption != null && !a.sounded && a.peakDb < L.signalsFloorDbfs, `Signals (${tag}): the arrival at ${fmt(a.t - r.meta.warmup, 1)} s captioned ${a.caption ? `"${a.caption}"` : 'nothing'}${a.announceOnly ? ' (announceOnly)' : ''}, ${a.sounded ? 'sounded' : 'no sound'}, loudest 400 ms over the 3 s after ${db(a.peakDb)}; want a caption and no rise (< ${L.signalsFloorDbfs} dBFS)`);
+                    }
+                    if (!open) info('signals', `Signals (busy): the answered strike at ${x.answered.map(t => `${fmt(t - r.meta.warmup, 1)} s`).join(', ') || 'none'} (the needs-you is answered at ${SIGNALS_ANSWER_AT} s)`);
+                    if (r.errors.length) info('signals', `page errors: ${r.errors.slice(0, 3).join(' | ')}`);
+                },
+            });
+        }
+    }
+    if (has('awaken')) {
+        units.push({
+            name: 'awaken (7.4: the village awakens, virtual clock)',
+            async run() {
+                const r = await renderOnce('awaken', AWAKEN_SCENE);
+                const x = awakenRows(r, { ...AWAKEN, stAtSec: L.awakenStAtSec });
+                verdict('awaken', x.plays === 1, `awakenings in one page session (enable, then Off at ${AWAKEN.offAt} s and Village at ${AWAKEN.onAt} s): ${x.plays}${x.presets.length ? ` (${x.presets.join(', ')})` : ''}; want 1`);
+                const under = x.callMMax != null && x.awakenMMax != null ? x.callMMax - x.awakenMMax : null;
+                verdict('awaken', Number.isFinite(x.awakenMMax) && under != null && under >= L.awakenUnderCallLu, `the awakening's M max ${fmt(x.awakenMMax)} vs the needs-you call's ${fmt(x.callMMax)} LUFS (cue stem): ${fmt(under)} LU under; want ≥ ${L.awakenUnderCallLu}`);
+                const d = x.stAt != null && x.steady != null ? x.stAt - x.steady : null;
+                verdict('awaken', d != null && Math.abs(d) <= L.awakenStWithinDb, `program short-term ${L.awakenStAtSec} s after the enable ${fmt(x.stAt)} vs steady ${fmt(x.steady)} LUFS (energy mean over ${AWAKEN.steadyFrom}–${AWAKEN.steadyTo} s): ${signed(d)} dB; want within ±${L.awakenStWithinDb}`);
+            },
+        });
+    }
+    if (has('listening')) {
+        units.push({
+            name: 'listening (7.7: output, tone)',
+            async run() {
+                const busy = {};
+                for (const output of ['speakers', 'mono']) busy[output] = outputRow(await renderOnce(`output:busy:${output}`, outputBusyScene({ output })));
+                const d = busy.mono.lufsI - busy.speakers.lufsI;
+                verdict('listening', Math.abs(d) <= L.monoCompLu && busy.mono.lrDiffDb < -90, `Mono vs Speakers (Village with cues): ${fmt(busy.mono.lufsI)} vs ${fmt(busy.speakers.lufsI)} LUFS-I (${signed(d, 2)} LU; compensation ${fmt(busy.mono.output?.monoCompDb, 2)} dB), mono L−R ${Number.isFinite(busy.mono.lrDiffDb) ? `max ${fmt(busy.mono.lrDiffDb)} dBFS` : 'identical'}; want within ±${L.monoCompLu} LU and L = R`);
+                const bed = {};
+                for (const output of ['speakers', 'headphones']) bed[output] = outputRow(await renderOnce(`output:bed:${output}`, outputScene({ output })));
+                verdict('listening', bed.headphones.icc >= L.headphonesIccMin, `Headphones: the world bed's ICC ${fmt(bed.headphones.icc, 2)} (Speakers ${fmt(bed.speakers.icc, 2)}; pan scale ${fmt(bed.headphones.output?.panScale, 2)}); want ≥ ${L.headphonesIccMin}`);
+                for (const b of ['world', 'music']) {
+                    const t = {};
+                    for (const tone of [-1, 0, 1]) t[tone] = toneRow(await renderOnce(`tone:${b}:${tone}`, toneScene(b, tone)));
+                    for (const tone of [-1, 1]) {
+                        const hi = t[tone].highDb - t[0].highDb;
+                        const lo = t[tone].lowDb - t[0].lowDb;
+                        verdict('listening', Math.abs(hi - tone * L.toneShelfDb) <= L.toneTolDb && Math.abs(lo) <= L.toneLowTolDb, `tone ${signed(tone, 0)} on the ${b === 'world' ? 'Village world bed' : 'Town band'}: 5–10 kHz ${signed(hi, 2)} dB, 100–1000 Hz ${signed(lo, 2)} dB vs tone 0 (engine tone ${fmt(t[tone].output?.toneDb, 1)} dB); want ${signed(tone * L.toneShelfDb, 0)} ± ${L.toneTolDb} dB above the shelf, within ±${L.toneLowTolDb} dB under it`);
+                    }
+                }
+            },
+        });
+        units.push({
+            name: 'listening (7.7: soften sudden sounds)',
+            async run() {
+                const off = softenRow(await renderOnce('soften:off', softenScene(false)));
+                const on = softenRow(await renderOnce('soften:on', softenScene(true)));
+                verdict('listening', on.bell?.riseMs != null && on.bell.riseMs >= L.softBellAttackMinMs, `Soften: the arrival bell's attack ${fmt(on.bell?.riseMs, 0)} ms (off ${fmt(off.bell?.riseMs, 0)} ms, −40 → −1 dB re peak); want ≥ ${L.softBellAttackMinMs} ms`);
+                verdict('listening', on.thunder?.riseMs != null && off.thunder?.riseMs != null && on.thunder.riseMs >= L.softThunderAttackMinMs && on.thunder.riseMs > off.thunder.riseMs, `Soften: the thunder's attack ${fmt(on.thunder?.riseMs, 0)} ms vs ${fmt(off.thunder?.riseMs, 0)} ms off, peak ${signed((on.thunder?.peakDb ?? NaN) - (off.thunder?.peakDb ?? NaN))} dB; want slower, ≥ ${L.softThunderAttackMinMs} ms`);
+                const pairs = on.ducks.map((d, i) => ({ d, o: off.ducks[i] })).filter(p => p.o && p.d.kind === p.o.kind && p.d.kind !== 'summons');
+                const ratios = pairs.flatMap(({ d, o }) => Object.keys(o.depths).filter(k => o.depths[k] < 0).map(k => ({ kind: d.kind, bus: k, ratio: (d.depths[k] ?? 0) / o.depths[k] })));
+                const bad = ratios.filter(x => Math.abs(x.ratio - L.softDuckScale) > L.softDuckTol);
+                verdict('listening', ratios.length > 0 && bad.length === 0, `Soften: ${ratios.length} duck depths of non-needs-you cues at ${[...new Set(ratios.map(x => fmt(x.ratio, 2)))].join('/') || '—'} × their depth off (${[...new Set(pairs.map(p => p.d.kind))].join(', ') || 'none paired'}); want ${L.softDuckScale} ± ${L.softDuckTol}${bad.length ? ` — ${bad.slice(0, 3).map(x => `${x.kind} ${x.bus} ×${fmt(x.ratio, 2)}`).join(', ')}` : ''}`);
+                const dc = on.callMMax != null && off.callMMax != null ? on.callMMax - off.callMMax : null;
+                verdict('listening', dc != null && Math.abs(dc) <= L.callWholeLu, `Soften: the needs-you call's M max ${fmt(on.callMMax)} vs ${fmt(off.callMMax)} LUFS off (${signed(dc, 2)} LU); want whole, within ±${L.callWholeLu} LU`);
+            },
+        });
+    }
+    return units;
+}
+
 // ---------------------------------------------------------------- pool ----
 async function pool(units, jobs) {
     let next = 0;
@@ -1870,6 +1957,12 @@ async function main() {
         }
         if (has('fps')) {
             appUnits.push({ name: 'app frame cost, sound on vs off (fps)', check: 'fps', run: async () => judgeFrameCost(await appFrameCostUnit(await appB(), reporter), reporter) });
+        }
+        if (has('awakening')) {
+            appUnits.push({ name: 'app first enable (awakening, 7.4)', check: 'awakening', run: async () => judgeAwakening(await appAwakeningUnit(await appB(), reporter), reporter, WAVE7_LIMITS) });
+        }
+        if (has('captionprobe')) {
+            appUnits.push({ name: 'app captions with sound off (captionprobe)', check: 'captionprobe', run: async () => judgeCaption(await appCaptionUnit(await appB(), reporter), reporter) });
         }
         if (has('lint')) {
             for (const u of await lintUnits(await harness(), server, reporter)) appUnits.push({ ...u, check: 'lint' });

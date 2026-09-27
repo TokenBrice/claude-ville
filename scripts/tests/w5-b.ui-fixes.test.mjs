@@ -240,32 +240,48 @@ test('Chronicle date selection stays committed on a failed read and export failu
     });
 });
 
-test('MIX moves focus into its dialog and restores the trigger on close', () => {
+test('the SOUND popover opens on the checked preset, closes the Spend Map, and restores its chevron', () => {
     const previousWindow = globalThis.window;
     globalThis.window = { innerWidth: 1280 };
     let focused = '';
-    const slider = { focus: () => { focused = 'slider'; } };
-    const button = {
+    const attributes = new Map();
+    const radio = (name) => ({ focus: () => { focused = name; } });
+    const chevron = {
         getBoundingClientRect: () => ({ right: 900, bottom: 40 }),
-        setAttribute() {},
-        classList: { add() {}, remove() {} },
-        focus: () => { focused = 'button'; },
+        setAttribute: (name, value) => attributes.set(name, value),
+        focus: () => { focused = 'chevron'; },
     };
-    const panel = {
-        style: { display: 'none' },
-        querySelector: () => slider,
-    };
+    const panel = { hidden: true, style: {}, focus: () => { focused = 'panel'; } };
+    let spendClosed = 0;
     try {
         const topbar = {
             _destroyed: false,
-            _mixerButtonEl: button,
-            _mixerPanelEl: panel,
-            _hideSpendPanel() {},
+            els: { soundMenu: chevron },
+            _soundEls: { panel, radios: { off: radio('off'), village: radio('village') } },
+            _soundView: { preset: 'village' },
+            _renderSoundPanel() {},
+            _hideSpendPanel: () => { spendClosed++; },
+            _soundPanelOpen: TopBar.prototype._soundPanelOpen,
         };
-        TopBar.prototype._showMixerPanel.call(topbar);
-        assert.equal(focused, 'slider');
-        TopBar.prototype._hideMixerPanel.call(topbar);
-        assert.equal(focused, 'button');
+        TopBar.prototype._showSoundPanel.call(topbar);
+        assert.equal(panel.hidden, false);
+        assert.equal(spendClosed, 1, 'never shares the screen with the Spend Map');
+        assert.equal(attributes.get('aria-expanded'), 'true');
+        assert.equal(focused, 'village', 'focus lands on the checked radio');
+        // Right-anchored under the chevron.
+        assert.equal(panel.style.left, `${900 - 308}px`);
+
+        TopBar.prototype._hideSoundPanel.call(topbar);
+        assert.equal(panel.hidden, true);
+        assert.equal(attributes.get('aria-expanded'), 'false');
+        assert.equal(focused, 'chevron');
+
+        // Closed and closed again writes nothing and moves no focus.
+        focused = '';
+        attributes.clear();
+        TopBar.prototype._hideSoundPanel.call(topbar);
+        assert.equal(attributes.size, 0);
+        assert.equal(focused, '');
     } finally {
         if (previousWindow === undefined) delete globalThis.window;
         else globalThis.window = previousWindow;

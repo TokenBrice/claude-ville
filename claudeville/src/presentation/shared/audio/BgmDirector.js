@@ -56,9 +56,8 @@ const ATMO_FRESH_MS = 3000;
 const PAUSE_CLOSE_SEC = 0.08;
 const RESUME_OPEN_SEC = 0.25;
 
-// Four working bands (MUS-8), shared with the Village director. The label
-// beside the music control always states the exact counts, so the bands never
-// have to.
+// Four working bands (MUS-8), shared with the Village director. The KPIs in
+// the top bar state the exact counts, so the bands never have to.
 const SECTION_BANDS = Object.freeze([
     Object.freeze({ section: 'rest', maxWorking: 0 }),
     Object.freeze({ section: 'light', maxWorking: 3 }),
@@ -84,10 +83,10 @@ const BGM_LEVEL = 0.9;
 const ATTENTION_DB = -2;
 
 /**
- * The counts the working section and its label are made of, from the same
- * ledger `AudioDirector._tick` reads. `waiting` counts every agent that is
- * waiting (on a person or on work); `actionable` is the subset a person has to
- * act on, which is what leans the band back (the attention stage).
+ * The counts the working section is made of, from the same ledger
+ * `AudioDirector._tick` reads. `waiting` counts every agent that is waiting
+ * (on a person or on work); `actionable` is the subset a person has to act
+ * on, which is what leans the band back (the attention stage).
  */
 export function workingSectionCounts(world) {
     const counts = bucketCounts(world);
@@ -98,11 +97,6 @@ export function workingSectionCounts(world) {
         watchlist: Number(counts.watchlist) || 0,
         actionable: Number(counts.actionable) || 0,
     };
-}
-
-/** The exact label beside the music control. Counts, never percentages. */
-export function workingSectionLabel({ working = 0, waiting = 0 } = {}) {
-    return `Working ${working} · Waiting ${waiting}`;
 }
 
 /** The working band (0 rest … 3 full) for an audible working count. */
@@ -521,7 +515,6 @@ export class BgmDirector {
                 requested: this._section.applied,
                 pending: this.player?.pendingBand != null ? SECTION_NAMES[this.player.pendingBand] : this._section.pending,
                 counts: { ...this._counts },
-                label: workingSectionLabel(this._counts),
             },
         };
     }

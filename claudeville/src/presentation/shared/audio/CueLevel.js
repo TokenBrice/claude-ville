@@ -40,6 +40,9 @@ const AIM_OVER_FLOOR_BY_LANE = Object.freeze({
     error: URGENT_AIM_OVER_FLOOR_LU,
     limit: URGENT_AIM_OVER_FLOOR_LU,
     routine: 2.3,
+    // A push's two gold bars read ≈ 1.5 LU over their aim on the Wave-7
+    // Village bed (sea and wind crests), so Medium aims half a LU under its floor.
+    outcomeMedium: -0.5,
     outcomeMinor: -0.5,
 });
 // Over music the band's own swell lifts what a cue reads over it (the Isle

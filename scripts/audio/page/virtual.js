@@ -25,7 +25,7 @@ import { cueScoreDiagnostics, scheduleAccent } from '/src/presentation/shared/au
 import { laneForCueKind } from '/src/presentation/shared/audio/cues/CueKit.js';
 import { PROGRAM_TRIM_DB } from '/src/presentation/shared/audio/Loudness.js';
 import {
-    LAYERS, atmosphereFor, atmosphereSummary, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
+    LAYERS, PRESET_FOR_MODE, atmosphereFor, atmosphereSummary, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
 } from './scene.js';
 import { installMusicProbe, stopLintRows } from './music.js';
 import { installRitualConductor, scriptedCamera } from './workshop.js';
@@ -279,6 +279,9 @@ function logCues(log, now, kitOf) {
             level: p?.level ?? p?.payload?.level ?? null, family: p?.family ?? null, count: p?.count ?? null,
             soundOnly: Boolean(p?.soundOnly), flock: Boolean(p?.flock), cluster: Array.isArray(p?.cluster) ? p.cluster.length : null,
             notes: Array.isArray(p?.notes) ? p.notes.slice() : null, silent: Boolean(p?.silent),
+            // Wave 7: captioned without a sound (Signals), and the one-time
+            // family line on the first real urgent cue after an enable.
+            announceOnly: Boolean(p?.announceOnly), familyLine: p?.familyLine ?? null,
         });
         const level = kitOf()?.lastLevel;
         if (level) log.levels.push({ t: now(), kind: p?.kind ?? null, ...plain(level) });
@@ -514,12 +517,17 @@ export async function runVirtual(spec) {
     // note back (3.3) and puts cues on its grid (3.5). The Village sequencer
     // refuses every start instead, so none plays.
     if (spec.force?.music === 0 || (spec.isolate && spec.isolate !== 'music')) await holdVillageMusic();
+    // 7.4: every awakening (`audio:awakened`, once per page session), in
+    // audio time.
+    const awakens = [];
+    eventBus.on('audio:awakened', (p) => { awakens.push({ t: p?.contextTime ?? ctx.currentTime, preset: p?.preset ?? null }); });
     controller = new AmbientAudioController({ world });
     const pinned = pinAtStart;
     // The directors follow `atmosphere:updated`; the scene's snapshot reaches
     // them before the enable starts any music (the world's own update would).
     eventBus.emit('atmosphere:updated', snapshot);
-    controller.activateFromUser(true);
+    // The enable a TopBar pick performs: the stored preset, as a user action.
+    controller.setPreset(PRESET_FOR_MODE[spec.mode || 'ambient'], { fromUser: true });
     eventBus.emit('atmosphere:updated', snapshot);
     await pumpUntil(() => controller.isRunning(), 'the enable');
     const engine = controller.engine;
@@ -607,6 +615,8 @@ export async function runVirtual(spec) {
         volumeStep: snap?.volumeStep ?? null,
         markers,
         cues: wall(log.cues),
+        awakens,
+        output: typeof engine.outputSnapshot === 'function' ? plain(engine.outputSnapshot()) : null,
         scheduled: wall(log.scheduled).map(s => ({ ...s, notes: s.notesMs.map(toT) })),
         ducks: log.ducks,
         accents: log.accents,

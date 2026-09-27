@@ -86,6 +86,8 @@ const TAKE_GAIN = Object.freeze({ gull: 0.2, clink: 0.04, groan: 0.9 });
 // Rare voices never sound in the first seconds after start (their bakes land
 // meanwhile), so a busy bake queue cannot decide whether an early gull plays.
 const RARE_WARMUP_SEC = 6;
+// The first crest waits at least one build (the longest, 2.4 s) after start.
+const FIRST_WAVE_LEAD_SEC = 2.4;
 const BAKE_RATE = 32000;
 const TAKES = Object.freeze({ gull: 4, clink: 4, groan: 3 });
 // Kept for snapshot().
@@ -562,7 +564,10 @@ export class SeaLayer extends BaseLayer {
 
         this._bakeTakes();
         this._rareFrom = t0 + RARE_WARMUP_SEC;
-        this._pending = this._planWave(t0 + rand(this._waveRng, 0.5, 2.5) + 2.4);
+        // The first crest lands at a steady-state phase of the wave period
+        // (after one build's lead), so an enable never opens denser than the
+        // sea runs (7.4, C-UX7): one draw, as before.
+        this._pending = this._planWave(t0 + FIRST_WAVE_LEAD_SEC + rand(this._waveRng, 0, 1) * this._P.periodSec);
 
         this._unsubscribe = eventBus.on('audio:cue-scheduled', payload => this._onCueScheduled(payload));
 

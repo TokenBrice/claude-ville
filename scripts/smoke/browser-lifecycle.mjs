@@ -38,9 +38,8 @@ const STATIC_OWNER_TARGETS = new Set([
   '#panelClose',
   '#sidebarToggle',
   '#topbarCinemaToggle',
-  '#topbarSoundMode',
+  '#topbarSoundMenu',
   '#topbarSoundToggle',
-  '#topbarSoundVolume',
   '#worldCanvas',
   'input.sidebar__filter-input',
   'span.topbar__version',
@@ -408,6 +407,20 @@ async function waitForAudio(page, predicate, arg = null, timeout = 5000) {
   return page.evaluate(() => window.__claudevilleAudio());
 }
 
+// The real enable (7.1): a click on the sound note; a profile's first-ever
+// click opens the SOUND panel's presets, so Village is picked there.
+async function enableVillageFromChip(page) {
+  await page.click('#topbarSoundToggle');
+  const panelOpen = await page.evaluate(() => {
+    const panel = document.getElementById('soundPanel');
+    return Boolean(panel && !panel.hidden && panel.getBoundingClientRect().width > 0);
+  });
+  if (panelOpen) {
+    await page.click('#soundPresets [role="radio"][data-preset="village"]');
+    await page.keyboard.press('Escape');
+  }
+}
+
 // Fresh profile, no interaction: the route exists from boot idle with no
 // AudioContext, and a council gathering is played (captioned) exactly once.
 // A live or simulated village has its own cue traffic, and the governor
@@ -553,7 +566,7 @@ async function runArmedChipProbe(browser, url, timeoutMs) {
 async function runActualAudioLifecycleProbe(page) {
   const initial = await waitForAudioRoute(page);
   if (!initial.available) throw new Error('AudioContext unavailable in the smoke browser');
-  if (!initial.enabled) await page.click('#topbarSoundToggle');
+  if (!initial.enabled) await enableVillageFromChip(page);
   const running = await waitForAudio(page, () => {
     const audio = window.__claudevilleAudio?.();
     return audio?.contextState === 'running' && audio?.running === true;
@@ -683,6 +696,7 @@ async function runAudioLifecycleProbe(page) {
     let hidden = false;
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
     const storedEnabled = window.localStorage.getItem('claudeville.sound.enabled');
+    const storedMode = window.localStorage.getItem('claudeville.sound.mode');
 
     const calls = { ensure: 0, start: 0, stop: 0, suspend: 0, dispose: 0, directorStart: 0, pause: 0, resume: 0 };
     let delayedResolve = null;
@@ -692,14 +706,13 @@ async function runAudioLifecycleProbe(page) {
     controller.directors.ambient.destroy();
     await controller.engine.dispose();
     controller.available = true;
-    // The throwaway controller must not write the app's section label.
-    controller.sectionLabel = null;
     controller.engine = {
       context: { state: 'running' },
       now() { return 0; },
       setVolumeStep() {},
       fadeDirector() { return 0; },
       setGroupLevel() {},
+      setBedCompensation() {},
       ensureContext() {
         calls.ensure++;
         if (!delayEnsure) return Promise.resolve(true);
@@ -725,13 +738,18 @@ async function runAudioLifecycleProbe(page) {
       currentPhase() { return 'day'; },
       setHidden() {},
       setSignalRouting() {},
+      setProfile() {},
+      setQuietMix() {},
       snapshot() { return {}; },
       cue() {},
     };
     controller.directors = { ambient: director, bgm: { ...director } };
+    // The awakening (7.4) plays on the real kit, which the stub engine has
+    // no graph for; these races are about starts and pauses, not its voice.
+    controller.cues.kit.playAwaken = () => false;
 
     try {
-      controller.activateFromUser(true);
+      controller.setPreset('village', { fromUser: true });
       await Promise.resolve();
       await Promise.resolve();
       const startedOnce = calls.start === 1 && calls.directorStart === 1;
@@ -787,9 +805,11 @@ async function runAudioLifecycleProbe(page) {
       else delete document.hidden;
       if (previousDebug) window.__claudevilleAudio = previousDebug;
       else delete window.__claudevilleAudio;
-      // The throwaway controller persisted its enable; the app's stays.
+      // The throwaway controller persisted its enable and preset; the app's stay.
       if (storedEnabled === null) window.localStorage.removeItem('claudeville.sound.enabled');
       else window.localStorage.setItem('claudeville.sound.enabled', storedEnabled);
+      if (storedMode === null) window.localStorage.removeItem('claudeville.sound.mode');
+      else window.localStorage.setItem('claudeville.sound.mode', storedMode);
     }
   });
 }

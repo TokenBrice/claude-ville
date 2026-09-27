@@ -2996,7 +2996,10 @@ export class IsometricRenderer {
             return;
         }
 
+        // Tab cycles agents only while focus rests on the World itself; from
+        // the top bar or any other control it moves focus as usual (7.6).
         if (event.code === 'Tab') {
+            if (!this._worldOwnsFocus(activeElement)) return;
             if (this._cycleAgentSelection(event.shiftKey ? -1 : 1)) event.preventDefault();
             return;
         }
@@ -3052,6 +3055,13 @@ export class IsometricRenderer {
         if (!element) return false;
         const tagName = String(element.tagName || '').toUpperCase();
         return tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT' || element.isContentEditable;
+    }
+
+    _worldOwnsFocus(element) {
+        if (typeof document === 'undefined') return true;
+        if (!element || element === document.body || element === document.documentElement) return true;
+        if (element === this.canvas) return true;
+        return Boolean(document.getElementById('characterMode')?.contains?.(element));
     }
 
     _isModalOpen() {

@@ -210,6 +210,10 @@ export const VOICE_REGISTRY = Object.freeze({
     'cue.linkLost': Object.freeze({ nominalLufsM: -40.1, plr: 15.1 }),
     'cue.linkRestored': Object.freeze({ nominalLufsM: -38.1, plr: 6.1 }),
     'cue.digest': Object.freeze({ nominalLufsM: -36.0, plr: 12.0 }),
+    // Wave 7: the awakening (a two-mode latch + two soft-mallet bells, trim
+    // 0), 14.2 LU under the L1 needs-you call in one offline render (M-max
+    // −27.9 vs −13.7 at volume step 10; PLR 8.8).
+    'cue.awaken': Object.freeze({ nominalLufsM: -54.0, plr: 8.8 }),
     'cue.thunder': Object.freeze({ nominalLufsM: -43.4, plr: 11.6 }),
     // Wave 5 workshop accents (WorkshopVoices.js, 5.2): one accent take of
     // the building's accent voice at unit gain (every take peaks at 1.0),

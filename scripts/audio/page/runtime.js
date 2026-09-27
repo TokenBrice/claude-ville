@@ -18,7 +18,7 @@ import { cueNoteOffsetsMs } from '/src/presentation/shared/audio/CueScore.js';
 import { STANDARD_VOLUME_STEP } from '/src/presentation/shared/audio/Loudness.js';
 import { PIECES } from '/src/presentation/shared/audio/bgm/BgmSongbook.js';
 import {
-    LAYERS, atmosphereFor, atmosphereSummary, hourFor, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
+    LAYERS, PRESET_FOR_MODE, atmosphereFor, atmosphereSummary, hourFor, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
 } from './scene.js';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -107,8 +107,8 @@ export async function runRealtime(spec) {
 
     controller = new AmbientAudioController({ world });
     // The page already holds a real user activation (openHarness clicks it),
-    // so this is the same enable a TopBar click performs.
-    controller.activateFromUser(true);
+    // so this is the same enable a TopBar pick performs.
+    controller.setPreset(PRESET_FOR_MODE[spec.mode || 'ambient'], { fromUser: true });
     const t0 = performance.now();
     while (!(controller.engine.running && controller.director.running)) {
         if (performance.now() - t0 > 10000) throw new Error(`audio did not start: ${controller.engine.context?.state}`);

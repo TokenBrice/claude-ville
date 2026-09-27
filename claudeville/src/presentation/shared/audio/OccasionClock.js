@@ -429,6 +429,20 @@ export class OccasionClock {
         return from + lerp(this._band.gapSec, this._gapDraw) * 1000;
     }
 
+    /**
+     * When the next tune may start (ms) for the popover's line (7.3): the
+     * next fragment's gap or an earned occasion's eligibility, whichever is
+     * first; null while one plays. A pure read (the decision owns the gap's
+     * start). The rules checked at the start (rest, rain, a long wait, the
+     * duty cap) may still hold it.
+     */
+    nextTuneAt(now) {
+        if (this._current && now < this._current.endMs) return null;
+        let at = (this._lastEndMs ?? now) + lerp(this._band.gapSec, this._gapDraw) * 1000;
+        for (const entry of this._pending.values()) at = Math.min(at, Math.max(now, entry.eligibleAt));
+        return at;
+    }
+
     /** Share (0..1) of the rolling hour before `now` that music was playing. */
     dutyLastHour(now) {
         const from = now - DUTY_WINDOW_MS;

@@ -45,12 +45,13 @@ async function captureSession(browser, planName, { seed, seconds, log }) {
             eventBus.on('audio:cue-played', p => scn.log.push({ ct: ctxT(), type: 'audio:cue-played', kind: p?.kind ?? null, agentId: p?.agentId ?? null }));
         }, { hour: plan.hour, weather: plan.weather });
 
+        // The real enable (7.1): the note's first-ever click opens the SOUND
+        // panel's presets; the plan's preset is picked there.
         await page.click('#topbarSoundToggle');
+        await page.locator('#soundPanel').waitFor({ state: 'visible', timeout: 10000 });
+        await page.click(`#soundPresets [role="radio"][data-preset="${plan.mode === 'bgm' ? 'townBand' : 'village'}"]`);
+        await page.keyboard.press('Escape');
         await page.waitForFunction(() => { const a = window.__claudevilleAudio?.(); return a?.contextState === 'running' && a?.running === true; }, null, { timeout: 20000 });
-        if (plan.mode === 'bgm') {
-            await page.waitForSelector('#topbarSoundMode:not([hidden])', { timeout: 10000 });
-            await page.click('#topbarSoundMode');
-        }
         // Ducked time: every window the engine is asked for.
         await page.evaluate(() => {
             const engine = window.__claudeVilleApp.topBar.audio.engine;

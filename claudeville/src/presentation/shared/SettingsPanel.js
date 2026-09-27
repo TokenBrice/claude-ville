@@ -4,29 +4,65 @@ import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { getClientPerfMetrics } from './ClientPerfMetrics.js';
 import {
+    HUSH_DURATION_MS,
+    SOUND_PRESETS,
+    SOUND_PRESET_DETAILS,
+    SOUND_PRESET_LABELS,
     SOUND_STEP_MAX,
+    TONE_RANGE_DB,
+    channelStep,
+    channelTrimSteps,
+    mixChannelsFor,
+    modeForPreset,
+    readStoredTrimSteps,
     readTownBandVoice,
     soundStep,
     writeCaptionSetting,
     writeCountHours,
+    writeHushUntil,
+    writePresetVolumeStep,
+    writeQuietHours,
     writeReminderSetting,
+    writeSoundBackground,
+    writeSoundOutput,
+    writeSoundSoften,
+    writeSoundTone,
+    writeStoredSoundEnabled,
+    writeStoredSoundMode,
+    writeStoredTrimSteps,
     writeTownBandVoice,
 } from './SoundSettings.js';
 
 export const REDUCED_MOTION_OVERRIDE_KEY = 'claudeville.motion.reduce';
 const HOOK_LIVE_WINDOW_MS = 15_000;
 const HEALTH_REFRESH_MS = 1_000;
-const SOUND_LAYERS = Object.freeze([
-    ['wind', 'Weather & sea'],
-    ['rain', 'Rain'],
-    ['wildlife', 'Wildlife'],
-    ['hum', 'Village hum'],
-    ['workshops', 'Workshops'],
-    ['music', 'Music'],
+// SOUND (7.8, UX-16): the same words as the popover. Internal ids stay in
+// storage; SET shows what each choice does.
+const PRESET_CHOICES = Object.freeze(SOUND_PRESETS.map(preset => [preset, SOUND_PRESET_LABELS[preset]]));
+const BACKGROUND_CHOICES = Object.freeze([
+    ['play', 'Keep playing'],
+    ['signals', 'Signals only'],
 ]);
-// Captions (3.8): internal ids stay in storage; SET shows what each choice
-// captions. Automatic follows the sound: signals while it is off, signals
-// and events while it is on.
+const OUTPUT_CHOICES = Object.freeze([
+    ['speakers', 'Speakers'],
+    ['headphones', 'Headphones'],
+    ['mono', 'Mono'],
+]);
+const QUIET_HOURS_CHOICES = Object.freeze([
+    ['off', 'Off'],
+    ['22-08', '10 PM – 8 AM'],
+    ['20-08', '8 PM – 8 AM'],
+    ['23-07', '11 PM – 7 AM'],
+]);
+const SOFTEN_CHOICES = Object.freeze([
+    ['auto', 'Follow Reduce motion'],
+    ['on', 'On'],
+    ['off', 'Off'],
+]);
+// The Village's Band slider is the music trim the Town band also plays at.
+const VILLAGE_BAND_DETAIL = 'Also sets the Town band level.';
+// Captions (3.8): Automatic follows the sound: signals while it is off,
+// signals and events while it is on.
 const CAPTION_CHOICES = Object.freeze([
     ['auto', 'Automatic'],
     ['signals', 'Signals only'],
@@ -47,15 +83,43 @@ const TOWN_BAND_VOICE_CHOICES = Object.freeze([
 
 let motionOverrideController = null;
 
-// The 0–10 sliders are 88px wide with an 8px square thumb: 8px per step, so
-// the gold fill always ends on a whole pixel at the thumb's centre.
+// Level sliders: whole steps 0–10 (plan 1.2, UX-8) read as `n / 10`.
+const LEVEL_SCALE = Object.freeze({
+    min: 0,
+    max: SOUND_STEP_MAX,
+    toSlider: value => soundStep(value, SOUND_STEP_MAX),
+    fromSlider: step => step,
+    readout: step => `${step} / 10`,
+    valueText: step => (step === 0 ? 'Off' : `${step} of 10`),
+});
+// Tone: Warm −4 dB … Bright +4 dB in 1 dB steps; stored as −1…+1.
+const signedDb = db => (db === 0 ? '0 dB' : `${db > 0 ? '+' : '−'}${Math.abs(db)} dB`);
+const TONE_SCALE = Object.freeze({
+    min: -TONE_RANGE_DB,
+    max: TONE_RANGE_DB,
+    toSlider: value => Math.round(Math.max(-1, Math.min(1, Number(value) || 0)) * TONE_RANGE_DB) + 0,
+    fromSlider: step => step / TONE_RANGE_DB,
+    readout: signedDb,
+    valueText: db => (db === 0 ? 'Neutral' : `${db < 0 ? 'Warm' : 'Bright'}, ${signedDb(db)}`),
+});
+
+// The sliders are 88px wide with an 8px square thumb: 80px of travel split
+// into whole-pixel steps (8px for 0–10), so the gold fill always ends on a
+// whole pixel at the thumb's centre.
 function syncRangeFill(input) {
-    const steps = Math.max(0, Math.min(10, Number(input?.value) || 0));
-    input?.style?.setProperty?.('--fill', `${steps * 8 + 4}px`);
+    const min = Number(input?.min) || 0;
+    const max = Number(input?.max) || SOUND_STEP_MAX;
+    const steps = Math.max(0, Math.min(max - min, (Number(input?.value) || 0) - min));
+    input?.style?.setProperty?.('--fill', `${Math.round(steps * (80 / (max - min))) + 4}px`);
 }
 
-function rangeStep(value) {
-    return soundStep(value, SOUND_STEP_MAX);
+function presetOf(settings) {
+    return SOUND_PRESETS.includes(settings?.soundPreset) ? settings.soundPreset : 'off';
+}
+
+function clockTime(ms) {
+    const date = new Date(ms);
+    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
 function storageGet(storage, key) {
@@ -179,11 +243,15 @@ function providerClass(provider) {
 export class SettingsPanel {
     constructor({
         readSettings,
-        onSoundEnabled,
-        onSoundMode,
-        onSoundBackground,
+        onSoundPreset,
         onSoundVolume,
         onSoundLayer,
+        onSoundBackground,
+        onSoundOutput,
+        onSoundTone,
+        onSoundSoften,
+        onSoundQuietHours,
+        onSoundHush,
         onSoundReminders,
         onSoundCountHours,
         onSoundTownBandVoice,
@@ -203,11 +271,24 @@ export class SettingsPanel {
         storage = globalThis.window?.localStorage,
     } = {}) {
         this.readSettings = readSettings;
-        this.onSoundEnabled = onSoundEnabled;
-        this.onSoundMode = onSoundMode;
-        this.onSoundBackground = onSoundBackground;
-        this.onSoundVolume = onSoundVolume;
-        this.onSoundLayer = onSoundLayer;
+        // Sound: TopBar routes each change to the sound controller, which
+        // persists it and applies it live. Without one, SET only persists
+        // (the controller reads the stored value when it loads).
+        this.onSoundPreset = onSoundPreset || ((preset) => {
+            writeStoredSoundEnabled(preset !== 'off', storage);
+            if (modeForPreset(preset)) writeStoredSoundMode(modeForPreset(preset), storage);
+            return preset;
+        });
+        this.onSoundVolume = onSoundVolume || ((preset, step) => writePresetVolumeStep(preset, step, storage));
+        this.onSoundLayer = onSoundLayer || ((name, step) => {
+            writeStoredTrimSteps({ ...readStoredTrimSteps(storage), [name]: soundStep(step, SOUND_STEP_MAX) }, storage);
+        });
+        this.onSoundBackground = onSoundBackground || (value => writeSoundBackground(value, storage));
+        this.onSoundOutput = onSoundOutput || (value => writeSoundOutput(value, storage));
+        this.onSoundTone = onSoundTone || (value => writeSoundTone(value, storage));
+        this.onSoundSoften = onSoundSoften || (value => writeSoundSoften(value, storage));
+        this.onSoundQuietHours = onSoundQuietHours || (value => writeQuietHours(value, storage));
+        this.onSoundHush = onSoundHush || (on => writeHushUntil(on ? Date.now() + HUSH_DURATION_MS : 0, storage));
         // Preferences no audio object needs to apply: SET persists them and
         // their readers take them on use.
         this.onSoundReminders = onSoundReminders || (value => writeReminderSetting(value, storage));
@@ -237,6 +318,8 @@ export class SettingsPanel {
         this._providerController = null;
         this._refreshTimer = null;
         this._metricsStartedHere = false;
+        this._sound = null;
+        this._offSoundState = null;
     }
 
     build() {
@@ -247,6 +330,7 @@ export class SettingsPanel {
                 className: 'settings-panel__intro',
                 text: 'Preferences, local watchtowers, storage, pricing, and live browser health.',
             }),
+            this._buildSound(settings),
             this._buildControls(settings),
             this._buildWatchtowers(),
             this._buildStorage(),
@@ -266,6 +350,10 @@ export class SettingsPanel {
             this._refreshOperationalRows();
         }, HEALTH_REFRESH_MS);
         void this._loadProviders();
+        // One sound state, many views (C-UX1): a change made in the popover,
+        // by `M` or by hush expiry reaches SET through the controller's
+        // change-only `audio:sound-state`.
+        this._offSoundState = eventBus.on('audio:sound-state', () => this._syncSound());
         return this.root;
     }
 
@@ -276,27 +364,64 @@ export class SettingsPanel {
         ]);
     }
 
-    _buildControls(settings) {
-        const grid = el('div', { className: 'settings-controls' });
-        grid.append(
-            this._checkbox('soundEnabled', 'Sound', 'Enable the local soundscape.', settings.soundEnabled, this.onSoundEnabled),
-            this._select('soundMode', 'Sound mode', 'Choose reactive ambience or continuous town music.', [
-                ['ambient', 'Reactive ambience'],
-                ['bgm', 'Town music'],
-            ], settings.soundMode, this.onSoundMode),
-            this._select('soundBackground', 'In the background', 'When ClaudeVille is visible but another app has focus.', [
-                ['play', 'Keep playing'],
-                ['signals', 'Signals only'],
-            ], settings.soundBackground, this.onSoundBackground),
-            this._select('soundTownBandVoice', 'Town band voice', 'Who plays the town music: the island\'s own band or the restored console chip.',
-                TOWN_BAND_VOICE_CHOICES, settings.soundTownBandVoice ?? readTownBandVoice(this._storage), this.onSoundTownBandVoice),
-            this._range('soundVolume', 'Master volume', settings.soundVolume, this.onSoundVolume),
+    // SOUND (7.8, UX-16): the popover's model plus the listening preferences,
+    // in the order Listen to, Volume, MIX, then how and when it plays. Volume
+    // and MIX follow the preset: Off shows neither, Signals no MIX, and each
+    // preset keeps its own volume step.
+    _buildSound(settings) {
+        const preset = presetOf(settings);
+        const presetRow = this._select('soundPreset', 'Listen to', SOUND_PRESET_DETAILS[preset], PRESET_CHOICES, preset,
+            value => this._choosePreset(value));
+        const volumeRow = this._slider('soundVolume', 'Volume', '', null,
+            step => this.onSoundVolume?.(this._sound.preset, step));
+        const mix = el('fieldset', { className: 'settings-soundscape' });
+        const hushButton = el('button', { className: 'settings-button' });
+        hushButton.type = 'button';
+        hushButton.addEventListener('click', () => this._toggleHush());
+        const hushRow = this._settingRow('Hush', 'Signals only for an hour.', hushButton);
+        this.controls.set('soundHush', hushButton);
+        this._sound = {
+            preset: null,
+            presetDetail: presetRow.querySelector('.settings-control__detail'),
+            volumeRow,
+            mix,
+            hushDetail: hushRow.querySelector('.settings-control__detail'),
+            hushUntil: 0,
+        };
+        const grid = el('div', { className: 'settings-controls' }, [
+            presetRow,
+            volumeRow,
+            mix,
+            this._select('soundBackground', 'In the background', 'When ClaudeVille is visible but another app has focus.',
+                BACKGROUND_CHOICES, settings.soundBackground, this.onSoundBackground),
+            this._select('soundOutput', 'Output', 'Headphones narrows left–right placement. Mono plays everything in both ears.',
+                OUTPUT_CHOICES, settings.soundOutput, this.onSoundOutput),
+            this._slider('soundTone', 'Tone', 'Warm ↔ Bright, on the weather, sea and music.', settings.soundTone,
+                value => this.onSoundTone?.(value), TONE_SCALE),
+            this._select('soundQuietHours', 'Quiet hours', 'Signals only, a little softer.',
+                QUIET_HOURS_CHOICES, settings.soundQuietHours, this.onSoundQuietHours),
+            hushRow,
+            this._select('captions', 'Captions', 'Short notes for what the village signals.',
+                CAPTION_CHOICES, settings.captions, this.onCaptions),
+            this._select('soundSoften', 'Soften sudden sounds', 'Gentler thunder and bells. Follows Reduce motion unless set.',
+                SOFTEN_CHOICES, settings.soundSoften, this.onSoundSoften),
             this._select('soundReminders', 'Reminders', 'Ring again while an agent is still waiting.',
                 REMINDER_CHOICES, settings.soundReminders, this.onSoundReminders),
             this._checkbox('soundCountHours', 'Count the hours', 'The tower bell strikes the hour after its phrase.',
                 settings.soundCountHours, this.onSoundCountHours),
-            this._select('captions', 'Captions', 'Short notes for what the village signals.',
-                CAPTION_CHOICES, settings.captions, this.onCaptions),
+            this._select('soundTownBandVoice', 'Town band voice', 'Who plays the town music: the island\'s own band or the restored console chip.',
+                TOWN_BAND_VOICE_CHOICES, settings.soundTownBandVoice ?? readTownBandVoice(this._storage), this.onSoundTownBandVoice),
+        ]);
+        this._renderPreset(settings);
+        this._renderHush(settings.soundHushUntil);
+        const section = this._section('SOUND', 'settings-section--sound', [grid]);
+        section.id = 'settingsSound';
+        return section;
+    }
+
+    _buildControls(settings) {
+        const grid = el('div', { className: 'settings-controls' });
+        grid.append(
             this._checkbox('autoCamera', 'Automatic camera', 'Frame live action while the World is idle.', settings.autoCamera, this.onAutoCamera),
             this._checkbox('desktopAlerts', 'Desktop alerts', this.alertsAvailable
                 ? 'Notify when an agent needs you.'
@@ -304,21 +429,78 @@ export class SettingsPanel {
             this._checkbox('sidebarCollapsed', 'Collapse sidebar', 'Keep the agent roster folded.', settings.sidebarCollapsed, this.onSidebarCollapsed),
             this._checkbox('reducedMotion', 'Reduce motion', 'Override the system preference for this browser.', settings.reducedMotion, this.onReducedMotion),
         );
-
-        const mix = el('fieldset', { className: 'settings-soundscape' }, [
-            el('legend', { className: 'settings-soundscape__legend', text: 'SOUNDSCAPE MIX' }),
-        ]);
-        for (const [name, label] of SOUND_LAYERS) {
-            mix.appendChild(this._range(
-                `soundLayer:${name}`,
-                label,
-                settings.soundLayers?.[name],
-                (value) => this.onSoundLayer?.(name, value),
-                true,
-            ));
-        }
-        grid.appendChild(mix);
         return this._section('CONTROLS', 'settings-section--controls', [grid]);
+    }
+
+    async _choosePreset(value) {
+        const result = await this.onSoundPreset?.(value);
+        // The stored state is the truth: a controller that could not start
+        // leaves the preset where it was.
+        this._syncSound();
+        return result;
+    }
+
+    async _toggleHush() {
+        const hushed = this._sound.hushUntil > Date.now();
+        const until = await this.onSoundHush?.(!hushed);
+        this._renderHush(Number.isFinite(Number(until)) ? Number(until) : this.readSettings?.()?.soundHushUntil);
+    }
+
+    _renderHush(until) {
+        const sound = this._sound;
+        if (!sound) return;
+        const next = Number(until) > Date.now() ? Number(until) : 0;
+        sound.hushUntil = next;
+        const detail = next ? `Hushed until ${clockTime(next)}` : 'Signals only for an hour.';
+        const text = next ? 'RESUME NOW' : 'HUSH FOR 1 HOUR';
+        const button = this.controls.get('soundHush');
+        if (sound.hushDetail && sound.hushDetail.textContent !== detail) sound.hushDetail.textContent = detail;
+        if (button && button.textContent !== text) button.textContent = text;
+    }
+
+    // The rows that follow the preset: its detail, its own volume step and
+    // the mix of trims it plays through (7.8). The MIX is rebuilt only when
+    // the preset changes.
+    _renderPreset(settings) {
+        const sound = this._sound;
+        if (!sound) return;
+        const preset = presetOf(settings);
+        const mode = modeForPreset(preset);
+        const detail = SOUND_PRESET_DETAILS[preset];
+        if (sound.presetDetail && sound.presetDetail.textContent !== detail) sound.presetDetail.textContent = detail;
+        sound.volumeRow.hidden = !mode;
+        if (mode) this._syncRange('soundVolume', settings.soundVolumes?.[mode]);
+        const channels = mixChannelsFor(preset);
+        if (preset !== sound.preset) {
+            sound.preset = preset;
+            for (const key of [...this.controls.keys()]) {
+                if (key.startsWith('soundMix:')) this.controls.delete(key);
+            }
+            replaceChildren(sound.mix, [
+                el('legend', { className: 'settings-soundscape__legend', text: 'MIX' }),
+                ...channels.map(channel => this._slider(
+                    `soundMix:${channel.id}`,
+                    channel.label,
+                    preset === 'village' && channel.id === 'band' ? VILLAGE_BAND_DETAIL : '',
+                    channelStep(channel, settings.soundLayers),
+                    (step) => {
+                        for (const [trim, trimStep] of Object.entries(channelTrimSteps(channel, step))) {
+                            this.onSoundLayer?.(trim, trimStep);
+                        }
+                    },
+                )),
+            ]);
+            sound.mix.hidden = channels.length === 0;
+            return;
+        }
+        for (const channel of channels) this._syncRange(`soundMix:${channel.id}`, channelStep(channel, settings.soundLayers));
+    }
+
+    /** Scrolls SET to its SOUND section and focuses `Listen to` (the popover's link). */
+    focusSound() {
+        const select = this.controls.get('soundPreset');
+        select?.closest?.('.settings-section')?.scrollIntoView?.({ block: 'start' });
+        select?.focus?.({ preventScroll: true });
     }
 
     _settingRow(label, detail, control) {
@@ -360,32 +542,43 @@ export class SettingsPanel {
             option.selected = choice === value;
             select.appendChild(option);
         }
-        select.addEventListener('change', () => callback?.(select.value));
+        select.addEventListener('change', async () => {
+            const result = await callback?.(select.value);
+            // A setter returns the value it kept (an invalid one falls back).
+            if (choices.some(([choice]) => choice === result) && select.value !== result) select.value = result;
+        });
         this.controls.set(key, select);
         // appearance:none drops the OS chevron; the wrap draws a pixel one.
         return this._settingRow(label, detail, el('span', { className: 'settings-select-wrap' }, [select]));
     }
 
-    // Sound levels are stored as whole steps 0–10 (plan 1.2) and shown as
-    // `n / 10`; the callback receives the step.
-    _range(key, label, value, callback, compact = false) {
-        const input = el('input', { className: 'settings-range', ariaLabel: `${label} level` });
+    // Sound levels are stored as whole steps 0–10 (plan 1.2, UX-8) and shown
+    // as `n / 10` (`aria-valuetext` `n of 10`); the callback receives the
+    // stored value (`scale.fromSlider`).
+    _slider(key, label, detail, value, callback, scale = LEVEL_SCALE) {
+        const input = el('input', { className: 'settings-range', ariaLabel: label });
         input.type = 'range';
-        input.min = '0';
-        input.max = '10';
+        input.min = String(scale.min);
+        input.max = String(scale.max);
         input.step = '1';
-        input.value = String(rangeStep(value));
-        const output = el('output', { className: 'settings-range__value', text: `${input.value} / 10` });
-        output.htmlFor = input.id;
-        syncRangeFill(input);
+        const output = el('output', { className: 'settings-range__value' });
+        const control = { input, output, scale };
+        this.controls.set(key, control);
+        this._setSlider(control, scale.toSlider(value));
         input.addEventListener('input', () => {
-            output.textContent = `${input.value} / 10`;
-            syncRangeFill(input);
-            callback?.(Number(input.value));
+            const step = Number(input.value);
+            this._setSlider(control, step);
+            callback?.(scale.fromSlider(step));
         });
-        this.controls.set(key, { input, output });
-        const control = el('div', { className: 'settings-range-wrap' }, [input, output]);
-        return this._settingRow(label, compact ? '' : 'Set the persisted level.', control);
+        return this._settingRow(label, detail, el('div', { className: 'settings-range-wrap' }, [input, output]));
+    }
+
+    _setSlider({ input, output, scale }, step) {
+        if (input.value !== String(step)) input.value = String(step);
+        const readout = scale.readout(step);
+        if (output.textContent !== readout) output.textContent = readout;
+        input.setAttribute('aria-valuetext', scale.valueText(step));
+        syncRangeFill(input);
     }
 
     _buildWatchtowers() {
@@ -569,36 +762,50 @@ export class SettingsPanel {
 
     syncControls() {
         const settings = this.readSettings?.() || {};
-        for (const key of ['soundEnabled', 'soundCountHours', 'autoCamera', 'desktopAlerts', 'sidebarCollapsed', 'reducedMotion']) {
+        for (const key of ['autoCamera', 'desktopAlerts', 'sidebarCollapsed', 'reducedMotion']) {
             const input = this.controls.get(key);
             if (input) input.checked = Boolean(settings[key]);
         }
-        const mode = this.controls.get('soundMode');
-        if (mode) mode.value = settings.soundMode || 'ambient';
-        const background = this.controls.get('soundBackground');
-        if (background) background.value = settings.soundBackground || 'play';
-        const voice = this.controls.get('soundTownBandVoice');
-        if (voice) voice.value = settings.soundTownBandVoice ?? readTownBandVoice(this._storage);
-        const reminders = this.controls.get('soundReminders');
-        if (reminders) reminders.value = settings.soundReminders || 'standard';
-        const captions = this.controls.get('captions');
-        if (captions) captions.value = settings.captions || 'auto';
-        this._syncRange('soundVolume', settings.soundVolume);
-        for (const [name] of SOUND_LAYERS) this._syncRange(`soundLayer:${name}`, settings.soundLayers?.[name]);
+        this._syncSound(settings);
         this._refreshOperationalRows();
+    }
+
+    // Every SOUND row from the stored state; a value already shown is not
+    // written again.
+    _syncSound(settings = this.readSettings?.() || {}) {
+        if (this._destroyed || !this._sound) return;
+        const selects = {
+            soundPreset: presetOf(settings),
+            soundBackground: settings.soundBackground || 'play',
+            soundOutput: settings.soundOutput || 'speakers',
+            soundQuietHours: settings.soundQuietHours || 'off',
+            captions: settings.captions || 'auto',
+            soundSoften: settings.soundSoften || 'auto',
+            soundReminders: settings.soundReminders || 'standard',
+            soundTownBandVoice: settings.soundTownBandVoice ?? readTownBandVoice(this._storage),
+        };
+        for (const [key, value] of Object.entries(selects)) {
+            const select = this.controls.get(key);
+            if (select && select.value !== value) select.value = value;
+        }
+        const countHours = this.controls.get('soundCountHours');
+        if (countHours && countHours.checked !== Boolean(settings.soundCountHours)) countHours.checked = Boolean(settings.soundCountHours);
+        this._syncRange('soundTone', settings.soundTone);
+        this._renderPreset(settings);
+        this._renderHush(settings.soundHushUntil);
     }
 
     _syncRange(key, value) {
         const control = this.controls.get(key);
-        if (!control) return;
-        control.input.value = String(rangeStep(value));
-        control.output.textContent = `${control.input.value} / 10`;
-        syncRangeFill(control.input);
+        if (control) this._setSlider(control, control.scale.toSlider(value));
     }
 
     destroy() {
         if (this._destroyed) return;
         this._destroyed = true;
+        this._offSoundState?.();
+        this._offSoundState = null;
+        this._sound = null;
         this._providerController?.abort?.();
         this._providerController = null;
         if (this._refreshTimer) globalThis.clearInterval?.(this._refreshTimer);

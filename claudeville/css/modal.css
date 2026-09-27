@@ -82,7 +82,8 @@
 /* Shared small control: a bordered ghost chip on the well colour. */
 .chronicle__date-button,
 .chronicle__export-button,
-.settings-actions__reset {
+.settings-actions__reset,
+.settings-button {
     min-height: 28px;
     padding: 0 10px;
     color: var(--ink-2);
@@ -98,7 +99,8 @@
 
 .chronicle__date-button:hover:not(:disabled),
 .chronicle__export-button:hover,
-.settings-actions__reset:hover:not(:disabled) {
+.settings-actions__reset:hover:not(:disabled),
+.settings-button:hover:not(:disabled) {
     color: var(--ink-1);
     background: var(--bg-2);
 }
@@ -208,6 +210,7 @@
 
 .settings-panel__intro,
 .settings-section--controls,
+.settings-section--sound,
 .settings-actions {
     grid-column: 1 / -1;
 }
@@ -270,6 +273,12 @@
     grid-column: 1 / -1;
     grid-row: 2;
     color: var(--ink-3);
+}
+
+/* SOUND rows that do nothing for the current preset leave the layout. */
+.settings-control[hidden],
+.settings-soundscape[hidden] {
+    display: none;
 }
 
 .settings-switch {
