@@ -157,6 +157,13 @@ const RAMP_STOPS = Object.fromEntries(Object.entries(ART_RAMPS).map(([key, stops
     stops.map((hex) => oklab(...hexToRgb(hex))),
 ]));
 
+// Snow stops (maintainer decision M9): achromatic snow may sit above the
+// Tier-A value ceiling wherever it appears (ground snow, snow-laden pines).
+const SNOW_STOP_SET = new Set(ART_RAMPS.snow.map((hex) => {
+    const [r, g, b] = hexToRgb(hex);
+    return (r << 16) | (g << 8) | b;
+}));
+
 function nearestStop(lab, rampKeys) {
     let best = Infinity;
     let bestKey = null;
@@ -269,7 +276,7 @@ function analyzeFile(stats, absPath, { exemptWholeFile, terrainRamps }) {
 
         const hot = luminance(r, g, b) > lumLimit || (sat > satLimit && max >= valFloor);
         if (hot) {
-            if (exemptWholeFile || (mask && mask[p])) stats.exempt++;
+            if (exemptWholeFile || (mask && mask[p]) || SNOW_STOP_SET.has((r << 16) | (g << 8) | b)) stats.exempt++;
             else stats.tierA++;
         }
 
@@ -589,7 +596,9 @@ function rampStopSet(key, stops = 0) {
 // Runs every tree sheet through FoliageRenderer's canopy remap for each plan
 // its variants and seasons use and counts canopy pixels that land off the
 // plan's ramps. A turning oak keeps its authored pixels below the turned
-// crown; those are counted as `authored`, not off-ramp.
+// crown; those are counted as `authored`, not off-ramp. Winter state sheets
+// (plan 5.5 bare/snow, `canopy: false`) are never remapped, so they report no
+// plans; their palette is checked by the per-asset rows above.
 function canopyRemapReport() {
     return Object.entries(TREE_SPRITES).map(([key, sprite]) => {
         const absPath = join(spritesRoot, 'vegetation', `${sprite.id}.png`);
@@ -600,7 +609,7 @@ function canopyRemapReport() {
         const source = Uint8ClampedArray.from(png.data.subarray(0, width * height * 4));
         const species = key.slice(0, key.indexOf('.'));
         const plans = new Set();
-        for (const season of CANOPY_SEASONS) {
+        for (const season of sprite.canopy === false ? [] : CANOPY_SEASONS) {
             for (const variant of CANOPY_VARIANTS) {
                 const plan = canopyPlan(species, variant, season);
                 if (plan) plans.add(plan);

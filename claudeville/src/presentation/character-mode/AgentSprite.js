@@ -4,6 +4,7 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { modelBehaviorProfile, moodBehaviorMultiplier } from '../../domain/value-objects/AgentMood.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { THEME, STATUS_VISUALS, PROVIDER_HUES, WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { packGeometryPixels } from './gpu/GpuSceneBuilder.js';
 import { agentSignature, drawAgentSignature, clearAgentSignatureCache, getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
 import { getTeamColor } from '../shared/TeamColor.js';
 import { SpriteSheet, dirFromVelocity, resolveActionFrame, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS, DEFAULT_CELL } from './SpriteSheet.js';
@@ -49,9 +50,16 @@ import {
 import { AgentAction, resolveAgentAction } from './ActionVocabulary.js';
 import { AgentGpuOverlayRenderer, departedTableau } from './AgentGpuOverlayRenderer.js';
 import { codexWeaponPose, drawCodexGauntlet } from './CodexWeaponPose.js';
+import { bakeWeaponFrame, rasterWeaponSource } from './WeaponFrames.js';
 import { clearDetachedCodexWrench } from './CodexEngineerGrips.js';
 import { REF_DT_MS, SPEED_RUNGS, snapBodyPx, speedRungIndex } from './MotionClock.js';
 import { gradeTone } from './EffectStamps.js';
+import { CANDLE_OFFSET, FALLBACK_SEAT_DROP, SEAT_FACING_DIR, queueCandleStamp, seatLineOffset, seatStoneStamps } from './RestSeats.js';
+import { materialClassId } from './MaterialRegistry.js';
+import { waitAnchor } from '../../domain/services/SignalLedger.js';
+
+// 7.1 — a stone seat drawn under its sitter lights as masonry, not as cloth.
+const SEAT_STONE_MATERIAL = materialClassId('stone');
 
 // Plan 2.1 (C3): villagers draw at exactly one world texel per authored pixel,
 // the same density as buildings, trees and tiles. Hit bounds come from the
@@ -92,6 +100,23 @@ const TURN_STEP_MS = 55;
 const STOP_BEAT_MS = 80;
 const START_BEAT_MS = 60;
 const PUSH_OFF_FRAME = 1;
+// 7.4 — a trailing walker that gives way plants for at least
+// FOLLOW_YIELD_MIN_MS (a deliberate beat, never a one-refresh stutter), at
+// most FOLLOW_YIELD_MAX_MS while its queue has no walking head (a knot), and
+// resumes FOLLOW_YIELD_ENTRY_PX into its contact frame. After a knot wait
+// that ran to the cap it walks at least FOLLOW_YIELD_WALK_OUT_MS before it
+// may give way again.
+const FOLLOW_YIELD_MIN_MS = 120;
+const FOLLOW_YIELD_MAX_MS = 1500;
+const FOLLOW_YIELD_WALK_OUT_MS = 500;
+const FOLLOW_YIELD_ENTRY_PX = 0.5;
+// Behavior states of a body that reached its visit and stands at it.
+const ARRIVED_BEHAVIOR_STATES = new Set(['performing', 'lingering', 'cooldown']);
+// A chat begins once the approach comes within CHAT_START_PX of its partner.
+// 7.4 — an approach re-aimed onto a fan place (at most one ring radius from
+// a body that itself stands within CHAT_START_PX) begins it on arrival there.
+const CHAT_START_PX = 35;
+const CHAT_FAN_REACH_PX = CHAT_START_PX + 24;
 // Camera-facing rank per direction (S, SE, E, NE, N, NW, W, SW): S/SE/SW show
 // the face, E/W the profile, NE/N/NW the back. An exact reversal turns through
 // the side with the higher rank, so the operator sees a face, never a back.
@@ -101,8 +126,25 @@ const DIR_NE = 3;
 const DIR_N = 4;
 const DIR_NW = 5;
 const DIR_W = 6;
+// 7.3 — the facings the work and wait strips are authored for (manifest
+// `directions: [se, e, w, sw]`, V7 work facings). A body about to play one
+// of those strips turns to the nearest of these, since any other column
+// resolves to no cell and would show the plain idle.
+const STRIP_FACINGS = Object.freeze([1, 2, 6, 7]);
 // V7 — per-direction foot anchors share the bounds cache under these keys.
 const FOOT_ANCHOR_KEYS = Object.freeze(DIRECTIONS.map((_, direction) => `anchor:${direction}`));
+// 7.1 / 7.2 — the two occupancy places outside any building. The allocator
+// picks the seat (nearest free) or the queue slot (wait rank); the queue keeps
+// the Command route type so a status route to Command never re-picks it.
+const REST_PLACE = Object.freeze({ type: 'rest-seat', restSeats: true, visitTiles: Object.freeze([]) });
+const QUEUE_PLACE = Object.freeze({ type: 'command', commandQueue: true, visitTiles: Object.freeze([]) });
+// How often a petitioner re-reads its queue slot (ranks move only when the
+// waiting set changes), and how soon a failed seat/queue pick may retry.
+const QUEUE_REFRESH_MS = 500;
+const PLACE_RETRY_MS = 2000;
+const LONG_DIRECTION_NAMES = Object.freeze({
+    s: 'south', se: 'south-east', e: 'east', ne: 'north-east', n: 'north', nw: 'north-west', w: 'west', sw: 'south-west',
+});
 // V7 — travel speed rung per state (indices into SPEED_RUNGS): WORKING keeps
 // the top rung (M27), WAITING and the other awake states walk at 1.125, IDLE
 // at 0.75, and a scenic stroll at 0.5625.
@@ -126,6 +168,12 @@ const RECEIVE_BEAT_MS = 1400;
 // (~600 ms): it replaces the working pulse on the same body, never stacks with
 // it, and reduced motion holds the group's declared static frame instead.
 const ACTION_BEAT_MS = 600;
+// 7.3 — authored work strips. A strip group plays only while RitualConductor
+// has admitted a ritual for this villager (≤ 6 at once), picked by the
+// ritual's real tool class (`ritual.stripGroup`), and cycles once per gesture
+// period with its contact frame on the period boundary, where WorkDownbeats
+// strikes. Held wait and work poses carry no idle bob.
+const WORK_STRIP_GROUPS = new Set(['strike', 'tinker', 'gaze']);
 // 2.3 — how long the resolved command slip shows its wax seal. Static mark,
 // bounded to the lifecycle event that earned it.
 const SEALED_SLIP_MS = 1800;
@@ -278,32 +326,209 @@ const PROCESSED_SPRITE_CACHE_ENTRY_LIMIT = 24;
 const PROCESSED_SPRITE_CACHE_PIXEL_LIMIT = 12_500_000;
 let processedSpriteCachePixels = 0;
 const CODEX_EQUIPMENT_CACHE = new Map();
-const CODEX_EQUIPMENT_CACHE_ENTRY_LIMIT = 96;
+// Baked weapon frames (3.8): one per (source, flip, scale, angle), shared by
+// every sprite; a full roster of weapons, gear and grips over 8 facings.
+const CODEX_EQUIPMENT_CACHE_ENTRY_LIMIT = 320;
 const CODEX_EQUIPMENT_CACHE_PIXEL_LIMIT = 2_000_000;
-const CODEX_EQUIPMENT_SCALE_STABLE_MS = 120;
 let codexEquipmentCachePixels = 0;
-let codexEquipmentRasterScale = 0;
-let codexEquipmentRasterScaleSince = 0;
 // Padding per cell side in the GPU equipped sheet: covers the tallest baked
 // weapon overhang (polearm/dawnblade tips reach ~50px past the pose anchor).
 const GPU_EQUIP_SHEET_PAD = 24;
-// Padded equipped sheets shared by every sprite of one profile (albedo +
-// padded sidecars + layout). ~48M px ≈ eight distinct armed profiles.
+// Padded equipped albedo sheets shared by every sprite of one profile. The
+// channel companions are never copied: the agent atlas draws the unpadded
+// sidecar cell at the pad offset (the record's `channelRect`). 48M px ≈ 30
+// armed profiles; a pinned (on-screen) profile is never evicted, so the
+// overage above the cap is reported on Shift-D instead.
 const GPU_EQUIPPED_SHEET_CACHE = new Map();
 const GPU_EQUIPPED_SHEET_CACHE_ENTRY_LIMIT = 12;
 const GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT = 48_000_000;
 let gpuEquippedSheetCachePixels = 0;
+// B.2 — an equipped albedo only a crowd (0.5x LOD) body samples is released
+// once its LOD sheet is baked and no 1:1 body has used it for
+// GPU_EQUIPPED_RELEASE_IDLE_MS; the entry keeps the LOD sheet. A 1:1 body
+// that needs it again recomposes it: at most one compose per animation frame
+// (urgent bodies inline, the rest from the derived-art idle queue), and the
+// body stays on its LOD sheet until its turn. Composition is deterministic,
+// so a recomposed sheet is the same pixels.
+const GPU_EQUIPPED_RELEASE_IDLE_MS = 3000;
+const GPU_EQUIPPED_RELEASE_SWEEP_MS = 1000;
+let gpuEquippedLastSweepAt = 0;
+let gpuEquippedComposeBlocked = false;
+const gpuEquippedComposeStats = { composes: 0, releases: 0, maxComposeMs: 0, lastComposeMs: 0 };
 const SHARED_DERIVED_HIGH_WATER_ESTIMATE_BYTES = 192 * 1024 * 1024;
 const ACTIVE_PROFILE_REFS = new Map();
 const PRIVATE_DERIVED_CACHE_ESTIMATES = new Map();
 const GPU_AGENT_CHANNEL_ATLAS_RECORDS = new Map();
+// B.2 — V9 packed geometry (flag 32): one canvas per authored material +
+// occluder sidecar pair, R material id (255 = none), G height, B strength
+// (0 = none), A presence. It replaces the separate occluder companion, so the
+// agent atlas carries one geometry channel instead of two. Keyed by the
+// material (else occluder) source. A frame crop packs inline; a sheet-size
+// pair packs inline at most once per CHANNEL_WORK_GAP_MS, and otherwise waits
+// for the next slot or the derived-art queue (one job per idle tick, even
+// when every tick arrives through its timeout under a busy crowd).
+const PACKED_GEOMETRY_CACHE = new Map();
+const PACKED_GEOMETRY_CACHE_PIXEL_LIMIT = 16_000_000;
+const PACKED_GEOMETRY_INLINE_PIXELS = 65_536;
+let packedGeometryCachePixels = 0;
+// Emissive sources proven all-transparent carry no authored emission and are
+// dropped from the agent atlas (a zero emissive map shades exactly like none).
+const AUTHORED_EMISSION = new WeakMap();
+const CHANNEL_SOURCE_IDS = new WeakMap();
+let channelSourceSerial = 0;
 
 function gpuEquippedSheetEntryPixels(entry) {
-    let pixels = 0;
-    for (const canvas of [entry?.albedo, entry?.material, entry?.emissive, entry?.occluder]) {
-        pixels += (canvas?.width || 0) * (canvas?.height || 0);
+    return (entry?.albedo?.width || 0) * (entry?.albedo?.height || 0);
+}
+
+// One equipped-sheet compose per animation frame; the next frame reopens it.
+function claimGpuEquippedCompose() {
+    if (gpuEquippedComposeBlocked) return false;
+    if (typeof requestAnimationFrame !== 'function') return true;
+    gpuEquippedComposeBlocked = true;
+    requestAnimationFrame(() => { gpuEquippedComposeBlocked = false; });
+    return true;
+}
+
+// Releases the albedo of every entry whose LOD sheet is baked and that no 1:1
+// body has sampled for GPU_EQUIPPED_RELEASE_IDLE_MS.
+function sweepGpuEquippedSheets(now) {
+    if (now - gpuEquippedLastSweepAt < GPU_EQUIPPED_RELEASE_SWEEP_MS) return;
+    gpuEquippedLastSweepAt = now;
+    for (const entry of GPU_EQUIPPED_SHEET_CACHE.values()) {
+        if (!entry.albedo || !entry.lod || now - entry.fullUsedAt < GPU_EQUIPPED_RELEASE_IDLE_MS) continue;
+        gpuEquippedSheetCachePixels -= gpuEquippedSheetEntryPixels(entry);
+        releaseCanvasBackingStore(entry.albedo);
+        entry.albedo = null;
+        gpuEquippedComposeStats.releases++;
     }
-    return pixels;
+    gpuEquippedSheetCachePixels = Math.max(0, gpuEquippedSheetCachePixels);
+}
+
+function channelSourceId(source) {
+    let id = CHANNEL_SOURCE_IDS.get(source);
+    if (!id) {
+        id = ++channelSourceSerial;
+        CHANNEL_SOURCE_IDS.set(source, id);
+    }
+    return id;
+}
+
+// Straight (non-premultiplied) RGBA of a channel source through a
+// software-backed scratch canvas; authored channel alpha is 0 or 255.
+function readChannelPixels(source, width, height) {
+    if (!source) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(source, 0, 0);
+    const data = ctx.getImageData(0, 0, width, height).data;
+    canvas.width = 0;
+    canvas.height = 0;
+    return data;
+}
+
+function packGeometryChannels(material, occluder) {
+    const base = material || occluder;
+    const width = base?.width || 0;
+    const height = base?.height || 0;
+    if (!width || !height || typeof document === 'undefined') return null;
+    if (material && occluder && (occluder.width !== width || occluder.height !== height)) return null;
+    const pixels = packGeometryPixels(
+        readChannelPixels(material, width, height),
+        readChannelPixels(occluder, width, height),
+        width * height,
+    );
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    // CPU-backed: it only feeds the CPU agent atlas, and a GPU-backed canvas
+    // kept a GPU upload of every sheet-size put (2.6 MB each).
+    canvas.getContext('2d', { willReadFrequently: true })?.putImageData(new ImageData(pixels, width, height), 0, 0);
+    return canvas;
+}
+
+// Evicted canvases are only dropped from the cache (never released): a record
+// built this frame may still sample one, and the GC frees it afterwards.
+function trimPackedGeometryCache() {
+    for (const [key, entry] of PACKED_GEOMETRY_CACHE) {
+        if (packedGeometryCachePixels <= PACKED_GEOMETRY_CACHE_PIXEL_LIMIT) break;
+        if (!entry.canvas) continue;
+        PACKED_GEOMETRY_CACHE.delete(key);
+        packedGeometryCachePixels -= entry.canvas.width * entry.canvas.height;
+    }
+}
+
+// The packed geometry canvas for one sidecar pair, or null while it is being
+// packed (the body then takes its record defaults, like a pending crop).
+function packedGeometrySource(material, occluder, assets) {
+    const key = material || occluder;
+    if (!key) return null;
+    let entry = PACKED_GEOMETRY_CACHE.get(key);
+    if (entry && (entry.occluder !== occluder || entry.material !== material)) {
+        if (entry.canvas) packedGeometryCachePixels -= entry.canvas.width * entry.canvas.height;
+        PACKED_GEOMETRY_CACHE.delete(key);
+        entry = null;
+    }
+    if (entry?.canvas) {
+        PACKED_GEOMETRY_CACHE.delete(key);
+        PACKED_GEOMETRY_CACHE.set(key, entry);
+        return entry.canvas;
+    }
+    if (!entry) {
+        entry = { material, occluder, canvas: null };
+        PACKED_GEOMETRY_CACHE.set(key, entry);
+    }
+    const pending = entry;
+    const build = () => {
+        if (PACKED_GEOMETRY_CACHE.get(key) !== pending || pending.canvas) return;
+        pending.canvas = packGeometryChannels(material, occluder);
+        if (!pending.canvas) {
+            PACKED_GEOMETRY_CACHE.delete(key);
+            return;
+        }
+        packedGeometryCachePixels += pending.canvas.width * pending.canvas.height;
+        trimPackedGeometryCache();
+    };
+    runChannelWork((key.width || 0) * (key.height || 0), `packed-geometry:${channelSourceId(key)}:${occluder ? channelSourceId(occluder) : 0}`, assets, build);
+    return pending.canvas;
+}
+
+const CHANNEL_WORK_GAP_MS = 32;
+let lastChannelWorkAt = -Infinity;
+
+function runChannelWork(pixels, key, assets, build) {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (pixels <= PACKED_GEOMETRY_INLINE_PIXELS || now - lastChannelWorkAt >= CHANNEL_WORK_GAP_MS) {
+        if (pixels > PACKED_GEOMETRY_INLINE_PIXELS) lastChannelWorkAt = now;
+        build();
+        return;
+    }
+    assets?.enqueueDerivedArt?.({ key, kind: 'agent', onScreen: true, build });
+}
+
+// The emissive source when it carries authored emission; null once a scan
+// proves it transparent. Unscanned sources pass through (identical shading).
+function authoredEmissionSource(emissive, assets) {
+    if (!emissive) return null;
+    const known = AUTHORED_EMISSION.get(emissive);
+    if (known === true) return emissive;
+    if (known === false) return null;
+    runChannelWork((emissive.width || 0) * (emissive.height || 0), `authored-emission:${channelSourceId(emissive)}`, assets, () => {
+        if (AUTHORED_EMISSION.has(emissive)) return;
+        const data = readChannelPixels(emissive, emissive.width || 0, emissive.height || 0);
+        let authored = false;
+        for (let i = 3; data && i < data.length; i += 4) {
+            if (data[i] > 0) {
+                authored = true;
+                break;
+            }
+        }
+        AUTHORED_EMISSION.set(emissive, authored);
+    });
+    return AUTHORED_EMISSION.get(emissive) === false ? null : emissive;
 }
 
 function canvasEstimateBytes(canvas) {
@@ -327,7 +552,7 @@ function activeProfilePins() {
 }
 
 function releaseSharedEntry(entry) {
-    for (const canvas of [entry?.canvas, entry?.albedo, entry?.material, entry?.emissive, entry?.occluder, entry]) {
+    for (const canvas of [entry?.canvas, entry?.albedo, entry?.lod, entry]) {
         if (typeof canvas?.getContext === 'function') releaseCanvasBackingStore(canvas);
     }
 }
@@ -505,16 +730,15 @@ export class AgentSprite {
         // Canvas implementations do not expose allocation sizes. All byte
         // values below estimate RGBA backing from dimensions; cache entries
         // are counted once here regardless of how many sprites reference them.
-        let gpuEquippedAlbedoPixels = 0;
-        let gpuEquippedMaterialPixels = 0;
-        let gpuEquippedEmissivePixels = 0;
-        let gpuEquippedOccluderPixels = 0;
+        // B.2 — equipped entries hold the padded albedo only; the pinned
+        // overage is what on-screen profiles hold above the pixel cap (they
+        // are never evicted), shown on Shift-D.
+        const profilePins = activeProfilePins();
+        let gpuEquippedPinnedPixels = 0;
         for (const entry of GPU_EQUIPPED_SHEET_CACHE.values()) {
-            gpuEquippedAlbedoPixels += (entry.albedo?.width || 0) * (entry.albedo?.height || 0);
-            gpuEquippedMaterialPixels += (entry.material?.width || 0) * (entry.material?.height || 0);
-            gpuEquippedOccluderPixels += (entry.occluder?.width || 0) * (entry.occluder?.height || 0);
-            gpuEquippedEmissivePixels += (entry.emissive?.width || 0) * (entry.emissive?.height || 0);
+            if (entryIsPinned(entry, profilePins)) gpuEquippedPinnedPixels += gpuEquippedSheetEntryPixels(entry);
         }
+        const gpuEquippedPinnedOverageBytes = Math.max(0, gpuEquippedPinnedPixels - GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT) * 4;
         const privateDerivedEstimateBytes = [...PRIVATE_DERIVED_CACHE_ESTIMATES.values()]
             .reduce((sum, bytes) => sum + bytes, 0);
         const activeSpriteCount = [...ACTIVE_PROFILE_REFS.values()]
@@ -522,13 +746,11 @@ export class AgentSprite {
         let gpuAgentChannelCellSize = 1;
         let hasGpuAgentMaterialAtlas = false;
         let hasGpuAgentEmissiveAtlas = false;
-        let hasGpuAgentOccluderAtlas = false;
         for (const record of GPU_AGENT_CHANNEL_ATLAS_RECORDS.values()) {
             const cell = Math.max(1, Math.ceil(Math.max(record.sw || 1, record.sh || 1)));
             gpuAgentChannelCellSize = Math.max(gpuAgentChannelCellSize, cell);
             hasGpuAgentMaterialAtlas ||= record.material;
             hasGpuAgentEmissiveAtlas ||= record.emissive;
-            hasGpuAgentOccluderAtlas ||= record.occluder;
         }
         const gpuAgentAtlasCapacity = Math.max(activeSpriteCount, GPU_AGENT_CHANNEL_ATLAS_RECORDS.size, 1);
         const gpuAgentAtlasColumns = Math.max(1, Math.ceil(Math.sqrt(gpuAgentAtlasCapacity)));
@@ -538,13 +760,14 @@ export class AgentSprite {
             * gpuAgentAtlasRows
             * gpuAgentChannelCellSize
             * 4;
+        // The material atlas is the packed geometry atlas (material + occluder).
         const gpuAgentMaterialAtlasEstimateBytes = hasGpuAgentMaterialAtlas
             ? gpuAgentChannelAtlasEstimateBytes
             : 0;
         const gpuAgentEmissiveAtlasEstimateBytes = hasGpuAgentEmissiveAtlas
             ? gpuAgentChannelAtlasEstimateBytes
             : 0;
-        const gpuAgentOccluderAtlasEstimateBytes = hasGpuAgentOccluderAtlas ? gpuAgentChannelAtlasEstimateBytes : 0;
+        const packedGeometryEstimateBytes = packedGeometryCachePixels * 4;
         const compositorCanvases = new Set(Compositor.shared()?.cache?.values?.() || []);
         for (const refs of ACTIVE_PROFILE_REFS.values()) {
             if (refs.baseCanvas) compositorCanvases.add(refs.baseCanvas);
@@ -560,10 +783,10 @@ export class AgentSprite {
             + processedSpriteEstimateBytes
             + codexEquipmentEstimateBytes
             + gpuEquippedSheetEstimateBytes
+            + packedGeometryEstimateBytes
             + privateDerivedEstimateBytes
             + gpuAgentMaterialAtlasEstimateBytes
-            + gpuAgentEmissiveAtlasEstimateBytes
-            + gpuAgentOccluderAtlasEstimateBytes;
+            + gpuAgentEmissiveAtlasEstimateBytes;
         return {
             processedSpriteSheets: PROCESSED_SPRITE_CACHE.size,
             processedSpritePixels: processedSpriteCachePixels,
@@ -575,17 +798,21 @@ export class AgentSprite {
             gpuEquippedSheets: GPU_EQUIPPED_SHEET_CACHE.size,
             gpuEquippedSheetPixels: gpuEquippedSheetCachePixels,
             gpuEquippedSheetEstimateBytes,
-            gpuEquippedAlbedoEstimateBytes: gpuEquippedAlbedoPixels * 4,
-            gpuEquippedMaterialEstimateBytes: gpuEquippedMaterialPixels * 4,
-            gpuEquippedEmissiveEstimateBytes: gpuEquippedEmissivePixels * 4,
-            gpuEquippedOccluderEstimateBytes: gpuEquippedOccluderPixels * 4,
+            gpuEquippedPinnedOverageBytes,
+            gpuEquippedReleasedSheets: [...GPU_EQUIPPED_SHEET_CACHE.values()].filter((entry) => !entry.albedo).length,
+            gpuEquippedLodEstimateBytes: [...GPU_EQUIPPED_SHEET_CACHE.values()]
+                .reduce((sum, entry) => sum + canvasEstimateBytes(entry.lod), 0),
+            gpuEquippedComposes: gpuEquippedComposeStats.composes,
+            gpuEquippedReleases: gpuEquippedComposeStats.releases,
+            gpuEquippedMaxComposeMs: gpuEquippedComposeStats.maxComposeMs,
             gpuEquippedSheetPixelLimit: GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT,
+            packedGeometrySheets: PACKED_GEOMETRY_CACHE.size,
+            packedGeometryEstimateBytes,
             processedSpriteEstimateBytes,
             compositorEstimateBytes,
             privateDerivedEstimateBytes,
             gpuAgentMaterialAtlasEstimateBytes,
             gpuAgentEmissiveAtlasEstimateBytes,
-            gpuAgentOccluderAtlasEstimateBytes,
             cpuDerivedEstimateBytes,
             ownership: {
                 compositorSpriteSheets: {
@@ -602,19 +829,11 @@ export class AgentSprite {
                 },
                 gpuEquippedAlbedoSheets: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
-                    estimateBytes: gpuEquippedAlbedoPixels * 4,
+                    estimateBytes: gpuEquippedSheetEstimateBytes,
                 },
-                gpuEquippedMaterialSheets: {
+                packedGeometrySheets: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
-                    estimateBytes: gpuEquippedMaterialPixels * 4,
-                },
-                gpuEquippedOccluderSheets: {
-                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
-                    estimateBytes: gpuEquippedOccluderPixels * 4,
-                },
-                gpuEquippedEmissiveSheets: {
-                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
-                    estimateBytes: gpuEquippedEmissivePixels * 4,
+                    estimateBytes: packedGeometryEstimateBytes,
                 },
                 perSpriteEffectCells: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
@@ -623,10 +842,6 @@ export class AgentSprite {
                 gpuAgentMaterialAtlas: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
                     estimateBytes: gpuAgentMaterialAtlasEstimateBytes,
-                },
-                gpuAgentOccluderAtlas: {
-                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
-                    estimateBytes: gpuAgentOccluderAtlasEstimateBytes,
                 },
                 gpuAgentEmissiveAtlas: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
@@ -706,6 +921,7 @@ export class AgentSprite {
         PROCESSED_SPRITE_CACHE.clear();
         CODEX_EQUIPMENT_CACHE.clear();
         GPU_EQUIPPED_SHEET_CACHE.clear();
+        PACKED_GEOMETRY_CACHE.clear();
         TOOL_CLASSIFICATION_CACHE.clear();
         AgentSprite.clearOverlayStampCache();
         clearAgentSignatureCache();
@@ -713,8 +929,7 @@ export class AgentSprite {
         processedSpriteCachePixels = 0;
         codexEquipmentCachePixels = 0;
         gpuEquippedSheetCachePixels = 0;
-        codexEquipmentRasterScale = 0;
-        codexEquipmentRasterScaleSince = 0;
+        packedGeometryCachePixels = 0;
     }
 
     constructor(agent, {
@@ -779,9 +994,8 @@ export class AgentSprite {
         this._gpuFrameRecord = null;
         this._gpuEquippedSheetKey = '';
         this._gpuEquippedSheetLayout = null;
-        this._gpuEquippedMaterialSheet = null;
-        this._gpuEquippedEmissiveSheet = null;
-        this._gpuEquippedOccluderSheet = null;
+        this._gpuEquippedEntry = null;
+        this._gpuPlainSpriteCanvas = null;
         this.gpuOverlayRenderer = new AgentGpuOverlayRenderer(this);
         this._lastBuildingType = null;
         this._lastIntentId = null;
@@ -979,9 +1193,8 @@ export class AgentSprite {
         this._gpuBaseSpriteCanvas = null;
         this._gpuEquippedSheetKey = '';
         this._gpuEquippedSheetLayout = null;
-        this._gpuEquippedMaterialSheet = null;
-        this._gpuEquippedEmissiveSheet = null;
-        this._gpuEquippedOccluderSheet = null;
+        this._gpuEquippedEntry = null;
+        this._gpuPlainSpriteCanvas = null;
         this._bubbleLayoutCacheKey = '';
         this._bubbleLayoutCache = null;
         this._releaseProfileOwnership();
@@ -1066,6 +1279,7 @@ export class AgentSprite {
         const chatTargetY = partner.y;
         const targetTile = this._screenToTile(chatTargetX, chatTargetY);
         this._assignTarget(chatTargetX, chatTargetY, targetTile.tileX, targetTile.tileY);
+        this._chatApproachRoute = true;
     }
 
     _pickTarget() {
@@ -1080,6 +1294,10 @@ export class AgentSprite {
             return;
         }
 
+        // 7.1 / 7.2 — an idle villager takes a rest seat and a petitioner its
+        // queue slot; neither strolls nor runs a scenic visit intent. A failed
+        // pick falls back to a visit.
+        if (this._routeToRestPlace()) return;
         const intent = this._activeVisitIntent();
         let buildingType = intent?.building || this._targetBuildingTypeForState();
         let building = this._ambientDestination(intent);
@@ -1120,6 +1338,10 @@ export class AgentSprite {
         this._lastVisitSlotId = visitTarget.slotId || null;
         this._lastVisitFacingPoint = visitTarget.facingPoint ? { ...visitTarget.facingPoint } : null;
         this._lastVisitMeta = visitTarget.meta ? { ...visitTarget.meta } : null;
+        // V8 — the occupancy role every building count reads: a rest seat and
+        // a queue slot are never visits, so their bodies never count as work.
+        this.visitRole = building.restSeats ? 'rest' : building.commandQueue ? 'queue' : null;
+        this._restSeat = building.restSeats ? visitTarget.meta?.seat || null : null;
 
         const routeReason = reason || this._routeReasonFor(building, intent);
         this.behavior.setRoute({
@@ -1155,6 +1377,125 @@ export class AgentSprite {
         }
         this.waitTimer = 0;
         return true;
+    }
+
+    // 7.1 / 7.2 — the place this status waits at, or null: IDLE rests on a
+    // seat, WAITING_ON_USER stands in the Command queue.
+    _restPlaceForState() {
+        const status = this.agent?.status;
+        if (status === AgentStatus.IDLE) return REST_PLACE;
+        if (status === AgentStatus.WAITING_ON_USER) return QUEUE_PLACE;
+        return null;
+    }
+
+    _routeToRestPlace() {
+        const place = this._restPlaceForState();
+        if (!place || !this.allocateVisitTile) return false;
+        const target = this._placeTarget(place);
+        if (!target) return false;
+        this._placeRetryAt = 0;
+        return this._routeToVisitTarget(place, null, target);
+    }
+
+    _placeTarget(place) {
+        const allocated = this.allocateVisitTile({ agent: this.agent, sprite: this, building: place });
+        if (!allocated || !Number.isFinite(Number(allocated.tileX)) || !Number.isFinite(Number(allocated.tileY))) return null;
+        this._lastReservationId = allocated.reservationId || null;
+        this._lastReservationRenewedAt = Date.now();
+        return {
+            tileX: Number(allocated.tileX),
+            tileY: Number(allocated.tileY),
+            slotId: allocated.slotId || null,
+            facingPoint: allocated.facingPoint ? { ...allocated.facingPoint } : null,
+            meta: {
+                reservationId: allocated.reservationId || null,
+                slotId: allocated.slotId || null,
+                buildingType: allocated.buildingType || place.type,
+                queueGroup: allocated.queueGroup || null,
+                queueIndex: Number.isInteger(allocated.queueIndex) ? allocated.queueIndex : null,
+                queueDepth: Number.isInteger(allocated.queueDepth) ? allocated.queueDepth : null,
+                queueOverflow: !!allocated.queueOverflow,
+                overflow: !!allocated.overflow,
+                seat: allocated.seat || null,
+            },
+        };
+    }
+
+    // Holding its place: arrived at a seat or queue slot and standing there.
+    _holdsRestPlace() {
+        return Boolean(this.visitRole) && !this.moving && this.waitTimer > 0;
+    }
+
+    // The seat this villager sits on right now (arrived, not walking), else
+    // null. An overflow stander holds a place but no seat.
+    _seatedSeat() {
+        const seat = this._restSeat;
+        if (!seat || this.visitRole !== 'rest' || this.moving || this.chatting || departedTableau(this)) return null;
+        const world = tileToWorld(seat.tileX, seat.tileY);
+        return Math.abs(world.x - this.x) < 1 && Math.abs(world.y - this.y) < 1 ? seat : null;
+    }
+
+    // World Y of the seated body cell's top edge. A sit strip lands its
+    // declared seat line (manifest `seatLine`, cell px per facing) on the
+    // seat's front edge; without one the strip keeps the V7 foot anchor. The
+    // lowered-body fallback drops the standing idle cell FALLBACK_SEAT_DROP
+    // texels; the caller clips both at the seat line.
+    _seatedBodyY(seat, pose, anchor, drawY) {
+        if (pose?.group === 'sit') {
+            const lines = pose.strip?.meta?.groups?.sit?.seatLine;
+            const short = DIRECTIONS[this.direction];
+            const row = Number(lines?.[short] ?? lines?.[LONG_DIRECTION_NAMES[short]]);
+            if (Number.isFinite(row)) return drawY + seatLineOffset(seat) - row;
+            return drawY - anchor.maxY + 2;
+        }
+        return drawY - anchor.maxY + 2 + FALLBACK_SEAT_DROP;
+    }
+
+    // A status whose place differs from the one held (or a place wanted but
+    // not held) re-picks at once, so an idle body goes to sit, a new
+    // petitioner joins the line, and a resumed worker stands up and leaves.
+    _syncRestPlace(now) {
+        if (this.chatPartner || this.chatting || this.leaving || this.isArrivalPending?.()) return;
+        const place = this._restPlaceForState();
+        const wanted = place === REST_PLACE ? 'rest' : place === QUEUE_PLACE ? 'queue' : null;
+        if (wanted === (this.visitRole || null)) return;
+        if (wanted && now < (this._placeRetryAt || 0)) return;
+        this._placeRetryAt = now + PLACE_RETRY_MS;
+        this._releaseVisitReservation();
+        this._lastPathTileKey = null;
+        this.waitTimer = 0;
+        this._pickTarget();
+    }
+
+    // Called every dwell frame while a place is held: the timer never runs
+    // out, the seat faces its authored way, and a petitioner walks to its new
+    // slot when the waiting set (and so its rank) changed.
+    _holdRestPlace(now) {
+        // Crowd spacing may shift an arrival's stop by a few px; a sitter
+        // lands exactly on its seat point, between the seat's two slices.
+        const held = this._restSeat;
+        if (held && this.visitRole === 'rest') {
+            const world = tileToWorld(held.tileX, held.tileY);
+            if (Math.hypot(world.x - this.x, world.y - this.y) <= 24) {
+                this.x = this.targetX = world.x;
+                this.y = this.targetY = world.y;
+            }
+        }
+        this.waitTimer = Math.max(this.waitTimer, 60);
+        this._renewVisitReservation();
+        const seat = this._seatedSeat();
+        if (seat) {
+            this._setFacingGoal(SEAT_FACING_DIR[seat.facing]);
+            return;
+        }
+        if (this.visitRole !== 'queue' || now < (this._queueRefreshAt || 0)) return;
+        this._queueRefreshAt = now + QUEUE_REFRESH_MS;
+        const target = this._placeTarget(QUEUE_PLACE);
+        if (!target) return;
+        const current = this._lastTargetTile;
+        if (current && current.tileX === target.tileX && current.tileY === target.tileY) return;
+        this._lastPathTileKey = null;
+        this._routeToVisitTarget(QUEUE_PLACE, null, target);
     }
 
     _routeStateFor(building, intent) {
@@ -1630,6 +1971,8 @@ export class AgentSprite {
         this._lastVisitFacingPoint = null;
         this._lastVisitMeta = null;
         this._lastReservationRenewedAt = 0;
+        this.visitRole = null;
+        this._restSeat = null;
     }
 
     _renewVisitReservation() {
@@ -1643,6 +1986,10 @@ export class AgentSprite {
 
     _assignTarget(targetScreenX, targetScreenY, targetTileX, targetTileY, viaWaypoints = null) {
         this._targetReachable = true;
+        // A new route: any fan place (7.4) and chat-approach mark belong to
+        // the old one.
+        this._fanTarget = null;
+        this._chatApproachRoute = false;
         if (!this.pathfinder) {
             this.targetX = targetScreenX;
             this.targetY = targetScreenY;
@@ -1693,6 +2040,15 @@ export class AgentSprite {
         const head = this.waypoints[0];
         this.targetX = head.x;
         this.targetY = head.y;
+    }
+
+    // The fan place (7.4) this body's route ends on, when the renderer re-aimed
+    // the route's last point there; else null.
+    _routeEndFanPlace() {
+        const fan = this._fanTarget;
+        if (!fan) return null;
+        const end = this.waypoints?.length ? this.waypoints[this.waypoints.length - 1] : { x: this.targetX, y: this.targetY };
+        return end && end.x === fan.x && end.y === fan.y ? fan : null;
     }
 
     _findStitchedPath(fromTile, toTile, viaWaypoints) {
@@ -1841,7 +2197,7 @@ export class AgentSprite {
     // whole rungs. A chat approach walks the top rung; it never sprints.
     _speedForState() {
         const top = SPEED_RUNGS.length - 1;
-        if (this.chatPartner) return SPEED_RUNGS[top];
+        if (this.chatPartner) return SPEED_RUNGS[this._followRung(top)];
         const status = this.agent.status;
         let base = RUNG_WAITING;
         if (status === AgentStatus.WORKING) base = RUNG_WORKING;
@@ -1859,7 +2215,63 @@ export class AgentSprite {
             Math.min(base + 1, ceiling),
         );
         if (this._congestedBuilding()) rung = Math.min(rung, speedRungIndex(SPEED_RUNGS[rung] * CONGESTION_GAIT_SCALE));
-        return SPEED_RUNGS[rung];
+        return SPEED_RUNGS[this._followRung(rung)];
+    }
+
+    // 7.4 — the trailing walker of a same-course pair (marked by the
+    // renderer's local avoidance with its leader's gait) keeps a loose file
+    // one rung below the slower of itself and that leader.
+    _followRung(rung) {
+        if (!this._followGap) return rung;
+        const leaderRung = typeof this._followGap === 'number' ? speedRungIndex(this._followGap) : rung;
+        return Math.max(0, Math.min(rung, leaderRung) - 1);
+    }
+
+    // 7.4 — a trailing walker closer than the renderer's yield gap behind its
+    // leader (`_followYield`) plants on its nearest contact frame and waits
+    // while the leader draws ahead; it resumes on that frame, the stride
+    // re-phased like after any hold. One wait lasts at least
+    // FOLLOW_YIELD_MIN_MS. A 'file' wait (its chain of leaders ends at a
+    // walker that steps) lasts as long as the queue; a 'knot' wait (a planted
+    // head, or walkers waiting on each other) at most FOLLOW_YIELD_MAX_MS,
+    // then the body walks FOLLOW_YIELD_WALK_OUT_MS before it may wait again,
+    // so no knot can lock. Under reduced motion the body just stands on its
+    // static frame for the wait.
+    _yieldToLeader(dt) {
+        const waited = this._followYieldMs || 0;
+        if (waited < 0) {
+            this._followYieldMs = Math.min(0, waited + dt);
+            return false;
+        }
+        const beat = waited > 0 && waited < FOLLOW_YIELD_MIN_MS;
+        if (!this._followYield && !beat) {
+            this._followYieldMs = 0;
+            this._followKnotMs = 0;
+            return false;
+        }
+        this._followKnotMs = this._followYield === 'knot' ? (this._followKnotMs || 0) + dt : 0;
+        if (this._followKnotMs >= FOLLOW_YIELD_MAX_MS) {
+            this._followYieldMs = -FOLLOW_YIELD_WALK_OUT_MS;
+            this._followKnotMs = 0;
+            return false;
+        }
+        const animated = this.motionScale > 0;
+        if (animated && !(this._followYieldMs > 0)) {
+            const contact = nearestContactFrame(this.frame);
+            // Half a pixel into the contact frame, so re-taking the stride
+            // phase (at most a quarter step) never shows the frame before it.
+            this._strideDistance = WALK_FRAMES * WALK_PIXELS_PER_FRAME
+                + contact * WALK_PIXELS_PER_FRAME + FOLLOW_YIELD_ENTRY_PX - this._stridePhase;
+            this.frame = contact;
+            this.walkFrame = contact;
+        }
+        this._followYieldMs = (this._followYieldMs || 0) + dt;
+        this._stepStartX = NaN;
+        this._stepLength = 0;
+        this._gaitSpeed = 0;
+        this._stridePhaseStale = true;
+        this.animState = animated ? 'walk' : 'idle';
+        return true;
     }
 
     /** Mood remains primary: tired/distressed drag, anxious/proud quicken. */
@@ -2062,8 +2474,22 @@ export class AgentSprite {
         this.waitTimer = 0;
     }
 
+    // 7.4 — a straight walk to a tile point, off the tile-centre path grid:
+    // the gate lanes run parallel through the arch, which tile centres would
+    // fold into one file. The caller guarantees the line is walkable.
+    walkStraightToTile(tileX, tileY) {
+        this.walkToTile(tileX, tileY);
+        if (!this.moving) return;
+        const screen = tileToWorld(tileX, tileY);
+        this.waypoints = [{ x: screen.x, y: screen.y }];
+        this.targetX = screen.x;
+        this.targetY = screen.y;
+    }
+
     retargetVisit() {
         if (this.chatting || this.chatPartner || this.isArrivalPending()) return false;
+        // 7.1 / 7.2 — a seated villager or a petitioner in line keeps its place.
+        if (this._holdsRestPlace()) return false;
         this._releaseVisitReservation();
         this._lastPathTileKey = null;
         this.waitTimer = 0;
@@ -2159,6 +2585,8 @@ export class AgentSprite {
         this._advanceContextStrainSweat(particleSystem);
         this._advanceDistressRecovery(particleSystem);
         this._advanceTokenFlowMotes(particleSystem, frameScale);
+        // 7.3 — a body whose strip is due turns to an authored strip facing.
+        this._holdStripFacing();
         // V7 — the one facing writer turns one column toward its goal.
         this._advanceFacing(dt);
 
@@ -2177,7 +2605,12 @@ export class AgentSprite {
             const cpDx = partner.x - this.x;
             const cpDy = partner.y - this.y;
             const cpDist = Math.sqrt(cpDx * cpDx + cpDy * cpDy);
-            if (cpDist < 35) {
+            // 7.4 — a chat approach the renderer re-aimed onto a fan place
+            // (another body already stands at its stop) walks on to that
+            // place and begins the chat there; stopping at the first point
+            // within CHAT_START_PX would stand it inside that body.
+            const fanPlace = this._chatApproachRoute ? this._routeEndFanPlace() : null;
+            if (fanPlace ? !this.moving && cpDist < CHAT_FAN_REACH_PX : cpDist < CHAT_START_PX) {
                 this.chatting = true;
                 this.behavior.transition('chatting', 'chat');
                 this.chatBubbleAnim = 0;
@@ -2204,8 +2637,10 @@ export class AgentSprite {
             }
         }
 
-        // Reroute immediately when status or fresh tool changes the intended building.
-        if (!this.chatPartner) {
+        // Reroute immediately when status or fresh tool changes the intended
+        // building. A status that waits at a place (7.1 seat, 7.2 queue) owns
+        // its route through _syncRestPlace instead.
+        if (!this.chatPartner && !this._restPlaceForState()) {
             const activeIntent = this._activeVisitIntent();
             let curBuilding = resolveUpdateRouteBuilding({
                 activeIntentBuilding: activeIntent?.building,
@@ -2227,8 +2662,16 @@ export class AgentSprite {
                 this._adoptIntentWithoutRetarget(activeIntent);
             }
         }
+        this._syncRestPlace(Date.now());
 
         if (this.waitTimer > 0) {
+            // 7.1 / 7.2 — a held seat or queue slot: still, no fidget, no
+            // timeout; only a status change (above) moves the body on.
+            if (!this.moving && this.visitRole) {
+                this._holdRestPlace(Date.now());
+                this._advanceIdleAnimation(dt);
+                return;
+            }
             if (!this.moving) {
                 this._snapToNearestWalkable();
                 this._restWorkFacing();
@@ -2240,6 +2683,14 @@ export class AgentSprite {
                 if (this.behavior.cooldownUntil > Date.now()) {
                     this.behavior.transition('cooldown', this.behavior.reason);
                     this.waitTimer = Math.max(10, Math.ceil((this.behavior.cooldownUntil - Date.now()) / 16));
+                    this._advanceIdleAnimation(dt);
+                    return;
+                }
+                // Reduced motion: an arrived body holds its place. Only a new
+                // building or intent (the reroute above) moves it, so bodies
+                // never cut between the tiles of one visit.
+                if (this.motionScale <= 0 && !this.chatPartner && ARRIVED_BEHAVIOR_STATES.has(this.behavior.state)) {
+                    this.waitTimer = this._waitDurationForState();
                     this._advanceIdleAnimation(dt);
                     return;
                 }
@@ -2261,14 +2712,23 @@ export class AgentSprite {
 
         this._renewVisitReservation();
 
+        // Reduced motion: no animated travel. The body cuts to the end of its
+        // route on its static frame and arrives there this update, so every
+        // building's visitors and working set stay as true as with motion on.
+        if (this.motionScale <= 0) {
+            this._cutToRouteEnd(dt, particleSystem);
+            return;
+        }
+
         // IDLE strollers stop-and-look at landmarks 1-2 s every 18-30 s.
-        if (this._advanceIdleStopAndLook(dt)) {
+        if (this.visitRole !== 'rest' && this._advanceIdleStopAndLook(dt)) {
             this._advanceIdleAnimation(dt);
             return;
         }
 
         // V7 — the start beat and a planted pivot hold the body on its feet.
         if (this._holdGait(dt)) return;
+        if (this._yieldToLeader(dt)) return;
 
         // V7 — travel is a whole speed rung per 16.67 ms and carries through
         // waypoints, so neither the pace nor the stride phase breaks at a
@@ -2336,21 +2796,45 @@ export class AgentSprite {
                     continue;
                 }
             }
-            this._advanceWalkAnimation(travelled, headingX, headingY, dt, particleSystem);
-            this._stepStartX = NaN;
-            this.moving = false;
-            this.behavior.arrive({
-                state: this._lastIntentId ? 'performing' : 'lingering',
-                cooldownMs: this._lastIntentId ? 2000 : 0,
-                phase: this._lastIntentSnapshot?.phase || this._phaseForAgentState(),
-                interruptible: this._lastIntentSnapshot?.interruptible,
-            });
-            if (!this.chatPartner) this._faceBuilding(this._buildingForType(this._lastBuildingType), this._lastVisitFacingPoint);
-            this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
-            this._beginStopBeat();
+            this._arriveAtTarget(travelled, headingX, headingY, dt, particleSystem);
             return;
         }
         this._advanceWalkAnimation(travelled, headingX, headingY, dt, particleSystem);
+    }
+
+    // Reduced motion — the route collapses to its last point: the body stands
+    // there facing along its course, then arrives like a walker would.
+    _cutToRouteEnd(dt, particleSystem) {
+        const last = this.waypoints?.length ? this.waypoints[this.waypoints.length - 1] : null;
+        const endX = Number.isFinite(Number(last?.x)) ? Number(last.x) : this.targetX;
+        const endY = Number.isFinite(Number(last?.y)) ? Number(last.y) : this.targetY;
+        const headingX = endX - this.x;
+        const headingY = endY - this.y;
+        this.x = endX;
+        this.y = endY;
+        this.targetX = endX;
+        this.targetY = endY;
+        if (this.waypoints) this.waypoints.length = 0;
+        this._stepStartX = NaN;
+        this._stepLength = 0;
+        this._arriveAtTarget(Math.hypot(headingX, headingY), headingX, headingY, dt, particleSystem);
+    }
+
+    // The body has reached its route's end: plant, record the arrival, face
+    // the visit and start its dwell.
+    _arriveAtTarget(travelled, headingX, headingY, dt, particleSystem) {
+        this._advanceWalkAnimation(travelled, headingX, headingY, dt, particleSystem);
+        this._stepStartX = NaN;
+        this.moving = false;
+        this.behavior.arrive({
+            state: this._lastIntentId ? 'performing' : 'lingering',
+            cooldownMs: this._lastIntentId ? 2000 : 0,
+            phase: this._lastIntentSnapshot?.phase || this._phaseForAgentState(),
+            interruptible: this._lastIntentSnapshot?.interruptible,
+        });
+        if (!this.chatPartner) this._faceBuilding(this._buildingForType(this._lastBuildingType), this._lastVisitFacingPoint);
+        this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
+        this._beginStopBeat();
     }
 
     // True when the body plants at its current target: the route's last
@@ -2625,14 +3109,64 @@ export class AgentSprite {
     // to NE or NW, toward the door's side (`doorDx`, world px from the body to
     // the facing point), NE turns to E and NW to W. Each result stays within
     // 67.5° of the true bearing, so the body still addresses its building.
+    // 7.3 — while a work, wait or gaze strip plays (or its ritual is about to),
+    // the body takes the nearest authored strip facing instead (_stripFacing).
     _workFacing(trueDir, doorDx = 0) {
-        if (trueDir === DIR_NE) return DIR_E;
-        if (trueDir === DIR_NW) return DIR_W;
-        if (trueDir !== DIR_N) return trueDir;
-        if (doorDx > 0) return DIR_NE;
-        if (doorDx < 0) return DIR_NW;
+        let dir;
+        if (trueDir === DIR_NE) dir = DIR_E;
+        else if (trueDir === DIR_NW) dir = DIR_W;
+        else if (trueDir !== DIR_N) dir = trueDir;
+        else if (doorDx > 0) dir = DIR_NE;
+        else if (doorDx < 0) dir = DIR_NW;
         // Dead under the door: a stable per-agent side from the seeded phase.
-        return this._idlePhaseFrames & 1 ? DIR_NE : DIR_NW;
+        else dir = this._idlePhaseFrames & 1 ? DIR_NE : DIR_NW;
+        return this._wantsStripFacing() ? this._stripFacing(dir, doorDx) : dir;
+    }
+
+    // 7.3 — true while this body shows (or, for a ritual still pending, is
+    // about to show) a strip authored only for STRIP_FACINGS: the held wait
+    // row of a petitioner, or the admitted ritual's strike/tinker/gaze.
+    _wantsStripFacing() {
+        if (this.agent?.status === AgentStatus.WAITING_ON_USER) return true;
+        const ritual = this._toolRitual;
+        if (!ritual || !WORK_STRIP_GROUPS.has(ritual.stripGroup)) return false;
+        if (ritual.agentId && ritual.agentId !== this.agent?.id) return false;
+        return ritual.phase === 'pending' || ritual.phase === 'playing' || ritual.phase === 'fading';
+    }
+
+    // The strip facing nearest the true bearing to the building (or queue
+    // slot ahead): NE → E, NW → W, N → E or W by the door's side, S → SE or
+    // SW by side. A north bearing lands at most 90° off (E or W), still inside
+    // the half-plane facing its building; every other bearing within 67.5°.
+    _stripFacing(dir, doorDx = 0) {
+        if (STRIP_FACINGS.includes(dir)) return dir;
+        const bearing = this._workBearing ?? (2 - dir) * (Math.PI / 4);
+        const side = doorDx > 0 ? 1 : doorDx < 0 ? -1 : (this._idlePhaseFrames & 1 ? 1 : -1);
+        let best = null;
+        let bestOff = Infinity;
+        for (const candidate of STRIP_FACINGS) {
+            // Ties (a dead-north or dead-south bearing) go to the door's side:
+            // E and SE are the +x side, W and SW the -x side.
+            const east = candidate === DIR_E || candidate === 1;
+            const off = angleOffDirection(candidate, bearing) + ((east ? 1 : -1) === side ? 0 : 1e-6);
+            if (off < bestOff) {
+                bestOff = off;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    // Per update: a standing body whose strip is due turns to its strip
+    // facing (a ritual admitted, or a petitioner arrived, while it faced a
+    // column the strip does not author). Seated, walking and chatting bodies
+    // keep their own facing writers.
+    _holdStripFacing() {
+        if (this.moving || this.chatting || this.chatPartner || this._seatedSeat() || !this._wantsStripFacing()) return;
+        const heading = this._facingGoal ?? this.direction;
+        if (STRIP_FACINGS.includes(heading)) return;
+        const bearing = this._workBearing;
+        this._setFacingGoal(this._stripFacing(heading, bearing == null ? 0 : Math.cos(bearing)));
     }
 
     // 0.5 — a villager at rest never settles with its back to the operator.
@@ -2651,7 +3185,8 @@ export class AgentSprite {
 
     // 0.5 — a fidget glances one column aside from the work facing, never into
     // a back-facing column (NE, N, NW) and never past the half-plane facing
-    // its building. With neither side open the villager holds still.
+    // its building; while a strip plays, never off its authored facings (7.3).
+    // With neither side open the villager holds still.
     _fidgetGlance(sign) {
         const from = this._facingGoal ?? this.direction;
         const first = (from + sign + 8) % 8;
@@ -2662,6 +3197,7 @@ export class AgentSprite {
 
     _glanceAllowed(dir) {
         if (FACING_FRONT_RANK[dir] === 0) return false;
+        if (!STRIP_FACINGS.includes(dir) && this._wantsStripFacing()) return false;
         const bearing = this._workBearing;
         return bearing == null || angleOffDirection(dir, bearing) <= Math.PI / 2 + 1e-9;
     }
@@ -2798,6 +3334,7 @@ export class AgentSprite {
     _resetWalkCycle() {
         this._strideActive = false;
         this._startBeatMs = 0;
+        this._followYieldMs = 0;
         this._strideDistance = 0;
         this._strideShortStep = 0;
         this._candidateDirection = null;
@@ -2924,7 +3461,12 @@ export class AgentSprite {
     _drawAtScreenPosition(ctx, zoom = 1, renderMode = 'full') {
         this._zoom = zoom;
 
-        if (this.isArrivalPending()) return;
+        // A pending body (materialize beat, dispatch comet, gate entry queue)
+        // is hidden on both backends: no stale GPU record stands in for it.
+        if (this.isArrivalPending()) {
+            this._gpuFrameRecord = null;
+            return;
+        }
 
         // V7 — the one placement value of this frame (snapBodyPx). The body
         // (Canvas and GPU record), crowd LOD, impostors, ground marks, x-ray,
@@ -3031,6 +3573,7 @@ export class AgentSprite {
             // _syncGpuEquippedSheet replace it with an equipment-baked copy
             // for codex classes, or WebGL villagers render empty-handed.
             this._gpuBaseSpriteCanvas = baseCanvas;
+            this._gpuPlainSpriteCanvas = baseCanvas;
             this.spriteCanvas = this._prepareSpriteCanvas(baseCanvas, identity, profileKey);
             if (this.spriteCanvas) {
                 this.spriteSheet = new SpriteSheet(this.spriteCanvas);
@@ -3046,7 +3589,13 @@ export class AgentSprite {
             return;
         }
 
-        this._syncGpuEquippedSheet(identity, profileKey);
+        // B.2 — false while this 1:1 body's released equipped sheet waits for
+        // its recompose turn: the 1:1 body samples its LOD sheet meanwhile.
+        const fullSheetReady = this._syncGpuEquippedSheet(identity, profileKey, {
+            full: !budgetMode,
+            urgent: this.selected || this.hovered
+                || [AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(this.agent?.status),
+        });
 
         // The update loop owns the body's pose (walk, stop beat, idle);
         // lingering departures and reduced motion hold a resting idle frame
@@ -3060,13 +3609,22 @@ export class AgentSprite {
         // LOD cell stands on the same per-direction foot anchor as the 1:1
         // body; its own bounds only size the body box.
         if (budgetMode) {
-            const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
+            // 7.1 — a seated crowd body holds its still idle cell, lowered
+            // onto the seat and clipped at the seat line like the 1:1 fallback.
+            const seat = this._seatedSeat();
+            let cell = seat
+                ? this.spriteSheet.cell('idle', this.direction, 0)
+                : this.spriteSheet.cell(this.animState, this.direction, this.frame);
             const bounds = this._getCellContentBounds(cell);
             const anchor = this._stableFootAnchor(this.direction);
             const drawX = this._placeX;
             const drawY = this._placeY;
             const dx = drawX - Math.round(anchor.cx2 * CROWD_LOD_SCALE / 2);
-            const dy = drawY + 2 - Math.floor(anchor.maxY * CROWD_LOD_SCALE);
+            const dy = drawY + 2 - Math.floor(anchor.maxY * CROWD_LOD_SCALE) + (seat ? FALLBACK_SEAT_DROP : 0);
+            if (seat) {
+                const rows = Math.max(1, Math.ceil((drawY + seatLineOffset(seat) - dy + 1) / CROWD_LOD_SCALE));
+                if (rows < cell.sh) cell = { ...cell, sh: rows };
+            }
             const contentTopY = dy + Math.floor(bounds.minY * CROWD_LOD_SCALE);
             this._setBodyBox(
                 drawX,
@@ -3083,7 +3641,6 @@ export class AgentSprite {
                 dy,
                 bounds,
                 drawScale: CROWD_LOD_SCALE,
-                cacheEquipment: true,
                 lod: true,
             };
             this._setGpuFrameRecord({
@@ -3137,15 +3694,20 @@ export class AgentSprite {
                 if (scenic.idleFrame != null) posture.idleFrame = scenic.idleFrame;
             }
         }
-        const renderFrame = (this.animState === 'idle' && posture.idleFrame != null)
-            ? posture.idleFrame
-            : this.frame;
-        const cell = this.spriteSheet.cell(this.animState, this.direction, renderFrame);
+        // 7.1 — a seated villager holds one still frame: the sit strip's held
+        // row, else the idle row-6 cell lowered onto the seat (fallback).
+        const seat = this._seatedSeat();
+        const renderFrame = seat
+            ? 0
+            : (this.animState === 'idle' && posture.idleFrame != null)
+                ? posture.idleFrame
+                : this.frame;
+        const cell = this.spriteSheet.cell(seat ? 'idle' : this.animState, this.direction, renderFrame);
         // 2.2 — an authored action pose replaces the idle body for this frame.
         // Geometry stays the base cell's (same 92 px cell, same feet anchor), so
         // only the source image and source rect change and the body never jumps.
-        const pose = this._actionStripPose(identity, spriteId);
-        const bodyCell = pose ? pose.cell : cell;
+        let pose = this._actionStripPose(identity, spriteId);
+        let bodyCell = pose ? pose.cell : cell;
         const bodySource = pose ? pose.source : this.spriteCanvas;
         const poseSource = pose ? pose.source : null;
         this._poseCell = {
@@ -3155,6 +3717,8 @@ export class AgentSprite {
             sh: bodyCell.sh,
             source: pose ? 'strip' : 'sheet',
             group: pose ? pose.group : null,
+            meta: pose ? pose.strip.meta : null,
+            now: pose ? pose.now : null,
             canvas: bodySource,
             // Where this cell was laid out (world texels); the x-ray re-blits it.
             dx: 0,
@@ -3170,9 +3734,11 @@ export class AgentSprite {
         // offset (reduced motion). Walking keeps the drop so the gait reads
         // hunched all the way to the watchtower.
         const distressDrop = this._distressPostureDrop();
+        // 7.3 — an authored wait or work pose holds its own frame: no idle bob.
+        const heldStrip = Boolean(seat) || (pose && (pose.group === 'wait' || WORK_STRIP_GROUPS.has(pose.group)));
         const bobY = departedTableau(this)
             ? 2
-            : this.animState === 'idle'
+            : this.animState === 'idle' && !heldStrip
             ? this.motionScale > 0
                 ? Math.round(
                     (
@@ -3205,9 +3771,21 @@ export class AgentSprite {
         // #36 — context-strain tremble: a tiny ±1px horizontal shiver once the
         // context window is nearly full (ratio >= 0.85), so the body language
         // reads as strain. Reduced motion (motionScale 0) skips the shiver.
-        const trembleX = this._contextStrainTremble();
+        const trembleX = seat ? 0 : this._contextStrainTremble();
         const dx = drawX - Math.round(anchor.cx2 / 2) + trembleX;
-        const dy = drawY - anchor.maxY + 2 + bobY + ackBobY;
+        const dy = seat
+            ? this._seatedBodyY(seat, pose, anchor, drawY)
+            : drawY - anchor.maxY + 2 + bobY + ackBobY;
+        if (seat) {
+            // Clip at the seat line: nothing of the body shows below the seat's
+            // front slice, on either backend.
+            const rows = Math.max(1, drawY + seatLineOffset(seat) - dy + 1);
+            if (rows < bodyCell.sh) {
+                bodyCell = { ...bodyCell, sh: rows };
+                if (pose) pose = { ...pose, cell: bodyCell };
+                this._poseCell.sh = rows;
+            }
+        }
         this._poseCell.dx = dx;
         this._poseCell.dy = dy;
         const contentTopY = dy + bounds.minY;
@@ -3223,10 +3801,9 @@ export class AgentSprite {
             bounds,
             cellSize,
             drawScale: 1,
-            cacheEquipment: archiveProgress <= 0,
         };
         this._setGpuFrameRecord({
-            cell,
+            cell: pose ? cell : bodyCell,
             dx,
             dy,
             drawScale: 1,
@@ -3239,6 +3816,11 @@ export class AgentSprite {
             // 2.2 — the resident renderer samples the same authored cell the
             // Canvas body blits, so both backends show one pose.
             pose,
+            // B.2 — while its released equipped sheet waits for the recompose
+            // turn, the 1:1 body samples that sheet's 0.5x LOD copy at its own
+            // 1:1 size (each LOD texel two world texels), so it never changes
+            // size for those frames.
+            lod: !fullSheetReady && !pose,
         });
         // Agent records are submitted independently of terrain coverage, even
         // beyond the island. Only the resident backend owns their body paint.
@@ -3252,7 +3834,10 @@ export class AgentSprite {
         // An authored pose owns its own hands: a strip that declares a sheathed
         // grip parks the runtime weapon instead of painting it over the prop.
         const sheathed = Boolean(pose && pose.strip?.meta?.grip?.sheathe);
+        const seatStones = this._seatStoneStamps();
         if (canvasBody) {
+            // 7.1 — a stone seat's top face under the sitter, before the body.
+            if (seatStones) ctx.drawImage(seatStones.back.canvas, this._placeX + seatStones.back.x, this._placeY + seatStones.back.y);
             if (!sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'back');
             // Plan 2.4 — the rim is baked into the sheet, identical to the
             // resident atlas; no per-frame halo pass.
@@ -3268,6 +3853,13 @@ export class AgentSprite {
             this._drawFrozenTint(ctx, bodyCell, dx, dy, poseSource);
         }
         if (canvasBody && !sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
+        // 7.1 — the stone seat's front faces over the sitter's legs; 7.2 — the
+        // petitioner's floor candle. Both after the body in its depth slot.
+        if (canvasBody) {
+            if (seatStones) ctx.drawImage(seatStones.front.canvas, this._placeX + seatStones.front.x, this._placeY + seatStones.front.y);
+            const candle = this._queueCandleMark();
+            if (candle) ctx.drawImage(candle.stamp, candle.x, candle.y);
+        }
         if (departedBody) ctx.restore();
         // These five marks belong to the body frame and have exactly one owner
         // per backend: this Canvas pass, or the resident renderer's ungraded
@@ -3584,8 +4176,74 @@ export class AgentSprite {
             hovered: this.hovered,
             accent: this._providerAccentColor(),
             trim: this._providerTrimColor(),
+            // 2.8 — the body keeps its lamp choice between frames.
+            owner: this,
         });
         return this._groundMarks;
+    }
+
+    // 7.2 — a petitioner standing in its queue slot, or at an overflow place
+    // on the plaza (the 13th onward), has a floor candle beside its feet; the
+    // wax steps down by its real wait age. It paints right after the body in
+    // the body's own depth slot (Canvas and GPU), so a bridge deck or plaza
+    // under the queue never hides it.
+    _queueCandleMark() {
+        if (this.visitRole !== 'queue' || this.moving || departedTableau(this)) return null;
+        const anchor = waitAnchor(this.agent);
+        const stamp = queueCandleStamp(anchor > 0 ? Math.max(0, Date.now() - anchor) : null);
+        if (!stamp) return null;
+        const mark = this._candleMark || (this._candleMark = { kind: 'queue-candle', stamp: null, x: 0, y: 0 });
+        mark.stamp = stamp;
+        mark.x = Math.round(this._placeX + CANDLE_OFFSET.x) - 2;
+        mark.y = Math.round(this._placeY + CANDLE_OFFSET.y) - stamp.height + 1;
+        return mark;
+    }
+
+    // 7.1 — the stone seat (Command step, fountain rim) this villager sits
+    // on: { back, front } stamps drawn in its own depth slot, so the stone
+    // exists only under a sitter. Null standing, or on a timber seat.
+    _seatStoneStamps() {
+        const seat = this._seatedSeat();
+        return seat ? seatStoneStamps(seat) : null;
+    }
+
+    _seatStoneRecord(stamp, part) {
+        const records = this._seatStoneRecordCache || (this._seatStoneRecordCache = {});
+        const record = records[part] || (records[part] = {
+            sx: 0, sy: 0, alpha: 1, elevation: 0.34, occluder: 0.2, emissive: 0, ownerSlot: 0, material: SEAT_STONE_MATERIAL,
+        });
+        record.id = `agent:${this.agent?.id}:seat-stone:${part}`;
+        record.stableKey = record.id;
+        record.textureKey = `agent-ground:${stamp.canvas.__cvGroundKey}`;
+        record.source = stamp.canvas;
+        record.sourceWidth = stamp.canvas.width;
+        record.sourceHeight = stamp.canvas.height;
+        record.sw = record.width = stamp.canvas.width;
+        record.sh = record.height = stamp.canvas.height;
+        record.x = this._placeX + stamp.x;
+        record.y = this._placeY + stamp.y;
+        return record;
+    }
+
+    _queueCandleRecord() {
+        const mark = this._queueCandleMark();
+        if (!mark || !this._gpuFrameRecord) return null;
+        const stamp = mark.stamp;
+        const record = this._candleRecord || (this._candleRecord = { sx: 0, sy: 0, alpha: 1, elevation: 0.3, occluder: 0 });
+        record.id = `agent:${this.agent?.id}:queue-candle`;
+        record.stableKey = record.id;
+        record.textureKey = `agent-ground:${stamp.__cvGroundKey}`;
+        record.source = stamp;
+        record.sourceWidth = stamp.width;
+        record.sourceHeight = stamp.height;
+        record.sw = record.width = stamp.width;
+        record.sh = record.height = stamp.height;
+        record.x = mark.x;
+        record.y = mark.y;
+        // The flame and cream cap read by night; wax and dish are lit like
+        // any prop (a small constant, never a pulse).
+        record.emissive = stamp.__cvGroundKey.includes(':lit:') ? 0.3 : 0;
+        return record;
     }
 
     // Plan 2.5 — the selected agent's chevron over the head. It lifts one
@@ -3636,7 +4294,15 @@ export class AgentSprite {
     }
 
     getGpuWorldRecords() {
-        return this.gpuOverlayRenderer.getRecords();
+        const records = this.gpuOverlayRenderer.getRecords();
+        const candle = this._queueCandleRecord();
+        const stones = this._gpuFrameRecord ? this._seatStoneStamps() : null;
+        if (!stones) return candle ? [...records, candle] : records;
+        // 7.1 — the stone seat's top face paints before the body, its front
+        // faces after it (record order is paint order within the body slot).
+        const out = [this._seatStoneRecord(stones.back, 'back'), ...records, this._seatStoneRecord(stones.front, 'front')];
+        if (candle) out.push(candle);
+        return out;
     }
 
     // Plan 2.3 — ground marks (contact shadow + meaningful rings) for the
@@ -3655,17 +4321,27 @@ export class AgentSprite {
     _setGpuFrameRecord(record) {
         this.gpuOverlayRenderer.setFrameRecord(record);
         const frame = this._gpuFrameRecord;
-        if (frame?.materialSource || frame?.emissiveSource || frame?.occluderSource) {
+        if (frame?.materialSource || frame?.emissiveSource) {
             GPU_AGENT_CHANNEL_ATLAS_RECORDS.set(this._resourceOwnerKey, {
                 sw: frame.sw,
                 sh: frame.sh,
                 material: Boolean(frame.materialSource),
                 emissive: Boolean(frame.emissiveSource),
-                occluder: Boolean(frame.occluderSource),
             });
         } else {
             GPU_AGENT_CHANNEL_ATLAS_RECORDS.delete(this._resourceOwnerKey);
         }
+    }
+
+    // B.2 — the agent atlas's channel sources: one packed geometry canvas per
+    // material + occluder pair (null while it packs), and the emissive
+    // companion only when it carries authored emission.
+    _packedGeometrySource(material, occluder) {
+        return packedGeometrySource(material, occluder, this.assets);
+    }
+
+    _authoredEmissionSource(emissive) {
+        return authoredEmissionSource(emissive, this.assets);
     }
 
     // GPU-world bodies are sampled from a packed sheet texture, so the runtime
@@ -3689,7 +4365,9 @@ export class AgentSprite {
         const canvas = document.createElement('canvas');
         canvas.width = cols * padded;
         canvas.height = rows * padded;
-        const ctx = canvas.getContext('2d');
+        // B.2 — CPU-backed: the base sheet is a CPU canvas, and the sheet only
+        // feeds the CPU agent atlas and the LOD bake, so no step keeps a GPU copy.
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (!ctx) return null;
         ctx.imageSmoothingEnabled = false;
         for (let col = 0; col < cols; col++) {
@@ -3698,7 +4376,7 @@ export class AgentSprite {
                 const cell = { sx: col * cellSize, sy: row * cellSize, sw: cellSize, sh: cellSize };
                 const bounds = this._getCellContentBounds(cell);
                 if (!bounds) continue;
-                const frameGeometry = { cell, dx: 0, dy: 0, bounds, drawScale: 1, cacheEquipment: false };
+                const frameGeometry = { cell, dx: 0, dy: 0, bounds, drawScale: 1 };
                 ctx.save();
                 ctx.beginPath();
                 ctx.rect(col * padded, row * padded, padded, padded);
@@ -3713,93 +4391,135 @@ export class AgentSprite {
         return canvas;
     }
 
-    // Re-lays an unpadded sheet-layout sidecar (material/emissive companion)
-    // into the padded cell grid so its UVs stay aligned with the equipped
-    // albedo sheet. Weapon pixels carry no channel data and fall back to the
-    // default material, matching the Canvas renderer.
-    _padSidecarSheet(source, cellSize, pad, cols, rows) {
-        if (!source?.width || !source?.height) return null;
-        const padded = cellSize + pad * 2;
-        const canvas = document.createElement('canvas');
-        canvas.width = cols * padded;
-        canvas.height = rows * padded;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return null;
-        ctx.imageSmoothingEnabled = false;
-        for (let col = 0; col < cols; col++) {
-            for (let row = 0; row < rows; row++) {
-                ctx.drawImage(
-                    source,
-                    col * cellSize, row * cellSize, cellSize, cellSize,
-                    col * padded + pad, row * padded + pad, cellSize, cellSize,
-                );
-            }
-        }
-        return canvas;
-    }
-
     // Keeps _gpuBaseSpriteCanvas in sync with the current profile and asset
     // version. Asset version participates so a weapon sprite arriving after a
     // fallback-vector compose triggers a rebuild (and, via the key doubling as
     // the record's textureRevision, a texture re-upload). Composed sheets are
     // shared across sprites via a module-level cache — a padded sheet is
     // ~6 MB, and audit swarms routinely field 20+ villagers of one profile.
-    _syncGpuEquippedSheet(identity, profileKey) {
-        if (!this.gpuWorldEnabled) return;
+    // Only the albedo is re-laid: the frame record points the channel
+    // companions at their unpadded sidecar cell (`channelRect`).
+    // B.2 — `full` asks for the albedo a 1:1 body samples; a crowd body only
+    // needs the entry's LOD sheet, so a released albedo stays released. A
+    // compose waits for the frame's single compose slot (claimed inline by an
+    // `urgent` body, else from the derived-art idle queue); until then a new
+    // profile draws its plain sheet and a released one its LOD sheet, and the
+    // return value is false when a 1:1 body must stay on the LOD sheet.
+    _syncGpuEquippedSheet(identity, profileKey, { full = true, urgent = false } = {}) {
+        if (!this.gpuWorldEnabled) return true;
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        sweepGpuEquippedSheets(now);
         const equipment = this._normalizedCodexEquipment(this._runtimeCodexEquipment(identity));
         const key = `${profileKey}|${equipment || '_'}|${this.assets?.assetVersion || 0}`;
-        if (this._gpuEquippedSheetKey === key) return;
-        this._gpuEquippedSheetKey = key;
-        this._gpuEquippedSheetLayout = null;
-        this._gpuEquippedMaterialSheet = null;
-        this._gpuEquippedEmissiveSheet = null;
-        this._gpuEquippedOccluderSheet = null;
-        if (!equipment) return;
+        if (this._gpuEquippedSheetKey !== key) {
+            this._gpuEquippedSheetKey = key;
+            this._gpuEquippedEntry = null;
+            this._gpuEquippedSheetLayout = null;
+            this._gpuBaseSpriteCanvas = this._gpuPlainSpriteCanvas || this._gpuBaseSpriteCanvas;
+            const cached = equipment ? GPU_EQUIPPED_SHEET_CACHE.get(key) : null;
+            if (cached) {
+                // LRU refresh.
+                GPU_EQUIPPED_SHEET_CACHE.delete(key);
+                GPU_EQUIPPED_SHEET_CACHE.set(key, cached);
+            }
+        }
+        if (!equipment) return true;
+        let entry = GPU_EQUIPPED_SHEET_CACHE.get(key) || null;
+        if (!entry || (full && !entry.albedo)) {
+            const queued = typeof this.assets?.enqueueDerivedArt === 'function';
+            const inline = (urgent || !entry || !queued) && claimGpuEquippedCompose();
+            if (inline) entry = this._composeGpuEquippedEntry(identity, key, profileKey, { withLod: !full, now }) || entry;
+            else if (queued) this._enqueueGpuEquippedCompose(identity, key, profileKey, { urgent, withLod: !full });
+        }
+        this._gpuEquippedEntry = entry;
+        if (!entry) {
+            this._gpuBaseSpriteCanvas = this._gpuPlainSpriteCanvas || this._gpuBaseSpriteCanvas;
+            this._gpuEquippedSheetLayout = null;
+            return true;
+        }
+        this._gpuBaseSpriteCanvas = entry.albedo || entry.stub;
+        this._gpuEquippedSheetLayout = entry.layout;
+        if (!full) return true;
+        if (!entry.albedo) return false;
+        entry.fullUsedAt = now;
+        return true;
+    }
+
+    // Composes (or recomposes a released) equipped entry; `withLod` also bakes
+    // the entry's LOD sheet in the same slot when a crowd body asked for it.
+    _composeGpuEquippedEntry(identity, key, profileKey, { withLod = false, now = performance.now() } = {}) {
+        const started = performance.now();
+        const composed = this._composeGpuEquippedSheet(identity);
+        if (!composed) return null;
+        const layout = { pad: GPU_EQUIP_SHEET_PAD, cellSize: this.spriteSheet?.cellSize || 92 };
         let entry = GPU_EQUIPPED_SHEET_CACHE.get(key);
         if (entry) {
-            // LRU refresh.
-            GPU_EQUIPPED_SHEET_CACHE.delete(key);
-            GPU_EQUIPPED_SHEET_CACHE.set(key, entry);
+            entry.albedo = composed;
         } else {
-            const composed = this._composeGpuEquippedSheet(identity);
-            if (!composed) return;
-            const cellSize = this.spriteSheet?.cellSize || 92;
-            const cols = Math.floor(this.spriteCanvas.width / cellSize);
-            const rows = Math.floor(this.spriteCanvas.height / cellSize);
-            const spriteId = identity?.spriteId || '';
-            const material = this.assets?.getSidecar?.(spriteId, 'material')
-                || this.assets?.getMaterialSidecar?.(spriteId, 'material') || null;
-            const emissive = this.assets?.getSidecar?.(spriteId, 'emissive')
-                || this.assets?.getMaterialSidecar?.(spriteId, 'emissive') || null;
-            const occluder = this.assets?.getSidecar?.(spriteId, 'occluder') || null;
             entry = {
                 albedo: composed,
-                occluder: occluder ? this._padSidecarSheet(occluder, cellSize, GPU_EQUIP_SHEET_PAD, cols, rows) : null,
-                material: material ? this._padSidecarSheet(material, cellSize, GPU_EQUIP_SHEET_PAD, cols, rows) : null,
-                emissive: emissive ? this._padSidecarSheet(emissive, cellSize, GPU_EQUIP_SHEET_PAD, cols, rows) : null,
-                layout: { pad: GPU_EQUIP_SHEET_PAD, cellSize },
+                lod: null,
+                // Stands in for a released albedo: same size, never drawn.
+                stub: { width: composed.width, height: composed.height },
+                layout,
                 profileKey,
+                fullUsedAt: now,
             };
             GPU_EQUIPPED_SHEET_CACHE.set(key, entry);
-            gpuEquippedSheetCachePixels += gpuEquippedSheetEntryPixels(entry);
-            while (
-                GPU_EQUIPPED_SHEET_CACHE.size > GPU_EQUIPPED_SHEET_CACHE_ENTRY_LIMIT
-                || gpuEquippedSheetCachePixels > GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT
-            ) {
-                const oldestKey = oldestUnpinnedCacheKey(GPU_EQUIPPED_SHEET_CACHE);
-                if (oldestKey == null) break;
-                const oldest = GPU_EQUIPPED_SHEET_CACHE.get(oldestKey);
-                GPU_EQUIPPED_SHEET_CACHE.delete(oldestKey);
-                gpuEquippedSheetCachePixels -= gpuEquippedSheetEntryPixels(oldest);
-                releaseSharedEntry(oldest);
-            }
-            gpuEquippedSheetCachePixels = Math.max(0, gpuEquippedSheetCachePixels);
         }
-        this._gpuBaseSpriteCanvas = entry.albedo;
-        this._gpuEquippedSheetLayout = entry.layout;
-        this._gpuEquippedMaterialSheet = entry.material;
-        this._gpuEquippedEmissiveSheet = entry.emissive;
-        this._gpuEquippedOccluderSheet = entry.occluder;
+        entry.fullUsedAt = now;
+        if (withLod && !entry.lod) {
+            entry.lod = this.compositor?.halfScaleSheet?.(composed, layout.cellSize + layout.pad * 2) || null;
+        }
+        const ms = performance.now() - started;
+        gpuEquippedComposeStats.composes++;
+        gpuEquippedComposeStats.lastComposeMs = ms;
+        gpuEquippedComposeStats.maxComposeMs = Math.max(gpuEquippedComposeStats.maxComposeMs, ms);
+        gpuEquippedSheetCachePixels += gpuEquippedSheetEntryPixels(entry);
+        while (
+            GPU_EQUIPPED_SHEET_CACHE.size > GPU_EQUIPPED_SHEET_CACHE_ENTRY_LIMIT
+            || gpuEquippedSheetCachePixels > GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT
+        ) {
+            const oldestKey = oldestUnpinnedCacheKey(GPU_EQUIPPED_SHEET_CACHE);
+            if (oldestKey == null) break;
+            const oldest = GPU_EQUIPPED_SHEET_CACHE.get(oldestKey);
+            GPU_EQUIPPED_SHEET_CACHE.delete(oldestKey);
+            gpuEquippedSheetCachePixels -= gpuEquippedSheetEntryPixels(oldest);
+            releaseSharedEntry(oldest);
+        }
+        gpuEquippedSheetCachePixels = Math.max(0, gpuEquippedSheetCachePixels);
+        return entry;
+    }
+
+    _enqueueGpuEquippedCompose(identity, key, profileKey, { urgent = false, withLod = false } = {}) {
+        const assets = this.assets;
+        const job = {
+            key: `equipped-sheet:${key}`,
+            kind: 'agent',
+            onScreen: true,
+            selected: Boolean(urgent),
+            build: () => {
+                if (this._gpuEquippedSheetKey !== key || !this.spriteCanvas || !this.gpuWorldEnabled) return;
+                if (GPU_EQUIPPED_SHEET_CACHE.get(key)?.albedo) return;
+                if (!claimGpuEquippedCompose()) {
+                    assets.enqueueDerivedArt(job);
+                    return;
+                }
+                this._composeGpuEquippedEntry(identity, key, profileKey, { withLod });
+            },
+        };
+        assets.enqueueDerivedArt(job);
+    }
+
+    // B.2 — the crowd LOD sheet of the body's GPU sheet. An equipped entry
+    // keeps its own, which outlives a released albedo.
+    _gpuLodSheet(source, cellSize) {
+        const entry = this._gpuEquippedEntry;
+        if (entry && (source === entry.albedo || source === entry.stub)) {
+            if (!entry.lod && entry.albedo) entry.lod = this.compositor?.halfScaleSheet?.(entry.albedo, cellSize) || null;
+            return entry.lod;
+        }
+        return this.compositor?.halfScaleSheet?.(source, cellSize) || null;
     }
 
     _drawFrozenTint(ctx, cell, dx, dy, source = null) {
@@ -3885,7 +4605,6 @@ export class AgentSprite {
         if (this.assets?.has?.(identity?.spriteId)) {
             geometry.authoredGrip = codexWeaponPose(identity.spriteId, frameGeometry, directionKey, equipment);
         }
-        const useCache = frameGeometry.cacheEquipment !== false;
         const heavyGearBaked = identity?.codexHeavyGearBaked && this.assets?.has?.(identity.spriteId);
         const heavyArmor = !heavyGearBaked && (equipment === 'greatsword' || equipment === 'polearm');
         const warlord = equipment === 'polearm';
@@ -3896,7 +4615,7 @@ export class AgentSprite {
 
         if (equipment === 'multitool' && geometry.authoredGrip) {
             if (layer === (assetDrawsBehindBody ? 'back' : 'front')) {
-                this._drawWeaponAt(ctx, geometry.authoredGrip, geometry.drawScale, () => this._drawCodexMultitool(ctx));
+                this._drawWeaponAt(ctx, geometry.authoredGrip, geometry.drawScale, 'multitool', c => this._drawCodexMultitool(c));
             }
             if (layer === (geometry.authoredGrip.behindBody ? 'back' : 'front')) {
                 drawCodexGauntlet(ctx, geometry.authoredGrip, geometry.drawScale);
@@ -3906,18 +4625,17 @@ export class AgentSprite {
 
         if (layer === 'back') {
             if (heavyArmor) {
-                this._drawGearAt(ctx, geometry.torso, geometry.drawScale, () => {
-                    this._drawCodexCape(ctx, warlord, directionKey);
-                });
+                this._drawWeaponAt(ctx, geometry.torso, geometry.drawScale, `cape:${warlord ? 1 : 0}:${directionKey}`,
+                    c => this._drawCodexCape(c, warlord, directionKey));
             }
 
             if (assetDef && assetDrawsBehindBody) {
-                this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset', useCache);
+                this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset');
                 if (geometry.authoredGrip?.behindBody) {
-                    this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'hands', useCache);
+                    this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'hands');
                 }
             } else if (!geometry.authoredGrip && equipment === 'engineerWrench' && this._weaponBackCarryDirection(directionKey)) {
-                this._drawWeaponAt(ctx, geometry.backCarry, geometry.drawScale, () => this._drawCodexBackWrench(ctx));
+                this._drawWeaponAt(ctx, geometry.backCarry, geometry.drawScale, 'backWrench', c => this._drawCodexBackWrench(c));
             }
             return;
         }
@@ -3925,46 +4643,49 @@ export class AgentSprite {
         if (layer !== 'front') return;
 
         if (heavyArmor) {
-            this._drawGearAt(ctx, geometry.torso, geometry.drawScale, () => this._drawCodexHeavyArmor(ctx, warlord, directionKey));
-            this._drawGearAt(ctx, geometry.head, geometry.drawScale, () => this._drawCodexHeavyHelmet(ctx, warlord, directionKey));
+            this._drawWeaponAt(ctx, geometry.torso, geometry.drawScale, `armor:${warlord ? 1 : 0}:${directionKey}`,
+                c => this._drawCodexHeavyArmor(c, warlord, directionKey));
+            this._drawWeaponAt(ctx, geometry.head, geometry.drawScale, `helmet:${warlord ? 1 : 0}:${directionKey}`,
+                c => this._drawCodexHeavyHelmet(c, warlord, directionKey));
         }
 
         if (assetDef) {
-            if (!assetDrawsBehindBody) this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset', useCache);
-            if (!geometry.authoredGrip?.behindBody) this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'hands', useCache);
+            if (!assetDrawsBehindBody) this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset');
+            if (!geometry.authoredGrip?.behindBody) this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'hands');
             return;
         }
 
         if (equipment === 'multitool') {
-            this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, () => {
-                this._drawCodexMultitool(ctx);
-                this._drawWeaponGripHand(ctx);
+            this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, 'multitool+grip', c => {
+                this._drawCodexMultitool(c);
+                this._drawWeaponGripHand(c);
             });
         } else if (equipment === 'runeblade') {
-            this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, () => {
-                this._drawCodexRuneblade(ctx);
-                this._drawWeaponGripHand(ctx);
+            this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, 'runeblade+grip', c => {
+                this._drawCodexRuneblade(c);
+                this._drawWeaponGripHand(c);
             });
         } else if (equipment === 'swordShield') {
-            this._drawWeaponAt(ctx, geometry.shield, geometry.drawScale, () => this._drawCodexShield(ctx, geometry.shieldSlim));
-            this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, () => {
-                this._drawCodexRuneblade(ctx);
-                this._drawWeaponGripHand(ctx);
+            this._drawWeaponAt(ctx, geometry.shield, geometry.drawScale, `shield:${geometry.shieldSlim ? 1 : 0}`,
+                c => this._drawCodexShield(c, geometry.shieldSlim));
+            this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, 'runeblade+grip', c => {
+                this._drawCodexRuneblade(c);
+                this._drawWeaponGripHand(c);
             });
         } else if (equipment === 'greatsword') {
-            this._drawWeaponAt(ctx, geometry.twoHanded, geometry.drawScale, () => {
-                this._drawCodexGreatsword(ctx);
-                this._drawWeaponGripHands(ctx);
+            this._drawWeaponAt(ctx, geometry.twoHanded, geometry.drawScale, 'greatsword+grips', c => {
+                this._drawCodexGreatsword(c);
+                this._drawWeaponGripHands(c);
             });
         } else if (equipment === 'polearm') {
-            this._drawWeaponAt(ctx, geometry.polearm, geometry.drawScale, () => {
-                this._drawCodexPolearm(ctx);
-                this._drawWeaponGripHands(ctx);
+            this._drawWeaponAt(ctx, geometry.polearm, geometry.drawScale, 'polearm+grips', c => {
+                this._drawCodexPolearm(c);
+                this._drawWeaponGripHands(c);
             });
         } else if (equipment === 'engineerWrench') {
-            this._drawWeaponAt(ctx, geometry.shoulderRest, geometry.drawScale, () => {
-                this._drawCodexShoulderWrench(ctx);
-                this._drawWeaponGripHand(ctx);
+            this._drawWeaponAt(ctx, geometry.shoulderRest, geometry.drawScale, 'shoulderWrench+grip', c => {
+                this._drawCodexShoulderWrench(c);
+                this._drawWeaponGripHand(c);
             });
         }
     }
@@ -4005,35 +4726,20 @@ export class AgentSprite {
         return normalized;
     }
 
-    _drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, part = 'asset', useCache = true) {
+    _drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, part = 'asset') {
         const poseName = this._weaponPoseName(assetDef, directionKey);
         const pose = geometry.authoredGrip || geometry[poseName] || geometry.rightHand;
         if (!pose) return;
 
         if (part === 'asset') {
-            const rasterScale = useCache ? this._stableCodexEquipmentRasterScale(ctx) : null;
-            const cached = rasterScale
-                ? this._cachedCodexEquipmentAsset(assetDef, pose, geometry.drawScale, rasterScale)
-                : null;
-            if (cached) {
-                ctx.imageSmoothingEnabled = false;
-                ctx.drawImage(
-                    cached.canvas,
-                    0,
-                    0,
-                    cached.canvas.width,
-                    cached.canvas.height,
-                    Math.round(pose.x) + cached.offsetX / rasterScale,
-                    Math.round(pose.y) + cached.offsetY / rasterScale,
-                    cached.canvas.width / rasterScale,
-                    cached.canvas.height / rasterScale,
-                );
-                return;
-            }
+            // The PNG (or, until it loads, its vector fallback) is one source;
+            // the asset version keys the frame so a late load re-bakes it.
+            const source = this.assets?.has?.(assetDef.id) ? 'asset' : `fallback:${assetDef.fallback || '_'}`;
             this._drawWeaponAt(ctx, {
                 ...pose,
                 scale: (pose.scale || 1) * (assetDef.scale || 1),
-            }, geometry.drawScale, () => this._drawCodexWeaponAssetImage(ctx, assetDef));
+            }, geometry.drawScale, `${assetDef.id}:${source}:${this.assets?.assetVersion || '_'}`,
+            c => this._drawCodexWeaponAssetImage(c, assetDef));
             return;
         }
 
@@ -4041,82 +4747,31 @@ export class AgentSprite {
             drawCodexGauntlet(ctx, pose, geometry.drawScale);
             return;
         }
-        this._drawWeaponAt(ctx, pose, geometry.drawScale, () => {
-            if (assetDef.hands === 'double') this._drawWeaponGripHands(ctx, assetDef.handSpacing || 11, assetDef.handVector);
-            else this._drawWeaponGripHand(ctx);
+        const double = assetDef.hands === 'double';
+        const handKey = double ? `grips:${assetDef.handSpacing || 11}:${assetDef.handVector || '_'}` : 'grip';
+        this._drawWeaponAt(ctx, pose, geometry.drawScale, handKey, c => {
+            if (double) this._drawWeaponGripHands(c, assetDef.handSpacing || 11, assetDef.handVector);
+            else this._drawWeaponGripHand(c);
         });
     }
 
-    _stableCodexEquipmentRasterScale(ctx) {
-        const transform = ctx.getTransform?.();
-        const scale = Math.abs(transform?.a || 0);
-        if (!scale || transform.b !== 0 || transform.c !== 0 || Math.abs(Math.abs(transform.d) - scale) > 1e-9) {
-            return null;
-        }
-        const now = performance.now();
-        if (scale !== codexEquipmentRasterScale) {
-            codexEquipmentRasterScale = scale;
-            codexEquipmentRasterScaleSince = now;
-            return null;
-        }
-        return now - codexEquipmentRasterScaleSince >= CODEX_EQUIPMENT_SCALE_STABLE_MS ? scale : null;
-    }
-
-    _cachedCodexEquipmentAsset(assetDef, pose, drawScale, rasterScale) {
-        const poseScale = pose.scale || 1;
-        const scale = drawScale * poseScale * (assetDef.scale || 1) * rasterScale;
+    // 3.8 — one baked frame per (source, flip, scale, angle): the unrotated
+    // source rasterized at one pixel per texel, then cleanEdge-resampled
+    // through the pose at one output pixel per world texel (WeaponFrames.js).
+    // Shared across sprites; nothing is rotated or scaled at draw time.
+    _bakedWeaponFrame(sourceKey, paint, pose, drawScale) {
+        const scale = drawScale * (pose.scale || 1);
         const angle = pose.angle || 0;
         const flipX = Boolean(pose.flipX);
-        const cacheKey = [
-            this.assets?.assetVersion || '_',
-            assetDef.id,
-            this.assets?.has?.(assetDef.id) ? 'asset' : `fallback:${assetDef.fallback || '_'}`,
-            flipX ? 1 : 0,
-            rasterScale,
-            scale,
-            angle,
-        ].join('|');
+        const cacheKey = `${sourceKey}|${flipX ? 1 : 0}|${scale.toFixed(4)}|${angle.toFixed(4)}`;
         const existing = CODEX_EQUIPMENT_CACHE.get(cacheKey);
         if (existing) return existing;
 
-        const dims = this.assets?.getDims?.(assetDef.id) || { w: 112, h: 112 };
-        const [anchorX, anchorY] = this._codexWeaponAssetAnchor(assetDef);
-        const sourceBounds = {
-            minX: -anchorX,
-            minY: -anchorY,
-            maxX: dims.w - anchorX,
-            maxY: dims.h - anchorY,
-        };
-        const cos = Math.cos(angle);
-        const sin = Math.sin(angle);
-        const points = [
-            [sourceBounds.minX, sourceBounds.minY],
-            [sourceBounds.maxX, sourceBounds.minY],
-            [sourceBounds.maxX, sourceBounds.maxY],
-            [sourceBounds.minX, sourceBounds.maxY],
-        ].map(([x, y]) => {
-            const rotatedX = (cos * x - sin * y) * scale;
-            return [flipX ? -rotatedX : rotatedX, (sin * x + cos * y) * scale];
-        });
-        const margin = 2;
-        const minX = Math.floor(Math.min(...points.map(point => point[0]))) - margin;
-        const minY = Math.floor(Math.min(...points.map(point => point[1]))) - margin;
-        const maxX = Math.ceil(Math.max(...points.map(point => point[0]))) + margin;
-        const maxY = Math.ceil(Math.max(...points.map(point => point[1]))) + margin;
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, maxX - minX);
-        canvas.height = Math.max(1, maxY - minY);
-        const cacheCtx = canvas.getContext('2d');
-        cacheCtx.imageSmoothingEnabled = false;
-        cacheCtx.translate(-minX, -minY);
-        cacheCtx.scale(flipX ? -1 : 1, 1);
-        cacheCtx.scale(scale, scale);
-        cacheCtx.rotate(angle);
-        this._drawCodexWeaponAssetImage(cacheCtx, assetDef);
-
-        const cached = { canvas, offsetX: minX, offsetY: minY, profileKey: this._spriteProfileKey };
+        const source = rasterWeaponSource(paint);
+        if (!source) return null;
+        const cached = { ...bakeWeaponFrame(source, { angle, scale, flipX }), profileKey: this._spriteProfileKey };
         CODEX_EQUIPMENT_CACHE.set(cacheKey, cached);
-        codexEquipmentCachePixels += canvas.width * canvas.height;
+        codexEquipmentCachePixels += cached.canvas.width * cached.canvas.height;
         while (
             CODEX_EQUIPMENT_CACHE.size > CODEX_EQUIPMENT_CACHE_ENTRY_LIMIT
             || codexEquipmentCachePixels > CODEX_EQUIPMENT_CACHE_PIXEL_LIMIT
@@ -4129,7 +4784,7 @@ export class AgentSprite {
             releaseSharedEntry(oldest);
         }
         codexEquipmentCachePixels = Math.max(0, codexEquipmentCachePixels);
-        return CODEX_EQUIPMENT_CACHE.get(cacheKey) || null;
+        return cached;
     }
 
     _drawCodexWeaponAssetImage(ctx, assetDef) {
@@ -4269,26 +4924,13 @@ export class AgentSprite {
         };
     }
 
-    _drawWeaponAt(ctx, pose, drawScale, drawFn) {
-        ctx.save();
+    // `paint(ctx)` draws the piece unrotated with its grip at the origin;
+    // `sourceKey` names that painting for the shared frame cache.
+    _drawWeaponAt(ctx, pose, drawScale, sourceKey, paint) {
+        const frame = this._bakedWeaponFrame(sourceKey, paint, pose, drawScale);
+        if (!frame) return;
         ctx.imageSmoothingEnabled = false;
-        ctx.translate(Math.round(pose.x), Math.round(pose.y));
-        ctx.scale(pose.flipX ? -1 : 1, 1);
-        ctx.scale(drawScale * (pose.scale || 1), drawScale * (pose.scale || 1));
-        ctx.rotate(pose.angle || 0);
-        drawFn();
-        ctx.restore();
-    }
-
-    _drawGearAt(ctx, pose, drawScale, drawFn) {
-        ctx.save();
-        ctx.imageSmoothingEnabled = false;
-        ctx.translate(Math.round(pose.x), Math.round(pose.y));
-        ctx.scale(pose.flipX ? -1 : 1, 1);
-        ctx.scale(drawScale * (pose.scale || 1), drawScale * (pose.scale || 1));
-        ctx.rotate(pose.angle || 0);
-        drawFn();
-        ctx.restore();
+        ctx.drawImage(frame.canvas, Math.round(pose.x) + frame.offsetX, Math.round(pose.y) + frame.offsetY);
     }
 
     _weaponBackCarryDirection(directionKey) {
@@ -4753,12 +5395,17 @@ export class AgentSprite {
     // no strip, is travelling, or is doing something the strip does not author.
     // Null is the contract's fallback: the procedural overlay stays in charge.
     _actionStripPose(identity, spriteId) {
-        if (this.moving || this.chatting || departedTableau(this) || this.animState !== 'idle') return null;
+        // Under reduced motion a body never plays its walk cycle (it holds
+        // the idle frame even while `moving`), so it may hold a strip's static
+        // row too: the waiting villager keeps its raised hand (7.3).
+        const travelling = this.moving && this.motionScale > 0;
+        if (travelling || this.chatting || departedTableau(this) || this.animState !== 'idle') return null;
         const group = this.actionStripGroup();
         if (!group) return null;
         const strip = this.assets?.getActionStrip?.(spriteId);
         if (!strip?.image || !strip.meta) return null;
-        const cell = resolveActionFrame(strip.meta, group, this.direction, this._actionStripFrame(strip.meta, group));
+        const now = Date.now();
+        const cell = resolveActionFrame(strip.meta, group, this.direction, this._actionStripFrame(strip.meta, group, now));
         if (!cell) return null;
         const cellSize = Number(strip.meta.cell) || DEFAULT_CELL;
         const source = this.compositor?.stripFor(`${spriteId}|${strip.path || 'actions'}`, strip.image, {
@@ -4770,31 +5417,73 @@ export class AgentSprite {
             cellSize,
             outline: true,
         }) || strip.image;
-        return { group, cell, source, strip };
+        return { group, cell, source, strip, now };
     }
 
     // Which authored group the current truth asks for. The held wait row wins
-    // over the generic work/think vocabulary (2.3); reading is the only other
-    // authored group today. Never derived from elapsed time.
+    // over the generic work/think vocabulary (2.3); an admitted tool ritual
+    // asks for its tool class's work strip (7.3); reading keeps its group.
+    // Never derived from elapsed time.
     actionStripGroup() {
+        // 7.1 — a villager on its seat sits (static held row).
+        if (this._seatedSeat()) return 'sit';
         if (this.agent?.status === AgentStatus.WAITING_ON_USER) return 'wait';
+        const work = this._admittedWorkStripGroup();
+        if (work) return work;
         return resolveAgentAction(this.agent, { chatting: this.chatting }) === AgentAction.READ ? 'read' : null;
     }
 
-    _actionStripFrame(meta, group) {
+    _admittedWorkStripGroup() {
+        const ritual = this._toolRitual;
+        if (!ritual || !WORK_STRIP_GROUPS.has(ritual.stripGroup)) return null;
+        if (ritual.agentId && ritual.agentId !== this.agent?.id) return null;
+        return ritual.phase === 'playing' || ritual.phase === 'fading' ? ritual.stripGroup : null;
+    }
+
+    _actionStripFrame(meta, group, now = Date.now()) {
         // Static band for the held wait row, for a stale observation (C1), and
         // for reduced motion. Otherwise one two-frame medium-band beat, which
         // replaces the working pulse instead of stacking on it.
-        if (group === 'wait' || this.motionScale <= 0 || this.observation?.state === 'stale') return 'hold';
+        if (group === 'wait' || group === 'sit' || this.motionScale <= 0 || this.observation?.state === 'stale') return 'hold';
         const rows = meta?.groups?.[group]?.rows;
         const first = Number(rows?.[0]);
         const span = Number(rows?.[1]) - first + 1;
         if (!Number.isInteger(first) || !(span > 1)) return 'hold';
+        if (WORK_STRIP_GROUPS.has(group)) return this._workStripFrame(meta.groups[group], span, now);
         const hold = Number(meta.groups[group].hold);
         const holdIndex = Number.isInteger(hold) ? Math.max(0, hold - first) : span - 1;
-        return (Math.floor(Date.now() / ACTION_BEAT_MS) % 2)
+        return (Math.floor(now / ACTION_BEAT_MS) % 2)
             ? (holdIndex - 1 + span) % span
             : holdIndex;
+    }
+
+    // One strip cycle per gesture period of the admitted ritual, on the clock
+    // ritualDownbeat reads, so the contact frame is on screen exactly when the
+    // WorkDownbeat strikes. A stale or reduced-motion ritual holds.
+    _workStripFrame(groupMeta, span, now = Date.now()) {
+        const ritual = this._toolRitual;
+        const period = RITUAL_GESTURE_PERIOD_MS[ritual?.pose];
+        if (!period || ritual.motionEnabled === false) return 'hold';
+        const contact = Number.isInteger(groupMeta?.contactFrame) ? groupMeta.contactFrame : 0;
+        const step = Math.floor(((now % period) / period) * span);
+        return (contact + step) % span;
+    }
+
+    // The strip's contact point for this facing in world texels, or null: the
+    // manifest group's `contact` map holds the contact frame's hand joint in
+    // cell px, keyed by short direction.
+    _workStripContact(frameGeometry) {
+        const cell = this._poseCell;
+        if (cell?.source !== 'strip' || !WORK_STRIP_GROUPS.has(cell.group) || !frameGeometry) return null;
+        const point = cell.meta?.groups?.[cell.group]?.contact?.[DIRECTIONS[this.direction]];
+        const scale = Number(frameGeometry.drawScale) || 1;
+        if (Array.isArray(point)) return { x: frameGeometry.dx + point[0] * scale, y: frameGeometry.dy + point[1] * scale };
+        // No authored point: the body's hand height, still never a procedural tool.
+        const bounds = frameGeometry.bounds || { minX: 0, maxX: 0, minY: 0, maxY: 0 };
+        return {
+            x: frameGeometry.dx + ((bounds.minX + bounds.maxX) / 2) * scale,
+            y: frameGeometry.dy + (bounds.minY + (bounds.maxY - bounds.minY) * 0.62) * scale,
+        };
     }
 
     /**
@@ -6074,6 +6763,24 @@ export class AgentSprite {
         // poses (reduced motion) scale identically.
         const gestureScale = Math.max(1, Number(drawScale) || 1);
         ctx.save();
+        // 7.3 — an authored work strip owns the gesture (no procedural tool
+        // over its empty hands); the beat lands on the strip's contact point
+        // when the contact frame is on screen.
+        const stripContact = this._workStripContact(frameGeometry);
+        if (stripContact) {
+            if (animated) {
+                drawWorkDownbeat(ctx, ritual, Math.round(stripContact.x), Math.round(stripContact.y), {
+                    side: sideSign,
+                    scale: gestureScale,
+                    contact: this._poseCell.group,
+                    // Keep the beat on the body cell's clock, even if this
+                    // overlay is drawn across a gesture-cycle boundary.
+                    now: this._poseCell.now,
+                });
+            }
+            ctx.restore();
+            return;
+        }
         if (ritual.phase === 'fading') ctx.globalAlpha *= 0.5;
         switch (ritual.pose) {
             case 'hammer':

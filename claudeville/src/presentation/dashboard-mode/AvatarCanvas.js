@@ -244,7 +244,9 @@ export class AvatarCanvas {
     }
 
     draw() {
-        const ctx = this.canvas.getContext('2d');
+        // B.2 — CPU-backed: the composed sheet it crops is a CPU canvas, and a
+        // GPU-backed avatar made Chrome keep a GPU copy of each whole sheet.
+        const ctx = this.canvas.getContext('2d', { willReadFrequently: true });
         const w = this.canvas.width;
         const h = this.canvas.height;
         const app = this.agent.appearance;

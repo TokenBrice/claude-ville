@@ -351,8 +351,9 @@ test('calm gate suppresses only named ornament and never weather, attention, or 
     assert.equal(storm.liveTwinkle, 'on');
     assert.equal(storm.weather, 'on');
 
-    assert.equal(allowAmbientMeteor({ calm: true, motionScale: 1 }), false);
-    assert.equal(allowAmbientMeteor({ calm: false, motionScale: 1 }), true);
+    // 5.8 — meteors come only on clear nights, which is when the scene is
+    // calm, so the calm gate must never silence them.
+    assert.equal(allowAmbientMeteor({ motionScale: 1 }), true);
     assert.equal(liveTwinkleBudget({ calm: true, motionScale: 1 }).count < liveTwinkleBudget({
         calm: false,
         motionScale: 1,

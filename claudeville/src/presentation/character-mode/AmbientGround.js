@@ -9,12 +9,17 @@
 // is only cached once every building mask has loaded.
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { buildingCenterToWorld } from './Projection.js';
+import { getCoastField } from './CoastBake.js';
 
 // Texels above the ground point a mark occupies (splash crown, firefly hover).
 const SPLASH_REACH = 4;
 const FIREFLY_REACH = 10;
 // Grass within this many tiles (Chebyshev) of water is firefly ground.
 const FIREFLY_WATER_REACH = 2;
+// 3.9 — a splash's ground point must sit this far (tiles of the coast
+// field's signed distance) inland: the organic coastline, not the tile
+// diamonds, decides where water is, and rain on water draws rings instead.
+const SPLASH_SHORE_MARGIN = -0.15;
 
 const cache = new WeakMap();
 
@@ -34,6 +39,7 @@ function classify(host) {
     if (cached) return cached;
     const occluders = buildingOccluders(host);
     if (!occluders) return null;
+    const coast = host.waterTiles.size ? getCoastField(host) : null;
 
     const pathSets = [
         host.pathTiles,
@@ -48,6 +54,7 @@ function classify(host) {
         for (let tileX = 0; tileX < MAP_SIZE; tileX++) {
             const key = `${tileX},${tileY}`;
             if (host.waterTiles.has(key) || host.bridgeTiles?.has?.(key)) continue;
+            if (coast && coast.signedDistance(tileX, tileY) > SPLASH_SHORE_MARGIN) continue;
             if (!host.pathfinder.isWalkable(tileX, tileY)) continue;
             const x = (tileX - tileY) * TILE_WIDTH / 2;
             const y = (tileX + tileY) * TILE_HEIGHT / 2;

@@ -13,7 +13,7 @@ import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
 import { baseWindX, cloudCourseDrift, windAt } from './Wind.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
-import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
+import { OCEAN_HORIZON_WORLD_Y, RAIN_START_PRECIPITATION } from './CoastBake.js';
 
 export function weatherEmbellishmentAllowed(level = 0) {
     return ornamentPlan({ level, motionScale: 1 }).ambientWeatherEmbellishment !== 'off';
@@ -233,7 +233,7 @@ export class WeatherRenderer {
         const cloudCover = clamp(weather.cloudCover, 0, 1);
         const legibility = weatherLegibilityGate(weather, atmosphere);
         const hasForegroundWeather = weather.intensity > 0
-            && (!CLEAR_TYPES.has(weather.type) || precipitation > 0.02 || fog > 0.04 || cloudCover > 0.72);
+            && (!CLEAR_TYPES.has(weather.type) || precipitation > RAIN_START_PRECIPITATION || fog > 0.04 || cloudCover > 0.72);
         if (!hasForegroundWeather) return;
 
         const particleEnabled = atmosphere?.motion?.particleEnabled !== false;
@@ -261,7 +261,9 @@ export class WeatherRenderer {
             ? Math.max(weather.intensity * 0.72, cloudCover * 0.54) * washBudget
             : 0;
         const fogIntensity = fogWashIntensity(weather, legibility);
-        const rainActive = RAIN_TYPES.has(weather.type) || precipitation > 0.02;
+        // The first rain falls here; the sea's forecast squall (CoastBake
+        // openSeaSquall) arrives before this same threshold.
+        const rainActive = RAIN_TYPES.has(weather.type) || precipitation > RAIN_START_PRECIPITATION;
         const rainOvercastIntensity = rainActive
             ? Math.min(
                 1,
@@ -469,7 +471,9 @@ export class WeatherRenderer {
         // while a gust passes), the sideways drift the knot wind (a drift
         // that followed the gust would jump the streaks).
         const drift = baseWindX(weather);
-        const lean = this._viewWind(canvas, timeMs, weather);
+        // Reduced motion holds one lean (the gust field at time 0), so the
+        // static streak frame never shifts as gusts pass.
+        const lean = this._viewWind(canvas, particleEnabled ? timeMs : 0, weather);
         const pad = 48;
         const travel = canvas.height + pad * 2;
         const speed = particleEnabled ? (0.42 + intensity * 0.34) : 0;
@@ -1217,7 +1221,7 @@ function fogWashIntensity(weather, legibility) {
 function fogBankIntensity(weather, legibility) {
     const fog = fogWashIntensity(weather, legibility);
     if (fog > 0 || weather.fog > 0.04 || weather.type === 'fog') return fog;
-    const rainActive = RAIN_TYPES.has(weather.type) || weather.precipitation > 0.02;
+    const rainActive = RAIN_TYPES.has(weather.type) || weather.precipitation > RAIN_START_PRECIPITATION;
     return !rainActive && weather.type === 'overcast' ? weather.intensity * 0.34 : 0;
 }
 

@@ -4,11 +4,14 @@
 // a cached multiply pattern (two world px per texel), laid over the terrain in
 // world space and drifted by the one wind (Wind.js `cloudCourseDrift`, the
 // integrator the composite reads too); reduced motion freezes the offset.
-// Clear days cover ~15 % of the ground, partly cloudy ~35 %, overcast/rain
-// none (the C2 grade flattens instead), and nothing at night.
+// A fair-weather sky (cover < 0.15) casts none, partly cloudy covers ~38 %,
+// overcast/rain none (the C2 grade flattens instead), and nothing at night
+// (`cloudCoveredShare`, the rule the resident path uses). Course edges are
+// solid with a 1-2 texel ordered seam (its width from the field's slope).
 
 import {
     buildCloudShadowTile,
+    cloudCoveredShare,
     CLOUD_TILE_SIZE,
     CLOUD_TILE_WORLD_SCALE,
 } from './gpu/GpuWorldPolicy.js';
@@ -66,10 +69,16 @@ function courseCanvas(covered, darkening) {
     const t2 = threshold(covered * 0.55);
     const t3 = threshold(covered * 0.22);
     const texelsPerCourse = WORLD_PX_PER_TEXEL / CLOUD_TILE_WORLD_SCALE;
+    const near = n => Math.min(Math.abs(n - t1), Math.abs(n - t2), Math.abs(n - t3));
     for (let y = 0; y < COURSE_SIZE; y++) {
         for (let x = 0; x < COURSE_SIZE; x++) {
-            const n = sample(values, (x + 0.5) * texelsPerCourse, (y + 0.5) * texelsPerCourse)
-                + (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 0.018;
+            const u = (x + 0.5) * texelsPerCourse;
+            const v = (y + 0.5) * texelsPerCourse;
+            let n = sample(values, u, v);
+            if (near(n) < 0.03) {
+                const slope = Math.max(Math.abs(sample(values, u + texelsPerCourse, v) - n), Math.abs(sample(values, u, v + texelsPerCourse) - n));
+                n += (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 2 * slope;
+            }
             const course = (n >= t1 ? 1 : 0) + (n >= t2 ? 1 : 0) + (n >= t3 ? 1 : 0);
             const offset = (y * COURSE_SIZE + x) * 4;
             image.data[offset] = Math.round(255 * (1 - course * darkening));
@@ -85,15 +94,17 @@ function courseCanvas(covered, darkening) {
 }
 
 /**
- * Draw the courses over the terrain. `ctx` carries the camera world
- * transform; `diamond` is the island's four world-space corner points.
+ * Draw the courses over the terrain and the sea. `ctx` carries the camera
+ * world transform; `region` is the world-space polygon to shade (3.4: the
+ * visible rect below the sea horizon, so the sea takes the island's shadows).
  */
-export function drawCloudShadowCourses(ctx, { atmosphere = null, diamond = null, timeMs = 0, reducedMotion = false } = {}) {
+export function drawCloudShadowCourses(ctx, { atmosphere = null, region = null, timeMs = 0, reducedMotion = false } = {}) {
     const grade = atmosphere?.lightGrade;
     const strength = Math.max(0, Math.min(1, Number(grade?.cloudShadow) || 0));
-    if (strength <= 0.02 || !diamond || diamond.length < 4 || typeof document === 'undefined') return false;
+    if (strength <= 0.02 || !region || region.length < 3 || typeof document === 'undefined') return false;
     const cover = Math.max(0, Math.min(1, Number(atmosphere?.weather?.cloudCover) || 0));
-    const covered = Math.max(0, Math.min(0.45, 0.1 + cover * 0.62));
+    const covered = cloudCoveredShare(cover);
+    if (covered <= 0) return false;
     const tile = courseCanvas(covered, 0.085 * strength);
     const pattern = ctx.createPattern(tile, 'repeat');
     if (!pattern) return false;
@@ -107,8 +118,8 @@ export function drawCloudShadowCourses(ctx, { atmosphere = null, diamond = null,
     ctx.save();
     ctx.imageSmoothingEnabled = false;
     ctx.beginPath();
-    ctx.moveTo(diamond[0].x, diamond[0].y);
-    for (let index = 1; index < 4; index++) ctx.lineTo(diamond[index].x, diamond[index].y);
+    ctx.moveTo(region[0].x, region[0].y);
+    for (let index = 1; index < region.length; index++) ctx.lineTo(region[index].x, region[index].y);
     ctx.closePath();
     ctx.globalCompositeOperation = 'multiply';
     ctx.fillStyle = pattern;

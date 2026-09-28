@@ -4,6 +4,10 @@ import {
 } from '../MaterialRegistry.js';
 import { RECEIVER_LUMA_CEILING } from '../../../config/artPalette.js';
 import { WATER_MAX_SATURATION } from '../GradeEvaluator.js';
+import { footprintFieldRect } from '../FootprintField.js';
+
+const FOOTPRINT_FIELD_RECT = footprintFieldRect();
+const FOOTPRINT_FIELD_BYTES = FOOTPRINT_FIELD_RECT.width * FOOTPRINT_FIELD_RECT.height * 2;
 
 export const GPU_WORLD_RENDERER_MODES = Object.freeze({
     WEBGL: 'webgl',
@@ -47,6 +51,13 @@ export const GPU_WORLD_RENDERER_MODES = Object.freeze({
 // level, and is never shed. Attachment bytes stay allocated across levels
 // (`GpuWorldRenderer._ensureTargets`); `bytes` prices what an effect keeps
 // resident, not what it returns when shed.
+//
+// Unshed CPU cost outside these rows (B.2, for B.1b/B.3 CPU accounting): the
+// agent atlases are CPU-backed (GpuSceneBuilder `createAgentAtlasCanvas`), so
+// their slot and 4.7 walk-strip patches upload from CPU memory on the main
+// thread: +0.18 ms/frame at dense-24 2560x1440 with 17 strips (14.0-14.3 vs
+// 3.2-3.5 ms/s GPU-backed; per upload p95 0.3 ms, max 0.6 ms), in exchange
+// for 80-150 MB less GPU-process memory at dense-100 1080p.
 export const EFFECT_BUDGET = Object.freeze({
     bloom: Object.freeze({
         id: 'bloom',
@@ -62,12 +73,22 @@ export const EFFECT_BUDGET = Object.freeze({
         staticFallback: 'phase-grade',
         canvas: 'canvas-weather',
     }),
-    occlusion: Object.freeze({
-        id: 'occlusion',
-        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
-        cost: Object.freeze({ gpuMsBand: [0.134, 0.608], cpuMsBand: [0.059, 0.128], bytes: 967680, scope: 'own-pass' }),
+    // 2.2 — the world-locked footprint march substitutes the screen occlusion
+    // pass (its 0.375-scale RGBA8 target, 967,680 B at 1680x1032, and its
+    // own draw of every occluder): per admitted light, 8 texel fetches (4 at
+    // REDUCED, none at MINIMAL) of a static RG8 field along the ground segment
+    // receiver foot -> light foot, only where that light already lays a
+    // course. Band: LightingGI's prototype in a pass without overdraw (+0.05
+    // to +0.17 ms over the loop, 1680x1032 to 5120x1440); the K8 receipt in
+    // the real scene pass waits for a quiet host. `bytes`: the field
+    // (`FootprintField.footprintFieldRect`, 704x384 RG8), resident from its
+    // first night frame at every level.
+    'footprint-occlusion': Object.freeze({
+        id: 'footprint-occlusion',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'four-steps', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0.05, 0.17], cpuMsBand: [0, 0.01], bytes: FOOTPRINT_FIELD_BYTES, scope: 'shared-scene-envelope' }),
         staticFallback: 'direct-light',
-        canvas: 'authored-shading',
+        canvas: 'ground-courses-only',
     }),
     // 1.4 — world-locked cloud shadows: one baked 256x256 noise tile
     // (262,144 B) fetched once per pixel in the composite, cut into three
@@ -85,6 +106,20 @@ export const EFFECT_BUDGET = Object.freeze({
         cost: Object.freeze({ gpuMsBand: [0, 0.24], cpuMsBand: [0, 0.01], bytes: 262144, scope: 'shared-composite-envelope' }),
         staticFallback: 'frozen-offset',
         canvas: 'cached-course-tile',
+    }),
+    // 3.4 — weather on the open sea, in the composite's open-sea branch
+    // (3.3): the sunlit course where the cloud field is lowest, C-W3 cat's
+    // paws (one bilinear fetch of the 128x128 R8 gust field, 16,384 B,
+    // refilled from `Wind.windAt` on 125 ms motion steps) and the forecast
+    // squall. The island's cloud courses reach the sea under `cloud-courses`.
+    // No receipt yet (V2 quiet host pending): the band is the resolvable
+    // limit of the rig that priced `cloud-courses`.
+    'sea-weather': Object.freeze({
+        id: 'sea-weather',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.24], cpuMsBand: [0, 0.3], bytes: 16384, scope: 'shared-composite-envelope' }),
+        staticFallback: 'frozen-offset',
+        canvas: 'none',
     }),
     // 1.6 — screen-Y aerial perspective toward the C2 horizon haze; ALU only,
     // in the composite, world layer only. Same rig as `cloud-courses`.
@@ -124,15 +159,60 @@ export const EFFECT_BUDGET = Object.freeze({
         staticFallback: 'same-envelope',
         canvas: 'same-envelope',
     }),
-    // 3.4 — the moon is now a continuous night term inside the C2 grade
-    // (every level); this row prices the FULL-only extra stepped water silver
-    // course. No band separable from the scene envelope.
-    'moon-course': Object.freeze({
-        id: 'moon-course',
-        levels: Object.freeze({ FULL: 'on', REDUCED: 'ambient-course-only', MINIMAL: 'ambient-course-only' }),
+    // Wave 3 water motion (the Waking Isle plan, M7). Each is a branch in
+    // the scene pass on water or coast fragments only; the WaterSea
+    // prototype put 3.1 + 3.2 + 3.6 + 3.9 together at +0.3-0.6 ms at FULL
+    // [INFERENCE, loaded host], so each band is that ceiling split by ALU
+    // share until the V2 K8 receipt lands on a quiet host. Every one has a
+    // static frame: reduced motion freezes the water clock (u_waterFx.x 0).
+    // 3.1 — palette-true crest cycle: near-shore swell and river current
+    // from the R8 cycle-offset field on the 1536x768 coast lattice (unit 7),
+    // the deep-sea phase field beyond. MINIMAL sheds the field and freezes
+    // the water on today's static dash frame.
+    waterCrests: Object.freeze({
+        id: 'waterCrests',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.25], cpuMsBand: [0, 0.005], bytes: 1179648, scope: 'shared-scene-envelope' }),
+        staticFallback: 'frozen-static-dashes',
+        canvas: 'static-dashes',
+    }),
+    // 3.2 — the sun/moon path on in-map water (replaces the FULL-only moon
+    // silver course): sparse seaPath dashes under the body's screen x, one
+    // hash per water fragment inside the path. MINIMAL holds a static set.
+    glitterPath: Object.freeze({
+        id: 'glitterPath',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'static' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.08], cpuMsBand: [0, 0.005], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'static-speck-set',
+        canvas: 'none',
+    }),
+    // 3.9 — rain rings on water stops, only while it rains; MINIMAL and
+    // reduced motion hold a fixed 20 % ring set.
+    rainRings: Object.freeze({
+        id: 'rainRings',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'static' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.08], cpuMsBand: [0, 0.005], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'static-ring-set',
+        canvas: 'none',
+    }),
+    // 3.6 — lapping swash and the drying wet band on the terrain batch,
+    // from the RG8 coast field (unit 8; also read by 3.7's ripple and 3.11's
+    // water-only discard). MINIMAL leaves the baked foam lace.
+    coastSwash: Object.freeze({
+        id: 'coastSwash',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.12], cpuMsBand: [0, 0.005], bytes: 2359296, scope: 'shared-scene-envelope' }),
+        staticFallback: 'baked-foam-lace',
+        canvas: 'baked-foam-lace',
+    }),
+    // 3.10 — the clear-day caustic net on the two shallowest stops at zoom
+    // >= 2 (the 2x1 seabed specks are static at every level).
+    shallowCaustics: Object.freeze({
+        id: 'shallowCaustics',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
         cost: Object.freeze({ gpuMsBand: [0, 0.05], cpuMsBand: [0, 0.005], bytes: 0, scope: 'shared-scene-envelope' }),
-        staticFallback: 'ambient-course-only',
-        canvas: 'ambient-course-only',
+        staticFallback: 'seabed-specks',
+        canvas: 'none',
     }),
     // 1.1/1.2 — the C2 keyframed grade (~20 ALU on the albedo before the
     // light loop) and the multiplicative stepped light pools replace the
@@ -214,6 +294,19 @@ export const EFFECT_BUDGET = Object.freeze({
         }),
         staticFallback: 'same-depth-pass',
         canvas: 'depth-sorted-drawables',
+    }),
+    // 3.11 (M11) — bodies standing on piers, bridges and banks (feet within
+    // 0.3 tiles of water) get a `reflect` twin record in the ground band:
+    // water-only, row ripple, dropped rows, three alpha courses. At most 12,
+    // nearest the camera centre; FULL only. No render target: +N records
+    // (typically 0-10) sharing the agent atlas. Band [INFERENCE] from the
+    // WS-7 note (one extra sprite record each); receipt on a quiet host.
+    bodyReflections: Object.freeze({
+        id: 'bodyReflections',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'off', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.03], cpuMsBand: [0, 0.02], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'none',
+        canvas: 'none',
     }),
 });
 
@@ -343,8 +436,17 @@ vec3 poolTint(vec3 light, float steps, out float strength, out float warm) {
 const vec3 LAND_RIM = POOL_RIM;
 const vec3 LAND_MID = vec3(1.346, 0.948, 0.504);
 const vec3 LAND_CORE = POOL_MID;
-// Share of the landing per course (rim, mid, core) at full pool light.
-const vec3 LAND_SHARE = vec3(0.62, 0.74, 0.84);
+// Share of the landing per course (rim, mid, core) at full pool light: high
+// enough that a pool on night grass lands on its amber stop instead of
+// reading as khaki or olive (the grass's own green keeps a sixth at most).
+const vec3 LAND_SHARE = vec3(0.84, 0.88, 0.90);
+// The least share of the value a course lands with, whatever the pool adds:
+// the thin outer course on night grass adds little value, so without a floor
+// its green kept most of the pixel and it read khaki-olive beside the amber
+// inner course. The rim course lands in full (its LAND_SHARE, as the inner
+// courses do where the pool carries the pixel). Luma is kept, so the value
+// ladder is unchanged.
+const vec3 LAND_FLOOR = vec3(1.0, 0.0, 0.0);
 // The stop at luma \`y\`, pulled toward grey only as far as the gamut needs
 // (hue and luma kept).
 vec3 onStop(vec3 stop, float y) {
@@ -436,8 +538,11 @@ vec3 receiverKnee(vec3 lit, float floorLuma) {
 // (pre-loop) luma. The attention course is added after that knee, so it is
 // always the brightest pool, and eases into its own ceiling one headroom
 // above the receivers' (okL <= 0.852): the T1 plate fill (okL 0.862) stays
-// brighter than every lit world pixel. Returns the lit colour.
-vec3 stepPool(vec3 graded, vec3 ambient, float ambientSteps, vec3 attention, float attentionSteps, vec3 albedo, vec3 reflection) {
+// brighter than every lit world pixel. \`land\` scales the hue landing (1 on
+// the ground and walls; a body passes less, so a figure in a warm pool reads
+// as warm light on its own costume colour, which names the agent, instead of
+// an amber silhouette). Returns the lit colour.
+vec3 stepPool(vec3 graded, vec3 ambient, float ambientSteps, vec3 attention, float attentionSteps, vec3 albedo, vec3 reflection, float land) {
     bool lit = ambientSteps > 0.5 && dot(ambient, GRADE_LUMA) > 0.01;
     bool marked = attentionSteps > 0.5 && dot(attention, GRADE_LUMA) > 0.01;
     if (!lit && !marked && reflection == vec3(0.0)) return graded;
@@ -452,7 +557,7 @@ vec3 stepPool(vec3 graded, vec3 ambient, float ambientSteps, vec3 attention, flo
     if (lit) {
         vec3 tint = poolTint(ambient, ambientSteps, strength, warm);
         vec3 pool = tint * strength;
-        float adapt = min(1.0, strength * 1.5) * warm * (0.85 * 0.6) * carry;
+        float adapt = min(1.0, strength * 1.5) * warm * (0.85 * 0.6) * carry * land;
         result = mix(graded, gradedLuma * tint, adapt);
         add += base * pool * u_poolGain + pool * 0.035 * u_poolGain;
         landWarm = warm;
@@ -463,7 +568,8 @@ vec3 stepPool(vec3 graded, vec3 ambient, float ambientSteps, vec3 attention, flo
         float share = clamp((y - gradedLuma) / max(y, 0.02) * 1.6, 0.0, 1.0);
         vec3 stop = ambientSteps < 1.5 ? LAND_RIM : ambientSteps < 2.5 ? LAND_MID : LAND_CORE;
         float course = ambientSteps < 1.5 ? LAND_SHARE.x : ambientSteps < 2.5 ? LAND_SHARE.y : LAND_SHARE.z;
-        result = mix(result, onStop(stop, y), landWarm * share * course);
+        share = max(share, ambientSteps < 1.5 ? LAND_FLOOR.x : ambientSteps < 2.5 ? LAND_FLOOR.y : LAND_FLOOR.z);
+        result = mix(result, onStop(stop, y), landWarm * share * course * land);
     }
     result = okCeiling(result, graded, RECEIVER_OKL_CEILING);
     if (marked) {
@@ -509,12 +615,71 @@ export function uploadGradeUniforms(gl, uniforms, grade) {
 }
 
 // 1.4 — world-locked cloud shadows. One tileable 256x256 value-noise field
-// (two octaves plus a detail octave), baked once, sampled in world space in
-// the composite and cut into three dithered courses there. Pure: no DOM.
+// (two octaves plus a detail octave), baked once, sampled in world space by
+// every record (ATMOSPHERE_COURSES_GLSL) and the open sea, and cut into three
+// dithered courses there. Pure: no DOM.
 export const CLOUD_TILE_SIZE = 256;
-// World pixels per tile texel: the field repeats every 1024 world px, larger
-// than any view at the crisp zoom tiers.
+// World pixels per tile texel: one tile spans 1024 world px.
 export const CLOUD_TILE_WORLD_SCALE = 4;
+// 3.4 — a 1024 px tile repeats ~4.8x across a 5120 z1 frame, so the field is
+// the tile read twice: `max(n1, weight x n2)`, n2 at `scale` x the size and
+// shifted by `offset` world px. 1.75 x 1024 = 1792, so the combined field
+// repeats every lcm(1024, 1792) = 7168 world px (CLOUD_FIELD_PERIOD); the
+// drift wraps on that period.
+export const CLOUD_SECOND_OCTAVE = Object.freeze({ scale: 1.75, offset: Object.freeze([317, 911]), weight: 0.9 });
+export const CLOUD_FIELD_PERIOD = 7168;
+
+/**
+ * 1.4 / 3.4 — the share of the ground and sea under a cloud course at a
+ * weather's cloud cover, one rule for both backends (GpuWorldRenderer
+ * `_resolveAtmosphereCourses`, CloudShadowCourses). A fair-weather sky (cover
+ * below 0.15) casts none, so a clear day reads clear on the 5120 sea; the
+ * share then rises on one slope (partly cloudy 0.45 -> 0.38) to 0.45.
+ */
+export function cloudCoveredShare(cover) {
+    const value = Number(cover);
+    return Math.max(0, Math.min(0.45, ((Number.isFinite(value) ? value : 0) - 0.15) * 1.27));
+}
+
+function sampleCloudTile(data, size, u, v) {
+    // Bilinear with REPEAT, texel centres at (i + 0.5) / size: the GPU's
+    // LINEAR sampler on the uploaded tile.
+    const x = u * size - 0.5;
+    const y = v * size - 0.5;
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
+    const fx = x - x0;
+    const fy = y - y0;
+    const at = (ix, iy) => data[((((iy % size) + size) % size) * size + (((ix % size) + size) % size)) * 4] / 255;
+    const top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * fx;
+    const bottom = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * fx;
+    return top + (bottom - top) * fy;
+}
+
+/**
+ * 3.4 — the combined cloud field at world point (x, y) (drift applied by the
+ * caller), as the shader reads it from the RGBA tile `data`.
+ */
+export function cloudFieldAt(data, x, y, size = CLOUD_TILE_SIZE) {
+    const span = CLOUD_TILE_WORLD_SCALE * size;
+    const n1 = sampleCloudTile(data, size, x / span, y / span);
+    const { scale, offset, weight } = CLOUD_SECOND_OCTAVE;
+    const n2 = sampleCloudTile(data, size, (x / scale + offset[0]) / span, (y / scale + offset[1]) / span);
+    return Math.max(n1, n2 * weight);
+}
+
+/**
+ * The combined field's values over one CLOUD_FIELD_PERIOD, sorted ascending:
+ * a covered share maps to an exact noise threshold (`sorted[(1 - share) n]`).
+ */
+export function sortedCloudField(data, size = CLOUD_TILE_SIZE, samples = 384) {
+    const out = new Float32Array(samples * samples);
+    const step = CLOUD_FIELD_PERIOD / samples;
+    for (let j = 0; j < samples; j++) {
+        for (let i = 0; i < samples; i++) out[j * samples + i] = cloudFieldAt(data, (i + 0.5) * step, (j + 0.5) * step, size);
+    }
+    return out.sort();
+}
 
 export function buildCloudShadowTile(size = CLOUD_TILE_SIZE, seed = 0x5eed) {
     const data = new Uint8Array(size * size * 4);
@@ -693,7 +858,23 @@ function finite(value, fallback = 0) {
     return Number.isFinite(number) ? number : fallback;
 }
 
-export function resolveGpuWorldRendererMode(search = '', { webgl2 = true } = {}) {
+// A software rasterizer (SwiftShader, llvmpipe, lavapipe, WARP) runs the
+// resident diorama's shaders on the CPU: its cost grows with the whole shader
+// (every branch), so the scene and composite programs JIT for seconds on the
+// first frame and then draw at a few frames per second, with the main thread
+// blocked on each frame's readback. The Canvas world is the faster picture
+// there. Matched on the unmasked renderer string (the browser's own
+// `failIfMajorPerformanceCaveat` judgement is the other signal).
+const SOFTWARE_RASTER_PATTERN = /\b(swiftshader|llvmpipe|softpipe|lavapipe|software rasterizer|microsoft basic render)\b/i;
+
+export function isSoftwareRasterizer(rendererString) {
+    return SOFTWARE_RASTER_PATTERN.test(String(rendererString || ''));
+}
+
+// `?renderer=webgl` forces WebGL wherever WebGL2 exists (a software
+// rasterizer included); `?renderer=canvas` forces Canvas; otherwise WebGL2 on
+// a hardware rasterizer is the default.
+export function resolveGpuWorldRendererMode(search = '', { webgl2 = true, softwareRaster = false } = {}) {
     const params = search instanceof URLSearchParams
         ? search
         : new URLSearchParams(String(search || '').replace(/^\?/, ''));
@@ -702,7 +883,7 @@ export function resolveGpuWorldRendererMode(search = '', { webgl2 = true } = {})
     if (requested === GPU_WORLD_RENDERER_MODES.WEBGL) {
         return webgl2 ? GPU_WORLD_RENDERER_MODES.WEBGL : GPU_WORLD_RENDERER_MODES.CANVAS;
     }
-    return webgl2 ? GPU_WORLD_RENDERER_MODES.WEBGL : GPU_WORLD_RENDERER_MODES.CANVAS;
+    return webgl2 && !softwareRaster ? GPU_WORLD_RENDERER_MODES.WEBGL : GPU_WORLD_RENDERER_MODES.CANVAS;
 }
 
 export function materialClassId(value) {
@@ -722,6 +903,10 @@ export const GPU_RECORD_FLAGS = Object.freeze({
     screenSpace: 8,
     surfaceCode: 16,
     packedGeometry: 32,
+    // 3.8 — an upright prop that turns round a vertical axis (a Harbor hull:
+    // frontCornerX is its pivot x, footY its waterline): the light loop gives
+    // it the body's wrap response without any ownerSlot attention.
+    receiverAxis: 64,
 });
 
 // V9 / 0.6 — painter's depth. A record's or particle's painter `sortY` is
@@ -755,7 +940,12 @@ export function gpuDepthKey(sortY) {
 // particles are light and feed bloom. A particle with neither (a pre-graded
 // night smoke tone, a fire-lit smoke underside) keeps its colour unlit.
 export const GPU_PARTICLE_INSTANCE_BYTES = 28;
-export const GPU_PARTICLE_SHAPES = Object.freeze({ rect: 0, blob: 1, wings: 2, motif: 3 });
+export const GPU_PARTICLE_SHAPES = Object.freeze({ rect: 0, blob: 1, wings: 2, motif: 3, smoke: 4 });
+// 6.4 — a smoke puff's lit and shade rims, per channel, from its body tone:
+// body #a9aeb8 → lit #d3d6dc, shade #787c86 (ParticleSystem `drawSmokePuff`
+// derives the same tones for Canvas).
+export const SMOKE_PUFF_LIT_GAIN = Object.freeze([211 / 169, 214 / 174, 220 / 184]);
+export const SMOKE_PUFF_SHADE_GAIN = Object.freeze([120 / 169, 124 / 174, 134 / 184]);
 export const GPU_PARTICLE_FLAGS = Object.freeze({ graded: 1, emits: 2 });
 // Event-shape motifs are 8x8 masks stacked vertically in one R8 texture.
 export const GPU_PARTICLE_MOTIF_SIZE = 8;
@@ -781,7 +971,10 @@ export function assignGpuRecordV9Fields(target, record, alpha, blend) {
     target.flags = (writesDepth ? GPU_RECORD_FLAGS.writesDepth : 0)
         | (record.reflect === true ? GPU_RECORD_FLAGS.reflect : 0)
         | (record.fatOptOut === true ? GPU_RECORD_FLAGS.fatOptOut : 0)
-        | (record.screenSpace === true ? GPU_RECORD_FLAGS.screenSpace : 0);
+        | (record.screenSpace === true ? GPU_RECORD_FLAGS.screenSpace : 0)
+        | (record.surfaceCode === true ? GPU_RECORD_FLAGS.surfaceCode : 0)
+        | (record.packedGeometry === true ? GPU_RECORD_FLAGS.packedGeometry : 0)
+        | (record.receiverAxis === true ? GPU_RECORD_FLAGS.receiverAxis : 0);
     target.footY = finite(record.footY, Number.isFinite(depthSortY) ? depthSortY : -1);
     target.frontCornerX = finite(record.frontCornerX, 0);
     target.frontCornerY = finite(record.frontCornerY, -1);
@@ -906,8 +1099,6 @@ export function buildStableGpuBatches(records = [], batches = [], normalizedReco
             current.records.length = 0;
             current.first = 0;
             current.count = 0;
-            current.occlusionFirst = 0;
-            current.occlusionCount = 0;
             current.occluderMax = 0;
             batchCount++;
         }
@@ -922,16 +1113,13 @@ export function estimateGpuWorldTextureBytes({
     width = 0,
     height = 0,
     bloomScale = 0.5,
-    occlusionScale = 0.5,
     cachedTextures = [],
 } = {}) {
     const w = Math.max(0, Math.floor(finite(width)));
     const h = Math.max(0, Math.floor(finite(height)));
     const bloomW = Math.max(0, Math.floor(w * Math.max(0, finite(bloomScale, 0.5))));
     const bloomH = Math.max(0, Math.floor(h * Math.max(0, finite(bloomScale, 0.5))));
-    const occW = Math.max(0, Math.floor(w * Math.max(0, finite(occlusionScale, 0.5))));
-    const occH = Math.max(0, Math.floor(h * Math.max(0, finite(occlusionScale, 0.5))));
-    const targets = (w * h + bloomW * bloomH * 2 + occW * occH) * 4;
+    const targets = (w * h + bloomW * bloomH * 2) * 4;
     let textures = 0;
     for (const texture of cachedTextures || []) {
         const tw = Math.max(0, Math.floor(finite(texture?.width)));

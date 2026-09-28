@@ -398,10 +398,27 @@ export class VillageDirector {
         return value.split('-').filter(Boolean).map(part => part[0]?.toUpperCase() + part.slice(1)).join(' ') || 'Villager';
     }
 
+    // V8 — caption priority (incident > verified release > returned >
+    // milestone): a pending RETURNED line stages before any biography
+    // banner, and pre-empts one already up — that banner goes back to the head
+    // of the queue and keeps its full time. A release parade is never
+    // displaced; banners wait behind it.
     _stageNextBiographyBanner(now) {
-        if (!this._pendingBiographyBanners.length || this.scenes.length >= SCENE_LIMIT) return;
-        if (this.scenes.some(scene => scene.type === 'release')) return;
-        const banner = this._pendingBiographyBanners.shift();
+        const queue = this._pendingBiographyBanners;
+        if (!queue.length) return;
+        let returnIndex = queue.findIndex(entry => entry.kind === 'return-banner');
+        const standing = this.scenes.filter(scene => scene.type === 'release');
+        if (standing.length) {
+            if (returnIndex < 0 || standing.some(scene => (scene.kind || 'biography-banner') !== 'biography-banner')) return;
+            for (const scene of standing) {
+                this.scenes.splice(this.scenes.indexOf(scene), 1);
+                const { id, type, intensity, startedAt, expiresAt, ...banner } = scene;
+                queue.unshift(banner);
+                returnIndex += 1;
+            }
+        }
+        if (this.scenes.length >= SCENE_LIMIT) return;
+        const banner = queue.splice(returnIndex >= 0 ? returnIndex : 0, 1)[0];
         this._addScene({
             ...banner,
             type: 'release',

@@ -124,7 +124,8 @@ material map. Material alpha also marks presence: opaque class zero is authored 
 R (including zero) overrides default elevation; G overrides default occlusion
 strength. Uncovered pixels use record defaults. Default strength is per vertex,
 never a batch-wide height floor. Agent geometry follows the same atlas slots and
-update cadence as albedo, including padded equipped Codex frames.
+update cadence as albedo, including padded equipped Codex frames; since B.2 it
+rides the packed geometry map (below) instead of an occluder atlas.
 
 Generated emissive defaults come only from named semantic sources and existing
 window/light anchors. The tooling does not infer emission from luminance.
@@ -163,12 +164,13 @@ six-vertex staging it replaced. A batch whose records all hold the default tail
 (locs 3-5: no occluder, gate 1, no ramp or flags, depth key 0, footY -1,
 frontCorner `(0, -1)`, no identity) stages the 48-byte head only and reads the
 tail as constant generic attributes: terrain, ground casts and marks, and every
-ground-cue chord. The occlusion pass draws the same ranges and culls
-non-occluders in its vertex stage (no second staging).
+ground-cue chord.
 
 - **Flags** (`GPU_RECORD_FLAGS`, loc3.w): 1 `writesDepth`, 2 `reflect`
   (3.11), 4 `fatOptOut` (4.6), 8 `screenSpace` (haze, `ground:semantics`),
-  16 `surfaceCode` (reserved for 2.3), 32 `packedGeometry` (reserved for B.2).
+  16 `surfaceCode` (2.3: occluder B is the surface code, R true height),
+  32 `packedGeometry` (B.2). loc3.x is reserved (0): its only reader, the
+  screen occlusion pass, was deleted by 2.2.
 - **Painter depth** (0.6): `depthKey = round((clamp(sortY) + 2048) x 8)`, i.e.
   sortY clamped to [-2048, 6143.875] at 1/8 world px, exactly the 65,536 steps of
   the `DEPTH_COMPONENT16` attachment (`gpuDepthKey`). Shaders write
@@ -177,11 +179,19 @@ non-occluders in its vertex stage (no second staging).
   `GpuSceneBuilder.stampPainterDepth`); soft alpha (< 1, e.g. departed bodies at
   0.58, archive fades) and additive blending never write; terrain, haze, ground
   and cue records never write. `writesDepth` joins the batch key.
-- **Receiver fields** (V5): `footY` defaults to the painter sortY, `-1` = ground
-  self; `frontCornerY -1` = no landmark corner (2.1 fills landmarks);
+- **Receiver fields** (V5, read by the 2.1 light loop): `footY` defaults to the
+  painter sortY, `-1` = ground self (terrain, casts, marks, cues face up at
+  their own point); props and bodies set their own ground line. Landmarks set
+  `frontCornerX/Y` to their footprint's front corner: a pixel above the front
+  edges is a wall facing its side's face (±0.7071, 0.7071), a pixel in front
+  of them an apron lit as ground, unless flag 16 supplies the authored surface
+  code. A body (`ownerSlot` > 0) keeps `frontCornerY -1` and carries its
+  vertical axis in `frontCornerX` (the lamp-side fill wraps round it).
   `landmarkId` = `GPU_LANDMARK_IDS` (command 1 … portal 9, 0 = none, never
-  reordered; 2.2's footprint G uses the same ids); `ownerSlot` 0 = none (2.5
-  assigns agents).
+  reordered; 2.2's footprint G uses the same ids, and the march never blocks
+  on the receiver's or the light's own landmark); `ownerSlot` 0 = none, else
+  `LightSourceRegistry.ownerSlotFor(agentId)`, the integer an attention light
+  compares (2.5).
 - **Shader-derived**: `originFrac = fract(rect.xy)` for sprite records (0 for
   ground-self and screen-space records): pool courses quantize from the
   record's own texel grid, so a body on the backing-pixel grid lights in whole
@@ -192,28 +202,32 @@ non-occluders in its vertex stage (no second staging).
   `GroundCueRecords` for `prenormalized` cues.
 
 **Sampler table** (fixed per program, never reassigned; WebGL2 guarantees 16
-fragment units). Scene and occlusion programs (`SCENE_SAMPLER_UNITS`):
+fragment units). Scene program (`SCENE_SAMPLER_UNITS`):
 
 | Unit | Field | Format | Reader |
 | ---: | --- | --- | --- |
 | 0 | albedo | RGBA8 | every record |
 | 1 | material | RGBA8 | every record |
-| 2 | occlusion target | RGBA8 | light loop (2.2 deletes it and frees the unit) |
+| 2 | free | | (2.2 deleted the screen occlusion target) |
 | 3 | emissive | RGBA8 | every record |
 | 4 | occluder companion | RGBA8 | every record |
 | 5 | palette-ramp LUT | RGBA8 | 3.5 pilot |
-| 6 | footprint height + landmark id | RG8 | reserved: 2.2 |
+| 6 | footprint height + landmark id | RG8 | 2.2 light loop: the footprint march (`FootprintField.js`, 704x384, 4 world px/texel) |
 | 7 | water cycle offset | R8 | reserved: 3.1 (terrain/water only) |
 | 8 | coast field | RG8 | reserved: 3.6 (terrain/water only) |
 | 9 | light records | RGBA32F | reserved: 2.4 |
 | 10 | light tile index | R16UI (`usampler2D`) | reserved: 2.4 |
 | 11 | puddle mask | R8 | reserved: 5.2 (ground only) |
-| 12 | cloud-course noise tile | RGBA8 (linear) | 1.4 cloud courses + 1.6 aerial haze, per record |
-| 13-15 | free | | |
+| 12 | cloud-course noise tile | RGBA8 (linear) | 1.4 cloud courses + 1.6 aerial haze, per record; 3.4 sunlit course on in-map open water |
+| 13 | C-W3 sea gust field | R8 (linear) | 3.4 cat's paws on in-map open water (the composite's own field, one upload per frame) |
+| 14-15 | free | | |
 
 Particle program (`PARTICLE_SAMPLER_UNITS`): 0 = event-shape motif mask (R8),
-1 = cloud-course noise tile. Composite: 0 scene, 1 bloom (clouds and haze are
-shaded per record, never on the world grid in the composite). `SCENE_FRAGMENT` stays one program:
+1 = cloud-course noise tile. Composite (`COMPOSITE_SAMPLER_UNITS`): 0 scene,
+1 bloom, 2 cloud-course noise tile, 3 sea gust field (the open sea's clouds,
+sunlit course and cat's paws on the world grid; the island's clouds and haze
+are shaded per record). `uploadTypedTexture` restores the active unit's
+binding, so an upload never blanks a sampler a caller already bound. `SCENE_FRAGMENT` stays one program:
 the table fits one unit budget, and a terrain/water split would need a uniform
 buffer to avoid uploading the grade and 32 lights twice per frame; the
 terrain/water-only units are marked so a split stays mechanical.
@@ -223,23 +237,139 @@ format, data, revision })` takes `r8`/`rg8` (`Uint8Array`), `r16ui`
 (`Uint16Array`, read through `usampler2D`) and `rgba32f` (`Float32Array`) with
 `UNPACK_ALIGNMENT 1`, nearest sampling and `texelFetch`; it re-uploads only on
 a revision or size change (`texSubImage2D` when the size holds). Every cache
-entry counts its real bytes (`width x height x bytesPerTexel`), so the 48 MiB
+entry counts its real bytes (`width x height x bytesPerTexel`), so the 160 MiB
 cached-source ceiling and Shift-D see an R8 field at a quarter of an RGBA
-canvas. First consumer: the particle motif mask.
+canvas. First consumer: the particle motif mask. The ceiling was 48 MiB until
+B.2; every frame already samples 105-137 MB of sources (terrain bake 25 MB,
+four world-pilot pages 64 MB, ground fields ~10.5 MB, agent atlases 6-30 MB),
+so a 48 MiB cap was permanently exceeded and only evicted what the camera had
+just left.
+
+**Patch uploads** (record `textureUpdates`, `materialTextureUpdates`,
+`emissiveTextureUpdates`): each entry `{ x, y, width, height, source }`
+`texSubImage2D`s a source of exactly that size, or with `sx, sy` set, the
+`width x height` rect at `(sx, sy)` of a larger source (`UNPACK_ROW_LENGTH` /
+`SKIP_PIXELS` / `SKIP_ROWS`, reset after). Patches apply only when the
+revision moved and the texture's source and size are unchanged; anything else
+uploads whole. `ground:semantics` (B.2) redraws only the extent its previous
+redraw painted (tracked per paint call on a bounds-recording context) while
+the canvas size and camera transform hold, and uploads the union of the old
+extent, the new one and any rect a skipped upload left behind.
+
+**GPU-resident sources** (B.2): `{ width, height, gpuResident: true }` resolves
+only to a live texture of the same key, revision and size
+(`hasResidentTexture(key, revision)`), so a CPU canvas can be released after
+its upload; the terrain bake uses it and re-bakes when the texture is gone.
 
 **One occluder channel contract** (before 2.3 or B.2 lands):
 
-- Occluder companion: R = height (today the authored elevation that drives fog
-  and the occlusion trace; 2.3 makes it true height above ground / 255 and
-  retunes the fog in the same change), G = occlusion strength, **B = surface
+- Occluder companion: R = height. On a record with flag 16 `surfaceCode`
+  (2.3; `GpuSceneBuilder` sets it from the manifest entry's
+  `surfaceCode: true`) R is the true height above the landmark's visual base
+  line, `min(255, round(h))` world px, and the scene pass lifts fog off it
+  over 128 world px (`min(1, R x 255 / 128)`); elsewhere R stays the authored
+  fog elevation. G = occlusion strength, **B = surface
   code `face x 64 + min(63, round(heightAboveGround / 4))`** (face 0 up/apron,
   1 left wall, 2 right wall, 3 roof), A = presence. B is read only on records
   with flag 16 `surfaceCode`; everywhere else it must be 0 and is ignored.
-- B.2's merged material + geometry packing (R material id, G height, B
-  strength, A presence) lives in the **material** map, never the occluder
-  companion, and is read only on records with flag 32 `packedGeometry`. A source
-  that carries 2.3 surface codes keeps the separate occluder companion, so the
-  two B channels never collide.
+- B.2's merged material + geometry packing lives in the **material** map, never
+  the occluder companion, and is read only on records with flag 32
+  `packedGeometry`: R material id (**255 = no material**, record default), G
+  occluder height, B occlusion strength (**0 = no geometry**, record defaults;
+  an authored strength of 0 packs as 1/255), A presence (255 wherever either
+  channel is present). The shader reads it as `geometry = vec4(G, B, 0, 1)`
+  only while the occluder channel's frame toggle is on (`u_packedGeometry`),
+  exactly where the old occluder upload was skipped. A source that carries
+  2.3 surface codes keeps the separate occluder companion, so the two B
+  channels never collide.
+- **Deviation from plan B.2 (world-pilot stays unpacked).** B.2 asked for the
+  world-pilot channel atlases to be packed like the agent atlas. They are not:
+  `world-pilot` holds all nine landmarks, whose occluder page carries 2.3
+  surface codes in B (V9 reserves occluder B for 2.3's surface code), so it
+  keeps four separate 2048² channel pages (albedo, material, emissive,
+  occluder: 16 MB of GL texture each). Packing it would have saved one page
+  (~16.8 MB) at the cost of the surface channel.
+- B.2 memory rules (agents): `packGeometryPixels` (`GpuSceneBuilder.js`)
+  packs one canvas per material + occluder sidecar pair
+  (`AgentSprite` packed-geometry cache, 16 M px; a frame crop packs inline, a
+  sheet-size pair inline at most once per 32 ms, else as a derived-art queue
+  job); the agent atlas keeps two channel canvases (packed
+  geometry, emissive) beside the albedo, and a body whose emissive companion
+  is entirely transparent passes none (a zero emissive map shades exactly like
+  none). Equipped Codex sheets re-lay the albedo only: the frame record's
+  `channelRect` draws the unpadded sidecar cell at the pad offset of the padded
+  slot, so no padded sidecar copies exist.
+- B.2 release and backing rules (agents): an equipped albedo that only crowd
+  (0.5x LOD) bodies sample is released once its LOD sheet is baked and no 1:1
+  body has used it for 3 s; the cache entry keeps the LOD sheet. A 1:1 body
+  that needs it again recomposes it (composition is deterministic, so the
+  pixels are identical): at most one compose per animation frame, inline for
+  a selected, hovered or action-needed body and otherwise from the derived-art
+  queue, with the body on its LOD sheet until its turn, drawn at its own 1:1
+  size (each LOD texel two world texels), so it never changes size. The composed and LOD
+  sheets, the three agent atlases and the dashboard avatars are CPU-backed
+  (`willReadFrequently`): their sources are CPU canvases, and a GPU-backed
+  destination made Chrome keep a GPU copy of every whole source sheet it drew.
+- Derived-art queue (`AssetManager.createDerivedArtQueue`): every idle tick
+  runs its first live job; a tick forced by the idle timeout (`didTimeout`,
+  `timeRemaining()` 0) runs exactly that one, a real idle period keeps going
+  until the 2 ms slice or the deadline ends.
+
+### Landmark surface channel (plan 2.3)
+
+All nine landmarks ship a baked `base.occluder.png` and declare
+`occluderSidecar: true` plus `surfaceCode: true` (the manifest flag that makes
+`GpuSceneBuilder` set record flag 16). `node scripts/sprites/bake-surface-channel.mjs`
+writes every texel from the albedo alpha and the landmark geometry, then
+`npm run sprites:atlas-bake -- --atlas=world-pilot` copies the whole companion
+pixel (B included) into the atlas occluder page; `--check` fails on a stale
+sidecar, `--out=<dir>` writes previews.
+
+- **R** = height above ground in world px (sprite px at scale 1), clamped 255.
+  **G** = `alpha x occluder.strength`. **B** = `face x 64 + min(63, round(h / 4))`.
+  **A** = albedo alpha. Decode: `face = B >> 6`, `h = (B & 63) x 4`.
+- **Visual base**: each landmark's 2:1 front edges where its art meets the
+  ground, in sprite px (`SURFACE_SPECS[type].base`; default the `BUILDING_DEFS`
+  footprint projected through the anchor, which sits on the footprint
+  centre). A wall texel's foot is the base edge under its column, so
+  `h = footY(x) - y`; face 1 (SW-facing, on the left->bottom edge) left of
+  the front corner, face 2 (SE-facing) right of it. Texels in front of the
+  edge are apron (face 0, h 0).
+- **Roofs** (face 3) are the landmark's slate colours (HSV hue 186-242,
+  S >= 0.2); window glass lit in the emissive sidecar is never roof.
+- **Authored regions** (polygons, first match wins) cover what the colour and
+  base rules cannot see: stairs (face 0, height ramps), decks and piers (face
+  0 at deck height, matched by plank colour with seams closed), set-back
+  masses with their own front corner (towers, the Command drum and dome, the
+  Forge chimney), and masses standing on a deck (`lift`). Per M5 the Harbor
+  (water line; decks and piers at h 8, houses lifted 8), Lighthouse (stair,
+  footing apron, bronze cap = roof), Observatory (door steps, dome shell and
+  maroon eaves = roof) and Portal (stairs 0->23, dais flagstones at h 23, the
+  arch and slabs lifted 23) are hand-authored.
+- The 1-px outline and the deepest shadow texels (HSV value < 0.13) take the
+  modal face and mean height of the non-ink texels in their 5x5 window, so an
+  outline belongs to the surface it draws.
+- The sprite audit (`npm run sprites:channels-validate`) fails a landmark
+  without `occluderSidecar` + `surfaceCode`, and one whose occluder R or B is
+  all zero.
+
+### Room masks (plan 6.3)
+
+Buildings with an emissive sidecar and registry window or room rects ship
+`base.rooms.png` beside `base.png` (manifest `roomsSidecar: true`; path via
+`roomMaskPathForEntry`): R = room index 1..N on the room's glass, 0 = not a
+room, G = B = 0, A = 255 on room texels. `node scripts/sprites/bake-room-masks.mjs`
+(`--check` for staleness) closes the emissive alpha by one texel (the
+validator's mullion bridge), splits it into 4-connected components and numbers
+them by the registry under the glass-centre `windowRectBounds` convention:
+`rooms.slots[k]` is room k + 1 where a building has room slots (Command,
+Archive); otherwise every component under a `windowRects` entry is a room, in
+first-reference order, and `ROOM_PANE_GROUPS` joins panes of one lamp split by
+a post (the Task board lanterns). Emission that no rect names (fire mouths,
+crystals, braziers, spare panes) is room 0 and stays on the building-level
+gate. `npm run world:validate-buildings` checks every mask: each rect sits
+>= 60 % on one room, room slots carry their own index, indices run 1..N with
+every room named, and mask texels stay on the closed emissive glass.
 
 ## Grade, Light Pools, and Emission
 
@@ -283,7 +413,8 @@ actionStrip:
   cell: 92
   groups:                                            # named, never identified by frame count
     read: { rows: [0, 3], hold: 3 }                  # hold = most legible static row
-    wait: { rows: [4, 4], hold: 4 }                  # single held row
+    wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+    strike: { rows: [7, 12], hold: 12, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [58, 44] } }
   grip: { hand: both, sheathe: true }                # right | left | both
   provenance: { characterId: <pixellab id>, animationGroupId: <id>, generationSize: 144 }
 ```
@@ -309,6 +440,28 @@ actionStrip:
   `node scripts/sprites/author-roster-channels.mjs` authors sheet and strip
   companions from the same reviewed colour classification; a companion whose
   dimensions disagree with the strip is refused.
+- Plan 7.3 groups: `wait` (3 rows, the held action-needed pose), `strike`
+  (Edit/Write/apply_patch, 6), `tinker` (Bash/tests, 6) and `gaze` (lookups:
+  WebFetch/WebSearch, Grep/Glob, Read; 4); 7.1 adds `sit` with `seatLine`.
+  They author the work facings only and say so in `directions` (short keys);
+  `resolveActionFrame` returns null for any other facing, so a body whose
+  strip is due turns to the nearest authored facing first
+  (`AgentSprite._stripFacing`). `contactFrame` (group-relative) and `contact`
+  (`{ <dir>: [x, y] }`, cell px, the contact frame's hand joint) are where the
+  WorkDownbeat strikes. A work group animates only while RitualConductor has
+  admitted a ritual of its tool class for that villager (`ritual.stripGroup`,
+  `workStripGroup`: the tool class first, the building only for a tool with
+  none), one cycle per gesture period with the contact frame on the beat; `wait`
+  shows its held row. Every strip frame passes `scripts/sprites/feet-audit.mjs`
+  (feet ±2 px of the V7 anchor, no new detached fragment, non-arm identity
+  held, the wait hand ≥ 3 px above the head) before it ships.
+- Pose strips (7.1/7.3): `scripts/sprites/generate-pose-strip.mjs` stages
+  skeleton-v3 candidates (idle row-6 first frame, arm joints only, feet,
+  hips, head and prop hand verbatim; `--clip` packs several groups into one
+  ≤ 15-frame job), `feet-audit.mjs --strip=…` reviews them, and
+  `scripts/sprites/assemble-action-strip.mjs` is the single writer of
+  `actions.png` (shipped groups kept, staged groups added in the order read,
+  wait, sit, strike, tinker, gaze) and prints the `actionStrip` record.
 - Production: `node scripts/sprites/generate-action-strip.mjs --ids=<id> --plan`
   quotes the live balance and per-direction generations; without `--plan` it
   requests one named v3 group at a time (Tier 1 allows 8 concurrent background

@@ -201,6 +201,11 @@ export function createDerivedArtQueue({
         timeoutHandle = timeout(() => tick());
     }
 
+    // Every tick makes progress: its first live job always runs. A tick the
+    // browser forced by the idle timeout (`didTimeout`, `timeRemaining()` 0)
+    // runs exactly that one job, so a busy frame pays for one build at most;
+    // a real idle period keeps building until the slice or the deadline ends.
+    // (Breaking before the first job starved the queue under constant load.)
     function tick(deadline) {
         idleHandle = null;
         timeoutHandle = null;
@@ -209,11 +214,16 @@ export function createDerivedArtQueue({
         const jobs = [...pending.values()].sort((a, b) => (
             a.priority - b.priority || a.seq - b.seq
         ));
+        let built = 0;
         for (const job of jobs) {
-            if (now() - start >= sliceMs) break;
-            if (typeof deadline?.timeRemaining === 'function' && deadline.timeRemaining() <= 0) break;
+            if (built > 0) {
+                if (now() - start >= sliceMs) break;
+                if (deadline?.didTimeout) break;
+                if (typeof deadline?.timeRemaining === 'function' && deadline.timeRemaining() <= 0) break;
+            }
             pending.delete(job.key);
             if (job.generation !== generation) continue;
+            built++;
             job.build?.();
         }
         pumping = false;

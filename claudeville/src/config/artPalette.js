@@ -56,6 +56,16 @@
 //   clothCrimson  Banners and awnings; the only red allowed on buildings.
 //   clothOchre    Awnings, pennant fringes, brass-toned cloth (S <= 0.63).
 //   emissive      RESERVED: authored lamp/fire/window light (Tier A allowed).
+//   seaPath       The sun and moon path on the water (3.2, M7): the sky
+//                 body's specular reflection, three (lo, hi) pairs: gold at
+//                 sunrise and golden hour, pale by day, silver under a moon
+//                 at least half full. The only water above S 0.40 (gold
+//                 S 0.56); graded, and held at HSL L <= 0.70 on screen.
+//   lampBeam      The Lighthouse lamp (2.7): cool white, never the seaPath
+//                 gold. Its three low stops are the beam's courses on the
+//                 water (far, mid, near; a receiver, okL <= 0.83, ungraded
+//                 like an emitter's own light); the two high stops are the
+//                 lantern's flash and halo (an emitter).
 //
 // Ground (grass+dirt+road+plaza as they cover the island, grass-majority)
 // lands at median S ~0.46-0.50: inside GROUND_SATURATION.
@@ -78,6 +88,8 @@ export const ART_RAMPS = Object.freeze({
     clothCrimson: ['#732a31', '#a4463f'],
     clothOchre: ['#987638', '#c9a04a'],
     emissive: ['#ff9d4a', '#ffcf7a', '#ffe9b8'],
+    seaPath: ['#c48054', '#ecb068', '#969d8f', '#c0bea4', '#849ab0', '#c4d6e2'],
+    lampBeam: ['#7a929c', '#98adb3', '#b8c8c8', '#d2dcd8', '#f4f1e2'],
     // Seasonal and per-tree ramps (plan items 5.1 and 5.3 of
     // agents/plans/claudeville-opus55-xhigh-visual-plan.md). FoliageRenderer
     // remaps canopy pixels onto them by luminance rank, dark -> light; the

@@ -309,3 +309,159 @@ export function villagerCastStamps(contactWidth, cast) {
     const count = Math.max(2, Math.round(reach / 6));
     return castTrail(cast, reach, contactWidth * 0.36, Math.max(2, contactWidth * 0.13), count, 0.25 + 0.3 * cast.rake, 0.3, 0.3, 0.2);
 }
+
+// 2.8 — night lamp casts (OE-2). With no raking sun, a body standing in a
+// real lamp's pool throws a short stepped trail away from that lamp's foot
+// (V5), in the Octopath / Sea of Stars way. Casts come from fixtures and
+// building apertures only: attention lights and agent-carried motes never
+// cast, so a waiting agent's own light adds no shadows.
+const POINT_CAST_RGB = [22, 16, 26];
+const POINT_CAST_CACHE_MAX = 256;
+// Crowd pressure: at most this many casts a frame, nearest the view centre.
+export const POINT_CAST_CAP = 24;
+// A body keeps its lamp until another is this much stronger at its feet.
+const POINT_CAST_HYSTERESIS = 0.15;
+const LOCAL_LIGHT_VISIBILITY_FLOOR = 0.04;
+const CASTING_ROLES = new Set(['fixture', 'aperture']);
+// The share of a lamp's radius its lit pool reaches on the ground (the
+// resident loop's first dithered course, shape ~0.1, ends near 0.85 of it).
+const POINT_CAST_POOL_RIM = 0.85;
+
+const _pointCasts = new Map();
+
+/**
+ * One cached point-light trail: 3+ stepped ellipses from the feet along
+ * `angleBucket / 16` rad (ground plane), `reachBucket * 4` texels long, the
+ * first course at `alphaBucket / 8` stepping down to ~60 % of it in eighths.
+ * LRU of POINT_CAST_CACHE_MAX keys; returns `{ canvas, offsetX, offsetY,
+ * key }` relative to the feet.
+ */
+export function pointCastStamp(contactWidth, angleBucket, reachBucket, alphaBucket) {
+    const w = Math.max(8, Math.round(finite(contactWidth, 20)));
+    const key = `pc|${w}|${angleBucket}|${reachBucket}|${alphaBucket}`;
+    const hit = _pointCasts.get(key);
+    if (hit) {
+        _pointCasts.delete(key);
+        _pointCasts.set(key, hit);
+        return hit;
+    }
+    const reach = reachBucket * 4;
+    const alpha = alphaBucket / 8;
+    const stamps = castTrail(
+        { angle: angleBucket / 16 },
+        reach,
+        w * 0.36,
+        Math.max(2, w * 0.13),
+        Math.max(3, Math.round(reach / 6)),
+        alpha,
+        Math.round(alpha * 0.6 * 8) / 8,
+        0.33,
+        0.25,
+    );
+    const raster = rasterizeCourses(stamps, POINT_CAST_RGB);
+    if (!raster) return null;
+    const entry = { ...raster, key };
+    while (_pointCasts.size >= POINT_CAST_CACHE_MAX) {
+        const [oldKey, oldEntry] = _pointCasts.entries().next().value;
+        releaseCanvasBackingStore(oldEntry.canvas);
+        _pointCasts.delete(oldKey);
+    }
+    _pointCasts.set(key, entry);
+    return entry;
+}
+
+// Per-frame casting lights on the ground plane, and the crowd cap state.
+const _castLights = [];
+const _castMemory = new WeakMap();
+let _castCentreX = 0;
+let _castCentreY = 0;
+let _castLimit = Infinity;
+const _castDistances = [];
+
+/**
+ * Called once per frame by the frame renderer, after the frame's light list
+ * and before any body lays out its ground marks. `lights` are normalized V5
+ * records; `localLightPhase` is the grade's local-light phase; `centre` is
+ * the view centre in world px (crowd cap ranking).
+ */
+export function setFramePointCastLights(lights, localLightPhase, centre = null) {
+    // The crowd cap ranks by last frame's candidates: one frame of lag keeps
+    // the nearest POINT_CAST_CAP bodies without a second layout pass.
+    if (_castDistances.length > POINT_CAST_CAP) {
+        _castDistances.sort((a, b) => a - b);
+        _castLimit = _castDistances[POINT_CAST_CAP - 1];
+    } else {
+        _castLimit = Infinity;
+    }
+    _castDistances.length = 0;
+    _castLights.length = 0;
+    _castCentreX = finite(centre?.x, 0);
+    _castCentreY = finite(centre?.y, 0);
+    if (!(finite(localLightPhase, 0) > LOCAL_LIGHT_VISIBILITY_FLOOR) || !lights?.length) return;
+    for (const light of lights) {
+        if (!light || light.attention || !CASTING_ROLES.has(light.role)) continue;
+        const radius = finite(light.radius, 0);
+        const intensity = finite(light.intensity, 0);
+        if (radius <= 0 || intensity <= 0.02) continue;
+        const foot = light.ground || light;
+        const gx = finite(foot.x, NaN);
+        const gy = finite(foot.y, NaN);
+        if (!Number.isFinite(gx) || !Number.isFinite(gy)) continue;
+        _castLights.push({ id: light.id, gx, gy, radius, intensity });
+    }
+}
+
+/**
+ * The point-light trail for one body this frame, or null: only while the
+ * sun is not raking (`cast.rake === 0`) and a casting lamp's ground radius
+ * contains the feet (iso distance from the lamp's foot). `owner` carries the
+ * body's lamp choice between frames (hysteresis against flip-flopping).
+ */
+export function pointCastFor(owner, x, y, contactWidth, cast = _frameCast) {
+    if (!_castLights.length || (cast && cast.rake > 0)) return null;
+    const px = finite(x, NaN);
+    const py = finite(y, NaN);
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+    const previous = owner ? _castMemory.get(owner) : null;
+    let best = null;
+    let bestStrength = 0;
+    let kept = null;
+    let keptStrength = 0;
+    for (const light of _castLights) {
+        const dx = px - light.gx;
+        const dy = (py - light.gy) * 2;
+        const d = Math.hypot(dx, dy);
+        if (d >= light.radius || d < 2) continue;
+        const strength = light.intensity * (1 - d / light.radius);
+        if (strength > bestStrength) {
+            best = { light, dx, dy, d };
+            bestStrength = strength;
+        }
+        if (light.id === previous) {
+            kept = { light, dx, dy, d };
+            keptStrength = strength;
+        }
+    }
+    const pick = kept && keptStrength + POINT_CAST_HYSTERESIS >= bestStrength ? kept : best;
+    if (owner) {
+        if (pick) _castMemory.set(owner, pick.light.id);
+        else _castMemory.delete(owner);
+    }
+    if (!pick) return null;
+    const centreDistance = Math.hypot(px - _castCentreX, py - _castCentreY);
+    _castDistances.push(centreDistance);
+    if (centreDistance > _castLimit) return null;
+    const ratio = pick.d / pick.light.radius;
+    const angleBucket = Math.round(Math.atan2(pick.dy, pick.dx) * 16);
+    // The trail ends inside the lamp's lit pool (its last course sits at
+    // POINT_CAST_POOL_RIM of the radius): a cast never darkens the unlit
+    // ground past the rim. A body at the rim throws none.
+    const room = pick.light.radius * POINT_CAST_POOL_RIM - pick.d - 2;
+    const reach = Math.min(18 + 60 * ratio, room);
+    if (reach < 8) return null;
+    const reachBucket = Math.max(2, Math.min(14, Math.floor(reach / 4)));
+    // Eighths 7 / 6 / 5: dense in the pool's core, lighter toward its rim;
+    // a lamp's own light lands on the trail too, so it starts dark.
+    const alphaBucket = ratio < 0.4 ? 7 : ratio < 0.75 ? 6 : 5;
+    return pointCastStamp(contactWidth, angleBucket, reachBucket, alphaBucket);
+}

@@ -52,6 +52,19 @@ The logical footprint always comes from `BUILDING_DEFS`. Do not duplicate it in 
 
 ## Parts (frame-strip layers)
 
+Every drawn manifest layer goes through `BuildingSprite.partDrawsFor`, one descriptor list for both backends: the Canvas pass blits it and the GPU emits one small record per descriptor right after the building's record (same painter depth, same split half). A plain layer with art and an `anchor` is a static overlay, bottom-centre anchored in base-local px, with no alpha pulse (V4):
+
+```yaml
+layers:
+  beacon:              # the Pharos lamp, seated in the lantern glass
+    width: 18
+    height: 25
+    anchor: [145, 84]  # base-local bottom-centre
+    fixture: true      # GPU: emits through no occupancy gate (a real fixture, M22)
+    materialClass: fire
+    emissive: { strength: 1, sources: [{ geometry: authored-albedo, strength: 1 }] }   # GPU emissive strip = its own albedo
+```
+
 Moving building parts (a Mine sheave, a Harbor crane, Forge bellows, a lantern flame, door strips) are manifest `layers:` entries authored as one horizontal strip:
 
 ```yaml
@@ -63,15 +76,50 @@ layers:
     frameH: 20
     fps: 6             # 4–8, stepped on the shared motion clock; never smooth
     staticFrame: 0     # drawn when the gate is false or motion is reduced
-    gate: work         # resolved by BuildingPartGates from isWorkingVisitor (V8), or an ambient cycle
+    gate: work.mine    # BuildingPartGates: `work.<type>` or `door.<type>`, true while the building has >= 1 isWorkingVisitor (V8)
     restIsBase: true   # frame 0 is pixel-identical to the base art under it
-    oneShot: false     # optional: play once per trigger (door opens on arrival)
+    oneShot: false     # optional: play forward once when the gate opens, hold the last frame, play back when it closes (doors)
+    loopFrom: 0        # optional: a loop skips frames below this (a lantern whose frame 0 is the unlit base)
 ```
 
-- The strip PNG `buildings/<id>/<layer>.png` is exactly `frames × frameW` by `frameH`.
-- Work-coupled parts loop only while their gate reads real work through `isWorkingVisitor`. Rest-seat, queue and inferred-leg visitors never animate a building. Ambient cycles (water, wind, the Lighthouse beam) never read agent state.
-- One looping part per building. A part changes ≥ 4–6 world px of value-contrasting pixels so it reads at z1, uses only the building's authored colours, and keeps its depth order in the split pass.
-- `restIsBase: true` promises that an idle building shows exactly `base.png`. The validator compares frame 0 with the base crop at `anchor` and rejects any strip whose width is not `frames × frameW`, whose `fps` falls outside 4–8, whose `staticFrame` is out of range, or that has no `gate`.
+- The strip PNG `buildings/<id>/<layer>.png` is exactly `frames × frameW` by `frameH`. `BuildingSprite.partDrawsFor` picks the frame once for both backends: the Canvas pass blits it, the GPU record carries channel strips cropped from the base's own sidecars (an added object or overlay takes its own `materialClass` and emits only what its `emissive` declares).
+- Work-coupled parts loop only while their gate reads real work through `isWorkingVisitor`. Rest-seat, queue and inferred-leg visitors never animate a building. A `restIsBase` part at frame 0 draws nothing, so an empty building is its `base.png`.
+- One looping part per building (the Task board's two eave lanterns are one part in two strips, each gated on its own room). A part changes ≥ 4–6 world px of value-contrasting pixels so it reads at z1, uses only the building's authored colours, and keeps its depth order in the split pass (each half draws the part's rows on its side of the horizon, like the base).
+- Doors (6.2) are 3-frame `oneShot` strips gated `door.<type>`: closed (the base crop), ajar, open, one frame per 110 ms, onto a dark hall `#1a1310` over a stepped warm floor on the C1 `emissive` ramp (rim `#ff9d4a`, core `#ffcf7a`, one Bayer course); the floor texels emit on the GPU through the occupancy gate. Reduced motion shows the held frame with no steps.
+- `restIsBase: true` promises that an idle building shows exactly `base.png`. The validator compares frame 0 with the base crop at `anchor` and rejects any strip whose width is not `frames × frameW`, whose `fps` falls outside 4–8, whose `staticFrame` is out of range, or whose `gate` is not `work.<type>` / `door.<type>` / `room.<type>.<k>`. `room.<type>.<k>` is open while a working visitor holds 6.3 room k (0-based, `base.rooms.png` R = k + 1): a part that is itself a room's glass (the Task board lanterns, `room.taskboard.0` west and `.1` east) burns for exactly the worker holding it, so N workers light min(N, rooms). A 6.7 `dressing: true` layer is a static strip: only its geometry is checked.
+- Strips are hand-authored by `output/`-side scripts from the current `base.png` (frame 0 is always the live base crop); re-crop after any base edit under a part.
+
+### Emitter cycles (V4, OE-1)
+
+A layer with `cycle: { gate, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 1/3, hz }` is a mask, never art: alpha marks the emitter's authored texels. `EmitterCycle.bakeEmitterCycle` sorts those texels' own colours by luma into a ramp and bakes `frames` phases in which a stepped +1/0/−1/0 rank wave in `bandPx` bands rises `riseStepPx` per phase up the flame (by row, or by the mask's red channel with `heightFromMask`); ranks below `fixedBelowRankFrac` (dark embers) never move, so every output texel is an authored colour. The rest frame is the art itself (nothing is drawn): gated off, banked or reduced motion.
+
+- `gate`: `work.<type>` (runs only while the building has an `isWorkingVisitor` body) or `lamps` (a fixture that runs only while `lampsLitAt` says the village lamps are lit; never reads agent state, so by day it is the still art). `hz` stays in the V4 slow band (≤ 8).
+- `art: <layer>` cycles a static overlay layer's pixels instead of `base.png` (the mask is that layer's size and anchor).
+- `rampStops: K` bins a many-shaded emitter's colours into K luma courses, each shown by its most-used authored colour, so a lit or dimmed band moves one visible course (a band at 0 keeps the texel's own colour). `shearPx: 0` drops the per-column lean for a mask whose order is not vertical.
+- The validator checks the gate, `hz`, `frames`, that `art` names a static overlay, and that the mask is its art's size and covers authored texels.
+
+Shipped:
+
+| Layer | Art | Gate | Rate | Mask order |
+| --- | --- | --- | --- | --- |
+| Forge `hearth` | base | `work.forge`, and only while the hearth glow is above the banked ember | 8 Hz | rows up the fire |
+| Command `braziers` | base | `lamps` | 6 Hz | rows up both flames |
+| Lighthouse `lens` | `beacon` | `lamps` (`fixture`) | 4 Hz, `rampStops: 6` | R = rows above the bowl |
+| Portal `runes` | base | `work.portal` | 6 Hz, `rampStops: 6`, `shearPx: 0` | R = around the rune ring from the front, then up the vortex (the ring's white eye and dark outlines excluded) |
+
+```yaml
+  lens:
+    width: 18
+    height: 25
+    anchor: [145, 84]
+    fixture: true
+    cycle: { gate: lamps, art: beacon, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.25, rampStops: 6, heightFromMask: true, hz: 4 }
+  runes:
+    width: 312
+    height: 208
+    anchor: [156, 182]
+    cycle: { gate: work.portal, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.3333, rampStops: 6, heightFromMask: true, shearPx: 0, hz: 6 }
+```
 
 ## Rooms (per-room light)
 

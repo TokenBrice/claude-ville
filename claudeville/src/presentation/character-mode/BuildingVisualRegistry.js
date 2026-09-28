@@ -288,6 +288,16 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
             { at: [159.5, 183], w: 5, h: 28 },
             { at: [181.5, 195], w: 5, h: 26 },
         ],
+        // 6.3 / M15 — the clerestory lancets: authored glass that belongs to
+        // no room, so it is unlit slate glass at every hour (RoomGlass reads
+        // `glassRects`); only a room a worker holds glows.
+        glassRects: [
+            { at: [98, 92], w: 7, h: 19 },
+            { at: [123.5, 104.5], w: 4, h: 18 },
+            { at: [147.5, 117], w: 4, h: 19 },
+            { at: [170, 129], w: 5, h: 19 },
+            { at: [192.5, 141], w: 6, h: 19 },
+        ],
         pennant: { at: [68, 14] },
         // 4.2 — two reading rooms (the second and fourth lancet bays). A third
         // working occupant is a count, never an invented third window.
@@ -409,13 +419,18 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
                 flame: [144, 68],
                 light: [144, 68],
                 particle: [144, 68],
+                // 2.7 (V5) — the tower base under the lantern: the foot the
+                // beam fans leave from (the lamp itself lights no ground).
+                foot: [145, 316],
             },
-            // #17 — pivot for the rotating distress searchlight beam. Anchored at
-            // the lantern fire so the wedge appears to sweep out from the flame.
+            // 2.7 — pivot, length and far width of the Lighthouse beam fans
+            // (ground px) the resident shaders sweep from the lantern: long
+            // enough to read at z1 on a 5120 frame, and a fan (about 11
+            // degrees each side), never a parallel strip.
             searchlight: {
                 pivot: [144, 68],
-                length: 320,
-                width: 58,
+                length: 520,
+                width: 200,
             },
         },
     },
@@ -445,6 +460,11 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
             { at: [183.5, 155.5], w: 3, h: 5 },
             { at: [190.5, 158], w: 3, h: 4 },
         ],
+        // 6.4 — the two grey stacks behind the office roof: where each column
+        // leaves its cap (ChimneySmoke; smoke only with a working visitor).
+        effectAnchors: {
+            smokeTop: [[129, 26], [139, 30]],
+        },
     },
 });
 
@@ -467,7 +487,6 @@ export const BUILDING_EMITTER_FALLBACKS = {
         { type: 'beaconMote', at: WATCHTOWER_LANTERN_FIRE.particle, chance: 0.038, count: 1 },
     ],
     harbor: [
-        { type: 'smoke', at: [127, 29], chance: 0.026, count: 1 },
         { type: 'sparkle', at: [249, 88], chance: 0.014, count: 1 },
     ],
     taskboard: [
@@ -481,7 +500,7 @@ export const BUILDING_EMITTER_FALLBACKS = {
 };
 
 export const BUILDING_LIGHT_FALLBACKS = {
-    forge: { at: [80, 165], color: '#ff8a33', radius: 80, overlay: 'atmosphere.light.fire-glow' },
+    forge: { at: [80, 186], color: '#ff8a33', radius: 80, overlay: 'atmosphere.light.fire-glow', fire: true },
     mine: { at: [76, 186], color: '#ffb84d', radius: 80, overlay: 'atmosphere.light.lantern-glow' },
     taskboard: { at: [124, 108], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
     archive: { at: [245, 178], color: '#ffcf7a', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
@@ -492,19 +511,28 @@ export const LIGHT_SOURCE_REGISTRY = {
     watchtower: [
         {
             kind: 'point',
+            role: 'fixture',
             at: WATCHTOWER_LANTERN_FIRE.light,
+            foot: WATCHTOWER_LANTERN_FIRE.foot,
             color: '#ffb347',
-            radius: 108,
+            // 2.7 — a 2.5D ground radius from the tower base: the gallery
+            // masonry near the lantern is lit and the base takes one course.
+            radius: 200,
             overlay: 'atmosphere.light.fire-glow',
         },
     ],
 };
 
+// 2.6 — `fire: true` marks flame sources that breathe in stepped quanta. A
+// `torch` emitter is fire only where its building's manifest declares an
+// emissive `kind: fire` source on that emitter geometry (the Command gate
+// braziers); glazed lanterns and flameless harbour/Lighthouse torches stay
+// steady.
 export const EMITTER_LIGHTS = {
     torch: { color: '#ffbc62', radius: 42, overlay: 'atmosphere.light.fire-glow' },
     signal: { color: '#ffd37a', radius: 48, overlay: 'atmosphere.light.lantern-glow' },
-    forgeEmber: { color: '#ff8a33', radius: 42, overlay: 'atmosphere.light.fire-glow' },
-    forgeSpark: { color: '#ff9f3f', radius: 34, overlay: 'atmosphere.light.fire-glow' },
+    forgeEmber: { color: '#ff8a33', radius: 42, overlay: 'atmosphere.light.fire-glow', fire: true },
+    forgeSpark: { color: '#ff9f3f', radius: 34, overlay: 'atmosphere.light.fire-glow', fire: true },
 };
 
 export function getBuildingVisual(type) {

@@ -347,7 +347,7 @@ async function verifyGpuFrames(page) {
       ctx.imageSmoothingEnabled = false;
       for (let dir = 0; dir < directions.length; dir++) for (let row = 0; row < 10; row++) {
         const cell = sprite.spriteSheet.cell(row < 6 ? 'walk' : 'idle', dir, row < 6 ? row : row - 6);
-        const geometry = { cell, dx: 0, dy: 0, drawScale: 1, bounds: sprite._getCellContentBounds(cell), cacheEquipment: false };
+        const geometry = { cell, dx: 0, dy: 0, drawScale: 1, bounds: sprite._getCellContentBounds(cell) };
         ctx.clearRect(0, 0, padded, padded);
         ctx.save();
         ctx.translate(pad, pad);

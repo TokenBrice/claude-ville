@@ -263,6 +263,22 @@ test('derived-art jobs coalesce on key and ignore stale generations', () => {
     assert.equal(staleRan, false);
 });
 
+test('derived-art queue progresses when every idle callback arrives timed out', () => {
+    // Under constant load requestIdleCallback only fires through its timeout,
+    // with timeRemaining() at 0: each such tick must still build one job, and
+    // only one, so the queue drains without a frame paying for two builds.
+    const built = [];
+    const queue = createDerivedArtQueue({ sliceMs: 50, scheduleIdle: () => 0, scheduleTimeout: () => 0 });
+    for (const key of ['a', 'b', 'c']) queue.enqueue({ key, build: () => built.push(key) });
+    const timedOut = { didTimeout: true, timeRemaining: () => 0 };
+    queue.tick(timedOut);
+    assert.deepEqual(built, ['a']);
+    queue.tick(timedOut);
+    queue.tick(timedOut);
+    assert.deepEqual(built, ['a', 'b', 'c']);
+    assert.equal(queue.size, 0);
+});
+
 test('atlas category gate keeps a single landmark on the individual source', () => {
     assert.equal(shouldUseAtlasForCategory({
         atlasBytes: 16 * 1024 * 1024,

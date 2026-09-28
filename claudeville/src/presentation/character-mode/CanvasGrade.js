@@ -174,7 +174,10 @@ const POOL_WEIGHTS = [0.30, 0.54, 0.76];
 // core #ffcf7a) and each course's share of the landing at full pool light.
 const LAND_MID = [1.346, 0.948, 0.504];
 const LAND_STOPS = [POOL_RIM, LAND_MID, POOL_MID];
-const LAND_SHARE = [0.62, 0.74, 0.84];
+const LAND_SHARE = [0.84, 0.88, 0.90];
+// The least share each course lands with (GPU LAND_FLOOR): the thin outer
+// course on night grass lands in full, warm instead of khaki-olive.
+const LAND_FLOOR = [1, 0, 0];
 // V5 — the brightest ground stop (dressed plaza) is the receiver the stamp
 // clamps against.
 const PLAZA_PEAK = ART_RAMPS.plaza[ART_RAMPS.plaza.length - 1];
@@ -219,8 +222,14 @@ export function gradedPoolReceiver(grade) {
  * plaza, conservative elsewhere, and keeps no quarter of the excess. The
  * resident pool's 55 % albedo chroma has no Canvas twin: the dodge multiplies
  * the already-graded surface, whose chroma the grade has set.
+ *
+ * V5 — `height` (px, the stamp's units) raises the light above the stamp's
+ * centre, the light's foot: the ground course is stepped on the 3D distance
+ * `|(dx, 2dy, height)|` over the reach `sqrt(radius^2 + height^2)`, and a facade
+ * aperture's `normal [nx, ng]` confines it to its face's half-space
+ * (`0.30 + 1.4 n.d / |d|`), exactly the resident loop's ground receiver.
  */
-export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell = 1, energy = 1, ambientTint = [0.4, 0.4, 0.4], poolGain = 1, receiver = null } = {}) {
+export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell = 1, energy = 1, ambientTint = [0.4, 0.4, 0.4], poolGain = 1, receiver = null, height = 0, normal = null } = {}) {
     const size = Math.max(2, Math.ceil(radius * 2));
     const cellPx = Math.max(1, Math.round(cell));
     const cells = Math.max(1, Math.ceil(size / cellPx));
@@ -249,12 +258,18 @@ export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell =
     const centreX = cells / 2;
     const centreY = rows / 2;
     const radiusCells = radius / cellPx;
+    const heightCells = Math.max(0, Number(height) || 0) / cellPx;
+    const reachCells = Math.max(1, Math.hypot(radiusCells, heightCells));
+    const lobed = Array.isArray(normal) && normal.length >= 2;
     for (let y = 0; y < rows; y++) {
         for (let x = 0; x < cells; x++) {
-            const distance = Math.hypot(x + 0.5 - centreX, (y + 0.5 - centreY) * 2) / Math.max(1, radiusCells);
-            if (distance >= 1) continue;
-            const t = distance;
-            const falloff = 1 - t * t * (3 - 2 * t);
+            const gx = x + 0.5 - centreX;
+            const gy = (y + 0.5 - centreY) * 2;
+            const d = Math.hypot(gx, gy, heightCells);
+            const t = d / reachCells;
+            if (t >= 1) continue;
+            const lobe = lobed ? clamp(0.30 + 1.4 * (normal[0] * gx + normal[1] * gy) / Math.max(d, 1)) : 1;
+            const falloff = (1 - t * t * (3 - 2 * t)) * lobe;
             const q = falloff + (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 0.08;
             const step = (q >= 0.12 ? 1 : 0) + (q >= 0.40 ? 1 : 0) + (q >= 0.75 ? 1 : 0);
             if (step <= 0) continue;
@@ -263,7 +278,7 @@ export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell =
             const landTint = landTints[step - 1];
             const offset = (y * canvas.width + x) * 4;
             const lift = poolGain * strength / ambientLuma;
-            const land = warm * LAND_SHARE[step - 1] * clamp(1.6 * lift / (1 + lift));
+            const land = warm * LAND_SHARE[step - 1] * Math.max(LAND_FLOOR[step - 1], clamp(1.6 * lift / (1 + lift)));
             const adapt = shade ? Math.max(Math.min(1, strength * 1.5) * adaptGain, land) : 0;
             const towards = [0, 0, 0];
             const gains = [0, 0, 0];

@@ -96,6 +96,74 @@ export function validateWindowGeometry(reporter, { registry, spritesRoot }) {
     }
 }
 
+// Plan 6.3 room masks (`base.rooms.png`, R = room index, baked by
+// scripts/sprites/bake-room-masks.mjs). A building's rooms are its registry
+// `rooms.slots`, else its `windowRects`. Each room rect must sit >= 60 % on a
+// single mask room (glass-centre convention); with `rooms.slots`, slot k is
+// room k + 1; room indices run 1..N with every room named by a rect; mask
+// texels stay on the closed emissive glass. Buildings without an emissive
+// sidecar have no glass to segment and carry no mask.
+export function validateRoomMasks(reporter, { registry, spritesRoot }) {
+    for (const [type, visual] of Object.entries(registry)) {
+        const slots = visual?.rooms?.slots || [];
+        const rects = slots.length ? slots : (visual?.windowRects || []);
+        if (!rects.length) continue;
+        const dir = join(spritesRoot, 'buildings', `building.${type}`);
+        const sidecar = readPng(join(dir, 'base.emissive.png'));
+        if (!sidecar) continue;
+        const path = `buildings/building.${type}/base.rooms.png`;
+        const mask = readPng(join(dir, 'base.rooms.png'));
+        if (!mask) {
+            reporter.error(path, 'missing: run `node scripts/sprites/bake-room-masks.mjs`');
+            continue;
+        }
+        if (mask.width !== sidecar.width || mask.height !== sidecar.height) {
+            reporter.error(path, `is ${mask.width}x${mask.height}, the emissive sidecar is ${sidecar.width}x${sidecar.height}`);
+            continue;
+        }
+        const glass = closedAlphaMask(sidecar).mask;
+        const present = new Set();
+        let offGlass = 0;
+        for (let p = 0; p < mask.width * mask.height; p++) {
+            if (!mask.data[p * 4 + 3]) continue;
+            const index = mask.data[p * 4];
+            if (!index) offGlass++;
+            else present.add(index);
+            if (!glass[p]) offGlass++;
+        }
+        if (offGlass) reporter.error(path, `${offGlass} mask texel(s) are off the emissive glass or carry room 0`);
+        const named = new Set();
+        rects.forEach((rect, slot) => {
+            const label = `registry.${type}.${slots.length ? 'rooms.slots' : 'windowRects'}[${slot}]`;
+            if (!Array.isArray(rect?.at) || !rect.at.every(Number.isFinite)) return;
+            const { left, top, w, h } = windowRectBounds(rect);
+            const counts = new Map();
+            for (let y = top; y < top + h; y++) {
+                for (let x = left; x < left + w; x++) {
+                    if (x < 0 || y < 0 || x >= mask.width || y >= mask.height) continue;
+                    const i = (y * mask.width + x) * 4;
+                    if (mask.data[i + 3] && mask.data[i]) counts.set(mask.data[i], (counts.get(mask.data[i]) || 0) + 1);
+                }
+            }
+            const [index, hits] = [...counts].sort((a, b) => b[1] - a[1])[0] || [0, 0];
+            const coverage = w * h ? hits / (w * h) : 0;
+            if (coverage < WINDOW_SIDECAR_MIN_COVERAGE) {
+                reporter.error(label, `covers ${pct(coverage)} of one room in ${path}, needs >= ${pct(WINDOW_SIDECAR_MIN_COVERAGE)}`);
+                return;
+            }
+            if (slots.length && index !== slot + 1) {
+                reporter.error(label, `sits on mask room ${index}; rooms.slots[${slot}] must be room ${slot + 1}`);
+            }
+            named.add(index);
+        });
+        const max = present.size ? Math.max(...present) : 0;
+        for (let index = 1; index <= max; index++) {
+            if (!present.has(index)) reporter.error(path, `room indices must run 1..${max}; room ${index} has no texels`);
+            else if (!named.has(index)) reporter.error(path, `room ${index} is named by no registry rect`);
+        }
+    }
+}
+
 function pct(value) {
     return `${Math.round(value * 100)}%`;
 }
@@ -106,29 +174,41 @@ function isPositiveInt(value) {
 
 // Plan 6.1 frame-strip parts: a manifest building layer with `frames` is a
 // horizontal strip of `frames` cells of `frameW x frameH`, bottom-centre
-// anchored at `anchor` in base-local texels (as `_drawManifestLayers` draws
-// it). `restIsBase` promises frame 0 is exactly the base art under it.
+// anchored at `anchor` in base-local texels (as `partDrawsFor` draws
+// it). `restIsBase` promises frame 0 is exactly the base art under it. A
+// 6.7 `dressing: true` layer is a static strip (one frame per earned tier):
+// no clock and no work gate, so only its strip geometry is checked. A layer
+// with `cycle` is an EmitterCycle mask (V4): its gate, its slow-band rate
+// and a mask the size of its art (base.png, or the `cycle.art` layer) that
+// covers authored texels.
 export function validateFrameStripParts(reporter, { entries, spritesRoot }) {
     for (const entry of entries) {
         const id = String(entry?.id || '');
         if (!id.startsWith('building.') || !entry.layers || Array.isArray(entry.layers)) continue;
         let base;
         for (const [name, layer] of Object.entries(entry.layers)) {
-            if (name === 'base' || !layer || layer.frames === undefined) continue;
+            if (name === 'base' || !layer) continue;
+            if (layer.cycle) {
+                validateEmitterCycle(reporter, { id, name, layer, entry, spritesRoot });
+                continue;
+            }
+            if (layer.frames === undefined) continue;
             const path = `manifest.${id}.layers.${name}`;
             const { frames, frameW, frameH, fps, staticFrame, gate } = layer;
             if (!isPositiveInt(frames) || !isPositiveInt(frameW) || !isPositiveInt(frameH)) {
                 reporter.error(path, '`frames`, `frameW` and `frameH` must be positive integers');
                 continue;
             }
-            if (!(Number(fps) >= PART_FPS_RANGE[0] && Number(fps) <= PART_FPS_RANGE[1])) {
-                reporter.error(path, `\`fps\` must be ${PART_FPS_RANGE[0]}-${PART_FPS_RANGE[1]} (stepped, not smooth)`);
-            }
-            if (!Number.isInteger(staticFrame) || staticFrame < 0 || staticFrame >= frames) {
-                reporter.error(path, '`staticFrame` must index a frame of the strip (the gated-off and reduced-motion frame)');
-            }
-            if (typeof gate !== 'string' || !gate.trim()) {
-                reporter.error(path, '`gate` must name a BuildingPartGates gate (real work via isWorkingVisitor, or an ambient cycle)');
+            if (layer.dressing !== true) {
+                if (!(Number(fps) >= PART_FPS_RANGE[0] && Number(fps) <= PART_FPS_RANGE[1])) {
+                    reporter.error(path, `\`fps\` must be ${PART_FPS_RANGE[0]}-${PART_FPS_RANGE[1]} (stepped, not smooth)`);
+                }
+                if (!Number.isInteger(staticFrame) || staticFrame < 0 || staticFrame >= frames) {
+                    reporter.error(path, '`staticFrame` must index a frame of the strip (the gated-off and reduced-motion frame)');
+                }
+                if (typeof gate !== 'string' || !/^((work|door)\.[a-z]+|room\.[a-z]+\.\d+)$/.test(gate.trim())) {
+                    reporter.error(path, '`gate` must name a BuildingPartGates gate (`work.<type>`, `door.<type>` or `room.<type>.<k>`, real work via isWorkingVisitor)');
+                }
             }
             if (!Array.isArray(layer.anchor) || !layer.anchor.every(Number.isFinite)) {
                 reporter.error(path, '`anchor` must be the base-local bottom-centre [x, y]');
@@ -157,6 +237,42 @@ export function validateFrameStripParts(reporter, { entries, spritesRoot }) {
             }
         }
     }
+}
+
+const CYCLE_MAX_HZ = 8;
+
+function validateEmitterCycle(reporter, { id, name, layer, entry, spritesRoot }) {
+    const path = `manifest.${id}.layers.${name}.cycle`;
+    const { gate, hz = 8, frames = 8, art } = layer.cycle;
+    if (typeof gate !== 'string' || !/^(lamps|work\.[a-z]+)$/.test(gate.trim())) {
+        reporter.error(path, '`gate` must be `lamps` (lampsLitAt) or `work.<type>` (real work via isWorkingVisitor)');
+    }
+    if (!(Number(hz) > 0 && Number(hz) <= CYCLE_MAX_HZ)) {
+        reporter.error(path, `\`hz\` must be in (0, ${CYCLE_MAX_HZ}] (the V4 slow band)`);
+    }
+    if (!isPositiveInt(frames)) reporter.error(path, '`frames` must be a positive integer');
+    if (art !== undefined) {
+        const artLayer = entry.layers[art];
+        if (!artLayer || artLayer.cycle || artLayer.frames !== undefined || !Array.isArray(artLayer.anchor)) {
+            reporter.error(path, `\`art\` must name a static overlay layer of ${id} (got "${art}")`);
+            return;
+        }
+    }
+    const artPng = readPng(join(spritesRoot, 'buildings', id, `${art ?? 'base'}.png`));
+    const mask = readPng(join(spritesRoot, 'buildings', id, `${name}.png`));
+    if (!artPng || !mask) {
+        reporter.error(path, `needs buildings/${id}/${name}.png and its art ${art ?? 'base'}.png`);
+        return;
+    }
+    if (mask.width !== artPng.width || mask.height !== artPng.height) {
+        reporter.error(path, `mask is ${mask.width}x${mask.height}, its art is ${artPng.width}x${artPng.height}`);
+        return;
+    }
+    let covered = 0;
+    for (let i = 3; i < mask.data.length; i += 4) {
+        if (mask.data[i] > 0 && artPng.data[i] > 0) covered++;
+    }
+    if (!covered) reporter.error(path, 'mask covers no authored texel of its art');
 }
 
 function firstStripMismatch(strip, base, left, top, frameW, frameH) {

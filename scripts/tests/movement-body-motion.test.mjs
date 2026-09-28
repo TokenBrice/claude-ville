@@ -107,3 +107,29 @@ test('work facing turns backs into profiles within 67.5° of the building and fi
         assert.ok(glance == null || ![3, 4, 5].includes(glance));
     }
 });
+
+test('a body about to play a work or wait strip turns to the nearest authored strip facing (7.3)', () => {
+    const s = sprite();
+    s._toolRitual = { agentId: s.agent.id, stripGroup: 'strike', phase: 'pending', pose: 'hammer' };
+    s._workBearing = -Math.PI / 2 + 0.2; // Forge just east of due north
+    assert.equal(s._workFacing(4, 12), 2, 'N with the door to the right → E, never the strip-less NE');
+    s._workBearing = -Math.PI / 2 - 0.2;
+    assert.equal(s._workFacing(4, -12), 6, 'N with the door to the left → W');
+    s._workBearing = Math.PI / 2 + 0.1;
+    assert.equal(s._workFacing(0, -1), 7, 'S → SW, the nearer authored column');
+    s._toolRitual = null;
+    s._workBearing = -Math.PI / 2 + 0.2;
+    assert.equal(s._workFacing(4, 12), 3, 'no strip due: plain work facing keeps NE');
+
+    const petitioner = sprite(AgentStatus.WAITING_ON_USER);
+    petitioner.moving = false;
+    petitioner.direction = 3; petitioner._facingGoal = null;
+    petitioner._workBearing = -Math.PI / 2 + 0.3; // the slot ahead lies north-north-east
+    petitioner._holdStripFacing();
+    assert.equal(petitioner._facingGoal, 2, 'a petitioner left facing NE turns to E, where its wait row is authored');
+    petitioner.direction = 2; petitioner._facingGoal = null;
+    for (const sign of [1, -1]) {
+        const glance = petitioner._fidgetGlance(sign);
+        assert.ok(glance == null || [1, 2, 6, 7].includes(glance), 'a fidget never leaves the strip facings');
+    }
+});

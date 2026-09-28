@@ -32,11 +32,32 @@
 //   node scripts/sprites/feet-audit.mjs --id=<id> --strip=<png> --groups=sit:0-3 --reference=group
 //   Options: --tolerance=2  --base (also list walk/idle deviations; informational)
 //            --json  --contact-sheet=<png> (2× cells with anchor and feet marks)
-// Exit code 1 when any audited strip frame exceeds the tolerance.
+//
+// Three more checks per strip frame (plan 7.3, after the Phase A review):
+//   fragments  detached islands (8-connected, alpha >= 16) that the idle cell
+//              does not carry within 2 px: a floating hammer head, a stray
+//              fragment. Fails at --island-min px (default 3; the generator
+//              clears 1–2 px specks). Idle sparkles and badges stay legal.
+//   identity   non-arm identity diff against the idle cell: pixels outside the
+//              moving arms' envelope (capsules around shoulder–elbow–hand of
+//              every arm whose joints moved, in the frame pose and the idle
+//              pose) that have no same-colour counterpart within 2 px, added
+//              plus removed. Catches a cape flaring like a run cycle, a prop
+//              that becomes another prop, a re-drawn crest. Fails above
+//              --identity-max px (default max(24, 2.5% of the idle body)).
+//              Needs the frames' keypoints: the generator's stage .json next
+//              to --strip, or --keypoints=<json> (the assembler's
+//              output/action-strips/<id>.keypoints.json, found automatically
+//              for shipped strips). Without keypoints it is reported as n/a.
+//   clearance  the `wait` group's held frame must rise at least --clearance px
+//              (default 3) above the idle cell's top row: the raised hand
+//              clears the hat or helm.
+// Exit code 1 when any audited strip frame fails a check.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { PNG } from 'pngjs';
+import { dilate, newIslands } from './cell-islands.mjs';
 import { collectSpriteEntries, loadSpriteManifest, repoRoot, spritesRoot } from './manifest-utils.mjs';
 
 const CELL = 92;
@@ -46,6 +67,7 @@ const LONG_DIRECTIONS = {
     south: 's', 'south-east': 'se', east: 'e', 'north-east': 'ne',
     north: 'n', 'north-west': 'nw', west: 'w', 'south-west': 'sw',
 };
+const SHORT_TO_LONG = Object.fromEntries(Object.entries(LONG_DIRECTIONS).map(([long, short]) => [short, long]));
 const ALPHA_MIN = 16;
 const FOOT_WINDOW = 10;
 const FOOT_SEARCH = 8;
@@ -68,6 +90,10 @@ const groupsOption = option('groups');
 const contactSheetPath = option('contact-sheet');
 const directions = list(option('directions')).map((name) => LONG_DIRECTIONS[name] || name);
 const ids = [...list(option('ids')), ...list(option('id'))];
+const islandMin = Number(option('island-min', '3'));
+const identityMaxOption = option('identity-max');
+const clearance = Number(option('clearance', '3'));
+const keypointsOption = option('keypoints');
 
 for (const name of directions) {
     if (!DIRECTIONS.includes(name)) fail(`unknown direction "${name}"; use ${DIRECTIONS.join(', ')}`);
@@ -93,12 +119,21 @@ for (const id of targets) {
     const anchors = anchorsFor(sheet);
     const strips = [];
     if (stripOption) {
-        strips.push({ path: resolvePath(stripOption), groups: parseGroups(groupsOption), label: 'candidate' });
+        const stripPath = resolvePath(stripOption);
+        strips.push({
+            path: stripPath,
+            groups: parseGroups(groupsOption),
+            label: 'candidate',
+            keypoints: loadKeypoints(keypointsOption ? resolvePath(keypointsOption) : stripPath.replace(/\.png$/, '.json')),
+        });
     } else if (entry.actionStrip?.path) {
         strips.push({
             path: join(spritesRoot, entry.actionStrip.path),
             groups: Object.entries(entry.actionStrip.groups || {}).map(([name, group]) => ({ name, rows: group.rows })),
             label: 'shipped',
+            keypoints: loadKeypoints(keypointsOption && ids.length === 1
+                ? resolvePath(keypointsOption)
+                : join(repoRoot, 'output', 'action-strips', `${id}.keypoints.json`)),
         });
     }
     const character = { id, anchors: {}, strips: [], base: null };
@@ -112,8 +147,8 @@ for (const id of targets) {
         const groups = [];
         for (const group of strip.groups) {
             if (group.rows[1] >= png.height / CELL) fail(`${id}: group ${group.name} rows ${group.rows.join('–')} exceed the strip`);
-            groups.push(auditGroup(png, group, anchors));
-            if (contactSheetPath) sheetTiles.push({ id, png, group, anchors });
+            groups.push(auditGroup(png, group, anchors, { keypoints: strip.keypoints }));
+            if (contactSheetPath) sheetTiles.push({ id, png, group, anchors, result: groups.at(-1) });
         }
         character.strips.push({ path: relative(strip.path), label: strip.label, groups });
     }
@@ -129,7 +164,7 @@ const failures = report.flatMap((character) => character.strips.flatMap((strip) 
     .map((group) => `${character.id} ${group.name}: ${group.failingFrames.join(' ')}`)));
 
 if (flag('json')) {
-    console.log(JSON.stringify({ tolerance, reference, failures, characters: report }, null, 2));
+    console.log(JSON.stringify({ tolerance, reference, failures, characters: report }, (key, value) => (key === 'drift' ? undefined : value), 2));
 } else {
     printReport(report);
 }
@@ -154,7 +189,7 @@ function measureCell(png, col, row) {
         }
     }
     if (maxX < 0) return null;
-    return { minX, minY, maxX, maxY, cx2: minX + maxX, mask };
+    return { minX, minY, maxX, maxY, cx2: minX + maxX, mask, png, x0, y0 };
 }
 
 // Where did the reference feet go? Vertically, the foot line: the frame's
@@ -204,8 +239,9 @@ function anchorsFor(sheet) {
     });
 }
 
-function auditGroup(png, group, anchors, { reference: mode = reference } = {}) {
+function auditGroup(png, group, anchors, { reference: mode = reference, keypoints = null } = {}) {
     const result = { name: group.name, rows: group.rows, reference: mode, directions: {}, failingFrames: [], pass: true };
+    const holdIndex = group.rows[1] - group.rows[0];
     for (const dir of columns) {
         const col = DIRECTIONS.indexOf(dir);
         const anchor = anchors[col];
@@ -213,24 +249,48 @@ function auditGroup(png, group, anchors, { reference: mode = reference } = {}) {
         for (let row = group.rows[0]; row <= group.rows[1]; row++) frames.push(measureCell(png, col, row));
         const first = frames[0];
         const ref = mode === 'group' && first ? first : anchor.idle;
+        const poses = keypointsFor(keypoints, group.name, dir);
+        const identityMax = identityMaxOption !== null
+            ? Number(identityMaxOption)
+            : Math.max(24, Math.round(0.025 * anchor.idle.mask.reduce((sum, v) => sum + v, 0)));
         const rows = frames.map((frame, index) => {
-            if (!frame) return { frame: index, empty: true, pass: false };
+            if (!frame) return { frame: index, empty: true, pass: false, why: ['empty'] };
             const shift = feetShift(ref, frame);
-            const pass = Math.abs(shift.dx) <= tolerance && Math.abs(shift.dy) <= tolerance;
+            const why = [];
+            if (Math.abs(shift.dx) > tolerance || Math.abs(shift.dy) > tolerance) why.push(`dx${signed(shift.dx)},dy${signed(shift.dy)}`);
+            const fragments = newIslands(frame.mask, anchor.idle.mask, CELL).filter((island) => island.size >= islandMin);
+            if (fragments.length) why.push(`fragment${fragments.map((island) => ` ${island.size}px@${island.minX},${island.minY}`).join('')}`);
+            // Seat poses (`--reference=group`) redraw hips and legs by design,
+            // so the non-arm identity diff applies to standing work poses.
+            let identity = null;
+            if (mode !== 'group' && poses && poses.frames[index]) {
+                identity = identityDiff(anchor.idle, frame, armEnvelope(poses.base, poses.frames[index], poses.pad, poses.offset));
+                if (identity.added + identity.removed > identityMax) why.push(`identity ${identity.added}+${identity.removed}px>${identityMax}`);
+            }
+            let rise = null;
+            if (group.name === 'wait' && index === holdIndex) {
+                rise = anchor.idle.minY - frame.minY;
+                if (rise < clearance) why.push(`hand clears the head by ${rise}px<${clearance}`);
+            }
             return {
                 frame: index,
                 dx: shift.dx,
                 dy: shift.dy,
                 iou: Number(shift.iou.toFixed(2)),
                 line: frame.maxY - anchor.maxY,
-                pass,
+                fragments: fragments.map((island) => island.size),
+                identity,
+                rise,
+                pass: why.length === 0,
+                why,
             };
         });
         const worst = rows.reduce((acc, row) => ({
             dx: Math.max(acc.dx, row.empty ? Infinity : Math.abs(row.dx)),
             dy: Math.max(acc.dy, row.empty ? Infinity : Math.abs(row.dy)),
-        }), { dx: 0, dy: 0 });
-        const entry = { worst, frames: rows };
+            identity: Math.max(acc.identity, row.identity ? row.identity.added + row.identity.removed : 0),
+        }), { dx: 0, dy: 0, identity: 0 });
+        const entry = { worst, identityMax: poses ? identityMax : null, frames: rows };
         if (mode === 'group' && first) {
             const pose = feetShift(anchor.idle, first);
             entry.offsetFromAnchor = { dx: pose.dx, dy: pose.dy, line: first.maxY - anchor.maxY };
@@ -239,10 +299,109 @@ function auditGroup(png, group, anchors, { reference: mode = reference } = {}) {
         for (const row of rows) {
             if (row.pass) continue;
             result.pass = false;
-            result.failingFrames.push(row.empty ? `${dir}#${row.frame}(empty)` : `${dir}#${row.frame}(dx${signed(row.dx)},dy${signed(row.dy)})`);
+            result.failingFrames.push(`${dir}#${row.frame}(${row.why.join('; ')})`);
         }
     }
     return result;
+}
+
+// ─── fragments and identity ───────────────────────────────────────────────────
+
+// Keypoints for one group and facing from a generator stage .json (its
+// `keypoints` field) or an assembler keypoints file (the same object at the
+// root): { pad, offset, base: { <long dir>: [18] }, groups: { name: { <long dir>: [[18], …] } } }.
+function loadKeypoints(path) {
+    if (!path || !existsSync(path)) return null;
+    const json = JSON.parse(readFileSync(path, 'utf8'));
+    const data = json.keypoints && json.keypoints.groups ? json.keypoints : json;
+    return data.groups && data.base ? data : null;
+}
+
+function keypointsFor(keypoints, name, dir) {
+    const long = SHORT_TO_LONG[dir] || dir;
+    const frames = keypoints?.groups?.[name]?.[long];
+    const base = keypoints?.base?.[long];
+    if (!frames || !base) return null;
+    return { frames, base, pad: keypoints.pad || 128, offset: keypoints.offset ?? 18 };
+}
+
+// Cells an arm may legitimately repaint: for every arm whose elbow or hand
+// moved, capsules along shoulder–elbow–hand in the frame pose (radius 5, the
+// hand 7) and in the idle pose (radius 6: a hanging sleeve leaves with it).
+function armEnvelope(base, frame, pad, offset) {
+    const at = (points, label) => {
+        const k = points.find((point) => point.label === label);
+        return { x: k.x * pad - offset, y: k.y * pad - offset };
+    };
+    const envelope = new Uint8Array(CELL * CELL);
+    const capsule = (a, b, radius) => {
+        const x0 = Math.max(0, Math.floor(Math.min(a.x, b.x) - radius)), x1 = Math.min(CELL - 1, Math.ceil(Math.max(a.x, b.x) + radius));
+        const y0 = Math.max(0, Math.floor(Math.min(a.y, b.y) - radius)), y1 = Math.min(CELL - 1, Math.ceil(Math.max(a.y, b.y) + radius));
+        const dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy || 1;
+        for (let y = y0; y <= y1; y++) {
+            for (let x = x0; x <= x1; x++) {
+                const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / len2));
+                if (Math.hypot(x - a.x - t * dx, y - a.y - t * dy) <= radius) envelope[y * CELL + x] = 1;
+            }
+        }
+    };
+    for (const side of ['RIGHT', 'LEFT']) {
+        const moved = ['ELBOW', 'ARM'].some((joint) => {
+            const a = at(base, `${side} ${joint}`), b = at(frame, `${side} ${joint}`);
+            return Math.hypot(a.x - b.x, a.y - b.y) > 1.5;
+        });
+        if (!moved) continue;
+        for (const [points, radius] of [[frame, 5], [base, 6]]) {
+            const shoulder = at(points, `${side} SHOULDER`), elbow = at(points, `${side} ELBOW`), hand = at(points, `${side} ARM`);
+            capsule(shoulder, elbow, radius);
+            capsule(elbow, hand, radius);
+            // The fist and cuff: the model draws the hand up to ~9 px off
+            // its joint (measured on the Phase C pilot's settle frames).
+            capsule(hand, hand, radius + 4);
+        }
+    }
+    return envelope;
+}
+
+// Added: frame pixels outside the envelope with no idle pixel of a close
+// colour within 2 px. Removed: idle pixels outside the envelope with no such
+// frame pixel. A 1–2 px redraw jitter or a lifted head matches; a flared cape,
+// a swapped prop or a re-drawn crest does not.
+function identityDiff(idle, frame, envelope) {
+    const RADIUS = 2;
+    const TOLERANCE = 64;
+    const rgb = (cell, p) => {
+        const i = ((cell.y0 + ((p / CELL) | 0)) * cell.png.width + cell.x0 + (p % CELL)) * 4;
+        return [cell.png.data[i], cell.png.data[i + 1], cell.png.data[i + 2]];
+    };
+    const close = (a, b) => {
+        const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2];
+        return Math.sqrt(2 * dr * dr + 4 * dg * dg + 3 * db * db) / 3 <= TOLERANCE;
+    };
+    const matched = (from, to, p) => {
+        const colour = rgb(from, p);
+        const x = p % CELL, y = (p / CELL) | 0;
+        for (let dy = -RADIUS; dy <= RADIUS; dy++) {
+            const ny = y + dy;
+            if (ny < 0 || ny >= CELL) continue;
+            for (let dx = -RADIUS; dx <= RADIUS; dx++) {
+                const nx = x + dx;
+                if (nx < 0 || nx >= CELL) continue;
+                const q = ny * CELL + nx;
+                if (to.mask[q] && close(colour, rgb(to, q))) return true;
+            }
+        }
+        return false;
+    };
+    const reach = dilate(envelope, CELL, 1);
+    let added = 0, removed = 0;
+    const drift = [];
+    for (let p = 0; p < CELL * CELL; p++) {
+        if (reach[p]) continue;
+        if (frame.mask[p] && !matched(frame, idle, p)) { added++; drift.push(p); }
+        if (idle.mask[p] && !matched(idle, frame, p)) { removed++; drift.push(p); }
+    }
+    return { added, removed, drift };
 }
 
 // ─── output ───────────────────────────────────────────────────────────────────
@@ -261,8 +420,8 @@ function printReport(characters) {
         if (!character.strips.length && !character.base) console.log('  (no action strip)');
     }
     console.log(failures.length
-        ? `\n[feet-audit] ${failures.length} group(s) outside ±${tolerance}px:\n  ${failures.join('\n  ')}`
-        : `\n[feet-audit] every audited strip frame is within ±${tolerance}px`);
+        ? `\n[feet-audit] ${failures.length} group(s) fail (feet outside ±${tolerance}px, fragment ≥ ${islandMin}px, identity, or wait clearance < ${clearance}px):\n  ${failures.join('\n  ')}`
+        : `\n[feet-audit] every audited strip frame passes (feet within ±${tolerance}px, no fragment, identity held, wait clearance)`);
 }
 
 function printGroup(status, group) {
@@ -271,7 +430,12 @@ function printGroup(status, group) {
         const pose = entry.offsetFromAnchor
             ? ` [pose vs idle ${signed(entry.offsetFromAnchor.dx)}/${signed(entry.offsetFromAnchor.dy)}]`
             : '';
-        return `${dir}: ${steps}${pose}`;
+        const identity = entry.identityMax !== null && entry.identityMax !== undefined
+            ? ` id≤${entry.worst.identity}/${entry.identityMax}`
+            : ' id n/a';
+        const fragments = entry.frames.reduce((sum, row) => sum + (row.fragments?.length || 0), 0);
+        const rise = entry.frames.find((row) => row.rise !== null && row.rise !== undefined)?.rise;
+        return `${dir}: ${steps}${pose}${identity}${fragments ? ` frag×${fragments}` : ''}${rise !== undefined ? ` rise ${rise}` : ''}`;
     });
     console.log(`    ${status.padEnd(4)} ${group.name} rows ${group.rows.join('–')} feet dx/dy  ${cells.join('  |  ')}`);
 }
@@ -318,10 +482,19 @@ function writeContactSheet(path, tiles) {
             const frameCell = measureCell(item.png, col, srcRow);
             const shift = frameCell ? feetShift(ref, frameCell) : null;
             const ok = shift && Math.abs(shift.dx) <= tolerance && Math.abs(shift.dy) <= tolerance;
+            // Green: every check passes. Red: the feet moved. Amber: the feet
+            // hold but a fragment, identity or wait-clearance check fails.
+            const row = item.result?.directions?.[item.dir]?.frames?.[frame];
+            // Identity drift pixels (outside the arm envelope, unmatched) in magenta.
+            for (const p of row?.identity?.drift || []) {
+                setPixel(out, ox + (p % CELL) * scale, oy + ((p / CELL) | 0) * scale, [236, 64, 220, 255]);
+                setPixel(out, ox + (p % CELL) * scale + 1, oy + ((p / CELL) | 0) * scale, [236, 64, 220, 255]);
+            }
+            const colour = !ok ? [240, 80, 70, 255] : row && !row.pass ? [240, 180, 60, 255] : [110, 220, 110, 255];
             const barY = oy + CELL * scale - 4;
             for (let x = 4; x < CELL * scale - 4; x++) {
-                setPixel(out, ox + x, barY, ok ? [110, 220, 110, 255] : [240, 80, 70, 255]);
-                setPixel(out, ox + x, barY + 1, ok ? [110, 220, 110, 255] : [240, 80, 70, 255]);
+                setPixel(out, ox + x, barY, colour);
+                setPixel(out, ox + x, barY + 1, colour);
             }
         }
     });

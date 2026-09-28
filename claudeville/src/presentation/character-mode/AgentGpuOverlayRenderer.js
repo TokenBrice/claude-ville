@@ -4,7 +4,13 @@ import { agentFrameKeyFromCell } from './AssetManager.js';
 import { gpuMaterialNameForProvider } from './gpu/GpuSceneBuilder.js';
 import { materialClassId } from './gpu/GpuWorldPolicy.js';
 import { isAttentionStatus } from './AttentionPlates.js';
-import { DEFAULT_CELL } from './SpriteSheet.js';
+import { DEFAULT_CELL, WALK_FRAMES } from './SpriteSheet.js';
+
+// 4.7 — a walking body's strip descriptor (six probe records, one per walk
+// frame of its facing) is rebuilt only when what it samples changes. A strip
+// whose channel crops were still pending is re-probed at this cadence.
+const WALK_STRIP_RETRY_MS = 250;
+let walkStripRevision = 0;
 
 // Owns the GPU-world base-sprite record and the ungraded Canvas annotation
 // pass. The host remains authoritative for animation, identity, and all shared
@@ -180,6 +186,7 @@ export class AgentGpuOverlayRenderer {
         frameGeometry = null,
         pose = null,
         lod = false,
+        stripProbe = false,
     }) {
         const host = this.host;
         if (!host.gpuWorldEnabled || !host.spriteCanvas || !cell) {
@@ -193,8 +200,8 @@ export class AgentGpuOverlayRenderer {
         const status = host.agent?.status;
         // Equipped codex sheets are re-laid on a padded cell grid so baked
         // blade tips survive past the 92px body cell; remap the cell UVs and
-        // grow the on-screen quad by the same padding. Sidecars are padded
-        // copies built alongside the albedo so their UVs stay aligned.
+        // grow the on-screen quad by the same padding. The channel companions
+        // stay unpadded: `channelRect` places their sheet cell at the pad.
         const layout = host._gpuEquippedSheetLayout;
         const pad = layout && source === host._gpuBaseSpriteCanvas ? layout.pad : 0;
         const cellSize = pad ? layout.cellSize : 0;
@@ -202,19 +209,36 @@ export class AgentGpuOverlayRenderer {
         const col = pad ? Math.floor(cell.sx / cellSize) : 0;
         const row = pad ? Math.floor(cell.sy / cellSize) : 0;
         const bodyCell = pose ? pose.cell : cell;
+        // 7.1 — a seated body arrives clipped at its seat line (sh < cell);
+        // the padded slot keeps its top pad and drops the rows below the clip.
+        const paddedRows = pad && bodyCell.sh < cellSize ? pad + bodyCell.sh : padded;
         const frameKey = agentFrameKeyFromCell(bodyCell);
         // Plan 2.7 — a crowd body samples the baked 0.5x LOD sheet at world
         // scale 1: source rects halve, and with drawScale 0.5 the quad keeps
         // one LOD texel per world texel. Authored channel sidecars describe
         // the full-resolution cells, so the LOD body uses record defaults.
+        // B.2 — an equipped profile's LOD sheet outlives its released albedo.
+        const lodCell = pad ? padded : (host.spriteSheet?.cellSize || DEFAULT_CELL);
         const lodSheet = lod && !pose
-            ? host.compositor?.halfScaleSheet?.(source, pad ? padded : (host.spriteSheet?.cellSize || DEFAULT_CELL))
+            ? (host._gpuLodSheet
+                ? host._gpuLodSheet(source, lodCell)
+                : host.compositor?.halfScaleSheet?.(source, lodCell))
             : null;
+        // A released albedo's stand-in is never drawn.
+        if (!lodSheet && source && source === host._gpuEquippedEntry?.stub) {
+            host._gpuFrameRecord = null;
+            return;
+        }
         const sourceScale = lodSheet ? 0.5 : 1;
         if (lodSheet) source = lodSheet;
-        const equippedMaterial = pad && !lodSheet ? host._gpuEquippedMaterialSheet : null;
-        const equippedEmissive = pad && !lodSheet ? host._gpuEquippedEmissiveSheet : null;
-        const resolved = (equippedMaterial || equippedEmissive || pose || lodSheet)
+        const sheetCell = pad && !lodSheet;
+        const sheetMaterial = sheetCell
+            ? host.assets?.getSidecar?.(spriteId, 'material') || host.assets?.getMaterialSidecar?.(spriteId, 'material') || null
+            : null;
+        const sheetEmissive = sheetCell
+            ? host.assets?.getSidecar?.(spriteId, 'emissive') || host.assets?.getMaterialSidecar?.(spriteId, 'emissive') || null
+            : null;
+        const resolved = (sheetMaterial || sheetEmissive || pose || lodSheet)
             ? null
             : host.assets?.resolveMaterialChannels?.(spriteId, frameKey, {
                 kind: 'agent',
@@ -225,29 +249,39 @@ export class AgentGpuOverlayRenderer {
         const resolvedReady = resolved?.ready && resolved.origin !== 'fallback';
         // A strip carries its own optional material companions; it never
         // borrows the base sheet's, whose cells describe a different pose.
-        const materialSource = lodSheet
+        const authoredMaterial = lodSheet
             ? null
             : pose
                 ? pose.strip?.channels?.material || null
-                : equippedMaterial
+                : sheetMaterial
                     || (resolvedReady ? resolved.material : null)
                     || (pad ? null : host.assets?.getSidecar?.(spriteId, 'material')
                         || host.assets?.getMaterialSidecar?.(spriteId, 'material'))
                     || null;
-        const emissiveSource = lodSheet
+        const authoredEmissive = lodSheet
             ? null
             : pose
                 ? pose.strip?.channels?.emissive || null
-                : equippedEmissive
+                : sheetEmissive
                     || (resolvedReady ? resolved.emissive : null)
                     || (pad ? null : host.assets?.getSidecar?.(spriteId, 'emissive')
                         || host.assets?.getMaterialSidecar?.(spriteId, 'emissive'))
                     || null;
-        const occluderSource = lodSheet
+        const authoredOccluder = lodSheet
             ? null
             : pose
                 ? pose.strip?.channels?.occluder || null
-                : pad ? host._gpuEquippedOccluderSheet : resolved?.occluder || host.assets?.getSidecar?.(spriteId, 'occluder') || null;
+                : sheetCell ? host.assets?.getSidecar?.(spriteId, 'occluder') || null
+                    : resolved?.occluder || host.assets?.getSidecar?.(spriteId, 'occluder') || null;
+        // B.2 — material + occluder travel as one packed geometry map (V9
+        // flag 32); an all-transparent emissive companion is dropped.
+        const materialSource = host._packedGeometrySource?.(authoredMaterial, authoredOccluder) || null;
+        const emissiveSource = host._authoredEmissionSource?.(authoredEmissive) || null;
+        // Sheet-layout companions of an equipped body: the unpadded cell,
+        // drawn at the pad offset inside the padded atlas slot.
+        const channelRect = sheetCell && (materialSource || emissiveSource) && (sheetMaterial || sheetEmissive || authoredOccluder)
+            ? { sx: col * cellSize, sy: row * cellSize, sw: cellSize, sh: cellSize, dx: pad, dy: pad }
+            : null;
         host._gpuFrameRecord = {
             id: `agent:${host.agent?.id || profileKey}`,
             stableKey: host.agent?.id || profileKey,
@@ -258,18 +292,19 @@ export class AgentGpuOverlayRenderer {
             source,
             materialSource,
             emissiveSource,
-            occluderSource,
+            packedGeometry: Boolean(materialSource),
+            channelRect,
             channelRevision: resolved?.revision || host.assets?.assetVersion || null,
             sourceWidth: source.width,
             sourceHeight: source.height,
             sx: (pad ? col * padded : bodyCell.sx) * sourceScale,
             sy: (pad ? row * padded : bodyCell.sy) * sourceScale,
             sw: (pad ? padded : bodyCell.sw) * sourceScale,
-            sh: (pad ? padded : bodyCell.sh) * sourceScale,
+            sh: (pad ? paddedRows : bodyCell.sh) * sourceScale,
             x: dx - pad * drawScale,
             y: dy - pad * drawScale,
             width: (pad ? padded : bodyCell.sw) * drawScale,
-            height: (pad ? padded : bodyCell.sh) * drawScale,
+            height: (pad ? paddedRows : bodyCell.sh) * drawScale,
             alpha: departedTableau(host) ? alpha * 0.58 : alpha,
             material: gpuMaterialNameForProvider(host.agent?.provider),
             elevation: 0.52,
@@ -295,5 +330,81 @@ export class AgentGpuOverlayRenderer {
                 || [AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(status),
             frameGeometry,
         };
+        if (stripProbe) return;
+        const walkFrame = !pose && !lodSheet && host.animState === 'walk' && host.motionScale > 0
+            ? walkFrameOfCell(host.spriteSheet, host.direction, cell)
+            : -1;
+        if (walkFrame < 0) return;
+        const strip = this._walkStripFor(host._gpuFrameRecord, {
+            dx, dy, drawScale, profileKey, spriteId, alpha, contentTopY, frameGeometry,
+        });
+        if (strip) host._gpuFrameRecord.walkStrip = { key: strip.key, cells: strip.cells, frame: walkFrame };
     }
+
+    // 4.7 — the six cells of the current facing's walk row, each resolved by
+    // setFrameRecord itself in probe mode, so albedo, padding and every channel
+    // source match what the body would sample on that frame. The packer copies
+    // them into the body's strip lazily; the key moves whenever the sampled
+    // sheet, channels, direction or tool changes.
+    _walkStripFor(record, args) {
+        const host = this.host;
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        // Channel revisions are per frame (their cache key names the cell), so
+        // the strip keys on the asset version; a channel source that changes
+        // under the same key (a crop landing) is caught by `stale` below.
+        const baseKey = [
+            host.direction,
+            record.textureKey,
+            record.textureRevision,
+            host.assets?.assetVersion ?? '',
+            host.agent?.currentTool || '',
+        ].join('|');
+        const cached = this._walkStrip;
+        const current = cached?.baseKey === baseKey
+            ? cached.cells.find(cell => cell.sx === record.sx && cell.sy === record.sy)
+            : null;
+        const stale = !current
+            || current.source !== record.source
+            || current.materialSource !== record.materialSource
+            || current.emissiveSource !== record.emissiveSource
+            || current.occluderSource !== record.occluderSource;
+        const retry = cached && !cached.complete && now - cached.builtAt >= WALK_STRIP_RETRY_MS;
+        if (!stale && !retry) return cached;
+        const cells = [];
+        let complete = true;
+        for (let frame = 0; frame < WALK_FRAMES; frame++) {
+            this.setFrameRecord({
+                ...args,
+                cell: host.spriteSheet.cell('walk', host.direction, frame),
+                stripProbe: true,
+            });
+            const probe = host._gpuFrameRecord;
+            if (!probe) {
+                host._gpuFrameRecord = record;
+                return null;
+            }
+            complete &&= Boolean(probe.materialSource) === Boolean(record.materialSource)
+                && Boolean(probe.emissiveSource) === Boolean(record.emissiveSource)
+                && Boolean(probe.occluderSource) === Boolean(record.occluderSource);
+            cells.push(probe);
+        }
+        host._gpuFrameRecord = record;
+        this._walkStrip = {
+            baseKey,
+            key: `${baseKey}|${++walkStripRevision}`,
+            cells,
+            complete,
+            builtAt: now,
+        };
+        return this._walkStrip;
+    }
+}
+
+function walkFrameOfCell(sheet, direction, cell) {
+    if (!sheet?.cell || !cell) return -1;
+    for (let frame = 0; frame < WALK_FRAMES; frame++) {
+        const walk = sheet.cell('walk', direction, frame);
+        if (walk.sx === cell.sx && walk.sy === cell.sy) return frame;
+    }
+    return -1;
 }

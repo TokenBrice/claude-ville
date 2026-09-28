@@ -5,7 +5,7 @@ import { tileToWorld, worldToTile } from './Projection.js';
 import { compactToolLabel, isCommandToolName, isTaskCommandInput, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
 import { providerColor } from './ArrivalDeparture.js';
 import { resolveObservation } from './ObservationCertainty.js';
-import { diamond, dottedCurve, gradeTone, snap } from './EffectStamps.js';
+import { diamond, dottedCurve, gradeTone, momentRectClear, resolveMomentAnchor, snap } from './EffectStamps.js';
 import { fillPixelEllipse } from './PixelShapes.js';
 
 const MAX_ITEMS_PER_KIND = 10;
@@ -1286,6 +1286,10 @@ export class LandmarkActivity {
     // overlap one already drawn this frame, a body, a name or a T1 plate step
     // up one plate row (up to three times), then yield rather than print over
     // them (S12: the T5 chit is the lowest tier on the ground).
+    // 8.1 — V8: the chit's seat is resolved like a moment's — clear of the
+    // chrome and the safe-area edge and of any building sorted in front, slid
+    // up the building's own column when it must — and every step up keeps
+    // that. A chit never becomes an edge plate: T5 yields instead.
     _drawTinyLabel(ctx, item, x, y, color) {
         const plates = this._chitRenderer;
         const verb = String(item.label || '').toUpperCase();
@@ -1299,12 +1303,21 @@ export class LandmarkActivity {
         const halfWidth = (measureLabelText(ctx, text) + 10) * unit / 2;
         ctx.restore();
         const rowHeight = 17 * unit;
+        const seat = resolveMomentAnchor({ x, y }, {
+            building: type,
+            extent: { left: -halfWidth, top: -rowHeight / 2, right: halfWidth, bottom: rowHeight / 2 },
+            id: `chit:${item.id}`,
+            kind: 'chit',
+            tier: 'minor',
+        });
+        if (seat.mode === 'edge') return;
         for (let step = 0; step < 4; step++) {
-            const cy = y - step * rowHeight;
+            const cy = seat.y - step * rowHeight;
             const rect = { id: item.id, cy, left: x - halfWidth, right: x + halfWidth, top: cy - rowHeight / 2, bottom: cy + rowHeight / 2 };
             const hit = this._chitRects.some(other => rect.left < other.right && rect.right > other.left
                 && rect.top < other.bottom && rect.bottom > other.top)
-                || plates._rectHitsSignalOrBody?.({ x: rect.left, y: rect.top, w: rect.right - rect.left, h: rect.bottom - rect.top });
+                || plates._rectHitsSignalOrBody?.({ x: rect.left, y: rect.top, w: rect.right - rect.left, h: rect.bottom - rect.top })
+                || (step > 0 && !momentRectClear(rect, { depthY: seat.depthY ?? y }));
             if (hit) continue;
             this._chitRects.push(rect);
             plates._drawInstrumentPlate(ctx, x, cy, text, { color, border: color, type });

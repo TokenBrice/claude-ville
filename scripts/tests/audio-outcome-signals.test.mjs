@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    MOMENT_AGGREGATE_MS,
     OUTCOME_AGGREGATE_MS,
     OutcomeRouter,
     OutcomeTracker,
@@ -9,6 +10,7 @@ import {
     toolFailedFact,
     verifiedOutcomeFact,
 } from '../../claudeville/src/application/OutcomeSignals.js';
+import { pendingRepoSummariesFromDockSummaries } from '../../claudeville/src/presentation/character-mode/HarborTraffic.js';
 
 // A deterministic clock and timer queue: `advance(ms)` fires due timers.
 function fakeTime(start = 1_000_000) {
@@ -127,6 +129,40 @@ test('a failed push is a growth in a repo\'s failed pushes after the first summa
     const second = failedPushFacts(first.state, [repo(2)]);
     assert.deepEqual(second.facts.map(fact => [fact.kind, fact.repo]), [['pushFailed', 'p']]);
     assert.deepEqual(failedPushFacts(second.state, [repo(2)]).facts, []);
+});
+
+test('a failed push with nothing docked is news for its agent, even in the first summary', () => {
+    const now = 5_000_000;
+    const push = { project: '/sim/repos/cv', branch: 'main', status: 'rejected', batchId: null, agentId: 'pusher', eventTime: now - 1_000 };
+    const rows = pendingRepoSummariesFromDockSummaries(new Map(), [push]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].failedPushes, 1);
+    assert.equal(rows[0].pendingCommits, 0);
+    const { facts } = failedPushFacts(null, rows, { now });
+    assert.deepEqual(facts.map(fact => [fact.kind, fact.agentId]), [['pushFailed', 'pusher']]);
+    // An old failure seen first on load stays a baseline.
+    assert.deepEqual(failedPushFacts(null, rows, { now: now + 60_000 }).facts, []);
+    // A push that is already batched is not a failure row.
+    assert.deepEqual(pendingRepoSummariesFromDockSummaries(new Map(), [{ ...push, batchId: 'b1' }]), []);
+});
+
+test('a fan of dispatches closes its batch MOMENT_AGGREGATE_MS after its last child, capped at the window', () => {
+    const time = fakeTime();
+    const emitted = [];
+    const outcomes = router(time, emitted);
+    outcomes.submit({ kind: 'dispatch', agentId: 'parent' });
+    time.advance(400);
+    outcomes.submit({ kind: 'dispatch', agentId: 'parent' });
+    time.advance(MOMENT_AGGREGATE_MS - 1);
+    assert.equal(emitted.length, 0);
+    time.advance(1);
+    assert.deepEqual(emitted.map(({ kind, count }) => [kind, count]), [['dispatch', 2]]);
+    for (let i = 0; i < 6; i++) {
+        outcomes.submit({ kind: 'dispatch', agentId: 'parent' });
+        time.advance(400);
+    }
+    time.advance(OUTCOME_AGGREGATE_MS);
+    assert.deepEqual(emitted.slice(1).map(({ count }) => count), [4, 2], 'never later than the window after the first');
 });
 
 test('Minor facts landing together are one outcome with the exact count', () => {

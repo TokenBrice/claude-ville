@@ -4,11 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 
+import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { DIRECTIONS, resolveActionFrame } from '../../claudeville/src/presentation/character-mode/SpriteSheet.js';
 import {
     actionStripMismatch,
     actionStripPathFor,
 } from '../../claudeville/src/presentation/character-mode/AssetManager.js';
+import { workStripGroup } from '../../claudeville/src/presentation/character-mode/RitualConductor.js';
 
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const spritesRoot = path.join(repoRoot, 'claudeville/assets/sprites');
@@ -24,6 +26,19 @@ const PILOT = {
     },
     grip: { hand: 'both', sheathe: true },
 };
+
+test('a work strip follows the real tool class wherever it lands; the building only breaks ties', () => {
+    assert.equal(workStripGroup('Grep', 'forge'), 'gaze', 'a lookup at the Forge gazes, it never strikes');
+    assert.equal(workStripGroup('Read', 'archive'), 'gaze');
+    assert.equal(workStripGroup('WebFetch', 'observatory'), 'gaze');
+    assert.equal(workStripGroup('Edit', 'forge'), 'strike');
+    assert.equal(workStripGroup('apply_patch', 'taskboard'), 'strike');
+    assert.equal(workStripGroup('Bash', 'observatory'), 'tinker', 'a shell command tinkers even under the telescope');
+    assert.equal(workStripGroup('Task', 'forge'), 'strike', 'no tool class: the Forge breaks the tie');
+    assert.equal(workStripGroup('mcp__browser__click', 'observatory'), 'gaze', 'an MCP call is not a shell command');
+    assert.equal(workStripGroup('mcp__browser__click', 'archive'), null);
+    assert.equal(workStripGroup('', 'forge'), null);
+});
 
 test('a named group resolves one cell per direction and frame', () => {
     assert.deepEqual(resolveActionFrame(PILOT, 'read', 0, 0), { sx: 0, sy: 0, sw: 92, sh: 92 });
@@ -110,4 +125,35 @@ test('every declared action strip exists at the engine cell and covers its group
             assert.ok(frame.sy + frame.sh <= height, `${entry.id} group ${name} hold row is outside the PNG`);
         }
     }
+});
+
+test('a work beat cannot cross its body cell into the next cycle while the overlay draws', (t) => {
+    const sprite = Object.assign(Object.create(AgentSprite.prototype), {
+        direction: 2,
+        motionScale: 1,
+        _toolRitual: { pose: 'hammer', phase: 'playing', beatOrigin: 1, motionEnabled: true },
+        _poseCell: {
+            source: 'strip',
+            group: 'strike',
+            now: 459,
+            meta: { groups: { strike: { contact: { e: [40, 50] } } } },
+        },
+    });
+    const pixels = [];
+    const ctx = {
+        globalAlpha: 1,
+        save() {},
+        restore() {},
+        fillRect(x, y, w, h) { pixels.push([x, y, w, h]); },
+    };
+    const geometry = { dx: 0, dy: 0, drawScale: 1, bounds: { minX: 0, maxX: 92, minY: 0, maxY: 92 } };
+    // The body chose the last wind-up frame; the overlay runs just after the
+    // 460 ms boundary. Its cream contact core must wait for the next body.
+    t.mock.method(Date, 'now', () => 460);
+    sprite._drawToolRitualOverlay(ctx, geometry);
+    assert.equal(pixels.some(([, , w, h]) => w === 2 && h === 2), false, 'no contact core on the wind-up body');
+    pixels.length = 0;
+    sprite._poseCell.now = 460;
+    sprite._drawToolRitualOverlay(ctx, geometry);
+    assert.deepEqual(pixels[0], [39, 49, 2, 2]);
 });

@@ -207,6 +207,16 @@ Cost is computed locally from token counts in session files multiplied by static
 
 If a model is missing or its price has changed, update one row in `claudeville/src/config/models.json`, run `npm run models:generate`, inspect it with `npm run models:resolve <provider> <model>`, and run the model registry and pricing tests before verifying browser and `/api/sessions` cost displays.
 
+## World looks flatter than the screenshots, or runs the Canvas renderer
+
+ClaudeVille draws the resident WebGL2 world only on a hardware rasterizer. When the browser's WebGL2 runs on a software rasterizer, the World uses the Canvas renderer instead. Software rasterizers include SwiftShader (hardware acceleration off, a blocklisted GPU, headless Chromium, many VMs and remote desktops), llvmpipe/lavapipe (Linux without a GPU driver) and the Microsoft Basic Render Driver. On a software rasterizer the resident shaders stall the first frame for seconds and then hold the page at a few frames per second. To check which one is active:
+
+```js
+window.__claudeVilleApp.renderer.worldRendererMode   // 'webgl' or 'canvas'
+```
+
+To confirm the rasterizer, open `chrome://gpu`: look for "WebGL: Software only" or a SwiftShader renderer. Turning on "Use graphics acceleration when available" (Chrome settings, System) and restarting the browser brings the WebGL world back. `?renderer=webgl` forces the WebGL world on any WebGL2 browser (slow on a software rasterizer); `?renderer=canvas` forces Canvas. Headless Playwright captures get the WebGL world only with `--use-angle=metal --ignore-gpu-blocklist` (macOS; `GPU_LAUNCH_ARGS` in `scripts/smoke/support/world-bench.mjs`) or with `?renderer=webgl`.
+
 ## Desktop graphics reset or compositor crash while ClaudeVille is open
 
 First distinguish an app crash from a system graphics-stack reset. On Linux/KWin/amdgpu systems, collect recent warning-level evidence:

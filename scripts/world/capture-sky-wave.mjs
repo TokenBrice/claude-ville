@@ -55,16 +55,19 @@ try {
   await page.waitForTimeout(900);
   await shot('day-clear-after-storm');
 
-  // 5. Snapshot shape probe: seasonal phases, weather.cause, cloudLayers, cacheKey
+  // 5. Snapshot shape probe: seasonal phases, weather.cause, cacheKey and the
+  // 5.7 horizon deck (icon cloud layers are retired).
   const probe = await page.evaluate(() => {
     const s = window.__claudeVilleAtmosphere?.snapshot?.();
+    const sky = window.__claudeVilleApp?.renderer?.skyRenderer;
     return s ? {
       phase: s.phase,
       month: s.effectiveDate?.getMonth(),
       cause: s.weather?.cause,
       cacheKey: s.cacheKey,
-      cloudLayers: s.sky?.cloudLayers?.length,
-      sunAssetHook: s.sky?.assetIds?.sun || null,
+      cloudCover: s.weather?.cloudCover,
+      deckBakes: sky?.deckBakes ?? null,
+      horizonY: sky?._horizonY ?? null,
     } : null;
   });
   console.log('probe:', JSON.stringify(probe));

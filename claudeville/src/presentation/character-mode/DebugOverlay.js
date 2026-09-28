@@ -1,6 +1,7 @@
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { WORLD_BODY_FONT_11 } from '../../config/theme.js';
 import { CANVAS_BUDGET } from './CanvasBudget.js';
+import { AgentSprite } from './AgentSprite.js';
 
 export class DebugOverlay {
     constructor() {
@@ -349,6 +350,7 @@ export class DebugOverlay {
                 ? `${resources.liveBodyAtlas.width}x${resources.liveBodyAtlas.height}/channel`
                 : 'absent'}`,
             ...(resources.atlasPages || []).map((page) => `  ${page.name}: ${page.width}x${page.height} · ${formatBytes(page.bytes)}`),
+            agentSheetRow(AgentSprite.sharedCacheStats()),
         ].filter(Boolean);
     }
 
@@ -410,6 +412,20 @@ export class DebugOverlay {
         ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
         ctx.fill();
     }
+}
+
+// B.2 — the equipped-sheet cache against its cap; pinned (on-screen) sheets
+// are never evicted, so what they hold above the cap shows as overage.
+// Released sheets (crowd-only profiles) keep just their LOD sheet.
+function agentSheetRow(stats) {
+    if (!stats) return null;
+    const overage = stats.gpuEquippedPinnedOverageBytes > 0
+        ? ` · PINNED OVERAGE ${formatBytes(stats.gpuEquippedPinnedOverageBytes)}`
+        : ' · pinned overage 0';
+    return `agent sheets: equipped ${stats.gpuEquippedSheets} · ${formatBytes(stats.gpuEquippedSheetEstimateBytes)}`
+        + ` / cap ${formatBytes(stats.gpuEquippedSheetPixelLimit * 4)}${overage}`
+        + ` · released ${stats.gpuEquippedReleasedSheets ?? 0} (LOD ${formatBytes(stats.gpuEquippedLodEstimateBytes || 0)})`
+        + ` · packed geometry ${stats.packedGeometrySheets} · ${formatBytes(stats.packedGeometryEstimateBytes)}`;
 }
 
 // Rows wider than the 560 px panel are squeezed, not wrapped, so long

@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-09-28-waking-isle-emitters"
+  assetVersion: "2026-09-28-waking-isle-action-roster"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -67,6 +67,19 @@ characters:
     generationMode: pro
     animations: [walk, breathing-idle]
     animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.claude.fable/actions.png
+      cell: 92
+      groups:
+        wait: { rows: [0, 2], hold: 2, directions: [se, e, w, sw] }
+        sit: { rows: [3, 4], hold: 4, seatLine: { south-east: 64, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "d2ba5ede-849b-4322-b63d-34d0d95a1a08", sw: "09cb6f81-3412-4cc2-8e1a-f66cae520161" } }, directions: [se, sw] }
+        strike: { rows: [5, 10], hold: 10, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [56, 47], w: [32, 44], se: [48, 50], sw: [43, 50] } }
+        tinker: { rows: [11, 16], hold: 11, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [54, 48], w: [34, 45], se: [46, 51], sw: [45, 51] } }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "3cef2064-b3dd-4f17-ab8a-ff35ed2ee379"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "3ea95fc1-4bbd-47f4-aaa5-a3ed9f22afd8", w: "d24c9c05-8061-4829-8429-34fef1260b15", se: "3e946315-6463-4151-87b2-f8f8676434cf", sw: "6edd6e38-2523-45be-9f79-1b6944c40271" } } }
     portraitCrop: { x: 28, y: 9, w: 34, h: 30 }
     provenance: { characterId: 3cef2064-b3dd-4f17-ab8a-ff35ed2ee379 }
     palette_layer: claude
@@ -94,6 +107,20 @@ characters:
     generationMode: pro
     animations: [walk, breathing-idle]
     animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.claude.opus/actions.png
+      cell: 92
+      groups:
+        wait: { rows: [0, 2], hold: 2, directions: [se, e, w, sw] }
+        sit: { rows: [3, 4], hold: 4, seatLine: { south-east: 65, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "d32f466a-17ec-43f6-a0fe-fc1cc7cbdf34", sw: "bf08d6ab-1d4f-4b92-8879-ad2c361d285a" } }, directions: [se, sw] }
+        strike: { rows: [5, 10], hold: 10, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [55, 49], w: [35, 49], se: [50, 52], sw: [43, 50] } }
+        tinker: { rows: [11, 16], hold: 11, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [58, 47], w: [37, 50], se: [49, 53], sw: [44, 51] } }
+        gaze: { rows: [17, 20], hold: 18, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [46, 35], w: [45, 32], se: [43, 34], sw: [50, 34] } }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "f8a273d6-1b74-4192-ba60-c9854d8e2683"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "4aa926e2-fc13-4afc-8489-9818de80d0c8", w: "26f39a00-7b38-4a44-adb8-1750f6210cda", se: "54abff10-40a8-43b3-94e5-2a7097440530", sw: "6c209e9f-922d-4d7f-8b2f-aadb9d61eb59" }, gaze: { e: "3073784b-15a2-47e9-b226-a90a87d49a4a", w: "1822ad0e-d318-41ae-a803-14a3e3c44979", se: "382911cc-977a-478b-acf4-5adfe21f166c", sw: "e007fc4d-28ed-4fcc-8d20-fd1c0aa4e515" } } }
     portraitCrop: { x: 29, y: 8, w: 34, h: 32 }
     provenance: { characterId: f8a273d6-1b74-4192-ba60-c9854d8e2683 }
     palette_layer: claude
@@ -122,9 +149,19 @@ characters:
     actionStrip:
       path: characters/agent.claude.sonnet/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 70, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "990e85b8-1940-411a-82f7-5d5f1e542d8a", sw: "e2f0b7f1-2604-4ef2-b9cd-732a2d151bc7" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [54, 51], w: [33, 49], se: [50, 53], sw: [42, 52] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [56, 48], w: [41, 52], se: [49, 54], sw: [44, 53] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [44, 34], w: [43, 32], se: [42, 34], sw: [51, 31] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: 28414b93-f0b6-4060-a9bf-cf471a26a7d9, animationGroupId: cbe22634-af4c-4e77-a104-72ac68c96446, generationSize: 144 }
+      provenance:
+        characterId: "28414b93-f0b6-4060-a9bf-cf471a26a7d9"
+        animationGroupId: "cbe22634-af4c-4e77-a104-72ac68c96446"
+        generationSize: 144
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "6ce8a5f6-b59c-4857-98da-fc7dd41c5ba0", w: "367eef2f-04eb-4e9b-873e-d4e4eb1c3f74", se: "98e38052-393d-4a65-9736-497bdb285a1f", sw: "52a0f7ed-02cc-46df-a00c-dd35fb8c6aa3" }, gaze: { e: "dc38230a-c5d9-46e9-a289-63816e706ecb", w: "363a82ac-15c6-49e4-aa43-19bce258fb64", se: "0bc82fc8-fb50-4d4a-9580-0bf5d99cb317", sw: "d71e3583-6de8-47fa-b3d6-47b38979dfce" } } }
     portraitCrop: { x: 29, y: 6, w: 34, h: 32 }
     provenance: { characterId: 28414b93-f0b6-4060-a9bf-cf471a26a7d9 }
     palette_layer: claude
@@ -152,6 +189,20 @@ characters:
     generationMode: pro
     animations: [walk, breathing-idle]
     animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.claude.haiku/actions.png
+      cell: 92
+      groups:
+        wait: { rows: [0, 2], hold: 2, directions: [se, e, w, sw] }
+        sit: { rows: [3, 4], hold: 4, seatLine: { south-east: 72, south-west: 72 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "d7675204-dd59-4f09-ac6b-5acb02d371be", sw: "6f5f5e51-a5cb-4536-9763-15425a81c6eb" }, handEdit: "7.1 fix: torso shortened 4 rows (cell rows 53-56, se and sw, every channel) so the body no longer sits tall" }, directions: [se, sw] }
+        strike: { rows: [5, 10], hold: 10, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [63, 49], w: [25, 46], se: [54, 54], sw: [24, 51] } }
+        tinker: { rows: [11, 16], hold: 11, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [64, 46], w: [34, 50], se: [52, 55], sw: [40, 54] } }
+        gaze: { rows: [17, 20], hold: 18, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [49, 26], w: [37, 25], se: [44, 30], sw: [35, 23] } }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "b55ca52b-eaf5-48cc-a45b-3f0c067bf020"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "42a880c5-c9fd-436f-adee-aae955eaf4fd", w: "e0e5604d-6650-446e-8e35-4e80b2a144b1", se: "008e1bc6-c613-40f0-9707-ce025a67ff9b", sw: "8b427014-33b1-4dd2-9d26-de47cad6384d" }, gaze: { e: "1804a1ea-169e-46e8-8626-6d52fa61c9e9", w: "d8c5f590-6510-4b47-b51d-272f562d2273", se: "74a29771-e3c0-49fc-8089-d84ef970b46a", sw: "82cf6f1b-d4d1-495e-b828-dc4fe08c6d87" } } }
     portraitCrop: { x: 29, y: 5, w: 32, h: 30 }
     provenance: { characterId: b55ca52b-eaf5-48cc-a45b-3f0c067bf020 }
     palette_layer: claude
@@ -179,9 +230,19 @@ characters:
     actionStrip:
       path: characters/agent.codex.gpt55/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 64, south-west: 65 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "cf893c8e-ab5c-4233-a07a-a396bd296b49", sw: "910bad72-f333-4249-a613-e8376703acc7" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [56, 47], w: [29, 45], se: [50, 50], sw: [26, 47] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [54, 48], w: [39, 48], se: [48, 52], sw: [46, 51] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [47, 30], w: [40, 26], se: [41, 27], sw: [34, 24] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: 2d64b6cc-f4e4-4f71-ac1a-dc025a5e8650, animationGroupId: 3e3da200-19e1-4c35-9f7b-349b70c5b2f0, generationSize: 116 }
+      provenance:
+        characterId: "2d64b6cc-f4e4-4f71-ac1a-dc025a5e8650"
+        animationGroupId: "3e3da200-19e1-4c35-9f7b-349b70c5b2f0"
+        generationSize: 116
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "c15e8f13-368f-4711-9cd4-f9aeb3e1396e", w: "46911ba6-2da4-42c7-861b-2a8ed96cc26f", se: "cd6b05a4-6683-43c8-9c00-a9fdba205171", sw: "32eb1b24-1063-4990-a443-27d6e7a6ea35" }, gaze: { e: "b46d2a71-8d25-4667-91dc-42016a99859b", w: "72615e37-6f04-4a3f-877d-5700a3a05f6d", se: "7d145e4e-2c4f-4d8b-a26c-0a9ba192a8a5", sw: "b268b9d3-b727-4cbf-bce0-20b31e7a17bc" } } }
     portraitCrop: { x: 28, y: 15, w: 36, h: 30 }
     provenance: { characterId: 2d64b6cc-f4e4-4f71-ac1a-dc025a5e8650 }
     palette_layer: codex
@@ -209,6 +270,20 @@ characters:
     generationMode: pro
     animations: [walk, breathing-idle]
     animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.codex.gpt55.high/actions.png
+      cell: 92
+      groups:
+        wait: { rows: [0, 2], hold: 2, directions: [se, e, w, sw] }
+        sit: { rows: [3, 4], hold: 4, seatLine: { south-east: 68, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "6db898b2-d062-4625-a073-f23238444b09", sw: "8c3d3aa3-b5a6-4e1d-a40a-0c2b0ed5735e" } }, directions: [se, sw] }
+        strike: { rows: [5, 10], hold: 10, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [58, 47], w: [32, 43], se: [49, 51], sw: [24, 45] } }
+        tinker: { rows: [11, 16], hold: 11, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [56, 49], w: [39, 47], se: [47, 52], sw: [48, 50] } }
+        gaze: { rows: [17, 20], hold: 18, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [46, 25], w: [44, 21], se: [40, 24], sw: [33, 19] } }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "c005d237-9365-4544-8c85-54bb9d29ba1a"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "52bd7a6f-cbd9-4b40-abf3-9e6204056a9e", w: "1b8aac29-63c5-4150-82c1-ae9cc10e7499", se: "4c38c7f9-f070-4998-bdcc-23f53469e880", sw: "fd480aca-ee54-429b-ad14-5503b58a8e1b" }, gaze: { e: "dddbbde1-5a62-4ebf-abb8-e19b2309b2b2", w: "1cfb3973-d329-43f9-abf2-30adfae72fe1", se: "08e92fe8-12df-4dec-8144-8bd44be0c118", sw: "b711b5ed-71cf-4006-b6d2-87cb80dcfa8c" } } }
     portraitCrop: { x: 27, y: 9, w: 38, h: 32 }
     provenance: { characterId: c005d237-9365-4544-8c85-54bb9d29ba1a }
     palette_layer: codex
@@ -239,9 +314,19 @@ characters:
     actionStrip:
       path: characters/agent.codex.gpt55.xhigh/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 66, south-west: 66 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "d359f843-7101-4b43-b81c-d30551fe466b", sw: "fb1cd4c3-8c71-44a8-82a1-b445c16b0764" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [55, 49], w: [34, 47], se: [49, 53], sw: [25, 47] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [54, 51], w: [41, 50], se: [47, 54], sw: [46, 52] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [47, 34], w: [43, 31], se: [41, 32], sw: [33, 26] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: c591af5b-a4e7-494b-a289-e5f9f7f6caf6, animationGroupId: 79807e50-1d42-4c2a-b54b-042d51db52de, generationSize: 140 }
+      provenance:
+        characterId: "c591af5b-a4e7-494b-a289-e5f9f7f6caf6"
+        animationGroupId: "79807e50-1d42-4c2a-b54b-042d51db52de"
+        generationSize: 140
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "285f78c7-59af-4eda-9445-072b9cf02d31", w: "f9467bd4-f4ec-4bd6-bcf6-38c300175086", se: "791675da-79c9-4e42-9ba6-c3d50a6b9ae2", sw: "42a72fff-708c-43b7-8545-e5fc28acf617" }, gaze: { e: "c5a889b8-b706-4112-8f27-a88b04f13245", w: "f56e3ec2-e331-47c8-ad1d-7b3e7be3df46", se: "2aa407ee-6cb5-4a49-81ac-6847bc571991", sw: "8cd32d0b-83b8-4a76-a292-9add4454fa9f" } } }
     portraitCrop: { x: 28, y: 13, w: 38, h: 32 }
     provenance: { characterId: c591af5b-a4e7-494b-a289-e5f9f7f6caf6 }
     palette_layer: codex
@@ -265,9 +350,19 @@ characters:
     actionStrip:
       path: characters/agent.codex.gpt6astra/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 68, south-west: 69 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "3776e59b-b12d-40ff-b175-8dc562582d94", sw: "965d8dab-dedf-461f-95eb-0a67acb1567b" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [63, 45], w: [21, 45], se: [54, 52], sw: [18, 47] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [60, 48], w: [33, 49], se: [51, 54], sw: [44, 51] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [49, 21], w: [35, 19], se: [43, 23], sw: [29, 19] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: a1da82e8-9dc7-410c-9c5e-81698604ab2c, animationGroupId: 6b29a379-57d5-482d-a4a9-961dbace148f, generationSize: 76 }
+      provenance:
+        characterId: "a1da82e8-9dc7-410c-9c5e-81698604ab2c"
+        animationGroupId: "6b29a379-57d5-482d-a4a9-961dbace148f"
+        generationSize: 76
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "3d53d06c-72bd-45a6-a605-9c200781e09d", w: "4f975fba-7952-4d5c-8582-ae9235232c32", se: "2be28b82-41d7-49d5-bbf0-a09c43f13000", sw: "16286937-0fff-434b-b47f-39340f391c19" }, gaze: { e: "ed3f5608-4c56-43e3-b1ed-fcb492afdd2f", w: "1e8e477a-51e3-42d7-ad16-faf11c47607c", se: "39780efa-6aab-43c9-b8cc-bb0898cdb06d", sw: "929dea74-4787-420d-87cb-6f55b498430c" } } }
     provenance:
       characterId: a1da82e8-9dc7-410c-9c5e-81698604ab2c
       animationGroupId: astra-caped-walk-repair
@@ -310,9 +405,18 @@ characters:
     actionStrip:
       path: characters/agent.codex.gpt56sol/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 69, south-west: 69 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "0509dbf8-5163-4e02-a5dd-97ec3a757def", sw: "13fda14a-f494-4221-81b2-92b59d41365b" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [61, 48], w: [23, 47], se: [50, 54], sw: [23, 50] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [68, 46], w: [36, 49], se: [49, 55], sw: [44, 54] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: c3424b1d-2a37-47db-bc9a-dfb88bf53885, animationGroupId: b9ee8a17-e595-4302-b0a2-a721331d163b, generationSize: 128 }
+      provenance:
+        characterId: "c3424b1d-2a37-47db-bc9a-dfb88bf53885"
+        animationGroupId: "b9ee8a17-e595-4302-b0a2-a721331d163b"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "d3d0018c-75a7-4e44-948f-6ec1a47c8ff6", w: "d2fe3fd1-87ee-4b05-9c47-df883e05f8f9", se: "d2f06dcf-3437-4ac9-89f1-934c0cc362b7", sw: "932d670b-f99d-4eb2-b552-6350039cf252" } } }
     portraitCrop: { x: 26, y: 13, w: 40, h: 34 }
     provenance: { characterId: c3424b1d-2a37-47db-bc9a-dfb88bf53885 }
     palette_layer: codex
@@ -341,9 +445,18 @@ characters:
     actionStrip:
       path: characters/agent.codex.gpt56terra/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 65, south-west: 65 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "7875318d-cf4d-4173-8801-e10669de3dfa", sw: "7a62500d-7125-4a42-a95f-e5e38a204155" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [58, 48], w: [28, 46], se: [50, 52], sw: [25, 47] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [56, 50], w: [37, 50], se: [48, 54], sw: [45, 51] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: c4799a67-269a-42e3-bd30-030d5c01bc3f, animationGroupId: c693a6b6-9f16-47a8-8378-a33c14585b63, generationSize: 116 }
+      provenance:
+        characterId: "c4799a67-269a-42e3-bd30-030d5c01bc3f"
+        animationGroupId: "c693a6b6-9f16-47a8-8378-a33c14585b63"
+        generationSize: 116
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "ba55f352-b063-4c74-974c-0433b2abf41b", w: "55767b98-a90d-458f-bb75-9792f21c17d4", se: "3e512c16-9d07-4219-b305-33888093bf29", sw: "4409cf6d-52e2-49e8-bdec-5752e6f78e24" } } }
     portraitCrop: { x: 28, y: 14, w: 36, h: 32 }
     provenance: { characterId: c4799a67-269a-42e3-bd30-030d5c01bc3f }
     palette_layer: codex
@@ -374,9 +487,18 @@ characters:
     actionStrip:
       path: characters/agent.codex.gpt56luna/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 69, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "eabff481-02df-40ad-9073-e7c9483e06a7", sw: "99a939af-3809-4102-a2ac-184e9d92b32e" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [58, 48], w: [31, 47], se: [51, 52], sw: [31, 50] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [59, 46], w: [38, 48], se: [50, 53], sw: [44, 52] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: 4c14cc02-74fc-48bc-8968-d4594c2ae150, animationGroupId: c4039946-9cc6-47e0-9f09-393c0c33572c, generationSize: 120 }
+      provenance:
+        characterId: "4c14cc02-74fc-48bc-8968-d4594c2ae150"
+        animationGroupId: "c4039946-9cc6-47e0-9f09-393c0c33572c"
+        generationSize: 120
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "c150b335-8e45-49c4-a2d5-e5027a5640e4", w: "34d28e8f-8eac-4dda-a12f-fe2e46604c9f", se: "5c8a6550-4cee-4e9c-9a12-52c974cabb98", sw: "0698be6d-47fe-4121-aeef-fa2d4cc76a0f" } } }
     portraitCrop: { x: 29, y: 14, w: 34, h: 36 }
     provenance: { characterId: 4c14cc02-74fc-48bc-8968-d4594c2ae150 }
     palette_layer: codex
@@ -404,9 +526,19 @@ characters:
     actionStrip:
       path: characters/agent.codex.gpt54/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 67, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "3c70de3a-ec14-4c37-ae2e-e256bc728711", sw: "ca51c59d-f244-46e0-a53e-ac91214212ca" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [54, 50], w: [33, 48], se: [49, 55], sw: [29, 51] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [52, 51], w: [40, 51], se: [47, 56], sw: [48, 53] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [45, 34], w: [43, 31], se: [40, 33], sw: [38, 30] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: a3960653-9e68-42f3-9569-82b7974477b3, animationGroupId: d22e1092-ad71-497d-8fa5-d2df4f1b08ec, generationSize: 116 }
+      provenance:
+        characterId: "a3960653-9e68-42f3-9569-82b7974477b3"
+        animationGroupId: "d22e1092-ad71-497d-8fa5-d2df4f1b08ec"
+        generationSize: 116
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "745347fc-310a-475e-afe1-24d68003eda3", w: "4d93f3a8-8c50-4ff0-abb3-2ef58d63856c", se: "e4dee400-ad5c-4194-85ab-9427389011c9", sw: "af5111ab-47ef-44a2-bb08-45e45d00b793" }, gaze: { e: "7f135c39-f42f-4e55-b835-b7c8c44d1f06", w: "002982ec-8f3c-4d7e-9f99-5f00d996651f", se: "61cf165c-2533-4c2d-afb2-06e05d29bd05", sw: "afb94189-626b-4302-ba4c-39a75a107626" } } }
     portraitCrop: { x: 30, y: 16, w: 34, h: 30 }
     provenance: { characterId: a3960653-9e68-42f3-9569-82b7974477b3 }
     palette_layer: codex
@@ -434,9 +566,18 @@ characters:
     actionStrip:
       path: characters/agent.codex.gpt53spark/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 68, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "ae09c681-5eb6-4cb9-87cc-59eadc961c26", sw: "6462d18b-34bd-4e4e-8cc3-32d5233ed355" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [56, 48], w: [32, 48], se: [50, 54], sw: [30, 50] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [55, 50], w: [39, 50], se: [48, 55], sw: [45, 53] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: fbc5f021-cf8a-45de-8fc0-bf2b3497c134, animationGroupId: baaa42f9-f2a6-4b14-a294-5840dacf0060, generationSize: 108 }
+      provenance:
+        characterId: "fbc5f021-cf8a-45de-8fc0-bf2b3497c134"
+        animationGroupId: "baaa42f9-f2a6-4b14-a294-5840dacf0060"
+        generationSize: 108
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "5ea91d42-8b7c-4395-a589-15bc694c640b", w: "f78a48d0-f489-47d0-9ad0-bf676aafb82b", se: "2f0b48ea-eb62-41b0-91ee-8dad271852bb", sw: "6049f241-186a-4b59-8eb8-21b50511cf63" } } }
     portraitCrop: { x: 31, y: 16, w: 32, h: 32 }
     provenance: { characterId: fbc5f021-cf8a-45de-8fc0-bf2b3497c134 }
     palette_layer: codex
@@ -464,9 +605,19 @@ characters:
     actionStrip:
       path: characters/agent.claude.base/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 65, south-west: 66 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "f07c2768-d19a-4d4b-810b-ee921432e1a5", sw: "ed6d8330-0636-4e6c-a55d-bc28c945c481" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [55, 48], w: [32, 46], se: [51, 53], sw: [27, 51] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [55, 46], w: [40, 50], se: [50, 54], sw: [45, 52] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [47, 35], w: [40, 31], se: [43, 33], sw: [36, 29] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: f38d99a1-4cf7-4cca-aaaf-120737e6fdee, animationGroupId: f67f8ca1-def9-4f36-b0ed-81792870ad21, generationSize: 112 }
+      provenance:
+        characterId: "f38d99a1-4cf7-4cca-aaaf-120737e6fdee"
+        animationGroupId: "f67f8ca1-def9-4f36-b0ed-81792870ad21"
+        generationSize: 112
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "55ea47dd-164c-4dfe-8a37-3d58b1807e83", w: "4a48d198-c5d5-4b0b-9b08-8abf42bfc528", se: "7d3fdbb2-d91d-4d1d-beb0-e44e2ea492ea", sw: "92a745ea-b18a-4552-a7f2-92a9c0704b7b" }, gaze: { e: "1faab677-9eb6-4e4d-9cd4-a458e4012160", w: "748f2fff-8e94-48dc-9208-3b2dc5ac5d05", se: "35a764a3-921b-4e97-a1ad-62477728710d", sw: "837f8f8a-2edf-4487-bd63-6203d063bbea" } } }
     portraitCrop: { x: 30, y: 13, w: 34, h: 34 }
     provenance: { characterId: f38d99a1-4cf7-4cca-aaaf-120737e6fdee }
     palette_layer: claude
@@ -491,9 +642,19 @@ characters:
     actionStrip:
       path: characters/agent.codex.base/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 65, south-west: 65 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "cf75d33a-e4a0-4282-b19f-263e9e88f085", sw: "da090761-f19c-4c7a-a117-d8489eed917e" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [57, 49], w: [30, 46], se: [51, 54], sw: [31, 51] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [60, 46], w: [37, 48], se: [50, 55], sw: [43, 53] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [48, 34], w: [39, 32], se: [44, 36], sw: [38, 32] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: 5791ece8-3708-4431-86a4-31c5d5314777, animationGroupId: 73e38688-610a-47c5-b4bc-d7d1f04b0588, generationSize: 104 }
+      provenance:
+        characterId: "5791ece8-3708-4431-86a4-31c5d5314777"
+        animationGroupId: "73e38688-610a-47c5-b4bc-d7d1f04b0588"
+        generationSize: 104
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "1b6e825e-14d9-444f-8ed0-557c77967a7e", w: "39186903-a4d4-4214-9052-62b352bb72b0", se: "60985fbe-89e7-4c00-a0d6-208fb8a2dfbf", sw: "c7d3b90d-1a7a-4709-9b38-61d8a5a82e45" }, gaze: { e: "ee84290d-9c67-4182-9d30-f1cf0d67594e", w: "a0915436-37e4-48de-bdf3-797b60721f59", se: "195cb6e8-0f96-4c8d-b6c4-44390682ee29", sw: "0ee20648-264b-4e90-b3bb-3869c2c89428" } } }
     portraitCrop: { x: 30, y: 19, w: 32, h: 32 }
     provenance: { characterId: 5791ece8-3708-4431-86a4-31c5d5314777 }
     palette_layer: codex
@@ -521,6 +682,19 @@ characters:
     generationMode: pro
     animations: [walk, breathing-idle]
     animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.gemini.base/actions.png
+      cell: 92
+      groups:
+        wait: { rows: [0, 2], hold: 2, directions: [se, e, w, sw] }
+        sit: { rows: [3, 4], hold: 4, seatLine: { south-east: 65, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "823e6d4b-ad33-482a-afa7-119e70f16fc5", sw: "bd65ba92-f772-4d70-b360-f2acf482e1b1" } }, directions: [se, sw] }
+        strike: { rows: [5, 10], hold: 10, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [55, 50], w: [33, 47], se: [51, 54], sw: [31, 50] } }
+        tinker: { rows: [11, 16], hold: 11, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [56, 47], w: [39, 51], se: [50, 55], sw: [45, 54] } }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "33e0d69e-2f4f-411e-91cc-163c216017c8"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "871ddcd9-3b43-4e2a-bac2-5318ddf7c00b", w: "b152c9c2-1302-4298-a085-296ac192db92", se: "1a735acd-b0e2-4d72-8f0a-af89204ea097", sw: "b6d99ea2-c882-4293-b5cf-a5bd41fce087" } } }
     portraitCrop: { x: 30, y: 15, w: 32, h: 32 }
     provenance: { characterId: 33e0d69e-2f4f-411e-91cc-163c216017c8 }
     palette_layer: gemini
@@ -551,9 +725,18 @@ characters:
     actionStrip:
       path: characters/agent.kimi.base/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 65, south-west: 65 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "ea151ec1-01e0-4611-a777-483d5a1d7e02", sw: "800f486d-e9e5-4645-bfca-92a551551f22" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [56, 50], w: [32, 48], se: [51, 54], sw: [32, 51] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [59, 49], w: [38, 50], se: [58, 51], sw: [43, 52] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: d52fcc0a-ff5d-4435-9b53-271fb3d72ff1, animationGroupId: fe969744-d2e6-43a5-bc4d-da3ae48a7c1a, generationSize: 108 }
+      provenance:
+        characterId: "d52fcc0a-ff5d-4435-9b53-271fb3d72ff1"
+        animationGroupId: "fe969744-d2e6-43a5-bc4d-da3ae48a7c1a"
+        generationSize: 108
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "ae2d635f-6ba7-4ad2-9203-4ff3b099e81a", w: "feba7e8e-afea-4ae5-b273-e95723099da9", se: "d5992f22-36ca-4929-8777-cac2c45290d9", sw: "ce66eebe-40a2-4e8f-a395-94cf45d7c729" } } }
     portraitCrop: { x: 31, y: 17, w: 32, h: 32 }
     provenance: { characterId: d52fcc0a-ff5d-4435-9b53-271fb3d72ff1 }
     palette_layer: kimi
@@ -583,9 +766,18 @@ characters:
     actionStrip:
       path: characters/agent.deepseek.reasoner/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 66, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "0b67cdfb-0de3-4af1-bcd6-f52ef2df9478", sw: "910fa1eb-b03e-4f98-852c-85b60fac2a19" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [57, 44], w: [34, 45], se: [51, 48], sw: [42, 48] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [55, 46], w: [36, 47], se: [49, 49], sw: [44, 49] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: 52c6aee3-fdf6-42a4-b5f5-8851b0145094, animationGroupId: 08784557-f6ca-4c25-bbd3-34dd605b4ad1, generationSize: 140 }
+      provenance:
+        characterId: "52c6aee3-fdf6-42a4-b5f5-8851b0145094"
+        animationGroupId: "08784557-f6ca-4c25-bbd3-34dd605b4ad1"
+        generationSize: 140
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "989b9787-6c4a-44cd-bbf3-ba2511347fe1", w: "ce26c64a-2413-4eb5-b9c5-1b0fdafa934f", se: "155a0df6-8b02-4d12-b809-ffd771405b1a", sw: "7bf6a566-90a2-4135-98d5-3b1a63c2ac47" } } }
     portraitCrop: { x: 30, y: 12, w: 34, h: 30 }
     portraitFace: { x: 47, y: 22 }
     provenance: { characterId: 52c6aee3-fdf6-42a4-b5f5-8851b0145094 }
@@ -617,9 +809,17 @@ characters:
     actionStrip:
       path: characters/agent.deepseek.pro/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        strike: { rows: [7, 12], hold: 12, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [60, 45], w: [30, 46], se: [63, 47], sw: [29, 47] } }
+        tinker: { rows: [13, 18], hold: 13, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [58, 46], w: [32, 48], se: [61, 49], sw: [30, 48] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: b43a2e2e-8e6e-40a0-ba6c-b9d4514ffb57, animationGroupId: 0157e4c7-afb9-45df-a655-dcde185657c0, generationSize: 136 }
+      provenance:
+        characterId: "b43a2e2e-8e6e-40a0-ba6c-b9d4514ffb57"
+        animationGroupId: "0157e4c7-afb9-45df-a655-dcde185657c0"
+        generationSize: 136
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "fb7cd0a3-3804-4362-9286-99422dd4aed5", w: "80d29bd4-1bda-491f-92c7-acdfe2f9d1f8", se: "b255d46b-f06e-46a7-8739-3c89161ac0be", sw: "47842fbf-f8e8-4a8a-9ce4-baf15092d570" } } }
     portraitCrop: { x: 29, y: 12, w: 34, h: 32 }
     portraitFace: { x: 45, y: 25 }
     provenance: { characterId: b43a2e2e-8e6e-40a0-ba6c-b9d4514ffb57 }
@@ -647,9 +847,18 @@ characters:
     actionStrip:
       path: characters/agent.deepseek.flash/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 67, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "4f14e5f1-85a5-41a8-974c-dda08b64a34d", sw: "a3a69d59-1643-4b70-96d8-ffab20f1ada8" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [58, 43], w: [27, 42], se: [52, 48], sw: [41, 47] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [56, 45], w: [30, 45], se: [62, 42], sw: [43, 48] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: 56645a06-9fff-45e5-8929-6f2bbd54a2c6, animationGroupId: 7da12e76-7616-4a25-8d13-4b3960d532e6, generationSize: 76 }
+      provenance:
+        characterId: "56645a06-9fff-45e5-8929-6f2bbd54a2c6"
+        animationGroupId: "7da12e76-7616-4a25-8d13-4b3960d532e6"
+        generationSize: 76
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "51e68404-3a79-4f26-a22a-4c85708b03ea", w: "df4b6151-dcd8-41bf-979f-0fb639036593", se: "bd8d03c0-345d-4ff5-8509-c7794ea57b75", sw: "653ec1db-0064-4d45-8e48-9a4fdf5041b9" } } }
     provenance: { characterId: 56645a06-9fff-45e5-8929-6f2bbd54a2c6, generationSize: 76, generationMode: pro }
     tool: create_character
     prompt: "DeepSeek Flash hooded forest scout, deep forest-green fitted leather armor with bronze trim, short hooded cloak with glowing teal rune edging, single curved dagger sheathed at hip, leather bracers and belt pouch, dark green leggings and light boots, lean agile ready stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no bow, no plate armor, 8-direction pixel art"
@@ -679,9 +888,18 @@ characters:
     actionStrip:
       path: characters/agent.deepseek.flash.high/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 66, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "d9e90680-e138-4dc4-88a9-6bfdbbbaefb6", sw: "6013b008-3d10-4909-8e2e-f6bd981d69a8" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [57, 44], w: [34, 45], se: [50, 48], sw: [41, 46] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [55, 46], w: [36, 46], se: [48, 49], sw: [43, 48] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: b2bad297-e8c2-4a73-9a20-266ce33fb26c, animationGroupId: 86d4c084-6cc9-4381-b01a-363278172051, generationSize: 76 }
+      provenance:
+        characterId: "b2bad297-e8c2-4a73-9a20-266ce33fb26c"
+        animationGroupId: "86d4c084-6cc9-4381-b01a-363278172051"
+        generationSize: 76
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "67d10a80-0b79-461e-ac7d-7648313df50e", w: "dac8070f-9208-40fc-87aa-fab683869dec", se: "1df91bc2-8061-4855-aa00-f338924fc031", sw: "10c40b15-ad0e-4703-90d6-c57c168b3c51" } } }
     provenance: { characterId: b2bad297-e8c2-4a73-9a20-266ce33fb26c, generationSize: 76, generationMode: pro }
     tool: create_character
     prompt: "DeepSeek Flash hooded forest scout archer, deep forest-green fitted leather armor with bronze trim, short hooded cloak with glowing teal rune edging, compact recurve shortbow held in one hand, small arrow quiver at hip, curved dagger sheathed at belt, leather bracers, dark green leggings and light boots, lean agile ready stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no plate armor, 8-direction pixel art"
@@ -711,9 +929,17 @@ characters:
     actionStrip:
       path: characters/agent.deepseek.flash.xhigh/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        strike: { rows: [7, 12], hold: 12, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [57, 43], w: [33, 45], se: [51, 48], sw: [42, 48] } }
+        tinker: { rows: [13, 18], hold: 13, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [55, 45], w: [35, 47], se: [49, 49], sw: [44, 49] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: ed46dccd-92ae-4be0-be3a-cb08051d770e, animationGroupId: 89bbe8fe-e17d-4513-bcf6-eec764e2c8e0, generationSize: 76 }
+      provenance:
+        characterId: "ed46dccd-92ae-4be0-be3a-cb08051d770e"
+        animationGroupId: "89bbe8fe-e17d-4513-bcf6-eec764e2c8e0"
+        generationSize: 76
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "8682dc5f-54a9-4b17-ae07-1832959a2290", w: "725a3ed3-c200-4fcb-a6d8-62eccbf10863", se: "8abda427-2e2f-4d61-9e29-225dc4048abb", sw: "42eb39d1-f8b3-4595-ba5e-c685eb1d85a9" } } }
     provenance: { characterId: ed46dccd-92ae-4be0-be3a-cb08051d770e, generationSize: 76, generationMode: pro }
     tool: create_character
     prompt: "DeepSeek Flash hooded forest ranger, deep forest-green layered leather armor with ornate bronze trim, hooded cloak with glowing teal rune edging, large ornate recurve longbow held ready in hand, full arrow quiver at hip, leather bracers and pauldron, dark green leggings and boots, commanding seasoned ranger stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no plate armor, 8-direction pixel art"
@@ -753,6 +979,19 @@ characters:
     generationMode: pro
     animations: [walk, breathing-idle]
     animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.grok.base/actions.png
+      cell: 92
+      groups:
+        wait: { rows: [0, 2], hold: 2, directions: [se, e, w, sw] }
+        sit: { rows: [3, 4], hold: 4, seatLine: { south-east: 66, south-west: 65 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "1a6be3d1-0780-4a42-97c1-477b09ace9bf", sw: "dce9a19a-4c0f-43ac-aaff-1239afe7b725" } }, directions: [se, sw] }
+        strike: { rows: [5, 10], hold: 10, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [56, 49], w: [32, 46], se: [52, 52], sw: [29, 51] } }
+        tinker: { rows: [11, 16], hold: 11, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [57, 46], w: [39, 48], se: [51, 53], sw: [43, 51] } }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "831e8a22-50bc-4e45-985d-8c32b8e81f6b"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "c361c2fc-dde4-428c-80f3-74198507048f", w: "f1a6118c-0ab7-4a0d-97bd-962a490d72b7", se: "fbe5c8f8-b26c-45a1-bd01-ff947285424b", sw: "43db4189-7547-4bc5-a11b-16c4462d8cc7" } } }
     portraitCrop: { x: 30, y: 14, w: 32, h: 30 }
     provenance: { characterId: 831e8a22-50bc-4e45-985d-8c32b8e81f6b, generationSize: 76, generationMode: pro }
     palette_layer: grok
@@ -783,9 +1022,18 @@ characters:
     actionStrip:
       path: characters/agent.grok.composer/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 67, south-west: 66 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "9457aad8-1281-4213-8282-f0c26ac04974", sw: "f1b3e257-a955-4a68-a202-518f001173ac" }, handEdit: "7.1 fix: torso shortened 3 rows (cell rows 54-56, se and sw, every channel) and the seat line lowered 2 px, so the body reads seated on the bench, not standing behind it" }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [58, 49], w: [29, 47], se: [52, 53], sw: [30, 50] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [60, 47], w: [37, 49], se: [51, 54], sw: [44, 52] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: f70b6f4c-b250-40bd-b1ad-fcb1a16a17a2, animationGroupId: 9f508b8c-456c-428f-a931-f64cfb3a213a, generationSize: 116 }
+      provenance:
+        characterId: "f70b6f4c-b250-40bd-b1ad-fcb1a16a17a2"
+        animationGroupId: "9f508b8c-456c-428f-a931-f64cfb3a213a"
+        generationSize: 116
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "16bd8139-4428-4a73-9544-07789b6edfc0", w: "14b6a6b0-5aea-4067-b072-137ee3b88a9e", se: "deca868e-8d33-4574-a56a-4b5ec1cbe93b", sw: "b7876dd9-5818-4c75-9800-2736cf22612e" } } }
     portraitCrop: { x: 30, y: 15, w: 32, h: 30 }
     provenance: { characterId: f70b6f4c-b250-40bd-b1ad-fcb1a16a17a2, generationSize: 76, generationMode: pro }
     palette_layer: grok
@@ -822,9 +1070,18 @@ characters:
     actionStrip:
       path: characters/agent.zai.glm/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 66, south-west: 66 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "df88b9f5-ac47-4796-b6d3-2dd4cc43fb92", sw: "ef5a1995-259e-4caa-809b-c5b50b79ed18" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [57, 48], w: [29, 46], se: [52, 53], sw: [29, 50] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [55, 50], w: [38, 49], se: [50, 54], sw: [43, 51] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: f64e33dc-6476-4c03-aac3-722e32a82088, animationGroupId: c470a518-e4fd-4ec0-92f9-af78e82a53cf, generationSize: 76 }
+      provenance:
+        characterId: "f64e33dc-6476-4c03-aac3-722e32a82088"
+        animationGroupId: "c470a518-e4fd-4ec0-92f9-af78e82a53cf"
+        generationSize: 76
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "bf849bd4-5f09-4515-bbf2-4e8feb81fe36", w: "39c48890-44d0-407c-ab3e-e9b0292aa653", se: "08a24785-73a2-4866-980b-1cd61251c5e5", sw: "a4a23c96-dd47-4a3c-90c7-01d49082e7c8" } } }
     portraitCrop: { x: 30, y: 17, w: 32, h: 32 }
     provenance: { characterId: f64e33dc-6476-4c03-aac3-722e32a82088, generationSize: 76, generationMode: pro }
     palette_layer: zai
@@ -855,9 +1112,18 @@ characters:
     actionStrip:
       path: characters/agent.zai.flash/actions.png
       cell: 92
-      groups: { read: { rows: [0, 3], hold: 3 } }
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 65, south-west: 66 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "970529c3-89d6-4048-b8e3-da4b50f4d566", sw: "49dfe4f7-09db-4bd7-a642-907d1d2fef17" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [56, 48], w: [31, 47], se: [51, 51], sw: [32, 51] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [58, 46], w: [33, 49], se: [58, 50], sw: [44, 52] } }
       grip: { hand: both, sheathe: true }
-      provenance: { characterId: f2b37456-ed34-4c67-84bf-f1ab93cf6f68, animationGroupId: 3d89ced6-3563-47c8-863a-45f4777376eb, generationSize: 76 }
+      provenance:
+        characterId: "f2b37456-ed34-4c67-84bf-f1ab93cf6f68"
+        animationGroupId: "3d89ced6-3563-47c8-863a-45f4777376eb"
+        generationSize: 76
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "27d82aad-ede9-4247-8641-a48e4b223009", w: "36a19ab2-9e0f-45df-a889-6398f9dfcc61", se: "5f3f2abc-0819-4927-be20-20061eb41806", sw: "37850530-8bfe-4d09-860c-f0f4b6c6bae5" } } }
     portraitCrop: { x: 31, y: 16, w: 32, h: 32 }
     provenance: { characterId: f2b37456-ed34-4c67-84bf-f1ab93cf6f68, generationSize: 76, generationMode: pro }
     palette_layer: zai
@@ -1000,6 +1266,17 @@ statusOverlays:
     size: 64
     anchor: [32, 36]
 
+  # 6.5 — the shared pixel pennant strip (PixelPennant.js): 4 frames of 24x16,
+  # five indexed tones (rim #3a2614, accent #d6a951, shade #8f6a2e, pole
+  # #4a3322, finial #e8c876) recoloured per accent at runtime; frame 1 = rest.
+  # Hand-authored (output/waking-isle/BuildingsB/pennant_strip.py), no spend.
+  - id: overlay.pennantStrip
+    tool: hand-authored
+    width: 96
+    height: 16
+    anchor: [1, 16]
+    assetPath: assets/sprites/overlays/pennant.strip.png
+
   - id: overlay.status.effortHigh
     tool: isometric_tile
     prompt: "flat ground decal viewed from directly above: THREE concentric ornate gold metal bands forming open elliptical rings with tiny glowing amber rune ticks on the bands, hollow transparent center, high reasoning effort marker, thin tile, rings only, no objects, no structures, no buildings, no medallion, no filled center, no floor tile, no filled disk"
@@ -1036,6 +1313,12 @@ buildings:
     materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
+    # 2.3 — occluder R = true height, B = surface code (face x 64 + h/4),
+    # baked by scripts/sprites/bake-surface-channel.mjs; the GPU reads B.
+    surfaceCode: true
+    # 6.3 — base.rooms.png: R = room index (1..N) on each room's glass,
+    # baked by scripts/sprites/bake-room-masks.mjs.
+    roomsSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.command }
     elevation: { base: 0, top: 240, unit: sprite-px }
     emissive:
@@ -1076,6 +1359,41 @@ buildings:
         height: 240
         anchor: [199, 164]
         materialClass: stone
+      # 6.2 — the lifted gate (visible leaf y 116–193 = 78 px, 1.2× the 1:1
+      # body; the leaf bottom was pushed 1 row down over the threshold in
+      # base.png, its sidecars and this strip; the porch
+      # front, crest and arch were raised 10 px by a row remap in base.png
+      # and its sidecars, the drum window kept) as a closed / ajar / open
+      # strip: leaves swing in, the dark hall #1a1310 over a stepped warm
+      # floor on the C1 emissive ramp. Frame 0 is the base crop. Open while
+      # Command has a working visitor (V8); one-shot on arrival.
+      gate:
+        tool: hand-authored
+        prompt: "Command gate closed / ajar / open: the base oak leaves swung inward, dark hall #1a1310 with a stepped warm floor on the C1 emissive ramp; authored, not generated"
+        width: 120
+        height: 80
+        frames: 3
+        frameW: 40
+        frameH: 80
+        anchor: [131, 198]
+        fps: 8
+        staticFrame: 0
+        gate: door.command
+        oneShot: true
+        restIsBase: true
+        materialClass: timber
+      # 6.1 / V4 — the two gate braziers' flames cycle their own authored
+      # colours (EmitterCycle), rising in 4-px bands, while the village lamps
+      # are lit (`lamps`, like the Pharos lens): fixtures of the lamp course
+      # that never read agent state, so by day an empty Command is its
+      # authored base. Mask only: never drawn as art.
+      braziers:
+        tool: hand-authored
+        prompt: "cycle mask: the baked flame texels of the two gate braziers; authored, not generated"
+        width: 360
+        height: 240
+        anchor: [199, 164]
+        cycle: { gate: lamps, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.3333, hz: 6 }
     # The two gate braziers (architectural fires) and the gold finial/crest.
     emitters:
       torch: [94, 180]
@@ -1090,8 +1408,8 @@ buildings:
 
   # ── HERO: Harbor Lighthouse (watchtower) ──
   # Single-image (was composeGrid [4,3]); narrow/tall Pharos per the building
-  # style contract. Beacon flame is the procedural _drawWatchtowerFire +
-  # beacon.png overlay anchored at the dark lantern crown (144,68).
+  # style contract. The lamp is the `beacon` layer seated in the lantern glass
+  # (6.1: drawn by partDrawsFor on both backends; the `lens` cycle steps it).
   # QAWorld F8 — the baked blue grid-tile plinth is cleared to alpha (the
   # terrain/coast bakes paint the ground around it); a hand-authored 7 px
   # limestone footing on the tower's own stone colours replaces it, the stair
@@ -1105,6 +1423,9 @@ buildings:
     anchor: [144, 320]
     materialClass: stone
     emissiveSidecar: true
+    occluderSidecar: true
+    surfaceCode: true
+    roomsSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.watchtower }
     elevation: { base: 0, top: 384, unit: sprite-px }
     emissive:
@@ -1116,18 +1437,38 @@ buildings:
     splitForOcclusion: true
     horizonY: 300
     layers:
+      # 6.1 — the Pharos lamp: the original generated 64x64 beacon.png cropped
+      # to its flame and bowl (cols 23-40, rows 5-29; the pedestal dropped) and seated on the
+      # lantern floor inside the glass; the texels that fell on the lantern
+      # roof were cleared so the roof stays in front. Static art (the old
+      # smooth-sine alpha pulse is gone, V4); a fixture, so on the GPU it
+      # emits through no occupancy gate (M22).
       beacon:
         tool: map_object
         prompt: "isolated warm lantern flame for a lighthouse crown, orange amber pixel fire with a bright golden core and soft warm halo, thin tile, transparent background only, no ground tile, no square base, no platform, no cube block, no modern beam, empty transparent corners"
-        size: 64
-        anchor: [144, 68]
-        animation: pulse
+        width: 18
+        height: 25
+        anchor: [145, 84]
+        fixture: true
         materialClass: fire
         emissive:
           strength: 1
           sources:
             - { id: emissive.watchtower.beacon, kind: fire, geometry: authored-albedo, strength: 1 }
         occluder: { mode: alpha-silhouette, strength: 0.35 }
+      # 6.1 / V4 (OE-1) — the lens cycle mask over the lamp's flame texels
+      # (R = height up the flame). The flame's own colours in 5 luma courses
+      # step up it at 4 Hz, only while the village lamps are lit
+      # (lampsLitAt); an ambient fixture that never reads agent state (M22).
+      # By day and under reduced motion the lamp is the authored art.
+      lens:
+        tool: hand-authored
+        prompt: "cycle mask: the flame texels of beacon.png ordered by height; authored, not generated"
+        width: 18
+        height: 25
+        anchor: [145, 84]
+        fixture: true
+        cycle: { gate: lamps, art: beacon, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.25, rampStops: 6, heightFromMask: true, hz: 4 }
     emitters:
       torch: [144, 68]
     # Phase 2.5.5: light-reflection compositing reads these to additively
@@ -1150,6 +1491,9 @@ buildings:
     anchor: [176, 204]
     materialClass: timber
     emissiveSidecar: true
+    occluderSidecar: true
+    surfaceCode: true
+    roomsSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.harbor }
     elevation: { base: 0, top: 232, unit: sprite-px }
     emissive:
@@ -1167,6 +1511,58 @@ buildings:
     lightColor: '#ffd37a'
     lightRadius: 96
     lightOverlay: 'atmosphere.light.lantern-glow'
+    layers:
+      # 6.1 — the loading crane hoists: the hook block and crate ride up and
+      # down 6 px on the chain (links scroll as it winds), 4 fps, only while
+      # the Harbor has a working visitor (V8). Frame 0 is the base crop.
+      crane:
+        tool: hand-authored
+        prompt: "Harbor crane hoist strip: the base chain, hook block and crate raised 0/2/4/6/4/2 px; authored, not generated"
+        width: 168
+        height: 70
+        frames: 6
+        frameW: 28
+        frameH: 70
+        anchor: [294, 128]
+        fps: 4
+        staticFrame: 0
+        gate: work.harbor
+        restIsBase: true
+        materialClass: timber
+      # 6.2 — the harbour-office door on the east house's deck: closed /
+      # ajar / open onto the dark hall and a warm floor while it works.
+      door:
+        tool: hand-authored
+        prompt: "Harbor office door closed / ajar / open, hinged left, dark hall #1a1310 over a stepped warm floor; authored, not generated"
+        width: 42
+        height: 24
+        frames: 3
+        frameW: 14
+        frameH: 24
+        anchor: [244, 155]
+        fps: 8
+        staticFrame: 0
+        gate: door.harbor
+        oneShot: true
+        restIsBase: true
+        materialClass: timber
+      # 6.7 (M16) — Chronicle dressing: festival bunting strung between two
+      # outlined timber masts with brass knobs on the middle pier, a pale rope
+      # over a dark under-line, one 6x10 swallow-tailed pennant of the 6.5
+      # family per verified release (frame k = k + 1 pennants, evenly spaced,
+      # max 5), sized to read at z2. A static fact from the Chronicle ledger:
+      # no clock, no gate, no light.
+      bunting:
+        tool: hand-authored
+        prompt: "Harbor release bunting strip: two outlined timber masts with brass knobs and a sagging pale rope hung with 1..5 gold swallow-tailed pennants (rim, accent, shade, finial tones of pennant.strip.png); authored, not generated"
+        width: 280
+        height: 36
+        frames: 5
+        frameW: 56
+        frameH: 36
+        anchor: [126, 184]
+        dressing: true
+        materialClass: timber
 
   # ── HERO: Clock Observatory ── (single-image; was composeGrid [3,2])
   # Blank clock dial on the sprite; the animated hands are drawn procedurally
@@ -1181,6 +1577,9 @@ buildings:
     # 4.6 — authored lit-window sidecar: only the dark glass of the three
     # windows, stepped amber rim / pale core; gated by NightOccupancyGate.
     emissiveSidecar: true
+    occluderSidecar: true
+    surfaceCode: true
+    roomsSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.observatory }
     elevation: { base: 0, top: 288, unit: sprite-px }
     emissive:
@@ -1198,6 +1597,24 @@ buildings:
     lightSource: [149, 107]
     lightColor: '#9fd1ff'
     lightRadius: 58
+    layers:
+      # 6.2 — the arched front door: closed / ajar / open while the
+      # Observatory has a working visitor (V8), one-shot on arrival.
+      door:
+        tool: hand-authored
+        prompt: "Observatory front door closed / ajar / open, dark hall #1a1310 over a stepped warm floor; authored, not generated"
+        width: 102
+        height: 54
+        frames: 3
+        frameW: 34
+        frameH: 54
+        anchor: [168, 253]
+        fps: 8
+        staticFrame: 0
+        gate: door.observatory
+        oneShot: true
+        restIsBase: true
+        materialClass: timber
 
   # ── HERO: Portal Gate ── (single-image; was composeGrid [3,2], converted losslessly)
   - id: building.portal
@@ -1207,6 +1624,8 @@ buildings:
     height: 208
     anchor: [156, 182]
     materialClass: glass-rune
+    occluderSidecar: true
+    surfaceCode: true
     atlasFrame: { atlas: world-pilot, key: building.portal }
     elevation: { base: 0, top: 208, unit: sprite-px }
     emissive:
@@ -1222,13 +1641,25 @@ buildings:
         prompt: "isolated swirling violet portal vortex flame, arcane purple energy spiral with magenta core and faint gold rune sparks, thin tile, transparent background only, no ground tile, no square base, no platform, no cube block, empty transparent corners"
         size: 64
         anchor: [144, 60]
-        animation: pulse
         materialClass: glass-rune
         emissive:
           strength: 1
           sources:
             - { id: emissive.portal.vortex, kind: rune, geometry: authored-albedo, strength: 1 }
         occluder: { mode: none, strength: 0 }
+      # 6.1 / V4 (OE-1) — the Portal runes cycle mask: the arch's vortex and
+      # rune-ring texels (dark outlines and the ring's white eye left out).
+      # R orders them around the ring from the front, then up the vortex, so
+      # the vortex's own colours (6 luma courses) chase round the ring and
+      # rise through the arch at 6 Hz — only while the Portal has a working
+      # visitor (work.portal, isWorkingVisitor). Mask only: never drawn as art.
+      runes:
+        tool: hand-authored
+        prompt: "cycle mask: the portal arch's vortex and rune-ring texels, ordered around the ring then up the vortex; authored, not generated"
+        width: 312
+        height: 208
+        anchor: [156, 182]
+        cycle: { gate: work.portal, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.3333, rampStops: 6, heightFromMask: true, shearPx: 0, hz: 6 }
     emitters:
       sparkle: [144, 60]
       sparkle2: [120, 80]
@@ -1257,6 +1688,8 @@ buildings:
     materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
+    surfaceCode: true
+    roomsSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.forge }
     elevation: { base: 0, top: 232, unit: sprite-px }
     emissive:
@@ -1265,11 +1698,12 @@ buildings:
         - { id: emissive.forge.furnace, kind: fire, geometry: registry.windowRects, strength: 1 }
     occluder: { mode: alpha-silhouette, strength: 1 }
     emitters:
-      smoke: [183, 6]
       forgeEmber: [80, 150]
       forgeSpark: [104, 198]
       sparkle: [150, 165]
-    lightSource: [80, 165]
+    # 2.6 — the hearth light stands at the fire's base on the door threshold,
+    # so the 2.5D light loop lands its breathing courses on the street.
+    lightSource: [80, 186]
     lightColor: '#ff8a33'
     lightRadius: 80
     lightOverlay: 'atmosphere.light.fire-glow'
@@ -1286,6 +1720,50 @@ buildings:
         height: 232
         anchor: [128, 169]
         materialClass: stone
+      # 6.1 / V4 (OE-1) — the hearth cycle mask: the banked mask's fire texels
+      # only (warm, saturated; the fire-lit jamb stone is left out so the ramp
+      # is the 12 authored flame colours). While the Forge has a working
+      # visitor and its glow is above the banked ember, the fire's own colours
+      # step up the flame at 8 Hz (EmitterCycle); banked, idle or reduced
+      # motion shows the base art. Mask only: never drawn as art.
+      hearth:
+        tool: hand-authored
+        prompt: "cycle mask: the hearth fire texels of banked.png whose base colour is a saturated flame colour; authored, not generated"
+        width: 256
+        height: 232
+        anchor: [128, 169]
+        cycle: { gate: work.forge, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.3333, hz: 8 }
+      # 6.1 — a leather bellows at the hearth's left jamb, nozzle into the
+      # fire, pumping at 4 fps while the Forge has a working visitor; at rest
+      # it lies still (frame 0), a physical object in the yard.
+      bellows:
+        tool: hand-authored
+        prompt: "forge bellows strip: two oak boards and stepped leather pleats, the upper board swinging about the nozzle hinge; authored, not generated"
+        width: 112
+        height: 22
+        frames: 4
+        frameW: 28
+        frameH: 22
+        anchor: [57, 197]
+        fps: 4
+        staticFrame: 0
+        gate: work.forge
+        restIsBase: false
+        materialClass: timber
+      # 6.7 (M16) — Chronicle dressing: a timber billet rack along the right
+      # wall, earned by verified feat/fix commits: 2 / 4 / 6 iron billets at
+      # the ribbon (10) / flagship (100) / aurora (1000) tiers. Static, unlit.
+      billetRack:
+        tool: hand-authored
+        prompt: "Forge billet rack strip: a timber rack on the right wall's 2:1 slope with 2 / 4 / 6 iron billets stood on end behind a front rail; authored, not generated"
+        width: 54
+        height: 26
+        frames: 3
+        frameW: 18
+        frameH: 26
+        anchor: [211, 191]
+        dressing: true
+        materialClass: timber
 
   # ── STANDARD: Token Mine ──
   # 4.5 (aesthetic plan, D3) — re-authored on the Observatory grid: REST
@@ -1310,6 +1788,8 @@ buildings:
     # lanterns and tunnel glow take the reserved light ramp.
     emissiveFamily: cool
     occluderSidecar: true
+    surfaceCode: true
+    roomsSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.mine }
     elevation: { base: 0, top: 232, unit: sprite-px }
     emissive:
@@ -1326,6 +1806,25 @@ buildings:
     lightColor: '#ffb84d'
     lightRadius: 80
     lightOverlay: 'atmosphere.light.lantern-glow'
+    layers:
+      # 6.1 — the headframe sheave winds (spokes turn 11.25° per step, 8
+      # spokes, one 45° period over 4 frames) at 6 fps while the Mine has a
+      # working visitor (V8). Frame 0 is the base crop, so an empty Mine is
+      # its base.png exactly.
+      sheave:
+        tool: hand-authored
+        prompt: "Mine headframe sheave strip: the base wheel's own spokes resampled at 0/11.25/22.5/33.75 degrees in the wheel plane, rope kept in front; authored, not generated"
+        width: 88
+        height: 32
+        frames: 4
+        frameW: 22
+        frameH: 32
+        anchor: [87, 66]
+        fps: 6
+        staticFrame: 0
+        gate: work.mine
+        restIsBase: true
+        materialClass: timber
 
   # ── HERO: Task Board (Town Quest Board) ──
   # 4.5 (aesthetic plan, D3) — re-authored as a true-isometric board: REST
@@ -1349,6 +1848,8 @@ buildings:
     materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
+    surfaceCode: true
+    roomsSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.taskboard }
     elevation: { base: 0, top: 232, unit: sprite-px }
     emissive:
@@ -1369,6 +1870,43 @@ buildings:
     lightColor: '#ffb347'
     lightRadius: 80
     lightOverlay: 'atmosphere.light.fire-glow'
+    layers:
+      # 6.1 / 6.3 — each eave lantern IS one of the Task board's two rooms
+      # (base.rooms.png R=1 west, R=2 east): it burns while a working
+      # visitor (V8) holds that room, so N workers light min(N, 2). The slate
+      # day panes (M15) take the emissive sidecar's own pane hues, cycled in
+      # 3-px bands (frames 1–3 loop at 6 fps). Frame 0 is the base crop (the
+      # unlit lantern).
+      lanternWest:
+        tool: hand-authored
+        prompt: "Task board west lantern: unlit base crop, then three lit flame frames from the sidecar pane hues; authored, not generated"
+        width: 80
+        height: 30
+        frames: 4
+        frameW: 20
+        frameH: 30
+        anchor: [46, 68]
+        fps: 6
+        staticFrame: 0
+        loopFrom: 1
+        gate: room.taskboard.0
+        restIsBase: true
+        materialClass: timber
+      lanternEast:
+        tool: hand-authored
+        prompt: "Task board east lantern: unlit base crop, then three lit flame frames from the sidecar pane hues; authored, not generated"
+        width: 80
+        height: 30
+        frames: 4
+        frameW: 20
+        frameH: 30
+        anchor: [203, 138]
+        fps: 6
+        staticFrame: 0
+        loopFrom: 1
+        gate: room.taskboard.1
+        restIsBase: true
+        materialClass: timber
 
   # ── STANDARD: Lore Archive ──
   # 4.5 (aesthetic plan, D3) — re-authored on the Observatory grid: REST
@@ -1394,6 +1932,8 @@ buildings:
     materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
+    surfaceCode: true
+    roomsSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.archive }
     elevation: { base: 0, top: 240, unit: sprite-px }
     emissive:
@@ -1412,6 +1952,39 @@ buildings:
     lightColor: '#ffcf7a'
     lightRadius: 108
     lightOverlay: 'atmosphere.light.lantern-glow'
+    layers:
+      # 6.2 — the SE lancet door: closed / ajar / open while the Archive
+      # has a working visitor (V8), one-shot on arrival.
+      door:
+        tool: hand-authored
+        prompt: "Archive lancet door closed / ajar / open, dark hall #1a1310 over a stepped warm floor; authored, not generated"
+        width: 105
+        height: 93
+        frames: 3
+        frameW: 35
+        frameH: 93
+        anchor: [238.5, 211]
+        fps: 8
+        staticFrame: 0
+        gate: door.archive
+        oneShot: true
+        restIsBase: true
+        materialClass: timber
+      # 6.7 (M16) — Chronicle dressing: a brass reading lectern beside the
+      # door steps, earned by verified Chronicle records: an open book at the
+      # flagship tier (100), gilt pages and a crimson marker at aurora (1000).
+      # Static, unlit.
+      lectern:
+        tool: hand-authored
+        prompt: "Archive brass lectern strip: a brass reading stand on a stone foot with an open book; the second frame gilds the page edges and hangs a crimson ribbon marker; authored, not generated"
+        width: 24
+        height: 18
+        frames: 2
+        frameW: 12
+        frameH: 18
+        anchor: [279, 205]
+        dressing: true
+        materialClass: timber
 
 # ─── PROPS ───────────────────────────────────────────────────────────────────
 # Prop ids match the camelCase `type` field in IsometricRenderer.js
@@ -1542,8 +2115,7 @@ props:
   - id: prop.flowerCart
     tool: isometric_tile
     prompt: "wooden flower cart with bright blooms, painted wheels, isometric"
-    size: 64
-    displaySize: 32
+    size: 32
     anchor: [16, 24]
 
   - id: prop.noticePillar
@@ -1552,85 +2124,143 @@ props:
     size: 48
     anchor: [24, 45]
 
-  - id: prop.harborBoat
-    tool: isometric_tile
-    prompt: "commit cargo boat marker, dark hull, bright white sail with gold branch sigil, glowing sealed cargo crate, transparent background, isometric"
-    size: 64
-    anchor: [32, 32]
+  # prop.harborBoat retired to output/attic (3.8): the 64 px commit-boat marker
+  # lost its last code reference when commits began riding the stack hulls.
 
+  # 3.8 — every hull is a 5-frame roll strip at its on-screen size (scale 1):
+  # -3°, -1.5°, 0, +1.5°, +3° left to right, frame 2 the authored sprite, the
+  # rolled frames baked with cleanEdge and a 1-px waterline lip on every frame
+  # (`node scripts/sprites/bake-harbor-hulls.mjs`). `anchor` is the frame-local
+  # waterline pivot (the lip row). The seven class hulls were generated at
+  # display size (REST pixflux, hull palette as colour image, seeds below;
+  # ledger output/waking-isle/pixellab-ledger.jsonl); the stacks are the
+  # previous map-object art resampled to display size (area majority).
   - id: prop.harborShip.skiff
     tool: generated
-    prompt: "tiny old-school fantasy harbor skiff, one cream sail, dark wood hull, transparent background"
-    size: 64
-    anchor: [32, 50]
+    prompt: "tiny fantasy harbor skiff, one cream triangular sail, dark oak hull, isometric three-quarter view, pixel art, transparent background"
+    width: 155
+    height: 41
+    frames: 5
+    anchor: [15, 38]
+    masthead: [12, 1]
+    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 13, generationSize: 52x52, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
 
   - id: prop.harborShip.cutter
     tool: generated
-    prompt: "fantasy cutter ship, larger single mast, cream sail, dark wood hull, transparent background"
-    size: 72
-    anchor: [36, 56]
+    prompt: "small fantasy cutter sailboat, single mast, cream sail, dark oak hull, isometric three-quarter view, pixel art, transparent background"
+    width: 150
+    height: 47
+    frames: 5
+    anchor: [14, 45]
+    masthead: [14, 1]
+    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 11, generationSize: 64x64, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
 
   - id: prop.harborShip.sloop
     tool: generated
-    prompt: "old-school sailing sloop, two cream sails, polished wood hull, transparent background"
-    size: 84
-    anchor: [42, 66]
+    prompt: "fantasy sailing sloop, two cream sails, oak hull with ochre trim, isometric three-quarter view, pixel art, transparent background"
+    width: 280
+    height: 62
+    frames: 5
+    anchor: [28, 59]
+    masthead: [24, 1]
+    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 13, generationSize: 68x68, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
 
   - id: prop.harborShip.brigantine
     tool: generated
-    prompt: "fantasy merchant brigantine, multiple cream sails, stern cabin, transparent background"
-    size: 96
-    anchor: [48, 74]
+    prompt: "fantasy merchant brigantine, two masts of cream square sails, stern cabin, oak hull, isometric three-quarter view, pixel art, transparent background"
+    width: 340
+    height: 66
+    frames: 5
+    anchor: [33, 63]
+    masthead: [45, 2]
+    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 11, generationSize: 72x72, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
 
   - id: prop.harborShip.galleon
     tool: generated
-    prompt: "grand fantasy galleon, ornate hull, many sails, gold trim, transparent background"
-    size: 112
-    anchor: [56, 86]
+    prompt: "fantasy galleon, three masts of cream sails, ornate oak hull with gold trim, stern lanterns, isometric three-quarter view, pixel art, transparent background"
+    width: 280
+    height: 65
+    frames: 5
+    anchor: [28, 62]
+    masthead: [28, 1]
+    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 11, generationSize: 78x78, generations: 1, pilotGenerations: 4, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
 
   - id: prop.harborShip.dreadnought
     tool: generated
-    prompt: "epic fantasy dreadnought sailing ship, dark hull, many sails, glowing trim, transparent background"
-    size: 128
-    anchor: [64, 98]
+    prompt: "fantasy dreadnought warship, dark oak hull, four masts of cream sails, crimson pennants, isometric three-quarter view, pixel art, transparent background"
+    width: 370
+    height: 81
+    frames: 5
+    anchor: [36, 74]
+    masthead: [40, 1]
+    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 13, generationSize: 84x84, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
 
   - id: prop.harborShip.flagship
     tool: generated
-    prompt: "mythic flagship fantasy galleon, colossal sails, ornate prow, magical lanterns, transparent background"
-    size: 144
-    anchor: [72, 110]
+    prompt: "mythic fantasy flagship galleon, five masts of cream sails, ornate gilded prow, stern lanterns, isometric three-quarter view, pixel art, transparent background"
+    width: 355
+    height: 89
+    frames: 5
+    anchor: [35, 84]
+    masthead: [43, 1]
+    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 11, generationSize: 92x92, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
 
   - id: prop.harborShip.stack5
     tool: map_object
     prompt: "compact isometric stack of about five tiny fantasy harbor commit cargo boats lashed together, dark wood hulls, cream triangular sails, gold branch sigils, a few glowing sealed cargo crates, transparent background, no text, no numbers"
-    size: 104
-    anchor: [52, 80]
+    width: 345
+    height: 68
+    frames: 5
+    anchor: [40, 65]
+    masthead: [40, 1]
 
   - id: prop.harborShip.stack10
     tool: map_object
     prompt: "large isometric stack of about ten fantasy harbor commit cargo boats packed into one broad flotilla marker, dark wood hulls, staggered cream sails, gold branch sigils, transparent background, no text, no numbers"
-    size: 132
-    anchor: [66, 102]
+    width: 425
+    height: 84
+    frames: 5
+    anchor: [48, 80]
+    masthead: [52, 1]
+
+  - id: prop.harborShip.stack20
+    tool: map_object
+    # 3.8 — the stack30 art resampled to 128 px (stack20 used to draw it at 0.76x).
+    prompt: "heavy isometric fleet-stack marker for about twenty to thirty fantasy harbor commit cargo boats, central flagship hull with smaller dark wood boats around it, dense staggered cream sails, gold branch sigils, transparent background, no text, no numbers"
+    width: 555
+    height: 109
+    frames: 5
+    anchor: [57, 106]
+    masthead: [61, 1]
 
   - id: prop.harborShip.stack30
     tool: map_object
     prompt: "heavy isometric fleet-stack marker for about twenty to thirty fantasy harbor commit cargo boats, central flagship hull with smaller dark wood boats around it, dense staggered cream sails, gold branch sigils, transparent background, no text, no numbers"
-    size: 168
-    anchor: [84, 130]
+    width: 625
+    height: 122
+    frames: 5
+    anchor: [64, 119]
+    masthead: [69, 1]
 
   - id: prop.harborShip.stack40
     tool: map_object
     # NOTE: baked via REST pixflux with seed=11 (the manifest-hash seed keeps
     # returning a hull sitting on an opaque water diamond).
     prompt: "titan-class isometric fleet-stack marker for about forty fantasy harbor commit cargo boats, colossal dark wood treasure galleon with towering stacked cream sails and a cluster of small cargo boats lashed to its hull, gold branch sigils, glowing sealed cargo crates on deck, transparent background, no text, no numbers"
-    size: 184
-    anchor: [92, 142]
+    width: 660
+    height: 152
+    frames: 5
+    anchor: [69, 145]
+    masthead: [87, 2]
 
   - id: prop.harborShip.stack50
     tool: map_object
     prompt: "titan-class isometric fleet-stack marker for about fifty fantasy harbor commit cargo boats, mythic leviathan-sized dark wood ark with five towering masts of cream sails, ornate gold prow, magical lanterns, dense flotilla of tiny cargo boats moored around its hull, gold branch sigils, transparent background, no text, no numbers"
-    size: 200
-    anchor: [100, 156]
+    width: 865
+    height: 157
+    frames: 5
+    anchor: [88, 154]
+    masthead: [113, 2]
 
   - id: prop.harborCrates
     tool: isometric_tile
@@ -1887,6 +2517,95 @@ vegetation:
     size: 32
     anchor: [16, 40]
 
+  # ── 5.5 woodland scale and winter states (The Waking Isle) ──
+  # Tall sheets draw only inside TREE_CLUSTERS woodlands (SceneryEngine
+  # _promoteWoodlandTrees); bare/snow sheets are FoliageRenderer winter states
+  # on the same canvas and trunk base as their leafy sheet. Every sheet is
+  # palette-snapped onto C1 (foliage/foliageSun/foliageDeep leaf, timber wood,
+  # snow) with a 1-px selective outline; PixelLab outputs were REST
+  # edit-image-pixen re-renders of the family sheets (native 1x, 1 generation
+  # each), snapped by hand-run scripts (output/waking-isle/Woodland/tools).
+  - id: veg.tree.oak.tall
+    tool: hand-authored
+    prompt: "towering woodland oak: AssetsA's Phase A tall-oak trunk and roots, the pixen bare-oak bough skeleton, and a hand-painted crown of oak.large-sized (8-10 px) leaf puffs in ten lobes, three sky holes, an under-crown shadow band; foliage + foliageSun[6] leaf, foliageDeep[0] outline, timber wood"
+    size: 112
+    anchor: [56, 111]
+    provenance: { item: '5.5', sources: ['create-1-direction-object f95b17f3-d9f3-425a-9872-b70fe23c7d99 (trunk, AssetsA Phase A, 20 generations)', 'edit-image-pixen d432445b-8cf4-4221-9217-8f7a830ce5a0 (bough skeleton)'], crown: 'hand-painted puff crown (output/waking-isle/Woodland/tools/crown.py, seed 3)', generatedAt: '2026-09-28' }
+
+  - id: veg.tree.oak.tall.bare
+    tool: edit_image_pixen
+    prompt: "The same tree in winter with every leaf fallen: a bare leafless oak, the same trunk and roots, thick boughs splitting into many thinner branches and fine twigs spreading to the same crown silhouette, brown bark, upper-left light, dark outline, no leaves, no green"
+    size: 112
+    anchor: [56, 111]
+    provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: d432445b-8cf4-4221-9217-8f7a830ce5a0, seed: 5, source: veg.tree.oak.tall (Phase A staged), generations: 1, snap: 'timber (OKLab nearest); summer trunk restored below the crown', generatedAt: '2026-09-28' }
+
+  - id: veg.tree.pine.tall
+    tool: edit_image_pixen
+    prompt: "The same pine tree but much taller: a tall old conifer with more layered bough tiers stepping down a longer straight trunk, same small pixel scale and needle detail, same dark outline and upper-left light, roots at the bottom"
+    width: 64
+    height: 102
+    anchor: [32, 101]
+    provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: 529b010e-722d-406b-b1bf-3ced23e4f41d, seed: 5, source: veg.tree.pine.large, canvas: 64x104, generations: 1, snap: 'foliageDeep[1-7] by luminance rank, timber, foliageDeep[0]/timber[0] outline', generatedAt: '2026-09-28' }
+
+  - id: veg.tree.pine.tall.snow
+    tool: edit_image_pixen
+    prompt: "The same pine tree after a heavy snowfall: thick white snow resting on top of every bough tier, snow caps on the upper side of each layer, dark green needles still showing underneath each cap, same trunk, shape and outline"
+    width: 64
+    height: 102
+    anchor: [32, 101]
+    provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: 47359e9a-2920-41a4-be80-aeedcefed3c4, seed: 5, source: veg.tree.pine.tall, generations: 1, snap: 'snow ramp by rank (M9), foliageDeep needles, timber', generatedAt: '2026-09-28' }
+
+  - id: veg.tree.willow.tall
+    tool: edit_image_pixen
+    prompt: "The same weeping willow but much bigger and older, same pixel art style: domed crown of small leaf puffs with long thin weeping branches draped down to the ground like a curtain, some gaps showing the gnarled trunk, same dark outline, upper-left light"
+    width: 88
+    height: 107
+    anchor: [44, 106]
+    provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: dc9f2f43-efba-4865-96f5-0856323fff82, seed: 47, source: veg.tree.willow.large, canvas: 88x84, generations: 1, snap: 'foliage + foliageSun[6] by rank, timber, foliageDeep[0] shadow-side outline', retouch: 'curtain lengthened by hand: 30 rows repeated among its vertical strand rows 44-65 (102 px opaque, 1.36x the tallest villager)', generatedAt: '2026-09-28' }
+
+  - id: veg.tree.willow.tall.bare
+    tool: edit_image_pixen
+    prompt: "The same weeping willow in winter with every leaf fallen: a bare leafless willow with the same trunk, bare arching branches with long thin bare drooping twigs hanging down like a curtain, brown bark, upper-left light, dark outline, no leaves, no green"
+    width: 88
+    height: 107
+    anchor: [44, 106]
+    provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: e94b8c4e-cc83-4049-8472-9c2eb8fd4466, seed: 17, source: veg.tree.willow.tall, generations: 1, snap: timber, retouch: 'curtain lengthened by hand to match the leafy sheet: 30 rows repeated among its vertical twig rows 48-63', generatedAt: '2026-09-28' }
+
+  - id: veg.tree.oak.large.bare
+    tool: edit_image_pixen
+    prompt: "The same tree in winter with every leaf fallen: a bare leafless oak, the same trunk and roots, boughs splitting into thinner branches and fine twigs spreading to the same crown silhouette, brown bark, upper-left light, dark outline, no leaves, no green"
+    size: 64
+    anchor: [32, 50]
+    provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: bac7cfc2-5af8-4237-8156-9ab76f737117, seed: 5, source: veg.tree.oak.large, generations: 1, snap: timber, generatedAt: '2026-09-28' }
+
+  - id: veg.tree.oak.small.bare
+    tool: edit_image_pixen
+    prompt: "The same young tree in winter with every leaf fallen: bare leafless branches and thin twigs spreading to the same crown shape, the same trunk, brown bark, dark outline, no leaves, no green"
+    size: 32
+    anchor: [16, 27]
+    provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: b3554e70-e8ab-4b1e-8f49-2bad299e813c, seed: 5, source: veg.tree.oak.small, generations: 1, snap: timber, generatedAt: '2026-09-28' }
+
+  - id: veg.tree.willow.large.bare
+    tool: edit_image_pixen
+    prompt: "The same willow in winter with every leaf fallen: a bare leafless weeping willow, the same trunk, long thin bare drooping twigs hanging down from the branches like a curtain, brown bark, upper-left light, dark outline, no leaves, no green"
+    size: 64
+    anchor: [32, 52]
+    provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: 654c6225-e940-4fb2-9b7b-0f4718eab354, seed: 5, source: veg.tree.willow.large, generations: 1, snap: timber, generatedAt: '2026-09-28' }
+
+  - id: veg.tree.willow.small.bare
+    tool: edit_image_pixen
+    prompt: "The same young willow in winter with every leaf fallen: bare leafless drooping thin twigs hanging from the branches, the same slim trunk, brown bark, dark outline, no leaves, no green"
+    size: 32
+    anchor: [16, 26]
+    provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: 861e438a-c76a-4a58-b1cc-41caf4fc1300, seed: 5, source: veg.tree.willow.small, generations: 1, snap: timber, generatedAt: '2026-09-28' }
+
+  - id: veg.tree.pine.large.snow
+    tool: edit_image_pixen
+    prompt: "The same pine tree after a snowfall: white snow resting on top of every bough tier, snow caps on the upper side of each layer, green needles still showing underneath, same trunk and outline"
+    size: 64
+    anchor: [32, 51]
+    provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: 4092a15a-99a6-4e9a-bb1a-599e88f9c957, seed: 5, source: veg.tree.pine.large, generations: 1, snap: 'snow ramp by rank (M9), foliageDeep needles, timber', generatedAt: '2026-09-28' }
+
   - id: veg.boulder.mossy.large
     tool: isometric_tile
     prompt: "large mossy granite boulder, rounded weathered grey stone with moss patches and lichens resting on bare transparency, natural rock silhouette, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no soil, no grass fringe, no ferns at the foot, no platform, no baked shadow, empty transparent corners"
@@ -2077,42 +2796,16 @@ atmosphere:
         - { id: emissive.atmosphere.lantern-glow, kind: lantern, geometry: authored-albedo, strength: 1 }
     occluder: { mode: none, strength: 0 }
 
-  - id: atmosphere.cloud.cumulus
-    tool: map_object
-    prompt: "low-poly pixel-art fantasy cloud silhouette, warm rust and burnt-umber tones edged with amber rim light, fluffy stratocumulus shape, painterly RPG sky, transparent background"
-    size: 64
-
-  - id: atmosphere.cloud.wisp
-    tool: map_object
-    prompt: "thin pixel-art cirrus wisp, pale ember and dusky rose, drawn-out streak shape, warm twilight sky, transparent background"
-    size: 64
+  # atmosphere.cloud.cumulus / .wisp / .cumulus.day / .wisp.day /
+  # .overcast-bank / .storm-shelf retired to output/attic (Waking Isle 5.7):
+  # zero code references — the sky draws no icon clouds; the horizon deck
+  # (`SkyRenderer.bakeDeckStrip`) and the world-locked cloud courses replace
+  # them.
 
   - id: atmosphere.moon.crescent
     tool: map_object
     prompt: "pixel-art crescent moon, warm gold rim with darker amber inner shadow, no face, painterly RPG night sky, transparent background"
     size: 64
-
-  - id: atmosphere.cloud.cumulus.day
-    tool: map_object
-    prompt: "soft white daytime cumulus cloud, cool pale blue shadow, subtle sunlit rim, fluffy readable silhouette, transparent background, pixel art"
-    size: 64
-
-  - id: atmosphere.cloud.wisp.day
-    tool: map_object
-    prompt: "thin pale daytime cloud wisp, cool blue underside, long airy horizontal shape, transparent background, pixel art"
-    size: 64
-
-  - id: atmosphere.cloud.overcast-bank
-    tool: map_object
-    prompt: "broad overcast gray-blue cloud bank, layered storm cloud silhouette, soft underside shadow, transparent background, pixel art"
-    width: 96
-    height: 64
-
-  - id: atmosphere.cloud.storm-shelf
-    tool: map_object
-    prompt: "epic high-fantasy pixel art storm shelf cloud, dramatic layered dark blue gray thunderhead bank with cool cyan underside and faint silver rim light, transparent background"
-    width: 128
-    height: 80
 
   - id: atmosphere.moon.crescent.cool
     tool: map_object

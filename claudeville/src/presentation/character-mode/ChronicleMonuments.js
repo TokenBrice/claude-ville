@@ -4,15 +4,21 @@ import { collectCommitEvents } from './ChronicleEvents.js';
 import { buildingCenterToWorld, tileToWorld } from './Projection.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import {
+    GOLD,
     GOLD_RAMP,
     PEAK,
     claimMajorMoment,
+    createCueGate,
     crown,
     crownSeal,
+    cueGatedAge,
     defineMoment,
+    drawMomentThread,
     momentPhase,
     quantStep,
+    queueMomentEdgePlate,
     releaseMajorMoment,
+    resolveMomentAnchor,
     streak,
     successGrammarDeferred,
 } from './EffectStamps.js';
@@ -88,6 +94,9 @@ const CROWN_MAJOR_ID = 'release-crown';
 // sprite top and run ~26 px tall; the crown hangs a little above that band.
 const HARBOR_PLAQUE_CLEARANCE_PX = 28 + 26 + 8;
 const HARBOR_BUILDING = BUILDING_DEFS.find(building => building.type === 'harbor') || null;
+// V8 — the crown's largest frame around its seat, in world texels: the
+// falloff's widest spokes and tips (±24) and the rocket's lowest step (+28).
+const CROWN_EXTENT = Object.freeze({ left: -24, top: -24, right: 24, bottom: 28 });
 // Mirrored from HarborTraffic.js HARBOR_SQUAD_ANCHORAGES[1] "Inner Quay Basin"
 // — kept here so this module stays self-contained without exporting harbor
 // internals.
@@ -238,7 +247,10 @@ export class ChronicleMonuments {
         }
         for (const record of planted) this.records.set(record.id, record);
         for (const record of planted) {
-            if (record.kind === 'release') this._scheduleReleaseCrown(record, now);
+            if (record.kind !== 'release') continue;
+            // The releasing agent, for the residue thread (V8).
+            const source = pushEvents.find(event => String(event.id || event.sourceId || event.commandHash || '') === record.sourceEventId);
+            this._scheduleReleaseCrown(record, now, source?.agentId ?? null);
         }
         await this._processCommitMilestones(gitEvents, now, generation);
         if (this._disposed || generation !== this._lifecycleGeneration) return [];
@@ -702,7 +714,7 @@ export class ChronicleMonuments {
         }
     }
 
-    _scheduleReleaseCrown(record, now) {
+    _scheduleReleaseCrown(record, now, actorId = null) {
         const color = KIND_COLORS[record.kind] || KIND_COLORS.release;
         this.eventBus?.emit?.('harbor:release-burst', {
             project: record.project,
@@ -722,6 +734,8 @@ export class ChronicleMonuments {
             count: 1,
             project: record.project || null,
             label: record.label || null,
+            actorId,
+            cue: null,
         };
     }
 
@@ -744,16 +758,38 @@ export class ChronicleMonuments {
             }
             state.startedAt = now;
             state.reduced = reduced;
+            // 8.3 — the cream frame waits for the peal's first note; the seal
+            // for its closing chord.
+            state.cue = reduced ? null : createCueGate('release', null);
         }
-        const phase = momentPhase(now - state.startedAt, RELEASE_CROWN, { reduced: state.reduced });
+        const age = cueGatedAge(state.cue, now - state.startedAt, RELEASE_CROWN.anticipation,
+            RELEASE_CROWN.anticipation + RELEASE_CROWN.peak + RELEASE_CROWN.follow, { reduced: state.reduced });
+        const phase = momentPhase(age, RELEASE_CROWN, { reduced: state.reduced });
         if (phase.phase === 'done') {
             releaseMajorMoment(CROWN_MAJOR_ID);
             this._crown = null;
             return;
         }
-        const anchor = this._harborCrownAnchor(zoom);
-        if (!anchor) return;
-        const { x, y } = anchor;
+        const seat = this._harborCrownAnchor(zoom);
+        if (!seat) return;
+        // 8.1 — V8: inside the safe area, clear of chrome and of anything
+        // standing in front of the Harbor; else down the Harbor's own column;
+        // else an edge plate.
+        const anchor = resolveMomentAnchor(seat, {
+            building: 'harbor',
+            actorId: state.actorId,
+            extent: CROWN_EXTENT,
+            id: CROWN_MAJOR_ID,
+            kind: 'release',
+            tier: 'major',
+            phase: phase.phase,
+        });
+        if (anchor.mode === 'edge') {
+            queueMomentEdgePlate(anchor, { word: 'RELEASE', color: GOLD, peak: phase.phase === 'peak', ctx });
+            return;
+        }
+        const x = Math.round(anchor.x);
+        const y = Math.round(anchor.y);
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
         switch (phase.phase) {
@@ -791,6 +827,8 @@ export class ChronicleMonuments {
         }
         case 'residue':
             crownSeal(ctx, x, y, { radius: 5, ramp: GOLD_RAMP });
+            // The releasing agent → the seal, while both are in view.
+            drawMomentThread(ctx, anchor, { color: GOLD_RAMP[1], targetLift: -7 });
             break;
         default:
             break;
@@ -1006,7 +1044,12 @@ export class ChronicleMonuments {
                 for (const event of source) {
                     const type = String(event?.type || event?.kind || '').toLowerCase();
                     if (type === 'push' || type === 'tag') {
-                        events.push({ ...event, project: event.project || agent.project, provider: event.provider || agent.provider });
+                        events.push({
+                            ...event,
+                            project: event.project || agent.project,
+                            provider: event.provider || agent.provider,
+                            agentId: event.agentId ?? agent.id ?? null,
+                        });
                     }
                 }
             }

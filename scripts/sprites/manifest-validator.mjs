@@ -14,12 +14,14 @@ import {
     palettesPath,
     pathForEntry,
     repoRoot,
+    roomMaskPathForEntry,
     spritesRoot,
 } from './manifest-utils.mjs';
 import {
     materialExpectedPngPaths,
     validateMaterialContract,
 } from './channel-validation.mjs';
+import { validateTexelTransforms } from './texel-transform-check.mjs';
 
 const args = process.argv.slice(2);
 const orphanAllowlist = new Set([
@@ -97,6 +99,8 @@ for (const e of collectSpriteEntries(manifest)) {
     if (e.id?.startsWith('agent.')) characterEntries.push(e);
     if (e.id?.startsWith('equipment.')) equipmentEntries.push(e);
     for (const p of expectedPathsForEntry(e)) expected.add(p);
+    const roomMask = roomMaskPathForEntry(e);
+    if (roomMask) expected.add(roomMask);
 }
 const expectedMaterialPngPaths = materialExpectedPngPaths(manifest);
 for (const path of expectedMaterialPngPaths) expected.add(path);
@@ -160,6 +164,7 @@ for (const entry of manifest.atmosphere || []) {
 const invalidPalettes = validatePaletteParity();
 const materialValidation = validateMaterialContract(manifest);
 const invalidMaterialAssets = materialValidation.errors;
+const invalidTexelTransforms = validateTexelTransforms({ root: repoRoot, manifestEntries });
 
 // Warnings (non-fatal): dimension drift, block-cube heuristic, dead inventory.
 // These catch the defect classes that shipped silently before (cube layers,
@@ -169,8 +174,8 @@ warnings += warnOnDimensionDrift();
 warnings += warnOnBlockCubes();
 warnings += warnOnUnreferencedIds();
 
-console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  allowlisted orphan PNGs: ${allowlistedOrphans}  duplicate PNG groups: ${duplicatePngs}  allowlisted duplicate PNG groups: ${allowlistedDuplicatePngGroups}  invalid manifest entries: ${invalidManifest}  invalid palette mirrors: ${invalidPalettes}  invalid character sheets: ${invalidCharacters}  invalid equipment PNGs: ${invalidEquipment}  invalid atmosphere PNGs: ${invalidAtmosphere}  invalid material/atlas assets: ${invalidMaterialAssets}  warnings: ${warnings + materialValidation.warnings}`);
-process.exit(missing > 0 || orphans > 0 || duplicatePngs > 0 || invalidManifest > 0 || invalidPalettes > 0 || invalidCharacters > 0 || invalidEquipment > 0 || invalidAtmosphere > 0 || invalidMaterialAssets > 0 ? 1 : 0);
+console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  allowlisted orphan PNGs: ${allowlistedOrphans}  duplicate PNG groups: ${duplicatePngs}  allowlisted duplicate PNG groups: ${allowlistedDuplicatePngGroups}  invalid manifest entries: ${invalidManifest}  invalid palette mirrors: ${invalidPalettes}  invalid character sheets: ${invalidCharacters}  invalid equipment PNGs: ${invalidEquipment}  invalid atmosphere PNGs: ${invalidAtmosphere}  invalid material/atlas assets: ${invalidMaterialAssets}  texel transform violations: ${invalidTexelTransforms}  warnings: ${warnings + materialValidation.warnings}`);
+process.exit(missing > 0 || orphans > 0 || duplicatePngs > 0 || invalidManifest > 0 || invalidPalettes > 0 || invalidCharacters > 0 || invalidEquipment > 0 || invalidAtmosphere > 0 || invalidMaterialAssets > 0 || invalidTexelTransforms > 0 ? 1 : 0);
 
 function duplicateGroupKey(paths) {
     return [...paths].sort().join('|');
@@ -382,6 +387,22 @@ function validateActionStrip(entry) {
         const hold = group.hold;
         if (hold !== undefined && (!Number.isInteger(hold) || hold < range[0] || hold > range[1])) {
             invalid(`groups.${name} hold must be a row inside ${range.join('–')}`);
+        }
+        // 7.3 — work/wait groups author only some facings and mark the
+        // WorkDownbeats contact frame (group-relative) and point (cell px).
+        const facings = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
+        if (group.directions !== undefined
+            && (!Array.isArray(group.directions) || !group.directions.length || group.directions.some((dir) => !facings.includes(dir)))) {
+            invalid(`groups.${name} directions must be a non-empty list of ${facings.join('/')}`);
+        }
+        if (group.contactFrame !== undefined
+            && (!Number.isInteger(group.contactFrame) || group.contactFrame < 0 || group.contactFrame > range[1] - range[0])) {
+            invalid(`groups.${name} contactFrame must be a frame index inside the group`);
+        }
+        if (group.contact !== undefined && (group.contact === null || typeof group.contact !== 'object'
+            || Object.entries(group.contact).some(([dir, point]) => !facings.includes(dir) || !Array.isArray(point)
+                || point.length !== 2 || !point.every((value) => Number.isInteger(value) && value >= 0 && value < cell)))) {
+            invalid(`groups.${name} contact must map facings to [x, y] cell px`);
         }
     }
     return errors;

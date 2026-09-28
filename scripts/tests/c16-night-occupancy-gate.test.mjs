@@ -29,7 +29,6 @@ function lightFixture(phase, forgeGate) {
         ],
         _workingVisitorCountFor: () => 0,
         _forgeGlowIntensity: () => 1,
-        _watchtowerIntensity: () => 0,
         _beaconScaleFor: () => 1,
         _workTierFor: () => 'dormant',
         _ritualLightSources: () => [],
@@ -44,12 +43,14 @@ test('day is unchanged while night follows only live working occupancy', () => {
     assert.equal(buildingEmissiveGate('night', 0.2, 0), 0);
     assert.equal(buildingEmissiveGate('night', 0.2, 1), 1);
 
+    // The Lighthouse lamp stands up its tower and lays no ground light at any
+    // hour (2.7, AD #6); the Forge follows its occupancy gate at night.
     const dayLights = lightFixture('day', 0).getLightSources();
-    assert.deepEqual(dayLights.map(light => light.id), ['forge', 'watchtower']);
+    assert.deepEqual(dayLights.map(light => light.id), ['forge']);
     const nightEmptyLights = lightFixture('night', 0).getLightSources();
-    assert.deepEqual(nightEmptyLights.map(light => light.id), ['watchtower']);
+    assert.deepEqual(nightEmptyLights.map(light => light.id), []);
     const nightWorkingLights = lightFixture('night', 1).getLightSources();
-    assert.deepEqual(nightWorkingLights.map(light => light.id), ['forge', 'watchtower']);
+    assert.deepEqual(nightWorkingLights.map(light => light.id), ['forge']);
 });
 
 test('only present mid-turn working agents light building windows (V8 isWorkingVisitor)', () => {
@@ -93,6 +94,9 @@ test('frame-fresh physical visitor tally drives the rise and completion fade', (
         _visitorStatusByType: new Map(),
         _visitorRepoByType: new Map(),
         _litGateByType: new Map(),
+        _roomSlotsByType: new Map(),
+        _roomLitByType: new Map(),
+        roomGlass: { roomCount: () => 0 },
         _spriteTilePosition: () => ({ tileX: 25, tileY: 30 }),
     });
     renderer._updateVisitorCounts();

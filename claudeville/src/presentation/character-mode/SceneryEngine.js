@@ -1,4 +1,4 @@
-import { MAP_SIZE } from '../../config/constants.js';
+import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import {
     WATER_POLYLINES,
     WATER_BASINS,
@@ -15,7 +15,10 @@ import {
     GRASS_TUFT_DENSITY,
     FLOWER_DENSITY,
     FOREST_FLOOR_REGIONS,
+    TALL_TREE_RULES,
 } from '../../config/scenery.js';
+import { TREE_SPRITES } from './FoliageRenderer.js';
+import { VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
 
 const CARDINAL_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 // Tree clumps: spiral probe count, ring step (tiles) and minimum trunk
@@ -25,6 +28,24 @@ const TREE_CLUMP_PROBES = 20;
 const TREE_CLUMP_STEP = 0.72;
 const TREE_TRUNK_SPACING_SQ = 0.5;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+// 5.5 — where a villager may stand on a walk tile when a tall crown is tested
+// for hiding it (tile-space offsets from the tile centre).
+const TALL_TREE_BODY_SAMPLES = Object.freeze([[0, 0], [0.35, 0], [-0.35, 0], [0, 0.35], [0, -0.35]]);
+// 5.5 — a woodland `stand`: candidate trunk points at the quarter points of
+// each tile, each jittered by up to ± half TALL_STAND_JITTER tile (hashed).
+const TALL_STAND_LATTICE = Object.freeze([[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]);
+const TALL_STAND_JITTER = 0.3;
+// Trees stand inside the village wall: a trunk keeps this many tiles from the
+// wall line and never stands on its seaward side (its roots would show on the
+// footing below the palisade).
+const WALL_TREE_CLEARANCE = 0.3;
+// 5.5 — a tall crown stays over the island: every point of its outline (an
+// ellipse filling the crown box, sampled at CROWN_OUTLINE_SAMPLES points)
+// stands over ground inside the map and off the sea and the harbour, so no
+// crown overhangs the coast past the palisade's ends or the island's rim. A
+// crown only ever reaches inland of its trunk, so behind the wall line it
+// stays behind the palisade.
+const CROWN_OUTLINE_SAMPLES = 16;
 // 5.3 — canopy variants: 0 authored, 1 deep/cool, 2 sunlit/yellow. Deep woods
 // turn up to this share of their sunlit trees deep, meadow edges the same
 // share of their deep trees sunlit; flowers within MEADOW_REACH tiles mark a
@@ -598,8 +619,9 @@ export class SceneryEngine {
         return this.tileNoise(cellX + (kind === 'bush' ? 401 : 503), cellY + 607) > 0.24;
     }
 
-    _passesTreeSpacing(x, y) {
+    _passesTreeSpacing(x, y, yields = null) {
         for (const tree of this.treeProps) {
+            if (yields?.(tree)) continue;
             const dx = tree.tileX - x;
             const dy = tree.tileY - y;
             if ((dx * dx + dy * dy) < TREE_TRUNK_SPACING_SQ) return false;
@@ -791,12 +813,193 @@ export class SceneryEngine {
                 if (this.tileNoise(tx + 31, ty + 97) > chance) continue;
                 const count = minTrees + Math.floor(this.tileNoise(tx + 67, ty + 43) * (maxTrees - minTrees + 1));
                 const dominant = this._pickWeighted(cluster.species, this.tileNoise(tx + 89, ty + 17));
-                if (this._growTreeClump(cx, cy, count, dominant, cluster.species, ctx)) {
+                if (this._growTreeClump(cx, cy, count, dominant, cluster.species, ctx, cluster.name)) {
                     clumpCentres.push({ x: cx, y: cy, spacing });
                 }
             }
         }
+        this._promoteWoodlandTrees(ctx);
         for (const tree of this.treeProps) tree.variant = this._canopyVariant(tree);
+    }
+
+    // 5.5 — woodland scale: a hashed share (`TREE_CLUSTERS[].tall`) of the large
+    // trees a woodland region grew become the tall sheets, only where
+    // TALL_TREE_RULES keep them off paths, out of the districts and never in
+    // front of a walkable tile, so no villager is hidden behind a crown. A
+    // region with a `stand` instead grows its whole tall layer as one stand.
+    _promoteWoodlandTrees(ctx) {
+        const { pathTiles, bridgeTiles } = ctx;
+        const shares = new Map(TREE_CLUSTERS.map((cluster) => [cluster.name, cluster.tall ?? 0]));
+        const widest = Math.max(...['oak', 'pine', 'willow'].map((species) => TREE_SPRITES[`${species}.tall`].width));
+        // Two tall trunks stand `spacing` tiles apart when both are the widest
+        // crown, proportionally closer for narrower crowns (two tall pines).
+        const reach = (tree) => TALL_TREE_RULES.spacing * TREE_SPRITES[`${tree.species}.tall`].width / widest / 2;
+        const talls = [];
+        const spaced = (tree) => !talls.some((t) => Math.hypot(t.tileX - tree.tileX, t.tileY - tree.tileY) < reach(t) + reach(tree));
+        const stands = new Set(TREE_CLUSTERS.filter((cluster) => cluster.stand).map((cluster) => cluster.name));
+        for (const tree of this.treeProps) {
+            if (!tree.woodland || tree.size !== 'large' || stands.has(tree.woodland)) continue;
+            const pick = this.tileNoise(Math.floor(tree.tileX * 4) + 311, Math.floor(tree.tileY * 4) + 173);
+            if (pick >= (shares.get(tree.woodland) ?? 0)) continue;
+            if (!spaced(tree)) continue;
+            if (!this._clearForTallTree(tree, pathTiles, bridgeTiles)) continue;
+            tree.size = 'tall';
+            talls.push(tree);
+        }
+        for (const [clusterIndex, cluster] of TREE_CLUSTERS.entries()) {
+            if (cluster.stand) this._growTallStand(cluster, clusterIndex, spaced, talls, ctx);
+        }
+    }
+
+    // The clumps a region grows are seeded around its open ground, so where a
+    // woodland is a narrow belt between paths and the sea wall few of them land
+    // on a site clear for a tall crown, and a hashed share of them leaves the
+    // belt a hedge with a few tall pines. A `stand` region instead visits every
+    // tree it grew (willows keep their waterside size) plus a hashed, jittered
+    // lattice of new trunk points (four per tile) inside its ellipse, in one
+    // hashed order, and makes each a tall tree where TALL_TREE_RULES hold (new
+    // points also pass the usual tree placement checks), one `stand` species
+    // after the other: the broad crowns pack the clear ground first, the
+    // narrower ones fill the gaps, so it closes into one contiguous tall mass.
+    _growTallStand(cluster, clusterIndex, spaced, talls, { pathTiles, bridgeTiles, isExcluded }) {
+        const rx = cluster.radiusX ?? cluster.radius;
+        const ry = cluster.radiusY ?? cluster.radius;
+        const hash = (hx, hy) => this.tileNoise(hx + 97, hy + 331 + clusterIndex * 7);
+        const sites = [];
+        for (const tree of this.treeProps) {
+            if (tree.woodland !== cluster.name || tree.species === 'willow') continue;
+            sites.push({ tree, x: tree.tileX, y: tree.tileY, order: hash(Math.floor(tree.tileX * 4) + 5, Math.floor(tree.tileY * 4) + 3) });
+        }
+        for (let ty = Math.floor(cluster.centerY - ry); ty <= Math.ceil(cluster.centerY + ry); ty++) {
+            for (let tx = Math.floor(cluster.centerX - rx); tx <= Math.ceil(cluster.centerX + rx); tx++) {
+                if (tx < 0 || tx >= MAP_SIZE || ty < 0 || ty >= MAP_SIZE) continue;
+                for (const [sx, sy] of TALL_STAND_LATTICE) {
+                    const hx = tx * 2 + sx * 2 - 0.5;
+                    const hy = ty * 2 + sy * 2 - 0.5;
+                    const x = tx + sx + (this.tileNoise(hx + 401 + clusterIndex * 7, hy + 59) - 0.5) * TALL_STAND_JITTER;
+                    const y = ty + sy + (this.tileNoise(hx + 83, hy + 467 + clusterIndex * 7) - 0.5) * TALL_STAND_JITTER;
+                    const nx = (x - cluster.centerX) / rx;
+                    const ny = (y - cluster.centerY) / ry;
+                    if (nx * nx + ny * ny > 1) continue;
+                    sites.push({ tree: null, x, y, order: hash(hx, hy) });
+                }
+            }
+        }
+        sites.sort((a, b) => a.order - b.order);
+        // A new tall trunk may take the place of the region's villager-scale
+        // trees (those within trunk spacing make way), never of a tall tree
+        // or another region's tree.
+        const understorey = (t) => t.woodland === cluster.name && t.size !== 'tall';
+        const nearSq = (t, x, y) => (t.tileX - x) ** 2 + (t.tileY - y) ** 2 < TREE_TRUNK_SPACING_SQ;
+        for (const species of cluster.stand) {
+            for (const { tree, x, y } of sites) {
+                if (tree?.size === 'tall' || tree?.cleared) continue;
+                if (!tree && !this._clearForNewTree(x, y, pathTiles, bridgeTiles, isExcluded, understorey)) continue;
+                const tall = { tileX: x, tileY: y, species, size: 'tall', woodland: cluster.name };
+                if (!spaced(tall) || !this._clearForTallTree(tall, pathTiles, bridgeTiles)) continue;
+                if (tree) {
+                    Object.assign(tree, tall);
+                } else {
+                    for (const t of this.treeProps) if (understorey(t) && nearSq(t, x, y)) t.cleared = true;
+                    this.treeProps.push(tall);
+                }
+                talls.push(tree ?? tall);
+            }
+        }
+        this.treeProps = this.treeProps.filter((t) => !t.cleared);
+    }
+
+    // Where a new tree may stand (a clump probe or a stand's lattice point);
+    // trees `yields` accepts make way instead of spacing it out.
+    _clearForNewTree(x, y, pathTiles, bridgeTiles, isExcluded, yields = null) {
+        const tx = Math.floor(x);
+        const ty = Math.floor(y);
+        return !this.isBlockedForTallScenery(x, y, pathTiles, bridgeTiles)
+            && !isExcluded?.(x, y)
+            && !this.bushTiles.has(`${tx},${ty}`)
+            && this._clearingBias(tx, ty) < 0.45
+            && this._insideVillageWall(x, y)
+            && this._passesTreeSpacing(x, y, yields);
+    }
+
+    // Both wall routes run east along the south shore, so the sea lies on the
+    // positive side of a run's cross product. A run's line counts past its
+    // ends too: the gate gap between the runs stands on the same line.
+    _insideVillageWall(x, y) {
+        for (const { points } of VILLAGE_WALL_ROUTES) {
+            for (let i = 1; i < points.length; i++) {
+                const ax = points[i - 1].tileX;
+                const ay = points[i - 1].tileY;
+                const dx = points[i].tileX - ax;
+                const dy = points[i].tileY - ay;
+                const length = Math.hypot(dx, dy);
+                if ((dx * (y - ay) - dy * (x - ax)) / length > -WALL_TREE_CLEARANCE) return false;
+            }
+        }
+        return true;
+    }
+
+    // 5.5 — true when a tall crown stands over the island (see
+    // CROWN_OUTLINE_SAMPLES): each outline point's ground point, the tile point
+    // under a crown point (sx, sy) world px from the trunk, is in the map and
+    // off the sea and the harbour.
+    _crownOverIsland(tree, sprite) {
+        const { halfWidth, bottom } = sprite.crown;
+        const centreY = -(sprite.height + bottom) / 2;
+        const radiusY = (sprite.height - bottom) / 2;
+        for (let i = 0; i < CROWN_OUTLINE_SAMPLES; i++) {
+            const angle = (i / CROWN_OUTLINE_SAMPLES) * Math.PI * 2;
+            const sx = Math.cos(angle) * halfWidth;
+            const sy = centreY + Math.sin(angle) * radiusY;
+            const x = tree.tileX + (sx / (TILE_WIDTH / 2) + sy / (TILE_HEIGHT / 2)) / 2;
+            const y = tree.tileY + (sy / (TILE_HEIGHT / 2) - sx / (TILE_WIDTH / 2)) / 2;
+            if (x < 0 || y < 0 || x >= MAP_SIZE || y >= MAP_SIZE) return false;
+            const kind = this.waterMeta.get(`${Math.floor(x)},${Math.floor(y)}`)?.kind;
+            if (kind === 'sea' || kind === 'harbor') return false;
+        }
+        return true;
+    }
+
+    _clearForTallTree(tree, pathTiles, bridgeTiles) {
+        const { pathClearance, districtClearance, villager: [bodyW, bodyH], hiddenShare } = TALL_TREE_RULES;
+        const sprite = TREE_SPRITES[`${tree.species}.tall`];
+        if (!sprite?.crown || !this._crownOverIsland(tree, sprite)) return false;
+        const { halfWidth, bottom } = sprite.crown;
+        // Share of a body box (feet at sx, sy relative to the trunk, world px)
+        // inside the crown box [-halfWidth, halfWidth] × [-height, -bottom].
+        const hidden = (sx, sy) => {
+            if (sy >= 0) return 0; // in front of the tree: drawn over it
+            const ox = Math.min(sx + bodyW / 2, halfWidth) - Math.max(sx - bodyW / 2, -halfWidth);
+            const oy = Math.min(sy, -bottom) - Math.max(sy - bodyH, -sprite.height);
+            return ox > 0 && oy > 0 ? (ox * oy) / (bodyW * bodyH) : 0;
+        };
+        const reach = Math.ceil(sprite.height / TILE_HEIGHT) + 2;
+        const x0 = Math.floor(tree.tileX);
+        const y0 = Math.floor(tree.tileY);
+        for (let ty = y0 - reach; ty <= y0 + 2; ty++) {
+            for (let tx = x0 - reach; tx <= x0 + 2; tx++) {
+                const key = `${tx},${ty}`;
+                if (!pathTiles.has(key) && !bridgeTiles.has(key)) continue;
+                // Distance from the trunk to the walk tile's square.
+                const ex = Math.max(tx - tree.tileX, 0, tree.tileX - (tx + 1));
+                const ey = Math.max(ty - tree.tileY, 0, tree.tileY - (ty + 1));
+                if (Math.hypot(ex, ey) < pathClearance) return false;
+                // A villager anywhere on the tile: its centre and four points
+                // 0.35 tile toward each edge.
+                for (const [ox, oy] of TALL_TREE_BODY_SAMPLES) {
+                    const dx = tx + 0.5 + ox - tree.tileX;
+                    const dy = ty + 0.5 + oy - tree.tileY;
+                    if (hidden((dx - dy) * TILE_WIDTH / 2, (dx + dy) * TILE_HEIGHT / 2) > hiddenShare) return false;
+                }
+            }
+        }
+        for (const zone of this._buildingSceneryZones) {
+            const r = zone.padded;
+            const ex = Math.max(r.x0 - tree.tileX, 0, tree.tileX - r.x1);
+            const ey = Math.max(r.y0 - tree.tileY, 0, tree.tileY - r.y1);
+            if (Math.hypot(ex, ey) < districtClearance) return false;
+        }
+        return true;
     }
 
     // 5.3 — the tree's canopy variant (0 authored, 1 deep/cool, 2 sunlit):
@@ -839,8 +1042,9 @@ export class SceneryEngine {
 
     // Grow one clump around (cx, cy) along a golden-angle spiral. Returns true
     // when at least three trees stood; smaller remnants are removed so no lone
-    // tree or pair is left standing on open ground.
-    _growTreeClump(cx, cy, count, dominant, mix, { pathTiles, bridgeTiles, isExcluded }) {
+    // tree or pair is left standing on open ground. Trees a TREE_CLUSTERS
+    // region grows carry its name (`woodland`) for the tall promotion.
+    _growTreeClump(cx, cy, count, dominant, mix, { pathTiles, bridgeTiles, isExcluded }, woodland = null) {
         const start = this.treeProps.length;
         const turn = this.tileNoise(Math.floor(cx) + 7, Math.floor(cy) + 211) * Math.PI * 2;
         for (let k = 0; k < TREE_CLUMP_PROBES && this.treeProps.length - start < count; k++) {
@@ -850,11 +1054,7 @@ export class SceneryEngine {
             const y = cy + Math.sin(angle) * radius;
             const tx = Math.floor(x);
             const ty = Math.floor(y);
-            if (this.isBlockedForTallScenery(x, y, pathTiles, bridgeTiles)) continue;
-            if (isExcluded?.(x, y)) continue;
-            if (this.bushTiles.has(`${tx},${ty}`)) continue;
-            if (this._clearingBias(tx, ty) >= 0.45) continue;
-            if (!this._passesTreeSpacing(x, y)) continue;
+            if (!this._clearForNewTree(x, y, pathTiles, bridgeTiles, isExcluded)) continue;
             const nearWater = this._distanceToWater(tx, ty) <= 1;
             const pick = this.tileNoise(tx * 3 + k, ty * 5 + 29);
             let species = pick < 0.72 || !mix ? dominant : this._pickWeighted(mix, this.tileNoise(tx + 131, ty + k));
@@ -863,7 +1063,7 @@ export class SceneryEngine {
             if (nearWater && this._nearFreshWater(tx, ty) && this.tileNoise(tx + 61, ty + 157) < 0.5) species = 'willow';
             if (species === 'willow' && !nearWater) species = 'oak';
             const size = k >= 2 && species !== 'pine' && this.tileNoise(tx + 17, ty + 71 + k) < 0.4 ? 'small' : 'large';
-            this.treeProps.push({ tileX: x, tileY: y, species, size });
+            this.treeProps.push(woodland ? { tileX: x, tileY: y, species, size, woodland } : { tileX: x, tileY: y, species, size });
         }
         if (this.treeProps.length - start >= 3) return true;
         this.treeProps.length = start;

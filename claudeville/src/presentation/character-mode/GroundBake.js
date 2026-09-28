@@ -47,9 +47,13 @@
 // is cached here per season/scenery/coast revision, so a terrain-cache rebake
 // for any other reason reuses it. Zero per-frame cost; reduced-motion neutral
 // (static); reads no phase, weather or camera — the grade owns time of day.
+// The one exception is the winter ground (plan 5.2): the C-W2 ground
+// history's snow bucket and frost re-tone a copy of the base bake (≤ 4 bakes
+// a day), never the live weather.
 //
 // Publishes `renderer.groundField` (class per texel) for Water's coast pass
-// and any later ground consumer.
+// and any later ground consumer, and `renderer.groundPuddleMask` (5.2: the
+// R8 puddle-site mask, one byte per 2×1 texel) for the puddle courses.
 
 import { ART_RAMPS } from '../../config/artPalette.js';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
@@ -57,6 +61,8 @@ import { FOREST_FLOOR_REGIONS } from '../../config/scenery.js';
 import { YARD_MATERIALS } from '../../config/townPlan.js';
 import { readTerrainCellLuma } from './TerrainTileset.js';
 import { getCoastField } from './CoastBake.js';
+import { snowBucketOf } from './GroundState.js';
+import { releaseCanvasBackingStore } from './CanvasBudget.js';
 
 export const GROUND_CLASS = Object.freeze({
     NONE: 0,
@@ -632,7 +638,8 @@ export function bakeGround(r) {
             return classes[row * cols + col];
         },
     };
-    return { canvas, field, ms: performance.now() - started, x0, y0 };
+    const puddleMask = bakePuddleSites({ cols, rows, surfaces, aoBuf });
+    return { canvas, field, ms: performance.now() - started, x0, y0, cols, rows, surfaces, aoBuf, puddleMask };
 }
 
 // Kerbs and wattle where a paved or fenced yard meets grass/sand (4.7).
@@ -732,7 +739,11 @@ function chamferToPaths(cols, rows, surfaces) {
 // Crown half-widths (world px) of the tree sheets (FoliageRenderer's sprite
 // keys); the ground under a crown is the iso ellipse of that radius, which is
 // a circle of radius/2 in 2×1 texels.
-const CROWN_RADIUS = Object.freeze({ 'oak.large': 26, 'oak.small': 9, 'pine.large': 13, 'willow.large': 20, 'willow.small': 12 });
+const CROWN_RADIUS = Object.freeze({
+    'oak.large': 26, 'oak.small': 9, 'pine.large': 13, 'willow.large': 20, 'willow.small': 12,
+    // 5.5 — the woodland-only tall sheets (≈ 1.85× the large crowns).
+    'oak.tall': 48, 'pine.tall': 20, 'willow.tall': 34,
+});
 // Leaves and needles fall around the trunk and drift downwind: the prevailing
 // knot wind blows toward screen right, so the drop zone sits a fifth of a
 // radius that way.
@@ -747,7 +758,7 @@ function buildCrownField(r, { cols, rows, x0, y0 }) {
     const owner = new Int16Array(cols * rows).fill(-1);
     trees.forEach((tree, index) => {
         const species = tree.species === 'pine' || tree.species === 'willow' ? tree.species : 'oak';
-        const size = tree.size === 'small' && species !== 'pine' ? 'small' : 'large';
+        const size = tree.size === 'tall' ? 'tall' : tree.size === 'small' && species !== 'pine' ? 'small' : 'large';
         const radius = CROWN_RADIUS[`${species}.${size}`] / 2;
         const cc = ((tree.tileX - tree.tileY) * HALF_W - x0) / TEXEL_W + DROP_DRIFT * radius;
         const rc = (tree.tileX + tree.tileY) * HALF_H - y0;
@@ -1137,17 +1148,180 @@ function drawDecals(r, ctx) {
     for (const d of list) d.draw(d);
 }
 
+// ---- 5.2 puddle sites ------------------------------------------------------
+
+// Puddles gather only on trodden and paved ground (never grass or sand, never
+// hard against a wall): organic 2:1 blobs, one candidate per PUDDLE_CELL.
+// The R8 mask stores, per texel, 255·(1 − threshold): the texel holds water
+// while the ground state's `puddles` ≥ threshold, with threshold = the site's
+// dryness rank (0.6 of it) plus a quarter of the texel's squared distance
+// from the site centre, so the last tenth of the puddle level still holds
+// the cores of the deepest sites. As
+// the ground dries, whole shallow sites vanish and deep ones shrink from the
+// rim. 0 = never a puddle. Uploaded on scene unit 11 (V9) by the resident
+// renderer; the Canvas path draws the same mask.
+const PUDDLE_SURFACES = new Set([S_DIRT, S_ROAD, S_PLAZA, S_FLAG, S_GRAVEL, S_CINDER, S_EARTH]);
+const PUDDLE_CELL_COLS = 30;
+const PUDDLE_CELL_ROWS = 22;
+const PUDDLE_SITE_CHANCE = 0.34;
+const PUDDLE_WALL_AO = 70;
+
+function bakePuddleSites({ cols, rows, surfaces, aoBuf }) {
+    const mask = new Uint8Array(cols * rows);
+    const eligible = (i) => PUDDLE_SURFACES.has(surfaces[i]) && aoBuf[i] < PUDDLE_WALL_AO;
+    for (let cy = 0; cy * PUDDLE_CELL_ROWS < rows; cy++) {
+        for (let cx = 0; cx * PUDDLE_CELL_COLS < cols; cx++) {
+            if (hash2(cx, cy, 901) > PUDDLE_SITE_CHANCE) continue;
+            const cc = cx * PUDDLE_CELL_COLS + 4 + Math.floor(hash2(cx, cy, 902) * (PUDDLE_CELL_COLS - 8));
+            const rc = cy * PUDDLE_CELL_ROWS + 3 + Math.floor(hash2(cx, cy, 903) * (PUDDLE_CELL_ROWS - 6));
+            if (cc >= cols || rc >= rows || !eligible(rc * cols + cc)) continue;
+            // Half-width in 2-px texels equals half-height in rows: a 2:1
+            // ellipse on the ground plane (6–14 world px across).
+            const rx = 3 + hash2(cx, cy, 904) * 4;
+            const ry = rx * (0.72 + hash2(cx, cy, 905) * 0.2);
+            const dryness = hash2(cx, cy, 907);
+            const salt = 911 + cx * 131 + cy * 17;
+            for (let row = Math.max(0, Math.floor(rc - ry - 2)); row <= Math.min(rows - 1, Math.ceil(rc + ry + 2)); row++) {
+                for (let col = Math.max(0, Math.floor(cc - rx - 2)); col <= Math.min(cols - 1, Math.ceil(cc + rx + 2)); col++) {
+                    const i = row * cols + col;
+                    if (!eligible(i)) continue;
+                    const dx = (col + 0.5 - cc) / rx;
+                    const dy = (row + 0.5 - rc) / ry;
+                    const radius = Math.hypot(dx, dy) + (vnoise(col / 2.5, row / 2, salt) - 0.5) * 0.55;
+                    if (radius >= 1) continue;
+                    const r = Math.max(0, radius);
+                    const threshold = Math.max(0.02, dryness * 0.6 + r * r * 0.25);
+                    const value = Math.max(1, Math.round(255 * (1 - threshold)));
+                    if (value > mask[i]) mask[i] = value;
+                }
+            }
+        }
+    }
+    return mask;
+}
+
+// ---- 5.2 winter ground -----------------------------------------------------
+
+// Snow lies only after the village's own winter precipitation (C-W2
+// `snowCover`, M9): the base bake is re-toned per quarter of snow cover (≤ 4
+// bakes over a day's snowfall). World-anchored fbm + a 2×2 Bayer decide where
+// snow lies; each snowy texel takes the `snow` ramp stop of its own luminance
+// rank, so the ground's texture reads through the snow. Grass and sand take
+// full courses; trodden earth turns to slush (grey snow over the dark ruts);
+// paving is swept (whole drifts only where the snow lies deepest, elsewhere a
+// dark seam in the deepest joints); cover thins under tree crowns and
+// at the eaves (contact AO). Doors, banners and status marks are sprites and
+// overlays drawn over the terrain, so snow never covers them. A clear winter
+// night (`frost`) rimes the grass tips instead.
+const SNOW = ramp('snow');
+const lumaOf = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+const SNOW_RANK_LUMAS = SURFACES.map(s => s.ramp.map(lumaOf));
+const SNOW_GRASS = new Set([S_GRASS, S_SAND]);
+const SNOW_SLUSH = new Set([S_DIRT, S_CINDER, S_EARTH]);
+// Five ground ranks fold onto three snow stops, so a snowfield keeps the
+// ground's texture as a quiet read instead of five-stop noise.
+const SNOW_TONE_BY_RANK = Object.freeze([2, 2, 3, 3, 4]);
+
+function rankOf(luma, lumas) {
+    let best = 0;
+    let bestD = Infinity;
+    for (let k = 0; k < lumas.length; k++) {
+        const d = Math.abs(lumas[k] - luma);
+        if (d < bestD) { bestD = d; best = k; }
+    }
+    return best;
+}
+
+export function bakeWinterGround(r, base, snowBucket, frost) {
+    const { cols, rows, x0, y0, surfaces, aoBuf } = base;
+    const w = cols * TEXEL_W;
+    const image = base.canvas.getContext('2d').getImageData(0, 0, w, rows);
+    const D = image.data;
+    const cover = Math.max(0, Math.min(4, snowBucket)) / 4;
+    const crowns = cover > 0 ? buildCrownField(r, { cols, rows, x0, y0 }) : null;
+    const write = (o, c) => {
+        D[o] = c[0]; D[o + 1] = c[1]; D[o + 2] = c[2];
+        D[o + 4] = c[0]; D[o + 5] = c[1]; D[o + 6] = c[2];
+    };
+    for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+            const i = row * cols + col;
+            const s = surfaces[i];
+            if (s === 255) continue;
+            const o = (row * w + col * TEXEL_W) * 4;
+            const rank = rankOf(lumaOf([D[o], D[o + 1], D[o + 2]]), SNOW_RANK_LUMAS[s]);
+            const sx = col * TEXEL_W;
+            const noise = fbm(sx / 30, row / 15, 1401) + BAYER[(row & 1) * 2 + (col & 1)] * 0.1;
+            let snowy = false;
+            if (cover > 0) {
+                const cd = crowns.dist[i];
+                const crownThin = cd < 1 ? 0.3 + 0.7 * cd : 1;
+                const eaveThin = 1 - Math.min(1, (aoBuf[i] / 255) * 1.8) * 0.9;
+                let local = cover * crownThin * eaveThin;
+                if (s === S_SAND) local *= 0.6;
+                const threshold = 0.1 + local * 0.88;
+                if (SNOW_GRASS.has(s)) {
+                    if (noise < threshold) {
+                        snowy = true;
+                        // A thin course one stop darker at each drift's rim.
+                        const rim = threshold - noise < 0.05 ? 1 : 0;
+                        write(o, SNOW[Math.max(0, SNOW_TONE_BY_RANK[rank] - rim)]);
+                    }
+                } else if (SNOW_SLUSH.has(s)) {
+                    if (noise < threshold * 0.85) {
+                        snowy = true;
+                        // Slush: grey packed snow on the crowns of the ruts,
+                        // the dark ruts themselves stay open.
+                        if (rank >= 2) write(o, SNOW[rank >= 4 ? 1 : 0]);
+                    }
+                } else if (noise < threshold * 0.4) {
+                    // Paving: a drift lies whole over the stones where the
+                    // snow is deepest, one stop under a grass snowfield.
+                    snowy = true;
+                    write(o, SNOW[SNOW_TONE_BY_RANK[rank] - 1]);
+                } else if (rank === 0 && noise < threshold * 0.8) {
+                    // The swept rest keeps snow only in its deepest joints,
+                    // in the darkest snow stop, so the joints read as a cool
+                    // seam, not a light lattice over the stones.
+                    snowy = true;
+                    write(o, SNOW[0]);
+                }
+            }
+            if (!snowy && frost && s === S_GRASS && rank >= 3
+                && hash2(col, row, 1409) < 0.6 && fbm(sx / 44, row / 22, 1411) < 0.62) {
+                write(o, SNOW[1]);
+            }
+        }
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = rows;
+    canvas.getContext('2d').putImageData(image, 0, 0);
+    return canvas;
+}
+
 // ---- install --------------------------------------------------------------
 
 // Registers the bake on the renderer. The pass revision (read every frame
-// as part of the terrain-cache key) only tracks the land sheets loading and
-// settles to a constant string once they have; season, scenery and the coast
+// as part of the terrain-cache key) tracks the land sheets loading (settling
+// to a constant once they have) and the winter ground: the C-W2 snow bucket
+// and frost from `renderer._groundState`, so the terrain rebakes only when a
+// quarter of snow cover or the frost changes. Season, scenery and the coast
 // field already key the terrain cache through their own entries. The cached
-// image is re-keyed on all of them at bake time only.
+// image is re-keyed on all of them at bake time only. Weather and time of day
+// never reach the base bake; the grade owns them.
 const SHEET_IDS = [...new Set(Object.values(TEXTURE_SOURCES).flat().map(([id]) => id))];
+
+function winterKeyOf(renderer) {
+    const ground = renderer._groundState;
+    const bucket = snowBucketOf(ground?.snowCover);
+    const frost = ground?.frost ? 1 : 0;
+    return bucket || frost ? `w${bucket}f${frost}` : '';
+}
 
 export function installGroundBake(renderer) {
     let cached = null;
+    let winter = null;
     let sheetsReady = false;
     const sheetsKey = () => {
         if (sheetsReady) return 'sheets';
@@ -1160,7 +1334,7 @@ export function installGroundBake(renderer) {
     return renderer.registerTerrainBakePass({
         id: 'ground-splat',
         stage: 'ground',
-        revision: sheetsKey,
+        revision: () => `${sheetsKey()}${winterKeyOf(renderer)}`,
         draw(ctx) {
             const key = `${getCoastField(renderer).key}|${sheetsKey()}|${renderer._terrainSeason || 'summer'}|${renderer._terrainSceneryRevision || 0}`;
             if (!cached || cached.key !== key) {
@@ -1168,8 +1342,34 @@ export function installGroundBake(renderer) {
                 cached = { key, ...baked };
                 renderer.groundField = baked.field;
                 renderer.groundBakeMs = Math.round(baked.ms);
+                renderer.groundPuddleMask = {
+                    data: baked.puddleMask,
+                    cols: baked.cols,
+                    rows: baked.rows,
+                    x0: baked.x0,
+                    y0: baked.y0,
+                    texelW: TEXEL_W,
+                    revision: key,
+                };
             }
-            ctx.drawImage(cached.canvas, cached.x0, cached.y0);
+            const winterKey = winterKeyOf(renderer);
+            if (!winterKey) {
+                if (winter) releaseCanvasBackingStore(winter.canvas);
+                winter = null;
+                ctx.drawImage(cached.canvas, cached.x0, cached.y0);
+                return;
+            }
+            if (!winter || winter.key !== `${key}|${winterKey}`) {
+                if (winter) releaseCanvasBackingStore(winter.canvas);
+                const ground = renderer._groundState;
+                const started = performance.now();
+                winter = {
+                    key: `${key}|${winterKey}`,
+                    canvas: bakeWinterGround(renderer, cached, snowBucketOf(ground?.snowCover), ground?.frost ? 1 : 0),
+                };
+                renderer.groundWinterBakeMs = Math.round(performance.now() - started);
+            }
+            ctx.drawImage(winter.canvas, cached.x0, cached.y0);
         },
     });
 }

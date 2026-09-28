@@ -7,6 +7,7 @@ import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { dialogueShape, dialogueSourceLabel } from '../../config/dialogue.js';
 import { el, replaceChildren } from './DomSafe.js';
+import { publishReservedRect } from './ReservedRects.js';
 import {
     collisionsForAgent,
     formatCdCommand,
@@ -475,6 +476,11 @@ export class ActivityPanel {
     constructor({ world = null, renderer = null, harborTraffic = null, biographyService = null, affinityService = null, toast = null } = {}) {
         const getterFor = (value) => (typeof value === 'function' ? value : () => value);
         this.panelEl = document.getElementById('activityPanel');
+        // V8 — the activity panel's box is reserved screen for moments,
+        // plates and director framing.
+        this._unpublishReservedRect = publishReservedRect('activity-panel', this.panelEl, {
+            frame: document.getElementById('characterMode'),
+        });
         this.closeBtn = document.getElementById('panelClose');
         this._dependencies = {
             world: getterFor(world),
@@ -4562,6 +4568,7 @@ export class ActivityPanel {
         this._detailFetchSeq++;
         this._chronicleFetchSeq++;
         this._pinFetchSeq++;
+        this._unpublishReservedRect?.();
         this._focusRequestVersion++;
         this._stopPolling();
         this._stopBuildingPolling();

@@ -9,7 +9,6 @@ import {
     gpuLightColorForShader,
     selectGpuTimingMetrics,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
-import { packGpuSidecarPixels } from '../../claudeville/src/presentation/character-mode/gpu/GpuSceneBuilder.js';
 import { GpuWorldRenderer } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
 
 test('GPU light slots preserve authored RGB, identity, and priority', () => {
@@ -42,20 +41,7 @@ test('GPU light slots preserve authored RGB, identity, and priority', () => {
     }
 });
 
-test('authored emissive RGB is kept in a separate packed channel', () => {
-    const packed = packGpuSidecarPixels({
-        material: new Uint8ClampedArray([3, 0, 0, 255, 4, 0, 0, 255]),
-        emissive: new Uint8ClampedArray([12, 34, 56, 64, 90, 80, 70, 128]),
-        occluder: new Uint8ClampedArray([0, 2, 5, 255, 0, 7, 0, 0]),
-        pixelCount: 2,
-    });
-    assert.deepEqual([...packed.emissive], [12, 34, 56, 64, 90, 80, 70, 128]);
-    // B carries occluder R (authored height) and A carries occluder G (strength).
-    // This assertion previously expected max(RGBA) collapsed into both, which was
-    // the packing defect itself: it destroyed the height/strength distinction the
-    // material contract defines.
-    assert.deepEqual([...packed.packed], [3, 64, 0, 2, 4, 128, 0, 7]);
-
+test('authored emissive RGB travels as its own batch channel', () => {
     const source = { width: 2, height: 1 };
     const materialSource = { width: 2, height: 1 };
     const emissiveSource = { width: 2, height: 1 };

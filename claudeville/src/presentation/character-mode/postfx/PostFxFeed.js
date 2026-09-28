@@ -6,6 +6,9 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../../config/constants.js';
 import { RENDERER_RESOURCE_BYTES_PER_PIXEL, canvasPixelCount, releaseCanvasBackingStore } from '../CanvasBudget.js';
 import { setGpuLightColor } from '../gpu/GpuWorldPolicy.js';
+import { ownerSlotFor } from '../LightSourceRegistry.js';
+import { footprintFieldFor } from '../FootprintField.js';
+import { GPU_LANDMARK_IDS } from '../gpu/GpuSceneBuilder.js';
 
 const MAX_LIGHTS = 48;
 const MAX_HAZE = 8;
@@ -77,6 +80,27 @@ function incidentRgb(kind) {
     return INCIDENT_RGB[kind] || INCIDENT_RGB.errored;
 }
 
+// V5 — role codes the resident loop reads (u_lightShape.w).
+const LIGHT_ROLE_CODES = Object.freeze({ point: 0, aperture: 1, fixture: 2, attention: 3 });
+
+// V5 — a light slot's world geometry beside its backing-px projection: the
+// foot (world px), the emitter height, ground radius and face normal, the
+// role, the owner's V9 slot (2.5) and the landmark the light is mounted on
+// (2.2). `heightPx` is the height in backing px for the hybrid pools.
+function setLightGeometry(slot, src, footX, footY, radiusWorld, scale) {
+    const normal = Array.isArray(src?.normal) ? src.normal : null;
+    slot.footX = footX;
+    slot.footY = footY;
+    slot.radiusWorld = radiusWorld;
+    slot.height = Math.max(0, finite(src?.height, 0));
+    slot.heightPx = slot.height * scale;
+    slot.nx = normal ? finite(normal[0], 0) : 0;
+    slot.ng = normal ? finite(normal[1], 0) : 0;
+    slot.role = LIGHT_ROLE_CODES[src?.role] ?? (src?.attention ? LIGHT_ROLE_CODES.attention : LIGHT_ROLE_CODES.point);
+    slot.ownerSlot = ownerSlotFor(src?.ownerId);
+    slot.landmarkId = Math.max(0, Math.round(finite(src?.landmarkId, 0)));
+}
+
 function emptyFeed(nowMs) {
     return {
         timeMs: finite(nowMs, 0),
@@ -94,6 +118,8 @@ function emptyFeed(nowMs) {
         // history, so the resident shader never re-derives rain history.
         wetness: 0,
         pulse: null,
+        // 2.2 — the RG8 footprint field (FootprintField.js), resident only.
+        footprint: null,
     };
 }
 
@@ -122,6 +148,8 @@ export function createPostFxFeed() {
     const hazeSlotPool = [];
     const lightColorScratch = [0, 0, 0];
     const lanternColor = [255, 213, 106];
+    // V5 — the prop-halo fixture template (its height is set per lantern).
+    const lanternHalo = { height: 24, normal: null, role: 'fixture', ownerId: null, landmarkId: 0 };
 
     let maskCanvas = null;
     let maskCtx = null;
@@ -279,21 +307,33 @@ export function createPostFxFeed() {
             const wx = finite(src.x ?? src.origin?.x, NaN);
             const wy = finite(src.y ?? src.origin?.y, NaN);
             if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
+            // V5 — every light is placed by its foot; the emitter's own screen
+            // position only anchors the heat haze.
+            const footX = finite(src.ground?.x, wx);
+            const footY = finite(src.ground?.y, wy);
 
-            // Cull in CSS/screen space (same space as worldToScreen), then scale.
+            // Cull in CSS/screen space (same space as worldToScreen), then
+            // scale: a light stays while its emitter or its foot is near.
             let sx;
             let sy;
+            let fx;
+            let fy;
             if (camera && typeof camera.worldToScreen === 'function') {
                 const p = camera.worldToScreen(wx, wy);
                 sx = finite(p?.x, 0);
                 sy = finite(p?.y, 0);
+                const f = camera.worldToScreen(footX, footY);
+                fx = finite(f?.x, 0);
+                fy = finite(f?.y, 0);
             } else {
                 sx = wx;
                 sy = wy;
+                fx = footX;
+                fy = footY;
             }
-            if (sx < -margin || sy < -margin || sx > cssW + margin || sy > cssH + margin) {
-                continue;
-            }
+            const emitterOut = sx < -margin || sy < -margin || sx > cssW + margin || sy > cssH + margin;
+            const footOut = fx < -margin || fy < -margin || fx > cssW + margin || fy > cssH + margin;
+            if (emitterOut && footOut) continue;
 
             const kind = src.kind || 'point';
             const radiusWorld = Math.max(0, finite(src.radius, 64));
@@ -313,13 +353,14 @@ export function createPostFxFeed() {
                 const slot = lightSlot(lightCount);
                 slot.id = String(src.id || `${kind}:${i}`);
                 slot.priority = finite(src.priority, 0);
-                slot.x = bx;
-                slot.y = by;
+                slot.x = fx * dpr;
+                slot.y = fy * dpr;
                 slot.radius = radiusBacking;
                 setGpuLightColor(slot, lightColorScratch);
                 slot.intensity = intensity;
                 slot.night = false;
                 slot.kind = kind;
+                setLightGeometry(slot, src, footX, footY, radiusWorld, zoom * dpr);
                 lightsOut.push(slot);
                 lightCount++;
             }
@@ -348,7 +389,11 @@ export function createPostFxFeed() {
             for (let i = 0; i < lanternSources.length && lightCount < MAX_LIGHTS; i++) {
                 const src = lanternSources[i];
                 if (!src) continue;
-                const p = camera.worldToScreen(finite(src.x, NaN), finite(src.y, NaN));
+                // V5 — a prop halo is a fixture on its tile (the flame source
+                // sits 10 px above it), lit from its flame height.
+                const footX = finite(src.x, NaN);
+                const footY = finite(src.y, NaN) + 10;
+                const p = camera.worldToScreen(footX, footY);
                 const sx = finite(p?.x, NaN);
                 const sy = finite(p?.y, NaN);
                 if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
@@ -364,6 +409,8 @@ export function createPostFxFeed() {
                 slot.intensity = 1;
                 slot.night = true;
                 slot.kind = 'point';
+                lanternHalo.height = src.fixture === 'brazier' ? 16 : 24;
+                setLightGeometry(slot, lanternHalo, footX, footY, lanternRadius / (zoom * dpr), zoom * dpr);
                 lightsOut.push(slot);
                 lightCount++;
             }
@@ -710,6 +757,7 @@ export function createPostFxFeed() {
                 feed.water = waterObj;
                 feed.wetness = 0;
                 feed.pulse = null;
+                feed.footprint = null;
                 return feed;
             }
 
@@ -746,6 +794,11 @@ export function createPostFxFeed() {
             feed.haze = hazeOut;
             feed.wetness = clamp01(renderer?._surfaceWetness);
             feed.pulse = fillPulse(villageSnapshot, nowMs);
+            // 2.2 — the resident renderer's footprint field (baked once per
+            // map/scenery revision); the hybrid pass has no receivers to march.
+            feed.footprint = args.gpuWorldActive === true
+                ? footprintFieldFor(renderer, GPU_LANDMARK_IDS)
+                : null;
             return feed;
         } catch {
             diagnostics.buildFailures++;

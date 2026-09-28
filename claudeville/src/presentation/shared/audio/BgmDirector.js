@@ -28,12 +28,15 @@
 import { eventBus } from '../../../domain/events/DomainEvent.js';
 import { bucketCounts } from '../../../domain/services/SignalLedger.js';
 import {
+    OUTCOME_AGGREGATE_MS,
     OutcomeRouter,
     OutcomeTracker,
     failedPushFacts,
+    isAggregatedOutcome,
     toolFailedFact,
     verifiedOutcomeFact,
 } from '../../../application/OutcomeSignals.js';
+import { expectCueScore } from './CueScore.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
 import { readCountHours, readTownBandVoice } from '../SoundSettings.js';
@@ -378,7 +381,19 @@ export class BgmDirector {
 
     _submitOutcomes(facts) {
         if (!this._ownsSignals() || !this._outcomes) return;
-        for (const fact of facts) this._outcomes.submit(fact);
+        for (const fact of facts) {
+            // 8.3 — while the band sounds, the moment that carries an
+            // aggregated fact (dispatch, return) waits for its note instead of
+            // peaking before the aggregation window closes; 600 ms covers
+            // CueKit's lead and the band's grid wait. An outcome emitted at
+            // once (release, failed push) publishes its score inside `submit`,
+            // so it needs no expectation — one registered after it would hold
+            // its moment to the cap.
+            const admitted = this._outcomes.submit(fact);
+            if (admitted && isAggregatedOutcome(fact.kind) && this.engine?.started) {
+                expectCueScore(fact.kind, fact.agentId ?? null, OUTCOME_AGGREGATE_MS + 600);
+            }
+        }
     }
 
     _playOutcome(outcome) {

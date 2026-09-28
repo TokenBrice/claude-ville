@@ -1,45 +1,65 @@
-// 6.7 — chimney smoke from real chimneys. Every building whose registry entry
-// names a `smokeTop` (where a column leaves the cap) or `chimney` effect anchor
-// gets a column of pixel puffs, and only while the building is occupied or
-// busy: smoke says someone is working inside, so an empty building never
-// smokes. Puffs sort just in front of the chimney's own building half (0.6),
-// so a nearer tower hides them on both backends and their own roof never does.
+// 6.4 — smoke that reads, from every real chimney. Every building whose
+// registry entry names `smokeTop` anchors (where a column leaves a cap; the
+// Harbor has one per stack) or a `chimney` effect anchor gets a column of
+// round three-tone puffs (ParticleSystem shape 'smoke': radius 2 -> 5 art px
+// over life, lit `#d3d6dc` / body `#a9aeb8` / shade `#787c86`, four alpha
+// quanta by height, gone at 60 world px), and only while the building has a
+// working visitor (V8 `isWorkingVisitor`): smoke says someone is working
+// inside, so an empty building never smokes. Puffs sort just in front of the
+// chimney's own building half (0.6), so a nearer tower hides them on both
+// backends and their own roof never does.
 //
 // Weather: the one wind (C-W3, `windAt` at each chimney mouth, gusts
 // included) leans the column — fog barely tilts it, a storm lays it flat —
 // and rain and storm flatten and shorten it further. A hearth building's soot
 // warms with its fire (#33), and at dusk and night its first puff carries the
 // fire-lit underside.
-// Reduced motion: one static three-puff wisp per smoking chimney.
+// Reduced motion: one static three-puff wisp per smoking chimney, the same
+// puffs at the same scale, leaning with the knot wind.
 import { getBuildingEffectAnchor } from './BuildingVisualRegistry.js';
-import { SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
+import { drawSmokePuff, smokePuffAlpha, SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
 import { buildingCenterToWorld } from './Projection.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
 import { smokeWindDrift } from './AtmosphereState.js';
+import { baseWindX } from './Wind.js';
 
-// Spawn cadence per occupancy tier. With puffs living 1.5–2.3 s this keeps
-// about 5 (occupied) to 8 (busy) puffs per chimney; a hard cap holds the
+// Spawn cadence per occupancy tier. With puffs living 1.7–2.2 s this keeps
+// about 4–5 (occupied) to 7–8 (busy) puffs per chimney; a hard cap holds the
 // ≤10 budget whatever the frame rate.
 const PUFF_INTERVAL_MS = Object.freeze({ occupied: 420, busy: 260 });
 const MAX_PUFFS_PER_CHIMNEY = 10;
+// Rain and storm flatten the column: slower, shorter-lived puffs that the
+// wind lays over (about half the dry column's height).
+const WET_LIFE = Object.freeze([70, 92]);
+const WET_SPEED = Object.freeze([0.32, 0.38]);
 // Buildings whose smoke rises off a live fire.
 const HEARTH_TYPES = new Set(['forge']);
 const HEARTH_UNDERSIDE = '#9a5a36';
 // After dark the column must stay the palest thing over the dark roofs and
 // lawns: moonlit soot. The Canvas frame is graded after the fact, so the
 // authored albedo sits high; a backend that grades particles itself (the
-// resident GPU draw) wears the grade's own response to that soot, held to a
-// luminance floor by mixing toward cool moonlight so the column reads pale
-// but never white (see `moonlitTones`).
-const MOONLIT_SOOT = Object.freeze(['#a9aeb8', '#bec3cb', '#d3d6dc']);
-const MOONLIT_FLOOR = Object.freeze([0.44, 0.51, 0.58]);
+// resident GPU draw) wears the grade's own response to that body tone, held
+// to a luminance floor by mixing toward cool moonlight so the column reads
+// pale but never white (see `moonlitTones`); its rims step from that body.
+const MOONLIT_SOOT = Object.freeze(['#a9aeb8']);
+const MOONLIT_FLOOR = Object.freeze([0.5]);
 const MOONLIGHT = Object.freeze([0.70, 0.76, 0.86]);
+// Reduced motion: the live column's first three life steps, frozen at the
+// heights where they would be (dy world px above the mouth, dx downwind).
 const STATIC_WISP = Object.freeze([
-    Object.freeze({ dx: 0, dy: -2, size: 3, alpha: 0.5 }),
-    Object.freeze({ dx: -1, dy: -7, size: 4, alpha: 0.36 }),
-    Object.freeze({ dx: -3, dy: -13, size: 4, alpha: 0.2 }),
+    Object.freeze({ dx: 0, dy: -3, radius: 2 }),
+    Object.freeze({ dx: 2, dy: -16, radius: 3 }),
+    Object.freeze({ dx: 5, dy: -31, radius: 4 }),
 ]);
-const STATIC_TONE = '#8d919a';
+const STATIC_TONE = SMOKE_COOL_COLORS[0];
+
+// Registry chimney mouths of one building: `smokeTop` may be one point or a
+// list (one per stack); `chimney` is the fallback.
+function chimneyAnchors(type) {
+    const top = getBuildingEffectAnchor(type, 'smokeTop', null) || getBuildingEffectAnchor(type, 'chimney', null);
+    if (!Array.isArray(top)) return [];
+    return Array.isArray(top[0]) ? top.filter(Array.isArray) : [top];
+}
 
 export class ChimneySmoke {
     constructor() {
@@ -54,21 +74,23 @@ export class ChimneySmoke {
         if (!buildings || !assets?.has) return [];
         const out = [];
         for (const building of buildings.values ? buildings.values() : buildings) {
-            const at = getBuildingEffectAnchor(building.type, 'smokeTop', null)
-                || getBuildingEffectAnchor(building.type, 'chimney', null);
-            if (!Array.isArray(at)) continue;
+            const anchors = chimneyAnchors(building.type);
+            if (!anchors.length) continue;
             const id = `building.${building.type}`;
             if (!assets.has(id)) return [];
             const anchor = assets.getAnchor(id);
             const center = buildingCenterToWorld(building);
-            out.push(Object.freeze({
-                type: building.type,
-                building,
-                localY: at[1],
-                x: Math.round(center.x - anchor[0] + at[0]),
-                y: Math.round(center.y - anchor[1] + at[1]),
-                hearth: HEARTH_TYPES.has(building.type),
-            }));
+            anchors.forEach((at, index) => {
+                out.push(Object.freeze({
+                    key: `${building.type}:${index}`,
+                    type: building.type,
+                    building,
+                    localY: at[1],
+                    x: Math.round(center.x - anchor[0] + at[0]),
+                    y: Math.round(center.y - anchor[1] + at[1]),
+                    hearth: HEARTH_TYPES.has(building.type),
+                }));
+            });
         }
         this._sources = out;
         return out;
@@ -88,20 +110,20 @@ export class ChimneySmoke {
             const tier = presence?.get?.(source.type)?.tier;
             const interval = PUFF_INTERVAL_MS[tier];
             if (!interval) continue;
-            const last = this._lastPuff.get(source.type) || 0;
+            const last = this._lastPuff.get(source.key) || 0;
             if (now - last < interval) continue;
-            this._lastPuff.set(source.type, now);
-            const tag = `chimney:${source.type}`;
+            this._lastPuff.set(source.key, now);
+            const tag = `chimney:${source.key}`;
             if (particleSystem.countTagged(tag) >= MAX_PUFFS_PER_CHIMNEY) continue;
             const options = {
                 tag,
-                spread: [1, 1],
+                spread: [0, 0],
                 windX: smokeWindDrift(atmosphere, source.x, source.y, timeMs) * (wet ? 1.8 : 1),
                 sortY: sortYFor ? sortYFor(source.building, source.localY) : null,
             };
             if (wet) {
-                options.life = [48, 80];
-                options.speed = [0.12, 0.2];
+                options.life = WET_LIFE;
+                options.speed = WET_SPEED;
             }
             if (dark) {
                 options.colors = MOONLIT_SOOT;
@@ -121,23 +143,18 @@ export class ChimneySmoke {
     // Reduced motion: a static wisp stands in for each live column. On the
     // ungraded resident overlay pass the C2 `lightGrade` so it takes the
     // scene's light (moonlit soot after dark); the Canvas frame is graded
-    // after the fact.
-    drawStatic(ctx, { buildings, assets, presence, lightGrade = null } = {}) {
+    // after the fact. The wisp leans with the knot wind (never a gust).
+    drawStatic(ctx, { buildings, assets, presence, lightGrade = null, weather = null } = {}) {
         const tone = !lightGrade ? STATIC_TONE
-            : Number(lightGrade.night) > 0.35 ? moonlitTones(lightGrade)[1]
+            : Number(lightGrade.night) > 0.35 ? moonlitTones(lightGrade)[0]
                 : gradedHex(STATIC_TONE, lightGrade);
+        const lean = baseWindX(weather) < 0 ? -1 : 1;
         for (const source of this.sources(buildings, assets)) {
             const tier = presence?.get?.(source.type)?.tier;
             if (!PUFF_INTERVAL_MS[tier]) continue;
             ctx.save();
-            ctx.fillStyle = tone;
             for (const puff of STATIC_WISP) {
-                ctx.globalAlpha = puff.alpha;
-                const left = source.x + puff.dx - (puff.size >> 1);
-                const top = source.y + puff.dy - (puff.size >> 1);
-                ctx.fillRect(left + 1, top, puff.size - 2, puff.size);
-                ctx.fillRect(left, top + 1, 1, puff.size - 2);
-                ctx.fillRect(left + puff.size - 1, top + 1, 1, puff.size - 2);
+                drawSmokePuff(ctx, source.x + puff.dx * lean, source.y + puff.dy, puff.radius, tone, smokePuffAlpha(-puff.dy));
             }
             ctx.restore();
         }
@@ -177,10 +194,13 @@ function gradedHex(hex, grade) {
     return `rgb(${Math.round(out[0] * 255)}, ${Math.round(out[1] * 255)}, ${Math.round(out[2] * 255)})`;
 }
 
+// A hot hearth only tints its soot (at most 30 % toward the ember brown): the
+// column must stay the plan's grey three-tone puff, which is what separates
+// it from the plaza stone and warm roofs behind it.
 function warmSoot(warmth) {
     let colors = warmSootCache.get(warmth);
     if (!colors) {
-        colors = SMOKE_COOL_COLORS.map((cool, i) => mixHex(cool, SMOKE_WARM_COLORS[i] || cool, warmth * 0.85));
+        colors = SMOKE_COOL_COLORS.map((cool, i) => mixHex(cool, SMOKE_WARM_COLORS[i] || cool, warmth * 0.3));
         warmSootCache.set(warmth, colors);
     }
     return colors;

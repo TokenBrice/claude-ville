@@ -10,6 +10,7 @@ const KIND_ORDER = Object.freeze({
     'prop-back': 20,
     prop: 30,
     'prop-column': 30,
+    'harbor-hulls': 40,
     'harbor-traffic': 40,
     'bridge-lantern': 45,
     agent: 50,
@@ -137,13 +138,22 @@ function drawSceneCategory(ctx, zoom, context, payload, drawable) {
     drawable.sceneCategory?.canvasFallback(ctx, payload, zoom, context);
 }
 
+// 3.8 / M23 — a scene category the backend resolved native (the registry
+// marks its entry) emits its commands as V9 records from its own depth
+// drawable, so they land in painter order with every other record. Other
+// categories return nothing here and replay on the overlay.
+function sceneCategoryGpuRecords(context, payload, drawable) {
+    if (drawable.sceneNative !== true) return null;
+    return drawable.sceneCategory?.emitSceneCommands?.(payload, context) ?? null;
+}
+
 const _framePools = new WeakMap();
 const _sceneCategorySemantics = new WeakMap();
 
 function sceneCategorySemantics(category) {
     let semantics = _sceneCategorySemantics.get(category);
     if (!semantics) {
-        semantics = { sortBand: category.sortBand };
+        semantics = { sortBand: category.sortBand, buildGpuRecord: sceneCategoryGpuRecords };
         _sceneCategorySemantics.set(category, semantics);
     } else {
         semantics.sortBand = category.sortBand;
@@ -237,25 +247,49 @@ export function appendDepthSortedDrawables(target, {
     for (const drawable of buildingDrawables) {
         pushDepthDrawable(target, pooledDepthDrawable(target, drawable.kind, drawable.sortY, drawable, drawBuilding));
     }
+    const splitBuildings = collectSplitBuildings(buildingDrawables);
     for (const drawable of propDrawables) {
+        // 7.1 — a rest seat's back and front slices bracket their sitter. A
+        // sitter standing behind a split building sorts just before its back
+        // half (agentSortY), so the seat's slices move there with it, keeping
+        // back < body < front.
+        const sprite = drawable.payload?.sprite;
+        if (sprite?.bracketsSitter) {
+            const behind = behindSplitSortY(sprite.x, sprite.y, splitBuildings);
+            const own = propPartSortY(sprite, drawable.payload.part, drawable.payload.column);
+            drawable.sortY = behind == null ? own : behind + (own - sprite.y) / 8;
+        }
         pushDepthDrawable(target, drawable);
     }
-    const splitBuildings = collectSplitBuildings(buildingDrawables);
     for (const sprite of agentSprites) {
         pushDepthDrawable(target, pooledDepthDrawable(target, 'agent', agentSortY(sprite, splitBuildings), sprite, drawAgent));
     }
     for (const entry of sceneCategoryFrame?.entries || []) {
         const category = entry.category;
         for (const item of entry.items) {
+            // 3.8 — a hull on the water behind a split building (the Harbor on
+            // its piers) sorts before the back half, like a body behind it.
+            let sortY = item?.sortY;
+            if (category.behindSplitBuildings === true && item) {
+                const split = behindSplit(item.x, item.y, splitBuildings);
+                // Read by the category's own marks pass (flags, plates): the
+                // depth verdict plus the building that sorts over the item,
+                // so the marks pass can test whether its silhouette actually
+                // covers the hull on screen before hiding them.
+                item.behindBuilding = split != null;
+                item.behindBuildingDrawable = split?.drawable ?? null;
+                if (split != null) sortY = split.backSortY - 0.5;
+            }
             const drawable = pooledDepthDrawable(
                 target,
                 category.id,
-                item?.sortY,
+                sortY,
                 item,
                 drawSceneCategory,
                 sceneCategorySemantics(category),
             );
             drawable.sceneCategory = category;
+            drawable.sceneNative = entry.native === true;
             drawable.overlayBand = category.overlayBand;
             pushDepthDrawable(target, drawable);
         }
@@ -301,6 +335,7 @@ function collectSplitBuildings(buildingDrawables) {
         const y1 = y0 + (Number(building.height) || 1);
         if (!Number.isFinite(x0) || !Number.isFinite(y0)) continue;
         out.push({
+            drawable,
             backSortY: drawable.sortY,
             frontSortY: front.sortY,
             x1,
@@ -314,25 +349,33 @@ function collectSplitBuildings(buildingDrawables) {
     return out;
 }
 
+// The split building a point at (x, y) stands behind (between its back and
+// front depths, inside its footprint), else null.
+function behindSplit(x, y, splitBuildings) {
+    if (!splitBuildings.length || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    for (const split of splitBuildings) {
+        if (!(y > split.backSortY && y <= split.frontSortY)) continue;
+        if (x < split.left || x > split.right) continue;
+        const tile = worldToTile(x, y);
+        if (tile.tileX < split.x1 && tile.tileY < split.y1) return split;
+    }
+    return null;
+}
+
+// The back-half depth such a point takes, else null.
+function behindSplitSortY(x, y, splitBuildings) {
+    const split = behindSplit(x, y, splitBuildings);
+    return split ? split.backSortY - 0.5 : null;
+}
+
 // The painter sortY the sprite was sorted at this frame is kept on the
 // sprite (`_depthSortY`), so the particles it emits (footfalls, sweat, motes)
 // sort with the body that owns them, behind a building with it.
 function agentSortY(sprite, splitBuildings) {
-    const y = sprite.y;
-    sprite._behindBuilding = false;
-    sprite._depthSortY = y;
-    if (!splitBuildings.length || !Number.isFinite(sprite.x) || !Number.isFinite(y)) return y;
-    for (const split of splitBuildings) {
-        if (!(y > split.backSortY && y <= split.frontSortY)) continue;
-        if (sprite.x < split.left || sprite.x > split.right) continue;
-        const tile = worldToTile(sprite.x, y);
-        if (tile.tileX < split.x1 && tile.tileY < split.y1) {
-            sprite._behindBuilding = true;
-            sprite._depthSortY = split.backSortY - 0.5;
-            return sprite._depthSortY;
-        }
-    }
-    return y;
+    const behind = behindSplitSortY(sprite.x, sprite.y, splitBuildings);
+    sprite._behindBuilding = behind != null;
+    sprite._depthSortY = behind ?? sprite.y;
+    return sprite._depthSortY;
 }
 
 // 0.6 — on Canvas each live world particle joins the depth stream as a small
@@ -399,6 +442,7 @@ function clearPooledDrawable(drawable) {
     drawable._drawFallback = null;
     drawable._gpuBuilder = null;
     drawable.sceneCategory = null;
+    drawable.sceneNative = false;
     drawable.elevation = null;
     drawable.emissive = null;
     drawable.occluder = null;
@@ -415,9 +459,8 @@ export function drawDepthSortedDrawables(ctx, drawables, context = {}) {
     const zoom = context.zoom || 1;
     const paintCounts = context.paintCounts;
     // On the resident path this context is the hidden pre-composite canvas
-    // under the opaque GPU island. Overlay-safe scene categories replay once
-    // on the overlay (drawSceneCategoryOverlays), so their copy here is waste.
-    const overlayCategoryIds = context.gpuWorldActive ? context.overlayCategoryIds : null;
+    // under the opaque GPU island. Scene categories render there as records
+    // or replay once on the overlay (drawSceneCategoryOverlays).
     for (const drawable of drawables) {
         if (paintCounts) {
             paintCounts.lower[drawable.kind] ??= 0;
@@ -429,7 +472,9 @@ export function drawDepthSortedDrawables(ctx, drawables, context = {}) {
         ) {
             continue;
         }
-        if (overlayCategoryIds?.has?.(drawable.sceneCategory?.id)) continue;
+        // A scene category on the resident path is either native (records)
+        // or replayed on the overlay: never painted on this hidden canvas.
+        if (context.gpuWorldActive && drawable.sceneCategory) continue;
         if (drawable.draw) {
             drawable.draw(ctx, zoom, context);
             if (paintCounts) paintCounts.lower[drawable.kind] += 1;
@@ -640,7 +685,7 @@ function drawablePoint(drawable, point) {
 function drawableRadius(drawable) {
     const kind = drawable?.kind || '';
     if (kind.startsWith('building')) return 260;
-    if (kind === 'harbor-traffic') return 180;
+    if (kind === 'harbor-traffic' || kind === 'harbor-hulls') return 180;
     if (kind === 'agent') return 80;
     if (kind.includes('prop')) return 150;
     return 120;

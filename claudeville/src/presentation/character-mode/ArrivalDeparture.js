@@ -9,10 +9,14 @@ import {
     chips,
     column,
     comet,
+    createCueGate,
+    cueGatedAge,
     defineMoment,
     diamond,
     momentPhase,
     quantStep,
+    queueMomentEdgePlate,
+    resolveMomentAnchor,
     ringDots,
     runeNotch,
     snap,
@@ -48,6 +52,13 @@ const MAX_MINIATURES = 24;
 // Launch/landing heights above the feet, in world texels.
 const PARENT_LAUNCH_LIFT = 40;
 const ARRIVAL_COLUMN_HEIGHT = 44;
+// V8 — each peak frame's largest extent around its own point (world texels):
+// the arrival's widest ring step and full column, the dispatch impact's ring
+// and the child's cream silhouette, the return's rim ring and its diamond.
+const ARRIVAL_EXTENT = Object.freeze({ left: -17, top: -(ARRIVAL_COLUMN_HEIGHT + 4), right: 17, bottom: 9 });
+const DISPATCH_IMPACT_EXTENT = Object.freeze({ left: -12, top: -36, right: 12, bottom: 7 });
+const RETURN_IMPACT_EXTENT = Object.freeze({ left: -12, top: -(PARENT_LAUNCH_LIFT + 6), right: 12, bottom: 7 });
+const ARRIVAL_RESIDUE_AT = ARRIVAL.anticipation + ARRIVAL.peak + ARRIVAL.follow;
 
 const PROVIDER_COLORS = {
     claude: '#a78bfa',
@@ -326,6 +337,8 @@ export class ArrivalDepartureController {
             onLanded: reduced ? null : onLanded,
             seed: hashId(agent.id),
             silhouette: reduced ? null : bodySilhouette(sprite),
+            // 8.3 — the cream frame lands on the arrival's first note.
+            cue: reduced ? null : createCueGate('arrival', agent.id),
         };
         this.arrivals.set(agent.id, arrival);
         return reduced ? null : arrival;
@@ -370,6 +383,8 @@ export class ArrivalDepartureController {
             silhouette: bodySilhouette(childSprite),
             ramp: MAGIC_RAMP,
             onLanded,
+            // 8.3 — the impact frame lands on the dispatch note.
+            cue: createCueGate('dispatch', parentSprite.agent?.id ?? null),
         });
         return this.dispatches.get(childId);
     }
@@ -411,6 +426,8 @@ export class ArrivalDepartureController {
             miniature: this.miniatures.get(childAgent.id) || null,
             signature: agentSignatureFor(childAgent),
             ramp: STONE_RAMP,
+            // 8.3 — the impact frame lands on the return's first note.
+            cue: createCueGate('subagentReturn', parentSprite.agent?.id ?? null),
         });
         return this.merges.get(childAgent.id);
     }
@@ -514,7 +531,7 @@ export class ArrivalDepartureController {
 
     update(now = nowMs()) {
         for (const [id, arrival] of this.arrivals.entries()) {
-            const age = now - arrival.startedAt;
+            const age = this._arrivalAge(arrival, now);
             if (!arrival.landed) {
                 if (!arrival.silhouette) arrival.silhouette = bodySilhouette(arrival.sprite);
                 if (age >= ARRIVAL.anticipation + ARRIVAL.peak) this._landArrival(arrival);
@@ -527,7 +544,7 @@ export class ArrivalDepartureController {
             // dispatched; keep trying until it leaves as itself.
             if (!dispatch.miniature) dispatch.miniature = this.rememberMiniature(dispatch.childSprite);
             if (!dispatch.silhouette) dispatch.silhouette = bodySilhouette(dispatch.childSprite);
-            const age = this.motionScale === 0 ? dispatch.duration : now - dispatch.startedAt;
+            const age = this.motionScale === 0 ? dispatch.duration : this._cometAge(dispatch, now);
             if (!dispatch.landed && age >= COMET_GATHER_MS + dispatch.flightMs + COMET_IMPACT_MS) {
                 dispatch.landed = true;
                 dispatch.childSprite.setArrivalState?.('visible');
@@ -542,7 +559,7 @@ export class ArrivalDepartureController {
             }
         }
         for (const [id, merge] of this.merges.entries()) {
-            const age = now - merge.startedAt;
+            const age = this._cometAge(merge, now);
             if (!merge.landed && age >= COMET_GATHER_MS + merge.flightMs) {
                 // The return has landed: the parent holds one static receive beat.
                 merge.landed = true;
@@ -566,6 +583,15 @@ export class ArrivalDepartureController {
         if (typeof onLanded === 'function') onLanded();
     }
 
+    // 8.3 — the moment clocks, held on the notes that carry their peaks.
+    _arrivalAge(arrival, now) {
+        return cueGatedAge(arrival.cue, now - arrival.startedAt, ARRIVAL.anticipation, ARRIVAL_RESIDUE_AT, { reduced: arrival.reduced });
+    }
+
+    _cometAge(item, now) {
+        return cueGatedAge(item.cue, now - item.startedAt, COMET_GATHER_MS + item.flightMs, null);
+    }
+
     draw(ctx, { zoom = 1, now = nowMs() } = {}) {
         if (!ctx) return;
         ctx.save();
@@ -584,7 +610,7 @@ export class ArrivalDepartureController {
         const sources = [];
         for (const arrival of this.arrivals.values()) {
             if (arrival.reduced) continue;
-            const phase = momentPhase(now - arrival.startedAt, ARRIVAL);
+            const phase = momentPhase(this._arrivalAge(arrival, now), ARRIVAL);
             if (phase.phase === 'residue' || phase.phase === 'done') continue;
             sources.push({
                 id: `arrival:${arrival.id}`,
@@ -627,8 +653,28 @@ export class ArrivalDepartureController {
     }
 
     _drawArrival(ctx, arrival, now) {
-        const phase = momentPhase(now - arrival.startedAt, ARRIVAL, { reduced: arrival.reduced });
-        const { x, y } = arrival.point;
+        const phase = momentPhase(this._arrivalAge(arrival, now), ARRIVAL, { reduced: arrival.reduced });
+        if (phase.phase === 'done') return;
+        // 8.1 — V8: the beat stands where the body lands when that spot is
+        // clear; else it rises up the actor's own column (without the body's
+        // silhouette, which is hidden there); else it is an edge plate.
+        const anchor = resolveMomentAnchor(arrival.point, {
+            actorId: arrival.id,
+            extent: ARRIVAL_EXTENT,
+            id: `arrival:${arrival.id}`,
+            kind: 'arrival',
+            tier: 'medium',
+            phase: phase.phase,
+        });
+        if (anchor.mode === 'edge') {
+            if (phase.phase !== 'residue') {
+                queueMomentEdgePlate(anchor, { word: 'ARRIVED', color: MAGIC_RAMP[1], peak: phase.phase === 'peak', ctx });
+            }
+            return;
+        }
+        const placed = anchor.mode === 'place';
+        const x = anchor.x;
+        const y = anchor.y;
         switch (phase.phase) {
         case 'anticipation': {
             // The eye gets a cue: a cream rune ring on the ground and a violet
@@ -642,7 +688,7 @@ export class ArrivalDepartureController {
             // the body as a flat cream silhouette.
             ringDots(ctx, x, y, 12, { count: 8, dot: 2, color: PEAK, phase: Math.PI / 8 });
             column(ctx, x, y, { height: ARRIVAL_COLUMN_HEIGHT, width: 9, ramp: MAGIC_RAMP, core: PEAK });
-            drawSilhouette(ctx, arrival.silhouette, x, y);
+            if (placed) drawSilhouette(ctx, arrival.silhouette, x, y);
             break;
         }
         case 'follow': {
@@ -652,19 +698,33 @@ export class ArrivalDepartureController {
             const ringTone = [MAGIC_RAMP[1], MAGIC_RAMP[0], null][phase.step];
             if (ringTone) ringDots(ctx, x, y, 12 + phase.step * 2, { count: 8, dot: 1, color: ringTone, phase: Math.PI / 8 });
             column(ctx, x, y + 1, { height: [9, 5, 2][phase.step], width: [11, 9, 7][phase.step], ramp: MAGIC_RAMP });
-            chips(ctx, x, y + 1, phase.t, { count: 6, seed: arrival.seed, spread: 14, lift: 5, tones: DUST_TONES });
+            if (placed) chips(ctx, x, y + 1, phase.t, { count: 6, seed: arrival.seed, spread: 14, lift: 5, tones: DUST_TONES });
             break;
         }
         case 'residue':
-            runeNotch(ctx, x, y, { ramp: MAGIC_RAMP });
+            // The rune is a ground mark at the feet: only where they stand.
+            if (placed) runeNotch(ctx, x, y, { ramp: MAGIC_RAMP });
             break;
         default:
             break;
         }
     }
 
+    // 8.1 — where a comet's impact and splash stand (V8). Gather and flight
+    // follow the bodies themselves.
+    _impactAnchor(item, phase, extent, id, kind) {
+        return resolveMomentAnchor(item.end, {
+            actorId: item.parentSprite?.agent?.id ?? null,
+            extent,
+            id,
+            kind,
+            tier: 'medium',
+            phase: phase.phase === 'impact' ? 'peak' : phase.phase,
+        });
+    }
+
     _drawDispatch(ctx, item, now, zoom) {
-        const phase = cometPhase(now - item.startedAt, item.flightMs);
+        const phase = cometPhase(this._cometAge(item, now), item.flightMs);
         const parent = item.parentSprite;
         switch (phase.phase) {
         case 'gather': {
@@ -682,17 +742,25 @@ export class ArrivalDepartureController {
             drawCometFlight(ctx, item, phase.t, { zoom, ramp: item.ramp, miniature: item.miniature, signature: item.signature });
             break;
         }
-        case 'impact': {
-            ringDots(ctx, item.end.x, item.end.y, 9, { count: 8, dot: 2, color: PEAK });
-            if (item.silhouette) drawSilhouette(ctx, item.silhouette, item.end.x, item.end.y);
-            else diamond(ctx, item.end.x, item.end.y - 12, 6, { color: PEAK, filled: true });
+        case 'impact':
+        case 'splash': {
+            const anchor = this._impactAnchor(item, phase, DISPATCH_IMPACT_EXTENT, `dispatch:${item.id}`, 'dispatch');
+            if (anchor.mode === 'edge') {
+                queueMomentEdgePlate(anchor, { word: 'DISPATCH', color: item.ramp[1], peak: phase.phase === 'impact', ctx });
+                break;
+            }
+            const placed = anchor.mode === 'place';
+            if (phase.phase === 'impact') {
+                ringDots(ctx, anchor.x, anchor.y, 9, { count: 8, dot: 2, color: PEAK });
+                if (placed && item.silhouette) drawSilhouette(ctx, item.silhouette, anchor.x, anchor.y);
+                else diamond(ctx, anchor.x, anchor.y - 12, 6, { color: PEAK, filled: true });
+            } else {
+                chips(ctx, anchor.x, anchor.y + 1, phase.t, {
+                    count: 6, seed: item.seed, spread: 12, lift: 6, tones: item.ramp,
+                });
+            }
             break;
         }
-        case 'splash':
-            chips(ctx, item.end.x, item.end.y + 1, phase.t, {
-                count: 6, seed: item.seed, spread: 12, lift: 6, tones: item.ramp,
-            });
-            break;
         default:
             break;
         }
@@ -700,7 +768,7 @@ export class ArrivalDepartureController {
 
     // Merge and orphan returns: stone comet from where the child stood.
     _drawReturn(ctx, item, now, zoom) {
-        const phase = cometPhase(now - item.startedAt, item.flightMs);
+        const phase = cometPhase(item.cue ? this._cometAge(item, now) : now - item.startedAt, item.flightMs);
         const parent = item.parentSprite || null;
         if (parent) item.end = { x: parent.x, y: parent.y };
         switch (phase.phase) {
@@ -721,15 +789,24 @@ export class ArrivalDepartureController {
             break;
         }
         case 'impact':
-            // One cream rim frame at the receiver.
-            ringDots(ctx, item.end.x, item.end.y, 11, { count: 12, dot: 1, color: PEAK });
-            diamond(ctx, item.end.x, item.end.y - (parent ? PARENT_LAUNCH_LIFT : 12), 4, { color: PEAK });
+        case 'splash': {
+            // One cream rim frame at the receiver, then the chips.
+            const lift = parent ? PARENT_LAUNCH_LIFT : 12;
+            const anchor = this._impactAnchor(item, phase, RETURN_IMPACT_EXTENT, `return:${item.id}`, 'subagentReturn');
+            if (anchor.mode === 'edge') {
+                queueMomentEdgePlate(anchor, { word: 'RETURNED', color: item.ramp[1], peak: phase.phase === 'impact', ctx });
+                break;
+            }
+            if (phase.phase === 'impact') {
+                ringDots(ctx, anchor.x, anchor.y, 11, { count: 12, dot: 1, color: PEAK });
+                diamond(ctx, anchor.x, anchor.y - lift, 4, { color: PEAK });
+            } else {
+                chips(ctx, anchor.x, anchor.y + 1, phase.t, {
+                    count: 5, seed: item.seed, spread: 10, lift: 5, tones: item.ramp,
+                });
+            }
             break;
-        case 'splash':
-            chips(ctx, item.end.x, item.end.y + 1, phase.t, {
-                count: 5, seed: item.seed, spread: 10, lift: 5, tones: item.ramp,
-            });
-            break;
+        }
         default:
             break;
         }

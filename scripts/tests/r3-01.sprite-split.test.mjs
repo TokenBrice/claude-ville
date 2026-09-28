@@ -7,14 +7,15 @@ import { AgentSprite } from '../../claudeville/src/presentation/character-mode/A
 
 test('AgentSprite keeps compatibility entry points while delegating GPU overlay ownership', () => {
     const calls = [];
-    const sprite = {
+    // A real sprite away from any queue: no floor candle joins its records.
+    const sprite = Object.assign(Object.create(AgentSprite.prototype), {
         gpuOverlayRenderer: {
             setEnabled(value) { calls.push(['enabled', value]); },
             getRecords() { calls.push(['records']); return ['record']; },
             draw(ctx, zoom, mode) { calls.push(['draw', ctx, zoom, mode]); },
             setFrameRecord(record) { calls.push(['frame', record]); },
         },
-    };
+    });
     const ctx = {};
 
     AgentSprite.prototype.setGpuWorldEnabled.call(sprite, true);

@@ -131,13 +131,67 @@ contract is in [`docs/material-channel-contract.md`](../../docs/material-channel
    props clip the cell, optionally narrowed with
    `--directions=north,west` to only the failing columns; leave a character
    strip-less rather than shipping a bad pose — the fallback is
-   byte-identical. A `wait` group (one held open-palm row) was piloted twice
-   on 2026-09-06 and rejected both times: the rigs re-drew the held staff or
-   spear into a hand on most directions. Shipped strips carry `read` only.
+   byte-identical. The v3 `wait` rows piloted on 2026-09-06 were rejected
+   twice (the rigs re-drew the held staff or spear into a hand); plan 7.3's
+   pose strips below replaced that route.
 5. Author strip companions with `node scripts/sprites/author-roster-channels.mjs`
    (it covers sheet and strip from one profile) when the entry declares
    sidecars, then `npm run sprites:audit-refresh`.
 6. Bump `style.assetVersion` once after the strip PNGs land.
+
+### Pose strips: work, wait and sit (plan 7.3 / 7.1)
+
+The `wait`, `strike`, `tinker`, `gaze` and `sit` groups are skeleton-v3 pose
+strips on the work facings E/W/SE/SW, generated from the base sheet itself so
+the feet stay on the V7 anchor:
+
+1. `node scripts/sprites/generate-pose-strip.mjs --id=<id> --groups=strike,tinker,wait --clip --plan`
+   quotes the job (a 15-frame clip bills 4 generations per direction, a
+   3-frame `wait` alone 2). The first frame is the idle row-6 cell, only arm
+   joints move (head, shoulders, hips, knees and ankles are copied), the
+   profile's baked prop hand (`PROPS`) is frozen and the gesture is
+   empty-handed. Keep object nouns out of `action` labels: the model draws
+   them into every frame.
+   Queued skeleton jobs save a `.job.json.pending` receipt before waiting
+   (up to 60 minutes). After an interruption, rerun the same command to
+   resume the paid job rather than queue it again; successful jobs replace
+   the receipt with the completed cache.
+2. `node scripts/sprites/feet-audit.mjs --id=<id> --strip=<stage png> --groups=<name:a-b,…> --contact-sheet=<png>`:
+   feet within ±2 px, no new detached fragment ≥ 3 px, the non-arm identity
+   diff under its cap (it reads the stage json's keypoints), and the `wait`
+   hand ≥ 3 px above the head. Ship only groups whose four facings pass.
+   A profile whose idle carries a detached prop (gpt54's floating wrench)
+   fails identity when the model drops or moves it: re-cut the cached jobs at
+   no cost with `--assemble-only --freeze-detached` (every non-body island is
+   cleared and the idle cell's detached props are pasted back pixel-exact).
+3. `node scripts/sprites/assemble-action-strip.mjs --id=<id> --stage=<stage png>[,<stage png>] [--groups=wait,strike]`
+   rebuilds `actions.png` (the single writer; 7.1 sit stages are picked up
+   from `output/waking-isle/Villagers/sit/`) and prints the `actionStrip`
+   record (one group and one provenance key per line) to paste into
+   `manifest.yaml`; then run step 5 above and `feet-audit.mjs --id=<id>` on
+   the shipped strip.
+
+The Phase C roster ships `wait`, `strike` and `tinker` on all 26 profiles,
+plus `gaze` on the two pilots and eight most-seen profiles. The assembled
+strips preserve 20 existing `read` groups and include 24 approved `sit`
+groups. A work body and its downbeat share the cell-selection timestamp:
+do not resample the wall clock in the overlay, or a cycle-boundary contact
+flash can land on the previous wind-up frame.
+
+The 7.1 rest seat uses the `sit-front` group on SE/SW only (settle + two held
+samples, 2 generations per facing): `seatFrontSkeleton` drops hips, head and
+shoulders onto the seat, turns the knees toward the camera with joint `depth`,
+rests the free hands on the knees and keeps the prop hand still; detached idle
+props (sparkles, a floating wrench) are frozen pixel-exact and every other
+detached island is cleared. `--seat-front='{…}'` tunes a body family (slim
+light-armour bodies need `hipDrop 1.15, kneeOut 0.45, kneeDown 0.6,
+handAlong 0.9, kneeDepth 110, handDepth 60`), `--freeze=<facing>@x0,y0,x1,y1`
+pins a planted prop (Sonnet's staff). Keep "bench" out of the prompt (the
+model paints one). A reviewed candidate is staged as
+`output/waking-isle/Villagers/sit/<id>.sit.png` (8 × 2 cells: settle, held)
+plus `<id>.sit.json` (`groups.sit.hold`, per-facing `seatLine`, provenance),
+judged over a bench front covering everything below `seatLine`, and audited
+with `feet-audit.mjs --groups=sit:0-1 --reference=group --directions=se,sw`.
 
 ## Manifest-Driven Bulk Bake + Contact Sheets
 

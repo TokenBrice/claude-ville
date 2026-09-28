@@ -259,6 +259,9 @@ export const FOREST_FLOOR_REGIONS = [
     { name: 'archive-grove', centerX: 8.2, centerY: 14.8, radiusX: 6.2, radiusY: 4.8, base: '#315f32', accent: '#729948', strength: 0.68 },
     { name: 'lighthouse-windbreak', centerX: 30.2, centerY: 10.8, radiusX: 5.8, radiusY: 6.2, base: '#315a36', accent: '#73924c', strength: 0.58 },
     { name: 'central-isle', centerX: 17, centerY: 22, radiusX: 7, radiusY: 6, base: '#2c5a32', accent: '#54753f', strength: 0.55 },
+    // The south wildwood's tall stand between the Portal and Mine yards and
+    // the sea wall (stops short of both yards and the gate avenue).
+    { name: 'south-wildwood', centerX: 7, centerY: 38.6, radiusX: 9, radiusY: 3.2, base: '#2d5a2b', accent: '#5c8b3f', strength: 0.85 },
 ];
 
 // Tree clusters: procedural woodland regions around the settlement. Each
@@ -270,16 +273,44 @@ export const FOREST_FLOOR_REGIONS = [
 // within one tile of fresh water may turn willow, and a willow never stands
 // away from water. SceneryEngine clamps iteration to [0, MAP_SIZE-1], so
 // regions may overhang the map edge.
+//
+// `tall` (plan 5.5) is the share of the region's large trees that grow into
+// the tall woodland sheets (oak/pine/willow `.tall`, 1.4–2.2× a villager), so
+// the outer woods read as forest while the 51-px trees keep the district
+// scale. A tree only grows tall where TALL_TREE_RULES allow it. `stand`
+// (species in planting order) makes the region a tall stand instead: every
+// tree it grew and every clear point inside its ellipse grows tall where the
+// rules allow, broad crowns first (SceneryEngine `_growTallStand`), for belts
+// too narrow for clumps to land on the few clear sites.
 export const TREE_CLUSTERS = [
     // North-west elderwood above the lagoon: the densest mass on the island.
-    { name: 'elderwood', centerX: 8, centerY: 2.2, radiusX: 10.5, radiusY: 4.4, density: 0.9, clump: [5, 7], spacing: 2.9, species: { oak: 0.5, pine: 0.5 } },
-    { name: 'west-cliff', centerX: 1.2, centerY: 9, radiusX: 2.4, radiusY: 4.2, density: 0.7, clump: [3, 5], spacing: 2.6, species: { pine: 0.6, oak: 0.4 } },
-    // South wildwood along the island's lower rim, clear of the gate avenue.
-    { name: 'south-wildwood', centerX: 9.5, centerY: 37.8, radiusX: 11, radiusY: 2.8, density: 0.8, clump: [4, 7], spacing: 2.9, species: { oak: 0.6, pine: 0.4 } },
-    { name: 'south-rim', centerX: 27, centerY: 38.4, radiusX: 4.6, radiusY: 1.8, density: 0.55, clump: [3, 5], spacing: 3.0, species: { oak: 0.55, pine: 0.45 } },
+    { name: 'elderwood', centerX: 8, centerY: 2.2, radiusX: 10.5, radiusY: 4.4, density: 0.9, clump: [5, 7], spacing: 2.9, species: { oak: 0.5, pine: 0.5 }, tall: 0.75 },
+    { name: 'west-cliff', centerX: 1.2, centerY: 9, radiusX: 2.4, radiusY: 4.2, density: 0.7, clump: [3, 5], spacing: 2.6, species: { pine: 0.6, oak: 0.4 }, tall: 0.5 },
+    // South wildwood along the island's lower rim, clear of the gate avenue:
+    // a belt between the Portal and Mine yards and the sea wall, grown as a
+    // tall stand so it reads as forest, not a hedge.
+    { name: 'south-wildwood', centerX: 9.5, centerY: 38, radiusX: 11, radiusY: 3.4, density: 0.8, clump: [4, 7], spacing: 2.9, species: { oak: 0.6, pine: 0.4 }, stand: ['oak', 'pine'] },
+    { name: 'south-rim', centerX: 27, centerY: 38.4, radiusX: 4.6, radiusY: 1.8, density: 0.55, clump: [3, 5], spacing: 3.0, species: { oak: 0.55, pine: 0.45 }, tall: 0.45 },
     // Sea-facing pine windbreak on the south-east coast.
-    { name: 'coast-windbreak', centerX: 32, centerY: 35, radiusX: 3.4, radiusY: 4.8, density: 0.6, clump: [3, 6], spacing: 2.8, species: { pine: 0.75, oak: 0.25 } },
+    { name: 'coast-windbreak', centerX: 32, centerY: 35, radiusX: 3.4, radiusY: 4.8, density: 0.6, clump: [3, 6], spacing: 2.8, species: { pine: 0.75, oak: 0.25 }, tall: 0.45 },
 ];
+
+// Where a woodland tree may grow tall (plan 5.5): never within `pathClearance`
+// tiles of a path, lane, yard or bridge tile; never within `districtClearance`
+// tiles of a landmark's scenery zone (51-px trees keep the district scale);
+// two tall oaks at least `spacing` tiles apart (narrower crowns closer, in
+// proportion to their width); and never where its crown would hide a
+// villager: a body (`villager` = [width, height] world px above the feet)
+// standing on any walkable tile behind the trunk may have at most
+// `hiddenShare` of its box inside the crown box (FoliageRenderer
+// `TREE_SPRITES[…].crown`).
+export const TALL_TREE_RULES = Object.freeze({
+    pathClearance: 1.5,
+    districtClearance: 2.5,
+    spacing: 1.3,
+    villager: Object.freeze([20, 56]),
+    hiddenShare: 0.25,
+});
 
 // Authored clumps that compose the settlement: they frame districts and water
 // edges and leave the ground around every landmark open. `trees` is the clump

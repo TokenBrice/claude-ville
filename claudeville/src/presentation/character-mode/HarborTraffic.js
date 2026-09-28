@@ -25,17 +25,25 @@ import {
     dottedCurve,
     ellipseArcDots,
     fillConvex,
+    createCueGate,
+    cueGatedAge,
+    drawMomentThread,
     holdSuccessGrammar,
     momentPhase,
     quantStep,
+    queueMomentEdgePlate,
     releaseSuccessGrammar,
+    pixelLine,
+    resolveMomentAnchor,
     snap,
 } from './EffectStamps.js';
 import { drawPixelFlame, fillPixelEllipse } from './PixelShapes.js';
+import { currentPennantTime, currentPennantWind, drawMiniPennant, drawPennant, pennantFrame } from './PixelPennant.js';
+
+import { drawHullFallback, hullGeometry, hullMasthead, hullRecords, hullStrip, liveryStrip, rollFrameIndex } from './HarborHulls.js';
 
 export { normalizeGitEvent } from '../shared/GitEventIdentity.js';
 
-const SHIP_SPRITE_ID = 'prop.harborBoat';
 const MAX_SHIPS_PER_SQUAD_ANCHORAGE = 3;
 const HARBOR_LOG_TILE = { tileX: 34.8, tileY: 17.2 };
 const COMMIT_LAGOON_LOG_TILE = { tileX: 17.2, tileY: 6.1 };
@@ -46,6 +54,39 @@ const STORAGE_TRANSFER_STAGGER_MS = 220;
 const EXIT_HOLD_MS = 1800;
 const EXIT_FADE_MS = 4200;
 const FADE_DELAY_MS = 3200;
+// 3.6 / 6.5 — the untethered broken-rope chevron: two polylines in texels
+// from the flag pole's top (x toward the cloth side), a gap between them.
+const UNTETHERED_CHEVRON = Object.freeze([
+    Object.freeze([[-4, 4], [1, 0], [3, 2]]),
+    Object.freeze([[6, 5], [9, 1], [13, 4]]),
+]);
+
+// 4.17 / 6.5 — the heraldry shield silhouette as whole-texel row runs
+// `[y, x0, x1)` about a centre column: straight sides to the shoulder at
+// 72 % of the height, then a stepped taper to a 2-texel point.
+const shieldRunCache = new Map();
+function shieldRuns(w, h) {
+    const key = `${w}x${h}`;
+    let runs = shieldRunCache.get(key);
+    if (runs) return runs;
+    const left = -Math.round(w / 2);
+    const right = left + w;
+    const shoulder = Math.round(h * 0.72);
+    runs = [];
+    for (let y = 0; y < h; y++) {
+        if (y < shoulder) {
+            runs.push([y, left, right]);
+            continue;
+        }
+        const k = (y - shoulder + 1) / (h - shoulder + 1);
+        const x0 = Math.min(-1, Math.round(left * (1 - k)));
+        const x1 = Math.max(1, Math.round(right * (1 - k)));
+        runs.push([y, x0, x1]);
+    }
+    if (shieldRunCache.size > 32) shieldRunCache.clear();
+    shieldRunCache.set(key, runs = Object.freeze(runs.map((run) => Object.freeze(run))));
+    return runs;
+}
 const FINALE_EFFECT_MS = 9000;
 const SCREEN_SUMMARY_MS = 16000;
 const RECENT_PUSH_REPLAY_MS = 2 * 60 * 1000;
@@ -70,7 +111,9 @@ const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
 // 6.5 — failed-push bracket: a 120 ms convergence, one cream flash frame, a
 // three-step shake of the stamp only, then a static red broken bracket for as
 // long as the failure stands. Replays older than the window arrive static.
-const FAILURE_BRACKET = defineMoment('medium', { anticipation: 120, peak: 80, follow: 180 });
+// V8 — the residue is the thread's window (actor → slip, while both are in
+// view); the bracket itself draws the same static frame through it and after.
+const FAILURE_BRACKET = defineMoment('medium', { anticipation: 120, peak: 80, follow: 180, residue: 6000 });
 const FAILURE_BRACKET_FRESH_MS = 15000;
 const FAILURE_BRACKET_MAX = 4;
 const FAILURE_SHAKE = Object.freeze([2, -2, 1]);
@@ -85,6 +128,11 @@ const CANCEL_RETURN_MS = 12000;
 const INBOUND_DURATION_MS = 36000;
 const INBOUND_FADE_IN_MS = 8000;
 const INBOUND_SHIP_CLASS_KEY = 'cutter';
+const NO_SINK = Object.freeze({ progress: 0, px: 0, alphaScale: 1 });
+// The repo flag's staff foot laps this many texels down the mast top.
+const FLAG_MAST_OVERLAP = 3;
+// The rejected caution beat: one 2 Hz step of four is the lit tone (V4).
+const CAUTION_BEAT_STEP_MS = 500;
 const UNTETHERED_MIN_COMMITS = 2;
 const UNTETHERED_HOLD_MS = 5 * 60 * 1000;
 const PUSH_SIGNAL_EXPIRY_MS = 8000;
@@ -103,23 +151,27 @@ const HARBOR_SQUAD_REUSE_OFFSETS = Object.freeze([
     { tileX: 0.82, tileY: -0.34 },
     { tileX: -0.64, tileY: -0.42 },
 ]);
+// 3.8 — hulls draw at scale 1 from their roll strips (HarborHulls.js). The
+// label lift is the hull's height above its waterline (world px; the strip
+// anchor overrides it once loaded) and the flag offsets sit the repo flag at
+// the mast head of the scale-1 hull.
 const HARBOR_SHIP_CLASSES = Object.freeze([
-    { key: 'flagship', spriteId: 'prop.harborShip.flagship', minCommits: 10, scale: 0.64, wakeScale: 2.38, cargoRows: 7, mastCount: 5, labelLift: 48, flagOffsetX: 31, flagOffsetY: 48, badge: '10+' },
-    { key: 'dreadnought', spriteId: 'prop.harborShip.dreadnought', minCommits: 8, scale: 0.66, wakeScale: 2.12, cargoRows: 7, mastCount: 5, labelLift: 44, flagOffsetX: 28, flagOffsetY: 44, badge: '8+' },
-    { key: 'galleon', spriteId: 'prop.harborShip.galleon', minCommits: 6, scale: 0.69, wakeScale: 1.86, cargoRows: 6, mastCount: 4, labelLift: 38, flagOffsetX: 24, flagOffsetY: 38, badge: '6+' },
-    { key: 'brigantine', spriteId: 'prop.harborShip.brigantine', minCommits: 4, scale: 0.75, wakeScale: 1.56, cargoRows: 5, mastCount: 3, labelLift: 31, flagOffsetX: 18, flagOffsetY: 31, badge: '4+' },
-    { key: 'sloop', spriteId: 'prop.harborShip.sloop', minCommits: 3, scale: 0.80, wakeScale: 1.32, cargoRows: 3, mastCount: 2, labelLift: 26, flagOffsetX: 14, flagOffsetY: 26, badge: '3+' },
-    { key: 'cutter', spriteId: 'prop.harborShip.cutter', minCommits: 2, scale: 0.88, wakeScale: 1.15, cargoRows: 1, mastCount: 1, labelLift: 16, flagOffsetX: 8, flagOffsetY: 16, badge: '2+' },
-    { key: 'skiff', spriteId: 'prop.harborShip.skiff', minCommits: 1, scale: 0.82, wakeScale: 0.88, cargoRows: 0, mastCount: 1, labelLift: 0, flagOffsetX: 0, flagOffsetY: 0, badge: '' },
+    { key: 'flagship', spriteId: 'prop.harborShip.flagship', minCommits: 10, wakeScale: 2.38, cargoRows: 7, mastCount: 5, labelLift: 84, flagOffsetX: 8, flagOffsetY: 50, badge: '10+' },
+    { key: 'dreadnought', spriteId: 'prop.harborShip.dreadnought', minCommits: 8, wakeScale: 2.12, cargoRows: 7, mastCount: 5, labelLift: 74, flagOffsetX: 8, flagOffsetY: 42, badge: '8+' },
+    { key: 'galleon', spriteId: 'prop.harborShip.galleon', minCommits: 6, wakeScale: 1.86, cargoRows: 6, mastCount: 4, labelLift: 62, flagOffsetX: 6, flagOffsetY: 30, badge: '6+' },
+    { key: 'brigantine', spriteId: 'prop.harborShip.brigantine', minCommits: 4, wakeScale: 1.56, cargoRows: 5, mastCount: 3, labelLift: 63, flagOffsetX: 6, flagOffsetY: 30, badge: '4+' },
+    { key: 'sloop', spriteId: 'prop.harborShip.sloop', minCommits: 3, wakeScale: 1.32, cargoRows: 3, mastCount: 2, labelLift: 59, flagOffsetX: 4, flagOffsetY: 26, badge: '3+' },
+    { key: 'cutter', spriteId: 'prop.harborShip.cutter', minCommits: 2, wakeScale: 1.15, cargoRows: 1, mastCount: 1, labelLift: 45, flagOffsetX: 2, flagOffsetY: 12, badge: '2+' },
+    { key: 'skiff', spriteId: 'prop.harborShip.skiff', minCommits: 1, wakeScale: 0.88, cargoRows: 0, mastCount: 1, labelLift: 38, flagOffsetX: 0, flagOffsetY: 6, badge: '' },
 ]);
 // Stack hull per titan tier, chosen by the pack's exact commit count.
 const HARBOR_SHIP_STACK_CLASSES = Object.freeze([
-    { key: 'stack50', spriteId: 'prop.harborShip.stack50', minCommits: 50, scale: 0.90, wakeScale: 2.80, cargoRows: 10, mastCount: 7, labelLift: 68, flagOffsetX: 42, flagOffsetY: 66 },
-    { key: 'stack40', spriteId: 'prop.harborShip.stack40', minCommits: 40, scale: 0.88, wakeScale: 2.60, cargoRows: 9, mastCount: 6, labelLift: 62, flagOffsetX: 38, flagOffsetY: 60 },
-    { key: 'stack30', spriteId: 'prop.harborShip.stack30', minCommits: 30, scale: 0.86, wakeScale: 2.38, cargoRows: 8, mastCount: 6, labelLift: 56, flagOffsetX: 34, flagOffsetY: 54 },
-    { key: 'stack20', spriteId: 'prop.harborShip.stack30', minCommits: 20, scale: 0.76, wakeScale: 2.12, cargoRows: 7, mastCount: 5, labelLift: 50, flagOffsetX: 30, flagOffsetY: 48 },
-    { key: 'stack10', spriteId: 'prop.harborShip.stack10', minCommits: 10, scale: 0.80, wakeScale: 1.72, cargoRows: 5, mastCount: 4, labelLift: 38, flagOffsetX: 24, flagOffsetY: 38 },
-    { key: 'stack5', spriteId: 'prop.harborShip.stack5', minCommits: 1, scale: 0.80, wakeScale: 1.30, cargoRows: 3, mastCount: 3, labelLift: 26, flagOffsetX: 17, flagOffsetY: 28 },
+    { key: 'stack50', spriteId: 'prop.harborShip.stack50', minCommits: 50, wakeScale: 2.80, cargoRows: 10, mastCount: 7, labelLift: 154, flagOffsetX: 40, flagOffsetY: 118 },
+    { key: 'stack40', spriteId: 'prop.harborShip.stack40', minCommits: 40, wakeScale: 2.60, cargoRows: 9, mastCount: 6, labelLift: 145, flagOffsetX: 30, flagOffsetY: 110 },
+    { key: 'stack30', spriteId: 'prop.harborShip.stack30', minCommits: 30, wakeScale: 2.38, cargoRows: 8, mastCount: 6, labelLift: 119, flagOffsetX: 28, flagOffsetY: 86 },
+    { key: 'stack20', spriteId: 'prop.harborShip.stack20', minCommits: 20, wakeScale: 2.12, cargoRows: 7, mastCount: 5, labelLift: 106, flagOffsetX: 24, flagOffsetY: 74 },
+    { key: 'stack10', spriteId: 'prop.harborShip.stack10', minCommits: 10, wakeScale: 1.72, cargoRows: 5, mastCount: 4, labelLift: 80, flagOffsetX: 18, flagOffsetY: 48 },
+    { key: 'stack5', spriteId: 'prop.harborShip.stack5', minCommits: 1, wakeScale: 1.30, cargoRows: 3, mastCount: 3, labelLift: 65, flagOffsetX: 14, flagOffsetY: 34 },
 ]);
 const HARBOR_DOCK_WATER_BOUNDS = Object.freeze({
     minTileX: 31.05,
@@ -230,11 +282,38 @@ const REPO_ANCHORAGE_OVERFLOW_TILE = Object.freeze({ tileX: 17.2, tileY: 11.4 })
 // An agent's repo stays "home" (a lit anchorage) this long after its last update.
 const REPO_ANCHORAGE_ACTIVE_MS = 5 * 60 * 1000;
 
-// Harbor traffic is intentionally overlay-safe: its routes stay in open water
-// and never require agent/building depth interleaving. Wildlife and waterfalls
-// share the same resolved category so the existing registry can replay every
-// water/air detail above the direct GPU island without adding a renderer pass.
+// Harbor marks (flags, plates, buoys, labels) and wildlife stay overlay-safe:
+// their routes stay in open water and they are marks, not matter. Wildlife
+// and waterfalls share the same resolved category so the existing registry
+// can replay every water/air detail above the direct GPU island.
 const OVERLAY_SAFE_SCENE_ITEMS = [];
+// 3.8 / M23 — the hulls themselves are matter: on the resident path they are
+// V9 records (painter depth, grade, lamp light, footprint occlusion) with a
+// `reflect` twin and a V-wake stamp in the ground band; elsewhere the Canvas
+// fallback draws the same whole-texel frames (graded on the overlay).
+export const HARBOR_HULL_SCENE_CATEGORY = Object.freeze({
+    id: 'harbor-hulls',
+    sortBand: 40,
+    // A hull behind the Harbor (a split building on its piers) sorts before
+    // the back half, so the whole building hides it.
+    behindSplitBuildings: true,
+    enumerate({ renderer } = {}) {
+        return renderer?.harborTraffic?.enumerateHullDrawables?.() ?? [];
+    },
+    emitSceneCommands(item) {
+        return item?.records?.length ? item.records : null;
+    },
+    canvasFallback(ctx, item, zoom, context = {}) {
+        if (!item?.pose) return;
+        const renderer = context.renderer;
+        drawHullFallback(ctx, item.pose, {
+            ungradedOverlay: context.ungradedOverlay === true,
+            lightGrade: renderer?._lastAtmosphere?.lightGrade || null,
+        });
+    },
+    unsupported: 'overlay-safe',
+    overlayBand: 39,
+});
 export const HARBOR_TRAFFIC_SCENE_CATEGORY = Object.freeze({
     id: 'harbor-traffic',
     sortBand: 40,
@@ -2364,27 +2443,36 @@ export function snapshotHarborTrafficState(state) {
     };
 }
 
-export function pendingRepoSummariesFromDockSummaries(summaries) {
+// One row per repo with docked commits or a failed push. A failed push with
+// nothing docked (no batch) still makes a row, so `harbor:updated` reports it;
+// `agentId` is the agent whose failure the Harbor's bracket marks (its docked
+// failed ship first, else its latest failed push), the key its cue is scored by.
+export function pendingRepoSummariesFromDockSummaries(summaries, pushEvents = []) {
     const byRepo = new Map();
+    const rowFor = (project, branch, profile) => byRepo.get(profile.key) || {
+        project,
+        branch: branch || '',
+        repoName: trafficLabel(project, branch),
+        shortName: profile.shortName || trafficLabel(project, branch, 18),
+        profile,
+        pendingCommits: 0,
+        failedPushes: 0,
+        agentId: null,
+        latestFailureAt: 0,
+        latestEventTime: 0,
+        oldestCommitTime: 0,
+        waitingZone: 'harbor',
+        storageCommits: 0,
+    };
     for (const summary of summaries?.values?.() || []) {
         const count = Number(summary.count) || 0;
         if (count <= 0) continue;
         const profile = summary.profile || trafficProfile(summary.project, summary.branch);
-        const existing = byRepo.get(profile.key) || {
-            project: summary.project,
-            branch: summary.branch || '',
-            repoName: trafficLabel(summary.project, summary.branch),
-            shortName: profile.shortName || trafficLabel(summary.project, summary.branch, 18),
-            profile,
-            pendingCommits: 0,
-            failedPushes: 0,
-            latestEventTime: 0,
-            oldestCommitTime: 0,
-            waitingZone: 'harbor',
-            storageCommits: 0,
-        };
+        const existing = rowFor(summary.project, summary.branch, profile);
         existing.pendingCommits += count;
         existing.failedPushes += Number(summary.failedCount) || 0;
+        existing.agentId ??= summary.failedAgentId ?? null;
+        existing.latestFailureAt = Math.max(existing.latestFailureAt, Number(summary.failedAt) || 0);
         existing.latestEventTime = Math.max(existing.latestEventTime, Number(summary.latestEventTime) || 0);
         const earliestEventTime = Number(summary.earliestEventTime) || 0;
         if (earliestEventTime > 0) {
@@ -2397,6 +2485,27 @@ export function pendingRepoSummariesFromDockSummaries(summaries) {
             existing.storageCommits += count;
         }
         byRepo.set(profile.key, existing);
+    }
+    const pushAgent = new Map();
+    for (const push of pushEvents || []) {
+        const status = push?.status || 'unknown';
+        if ((status !== 'failed' && status !== 'rejected') || push.batchId || !push.project) continue;
+        const branch = push.branch || '';
+        const profile = trafficProfile(push.project, branch);
+        const existing = rowFor(push.project, branch, profile);
+        const eventTime = Number(push.eventTime) || 0;
+        existing.failedPushes += 1;
+        existing.latestFailureAt = Math.max(existing.latestFailureAt, eventTime);
+        existing.latestEventTime = Math.max(existing.latestEventTime, eventTime);
+        const latest = pushAgent.get(profile.key);
+        if (push.agentId && (!latest || eventTime >= latest.eventTime)) {
+            pushAgent.set(profile.key, { agentId: push.agentId, eventTime });
+        }
+        byRepo.set(profile.key, existing);
+    }
+    for (const [key, { agentId }] of pushAgent) {
+        const row = byRepo.get(key);
+        row.agentId ??= agentId;
     }
     return [...byRepo.values()]
         .sort((a, b) => (b.failedPushes - a.failedPushes)
@@ -3267,6 +3376,8 @@ export class HarborTraffic {
         this._markerByRepoCache = new Map();
         this._repoAnchorageDrawableCache = [];
         this._drawableBuffer = [];
+        this._hullItems = [];
+        this._hullItemPool = new Map();
         this._departingBuffer = [];
         this._crateDrawnForKeys = new Set();
         this._convoyGroups = new Map();
@@ -3394,7 +3505,7 @@ export class HarborTraffic {
             this._stateReductions++;
             this._dockLayout = buildDockSquadLayout(this.state);
             this._repoDockSummaryCache = this._repoDockSummaries(this._dockLayout);
-            this._pendingRepoSummaries = pendingRepoSummariesFromDockSummaries(this._repoDockSummaryCache);
+            this._pendingRepoSummaries = pendingRepoSummariesFromDockSummaries(this._repoDockSummaryCache, this.state.pushEvents.values());
             this._observeStorageTransfers(this._dockLayout, now);
             this._refreshRenderWindow(now);
         } else {
@@ -3475,6 +3586,8 @@ export class HarborTraffic {
         this._markerByRepoCache.clear();
         this._repoAnchorageDrawableCache.length = 0;
         this._drawableBuffer.length = 0;
+        this._hullItems.length = 0;
+        this._hullItemPool.clear();
         this._departingBuffer.length = 0;
         this._crateDrawnForKeys.clear();
         this._convoyGroups.clear();
@@ -4094,21 +4207,10 @@ export class HarborTraffic {
             if (!drawable || drawable.type !== 'ship') continue;
             const shipClass = harborShipClass(drawable);
             const waterRegion = this._shipWaterRegion(drawable);
-            if (drawable.storageTransfer && drawable.storageTransferProgress > 0.002 && drawable.storageTransferProgress < 1) {
-                wakes.push({
-                    type: 'departing',
-                    x: drawable.x,
-                    y: drawable.y,
-                    tailX: drawable.tailX,
-                    tailY: drawable.tailY,
-                    alpha: Math.max(0.06, 0.14 * (1 - drawable.storageTransferProgress * 0.45)),
-                    spread: (0.32 + drawable.storageTransferProgress * 0.52) * shipClass.wakeScale,
-                    progress: drawable.storageTransferProgress,
-                    waterRegion,
-                    projectAccent: trafficProfile(drawable.project, drawable.branch).accent,
-                });
-                continue;
-            }
+            // 3.8 — a hull under way throws its V wake from the harbor-hulls
+            // category (EffectStamps.wakeV, a ground-band record on the
+            // resident path); only berth rings and sink rings remain here.
+            if (drawable.storageTransfer && drawable.storageTransferProgress > 0.002 && drawable.storageTransferProgress < 1) continue;
             if (drawable.status === 'docked') {
                 const pulse = this.motionScale > 0
                     ? 0.55 + 0.25 * Math.sin(this.frame * 0.08 + drawable.berthIndex)
@@ -4126,22 +4228,6 @@ export class HarborTraffic {
                 continue;
             }
             if (drawable.status === 'departing' && drawable.progress > 0.002 && drawable.progress < 0.94) {
-                // #35 — wakeScale lets the water layer scale the diverging stern
-                // arcs + V bow ripple by hull class (skiff faint → flagship broad).
-                wakes.push({
-                    type: 'departing',
-                    x: drawable.x,
-                    y: drawable.y,
-                    tailX: drawable.tailX,
-                    tailY: drawable.tailY,
-                    alpha: Math.max(0.05, 0.18 * (1 - drawable.progress)),
-                    spread: (0.35 + drawable.progress * 0.75) * shipClass.wakeScale,
-                    progress: drawable.progress,
-                    wakeScale: shipClass.wakeScale,
-                    bowRipple: true,
-                    waterRegion,
-                    projectAccent: trafficProfile(drawable.project, drawable.branch).accent,
-                });
                 // #35 — force-push hulls list and sink in the last 4s of departure;
                 // emit a widening foam ring scaled by hull class so the size of the
                 // doomed push is viscerally readable. Renderer draws the ring + a
@@ -4276,7 +4362,11 @@ export class HarborTraffic {
                 earliestEventTime: 0,
             };
             summary.count += 1;
-            if (ship.pushStatus === 'failed') summary.failedCount += 1;
+            if (ship.pushStatus === 'failed') {
+                summary.failedCount += 1;
+                summary.failedAgentId ??= ship.agentId || null;
+                summary.failedAt = Math.max(Number(summary.failedAt) || 0, Number(ship.failedAt || ship.eventTime) || 0);
+            }
             summary.x += pos.x;
             summary.y += pos.y;
             summary.latestEventTime = Math.max(summary.latestEventTime, ship.eventTime || 0);
@@ -4670,6 +4760,7 @@ export class HarborTraffic {
                 key,
                 tile: this._shipStartTile(ship),
                 onShip: true,
+                agentId: ship.agentId || null,
                 eventTime: Number(ship.failedAt || ship.rejectedAt || 0),
             });
         }
@@ -4682,6 +4773,7 @@ export class HarborTraffic {
                 key,
                 tile: this._repoSlipTile(push.project),
                 onShip: false,
+                agentId: push.agentId || null,
                 eventTime: Number(push.eventTime || 0),
             });
         }
@@ -4696,11 +4788,14 @@ export class HarborTraffic {
                 seen = {
                     firstSeen: now,
                     fresh: mark.eventTime > 0 && now - mark.eventTime < FAILURE_BRACKET_FRESH_MS,
+                    // 8.3 — the cream frame lands on the failed push's note.
+                    cue: createCueGate('pushFailed', mark.agentId),
                 };
                 this._failureBrackets.set(mark.key, seen);
             }
             mark.firstSeen = seen.firstSeen;
             mark.fresh = seen.fresh;
+            mark.cue = seen.cue;
             list.push(mark);
         }
         return list;
@@ -4720,10 +4815,33 @@ export class HarborTraffic {
         if (!mark.tile) return;
         const point = toWorld(mark.tile.tileX, mark.tile.tileY);
         const size = mark.onShip ? { width: 30, height: 20, lift: 12 } : { width: 22, height: 14, lift: 6 };
-        const x = point.x;
-        const y = point.y - size.lift;
         const animated = mark.fresh && this.motionScale > 0;
-        const phase = animated ? momentPhase(now - mark.firstSeen, FAILURE_BRACKET) : null;
+        // 8.3 — the cream frame waits for the failed push's first note.
+        const age = animated
+            ? cueGatedAge(mark.cue, now - mark.firstSeen, FAILURE_BRACKET.anticipation, FAILURE_BRACKET.active)
+            : 0;
+        const phase = animated ? momentPhase(age, FAILURE_BRACKET) : null;
+        // 8.1 — V8: at the slip when that spot is clear and in the safe area;
+        // else along the Harbor's own column; else an edge plate.
+        const halfW = size.width / 2 + 7;
+        const anchor = resolveMomentAnchor(point, {
+            building: 'harbor',
+            actorId: mark.agentId,
+            depthY: point.y,
+            extent: { left: -halfW, top: -(size.lift + size.height / 2 + 6), right: halfW, bottom: size.height / 2 + 2 - size.lift },
+            id: `failed-push:${mark.key}`,
+            kind: 'pushFailed',
+            tier: 'medium',
+            phase: phase?.phase ?? 'residue',
+        });
+        if (anchor.mode === 'edge') {
+            queueMomentEdgePlate(anchor, { word: 'PUSH FAILED', color: FAILURE, peak: phase?.phase === 'peak', ctx });
+            return;
+        }
+        const x = anchor.x;
+        const y = anchor.y - size.lift;
+        // The actor → the slip, for the residue window only.
+        if (phase?.phase === 'residue') drawMomentThread(ctx, anchor, { color: FAILURE, targetLift: size.lift });
         const options = { width: size.width, height: size.height, broken: true, color: FAILURE, outline: FAILURE_OUTLINE };
         switch (phase?.phase) {
         case 'anticipation':
@@ -4995,59 +5113,66 @@ export class HarborTraffic {
         };
     }
 
-    _drawShip(ctx, ship, zoom) {
-        // 3.2 — inbound ships fade in over the first 8s of approach.
-        let alpha;
-        if (ship.status === 'departing') {
-            alpha = this._departureAlpha(ship);
-        } else if (ship.status === 'arriving' || ship.status === 'anchored') {
-            const elapsed = Math.max(0, Number(ship.elapsed) || 0);
-            alpha = Math.max(0, Math.min(1, elapsed / INBOUND_FADE_IN_MS));
-        } else {
-            alpha = 1;
+    // DrawablePass sorts a hull behind a split building by depth
+    // (`behindBuilding`, with the building drawable that sorts over it); the
+    // marks drop only where that building's silhouette covers the hull on
+    // screen: its masthead (where the flag flies) or most of a 3 x 3 grid
+    // over the frame. A hull passing behind the Lighthouse footprint beside
+    // the slim tower stays in view, and so do its flag and plate.
+    _marksHiddenBehindBuilding(ship) {
+        const item = this._hullItemPool?.get(ship.id);
+        if (!item?.behindBuilding) return false;
+        const building = item.behindBuildingDrawable;
+        const sprites = this.sprites;
+        const pose = item.pose;
+        if (!building?.entry?.id || typeof sprites?.hitTest !== 'function' || !pose?.strip) return true;
+        const id = building.entry.id;
+        const [ax, ay] = sprites.assets?.getAnchor?.(id) || [0, 0];
+        const dx = Math.round(building.wx - ax);
+        const dy = Math.round(building.wy - ay);
+        const mast = hullMasthead(pose);
+        if (sprites.hitTest(id, mast.x, mast.y, dx, dy)) return true;
+        const g = hullGeometry(pose);
+        let covered = 0;
+        for (let j = 1; j <= 3; j++) {
+            for (let i = 1; i <= 3; i++) {
+                if (sprites.hitTest(id, g.x + g.width * i / 4, g.y + g.height * j / 4, dx, dy)) covered++;
+            }
         }
+        return covered >= 5;
+    }
+
+    _drawShip(ctx, ship, zoom) {
+        const alpha = this._shipAlpha(ship);
         if (alpha <= 0.02) return;
+        // A hull the Harbor hides takes its flags and plates with it, as a
+        // body behind a building drops its name.
+        if (this._marksHiddenBehindBuilding(ship)) return;
         const profile = trafficProfile(ship.project, ship.branch);
         const shipClass = harborShipClass(ship);
 
-        // Ship wakes are exported through enumerateWakeDescriptors() so the
-        // water layer can render them beneath harbor traffic and buildings.
-
+        // 3.8 — the hull, its reflection and its V wake are the harbor-hulls
+        // scene category (records on the resident path). This pass draws the
+        // ship's marks: flags, badges, plates and moorings, which ride the
+        // hull's whole-texel sink so a sinking ship takes its flag down.
         ctx.save();
         // 3.6 — amended commit flash hull in repo accent for 400ms.
         const amendFlashAt = Number(ship.amendFlashAt) || 0;
         const amendFlashElapsed = amendFlashAt ? Math.max(0, Date.now() - amendFlashAt) : Infinity;
         const flashing = amendFlashElapsed < 400;
-        // 3.1 — force-push: ship lists and sinks in last 4s of departure.
-        let listAngle = 0;
-        let sinkY = 0;
-        let forceSinkAlpha = alpha;
-        if (this.motionScale > 0 && ship.status === 'departing' && ship.pushForce === true) {
-            const departMs = Math.max(1, Number(ship.departMsOverride) || FORCE_DEPARTURE_MS);
-            const sinkWindow = Math.min(4000, departMs * 0.5);
-            const elapsed = Math.max(0, Number(ship.elapsed) || 0);
-            const sinkProgress = Math.max(0, Math.min(1, (elapsed - (departMs - sinkWindow)) / sinkWindow));
-            if (sinkProgress > 0) {
-                listAngle = (4 + 4 * sinkProgress) * (Math.PI / 180); // 4° → 8°
-                sinkY = 16 * sinkProgress;
-                forceSinkAlpha = Math.max(0, alpha * (1 - sinkProgress * 0.55));
-            }
-        }
-        if (listAngle !== 0 || sinkY !== 0) {
-            ctx.translate(ship.x, ship.y);
-            ctx.rotate(listAngle);
-            ctx.translate(-ship.x, -ship.y + sinkY);
-        }
+        // 3.1 — force-push: the hull takes its hardest roll frame and sinks
+        // in whole texels over the last 4 s of departure (no rotate).
+        const sink = this._shipSink(ship);
+        const forceSinkAlpha = alpha * sink.alphaScale;
+        if (sink.px) ctx.translate(0, sink.px);
         if (flashing && this.motionScale > 0) {
             ctx.save();
             ctx.globalAlpha = 0.42 * (1 - amendFlashElapsed / 400);
             ctx.globalCompositeOperation = 'lighter';
-            fillPixelEllipse(ctx, ship.x, ship.y - 2, 26 * (shipClass.scale || 1), 14 * (shipClass.scale || 1), profile.accent);
+            fillPixelEllipse(ctx, ship.x, ship.y - 2, 26, 14, profile.accent);
             ctx.restore();
         }
-        if (this.sprites) {
-            this._drawShipSprite(ctx, ship, forceSinkAlpha, shipClass);
-        } else {
+        if (!hullStrip(this.sprites?.assets, shipClass.spriteId)) {
             this._drawFallbackBoat(ctx, ship.x, ship.y, forceSinkAlpha, shipClass, profile);
         }
         this._drawShipClassOverlay(ctx, ship, forceSinkAlpha, profile, shipClass, zoom);
@@ -5153,44 +5278,131 @@ export class HarborTraffic {
         }
     }
 
-    // v0.23 A3 — per-ship vertical bob (px, positive = up), phase-seeded off the
-    // ship id so a docked flock heaves out of sync. Departing/sailing hulls
-    // heave harder. Zero under reduced motion so the fleet sits still.
+    // v0.23 A3 / 3.8 — per-ship vertical bob in whole texels (positive = up),
+    // phase-seeded off the ship id so a docked flock heaves out of sync.
+    // Departing hulls heave harder. Zero under reduced motion.
     _shipBob(ship = {}) {
         if (this.motionScale <= 0) return 0;
         const phase = (stableHash(ship.id || '') % 1000) / 1000 * Math.PI * 2;
         const heave = ship.status === 'departing' ? 1.7 : 1;
-        return Math.sin(this.frame * 0.08 + phase) * 1.2 * heave;
+        return Math.round(Math.sin(this.frame * 0.08 + phase) * 1.2 * heave);
     }
 
-    // v0.23 A3 — subtle hull roll (radians, ~±1.5°), a slower off-phase sine so
-    // the roll and bob never lock. Stronger while departing. Static under
-    // reduced motion.
+    // v0.23 A3 / 3.8 — hull roll in degrees (~±1.5°, ~±2.9° departing), a
+    // slower off-phase sine so roll and bob never lock. It only selects one of
+    // the five baked roll frames (rollFrameIndex); nothing rotates at draw
+    // time. Upright under reduced motion.
     _shipRoll(ship = {}) {
         if (this.motionScale <= 0) return 0;
         const phase = (stableHash(ship.id || '') % 1000) / 1000 * Math.PI * 2;
         const heave = ship.status === 'departing' ? 1.9 : 1;
-        return Math.sin(this.frame * 0.065 + phase + 0.7) * (1.5 * Math.PI / 180) * heave;
+        return Math.sin(this.frame * 0.065 + phase + 0.7) * 1.5 * heave;
     }
 
-    _drawShipSprite(ctx, ship, alpha, shipClass = harborShipClass(ship)) {
-        const scale = Math.max(0.5, Number(shipClass.scale || 1));
-        const spriteId = shipClass.spriteId && this.sprites?.assets?.has?.(shipClass.spriteId)
-            ? shipClass.spriteId
-            : SHIP_SPRITE_ID;
-        const bob = this._shipBob(ship);
-        const roll = this._shipRoll(ship);
-        // v0.23 A6 — deterministic horizontal mirror for ~half the skiffs so a
-        // docked flock doesn't read as identical clones. Flags/labels draw in
-        // their own helpers and stay unmirrored/legible.
-        const mirror = shipClass.key === 'skiff' && (stableHash(`${ship.id || ''}:mirror`) % 2 === 0);
-        ctx.save();
-        ctx.translate(Math.round(ship.x), Math.round(ship.y));
-        if (roll) ctx.rotate(roll);
-        ctx.translate(0, -bob);
-        ctx.scale(mirror ? -scale : scale, scale);
-        this.sprites.drawSprite(ctx, spriteId, 0, 0, { alpha });
-        ctx.restore();
+    // 3.2 — inbound ships fade in over the first 8 s of approach; departing
+    // ships fade out at the end of their route.
+    _shipAlpha(ship = {}) {
+        if (ship.status === 'departing') return this._departureAlpha(ship);
+        if (ship.status === 'arriving' || ship.status === 'anchored') {
+            const elapsed = Math.max(0, Number(ship.elapsed) || 0);
+            return Math.max(0, Math.min(1, elapsed / INBOUND_FADE_IN_MS));
+        }
+        return 1;
+    }
+
+    // 3.1 / 3.8 — a force-pushed hull sinks 16 texels over the last 4 s of
+    // its departure, in whole texels, fading to 45 %.
+    _shipSink(ship = {}) {
+        if (!(this.motionScale > 0) || ship.status !== 'departing' || ship.pushForce !== true) return NO_SINK;
+        const departMs = Math.max(1, Number(ship.departMsOverride) || FORCE_DEPARTURE_MS);
+        const sinkWindow = Math.min(4000, departMs * 0.5);
+        const elapsed = Math.max(0, Number(ship.elapsed) || 0);
+        const progress = Math.max(0, Math.min(1, (elapsed - (departMs - sinkWindow)) / sinkWindow));
+        if (!(progress > 0)) return NO_SINK;
+        return { progress, px: Math.round(16 * progress), alphaScale: 1 - progress * 0.55 };
+    }
+
+    // 3.8 — the whole-texel hull pose the harbor-hulls category draws: roll
+    // frame, bob, sink, a 4-step alpha, the V wake while under way, and the
+    // repo-accent livery stripe on skiffs (baked into a cached strip copy).
+    _hullPose(ship) {
+        const shipClass = harborShipClass(ship);
+        let strip = hullStrip(this.sprites?.assets, shipClass.spriteId);
+        if (!strip) return null;
+        const sink = this._shipSink(ship);
+        const alpha = Math.round(this._shipAlpha(ship) * sink.alphaScale * 4) / 4;
+        if (alpha <= 0) return null;
+        if (shipClass.key === 'skiff') {
+            const accent = trafficProfile(ship.project, ship.branch).accent;
+            strip = liveryStrip(strip, accent, 4 + (stableHash(`${ship.id || ''}:skiff`) % 4));
+        }
+        const frame = sink.progress > 0 ? 4 : rollFrameIndex(this._shipRoll(ship));
+        return {
+            id: ship.id || `${ship.x},${ship.y}`,
+            strip,
+            frame,
+            x: ship.x,
+            y: ship.y,
+            bob: this._shipBob(ship),
+            sink: sink.px,
+            alpha,
+            wake: this._shipUnderWay(ship) ? this._wakeHeading(ship, shipClass) : null,
+        };
+    }
+
+    // Heading from the route sample `_shipDrawable` stored: an inbound ship's
+    // tail point lies ahead on its reversed route, every other one behind.
+    _wakeHeading(ship, shipClass) {
+        const ahead = ship.status === 'arriving' || ship.status === 'anchored';
+        const dirX = ahead ? ship.tailX - ship.x : ship.x - ship.tailX;
+        const dirY = ahead ? ship.tailY - ship.y : ship.y - ship.tailY;
+        // The V runs from the bow: fresh (under the hull) to the stern, then a
+        // class-scaled open-water tail that ages out in its 4 steps.
+        const strip = hullStrip(this.sprites?.assets, shipClass.spriteId);
+        const hold = strip ? Math.round(strip.frameWidth * 0.8) : 20;
+        return { dirX, dirY, hold, length: hold + 24 + Math.round(shipClass.wakeScale * 12) };
+    }
+
+    // A hull is under way (throws a V wake) while it sails a route: departing
+    // past cast-off, rejecting, cancelling, arriving, or mid storage transfer.
+    _shipUnderWay(ship = {}) {
+        if (!Number.isFinite(ship.tailX) || !Number.isFinite(ship.tailY)) return false;
+        if (Math.abs(ship.x - ship.tailX) + Math.abs(ship.y - ship.tailY) < 0.5) return false;
+        if (ship.storageTransfer) return true;
+        if (ship.status === 'departing') return !ship.castingOff && ship.progress > 0.002 && ship.progress < 0.97;
+        return ship.status === 'rejecting' || ship.status === 'cancelling' || ship.status === 'arriving';
+    }
+
+    // 3.8 — one harbor-hulls item per drawn ship, at the ship drawable's
+    // painter sortY, carrying its pose and (for the resident path) its
+    // records. Items are pooled per ship id.
+    enumerateHullDrawables(now = Date.now()) {
+        const drawables = this.enumerateDrawables(now);
+        const items = this._hullItems;
+        items.length = 0;
+        const pool = this._hullItemPool;
+        for (const drawable of drawables) {
+            const ship = drawable.payload;
+            if (ship?.type !== 'ship') continue;
+            const pose = this._hullPose(ship);
+            if (!pose) continue;
+            let item = pool.get(pose.id);
+            if (!item) {
+                item = { kind: 'harbor-hulls', id: pose.id, sortY: 0, x: 0, y: 0, pose: null, records: [] };
+                pool.set(pose.id, item);
+            }
+            item.sortY = drawable.sortY;
+            item.x = ship.x;
+            item.y = ship.y;
+            item.pose = pose;
+            hullRecords(pose, item.records);
+            items.push(item);
+        }
+        if (pool.size > items.length * 2 + 32) {
+            const live = new Set(items.map(item => item.id));
+            for (const id of pool.keys()) if (!live.has(id)) pool.delete(id);
+        }
+        return items;
     }
 
     // v0.23 A7 — the repo's lead docked ship (index 0) with more than one commit
@@ -5201,39 +5413,15 @@ export class HarborTraffic {
             && harborFleetCount(ship) > 1;
     }
 
-    // v0.23 A6 — procedural per-skiff variety drawn over the sprite: a thin
-    // repo-accent gunwale stripe at a hash-varied height plus an occasional
-    // deck crate. Skiff class only; flags/labels are drawn elsewhere.
-    _drawSkiffDetails(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const scale = Math.max(0.5, Number(shipClass.scale || 1));
-        const bob = this._shipBob(ship);
-        const hash = stableHash(`${ship.id || ''}:skiff`);
-        ctx.save();
-        ctx.globalAlpha = 0.85 * alpha;
-        const stripeY = ship.y - (5 + (hash % 4)) * scale - bob;
-        ctx.fillStyle = profile.accent;
-        ctx.fillRect(Math.round(ship.x - 13 * scale), Math.round(stripeY), Math.max(6, Math.round(24 * scale)), Math.max(1, Math.round(1.4 * scale)));
-        if (hash % 3 === 0) {
-            const cw = Math.max(4, Math.round(6 * scale));
-            const cx = Math.round(ship.x - (2 + (hash % 5)) * scale);
-            const cy = Math.round(ship.y - 13 * scale - bob);
-            ctx.fillStyle = '#8a5530';
-            ctx.strokeStyle = 'rgba(32, 20, 14, 0.8)';
-            ctx.lineWidth = Math.max(1, Math.round(scale));
-            ctx.fillRect(cx, cy, cw, cw);
-            ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, cw - 1);
-        }
-        ctx.restore();
-    }
-
     _drawShipClassOverlay(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), zoom = 1) {
-        if (shipClass.spriteId && this.sprites?.assets?.has?.(shipClass.spriteId)) {
-            if (shipClass.key === 'skiff') this._drawSkiffDetails(ctx, ship, alpha, profile, shipClass);
+        if (hullStrip(this.sprites?.assets, shipClass.spriteId)) {
             this._drawShipTierBadge(ctx, ship, alpha, profile, shipClass, zoom);
             return;
         }
 
-        const scale = Math.max(0.5, Number(shipClass.scale || 1));
+        // No hull art (asset missing or no sprite system): a procedural
+        // stand-in at scale 1.
+        const scale = 1;
         const cargoRows = Math.max(0, Number(shipClass.cargoRows || 0));
         const mastCount = Math.max(1, Number(shipClass.mastCount || 1));
         const bob = this._shipBob(ship);
@@ -5331,6 +5519,27 @@ export class HarborTraffic {
         ctx.restore();
     }
 
+    // 3.8 — the hull's height above its waterline in world px (the strip's
+    // waterline anchor), falling back to the class table.
+    _hullLift(ship, shipClass = harborShipClass(ship)) {
+        const strip = hullStrip(this.sprites?.assets, shipClass.spriteId);
+        return strip ? strip.anchorY : Math.max(0, Number(shipClass.labelLift || 0));
+    }
+
+    // 3.8 — plates sit above the hull and its masthead flag at every zoom:
+    // screen px (relative to the waterline anchor, zoom cancelled) of the
+    // flag's top (the hull's top edge while the strip loads), 4 px up.
+    _plateBase(ship, shipClass, zoom) {
+        const strip = hullStrip(this.sprites?.assets, shipClass.spriteId);
+        const flagTop = strip?.mastheads ? strip.mastheads[2][1] + FLAG_MAST_OVERLAP - 16 : 0;
+        const lift = this._hullLift(ship, shipClass) - Math.min(0, flagTop);
+        return -Math.round((lift + this._shipBob(ship)) * (zoom || 1)) - 4;
+    }
+
+    _hasShipBadge(ship, shipClass) {
+        return (this._isFleetLead(ship) && !(Number(ship.visualPackSize) > 1)) || Boolean(shipClass.badge);
+    }
+
     _drawShipTierBadge(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), zoom = 1) {
         // v0.23 A7 — the repo's lead docked ship shows a single fleet-count banner
         // in place of its class tier badge. Titan packs keep their exact `Nx`
@@ -5341,8 +5550,6 @@ export class HarborTraffic {
             return;
         }
         if (!shipClass.badge) return;
-        const scale = Math.max(0.85, Number(shipClass.scale || 1));
-        const bob = this._shipBob(ship);
         const badge = shipClass.badge;
         ctx.save();
         ctx.globalAlpha = 0.94 * alpha;
@@ -5354,7 +5561,7 @@ export class HarborTraffic {
         const width = Math.max(18, measureLabelText(ctx, badge) + 8);
         const height = 14;
         const left = -Math.round(width / 2);
-        const top = -Math.round((40 + Math.max(0, Number(shipClass.labelLift || 0)) + bob) * scale);
+        const top = this._plateBase(ship, shipClass, zoom) - height;
         ctx.fillStyle = profile.accent;
         ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = 'rgba(24, 33, 36, 0.92)';
@@ -5370,8 +5577,6 @@ export class HarborTraffic {
     // reusing the tier-badge style so the whole flock reads as a single fleet.
     _drawFleetBanner(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), zoom = 1) {
         const count = harborFleetCount(ship);
-        const scale = Math.max(0.85, Number(shipClass.scale || 1));
-        const bob = this._shipBob(ship);
         const badge = `${count}⚓`;
         ctx.save();
         ctx.globalAlpha = 0.96 * alpha;
@@ -5383,7 +5588,7 @@ export class HarborTraffic {
         const width = Math.max(20, measureLabelText(ctx, badge) + 10);
         const height = 14;
         const left = -Math.round(width / 2);
-        const top = -Math.round((42 + Math.max(0, Number(shipClass.labelLift || 0)) + bob) * scale);
+        const top = this._plateBase(ship, shipClass, zoom) - height;
         ctx.fillStyle = profile.accent;
         ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = 'rgba(20, 29, 32, 0.94)';
@@ -5503,34 +5708,30 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    // 3.1 — yellow chevron banner above the flagship's flag for --force-with-lease.
+    // 3.1 / 6.5 — a yellow pennant hoisted above the flagship's flag for
+    // --force-with-lease (the shared pixel strip, flying downwind).
     _drawForceLeaseBanner(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
-        const s = 1 / Math.max(1, zoom || 1);
-        const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
-        const y = Math.round(ship.y - (45 + (shipClass.flagOffsetY || 0)) * s);
+        const { x, y: top } = this._flagAnchor(ship, shipClass);
+        const y = top - 14;
+        const windX = currentPennantWind();
         ctx.save();
-        ctx.fillStyle = '#ffd34a';
-        ctx.strokeStyle = 'rgba(40, 28, 8, 0.78)';
-        ctx.lineWidth = Math.max(1, Math.round(1 * s));
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x + 11 * s, y + 4 * s);
-        ctx.lineTo(x, y + 8 * s);
-        ctx.lineTo(x + 5 * s, y + 4 * s);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+        drawPennant(ctx, x, y + 14, {
+            accent: '#ffd34a',
+            rim: '#281c08',
+            frame: pennantFrame(currentPennantTime(), windX, { motion: this.motionScale > 0, phase: 1 }),
+            windX,
+            withPole: false,
+        });
         ctx.restore();
     }
 
     // 3.1 — thin yellow underline beneath the flag for --force-if-includes.
     _drawForceIncludesUnderline(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
-        const s = 1 / Math.max(1, zoom || 1);
-        const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
-        const y = Math.round(ship.y - (16 + (shipClass.flagOffsetY || 0)) * s);
+        // One texel under the repo flag's cloth (cloth rows 2-10 of the strip).
+        const { x, y } = this._flagAnchor(ship, shipClass);
         ctx.save();
         ctx.fillStyle = '#ffd34a';
-        ctx.fillRect(x, y, Math.max(2, Math.round(11 * s)), Math.max(1, Math.round(1.5 * s)));
+        ctx.fillRect(x + 3, y + 11, 11, 1);
         ctx.restore();
     }
 
@@ -5564,42 +5765,42 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    // Secondary pennon hoisted on flagship/dreadnought at cast-off end.
+    // Secondary pennon hoisted on flagship/dreadnought at cast-off end (6.5:
+    // the shared pixel strip, flying downwind).
     _drawSecondaryPennon(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const s = 1 / Math.max(1, zoom || 1);
-        const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
-        const y = Math.round(ship.y - (52 + (shipClass.flagOffsetY || 0)) * s);
+        const { x, y: top } = this._flagAnchor(ship, shipClass);
+        const y = top - 21;
+        const windX = currentPennantWind();
         ctx.save();
-        ctx.fillStyle = profile.accent;
-        ctx.beginPath();
-        ctx.moveTo(x + 2 * s, y);
-        ctx.lineTo(x + 8 * s, y + 3 * s);
-        ctx.lineTo(x + 2 * s, y + 6 * s);
-        ctx.closePath();
-        ctx.fill();
+        drawPennant(ctx, x, y + 14, {
+            accent: profile.accent,
+            frame: pennantFrame(currentPennantTime(), windX, { motion: this.motionScale > 0, phase: 2 }),
+            windX,
+            withPole: false,
+        });
         ctx.restore();
     }
 
-    // Yellow caution flag overlay on a rejected ship.
+    // Caution pennant on a rejected ship (6.5: the shared pixel strip in the
+    // rejected status colour). The caution beat is a V4 palette step, not a
+    // fade: every 2 s the cloth swaps to its rim tone for one 0.5 s step on
+    // the pennant clock; reduced motion holds the rest tones.
     _drawRejectedCautionFlag(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
-        const s = 1 / Math.max(1, zoom || 1);
-        const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
-        const y = Math.round(ship.y - (38 + (shipClass.flagOffsetY || 0)) * s);
-        const pulse = this.motionScale > 0
-            ? 0.62 + 0.22 * Math.sin(this.frame * 0.18 + ship.berthIndex)
-            : 0.72;
+        const { x, y: top } = this._flagAnchor(ship, shipClass);
+        const y = top - 7;
+        const style = PUSH_STATUS_STYLE.rejected;
+        const rim = style.panelBorder || '#ff755d';
+        const step = Math.floor(currentPennantTime() / CAUTION_BEAT_STEP_MS) + (Number(ship.berthIndex) || 0);
+        const lit = this.motionScale > 0 && ((step % 4) + 4) % 4 === 3;
+        const windX = currentPennantWind();
         ctx.save();
-        ctx.globalAlpha = pulse;
-        ctx.fillStyle = PUSH_STATUS_STYLE.rejected.accent;
-        ctx.strokeStyle = PUSH_STATUS_STYLE.rejected.panelBorder || '#ff755d';
-        ctx.lineWidth = Math.max(1, Math.round(1 * s));
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x + 10 * s, y + 4 * s);
-        ctx.lineTo(x, y + 8 * s);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+        drawPennant(ctx, x, y + 14, {
+            accent: lit ? rim : style.accent,
+            rim: lit ? style.accent : rim,
+            frame: pennantFrame(currentPennantTime(), windX, { motion: this.motionScale > 0, phase: 3 }),
+            windX,
+            withPole: false,
+        });
         ctx.restore();
     }
 
@@ -5617,38 +5818,33 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    // 3.6 — broken-rope chevron above the flag for untethered (no remote).
+    // 3.6 / 6.5 — broken-rope chevron above the repo flag for untethered (no
+    // remote): two whole-texel polylines on the art grid, riding the flag's
+    // pole and bob and mirrored with the wind like the cloth.
     _drawUntetheredFlag(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const s = 1 / Math.max(1, zoom || 1);
-        const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
-        const y = Math.round(ship.y - (47 + (shipClass.flagOffsetY || 0)) * s);
+        const { x, y: top } = this._flagAnchor(ship, shipClass);
+        const y = top - 16;
+        const dir = currentPennantWind() < 0 ? -1 : 1;
         ctx.save();
-        ctx.strokeStyle = '#d6dadf';
-        ctx.lineWidth = Math.max(1, Math.round(1.3 * s));
-        // broken-rope chevron: two segments with a gap between
-        ctx.beginPath();
-        ctx.moveTo(x - 4 * s, y + 4 * s);
-        ctx.lineTo(x + 1 * s, y);
-        ctx.lineTo(x + 3 * s, y + 2 * s);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(x + 6 * s, y + 5 * s);
-        ctx.lineTo(x + 9 * s, y + 1 * s);
-        ctx.lineTo(x + 13 * s, y + 4 * s);
-        ctx.stroke();
+        ctx.fillStyle = '#d6dadf';
+        for (const run of UNTETHERED_CHEVRON) {
+            for (let i = 1; i < run.length; i++) {
+                pixelLine(ctx, x + dir * run[i - 1][0], y + run[i - 1][1], x + dir * run[i][0], y + run[i][1]);
+            }
+        }
         ctx.restore();
     }
 
-    // 3.6 — checkered black-and-white band overlay for detached HEAD.
+    // 3.6 / 6.5 — checkered black-and-white band across the flag's hoist for
+    // detached HEAD: five 2×2-texel cells on the cloth side of the pole.
     _drawDetachedHeadBand(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
-        const s = 1 / Math.max(1, zoom || 1);
-        const x = Math.round(ship.x + (15 + (shipClass.flagOffsetX || 0)) * s);
-        const y = Math.round(ship.y - (27 + (shipClass.flagOffsetY || 0)) * s);
-        const cell = Math.max(1, Math.round(2 * s));
+        const { x: pole, y: top } = this._flagAnchor(ship, shipClass);
+        const y = top + 4;
+        const mirror = currentPennantWind() < 0;
         ctx.save();
         for (let i = 0; i < 5; i++) {
             ctx.fillStyle = i % 2 === 0 ? '#1a1a1a' : '#f4f0e6';
-            ctx.fillRect(x + i * cell, y, cell, cell);
+            ctx.fillRect(mirror ? pole - 2 - i * 2 : pole + 2 + i * 2, y, 2, 2);
         }
         ctx.restore();
     }
@@ -5659,16 +5855,17 @@ export class HarborTraffic {
         if (count <= 0) return;
         const labels = ['', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
         const text = count > 1 ? (labels[count] || `^${count}`) : '¹';
-        // C5 — screen-fixed: whole screen pixels at the flag's world anchor.
+        // C5 — screen-fixed glyphs at the repo flag's fly end (world anchor).
+        const { x, y } = this._flagAnchor(ship, shipClass);
         ctx.save();
-        ctx.translate(ship.x, ship.y);
+        ctx.translate(x + 21, y + 2);
         ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
         snapScreenOrigin(ctx);
         ctx.fillStyle = '#f6cf60';
         ctx.font = WORLD_DISPLAY_FONT_8;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
-        this._fillReadableText(ctx, text, Math.round(26 + (shipClass.flagOffsetX || 0)), Math.round(-33 - (shipClass.flagOffsetY || 0)) + 7);
+        this._fillReadableText(ctx, text, 0, 7);
         ctx.restore();
     }
 
@@ -5676,7 +5873,7 @@ export class HarborTraffic {
     _drawInboundCrates(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
         const s = 1 / Math.max(1, zoom || 1);
         const count = Math.min(4, Math.max(1, Number(ship.inboundCargoCount || 0)));
-        const baseY = Math.round(ship.y - 14 * (shipClass.scale || 1));
+        const baseY = Math.round(ship.y - Math.max(8, this._hullLift(ship, shipClass) * 0.4) - this._shipBob(ship));
         ctx.save();
         ctx.fillStyle = '#8a5530';
         ctx.strokeStyle = '#2d1c12';
@@ -5813,158 +6010,139 @@ export class HarborTraffic {
         return { state: 'idle' };
     }
 
-    _drawRepoFlag(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const s = 1 / Math.max(1, zoom || 1);
+    // 6.5 / 3.8 — the flag hoist: the repo flag's pole stands on the hull's
+    // masthead (the manifest `masthead` of the strip, turned with the roll
+    // frame it draws, riding its bob), its foot FLAG_MAST_OVERLAP texels down
+    // the mast so staff and mast read as one spar. Returns the pennant box
+    // top-left x at the pole and its top row (the pole foot is y + 16); every
+    // other mark on the flag hangs off this. A hull still loading its strip
+    // falls back to the class offsets.
+    _flagAnchor(ship, shipClass = harborShipClass(ship)) {
         const bob = this._shipBob(ship);
-        const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
-        const y = Math.round(ship.y - (31 + (shipClass.flagOffsetY || 0)) * s - bob);
+        const strip = hullStrip(this.sprites?.assets, shipClass.spriteId);
+        if (!strip?.mastheads) {
+            return {
+                x: Math.round(ship.x + 13 + (shipClass.flagOffsetX || 0)),
+                y: Math.round(ship.y - 31 - (shipClass.flagOffsetY || 0) - bob),
+            };
+        }
+        const frame = this._shipSink(ship).progress > 0 ? 4 : rollFrameIndex(this._shipRoll(ship));
+        const [mx, my] = strip.mastheads[frame];
+        return {
+            x: Math.round(ship.x) - strip.anchorX + mx,
+            y: Math.round(ship.y) - strip.anchorY - bob + my + FLAG_MAST_OVERLAP - 16,
+        };
+    }
+
+    // 6.5 — the repo flag: the shared pixel pennant strip on a staff at the
+    // masthead in the repo accent (a branch variant rims it in its base
+    // repo's accent), stepped at 4 fps downwind, on the rest frame in calm
+    // air and under reduced motion.
+    _drawRepoFlag(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
+        const { x, y } = this._flagAnchor(ship, shipClass);
+        const windX = currentPennantWind();
+        const phase = stableHash(ship.id || '') % 4;
         ctx.save();
         ctx.globalAlpha = 0.92 * alpha;
-        ctx.fillStyle = 'rgba(17, 26, 30, 0.82)';
-        ctx.fillRect(x, y, Math.max(1, Math.round(2 * s)), Math.max(1, Math.round(14 * s)));
-        ctx.fillStyle = profile.accent;
-        // v0.23 A4 — two-segment procedural wave: the fly edge ripples and the
-        // tip streams (harder while departing). Static triangle under reduced motion.
-        if (this.motionScale > 0) {
-            const phase = (stableHash(ship.id || '') % 1000) / 1000 * Math.PI * 2;
-            const stream = ship.status === 'departing'
-                ? 1 + Math.max(0, Math.min(1, Number(ship.progress) || 0)) * 1.4
-                : 1;
-            const wave = Math.sin(this.frame * 0.2 + phase) * 2 * s * stream;
-            const tipX = x + (13 + (stream - 1) * 4) * s;
-            const tipY = y + 5 * s + wave;
-            ctx.beginPath();
-            ctx.moveTo(x + 2 * s, y + 1 * s);
-            ctx.quadraticCurveTo(x + 7 * s, y + 2 * s + wave * 0.55, tipX, tipY);
-            ctx.quadraticCurveTo(x + 7 * s, y + 8 * s + wave * 0.55, x + 2 * s, y + 9 * s);
-            ctx.closePath();
-            ctx.fill();
-        } else {
-            ctx.beginPath();
-            ctx.moveTo(x + 2 * s, y + 1 * s);
-            ctx.lineTo(x + 13 * s, y + 5 * s);
-            ctx.lineTo(x + 2 * s, y + 9 * s);
-            ctx.closePath();
-            ctx.fill();
-        }
-        if (profile.isBranchVariant && profile.baseAccent) {
-            ctx.fillStyle = profile.baseAccent;
-            ctx.fillRect(x + 3 * s, y + 6 * s, Math.max(2, Math.round(9 * s)), Math.max(1, Math.round(2 * s)));
-        }
+        drawPennant(ctx, x, y + 16, {
+            accent: profile.accent,
+            rim: profile.isBranchVariant && profile.baseAccent ? profile.baseAccent : null,
+            frame: pennantFrame(currentPennantTime(), windX, { motion: this.motionScale > 0, phase }),
+            windX,
+        });
         ctx.restore();
     }
 
-    // 4.17: procedural repo heraldry shield on squad flagship. Drawn in canvas
-    // (no sprite/asset) so we can tint by repo hue at render time. Height ~24 px
-    // in world units; clamped tightly above the ship so it doesn't overlap the
-    // commit pennant which sits to the side and below.
+    // 4.17 / 6.5: procedural repo heraldry shield on the squad flagship,
+    // tinted by the repo at render time. The shield is flag drawing on the art
+    // grid: whole-texel row runs in world units (24 texels tall, wide enough
+    // at z1 for its label), so it scales with the hull in exact k×k texels;
+    // no path, no anti-aliased edge. Only the short repo label stays a
+    // screen-fixed C5 glyph run, centred on the shield's upper third.
     _drawRepoShield(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
         const h = 24;
-        // C5 — screen-fixed: zoom cancelled at the ship anchor, whole screen px.
-        ctx.save();
-        ctx.globalAlpha = Math.max(0, alpha) * 0.94;
-        ctx.translate(ship.x, ship.y);
-        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
-        snapScreenOrigin(ctx);
-        ctx.font = WORLD_DISPLAY_FONT_8;
         const shortName = String(profile.shortName || profile.name || '').slice(0, 3).toUpperCase();
-        // The crest widens just enough to carry its label without squeezing
-        // glyphs (C5 measures instead of fillText maxWidth).
-        const w = shortName ? Math.max(18, measureLabelText(ctx, shortName) + 6) : 18;
-        const cx = 0;
-        const top = -Math.round(44 + (shipClass.flagOffsetY || 0) * 0.6);
-        const left = -Math.round(w / 2);
-        const right = left + w;
-        const pointY = top + h;
-        const shoulderY = top + Math.round(h * 0.72);
-
+        ctx.save();
+        ctx.font = WORLD_DISPLAY_FONT_8;
+        // The crest widens just enough to carry its label at z1 without
+        // squeezing glyphs (C5 measures instead of fillText maxWidth).
+        const w = shortName ? Math.max(18, Math.ceil(measureLabelText(ctx, shortName)) + 6) : 18;
+        const cx = Math.round(ship.x);
+        const top = Math.round(ship.y) - Math.round(44 + (shipClass.flagOffsetY || 0) * 0.6);
+        const runs = shieldRuns(w, h);
+        ctx.globalAlpha = Math.max(0, alpha) * 0.94;
         // Drop shadow behind the shield for legibility against busy water.
         ctx.fillStyle = 'rgba(8, 12, 16, 0.55)';
-        ctx.beginPath();
-        ctx.moveTo(left + 1, top + 2);
-        ctx.lineTo(right + 1, top + 2);
-        ctx.lineTo(right + 1, shoulderY + 2);
-        ctx.lineTo(cx + 1, pointY + 2);
-        ctx.lineTo(left + 1, shoulderY + 2);
-        ctx.closePath();
-        ctx.fill();
-
-        // Outer rim — gold on base repos, branch accent on variants; a 1 px
-        // expanded silhouette fill, not a stroke (C5).
+        for (const [y, x0, x1] of runs) ctx.fillRect(cx + x0 + 1, top + y + 2, x1 - x0, 1);
+        // Outer rim — gold on base repos, branch accent on variants: the
+        // silhouette grown by one texel.
         ctx.fillStyle = profile.isBranchVariant && profile.baseAccent
             ? profile.baseAccent
             : 'rgba(255, 240, 184, 0.88)';
-        ctx.beginPath();
-        ctx.moveTo(left - 1, top - 1);
-        ctx.lineTo(right + 1, top - 1);
-        ctx.lineTo(right + 1, shoulderY + 1);
-        ctx.lineTo(cx, pointY + 2);
-        ctx.lineTo(left - 1, shoulderY + 1);
-        ctx.closePath();
-        ctx.fill();
-
+        ctx.fillRect(cx + runs[0][1] - 1, top - 1, runs[0][2] - runs[0][1] + 2, 1);
+        for (const [y, x0, x1] of runs) ctx.fillRect(cx + x0 - 1, top + y, x1 - x0 + 2, 1);
+        ctx.fillRect(cx - 1, top + h, 2, 1);
         // Shield body filled with the repo accent.
         ctx.fillStyle = profile.accent || '#f6d384';
-        ctx.beginPath();
-        ctx.moveTo(left, top);
-        ctx.lineTo(right, top);
-        ctx.lineTo(right, shoulderY);
-        ctx.lineTo(cx, pointY);
-        ctx.lineTo(left, shoulderY);
-        ctx.closePath();
-        ctx.fill();
-
-        // Branch variant: thin sash band across the bottom (the band sits just
-        // above the point so the chevron still reads as a shield).
+        for (const [y, x0, x1] of runs) ctx.fillRect(cx + x0, top + y, x1 - x0, 1);
+        // Branch variant: a 3-texel sash across the middle (just above the
+        // point, so the chevron still reads as a shield).
         if (profile.isBranchVariant && profile.baseAccent) {
-            const bandTop = top + Math.round(h * 0.50);
+            const bandTop = Math.round(h * 0.5);
             ctx.fillStyle = profile.baseAccent;
-            ctx.fillRect(left + 2, bandTop, w - 4, 3);
+            for (const [y, x0, x1] of runs) {
+                if (y >= bandTop && y < bandTop + 3) ctx.fillRect(cx + x0 + 2, top + y, Math.max(0, x1 - x0 - 4), 1);
+            }
         }
-
-        // Short repo label in the upper third of the shield.
+        ctx.restore();
+        // Short repo label in the upper third of the shield (C5 screen-fixed).
         if (shortName) {
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, alpha) * 0.94;
+            ctx.translate(cx, top + Math.round(h * 0.34));
+            ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+            snapScreenOrigin(ctx);
+            ctx.font = WORLD_DISPLAY_FONT_8;
             ctx.fillStyle = profile.labelText || 'rgba(20, 14, 10, 0.94)';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'alphabetic';
             this._applyReadableTextShadow(ctx);
-            ctx.fillText(shortName, cx, top + Math.round(h * 0.34) + 4);
+            ctx.fillText(shortName, 0, 4);
+            ctx.restore();
         }
-        ctx.restore();
     }
 
-    // 4.17: thin static bunting arc between two adjacent docked ships in the
-    // same squad. No animation — reduced-motion clients get the same visual.
+    // 4.17 / 6.5: static bunting line between two adjacent docked ships in
+    // the same squad, on the art grid: a sagging line of whole texels (each
+    // step joined by pixelLine, no stroke) with a hanging pixel pennant at
+    // its lowest point. No animation — reduced motion shows the same line.
     _drawSquadBunting(ctx, ship, neighbor, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch)) {
         if (!neighbor || !Number.isFinite(neighbor.x) || !Number.isFinite(neighbor.y)) return;
-        const s = 1 / Math.max(1, zoom || 1);
-        const liftA = 28 * s; // anchor lift above each ship's deck
-        const liftB = 28 * s;
-        const ax = ship.x;
-        const ay = ship.y - liftA;
-        const bx = neighbor.x;
-        const by = neighbor.y - liftB;
-        const sag = Math.min(14 * s, Math.hypot(bx - ax, by - ay) * 0.18);
-        const mx = (ax + bx) / 2;
-        const my = (ay + by) / 2 + sag;
+        const lift = 28; // anchor lift above each ship's deck, texels
+        const ax = Math.round(ship.x);
+        const ay = Math.round(ship.y - lift);
+        const bx = Math.round(neighbor.x);
+        const by = Math.round(neighbor.y - lift);
+        const sag = Math.round(Math.min(14, Math.hypot(bx - ax, by - ay) * 0.18));
+        const steps = Math.max(1, Math.abs(bx - ax), Math.abs(by - ay));
+        const at = (t) => [Math.round(ax + (bx - ax) * t), Math.round(ay + (by - ay) * t + 4 * sag * t * (1 - t))];
         ctx.save();
         ctx.globalAlpha = Math.max(0, alpha) * 0.82;
-        ctx.strokeStyle = profile.accent || '#f6d384';
-        ctx.lineWidth = Math.max(1, 1.2 * s);
-        ctx.beginPath();
-        ctx.moveTo(ax, ay);
-        ctx.quadraticCurveTo(mx, my, bx, by);
-        ctx.stroke();
-        // Small midpoint pennant for a flag-line feel.
+        ctx.fillStyle = profile.accent || '#f6d384';
+        let [px0, py0] = at(0);
+        for (let i = 1; i <= steps; i++) {
+            const [px1, py1] = at(i / steps);
+            if (px1 !== px0 || py1 !== py0) pixelLine(ctx, px0, py0, px1, py1);
+            px0 = px1;
+            py0 = py1;
+        }
+        // Small pennant at the lowest point for a flag-line feel: a hanging
+        // triangle, rows filled on whole texels.
+        const [px, py] = at(0.5);
         ctx.fillStyle = profile.isBranchVariant && profile.baseAccent
             ? profile.baseAccent
             : (profile.accent || '#f6d384');
-        ctx.beginPath();
-        ctx.moveTo(mx, my);
-        ctx.lineTo(mx - 3 * s, my + 5 * s);
-        ctx.lineTo(mx + 3 * s, my + 5 * s);
-        ctx.closePath();
-        ctx.fill();
+        fillConvex(ctx, [[px - 3, py + 1], [px + 3, py + 1], [px, py + 6]]);
         ctx.restore();
     }
 
@@ -6033,7 +6211,6 @@ export class HarborTraffic {
     }
 
     _drawCommitPennant(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const s = 1 / Math.max(1, zoom || 1);
         const statusStyle = PUSH_STATUS_STYLE[ship.pushStatus] || null;
         const accent = ship.pushStatus === 'failed' && statusStyle ? statusStyle.accent : profile.accent;
         const compact = Boolean(ship.compactCommitLabel);
@@ -6042,10 +6219,12 @@ export class HarborTraffic {
             : Math.max(0, Number(ship.repoDockIndex || 0));
         const visibleCount = Math.max(1, Number(ship.repoDockVisibleCount || 1));
         const lane = visibleCount > 1 ? Math.max(-0.72, Math.min(0.72, localIndex - (visibleCount - 1) / 2)) : 0;
-        const labelLift = Math.max(0, Number(shipClass.labelLift || 0));
         const bob = this._shipBob(ship);
-        const miniX = Math.round(ship.x - (22 + Math.min(12, labelLift * 0.3)) * s);
-        const miniY = Math.round(ship.y - (31 + labelLift * 0.55) * s - bob);
+        // The mini pennant is the second flag of the masthead hoist: on the
+        // mast just under the repo flag's cloth, riding the same bob and roll.
+        const hoist = this._flagAnchor(ship, shipClass);
+        const miniX = hoist.x;
+        const miniY = hoist.y + 12;
 
         const label = shortGitLabel(commitPennantLabel(ship), compact ? 10 : 12, '…');
         const maxText = compact ? 58 : 70;
@@ -6062,7 +6241,10 @@ export class HarborTraffic {
         const width = Math.max(42, measureLabelText(ctx, shown) + 22);
         const height = 16;
         const left = Math.round(lane * 34) - Math.round(width / 2);
-        const top = Math.round(22 + labelTier * 10 + Math.min(8, labelLift * 0.18));
+        // 3.8 — above the hull (and its tier badge), staggered per squad slot,
+        // never on the water where the reflection lies.
+        const badgeRoom = this._hasShipBadge(ship, shipClass) ? 18 : 0;
+        const top = this._plateBase(ship, shipClass, zoom) + Math.round(bob * (zoom || 1)) - badgeRoom - height - labelTier * 10;
         ctx.fillStyle = accent;
         ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.9)';
@@ -6079,31 +6261,19 @@ export class HarborTraffic {
         ctx.textBaseline = 'alphabetic';
         this._fillReadableText(ctx, shown, left + 15, top + 12);
         ctx.restore();
-        // v0.23 A4 — mini pennant on the pole (world art): re-open the faded
-        // state the plate frame closed above.
+        // v0.23 A4 / 6.5 — mini pennant on the plate pole (world art): the
+        // small pixel pennant, stepped with the one wind like the repo flag.
         ctx.save();
         ctx.globalAlpha = 0.92 * alpha;
-        // Pennant triangle ripples in sync with the repo flag; static under
-        // reduced motion.
-        ctx.fillStyle = accent;
-        ctx.fillRect(miniX, miniY, Math.max(1, Math.round(3 * s)), Math.max(1, Math.round(11 * s)));
-        if (this.motionScale > 0) {
-            const phase = (stableHash(ship.id || '') % 1000) / 1000 * Math.PI * 2;
-            const wave = Math.sin(this.frame * 0.2 + phase) * 1.6 * s;
-            ctx.beginPath();
-            ctx.moveTo(miniX + 3 * s, miniY);
-            ctx.quadraticCurveTo(miniX + 8 * s, miniY + 2 * s + wave, miniX + 11 * s, miniY + 4 * s + wave);
-            ctx.lineTo(miniX + 3 * s, miniY + 6 * s);
-            ctx.closePath();
-            ctx.fill();
-        } else {
-            ctx.beginPath();
-            ctx.moveTo(miniX + 3 * s, miniY);
-            ctx.lineTo(miniX + 11 * s, miniY + 3 * s);
-            ctx.lineTo(miniX + 3 * s, miniY + 6 * s);
-            ctx.closePath();
-            ctx.fill();
-        }
+        const windX = currentPennantWind();
+        drawMiniPennant(ctx, miniX, miniY + 11, {
+            accent,
+            frame: pennantFrame(currentPennantTime(), windX, {
+                motion: this.motionScale > 0,
+                phase: stableHash(ship.id || '') % 4,
+            }),
+            windX,
+        });
         ctx.restore();
     }
 
@@ -6112,7 +6282,7 @@ export class HarborTraffic {
         const subject = cachedCleanCommitSubject(ship.label || '');
         const label = shortGitLabel(subject || `commit ${commitPennantLabel(ship)}`, 36, '…');
         if (!label) return;
-        const lift = Math.max(0, Number(shipClass.labelLift || 0));
+        const base = this._plateBase(ship, shipClass, zoom) - (this._hasShipBadge(ship, shipClass) ? 18 : 0);
         ctx.save();
         ctx.globalAlpha = Math.min(1, 0.96 * alpha);
         // C5 — screen-fixed plate: zoom cancelled, whole screen px, width
@@ -6124,7 +6294,7 @@ export class HarborTraffic {
         const width = Math.max(54, measureLabelText(ctx, label) + 26);
         const height = 16;
         const left = -Math.round(width / 2);
-        const top = -Math.round(56 + lift);
+        const top = base - 20 - height;
         ctx.fillStyle = profile.accent;
         ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.92)';
@@ -6472,7 +6642,7 @@ export class HarborTraffic {
     }
 
     _drawFallbackBoat(ctx, x, y, alpha, shipClass = HARBOR_SHIP_CLASSES[HARBOR_SHIP_CLASSES.length - 1], profile = { accent: '#9fb9b5' }) {
-        const scale = Math.max(0.5, Number(shipClass.scale || 1));
+        const scale = 1;
         ctx.save();
         ctx.globalAlpha = alpha;
         ctx.fillStyle = '#6a3f2a';

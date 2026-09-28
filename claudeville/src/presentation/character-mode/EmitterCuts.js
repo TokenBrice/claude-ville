@@ -62,8 +62,9 @@ function hasEmissiveSidecar(assets, id) {
  */
 export function cacheEmitterRecords(renderer, channelRevision) {
     const assets = renderer?.assets;
-    if (!assets || !renderer._gpuAtlasResident) return [];
-    const records = [];
+    if (!assets) return [];
+    const records = cacheWaterRecords(renderer);
+    if (!renderer._gpuAtlasResident) return records;
     for (const prop of cacheLayerProps()) {
         if (!hasEmissiveSidecar(assets, prop.id)) continue;
         const frame = assets.getAtlasFrame?.(prop.id);
@@ -100,6 +101,88 @@ export function cacheEmitterRecords(renderer, channelRevision) {
             sidecarRevision: channelRevision(assets, atlasId),
             sequence: -0.5,
             sourceKind: 'atlas',
+        });
+    }
+    return records;
+}
+
+// 2.1 / V5 — terrain-baked props that hold water (the plaza rune fountain,
+// the well): the terrain's quarter-resolution class map paints their basin
+// as the plaza cobble under them, so a brazier pool laid lime on the
+// fountain water. One record per prop redraws its identical pixels right
+// after the terrain with a material sidecar marking its water texels
+// (blue-dominant) as water, which the light loop keeps out of every
+// diffuse pool; the rest keeps the plaza's own class.
+const CACHE_WATER_PROPS = new Set(['prop.runeFountain', 'prop.well']);
+const CACHE_WATER_GROUND_CLASS = 7;
+const waterMaps = new Map();
+
+function waterMaterialMap(image, key) {
+    const cached = waterMaps.get(key);
+    if (cached !== undefined) return cached;
+    if (typeof document === 'undefined' || !image?.width) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0);
+    const px = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let water = 0;
+    for (let i = 0; i < px.data.length; i += 4) {
+        const [r, g, b, a] = [px.data[i], px.data[i + 1], px.data[i + 2], px.data[i + 3]];
+        const isWater = a > 0 && b > r + 30 && b >= g;
+        px.data[i] = isWater ? 8 : 0;
+        px.data[i + 1] = 0;
+        px.data[i + 2] = 0;
+        px.data[i + 3] = isWater ? 255 : 0;
+        if (isWater) water++;
+    }
+    ctx.putImageData(px, 0, 0);
+    const map = water ? canvas : null;
+    waterMaps.set(key, map);
+    return map;
+}
+
+function cacheWaterRecords(renderer) {
+    const assets = renderer.assets;
+    const records = [];
+    for (const prop of cacheLayerProps()) {
+        if (!CACHE_WATER_PROPS.has(prop.id)) continue;
+        const image = assets.get?.(prop.id);
+        if (!image?.width) continue;
+        const version = assets.assetVersion || 0;
+        const textureKey = `cache-water:${prop.id}:${version}`;
+        const materialSource = waterMaterialMap(image, textureKey);
+        if (!materialSource) continue;
+        const [ax, ay] = assets.getAnchor(prop.id);
+        const key = `cache-water:${prop.id}:${prop.tileX},${prop.tileY}`;
+        records.push({
+            id: key,
+            stableKey: key,
+            textureKey,
+            sidecarKey: `${textureKey}:channels`,
+            source: image,
+            materialSource,
+            emissiveSource: null,
+            occluderSource: null,
+            sourceWidth: image.width,
+            sourceHeight: image.height,
+            sx: 0,
+            sy: 0,
+            sw: image.width,
+            sh: image.height,
+            x: Math.round(prop.x - ax),
+            y: Math.round(prop.y - ay),
+            width: image.width,
+            height: image.height,
+            material: CACHE_WATER_GROUND_CLASS,
+            elevation: 0,
+            emissive: 0,
+            occluder: 0,
+            textureRevision: textureKey,
+            sidecarRevision: textureKey,
+            sequence: -0.6,
+            sourceKind: 'individual',
         });
     }
     return records;
@@ -144,6 +227,112 @@ function cutFor(assets, id) {
     return cut;
 }
 
+// Canvas mode loads no material companions, so an over-base part (a cycle or
+// rest frame drawn over its building's own texels: the Task board lanterns)
+// has no channel strip there: its emissive strip is cropped from the
+// building's `.emissive.png` sidecar, fetched once beside the albedo.
+const sidecars = new Map();
+function emissiveSidecarFor(assets, id) {
+    const companion = assets.getCompanion?.(id, 'emissive');
+    if (companion) return companion;
+    const key = `${assets.assetVersion || ''}|${id}`;
+    const cached = sidecars.get(key);
+    if (cached !== undefined) return cached === 'loading' ? null : cached;
+    const albedo = assets.get?.(id);
+    const src = typeof albedo?.src === 'string' ? albedo.src : '';
+    if (!src || typeof Image === 'undefined') {
+        sidecars.set(key, null);
+        return null;
+    }
+    const image = new Image();
+    sidecars.set(key, 'loading');
+    image.onload = () => sidecars.set(key, image);
+    image.onerror = () => sidecars.set(key, null);
+    image.src = src.replace(/\.png(?=([?#]|$))/, '.emissive.png');
+    return null;
+}
+
+function overBaseEmissiveStrip(assets, entry, draw) {
+    const overBase = draw.layer?.restIsBase === true || Boolean(draw.layer?.cycle && !draw.layer.cycle.art);
+    if (!overBase) return null;
+    const sidecar = emissiveSidecarFor(assets, entry.id);
+    if (!sidecar) return null;
+    const frames = Math.max(1, Math.round(draw.image.width / draw.frameW));
+    const canvas = document.createElement('canvas');
+    canvas.width = draw.frameW * frames;
+    canvas.height = draw.frameH;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    for (let f = 0; f < frames; f++) {
+        context.drawImage(sidecar, draw.localLeft, draw.localTop, draw.frameW, draw.frameH,
+            f * draw.frameW, 0, draw.frameW, draw.frameH);
+    }
+    return canvas;
+}
+
+// 6.1 — a manifest part's cut (the Pharos lamp and lens, portal runes, the
+// Task board lanterns, every cycled emitter), from the draw's own image and
+// the channel strip the GPU part record emits through, cached per strip.
+function partCutFor(assets, buildings, entry, draw) {
+    const channels = buildings.partChannelsFor?.(entry, draw);
+    const key = `part|${draw.textureKey}|${channels?.key || ''}`;
+    const cached = cuts.get(key);
+    if (cached !== undefined) return cached;
+    const emissive = channels?.emissive || overBaseEmissiveStrip(assets, entry, draw);
+    if (!emissive) return null;
+    const cut = buildEmitterCut(draw.image, emissive);
+    cuts.set(key, cut);
+    return cut;
+}
+
+let partScratch = null;
+
+// Draws the lit emitter texels of the frame each part shows now, carved by
+// whatever the depth pass drew in front of the building, after the
+// building's own cut (a part covers the base texels under it).
+function drawPartCuts(ctx, renderer, emitter, core, scale) {
+    const buildings = renderer.buildingRenderer;
+    if (!buildings?.partDrawsFor || !emitter.entry?.layers) return;
+    partScratch ||= [];
+    const draws = buildings.partDrawsFor(emitter.entry, emitter.building, emitter.x, emitter.y, 'whole', null, partScratch);
+    for (let index = 0; index < draws.length; index++) {
+        const d = draws[index];
+        const alpha = Math.min(1, (d.fixture ? 1 : Math.max(0, emitter.gate)) * core);
+        if (alpha < 0.02) continue;
+        const cut = partCutFor(renderer.assets, buildings, emitter.entry, d);
+        if (!cut) continue;
+        // The frame's rect inside the strip, clipped to the cut.
+        const left = Math.max(d.sx, cut.x);
+        const top = Math.max(d.sy, cut.y);
+        const right = Math.min(d.sx + d.sw, cut.x + cut.canvas.width);
+        const bottom = Math.min(d.sy + d.sh, cut.y + cut.canvas.height);
+        if (right <= left || bottom <= top) continue;
+        const x = d.x + (left - d.sx);
+        const y = d.y + (top - d.sy);
+        const w = right - left;
+        const h = bottom - top;
+        const occluders = occludersFor(renderer, emitter.sortY, emitter.sortY, x, y, w, h);
+        ctx.globalAlpha = alpha;
+        if (occluders.length) {
+            const frame = { canvas: partFrameCanvas(cut.canvas, left - cut.x, top - cut.y, w, h) };
+            const carved = carvedCut(frame, x, y, occluders, scale);
+            ctx.drawImage(carved.canvas, 0, 0, carved.w, carved.h, x, y, carved.w / scale, carved.h / scale);
+        } else {
+            ctx.drawImage(cut.canvas, left - cut.x, top - cut.y, w, h, x, y, w, h);
+        }
+    }
+}
+
+let partFrame = null;
+function partFrameCanvas(source, sx, sy, w, h) {
+    if (!partFrame) partFrame = document.createElement('canvas');
+    partFrame.width = w;
+    partFrame.height = h;
+    const ctx = partFrame.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(source, sx, sy, w, h, 0, 0, w, h);
+    return partFrame;
+}
+
 function* emitterPlacements(renderer) {
     const assets = renderer.assets;
     const buildings = renderer.buildingRenderer;
@@ -158,6 +347,10 @@ function* emitterPlacements(renderer) {
             y: drawable.wy,
             sortY: drawable.sortY,
             gate: buildings._emissiveGateFor?.(building) ?? 1,
+            // 6.3 — dark rooms (and every pane by day) carved back to glass.
+            glass: buildings.glassPatchFor?.(building) || null,
+            entry: drawable.entry,
+            building,
         };
     }
     for (const sprite of renderer.districtPropSprites || []) {
@@ -277,23 +470,36 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere) {
     const transform = ctx.getTransform();
     const scale = Math.max(1, Math.hypot(transform.a, transform.b));
     for (const emitter of emitterPlacements(renderer)) {
-        const alpha = Math.min(1, Math.max(0, emitter.gate) * core);
-        if (alpha < 0.02) continue;
-        const cut = cutFor(assets, emitter.id);
-        if (!cut) continue;
-        const [ax, ay] = assets.getAnchor(emitter.id);
-        const x = Math.round(emitter.x - ax) + cut.x;
-        const y = Math.round(emitter.y - ay) + cut.y;
-        const { width, height } = cut.canvas;
-        if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + width < topLeft.x || y + height < topLeft.y)) continue;
-        const occluders = occludersFor(renderer, emitter.sortY, emitter.staticSortY ?? emitter.sortY, x, y, width, height);
-        ctx.globalAlpha = alpha;
-        if (occluders.length) {
-            const carved = carvedCut(cut, x, y, occluders, scale);
-            ctx.drawImage(carved.canvas, 0, 0, carved.w, carved.h, x, y, carved.w / scale, carved.h / scale);
-        } else {
-            ctx.drawImage(cut.canvas, x, y);
-        }
+        drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight);
+        if (emitter.building) drawPartCuts(ctx, renderer, emitter, core, scale);
     }
+    // 2.7 — the Lighthouse lamp's own light (halo, lens flash, fans).
+    ctx.globalAlpha = 1;
+    renderer.buildingRenderer?.drawLanternLight?.(ctx);
     ctx.restore();
+}
+
+function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight) {
+    const assets = renderer.assets;
+    const alpha = Math.min(1, Math.max(0, emitter.gate) * core);
+    if (alpha < 0.02) return;
+    const cut = cutFor(assets, emitter.id);
+    if (!cut) return;
+    const [ax, ay] = assets.getAnchor(emitter.id);
+    const x = Math.round(emitter.x - ax) + cut.x;
+    const y = Math.round(emitter.y - ay) + cut.y;
+    const { width, height } = cut.canvas;
+    if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + width < topLeft.x || y + height < topLeft.y)) return;
+    const occluders = occludersFor(renderer, emitter.sortY, emitter.staticSortY ?? emitter.sortY, x, y, width, height);
+    if (emitter.glass) {
+        const glass = emitter.glass;
+        occluders.push({ x: x - cut.x + glass.left, y: y - cut.y + glass.top, w: glass.w, h: glass.h, image: glass.canvas });
+    }
+    ctx.globalAlpha = alpha;
+    if (occluders.length) {
+        const carved = carvedCut(cut, x, y, occluders, scale);
+        ctx.drawImage(carved.canvas, 0, 0, carved.w, carved.h, x, y, carved.w / scale, carved.h / scale);
+    } else {
+        ctx.drawImage(cut.canvas, x, y);
+    }
 }

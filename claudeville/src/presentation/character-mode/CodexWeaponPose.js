@@ -35,11 +35,12 @@ export function codexWeaponPose(spriteId, geometry, direction, equipment) {
 
 export function drawCodexGauntlet(ctx, pose, drawScale) {
     ctx.save();
-    ctx.translate(Math.round(pose.x), Math.round(pose.y));
-    ctx.scale(drawScale, drawScale);
-    const scale = pose.gripScale || 1;
-    // Keep smaller gloves on the source pixel grid, including in GPU sheets.
-    const rect = (x, y, w, h) => ctx.fillRect(Math.round(x * scale), Math.round(y * scale),
+    const ox = Math.round(pose.x);
+    const oy = Math.round(pose.y);
+    const scale = (pose.gripScale || 1) * drawScale;
+    // Keep smaller gloves on the source pixel grid, including in GPU sheets:
+    // whole-pixel rects, never a canvas scale (3.8 validator).
+    const rect = (x, y, w, h) => ctx.fillRect(ox + Math.round(x * scale), oy + Math.round(y * scale),
         Math.max(1, Math.round((x + w) * scale) - Math.round(x * scale)),
         Math.max(1, Math.round((y + h) * scale) - Math.round(y * scale)));
     const [outline, shadow, midtone, highlight] = pose.palette;

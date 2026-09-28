@@ -11,9 +11,6 @@ import { weatherEmbellishmentAllowed } from '../../claudeville/src/presentation/
 import {
     HAZE_ALPHA_CAP,
     HAZE_COURSE_ALPHA,
-    WETNESS_ATTACK_MS,
-    WETNESS_RELEASE_MS,
-    advanceSurfaceWetness,
     applySurfaceWetnessToReactions,
     bakeHazeField,
     collectDampMarks,
@@ -26,6 +23,8 @@ import {
     hazePlanForPressure,
     isoFromTile,
 } from '../../claudeville/src/presentation/character-mode/WorldFrameRenderer.js';
+import { groundStateAt } from '../../claudeville/src/presentation/character-mode/GroundState.js';
+import { normalizeTimelineKnots } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 
 const CHARACTER_MODE = '../../claudeville/src/presentation/character-mode/';
 
@@ -84,28 +83,40 @@ test('ground haze lies at dawn and in fog only, in stepped strengths', () => {
     assert.equal(groundHazeStrength({ phase: 'day', weather: { type: 'overcast', fog: 0.08 } }), 0);
 });
 
-test('surface wetness rises under precipitation and decays deterministically to zero', () => {
-    let wetness = 0;
-    wetness = advanceSurfaceWetness(wetness, {
-        precipitation: 1,
-        dt: WETNESS_ATTACK_MS,
-        weatherType: 'rain',
-    });
-    assert.ok(wetness >= 0.99);
-
-    wetness = advanceSurfaceWetness(wetness, {
-        precipitation: 0,
-        dt: WETNESS_RELEASE_MS,
-        weatherType: 'clear',
-    });
-    assert.ok(wetness <= 1e-9);
-
-    wetness = advanceSurfaceWetness(0.4, {
-        precipitation: 0,
-        dt: WETNESS_RELEASE_MS,
-        weatherType: 'clear',
-    });
-    assert.equal(wetness, 0);
+// C-W2 (plan 5.2) — the ground remembers the timeline, not the frame clock:
+// a pinned rain knot ending 14:00 leaves a puddled street at 14:30, only a
+// few puddle cores at 15:15, a dry one by 16:00, and the same answer again,
+// however long it rained.
+test('ground state integrates the timeline history (rain ending 14:00)', () => {
+    const knots = normalizeTimelineKnots([
+        { minute: 0, type: 'clear' }, { minute: 600, type: 'clear' },
+        { minute: 660, type: 'rain' }, { minute: 780, type: 'rain' }, { minute: 840, type: 'clear' },
+    ]);
+    const hard = normalizeTimelineKnots([
+        { minute: 0, type: 'clear' }, { minute: 720, type: 'clear' },
+        { minute: 721, type: 'rain' }, { minute: 839, type: 'rain' }, { minute: 840, type: 'clear' },
+    ]);
+    for (const timelineKnots of [knots, hard]) {
+        const at = (h, m) => groundStateAt(new Date(2026, 8, 20, h, m), { timelineKnots });
+        const wet = at(14, 30);
+        const fewer = at(15, 15);
+        const dry = at(16, 0);
+        assert.ok(wet.puddles > 0.9);
+        assert.ok(fewer.puddles > 0 && fewer.puddles < 0.6);
+        assert.equal(dry.puddles, 0);
+        assert.ok(dry.wetness < 0.15);
+        assert.deepEqual(at(14, 30), wet);
+    }
+    // Winter precipitation lies as snow, and only after it fell.
+    const winter = (d, h, m = 0) => groundStateAt(new Date(2027, 0, d, h, m), { timelineKnots: knots });
+    assert.ok(winter(15, 14).snowCover > 0);
+    // The cover is one path through midnight: no melt at night, no drop.
+    assert.ok(winter(16, 0).snowCover >= winter(15, 23, 50).snowCover);
+    const dryWinter = groundStateAt(new Date(2027, 0, 15, 12, 0), { timelineKnots: normalizeTimelineKnots([{ minute: 0, type: 'clear' }]) });
+    assert.equal(dryWinter.snowCover, 0);
+    // Overcast drizzle shows flurries but never settles.
+    const drizzle = groundStateAt(new Date(2027, 0, 15, 18, 0), { timelineKnots: normalizeTimelineKnots([{ minute: 0, type: 'overcast' }]) });
+    assert.equal(drizzle.snowCover, 0);
 
     const reactions = applySurfaceWetnessToReactions({ puddleAlpha: 0, roofGlintAlpha: 0 }, 0.8);
     assert.equal(reactions.surfaceWetness, 0.8);

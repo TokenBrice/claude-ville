@@ -128,6 +128,15 @@ export function expectedPathsForEntry(entry) {
     return paths;
 }
 
+// Plan 6.3 room masks (`roomsSidecar: true`): semantic data beside the base
+// albedo (R = room index), baked by scripts/sprites/bake-room-masks.mjs. Not
+// an art path, so art analysis never reads it.
+export function roomMaskPathForEntry(entry) {
+    if (entry?.roomsSidecar !== true) return null;
+    const base = pathForEntry(entry);
+    return base ? base.replace(/\.png$/, '.rooms.png') : null;
+}
+
 export function inferSpriteTool(id) {
     if (id.startsWith('agent.')) return 'create_character';
     if (id.startsWith('terrain.')) return 'tileset';

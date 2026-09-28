@@ -1,34 +1,27 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { normalizeLightSource } from '../../claudeville/src/presentation/character-mode/LightSourceRegistry.js';
 import { clampGpuLights } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
-import { packGpuSidecarPixels } from '../../claudeville/src/presentation/character-mode/gpu/GpuSceneBuilder.js';
+import { packGeometryPixels } from '../../claudeville/src/presentation/character-mode/gpu/GpuSceneBuilder.js';
 
-test('occluder height and strength survive the packed material map independently', () => {
-    const packed = packGpuSidecarPixels({
-        material: new Uint8ClampedArray([3, 0, 0, 255, 4, 0, 0, 255]),
-        emissive: new Uint8ClampedArray([12, 34, 56, 64, 90, 80, 70, 128]),
-        occluder: new Uint8ClampedArray([19, 203, 77, 255, 231, 17, 42, 0]),
-        pixelCount: 2,
-    });
-
-    assert.deepEqual([...packed.packed], [3, 64, 19, 203, 4, 128, 231, 17]);
-    assert.deepEqual([...packed.emissive], [12, 34, 56, 64, 90, 80, 70, 128]);
-});
-
-test('occlusion keeps the existing three samples while tracing authored height and strength', async () => {
-    const source = await readFile(new URL(
-        '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js',
-        import.meta.url,
-    ), 'utf8');
-
-    assert.match(source, /for \(int stepIndex = 1; stepIndex <= 3; stepIndex\+\+\)/);
-    assert.match(source, /vec4 occluder = texture\(u_occlusion/);
-    assert.match(source, /float rayHeight = mix\(elevation, 0\.0, t\)/);
-    assert.match(source, /blocked = max\(blocked, heightBlock \* occluder\.a\)/);
-    assert.equal((source.match(/texture\(u_occlusion/g) || []).length, 1);
+test('packed geometry keeps material, height and strength apart and marks missing channels', () => {
+    // Texel 0: both channels. 1: material only. 2: occluder only (strength 0
+    // authored). 3: neither.
+    const packed = packGeometryPixels(
+        new Uint8ClampedArray([3, 0, 0, 255, 4, 0, 0, 255, 9, 9, 9, 0, 5, 0, 0, 0]),
+        new Uint8ClampedArray([19, 203, 77, 255, 231, 17, 42, 0, 88, 0, 0, 255, 7, 7, 7, 0]),
+        4,
+    );
+    assert.deepEqual([...packed], [
+        3, 19, 203, 255,
+        // No geometry: B = 0, so the shader keeps the record's elevation and strength.
+        4, 0, 0, 255,
+        // No material: R = 255, so the shader keeps the record's material class;
+        // an authored strength of 0 still reads as geometry (1/255).
+        255, 88, 1, 255,
+        0, 0, 0, 0,
+    ]);
 });
 
 test('authored light priority survives normalization and controls the admitted slot', () => {

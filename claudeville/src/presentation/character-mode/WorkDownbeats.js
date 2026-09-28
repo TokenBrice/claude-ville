@@ -40,12 +40,20 @@ const SLASHES = Object.freeze([
     Object.freeze({ dx: 1, dy: 0 }),
 ]);
 
+// 7.3 — an authored work strip passes its group name as `contact`: (x, y) is
+// then the contact frame's hand joint itself, so the beat bursts right where
+// the empty fist lands (strike), where the hands tap (tinker) or at the
+// shading hand (gaze), with no gesture offset.
+const STRIP_CONTACT_KIND = Object.freeze({ strike: 'slash', tinker: 'chip', gaze: 'glint' });
+
 // Draw the beat for `ritual` if one is on screen. (x, y) and `scale` are the
 // gesture origin and scale; `side` is +1 facing right, -1 facing left.
-export function drawWorkDownbeat(ctx, ritual, x, y, { side = 1, scale = 1, now = Date.now() } = {}) {
+export function drawWorkDownbeat(ctx, ritual, x, y, { side = 1, scale = 1, now = Date.now(), contact = null } = {}) {
     const beat = ritualDownbeat(ritual, now);
     if (!beat) return false;
-    const strike = STRIKE_POINT[ritual.pose];
+    const strike = contact
+        ? { x: 0, y: 0, kind: STRIP_CONTACT_KIND[contact] || 'slash' }
+        : STRIKE_POINT[ritual.pose];
     if (!strike) return false;
     const px = snap(x + strike.x * side * scale);
     const py = snap(y + strike.y * scale);

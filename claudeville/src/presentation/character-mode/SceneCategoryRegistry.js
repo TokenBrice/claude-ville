@@ -1,5 +1,5 @@
 import { BRIDGE_LANTERN_SCENE_CATEGORY } from './BridgeLanterns.js';
-import { HARBOR_TRAFFIC_SCENE_CATEGORY } from './HarborTraffic.js';
+import { HARBOR_HULL_SCENE_CATEGORY, HARBOR_TRAFFIC_SCENE_CATEGORY } from './HarborTraffic.js';
 import { LANDMARK_ACTIVITY_SCENE_CATEGORY } from './LandmarkActivity.js';
 
 const UNSUPPORTED_POLICIES = new Set([
@@ -97,6 +97,9 @@ export class SceneCategoryRegistry {
         for (let entryIndex = 0; entryIndex < frameEntries.length; entryIndex++) {
             const entry = frameEntries[entryIndex];
             const { category, items, commandGroups } = entry;
+            // 3.8 — DrawablePass reads this to let a native category's depth
+            // drawables emit their commands as records in painter order.
+            entry.native = false;
             if (!items.length) {
                 categories[entryIndex] = writeCategoryStatus(
                     this._statusPool,
@@ -145,6 +148,7 @@ export class SceneCategoryRegistry {
                 batch.categoryId = category.id;
                 batch.commands = commands;
                 nativeCommandBatches[batchIndex] = batch;
+                entry.native = true;
                 categories[entryIndex] = writeCategoryStatus(
                     this._statusPool,
                     entryIndex,
@@ -245,6 +249,9 @@ function normalizeCategory(definition = {}) {
         canvasFallback: definition.canvasFallback,
         unsupported: definition.unsupported,
         overlayBand: finiteBand(definition.overlayBand, sortBand),
+        // Items (with world x, y) behind a split building's footprint sort
+        // before its back half (DrawablePass), as bodies do.
+        behindSplitBuildings: definition.behindSplitBuildings === true,
     });
 }
 
@@ -298,6 +305,7 @@ function writeCategoryStatus(pool, index, category, handling, count) {
 // backend-specific or otherwise. Adding a category changes the registry and its
 // source adapter, while every renderer receives the same resolved frame.
 export const worldSceneCategoryRegistry = new SceneCategoryRegistry([
+    HARBOR_HULL_SCENE_CATEGORY,
     HARBOR_TRAFFIC_SCENE_CATEGORY,
     LANDMARK_ACTIVITY_SCENE_CATEGORY,
     BRIDGE_LANTERN_SCENE_CATEGORY,

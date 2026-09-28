@@ -144,3 +144,71 @@ export const YARD_MATERIALS = Object.freeze({
     watchtower: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
     harbor: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
 });
+
+// Plan 7.1 — rest seats. Idle villagers reserve the free seat nearest on foot
+// (VisitTileAllocator) and hold a seated pose there; working bodies never sit.
+// `facing` is the sitter's front three-quarter facing (the sit strips are
+// authored for south-east and south-west only). `occluder` names the front
+// slice drawn over the sitter's legs (RestSeats.js): a timber bench on the
+// greens, the Harbor pier kerb, and stone (a step against Command's wings, the
+// fountain's rim) that is drawn only under a sitter. Seats on building visit
+// points (Command wings, the pier) never count as visitors (V8). None sits on
+// the Command approach (7.2) or behind a wall the camera cannot see past.
+export const REST_SEATS = Object.freeze([
+    { id: 'command-east-step-n', tileX: 18, tileY: 18, facing: 'south-east', occluder: 'step' },
+    { id: 'command-east-step-s', tileX: 18, tileY: 19, facing: 'south-east', occluder: 'step' },
+    { id: 'command-west-step', tileX: 12, tileY: 19, facing: 'south-west', occluder: 'step' },
+    { id: 'taskboard-green', tileX: 24, tileY: 28, facing: 'south-west', occluder: 'bench' },
+    { id: 'fountain-rim', tileX: 14, tileY: 21, facing: 'south-west', occluder: 'well' },
+    { id: 'harbor-pier', tileX: 26, tileY: 21, facing: 'south-west', occluder: 'pier' },
+    { id: 'archive-green-e', tileX: 10, tileY: 13, facing: 'south-east', occluder: 'bench' },
+    { id: 'archive-green-w', tileX: 12, tileY: 13, facing: 'south-west', occluder: 'bench' },
+    { id: 'archive-bank-e', tileX: 4, tileY: 20, facing: 'south-east', occluder: 'bench' },
+    { id: 'archive-bank-w', tileX: 6, tileY: 21, facing: 'south-west', occluder: 'bench' },
+    { id: 'observatory-green-w', tileX: 24, tileY: 20, facing: 'south-west', occluder: 'bench' },
+    { id: 'observatory-green-e', tileX: 26, tileY: 19, facing: 'south-east', occluder: 'bench' },
+    { id: 'south-lawn-w', tileX: 6, tileY: 28, facing: 'south-east', occluder: 'bench' },
+    { id: 'south-lawn-mid', tileX: 7, tileY: 30, facing: 'south-west', occluder: 'bench' },
+    { id: 'south-lawn-e', tileX: 15, tileY: 28, facing: 'south-east', occluder: 'bench' },
+    { id: 'forge-shore', tileX: 30, tileY: 30, facing: 'south-east', occluder: 'bench' },
+    { id: 'gate-green-w', tileX: 16, tileY: 32, facing: 'south-east', occluder: 'bench' },
+    { id: 'gate-green-e', tileX: 21, tileY: 34, facing: 'south-west', occluder: 'bench' },
+]);
+
+// Plan 7.2 — the petitioners' queue. Waiting-on-user agents stand in
+// `slots` by SignalLedger wait rank (slot 0, nearest Command's door, holds the
+// longest wait); ranks change only when the waiting set changes. The line
+// leaves the foot of Command's steps, crosses the bridge landing, runs down
+// the bridge deck and folds at its foot, between the watch lantern, the
+// notice pillar, the avenue stall and the Task Board roof (32-36 world px
+// between slots). The 13th petitioner onward stands on the plaza west of the
+// fountain (`overflow`). No slot stands on a fixture's footprint
+// (VisitTileAllocator `standsOnFixture`) or behind a roof. `door` is the point
+// the head of the line faces; each later slot faces the slot ahead of it.
+export const COMMAND_QUEUE = Object.freeze({
+    door: Object.freeze({ tileX: 14.5, tileY: 19.5 }),
+    slots: Object.freeze([
+        { tileX: 15, tileY: 21 },
+        { tileX: 16, tileY: 22 },
+        { tileX: 17, tileY: 22 },
+        { tileX: 18, tileY: 22 },
+        { tileX: 18, tileY: 23 },
+        { tileX: 18, tileY: 24 },
+        { tileX: 18, tileY: 25 },
+        { tileX: 18, tileY: 26 },
+        { tileX: 18, tileY: 27 },
+        { tileX: 19, tileY: 28 },
+        { tileX: 18, tileY: 28 },
+        { tileX: 18, tileY: 29 },
+    ].map(Object.freeze)),
+    overflow: Object.freeze([
+        { tileX: 11, tileY: 22 },
+        { tileX: 10, tileY: 22 },
+        { tileX: 9, tileY: 21 },
+        { tileX: 10, tileY: 20 },
+        { tileX: 9, tileY: 22 },
+        { tileX: 8, tileY: 21 },
+        { tileX: 10, tileY: 19 },
+        { tileX: 8, tileY: 22 },
+    ].map(Object.freeze)),
+});

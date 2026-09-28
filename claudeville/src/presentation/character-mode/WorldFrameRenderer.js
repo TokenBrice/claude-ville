@@ -21,16 +21,21 @@ import {
 } from './VillageDirectorOverlay.js';
 import { worldSceneCategoryRegistry } from './SceneCategoryRegistry.js';
 import { buildGpuWorldRecords } from './gpu/GpuSceneBuilder.js';
-import { materialClassId } from './gpu/GpuWorldPolicy.js';
+import { localLightPhaseForLighting, materialClassId } from './gpu/GpuWorldPolicy.js';
 import { createBoundedRing, writeBoundedRing } from '../shared/ClientPerfMetrics.js';
 import { drawWorkScoreGround, drawWorkScoreScreen } from './SpatialWorkScore.js';
 import { ornamentPlan } from './MarkGovernor.js';
 import { GroundCueRecorder, insertGroundCueRecords } from './GroundCueRecords.js';
+import { insertBodyReflectionRecords } from './WaterReflections.js';
 import { drawCanvasAerialHaze, drawResidentBackdropGrade } from './BackdropGrade.js';
-import { castLightingFor, drawTreeCasts, setFrameCastLighting } from './RakingLight.js';
+import { castLightingFor, drawTreeCasts, setFrameCastLighting, setFramePointCastLights } from './RakingLight.js';
 import { drawFlashExposure, stormStrikeAt, weatherPressureLevel } from './WeatherRenderer.js';
 import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
 import { drawCanvasEmitterCuts } from './EmitterCuts.js';
+import { groundOptionsFor, groundStateAt } from './GroundState.js';
+import { ungradeRgb } from './CanvasGrade.js';
+import { drawMomentEdgePlates, setMomentStage } from './EffectStamps.js';
+import { getReservedRects, publishReservedBox } from '../shared/ReservedRects.js';
 
 const FRAME_TIMING_RING_CAPACITY = 90;
 const FRAME_TIMER_MAX_MARKS = 48;
@@ -60,8 +65,6 @@ const HAZE_MARGIN = 96;
 const HAZE_OCCUPANCY_CELL = 8;
 const HAZE_FIELD_RGB = Object.freeze([214, 228, 236]);
 const HAZE_BAYER4 = Object.freeze([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
-export const WETNESS_ATTACK_MS = 480;
-export const WETNESS_RELEASE_MS = 4000;
 export const DAMP_MARK_LIMIT = 24;
 export const DAMP_MATERIAL_MULTIPLIER = Object.freeze({
     roof: 1,
@@ -330,20 +333,117 @@ export function groundHazeStrength(atmosphere, density = 1) {
     return Math.round(Math.max(dawn, fog) * clamp01(density) * HAZE_STRENGTH_STEPS) / HAZE_STRENGTH_STEPS;
 }
 
-export function advanceSurfaceWetness(current = 0, {
-    precipitation = 0,
-    dt = 16,
-    weatherType = 'clear',
-} = {}) {
-    const wetness = clamp01(current);
-    const precip = clamp01(precipitation);
-    const raining = precip > 0.04 || weatherType === 'rain' || weatherType === 'storm';
-    const frameDt = Math.max(0, Number(dt) || 0);
-    if (raining) {
-        const attack = frameDt / WETNESS_ATTACK_MS;
-        return clamp01(wetness + Math.max(precip, 0.35) * attack);
+const NO_GROUND_STATE = Object.freeze({ wetness: 0, puddles: 0, snowCover: 0, frost: 0, bucketMinute: 0 });
+
+// C-W2 — the ground state for a snapshot, read with the same timeline inputs
+// (seed override, fixed/auto mode, pinned QA knots) the live weather used.
+export function groundStateForAtmosphere(atmosphere) {
+    const date = atmosphere?.effectiveDate;
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return NO_GROUND_STATE;
+    return groundStateAt(date, groundOptionsFor(atmosphere));
+}
+
+// 5.2 — the Canvas/PostFx twin of the resident puddle courses: the same
+// GroundBake site mask and puddle level, composed once per (level, sky
+// palette) into one world-space layer: the far-rim lip as black at 0.36
+// (the resident ground × 0.64), the body as the capped sky at 0.72 over the
+// street (the resident 28 % street share), sparse opaque horizon glints on
+// the near rim, and the shallow rim at half the body's sky share. These
+// paths grade the finished frame, so the sky colours are
+// painted as their preimage (ungradeRgb), like the sky plate. The caps sit
+// a step under the resident ones (body min(0.56, ...), glint 0.62) because
+// the preimage round trip lands a touch light; measured, both backends then
+// land on the same sky-blue (OKLab-close body, equal saturation).
+const PUDDLE_BODY_CAP = 0.53;
+const PUDDLE_GLINT_CAP = 0.59;
+
+function cappedSkyRgb(hex, cap) {
+    const text = String(hex || '');
+    if (!/^#[0-9a-f]{6}$/i.test(text)) return [0.6, 0.68, 0.74];
+    const rgb = [1, 3, 5].map(index => parseInt(text.slice(index, index + 2), 16) / 255);
+    const luma = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+    return luma > cap ? rgb.map(channel => channel * cap / luma) : rgb;
+}
+
+function puddleLayerFor(renderer, mask, level, atmosphere) {
+    const palette = atmosphere?.sky?.palette;
+    const grade = atmosphere?.lightGrade || null;
+    const key = `${mask.revision}|${level}|${palette?.upperBand}|${palette?.horizon}|${grade?.cacheKey || ''}`;
+    const cached = renderer._canvasPuddleLayer;
+    if (cached?.key === key) return cached;
+    const { cols, rows, data } = mask;
+    const threshold = Math.ceil(255 * (1 - level));
+    const wet = (col, row) => col >= 0 && row >= 0 && col < cols && row < rows
+        && data[row * cols + col] > 0 && data[row * cols + col] >= threshold;
+    let minCol = cols;
+    let minRow = rows;
+    let maxCol = -1;
+    let maxRow = -1;
+    for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+            if (!wet(col, row)) continue;
+            if (col < minCol) minCol = col;
+            if (col > maxCol) maxCol = col;
+            if (row < minRow) minRow = row;
+            if (row > maxRow) maxRow = row;
+        }
     }
-    return clamp01(wetness - frameDt / WETNESS_RELEASE_MS);
+    if (cached?.canvas) cached.canvas.width = cached.canvas.height = 0;
+    if (maxCol < 0) {
+        renderer._canvasPuddleLayer = { key, canvas: null };
+        return renderer._canvasPuddleLayer;
+    }
+    const toBytes = (rgb) => ungradeRgb(rgb, grade).map(channel => Math.round(clamp01(channel) * 255));
+    const body = toBytes(cappedSkyRgb(palette?.upperBand, PUDDLE_BODY_CAP));
+    const glint = toBytes(cappedSkyRgb(palette?.horizon, PUDDLE_GLINT_CAP));
+    const texelW = mask.texelW || 2;
+    const w = (maxCol - minCol + 1) * texelW;
+    const h = maxRow - minRow + 1;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const cctx = canvas.getContext('2d');
+    const image = cctx.createImageData(w, h);
+    const out = image.data;
+    for (let row = minRow; row <= maxRow; row++) {
+        for (let col = minCol; col <= maxCol; col++) {
+            if (!wet(col, row)) continue;
+            let rgba;
+            if (!wet(col, row - 1)) rgba = [0, 0, 0, 92];
+            else if (!wet(col, row + 1) && fractHash(col, row) < 0.42) rgba = [...glint, 255];
+            else rgba = [...body, data[row * cols + col] / 255 - (1 - level) < 0.12 ? 92 : 184];
+            for (let k = 0; k < texelW; k++) {
+                const o = ((row - minRow) * w + (col - minCol) * texelW + k) * 4;
+                out[o] = rgba[0]; out[o + 1] = rgba[1]; out[o + 2] = rgba[2]; out[o + 3] = rgba[3];
+            }
+        }
+    }
+    cctx.putImageData(image, 0, 0);
+    renderer._canvasPuddleLayer = {
+        key,
+        canvas,
+        x: mask.x0 + minCol * texelW,
+        y: mask.y0 + minRow,
+    };
+    return renderer._canvasPuddleLayer;
+}
+
+// The GLSL glint hash (`fract(sin(dot(cell, (12.9898, 78.233))) * 43758.5453)`).
+function fractHash(col, row) {
+    const v = Math.sin(col * 12.9898 + row * 78.233) * 43758.5453;
+    return v - Math.floor(v);
+}
+
+export function drawCanvasPuddles(renderer, ctx, atmosphere) {
+    const puddles = renderer._groundState?.puddles || 0;
+    const mask = renderer.groundPuddleMask;
+    if (puddles <= 0.001 || !mask?.data) return;
+    const layer = puddleLayerFor(renderer, mask, puddles, atmosphere);
+    if (!layer.canvas) return;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(layer.canvas, layer.x, layer.y);
+    ctx.restore();
 }
 
 export function dampMaterialMultiplier(material) {
@@ -421,6 +521,16 @@ export function renderWorldFrame(renderer, dt = 16) {
     const renderNow = Date.now();
     const villageSnapshot = renderer.villageDirector?.getSnapshot?.() || null;
     const viewport = renderer._screenViewport();
+    // V8 — the frame's moment stage: every C4 moment (and the building chits)
+    // resolves where it may stand against this camera, the chrome's reserved
+    // rects and the building sprites sorted in front of it.
+    setMomentStage({
+        camera: renderer.camera,
+        viewport,
+        reserved: getReservedRects(),
+        buildings: renderer.buildingRenderer,
+        actors: renderer.agentSprites,
+    });
     const gpuWorldRequested = renderer.gpuWorld?.isActive?.() === true;
     const sceneCategoryContext = renderer._sceneCategoryContext || (renderer._sceneCategoryContext = {});
     sceneCategoryContext.renderer = renderer;
@@ -469,11 +579,15 @@ export function renderWorldFrame(renderer, dt = 16) {
         ? wx.intensity
         : 0;
     renderer._waterWeather = renderer._waterWeatherState(atmosphere);
-    renderer._surfaceWetness = advanceSurfaceWetness(renderer._surfaceWetness || 0, {
-        precipitation: wx?.precipitation || 0,
-        weatherType: wx?.type || 'clear',
-        dt,
-    });
+    // C-W2 — the ground remembers the village's own weather: wetness,
+    // puddles, snow cover and frost integrated from the timeline history
+    // (today and the two previous days), memoized per 10-minute bucket, so a
+    // reload or reduced motion shows the same ground. Live precipitation
+    // wets the street at once; the history keeps it wet after the rain.
+    renderer._groundState = groundStateForAtmosphere(atmosphere);
+    // 5.2 — flora props step their winter state with the season and bucket.
+    renderer._syncPropWinter?.();
+    renderer._surfaceWetness = Math.max(clamp01(Number(wx?.precipitation) || 0), renderer._groundState.wetness);
     const reactions = applySurfaceWetnessToReactions(atmosphere?.reactions || {}, renderer._surfaceWetness);
     renderer._atmosphereReactions = reactions;
     renderer.buildingRenderer?.setLightingState(atmosphere?.lighting);
@@ -496,6 +610,13 @@ export function renderWorldFrame(renderer, dt = 16) {
     ctx.clearRect(0, 0, viewport.width, viewport.height);
     // 1.5 — this frame's sun bucket for the villager contact stamps.
     setFrameCastLighting(castLightingFor(atmosphere));
+    // 2.8 — the lamps that may throw villager casts this frame (from their
+    // feet), ranked for the crowd cap from the view centre.
+    setFramePointCastLights(
+        renderer._frameLightSources?.ambient,
+        localLightPhaseForLighting(atmosphere?.lighting),
+        renderer.camera?.screenToWorld?.(viewport.width / 2, viewport.height / 2),
+    );
     // 1.3 — the sky/void plate is graded with the island: on the resident
     // path nothing grades this canvas afterwards, so it paints the C2 sky
     // colours as-is; the Canvas/PostFx paths grade the finished frame, so it
@@ -507,6 +628,8 @@ export function renderWorldFrame(renderer, dt = 16) {
         atmosphere,
         motionScale: renderer.motionScale,
         backdropGraded: gpuWorldActive,
+        // 5.7 — the deck's drift rides the motion clock (held when reduced).
+        timeMs: renderer.motionTimeMs,
     });
     markFrameTiming(frameTimer, 'sky');
 
@@ -541,6 +664,8 @@ export function renderWorldFrame(renderer, dt = 16) {
             ctx,
             frameTimer ? label => markFrameTiming(frameTimer, label) : null,
         );
+        // 5.2 — the Canvas twin of the resident puddle courses.
+        drawCanvasPuddles(renderer, ctx, atmosphere);
         // 1.4 — world-locked stepped cloud-shadow courses over the terrain.
         drawCloudShadows(renderer, ctx, atmosphere, perfNow);
         // 0.10 — ground haze and the fog banks: world-locked stepped fields
@@ -578,7 +703,10 @@ export function renderWorldFrame(renderer, dt = 16) {
         // changes), and every cue that follows an agent becomes native ground
         // records spliced in after terrain, so moving agents move records.
         const ground = prepareSemanticGround(renderer, viewport, villageSnapshot, atmosphere);
-        if (ground?.dirty) drawGroundSemantics(renderer, ground.ctx, groundOptions, GROUND_CUES_RETAINED);
+        if (ground?.dirty) {
+            drawGroundSemantics(renderer, ground.ctx, groundOptions, GROUND_CUES_RETAINED);
+            ground.finish();
+        }
         recordLiveGroundCues(renderer, groundOptions);
     }
     markFrameTiming(frameTimer, 'prelayers');
@@ -644,7 +772,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawableContext.chronicler = renderer.chronicler;
     drawableContext.agentRenderMode = agentRenderMode;
     drawableContext.gpuWorldActive = gpuWorldActive;
-    drawableContext.overlayCategoryIds = sceneCategoryResolution.overlayCategoryIds;
     drawableContext.paintCounts = paintCounts;
     drawableContext.particleMotionEnabled = renderer.particleSystem?.motionEnabled !== false;
     drawDepthSortedDrawables(ctx, drawables, drawableContext);
@@ -690,17 +817,31 @@ export function renderWorldFrame(renderer, dt = 16) {
         gpuFeed.weather = atmosphere?.weather || null;
         // 0.10 — the lightning exposure scale the composite applies (0 = none).
         gpuFeed.flash = strike.exposure;
+        // 2.7 — the Lighthouse beam fan (null by day), swept on the motion clock.
+        gpuFeed.beam = renderer.buildingRenderer?.lighthouseBeam?.(renderer.motionTimeMs) || null;
         gpuFeed.lighting = atmosphere?.lighting || null;
         // 3.2 — the resident shader consumes the same accumulated wetness the
         // Canvas damp marks use; it never re-derives rain history in GLSL.
         gpuFeed.wetness = renderer._surfaceWetness || 0;
+        // 5.2 — puddles: the level from the ground history over GroundBake's
+        // baked site mask, reflecting the graded sky palette.
+        gpuFeed.puddles = renderer._groundState?.puddles || 0;
+        gpuFeed.puddleMask = renderer.groundPuddleMask || null;
+        gpuFeed.skyPalette = atmosphere?.sky?.palette || null;
         // 3.5 — the authored palette ramp travels as a plain decoded image; a
         // missing or unexpected table leaves the pilot at today's response.
         gpuFeed.paletteLut = renderer.assets?.get?.(PALETTE_RAMP_ASSET_ID) || null;
         gpuFeed.paletteLutRevision = renderer.assets?.assetVersion || null;
-        gpuBuildContext.occluderChannelEnabled = renderer.gpuWorld.prepareFrame(gpuFeed);
+        // 3.1 + 3.6 — the coast bake's resident water fields (cycle offset,
+        // coast field), uploaded once per coast bake on units 7 and 8.
+        gpuFeed.coastWater = renderer._coastBake?.waterFields || null;
+        renderer.gpuWorld.prepareFrame(gpuFeed);
         const records = insertGroundFogRecords(
-            insertGroundCueRecords(buildGpuWorldRecords(renderer, gpuBuildContext), renderer._groundCueRecords),
+            insertGroundCueRecords(
+                // 3.11 — reflect twins of bodies at the water (after the agent atlas packs).
+                insertBodyReflectionRecords(renderer, buildGpuWorldRecords(renderer, gpuBuildContext)),
+                renderer._groundCueRecords,
+            ),
             groundFogRecords(renderer, atmosphere, viewport),
         );
         const gpuRenderContext = renderer._gpuRenderContext || (renderer._gpuRenderContext = {});
@@ -820,6 +961,9 @@ export function renderWorldFrame(renderer, dt = 16) {
     // with it. Screen rect converted to world space: the label pass runs under
     // the world transform.
     const ambientCaption = ambientCaptionLayout(overlayCtx, renderer, viewport, villageSnapshot);
+    // V8 — the caption band is reserved screen for the next frame's moments
+    // and plates (the painter publishes it; it is not a DOM element).
+    publishReservedBox('caption-band', ambientCaption?.rect || null);
     const captionWorldBox = ambientCaption && renderer.camera?.screenToWorld
         ? (() => {
             const topLeft = renderer.camera.screenToWorld(ambientCaption.rect.left, ambientCaption.rect.top);
@@ -870,6 +1014,8 @@ export function renderWorldFrame(renderer, dt = 16) {
     // 5.7 — offscreen-event edge indicators (incl. cues the CameraDirector
     // dropped): small screen-edge markers, click to glide there.
     drawOffscreenCueEdges(overlayCtx, renderer, viewport, renderNow);
+    // V8 — moments that could not stand in their column dock here.
+    drawMomentEdgePlates(overlayCtx);
     // 5.7/5.2 — cinematic letterbox bars: they ride a release/incident cue
     // glide, and an ambient chapter holds them for a beat after settling so
     // the caption is read at rest. Reduced motion draws none.
@@ -1102,13 +1248,156 @@ export function prepareSemanticGround(renderer, viewport, snapshot, atmosphere) 
     ].join(';');
     const ctx = canvas.getContext('2d');
     if (key === renderer._semanticGroundKey) return { ctx, dirty: false };
+    // B.2 — on the same canvas size and camera transform the last redraw's
+    // painted extent is the only non-transparent area: clear just it, record
+    // this redraw's extent, and upload their union (plus any rect a skipped
+    // upload left behind) through a sub-rect texSubImage2D.
+    const transform = [width, height, camera.renderOffsetX, camera.renderOffsetY, camera.zoom].join(';');
+    const previous = canvas.width === width && canvas.height === height
+        && renderer._semanticGroundTransform === transform
+        ? renderer._semanticGroundExtent
+        : null;
     if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, width, height);
+    if (!previous) ctx.clearRect(0, 0, width, height);
+    else if (!previous.empty) ctx.clearRect(previous.x0, previous.y0, previous.x1 - previous.x0, previous.y1 - previous.y0);
     ctx.setTransform(camera.zoom * scale, 0, 0, camera.zoom * scale, camera.renderOffsetX * scale, camera.renderOffsetY * scale);
+    const uploaded = renderer.gpuWorld?.hasResidentTexture?.('ground:semantics', renderer._semanticGroundRevision) === true;
+    const carried = uploaded ? null : renderer._semanticGroundPending;
     renderer._semanticGroundKey = key;
-    renderer._semanticGroundRevision = (renderer._semanticGroundRevision || 0) + 1;
-    return { ctx, dirty: true };
+    renderer._semanticGroundTransform = transform;
+    const extent = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity, full: false };
+    const finish = () => {
+        const painted = pixelExtent(extent, width, height);
+        renderer._semanticGroundExtent = painted;
+        renderer._semanticGroundRevision = (renderer._semanticGroundRevision || 0) + 1;
+        if (!previous) {
+            renderer._semanticGroundPending = null;
+            renderer._semanticGroundUpdates = null;
+            return;
+        }
+        const dirty = unionExtent(unionExtent(previous, painted), carried);
+        renderer._semanticGroundPending = dirty;
+        renderer._semanticGroundUpdates = dirty.empty ? null : [{
+            x: dirty.x0, y: dirty.y0, sx: dirty.x0, sy: dirty.y0,
+            width: dirty.x1 - dirty.x0, height: dirty.y1 - dirty.y0, source: canvas,
+        }];
+    };
+    return { ctx: paintBoundsContext(ctx, extent), dirty: true, finish };
+}
+
+const EMPTY_EXTENT = Object.freeze({ empty: true, x0: 0, y0: 0, x1: 0, y1: 0 });
+
+// Integer canvas rect of a device-space paint extent, 2 px padded (stroke
+// caps, glyph antialiasing) and clamped to the canvas.
+function pixelExtent(extent, width, height) {
+    if (extent.full) return { empty: false, x0: 0, y0: 0, x1: width, y1: height };
+    if (!(extent.x1 >= extent.x0) || !(extent.y1 >= extent.y0)) return EMPTY_EXTENT;
+    const x0 = Math.max(0, Math.floor(extent.x0) - 2);
+    const y0 = Math.max(0, Math.floor(extent.y0) - 2);
+    const x1 = Math.min(width, Math.ceil(extent.x1) + 2);
+    const y1 = Math.min(height, Math.ceil(extent.y1) + 2);
+    return x1 > x0 && y1 > y0 ? { empty: false, x0, y0, x1, y1 } : EMPTY_EXTENT;
+}
+
+function unionExtent(a, b) {
+    if (!b || b.empty) return a;
+    if (!a || a.empty) return b;
+    return { empty: false, x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) };
+}
+
+// Composite modes that change pixels outside the drawn shape.
+const UNBOUNDED_COMPOSITES = new Set(['copy', 'source-in', 'source-out', 'destination-in', 'destination-atop']);
+
+// B.2 — a 2D context wrapper that forwards every call and grows `extent`
+// (device px) by the conservative bounds of each paint: path control points
+// (a curve lies in their hull), stroke width, text metrics, image and rect
+// destinations. Path2D arguments, shadows and unbounded composites mark the
+// whole canvas. Filters are not tracked: the pixel grammar admits only
+// per-pixel colour filters (never blur), which paint inside the shape.
+function paintBoundsContext(ctx, extent) {
+    let path = null;
+    const grow = (box, pad = 0) => {
+        if (!box) return;
+        extent.x0 = Math.min(extent.x0, box.x0 - pad);
+        extent.y0 = Math.min(extent.y0, box.y0 - pad);
+        extent.x1 = Math.max(extent.x1, box.x1 + pad);
+        extent.y1 = Math.max(extent.y1, box.y1 + pad);
+    };
+    const deviceBox = (x0, y0, x1, y1) => {
+        const m = ctx.getTransform();
+        const xs = [m.a * x0 + m.c * y0 + m.e, m.a * x1 + m.c * y0 + m.e, m.a * x0 + m.c * y1 + m.e, m.a * x1 + m.c * y1 + m.e];
+        const ys = [m.b * x0 + m.d * y0 + m.f, m.b * x1 + m.d * y0 + m.f, m.b * x0 + m.d * y1 + m.f, m.b * x1 + m.d * y1 + m.f];
+        return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+    };
+    const addToPath = (x0, y0, x1, y1) => {
+        const box = deviceBox(Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1));
+        path = path ? { x0: Math.min(path.x0, box.x0), y0: Math.min(path.y0, box.y0), x1: Math.max(path.x1, box.x1), y1: Math.max(path.y1, box.y1) } : box;
+    };
+    const addPoints = (coords) => {
+        let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+        for (let i = 0; i + 1 < coords.length; i += 2) {
+            x0 = Math.min(x0, coords[i]); x1 = Math.max(x1, coords[i]);
+            y0 = Math.min(y0, coords[i + 1]); y1 = Math.max(y1, coords[i + 1]);
+        }
+        if (x1 >= x0) addToPath(x0, y0, x1, y1);
+    };
+    const strokePad = () => {
+        const m = ctx.getTransform();
+        const scale = Math.max(Math.hypot(m.a, m.b), Math.hypot(m.c, m.d));
+        const join = ctx.lineJoin === 'miter' ? Math.max(1, ctx.miterLimit) : 1;
+        return (Number(ctx.lineWidth) || 1) * scale * join * 0.5 + 1;
+    };
+    const unbounded = () => UNBOUNDED_COMPOSITES.has(ctx.globalCompositeOperation)
+        || ((ctx.shadowBlur > 0 || ctx.shadowOffsetX || ctx.shadowOffsetY) && ctx.shadowColor !== 'rgba(0, 0, 0, 0)');
+    const paint = (box, pad = 0) => {
+        if (unbounded()) extent.full = true;
+        else grow(box, pad);
+    };
+    const wrap = {
+        beginPath: () => { path = null; ctx.beginPath(); },
+        moveTo: (x, y) => { addPoints([x, y]); ctx.moveTo(x, y); },
+        lineTo: (x, y) => { addPoints([x, y]); ctx.lineTo(x, y); },
+        quadraticCurveTo: (...a) => { addPoints(a); ctx.quadraticCurveTo(...a); },
+        bezierCurveTo: (...a) => { addPoints(a); ctx.bezierCurveTo(...a); },
+        arcTo: (x1, y1, x2, y2, r) => { addToPath(Math.min(x1, x2) - r, Math.min(y1, y2) - r, Math.max(x1, x2) + r, Math.max(y1, y2) + r); ctx.arcTo(x1, y1, x2, y2, r); },
+        rect: (x, y, w, h) => { addToPath(x, y, x + w, y + h); ctx.rect(x, y, w, h); },
+        roundRect: (x, y, w, h, r) => { addToPath(x, y, x + w, y + h); ctx.roundRect(x, y, w, h, r); },
+        arc: (x, y, r, ...a) => { addToPath(x - r, y - r, x + r, y + r); ctx.arc(x, y, r, ...a); },
+        ellipse: (x, y, rx, ry, ...a) => { const r = Math.max(rx, ry); addToPath(x - r, y - r, x + r, y + r); ctx.ellipse(x, y, rx, ry, ...a); },
+        fill: (...a) => { if (typeof a[0] === 'object' && a[0]) extent.full = true; else paint(path, 1); ctx.fill(...a); },
+        stroke: (...a) => { if (typeof a[0] === 'object' && a[0]) extent.full = true; else paint(path, strokePad()); ctx.stroke(...a); },
+        fillRect: (x, y, w, h) => { paint(deviceBox(Math.min(x, x + w), Math.min(y, y + h), Math.max(x, x + w), Math.max(y, y + h)), 1); ctx.fillRect(x, y, w, h); },
+        strokeRect: (x, y, w, h) => { paint(deviceBox(Math.min(x, x + w), Math.min(y, y + h), Math.max(x, x + w), Math.max(y, y + h)), strokePad()); ctx.strokeRect(x, y, w, h); },
+        clearRect: (x, y, w, h) => { grow(deviceBox(Math.min(x, x + w), Math.min(y, y + h), Math.max(x, x + w), Math.max(y, y + h)), 1); ctx.clearRect(x, y, w, h); },
+        fillText: (text, x, y, maxWidth) => { paint(textBox(text, x, y, maxWidth), 2); ctx.fillText(text, x, y, maxWidth); },
+        strokeText: (text, x, y, maxWidth) => { paint(textBox(text, x, y, maxWidth), strokePad() + 2); ctx.strokeText(text, x, y, maxWidth); },
+        drawImage: (image, ...a) => {
+            const [dx, dy, dw, dh] = a.length >= 8 ? a.slice(4, 8) : a.length >= 4 ? a : [a[0], a[1], image?.width || 0, image?.height || 0];
+            paint(deviceBox(Math.min(dx, dx + dw), Math.min(dy, dy + dh), Math.max(dx, dx + dw), Math.max(dy, dy + dh)), 1);
+            ctx.drawImage(image, ...a);
+        },
+        putImageData: (data, dx, dy, ...a) => { extent.full = true; ctx.putImageData(data, dx, dy, ...a); },
+    };
+    function textBox(text, x, y, maxWidth) {
+        const m = ctx.measureText(String(text ?? ''));
+        const w = Number.isFinite(maxWidth) ? Math.min(maxWidth, m.actualBoundingBoxLeft + m.actualBoundingBoxRight) : m.actualBoundingBoxLeft + m.actualBoundingBoxRight;
+        return deviceBox(x - m.actualBoundingBoxLeft, y - m.actualBoundingBoxAscent, x - m.actualBoundingBoxLeft + w, y + m.actualBoundingBoxDescent);
+    }
+    const bound = new Map();
+    return new Proxy(ctx, {
+        get(target, prop) {
+            if (Object.hasOwn(wrap, prop)) return wrap[prop];
+            const value = Reflect.get(target, prop, target);
+            if (typeof value !== 'function') return value;
+            let fn = bound.get(prop);
+            if (!fn) bound.set(prop, fn = value.bind(target));
+            return fn;
+        },
+        set(target, prop, value) {
+            return Reflect.set(target, prop, value, target);
+        },
+    });
 }
 
 // 5.7 — cinematic letterbox bars while a release/incident camera cue glide
@@ -1163,18 +1452,27 @@ const CAPTION_STYLES = Object.freeze({
     returned: { eyebrow: 'RETURNED', accent: '#b9ad96', text: '#f3e2bd' },
 });
 
+// V8 — caption priority: incident > verified release > returned > milestone.
+// An incident is the chapter Ambient composed, or a verified failed/rejected
+// push inside its window whether or not Ambient owns the camera (the bracket
+// at the slip has no words of its own). The standing Ambient line yields to
+// the three event lines and outranks a milestone; a biography banner never
+// blocks the first three (VillageDirector stages banners in the same order).
 function captionSource(renderer, villageSnapshot) {
     const ambient = renderer?.cameraDirector?.getAmbientCaption?.();
     const ambientText = String(ambient?.text || '').trim();
     if (ambientText && ambient.kind === 'chapter') return { style: CAPTION_STYLES.incident, text: ambientText };
+    const chapter = villageSnapshot?.incidentChapter;
+    const chapterText = String(chapter?.caption || '').trim();
+    if (chapterText && chapter.kind === 'failed-push') return { style: CAPTION_STYLES.incident, text: chapterText };
     const parade = villageSnapshot?.releaseParade;
     const paradeText = String(parade?.label || '').trim();
     if (paradeText && parade.kind === 'parade') return { style: CAPTION_STYLES.release, text: paradeText };
-    if (ambientText) return { style: CAPTION_STYLES.ambient, text: ambientText };
-    // A biography milestone is a neutral stone line, never a parade, and a
-    // sub-agent's session ending is not celebrated at all: its return is the
+    // A sub-agent's session ending is not celebrated: its return is the
     // neutral RETURNED line (child → parent), with no success wording.
     if (paradeText && parade.kind === 'return-banner') return { style: CAPTION_STYLES.returned, text: paradeText };
+    if (ambientText) return { style: CAPTION_STYLES.ambient, text: ambientText };
+    // A biography milestone is a neutral stone line, never a parade.
     if (paradeText && parade.kind === 'biography-banner') {
         const agent = parade.agentId ? renderer?.world?.agents?.get?.(parade.agentId) : null;
         if (!agent?.isSubagent) return { style: CAPTION_STYLES.milestone, text: paradeText };
@@ -1534,10 +1832,9 @@ function drawBuildingLightReflections(renderer, ctx, atmosphere) {
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     for (const light of lights) {
-        if (light.kind === 'beam') {
-            renderer._drawLighthouseBeam(ctx, light, atmosphere);
-            continue;
-        }
+        // 2.7 — the Lighthouse lamp lights its gallery and base course from
+        // its foot (V5); no reflection sticker at the lantern over the sea.
+        if (light.buildingType === 'watchtower') continue;
         const overlayId = light.overlay || 'atmosphere.light.lantern-glow';
         const overlayImg = renderer.assets.get(overlayId);
         if (!overlayImg) continue;
@@ -1545,7 +1842,7 @@ function drawBuildingLightReflections(renderer, ctx, atmosphere) {
         if (!dims) continue;
         const stepped = steppedReflection(overlayImg);
         if (!stepped) continue;
-        const alpha = alphaBase * (light.intensity || 1) * (light.buildingType === 'watchtower' ? 1.55 : 1);
+        const alpha = alphaBase * (light.intensity || 1);
         ctx.globalAlpha = alpha;
         ctx.drawImage(
             stepped,

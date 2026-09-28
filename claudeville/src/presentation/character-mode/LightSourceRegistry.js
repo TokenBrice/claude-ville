@@ -1,5 +1,37 @@
 const SUPPORTED_KINDS = new Set(['point', 'beam', 'spark', 'arc', 'orbit']);
+// V5 — what a light is in the 2.5D model, beside its drawing `kind`: an omni
+// `point` (effects, motes), a facade `aperture` (window or door, emitting into
+// its face's half-space), a free-standing `fixture` (lantern, brazier, lamp)
+// and an action-needed `attention` light (its owner's ground and body only).
+const SUPPORTED_ROLES = new Set(['point', 'aperture', 'fixture', 'attention']);
 
+function finitePoint(point) {
+    if (Array.isArray(point)) {
+        return Number.isFinite(point[0]) && Number.isFinite(point[1]) ? { x: point[0], y: point[1] } : null;
+    }
+    return point && Number.isFinite(point.x) && Number.isFinite(point.y) ? { x: point.x, y: point.y } : null;
+}
+
+function faceNormal(normal) {
+    if (!Array.isArray(normal) || normal.length < 2) return null;
+    const nx = Number(normal[0]);
+    const ng = Number(normal[1]);
+    const length = Math.hypot(nx, ng);
+    return Number.isFinite(length) && length > 1e-6 ? [nx / length, ng / length] : null;
+}
+
+/**
+ * The one light record (V5). `{ x, y }` is the emitter in world px (what
+ * screen-space consumers draw at); `ground { x, y }` is its foot on the ground
+ * plane and `height` the emitter's world px above that foot, so the resident
+ * loop, Canvas pool stamps, wet reflections and lamp casts all measure from the
+ * foot, never the emitter's screen position. `normal [nx, ng]` is a facade
+ * aperture's ground-plane face normal (ng on the iso depth axis) or null for
+ * an omni light; `ownerId` names the agent an attention light belongs to;
+ * `landmarkId` (GPU_LANDMARK_IDS) the building a light is mounted on, so the
+ * footprint march never shadows a light with its own building. `kind` keeps
+ * its drawing meaning for its readers.
+ */
 export function normalizeLightSource(source = {}, defaults = {}) {
     const kind = SUPPORTED_KINDS.has(source.kind) ? source.kind : 'point';
     const origin = source.origin || (
@@ -9,12 +41,33 @@ export function normalizeLightSource(source = {}, defaults = {}) {
     );
     const priority = Number(source.priority);
     const defaultPriority = Number(defaults.priority);
+    const x = origin?.x ?? source.x;
+    const y = origin?.y ?? source.y;
+    const ground = finitePoint(source.ground) || (Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null);
+    const height = Number(source.height);
+    const role = SUPPORTED_ROLES.has(source.role)
+        ? source.role
+        : SUPPORTED_ROLES.has(defaults.role) ? defaults.role : 'point';
+    const landmarkId = Number(source.landmarkId ?? defaults.landmarkId);
     return {
         id: source.id || defaults.id || `${defaults.buildingType || 'light'}:${kind}:${Math.round(origin?.x || 0)},${Math.round(origin?.y || 0)}`,
         kind,
+        role,
         origin,
-        x: origin?.x ?? source.x,
-        y: origin?.y ?? source.y,
+        x,
+        y,
+        ground,
+        height: Number.isFinite(height) && height > 0 ? height : 0,
+        normal: faceNormal(source.normal),
+        ownerId: source.ownerId ?? defaults.ownerId ?? null,
+        landmarkId: Number.isFinite(landmarkId) && landmarkId > 0 ? Math.round(landmarkId) : 0,
+        fire: source.fire === true,
+        // 2.6 — the fire a flame light belongs to: every light of one fire
+        // (the Forge door light and its hearth spill) breathes on one beat.
+        fireGroup: source.fireGroup
+            || (source.fire === true && (source.buildingType || defaults.buildingType)
+                ? `fire:${source.buildingType || defaults.buildingType}`
+                : null),
         endpoints: Array.isArray(source.endpoints) ? source.endpoints : undefined,
         controlPoint: source.controlPoint,
         parent: source.parent,
@@ -35,6 +88,26 @@ export function normalizeLightSource(source = {}, defaults = {}) {
     };
 }
 
+// 2.5 — V9's integer owner slot for an agent id: records and attention lights
+// compare this integer (instance loc5.x), never a float hash, which would
+// collide beyond 2^24. Slots are stable for the page's life; 0 means none.
+const OWNER_SLOTS = new Map();
+let nextOwnerSlot = 1;
+
+export function ownerSlotFor(ownerId) {
+    if (ownerId == null || ownerId === '') return 0;
+    const key = String(ownerId);
+    let slot = OWNER_SLOTS.get(key);
+    if (slot) return slot;
+    if (nextOwnerSlot > 65535) {
+        OWNER_SLOTS.clear();
+        nextOwnerSlot = 1;
+    }
+    slot = nextOwnerSlot++;
+    OWNER_SLOTS.set(key, slot);
+    return slot;
+}
+
 export function lightSourceCacheKey(source, phaseBucket = 'fallback') {
     return [
         source.id || '',
@@ -45,4 +118,48 @@ export function lightSourceCacheKey(source, phaseBucket = 'fallback') {
         source.color || '',
         phaseBucket,
     ].join('|');
+}
+
+// 2.6 — fire breathes in stepped quanta, never a continuous sine: each fire
+// holds one of three intensity steps for a 140 ms beat, picked by a hash of
+// (beat, fire key) on the one motion clock. Pass a light's `fireGroup` (else
+// its id), so the lights of one fire share one step and their overlap still
+// takes three states. `depth` scales the step (fireBreathDepth): a large pool
+// breathes shallower, so the Forge door pool and the walls it reaches shift
+// a few levels per beat instead of swinging a whole block. Windows, lamps and
+// attention lights never call this; reduced motion holds 1.
+export const FIRE_BREATH_QUANTA = Object.freeze([0.86, 0.94, 1.0]);
+export const FIRE_BREATH_BEAT_MS = 140;
+// Pools up to this ground radius (world px) breathe the full quanta; a wider
+// pool breathes in proportion, never under FIRE_BREATH_MIN_DEPTH.
+const FIRE_BREATH_FULL_RADIUS = 34;
+const FIRE_BREATH_MIN_DEPTH = 0.4;
+const FIRE_ID_HASHES = new Map();
+
+function fireIdHash(id) {
+    const key = String(id ?? '');
+    let hash = FIRE_ID_HASHES.get(key);
+    if (hash !== undefined) return hash;
+    hash = 2166136261;
+    for (let i = 0; i < key.length; i++) hash = Math.imul(hash ^ key.charCodeAt(i), 16777619);
+    hash >>>= 0;
+    if (FIRE_ID_HASHES.size >= 512) FIRE_ID_HASHES.clear();
+    FIRE_ID_HASHES.set(key, hash);
+    return hash;
+}
+
+export function fireBreathDepth(radius) {
+    const r = Number(radius);
+    if (!(r > FIRE_BREATH_FULL_RADIUS)) return 1;
+    return Math.max(FIRE_BREATH_MIN_DEPTH, FIRE_BREATH_FULL_RADIUS / r);
+}
+
+export function fireBreath(motionTimeMs, sourceId, motionScale = 1, depth = 1) {
+    if (!(Number(motionScale) > 0)) return 1;
+    const beat = Math.floor(Math.max(0, Number(motionTimeMs) || 0) / FIRE_BREATH_BEAT_MS);
+    let h = Math.imul(fireIdHash(sourceId) ^ Math.imul(beat, 0x9e3779b1), 0x85ebca6b);
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35);
+    h ^= h >>> 16;
+    return 1 - (1 - FIRE_BREATH_QUANTA[(h >>> 0) % 3]) * Math.min(1, Math.max(0, Number(depth) || 0));
 }

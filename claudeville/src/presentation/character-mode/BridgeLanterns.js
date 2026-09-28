@@ -226,12 +226,16 @@ export class BridgeLanterns {
     getLightSources(lighting = null) {
         const beaconIntensity = Math.max(0, Math.min(1, Number(lighting?.beaconIntensity) || 0));
         if (beaconIntensity <= 0.05 || this.plan.length === 0) return [];
+        // V5 — a lantern post is a fixture on its tile, its flame 10 px up.
         return this.plan.map(lantern => ({
             ...normalizeLightSource({
                 id: `bridge-lantern:${lantern.tileX},${lantern.tileY}`,
                 kind: 'point',
+                role: 'fixture',
                 x: lantern.world.x,
                 y: lantern.world.y - 10,
+                ground: lantern.world,
+                height: 10,
                 color: LANTERN_COLOR,
                 radius: 46,
                 intensity: 0.7 * lantern.tier,

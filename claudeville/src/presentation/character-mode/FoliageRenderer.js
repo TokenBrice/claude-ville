@@ -3,6 +3,7 @@ import { SpriteRenderer } from './SpriteRenderer.js';
 import { StaticPropSprite } from './StaticPropDrawables.js';
 import { canvasMapPixelCount, releaseCanvasMap } from './CanvasBudget.js';
 import { baseWindX, windAt } from './Wind.js';
+import { snowBucketOf } from './GroundState.js';
 
 // Trees: one shared image per (sprite, canopy variant, season, lean frame),
 // drawn at 1× on one pixel grid (contract C3) by both backends.
@@ -16,7 +17,17 @@ import { baseWindX, windAt } from './Wind.js';
 // recolours pick whole leaf clumps (`canopyClumps`, a watershed of the
 // canopy's luminance), so a colour boundary runs along a shadow crease. Variant
 // 0 keeps the authored art; pines keep their colours through the seasons.
-// Winter keeps the canopies (bare trees need authored sprites, plan 5.5).
+//
+// Woodland scale and winter states (plan 5.5): `size: 'tall'` records (placed
+// only inside TREE_CLUSTERS woodlands, SceneryEngine `_promoteWoodlandTrees`)
+// draw the tall sheets. In winter every deciduous sheet swaps to its authored
+// bare sheet (`bare`); a pine carries snow only while the village's own snow
+// lies on the ground (`GroundState` snowCover, M9), never from the calendar,
+// stepped with the snow bucket: quarters 1–3 lay the top 1–3 rows of each
+// snow cap of its snow-laden sheet (`snow`) onto the leafy pine
+// (`dustPineCanopy`), a full cover draws the laden sheet itself. Bare and snow
+// sheets carry no canopy remap (`canopy: false`), so one image per state
+// serves every variant.
 //
 // Lean frames (plan 0.7): per canopy image, frames by whole-texel row shear
 // with the trunk planted (`lean` = A texels at the crown top, `planted` = the
@@ -35,24 +46,49 @@ import { baseWindX, windAt } from './Wind.js';
 // the crop drops the empty rows below the roots and the anchor sits on the
 // lowest root pixel.
 export const TREE_SPRITES = Object.freeze({
-    'oak.large': Object.freeze({ id: 'veg.tree.oak.large', width: 64, height: 51, lean: 1, planted: 0.3 }),
-    'oak.small': Object.freeze({ id: 'veg.tree.oak.small', width: 32, height: 28, lean: 1, planted: 0.3 }),
+    'oak.large': Object.freeze({ id: 'veg.tree.oak.large', width: 64, height: 51, lean: 1, planted: 0.3, bare: 'oak.large.bare' }),
+    'oak.small': Object.freeze({ id: 'veg.tree.oak.small', width: 32, height: 28, lean: 1, planted: 0.3, bare: 'oak.small.bare' }),
     // A pine bends higher up: at 0.3 its crown shears off the trunk top.
-    'pine.large': Object.freeze({ id: 'veg.tree.pine.large', width: 64, height: 52, lean: 1, planted: 0.4 }),
-    'willow.large': Object.freeze({ id: 'veg.tree.willow.large', width: 64, height: 53, lean: 2, planted: 0.3 }),
-    'willow.small': Object.freeze({ id: 'veg.tree.willow.small', width: 32, height: 27, lean: 2, planted: 0.3 }),
+    'pine.large': Object.freeze({ id: 'veg.tree.pine.large', width: 64, height: 52, lean: 1, planted: 0.4, snow: 'pine.large.snow' }),
+    'willow.large': Object.freeze({ id: 'veg.tree.willow.large', width: 64, height: 53, lean: 2, planted: 0.3, bare: 'willow.large.bare' }),
+    'willow.small': Object.freeze({ id: 'veg.tree.willow.small', width: 32, height: 27, lean: 2, planted: 0.3, bare: 'willow.small.bare' }),
+    // Woodland sheets (plan 5.5), about 1.4–2.2× the villager-scale trees.
+    // `crown`: the leaf mass's screen box around the anchor (half width, and
+    // its lowest row above the trunk base), the occluder SceneryEngine keeps
+    // clear of every walkable tile behind a tall tree.
+    'oak.tall': Object.freeze({ id: 'veg.tree.oak.tall', width: 112, height: 112, lean: 2, planted: 0.3, bare: 'oak.tall.bare', crown: Object.freeze({ halfWidth: 46, bottom: 35 }) }),
+    'pine.tall': Object.freeze({ id: 'veg.tree.pine.tall', width: 64, height: 102, lean: 1, planted: 0.4, snow: 'pine.tall.snow', crown: Object.freeze({ halfWidth: 18, bottom: 31 }) }),
+    'willow.tall': Object.freeze({ id: 'veg.tree.willow.tall', width: 88, height: 107, lean: 2, planted: 0.3, bare: 'willow.tall.bare', crown: Object.freeze({ halfWidth: 32, bottom: 2 }) }),
+    // Winter states: the same canvas and trunk base as their leafy sheet.
+    'oak.large.bare': Object.freeze({ id: 'veg.tree.oak.large.bare', width: 64, height: 51, lean: 1, planted: 0.3, canopy: false }),
+    'oak.small.bare': Object.freeze({ id: 'veg.tree.oak.small.bare', width: 32, height: 28, lean: 1, planted: 0.3, canopy: false }),
+    'pine.large.snow': Object.freeze({ id: 'veg.tree.pine.large.snow', width: 64, height: 52, lean: 1, planted: 0.4, canopy: false }),
+    'willow.large.bare': Object.freeze({ id: 'veg.tree.willow.large.bare', width: 64, height: 53, lean: 2, planted: 0.3, canopy: false }),
+    'willow.small.bare': Object.freeze({ id: 'veg.tree.willow.small.bare', width: 32, height: 27, lean: 2, planted: 0.3, canopy: false }),
+    'oak.tall.bare': Object.freeze({ id: 'veg.tree.oak.tall.bare', width: 112, height: 112, lean: 2, planted: 0.3, canopy: false }),
+    'pine.tall.snow': Object.freeze({ id: 'veg.tree.pine.tall.snow', width: 64, height: 102, lean: 1, planted: 0.4, canopy: false }),
+    'willow.tall.bare': Object.freeze({ id: 'veg.tree.willow.tall.bare', width: 88, height: 107, lean: 2, planted: 0.3, canopy: false }),
 });
 const TREE_SPECIES = Object.freeze(['oak', 'pine', 'willow']);
 export const CANOPY_VARIANTS = Object.freeze([0, 1, 2]);
 export const CANOPY_SEASONS = Object.freeze(['spring', 'summer', 'autumn', 'winter']);
 const LEAN_PAD = 2;
 
-// Resolve a tree record to a sprite key. The small pine sheet is a snow-tipped
-// winter sprite, so pines always use the large sheet.
+// Resolve a tree record to its leafy sprite key. Pines have no small sheet, so
+// a small pine draws the large one.
 function treeSpriteKey(tree) {
     const species = TREE_SPECIES.includes(tree?.species) ? tree.species : 'oak';
-    const size = tree?.size === 'small' && species !== 'pine' ? 'small' : 'large';
+    const size = tree?.size === 'tall' ? 'tall' : tree?.size === 'small' && species !== 'pine' ? 'small' : 'large';
     return `${species}.${size}`;
+}
+
+// The sheet a leafy sprite shows now: bare in winter (deciduous), snow-laden
+// while snow lies on the ground (pines, `snowBucket` > 0), else itself.
+export function treeStateKey(spriteKey, season, snowBucket) {
+    const sprite = TREE_SPRITES[spriteKey];
+    if (season === 'winter' && sprite?.bare) return sprite.bare;
+    if (snowBucket > 0 && sprite?.snow) return sprite.snow;
+    return spriteKey;
 }
 
 function canopyVariantOf(tree) {
@@ -337,6 +373,33 @@ export function recolorCanopy(data, width, height, canopy) {
     return indices.length;
 }
 
+// A snow pixel of a laden sheet: light, near-neutral, never warmer than blue.
+function isSnowPixel(data, i) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    return data[i + 3] > 200 && Math.min(r, g, b) >= 150 && Math.max(r, g, b) - Math.min(r, g, b) <= 32 && b >= r;
+}
+
+/**
+ * Lays a partial snow load on a leafy pine in place (pure; Node-safe): the top
+ * `depth` rows of every snow cap in the same-canvas `laden` sheet, down each
+ * column, wherever the pine is opaque. Snow thickens from its upper edge as
+ * the snow bucket steps 1 → 3, and every written pixel is an authored snow
+ * pixel.
+ */
+export function dustPineCanopy(data, laden, width, height, depth) {
+    for (let x = 0; x < width; x++) {
+        let run = 0;
+        for (let y = 0; y < height; y++) {
+            const i = (y * width + x) * 4;
+            run = isSnowPixel(laden, i) ? run + 1 : 0;
+            if (run === 0 || run > depth || data[i + 3] === 0) continue;
+            data[i] = laden[i]; data[i + 1] = laden[i + 1]; data[i + 2] = laden[i + 2]; data[i + 3] = laden[i + 3];
+        }
+    }
+}
+
 // ---- lean frames -------------------------------------------------------------
 
 // Whole-texel shear of row `y` for a sprite whose opaque rows span [top, base]:
@@ -454,10 +517,11 @@ export class FoliageRenderer {
     constructor(host) {
         this.host = host;
         // Lean frames (canvases) and the recoloured canopies they shear from
-        // (ImageData), both for the current season only.
+        // (ImageData), both for the current season and snow state only.
         this.cache = new Map();
         this._canopies = new Map();
         this.season = 'summer';
+        this._snowBucket = 0;
         this._wind = { x: 0, gust: 0 };
     }
 
@@ -535,6 +599,7 @@ export class FoliageRenderer {
     // Fills `out` with the frame a tree sprite shows now: the shared image, its
     // world top-left and its GPU texture key. Null until the sheet has loaded.
     leanFrameFor(sprite, out) {
+        this._syncSnow();
         const frame = this.swayFrame(sprite, this.host.motionTimeMs || 0);
         const cached = this._frame(sprite.tree, frame);
         if (!cached) return null;
@@ -545,16 +610,35 @@ export class FoliageRenderer {
         return out;
     }
 
+    // Pines carry snow only while the village's own snow lies on the ground
+    // (`renderer._groundState`, the same bucket the ground snow rebakes on);
+    // a bucket change drops every tree image once, like a season change.
+    _syncSnow() {
+        const bucket = snowBucketOf(this.host._groundState?.snowCover);
+        if (bucket === this._snowBucket) return;
+        this._snowBucket = bucket;
+        this.releaseCache();
+    }
+
     _frame(tree, frame) {
-        const spriteKey = treeSpriteKey(tree);
-        const variant = canopyVariantOf(tree);
-        const canopyKey = `${spriteKey}|${variant}|${this.season}`;
+        const leafy = treeSpriteKey(tree);
+        const state = treeStateKey(leafy, this.season, this._snowBucket);
+        // Snow quarters 1–3 dust the leafy pine; a full cover draws the laden
+        // sheet. A state sheet still loading shows the leafy sheet meanwhile.
+        const dust = state === TREE_SPRITES[leafy].snow && this._snowBucket < 4 ? this._snowBucket : 0;
+        const shown = dust ? leafy : state;
+        return this._frameOf(shown, tree, frame, dust) || (shown !== leafy || dust ? this._frameOf(leafy, tree, frame) : null);
+    }
+
+    _frameOf(spriteKey, tree, frame, dust = 0) {
+        const sprite = TREE_SPRITES[spriteKey];
+        const variant = sprite.canopy === false ? 0 : canopyVariantOf(tree);
+        const canopyKey = `${spriteKey}|${variant}|${this.season}${dust ? `|snow${dust}` : ''}`;
         const key = `${canopyKey}|${frame}`;
         const existing = this.cache.get(key);
         if (existing) return existing;
-        const canopy = this._canopy(spriteKey, variant, canopyKey);
+        const canopy = this._canopy(spriteKey, variant, canopyKey, dust);
         if (!canopy) return null;
-        const sprite = TREE_SPRITES[spriteKey];
         const lean = leanFrameImage(canopy.data, canopy.width, canopy.height, frame, sprite.planted);
         const canvas = document.createElement('canvas');
         canvas.width = lean.width;
@@ -573,11 +657,9 @@ export class FoliageRenderer {
         return cached;
     }
 
-    // The recoloured canopy image (ImageData) of one sprite/variant for this
-    // season, which every lean frame shears from.
-    _canopy(spriteKey, variant, canopyKey) {
-        const existing = this._canopies.get(canopyKey);
-        if (existing) return existing;
+    // One sheet's authored pixels (ImageData at its crop), or null while it
+    // loads.
+    _sheetPixels(spriteKey) {
         const sprite = TREE_SPRITES[spriteKey];
         const source = this.host.assets?.get?.(sprite.id);
         if (!source || typeof document === 'undefined') return null;
@@ -587,9 +669,22 @@ export class FoliageRenderer {
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         SpriteRenderer.disableSmoothing(ctx);
         ctx.drawImage(source, 0, 0, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
-        const image = ctx.getImageData(0, 0, sprite.width, sprite.height);
+        return ctx.getImageData(0, 0, sprite.width, sprite.height);
+    }
+
+    // The recoloured canopy image (ImageData) of one sprite/variant for this
+    // season (and snow dusting), which every lean frame shears from.
+    _canopy(spriteKey, variant, canopyKey, dust = 0) {
+        const existing = this._canopies.get(canopyKey);
+        if (existing) return existing;
+        const sprite = TREE_SPRITES[spriteKey];
+        const image = this._sheetPixels(spriteKey);
+        const laden = dust ? this._sheetPixels(sprite.snow) : null;
+        if (!image || (dust && !laden)) return null;
         const species = spriteKey.slice(0, spriteKey.indexOf('.'));
-        recolorCanopy(image.data, sprite.width, sprite.height, canopyPlan(species, variant, this.season));
+        const plan = sprite.canopy === false ? null : canopyPlan(species, variant, this.season);
+        recolorCanopy(image.data, sprite.width, sprite.height, plan);
+        if (laden) dustPineCanopy(image.data, laden.data, sprite.width, sprite.height, dust);
         this._canopies.set(canopyKey, image);
         return image;
     }

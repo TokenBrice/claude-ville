@@ -5,6 +5,7 @@ import { repoBranchProfile } from './RepoColor.js';
 import { AgentSearchIndex } from './SearchIndex.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
 import { el, replaceChildren } from './DomSafe.js';
+import { publishReservedRect } from './ReservedRects.js';
 import { bucketAgents, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { VillagePhase } from '../../application/VillageState.js';
 import {
@@ -134,6 +135,11 @@ export class Sidebar {
     constructor(world) {
         this.world = world;
         this.sidebarEl = document.getElementById('sidebar');
+        // V8 — the sidebar is chrome over (or beside) the World: moments,
+        // plates and framing read its box as occluded screen.
+        this._unpublishReservedRect = publishReservedRect('sidebar', this.sidebarEl, {
+            frame: document.getElementById('characterMode'),
+        });
         this.listEl = document.getElementById('agentList');
         this.countEl = document.getElementById('agentCount');
         this.shelfEl = document.getElementById('attentionShelf');
@@ -1382,6 +1388,7 @@ export class Sidebar {
         this._destroyed = true;
         for (const row of this._shelfRows?.values() || []) row.unsubscribe?.();
         this._shelfRows?.clear();
+        this._unpublishReservedRect?.();
         this.shelfEl?.replaceChildren();
         if (this.shelfEl) this.shelfEl.hidden = true;
         this._cancelReactiveFrame();

@@ -4,7 +4,9 @@
 // box is the world canvas), refreshed by a ResizeObserver on both, so
 // per-frame readers (T1 plates, moment staging, director framing) never read
 // layout. A hidden element (`display: none`, e.g. in Dashboard) publishes no
-// rect. Consumers treat every rect as occluded screen.
+// rect. A painter with no DOM element (the lower-third caption band) publishes
+// its box directly with `publishReservedBox`. Consumers treat every rect as
+// occluded screen.
 
 const entries = new Map();
 const listeners = new Set();
@@ -62,6 +64,38 @@ export function unpublishReservedRect(name) {
     entry.observer?.disconnect();
     entries.delete(name);
     if (entry.rect) rebuildSnapshot();
+}
+
+/**
+ * Publish a rect a canvas painter reserves (e.g. the lower-third caption
+ * band, drawn on the world overlay rather than as a DOM element): integer CSS
+ * px in the frame's space. `null` clears it. Cheap to call every frame: the
+ * snapshot only changes when the box does.
+ */
+export function publishReservedBox(name, rect) {
+    if (!name) return;
+    const entry = entries.get(name);
+    if (entry?.element) return;
+    const next = rect && rect.right > rect.left && rect.bottom > rect.top
+        ? {
+            left: Math.floor(rect.left),
+            top: Math.floor(rect.top),
+            right: Math.ceil(rect.right),
+            bottom: Math.ceil(rect.bottom),
+        }
+        : null;
+    const prev = entry?.rect || null;
+    if (!next) {
+        if (!entry) return;
+        entries.delete(name);
+        if (prev) rebuildSnapshot();
+        return;
+    }
+    if (prev && prev.left === next.left && prev.top === next.top
+        && prev.right === next.right && prev.bottom === next.bottom) return;
+    const frozen = Object.freeze({ name, ...next, width: next.right - next.left, height: next.bottom - next.top });
+    entries.set(name, { name, element: null, frame: null, rect: frozen, observer: null });
+    rebuildSnapshot();
 }
 
 // Every published rect: a frozen array, identical until something changes.

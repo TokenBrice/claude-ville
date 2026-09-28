@@ -5,7 +5,7 @@ These checks complement `node:test`. Most are deterministic Node programs; brows
 | Script | What it proves | Requirements | Runtime | npm wrapper |
 | --- | --- | --- | --- | --- |
 | `adapters.mjs` | Claude discovery, parent linkage, and team membership. | Temp dir; no dependencies/server | <1 s | None |
-| `astra-height-smoke.mjs` | GPU pixel readback proves authored zero/low/tall height and independent shadow strength against a tall receiver and one light. | `node_modules`, Playwright, maintained server or `CLAUDEVILLE_URL` | <1 s | None |
+| `astra-height-smoke.mjs` | GPU pixel readback proves 2.2's footprint march: a footprint taller than the ray shadows a ground receiver from a raised lamp, a short one does not; authored-unlit material stays darker than the metal fallback. | `node_modules`, Playwright, maintained server or `CLAUDEVILLE_URL` | <1 s | None |
 | `architecture.mjs` | Layer boundaries and adapter-helper allowlists. | No dependencies/server | <1 s | `verify:architecture` |
 | `boot-contract.mjs` | HTML, APIs, and WebSocket init/delta/resync. | Temp dir; isolated socket | Seconds | `verify:server` |
 | `browser-lifecycle.mjs` | Repeated mode switches preserve lifecycle and resource invariants. | `node_modules`, Playwright, server on 4000 or `CLAUDEVILLE_URL` | Minutes | None |

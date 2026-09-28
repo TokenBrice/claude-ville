@@ -8,7 +8,8 @@ import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { ungradeRgb } from './CanvasGrade.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
 import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
-import { baseWindX, cloudDriftSpeed } from './Wind.js';
+import { cloudCourseDrift } from './Wind.js';
+import { groundOptionsFor, rainClearedMinutesAgo } from './GroundState.js';
 import {
     ornamentPlan,
     resolveCalmGate,
@@ -37,12 +38,14 @@ const STAR_CEILING_FRAC = 0.60;
 // same deterministic PRNG walk as _drawStars, so they land on baked hot stars.
 const LIVE_TWINKLE_STARS = 12;
 // 5.2 — rare ambient meteors on clear nights (no event needed): one every
-// ~90–180s while the sky is clear enough to read as a starfield.
+// ~90–180s while the sky is clear enough to read as a starfield; 5.8 drops
+// the interval to 20–70 s within a day of a meteor-shower peak.
 const AMBIENT_METEOR_MIN_MS = 90000;
 const AMBIENT_METEOR_SPAN_MS = 90000;
+const SHOWER_METEOR_MIN_MS = 20000;
+const SHOWER_METEOR_SPAN_MS = 50000;
 const AMBIENT_METEOR_MIN_STARS_ALPHA = 0.45;
 const AMBIENT_METEOR_MAX_CLOUD_COVER = 0.35;
-const FALLBACK_CLOUD_IDS = ['atmosphere.cloud.cumulus', 'atmosphere.cloud.wisp'];
 const FALLBACK_MOON_ID = 'atmosphere.moon.crescent';
 // 0.10 — the sun is a flat-to-core stepped disc baked on a 2 px cell: a flat
 // body, a lighter mid course and a pale core, no outline ring and no
@@ -59,9 +62,14 @@ const MOON_PHASE_ASSETS = {
     half: 'atmosphere.moon.half.cool',
     gibbous: 'atmosphere.moon.gibbous.cool',
 };
-// Icon clouds drift at a fifth of the cloud-shadow course speed (Wind.js),
-// in px per ms: ~1.1 px/s on a clear day, ~2.4 px/s in a storm.
-const CLOUD_DRIFT_PX_PER_MS = 0.0002;
+// 5.8 — a meteor is rasterized on this cell: a bright head cell and a trail
+// of whole cells in three stepped courses, never an anti-aliased stroke.
+const METEOR_CELL_PX = 2;
+const METEOR_COURSES = Object.freeze([
+    Object.freeze({ rgb: '#fffbe8', alpha: 1 }),
+    Object.freeze({ rgb: '#ffe2a8', alpha: 0.62 }),
+    Object.freeze({ rgb: '#e9a878', alpha: 0.3 }),
+]);
 const CANOPY_HEIGHT_FRAC = 0.52;
 const CANOPY_MIN_HEIGHT = 240;
 const CANOPY_MAX_HEIGHT = 520;
@@ -71,10 +79,10 @@ const CANOPY_MAX_HEIGHT = 520;
 const SUN_HORIZON_CLEARANCE_RADIUS = 1.3;
 const MOON_DISC_RADIUS = 32;
 const SHOOTING_STAR_DURATION_MS = 1200;
-// Slow sky layers (stars, sun, moon, godrays, clouds) are composed into one
-// cached frame and refreshed at this cadence instead of repainting several
-// full-screen gradients every animation frame. Icon-cloud drift is at most
-// ~2.4 px/s, so a refresh moves clouds about half a pixel — invisible at 5 Hz.
+// Slow sky layers (stars, sun, moon) are composed into one cached frame and
+// refreshed at this cadence instead of repainting several full-screen
+// gradients every animation frame. The horizon deck and the rainbow draw
+// from their own baked strips over it.
 const SKY_FRAME_REFRESH_MS = 200;
 const FAST_SKY_CSS_PIXELS = 800_000;
 const FAST_SKY_FRAME_REFRESH_MS = 1000;
@@ -104,11 +112,68 @@ const CONSTELLATIONS = [
     },
 ];
 
-const CLOUD_LAYER_DEFAULTS = [
-    { fy: 0.20, parallax: 0.03, driftMul: 0.55, alphaMul: 0.72 },
-    { fy: 0.30, parallax: 0.07, driftMul: 0.92, alphaMul: 0.46 },
-    { fy: 0.40, parallax: 0.11, driftMul: 1.20, alphaMul: 0.32 },
-];
+// 5.8 — IMO 2026 meteor-shower calendar (northern hemisphere, M9): each
+// shower's local peak days (month 0–11, first and last) and its radiant on
+// the sky plate (fractions of the frame; above the frame when y < 0). Within
+// a day of a peak, on a clear night, meteors come every 20–70 s and every
+// one streaks away from the radiant; otherwise a sporadic one every
+// 90–180 s in a random direction.
+export const METEOR_SHOWERS = Object.freeze([
+    { name: 'Quadrantids', month: 0, days: [3, 4], radiant: [0.46, -0.04] },
+    { name: 'Lyrids', month: 3, days: [22, 22], radiant: [0.64, 0.02] },
+    { name: 'eta Aquariids', month: 4, days: [6, 6], radiant: [0.86, 0.30] },
+    { name: 'Southern delta Aquariids', month: 6, days: [30, 30], radiant: [0.84, 0.34] },
+    { name: 'Perseids', month: 7, days: [12, 13], radiant: [0.30, 0.04] },
+    { name: 'Draconids', month: 9, days: [8, 8], radiant: [0.52, -0.06] },
+    { name: 'Orionids', month: 9, days: [21, 21], radiant: [0.18, 0.22] },
+    { name: 'Leonids', month: 10, days: [17, 17], radiant: [0.24, 0.16] },
+    { name: 'Geminids', month: 11, days: [14, 14], radiant: [0.36, 0.08] },
+    { name: 'Ursids', month: 11, days: [22, 22], radiant: [0.56, -0.08] },
+].map(shower => Object.freeze(shower)));
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The shower whose peak is within a day of `date`'s local date, or null. */
+export function meteorShowerFor(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+    const year = date.getFullYear();
+    const today = Date.UTC(year, date.getMonth(), date.getDate());
+    for (const shower of METEOR_SHOWERS) {
+        const first = Date.UTC(year, shower.month, shower.days[0]) - DAY_MS;
+        const last = Date.UTC(year, shower.month, shower.days[1]) + DAY_MS;
+        if (today >= first && today <= last) return shower;
+    }
+    return null;
+}
+
+// 5.7 — the horizon cloud deck: three baked strips of stepped-noise cumulus
+// silhouettes on the plate's round(zoom) cell, far to near. Sizes are shares
+// of the sky band B = horizonY − top (bucketed): `f` lifts a strip's base
+// above the sea horizon (y = horizonY − f·B), `height` is the strip's
+// height and `puff` the cloud radii range. Nearer strips are taller,
+// puffier and pan faster. Nothing is drawn below SKY_HORIZON_WORLD_Y.
+const DECK_STRIPS = Object.freeze([
+    Object.freeze({ f: 0, parallax: 0.02, height: 0.1, puff: [0.035, 0.08], salt: 11 }),
+    Object.freeze({ f: 0.12, parallax: 0.05, height: 0.15, puff: [0.05, 0.12], salt: 23 }),
+    Object.freeze({ f: 0.3, parallax: 0.09, height: 0.22, puff: [0.07, 0.17], salt: 37 }),
+]);
+// One strip repeats every DECK_PERIOD_PX screen px (> a 2560 view, and the
+// three strips' periods drift apart under parallax).
+const DECK_PERIOD_PX = 3072;
+const DECK_BAND_BUCKET_PX = 48;
+// [sun-side rim, body, underside] in final (graded) colour.
+// Noon: a white crown, a body a step above the horizon sky, a blue-grey base.
+const DECK_NOON = Object.freeze(['#f4f7fa', '#dce5ee', '#a9bacb']);
+const DECK_DUSK = Object.freeze(['#f6be96', '#a07492', '#74536e']);
+const DECK_HEAVY_WEATHER = new Set(['overcast', 'rain', 'storm']);
+
+// 5.8 — the after-rain rainbow: six stepped bands (outer red to inner
+// violet) on 2 px cells with a Bayer edge at the outer and inner rims, at
+// most 0.35 alpha, fading in and out in three quanta.
+const RAINBOW_CELL_PX = 2;
+const RAINBOW_BANDS = Object.freeze(['#c46a5e', '#d4955c', '#d9c878', '#86ad7c', '#6f90c0', '#8676b4']);
+const RAINBOW_MAX_ALPHA = 0.35;
+const RAINBOW_MAX_SUN_ELEVATION_DEG = 42;
 const LIVE_TWINKLE_STARS_CALM = 3;
 const LIVE_TWINKLE_RATE_SCALE_CALM = 0.28;
 
@@ -121,8 +186,12 @@ export function liveTwinkleBudget({ calm = false, motionScale = 1 } = {}) {
     return { count: LIVE_TWINKLE_STARS, rateScale: 1 };
 }
 
-export function allowAmbientMeteor({ calm = false, motionScale = 1 } = {}) {
-    return ornamentPlan({ calm, motionScale, level: 0 }).ambientMeteors === 'on';
+// 5.8 — meteors are the sky's own calendar events, already rare, and they
+// only come on clear nights — exactly when the scene's calm gate is closed
+// (calm = clear weather, no attention, no recent event). So the calm gate
+// never silences them; reduced motion still does.
+export function allowAmbientMeteor({ motionScale = 1 } = {}) {
+    return ornamentPlan({ calm: false, motionScale, level: 0 }).ambientMeteors === 'on';
 }
 
 // Weather plate is a vertical, canvas-wide sky condition. Spatial ground
@@ -136,7 +205,10 @@ export class SkyRenderer {
         this.cacheKey = '';
         this._frameCache = null;
         this._frameCacheKey = '';
-        this._decorativeCloudOffset = 0;
+        this._deck = null;
+        this._deckKey = '';
+        this._rainbowStamp = null;
+        this.deckBakes = 0;
         this._fallbackAtmosphere = null;
         this._shootingStars = [];
         this._nextAmbientMeteorAt = 0;
@@ -150,25 +222,19 @@ export class SkyRenderer {
     }
 
     // `backdropGraded`: true when nothing grades the 2D frame after this
-    // draw (the resident GPU world sits over it), so the plate paints the C2
-    // sky colours as-is and cloud sprites are pre-graded; false on the
-    // Canvas/PostFx paths, which grade the finished frame, so the plate
-    // paints the preimage of the same colours instead.
+    // draw (the resident GPU world sits over it), so the plate, the deck and
+    // the rainbow paint the C2 sky colours as-is; false on the Canvas/PostFx
+    // paths, which grade the finished frame, so they paint the preimage of
+    // the same colours instead. `timeMs` is the motion clock (the deck's
+    // drift integrator); reduced motion holds it.
     draw(ctx, arg1 = {}, arg2 = null, arg3 = 16, arg4 = 1) {
-        const { canvas, camera, dt, atmosphere, motionScale, backdropGraded } = this._normalizeDrawArgs(arg1, arg2, arg3, arg4);
+        const { canvas, camera, atmosphere, motionScale, backdropGraded, timeMs } = this._normalizeDrawArgs(arg1, arg2, arg3, arg4);
         if (!canvas) return;
         const snapshot = atmosphere || this._getFallbackAtmosphere(motionScale);
         this._currentPhase = snapshot.phase || null;
         this._currentMotionScale = motionScale;
         this._currentCloudCover = clamp(snapshot.weather?.cloudCover ?? 0, 0, 1);
         this._backdropGraded = backdropGraded;
-        if (snapshot.motion?.driftEnabled) {
-            // C-W3 — the icon clouds integrate the one wind: a speed or sign
-            // change alters the drift rate, never the clouds' positions.
-            const wind = baseWindX(snapshot.weather);
-            const step = dt * CLOUD_DRIFT_PX_PER_MS * cloudDriftSpeed(wind) * (wind < 0 ? -1 : 1);
-            this._decorativeCloudOffset = (this._decorativeCloudOffset + step) % Math.max(1, canvas.width);
-        }
 
         this._horizonY = this._horizonScreenY(camera, canvas);
         this._drawPlate(ctx, canvas, camera, snapshot);
@@ -178,6 +244,10 @@ export class SkyRenderer {
         // ride the canopy pass (drawCanopy) so they draw over terrain.
         this._publishCalmSceneHints(snapshot);
         this._drawLiveStarTwinkle(ctx, canvas, snapshot, motionScale);
+        // 5.8 then 5.7 — the rainbow sits behind the horizon deck, and the
+        // deck in front of the low sun and moon.
+        this._drawRainbow(ctx, canvas, snapshot, motionScale);
+        this._drawHorizonDeck(ctx, camera, canvas, snapshot, motionScale > 0 ? timeMs : null);
         this._maybeTriggerAmbientMeteor(snapshot);
     }
 
@@ -190,10 +260,10 @@ export class SkyRenderer {
         });
     }
 
-    // Compose the slow celestial layers (stars, sun, moon, clouds) into one
+    // Compose the slow celestial layers (stars, sun, moon) into one
     // transparent offscreen frame over the plate. Refreshes on atmosphere
-    // bucket change, viewport resize, camera movement (sun clamp and cloud
-    // parallax read the camera), or every SKY_FRAME_REFRESH_MS.
+    // bucket change, viewport resize, camera movement (the sun clamp reads
+    // the camera), or every SKY_FRAME_REFRESH_MS.
     _getComposedSkyFrame(canvas, camera, atmosphere) {
         const dpr = this._skyCacheDpr(canvas);
         const fast = this._useFastSkyCache(canvas);
@@ -228,14 +298,14 @@ export class SkyRenderer {
         this._frameHasContent = this._drawStars(fctx, canvas, atmosphere) || this._frameHasContent;
         this._frameHasContent = this._drawSun(fctx, camera, canvas, atmosphere) || this._frameHasContent;
         this._frameHasContent = this._drawMoon(fctx, canvas, atmosphere) || this._frameHasContent;
-        this._frameHasContent = this._drawClouds(fctx, camera, canvas, atmosphere) || this._frameHasContent;
         this._frameCacheKey = key;
         return frame;
     }
 
     // Reduced motion is honored at draw time (a fixed-pose streak on a 3-step
-    // envelope) so RM sessions still see the ambient meteor.
-    triggerShootingStar({ angle = null, length = null } = {}) {
+    // envelope) so RM sessions still see the ambient meteor. A shower meteor
+    // (5.8) carries its radiant and streaks directly away from it.
+    triggerShootingStar({ angle = null, length = null, radiant = null } = {}) {
         if (!SHOOTING_STAR_NIGHT_PHASES.has(this._currentPhase)) return false;
         if (this._shootingStars.length >= SHOOTING_STAR_MAX) return false;
         const resolvedAngle = Number.isFinite(angle)
@@ -243,12 +313,16 @@ export class SkyRenderer {
             : Math.PI / 3 + Math.random() * (Math.PI / 6);
         const resolvedLength = Number.isFinite(length) ? length : 0.18;
         const startXFrac = 0.05 + Math.random() * 0.75;
-        const startYFrac = Math.random() * (STAR_CEILING_FRAC * 0.7);
+        // A share of the visible sky band (top of canvas to the sea horizon
+        // or the star ceiling, whichever is higher), resolved at draw time,
+        // so a meteor always starts in open sky.
+        const startSkyFrac = 0.08 + Math.random() * 0.5;
         this._shootingStars.push({
             angle: resolvedAngle,
             lengthFrac: resolvedLength,
             startXFrac,
-            startYFrac,
+            startSkyFrac,
+            radiant: Array.isArray(radiant) ? radiant : null,
             elapsed: 0,
         });
         return true;
@@ -285,8 +359,6 @@ export class SkyRenderer {
         this._drawMoon(ctx, canvas, canopy);
         this._drawGodrays(ctx, camera, canvas, canopy, { alphaMul: 0.4 });
         ctx.restore();
-        ctx.globalCompositeOperation = 'source-over';
-        this._drawClouds(ctx, camera, canvas, canopy);
         // Ambient meteors ride this canopy pass (which runs after
         // _drawTerrain) so they composite over terrain, clipped to the sky.
         this._drawShootingStars(ctx, canvas, dt, resolvedMotionScale);
@@ -300,10 +372,6 @@ export class SkyRenderer {
             sky: {
                 ...sky,
                 starsAlpha: (sky.starsAlpha || 0) * 0.72,
-                // 5.6 — canopy cloud alpha lift (was ×0.34): clouds over the
-                // terrain read too faint, deadening the night canopy.
-                cloudAlpha: (sky.cloudAlpha || 0) * 0.48,
-                cloudDensity: Math.min(1, (sky.cloudDensity || 0) * 0.72),
                 sun: sky.sun ? {
                     ...sky.sun,
                     alpha: sky.sun.alpha * 0.34,
@@ -315,12 +383,6 @@ export class SkyRenderer {
         if (canopy.sky.sun) {
             const horizonCut = canopy.sky.sun.yFrac > 0.42 ? 0.58 : 1;
             canopy.sky.sun.alpha *= 0.54 * horizonCut;
-        }
-        if (canopy.sky.cloudLayers?.length) {
-            canopy.sky.cloudLayers = canopy.sky.cloudLayers
-                .filter((layer, index) => index % 2 === 0 || layer.yFrac < 0.34)
-                // 5.6 — matching per-layer lift (was ×0.58).
-                .map(layer => ({ ...layer, alpha: layer.alpha * 0.72 }));
         }
         return canopy;
     }
@@ -334,6 +396,7 @@ export class SkyRenderer {
                 atmosphere: arg1.atmosphere || null,
                 motionScale: Number.isFinite(arg1.motionScale) ? arg1.motionScale : 1,
                 backdropGraded: arg1.backdropGraded === true,
+                timeMs: Number.isFinite(arg1.timeMs) ? arg1.timeMs : null,
             };
         }
         return {
@@ -343,6 +406,7 @@ export class SkyRenderer {
             atmosphere: null,
             motionScale: Number.isFinite(arg4) ? arg4 : 1,
             backdropGraded: false,
+            timeMs: null,
         };
     }
 
@@ -897,141 +961,132 @@ export class SkyRenderer {
         ctx.restore();
     }
 
-    _drawClouds(ctx, camera, canvas, atmosphere) {
-        if (!this.assets) return false;
-        const layers = Array.isArray(atmosphere.sky?.cloudLayers) && atmosphere.sky.cloudLayers.length
-            ? atmosphere.sky.cloudLayers
-            : null;
-        if (layers) {
-            return this._drawCloudLayerDescriptors(ctx, camera, canvas, atmosphere, layers);
+    // 5.7 — the horizon cloud deck. Three strips baked once per bucket (cell,
+    // cloud-cover tenth, sun side, the day's seed and the stepped colour
+    // set) and drawn every frame as whole-cell offsets: parallax 0.02 /
+    // 0.05 / 0.09 of the camera pan plus the same C-W3 drift integrator the
+    // cloud-shadow courses ride (`cloudCourseDrift`), which holds under
+    // reduced motion so the deck moves only when the operator pans. Clipped
+    // to the sky above the sea horizon.
+    _drawHorizonDeck(ctx, camera, canvas, atmosphere, timeMs) {
+        const horizonY = this._horizonY;
+        if (!(horizonY > 0)) return false;
+        const coverage = clamp(atmosphere.weather?.cloudCover ?? 0);
+        if (coverage < 0.04) return false;
+        const zoom = camera?.zoom || 1;
+        const cell = Math.max(1, Math.round(zoom));
+        const band = Math.max(96, Math.round(horizonY / DECK_BAND_BUCKET_PX) * DECK_BAND_BUCKET_PX);
+        const colors = this._deckColors(atmosphere);
+        const sun = atmosphere.sky?.sun;
+        const rimSide = sun?.visible ? (sun.xFrac < 0.4 ? -1 : sun.xFrac > 0.6 ? 1 : 0) : 0;
+        const seed = hashString(`${atmosphere.clock?.localDate || ''}|deck`);
+        const coverBucket = Math.round(coverage * 10);
+        const key = `${cell}|${band}|${coverBucket}|${rimSide}|${seed}|${colors.map(rgb01Css).join(',')}`;
+        if (!this._deck || this._deckKey !== key) {
+            for (const strip of this._deck || []) releaseCanvasBackingStore(strip);
+            this._deck = DECK_STRIPS.map(strip => bakeDeckStrip(strip, {
+                coverage: coverBucket / 10,
+                seed,
+                colors,
+                cell,
+                band,
+                rimSide,
+            }));
+            this._deckKey = key;
+            this.deckBakes += 1;
         }
-        const cloudIds = this._availableCloudIds(atmosphere);
-        if (!cloudIds.length) return false;
-
+        const drift = cloudCourseDrift(timeMs, atmosphere.weather).x;
         const camX = camera?.x || 0;
-        const density = atmosphere.sky?.cloudDensity ?? 0.3;
-        const baseAlpha = atmosphere.sky?.cloudAlpha ?? 0.35;
-        const clockDrift = atmosphere.motion?.clockDriftPx || 0;
-        const seed = Number.isFinite(Number(atmosphere.weather?.seed))
-            ? Number(atmosphere.weather.seed) >>> 0
-            : hashString(`${atmosphere.clock?.localDate || ''}|${atmosphere.weather?.type || 'clear'}`);
-
-        cloudIds.forEach((id, index) => {
-            const img = this._cloudSprite(id, atmosphere);
-            const dims = this.assets.getDims(id);
-            if (!img || !dims) return;
-            const defaults = CLOUD_LAYER_DEFAULTS[index % CLOUD_LAYER_DEFAULTS.length];
-            const count = Math.max(2, Math.round(2 + density * 5) - index);
-            const spacing = canvas.width / count;
-            const rawOffset = -camX * defaults.parallax
-                + clockDrift * defaults.driftMul
-                + this._decorativeCloudOffset * defaults.driftMul;
-            const baseOffset = ((rawOffset % spacing) + spacing) % spacing;
-
-            ctx.save();
-            ctx.globalAlpha = Math.min(0.86, baseAlpha * defaults.alphaMul);
-            for (let i = -1; i <= count; i++) {
-                const salt = index * 1009 + (i + 3) * 131;
-                const jitter = (random01(seed, salt + 11) - 0.5) * spacing * 0.62;
-                const yJitter = (random01(seed, salt + 23) - 0.5) * canvas.height * 0.055;
-                const scale = 0.82 + random01(seed, salt + 37) * 0.36;
-                const layerAlpha = 0.74 + random01(seed, salt + 41) * 0.34;
-                const y = (defaults.fy + index * 0.045) * canvas.height + yJitter;
-                const x = i * spacing + baseOffset + jitter - (dims.w * scale) / 2;
-                ctx.globalAlpha = Math.min(0.86, baseAlpha * defaults.alphaMul * layerAlpha);
-                ctx.drawImage(
-                    img,
-                    Math.round(x),
-                    Math.round(y),
-                    Math.round(dims.w * scale),
-                    Math.round(dims.h * scale),
-                );
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, canvas.width, horizonY);
+        ctx.clip();
+        ctx.imageSmoothingEnabled = false;
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = 'source-over';
+        DECK_STRIPS.forEach((strip, index) => {
+            const baked = this._deck[index];
+            const lift = Math.round((strip.f * horizonY) / cell) * cell;
+            const y = horizonY - lift - baked.height;
+            const shift = Math.round(((drift - camX) * strip.parallax * zoom) / cell) * cell;
+            const period = baked.width;
+            for (let x = ((shift % period) + period) % period - period; x < canvas.width; x += period) {
+                ctx.drawImage(baked, x, y);
             }
-            ctx.restore();
         });
+        ctx.restore();
         return true;
     }
 
-    _drawCloudLayerDescriptors(ctx, camera, canvas, atmosphere, layers) {
-        const camX = camera?.x || 0;
-        const clockDrift = atmosphere.motion?.clockDriftPx || 0;
-        const wrapWidth = canvas.width + 260;
-        ctx.save();
-        let drawn = false;
-        for (const layer of layers) {
-            const id = this.assets.has(layer.assetId) ? layer.assetId : this._availableCloudIds(atmosphere)[0];
-            if (!id) continue;
-            const img = this._cloudSprite(id, atmosphere);
-            const dims = this.assets.getDims(id);
-            if (!img || !dims) continue;
-            const scale = Math.max(0.45, Number(layer.scale) || 1);
-            const w = dims.w * scale;
-            const h = dims.h * scale;
-            const parallax = Number(layer.parallax) || 0.04;
-            const driftMul = Number(layer.driftMul) || 1;
-            const drift = -camX * parallax
-                + clockDrift * driftMul
-                + this._decorativeCloudOffset * driftMul;
-            const y = canvas.height * clamp(layer.yFrac ?? 0.25, 0.04, 0.62);
-            const baseX = (layer.xFrac ?? 0.5) * canvas.width + drift;
-            const x = wrap(baseX, -w - 130, wrapWidth);
-            ctx.globalAlpha = Math.min(0.88, Math.max(0, Number(layer.alpha) || 0));
-            ctx.drawImage(img, Math.round(x), Math.round(y), Math.round(w), Math.round(h));
-            drawn = true;
-            if (x + w < canvas.width + 80) {
-                ctx.drawImage(img, Math.round(x + wrapWidth), Math.round(y), Math.round(w), Math.round(h));
-            }
+    // The deck's [rim, body, underside] in final colour: the dusk set while
+    // the sun is warm, else the noon set, one tone down under a heavy sky,
+    // moonlit through the C2 grade at night and never brighter than a step
+    // above the plate's horizon band (blue hour keeps dim silhouettes).
+    // Painted as the preimage where the frame is graded afterwards.
+    _deckColors(atmosphere) {
+        const grade = atmosphere.lightGrade || null;
+        const warmth = clamp(atmosphere.lighting?.sunWarmth ?? 0);
+        const lowSun = atmosphere.phase === 'dawn' || atmosphere.phase === 'dusk' || warmth >= 0.3;
+        let set = (lowSun ? DECK_DUSK : DECK_NOON).map(hexToRgb01);
+        if (DECK_HEAVY_WEATHER.has(atmosphere.weather?.type)) {
+            set = [set[1], set[2], set[2].map(channel => channel * 0.8)];
         }
-        ctx.restore();
-        return drawn;
+        // Never brighter than a step above the plate's horizon band (at night
+        // a dim moonlit silhouette, in blue hour a dim one; a noon sky lets
+        // the full set through).
+        const night = grade ? clamp(grade.night ?? 0) : 0;
+        if (night >= 0.5) set = set.map(rgb => applyGradeToRgb(rgb, grade).map(channel => clamp(channel)));
+        const horizon = hexToRgb01(atmosphere.sky?.palette?.horizon || '#c8d4dc');
+        const ceiling = lumaOf(horizon) + (night >= 0.5 ? 0.07 : 0.2);
+        const k = Math.min(1, ceiling / Math.max(1e-3, lumaOf(set[0])));
+        if (k < 1) set = set.map(rgb => rgb.map(channel => channel * k));
+        const quantize = (rgb) => rgb.map(channel => Math.round(clamp(channel) * 255) / 255);
+        if (!this._backdropGraded && grade) set = set.map(rgb => ungradeRgb(rgb, grade));
+        return set.map(quantize);
     }
 
-    // 1.3 — on the resident path nothing grades the backdrop after it is
-    // drawn, so cloud sprites are graded on the CPU with the island's C2
-    // grade (applyGradeToRgb per unique colour), cached per sprite and grade
-    // bucket. The sun, moon and stars are light sources and stay exempt,
-    // like emissive pixels on the island. The Canvas/PostFx paths grade the
-    // whole frame and take the raw sprite.
-    _cloudSprite(id, atmosphere) {
-        const img = this.assets.get(id);
-        const grade = atmosphere.lightGrade;
-        if (!img || !this._backdropGraded || !grade) return img;
-        const cache = (this._gradedClouds ||= new Map());
-        const key = `${id}|${grade.cacheKey || ''}`;
-        const hit = cache.get(key);
-        if (hit) return hit;
-        for (const [oldKey, oldCanvas] of cache) {
-            if (!oldKey.startsWith(`${id}|`)) continue;
-            releaseCanvasBackingStore(oldCanvas);
-            cache.delete(oldKey);
+    // 5.8 — a stepped rainbow opposite the sun for the 20 minutes after the
+    // village's own timeline goes from rain to clearing, while the sun is
+    // up and below 42°. The arc's centre is the antisolar point (below the
+    // horizon by the sun's elevation) and only the part above the sea
+    // horizon is drawn. It fades in and out in three alpha quanta; reduced
+    // motion holds the middle quantum for the whole window.
+    _drawRainbow(ctx, canvas, atmosphere, motionScale) {
+        const horizonY = this._horizonY;
+        const sun = atmosphere.sky?.sun;
+        if (!(horizonY > 0) || !sun?.visible) return false;
+        const elevation = Number(sun.elevationDeg);
+        if (!(elevation >= 0 && elevation < RAINBOW_MAX_SUN_ELEVATION_DEG)) return false;
+        const date = atmosphere.effectiveDate;
+        if (!(date instanceof Date)) return false;
+        const since = rainClearedMinutesAgo(date, groundOptionsFor(atmosphere));
+        if (since == null) return false;
+        const quanta = motionScale === 0
+            ? 2
+            : since < 2 || since >= 18 ? 1 : since < 4 || since >= 16 ? 2 : 3;
+        const cell = RAINBOW_CELL_PX;
+        const radius = Math.round(clamp(canvas.width * 0.2, 160, 520) / cell) * cell;
+        const grade = atmosphere.lightGrade || null;
+        const colors = RAINBOW_BANDS.map(hexToRgb01)
+            .map(rgb => (!this._backdropGraded && grade ? ungradeRgb(rgb, grade) : rgb));
+        const key = `${radius}|${colors.map(rgb01Css).join(',')}`;
+        if (!this._rainbowStamp || this._rainbowStamp.key !== key) {
+            releaseCanvasBackingStore(this._rainbowStamp?.canvas);
+            this._rainbowStamp = { key, canvas: bakeRainbowStamp(radius, cell, colors) };
         }
-        const width = img.naturalWidth || img.width;
-        const height = img.naturalHeight || img.height;
-        if (!width || !height) return img;
-        const graded = document.createElement('canvas');
-        graded.width = width;
-        graded.height = height;
-        const gctx = graded.getContext('2d', { willReadFrequently: true });
-        gctx.drawImage(img, 0, 0);
-        const image = gctx.getImageData(0, 0, width, height);
-        const data = image.data;
-        const memo = new Map();
-        for (let offset = 0; offset < data.length; offset += 4) {
-            if (data[offset + 3] === 0) continue;
-            const packed = (data[offset] << 16) | (data[offset + 1] << 8) | data[offset + 2];
-            let out = memo.get(packed);
-            if (!out) {
-                const rgb = applyGradeToRgb([data[offset] / 255, data[offset + 1] / 255, data[offset + 2] / 255], grade);
-                out = rgb.map(channel => Math.round(clamp(channel) * 255));
-                memo.set(packed, out);
-            }
-            data[offset] = out[0];
-            data[offset + 1] = out[1];
-            data[offset + 2] = out[2];
-        }
-        gctx.putImageData(image, 0, 0);
-        cache.set(key, graded);
-        return graded;
+        const pxPerDegree = radius / 42;
+        const cx = Math.round(((1 - sun.xFrac) * canvas.width) / cell) * cell;
+        const cy = horizonY + Math.round((elevation * pxPerDegree) / cell) * cell;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, canvas.width, horizonY);
+        ctx.clip();
+        ctx.imageSmoothingEnabled = false;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = RAINBOW_MAX_ALPHA * quanta / 3;
+        ctx.drawImage(this._rainbowStamp.canvas, cx - radius, cy - radius);
+        ctx.restore();
+        return true;
     }
 
     // Live star twinkle over the cached night sky. Walks the same deterministic
@@ -1080,9 +1135,21 @@ export class SkyRenderer {
         ctx.restore();
     }
 
+    // 5.8 — meteors on the cell grid: the streak is walked in whole
+    // METEOR_CELL_PX cells from the head back along its path, the head cell
+    // brightest and the trail in two dimmer courses; the life envelope steps
+    // in thirds. A shower meteor's direction points away from its radiant.
     _drawShootingStars(ctx, canvas, dt, motionScale) {
         if (!this._shootingStars.length) return;
-        const ceilingY = canvas.height * STAR_CEILING_FRAC;
+        // The sky band a meteor lives in: above the sea horizon and the star
+        // ceiling; cells below it are never drawn.
+        const horizonY = Number.isFinite(this._horizonY) ? this._horizonY : Infinity;
+        const skyBottom = Math.max(0, Math.min(canvas.height * STAR_CEILING_FRAC, horizonY));
+        if (!(skyBottom > METEOR_CELL_PX * 4)) {
+            this._shootingStars = this._shootingStars.filter((star) => (star.elapsed += dt) < SHOOTING_STAR_DURATION_MS);
+            return;
+        }
+        const cell = METEOR_CELL_PX;
         const next = [];
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
@@ -1090,82 +1157,76 @@ export class SkyRenderer {
             star.elapsed += dt;
             const t = star.elapsed / SHOOTING_STAR_DURATION_MS;
             if (t >= 1) continue;
-            // 5.6 — reduced motion: the streak holds a fixed mid-flight pose
-            // and steps its alpha (3-step envelope) instead of traveling.
-            const alpha = motionScale === 0
+            // Reduced motion: the streak holds a fixed mid-flight pose and
+            // steps its alpha (3-step envelope) instead of traveling.
+            const envelope = motionScale === 0
                 ? rmThreeStepEnvelope(t) * 0.9
                 : t < 0.18 ? t / 0.18 : 1 - (t - 0.18) / 0.82;
-            if (alpha <= 0.01) {
+            const alpha = Math.ceil(clamp(envelope) * 3) / 3;
+            if (alpha <= 0) {
                 next.push(star);
                 continue;
             }
             const length = canvas.width * star.lengthFrac;
-            const dx = Math.cos(star.angle);
-            const dy = Math.sin(star.angle);
             const x0 = canvas.width * star.startXFrac;
-            const y0 = canvas.height * star.startYFrac;
+            const y0 = skyBottom * star.startSkyFrac;
+            let dx = Math.cos(star.angle);
+            let dy = Math.sin(star.angle);
+            if (star.radiant) {
+                const rx = x0 - canvas.width * star.radiant[0];
+                const ry = y0 - canvas.height * star.radiant[1];
+                const norm = Math.hypot(rx, ry) || 1;
+                dx = rx / norm;
+                dy = ry / norm;
+            }
             const headProgress = motionScale === 0 ? 0.62 : 0.2 + t * 0.8;
             const hx = x0 + dx * length * headProgress;
             const hy = y0 + dy * length * headProgress;
-            const tx = hx - dx * length * 0.55;
-            const ty = hy - dy * length * 0.55;
-            if (hy > ceilingY + 4) {
-                next.push(star);
-                continue;
+            const trailCells = Math.max(3, Math.round((length * 0.55) / cell));
+            let lastX = NaN;
+            let lastY = NaN;
+            for (let i = trailCells; i >= 0; i--) {
+                const gx = Math.floor((hx - dx * i * cell) / cell) * cell;
+                const gy = Math.floor((hy - dy * i * cell) / cell) * cell;
+                if (gx === lastX && gy === lastY) continue;
+                if (gy + cell > skyBottom) continue;
+                lastX = gx;
+                lastY = gy;
+                const course = METEOR_COURSES[i === 0 ? 0 : i <= trailCells / 3 ? 1 : 2];
+                ctx.globalAlpha = alpha * course.alpha;
+                ctx.fillStyle = course.rgb;
+                ctx.fillRect(gx, gy, cell, cell);
             }
-            const trail = ctx.createLinearGradient(tx, ty, hx, hy);
-            trail.addColorStop(0, `rgba(255, 196, 132, 0)`);
-            trail.addColorStop(0.55, `rgba(255, 214, 158, ${alpha * 0.42})`);
-            trail.addColorStop(1, `rgba(255, 250, 232, ${alpha * 0.88})`);
-            ctx.strokeStyle = trail;
-            ctx.lineWidth = 1.6;
-            ctx.lineCap = 'round';
-            ctx.beginPath();
-            ctx.moveTo(tx, ty);
-            ctx.lineTo(hx, hy);
-            ctx.stroke();
-            const head = ctx.createRadialGradient(hx, hy, 0, hx, hy, 6);
-            head.addColorStop(0, `rgba(255, 255, 255, ${alpha})`);
-            head.addColorStop(1, 'rgba(255, 255, 255, 0)');
-            ctx.fillStyle = head;
-            ctx.beginPath();
-            ctx.arc(hx, hy, 6, 0, Math.PI * 2);
-            ctx.fill();
             next.push(star);
         }
         ctx.restore();
         this._shootingStars = next;
     }
 
-    // 5.2 — ambient clear-night meteors: one every ~90–180s while the
-    // starfield is actually visible (at most SHOOTING_STAR_MAX in flight).
-    // The first eligible clear night only arms the timer — no boot-time
-    // meteor. The sky answers to no agent event (V3).
+    // 5.2 / 5.8 — ambient clear-night meteors: one every ~90–180 s while the
+    // starfield is actually visible (at most SHOOTING_STAR_MAX in flight),
+    // every 20–70 s within a day of a meteor-shower peak (IMO calendar),
+    // then from the shower's radiant. The first eligible clear night only
+    // arms the timer — no boot-time meteor. The sky answers to no agent
+    // event (V3).
     _maybeTriggerAmbientMeteor(atmosphere) {
-        if (!allowAmbientMeteor({
-            calm: resolveCalmGate(),
-            motionScale: this._currentMotionScale,
-        })) return;
+        if (!allowAmbientMeteor({ motionScale: this._currentMotionScale })) return;
         if (!SHOOTING_STAR_NIGHT_PHASES.has(this._currentPhase)) return;
         if ((atmosphere.sky?.starsAlpha ?? 0) < AMBIENT_METEOR_MIN_STARS_ALPHA) return;
         if (this._currentCloudCover > AMBIENT_METEOR_MAX_CLOUD_COVER) return;
+        const shower = meteorShowerFor(atmosphere.effectiveDate);
+        const minMs = shower ? SHOWER_METEOR_MIN_MS : AMBIENT_METEOR_MIN_MS;
+        const spanMs = shower ? SHOWER_METEOR_SPAN_MS : AMBIENT_METEOR_SPAN_MS;
         const now = Date.now();
-        if (!this._nextAmbientMeteorAt) {
-            this._nextAmbientMeteorAt = now + AMBIENT_METEOR_MIN_MS + Math.random() * AMBIENT_METEOR_SPAN_MS;
+        if (!this._nextAmbientMeteorAt || this._nextAmbientMeteorAt - now > minMs + spanMs) {
+            this._nextAmbientMeteorAt = now + minMs + Math.random() * spanMs;
             return;
         }
         if (now < this._nextAmbientMeteorAt) return;
-        this._nextAmbientMeteorAt = now + AMBIENT_METEOR_MIN_MS + Math.random() * AMBIENT_METEOR_SPAN_MS;
+        this._nextAmbientMeteorAt = now + minMs + Math.random() * spanMs;
         const angle = Math.PI / 3 + Math.random() * (Math.PI / 6);
         const length = 0.12 + Math.random() * 0.10;
-        this.triggerShootingStar({ angle, length });
-    }
-
-    _availableCloudIds(atmosphere) {
-        const requested = atmosphere.sky?.assetIds?.clouds || [];
-        const available = requested.filter(id => this.assets?.has(id));
-        if (available.length) return available;
-        return FALLBACK_CLOUD_IDS.filter(id => this.assets?.has(id));
+        this.triggerShootingStar({ angle, length, radiant: shower ? shower.radiant : null });
     }
 
     _firstAvailable(ids) {
@@ -1190,13 +1251,15 @@ export class SkyRenderer {
         this._sunStamp = null;
         for (const stamp of this._glowStamps?.values() || []) releaseCanvasBackingStore(stamp);
         this._glowStamps?.clear();
-        for (const sprite of this._gradedClouds?.values() || []) releaseCanvasBackingStore(sprite);
-        this._gradedClouds?.clear();
+        for (const strip of this._deck || []) releaseCanvasBackingStore(strip);
+        this._deck = null;
+        this._deckKey = '';
+        releaseCanvasBackingStore(this._rainbowStamp?.canvas);
+        this._rainbowStamp = null;
     }
 
     dispose() {
         this.releaseCache();
-        this._decorativeCloudOffset = 0;
         this._shootingStars.length = 0;
         this._nextAmbientMeteorAt = 0;
         this._fallbackAtmosphere?.dispose?.();
@@ -1249,6 +1312,175 @@ function wrap(value, min, max) {
     const range = max - min;
     if (!Number.isFinite(range) || range <= 0) return min;
     return ((value - min) % range + range) % range + min;
+}
+
+function lumaOf(rgb) {
+    return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+}
+
+// 5.7 — one deck strip: a periodic row of cumulus clouds, one texel per
+// cell, then scaled to the cell with nearest sampling. Each cloud is a
+// cluster of 2–4 stepped half-ellipse puffs (the tallest in the middle) on a
+// flat base; clouds gather where a periodic clump field allows, so a partly
+// cloudy sky keeps open gaps, and a covered sky adds a continuous stratus
+// floor. Colours per cell: the top of each column and any edge facing the
+// sun take the rim, edges facing away and the bottom rows the underside (a
+// 4x4 Bayer seam between body and underside), everything else the body.
+// `rimSide`: −1 sun left, 1 right, 0 high or absent (every top rims).
+function bakeDeckStrip(strip, { coverage, seed, colors, cell, band, rimSide }) {
+    const W = Math.round(DECK_PERIOD_PX / cell);
+    const H = Math.max(4, Math.round((strip.height * band) / cell));
+    const radiusMin = Math.max(2, (strip.puff[0] * band) / cell);
+    const radiusMax = Math.max(radiusMin + 1, (strip.puff[1] * band) / cell);
+    const top = new Int16Array(W).fill(H);
+    const cover = clamp(coverage);
+    // Periodic clump field: 7 control values around the period.
+    const knots = Array.from({ length: 7 }, (_, k) => random01(seed, strip.salt * 17 + k));
+    const clump = (x) => {
+        const t = (x / W) * knots.length;
+        const i = Math.floor(t);
+        const f = t - i;
+        const s = f * f * (3 - 2 * f);
+        return knots[i % knots.length] * (1 - s) + knots[(i + 1) % knots.length] * s;
+    };
+    const puff = (cx, radius, rise) => {
+        const reach = Math.ceil(radius);
+        for (let dx = -reach; dx <= reach; dx++) {
+            const k = 1 - (dx / radius) ** 2;
+            if (k <= 0) continue;
+            const height = Math.min(H, Math.floor(rise * Math.sqrt(k)) + 1);
+            const col = (((cx + dx) % W) + W) % W;
+            top[col] = Math.min(top[col], H - height);
+        }
+    };
+    const averageWidth = (radiusMin + radiusMax) * 1.6;
+    const clouds = Math.round((cover * W) / averageWidth * 1.4);
+    for (let i = 0, placed = 0; i < clouds * 4 && placed < clouds; i++) {
+        const salt = strip.salt * 131 + i * 11;
+        const cx = Math.floor(random01(seed, salt) * W);
+        if (clump(cx) > cover + 0.35) continue;
+        placed++;
+        const radius = radiusMin + random01(seed, salt + 1) * (radiusMax - radiusMin);
+        const rise = Math.min(H - 1, radius * (0.32 + random01(seed, salt + 2) * 0.55));
+        puff(cx, radius, rise);
+        const lobes = 1 + Math.floor(random01(seed, salt + 3) * 4);
+        for (let lobe = 0; lobe < lobes; lobe++) {
+            const side = lobe % 2 === 0 ? 1 : -1;
+            const offset = side * radius * (0.55 + random01(seed, salt + 4 + lobe) * 0.5);
+            const size = radius * (0.45 + random01(seed, salt + 8 + lobe) * 0.3);
+            puff(Math.round(cx + offset), size, rise * (0.45 + random01(seed, salt + 12 + lobe) * 0.3));
+        }
+    }
+    // Stepped noise on the silhouettes: a 1-cell rise or fall per 3-cell run
+    // along each top so the domes break into billows.
+    for (let col = 0; col < W; col++) {
+        if (top[col] >= H - 2) continue;
+        const n = random01(seed, strip.salt * 97 + Math.floor(col / 3));
+        top[col] = Math.max(0, Math.min(H - 2, top[col] + (n > 0.72 ? -1 : n < 0.28 ? 1 : 0)));
+    }
+    // A covered sky lays a continuous stratus floor along the far strip only,
+    // so the nearer strips never read as stacked bands.
+    if (cover > 0.72 && strip.f === 0) {
+        const floor = Math.max(2, Math.round(H * (cover > 0.9 ? 0.4 : 0.25)));
+        for (let col = 0; col < W; col++) top[col] = Math.min(top[col], H - floor);
+    }
+    const underRows = Math.max(1, Math.round(H * 0.18));
+    const bytes = colors.map(rgb => rgb.map(channel => Math.round(clamp(channel) * 255)));
+    const small = document.createElement('canvas');
+    small.width = W;
+    small.height = H;
+    const sctx = small.getContext('2d');
+    const image = sctx.createImageData(W, H);
+    const data = image.data;
+    for (let col = 0; col < W; col++) {
+        const left = top[(col - 1 + W) % W];
+        const right = top[(col + 1) % W];
+        // A high sun (rimSide 0) lights only the tops: no side reaches in.
+        const sunward = rimSide < 0 ? left : rimSide > 0 ? right : -1;
+        const leeward = rimSide < 0 ? right : rimSide > 0 ? left : -1;
+        // Each cloud's own height sets its courses, so a low cloud keeps a
+        // lit top and a thin base instead of turning all underside.
+        const h = H - top[col];
+        const under = Math.min(underRows, Math.max(1, Math.round(h * 0.3)));
+        const crown = Math.max(1, Math.round(h * 0.3));
+        for (let row = top[col]; row < H; row++) {
+            const depth = row - top[col];
+            const seam = BAYER4[(row % 4) * 4 + (col % 4)] < 8;
+            let tone = 1;
+            if (row >= H - under) tone = 2;
+            else if (row === H - under - 1 && seam) tone = 2;
+            else if (rimSide === 0) {
+                // A high sun lights the upper third of every dome, a Bayer
+                // seam stepping it into the body.
+                if (depth < crown || (depth === crown && seam)) tone = 0;
+            } else if (row === top[col] ? sunward >= row : row < sunward) tone = 0;
+            else if (row < leeward && row !== top[col]) tone = 2;
+            const c = bytes[tone];
+            const o = (row * W + col) * 4;
+            data[o] = c[0];
+            data[o + 1] = c[1];
+            data[o + 2] = c[2];
+            data[o + 3] = 255;
+        }
+    }
+    sctx.putImageData(image, 0, 0);
+    if (cell === 1) return small;
+    const scaled = document.createElement('canvas');
+    scaled.width = W * cell;
+    scaled.height = H * cell;
+    const tctx = scaled.getContext('2d');
+    tctx.imageSmoothingEnabled = false;
+    tctx.drawImage(small, 0, 0, scaled.width, scaled.height);
+    releaseCanvasBackingStore(small);
+    return scaled;
+}
+
+// 5.8 — the upper half of a six-band ring (outer red → inner violet) on
+// `cell` px cells, each band one or more whole cells wide, the outer and
+// inner rims broken by a 4x4 Bayer threshold instead of a soft fade.
+function bakeRainbowStamp(radius, cell, colors) {
+    const cols = Math.ceil((radius * 2) / cell);
+    const rows = Math.ceil(radius / cell);
+    const bandWidth = Math.max(cell, Math.round((radius * 0.012) / cell) * cell);
+    const bytes = colors.map(rgb => rgb.map(channel => Math.round(clamp(channel) * 255)));
+    const small = document.createElement('canvas');
+    small.width = cols;
+    small.height = rows;
+    const sctx = small.getContext('2d');
+    const image = sctx.createImageData(cols, rows);
+    const data = image.data;
+    const last = bytes.length - 1;
+    for (let j = 0; j < rows; j++) {
+        for (let i = 0; i < cols; i++) {
+            const px = (i + 0.5) * cell - radius;
+            const py = (j + 0.5) * cell - radius;
+            const u = (radius - Math.hypot(px, py)) / bandWidth;
+            const order = BAYER4[(j % 4) * 4 + (i % 4)] / 16;
+            let band = Math.floor(u);
+            if (band < 0) {
+                if (u > -0.75 && order < 0.5 * (1 + u / 0.75)) band = 0;
+                else continue;
+            } else if (band > last) {
+                if (u < last + 1.75 && order < 0.5 * (1 - (u - last - 1) / 0.75)) band = last;
+                else continue;
+            }
+            const c = bytes[band];
+            const o = (j * cols + i) * 4;
+            data[o] = c[0];
+            data[o + 1] = c[1];
+            data[o + 2] = c[2];
+            data[o + 3] = 255;
+        }
+    }
+    sctx.putImageData(image, 0, 0);
+    const scaled = document.createElement('canvas');
+    scaled.width = cols * cell;
+    scaled.height = rows * cell;
+    const tctx = scaled.getContext('2d');
+    tctx.imageSmoothingEnabled = false;
+    tctx.drawImage(small, 0, 0, scaled.width, scaled.height);
+    releaseCanvasBackingStore(small);
+    return scaled;
 }
 
 function hashString(value) {

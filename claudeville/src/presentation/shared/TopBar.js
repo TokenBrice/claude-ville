@@ -16,6 +16,7 @@ import {
 } from '../../application/VillageState.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { eventShapeSvgPath } from './EventShapes.js';
+import { publishReservedRect } from './ReservedRects.js';
 import {
     DEFAULT_TOWN_BAND_VOICE,
     HUSH_DURATION_MS,
@@ -230,6 +231,11 @@ export class TopBar {
         this.frameAttention = frameAttention;
         this.chronicle = chronicle || null;
         this.spendLedger = spendLedger || null;
+        // V8 — the top bar is chrome over (or above) the World: moments,
+        // plates and director framing read its box as occluded screen.
+        this._unpublishReservedRect = publishReservedRect('top-bar', document.getElementById('topbar'), {
+            frame: document.getElementById('characterMode'),
+        });
         this.els = {
             root: document.getElementById('topbar'),
             tokens: document.getElementById('statTokens'),
@@ -1658,6 +1664,7 @@ export class TopBar {
         if (this._destroyed) return this._destroyPromise;
         this._destroyed = true;
         eventBus.off('atmosphere:updated', this._onAtmosphere);
+        this._unpublishReservedRect?.();
         this.els.attention?.remove();
         if (this.timeInterval) {
             clearInterval(this.timeInterval);

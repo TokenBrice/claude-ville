@@ -1,5 +1,7 @@
 import { materialClassId } from './GpuWorldPolicy.js';
 import { tileToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH } from '../Projection.js';
+import { landmarkFootprint } from '../FootprintField.js';
+import { ownerSlotFor } from '../LightSourceRegistry.js';
 import {
     atlasSourceRect,
     shouldUseAtlasForCategory,
@@ -9,6 +11,7 @@ import { paintCoastWaterMaterial } from '../CoastBake.js';
 import { GROUND_CLASS, paintGroundMaterial } from '../GroundBake.js';
 import { castLightingFor, structureCast, treeCast, TREE_CAST_ALPHA } from '../RakingLight.js';
 import { cacheEmitterRecords } from '../EmitterCuts.js';
+import { WALK_FRAMES } from '../SpriteSheet.js';
 
 const PILOT_PROP_IDS = Object.freeze(['prop.lantern', 'prop.runeBrazier', 'prop.bridgeLanternPost']);
 const TERRAIN_TILE_SOURCES = Object.freeze([
@@ -98,37 +101,27 @@ function sidecarFor(assets, id, kind = 'material') {
         || null;
 }
 
-// The material/occluder map has four packed bytes. Authored emissive RGB does
-// not fit beside material id, strength, and occluder height, so it remains a
-// separate frame-local RGBA channel while the existing packed map stays stable.
-export function packGpuSidecarPixels({ material = null, emissive = null, occluder = null, pixelCount = null } = {}) {
-    const largestChannel = Math.max(
-        Number(material?.length) || 0,
-        Number(emissive?.length) || 0,
-        Number(occluder?.length) || 0,
-    );
+// B.2 / V9 — the packed geometry map (flag 32 `packedGeometry`) from straight
+// RGBA material and occluder pixels: R material id (255 = no material), G
+// occluder height, B occlusion strength (0 = no geometry; an authored 0
+// packs as 1), A presence. It replaces the occluder companion, so it never
+// carries 2.3 surface codes; emissive stays its own RGBA channel.
+export function packGeometryPixels(material = null, occluder = null, pixelCount = null) {
     const requestedPixels = Number(pixelCount);
     const pixels = Number.isFinite(requestedPixels)
         ? Math.max(0, Math.floor(requestedPixels))
-        : Math.ceil(largestChannel / 4);
+        : Math.ceil(Math.max(Number(material?.length) || 0, Number(occluder?.length) || 0) / 4);
     const packed = new Uint8ClampedArray(pixels * 4);
-    const authoredEmissive = emissive ? new Uint8ClampedArray(pixels * 4) : null;
     for (let index = 0; index < packed.length; index += 4) {
-        packed[index] = material?.[index] || 0;
-        packed[index + 1] = emissive?.[index + 3] || 0;
-        // The packed map keeps material in R and emissive contribution in G;
-        // preserve the authored occluder R/G pair in B/A instead of reducing
-        // all four source bytes to one mask value.
-        packed[index + 2] = occluder?.[index] || 0;
-        packed[index + 3] = occluder?.[index + 1] || 0;
-        if (authoredEmissive) {
-            authoredEmissive[index] = emissive[index] || 0;
-            authoredEmissive[index + 1] = emissive[index + 1] || 0;
-            authoredEmissive[index + 2] = emissive[index + 2] || 0;
-            authoredEmissive[index + 3] = emissive[index + 3] || 0;
-        }
+        const materialPresent = (material?.[index + 3] || 0) > 0;
+        const geometryPresent = (occluder?.[index + 3] || 0) > 0;
+        if (!materialPresent && !geometryPresent) continue;
+        packed[index] = materialPresent ? material[index] : 255;
+        packed[index + 1] = geometryPresent ? occluder[index] : 0;
+        packed[index + 2] = geometryPresent ? Math.max(1, occluder[index + 1]) : 0;
+        packed[index + 3] = 255;
     }
-    return { packed, emissive: authoredEmissive };
+    return packed;
 }
 
 function packedLandmarkChannels(renderer, id, { crop = false } = {}) {
@@ -191,6 +184,11 @@ function paintTerrainClassMap(ctx, renderer, cached, scale, sources) {
     const colorFor = (name) => `rgba(${materialClassId(name)},0,0,1)`;
     ctx.fillStyle = colorFor('earth');
     ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    // Each tile diamond is filled as whole-pixel row spans, never an
+    // anti-aliased path: an AA edge blends two class ids into a third one
+    // (earth 6 over water 8 left cobble 7 along every water tile's rim,
+    // which the coast pass keeps as paving, so the map-diamond edge lit a
+    // dotted row of land-lit water, 3.3).
     const drawTiles = (tiles, material) => {
         ctx.fillStyle = colorFor(material);
         for (const key of tiles || []) {
@@ -201,13 +199,18 @@ function paintTerrainClassMap(ctx, renderer, cached, scale, sources) {
             const cy = (point.y - cached.bounds.y) * scale;
             const halfW = Math.max(1, TILE_HALF_WIDTH * scale + 0.5);
             const halfH = Math.max(1, TILE_HALF_HEIGHT * scale + 0.5);
-            ctx.beginPath();
-            ctx.moveTo(Math.round(cx), Math.round(cy - halfH));
-            ctx.lineTo(Math.round(cx + halfW), Math.round(cy));
-            ctx.lineTo(Math.round(cx), Math.round(cy + halfH));
-            ctx.lineTo(Math.round(cx - halfW), Math.round(cy));
-            ctx.closePath();
-            ctx.fill();
+            const x = Math.round(cx);
+            const midY = Math.round(cy);
+            const top = Math.round(cy - halfH);
+            const bottom = Math.round(cy + halfH);
+            const spanW = Math.round(cx + halfW) - x;
+            const reachUp = Math.max(1, midY - top);
+            const reachDown = Math.max(1, bottom - midY);
+            for (let y = top; y < bottom; y++) {
+                const centre = y + 0.5 - midY;
+                const span = Math.round(spanW * (1 - Math.abs(centre) / (centre < 0 ? reachUp : reachDown)));
+                if (span > 0) ctx.fillRect(x - span, y, span * 2, 1);
+            }
         }
     };
     for (const source of sources) {
@@ -317,15 +320,31 @@ function terrainMaterialSidecar(renderer, cached) {
     return canvas;
 }
 
+// B.2 — the resident path holds the terrain bake only as a texture: once the
+// GPU reports this bake's upload, the CPU canvas is released and a same-size
+// GPU-resident stand-in keys the record; if that texture is gone (context
+// loss, eviction) the stand-in is dropped and the canvas re-bakes here.
 function recordForTerrain(renderer) {
-    const cached = renderer?._getTerrainCache?.();
+    let cached = renderer?._getTerrainCache?.({ allowResident: true });
     if (!cached?.canvas || !cached?.bounds) return null;
+    const textureKey = `terrain:${renderer.terrainCacheKey || 'static'}`;
+    const revision = renderer.terrainCacheKey || null;
+    const uploaded = renderer.gpuWorld?.hasResidentTexture?.(textureKey, revision) === true;
+    if (cached.resident && !uploaded) {
+        renderer.dropTerrainResident?.();
+        cached = renderer._getTerrainCache();
+        if (!cached?.canvas) return null;
+    } else if (!cached.resident && uploaded && renderer.releaseTerrainCanvas) {
+        renderer.releaseTerrainCanvas();
+        cached = renderer._getTerrainCache({ allowResident: true });
+        if (!cached?.canvas) return null;
+    }
     const { canvas, bounds } = cached;
     const materialSource = terrainMaterialSidecar(renderer, cached);
     return {
         id: 'terrain:static',
         stableKey: 'terrain:static',
-        textureKey: `terrain:${renderer.terrainCacheKey || 'static'}`,
+        textureKey,
         source: canvas,
         materialSource,
         sidecarKey: 'terrain:material',
@@ -343,7 +362,7 @@ function recordForTerrain(renderer) {
         elevation: 0,
         emissive: 0,
         occluder: 0,
-        textureRevision: renderer.terrainCacheKey || null,
+        textureRevision: revision,
         sidecarRevision: renderer._gpuTerrainAuthoredMaterial?.revision
             || renderer._gpuTerrainMaterialSidecar?.revision
             || null,
@@ -516,6 +535,7 @@ function recordForBuilding(renderer, drawable, sequence) {
     const buildingType = drawable.building?.type || id.replace(/^building\./, '');
     const materialMeta = drawable.entry?.material || drawable.entry?.gpuMaterial || {};
     const materialName = materialMeta.class || drawable.entry?.materialClass || MATERIAL_BY_BUILDING[buildingType] || 'stone';
+    const footprint = drawable.building ? landmarkFootprint(drawable.building) : null;
     // V8 — landmark emission follows the work tier (isWorkingVisitor counts +
     // observed-tool recency), never idle, seated or passing bodies.
     const workTier = renderer?.buildingRenderer?._workTierFor?.(drawable.building);
@@ -572,6 +592,15 @@ function recordForBuilding(renderer, drawable, sequence) {
         // atlas batch.
         paletteRamp: buildingType === 'command',
         occluder: finite(materialMeta.occluder, 0.86),
+        // V5 / V9 — the landmark's analytic receiver geometry (2.1): its
+        // footprint's front corner; a pixel above the front edges is a wall
+        // facing its side's face, one in front of them an apron lit as ground.
+        // `surfaceCode` (2.3) says the occluder companion carries true height
+        // in R and the authored face/height code in B, which override it.
+        footY: footprint ? Math.round(footprint.front.y) : undefined,
+        frontCornerX: footprint ? Math.round(footprint.front.x) : undefined,
+        frontCornerY: footprint ? Math.round(footprint.front.y) : undefined,
+        surfaceCode: (drawable.entry || assets.getEntry?.(id))?.surfaceCode === true,
         landmarkId: GPU_LANDMARK_IDS[buildingType] || 0,
         textureRevision: assets.assetVersion || null,
         sidecarRevision: useAtlas && atlasFrame?.atlas
@@ -581,7 +610,119 @@ function recordForBuilding(renderer, drawable, sequence) {
         sourceKind: useAtlas ? 'atlas' : 'individual',
     };
     const shadows = buildingShadowRecords(renderer, drawable, sequence);
-    return shadows.length ? [...shadows, record] : record;
+    const glass = glassPatchRecord(renderer, drawable, record, split ? horizon : null, front);
+    const parts = buildingPartRecords(renderer, drawable, record, sequence);
+    if (!shadows.length && !glass && !parts.length) return record;
+    const out = glass ? [...shadows, record, glass] : [...shadows, record];
+    for (let index = 0; index < parts.length; index++) out.push(parts[index]);
+    return out;
+}
+
+// 6.1 / 6.2 — one small record per drawn manifest layer (static overlay such
+// as the Pharos lamp or the Portal's rune brazier, active frame-strip part,
+// door or cycled emitter), right after its building record (and its glass
+// patch): the same painter depth and split half (stampPainterDepth gives
+// every record of the drawable its sortY), the frame
+// BuildingSprite.partDrawsFor picks for the Canvas blit, and channel strips
+// cropped from the base's own sidecars so the part shades exactly like the
+// texels it replaces (an overlay emits its own authored albedo instead). A
+// gated-off restIsBase part emits nothing. A `fixture` layer (the Pharos
+// lamp and lens, M22) emits through no occupancy gate.
+const NO_PART_RECORDS = Object.freeze([]);
+
+function buildingPartRecords(renderer, drawable, base, sequence) {
+    const buildings = renderer?.buildingRenderer;
+    if (!buildings?.partDrawsFor || !drawable?.entry?.layers) return NO_PART_RECORDS;
+    const split = drawable.kind === 'building-back'
+        ? 'back'
+        : drawable.kind === 'building-front' ? 'front' : 'whole';
+    const scratch = renderer._gpuPartDrawScratch || (renderer._gpuPartDrawScratch = []);
+    const draws = buildings.partDrawsFor(drawable.entry, drawable.building, drawable.wx, drawable.wy,
+        split, drawable.horizonY ?? null, scratch);
+    if (!draws.length) return NO_PART_RECORDS;
+    const out = [];
+    for (let index = 0; index < draws.length; index++) {
+        const d = draws[index];
+        const channels = buildings.partChannelsFor?.(drawable.entry, d) || null;
+        const id = `${base.id}:part:${d.name}`;
+        out.push({
+            id,
+            stableKey: id,
+            textureKey: d.textureKey,
+            sidecarKey: `${d.textureKey}:channels`,
+            source: d.image,
+            materialSource: channels?.material || null,
+            emissiveSource: channels?.emissive || null,
+            occluderSource: channels?.occluder || null,
+            sourceWidth: d.image.width,
+            sourceHeight: d.image.height,
+            sx: d.sx,
+            sy: d.sy,
+            sw: d.sw,
+            sh: d.sh,
+            x: d.x,
+            y: d.y,
+            width: d.sw,
+            height: d.sh,
+            material: d.materialClass ? materialClassId(d.materialClass) : base.material,
+            elevation: base.elevation,
+            emissive: channels?.material ? base.emissive : 0,
+            emissiveGate: d.fixture ? 1 : base.emissiveGate,
+            paletteRamp: base.paletteRamp,
+            occluder: base.occluder,
+            landmarkId: base.landmarkId,
+            textureRevision: d.textureKey,
+            sidecarRevision: channels?.key || d.textureKey,
+            sequence: sequence + (index + 2) / 1000,
+            sourceKind: 'individual',
+        });
+    }
+    return out;
+}
+
+// 6.3 — the landmark's unlit panes (BuildingSprite.glassPatchFor, RoomGlass):
+// each dark room's own unlit albedo drawn on the same texels right after the
+// landmark, with no emissive channel, so an unoccupied room — and every pane
+// by day (M15) — shows unlit slate glass instead of the lit sidecar.
+function glassPatchRecord(renderer, drawable, record, horizon, front) {
+    const patch = renderer?.buildingRenderer?.glassPatchFor?.(drawable.building);
+    if (!patch) return null;
+    let sy = 0;
+    let sh = patch.h;
+    if (horizon != null) {
+        const cut = Math.max(0, Math.min(patch.h, horizon - patch.top));
+        if (front) sy = cut;
+        sh = front ? patch.h - cut : cut;
+        if (sh <= 0) return null;
+    }
+    const spriteTop = record.y - (horizon != null && front ? horizon : 0);
+    const id = drawable.entry.id;
+    const version = renderer.assets?.assetVersion || '';
+    return {
+        ...record,
+        id: `${record.id}:glass`,
+        stableKey: `${record.stableKey}:glass`,
+        textureKey: `${id}:glass`,
+        sidecarKey: `${id}:glass`,
+        source: patch.canvas,
+        materialSource: patch.channels?.material || null,
+        emissiveSource: null,
+        occluderSource: patch.channels?.occluder || null,
+        sourceWidth: patch.w,
+        sourceHeight: patch.h,
+        sx: 0,
+        sy,
+        sw: patch.w,
+        sh,
+        x: record.x + patch.left,
+        y: spriteTop + patch.top + sy,
+        width: patch.w,
+        height: sh,
+        emissive: 0,
+        textureRevision: `${version}:${patch.revision}`,
+        sidecarRevision: `${version}:glass`,
+        sourceKind: 'individual',
+    };
 }
 
 // A prop's cached image: its own padded cache canvas, or for a tree the shared
@@ -711,6 +852,9 @@ function recordForProp(renderer, drawable, sequence) {
         y: destY,
         width: destW,
         height: destH,
+        // V5 — a prop (split halves and columns alike) receives light at its
+        // own ground line, not its painter sort.
+        footY: Math.round(finite(sprite.y)),
         material: materialClassId(materialName),
         elevation: materialName === 'foliage' ? 0.64 : elevated > 70 ? 0.58 : 0.34,
         emissive: emissiveSource ? 0 : (materialName === 'fire' ? 0.35 : 0),
@@ -731,6 +875,14 @@ function recordsForAgent(drawable, sequence) {
     if (!sprite) return [];
     const direct = sprite.getGpuWorldRecords?.() || sprite._gpuWorldRecords || sprite._gpuFrameRecord;
     const records = Array.isArray(direct) ? direct : direct ? [direct] : [];
+    // V5 / V9 — a body receives light at its own foot (V7's placement value,
+    // never a painter sort pinned behind a building) and carries its owner's
+    // integer slot, so an attention light lights only its own body (2.5). A
+    // body has no front corner (frontCornerY stays -1): its frontCornerX
+    // carries its vertical axis, around which the loop wraps a lamp-side fill.
+    const footY = Math.round(Number.isFinite(sprite._placeY) ? sprite._placeY : finite(sprite.y));
+    const axisX = Math.round(Number.isFinite(sprite._placeX) ? sprite._placeX : finite(sprite.x));
+    const ownerSlot = ownerSlotFor(sprite.agent?.id);
     const baseRecords = records.map((record, index) => ({
         ...record,
         id: record.id || `agent:${sprite.agent?.id || sequence}:${index}`,
@@ -739,6 +891,9 @@ function recordsForAgent(drawable, sequence) {
         material: record.material ?? materialClassId(gpuMaterialNameForProvider(sprite.agent?.provider)),
         elevation: record.elevation ?? 0.52,
         occluder: record.occluder ?? 0.58,
+        footY: record.footY ?? footY,
+        frontCornerX: record.frontCornerX ?? axisX,
+        ownerSlot: record.ownerSlot ?? ownerSlot,
         sequence: sequence + index / 100,
     }));
     if (!baseRecords.length) return baseRecords;
@@ -749,11 +904,23 @@ function recordsForAgent(drawable, sequence) {
     return ground.length ? [...ground, ...baseRecords] : baseRecords;
 }
 
+// B.2 — the agent atlases are CPU-backed. Their sources (composed and LOD
+// sheets, sidecars, strips) are CPU canvases or images, so a GPU-backed atlas
+// made Chrome keep a GPU copy of every source it ever drew (~2.6 MB per
+// composed sheet, 1.5 MB per LOD sheet in the GPU process), and its sub-rect
+// texture patches read the GPU canvas back. The context is bound here, with
+// the attribute, before any other getContext call can pick the backing.
+function createAgentAtlasCanvas() {
+    const atlas = document.createElement('canvas');
+    atlas.getContext?.('2d', { alpha: true, willReadFrequently: true });
+    return atlas;
+}
+
 function ensureAgentChannelAtlas(renderer, property, width, height, state) {
     let atlas = renderer[property];
     let resized = false;
     if (!atlas && typeof document !== 'undefined') {
-        atlas = document.createElement('canvas');
+        atlas = createAgentAtlasCanvas();
         renderer[property] = atlas;
         resized = true;
     }
@@ -775,6 +942,13 @@ function ensureAgentChannelAtlas(renderer, property, width, height, state) {
 function drawAgentChannelFrame(ctx, record, channel, x, y) {
     const source = record[channel];
     if (!source) return;
+    // B.2 — an equipped body's channel companions keep the unpadded sheet
+    // layout: its cell lands at the pad offset inside the padded slot.
+    const rect = record.channelRect;
+    if (rect) {
+        ctx.drawImage(source, rect.sx, rect.sy, rect.sw, rect.sh, x + rect.dx, y + rect.dy, rect.sw, rect.sh);
+        return;
+    }
     const srcW = source.width || 0;
     const srcH = source.height || 0;
     if (srcW === record.sw && srcH === record.sh) {
@@ -814,75 +988,223 @@ function drawAgentChannelAtlas(atlas, records, slots, columns, cell, channel) {
     }
 }
 
-function buildAgentAtlasTextureUpdates(renderer, poolProperty, records, slots, columns, cell, channel) {
+// B.2 — a redrawn slot uploads straight from its atlas canvas as a sub-rect
+// patch (`sx`/`sy`), so no per-agent copy canvas is kept per channel.
+function buildAgentAtlasTextureUpdates(atlas, records, slots, columns, cell) {
     const updates = [];
-    if (!records.length || typeof document === 'undefined') return updates;
-    const pool = renderer[poolProperty] ||= new Map();
-    const liveIds = new Set();
+    if (!atlas) return updates;
     for (const record of records) {
-        liveIds.add(record.id);
-        let canvas = pool.get(record.id);
-        if (!canvas) {
-            canvas = document.createElement('canvas');
-            pool.set(record.id, canvas);
-        }
-        if (canvas.width !== cell || canvas.height !== cell) {
-            canvas.width = cell;
-            canvas.height = cell;
-        }
-        const ctx = canvas.getContext('2d', { alpha: true });
-        if (!ctx) continue;
-        ctx.imageSmoothingEnabled = false;
-        ctx.clearRect(0, 0, cell, cell);
-        drawAgentChannelFrame(ctx, record, channel, 0, 0);
         const slot = slots.get(record.id) || 0;
-        updates.push({
-            x: (slot % columns) * cell,
-            y: Math.floor(slot / columns) * cell,
-            width: cell,
-            height: cell,
-            source: canvas,
-        });
-    }
-    for (const id of pool.keys()) {
-        if (!liveIds.has(id) && !slots.has(id)) pool.delete(id);
+        const x = (slot % columns) * cell;
+        const y = Math.floor(slot / columns) * cell;
+        updates.push({ x, y, sx: x, sy: y, width: cell, height: cell, source: atlas });
     }
     return updates;
 }
 
-export function packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled = true) {
-    const agentRecords = records.filter(record => String(record.id || '').startsWith('agent:'));
-    const occluderFrames = renderer._gpuAgentOccluderFrames ||= new Map();
-    const liveAgentIds = renderer._gpuAgentOccluderLiveIds ||= new Set();
-    liveAgentIds.clear();
-    for (const record of agentRecords) liveAgentIds.add(record.id);
-    for (const id of occluderFrames.keys()) {
-        if (!liveAgentIds.has(id)) occluderFrames.delete(id);
+// 4.7 — full-rate gait on the resident path. A walking, on-screen, non-LOD
+// body (its record carries `walkStrip`, built by AgentGpuOverlayRenderer)
+// holds a strip of WALK_FRAMES cells in a band below the slot grid, and each
+// frame samples `stripX + frame * cell`. A strip cell is copied and uploaded
+// the first time its frame shows, so a strip costs at most one cell upload
+// per frame change and none once the stride has cycled; it refills only when
+// its key (direction, tool, sheet, channels, pose) moves. Idle, posed and
+// crowd-LOD bodies keep their single slot on the 125 ms cadence. The band
+// grows in quanta, capped by count and by pixels per atlas (albedo and every
+// channel atlas share the geometry), so the agent atlases stay a bounded
+// share of the 160 MiB texture cache.
+const WALK_STRIP_CAP = 24;
+const WALK_STRIP_QUANTUM = 4;
+const WALK_STRIP_BUDGET_PX = 2 * 1024 * 1024;
+
+function walkStripEligible(record, cell) {
+    const strip = record.walkStrip;
+    if (!strip || strip.cells?.length !== WALK_FRAMES) return false;
+    if (!Number.isInteger(strip.frame) || strip.frame < 0 || strip.frame >= WALK_FRAMES) return false;
+    for (let frame = 0; frame < WALK_FRAMES; frame++) {
+        const source = strip.cells[frame];
+        if (!source?.source || !(source.sw <= cell) || !(source.sh <= cell)) return false;
     }
-    const restoreOccluder = occluderChannelEnabled && renderer._gpuAgentOccluderSkipped === true;
-    renderer._gpuAgentOccluderSkipped = !occluderChannelEnabled;
+    return true;
+}
+
+function walkStripCapacity(renderer, eligibleCount, cell, rosterChanged) {
+    const limit = Math.min(WALK_STRIP_CAP, Math.floor(WALK_STRIP_BUDGET_PX / (WALK_FRAMES * cell * cell)));
+    const sameCell = renderer._gpuAgentStripCell === cell;
+    let capacity = rosterChanged || !sameCell ? 0 : renderer._gpuAgentStripCapacity || 0;
+    const needed = Math.min(limit, eligibleCount);
+    if (needed > capacity) capacity = Math.min(limit, Math.ceil(needed / WALK_STRIP_QUANTUM) * WALK_STRIP_QUANTUM);
+    if (capacity !== renderer._gpuAgentStripCapacity || !sameCell || !renderer._gpuAgentStrips) {
+        renderer._gpuAgentStrips = Array.from({ length: capacity }, () => ({ owner: null, key: '', filled: 0, used: 0 }));
+        renderer._gpuAgentStripOwners = new Map();
+    }
+    renderer._gpuAgentStripCapacity = capacity;
+    renderer._gpuAgentStripCell = cell;
+    return capacity;
+}
+
+// Holders keep their strip while they walk (a reassigned strip refills);
+// newcomers take a never-used or least-recently-used free strip, and an
+// action-needed, selected or hovered walker may displace an ambient one.
+function assignWalkStrips(renderer, eligible) {
+    const assigned = renderer._gpuAgentStripAssigned ||= new Map();
+    assigned.clear();
+    const strips = renderer._gpuAgentStrips || [];
+    if (!strips.length || !eligible.length) return assigned;
+    const owners = renderer._gpuAgentStripOwners ||= new Map();
+    const tick = renderer._gpuAgentStripTick = (renderer._gpuAgentStripTick || 0) + 1;
+    const taken = new Set();
+    const wanting = [];
+    for (const record of eligible) {
+        const index = owners.get(record.id);
+        if (index !== undefined && strips[index]?.owner === record.id) {
+            assigned.set(record.id, index);
+            taken.add(index);
+        } else {
+            wanting.push(record);
+        }
+    }
+    if (wanting.length) {
+        const free = [];
+        for (let index = 0; index < strips.length; index++) if (!taken.has(index)) free.push(index);
+        free.sort((a, b) => (strips[a].owner ? 1 : 0) - (strips[b].owner ? 1 : 0) || strips[a].used - strips[b].used);
+        // Past capacity the walkers nearest the middle of the view win; the
+        // rest keep the slot cadence.
+        const camera = renderer.camera;
+        const midX = (renderer._screenWidth?.() || 0) / 2;
+        const midY = (renderer._screenHeight?.() || 0) / 2;
+        const centreDistance = (record) => {
+            const point = camera?.worldToScreen?.(finite(record.x) + finite(record.width) / 2, finite(record.y) + finite(record.height));
+            return point ? Math.hypot(point.x - midX, point.y - midY) : 0;
+        };
+        if (wanting.length > free.length) {
+            for (const record of wanting) record._stripDistance = centreDistance(record);
+        }
+        wanting.sort((a, b) => (b.urgentPose ? 1 : 0) - (a.urgentPose ? 1 : 0)
+            || (a._stripDistance || 0) - (b._stripDistance || 0));
+        for (const record of wanting) {
+            let index = free.shift();
+            if (index === undefined && record.urgentPose) {
+                const ambient = eligible.find(other => !other.urgentPose && assigned.has(other.id));
+                if (ambient) {
+                    index = assigned.get(ambient.id);
+                    assigned.delete(ambient.id);
+                }
+            }
+            if (index === undefined) break;
+            const strip = strips[index];
+            if (strip.owner) owners.delete(strip.owner);
+            strip.owner = record.id;
+            strip.key = '';
+            strip.filled = 0;
+            owners.set(record.id, index);
+            assigned.set(record.id, index);
+        }
+    }
+    for (const index of assigned.values()) strips[index].used = tick;
+    return assigned;
+}
+
+function walkStripOrigin(index, layout) {
+    return {
+        x: (index % layout.stripsPerRow) * WALK_FRAMES * layout.cell,
+        y: (layout.slotRows + Math.floor(index / layout.stripsPerRow)) * layout.cell,
+    };
+}
+
+// One freshly filled strip cell as a sub-rect patch read straight from its
+// atlas canvas (GpuWorldRenderer._textureFor honours `sx/sy`).
+function walkStripCellUpdate(atlas, x, y, cell) {
+    return { x, y, sx: x, sy: y, width: cell, height: cell, source: atlas };
+}
+
+function fillWalkStrips(renderer, agentRecords, assigned, layout) {
+    const strips = renderer._gpuAgentStrips || [];
+    const { cell, atlas, resized, channels } = layout;
+    // A new or cleared canvas empties every strip, held or waiting for its
+    // walker to return; a holder's slot was not redrawn into it either, so
+    // the slot repacks when the body returns to it.
+    if (resized || channels.some(channel => channel.state.resized)) {
+        for (const strip of strips) strip.filled = 0;
+        for (const id of assigned.keys()) renderer._gpuAgentAtlasFrameKeys?.delete(id);
+    }
+    if (!assigned.size) return;
+    const ctx = atlas.getContext('2d', { alpha: true });
+    ctx.imageSmoothingEnabled = false;
+    let fills = 0;
+    let channelFills = 0;
+    for (const record of agentRecords) {
+        const index = assigned.get(record.id);
+        if (index === undefined) continue;
+        const strip = strips[index];
+        // The walk-strip key moves whenever a probed cell's sheet or channel
+        // source moves; a channel atlas that appears arrives as a resize.
+        const key = [
+            record.textureKey,
+            record.textureRevision,
+            record.walkStrip.key,
+            record.poseKey || '',
+        ].join(':');
+        if (strip.key !== key) {
+            strip.key = key;
+            strip.filled = 0;
+        }
+        const frame = record.walkStrip.frame;
+        const bit = 1 << frame;
+        if (strip.filled & bit) continue;
+        const source = record.walkStrip.cells[frame];
+        const origin = walkStripOrigin(index, layout);
+        const x = origin.x + frame * cell;
+        ctx.clearRect(x, origin.y, cell, cell);
+        ctx.drawImage(source.source, source.sx, source.sy, source.sw, source.sh, x, origin.y, source.sw, source.sh);
+        if (!resized) {
+            renderer._gpuAgentAlbedoTextureUpdates.push(walkStripCellUpdate(atlas, x, origin.y, cell));
+        }
+        for (const channel of channels) {
+            const channelAtlas = channel.state.atlas;
+            if (!channelAtlas) continue;
+            const channelCtx = channelAtlas.getContext('2d', { alpha: true });
+            channelCtx.imageSmoothingEnabled = false;
+            channelCtx.clearRect(x, origin.y, cell, cell);
+            drawAgentChannelFrame(channelCtx, source, channel.name, x, origin.y);
+            if (!channel.state.resized) {
+                renderer[channel.updates].push(walkStripCellUpdate(channelAtlas, x, origin.y, cell));
+            }
+            channelFills++;
+        }
+        strip.filled |= bit;
+        fills++;
+    }
+    if (fills) renderer._gpuAgentFrameAtlasRevision++;
+    if (channelFills) renderer._gpuAgentSidecarRevision = (renderer._gpuAgentSidecarRevision || 0) + 1;
+}
+
+// B.2 — agent material and occluder travel as one packed geometry channel
+// (V9 flag 32: R material id, G height, B strength, A presence), so the atlas
+// keeps two channel canvases (packed geometry, emissive) beside the albedo.
+// The occluder channel's frame toggle gates the packed geometry in the shader
+// (`u_packedGeometry`), so the channel never needs a skip/restore repack.
+export function packGpuAgentFrameAtlas(renderer, records) {
+    const agentRecords = records.filter(record => String(record.id || '').startsWith('agent:'));
     if (!agentRecords.length || typeof document === 'undefined') return records;
     let cell = 1;
     let hasMaterialSource = false;
     let hasEmissiveSource = false;
-    let hasOccluderSource = false;
     for (const record of agentRecords) {
         cell = Math.max(cell, Math.ceil(Math.max(record.sw || 1, record.sh || 1)));
         hasMaterialSource ||= Boolean(record.materialSource);
         hasEmissiveSource ||= Boolean(record.emissiveSource);
-        hasOccluderSource ||= Boolean(record.occluderSource);
     }
     const capacity = Math.max(agentRecords.length, renderer?.agentSprites?.size || 0, 1);
     const columns = Math.max(1, Math.ceil(Math.sqrt(capacity)));
     const rows = Math.max(1, Math.ceil(capacity / columns));
-    const width = columns * cell;
-    const height = rows * cell;
     const slots = renderer._gpuAgentAtlasSlots ||= new Map();
     const roster = [...(renderer?.agentSprites?.keys?.() || [])].sort();
     const rosterSignature = roster.join('|');
     let nextSlot = renderer._gpuAgentAtlasNextSlot || 0;
     let newSlot = false;
-    if (rosterSignature !== renderer._gpuAgentAtlasRosterSignature) {
+    const rosterChanged = rosterSignature !== renderer._gpuAgentAtlasRosterSignature;
+    if (rosterChanged) {
         slots.clear();
         roster.forEach((id, index) => slots.set(`agent:${id}`, index));
         nextSlot = roster.length;
@@ -897,10 +1219,21 @@ export function packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled
         newSlot = true;
     }
     renderer._gpuAgentAtlasNextSlot = nextSlot;
+    // 4.7 — walk strips sit in a band below the slot grid, WALK_FRAMES cells
+    // wide; the band exists only while someone walks on screen.
+    const stripCandidates = agentRecords.filter(record => walkStripEligible(record, cell));
+    const stripCapacity = walkStripCapacity(renderer, stripCandidates.length, cell, rosterChanged);
+    const atlasColumns = stripCapacity ? Math.max(columns, WALK_FRAMES) : columns;
+    const stripsPerRow = Math.max(1, Math.floor(atlasColumns / WALK_FRAMES));
+    const stripRows = stripCapacity ? Math.ceil(stripCapacity / stripsPerRow) : 0;
+    const width = atlasColumns * cell;
+    const height = (rows + stripRows) * cell;
+    const stripped = assignWalkStrips(renderer, stripCandidates);
+    const stripLayout = { cell, slotRows: rows, stripsPerRow };
     let atlas = renderer._gpuAgentFrameAtlas;
     let resized = false;
     if (!atlas || atlas.width !== width || atlas.height !== height) {
-        atlas = document.createElement('canvas');
+        atlas = createAgentAtlasCanvas();
         atlas.width = width;
         atlas.height = height;
         renderer._gpuAgentFrameAtlas = atlas;
@@ -918,6 +1251,11 @@ export function packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled
     const dirtyRecords = [];
     for (let index = 0; index < agentRecords.length; index++) {
         const record = agentRecords[index];
+        if (stripped.has(record.id)) {
+            // A strip holder skips the slot cadence; its slot is left as is.
+            desiredKeys[index] = `strip:${record.id}`;
+            continue;
+        }
         const key = [
             record.id,
             record.textureKey,
@@ -929,7 +1267,6 @@ export function packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled
             record.channelRevision ?? record.sidecarRevision,
             record.materialSource ? 'material' : '',
             record.emissiveSource ? 'emissive' : '',
-            record.occluderSource ? 'occluder' : '',
             record.poseKey || '',
         ].join(':');
         desiredKeys[index] = key;
@@ -953,13 +1290,9 @@ export function packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled
         emissiveAtlasState.atlas = null;
         emissiveAtlasState.resized = false;
     }
-    const occluderAtlasState = renderer._gpuAgentOccluderAtlasState ||= { atlas: null, resized: false };
-    if (hasOccluderSource && occluderChannelEnabled) ensureAgentChannelAtlas(renderer, '_gpuAgentOccluderAtlas', width, height, occluderAtlasState);
-    else { occluderAtlasState.atlas = null; occluderAtlasState.resized = false; }
-    const channelsChanged = occluderAtlasState.resized || changed
+    const channelsChanged = changed
         || materialAtlasState.resized
-        || emissiveAtlasState.resized
-        || occluderAtlasState.resized;
+        || emissiveAtlasState.resized;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const cadenceElapsed = now - (renderer._gpuAgentAtlasUpdatedAt || 0) >= 125;
     // Direction/tool changes and individually important actors must keep body
@@ -974,12 +1307,12 @@ export function packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled
     renderer._gpuAgentAlbedoTextureUpdates = [];
     renderer._gpuAgentMaterialTextureUpdates = [];
     renderer._gpuAgentEmissiveTextureUpdates = [];
-    renderer._gpuAgentOccluderTextureUpdates = [];
     if (changed && (resized || newSlot || missingFrame || cadenceElapsed || immediate.size)) {
         const ctx = atlas.getContext('2d', { alpha: true });
         ctx.imageSmoothingEnabled = false;
         for (let index = 0; index < agentRecords.length; index++) {
             const record = agentRecords[index];
+            if (stripped.has(record.id)) continue;
             if (!resized && frameKeys.get(record.id) === desiredKeys[index]) continue;
             if (!resized && !newSlot && !missingFrame && !cadenceElapsed && !immediate.has(record)) continue;
             const slot = slots.get(record.id) || 0;
@@ -999,31 +1332,12 @@ export function packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled
             );
             frameKeys.set(record.id, desiredKeys[index]);
             poses.set(record.id, record.poseKey);
-            let geometry = occluderFrames.get(record.id);
-            if (!geometry) {
-                geometry = {};
-                occluderFrames.set(record.id, geometry);
-            }
-            geometry.id = record.id;
-            geometry.occluderSource = record.occluderSource;
-            geometry.sx = record.sx;
-            geometry.sy = record.sy;
-            geometry.sw = record.sw;
-            geometry.sh = record.sh;
         }
         renderer._gpuAgentFrameAtlasSignature = desiredKeys.slice().sort().join('|');
         renderer._gpuAgentFrameAtlasRevision++;
         if (cadenceElapsed || resized || newSlot || missingFrame) renderer._gpuAgentAtlasUpdatedAt = now;
         if (!resized) {
-            renderer._gpuAgentAlbedoTextureUpdates = buildAgentAtlasTextureUpdates(
-                renderer,
-                '_gpuAgentAlbedoUpdateCanvases',
-                dirtyRecords,
-                slots,
-                columns,
-                cell,
-                'source',
-            );
+            renderer._gpuAgentAlbedoTextureUpdates = buildAgentAtlasTextureUpdates(atlas, dirtyRecords, slots, columns, cell);
         }
     }
     const packNow = resized
@@ -1032,17 +1346,8 @@ export function packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled
         || cadenceElapsed
         || immediate.size > 0
         || materialAtlasState.resized
-        || emissiveAtlasState.resized
-        || occluderAtlasState.resized;
+        || emissiveAtlasState.resized;
     if (channelsChanged && packNow) {
-        if (occluderChannelEnabled && !restoreOccluder) {
-            const geometryRecords = occluderAtlasState.resized ? agentRecords : dirtyRecords;
-            drawAgentChannelAtlas(occluderAtlasState.atlas, geometryRecords, slots, columns, cell, 'occluderSource');
-            if (!occluderAtlasState.resized && occluderAtlasState.atlas) {
-                renderer._gpuAgentOccluderTextureUpdates = buildAgentAtlasTextureUpdates(renderer,
-                    '_gpuAgentOccluderUpdateCanvases', geometryRecords, slots, columns, cell, 'occluderSource');
-            }
-        }
         const materialRecords = materialAtlasState.resized ? agentRecords : dirtyRecords;
         const emissiveRecords = emissiveAtlasState.resized ? agentRecords : dirtyRecords;
         drawAgentChannelAtlas(
@@ -1064,40 +1369,31 @@ export function packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled
         renderer._gpuAgentSidecarRevision = (renderer._gpuAgentSidecarRevision || 0) + 1;
         if (!materialAtlasState.resized && materialAtlasState.atlas) {
             renderer._gpuAgentMaterialTextureUpdates = buildAgentAtlasTextureUpdates(
-                renderer,
-                '_gpuAgentMaterialUpdateCanvases',
-                materialRecords,
-                slots,
-                columns,
-                cell,
-                'materialSource',
-            );
+                materialAtlasState.atlas, materialRecords, slots, columns, cell);
         }
         if (!emissiveAtlasState.resized && emissiveAtlasState.atlas) {
             renderer._gpuAgentEmissiveTextureUpdates = buildAgentAtlasTextureUpdates(
-                renderer,
-                '_gpuAgentEmissiveUpdateCanvases',
-                emissiveRecords,
-                slots,
-                columns,
-                cell,
-                'emissiveSource',
-            );
+                emissiveAtlasState.atlas, emissiveRecords, slots, columns, cell);
         }
     }
-    if (restoreOccluder && occluderAtlasState.atlas) {
-        const ctx = occluderAtlasState.atlas.getContext('2d', { alpha: true });
-        ctx.clearRect(0, 0, width, height);
-        drawAgentChannelAtlas(occluderAtlasState.atlas, occluderFrames.values(), slots, columns, cell, 'occluderSource');
-        renderer._gpuAgentSidecarRevision = (renderer._gpuAgentSidecarRevision || 0) + 1;
-    }
+    fillWalkStrips(renderer, agentRecords, stripped, {
+        ...stripLayout,
+        atlas,
+        resized,
+        channels: [
+            { name: 'materialSource', state: materialAtlasState, updates: '_gpuAgentMaterialTextureUpdates' },
+            { name: 'emissiveSource', state: emissiveAtlasState, updates: '_gpuAgentEmissiveTextureUpdates' },
+        ],
+    });
     for (const record of agentRecords) {
         const slot = slots.get(record.id) || 0;
+        const stripIndex = stripped.get(record.id);
+        const stripOrigin = stripIndex === undefined ? null : walkStripOrigin(stripIndex, stripLayout);
         record.source = atlas;
         record.sourceWidth = width;
         record.sourceHeight = height;
-        record.sx = (slot % columns) * cell;
-        record.sy = Math.floor(slot / columns) * cell;
+        record.sx = stripOrigin ? stripOrigin.x + record.walkStrip.frame * cell : (slot % columns) * cell;
+        record.sy = stripOrigin ? stripOrigin.y : Math.floor(slot / columns) * cell;
         record.textureKey = 'agent-frame-atlas';
         record.textureRevision = renderer._gpuAgentFrameAtlasRevision;
         record.textureUpdates = renderer._gpuAgentAlbedoTextureUpdates;
@@ -1107,8 +1403,7 @@ export function packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled
         // record values without inferring emission from albedo.
         record.materialSource = materialAtlasState.atlas;
         record.emissiveSource = emissiveAtlasState.atlas;
-        record.occluderSource = occluderAtlasState.atlas;
-        record.occluderTextureUpdates = renderer._gpuAgentOccluderTextureUpdates;
+        record.packedGeometry = Boolean(materialAtlasState.atlas);
         record.sidecarKey = materialAtlasState.atlas || emissiveAtlasState.atlas
             ? 'agent-frame-atlas:channels'
             : '';
@@ -1226,7 +1521,7 @@ function stampPainterDepth(records, from, drawable) {
     }
 }
 
-export function buildGpuWorldRecords(renderer, { drawables = [], occluderChannelEnabled = true } = {}) {
+export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     const decision = decideAtlasCategories(renderer, drawables);
     if (renderer) renderer._gpuAtlasDecision = decision;
     const records = renderer?._gpuWorldRecordScratch || [];
@@ -1248,7 +1543,9 @@ export function buildGpuWorldRecords(renderer, { drawables = [], occluderChannel
         records.push({ id: 'ground:semantics', source: cue, textureKey: 'ground:semantics',
             x: -camera.renderOffsetX / camera.zoom, y: -camera.renderOffsetY / camera.zoom,
             width: renderer._semanticGroundViewport.width / camera.zoom, height: renderer._semanticGroundViewport.height / camera.zoom,
-            textureRevision: renderer._semanticGroundRevision, elevation: 0, occluder: 0, screenSpace: true });
+            textureRevision: renderer._semanticGroundRevision, elevation: 0, occluder: 0, screenSpace: true,
+            // B.2 — the redraw's dirty rect (null = full upload).
+            textureUpdates: renderer._semanticGroundUpdates || null });
     }
     let sequence = 0;
     for (const drawable of drawables || []) {
@@ -1273,7 +1570,7 @@ export function buildGpuWorldRecords(renderer, { drawables = [], occluderChannel
         stampPainterDepth(records, from, drawable);
         sequence++;
     }
-    packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled);
+    packGpuAgentFrameAtlas(renderer, records);
     const ordered = renderer?._gpuWorldOrderedRecords || [];
     ordered.length = 0;
     for (let index = 0; index < records.length; index++) {

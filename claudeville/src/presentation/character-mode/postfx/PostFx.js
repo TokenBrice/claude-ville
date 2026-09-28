@@ -73,6 +73,8 @@ uniform int u_lightCount;
 uniform int u_attentionCount;
 uniform vec4 u_haze[8];
 uniform vec4 u_lights[48];
+// V5 — per light: (height above the foot, face normal nx, ng, role code).
+uniform vec4 u_lightGeo[48];
 uniform vec4 u_lightColors[48];
 
 float hash21(vec2 p) {
@@ -165,13 +167,14 @@ vec3 applyGrade(vec3 color) {
     return max(applyGradeVignette(color, scenePixels(), u_resolution), vec3(0.0));
 }
 
-// 1.2 parity — the resident renderer's stepped multiplicative pools: each
-// light is stepped on its own falloff per art pixel, in iso ground space
-// (screen y doubled, a 2:1 ellipse), the courses accumulate, and the pool
-// multiplies the ungraded source colour on the C1 ramp. Action-needed lights
-// take the same courses, but the strongest one at the pixel wins (no sum),
-// and land outside V5's receiver knee, as on the resident path. The hybrid
-// path carries no water or wet reflection term.
+// 1.2 parity — the resident renderer's stepped multiplicative pools, ground
+// courses only (V5: a flattened frame has no receiver facing, rim or
+// occlusion): each light is stepped per art pixel from its foot, in iso
+// ground space (screen y doubled, a 2:1 ellipse) with its height term and
+// aperture lobe, the courses accumulate, and the pool multiplies the
+// ungraded source colour on the C1 ramp. Action-needed lights take the same
+// courses, but the strongest one at the pixel wins (no sum), and land outside
+// V5's receiver knee, as on the resident path. No water or wet reflection.
 vec3 applyPools(vec3 graded, vec3 albedo) {
     vec2 cell = artCell();
     vec2 p = artCellPixels();
@@ -184,10 +187,18 @@ vec3 applyPools(vec3 graded, vec3 albedo) {
     for (int i = 0; i < 48; i++) {
         if (i >= u_lightCount) break;
         vec4 light = u_lights[i];
+        vec4 geo = u_lightGeo[i];
         float radius = max(1.0, light.z);
-        float t = length((p - light.xy) * vec2(1.0, 2.0)) / radius;
+        // V5 — the ground course from the light's foot: the height term over
+        // the reach sqrt(r^2 + h^2), and an aperture's half-space lobe.
+        vec2 ground = (p - light.xy) * vec2(1.0, 2.0);
+        float d = length(vec3(ground, geo.x));
+        float t = d / sqrt(radius * radius + geo.x * geo.x);
         if (t >= 1.0) continue;
-        float steps = poolSteps(1.0 - smoothstep(0.0, 1.0, t), order);
+        float lobe = geo.w > 0.5 && geo.w < 1.5 && dot(geo.yz, geo.yz) > 0.25
+            ? clamp(0.30 + 1.4 * dot(geo.yz, ground) / max(d, 1.0), 0.0, 1.0)
+            : 1.0;
+        float steps = poolSteps((1.0 - smoothstep(0.0, 1.0, t)) * lobe, order);
         vec3 lit = u_lightColors[i].rgb * poolWeight(steps) * light.w * u_lightColors[i].a;
         if (i < u_attentionCount) {
             float litLuma = dot(lit, GRADE_LUMA);
@@ -201,7 +212,7 @@ vec3 applyPools(vec3 graded, vec3 albedo) {
             depth = max(depth, steps);
         }
     }
-    return stepPool(graded, acc, depth, attention, attentionDepth, albedo, vec3(0.0));
+    return stepPool(graded, acc, depth, attention, attentionDepth, albedo, vec3(0.0), 1.0);
 }
 
 vec3 applyGodRays(vec3 color, vec2 uv) {
@@ -411,6 +422,7 @@ class PostFxInstance {
         // Reused per-frame uniform staging; sized to the shader array bounds.
         this.hazeValues = new Float32Array(MAX_HAZE_ANCHORS * 4);
         this.lightValues = new Float32Array(MAX_LIGHTS * 4);
+        this.lightGeo = new Float32Array(MAX_LIGHTS * 4);
         this.lightColors = new Float32Array(MAX_LIGHTS * 4);
         this._onContextLost = event => {
             event.preventDefault();
@@ -500,7 +512,7 @@ class PostFxInstance {
             'u_reducedMotion', 'u_waterEnabled', 'u_displacementEnabled',
             'u_reflectionEnabled', 'u_godRaysEnabled', 'u_pulseEnabled',
             'u_grainEnabled', 'u_hazeCount', 'u_lightCount', 'u_attentionCount',
-            'u_haze[0]', 'u_lights[0]', 'u_lightColors[0]',
+            'u_haze[0]', 'u_lights[0]', 'u_lightGeo[0]', 'u_lightColors[0]',
         ]);
         this.bloomUniforms = locations(this.bloomProgram, ['u_input', 'u_texel', 'u_extract']);
         this.compositeUniforms = locations(this.compositeProgram, ['u_scene', 'u_bloom', 'u_bloomStrength']);
@@ -866,6 +878,7 @@ class PostFxInstance {
 
         this.lightValues.fill(0);
         this.lightColors.fill(0);
+        this.lightGeo.fill(0);
         const lights = Array.isArray(feed?.lights) ? feed.lights : [];
         let lightCount = 0;
         let attentionCount = 0;
@@ -891,6 +904,12 @@ class PostFxInstance {
                 this.lightValues[offset + 1] = finite(light.y);
                 this.lightValues[offset + 2] = Math.max(1, finite(light.radius, 1));
                 this.lightValues[offset + 3] = Math.max(0, finite(light.intensity, 1));
+                // V5 — the height term and aperture lobe of the light's ground
+                // course, in backing px (PostFxFeed `heightPx`).
+                this.lightGeo[offset] = Math.max(0, finite(light.heightPx, 0));
+                this.lightGeo[offset + 1] = finite(light.nx, 0);
+                this.lightGeo[offset + 2] = finite(light.ng, 0);
+                this.lightGeo[offset + 3] = finite(light.role, 0);
                 this.lightColors[offset] = clamp(finite(light.r, 255) / 255, 0, 1);
                 this.lightColors[offset + 1] = clamp(finite(light.g, 255) / 255, 0, 1);
                 this.lightColors[offset + 2] = clamp(finite(light.b, 255) / 255, 0, 1);
@@ -903,6 +922,7 @@ class PostFxInstance {
         gl.uniform1i(uniforms.u_lightCount, lightCount);
         gl.uniform1i(uniforms.u_attentionCount, attentionCount);
         gl.uniform4fv(uniforms['u_lights[0]'], this.lightValues);
+        gl.uniform4fv(uniforms['u_lightGeo[0]'], this.lightGeo);
         gl.uniform4fv(uniforms['u_lightColors[0]'], this.lightColors);
     }
 

@@ -31,10 +31,14 @@ export class SpriteSheet {
 // rows of the same engine cell as the base sheet, with named groups instead of
 // frame-count identity. `sheetMeta` is the manifest `actionStrip` record:
 //   { path, cell, groups: { read: { rows: [0, 3], hold: 3 } }, grip, provenance }
+// A group may declare `directions` (short keys, e.g. the 7.3 work strips'
+// ['se', 'e', 'w', 'sw']): other facings resolve to null, never to an empty
+// cell. `contactFrame` and `contact` ({ <dir>: [x, y] } cell px) mark the
+// WorkDownbeats frame and point.
 // `direction` is a DIRECTIONS index or key; `frame` is a group-relative index
 // (wrapping) or the literal 'hold' for the most legible static row. Returns
-// null for a missing strip, unknown group, or malformed metadata so callers
-// fall back to the procedural overlay.
+// null for a missing strip, unknown group, unauthored facing, or malformed
+// metadata so callers fall back to the procedural overlay.
 export function resolveActionFrame(sheetMeta, group, direction, frame = 0) {
     const cell = Number(sheetMeta?.cell);
     if (!Number.isInteger(cell) || cell <= 0) return null;
@@ -46,6 +50,7 @@ export function resolveActionFrame(sheetMeta, group, direction, frame = 0) {
     if (!Number.isInteger(first) || !Number.isInteger(last) || first < 0 || last < first) return null;
     const col = typeof direction === 'number' ? direction : DIRECTIONS.indexOf(direction);
     if (!Number.isInteger(col) || col < 0 || col >= DIRECTIONS.length) return null;
+    if (Array.isArray(groupMeta.directions) && !groupMeta.directions.includes(DIRECTIONS[col])) return null;
     let row;
     if (frame === 'hold') {
         const hold = Number(groupMeta.hold);

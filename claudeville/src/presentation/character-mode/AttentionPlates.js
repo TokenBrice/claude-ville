@@ -160,6 +160,9 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
             since: statusSince(sprite),
             name: spriteName(sprite),
             id: String(sprite.agent?.id || ''),
+            // 7.2 — holds a place in the Command queue (a line slot or, for the
+            // 13th onward, the plaza overflow).
+            queued: sprite.visitRole === 'queue',
         };
         const side = offscreenSide(beacon, head.y, viewport);
         if (side) {
@@ -200,8 +203,10 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
 
     // Collapse: union same-kind items whose natural plates collide or whose
     // beacons stand within GROUP_RADIUS; components of three or more become
-    // one group plate. Kinds never mix, so a group word is always true of
-    // every member it counts.
+    // one group plate. Every petitioner holding a place in the Command queue
+    // is one knot however far the plaza overflow stands from the line (7.2),
+    // so the group carries the exact total. Kinds never mix, so a group word
+    // is always true of every member it counts.
     const parent = items.map((_, index) => index);
     const find = (index) => {
         while (parent[index] !== index) index = parent[index] = parent[parent[index]];
@@ -210,7 +215,9 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
     for (let i = 0; i < items.length; i++) {
         for (let j = i + 1; j < items.length; j++) {
             if (items[i].kind !== items[j].kind) continue;
-            if (rectsOverlap(items[i].natural, items[j].natural, 2) || beaconsNear(items[i], items[j])) {
+            if ((items[i].queued && items[j].queued)
+                || rectsOverlap(items[i].natural, items[j].natural, 2)
+                || beaconsNear(items[i], items[j])) {
                 parent[find(j)] = find(i);
             }
         }

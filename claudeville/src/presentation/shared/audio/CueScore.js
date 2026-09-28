@@ -209,6 +209,9 @@ function nowMs() {
 const state = {
     scores: [],
     accents: [],
+    // 8.3 — cues a sounding director has admitted but not yet scheduled
+    // (outcomes wait out their aggregation window): `{ kind, key, until }`.
+    expected: [],
     diagnostics: {
         published: 0,
         silent: 0,
@@ -300,6 +303,9 @@ export function publishCueScore({
         publishedAt: now,
     };
     state.scores.push(score);
+    // The expected cue has its notes now.
+    state.expected = state.expected.filter(entry => !(entry.kind === score.kind
+        && (entry.key == null || score.key == null || entry.key === score.key)));
     pruneScores(now);
     state.diagnostics.published++;
     if (score.silent) state.diagnostics.silent++;
@@ -324,10 +330,14 @@ function notePitch(atMs, pitch) {
 
 /**
  * Has note `index` of this cue's score arrived? With no admitted score the
- * accent is already due — a silent village draws the same marks at once. The
- * first frame a note reads due records its lag for the score diagnostics.
+ * accent is already due — a silent village draws the same marks at once —
+ * unless a sounding director expects the cue (`expectCueScore`). The first
+ * frame a note reads due records its lag for the score diagnostics.
  */
 export function cueNoteDue(kind, key, index, now = nowMs()) {
+    // A cue still expected is newer than any score on record (publishing
+    // clears its expectation), so its peak waits even past an older score.
+    if (cueExpected(kind, key, now)) return false;
     const score = findScore(kind, key, now);
     if (!score) return true;
     const noteIndex = Math.max(0, Math.min(score.notes.length - 1, Math.trunc(Number(index) || 0)));
@@ -338,6 +348,28 @@ export function cueNoteDue(kind, key, index, now = nowMs()) {
         recordLag(now - note.atMs);
     }
     return true;
+}
+
+// 8.3 — a director that will SOUND a cue it has admitted but not yet
+// scheduled declares it here (an outcome waits out its aggregation window
+// before CueKit scores it), so a moment's peak waits for the note instead of
+// landing before the bell exists. Bounded by `withinMs`; never declared on a
+// muted route, so silence never waits. A published score of the same kind and
+// key clears it.
+const MAX_EXPECTED = 16;
+export function expectCueScore(kind, key = null, withinMs = 0, now = nowMs()) {
+    if (!kind || !(withinMs > 0)) return;
+    state.expected = state.expected.filter(entry => entry.until > now);
+    state.expected.push({ kind, key: key ?? null, until: now + withinMs });
+    if (state.expected.length > MAX_EXPECTED) state.expected.shift();
+}
+
+function cueExpected(kind, key, now) {
+    for (const entry of state.expected) {
+        if (entry.kind !== kind || entry.until <= now) continue;
+        if (key == null || entry.key == null || entry.key === key) return true;
+    }
+    return false;
 }
 
 /** How many notes the live score for this cue has, or 0 when none is admitted. */
@@ -456,6 +488,7 @@ export function cueScoreDiagnostics() {
 export function resetCueScore() {
     state.scores = [];
     state.accents = [];
+    state.expected = [];
     state.diagnostics = {
         published: 0,
         silent: 0,

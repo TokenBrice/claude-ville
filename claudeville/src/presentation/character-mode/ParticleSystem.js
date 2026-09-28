@@ -12,6 +12,8 @@ import {
     GPU_PARTICLE_INSTANCE_BYTES,
     GPU_PARTICLE_MOTIF_SIZE,
     GPU_PARTICLE_SHAPES,
+    SMOKE_PUFF_LIT_GAIN,
+    SMOKE_PUFF_SHADE_GAIN,
 } from './gpu/GpuWorldPolicy.js';
 
 const PARTICLE_GRAVITY = 0.05;
@@ -150,6 +152,9 @@ class Particle {
         // particles itself (the resident GPU draw) wears this ungraded; the
         // Canvas frame grades `color` after the fact instead.
         this.gradedColor = opts.gradedColor || null;
+        // 6.4 — the chimney mouth a smoke puff rose from: its alpha quantum
+        // steps with height above it, and it is gone at SMOKE_COLUMN_PX.
+        this.originY = Number.isFinite(opts.originY) ? opts.originY : y;
     }
 
     update(dt = 16) {
@@ -160,6 +165,7 @@ class Particle {
             this.vy += PARTICLE_GRAVITY * frameScale;
         }
         this.life -= frameScale;
+        if (this.shape === 'smoke' && this.originY - this.y >= SMOKE_COLUMN_PX) this.life = 0;
     }
 
     get alive() {
@@ -185,7 +191,22 @@ class Particle {
         let width;
         let height;
         const motifIndex = MOTIF_INDEX.get(this.shape);
-        if (motifIndex !== undefined) {
+        if (this.shape === 'smoke') {
+            // 6.4 — one round three-tone puff; the shader cuts the disc and
+            // steps the lit and shade rims from the body tone.
+            const radius = smokePuffRadius(age, this.maxLife);
+            const step0 = radius === SMOKE_PUFF_RADII[0];
+            if (step0 && this.baseColor) {
+                color = this.baseColor;
+                flags = 0;
+            }
+            alpha = smokePuffAlpha(this.originY - this.y) * this.alpha;
+            shape = GPU_PARTICLE_SHAPES.smoke;
+            left = cx - radius;
+            top = cy - radius;
+            width = radius * 2;
+            height = radius * 2;
+        } else if (motifIndex !== undefined) {
             shape = GPU_PARTICLE_SHAPES.motif;
             motif = motifIndex;
             left = cx - 8 + MOTIF_PAD;
@@ -292,6 +313,16 @@ class Particle {
             ctx.globalAlpha = 1;
             return;
         }
+        // 6.4 — chimney smoke: a round puff in three tones (lit rim upper
+        // left, body, shade rim lower right) growing 2 -> 5 art px in radius
+        // over its life, thinning in four alpha quanta by height.
+        if (this.shape === 'smoke') {
+            const radius = smokePuffRadius(age, this.maxLife);
+            const fire = radius === SMOKE_PUFF_RADII[0] && this.baseColor;
+            drawSmokePuff(ctx, cx, cy, radius, fire ? this.baseColor : color,
+                smokePuffAlpha(this.originY - this.y) * this.alpha, { flat: Boolean(fire) });
+            return;
+        }
 
         // 6.7 — a smoke puff grows 2 -> 3 -> 4 -> 3 art pixels over its life
         // and thins in four alpha steps instead of a smooth fade; the first
@@ -327,6 +358,112 @@ class Particle {
 
 const PUFF_STEP_SIZES = Object.freeze([2, 3, 4, 3]);
 const PUFF_STEP_ALPHA = Object.freeze([0.9, 0.75, 0.5, 0.25]);
+
+// 6.4 — chimney smoke puffs. Radius steps 2 -> 5 art px over life; alpha
+// steps in four quanta by height above the mouth; the column ends at
+// SMOKE_COLUMN_PX. Tones: body `#a9aeb8`, lit `#d3d6dc`, shade `#787c86`,
+// the rims derived from any body by the same per-channel gains the resident
+// particle shader applies (GpuWorldPolicy), so both backends agree.
+export const SMOKE_PUFF_RADII = Object.freeze([2, 3, 4, 5]);
+export const SMOKE_PUFF_ALPHA = Object.freeze([1, 0.84, 0.66, 0.44]);
+export const SMOKE_COLUMN_PX = 60;
+const SMOKE_ALPHA_BAND_PX = SMOKE_COLUMN_PX / SMOKE_PUFF_ALPHA.length;
+
+export function smokePuffRadius(age, maxLife) {
+    const t = maxLife > 0 ? age / maxLife : 0;
+    return SMOKE_PUFF_RADII[Math.max(0, Math.min(SMOKE_PUFF_RADII.length - 1, Math.floor(t * SMOKE_PUFF_RADII.length)))];
+}
+
+export function smokePuffAlpha(rise) {
+    const band = Math.floor(Math.max(0, rise) / SMOKE_ALPHA_BAND_PX);
+    return SMOKE_PUFF_ALPHA[Math.min(SMOKE_PUFF_ALPHA.length - 1, band)];
+}
+
+// Disc and rims on the texel grid, in half-texel integers so the shader's
+// test is the same arithmetic: tone 0 body, 1 lit, 2 shade, -1 outside.
+function smokePuffTone(x, y, radius) {
+    const limit = 4 * radius * radius;
+    const dx = 2 * x + 1 - 2 * radius;
+    const dy = 2 * y + 1 - 2 * radius;
+    if (dx * dx + dy * dy > limit) return -1;
+    const lx = dx - 2;
+    const ly = dy - 2;
+    if (lx * lx + ly * ly > limit) return 1;
+    // The shade crescent is 2 texels deep (3 from radius 4): the lower-right
+    // mass is what separates a puff from light plaza stone behind it.
+    const shade = radius >= 4 ? 6 : 4;
+    const sx = dx + shade;
+    const sy = dy + shade;
+    return sx * sx + sy * sy > limit ? 2 : 0;
+}
+
+const smokeRunCache = new Map();
+
+// Row runs per tone for one radius: [{ y, x, w, tone }].
+function smokePuffRuns(radius) {
+    let runs = smokeRunCache.get(radius);
+    if (runs) return runs;
+    runs = [];
+    const size = radius * 2;
+    for (let y = 0; y < size; y++) {
+        let start = 0;
+        let tone = smokePuffTone(0, y, radius);
+        for (let x = 1; x <= size; x++) {
+            const next = x < size ? smokePuffTone(x, y, radius) : -2;
+            if (next === tone) continue;
+            if (tone >= 0) runs.push(Object.freeze({ y, x: start, w: x - start, tone }));
+            start = x;
+            tone = next;
+        }
+    }
+    smokeRunCache.set(radius, runs = Object.freeze(runs));
+    return runs;
+}
+
+const smokeToneCache = new Map();
+
+function parseColor(value) {
+    const text = String(value).trim();
+    if (text.startsWith('#') && text.length === 7) {
+        const n = Number.parseInt(text.slice(1), 16);
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    }
+    const match = text.match(/rgba?\(([^)]+)\)/);
+    if (!match) return null;
+    return match[1].split(',').slice(0, 3).map((part) => Number.parseFloat(part));
+}
+
+/** `[body, lit, shade]` CSS colours for a body tone. */
+export function smokePuffTones(body) {
+    let tones = smokeToneCache.get(body);
+    if (tones) return tones;
+    const rgb = parseColor(body);
+    const tone = (gain) => rgb
+        ? `rgb(${rgb.map((c, i) => Math.min(255, Math.round(c * gain[i]))).join(', ')})`
+        : body;
+    tones = Object.freeze([body, tone(SMOKE_PUFF_LIT_GAIN), tone(SMOKE_PUFF_SHADE_GAIN)]);
+    if (smokeToneCache.size > 64) smokeToneCache.clear();
+    smokeToneCache.set(body, tones);
+    return tones;
+}
+
+/**
+ * Paints one smoke puff centred on the art-grid point (cx, cy). `flat` paints
+ * the whole disc in `body` (the fire-lit underside at the mouth).
+ */
+export function drawSmokePuff(ctx, cx, cy, radius, body, alpha, { flat = false } = {}) {
+    const tones = flat ? [body, body, body] : smokePuffTones(body);
+    const left = Math.round(cx) - radius;
+    const top = Math.round(cy) - radius;
+    ctx.globalAlpha = alpha;
+    for (let tone = 0; tone < 3; tone++) {
+        ctx.fillStyle = tones[tone];
+        for (const run of smokePuffRuns(radius)) {
+            if (run.tone === tone) ctx.fillRect(left + run.x, top + run.y, run.w, 1);
+        }
+    }
+    ctx.globalAlpha = 1;
+}
 
 const PARTICLE_PRESETS = {
     // Default dirt-path footfall: a low brown dust kick (the fallback when no
@@ -407,19 +544,19 @@ const PARTICLE_PRESETS = {
         gravity: false,
         direction: 'up',
     },
-    // #33 / 6.7 — chimney smoke: pixel puffs (shape 'puff' steps 2->3->4->3
-    // art px) on a cool soot ramp. Callers pass `windX` (a signed drift
-    // velocity) so the column leans downwind, may shorten `life` in rain, and
-    // may override `colors` with warmer soot tints when a forge runs hot.
+    // #33 / 6.4 — chimney smoke: round three-tone puffs (shape 'smoke', radius
+    // 2 -> 5 art px) on the soot body tone. Callers pass `windX` (a signed
+    // drift velocity) so the column leans downwind, may flatten it in rain,
+    // and may warm the body when a forge runs hot. A puff rises about 60 px.
     smoke: {
-        colors: ['#6b6f78', '#8d919a', '#b3b5ba'],
-        size: [2, 3.6],
-        life: [90, 140],
-        speed: [0.22, 0.36],
-        lateral: 0.05,
+        colors: ['#a9aeb8'],
+        size: [4, 4],
+        life: [104, 132],
+        speed: [0.46, 0.54],
+        lateral: 0.04,
         gravity: false,
         direction: 'up',
-        shape: 'puff',
+        shape: 'smoke',
     },
     // Daytime ambient insects. Longer life + slow wander so they linger and
     // drift like butterflies rather than sparking like fireflies.
@@ -650,7 +787,7 @@ export const BUOY_TORCH_COLORS = Object.freeze([...PARTICLE_PRESETS.buoyTorch.co
 // toward the warm tints as the forge hearth heats, so a hot hearth pushes
 // browner, ember-lit smoke while a banked forge stays grey.
 export const SMOKE_COOL_COLORS = Object.freeze([...PARTICLE_PRESETS.smoke.colors]);
-export const SMOKE_WARM_COLORS = Object.freeze(['#6b5240', '#8a6a4c', '#a8806b']);
+export const SMOKE_WARM_COLORS = Object.freeze(['#a8836c']);
 
 // #35 — exported so the wake renderer's sink-ring foam burst stays colour-matched
 // to the shared `wakeFoam` preset.
@@ -806,8 +943,8 @@ export class ParticleSystem {
 
             // Drawn shapes get a deterministic flap/tumble phase seeded from
             // the spawn rng so animation never calls Math.random in draw.
-            const opts = { lit, tag, baseColor, sortY, gradedColor: gradedColors ? gradedColors[colorIndex] : null };
-            if (shape === 'butterfly' || shape === 'tumble' || shape === 'puff') {
+            const opts = { lit, tag, baseColor, sortY, originY: y, gradedColor: gradedColors ? gradedColors[colorIndex] : null };
+            if (shape === 'butterfly' || shape === 'tumble' || shape === 'puff' || shape === 'smoke') {
                 opts.shape = shape;
                 opts.phase = rng() * Math.PI * 2;
                 opts.animRate = (shape === 'butterfly' ? 0.35 : 0.12) * (0.85 + 0.3 * rng());

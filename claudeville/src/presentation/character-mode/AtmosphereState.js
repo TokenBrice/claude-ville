@@ -85,8 +85,6 @@ const WEATHER_TYPE_SET = new Set(WEATHER_TYPES);
 export const WEATHER_PRESETS = {
     clear: {
         intensity: 0.18,
-        cloudAlpha: 0.12,
-        cloudDensity: 0.16,
         cloudCover: 0.10,
         precipitation: 0,
         fog: 0,
@@ -95,8 +93,6 @@ export const WEATHER_PRESETS = {
     },
     'partly-cloudy': {
         intensity: 0.48,
-        cloudAlpha: 0.42,
-        cloudDensity: 0.52,
         cloudCover: 0.42,
         precipitation: 0,
         fog: 0.02,
@@ -105,8 +101,6 @@ export const WEATHER_PRESETS = {
     },
     overcast: {
         intensity: 0.68,
-        cloudAlpha: 0.70,
-        cloudDensity: 0.88,
         cloudCover: 0.86,
         precipitation: 0.04,
         fog: 0.08,
@@ -115,8 +109,6 @@ export const WEATHER_PRESETS = {
     },
     rain: {
         intensity: 0.78,
-        cloudAlpha: 0.76,
-        cloudDensity: 0.96,
         cloudCover: 0.94,
         precipitation: 0.68,
         fog: 0.14,
@@ -125,8 +117,6 @@ export const WEATHER_PRESETS = {
     },
     fog: {
         intensity: 0.58,
-        cloudAlpha: 0.38,
-        cloudDensity: 0.62,
         cloudCover: 0.60,
         precipitation: 0,
         fog: 0.78,
@@ -135,8 +125,6 @@ export const WEATHER_PRESETS = {
     },
     storm: {
         intensity: 0.88,
-        cloudAlpha: 0.84,
-        cloudDensity: 1,
         cloudCover: 1,
         precipitation: 0.92,
         fog: 0.18,
@@ -146,55 +134,8 @@ export const WEATHER_PRESETS = {
 };
 
 // The sun has no asset: SkyRenderer bakes a flat-to-core stepped disc (0.10).
-const SKY_ASSETS = {
-    clear: {
-        clouds: ['atmosphere.cloud.wisp.day'],
-        moon: 'atmosphere.moon.crescent.cool',
-    },
-    'partly-cloudy': {
-        clouds: ['atmosphere.cloud.cumulus.day', 'atmosphere.cloud.wisp.day'],
-        moon: 'atmosphere.moon.crescent.cool',
-    },
-    overcast: {
-        clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
-        moon: 'atmosphere.moon.crescent.cool',
-    },
-    rain: {
-        clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
-        moon: 'atmosphere.moon.crescent.cool',
-    },
-    storm: {
-        clouds: ['atmosphere.cloud.storm-shelf', 'atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
-        moon: 'atmosphere.moon.crescent.cool',
-    },
-    fog: {
-        clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.wisp.day'],
-        moon: 'atmosphere.moon.crescent.cool',
-    },
-};
-
-const CLOUD_LAYER_BANDS = [
-    { yFrac: 0.16, parallax: 0.025, driftMul: 0.46, alphaMul: 0.62, scaleBase: 0.86 },
-    { yFrac: 0.25, parallax: 0.060, driftMul: 0.78, alphaMul: 0.54, scaleBase: 1.05 },
-    { yFrac: 0.35, parallax: 0.105, driftMul: 1.08, alphaMul: 0.38, scaleBase: 1.22 },
-];
-
-// Bounded descriptor cache. Several keys are live during a weather cross-fade
-// window (incoming set, outgoing set, merged blend), so this is a small Map
-// with oldest-entry eviction instead of a single slot. Keys are deterministic
-// (date | type | cloud bucket [| weight bucket]), so rebuilds are rare and the
-// map cannot grow across sessions.
-const CLOUD_LAYER_CACHE_MAX = 8;
-const _cloudLayerCache = new Map();
-
-function cloudLayerCacheSet(key, layers) {
-    _cloudLayerCache.set(key, layers);
-    if (_cloudLayerCache.size > CLOUD_LAYER_CACHE_MAX) {
-        const oldest = _cloudLayerCache.keys().next().value;
-        _cloudLayerCache.delete(oldest);
-    }
-    return layers;
-}
+// The sky's clouds are SkyRenderer's baked horizon deck (5.7), not sprites.
+const SKY_ASSETS = Object.freeze({ moon: 'atmosphere.moon.crescent.cool' });
 
 function clamp(value, min = 0, max = 1) {
     return Math.max(min, Math.min(max, value));
@@ -330,14 +271,6 @@ function seededRandom(seed) {
         state = Math.imul(1664525, state) + 1013904223;
         return (state >>> 0) / 4294967296;
     };
-}
-
-function random01(seed, salt) {
-    let value = (seed + Math.imul(salt + 1, 0x9e3779b1)) >>> 0;
-    value ^= value << 13;
-    value ^= value >>> 17;
-    value ^= value << 5;
-    return (value >>> 0) / 4294967296;
 }
 
 function weatherTypeFromRoll(roll, minute) {
@@ -891,10 +824,68 @@ function normalizeWeatherOverride(override, fallbackSeed = null) {
 // C-W1 — the weather is a pure function of (local date, minute, optional
 // explicit seed or debug override). Nothing about agents, moods, the
 // director, pushes or the Chronicle can reach it.
-export function resolveWeather(date, override = null, { seedOverride = null, timelineMode = 'auto' } = {}) {
+export function resolveWeather(date, override = null, { seedOverride = null, timelineMode = 'auto', timelineKnots = null } = {}) {
     if (override) return normalizeWeatherOverride(override, seedOverride);
-    if (timelineMode === 'fixed') return deterministicWeather(date, seedOverride);
-    return resolveWeatherAt(minutesSinceMidnight(date), buildWeatherTimeline(date, seedOverride));
+    // Pinned QA knots win in both modes: fixed mode only drops the date hash.
+    if (timelineMode === 'fixed' && !timelineKnots) return deterministicWeather(date, seedOverride);
+    return resolveWeatherAt(minutesSinceMidnight(date), timelineFor(date, seedOverride, timelineKnots));
+}
+
+// QA debug hook (5.2 acceptance): a pinned knot list replaces the date-hashed
+// timeline on every date, so the live weather and `groundStateAt`'s history
+// read the same knots. Reachable only from `window.__claudeVilleAtmosphere`
+// (`setTimelineKnots`), never from agent, mood or director state (V3).
+// Each knot is `{ minute, type }` plus optional `intensity`, `cloudCover`,
+// `precipitation`, `fog`, `windX`; missing values take the type's preset.
+export function normalizeTimelineKnots(knots) {
+    if (!Array.isArray(knots) || knots.length === 0) return null;
+    const out = [];
+    for (const knot of knots) {
+        const minute = Number(knot?.minute);
+        if (!Number.isFinite(minute) || !isKnownWeatherTypeInput(knot?.type)) continue;
+        const type = normalizeWeatherType(knot.type);
+        const preset = WEATHER_PRESETS[type];
+        const pick = (key, fallback) => (Number.isFinite(Number(knot[key])) ? clamp(Number(knot[key])) : fallback);
+        const windX = Number(knot.windX);
+        out.push({
+            minute: clamp(Math.round(minute), 0, DAY_MINUTES - 1),
+            type,
+            intensity: pick('intensity', preset.intensity),
+            cloudCover: pick('cloudCover', preset.cloudCover),
+            precipitation: pick('precipitation', preset.precipitation),
+            fog: pick('fog', preset.fog),
+            windX: Number.isFinite(windX) ? clamp(windX, -WIND_MAX, WIND_MAX) : windSpeedForType(type),
+            seed: 0,
+        });
+    }
+    if (!out.length) return null;
+    out.sort((a, b) => a.minute - b.minute);
+    return Object.freeze(out.map(knot => Object.freeze(knot)));
+}
+
+function timelineFor(date, seedOverride, timelineKnots) {
+    if (!timelineKnots) return buildWeatherTimeline(date, seedOverride);
+    const dateKey = localDateKey(date);
+    return { seed: resolveSeed(seedOverride, `${dateKey}|weather-timeline`), dateKey, knots: timelineKnots };
+}
+
+/**
+ * C-W2 — the weather history reader for `GroundState.groundStateAt`: one
+ * date's sampler `(minute) → { type, precipitation, cloudCover }` over the
+ * same resolution the live snapshot uses (the date-hashed or pinned timeline,
+ * or the fixed-mode deterministic weather). Debug weather overrides are a
+ * live-only look and never enter the history.
+ */
+export function weatherHistorySampler(date, { seedOverride = null, timelineMode = 'auto', timelineKnots = null } = {}) {
+    if (timelineMode === 'fixed' && !timelineKnots) {
+        const at = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        return (minute) => {
+            at.setHours(0, Math.floor(minute), 0, 0);
+            return deterministicWeather(at, seedOverride);
+        };
+    }
+    const knots = timelineFor(date, seedOverride, timelineKnots).knots;
+    return (minute) => timelineStateAt(minute, knots);
 }
 
 function phaseLight(phase, phaseProgress) {
@@ -921,9 +912,13 @@ function celestialHorizonState(yFrac, horizonFrac) {
     };
 }
 
+// 5.8 — the sun's noon elevation by season (northern hemisphere, M9): the
+// rainbow needs the sun below 42 degrees.
+const SUN_NOON_ELEVATION_DEG = Object.freeze({ winter: 26, spring: 48, summer: 62, autumn: 40 });
+
 // 0.10 — a storm's cover hides the sun entirely (no pale disc showing
 // through a thunderhead); other weather thins it by its occlusion.
-function buildSun(minute, phase, phaseProgress, weather, phases = PHASES) {
+function buildSun(minute, phase, phaseProgress, weather, phases = PHASES, seasonToken = '') {
     const progress = progressInInterval(minute, phases[0].start, phases[2].end);
     const light = phaseLight(phase, phaseProgress);
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
@@ -937,6 +932,7 @@ function buildSun(minute, phase, phaseProgress, weather, phases = PHASES) {
         alpha: alpha * horizon.horizonFade,
         xFrac: 0.08 + progress * 0.84,
         yFrac,
+        elevationDeg: Math.sin(progress * Math.PI) * (SUN_NOON_ELEVATION_DEG[seasonToken] ?? 44),
         ...horizon,
     };
 }
@@ -980,86 +976,6 @@ function buildMoon(minute, phase, phaseProgress, weather, date, phases = PHASES)
         ...horizon,
         phase: phaseState,
     };
-}
-
-function buildCloudLayers({ date, weather, assetIds, cloudDensity, cloudAlpha }) {
-    const ids = assetIds?.clouds?.length ? assetIds.clouds : SKY_ASSETS.clear.clouds;
-    const seed = Number.isFinite(Number(weather.seed))
-        ? Number(weather.seed) >>> 0
-        : hashString(`${localDateKey(date)}|${weather.type}|clouds`);
-    const density = clamp(cloudDensity ?? 0.3);
-    const alpha = clamp(cloudAlpha ?? 0.28);
-    const layerCount = Math.max(3, Math.min(14, Math.round(3 + density * 11)));
-    const out = [];
-
-    for (let i = 0; i < layerCount; i++) {
-        const band = CLOUD_LAYER_BANDS[i % CLOUD_LAYER_BANDS.length];
-        const row = Math.floor(i / CLOUD_LAYER_BANDS.length);
-        const rowOffset = random01(seed, row * 313 + 17) * 0.32;
-        const xFrac = (random01(seed, i * 97 + 11) + rowOffset) % 1;
-        const yNoise = (random01(seed, i * 101 + 23) - 0.5) * 0.075;
-        const scaleNoise = 0.72 + random01(seed, i * 103 + 37) * 0.72;
-        out.push({
-            assetId: ids[i % ids.length],
-            xFrac,
-            yFrac: clamp(band.yFrac + row * 0.075 + yNoise, 0.08, 0.55),
-            scale: Number((band.scaleBase * scaleNoise).toFixed(3)),
-            alpha: Number(clamp(alpha * band.alphaMul * (0.74 + random01(seed, i * 107 + 41) * 0.46), 0, 0.86).toFixed(3)),
-            parallax: band.parallax,
-            driftMul: band.driftMul,
-        });
-    }
-    return out;
-}
-
-function memoizedCloudLayers(key, args) {
-    const cached = _cloudLayerCache.get(key);
-    if (cached) return cached;
-    return cloudLayerCacheSet(key, buildCloudLayers(args));
-}
-
-function cloudSetKeyFor(type) {
-    return (SKY_ASSETS[type] || SKY_ASSETS.clear).clouds.join(',');
-}
-
-// 5.6 — cloud-set cross-fade during weather transitions. The timeline flips
-// `weather.type` at the transition midpoint; instead of hard-swapping cloud
-// shapes there, the outgoing set fades out over CLOUD_CROSSFADE_WINDOW of
-// transition progress while the incoming set fades in. Both sets are memoized
-// descriptors; only the merged (alpha-weighted) list is built per weight
-// bucket, so the steady-state path allocates nothing.
-const CLOUD_CROSSFADE_WINDOW = 0.25;
-
-function blendedCloudLayers({ date, weather, cloudDensity, cloudAlpha, cloudBucket }) {
-    const dateKey = localDateKey(date);
-    const currentAssets = SKY_ASSETS[weather.type] || SKY_ASSETS.clear;
-    const currentKey = `${dateKey}|${weather.type}|${cloudBucket}`;
-    const transitionProgress = clamp(Number(weather.transitionProgress) || 0);
-    const previousType = weather.previousType;
-    const blending = previousType
-        && previousType !== weather.type
-        && transitionProgress >= 0.5
-        && cloudSetKeyFor(previousType) !== cloudSetKeyFor(weather.type);
-    if (!blending) {
-        return memoizedCloudLayers(currentKey, { date, weather, assetIds: currentAssets, cloudDensity, cloudAlpha });
-    }
-    const weight = clamp((transitionProgress - 0.5) / CLOUD_CROSSFADE_WINDOW);
-    if (weight >= 1) {
-        return memoizedCloudLayers(currentKey, { date, weather, assetIds: currentAssets, cloudDensity, cloudAlpha });
-    }
-    const weightBucket = Math.round(weight * 10) / 10;
-    const mergedKey = `${dateKey}|xf:${previousType}>${weather.type}|${cloudBucket}|w${weightBucket}`;
-    const cached = _cloudLayerCache.get(mergedKey);
-    if (cached) return cached;
-    const outgoing = memoizedCloudLayers(`${dateKey}|prev:${previousType}|${cloudBucket}`, {
-        date, weather, assetIds: SKY_ASSETS[previousType] || SKY_ASSETS.clear, cloudDensity, cloudAlpha,
-    });
-    const incoming = memoizedCloudLayers(currentKey, { date, weather, assetIds: currentAssets, cloudDensity, cloudAlpha });
-    const merged = [
-        ...outgoing.map(layer => ({ ...layer, alpha: Number((layer.alpha * (1 - weight)).toFixed(3)) })),
-        ...incoming.map(layer => ({ ...layer, alpha: Number((layer.alpha * weight).toFixed(3)) })),
-    ];
-    return cloudLayerCacheSet(mergedKey, merged);
 }
 
 function parseRgbaString(value) {
@@ -1372,6 +1288,7 @@ export function createAtmosphereSnapshot({
     hourOverride = null,
     seedOverride = null,
     timelineMode = 'auto',
+    timelineKnots = null,
 } = {}) {
     const effectiveDate = applyHourOverride(normalizeDate(now), hourOverride);
     const minute = minutesSinceMidnight(effectiveDate);
@@ -1381,14 +1298,11 @@ export function createAtmosphereSnapshot({
     const phases = phasesForSeason(seasonToken);
     const { phase, phaseProgress } = resolvePhase(minute, phases);
     const dayProgress = minute / DAY_MINUTES;
-    const weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode });
+    const weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode, timelineKnots });
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const intensity = clamp(weather.intensity);
     const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover : preset.cloudCover;
-    const cloudAlpha = clamp(preset.cloudAlpha * (0.54 + intensity * 0.32 + cloudCover * 0.42));
-    const cloudDensity = clamp(preset.cloudDensity * (0.58 + intensity * 0.28 + cloudCover * 0.52));
     const transition = phaseTransition(phase, phaseProgress);
-    const assetIds = SKY_ASSETS[weather.type] || SKY_ASSETS.clear;
     const moon = buildMoon(minute, phase, phaseProgress, weather, effectiveDate, phases);
     const lighting = buildLighting(minute, seasonToken, phase, phaseProgress, weather, moon);
     const timeBucket = Math.floor(dayProgress * 96);
@@ -1397,14 +1311,8 @@ export function createAtmosphereSnapshot({
     const cloudBucket = Math.round((weather.cloudCover || 0) * 10);
     const precipitationBucket = Math.round((weather.precipitation || 0) * 10);
     const fogBucket = Math.round((weather.fog || 0) * 10);
-    const cloudLayerBlend = blendedCloudLayers({ date: effectiveDate, weather, cloudDensity, cloudAlpha, cloudBucket });
     const effectiveMotionScale = preferredMotionScale(motionScale);
     const driftEnabled = effectiveMotionScale > 0;
-    // The day-clock offset of the sky's icon clouds (imperceptible, ~0.05 px/s)
-    // ignores the wind entirely, so neither a speed change nor the wind
-    // turning through calm ever moves them; their visible drift integrates
-    // the wind in SkyRenderer.
-    const clockDriftPx = Math.round(dayProgress * 4096);
     const lightGrade = lightGradeFor(minute, weather, lighting.moonFill, seasonToken);
 
     return {
@@ -1418,14 +1326,11 @@ export function createAtmosphereSnapshot({
         weather,
         sky: {
             palette: skyPaletteFor(lightGrade),
-            assetIds,
-            sun: buildSun(minute, phase, phaseProgress, weather, phases),
+            assetIds: SKY_ASSETS,
+            sun: buildSun(minute, phase, phaseProgress, weather, phases, seasonToken),
             moon,
             starsAlpha: starAlpha(lightGrade, weather),
-            cloudAlpha,
-            cloudDensity,
             cloudCover,
-            cloudLayers: cloudLayerBlend,
         },
         grade: buildGrade(phase, phaseProgress, weather),
         // C2 — the one world grade (time keys + weather + moon). Every backend
@@ -1437,7 +1342,6 @@ export function createAtmosphereSnapshot({
         motion: {
             driftEnabled,
             particleEnabled: effectiveMotionScale > 0,
-            clockDriftPx,
             windX: weather.windX,
         },
         effectiveDate,
@@ -1453,6 +1357,7 @@ export class AtmosphereState {
         this._weatherOverride = null;
         this._seedOverride = null;
         this._timelineMode = 'auto';
+        this._timelineKnots = null;
         this._frozenDate = null;
         this._lastSnapshot = null;
         this._previousHelper = null;
@@ -1473,11 +1378,16 @@ export class AtmosphereState {
             hourOverride: this._hourOverride,
             seedOverride: this._seedOverride,
             timelineMode: this._timelineMode,
+            timelineKnots: this._timelineKnots,
         });
+        // C-W2 — everything `groundStateAt` needs to integrate the same
+        // history the live weather resolves from.
         this._lastSnapshot.timeline = {
             mode: this._timelineMode,
             hourOverride: this._hourOverride,
             frozen: this._frozenDate !== null,
+            seedOverride: this._seedOverride,
+            knots: this._timelineKnots,
         };
         return this._lastSnapshot;
     }
@@ -1525,6 +1435,13 @@ export class AtmosphereState {
         return this.snapshot();
     }
 
+    // QA debug hook only (see normalizeTimelineKnots): pin one knot list for
+    // every date, or `null` to return to the date-hashed timeline.
+    setTimelineKnots(knots) {
+        this._timelineKnots = normalizeTimelineKnots(knots);
+        return this.snapshot();
+    }
+
     freeze() {
         const snapshot = this.snapshot();
         this._frozenDate = new Date(snapshot.effectiveDate.getTime());
@@ -1536,6 +1453,7 @@ export class AtmosphereState {
         this._weatherOverride = null;
         this._seedOverride = null;
         this._timelineMode = 'auto';
+        this._timelineKnots = null;
         this._frozenDate = null;
         return this.snapshot();
     }
@@ -1577,6 +1495,7 @@ export class AtmosphereState {
             setWeather: (typeOrObject, intensity, windX) => this.setWeather(typeOrObject, intensity, windX),
             setSeed: (seed) => this.setSeed(seed),
             setTimelineMode: (mode) => this.setTimelineMode(mode),
+            setTimelineKnots: (knots) => this.setTimelineKnots(knots),
             freeze: () => this.freeze(),
             clear: () => this.clear(),
             snapshot: () => this.snapshot(),

@@ -15,7 +15,7 @@
 import { RESERVED_STATUS } from '../../config/artPalette.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
-import { frameCastLighting, rasterizeCourses, villagerCastStamps } from './RakingLight.js';
+import { frameCastLighting, pointCastFor, rasterizeCourses, villagerCastStamps } from './RakingLight.js';
 
 // Warm near-black shared with the body rim (plan 2.4).
 const SHADOW_RGB = [26, 20, 16];
@@ -99,18 +99,33 @@ export function contactShadowWidth(contentWidth) {
 // Two stepped courses: a soft 1-texel outer band and a dense core. 1.5 — at
 // golden hour and sunrise a thin raking trail runs from the feet along the
 // sun in the violet cast colour (RakingLight), baked into the same stamp per
-// sun bucket; the stamp then carries its feet anchor (`__anchorX/Y`).
-export function contactShadowStamp(width, cast = frameCastLighting()) {
+// sun bucket. 2.8 — at night, with no raking sun, a body inside a lamp's pool
+// carries that lamp's point cast (`RakingLight.pointCastFor`) in the same
+// stamp instead. The stamp then carries its feet anchor (`__anchorX/Y`), and
+// where a trail and the contact overlap the stronger course wins, so nothing
+// darkens twice.
+const POINT_CAST_STAMP_MAX = 256;
+
+export function contactShadowStamp(width, cast = frameCastLighting(), pointCast = null) {
     const w = evenWidth(width);
-    const trail = villagerCastStamps(w, cast);
-    const key = trail.length ? `shadow|${w}|${cast.key}` : `shadow|${w}`;
+    const trail = pointCast ? [] : villagerCastStamps(w, cast);
+    const key = pointCast
+        ? `shadow|${w}|${pointCast.key}`
+        : trail.length ? `shadow|${w}|${cast.key}` : `shadow|${w}`;
     const cached = STAMP_CACHE.get(key);
-    if (cached) return cached;
+    if (cached) {
+        if (pointCast) {
+            STAMP_CACHE.delete(key);
+            STAMP_CACHE.set(key, cached);
+        }
+        return cached;
+    }
     if (trail.length) pruneCastStamps(cast.key);
+    if (pointCast) prunePointCastStamps();
     const h = Math.max(5, Math.round(w * SHADOW_ASPECT) | 1);
     const outer = ellipseMask(w, h);
     const core = ellipseMask(w, h, 3, 1.5);
-    const raster = trail.length ? rasterizeCourses(trail, cast.color) : null;
+    const raster = pointCast || (trail.length ? rasterizeCourses(trail, cast.color) : null);
     // Contact box relative to the feet: top-left at (-w/2, -h/2).
     const cx0 = -Math.floor(w / 2);
     const cy0 = -Math.floor(h / 2);
@@ -123,13 +138,17 @@ export function contactShadowStamp(width, cast = frameCastLighting()) {
     const ctx = canvas.getContext('2d');
     if (raster) {
         ctx.drawImage(raster.canvas, raster.offsetX - minX, raster.offsetY - minY);
-        releaseCanvasBackingStore(raster.canvas);
+        // The point cast raster stays in RakingLight's LRU; the raking trail
+        // raster is this stamp's alone.
+        if (!pointCast) releaseCanvasBackingStore(raster.canvas);
     }
-    // The contact courses replace (never sum with) the trail under the feet.
+    // The stronger of trail and contact course wins under the feet (never a sum).
     const image = ctx.getImageData(cx0 - minX, cy0 - minY, w, h);
     for (let i = 0; i < outer.length; i++) {
         if (!outer[i]) continue;
-        setPixel(image.data, i, SHADOW_RGB, core[i] ? SHADOW_CORE_ALPHA : SHADOW_OUTER_ALPHA);
+        const alpha = core[i] ? SHADOW_CORE_ALPHA : SHADOW_OUTER_ALPHA;
+        if (image.data[i * 4 + 3] >= alpha) continue;
+        setPixel(image.data, i, SHADOW_RGB, alpha);
     }
     ctx.putImageData(image, cx0 - minX, cy0 - minY);
     canvas.__cvGroundKey = key;
@@ -137,6 +156,19 @@ export function contactShadowStamp(width, cast = frameCastLighting()) {
     canvas.__anchorY = -minY;
     STAMP_CACHE.set(key, canvas);
     return canvas;
+}
+
+// 2.8 — an LRU over the composed point-cast contact stamps.
+function prunePointCastStamps() {
+    let count = 0;
+    for (const key of STAMP_CACHE.keys()) if (key.includes('|pc|')) count++;
+    if (count < POINT_CAST_STAMP_MAX) return;
+    for (const [key, canvas] of STAMP_CACHE) {
+        if (!key.includes('|pc|')) continue;
+        releaseCanvasBackingStore(canvas);
+        STAMP_CACHE.delete(key);
+        if (--count < POINT_CAST_STAMP_MAX) return;
+    }
 }
 
 // Keep only the current sun bucket's trail stamps.
@@ -196,9 +228,9 @@ export function actionNeededRingColor(status) {
 // Resolves the ground mark set for one body. `x`/`y` is the body's placement
 // for this frame (V7 `snapBodyPx`: a whole texel at rest, the backing-pixel
 // grid while walking), taken as is so shadow, rings and body never part.
-// Returns stamps plus top-left positions in world texels; callers paint them
-// in order.
-export function resolveGroundMarks({ x, y, contentWidth, status, selected = false, hovered = false, accent, trim }) {
+// `owner` (the body) keeps its 2.8 lamp choice between frames. Returns stamps
+// plus top-left positions in world texels; callers paint them in order.
+export function resolveGroundMarks({ x, y, contentWidth, status, selected = false, hovered = false, accent, trim, owner = null }) {
     const cx = x;
     const cy = y + GROUND_MARK_FOOT_Y;
     const shadowW = contactShadowWidth(contentWidth);
@@ -212,7 +244,8 @@ export function resolveGroundMarks({ x, y, contentWidth, status, selected = fals
             y: cy - (stamp.__anchorY ?? Math.floor(stamp.height / 2)),
         });
     };
-    push(contactShadowStamp(shadowW), 'shadow');
+    const cast = frameCastLighting();
+    push(contactShadowStamp(shadowW, cast, pointCastFor(owner, cx, cy, shadowW, cast)), 'shadow');
     const statusColor = actionNeededRingColor(status);
     if (statusColor) push(ringStamp('status', shadowW + STATUS_RING_PAD, statusColor), 'status');
     if (selected) push(ringStamp('selected', shadowW + SELECTED_RING_PAD, accent), 'selected');

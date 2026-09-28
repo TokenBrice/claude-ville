@@ -9,6 +9,7 @@ import {
   isAttentionLight,
   localLightPhaseForLighting,
   materialClassId,
+  isSoftwareRasterizer,
   resolveGpuWorldRendererMode,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import {
@@ -26,6 +27,25 @@ test('GPU renderer is the default after parity gates pass with a Canvas escape h
   assert.equal(resolveGpuWorldRendererMode('', { webgl2: true }), 'webgl');
   assert.equal(resolveGpuWorldRendererMode('?renderer=canvas', { webgl2: true }), 'canvas');
   assert.equal(resolveGpuWorldRendererMode('?renderer=webgl', { webgl2: false }), 'canvas');
+});
+
+test('a software rasterizer defaults to the Canvas world unless WebGL is forced', () => {
+  const software = { webgl2: true, softwareRaster: true };
+  assert.equal(resolveGpuWorldRendererMode('', software), 'canvas');
+  assert.equal(resolveGpuWorldRendererMode('?renderer=webgl', software), 'webgl');
+  assert.equal(resolveGpuWorldRendererMode('?renderer=canvas', software), 'canvas');
+  for (const name of [
+    'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)',
+    'llvmpipe (LLVM 15.0.7, 256 bits)',
+    'ANGLE (Microsoft, Microsoft Basic Render Driver Direct3D11 vs_5_0 ps_5_0, D3D11)',
+  ]) assert.equal(isSoftwareRasterizer(name), true, name);
+  for (const name of [
+    'ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Pro, Unspecified Version)',
+    'ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    'Mesa Intel(R) UHD Graphics 620 (KBL GT2)',
+    'Apple GPU',
+    '',
+  ]) assert.equal(isSoftwareRasterizer(name), false, name);
 });
 
 test('stable GPU batches merge only consecutive compatible records', () => {
@@ -113,10 +133,9 @@ test('texture byte estimates include render targets and cached sources', () => {
     width: 100,
     height: 80,
     bloomScale: 0.5,
-    occlusionScale: 0.25,
     cachedTextures: [{ width: 20, height: 10, copies: 2 }],
   });
-  assert.equal(estimate.targets, (8000 + 2000 * 2 + 500) * 4);
+  assert.equal(estimate.targets, (8000 + 2000 * 2) * 4);
   assert.equal(estimate.textures, 20 * 10 * 4 * 2);
   assert.equal(estimate.total, estimate.targets + estimate.textures);
 });

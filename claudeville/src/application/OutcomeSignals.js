@@ -26,6 +26,19 @@ export const DISPATCH_FRESH_MS = 30_000;
 // Held for the window and emitted once with a count; everything else is
 // emitted at once (a release is its own ceremony; a failed push is news now).
 const AGGREGATED_KINDS = new Set(['turnDone', 'subagentReturn', 'toolFailed', 'commit', 'push', 'dispatch']);
+// 8.3 — a dispatch or a return carries a comet whose impact waits for its
+// note, so its batch closes this long after its LAST fact (a fan lands inside
+// it), never later than `OUTCOME_AGGREGATE_MS` after its first. With CueKit's
+// ≥ 40 ms lead the note sounds ≥ 600 ms after the last fact: inside the last
+// comet's 80 ms pull window before its 650 ms impact, or just after it.
+export const MOMENT_AGGREGATE_MS = 560;
+const MOMENT_KINDS = new Set(['dispatch', 'subagentReturn']);
+
+/** Whether a fact of this kind waits in the aggregation window before it is emitted. */
+export function isAggregatedOutcome(kind) {
+    return AGGREGATED_KINDS.has(kind);
+}
+
 const TURN_END_STATUSES = new Set([
     AgentStatus.IDLE,
     AgentStatus.WAITING,
@@ -108,16 +121,24 @@ function repoKey(repo) {
 /**
  * `harbor:updated` repo summaries → failed pushes: a repo whose
  * `failedPushes` grew since the last summary. The first summary is a
- * baseline (a failure already docked when we looked is not news).
+ * baseline (a failure already docked when we looked is not news) unless its
+ * latest failure (`latestFailureAt`) is younger than `freshMs`: a push that
+ * fails in the first harbor summary this page has seen is still news.
  */
-export function failedPushFacts(previous, repos) {
+export const FAILED_PUSH_FRESH_MS = 15_000;
+
+export function failedPushFacts(previous, repos, { now = Date.now(), freshMs = FAILED_PUSH_FRESH_MS } = {}) {
     const next = new Map();
     const facts = [];
     for (const repo of Array.isArray(repos) ? repos : []) {
         const key = repoKey(repo);
         const failed = Math.max(0, finite(repo?.failedPushes) ?? 0);
         next.set(key, failed);
-        if (previous && failed > (previous.get(key) ?? 0)) {
+        const failedAt = finite(repo?.latestFailureAt) ?? 0;
+        const news = previous
+            ? failed > (previous.get(key) ?? 0)
+            : failed > 0 && failedAt > 0 && now - failedAt >= 0 && now - failedAt < freshMs;
+        if (news) {
             facts.push({
                 kind: 'pushFailed',
                 agentId: idOf(repo?.agentId),
@@ -308,12 +329,22 @@ export class OutcomeRouter {
         const batch = this._batches.get(key);
         if (batch) {
             batch.facts.push(fact);
+            if (MOMENT_KINDS.has(fact.kind)) this._rearm(key, batch, now);
             return true;
         }
-        const entry = { facts: [fact], timer: null };
-        entry.timer = this._setTimer(() => this._flush(key), this.windowMs);
+        const entry = { facts: [fact], timer: null, firstAt: now };
+        const windowMs = MOMENT_KINDS.has(fact.kind) ? Math.min(MOMENT_AGGREGATE_MS, this.windowMs) : this.windowMs;
+        entry.timer = this._setTimer(() => this._flush(key), windowMs);
         this._batches.set(key, entry);
         return true;
+    }
+
+    // A moment batch closes `MOMENT_AGGREGATE_MS` after its latest fact, capped
+    // at the full window from its first.
+    _rearm(key, batch, now) {
+        const until = Math.min(now + Math.min(MOMENT_AGGREGATE_MS, this.windowMs), batch.firstAt + this.windowMs);
+        this._clearTimer(batch.timer);
+        batch.timer = this._setTimer(() => this._flush(key), Math.max(0, until - now));
     }
 
     /** Pending batch sizes by key (diagnostics). */

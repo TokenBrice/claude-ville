@@ -4,6 +4,7 @@
 
 import { BUILDING_DEFS } from '../config/buildings.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
+import { verifiedOutcomeFromGitEvent } from '../domain/services/VerifiedOutcome.js';
 
 const DISTRICT_BY_TYPE = {
     feat: 'forge',
@@ -30,6 +31,117 @@ const MILESTONE_TIERS = Object.freeze([
     { count: 10, tier: 'ribbon' },
     { count: 1, tier: 'maiden' },
 ]);
+
+/** 6.7 — the highest lifetime tier `count` has earned (1 / 10 / 100 / 1000), or null. */
+export function lifetimeTierFor(count) {
+    const value = Number(count);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    for (const { count: threshold, tier } of MILESTONE_TIERS) {
+        if (value >= threshold) return tier;
+    }
+    return null;
+}
+
+// 6.7 — Chronicle dressing (M16): one static manifest layer per building,
+// earned by verified lifetime counts and never lost to retention. The Harbor
+// strings one bunting pennant per verified release (max 5, the 6.5 pennant
+// family); the Forge stands a billet rack from the ribbon tier of verified
+// feat/fix commits (more billets at flagship and aurora); the Archive a brass
+// lectern from the flagship tier of verified Chronicle records (a gilt book
+// at aurora). The frame is the layer's strip frame; null draws nothing.
+export const CHRONICLE_DRESSING_META_KEY = 'chronicleDressing';
+export const BUNTING_MAX_PENNANTS = 5;
+const DRESSING_ID_LIMIT = 512;
+const DRESSING_TIER_FRAMES = Object.freeze({
+    'forge.billetRack': Object.freeze({ counter: 'featFix', frames: Object.freeze({ ribbon: 0, flagship: 1, aurora: 2 }) }),
+    'archive.lectern': Object.freeze({ counter: 'records', frames: Object.freeze({ flagship: 0, aurora: 1 }) }),
+});
+
+/**
+ * The static strip frame of dressing layer `name` on building `type` for
+ * lifetime `counts` `{ release, featFix, records }`, or null (nothing earned,
+ * unknown layer, or a frame the strip does not have).
+ */
+export function chronicleDressingFrame(counts, type, name, frames = Infinity) {
+    let frame = null;
+    if (type === 'harbor' && name === 'bunting') {
+        const releases = Math.min(BUNTING_MAX_PENNANTS, Math.floor(Number(counts?.release) || 0));
+        frame = releases > 0 ? releases - 1 : null;
+    } else {
+        const rule = DRESSING_TIER_FRAMES[`${type}.${name}`];
+        const tier = rule ? lifetimeTierFor(counts?.[rule.counter]) : null;
+        frame = tier != null && rule.frames[tier] !== undefined ? rule.frames[tier] : null;
+    }
+    return frame != null && frame < frames ? frame : null;
+}
+
+function isFeatFixCommit(event) {
+    const parsed = conventionalType(
+        event?.subject || event?.message || event?.label || commitMessageFromCommand(event?.command) || event?.command
+    );
+    return parsed?.type === 'feat' || parsed?.type === 'fix';
+}
+
+/**
+ * 6.7 — lifetime counters behind the dressing, persisted in the Chronicle
+ * store's meta (which retention never prunes), so a record past retention
+ * keeps the tier it earned. Only verified outcomes count (a successful push
+ * of a release tag, a successful commit; `verifiedOutcomeFromGitEvent`).
+ */
+export class ChronicleDressingLedger {
+    constructor() {
+        this.counts = { release: 0, featFix: 0, records: 0 };
+        this._ids = [];
+        this._idSet = new Set();
+        this._loaded = false;
+        this._loading = null;
+    }
+
+    load(store) {
+        if (this._loaded) return Promise.resolve();
+        if (typeof store?.getMeta !== 'function') {
+            this._loaded = true;
+            return Promise.resolve();
+        }
+        if (!this._loading) {
+            this._loading = store.getMeta(CHRONICLE_DRESSING_META_KEY, null)
+                .then((value) => {
+                    for (const key of Object.keys(this.counts)) {
+                        const n = Math.floor(Number(value?.[key]));
+                        if (Number.isFinite(n) && n > this.counts[key]) this.counts[key] = n;
+                    }
+                    for (const id of Array.isArray(value?.ids) ? value.ids : []) this._remember(String(id));
+                })
+                .catch(() => {})
+                .finally(() => { this._loaded = true; });
+        }
+        return this._loading;
+    }
+
+    frameFor(type, name, frames) {
+        return chronicleDressingFrame(this.counts, type, name, frames);
+    }
+
+    _remember(id) {
+        if (this._idSet.has(id)) return;
+        this._idSet.add(id);
+        this._ids.push(id);
+        while (this._ids.length > DRESSING_ID_LIMIT) this._idSet.delete(this._ids.shift());
+    }
+
+    // Counts a freshly planted record once, if its source event is verified.
+    async note(store, record, event) {
+        if (!record?.id || this._idSet.has(record.id) || !verifiedOutcomeFromGitEvent(event)) return false;
+        this._remember(record.id);
+        this.counts.records += 1;
+        if (record.kind === 'release') this.counts.release += 1;
+        else if (isFeatFixCommit(event)) this.counts.featFix += 1;
+        if (typeof store?.setMeta === 'function') {
+            await store.setMeta(CHRONICLE_DRESSING_META_KEY, { ...this.counts, ids: [...this._ids] });
+        }
+        return true;
+    }
+}
 
 function textOf(value) {
     return String(value || '').trim();
@@ -259,10 +371,13 @@ export class MonumentPlanter {
         this.rules = rules;
         this.eventBus = eventTarget;
         this.seen = new Set();
+        // 6.7 — the lifetime counters the Chronicle dressing reads.
+        this.dressing = new ChronicleDressingLedger();
     }
 
     async processEvents(events = [], context = {}) {
         if (!this.store) return [];
+        await this.dressing.load(this.store);
         const planted = [];
         const isActive = typeof context.isActive === 'function' ? context.isActive : () => true;
         for (const event of events) {
@@ -275,6 +390,7 @@ export class MonumentPlanter {
                 if (!isActive()) break;
                 if (existing) continue;
                 await this.store.put('monuments', record);
+                await this.dressing.note(this.store, record, event);
                 if (!isActive()) break;
                 planted.push(record);
                 this.eventBus?.emit?.('chronicle:milestone', record);

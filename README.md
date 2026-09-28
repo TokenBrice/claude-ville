@@ -59,7 +59,7 @@ An isometric pixel island where each session is a villager whose sprite follows 
 - **Instruments.** Hold **B** (or READ) to swap routine names for work verbs. **A** frames every agent needing attention and states how many fell outside the frame. **AMBIENT CAM** hands the camera to a patient broadcast of the busiest real work; any input takes it back. **F** frames the village; `/` or `Ctrl/Cmd+K` searches agents.
 - **Light and weather.** One colour grade from the local clock, a seeded daily weather timeline, the moon phase, and the season. After dusk, windows light only where someone works. Weather is modelled locally, never fetched.
 - **Moments.** Arrivals rise as a violet column at the gate, sub-agents fly out as comets and land near their parent, and a finished top-level agent walks out through the gate while a finished sub-agent merges back into its parent.
-- **Renderer.** A resident WebGL2 world by default, with a Canvas 2D fallback (`?renderer=canvas`). Shift-D shows the debug overlay.
+- **Renderer.** A resident WebGL2 world by default on a hardware GPU. The World falls back to Canvas 2D on a software rasterizer (SwiftShader, llvmpipe) or with `?renderer=canvas`; `?renderer=webgl` forces WebGL. Shift-D shows the debug overlay.
 
 ### Dashboard mode
 
@@ -183,7 +183,7 @@ The frontend boot path is `claudeville/src/presentation/App.js`:
 5. In parallel: sprite metadata, the `IsometricRenderer` module, the `DashboardRenderer` module, and the initial snapshot over the WebSocket (REST is the fallback).
 6. Start `SessionWatcher` (skipped under `?sim=1`, which starts the simulator instead).
 7. Bind the World container `ResizeObserver`.
-8. Mount `IsometricRenderer` once assets and module are ready: resident WebGL2 unless `?renderer=canvas` or `?postfx=0`; the canvases fade in on the first presented frame.
+8. Mount `IsometricRenderer` once assets and module are ready: resident WebGL2 on a hardware rasterizer unless `?renderer=canvas` or `?postfx=0` (Canvas on a software rasterizer unless `?renderer=webgl`); the canvases fade in on the first presented frame.
 9. Bind agent follow and `#agent=<id>` deep links. The Activity Panel and Chronicle panel load with their stylesheets on first use; audio loads after boot.
 10. Apply English UI strings.
 
@@ -278,7 +278,7 @@ curl http://localhost:4000/api/sessions
 - Keep port `4000` unless all dependent docs and local workflows are updated together.
 - No framework, bundler, transpiler, TypeScript, or runtime dependency. Keep changes within vanilla JavaScript ES modules and static CSS.
 - `DEBUG_STATIC=1` logs static file requests; `DEBUG_WATCH=1` logs watch-path refresh details; `CLAUDEVILLE_DEBUG_JSONL=1` logs skipped transcript lines.
-- Useful URL flags: `?sim=1` (simulator), `?renderer=canvas` (Canvas 2D fallback), `?postfx=0` (no WebGL layer at all).
+- Useful URL flags: `?sim=1` (simulator), `?renderer=canvas` (Canvas 2D fallback), `?renderer=webgl` (force WebGL, even on a software rasterizer), `?postfx=0` (no WebGL layer at all).
 - Add models through `models.json` and `npm run models:generate`, never by hand-editing the generated files.
 - Do not edit sprite PNGs without also checking `claudeville/assets/sprites/manifest.yaml` and the sprite validation rules.
 - This repo is often edited by multiple agents. Check `git status --short` before changes and preserve unrelated local edits.

@@ -1,5 +1,6 @@
 import { resolveObservation } from './ObservationCertainty.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { toolCategory } from '../../domain/services/ToolIdentity.js';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { defineMoment, momentPhase } from './EffectStamps.js';
 
@@ -79,6 +80,27 @@ export function ritualDownbeat(ritual, now = Date.now()) {
     if (ritual.phase === 'fading' && age < lead) return null;
     const phase = momentPhase(age, DOWNBEAT_MOMENT);
     return phase.phase === 'done' ? null : { index, age, ...phase };
+}
+
+// 7.3 — the authored work strip a ritual asks the villager to play, by the
+// real tool class first, wherever the tool lands: shell commands (Bash,
+// tests) tinker, file edits (Edit/Write/apply_patch) strike, lookups
+// (WebFetch/WebSearch, Grep/Glob, Read) gaze. Only a tool with no such class
+// (tasks, MCP calls, unknown names) takes the building's group as the
+// tie-break: gaze at the Observatory, strike at the Forge. Everything else
+// keeps its procedural gesture. Admission is this conductor's: only an
+// enqueued ritual (≤ MAX_CONCURRENT_RITUALS) animates a strip.
+const STRIP_GROUP_BY_TOOL_CATEGORY = Object.freeze({ exec: 'tinker', write: 'strike', search: 'gaze', read: 'gaze' });
+
+export function workStripGroup(tool, building) {
+    const name = String(tool || '');
+    if (!name) return null;
+    // An MCP call reports as `exec` but is not a shell command.
+    const byClass = name.startsWith('mcp__') ? null : STRIP_GROUP_BY_TOOL_CATEGORY[toolCategory(name)];
+    if (byClass) return byClass;
+    if (building === 'observatory') return 'gaze';
+    if (building === 'forge') return 'strike';
+    return null;
 }
 
 // #41 — place-specific idle posture for villagers loitering at a scenic point.
@@ -477,6 +499,7 @@ export class RitualConductor {
             angle: meta.angle || 0,
             commandLifecycle: meta.commandLifecycle || event.commandLifecycle || null,
             pose: RITUAL_POSE_BY_BUILDING[building] || null,
+            stripGroup: workStripGroup(event.tool, building),
             pulseBand: meta.pulseBand || 'static',
             phase: 'pending',
             count: 1,

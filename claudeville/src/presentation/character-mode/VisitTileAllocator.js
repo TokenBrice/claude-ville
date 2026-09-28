@@ -1,4 +1,9 @@
 import { normalizeBuildingType, VISIT_OVERFLOW_TILES } from '../../config/buildings.js';
+import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
+import { AMBIENT_GROUND_PROPS, DISTRICT_PROPS, SCENIC_POINT_PROPS } from '../../config/scenery.js';
+import { COMMAND_QUEUE, REST_SEATS } from '../../config/townPlan.js';
+import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
+import { compareByWaitAge, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 
 const DEFAULT_RESERVATION_TTL_MS = 20000;
@@ -18,6 +23,74 @@ const LOCAL_CLUSTER_RADIUS = 2.4;
 const LOCAL_CLUSTER_PENALTY = 12;
 const CROWD_CLUSTER_CELL_SIZE = 4;
 const CROWD_CLUSTER_TOP_LIMIT = 12;
+
+// Plans 7.1 / 7.2 — occupancy places outside any building. Their reservations
+// carry their own building types, so they never raise a building's load,
+// capacity or congestion (V8: rest and queue occupants are not visitors).
+export const REST_SEAT_BUILDING_TYPE = 'rest-seat';
+export const COMMAND_QUEUE_BUILDING_TYPE = 'command-queue';
+// A seat or queue place is held for as long as its occupant renews it (the
+// sprite renews every 5 s while it waits); a vanished agent frees it in 60 s.
+const PLACE_RESERVATION_TTL_MS = 60000;
+// Where an idle villager stands when every seat is taken: beside the nearest
+// seat, on the first free walkable tile of this ring (tile offsets).
+const SEAT_STAND_RING = Object.freeze([
+    [1, 1], [-1, 1], [1, -1], [-1, -1], [2, 0], [0, 2], [-2, 0], [0, -2], [2, 1], [1, 2], [-2, 1], [1, -2],
+]);
+// Seat ranking: a seat the walk search cannot reach ranks after every
+// reachable one.
+const SEAT_UNREACHED_STEPS = 10000;
+const WALK_STEPS = Object.freeze([[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]);
+const FACING_TILE_STEP = Object.freeze({ 'south-east': [1, 0], 'south-west': [0, 1] });
+
+// A standing body never covers a fixture: a brazier, lantern, well, cart,
+// stall, sign or crate, or a bench it does not sit on. A body standing in
+// front of a fixture is drawn over it, so its box (`FIXTURE_BODY.halfPx`
+// either side of the foot, `heightPx` up) keeps off the fixture's standing
+// part: the foot stays out of the box `half + halfPx` across, `backPx` behind
+// and `heightPx - rise` in front of the fixture's foot. `half` is the
+// half-width of the fixture sprite's standing part (alpha > 128, world px) and
+// `rise` the height of that part's lowest row above the foot: a brazier's
+// bowl, a stall's awning, a cart's bed, a lantern's post and lamp or a sign's
+// post and arm (above their ground plinth), a bench's timber seat. A body
+// behind a fixture is drawn under it. Walkers may pass; standing places
+// (visit slots, the seat stand ring, fan places, landings, queue slots) are
+// checked. Step, rim and pier seats draw only under a sitter, so they are no
+// fixture.
+const FIXTURE_BODY = Object.freeze({ halfPx: 16, heightPx: 60, backPx: 8 });
+const FIXTURE_PARTS = Object.freeze({
+    'prop.runeBrazier': [14, 0], 'prop.lantern': [5, 16], 'prop.bridgeLanternPost': [6, 0],
+    'prop.well': [22, 0], 'prop.oreCart': [19, 0], 'prop.flowerCart': [16, 0],
+    'prop.marketStall': [32, 0], 'prop.signpost': [11, 16], 'prop.noticePillar': [21, 0],
+    'prop.runestone': [11, 0], 'prop.scrollCrates': [19, 0], 'prop.netRack': [15, 0],
+    bench: [14, 0],
+});
+const fixtureFoot = (tileX, tileY, [half, rise], seatId = null) => Object.freeze({
+    x: (tileX - tileY) * TILE_WIDTH / 2,
+    y: (tileX + tileY) * TILE_HEIGHT / 2,
+    xPx: half + FIXTURE_BODY.halfPx,
+    frontPx: FIXTURE_BODY.heightPx - rise,
+    seatId,
+});
+const FIXTURE_FEET = Object.freeze([
+    ...DISTRICT_PROPS.map(prop => [prop, prop.id]),
+    ...SCENIC_POINT_PROPS.map(prop => [prop, prop.id]),
+    ...AMBIENT_GROUND_PROPS.map(prop => [prop, `prop.${prop.type}`]),
+].filter(([, id]) => FIXTURE_PARTS[id])
+    .map(([prop, id]) => fixtureFoot(prop.tileX, prop.tileY, FIXTURE_PARTS[id]))
+    .concat(REST_SEATS.filter(seat => seat.occluder === 'bench')
+        .map(seat => fixtureFoot(seat.tileX, seat.tileY, FIXTURE_PARTS.bench, seat.id))));
+
+// True when a body standing at world (x, y) covers a fixture. `seatId` is the
+// bench its body sits on, which it may cover.
+export function standsOnFixture(x, y, seatId = null) {
+    for (const foot of FIXTURE_FEET) {
+        if (seatId && foot.seatId === seatId) continue;
+        const dy = y - foot.y;
+        if (Math.abs(x - foot.x) < foot.xPx && dy > -FIXTURE_BODY.backPx && dy < foot.frontPx) return true;
+    }
+    return false;
+}
 
 const BUILDING_CAPACITY_OVERRIDES = Object.freeze({
     command: 5,
@@ -223,6 +296,11 @@ export class VisitTileAllocator {
             return null;
         }
 
+        // 7.1 / 7.2 — rest seats and the Command queue are places, not
+        // buildings: their slot is chosen by distance or by wait rank.
+        if (building?.restSeats) return this._allocateRestSeat({ agentId, agent, sprite, now });
+        if (building?.commandQueue) return this._allocateQueuePlace({ agentId, now });
+
         const resolvedBuilding = this._resolveBuilding(building, intent);
         const buildingType = this._buildingType(resolvedBuilding, intent);
         const slots = this._candidateTiles({
@@ -240,7 +318,7 @@ export class VisitTileAllocator {
         const sourceTile = this._spriteTile(sprite) || this._agentTile(agent);
         const buildingCapacity = this._buildingCapacity(resolvedBuilding, buildingType, slots.length, intent);
         const buildingOccupancy = this._buildingOccupancy(resolvedBuilding, buildingType, agentId);
-        const hasWalkableSlot = slots.some((slot) => this._isWalkable(slot.tileX, slot.tileY));
+        const hasWalkableSlot = slots.some((slot) => this._isStandable(slot.tileX, slot.tileY));
 
         let best = null;
         for (const slot of slots) {
@@ -346,6 +424,196 @@ export class VisitTileAllocator {
             relatedCluster: reservation.relatedCluster,
             relatedDistance: reservation.relatedDistance,
             facingPoint: reservation.facingPoint,
+        };
+    }
+
+    // 7.1 — the free seat the villager reaches soonest on foot (a seat across
+    // the water is far however close it looks); its own seat while it still
+    // holds one. With every seat taken it stands beside the nearest seat.
+    _allocateRestSeat({ agentId, agent, sprite, now }) {
+        const own = this._reservationForAgent(agentId);
+        const taken = new Set();
+        const standing = new Set();
+        for (const reservation of this.reservations.values()) {
+            if (reservation.agentId === agentId || reservation.expiresAt <= now) continue;
+            if (reservation.buildingType !== REST_SEAT_BUILDING_TYPE) continue;
+            taken.add(reservation.slotId);
+            standing.add(`${reservation.tileX},${reservation.tileY}`);
+        }
+        if (own?.buildingType === REST_SEAT_BUILDING_TYPE && own.seat && own.expiresAt > now && !taken.has(own.slotId)) {
+            return this._placeAllocation(this._storePlace(agentId, own, now));
+        }
+        const source = this._spriteTile(sprite) || this._agentTile(agent);
+        const steps = source ? this._walkSteps(source, REST_SEATS) : null;
+        const bySource = REST_SEATS
+            .map((seat) => {
+                const direct = source ? this._distance(source, seat) : 0;
+                const walked = steps ? steps.get(`${seat.tileX},${seat.tileY}`) ?? SEAT_UNREACHED_STEPS + direct : direct;
+                return { seat, distance: walked };
+            })
+            .sort((a, b) => (a.distance - b.distance) || a.seat.id.localeCompare(b.seat.id));
+        for (const { seat } of bySource) {
+            const slotId = `seat:${seat.id}`;
+            if (taken.has(slotId) || !this._isWalkable(seat.tileX, seat.tileY)) continue;
+            return this._placeAllocation(this._storePlace(agentId, {
+                buildingType: REST_SEAT_BUILDING_TYPE,
+                tileX: seat.tileX,
+                tileY: seat.tileY,
+                slotId,
+                seat,
+                role: 'rest',
+                facingPoint: seatFacingPoint(seat),
+            }, now));
+        }
+        // Overflow: stand at the nearest seat's cluster, never on a seat.
+        const seatTiles = new Set(REST_SEATS.map((seat) => `${seat.tileX},${seat.tileY}`));
+        for (const { seat } of bySource) {
+            for (const [ox, oy] of SEAT_STAND_RING) {
+                const tileX = seat.tileX + ox;
+                const tileY = seat.tileY + oy;
+                const key = `${tileX},${tileY}`;
+                if (seatTiles.has(key) || standing.has(key) || !this._isStandable(tileX, tileY)) continue;
+                return this._placeAllocation(this._storePlace(agentId, {
+                    buildingType: REST_SEAT_BUILDING_TYPE,
+                    tileX,
+                    tileY,
+                    slotId: `seat-stand:${key}`,
+                    seat: null,
+                    role: 'rest',
+                    overflow: true,
+                    facingPoint: { x: seat.tileX, y: seat.tileY },
+                }, now));
+            }
+        }
+        this.metrics.rejected++;
+        return null;
+    }
+
+    // Walking steps (8-neighbour, no corner cutting) from `source` to each
+    // target tile, by breadth-first search over the walk grid. Null without a
+    // pathfinder grid; unreached targets are missing from the map.
+    _walkSteps(source, targets) {
+        if (!this.pathfinder || typeof this.pathfinder.isWalkable !== 'function') return null;
+        const wanted = new Set(targets.map((tile) => `${Math.round(tile.tileX)},${Math.round(tile.tileY)}`));
+        const found = new Map();
+        let start = { tileX: Math.round(source.tileX), tileY: Math.round(source.tileY) };
+        if (!this._isWalkable(start.tileX, start.tileY)) {
+            start = this.pathfinder.nearestWalkable?.(start.tileX, start.tileY, 3) || null;
+            if (!start) return null;
+        }
+        const seen = new Set([`${start.tileX},${start.tileY}`]);
+        let frontier = [[start.tileX, start.tileY]];
+        for (let depth = 0; frontier.length && found.size < wanted.size; depth++) {
+            const next = [];
+            for (const [x, y] of frontier) {
+                const key = `${x},${y}`;
+                if (wanted.has(key)) found.set(key, depth);
+                for (const [dx, dy] of WALK_STEPS) {
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    const nextKey = `${nx},${ny}`;
+                    if (seen.has(nextKey) || !this._isWalkable(nx, ny)) continue;
+                    if (dx && dy && (!this._isWalkable(x + dx, y) || !this._isWalkable(x, y + dy))) continue;
+                    seen.add(nextKey);
+                    next.push([nx, ny]);
+                }
+            }
+            frontier = next;
+        }
+        return found;
+    }
+
+    // 7.2 — the petitioner's place in the Command queue: slot = its wait rank.
+    _allocateQueuePlace({ agentId, now }) {
+        const rank = this.queueRank(agentId);
+        if (rank < 0) {
+            this.metrics.rejected++;
+            return null;
+        }
+        const slots = COMMAND_QUEUE.slots;
+        const inLine = rank < slots.length;
+        const tile = inLine ? slots[rank] : COMMAND_QUEUE.overflow[(rank - slots.length) % COMMAND_QUEUE.overflow.length];
+        const ahead = inLine && rank > 0 ? slots[rank - 1] : COMMAND_QUEUE.door;
+        return this._placeAllocation(this._storePlace(agentId, {
+            buildingType: COMMAND_QUEUE_BUILDING_TYPE,
+            tileX: tile.tileX,
+            tileY: tile.tileY,
+            slotId: inLine ? `queue:${rank}` : `queue-plaza:${rank}`,
+            role: 'queue',
+            queueIndex: rank,
+            queueDepth: this._queueRanking.order.length,
+            queueOverflow: !inLine,
+            overflow: !inLine,
+            facingPoint: { x: ahead.tileX, y: ahead.tileY },
+        }, now));
+    }
+
+    // 7.2 — wait rank among the waiting-on-user bodies: oldest
+    // `SignalLedger.waitAnchor()` first (the sidebar's NEEDS YOU order), unknown
+    // ages last. Re-ranked only when the waiting set changes, so a petitioner
+    // never swaps places with a neighbour while both still wait. -1 when the
+    // agent is not waiting on the operator.
+    queueRank(agentId) {
+        const ranking = this._refreshQueueRanking();
+        const rank = ranking.rankById.get(String(agentId));
+        return Number.isInteger(rank) ? rank : -1;
+    }
+
+    _refreshQueueRanking() {
+        const waiting = [];
+        for (const sprite of this.agentSprites) {
+            const agent = sprite?.agent;
+            if (!agent || agent.status !== AgentStatus.WAITING_ON_USER || agent.isDeparted) continue;
+            waiting.push(agent);
+        }
+        const key = waiting.map((agent) => String(agent.id)).sort().join('|');
+        if (this._queueRanking?.key === key) return this._queueRanking;
+        const known = waiting.filter((agent) => waitAnchor(agent) > 0).sort(compareByWaitAge);
+        const unknown = waiting.filter((agent) => !(waitAnchor(agent) > 0))
+            .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        const order = [...known, ...unknown].map((agent) => String(agent.id));
+        this._queueRanking = { key, order, rankById: new Map(order.map((id, rank) => [id, rank])) };
+        return this._queueRanking;
+    }
+
+    _storePlace(agentId, place, now) {
+        const previousReservationId = this.agentReservationIds.get(agentId);
+        if (previousReservationId) this.reservations.delete(previousReservationId);
+        const reservation = {
+            ...place,
+            id: this._nextReservationId(agentId),
+            agentId,
+            createdAt: place.createdAt ?? now,
+            expiresAt: now + PLACE_RESERVATION_TTL_MS,
+            walkable: this._isWalkable(place.tileX, place.tileY),
+            scenic: false,
+            overflow: !!place.overflow,
+        };
+        this.reservations.set(reservation.id, reservation);
+        this.agentReservationIds.set(agentId, reservation.id);
+        this.metrics.allocations++;
+        return reservation;
+    }
+
+    _placeAllocation(reservation) {
+        return {
+            tileX: reservation.tileX,
+            tileY: reservation.tileY,
+            slotId: reservation.slotId,
+            slotIndex: null,
+            reservationId: reservation.id,
+            buildingType: reservation.buildingType,
+            expiresAt: reservation.expiresAt,
+            walkable: reservation.walkable,
+            scenic: false,
+            overflow: reservation.overflow,
+            queueGroup: reservation.buildingType,
+            queueIndex: Number.isInteger(reservation.queueIndex) ? reservation.queueIndex : null,
+            queueDepth: Number.isInteger(reservation.queueDepth) ? reservation.queueDepth : null,
+            queueOverflow: !!reservation.queueOverflow,
+            role: reservation.role,
+            seat: reservation.seat || null,
+            facingPoint: reservation.facingPoint ? { ...reservation.facingPoint } : null,
         };
     }
 
@@ -528,7 +796,7 @@ export class VisitTileAllocator {
         const tileX = slot.tileX;
         const tileY = slot.tileY;
         const slotId = slot.slotId;
-        const walkable = this._isWalkable(tileX, tileY);
+        const walkable = this._isStandable(tileX, tileY);
         const reservations = this._reservationsForSlot(slotId, buildingType, now);
         const reservedByOther = reservations.some((reservation) => reservation.agentId !== agentId);
         const sameAgentSlot = existingReservation
@@ -774,6 +1042,12 @@ export class VisitTileAllocator {
         return !!this.pathfinder.isWalkable(Math.round(tileX), Math.round(tileY));
     }
 
+    // A tile a body may stand on: walkable, and off every fixture.
+    _isStandable(tileX, tileY) {
+        if (!this._isWalkable(tileX, tileY)) return false;
+        return !standsOnFixture((tileX - tileY) * TILE_WIDTH / 2, (tileX + tileY) * TILE_HEIGHT / 2);
+    }
+
     _reservationForAgent(agentId) {
         const reservationId = this.agentReservationIds.get(agentId);
         return reservationId ? this.reservations.get(reservationId) || null : null;
@@ -896,6 +1170,12 @@ export class VisitTileAllocator {
     _distance(a, b) {
         return Math.hypot((a.tileX || 0) - (b.tileX || 0), (a.tileY || 0) - (b.tileY || 0));
     }
+}
+
+// The tile a seated villager looks toward: one tile along its facing.
+function seatFacingPoint(seat) {
+    const [dx, dy] = FACING_TILE_STEP[seat.facing] || [1, 0];
+    return { x: seat.tileX + dx, y: seat.tileY + dy };
 }
 
 export default VisitTileAllocator;

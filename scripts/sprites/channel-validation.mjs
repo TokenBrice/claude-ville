@@ -112,6 +112,7 @@ export function validateMaterialContract(manifest, {
             errors += validateOccluder(entry, logger);
         }
         errors += validateDeclaredSidecars(entry, root, logger, channels);
+        errors += validateSurfaceChannel(entry, root, logger);
         for (const [name, layer] of Object.entries(entry.layers || {})) {
             const layerEntry = { ...layer, id: `${entry.id}.${name}` };
             if (layer.materialClass && !isKnownMaterialClass(layer.materialClass)) {
@@ -314,6 +315,40 @@ function validateDeclaredSidecars(entry, root, logger, channels = MATERIAL_CHANN
             }
         }
     }
+    return errors;
+}
+
+// Plan 2.3 — every landmark ships a baked surface channel: an occluder
+// companion whose R (true height) and B (surface code) are not all zero, read
+// by the GPU through `surfaceCode: true`
+// (scripts/sprites/bake-surface-channel.mjs).
+function validateSurfaceChannel(entry, root, logger) {
+    const landmark = /^building\.[^.]+$/.test(entry.id || '');
+    if (!landmark && !entry.surfaceCode) return 0;
+    if (entry.surfaceCode && entry.occluderSidecar !== true) {
+        return fail(logger, `INVALID SURFACE CHANNEL: ${entry.id} declares surfaceCode without occluderSidecar`);
+    }
+    if (!entry.surfaceCode || entry.occluderSidecar !== true) {
+        return fail(logger, `INVALID SURFACE CHANNEL: landmark ${entry.id} needs occluderSidecar + surfaceCode (run bake-surface-channel.mjs)`);
+    }
+    const albedoPath = join(root, `buildings/${entry.id}/base.png`);
+    const path = companionPathForChannel(entry, 'occluder', albedoPath);
+    if (!path || !existsSync(path)) return 0; // validateDeclaredSidecars reports the missing file
+    let red = false;
+    let blue = false;
+    try {
+        const png = PNG.sync.read(readFileSync(path));
+        for (let index = 0; index < png.width * png.height && !(red && blue); index++) {
+            if (!png.data[index * 4 + 3]) continue;
+            red ||= png.data[index * 4] > 0;
+            blue ||= png.data[index * 4 + 2] > 0;
+        }
+    } catch (err) {
+        return fail(logger, `INVALID SURFACE CHANNEL: ${entry.id} occluder sidecar cannot be read (${err.message})`);
+    }
+    let errors = 0;
+    if (!red) errors += fail(logger, `INVALID SURFACE CHANNEL: ${entry.id} occluder R (height) is all zero`);
+    if (!blue) errors += fail(logger, `INVALID SURFACE CHANNEL: ${entry.id} occluder B (surface code) is all zero`);
     return errors;
 }
 

@@ -28,7 +28,7 @@ import { getReservedRects } from '../shared/ReservedRects.js';
 import { CameraDirector } from './CameraDirector.js';
 import { ParticleSystem, WAKE_FOAM_COLORS } from './ParticleSystem.js';
 import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
-import { BuildingSprite, SOURCE_HALO_RADIUS_CAP, lampsLitAt } from './BuildingSprite.js';
+import { BuildingSprite, SOURCE_HALO_RADIUS_CAP } from './BuildingSprite.js';
 
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
@@ -40,8 +40,10 @@ import { WeatherRenderer } from './WeatherRenderer.js';
 import { baseWindX } from './Wind.js';
 import { WildlifeRenderer } from './WildlifeRenderer.js';
 import { FoliageRenderer } from './FoliageRenderer.js';
+import { PropWinter, WINTER_PROPS } from './PropWinter.js';
 import { SeasonalAmbience, seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { ChimneySmoke } from './ChimneySmoke.js';
+import { setPennantWeather } from './PixelPennant.js';
 import { openGroundTiles } from './AmbientGround.js';
 import { installGroundBake } from './GroundBake.js';
 import { OCEAN_HORIZON_WORLD_Y, drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
@@ -54,10 +56,10 @@ import { AgentEventStream } from './AgentEventStream.js';
 import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
-import VisitTileAllocator from './VisitTileAllocator.js';
+import VisitTileAllocator, { standsOnFixture } from './VisitTileAllocator.js';
 import { getPulsePriority, pulseValue } from './PulsePolicy.js';
 import { annotationModeForPressure, calculateScenePressure, getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
-import { lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
+import { fireBreath, fireBreathDepth, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import {
     applyTeamPlazaPreferences,
     getCouncilRingDiagnostics,
@@ -77,6 +79,7 @@ import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { attentionScreenRects, isAttentionStatus, layoutAttentionPlates } from './AttentionPlates.js';
 import { IDENTITY_LABEL, identityLabelTop, identityLabelWidth } from './WorldLabelKit.js';
 import { StaticPropSprite, buildStaticPropDrawables, lineOcclusionColumns } from './StaticPropDrawables.js';
+import { buildRestSeatPropSprites } from './RestSeats.js';
 import { createDepthDrawable, propPartSortY } from './DrawablePass.js';
 import {
     renderWorldFrame,
@@ -86,7 +89,7 @@ import {
 } from './WorldFrameRenderer.js';
 import { createPostFx } from './postfx/PostFx.js';
 import { createPostFxFeed } from './postfx/PostFxFeed.js';
-import { createGpuWorldRenderer } from './gpu/GpuWorldRenderer.js';
+import { createGpuWorldRenderer, probeWebgl2Raster } from './gpu/GpuWorldRenderer.js';
 import {
     GPU_ATTENTION_LIGHT_PRIORITY,
     localLightPhaseForLighting,
@@ -156,6 +159,9 @@ const ATTENTION_LIGHT_STYLES = Object.freeze({
     errors: Object.freeze({ color: THEME.error, radius: 38, intensity: 0.6 }),
     quota: Object.freeze({ color: `rgb(${INCIDENT_COLORS_RGB.quota})`, radius: 34, intensity: 0.45 }),
 });
+// V5 / 2.5 — the attention light stands on its owner's foot, this many world
+// px up: its courses fill the owner's ground and hem, never a neighbour.
+const ATTENTION_LIGHT_HEIGHT = 4;
 const TERRAIN_CACHE_MARGIN = 360;
 const TERRAIN_CACHE_CHUNK_SIZE = 16;
 const TERRAIN_CACHE_MAX_SINGLE_SURFACE_PIXELS = CANVAS_BUDGET.maxWorldCachePixels;
@@ -178,6 +184,74 @@ const LOCAL_AVOIDANCE = Object.freeze({
     denseStrengthPx: 0.62,
     bucketPx: 40,
 });
+// 7.4 — foot traffic. Of two walkers within engagePx whose courses agree
+// (heading dot > headingDot), the trailing one walks one V7 rung down until
+// the gap opens to releasePx: a loose file, never a stack. A walker about to
+// come closer than yieldPx to a walker ahead of it (inside its aheadDot
+// cone, on a course within 90°: mergeDot) that is walking or giving way
+// itself plants and lets the other draw ahead (AgentSprite._yieldToLeader)
+// until the gap is back to releasePx; the trigger leads the pair's closing
+// speed by closingFrames refreshes. Within lookAheadPx of a corner a
+// walker's course is already its next leg.
+const FOLLOW_GAP = Object.freeze({
+    engagePx: 22,
+    releasePx: 24,
+    yieldPx: 20.5,
+    closingFrames: 2,
+    lookAheadPx: 20,
+    headingDot: 0.7,
+    mergeDot: 0,
+    aheadDot: 0.5,
+    chainSteps: 12,
+});
+// 7.4 — a walker bends its course around a villager standing in its way
+// (performing, talking, seated, queued): inside this 2:1-ish clearance
+// ellipse (the body box |dx| < 14, |dy| < 8 plus two steps' margin) it is
+// pushed out along the ellipse normal at up to strength × the local-avoidance
+// push. The standing body never moves; a walker coming to stand beside that
+// body, or on its last lastLegPx, walks straight in.
+const STANDING_CLEARANCE = Object.freeze({ xPx: 28, yPx: 18, strength: 2.5, lastLegPx: 10 });
+// 7.4 — villagers at one building fan on a 2:1 ring in visit-slot order
+// instead of standing inside one another. The plan's ±6 × ±3 px ring left
+// neighbours 6–12 px apart: still one body box (|dx| < 14, |dy| < 8 world
+// px) and one clump on screen, so the ring is sized to the body box instead:
+// ±16 px across, ±8 px deep, the places beside the anchor first. A walker
+// whose stop lands on a standing body re-aims at a ring place while it is
+// still more than minApproachPx out (a re-picked visit that would walk a
+// fanned body back onto the anchor re-aims too), so it walks into the fan;
+// a body that stops inside another's box anyway (a chat approach stops
+// wherever it reaches its partner) steps onto the nearest free ring place
+// within settleHopPx; bodies already stacked (closer than stackPx) settle
+// onto the ring.
+const PERFORMING_FAN = Object.freeze({
+    radiusXPx: 16,
+    radiusYPx: 8,
+    overlapXPx: 14,
+    overlapYPx: 8,
+    stackPx: 3,
+    settleHopPx: 12,
+    minApproachPx: 1,
+    approachPx: 40,
+});
+// Ring places after the anchor in units of the radii: beside it (east and
+// west, the stable hash mirroring the set), in front, behind, then the four
+// corners. Every place clears the anchor's body box and its neighbours'.
+const FAN_RING_PLACES = Object.freeze([[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]]);
+// A seated (7.1 'rest') or queued (7.2 'queue') villager holds an exact
+// authored point; the fan never moves or re-aims it.
+const FAN_EXEMPT_ROLES = new Set(['rest', 'queue']);
+// 7.4 — sessions that arrive together enter the village gate in two
+// parallel files: each waits hidden until a lane's entry point has no body
+// within GATE_ENTRY_GAP_PX, so a restart that lands dozens of sessions in one
+// frame walks in spaced, never as a stacked knot. Both lanes run straight
+// through the arch along -tileY, from `outsideY` to `insideY`, 0.45 tile
+// either side of the arch's axis (tile column 19.1): 26 world px between
+// the files, both inside the arch.
+const GATE_ENTRY_GAP_PX = FOLLOW_GAP.releasePx;
+const GATE_ENTRY_LANES = Object.freeze([
+    Object.freeze({ tileX: 18.65, outsideY: 39.35, insideY: 37.6 }),
+    Object.freeze({ tileX: 19.55, outsideY: 39.35, insideY: 37.6 }),
+]);
 
 // C2 — the Canvas fallback grades with the same evaluated grade as the
 // resident and hybrid paths. A multiply overlay carries the ambient (exposure
@@ -364,6 +438,8 @@ const VILLAGE_STONE_PALETTE = Object.freeze({
     moss: '#4f7b3d',
     outline: '#1b1009',
 });
+// drawSprite options for a prop drawn as authored (no winter state).
+const NO_PROP_OPTS = Object.freeze({});
 const VILLAGE_GATE_TOWER_HALF_TILES = 1.55;
 const VILLAGE_GATE_TOWER_SPRITE_ID = 'prop.villageGateTower';
 const VILLAGE_GATE_ARCH_SPRITE_ID = 'prop.villageGateArch';
@@ -544,9 +620,13 @@ export class IsometricRenderer {
         this.terrainCacheMeta = null;
         this._terrainCacheLimitWarningKey = '';
         this.foliageRenderer = new FoliageRenderer(this);
+        // 5.2 — flora props' winter states (dormant beds, snow caps).
+        this.propWinter = new PropWinter(this);
         this.wildlifeRenderer = new WildlifeRenderer(this);
         this.terrainSeed = [];
         this._motionClock = createMotionClock();
+        // 6.1 — building parts and emitter cycles step on the one clock.
+        if (this.buildingRenderer) this.buildingRenderer.motionClock = this._motionClock;
         this.waterFrame = 0;
         this.motionQuery = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this.motionScale = this.motionQuery?.matches ? 0 : 1;
@@ -563,6 +643,8 @@ export class IsometricRenderer {
             assets: this.assets,
             particles: this.particleSystem,
         });
+        // 6.7 — the Chronicle dressing layers read the planter's lifetime ledger.
+        if (this.buildingRenderer) this.buildingRenderer.chronicleDressing = this.chronicleMonuments.planter.dressing;
         this.trailRenderer = new TrailRenderer({
             store: this.chronicleStore,
             world: this.world,
@@ -746,7 +828,7 @@ export class IsometricRenderer {
                 id,
                 bounds: this._assetPropBounds(id, 0.62),
                 splitForOcclusion: size === 'large',
-                drawFn: (ctx, x, y) => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y); },
+                drawFn: (ctx, x, y) => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y, this._winterPropOpts(id)); },
             });
         });
         this.districtPropSprites = this._buildDistrictPropSprites();
@@ -755,6 +837,9 @@ export class IsometricRenderer {
             ...this.boulderPropSprites,
             ...this.districtPropSprites,
         ];
+        // The cached flora props (and the bridge's near-rail slices, cut from
+        // the bridge image) that repaint when the winter state steps.
+        this._winterPropSprites = this._staticPropSprites.filter((sprite) => WINTER_PROPS[sprite.id] || sprite.id?.startsWith?.('bridge.rail.'));
         this._staticPropDrawables = this._buildStaticPropDrawables();
         this._staticPropFastDrawables = this._buildStaticPropFastDrawables();
         this._staticPropFastFrameDrawables = [];
@@ -1540,11 +1625,14 @@ export class IsometricRenderer {
             return false;
         }
         // The parity, lifecycle, memory, and reference-hardware gates promote
-        // the GPU-resident diorama to the default. `?renderer=canvas` keeps the
-        // production fallback and `?postfx=0` is the allocation-free escape.
+        // the GPU-resident diorama to the default on a hardware rasterizer; a
+        // software one (SwiftShader, llvmpipe) takes the Canvas world.
+        // `?renderer=canvas` keeps the production fallback, `?renderer=webgl`
+        // forces WebGL, and `?postfx=0` is the allocation-free escape.
         const params = new URLSearchParams(window.location.search);
         const postFxEnabled = params.get('postfx') !== '0';
-        const requestedMode = resolveGpuWorldRendererMode(params, { webgl2: true });
+        const raster = params.has('renderer') ? { webgl2: true, softwareRaster: false } : probeWebgl2Raster();
+        const requestedMode = resolveGpuWorldRendererMode(params, raster);
         this.gpuWorld = (postFxEnabled && requestedMode === 'webgl' && this.fxCanvas)
             ? createGpuWorldRenderer({ canvas: this.fxCanvas, enabled: true })
             : null;
@@ -2056,14 +2144,6 @@ export class IsometricRenderer {
         releaseCanvasBackingStore(this._groundCueRecorder?.atlas?.canvas);
         this._groundCueRecorder = null;
         this._groundCueRecords = null;
-        releaseCanvasBackingStore(this._gpuAgentOccluderAtlas);
-        this._gpuAgentOccluderAtlas = null;
-        this._gpuAgentOccluderAtlasState = null;
-        this._gpuAgentOccluderFrames?.clear();
-        this._gpuAgentOccluderLiveIds?.clear();
-        releaseCanvasMap(this._gpuAgentOccluderUpdateCanvases);
-        this._gpuAgentOccluderUpdateCanvases = null;
-        this._gpuAgentOccluderTextureUpdates = [];
         releaseCanvasBackingStore(this._gpuAgentFrameAtlas);
         this._gpuAgentFrameAtlas = null;
         releaseCanvasBackingStore(this._gpuAgentMaterialAtlas);
@@ -2072,12 +2152,6 @@ export class IsometricRenderer {
         this._gpuAgentEmissiveAtlas = null;
         this._gpuAgentMaterialAtlasState = null;
         this._gpuAgentEmissiveAtlasState = null;
-        releaseCanvasMap(this._gpuAgentAlbedoUpdateCanvases);
-        releaseCanvasMap(this._gpuAgentMaterialUpdateCanvases);
-        releaseCanvasMap(this._gpuAgentEmissiveUpdateCanvases);
-        this._gpuAgentAlbedoUpdateCanvases = null;
-        this._gpuAgentMaterialUpdateCanvases = null;
-        this._gpuAgentEmissiveUpdateCanvases = null;
         this._gpuAgentAlbedoTextureUpdates = [];
         this._gpuAgentMaterialTextureUpdates = [];
         this._gpuAgentEmissiveTextureUpdates = [];
@@ -3253,8 +3327,9 @@ export class IsometricRenderer {
             sprite.setMotionScale(this.motionScale);
             sprite.setGpuWorldEnabled?.(this.gpuWorld?.isActive?.() === true);
             sprite.addedAt = performance.now();
-            this._beginAgentGateArrival(agent, sprite);
+            // Registered first: the gate entry queue lets in live sprites only.
             this.agentSprites.set(agent.id, sprite);
+            this._beginAgentGateArrival(agent, sprite);
             this._primeNickname(sprite);
             this._markSpritesDirty();
         }
@@ -3596,12 +3671,47 @@ export class IsometricRenderer {
         this._walkInThroughGate(agent, sprite);
     }
 
+    // 7.4 — the walk-in joins the gate entry queue; a clear gate mouth lets
+    // it in at once, otherwise it waits hidden (pending) for its turn.
     _walkInThroughGate(agent, sprite) {
-        sprite.walkToTile?.(
-            VILLAGE_GATE.inside.tileX + this._gateJitter(agent, 'inside-x', 0.42),
-            VILLAGE_GATE.inside.tileY + this._gateJitter(agent, 'inside-y', 0.28),
-        );
-        this.gateTransits.set(agent.id, { type: 'arrival' });
+        const queue = this._gateEntryQueue ||= [];
+        if (!queue.some(entry => entry.sprite === sprite)) queue.push({ agent, sprite });
+        sprite.setArrivalState?.('pending');
+        this._releaseGateEntries();
+    }
+
+    // Lets the head of the gate entry queue in through the first gate lane
+    // whose entry point has no visible body within GATE_ENTRY_GAP_PX (the
+    // body just let in blocks its own lane). An entry whose villager left,
+    // departs or is shown by someone else drops.
+    _releaseGateEntries() {
+        const queue = this._gateEntryQueue;
+        while (queue?.length) {
+            const { agent, sprite } = queue[0];
+            const live = this.agentSprites.get(agent.id);
+            if (live !== sprite || sprite.leaving || !sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'departure')) {
+                queue.shift();
+                continue;
+            }
+            const lane = GATE_ENTRY_LANES.find(entry => this._gateLaneClear(entry));
+            if (!lane) return;
+            queue.shift();
+            sprite.setTilePosition?.(lane.tileX, lane.outsideY);
+            sprite.walkStraightToTile?.(lane.tileX, lane.insideY);
+            this.gateTransits.set(agent.id, { type: 'arrival', gate: true });
+            this._markSpritesDirty();
+        }
+    }
+
+    // True when no visible body stands within GATE_ENTRY_GAP_PX of the gate
+    // lane's entry point.
+    _gateLaneClear(lane) {
+        const entry = tileToWorld(lane.tileX, lane.outsideY);
+        for (const other of this.agentSprites.values()) {
+            if (other.isArrivalPending?.()) continue;
+            if (Math.hypot(other.x - entry.x, other.y - entry.y) < GATE_ENTRY_GAP_PX) return false;
+        }
+        return true;
     }
 
     _beginAgentGateDeparture(agent) {
@@ -3702,6 +3812,21 @@ export class IsometricRenderer {
         if (this.gateDoorsOpen !== wasOpen) {
             for (const sprite of this._gateDoorStateSprites) sprite.invalidateCache();
         }
+    }
+
+    // 5.2 — steps the flora props' winter state from the season and the C-W2
+    // snow bucket (called once a frame after the ground state). A step drops
+    // the derived images and repaints the sorted flora props; the `cache`
+    // layer ones and the bridge rebake with the terrain, whose key already
+    // carries the season and the snow bucket.
+    _syncPropWinter() {
+        if (!this.propWinter.sync(this._currentSeasonToken(), this._groundState?.snowCover)) return;
+        for (const sprite of this._winterPropSprites || []) sprite.invalidateCache();
+    }
+
+    _winterPropOpts(id) {
+        const image = this.propWinter.image(id);
+        return image ? { image } : NO_PROP_OPTS;
     }
 
     // Note: when motionScale=0, _beginAgentGateArrival short-circuits BEFORE
@@ -4420,6 +4545,7 @@ export class IsometricRenderer {
             applyTeamPlazaPreferences(this.relationshipState, this.agentSprites);
         }
         this._pruneCrowdBumpCooldowns(now);
+        this._releaseGateEntries();
         // 2.4 — affinity proximity re-evaluates on a slow cadence; warmth
         // changes are gradual, so per-frame work would be wasted.
         this._affinityProximityAccumulator += dt;
@@ -4453,6 +4579,10 @@ export class IsometricRenderer {
                     completedDepartures.push(sprite.agent.id);
                 } else {
                     this.gateTransits.delete(sprite.agent.id);
+                    // 7.4 — through the gate, the villager walks on to its
+                    // work instead of loitering in the gate mouth, where the
+                    // next arrivals of its file would land on it.
+                    if (transit.gate) sprite.waitTimer = 0;
                 }
             }
             if (sprite._lastSortedY !== sprite.y) {
@@ -4482,10 +4612,15 @@ export class IsometricRenderer {
             this._lastAgentCount = this.agentSprites.size;
             this._crowdStats = this._summarizeCrowdClusters();
         }
+        const walkerStopped = this._settleLandings(movingSprites);
         this._stationaryOverlapAccumulator += dt;
         if (this._stationaryOverlapAccumulator >= 420) {
             this._stationaryOverlapAccumulator = 0;
             this._resolveStationaryOverlaps();
+        } else if (walkerStopped) {
+            // 7.4 — two bodies that land on one point the same refresh
+            // settle onto the fan ring at once, not up to 420 ms later.
+            this._fanStacks();
         }
 
         // These consumers need every live position but do not require painter
@@ -4522,6 +4657,8 @@ export class IsometricRenderer {
         this.buildingRenderer?.update(dt);
         this._updateAmbientEffects(dt);
         this._updateChimneySmoke();
+        // 6.5 — every pennant and flag steps from this frame's wind and clock.
+        setPennantWeather(this._lastAtmosphere?.weather || null, this.motionTimeMs);
 
         // Reap any agent sprites whose 800ms archive-fade window has expired
         // before the particle update so the next frame draws the final state.
@@ -4584,6 +4721,12 @@ export class IsometricRenderer {
         if (!this.pathfinder || typeof sprite?._screenToTile !== 'function') return true;
         const tile = sprite._screenToTile(x, y);
         return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY));
+    }
+
+    // A place `sprite` may stand on: walkable, and covering no fixture
+    // (brazier, lantern, well, cart, bench it does not sit on).
+    _isSpriteStandable(sprite, x, y) {
+        return this._isSpritePositionWalkable(sprite, x, y) && !standsOnFixture(x, y, sprite?._restSeat?.id || null);
     }
 
     _buildLaneTileIndex() {
@@ -4745,6 +4888,9 @@ export class IsometricRenderer {
         let corrections = 0;
         for (const sprite of movingSprites) {
             if (!sprite || sprite.chatPartner || sprite.chatting || sprite.isArrivalPending?.()) continue;
+            // 7.4 — a walker abreast of another on its course keeps its line
+            // while local avoidance opens the pair (see _applyLocalAvoidance).
+            if (this._abreastWalkers?.has(sprite)) continue;
             const targetDistance = Math.hypot(
                 Number(sprite.targetX) - Number(sprite.x),
                 Number(sprite.targetY) - Number(sprite.y),
@@ -4796,14 +4942,42 @@ export class IsometricRenderer {
     // that stepped this refresh takes the proposal's course at its own step
     // length (AgentSprite.steeredPosition), so crowd nudges never break the
     // 4.5 px walk frame; one that did not step (a start beat, a pivot, a
-    // stop) is not moved at all, so nothing skates. Null = leave it.
+    // stop, a look at a landmark) is not moved at all, so nothing skates.
+    // Null = leave it.
     _strideKeptSteer(sprite, proposed) {
+        if (sprite?._stopLookActiveMs > 0) return null;
         if (typeof sprite?.steeredPosition !== 'function') return proposed;
         return sprite.steeredPosition(proposed.x, proposed.y);
     }
 
     _applyLocalAvoidance(movingSprites, dt = 16) {
-        if (!movingSprites?.length) return;
+        // Trailing walker -> the slowest gait among the walkers it trails;
+        // and, for giving way, its smallest gap and that nearest leader.
+        const following = this._followGapNext ||= new Map();
+        const followGaps = this._followGapDistances ||= new Map();
+        const yieldLeaders = this._followYieldLeaders ||= new Map();
+        // Walkers abreast of one on the same course: lane discipline leaves
+        // them where they are next refresh, so it never squeezes the pair
+        // into one lane side while the push opens it.
+        const abreast = this._abreastWalkers ||= new Set();
+        following.clear();
+        followGaps.clear();
+        yieldLeaders.clear();
+        abreast.clear();
+        if (!movingSprites?.length) {
+            this._settleFollowGaps(following, followGaps);
+            return;
+        }
+        const headings = this._travelHeadings ||= new Map();
+        const courses = this._travelCourses ||= new Map();
+        headings.clear();
+        courses.clear();
+        for (const sprite of movingSprites) {
+            const heading = this._travelHeading(sprite);
+            if (!heading) continue;
+            headings.set(sprite, heading);
+            courses.set(sprite, this._travelCourse(sprite, heading));
+        }
         const dense = this.agentSprites.size >= 50;
         const radius = dense ? LOCAL_AVOIDANCE.denseRadiusPx : LOCAL_AVOIDANCE.radiusPx;
         const frameScale = Math.max(0, Math.min(2.5, dt / 16));
@@ -4814,6 +4988,75 @@ export class IsometricRenderer {
             const dx = a.x - b.x;
             const dy = a.y - b.y;
             let dist = Math.hypot(dx, dy);
+            // 7.4 — a loose file: of two walkers on one course, the trailing
+            // one walks a V7 rung below its leader (AgentSprite._speedForState)
+            // until the gap opens to releasePx. Of two walkers merging or
+            // crossing at under 90° (mergeDot) closer than yieldPx, the one
+            // behind gives way the same way. A pair reads whichever of its
+            // current headings and look-ahead courses agree more.
+            const headingA = headings.get(a);
+            const headingB = headings.get(b);
+            let courseA = courses.get(a);
+            let courseB = courses.get(b);
+            let courseDot = -1;
+            if (headingA && headingB) {
+                const headingDot = headingA.x * headingB.x + headingA.y * headingB.y;
+                courseDot = courseA.x * courseB.x + courseA.y * courseB.y;
+                if (headingDot > courseDot) {
+                    courseDot = headingDot;
+                    courseA = headingA;
+                    courseB = headingB;
+                }
+            }
+            const sameCourse = courseDot > FOLLOW_GAP.headingDot;
+            if (courseDot > FOLLOW_GAP.mergeDot && dist < FOLLOW_GAP.releasePx) {
+                const lead = dx * (courseA.x + courseB.x) + dy * (courseA.y + courseB.y);
+                const leadsA = lead > 0 || (lead === 0 && this._spriteStableId(a) < this._spriteStableId(b));
+                const trailing = leadsA ? b : a;
+                const leader = leadsA ? a : b;
+                const files = sameCourse && (dist < FOLLOW_GAP.engagePx || trailing._followGap);
+                // Only a walker ahead (inside the trailing one's 60° cone, not
+                // abreast) is given way to, until the gap is back to
+                // releasePx; the trigger leads the closing speed by
+                // closingFrames, so the gap never dips under yieldPx. A leader
+                // planted for its own reasons (a start beat, a pivot, a look
+                // at a landmark) is walked around instead; one that is giving
+                // way itself holds its file.
+                // The leader is ahead along the trailing walker's heading or
+                // its look-ahead course, whichever points at it more.
+                const toLeaderX = leadsA ? dx : -dx;
+                const toLeaderY = leadsA ? dy : -dy;
+                const trailingHeading = headings.get(trailing);
+                const trailingCourse = courses.get(trailing);
+                const ahead = Math.max(
+                    toLeaderX * trailingHeading.x + toLeaderY * trailingHeading.y,
+                    toLeaderX * trailingCourse.x + toLeaderY * trailingCourse.y,
+                );
+                const leaderPlanted = this._isPlanted(leader);
+                const leaderWalks = !leaderPlanted || leader._followYield;
+                const leaderAlong = leaderPlanted ? 0 : (leader._gaitSpeed || 0) * courseDot;
+                const closing = Math.max(0, (trailing._gaitSpeed || 0) - leaderAlong);
+                const trigger = trailing._followYield
+                    ? FOLLOW_GAP.releasePx
+                    : FOLLOW_GAP.yieldPx + closing * FOLLOW_GAP.closingFrames;
+                // A walker never plants to give way on a fixture: it walks on
+                // (one rung down, in file) until it is off it.
+                const givesWay = leaderWalks && ahead >= FOLLOW_GAP.aheadDot * dist && dist < trigger
+                    && !standsOnFixture(trailing.x, trailing.y);
+                if (sameCourse && dist < FOLLOW_GAP.engagePx && ahead < FOLLOW_GAP.aheadDot * dist) {
+                    abreast.add(a);
+                    abreast.add(b);
+                }
+                // A walker catching up with its own chat partner is meant to reach it.
+                if ((files || givesWay) && trailing.chatPartner !== leader) {
+                    const leaderGait = leader._gaitSpeed > 0 ? leader._gaitSpeed : Infinity;
+                    following.set(trailing, Math.min(following.get(trailing) ?? Infinity, leaderGait));
+                    if (givesWay && !(followGaps.get(trailing) <= dist)) {
+                        followGaps.set(trailing, dist);
+                        yieldLeaders.set(trailing, leader);
+                    }
+                }
+            }
             if (dist >= radius) return true;
 
             let nx;
@@ -4833,19 +5076,26 @@ export class IsometricRenderer {
             const sameLane = a._laneDiscipline?.tileKey && a._laneDiscipline.tileKey === b._laneDiscipline?.tileKey;
             const opposingLanes = sameLane && a._laneDiscipline.side !== b._laneDiscipline.side;
             const strength = baseStrength * (opposingLanes ? 0.55 : 1);
+            // Steering never pushes a walker back along its own course. Of a
+            // file (one course) only the push's lateral and forward parts
+            // reach the proposal; the gap belongs to the follow rung. Walkers
+            // on crossing or opposed courses sidestep by the backward part.
+            const sidestep = !sameCourse;
+            const pushA = this._forwardOnlyPush(nx * overlap * strength, ny * overlap * strength, headingA, sidestep);
+            const pushB = this._forwardOnlyPush(-nx * overlap * strength, -ny * overlap * strength, headingB, sidestep);
             const nextA = constrainSteeringToTarget({
                 x: a.x,
                 y: a.y,
-                nextX: a.x + nx * overlap * strength,
-                nextY: a.y + ny * overlap * strength,
+                nextX: a.x + pushA.x,
+                nextY: a.y + pushA.y,
                 targetX: a.targetX,
                 targetY: a.targetY,
             });
             const nextB = constrainSteeringToTarget({
                 x: b.x,
                 y: b.y,
-                nextX: b.x - nx * overlap * strength,
-                nextY: b.y - ny * overlap * strength,
+                nextX: b.x + pushB.x,
+                nextY: b.y + pushB.y,
                 targetX: b.targetX,
                 targetY: b.targetY,
             });
@@ -4879,6 +5129,7 @@ export class IsometricRenderer {
             }
             return true;
         });
+        pushes += this._steerAroundStanding(movingSprites, headings, baseStrength * STANDING_CLEARANCE.strength);
         if (pushes > 0) {
             this._localAvoidanceMetrics.separationPushes += pushes;
             this._markSpritesDirty();
@@ -4886,6 +5137,267 @@ export class IsometricRenderer {
         if (zeroDistancePairs > 0) {
             this._localAvoidanceMetrics.zeroDistancePairs += zeroDistancePairs;
         }
+        this._settleFollowGaps(following, followGaps);
+        this._fanArrivals(movingSprites);
+    }
+
+    // 7.4 — walkers bend around villagers standing in their way. Returns the
+    // number of walkers steered.
+    _steerAroundStanding(movingSprites, headings, strength) {
+        const standing = this._standingObstacles ||= [];
+        standing.length = 0;
+        for (const sprite of this.agentSprites.values()) {
+            if (sprite && this._isPlanted(sprite) && !this._isGateTransit(sprite, 'departure')) standing.push(sprite);
+        }
+        if (!standing.length) return 0;
+        const { xPx, yPx, lastLegPx } = STANDING_CLEARANCE;
+        let steered = 0;
+        for (const walker of movingSprites) {
+            if (!walker || this._isPlanted(walker)) continue;
+            const stop = this._fanStopOf(walker);
+            if (stop.reach <= lastLegPx) continue;
+            let px = 0;
+            let py = 0;
+            for (const body of standing) {
+                const ex = (walker.x - body.x) / xPx;
+                const ey = (walker.y - body.y) / yPx;
+                const e = Math.hypot(ex, ey);
+                if (e >= 1) continue;
+                // A walker coming to stand beside this body (its fan place,
+                // box-clear by construction) walks straight in while it is
+                // no nearer the body than that place. A chat approach stops
+                // wherever it reaches its partner, so it always steers, unless
+                // it was re-aimed onto a fan place (it then walks on to it).
+                const standsBeside = !walker.chatPartner || walker._routeEndFanPlace?.();
+                if (standsBeside && e >= Math.hypot((stop.x - body.x) / xPx, (stop.y - body.y) / yPx)) continue;
+                // Out along the ellipse normal; a walker standing exactly on
+                // the body takes the stable hash angle.
+                let gx = ex / xPx;
+                let gy = ey / yPx;
+                let g = Math.hypot(gx, gy);
+                if (!(g > 1e-9)) {
+                    const angle = (this._stableHash(`${this._spriteStableId(walker)}|${this._spriteStableId(body)}`) % 628) / 100;
+                    gx = Math.cos(angle);
+                    gy = Math.sin(angle);
+                    g = 1;
+                }
+                const weight = (1 - e) * strength / g;
+                px += gx * weight;
+                py += gy * weight;
+            }
+            if (!px && !py) continue;
+            const push = this._forwardOnlyPush(px, py, headings.get(walker), true);
+            const next = constrainSteeringToTarget({
+                x: walker.x,
+                y: walker.y,
+                nextX: walker.x + push.x,
+                nextY: walker.y + push.y,
+                targetX: walker.targetX,
+                targetY: walker.targetY,
+            });
+            const kept = this._strideKeptSteer(walker, next);
+            if (
+                !kept
+                || Math.hypot(kept.x - walker.x, kept.y - walker.y) <= 0.001
+                || !this._isSpritePositionWalkable(walker, kept.x, kept.y)
+            ) continue;
+            walker.x = kept.x;
+            walker.y = kept.y;
+            if (next.constrained) this._localAvoidanceMetrics.progressClamps++;
+            steered++;
+        }
+        return steered;
+    }
+
+    // 7.4 — a walker's course: toward its current waypoint, else its last step.
+    _travelHeading(sprite) {
+        let hx = Number(sprite.targetX) - sprite.x;
+        let hy = Number(sprite.targetY) - sprite.y;
+        let length = Math.hypot(hx, hy);
+        if (!(length > 0.5)) {
+            hx = sprite.x - Number(sprite._stepStartX);
+            hy = sprite.y - Number(sprite._stepStartY);
+            length = Math.hypot(hx, hy);
+        }
+        return length > 1e-6 ? { x: hx / length, y: hy / length } : null;
+    }
+
+    // 7.4 — the course the file rule reads: within lookAheadPx of a corner it
+    // is already the next leg, so two walkers about to share a leg (one
+    // coming back from a hairpin, one merging) sort out who gives way before
+    // they meet on it.
+    _travelCourse(sprite, heading) {
+        const next = sprite.waypoints?.length > 1 ? sprite.waypoints[1] : null;
+        if (!next || Math.hypot(Number(sprite.targetX) - sprite.x, Number(sprite.targetY) - sprite.y) > FOLLOW_GAP.lookAheadPx) {
+            return heading;
+        }
+        const hx = Number(next.x) - sprite.x;
+        const hy = Number(next.y) - sprite.y;
+        const length = Math.hypot(hx, hy);
+        return length > 1e-6 ? { x: hx / length, y: hy / length } : heading;
+    }
+
+    // A steering push without its part back along the walker's course. With
+    // `sidestep`, that part turns into a sidestep instead: along the push's
+    // own lateral side, or (dead ahead) to the walker's right, so two walkers
+    // meeting head-on pass each other on opposite sides.
+    _forwardOnlyPush(px, py, heading, sidestep = false) {
+        if (!heading) return { x: px, y: py };
+        const along = px * heading.x + py * heading.y;
+        if (along >= 0) return { x: px, y: py };
+        const lx = px - along * heading.x;
+        const ly = py - along * heading.y;
+        if (!sidestep) return { x: lx, y: ly };
+        const lateral = Math.hypot(lx, ly);
+        const sx = lateral > 1e-6 ? lx / lateral : -heading.y;
+        const sy = lateral > 1e-6 ? ly / lateral : heading.x;
+        return { x: lx - along * sx, y: ly - along * sy };
+    }
+
+    // The follow marks live on the sprite only while it trails someone:
+    // `_followGap` is the leader's gait (px per 16.67 ms), or true when the
+    // leader has not stepped; `_followYield` is set while the gap is under
+    // yieldPx.
+    _settleFollowGaps(following, followGaps) {
+        const holders = this._followGapHolders ||= new Set();
+        for (const sprite of holders) {
+            if (!following.has(sprite)) {
+                sprite._followGap = false;
+                sprite._followYield = false;
+            }
+        }
+        holders.clear();
+        for (const [sprite, leaderGait] of following) {
+            sprite._followGap = Number.isFinite(leaderGait) ? leaderGait : true;
+            sprite._followYield = followGaps.has(sprite);
+            holders.add(sprite);
+        }
+        // A wait is a 'file' when its chain of leaders ends at a walker that
+        // steps (it ends by itself, however long the queue), else a 'knot'
+        // (a planted head, or a ring of walkers waiting on each other),
+        // which AgentSprite times out.
+        const leaders = this._followYieldLeaders;
+        for (const sprite of holders) {
+            if (!sprite._followYield) continue;
+            let leader = leaders?.get(sprite);
+            let steps = 0;
+            while (leader?._followYield && holders.has(leader) && steps++ < FOLLOW_GAP.chainSteps) {
+                leader = leaders.get(leader);
+            }
+            const walks = leader && !leader._followYield && !this._isPlanted(leader);
+            sprite._followYield = walks ? 'file' : 'knot';
+        }
+    }
+
+    // 7.4 — the fan ring's places around an anchor, in visit-slot order: the
+    // first villager keeps the anchor, the next ones stand beside it (east and
+    // west first, the stable hash picking the side), then in front, behind and
+    // on the corners. Whole texels, so a standing body stays on the grid.
+    _fanRingPlace(anchor, index, hashKey) {
+        if (index <= 0) return { x: Math.round(anchor.x), y: Math.round(anchor.y) };
+        const side = this._stableHash(hashKey) % 2 ? 1 : -1;
+        const [ux, uy] = FAN_RING_PLACES[(index - 1) % FAN_RING_PLACES.length];
+        return {
+            x: Math.round(anchor.x + ux * side * PERFORMING_FAN.radiusXPx),
+            y: Math.round(anchor.y + uy * PERFORMING_FAN.radiusYPx),
+        };
+    }
+
+    // The first walkable ring place around `anchor` for `sprite` whose body
+    // box is clear of every other standing body and claimed place; failing
+    // that, the first one at least stackPx from all of them.
+    _freeFanPlace(sprite, anchor, startIndex, taken, hashKey) {
+        const boxClear = (place) => !taken.some(other => other !== sprite
+            && Math.abs(other.x - place.x) < PERFORMING_FAN.overlapXPx
+            && Math.abs(other.y - place.y) < PERFORMING_FAN.overlapYPx);
+        const stackClear = (place) => !taken.some(other => other !== sprite
+            && Math.hypot(other.x - place.x, other.y - place.y) < PERFORMING_FAN.stackPx);
+        for (const clear of [boxClear, stackClear]) {
+            for (let index = startIndex; index <= FAN_RING_PLACES.length; index++) {
+                const place = this._fanRingPlace(anchor, index, hashKey);
+                if (clear(place) && this._isSpriteStandable(sprite, place.x, place.y)) return place;
+            }
+        }
+        return null;
+    }
+
+    // 7.4 — a walker on its last leg (a visit, or a chat approach) whose stop
+    // lands inside a villager already standing there (performing, talking,
+    // seated, queued), or on the stop of a walker that lands first, takes the
+    // next place on that body's fan ring, so it walks into the fan instead of
+    // onto a body.
+    _fanArrivals(movingSprites) {
+        const standing = this._fanStanding ||= [];
+        standing.length = 0;
+        for (const sprite of this.agentSprites.values()) {
+            if (sprite && this._isPlanted(sprite)) standing.push(sprite);
+        }
+        const arrivals = this._fanArrivalOrder ||= [];
+        arrivals.length = 0;
+        for (const sprite of movingSprites) {
+            if (this._isGateTransit(sprite, 'departure')) continue;
+            // A seat (7.1) or petitioner place (7.2) is an exact point: never re-aimed.
+            if (FAN_EXEMPT_ROLES.has(sprite.visitRole)) continue;
+            const stop = this._fanStopOf(sprite);
+            if (stop.reach <= PERFORMING_FAN.approachPx) arrivals.push(sprite);
+        }
+        if (!arrivals.length) return;
+        // The nearer stop lands first and keeps its place.
+        arrivals.sort((a, b) => this._fanStopOf(a).reach - this._fanStopOf(b).reach);
+        const landing = this._fanLanding ||= [];
+        landing.length = 0;
+        for (const sprite of arrivals) {
+            const stop = this._fanStopOf(sprite);
+            const building = sprite._lastBuildingType;
+            const fanned = sprite._fanTarget && sprite._fanTarget.x === stop.x && sprite._fanTarget.y === stop.y;
+            if (fanned || !(stop.reach > PERFORMING_FAN.minApproachPx)) {
+                landing.push({ x: stop.x, y: stop.y, building });
+                continue;
+            }
+            const occupant = standing.find(other => other !== sprite
+                && Math.abs(other.x - stop.x) < PERFORMING_FAN.overlapXPx
+                && Math.abs(other.y - stop.y) < PERFORMING_FAN.overlapYPx)
+                || landing.find(other => Math.abs(other.x - stop.x) < PERFORMING_FAN.overlapXPx
+                    && Math.abs(other.y - stop.y) < PERFORMING_FAN.overlapYPx);
+            // A stop on a fixture fans around that stop like one on a body.
+            if (!occupant && !standsOnFixture(stop.x, stop.y, sprite._restSeat?.id || null)) {
+                landing.push({ x: stop.x, y: stop.y, building });
+                continue;
+            }
+            const anchor = occupant ? occupant._fanAnchor || occupant : { x: stop.x, y: stop.y };
+            const place = this._freeFanPlace(sprite, anchor, 1, [...standing, ...landing], `${building}|${anchor.x | 0},${anchor.y | 0}`);
+            if (!place) {
+                landing.push({ x: stop.x, y: stop.y, building });
+                continue;
+            }
+            const last = sprite.waypoints?.length ? sprite.waypoints.length - 1 : -1;
+            if (last >= 0) sprite.waypoints[last] = { ...sprite.waypoints[last], x: place.x, y: place.y };
+            if (last <= 0) {
+                sprite.targetX = place.x;
+                sprite.targetY = place.y;
+            }
+            sprite._fanTarget = place;
+            sprite._fanAnchor = { x: anchor.x, y: anchor.y };
+            landing.push({ x: place.x, y: place.y, building });
+            this._localAvoidanceMetrics.fannedArrivals = (this._localAvoidanceMetrics.fannedArrivals || 0) + 1;
+        }
+    }
+
+    // Where a walker will stop (its route's last point) and how far it still
+    // walks to get there. Past PERFORMING_FAN.approachPx the walk is not summed
+    // further: `reach` then only says "farther than that", and x/y are unset.
+    _fanStopOf(sprite) {
+        const tx = Number(sprite.targetX);
+        const ty = Number(sprite.targetY);
+        let reach = Math.hypot(tx - sprite.x, ty - sprite.y);
+        const route = sprite.waypoints;
+        if (!(route?.length > 1)) return { x: tx, y: ty, reach };
+        for (let index = 1; index < route.length; index++) {
+            if (reach > PERFORMING_FAN.approachPx) return { x: NaN, y: NaN, reach };
+            reach += Math.hypot(route[index].x - route[index - 1].x, route[index].y - route[index - 1].y);
+        }
+        const final = route[route.length - 1];
+        return { x: Number(final.x), y: Number(final.y), reach };
     }
 
     _forEachNearbySpritePair(sprites, cellSize, visitor) {
@@ -5012,6 +5524,7 @@ export class IsometricRenderer {
             !sprite.selected &&
             !this._isGateTransit(sprite, 'departure') &&
             !sprite.isArrivalPending?.() &&
+            !FAN_EXEMPT_ROLES.has(sprite.visitRole) &&
             this._canStationaryRetarget(sprite, now)
         ));
         this.behaviorMetrics.stationaryOverlapChecks++;
@@ -5023,18 +5536,143 @@ export class IsometricRenderer {
             const dx = a.x - b.x;
             const dy = a.y - b.y;
             const dist = Math.hypot(dx, dy);
-            if (dist <= 0 || dist >= threshold) return true;
+            // 7.4 — an exact stack (dist 0) is an overlap too; the stable
+            // hash settles which of the two moves when neither rerouted last.
+            if (dist >= threshold) return true;
             const aSnap = a.getBehaviorDebugSnapshot?.();
             const bSnap = b.getBehaviorDebugSnapshot?.();
             const sameBuilding = aSnap?.building && aSnap.building === bSnap?.building;
             if (!sameBuilding && dist > 14) return true;
-            const loser = (aSnap?.behavior?.lastRerouteAt || 0) <= (bSnap?.behavior?.lastRerouteAt || 0) ? a : b;
+            const aRerouted = aSnap?.behavior?.lastRerouteAt || 0;
+            const bRerouted = bSnap?.behavior?.lastRerouteAt || 0;
+            const loser = aRerouted === bRerouted
+                ? (this._stableHash(`${this._spriteStableId(a)}|${this._spriteStableId(b)}`) % 2 ? a : b)
+                : aRerouted < bRerouted ? a : b;
             if (loser.retargetVisit?.()) {
                 retargets++;
                 this.behaviorMetrics.stationaryRetargets++;
             }
             return retargets < maxRetargets;
         });
+        this._fanStacks();
+    }
+
+    // 7.4 — a body on its feet at one point: standing, or a walker that has
+    // not stepped (a start beat, a pivot, giving way) or stopped to look at a
+    // landmark.
+    _isPlanted(sprite) {
+        return !sprite.moving || !Number.isFinite(sprite._stepStartX) || sprite._stopLookActiveMs > 0;
+    }
+
+    // 7.4 — a villager that stopped this refresh (arrived, or began a chat
+    // wherever its approach reached its partner) inside a standing body's
+    // box steps onto the nearest box-clear place of that body's fan ring, on
+    // the refresh it lands, when that place is within settleHopPx. Seated,
+    // queued and selected bodies never move. Returns true when anyone
+    // stopped.
+    _settleLandings(movingSprites) {
+        const previous = this._walkersLastRefresh ||= new Set();
+        const landed = this._landedSprites ||= [];
+        landed.length = 0;
+        for (const sprite of previous) {
+            if (!sprite.moving || sprite.chatting) landed.push(sprite);
+        }
+        previous.clear();
+        for (const sprite of movingSprites) previous.add(sprite);
+        if (!landed.length) return false;
+        const standing = this._fanStanding ||= [];
+        standing.length = 0;
+        for (const sprite of this.agentSprites.values()) {
+            if (sprite && this._isPlanted(sprite)) standing.push(sprite);
+        }
+        const boxHit = (other, x, y) => Math.abs(other.x - x) < PERFORMING_FAN.overlapXPx
+            && Math.abs(other.y - y) < PERFORMING_FAN.overlapYPx;
+        for (const sprite of landed) {
+            if (sprite.moving || sprite.selected || FAN_EXEMPT_ROLES.has(sprite.visitRole)) continue;
+            if (!this.agentSprites.has(sprite.agent?.id) || this._isGateTransit(sprite, 'departure')) continue;
+            const occupant = standing.find(other => other !== sprite && boxHit(other, sprite.x, sprite.y));
+            // A body that stopped on a fixture steps off it the same way.
+            if (!occupant && !standsOnFixture(sprite.x, sprite.y, sprite._restSeat?.id || null)) continue;
+            const anchor = occupant ? occupant._fanAnchor || occupant : { x: sprite.x, y: sprite.y };
+            const hashKey = `${occupant?._lastBuildingType || sprite._lastBuildingType}|${anchor.x | 0},${anchor.y | 0}`;
+            let best = null;
+            let bestHop = PERFORMING_FAN.settleHopPx;
+            for (let index = 1; index <= FAN_RING_PLACES.length; index++) {
+                const place = this._fanRingPlace(anchor, index, hashKey);
+                const hop = Math.hypot(place.x - sprite.x, place.y - sprite.y);
+                if (hop > bestHop) continue;
+                if (standing.some(other => other !== sprite && boxHit(other, place.x, place.y))) continue;
+                if (!this._isSpriteStandable(sprite, place.x, place.y)) continue;
+                best = place;
+                bestHop = hop;
+            }
+            if (!best) continue;
+            sprite.x = best.x;
+            sprite.y = best.y;
+            sprite.targetX = best.x;
+            sprite.targetY = best.y;
+            sprite._fanAnchor = { x: anchor.x, y: anchor.y };
+            this._localAvoidanceMetrics.settledLandings = (this._localAvoidanceMetrics.settledLandings || 0) + 1;
+            this._markSpritesDirty();
+        }
+        return true;
+    }
+
+    // 7.4 — villagers performing at one building, or talking there, that
+    // stand stacked (closer than stackPx, two bodies reading as one) settle
+    // onto the fan ring in visit-slot order: the first keeps the anchor, the
+    // rest take ring places (talkers then turn to their partner on their own,
+    // `_faceChatPartner`). A later arrival walks into the ring on its own
+    // (_fanArrivals), so this meets only bodies that stopped together.
+    _fanStacks() {
+        const standing = [];
+        for (const sprite of this.agentSprites.values()) {
+            if (!sprite || sprite.moving || !sprite._lastBuildingType) continue;
+            if (sprite.chatPartner && !sprite.chatting) continue;
+            if (this._isGateTransit(sprite, 'departure') || sprite.isArrivalPending?.()) continue;
+            standing.push(sprite);
+        }
+        let fanned = 0;
+        const visited = new Set();
+        for (const seed of standing) {
+            if (visited.has(seed)) continue;
+            visited.add(seed);
+            const stack = [seed];
+            for (let index = 0; index < stack.length; index++) {
+                for (const other of standing) {
+                    if (visited.has(other) || other._lastBuildingType !== seed._lastBuildingType) continue;
+                    if (Math.hypot(other.x - stack[index].x, other.y - stack[index].y) >= PERFORMING_FAN.stackPx) continue;
+                    visited.add(other);
+                    stack.push(other);
+                }
+            }
+            if (stack.length < 2) continue;
+            const performing = stack.filter(sprite => sprite.chatting || ['performing', 'cooldown']
+                .includes(sprite.getBehaviorDebugSnapshot?.()?.behaviorState));
+            if (performing.length < 2) continue;
+            performing.sort((a, b) => (a._lastVisitMeta?.slotIndex ?? Infinity) - (b._lastVisitMeta?.slotIndex ?? Infinity)
+                || this._spriteStableId(a).localeCompare(this._spriteStableId(b)));
+            const anchor = { x: performing[0].x, y: performing[0].y };
+            const taken = standing.filter(sprite => !performing.includes(sprite) || sprite === performing[0]);
+            const hashKey = `${seed._lastBuildingType}|${anchor.x | 0},${anchor.y | 0}`;
+            for (let index = 1; index < performing.length; index++) {
+                const sprite = performing[index];
+                if (sprite.selected || FAN_EXEMPT_ROLES.has(sprite.visitRole)) continue;
+                const place = this._freeFanPlace(sprite, anchor, 1, taken, hashKey);
+                if (!place) continue;
+                sprite.x = place.x;
+                sprite.y = place.y;
+                sprite.targetX = place.x;
+                sprite.targetY = place.y;
+                sprite._fanAnchor = anchor;
+                taken.push(place);
+                fanned++;
+            }
+        }
+        if (fanned) {
+            this._localAvoidanceMetrics.fannedStacks = (this._localAvoidanceMetrics.fannedStacks || 0) + fanned;
+            this._markSpritesDirty();
+        }
     }
 
     _canStationaryRetarget(sprite, now = Date.now()) {
@@ -5123,6 +5761,7 @@ export class IsometricRenderer {
             assets: this.assets,
             presence: this.buildingRenderer?.getWorkingPresence?.() || null,
             lightGrade,
+            weather: this._lastAtmosphere?.weather || null,
         });
     }
 
@@ -6093,7 +6732,9 @@ export class IsometricRenderer {
             const wy = (tree.tileX + tree.tileY) * TILE_HEIGHT / 2;
             const p = camera.worldToScreen(wx, wy);
             if (p.x < -20 || p.y < -20 || p.x > vp.width + 20 || p.y > vp.height + 20) continue;
-            out.push({ x: p.x, y: p.y - 30 * zoom }); // offset up onto the canopy
+            // Up onto the canopy: 60 % of the sprite's height (30 texels on a
+            // 51-px oak, the crown of a tall woodland tree, plan 5.5).
+            out.push({ x: p.x, y: p.y - Math.round(-(tree.bounds?.top ?? -50) * 0.6) * zoom });
             if (out.length >= 48) break;
         }
         return out;
@@ -6119,7 +6760,11 @@ export class IsometricRenderer {
         return out;
     }
 
-    _getTerrainCache() {
+    // B.2 — `allowResident` (the resident GPU path): once the GPU holds this
+    // bake's texture the CPU canvas is released (`releaseTerrainCanvas`) and a
+    // same-size GPU-resident stand-in answers instead. The Canvas path, a lost
+    // context or an evicted texture re-bakes the canvas (12-16 ms, once).
+    _getTerrainCache({ allowResident = false } = {}) {
         const bounds = this._terrainCacheBounds();
         const meta = this._getTerrainCacheMeta(bounds);
         if (!meta.singleSurfaceWithinBudget) {
@@ -6141,6 +6786,10 @@ export class IsometricRenderer {
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
         }
+        if (allowResident && this._terrainResident?.key === key) {
+            return { canvas: this._terrainResident, bounds, resident: true };
+        }
+        this._terrainResident = null;
 
         releaseCanvasBackingStore(this.terrainCache);
 
@@ -6157,6 +6806,21 @@ export class IsometricRenderer {
         this.terrainCacheBounds = bounds;
         this.terrainCacheKey = key;
         return { canvas, bounds };
+    }
+
+    // B.2 — drop the terrain bake's CPU canvas once the GPU holds its upload.
+    releaseTerrainCanvas() {
+        const canvas = this.terrainCache;
+        if (!canvas) return;
+        this._terrainResident = { width: canvas.width, height: canvas.height, gpuResident: true, key: this.terrainCacheKey };
+        releaseCanvasBackingStore(canvas);
+        this.terrainCache = null;
+    }
+
+    // B.2 — the resident stand-in no longer has a texture behind it (context
+    // loss, eviction): the next terrain request re-bakes the canvas.
+    dropTerrainResident() {
+        this._terrainResident = null;
     }
 
     // 0.3 — the bake is keyed only on what changes its pixels: the cache
@@ -6213,6 +6877,11 @@ export class IsometricRenderer {
             // 3.2 — GroundBake paints every land texel (class field, C1 ramps,
             // AO, thresholds, yards, decals) in one cached image.
             this._runTerrainBakePasses(ctx, 'ground');
+            // The far-row haze multiplies the ground only: water, foam and wet
+            // sand stay exact CoastBake colours, which the resident water
+            // cycles match by ungraded albedo (3.1, 3.6); baked props, bridges
+            // and foundations take 1.6's aerial haze like every sprite.
+            this._bakeAtmosphericPerspective(ctx);
             // 3.4/3.5 — CoastBake: one continuous coast field paints wet sand,
             // foam and every water pixel, then the stratified cliff under land
             // edge tiles only (the sea meets the cached outer ocean).
@@ -6221,7 +6890,6 @@ export class IsometricRenderer {
             this._drawLandmarkBridgeSpans(ctx);
             this.buildingRenderer?.drawGroundFoundations?.(ctx);
             this._drawAmbientGroundProps(ctx);
-            this._bakeAtmosphericPerspective(ctx);
             this._runTerrainBakePasses(ctx, 'finish');
         } finally {
             this.motionScale = previousMotionScale;
@@ -6360,10 +7028,12 @@ export class IsometricRenderer {
                     splitForOcclusion: Boolean(dims && dims.h >= 56),
                     drawFn: (ctx, x, y) => {
                         if (contactShadow) this._drawPropContactShadow(ctx, x, y, prop.id, prop.tileX, prop.tileY);
-                        this.sprites.drawSprite(ctx, prop.id, x, y);
+                        this.sprites.drawSprite(ctx, prop.id, x, y, this._winterPropOpts(prop.id));
                     },
                 });
             }));
+        // 7.1 — rest-seat furniture: back and front slices around each seat.
+        sprites.push(...buildRestSeatPropSprites());
         return sprites;
     }
 
@@ -6461,17 +7131,7 @@ export class IsometricRenderer {
                     bounds: wallBounds,
                     splitForOcclusion: false,
                     sortY: Math.max(start.y, end.y) - 14,
-                    drawFn: (ctx, x, y) => {
-                        const isLastSegment = i === route.points.length - 2;
-                        const isFirstSegment = i === 0;
-                        let footingExtent = null;
-                        if (route.id === 'west' && isLastSegment) {
-                            footingExtent = { side: 'end', distance: 30, dither: 32 };
-                        } else if (route.id === 'east' && isFirstSegment) {
-                            footingExtent = { side: 'start', distance: 24, dither: 32 };
-                        }
-                        this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i, footingExtent);
-                    },
+                    drawFn: (ctx, x, y) => this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i),
                 }));
             }
         }
@@ -7277,7 +7937,7 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _drawVillageWallSegment(ctx, originX, originY, start, end, phase = 0, footingExtent = null) {
+    _drawVillageWallSegment(ctx, originX, originY, start, end, phase = 0) {
         const palette = VILLAGE_WOOD_PALETTE;
         const stone = VILLAGE_STONE_PALETTE;
         const x1 = Math.round(originX + start.x);
@@ -7458,10 +8118,6 @@ export class IsometricRenderer {
             ctx.stroke();
         }
 
-        if (footingExtent) {
-            this._drawVillageWallStoneFooting(ctx, x1, y1, x2, y2, ux, uy, nx, ny, length, footingExtent);
-        }
-
         for (let d = 32 + offset; d < length - 12; d += 72) {
             const p = { x: x1 + ux * d, y: y1 + uy * d };
             const w = 13;
@@ -7589,113 +8245,6 @@ export class IsometricRenderer {
         ctx.moveTo(Math.round(x1), Math.round(y1));
         ctx.lineTo(Math.round(x2), Math.round(y2));
         ctx.stroke();
-        ctx.restore();
-    }
-
-    _drawVillageWallStoneFooting(ctx, x1, y1, x2, y2, ux, uy, nx, ny, length, extent) {
-        const stone = VILLAGE_STONE_PALETTE;
-        // Footing is painted as a strip at the wall base on the side closest to the gate.
-        const fullDist = Math.min(extent.distance ?? 30, length - 32); // stay clear of the last watchpost
-        const ditherDist = extent.dither ?? 32;
-        if (fullDist <= 0) return;
-
-        // Determine which end of the segment is gate-adjacent.
-        const fromEnd = extent.side === 'end';
-        const startD = fromEnd ? length - fullDist : 0;
-        const endD = fromEnd ? length : fullDist;
-        const ditherStartD = fromEnd ? startD - ditherDist : endD;
-        const ditherEndD = fromEnd ? startD : endD + ditherDist;
-
-        const footingHeight = 18; // px, drops below the wall face
-        const stoneY = (d) => ({
-            x: x1 + ux * d,
-            y: y1 + uy * d,
-        });
-
-        ctx.save();
-        SpriteRenderer.disableSmoothing(ctx);
-
-        // Full footing block
-        const a = stoneY(startD);
-        const b = stoneY(endD);
-        ctx.fillStyle = stone.mid;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(a.x), Math.round(a.y));
-        ctx.lineTo(Math.round(b.x), Math.round(b.y));
-        ctx.lineTo(Math.round(b.x), Math.round(b.y + footingHeight));
-        ctx.lineTo(Math.round(a.x), Math.round(a.y + footingHeight));
-        ctx.closePath();
-        ctx.fill();
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-
-        // Mortar line across the middle of the footing
-        ctx.strokeStyle = stone.mortar;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(a.x), Math.round(a.y + footingHeight / 2));
-        ctx.lineTo(Math.round(b.x), Math.round(b.y + footingHeight / 2));
-        ctx.stroke();
-
-        // Vertical mortar joints (offset between courses)
-        for (let d = startD + 16; d < endD; d += 24) {
-            const p = stoneY(d);
-            ctx.beginPath();
-            ctx.moveTo(Math.round(p.x), Math.round(p.y));
-            ctx.lineTo(Math.round(p.x), Math.round(p.y + footingHeight / 2));
-            ctx.stroke();
-        }
-        for (let d = startD + 28; d < endD; d += 24) {
-            const p = stoneY(d);
-            ctx.beginPath();
-            ctx.moveTo(Math.round(p.x), Math.round(p.y + footingHeight / 2));
-            ctx.lineTo(Math.round(p.x), Math.round(p.y + footingHeight));
-            ctx.stroke();
-        }
-
-        // Moss tufts on top edge of footing (only inside the full block)
-        ctx.fillStyle = stone.moss;
-        for (let d = startD + 8; d < endD; d += 28) {
-            const p = stoneY(d);
-            ctx.fillRect(Math.round(p.x - 4), Math.round(p.y - 2), 8, 3);
-        }
-
-        // Dither stones — the footing tumbling out over half a tile.
-        //
-        // These were flat mid-grey squares with a hard outline on all four
-        // sides: no lit edge, no shadow, no contact with the ground, so they
-        // read as UI boxes dropped on the sand rather than masonry petering
-        // out. Same three-tone treatment as the course above, a shadow under
-        // each one, and a small stagger so they tumble instead of descending a
-        // perfect staircase.
-        const cubeCount = 4;
-        for (let i = 0; i < cubeCount; i++) {
-            const t = (i + 1) / (cubeCount + 1);
-            const d = fromEnd ? startD - t * ditherDist : endD + t * ditherDist;
-            const size = Math.max(3, Math.round(footingHeight * (1 - t)));
-            const p = stoneY(d);
-            // Deterministic per-stone wobble, so the run never looks stepped.
-            const jitter = ((i * 37) % 5) - 2;
-            const sx = Math.round(p.x - size / 2) + jitter;
-            const sy = Math.round(p.y + footingHeight - size) + ((i * 23) % 3) - 1;
-
-            ctx.fillStyle = 'rgba(24, 18, 14, 0.28)';
-            ctx.fillRect(sx - 1, sy + size, size + 2, 1);
-
-            ctx.fillStyle = stone.mid;
-            ctx.fillRect(sx, sy, size, size);
-            ctx.fillStyle = stone.light;
-            ctx.fillRect(sx, sy, size, 1);
-            if (size > 4) {
-                ctx.fillStyle = stone.shadow;
-                ctx.fillRect(sx, sy + size - 1, size, 1);
-                ctx.fillRect(sx + size - 1, sy + 1, 1, size - 1);
-            }
-            ctx.fillStyle = stone.mortar;
-            ctx.fillRect(sx, sy + size - 1, 1, 1);
-        }
-
         ctx.restore();
     }
 
@@ -8808,7 +9357,7 @@ export class IsometricRenderer {
         if (!this.assets) return null;
         const spriteId = this._bridgeSpriteId(span);
         if (this.assets.has && !this.assets.has(spriteId)) return null;
-        const img = this.assets.get(spriteId);
+        const img = this.propWinter.image(spriteId) || this.assets.get(spriteId);
         const dims = this.assets.getDims(spriteId);
         if (!img || !dims) return null;
         const [anchorX, anchorY] = this.assets.getAnchor(spriteId);
@@ -9045,14 +9594,20 @@ export class IsometricRenderer {
         // 3.1 — the gate braziers spend the same exposure envelope as every
         // other motivated source; the floor keeps them lit while the sky is up.
         const phaseBoost = Math.max(0.35, sourceEnergyFor(lighting).core);
+        // V5 — each brazier is a fixture standing on its tower's base line,
+        // its flame 13 world px up.
         return [
-            { id: 'left', x: leftBase.x - 9, y: leftBase.y - 13 },
-            { id: 'right', x: rightBase.x + 9, y: rightBase.y - 13 },
+            { id: 'left', x: leftBase.x - 9, y: leftBase.y - 13, footY: leftBase.y },
+            { id: 'right', x: rightBase.x + 9, y: rightBase.y - 13, footY: rightBase.y },
         ].map((fixture) => normalizeLightSource({
             id: `gate.brazier.${fixture.id}`,
             kind: 'point',
+            role: 'fixture',
             x: fixture.x,
             y: fixture.y,
+            ground: { x: fixture.x, y: fixture.footY },
+            height: fixture.footY - fixture.y,
+            fire: true,
             radius: 62,
             color: '#ffd56a',
             intensity: phaseBoost * 0.82,
@@ -9064,13 +9619,23 @@ export class IsometricRenderer {
         const beaconIntensity = Math.max(0, Math.min(1, Number(lighting?.beaconIntensity) || 0));
         if (beaconIntensity <= 0.05) return [];
         const core = sourceEnergyFor(lighting).core;
+        // V5 — a village lantern or brazier stands on its tile (the flame
+        // source sits 10 px above it), its flame 16 (brazier) / 24 (lantern)
+        // world px up: the pool lands around the foot, and the post, the
+        // walls and the bodies around it light by their height and facing.
         return this._lanternGlowSources().map((source) => {
             const isBrazier = source.fixture === 'brazier';
+            const foot = { x: source.x, y: source.y + 10 };
+            const height = isBrazier ? 16 : 24;
             return normalizeLightSource({
                 id: `village.${source.fixture}.${source.tileX}.${source.tileY}`,
                 kind: 'point',
-                x: source.x,
-                y: source.y + 10,
+                role: 'fixture',
+                x: foot.x,
+                y: foot.y - height,
+                ground: foot,
+                height,
+                fire: isBrazier,
                 color: isBrazier ? '#ffa94a' : '#ffc95e',
                 radius: Math.min(isBrazier ? 62 : 52, SOURCE_HALO_RADIUS_CAP),
                 intensity: (isBrazier ? 0.94 : 0.82) * core,
@@ -9085,12 +9650,23 @@ export class IsometricRenderer {
             for (const agent of ledger[bucket]) {
                 const sprite = this.agentSprites.get(agent.id);
                 if (!sprite || sprite.isArrivalPending?.()) continue;
+                // V5 / 2.5 — the attention light stands on its owner's foot
+                // (V7's one placement value), 4 world px up, and lights only
+                // that owner's ground and body (`ownerId` -> V9 owner slot).
+                const foot = {
+                    x: Number.isFinite(sprite._placeX) ? sprite._placeX : sprite.x,
+                    y: Number.isFinite(sprite._placeY) ? sprite._placeY : sprite.y,
+                };
                 sources.push({
                     ...normalizeLightSource({
                         id: `attention:${bucket}:${agent.id}`,
                         kind: 'point',
-                        x: sprite.x,
-                        y: sprite.y + 7,
+                        role: 'attention',
+                        x: foot.x,
+                        y: foot.y - ATTENTION_LIGHT_HEIGHT,
+                        ground: foot,
+                        height: ATTENTION_LIGHT_HEIGHT,
+                        ownerId: agent.id,
                         radius: style.radius,
                         color: style.color,
                         intensity: style.intensity,
@@ -9120,6 +9696,16 @@ export class IsometricRenderer {
             ...this._lanternGroundLightSources(lighting),
             ...(this.bridgeLanterns?.getLightSources?.(lighting) || []),
         ];
+        // 2.6 — fire sources (forge door and spill, torches, village and gate
+        // braziers) breathe in stepped 140 ms quanta on the one motion clock;
+        // windows, lamps and attention lights never do. Each record is fresh
+        // this frame, so the multiply lands exactly once.
+        const motionTimeMs = this.motionTimeMs;
+        for (const light of ambient) {
+            if (light.fire && !light.attention) {
+                light.intensity *= fireBreath(motionTimeMs, light.fireGroup || light.id, this.motionScale, fireBreathDepth(light.radius));
+            }
+        }
         // 3.2 — plan the wet source reflections here, before any ground pass
         // draws, so the neutral damp marks can stand aside for them in the
         // same frame instead of one frame later.
@@ -9294,12 +9880,23 @@ export class IsometricRenderer {
         return ambient;
     }
 
-    // 1.4 Canvas parity — called from the Canvas terrain pass with the world
-    // transform applied. Motion time matches the resident composite's clock.
+    // 1.4 / 3.4 Canvas parity — called from the Canvas terrain pass with the
+    // world transform applied, over the whole visible rect below the sea
+    // horizon (island and sea), so the sea carries the island's shadows.
+    // Motion time matches the resident composite's clock.
     _drawCloudShadowCourses(ctx, atmosphere = null, perfNow = 0) {
+        const m = ctx.getTransform?.();
+        const width = ctx.canvas?.width || 0;
+        const height = ctx.canvas?.height || 0;
+        if (!m || !(m.a > 0) || !(m.d > 0) || !width || !height) return false;
+        const x0 = -m.e / m.a;
+        const x1 = (width - m.e) / m.a;
+        const y0 = Math.max(OCEAN_HORIZON_WORLD_Y, -m.f / m.d);
+        const y1 = (height - m.f) / m.d;
+        if (!(y1 > y0)) return false;
         return drawCloudShadowCourses(ctx, {
             atmosphere,
-            diamond: this._worldDiamondPoints?.(),
+            region: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }],
             timeMs: this.motionTimeMs ?? perfNow,
             reducedMotion: !((this.motionScale ?? 1) > 0),
         });
@@ -9367,7 +9964,11 @@ export class IsometricRenderer {
         for (const light of ambientLightSources || this._ambientLightSources(atmosphere)) {
             if (drawn >= maxCount) break;
             if (light.kind && !['point', 'spark', 'orbit', 'arc'].includes(light.kind)) continue;
-            const p = this.camera.worldToScreen(light.x, light.y);
+            // V5 — Canvas parity is the ground courses only: the stamp lands
+            // on the light's foot with the same height term and aperture lobe
+            // as the resident loop (no facing, rim or occlusion here).
+            const foot = light.ground || light;
+            const p = this.camera.worldToScreen(foot.x, foot.y);
             if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
             const radius = light.radius * this.camera.zoom;
             const energy = (light.attention ? 1 : spill) * (light.intensity || 1);
@@ -9472,8 +10073,9 @@ export class IsometricRenderer {
 
     // C3 — torchlight at the baked lantern/brazier props, as the same stepped
     // multiplicative pools as every other emitter (1.2). Energy tracks the
-    // beacon (night) factor x the envelope spill; a faint deterministic
-    // flicker steps the energy under motion, static under reduced motion.
+    // beacon (night) factor x the envelope spill; braziers breathe in the 2.6
+    // fire quanta (the same beat and id as their light record), lanterns hold
+    // steady, and reduced motion holds every one at 1.
     // Only runs in the full atmosphere path (the fast path drops them by
     // design — that's E3's territory). `ctx` is the pool layer.
     _drawLanternGlows(ctx, canvas, atmosphere = null) {
@@ -9485,8 +10087,7 @@ export class IsometricRenderer {
 
         const zoom = this.camera?.zoom || 1;
         const radius = Math.max(9, Math.round(14 * zoom));
-        const t = this.waterFrame;
-        const flickerOn = (this.motionScale ?? 1) > 0;
+        const motionTimeMs = this.motionTimeMs;
         const light = this._lanternPoolLight || (this._lanternPoolLight = {
             id: 'prop-lantern', kind: 'point', color: '#ffd56a', radius: 14,
         });
@@ -9494,8 +10095,10 @@ export class IsometricRenderer {
         for (const src of sources) {
             const p = this.camera.worldToScreen(src.x, src.y);
             if (p.x < -radius || p.y < -radius || p.x > canvas.width + radius || p.y > canvas.height + radius) continue;
-            const flick = flickerOn ? (Math.sin(t * 5 + src.phase) > 0.4 ? 1 : 0.86) : 1;
-            const stamp = this._getLightGlowStamp(light, radius, nightFactor * spill * flick, atmosphere);
+            const breath = src.fixture === 'brazier'
+                ? fireBreath(motionTimeMs, `village.brazier.${src.tileX}.${src.tileY}`, this.motionScale)
+                : 1;
+            const stamp = this._getLightGlowStamp(light, radius, nightFactor * spill * breath, atmosphere);
             this._stampPool(ctx, stamp, p.x, p.y);
         }
     }
@@ -9513,8 +10116,8 @@ export class IsometricRenderer {
 
     // World-space lantern/brazier positions gathered once from the scenery
     // config (prop.lantern / prop.runeBrazier across the ambient, district, and
-    // scenic-point prop sets), lifted to the flame and given a deterministic
-    // flicker phase. Memoized — the prop layout never changes at runtime.
+    // scenic-point prop sets), lifted to the flame. Memoized — the prop layout
+    // never changes at runtime.
     _lanternGlowSources() {
         if (this._lanternGlowSourcesCache) return this._lanternGlowSourcesCache;
         const out = [];
@@ -9522,8 +10125,7 @@ export class IsometricRenderer {
             if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return;
             const x = (tileX - tileY) * TILE_WIDTH / 2;
             const y = (tileX + tileY) * TILE_HEIGHT / 2 - 10; // lift onto the flame
-            const phase = (Math.sin(tileX * 12.9898 + tileY * 78.233) * 43758.5453) % (Math.PI * 2);
-            out.push({ x, y, phase, fixture, tileX, tileY });
+            out.push({ x, y, fixture, tileX, tileY });
         };
         for (const prop of AMBIENT_GROUND_PROPS) {
             if (prop.type === 'lantern') push(prop.tileX, prop.tileY);
@@ -9656,6 +10258,10 @@ export class IsometricRenderer {
         const ambientTint = grade.ambientTint || [1, 1, 1];
         // V5 — each course clamps the graded plaza under the receiver ceiling.
         const receiver = gradedPoolReceiver(grade);
+        // V5 — the ground course of a raised light (height term) and of a
+        // facade aperture (its face's half-space lobe), as on the GPU.
+        const height = Math.max(0, Number(light.height) || 0) * (this.camera?.zoom || 1);
+        const normal = Array.isArray(light.normal) ? light.normal : null;
         const key = [
             lightSourceCacheKey(light, 'pool'),
             Math.round(radius),
@@ -9664,6 +10270,8 @@ export class IsometricRenderer {
             ambientTint.map(channel => Math.round(channel * 32)).join(','),
             Math.round((grade.poolGain ?? 1) * 32),
             receiver ? receiver.map(channel => Math.round(channel * 64)).join(',') : '',
+            Math.round(height),
+            normal ? normal.map(value => Math.round(value * 8)).join(',') : '',
         ].join('|');
         const cached = this.lightGradientCache.get(key);
         if (cached) {
@@ -9680,6 +10288,8 @@ export class IsometricRenderer {
             ambientTint,
             poolGain: grade.poolGain ?? 1,
             receiver,
+            height,
+            normal,
         });
         const stampPixels = canvasPixelCount(stamp);
         if (stampPixels <= MAX_LIGHT_GRADIENT_STAMP_PIXELS) {
@@ -9698,186 +10308,6 @@ export class IsometricRenderer {
             this.lightGradientCache.set(key, stamp);
         }
         return stamp;
-    }
-
-    _drawLighthouseBeam(ctx, light, atmosphere = null) {
-        // AD-6 — no beam by day: only once the lamp course reaches `settling`.
-        if (!lampsLitAt(atmosphere)) return;
-        const signal = (typeof this.harborTraffic?.getActivePushSignal === 'function'
-            ? this.harborTraffic.getActivePushSignal()
-            : null) || { state: 'idle' };
-        const stateName = typeof signal.state === 'string' ? signal.state : 'idle';
-        const now = (typeof performance !== 'undefined' && performance.now)
-            ? performance.now()
-            : Date.now();
-        if (this._beamSignalState !== stateName) {
-            this._beamPrevSignalState = this._beamSignalState || 'idle';
-            this._beamSignalState = stateName;
-            this._beamSignalSince = now;
-            this._beamPrevAngle = (typeof this._beamLastIdleAngle === 'number')
-                ? this._beamLastIdleAngle
-                : -0.34;
-        }
-        const transitionElapsed = Math.max(0, now - (this._beamSignalSince || now));
-        const reducedMotion = this.motionScale <= 0;
-
-        const beaconIntensity = atmosphere?.lighting?.beaconIntensity ?? 0.5;
-        const phase = this.motionScale ? this.waterFrame * 0.11 : 0.65;
-        const sweep = Math.sin(phase) * 0.28;
-        const baseAlpha = (light.alpha ?? 0.12) * (0.45 + beaconIntensity * 0.85) * (light.intensity || 1);
-        const length = light.length || 360;
-        const farWidth = light.width || 92;
-        const nearWidth = Math.max(8, farWidth * 0.13);
-        const defaultColor = light.color;
-
-        let primaryAngle = -0.34 + sweep;
-        let secondaryAngle = Math.PI - 0.34 + sweep;
-        let color = defaultColor;
-        let alpha = baseAlpha;
-        let lockedSingleBeam = false;
-
-        if (stateName === 'departing' && signal.departingTile) {
-            const target = this._tileToWorld(signal.departingTile.tileX, signal.departingTile.tileY);
-            const targetAngle = Math.atan2(target.y - light.y, target.x - light.x);
-            const lockDuration = 600;
-            const t = reducedMotion ? 1 : Math.min(1, transitionElapsed / lockDuration);
-            const prev = (typeof this._beamPrevAngle === 'number') ? this._beamPrevAngle : targetAngle;
-            const delta = Math.atan2(Math.sin(targetAngle - prev), Math.cos(targetAngle - prev));
-            primaryAngle = prev + delta * t;
-            secondaryAngle = primaryAngle + Math.PI;
-            lockedSingleBeam = true;
-            color = (typeof signal.accent === 'string' && signal.accent) ? signal.accent : defaultColor;
-        } else if (stateName === 'failed' || stateName === 'rejected') {
-            const fallback = stateName === 'failed' ? '#ff755d' : '#ffd34a';
-            color = (typeof signal.accent === 'string' && signal.accent) ? signal.accent : fallback;
-            if (reducedMotion) {
-                alpha = baseAlpha * 0.7;
-            } else {
-                const strobeOn = Math.floor(transitionElapsed / 200) % 2 === 0;
-                alpha = strobeOn ? baseAlpha : 0;
-            }
-        } else if (stateName === 'untethered') {
-            alpha = baseAlpha * 0.4;
-        } else if (stateName === 'pulsing') {
-            if (reducedMotion) {
-                alpha = baseAlpha * 0.85;
-            } else {
-                const pulseT = (transitionElapsed % 1500) / 1500;
-                const pulse = 0.7 + (Math.sin(pulseT * Math.PI * 2) * 0.5 + 0.5) * 0.3;
-                alpha = baseAlpha * pulse;
-            }
-        }
-
-        if (stateName !== 'departing') {
-            this._beamLastIdleAngle = primaryAngle;
-        }
-
-        // Punch the beam through fog/rain/storm so it stays legible when the
-        // sky is occluded. Multipliers cap at 1.5× alpha and 1.25× bloom; a
-        // faint volumetric cone wedge is added at 0.4 alpha to read as light
-        // scattering through precipitation. Stacks above the push-signal hue
-        // work, inside the same `screen` composite block.
-        const weather = atmosphere?.weather;
-        let weatherBoost = 1;
-        let bloomScale = 1;
-        let fogConeAlpha = 0;
-        if (weather && (weather.type === 'fog' || weather.type === 'rain' || weather.type === 'storm')) {
-            const intensity = Math.max(0, Math.min(1, Number(weather.intensity) || 0));
-            if (intensity > 0) {
-                weatherBoost = Math.min(1.5, 1 + intensity * 0.6);
-                bloomScale = 1 + intensity * 0.25;
-                fogConeAlpha = 0.4 * intensity;
-            }
-        }
-        const finalAlpha = alpha * weatherBoost;
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 1;
-        if (finalAlpha > 0) {
-            this._drawBeamWedge(
-                ctx, light.x, light.y, primaryAngle, length,
-                nearWidth, farWidth, color, finalAlpha, bloomScale,
-            );
-            if (!lockedSingleBeam) {
-                this._drawBeamWedge(
-                    ctx, light.x, light.y, secondaryAngle, length * 0.72,
-                    nearWidth, farWidth * 0.72, color, finalAlpha * 0.55, bloomScale,
-                );
-            }
-            if (fogConeAlpha > 0) {
-                this._drawBeamFogCone(
-                    ctx, light.x, light.y, primaryAngle, length,
-                    farWidth, fogConeAlpha,
-                );
-                if (!lockedSingleBeam) {
-                    this._drawBeamFogCone(
-                        ctx, light.x, light.y, secondaryAngle, length * 0.72,
-                        farWidth * 0.72, fogConeAlpha * 0.55,
-                    );
-                }
-            }
-        }
-        ctx.restore();
-    }
-
-    // Faint volumetric cone wedge added on top of the existing beam pass when
-    // fog/rain/storm intensity is non-zero. Mirrors the wedge geometry of
-    // _drawBeamWedge but uses a white→transparent gradient at low alpha to
-    // read as scattered light through weather.
-    _drawBeamFogCone(ctx, x, y, angle, length, farWidth, alpha) {
-        if (alpha <= 0) return;
-        const dx = Math.cos(angle);
-        const dy = Math.sin(angle);
-        const px = -dy;
-        const py = dx;
-        const farX = x + dx * length;
-        const farY = y + dy * length;
-        const wedgeWidth = farWidth * 1.10;
-        const gradient = ctx.createLinearGradient(x, y, farX, farY);
-        gradient.addColorStop(0, `rgba(255, 255, 255, ${this._quantizedAlpha(alpha * 0.85)})`);
-        gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(farX + px * wedgeWidth * 0.5, farY + py * wedgeWidth * 0.5);
-        ctx.lineTo(farX - px * wedgeWidth * 0.5, farY - py * wedgeWidth * 0.5);
-        ctx.closePath();
-        ctx.fill();
-    }
-
-    _drawBeamWedge(ctx, x, y, angle, length, nearWidth, farWidth, color, alpha, bloomScale = 1) {
-        if (alpha <= 0) return;
-        const dx = Math.cos(angle);
-        const dy = Math.sin(angle);
-        const px = -dy;
-        const py = dx;
-        const farX = x + dx * length;
-        const farY = y + dy * length;
-        const gradient = ctx.createLinearGradient(x, y, farX, farY);
-        gradient.addColorStop(0, this._withAlpha(color, this._quantizedAlpha(alpha * 0.35)));
-        gradient.addColorStop(0.58, this._withAlpha(color, this._quantizedAlpha(alpha)));
-        gradient.addColorStop(1, this._withAlpha(color, 0));
-
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.moveTo(x + px * nearWidth * 0.5, y + py * nearWidth * 0.5);
-        ctx.lineTo(farX + px * farWidth * 0.5, farY + py * farWidth * 0.5);
-        ctx.lineTo(farX - px * farWidth * 0.5, farY - py * farWidth * 0.5);
-        ctx.lineTo(x - px * nearWidth * 0.5, y - py * nearWidth * 0.5);
-        ctx.closePath();
-        ctx.fill();
-
-        // `bloomScale` widens the radial bloom radius under fog/rain/storm
-        // so the head of the beam reads through the precipitation.
-        const bloomRadius = farWidth * 0.75 * bloomScale;
-        const bloom = ctx.createRadialGradient(farX, farY, 0, farX, farY, bloomRadius);
-        bloom.addColorStop(0, this._withAlpha(color, this._quantizedAlpha(alpha * 0.28)));
-        bloom.addColorStop(1, this._withAlpha(color, 0));
-        ctx.fillStyle = bloom;
-        ctx.beginPath();
-        ctx.ellipse(farX, farY, farWidth * 0.72 * bloomScale, farWidth * 0.22 * bloomScale, angle, 0, Math.PI * 2);
-        ctx.fill();
     }
 
     _getAtmosphereVignette(canvas, atmosphere = null) {
@@ -10004,13 +10434,8 @@ export class IsometricRenderer {
             gpuAgentAtlas: canvasPixelCount(this._gpuAgentFrameAtlas),
             gpuAgentMaterialAtlas: canvasPixelCount(this._gpuAgentMaterialAtlas),
             gpuAgentEmissiveAtlas: canvasPixelCount(this._gpuAgentEmissiveAtlas),
-            gpuAgentOccluderAtlas: canvasPixelCount(this._gpuAgentOccluderAtlas),
             semanticGround: canvasPixelCount(this._semanticGroundCanvas),
             groundCueAtlas: canvasPixelCount(this._groundCueRecorder?.atlas?.canvas),
-            gpuAgentAtlasUpdateSlots: canvasMapPixelCount(this._gpuAgentAlbedoUpdateCanvases)
-                + canvasMapPixelCount(this._gpuAgentMaterialUpdateCanvases)
-                + canvasMapPixelCount(this._gpuAgentEmissiveUpdateCanvases)
-                + canvasMapPixelCount(this._gpuAgentOccluderUpdateCanvases),
         };
         const volatilePixels = Object.values(volatile).reduce((sum, value) => sum + value, 0);
         const visibleCanvasPixels = canvasPixelCount(this.canvas);
@@ -10201,7 +10626,7 @@ export class IsometricRenderer {
                 const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
                 const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
                 this._drawPropContactShadow(ctx, x, y, prop.id, prop.tileX, prop.tileY);
-                this.sprites.drawSprite(ctx, prop.id, x, y);
+                this.sprites.drawSprite(ctx, prop.id, x, y, this._winterPropOpts(prop.id));
             }
             // #41 — scenic-point storytelling props baked alongside the other
             // cache props so each loiter spot reads as an inhabited place.
@@ -10210,7 +10635,7 @@ export class IsometricRenderer {
                 const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
                 const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
                 this._drawPropContactShadow(ctx, x, y, prop.id, prop.tileX, prop.tileY);
-                this.sprites.drawSprite(ctx, prop.id, x, y);
+                this.sprites.drawSprite(ctx, prop.id, x, y, this._winterPropOpts(prop.id));
             }
         }
 

@@ -44,6 +44,9 @@ test('agent overlay and profile lookup use the provider table for every provider
     const source = { width: 16, height: 16 };
     const material = { width: 16, height: 16 };
     const emissive = { width: 16, height: 16 };
+    const occluder = { width: 16, height: 16 };
+    const packed = { width: 16, height: 16 };
+    const packedFrom = [];
     const host = {
         gpuWorldEnabled: true,
         spriteCanvas: source,
@@ -52,9 +55,15 @@ test('agent overlay and profile lookup use the provider table for every provider
         assets: {
             assetVersion: 'assets-v1',
             getSidecar(_id, channel) {
-                return channel === 'material' ? material : emissive;
+                return { material, emissive, occluder }[channel] || null;
             },
         },
+        // B.2 — material and occluder travel as one packed geometry map.
+        _packedGeometrySource(...pair) {
+            packedFrom.push(pair);
+            return packed;
+        },
+        _authoredEmissionSource: channel => channel,
     };
     const overlay = new AgentGpuOverlayRenderer(host);
     overlay.setFrameRecord({
@@ -67,7 +76,9 @@ test('agent overlay and profile lookup use the provider table for every provider
     });
 
     assert.equal(host._gpuFrameRecord.material, 'glass-rune');
-    assert.equal(host._gpuFrameRecord.materialSource, material);
+    assert.deepEqual(packedFrom.at(-1), [material, occluder]);
+    assert.equal(host._gpuFrameRecord.materialSource, packed);
+    assert.equal(host._gpuFrameRecord.packedGeometry, true);
     assert.equal(host._gpuFrameRecord.emissiveSource, emissive);
     assert.equal(host._gpuFrameRecord.channelRevision, 'assets-v1');
 });
@@ -138,14 +149,14 @@ test('agent atlas revisions expose changed slots for incremental GPU uploads', (
         record.textureRevision = 'frame-2';
         const [packed] = packGpuAgentFrameAtlas(renderer, [record]);
 
+        // B.2 — the changed slot uploads as a sub-rect of the atlas itself.
         assert.equal(packed.textureUpdates.length, 1);
+        const [update] = packed.textureUpdates;
         assert.deepEqual(
-            { x: packed.textureUpdates[0].x, y: packed.textureUpdates[0].y },
-            { x: 0, y: 0 },
+            { x: update.x, y: update.y, sx: update.sx, sy: update.sy, width: update.width, height: update.height },
+            { x: 0, y: 0, sx: 0, sy: 0, width: 8, height: 8 },
         );
-        assert.equal(packed.textureUpdates[0].source.width, 8);
-        assert.equal(packed.textureUpdates[0].source.height, 8);
-        assert.notEqual(packed.textureUpdates[0].source, renderer._gpuAgentFrameAtlas);
+        assert.equal(update.source, renderer._gpuAgentFrameAtlas);
     } finally {
         if (previousDocument === undefined) delete globalThis.document;
         else globalThis.document = previousDocument;

@@ -28,6 +28,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { PNG } from 'pngjs';
 import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
+import { TREE_SPRITES } from '../../claudeville/src/presentation/character-mode/FoliageRenderer.js';
 import { repoRoot } from './manifest-utils.mjs';
 
 const args = process.argv.slice(2);
@@ -106,6 +107,47 @@ for (const target of TARGETS) {
     }
 }
 console.log(`[foliage-pass] ${processed} sprite(s) ${previewDir ? `previewed to ${previewDir}` : dryRun ? 'checked (dry run)' : 'written'}`);
+
+// Plan 5.5 sheets (tall woodland trees and the bare/snow winter states) were
+// authored palette-snapped and plinth-free, so the pass never re-tones them
+// (a re-tone would move them off the C1 stops); it checks them instead:
+// binary alpha, every pixel a stop of the leaf/wood/snow ramps, nothing below
+// the trunk-base row, and each winter state on its leafy sheet's canvas and
+// trunk base. Exits 1 on a failed check.
+const AUTHORED_RAMPS = ['foliage', 'foliageSun', 'foliageDeep', 'timber', 'snow'];
+const authoredStops = new Set(AUTHORED_RAMPS.flatMap((key) => ART_RAMPS[key].map((hex) => hex.toLowerCase())));
+const baseRow = (png) => {
+    for (let y = png.height - 1; y >= 0; y--) {
+        for (let x = 0; x < png.width; x++) if (png.data[(y * png.width + x) * 4 + 3]) return y;
+    }
+    return -1;
+};
+let failures = 0;
+for (const [key, sprite] of Object.entries(TREE_SPRITES)) {
+    const leafy = Object.entries(TREE_SPRITES).find(([, s]) => s.bare === key || s.snow === key);
+    if (!key.endsWith('.tall') && !leafy) continue;
+    const png = PNG.sync.read(readFileSync(join(VEG, `${sprite.id}.png`)));
+    const problems = [];
+    const off = new Set();
+    let semi = 0;
+    for (let i = 0; i < png.data.length; i += 4) {
+        const a = png.data[i + 3];
+        if (!a) continue;
+        if (a !== 255) semi++;
+        const hex = `#${[0, 1, 2].map((k) => png.data[i + k].toString(16).padStart(2, '0')).join('')}`;
+        if (!authoredStops.has(hex)) off.add(hex);
+    }
+    if (semi) problems.push(`${semi} semi-transparent px`);
+    if (off.size) problems.push(`${off.size} colour(s) off the C1 ${AUTHORED_RAMPS.join('/')} stops (${[...off].slice(0, 4).join(' ')})`);
+    if (baseRow(png) !== sprite.height - 1) problems.push(`trunk base row ${baseRow(png)}, expected ${sprite.height - 1}`);
+    if (leafy) {
+        const [leafyKey, leafySprite] = leafy;
+        if (leafySprite.width !== sprite.width || leafySprite.height !== sprite.height) problems.push(`canvas differs from ${leafyKey}`);
+    }
+    if (problems.length) failures++;
+    console.log(`[foliage-pass] 5.5 ${sprite.id}: ${problems.length ? `FAIL ${problems.join('; ')}` : 'ok'}`);
+}
+if (failures) process.exitCode = 1;
 
 function processSprite(png, { cutRow, lastRow, spans, tone }) {
     const { width, height, data } = png;
