@@ -1,0 +1,42 @@
+/* ── Frame kit (plan 9.5): hand-authored 9×9 nine-slice frames ──
+   Six flat PNGs in assets/ui/, drawn pixel by pixel on the chrome palette:
+   a black seam with a 1 px notch at each corner, the walnut lit edge
+   (#6e533a) on the top/left and the shade (#2a1f16) on the bottom/right, so
+   the light comes from the upper left like the world's sun key; raised frames
+   add a 1 px cast line inside the lit edge. `border-image … fill` paints the
+   face, so a framed element has no background, border or box-shadow of its
+   own; the frame is its 3 px border (2 px for the well). Slice = width, so
+   every frame pixel is an exact 1× copy at DPR 1 and 2× at DPR 2.
+     walnut      raised, --bg-1 face: dock, modal, active mode tab, portrait
+     bg2         raised, --bg-2 face: popovers, first-run hint, tooltip
+     well        recessed, --bg-0 face, 2 px: segmented wells (28 px tall)
+     attn        the lit slot / call card, NEEDS YOU hue, 16 % face
+     attn-error  the same in the ERROR hue
+     attn-limit  the same in the LIMIT hue
+   Use: `class="cv-frame cv-frame--<name>"`. */
+:root {
+    /* The attn faces: today's `color-mix(in srgb, <hue> 16%, var(--bg-1))`,
+       baked into the PNGs; exposed for surfaces that sit beside a frame. */
+    --cv-attn-fill-needs-you: #372f17;
+    --cv-attn-fill-error: #351f19;
+    --cv-attn-fill-limit: #381e2f;
+}
+
+.cv-frame {
+    border: 3px solid transparent;
+    border-image: url("../assets/ui/walnut.png") 3 fill / 3px / 0 stretch;
+    background: transparent;
+    box-shadow: none;
+    image-rendering: pixelated;
+}
+
+.cv-frame--walnut { border-image-source: url("../assets/ui/walnut.png"); }
+.cv-frame--bg2 { border-image-source: url("../assets/ui/bg2.png"); }
+.cv-frame--attn { border-image-source: url("../assets/ui/attn.png"); }
+.cv-frame--attn-error { border-image-source: url("../assets/ui/attn-error.png"); }
+.cv-frame--attn-limit { border-image-source: url("../assets/ui/attn-limit.png"); }
+
+.cv-frame--well {
+    border-width: 2px;
+    border-image: url("../assets/ui/well.png") 2 fill / 2px / 0 stretch;
+}

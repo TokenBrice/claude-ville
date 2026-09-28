@@ -303,3 +303,24 @@ test('a sound status is polite, not a cue caption, and replaces the previous one
     assert.equal(status.dataset.cueKind, undefined);
     h.toast.destroy();
 });
+
+test('more than two attention notices in one second collapse into one summary that absorbs later ones', () => {
+    const h = harness({ storage: new MemoryStorage({ 'claudeville.sound.enabled': 'true', [SOUND_INVITED_KEY]: '1' }) });
+    const raise = (id, name) => {
+        h.eventTarget.emit('attention:raised', { ...raised(id, 'waiting_on_user', name), oldestWaitMs: 9 * 60_000 });
+        h.toast.show(`${name} asked you a question`, 'warning');
+    };
+    raise('a', 'Aurora');
+    raise('b', 'Birch');
+    assert.equal(h.container.children.length, 2, 'two notices stay individual');
+    raise('c', 'Cedar');
+    assert.equal(h.container.children.length, 1);
+    const [summary] = h.container.children;
+    assert.equal(summary.textContent, '3 agents need you · oldest 9 min');
+    assert.equal(summary.attributes.get('role'), 'alert');
+    raise('d', 'Dune');
+    h.eventTarget.emit('audio:cue-played', { kind: 'summons', agentId: 'd', label: 'Dune' });
+    assert.equal(h.container.children.length, 1, 'later notices, direct copies and summons fold into the summary');
+    assert.equal(summary.textContent, '4 agents need you · oldest 9 min');
+    h.toast.destroy();
+});

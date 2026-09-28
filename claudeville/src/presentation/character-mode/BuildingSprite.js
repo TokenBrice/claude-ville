@@ -24,10 +24,13 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { classifyTool, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
+import { getReservedRects } from '../shared/ReservedRects.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
-import { normalizeLightingState, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
+import { normalizeLightingState, seasonShiftFor, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
+import { lampCourseAt } from './GradeEvaluator.js';
+import { seasonTokenForAtmosphere } from './SeasonalAmbience.js';
+import { isWorkingVisitor } from './VisitIntentManager.js';
 import { castLightingFor, structureCast } from './RakingLight.js';
-import { PARTICLE_LAYER_AIR } from './ParticleSystem.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
 import {
@@ -37,7 +40,6 @@ import {
 import {
     advanceNightOccupancyGate,
     buildingEmissiveGate,
-    lightsBuildingWindows,
     nightWindowGate,
 } from './NightOccupancyGate.js';
 import {
@@ -55,6 +57,7 @@ import {
     getBuildingWindowColor,
     getBuildingWindowRects,
     LIGHT_SOURCE_REGISTRY,
+    windowRectBounds,
 } from './BuildingVisualRegistry.js';
 import {
     getBuildingApertureProfile,
@@ -151,6 +154,19 @@ const WATCHTOWER_SEARCHLIGHT = Object.freeze(getBuildingEffectAnchor('watchtower
 // Sweep angular velocity (rad/s) scales from calm→distressed across this range.
 const SEARCHLIGHT_SPIN_CALM_RAD_PER_S = 0.45;
 const SEARCHLIGHT_SPIN_DISTRESS_RAD_PER_S = 1.7;
+// AD-6 — no beam by day. The Pharos searchlight and the Lighthouse beam draw
+// only once the lamp course reaches `settling` (GradeEvaluator.lampCourseAt),
+// the same minutes at which the grade keys hand the island to its lamps.
+// Weather never promotes it (a stormy noon is still day) and neither does
+// distress: action-needed agents live on T1 plates and the top bar (V3).
+const LAMP_COURSE_SETTLING = 1;
+
+export function lampsLitAt(atmosphere) {
+    const minute = Number(atmosphere?.clock?.minuteOfDay);
+    if (!Number.isFinite(minute)) return false;
+    const shift = seasonShiftFor(seasonTokenForAtmosphere(atmosphere));
+    return lampCourseAt(minute, shift) >= LAMP_COURSE_SETTLING;
+}
 const PARTICLE_ALIASES = {
     sparkle2: 'sparkle',
     sparkle3: 'sparkle',
@@ -175,13 +191,15 @@ const OBSERVATORY_CLOCK_FACE = Object.freeze(getBuildingEffectAnchor('observator
 const MINE_SEAM_COLORS = ['#ffc15a', '#ff8a33', '#ff4528'];
 const MINE_CARGO_CRYSTAL_COLORS = ['#bfe9ff', '#8fd0f4', '#e6f8ff'];
 const MINE_CARGO_ORE_COLORS = ['#5c554b', '#3f3a33', '#7e6a50'];
-// Presence tier -> (emitter chance ×, light radius ×, occupancy scalar 0..1).
-// Occupancy feeds window warmth via 0.45 + 0.55 * scalar.
+// Work tier (V8, `_workTierFor`) -> (emitter chance ×, light radius ×,
+// occupancy scalar 0..1). Occupancy feeds window warmth via 0.45 + 0.55 * scalar.
 const PRESENCE_TIER_TABLE = Object.freeze({
     dormant:  { emitter: 0.3, radius: 0.85, occupancy: 0 },
     occupied: { emitter: 1.0, radius: 1.0, occupancy: 0.7 },
     busy:     { emitter: 1.6, radius: 1.15, occupancy: 1 },
 });
+// (V8: the tier reads working visitors only. Observed-tool recency still
+// drives the activity plate/text via `_buildingActivityInfo`, never light.)
 // 3.1 — halo area is capped by authored source geometry, not by how dark the
 // sky is. The widest authored lamps (Pharos 108 px, Harbor/Lighthouse 96 px)
 // used to reach ~140 px of soft halo at night and rivalled the work they lit;
@@ -478,10 +496,6 @@ export class BuildingSprite {
         this._litGateByType.clear();
     }
 
-    _presenceTierFor(type) {
-        return this._presenceByType.get(type)?.tier || 'dormant';
-    }
-
     _nightShiftLit(type) {
         return this._litGateByType.get(type)?.value || 0;
     }
@@ -758,7 +772,7 @@ export class BuildingSprite {
                 life: [26, 48],
                 speed: [0.25, 0.7],
                 spread: [4, 8],
-                layer: PARTICLE_LAYER_AIR,
+                sortY: this.particleSortY(observatory, star[1]),
             });
     }
 
@@ -986,6 +1000,7 @@ export class BuildingSprite {
         scaleMode = 'screen-fixed',
         readMode = false,
         selectedType = null,
+        reserved = getReservedRects(),
     } = {}) {
         const labelScale = 1 / Math.max(0.01, zoom);
         const occupied = [];
@@ -993,6 +1008,16 @@ export class BuildingSprite {
         const harborLedgerRows = this._harborLedgerRows(harborPendingRepos);
         const plaqueCounts = this._plaqueCountsByType();
         const view = this._plaqueWorldViewport(ctx, labelScale);
+        // SM-7 — a plaque never covers a drawn identity label (T4 name or T2
+        // plate) or a T1 plate: the renderer's label pass hands those rects
+        // over as `identityWorldRects` just before this call. Names never
+        // move; a plaque that cannot clear them in any candidate or fallback
+        // is not drawn this frame.
+        const nameBoxes = this._normalizeBoxes(this.identityWorldRects || []);
+        // V8 — chrome over the world (the World dock) is occluded screen: a
+        // plaque whose board or post would land under it flips below it (or
+        // steps left of it), else that candidate is dropped.
+        const chromeBoxes = this._reservedWorldBoxes(ctx, reserved);
         const buildingList = [...this.buildings].sort((a, b) => {
             const ac = this._buildingScreenCenter(a);
             const bc = this._buildingScreenCenter(b);
@@ -1038,6 +1063,8 @@ export class BuildingSprite {
                     candidates: this._labelLayoutCandidates(isLandmark, isHovered || isSelected).map(({ dx, dy }) => ({ dx: dx * labelScale, dy: dy * labelScale })),
                     occupied,
                     occupiedExternal: normalizedOccupiedBoxes,
+                    hardBoxes: nameBoxes,
+                    hardPad: labelScale,
                     centerX: baseX,
                     centerY: baseY,
                     tagW: plaque.width * labelScale,
@@ -1049,21 +1076,32 @@ export class BuildingSprite {
                 const labelOverlap = layout.overlap != null ? layout.overlap : this._boxesOverlapRatio(layout.box, occupied);
                 if (labelOverlap > attempt.overlapTolerance) continue;
                 if (attempt.blockAgents && this._boxesOverlapRatio(layout.box, normalizedOccupiedBoxes) > attempt.overlapTolerance) continue;
-                chosen = { plaque, layout };
+                const candidate = { plaque, layout };
+                // S13 — a plaque stays inside the visible world: shifted in
+                // whole while its building stands in view, hidden when the
+                // building is off-frame (a bare count cell at the edge would be
+                // an orphan). The shift must not land it on a name either.
+                if (view && !this._placePlaqueInView(candidate, view, {
+                    buildingLeft: center.x - dims.w / 2,
+                    buildingRight: center.x + dims.w / 2,
+                    buildingTop: spriteTop,
+                    buildingBottom: center.y,
+                    tagW: plaque.width * labelScale,
+                    tagH: plaque.height * labelScale,
+                })) break;
+                const tagW = plaque.width * labelScale;
+                const tagH = plaque.height * labelScale;
+                const poleBottom = spriteTop + 2 * labelScale;
+                if (chromeBoxes.length && !this._clearPlaqueOfChrome(layout, {
+                    tagW, tagH, pad: 2 * labelScale, poleBottom, chromeBoxes, view,
+                })) continue;
+                // The post counts as much as the board: a walker's name
+                // crossing the post reads as a plaque drawn over the name.
+                if (this._plaqueHitsBoxes(layout.x, layout.y, tagW, tagH, labelScale, nameBoxes, poleBottom, labelScale)) continue;
+                chosen = candidate;
                 break;
             }
             if (!chosen) continue;
-            // S13 — a plaque stays inside the visible world: shifted in whole
-            // while its building stands in view, hidden when the building is
-            // off-frame (a bare count cell at the edge would be an orphan).
-            if (view && !this._placePlaqueInView(chosen, view, {
-                buildingLeft: center.x - dims.w / 2,
-                buildingRight: center.x + dims.w / 2,
-                buildingTop: spriteTop,
-                buildingBottom: center.y,
-                tagW: chosen.plaque.width * labelScale,
-                tagH: chosen.plaque.height * labelScale,
-            })) continue;
             occupied.push(chosen.layout.box);
             this._paintPlaque(ctx, chosen.plaque, {
                 x: chosen.layout.x,
@@ -1096,6 +1134,85 @@ export class BuildingSprite {
             right: bottomRight.x - margin,
             bottom: bottomRight.y - margin,
         };
+    }
+
+    // True when a plaque board centred on (x, y) — plus `pad` for the selected
+    // gold rim — or, when `poleBottom` is given, its post (3 screen px wide,
+    // `px` world px per screen px, from the board's foot down to
+    // `poleBottom`) crosses any box.
+    _plaqueHitsBoxes(x, y, tagW, tagH, pad, boxes, poleBottom = null, px = 1) {
+        const left = x - tagW / 2 - pad;
+        const right = x + tagW / 2 + pad;
+        const top = y - tagH / 2 - pad;
+        const bottom = y + tagH / 2 + pad;
+        const poleTop = y + tagH / 2;
+        const hasPole = Number.isFinite(poleBottom) && poleBottom > poleTop;
+        const poleLeft = x - 1.5 * px;
+        const poleRight = x + 2.5 * px;
+        for (const box of boxes) {
+            if (left < box.right && right > box.left && top < box.bottom && bottom > box.top) return true;
+            if (hasPole && poleLeft < box.right && poleRight > box.left && poleTop < box.bottom && poleBottom > box.top) return true;
+        }
+        return false;
+    }
+
+    // V8 reserved rects (integer CSS px over the world canvas) as world boxes
+    // under the overlay transform; empty when the context cannot say.
+    _reservedWorldBoxes(ctx, reserved) {
+        const out = this._chromeWorldBoxes || (this._chromeWorldBoxes = []);
+        out.length = 0;
+        if (!reserved?.length || typeof ctx?.getTransform !== 'function') return out;
+        const matrix = ctx.getTransform();
+        if (!matrix || typeof matrix.inverse !== 'function' || !matrix.a || !matrix.d) return out;
+        const inverse = matrix.inverse();
+        const cssWidth = ctx.canvas?.clientWidth || 0;
+        const dpr = cssWidth > 0 ? ctx.canvas.width / cssWidth : (globalThis.devicePixelRatio || 1);
+        for (const rect of reserved) {
+            const x0 = rect.left * dpr;
+            const y0 = rect.top * dpr;
+            const x1 = rect.right * dpr;
+            const y1 = rect.bottom * dpr;
+            const ax = inverse.a * x0 + inverse.c * y0 + inverse.e;
+            const ay = inverse.b * x0 + inverse.d * y0 + inverse.f;
+            const bx = inverse.a * x1 + inverse.c * y1 + inverse.e;
+            const by = inverse.b * x1 + inverse.d * y1 + inverse.f;
+            out.push({ left: Math.min(ax, bx), right: Math.max(ax, bx), top: Math.min(ay, by), bottom: Math.max(ay, by) });
+        }
+        return out;
+    }
+
+    // Keeps a plaque (board and post) off reserved chrome: flipped just below
+    // the chrome it touches, else stepped left of it, staying inside `view`.
+    // Returns false (layout restored) when neither clears every chrome box.
+    _clearPlaqueOfChrome(layout, { tagW, tagH, pad, poleBottom, chromeBoxes, view }) {
+        const px = pad / 2;
+        const hits = () => this._plaqueHitsBoxes(layout.x, layout.y, tagW, tagH, pad, chromeBoxes, poleBottom, px);
+        if (!hits()) return true;
+        const startX = layout.x;
+        const startY = layout.y;
+        const move = (x, y) => {
+            const dx = x - layout.x;
+            const dy = y - layout.y;
+            layout.x = x;
+            layout.y = y;
+            layout.box = {
+                left: layout.box.left + dx,
+                right: layout.box.right + dx,
+                top: layout.box.top + dy,
+                bottom: layout.box.bottom + dy,
+            };
+        };
+        const inView = () => !view || (layout.x - tagW / 2 >= view.left && layout.x + tagW / 2 <= view.right
+            && layout.y - tagH / 2 >= view.top && layout.y + tagH / 2 <= view.bottom);
+        for (const chrome of chromeBoxes) {
+            if (!this._plaqueHitsBoxes(startX, startY, tagW, tagH, pad, [chrome], poleBottom, px)) continue;
+            move(startX, chrome.bottom + pad + tagH / 2);
+            if (inView() && !hits()) return true;
+            move(chrome.left - pad - tagW / 2, startY);
+            if (inView() && !hits()) return true;
+        }
+        move(startX, startY);
+        return false;
     }
 
     // Moves a chosen plaque layout wholly inside `view`, or returns false when
@@ -1282,6 +1399,12 @@ export class BuildingSprite {
             { dx: major ? 0 : 6, dy: major ? 26 : 19 },
             { dx: -drift, dy: -18 },
             { dx: drift, dy: -18 },
+            // Escape rows for a roof crowded with names: step the board
+            // further up rather than onto a label.
+            { dx: 0, dy: -30 },
+            { dx: -drift * 2, dy: -30 },
+            { dx: drift * 2, dy: -30 },
+            { dx: 0, dy: -42 },
         ];
     }
 
@@ -1336,6 +1459,8 @@ export class BuildingSprite {
         candidates,
         occupied,
         occupiedExternal = [],
+        hardBoxes = [],
+        hardPad = 0,
         centerX,
         centerY,
         tagW,
@@ -1351,6 +1476,7 @@ export class BuildingSprite {
         for (const { dx, dy } of candidates) {
             const labelX = centerX + dx;
             const labelY = centerY + dy;
+            if (hardBoxes.length && this._plaqueHitsBoxes(labelX, labelY, tagW, tagH, hardPad, hardBoxes)) continue;
             const tagLeft = labelX - tagW / 2;
             const tagTop = labelY - tagH / 2;
             const box = {
@@ -1440,8 +1566,10 @@ export class BuildingSprite {
         const staticSources = this._staticLightSources();
         const out = [];
         for (const source of staticSources) {
-            const visitors = source.building ? this._visitorCountFor(source.building) : 0;
-            let activity = visitors > 0 ? 1.12 : 1;
+            // V8 — only real work (isWorkingVisitor) warms a building's light;
+            // seated, queued or passing bodies leave it exactly as empty.
+            const working = source.building ? this._workingVisitorCountFor(source.building) : 0;
+            let activity = working > 0 ? 1.12 : 1;
             let alpha = source.alpha;
             let color = source.color;
             if (source.buildingType === 'forge') {
@@ -1456,8 +1584,8 @@ export class BuildingSprite {
             const typeResponse = source.kind === 'beam'
                 ? 1
                 : 0.62 + 0.38 * getBuildingBeaconBase(source.buildingType);
-            const presenceRadiusMult = source.buildingType
-                ? PRESENCE_TIER_TABLE[this._presenceTierFor(source.buildingType)].radius
+            const presenceRadiusMult = source.building
+                ? PRESENCE_TIER_TABLE[this._workTierFor(source.building)].radius
                 : 1;
             const radius = Math.min(
                 source.radius * energy.halo,
@@ -1910,9 +2038,10 @@ export class BuildingSprite {
         this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, dims, baseAnchor);
         ctx.globalCompositeOperation = 'screen';
         if (windowWarmth > 0.035) {
-            // Dusk crossfades legacy presence warmth into the live night-shift
-            // gate; at night only a physically present working agent lights it.
-            const occupancy = PRESENCE_TIER_TABLE[this._presenceTierFor(building.type)].occupancy;
+            // Dusk crossfades the work-tier warmth into the live night-shift
+            // gate; at night only a physically present working agent (V8)
+            // lights it.
+            const occupancy = PRESENCE_TIER_TABLE[this._workTierFor(building)].occupancy;
             const lit = this._nightShiftLit(building.type);
             const nightGate = this._nightWindowGate();
             // 4.6 — at canonical rest the work buildings go dark and only the
@@ -1932,11 +2061,16 @@ export class BuildingSprite {
             // selected building assigns a room per working occupant, the
             // aggregate warmth stands down entirely: two answers to "who is in
             // there" must never be lit at once. The doorstep spill below is a
-            // door, not a room, so it stays.
+            // door, not a room, so it stays. 0.8 — a building with an authored
+            // emissive sidecar is lit by its art-shaped glass texels instead
+            // (the Canvas emitter cut, `drawCanvasEmitterCuts`, as the scene
+            // pass does on WebGL): amber panes with the muntins left dark, so
+            // no flat rect is stamped over them here.
             const roomsLit = Boolean(this._roomInstrumentFor(building));
             const windowRects = getBuildingWindowRects(building.type);
-            if (roomsLit) {
-                // rooms carry the occupancy read for this building
+            const sidecarLit = this.assets.getEntry?.(entry.id)?.emissiveSidecar === true;
+            if (roomsLit || sidecarLit) {
+                // rooms, or the authored lit glass, carry the window read
             } else if (windowRects) {
                 this._drawWarmthWindows(
                     ctx,
@@ -2060,16 +2194,13 @@ export class BuildingSprite {
         for (const rect of rects) {
             const [lx, ly] = rect.at || [];
             if (!Number.isFinite(lx) || !Number.isFinite(ly) || !shouldDrawLocalY(ly)) continue;
-            const w = Math.max(3, Math.round(rect.w || 6));
-            const h = Math.max(3, Math.round(rect.h || 8));
             const p = localPoint(lx, ly);
+            const { left, top, w, h } = windowRectBounds(rect, p.x, p.y);
             // Stepped halo: the inner course overlaps the outer, so the window
             // falls off in two hard alpha steps instead of a gradient.
             fillPixelEllipse(ctx, p.x, p.y, w * 1.7, h * 1.5, halo);
             fillPixelEllipse(ctx, p.x, p.y, w * 1.15, h * 1.05, halo);
 
-            const left = Math.round(p.x - w / 2);
-            const top = Math.round(p.y - h / 2);
             if (rect.shape === 'ellipse') {
                 fillPixelEllipse(ctx, p.x, p.y, w / 2, h / 2, coreFill);
             } else {
@@ -2275,12 +2406,12 @@ export class BuildingSprite {
                 return;
             }
             const gate = localPoint(144, 60);
-            const visitors = this._visitorCountFor(building);
+            const working = this._workingVisitorCountFor(building);
             const portalRitual = this._latestRitual('portal');
             // Three rings of snapped dots on the 2:1 ground ellipse, stepping
             // round one dot slot on the slow band (held under reduced motion).
-            // A visiting agent turns the inner ring violet; the plaque carries
-            // the exact count.
+            // A working visitor (V8) turns the inner ring violet; the plaque
+            // carries the exact count.
             const tick = this.motionScale ? Math.floor(this.frame * 0.05) : 0;
             const grow = portalRitual ? 2 : 0;
             for (let i = 0; i < 3; i++) {
@@ -2288,7 +2419,7 @@ export class BuildingSprite {
                 ringDots(ctx, gate.x, gate.y, 19 + i * 8 + grow, {
                     count,
                     dot: 1,
-                    color: i === 0 && visitors > 0 ? '#bda7ff' : '#8feaff',
+                    color: i === 0 && working > 0 ? '#bda7ff' : '#8feaff',
                     phase: ((tick + i) % count) * (Math.PI * 2 / count) * (i % 2 ? -1 : 1),
                 });
             }
@@ -2296,8 +2427,11 @@ export class BuildingSprite {
         } else if (building.type === 'watchtower') {
             if (shouldDrawLocalY(WATCHTOWER_LANTERN_FIRE.flame[1])) {
                 const beacon = localPoint(...WATCHTOWER_LANTERN_FIRE.flame);
-                const pivot = localPoint(...WATCHTOWER_SEARCHLIGHT.pivot);
-                this._drawWatchtowerSearchlight(ctx, pivot, this._fleetDistressRatio());
+                // AD-6 — the wedge is a night lamp only (lampsLitAt).
+                if (lampsLitAt(this.atmosphereState)) {
+                    const pivot = localPoint(...WATCHTOWER_SEARCHLIGHT.pivot);
+                    this._drawWatchtowerSearchlight(ctx, pivot, this._fleetDistressRatio());
+                }
                 this._drawWatchtowerFire(ctx, beacon);
                 this._drawWatchtowerRitual(ctx, beacon);
             }
@@ -4042,10 +4176,8 @@ export class BuildingSprite {
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
         for (let i = 0; i < count; i++) {
-            const { at, w = 4, h = 8 } = panes[i];
-            const p = localPoint(at[0], at[1]);
-            const left = Math.round(p.x - w / 2);
-            const top = Math.round(p.y - h / 2);
+            const p = localPoint(panes[i].at[0], panes[i].at[1]);
+            const { left, top, w, h } = windowRectBounds(panes[i], p.x, p.y);
             // A warm pane with a hot mullion line, one per working occupant.
             ctx.fillStyle = '#ffe59a';
             ctx.fillRect(left, top, w, h);
@@ -4144,7 +4276,9 @@ export class BuildingSprite {
     // gradient. Sweep speed (driven by _updateWatchtowerSearchlight) and colour
     // both read fleet distress — amber when calm, shifting to red as
     // errored/rate-limited agents mount. The beam is clipped to the sky above
-    // the pivot so it never spills onto the terrain below the tower.
+    // the pivot so it never spills onto the terrain below the tower. It draws
+    // only while the lamps are lit (AD-6, `lampsLitAt`): there is no daytime
+    // beam, distressed or not.
     //
     // Reduced-motion fallback: no rotation (angle frozen at last value) and a
     // single static directional wedge at a steady alpha.
@@ -4319,9 +4453,9 @@ export class BuildingSprite {
         for (const [particleType, [lx, ly]] of Object.entries(entry?.emitters || {})) {
             const normalizedType = PARTICLE_ALIASES[particleType] || particleType;
             const at = b.type === 'watchtower' ? WATCHTOWER_LANTERN_FIRE.particle : [lx, ly];
-            this._spawnBuildingParticle(normalizedType, center, baseAnchor, at, 0.035, 1, dt);
+            this._spawnBuildingParticle(b, normalizedType, center, baseAnchor, at, 0.035, 1, dt);
         }
-        const presenceMult = PRESENCE_TIER_TABLE[this._presenceTierFor(b.type)].emitter;
+        const presenceMult = PRESENCE_TIER_TABLE[this._workTierFor(b)].emitter;
         // Beacon breathing: emitter density rises with the global beacon
         // intensity so every building's fire/spark/mote flow quickens together as
         // night deepens. Held at the static-0.5 floor under reduced motion.
@@ -4342,13 +4476,13 @@ export class BuildingSprite {
         for (const emitter of restQuiet ? [] : BUILDING_EMITTER_FALLBACKS[b.type] || []) {
             let chanceBoost = b.type === 'forge'
                 ? 0.7 + this._forgeGlowIntensity() * 1.1
-                : this._visitorCountFor(b) > 0 ? 1.6 : 1;
+                : this._workingVisitorCountFor(b) > 0 ? 1.6 : 1;
             if (archiveReadIntensity > 0.6 && Array.isArray(emitter.at) && emitter.at[1] >= 120) {
                 chanceBoost *= 1 + (archiveReadIntensity - 0.6) * 5;
             }
             const chance = emitter.chance * chanceBoost * presenceMult * beaconMult;
             const options = this._smokeEmitterOptions(b, emitter.type, windDrift);
-            this._spawnBuildingParticle(emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1, dt, options);
+            this._spawnBuildingParticle(b, emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1, dt, options);
         }
     }
 
@@ -4369,18 +4503,30 @@ export class BuildingSprite {
         return options;
     }
 
-    _spawnBuildingParticle(type, center, baseAnchor, at, chance, count, dt = 16, options = null) {
+    _spawnBuildingParticle(building, type, center, baseAnchor, at, chance, count, dt = 16, options = null) {
         if (Math.random() > chanceForDt(chance, dt)) return;
         const [lx, ly] = at;
         const wx = center.x - baseAnchor[0] + lx;
         const wy = center.y - baseAnchor[1] + ly;
-        // 0.1 — building emitters are open-air by construction, so they replay
-        // on the resident WebGL overlay; the mine mouth's dust stays at ground
-        // level and waits for GPU particle records.
-        const grounded = type === 'mineDust' || type === 'mining';
-        const spawnOptions = grounded ? options : { ...(options || {}), layer: PARTICLE_LAYER_AIR };
-        if (spawnOptions) this.particles.spawn(type, wx, wy, count, spawnOptions);
-        else this.particles.spawn(type, wx, wy, count);
+        // 0.6 — every building emitter (torches, embers, motes, pings, mine
+        // dust) sorts just in front of the half of its own sprite it sits on.
+        this.particles.spawn(type, wx, wy, count, { ...(options || {}), sortY: this.particleSortY(building, ly) });
+    }
+
+    // 0.6 — the painter sortY for a particle emitted at sprite row `localY` of
+    // `building`: the owning drawable (the back half above the horizon, the
+    // front half below it, the whole sprite when unsplit) + 1, so an ember or
+    // a puff never hides behind its own roof yet stays behind anything nearer.
+    // Null when the building has no drawable (the spawn's ground line stands).
+    particleSortY(building, localY) {
+        for (const drawable of this.enumerateDrawables()) {
+            if (drawable.building !== building) continue;
+            if (drawable.kind === 'building'
+                || (drawable.kind === 'building-front') === (Number(localY) >= drawable.horizonY)) {
+                return drawable.sortY + 1;
+            }
+        }
+        return null;
     }
 
     _updateVisitorCounts() {
@@ -4412,7 +4558,14 @@ export class BuildingSprite {
                     this._visitorStatusByType.set(building.type, tally);
                 }
                 const status = sprite.agent?.status;
-                if (lightsBuildingWindows(sprite.agent)) tally.working++;
+                // V8 — `working` is the one working-visitor count every light,
+                // emitter and window gate reads. The sprite's route intent and
+                // occupancy role (7.1 seat / 7.2 queue) ride along.
+                if (isWorkingVisitor(sprite.agent, {
+                    building: building.type,
+                    intent: sprite._lastIntentSnapshot,
+                    role: sprite.visitRole,
+                })) tally.working++;
                 if (status === AgentStatus.WAITING_ON_USER) tally.waiting_on_user++;
                 else if (status === AgentStatus.ERRORED) tally.errored++;
                 const project = this._repoProjectKey(sprite.agent);
@@ -4487,6 +4640,39 @@ export class BuildingSprite {
         return this._visitorCountByType.get(building?.type) || 0;
     }
 
+    // V8 — the bodies at this building that pass `isWorkingVisitor`.
+    _workingVisitorCountFor(building) {
+        return this._visitorStatusByType.get(building?.type)?.working || 0;
+    }
+
+    // V8 — the presence tier a building's own light, emitters, window warmth
+    // and chimney smoke read: busy at work capacity, occupied while anyone
+    // works there, else dormant. Counting only working visitors (no observed-
+    // tool recency tail), so the tier drops the update after the last worker
+    // leaves, and seated, queued, waiting or passing bodies never brighten it.
+    _workTierFor(building) {
+        const working = this._workingVisitorCountFor(building);
+        if (working <= 0) return 'dormant';
+        const capacity = Number(building?.capacity?.work);
+        return capacity > 0 && working >= capacity ? 'busy' : 'occupied';
+    }
+
+    // V8 — Map<type, { count, tier }> of working presence, the occupancy gate
+    // ChimneySmoke reads. Entries are reused frame to frame.
+    getWorkingPresence() {
+        const out = this._workingPresence || (this._workingPresence = new Map());
+        for (const building of this.buildings) {
+            let entry = out.get(building.type);
+            if (!entry) {
+                entry = { count: 0, tier: 'dormant' };
+                out.set(building.type, entry);
+            }
+            entry.count = this._workingVisitorCountFor(building);
+            entry.tier = this._workTierFor(building);
+        }
+        return out;
+    }
+
     _buildingCapacityForLabel(building) {
         const explicit = Number(building?.visitCapacity);
         if (Number.isFinite(explicit) && explicit > 0) return Math.max(1, Math.floor(explicit));
@@ -4541,7 +4727,11 @@ export class BuildingSprite {
                 // A waiting session is not a failed bulb, and a stale one is
                 // not a finished one: both keep their identity, neither claims
                 // new work (C1).
-                working: lightsBuildingWindows(agent),
+                working: isWorkingVisitor(agent, {
+                    building: type,
+                    intent: sprite._lastIntentSnapshot,
+                    role: sprite.visitRole,
+                }),
                 stale: observation?.state === 'stale',
                 waiting: agent.status === AgentStatus.WAITING_ON_USER || agent.status === AgentStatus.WAITING,
             });
@@ -4765,10 +4955,7 @@ export class BuildingSprite {
             const [lx, ly] = slot.at || [];
             if (!Number.isFinite(lx) || !Number.isFinite(ly) || !shouldDrawLocalY(ly)) continue;
             const point = localPoint(lx, ly);
-            const w = Math.max(3, Math.round(slot.w || 6));
-            const h = Math.max(3, Math.round(slot.h || 8));
-            const left = Math.round(point.x - w / 2);
-            const top = Math.round(point.y - h / 2);
+            const { left, top, w, h } = windowRectBounds(slot, point.x, point.y);
             // Every room keeps its dark frame, so an unlit room reads as a
             // room at rest rather than as missing art.
             ctx.globalCompositeOperation = 'source-over';

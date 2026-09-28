@@ -19,6 +19,9 @@ const KIND_ORDER = Object.freeze({
     'familiar-motes': 80,
     'building-front': 90,
     building: 95,
+    // 0.6 — a particle paints after every other kind at an equal sortY, as
+    // the resident LEQUAL test shows it over the records sharing its depth.
+    particle: 100,
 });
 const EMPTY_SEMANTICS = Object.freeze({});
 
@@ -220,6 +223,7 @@ export function appendDepthSortedDrawables(target, {
     chronicleMonumentDrawables = [],
     chroniclerDrawables = [],
     familiarDrawables = [],
+    particles = null,
 } = {}) {
     const pool = _framePools.get(target);
     if (pool) {
@@ -265,6 +269,7 @@ export function appendDepthSortedDrawables(target, {
     for (const drawable of familiarDrawables) {
         pushDepthDrawable(target, pooledDepthDrawable(target, drawable.kind || 'familiar-motes', drawable.sortY, drawable, drawFamiliarMotes));
     }
+    appendParticleDrawables(target, particles);
     const activePool = _framePools.get(target);
     for (let index = activePool?.fallbackCursor || 0; index < (activePool?.fallback.length || 0); index++) {
         clearPooledDrawable(activePool.fallback[index]);
@@ -309,9 +314,13 @@ function collectSplitBuildings(buildingDrawables) {
     return out;
 }
 
+// The painter sortY the sprite was sorted at this frame is kept on the
+// sprite (`_depthSortY`), so the particles it emits (footfalls, sweat, motes)
+// sort with the body that owns them, behind a building with it.
 function agentSortY(sprite, splitBuildings) {
     const y = sprite.y;
     sprite._behindBuilding = false;
+    sprite._depthSortY = y;
     if (!splitBuildings.length || !Number.isFinite(sprite.x) || !Number.isFinite(y)) return y;
     for (const split of splitBuildings) {
         if (!(y > split.backSortY && y <= split.frontSortY)) continue;
@@ -319,10 +328,67 @@ function agentSortY(sprite, splitBuildings) {
         const tile = worldToTile(sprite.x, y);
         if (tile.tileX < split.x1 && tile.tileY < split.y1) {
             sprite._behindBuilding = true;
-            return split.backSortY - 0.5;
+            sprite._depthSortY = split.backSortY - 0.5;
+            return sprite._depthSortY;
         }
     }
     return y;
+}
+
+// 0.6 — on Canvas each live world particle joins the depth stream as a small
+// drawable at its spawn sortY, so a building front or a nearer body covers
+// it exactly as the resident depth test does. The wrappers are pooled per
+// target and carry only what sorting, culling and painting read.
+const _particlePools = new WeakMap();
+
+function drawParticleDrawable(ctx, zoom, context) {
+    this.payload?.draw?.(ctx, context?.particleMotionEnabled !== false);
+}
+
+function noGpuRecord() {
+    return null;
+}
+
+function appendParticleDrawables(target, particles) {
+    let pool = _particlePools.get(target);
+    if (!pool) {
+        pool = [];
+        _particlePools.set(target, pool);
+    }
+    const count = particles?.length || 0;
+    for (let index = 0; index < count; index++) {
+        let drawable = pool[index];
+        if (!drawable) {
+            drawable = {
+                kind: 'particle',
+                sortY: 0,
+                sortBand: KIND_ORDER.particle,
+                stableKey: '',
+                salience: 'ambient',
+                materialId: 'material.default',
+                materialClass: 'unlit',
+                elevation: null,
+                emissive: null,
+                occluder: null,
+                atlasFrame: null,
+                hitArea: null,
+                payload: null,
+                draw: drawParticleDrawable,
+                drawFallback: drawParticleDrawable,
+                buildGpuRecord: noGpuRecord,
+                gpuReady: false,
+                sceneCategory: null,
+                overlayBand: 0,
+                sequence: 0,
+            };
+            pool[index] = drawable;
+        }
+        const particle = particles[index];
+        drawable.sortY = finiteSortY(particle.sortY ?? particle.y);
+        drawable.payload = particle;
+        pushDepthDrawable(target, drawable);
+    }
+    for (let index = count; index < pool.length; index++) pool[index].payload = null;
 }
 
 function clearPooledDrawable(drawable) {

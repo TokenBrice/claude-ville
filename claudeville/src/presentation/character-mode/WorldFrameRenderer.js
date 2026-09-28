@@ -1,5 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { drawAttentionPlates } from './AttentionPlates.js';
 import { fitLabelText, measureLabelText } from './WorldLabelKit.js';
@@ -21,14 +21,16 @@ import {
 } from './VillageDirectorOverlay.js';
 import { worldSceneCategoryRegistry } from './SceneCategoryRegistry.js';
 import { buildGpuWorldRecords } from './gpu/GpuSceneBuilder.js';
+import { materialClassId } from './gpu/GpuWorldPolicy.js';
 import { createBoundedRing, writeBoundedRing } from '../shared/ClientPerfMetrics.js';
 import { drawWorkScoreGround, drawWorkScoreScreen } from './SpatialWorkScore.js';
-import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
+import { ornamentPlan } from './MarkGovernor.js';
 import { GroundCueRecorder, insertGroundCueRecords } from './GroundCueRecords.js';
-import { PARTICLE_LAYER_AIR } from './ParticleSystem.js';
-import { gradeColor } from './AtmosphereState.js';
 import { drawCanvasAerialHaze, drawResidentBackdropGrade } from './BackdropGrade.js';
 import { castLightingFor, drawTreeCasts, setFrameCastLighting } from './RakingLight.js';
+import { drawFlashExposure, stormStrikeAt, weatherPressureLevel } from './WeatherRenderer.js';
+import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
+import { drawCanvasEmitterCuts } from './EmitterCuts.js';
 
 const FRAME_TIMING_RING_CAPACITY = 90;
 const FRAME_TIMER_MAX_MARKS = 48;
@@ -38,18 +40,26 @@ const CANVAS_SCENE_BACKEND = Object.freeze({ id: 'canvas-2d', canvasFallback: tr
 // pilot keeps today's additive light response.
 export const PALETTE_RAMP_ASSET_ID = 'lut.light-ramp.command';
 
-// Quarter-res occupancy field, matching the PostFx water-mask budget. One
-// byte per sample; the renderer paints it into a reused quarter-res canvas
-// only when the pose/viewport/atmosphere key changes.
-export const HAZE_FIELD_SCALE = 0.25;
-export const HAZE_FIELD_BYTES_PER_SAMPLE = 1;
-export const HAZE_ALPHA_CAP = 0.16;
+// 0.10 — ground haze is one world-locked field baked per map revision: HAZE_TEXEL
+// world px per texel over the island's bounds plus a margin, cut into three
+// flat courses (occupancy thresholds HAZE_COURSES) with a 4x4 ordered dither
+// only in a narrow band at each seam, and drawn at a stepped strength. Both
+// backends read the same canvas (Canvas drawImage, the GPU `ground:haze`
+// record); it never re-projects with the camera and carries no gradient.
+export const HAZE_TEXEL = 2;
+export const HAZE_ALPHA_CAP = 0.3;
+export const HAZE_COURSES = Object.freeze([0.22, 0.44, 0.68]);
+export const HAZE_COURSE_ALPHA = Object.freeze([0.34, 0.64, 1]);
+export const HAZE_STRENGTH_STEPS = 8;
 export const HAZE_WATER_FALLOFF_PX = 220;
 export const HAZE_LOWLAND_FALLOFF_PX = 160;
 export const HAZE_ROAD_CARVE_RADIUS_PX = 28;
-export const HAZE_SUBJECT_CARVE_RADIUS_PX = 42;
 export const HAZE_ROAD_CARVE = 0.12;
-export const HAZE_SUBJECT_CARVE = 0.18;
+const HAZE_SEAM = 0.08;
+const HAZE_MARGIN = 96;
+const HAZE_OCCUPANCY_CELL = 8;
+const HAZE_FIELD_RGB = Object.freeze([214, 228, 236]);
+const HAZE_BAYER4 = Object.freeze([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
 export const WETNESS_ATTACK_MS = 480;
 export const WETNESS_RELEASE_MS = 4000;
 export const DAMP_MARK_LIMIT = 24;
@@ -93,51 +103,14 @@ export function isoFromTile(tileX, tileY, tileWidth = TILE_WIDTH, tileHeight = T
     };
 }
 
-export function hazeFieldSampleCount(viewportWidth, viewportHeight, scale = HAZE_FIELD_SCALE) {
-    const width = Math.max(1, Math.ceil(Math.max(0, Number(viewportWidth) || 0) * scale));
-    const height = Math.max(1, Math.ceil(Math.max(0, Number(viewportHeight) || 0) * scale));
-    return width * height;
-}
-
-export function hazeFieldMemoryBytes(viewportWidth, viewportHeight, scale = HAZE_FIELD_SCALE) {
-    return hazeFieldSampleCount(viewportWidth, viewportHeight, scale) * HAZE_FIELD_BYTES_PER_SAMPLE;
-}
-
 export function hazePlanForPressure(level = 0, motionScale = 1) {
     const reduced = Number(motionScale) <= 0;
     const plan = ornamentPlan({ level, motionScale: reduced ? 0 : 1 });
     const shed = plan.ambientWeatherEmbellishment === 'off';
     return {
         density: shed ? 0.36 : 1,
-        detail: shed ? 0 : 1,
-        fieldScale: shed ? 0.125 : HAZE_FIELD_SCALE,
-        static: reduced,
-        rebuild: !reduced,
         pressureLevel: Number(level) || 0,
     };
-}
-
-export function hazeFieldCacheKey({
-    camera = null,
-    viewport = null,
-    atmosphereBucket = '',
-    pressureLevel = 0,
-    focusedId = '',
-    fieldScale = HAZE_FIELD_SCALE,
-} = {}) {
-    const x = Math.round((Number(camera?.x) || 0) * 2) / 2;
-    const y = Math.round((Number(camera?.y) || 0) * 2) / 2;
-    const z = Math.round((Number(camera?.zoom) || 1) * 100);
-    const vw = Math.round(Number(viewport?.width) || 0);
-    const vh = Math.round(Number(viewport?.height) || 0);
-    return `${x}|${y}|${z}|${vw}x${vh}|${atmosphereBucket}|p${pressureLevel}|f${focusedId || ''}|s${fieldScale}`;
-}
-
-export function shouldRebuildHazeField(previousKey, nextKey, { motionScale = 1, hasField = false } = {}) {
-    if (!nextKey) return false;
-    if (previousKey === nextKey) return false;
-    if (Number(motionScale) <= 0 && hasField) return false;
-    return true;
 }
 
 export function collectHazeAnchors({
@@ -246,7 +219,6 @@ function isoDistance(ax, ay, bx, by) {
 export function hazeOccupancyAtWorld(worldX, worldY, {
     anchors = [],
     roads = [],
-    focused = null,
 } = {}) {
     let occupancy = 0;
     for (let i = 0; i < anchors.length; i++) {
@@ -264,80 +236,98 @@ export function hazeOccupancyAtWorld(worldX, worldY, {
         const t = 1 - dist / HAZE_ROAD_CARVE_RADIUS_PX;
         occupancy *= 1 - t * (1 - HAZE_ROAD_CARVE);
     }
-    if (focused && Number.isFinite(focused.x) && Number.isFinite(focused.y)) {
-        const dist = isoDistance(worldX, worldY, focused.x, focused.y);
-        if (dist < HAZE_SUBJECT_CARVE_RADIUS_PX) {
-            const t = 1 - dist / HAZE_SUBJECT_CARVE_RADIUS_PX;
-            occupancy *= 1 - t * (1 - HAZE_SUBJECT_CARVE);
-        }
-    }
     return occupancy;
 }
 
-export function hazeDensityAtWorld(worldX, worldY, options = {}) {
-    const alphaCap = Number.isFinite(Number(options.alphaCap)) ? Number(options.alphaCap) : HAZE_ALPHA_CAP;
-    const occupancy = hazeOccupancyAtWorld(worldX, worldY, options);
-    return Math.min(alphaCap, occupancy * alphaCap);
+function hazeHash(ix, iy) {
+    let h = Math.imul(ix, 374761393) ^ Math.imul(iy, 668265263) ^ 0x2c1b3c6d;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
-export function projectWorldToScreen(camera, worldX, worldY) {
-    const zoom = Number(camera?.zoom) || 1;
-    return {
-        x: (worldX + (Number(camera?.x) || 0)) * zoom,
-        y: (worldY + (Number(camera?.y) || 0)) * zoom,
-    };
+// Low strata: ground haze lies in flat bands HAZE_BAND_PX world px tall along
+// the iso horizontal, each band a run of streaks ~HAZE_STREAK_PX long at its
+// own phase, so the occupancy reach is cut into stacked courses of mist over
+// water and lowland (hard band edges, Bayer only where a streak ends), never
+// concentric rings around the anchors.
+const HAZE_BAND_PX = 16;
+const HAZE_STREAK_PX = 240;
+function hazeStrata(worldX, worldY) {
+    const band = Math.floor(worldY / HAZE_BAND_PX);
+    const gx = worldX / HAZE_STREAK_PX + hazeHash(band, 977) * 31;
+    const x0 = Math.floor(gx);
+    const fx = gx - x0;
+    const sx = fx * fx * (3 - 2 * fx);
+    const n = hazeHash(x0, band) + (hazeHash(x0 + 1, band) - hazeHash(x0, band)) * sx;
+    return Math.min(1, Math.max(0, (n - 0.3) / 0.4));
 }
 
-export function projectScreenToWorld(camera, screenX, screenY) {
-    const zoom = Number(camera?.zoom) || 1;
-    return {
-        x: screenX / zoom - (Number(camera?.x) || 0),
-        y: screenY / zoom - (Number(camera?.y) || 0),
-    };
-}
-
-export function projectHazeField({
-    anchors = [],
-    roads = [],
-    focused = null,
-    camera = { x: 0, y: 0, zoom: 1 },
-    viewport = { width: 1280, height: 720 },
-    scale = HAZE_FIELD_SCALE,
-    strength = 1,
-    densityScale = 1,
-    alphaCap = HAZE_ALPHA_CAP,
-} = {}) {
-    const width = Math.max(1, Math.ceil(Math.max(0, Number(viewport.width) || 0) * scale));
-    const height = Math.max(1, Math.ceil(Math.max(0, Number(viewport.height) || 0) * scale));
-    const samples = new Uint8Array(width * height);
-    const invScale = 1 / scale;
-    const gain = clamp01(strength) * clamp01(densityScale);
-    for (let y = 0; y < height; y++) {
-        const sy = (y + 0.5) * invScale;
-        for (let x = 0; x < width; x++) {
-            const sx = (x + 0.5) * invScale;
-            const world = projectScreenToWorld(camera, sx, sy);
-            const occupancy = hazeOccupancyAtWorld(world.x, world.y, { anchors, roads, focused });
-            samples[y * width + x] = Math.round(Math.min(1, occupancy * gain) * 255);
+/**
+ * Bake the ground-haze field for a world rect `bounds` ({ x, y, w, h }):
+ * straight RGBA at `texel` world px per texel, alpha on exactly three
+ * courses (HAZE_COURSE_ALPHA × HAZE_ALPHA_CAP) or zero. Occupancy is sampled
+ * on a coarse HAZE_OCCUPANCY_CELL grid and read back bilinearly, so the bake
+ * stays a few tens of ms; the field fades to nothing inside its own margin.
+ * Pure: no camera, no DOM.
+ */
+export function bakeHazeField({ anchors = [], roads = [], bounds, texel = HAZE_TEXEL } = {}) {
+    const width = Math.max(1, Math.ceil(bounds.w / texel));
+    const height = Math.max(1, Math.ceil(bounds.h / texel));
+    const cell = HAZE_OCCUPANCY_CELL;
+    const cw = Math.ceil(bounds.w / cell) + 2;
+    const ch = Math.ceil(bounds.h / cell) + 2;
+    const coarse = new Float32Array(cw * ch);
+    for (let cy = 0; cy < ch; cy++) {
+        const wy = bounds.y + cy * cell;
+        for (let cx = 0; cx < cw; cx++) {
+            const wx = bounds.x + cx * cell;
+            const edge = Math.min(wx - bounds.x, bounds.x + bounds.w - wx, wy - bounds.y, bounds.y + bounds.h - wy);
+            if (edge <= 0) continue;
+            coarse[cy * cw + cx] = hazeOccupancyAtWorld(wx, wy, { anchors, roads })
+                * hazeStrata(wx, wy)
+                * Math.min(1, edge / HAZE_MARGIN);
         }
     }
-    return {
-        width,
-        height,
-        scale,
-        samples,
-        bytes: samples.length * HAZE_FIELD_BYTES_PER_SAMPLE,
-        alphaCap,
-    };
+    const data = new Uint8ClampedArray(width * height * 4);
+    const alphas = HAZE_COURSE_ALPHA.map(share => Math.round(share * HAZE_ALPHA_CAP * 255));
+    for (let y = 0; y < height; y++) {
+        const gy = ((y + 0.5) * texel) / cell;
+        const y0 = Math.min(ch - 2, Math.floor(gy));
+        const fy = gy - y0;
+        for (let x = 0; x < width; x++) {
+            const gx = ((x + 0.5) * texel) / cell;
+            const x0 = Math.min(cw - 2, Math.floor(gx));
+            const fx = gx - x0;
+            const i = y0 * cw + x0;
+            const top = coarse[i] + (coarse[i + 1] - coarse[i]) * fx;
+            const bottom = coarse[i + cw] + (coarse[i + cw + 1] - coarse[i + cw]) * fx;
+            const o = top + (bottom - top) * fy
+                + (HAZE_BAYER4[(y & 3) * 4 + (x & 3)] / 16 - 0.5) * HAZE_SEAM;
+            const course = (o >= HAZE_COURSES[0] ? 1 : 0) + (o >= HAZE_COURSES[1] ? 1 : 0) + (o >= HAZE_COURSES[2] ? 1 : 0);
+            if (!course) continue;
+            const offset = (y * width + x) * 4;
+            data[offset] = HAZE_FIELD_RGB[0];
+            data[offset + 1] = HAZE_FIELD_RGB[1];
+            data[offset + 2] = HAZE_FIELD_RGB[2];
+            data[offset + 3] = alphas[course - 1];
+        }
+    }
+    return { x: bounds.x, y: bounds.y, w: width * texel, h: height * texel, width, height, data };
 }
 
-export function sampleHazeField(field, screenX, screenY) {
-    if (!field?.samples || !field.width || !field.height) return 0;
-    const scale = field.scale || HAZE_FIELD_SCALE;
-    const x = Math.floor(screenX * scale);
-    const y = Math.floor(screenY * scale);
-    if (x < 0 || y < 0 || x >= field.width || y >= field.height) return 0;
-    return field.samples[y * field.width + x] / 255;
+/**
+ * 0.10 — how strongly the ground haze lies, stepped in HAZE_STRENGTH_STEPS:
+ * the dawn mist (rising and burning off across the dawn phase) or a real fog
+ * (the village's own timeline). Rain and overcast lay none; it is never a
+ * multiple of the weather.
+ */
+export function groundHazeStrength(atmosphere, density = 1) {
+    const dawn = atmosphere?.phase === 'dawn'
+        ? Math.sin(clamp01(atmosphere.phaseProgress) * Math.PI)
+        : 0;
+    const weather = atmosphere?.weather;
+    const fog = weather?.type === 'fog' ? clamp01(((Number(weather.fog) || 0) - 0.24) / 0.5) : 0;
+    return Math.round(Math.max(dawn, fog) * clamp01(density) * HAZE_STRENGTH_STEPS) / HAZE_STRENGTH_STEPS;
 }
 
 export function advanceSurfaceWetness(current = 0, {
@@ -464,17 +454,16 @@ export function renderWorldFrame(renderer, dt = 16) {
         }
         for (const id of acked) if (!live.has(id)) acked.delete(id);
     }
+    // C-W1 — the environment reads the village's own timeline only: no agent,
+    // mood or director input reaches the weather, sky, fog or grade (V3).
     const atmosphere = renderer.atmosphereState.update({
         now: new Date(renderNow),
         motionScale: renderer.motionScale,
-        // 2.2 — village mood nudges the weather (error spikes raise
-        // storminess, push streaks clear the skies). Stateless per-frame read.
-        eventInfluence: combineWeatherInfluence(
-            renderer.moodService?.getWeatherInfluence?.(renderNow) ?? null,
-            renderer.villageDirector?.getWeatherInfluence?.(renderNow) ?? null,
-        ),
     });
     renderer._lastAtmosphere = atmosphere;
+    // 0.10 — one lightning schedule per frame on the one clock: the stepped
+    // flash exposure both backends apply and the bolt WeatherRenderer draws.
+    const strike = stormStrikeAt(renderer.motionTimeMs, atmosphere, renderer.motionScale ?? 1);
     const wx = atmosphere?.weather;
     renderer._stormIntensity = (wx?.type === 'overcast' || wx?.type === 'rain' || wx?.type === 'storm') && wx.intensity > 0.4
         ? wx.intensity
@@ -526,6 +515,10 @@ export function renderWorldFrame(renderer, dt = 16) {
     // resident path (Canvas/PostFx grade the finished frame afterwards).
     renderer._drawDistantSeaHorizon(ctx, atmosphere, { gpuGraded: gpuWorldActive });
     if (gpuWorldActive) {
+        // 0.10 — the fog banks over the outer ocean (the island's own come
+        // in as ground records, under its bodies): the same world-locked
+        // lattice, pre-graded like the ocean under it.
+        drawGroundFog(ctx, renderer, atmosphere, viewport, { graded: true });
         // 1.3 — the island's stepped vignette and screen-Y aerial haze over
         // the backdrop (sky plate + outer ocean), so sea and sky meet the
         // graded island without a seam at the frame edges.
@@ -536,6 +529,9 @@ export function renderWorldFrame(renderer, dt = 16) {
             zoom: renderer.camera.zoom,
             hazeStrength: renderer.gpuWorld?.aerialHaze || 0,
         });
+        // 0.10 — the flash exposure on the backdrop; the composite applies
+        // the same scale to the island (`u_flash`).
+        drawFlashExposure(ctx, viewport.width, viewport.height, strike);
         renderer.camera.applyTransform(ctx);
     }
     markFrameTiming(frameTimer, 'horizon');
@@ -547,21 +543,19 @@ export function renderWorldFrame(renderer, dt = 16) {
         );
         // 1.4 — world-locked stepped cloud-shadow courses over the terrain.
         drawCloudShadows(renderer, ctx, atmosphere, perfNow);
-        // 6.4 — ground haze over water and lowlands, drawn on the ground plane
-        // ahead of agents and buildings. The ten wisps are the crest of this
-        // field, not the whole effect.
-        drawGroundFog(renderer, ctx, atmosphere, perfNow);
+        // 0.10 — ground haze and the fog banks: world-locked stepped fields
+        // on the ground plane, ahead of agents and buildings.
+        drawGroundHaze(renderer, ctx, atmosphere, viewport);
+        drawGroundFog(ctx, renderer, atmosphere, viewport);
     } else {
-        const pressure = sampleFramePressure();
-        const plan = hazePlanForPressure(pressure.level, renderer.motionScale ?? 1);
-        renderer._gpuHazeStrength = groundFogStrength(renderer, atmosphere) * plan.density;
-        if (renderer._gpuHazeStrength > 0.02) ensureHazeField(renderer, atmosphere, plan);
+        const plan = hazePlanForPressure(hazePressureLevel(renderer, atmosphere, viewport), renderer.motionScale ?? 1);
+        renderer._gpuHazeStrength = groundHazeStrength(atmosphere, plan.density);
+        if (renderer._gpuHazeStrength > 0) ensureHazeField(renderer);
     }
     markFrameTiming(frameTimer, 'ground-atmosphere');
-    // [0.6] Draw-order: the canopy pass now also carries the hero sky rewards
-    // (aurora, shooting stars, sky-flare, sun glints, push grade) so they
-    // composite over terrain instead of behind the village. The rewards live
-    // in SkyRenderer.drawCanopy — this call site is the whole draw-order change.
+    // The sky canopy: stars, the sun's glare, the moon, god rays, icon clouds
+    // and ambient meteors over the terrain, clipped to the sky above the sea
+    // horizon (SkyRenderer.drawCanopy).
     renderer._drawSkyCanopy(ctx, atmosphere, dt, renderer.motionScale);
     renderer.camera.applyTransform(ctx);
     markFrameTiming(frameTimer, 'sky-canopy');
@@ -624,6 +618,9 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawableAssembly.chronicleMonumentDrawables = chronicleMonumentDrawables;
     drawableAssembly.chroniclerDrawables = chroniclerDrawables;
     drawableAssembly.familiarDrawables = familiarDrawables;
+    // 0.6 — Canvas paints world particles as small depth drawables at their
+    // painter sortY; the resident path draws them in its own depth pass.
+    drawableAssembly.particles = gpuWorldActive ? null : renderer.particleSystem?.particles || null;
     appendDepthSortedDrawables(drawables, drawableAssembly);
     const cullingStats = cullDepthSortedDrawables(
         drawables,
@@ -649,16 +646,16 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawableContext.gpuWorldActive = gpuWorldActive;
     drawableContext.overlayCategoryIds = sceneCategoryResolution.overlayCategoryIds;
     drawableContext.paintCounts = paintCounts;
+    drawableContext.particleMotionEnabled = renderer.particleSystem?.motionEnabled !== false;
     drawDepthSortedDrawables(ctx, drawables, drawableContext);
     // Direct GPU carries wetness in the material shader; the discrete Canvas
     // damp-mark decoration remains fallback-only and is documented as such.
     if (!gpuWorldActive) renderer._drawSurfaceWetnessMarks?.(ctx, 'roofs');
     markFrameTiming(frameTimer, 'drawables');
-    // 0.1 — on the resident path this 2D context sits under the opaque GPU
-    // island, so world particles and the harbor finale replay on the overlay
-    // after the GPU world renders (see drawAirParticles below) instead.
+    // On the resident path this 2D context sits under the opaque GPU island;
+    // the harbor finale and the reduced-motion chimney wisp replay on the
+    // overlay after the GPU world renders instead.
     if (!gpuWorldActive) {
-        renderer.particleSystem.draw(ctx, { excludeLayer: 'screen' });
         renderer._drawChimneySmokeStatic?.(ctx);
         renderer.harborTraffic?.drawFinaleEffects(ctx, renderNow);
     }
@@ -667,7 +664,11 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer._resetScreenTransform(ctx);
     // 1.6 Canvas parity — the resident composite's stepped screen-Y aerial
     // haze over the finished Canvas world, before the frame grade.
-    if (!gpuWorldActive) drawCanvasAerialHaze(ctx, { viewport, atmosphere, zoom: renderer.camera.zoom });
+    if (!gpuWorldActive) {
+        drawCanvasAerialHaze(ctx, { viewport, atmosphere, zoom: renderer.camera.zoom });
+        // 0.10 — the flash exposure over the whole finished Canvas frame.
+        drawFlashExposure(ctx, viewport.width, viewport.height, strike);
+    }
     let gpuWorldRendered = false;
     let postFxRendered = false;
     const needsGpuFeed = gpuWorldActive || postFxActive;
@@ -687,6 +688,8 @@ export function renderWorldFrame(renderer, dt = 16) {
         gpuFeed.timeMs = renderer.motionTimeMs ?? feed?.timeMs;
         gpuFeed.atmosphere = atmosphere;
         gpuFeed.weather = atmosphere?.weather || null;
+        // 0.10 — the lightning exposure scale the composite applies (0 = none).
+        gpuFeed.flash = strike.exposure;
         gpuFeed.lighting = atmosphere?.lighting || null;
         // 3.2 — the resident shader consumes the same accumulated wetness the
         // Canvas damp marks use; it never re-derives rain history in GLSL.
@@ -696,12 +699,18 @@ export function renderWorldFrame(renderer, dt = 16) {
         gpuFeed.paletteLut = renderer.assets?.get?.(PALETTE_RAMP_ASSET_ID) || null;
         gpuFeed.paletteLutRevision = renderer.assets?.assetVersion || null;
         gpuBuildContext.occluderChannelEnabled = renderer.gpuWorld.prepareFrame(gpuFeed);
-        const records = insertGroundCueRecords(buildGpuWorldRecords(renderer, gpuBuildContext), renderer._groundCueRecords);
+        const records = insertGroundFogRecords(
+            insertGroundCueRecords(buildGpuWorldRecords(renderer, gpuBuildContext), renderer._groundCueRecords),
+            groundFogRecords(renderer, atmosphere, viewport),
+        );
         const gpuRenderContext = renderer._gpuRenderContext || (renderer._gpuRenderContext = {});
         gpuRenderContext.records = records;
         gpuRenderContext.camera = renderer.camera;
         gpuRenderContext.feed = gpuFeed;
         gpuRenderContext.sceneCommands = sceneCategoryResolution.nativeCommandBatches;
+        // 0.6 — every live world particle, depth-tested against the painter
+        // depth the records write (one instanced draw).
+        gpuRenderContext.particles = renderer.particleSystem || null;
         gpuWorldRendered = renderer.gpuWorld?.render?.(gpuRenderContext) === true;
         markFrameTiming(frameTimer, 'gpu-world');
     } else if (postFxActive) {
@@ -721,22 +730,24 @@ export function renderWorldFrame(renderer, dt = 16) {
         renderer._setPostFxCanvasVisible?.(false);
     }
 
+    // 1.3 — the Canvas and hybrid PostFx paths grade the whole 2D frame, so
+    // authored emitters keep their own light as cached cuts on the ungraded
+    // overlay, under weather, marks and labels.
+    if (!gpuWorldRendered) drawCanvasEmitterCuts(overlayCtx, renderer, atmosphere);
     renderer._resetScreenTransform(overlayCtx);
     renderer.weatherRenderer?.drawForeground(overlayCtx, {
         canvas: viewport,
         atmosphere,
         dt,
+        timeMs: renderer.motionTimeMs,
+        strike,
+        seaAt: strikeSeaAt(renderer),
         profileMark: frameTimer ? label => markFrameTiming(frameTimer, label) : null,
     });
     renderer.camera.applyTransform(overlayCtx);
     if (gpuWorldRendered) {
-        // 0.1 — open-air particles (chimney smoke, forge embers, torch flames,
-        // seasonal drift, roof and lantern motes) replay above the opaque
-        // island, under every mark and label. Ground-level presets stay
-        // deferred here until GPU particle records exist: the overlay has no
-        // depth order. 6.7 — under reduced motion the live chimneys show a
-        // static wisp instead.
-        drawAirParticles(renderer, overlayCtx, atmosphere);
+        // 6.7 — under reduced motion the live chimneys show a static wisp
+        // (live particles draw in the GPU scene pass, depth-tested).
         renderer._drawChimneySmokeStatic?.(overlayCtx, atmosphere?.lightGrade || null);
         renderer.buildingRenderer?.drawGpuFunctionalOverlays?.(overlayCtx);
     }
@@ -851,7 +862,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     markFrameTiming(frameTimer, 'labels');
 
     renderer._resetScreenTransform(overlayCtx);
-    renderer.particleSystem.draw(overlayCtx, { layer: 'screen' });
     renderer.harborTraffic?.drawScreenSummary(overlayCtx, viewport, renderer.camera, renderNow);
     drawVillageDirectorScreen(overlayCtx, villageSnapshot, viewport);
     // 5.4 — the work score's badge and every exact count, once, on the shared
@@ -860,10 +870,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     // 5.7 — offscreen-event edge indicators (incl. cues the CameraDirector
     // dropped): small screen-edge markers, click to glide there.
     drawOffscreenCueEdges(overlayCtx, renderer, viewport, renderNow);
-    // #21 — director glide grade pass: a momentary vignette + worldTint wash that
-    // fades in and out with the cinematic move. Reduced motion yields no grade
-    // (the camera cut leaves nothing to fade), so this is a no-op there.
-    drawDirectorGlideGrade(overlayCtx, renderer.camera?.getDirectorGlideGrade?.(), viewport);
     // 5.7/5.2 — cinematic letterbox bars: they ride a release/incident cue
     // glide, and an ambient chapter holds them for a beat after settling so
     // the caption is read at rest. Reduced motion draws none.
@@ -1105,134 +1111,13 @@ export function prepareSemanticGround(renderer, viewport, snapshot, atmosphere) 
     return { ctx, dirty: true };
 }
 
-// 0.1 — the open-air particle replay for the resident path. The overlay sits
-// above the graded GPU composite, so lit presets (smoke, dust) take the frame's
-// C2 light here: albedo x ambient light x grade gain, desaturated by the grade,
-// memoized per grade course. Emissive presets (flames, embers, fireflies,
-// motes) are light sources and keep their authored colour. Without a C2 grade
-// the legacy multiply strength stands in.
-function airParticleShade(hex, lightGrade, grade) {
-    // Forge smoke arrives as `rgb(...)` (heat-mixed); presets as `#rrggbb`.
-    const text = String(hex || '');
-    const match = /^rgb\(\s*(\d+),\s*(\d+),\s*(\d+)\s*\)$/.exec(text);
-    const rgb = match
-        ? { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]) }
-        : hexToRgb(lightGrade ? text : gradeColor(text, grade));
-    if (!rgb) return hex;
-    let r = rgb.r;
-    let g = rgb.g;
-    let b = rgb.b;
-    if (lightGrade) {
-        const ambient = lightGrade.ambientTint || [1, 1, 1];
-        const gain = lightGrade.gain || [1, 1, 1];
-        r *= ambient[0] * gain[0];
-        g *= ambient[1] * gain[1];
-        b *= ambient[2] * gain[2];
-        const saturation = Math.max(0, Math.min(1, Number(lightGrade.saturation ?? 1)));
-        const luma = r * 0.2126 + g * 0.7152 + b * 0.0722;
-        r = luma + (r - luma) * saturation;
-        g = luma + (g - luma) * saturation;
-        b = luma + (b - luma) * saturation;
-    } else {
-        const dim = 1 - Math.max(0, Math.min(0.9, Number(grade?.overlayAlpha) || 0));
-        r *= dim;
-        g *= dim;
-        b *= dim;
-    }
-    const channel = value => Math.max(0, Math.min(255, Math.round(value)));
-    return `rgb(${channel(r)}, ${channel(g)}, ${channel(b)})`;
-}
-
-function drawAirParticles(renderer, ctx, atmosphere) {
-    const particles = renderer.particleSystem;
-    if (!particles?.particles?.length) return;
-    const lightGrade = atmosphere?.lightGrade || null;
-    const grade = atmosphere?.grade || null;
-    const key = lightGrade?.cacheKey ?? `${grade?.worldTint || ''}|${grade?.overlayAlpha ?? 0}`;
-    const shade = renderer._airParticleShade || (renderer._airParticleShade = { key: null, cache: new Map(), litColor: null });
-    if (shade.key !== key) {
-        shade.key = key;
-        shade.cache.clear();
-        shade.litColor = (hex) => {
-            let color = shade.cache.get(hex);
-            if (color === undefined) {
-                color = airParticleShade(hex, lightGrade, grade);
-                // Forge smoke blends its palette with heat; bound the memo.
-                if (shade.cache.size >= 256) shade.cache.clear();
-                shade.cache.set(hex, color);
-            }
-            return color;
-        };
-    }
-    particles.draw(ctx, { layer: PARTICLE_LAYER_AIR, litColor: shade.litColor });
-}
-
-function hexToRgb(hex) {
-    const value = String(hex || '').replace('#', '');
-    if (value.length !== 6) return null;
-    const n = Number.parseInt(value, 16);
-    if (!Number.isFinite(n)) return null;
-    return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
-}
-
-// #21 — screen-space cinematic grade for an active director glide. A radial
-// vignette pulls focus to the framed subject and a faint worldTint wash colours
-// the moment (red for incidents, gold for a parade, teal for an arrival). Both
-// scale with the glide's bell-curve weight so they never linger after the move.
-//
-// 5.8 — the vignette gradient is cached per (viewport, quantized-strength)
-// bucket instead of allocated every frame of the glide; strength is quantized
-// to 0.05 steps so the bell-curve ramp reuses a handful of buckets.
-const _glideVignetteCache = new Map();
-const GLIDE_VIGNETTE_CACHE_LIMIT = 24;
-
-function glideVignetteGradient(ctx, w, h, vignette) {
-    const quantized = Math.round(vignette * 20) / 20;
-    const key = `${w}x${h}:${quantized}`;
-    const cached = _glideVignetteCache.get(key);
-    if (cached) return cached;
-    const cx = w / 2;
-    const cy = h / 2;
-    const inner = Math.min(w, h) * 0.32;
-    const outer = Math.hypot(w, h) / 2;
-    const gradient = ctx.createRadialGradient(cx, cy, inner, cx, cy, outer);
-    gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
-    gradient.addColorStop(1, `rgba(0, 0, 0, ${quantized})`);
-    if (_glideVignetteCache.size >= GLIDE_VIGNETTE_CACHE_LIMIT) _glideVignetteCache.clear();
-    _glideVignetteCache.set(key, gradient);
-    return gradient;
-}
-
-function drawDirectorGlideGrade(ctx, grade, viewport) {
-    if (!grade || !(grade.weight > 0.01) || !viewport?.width || !viewport?.height) return;
-    const w = viewport.width;
-    const h = viewport.height;
-    const weight = Math.max(0, Math.min(1, grade.weight));
-    const tint = hexToRgb(grade.worldTint);
-
-    ctx.save();
-    if (tint) {
-        ctx.globalCompositeOperation = 'soft-light';
-        ctx.globalAlpha = 0.5 * weight;
-        ctx.fillStyle = `rgb(${tint.r}, ${tint.g}, ${tint.b})`;
-        ctx.fillRect(0, 0, w, h);
-    }
-    const vignette = Math.max(0, Math.min(1, Number(grade.vignette) || 0)) * weight;
-    if (vignette > 0.01) {
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = glideVignetteGradient(ctx, w, h, vignette);
-        ctx.fillRect(0, 0, w, h);
-    }
-    ctx.restore();
-}
-
 // 5.7 — cinematic letterbox bars while a release/incident camera cue glide
 // owns the frame. Bar height rides the glide's bell-curve weight so the bars
-// slide in and out with the move; a 1px ember line on the inner edge (tinted
-// by the cue grade) keeps them reading as cinema chrome, not a render
-// artifact. Reduced motion: cue glides are suppressed and Camera cuts instead,
-// so no bars ever appear.
+// slide in and out with the move; a 1px brass line on the inner edge keeps
+// them reading as cinema chrome, not a render artifact. The bars are neutral
+// brass whatever the cue: nothing here tints the frame (0.2, V3). Reduced
+// motion: cue glides are suppressed and Camera cuts instead, so no bars ever
+// appear.
 //
 // 5.2 — an Ambient incident chapter keeps its bars at full height for three
 // seconds after the move settles instead of dropping them on arrival, so the
@@ -1249,8 +1134,7 @@ function drawCueLetterbox(ctx, camera, viewport) {
     ctx.fillStyle = 'rgba(12, 9, 7, 0.94)';
     ctx.fillRect(0, 0, viewport.width, barH);
     ctx.fillRect(0, viewport.height - barH, viewport.width, barH);
-    const tint = hexToRgb(state?.grade?.worldTint) || { r: 214, g: 169, b: 81 };
-    ctx.fillStyle = `rgba(${tint.r}, ${tint.g}, ${tint.b}, ${0.5 * weight})`;
+    ctx.fillStyle = `rgba(184, 137, 63, ${0.5 * weight})`;
     ctx.fillRect(0, barH, viewport.width, 1);
     ctx.fillRect(0, viewport.height - barH - 1, viewport.width, 1);
     ctx.restore();
@@ -1347,20 +1231,6 @@ function drawAmbientCaption(ctx, layout) {
     ctx.restore();
 }
 
-function combineWeatherInfluence(a, b) {
-    if (!a && !b) return null;
-    return {
-        storminess: Math.max(
-            Number(a?.storminess) || 0,
-            Number(b?.storminess) || 0,
-        ),
-        clearing: Math.max(
-            Number(a?.clearing) || 0,
-            Number(b?.clearing) || 0,
-        ),
-    };
-}
-
 // 0.7 — PRIMARY marks survive night. On the Canvas backend everything drawn
 // before _drawAtmosphere is dimmed by the multiply grade, so the selected
 // agent's pixel chevron is re-struck here, scaled by the beacon night factor
@@ -1396,55 +1266,10 @@ function primaryRestampNightFactor(renderer, atmosphere) {
 }
 
 // ---------------------------------------------------------------------------
-// 6.4 — ground haze over water and lowlands. The coherent field is a
-// quarter-resolution occupancy mask keyed by camera pose / viewport /
-// atmosphere bucket and rebuilt only when that key changes. The existing
-// ten wisps remain the visible crest of that field, not the whole effect.
-const FOG_SPOT_LIMIT = 10;
-const FOG_WATER_ANCHOR_LIMIT = 6;
-const FOG_DRIFT_PERIOD_MS = 52000;
-const FOG_DRIFT_PX = 14;
-const FOG_WISP_SPRITE_ID = 'atmosphere.fog.wisp.low';
-const HAZE_FIELD_RGB = Object.freeze([214, 228, 236]);
-let _fogStamp = null;
-
-function fogStampCanvas() {
-    if (_fogStamp) return _fogStamp;
-    const canvas = document.createElement('canvas');
-    canvas.width = 96;
-    canvas.height = 48;
-    const stampCtx = canvas.getContext('2d');
-    const gradient = stampCtx.createRadialGradient(48, 24, 0, 48, 24, 48);
-    gradient.addColorStop(0, 'rgba(214, 228, 236, 0.55)');
-    gradient.addColorStop(0.6, 'rgba(214, 228, 236, 0.22)');
-    gradient.addColorStop(1, 'rgba(214, 228, 236, 0)');
-    stampCtx.fillStyle = gradient;
-    stampCtx.save();
-    stampCtx.translate(48, 24);
-    stampCtx.scale(1, 0.5);
-    stampCtx.translate(-48, -48);
-    stampCtx.fillRect(0, -24, 96, 96);
-    stampCtx.restore();
-    _fogStamp = canvas;
-    return canvas;
-}
-
-function groundFogSpots(renderer) {
-    if (renderer._groundFogSpots) return renderer._groundFogSpots;
-    const { anchors } = collectHazeAnchors({
-        waterTiles: renderer.waterTiles,
-        waterMeta: renderer.waterMeta,
-        lowlandPoints: lowlandPointsFromDiamond(renderer._worldDiamondPoints?.()),
-        waterLimit: FOG_WATER_ANCHOR_LIMIT,
-    });
-    renderer._groundFogSpots = anchors.slice(0, FOG_SPOT_LIMIT).map((anchor) => ({
-        x: anchor.x,
-        y: anchor.y,
-        seed: anchor.seed || 0,
-    }));
-    return renderer._groundFogSpots;
-}
-
+// 0.10 — ground haze over water and lowlands: the world-locked stepped field
+// (see HAZE_TEXEL above), baked once per map revision and drawn at the
+// stepped `groundHazeStrength`. On the resident path the GPU `ground:haze`
+// record samples the same canvas over the same world rect.
 function hazeRoadPoints(renderer) {
     if (renderer._hazeRoadPoints) return renderer._hazeRoadPoints;
     renderer._hazeRoadPoints = collectRoadCarvePoints({
@@ -1456,181 +1281,249 @@ function hazeRoadPoints(renderer) {
     return renderer._hazeRoadPoints;
 }
 
-function hazeAtmosphereBucket(atmosphere) {
-    if (atmosphere?.cacheKey) return atmosphere.cacheKey;
-    const fog = Math.round((Number(atmosphere?.weather?.fog) || 0) * 10);
-    const precip = Math.round((Number(atmosphere?.weather?.precipitation) || 0) * 10);
-    return `${atmosphere?.phase || 'day'}|f${fog}|p${precip}`;
+function hazeBounds(points) {
+    const xs = points.map(point => point.x);
+    const ys = points.map(point => point.y);
+    const x = Math.floor((Math.min(...xs) - HAZE_MARGIN) / HAZE_TEXEL) * HAZE_TEXEL;
+    const y = Math.floor((Math.min(...ys) - HAZE_MARGIN) / HAZE_TEXEL) * HAZE_TEXEL;
+    return {
+        x,
+        y,
+        w: Math.ceil((Math.max(...xs) + HAZE_MARGIN - x) / HAZE_TEXEL) * HAZE_TEXEL,
+        h: Math.ceil((Math.max(...ys) + HAZE_MARGIN - y) / HAZE_TEXEL) * HAZE_TEXEL,
+    };
 }
 
-function focusedHazeSubject(renderer) {
-    const selected = renderer.selectedAgent;
-    const sprite = selected?.id ? renderer.agentSprites?.get?.(selected.id) : null;
-    if (sprite && Number.isFinite(sprite.x) && Number.isFinite(sprite.y)) {
-        return { id: selected.id, x: sprite.x, y: sprite.y };
-    }
-    return null;
-}
-
-function groundFogStrength(renderer, atmosphere) {
-    let strength = 0;
-    if (atmosphere?.phase === 'dawn') {
-        const progress = Math.max(0, Math.min(1, Number(atmosphere.phaseProgress) || 0));
-        // Fade in and back out across the dawn phase rather than popping.
-        strength = Math.sin(progress * Math.PI);
-    }
-    const weatherFog = Number(renderer._waterWeather?.fog) || 0;
-    const precipitation = Number(renderer._waterWeather?.rain) || 0;
-    return Math.max(strength, weatherFog * 0.7, precipitation * 0.45);
-}
-
-function paintHazeMaskCanvas(field) {
-    if (typeof document === 'undefined') return null;
-    const width = field.width;
-    const height = field.height;
-    let canvas = field.canvas;
-    if (!canvas || canvas.width !== width || canvas.height !== height) {
-        canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-    }
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-    const imageData = ctx.createImageData(width, height);
-    const data = imageData.data;
-    const samples = field.samples;
-    const r = HAZE_FIELD_RGB[0];
-    const g = HAZE_FIELD_RGB[1];
-    const b = HAZE_FIELD_RGB[2];
-    for (let i = 0; i < samples.length; i++) {
-        const offset = i * 4;
-        data[offset] = r;
-        data[offset + 1] = g;
-        data[offset + 2] = b;
-        data[offset + 3] = samples[i];
-    }
-    ctx.putImageData(imageData, 0, 0);
-    field.canvas = canvas;
-    return canvas;
-}
-
-function ensureHazeField(renderer, atmosphere, plan) {
-    const viewport = renderer._screenViewport?.() || { width: 0, height: 0 };
-    if (!(viewport.width > 0) || !(viewport.height > 0)) return null;
-    const focused = focusedHazeSubject(renderer);
-    const key = hazeFieldCacheKey({
-        camera: renderer.camera,
-        viewport,
-        atmosphereBucket: hazeAtmosphereBucket(atmosphere),
-        pressureLevel: plan.pressureLevel || 0,
-        focusedId: focused?.id || '',
-        fieldScale: plan.fieldScale,
-    });
-    const cached = renderer._hazeField;
-    if (!shouldRebuildHazeField(cached?.key, key, {
-        motionScale: renderer.motionScale ?? 1,
-        hasField: Boolean(cached?.canvas || cached?.samples),
-    })) {
-        return cached;
-    }
+// The baked field, keyed by the terrain revision and the water it hangs over.
+function ensureHazeField(renderer) {
+    const points = renderer._worldDiamondPoints?.();
+    if (!Array.isArray(points) || points.length < 4 || typeof document === 'undefined') return null;
+    const key = `${renderer.terrainCacheKey || 'static'}|${renderer.waterTiles?.size || 0}`;
+    if (renderer._hazeField?.key === key) return renderer._hazeField;
     const { anchors } = collectHazeAnchors({
         waterTiles: renderer.waterTiles,
         waterMeta: renderer.waterMeta,
-        lowlandPoints: lowlandPointsFromDiamond(renderer._worldDiamondPoints?.()),
-        waterLimit: FOG_WATER_ANCHOR_LIMIT,
+        lowlandPoints: lowlandPointsFromDiamond(points),
     });
-    if (!anchors.length) {
-        renderer._hazeField = { key, width: 0, height: 0, samples: new Uint8Array(0), canvas: null };
-        return renderer._hazeField;
-    }
-    const field = projectHazeField({
-        anchors,
-        roads: hazeRoadPoints(renderer),
-        focused,
-        camera: renderer.camera,
-        viewport,
-        scale: plan.fieldScale,
-        strength: 1,
-        densityScale: 1,
-    });
-    field.key = key;
-    if (paintHazeMaskCanvas(field)) field.samples = null;
-    renderer._hazeField = field;
-    return field;
+    const baked = bakeHazeField({ anchors, roads: hazeRoadPoints(renderer), bounds: hazeBounds(points) });
+    const canvas = renderer._hazeField?.canvas || document.createElement('canvas');
+    canvas.width = baked.width;
+    canvas.height = baked.height;
+    const hazeCtx = canvas.getContext('2d');
+    if (!hazeCtx) return null;
+    hazeCtx.putImageData(new ImageData(baked.data, baked.width, baked.height), 0, 0);
+    renderer._hazeField = { key, canvas, x: baked.x, y: baked.y, w: baked.w, h: baked.h };
+    return renderer._hazeField;
 }
 
-function clipProjectedDiamond(renderer, ctx) {
-    const points = renderer._worldDiamondPoints?.();
-    const camera = renderer.camera;
-    if (!Array.isArray(points) || points.length < 4 || !camera?.worldToScreen) return false;
-    ctx.beginPath();
-    for (let i = 0; i < 4; i++) {
-        const screen = camera.worldToScreen(points[i].x, points[i].y);
-        if (i === 0) ctx.moveTo(screen.x, screen.y);
-        else ctx.lineTo(screen.x, screen.y);
-    }
-    ctx.closePath();
-    ctx.clip();
-    return true;
+// Reduced motion latches the governor's level with the weather overlay's
+// (one static frame; `weatherPressureLevel`).
+function hazePressureLevel(renderer, atmosphere, viewport) {
+    return weatherPressureLevel(atmosphere, !((renderer.motionScale ?? 1) > 0), {
+        zoom: renderer.camera?.zoom,
+        width: viewport?.width,
+        height: viewport?.height,
+    });
 }
 
-function drawHazeField(renderer, ctx, field, strength) {
-    if (!field?.canvas || !(field.width > 0) || strength <= 0.01) return;
-    const viewport = renderer._screenViewport?.();
-    if (!viewport?.width || !viewport?.height) return;
+function drawGroundHaze(renderer, ctx, atmosphere, viewport) {
+    const plan = hazePlanForPressure(hazePressureLevel(renderer, atmosphere, viewport), renderer.motionScale ?? 1);
+    const strength = groundHazeStrength(atmosphere, plan.density);
+    if (strength <= 0) return;
+    const field = ensureHazeField(renderer);
+    if (!field?.canvas) return;
     ctx.save();
-    renderer._resetScreenTransform?.(ctx);
-    clipProjectedDiamond(renderer, ctx);
     ctx.imageSmoothingEnabled = false;
     ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = Math.min(HAZE_ALPHA_CAP, HAZE_ALPHA_CAP * strength);
-    ctx.drawImage(field.canvas, 0, 0, viewport.width, viewport.height);
+    ctx.globalAlpha = strength;
+    ctx.drawImage(field.canvas, field.x, field.y, field.w, field.h);
     ctx.restore();
 }
 
-function drawGroundFog(renderer, ctx, atmosphere, perfNow) {
-    const strength = groundFogStrength(renderer, atmosphere);
-    const pressure = sampleFramePressure();
-    const plan = hazePlanForPressure(pressure.level, renderer.motionScale ?? 1);
-    const fieldStrength = strength * plan.density;
-    if (fieldStrength <= 0.02) return;
-    const field = ensureHazeField(renderer, atmosphere, plan);
-    if (field) drawHazeField(renderer, ctx, field, fieldStrength);
+// 0.10 — the fog banks on the ground plane (WeatherRenderer
+// `groundFogLayer`): a world-locked tile lattice below the sea horizon,
+// under every body, building and tree. `groundFogSpan` is the visible world
+// rect it covers this frame.
+function groundFogSpan(renderer, viewport, layer) {
+    const camera = renderer.camera;
+    const zoom = Math.max(0.01, Number(camera?.zoom) || 1);
+    const left = Math.floor(-(Number(camera?.renderOffsetX) || 0) / zoom) - layer.texel;
+    const top = Math.max(layer.top, Math.floor(-(Number(camera?.renderOffsetY) || 0) / zoom) - layer.texel);
+    const right = left + Math.ceil((Number(viewport?.width) || 0) / zoom) + layer.texel * 2;
+    const bottom = Math.floor(-(Number(camera?.renderOffsetY) || 0) / zoom) + Math.ceil((Number(viewport?.height) || 0) / zoom) + layer.texel;
+    return bottom > top && right > left ? { left, top, right, bottom } : null;
+}
 
-    if (plan.detail <= 0) return;
-    const spots = groundFogSpots(renderer);
-    if (!spots.length) return;
-    const drifting = (renderer.motionScale ?? 1) > 0;
-    const driftPhase = drifting ? (perfNow / FOG_DRIFT_PERIOD_MS) * Math.PI * 2 : 0;
+function groundFogFor(renderer, atmosphere, viewport, graded = false) {
+    return renderer.weatherRenderer?.groundFogLayer?.({
+        atmosphere,
+        viewport,
+        timeMs: renderer.motionTimeMs,
+        graded,
+    }) || null;
+}
 
-    ctx.save();
-    ctx.globalCompositeOperation = 'screen';
-    for (let i = 0; i < spots.length; i++) {
-        const spot = spots[i];
-        const dx = Math.sin(driftPhase + spot.seed * Math.PI * 2 + i) * FOG_DRIFT_PX;
-        const alpha = Math.min(0.26, (0.15 + spot.seed * 0.08) * strength);
-        const drew = renderer._drawAtmosphereEffectSprite?.(ctx, FOG_WISP_SPRITE_ID, {
-            x: spot.x + dx,
-            y: spot.y,
-            alpha,
-            scaleX: 1.7 + spot.seed * 0.9,
-            scaleY: 0.55 + spot.seed * 0.25,
-            rotation: -0.1 + spot.seed * 0.2,
-            flipX: spot.seed > 0.5,
-        });
-        if (drew) continue;
-        const stamp = fogStampCanvas();
-        ctx.globalAlpha = alpha;
-        ctx.drawImage(stamp, Math.round(spot.x + dx - 80), Math.round(spot.y - 26), 160, 64);
-        ctx.globalAlpha = 1;
+function drawGroundFog(ctx, renderer, atmosphere, viewport, { graded = false } = {}) {
+    const layer = groundFogFor(renderer, atmosphere, viewport, graded);
+    const span = layer && groundFogSpan(renderer, viewport, layer);
+    if (!span) return;
+    let cached = renderer._groundFogPattern;
+    if (cached?.key !== layer.key || cached.canvas !== layer.canvas) {
+        const pattern = ctx.createPattern(layer.canvas, 'repeat');
+        if (!pattern) return;
+        cached = renderer._groundFogPattern = { key: layer.key, canvas: layer.canvas, pattern };
     }
+    cached.pattern.setTransform?.(new DOMMatrix([layer.texel, 0, 0, layer.texel, layer.x, layer.y]));
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = cached.pattern;
+    ctx.fillRect(span.left, span.top, span.right - span.left, span.bottom - span.top);
     ctx.restore();
+}
+
+// The resident path: one ground record per lattice cell in view, each cut to
+// the visible span on the texel grid (records reused frame to frame).
+function groundFogRecords(renderer, atmosphere, viewport) {
+    const out = renderer._groundFogRecords || (renderer._groundFogRecords = []);
+    out.length = 0;
+    const layer = groundFogFor(renderer, atmosphere, viewport);
+    const span = layer && groundFogSpan(renderer, viewport, layer);
+    if (!span) return out;
+    const pool = renderer._groundFogRecordPool || (renderer._groundFogRecordPool = []);
+    const { width: W, height: H, texel } = layer;
+    const snapDown = (value, origin) => origin + Math.floor((value - origin) / texel) * texel;
+    const snapUp = (value, origin) => origin + Math.ceil((value - origin) / texel) * texel;
+    for (let j = Math.floor((span.top - layer.y) / H); layer.y + j * H < span.bottom; j++) {
+        const tileY = layer.y + j * H;
+        const y0 = snapDown(Math.max(span.top, tileY), tileY);
+        const y1 = snapUp(Math.min(span.bottom, tileY + H), tileY);
+        if (!(y1 > y0)) continue;
+        for (let i = Math.floor((span.left - layer.x) / W); layer.x + i * W < span.right; i++) {
+            const tileX = layer.x + i * W;
+            const x0 = snapDown(Math.max(span.left, tileX), tileX);
+            const x1 = snapUp(Math.min(span.right, tileX + W), tileX);
+            if (!(x1 > x0)) continue;
+            const record = pool[out.length] || (pool[out.length] = {
+                id: 'ground:fog',
+                stableKey: 'ground:fog',
+                textureKey: 'ground-fog-tile',
+                material: materialClassId('default'),
+                alpha: 1,
+                elevation: 0,
+                emissive: 0,
+                occluder: 0,
+                sequence: -0.85,
+                sourceKind: 'individual',
+                // V9 — like the haze field, the fog's texels sit on the screen.
+                screenSpace: true,
+            });
+            record.source = layer.canvas;
+            record.sourceWidth = layer.canvas.width;
+            record.sourceHeight = layer.canvas.height;
+            record.sx = (x0 - tileX) / texel;
+            record.sy = (y0 - tileY) / texel;
+            record.sw = (x1 - x0) / texel;
+            record.sh = (y1 - y0) / texel;
+            record.x = x0;
+            record.y = y0;
+            record.width = x1 - x0;
+            record.height = y1 - y0;
+            record.textureRevision = layer.key;
+            out.push(record);
+        }
+    }
+    return out;
+}
+
+// After the terrain and the ground haze, ahead of the retained cue texture
+// and every live cue (the Canvas order: haze, fog, then the ground cues).
+function insertGroundFogRecords(ordered, fogRecords) {
+    if (!Array.isArray(ordered) || !fogRecords?.length) return ordered;
+    let at = 0;
+    while (at < ordered.length) {
+        const id = ordered[at]?.id;
+        if (id === 'terrain:static' || id === 'ground:haze') at++;
+        else break;
+    }
+    ordered.splice(at, 0, ...fogRecords);
+    return ordered;
+}
+
+// 0.10 — where a lightning bolt may land (and where its forks may run): the
+// open ocean around the island, off the map's tile grid (the island diamond
+// ends at the grid edge; everything beyond it is sea) and below the sea
+// horizon, and clear of island art: the ground in front of the point for
+// STRIKE_OVERHANG_PX is off the grid too, so a tall sprite on a north shore
+// never stands over it. Never the island, its rivers, lagoon, harbour,
+// bridges or piers: a strike in the village would read as an event. With
+// `sky` the band above the sea horizon counts as open too (fork channels).
+const STRIKE_OVERHANG_PX = 176;
+function strikeOnGrid(worldX, worldY) {
+    const tileX = Math.round(worldY / TILE_HEIGHT + worldX / TILE_WIDTH);
+    const tileY = Math.round(worldY / TILE_HEIGHT - worldX / TILE_WIDTH);
+    return tileX >= -1 && tileY >= -1 && tileX <= MAP_SIZE && tileY <= MAP_SIZE;
+}
+
+function strikeSeaAt(renderer) {
+    if (renderer._strikeSeaAt) return renderer._strikeSeaAt;
+    renderer._strikeSeaAt = (worldX, worldY, sky = false) => {
+        if (!sky && !(worldY > OCEAN_HORIZON_WORLD_Y)) return false;
+        for (let reach = 0; reach <= STRIKE_OVERHANG_PX; reach += TILE_HEIGHT / 2) {
+            if (strikeOnGrid(worldX, worldY + reach)) return false;
+        }
+        return true;
+    };
+    return renderer._strikeSeaAt;
 }
 
 // 1.4 — world-locked dithered cloud-shadow courses from the same baked field
 // as the resident composite (IsometricRenderer → CloudShadowCourses).
 function drawCloudShadows(renderer, ctx, atmosphere, perfNow) {
     renderer._drawCloudShadowCourses?.(ctx, atmosphere, perfNow);
+}
+
+// 0.8 — the reflection overlays (`atmosphere.light.lantern-glow`) are smooth
+// radial gradients; screen-blended as authored they laid a smooth warm wash
+// round the Archive door on Canvas. Each overlay is re-cut once into three
+// flat courses with a 4x4 ordered dither across the course edges (the
+// CanvasGrade pool thresholds), keeping its colour, so the wash lands on the
+// art grid like every other pool.
+const _steppedReflections = new WeakMap();
+
+function steppedReflection(image) {
+    if (_steppedReflections.has(image)) return _steppedReflections.get(image);
+    let stepped = null;
+    const w = image?.naturalWidth || image?.width || 0;
+    const h = image?.naturalHeight || image?.height || 0;
+    if (w > 0 && h > 0 && typeof document !== 'undefined') {
+        try {
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const c = canvas.getContext('2d', { willReadFrequently: true });
+            c.drawImage(image, 0, 0);
+            const data = c.getImageData(0, 0, w, h);
+            const px = data.data;
+            let peak = 0;
+            for (let i = 3; i < px.length; i += 4) if (px[i] > peak) peak = px[i];
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const i = (y * w + x) * 4 + 3;
+                    const q = px[i] / Math.max(1, peak) + (HAZE_BAYER4[(y & 3) * 4 + (x & 3)] / 16 - 0.5) * 0.08;
+                    const course = (q >= 0.12 ? 1 : 0) + (q >= 0.40 ? 1 : 0) + (q >= 0.75 ? 1 : 0);
+                    px[i] = Math.round(peak * course / 3);
+                }
+            }
+            c.putImageData(data, 0, 0);
+            stepped = canvas;
+        } catch {
+            stepped = null;
+        }
+    }
+    _steppedReflections.set(image, stepped);
+    return stepped;
 }
 
 function drawBuildingLightReflections(renderer, ctx, atmosphere) {
@@ -1650,12 +1543,16 @@ function drawBuildingLightReflections(renderer, ctx, atmosphere) {
         if (!overlayImg) continue;
         const dims = renderer.assets.getDims(overlayId);
         if (!dims) continue;
+        const stepped = steppedReflection(overlayImg);
+        if (!stepped) continue;
         const alpha = alphaBase * (light.intensity || 1) * (light.buildingType === 'watchtower' ? 1.55 : 1);
         ctx.globalAlpha = alpha;
         ctx.drawImage(
-            overlayImg,
+            stepped,
             Math.round(light.x - dims.w / 2),
-            Math.round(light.y - dims.h / 2)
+            Math.round(light.y - dims.h / 2),
+            dims.w,
+            dims.h,
         );
     }
     ctx.restore();

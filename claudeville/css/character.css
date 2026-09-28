@@ -2,71 +2,99 @@
     position: relative;
 }
 
-/* 0.5 — the World container is the sky, never black. It mirrors what the
-   world itself paints around the island: zenith at the top, a thin horizon
-   glow just above mid-screen, then the darker sea below — in hard bands (a
-   stepped sky, no smooth gradient), so the canvas fade-in never flashes a
-   bright field. The band colours below mirror the AtmosphereState phase
-   palettes (zenith, upper band, mid band, horizon) and cover the moment
-   before a renderer exists; App then writes the live palette as inline
-   custom properties. */
+/* 0.5/0.3 — the World container holds the frame's own colour, never black
+   and never a sky the scene does not show. Before a renderer exists it
+   predicts the opening frame: the index.html inline script picks the
+   local-clock band and, from the opening shot's own rule, where the sea
+   horizon falls (`--cv-world-horizon`; 0 when the opening shows no sky, as
+   at DPR 1) and the rows of the island's grass core (`--cv-world-land-*`;
+   none where the island is narrow in the frame, all rows under reduced
+   motion, whose opening cuts to a land-weighted frame). The sky's four stops are
+   stepped down to the horizon, then the sea, the grass core and the sea
+   again: the island-proximate water and the grass of the opening frame,
+   each measured at a representative hour (night 23:00, dawn 06:00, day
+   12:00, dusk 18:30). Without the script it is all sea. From the World's
+   first frame on, App paints `data-reveal-bands`: the presented frame's own
+   materials as stepped bands with a 2x2 ordered dither on the art-texel
+   grid at each seam (RevealBands.js) — four at boot, seamed on the sea
+   horizon, and eight held across a Dashboard trip. */
 #characterMode {
-    --cv-world-sky-0: #040913;
-    --cv-world-sky-1: #08162d;
-    --cv-world-sky-2: #102642;
-    --cv-world-sky-3: #1d3f60;
-    /* The brightest step (horizon) sits at 34-37 %, on the far shore line
-       behind the island and clear of the centred empty-state card. */
+    --cv-world-sky-0: #0d1017;
+    --cv-world-sky-1: #131720;
+    --cv-world-sky-2: #181d29;
+    --cv-world-sky-3: #1c2330;
+    --cv-world-sea: #29323d;
+    --cv-world-land: #3d4f48;
+    --cv-world-horizon: 0%;
+    --cv-world-land-top: 100%;
+    --cv-world-land-bottom: 100%;
     background: linear-gradient(180deg,
-        var(--cv-world-sky-0) 0 12%,
-        color-mix(in srgb, var(--cv-world-sky-0), var(--cv-world-sky-1)) 12% 22%,
-        var(--cv-world-sky-1) 22% 30%,
-        var(--cv-world-sky-2) 30% 34%,
-        var(--cv-world-sky-3) 34% 37%,
-        color-mix(in srgb, var(--cv-world-sky-2), var(--cv-world-sky-0)) 37% 56%,
-        color-mix(in srgb, var(--cv-world-sky-1), var(--cv-world-sky-0)) 56% 100%);
+        var(--cv-world-sky-0) 0 calc(var(--cv-world-horizon) * 0.32),
+        color-mix(in srgb, var(--cv-world-sky-0), var(--cv-world-sky-1)) calc(var(--cv-world-horizon) * 0.32) calc(var(--cv-world-horizon) * 0.59),
+        var(--cv-world-sky-1) calc(var(--cv-world-horizon) * 0.59) calc(var(--cv-world-horizon) * 0.81),
+        var(--cv-world-sky-2) calc(var(--cv-world-horizon) * 0.81) calc(var(--cv-world-horizon) * 0.92),
+        var(--cv-world-sky-3) calc(var(--cv-world-horizon) * 0.92) var(--cv-world-horizon),
+        var(--cv-world-sea) var(--cv-world-horizon) var(--cv-world-land-top),
+        var(--cv-world-land) var(--cv-world-land-top) var(--cv-world-land-bottom),
+        var(--cv-world-sea) var(--cv-world-land-bottom) 100%);
+}
+
+#characterMode[data-reveal-bands] {
+    background: var(--cv-reveal-base) var(--cv-reveal-image) 0 0 / var(--cv-reveal-size) repeat-x;
 }
 
 #characterMode[data-sky-band="dawn"] {
-    --cv-world-sky-0: #203c66;
-    --cv-world-sky-1: #537aa4;
-    --cv-world-sky-2: #9eb7cf;
-    --cv-world-sky-3: #e8b99f;
+    --cv-world-sky-0: #3a4963;
+    --cv-world-sky-1: #887093;
+    --cv-world-sky-2: #be8da1;
+    --cv-world-sky-3: #e2a98a;
+    --cv-world-sea: #36404f;
+    --cv-world-land: #41543b;
 }
 
 #characterMode[data-sky-band="day"] {
-    --cv-world-sky-0: #236eb8;
-    --cv-world-sky-1: #4aa0dd;
-    --cv-world-sky-2: #86cdf0;
-    --cv-world-sky-3: #d5f3ff;
+    --cv-world-sky-0: #5f82a4;
+    --cv-world-sky-1: #7ea1bd;
+    --cv-world-sky-2: #9cbed4;
+    --cv-world-sky-3: #b8d6e6;
+    --cv-world-sea: #324550;
+    --cv-world-land: #416139;
 }
 
 #characterMode[data-sky-band="dusk"] {
-    --cv-world-sky-0: #1d325a;
-    --cv-world-sky-1: #566487;
-    --cv-world-sky-2: #9b8199;
-    --cv-world-sky-3: #d7a98e;
+    --cv-world-sky-0: #475f7b;
+    --cv-world-sky-1: #8f779d;
+    --cv-world-sky-2: #bc899c;
+    --cv-world-sky-3: #d5a37d;
+    --cv-world-sea: #2a3242;
+    --cv-world-land: #385134;
 }
 
 /* The world canvases stay transparent until the renderer reports its first
    presented frame (`world:first-frame`), then fade in: 360 ms on boot, 220 ms
-   back from Dashboard. Opacity only — composited, no per-frame JS. Leaving
-   the ready state is instant (the container is hidden by then). */
-#characterMode > .content__canvas {
+   back from Dashboard. Opacity only — composited, no per-frame JS. The three
+   canvases fade as one layer (group opacity on `#worldStack`), so the reveal
+   is a straight mix of the container bands and the finished frame; faded one
+   by one, the 2D backdrop under the WebGL scene showed through mid-fade.
+   Leaving the ready state is instant (the container is hidden by then). */
+#worldStack {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
     opacity: 0;
 }
 
-#characterMode[data-world-ready] > .content__canvas {
+#characterMode[data-world-ready] > #worldStack {
     opacity: 1;
     transition: opacity 360ms cubic-bezier(0.2, 0, 0.2, 1);
 }
 
-#characterMode[data-world-ready="return"] > .content__canvas {
+#characterMode[data-world-ready="return"] > #worldStack {
     transition-duration: 220ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
-    #characterMode[data-world-ready] > .content__canvas {
+    #characterMode[data-world-ready] > #worldStack {
         transition: none;
     }
 }
@@ -174,11 +202,12 @@
     color: var(--ink-2);
 }
 
-/* The first-run hint points at the World-controls compass. It sits below
-   every modal (1000) and folds away whenever something else owns attention:
-   a modal, the controls popover itself, or a selected agent's panel (whose
-   T1 plate it would otherwise cover). Anchored to the compass so the arrow
-   stays on it at every width; the fixed offset is the no-anchor fallback. */
+/* The first-run hint points at the World-controls compass in the World dock.
+   It sits below every modal (1000) and folds away whenever something else
+   owns attention: a modal, the controls popover itself, or a selected agent's
+   panel (whose T1 plate it would otherwise cover). Anchored to the compass so
+   the arrow stays on it at every width; the fixed offset is the no-anchor
+   fallback. Its frame is the kit's bg2 slice (`cv-frame cv-frame--bg2`). */
 #topbarWorldControls {
     anchor-name: --cv-world-controls;
 }
@@ -186,17 +215,15 @@
 .first-run-hint {
     position: fixed;
     z-index: 90;
-    top: 60px;
-    right: 167px;
+    top: 96px;
+    right: 14px;
     display: flex;
     width: 296px;
     box-sizing: border-box;
     flex-direction: column;
     gap: 8px;
-    padding: 12px 32px 12px 12px;
+    padding: 9px 29px 9px 9px;
     color: var(--ink-2);
-    background: var(--bg-2);
-    box-shadow: inset 0 0 0 1px var(--line-2), 0 0 0 1px var(--seam);
 }
 
 @supports (anchor-name: --cv-world-controls) {
@@ -210,32 +237,25 @@
 }
 
 body.cv-panel-open .first-run-hint,
-body:has(.modal-overlay) .first-run-hint,
+body:has(.modal-overlay[aria-hidden="false"]) .first-run-hint,
 body:has(#worldGrammar:popover-open) .first-run-hint {
     display: none;
 }
 
-/* Stepped arrow: three 1px-seamed rows of --bg-2, no rotated AA edge. */
+/* The arrow is the frame's own pixels continued up to a two-pixel tip: the
+   black seam on both slopes, the walnut lit edge on the left slope and the
+   shade on the right, the --bg-2 face flowing into the hint through the
+   frame's top edge. Hand-drawn 14×10, whole pixels at 1× and 2×. Its centre
+   sits 20px in from the hint's right edge, on the compass centre. */
 .first-run-hint::before {
     content: "";
     position: absolute;
-    top: -8px;
-    right: 14px;
-    width: 12px;
-    height: 8px;
-    background: var(--line-2);
-    clip-path: polygon(4px 0, 8px 0, 8px 2px, 10px 2px, 10px 4px, 12px 4px, 12px 8px, 0 8px, 0 4px, 2px 4px, 2px 2px, 4px 2px);
-}
-
-.first-run-hint::after {
-    content: "";
-    position: absolute;
-    top: -7px;
-    right: 15px;
-    width: 10px;
-    height: 8px;
-    background: var(--bg-2);
-    clip-path: polygon(4px 0, 6px 0, 6px 2px, 8px 2px, 8px 4px, 10px 4px, 10px 8px, 0 8px, 0 4px, 2px 4px, 2px 2px, 4px 2px);
+    top: -10px;
+    right: 10px;
+    width: 14px;
+    height: 10px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 10' shape-rendering='crispEdges'%3E%3Cpath fill='%23000' d='M6 0h2v1H6zM5 1h1v1H5zM8 1h1v1H8zM4 2h1v1H4zM9 2h1v1H9zM3 3h1v1H3zM10 3h1v1H10zM2 4h1v1H2zM11 4h1v1H11zM1 5h1v1H1zM12 5h1v1H12zM0 6h1v1H0zM13 6h1v1H13z'/%3E%3Cpath fill='%236e533a' d='M6 1h1v1H6zM5 2h1v1H5zM4 3h1v1H4zM3 4h1v1H3zM2 5h1v1H2zM1 6h1v1H1zM0 7h1v1H0z'/%3E%3Cpath fill='%232a1f16' d='M7 1h1v1H7zM8 2h1v1H8zM9 3h1v1H9zM10 4h1v1H10zM11 5h1v1H11zM12 6h1v1H12zM13 7h1v1H13z'/%3E%3Cpath fill='%231d1612' d='M6 2h2v1H6zM5 3h4v1H5zM4 4h6v1H4zM3 5h8v1H3zM2 6h10v1H2zM1 7h12v1H1zM0 8h14v2H0z'/%3E%3C/svg%3E") 0 0 / 14px 10px no-repeat;
+    image-rendering: pixelated;
 }
 
 .first-run-hint__title {
@@ -259,8 +279,8 @@ body:has(#worldGrammar:popover-open) .first-run-hint {
 
 .first-run-hint__dismiss {
     position: absolute;
-    top: 8px;
-    right: 8px;
+    top: 5px;
+    right: 5px;
     width: 16px;
     height: 16px;
     padding: 0;
@@ -275,18 +295,25 @@ body:has(#worldGrammar:popover-open) .first-run-hint {
     color: var(--gold-hi);
 }
 
-/* Ungraded, discoverable grammar opened from the matching topbar icon. */
+/* Ungraded, discoverable grammar opened from the dock's compass, hung under
+   it (anchor positioning; the fixed inset is the no-anchor fallback). Its
+   frame is the kit's bg2 slice (`cv-frame cv-frame--bg2`). */
 .world-grammar {
     position: fixed;
-    inset: 60px 174px auto auto;
+    inset: 92px 14px auto auto;
     margin: 0;
     width: 312px;
     padding: 0;
     color: var(--ink-2);
-    background: var(--bg-2);
-    border: 0;
-    box-shadow: inset 0 0 0 1px var(--line-2), 0 0 0 1px var(--seam);
     font: var(--fs-body)/var(--lh-body) var(--font-body);
+}
+
+@supports (anchor-name: --cv-world-controls) {
+    .world-grammar {
+        position-anchor: --cv-world-controls;
+        top: calc(anchor(bottom) + 8px);
+        right: calc(anchor(right) - 6px);
+    }
 }
 
 .world-grammar::backdrop { background: transparent; }
@@ -320,13 +347,6 @@ body:has(#worldGrammar:popover-open) .first-run-hint {
 /* Keys read as ink, not weight: both faces ship one weight. */
 .world-grammar__body b { font-weight: 400; color: var(--ink-1); }
 
-.world-read { touch-action: none; user-select: none; white-space: nowrap; }
-.world-read[aria-pressed="true"] { color: var(--gold); background: var(--bg-3); }
-/* 5.1 — the Ambient camera control. One chip, three honest states: available,
-   broadcasting (the shared --on treatment), and handed back to the operator,
-   where it waits as RESUME AMBIENT and never re-takes the frame on its own. */
-.world-ambient { user-select: none; white-space: nowrap; }
-.world-ambient[data-state="resume"] { color: var(--gold); }
 .world-semantic-summary { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* Boot banner: shown only when no empty-state card is speaking (App hides it

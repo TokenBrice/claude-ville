@@ -50,7 +50,7 @@ import { AgentAction, resolveAgentAction } from './ActionVocabulary.js';
 import { AgentGpuOverlayRenderer, departedTableau } from './AgentGpuOverlayRenderer.js';
 import { codexWeaponPose, drawCodexGauntlet } from './CodexWeaponPose.js';
 import { clearDetachedCodexWrench } from './CodexEngineerGrips.js';
-import { clampDt, inDutyPause, IDLE_STRIDE_PERIOD_MS, IDLE_STRIDE_PAUSE_FRACTION } from './MotionClock.js';
+import { REF_DT_MS, SPEED_RUNGS, snapBodyPx, speedRungIndex } from './MotionClock.js';
 import { gradeTone } from './EffectStamps.js';
 
 // Plan 2.1 (C3): villagers draw at exactly one world texel per authored pixel,
@@ -73,7 +73,43 @@ const IMPOSTOR_OUTLINE = '#070a0c';
 // Stamp box (feet-relative) covering shadow, outline and the apex status cell.
 const IMPOSTOR_BOX = Object.freeze({ left: -9, top: -22, width: 18, height: 28 });
 const WALK_PIXELS_PER_FRAME = 4.5;
+// V7 — the distance-driven stride turns its frame a quarter refresh ahead of
+// each whole-refresh boundary, so rAF timing jitter never splits a steady hold
+// of 3 refreshes into 2 + 4; a quarter also clears both 120 Hz refreshes.
+const STRIDE_PHASE_REFRESHES = 0.25;
+// V7 — a route step shorter than this (world px) may not move a body a whole
+// backing pixel at k >= 2 (a 0-px step on screen): corner and stop slivers
+// fold into a neighbouring step instead.
+const STEP_SLIVER_PX = 0.5;
+// ±45° travel changes must persist this long before the body turns, so a
+// one-tile zig-zag in an 8-connected path does not twitch the facing.
 const DIRECTION_HOLD_MS = 70;
+// V7 — one facing writer: the body turns one 45° column per TURN_STEP_MS.
+const TURN_STEP_MS = 55;
+// V7 — gait beats. On arrival the body holds its nearest contact frame (feet
+// planted) before settling into idle; leaving rest it holds the push-off
+// frame before the first step. Neither beat moves the body.
+const STOP_BEAT_MS = 80;
+const START_BEAT_MS = 60;
+const PUSH_OFF_FRAME = 1;
+// Camera-facing rank per direction (S, SE, E, NE, N, NW, W, SW): S/SE/SW show
+// the face, E/W the profile, NE/N/NW the back. An exact reversal turns through
+// the side with the higher rank, so the operator sees a face, never a back.
+const FACING_FRONT_RANK = Object.freeze([2, 2, 1, 0, 0, 0, 1, 2]);
+const DIR_E = 2;
+const DIR_NE = 3;
+const DIR_N = 4;
+const DIR_NW = 5;
+const DIR_W = 6;
+// V7 — per-direction foot anchors share the bounds cache under these keys.
+const FOOT_ANCHOR_KEYS = Object.freeze(DIRECTIONS.map((_, direction) => `anchor:${direction}`));
+// V7 — travel speed rung per state (indices into SPEED_RUNGS): WORKING keeps
+// the top rung (M27), WAITING and the other awake states walk at 1.125, IDLE
+// at 0.75, and a scenic stroll at 0.5625.
+const RUNG_STROLL = 0;
+const RUNG_IDLE = 1;
+const RUNG_WAITING = 3;
+const RUNG_WORKING = 4;
 const IDLE_FRAME_TICK_MS = 500;
 const FIDGET_COOLDOWN_MIN_MS = 4000;
 const FIDGET_COOLDOWN_RANGE_MS = 5000;
@@ -127,8 +163,53 @@ function easeOutCubic(t) {
     return 1 - Math.pow(1 - c, 3);
 }
 
-// 3.13 — congestion treatment: gait slowdown when the destination/current
-// building is over visit capacity.
+// V7 — a body rides the backing-pixel grid only while it is on the move; a
+// stop-and-look pause is a stop, so the body rests on a whole texel through it.
+function bodyPlacementMoving(sprite) {
+    return Boolean(sprite.moving) && !(sprite._stopLookActiveMs > 0);
+}
+
+// Smallest angle (radians) between a direction column and a screen-space
+// bearing in atan2 space (y down), matching SpriteSheet.dirFromVelocity.
+function angleOffDirection(direction, bearing) {
+    const turn = Math.PI * 2;
+    const delta = (2 - direction) * (Math.PI / 4) - bearing;
+    return Math.abs((((delta + Math.PI) % turn) + turn) % turn - Math.PI);
+}
+
+// 0.5 — a building's footprint centre in tile units. The domain Building
+// keeps its origin in `position` (tileX, tileY); plain layout objects carry
+// `x`/`y`. Null when neither is finite.
+function buildingCentreTile(building) {
+    const bx = Number(building?.position?.tileX ?? building?.x);
+    const by = Number(building?.position?.tileY ?? building?.y);
+    if (!Number.isFinite(bx) || !Number.isFinite(by)) return null;
+    return {
+        tileX: bx + (Number(building.width) || 1) / 2,
+        tileY: by + (Number(building.height) || 1) / 2,
+    };
+}
+
+// The contact frame (feet planted: walk frames 0 and 3) nearest a walk frame.
+function nearestContactFrame(frame) {
+    const half = WALK_FRAMES / 2;
+    const f = ((frame % WALK_FRAMES) + WALK_FRAMES) % WALK_FRAMES;
+    return Math.abs(f - half) < Math.min(f, WALK_FRAMES - f) ? half : 0;
+}
+
+// True when a change of course from heading a to heading b turns three or
+// more 45° columns (135° or more): the walker plants and pivots there.
+function sharpCourseChange(ax, ay, bx, by) {
+    const from = dirFromVelocity(ax, ay);
+    const to = dirFromVelocity(bx, by);
+    if (from == null || to == null) return false;
+    const columns = (to - from + 8) % 8;
+    return Math.min(columns, 8 - columns) >= 3;
+}
+
+// 3.13 — congestion treatment: the gait drops whole speed rungs when the
+// destination/current building is over visit capacity (0.6× from the top rung
+// lands two rungs down).
 const CONGESTION_GAIT_SCALE = 0.6;
 const PROVIDER_TRIM = Object.freeze(Object.fromEntries(
     Object.entries(PROVIDER_HUES).map(([key, hue]) => [key, hue.trim]),
@@ -650,6 +731,7 @@ export class AgentSprite {
         getAmbientDestination = null,
         getRoadTiles = null,
         getTileType = null,
+        motionClock = null,
     } = {}) {
         this.agent = agent;
         this.observation = resolveObservation(agent, Date.now());
@@ -803,6 +885,9 @@ export class AgentSprite {
         // deep) used to key terrain-aware footfall particles to the ground under
         // each stride.
         this.getTileType = typeof getTileType === 'function' ? getTileType : null;
+        // V7 — the renderer's one motion clock: travel reads its display-
+        // latched stride dt (`strideDtMs`) so host jitter never splits a hold.
+        this._motionClock = motionClock && typeof motionClock === 'object' ? motionClock : null;
         this.waypoints = [];
         this._lastPathTileKey = null;
         this._pathAgeFrames = 0;
@@ -820,8 +905,44 @@ export class AgentSprite {
         this.frame = this._idlePhaseFrames;
         this.frameTimer = this._idlePhaseTimerMs;
         this._strideDistance = 0;
+        // V7 — gait state: the rung this update walked at, the stride phase
+        // (and whether a new rung or short step needs it re-taken), whether
+        // the legs are mid-stride (false after any stop, so leaving rest plays
+        // the start beat), and the two beat timers.
+        this._gaitSpeed = 0;
+        this._stridePhase = 0;
+        this._stridePhaseStale = true;
+        this._strideShortStep = 0;
+        this._strideActive = false;
+        // V7 — where this refresh's step began (NaN when the body did not
+        // step) and how far it went: renderer steering keeps that length
+        // (`steeredPosition`), so every walk frame covers 4.5 px of travel.
+        this._stepStartX = NaN;
+        this._stepStartY = NaN;
+        this._stepLength = 0;
+        this._startBeatMs = 0;
+        this._stopBeatMs = 0;
         this._candidateDirection = null;
         this._candidateDirectionMs = 0;
+        // V7 — one facing writer: the goal the stepper turns toward (null when
+        // settled), which way it turns, the time banked toward the next
+        // column, and whether a turn of 135° or more has planted the stride.
+        this._facingGoal = null;
+        this._facingTurnSign = 1;
+        this._facingTurnMs = 0;
+        this._facingPivot = false;
+        // 0.5 — the screen bearing (radians) to the building last faced, so a
+        // fidget glance never turns past that building's half-plane.
+        this._workBearing = null;
+        // V7 — the partner tile a chat approach last routed to; the approach
+        // re-routes only when the partner changes tile.
+        this._chatPartnerTileX = NaN;
+        this._chatPartnerTileY = NaN;
+        // V7 — the one placement value of the last draw (snapBodyPx) and the
+        // backing DPR it was taken at; every per-agent layer reads it.
+        this._placeX = this.x;
+        this._placeY = this.y;
+        this._placeDpr = 1;
         this.spriteCanvas = null;
         this.spriteSheet = null;     // cached SpriteSheet wrapper, set on first draw
         this._spriteProfileKey = '';
@@ -932,17 +1053,28 @@ export class AgentSprite {
         else PRIVATE_DERIVED_CACHE_ESTIMATES.delete(this._resourceOwnerKey);
     }
 
+    // V7 — route beside the chat partner and remember the partner's tile: the
+    // approach re-routes only when the partner reaches another tile, never
+    // per frame, so its target and path hold still while it walks.
+    _routeToChatPartner() {
+        const partner = this.chatPartner;
+        const partnerTile = worldToTile(partner.x, partner.y);
+        this._chatPartnerTileX = Math.round(partnerTile.tileX);
+        this._chatPartnerTileY = Math.round(partnerTile.tileY);
+        const offsetX = this.x < partner.x ? -25 : 25;
+        const chatTargetX = partner.x + offsetX;
+        const chatTargetY = partner.y;
+        const targetTile = this._screenToTile(chatTargetX, chatTargetY);
+        this._assignTarget(chatTargetX, chatTargetY, targetTile.tileX, targetTile.tileY);
+    }
+
     _pickTarget() {
         // Move to the partner position when there is a chat partner
         if (this.chatPartner) {
             this._releaseVisitReservation();
             this.behavior.transition('chat-approach', 'chat');
-            const offsetX = this.x < this.chatPartner.x ? -25 : 25;
-            const chatTargetX = this.chatPartner.x + offsetX;
-            const chatTargetY = this.chatPartner.y;
-            const targetTile = this._screenToTile(chatTargetX, chatTargetY);
             this._lastPathTileKey = null; // force fresh path on every chat entry
-            this._assignTarget(chatTargetX, chatTargetY, targetTile.tileX, targetTile.tileY);
+            this._routeToChatPartner();
             this.moving = true;
             this.waitTimer = 0;
             return;
@@ -1223,13 +1355,8 @@ export class AgentSprite {
         if (raw && finite(raw.x ?? raw.tileX) && finite(raw.y ?? raw.tileY)) {
             return { x: Number(raw.x ?? raw.tileX), y: Number(raw.y ?? raw.tileY) };
         }
-        const bx = Number(building?.x);
-        const by = Number(building?.y);
-        if (!finite(bx) || !finite(by)) return null;
-        return {
-            x: bx + (Number(building.width) || 1) / 2,
-            y: by + (Number(building.height) || 1) / 2,
-        };
+        const centre = buildingCentreTile(building);
+        return centre ? { x: centre.tileX, y: centre.tileY } : null;
     }
 
     _recordBlockedRecovery(reason, building, target) {
@@ -1706,19 +1833,33 @@ export class AgentSprite {
         return Math.round(this._clamp(dwell, 45, 480));
     }
 
+    // V7 — travel speed is always a whole rung (px per 16.67 ms), so the
+    // distance-driven legs hold each walk frame for the same whole number of
+    // refreshes. The state picks the rung; intent, model temperament and mood
+    // move it at most one rung, and only WORKING may walk the top rung, so the
+    // gait still ranks urgency (WORKING > WAITING > IDLE). Congestion drops
+    // whole rungs. A chat approach walks the top rung; it never sprints.
     _speedForState() {
-        if (this.chatPartner) return 2.5;
-        let base = 1.2;
-        if (this.agent.status === AgentStatus.WORKING) base = 1.5;
-        if (this.agent.status === AgentStatus.WAITING) base = 1.1;
-        if (this.agent.status === AgentStatus.IDLE) base = 0.8;
-        const speed = this._clamp(base * this._intentSpeedMultiplier(this._currentMotionIntent()), 0.62, 2.15);
-        // Model temperament is deliberately narrow (±8%). Mood applies after
-        // it, preserving urgency/slump across every tier; pathing is unchanged.
-        return speed
+        const top = SPEED_RUNGS.length - 1;
+        if (this.chatPartner) return SPEED_RUNGS[top];
+        const status = this.agent.status;
+        let base = RUNG_WAITING;
+        if (status === AgentStatus.WORKING) base = RUNG_WORKING;
+        else if (status === AgentStatus.IDLE) {
+            const type = this._lastBuildingType;
+            base = typeof type === 'string' && type.startsWith('ambient:') ? RUNG_STROLL : RUNG_IDLE;
+        }
+        const temperament = this._intentSpeedMultiplier(this._currentMotionIntent())
             * this._modelBehavior.walkPace
-            * this._moodGaitMultiplier()
-            * this._congestionGaitMultiplier();
+            * this._moodGaitMultiplier();
+        const ceiling = base === RUNG_WORKING ? RUNG_WORKING : RUNG_WORKING - 1;
+        let rung = this._clamp(
+            speedRungIndex(SPEED_RUNGS[base] * temperament),
+            Math.max(0, base - 1),
+            Math.min(base + 1, ceiling),
+        );
+        if (this._congestedBuilding()) rung = Math.min(rung, speedRungIndex(SPEED_RUNGS[rung] * CONGESTION_GAIT_SCALE));
+        return SPEED_RUNGS[rung];
     }
 
     /** Mood remains primary: tired/distressed drag, anxious/proud quicken. */
@@ -1787,11 +1928,6 @@ export class AgentSprite {
         return this.agent?.status === AgentStatus.ERRORED ? 3 : 2;
     }
 
-    /** 3.13 — slower gait while heading to/standing in a congested building. */
-    _congestionGaitMultiplier() {
-        return this._congestedBuilding() ? CONGESTION_GAIT_SCALE : 1;
-    }
-
     /** Destination/current building when over visit capacity, else null. */
     _congestedBuilding() {
         const type = this._lastBuildingType
@@ -1839,7 +1975,16 @@ export class AgentSprite {
         // once. An effect already in flight kept reading wall-clock time, so
         // switching reduced motion ON mid-animation did not stop it. Cancel
         // in-flight one-shots here so the gate holds in both directions.
-        if (!(scale > 0)) this._handoffAckStart = 0;
+        if (!(scale > 0)) {
+            this._handoffAckStart = 0;
+            // V7 — reduced motion snaps: a turn in progress lands on its goal
+            // and the gait beats end, so the static frame is the settled one.
+            if (this._facingGoal != null) this.direction = this._facingGoal;
+            this._facingGoal = null;
+            this._facingPivot = false;
+            this._startBeatMs = 0;
+            this._stopBeatMs = 0;
+        }
     }
 
     // 3.7 — hover affordance. Driven by the renderer's mousemove hit-test
@@ -1981,6 +2126,9 @@ export class AgentSprite {
     }
 
     update(particleSystem, dt = 16) {
+        // V7 — no step yet this refresh: steering never moves a held body.
+        this._stepStartX = NaN;
+        this._stepLength = 0;
         if (this.isArrivalPending()) {
             this._advanceIdleAnimation(dt);
             return;
@@ -2011,6 +2159,8 @@ export class AgentSprite {
         this._advanceContextStrainSweat(particleSystem);
         this._advanceDistressRecovery(particleSystem);
         this._advanceTokenFlowMotes(particleSystem, frameScale);
+        // V7 — the one facing writer turns one column toward its goal.
+        this._advanceFacing(dt);
 
         // Handle chatting state
         if (this.chatting) {
@@ -2020,41 +2170,38 @@ export class AgentSprite {
             return; // Do not move while chatting
         }
 
-        // Moving toward the chat partner; start chatting when close
+        // Moving toward the chat partner; start chatting when close. The
+        // approach faces its own path; both turn to each other once it stops.
         if (this.chatPartner) {
-            const cpDx = this.chatPartner.x - this.x;
-            const cpDy = this.chatPartner.y - this.y;
-            this._faceChatPartner();
+            const partner = this.chatPartner;
+            const cpDx = partner.x - this.x;
+            const cpDy = partner.y - this.y;
             const cpDist = Math.sqrt(cpDx * cpDx + cpDy * cpDy);
             if (cpDist < 35) {
                 this.chatting = true;
                 this.behavior.transition('chatting', 'chat');
                 this.chatBubbleAnim = 0;
                 this.moving = false;
-                this._resetWalkCycle();
-                // Derive facing direction toward chat partner.
-                const dir = dirFromVelocity(cpDx, cpDy);
-                if (dir != null) this.direction = dir;
+                this._beginStopBeat();
+                this._setFacingGoal(dirFromVelocity(cpDx, cpDy));
                 // Put the partner in chat state too
-                if (!this.chatPartner.chatting) {
-                    this.chatPartner.chatPartner = this;
-                    this.chatPartner.chatting = true;
-                    this.chatPartner.behavior?.transition?.('chatting', 'chat');
-                    this.chatPartner.chatBubbleAnim = 0;
-                    this.chatPartner.moving = false;
-                    this.chatPartner._resetWalkCycle();
-                    // Partner faces back.
-                    const partnerDir = dirFromVelocity(-cpDx, -cpDy);
-                    if (partnerDir != null) this.chatPartner.direction = partnerDir;
+                if (!partner.chatting) {
+                    partner.chatPartner = this;
+                    partner.chatting = true;
+                    partner.behavior?.transition?.('chatting', 'chat');
+                    partner.chatBubbleAnim = 0;
+                    partner.moving = false;
+                    partner._beginStopBeat();
+                    // Partner turns back to face us.
+                    partner._setFacingGoal(dirFromVelocity(-cpDx, -cpDy));
                 }
                 return;
             }
-            // Refresh target when the partner position changes — route via pathfinder.
-            const offsetX = this.x < this.chatPartner.x ? -25 : 25;
-            const chatTargetX = this.chatPartner.x + offsetX;
-            const chatTargetY = this.chatPartner.y;
-            const chatTargetTile = this._screenToTile(chatTargetX, chatTargetY);
-            this._assignTarget(chatTargetX, chatTargetY, chatTargetTile.tileX, chatTargetTile.tileY);
+            const partnerTile = worldToTile(partner.x, partner.y);
+            if (Math.round(partnerTile.tileX) !== this._chatPartnerTileX
+                || Math.round(partnerTile.tileY) !== this._chatPartnerTileY) {
+                this._routeToChatPartner();
+            }
         }
 
         // Reroute immediately when status or fresh tool changes the intended building.
@@ -2082,7 +2229,10 @@ export class AgentSprite {
         }
 
         if (this.waitTimer > 0) {
-            if (!this.moving) this._snapToNearestWalkable();
+            if (!this.moving) {
+                this._snapToNearestWalkable();
+                this._restWorkFacing();
+            }
             this._renewVisitReservation();
             this._advanceFidget(dt);
             this.waitTimer -= frameScale;
@@ -2102,6 +2252,7 @@ export class AgentSprite {
 
         if (!this.moving) {
             this._snapToNearestWalkable();
+            this._restWorkFacing();
             this._advanceIdleAnimation(dt);
             this._renewVisitReservation();
             this._pickTarget();
@@ -2116,24 +2267,77 @@ export class AgentSprite {
             return;
         }
 
-        const dx = this.targetX - this.x;
-        const dy = this.targetY - this.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const speed = this._speedForState();
-        const step = speed * frameScale;
+        // V7 — the start beat and a planted pivot hold the body on its feet.
+        if (this._holdGait(dt)) return;
 
-        if (dist < step) {
+        // V7 — travel is a whole speed rung per 16.67 ms and carries through
+        // waypoints, so neither the pace nor the stride phase breaks at a
+        // corner. A new rung re-phases the stride (see _advanceWalkAnimation);
+        // the first step after a sharp corner is the part of the step the
+        // corner cut short, which puts the stride back on its lattice. The
+        // step reads the motion clock's display-latched dt, so every refresh
+        // of a steady walk steps the same distance whatever the host jitter.
+        const speed = this._speedForState();
+        if (speed !== this._gaitSpeed) this._stridePhaseStale = true;
+        this._gaitSpeed = speed;
+        const strideDt = this._motionClock ? this._motionClock.strideDtMs : dt;
+        let remaining = speed * Math.max(0, Math.min(3, strideDt / REF_DT_MS));
+        if (this._strideShortStep > 0) {
+            // The part of the step a sharp corner cut short. A sliver of it
+            // (under STEP_SLIVER_PX) rides on this full step instead, so no
+            // refresh translates by less than a backing pixel (a 0-px step).
+            remaining = this._strideShortStep >= STEP_SLIVER_PX
+                ? Math.min(remaining, this._strideShortStep)
+                : remaining + this._strideShortStep;
+            this._strideShortStep = 0;
+        }
+        this._stepStartX = this.x;
+        this._stepStartY = this.y;
+        let travelled = 0;
+        let headingX = this.targetX - this.x;
+        let headingY = this.targetY - this.y;
+        while (remaining > 0) {
+            const dx = this.targetX - this.x;
+            const dy = this.targetY - this.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            // V7 — a stop or a sharp corner a sliver beyond this step is
+            // reached now: the body plants there instead of creeping onto it
+            // by a step that would not move it a backing pixel.
+            const sliverToStop = dist > remaining && dist - remaining < STEP_SLIVER_PX
+                && this._stopsAtTarget(dx, dy);
+            if (dist > remaining && !sliverToStop) {
+                this.x += (dx / dist) * remaining;
+                this.y += (dy / dist) * remaining;
+                travelled += remaining;
+                headingX = dx;
+                headingY = dy;
+                break;
+            }
             this.x = this.targetX;
             this.y = this.targetY;
-            this._advanceWalkAnimation(dist, dx, dy, dt, particleSystem);
+            travelled += dist;
+            remaining -= dist;
+            if (dist > 0) {
+                headingX = dx;
+                headingY = dy;
+            }
             if (this.waypoints && this.waypoints.length > 0) {
                 this.waypoints.shift();
                 if (this.waypoints.length > 0) {
                     this.targetX = this.waypoints[0].x;
                     this.targetY = this.waypoints[0].y;
-                    return;
+                    // A sharp corner (135° or more) ends the step on the corner
+                    // and the next update pivots before the body walks on, so
+                    // it never steps backward on its old facing.
+                    if (sharpCourseChange(headingX, headingY, this.targetX - this.x, this.targetY - this.y)) {
+                        this._strideShortStep = remaining;
+                        break;
+                    }
+                    continue;
                 }
             }
+            this._advanceWalkAnimation(travelled, headingX, headingY, dt, particleSystem);
+            this._stepStartX = NaN;
             this.moving = false;
             this.behavior.arrive({
                 state: this._lastIntentId ? 'performing' : 'lingering',
@@ -2143,13 +2347,37 @@ export class AgentSprite {
             });
             if (!this.chatPartner) this._faceBuilding(this._buildingForType(this._lastBuildingType), this._lastVisitFacingPoint);
             this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
-            this._resetWalkCycle();
+            this._beginStopBeat();
             return;
         }
+        this._advanceWalkAnimation(travelled, headingX, headingY, dt, particleSystem);
+    }
 
-        this.x += (dx / dist) * step;
-        this.y += (dy / dist) * step;
-        this._advanceWalkAnimation(step, dx, dy, dt, particleSystem);
+    // True when the body plants at its current target: the route's last
+    // point, or a sharp corner (see sharpCourseChange). `dx`, `dy` is the
+    // course onto the target.
+    _stopsAtTarget(dx, dy) {
+        const next = this.waypoints?.[1];
+        if (!next) return true;
+        return sharpCourseChange(dx, dy, next.x - this.targetX, next.y - this.targetY);
+    }
+
+    // V7 — where renderer steering (lane discipline, local avoidance) may put
+    // this body, asked with the position it proposes. A body that stepped
+    // this refresh keeps its step's length about the step's start and takes
+    // only the steering's change of course: the stride stays on its lattice,
+    // so every walk frame covers 4.5 px of the body's real travel, and a
+    // crowd nudge never speeds a walker up, stalls it or pushes it past its
+    // route progress. Null when the body did not step this refresh (a start
+    // beat, a planted pivot, a stop, reduced motion): it never skates.
+    steeredPosition(x, y) {
+        if (!Number.isFinite(this._stepStartX) || !(this._stepLength > 0)) return null;
+        const dx = x - this._stepStartX;
+        const dy = y - this._stepStartY;
+        const length = Math.hypot(dx, dy);
+        if (!(length > 1e-6)) return null;
+        const scale = this._stepLength / length;
+        return { x: this._stepStartX + dx * scale, y: this._stepStartY + dy * scale };
     }
 
     // #42 — resolve the terrain class under the sprite's current world position
@@ -2178,24 +2406,33 @@ export class AgentSprite {
             return;
         }
 
-        // Deliberate stride pause for IDLE strollers: hold the frame for the
-        // first half of a 200 ms period so motion looks unhurried. Pause is
-        // skipped when reduced-motion is active (motionScale 0).
-        const isIdleStroll = this.agent?.status === AgentStatus.IDLE && !this.chatPartner && !this.chatting;
-        if (isIdleStroll) {
-            this._idleStrideMs = (this._idleStrideMs || 0) + clampDt(dt);
-            if (inDutyPause(this._idleStrideMs, IDLE_STRIDE_PERIOD_MS, IDLE_STRIDE_PAUSE_FRACTION)) {
-                // Pause stride: skip distance accumulation, keep current frame.
-                this.walkFrame = this.frame;
-                return;
-            }
-        }
-
+        // Distance-driven stride: one walk frame per 4.5 px of travel, so the
+        // feet never slide. V7 — every rung divides 4.5 px, so at a steady pace
+        // the stride lands on the same lattice each refresh, and the phase
+        // keeps every frame boundary a quarter step off that lattice: half a
+        // 120 Hz refresh from the nearest refresh at 60 or 120 Hz, so timing
+        // jitter never splits a steady hold. A hold, a new rung or a short
+        // corner step moves the lattice, so the phase is re-taken: of the two
+        // phases half a step apart, the one nearest the old, so a boundary
+        // moves by at most a quarter step.
         const previousFrame = this.frame % WALK_FRAMES;
-        this._strideDistance += Math.max(0, distance);
-        this.frame = Math.floor(this._strideDistance / WALK_PIXELS_PER_FRAME) % WALK_FRAMES;
+        const speed = this._gaitSpeed;
+        // V7 — the stride counts the body's net travel this refresh; renderer
+        // steering keeps that length (`steeredPosition`), so a frame change
+        // always covers 4.5 px of real travel.
+        this._stepLength = Number.isFinite(this._stepStartX)
+            ? Math.hypot(this.x - this._stepStartX, this.y - this._stepStartY)
+            : Math.max(0, distance);
+        this._strideDistance += this._stepLength;
+        this.frame = Math.floor((this._strideDistance + this._stridePhase) / WALK_PIXELS_PER_FRAME) % WALK_FRAMES;
         this.walkFrame = this.frame;
         this.frameTimer = 0;
+        if (this._stridePhaseStale && speed > 0) {
+            const half = speed / 2;
+            const target = (((speed * STRIDE_PHASE_REFRESHES - (this._strideDistance % half)) % half) + half) % half;
+            this._stridePhase = target + Math.round((this._stridePhase - target) / half) * half;
+            this._stridePhaseStale = false;
+        }
 
         if (
             particleSystem &&
@@ -2204,11 +2441,59 @@ export class AgentSprite {
             FOOTFALL_FRAMES.has(this.frame)
         ) {
             const footSide = this.frame === 0 ? -3 : 3;
-            particleSystem.spawn(this._footfallPresetForSurface(), this.x + footSide, this._visualAnchorY() + 3, 1);
+            particleSystem.spawn(this._footfallPresetForSurface(), this.x + footSide, this._visualAnchorY() + 3, 1, {
+                sortY: this._depthSortY ?? this.y,
+            });
         }
     }
 
+    // V7 — gait beats that keep the feet planted. Leaving rest, the body holds
+    // its push-off frame for START_BEAT_MS while it turns toward its path; a
+    // turn of 135° or more pivots in place until the facing arrives. The body
+    // never translates on a held frame, so nothing skates.
+    _holdGait(dt) {
+        if (this.motionScale <= 0) return false;
+        const courseX = this.targetX - this.x;
+        const courseY = this.targetY - this.y;
+        if (!this._strideActive) {
+            this._strideActive = true;
+            this._startBeatMs = START_BEAT_MS;
+            this._stopBeatMs = 0;
+            this._strideDistance = PUSH_OFF_FRAME * WALK_PIXELS_PER_FRAME;
+            this._stridePhase = 0;
+            this._stridePhaseStale = true;
+            this.frame = PUSH_OFF_FRAME;
+            this.walkFrame = PUSH_OFF_FRAME;
+            this._candidateDirection = null;
+            this._candidateDirectionMs = 0;
+            this._setFacingGoal(dirFromVelocity(courseX, courseY));
+        } else if (!this._facingPivot) {
+            // A sharp change of course (a corner or a new target behind the
+            // walker) turns before the first step, never after it.
+            const heading = this._facingGoal ?? this.direction;
+            const course = dirFromVelocity(courseX, courseY);
+            if (course != null) {
+                const columns = (course - heading + 8) % 8;
+                if (Math.min(columns, 8 - columns) >= 3) this._setFacingGoal(course);
+            }
+        }
+        if (this._startBeatMs > 0) this._startBeatMs -= dt;
+        else if (!this._facingPivot) return false;
+        // Time passes on a held frame while the stride does not, so the first
+        // step after the hold re-takes the stride phase.
+        this._stridePhaseStale = true;
+        this.animState = 'walk';
+        return true;
+    }
+
     _advanceIdleAnimation(dt) {
+        // V7 — the stop beat holds its contact frame, then idle takes over.
+        if (this._stopBeatMs > 0) {
+            this._stopBeatMs -= dt;
+            if (this._stopBeatMs > 0 && this.motionScale > 0) return;
+            this._settleIdle();
+            return;
+        }
         this.animState = 'idle';
         if (this.motionScale <= 0) {
             this.frame = 0;
@@ -2223,11 +2508,23 @@ export class AgentSprite {
         }
     }
 
+    // Travel facing: the path's heading becomes the facing goal. A ±45°
+    // change must persist DIRECTION_HOLD_MS first (one-tile zig-zags); a
+    // larger one is a real change of course and starts turning at once.
+    // Reduced motion debounces every change, then snaps.
     _updateFacingDirection(dx, dy, dt) {
         const dir = dirFromVelocity(dx, dy);
-        if (dir == null || dir === this.direction) {
+        const heading = this._facingGoal ?? this.direction;
+        if (dir == null || dir === heading) {
             this._candidateDirection = null;
             this._candidateDirectionMs = 0;
+            return;
+        }
+        const columns = (dir - heading + 8) % 8;
+        if (this.motionScale > 0 && columns !== 1 && columns !== 7) {
+            this._candidateDirection = null;
+            this._candidateDirectionMs = 0;
+            this._setFacingGoal(dir);
             return;
         }
         if (this._candidateDirection !== dir) {
@@ -2236,25 +2533,137 @@ export class AgentSprite {
         }
         this._candidateDirectionMs += dt;
         if (this._candidateDirectionMs >= DIRECTION_HOLD_MS) {
-            this.direction = dir;
             this._candidateDirection = null;
             this._candidateDirectionMs = 0;
+            this._setFacingGoal(dir);
         }
     }
 
+    // V7 — the one facing writer. Every source (travel, chat, building,
+    // fidget, landmark look) names a goal here; only _advanceFacing and the
+    // reduced-motion snap write `direction`, one 45° column per TURN_STEP_MS.
+    // An exact reversal turns through the camera-facing side (a face, never a
+    // back); a turn of 135° or more plants the stride so the body pivots.
+    _setFacingGoal(dir) {
+        if (dir == null) return;
+        if (this.motionScale <= 0) {
+            this.direction = dir;
+            this._facingGoal = null;
+            this._facingPivot = false;
+            return;
+        }
+        if (dir === this._facingGoal) return;
+        if (dir === this.direction) {
+            this._facingGoal = null;
+            this._facingPivot = false;
+            return;
+        }
+        const from = this.direction;
+        const columns = (dir - from + 8) % 8;
+        let sign = columns < 4 ? 1 : -1;
+        if (columns === 4) {
+            const viaPlus = FACING_FRONT_RANK[(from + 2) % 8] * 4 + FACING_FRONT_RANK[(from + 1) % 8];
+            const viaMinus = FACING_FRONT_RANK[(from + 6) % 8] * 4 + FACING_FRONT_RANK[(from + 7) % 8];
+            sign = viaMinus > viaPlus ? -1 : 1;
+        }
+        const turning = this._facingGoal != null;
+        // A fresh turn takes its first column on the next update.
+        if (!turning) this._facingTurnMs = TURN_STEP_MS;
+        this._facingPivot = (turning && this._facingPivot) || Math.min(columns, 8 - columns) >= 3;
+        this._facingGoal = dir;
+        this._facingTurnSign = sign;
+    }
+
+    _advanceFacing(dt) {
+        const goal = this._facingGoal;
+        if (goal == null) return;
+        if (this.motionScale <= 0 || goal === this.direction) {
+            this.direction = goal;
+            this._facingGoal = null;
+            this._facingPivot = false;
+            return;
+        }
+        this._facingTurnMs += dt;
+        if (this._facingTurnMs < TURN_STEP_MS) return;
+        // One column per update at most: no refresh ever turns more than 45°.
+        this._facingTurnMs = Math.min(this._facingTurnMs - TURN_STEP_MS, TURN_STEP_MS);
+        this.direction = (this.direction + this._facingTurnSign + 8) % 8;
+        if (this.direction === goal) {
+            this._facingGoal = null;
+            this._facingPivot = false;
+        }
+    }
+
+    // Chat facing is literal: partners face each other along the true
+    // bearing (work facing never applies).
     _faceChatPartner() {
         if (!this.chatPartner) return;
-        const dir = dirFromVelocity(this.chatPartner.x - this.x, this.chatPartner.y - this.y);
-        if (dir != null) this.direction = dir;
+        this._setFacingGoal(dirFromVelocity(this.chatPartner.x - this.x, this.chatPartner.y - this.y));
     }
 
     _faceBuilding(building, facingPoint = null) {
         if (!building && !facingPoint) return;
         const point = this._resolveBuildingFacingPoint(building, facingPoint);
         if (!point) return;
-        const center = tileToWorld({ tileX: point.tileX, tileY: point.tileY });
-        const dir = dirFromVelocity(center.x - this.x, center.y - this.y);
-        if (dir != null) this.direction = dir;
+        let center = tileToWorld({ tileX: point.tileX, tileY: point.tileY });
+        // A slot whose facing point is its own tile gives no bearing; the
+        // body then addresses the building's centre instead.
+        if (building && Math.abs(center.x - this.x) < 1 && Math.abs(center.y - this.y) < 1) {
+            const centre = buildingCentreTile(building);
+            if (centre) center = tileToWorld(centre);
+        }
+        const bearingX = center.x - this.x;
+        const bearingY = center.y - this.y;
+        const trueDir = dirFromVelocity(bearingX, bearingY);
+        if (trueDir == null) return;
+        this._workBearing = Math.atan2(bearingY, bearingX);
+        this._setFacingGoal(this._workFacing(trueDir, bearingX));
+    }
+
+    // 0.5 / V7 — work facing (M20). A villager at its building stands
+    // side-on instead of showing the operator its back: a north bearing turns
+    // to NE or NW, toward the door's side (`doorDx`, world px from the body to
+    // the facing point), NE turns to E and NW to W. Each result stays within
+    // 67.5° of the true bearing, so the body still addresses its building.
+    _workFacing(trueDir, doorDx = 0) {
+        if (trueDir === DIR_NE) return DIR_E;
+        if (trueDir === DIR_NW) return DIR_W;
+        if (trueDir !== DIR_N) return trueDir;
+        if (doorDx > 0) return DIR_NE;
+        if (doorDx < 0) return DIR_NW;
+        // Dead under the door: a stable per-agent side from the seeded phase.
+        return this._idlePhaseFrames & 1 ? DIR_NE : DIR_NW;
+    }
+
+    // 0.5 — a villager at rest never settles with its back to the operator.
+    // A back-facing heading left by travel (an aborted start, a blocked or
+    // re-picked route) turns to its work facing; NE/NW stays only when the
+    // bearing to its building is north. Chat facing is exempt.
+    _restWorkFacing() {
+        if (this.chatting || this.chatPartner) return;
+        const heading = this._facingGoal ?? this.direction;
+        if (FACING_FRONT_RANK[heading] !== 0) return;
+        const bearing = this._workBearing;
+        const doorDx = bearing == null ? 0 : Math.cos(bearing);
+        if (heading !== DIR_N && bearing != null && dirFromVelocity(doorDx, Math.sin(bearing)) === DIR_N) return;
+        this._setFacingGoal(this._workFacing(heading, doorDx));
+    }
+
+    // 0.5 — a fidget glances one column aside from the work facing, never into
+    // a back-facing column (NE, N, NW) and never past the half-plane facing
+    // its building. With neither side open the villager holds still.
+    _fidgetGlance(sign) {
+        const from = this._facingGoal ?? this.direction;
+        const first = (from + sign + 8) % 8;
+        if (this._glanceAllowed(first)) return first;
+        const second = (from - sign + 8) % 8;
+        return this._glanceAllowed(second) ? second : null;
+    }
+
+    _glanceAllowed(dir) {
+        if (FACING_FRONT_RANK[dir] === 0) return false;
+        const bearing = this._workBearing;
+        return bearing == null || angleOffDirection(dir, bearing) <= Math.PI / 2 + 1e-9;
     }
 
     _resolveBuildingFacingPoint(building, explicitFacingPoint = null) {
@@ -2274,13 +2683,7 @@ export class AgentSprite {
         if (visitFacing) return visitFacing;
         const fromBuilding = wrap(building?.facingPoint);
         if (fromBuilding) return fromBuilding;
-        if (!building) return null;
-        const bx = Number(building.x);
-        const by = Number(building.y);
-        if (!finite(bx) || !finite(by)) return null;
-        const cx = bx + (Number(building.width) || 1) / 2;
-        const cy = by + (Number(building.height) || 1) / 2;
-        return { tileX: cx, tileY: cy };
+        return buildingCentreTile(building);
     }
 
     _currentVisitTileEntry(building) {
@@ -2319,8 +2722,8 @@ export class AgentSprite {
         }
         this._fidgetCooldownMs -= dt;
         if (this._fidgetCooldownMs <= 0) {
-            const sign = this._fidgetRandom() > 0.5 ? 1 : -1;
-            this.direction = (this.direction + sign + 8) % 8;
+            const glance = this._fidgetGlance(this._fidgetRandom() > 0.5 ? 1 : -1);
+            if (glance != null) this._setFacingGoal(glance);
             this._fidgetActiveMs = 600 + this._fidgetRandom() * 400;
             this._fidgetCooldownMs = this._nextFidgetCooldownMs();
         }
@@ -2362,6 +2765,8 @@ export class AgentSprite {
         }
         this._stopLookCooldownMs -= dt;
         if (this._stopLookCooldownMs <= 0) {
+            // V7 — the stroller stops on a contact frame before it looks.
+            this._beginStopBeat();
             const nearest = this._nearestLandmarkBuilding();
             if (nearest) this._faceBuilding(nearest);
             this._stopLookActiveMs = 1000 + Math.random() * 1000;
@@ -2388,16 +2793,40 @@ export class AgentSprite {
         return best;
     }
 
+    // Settle at rest at once: the stride and travel-facing debounce clear and
+    // the body takes its seeded idle phase. Every stop goes through here.
     _resetWalkCycle() {
-        this.walkFrame = 0;
+        this._strideActive = false;
+        this._startBeatMs = 0;
         this._strideDistance = 0;
+        this._strideShortStep = 0;
         this._candidateDirection = null;
         this._candidateDirectionMs = 0;
+        this._settleIdle();
+    }
+
+    _settleIdle() {
+        this._stopBeatMs = 0;
+        this.walkFrame = 0;
         // 3.1 — resume idle on the agent's seeded phase so agents arriving
         // together do not re-synchronize their breathing.
         this.frameTimer = this._idlePhaseTimerMs;
         this.frame = this._idlePhaseFrames;
         this.animState = 'idle';
+    }
+
+    // V7 — the stop beat: a walker lands on its nearest contact frame (feet
+    // planted) and holds it for STOP_BEAT_MS before its idle phase takes over.
+    // Reduced motion, or a body already at rest, settles at once.
+    _beginStopBeat() {
+        const walking = this.motionScale > 0 && this.animState === 'walk';
+        const frame = this.frame;
+        this._resetWalkCycle();
+        if (!walking) return;
+        this.frame = nearestContactFrame(frame);
+        this.walkFrame = this.frame;
+        this.animState = 'walk';
+        this._stopBeatMs = STOP_BEAT_MS;
     }
 
     /** Start chat (called from IsometricRenderer) */
@@ -2496,6 +2925,16 @@ export class AgentSprite {
         this._zoom = zoom;
 
         if (this.isArrivalPending()) return;
+
+        // V7 — the one placement value of this frame (snapBodyPx). The body
+        // (Canvas and GPU record), crowd LOD, impostors, ground marks, x-ray,
+        // body box, hit test and every head or name anchor read it, so no
+        // per-agent layer detaches by a sub-texel from the body.
+        const placeDpr = Number(ctx?.canvas?._claudeVilleDpr) || 1;
+        const placeMoving = bodyPlacementMoving(this);
+        this._placeDpr = placeDpr;
+        this._placeX = snapBodyPx(this.x, placeMoving, zoom, placeDpr);
+        this._placeY = snapBodyPx(this.y, placeMoving, zoom, placeDpr);
 
         // Archive fade. The renderer sets `_archiveAnim = { startedAt }` on
         // agent:removed and disposes the sprite when progress >= 1; our job is
@@ -2609,24 +3048,25 @@ export class AgentSprite {
 
         this._syncGpuEquippedSheet(identity, profileKey);
 
-        // Ensure animState reflects current movement (idle when not moving).
-        // Lingering departures hold a finished resting frame even if stale
-        // movement state remains on the projected agent.
-        this.animState = departedTableau(this)
-            ? 'idle'
-            : this.moving && this.motionScale > 0 ? 'walk' : 'idle';
+        // The update loop owns the body's pose (walk, stop beat, idle);
+        // lingering departures and reduced motion hold a resting idle frame
+        // even if stale movement state remains on the projected agent.
+        if (departedTableau(this) || this.motionScale <= 0) this.animState = 'idle';
 
         // Plan 2.7 — crowd-pressure GPU bodies sample the baked 0.5x LOD sheet
         // at world scale 1, so they stay on the world's texel grid instead of
         // a fractional nearest minification. Selected, hovered and
-        // action-needed agents never take this branch and stay 1:1.
+        // action-needed agents never take this branch and stay 1:1. V7 — the
+        // LOD cell stands on the same per-direction foot anchor as the 1:1
+        // body; its own bounds only size the body box.
         if (budgetMode) {
             const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
             const bounds = this._getCellContentBounds(cell);
-            const drawX = Math.round(this.x);
-            const drawY = Math.round(this.y);
-            const dx = drawX - Math.round((bounds.minX + bounds.maxX) * CROWD_LOD_SCALE / 2);
-            const dy = drawY + 2 - Math.floor(bounds.maxY * CROWD_LOD_SCALE);
+            const anchor = this._stableFootAnchor(this.direction);
+            const drawX = this._placeX;
+            const drawY = this._placeY;
+            const dx = drawX - Math.round(anchor.cx2 * CROWD_LOD_SCALE / 2);
+            const dy = drawY + 2 - Math.floor(anchor.maxY * CROWD_LOD_SCALE);
             const contentTopY = dy + Math.floor(bounds.minY * CROWD_LOD_SCALE);
             this._setBodyBox(
                 drawX,
@@ -2716,6 +3156,9 @@ export class AgentSprite {
             source: pose ? 'strip' : 'sheet',
             group: pose ? pose.group : null,
             canvas: bodySource,
+            // Where this cell was laid out (world texels); the x-ray re-blits it.
+            dx: 0,
+            dy: 0,
         };
         const cellSize = this.spriteSheet?.cellSize || 92;
         const bounds = this._getCellContentBounds(cell);
@@ -2752,17 +3195,21 @@ export class AgentSprite {
                 this._handoffAckStart = 0;
             }
         }
-        // Plan 2.1 / C3 — scale 1 and whole world texels, the same grid the
-        // buildings and terrain blit on (a fractional anchor would sit the body
-        // half an art pixel off the ground at zoom 2).
-        const drawX = Math.round(this.x);
-        const drawY = Math.round(this.y);
+        // V7 — every cell of this facing (walk, idle, action strip, GPU
+        // record) stands on one foot anchor at the frame's placement, so arm
+        // swing or a lifted foot never shifts the whole body. The per-frame
+        // bounds only size the body box, labels and hit test.
+        const anchor = this._stableFootAnchor(this.direction);
+        const drawX = this._placeX;
+        const drawY = this._placeY;
         // #36 — context-strain tremble: a tiny ±1px horizontal shiver once the
         // context window is nearly full (ratio >= 0.85), so the body language
         // reads as strain. Reduced motion (motionScale 0) skips the shiver.
         const trembleX = this._contextStrainTremble();
-        const dx = drawX - Math.round((bounds.minX + bounds.maxX) / 2) + trembleX;
-        const dy = drawY - bounds.maxY + 2 + bobY + ackBobY;
+        const dx = drawX - Math.round(anchor.cx2 / 2) + trembleX;
+        const dy = drawY - anchor.maxY + 2 + bobY + ackBobY;
+        this._poseCell.dx = dx;
+        this._poseCell.dy = dy;
         const contentTopY = dy + bounds.minY;
         this._setBodyBox(drawX, drawY, dx + bounds.minX, contentTopY, dx + bounds.maxX + 1, dy + bounds.maxY + 1);
         // Plan 2.3 — one contact shadow, plus a ring only when it means
@@ -2845,22 +3292,27 @@ export class AgentSprite {
         if (this.selected && !this.gpuWorldEnabled) this._drawSelectionChevron(ctx, contentTopY);
 
         // Everything anchored over the head clears the chevron, so no label
-        // ever crosses the body.
-        const labelTopY = this._labelTopY(contentTopY);
-        if (this.chatting && !departedTableau(this)) {
-            this._drawChatEffect(ctx, labelTopY);
-        } else if (!departedTableau(this)) {
-            this._drawStatus(ctx, labelTopY);
+        // ever crosses the body. On the resident backend the ungraded overlay
+        // (AgentGpuOverlayRenderer.draw) is the one owner of the chat bubble,
+        // status chip, emote, plan and retry glyphs and name plate; striking
+        // them here too drew each twice per frame.
+        if (!this.gpuWorldEnabled) {
+            const labelTopY = this._labelTopY(contentTopY);
+            if (this.chatting && !departedTableau(this)) {
+                this._drawChatEffect(ctx, labelTopY);
+            } else if (!departedTableau(this)) {
+                this._drawStatus(ctx, labelTopY);
+            }
+            if (!departedTableau(this)) this._drawStatusEmote(ctx, labelTopY);
+            // Plan-mode and retry glyphs sit above the silhouette. The status
+            // emote (kind != null) wins the slot; otherwise plan-mode glyph
+            // renders slightly higher. Retry glyph renders to the right.
+            if (!departedTableau(this)) {
+                this._drawPlanModeGlyph(ctx, labelTopY);
+                this._drawRetryGlyph(ctx, labelTopY);
+            }
+            this._drawNameTag(ctx);
         }
-        if (!departedTableau(this)) this._drawStatusEmote(ctx, labelTopY);
-        // Plan-mode and retry glyphs sit above the silhouette. The status
-        // emote (kind != null) wins the slot; otherwise plan-mode glyph renders
-        // slightly higher. Retry glyph renders to the right.
-        if (!departedTableau(this)) {
-            this._drawPlanModeGlyph(ctx, labelTopY);
-            this._drawRetryGlyph(ctx, labelTopY);
-        }
-        this._drawNameTag(ctx);
 
         // Sparkle flash during the first 200 ms of the archive fade.
         // Reduced-motion skips entirely; otherwise we draw a brief radial puff
@@ -3088,7 +3540,10 @@ export class AgentSprite {
         if (beat === this._strainSweatBeat) return;
         this._strainSweatBeat = beat;
         // Bead off the temple (slightly off-centre, just under the head top).
-        particleSystem.spawn('sweatDrop', this.x + 4, this._headTopY() + 8, 1, { spread: 1.5 });
+        particleSystem.spawn('sweatDrop', this.x + 4, this._headTopY() + 8, 1, {
+            spread: 1.5,
+            sortY: this._depthSortY ?? this.y,
+        });
     }
 
     // Plan 2.1 — records the body laid out this frame, relative to the feet
@@ -3118,10 +3573,11 @@ export class AgentSprite {
     // Plan 2.3 — the ground mark set both backends paint: one contact shadow,
     // a status ring only for waiting-on-you / errored / rate-limited, and the
     // selection or hover ring. Working and idle villagers get the shadow alone.
+    // V7 — laid out at the body's own placement, so they never part from it.
     _layoutGroundMarks(contentWidth) {
         this._groundMarks = resolveGroundMarks({
-            x: this.x,
-            y: this.y,
+            x: this._placeX,
+            y: this._placeY,
             contentWidth,
             status: departedTableau(this) ? null : this.agent?.status,
             selected: this.selected,
@@ -3137,7 +3593,7 @@ export class AgentSprite {
     // holds still under reduced motion.
     _drawSelectionChevron(ctx, contentTopY) {
         const lift = pulseBand01Frame('selection', this.statusAnim * 20, this.motionScale) > 0.5 ? 1 : 0;
-        drawSelectionChevron(ctx, this.x, contentTopY, this._zoom || 1, this.motionScale > 0 ? lift : 0);
+        drawSelectionChevron(ctx, this._placeX, contentTopY, this._zoom || 1, this.motionScale > 0 ? lift : 0);
     }
 
     // Top edge for head-anchored labels (bubbles, emotes, glyphs). The
@@ -3146,29 +3602,25 @@ export class AgentSprite {
         return this.selected ? contentTopY - selectionChevronClearance(this._zoom || 1) - 1 : contentTopY;
     }
 
-    // X-ray pass: blits the current animation cell with alpha so a selected
-    // agent stays visible behind a building's front-half. Avoids the full-
-    // sprite-sheet blit that drawing via SpriteRenderer.drawSilhouette would
-    // produce against multi-direction agent sheets.
+    // X-ray pass: re-blits the body cell exactly as this frame laid it out
+    // (same pose, same V7 placement) with alpha, so a selected agent stays
+    // visible behind a building's front-half. Avoids the full-sprite-sheet
+    // blit that drawing via SpriteRenderer.drawSilhouette would produce
+    // against multi-direction agent sheets.
     drawXraySilhouette(ctx) {
         return this.withBridgeLift(() => this._drawXraySilhouetteAtScreenPosition(ctx));
     }
 
     _drawXraySilhouetteAtScreenPosition(ctx) {
-        if (!this.spriteCanvas || !this.spriteSheet) return;
-        const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
-        const bounds = this._getCellContentBounds(cell);
-        const drawX = Math.round(this.x);
-        const drawY = Math.round(this.y);
-        const dx = drawX - Math.round((bounds.minX + bounds.maxX) / 2);
-        const dy = drawY - bounds.maxY + 2;
+        const body = this._poseCell;
+        if (!this.spriteCanvas || !body?.canvas) return;
         ctx.save();
         ctx.imageSmoothingEnabled = false;
         ctx.globalAlpha = 0.65;
         ctx.drawImage(
-            this.spriteCanvas,
-            cell.sx, cell.sy, cell.sw, cell.sh,
-            dx, dy, cell.sw, cell.sh
+            body.canvas,
+            body.sx, body.sy, body.sw, body.sh,
+            body.dx, body.dy, body.sw, body.sh
         );
         ctx.restore();
     }
@@ -3387,6 +3839,28 @@ export class AgentSprite {
         const bounds = measureCellContentBounds(this.spriteCanvas, cell);
         this._cellBoundsCache.set(key, bounds);
         return bounds;
+    }
+
+    // V7 — the foot anchor of one facing: `cx2` (minX + maxX) of idle row 6
+    // and `maxY`, the lowest opaque row over all ten rows of that column. Every
+    // cell of the facing is placed by it, so the body shows the sway the
+    // artist drew and no more. Cached with the bounds (cleared per profile).
+    _stableFootAnchor(direction) {
+        const key = FOOT_ANCHOR_KEYS[direction] ?? `anchor:${direction}`;
+        const cached = this._cellBoundsCache.get(key);
+        if (cached) return cached;
+        const sheet = this.spriteSheet;
+        const idle = this._getCellContentBounds(sheet.cell('idle', direction, 0));
+        let maxY = idle.maxY;
+        for (let frame = 0; frame < WALK_FRAMES; frame++) {
+            maxY = Math.max(maxY, this._getCellContentBounds(sheet.cell('walk', direction, frame)).maxY);
+        }
+        for (let frame = 1; frame < IDLE_FRAMES; frame++) {
+            maxY = Math.max(maxY, this._getCellContentBounds(sheet.cell('idle', direction, frame)).maxY);
+        }
+        const anchor = { cx2: idle.minX + idle.maxX, maxY };
+        this._cellBoundsCache.set(key, anchor);
+        return anchor;
     }
 
     _statusVisual() {
@@ -4534,7 +5008,7 @@ export class AgentSprite {
     _drawBubbleDotMarker(ctx, accentColor, contentTopY = null) {
         ctx.save();
         const s = 1 / (this._zoom || 1);
-        ctx.translate(this.x, Number.isFinite(contentTopY) ? contentTopY : this.y);
+        ctx.translate(this._placeX, Number.isFinite(contentTopY) ? contentTopY : this._placeY);
         ctx.scale(s, s);
         const anchored = Number.isFinite(contentTopY);
         ctx.translate(0, anchored ? -18 : -50);
@@ -4559,7 +5033,7 @@ export class AgentSprite {
     _drawLongWaitClockBubble(ctx, accentColor, contentTopY = null, stackShift = 0) {
         ctx.save();
         const s = 1 / (this._zoom || 1);
-        ctx.translate(this.x, Number.isFinite(contentTopY) ? contentTopY : this.y);
+        ctx.translate(this._placeX, Number.isFinite(contentTopY) ? contentTopY : this._placeY);
         ctx.scale(s, s);
         const anchored = Number.isFinite(contentTopY);
         const bubbleW = anchored ? 22 : 28;
@@ -4609,7 +5083,7 @@ export class AgentSprite {
         ctx.save();
         const s = 1 / (this._zoom || 1); // inverse zoom correction
 
-        ctx.translate(this.x, Number.isFinite(contentTopY) ? contentTopY : this.y);
+        ctx.translate(this._placeX, Number.isFinite(contentTopY) ? contentTopY : this._placeY);
         ctx.scale(s, s); // fixed size in screen space
 
         // Measure text size and auto-truncate
@@ -4727,7 +5201,7 @@ export class AgentSprite {
         const s = 1 / (this._zoom || 1);
         const anchored = Number.isFinite(contentTopY);
         const maxWidth = anchored ? STATUS_BUBBLE_HISTORY_MAX_WIDTH.anchored : STATUS_BUBBLE_HISTORY_MAX_WIDTH.floating;
-        ctx.translate(this.x, Number.isFinite(contentTopY) ? contentTopY : this.y);
+        ctx.translate(this._placeX, Number.isFinite(contentTopY) ? contentTopY : this._placeY);
         ctx.scale(s, s);
         ctx.font = WORLD_BODY_FONT_11;
 
@@ -4859,7 +5333,7 @@ export class AgentSprite {
         if (this.decisionFocusMuted) return;
         ctx.save();
         const s = 1 / (this._zoom || 1);
-        ctx.translate(this.x, Number.isFinite(labelTopY) ? labelTopY : this._headTopY());
+        ctx.translate(this._placeX, Number.isFinite(labelTopY) ? labelTopY : this._headTopY());
         ctx.scale(s, s);
 
         // A conversation is always a message, not a tool invocation.
@@ -4947,7 +5421,7 @@ export class AgentSprite {
         const zoom = this._zoom || 1;
         const trim = this.selected ? LABEL_INK.gold : LABEL_INK.brass;
         ctx.save();
-        ctx.translate(this.x, this.y);
+        ctx.translate(this._placeX, this._placeY);
         ctx.scale(1 / zoom, 1 / zoom);
         ctx.shadowColor = 'transparent';
         ctx.font = WORLD_BODY_FONT_11;
@@ -4981,7 +5455,7 @@ export class AgentSprite {
         const color = this.readVerb ? WALNUT.text : LABEL_INK.text;
         const zoom = this._zoom || 1;
         ctx.save();
-        ctx.translate(this.x, this.y);
+        ctx.translate(this._placeX, this._placeY);
         ctx.scale(1 / zoom, 1 / zoom);
         ctx.shadowColor = 'transparent';
         ctx.font = WORLD_BODY_FONT_11;
@@ -5010,7 +5484,7 @@ export class AgentSprite {
         const building = memoizedToolClassification(tool, this.agent?.currentToolInput)?.building || null;
         const zoom = this._zoom || 1;
         ctx.save();
-        ctx.translate(this.x, this.y);
+        ctx.translate(this._placeX, this._placeY);
         ctx.scale(1 / zoom, 1 / zoom);
         drawToolGlyphBadge(ctx, {
             glyph: toolGlyphKey(tool, building),
@@ -5052,7 +5526,7 @@ export class AgentSprite {
         if (t >= 1) return;
         const visual = this._statusVisual();
         const color = visual?.color || '#f2d36b';
-        const headY = Number.isFinite(contentTopY) ? contentTopY + 12 : this.y - 36;
+        const headY = Number.isFinite(contentTopY) ? contentTopY + 12 : this._placeY - 36;
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
         ctx.globalAlpha *= (1 - t) * 0.85;
@@ -5062,7 +5536,7 @@ export class AgentSprite {
         for (let i = 0; i < 5; i++) {
             const angle = (i / 5) * Math.PI * 2 + t * 0.6;
             const r = baseRadius + ((i * 13) % 7);
-            const sx = this.x + Math.cos(angle) * r;
+            const sx = this._placeX + Math.cos(angle) * r;
             const sy = headY + Math.sin(angle) * r * 0.55;
             const size = 1.6 + (1 - t) * 1.2;
             ctx.beginPath();
@@ -5304,7 +5778,7 @@ export class AgentSprite {
         if (!kind) return;
         ctx.save();
         const s = 1 / (this._zoom || 1);
-        ctx.translate(this.x, contentTopY);
+        ctx.translate(this._placeX, contentTopY);
         ctx.scale(s, s);
         ctx.translate(0, -14);
         snapScreenOrigin(ctx);
@@ -5325,7 +5799,7 @@ export class AgentSprite {
         if (this._statusEmoteKind() || isAttentionStatus(this.agent?.status)) return;
         ctx.save();
         const s = 1 / (this._zoom || 1);
-        ctx.translate(this.x, contentTopY);
+        ctx.translate(this._placeX, contentTopY);
         ctx.scale(s, s);
         ctx.translate(0, -22);
         const box = 8;
@@ -5349,7 +5823,7 @@ export class AgentSprite {
         if (!this.behavior?.isRetryGlyphActive?.()) return;
         ctx.save();
         const s = 1 / (this._zoom || 1);
-        ctx.translate(this.x, contentTopY);
+        ctx.translate(this._placeX, contentTopY);
         ctx.scale(s, s);
         // Offset right so it doesn't collide with the emote stack.
         ctx.translate(12, -14);
@@ -5469,7 +5943,7 @@ export class AgentSprite {
         const beat = Math.floor((Date.now() + offset) / period);
         if (beat === this._moodMoteBeat) return;
         this._moodMoteBeat = beat;
-        particleSystem.spawn(preset, this.x, this._headTopY() + dy, 1);
+        particleSystem.spawn(preset, this.x, this._headTopY() + dy, 1, { sortY: this._depthSortY ?? this.y });
     }
 
     // #34 — token-flow motes. While the villager is WORKING and parked, recent
@@ -5535,7 +6009,7 @@ export class AgentSprite {
             spread: 4,
             windX: driftX,
             driftY,
-            layer: 'effects',
+            sortY: this._depthSortY ?? this.y,
         });
     }
 
@@ -5565,7 +6039,7 @@ export class AgentSprite {
         const storming = this._isStorming();
         if (this._stormingLast && !storming && this.motionScale > 0 && particleSystem) {
             this._reliefSparkAt = Date.now();
-            particleSystem.spawn('distressRelief', this.x, this._headTopY() + 8, 7);
+            particleSystem.spawn('distressRelief', this.x, this._headTopY() + 8, 7, { sortY: this._depthSortY ?? this.y });
         }
         this._stormingLast = storming;
     }
@@ -5650,7 +6124,7 @@ export class AgentSprite {
         if (gate && !gate.draw) return;
         ctx.save();
         const box = this._bodyBox || DEFAULT_BODY_BOX;
-        ctx.translate(Math.round(this.x + box.right + 6), Math.round(this.y + box.top + 12));
+        ctx.translate(this._placeX + box.right + 6, this._placeY + box.top + 12);
         ctx.scale(1 / (this._zoom || 1), 1 / (this._zoom || 1));
         ctx.globalAlpha *= gate?.alpha ?? 1;
         drawEventShape(ctx, 'stale-seal', -8, -8, 1, '#d4c9ae');
@@ -5697,7 +6171,7 @@ export class AgentSprite {
         if (gate && !gate.draw) return;
         ctx.save();
         const box = this._bodyBox || DEFAULT_BODY_BOX;
-        ctx.translate(Math.round(this.x + box.right + 8), Math.round(this.y + box.bottom - 14));
+        ctx.translate(this._placeX + box.right + 8, this._placeY + box.bottom - 14);
         ctx.scale(1 / (this._zoom || 1), 1 / (this._zoom || 1));
         ctx.fillStyle = '#e7d3a0';
         if (emphasized) {
@@ -5727,6 +6201,18 @@ export class AgentSprite {
         if (!['claude', 'codex'].includes(provider) || this.moving) return;
         const action = resolveAgentAction(this.agent, { chatting: this.chatting });
         if (!action) return;
+        // SM-7 — one chip per body: a chatting body already wears the message
+        // bubble over its head, so the TALK scroll prop would be a second one.
+        // A muted chatter (decision focus elsewhere) shows the prop instead,
+        // unless its partner, standing against it, still wears the bubble:
+        // the overlapping pair would read as one body with two chips. When
+        // both are muted, only the lower id of the pair keeps the prop.
+        if (action === AgentAction.TALK && this.chatting) {
+            if (!this.decisionFocusMuted) return;
+            const partner = this.chatPartner;
+            if (partner?.chatting && !partner.decisionFocusMuted) return;
+            if (partner?.chatting && String(partner.agent?.id) < String(this.agent?.id)) return;
+        }
         // 2.2 — the authored body already holds the book: one instrument per
         // fact, so the procedural read prop is removed for strip characters.
         if (poseGroup === 'read' && action === AgentAction.READ) return;
@@ -5971,7 +6457,7 @@ export class AgentSprite {
         const args = this._impostorStampArgs();
         const z = zoom > 0 ? zoom : 1;
         ctx.save();
-        ctx.translate(this.x, this.y);
+        ctx.translate(this._placeX, this._placeY);
         ctx.scale(1 / z, 1 / z);
         snapScreenOrigin(ctx);
         const paint = (target) => this._paintImpostorStamp(target, args);
@@ -5989,7 +6475,7 @@ export class AgentSprite {
     _drawBudgetImpostor(ctx) {
         const args = this._impostorStampArgs();
         ctx.save();
-        ctx.translate(Math.round(this.x), Math.round(this.y));
+        ctx.translate(this._placeX, this._placeY);
         const paint = (target) => this._paintImpostorStamp(target, args);
         if (this.gpuWorldEnabled) {
             const key = `impostor-budget|${args.provider}|${args.trim}|${args.signature.key}|${args.accent}|${args.statusColor}`;
@@ -6025,8 +6511,12 @@ export class AgentSprite {
     hitTest(screenX, screenY) {
         if (this.isArrivalPending()) return false;
         const box = this._bodyBox || DEFAULT_BODY_BOX;
-        const dx = screenX - this.x;
-        const dy = screenY - (this.y - this._currentBridgeLift());
+        // V7 — test against the placement the body is drawn at (bridge lift
+        // included), recomputed from the current position.
+        const moving = bodyPlacementMoving(this);
+        const zoom = this._zoom || 1;
+        const dx = screenX - snapBodyPx(this.x, moving, zoom, this._placeDpr || 1);
+        const dy = screenY - snapBodyPx(this.y - this._currentBridgeLift(), moving, zoom, this._placeDpr || 1);
         return dx > box.left - HIT_PAD && dx < box.right + HIT_PAD
             && dy > box.top - HIT_PAD && dy < Math.max(box.bottom, 4) + HIT_PAD;
     }

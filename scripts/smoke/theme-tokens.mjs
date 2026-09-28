@@ -326,7 +326,6 @@ function run() {
     check('topbar text declarations meet 4.5:1 on the bar, wells and hover plates', () => {
         const selectors = [
             '.topbar__sound-btn',
-            '.topbar__cinema-btn',
             '.topbar__seg-stat--muted .topbar__stat-value',
             '.topbar__uptime',
             '.topbar__stat-rate',

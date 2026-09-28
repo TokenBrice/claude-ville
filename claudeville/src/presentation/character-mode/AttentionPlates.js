@@ -32,7 +32,7 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { waitAnchor } from '../../domain/services/SignalLedger.js';
 import { STATUS_VISUALS, WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
-import { formatElapsed } from '../shared/Formatters.js';
+import { elapsedTickNow, formatElapsed } from '../shared/Formatters.js';
 import { LABEL_INK, drawOutlinedMotif, fitLabelText, measureLabelText } from './WorldLabelKit.js';
 
 export const ATTENTION_STATUSES = Object.freeze([
@@ -44,7 +44,7 @@ export const ATTENTION_STATUSES = Object.freeze([
 const KIND = Object.freeze({
     [AgentStatus.WAITING_ON_USER]: { word: 'NEEDS YOU', motif: 'needs-you', color: STATUS_VISUALS.waiting_on_user.color, rank: 1 },
     [AgentStatus.ERRORED]: { word: 'ERROR', motif: 'alert', color: STATUS_VISUALS.errored.color, rank: 0 },
-    [AgentStatus.RATE_LIMITED]: { word: 'LIMIT', motif: 'turn-sand', color: STATUS_VISUALS.rate_limited.color, rank: 2 },
+    [AgentStatus.RATE_LIMITED]: { word: 'LIMIT', motif: 'limit-gate', color: STATUS_VISUALS.rate_limited.color, rank: 2 },
 });
 
 const BEACON_STEP = 2;
@@ -98,6 +98,9 @@ function statusSince(sprite) {
     return Number.isFinite(since) && since > 0 ? since : null;
 }
 
+// Ages format from the shared 1 Hz tick (`elapsedTickNow`), the same clock
+// the sidebar and the call card patch from, so a plate never reads a second
+// ahead of the card beside it.
 function ageText(since, now) {
     return since ? formatElapsed(Math.max(0, now - since)) : '';
 }
@@ -119,11 +122,15 @@ function plateWidths(ctx, word, text) {
  * would not be fully in view is not clamped onto the frame: it gets an edge
  * plate docked on the side it lies beyond, with an arrow pointing there.
  * Edge plates on one side that would collide merge into one exact group.
+ * V8 — `reserved` rects (chrome over the world, e.g. the World dock, in the
+ * same canvas CSS px) are occluded screen: a beacon under one counts as
+ * beyond the top edge, and no plate rect ever intersects one.
  * @returns {{ plates: object[], beacons: object[], count: number, offscreen: number }}
  */
-export function layoutAttentionPlates(ctx, { sprites, camera, viewport, now = Date.now() } = {}) {
+export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved = null, now = elapsedTickNow() } = {}) {
     const layout = { plates: [], beacons: [], count: 0, offscreen: 0 };
     if (!ctx || !camera?.worldToScreen || !viewport?.width) return layout;
+    if (reserved?.length) viewport = { ...viewport, reserved };
     const items = [];
     const edgeItems = [];
     for (const sprite of sprites || []) {
@@ -298,7 +305,8 @@ function leaderLength(plate) {
 }
 
 // The side of the frame an agent lies beyond, or null when its whole beacon
-// is in view. The largest overshoot wins at corners.
+// is in view. The largest overshoot wins at corners. A beacon under reserved
+// chrome is not in view either: it docks on the top edge, below the chrome.
 function offscreenSide(beacon, headY, viewport) {
     const over = {
         top: -beacon.top,
@@ -314,6 +322,7 @@ function offscreenSide(beacon, headY, viewport) {
             side = key;
         }
     }
+    if (!side && viewport.reserved?.some(rect => rectsOverlap(beacon, rect, 0))) side = 'top';
     return side;
 }
 
@@ -321,21 +330,36 @@ function clampNumber(value, min, max) {
     return Math.max(min, Math.min(Math.max(min, max), value));
 }
 
+// Move a plate rect off every reserved rect it touches: below chrome that
+// hangs in the upper half of the frame, above chrome in the lower half.
+function clearReserved(rect, viewport) {
+    for (const chrome of viewport.reserved || []) {
+        if (!rectsOverlap(rect, chrome, 2)) continue;
+        const height = rect.bottom - rect.top;
+        const top = (chrome.top + chrome.bottom) / 2 < viewport.height / 2
+            ? chrome.bottom + EDGE_MARGIN
+            : chrome.top - EDGE_MARGIN - height;
+        rect = { ...rect, top, bottom: top + height };
+    }
+    return rect;
+}
+
 // Plate rect docked on `side`, centred on the agent's projection along that
-// edge. Side plates keep clear of the top/bottom bands and the caption band.
+// edge. Side plates keep clear of the top/bottom bands, the caption band and
+// reserved chrome.
 function edgeRect(side, x, y, width, viewport) {
     const W = viewport.width;
     const H = viewport.height;
     if (side === 'top' || side === 'bottom') {
         const left = clampNumber(Math.round(x - width / 2), EDGE_MARGIN, W - EDGE_MARGIN - width);
         const top = side === 'top' ? EDGE_MARGIN : H - CAPTION_CLEAR - PLATE_H;
-        return { left, top, right: left + width, bottom: top + PLATE_H };
+        return clearReserved({ left, top, right: left + width, bottom: top + PLATE_H }, viewport);
     }
     const bandTop = EDGE_MARGIN + PLATE_H + 4;
     const bandBottom = H - CAPTION_CLEAR - PLATE_H - 4;
     const top = clampNumber(Math.round(y) - Math.floor(PLATE_H / 2), bandTop, bandBottom - PLATE_H);
     const left = side === 'left' ? EDGE_MARGIN : W - EDGE_MARGIN - width;
-    return { left, top, right: left + width, bottom: top + PLATE_H };
+    return clearReserved({ left, top, right: left + width, bottom: top + PLATE_H }, viewport);
 }
 
 // An edge plate carries its direction inside the status cell — an arrow in
@@ -399,9 +423,9 @@ function layoutEdgePlates(ctx, edgeItems, viewport, now, byAge) {
             const rect = sidePlates[i].rect;
             if (!rectsOverlap(prev, rect, 4)) continue;
             const shift = horizontal ? prev.right + 4 - rect.left : prev.bottom + 4 - rect.top;
-            sidePlates[i].rect = horizontal
+            sidePlates[i].rect = clearReserved(horizontal
                 ? { ...rect, left: rect.left + shift, right: rect.right + shift }
-                : { ...rect, top: rect.top + shift, bottom: rect.bottom + shift };
+                : { ...rect, top: rect.top + shift, bottom: rect.bottom + shift }, viewport);
         }
         plates.push(...sidePlates);
     }
@@ -490,7 +514,7 @@ function clampRect(rect, viewport) {
     const height = rect.bottom - rect.top;
     const left = Math.max(EDGE_MARGIN, Math.min(viewport.width - EDGE_MARGIN - width, rect.left));
     const top = Math.max(EDGE_MARGIN, Math.min(viewport.height - EDGE_MARGIN - height - NOTCH_ROWS, rect.top));
-    return { left, top, right: left + width, bottom: top + height };
+    return clearReserved({ left, top, right: left + width, bottom: top + height }, viewport);
 }
 
 // Screen rects of every plate and beacon, for plaque/name reservations.

@@ -2,7 +2,8 @@
 // noise field the resident composite samples (GpuWorldPolicy
 // `buildCloudShadowTile`). The field is cut into three dithered courses into
 // a cached multiply pattern (two world px per texel), laid over the terrain in
-// world space and drifted by the wind; reduced motion freezes the offset.
+// world space and drifted by the one wind (Wind.js `cloudCourseDrift`, the
+// integrator the composite reads too); reduced motion freezes the offset.
 // Clear days cover ~15 % of the ground, partly cloudy ~35 %, overcast/rain
 // none (the C2 grade flattens instead), and nothing at night.
 
@@ -11,6 +12,7 @@ import {
     CLOUD_TILE_SIZE,
     CLOUD_TILE_WORLD_SCALE,
 } from './gpu/GpuWorldPolicy.js';
+import { cloudCourseDrift } from './Wind.js';
 
 const WORLD_PX_PER_TEXEL = 2;
 const PERIOD = CLOUD_TILE_SIZE * CLOUD_TILE_WORLD_SCALE;
@@ -95,11 +97,9 @@ export function drawCloudShadowCourses(ctx, { atmosphere = null, diamond = null,
     const tile = courseCanvas(covered, 0.085 * strength);
     const pattern = ctx.createPattern(tile, 'repeat');
     if (!pattern) return false;
-    const windX = Math.max(-1.4, Math.min(1.4, Number(atmosphere?.motion?.windX ?? atmosphere?.weather?.windX) || 0)) || 0.6;
-    const seconds = reducedMotion ? 0 : (Number(timeMs) || 0) / 1000;
-    // Same drift as the resident composite: ~6 world px/s along the wind.
-    const driftX = ((-windX * 6 * seconds) % PERIOD + PERIOD) % PERIOD;
-    const driftY = ((-Math.abs(windX) * 2 * seconds) % PERIOD + PERIOD) % PERIOD;
+    const drift = cloudCourseDrift(reducedMotion ? null : (Number(timeMs) || 0), atmosphere?.weather);
+    const driftX = ((-drift.x % PERIOD) + PERIOD) % PERIOD;
+    const driftY = ((-drift.y % PERIOD) + PERIOD) % PERIOD;
     pattern.setTransform?.(new DOMMatrix([
         WORLD_PX_PER_TEXEL, 0, 0, WORLD_PX_PER_TEXEL,
         -Math.round(driftX), -Math.round(driftY),

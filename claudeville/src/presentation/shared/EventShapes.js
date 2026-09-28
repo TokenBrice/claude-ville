@@ -33,6 +33,12 @@ const motifs = {
     // glyph badge drew with anti-aliased strokes.
     'needs-you': ['00011000','00111100','01111110','01111110','01111110','11111111','00000000','00011000'],
     'alert': ['00111100','00111100','00111100','00111100','00011000','00000000','00011000','00011000'],
+    // SM-7 — RATE_LIMITED: a closed portcullis under a crenellated lintel —
+    // a full-width lattice of bars and crossbars whose bars run on past the
+    // last crossbar as teeth — so `turn-sand` means elapsed time only. Wide,
+    // square and latticed on purpose: nothing like the narrow solid
+    // `district-watchtower`.
+    'limit-gate': ['11010110','11111110','10101010','11111110','10101010','11111110','10101010','10101010'],
     'globe': ['00111100','01011010','10011001','11111111','10011001','01011010','00111100','00000000'],
     'pick': ['01111000','10000110','00001100','00011010','00110001','01100000','11000000','10000000'],
     'anchor': ['00011000','00011000','01111110','00011000','00011000','10011001','01011010','00111100'],

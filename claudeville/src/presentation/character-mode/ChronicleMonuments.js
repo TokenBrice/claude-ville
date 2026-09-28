@@ -15,7 +15,6 @@ import {
     releaseMajorMoment,
     streak,
     successGrammarDeferred,
-    suppressHarborGulls,
 } from './EffectStamps.js';
 import { repoProfile } from '../shared/RepoColor.js';
 import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
@@ -272,6 +271,8 @@ export class ChronicleMonuments {
                 speed: [0.06, 0.2],
                 alpha: [0.3, 0.55],
                 spread: [8, 12],
+                // 0.6 — just in front of the monument (drawable sortY y + 18).
+                sortY: world.y + 19,
             });
         }
     }
@@ -743,7 +744,6 @@ export class ChronicleMonuments {
             }
             state.startedAt = now;
             state.reduced = reduced;
-            suppressHarborGulls((reduced ? 0 : RELEASE_CROWN.active) + RELEASE_CROWN.residue);
         }
         const phase = momentPhase(now - state.startedAt, RELEASE_CROWN, { reduced: state.reduced });
         if (phase.phase === 'done') {

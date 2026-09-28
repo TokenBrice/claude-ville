@@ -5,8 +5,9 @@
  *   - `deriveAgentMood`: per-agent mood from errors, wait age, context
  *     pressure, commit/push streaks, and token spend.
  *   - `modelBehaviorProfile`: model/effort → stable presentation behavior.
- *   - `deriveWeatherInfluence`: village-level event-influence input for
- *     weather (error spikes raise storminess, commit streaks clear skies).
+ *
+ * Mood is an agent's own presentation; it never reaches the environment
+ * (weather, sky, fog, wind, sea or grade — V3).
  *
  * The temporal bookkeeping (token-rate sampling, error/push timestamps)
  * is owned by `application/MoodService.js`; this module stays stateless
@@ -138,15 +139,6 @@ export const MOOD_TUNING = {
     minIntensity: 0.2,
 };
 
-export const INFLUENCE_TUNING = {
-    // Rolling windows for village-level event counting.
-    errorWindowMs: 10 * 60_000,
-    pushWindowMs: 15 * 60_000,
-    // Event counts that saturate the respective influence channel.
-    errorsForFullStorm: 4,
-    pushesForFullClearing: 5,
-};
-
 function clamp01(value) {
     const n = Number(value);
     if (!Number.isFinite(n)) return 0;
@@ -245,53 +237,4 @@ export function deriveAgentMood(inputs = {}, now = Date.now()) {
         }
     }
     return normalizeMood(null);
-}
-
-/**
- * Derive the village-level event influence on weather.
- *
- * @param {object} inputs
- * @param {number[]} inputs.errorTimestamps  ms timestamps of recent error episodes
- * @param {number[]} inputs.pushTimestamps   ms timestamps of recent successful commits/pushes
- * @param {Array<{type: string}>} inputs.moods  current per-agent moods
- * @param {number} now
- * @returns {{
- *   storminess: number,  // 0..1, raises cloud cover / precipitation
- *   clearing: number,    // 0..1, pulls weather toward clear skies
- *   bias: number,        // clearing - storminess, -1..1
- *   signals: { recentErrors: number, recentPushes: number,
- *              distressedAgents: number, proudAgents: number, agentCount: number },
- *   updatedAt: number,
- * }}
- */
-export function deriveWeatherInfluence(inputs = {}, now = Date.now()) {
-    const errorTimestamps = Array.isArray(inputs.errorTimestamps) ? inputs.errorTimestamps : [];
-    const pushTimestamps = Array.isArray(inputs.pushTimestamps) ? inputs.pushTimestamps : [];
-    const moods = Array.isArray(inputs.moods) ? inputs.moods : [];
-
-    const errorCutoff = now - INFLUENCE_TUNING.errorWindowMs;
-    const pushCutoff = now - INFLUENCE_TUNING.pushWindowMs;
-    const recentErrors = errorTimestamps.filter(ts => ts >= errorCutoff && ts <= now).length;
-    const recentPushes = pushTimestamps.filter(ts => ts >= pushCutoff && ts <= now).length;
-
-    const agentCount = moods.length;
-    const distressedAgents = moods.filter(mood => mood?.type === Mood.DISTRESSED).length;
-    const proudAgents = moods.filter(mood => mood?.type === Mood.PROUD).length;
-    const distressedShare = agentCount ? distressedAgents / agentCount : 0;
-    const proudShare = agentCount ? proudAgents / agentCount : 0;
-
-    const storminess = clamp01(
-        recentErrors / INFLUENCE_TUNING.errorsForFullStorm * 0.7 + distressedShare * 0.5,
-    );
-    const clearing = clamp01(
-        recentPushes / INFLUENCE_TUNING.pushesForFullClearing * 0.7 + proudShare * 0.5,
-    );
-
-    return {
-        storminess,
-        clearing,
-        bias: clearing - storminess,
-        signals: { recentErrors, recentPushes, distressedAgents, proudAgents, agentCount },
-        updatedAt: now,
-    };
 }

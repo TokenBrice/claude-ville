@@ -1,9 +1,10 @@
-/* ─── Agent sidebar (plan 7.5, 0.4, 0.6; contract C5) ───────────────
+/* ─── Agent sidebar (plan 7.5, 0.4, 0.6, 9.3; contract C5) ─────────
    One flat bg-1 column with a 1px lit bevel + 1px black seam against the
-   world. Rows sit on a 16px rhythm: `8px dot | name / sub | age`, 44px tall.
-   Colour on text is status only (waiting-on-you / errored sub-lines);
-   repo identity lives on the 3px row rail and the 8x8 group swatch; gold
-   marks the selected row and nothing else. */
+   world. Rows sit on a 16px rhythm: `32px bust | name / sub | age`, 44px
+   tall, the status an 8px pip on the bust's corner. Colour on text is
+   status only (waiting-on-you / errored sub-lines); repo identity lives on
+   the 3px row rail and the 8x8 group swatch; gold marks the selected row
+   and nothing else. */
 
 .sidebar {
     width: 240px;
@@ -49,15 +50,16 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* Attention shelf: the exception list keeps a status rail, not a band. The
-   rail and heading wear the first lit bucket (needs-you, error, limit). */
+/* Attention shelf: the exception list wears the frame kit's attn slice
+   (`cv-frame cv-frame--attn[-error|-limit]` from its lead bucket, set by
+   Sidebar.js), the same frame as the call card and the lit slot, so the
+   frame is its 3 px border and face. The heading wears the lead's hue. */
 .attention-shelf {
     --shelf-hue: var(--cv-status-waiting-user);
     flex: 0 0 auto;
-    padding: 8px 12px 8px 13px;
-    border-bottom: 1px solid var(--line-1);
-    border-left: 3px solid var(--shelf-hue);
-    background: var(--bg-2);
+    /* 4 + 3 + 9: names start at 16 and ages end at 224, like the rows. */
+    margin: 8px 4px 4px;
+    padding: 5px 9px;
     color: var(--ink-1);
     font: var(--fs-body)/var(--lh-body) var(--font-body);
 }
@@ -69,7 +71,7 @@
 .attention-shelf__agent { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 0; text-align: left; color: var(--ink-1); background: none; border: 0; font: inherit; cursor: pointer; }
 .attention-shelf__agent:hover { color: var(--gold-hi); }
 .attention-shelf__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.attention-shelf__age { flex: 0 0 auto; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.attention-shelf__age { flex: 0 0 auto; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .attention-shelf__expand { margin-top: 4px; padding: 0 4px; background: var(--bg-0); color: var(--ink-2); border: 1px solid var(--line-2); font: inherit; cursor: pointer; }
 .attention-shelf button:focus-visible { outline: 1px solid var(--gold-hi); outline-offset: 1px; }
 .attention-shelf [hidden] { display: none; }
@@ -147,6 +149,7 @@
 
 /* ─── Agent row ─── */
 .sidebar__agent {
+    position: relative;
     display: flex;
     align-items: stretch;
     gap: 8px;
@@ -157,9 +160,12 @@
     contain: layout style;
 }
 
+/* `32px bust | name | age` over `bust | sub-line ...`: the sub-line runs
+   under the age, and the age column's right edge is the row's, so every
+   age ends on the same x. */
 .sidebar__agent-select {
     display: grid;
-    grid-template-columns: 8px minmax(0, 1fr) auto;
+    grid-template-columns: 32px minmax(0, 1fr) auto;
     column-gap: 8px;
     align-items: start;
     flex: 1;
@@ -178,9 +184,14 @@
     outline-offset: 2px;
 }
 
+/* A subagent's parent link takes the second line under the age; its sub-
+   line stops short of it and the age column widens to the link's 64px, so
+   the age's right edge does not move. */
 .sidebar__agent-parent {
-    flex: 0 1 64px;
-    align-self: start;
+    position: absolute;
+    top: 22px;
+    right: 16px;
+    max-width: 64px;
     min-width: 0;
     padding: 0;
     overflow: hidden;
@@ -193,6 +204,14 @@
     text-underline-offset: 2px;
     white-space: nowrap;
     cursor: pointer;
+}
+
+.sidebar__agent--child .sidebar__agent-age {
+    min-width: 64px;
+}
+
+.sidebar__agent--child .sidebar__agent-model:not(.sidebar__agent-match) {
+    grid-column: 2;
 }
 
 .sidebar__agent-parent:hover,
@@ -223,7 +242,8 @@
     color: var(--gold-hi);
 }
 
-/* 8x8 status square, centred on the 16px name line. */
+/* 8x8 status square. Harbor rows keep it centred on the 16px name line;
+   agent rows carry it as a pip on the bust's corner (below). */
 .sidebar__agent-dot {
     grid-column: 1;
     width: 8px;
@@ -231,6 +251,46 @@
     margin-top: 4px;
     background: var(--ink-4);
     flex-shrink: 0;
+}
+
+/* 9.3 — the bust: a 32px well with a 1px line-1 ring holding the 'sheet'
+   portrait canvas (64px backing store) at 32 CSS px, pixelated: the
+   authored 1x at DPR 1, native at DPR 2. */
+.sidebar__bust {
+    position: relative;
+    grid-column: 1;
+    grid-row: 1 / 3;
+    width: 32px;
+    height: 32px;
+    background: var(--bg-0);
+    box-shadow: 0 0 0 1px var(--line-1);
+}
+
+.sidebar__bust canvas {
+    display: block;
+    width: 32px;
+    height: 32px;
+    image-rendering: pixelated;
+}
+
+/* The pip sits on a 10px seam square, so its blink steps between the status
+   hue and a darker course over black, never a mix with portrait pixels. */
+.sidebar__bust::after {
+    content: '';
+    position: absolute;
+    right: -3px;
+    bottom: -3px;
+    width: 10px;
+    height: 10px;
+    background: var(--seam);
+}
+
+.sidebar__bust .sidebar__agent-dot {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    z-index: 1;
+    margin: 0;
 }
 
 .sidebar__agent-dot--working { background: var(--cv-status-working); }
@@ -266,13 +326,16 @@
     }
 }
 
+/* Name, sub-line and search context are grid items of the row itself. */
 .sidebar__agent-info {
-    grid-column: 2;
-    min-width: 0;
+    display: contents;
 }
 
 .sidebar__agent-name {
     display: block;
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     color: var(--ink-1);
     overflow: hidden;
@@ -282,11 +345,18 @@
 
 .sidebar__agent-model {
     display: block;
+    grid-column: 2 / -1;
+    grid-row: 2;
+    min-width: 0;
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     color: var(--ink-3);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.sidebar__agent-match {
+    grid-row: 3;
 }
 
 /* The sub-line takes status colour only when the agent needs action. */
@@ -296,6 +366,7 @@
 
 .sidebar__agent-age {
     grid-column: 3;
+    grid-row: 1;
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     color: var(--ink-3);
     font-variant-numeric: tabular-nums;
@@ -388,7 +459,9 @@
     cursor: default;
 }
 
+/* Harbor rows keep the 8px swatch column: no bust. */
 .sidebar__harbor-row .sidebar__agent-select {
+    grid-template-columns: 8px minmax(0, 1fr) auto;
     cursor: default;
 }
 

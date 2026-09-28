@@ -15,6 +15,8 @@
  * Pure: no DOM, no timers, no allocation beyond the caller's clock object.
  */
 
+import { snapRefreshRateHz } from './postfx/PostFxLadder.js';
+
 /** The reference frame duration the existing cadences were authored against. */
 export const REF_DT_MS = 1000 / 60;
 
@@ -61,9 +63,29 @@ export function dtAlpha(perFrameSmoothing, dtMs, refDtMs = REF_DT_MS) {
     return Math.min(1, 1 - Math.exp(-dt / tau));
 }
 
+/**
+ * V7 — frame gaps the stride latch reads: about half a second at 60 Hz.
+ * Gaps outside 2–100 ms (a stall, a paused tab) are not display intervals.
+ */
+const STRIDE_LATCH_SAMPLES = 31;
+const STRIDE_LATCH_MIN_GAP_MS = 2;
+const STRIDE_LATCH_MAX_GAP_MS = 100;
+
 /** A fresh clock. `virtualFrame` is derived, never independently advanced. */
 export function createMotionClock() {
-    return { elapsedMs: 0, virtualFrame: 0, lastDtMs: 0 };
+    return {
+        elapsedMs: 0,
+        virtualFrame: 0,
+        lastDtMs: 0,
+        // V7 — the stride clock's display-period latch (`latchStrideDt`).
+        periodMs: 0,
+        strideDtMs: 0,
+        strideGaps: new Float64Array(STRIDE_LATCH_SAMPLES),
+        strideGapScratch: new Float64Array(STRIDE_LATCH_SAMPLES),
+        strideGapCount: 0,
+        strideGapCursor: 0,
+        strideCarryMs: 0,
+    };
 }
 /**
  * Advance a clock by one frame.
@@ -74,20 +96,59 @@ export function createMotionClock() {
  * A fractional scale between 0 and 1 slows the clock proportionally, which
  * preserves the semantics of the per-frame accumulators this replaced (they
  * multiplied their step by `motionScale`). Returns the same object so callers
- * can chain without allocating.
+ * can chain without allocating. The same frame also latches the stride
+ * clock's dt (`strideDtMs`, see `latchStrideDt`).
  */
 export function advanceMotionClock(clock, dtMs, motionScale = 1) {
     if (!clock) return createMotionClock();
     const scale = Number(motionScale);
     if (!Number.isFinite(scale) || scale <= 0) {
         clock.lastDtMs = 0;
+        clock.strideDtMs = 0;
         return clock;
     }
     const dt = clampDt(dtMs) * Math.min(1, scale);
     clock.lastDtMs = dt;
     clock.elapsedMs += dt;
     clock.virtualFrame = virtualFramesFor(clock.elapsedMs);
+    clock.strideDtMs = latchStrideDt(clock, dtMs) * Math.min(1, scale);
     return clock;
+}
+
+/**
+ * V7 — the stride clock's dt for this frame, latched to the display period.
+ * Walkers travel a whole speed rung per 16.67 ms, so a raw dt carrying host
+ * jitter (a callback 5 ms late, then 5 ms early) moved a body by uneven steps
+ * and split steady walk-frame holds. The period is the median of the recent
+ * frame gaps, snapped to a display refresh rate; each frame then counts a
+ * whole number of periods: at least one (a presented frame always steps),
+ * and a second only once the owed time reaches 1.75 periods, so callback
+ * jitter never doubles a step while a real missed refresh still does. The
+ * remainder carries into the next frame (within one period), so the pace
+ * stays true over time. A clock without latch state returns the clamped dt.
+ */
+export function latchStrideDt(clock, dtMs) {
+    const dt = clampDt(dtMs);
+    const gaps = clock?.strideGaps;
+    if (dt === 0 || !gaps) return dt;
+    if (dt >= STRIDE_LATCH_MIN_GAP_MS && dt <= STRIDE_LATCH_MAX_GAP_MS) {
+        gaps[clock.strideGapCursor] = dt;
+        clock.strideGapCursor = (clock.strideGapCursor + 1) % gaps.length;
+        clock.strideGapCount = Math.min(gaps.length, clock.strideGapCount + 1);
+    }
+    const count = clock.strideGapCount;
+    if (count === 0) return dt;
+    const scratch = clock.strideGapScratch;
+    for (let index = 0; index < gaps.length; index++) {
+        scratch[index] = index < count ? gaps[index] : Infinity;
+    }
+    scratch.sort();
+    const period = 1000 / snapRefreshRateHz(1000 / scratch[(count - 1) >> 1]);
+    clock.periodMs = period;
+    const owed = dt + clock.strideCarryMs;
+    const refreshes = Math.max(1, Math.floor(owed / period + 0.25));
+    clock.strideCarryMs = Math.max(-period, Math.min(period, owed - refreshes * period));
+    return refreshes * period;
 }
 
 /** Elapsed milliseconds expressed as 60 Hz frames. */
@@ -105,31 +166,38 @@ export function msForVirtualFrames(frames) {
 }
 
 /**
- * Where the clock sits inside a repeating duty cycle, as 0..1.
- *
- * Used to express an authored on/off cadence in real time instead of update
- * counts. The idle stroller's "hold the frame for 6 ticks out of every 12"
- * becomes a 200 ms period with a 0.5 pause fraction.
+ * V7 — travel speed rungs, in world px per 16.67 ms. Each rung covers one
+ * 4.5 px walk frame of stride in a whole number of 60 Hz refreshes (3, 4, 5,
+ * 6, 8), so the distance-driven legs hold every frame for the same count at
+ * 60 and at 120 Hz: 20, 15, 12, 10 and 7.5 frames/s. Ascending.
  */
-export function dutyCyclePhase(elapsedMs, periodMs) {
-    const period = Number(periodMs);
-    if (!Number.isFinite(period) || period <= 0) return 0;
-    const ms = Number(elapsedMs);
-    if (!Number.isFinite(ms) || ms <= 0) return 0;
-    return (ms % period) / period;
+export const SPEED_RUNGS = Object.freeze([0.5625, 0.75, 0.9, 1.125, 1.5]);
+
+/** Index of the rung nearest `speed` by ratio (so ×1.2 and ÷1.2 weigh alike). */
+export function speedRungIndex(speed) {
+    const s = Number(speed);
+    if (!Number.isFinite(s) || s <= SPEED_RUNGS[0]) return 0;
+    const top = SPEED_RUNGS.length - 1;
+    if (s >= SPEED_RUNGS[top]) return top;
+    let index = 0;
+    while (index < top && SPEED_RUNGS[index + 1] <= s) index += 1;
+    // Between rungs `index` and `index + 1`: compare in log space.
+    return s * s >= SPEED_RUNGS[index] * SPEED_RUNGS[index + 1] ? index + 1 : index;
 }
 
 /**
- * True while a duty cycle is in its paused leading fraction, matching the
- * original `phase < 6` of 12 test.
+ * V7 / PT-1 — where a body stands this frame, in world texels. While it
+ * moves and k = zoom × dpr is a whole number, it rides the backing-pixel grid
+ * (every texel still lands as an exact k×k block), so a walker steps an even
+ * 4–5 px per refresh at k = 3 instead of alternating 3 and 6, and never
+ * stalls at 120 Hz. At rest, or at a fractional k, it sits on a whole world
+ * texel (C3). Every per-agent layer reads this one value.
  */
-export function inDutyPause(elapsedMs, periodMs, pauseFraction = 0.5) {
-    const off = Number(pauseFraction);
-    if (!Number.isFinite(off) || off <= 0) return false;
-    if (off >= 1) return true;
-    return dutyCyclePhase(elapsedMs, periodMs) < off;
+export function snapBodyPx(v, moving, zoom, dpr) {
+    if (moving) {
+        const k = zoom * dpr;
+        const whole = Math.round(k);
+        if (whole >= 1 && Math.abs(k - whole) <= 1e-3) return Math.round(v * whole) / whole;
+    }
+    return Math.round(v);
 }
-
-/** The idle stroller's authored cadence: 6 paused ticks of every 12 at 60 Hz. */
-export const IDLE_STRIDE_PERIOD_MS = 12 * REF_DT_MS;
-export const IDLE_STRIDE_PAUSE_FRACTION = 0.5;

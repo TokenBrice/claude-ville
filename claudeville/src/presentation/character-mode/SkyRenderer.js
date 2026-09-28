@@ -8,7 +8,7 @@ import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { ungradeRgb } from './CanvasGrade.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
 import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
-import { eventBus } from '../../domain/events/DomainEvent.js';
+import { baseWindX, cloudDriftSpeed } from './Wind.js';
 import {
     ornamentPlan,
     resolveCalmGate,
@@ -42,32 +42,29 @@ const AMBIENT_METEOR_MIN_MS = 90000;
 const AMBIENT_METEOR_SPAN_MS = 90000;
 const AMBIENT_METEOR_MIN_STARS_ALPHA = 0.45;
 const AMBIENT_METEOR_MAX_CLOUD_COVER = 0.35;
-// 0.6 — optional whole-village warm grade pulse on push: one cheap
-// full-screen gradient wash for 2s, drawn unclipped after the canopy pass.
-const PUSH_GRADE_DURATION_MS = 2000;
-const PUSH_GRADE_FADE_IN_MS = 320;
-const PUSH_GRADE_HOLD_MS = 680;
-const PUSH_GRADE_COOLDOWN_MS = 45000;
 const FALLBACK_CLOUD_IDS = ['atmosphere.cloud.cumulus', 'atmosphere.cloud.wisp'];
 const FALLBACK_MOON_ID = 'atmosphere.moon.crescent';
-// 5.3 — manifest hook for a generated pixel-art sun. When `atmosphere.sun`
-// lands in manifest.yaml it renders as-is; until then _getSunStamp() bakes a
-// quantized stepped-disc fallback (pixel doctrine: no soft gradient orb).
-const FALLBACK_SUN_ID = 'atmosphere.sun';
+// 0.10 — the sun is a flat-to-core stepped disc baked on a 2 px cell: a flat
+// body, a lighter mid course and a pale core, no outline ring and no
+// specular dot (a light source, not a glossy ball). Every course out-values
+// the dusk horizon (≈ #e2a98a at 18:00), so it reads as the brightest thing
+// in the sky.
 const SUN_STAMP_CELL_PX = 2;
+const SUN_COURSES = Object.freeze({
+    day: Object.freeze(['#ffdf86', '#ffe992', '#fff0a0']),
+    warm: Object.freeze(['#ffcf7c', '#ffe08e', '#fff0a0']),
+});
 const MOON_PHASE_ASSETS = {
     crescent: 'atmosphere.moon.crescent.cool',
     half: 'atmosphere.moon.half.cool',
     gibbous: 'atmosphere.moon.gibbous.cool',
 };
-const CLOUD_DRIFT_PX_PER_MS = 0.0012;
+// Icon clouds drift at a fifth of the cloud-shadow course speed (Wind.js),
+// in px per ms: ~1.1 px/s on a clear day, ~2.4 px/s in a storm.
+const CLOUD_DRIFT_PX_PER_MS = 0.0002;
 const CANOPY_HEIGHT_FRAC = 0.52;
 const CANOPY_MIN_HEIGHT = 240;
 const CANOPY_MAX_HEIGHT = 520;
-const AURORA_DURATION_MS = 12000;
-const AURORA_FADE_IN_MS = 2000;
-const AURORA_HOLD_MS = 6000;
-const AURORA_COOLDOWN_MS = 5 * 60 * 1000;
 // The sun's disc centre stays this many radii above the sea horizon, so it
 // always sits in the sky plate, never on the sea or the island. The moon
 // (64 px authored discs) holds the same way.
@@ -76,28 +73,17 @@ const MOON_DISC_RADIUS = 32;
 const SHOOTING_STAR_DURATION_MS = 1200;
 // Slow sky layers (stars, sun, moon, godrays, clouds) are composed into one
 // cached frame and refreshed at this cadence instead of repainting several
-// full-screen gradients every animation frame. Cloud drift is ~0.0012 px/ms,
-// so a refresh moves clouds well under a pixel — invisible at 5 Hz.
+// full-screen gradients every animation frame. Icon-cloud drift is at most
+// ~2.4 px/s, so a refresh moves clouds about half a pixel — invisible at 5 Hz.
 const SKY_FRAME_REFRESH_MS = 200;
 const FAST_SKY_CSS_PIXELS = 800_000;
 const FAST_SKY_FRAME_REFRESH_MS = 1000;
 const FAST_SKY_CAMERA_QUANT_PX = 64;
 const SHOOTING_STAR_MAX = 3;
-const SHOOTING_STAR_COOLDOWN_MS = 4000;
 const SHOOTING_STAR_NIGHT_PHASES = new Set(['night', 'dusk']);
-// Daytime counterparts of the night-only aurora / shooting-star rewards so
-// push & subagent hero moments stay visible in daytime sessions (most of them).
-const DAY_REWARD_PHASES = new Set(['day', 'dawn', 'dusk']);
-const SKY_FLARE_DURATION_MS = 4200;
-const SKY_FLARE_FADE_IN_MS = 700;
-const SKY_FLARE_HOLD_MS = 1600;
-const SKY_FLARE_COOLDOWN_MS = 5 * 60 * 1000;
-const SUN_GLINT_DURATION_MS = 1500;
-const SUN_GLINT_COOLDOWN_MS = 4000;
-const SUN_GLINT_MAX = 3;
-// Below this cloud cover the sky is clear enough for god-rays / daytime
-// rewards to break through; above it the overcast plate swallows them.
-const DAY_REWARD_CLOUD_COVER_MAX = 0.74;
+// Below this cloud cover the sky is clear enough for god-rays to break
+// through; above it the overcast plate swallows them.
+const GODRAY_CLOUD_COVER_MAX = 0.74;
 
 const CONSTELLATIONS = [
     {
@@ -152,16 +138,7 @@ export class SkyRenderer {
         this._frameCacheKey = '';
         this._decorativeCloudOffset = 0;
         this._fallbackAtmosphere = null;
-        this._auroraStartedAt = 0;
-        this._lastAuroraTriggerAt = 0;
-        this._lastShootingStarAt = 0;
         this._shootingStars = [];
-        this._skyFlareStartedAt = 0;
-        this._lastSkyFlareAt = 0;
-        this._lastSunGlintAt = 0;
-        this._sunGlints = [];
-        this._pushGradeStartedAt = 0;
-        this._lastPushGradeAt = 0;
         this._nextAmbientMeteorAt = 0;
         this._sunStamp = null;
         this._currentPhase = null;
@@ -170,52 +147,6 @@ export class SkyRenderer {
         this._backdropGraded = false;
         this._frameHasContent = false;
         this.plateBakes = 0;
-        this._unsubscribers = [];
-        this.attach();
-    }
-
-    // Subscriptions live on attach/detach so the renderer can survive mode
-    // toggles: IsometricRenderer.hide() calls detach() and show() re-attaches.
-    attach() {
-        if (this._unsubscribers.length) this.detach();
-        if (!eventBus || typeof eventBus.on !== 'function') return;
-        const onPush = () => {
-            // Night → aurora; daytime → golden sky-flare. One reward fires.
-            if (!this.maybeTriggerAuroraForPushSuccess(this._currentPhase)) {
-                this.maybeTriggerSkyFlareForPushSuccess(this._currentPhase);
-            }
-            // 0.6 — whole-village warm grade pulse: cheap, cooldown-gated, and
-            // fires even when cloud cover blocks the sky-flare.
-            const now = Date.now();
-            if (now - this._lastPushGradeAt >= PUSH_GRADE_COOLDOWN_MS) {
-                this._pushGradeStartedAt = now;
-                this._lastPushGradeAt = now;
-            }
-        };
-        this._unsubscribers.push(eventBus.on('git:pushed', onPush));
-        this._unsubscribers.push(eventBus.on('harbor:push-success', onPush));
-        this._unsubscribers.push(eventBus.on('subagent:completed', () => {
-            const now = Date.now();
-            // Night → shooting star; daytime → a sun-ray glint near the sun.
-            if (SHOOTING_STAR_NIGHT_PHASES.has(this._currentPhase)) {
-                if (now - this._lastShootingStarAt < SHOOTING_STAR_COOLDOWN_MS) return;
-                const angle = Math.PI / 3 + Math.random() * (Math.PI / 6);
-                const length = 0.14 + Math.random() * 0.08;
-                if (this.triggerShootingStar({ angle, length })) {
-                    this._lastShootingStarAt = now;
-                }
-                return;
-            }
-            if (now - this._lastSunGlintAt < SUN_GLINT_COOLDOWN_MS) return;
-            if (this.triggerSunGlint()) this._lastSunGlintAt = now;
-        }));
-    }
-
-    detach() {
-        for (const unsubscribe of this._unsubscribers) {
-            try { unsubscribe?.(); } catch { /* ignore */ }
-        }
-        this._unsubscribers.length = 0;
     }
 
     // `backdropGraded`: true when nothing grades the 2D frame after this
@@ -232,38 +163,30 @@ export class SkyRenderer {
         this._currentCloudCover = clamp(snapshot.weather?.cloudCover ?? 0, 0, 1);
         this._backdropGraded = backdropGraded;
         if (snapshot.motion?.driftEnabled) {
-            this._decorativeCloudOffset = (this._decorativeCloudOffset + dt * CLOUD_DRIFT_PX_PER_MS) % Math.max(1, canvas.width);
+            // C-W3 — the icon clouds integrate the one wind: a speed or sign
+            // change alters the drift rate, never the clouds' positions.
+            const wind = baseWindX(snapshot.weather);
+            const step = dt * CLOUD_DRIFT_PX_PER_MS * cloudDriftSpeed(wind) * (wind < 0 ? -1 : 1);
+            this._decorativeCloudOffset = (this._decorativeCloudOffset + step) % Math.max(1, canvas.width);
         }
 
         this._horizonY = this._horizonScreenY(camera, canvas);
         this._drawPlate(ctx, canvas, camera, snapshot);
         const frame = this._getComposedSkyFrame(canvas, camera, snapshot);
         if (this._frameHasContent) ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
-        // The star twinkle stays live over the cached layer. 0.6 — the hero
-        // rewards (aurora, shooting stars, sky-flare, sun glints, push grade)
-        // ride the canopy pass (drawCanopy) so they draw over terrain instead
-        // of behind the village.
+        // The star twinkle stays live over the cached layer; ambient meteors
+        // ride the canopy pass (drawCanopy) so they draw over terrain.
         this._publishCalmSceneHints(snapshot);
         this._drawLiveStarTwinkle(ctx, canvas, snapshot, motionScale);
         this._maybeTriggerAmbientMeteor(snapshot);
     }
 
+    // The calm gate reads the sky's own state only: the weather and an
+    // ambient meteor in flight. No agent, mood or director input (V3).
     _publishCalmSceneHints(atmosphere) {
-        const districts = atmosphere?.eventInfluence?.districts;
-        const attention = Boolean(atmosphere?.attention)
-            || Number(atmosphere?.eventInfluence?.storminess) > 0
-            || (Array.isArray(districts) && districts.some(entry => Number(entry?.storminess) > 0));
-        const recentEvent = Boolean(
-            this._auroraStartedAt
-            || this._shootingStars.length
-            || this._skyFlareStartedAt
-            || this._sunGlints.length
-            || this._pushGradeStartedAt,
-        );
         setCalmSceneHints({
             weatherType: atmosphere?.weather?.type || null,
-            attention,
-            recentEvent,
+            recentEvent: this._shootingStars.length > 0,
         });
     }
 
@@ -310,21 +233,8 @@ export class SkyRenderer {
         return frame;
     }
 
-    triggerAurora(now = Date.now()) {
-        this._auroraStartedAt = now;
-        this._lastAuroraTriggerAt = now;
-    }
-
-    maybeTriggerAuroraForPushSuccess(phase = this._currentPhase) {
-        if (phase !== 'night') return false;
-        const now = Date.now();
-        if (now - this._lastAuroraTriggerAt < AURORA_COOLDOWN_MS) return false;
-        this.triggerAurora(now);
-        return true;
-    }
-
     // Reduced motion is honored at draw time (a fixed-pose streak on a 3-step
-    // envelope) so RM sessions still see the subagent/ambient cue.
+    // envelope) so RM sessions still see the ambient meteor.
     triggerShootingStar({ angle = null, length = null } = {}) {
         if (!SHOOTING_STAR_NIGHT_PHASES.has(this._currentPhase)) return false;
         if (this._shootingStars.length >= SHOOTING_STAR_MAX) return false;
@@ -341,32 +251,6 @@ export class SkyRenderer {
             startYFrac,
             elapsed: 0,
         });
-        return true;
-    }
-
-    triggerSkyFlare(now = Date.now()) {
-        this._skyFlareStartedAt = now;
-        this._lastSkyFlareAt = now;
-    }
-
-    // Daytime counterpart of the aurora: a brief golden flare washes the sky
-    // on push success. Blocked under heavy cloud cover (no break-through).
-    maybeTriggerSkyFlareForPushSuccess(phase = this._currentPhase) {
-        if (!DAY_REWARD_PHASES.has(phase)) return false;
-        if (this._currentCloudCover > DAY_REWARD_CLOUD_COVER_MAX) return false;
-        const now = Date.now();
-        if (now - this._lastSkyFlareAt < SKY_FLARE_COOLDOWN_MS) return false;
-        this.triggerSkyFlare(now);
-        return true;
-    }
-
-    // Daytime counterpart of the shooting star: a quick ray glint flares out
-    // from the sun on subagent completion.
-    triggerSunGlint() {
-        if (!DAY_REWARD_PHASES.has(this._currentPhase)) return false;
-        if (this._currentCloudCover > DAY_REWARD_CLOUD_COVER_MAX) return false;
-        if (this._sunGlints.length >= SUN_GLINT_MAX) return false;
-        this._sunGlints.push({ elapsed: 0, twist: (Math.random() - 0.5) * 0.5 });
         return true;
     }
 
@@ -403,18 +287,10 @@ export class SkyRenderer {
         ctx.restore();
         ctx.globalCompositeOperation = 'source-over';
         this._drawClouds(ctx, camera, canvas, canopy);
-        // 0.6 — hero rewards ride this canopy pass (which runs after
-        // _drawTerrain) so they composite over terrain instead of behind the
-        // village. They stay clipped to the sky band; the sky-flare's
-        // gradient is scaled to the band so the clip leaves no hard edge.
-        this._drawAurora(ctx, canvas, source, resolvedMotionScale);
+        // Ambient meteors ride this canopy pass (which runs after
+        // _drawTerrain) so they composite over terrain, clipped to the sky.
         this._drawShootingStars(ctx, canvas, dt, resolvedMotionScale);
-        this._drawSkyFlare(ctx, canvas, source, resolvedMotionScale, height);
-        this._drawSunGlints(ctx, camera, canvas, source, dt, resolvedMotionScale);
         ctx.restore();
-        // 0.6 — the push grade pulse is the whole-village moment: unclipped,
-        // grading terrain and buildings too.
-        this._drawPushGradePulse(ctx, canvas, resolvedMotionScale);
     }
 
     _buildCanopySnapshot(atmosphere) {
@@ -705,7 +581,6 @@ export class SkyRenderer {
         const lighting = atmosphere.lighting || {};
         const warmth = lighting.sunWarmth ?? 0;
         const bloomScale = lighting.sunBloomScale ?? 1;
-        const squashY = visibleSun.squashY ?? 1;
         const glowRadius = radius * (3.2 + warmth * 2.2) * bloomScale;
         const glowRgb = warmth > 0.05
             ? [255, Math.round(214 - warmth * 50), Math.round(150 - warmth * 60)]
@@ -720,8 +595,8 @@ export class SkyRenderer {
         const halo = this._getSteppedGlowStamp(glowRadius, glowRgb, visibleSun.alpha * 0.34);
         ctx.drawImage(halo, Math.round(x - halo.width / 2), Math.round(y - halo.height / 2));
 
-        // The canopy pass composites over the terrain so the hero sky rewards
-        // land on top of the village. The sun's glow belongs there — it is
+        // The canopy pass composites over the terrain so the sky's glare
+        // lands on top of the village. The sun's glow belongs there — it is
         // additive light and reads as glare. Its body does not: it is an
         // opaque `source-over` disc, so drawing it in that pass plants a
         // solid ball on whatever happens to be underneath, which at close zoom
@@ -733,38 +608,22 @@ export class SkyRenderer {
             return true;
         }
 
-        // 5.3 — pixel-integrity body. Prefer the authored `atmosphere.sun`
-        // asset when the manifest provides one; otherwise draw the cached
-        // quantized stepped-disc stamp. Both replace the old soft
-        // radial-gradient orb (the "lamp behind trees").
+        // 0.10 — the body is the baked flat-to-core stepped disc (no outline,
+        // no specular dot); the horizon squash is baked into its rows, so it
+        // is never scaled off the pixel grid.
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = visibleSun.alpha;
-        const sunAssetId = this._firstAvailable([atmosphere.sky?.assetIds?.sun, FALLBACK_SUN_ID]);
-        ctx.translate(x, y);
-        if (squashY < 0.99) ctx.scale(1, squashY);
         ctx.imageSmoothingEnabled = false;
-        if (sunAssetId) {
-            const img = this.assets.get(sunAssetId);
-            const dims = this.assets.getDims(sunAssetId);
-            const scale = (radius * 2) / Math.max(dims.w, dims.h, 1);
-            ctx.drawImage(
-                img,
-                Math.round((-dims.w * scale) / 2),
-                Math.round((-dims.h * scale) / 2),
-                Math.max(1, Math.round(dims.w * scale)),
-                Math.max(1, Math.round(dims.h * scale)),
-            );
-        } else {
-            const stamp = this._getSunStamp(radius, warmth);
-            ctx.drawImage(stamp, Math.round(-stamp.width / 2), Math.round(-stamp.height / 2));
-        }
+        const stamp = this._getSunStamp(radius, warmth, visibleSun.squashY ?? 1);
+        ctx.drawImage(stamp, Math.round(x - stamp.width / 2), Math.round(y - stamp.height / 2));
         ctx.restore();
         return true;
     }
 
     // 1.3 — a stepped halo for the sun and moon: three flat courses (alpha
-    // 1, 0.5, 0.2 of `alpha`) on a 2 px cell with a 4x4 ordered dither at
-    // each edge, cached per (radius, colour, alpha) bucket. Replaces the
+    // 1, 0.5, 0.2 of `alpha`) on a 2 px cell with a 4x4 ordered dither only in
+    // a two-cell band at each seam (a wider dither reads as a smooth radial
+    // glow at 1:1), cached per (radius, colour, alpha) bucket. Replaces the
     // smooth full-screen radial gradients.
     _getSteppedGlowStamp(radius, rgb, alpha) {
         const cell = SUN_STAMP_CELL_PX;
@@ -787,11 +646,13 @@ export class SkyRenderer {
         const image = sctx.createImageData(cells, cells);
         const centre = cells / 2;
         const base = alphaBucket / 32;
+        // Course index per cell is 3 / centre: two cells of seam.
+        const seam = Math.min(0.6, 6 / centre);
         for (let y = 0; y < cells; y++) {
             for (let x = 0; x < cells; x++) {
                 const d = Math.hypot(x + 0.5 - centre, y + 0.5 - centre) / centre;
                 if (d >= 1) continue;
-                const q = (1 - d) * 3 + (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 0.6;
+                const q = (1 - d) * 3 + (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * seam;
                 const course = q >= 2 ? 1 : q >= 1 ? 0.5 : q >= 0.1 ? 0.2 : 0;
                 if (course <= 0) continue;
                 const offset = (y * cells + x) * 4;
@@ -813,38 +674,38 @@ export class SkyRenderer {
         return stamp;
     }
 
-    // 5.3 — stepped-disc sun stamp: the body is baked once per (radius,
-    // warmth) bucket as flat 2px cells — a pixel-art disc with a blocky
-    // highlight and rim instead of an anti-aliased gradient orb. Drawn with
-    // imageSmoothingEnabled=false so the steps stay crisp at any DPR. Single
-    // -slot cache; radius/warmth drift slowly, so rebuilds are rare.
-    _getSunStamp(radius, warmth = 0) {
-        const r = Math.max(8, Math.round(radius));
-        const warmthBucket = Math.round(clamp(warmth) * 4);
-        const key = `${r}|${warmthBucket}`;
+    // 0.10 — the sun body: three flat courses on a 2 px cell (body, a lighter
+    // mid course inside 0.66 r, a pale core inside 0.34 r) with a 4x4 ordered
+    // dither only in a narrow band at each seam, a stair-stepped edge and no
+    // outline. The horizon squash sets the baked row radius. Single-slot
+    // cache; radius, warmth and squash move slowly, so rebuilds are rare.
+    _getSunStamp(radius, warmth = 0, squash = 1) {
+        const cell = SUN_STAMP_CELL_PX;
+        const r = Math.max(8, Math.round(radius / cell) * cell);
+        const courses = warmth > 0.05 ? SUN_COURSES.warm : SUN_COURSES.day;
+        const squashCells = Math.max(0.5, Math.round(clamp(squash, 0.5, 1) * 16) / 16);
+        const key = `${r}|${courses === SUN_COURSES.warm ? 'w' : 'd'}|${squashCells}`;
         if (this._sunStamp?.key === key) return this._sunStamp.canvas;
         releaseCanvasBackingStore(this._sunStamp?.canvas);
-        const cell = SUN_STAMP_CELL_PX;
-        const size = Math.ceil((r * 2) / cell) * cell + cell * 2;
-        const half = size / 2;
+        const cellsX = Math.ceil((r * 2) / cell) + 2;
+        const cellsY = Math.ceil((r * 2 * squashCells) / cell) + 2;
         const off = document.createElement('canvas');
-        off.width = size;
-        off.height = size;
+        off.width = cellsX * cell;
+        off.height = cellsY * cell;
         const o = off.getContext('2d');
-        const base = warmthBucket > 0 ? '#ffd176' : '#ffe36b';
-        const light = '#fff9bf';
-        const rim = warmthBucket > 0 ? '#f3a14d' : '#ffc842';
-        for (let gy = 0; gy < size; gy += cell) {
-            for (let gx = 0; gx < size; gx += cell) {
-                const cx = gx + cell / 2 - half;
-                const cy = gy + cell / 2 - half;
-                const d = Math.hypot(cx, cy);
-                if (d > r) continue;
-                let color = base;
-                if (d > r - cell * 1.6) color = rim;
-                else if (Math.hypot(cx + r * 0.26, cy + r * 0.30) < r * 0.44) color = light;
-                o.fillStyle = color;
-                o.fillRect(gx, gy, cell, cell);
+        const cx0 = cellsX / 2;
+        const cy0 = cellsY / 2;
+        const rc = r / cell;
+        for (let gy = 0; gy < cellsY; gy++) {
+            for (let gx = 0; gx < cellsX; gx++) {
+                const dx = (gx + 0.5 - cx0) / rc;
+                const dy = (gy + 0.5 - cy0) / (rc * squashCells);
+                const d = Math.hypot(dx, dy);
+                if (d > 1) continue;
+                const order = (BAYER4[(gy % 4) * 4 + (gx % 4)] / 16 - 0.5) * 0.08;
+                const q = d + order;
+                o.fillStyle = q < 0.34 ? courses[2] : q < 0.66 ? courses[1] : courses[0];
+                o.fillRect(gx * cell, gy * cell, cell, cell);
             }
         }
         this._sunStamp = { key, canvas: off };
@@ -859,7 +720,7 @@ export class SkyRenderer {
         // Loosened from 0.18 so rays break through on a clearing transition
         // (the warm-up before dawn/after dusk), but only under clear-enough sky.
         const cloudCover = clamp(atmosphere.weather?.cloudCover ?? 0, 0, 1);
-        const warmthGate = cloudCover > DAY_REWARD_CLOUD_COVER_MAX ? 0.18 : 0.08;
+        const warmthGate = cloudCover > GODRAY_CLOUD_COVER_MAX ? 0.18 : 0.08;
         if (warmth <= warmthGate) return;
         if ((sun.alpha ?? 0) <= 0.04) return;
 
@@ -1051,7 +912,6 @@ export class SkyRenderer {
         const density = atmosphere.sky?.cloudDensity ?? 0.3;
         const baseAlpha = atmosphere.sky?.cloudAlpha ?? 0.35;
         const clockDrift = atmosphere.motion?.clockDriftPx || 0;
-        const windX = atmosphere.motion?.windX || 1;
         const seed = Number.isFinite(Number(atmosphere.weather?.seed))
             ? Number(atmosphere.weather.seed) >>> 0
             : hashString(`${atmosphere.clock?.localDate || ''}|${atmosphere.weather?.type || 'clear'}`);
@@ -1065,7 +925,7 @@ export class SkyRenderer {
             const spacing = canvas.width / count;
             const rawOffset = -camX * defaults.parallax
                 + clockDrift * defaults.driftMul
-                + this._decorativeCloudOffset * defaults.driftMul * windX;
+                + this._decorativeCloudOffset * defaults.driftMul;
             const baseOffset = ((rawOffset % spacing) + spacing) % spacing;
 
             ctx.save();
@@ -1095,7 +955,6 @@ export class SkyRenderer {
     _drawCloudLayerDescriptors(ctx, camera, canvas, atmosphere, layers) {
         const camX = camera?.x || 0;
         const clockDrift = atmosphere.motion?.clockDriftPx || 0;
-        const windX = atmosphere.motion?.windX || 1;
         const wrapWidth = canvas.width + 260;
         ctx.save();
         let drawn = false;
@@ -1112,7 +971,7 @@ export class SkyRenderer {
             const driftMul = Number(layer.driftMul) || 1;
             const drift = -camX * parallax
                 + clockDrift * driftMul
-                + this._decorativeCloudOffset * driftMul * windX;
+                + this._decorativeCloudOffset * driftMul;
             const y = canvas.height * clamp(layer.yFrac ?? 0.25, 0.04, 0.62);
             const baseX = (layer.xFrac ?? 0.5) * canvas.width + drift;
             const x = wrap(baseX, -w - 130, wrapWidth);
@@ -1179,7 +1038,7 @@ export class SkyRenderer {
     // PRNG as _drawStars (same seed / next() sequence / hot test / drift) so the
     // first LIVE_TWINKLE_STARS hot stars land exactly on their baked positions,
     // then overdraws them with a staggered sinusoidal alpha. Pulse cadence is a
-    // local sine, matching the aurora / shooting-star live layers (no shared
+    // local sine, matching the ambient meteor's live layer (no shared
     // PulsePolicy). Skipped under reduced motion or when the sky has no stars.
     _drawLiveStarTwinkle(ctx, canvas, atmosphere, motionScale = 1) {
         if (motionScale === 0) return;
@@ -1219,77 +1078,6 @@ export class SkyRenderer {
             drawn++;
         }
         ctx.restore();
-    }
-
-    _drawAurora(ctx, canvas, atmosphere, motionScale = 1) {
-        if (!this._auroraStartedAt) return;
-        const elapsed = Date.now() - this._auroraStartedAt;
-        if (elapsed > AURORA_DURATION_MS) {
-            this._auroraStartedAt = 0;
-            return;
-        }
-        const alpha = this._auroraAlpha(elapsed, motionScale);
-        if (alpha <= 0.005) return;
-        const beacon = atmosphere?.lighting?.beaconIntensity ?? 0.65;
-        const yBase = canvas.height * 0.23;
-        const width = canvas.width;
-        const time = motionScale === 0 ? 0.75 : elapsed / 1000;
-
-        // Sky plate grammar: each band is a ribbon of flat 2 px cells in 4 px
-        // columns — a core course, a half-alpha course and a checker-dithered
-        // fringe — whose alpha steps in thirds through the old vertical ramp,
-        // instead of a gradient-stroked AA polyline.
-        const cell = SUN_STAMP_CELL_PX;
-        const column = cell * 2;
-        const outer = Math.min(0.22, alpha * (0.78 + beacon * 0.35));
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (let band = 0; band < 3; band++) {
-            const yOffset = band * 18;
-            ctx.fillStyle = band === 0 ? 'rgb(102, 255, 196)' : band === 1 ? 'rgb(104, 190, 255)' : 'rgb(196, 126, 255)';
-            const peakAlpha = 0.38 - band * 0.07;
-            const rampTop = yBase - 42 + yOffset;
-            const rampBottom = yBase + 64 + yOffset;
-            const rampPeak = rampTop + (rampBottom - rampTop) * 0.42;
-            const half = (22 - band * 4) / 2;
-            const core = Math.max(cell, Math.round(half * 0.5 / cell) * cell);
-            const body = Math.max(core + cell, Math.round(half / cell) * cell);
-            const fringe = body + cell * 2;
-            for (let x = 0, col = 0; x < width; x += column, col++) {
-                const t = (x + column / 2) / Math.max(1, width);
-                const y = yBase + yOffset
-                    + Math.cos(t * Math.PI * 2.1 + band * 0.85 + time * 0.45) * (18 + band * 5)
-                    + Math.cos(t * Math.PI * 5.2 - time * 0.25) * 5;
-                const ramp = y < rampPeak
-                    ? (y - rampTop) / (rampPeak - rampTop)
-                    : (rampBottom - y) / (rampBottom - rampPeak);
-                const step = Math.ceil(Math.max(0, Math.min(1, ramp)) * 3) / 3;
-                if (step <= 0) continue;
-                const a = outer * peakAlpha * step;
-                const cy = Math.round(y / cell) * cell;
-                ctx.globalAlpha = a;
-                ctx.fillRect(x, cy - core, column, core * 2);
-                ctx.globalAlpha = a * 0.5;
-                ctx.fillRect(x, cy - body, column, body - core);
-                ctx.fillRect(x, cy + core, column, body - core);
-                if (col % 2 === 0) {
-                    ctx.globalAlpha = a * 0.25;
-                    ctx.fillRect(x, cy - fringe, column, cell * 2);
-                    ctx.fillRect(x, cy + body, column, cell * 2);
-                }
-            }
-        }
-        ctx.restore();
-    }
-
-    _auroraAlpha(elapsed, motionScale) {
-        // 5.6 — reduced motion: three static alpha steps (in/hold/out) over
-        // the same window instead of a 12s fixed hold that pops off.
-        if (motionScale === 0) return rmThreeStepEnvelope(elapsed / AURORA_DURATION_MS);
-        if (elapsed < AURORA_FADE_IN_MS) return elapsed / AURORA_FADE_IN_MS;
-        if (elapsed < AURORA_FADE_IN_MS + AURORA_HOLD_MS) return 1;
-        const fadeElapsed = elapsed - AURORA_FADE_IN_MS - AURORA_HOLD_MS;
-        return Math.max(0, 1 - fadeElapsed / (AURORA_DURATION_MS - AURORA_FADE_IN_MS - AURORA_HOLD_MS));
     }
 
     _drawShootingStars(ctx, canvas, dt, motionScale) {
@@ -1349,126 +1137,10 @@ export class SkyRenderer {
         this._shootingStars = next;
     }
 
-    // Golden sky-flare — daytime push reward. Pulse band: a single envelope
-    // (fade-in → hold → fade-out) over SKY_FLARE_DURATION_MS, no looping
-    // oscillation. 0.6 — drawn through the canopy pass, clipped to the sky
-    // band; gradientHeight scales the wash to the band so the clip leaves no
-    // hard edge. Reduced motion (motionScale 0): the same window on a 3-step
-    // static envelope (step-in → hold → step-out), no continuous animation.
-    _drawSkyFlare(ctx, canvas, atmosphere, motionScale = 1, gradientHeight = 0) {
-        if (!this._skyFlareStartedAt) return;
-        const elapsed = Date.now() - this._skyFlareStartedAt;
-        if (elapsed > SKY_FLARE_DURATION_MS) {
-            this._skyFlareStartedAt = 0;
-            return;
-        }
-        const envelope = motionScale === 0
-            ? 0.62 * rmThreeStepEnvelope(elapsed / SKY_FLARE_DURATION_MS)
-            : this._skyFlareEnvelope(elapsed);
-        if (envelope <= 0.005) return;
-        const warmth = atmosphere?.lighting?.sunWarmth ?? 0;
-        const peak = 0.30 * envelope;
-        const gradHeight = gradientHeight > 0 ? gradientHeight : canvas.height;
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        const grad = ctx.createLinearGradient(0, 0, 0, gradHeight);
-        const topG = Math.round(228 - warmth * 30);
-        const topB = Math.round(150 - warmth * 50);
-        grad.addColorStop(0, `rgba(255, ${topG}, ${topB}, ${peak})`);
-        grad.addColorStop(0.45, `rgba(255, 214, 150, ${peak * 0.5})`);
-        grad.addColorStop(1, 'rgba(255, 206, 138, 0)');
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, canvas.width, gradHeight);
-        ctx.restore();
-    }
-
-    _skyFlareEnvelope(elapsed) {
-        if (elapsed < SKY_FLARE_FADE_IN_MS) return elapsed / SKY_FLARE_FADE_IN_MS;
-        if (elapsed < SKY_FLARE_FADE_IN_MS + SKY_FLARE_HOLD_MS) return 1;
-        const fadeElapsed = elapsed - SKY_FLARE_FADE_IN_MS - SKY_FLARE_HOLD_MS;
-        const fadeLen = SKY_FLARE_DURATION_MS - SKY_FLARE_FADE_IN_MS - SKY_FLARE_HOLD_MS;
-        return Math.max(0, 1 - fadeElapsed / fadeLen);
-    }
-
-    // Sun-ray glint — daytime subagent reward. Pulse band: a single one-shot
-    // envelope per glint over SUN_GLINT_DURATION_MS (rays bloom out then fade),
-    // no looping oscillation. Reduced motion: one fixed-pose rim flash whose
-    // alpha steps on a 3-step envelope (no expanding sweep), then it drops.
-    _drawSunGlints(ctx, camera, canvas, atmosphere, dt, motionScale = 1) {
-        if (!this._sunGlints.length) return;
-        const sun = atmosphere.sky?.sun;
-        if (!sun?.visible || (sun.alpha ?? 0) <= 0.04) {
-            this._sunGlints.length = 0;
-            return;
-        }
-        const radius = Math.max(22, Math.min(canvas.width, canvas.height) * 0.042);
-        const position = this._resolveSunPosition(camera, canvas, sun, radius);
-        if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
-        const { x, y } = position;
-        const sunAlpha = sun.alpha ?? 0;
-        const next = [];
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (const glint of this._sunGlints) {
-            glint.elapsed += dt;
-            // Reduced motion: hold one static rim flash at peak for the full
-            // window, no expanding sweep; then drop it.
-            if (motionScale === 0) {
-                if (glint.elapsed >= SUN_GLINT_DURATION_MS) continue;
-            } else if (glint.elapsed >= SUN_GLINT_DURATION_MS) {
-                continue;
-            }
-            const t = motionScale === 0 ? 0.5 : glint.elapsed / SUN_GLINT_DURATION_MS;
-            // 5.6 — reduced motion: 3-step alpha steps anchored to the old
-            // fixed t=0.5 fade at its hold step, instead of one static hold.
-            const fade = motionScale === 0
-                ? 0.64 * rmThreeStepEnvelope(glint.elapsed / SUN_GLINT_DURATION_MS)
-                : t < 0.22 ? t / 0.22 : 1 - (t - 0.22) / 0.78;
-            const alpha = Math.max(0, fade) * sunAlpha * 0.55;
-            if (alpha <= 0.01) {
-                next.push(glint);
-                continue;
-            }
-            const reach = motionScale === 0
-                ? radius * 4.2
-                : radius * (2.0 + t * 3.2);
-            const rays = 8;
-            ctx.strokeStyle = `rgba(255, 236, 178, ${alpha})`;
-            ctx.lineWidth = Math.max(2, Math.round(radius * 0.1));
-            ctx.lineCap = 'round';
-            for (let i = 0; i < rays; i++) {
-                const angle = (Math.PI * 2 * i) / rays + glint.twist;
-                const inner = radius * 1.2;
-                ctx.beginPath();
-                ctx.moveTo(
-                    Math.round(x + Math.cos(angle) * inner),
-                    Math.round(y + Math.sin(angle) * inner),
-                );
-                ctx.lineTo(
-                    Math.round(x + Math.cos(angle) * reach),
-                    Math.round(y + Math.sin(angle) * reach),
-                );
-                ctx.stroke();
-            }
-            const halo = ctx.createRadialGradient(x, y, radius * 0.4, x, y, reach);
-            halo.addColorStop(0, `rgba(255, 244, 198, ${alpha * 0.7})`);
-            halo.addColorStop(1, 'rgba(255, 230, 170, 0)');
-            ctx.fillStyle = halo;
-            ctx.beginPath();
-            ctx.arc(x, y, reach, 0, Math.PI * 2);
-            ctx.fill();
-            next.push(glint);
-        }
-        ctx.restore();
-        this._sunGlints = next;
-    }
-
     // 5.2 — ambient clear-night meteors: one every ~90–180s while the
-    // starfield is actually visible. Shares the reward shooting-star pool
-    // (cap included), so it never stacks onto a subagent celebration. The
-    // first eligible clear night only arms the timer — no boot-time meteor.
+    // starfield is actually visible (at most SHOOTING_STAR_MAX in flight).
+    // The first eligible clear night only arms the timer — no boot-time
+    // meteor. The sky answers to no agent event (V3).
     _maybeTriggerAmbientMeteor(atmosphere) {
         if (!allowAmbientMeteor({
             calm: resolveCalmGate(),
@@ -1489,43 +1161,6 @@ export class SkyRenderer {
         this.triggerShootingStar({ angle, length });
     }
 
-    // 0.6 — whole-village warm grade pulse on push: a single full-screen
-    // 'screen' gradient for 2s (one gradient + one fillRect per frame,
-    // cooldown-gated in the push handler). Drawn unclipped after the canopy
-    // pass so it grades terrain and buildings too. Reduced motion: the same
-    // window on a 3-step static envelope.
-    _drawPushGradePulse(ctx, canvas, motionScale = 1) {
-        if (!this._pushGradeStartedAt) return;
-        const elapsed = Date.now() - this._pushGradeStartedAt;
-        if (elapsed > PUSH_GRADE_DURATION_MS) {
-            this._pushGradeStartedAt = 0;
-            return;
-        }
-        const envelope = motionScale === 0
-            ? rmThreeStepEnvelope(elapsed / PUSH_GRADE_DURATION_MS)
-            : this._pushGradeEnvelope(elapsed);
-        if (envelope <= 0.005) return;
-        const peak = 0.12 * envelope;
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-        grad.addColorStop(0, `rgba(255, 214, 150, ${peak})`);
-        grad.addColorStop(0.55, `rgba(255, 196, 128, ${peak * 0.62})`);
-        grad.addColorStop(1, `rgba(255, 186, 118, ${peak * 0.35})`);
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.restore();
-    }
-
-    _pushGradeEnvelope(elapsed) {
-        if (elapsed < PUSH_GRADE_FADE_IN_MS) return elapsed / PUSH_GRADE_FADE_IN_MS;
-        if (elapsed < PUSH_GRADE_FADE_IN_MS + PUSH_GRADE_HOLD_MS) return 1;
-        const fadeElapsed = elapsed - PUSH_GRADE_FADE_IN_MS - PUSH_GRADE_HOLD_MS;
-        const fadeLen = PUSH_GRADE_DURATION_MS - PUSH_GRADE_FADE_IN_MS - PUSH_GRADE_HOLD_MS;
-        return Math.max(0, 1 - fadeElapsed / fadeLen);
-    }
-
     _availableCloudIds(atmosphere) {
         const requested = atmosphere.sky?.assetIds?.clouds || [];
         const available = requested.filter(id => this.assets?.has(id));
@@ -1541,9 +1176,9 @@ export class SkyRenderer {
         return null;
     }
 
-    // Drop the cached plate strip, celestial frame and stamps without
-    // detaching subscriptions. Used by viewport/resize cache invalidation
-    // paths that must not tear down the aurora / shooting-star event wiring.
+    // Drop the cached plate strip, celestial frame and stamps. Used by
+    // viewport/resize cache invalidation paths; ambient meteors in flight
+    // survive it.
     releaseCache() {
         releaseCanvasBackingStore(this.cache);
         this.cache = null;
@@ -1562,14 +1197,8 @@ export class SkyRenderer {
     dispose() {
         this.releaseCache();
         this._decorativeCloudOffset = 0;
-        this._auroraStartedAt = 0;
         this._shootingStars.length = 0;
-        this._skyFlareStartedAt = 0;
-        this._sunGlints.length = 0;
-        this._pushGradeStartedAt = 0;
-        this._lastPushGradeAt = 0;
         this._nextAmbientMeteorAt = 0;
-        this.detach();
         this._fallbackAtmosphere?.dispose?.();
         this._fallbackAtmosphere = null;
     }
@@ -1606,9 +1235,9 @@ function starCountForCanvas(canvas) {
     );
 }
 
-// 5.6 — reduced-motion envelope for one-shot sky rewards: three static alpha
-// steps (step-in → hold → step-out) across the reward's normal duration, so
-// RM sessions still get the cue without continuous per-frame interpolation.
+// 5.6 — reduced-motion envelope for an ambient meteor: three static alpha
+// steps (step-in → hold → step-out) across its normal duration, so RM
+// sessions still see it without continuous per-frame interpolation.
 // t is normalized 0..1.
 function rmThreeStepEnvelope(t) {
     if (t < 0.25) return 0.55;

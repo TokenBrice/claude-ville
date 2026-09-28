@@ -84,7 +84,7 @@ test('every concrete topbar class emitted by TopBar has a stylesheet rule', asyn
 
 
 test('a suspended render loop reads as idle in Settings > Health while genuine zero stays 0 FPS', () => {
-    const bar = { els: { fps: {} } };
+    const bar = { els: { fps: { dataset: {} } } };
     const healthText = (fps) => {
         TopBar.prototype.renderFps.call(bar, fps);
         const panel = {
@@ -116,16 +116,22 @@ test('usage coverage distinguishes observed zero, partial counts and unavailable
 test('the lit slot counts needs-you, errored and rate-limited agents exactly, hides when empty, and waits for the first snapshot', () => {
     let stats = { working: 4, idle: 2, waiting: 0, needsYou: 1, errors: 0, quota: 0 };
     const part = () => ({ part: {}, num: {} });
+    const classes = new Set(['cv-frame', 'cv-frame--attn']);
     const bar = Object.assign(Object.create(TopBar.prototype), {
         world: { getStats: () => stats },
         els: {
             working: {}, idle: {}, waiting: {},
-            attention: { dataset: {} },
+            attention: {
+                dataset: {},
+                classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)) },
+            },
             attentionParts: { needsYou: part(), errors: part(), quota: part() },
         },
         _villageState: { phase: 'ready-live', link: { lastSnapshotAt: 1 } },
         _unknownModelSeenToday() {}, _renderSpend() {}, _renderActivityRail() {},
     });
+    // The frame wears exactly one attn slice: the leading bucket's hue.
+    const slices = () => [...classes].filter(name => name.startsWith('cv-frame--attn'));
     const { attention, attentionParts } = bar.els;
     TopBar.prototype.render.call(bar);
     assert.equal(bar.els.waiting.textContent, '0');
@@ -140,11 +146,13 @@ test('the lit slot counts needs-you, errored and rate-limited agents exactly, hi
     assert.equal(bar.els.waiting.textContent, '1');
     assert.equal(attention.hidden, false);
     assert.equal(attention.dataset.lead, 'quota');
+    assert.deepEqual(slices(), ['cv-frame--attn-limit']);
     assert.equal(attentionParts.needsYou.part.hidden, true);
     assert.equal(attentionParts.quota.num.textContent, '1');
     stats = { ...stats, quota: 0, errors: 2 };
     TopBar.prototype.render.call(bar);
     assert.equal(attention.dataset.lead, 'errors');
+    assert.deepEqual(slices(), ['cv-frame--attn-error']);
     assert.equal(attentionParts.errors.num.textContent, '2');
     stats = { ...stats, errors: 0 };
     TopBar.prototype.render.call(bar);

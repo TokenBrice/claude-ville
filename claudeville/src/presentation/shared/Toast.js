@@ -13,6 +13,10 @@ const CUE_CONTEXT_MAX_AGE_MS = 1500;
 // A sound status (the M key) is a glance, not news.
 const SOUND_STATUS_DISMISS_MS = 1500;
 const ATTENTION_NOTICE_GRACE_MS = 1500;
+// More than ATTENTION_BURST_MAX notices inside one window (a boot or a
+// reconnect that finds the village already waiting) fold into one summary.
+const ATTENTION_BURST_MS = 1000;
+const ATTENTION_BURST_MAX = 2;
 const PRIMARY_CUES = new Set(['distress', 'limit', 'summons', 'reminder']);
 // The cues a direct attention notice for the same agent folds into.
 const ATTENTION_CUES = new Set(['distress', 'limit', 'summons']);
@@ -100,6 +104,21 @@ const CUE_TYPES = Object.freeze({
     hourBell: 'warning',
     linkLost: 'warning',
     linkRestored: 'success',
+});
+
+// 9.5 / one ask, one frame: a notice about an ask wears the frame kit's attn
+// slice in its family hue (frame-kit.css), like the call card and the lit
+// slot, instead of a coloured left rail. Keyed by status, cue kind or family.
+const ATTENTION_FRAME = Object.freeze({
+    waiting_on_user: 'cv-frame--attn',
+    errored: 'cv-frame--attn-error',
+    rate_limited: 'cv-frame--attn-limit',
+    summons: 'cv-frame--attn',
+    distress: 'cv-frame--attn-error',
+    limit: 'cv-frame--attn-limit',
+    needsYou: 'cv-frame--attn',
+    errors: 'cv-frame--attn-error',
+    quota: 'cv-frame--attn-limit',
 });
 
 // Reminders restate the village's oldest wait by its family (SIG-2).
@@ -319,6 +338,7 @@ export class Toast {
         this._eventTarget = eventTarget;
         this._agentLabels = new Map();
         this._recentCueContext = new Map();
+        this._attentionBurst = null;
         this._eventUnsubscribes = [];
         const on = (event, handler) => {
             const unsubscribe = eventTarget?.on?.(event, handler);
@@ -373,11 +393,13 @@ export class Toast {
         const collapsed = this._collapseDirectAttention(cleanMessage, type);
         if (collapsed) return collapsed;
 
+        const attention = isAttentionNotice(cleanMessage) && (type === 'warning' || type === 'error');
         const agentId = isAttentionNotice(cleanMessage) ? this._agentIdForMessage(cleanMessage) : '';
         return this._show(message, type, {
             dismissMs: AUTO_DISMISS_MS,
             attentionAgentId: agentId,
             attentionExpectedMessages: agentId ? [cleanMessage] : [],
+            frame: attention ? (type === 'error' ? ATTENTION_FRAME.errored : ATTENTION_FRAME.waiting_on_user) : '',
         });
     }
 
@@ -397,6 +419,11 @@ export class Toast {
             this._offerInvite(existing, payload);
             return existing;
         }
+        const burst = this._attentionBurstFor(Date.now());
+        if (burst.summary && this.toasts.includes(burst.summary)) {
+            this._absorbIntoSummary(burst, agentId, message, payload);
+            return burst.summary;
+        }
         const entry = this._show(message, 'warning', {
             dismissMs: PRIMARY_CUE_DISMISS_MS,
             cueKey: `attention:${eventKey}`,
@@ -405,9 +432,73 @@ export class Toast {
             attentionAgentId: agentId,
             attentionEventKey: eventKey,
             attentionExpectedMessages: [message],
+            frame: ATTENTION_FRAME[cleanLabel(payload?.status)] || ATTENTION_FRAME.waiting_on_user,
         });
+        if (entry) burst.entries.push(entry);
+        if (burst.entries.length > ATTENTION_BURST_MAX) return this._collapseBurst(burst, payload);
         this._offerInvite(entry, payload);
         return entry;
+    }
+
+    // The burst window opens at its first notice and lasts ATTENTION_BURST_MS;
+    // once summarised, notices arriving within ATTENTION_BURST_MS of the last
+    // keep folding into the live summary.
+    _attentionBurstFor(now) {
+        const burst = this._attentionBurst;
+        const summaryLive = Boolean(burst?.summary && this.toasts.includes(burst.summary));
+        if (burst && (now - burst.at <= ATTENTION_BURST_MS || (summaryLive && now - burst.last <= ATTENTION_BURST_MS))) {
+            burst.last = now;
+            return burst;
+        }
+        this._attentionBurst = { at: now, last: now, entries: [], summary: null, agentIds: new Set(), oldestMs: 0 };
+        return this._attentionBurst;
+    }
+
+    // #15 — the third notice in one burst replaces the burst's notices with a
+    // single summary that keeps every folded agent and expected message, so
+    // the direct notices and summons captions that follow still land on it.
+    _collapseBurst(burst, payload) {
+        const agentIds = new Set();
+        const expected = new Set();
+        for (const entry of burst.entries) {
+            if (entry.attentionAgentId) agentIds.add(entry.attentionAgentId);
+            for (const message of entry.attentionExpectedMessages || []) expected.add(message);
+            this._remove(entry);
+        }
+        burst.entries = [];
+        burst.agentIds = agentIds;
+        burst.oldestMs = Math.max(0, Number(payload?.oldestWaitMs) || 0);
+        const summary = this._show(this._burstSummaryText(burst), 'warning', {
+            dismissMs: PRIMARY_CUE_DISMISS_MS,
+            cueKey: `attention:burst:${burst.at}`,
+            // The Dashboard's bell lane hides `attention` notices it repeats (layout.css).
+            cueKind: 'attention',
+            primary: true,
+            attentionEventKey: `burst:${burst.at}`,
+            attentionExpectedMessages: [...expected],
+            frame: ATTENTION_FRAME.waiting_on_user,
+        });
+        if (!summary) return null;
+        summary.summary = true;
+        summary.attentionAgentIds = agentIds;
+        burst.summary = summary;
+        this._offerInvite(summary, payload);
+        return summary;
+    }
+
+    _absorbIntoSummary(burst, agentId, message, payload) {
+        const summary = burst.summary;
+        if (agentId) burst.agentIds.add(agentId);
+        summary.attentionExpectedMessages.add(message);
+        summary.attentionAt = Date.now();
+        burst.oldestMs = Math.max(burst.oldestMs, Number(payload?.oldestWaitMs) || 0);
+        this._setText(summary, this._burstSummaryText(burst));
+        this._restartDismissTimer(summary, PRIMARY_CUE_DISMISS_MS);
+    }
+
+    _burstSummaryText(burst) {
+        const minutes = burst.oldestMs > 0 ? Math.max(1, Math.round(burst.oldestMs / 60_000)) : 0;
+        return `${burst.agentIds.size} agents need you${minutes ? ` · oldest ${minutes} min` : ''}`;
     }
 
     // 7.5: sound off, the page open ≥ 2 min and visible, never invited → the
@@ -558,9 +649,14 @@ export class Toast {
         if (ATTENTION_CUES.has(kind)) {
             const attention = [...this.toasts]
                 .reverse()
-                .find(entry => entry.attentionAgentId === agentId && entry.attentionAt
+                .find(entry => (entry.attentionAgentId === agentId || entry.attentionAgentIds?.has(agentId)) && entry.attentionAt
                     && Date.now() - entry.attentionAt <= ATTENTION_NOTICE_GRACE_MS);
             if (attention) return this._addFamilyLine(attention, payload);
+        }
+        // A reminder restates the waits a live burst summary already states.
+        const liveSummary = this._attentionBurst?.summary;
+        if (kind === 'reminder' && liveSummary && this.toasts.includes(liveSummary)) {
+            return this._addFamilyLine(liveSummary, payload);
         }
         if (SUPERSEDING_CUES.has(kind)) {
             for (const entry of this.toasts.filter(entry => entry.cueKind === kind)) this._remove(entry);
@@ -594,6 +690,9 @@ export class Toast {
             cueKind: kind,
             primary: isPrimary,
             agentId,
+            frame: kind === 'reminder'
+                ? ATTENTION_FRAME[cleanLabel(payload.family)] || ATTENTION_FRAME.needsYou
+                : ATTENTION_FRAME[kind] || '',
         }), payload);
     }
 
@@ -624,10 +723,11 @@ export class Toast {
         if (!agentId) return null;
         const existing = [...this.toasts]
             .reverse()
-            .find(entry => (ATTENTION_CUES.has(entry.cueKind) || entry.attentionAgentId === agentId)
-                && (entry.agentId === agentId || entry.attentionAgentId === agentId));
+            .find(entry => entry.attentionAgentIds?.has(agentId)
+                || ((ATTENTION_CUES.has(entry.cueKind) || entry.attentionAgentId === agentId)
+                    && (entry.agentId === agentId || entry.attentionAgentId === agentId)));
         if (!existing) return null;
-        existing.attentionAgentId = agentId;
+        if (!existing.summary) existing.attentionAgentId = agentId;
         existing.attentionAt = Date.now();
         existing.attentionExpectedMessages ||= new Set();
         existing.attentionExpectedMessages.add(message);
@@ -644,7 +744,8 @@ export class Toast {
 
     _preferMessage(entry, message) {
         const next = cleanLabel(message);
-        if (!entry || !next || entry.message === next) return;
+        // A burst summary keeps its count; a folded agent's own wording never replaces it.
+        if (!entry || entry.summary || !next || entry.message === next) return;
         if (attentionMessageSpecificity(next) < attentionMessageSpecificity(entry.message)) return;
         entry.message = next;
         this._setText(entry, next);
@@ -660,12 +761,13 @@ export class Toast {
         attentionEventKey = '',
         attentionExpectedMessages = [],
         status = false,
+        frame = '',
     }) {
         if (!this._makeRoom(primary)) return;
 
         const el = this.documentRef?.createElement?.('div');
         if (!el) return;
-        el.className = `toast toast--${type}`;
+        el.className = `toast toast--${type}${frame ? ` cv-frame ${frame}` : ''}`;
         el.textContent = message;
         if (type === 'error' || primary) el.setAttribute('role', 'alert');
         else if (status) el.setAttribute('role', 'status');

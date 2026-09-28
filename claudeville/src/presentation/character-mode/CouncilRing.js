@@ -75,6 +75,13 @@ function lightBoost(lighting) {
     return Math.max(0.45, Math.min(1.8, lighting?.lightBoost ?? 1));
 }
 
+// Tethers and the council outline are texel-dot curves (EffectStamps
+// `dottedCurve`), never AA strokes: every dot is a whole art texel and alpha
+// moves in 1/16 steps so the pulse bands never smear partial pixels.
+function steppedAlpha(alpha) {
+    return Math.max(0, Math.min(1, Math.round(alpha * 16) / 16));
+}
+
 function sortedSpritesForTeam(memberIds, agentSprites) {
     const sprites = [];
     for (const id of memberIds || []) {
@@ -312,11 +319,9 @@ export function drawCouncilRings(ctx, {
             ? governor.admit(MarkTier.SECONDARY, sprites[0].x, sprites[0].y)
             : { draw: true, alpha: 1 };
         if (!gate.draw) continue;
+        const outline = gradeColor(color.accent, grade);
         ctx.save();
-        ctx.strokeStyle = rgba(gradeColor(color.accent, grade), Math.min(0.42, 0.26 * boost) * gate.alpha);
-        ctx.lineWidth = 1.4 / (zoom || 1);
-        ctx.setLineDash([]);
-        ctx.beginPath();
+        ctx.globalAlpha = steppedAlpha(Math.min(0.42, 0.26 * boost) * gate.alpha);
 
         const points = sprites.map(sprite => ({ x: sprite.x, y: sprite.y - 3 }));
         const centroid = points.reduce(
@@ -339,11 +344,8 @@ export function drawCouncilRings(ctx, {
                 x: mid.x + (anchor.x - mid.x) * 0.18,
                 y: mid.y + (anchor.y - mid.y) * 0.18 - 8,
             };
-            if (i === 0) ctx.moveTo(point.x, point.y);
-            ctx.quadraticCurveTo(control.x, control.y, next.x, next.y);
+            dottedCurve(ctx, point.x, point.y, control.x, control.y, next.x, next.y, { step: 2, color: outline });
         }
-        ctx.closePath();
-        ctx.stroke();
         ctx.restore();
     }
 }
@@ -367,7 +369,8 @@ export function drawFamilyTethers(ctx, {
     // motion keeps the legacy static value.
     const flicker = motionScale === 0 ? 1 : 0.85 + 0.15 * pulseBand01('intrinsic', now, motionScale);
     const alpha = Math.min(0.28, Math.max(0.18, 0.22 * boost * flicker));
-    const dashOffset = motionScale === 0 ? 0 : -(Math.floor(now * 0.06) % 9);
+    // Dots march one texel per 160 ms toward the child; static under RM.
+    const phase = motionScale === 0 ? 0 : Math.floor(now / 160);
     const governor = getActiveMarkGovernor();
 
     const advisorChildIds = new Set((snapshot.advisorPairs || []).map(pair => pair.advisorId));
@@ -393,21 +396,14 @@ export function drawFamilyTethers(ctx, {
                 ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
                 : { draw: true, alpha: 1 };
             if (!gate.draw) continue;
-            const stroke = rgba(trim, alpha * gate.alpha);
             const control = {
                 x: (start.x + end.x) / 2,
                 y: (start.y + end.y) / 2 - Math.min(28, dist * 0.18),
             };
 
             ctx.save();
-            ctx.strokeStyle = stroke;
-            ctx.lineWidth = 1 / (zoom || 1);
-            ctx.setLineDash([3 / (zoom || 1), 6 / (zoom || 1)]);
-            ctx.lineDashOffset = dashOffset / (zoom || 1);
-            ctx.beginPath();
-            ctx.moveTo(start.x, start.y);
-            ctx.quadraticCurveTo(control.x, control.y, end.x, end.y);
-            ctx.stroke();
+            ctx.globalAlpha = steppedAlpha(alpha * gate.alpha);
+            dottedCurve(ctx, start.x, start.y, control.x, control.y, end.x, end.y, { step: 4, phase, color: trim });
             ctx.restore();
         }
     }
@@ -436,7 +432,6 @@ export function drawAdvisorTethers(ctx, {
     const pulse = motionScale === 0 ? 1 : 0.82 + 0.18 * pulseBand01('intrinsic', now, motionScale, 0.9);
     const alpha = Math.min(0.55, Math.max(0.3, 0.42 * boost * pulse));
     const governor = getActiveMarkGovernor();
-    const invZoom = 1 / (zoom || 1);
 
     for (const pair of pairs) {
         const advisor = agentSprites.get(pair.advisorId);
@@ -460,24 +455,19 @@ export function drawAdvisorTethers(ctx, {
         };
 
         ctx.save();
-        ctx.strokeStyle = rgba(trim, alpha * gate.alpha);
-        ctx.lineWidth = 1.4 * invZoom;
-        ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.moveTo(start.x, start.y);
-        ctx.quadraticCurveTo(control.x, control.y, end.x, end.y);
-        ctx.stroke();
+        ctx.globalAlpha = steppedAlpha(alpha * gate.alpha);
+        dottedCurve(ctx, start.x, start.y, control.x, control.y, end.x, end.y, { step: 2, color: trim });
 
-        // Counsel mote riding the curve toward the parent; static midpoint
-        // bead under reduced motion so the link stays marked.
-        const t = motionScale === 0 ? 0.5 : ((now % TALK_MOTE_PERIOD_MS) / TALK_MOTE_PERIOD_MS);
+        // Counsel mote riding the curve toward the parent in 12 texel steps
+        // (a 2×2 texel, as the talk mote); static midpoint bead under reduced
+        // motion so the link stays marked.
+        const t = motionScale === 0 ? 0.5 : Math.floor(((now % TALK_MOTE_PERIOD_MS) / TALK_MOTE_PERIOD_MS) * 12) / 12;
         const inv = 1 - t;
         const moteX = inv * inv * start.x + 2 * inv * t * control.x + t * t * end.x;
         const moteY = inv * inv * start.y + 2 * inv * t * control.y + t * t * end.y;
-        ctx.fillStyle = rgba(trim, Math.min(0.85, (alpha + 0.3) * gate.alpha));
-        ctx.beginPath();
-        ctx.arc(moteX, moteY, 1.6 * invZoom, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.globalAlpha = steppedAlpha(Math.min(0.85, (alpha + 0.3) * gate.alpha));
+        ctx.fillStyle = trim;
+        ctx.fillRect(Math.round(moteX) - 1, Math.round(moteY) - 1, 2, 2);
         ctx.restore();
     }
 }
@@ -521,20 +511,15 @@ export function drawAllyTethers(ctx, {
             ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
             : { draw: true, alpha: 1 };
         if (!gate.draw) continue;
-        const stroke = rgba(gradeColor(THEME.ally || '#f0b27a', grade), alpha * gate.alpha);
+        const color = gradeColor(THEME.ally || '#f0b27a', grade);
         const control = {
             x: (start.x + end.x) / 2,
             y: (start.y + end.y) / 2 - Math.min(22, dist * 0.16),
         };
 
         ctx.save();
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = 1.2 / (zoom || 1);
-        ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.moveTo(start.x, start.y);
-        ctx.quadraticCurveTo(control.x, control.y, end.x, end.y);
-        ctx.stroke();
+        ctx.globalAlpha = steppedAlpha(alpha * gate.alpha);
+        dottedCurve(ctx, start.x, start.y, control.x, control.y, end.x, end.y, { step: 3, color });
         ctx.restore();
     }
 }

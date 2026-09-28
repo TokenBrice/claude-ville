@@ -12,7 +12,11 @@ export function attentionCandidateBounds(candidate) {
 }
 
 // Pure world-space framing. Unknown wait ages stay unknown and sort last.
-export function fitAttentionFrame(candidates, viewport, { padding = 16 } = {}) {
+// `zooms` are the tiers to try, closest first (4.1: the camera passes its
+// close, medium and wide shot scales, then tier 1); the last is the fallback.
+export function fitAttentionFrame(candidates, viewport, { padding = 16, zooms = [3, 2, 1] } = {}) {
+    const tiers = [...new Set(zooms)].filter(zoom => Number.isFinite(zoom) && zoom > 0).sort((a, b) => b - a);
+    const floor = tiers.length ? tiers[tiers.length - 1] : 1;
     const ranked = [...candidates].sort((a, b) => {
         const age = value => Number.isFinite(value) && value > 0 ? value : Infinity;
         return age(a.awaitingSince) - age(b.awaitingSince) || String(a.id).localeCompare(String(b.id));
@@ -42,7 +46,7 @@ export function fitAttentionFrame(candidates, viewport, { padding = 16 } = {}) {
         }
         return { center: pose, zoom, included, excluded, bias };
     };
-    for (const zoom of [3, 2, 1]) {
+    for (const zoom of tiers) {
         const centered = result(center, zoom, 'center');
         if (centered.excluded.length) continue;
         if (!ranked.length) return centered;
@@ -50,6 +54,6 @@ export function fitAttentionFrame(candidates, viewport, { padding = 16 } = {}) {
         const third = result({ x: oldest.x + width / (6 * zoom), y: center.y }, zoom, 'third');
         return third.excluded.length ? centered : third;
     }
-    // No complete fit: keep the oldest decision in a centered minimum-tier shot.
-    return result(ranked.length ? midpoint(bounds(ranked[0])) : center, 1, 'center');
+    // No complete fit: keep the oldest decision in a centered widest-tier shot.
+    return result(ranked.length ? midpoint(bounds(ranked[0])) : center, floor, 'center');
 }

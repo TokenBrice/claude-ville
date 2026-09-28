@@ -9,7 +9,7 @@ import {
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { PNG } from 'pngjs';
-import { getBuildingVisual } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
+import { getBuildingVisual, windowRectBounds } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
 import {
     defaultChannelPixel,
 } from '../../claudeville/src/presentation/character-mode/MaterialRegistry.js';
@@ -185,12 +185,12 @@ function semanticEmissiveStrength(frame, entry, x, y) {
     return strength;
 }
 
+// BL-3 — registry `at` is the glass centre; the bounds come from the same
+// helper the runtime stamps and the building validator use.
 function rectHit(candidate, x, y) {
-    const at = candidate?.at;
-    if (!Array.isArray(at)) return false;
-    const w = Math.max(1, Number(candidate.w) || 1);
-    const h = Math.max(1, Number(candidate.h) || 1);
-    return x >= at[0] && x < at[0] + w && y >= at[1] && y < at[1] + h;
+    if (!Array.isArray(candidate?.at)) return false;
+    const { left, top, w, h } = windowRectBounds(candidate);
+    return x >= left && x < left + w && y >= top && y < top + h;
 }
 
 function pointHit(point, x, y, radius) {

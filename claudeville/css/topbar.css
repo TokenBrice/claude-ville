@@ -1,16 +1,18 @@
-/* ── Top bar (plan 7.3): a quiet instrument with one loud slot ──
+/* ── Top bar (plan 7.3, 9.1): a quiet instrument with one loud slot ──
    48px, one warm surface, a 1px lit bevel and a 1px black seam against the
    world. Left: wordmark + meta line. Centre: KPI stacks (22px Departure Mono
    numeral over an 8px Press Start caption); NEEDS YOU is the only framed, lit
-   slot and exists only while > 0. Right: ghost 28px icon buttons and two
-   segmented wells (READ | AMBIENT, WORLD | DASHBOARD). Type is on the C5 grid
-   only (PS2P 8/16, DM 11/22), never bold. */
+   slot and exists only while > 0. Right: ghost 28px icon buttons and the
+   WORLD | DASHBOARD well — the same controls at the same x in both modes.
+   The World's own camera controls live in the World dock (`.world-dock`,
+   end of this file). Type is on the C5 grid only (PS2P 8/16, DM 11/22),
+   never bold. */
 .topbar {
     height: 48px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    gap: 12px;
     padding: 0 12px 0 16px;
     position: relative;
     isolation: isolate;
@@ -91,6 +93,9 @@
 .topbar__clock-time { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .topbar__clock-phase,
 .topbar__clock-override { color: var(--ink-3); text-transform: lowercase; }
+/* The widest reading (`· ☼ 10:30 night fixed`), so the centre never shifts
+   at a phase change; the slack falls at the end of the line. */
+.topbar__clock { min-width: calc(16ch + 38px); }
 
 /* ── Version (clickable → changelog) ── */
 .topbar__version {
@@ -105,9 +110,12 @@
     text-decoration: underline solid var(--gold-hi);
 }
 
-/* FPS is a permanent instrument beside the clock, including while idle. */
+/* FPS is a permanent instrument beside the clock, including while idle. Its
+   box fits the widest reading (`· FPS idle`), so the centre instrument keeps
+   its x when the render loop idles in Dashboard (9.1). */
 .topbar__fps {
     flex-shrink: 0;
+    min-width: calc(9ch + 6px);
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
     color: var(--ink-3);
@@ -449,9 +457,9 @@
     flex-wrap: wrap;
     align-content: flex-start;
     align-items: center;
-    gap: 8px 16px;
+    gap: 8px 12px;
     height: 48px;
-    padding-top: 8px;
+    padding-top: 4px;
     /* Centre absorbs overflow so the brand and the right-hand controls stay
        pinned at every width. A unit that does not fit wraps onto a clipped
        second row and disappears whole (never cut mid-glyph). NEEDS YOU and
@@ -469,7 +477,7 @@
 .topbar__status {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 12px;
 }
 
 /* KPI stack: numeral over caption, centred, 32px tall. */
@@ -517,33 +525,44 @@
 }
 
 /* NEED ACTION: the only framed, lit slot. Hidden at zero by TopBar. One part
-   per non-zero bucket (NEEDS YOU / ERROR / LIMIT), numeral and caption in the
-   bucket's status hue; the frame wears the first lit bucket's hue. */
+   per non-zero bucket (NEEDS YOU / ERROR / LIMIT), each a KPI stack like its
+   neighbours (numeral over caption) in the bucket's status hue; the frame
+   kit's attn slice (TopBar picks attn / attn-error / attn-limit from the
+   first lit bucket) is its 3px frame, so its numerals and captions sit on
+   the same rows as WORKING/IDLE/WAITING beside it. */
 .topbar__seg--attention {
-    --attn-hue: var(--cv-status-waiting-user);
     flex-direction: row;
     align-items: center;
-    gap: 16px;
-    height: 32px;
-    padding: 0 12px 0 10px;
-    background: color-mix(in srgb, var(--attn-hue) 16%, var(--bg-1));
-    box-shadow:
-        inset 0 0 0 1px color-mix(in srgb, var(--attn-hue) 60%, var(--bg-1)),
-        0 1px 0 var(--seam);
+    gap: 10px;
+    height: 38px;
+    padding: 0 6px;
 }
-
-.topbar__seg--attention[data-lead="errors"] { --attn-hue: var(--cv-status-errored); }
-.topbar__seg--attention[data-lead="quota"] { --attn-hue: var(--cv-status-rate-limited); }
 
 .topbar__attn-part {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: 2px;
     white-space: nowrap;
 }
 
 .topbar__attn-part[hidden] {
     display: none;
+}
+
+/* The bucket's motif rides the numeral row at 2× (its 8×8 grid), costing
+   no width: every caption is wider than motif + numeral. */
+.topbar__attn-count {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.topbar__attn-glyph {
+    display: block;
+    width: 16px;
+    height: 16px;
+    shape-rendering: crispEdges;
 }
 
 .topbar__attn-part--needs-you { color: var(--cv-status-waiting-user); }
@@ -561,7 +580,7 @@
     align-items: center;
     min-width: 0;
     height: 32px;
-    padding-left: 16px;
+    padding-left: 12px;
     border-left: 1px solid var(--line-1);
     overflow: hidden;
     flex-shrink: 1;
@@ -602,7 +621,7 @@
     color: var(--gold-hi);
 }
 
-/* ── Right: ghost icon buttons and two segmented wells ── */
+/* ── Right: ghost icon buttons and the mode well ── */
 .topbar__right {
     display: flex;
     align-items: center;
@@ -612,8 +631,7 @@
 
 /* Text chips and the icon buttons share one ghost treatment: no plate at
    rest, --bg-2 on hover, --bg-3 + gold glyph while engaged. */
-.topbar__sound-btn,
-.topbar__cinema-btn {
+.topbar__sound-btn {
     height: 28px;
     padding: 0 8px;
     color: var(--ink-3);
@@ -631,16 +649,13 @@
     color: var(--ink-2);
 }
 
-.topbar__sound-btn:hover:not(:disabled),
-.topbar__cinema-btn:hover {
+.topbar__sound-btn:hover:not(:disabled) {
     color: var(--ink-1);
     background: var(--bg-2);
 }
 
 .topbar__sound-btn--on,
-.topbar__cinema-btn--on,
 .topbar__sound-btn--on:hover:not(:disabled),
-.topbar__cinema-btn--on:hover,
 body:has(#worldGrammar:popover-open) #topbarWorldControls {
     color: var(--gold-hi);
     background: var(--bg-3);
@@ -771,15 +786,13 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     background: var(--ink-2);
 }
 
-/* A segmented well: one recessed --bg-0 channel, tabs inside it. */
+/* A segmented well: the frame kit's recessed slice (2px, so the well stays
+   28px) around the tabs, a 1px --line-1 rule between them. */
 .topbar__well {
     display: flex;
     align-items: stretch;
     height: 28px;
     margin-left: 8px;
-    padding: 1px;
-    background: var(--bg-0);
-    box-shadow: inset 0 0 0 1px var(--line-1);
 }
 
 .topbar__well:not(:has(> :not([hidden]))) {
@@ -788,28 +801,12 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
 
 .topbar__well > .topbar__sound-btn,
 .topbar__well > .topbar__mode-btn {
-    height: 26px;
+    height: 24px;
     padding: 0 8px;
 }
 
 .topbar__well > * + *:not([hidden]) {
     box-shadow: inset 1px 0 0 var(--line-1);
-}
-
-.topbar__well .world-read kbd {
-    font: inherit;
-    color: var(--ink-4);
-}
-
-.topbar__well .world-read[aria-pressed="true"],
-.topbar__well .world-ambient.topbar__sound-btn--on {
-    color: var(--gold-hi);
-    background: var(--bg-3);
-}
-
-/* Handed back to the operator: an invitation, not an active broadcast. */
-.topbar__well .world-ambient[data-state="resume"] {
-    color: var(--ink-1);
 }
 
 .topbar__mode-btn {
@@ -825,15 +822,129 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     background: var(--bg-2);
 }
 
-/* The one gold slab in the chrome: the active mode tab. Stepped, not
-   smoothed: a 1px highlight, a gold face, a deeper lower half, a 1px foot. */
+/* The one gold slab in the chrome: the active mode tab, a raised key in the
+   well. The frame kit's walnut slice is its rim (seam, notch, lit upper
+   left); inside it the stepped gold face: a 1px highlight, the face, a
+   deeper lower half, a 1px foot. */
 .topbar__mode-btn--active,
 .topbar__mode-btn--active:hover {
     color: var(--cv-active-ink);
+    border: 3px solid transparent;
+    border-image: url("../assets/ui/walnut.png") 3 / 3px / 0 stretch;
     background: linear-gradient(180deg,
         var(--cv-active-top) 0 1px,
         var(--gold) 1px 50%,
         var(--cv-active-mid) 50% calc(100% - 1px),
-        var(--cv-active-bottom) calc(100% - 1px));
+        var(--cv-active-bottom) calc(100% - 1px)) padding-box;
     box-shadow: none;
+    image-rendering: pixelated;
+}
+
+.topbar__well > .topbar__mode-btn--active {
+    padding: 0 5px;
+}
+
+.topbar__well > .topbar__mode-btn--active + *,
+.topbar__well > * + .topbar__mode-btn--active {
+    box-shadow: none;
+}
+
+/* ── World camera dock (plan 9.1) ──
+   The World's own controls hang from the bar's seam at the world's top
+   right, so the bar keeps one shape in both modes: the FREE | AUTO | AMBIENT
+   camera well, the READ hold, and the World-controls compass. A walnut tab
+   (frame kit) open at the top, 36px tall; it lives in #characterMode, so it
+   follows the world's edge when the Activity Panel opens, and publishes its
+   rect as the reserved rect `world-dock` (V8) for plates and moments. */
+.world-dock {
+    position: absolute;
+    top: 0;
+    right: 12px;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 36px;
+    padding: 3px 5px 2px;
+}
+
+.world-dock.cv-frame {
+    border-top-width: 0;
+    border-image-width: 0 3px 3px;
+}
+
+.world-dock .topbar__well {
+    margin-left: 0;
+}
+
+/* One segment pressed at a time: the camera's current owner. */
+.world-camera[aria-pressed="true"],
+.world-camera[aria-pressed="true"]:hover {
+    color: var(--gold-hi);
+    background: var(--bg-3);
+}
+
+/* Ambient handed back by an input: an invitation, not a broadcast. The
+   segment keeps its word and width and wears the armed pip (the sound
+   chip's grammar): a hollow 3px gold square in its lower right. */
+.world-ambient[data-state="resume"] {
+    position: relative;
+    color: var(--ink-1);
+}
+
+.world-ambient[data-state="resume"]::after {
+    content: '';
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    width: 3px;
+    height: 3px;
+    border: 1px solid var(--gold);
+}
+
+.world-read,
+.world-camera {
+    user-select: none;
+    white-space: nowrap;
+}
+
+.world-read {
+    touch-action: none;
+}
+
+.world-read[aria-pressed="true"] {
+    color: var(--gold-hi);
+    background: var(--bg-3);
+}
+
+/* ── One chrome tooltip (plan 9.4) ──
+   #cvTip is a manual popover anchored (CSS anchor positioning) to whichever
+   [data-tip] control ChromeTooltip.js points it at: hung from the control's
+   left edge, flipped to its right edge or above it when the viewport would
+   clip it. Bitmap type on the C5 grid (DM 11/16), a bg2 frame, whole-pixel
+   edges, no animation. The UA popover rules supply `position: fixed`. */
+.cv-tip {
+    inset: auto;
+    /* Its own width first, so a tip near the edge flips instead of wrapping. */
+    width: max-content;
+    max-width: 320px;
+    margin: 4px 0 0;
+    padding: 3px 5px;
+    overflow: visible;
+    color: var(--ink-1);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    white-space: normal;
+    pointer-events: none;
+    position-anchor: --cv-tip;
+    position-area: bottom span-right;
+    position-try-fallbacks: flip-inline, flip-block, flip-block flip-inline;
+}
+
+.cv-tip kbd {
+    margin-left: 8px;
+    padding: 0 4px;
+    color: var(--gold-hi);
+    background: var(--bg-0);
+    box-shadow: inset 0 0 0 1px var(--line-1);
+    font: inherit;
 }

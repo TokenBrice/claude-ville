@@ -337,8 +337,10 @@ export class DebugOverlay {
         const resources = gpu.resources || {};
         return [
             `gpu world: level ${gpu.qualityLevel} · ${gpu.qualityReason} · ${gpu.records} records / ${gpu.batches} batches · ${gpu.lights} lights`,
-            `gpu frame: whole ${formatMicroMs(gpu.gpuMs)} · cpu ${formatOptionalMs(gpu.cpuMs)} · gap ${formatOptionalMs(gpu.frameGapMs)} · source ${gpu.qualityTimingSource}`,
-            `shed (${gpu.shedReason}): ${gpu.shedEffects.map((effect) => `${effect.id} ${effect.mode}`).join(', ') || 'none'}`,
+            ...pacingRows(gpu.pacing),
+            `gpu timer: p25 ${formatMicroMs(gpu.gpuMsP25)} · ema ${formatMicroMs(gpu.gpuMs)} · 1/${gpu.gpuTimerEvery ?? '?'} frames · n=${gpu.gpuTimerSamples ?? 0}`,
+            `gpu frame: cpu ${formatOptionalMs(gpu.cpuMs)} · gap ${formatOptionalMs(gpu.frameGapMs)} · source ${gpu.qualityTimingSource}`,
+            ...shedRows(gpu),
             `pass sampling ${gpu.passSamplingEnabled ? 'on' : 'off'} · disjoint discards ${gpu.gpuDisjointDiscards} · timer errors ${gpu.gpuTimerErrors}`,
             ...Object.entries(gpu.passes).map(([name, pass]) => `  ${name}: gpu ${formatMicroMs(pass.gpuMs)}`
                 + ` · cpu ${formatMicroMs(pass.cpuMs)} · ${pass.draws ?? 0} draws · ${formatBytes(pass.bytes)} · n=${pass.samples}`),
@@ -347,7 +349,7 @@ export class DebugOverlay {
                 ? `${resources.liveBodyAtlas.width}x${resources.liveBodyAtlas.height}/channel`
                 : 'absent'}`,
             ...(resources.atlasPages || []).map((page) => `  ${page.name}: ${page.width}x${page.height} · ${formatBytes(page.bytes)}`),
-        ];
+        ].filter(Boolean);
     }
 
     _hybridPostFxRows(renderer) {
@@ -408,6 +410,62 @@ export class DebugOverlay {
         ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
         ctx.fill();
     }
+}
+
+// Rows wider than the 560 px panel are squeezed, not wrapped, so long
+// readouts break into continuation rows instead.
+const WRAP_CHARS = 72;
+
+function wrapRows(head, parts, separator) {
+    const rows = [];
+    let row = head;
+    for (const part of parts) {
+        const joined = row === head ? `${row}${part}` : `${row}${separator}${part}`;
+        if (joined.length > WRAP_CHARS && row !== head && row.trim()) {
+            rows.push(row);
+            row = `    ${part}`;
+        } else {
+            row = joined;
+        }
+    }
+    rows.push(row);
+    return rows;
+}
+
+// 0.1 — the ladder's pacing state: the latched display period, the miss
+// window it demotes on, the timer veto, and any probe, step or cool-down.
+function pacingRows(pacing) {
+    if (!pacing) return [];
+    const now = performance.now();
+    const parts = [pacing.refreshHz
+        ? `${pacing.refreshHz} Hz latched (${Number(pacing.periodMs).toFixed(1)}ms)`
+        : 'latching the display period'];
+    parts.push(`misses ${Math.round((pacing.missShare || 0) * (pacing.intervals || 0))}/${pacing.intervals || 0}`);
+    parts.push(`paced level ${pacing.pacedLevel}`);
+    parts.push(`veto budget ${formatOptionalMs(pacing.budgetMs)} (${pacing.timerVeto})`);
+    if (pacing.pending) parts.push(pacing.pending);
+    const coolDownMs = Number(pacing.coolDownUntilMs) - now;
+    if (coolDownMs > 0) parts.push(`cool-down ${Math.ceil(coolDownMs / 1000)}s`);
+    const probeMs = Number(pacing.nextProbeAtMs) - now;
+    if (probeMs > 0) parts.push(`next probe ${Math.ceil(probeMs / 1000)}s`);
+    return wrapRows('pacing: ', parts, ' · ');
+}
+
+// Every active cap: the EFFECT_BUDGET rows below FULL, and the light
+// admission whenever it drops offered lights (at FULL too).
+function shedRows(gpu) {
+    const admission = gpu.lightAdmission;
+    const note = !admission ? ''
+        : admission.daylight ? ' (day: local lights off)'
+            : ` (${admission.admitted}/${admission.offered} admitted)`;
+    const parts = gpu.shedEffects.map((effect) => (effect.id === 'light-admission'
+        ? `light-admission ${effect.mode}${note}`
+        : `${effect.id} ${effect.mode}`));
+    if (admission && !admission.daylight && admission.offered > admission.cap
+        && !gpu.shedEffects.some((effect) => effect.id === 'light-admission')) {
+        parts.push(`light-admission ${admission.cap}${note}`);
+    }
+    return wrapRows(`shed (${gpu.shedReason}): `, parts.length ? parts : ['none'], ', ');
 }
 
 function formatMs(value) {

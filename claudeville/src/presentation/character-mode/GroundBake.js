@@ -21,7 +21,8 @@
 //                    Command plaza the lightest paved floor.
 //   4. macro fields  6–7-tile value drift plus district-anchored warmth:
 //                    drier/warmer grass by the workshops, lusher/cooler under
-//                    the northern canopy and by the scholars' buildings.
+//                    the northern canopy and by the scholars' buildings; the
+//                    forest floor a further half ramp step darker (5.4).
 //   5. contact AO    ramp-step darkening outside building footprints (longer
 //                    on the down-light sides), under tree canopies and props.
 //   6. thresholds    authored worn-earth corridors from each door along its
@@ -29,7 +30,17 @@
 //   7. yards (4.7)   each district's frontage apron in its own material
 //                    (flagstone, gravel, cinder, earth) with low baked kerbs
 //                    or wattle edging where it meets grass.
-//   8. decals        sparse clusters at native texel density: meadow flower
+//   8. living ground (plan 5.1 and 5.4 of
+//                    agents/plans/claudeville-opus55-xhigh-visual-plan.md)
+//                    a chamfer distance from grass to the paths and a crown
+//                    field pushed downwind under every tree place clustered
+//                    micro-detail: an unmown verge of blades and seed heads
+//                    along every path (dead stems in winter), twigs, moss and
+//                    pine needle duff under crowns, weeds at wall bases, rare
+//                    meadow pockets; by season, autumn leaf litter matching
+//                    the crown above and dry-grass patches, spring petals
+//                    under blossoming oaks, winter leaf mould.
+//   9. decals        sparse clusters at native texel density: meadow flower
 //                    pockets, grass tufts, low shrubs, bank reeds, pebbles.
 //
 // Registered as terrain bake pass 'ground-splat' (stage 'ground'). The result
@@ -95,6 +106,8 @@ const SAND = ramp('sand');
 const FOLIAGE = ramp('foliage');
 const TIMBER = ramp('timber');
 const OCHRE = ramp('clothOchre');
+const LEAF = ramp('leafAutumn');
+const BLOSSOM = ramp('blossom');
 // Grass drift ramps derived from C1 (same value ladder, shifted hue): dry
 // grass leans toward the earth ramp, lush grass toward the sage foliage.
 const GRASS_DRY = GRASS.map((c, i) => mixRgb(c, DIRT[Math.max(0, i - 1)], 0.18));
@@ -179,6 +192,8 @@ const DISTRICT_DRIFT = Object.freeze({
 });
 
 const BAYER = [0, 2, 3, 1].map(v => v / 4 - 0.375);
+// 5.4 — grass inside the forest floors sits half a ramp step darker.
+const FOREST_FLOOR_STEP = 0.5;
 
 // ---- noise ----------------------------------------------------------------
 
@@ -230,11 +245,14 @@ function buildTileGrid(r) {
     return { code, yardSurface };
 }
 
-// Macro value and warmth drift sampled at tile centres (bilinear per texel).
+// Macro value and warmth drift sampled at tile centres (bilinear per texel),
+// plus the forest-floor weight (0 outside FOREST_FLOOR_REGIONS, 1 a third of
+// the way in) that darkens the woods' grass by FOREST_FLOOR_STEP (5.4).
 function buildDriftGrid(r) {
     const N = MAP_SIZE;
     const value = new Float32Array(N * N);
     const warm = new Float32Array(N * N);
+    const forest = new Float32Array(N * N);
     const anchors = [];
     for (const b of r.world?.buildings?.values?.() || []) {
         const drift = DISTRICT_DRIFT[b.type];
@@ -252,6 +270,7 @@ function buildDriftGrid(r) {
                 v += a.value * g;
                 w += a.warm * g;
             }
+            let f = 0;
             for (const region of FOREST_FLOOR_REGIONS) {
                 const dx = (x + 0.5 - region.centerX) / region.radiusX;
                 const dy = (y + 0.5 - region.centerY) / region.radiusY;
@@ -260,12 +279,14 @@ function buildDriftGrid(r) {
                 const s = (1 - d) * (region.strength ?? 1);
                 v -= 0.45 * s;
                 w -= 0.7 * s;
+                f = Math.max(f, Math.min(1, (1 - d) * 3));
             }
             value[y * N + x] = v;
             warm[y * N + x] = w;
+            forest[y * N + x] = f;
         }
     }
-    return { value, warm };
+    return { value, warm, forest };
 }
 
 function readTextures(r) {
@@ -424,6 +445,9 @@ export function bakeGround(r) {
     const surfaces = new Uint8Array(cols * rows).fill(255);
     const sdBuf = new Float32Array(cols * rows).fill(9);
     const aoBuf = new Uint8Array(cols * rows);
+    // Ramp stop index per texel, so the living-ground pass can re-tone grass
+    // (dry patches) on the same value ladder.
+    const stepBuf = new Uint8Array(cols * rows);
     const image = new ImageData(w, h);
     const D = image.data;
     const clampI = (v) => (v < 0 ? 0 : v >= N ? N - 1 : v);
@@ -561,6 +585,7 @@ export function bakeGround(r) {
 
             let k = 2 + S.offset + z * S.contrast + macro + dither * 0.75
                 + lip * 0.8 - tuck * 1.0 - ao * 3.2 + wearStep;
+            if (surface === S_GRASS) k -= FOREST_FLOOR_STEP * lerp4(drift.forest);
             k = k < 0 ? 0 : k > 4 ? 4 : Math.round(k);
 
             let rampColors = S.ramp;
@@ -574,6 +599,7 @@ export function bakeGround(r) {
             D[o + 4] = c[0]; D[o + 5] = c[1]; D[o + 6] = c[2]; D[o + 7] = 255;
             classes[ti] = sd > 0 ? GROUND_CLASS.WATER : S.cls;
             surfaces[ti] = surface;
+            stepBuf[ti] = k;
         }
     }
 
@@ -585,6 +611,7 @@ export function bakeGround(r) {
     };
 
     drawYardEdges({ cols, rows, surfaces, put });
+    drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put, season: r._terrainSeason || 'summer' });
     drawDecals(r, { cols, rows, x0, y0, surfaces, sdBuf, aoBuf, put, season: r._terrainSeason || 'summer' });
 
     const canvas = document.createElement('canvas');
@@ -655,6 +682,302 @@ const edgeForYardSurface = (() => {
     }
     return (s) => bySurface.get(s) || null;
 })();
+
+// ---- living ground (5.1 seasons, 5.4 micro-detail) ------------------------
+
+// Two-pass 5-7 chamfer distance (in fifths of a texel) from every grass or
+// sand texel to the nearest paved or trodden texel. The 2×1 texel is square on
+// the ground plane (2 world px across = 1 px down in 2:1 iso), so one mask
+// serves both axes. Water and off-map texels are not sources.
+const CHAMFER_A = 5;
+const CHAMFER_B = 7;
+function chamferToPaths(cols, rows, surfaces) {
+    const far = 65535;
+    const d = new Uint16Array(cols * rows);
+    for (let i = 0; i < d.length; i++) {
+        const s = surfaces[i];
+        d[i] = s === S_GRASS || s === S_SAND || s === 255 ? far : 0;
+    }
+    for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+            const i = row * cols + col;
+            let v = d[i];
+            if (v === 0) continue;
+            if (col > 0) v = Math.min(v, d[i - 1] + CHAMFER_A);
+            if (row > 0) {
+                v = Math.min(v, d[i - cols] + CHAMFER_A);
+                if (col > 0) v = Math.min(v, d[i - cols - 1] + CHAMFER_B);
+                if (col < cols - 1) v = Math.min(v, d[i - cols + 1] + CHAMFER_B);
+            }
+            d[i] = v;
+        }
+    }
+    for (let row = rows - 1; row >= 0; row--) {
+        for (let col = cols - 1; col >= 0; col--) {
+            const i = row * cols + col;
+            let v = d[i];
+            if (v === 0) continue;
+            if (col < cols - 1) v = Math.min(v, d[i + 1] + CHAMFER_A);
+            if (row < rows - 1) {
+                v = Math.min(v, d[i + cols] + CHAMFER_A);
+                if (col < cols - 1) v = Math.min(v, d[i + cols + 1] + CHAMFER_B);
+                if (col > 0) v = Math.min(v, d[i + cols - 1] + CHAMFER_B);
+            }
+            d[i] = v;
+        }
+    }
+    return d;
+}
+
+// Crown half-widths (world px) of the tree sheets (FoliageRenderer's sprite
+// keys); the ground under a crown is the iso ellipse of that radius, which is
+// a circle of radius/2 in 2×1 texels.
+const CROWN_RADIUS = Object.freeze({ 'oak.large': 26, 'oak.small': 9, 'pine.large': 13, 'willow.large': 20, 'willow.small': 12 });
+// Leaves and needles fall around the trunk and drift downwind: the prevailing
+// knot wind blows toward screen right, so the drop zone sits a fifth of a
+// radius that way.
+const DROP_DRIFT = 0.2;
+const CROWN_REACH = 1.5;
+
+// Per texel: distance to the nearest crown's drop zone in crown radii (9 when
+// none within CROWN_REACH) and that tree's index.
+function buildCrownField(r, { cols, rows, x0, y0 }) {
+    const trees = r.scenery?.getTreeProps?.() || [];
+    const dist = new Float32Array(cols * rows).fill(9);
+    const owner = new Int16Array(cols * rows).fill(-1);
+    trees.forEach((tree, index) => {
+        const species = tree.species === 'pine' || tree.species === 'willow' ? tree.species : 'oak';
+        const size = tree.size === 'small' && species !== 'pine' ? 'small' : 'large';
+        const radius = CROWN_RADIUS[`${species}.${size}`] / 2;
+        const cc = ((tree.tileX - tree.tileY) * HALF_W - x0) / TEXEL_W + DROP_DRIFT * radius;
+        const rc = (tree.tileX + tree.tileY) * HALF_H - y0;
+        const reach = radius * CROWN_REACH;
+        const c0 = Math.max(0, Math.floor(cc - reach));
+        const c1 = Math.min(cols - 1, Math.ceil(cc + reach));
+        const r0 = Math.max(0, Math.floor(rc - reach));
+        const r1 = Math.min(rows - 1, Math.ceil(rc + reach));
+        for (let row = r0; row <= r1; row++) {
+            for (let col = c0; col <= c1; col++) {
+                const d = Math.hypot(col + 0.5 - cc, row + 0.5 - rc) / radius;
+                const i = row * cols + col;
+                if (d < dist[i]) { dist[i] = d; owner[i] = index; }
+            }
+        }
+    });
+    return { trees, dist, owner };
+}
+
+// Litter colours (leafAutumn stops) by the crown above: russet oaks drop
+// russet, ochre oaks gold, turning oaks a mix, willows straw gold.
+const LITTER = Object.freeze({
+    russet: [LEAF[0], LEAF[1], LEAF[2]],
+    ochre: [LEAF[3], LEAF[4], LEAF[1]],
+    turning: [LEAF[1], LEAF[3], LEAF[4], LEAF[2]],
+    willow: [LEAF[3], LEAF[4]],
+    mould: [DIRT[0], LEAF[0]],
+});
+const NEEDLES = [TIMBER[2], DIRT[1], DIRT[0]];
+// The verge (plan 5.4): tufts rooted 2–6 texels from a path, blades 1–3
+// texels above the root row.
+const VERGE_NEAR = 2 * CHAMFER_A;
+const VERGE_FAR = 6 * CHAMFER_A;
+const MEADOW_OPEN = 12 * CHAMFER_A;
+// Spring's fresh flush: new growth one C1 grass step toward the sunlit
+// foliage ramp's yellow-green (the same drift recipe as GRASS_DRY).
+const SUN = ramp('foliageSun');
+const GRASS_FRESH = GRASS.map((c, i) => mixRgb(c, SUN[Math.min(SUN.length - 1, i + 3)], 0.3));
+
+// Verge colours per season: blade stem and tip, and the seed tufts' heads
+// [lower, upper] (none in spring; brown dead heads, rarer, in winter).
+const VERGE_STYLE = Object.freeze({
+    spring: { stem: GRASS[3], tip: GRASS_FRESH[4], head: null, seeds: 0 },
+    summer: { stem: GRASS[3], tip: GRASS[4], head: [SAND[1], SAND[3]], seeds: 0.6 },
+    autumn: { stem: GRASS_DRY[2], tip: GRASS_DRY[4], head: [DIRT[2], DIRT[4]], seeds: 0.6 },
+    winter: { stem: GRASS_DRY[1], tip: GRASS_DRY[3], head: [DIRT[1], DIRT[3]], seeds: 0.3 },
+});
+// Seed tufts as [column offset, blade height, head texels] from the root
+// texel: two or three blades from one root; the tallest carries a two-texel
+// head and one neighbour a single head touching it, so seeds read as one
+// small cluster per tuft instead of single flecks.
+const SEED_TUFTS = Object.freeze([
+    [[-1, 2, 0], [0, 3, 2], [1, 2, 1]],
+    [[-1, 2, 1], [0, 3, 2], [1, 1, 0]],
+    [[0, 3, 2], [1, 2, 1]],
+    [[-1, 1, 0], [0, 2, 1], [1, 3, 2]],
+]);
+
+// True when (col, row) is the one hashed candidate texel of its w×h cell:
+// clustered marks (tufts, leaf clumps, petals) sit on a jittered grid, so they
+// never pile up into noise or leave long gaps.
+function cellCandidate(col, row, w, h, salt) {
+    const cx = Math.floor(col / w);
+    const cy = Math.floor(row / h);
+    return col === cx * w + Math.floor(hash2(cx, cy, salt) * w)
+        && row === cy * h + Math.floor(hash2(cx, cy, salt + 1) * h);
+}
+
+function litterFor(tree, season) {
+    if (season === 'winter') return LITTER.mould;
+    if (tree.species === 'willow') return LITTER.willow;
+    return tree.variant === 1 ? LITTER.russet : tree.variant === 2 ? LITTER.ochre : LITTER.turning;
+}
+
+// Fallen leaves and petals lie in small clumps of two to four texels, one
+// colour per clump with a darker underside texel.
+const CLUMPS = Object.freeze([
+    [[0, 0], [1, 0]],
+    [[0, 0], [1, 0], [0, -1]],
+    [[0, 0], [1, 0], [1, 1]],
+    [[-1, 0], [0, 0], [0, -1], [1, 0]],
+]);
+
+function drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put, season }) {
+    const edge = chamferToPaths(cols, rows, surfaces);
+    const crowns = buildCrownField(r, { cols, rows, x0, y0 });
+    const winter = season === 'winter';
+    const autumn = season === 'autumn';
+    const spring = season === 'spring';
+    const style = VERGE_STYLE[season] || VERGE_STYLE.summer;
+
+    // A blade rising `tall` texels (base included); a tall blade throws its
+    // root shadow one texel down-light (screen right).
+    const blade = (col, row, tall, stem, tip) => {
+        put(col, row, GRASS[0]);
+        if (tall > 2) put(col + 1, row, GRASS[0]);
+        for (let k = 1; k < tall; k++) put(col, row - k, k === tall - 1 ? tip : stem);
+    };
+    // A seed tuft rooted at (col, row): its blades and their heads.
+    const seedTuft = (col, row, pick) => {
+        for (const [dx, h, head] of SEED_TUFTS[Math.floor(pick * SEED_TUFTS.length)]) {
+            blade(col + dx, row, h + 1, style.stem, head ? style.stem : style.tip);
+            if (head) put(col + dx, row - h - 1, style.head[0]);
+            if (head > 1) put(col + dx, row - h - 2, style.head[1]);
+        }
+    };
+    // A clump of fallen leaves or petals.
+    const clump = (col, row, pick, c, under) => {
+        const shape = CLUMPS[Math.floor(pick * CLUMPS.length)];
+        shape.forEach(([dx, dy], k) => put(col + dx, row + dy, k === 0 && under ? under : c));
+    };
+
+    for (let row = 4; row < rows - 1; row++) {
+        const sy = y0 + row + 0.5;
+        for (let col = 1; col < cols - 1; col++) {
+            const i = row * cols + col;
+            if (surfaces[i] !== S_GRASS) continue;
+            const sx = x0 + col * TEXEL_W + 1;
+            const e = edge[i];
+            const h = hash2(col, row, 1201);
+            const pick = hash2(col, row, 1202);
+            const cd = crowns.dist[i];
+            const tree = cd < CROWN_REACH ? crowns.trees[crowns.owner[i]] : null;
+            const ao = aoBuf[i];
+
+            // Seasonal patches away from the crowns: autumn dry grass, a
+            // sparser dormant set in winter, spring's fresh flush.
+            if (cd > 1.2 && season !== 'summer') {
+                const tx = sx / TILE_WIDTH + sy / TILE_HEIGHT;
+                const ty = sy / TILE_HEIGHT - sx / TILE_WIDTH;
+                const n = vnoise(tx / 2.6, ty / 2.6, spring ? 1310 : 1311) + BAYER[(row & 1) * 2 + (col & 1)] * 0.3;
+                if (n > (autumn ? 0.7 : spring ? 0.66 : 0.8)) put(col, row, (spring ? GRASS_FRESH : GRASS_DRY)[stepBuf[i]]);
+            }
+
+            // The unmown verge along every path: blades densest at the path's
+            // edge and thinning inward in longer and shorter stretches, each
+            // a lit stroke over a dark root texel; seed heads only in seed
+            // tufts, on a jittered 6×4 grid inside patches of the band. Under
+            // a crown the verge keeps its blades in shade colours. A grass
+            // sliver too narrow to reach the band carries blades along its
+            // ridge (its texels farthest from paving).
+            const inBand = e >= VERGE_NEAR && e <= VERGE_FAR;
+            const ridge = !inBand && e >= CHAMFER_A && e < VERGE_NEAR
+                && edge[i - 1] <= e && edge[i + 1] <= e && edge[i - cols] <= e && edge[i + cols] <= e;
+            if (inBand || ridge) {
+                const band = vnoise(sx / 60, sy / 30, 1206);
+                const inward = ridge ? 0 : (e - VERGE_NEAR) / (VERGE_FAR - VERGE_NEAR);
+                const shaded = Boolean(tree) && cd < 1;
+                if (style.head && !shaded && cellCandidate(col, row, 6, 4, 1213)
+                    && vnoise(sx / 40, sy / 20, 1218) > 0.45
+                    && hash2(col, row, 1207) < style.seeds * (1 - inward * 0.5)) {
+                    seedTuft(col, row, pick);
+                    continue;
+                }
+                if (h < (ridge ? 0.35 : (0.12 + band * 0.18) * (1 - inward * 0.5))) {
+                    const tall = 2 + Math.floor(pick * 3);
+                    if (shaded) blade(col, row, tall, GRASS[2], GRASS[3]);
+                    else blade(col, row, tall, style.stem, style.tip);
+                    continue;
+                }
+            }
+
+            if (tree && cd < 1) {
+                // Under a crown: litter by season, then needles, twigs, moss.
+                const near = 1 - cd;
+                const drift = 0.6 + 0.8 * vnoise(sx / 14, sy / 7, 1203);
+                if (tree.species === 'pine') {
+                    if (h < (near + 0.1) * 0.32 * drift) {
+                        put(col, row, NEEDLES[Math.floor(pick * NEEDLES.length)]);
+                        if (pick > 0.6) put(col + 1, row, NEEDLES[0]);
+                    }
+                    continue;
+                }
+                if ((autumn || winter) && cellCandidate(col, row, 3, 2, 1214)) {
+                    if (h < near ** 1.2 * (autumn ? 1.1 : 0.3) * drift) {
+                        const litter = litterFor(tree, season);
+                        const k = Math.floor(pick * litter.length);
+                        clump(col, row, hash2(col, row, 1215), litter[k], litter[Math.max(0, k - 1)]);
+                    }
+                    continue;
+                }
+                if (spring && tree.species === 'oak' && tree.variant === 2 && cellCandidate(col, row, 3, 2, 1216)) {
+                    if (h < near * 0.85 * drift) clump(col, row, hash2(col, row, 1215), BLOSSOM[3], BLOSSOM[2]);
+                    continue;
+                }
+                const q = hash2(col, row, 1205);
+                if (q < 0.01) {
+                    put(col, row, TIMBER[1]);
+                    put(col + 1, row + (pick > 0.5 ? 1 : -1), TIMBER[2]);
+                } else if (q < 0.03) {
+                    put(col, row, FOLIAGE[2]);
+                    put(col + 1, row, FOLIAGE[3]);
+                }
+                continue;
+            }
+            if (tree && autumn && tree.species !== 'pine' && cellCandidate(col, row, 3, 2, 1214)
+                && h < (CROWN_REACH - cd) * 0.25) {
+                // A few leaves blown past the drop zone.
+                const litter = litterFor(tree, season);
+                put(col, row, litter[Math.floor(pick * 2)]);
+                put(col + 1, row, litter[Math.floor(pick * 2)]);
+                continue;
+            }
+
+            if (ao > 20 && ao < 110) {
+                // Weeds at wall and prop bases, in clumps; in winter a dead
+                // stalk pair, never a lone brown fleck.
+                if (h < (vnoise(sx / 40, sy / 20, 1212) > 0.45 ? 0.06 : 0.012)) {
+                    put(col, row, FOLIAGE[1]);
+                    put(col, row - 1, winter ? DIRT[2] : FOLIAGE[2]);
+                    if (pick > 0.5 || winter) put(col + 1, row - 1, winter ? DIRT[3] : FOLIAGE[3]);
+                }
+            } else if (e > MEADOW_OPEN && ao === 0 && !tree && !winter) {
+                // Rare meadow pockets: daisies (seed tufts in autumn) where a
+                // low-frequency mask opens, clover drifts where it closes.
+                // Spring opens more pockets.
+                const pocket = vnoise(sx / 110, sy / 55, 1208);
+                const open = spring ? 0.58 : 0.66;
+                if (pocket > open && h < (pocket - open) * 0.2) {
+                    put(col, row, GRASS[1]);
+                    put(col, row - 1, autumn ? DIRT[4] : pick > 0.85 ? OCHRE[1] : SAND[4]);
+                } else if (pocket < 0.22 && h < 0.012) {
+                    put(col, row, GRASS[2]);
+                    put(col + 1, row, GRASS[3]);
+                    put(col, row - 1, GRASS[3]);
+                }
+            }
+        }
+    }
+}
 
 // ---- decals ---------------------------------------------------------------
 

@@ -36,12 +36,14 @@ import {
 const SETTINGS_MODAL_OWNER = 'topbar-settings';
 const UNKNOWN_MODEL_DATE_KEY = 'claudeville.pricing.unknownModelDate';
 // The actionable buckets in display precedence (SignalLedger ACTIONABLE_BUCKETS
-// order), with the same words the World's attention plates use.
-const ATTENTION_PARTS = Object.freeze([
-    Object.freeze({ key: 'needsYou', word: 'NEEDS YOU', modifier: 'needs-you', noun: 'waiting for you' }),
-    Object.freeze({ key: 'errors', word: 'ERROR', modifier: 'error', noun: 'errored' }),
-    Object.freeze({ key: 'quota', word: 'LIMIT', modifier: 'limit', noun: 'rate-limited' }),
+// order), with the same words and motifs the World's attention plates use,
+// and the frame-kit slice (9.5) the lit slot wears when the bucket leads.
+export const ATTENTION_PARTS = Object.freeze([
+    Object.freeze({ key: 'needsYou', word: 'NEEDS YOU', modifier: 'needs-you', noun: 'waiting for you', motif: 'needs-you', frame: 'cv-frame--attn' }),
+    Object.freeze({ key: 'errors', word: 'ERROR', modifier: 'error', noun: 'errored', motif: 'alert', frame: 'cv-frame--attn-error' }),
+    Object.freeze({ key: 'quota', word: 'LIMIT', modifier: 'limit', noun: 'rate-limited', motif: 'limit-gate', frame: 'cv-frame--attn-limit' }),
 ]);
+const SVG_NS = 'http://www.w3.org/2000/svg';
 // The boot-idle build of the sound controller: the idle slot's deadline, and
 // the delay where `requestIdleCallback` is missing (Safari).
 const AUDIO_ROUTE_IDLE_TIMEOUT_MS = 4000;
@@ -85,6 +87,7 @@ export function connectionReasonText(code) {
 export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
     ...SOUND_SETTING_DEFAULTS,
     'cv-auto-camera': '1',
+    'cv-ambient-standing': '0',
     'claudeville.alerts.desktop': '0',
     'claudeville.sidebarCollapsed': 'false',
 });
@@ -240,7 +243,6 @@ export class TopBar {
             soundGroup: document.querySelector('.topbar__sound'),
             soundToggle: document.getElementById('topbarSoundToggle'),
             soundMenu: document.getElementById('topbarSoundMenu'),
-            cinemaToggle: document.getElementById('topbarCinemaToggle'),
             alertsToggle: document.getElementById('topbarAlertsToggle'),
             chronicleBtn: document.getElementById('topbarChronicle'),
             rate: document.getElementById('statRate'),
@@ -248,19 +250,40 @@ export class TopBar {
             fps: document.getElementById('statFps'),
         };
         this.els.center = this.els.root?.querySelector('.topbar__center') || null;
+        // The centre sits between the brand and the controls on
+        // space-between, so an odd free width puts the lit slot (and every
+        // tip anchored to it) on a half CSS pixel. One px of right padding,
+        // chosen from the unpadded position, keeps its left edge integral.
+        this._centerSnap = typeof ResizeObserver === 'function' && this.els.center
+            ? new ResizeObserver(() => this._snapCenter())
+            : null;
+        if (this._centerSnap) {
+            this._centerSnap.observe(this.els.root);
+            this._centerSnap.observe(this.els.center);
+        }
         // The one loud slot counts every agent that needs action — needs-you,
         // errored and rate-limited — one exact numeral per non-zero bucket, in
-        // the bucket's status colour, inside a single lit frame.
-        this.els.attentionParts = Object.fromEntries(ATTENTION_PARTS.map(({ key, word, modifier }) => {
+        // the bucket's status colour, inside a single lit frame. Each numeral
+        // rides beside its bucket's motif at 2× (the plates' 8×8 motif).
+        this.els.attentionParts = Object.fromEntries(ATTENTION_PARTS.map(({ key, word, modifier, motif }) => {
             const num = el('span', { className: 'topbar__kpi-num', text: '0' });
+            const glyph = document.createElementNS(SVG_NS, 'svg');
+            glyph.setAttribute('class', 'topbar__attn-glyph');
+            glyph.setAttribute('viewBox', '4 4 8 8');
+            glyph.setAttribute('aria-hidden', 'true');
+            glyph.setAttribute('focusable', 'false');
+            const path = document.createElementNS(SVG_NS, 'path');
+            path.setAttribute('fill', 'currentColor');
+            path.setAttribute('d', eventShapeSvgPath(motif));
+            glyph.appendChild(path);
             const part = el('span', { className: `topbar__attn-part topbar__attn-part--${modifier}` }, [
-                num,
+                el('span', { className: 'topbar__attn-count' }, [glyph, num]),
                 el('span', { className: 'topbar__kpi-cap', text: word }),
             ]);
             part.hidden = true;
             return [key, { part, num }];
         }));
-        this.els.attention = el('span', { className: 'topbar__seg topbar__seg--attention' },
+        this.els.attention = el('span', { className: 'topbar__seg topbar__seg--attention cv-frame cv-frame--attn' },
             ATTENTION_PARTS.map(({ key }) => this.els.attentionParts[key].part));
         this.els.attention.id = 'badgeAttention';
         this.els.attention.hidden = true;
@@ -296,7 +319,6 @@ export class TopBar {
         this._audioIdleTimer = null;
         this._initSound();
         this._scheduleAudioRoute();
-        this._initCinemaToggle();
         this._initAttentionControls();
         this._initChronicleButton();
         this._initSpendBreakdown();
@@ -337,7 +359,7 @@ export class TopBar {
         this._initConnectionInstrument();
 
         if (this.modal && this.els.version) {
-            this.els.version.title = 'View changelog';
+            this.els.version.dataset.tip = 'View changelog';
             this._onVersionClick = () => this._openChangelog();
             this.els.version.addEventListener('click', this._onVersionClick);
             this._onVersionKeydown = (e) => {
@@ -374,33 +396,7 @@ export class TopBar {
         const glyph = /rain|storm|snow/.test(weather) ? 'weather-rain'
             : /cloud|fog|overcast/.test(weather) ? 'weather-cloud' : 'weather-clear';
         node.querySelector('path').setAttribute('d', eventShapeSvgPath(glyph));
-        node.title = `Modeled village weather: ${weather}${override ? ` · ${override.toLowerCase()} timeline` : ''}`;
-    }
-
-    // #attract — topbar toggle for the idle action camera (on by default,
-    // persisted). Emits `camera:auto-camera` which the World renderer consumes;
-    // also reflects the state if it is flipped elsewhere.
-    _initCinemaToggle() {
-        const btn = this.els.cinemaToggle;
-        if (!btn) return;
-        const read = () => {
-            try { return window.localStorage?.getItem('cv-auto-camera') !== '0'; } catch (_) { return true; }
-        };
-        const apply = (on) => {
-            btn.classList.toggle('topbar__cinema-btn--on', on);
-            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-            btn.title = on ? 'Auto-camera on: frames live action when idle' : 'Auto-camera off';
-        };
-        apply(read());
-        this._onCinemaClick = () => {
-            const next = !read();
-            try { window.localStorage?.setItem('cv-auto-camera', next ? '1' : '0'); } catch (_) { /* storage unavailable */ }
-            apply(next);
-            eventBus.emit('camera:auto-camera', { enabled: next });
-        };
-        btn.addEventListener('click', this._onCinemaClick);
-        this._onAutoCamera = (payload) => apply(payload?.enabled !== false);
-        eventBus.on('camera:auto-camera', this._onAutoCamera);
+        node.dataset.tip = `Modeled village weather: ${weather}${override ? ` · ${override.toLowerCase()} timeline` : ''}`;
     }
 
     // The `A` hotkey jumps to the longest-waiting actionable agent, and ALERTS
@@ -419,7 +415,7 @@ export class TopBar {
                     const on = await this.attention.setDesktopAlerts(!this.attention.desktopAlerts);
                     this._applyAlertsState(on);
                     if (!on && Notification.permission === 'denied') {
-                        btn.title = 'Blocked by the browser — allow notifications for localhost:4000';
+                        btn.dataset.tip = 'Blocked by the browser · allow notifications for localhost:4000';
                     }
                 };
                 btn.addEventListener('click', this._onAlertsClick);
@@ -447,7 +443,7 @@ export class TopBar {
         if (!btn) return;
         btn.classList.toggle('topbar__sound-btn--on', Boolean(on));
         btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-        btn.title = on ? 'Disable desktop notifications' : 'Enable desktop notifications';
+        btn.dataset.tip = on ? 'Disable desktop notifications' : 'Enable desktop notifications';
     }
 
     _initChronicleButton() {
@@ -462,16 +458,18 @@ export class TopBar {
         btn.addEventListener('click', this._onChronicleClick);
     }
 
+    // Settings sits after the sound group, so the bar's right cluster is
+    // the same controls at the same x in World and Dashboard (9.1).
     _initSettingsButton() {
         if (!this.modal || !this.els.root) return;
-        const anchor = document.getElementById('topbarWorldControls');
+        const anchor = this.els.soundGroup;
         if (!anchor?.parentElement) return;
         const button = el('button', {
             className: 'topbar__sound-btn topbar__icon-btn topbar__icon-btn--action',
-            title: 'Settings and health',
             ariaLabel: 'Open settings',
         });
         button.type = 'button';
+        button.dataset.tip = 'Settings and health';
         button.setAttribute('aria-haspopup', 'dialog');
         button.appendChild(el('span', { className: 'topbar__settings-icon' }));
         this._onSettingsClick = () => this._openSettings();
@@ -588,11 +586,11 @@ export class TopBar {
         return readPresetVolumeStep(preset);
     }
 
+    // SET's Auto camera row is the FREE | AUTO half of the World dock's camera
+    // control (App): persist, then announce; the dock and the renderer follow.
     _setAutoCamera(enabled) {
         const next = Boolean(enabled);
-        const current = readPersistedSettings().autoCamera;
-        if (current !== next && this.els.cinemaToggle) this.els.cinemaToggle.click();
-        else if (current !== next) {
+        if (readPersistedSettings().autoCamera !== next) {
             try { window.localStorage?.setItem('cv-auto-camera', next ? '1' : '0'); } catch { /* persistence is optional */ }
             eventBus.emit('camera:auto-camera', { enabled: next });
         }
@@ -818,7 +816,7 @@ export class TopBar {
         this._soundChipKey = key;
         setAttr(button, 'data-sound-state', state);
         setAttr(button, 'aria-pressed', pressed);
-        button.title = title;
+        button.dataset.tip = title;
         button.disabled = !available;
         if (this.els.soundMenu) this.els.soundMenu.disabled = !available;
     }
@@ -972,8 +970,8 @@ export class TopBar {
         this._hideSpendPanel({ restoreFocus: false });
         const { panel } = this._soundEls;
         const rect = this.els.soundMenu.getBoundingClientRect();
-        panel.style.left = `${Math.max(8, Math.min(rect.right - SOUND_PANEL_WIDTH, window.innerWidth - SOUND_PANEL_WIDTH - 8))}px`;
-        panel.style.top = `${rect.bottom + 7}px`;
+        panel.style.left = `${Math.round(Math.max(8, Math.min(rect.right - SOUND_PANEL_WIDTH, window.innerWidth - SOUND_PANEL_WIDTH - 8)))}px`;
+        panel.style.top = `${Math.round(rect.bottom + 7)}px`;
         this._renderSoundPanel();
         panel.hidden = false;
         this.els.soundMenu.setAttribute('aria-expanded', 'true');
@@ -1071,7 +1069,7 @@ export class TopBar {
         trigger.setAttribute('aria-haspopup', 'dialog');
         trigger.setAttribute('aria-controls', 'spendBreakdownPanel');
         trigger.setAttribute('aria-expanded', 'false');
-        trigger.title = 'Open project and provider spend map';
+        trigger.dataset.tip = 'Open project and provider spend map';
         this._onSpendClick = (event) => {
             event.stopPropagation();
             this._toggleSpendPanel();
@@ -1147,8 +1145,13 @@ export class TopBar {
         }
         frame.hidden = lit.length === 0;
         if (!lit.length) return;
-        frame.dataset.lead = lit[0].key;
-        frame.title = `Needs action: ${lit.map(({ count, noun }) => `${count} ${noun}`).join(' · ')}. Press A to frame them.`;
+        const lead = ATTENTION_PARTS.find(({ key }) => key === lit[0].key);
+        if (frame.dataset.lead !== lead.key) {
+            for (const { frame: slice } of ATTENTION_PARTS) frame.classList.toggle(slice, slice === lead.frame);
+            frame.dataset.lead = lead.key;
+        }
+        frame.dataset.tip = `Needs action: ${lit.map(({ count, noun }) => `${count} ${noun}`).join(' · ')} · frame them`;
+        frame.dataset.tipKey = 'A';
     }
 
     _renderCount(node, value, pending) {
@@ -1178,11 +1181,11 @@ export class TopBar {
         const rateText = rate ? `${formatNumber(Math.round(rate.tokensPerHour))}/h` : '';
         this.els.rate.textContent = pending ? '' : [rateText, incomplete ? 'partial' : ''].filter(Boolean).join(' · ');
         if (this.els.rateWrap) {
-            this.els.rateWrap.title = rate
+            this.els.rateWrap.dataset.tip = rate
                 ? `Tokens observed today, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates. Rate match: mixed session models; revision ${TokenUsage.rateRevision}. Click for project and provider detail.`
                 : 'Tokens observed today by this page. A burn rate appears after a couple of minutes of activity. Click for project and provider detail.';
         }
-        if (this.els.rateWrap && this._coverageNote) this.els.rateWrap.title += ` ${this._coverageNote}`;
+        if (this.els.rateWrap && this._coverageNote) this.els.rateWrap.dataset.tip += ` ${this._coverageNote}`;
         if (this._spendPanelEl?.style.display !== 'none') this._renderSpendPanel();
     }
 
@@ -1216,8 +1219,8 @@ export class TopBar {
         this._renderSpendPanel();
         const panel = this._spendPanelEl;
         const rect = this.els.rateWrap.getBoundingClientRect();
-        panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 516))}px`;
-        panel.style.top = `${rect.bottom + 7}px`;
+        panel.style.left = `${Math.round(Math.max(8, Math.min(rect.left, window.innerWidth - 516)))}px`;
+        panel.style.top = `${Math.round(rect.bottom + 7)}px`;
         panel.style.display = 'block';
         this.els.rateWrap.setAttribute('aria-expanded', 'true');
         focusWithoutScroll(panel);
@@ -1366,7 +1369,7 @@ export class TopBar {
         chip.setAttribute('aria-haspopup', 'dialog');
         chip.setAttribute('aria-controls', 'topbarConnectionDetails');
         chip.setAttribute('aria-expanded', 'false');
-        chip.title = 'Connection details';
+        // No data-tip: hover and focus open the connection panel itself.
         this._connectionLiveEl = el('span', {
             className: 'topbar__connection-live',
         });
@@ -1469,8 +1472,8 @@ export class TopBar {
         if (!panel) return;
         this._renderConnectionDetails();
         const rect = this.els.connection.getBoundingClientRect();
-        panel.style.left = `${Math.max(8, rect.left)}px`;
-        panel.style.top = `${rect.bottom}px`;
+        panel.style.left = `${Math.round(Math.max(8, rect.left))}px`;
+        panel.style.top = `${Math.round(rect.bottom)}px`;
         panel.style.display = 'grid';
         this.els.connection.setAttribute('aria-expanded', 'true');
         if (focus) focusWithoutScroll(panel);
@@ -1545,7 +1548,7 @@ export class TopBar {
         const counter = this.els.fps;
         if (!counter) return;
         counter.textContent = this._lastFps === null ? 'FPS idle' : `${Math.round(this._lastFps)} FPS`;
-        counter.title = this._lastFps === null
+        counter.dataset.tip = this._lastFps === null
             ? 'World render loop is idle'
             : 'World render-loop frames per second, averaged over at least 500 ms; includes reused idle frames';
     }
@@ -1641,6 +1644,16 @@ export class TopBar {
             .replace(/`(.+?)`/g, '<code>$1</code>');
     }
 
+    _snapCenter() {
+        const center = this.els.center;
+        if (!center?.isConnected) return;
+        const pad = center.style.paddingRight === '1px' ? 1 : 0;
+        // Adding 1 px of width moves a space-between item left by 0.5 px.
+        const unpaddedLeft = center.getBoundingClientRect().left + pad / 2;
+        const next = Math.abs(unpaddedLeft - Math.round(unpaddedLeft)) > 0.25 ? 1 : 0;
+        if (next !== pad) center.style.paddingRight = next ? '1px' : '';
+    }
+
     destroy() {
         if (this._destroyed) return this._destroyPromise;
         this._destroyed = true;
@@ -1670,6 +1683,8 @@ export class TopBar {
             this.els.connection.removeEventListener('mouseleave', this._onConnectionLeave);
             this.els.connection.removeEventListener('keydown', this._onConnectionKeydown);
         }
+        this._centerSnap?.disconnect();
+        this._centerSnap = null;
         if (this._onConnectionOutside) document.removeEventListener('pointerdown', this._onConnectionOutside);
         if (this._connectionPanelEl && this._onConnectionPanelLeave) {
             this._connectionPanelEl.removeEventListener('mouseleave', this._onConnectionPanelLeave);
@@ -1678,10 +1693,6 @@ export class TopBar {
         this._connectionLiveEl?.remove();
         this._connectionPanelEl = null;
         this._connectionLiveEl = null;
-        if (this._onAutoCamera) eventBus.off('camera:auto-camera', this._onAutoCamera);
-        if (this._onCinemaClick && this.els.cinemaToggle) {
-            this.els.cinemaToggle.removeEventListener('click', this._onCinemaClick);
-        }
         if (this._onVersionClick && this.els.version) {
             this.els.version.removeEventListener('click', this._onVersionClick);
         }

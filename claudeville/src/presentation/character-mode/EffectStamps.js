@@ -118,7 +118,7 @@ export function steppedDecay(age, duration) {
 }
 
 // ---------------------------------------------------------------------------
-// Moment ledger — one Major globally, success deferral, gull suppression.
+// Moment ledger — one Major globally, success deferral.
 // Durations in, clock owned here: callers run on different clocks
 // (performance.now vs Date.now) and must never compare them directly.
 // ---------------------------------------------------------------------------
@@ -126,7 +126,6 @@ export function steppedDecay(age, duration) {
 const ledger = {
     major: null,
     successHolds: new Map(),
-    gullsUntil: 0,
 };
 
 function ledgerNow() {
@@ -170,22 +169,10 @@ export function successGrammarDeferred() {
     return false;
 }
 
-// 6.4 — white gull specks compete with the crown's one cream flash, so the
-// Harbor gulls stand down while a crown (and its residue) is up. Wildlife reads
-// this flag; it never reads crown state directly.
-export function suppressHarborGulls(durationMs) {
-    ledger.gullsUntil = Math.max(ledger.gullsUntil, ledgerNow() + Math.max(0, Number(durationMs) || 0));
-}
-
-export function harborGullsSuppressed() {
-    return ledger.gullsUntil > ledgerNow();
-}
-
 // Test and dispose hook: forget every hold and claim.
 export function resetMomentLedger() {
     ledger.major = null;
     ledger.successHolds.clear();
-    ledger.gullsUntil = 0;
 }
 
 // ---------------------------------------------------------------------------

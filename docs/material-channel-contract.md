@@ -116,7 +116,8 @@ The committed pilot atlas has identical rectangles and padding in every channel:
 - `material`: R = stable material-class index; G/B reserved; A = albedo alpha.
 - `emissive`: authored RGB with A as contribution; transparent black by default.
 - `occluder`: R = authored height (zero in the flat default), G = occlusion
-  strength, B reserved, A = albedo alpha. `mode: none` is transparent.
+  strength, B = surface code (V9, below), A = albedo alpha. `mode: none` is
+  transparent.
 
 The direct GPU renderer samples the occluder companion separately from the raw
 material map. Material alpha also marks presence: opaque class zero is authored unlit, not the provider fallback. Nonzero occluder companion alpha explicitly marks authored geometry:
@@ -140,6 +141,105 @@ window emission lands off the panes for any building without a sidecar.
 Each frame has a two-pixel extruded gutter to prevent atlas bleeding. Runtime
 sampling is still nearest; gutters protect edge texels when future passes sample
 near frame boundaries.
+
+## V9 GPU Record Layout, Samplers, Typed Uploads and Channels
+
+The resident renderer draws **one instance per record**
+(`drawArraysInstanced(TRIANGLE_STRIP, 0, 4, n)`, every attribute at divisor 1,
+the strip corner from `gl_VertexID`). WebGL2 has no base instance, so each batch
+re-points its attributes at its own byte range (`_pointRecordInstances`).
+
+| Loc | Type | Fields | Bytes |
+| --- | --- | --- | --- |
+| 0 | `FLOAT x4` | rect `(x, y, w, h)`, world px | 0-15 |
+| 1 | `FLOAT x4` | uv rect `(u0, v0, u1, v1)` | 16-31 |
+| 2 | `FLOAT x4` | `(alpha, material, elevation, emissive)` | 32-47 |
+| 3 | `USHORT x4` | `(occluder x 65535, gate x 65535, ramp, flags)` | 48-55 |
+| 4 | `USHORT x4` | `(depth key, footY, frontCornerX, frontCornerY)`; receiver coordinates are integer world px + 32768 | 56-63 |
+| 5 | `USHORT x2`, `vertexAttribIPointer`, flat | `(ownerSlot, landmarkId)` | 64-67 |
+
+Continuous values stay float32, so the instanced frame is hash-identical with the
+six-vertex staging it replaced. A batch whose records all hold the default tail
+(locs 3-5: no occluder, gate 1, no ramp or flags, depth key 0, footY -1,
+frontCorner `(0, -1)`, no identity) stages the 48-byte head only and reads the
+tail as constant generic attributes: terrain, ground casts and marks, and every
+ground-cue chord. The occlusion pass draws the same ranges and culls
+non-occluders in its vertex stage (no second staging).
+
+- **Flags** (`GPU_RECORD_FLAGS`, loc3.w): 1 `writesDepth`, 2 `reflect`
+  (3.11), 4 `fatOptOut` (4.6), 8 `screenSpace` (haze, `ground:semantics`),
+  16 `surfaceCode` (reserved for 2.3), 32 `packedGeometry` (reserved for B.2).
+- **Painter depth** (0.6): `depthKey = round((clamp(sortY) + 2048) x 8)`, i.e.
+  sortY clamped to [-2048, 6143.875] at 1/8 world px, exactly the 65,536 steps of
+  the `DEPTH_COMPONENT16` attachment (`gpuDepthKey`). Shaders write
+  `depth = 1 - key / 65535`; key 0 is the cleared far plane. `writesDepth` is the
+  writer's per-kind opt-in (buildings, props, bodies via
+  `GpuSceneBuilder.stampPainterDepth`); soft alpha (< 1, e.g. departed bodies at
+  0.58, archive fades) and additive blending never write; terrain, haze, ground
+  and cue records never write. `writesDepth` joins the batch key.
+- **Receiver fields** (V5): `footY` defaults to the painter sortY, `-1` = ground
+  self; `frontCornerY -1` = no landmark corner (2.1 fills landmarks);
+  `landmarkId` = `GPU_LANDMARK_IDS` (command 1 … portal 9, 0 = none, never
+  reordered; 2.2's footprint G uses the same ids); `ownerSlot` 0 = none (2.5
+  assigns agents).
+- **Shader-derived**: `originFrac = fract(rect.xy)` for sprite records (0 for
+  ground-self and screen-space records): pool courses quantize from the
+  record's own texel grid, so a body on the backing-pixel grid lights in whole
+  k x k blocks. The record-rect clamp keeps every sample inside the record's
+  source rect, inset half a texel but never past its centre.
+- Every writer supplies these defaults: `normalizeGpuRecord`
+  (`assignGpuRecordV9Fields`) for ordinary records, and the literal pool in
+  `GroundCueRecords` for `prenormalized` cues.
+
+**Sampler table** (fixed per program, never reassigned; WebGL2 guarantees 16
+fragment units). Scene and occlusion programs (`SCENE_SAMPLER_UNITS`):
+
+| Unit | Field | Format | Reader |
+| ---: | --- | --- | --- |
+| 0 | albedo | RGBA8 | every record |
+| 1 | material | RGBA8 | every record |
+| 2 | occlusion target | RGBA8 | light loop (2.2 deletes it and frees the unit) |
+| 3 | emissive | RGBA8 | every record |
+| 4 | occluder companion | RGBA8 | every record |
+| 5 | palette-ramp LUT | RGBA8 | 3.5 pilot |
+| 6 | footprint height + landmark id | RG8 | reserved: 2.2 |
+| 7 | water cycle offset | R8 | reserved: 3.1 (terrain/water only) |
+| 8 | coast field | RG8 | reserved: 3.6 (terrain/water only) |
+| 9 | light records | RGBA32F | reserved: 2.4 |
+| 10 | light tile index | R16UI (`usampler2D`) | reserved: 2.4 |
+| 11 | puddle mask | R8 | reserved: 5.2 (ground only) |
+| 12 | cloud-course noise tile | RGBA8 (linear) | 1.4 cloud courses + 1.6 aerial haze, per record |
+| 13-15 | free | | |
+
+Particle program (`PARTICLE_SAMPLER_UNITS`): 0 = event-shape motif mask (R8),
+1 = cloud-course noise tile. Composite: 0 scene, 1 bloom (clouds and haze are
+shaded per record, never on the world grid in the composite). `SCENE_FRAGMENT` stays one program:
+the table fits one unit budget, and a terrain/water split would need a uniform
+buffer to avoid uploading the grade and 32 lights twice per frame; the
+terrain/water-only units are marked so a split stays mechanical.
+
+**Typed uploads**: `GpuWorldRenderer.uploadTypedTexture(key, { width, height,
+format, data, revision })` takes `r8`/`rg8` (`Uint8Array`), `r16ui`
+(`Uint16Array`, read through `usampler2D`) and `rgba32f` (`Float32Array`) with
+`UNPACK_ALIGNMENT 1`, nearest sampling and `texelFetch`; it re-uploads only on
+a revision or size change (`texSubImage2D` when the size holds). Every cache
+entry counts its real bytes (`width x height x bytesPerTexel`), so the 48 MiB
+cached-source ceiling and Shift-D see an R8 field at a quarter of an RGBA
+canvas. First consumer: the particle motif mask.
+
+**One occluder channel contract** (before 2.3 or B.2 lands):
+
+- Occluder companion: R = height (today the authored elevation that drives fog
+  and the occlusion trace; 2.3 makes it true height above ground / 255 and
+  retunes the fog in the same change), G = occlusion strength, **B = surface
+  code `face x 64 + min(63, round(heightAboveGround / 4))`** (face 0 up/apron,
+  1 left wall, 2 right wall, 3 roof), A = presence. B is read only on records
+  with flag 16 `surfaceCode`; everywhere else it must be 0 and is ignored.
+- B.2's merged material + geometry packing (R material id, G height, B
+  strength, A presence) lives in the **material** map, never the occluder
+  companion, and is read only on records with flag 32 `packedGeometry`. A source
+  that carries 2.3 surface codes keeps the separate occluder companion, so the
+  two B channels never collide.
 
 ## Grade, Light Pools, and Emission
 

@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    POST_FX_LADDER_REASONS as REASONS,
     POST_FX_LEVELS,
     assessPostFxTimings,
     createPostFxLadder,
+    latchDisplayPeriod,
 } from '../../claudeville/src/presentation/character-mode/postfx/PostFxLadder.js';
 import {
     EFFECT_BUDGET,
@@ -12,38 +14,270 @@ import {
     shedEffectsForLevel,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 
-test('resident effects shed in declared order as the ladder steps down', () => {
-    const ladder = createPostFxLadder();
+const { FULL, REDUCED, MINIMAL, DISABLED } = POST_FX_LEVELS;
+const P60 = 1000 / 60;
+const P120 = 1000 / 120;
 
-    ladder.setOverride(POST_FX_LEVELS.FULL);
-    assert.deepEqual(shedEffectsForLevel(ladder.getLevel()), []);
+// Drive the ladder frame by frame. `frameAt(now, level)` returns the display
+// interval that ends the frame and the timer p25 the renderer would report.
+function drive(ladder, frameAt, durationMs, startMs = 0, onFrame = null) {
+    let now = startMs;
+    const endMs = startMs + durationMs;
+    while (now < endMs) {
+        const frame = frameAt(now, ladder.getLevel());
+        now += frame.intervalMs;
+        const metrics = { uploadMs: 0, frameGapMs: frame.intervalMs, intervalMs: frame.intervalMs };
+        if (frame.gpuMs === undefined) metrics.shaderCpuMs = 1;
+        else metrics.gpuMs = frame.gpuMs;
+        const state = ladder.update(metrics, now);
+        onFrame?.(state, now);
+    }
+    return now;
+}
 
-    ladder.setOverride(POST_FX_LEVELS.REDUCED);
-    assert.deepEqual(shedEffectsForLevel(ladder.getLevel()), [
-        { id: 'bloom', mode: 'reduced' },
-        { id: 'weather-amplitude', mode: 'reduced' },
-        { id: 'moon-course', mode: 'ambient-course-only' },
-        { id: 'wet-reflection', mode: 'four-sources' },
-    ]);
+const steady = (intervalMs, gpuMs) => () => ({ intervalMs, gpuMs });
 
-    ladder.setOverride(POST_FX_LEVELS.MINIMAL);
-    assert.deepEqual(shedEffectsForLevel(ladder.getLevel()), [
-        { id: 'bloom', mode: 'off' },
-        { id: 'weather-amplitude', mode: 'off' },
-        { id: 'occlusion', mode: 'off' },
-        { id: 'cloud-courses', mode: 'off' },
-        { id: 'aerial-perspective', mode: 'off' },
-        { id: 'moon-course', mode: 'ambient-course-only' },
-        { id: 'wet-reflection', mode: 'static-wet-darkening' },
-        { id: 'palette-ramp', mode: 'off' },
-    ]);
+// A GPU-side load the ladder can shed: FULL misses, lower levels hold pacing.
+const sheddable = (periodMs, gpuMs = 22) => (now, level) => (level === FULL
+    ? { intervalMs: periodMs * 2, gpuMs }
+    : { intervalMs: periodMs, gpuMs: 4 });
 
-    // The minimal-resident probe level renders MINIMAL's composition.
-    ladder.setOverride(POST_FX_LEVELS.DISABLED);
+function residentLadder() {
+    const ladder = createPostFxLadder({ maxLevel: MINIMAL });
+    ladder.reset(MINIMAL);
+    return ladder;
+}
+
+function bootedLadder(periodMs = P60) {
+    const ladder = residentLadder();
+    const now = drive(ladder, steady(periodMs, 2), 4000);
+    assert.equal(ladder.getLevel(), FULL, 'a healthy boot reaches FULL');
+    return { ladder, now };
+}
+
+function transitionsOf(ladder, frameAt, durationMs, startMs) {
+    const transitions = [];
+    let previous = ladder.getLevel();
+    const now = drive(ladder, frameAt, durationMs, startMs, (state, at) => {
+        if (state.effectiveLevel !== previous) {
+            transitions.push({ at, from: previous, to: state.effectiveLevel, reason: state.lastTransitionReason });
+            previous = state.effectiveLevel;
+        }
+    });
+    return { transitions, now };
+}
+
+test('the display period latches from p5 of the warm-up gaps, snapped to a refresh rate', () => {
+    const jittered = (periodMs, count = 60) => Array.from({ length: count }, (_, index) => (
+        index % 7 === 3 ? periodMs * 2 : periodMs + (index % 2 ? 0.4 : -0.4)
+    ));
+    for (const hz of [60, 75, 90, 100, 120, 144, 165, 240]) {
+        assert.equal(latchDisplayPeriod(jittered(1000 / hz)).refreshHz, hz);
+    }
+    // A warm-up that mostly achieves 60 fps on a 120 Hz panel still latches
+    // the panel's period: the latch never reads the median of achieved gaps.
+    const mostlyHalfRate = [...Array(56).fill(P60), ...Array(4).fill(P120)];
+    assert.equal(latchDisplayPeriod(mostlyHalfRate).refreshHz, 120);
+    // Stalls and hidden-page gaps never reach the latch.
+    assert.equal(latchDisplayPeriod([...Array(59).fill(P60), 400]).refreshHz, 60);
+});
+
+test('the latch sets the timer veto budget to half the period', () => {
+    for (const periodMs of [P60, P120]) {
+        const ladder = residentLadder();
+        drive(ladder, steady(periodMs, 1), 1100);
+        const state = ladder.getState();
+        assert.ok(Math.abs(state.periodMs - periodMs) < 1e-9);
+        assert.ok(Math.abs(state.budgetMs - periodMs / 2) < 1e-9);
+    }
+});
+
+test('boot climbs from MINIMAL to FULL through pacing probes, then holds', () => {
+    const ladder = residentLadder();
+    let fullAt = null;
+    drive(ladder, steady(P60, 2), 4000, 0, (state, now) => {
+        if (fullAt === null && state.effectiveLevel === FULL) fullAt = now;
+    });
+    assert.ok(fullAt !== null && fullAt <= 3000, `FULL within 3 s of boot, reached at ${fullAt}`);
+    const { transitions } = transitionsOf(ladder, steady(P60, 2), 120_000, 4000);
+    assert.deepEqual(transitions, [], 'a paced display never changes level');
+});
+
+test('a contended timer over budget never demotes a paced display', () => {
+    const { ladder, now } = bootedLadder();
+    const { transitions } = transitionsOf(ladder, steady(P60, 12), 60_000, now);
+    assert.deepEqual(transitions, []);
+    assert.equal(ladder.getLevel(), FULL);
+});
+
+test('missed frames with a healthy timer are main-thread-bound and never demote', () => {
+    const { ladder, now } = bootedLadder();
+    let frame = 0;
+    drive(ladder, () => ({ intervalMs: frame++ % 3 === 0 ? P60 * 2 : P60, gpuMs: 3 }), 10_000, now);
+    assert.equal(ladder.getLevel(), FULL);
+    assert.equal(ladder.getState().lastDecisionReason, REASONS.MISSING_TIMER_UNDER_BUDGET);
+});
+
+test('a steady GPU-bound 60 fps on a 120 Hz panel demotes within 2 s and keeps the latched period', () => {
+    const { ladder, now } = bootedLadder(P120);
+    const { transitions } = transitionsOf(ladder, sheddable(P120, 12), 5000, now);
+    assert.ok(transitions.length >= 1, 'the ladder demotes');
+    assert.equal(transitions[0].to, REDUCED);
+    assert.equal(transitions[0].reason, REASONS.DEMOTE);
+    assert.ok(transitions[0].at - now <= 2000, `demoted ${transitions[0].at - now} ms after the load`);
+    const state = ladder.getState();
+    assert.equal(state.refreshHz, 120, 'achieved 60 fps never redefines the period');
+    assert.ok(Math.abs(state.budgetMs - P120 / 2) < 1e-9);
+    assert.equal(ladder.getLevel(), REDUCED, 'the shed helped, so it is kept');
+});
+
+test('shedding that does not cut the misses reverts and cools down with exponential backoff', () => {
+    const { ladder, now } = bootedLadder();
+    const { transitions } = transitionsOf(ladder, steady(P60 * 2, 22), 200_000, now);
+    const demotions = transitions.filter(item => item.reason === REASONS.DEMOTE);
+    const reverts = transitions.filter(item => item.reason === REASONS.STEP_REVERTED);
+    assert.ok(demotions.length >= 3 && reverts.length >= 3);
+    assert.ok(demotions[0].at - now <= 2000, 'a real overload still sheds within 2 s');
+    for (const revert of reverts) assert.equal(revert.to, FULL);
+    assert.ok(transitions.every(item => item.to <= REDUCED), 'no 3-2-1-0 cycling');
+    const firstHold = demotions[1].at - reverts[0].at;
+    const secondHold = demotions[2].at - reverts[1].at;
+    assert.ok(firstHold >= 60_000 && firstHold < 62_000, `first cool-down ${firstHold} ms`);
+    assert.ok(secondHold >= 120_000 && secondHold < 122_000, `second cool-down ${secondHold} ms`);
+});
+
+test('probes that miss revert with exponential backoff, and the ladder recovers once the load is gone', () => {
+    const { ladder, now } = bootedLadder();
+    const loaded = transitionsOf(ladder, sheddable(P60), 100_000, now);
+    assert.equal(loaded.transitions[0].reason, REASONS.DEMOTE);
+    const probes = loaded.transitions.filter(item => item.reason === REASONS.PROBE);
+    const reverts = loaded.transitions.filter(item => item.reason === REASONS.PROBE_REVERTED);
+    assert.ok(probes.length >= 4 && reverts.length >= 4);
+    const waits = reverts.slice(0, 3).map((revert, index) => probes[index + 1].at - revert.at);
+    assert.ok(waits[0] >= 8_000 && waits[0] < 8_100, `second probe waits ${waits[0]} ms`);
+    assert.ok(waits[1] >= 16_000 && waits[1] < 16_100, `third probe waits ${waits[1]} ms`);
+    assert.ok(waits[2] >= 32_000 && waits[2] < 32_100, `fourth probe waits ${waits[2]} ms`);
+    for (const revert of reverts) assert.ok(revert.at - probes[reverts.indexOf(revert)].at < 500, 'a failing probe is short');
+    assert.equal(ladder.getLevel(), REDUCED);
+
+    const recovery = transitionsOf(ladder, steady(P60, 3), 70_000, loaded.now);
+    assert.equal(ladder.getLevel(), FULL, 'the next probe after removal holds');
+    assert.equal(recovery.transitions.length, 1);
+    assert.equal(recovery.transitions[0].reason, REASONS.PROBE);
+});
+
+test('probe-window hitches with a healthy timer do not revert the probe', () => {
+    const ladder = residentLadder();
+    let frame = 0;
+    // Every 20th frame is a 50 ms main-thread hitch: 5 % of a window.
+    drive(ladder, () => ({ intervalMs: frame++ % 20 === 19 ? 50 : P60, gpuMs: 2 }), 4500);
+    assert.equal(ladder.getLevel(), FULL);
+});
+
+test('without a GPU timer the veto is waived: pacing and the shed guard decide alone', () => {
+    const noTimer = frameAt => (now, level) => ({ ...frameAt(now, level), gpuMs: undefined });
+    const shed = bootedLadder();
+    const { transitions } = transitionsOf(shed.ladder, noTimer(sheddable(P60)), 5000, shed.now);
+    assert.equal(transitions[0]?.reason, REASONS.DEMOTE);
+    assert.ok(transitions[0].at - shed.now <= 2000);
+    assert.equal(shed.ladder.getLevel(), REDUCED);
+
+    const stuck = bootedLadder();
+    const reverted = transitionsOf(stuck.ladder, noTimer(steady(P60 * 2)), 10_000, stuck.now);
+    assert.deepEqual(reverted.transitions.map(item => item.reason), [REASONS.DEMOTE, REASONS.STEP_REVERTED]);
+});
+
+test('a Dashboard return resumes the last paced level at once and keeps the latch', () => {
+    const { ladder, now } = bootedLadder();
+    const resumed = ladder.resume();
+    assert.equal(resumed.effectiveLevel, FULL);
+    assert.equal(resumed.lastDecisionReason, REASONS.RESUME);
+    assert.equal(resumed.refreshHz, 60);
+    const { transitions } = transitionsOf(ladder, steady(P60, 2), 1000, now + 5000);
+    assert.deepEqual(transitions, [], 'the returned level holds');
+
+    // Suspended mid-probe: the return lands on the level the probe started from.
+    const probing = bootedLadder();
+    let resumedLevel = null;
+    drive(probing.ladder, sheddable(P60), 30_000, probing.now, (state) => {
+        if (resumedLevel === null && state.lastDecisionReason === REASONS.PROBE && state.effectiveLevel === FULL) {
+            resumedLevel = probing.ladder.resume().effectiveLevel;
+        }
+    });
+    assert.equal(resumedLevel, REDUCED);
+});
+
+test('hidden-page gaps are not misses, and a visibility change clears the window', () => {
+    const { ladder, now } = bootedLadder();
+    let after = drive(ladder, steady(2000, 2), 2000, now);
+    after = drive(ladder, steady(P60, 2), 500, after);
+    assert.equal(ladder.getState().missShare, 0);
+    after = drive(ladder, steady(P60 * 2, 2), 300, after);
+    assert.ok(ladder.getState().missShare > 0);
+    ladder.clearPacing();
+    drive(ladder, steady(P60, 2), 20, after);
+    assert.equal(ladder.getState().missShare, 0);
+    assert.equal(ladder.getLevel(), FULL);
+});
+
+test('a screen or DPR change re-latches the period without changing the level', () => {
+    const { ladder, now } = bootedLadder();
+    ladder.relatch();
+    const { transitions } = transitionsOf(ladder, steady(P120, 2), 1000, now);
+    assert.deepEqual(transitions, []);
+    const state = ladder.getState();
+    assert.equal(state.refreshHz, 120);
+    assert.ok(Math.abs(state.budgetMs - P120 / 2) < 1e-9);
+});
+
+test('setBudgetMs replaces the timer veto budget until the next latch', () => {
+    const { ladder } = bootedLadder();
+    assert.equal(ladder.setBudgetMs(5), 5);
+    assert.equal(ladder.getState().budgetMs, 5);
+});
+
+test('override pins the effective level and survives pacing churn', () => {
+    const { ladder, now } = bootedLadder();
+    ladder.setOverride(MINIMAL);
+    drive(ladder, steady(P60 * 2, 30), 5000, now);
+    assert.equal(ladder.getLevel(), MINIMAL);
+    ladder.setOverride(null);
+    assert.equal(ladder.getLevel(), FULL);
+});
+
+test('timing assessment attributes upload, auxiliary upload, shader, GPU, and frame-gap cost', () => {
+    const upload = assessPostFxTimings({
+        uploadMs: 6,
+        auxUploadMs: 1,
+        setupCpuMs: 0.5,
+        shaderCpuMs: 1,
+        gpuMs: 2,
+    });
+    assert.equal(upload.driver, 'uploadMs');
+    assert.equal(upload.score, 10.5);
+
+    // The > 35 ms gap penalty still reaches the veto score.
+    const stall = assessPostFxTimings({ uploadMs: 0.2, shaderCpuMs: 0.2, frameGapMs: 140 });
+    assert.equal(stall.driver, 'frameGapMs');
+    assert.equal(stall.score, 107);
+});
+
+test('light admission is a declared row: the night keeps its pools at every level', () => {
+    const caps = [FULL, REDUCED, MINIMAL].map(level => effectBudgetMode('light-admission', level));
+    assert.equal(caps[0], 32);
+    assert.ok(caps[1] >= 24 && caps[1] <= caps[0]);
+    assert.ok(caps[2] >= 12 && caps[2] <= caps[1]);
+    assert.deepEqual(shedEffectsForLevel(FULL), []);
     assert.deepEqual(
-        shedEffectsForLevel(ladder.getLevel()),
-        shedEffectsForLevel(POST_FX_LEVELS.MINIMAL),
+        shedEffectsForLevel(REDUCED).find(effect => effect.id === 'light-admission'),
+        { id: 'light-admission', mode: caps[1] },
     );
+    assert.deepEqual(
+        shedEffectsForLevel(MINIMAL).find(effect => effect.id === 'light-admission'),
+        { id: 'light-admission', mode: caps[2] },
+    );
+    // The minimal-resident override renders MINIMAL's composition.
+    assert.deepEqual(shedEffectsForLevel(DISABLED), shedEffectsForLevel(MINIMAL));
 });
 
 test('MINIMAL admits no optional GPU pass and no optional resident bytes', () => {
@@ -85,215 +319,4 @@ test('MINIMAL admits no optional GPU pass and no optional resident bytes', () =>
 
 test('an unknown effect is a programming error, never a silent pass-through', () => {
     assert.throws(() => effectBudgetMode('window-spill', POST_FX_LEVELS.FULL), /unknown effect budget/);
-});
-
-function run(ladder, metrics, durationMs, startMs = 0, stepMs = 16, onFrame = null) {
-    let now = startMs;
-    const endMs = startMs + durationMs;
-    while (now < endMs) {
-        now = Math.min(endMs, now + stepMs);
-        const state = ladder.update(
-            typeof metrics === 'function' ? metrics(now) : metrics,
-            now,
-        );
-        onFrame?.(state, now);
-    }
-    return now;
-}
-
-test('healthy timings keep the ladder at FULL', () => {
-    const ladder = createPostFxLadder();
-    run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 10_000);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
-});
-
-test('over-budget duration is measured in milliseconds at different frame rates', () => {
-    for (const stepMs of [8, 20]) {
-        const ladder = createPostFxLadder({ scoreWindowFrames: 1, uploadGraceMs: 0 });
-        let now = run(ladder, { gpuMs: 6 }, 999, 0, stepMs);
-        assert.equal(
-            ladder.getLevel(),
-            POST_FX_LEVELS.FULL,
-            `must not degrade before 1000 ms at a ${stepMs} ms cadence`,
-        );
-        run(ladder, { gpuMs: 6 }, 25, now, stepMs);
-        assert.equal(ladder.getLevel(), POST_FX_LEVELS.REDUCED);
-    }
-});
-
-test('rolling median rejects a single over-budget frame', () => {
-    const ladder = createPostFxLadder({
-        scoreWindowFrames: 5,
-        overBudgetMs: 100,
-        uploadGraceMs: 0,
-    });
-    let now = run(ladder, { gpuMs: 1 }, 80);
-    ladder.update({ gpuMs: 20 }, now += 16);
-    assert.equal(ladder.getState().lastScore, 1);
-    run(ladder, { gpuMs: 1 }, 200, now);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
-});
-
-test('persistent stalls walk the ladder to DISABLED by elapsed time', () => {
-    const ladder = createPostFxLadder({
-        scoreWindowFrames: 1,
-        overBudgetMs: 100,
-        uploadGraceMs: 0,
-    });
-    run(ladder, { gpuMs: 8 }, 400, 0, 10);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.DISABLED);
-    assert.match(ladder.getState().lastDecisionReason, /^minimal-resident:/);
-});
-
-test('frame-gap stalls degrade even when instrumented timings look healthy', () => {
-    const ladder = createPostFxLadder({
-        scoreWindowFrames: 1,
-        overBudgetMs: 1000,
-        uploadGraceMs: 0,
-    });
-    run(ladder, { uploadMs: 0.5, gpuMs: 0.2, frameGapMs: 140 }, 1260, 0, 140);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.REDUCED);
-    assert.equal(ladder.getState().lastDegradationReason, 'sustained-frameGapMs');
-});
-
-test('healthy recovery reaches FULL within ten seconds from MINIMAL', () => {
-    const ladder = createPostFxLadder({ uploadIdleFullMs: 60_000 });
-    ladder.reset(POST_FX_LEVELS.MINIMAL);
-    const transitions = [];
-    run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 10_000, 0, 16, (state, now) => {
-        if (state.lastTransitionAtMs === now) transitions.push({ level: state.level, now });
-    });
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
-    assert.ok(transitions.some(item => item.level === POST_FX_LEVELS.FULL && item.now <= 10_000));
-});
-
-test('healthy hardware has at most one transition in the following minute', () => {
-    const ladder = createPostFxLadder({ uploadIdleFullMs: 60_000 });
-    ladder.reset(POST_FX_LEVELS.MINIMAL);
-    let now = run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 10_000);
-    let transitions = 0;
-    let previousLevel = ladder.getLevel();
-    let lastSpikeBucket = -1;
-    run(
-        ladder,
-        sampleAt => {
-            const spikeBucket = Math.floor((sampleAt - now) / 10_000);
-            const spike = spikeBucket > lastSpikeBucket;
-            lastSpikeBucket = Math.max(lastSpikeBucket, spikeBucket);
-            return { uploadMs: 0.2, gpuMs: spike ? 12 : 1 };
-        },
-        60_000,
-        now,
-        16,
-        state => {
-            if (state.level !== previousLevel) transitions += 1;
-            previousLevel = state.level;
-        },
-    );
-    assert.ok(transitions <= 1, `expected at most one transition, received ${transitions}`);
-});
-
-test('a single over-threshold frame does not reset recovery', () => {
-    const ladder = createPostFxLadder({
-        scoreWindowFrames: 1,
-        unhealthyResetFrames: 3,
-        probeMs: 1000,
-        uploadGraceMs: 0,
-        uploadIdleFullMs: 60_000,
-    });
-    ladder.reset(POST_FX_LEVELS.REDUCED);
-    let now = run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 800, 0, 100);
-    const healthySinceMs = ladder.getState().healthySinceMs;
-    ladder.update({ uploadMs: 0.2, gpuMs: 5 }, now += 100);
-    assert.equal(ladder.getState().healthySinceMs, healthySinceMs);
-    run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 200, now, 100);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
-});
-
-test('three consecutive over-threshold frames reset recovery', () => {
-    const ladder = createPostFxLadder({
-        scoreWindowFrames: 1,
-        unhealthyResetFrames: 3,
-        uploadGraceMs: 0,
-        uploadIdleFullMs: 60_000,
-    });
-    ladder.reset(POST_FX_LEVELS.REDUCED);
-    let now = run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 500, 0, 100);
-    run(ladder, { uploadMs: 0.2, gpuMs: 3 }, 300, now, 100);
-    assert.equal(ladder.getState().healthySinceMs, null);
-});
-
-test('recovery threshold is always 75 percent of the budget', () => {
-    const ladder = createPostFxLadder({ budgetMs: 10, healthyMs: 1 });
-    assert.equal(ladder.getState().options.healthyMs, 7.5);
-});
-
-test('upload-driven boot work is ignored for the three-second grace window', () => {
-    const ladder = createPostFxLadder({
-        scoreWindowFrames: 1,
-        overBudgetMs: 100,
-        uploadGraceMs: 3000,
-    });
-    run(ladder, { uploadMs: 20, gpuMs: 1 }, 2900, 0, 100);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
-    assert.equal(ladder.getState().lastDecisionReason, 'upload-grace');
-});
-
-test('one second with no uploads snaps a healthy resident ladder back to FULL', () => {
-    const ladder = createPostFxLadder();
-    ladder.reset(POST_FX_LEVELS.MINIMAL);
-    run(ladder, { uploadMs: 0, gpuMs: 1 }, 1100, 0, 100);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
-    assert.equal(ladder.getState().lastDecisionReason, 'upload-idle-recovery');
-});
-
-test('override pins the effective level and survives metric churn', () => {
-    const ladder = createPostFxLadder();
-    ladder.setOverride(POST_FX_LEVELS.MINIMAL);
-    run(ladder, { uploadMs: 20, gpuMs: 10 }, 5000);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.MINIMAL);
-    ladder.setOverride(null);
-    assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
-});
-
-test('timing assessment attributes upload, auxiliary upload, shader, GPU, and frame-gap cost', () => {
-    const upload = assessPostFxTimings({
-        uploadMs: 6,
-        auxUploadMs: 1,
-        setupCpuMs: 0.5,
-        shaderCpuMs: 1,
-        gpuMs: 2,
-    });
-    assert.equal(upload.driver, 'uploadMs');
-    assert.equal(upload.score, 10.5);
-
-    const stall = assessPostFxTimings({ uploadMs: 0.2, shaderCpuMs: 0.2, frameGapMs: 140 });
-    assert.equal(stall.driver, 'frameGapMs');
-    assert.equal(stall.score, 107);
-});
-
-test('degradation diagnostics retain the concrete bottleneck reason', () => {
-    const ladder = createPostFxLadder({
-        scoreWindowFrames: 1,
-        overBudgetMs: 100,
-        probeMs: 100,
-        uploadGraceMs: 0,
-        uploadIdleFullMs: 60_000,
-    });
-    run(ladder, { uploadMs: 0.2, gpuMs: 6 }, 120, 0, 20);
-    const degraded = ladder.getState();
-    assert.equal(degraded.level, POST_FX_LEVELS.REDUCED);
-    assert.equal(degraded.lastDecisionReason, 'degrade:sustained-gpuMs');
-    assert.equal(degraded.lastDegradationReason, 'sustained-gpuMs');
-    assert.equal(degraded.lastTransitionMetrics.driver, 'gpuMs');
-
-    run(ladder, { uploadMs: 0.2, gpuMs: 1 }, 120, 120, 20);
-    const recovered = ladder.getState();
-    assert.equal(recovered.level, POST_FX_LEVELS.FULL);
-    assert.equal(recovered.lastDecisionReason, 'healthy-recovery');
-    assert.equal(
-        recovered.lastDegradationReason,
-        'sustained-gpuMs',
-        'recovery must not erase the last degradation cause',
-    );
 });

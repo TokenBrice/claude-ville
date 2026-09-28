@@ -2,15 +2,18 @@
 //
 // Screen-space foreground weather. Intended to run after world sprites and
 // particles, before labels and status badges, with the canvas transform reset.
+//
+// 0.10 — every layer here is on the pixel grammar: stepped courses with 4x4
+// ordered-dither seams on the world's art-pixel grid, no gradients and no
+// anti-aliased strokes. The weather is the village's own (AtmosphereState's
+// timeline); nothing here reads agent, mood or director state (V3).
 
-import {
-    DISTRICT_LIGHTING_BANDS,
-    WEATHER_PRESETS,
-    WEATHER_TYPES,
-    quantizeDistrictLightingBand,
-} from './AtmosphereState.js';
+import { WEATHER_PRESETS, WEATHER_TYPES } from './AtmosphereState.js';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
+import { baseWindX, cloudCourseDrift, windAt } from './Wind.js';
+import { applyGradeToRgb } from './GradeEvaluator.js';
+import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
 
 export function weatherEmbellishmentAllowed(level = 0) {
     return ornamentPlan({ level, motionScale: 1 }).ambientWeatherEmbellishment !== 'off';
@@ -20,6 +23,28 @@ export function weatherPassKeepsPrecipitation(level = 0) {
     const moving = ornamentPlan({ level, motionScale: 1 });
     const reduced = ornamentPlan({ level, motionScale: 0 });
     return moving.weather === 'on' && reduced.weather === 'static';
+}
+
+// Reduced motion shows one static weather frame, so the governor's level is
+// latched per static scene (the weather's type and buckets, the zoom and the
+// viewport) instead of read each frame: a level crossing on a busy host would
+// otherwise pop the fog banks, the rain density and the ground haze between
+// otherwise identical frames. With motion on the live level is returned.
+const _staticPressure = { key: null, level: 0 };
+export function weatherPressureLevel(atmosphere, reduced, { zoom = 1, width = 0, height = 0 } = {}) {
+    const level = sampleFramePressure().level;
+    if (!reduced) {
+        _staticPressure.key = null;
+        return level;
+    }
+    const weather = atmosphere?.weather || {};
+    const bucket = value => Math.round((Number(value) || 0) * 8);
+    const key = `${weather.type}|${bucket(weather.intensity)}|${bucket(weather.fog)}|${bucket(weather.precipitation)}|${atmosphere?.phase}|${zoom}|${width}x${height}`;
+    if (_staticPressure.key !== key) {
+        _staticPressure.key = key;
+        _staticPressure.level = level;
+    }
+    return _staticPressure.level;
 }
 
 const CLEAR_TYPES = new Set(['clear', 'partly-cloudy']);
@@ -38,10 +63,6 @@ const RAIN_WIDE_ZOOM = 1.5;
 const SNOW_AREA_DENSITY = 3200;
 const SNOW_MAX_FLAKES = 420;
 const SNOW_MIN_FLAKES = 24;
-const FOG_MAX_BANDS = 9;
-const FOG_MIN_BANDS = 3;
-// Aerial fog only. Spatial ground haze is WorldFrameRenderer's field.
-export const FOG_BAND_Y_RANGE = Object.freeze({ min: 0.10, max: 0.40 });
 
 const RAIN_RIPPLE_SPRITE_ID = 'atmosphere.water.ripple.rain';
 const SPLASH_PRECIP_THRESHOLD = 0.15;
@@ -64,13 +85,6 @@ const RAIN_LIGHT = '#c4d6e2';
 const RAIN_DIM = '#96aabb';
 const RIPPLE_TILE_THROTTLE_MS = 2000;
 const RIPPLE_TILE_TRACK_LIMIT = 256;
-const DISTRICT_TEXTURE_SIZE = 128;
-const DISTRICT_TEXTURE_CACHE_LIMIT = 12;
-const DISTRICT_COOL_TINT = '76, 104, 150';
-const DISTRICT_WARM_TINT = '226, 181, 112';
-const DISTRICT_DIM_TINT = '10, 14, 24';
-const DISTRICT_TILE_RADIUS_X = TILE_WIDTH / 2;
-const DISTRICT_TILE_RADIUS_Y = TILE_HEIGHT / 2;
 
 const DEFAULT_INTENSITY = {
     overcast: 0.38,
@@ -78,20 +92,6 @@ const DEFAULT_INTENSITY = {
     fog: 0.58,
     storm: 0.82,
 };
-
-function normalizedDistrictLightingBand(value, direction) {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric <= 0) return 0;
-    for (const band of DISTRICT_LIGHTING_BANDS) {
-        if (numeric === band) return band;
-    }
-    return quantizeDistrictLightingBand(numeric, direction);
-}
-
-function districtLightingStrength(band) {
-    if (!band || band === DISTRICT_LIGHTING_BANDS[2]) return 0;
-    return Math.abs(1 - band);
-}
 
 // Parallax rain on the art-pixel grid: three depth layers, each a field of
 // streaks built from whole art-pixel cells (cell = round(zoom) CSS px) that
@@ -104,23 +104,97 @@ const RAIN_LAYERS = [
     { frac: 0.2, speedMul: 1.4, cells: [8, 11], color: RAIN_LIGHT, alpha: 0.78, dashed: false, windMul: 1.18, saltOffset: 2600 },
 ];
 
+// 4x4 Bayer in [0, 16).
+const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+
+// 0.10 — the screen washes (overcast darkening, fog lightening) are a
+// vertical profile cut into flat courses of WASH_COURSE_ALPHA with ordered
+// dither at each seam, cached as a narrow pattern tile on the art-pixel grid.
+const WASH_COURSE_ALPHA = 1 / 48;
+// Share of a course over which the seam dithers (the rest is flat).
+const WASH_SEAM = 0.35;
+const WASH_BUCKETS = 32;
+// [screen-height fraction, share of the wash alpha] and one flat colour per
+// wash: the overcast darkens toward the bottom of the frame, the fog wash
+// lifts it (the old gradients' shapes, now in courses).
+const OVERCAST_WASH = Object.freeze([[0, 0.70], [0.45, 0.42], [1, 1]]);
+const FOG_WASH = Object.freeze([[0, 0], [0.36, 0.28], [1, 1]]);
+const OVERCAST_WASH_RGB = Object.freeze([48, 58, 64]);
+const FOG_WASH_RGB = Object.freeze([208, 222, 219]);
+
+// 0.10 — fog banks: world-locked courses cut from a tileable value-noise
+// field (period FOG_TILE_W × FOG_TILE_H world px at FOG_TEXEL world px per
+// texel; octave cells ~5:1 along the iso horizontal, so the courses lie as
+// long banks rather than blobs), drifting with the one wind (the cloud-course
+// drift, Wind.js). Three flat courses with solid interiors; the ordered
+// dither is held to FOG_SEAM_TEXELS either side of each seam (scaled by the
+// field's local slope), so a bank reads calm at 1:1, not as checker mottle.
+// The banks lie on the ground plane: both backends lay them in the ground
+// pass (`groundFogLayer`), under every body, building and tree, so a
+// villager standing in fog stays legible; only the screen wash veils them.
+const FOG_TEXEL = 2;
+const FOG_TILE_W = 1536;
+const FOG_TILE_H = 768;
+const FOG_COLOR = Object.freeze([224, 231, 229]);
+const FOG_COURSE_ALPHA = Object.freeze([0.11, 0.2, 0.31]);
+// Two octaves: the small third octave broke the courses into busy cells.
+const FOG_OCTAVES = Object.freeze([[3, 8, 0.62], [6, 16, 0.38]]);
+const FOG_SEAM_TEXELS = 1;
+const FOG_BUCKETS = 8;
+
+// 0.10 — lightning. One schedule on the one motion clock drives the bolt
+// here and the flash exposure both backends apply (C4 stepped quanta: a
+// peak, four decaying steps, a re-strike at 470 ms). `stage` 1 shows the
+// first bolt, 2 the re-strike; 0 is afterglow only.
+const STRIKE_CYCLE_MS = 7200;
+export const FLASH_STEPS = Object.freeze([
+    Object.freeze({ at: 0, scalar: 0.30, stage: 1 }),
+    Object.freeze({ at: 83, scalar: 0.18, stage: 1 }),
+    Object.freeze({ at: 166, scalar: 0.12, stage: 1 }),
+    Object.freeze({ at: 250, scalar: 0.07, stage: 0 }),
+    Object.freeze({ at: 333, scalar: 0.035, stage: 0 }),
+    Object.freeze({ at: 470, scalar: 0.16, stage: 2 }),
+    Object.freeze({ at: 553, scalar: 0.07, stage: 0 }),
+    Object.freeze({ at: 636, scalar: 0.035, stage: 0 }),
+    Object.freeze({ at: 720, scalar: 0, stage: 0 }),
+]);
+// The flash is an exposure step: every world and backdrop pixel is multiplied
+// by (1 + scalar × gain × tint); the tint is a cool, slightly blue white.
+// Gains are capped by 0.10's "peak luma ≤ the old flash" (the HEAD source-over
+// diagonal veil, alpha 0.18 × intensity × legibility): a multiply lifts the
+// brightest pixels most, and at night those are the lamp pools, so the night
+// gain sits below the day one (measured at storm peaks at 5120×1440,
+// 2560×1440 and 1512×982 DPR 2, both backends: frame mean and p99 luma stay
+// under the old flash's; p99 at DPR 2 is the binding case).
+const FLASH_GAIN_DAY = 0.27;
+const FLASH_GAIN_NIGHT = 0.18;
+const FLASH_TINT = Object.freeze([0.9, 0.97, 1.12]);
+const BOLT_CORE = '#f4f8ff';
+const BOLT_HALO = '#9fb8ff';
+const BOLT_SPLASH = '#dfe9ff';
+// Endpoint candidates tried per strike; a bolt that finds no open sea (or
+// sky) is not drawn: the flash still lights the frame.
+const BOLT_CANDIDATES = 24;
+// The water mask is sampled at quarter resolution around each candidate: the
+// endpoint and its splash ring must all be open sea.
+const BOLT_MASK_STEP = 4;
+
 export class WeatherRenderer {
-    constructor({ assets = null, canvasFactory = null } = {}) {
+    constructor({ assets = null } = {}) {
         this.assets = assets;
-        this.districtContext = null;
-        this._canvasFactory = typeof canvasFactory === 'function'
-            ? canvasFactory
-            : () => (typeof document !== 'undefined' ? document.createElement('canvas') : null);
-        this._districtWashTextures = new Map();
-        this._lastDistrictDrawCount = 0;
+        this.sceneContext = null;
         this.elapsedMs = 0;
         this._lastSplashStamp = 0;
         this._splashStampSeed = 0;
         this._splashes = [];
         this._lightGrade = null;
         this._rippleStampTimes = new Map();
-        this._washStrip = null;
-        this._washStripKey = '';
+        this._washTile = null;
+        this._washPattern = null;
+        this._washKey = '';
+        this._washColors = null;
+        this._fogVariants = null;
+        this._bolt = null;
         this._allowEmbellishment = true;
     }
 
@@ -128,22 +202,27 @@ export class WeatherRenderer {
         this.assets = assets || null;
     }
 
-    setDistrictContext(context) {
-        this.districtContext = context || null;
+    // `{ camera, openGroundTiles }` — the camera phases every cell to the
+    // world's art-pixel grid and anchors the world-locked layers (fog banks,
+    // splashes, the lightning endpoint); `openGroundTiles()` lists the open
+    // ground rain may splash on.
+    setSceneContext(context) {
+        this.sceneContext = context || null;
     }
 
+    // `timeMs`: the MotionClock time (frozen under reduced motion). `strike`:
+    // this frame's `stormStrikeAt` result (the same one the flash exposure
+    // used). `seaAt(worldX, worldY)`: true on open sea, where a bolt may land.
     drawForeground(ctx, {
         canvas = ctx?.canvas,
         atmosphere = null,
         dt = 16,
+        timeMs = 0,
+        strike = null,
+        seaAt = null,
         profileMark = null,
     } = {}) {
         if (!ctx || !canvas || !canvas.width || !canvas.height) return;
-
-        // District atmosphere is a static information layer, not weather
-        // motion. It remains visible under reduced motion and claims no pulse
-        // band, timers, particles, or per-frame animation state.
-        this._drawDistrictAtmosphere(ctx, atmosphere);
 
         const weather = normalizeWeather(atmosphere);
         if (!weather) return;
@@ -158,8 +237,12 @@ export class WeatherRenderer {
         if (!hasForegroundWeather) return;
 
         const particleEnabled = atmosphere?.motion?.particleEnabled !== false;
-        const pressure = sampleFramePressure();
-        this._allowEmbellishment = weatherEmbellishmentAllowed(pressure.level);
+        const level = weatherPressureLevel(atmosphere, !particleEnabled, {
+            zoom: this.sceneContext?.camera?.zoom,
+            width: canvas.width,
+            height: canvas.height,
+        });
+        this._allowEmbellishment = weatherEmbellishmentAllowed(level);
         if (particleEnabled) {
             const frameDt = Math.max(0, Math.min(MAX_FRAME_DT, Number(dt) || 0));
             this.elapsedMs = (this.elapsedMs + frameDt) % LOOP_MS;
@@ -177,10 +260,7 @@ export class WeatherRenderer {
         const overcastIntensity = weather.type === 'overcast' || cloudCover > 0.72
             ? Math.max(weather.intensity * 0.72, cloudCover * 0.54) * washBudget
             : 0;
-        const fogActive = fog > 0.04 || weather.type === 'fog';
-        const fogIntensity = fogActive
-            ? Math.max(fog, weather.type === 'fog' ? weather.intensity : 0) * legibility.fog
-            : 0;
+        const fogIntensity = fogWashIntensity(weather, legibility);
         const rainActive = RAIN_TYPES.has(weather.type) || precipitation > 0.02;
         const rainOvercastIntensity = rainActive
             ? Math.min(
@@ -198,27 +278,22 @@ export class WeatherRenderer {
         );
         profileMark?.('weather-wash');
 
-        if (fogActive && this._allowEmbellishment) {
-            this._drawFogBands(ctx, canvas, fogIntensity, phaseMs, seed, particleEnabled);
-        }
-        profileMark?.('weather-fog-bands');
+        // The fog banks themselves lie on the ground plane, under the bodies
+        // (`groundFogLayer`, drawn by the frame's ground pass).
 
         if (rainActive) {
             const storm = weather.type === 'storm';
             const rainIntensity = Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72)) * legibility.rain;
-            // Winter (Dec–Feb) swaps rain streaks for drifting snow — presentation
-            // only; storm flash/lightning below still fires.
+            // Winter (Dec–Feb) precipitation falls as drifting snow; the storm's
+            // lightning below still strikes.
             if (isWinterMonth(atmosphere)) {
                 this._drawSnow(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
             } else {
-                this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
+                this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled, timeMs);
             }
-            if (storm && particleEnabled) {
-                this._drawStormFlash(ctx, canvas, Math.max(weather.intensity, precipitation) * legibility.flash, seed, weather.cause);
-            }
-        } else if (this._allowEmbellishment && weather.type === 'overcast' && fog <= 0.04) {
-            this._drawFogBands(ctx, canvas, weather.intensity * 0.34, phaseMs, seed, particleEnabled);
         }
+        // Reduced motion: `stormStrikeAt` never strikes, so no bolt and no flash.
+        if (strike?.active && strike.stage > 0) this._drawLightningBolt(ctx, canvas, strike, seaAt);
         profileMark?.('weather-precipitation');
 
         ctx.restore();
@@ -234,307 +309,152 @@ export class WeatherRenderer {
         this._splashStampSeed = 0;
         this._splashes.length = 0;
         this._rippleStampTimes.clear();
-        for (const ratios of this._districtWashTextures.values()) {
-            for (const texture of ratios.values()) {
-                texture.width = 0;
-                texture.height = 0;
-            }
-            ratios.clear();
+        this.sceneContext = null;
+        const fogTiles = Object.values(this._fogVariants || {}).map(variant => variant.canvas);
+        for (const tile of [this._washTile, ...fogTiles]) {
+            if (!tile) continue;
+            tile.width = 0;
+            tile.height = 0;
         }
-        this._districtWashTextures.clear();
-        this.districtContext = null;
-        if (this._washStrip) {
-            this._washStrip.width = 0;
-            this._washStrip.height = 0;
-        }
-        this._washStrip = null;
-        this._washStripKey = '';
+        this._washTile = null;
+        this._washPattern = null;
+        this._washKey = '';
+        this._washColors = null;
+        this._fogVariants = null;
+        this._bolt = null;
     }
 
-    _drawDistrictAtmosphere(ctx, atmosphere) {
-        this._lastDistrictDrawCount = 0;
-        const districts = atmosphere?.districtAtmosphere;
-        const camera = this.districtContext?.camera;
-        const sprites = this.districtContext?.agentSprites;
-        if (!Array.isArray(districts) || !districts.length || !camera || !sprites?.get) return;
-
-        const zoom = Math.max(0.1, Number(camera.zoom) || 1);
-        const cameraX = Number(camera.x) || 0;
-        const cameraY = Number(camera.y) || 0;
-        for (let districtIndex = 0; districtIndex < districts.length; districtIndex++) {
-            const district = districts[districtIndex];
-            const agentIds = district?.agentIds;
-            if (!Array.isArray(agentIds) || !agentIds.length) continue;
-
-            let centerX = 0;
-            let centerY = 0;
-            let occupantCount = 0;
-            for (let agentIndex = 0; agentIndex < agentIds.length; agentIndex++) {
-                const sprite = sprites.get(agentIds[agentIndex]);
-                if (!sprite || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
-                centerX += sprite.x;
-                centerY += sprite.y;
-                occupantCount++;
-            }
-            if (!occupantCount) continue;
-            centerX /= occupantCount;
-            centerY /= occupantCount;
-
-            let footprintRadius = 0;
-            for (let agentIndex = 0; agentIndex < agentIds.length; agentIndex++) {
-                const sprite = sprites.get(agentIds[agentIndex]);
-                if (!sprite || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
-                const distance = Math.hypot(sprite.x - centerX, sprite.y - centerY);
-                if (distance > footprintRadius) footprintRadius = distance;
-            }
-
-            const innerTiles = Math.max(0, Number(district?.falloff?.innerRadiusTiles) || 0);
-            const outerTiles = Math.max(innerTiles + 0.1, Number(district?.falloff?.outerRadiusTiles) || 0);
-            const radiusX = (footprintRadius + outerTiles * DISTRICT_TILE_RADIUS_X) * zoom;
-            const radiusY = (footprintRadius * 0.5 + outerTiles * DISTRICT_TILE_RADIUS_Y) * zoom;
-            const innerRatio = clamp(
-                (footprintRadius + innerTiles * DISTRICT_TILE_RADIUS_X)
-                    / Math.max(1, footprintRadius + outerTiles * DISTRICT_TILE_RADIUS_X),
-                0,
-                0.95,
-            );
-            const screenX = (centerX + cameraX) * zoom;
-            const screenY = (centerY + cameraY + 5) * zoom;
-            const hazeAlpha = clamp(Number(district?.groundHaze?.alpha) || 0, 0, 1);
-            const cool = normalizedDistrictLightingBand(district?.lightingBias?.cool, 'cool');
-            const warm = normalizedDistrictLightingBand(district?.lightingBias?.warm, 'warm');
-            const dim = normalizedDistrictLightingBand(district?.lightingBias?.dim, 'dim');
-
-            ctx.save();
-            ctx.globalCompositeOperation = 'source-over';
-            if (hazeAlpha > 0.002) {
-                this._drawDistrictWash(
-                    ctx,
-                    district.groundHaze?.tint || DISTRICT_COOL_TINT,
-                    innerRatio,
-                    hazeAlpha,
-                    screenX,
-                    screenY,
-                    radiusX,
-                    radiusY,
-                );
-            }
-            if (cool && cool !== DISTRICT_LIGHTING_BANDS[2]) {
-                this._drawDistrictLighting(
-                    ctx,
-                    DISTRICT_COOL_TINT,
-                    innerRatio,
-                    cool,
-                    screenX,
-                    screenY,
-                    radiusX,
-                    radiusY,
-                );
-            }
-            if (warm && warm !== DISTRICT_LIGHTING_BANDS[2]) {
-                this._drawDistrictLighting(
-                    ctx,
-                    DISTRICT_WARM_TINT,
-                    innerRatio,
-                    warm,
-                    screenX,
-                    screenY,
-                    radiusX,
-                    radiusY,
-                );
-            }
-            if (dim && dim !== DISTRICT_LIGHTING_BANDS[2]) {
-                this._drawDistrictLighting(
-                    ctx,
-                    DISTRICT_DIM_TINT,
-                    innerRatio,
-                    dim,
-                    screenX,
-                    screenY,
-                    radiusX,
-                    radiusY,
-                );
-            }
-            ctx.restore();
-            this._lastDistrictDrawCount++;
-        }
-    }
-
-    _drawDistrictWash(ctx, tint, innerRatio, alpha, x, y, radiusX, radiusY) {
-        const texture = this._districtWashTexture(tint, innerRatio);
-        if (!texture || radiusX <= 0 || radiusY <= 0) return;
-        ctx.globalAlpha = alpha;
-        ctx.drawImage(texture, x - radiusX, y - radiusY, radiusX * 2, radiusY * 2);
-        ctx.globalAlpha = 1;
-    }
-
-    _drawDistrictLighting(ctx, tint, innerRatio, band, x, y, radiusX, radiusY) {
-        const strength = districtLightingStrength(band);
-        if (!strength || radiusX <= 0 || radiusY <= 0) return;
-        const texture = this._districtLightingTexture(tint, innerRatio, band);
-        if (!texture) return;
-        ctx.globalCompositeOperation = band < DISTRICT_LIGHTING_BANDS[2] ? 'multiply' : 'screen';
-        ctx.globalAlpha = strength;
-        ctx.drawImage(texture, x - radiusX, y - radiusY, radiusX * 2, radiusY * 2);
-        ctx.globalAlpha = 1;
-        ctx.globalCompositeOperation = 'source-over';
-    }
-
-    _districtWashTexture(tint, innerRatio) {
-        const ratioBucket = Math.round(clamp(innerRatio, 0, 0.95) * 20) / 20;
-        let ratios = this._districtWashTextures.get(tint);
-        if (!ratios) {
-            ratios = new Map();
-            this._districtWashTextures.set(tint, ratios);
-        }
-        const cached = ratios.get(ratioBucket);
-        if (cached) return cached;
-        const canvas = this._canvasFactory();
-        if (!canvas) return null;
-        canvas.width = DISTRICT_TEXTURE_SIZE;
-        canvas.height = DISTRICT_TEXTURE_SIZE;
-        const textureCtx = canvas.getContext?.('2d');
-        if (!textureCtx?.createRadialGradient) return null;
-        const radius = DISTRICT_TEXTURE_SIZE / 2;
-        const gradient = textureCtx.createRadialGradient(radius, radius, 0, radius, radius, radius);
-        const span = 1 - ratioBucket;
-        gradient.addColorStop(0, `rgba(${tint}, 1)`);
-        gradient.addColorStop(ratioBucket, `rgba(${tint}, 1)`);
-        // Five samples approximate 1-smoothstep across the contract's broad
-        // falloff without allocating gradients in the render hot path.
-        gradient.addColorStop(ratioBucket + span * 0.25, `rgba(${tint}, 0.844)`);
-        gradient.addColorStop(ratioBucket + span * 0.5, `rgba(${tint}, 0.5)`);
-        gradient.addColorStop(ratioBucket + span * 0.75, `rgba(${tint}, 0.156)`);
-        gradient.addColorStop(1, `rgba(${tint}, 0)`);
-        textureCtx.fillStyle = gradient;
-        textureCtx.fillRect(0, 0, DISTRICT_TEXTURE_SIZE, DISTRICT_TEXTURE_SIZE);
-        ratios.set(ratioBucket, canvas);
-        this._trimDistrictTextureCache();
-        return canvas;
-    }
-
-    _districtLightingTexture(tint, innerRatio, band) {
-        const ratioBucket = Math.round(clamp(innerRatio, 0, 0.95) * 20) / 20;
-        const tintKey = `lighting:${tint}`;
-        let ratios = this._districtWashTextures.get(tintKey);
-        if (!ratios) {
-            ratios = new Map();
-            this._districtWashTextures.set(tintKey, ratios);
-        }
-        const key = `${ratioBucket}|${band}`;
-        const cached = ratios.get(key);
-        if (cached) return cached;
-        const canvas = this._canvasFactory();
-        if (!canvas) return null;
-        canvas.width = DISTRICT_TEXTURE_SIZE;
-        canvas.height = DISTRICT_TEXTURE_SIZE;
-        const textureCtx = canvas.getContext?.('2d');
-        if (!textureCtx?.createRadialGradient) return null;
-        const radius = DISTRICT_TEXTURE_SIZE / 2;
-        const gradient = textureCtx.createRadialGradient(radius, radius, 0, radius, radius, radius);
-        const span = 1 - ratioBucket;
-        const course = band < DISTRICT_LIGHTING_BANDS[2] ? band : 1;
-        const color = alpha => `rgba(${tint}, ${alpha})`;
-        gradient.addColorStop(0, color(1));
-        gradient.addColorStop(ratioBucket, color(1));
-        // Duplicate the stops over a tiny pixel-sized interval. The district
-        // lighting response changes course in discrete rings; only haze keeps
-        // the smooth five-stop falloff above.
-        const addStep = (offset, from, to) => {
-            const safe = clamp(offset, 0, 0.999);
-            gradient.addColorStop(safe, color(from));
-            gradient.addColorStop(Math.min(1, safe + 0.001), color(to));
-        };
-        addStep(ratioBucket + span * 0.25, 1, course);
-        addStep(ratioBucket + span * 0.50, course, course);
-        addStep(ratioBucket + span * 0.75, course, course);
-        gradient.addColorStop(1, color(0));
-        textureCtx.fillStyle = gradient;
-        textureCtx.fillRect(0, 0, DISTRICT_TEXTURE_SIZE, DISTRICT_TEXTURE_SIZE);
-        ratios.set(key, canvas);
-        this._trimDistrictTextureCache();
-        return canvas;
-    }
-
-    _trimDistrictTextureCache() {
-        let count = 0;
-        for (const ratios of this._districtWashTextures.values()) count += ratios.size;
-        if (count <= DISTRICT_TEXTURE_CACHE_LIMIT) return;
-        const firstTint = this._districtWashTextures.keys().next().value;
-        const ratios = this._districtWashTextures.get(firstTint);
-        const firstRatio = ratios?.keys().next().value;
-        const texture = ratios?.get(firstRatio);
-        if (texture) {
-            texture.width = 0;
-            texture.height = 0;
-        }
-        ratios?.delete(firstRatio);
-        if (!ratios?.size) this._districtWashTextures.delete(firstTint);
-    }
-
+    // 0.10 — the overcast darkening and fog lightening washes vary only with
+    // screen height. Each is cut into flat courses of WASH_COURSE_ALPHA with a
+    // 4x4 ordered dither at the seams, composited once into a 4-cell-wide
+    // tile (one texel per art pixel) and laid over the frame as a pattern on
+    // the art-pixel grid: one fill, rebaked only when a bucketed intensity,
+    // the cell, the height or the grade course changes. No gradient anywhere.
     _drawWeatherWash(ctx, canvas, overcastIntensity, fogIntensity, rainOvercastIntensity = 0) {
-        const hasOvercast = clamp(overcastIntensity, 0, 1) * 0.14 > 0.005;
-        const hasFog = clamp(fogIntensity, 0, 1) * 0.12 > 0.005;
-        const hasRainOvercast = clamp(rainOvercastIntensity, 0, 1) * 0.14 > 0.005;
-        if (!hasOvercast && !hasRainOvercast) {
-            if (hasFog) this._drawFogWash(ctx, canvas, fogIntensity);
-            return;
+        const overcast = washBucket(overcastIntensity);
+        const fog = washBucket(fogIntensity);
+        const rain = washBucket(rainOvercastIntensity);
+        if (!overcast && !fog && !rain) return;
+        if (typeof document === 'undefined') return;
+        const { cell, ox, oy } = this._artGrid();
+        const rows = Math.ceil(canvas.height / cell) + 2;
+        const graded = this._gradedWashColors();
+        const key = `${rows}|${overcast}|${fog}|${rain}|${graded.key}`;
+        if (key !== this._washKey || !this._washPattern) {
+            const tile = this._washTile || document.createElement('canvas');
+            tile.width = 4;
+            tile.height = rows;
+            const tctx = tile.getContext('2d');
+            const image = tctx.createImageData(4, rows);
+            const layers = [];
+            if (overcast) layers.push({ stops: OVERCAST_WASH, alpha: (overcast / WASH_BUCKETS) * 0.14, rgb: graded.overcast });
+            if (fog) layers.push({ stops: FOG_WASH, alpha: (fog / WASH_BUCKETS) * 0.12, rgb: graded.fog });
+            if (rain) layers.push({ stops: OVERCAST_WASH, alpha: (rain / WASH_BUCKETS) * 0.14, rgb: graded.overcast });
+            for (let y = 0; y < rows; y++) {
+                const t = rows > 1 ? y / (rows - 1) : 1;
+                for (let x = 0; x < 4; x++) {
+                    const order = BAYER4[(y % 4) * 4 + x] / 16;
+                    let r = 0;
+                    let g = 0;
+                    let b = 0;
+                    let a = 0;
+                    for (const layer of layers) {
+                        // Flat courses; the ordered dither only mixes two
+                        // neighbouring courses in a narrow band at each seam.
+                        const raw = layer.alpha * washProfile(layer.stops, t);
+                        const la = Math.floor(raw / WASH_COURSE_ALPHA + (order - 0.5) * WASH_SEAM + 0.5) * WASH_COURSE_ALPHA;
+                        if (la <= 0) continue;
+                        // Premultiplied source-over.
+                        r = layer.rgb[0] * la + r * (1 - la);
+                        g = layer.rgb[1] * la + g * (1 - la);
+                        b = layer.rgb[2] * la + b * (1 - la);
+                        a = la + a * (1 - la);
+                    }
+                    if (a <= 0) continue;
+                    const offset = (y * 4 + x) * 4;
+                    image.data[offset] = Math.round(r / a);
+                    image.data[offset + 1] = Math.round(g / a);
+                    image.data[offset + 2] = Math.round(b / a);
+                    image.data[offset + 3] = Math.round(a * 255);
+                }
+            }
+            tctx.putImageData(image, 0, 0);
+            this._washTile = tile;
+            this._washPattern = ctx.createPattern(tile, 'repeat-x');
+            this._washKey = key;
         }
-        if ((!hasFog && !hasRainOvercast) || typeof document === 'undefined') {
-            if (hasOvercast) this._drawOvercast(ctx, canvas, overcastIntensity);
-            if (hasFog) this._drawFogWash(ctx, canvas, fogIntensity);
-            if (hasRainOvercast) this._drawOvercast(ctx, canvas, rainOvercastIntensity);
-            return;
-        }
-
-        // Both washes vary only vertically, so a 1px-wide strip preserves their
-        // source-over composition while replacing two full-canvas fills with one.
-        const height = Math.max(1, Math.round(canvas.height));
-        const key = `${height}|${overcastIntensity}|${fogIntensity}|${rainOvercastIntensity}`;
-        if (!this._washStrip || this._washStrip.height !== height) {
-            this._washStrip = document.createElement('canvas');
-            this._washStrip.width = 1;
-            this._washStrip.height = height;
-            this._washStripKey = '';
-        }
-        if (this._washStripKey !== key) {
-            const stripCtx = this._washStrip.getContext('2d');
-            stripCtx.clearRect(0, 0, 1, height);
-            stripCtx.globalAlpha = 1;
-            stripCtx.globalCompositeOperation = 'source-over';
-            if (hasOvercast) this._drawOvercast(stripCtx, this._washStrip, overcastIntensity);
-            if (hasFog) this._drawFogWash(stripCtx, this._washStrip, fogIntensity);
-            if (hasRainOvercast) this._drawOvercast(stripCtx, this._washStrip, rainOvercastIntensity);
-            this._washStripKey = key;
-        }
-        ctx.drawImage(this._washStrip, 0, 0, 1, height, 0, 0, canvas.width, canvas.height);
-    }
-
-    _drawOvercast(ctx, canvas, intensity) {
-        const alpha = clamp(intensity, 0, 1) * 0.14;
-        if (alpha <= 0.005) return;
-
-        const wash = ctx.createLinearGradient(0, 0, 0, canvas.height);
-        wash.addColorStop(0, `rgba(65, 78, 88, ${alpha * 0.70})`);
-        wash.addColorStop(0.45, `rgba(54, 66, 72, ${alpha * 0.42})`);
-        wash.addColorStop(1, `rgba(35, 40, 44, ${alpha})`);
-        ctx.fillStyle = wash;
+        const pattern = this._washPattern;
+        if (!pattern) return;
+        pattern.setTransform?.(new DOMMatrix([cell, 0, 0, cell, ox - cell, oy - cell]));
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.fillStyle = pattern;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
     }
 
-    _drawFogWash(ctx, canvas, intensity) {
-        const alpha = clamp(intensity, 0, 1) * 0.12;
-        if (alpha <= 0.005) return;
-
-        const wash = ctx.createLinearGradient(0, 0, 0, canvas.height);
-        wash.addColorStop(0, 'rgba(210, 225, 224, 0)');
-        wash.addColorStop(0.36, `rgba(202, 218, 216, ${alpha * 0.28})`);
-        wash.addColorStop(1, `rgba(213, 225, 220, ${alpha})`);
-        ctx.fillStyle = wash;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // The overlay is ungraded on both backends, so the wash and fog colours
+    // take the C2 grade here (a fog at night is a dim blue-grey, not white).
+    _gradedWashColors() {
+        const grade = this._lightGrade;
+        const key = grade?.cacheKey || 'neutral';
+        if (this._washColors?.key === key) return this._washColors;
+        const toGraded = rgb => (grade
+            ? applyGradeToRgb(rgb.map(channel => channel / 255), grade).map(channel => Math.round(clamp(channel, 0, 1) * 255))
+            : rgb.slice());
+        this._washColors = {
+            key,
+            overcast: toGraded(OVERCAST_WASH_RGB),
+            fog: toGraded(FOG_WASH_RGB),
+        };
+        return this._washColors;
     }
 
-    _drawRain(ctx, canvas, weather, phaseMs, seed, particleEnabled) {
+    // 0.10 — this frame's fog banks for the ground pass, or null: the baked
+    // three-course tile and the world origin of its lattice (period `width` ×
+    // `height` world px, `texel` world px per texel), drifting with the
+    // cloud-course drift (the one wind; fog blows at 0.1, so the banks barely
+    // creep; reduced motion holds them). The frame renderer lays it on the
+    // ground below the sea horizon, under every body, building and tree. The
+    // tile is FOG_COLOR as-is (both backends grade the world downstream);
+    // `graded` bakes it through the C2 grade for the resident path's 2D
+    // backdrop (the outer ocean, which nothing grades after it is drawn).
+    groundFogLayer({ atmosphere = null, viewport = null, timeMs = null, graded = false } = {}) {
+        const weather = normalizeWeather(atmosphere);
+        if (!weather || !(weather.intensity > 0) || typeof document === 'undefined') return null;
+        const reduced = atmosphere?.motion?.particleEnabled === false;
+        const level = weatherPressureLevel(atmosphere, reduced, {
+            zoom: this.sceneContext?.camera?.zoom,
+            width: viewport?.width,
+            height: viewport?.height,
+        });
+        if (!weatherEmbellishmentAllowed(level)) return null;
+        const legibility = weatherLegibilityGate(weather, atmosphere);
+        const strength = Math.round(clamp(fogBankIntensity(weather, legibility), 0, 1) * FOG_BUCKETS);
+        if (strength <= 0) return null;
+        const grade = graded ? atmosphere?.lightGrade || null : null;
+        const key = `ground-fog-${strength}${grade ? `-${grade.cacheKey || 'g'}` : ''}`;
+        const variants = this._fogVariants ||= {};
+        const variant = variants[graded ? 'graded' : 'plain'] ||= {
+            canvas: null,
+            layer: { canvas: null, key: '', x: 0, y: 0, width: FOG_TILE_W, height: FOG_TILE_H, texel: FOG_TEXEL, top: OCEAN_HORIZON_WORLD_Y },
+        };
+        if (variant.layer.key !== key || !variant.canvas) {
+            const rgb = grade
+                ? applyGradeToRgb(FOG_COLOR.map(channel => channel / 255), grade).map(channel => Math.round(clamp(channel, 0, 1) * 255))
+                : FOG_COLOR;
+            variant.canvas = bakeFogBankTile(variant.canvas, strength / FOG_BUCKETS, rgb);
+        }
+        const drift = cloudCourseDrift(reduced ? null : timeMs, weather);
+        const layer = variant.layer;
+        layer.canvas = variant.canvas;
+        layer.key = key;
+        layer.x = Math.round(drift.x);
+        layer.y = Math.round(drift.y);
+        return layer;
+    }
+
+    _drawRain(ctx, canvas, weather, phaseMs, seed, particleEnabled, timeMs = 0) {
         const intensity = clamp(weather.intensity, 0, 1);
         const storm = weather.type === 'storm';
         const grid = this._artGrid();
@@ -544,8 +464,12 @@ export class WeatherRenderer {
         if (!particleEnabled) count = Math.round(count * 0.5);
         if (!this._allowEmbellishment) count = Math.round(count * 0.62);
 
-        const windValue = Number(weather.windX);
-        const windX = clamp(Number.isFinite(windValue) ? windValue : -0.46, -1.4, 1.4);
+        // C-W3 — the rain leans with the one wind: the streak slope reads the
+        // gust at the view centre (stepped, so the whole field leans harder
+        // while a gust passes), the sideways drift the knot wind (a drift
+        // that followed the gust would jump the streaks).
+        const drift = baseWindX(weather);
+        const lean = this._viewWind(canvas, timeMs, weather);
         const pad = 48;
         const travel = canvas.height + pad * 2;
         const speed = particleEnabled ? (0.42 + intensity * 0.34) : 0;
@@ -562,7 +486,8 @@ export class WeatherRenderer {
             this._drawRainStreakLayer(ctx, canvas, grid, {
                 count: layerCount,
                 seed,
-                windX: windX * layer.windMul,
+                drift: drift * layer.windMul,
+                lean: lean * layer.windMul,
                 pad,
                 travel,
                 fall: (phaseMs * speed * layer.speedMul) % travel,
@@ -577,7 +502,7 @@ export class WeatherRenderer {
         // the flash the same way). `intensity` is already legibility-gated, so
         // a pressured scene drops below the threshold and keeps its labels.
         if (this._allowEmbellishment && storm && intensity > 0.7 && particleEnabled) {
-            this._drawRainCurtains(ctx, canvas, { intensity, windX, phaseMs, seed });
+            this._drawRainCurtains(ctx, canvas, { intensity, windX: drift, phaseMs, seed });
         }
 
         if (this._allowEmbellishment && (weather.precipitation > SPLASH_PRECIP_THRESHOLD || intensity > SPLASH_PRECIP_THRESHOLD)) {
@@ -594,7 +519,7 @@ export class WeatherRenderer {
     // The world's art-pixel grid on screen (CSS px): one cell per art pixel,
     // phased to the camera so weather cells line up with the world's texels.
     _artGrid() {
-        const camera = this.districtContext?.camera || null;
+        const camera = this.sceneContext?.camera || null;
         const zoom = Math.max(0.1, Number(camera?.zoom) || 1);
         const cell = Math.max(1, Math.round(zoom));
         const ox = mod(Number(camera?.renderOffsetX) || 0, cell);
@@ -602,14 +527,22 @@ export class WeatherRenderer {
         return { camera, zoom, cell, ox, oy };
     }
 
+    // `windAt` under the middle of the view (screen-space layers lean as one).
+    _viewWind(canvas, timeMs, weather) {
+        const camera = this.sceneContext?.camera;
+        if (!camera?.screenToWorld) return baseWindX(weather);
+        const centre = camera.screenToWorld(canvas.width / 2, canvas.height / 2);
+        return windAt(centre.x, centre.y, timeMs, weather, (this._windScratch ||= { x: 0, gust: 0 })).x;
+    }
+
     // One parallax layer: seeded streaks falling on the layer's own offset,
-    // each a run of whole cells that steps one cell sideways per 1/|wind|
+    // each a run of whole cells that steps one cell sideways per 1/|lean|
     // cells down. All cells go into one path, filled once.
-    _drawRainStreakLayer(ctx, canvas, grid, { count, seed, windX, pad, travel, fall, layer, alpha }) {
+    _drawRainStreakLayer(ctx, canvas, grid, { count, seed, drift, lean: wind, pad, travel, fall, layer, alpha }) {
         const { cell, ox, oy } = grid;
         const xSpan = canvas.width + pad * 2;
         const [minCells, maxCells] = layer.cells;
-        const lean = windX * 0.8;
+        const lean = clamp(wind * 0.8, -1.5, 1.5);
         ctx.globalAlpha = clamp(alpha, 0, 1);
         ctx.fillStyle = layer.color;
         ctx.beginPath();
@@ -617,7 +550,7 @@ export class WeatherRenderer {
             const s = i + layer.saltOffset;
             const cells = minCells + Math.floor(random01(seed, s + 17) * (maxCells - minCells + 1));
             const y = ((random01(seed, s + 211) * travel + fall) % travel) - pad;
-            const rawX = random01(seed, s + 101) * xSpan - pad + fall * windX * 0.34;
+            const rawX = random01(seed, s + 101) * xSpan - pad + fall * drift * 0.34;
             const x = wrap(rawX, -pad, canvas.width + pad);
             const headX = ox + Math.floor((x - ox) / cell) * cell;
             const headY = oy + Math.floor((y - oy) / cell) * cell;
@@ -647,8 +580,7 @@ export class WeatherRenderer {
             ),
         );
 
-        const windValue = Number(weather.windX);
-        const windX = clamp(Number.isFinite(windValue) ? windValue : -0.3, -1.4, 1.4);
+        const windX = baseWindX(weather);
         const pad = 24;
         const travel = canvas.height + pad * 2;
         const alpha = Math.min(0.7, (particleEnabled ? 0.42 : 0.3) + intensity * 0.28);
@@ -686,7 +618,7 @@ export class WeatherRenderer {
         const baseAlpha = Math.min(0.1, 0.04 + (intensity - 0.7) * 0.2);
         if (baseAlpha <= 0.005) return;
         const span = canvas.width + canvas.width * 0.6;
-        const drift = clamp(Number.isFinite(windX) ? windX : -0.46, -1.4, 1.4);
+        const drift = clamp(Number(windX) || 0, -1.4, 1.4);
         const { cell } = this._artGrid();
 
         ctx.save();
@@ -716,7 +648,7 @@ export class WeatherRenderer {
     // it pans with the ground. Water keeps its own rain ripples.
     _drawRainSplashes(ctx, grid, { intensity, precipitation, particleEnabled, seed, alphaScale }) {
         const camera = grid.camera;
-        const tiles = this.districtContext?.openGroundTiles?.() || null;
+        const tiles = this.sceneContext?.openGroundTiles?.() || null;
         if (!camera?.worldToScreen || !camera?.screenToWorld || !tiles?.length) return;
         const view = this._visibleWorldRect(camera);
         const driveT = Math.min(1, Math.max(intensity, precipitation));
@@ -853,178 +785,383 @@ export class WeatherRenderer {
         this._rippleStampTimes.set(key, nowMs);
     }
 
-    _drawFogBands(ctx, canvas, intensity, phaseMs, seed, particleEnabled) {
-        const alphaBase = clamp(intensity, 0, 1) * (particleEnabled ? 0.12 : 0.075);
-        if (alphaBase <= 0.005) return;
-
-        const count = Math.min(
-            FOG_MAX_BANDS,
-            Math.max(FOG_MIN_BANDS, Math.floor(canvas.height / 150) + Math.ceil(intensity * 3)),
-        );
-        const drift = particleEnabled ? phaseMs * 0.012 : 0;
-
-        ctx.save();
-        for (let i = 0; i < count; i++) {
-            const bandSeed = i * 97;
-            const bandHeight = 18 + random01(seed, bandSeed + 11) * 42;
-            const lowerBias = Math.pow(random01(seed, bandSeed + 23), 0.56);
-            const yBase = canvas.height * (FOG_BAND_Y_RANGE.min
-                + lowerBias * (FOG_BAND_Y_RANGE.max - FOG_BAND_Y_RANGE.min));
-            const y = Math.round(yBase + Math.sin(i * 1.7 + phaseMs * 0.0008) * (particleEnabled ? 5 : 0));
-            const width = canvas.width * (0.58 + random01(seed, bandSeed + 37) * 0.56);
-            const xDrift = drift * (0.32 + random01(seed, bandSeed + 41) * 0.52);
-            const x = wrap(
-                random01(seed, bandSeed + 53) * canvas.width - width * 0.5 + xDrift,
-                -width,
-                canvas.width,
-            );
-            const labelZoneGuard = y < canvas.height * 0.34 ? 0.36 : y < canvas.height * 0.48 ? 0.68 : 1;
-            const alpha = alphaBase * labelZoneGuard * (0.45 + random01(seed, bandSeed + 67) * 0.55);
-
-            this._drawFogBand(ctx, x, y, width, bandHeight, alpha);
-            if (x + width < canvas.width) {
-                this._drawFogBand(ctx, x + width + canvas.width * 0.18, y, width, bandHeight, alpha * 0.72);
-            }
+    // 0.10 — the lightning bolt: midpoint displacement planned once per strike
+    // in world space, rasterized every frame on the art-pixel grid
+    // (`round(zoom)` px cells): a cream core (one cell, two side by side at
+    // zoom ≤ 1 so it reads at the wide shots), a checkerboard `#9fb8ff` halo
+    // beside it, 0–2 forks, and a stepped 2:1 splash ring where it meets the
+    // sea. It lands only on open sea (a quarter-res sample of the water mask
+    // around the endpoint and its ring) or ends in the sky above the horizon,
+    // and its forks run only over open sea or sky; it never strikes the
+    // island. The re-strike (stage 2) redraws the same channel without its
+    // forks.
+    _drawLightningBolt(ctx, canvas, strike, seaAt) {
+        const grid = this._artGrid();
+        const camera = grid.camera;
+        if (!camera?.worldToScreen || !camera?.screenToWorld) return;
+        if (!this._bolt || this._bolt.id !== strike.id || this._bolt.seed !== strike.seed) {
+            this._bolt = planBolt(strike, canvas, camera, seaAt);
         }
-        ctx.restore();
-    }
-
-    _drawFogBand(ctx, x, y, width, height, alpha) {
-        const grad = ctx.createLinearGradient(x, 0, x + width, 0);
-        grad.addColorStop(0, 'rgba(218, 228, 224, 0)');
-        grad.addColorStop(0.18, `rgba(218, 228, 224, ${alpha * 0.58})`);
-        grad.addColorStop(0.52, `rgba(225, 232, 228, ${alpha})`);
-        grad.addColorStop(0.86, `rgba(218, 228, 224, ${alpha * 0.46})`);
-        grad.addColorStop(1, 'rgba(218, 228, 224, 0)');
-
-        ctx.fillStyle = grad;
-        ctx.fillRect(Math.round(x), Math.round(y), Math.round(width), Math.round(height));
-    }
-
-    _drawStormFlash(ctx, canvas, intensity, seed, cause = 'timeline') {
-        const cycleMs = 7200;
-        const cycle = Math.floor(this.elapsedMs / cycleMs);
-        const cycleT = this.elapsedMs % cycleMs;
-        const chance = random01(seed, cycle + 701);
-        if (chance > 0.18 + intensity * 0.10) return;
-
-        const offset = 900 + random01(seed, cycle + 809) * 4700;
-        const age = cycleT - offset;
-        const secondAge = cycleT - offset - 170;
-        const flashAge = age >= 0 && age < 110 ? age : secondAge >= 0 && secondAge < 70 ? secondAge : -1;
-        if (flashAge < 0) return;
-
-        const windowMs = flashAge === age ? 110 : 70;
-        const flashT = 1 - flashAge / windowMs;
-        const alpha = flashT * clamp(intensity, 0, 1) * 0.18;
-        if (alpha <= 0.005) return;
-
-        // 5.5 — fleet-driven storms (weather.cause === 'fleet') flash a subtle
-        // violet vs the timeline storm's cool white.
-        const fleet = cause === 'fleet';
-        const flash = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-        flash.addColorStop(0, fleet ? `rgba(216, 196, 255, ${alpha})` : `rgba(220, 236, 255, ${alpha})`);
-        flash.addColorStop(0.55, fleet ? `rgba(228, 214, 255, ${alpha * 0.58})` : `rgba(235, 242, 255, ${alpha * 0.58})`);
-        flash.addColorStop(1, fleet ? 'rgba(216, 196, 255, 0)' : 'rgba(220, 236, 255, 0)');
-        ctx.fillStyle = flash;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        // The primary strike of each flash pair carries a forked bolt; the
-        // dimmer afterglow (secondAge) is sky-glow only. Brighter at the peak
-        // of the flash envelope so the bolt reads as the source of the light.
-        if (flashAge === age && flashT > 0.32) {
-            this._drawLightningBolt(ctx, canvas, flashT * clamp(intensity, 0, 1), seed, cycle, fleet);
-        }
-    }
-
-    // Procedural forked bolt via midpoint displacement. Deterministic per
-    // strike (seed + cycle) so it is identical across the brief multi-frame
-    // flash window. Drawn screen-composite over the flash wash.
-    _drawLightningBolt(ctx, canvas, strength, seed, cycle, fleet = false) {
-        const boltSeed = (seed + Math.imul(cycle + 1, 0x27d4eb2f)) >>> 0;
-        const startX = Math.round(canvas.width * (0.32 + random01(boltSeed, 11) * 0.36));
-        const endX = startX + Math.round((random01(boltSeed, 23) - 0.5) * canvas.width * 0.22);
-        const endY = Math.round(canvas.height * (0.46 + random01(boltSeed, 37) * 0.18));
-        const points = this._displaceBolt(
-            { x: startX, y: 0 },
-            { x: endX, y: endY },
-            boltSeed,
-            5,
-            canvas.width * 0.05,
-        );
-
+        const bolt = this._bolt;
+        if (!bolt.points) return;
+        const { cell, ox, oy, zoom } = grid;
+        const core = zoom <= 1 ? 2 : 1;
+        const cellsOf = points => points.map((point) => {
+            const screen = camera.worldToScreen(point.x, point.y);
+            return { x: Math.floor((screen.x - ox) / cell), y: Math.floor((screen.y - oy) / cell) };
+        });
+        const main = rasterizeCells(cellsOf(bolt.points));
         ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-
-        // Soft outer glow, then a crisp bright core.
-        const drawPath = (pts) => {
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = 'source-over';
+        // Halo: every other cell beside the core, a checkerboard, never a blur.
+        ctx.fillStyle = BOLT_HALO;
+        ctx.beginPath();
+        for (const c of main) {
+            if (((c.x + c.y) & 1) === 0) continue;
+            ctx.rect(ox + (c.x - 1) * cell, oy + c.y * cell, cell, cell);
+            ctx.rect(ox + (c.x + core) * cell, oy + c.y * cell, cell, cell);
+        }
+        ctx.fill();
+        if (strike.stage === 1) {
+            // Forks: halo-coloured single cells, their last third broken.
             ctx.beginPath();
-            ctx.moveTo(Math.round(pts[0].x), Math.round(pts[0].y));
-            for (let i = 1; i < pts.length; i++) ctx.lineTo(Math.round(pts[i].x), Math.round(pts[i].y));
-            ctx.stroke();
-        };
-
-        ctx.strokeStyle = fleet
-            ? `rgba(198, 168, 255, ${Math.min(0.5, strength * 0.55)})`
-            : `rgba(176, 206, 255, ${Math.min(0.5, strength * 0.55)})`;
-        ctx.lineWidth = 5;
-        drawPath(points);
-
-        // 2 short branches forking off interior nodes.
-        const branchCount = 2 + (random01(boltSeed, 53) > 0.6 ? 1 : 0);
-        for (let b = 0; b < branchCount; b++) {
-            const anchor = points[1 + ((b + 1) % (points.length - 2))];
-            if (!anchor) continue;
-            const len = canvas.height * (0.06 + random01(boltSeed, b + 61) * 0.08);
-            const ang = (random01(boltSeed, b + 71) - 0.5) * 1.4 + Math.PI / 2;
-            const branch = this._displaceBolt(
-                anchor,
-                { x: anchor.x + Math.cos(ang) * len, y: anchor.y + Math.sin(ang) * len },
-                (boltSeed + b * 131) >>> 0,
-                3,
-                canvas.width * 0.02,
-            );
-            ctx.strokeStyle = fleet
-                ? `rgba(206, 182, 255, ${Math.min(0.34, strength * 0.36)})`
-                : `rgba(190, 216, 255, ${Math.min(0.34, strength * 0.36)})`;
-            ctx.lineWidth = 2.5;
-            drawPath(branch);
+            for (const fork of bolt.forks) {
+                const cells = rasterizeCells(cellsOf(fork));
+                const taper = Math.floor(cells.length * 2 / 3);
+                for (let i = 0; i < cells.length; i++) {
+                    if (i >= taper && (i & 1)) continue;
+                    ctx.rect(ox + cells[i].x * cell, oy + cells[i].y * cell, cell, cell);
+                }
+            }
+            ctx.fill();
         }
-
-        ctx.strokeStyle = fleet
-            ? `rgba(246, 240, 255, ${Math.min(0.92, 0.4 + strength * 0.55)})`
-            : `rgba(244, 250, 255, ${Math.min(0.92, 0.4 + strength * 0.55)})`;
-        ctx.lineWidth = 1.6;
-        drawPath(points);
+        ctx.fillStyle = BOLT_CORE;
+        ctx.beginPath();
+        for (const c of main) ctx.rect(ox + c.x * cell, oy + c.y * cell, cell * core, cell);
+        ctx.fill();
+        if (bolt.sea) {
+            // The splash grows over the strike's steps (4, 8, 12 art px, the
+            // last broken); the re-strike throws one mid ring.
+            const rx = strike.stage === 2 ? 6 : [4, 8, 12][Math.min(2, Math.max(0, strike.step))];
+            const broken = strike.stage === 1 && strike.step >= 2;
+            const count = Math.max(8, Math.round(rx * 1.6));
+            ctx.fillStyle = BOLT_SPLASH;
+            ctx.beginPath();
+            for (let i = 0; i < count; i++) {
+                if (broken && (i & 1)) continue;
+                const angle = (i / count) * Math.PI * 2;
+                const screen = camera.worldToScreen(
+                    bolt.end.x + Math.cos(angle) * rx,
+                    bolt.end.y + Math.sin(angle) * rx * 0.5,
+                );
+                ctx.rect(
+                    ox + Math.floor((screen.x - ox) / cell) * cell,
+                    oy + Math.floor((screen.y - oy) / cell) * cell,
+                    cell,
+                    cell,
+                );
+            }
+            ctx.fill();
+        }
         ctx.restore();
     }
+}
 
-    // Recursive midpoint displacement between two endpoints.
-    _displaceBolt(a, b, seed, depth, jitter) {
-        let segments = [a, b];
-        let amplitude = jitter;
-        for (let d = 0; d < depth; d++) {
-            const next = [segments[0]];
-            for (let i = 0; i < segments.length - 1; i++) {
-                const p = segments[i];
-                const q = segments[i + 1];
-                const mx = (p.x + q.x) / 2;
-                const my = (p.y + q.y) / 2;
-                const off = (random01(seed, d * 211 + i * 17 + 3) - 0.5) * amplitude;
-                // Displace perpendicular to the segment so the bolt zig-zags.
-                const dx = q.x - p.x;
-                const dy = q.y - p.y;
-                const len = Math.hypot(dx, dy) || 1;
-                next.push({ x: mx + (-dy / len) * off, y: my + (dx / len) * off });
-                next.push(q);
-            }
-            segments = next;
-            amplitude *= 0.5;
+/**
+ * 0.10 — this frame's lightning, a pure function of the motion-clock time and
+ * the village's own storm (never agent state). Returns a reused object:
+ * `active`, the C4 `scalar` (0.30 → 0.035, re-strike 0.16), the per-channel
+ * `exposure` both backends multiply the frame by (1 + exposure), the bolt
+ * `stage` (1 strike, 2 re-strike, 0 afterglow), the `step` index, and the
+ * strike `id`/`seed` that key the bolt's shape. Reduced motion (or particle
+ * motion off) never strikes: no bolt and no flash.
+ */
+const _strike = { active: false, scalar: 0, exposure: [0, 0, 0], stage: 0, step: -1, id: -1, seed: 0 };
+export function stormStrikeAt(tMs, atmosphere, motionScale = 1) {
+    const strike = _strike;
+    strike.active = false;
+    strike.scalar = 0;
+    strike.stage = 0;
+    strike.step = -1;
+    strike.exposure[0] = 0;
+    strike.exposure[1] = 0;
+    strike.exposure[2] = 0;
+    const weather = atmosphere?.weather;
+    if (weather?.type !== 'storm') return strike;
+    if (!(Number(motionScale) > 0) || atmosphere?.motion?.particleEnabled === false) return strike;
+    const t = Math.max(0, Number(tMs) || 0);
+    const seed = Number.isFinite(Number(weather.seed)) ? Number(weather.seed) >>> 0 : 0;
+    const intensity = clamp(Number(weather.intensity) || 0, 0, 1);
+    const cycle = Math.floor(t / STRIKE_CYCLE_MS);
+    if (random01(seed, cycle + 701) > 0.18 + intensity * 0.10) return strike;
+    const offset = 900 + random01(seed, cycle + 809) * 4700;
+    const age = t - cycle * STRIKE_CYCLE_MS - offset;
+    if (age < 0) return strike;
+    let index = -1;
+    for (let i = 0; i < FLASH_STEPS.length; i++) if (age >= FLASH_STEPS[i].at) index = i;
+    const step = FLASH_STEPS[index];
+    if (!step || step.scalar <= 0) return strike;
+    const night = clamp(Number(atmosphere.lightGrade?.night) || 0, 0, 1);
+    const gain = step.scalar * (FLASH_GAIN_DAY + (FLASH_GAIN_NIGHT - FLASH_GAIN_DAY) * night);
+    strike.active = true;
+    strike.scalar = step.scalar;
+    strike.stage = step.stage;
+    strike.step = index;
+    strike.id = cycle;
+    strike.seed = (seed + Math.imul(cycle + 1, 0x27d4eb2f)) >>> 0;
+    for (let channel = 0; channel < 3; channel++) strike.exposure[channel] = gain * FLASH_TINT[channel];
+    return strike;
+}
+
+/**
+ * The flash as an exposure step on a finished 2D frame: a flat `color-dodge`
+ * fill of `e / (1 + e)` multiplies every pixel by `1 + e` per channel, the
+ * same scale the resident composite applies to the island (`u_flash`). One
+ * fillRect; no gradient, no veil.
+ */
+export function drawFlashExposure(ctx, width, height, strike) {
+    if (!ctx || !strike?.active || !(width > 0) || !(height > 0)) return false;
+    const e = strike.exposure;
+    const channel = index => Math.round((255 * e[index]) / (1 + e[index]));
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'color-dodge';
+    ctx.fillStyle = `rgb(${channel(0)}, ${channel(1)}, ${channel(2)})`;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+    return true;
+}
+
+// Endpoint first: open sea below the horizon, tried at hashed candidates,
+// else a point in the sky band when the sky is in view, else no bolt. The
+// channel runs from above the top of the view to it.
+function planBolt(strike, canvas, camera, seaAt) {
+    const seed = strike.seed;
+    const width = canvas.width;
+    const height = canvas.height;
+    const horizon = camera.worldToScreen(0, OCEAN_HORIZON_WORLD_Y).y;
+    const zoom = Math.max(0.1, Number(camera.zoom) || 1);
+    let end = null;
+    let sea = false;
+    if (typeof seaAt === 'function') {
+        const top = Math.max(horizon + 24, height * 0.3);
+        for (let i = 0; i < BOLT_CANDIDATES && !end; i++) {
+            const sx = width * (0.06 + random01(seed, 31 + i * 7) * 0.88);
+            const sy = top + random01(seed, 37 + i * 7) * (height * 0.94 - top);
+            if (!(sy < height * 0.94)) break;
+            if (!openSeaAround(camera, seaAt, sx, sy, zoom)) continue;
+            end = camera.screenToWorld(sx, sy);
+            sea = true;
         }
-        return segments;
     }
+    // `seaAt(x, y, true)` also admits the sky band: fork channels and a sky
+    // endpoint must be open (never over island art) too.
+    const openAt = typeof seaAt === 'function' ? (point) => seaAt(point.x, point.y, true) : () => true;
+    for (let i = 0; !end && i < 4 && horizon > height * 0.18; i++) {
+        const sx = width * (0.15 + random01(seed, 211 + i * 5) * 0.7);
+        const sy = Math.min(horizon, height) * (0.45 + random01(seed, 223 + i * 5) * 0.3);
+        const candidate = camera.screenToWorld(sx, sy);
+        if (openAt(candidate)) end = candidate;
+    }
+    if (!end) return { id: strike.id, seed, points: null, forks: [], end: null, sea: false };
+    const endScreen = camera.worldToScreen(end.x, end.y);
+    const start = camera.screenToWorld(endScreen.x + (random01(seed, 239) - 0.5) * width * 0.18, -8);
+    const length = Math.hypot(end.x - start.x, end.y - start.y) || 1;
+    const points = displaceBolt(start, end, seed, 6, length * 0.14);
+    const forks = [];
+    const forkCount = Math.min(2, Math.floor(random01(seed, 251) * 3));
+    for (let f = 0; f < forkCount; f++) {
+        const anchor = points[Math.floor(points.length * (0.25 + 0.4 * random01(seed, 263 + f)))];
+        const side = random01(seed, 271 + f) < 0.5 ? -1 : 1;
+        const baseReach = length * (0.12 + random01(seed, 281 + f) * 0.1);
+        const spread = 0.4 + random01(seed, 293 + f) * 0.5;
+        // The authored fork first, then the other side, then shorter; a fork
+        // that would cross island art in every try is dropped.
+        for (const [turn, share] of [[side, 1], [-side, 1], [side, 0.55], [-side, 0.55]]) {
+            const reach = baseReach * share;
+            const angle = Math.PI / 2 + turn * spread;
+            const tip = { x: anchor.x + Math.cos(angle) * reach, y: anchor.y + Math.sin(angle) * reach };
+            const fork = displaceBolt(anchor, tip, (seed + (f + 1) * 131) >>> 0, 4, reach * 0.2);
+            if (!polylineOpen(fork, openAt)) continue;
+            forks.push(fork);
+            break;
+        }
+    }
+    return { id: strike.id, seed, points, forks, end, sea };
+}
+
+// Every point along the polyline, sampled at least every BOLT_MASK_STEP
+// world px, is open.
+function polylineOpen(points, openAt) {
+    const probe = { x: 0, y: 0 };
+    for (let i = 1; i < points.length; i++) {
+        const a = points[i - 1];
+        const b = points[i];
+        const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / BOLT_MASK_STEP));
+        for (let s = i === 1 ? 0 : 1; s <= steps; s++) {
+            probe.x = a.x + ((b.x - a.x) * s) / steps;
+            probe.y = a.y + ((b.y - a.y) * s) / steps;
+            if (!openAt(probe)) return false;
+        }
+    }
+    return true;
+}
+
+// The water mask at quarter resolution: the endpoint and the extremes of its
+// splash ring, each snapped to a 4 px sample, must all be open sea.
+function openSeaAround(camera, seaAt, sx, sy, zoom) {
+    const rx = 14 * zoom;
+    const ry = 7 * zoom;
+    const samples = [[0, 0], [-rx, 0], [rx, 0], [0, -ry], [0, ry], [-rx * 0.7, -ry * 0.7], [rx * 0.7, ry * 0.7]];
+    for (const [dx, dy] of samples) {
+        const qx = Math.floor((sx + dx) / BOLT_MASK_STEP) * BOLT_MASK_STEP + BOLT_MASK_STEP / 2;
+        const qy = Math.floor((sy + dy) / BOLT_MASK_STEP) * BOLT_MASK_STEP + BOLT_MASK_STEP / 2;
+        const world = camera.screenToWorld(qx, qy);
+        if (!seaAt(world.x, world.y)) return false;
+    }
+    return true;
+}
+
+// Recursive midpoint displacement between two world points.
+function displaceBolt(a, b, seed, depth, jitter) {
+    let segments = [a, b];
+    let amplitude = jitter;
+    for (let d = 0; d < depth; d++) {
+        const next = [segments[0]];
+        for (let i = 0; i < segments.length - 1; i++) {
+            const p = segments[i];
+            const q = segments[i + 1];
+            const off = (random01(seed, d * 211 + i * 17 + 3) - 0.5) * amplitude;
+            const dx = q.x - p.x;
+            const dy = q.y - p.y;
+            const len = Math.hypot(dx, dy) || 1;
+            next.push({ x: (p.x + q.x) / 2 + (-dy / len) * off, y: (p.y + q.y) / 2 + (dx / len) * off }, q);
+        }
+        segments = next;
+        amplitude *= 0.5;
+    }
+    return segments;
+}
+
+// Bresenham through cell-space points: one cell per step, no gaps, no AA.
+function rasterizeCells(points) {
+    const cells = [];
+    for (let i = 1; i < points.length; i++) {
+        let x0 = points[i - 1].x;
+        let y0 = points[i - 1].y;
+        const x1 = points[i].x;
+        const y1 = points[i].y;
+        const dx = Math.abs(x1 - x0);
+        const dy = -Math.abs(y1 - y0);
+        const sx = x0 < x1 ? 1 : -1;
+        const sy = y0 < y1 ? 1 : -1;
+        let err = dx + dy;
+        for (;;) {
+            if (i === 1 || x0 !== points[i - 1].x || y0 !== points[i - 1].y) cells.push({ x: x0, y: y0 });
+            if (x0 === x1 && y0 === y1) break;
+            const e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+    }
+    return cells;
+}
+
+function washBucket(intensity) {
+    return Math.round(clamp(Number(intensity) || 0, 0, 1) * WASH_BUCKETS);
+}
+
+// Piecewise-linear alpha profile down the screen, `stops` = [[t, share]].
+function washProfile(stops, t) {
+    if (t <= stops[0][0]) return stops[0][1];
+    for (let i = 1; i < stops.length; i++) {
+        const [t1, v1] = stops[i];
+        if (t <= t1) {
+            const [t0, v0] = stops[i - 1];
+            return v0 + (v1 - v0) * ((t - t0) / Math.max(1e-6, t1 - t0));
+        }
+    }
+    return stops[stops.length - 1][1];
+}
+
+// A periodic value-noise field (fBm, two octaves) over the fog tile's
+// texel grid, cut into three flat courses by covered share. The field keeps
+// its local slope (per texel) so the ordered dither at each seam spans a
+// fixed FOG_SEAM_TEXELS either side, whatever the gradient. The field is
+// built once; the tile is rebaked (into the reused canvas) per strength
+// bucket.
+let _fogField = null;
+function fogField() {
+    if (_fogField) return _fogField;
+    const w = FOG_TILE_W / FOG_TEXEL;
+    const h = FOG_TILE_H / FOG_TEXEL;
+    const values = new Float32Array(w * h);
+    for (const [px, py, amp] of FOG_OCTAVES) {
+        const at = (ix, iy) => random01(0x5f0c + px, (iy % py) * 131 + (ix % px));
+        for (let y = 0; y < h; y++) {
+            const gy = (y / h) * py;
+            const y0 = Math.floor(gy);
+            const fy = gy - y0;
+            const sy = fy * fy * (3 - 2 * fy);
+            for (let x = 0; x < w; x++) {
+                const gx = (x / w) * px;
+                const x0 = Math.floor(gx);
+                const fx = gx - x0;
+                const sx = fx * fx * (3 - 2 * fx);
+                const top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * sx;
+                const bottom = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * sx;
+                values[y * w + x] += amp * (top + (bottom - top) * sy);
+            }
+        }
+    }
+    // Largest per-texel change (wrapped central differences).
+    const slope = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) {
+        const up = ((y + h - 1) % h) * w;
+        const down = ((y + 1) % h) * w;
+        for (let x = 0; x < w; x++) {
+            const left = (x + w - 1) % w;
+            const right = (x + 1) % w;
+            slope[y * w + x] = Math.max(
+                Math.abs(values[y * w + right] - values[y * w + left]),
+                Math.abs(values[down + x] - values[up + x]),
+            ) / 2;
+        }
+    }
+    const sorted = Float32Array.from(values).sort();
+    _fogField = { w, h, values, slope, sorted };
+    return _fogField;
+}
+
+function bakeFogBankTile(canvas, strength, rgb) {
+    const { w, h, values, slope, sorted } = fogField();
+    const tile = canvas || document.createElement('canvas');
+    tile.width = w;
+    tile.height = h;
+    const tctx = tile.getContext('2d');
+    const image = tctx.createImageData(w, h);
+    const share = 0.3 + 0.34 * strength;
+    const threshold = s => sorted[Math.round((1 - clamp(s, 0, 1)) * (sorted.length - 1))];
+    const t1 = threshold(share);
+    const t2 = threshold(share * 0.55);
+    const t3 = threshold(share * 0.25);
+    const alphaScale = 0.5 + 0.5 * strength;
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            const index = y * w + x;
+            const n = values[index] + (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 2 * FOG_SEAM_TEXELS * slope[index];
+            const course = (n >= t1 ? 1 : 0) + (n >= t2 ? 1 : 0) + (n >= t3 ? 1 : 0);
+            if (!course) continue;
+            const offset = (y * w + x) * 4;
+            image.data[offset] = rgb[0];
+            image.data[offset + 1] = rgb[1];
+            image.data[offset + 2] = rgb[2];
+            image.data[offset + 3] = Math.round(FOG_COURSE_ALPHA[course - 1] * alphaScale * 255);
+        }
+    }
+    tctx.putImageData(image, 0, 0);
+    return tile;
 }
 
 function normalizeWeather(atmosphere) {
@@ -1055,9 +1192,6 @@ function normalizeWeather(atmosphere) {
         ? Number(raw.fog)
         : preset.fog;
     const seed = typeof raw === 'object' && raw ? raw.seed : null;
-    // 5.5 — fleet-driven storms (error-storminess dominating the event
-    // influence) carry a violet cast on flash/lightning vs timeline storms.
-    const cause = typeof raw === 'object' && raw && raw.cause === 'fleet' ? 'fleet' : 'timeline';
 
     return {
         type,
@@ -1067,8 +1201,24 @@ function normalizeWeather(atmosphere) {
         precipitation: clamp(precipitation, 0, 1),
         fog: clamp(fog, 0, 1),
         seed,
-        cause,
     };
+}
+
+// The fog's own strength (fog weather, or any weather carrying fog),
+// legibility-gated: the screen wash and the ground banks both follow it.
+function fogWashIntensity(weather, legibility) {
+    const fogActive = weather.fog > 0.04 || weather.type === 'fog';
+    return fogActive
+        ? Math.max(weather.fog, weather.type === 'fog' ? weather.intensity : 0) * legibility.fog
+        : 0;
+}
+
+// The ground banks: the fog's strength, else a thin mist on a dry overcast.
+function fogBankIntensity(weather, legibility) {
+    const fog = fogWashIntensity(weather, legibility);
+    if (fog > 0 || weather.fog > 0.04 || weather.type === 'fog') return fog;
+    const rainActive = RAIN_TYPES.has(weather.type) || weather.precipitation > 0.02;
+    return !rainActive && weather.type === 'overcast' ? weather.intensity * 0.34 : 0;
 }
 
 function weatherLegibilityGate(weather, atmosphere) {

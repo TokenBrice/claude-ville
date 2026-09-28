@@ -13,7 +13,6 @@ import {
 } from './SpatialWorkScore.js';
 
 const SCENE_LIMIT = 8;
-const OVERFLOW_BUCKET_MS = 1_000;
 const TOOL_EVENT_LIMIT = 40;
 const REPLAY_RETENTION_MS = 60_000;
 const REPLAY_SAMPLE_INTERVAL_MS = 750;
@@ -131,10 +130,9 @@ export class VillageDirector {
         this.buildingPresence = new Map();
         this.lastSnapshot = this._emptySnapshot(Date.now());
         this._lastStats = this._emptyStats();
-        this._sceneOverflowCount = 0;
-        // Scenes beyond the visual budget are reduced to expiry/type cohorts.
-        // This preserves an exact count without retaining another render list.
-        this._sceneOverflowBuckets = new Map();
+        // Scenes beyond SCENE_LIMIT are dropped by salience; the count feeds
+        // the debug overlay only (SM-7 retired the on-screen overflow chip).
+        this._sceneDropCount = 0;
         // Biography rewards share the release-parade stage, one batch at a
         // time. The queue is not render state and never bypasses SCENE_LIMIT.
         this._pendingBiographyBanners = [];
@@ -171,7 +169,6 @@ export class VillageDirector {
         this.replaySamples = [];
         this.toolEvents = [];
         this.scenes = [];
-        this._sceneOverflowBuckets.clear();
         this._pendingBiographyBanners = [];
         this._seenBiographyMilestones.clear();
         this._distressedAgents.clear();
@@ -429,10 +426,8 @@ export class VillageDirector {
         const buildingSignals = this._buildingSignals(agents, now);
         const selectedBuildingSignal = this._selectedBuildingSignal(agents, buildingSignals);
         const hoverBuildingSignal = this._hoverBuildingSignal(agents, buildingSignals);
-        const weatherInfluence = this._weatherInfluence(agents, incidents, now);
         const releaseParade = this._releaseScene(now, agents);
         const replaySamples = this.replayActive ? this._recentReplaySamples(now) : [];
-        const sceneOverflow = this._sceneOverflowSummary(now);
         // 5.1/5.2 — the two facts Ambient composes from: where real work is
         // concentrated right now, and whether an incident has earned a chapter.
         const workCohorts = this._workCohorts(agents);
@@ -460,9 +455,7 @@ export class VillageDirector {
             selectedBuildingSignal,
             hoverBuildingSignal,
             releaseParade,
-            weatherInfluence,
             activeSceneCount: this.scenes.length,
-            sceneOverflow,
             workCohorts,
             incidentChapter,
             workScore,
@@ -627,8 +620,9 @@ export class VillageDirector {
 
     // #21 — resolve frame-worthy moments into camera cues. We dedupe per cue
     // signature so a long-lived scene only fires once; the CameraDirector
-    // applies cooldown/priority/abort. Cues carry a world box plus an
-    // art-directed grade hint (vignette + worldTint) for the frame pass.
+    // applies cooldown/priority/abort. Cues carry a world box, whether the
+    // move owns letterbox bars, and the edge-marker tint. Nothing here grades
+    // or tints the frame (V3).
     _emitCameraCues(snapshot, now) {
         if (!snapshot) return;
         if (!this._lastCueSignatures) this._lastCueSignatures = new Map();
@@ -644,7 +638,8 @@ export class VillageDirector {
                 .join('|');
             this._fireCue('incident', sig, now, {
                 box: this._boxForPoints(cohort, 90),
-                grade: { vignette: 0.42, worldTint: '#c0392b' },
+                letterbox: true,
+                tint: '#c0392b',
             });
         } else {
             this._lastCueSignatures.delete('incident');
@@ -656,7 +651,8 @@ export class VillageDirector {
             const sig = `release:${release.id || release.label || ''}`;
             this._fireCue('release', sig, now, {
                 box: this._boxForPoints([release.center], 120),
-                grade: { vignette: 0.30, worldTint: '#f5c451' },
+                letterbox: true,
+                tint: '#f5c451',
             });
         }
 
@@ -668,7 +664,7 @@ export class VillageDirector {
             const sig = `arrival:${arrival.id || arrival.agentId || ''}`;
             this._fireCue('arrival', sig, now, {
                 box: this._boxForPoints([arrival.center], 80),
-                grade: { vignette: 0.22, worldTint: '#7fc7c0' },
+                tint: '#7fc7c0',
             });
         }
     }
@@ -689,10 +685,6 @@ export class VillageDirector {
             minY: Math.min(...ys) - halfExtent,
             maxY: Math.max(...ys) + halfExtent,
         };
-    }
-
-    getWeatherInfluence() {
-        return this.lastSnapshot?.weatherInfluence || null;
     }
 
     getStats() {
@@ -718,9 +710,7 @@ export class VillageDirector {
             selectedBuildingSignal: null,
             hoverBuildingSignal: null,
             releaseParade: null,
-            weatherInfluence: null,
             activeSceneCount: 0,
-            sceneOverflow: null,
             workCohorts: [],
             incidentChapter: null,
             workScore: null,
@@ -731,8 +721,6 @@ export class VillageDirector {
         return {
             activeScenes: 0,
             sceneDrops: 0,
-            sceneOverflow: 0,
-            sceneOverflowTotal: 0,
             buildingSignals: 0,
             hoverPreview: 0,
             selectedRoutes: 0,
@@ -1000,18 +988,15 @@ export class VillageDirector {
         }
         this._lastSceneSignatures.add(signature);
         this.scenes.push(normalized);
-        if (this.scenes.length > SCENE_LIMIT) {
-            const overflowed = [];
-            while (this.scenes.length > SCENE_LIMIT) {
-                let removeAt = 0;
-                for (let index = 1; index < this.scenes.length; index++) {
-                    if (this._sceneSalience(this.scenes[index]) < this._sceneSalience(this.scenes[removeAt])) {
-                        removeAt = index;
-                    }
+        while (this.scenes.length > SCENE_LIMIT) {
+            let removeAt = 0;
+            for (let index = 1; index < this.scenes.length; index++) {
+                if (this._sceneSalience(this.scenes[index]) < this._sceneSalience(this.scenes[removeAt])) {
+                    removeAt = index;
                 }
-                overflowed.push(this.scenes.splice(removeAt, 1)[0]);
             }
-            for (const item of overflowed) this._summarizeOverflowScene(item, now);
+            this.scenes.splice(removeAt, 1);
+            this._sceneDropCount += 1;
         }
         eventBus.emit('village:scene', normalized);
     }
@@ -1020,38 +1005,6 @@ export class VillageDirector {
         if (scene?.type === 'incident') return 3;
         if (scene?.type === 'release') return 1;
         return 2;
-    }
-
-    _summarizeOverflowScene(scene, now = Date.now()) {
-        const expiresAt = Number(scene?.expiresAt) || now;
-        if (expiresAt <= now) return;
-        const bucketExpiry = Math.ceil(expiresAt / OVERFLOW_BUCKET_MS) * OVERFLOW_BUCKET_MS;
-        const type = scene?.type === 'incident' ? 'incident' : 'moment';
-        const key = `${type}:${bucketExpiry}`;
-        const bucket = this._sceneOverflowBuckets.get(key) || { type, expiresAt: bucketExpiry, count: 0 };
-        bucket.count += 1;
-        this._sceneOverflowBuckets.set(key, bucket);
-        this._sceneOverflowCount += 1;
-    }
-
-    _sceneOverflowSummary(now = Date.now()) {
-        let count = 0;
-        let incidentCount = 0;
-        let expiresAt = 0;
-        for (const bucket of this._sceneOverflowBuckets.values()) {
-            if (bucket.expiresAt <= now) continue;
-            count += bucket.count;
-            if (bucket.type === 'incident') incidentCount += bucket.count;
-            expiresAt = Math.max(expiresAt, bucket.expiresAt);
-        }
-        if (!count) return null;
-        const noun = incidentCount === count ? 'incident' : 'moment';
-        return {
-            count,
-            incidentCount,
-            label: `+${count} more ${noun}${count === 1 ? '' : 's'}`,
-            expiresAt,
-        };
     }
 
     _touchBuildingSignal(type, patch = {}) {
@@ -1095,9 +1048,6 @@ export class VillageDirector {
             if (now - (entry.recoveredAt || 0) > RECOVERY_TTL_MS) this._recoveries.delete(id);
         }
         this.scenes = this.scenes.filter(scene => (scene.expiresAt || 0) > now);
-        for (const [key, bucket] of this._sceneOverflowBuckets) {
-            if (bucket.expiresAt <= now) this._sceneOverflowBuckets.delete(key);
-        }
         this.toolEvents = this.toolEvents.filter(event => now - (Number(event.ts) || 0) <= BUILDING_SIGNAL_TTL_MS);
         for (const [type, entry] of this.buildingPresence.entries()) {
             if (now - (Number(entry.updatedAt) || 0) > BUILDING_SIGNAL_TTL_MS) this.buildingPresence.delete(type);
@@ -1401,28 +1351,6 @@ export class VillageDirector {
         };
     }
 
-    _weatherInfluence(agents, incidents, now) {
-        const total = Math.max(1, agents.length);
-        const stormAgents = agents.filter(agent => (
-            agent.status === AgentStatus.RATE_LIMITED
-            || agent.status === AgentStatus.ERRORED
-            || agent.status === AgentStatus.WAITING_ON_USER
-        )).length;
-        const failedPush = incidents.some(scene => scene.kind === 'failed-push') ? 0.38 : 0;
-        const quota = clamp((this._quotaRatio(this.quotaState) - 0.72) / 0.28) * 0.42;
-        const recentCompleted = this.scenes.filter(scene => scene.type === 'lifecycle'
-            && scene.kind === 'departure'
-            && now - (scene.startedAt || 0) < 25_000).length;
-        const rawStorminess = clamp((stormAgents / total) * 0.55 + failedPush + quota);
-        const rawClearing = clamp(rawStorminess > 0 ? 0 : recentCompleted * 0.16);
-        // Bucket the floats at the source so per-frame jitter in aggregate
-        // health does not thrash AtmosphereState's weather cacheKey downstream.
-        const storminess = Math.round(rawStorminess * 10) / 10;
-        const clearing = Math.round(rawClearing * 10) / 10;
-        if (storminess <= 0.02 && clearing <= 0.02) return null;
-        return { storminess, clearing };
-    }
-
     _releaseScene(now, agents = []) {
         const scene = [...this.scenes].reverse().find(item => item.type === 'release');
         if (!scene) return null;
@@ -1460,11 +1388,7 @@ export class VillageDirector {
         ), 0);
         return {
             activeScenes: snapshot.activeSceneCount || 0,
-            // Compatibility for the existing diagnostic line: nothing is
-            // silently dropped now. The adjacent fields expose overflow.
-            sceneDrops: 0,
-            sceneOverflow: snapshot.sceneOverflow?.count || 0,
-            sceneOverflowTotal: this._sceneOverflowCount,
+            sceneDrops: this._sceneDropCount,
             buildingSignals: snapshot.buildingSignals?.length || 0,
             hoverPreview: snapshot.hoverBuildingSignal ? 1 : 0,
             selectedRoutes: snapshot.selectedBuildingSignal?.routes?.length || 0,

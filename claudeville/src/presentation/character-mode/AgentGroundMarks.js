@@ -193,11 +193,14 @@ export function actionNeededRingColor(status) {
     return ACTION_NEEDED_RING[status] || null;
 }
 
-// Resolves the ground mark set for one body. Returns stamps plus integer
-// top-left positions in world texels; callers paint them in order.
+// Resolves the ground mark set for one body. `x`/`y` is the body's placement
+// for this frame (V7 `snapBodyPx`: a whole texel at rest, the backing-pixel
+// grid while walking), taken as is so shadow, rings and body never part.
+// Returns stamps plus top-left positions in world texels; callers paint them
+// in order.
 export function resolveGroundMarks({ x, y, contentWidth, status, selected = false, hovered = false, accent, trim }) {
-    const cx = Math.round(x);
-    const cy = Math.round(y) + GROUND_MARK_FOOT_Y;
+    const cx = x;
+    const cy = y + GROUND_MARK_FOOT_Y;
     const shadowW = contactShadowWidth(contentWidth);
     const marks = [];
     const push = (stamp, kind) => {

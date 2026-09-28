@@ -2,17 +2,20 @@
 // names a `smokeTop` (where a column leaves the cap) or `chimney` effect anchor
 // gets a column of pixel puffs, and only while the building is occupied or
 // busy: smoke says someone is working inside, so an empty building never
-// smokes. Puffs ride the open-air particle layer, so the resident WebGL path
-// replays them above the island (graded) and Canvas draws them in the frame.
+// smokes. Puffs sort just in front of the chimney's own building half (0.6),
+// so a nearer tower hides them on both backends and their own roof never does.
 //
-// Weather: wind leans the column; rain and storm flatten and shorten it. A
-// hearth building's soot warms with its fire (#33), and at dusk and night its
-// first puff carries the fire-lit underside.
+// Weather: the one wind (C-W3, `windAt` at each chimney mouth, gusts
+// included) leans the column — fog barely tilts it, a storm lays it flat —
+// and rain and storm flatten and shorten it further. A hearth building's soot
+// warms with its fire (#33), and at dusk and night its first puff carries the
+// fire-lit underside.
 // Reduced motion: one static three-puff wisp per smoking chimney.
 import { getBuildingEffectAnchor } from './BuildingVisualRegistry.js';
-import { PARTICLE_LAYER_AIR, SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
+import { SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
 import { buildingCenterToWorld } from './Projection.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
+import { smokeWindDrift } from './AtmosphereState.js';
 
 // Spawn cadence per occupancy tier. With puffs living 1.5–2.3 s this keeps
 // about 5 (occupied) to 8 (busy) puffs per chimney; a hard cap holds the
@@ -24,9 +27,10 @@ const HEARTH_TYPES = new Set(['forge']);
 const HEARTH_UNDERSIDE = '#9a5a36';
 // After dark the column must stay the palest thing over the dark roofs and
 // lawns: moonlit soot. The Canvas frame is graded after the fact, so the
-// authored albedo sits high; the ungraded overlay wears the grade's own
-// response to that soot, held to a luminance floor by mixing toward cool
-// moonlight so the column reads pale but never white (see `moonlitTones`).
+// authored albedo sits high; a backend that grades particles itself (the
+// resident GPU draw) wears the grade's own response to that soot, held to a
+// luminance floor by mixing toward cool moonlight so the column reads pale
+// but never white (see `moonlitTones`).
 const MOONLIT_SOOT = Object.freeze(['#a9aeb8', '#bec3cb', '#d3d6dc']);
 const MOONLIT_FLOOR = Object.freeze([0.44, 0.51, 0.58]);
 const MOONLIGHT = Object.freeze([0.70, 0.76, 0.86]);
@@ -59,6 +63,8 @@ export class ChimneySmoke {
             const center = buildingCenterToWorld(building);
             out.push(Object.freeze({
                 type: building.type,
+                building,
+                localY: at[1],
                 x: Math.round(center.x - anchor[0] + at[0]),
                 y: Math.round(center.y - anchor[1] + at[1]),
                 hearth: HEARTH_TYPES.has(building.type),
@@ -70,7 +76,9 @@ export class ChimneySmoke {
 
     // `heatFor(type)` (0..1) warms a hearth's soot toward the ember ramp in
     // four steps: a hot forge pushes browner smoke than a banked one.
-    update({ now, buildings, assets, presence, particleSystem, atmosphere, windX = 0, heatFor = null } = {}) {
+    // `timeMs` is the motion-clock time the wind's gusts run on.
+    // `sortYFor(building, localY)` is the owner half's painter sortY + 1.
+    update({ now, timeMs = 0, buildings, assets, presence, particleSystem, atmosphere, heatFor = null, sortYFor = null } = {}) {
         if (!particleSystem?.motionEnabled) return;
         const weather = atmosphere?.weather?.type;
         const wet = weather === 'rain' || weather === 'storm';
@@ -87,9 +95,9 @@ export class ChimneySmoke {
             if (particleSystem.countTagged(tag) >= MAX_PUFFS_PER_CHIMNEY) continue;
             const options = {
                 tag,
-                layer: PARTICLE_LAYER_AIR,
                 spread: [1, 1],
-                windX: windX * (wet ? 1.8 : 1),
+                windX: smokeWindDrift(atmosphere, source.x, source.y, timeMs) * (wet ? 1.8 : 1),
+                sortY: sortYFor ? sortYFor(source.building, source.localY) : null,
             };
             if (wet) {
                 options.life = [48, 80];
@@ -98,7 +106,7 @@ export class ChimneySmoke {
             if (dark) {
                 options.colors = MOONLIT_SOOT;
                 const tones = moonlitTones(atmosphere?.lightGrade);
-                if (tones) options.overlayColors = tones;
+                if (tones) options.gradedColors = tones;
             }
             if (source.hearth) {
                 if (dark) options.baseColor = HEARTH_UNDERSIDE;

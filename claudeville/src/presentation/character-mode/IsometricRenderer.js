@@ -24,25 +24,28 @@ import {
     getClientPerfMetrics,
     percentileAtSnapshot,
 } from '../shared/ClientPerfMetrics.js';
+import { getReservedRects } from '../shared/ReservedRects.js';
 import { CameraDirector } from './CameraDirector.js';
 import { ParticleSystem, WAKE_FOAM_COLORS } from './ParticleSystem.js';
 import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
-import { BuildingSprite, SOURCE_HALO_RADIUS_CAP } from './BuildingSprite.js';
+import { BuildingSprite, SOURCE_HALO_RADIUS_CAP, lampsLitAt } from './BuildingSprite.js';
 
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
 import { constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
-import { AtmosphereState, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
+import { AtmosphereState, sourceEnergyFor } from './AtmosphereState.js';
 import { WeatherRenderer } from './WeatherRenderer.js';
+import { baseWindX } from './Wind.js';
 import { WildlifeRenderer } from './WildlifeRenderer.js';
 import { FoliageRenderer } from './FoliageRenderer.js';
 import { SeasonalAmbience, seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { ChimneySmoke } from './ChimneySmoke.js';
 import { openGroundTiles } from './AmbientGround.js';
 import { installGroundBake } from './GroundBake.js';
-import { drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
+import { OCEAN_HORIZON_WORLD_Y, drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
+import { sampleRevealBands } from './RevealBands.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
 import { BridgeLanterns } from './BridgeLanterns.js';
@@ -94,6 +97,7 @@ import {
     buildPoolDodgeStamp,
     drawCanvasGradeLift,
     drawCanvasGradeSaturation,
+    gradedPoolReceiver,
 } from './CanvasGrade.js';
 import { drawCloudShadowCourses } from './CloudShadowCourses.js';
 import {
@@ -460,10 +464,6 @@ export class IsometricRenderer {
                 width: (this.canvas?.width ?? 0) / (this._screenDpr?.() || 1),
                 height: (this.canvas?.height ?? 0) / (this._screenDpr?.() || 1),
             }),
-            // #39 — hush decorative seasonal drift while a real git reward is on
-            // screen (the celebratory gull scatter window) so it doesn't compete
-            // with the live event.
-            suppressGetter: () => this._gullScatterActive(),
             // C2 — anchor petal/leaf drift to visible tree canopies and
             // butterflies to flower tiles; snow falls anywhere in view. The
             // camera maps them into world space and gates the zoom budget.
@@ -626,6 +626,8 @@ export class IsometricRenderer {
         this._worldResourceGeneration = 0;
         this._worldResumePromise = null;
         this._worldResumeFailures = 0;
+        // 0.3 — the boot reveal waits for the opening pose (App._openWorld).
+        this._firstFrameReason = 'boot-pending';
         this._worldSpritesDirty = false;
         this._idleFrameDirty = true;
         this._idleLastRenderCamera = { x: NaN, y: NaN, zoom: NaN };
@@ -721,32 +723,15 @@ export class IsometricRenderer {
         this.grassTuftTiles = this.scenery.getGrassTuftTiles();
         this.flowerTiles = this.scenery.getFlowerTiles();
 
-        // Trees (Y-sorted props): clumped 1× trees from SceneryEngine, all drawn
-        // through the foliage caches (plinth-free sprites, one pixel grid).
+        // Trees (Y-sorted props): clumped 1× trees from SceneryEngine, drawn
+        // from the foliage renderer's shared canopy and lean-frame images
+        // (plinth-free sprites, one pixel grid, one wind).
         this.scenery.generateTrees(
             this.sceneryClearTiles,
             this.bridgeTiles,
             (tileX, tileY) => this._isInBridgeTreeExclusion(tileX, tileY),
         );
-        this.treePropSprites = this.scenery.getTreeProps().map((t) => {
-            // Deterministic per-tree phase seed for wind sway. Anchored to
-            // tile coordinates + species so the visual offset is stable across
-            // reloads but each tree drifts on its own phase.
-            const swaySeed = this.foliageRenderer.windSwaySeed(t);
-            return new StaticPropSprite({
-                tileX: t.tileX,
-                tileY: t.tileY,
-                id: 'fantasy.tree',
-                bounds: this.foliageRenderer.fantasyTreePropBounds(t),
-                splitForOcclusion: true,
-                drawFn: (ctx, x, y) => this.foliageRenderer.withTreeSway(
-                    ctx,
-                    swaySeed,
-                    () => this.foliageRenderer.drawFantasyForestTree(ctx, x, y, t),
-                    t.tileX,
-                ),
-            });
-        });
+        this.treePropSprites = this.foliageRenderer.createTreeProps(this.scenery.getTreeProps());
 
         // Boulders (Y-sorted props)
         this.scenery.generateBoulders(this.sceneryClearTiles, this.bridgeTiles);
@@ -792,9 +777,6 @@ export class IsometricRenderer {
         this._laneTiles = this._buildLaneTileIndex();
         this.ambientEmitters = [];
         this._generateAmbientEmitters();
-        // Latest building presence tiers, refreshed via building:active-agents
-        // and consulted by ChimneySmoke. Map<type, { count, recencyScore, tier }>.
-        this._buildingPresenceMap = new Map();
         // 6.7 — occupancy-gated chimney smoke from the registry's chimney
         // anchors (one owner for every chimney column).
         this.chimneySmoke = new ChimneySmoke();
@@ -1588,14 +1570,15 @@ export class IsometricRenderer {
         this._ensureTrailRenderer();
         this._contextLost = false;
         this.camera = new Camera(canvas);
+        // 4.2 — automatic shots keep landmark silhouettes and their plates
+        // clear of the frame's top edge and reserved chrome.
+        this.camera.setSpriteMetrics((id) => (this.assets ? { dims: this.assets.getDims(id), anchor: this.assets.getAnchor(id), mask: this.assets.getMask?.(id) } : null));
         this.camera.attach();
-        // WeatherRenderer owns the additive Canvas atmosphere overlay. Supplying
-        // stable renderer references lets it resolve project agentIds into a
-        // local footprint without copying sprite positions every frame. The
-        // same overlay canvas sits above both Canvas and GPU world bases.
-        this.weatherRenderer?.setDistrictContext?.({
+        // WeatherRenderer draws the foreground weather on the overlay canvas
+        // that sits above both Canvas and GPU world bases. The camera anchors
+        // its world-locked layers and phases its cells to the art grid.
+        this.weatherRenderer?.setSceneContext?.({
             camera: this.camera,
-            agentSprites: this.agentSprites,
             // 6.7 — open ground the overlay may splash rain on (no building
             // art covers it); static per village, classified once.
             openGroundTiles: () => openGroundTiles(this),
@@ -1608,9 +1591,6 @@ export class IsometricRenderer {
         let autoCam = true;
         try { autoCam = window.localStorage?.getItem('cv-auto-camera') !== '0'; } catch (_) { /* storage unavailable */ }
         this.cameraDirector.setAutoMode(autoCam);
-        // Re-arm SkyRenderer aurora/shooting-star event wiring; mode toggles
-        // detach in hide() and would otherwise leave these subscriptions dead.
-        this.skyRenderer?.attach?.();
         this._bindMotionPreference();
         this._setMotionScale(this.motionQuery?.matches ? 0 : 1);
         this.atmosphereState?.installDebugHelper?.();
@@ -1699,29 +1679,14 @@ export class IsometricRenderer {
                 this._invalidateIdleFrame();
                 this._enqueueSubagentSummonRitual(payload);
             }),
-            // Cache the latest building presence tiers so per-frame emitter
-            // gating (forge/mine smoke) can read tier === 'occupied'|'busy'
-            // without hot-path enumeration of agent sprites.
+            // Presence changes move plaques and the building's work tier
+            // (BuildingSprite reads the payload itself): wake an idle frame.
             eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, (payload) => {
                 if (!payload) return;
                 this._invalidateIdleFrame();
-                this._buildingPresenceMap = new Map(Object.entries(payload));
             }),
             eventBus.on(BUILDING_EVENTS.SELECTED, () => this._invalidateIdleFrame()),
             eventBus.on(BUILDING_EVENTS.DESELECTED, () => this._invalidateIdleFrame()),
-            // #39 — celebratory gull scatter: a harbor push-success scatters
-            // the flock skyward for a few seconds by lifting the active-gull
-            // target toward GULL_MAX_ACTIVE_TARGET. Also records the moment so
-            // SeasonalAmbience suppresses decorative drift while the real git
-            // reward is on screen.
-            eventBus.on('harbor:push-success', () => {
-                this._invalidateIdleFrame();
-                this._triggerGullScatter();
-            }),
-            eventBus.on('git:pushed', () => {
-                this._invalidateIdleFrame();
-                this._triggerGullScatter();
-            }),
             // #attract — topbar toggle flips the idle-attract camera live.
             eventBus.on('camera:auto-camera', (payload) => this.cameraDirector?.setAutoMode?.(payload?.enabled !== false)),
             // 4.8 — earned nicknames garnish agent name tags.
@@ -1965,11 +1930,9 @@ export class IsometricRenderer {
         this.visitIntentManager?.dispose?.();
         this.visitTileAllocator?.dispose?.();
         this._crowdBumpCooldowns.clear();
-        this._buildingPresenceMap.clear();
         this.foliageRenderer?.clear?.();
         this._atmosphereEffectSpriteCache.clear();
         this.weatherRenderer?.dispose?.();
-        this.skyRenderer?.detach?.();
         this.skyRenderer?.releaseCache?.();
         this.atmosphereState?.dispose?.();
         // SeasonalAmbience holds no resources today; the optional chain keeps
@@ -1991,7 +1954,7 @@ export class IsometricRenderer {
             || this._frameFailureStats.paused
         ) return;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-        this.frameId = requestAnimationFrame(() => this._loop());
+        this.frameId = requestAnimationFrame(frameTime => this._loop(frameTime));
     }
 
     _stopLoop() {
@@ -2663,9 +2626,11 @@ export class IsometricRenderer {
         // (e.g. missing viewport) retries on the next re-frame.
         if (!this._didEstablishingShot && this.playOpeningShot({ targetBox })) return;
 
-        // 5.7/8.1 — later re-frames (relayout, the F key) glide in the director
-        // vocabulary and settle on the default frame tier; a box spanning most
-        // of the island widens to the survey tier instead of being cropped.
+        // 5.7/8.1/4.1 — later re-frames (relayout, the F key) glide in the
+        // director vocabulary and settle on the default frame tier (3, or the
+        // closest rung that fits, DPR-2 half rungs included), land-weighted
+        // (4.2); a box spanning most of the island widens to the survey shot
+        // (`scales.survey`, z1 on the DPR-1 ultrawide) instead of being cropped.
         const maxZoom = this.camera.defaultFrameTier;
         const minZoom = this.camera.frameTierFloorForBox(targetBox);
         if (this.camera.glideToWorld(targetBox, { owner: 'system', maxZoom, minZoom })) return;
@@ -2702,23 +2667,95 @@ export class IsometricRenderer {
         };
     }
 
-    // 0.5 — one `world:first-frame` per World activation: the page opening
+    // 0.5/0.3 — one `world:first-frame` per World activation: the page opening
     // ('boot') and every return from Dashboard ('return'). The shell keeps the
-    // world canvases transparent over a sky-coloured container until it fires,
-    // so nothing black or half-built is ever shown. `_firstFrameReason` is
-    // undefined until the first frame (boot), a reason string while armed,
-    // and null once reported.
+    // world canvases transparent over the container's stepped bands until it
+    // fires, so nothing black, half-built or at a stale pose is ever shown.
+    // `_firstFrameReason` starts as 'boot-pending': frames drawn before
+    // App._openWorld has applied the opening pose (playOpeningShot,
+    // frameContent, or a scenario's `opening: false`) never report. It is a
+    // reason string while armed and null once reported.
     armFirstFrameSignal(reason = 'return') {
+        // A Dashboard return that lands before the opening keeps the boot gate.
+        if (this._firstFrameReason === 'boot-pending' && reason !== 'boot') return;
         this._firstFrameReason = reason;
         this.camera?.setPresented?.(false);
+        // A static scene may skip idle frames; the armed frame has to draw.
+        this._invalidateIdleFrame();
     }
 
+    // Runs right after a render, in the same task, so the bands it measures
+    // are the frame the compositor is about to present (the WebGL surface
+    // does not preserve its drawing buffer past that task).
     _signalFirstFrame() {
-        const reason = this._firstFrameReason === undefined ? 'boot' : this._firstFrameReason;
-        if (!reason) return;
+        const reason = this._firstFrameReason;
+        if (!reason || reason === 'boot-pending') return;
         this._firstFrameReason = null;
         this.camera?.setPresented?.(true);
-        eventBus.emit('world:first-frame', { reason, sky: this._lastAtmosphere?.sky?.palette || null });
+        const horizonY = this._horizonScreenFraction();
+        const measured = this._sampleFrameBands(4, horizonY);
+        eventBus.emit('world:first-frame', {
+            reason,
+            sky: this._lastAtmosphere?.sky?.palette || null,
+            sea: measured?.sea || null,
+            horizonY,
+            bands: measured?.bands || null,
+            cell: this._revealCell(),
+        });
+    }
+
+    // The sea horizon's screen fraction; 0 when it is at or above the top edge.
+    _horizonScreenFraction() {
+        const height = this._screenHeight();
+        const y = this.camera?.worldToScreen?.(0, OCEAN_HORIZON_WORLD_Y)?.y;
+        if (!(height > 0) || !Number.isFinite(y)) return 0;
+        return Math.max(0, Math.min(1, y / height));
+    }
+
+    // The reveal bands dither on one art texel at the current zoom (CSS px).
+    _revealCell() {
+        return Math.max(1, Math.round(this.camera?.zoom || 1));
+    }
+
+    _sampleFrameBands(count, horizonY) {
+        return sampleRevealBands([this.canvas, this.fxCanvas, this.overlayCanvas], { count, horizonY });
+    }
+
+    // 0.3 (c) — the World is about to be suspended for Dashboard: draw one
+    // frame now and measure it as `count` stepped bands, which the container
+    // holds until the return's first frame. Null when the World cannot draw.
+    captureFrameBands(count = 8) {
+        if (!this.renderNow()) return null;
+        const horizonY = this._horizonScreenFraction();
+        const measured = this._sampleFrameBands(count, horizonY);
+        return measured ? { ...measured, horizonY, cell: this._revealCell() } : null;
+    }
+
+    // 0.3 (b) — draw one frame synchronously, outside the loop. The resize
+    // closure calls it after reallocating the canvases (which clears them), so
+    // a cleared backing store never presents. Nothing draws before the loop's
+    // first frame (which runs the first update). Returns whether it drew.
+    renderNow() {
+        if (
+            !this.running
+            || this._disposed
+            || !this._worldModeActive
+            || this._worldResourcesSuspended
+            || this._contextLost
+            || this._frameFailureStats.paused
+            || !this.camera
+            || !this._lastAtmosphere
+        ) return false;
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+        try {
+            this._render(0);
+        } catch (error) {
+            this._reportFrameFailure(error, 'render');
+            return false;
+        }
+        this._recordIdleRenderState();
+        this._signalFirstFrame();
+        return true;
     }
 
 
@@ -3061,11 +3098,23 @@ export class IsometricRenderer {
         if (typeof document === 'undefined') return true;
         if (!element || element === document.body || element === document.documentElement) return true;
         if (element === this.canvas) return true;
+        // The World dock and its popover live inside #characterMode (9.1), but
+        // their controls are ordinary Tab stops: only the World surface itself
+        // turns Tab into agent cycling.
+        if (element.closest?.('#worldDock, [popover], button, a[href], [role="button"]')) return false;
         return Boolean(document.getElementById('characterMode')?.contains?.(element));
     }
 
     _isModalOpen() {
-        return this.modal?.overlay?.style?.display === 'flex';
+        if (this.modal?.overlay?.style?.display === 'flex') return true;
+        // An open auto popover (World controls) owns the keyboard: Escape must
+        // reach its light-dismiss close request instead of being cancelled here.
+        if (typeof document === 'undefined') return false;
+        try {
+            return Boolean(document.querySelector('[popover]:not([popover="manual"]):popover-open'));
+        } catch {
+            return false;
+        }
     }
 
     _cycleAgentSelection(direction = 1) {
@@ -3199,6 +3248,7 @@ export class IsometricRenderer {
                 getAmbientDestination: (request) => this._getAmbientDestination(request),
                 getRoadTiles: () => this.pathTiles,
                 getTileType: (tileX, tileY) => this._surfaceMaterialAt(tileX, tileY),
+                motionClock: this._motionClock,
             });
             sprite.setMotionScale(this.motionScale);
             sprite.setGpuWorldEnabled?.(this.gpuWorld?.isActive?.() === true);
@@ -3854,7 +3904,6 @@ export class IsometricRenderer {
             || arrival?.orphanReturns?.length
         ) return true;
         if (this.ritualConductor?.rituals?.length || this.particleSystem?.particles?.length) return true;
-        if (this._gullScatterActive()) return true;
 
         const chronicler = this.chronicler;
         if (
@@ -3873,7 +3922,6 @@ export class IsometricRenderer {
             || director?.buildingPresence?.size
             || director?.toolEvents?.length
         ) return true;
-        if (this.moodService?.getWeatherInfluence?.(now)) return true;
         const harbor = this.harborTraffic;
         if (
             harbor?._hasTimedLifecycle
@@ -3948,7 +3996,7 @@ export class IsometricRenderer {
         this._idleFrameDirty = false;
     }
 
-    _loop() {
+    _loop(frameTime) {
         if (!this.running) return;
         this.frameId = null;
         if (!this._worldModeActive || this._contextLost) return;
@@ -3956,6 +4004,16 @@ export class IsometricRenderer {
         const now = performance.now();
         const frameGapMs = Number.isFinite(this._lastFrameTime) ? now - this._lastFrameTime : 0;
         const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
+        // 0.1 — the resident ladder's pacing sample: the gap between rAF
+        // timestamps (vsync-aligned frame begin times, steadier than callback
+        // wall time). A gap across a pause or resume — anything that reset
+        // `_lastFrameTime` outside this loop — is not a display interval.
+        const vsyncTime = Number.isFinite(frameTime) ? frameTime : now;
+        if (this._lastFrameTime === this._lastLoopFrameTime && Number.isFinite(this._lastVsyncTime)) {
+            this.gpuWorld?.notePresentInterval?.(vsyncTime - this._lastVsyncTime);
+        }
+        this._lastVsyncTime = vsyncTime;
+        this._lastLoopFrameTime = now;
         this._lastFrameTime = now;
         if (this._canSkipIdleFrame(Date.now())) {
             this._recordFrameEnvelope(0, 0, 0, frameGapMs, null);
@@ -4710,7 +4768,7 @@ export class IsometricRenderer {
                 continue;
             }
             const step = Math.max(-maxCorrection, Math.min(maxCorrection, correction));
-            const steered = constrainSteeringToTarget({
+            const constrained = constrainSteeringToTarget({
                 x: sprite.x,
                 y: sprite.y,
                 nextX: sprite.x + lane.perpX * step,
@@ -4718,18 +4776,30 @@ export class IsometricRenderer {
                 targetX: sprite.targetX,
                 targetY: sprite.targetY,
             });
+            const steered = this._strideKeptSteer(sprite, constrained);
+            if (!steered) continue;
             if (!this._isSpritePositionWalkable(sprite, steered.x, steered.y)) continue;
             if (Math.hypot(steered.x - sprite.x, steered.y - sprite.y) <= 0.001) continue;
             sprite.x = steered.x;
             sprite.y = steered.y;
             sprite._laneDiscipline = { tileKey: lane.tileKey, side, offsetPx: desiredOffset };
-            if (steered.constrained) this._localAvoidanceMetrics.progressClamps++;
+            if (constrained.constrained) this._localAvoidanceMetrics.progressClamps++;
             corrections++;
         }
         if (corrections > 0) {
             this._localAvoidanceMetrics.laneCorrections += corrections;
             this._markSpritesDirty();
         }
+    }
+
+    // V7 — steering proposes a position; the body keeps its stride. A sprite
+    // that stepped this refresh takes the proposal's course at its own step
+    // length (AgentSprite.steeredPosition), so crowd nudges never break the
+    // 4.5 px walk frame; one that did not step (a start beat, a pivot, a
+    // stop) is not moved at all, so nothing skates. Null = leave it.
+    _strideKeptSteer(sprite, proposed) {
+        if (typeof sprite?.steeredPosition !== 'function') return proposed;
+        return sprite.steeredPosition(proposed.x, proposed.y);
     }
 
     _applyLocalAvoidance(movingSprites, dt = 16) {
@@ -4781,21 +4851,25 @@ export class IsometricRenderer {
             });
 
             let moved = false;
+            const keptA = this._strideKeptSteer(a, nextA);
             if (
-                Math.hypot(nextA.x - a.x, nextA.y - a.y) > 0.001
-                && this._isSpritePositionWalkable(a, nextA.x, nextA.y)
+                keptA
+                && Math.hypot(keptA.x - a.x, keptA.y - a.y) > 0.001
+                && this._isSpritePositionWalkable(a, keptA.x, keptA.y)
             ) {
-                a.x = nextA.x;
-                a.y = nextA.y;
+                a.x = keptA.x;
+                a.y = keptA.y;
                 if (nextA.constrained) this._localAvoidanceMetrics.progressClamps++;
                 moved = true;
             }
+            const keptB = this._strideKeptSteer(b, nextB);
             if (
-                Math.hypot(nextB.x - b.x, nextB.y - b.y) > 0.001
-                && this._isSpritePositionWalkable(b, nextB.x, nextB.y)
+                keptB
+                && Math.hypot(keptB.x - b.x, keptB.y - b.y) > 0.001
+                && this._isSpritePositionWalkable(b, keptB.x, keptB.y)
             ) {
-                b.x = nextB.x;
-                b.y = nextB.y;
+                b.x = keptB.x;
+                b.y = keptB.y;
                 if (nextB.constrained) this._localAvoidanceMetrics.progressClamps++;
                 moved = true;
             }
@@ -4993,7 +5067,10 @@ export class IsometricRenderer {
         a.bumpFlash = Math.max(a.bumpFlash || 0, Math.min(1, 0.4 + overlap));
         b.bumpFlash = Math.max(b.bumpFlash || 0, Math.min(1, 0.4 + overlap));
         if (this.motionScale > 0) {
-            this.particleSystem.spawn('crowdBump', (a.x + b.x) / 2, (a.y + b.y) / 2 + 6, 2);
+            // 0.6 — the bump sorts with the nearer of the two bodies.
+            this.particleSystem.spawn('crowdBump', (a.x + b.x) / 2, (a.y + b.y) / 2 + 6, 2, {
+                sortY: Math.max(a._depthSortY ?? a.y, b._depthSortY ?? b.y),
+            });
         }
     }
 
@@ -5012,25 +5089,28 @@ export class IsometricRenderer {
             const frameScale = Math.max(0, Math.min(3, dt / 16));
             const chance = 1 - Math.pow(1 - Math.max(0, Math.min(1, emitter.chance * particleBudget * localBudget)), frameScale);
             if (Math.random() < chance) {
-                this.particleSystem.spawn(emitter.particleType, emitter.x, emitter.y - 18, 1);
+                // 0.6 — the mote rises 18 px over its emitter's ground point.
+                this.particleSystem.spawn(emitter.particleType, emitter.x, emitter.y - 18, 1, { sortY: emitter.y });
                 spawned++;
             }
         }
     }
 
     // 6.7 — chimney smoke rides its own interval (not the one-ambient-spawn
-    // cap above): occupancy-gated, wind-leaned, flattened by rain.
+    // cap above): gated by working presence (V8 isWorkingVisitor, via
+    // BuildingSprite.getWorkingPresence), wind-leaned, flattened by rain.
     _updateChimneySmoke() {
         if (!this.motionScale || !this.chimneySmoke) return;
         this.chimneySmoke.update({
             now: performance.now(),
+            timeMs: this.motionTimeMs,
             buildings: this.world?.buildings,
             assets: this.assets,
-            presence: this._buildingPresenceMap,
+            presence: this.buildingRenderer?.getWorkingPresence?.() || null,
             particleSystem: this.particleSystem,
             atmosphere: this._lastAtmosphere,
-            windX: smokeWindDrift(this.atmosphereState),
             heatFor: type => (type === 'forge' ? this.buildingRenderer?._forgeGlowIntensity?.() ?? 0 : 0),
+            sortYFor: (building, localY) => this.buildingRenderer?.particleSortY?.(building, localY) ?? null,
         });
     }
 
@@ -5041,7 +5121,7 @@ export class IsometricRenderer {
         this.chimneySmoke.drawStatic(ctx, {
             buildings: this.world?.buildings,
             assets: this.assets,
-            presence: this._buildingPresenceMap,
+            presence: this.buildingRenderer?.getWorkingPresence?.() || null,
             lightGrade,
         });
     }
@@ -5081,7 +5161,10 @@ export class IsometricRenderer {
             const sprite = sprites[Math.floor(Math.random() * sprites.length)];
             if (!sprite || sprite.isArrivalPending?.()) continue;
             // Feet sit ~7px below the sprite anchor (matches footstep dust).
-            this.particleSystem.spawn('rainSplash', sprite.x, sprite.y + 7, 1, { spread: 5 });
+            this.particleSystem.spawn('rainSplash', sprite.x, sprite.y + 7, 1, {
+                spread: 5,
+                sortY: sprite._depthSortY ?? sprite.y,
+            });
         }
     }
 
@@ -5382,7 +5465,10 @@ export class IsometricRenderer {
             sprites: this.agentSprites.values(),
             camera: this.camera,
             viewport,
-            now: Date.now(),
+            // V8 — chrome over the world (the World dock) is occluded screen.
+            reserved: getReservedRects(),
+            // Ages default to the shared 1 Hz tick (`elapsedTickNow`), so a
+            // plate and the card beside it always print the same second.
         });
         const attentionWorldRects = this._attentionWorldRects;
         attentionWorldRects.length = 0;
@@ -6046,9 +6132,11 @@ export class IsometricRenderer {
         const dpr = 1;
         // C1 — a season token keyed into the cache so the ground decals rebake
         // only when the season actually changes (four discrete values), never
-        // per frame. Stored for the GroundBake decals to branch on.
+        // per frame. Stored for the GroundBake decals to branch on; the tree
+        // canopies (5.1) drop their images once when it changes.
         const season = this._currentSeasonToken();
         this._terrainSeason = season;
+        this.foliageRenderer.setSeason(season);
         const key = this._terrainBakeKey(bounds, dpr, season);
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
@@ -6145,10 +6233,55 @@ export class IsometricRenderer {
     // near rows (high tileY, low on screen) — the painterly "distant things recede"
     // trick at zero per-frame cost. Clipped to the world diamond, multiply-blended,
     // ~8% at the far apex fading to 0 across the near half. No motion (baked).
+    // 0.10 — on the pixel grammar: six flat horizontal courses on a 2 world-px
+    // cell, each the old profile's colour at its centre, with a 4x4 ordered
+    // dither only in a two-cell band at each seam. No gradient.
     _bakeAtmosphericPerspective(ctx) {
         const points = this._worldDiamondPoints();
         const topY = points[0].y;       // far apex (tileY≈0)
         const bottomY = points[2].y;    // near apex (tileY≈MAP_SIZE)
+        if (!(bottomY > topY) || typeof document === 'undefined') return;
+        const CELL = 2;
+        const COURSES = 6;
+        const SEAM_CELLS = 2;
+        const rows = Math.ceil((bottomY - topY) / CELL);
+        if (this._perspectiveTile?.height !== rows) {
+            // Cool, high-value haze tint at half strength: multiply leaves the
+            // near rows untouched (white → 1×) and cools the far rows.
+            const stops = [[0, [196, 214, 232]], [0.5, [232, 240, 248]], [1, [255, 255, 255]]];
+            const profile = (t) => {
+                const k = t < 0.5 ? 0 : 1;
+                const [t0, c0] = stops[k];
+                const [t1, c1] = stops[k + 1];
+                const f = (t - t0) / (t1 - t0);
+                return c0.map((c, i) => Math.round(255 - (255 - (c + (c1[i] - c) * f)) * 0.5));
+            };
+            const colours = Array.from({ length: COURSES }, (_, course) => profile((course + 0.5) / COURSES));
+            const seam = SEAM_CELLS / Math.max(1, rows / COURSES);
+            const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+            const tile = this._perspectiveTile || document.createElement('canvas');
+            tile.width = 4;
+            tile.height = rows;
+            const tctx = tile.getContext('2d');
+            const image = tctx.createImageData(4, rows);
+            for (let y = 0; y < rows; y++) {
+                for (let x = 0; x < 4; x++) {
+                    const order = bayer[(y % 4) * 4 + x] / 16 - 0.5;
+                    const q = ((y + 0.5) / rows) * COURSES + order * seam;
+                    const rgb = colours[Math.max(0, Math.min(COURSES - 1, Math.floor(q)))];
+                    const offset = (y * 4 + x) * 4;
+                    image.data[offset] = rgb[0];
+                    image.data[offset + 1] = rgb[1];
+                    image.data[offset + 2] = rgb[2];
+                    image.data[offset + 3] = 255;
+                }
+            }
+            tctx.putImageData(image, 0, 0);
+            this._perspectiveTile = tile;
+        }
+        const pattern = ctx.createPattern(this._perspectiveTile, 'repeat-x');
+        if (!pattern) return;
+        pattern.setTransform?.(new DOMMatrix([CELL, 0, 0, CELL, 0, topY]));
         ctx.save();
         ctx.beginPath();
         ctx.moveTo(points[0].x, points[0].y);
@@ -6156,14 +6289,8 @@ export class IsometricRenderer {
         ctx.closePath();
         ctx.clip();
         ctx.globalCompositeOperation = 'multiply';
-        const haze = ctx.createLinearGradient(0, topY, 0, bottomY);
-        // Cool, high-value haze tint — multiply leaves near rows untouched (white→1x)
-        // and gently desaturates/cools the far rows toward atmospheric distance.
-        haze.addColorStop(0, 'rgb(196, 214, 232)');
-        haze.addColorStop(0.5, 'rgb(232, 240, 248)');
-        haze.addColorStop(1, 'rgb(255, 255, 255)');
-        ctx.fillStyle = haze;
-        ctx.globalAlpha = 0.5;          // peak ~8% effective cool wash at the far apex
+        ctx.imageSmoothingEnabled = false;
+        ctx.fillStyle = pattern;
         ctx.fillRect(points[3].x, topY, points[1].x - points[3].x, bottomY - topY);
         ctx.restore();
     }
@@ -7965,7 +8092,8 @@ export class IsometricRenderer {
             rain: precipitation,
             storm: storm ? intensity : 0,
             fog: type === 'fog' ? intensity : Math.max(0, Math.min(1, Number(wx.fog) || 0)),
-            windX: Number(wx.windX) || atmosphere?.motion?.windX || 1,
+            // C-W3 — the one knot wind (a calm 0 stays calm).
+            windX: baseWindX(wx),
             reactions: atmosphere?.reactions || {},
             phase: atmosphere?.phase || 'day',
         };
@@ -8265,7 +8393,6 @@ export class IsometricRenderer {
             speed: [0.5, 0.6 + hullScale * 0.8],
             spread: radiusX * 0.4,
             alpha: [0.4, 0.85 * (1 - t * 0.4)],
-            layer: 'effects',
         });
     }
 
@@ -8807,14 +8934,6 @@ export class IsometricRenderer {
 
     _drawLandBirds(ctx) {
         this.wildlifeRenderer.drawLandBirds(ctx);
-    }
-
-    _triggerGullScatter() {
-        this.wildlifeRenderer.triggerGullScatter();
-    }
-
-    _gullScatterActive() {
-        return this.wildlifeRenderer.gullScatterActive();
     }
 
     _drawOpenSeaGulls(ctx) {
@@ -9535,6 +9654,8 @@ export class IsometricRenderer {
         const { grade } = canvasGradeFor(atmosphere);
         const cell = Math.max(1, Math.round(this.camera?.zoom || 1));
         const ambientTint = grade.ambientTint || [1, 1, 1];
+        // V5 — each course clamps the graded plaza under the receiver ceiling.
+        const receiver = gradedPoolReceiver(grade);
         const key = [
             lightSourceCacheKey(light, 'pool'),
             Math.round(radius),
@@ -9542,6 +9663,7 @@ export class IsometricRenderer {
             this._quantizedAlpha(energy),
             ambientTint.map(channel => Math.round(channel * 32)).join(','),
             Math.round((grade.poolGain ?? 1) * 32),
+            receiver ? receiver.map(channel => Math.round(channel * 64)).join(',') : '',
         ].join('|');
         const cached = this.lightGradientCache.get(key);
         if (cached) {
@@ -9557,6 +9679,7 @@ export class IsometricRenderer {
             energy: this._quantizedAlpha(energy),
             ambientTint,
             poolGain: grade.poolGain ?? 1,
+            receiver,
         });
         const stampPixels = canvasPixelCount(stamp);
         if (stampPixels <= MAX_LIGHT_GRADIENT_STAMP_PIXELS) {
@@ -9578,6 +9701,8 @@ export class IsometricRenderer {
     }
 
     _drawLighthouseBeam(ctx, light, atmosphere = null) {
+        // AD-6 — no beam by day: only once the lamp course reaches `settling`.
+        if (!lampsLitAt(atmosphere)) return;
         const signal = (typeof this.harborTraffic?.getActivePushSignal === 'function'
             ? this.harborTraffic.getActivePushSignal()
             : null) || { state: 'idle' };
@@ -9633,9 +9758,6 @@ export class IsometricRenderer {
             }
         } else if (stateName === 'untethered') {
             alpha = baseAlpha * 0.4;
-            if (this.weatherRenderer && typeof this.weatherRenderer.nudgeFogIntensity === 'function' && !reducedMotion) {
-                this.weatherRenderer.nudgeFogIntensity(0.15);
-            }
         } else if (stateName === 'pulsing') {
             if (reducedMotion) {
                 alpha = baseAlpha * 0.85;

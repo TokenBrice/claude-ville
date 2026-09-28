@@ -76,6 +76,7 @@
     "world:verify-dpr": "NODE_NO_WARNINGS=1 node scripts/world/verify-dpr-fix.mjs",
     "world:benchmark-trails": "node scripts/smoke/trail-camera-benchmark.mjs",
     "world:benchmark-fps": "node scripts/smoke/world-fps-benchmark.mjs --profile",
+    "world:gpu-burst": "node scripts/world/gpu-burst.mjs",
     "vendor:refresh-js-yaml": "node scripts/vendor/refresh-js-yaml.mjs"
   },
   "devDependencies": {

@@ -14,13 +14,6 @@ export function nightWindowGate(phase, phaseProgress = 0) {
     return (progress - 0.8) / 0.2;
 }
 
-export function lightsBuildingWindows(agent) {
-    if (!agent || agent.isDeparted === true) return false;
-    const departedAt = Number(agent.departedAt);
-    if (Number.isFinite(departedAt) && departedAt !== 0) return false;
-    return agent.status === 'working' || agent.turnState === 'tool_pending';
-}
-
 export function buildingEmissiveGate(phase, phaseProgress, workingFactor) {
     const night = nightWindowGate(phase, phaseProgress);
     return 1 + (clamp01(workingFactor) - 1) * night;

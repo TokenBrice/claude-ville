@@ -6,10 +6,76 @@ import {
     resolveCalmGate,
     sampleFramePressure,
 } from './MarkGovernor.js';
+import {
+    gpuDepthKey,
+    GPU_PARTICLE_FLAGS,
+    GPU_PARTICLE_INSTANCE_BYTES,
+    GPU_PARTICLE_MOTIF_SIZE,
+    GPU_PARTICLE_SHAPES,
+} from './gpu/GpuWorldPolicy.js';
 
 const PARTICLE_GRAVITY = 0.05;
 const MAX_PARTICLES = 240;
+// 0.6 — open-air drift (snow) sorts in front of the whole village: a flake
+// between the camera and a roof is in front of that roof. Finite, so the
+// Canvas sort and the GPU depth key (clamped to its nearest step) agree.
+export const PARTICLE_SORT_Y_OPEN_AIR = 100000;
 
+// 0.6 — event-shape motifs as one R8 mask: each 8x8 motif core (the drawn
+// rows and columns 4-11 of its padded 16x16 grid) stacked vertically in
+// EVENT_SHAPES order. The resident particle draw reads it with texelFetch.
+export const PARTICLE_MOTIF_IDS = Object.freeze(Object.keys(EVENT_SHAPES));
+const MOTIF_INDEX = new Map(PARTICLE_MOTIF_IDS.map((id, index) => [id, index]));
+const MOTIF_PAD = 4;
+let _motifMask = null;
+
+export function particleMotifMask() {
+    if (_motifMask) return _motifMask;
+    const size = GPU_PARTICLE_MOTIF_SIZE;
+    const data = new Uint8Array(size * size * PARTICLE_MOTIF_IDS.length);
+    PARTICLE_MOTIF_IDS.forEach((id, index) => {
+        const rows = EVENT_SHAPES[id];
+        for (let y = 0; y < size; y++) {
+            for (let x = 0; x < size; x++) {
+                if (rows[y + MOTIF_PAD]?.[x + MOTIF_PAD] === '1') data[(index * size + y) * size + x] = 255;
+            }
+        }
+    });
+    _motifMask = Object.freeze({
+        width: size,
+        height: size * PARTICLE_MOTIF_IDS.length,
+        data,
+        revision: `particle-motifs:${PARTICLE_MOTIF_IDS.length}`,
+    });
+    return _motifMask;
+}
+
+// Particle colours arrive as `#rgb`, `#rrggbb`, `rgb()` or `rgba()`; parsed
+// once per distinct string for the GPU instance bytes.
+const PARTICLE_COLOR_CACHE_LIMIT = 256;
+const _particleColors = new Map();
+
+function particleColor(text) {
+    let parsed = _particleColors.get(text);
+    if (parsed !== undefined) return parsed;
+    parsed = null;
+    const value = String(text || '').trim();
+    const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value);
+    if (hex) {
+        const digits = hex[1].length === 3 ? hex[1].replace(/./g, '$&$&') : hex[1];
+        const number = Number.parseInt(digits, 16);
+        parsed = [(number >> 16) & 255, (number >> 8) & 255, number & 255, 1];
+    } else {
+        const rgb = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/i.exec(value);
+        if (rgb) {
+            const channel = (v) => Math.max(0, Math.min(255, Math.round(Number(v))));
+            parsed = [channel(rgb[1]), channel(rgb[2]), channel(rgb[3]), rgb[4] == null ? 1 : Math.max(0, Math.min(1, Number(rgb[4])))];
+        }
+    }
+    if (_particleColors.size >= PARTICLE_COLOR_CACHE_LIMIT) _particleColors.clear();
+    _particleColors.set(text, parsed);
+    return parsed;
+}
 export const PARTICLE_ROLES = Object.freeze({
     fauna: Object.freeze(['butterfly', 'dragonfly']),
     ambient: Object.freeze(['sparkle', 'leaf', 'petal', 'snow']),
@@ -49,7 +115,7 @@ function darkenHex(hex) {
 }
 
 class Particle {
-    constructor(x, y, vx, vy, life, color, size, gravity, alpha = 1, layer = 'effects', opts = {}) {
+    constructor(x, y, vx, vy, life, color, size, gravity, alpha = 1, opts = {}) {
         this.x = x;
         this.y = y;
         this.vx = vx;
@@ -60,7 +126,10 @@ class Particle {
         this.size = size;
         this.gravity = gravity;
         this.alpha = alpha;
-        this.layer = layer;
+        // 0.6 — the painter depth the particle sorts at, fixed at spawn (its
+        // emitter's ground line or owner), and its GPU depth key.
+        this.sortY = opts.sortY;
+        this.depthKey = gpuDepthKey(opts.sortY);
         // C6 — shaped-insect draw hints. `shape` keys the draw branch;
         // `phase`/`animRate` give each insect a deterministic, per-particle wing
         // flap cycle seeded once at spawn (never in draw).
@@ -68,18 +137,19 @@ class Particle {
         this.phase = opts.phase || 0;
         this.animRate = opts.animRate || 0;
         this.bodyColor = this.shape === 'butterfly' ? darkenHex(color) : null;
-        // 0.1 — non-emissive presets (smoke, dust) take the scene's light when
-        // replayed on an ungraded layer; emissive ones keep their colour.
+        // Matter (smoke, dust, leaves) takes the scene's grade; every other
+        // preset is light and keeps its colour.
         this.lit = !!opts.lit;
         // 6.7 — `tag` lets an emitter count its own live particles (seasonal
         // drift caps); `baseColor` is an emissive tone a smoke puff wears only
         // on its first step (a fire-lit underside at the chimney mouth).
         this.tag = opts.tag || null;
         this.baseColor = opts.baseColor || null;
-        // A lit particle whose emitter already graded it for the ungraded
-        // overlay (night chimney smoke: moonlit soot held above the dark)
-        // wears this instead of the generic lit re-tint.
-        this.overlayColor = opts.overlayColor || null;
+        // A lit particle whose emitter already graded it (night chimney
+        // smoke: moonlit soot held above the dark). A backend that grades
+        // particles itself (the resident GPU draw) wears this ungraded; the
+        // Canvas frame grades `color` after the fact instead.
+        this.gradedColor = opts.gradedColor || null;
     }
 
     update(dt = 16) {
@@ -96,13 +166,94 @@ class Particle {
         return this.life > 0;
     }
 
+    // 0.6 — one resident GPU instance with exactly the rects `draw` paints on
+    // Canvas (GpuWorldPolicy GPU_PARTICLE_INSTANCE_BYTES layout). Returns
+    // false for a particle that paints nothing.
+    writeGpuInstance(views, index, motionEnabled = true) {
+        const age = this.maxLife - this.life;
+        const cx = Math.round(this.x);
+        const cy = Math.round(this.y);
+        let alpha = (this.life / this.maxLife) * this.alpha;
+        let color = this.lit && this.gradedColor ? this.gradedColor : this.color;
+        let flags = this.lit
+            ? (this.gradedColor ? 0 : GPU_PARTICLE_FLAGS.graded)
+            : GPU_PARTICLE_FLAGS.emits;
+        let shape = GPU_PARTICLE_SHAPES.rect;
+        let motif = 0;
+        let left;
+        let top;
+        let width;
+        let height;
+        const motifIndex = MOTIF_INDEX.get(this.shape);
+        if (motifIndex !== undefined) {
+            shape = GPU_PARTICLE_SHAPES.motif;
+            motif = motifIndex;
+            left = cx - 8 + MOTIF_PAD;
+            top = cy - 8 + MOTIF_PAD;
+            width = GPU_PARTICLE_MOTIF_SIZE;
+            height = GPU_PARTICLE_MOTIF_SIZE;
+        } else if (this.shape === 'butterfly') {
+            const scale = motionEnabled ? Math.abs(Math.sin(age * this.animRate + this.phase)) : 0.6;
+            const wingW = Math.max(1, Math.round(this.size * scale));
+            height = Math.max(1, Math.round(this.size * 0.85));
+            shape = GPU_PARTICLE_SHAPES.wings;
+            left = cx - wingW;
+            top = cy - (height >> 1);
+            width = wingW * 2 + 1;
+        } else if (this.shape === 'tumble') {
+            const upright = motionEnabled && Math.floor(age * this.animRate + this.phase) % 2 === 1;
+            left = cx;
+            top = cy;
+            width = upright ? 1 : 2;
+            height = upright ? 2 : 1;
+        } else {
+            let size = Math.max(1, Math.round(this.size));
+            if (this.shape === 'puff') {
+                const step = Math.min(3, Math.floor((age / this.maxLife) * 4));
+                size = PUFF_STEP_SIZES[step] + (this.size >= 3 ? 1 : 0);
+                alpha = PUFF_STEP_ALPHA[step] * this.alpha;
+                if (step === 0 && this.baseColor) {
+                    // The fire-lit underside is light on the smoke: unlit, no bloom.
+                    color = this.baseColor;
+                    flags = 0;
+                }
+            }
+            if (size >= 3) shape = GPU_PARTICLE_SHAPES.blob;
+            left = cx - (size >> 1);
+            top = cy - (size >> 1);
+            width = size;
+            height = size;
+        }
+        const rgba = particleColor(color);
+        if (!rgba) return false;
+        const coverage = Math.max(0, Math.min(1, alpha * rgba[3]));
+        if (coverage <= 0) return false;
+        const byte = index * GPU_PARTICLE_INSTANCE_BYTES;
+        const f = byte >> 2;
+        views.f32[f] = left;
+        views.f32[f + 1] = top;
+        views.f32[f + 2] = width;
+        views.f32[f + 3] = height;
+        views.u8[byte + 16] = rgba[0];
+        views.u8[byte + 17] = rgba[1];
+        views.u8[byte + 18] = rgba[2];
+        views.u8[byte + 19] = Math.round(coverage * 255);
+        views.u8[byte + 20] = shape;
+        views.u8[byte + 21] = flags;
+        views.u8[byte + 22] = motif;
+        views.u8[byte + 23] = 0;
+        views.u16[(byte >> 1) + 12] = this.depthKey;
+        views.u16[(byte >> 1) + 13] = 0;
+        return true;
+    }
+
     // 0.1 — every particle lands on whole art pixels: position, size, wing and
     // halo are rounded to the world texel grid so no sub-pixel square blurs or
-    // mixes under the camera zoom. `litColor` (optional) re-tints lit presets.
-    draw(ctx, motionEnabled = true, litColor = null) {
+    // mixes under the camera zoom. `writeGpuInstance` cuts the same rects.
+    draw(ctx, motionEnabled = true) {
         const baseAlpha = (this.life / this.maxLife) * this.alpha;
         const age = this.maxLife - this.life;
-        const color = litColor && this.lit ? (this.overlayColor || litColor(this.color)) : this.color;
+        const color = this.color;
         const cx = Math.round(this.x);
         const cy = Math.round(this.y);
 
@@ -273,6 +424,8 @@ const PARTICLE_PRESETS = {
     // Daytime ambient insects. Longer life + slow wander so they linger and
     // drift like butterflies rather than sparking like fireflies.
     butterfly: {
+        // 0.6 — rises from flower tiles anchored ~6 px above the tile centre.
+        groundOffset: 8,
         colors: ['#f4a93c', '#f6d35a', '#e8743b', '#7ab8ec', '#f2f2f2'],
         size: [2, 3.4],
         life: [120, 240],
@@ -291,6 +444,8 @@ const PARTICLE_PRESETS = {
         direction: 'random',
     },
     snow: {
+        // 0.6 — falls anywhere in view, between the camera and the village.
+        openAir: true,
         colors: ['#e8f4ff', '#cce8ff', '#ffffff'],
         size: [1, 2],
         life: [60, 120],
@@ -301,6 +456,9 @@ const PARTICLE_PRESETS = {
     // 6.7 — autumn leaves and spring petals tumble down from canopies as a
     // 2×1 / 1×2 art-pixel pair (shape 'tumble').
     leaf: {
+        // 0.6 — falls from a canopy anchor 30 world px above its tree's base:
+        // sort just in front of that tree.
+        groundOffset: 40,
         colors: ['#c0703a', '#d9a441', '#8a5a2b'],
         size: [1, 1],
         life: [110, 180],
@@ -310,6 +468,7 @@ const PARTICLE_PRESETS = {
         shape: 'tumble',
     },
     petal: {
+        groundOffset: 40,
         colors: ['#f2b8c6', '#e89aae'],
         size: [1, 1],
         life: [110, 180],
@@ -449,36 +608,16 @@ const PARTICLE_PRESETS = {
     },
 };
 
-// 0.1 — particle layers. `effects` particles live in the world's depth stream:
-// the Canvas renderer draws them in the frame; the resident WebGL path defers
-// them (not drawn) until GPU particle records exist, because they sit at foot
-// or hand height where the ungraded, unsorted overlay would paint them over
-// building fronts and bodies. `air` particles rise above roofs or hang in open
-// air, so the resident path replays them on the overlay. `screen` particles are
-// drawn in screen space on the overlay by both renderers.
-export const PARTICLE_LAYER_EFFECTS = 'effects';
-export const PARTICLE_LAYER_AIR = 'air';
-export const PARTICLE_LAYER_SCREEN = 'screen';
+// 0.6 — every world particle sorts by its painter depth on both backends:
+// Canvas paints it as a small depth drawable (DrawablePass), the resident
+// WebGL path draws all of them in one instanced call against the painter
+// depth buffer. `spawn(type, x, y, { sortY })`: an emitter at hand or roof
+// height passes its owner's sortY (a body's painter sortY, a building half's
+// sortY + 1); otherwise the particle sorts at `y + preset.groundOffset` (its
+// ground line), or in front of everything for open-air drift.
 
-// The admitted open-air set: presets whose every emitter sits at a chimney,
-// torch, hearth mouth or in open air. Presets shared with foot/hand-height
-// sources (footfalls, rain splashes, token motes) stay `effects`; an emitter
-// that is itself open-air (a roof glint, a lantern crown) may opt a spawn in
-// with `{ layer: PARTICLE_LAYER_AIR }`. Seasonal drift (leaves, petals, snow,
-// butterflies) hangs in open air above the lawns.
-export const AIR_PARTICLE_PRESETS = Object.freeze([
-    'smoke',
-    'torch',
-    'buoyTorch',
-    'forgeEmber',
-    'leaf',
-    'petal',
-    'snow',
-    'butterfly',
-]);
-
-// Presets that are matter, not light: they take the scene's light when
-// replayed on the ungraded overlay. Everything else is emissive.
+// Presets that are matter, not light: they take the scene's C2 grade. Every
+// other preset is emissive and keeps its colour (and feeds bloom on WebGL).
 export const LIT_PARTICLE_PRESETS = Object.freeze([
     'smoke',
     'mineDust',
@@ -491,12 +630,16 @@ export const LIT_PARTICLE_PRESETS = Object.freeze([
     'butterfly',
 ]);
 
-const AIR_PRESET_SET = new Set(AIR_PARTICLE_PRESETS);
 const LIT_PRESET_SET = new Set(LIT_PARTICLE_PRESETS);
 
-export function particleLayerFor(type, requested = null) {
-    if (requested) return String(requested);
-    return AIR_PRESET_SET.has(type) ? PARTICLE_LAYER_AIR : PARTICLE_LAYER_EFFECTS;
+// The painter sortY a spawn sorts at: the caller's explicit owner sortY, the
+// open-air front, or the spawn point's ground line.
+export function particleSortY(type, y, sortY = null) {
+    const explicit = sortY == null ? Number.NaN : Number(sortY);
+    if (!Number.isNaN(explicit)) return explicit;
+    const preset = PARTICLE_PRESETS[type];
+    if (preset?.openAir) return PARTICLE_SORT_Y_OPEN_AIR;
+    return Number(y) + (Number(preset?.groundOffset) || 0);
 }
 
 // #18 — exported so HarborTraffic's inline buoy flame stays colour-matched to
@@ -604,7 +747,8 @@ export class ParticleSystem {
         // 6.7 — sideways jitter for up/down presets (a chimney column wants
         // almost none; the legacy default is ±0.3).
         const lateral = Number.isFinite(preset.lateral) ? preset.lateral : 0.3;
-        const layer = particleLayerFor(type, options.layer);
+        // 0.6 — the painter depth the whole burst sorts at (its emitter's).
+        const sortY = particleSortY(type, y, options.sortY);
         const lit = LIT_PRESET_SET.has(type);
         // C6 / 6.7 — drawn-shape hints carried from the preset (butterfly
         // wings, tumbling leaves, smoke puffs).
@@ -612,9 +756,9 @@ export class ParticleSystem {
         const seed = options.seed;
         const tag = options.tag || null;
         const baseColor = typeof options.baseColor === 'string' ? options.baseColor : null;
-        // `overlayColors[i]` is the pre-graded overlay tone of `colors[i]`.
-        const overlayColors = Array.isArray(options.overlayColors) && options.overlayColors.length === colors.length
-            ? options.overlayColors
+        // `gradedColors[i]` is the emitter's own graded tone of `colors[i]`.
+        const gradedColors = Array.isArray(options.gradedColors) && options.gradedColors.length === colors.length
+            ? options.gradedColors
             : null;
         // #33 — signed horizontal drift (world units / 16ms) added to every
         // particle's vx so a rising smoke column leans downwind. Defaults to 0
@@ -662,7 +806,7 @@ export class ParticleSystem {
 
             // Drawn shapes get a deterministic flap/tumble phase seeded from
             // the spawn rng so animation never calls Math.random in draw.
-            const opts = { lit, tag, baseColor, overlayColor: overlayColors ? overlayColors[colorIndex] : null };
+            const opts = { lit, tag, baseColor, sortY, gradedColor: gradedColors ? gradedColors[colorIndex] : null };
             if (shape === 'butterfly' || shape === 'tumble' || shape === 'puff') {
                 opts.shape = shape;
                 opts.phase = rng() * Math.PI * 2;
@@ -679,7 +823,6 @@ export class ParticleSystem {
                 size,
                 gravity,
                 alpha,
-                layer,
                 opts,
             ));
         }
@@ -697,18 +840,23 @@ export class ParticleSystem {
         this.particles.length = next;
     }
 
-    // `litColor` (optional) maps a lit particle's authored hex to the colour
-    // it should take on an ungraded layer; emissive particles ignore it.
-    draw(ctx, { layer = null, excludeLayer = null, litColor = null } = {}) {
-        if (this.particles.length === 0) return;
-        const wantedLayer = layer == null ? null : String(layer);
-        const excludedLayer = excludeLayer == null ? null : String(excludeLayer);
-        for (const p of this.particles) {
-            const particleLayer = p.layer || PARTICLE_LAYER_EFFECTS;
-            if (wantedLayer && particleLayer !== wantedLayer) continue;
-            if (excludedLayer && particleLayer === excludedLayer) continue;
-            p.draw(ctx, this.motionEnabled, litColor);
+    // 0.6 — the resident GPU particle instances (GpuWorldPolicy layout) in
+    // Canvas painter order: by depth key, then spawn order, so overlapping
+    // particles blend as the depth-sorted Canvas pass paints them. Returns
+    // the instance count (at most `views.capacity`).
+    packGpuInstances(views) {
+        const particles = this.particles;
+        const order = this._gpuOrder || (this._gpuOrder = []);
+        order.length = particles.length;
+        for (let index = 0; index < particles.length; index++) order[index] = index;
+        order.sort(this._compareGpuOrder || (this._compareGpuOrder = (a, b) => (
+            (this.particles[a].depthKey - this.particles[b].depthKey) || (a - b)
+        )));
+        let count = 0;
+        for (let index = 0; index < order.length && count < views.capacity; index++) {
+            if (particles[order[index]].writeGpuInstance(views, count, this.motionEnabled)) count++;
         }
+        return count;
     }
 
     // 6.7 — live particles an emitter spawned under `tag` (visible caps).

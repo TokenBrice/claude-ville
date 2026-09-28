@@ -7,21 +7,28 @@
 // WebGL island like chimney smoke.
 //
 // Drift per season:
-//   winter (Dec–Feb): 'snow'       flurries anywhere in view
+//   winter (Dec–Feb): 'snow'       flakes anywhere in view, only while the
+//                                  village's own timeline precipitates (M9,
+//                                  northern hemisphere): no snow on a dry day
 //   spring (Mar–May): 'petal'      pink cherry petals from tree canopies
 //   summer (Jun–Aug): 'butterfly'  by day, rising from flower tiles
 //   autumn (Sep–Nov): 'leaf'       rust and gold leaves from tree canopies
 // Summer nights carry fireflies instead (fauna; WildlifeRenderer's own budget).
 //
 // 6.7 ambient budget: none at z < 2 (the wide shot keeps its silhouette), at
-// most 6 live at z >= 2, none at night, none in rain or storm, and none under
-// reduced motion — the season already lives in the terrain rebake, so the
-// honest static fallback is nothing (no screen-locked specks).
+// most 6 live at z >= 2, none at night, no petals, butterflies or leaves in
+// rain or storm, and none under reduced motion — the season already lives in
+// the terrain rebake, so the honest static fallback is nothing (no
+// screen-locked specks). The drift reads only the calendar and the weather,
+// never agent or event state (V3).
 
 const SPAWNS_PER_SECOND = 2;
 const SEASONAL_TAG = 'seasonal-drift';
 export const SEASONAL_DRIFT_CAP = 6;
 export const SEASONAL_DRIFT_MIN_ZOOM = 2;
+// The weather layer's own precipitation threshold (WeatherRenderer draws
+// rain, or snow in winter, above it).
+const PRECIPITATING = 0.02;
 
 const SEASONS = {
     winter: { type: 'snow', token: 'winter' },
@@ -57,7 +64,6 @@ export class SeasonalAmbience {
         atmosphereStateGetter = null,
         motionScaleGetter = null,
         viewportProvider = null,
-        suppressGetter = null,
         anchorsProvider = null,
         cameraGetter = null,
     } = {}) {
@@ -71,12 +77,6 @@ export class SeasonalAmbience {
         this.viewportProvider = typeof viewportProvider === 'function'
             ? viewportProvider
             : null;
-        // #39 — when this returns true (a real git event / gull scatter is on
-        // screen), decorative drift spawning is suppressed so the ambient layer
-        // yields to the live event.
-        this.suppressGetter = typeof suppressGetter === 'function'
-            ? suppressGetter
-            : () => false;
         // C2 — world-anchored drift. Given a kind ('canopy' | 'flower'), returns
         // screen-space candidate points (tree canopies / flower tiles). Petals
         // and leaves fall from canopies, butterflies rise from flowers; snow
@@ -102,10 +102,7 @@ export class SeasonalAmbience {
         if (!this.enabled || !this.particleSystem) return;
         const season = this._driftSeason();
         const motionScale = clamp01(Number(this.motionScaleGetter()) || 0);
-        // suppressDuringEvents — a live git reward (the celebratory gull
-        // scatter) is on screen; hold off decorative spawns and drain the
-        // accumulator so nothing bursts when suppression lifts.
-        if (!season || motionScale === 0 || this.suppressGetter()) {
+        if (!season || motionScale === 0) {
             this._spawnAccumulator = 0;
             return;
         }
@@ -120,7 +117,8 @@ export class SeasonalAmbience {
     }
 
     // The season whose drift may fall this frame, or null when the budget
-    // says none: wide zoom, night, rain or storm.
+    // says none: wide zoom, night, rain or storm for the fair-weather drifts,
+    // and a dry minute for winter snow.
     _driftSeason() {
         const camera = this.cameraGetter();
         if (!camera || !(Number(camera.zoom) >= SEASONAL_DRIFT_MIN_ZOOM)) return null;
@@ -129,9 +127,12 @@ export class SeasonalAmbience {
         if (!season) return null;
         const phase = atmosphere?.phase || atmosphere?.clock?.phase || 'day';
         if (phase === 'night') return null;
-        const weather = atmosphere?.weather?.type;
-        if (weather === 'rain' || weather === 'storm') return null;
-        return season;
+        const weather = atmosphere?.weather;
+        const precipitating = weather?.type === 'rain'
+            || weather?.type === 'storm'
+            || (Number(weather?.precipitation) || 0) > PRECIPITATING;
+        if (season.type === 'snow') return precipitating ? season : null;
+        return precipitating ? null : season;
     }
 
     _spawnDriftParticle(season) {

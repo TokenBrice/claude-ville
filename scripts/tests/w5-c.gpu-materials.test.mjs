@@ -3,12 +3,6 @@ import assert from 'node:assert/strict';
 
 import { AgentGpuOverlayRenderer } from '../../claudeville/src/presentation/character-mode/AgentGpuOverlayRenderer.js';
 import {
-    DISTRICT_LIGHTING_BANDS,
-    buildDistrictAtmosphere,
-    createDistrictAtmosphereBuffer,
-    quantizeDistrictLightingBand,
-} from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
-import {
     DEFAULT_PROVIDER_MATERIAL_CLASS,
     gpuMaterialNameForProvider,
     packGpuAgentFrameAtlas,
@@ -210,35 +204,6 @@ test('GPU textures use slot uploads after allocating atlas storage', () => {
 
     assert.deepEqual(calls, { full: 2, sub: 1 });
     assert.equal(renderer.uploadBytes, (64 * 64 * 4 * 2) + (8 * 8 * 4));
-});
-
-test('district lighting selects contract bands while district haze remains independently feathered', () => {
-    assert.deepEqual([...DISTRICT_LIGHTING_BANDS], [0.72, 0.86, 1, 1.12]);
-    assert.equal(quantizeDistrictLightingBand(0.8, 'dim'), 0.72);
-    assert.equal(quantizeDistrictLightingBand(0.15, 'cool'), 0.86);
-    assert.equal(quantizeDistrictLightingBand(0.8, 'warm'), 1.12);
-    assert.equal(quantizeDistrictLightingBand(0, 'cool'), 0);
-
-    const buffer = createDistrictAtmosphereBuffer();
-    const first = buildDistrictAtmosphere([{
-        project: '/repos/failing',
-        agentIds: ['agent-1'],
-        storminess: 0.8,
-        clearing: 0,
-    }], buffer);
-    const descriptor = first[0];
-    assert.deepEqual(descriptor.lightingBias, { cool: 0.72, warm: 0, dim: 0.72 });
-    assert.ok(descriptor.groundHaze.alpha > 0);
-
-    const second = buildDistrictAtmosphere([{
-        project: '/repos/quiet',
-        agentIds: ['agent-2'],
-        storminess: 0,
-        clearing: 0.8,
-    }], buffer);
-    assert.equal(second, first);
-    assert.equal(second[0], descriptor);
-    assert.deepEqual(second[0].lightingBias, { cool: 0, warm: 1.12, dim: 0 });
 });
 
 test('frame feeds reuse light slots, scene registry containers, and timing envelopes', () => {

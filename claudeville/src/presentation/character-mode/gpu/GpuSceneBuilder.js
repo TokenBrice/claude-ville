@@ -8,8 +8,9 @@ import { getBuildingVisual } from '../BuildingVisualRegistry.js';
 import { paintCoastWaterMaterial } from '../CoastBake.js';
 import { GROUND_CLASS, paintGroundMaterial } from '../GroundBake.js';
 import { castLightingFor, structureCast, treeCast, TREE_CAST_ALPHA } from '../RakingLight.js';
+import { cacheEmitterRecords } from '../EmitterCuts.js';
 
-const PILOT_PROP_IDS = Object.freeze(['prop.lantern', 'prop.runeBrazier']);
+const PILOT_PROP_IDS = Object.freeze(['prop.lantern', 'prop.runeBrazier', 'prop.bridgeLanternPost']);
 const TERRAIN_TILE_SOURCES = Object.freeze([
     Object.freeze({ tiles: 'deepWaterTiles', id: 'terrain.shallow-deep' }),
     Object.freeze({ tiles: 'waterTiles', id: 'terrain.shore-shallow' }),
@@ -31,6 +32,21 @@ const MATERIAL_BY_BUILDING = Object.freeze({
     watchtower: 'stone',
     observatory: 'stone',
     portal: 'rune',
+});
+
+// V9 `landmarkId` (instance loc5.y, uint16): 0 = not a landmark. A stable id
+// per landmark type, never reordered; 2.2's RG8 footprint field writes the
+// same id into G so a receiver can skip its own footprint.
+export const GPU_LANDMARK_IDS = Object.freeze({
+    command: 1,
+    taskboard: 2,
+    archive: 3,
+    mine: 4,
+    forge: 5,
+    harbor: 6,
+    watchtower: 7,
+    observatory: 8,
+    portal: 9,
 });
 
 // Provider identity is layered over authored sprite channels. These profiles
@@ -66,7 +82,9 @@ function materialForProp(sprite = {}) {
     const id = String(sprite.id || '').toLowerCase();
     if (/tree|bush|flower|reed|lilypad|hedge|root|mangrove/.test(id)) return 'foliage';
     if (/ship|boat|crate|cart|stall|rack|gate|wall|bridge|dock|sign|board/.test(id)) return 'timber';
-    if (/lantern|brazier|beacon|fire/.test(id)) return 'fire';
+    // The harbor beacon buoy is a brass cage over an unlit float: it casts no
+    // light and has no lit pixels, so it is metal, never a whole-sprite glow.
+    if (/lantern|brazier|beacon|fire/.test(id)) return /buoy/.test(id) ? 'metal' : 'fire';
     if (/ore|metal|crane/.test(id)) return 'metal';
     if (/stone|boulder|monument|well|fountain|shrine|rune/.test(id)) return 'stone';
     return 'earth';
@@ -334,14 +352,14 @@ function recordForTerrain(renderer) {
     };
 }
 
+// 0.10 — the ground haze: the same world-locked stepped field the Canvas
+// path draws (WorldFrameRenderer `ensureHazeField`), one record over its own
+// world rect, laid source-over at the stepped strength. The texture uploads
+// once per field bake (`textureRevision` is the bake key), never per pan.
 function recordForHaze(renderer) {
     const field = renderer?._hazeField;
     const strength = finite(renderer?._gpuHazeStrength, 0);
-    const viewport = renderer?._screenViewport?.();
-    const camera = renderer?.camera;
-    const zoom = Math.max(0.0001, finite(camera?.zoom, 1));
-    if (!field?.canvas || !(field.width > 0) || !(field.height > 0) || strength <= 0.02) return null;
-    if (!(viewport?.width > 0) || !(viewport?.height > 0)) return null;
+    if (!field?.canvas || !(field.w > 0) || !(field.h > 0) || strength <= 0) return null;
     return {
         id: 'ground:haze',
         stableKey: 'ground:haze',
@@ -353,12 +371,11 @@ function recordForHaze(renderer) {
         sy: 0,
         sw: field.canvas.width,
         sh: field.canvas.height,
-        x: -finite(camera?.x),
-        y: -finite(camera?.y),
-        width: viewport.width / zoom,
-        height: viewport.height / zoom,
+        x: field.x,
+        y: field.y,
+        width: field.w,
+        height: field.h,
         alpha: Math.min(1, strength),
-        blend: 'add',
         material: materialClassId('default'),
         elevation: 0,
         emissive: 0,
@@ -499,8 +516,10 @@ function recordForBuilding(renderer, drawable, sequence) {
     const buildingType = drawable.building?.type || id.replace(/^building\./, '');
     const materialMeta = drawable.entry?.material || drawable.entry?.gpuMaterial || {};
     const materialName = materialMeta.class || drawable.entry?.materialClass || MATERIAL_BY_BUILDING[buildingType] || 'stone';
-    const occupied = renderer?.buildingRenderer?._buildingOccupancyInfo?.(drawable.building)?.state;
-    const active = occupied && occupied !== 'idle';
+    // V8 — landmark emission follows the work tier (isWorkingVisitor counts +
+    // observed-tool recency), never idle, seated or passing bodies.
+    const workTier = renderer?.buildingRenderer?._workTierFor?.(drawable.building);
+    const active = Boolean(workTier) && workTier !== 'dormant';
     const emissiveGate = renderer?.buildingRenderer?._emissiveGateFor?.(drawable.building) ?? 1;
     // Material/emissive are sampled with the albedo's UVs (see the GL fragment
     // shaders), so a channel source must share the albedo's geometry. When the
@@ -553,6 +572,7 @@ function recordForBuilding(renderer, drawable, sequence) {
         // atlas batch.
         paletteRamp: buildingType === 'command',
         occluder: finite(materialMeta.occluder, 0.86),
+        landmarkId: GPU_LANDMARK_IDS[buildingType] || 0,
         textureRevision: assets.assetVersion || null,
         sidecarRevision: useAtlas && atlasFrame?.atlas
             ? atlasChannelRevision(assets, atlasFrame.atlas)
@@ -564,6 +584,10 @@ function recordForBuilding(renderer, drawable, sequence) {
     return shadows.length ? [...shadows, record] : record;
 }
 
+// A prop's cached image: its own padded cache canvas, or for a tree the shared
+// lean frame of the moment (FoliageRenderer), whose `textureKey`
+// (`tree:${sprite}|${variant}|${season}|${frame}`) is shared by every tree
+// showing that frame, so no texture exists per tree (plan 0.7).
 function recordForProp(renderer, drawable, sequence) {
     const sprite = drawable?.payload?.sprite || drawable?.sprite;
     if (!sprite?._getCachedCanvas) return null;
@@ -608,7 +632,7 @@ function recordForProp(renderer, drawable, sequence) {
     let sy = 0;
     let sw = cachedW;
     let sh = cachedH;
-    let textureKey = `prop-cache:${propId || 'procedural'}:${sprite.tileX},${sprite.tileY}`;
+    let textureKey = cached.textureKey || `prop-cache:${propId || 'procedural'}:${sprite.tileX},${sprite.tileY}`;
     let sourceKind = 'individual';
     if (useAtlas) {
         source = atlasAlbedo;
@@ -1185,6 +1209,23 @@ function sourceKindCensus(records = [], decision = {}) {
     };
 }
 
+// V9 / 0.6 — painter depth for the records one drawable produced. Opaque
+// sprite kinds (buildings, props, bodies) opt in to writing the depth key of
+// the drawable's painter sortY (the same sortY DrawablePass sorted them by);
+// any other producer sets `writesDepth` itself. The drawable's ground-layer
+// records (`ground:*` casts and marks) keep the far plane and never write.
+const DEPTH_WRITING_KINDS = /^(?:building|prop|agent)/;
+
+function stampPainterDepth(records, from, drawable) {
+    const kindWrites = DEPTH_WRITING_KINDS.test(drawable?.kind || '');
+    for (let index = from; index < records.length; index++) {
+        const record = records[index];
+        if (!record || String(record.id || '').startsWith('ground:')) continue;
+        if (record.depthSortY == null) record.depthSortY = drawable.sortY;
+        if (record.writesDepth == null) record.writesDepth = kindWrites;
+    }
+}
+
 export function buildGpuWorldRecords(renderer, { drawables = [], occluderChannelEnabled = true } = {}) {
     const decision = decideAtlasCategories(renderer, drawables);
     if (renderer) renderer._gpuAtlasDecision = decision;
@@ -1192,19 +1233,27 @@ export function buildGpuWorldRecords(renderer, { drawables = [], occluderChannel
     records.length = 0;
     const terrain = recordForTerrain(renderer);
     if (terrain) records.push(terrain);
+    // 1.3 — terrain-baked emitter props (plaza braziers, street lanterns)
+    // redraw over the terrain with their emissive sidecars.
+    records.push(...cacheEmitterRecords(renderer, atlasChannelRevision));
     const haze = recordForHaze(renderer);
-    if (haze) records.push(haze);
+    if (haze) {
+        // V9 — the haze field's texels sit on the screen, not the world grid.
+        haze.screenSpace = true;
+        records.push(haze);
+    }
     const cue = renderer?._semanticGroundCanvas;
     if (cue && renderer._semanticGroundActive) {
         const camera = renderer.camera;
         records.push({ id: 'ground:semantics', source: cue, textureKey: 'ground:semantics',
             x: -camera.renderOffsetX / camera.zoom, y: -camera.renderOffsetY / camera.zoom,
             width: renderer._semanticGroundViewport.width / camera.zoom, height: renderer._semanticGroundViewport.height / camera.zoom,
-            textureRevision: renderer._semanticGroundRevision, elevation: 0, occluder: 0 });
+            textureRevision: renderer._semanticGroundRevision, elevation: 0, occluder: 0, screenSpace: true });
     }
     let sequence = 0;
     for (const drawable of drawables || []) {
         let next = null;
+        const from = records.length;
         if (drawable.kind?.startsWith?.('building')) {
             next = recordForBuilding(renderer, drawable.payload || drawable, sequence);
         } else if (drawable.kind?.startsWith?.('prop')) {
@@ -1221,6 +1270,7 @@ export function buildGpuWorldRecords(renderer, { drawables = [], occluderChannel
             for (let index = 0; index < next.length; index++) records.push(next[index]);
         }
         else if (next) records.push(next);
+        stampPainterDepth(records, from, drawable);
         sequence++;
     }
     packGpuAgentFrameAtlas(renderer, records, occluderChannelEnabled);

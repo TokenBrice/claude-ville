@@ -15,7 +15,6 @@ import {
     WATCHTOWER_GULL_ORBIT,
 } from '../../config/scenery.js';
 import { fireflyGroundTiles } from './AmbientGround.js';
-import { harborGullsSuppressed } from './EffectStamps.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
 import { buildingCenterToWorld } from './Projection.js';
 import { monthIndexForAtmosphere } from './SeasonalAmbience.js';
@@ -25,16 +24,13 @@ import { monthIndexForAtmosphere } from './SeasonalAmbience.js';
 // are on a crossing at once (6–8 at dawn and dusk, ×0.3 in rain), and only the
 // few nearest the middle of the view are drawn: 8 at the wide shot, 5 at z2,
 // 3 from z3. A storm grounds them on their roosts; the night leaves only the
-// lighthouse gull; reduced motion shows the roosts alone; a release crown
-// (`harborGullsSuppressed`) clears the sky. A push-success scatter is the one
-// moment the full flock flies, and even it only doubles the visible cap.
+// lighthouse gull; reduced motion shows the roosts alone. The birds answer to
+// the time of day and the village's own weather only — never to a push, a
+// release or any other agent event (V3).
 const GULL_POPULATION = OPEN_SEA_FLOCK_ROUTES.reduce((sum, flock) => sum + flock.size, 0);
 const GULL_ACTIVE_DAY = Object.freeze([4, 10]);
 const GULL_ACTIVE_TWILIGHT = Object.freeze([6, 8]);
 const GULL_RAIN_SCALE = 0.3;
-// #39 — how long a celebratory flock scatter holds the active-gull target at
-// the whole pool after a harbor push-success / git push.
-const GULL_SCATTER_DURATION_MS = 6000;
 // Songbirds: none at the wide shot, 2 at z2, 3 from z3; none in rain, storm
 // or at night; one perched bird under reduced motion.
 const SONGBIRD_ZOOM_CAPS = Object.freeze([[3, 3], [2, 2]]);
@@ -100,7 +96,6 @@ export class WildlifeRenderer {
         this.openSeaFlockBirds = this._buildOpenSeaFlockBirds();
         this._landBirdRoutes = null;
         this._landBirdLastNow = 0;
-        this._gullScatterUntil = 0;
         this._sceneFrameToken = null;
         this._sceneFrameNow = 0;
         this._visibleGullIds = new Set();
@@ -361,7 +356,6 @@ export class WildlifeRenderer {
             for (let member = 0; member < count; member++) {
                 const formation = OPEN_SEA_FLOCK_FORMATION[member % OPEN_SEA_FLOCK_FORMATION.length];
                 const seed = 31.41 + (flockIndex + 1) * 23.17 + member * 8.31;
-                const activeSpan = 0.70 + ((Math.sin(seed * 1.37) + 1) / 2) * 0.18;
                 birds.push({
                     index: birds.length,
                     route,
@@ -373,8 +367,6 @@ export class WildlifeRenderer {
                     trailOffset: formation.trail + Math.cos(seed * 0.73) * 0.08,
                     speed: flock.speed * GULL_ROUTE_SPEED_SCALE * (0.82 + (member % 3) * 0.018),
                     wingRate: flock.wingRate * (0.92 + (member % 4) * 0.045),
-                    activeSpan,
-                    cycleOffset: ((seed * 0.61803398875) % 1 + 1) % 1,
                     entryIndex: (flockIndex + member) % GULL_OFFMAP_GATEWAYS.length,
                     exitIndex: (flockIndex * 3 + member * 2) % GULL_OFFMAP_GATEWAYS.length,
                     waypointIndex: (flockIndex + member) % GULL_STAGING_WAYPOINTS.length,
@@ -449,24 +441,6 @@ export class WildlifeRenderer {
         return value - Math.floor(value);
     }
 
-    // #39 — record a push-success so the gull flock scatters skyward for a
-    // few seconds. Bounded by performance.now(); read by `_openSeaGullPositions`
-    // and (via the renderer-supplied getter) by SeasonalAmbience suppression.
-    triggerGullScatter() {
-        const now = (typeof performance !== 'undefined' && performance.now)
-            ? performance.now()
-            : Date.now();
-        this._gullScatterUntil = now + GULL_SCATTER_DURATION_MS;
-    }
-
-    gullScatterActive() {
-        if (!this._gullScatterUntil) return false;
-        const now = (typeof performance !== 'undefined' && performance.now)
-            ? performance.now()
-            : Date.now();
-        return now < this._gullScatterUntil;
-    }
-
     // Gulls on a crossing at once: the budget's 4–10 (6–8 at dawn and dusk),
     // ×0.3 in rain. A hard band, not an expectation: the flying gulls are
     // `max` lanes, each carrying one pool gull per crossing, so no more than
@@ -505,19 +479,6 @@ export class WildlifeRenderer {
             if (lane >= min && this._gullUnitNoise(lane * 3.71 + cycleIndex * 7.31) >= 0.5) continue;
             const pick = Math.floor(this._gullUnitNoise(lane * 1.93 + cycleIndex * 4.07) * members.length);
             flights.push({ gull: members[Math.min(members.length - 1, pick)], cycleIndex, journeyT: rawCycle - cycleIndex });
-        }
-        return flights;
-    }
-
-    // A live push-success scatter: the whole pool on its own crossings.
-    _gullScatterFlights(time) {
-        const flights = [];
-        for (const gull of this.openSeaFlockBirds) {
-            const rawCycle = time * gull.speed + gull.cycleOffset;
-            const cycleIndex = Math.floor(rawCycle);
-            const cyclePhase = rawCycle - cycleIndex;
-            if (cyclePhase > gull.activeSpan) continue;
-            flights.push({ gull, cycleIndex, journeyT: cyclePhase / gull.activeSpan });
         }
         return flights;
     }
@@ -613,7 +574,7 @@ export class WildlifeRenderer {
     // Flying gulls this frame (motion on). Positions are in world units.
     _openSeaGullPositions() {
         const time = this.host.waterFrame;
-        const flights = this.gullScatterActive() ? this._gullScatterFlights(time) : this._gullLaneFlights(time);
+        const flights = this._gullLaneFlights(time);
         return flights.map(({ gull, cycleIndex, journeyT }) => {
             const routePoint = this._gullJourneyPoint(gull, cycleIndex, journeyT);
             const turnProbe = this._gullJourneyPoint(gull, cycleIndex, Math.min(1, journeyT + 0.006));
@@ -704,14 +665,12 @@ export class WildlifeRenderer {
     // What the sky holds this frame. `flying` gates the flock, `lighthouse`
     // the beacon gull, `roost` the perched birds.
     _gullPlan() {
-        if (harborGullsSuppressed()) return { mode: 'suppressed', flying: false, lighthouse: false, roost: false, cap: 0 };
-        const scatter = this.gullScatterActive();
         const zoom = this._zoom();
-        const cap = (zoom >= 3 ? 3 : zoom >= 2 ? 5 : 8) * (scatter ? 2 : 1);
+        const cap = zoom >= 3 ? 3 : zoom >= 2 ? 5 : 8;
         if (!this.host.motionScale) return { mode: 'reduced-motion', flying: false, lighthouse: false, roost: true, cap };
         if (this._weatherType() === 'storm') return { mode: 'storm', flying: false, lighthouse: false, roost: true, cap };
-        if (this._phase() === 'night' && !scatter) return { mode: 'night', flying: false, lighthouse: true, roost: false, cap };
-        return { mode: scatter ? 'scatter' : 'flying', flying: true, lighthouse: true, roost: false, cap };
+        if (this._phase() === 'night') return { mode: 'night', flying: false, lighthouse: true, roost: false, cap };
+        return { mode: 'flying', flying: true, lighthouse: true, roost: false, cap };
     }
 
     drawOpenSeaGulls(ctx) {

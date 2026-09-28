@@ -381,7 +381,7 @@
       "id": "building.forge",
       "materialClass": "stone",
       "sourcePath": "buildings/building.forge/base.png",
-      "sourceSha256": "a48b05cda5be3869ca6e63dd46399e3a10c4b9aee3ec04d9a398156518aa9c7b",
+      "sourceSha256": "88a46b78970f8cf4abeccb67fd4cfb263dc0903b0ad0b8a2a26165220318386d",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -562,6 +562,34 @@
       },
       "structureMask": null
     },
+    "prop.bridgeLanternPost": {
+      "anchor": [
+        16,
+        28
+      ],
+      "atlasFrame": {
+        "atlas": "world-pilot",
+        "key": "prop.bridgeLanternPost",
+        "keyPrefix": null
+      },
+      "baseFrameCount": 1,
+      "emissiveSources": [
+        "emissive.prop.bridgeLanternPost.glass"
+      ],
+      "frameCount": 1,
+      "frames": [
+        "prop.bridgeLanternPost"
+      ],
+      "id": "prop.bridgeLanternPost",
+      "materialClass": "timber",
+      "sourcePath": "props/prop.bridgeLanternPost.png",
+      "sourceSha256": "d297f59845a60c8acd74e80591c28dec45bc5cc4ec3754b8cc8d875b6c43a5fa",
+      "sourceSize": {
+        "h": 32,
+        "w": 32
+      },
+      "structureMask": null
+    },
     "prop.lantern": {
       "anchor": [
         16,
@@ -611,7 +639,7 @@
       "id": "prop.runeBrazier",
       "materialClass": "fire",
       "sourcePath": "props/prop.runeBrazier.png",
-      "sourceSha256": "37947783ddbadf5f86885c1008f507600a5fae0c8c9047815c39ba2506c995d5",
+      "sourceSha256": "2781526762f10a83fe178edb260465c79c5fd71209610c548f28b94cb2950a99",
       "sourceSize": {
         "h": 48,
         "w": 48
@@ -702,10 +730,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "272d52ed1845751b1b8c0ebced136ab56712938cb5ee0f5711163f7650d03569",
-    "emissive": "542639dd3c8480327de4d6ff32398bfc7e14c027f389aacb80837d40d911e7b6",
-    "material": "94822b0684aeda4e16833ab37fd0ea02b0047f4f9072941f34e0981ffc602fea",
-    "occluder": "13e63a59bb64f2d9d5e0f93ae4f94e3702668885d7a9bb9faa488b3a50efdde5"
+    "albedo": "aa9f9baf3cafbf9053bfdd09ef83296df58bbae6d200149084f828f546fdb583",
+    "emissive": "3cb9949a9b26fa8ac08446d98ee8629f7cb0fba9543dbceed4fe108a49b80d59",
+    "material": "2c6acc307248a63d5a2f1a5c8aedf6672354414f6402beb7947340414c4227dc",
+    "occluder": "e5aaf7285fa665af420c52021850c2b3fa194445738ea6e3d166c2d4084d9e62"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -10139,7 +10167,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "a48b05cda5be3869ca6e63dd46399e3a10c4b9aee3ec04d9a398156518aa9c7b",
+      "sourceSha256": "88a46b78970f8cf4abeccb67fd4cfb263dc0903b0ad0b8a2a26165220318386d",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10653,6 +10681,60 @@
         "layer": "beacon"
       }
     },
+    "prop.bridgeLanternPost": {
+      "anchor": [
+        16,
+        28
+      ],
+      "emissive": {
+        "sources": [
+          {
+            "geometry": "authored-albedo",
+            "id": "emissive.prop.bridgeLanternPost.glass",
+            "kind": "rune",
+            "strength": 0.8
+          }
+        ],
+        "strength": 0.8
+      },
+      "materialClass": "timber",
+      "occluder": {
+        "mode": "alpha-silhouette",
+        "strength": 0.85
+      },
+      "paddedRect": {
+        "h": 36,
+        "w": 36,
+        "x": 1928,
+        "y": 1420
+      },
+      "rect": {
+        "h": 32,
+        "w": 32,
+        "x": 1930,
+        "y": 1422
+      },
+      "sidecars": {
+        "emissive": "props/prop.bridgeLanternPost.emissive.png",
+        "material": null,
+        "occluder": null
+      },
+      "sourcePath": "props/prop.bridgeLanternPost.png",
+      "sourceRect": {
+        "h": 32,
+        "w": 32,
+        "x": 0,
+        "y": 0
+      },
+      "sourceSha256": "d297f59845a60c8acd74e80591c28dec45bc5cc4ec3754b8cc8d875b6c43a5fa",
+      "sourceSize": {
+        "h": 32,
+        "w": 32
+      },
+      "tags": {
+        "layer": "base"
+      }
+    },
     "prop.lantern": {
       "anchor": [
         16,
@@ -10677,17 +10759,17 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1928,
+        "x": 1964,
         "y": 1420
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1930,
+        "x": 1966,
         "y": 1422
       },
       "sidecars": {
-        "emissive": null,
+        "emissive": "props/prop.lantern.emissive.png",
         "material": null,
         "occluder": null
       },
@@ -10741,7 +10823,7 @@
         "y": 1422
       },
       "sidecars": {
-        "emissive": null,
+        "emissive": "props/prop.runeBrazier.emissive.png",
         "material": null,
         "occluder": null
       },
@@ -10752,7 +10834,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "37947783ddbadf5f86885c1008f507600a5fae0c8c9047815c39ba2506c995d5",
+      "sourceSha256": "2781526762f10a83fe178edb260465c79c5fd71209610c548f28b94cb2950a99",
       "sourceSize": {
         "h": 48,
         "w": 48
@@ -10778,13 +10860,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1964,
+        "x": 2000,
         "y": 1420
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1966,
+        "x": 2002,
         "y": 1422
       },
       "sidecars": {
@@ -10826,14 +10908,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 2000,
-        "y": 1420
+        "x": 0,
+        "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 2002,
-        "y": 1422
+        "x": 2,
+        "y": 1518
       },
       "sidecars": {
         "emissive": null,
@@ -10874,13 +10956,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 0,
+        "x": 36,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 2,
+        "x": 38,
         "y": 1518
       },
       "sidecars": {
@@ -10922,13 +11004,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 36,
+        "x": 72,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 38,
+        "x": 74,
         "y": 1518
       },
       "sidecars": {
@@ -10970,13 +11052,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 72,
+        "x": 108,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 74,
+        "x": 110,
         "y": 1518
       },
       "sidecars": {
@@ -11018,13 +11100,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 108,
+        "x": 144,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 110,
+        "x": 146,
         "y": 1518
       },
       "sidecars": {
@@ -11066,13 +11148,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 144,
+        "x": 180,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 146,
+        "x": 182,
         "y": 1518
       },
       "sidecars": {
@@ -11114,13 +11196,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 180,
+        "x": 216,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 182,
+        "x": 218,
         "y": 1518
       },
       "sidecars": {
@@ -11162,13 +11244,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 216,
+        "x": 252,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 218,
+        "x": 254,
         "y": 1518
       },
       "sidecars": {
@@ -11210,13 +11292,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 252,
+        "x": 288,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 254,
+        "x": 290,
         "y": 1518
       },
       "sidecars": {
@@ -11258,13 +11340,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 288,
+        "x": 324,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 290,
+        "x": 326,
         "y": 1518
       },
       "sidecars": {
@@ -11306,13 +11388,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 324,
+        "x": 360,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 326,
+        "x": 362,
         "y": 1518
       },
       "sidecars": {
@@ -11354,13 +11436,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 360,
+        "x": 396,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 362,
+        "x": 398,
         "y": 1518
       },
       "sidecars": {
@@ -11402,13 +11484,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 396,
+        "x": 432,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 398,
+        "x": 434,
         "y": 1518
       },
       "sidecars": {
@@ -11450,13 +11532,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 432,
+        "x": 468,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 434,
+        "x": 470,
         "y": 1518
       },
       "sidecars": {
@@ -11498,13 +11580,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 468,
+        "x": 504,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 470,
+        "x": 506,
         "y": 1518
       },
       "sidecars": {
@@ -11546,13 +11628,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 504,
+        "x": 540,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 506,
+        "x": 542,
         "y": 1518
       },
       "sidecars": {
@@ -11594,13 +11676,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 540,
+        "x": 576,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 542,
+        "x": 578,
         "y": 1518
       },
       "sidecars": {
@@ -11642,13 +11724,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 576,
+        "x": 612,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 578,
+        "x": 614,
         "y": 1518
       },
       "sidecars": {
@@ -11690,13 +11772,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 612,
+        "x": 648,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 614,
+        "x": 650,
         "y": 1518
       },
       "sidecars": {
@@ -11738,13 +11820,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 648,
+        "x": 684,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 650,
+        "x": 686,
         "y": 1518
       },
       "sidecars": {
@@ -11786,13 +11868,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 684,
+        "x": 720,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 686,
+        "x": 722,
         "y": 1518
       },
       "sidecars": {
@@ -11834,13 +11916,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 720,
+        "x": 756,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 722,
+        "x": 758,
         "y": 1518
       },
       "sidecars": {
@@ -11882,13 +11964,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 756,
+        "x": 792,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 758,
+        "x": 794,
         "y": 1518
       },
       "sidecars": {
@@ -11930,13 +12012,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 792,
+        "x": 828,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 794,
+        "x": 830,
         "y": 1518
       },
       "sidecars": {
@@ -11978,13 +12060,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 828,
+        "x": 864,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 830,
+        "x": 866,
         "y": 1518
       },
       "sidecars": {
@@ -12026,13 +12108,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 864,
+        "x": 900,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 866,
+        "x": 902,
         "y": 1518
       },
       "sidecars": {
@@ -12074,13 +12156,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 900,
+        "x": 936,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 902,
+        "x": 938,
         "y": 1518
       },
       "sidecars": {
@@ -12122,13 +12204,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 936,
+        "x": 972,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 938,
+        "x": 974,
         "y": 1518
       },
       "sidecars": {
@@ -12170,13 +12252,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 972,
+        "x": 1008,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 974,
+        "x": 1010,
         "y": 1518
       },
       "sidecars": {
@@ -12218,13 +12300,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1008,
+        "x": 1044,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1010,
+        "x": 1046,
         "y": 1518
       },
       "sidecars": {
@@ -12266,13 +12348,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1044,
+        "x": 1080,
         "y": 1516
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1046,
+        "x": 1082,
         "y": 1518
       },
       "sidecars": {
@@ -12315,6 +12397,7 @@
     "building.archive",
     "prop.lantern",
     "prop.runeBrazier",
+    "prop.bridgeLanternPost",
     "terrain.shore-shallow",
     "terrain.shallow-deep",
     "atmosphere.light.lighthouse-beam",
@@ -12501,6 +12584,7 @@
     "building.portal.portalGlow",
     "building.watchtower.beacon",
     "prop.runeBrazier",
+    "prop.bridgeLanternPost",
     "prop.lantern",
     "terrain.shallow-deep/wang/0",
     "terrain.shallow-deep/wang/1",

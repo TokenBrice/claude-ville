@@ -36,7 +36,7 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>`.
 ## Director Incidents And Signals
 
 - `waiting-on-user`: the waiting agent carries one `NEEDS YOU` attention plate (docked at the frame edge when the agent is out of view), the top bar lights `NEEDS YOU`, and the agent remains inspectable in the Activity Panel.
-- `quota-rate-limit`: mine-side quota/rate-limit pressure creates a Director incident, building Signal rows, and a subtle work-weather nudge.
+- `quota-rate-limit`: mine-side quota/rate-limit pressure creates a Director incident and building Signal rows. The weather does not change: the snapshot reports `weather.cause === 'timeline'` with the same type, cloud cover and precipitation as `no-agents` at that minute (the same holds for `many-waiting` and `failed-push`).
 - Building hover should show a light signal/route preview; clicking the building should promote that to the full selected-building route treatment and Signal panel.
 - Press `R` in any World scenario to toggle the last-minute replay badge and trails; `building-inspection-replay` starts with replay already enabled.
 
@@ -62,8 +62,10 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>`.
 
 - Clear day: landmarks, terrain, roads, water edges, bridges, and docks have clear contrast.
 - Night: building lights, lighthouse, water reflections, and labels stay legible without washing out agents.
-- Fog/rain/storm: weather communicates state while preserving selected-agent, harbor, and building readability.
-- `storm-night-reduced-motion`: reduced-motion metadata disables or freezes nonessential motion while keeping semantic state visible.
+- Weather truth (0.2): the weather is the village's own timeline (`resolveWeather` of the local date and minute); no agent, mood, director, push, release or Chronicle input reaches cloud, rain, fog, wind, sky, sea, grade, tint, birds or ambient particles. A push or release changes no sky, gull or fog pixel; a director glide or Ambient chapter never tints the frame (letterbox bars are neutral brass `#b8893f`); the empty-village tour at 12:00 clear matches the static noon hue. Winter snow falls only while the timeline precipitates.
+- Fog/rain/storm: weather communicates the village's weather while preserving selected-agent, harbor, and building readability. Fog and dawn ground haze are world-locked stepped courses with ordered-dither seams (no gradient; they pan with the ground); the overcast and fog screen washes step in flat courses. Lightning is a pixel bolt on `round(zoom)` cells (cream core, checker halo, 0–2 forks) that lands only on open sea (with a stepped 2:1 splash ring) or ends in the sky, never on the island; the flash steps 0.30 → 0.035 with a 0.16 re-strike as an exposure step on both backends; the sun disc is a flat stepped disc with no outline and is hidden under a storm.
+- Wind (C-W3): trees, chimney smoke, rain lean, cloud-shadow drift and the sky's icon clouds agree in direction; a pinned storm flattens smoke and moves cloud shadows over twice as fast as a clear day; in fog smoke rises and the gusts are still.
+- `storm-night-reduced-motion`: reduced-motion metadata disables or freezes nonessential motion while keeping semantic state visible: no lightning strike and no flash; fog banks, cloud shadows and gusts hold still.
 
 ## Frontier Instruments
 

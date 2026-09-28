@@ -24,22 +24,12 @@
 // debug overlays) that already destructure `atmosphere.clock`.
 
 import { seasonTokenForMonth } from './SeasonalAmbience.js';
-import { AUTHORED_KEY_LIGHT } from './MaterialRegistry.js';
 import { applyGradeToRgb, evaluateGrade, lampCourseAt } from './GradeEvaluator.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
+import { WIND_MAX, baseWindX, windAt, windSpeedForType } from './Wind.js';
 
 const DAY_MINUTES = 24 * 60;
 const WEATHER_TIMELINE_KNOTS = 6;
-// VillageDirector still supplies a legacy global roll. Values below this floor
-// represent isolated agents (for example one troubled agent among five), not a
-// village-wide condition, and must not tint the shared dome.
-const SHARED_SKY_INFLUENCE_FLOOR = 0.2;
-export const DISTRICT_LIGHTING_BANDS = AUTHORED_KEY_LIGHT.responseBands;
-
-const DEFAULT_DISTRICT_ATMOSPHERE_BUFFER = {
-    entries: [],
-    pool: [],
-};
 
 const PHASES = [
     { name: 'dawn', start: 5 * 60 + 30, end: 7 * 60 },
@@ -155,39 +145,31 @@ export const WEATHER_PRESETS = {
     },
 };
 
-// 5.3 — `sun` is the manifest hook for a generated pixel-art sun asset. The
-// SkyRenderer gates the lookup on assets.has(), so no manifest entry is
-// required until the asset is actually baked (stepped-disc fallback till then).
+// The sun has no asset: SkyRenderer bakes a flat-to-core stepped disc (0.10).
 const SKY_ASSETS = {
     clear: {
         clouds: ['atmosphere.cloud.wisp.day'],
         moon: 'atmosphere.moon.crescent.cool',
-        sun: 'atmosphere.sun',
     },
     'partly-cloudy': {
         clouds: ['atmosphere.cloud.cumulus.day', 'atmosphere.cloud.wisp.day'],
         moon: 'atmosphere.moon.crescent.cool',
-        sun: 'atmosphere.sun',
     },
     overcast: {
         clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
         moon: 'atmosphere.moon.crescent.cool',
-        sun: 'atmosphere.sun',
     },
     rain: {
         clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
         moon: 'atmosphere.moon.crescent.cool',
-        sun: 'atmosphere.sun',
     },
     storm: {
         clouds: ['atmosphere.cloud.storm-shelf', 'atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
         moon: 'atmosphere.moon.crescent.cool',
-        sun: 'atmosphere.sun',
     },
     fog: {
         clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.wisp.day'],
         moon: 'atmosphere.moon.crescent.cool',
-        sun: 'atmosphere.sun',
     },
 };
 
@@ -370,6 +352,9 @@ function weatherTypeFromRoll(roll, minute) {
     return 'storm';
 }
 
+// C-W3 — the knot wind is `sign × speed[type]`: still in fog, a light breeze
+// on a clear day, a gale in a storm (Wind.js owns the table). The sign keeps
+// the authored 18 % chance of an easterly.
 function buildWeatherKnot(type, minute, random, seed) {
     const preset = WEATHER_PRESETS[type] || WEATHER_PRESETS.clear;
     const jitter = (random() - 0.5) * 0.18;
@@ -381,16 +366,23 @@ function buildWeatherKnot(type, minute, random, seed) {
         cloudCover: clamp(preset.cloudCover + jitter * 0.75, 0, 1),
         precipitation: clamp(preset.precipitation * (0.82 + random() * 0.36), 0, 1),
         fog: clamp(preset.fog * (0.78 + random() * 0.44), 0, 1),
-        windX: random() < 0.18 ? -1 : 1,
+        windX: (random() < 0.18 ? -1 : 1) * windSpeedForType(type),
         seed,
     };
 }
 
+// C-W1 — `null`/`undefined` (and anything non-numeric) never coerce to seed 0:
+// `Number(null)` is 0 and finite, which once gave every date the same six
+// knots. Only an explicit numeric seed overrides the date hash.
+function resolveSeed(seedOverride, fallbackKey) {
+    return seedOverride == null || !Number.isFinite(Number(seedOverride))
+        ? hashString(fallbackKey)
+        : Number(seedOverride) >>> 0;
+}
+
 export function buildWeatherTimeline(date, seedOverride = null) {
     const dateKey = localDateKey(date);
-    const seed = Number.isFinite(Number(seedOverride))
-        ? Number(seedOverride) >>> 0
-        : hashString(`${dateKey}|weather-timeline`);
+    const seed = resolveSeed(seedOverride, `${dateKey}|weather-timeline`);
     const random = seededRandom(seed);
     const knots = [];
 
@@ -414,10 +406,10 @@ function interpolateNumber(from, to, weight) {
     return from + (to - from) * weight;
 }
 
-export function resolveWeatherAt(minute, timeline) {
-    const knots = timeline?.knots || [];
-    if (!knots.length) return normalizeWeatherOverride({ type: 'clear' }, timeline?.seed);
-
+// The minute's weather between two knots, without wind: the smoothstepped
+// blend and the type it resolves to (the nearer knot's, re-derived from the
+// blended fog / precipitation / cloud), plus the nearer knot (its wind sign).
+function timelineStateAt(minute, knots) {
     let previous = knots[knots.length - 1];
     let next = knots[0];
     let adjustedMinute = minute;
@@ -454,18 +446,120 @@ export function resolveWeatherAt(minute, timeline) {
     } else if (cloudCover > 0.74) {
         type = 'overcast';
     }
-    const windX = transitionProgress < 0.5 ? previous.windX : next.windX;
-
     return {
-        type,
-        previousType: previous.type,
-        nextType: next.type,
+        previous,
+        next,
+        nearer: transitionProgress < 0.5 ? previous : next,
         transitionProgress,
         intensity,
         cloudCover,
         precipitation,
         fog,
-        windX,
+        type,
+    };
+}
+
+// C-W3 — the timeline wind follows the resolved type, never the knot alone:
+// each stretch of the day blows at `sign × speed[type]` (the sign of the
+// nearer knot), and where the type or sign changes the wind eases over at
+// most WIND_EASE_MINUTES, always inside the windier stretch, so a fog minute
+// is still (|windX| ≤ the fog speed) and the wind never jumps between frames.
+const WIND_EASE_MINUTES = 12;
+const WIND_SCAN_STEP_MINUTES = 0.25;
+const WIND_EDGE_PRECISION_MINUTES = 1 / 600;
+const _windPlans = new Map();
+
+function windTargetAt(minute, knots) {
+    const state = timelineStateAt(minute, knots);
+    return (Number(state.nearer.windX) < 0 ? -1 : 1) * windSpeedForType(state.type);
+}
+
+function circularOffset(from, to) {
+    const d = (to - from) % DAY_MINUTES;
+    return d < 0 ? d + DAY_MINUTES : d;
+}
+
+// The day's wind stretches (circular): every edge where the target changes,
+// found on a quarter-minute scan and bisected, with its ease window.
+function timelineWindPlan(knots) {
+    const key = knots.map(knot => `${knot.minute},${knot.type},${knot.windX},${knot.intensity},${knot.cloudCover},${knot.precipitation},${knot.fog}`).join('|');
+    const cached = _windPlans.get(key);
+    if (cached) return cached;
+    const steps = Math.round(DAY_MINUTES / WIND_SCAN_STEP_MINUTES);
+    const edges = [];
+    let before = windTargetAt(DAY_MINUTES - WIND_SCAN_STEP_MINUTES, knots);
+    for (let i = 0; i < steps; i++) {
+        const at = i * WIND_SCAN_STEP_MINUTES;
+        const target = windTargetAt(at, knots);
+        if (target !== before) {
+            let lo = at - WIND_SCAN_STEP_MINUTES;
+            let hi = at;
+            while (hi - lo > WIND_EDGE_PRECISION_MINUTES) {
+                const mid = (lo + hi) / 2;
+                if (windTargetAt(mid < 0 ? mid + DAY_MINUTES : mid, knots) === before) lo = mid;
+                else hi = mid;
+            }
+            edges.push({ at: hi < 0 ? hi + DAY_MINUTES : hi, from: before, to: target, lead: 0, lag: 0 });
+        }
+        before = target;
+    }
+    edges.sort((a, b) => a.at - b.at);
+    for (let i = 0; i < edges.length; i++) {
+        const edge = edges[i];
+        const prevSpan = edges.length === 1 ? DAY_MINUTES : circularOffset(edges[(i - 1 + edges.length) % edges.length].at, edge.at);
+        const nextSpan = edges.length === 1 ? DAY_MINUTES : circularOffset(edge.at, edges[(i + 1) % edges.length].at);
+        const calmer = Math.abs(edge.to) - Math.abs(edge.from);
+        if (calmer < 0) edge.lead = Math.min(WIND_EASE_MINUTES, prevSpan / 2);
+        else if (calmer > 0) edge.lag = Math.min(WIND_EASE_MINUTES, nextSpan / 2);
+        else {
+            edge.lead = Math.min(WIND_EASE_MINUTES / 2, prevSpan / 2);
+            edge.lag = Math.min(WIND_EASE_MINUTES / 2, nextSpan / 2);
+        }
+    }
+    const plan = { edges, constant: edges.length ? 0 : windTargetAt(0, knots) };
+    if (_windPlans.size >= 8) _windPlans.delete(_windPlans.keys().next().value);
+    _windPlans.set(key, plan);
+    return plan;
+}
+
+function timelineWindAt(minute, knots) {
+    const plan = timelineWindPlan(knots);
+    if (!plan.edges.length) return plan.constant;
+    const m = circularOffset(0, minute);
+    let latest = null;
+    let latestOffset = Infinity;
+    for (const edge of plan.edges) {
+        const after = circularOffset(edge.at, m);
+        if (after <= edge.lag && edge.lag > 0) {
+            return edge.from + (edge.to - edge.from) * smoothstep((edge.lead + after) / (edge.lead + edge.lag));
+        }
+        const ahead = circularOffset(m, edge.at);
+        if (ahead > 0 && ahead <= edge.lead) {
+            return edge.from + (edge.to - edge.from) * smoothstep((edge.lead - ahead) / (edge.lead + edge.lag));
+        }
+        if (after < latestOffset) {
+            latestOffset = after;
+            latest = edge;
+        }
+    }
+    return latest.to;
+}
+
+export function resolveWeatherAt(minute, timeline) {
+    const knots = timeline?.knots || [];
+    if (!knots.length) return normalizeWeatherOverride({ type: 'clear' }, timeline?.seed);
+
+    const state = timelineStateAt(minute, knots);
+    return {
+        type: state.type,
+        previousType: state.previous.type,
+        nextType: state.next.type,
+        transitionProgress: state.transitionProgress,
+        intensity: state.intensity,
+        cloudCover: state.cloudCover,
+        precipitation: state.precipitation,
+        fog: state.fog,
+        windX: timelineWindAt(minute, knots),
         seed: timeline.seed,
         cause: 'timeline',
         timelineMode: 'auto',
@@ -480,9 +574,7 @@ export function resolveWeatherAt(minute, timeline) {
 
 function deterministicWeather(date, seedOverride = null) {
     const minute = minutesSinceMidnight(date);
-    const seed = Number.isFinite(Number(seedOverride))
-        ? Number(seedOverride) >>> 0
-        : hashString(`${localDateKey(date)}|weather|fixed`);
+    const seed = resolveSeed(seedOverride, `${localDateKey(date)}|weather|fixed`);
     const random = seededRandom(seed);
     const roll = random();
     return normalizeWeatherOverride(buildWeatherKnot(weatherTypeFromRoll(roll, minute), minute, random, seed), seed);
@@ -765,7 +857,9 @@ function normalizeWeatherOverride(override, fallbackSeed = null) {
     const intensity = Number.isFinite(Number(override?.intensity))
         ? clamp(Number(override.intensity))
         : base.intensity;
-    const windValue = Number(override?.windX);
+    // A missing wind (`null`/`undefined`, which `Number()` would coerce to a
+    // calm 0) takes the type's own speed toward +x.
+    const windValue = override?.windX == null ? NaN : Number(override.windX);
     return {
         type,
         previousType: normalizeWeatherType(override?.previousType || type),
@@ -783,7 +877,7 @@ function normalizeWeatherOverride(override, fallbackSeed = null) {
         fog: Number.isFinite(Number(override?.fog))
             ? clamp(Number(override.fog))
             : clamp(base.fog * (0.72 + intensity * 0.5)),
-        windX: Number.isFinite(windValue) ? clamp(windValue, -1.4, 1.4) : 1,
+        windX: Number.isFinite(windValue) ? clamp(windValue, -WIND_MAX, WIND_MAX) : windSpeedForType(type),
         seed: Number.isFinite(Number(override?.seed))
             ? Number(override.seed) >>> 0
             : Number.isFinite(Number(fallbackSeed))
@@ -794,133 +888,13 @@ function normalizeWeatherOverride(override, fallbackSeed = null) {
     };
 }
 
-function resolveWeather(date, override, { seedOverride = null, timelineMode = 'auto' } = {}) {
+// C-W1 — the weather is a pure function of (local date, minute, optional
+// explicit seed or debug override). Nothing about agents, moods, the
+// director, pushes or the Chronicle can reach it.
+export function resolveWeather(date, override = null, { seedOverride = null, timelineMode = 'auto' } = {}) {
     if (override) return normalizeWeatherOverride(override, seedOverride);
     if (timelineMode === 'fixed') return deterministicWeather(date, seedOverride);
     return resolveWeatherAt(minutesSinceMidnight(date), buildWeatherTimeline(date, seedOverride));
-}
-
-/**
- * Blend a shared-sky event influence (see application/MoodService.js
- * `deriveWeatherInfluence`) into resolved weather. Storminess pushes cloud
- * cover/precipitation/intensity toward rain/storm; clearing pulls them back
- * toward clear skies. The weather type is only escalated when the influence
- * is storm-biased and only de-escalated when clearing-biased, so the
- * timeline's own narrative stays in charge for neutral influences.
- *
- * 5.5 — cause legibility: when error-storminess dominates, the weather is
- * marked `cause: 'fleet'` so renderers can cast the storm subtly violet
- * (storm canopy + lightning), making "storm = fleet struggling" readable.
- * Otherwise the timeline owns the weather (`cause: 'timeline'`). The cause is
- * folded into atmosphere.cacheKey so baked storm plates re-bake on the flip.
- */
-function applyWeatherEventInfluence(weather, influence) {
-    if (!weather || !influence) return weather;
-    const rawStorminess = clamp(Number(influence.storminess) || 0);
-    const rawClearing = clamp(Number(influence.clearing) || 0);
-    const storminess = rawStorminess < SHARED_SKY_INFLUENCE_FLOOR ? 0 : rawStorminess;
-    const clearing = rawClearing < SHARED_SKY_INFLUENCE_FLOOR ? 0 : rawClearing;
-    if (storminess <= 0 && clearing <= 0) return weather;
-
-    const cloudCover = clamp(weather.cloudCover + storminess * 0.45 - clearing * 0.45 * weather.cloudCover);
-    const precipitation = clamp(weather.precipitation + storminess * 0.40 - clearing * 0.55 * weather.precipitation);
-    const intensity = clamp(weather.intensity + storminess * 0.28 - clearing * 0.25 * weather.intensity);
-    const fog = clamp(weather.fog * (1 - clearing * 0.4));
-
-    let type = weather.type;
-    if (storminess > clearing) {
-        if (precipitation > 0.5 && cloudCover > 0.85) type = 'storm';
-        else if (precipitation > 0.18) type = 'rain';
-        else if (cloudCover > 0.74) type = 'overcast';
-        else if (cloudCover > 0.38 && type === 'clear') type = 'partly-cloudy';
-    } else if (clearing > storminess && type !== 'fog') {
-        if (type === 'storm' && (precipitation <= 0.5 || cloudCover <= 0.85)) type = 'rain';
-        if (type === 'rain' && precipitation <= 0.18) type = 'overcast';
-        if (type === 'overcast' && cloudCover <= 0.74) type = 'partly-cloudy';
-        if (type === 'partly-cloudy' && cloudCover <= 0.34) type = 'clear';
-    }
-
-    const cause = storminess > clearing && storminess > 0.12
-        ? 'fleet'
-        : weather.cause || 'timeline';
-    return { ...weather, type, intensity, cloudCover, precipitation, fog, cause };
-}
-
-export function createDistrictAtmosphereBuffer() {
-    return { entries: [], pool: [] };
-}
-
-function roundDistrictValue(value) {
-    return Math.round(value * 1000) / 1000;
-}
-
-// A district's lighting response selects an authored palette band. It is not
-// a continuous multiplier: zero means no local lighting response, while the
-// non-zero values are the material contract's four response bands.
-export function quantizeDistrictLightingBand(value, direction = 'dim') {
-    const strength = clamp(Number(value) || 0);
-    if (strength < 0.02) return 0;
-    if (direction === 'warm') return DISTRICT_LIGHTING_BANDS[3];
-    return strength >= 0.66
-        ? DISTRICT_LIGHTING_BANDS[0]
-        : DISTRICT_LIGHTING_BANDS[1];
-}
-
-function districtDescriptor(pool, index) {
-    return pool[index] ||= {
-        project: 'unknown',
-        agentIds: [],
-        storminess: 0,
-        clearing: 0,
-        groundHaze: { alpha: 0, tint: '' },
-        lightingBias: { cool: 0, warm: 0, dim: 0 },
-        falloff: { shape: 'smoothstep', innerRadiusTiles: 2.5, outerRadiusTiles: 7 },
-    };
-}
-
-/**
- * Convert project-scoped mood influence into renderer-neutral ground effects.
- * Haze keeps a smooth feather between the inner and outer radii. Lighting is
- * a discrete response-band selection so it cannot become a soft PBR factor on
- * top of the finished world pixels.
- */
-export function buildDistrictAtmosphere(influences = [], buffer = null) {
-    const target = buffer?.entries && buffer?.pool
-        ? buffer
-        : DEFAULT_DISTRICT_ATMOSPHERE_BUFFER;
-    const entries = target.entries;
-    const pool = target.pool;
-    entries.length = 0;
-    if (!Array.isArray(influences)) return entries;
-
-    let count = 0;
-    for (const influence of influences) {
-        const storminess = clamp(Number(influence?.storminess) || 0);
-        const clearing = clamp(Number(influence?.clearing) || 0);
-        const strength = Math.max(storminess, clearing);
-        if (strength < 0.02) continue;
-
-        const descriptor = districtDescriptor(pool, count);
-        descriptor.project = String(influence?.project || 'unknown');
-        const agentIds = descriptor.agentIds;
-        agentIds.length = 0;
-        if (Array.isArray(influence?.agentIds)) {
-            for (const agentId of influence.agentIds) agentIds.push(agentId);
-        }
-        descriptor.storminess = storminess;
-        descriptor.clearing = clearing;
-        descriptor.groundHaze.alpha = roundDistrictValue(storminess * 0.24);
-        descriptor.groundHaze.tint = storminess > clearing ? '76, 68, 94' : '210, 226, 205';
-        descriptor.lightingBias.cool = quantizeDistrictLightingBand(storminess, 'cool');
-        descriptor.lightingBias.warm = quantizeDistrictLightingBand(clearing, 'warm');
-        descriptor.lightingBias.dim = quantizeDistrictLightingBand(storminess, 'dim');
-        descriptor.falloff.shape = 'smoothstep';
-        descriptor.falloff.innerRadiusTiles = 2.5;
-        descriptor.falloff.outerRadiusTiles = 7;
-        entries[count++] = descriptor;
-    }
-    entries.length = count;
-    return entries;
 }
 
 function phaseLight(phase, phaseProgress) {
@@ -947,11 +921,15 @@ function celestialHorizonState(yFrac, horizonFrac) {
     };
 }
 
+// 0.10 — a storm's cover hides the sun entirely (no pale disc showing
+// through a thunderhead); other weather thins it by its occlusion.
 function buildSun(minute, phase, phaseProgress, weather, phases = PHASES) {
     const progress = progressInInterval(minute, phases[0].start, phases[2].end);
     const light = phaseLight(phase, phaseProgress);
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
-    const alpha = clamp(light * (1 - preset.sunOcclusion * clamp(weather.intensity + 0.16)));
+    const alpha = weather.type === 'storm'
+        ? 0
+        : clamp(light * (1 - preset.sunOcclusion * clamp(weather.intensity + 0.16)));
     const yFrac = 0.50 - Math.sin(progress * Math.PI) * 0.38;
     const horizon = celestialHorizonState(yFrac, 0.49);
     return {
@@ -1315,19 +1293,22 @@ export function normalizeLightingState(state = {}) {
     };
 }
 
-// #33 — convert an atmosphere snapshot's wind into a signed horizontal drift
-// velocity (world units / 16ms frame) for rising smoke columns. Single source
-// of truth so chimney smoke, mine dust, and the harbor cookfire all lean by the
-// same amount. `weather.windX` is the canonical signed wind (~-1.4..1.4); we
-// scale it to a gentle sub-pixel lean. Returns 0 when particle motion is off
-// (the snapshot's `motion.particleEnabled === false`) so the reduced-motion
-// static wisp never inherits drift.
-const SMOKE_WIND_DRIFT_SCALE = 0.26;
-export function smokeWindDrift(atmosphere) {
-    if (!atmosphere || atmosphere.motion?.particleEnabled === false) return 0;
-    const windX = Number(atmosphere.weather?.windX ?? atmosphere.motion?.windX);
-    if (!Number.isFinite(windX)) return 0;
-    return clamp(windX, -1.4, 1.4) * SMOKE_WIND_DRIFT_SCALE;
+// #33 / C-W3 — a rising smoke column's signed horizontal drift (world units /
+// 16 ms frame), read from the one wind so chimney smoke, mine dust and the
+// harbor cookfire lean together with the trees, rain and clouds. With a
+// chimney position and the motion-clock time it is `windAt` there (gusts
+// included), else the knot wind. Fog's 0.1 barely tilts a column; a storm's
+// 1.3 lays it nearly flat. Returns 0 when particle motion is off (the
+// snapshot's `motion.particleEnabled === false`) so the reduced-motion static
+// wisp never inherits drift.
+const SMOKE_WIND_DRIFT_SCALE = 0.5;
+const _smokeWind = { x: 0, gust: 0 };
+export function smokeWindDrift(atmosphere, worldX = null, worldY = null, tMs = 0) {
+    if (!atmosphere?.weather || atmosphere.motion?.particleEnabled === false) return 0;
+    const wind = Number.isFinite(worldX) && Number.isFinite(worldY)
+        ? windAt(worldX, worldY, tMs, atmosphere.weather, _smokeWind).x
+        : baseWindX(atmosphere.weather);
+    return wind * SMOKE_WIND_DRIFT_SCALE;
 }
 
 function buildReactions(phase, phaseProgress, weather, lighting) {
@@ -1391,8 +1372,6 @@ export function createAtmosphereSnapshot({
     hourOverride = null,
     seedOverride = null,
     timelineMode = 'auto',
-    eventInfluence = null,
-    districtBuffer = null,
 } = {}) {
     const effectiveDate = applyHourOverride(normalizeDate(now), hourOverride);
     const minute = minutesSinceMidnight(effectiveDate);
@@ -1402,11 +1381,7 @@ export function createAtmosphereSnapshot({
     const phases = phasesForSeason(seasonToken);
     const { phase, phaseProgress } = resolvePhase(minute, phases);
     const dayProgress = minute / DAY_MINUTES;
-    let weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode });
-    // Explicit overrides (debug helper, scenario metadata) win over the
-    // village event influence.
-    if (!weatherOverride) weather = applyWeatherEventInfluence(weather, eventInfluence);
-    const districtAtmosphere = buildDistrictAtmosphere(eventInfluence?.districts, districtBuffer);
+    const weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode });
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const intensity = clamp(weather.intensity);
     const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover : preset.cloudCover;
@@ -1425,7 +1400,11 @@ export function createAtmosphereSnapshot({
     const cloudLayerBlend = blendedCloudLayers({ date: effectiveDate, weather, cloudDensity, cloudAlpha, cloudBucket });
     const effectiveMotionScale = preferredMotionScale(motionScale);
     const driftEnabled = effectiveMotionScale > 0;
-    const clockDriftPx = Math.round(dayProgress * 4096) * weather.windX;
+    // The day-clock offset of the sky's icon clouds (imperceptible, ~0.05 px/s)
+    // ignores the wind entirely, so neither a speed change nor the wind
+    // turning through calm ever moves them; their visible drift integrates
+    // the wind in SkyRenderer.
+    const clockDriftPx = Math.round(dayProgress * 4096);
     const lightGrade = lightGradeFor(minute, weather, lighting.moonFill, seasonToken);
 
     return {
@@ -1433,16 +1412,10 @@ export function createAtmosphereSnapshot({
         phaseProgress,
         dayProgress,
         transition,
-        // 5.5 — weather.cause ('timeline' | 'fleet') is part of the key so
-        // baked storm plates re-bake when a storm flips between fleet-driven
-        // (violet cast) and timeline-driven.
         // 3.4 — `mN` is the reviewed night ambient course: the cached Canvas
         // grade overlay and baked plates must re-bake when the moon changes it.
-        cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}|m${Math.round(lighting.moonFill * 10)}|${weather.cause === 'fleet' ? 'fleet' : 'timeline'}`,
+        cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}|m${Math.round(lighting.moonFill * 10)}`,
         weather,
-        // Additive local-atmosphere contract. The shared sky remains coherent;
-        // renderers may paint these feathered effects around project occupants.
-        districtAtmosphere,
         sky: {
             palette: skyPaletteFor(lightGrade),
             assetIds,
@@ -1481,14 +1454,13 @@ export class AtmosphereState {
         this._seedOverride = null;
         this._timelineMode = 'auto';
         this._frozenDate = null;
-        this._districtAtmosphereBuffer = createDistrictAtmosphereBuffer();
         this._lastSnapshot = null;
         this._previousHelper = null;
         this._debugHelperInstalled = false;
         this._installDebugHelper();
     }
 
-    update({ now = null, motionScale = null, eventInfluence = null } = {}) {
+    update({ now = null, motionScale = null } = {}) {
         const baseNow = now
             ? new Date(now.getTime ? now.getTime() : now)
             : this._frozenDate
@@ -1501,8 +1473,6 @@ export class AtmosphereState {
             hourOverride: this._hourOverride,
             seedOverride: this._seedOverride,
             timelineMode: this._timelineMode,
-            eventInfluence,
-            districtBuffer: this._districtAtmosphereBuffer,
         });
         this._lastSnapshot.timeline = {
             mode: this._timelineMode,
@@ -1528,8 +1498,10 @@ export class AtmosphereState {
         this._weatherOverride = {
             type: weatherType,
             intensity: Number.isFinite(Number(source.intensity)) ? clamp(Number(source.intensity)) : undefined,
-            windX: Number.isFinite(Number(source.windX)) ? clamp(Number(source.windX), -1.4, 1.4) : undefined,
-            seed: Number.isFinite(Number(source.seed)) ? Number(source.seed) >>> 0 : undefined,
+            windX: source.windX != null && Number.isFinite(Number(source.windX))
+                ? clamp(Number(source.windX), -WIND_MAX, WIND_MAX)
+                : undefined,
+            seed: source.seed != null && Number.isFinite(Number(source.seed)) ? Number(source.seed) >>> 0 : undefined,
             cloudCover: Number.isFinite(Number(source.cloudCover)) ? clamp(Number(source.cloudCover)) : undefined,
             precipitation: Number.isFinite(Number(source.precipitation)) ? clamp(Number(source.precipitation)) : undefined,
             fog: Number.isFinite(Number(source.fog)) ? clamp(Number(source.fog)) : undefined,

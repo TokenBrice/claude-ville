@@ -158,6 +158,56 @@ export function drawCrowdClusterAuras(ctx, { crowdStats, lighting = null } = {})
 // by 1/zoom so the standard keeps a constant on-screen size. Static — no motion,
 // so the prefers-reduced-motion rendering is identical.
 const _namedPerCell = new Map();
+// A body's head-chip column: its drawn body plus the screen-fixed chip slot
+// above the head (chat bubble, TALK scroll, status emote, …), in world px.
+const CHIP_SLOT_SCREEN_H = 30;
+const CHIP_SLOT_SCREEN_HALF_W = 14;
+const BADGE_BODY_GAP = 4;
+const _badgeSpans = [];
+const _badgeClear = { y: 0 };
+
+// 0.8 — the `+N` tab must never sit on a body: over a crowd it read as that
+// one body wearing the tab on top of its own chip. Keep the tab at its
+// height and slide it sideways to the free x nearest the cluster centre,
+// clear of every body column its band crosses; when the cluster is packed
+// wall to wall across its aura, lift it just above the tallest column so the
+// count stays visible. Scratch arrays are reused (hot path).
+function badgeClearX(cx, cy, bw, bh, s, reach, agentSprites) {
+    const spans = _badgeSpans;
+    spans.length = 0;
+    const top = cy - bh / 2;
+    const bottom = cy + bh / 2;
+    let highest = top;
+    for (const sprite of agentSprites?.values?.() || []) {
+        if (!sprite || sprite.agent?.isDeparted || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
+        if (Math.abs(sprite.x - cx) > reach + bw) continue;
+        const box = sprite._bodyBox;
+        const headTop = typeof sprite._headTopY === 'function' ? sprite._headTopY() : sprite.y - 58;
+        const columnTop = headTop - CHIP_SLOT_SCREEN_H * s;
+        const columnBottom = sprite.y + (box ? box.bottom : 3);
+        if (columnTop >= bottom || columnBottom <= top) continue;
+        const half = Math.max(CHIP_SLOT_SCREEN_HALF_W * s, box ? Math.max(-box.left, box.right) : 17);
+        const pad = bw / 2 + BADGE_BODY_GAP * s;
+        spans.push(sprite.x - half - pad, sprite.x + half + pad);
+        if (columnTop < highest) highest = columnTop;
+    }
+    _badgeClear.y = cy;
+    if (!spans.length) return cx;
+    let best = NaN;
+    for (let c = -1; c < spans.length; c++) {
+        const x = c < 0 ? cx : spans[c];
+        if (Math.abs(x - cx) > reach) continue;
+        if (Number.isFinite(best) && Math.abs(x - cx) >= Math.abs(best - cx)) continue;
+        let free = true;
+        for (let i = 0; i < spans.length; i += 2) {
+            if (x > spans[i] && x < spans[i + 1]) { free = false; break; }
+        }
+        if (free) best = x;
+    }
+    if (Number.isFinite(best)) return best;
+    _badgeClear.y = highest - bh / 2 - BADGE_BODY_GAP * s;
+    return cx;
+}
 
 export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1, agentSprites, cellSize = 4 } = {}) {
     // At dense load remembered residents share one exact building count.
@@ -229,8 +279,16 @@ export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1, agentSprites
         const h = pipCount > 0
             ? BADGE_HEIGHT + STANDARD_PADDING_TOP + PIP_ROW_HEIGHT
             : BADGE_HEIGHT;
-        const x = clusterWorldX(cluster);
-        const y = clusterWorldY(cluster) - auraRadiusX(cluster) * 0.5 - 12;
+        const x = badgeClearX(
+            clusterWorldX(cluster),
+            clusterWorldY(cluster) - auraRadiusX(cluster) * 0.5 - 12,
+            w * s,
+            h * s,
+            s,
+            auraRadiusX(cluster),
+            agentSprites,
+        );
+        const y = _badgeClear.y;
         const aura = statusAura(cluster.dominantStatus);
 
         ctx.save();

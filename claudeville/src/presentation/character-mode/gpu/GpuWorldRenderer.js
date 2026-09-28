@@ -16,6 +16,12 @@ import {
     CLOUD_TILE_SIZE,
     CLOUD_TILE_WORLD_SCALE,
     aerialPerspectiveStrength,
+    EFFECT_BUDGET,
+    GPU_PARTICLE_FLAGS,
+    GPU_PARTICLE_INSTANCE_BYTES,
+    GPU_PARTICLE_MOTIF_SIZE,
+    GPU_PARTICLE_SHAPES,
+    GPU_RECORD_FLAGS,
 } from './GpuWorldPolicy.js';
 import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import { waterMoodFor } from '../CoastBake.js';
@@ -26,13 +32,68 @@ import {
 import { glslMaterialWeatherFunctions } from '../MaterialRegistry.js';
 import { NEUTRAL_SOURCE_ENERGY, sourceEnergyFor } from '../AtmosphereState.js';
 import { growTypedArray } from '../AssetManager.js';
+import { particleMotifMask } from '../ParticleSystem.js';
+import { cloudCourseDrift } from '../Wind.js';
 
 const MAX_LIGHTS = 32;
-// 3.5 adds one float: the per-record palette-ramp opt-in. It cannot ride an
-// existing channel — `material` is overridden by the sidecar's own class byte
-// and `gate` carries authored emission — so the pilot gets its own lane.
-const VERTEX_FLOATS = 11;
-const VERTEX_STRIDE = VERTEX_FLOATS * Float32Array.BYTES_PER_ELEMENT;
+// V9 / B.1a — one instance per record, drawn as a 4-vertex TRIANGLE_STRIP
+// with every attribute at divisor 1 (docs/material-channel-contract.md):
+//   loc0 FLOAT  x4  rect (x, y, w, h), world px                  bytes  0-15
+//   loc1 FLOAT  x4  uv rect (u0, v0, u1, v1)                            16-31
+//   loc2 FLOAT  x4  (alpha, material, elevation, emissive)              32-47
+//   loc3 USHORT x4  (occluder, gate) x 65535, ramp, flags               48-55
+//   loc4 USHORT x4  depth key, footY, frontCornerX, frontCornerY        56-63
+//                   (receiver coordinates integer world px + 32768)
+//   loc5 USHORT x2  (ownerSlot, landmarkId), vertexAttribIPointer        64-67
+// Continuous surface values stay float32, so the frame is bit-exact with the
+// six-vertex staging it replaced; the integer fields pack as uint16. A batch
+// whose records all carry the default V9 tail (loc3-loc5: no occluder, gate
+// 1, no ramp or flags, far-plane depth, ground-self receiver, no identity) —
+// terrain, ground casts and marks, every ground-cue chord — stages only the
+// 48-byte head; its draw disables arrays 3-5 and the vertex stage reads the
+// tail as constant generic attributes. WebGL2 has no base instance: every
+// batch re-points its attributes at its own byte range
+// (`_pointRecordInstances`).
+const RECORD_HEAD_BYTES = 48;
+const RECORD_INSTANCE_BYTES = 68;
+const RECEIVER_BIAS = 32768;
+const RECORD_TAIL_RESPONSE = Object.freeze([0, 65535, 0, 0]);
+const RECORD_TAIL_RECEIVER = Object.freeze([0, RECEIVER_BIAS - 1, RECEIVER_BIAS, RECEIVER_BIAS - 1]);
+const SCENE_DEPTH_BYTES_PER_PIXEL = EFFECT_BUDGET['particle-depth'].cost.attachmentBytesPerPixel;
+// V9 sampler table: one fixed texture unit per field per program, never
+// reassigned (WebGL2 guarantees 16 fragment units). A `reserved` unit is held
+// for the named item and bound only by it; see the channel contract doc.
+export const SCENE_SAMPLER_UNITS = Object.freeze({
+    albedo: 0,
+    material: 1,
+    occlusion: 2,
+    emissive: 3,
+    occluder: 4,
+    paletteLut: 5,
+    footprint: 6,
+    cycleOffset: 7,
+    coastField: 8,
+    lightData: 9,
+    lightTiles: 10,
+    puddleMask: 11,
+    cloudTile: 12,
+});
+export const PARTICLE_SAMPLER_UNITS = Object.freeze({ motifs: 0, cloudTile: 1 });
+export const COMPOSITE_SAMPLER_UNITS = Object.freeze({ scene: 0, bloom: 1 });
+// V9 typed-texture formats: `bytesPerTexel` is the real resident size (the
+// cache's accounting unit), never the x4 of an RGBA canvas.
+const TEXTURE_FORMATS = Object.freeze({
+    rgba8: Object.freeze({ internalFormat: 'RGBA8', format: 'RGBA', type: 'UNSIGNED_BYTE', bytesPerTexel: 4, array: Uint8Array }),
+    r8: Object.freeze({ internalFormat: 'R8', format: 'RED', type: 'UNSIGNED_BYTE', bytesPerTexel: 1, array: Uint8Array }),
+    rg8: Object.freeze({ internalFormat: 'RG8', format: 'RG', type: 'UNSIGNED_BYTE', bytesPerTexel: 2, array: Uint8Array }),
+    r16ui: Object.freeze({ internalFormat: 'R16UI', format: 'RED_INTEGER', type: 'UNSIGNED_SHORT', bytesPerTexel: 2, array: Uint16Array }),
+    rgba32f: Object.freeze({ internalFormat: 'RGBA32F', format: 'RGBA', type: 'FLOAT', bytesPerTexel: 16, array: Float32Array }),
+});
+// 0.6 — an emissive particle's bloom share, scaled by the same source-energy
+// core as authored emission (fire props without a sidecar sit at 0.35).
+const PARTICLE_EMISSION = 0.5;
+// The app caps live particles at 240 (ParticleSystem MAX_PARTICLES).
+const MAX_PARTICLE_INSTANCES = 240;
 const BLOOM_SCALE = 0.375;
 const OCCLUSION_SCALE = 0.375;
 const EMA_ALPHA = 0.1;
@@ -52,62 +113,108 @@ const LOCAL_LIGHT_VISIBILITY_FLOOR = 0.04;
 const DEFAULT_LIGHT_COLOR = Object.freeze([1, 0.78, 0.42]);
 const GPU_PASS_NAMES = ['upload', 'occlusion', 'scene', 'bloom', 'present'];
 const PASS_RING_CAPACITY = 32;
+// 0.1 — the whole-frame GPU timer is a veto, not a clock. It is begun on 1
+// frame in 4 (each begin/end forces an ANGLE-Metal command-buffer flush), on
+// every frame while at least 10 % of the pacing window misses (a real overload
+// then confirms within 2 s), and the ladder reads the p25 of the last 30
+// samples: contention only ever lengthens a span.
+const GPU_TIMER_EVERY = 4;
+const GPU_TIMER_DENSE_MISS_SHARE = 0.1;
+const GPU_TIMER_RING = 30;
+// 0.1 — debug-only injected GPU load (`setDebugLoad`, `?gpuLoad=N`): one
+// composite-sized pass (a scene fetch and ~20 ALU) that adds exactly zero,
+// which no compiler can prove, so every pass executes and the frame is
+// unchanged. Additive blending also keeps TBDR hidden-surface removal from
+// culling the stacked full-screen draws.
+const DEBUG_LOAD_FRAGMENT = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+layout(location = 0) out vec4 outColor;
+uniform sampler2D u_scene;
+void main() {
+    vec3 c = texture(u_scene, v_uv).rgb;
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    vec3 g = mix(vec3(l), c * vec3(0.9, 0.95, 1.05) + vec3(0.02), 0.7);
+    g = pow(max(g, vec3(0.0)), vec3(1.08));
+    outColor = vec4(max(g - vec3(4.0), vec3(0.0)), 0.0);
+}`;
 
-// The seven per-record attributes are read once per quad and replayed into all
-// six vertices; thousands of small ground-cue records stage every frame.
-function writeGpuVertex(vertices, offset, x, y, u, v, alpha, material, elevation, emissive, occluder, gate, ramp) {
-    vertices[offset] = x;
-    vertices[offset + 1] = y;
-    vertices[offset + 2] = u;
-    vertices[offset + 3] = v;
-    vertices[offset + 4] = alpha;
-    vertices[offset + 5] = material;
-    vertices[offset + 6] = elevation;
-    vertices[offset + 7] = emissive;
-    vertices[offset + 8] = occluder;
-    vertices[offset + 9] = gate;
-    vertices[offset + 10] = ramp;
-    return offset + 11;
+function unitToUint16(value) {
+    const number = Number(value);
+    if (!(number > 0)) return 0;
+    return number >= 1 ? 65535 : Math.round(number * 65535);
 }
 
-function writeGpuRecordVertices(vertices, offset, record) {
-    const x0 = record.x;
-    const y0 = record.y;
-    const x1 = x0 + record.width;
-    const y1 = y0 + record.height;
+function receiverToUint16(value) {
+    const number = Math.round(Number(value)) + RECEIVER_BIAS;
+    if (!(number > 0)) return 0;
+    return number >= 65535 ? 65535 : number;
+}
+
+// True when a record's V9 tail (loc3-loc5) is all defaults, so its batch may
+// stage the head alone.
+function recordHasDefaultTail(record) {
+    return !(record.occluder > 0)
+        && (record.emissiveGate ?? 1) >= 1
+        && !record.paletteRamp
+        && !record.flags
+        && !record.depthKey
+        && (record.footY ?? -1) === -1
+        && !record.frontCornerX
+        && (record.frontCornerY ?? -1) === -1
+        && !record.ownerSlot
+        && !record.landmarkId;
+}
+
+// One V9 instance at `byteOffset`; `tail` false stages the 48-byte head only.
+// The float and uint16 views share one ArrayBuffer.
+function writeGpuRecordInstance(f32, u16, byteOffset, record, tail) {
+    const f = byteOffset >> 2;
     const sourceWidth = record.sourceWidth;
     const sourceHeight = record.sourceHeight;
-    const u0 = record.sx / sourceWidth;
-    const v0 = record.sy / sourceHeight;
-    const u1 = (record.sx + record.sw) / sourceWidth;
-    const v1 = (record.sy + record.sh) / sourceHeight;
-    const alpha = record.alpha;
-    const material = record.material;
-    const elevation = record.elevation;
-    const emissive = record.emissive;
-    const occluder = record.occluder;
-    const gate = record.emissiveGate ?? 1;
-    const ramp = record.paletteRamp ? 1 : 0;
-    offset = writeGpuVertex(vertices, offset, x0, y0, u0, v0, alpha, material, elevation, emissive, occluder, gate, ramp);
-    offset = writeGpuVertex(vertices, offset, x1, y0, u1, v0, alpha, material, elevation, emissive, occluder, gate, ramp);
-    offset = writeGpuVertex(vertices, offset, x0, y1, u0, v1, alpha, material, elevation, emissive, occluder, gate, ramp);
-    offset = writeGpuVertex(vertices, offset, x0, y1, u0, v1, alpha, material, elevation, emissive, occluder, gate, ramp);
-    offset = writeGpuVertex(vertices, offset, x1, y0, u1, v0, alpha, material, elevation, emissive, occluder, gate, ramp);
-    offset = writeGpuVertex(vertices, offset, x1, y1, u1, v1, alpha, material, elevation, emissive, occluder, gate, ramp);
-    return offset;
+    f32[f] = record.x;
+    f32[f + 1] = record.y;
+    f32[f + 2] = record.width;
+    f32[f + 3] = record.height;
+    f32[f + 4] = record.sx / sourceWidth;
+    f32[f + 5] = record.sy / sourceHeight;
+    f32[f + 6] = (record.sx + record.sw) / sourceWidth;
+    f32[f + 7] = (record.sy + record.sh) / sourceHeight;
+    f32[f + 8] = record.alpha;
+    f32[f + 9] = record.material;
+    f32[f + 10] = record.elevation;
+    f32[f + 11] = record.emissive;
+    if (!tail) return;
+    const h = (byteOffset >> 1) + RECORD_HEAD_BYTES / 2;
+    u16[h] = unitToUint16(record.occluder);
+    u16[h + 1] = unitToUint16(record.emissiveGate ?? 1);
+    u16[h + 2] = record.paletteRamp ? 1 : 0;
+    u16[h + 3] = record.flags || 0;
+    u16[h + 4] = record.depthKey || 0;
+    u16[h + 5] = receiverToUint16(record.footY ?? -1);
+    u16[h + 6] = receiverToUint16(record.frontCornerX ?? 0);
+    u16[h + 7] = receiverToUint16(record.frontCornerY ?? -1);
+    u16[h + 8] = record.ownerSlot || 0;
+    u16[h + 9] = record.landmarkId || 0;
 }
 
-const QUAD_VERTEX = `#version 300 es
+// The shared record vertex stage. The occlusion variant draws each batch's
+// whole instance range and culls, here, the records that neither carry an
+// occluder companion nor occlude (instead of staging them a second time).
+function quadVertexSource({ occlusion = false } = {}) {
+    return `#version 300 es
 precision highp float;
-layout(location = 0) in vec2 a_world;
-layout(location = 1) in vec2 a_uv;
-layout(location = 2) in vec4 a_meta;
-layout(location = 3) in float a_occluder;
-layout(location = 4) in float a_gate;
-layout(location = 5) in float a_ramp;
+precision highp int;
+layout(location = 0) in vec4 a_rect;
+layout(location = 1) in vec4 a_uvRect;
+layout(location = 2) in vec4 a_surface;
+layout(location = 3) in vec4 a_response;
+layout(location = 4) in vec4 a_receiver;
+layout(location = 5) in uvec2 a_identity;
 uniform vec3 u_camera;
 uniform vec2 u_resolution;
-out vec2 v_uv;
+uniform sampler2D u_albedo;
+${occlusion ? 'uniform bool u_batchOccluderSource;\n' : ''}out vec2 v_uv;
 out vec2 v_world;
 out float v_alpha;
 out float v_material;
@@ -116,23 +223,97 @@ out float v_emissive;
 out float v_occluder;
 out float v_gate;
 out float v_ramp;
+flat out vec2 v_originFrac;
+flat out vec4 v_uvClamp;
+flat out vec3 v_receiver;
+flat out uvec2 v_identity;
+flat out uint v_flags;
 void main() {
-    vec2 screen = (a_world + u_camera.xy) * u_camera.z;
+    // Strip corners (0,0) (1,0) (0,1) (1,1). Each coordinate is selected from
+    // the staged rect, never interpolated, so every edge is the staged value.
+    bool right = (gl_VertexID & 1) == 1;
+    bool bottom = gl_VertexID >= 2;
+    vec2 world = vec2(right ? a_rect.x + a_rect.z : a_rect.x, bottom ? a_rect.y + a_rect.w : a_rect.y);
+    uint flags = uint(a_response.w + 0.5);
+    vec2 screen = (world + u_camera.xy) * u_camera.z;
     vec2 clip = vec2(
         screen.x / max(1.0, u_resolution.x) * 2.0 - 1.0,
         1.0 - screen.y / max(1.0, u_resolution.y) * 2.0
     );
-    gl_Position = vec4(clip, 0.0, 1.0);
-    v_uv = a_uv;
-    v_world = a_world;
-    v_alpha = a_meta.x;
-    v_material = a_meta.y;
-    v_elevation = a_meta.z;
-    v_emissive = a_meta.w;
-    v_occluder = a_occluder;
-    v_gate = a_gate;
-    v_ramp = a_ramp;
+    // 0.6 — the painter depth key (0 = far plane, 65535 = nearest).
+    gl_Position = vec4(clip, (1.0 - a_receiver.x / 65535.0) * 2.0 - 1.0, 1.0);
+${occlusion ? `    if (!u_batchOccluderSource && a_response.x <= 0.0 && a_surface.z <= 0.05) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    }
+` : ''}    v_uv = vec2(right ? a_uvRect.z : a_uvRect.x, bottom ? a_uvRect.w : a_uvRect.y);
+    v_world = world;
+    v_alpha = a_surface.x;
+    v_material = a_surface.y;
+    v_elevation = a_surface.z;
+    v_emissive = a_surface.w;
+    v_occluder = a_response.x / 65535.0;
+    v_gate = a_response.y / 65535.0;
+    v_ramp = a_response.z;
+    // PT-1 / M4 — a sprite record quantizes world-grid shading from its own
+    // origin, so a body resting between world texels (the backing-pixel grid)
+    // still lights in whole k x k blocks. Ground-self records (footY -1:
+    // terrain, casts, marks, cues) and screen-space records keep the world grid.
+    bool worldGrid = (flags & ${GPU_RECORD_FLAGS.screenSpace}u) != 0u || a_receiver.y == ${RECEIVER_BIAS - 1}.0;
+    v_originFrac = worldGrid ? vec2(0.0) : fract(a_rect.xy);
+    // The record-rect clamp: sampling never leaves the record's own source
+    // rect (atlas neighbours), inset half a texel but never past its centre.
+    vec2 uvLow = min(a_uvRect.xy, a_uvRect.zw);
+    vec2 uvHigh = max(a_uvRect.xy, a_uvRect.zw);
+    vec2 inset = min(0.5 / vec2(textureSize(u_albedo, 0)), (uvHigh - uvLow) * 0.5);
+    v_uvClamp = vec4(uvLow + inset, uvHigh - inset);
+    v_receiver = a_receiver.yzw - ${RECEIVER_BIAS}.0;
+    v_identity = a_identity;
+    v_flags = flags;
 }`;
+}
+
+const QUAD_VERTEX = quadVertexSource();
+const OCCLUSION_QUAD_VERTEX = quadVertexSource({ occlusion: true });
+// 1.4 + 1.6 — the world-locked cloud-shadow courses and the screen-Y aerial
+// haze, quantized on one art pixel `cell`: a sprite record's own texel grid
+// (its V9 origin fraction), the world grid for ground records and particles.
+// They ran in the composite on the world grid, which split a body resting
+// between world texels into 2+1 px sub-blocks. Per record the maths is the
+// same: the cloud course is a multiply and the haze an affine map, so painter
+// blending of the premultiplied records lands on the composite's old result
+// on the world grid. The haze reads its screen row at the cell centre
+// (`cellCentreY`, top-left px), so a course never changes inside one texel.
+// Additive records (the ground haze field) take the multiply and the haze's
+// scale, never its colour lift.
+const ATMOSPHERE_COURSES_GLSL = `
+uniform sampler2D u_cloudTile;
+// xy: world-space drift offset (world px), z: darkening per course (0 = off).
+uniform vec4 u_cloud;
+// Noise thresholds for course 1/2/3 at the current cover.
+uniform vec3 u_cloudThresholds;
+// rgb: C2 horizon haze, a: strength at the top of the frame (0 = off).
+uniform vec4 u_haze;
+vec3 applyAtmosphereCourses(vec3 color, vec2 cell, float order, float cellCentreY, bool additive) {
+    if (u_cloud.z > 0.0) {
+        vec2 cloudUv = fract((cell + 0.5 + u_cloud.xy) / ${CLOUD_TILE_WORLD_SCALE.toFixed(1)} / ${CLOUD_TILE_SIZE.toFixed(1)});
+        float n = texture(u_cloudTile, cloudUv).r + (order - 0.5) * 0.018;
+        float course = step(u_cloudThresholds.x, n) + step(u_cloudThresholds.y, n) + step(u_cloudThresholds.z, n);
+        // Slightly cool shade: blue loses less than red.
+        color *= vec3(1.0) - course * u_cloud.z * vec3(1.0, 0.96, 0.84);
+    }
+    if (u_haze.a > 0.0) {
+        float yTop = cellCentreY / max(1.0, u_resolution.y);
+        float haze = pow(clamp((0.55 - yTop) / 0.55, 0.0, 1.0), 1.4) * u_haze.a;
+        haze = floor(haze * 48.0 + order) / 48.0;
+        if (haze > 0.0) {
+            float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
+            color = mix(color, mix(vec3(l), color, 0.8), min(1.0, haze * 8.0));
+            color = additive ? color * (1.0 - haze) : mix(color, u_haze.rgb, haze);
+        }
+    }
+    return color;
+}`;
+const ATMOSPHERE_COURSE_UNIFORM_NAMES = ['u_cloudTile', 'u_cloud', 'u_cloudThresholds', 'u_haze'];
 
 const SCENE_FRAGMENT = `#version 300 es
 precision highp float;
@@ -144,6 +325,15 @@ in float v_elevation;
 in float v_emissive;
 in float v_gate;
 in float v_ramp;
+// V9 per-record values, flat: the record's origin fraction (sprite-origin
+// shading grid), its source-rect clamp, receiver geometry (footY,
+// frontCornerX, frontCornerY; integer world px, -1 = none/ground self),
+// identity (ownerSlot, landmarkId) and flag bits.
+flat in vec2 v_originFrac;
+flat in vec4 v_uvClamp;
+flat in vec3 v_receiver;
+flat in uvec2 v_identity;
+flat in uint v_flags;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outEmission;
 uniform sampler2D u_albedo;
@@ -230,6 +420,7 @@ float occlusionBetween(vec2 fromPx, vec2 toPx, float elevation) {
 
 ${glslMaterialWeatherFunctions()}
 ${GRADE_GLSL}
+${ATMOSPHERE_COURSES_GLSL}
 
 float orderedDither4(vec2 px) {
     return mod(floor(px.x) + 2.0 * floor(px.y), 4.0) / 3.0;
@@ -339,11 +530,14 @@ vec3 applyAuthoredSunBand(vec3 color, float material) {
 }
 
 void main() {
-    vec4 albedo = texture(u_albedo, v_uv);
+    // V9 — sample inside the record's own source rect (never an atlas
+    // neighbour), whatever sub-texel offset the record rests at.
+    vec2 uv = clamp(v_uv, v_uvClamp.xy, v_uvClamp.zw);
+    vec4 albedo = texture(u_albedo, uv);
     float alpha = albedo.a * v_alpha;
     if (alpha < 0.01) discard;
-    vec4 sidecar = u_hasMaterialMap ? texture(u_materialMap, v_uv) : vec4(0.0);
-    vec4 authoredEmission = u_hasEmissiveMap ? texture(u_emissiveMap, v_uv) : vec4(0.0);
+    vec4 sidecar = u_hasMaterialMap ? texture(u_materialMap, uv) : vec4(0.0);
+    vec4 authoredEmission = u_hasEmissiveMap ? texture(u_emissiveMap, uv) : vec4(0.0);
     float material = sidecar.a > 0.0 ? floor(sidecar.r * 255.0 + 0.5) : v_material;
     float emissive = max(v_emissive, sidecar.g * 2.0);
     vec3 emissionColor = albedo.rgb;
@@ -362,7 +556,7 @@ void main() {
     // ambient ramp: authored emitters stay identifiable by day and reach full
     // energy once the exposure envelope says the village needs them.
     emissive *= u_coreEnergy;
-    vec4 geometry = u_hasOccluderMap ? texture(u_occluderMap, v_uv) : vec4(0.0);
+    vec4 geometry = u_hasOccluderMap ? texture(u_occluderMap, uv) : vec4(0.0);
     float elevation = geometry.a > 0.0 ? geometry.r : v_elevation;
     vec2 px = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
     vec2 glPx = gl_FragCoord.xy;
@@ -380,9 +574,21 @@ void main() {
     // cobble, grass and wall texture instead of a desaturated night albedo.
     vec3 poolAlbedo = color;
     // 1.1 — C2 time-of-day and weather grade, before any local light or
-    // authored emission: lit and emissive pixels are exempt by construction.
+    // authored emission.
     color = applyTimeGrade(color, !u_additive);
+    // V6 — graded water stays quiet at every hour (CoastBake's outer ocean
+    // takes the same cap, so the two still meet without a seam).
+    if (waterMaterial) color = capSaturation(color, WATER_MAX_SATURATION);
     color = applyGradeVignette(color, px, u_resolution);
+    // 1.3 — emitters keep their own light: a lit authored-emitter pixel skips
+    // the grade in proportion to its lit contribution (emissive already
+    // carries the occupancy gate and the core energy), so the night Purkinje
+    // target and highlight tint no longer turn yellow glass lime or dull the
+    // Forge fire, and an unlit or daytime window grades like any wall.
+    float emitterWeight = u_hasEmissiveMap ? clamp(emissive, 0.0, 1.0) : 0.0;
+    color = mix(color, poolAlbedo, emitterWeight);
+    // V5 — the receiver knee's floor: the graded value before any local light.
+    float receiverLuma = dot(color, GRADE_LUMA);
 
     // 3.2 — the approved wet receiver is classified lazily: only a fragment
     // that a reflecting source actually reaches pays for the classification,
@@ -403,6 +609,9 @@ void main() {
     // line gets a short wash, never a camera-facing disc.
     vec3 poolLight = vec3(0.0);
     float poolDepth = 0.0;
+    // V5 — water and wet-ground reflections accumulate apart from the graded
+    // colour and land through the same receiver knee as the pools.
+    vec3 reflectionLight = vec3(0.0);
     // Action-needed lights take the same stepped courses, but the strongest
     // one at the pixel wins instead of summing: a crowd of waiting agents
     // reads as one warm ground course under the bodies, never a bloom that
@@ -410,9 +619,12 @@ void main() {
     vec3 attentionLight = vec3(0.0);
     float attentionLuma = 0.0;
     float attentionDepth = 0.0;
-    vec2 artCell = floor(v_world);
+    // PT-1 — courses quantize on the record's own texel grid (its origin
+    // fraction; 0 for ground and screen-space records), so a sprite resting
+    // between world texels still lights in whole k x k blocks.
+    vec2 artCell = floor(v_world - v_originFrac);
     float poolOrder = bayer4(artCell);
-    vec2 artTopLeftPx = (artCell + 0.5 + u_camera.xy) * u_camera.z;
+    vec2 artTopLeftPx = (artCell + v_originFrac + 0.5 + u_camera.xy) * u_camera.z;
     vec2 poolPx = vec2(artTopLeftPx.x, u_resolution.y - artTopLeftPx.y);
     for (int i = 0; i < 32; i++) {
         if (i >= u_lightCount) break;
@@ -449,7 +661,7 @@ void main() {
         float reflectionX = 1.0 - smoothstep(0.0, radius * 0.30, abs(glPx.x - light.x));
         float reflectionY = 1.0 - smoothstep(0.0, radius * 1.70, abs(glPx.y - light.y));
         float reflectionCourse = step(0.52, fract((floor(v_world.x) + floor(v_world.y) * 0.5) * 0.125));
-        color += u_lightColors[i].rgb * waterReceiver * reflectionX * reflectionY
+        reflectionLight += u_lightColors[i].rgb * waterReceiver * reflectionX * reflectionY
             * reflectionCourse * light.w * u_lightColors[i].a * 0.10;
         // The source's own hue lies in a world-space downward footprint below
         // the lantern or window, broken on the world grid and clipped by the
@@ -467,28 +679,31 @@ void main() {
                 float footprint = step(0.0, drop) * (1.0 - smoothstep(0.0, radius * 1.30, drop));
                 float lateral = 1.0 - smoothstep(0.0, radius * 0.26, abs(glPx.x - light.x));
                 float wetCourse = step(0.55, fract((floor(v_world.x) + floor(v_world.y) * 0.5) * 0.125 + 0.37));
-                color += u_lightColors[i].rgb * wetReceiver * footprint * lateral * wetCourse
+                reflectionLight += u_lightColors[i].rgb * wetReceiver * footprint * lateral * wetCourse
                     * light.w * u_lightColors[i].a * (1.0 - blocked) * 0.22;
             }
         }
     }
-    if (attentionDepth > 0.5) {
-        poolLight += attentionLight;
-        poolDepth = max(poolDepth, attentionDepth);
-    }
     // 3.5 — two reviewed thresholds pick the dark / mid / light course. The
     // ramp multiplies the authored albedo and adds one authored lift, so slate
-    // stays slate and gold reaches its own highlight instead of bleaching.
+    // stays slate and gold reaches its own highlight instead of bleaching. The
+    // ramp light and the pilot's reflections land through the receiver knee.
     if (rampPixel && admitted > 0.0) {
         float course = step(0.14, admitted) + step(0.45, admitted);
         vec4 ramp = texture(u_paletteLut, vec2(
             (material + 0.5) / 11.0,
             (course + 0.5) / 3.0
         ));
-        color = color * (ramp.rgb * 2.0) + vec3(ramp.a * 0.25) * step(0.14, admitted);
+        color = receiverKnee(
+            color * (ramp.rgb * 2.0) + vec3(ramp.a * 0.25) * step(0.14, admitted) + reflectionLight,
+            receiverLuma
+        );
+        reflectionLight = vec3(0.0);
     }
-    // 1.2 — the pools land once, stepped, multiplying the ungraded albedo.
-    color = stepPool(color, poolLight, poolDepth, poolAlbedo);
+    // 1.2 / V5 — the pools land once, stepped, multiplying the ungraded
+    // albedo: ambient pools and reflections under the receiver knee, the
+    // strongest action-needed course added outside it.
+    color = stepPool(color, poolLight, poolDepth, attentionLight, attentionDepth, poolAlbedo, reflectionLight);
 
     float fog = clamp(u_weather.y, 0.0, 1.0);
     float groundFog = fog * (1.0 - elevation * 0.72) * smoothstep(0.18, 0.98, gl_FragCoord.y / max(1.0, u_resolution.y));
@@ -500,6 +715,12 @@ void main() {
     color = fogged;
     vec3 emission = emissionColor * emissive;
     color += emission * 0.42;
+    // 1.3 — hue-preserving protection after emission: a lit emitter pushed
+    // past 1 scales down on its brightest channel instead of clipping toward
+    // cream or a flat hue.
+    color /= max(1.0, max(color.r, max(color.g, color.b)));
+    // 1.4 + 1.6 — cloud courses and aerial haze on this record's own grid.
+    color = applyAtmosphereCourses(color, artCell, poolOrder, artTopLeftPx.y, u_additive);
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
     outEmission = vec4(emission * alpha, alpha > 0.0 ? 1.0 : 0.0);
 }`;
@@ -507,6 +728,7 @@ void main() {
 const OCCLUSION_FRAGMENT = `#version 300 es
 precision highp float;
 in vec2 v_uv;
+flat in vec4 v_uvClamp;
 in float v_alpha;
 in float v_elevation;
 uniform sampler2D u_albedo;
@@ -517,12 +739,13 @@ uniform bool u_hasOccluderMap;
 in float v_occluder;
 layout(location = 0) out vec4 outColor;
 void main() {
-    float alpha = texture(u_albedo, v_uv).a * v_alpha;
+    vec2 uv = clamp(v_uv, v_uvClamp.xy, v_uvClamp.zw);
+    float alpha = texture(u_albedo, uv).a * v_alpha;
     if (alpha < 0.05) discard;
-    vec4 sidecar = u_hasMaterialMap ? texture(u_materialMap, v_uv) : vec4(0.0);
+    vec4 sidecar = u_hasMaterialMap ? texture(u_materialMap, uv) : vec4(0.0);
     // Height and strength are independent: authored strength attenuates the
     // trace in the target alpha channel and never lowers the height itself.
-    vec4 geometry = u_hasOccluderMap ? texture(u_occluderMap, v_uv) : vec4(0.0);
+    vec4 geometry = u_hasOccluderMap ? texture(u_occluderMap, uv) : vec4(0.0);
     float height = geometry.a > 0.0 ? geometry.r : v_elevation;
     float strength = geometry.a > 0.0 ? geometry.g : v_occluder;
     outColor = vec4(height * alpha, 0.0, 0.0, strength * alpha);
@@ -571,18 +794,73 @@ in vec2 v_uv;
 layout(location = 0) out vec4 outColor;
 uniform sampler2D u_scene;
 uniform sampler2D u_bloom;
-uniform sampler2D u_cloudTile;
 uniform float u_bloomStrength;
+// 0.10 — the lightning flash as an exposure step: the island is multiplied by
+// (1 + u_flash) per channel, the same scale the 2D backdrop takes (0 = none).
+// The cloud courses and aerial haze are shaded per record
+// (ATMOSPHERE_COURSES_GLSL), on each record's own texel grid.
+uniform vec3 u_flash;
+void main() {
+    vec4 scene = texture(u_scene, clamp(v_uv, vec2(0.0), vec2(1.0)));
+    vec3 bloom = texture(u_bloom, clamp(v_uv, vec2(0.0), vec2(1.0))).rgb;
+    vec3 color = scene.rgb;
+    color *= vec3(1.0) + u_flash;
+    outColor = vec4(color + bloom * u_bloomStrength, scene.a);
+}`;
+
+// 0.6 — one instanced draw for every live world particle, after the record
+// loop, depth-tested LEQUAL against the painter depth the sprite records
+// wrote (and never writing it): a particle behind a nearer building front or
+// body is hidden, one at or in front of its owner shows. Instances are laid
+// out by GpuWorldPolicy (GPU_PARTICLE_INSTANCE_BYTES) and packed by
+// ParticleSystem.packGpuInstances with the Canvas Particle.draw geometry, so
+// both backends cut the same whole-texel rects.
+const PARTICLE_VERTEX = `#version 300 es
+precision highp float;
+precision highp int;
+layout(location = 0) in vec4 a_rect;
+layout(location = 1) in float a_depthKey;
+layout(location = 2) in vec4 a_color;
+layout(location = 3) in uvec4 a_shape;
 uniform vec3 u_camera;
 uniform vec2 u_resolution;
-// 1.4 — xy: world-space drift offset (world px), z: darkening per course
-// (0 = off), w: unused.
-uniform vec4 u_cloud;
-// Noise thresholds for course 1/2/3 at the current cover.
-uniform vec3 u_cloudThresholds;
-// 1.6 — rgb: C2 horizon haze, a: strength at the top of the frame (0 = off).
-uniform vec4 u_haze;
-const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+out vec2 v_local;
+out vec2 v_world;
+flat out vec4 v_color;
+flat out uvec4 v_shape;
+flat out ivec2 v_size;
+void main() {
+    vec2 corner = vec2((gl_VertexID & 1) == 1 ? 1.0 : 0.0, gl_VertexID >= 2 ? 1.0 : 0.0);
+    vec2 world = a_rect.xy + corner * a_rect.zw;
+    vec2 screen = (world + u_camera.xy) * u_camera.z;
+    vec2 clip = vec2(
+        screen.x / max(1.0, u_resolution.x) * 2.0 - 1.0,
+        1.0 - screen.y / max(1.0, u_resolution.y) * 2.0
+    );
+    gl_Position = vec4(clip, (1.0 - a_depthKey / 65535.0) * 2.0 - 1.0, 1.0);
+    v_local = corner * a_rect.zw;
+    v_world = world;
+    v_color = a_color;
+    v_shape = a_shape;
+    v_size = ivec2(a_rect.zw + 0.5);
+}`;
+
+const PARTICLE_FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+in vec2 v_local;
+in vec2 v_world;
+flat in vec4 v_color;
+flat in uvec4 v_shape;
+flat in ivec2 v_size;
+layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outEmission;
+uniform sampler2D u_motifs;
+uniform vec2 u_resolution;
+uniform vec3 u_camera;
+uniform float u_coreEnergy;
+${GRADE_GLSL}
+${ATMOSPHERE_COURSES_GLSL}
 float bayer2(vec2 a) {
     a = floor(a);
     return fract(dot(a, vec2(0.5, a.y * 0.75)));
@@ -591,40 +869,39 @@ float bayer4(vec2 p) {
     return bayer2(0.5 * p) * 0.25 + bayer2(p);
 }
 void main() {
-    vec4 scene = texture(u_scene, clamp(v_uv, vec2(0.0), vec2(1.0)));
-    vec3 bloom = texture(u_bloom, clamp(v_uv, vec2(0.0), vec2(1.0))).rgb;
-    vec3 color = scene.rgb;
-    if (scene.a > 0.0 && (u_cloud.z > 0.0 || u_haze.a > 0.0)) {
-        vec2 px = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
-        // One art pixel of the world under this screen pixel.
-        vec2 world = floor(px / max(0.0001, u_camera.z) - u_camera.xy);
-        float order = bayer4(world);
-        if (u_cloud.z > 0.0) {
-            // World-locked: the field is sampled in world space and drifts
-            // with the wind (frozen under reduced motion). Three courses with
-            // an ordered dither on their edges, on the art-pixel grid.
-            vec2 cloudUv = fract((world + 0.5 + u_cloud.xy) / ${CLOUD_TILE_WORLD_SCALE.toFixed(1)} / ${CLOUD_TILE_SIZE.toFixed(1)});
-            float n = texture(u_cloudTile, cloudUv).r + (order - 0.5) * 0.018;
-            float course = step(u_cloudThresholds.x, n) + step(u_cloudThresholds.y, n) + step(u_cloudThresholds.z, n);
-            // Slightly cool shade: blue loses less than red.
-            color *= vec3(1.0) - course * u_cloud.z * vec3(1.0, 0.96, 0.84);
-        }
-        if (u_haze.a > 0.0) {
-            // Screen-Y aerial perspective toward the C2 horizon haze, world
-            // layer only, stepped in 1/48 courses with an ordered dither.
-            float yTop = px.y / max(1.0, u_resolution.y);
-            float haze = pow(clamp((0.55 - yTop) / 0.55, 0.0, 1.0), 1.4) * u_haze.a;
-            haze = floor(haze * 48.0 + order) / 48.0;
-            if (haze > 0.0) {
-                vec3 straight = color / scene.a;
-                float l = dot(straight, LUMA);
-                straight = mix(straight, mix(vec3(l), straight, 0.8), min(1.0, haze * 8.0));
-                straight = mix(straight, u_haze.rgb, haze);
-                color = straight * scene.a;
-            }
-        }
+    ivec2 cell = clamp(ivec2(floor(v_local)), ivec2(0), v_size - 1);
+    vec3 rgb = v_color.rgb;
+    uint shape = v_shape.x;
+    if (shape == ${GPU_PARTICLE_SHAPES.blob}u) {
+        // A puff, not a tile: the four corner texels drop out.
+        bool edgeX = cell.x == 0 || cell.x == v_size.x - 1;
+        bool edgeY = cell.y == 0 || cell.y == v_size.y - 1;
+        if (edgeX && edgeY) discard;
+    } else if (shape == ${GPU_PARTICLE_SHAPES.wings}u) {
+        // Two wing rects about a 1-texel body at half the wing's own value.
+        if (cell.x == (v_size.x - 1) / 2) rgb = floor(floor(rgb * 255.0 + 0.5) * 0.5) / 255.0;
+    } else if (shape == ${GPU_PARTICLE_SHAPES.motif}u) {
+        ivec2 texel = ivec2(cell.x, int(v_shape.z) * ${GPU_PARTICLE_MOTIF_SIZE} + cell.y);
+        if (texelFetch(u_motifs, texel, 0).r < 0.5) discard;
     }
-    outColor = vec4(color + bloom * u_bloomStrength, scene.a);
+    float alpha = v_color.a;
+    if ((v_shape.y & ${GPU_PARTICLE_FLAGS.graded}u) != 0u) {
+        // Matter (dust, smoke, leaves) takes the frame's C2 grade.
+        vec2 px = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
+        rgb = applyGradeVignette(applyTimeGrade(rgb, true), px, u_resolution);
+    }
+    // Light (embers, sparks, motes) keeps its colour and feeds bloom; its
+    // emission alpha is its own coverage, so a fading spark never punches a
+    // hole in the halo beneath it.
+    vec3 emission = (v_shape.y & ${GPU_PARTICLE_FLAGS.emits}u) != 0u
+        ? rgb * ${PARTICLE_EMISSION.toFixed(2)} * u_coreEnergy
+        : vec3(0.0);
+    // 1.4 + 1.6 — cloud courses and aerial haze on the world grid (colour
+    // only; the bloom share above stays unshaded, as it was in the composite).
+    vec2 artCell = floor(v_world);
+    vec3 shaded = applyAtmosphereCourses(rgb, artCell, bayer4(artCell), (artCell.y + 0.5 + u_camera.y) * u_camera.z, false);
+    outColor = vec4(shaded * alpha, alpha);
+    outEmission = vec4(emission * alpha, alpha);
 }`;
 
 function finite(value, fallback = 0) {
@@ -762,25 +1039,58 @@ export class GpuWorldRenderer {
         this.skippedOccluderUploads = 0;
         this.textureBytes = 0;
         this.textureEvictions = 0;
-        this.qualityLadder = createPostFxLadder({
-            budgetMs: 4,
-            healthyMs: 2,
-            overBudgetFrames: 12,
-            probeMs: 1500,
-        });
-        // Shader compilation and first-use texture uploads happen together on
-        // a fresh context. Begin with optional occlusion/bloom shed, then let
-        // the normal healthy probes restore REDUCED and FULL within ~3 seconds.
+        // 0.1 — the pacing-true ladder. It boots at MINIMAL (shader compilation
+        // and first-use uploads land together on a fresh context), latches the
+        // display period from that warm-up, and climbs through pacing probes.
+        // DISABLED would render MINIMAL's composition here, so pacing never
+        // demotes past MINIMAL.
+        this.qualityLadder = createPostFxLadder({ maxLevel: POST_FX_LEVELS.MINIMAL });
         this.qualityLadder.reset(POST_FX_LEVELS.MINIMAL);
+        this.gpuMsP25 = null;
+        this._gpuTimerRing = null;
+        this._gpuTimerEvery = GPU_TIMER_EVERY;
+        this._pendingPresentIntervalMs = null;
+        this._presentIntervalsNoted = false;
+        this._displayDpr = null;
+        this._displayScreenWidth = 0;
+        this._displayScreenHeight = 0;
+        this._onVisibilityChange = () => {
+            this._pendingPresentIntervalMs = null;
+            this.qualityLadder.clearPacing();
+        };
+        this.lightAdmission = { cap: 0, admitted: 0, offered: 0, daylight: true };
+        this._debugLoad = null;
+        this._frameLoadPasses = 0;
+        this._frameLoadArm = null;
+        const debugParams = new URLSearchParams(globalThis.location?.search || '');
+        const debugLoadPasses = Number(debugParams.get('gpuLoad'));
+        if (debugLoadPasses > 0) {
+            this.setDebugLoad({ passes: debugLoadPasses, levels: debugParams.get('gpuLoadLevels') || 'full' });
+        }
         this._frameUploadMs = 0;
         this._lastRenderAtMs = null;
         this._textureEntries = new Map();
         this._cachedTextureBytes = 0;
         this._textureCacheNeedsTrim = false;
         this._lastTextureTrimFrame = 0;
-        this._vertexScratch = new Float32Array(64);
+        // V9 instance staging: one ArrayBuffer seen as float32 and uint16.
+        this._instanceF32 = new Float32Array(64);
+        this._instanceU16 = new Uint16Array(this._instanceF32.buffer);
         this._vertexScratchUsed = 0;
         this.vertexBufferBytes = 0;
+        this._pointedInstance = -1;
+        // 0.6 — the particle instance scratch (<= 240 x 28 B), written by
+        // ParticleSystem.packGpuInstances through these views.
+        this._particleBytes = new ArrayBuffer(MAX_PARTICLE_INSTANCES * GPU_PARTICLE_INSTANCE_BYTES);
+        this._particleViews = {
+            f32: new Float32Array(this._particleBytes),
+            u16: new Uint16Array(this._particleBytes),
+            u8: new Uint8Array(this._particleBytes),
+            capacity: MAX_PARTICLE_INSTANCES,
+        };
+        this._particleCount = 0;
+        this._particleMotifTexture = null;
+        this.particleInstances = 0;
         this._batchScratch = [];
         this._normalizedRecordScratch = [];
         this._lightAdmissionCache = { source: null, sourceLength: 0, ranked: [], admitted: [], snapshots: [] };
@@ -856,7 +1166,8 @@ export class GpuWorldRenderer {
         const gl = this.gl;
         this._releaseGpuResources();
         this.sceneProgram = createProgram(gl, QUAD_VERTEX, SCENE_FRAGMENT);
-        this.occlusionProgram = createProgram(gl, QUAD_VERTEX, OCCLUSION_FRAGMENT);
+        this.occlusionProgram = createProgram(gl, OCCLUSION_QUAD_VERTEX, OCCLUSION_FRAGMENT);
+        this.particleProgram = createProgram(gl, PARTICLE_VERTEX, PARTICLE_FRAGMENT);
         this.bloomProgram = createProgram(gl, FULLSCREEN_VERTEX, BLOOM_FRAGMENT);
         this.compositeProgram = createProgram(gl, FULLSCREEN_VERTEX, COMPOSITE_FRAGMENT);
         this.timerExtension = gl.getExtension?.('EXT_disjoint_timer_query_webgl2') || null;
@@ -870,32 +1181,48 @@ export class GpuWorldRenderer {
             'u_useOcclusion', 'u_coreEnergy', 'u_moonFill', 'u_waterSilver', 'u_waterMood',
             'u_wetness', 'u_wetReflectionCount',
             'u_paletteLut', 'u_hasPaletteLut', 'u_attentionMask', 'u_wetMask',
+            ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
         ]);
         this.occlusionUniforms = uniformLocations(gl, this.occlusionProgram, [
             'u_camera', 'u_resolution', 'u_albedo', 'u_materialMap',
-            'u_hasMaterialMap', 'u_occluderMap', 'u_hasOccluderMap',
+            'u_hasMaterialMap', 'u_occluderMap', 'u_hasOccluderMap', 'u_batchOccluderSource',
+        ]);
+        this.particleUniforms = uniformLocations(gl, this.particleProgram, [
+            'u_camera', 'u_resolution', 'u_motifs', 'u_coreEnergy', ...GRADE_UNIFORM_NAMES,
+            ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
         ]);
         this.bloomUniforms = uniformLocations(gl, this.bloomProgram, ['u_input', 'u_texel', 'u_blur']);
         this.compositeUniforms = uniformLocations(gl, this.compositeProgram, [
-            'u_scene', 'u_bloom', 'u_bloomStrength', 'u_cloudTile', 'u_camera', 'u_resolution',
-            'u_cloud', 'u_cloudThresholds', 'u_haze',
+            'u_scene', 'u_bloom', 'u_bloomStrength', 'u_flash',
         ]);
+        // V9 record VAO: six instance attributes (divisor 1), re-pointed per
+        // batch by `_pointRecordInstances`; the strip corner is gl_VertexID.
         this.vao = gl.createVertexArray();
         this.vertexBuffer = gl.createBuffer();
         gl.bindVertexArray(this.vao);
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+        for (let location = 0; location <= 5; location++) {
+            gl.enableVertexAttribArray(location);
+            gl.vertexAttribDivisor(location, 1);
+        }
+        gl.bindVertexArray(null);
+        this._pointedInstance = -1;
+        this._recordTailArrays = true;
+        // 0.6 particle VAO: one static layout over its own small buffer.
+        this.particleVao = gl.createVertexArray();
+        this.particleBuffer = gl.createBuffer();
+        gl.bindVertexArray(this.particleVao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.particleBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, this._particleBytes.byteLength, gl.DYNAMIC_DRAW);
+        const particleStride = GPU_PARTICLE_INSTANCE_BYTES;
         gl.enableVertexAttribArray(0);
-        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, VERTEX_STRIDE, 0);
+        gl.vertexAttribPointer(0, 4, gl.FLOAT, false, particleStride, 0);
         gl.enableVertexAttribArray(1);
-        gl.vertexAttribPointer(1, 2, gl.FLOAT, false, VERTEX_STRIDE, 2 * Float32Array.BYTES_PER_ELEMENT);
+        gl.vertexAttribPointer(1, 1, gl.UNSIGNED_SHORT, false, particleStride, 24);
         gl.enableVertexAttribArray(2);
-        gl.vertexAttribPointer(2, 4, gl.FLOAT, false, VERTEX_STRIDE, 4 * Float32Array.BYTES_PER_ELEMENT);
+        gl.vertexAttribPointer(2, 4, gl.UNSIGNED_BYTE, true, particleStride, 16);
         gl.enableVertexAttribArray(3);
-        gl.vertexAttribPointer(3, 1, gl.FLOAT, false, VERTEX_STRIDE, 8 * Float32Array.BYTES_PER_ELEMENT);
-        gl.enableVertexAttribArray(4);
-        gl.vertexAttribPointer(4, 1, gl.FLOAT, false, VERTEX_STRIDE, 9 * Float32Array.BYTES_PER_ELEMENT);
-        gl.enableVertexAttribArray(5);
-        gl.vertexAttribPointer(5, 1, gl.FLOAT, false, VERTEX_STRIDE, 10 * Float32Array.BYTES_PER_ELEMENT);
+        gl.vertexAttribIPointer(3, 4, gl.UNSIGNED_BYTE, particleStride, 20);
+        for (let location = 0; location <= 3; location++) gl.vertexAttribDivisor(location, 1);
         gl.bindVertexArray(null);
         gl.bindBuffer(gl.ARRAY_BUFFER, null);
         this.emptyMaterialTexture = this._createTexture(1, 1, {
@@ -903,7 +1230,8 @@ export class GpuWorldRenderer {
             filter: gl.NEAREST,
         });
         // 1.4 — the baked cloud field. Linear sampling of a smooth noise
-        // value; the composite quantizes it into dithered art-pixel courses.
+        // value; the scene and particle programs quantize it into dithered
+        // art-pixel courses on each record's own grid.
         this.cloudTileTexture = this._createTexture(CLOUD_TILE_SIZE, CLOUD_TILE_SIZE, {
             data: cloudTile().data,
             filter: gl.LINEAR,
@@ -915,21 +1243,90 @@ export class GpuWorldRenderer {
         this._textureEntries.clear();
     }
 
-    _createTexture(width, height, { data = null, filter = null } = {}) {
+    // V9 typed-texture creation. `format` names a TEXTURE_FORMATS row: RGBA8
+    // (targets, canvases), R8 / RG8 (masks and fields), R16UI (integer
+    // indices, read through a usampler2D) and RGBA32F (data rows). Typed
+    // fields upload with UNPACK_ALIGNMENT 1 and are read with texelFetch, so
+    // they are always nearest-sampled; integer and float32 textures are not
+    // filterable in WebGL2.
+    _createTexture(width, height, { data = null, filter = null, format = 'rgba8' } = {}) {
         const gl = this.gl;
+        const spec = TEXTURE_FORMATS[format];
+        if (!spec) throw new Error(`unknown GPU texture format: ${format}`);
         const texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
-        const sampling = filter ?? gl.NEAREST;
+        const sampling = format === 'rgba8' ? (filter ?? gl.NEAREST) : gl.NEAREST;
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, sampling);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, sampling);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+        if (format !== 'rgba8') gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl[spec.internalFormat], width, height, 0,
+            gl[spec.format], gl[spec.type], data);
+        if (format !== 'rgba8') gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
         gl.bindTexture(gl.TEXTURE_2D, null);
         return texture;
     }
 
-    _createTarget(width, height, { attachments = 1, filter = null } = {}) {
+    /**
+     * V9 typed-field upload, cached by key beside the canvas textures: `data`
+     * is a typed array of `width x height` texels in `format` (`r8`, `rg8`,
+     * `r16ui`, `rgba32f`; `rgba8` also accepted). Re-uploads only when the
+     * revision or size changes (texSubImage2D when the size holds). The cache
+     * counts its real bytes (width x height x bytesPerTexel), so the 48 MiB
+     * ceiling and Shift-D see an R8 field at a quarter of an RGBA canvas.
+     * Returns the texture, or null for an invalid field.
+     */
+    uploadTypedTexture(key, { width, height, format, data, revision = null } = {}) {
+        const gl = this.gl;
+        const spec = TEXTURE_FORMATS[format];
+        const w = Math.floor(finite(width));
+        const h = Math.floor(finite(height));
+        const channels = spec ? spec.bytesPerTexel / spec.array.BYTES_PER_ELEMENT : 0;
+        if (!gl || !spec || w <= 0 || h <= 0 || !(data instanceof spec.array) || data.length < w * h * channels) {
+            return null;
+        }
+        const bytes = w * h * spec.bytesPerTexel;
+        let entry = this._textureEntries.get(key);
+        const storageChanged = !entry || entry.format !== format || entry.width !== w || entry.height !== h;
+        if (!entry || entry.format !== format) {
+            if (entry?.texture) gl.deleteTexture(entry.texture);
+            this._cachedTextureBytes -= entry?.bytes || 0;
+            entry = { texture: null, source: null, revision: null, width: 0, height: 0, bytes: 0, format };
+            this._textureEntries.set(key, entry);
+            this._textureCacheNeedsTrim = true;
+        }
+        if (storageChanged || entry.revision !== revision || entry.source !== data) {
+            const started = performance.now();
+            if (storageChanged) {
+                if (entry.texture) gl.deleteTexture(entry.texture);
+                entry.texture = this._createTexture(w, h, { data, format });
+            } else {
+                gl.bindTexture(gl.TEXTURE_2D, entry.texture);
+                gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+                gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl[spec.format], gl[spec.type], data);
+                gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+                gl.bindTexture(gl.TEXTURE_2D, null);
+            }
+            this._cachedTextureBytes += bytes - entry.bytes;
+            entry.source = data;
+            entry.revision = revision;
+            entry.width = w;
+            entry.height = h;
+            entry.bytes = bytes;
+            this.uploads++;
+            this.uploadBytes += bytes;
+            this._frameUploadMs += performance.now() - started;
+            if (storageChanged) {
+                this._textureCacheNeedsTrim = true;
+                this._updateTextureBytes();
+            }
+        }
+        entry.lastUsedFrame = this.frames + 1;
+        return entry.texture;
+    }
+
+    _createTarget(width, height, { attachments = 1, filter = null, depth = false } = {}) {
         const gl = this.gl;
         const framebuffer = gl.createFramebuffer();
         gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
@@ -942,21 +1339,34 @@ export class GpuWorldRenderer {
             gl.framebufferTexture2D(gl.FRAMEBUFFER, attachment, gl.TEXTURE_2D, texture, 0);
             drawBuffers.push(attachment);
         }
+        // 0.6 — the painter depth: a DEPTH_COMPONENT16 renderbuffer, written
+        // by opaque sprite records and read (LEQUAL) by the particle draw, then
+        // invalidated before the scene target is unbound.
+        let depthBuffer = null;
+        if (depth) {
+            depthBuffer = gl.createRenderbuffer();
+            gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+            gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
+            gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+            gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+        }
         gl.drawBuffers(drawBuffers);
         if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
             for (const texture of textures) gl.deleteTexture(texture);
+            if (depthBuffer) gl.deleteRenderbuffer(depthBuffer);
             gl.deleteFramebuffer(framebuffer);
             throw new Error('GPU world framebuffer is incomplete');
         }
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        return { framebuffer, textures, width, height, attachments };
+        return { framebuffer, textures, depthBuffer, width, height, attachments };
     }
 
     _releaseTarget(target) {
         if (!target || !this.gl) return;
         this.gl.deleteFramebuffer(target.framebuffer);
         for (const texture of target.textures || []) this.gl.deleteTexture(texture);
+        if (target.depthBuffer) this.gl.deleteRenderbuffer(target.depthBuffer);
     }
 
     _releaseGpuResources() {
@@ -987,17 +1397,24 @@ export class GpuWorldRenderer {
         if (this.cloudTileTexture) gl.deleteTexture(this.cloudTileTexture);
         if (this.vertexBuffer) gl.deleteBuffer(this.vertexBuffer);
         if (this.vao) gl.deleteVertexArray(this.vao);
-        for (const program of [this.sceneProgram, this.occlusionProgram, this.bloomProgram, this.compositeProgram]) {
+        if (this.particleBuffer) gl.deleteBuffer(this.particleBuffer);
+        if (this.particleVao) gl.deleteVertexArray(this.particleVao);
+        for (const program of [this.sceneProgram, this.occlusionProgram, this.particleProgram, this.bloomProgram, this.compositeProgram]) {
             if (program) gl.deleteProgram(program);
         }
         this.emptyMaterialTexture = null;
         this.cloudTileTexture = null;
         this.vertexBuffer = null;
         this.vao = null;
+        this.particleBuffer = null;
+        this.particleVao = null;
         this.sceneProgram = null;
         this.occlusionProgram = null;
+        this.particleProgram = null;
         this.bloomProgram = null;
         this.compositeProgram = null;
+        this._pointedInstance = -1;
+        this._particleMotifTexture = null;
         // The next _initResources creates a zero-size VBO; a stale capacity
         // here would make _uploadVertices skip its bufferData allocation and
         // leave every draw without geometry after suspend/resume.
@@ -1014,10 +1431,15 @@ export class GpuWorldRenderer {
         this.cloudTileTexture = null;
         this.vertexBuffer = null;
         this.vao = null;
+        this.particleBuffer = null;
+        this.particleVao = null;
         this.sceneProgram = null;
         this.occlusionProgram = null;
+        this.particleProgram = null;
         this.bloomProgram = null;
         this.compositeProgram = null;
+        this._pointedInstance = -1;
+        this._particleMotifTexture = null;
         this.textureBytes = 0;
         this._cachedTextureBytes = 0;
         this._textureCacheNeedsTrim = false;
@@ -1047,7 +1469,7 @@ export class GpuWorldRenderer {
         this._releaseTarget(this.bloomA);
         this._releaseTarget(this.bloomB);
         this._releaseTarget(this.occlusionTarget);
-        this.sceneTarget = this._createTarget(this.width, this.height, { attachments: 2, filter: gl.NEAREST });
+        this.sceneTarget = this._createTarget(this.width, this.height, { attachments: 2, filter: gl.NEAREST, depth: true });
         this.bloomA = this._createTarget(bloomWidth, bloomHeight, { filter: gl.LINEAR });
         this.bloomB = this._createTarget(bloomWidth, bloomHeight, { filter: gl.LINEAR });
         this.occlusionTarget = this._createTarget(occWidth, occHeight, { filter: gl.NEAREST });
@@ -1061,9 +1483,13 @@ export class GpuWorldRenderer {
             bloomScale: BLOOM_SCALE,
             occlusionScale: OCCLUSION_SCALE,
         });
-        // The scene target has two full-resolution attachments rather than the
-        // policy helper's one, so add the emissive attachment explicitly.
-        this.textureBytes = estimate.total + this.width * this.height * 4 + this._cachedTextureBytes;
+        // The scene target has two full-resolution colour attachments rather
+        // than the policy helper's one, plus 0.6's DEPTH_COMPONENT16 painter
+        // depth, so add both explicitly.
+        const sceneDepthBytes = this.sceneTarget?.depthBuffer
+            ? this.width * this.height * SCENE_DEPTH_BYTES_PER_PIXEL
+            : 0;
+        this.textureBytes = estimate.total + this.width * this.height * 4 + sceneDepthBytes + this._cachedTextureBytes;
     }
 
     resize(width, height) {
@@ -1099,7 +1525,13 @@ export class GpuWorldRenderer {
             this.suspended = false;
             this._initResources();
             this.resize(this.width, this.height);
-            this.qualityLadder.reset(POST_FX_LEVELS.MINIMAL);
+            // 0.1 — a Dashboard return resumes the last paced level (the
+            // display period stays latched) instead of re-climbing from
+            // MINIMAL; the timer ring holds pre-suspend spans, so it restarts.
+            this.qualityLadder.resume();
+            this._gpuTimerRing = null;
+            this.gpuMsP25 = null;
+            this._pendingPresentIntervalMs = null;
             this.contextHealthy = true;
             return true;
         } catch (error) {
@@ -1122,7 +1554,7 @@ export class GpuWorldRenderer {
             || entry.height !== height;
         const revisionChanged = !entry || entry.revision !== revision;
         if (!entry) {
-            entry = { texture: gl.createTexture(), source: null, revision: null, width: 0, height: 0 };
+            entry = { texture: gl.createTexture(), source: null, revision: null, width: 0, height: 0, bytes: 0, format: 'rgba8' };
             this._textureEntries.set(key, entry);
             this._textureCacheNeedsTrim = true;
         }
@@ -1176,12 +1608,14 @@ export class GpuWorldRenderer {
                 uploadedBytes = width * height * 4;
             }
             gl.bindTexture(gl.TEXTURE_2D, null);
-            const previousBytes = entry.width * entry.height * 4;
+            // Canvas and image sources upload as RGBA8: 4 B per texel.
+            const bytes = width * height * TEXTURE_FORMATS.rgba8.bytesPerTexel;
             entry.source = source;
             entry.revision = revision;
             entry.width = width;
             entry.height = height;
-            this._cachedTextureBytes += width * height * 4 - previousBytes;
+            this._cachedTextureBytes += bytes - (entry.bytes || 0);
+            entry.bytes = bytes;
             this.uploads++;
             this.uploadBytes += uploadedBytes;
             this._frameUploadMs += performance.now() - started;
@@ -1212,7 +1646,7 @@ export class GpuWorldRenderer {
                 && this._textureEntries.size <= MAX_CACHED_TEXTURES) break;
             this.gl.deleteTexture(entry.texture);
             this._textureEntries.delete(key);
-            this._cachedTextureBytes -= entry.width * entry.height * 4;
+            this._cachedTextureBytes -= entry.bytes || 0;
             this.textureEvictions++;
         }
         this._updateTextureBytes();
@@ -1288,7 +1722,7 @@ export class GpuWorldRenderer {
             }
         } catch {
             this.gpuTimerErrors++;
-            if (!metadata) this.gpuMs = null;
+            if (!metadata?.pass) this.gpuMs = null;
             this.gl.deleteQuery?.(query);
         }
     }
@@ -1314,7 +1748,7 @@ export class GpuWorldRenderer {
                 const gpuMs = Number(gl.getQueryParameter(sample.query, gl.QUERY_RESULT)) / 1e6;
                 if (Number.isFinite(gpuMs) && gpuMs >= 0) {
                     if (sample.pass) this._recordPass({ ...sample, query: undefined, gpuMs });
-                    else this.gpuMs = ema(this.gpuMs, gpuMs);
+                    else this._recordFrameTimerSample(gpuMs, sample.arm);
                 }
             } catch {
                 this.gpuTimerErrors++;
@@ -1325,45 +1759,70 @@ export class GpuWorldRenderer {
         }
     }
 
+    // 0.1 — raw EMA for the readout, p25 of the last GPU_TIMER_RING samples
+    // for the ladder's veto. The sort copy is at most 30 numbers, on 1 frame
+    // in 4. A K-slope arm (`setDebugLoad({ schedule })`) also gets its sample.
+    _recordFrameTimerSample(gpuMs, arm = undefined) {
+        this.gpuMs = ema(this.gpuMs, gpuMs);
+        const ring = this._gpuTimerRing ||= {
+            samples: new Float64Array(GPU_TIMER_RING),
+            sorted: new Float64Array(GPU_TIMER_RING),
+            count: 0,
+            next: 0,
+        };
+        ring.samples[ring.next] = gpuMs;
+        ring.next = (ring.next + 1) % GPU_TIMER_RING;
+        ring.count = Math.min(GPU_TIMER_RING, ring.count + 1);
+        const sorted = ring.sorted.subarray(0, ring.count);
+        sorted.set(ring.samples.subarray(0, ring.count));
+        sorted.sort();
+        this.gpuMsP25 = sorted[Math.floor((ring.count - 1) * 0.25)];
+        if (arm !== undefined) this._debugLoad?.samples?.[arm]?.push(gpuMs);
+    }
+
+    // V9 / B.1a — one instance per record, every batch in one buffer at its
+    // own byte offset: 68 bytes, or the 48-byte head alone when every record
+    // of the batch has the default tail. The occlusion pass draws the same
+    // ranges and culls the non-occluders in its vertex stage, so nothing is
+    // staged twice. `batch.occlusionCount` counts a batch's occluding records
+    // (0 skips it in that pass).
     _stageFrameVertices(batches, occluderChannelEnabled = true) {
-        let sceneRecordCount = 0;
-        let occlusionRecordCount = 0;
-        for (let index = 0; index < batches.length; index++) {
-            const records = batches[index].records;
-            sceneRecordCount += records.length;
-            for (let recordIndex = 0; occluderChannelEnabled && recordIndex < records.length; recordIndex++) {
-                const record = records[recordIndex];
-                if (record.occluderSource || record.occluder > 0 || record.elevation > 0.05) occlusionRecordCount++;
-            }
-        }
-        const needed = (sceneRecordCount + occlusionRecordCount) * 6 * VERTEX_FLOATS;
-        this._vertexScratch = growTypedArray(Float32Array, this._vertexScratch, needed, 64);
-        const vertices = this._vertexScratch;
-        let offset = 0;
-        let first = 0;
+        let byteLength = 0;
         for (let index = 0; index < batches.length; index++) {
             const batch = batches[index];
-            batch.first = first;
-            batch.count = batch.records.length * 6;
-            for (let recordIndex = 0; recordIndex < batch.records.length; recordIndex++) {
-                offset = writeGpuRecordVertices(vertices, offset, batch.records[recordIndex]);
+            const records = batch.records;
+            let tail = false;
+            for (let recordIndex = 0; !tail && recordIndex < records.length; recordIndex++) {
+                tail = !recordHasDefaultTail(records[recordIndex]);
             }
-            first += batch.count;
+            batch.tail = tail;
+            batch.instanceOffset = byteLength;
+            batch.count = records.length;
+            byteLength += records.length * (tail ? RECORD_INSTANCE_BYTES : RECORD_HEAD_BYTES);
         }
+        const floats = byteLength / Float32Array.BYTES_PER_ELEMENT;
+        const grown = growTypedArray(Float32Array, this._instanceF32, floats, 64);
+        if (grown !== this._instanceF32) {
+            this._instanceF32 = grown;
+            this._instanceU16 = new Uint16Array(grown.buffer);
+        }
+        const f32 = this._instanceF32;
+        const u16 = this._instanceU16;
         for (let index = 0; index < batches.length; index++) {
             const batch = batches[index];
-            batch.occlusionFirst = first;
+            const records = batch.records;
+            const stride = batch.tail ? RECORD_INSTANCE_BYTES : RECORD_HEAD_BYTES;
             batch.occlusionCount = 0;
-            for (let recordIndex = 0; occluderChannelEnabled && recordIndex < batch.records.length; recordIndex++) {
-                const record = batch.records[recordIndex];
-                if (!record.occluderSource && record.occluder <= 0 && record.elevation <= 0.05) continue;
-                offset = writeGpuRecordVertices(vertices, offset, record);
-                batch.occlusionCount += 6;
+            for (let recordIndex = 0; recordIndex < records.length; recordIndex++) {
+                const record = records[recordIndex];
+                writeGpuRecordInstance(f32, u16, batch.instanceOffset + recordIndex * stride, record, batch.tail);
+                if (occluderChannelEnabled
+                    && (record.occluderSource || record.occluder > 0 || record.elevation > 0.05)) {
+                    batch.occlusionCount++;
+                }
             }
-            first += batch.occlusionCount;
         }
-        this._vertexScratchUsed = needed;
-        const byteLength = needed * Float32Array.BYTES_PER_ELEMENT;
+        this._vertexScratchUsed = floats;
         const gl = this.gl;
         gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
         const allocatedBytes = this.vertexBufferBytes || 0;
@@ -1371,7 +1830,38 @@ export class GpuWorldRenderer {
             gl.bufferData(gl.ARRAY_BUFFER, byteLength, gl.DYNAMIC_DRAW);
             this.vertexBufferBytes = byteLength;
         }
-        gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertices, 0, needed);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, f32, 0, floats);
+        this._pointedInstance = -1;
+    }
+
+    // WebGL2 has no base instance: point the V9 attributes at the batch's own
+    // byte range (skipped when that range is already current). A head-only
+    // batch disables arrays 3-5 and sets the default tail as constant generic
+    // attributes instead.
+    _pointRecordInstances(batch) {
+        const offset = batch.instanceOffset;
+        if (this._pointedInstance === offset) return;
+        const gl = this.gl;
+        const stride = batch.tail ? RECORD_INSTANCE_BYTES : RECORD_HEAD_BYTES;
+        gl.vertexAttribPointer(0, 4, gl.FLOAT, false, stride, offset);
+        gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, offset + 16);
+        gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, offset + 32);
+        if (batch.tail) {
+            if (!this._recordTailArrays) {
+                for (let location = 3; location <= 5; location++) gl.enableVertexAttribArray(location);
+                this._recordTailArrays = true;
+            }
+            gl.vertexAttribPointer(3, 4, gl.UNSIGNED_SHORT, false, stride, offset + 48);
+            gl.vertexAttribPointer(4, 4, gl.UNSIGNED_SHORT, false, stride, offset + 56);
+            gl.vertexAttribIPointer(5, 2, gl.UNSIGNED_SHORT, stride, offset + 64);
+        } else if (this._recordTailArrays !== false) {
+            for (let location = 3; location <= 5; location++) gl.disableVertexAttribArray(location);
+            gl.vertexAttrib4fv(3, RECORD_TAIL_RESPONSE);
+            gl.vertexAttrib4fv(4, RECORD_TAIL_RECEIVER);
+            gl.vertexAttribI4ui(5, 0, 0, 0, 0);
+            this._recordTailArrays = false;
+        }
+        this._pointedInstance = offset;
     }
 
     _setCameraUniforms(uniforms, camera, scale = 1) {
@@ -1423,30 +1913,29 @@ export class GpuWorldRenderer {
         const albedo = batch.albedoTexture;
         if (!albedo) return 0;
         const material = batch.materialTexture;
-        gl.activeTexture(gl.TEXTURE0);
+        const units = SCENE_SAMPLER_UNITS;
+        gl.activeTexture(gl.TEXTURE0 + units.albedo);
         gl.bindTexture(gl.TEXTURE_2D, albedo);
-        gl.uniform1i(uniforms.u_albedo, 0);
-        gl.activeTexture(gl.TEXTURE1);
+        gl.uniform1i(uniforms.u_albedo, units.albedo);
+        gl.activeTexture(gl.TEXTURE0 + units.material);
         gl.bindTexture(gl.TEXTURE_2D, material || this.emptyMaterialTexture);
-        gl.uniform1i(uniforms.u_materialMap, 1);
+        gl.uniform1i(uniforms.u_materialMap, units.material);
         gl.uniform1i(uniforms.u_hasMaterialMap, material ? 1 : 0);
         if (uniforms.u_emissiveMap) {
-            gl.activeTexture(gl.TEXTURE3);
+            gl.activeTexture(gl.TEXTURE0 + units.emissive);
             gl.bindTexture(gl.TEXTURE_2D, batch.emissiveTexture || this.emptyMaterialTexture);
-            gl.uniform1i(uniforms.u_emissiveMap, 3);
+            gl.uniform1i(uniforms.u_emissiveMap, units.emissive);
             gl.uniform1i(uniforms.u_hasEmissiveMap, batch.emissiveTexture ? 1 : 0);
         }
         if (uniforms.u_occluderMap) {
-            gl.activeTexture(gl.TEXTURE4);
+            gl.activeTexture(gl.TEXTURE0 + units.occluder);
             gl.bindTexture(gl.TEXTURE_2D, batch.occluderTexture || this.emptyMaterialTexture);
-            gl.uniform1i(uniforms.u_occluderMap, 4);
+            gl.uniform1i(uniforms.u_occluderMap, units.occluder);
             gl.uniform1i(uniforms.u_hasOccluderMap, batch.occluderTexture ? 1 : 0);
         }
-        gl.drawArrays(
-            gl.TRIANGLES,
-            occlusion ? batch.occlusionFirst : batch.first,
-            occlusion ? batch.occlusionCount : batch.count,
-        );
+        if (occlusion) gl.uniform1i(uniforms.u_batchOccluderSource, batch.occluderSource ? 1 : 0);
+        this._pointRecordInstances(batch);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.count);
         return batch.records.length;
     }
 
@@ -1503,6 +1992,8 @@ export class GpuWorldRenderer {
         this._frameGradeForComposite = grade;
         this._compositeCloudCover = cloudCover;
         this._compositeQualityLevel = qualityLevel;
+        this._resolveAtmosphereCourses(qualityLevel, camera, feed, grade);
+        this._uploadAtmosphereCourses(uniforms, SCENE_SAMPLER_UNITS.cloudTile);
         // 3.1 — one envelope, three consumers: the core here, the spill on each
         // admitted light below, and the bloom share in `_present`.
         const energy = sourceEnergyFor(feed.lighting);
@@ -1532,34 +2023,37 @@ export class GpuWorldRenderer {
             ? this._textureFor('lut:palette-ramp', lutSource, feed.paletteLutRevision ?? null)
             : null;
         this.paletteLutActive = Boolean(lut);
-        gl.activeTexture(gl.TEXTURE5);
+        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.paletteLut);
         gl.bindTexture(gl.TEXTURE_2D, lut || this.emptyMaterialTexture);
-        gl.uniform1i(uniforms.u_paletteLut, 5);
+        gl.uniform1i(uniforms.u_paletteLut, SCENE_SAMPLER_UNITS.paletteLut);
         gl.uniform1i(uniforms.u_hasPaletteLut, lut ? 1 : 0);
         // Keep the existing time channel inside float32's precise range. The
         // one-million-ms period closes on both shader phase multipliers.
         const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
         gl.uniform1f(uniforms.u_time, shaderTimeMs);
         gl.uniform1f(uniforms.u_motionScale, feed.reducedMotion ? 0 : clamp(finite(feed.motionScale, 1), 0, 2));
-        gl.activeTexture(gl.TEXTURE2);
+        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.occlusion);
         gl.bindTexture(gl.TEXTURE_2D, this.occlusionTarget.textures[0]);
-        gl.uniform1i(uniforms.u_occlusion, 2);
+        gl.uniform1i(uniforms.u_occlusion, SCENE_SAMPLER_UNITS.occlusion);
 
         this.localLightPhase = localLightPhaseForLighting(feed.lighting);
         const daylightSuppressesLights = this.localLightPhase <= LOCAL_LIGHT_VISIBILITY_FLOOR;
+        // 0.1 — admission is the declared `light-admission` row (FULL 32,
+        // REDUCED 24, MINIMAL 12): the night's pools ship at every level.
         const lightLimit = daylightSuppressesLights
             ? 0
-            : qualityLevel >= POST_FX_LEVELS.MINIMAL
-            ? 4
-            : qualityLevel >= POST_FX_LEVELS.REDUCED
-                ? 10
-                : MAX_LIGHTS;
+            : Math.min(MAX_LIGHTS, effectBudgetMode('light-admission', qualityLevel));
         const lights = clampGpuLights(
             feed.lights,
             lightLimit,
             daylightSuppressesLights ? 0 : MAX_LIGHTS,
             this._lightAdmissionCache,
         );
+        const admission = this.lightAdmission;
+        admission.cap = lightLimit;
+        admission.admitted = lights.length;
+        admission.offered = feed.lights?.length || 0;
+        admission.daylight = daylightSuppressesLights;
         const lightValues = this._lightScratch;
         const lightColors = this._lightColorScratch;
         lightValues.fill(0);
@@ -1609,7 +2103,13 @@ export class GpuWorldRenderer {
             : [gl.COLOR_ATTACHMENT0]);
         gl.viewport(0, 0, this.width, this.height);
         gl.clearColor(0, 0, 0, 0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
+        // 0.6 — the particle draw leaves depthMask false, and a masked depth
+        // clear is a no-op: open the mask before clearing to the far plane.
+        gl.depthMask(true);
+        gl.clearDepth(1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.depthFunc(gl.ALWAYS);
+        let depthWrites = true;
         gl.useProgram(this.sceneProgram);
         this._setSceneUniforms(feed, camera, qualityLevel);
         let additive = false;
@@ -1621,9 +2121,47 @@ export class GpuWorldRenderer {
                 additive = add;
                 gl.uniform1i(this.sceneUniforms.u_additive, add ? 1 : 0);
             }
+            // Painter order still decides every colour (depthFunc ALWAYS);
+            // opaque sprite batches also leave their depth key behind.
+            if (batch.writesDepth !== depthWrites) {
+                depthWrites = batch.writesDepth === true;
+                gl.depthMask(depthWrites);
+            }
             this._bindBatch(this.sceneProgram, this.sceneUniforms, batch);
         }
+        this._renderParticles(camera);
+        // The painter depth never leaves the pass.
+        gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.DEPTH_ATTACHMENT]);
         return bloomEnabled;
+    }
+
+    // 0.6 — every live world particle in one instanced draw, LEQUAL against
+    // the painter depth, never writing it. Lit particles take the frame grade
+    // uploaded here; emissive ones feed bloom with their own coverage.
+    _renderParticles(camera) {
+        const count = this._particleCount;
+        if (!count || !this._particleMotifTexture) return;
+        const gl = this.gl;
+        const uniforms = this.particleUniforms;
+        gl.useProgram(this.particleProgram);
+        this._setCameraUniforms(uniforms, camera, 1);
+        gl.uniform2f(uniforms.u_resolution, this.width, this.height);
+        uploadGradeUniforms(gl, uniforms, this._frameGradeForComposite || NEUTRAL_GRADE);
+        gl.uniform1f(uniforms.u_coreEnergy, clamp(finite(this.sourceEnergy?.core, 1), 0, 2));
+        gl.activeTexture(gl.TEXTURE0 + PARTICLE_SAMPLER_UNITS.motifs);
+        gl.bindTexture(gl.TEXTURE_2D, this._particleMotifTexture);
+        gl.uniform1i(uniforms.u_motifs, PARTICLE_SAMPLER_UNITS.motifs);
+        if (this._atmosphereCourses) this._uploadAtmosphereCourses(uniforms, PARTICLE_SAMPLER_UNITS.cloudTile);
+        gl.bindVertexArray(this.particleVao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.particleBuffer);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, this._particleViews.u8, 0, count * GPU_PARTICLE_INSTANCE_BYTES);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthFunc(gl.LEQUAL);
+        gl.depthMask(false);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+        gl.depthFunc(gl.ALWAYS);
+        gl.bindVertexArray(this.vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
     }
 
     _renderBloom() {
@@ -1655,8 +2193,8 @@ export class GpuWorldRenderer {
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.useProgram(this.compositeProgram);
-        gl.uniform1i(this.compositeUniforms.u_scene, 0);
-        gl.uniform1i(this.compositeUniforms.u_bloom, 1);
+        gl.uniform1i(this.compositeUniforms.u_scene, COMPOSITE_SAMPLER_UNITS.scene);
+        gl.uniform1i(this.compositeUniforms.u_bloom, COMPOSITE_SAMPLER_UNITS.bloom);
         const bloomMode = effectBudgetMode('bloom', qualityLevel);
         const bloomStrength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
         // 3.1 — bloom is served last from the same envelope, so broad halo
@@ -1666,27 +2204,97 @@ export class GpuWorldRenderer {
             this.compositeUniforms.u_bloomStrength,
             this.lightCount > 0 ? bloomStrength * bloomEnergy : 0,
         );
-        this._setCompositeUniforms(qualityLevel, camera, feed);
-        gl.activeTexture(gl.TEXTURE0);
+        const flash = feed.flash;
+        gl.uniform3f(this.compositeUniforms.u_flash, finite(flash?.[0], 0), finite(flash?.[1], 0), finite(flash?.[2], 0));
+        gl.activeTexture(gl.TEXTURE0 + COMPOSITE_SAMPLER_UNITS.scene);
         gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.textures[0]);
-        gl.activeTexture(gl.TEXTURE1);
+        gl.activeTexture(gl.TEXTURE0 + COMPOSITE_SAMPLER_UNITS.bloom);
         gl.bindTexture(gl.TEXTURE_2D, this.bloomB.textures[0]);
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, this.cloudTileTexture);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+        if (this._frameLoadPasses > 0) this._drawDebugLoad(this._frameLoadPasses);
     }
 
-    // 1.4 + 1.6 — world-locked cloud-shadow courses and screen-Y aerial
-    // perspective, both in the one composite read of the scene.
-    _setCompositeUniforms(qualityLevel, camera, feed) {
-        const gl = this.gl;
-        const uniforms = this.compositeUniforms;
-        const grade = this._frameGradeForComposite || frameGrade(feed);
-        gl.uniform1i(uniforms.u_cloudTile, 2);
-        this._setCameraUniforms(uniforms, camera, 1);
-        gl.uniform2f(uniforms.u_resolution, this.width, this.height);
+    /**
+     * 0.1 — debug-only GPU-side load for the ladder acceptance run and V2
+     * K-slope receipts; off unless set here or by `?gpuLoad=<passes>`.
+     * `{ passes, levels }`: `levels: 'full'` (default) draws only at FULL, a
+     * load the ladder can shed; `'all'` draws at every level, so shedding
+     * cannot help. `{ schedule: [{ id, passes }, …] }` interleaves arms per
+     * frame instead, times every frame, and files each whole-frame timer
+     * sample under its arm id (`takeDebugLoadSamples()`). `null` or 0 turns it
+     * off.
+     */
+    setDebugLoad(config = null) {
+        const previous = this._debugLoad;
+        const spec = typeof config === 'number' ? { passes: config } : config;
+        const schedule = Array.isArray(spec?.schedule) && spec.schedule.length
+            ? spec.schedule.map((arm, index) => ({
+                id: String(arm?.id ?? index),
+                passes: Math.max(0, Math.floor(finite(arm?.passes))),
+            }))
+            : null;
+        const passes = Math.max(0, Math.floor(finite(spec?.passes)));
+        if (!schedule && passes === 0) {
+            if (previous?.program && this.gl?.isProgram?.(previous.program)) this.gl.deleteProgram(previous.program);
+            this._debugLoad = null;
+            return null;
+        }
+        this._debugLoad = {
+            passes,
+            levels: spec.levels === 'all' ? 'all' : 'full',
+            schedule,
+            cursor: 0,
+            samples: schedule ? Object.fromEntries(schedule.map(arm => [arm.id, []])) : null,
+            program: previous?.program ?? null,
+            owner: previous?.owner ?? null,
+            sceneLocation: previous?.sceneLocation ?? null,
+        };
+        return { passes, levels: this._debugLoad.levels, schedule };
+    }
 
+    /** K-slope timer samples per arm id since the last call; the arms restart empty. */
+    takeDebugLoadSamples() {
+        const samples = this._debugLoad?.samples;
+        if (!samples) return null;
+        const taken = {};
+        for (const [id, values] of Object.entries(samples)) {
+            taken[id] = values.slice();
+            values.length = 0;
+        }
+        return taken;
+    }
+
+    _drawDebugLoad(passes) {
+        const gl = this.gl;
+        const load = this._debugLoad;
+        // The program follows the composite program's lifetime: suspend,
+        // resume and context restore all recreate the composite.
+        if (!load.program || load.owner !== this.compositeProgram) {
+            if (load.program && gl.isProgram(load.program)) gl.deleteProgram(load.program);
+            load.program = createProgram(gl, FULLSCREEN_VERTEX, DEBUG_LOAD_FRAGMENT);
+            load.owner = this.compositeProgram;
+            load.sceneLocation = gl.getUniformLocation(load.program, 'u_scene');
+        }
+        gl.useProgram(load.program);
+        // TEXTURE0 still holds the scene target from the composite.
+        gl.uniform1i(load.sceneLocation, 0);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        for (let index = 0; index < passes; index++) gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    }
+
+    // 1.4 + 1.6 — the frame's world-locked cloud-shadow courses and screen-Y
+    // aerial perspective, resolved once per frame with the scene uniforms.
+    // The scene and particle programs shade them per record, on each record's
+    // own texel grid (ATMOSPHERE_COURSES_GLSL), so a body resting between
+    // world texels keeps whole k x k blocks.
+    _resolveAtmosphereCourses(qualityLevel, camera, feed, grade) {
+        const courses = this._atmosphereCourses || (this._atmosphereCourses = {
+            cloud: new Float32Array(4),
+            thresholds: new Float32Array(3),
+            haze: new Float32Array(4),
+        });
         // Cover sets the covered share (clear ~15 %, partly cloudy ~35 %);
         // overcast/rain get none (the grade flattens instead) and the night
         // has no sun to cast them. Darkening per course is 8.5 %: three
@@ -1695,26 +2303,25 @@ export class GpuWorldRenderer {
         const cloudMode = effectBudgetMode('cloud-courses', qualityLevel);
         const cloudStrength = cloudMode === 'off' ? 0 : clamp(finite(grade.cloudShadow, 0), 0, 1);
         const covered = clamp(0.1 + cover * 0.62, 0, 0.45);
+        // C-W3 — the one wind: the courses drift at 3 + 7·|windX| world px/s
+        // along it (a third of that down-screen), integrated over the motion
+        // clock in Wind.js so both backends agree and a wind change never
+        // jumps them; frozen under reduced motion.
+        const moving = !feed.reducedMotion && finite(feed.motionScale, 1) > 0;
+        const drift = cloudCourseDrift(moving ? finite(feed.timeMs, 0) : null, feed.atmosphere?.weather);
         this.cloudCourses = cloudStrength > 0.02 ? 3 : 0;
         if (this.cloudCourses) {
-            const windX = clamp(finite(feed.atmosphere?.motion?.windX ?? feed.atmosphere?.weather?.windX, 0.6), -1.4, 1.4) || 0.6;
-            const moving = !feed.reducedMotion && finite(feed.motionScale, 1) > 0;
-            // ~6 world px/s along the wind, a little down-screen; frozen under
-            // reduced motion. Wrapped to one tile period for float precision.
+            // Wrapped to one tile period for float precision.
             const period = CLOUD_TILE_SIZE * CLOUD_TILE_WORLD_SCALE;
-            const seconds = moving ? finite(feed.timeMs, 0) / 1000 : 0;
-            const driftX = ((-windX * 6 * seconds) % period + period) % period;
-            const driftY = ((-Math.abs(windX) * 2 * seconds) % period + period) % period;
-            gl.uniform4f(uniforms.u_cloud, driftX, driftY, 0.085 * cloudStrength, 0);
-            gl.uniform3f(
-                uniforms.u_cloudThresholds,
-                cloudThreshold(covered),
-                cloudThreshold(covered * 0.55),
-                cloudThreshold(covered * 0.22),
-            );
+            courses.cloud[0] = ((-drift.x % period) + period) % period;
+            courses.cloud[1] = ((-drift.y % period) + period) % period;
+            courses.cloud[2] = 0.085 * cloudStrength;
+            courses.thresholds[0] = cloudThreshold(covered);
+            courses.thresholds[1] = cloudThreshold(covered * 0.55);
+            courses.thresholds[2] = cloudThreshold(covered * 0.22);
         } else {
-            gl.uniform4f(uniforms.u_cloud, 0, 0, 0, 0);
-            gl.uniform3f(uniforms.u_cloudThresholds, 2, 2, 2);
+            courses.cloud.fill(0);
+            courses.thresholds.fill(2);
         }
 
         const hazeMode = effectBudgetMode('aerial-perspective', qualityLevel);
@@ -1722,31 +2329,73 @@ export class GpuWorldRenderer {
         const haze = hazeMode === 'off' ? 0 : aerialPerspectiveStrength(finite(camera?.zoom, 1), fog);
         this.aerialHaze = haze;
         const hazeColor = grade.fogColor || [0.6, 0.7, 0.78];
-        gl.uniform4f(uniforms.u_haze, hazeColor[0], hazeColor[1], hazeColor[2], haze);
+        courses.haze[0] = hazeColor[0];
+        courses.haze[1] = hazeColor[1];
+        courses.haze[2] = hazeColor[2];
+        courses.haze[3] = haze;
+    }
+
+    _uploadAtmosphereCourses(uniforms, unit) {
+        const gl = this.gl;
+        const courses = this._atmosphereCourses;
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_2D, this.cloudTileTexture);
+        gl.uniform1i(uniforms.u_cloudTile, unit);
+        gl.uniform4fv(uniforms.u_cloud, courses.cloud);
+        gl.uniform3fv(uniforms.u_cloudThresholds, courses.thresholds);
+        gl.uniform4fv(uniforms.u_haze, courses.haze);
+    }
+
+    /**
+     * 0.1 — the render loop's display interval for the coming frame (rAF
+     * timestamp gap), the ladder's pacing sample. A screen or DPR change
+     * re-latches the display period; `visibilitychange` clears the pacing
+     * window so a hidden page never reads as missed frames.
+     */
+    notePresentInterval(intervalMs) {
+        if (!this._presentIntervalsNoted) {
+            this._presentIntervalsNoted = true;
+            globalThis.document?.addEventListener?.('visibilitychange', this._onVisibilityChange);
+        }
+        this._pendingPresentIntervalMs = intervalMs;
+        const dpr = globalThis.devicePixelRatio || 1;
+        const screenWidth = globalThis.screen?.width || 0;
+        const screenHeight = globalThis.screen?.height || 0;
+        if (dpr !== this._displayDpr
+            || screenWidth !== this._displayScreenWidth
+            || screenHeight !== this._displayScreenHeight) {
+            if (this._displayDpr !== null) {
+                this.qualityLadder.relatch();
+                this._pendingPresentIntervalMs = null;
+            }
+            this._displayDpr = dpr;
+            this._displayScreenWidth = screenWidth;
+            this._displayScreenHeight = screenHeight;
+        }
     }
 
     prepareFrame(feed = {}) {
-        let qualityLevel = this.qualityLadder.getLevel();
-        // DISABLED means optional GPU effects are exhausted, not that the
-        // renderer may swap composition paths mid-scene. Canvas-only fauna and
-        // water details sit beneath this surface; toggling to Canvas and back
-        // makes boats/waterfalls blink. Keep the minimal resident scene while
-        // cheap probes allow recovery after warm-up.
-        if (qualityLevel >= POST_FX_LEVELS.DISABLED) {
-            const recovery = this.qualityLadder.update({ totalMs: 0 }, performance.now());
-            qualityLevel = Math.min(recovery.effectiveLevel, POST_FX_LEVELS.MINIMAL);
-        }
+        // Pacing never demotes past MINIMAL here; a QA override may still ask
+        // for DISABLED (minimal-resident), which renders MINIMAL's composition
+        // rather than swapping composition paths mid-scene (Canvas-only fauna
+        // and water details sit beneath this surface and would blink).
+        const qualityLevel = Math.min(this.qualityLadder.getLevel(), POST_FX_LEVELS.MINIMAL);
         this._preparedQualityLevel = qualityLevel;
         this._preparedFeed = feed;
         return effectBudgetMode('occlusion', qualityLevel) !== 'off' || weatherUniform(feed)[1] !== 0;
     }
 
-    render({ records = [], camera = null, feed = {} } = {}) {
+    render({ records = [], camera = null, feed = {}, particles = null } = {}) {
         if (!this.isActive() || !camera || !records.length) return false;
         const gl = this.gl;
         const started = performance.now();
         const frameGapMs = this._lastRenderAtMs == null ? 0 : started - this._lastRenderAtMs;
         this._lastRenderAtMs = started;
+        // 0.1 — the pacing sample is the display interval the loop noted for
+        // this frame; a render outside that cadence (a resize redraw, a
+        // gpu-burst) carries none. Without a noting loop the render gap stands in.
+        const presentIntervalMs = this._presentIntervalsNoted ? this._pendingPresentIntervalMs : frameGapMs;
+        this._pendingPresentIntervalMs = null;
         this._frameUploadMs = 0;
         const occluderChannelEnabled = this._preparedFeed === feed
             ? effectBudgetMode('occlusion', this._preparedQualityLevel) !== 'off' || weatherUniform(feed)[1] !== 0
@@ -1775,6 +2424,22 @@ export class GpuWorldRenderer {
             this._beginPass('upload');
             this._stageFrameVertices(batches, occluderChannelEnabled);
             this._uploadBatchTextures(batches, occluderChannelEnabled);
+            // 0.6 — the live world particles, packed with the Canvas geometry;
+            // the event-shape motifs ride one cached R8 field (V9 typed path).
+            this._particleCount = particles?.packGpuInstances
+                ? particles.packGpuInstances(this._particleViews)
+                : 0;
+            this.particleInstances = this._particleCount;
+            if (this._particleCount > 0) {
+                const motifs = particleMotifMask();
+                this._particleMotifTexture = this.uploadTypedTexture('particle:motifs', {
+                    width: motifs.width,
+                    height: motifs.height,
+                    format: 'r8',
+                    data: motifs.data,
+                    revision: motifs.revision,
+                });
+            }
             this._endPass('upload', 0, this._vertexScratchUsed * 4);
             let atlasRecords = 0;
             let individualRecords = 0;
@@ -1790,9 +2455,25 @@ export class GpuWorldRenderer {
             };
             gl.bindVertexArray(this.vao);
             gl.enable(gl.BLEND);
-            gl.disable(gl.DEPTH_TEST);
+            // 0.6 — painter's depth: records keep painter order (ALWAYS) and
+            // opaque sprite batches write their key; particles test LEQUAL.
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.ALWAYS);
             gl.disable(gl.CULL_FACE);
-            gpuTimer = this._sampledPass ? null : this._beginGpuTimer();
+            // 0.1 — this frame's debug load: a K-slope arm, or a fixed load at
+            // FULL only (sheddable) or at every level.
+            this._frameLoadPasses = 0;
+            this._frameLoadArm = null;
+            const load = this._debugLoad;
+            if (load?.schedule) {
+                const arm = load.schedule[load.cursor++ % load.schedule.length];
+                this._frameLoadPasses = arm.passes;
+                this._frameLoadArm = arm.id;
+            } else if (load && (load.levels === 'all' || qualityLevel === POST_FX_LEVELS.FULL)) {
+                this._frameLoadPasses = load.passes;
+            }
+            const timeThisFrame = this._frameLoadArm !== null || this.frames % this._gpuTimerEvery === 0;
+            gpuTimer = this._sampledPass || !timeThisFrame ? null : this._beginGpuTimer();
             const localLightsVisible = localLightPhaseForLighting(feed.lighting)
                 > LOCAL_LIGHT_VISIBILITY_FLOOR;
             this._beginPass('occlusion');
@@ -1813,6 +2494,7 @@ export class GpuWorldRenderer {
             const bloomEnabled = this._renderScene(batches, camera, feed, qualityLevel);
             this._endPass('scene', batches.length, this.width * this.height * 4 * (bloomEnabled ? 2 : 1));
             gl.disable(gl.BLEND);
+            gl.disable(gl.DEPTH_TEST);
             this._beginPass('bloom');
             if (bloomEnabled && this.lightCount > 0) this._renderBloom();
             this._endPass('bloom', bloomEnabled && this.lightCount > 0 ? 2 : 0,
@@ -1821,7 +2503,7 @@ export class GpuWorldRenderer {
             this._beginPass('present');
             this._present(qualityLevel, camera, feed);
             this._endPass('present', 1, this.width * this.height * 4);
-            this._endGpuTimer(gpuTimer);
+            this._endGpuTimer(gpuTimer, this._frameLoadArm !== null ? { arm: this._frameLoadArm } : null);
             gpuTimer = null;
             this._trimTextureCache();
             gl.bindTexture(gl.TEXTURE_2D, null);
@@ -1843,12 +2525,14 @@ export class GpuWorldRenderer {
             const timingInput = this._qualityTimingInput;
             timingInput.uploadMs = this._frameUploadMs;
             timingInput.shaderCpuMs = shaderCpuMs;
-            timingInput.gpuMs = this.gpuMs;
+            timingInput.gpuMs = this.gpuMsP25;
             timingInput.gpuTimerSupported = Boolean(this.timerExtension);
             timingInput.frameGapMs = frameGapMs;
             const timing = selectGpuTimingMetrics(timingInput, this._qualityTimingScratch);
+            timing.metrics.intervalMs = presentIntervalMs;
             this.qualityTimingSource = timing.source;
-            this.qualityLadder.update(timing.metrics, started);
+            const quality = this.qualityLadder.update(timing.metrics, started);
+            this._gpuTimerEvery = quality.missShare >= GPU_TIMER_DENSE_MISS_SHARE ? 1 : GPU_TIMER_EVERY;
             return true;
         } catch (error) {
             gpuTimer ||= this._activePassQuery;
@@ -1888,7 +2572,7 @@ export class GpuWorldRenderer {
             exposureBucket: this.sourceEnergy?.bucket ?? 'unreviewed',
             wetReflections: this.wetReflectionCount,
             // C2 / 1.4 / 1.6 receipts: which grade keys are blending, and
-            // whether the composite spent its cloud fetch and haze mix.
+            // whether the record passes spent their cloud fetch and haze mix.
             gradeKey: this._frameGradeForComposite?.key ?? null,
             gradeExposure: this._frameGradeForComposite?.exposure ?? null,
             cloudCourses: this.cloudCourses,
@@ -1899,7 +2583,11 @@ export class GpuWorldRenderer {
             uploadMs: this.uploadMs ?? 0,
             cpuMs: this.cpuMs ?? 0,
             shaderCpuMs: this.shaderCpuMs ?? 0,
+            // 0.1 — raw EMA beside the contention-robust p25 the ladder reads.
             gpuMs: this.gpuMs,
+            gpuMsP25: this.gpuMsP25,
+            gpuTimerSamples: this._gpuTimerRing?.count ?? 0,
+            gpuTimerEvery: this._gpuTimerEvery,
             gpuTimerSupported: Boolean(this.timerExtension),
             gpuTimerExtension: this.timerExtension ? 'EXT_disjoint_timer_query_webgl2' : null,
             gpuTimerPendingQueries: this.pendingGpuQueries.length,
@@ -1928,15 +2616,37 @@ export class GpuWorldRenderer {
             maxCachedTextureBytes: MAX_CACHED_TEXTURE_BYTES,
             maxCachedTextures: MAX_CACHED_TEXTURES,
             materialAttachments: 2,
+            // 0.6 — live world particles drawn this frame (one instanced draw).
+            particleInstances: this.particleInstances,
             occlusionScale: OCCLUSION_SCALE,
             bloomScale: BLOOM_SCALE,
             qualityLevel: quality.effectiveLevel,
-            qualityReason: quality.lastDecisionReason.replace(/^disabled(?=:|$)/, 'minimal-resident'),
+            qualityReason: quality.lastDecisionReason,
             shedEffects: shedEffectsForLevel(quality.effectiveLevel),
             shedReason: quality.lastDecisionReason,
             qualityDegradationReason: quality.lastDegradationReason,
+            qualityTransitionReason: quality.lastTransitionReason,
             qualityTransitionAtMs: quality.lastTransitionAtMs,
             qualityTransitionMetrics: quality.lastTransitionMetrics,
+            qualityTransitions: quality.transitions,
+            pacing: {
+                refreshHz: quality.refreshHz,
+                periodMs: quality.periodMs,
+                budgetMs: quality.budgetMs,
+                timerVeto: quality.timerVeto,
+                missShare: quality.missShare,
+                intervals: Math.min(quality.pacingCount, quality.options.pacingWindow),
+                window: quality.options.pacingWindow,
+                pending: quality.pending ? `${quality.pending.kind} from ${quality.pending.fromLevel}` : null,
+                pacedLevel: quality.pacedLevel,
+                coolDownUntilMs: quality.holdUntilMs,
+                nextProbeAtMs: quality.nextProbeAtMs,
+                sampledAtMs: quality.lastSampleAtMs,
+            },
+            lightAdmission: { ...this.lightAdmission },
+            debugLoad: this._debugLoad
+                ? { passes: this._debugLoad.passes, levels: this._debugLoad.levels, arms: this._debugLoad.schedule?.length ?? 0 }
+                : null,
             resources: this.getResourceAccounting(),
             atlasRecords: this._sourceCensus?.atlasRecords || 0,
             individualRecords: this._sourceCensus?.individualRecords || 0,
@@ -1953,7 +2663,7 @@ export class GpuWorldRenderer {
         let evictableSourceBytes = 0;
         const atlasPages = [];
         for (const [name, entry] of this._textureEntries) {
-            const bytes = entry.width * entry.height * 4;
+            const bytes = entry.bytes || 0;
             const pinned = entry.lastUsedFrame === this.frames;
             if (pinned) pinnedSourceBytes += bytes;
             else evictableSourceBytes += bytes;
@@ -1962,9 +2672,13 @@ export class GpuWorldRenderer {
             }
         }
         const targetBytes = target => target ? target.width * target.height * 4 : 0;
-        const attachmentBytes = targetBytes(this.sceneTarget) * 2
+        const depthBytes = target => target?.depthBuffer
+            ? target.width * target.height * SCENE_DEPTH_BYTES_PER_PIXEL
+            : 0;
+        const attachmentBytes = targetBytes(this.sceneTarget) * 2 + depthBytes(this.sceneTarget)
             + targetBytes(this.bloomA) + targetBytes(this.bloomB) + targetBytes(this.occlusionTarget);
-        const pinnedBytes = pinnedSourceBytes + attachmentBytes + (this.vertexBufferBytes || 0);
+        const bufferBytes = (this.vertexBufferBytes || 0) + (this.particleBuffer ? this._particleBytes.byteLength : 0);
+        const pinnedBytes = pinnedSourceBytes + attachmentBytes + bufferBytes;
         return {
             textures: { pinnedSources: pinnedSourceBytes, evictableSources: evictableSourceBytes },
             pinnedBytes,
@@ -1976,11 +2690,15 @@ export class GpuWorldRenderer {
             attachments: {
                 sceneColor: targetBytes(this.sceneTarget),
                 sceneEmission: targetBytes(this.sceneTarget),
+                sceneDepth: depthBytes(this.sceneTarget),
                 bloomA: targetBytes(this.bloomA),
                 bloomB: targetBytes(this.bloomB),
                 occlusion: targetBytes(this.occlusionTarget),
             },
-            buffers: { vertices: this.vertexBufferBytes || 0 },
+            buffers: {
+                vertices: this.vertexBufferBytes || 0,
+                particles: this.particleBuffer ? this._particleBytes.byteLength : 0,
+            },
         };
     }
 
@@ -1989,6 +2707,8 @@ export class GpuWorldRenderer {
         this.disposed = true;
         this.canvas?.removeEventListener?.('webglcontextlost', this._onContextLost, false);
         this.canvas?.removeEventListener?.('webglcontextrestored', this._onContextRestored, false);
+        globalThis.document?.removeEventListener?.('visibilitychange', this._onVisibilityChange);
+        this.setDebugLoad(null);
         this._releaseGpuResources();
         this.contextHealthy = false;
         this.textureBytes = 0;

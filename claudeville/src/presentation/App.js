@@ -39,14 +39,21 @@ import { emitAgentSelected, emitAgentDeselected, resetAgentSelection } from './s
 import { sessionDetailsService } from './shared/SessionDetailsService.js';
 import { ClientPerfMetrics } from './shared/ClientPerfMetrics.js';
 import { getModelVisualIdentity } from './shared/ModelVisualIdentity.js';
+import { installChromeTooltip } from './shared/ChromeTooltip.js';
+import { publishReservedRect } from './shared/ReservedRects.js';
 import { isKeyboardEditTarget } from './dashboard-mode/DashboardKeyboardNavigation.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
+import { paintRevealBands } from './character-mode/RevealBands.js';
 
 const LIFECYCLE_DRAIN_TIMEOUT_MS = 2000;
 const INITIAL_WEBSOCKET_TIMEOUT_MS = 2500;
 const FIRST_RUN_HINT_STORAGE_KEY = 'claudeville.firstRunHint.worldControls.v1';
+// FREE | AUTO | AMBIENT (9.1 / 4.4): the Auto-camera preference (shared with
+// SET and the renderer) and Ambient's standing choice.
+const AUTO_CAMERA_STORAGE_KEY = 'cv-auto-camera';
+const AMBIENT_STANDING_STORAGE_KEY = 'cv-ambient-standing';
 const FEATURE_STYLES = Object.freeze({
     activity: 'css/activity-panel.css',
     dashboard: 'css/dashboard.css',
@@ -151,6 +158,7 @@ export class App {
         this._centerCameraHandle = null;
         this._worldRevealRoot = null;
         this._worldReturnPose = null;
+        this._revealHoldPainted = false;
         this._onWindowResize = null;
         this._watchDevicePixelRatio = null;
         this._onDevicePixelRatioChange = null;
@@ -446,7 +454,8 @@ export class App {
         this._bindWorldEmptyState();
         this._initFirstRunHint();
         this._initReadControl();
-        this._initAmbientControl();
+        this._initCameraModeControl();
+        this._initWorldDock();
         this._initWorldReveal();
 
         // 4. Initialize application services
@@ -1011,10 +1020,7 @@ export class App {
             [button, 'blur', up], [window, 'pointerup', up], [window, 'blur', up],
         ];
         for (const [target, name, handler] of bindings) target.addEventListener(name, handler);
-        this._eventUnsubscribers.push(eventBus.on('mode:changed', mode => {
-            up();
-            button.hidden = mode === 'dashboard';
-        }));
+        this._eventUnsubscribers.push(eventBus.on('mode:changed', up));
         this._readControlCleanup = () => {
             up();
             for (const [target, name, handler] of bindings) target.removeEventListener(name, handler);
@@ -1022,74 +1028,193 @@ export class App {
         };
     }
 
-    // 5.1 (C6) — the only way into Ambient. The control also carries the
-    // revocation state: once a genuine input hands the frame back, it reads
-    // RESUME AMBIENT and waits to be asked again. Nothing here is on a timer.
-    _initAmbientControl() {
-        const button = document.getElementById('worldAmbient');
-        if (!button || this._ambientControlCleanup) return;
-        const apply = state => {
-            const on = state === 'on';
-            button.dataset.state = state;
-            button.textContent = state === 'resume' ? 'RESUME AMBIENT' : 'AMBIENT CAM';
-            button.setAttribute('aria-pressed', String(on));
-            button.classList.toggle('topbar__sound-btn--on', on);
+    // 9.1 / 4.4 (M14, M8) — FREE | AUTO | AMBIENT: one segmented control for
+    // who moves the World camera, exactly one segment pressed. FREE and AUTO
+    // are the persisted Auto-camera preference (`cv-auto-camera`, also in
+    // SET); AMBIENT is the explicit broadcast claim (C6), the only way into
+    // Ambient. Choosing it is a standing choice (`cv-ambient-standing`): it is
+    // reclaimed once the boot opening glide has settled and on every return
+    // from Dashboard, and only picking FREE or AUTO clears it. A genuine input
+    // still revokes the claim at once; AMBIENT then wears the resume pip and
+    // waits to be asked again (a reload or a Dashboard trip asks again for the
+    // operator, because the choice stands). Nothing here runs on a timer.
+    _initCameraModeControl() {
+        const group = document.querySelector('.world-dock__camera');
+        const ambientButton = document.getElementById('worldAmbient');
+        if (!group || !ambientButton || this._cameraModeCleanup) return;
+        const segments = [...group.querySelectorAll('[data-camera-mode]')];
+        const ambientTip = ambientButton.dataset.tip;
+        const storage = () => { try { return window.localStorage || null; } catch { return null; } };
+        const readAuto = () => storage()?.getItem(AUTO_CAMERA_STORAGE_KEY) !== '0';
+        const standing = () => storage()?.getItem(AMBIENT_STANDING_STORAGE_KEY) === '1';
+        const setStanding = on => {
+            try { storage()?.setItem(AMBIENT_STANDING_STORAGE_KEY, on ? '1' : '0'); } catch { /* persistence is optional */ }
         };
-        const onClick = () => {
+        const state = { auto: readAuto(), ambient: false, resume: false };
+        let settleHandle = null;
+        const render = () => {
+            const mode = state.ambient ? 'ambient' : state.auto ? 'auto' : 'free';
+            for (const segment of segments) {
+                segment.setAttribute('aria-pressed', String(segment.dataset.cameraMode === mode));
+            }
+            ambientButton.dataset.state = state.ambient ? 'on' : state.resume ? 'resume' : 'off';
+            if (state.resume) {
+                ambientButton.setAttribute('aria-label', 'Resume Ambient camera');
+                ambientButton.dataset.tip = 'Ambient handed the frame back to you · click to resume the broadcast';
+            } else {
+                ambientButton.removeAttribute('aria-label');
+                ambientButton.dataset.tip = ambientTip;
+            }
+        };
+        const claim = () => {
             const director = this.renderer?.cameraDirector;
-            if (!director?.setAmbient) return;
-            if (button.dataset.state === 'on') {
-                director.setAmbient(false);
-                apply('off');
+            if (!director?.setAmbient) return false;
+            // `camera:owner` renders the claim; a refused claim changes nothing.
+            return director.setAmbient(true);
+        };
+        const cancelSettle = () => {
+            if (settleHandle !== null) cancelAnimationFrame(settleHandle);
+            settleHandle = null;
+        };
+        // Boot: the opening glide is the establishing shot, never cut short.
+        // Once it has settled the standing choice claims the frame, unless
+        // the operator already took the camera, which is a revocation.
+        const claimAfterOpening = () => {
+            cancelSettle();
+            const camera = this.renderer?.camera;
+            const epoch = camera?.inputEpoch;
+            const poll = () => {
+                settleHandle = null;
+                if (this.renderer?.camera !== camera || !standing() || state.ambient) return;
+                if (camera?.isDirectorGliding?.()) {
+                    settleHandle = requestAnimationFrame(poll);
+                    return;
+                }
+                if (camera?.inputEpoch !== epoch) {
+                    state.resume = true;
+                    render();
+                    return;
+                }
+                claim();
+            };
+            settleHandle = requestAnimationFrame(poll);
+        };
+        const onClick = event => {
+            const mode = event.target.closest('[data-camera-mode]')?.dataset.cameraMode;
+            if (!mode) return;
+            if (mode === 'ambient') {
+                if (!state.ambient && claim()) setStanding(true);
                 return;
             }
-            apply(director.setAmbient(true) ? 'on' : 'off');
+            // FREE or AUTO is the operator saying "not Ambient": it ends a
+            // broadcast and clears the standing choice and its resume pip.
+            cancelSettle();
+            setStanding(false);
+            state.resume = false;
+            if (state.ambient) this.renderer?.cameraDirector?.setAmbient?.(false);
+            const auto = mode === 'auto';
+            if (auto !== state.auto) {
+                try { storage()?.setItem(AUTO_CAMERA_STORAGE_KEY, auto ? '1' : '0'); } catch { /* persistence is optional */ }
+                eventBus.emit('camera:auto-camera', { enabled: auto });
+            }
+            render();
         };
-        button.addEventListener('click', onClick);
-        const onOwner = payload => {
-            if (payload?.owner === 'ambient') { apply('on'); return; }
-            if (payload?.previous !== 'ambient') return;
-            apply(payload.reason === 'release' ? 'off' : 'resume');
+        group.addEventListener('click', onClick);
+        const unsubscribers = [
+            eventBus.on('camera:owner', payload => {
+                if (payload?.owner === 'ambient') {
+                    state.ambient = true;
+                    state.resume = false;
+                } else if (payload?.previous === 'ambient') {
+                    state.ambient = false;
+                    state.resume = payload.reason !== 'release';
+                } else {
+                    return;
+                }
+                render();
+            }),
+            eventBus.on('camera:auto-camera', payload => {
+                state.auto = payload?.enabled !== false;
+                render();
+            }),
+            eventBus.on('mode:changed', mode => {
+                if (mode !== 'dashboard') return;
+                // The World stops while Dashboard is up; a broadcast cannot run
+                // behind a hidden canvas, so the claim is dropped, not parked.
+                // The standing choice survives and reclaims on the way back.
+                cancelSettle();
+                this.renderer?.cameraDirector?.setAmbient?.(false);
+                state.ambient = false;
+                state.resume = false;
+                render();
+            }),
+            eventBus.on('world:first-frame', (payload = {}) => {
+                if (!standing() || state.ambient) return;
+                if (payload.reason === 'return') claim();
+                else if (payload.reason === 'boot') claimAfterOpening();
+            }),
+        ];
+        this._eventUnsubscribers.push(...unsubscribers);
+        this._cameraModeCleanup = () => {
+            cancelSettle();
+            group.removeEventListener('click', onClick);
+            this._cameraModeCleanup = null;
         };
-        this._eventUnsubscribers.push(eventBus.on('camera:owner', onOwner));
-        this._eventUnsubscribers.push(eventBus.on('mode:changed', mode => {
-            // The World stops while Dashboard is up; a broadcast cannot run
-            // behind a hidden canvas, so the claim is dropped, not parked.
-            this.renderer?.cameraDirector?.setAmbient?.(false);
-            apply('off');
-            button.hidden = mode === 'dashboard';
-        }));
-        this._ambientControlCleanup = () => {
-            button.removeEventListener('click', onClick);
-            this._ambientControlCleanup = null;
-        };
-        apply('off');
+        render();
     }
 
-    // 0.5 — the World surface never shows a black or half-built frame. The
-    // world canvases stay transparent over a sky-coloured container until the
-    // renderer reports a presented frame (`world:first-frame`), then fade in
-    // with a compositor-only CSS transition: 360 ms on boot, 220 ms on the
-    // way back from Dashboard. Reduced motion drops the fade in CSS. A
+    // 9.1 / 9.4 — the World dock publishes its screen rect for plates,
+    // moments and director framing (V8), and the chrome's `[data-tip]`
+    // controls share the one pixel tooltip.
+    _initWorldDock() {
+        if (this._worldDockCleanup) return;
+        const dock = document.getElementById('worldDock');
+        const unpublish = dock
+            ? publishReservedRect('world-dock', dock, { frame: document.getElementById('characterMode') })
+            : () => {};
+        const uninstallTooltip = installChromeTooltip(document);
+        this._worldDockCleanup = () => {
+            unpublish();
+            uninstallTooltip();
+            this._worldDockCleanup = null;
+        };
+    }
+
+    // 0.5/0.3 — the World surface never shows a black, stale-pose or pale
+    // frame. The world canvases stay transparent over `#characterMode` until
+    // the renderer reports a presented frame (`world:first-frame`), then fade
+    // in with a compositor-only CSS transition: 360 ms on boot, 220 ms on the
+    // way back from Dashboard (none under reduced motion). The container
+    // underneath holds the frame's own colour: before any renderer, the
+    // opening frame as index.html predicts it (local-clock sky down to the
+    // opening's horizon, its sea and the island's grass core; character.css);
+    // from the boot frame on, four stepped bands of that frame's materials,
+    // seamed on the sea horizon; across a Dashboard trip, eight bands of the
+    // last World frame (RevealBands). A
     // Dashboard trip keeps the camera pose it left with.
     _initWorldReveal() {
         const root = document.getElementById('characterMode');
         if (!root || this._worldRevealRoot) return;
         this._worldRevealRoot = root;
-        this._paintWorldSky(null);
         this._eventUnsubscribers.push(eventBus.on('world:first-frame', (payload = {}) => {
-            if (payload.sky) this._paintWorldSky(payload.sky);
             this._worldReturnPose = null;
+            // A Dashboard hold is this frame's own colour already; anything
+            // else (the boot sky, a trip the World never drew for) repaints.
+            if (!this._revealHoldPainted) this._paintRevealBands(payload);
+            this._revealHoldPainted = false;
             root.dataset.worldReady = payload.reason === 'return' ? 'return' : 'boot';
         }));
         this._eventUnsubscribers.push(eventBus.on('mode:changed', mode => {
             const renderer = this.renderer;
             if (mode === 'dashboard') {
                 this._worldReturnPose = renderer?.camera?.capturePose?.() || null;
+                // Measured before the renderer suspends its surfaces (its own
+                // listener registers after this one). If it cannot draw, the
+                // container keeps the bands it already shows.
+                const hold = renderer?.captureFrameBands?.(8) || null;
                 renderer?.camera?.setPresented?.(false);
                 delete root.dataset.worldReady;
-                const sky = renderer?._lastAtmosphere?.sky?.palette;
-                if (sky) this._paintWorldSky(sky);
+                if (hold) this._revealHoldPainted = this._paintRevealBands(hold);
                 return;
             }
             if (!renderer) return;
@@ -1097,19 +1222,12 @@ export class App {
         }));
     }
 
-    // The container sky: the live atmosphere palette once a renderer has one,
-    // before that a local-clock band whose colours live in character.css.
-    _paintWorldSky(palette) {
+    _paintRevealBands({ bands = null, cell = 1 } = {}) {
         const root = this._worldRevealRoot;
-        if (!root) return;
-        const stops = palette
-            ? [palette.zenith, palette.upperBand, palette.midBand, palette.horizon]
-            : null;
-        if (stops?.every(color => typeof color === 'string' && color)) {
-            stops.forEach((color, index) => root.style.setProperty(`--cv-world-sky-${index}`, color));
-            return;
-        }
-        paintBootSkyBand(root);
+        return paintRevealBands(root, bands, {
+            heightPx: this._worldCanvas?._claudeVilleCssHeight || root?.clientHeight || 0,
+            cell,
+        });
     }
 
     _initFirstRunHint() {
@@ -1506,8 +1624,9 @@ export class App {
             previous?.hide?.();
             this._installPerfDebugHelper();
             // Framing waits one frame so the first update has placed the agent
-            // sprites the content box is built from; that first frame is still
-            // behind the transparent canvas (0.5), so the opening is what shows.
+            // sprites the content box is built from. That frame never reveals:
+            // the boot signal stays 'boot-pending' until `_openWorld` has applied
+            // the opening pose (0.3), so the first frame shown is the opening.
             this._centerCameraHandle = requestAnimationFrame(() => {
                 this._centerCameraHandle = null;
                 if (this.renderer !== candidate || !candidate.camera) return;
@@ -1525,18 +1644,19 @@ export class App {
     // 8.3 — the opening shot. A scenario that authors a camera pose opens on
     // the island and settles on that pose (metadata `camera.opening: false`
     // keeps a deterministic first frame); otherwise it settles on live work.
+    // 0.3 — only then may a presented frame report `world:first-frame`.
     _openWorld(renderer, scenarioMetadata = null) {
         const cameraMeta = scenarioMetadata?.camera || null;
         if (cameraMeta) {
-            if (cameraMeta.opening === false) return;
-            renderer.playOpeningShot?.({ targetPose: renderer.camera.capturePose() });
-            return;
-        }
-        if (typeof renderer.frameContent === 'function') {
+            if (cameraMeta.opening !== false) {
+                renderer.playOpeningShot?.({ targetPose: renderer.camera.capturePose() });
+            }
+        } else if (typeof renderer.frameContent === 'function') {
             renderer.frameContent();
         } else {
             renderer.camera.centerOnMap();
         }
+        renderer.armFirstFrameSignal?.('boot');
     }
 
     async _loadDashboard() {
@@ -1655,10 +1775,8 @@ export class App {
                 }
             }).catch(() => {}));
         }));
-
-        this._eventUnsubscribers.push(eventBus.on('chronicle:aurora', () => {
-            this.renderer?.skyRenderer?.triggerAurora?.();
-        }));
+        // `chronicle:aurora` is the audio cue's (BgmDirector, SignalDirector):
+        // the sky never answers to the Chronicle or any agent event (V3).
     }
 
     _trackChronicleTask(task) {
@@ -1715,6 +1833,12 @@ export class App {
                     surface._claudeVilleDpr === dpr
                 ))
             ) return;
+            // 0.3 — the screen-centre world point before the canvases change
+            // (the camera still reads the old viewport here). Opening or
+            // closing the activity panel must not jump the world sideways.
+            const heldCenter = this.renderer?.camera && canvas._claudeVilleCssWidth > 0
+                ? this.renderer.camera.currentCenterWorld()
+                : null;
             for (const surface of canvasSurfaces) {
                 surface.width = newW;
                 surface.height = newH;
@@ -1745,6 +1869,7 @@ export class App {
             if (this.renderer && this.renderer.camera) {
                 const cam = this.renderer.camera;
                 cam.onViewportResize();
+                if (heldCenter) cam.holdCenter(heldCenter);
                 // 0.5 — the relayout a Dashboard→World switch causes restores
                 // the pose the World was left in; it is not a reason to re-frame.
                 const returnPose = this._worldReturnPose;
@@ -1757,6 +1882,11 @@ export class App {
                     this.renderer.frameContent();
                 }
             }
+            // 0.3 — reallocating the canvases cleared them. Draw the frame now,
+            // inside the ResizeObserver callback (after layout, before paint), so
+            // a cleared backing store never reaches the screen. A World that is
+            // suspended, hidden or not yet drawn skips this.
+            this.renderer?.renderNow?.();
         };
 
         // Use ResizeObserver to detect container size changes (including footer open/close)
@@ -1923,7 +2053,8 @@ export class App {
         }
         this._deferredSelectionIntent = null;
         this._readControlCleanup?.();
-        this._ambientControlCleanup?.();
+        this._cameraModeCleanup?.();
+        this._worldDockCleanup?.();
         if (this._onFirstRunHintDismiss) {
             document.getElementById('firstRunHintDismiss')?.removeEventListener(
                 'click',
@@ -2145,19 +2276,6 @@ export class App {
         if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
     }
 }
-
-// 0.5 — the World container shows the local-clock sky band from the first
-// paint after this module runs, before `load` boots the App.
-function paintBootSkyBand(root) {
-    if (!root) return;
-    const hour = new Date().getHours();
-    root.dataset.skyBand = hour >= 5 && hour < 7 ? 'dawn'
-        : hour >= 7 && hour < 17 ? 'day'
-            : hour >= 17 && hour < 20 ? 'dusk'
-                : 'night';
-}
-
-if (typeof document !== 'undefined') paintBootSkyBand(document.getElementById('characterMode'));
 
 // Boot
 window.addEventListener('load', () => {

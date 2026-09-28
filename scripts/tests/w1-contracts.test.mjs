@@ -22,8 +22,6 @@ import {
     createMotionClock,
     advanceMotionClock,
     virtualFramesFor,
-    inDutyPause,
-    IDLE_STRIDE_PERIOD_MS,
 } from '../../claudeville/src/presentation/character-mode/MotionClock.js';
 import {
     VillagePhase,
@@ -227,23 +225,6 @@ test('C3: two refresh rates agree on elapsed time for the same wall clock', () =
     for (let i = 0; i < 30; i++) advanceMotionClock(slow, 1000 / 30);
     for (let i = 0; i < 120; i++) advanceMotionClock(fast, 1000 / 120);
     assert.ok(Math.abs(slow.elapsedMs - fast.elapsedMs) < 1e-6);
-});
-
-test('C3: the idle stride duty cycle preserves the authored 6-of-12 cadence', () => {
-    assert.ok(Math.abs(IDLE_STRIDE_PERIOD_MS - 200) < 1e-6);
-    // First half of the period is the pause, exactly as `phase < 6` of 12 was.
-    assert.equal(inDutyPause(0, IDLE_STRIDE_PERIOD_MS), true);
-    assert.equal(inDutyPause(99, IDLE_STRIDE_PERIOD_MS), true);
-    assert.equal(inDutyPause(101, IDLE_STRIDE_PERIOD_MS), false);
-    assert.equal(inDutyPause(199, IDLE_STRIDE_PERIOD_MS), false);
-    assert.equal(inDutyPause(201, IDLE_STRIDE_PERIOD_MS), true);
-    // Duty ratio holds regardless of sampling rate.
-    let paused = 0;
-    const samples = 1200;
-    for (let i = 0; i < samples; i++) {
-        if (inDutyPause(i * (1000 / 120), IDLE_STRIDE_PERIOD_MS)) paused++;
-    }
-    assert.ok(Math.abs(paused / samples - 0.5) < 0.02);
 });
 
 // ---------------------------------------------------------------------------

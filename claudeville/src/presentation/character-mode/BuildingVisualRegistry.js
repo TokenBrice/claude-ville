@@ -59,7 +59,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.45, busyMax: 0.8 },
         labelPriority: 'landmark',
         beaconBase: 0.85,
-        // 6.2 — sprite-local lit-window spots (`at` is the pane centre).
+        // 6.2 — sprite-local lit-window spots. BL-3 — `at` is the glass
+        // centre on every rect in this registry (`windowRectBounds`), and
+        // each rect sits >= 60 % on its emissive sidecar's glass
+        // (`npm run world:validate-buildings`).
         // 4.2 — measured on the re-authored keep: the three dome-drum panes,
         // the lower left-tower pane and the hall pane beside the right tower.
         // The east wing's panes are left out: they sit inside the 4.1 cut.
@@ -67,8 +70,8 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
             { at: [143, 103], w: 5, h: 12 },
             { at: [175, 110], w: 6, h: 11 },
             { at: [207, 103], w: 3, h: 11 },
-            { at: [72, 120], w: 3, h: 6 },
-            { at: [236, 121], w: 4, h: 10 },
+            { at: [72.5, 121], w: 3, h: 6 },
+            { at: [236.5, 122], w: 3, h: 10 },
         ],
         // #53 — sprite-local pole base for the occupancy pennant (right turret).
         pennant: { at: [254, 60] },
@@ -138,9 +141,12 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         beaconBase: 0.8,
         // 6.2 — the two eave lanterns, not mid-wall blobs. 4.5 — glass
         // measured on the re-authored board (NW and SE ends of the roof beam).
+        // BL-3 — one rect per lantern pane: the dark centre post is not glass.
         windowRects: [
-            { at: [46, 55], w: 6, h: 10, shape: 'ellipse' },
-            { at: [203, 125], w: 6, h: 10, shape: 'ellipse' },
+            { at: [43, 56], w: 4, h: 12 },
+            { at: [50, 56], w: 4, h: 12 },
+            { at: [200, 126], w: 4, h: 12 },
+            { at: [207.5, 126], w: 4, h: 12 },
         ],
         // On the roof ridge, above the middle of the slate.
         pennant: { at: [124, 33] },
@@ -167,9 +173,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         labelPriority: 'landmark',
         beaconBase: 1,
         // 4.5 — the two warm panes over the tool rack (re-authored base.png).
+        // BL-3 — pane centres on the sidecar glass (they were top-left corners).
         windowRects: [
-            { at: [140, 157], w: 8, h: 21 },
-            { at: [153, 152], w: 8, h: 21 },
+            { at: [144, 169.5], w: 6, h: 19 },
+            { at: [158, 163.5], w: 6, h: 19 },
         ],
         // 4.6 — the hearth fire is painted into base.png, so rest needs an
         // authored mask: `banked.png` restates exactly those pixels as stepped
@@ -271,13 +278,15 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         // 4.5 — the re-authored hall's five ground-floor lancets (the reading
         // rooms), glass bounds measured on base.png. The clerestory row is
         // emissive art only. (QAWorld F10: the SE gable is now one tall lancet
-        // portal, so the rose window and its rect are gone.)
+        // portal, so the rose window and its rect are gone.) BL-3 — lancet
+        // glass centres; these were top-left corners, so every stamp and room
+        // pane lit the wall below-right of its window.
         windowRects: [
-            { at: [90, 137], w: 8, h: 30 },
-            { at: [113, 148], w: 5, h: 25 },
-            { at: [135, 159], w: 5, h: 26 },
-            { at: [157, 169], w: 5, h: 28 },
-            { at: [179, 182], w: 5, h: 26 },
+            { at: [95, 152], w: 5, h: 30 },
+            { at: [115.5, 160.5], w: 5, h: 25 },
+            { at: [137.5, 172], w: 5, h: 26 },
+            { at: [159.5, 183], w: 5, h: 28 },
+            { at: [181.5, 195], w: 5, h: 26 },
         ],
         pennant: { at: [68, 14] },
         // 4.2 — two reading rooms (the second and fourth lancet bays). A third
@@ -285,8 +294,8 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         rooms: {
             countAt: [140, 216],
             slots: [
-                { at: [113, 148], w: 5, h: 25 },
-                { at: [157, 169], w: 5, h: 28 },
+                { at: [115.5, 160.5], w: 5, h: 25 },
+                { at: [159.5, 183], w: 5, h: 28 },
             ],
         },
         // QAWorld F10 — the SE portal was re-authored (inpaint) into a lancet
@@ -352,11 +361,13 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         labelPriority: 'landmark',
         beaconBase: 0.92,
         // Violet rune aperture; kept separate from the mine's amber fire.
+        // No emissive sidecar to validate against: centred by eye on the
+        // aperture (x 139-164) between the arch's inner stones.
         windowColor: '#b38cff',
         windowRects: [
-            { at: [134, 91], w: 5, h: 28 },
-            { at: [144, 84], w: 8, h: 32, shape: 'ellipse' },
-            { at: [154, 91], w: 5, h: 28 },
+            { at: [142, 92], w: 5, h: 26 },
+            { at: [152, 84], w: 8, h: 32, shape: 'ellipse' },
+            { at: [161, 92], w: 5, h: 26 },
         ],
         doorSpill: {
             at: [144, 128],
@@ -383,13 +394,14 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         beaconBase: 1,
         // Centres of the five arched windows up the lit (SW) face of the
         // shaft, measured on base.png glass (the old rects sat on blank wall).
-        // The emissive sidecar lights the same glass plus the SE-face window.
+        // The emissive sidecar lights the same glass plus the SE-face window;
+        // the second, fourth and fifth rects are narrowed to its lit slit.
         windowRects: [
             { at: [131, 122], w: 6, h: 15 },
-            { at: [129, 148], w: 6, h: 15 },
+            { at: [130.5, 148], w: 3, h: 16 },
             { at: [129, 179], w: 4, h: 17 },
-            { at: [125, 218], w: 6, h: 15 },
-            { at: [118, 258], w: 5, h: 14 },
+            { at: [126.5, 218], w: 3, h: 16 },
+            { at: [118.5, 258], w: 3, h: 16 },
         ],
         pennant: { at: [166, 80] },
         effectAnchors: {
@@ -418,19 +430,20 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
         beaconBase: 0.9,
+        // Pane centres, sized to the sidecar's lit texels on each pane. The
+        // sidecar lights only a one-texel sliver of the panes at ~[122, 129]
+        // and ~[167, 148], so they carry no rect.
         windowRects: [
-            { at: [155, 70], w: 4, h: 8 },
-            { at: [181, 80], w: 4, h: 8 },
-            { at: [195, 89], w: 8, h: 7 },
-            { at: [222, 90], w: 4, h: 7 },
-            { at: [102, 110], w: 4, h: 9 },
-            { at: [179, 107], w: 4, h: 7 },
-            { at: [232, 110], w: 4, h: 8 },
-            { at: [122, 129], w: 4, h: 8 },
-            { at: [180, 136], w: 4, h: 8 },
-            { at: [167, 148], w: 4, h: 8 },
-            { at: [183, 155], w: 4, h: 8 },
-            { at: [190, 158], w: 4, h: 7 },
+            { at: [155.5, 70.5], w: 3, h: 3 },
+            { at: [181.5, 79.5], w: 3, h: 5 },
+            { at: [196, 88], w: 6, h: 6 },
+            { at: [221.5, 90.5], w: 3, h: 3 },
+            { at: [102.5, 111], w: 3, h: 8 },
+            { at: [178.5, 107], w: 3, h: 4 },
+            { at: [231.5, 111], w: 3, h: 4 },
+            { at: [179.5, 135.5], w: 3, h: 5 },
+            { at: [183.5, 155.5], w: 3, h: 5 },
+            { at: [190.5, 158], w: 3, h: 4 },
         ],
     },
 });
@@ -523,6 +536,17 @@ export function getBuildingEffectAnchor(type, key, fallback = null) {
 export function getBuildingWindowRects(type) {
     const rects = getBuildingVisual(type)?.windowRects;
     return Array.isArray(rects) && rects.length ? rects : null;
+}
+
+// BL-3 — `at` on every window rect and room pane is the glass centre, in
+// base-local texels. Every reader (the warmth stamps, the room panes, the
+// Command aggregate row, the atlas bake and the building validator) takes a
+// rect's texel bounds from here, so the convention lives in one place. Pass
+// a mapped centre (`cx`, `cy`) to get bounds in that space instead.
+export function windowRectBounds(rect, cx = rect.at[0], cy = rect.at[1]) {
+    const w = Math.max(3, Math.round(rect.w || 6));
+    const h = Math.max(3, Math.round(rect.h || 8));
+    return { left: Math.round(cx - w / 2), top: Math.round(cy - h / 2), w, h };
 }
 
 export function getBuildingWindowColor(type, fallback = null) {
@@ -649,7 +673,6 @@ export function getBuildingOccupancyState(type, { count = 0, capacity = 0, alert
 export {
     MIDNIGHT_OIL_FALL_MS,
     MIDNIGHT_OIL_RISE_MS,
-    lightsBuildingWindows,
     nightWindowGate,
 } from './NightOccupancyGate.js';
 

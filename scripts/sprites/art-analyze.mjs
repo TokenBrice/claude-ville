@@ -22,6 +22,14 @@
 // breakdown (measured S vs the ramp's own S). Pooling counts sheet pixels, not
 // on-screen coverage.
 //
+// Seasonal and canopy ramps (plan 5.1/5.3): each ramp the tree canopies and
+// the baked leaf litter use is checked against its rules (dark -> light by
+// luminance, no Tier A except snow's M9 winter exception, foliageDeep /
+// foliageSun at S <= 0.50 with a mid hue of 90-110 deg), and every tree sheet
+// is run through FoliageRenderer's own canopy remap for every variant and
+// season: every remapped canopy pixel must be a stop of the plan's ramps
+// (`offRamp` 0).
+//
 // Advisory only: always exits 0. Runs next to `npm run sprites:audit-refresh`.
 //
 // Usage:
@@ -36,6 +44,14 @@ import {
     GROUND_SATURATION,
     WATER_VOID_SATURATION_MAX,
 } from '../../claudeville/src/config/artPalette.js';
+import {
+    CANOPY_SEASONS,
+    CANOPY_VARIANTS,
+    TREE_SPRITES,
+    canopyPlan,
+    isCanopyPixel,
+    recolorCanopy,
+} from '../../claudeville/src/presentation/character-mode/FoliageRenderer.js';
 import {
     collectSpriteEntries,
     expectedPathsForEntry,
@@ -494,6 +510,126 @@ function hexSaturation(hex) {
     return max === 0 ? 0 : (max - Math.min(r, g, b)) / max;
 }
 
+// ------------------------------------------------ seasonal and canopy ramps
+
+// Rules per plan 5.1/5.3 ramp. Every ramp runs dark -> light by luminance and
+// stays out of Tier A unless `tierAExempt` (snow: maintainer decision M9).
+// Snow may cool its shadow step but its top step reads as snow only near
+// achromatic (terrain-foliage notes: S <= 0.12).
+const SEASONAL_RAMP_RULES = Object.freeze({
+    snow: { maxSat: 0.2, topMaxSat: 0.12, tierAExempt: true },
+    leafAutumn: {},
+    canopyRusset: {},
+    canopyOchre: {},
+    willowGold: {},
+    blossom: {},
+    foliageDeep: { maxSat: 0.5, midHue: [90, 110] },
+    foliageSun: { maxSat: 0.5, midHue: [90, 110] },
+});
+
+function hexHsv(hex) {
+    const [r, g, b] = hexToRgb(hex);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const d = max - min;
+    let h = 0;
+    if (d > 0) {
+        if (max === r) h = ((g - b) / d) % 6;
+        else if (max === g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h = (h * 60 + 360) % 360;
+    }
+    return { h, s: max === 0 ? 0 : d / max, v: max / 255 };
+}
+
+function isTierAHex(hex) {
+    const [r, g, b] = hexToRgb(hex);
+    const { s, v } = hexHsv(hex);
+    return luminance(r, g, b) > THRESHOLDS.tierALuminance
+        || (s > THRESHOLDS.tierASaturation && v >= THRESHOLDS.tierASaturationMinValue);
+}
+
+function seasonalRampReport() {
+    return Object.entries(SEASONAL_RAMP_RULES).map(([key, rule]) => {
+        const stops = ART_RAMPS[key] || [];
+        const hsv = stops.map(hexHsv);
+        const lum = stops.map((hex) => luminance(...hexToRgb(hex)));
+        const flags = [];
+        if (!stops.length) flags.push('missing');
+        if (lum.some((l, i) => i > 0 && l <= lum[i - 1])) flags.push('not-dark-to-light');
+        const tierA = stops.filter(isTierAHex);
+        if (tierA.length && !rule.tierAExempt) flags.push('tier-a');
+        const maxSat = Math.max(0, ...hsv.map((c) => c.s));
+        if (rule.maxSat !== undefined && maxSat > rule.maxSat) flags.push('saturation');
+        if (rule.topMaxSat !== undefined && hsv.length && hsv[hsv.length - 1].s > rule.topMaxSat) flags.push('top-saturation');
+        const mid = stops.length >> 1;
+        const midHue = stops.length ? (stops.length % 2 ? hsv[mid].h : (hsv[mid - 1].h + hsv[mid].h) / 2) : null;
+        if (rule.midHue && !(midHue >= rule.midHue[0] && midHue <= rule.midHue[1])) flags.push('mid-hue');
+        return {
+            ramp: key,
+            stops: stops.length,
+            minSat: Math.min(1, ...hsv.map((c) => c.s)),
+            maxSat,
+            minLum: lum.length ? lum[0] : null,
+            maxLum: lum.length ? lum[lum.length - 1] : null,
+            midHue,
+            tierAStops: tierA.length,
+            flags,
+        };
+    });
+}
+
+const packRgb = (r, g, b) => (r << 16) | (g << 8) | b;
+
+function rampStopSet(key, stops = 0) {
+    const hexes = ART_RAMPS[key] || [];
+    return (stops ? hexes.slice(0, stops) : hexes).map((hex) => packRgb(...hexToRgb(hex)));
+}
+
+// Runs every tree sheet through FoliageRenderer's canopy remap for each plan
+// its variants and seasons use and counts canopy pixels that land off the
+// plan's ramps. A turning oak keeps its authored pixels below the turned
+// crown; those are counted as `authored`, not off-ramp.
+function canopyRemapReport() {
+    return Object.entries(TREE_SPRITES).map(([key, sprite]) => {
+        const absPath = join(spritesRoot, 'vegetation', `${sprite.id}.png`);
+        if (!existsSync(absPath)) return { sprite: key, missing: true, plans: 0, canopy: 0, remapped: 0, authored: 0, offRamp: 0 };
+        const png = readPng(absPath);
+        const width = png.width;
+        const height = Math.min(sprite.height, png.height);
+        const source = Uint8ClampedArray.from(png.data.subarray(0, width * height * 4));
+        const species = key.slice(0, key.indexOf('.'));
+        const plans = new Set();
+        for (const season of CANOPY_SEASONS) {
+            for (const variant of CANOPY_VARIANTS) {
+                const plan = canopyPlan(species, variant, season);
+                if (plan) plans.add(plan);
+            }
+        }
+        const row = { sprite: key, missing: false, plans: plans.size, canopy: 0, remapped: 0, authored: 0, offRamp: 0 };
+        for (const plan of plans) {
+            const data = Uint8ClampedArray.from(source);
+            recolorCanopy(data, width, height, plan);
+            const allowed = new Set([
+                ...(plan.ramp ? rampStopSet(plan.ramp, plan.stops) : []),
+                ...(plan.turning ? rampStopSet(plan.turning) : []),
+                ...(plan.blossom ? rampStopSet('blossom') : []),
+            ]);
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const i = (y * width + x) * 4;
+                    if (!isCanopyPixel(source, i, y, height)) continue;
+                    row.canopy++;
+                    if (allowed.has(packRgb(data[i], data[i + 1], data[i + 2]))) row.remapped++;
+                    else if (!plan.ramp && data[i] === source[i] && data[i + 1] === source[i + 1] && data[i + 2] === source[i + 2]) row.authored++;
+                    else row.offRamp++;
+                }
+            }
+        }
+        return row;
+    });
+}
+
 function printReport(results, summary, opts) {
     const rows = opts.flaggedOnly ? results.filter((r) => r.flags.length) : results;
     console.log(`ClaudeVille art analysis — ${results.length} assets (advisory; see artPalette.js for the rules)\n`);
@@ -538,6 +674,30 @@ function printReport(results, summary, opts) {
                 { label: 'rampS', get: (g) => num(g.rampSaturation), right: true },
             ]));
         }
+    }
+
+    if (summary.seasonalRamps) {
+        console.log('\nSeasonal and canopy ramps (plan 5.1/5.3; dark -> light, no Tier A except snow, foliageDeep/Sun S <= 0.50 and mid hue 90-110):');
+        console.log(table(summary.seasonalRamps, [
+            { label: 'ramp', get: (r) => r.ramp },
+            { label: 'stops', get: (r) => r.stops, right: true },
+            { label: 'S', get: (r) => `${num(r.minSat)}-${num(r.maxSat)}`, right: true },
+            { label: 'L', get: (r) => `${num(r.minLum)}-${num(r.maxLum)}`, right: true },
+            { label: 'midHue', get: (r) => (r.midHue === null ? '-' : Math.round(r.midHue)), right: true },
+            { label: 'tierA', get: (r) => r.tierAStops, right: true },
+            { label: 'flags', get: (r) => r.flags.join(',') },
+        ]));
+    }
+    if (summary.canopyRemaps) {
+        console.log('\nTree canopy remaps (FoliageRenderer, every variant and season; offRamp must be 0):');
+        console.log(table(summary.canopyRemaps, [
+            { label: 'sprite', get: (r) => r.sprite },
+            { label: 'plans', get: (r) => (r.missing ? 'missing' : r.plans), right: true },
+            { label: 'canopy px', get: (r) => r.canopy, right: true },
+            { label: 'on-ramp', get: (r) => r.remapped, right: true },
+            { label: 'authored', get: (r) => r.authored, right: true },
+            { label: 'offRamp', get: (r) => r.offRamp, right: true },
+        ]));
     }
 
     console.log('\nBy class (medians of per-asset values):');
@@ -600,6 +760,10 @@ function main() {
         console.error(`[art-analyze] no manifest ids match: ${opts.ids.join(', ')}`);
     }
     const summary = summarize(results);
+    if (!opts.ids || Object.values(TREE_SPRITES).some((sprite) => matches(sprite.id))) {
+        summary.seasonalRamps = seasonalRampReport();
+        summary.canopyRemaps = canopyRemapReport();
+    }
     if (opts.json) {
         console.log(JSON.stringify(toJson(results, summary), null, 2));
     } else {

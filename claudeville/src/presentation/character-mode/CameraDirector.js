@@ -1,7 +1,8 @@
+import { BUILDING_DEFS } from '../../config/buildings.js';
+import { TILE_HALF_WIDTH } from './Projection.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { fitAttentionFrame } from './AttentionFraming.js';
-import { SURVEY_TIER } from './Camera.js';
+import { attentionCandidateBounds, fitAttentionFrame } from './AttentionFraming.js';
 
 const SCORE_INTERVAL_MS = 3000;
 const ORDINARY_IDLE_MS = 30000;
@@ -30,16 +31,35 @@ const AMBIENT_HOLD_MAX_MS = 30000;
 const AMBIENT_MOVE_GAP_MS = 18000;
 const AMBIENT_CHAPTERS_PER_WIDE = 2;
 const AMBIENT_WIDE_PADDING_PX = 200;
-const AMBIENT_COHORT_PADDING_PX = 220;
-const AMBIENT_CHAPTER_PADDING_PX = 230;
+// 4.1/4.2 — a cohort or chapter shot frames its subject, not the Director's
+// padded district box (which stays the comfort test): each member's body
+// (the tallest stands 76 texels over its feet, plus its contact shadow) and
+// the district's building, with a little air, so the medium scale can hold it.
+const AMBIENT_SUBJECT_BODY = Object.freeze({ side: 20, up: 76, down: 6 });
+const AMBIENT_SUBJECT_PADDING_PX = 32;
+// 4.2 — a cohort shot frames the bodies actually at its building: folded on
+// its footprint or visit tiles (`_foldBuildingType`), or standing or arriving
+// on its apron, within the footprint's long side plus three tiles of its
+// centre. A member chatting or walking at another building is not in the shot.
+const AMBIENT_COHORT_APRON_TILES = 3;
+const BUILDING_SPAN_TILES = new Map(BUILDING_DEFS.map(def => [def.type, Math.max(def.width || 1, def.height || 1)]));
 // Long lateral moves in the ambient motion family (8.1: easeInOutSine, the
-// distance-scaled duration ×2.2). The wide is the survey tier where the
-// backing store has one (8.3); cohorts and chapters rest at tier 1 at most.
-// Automatic moves never rest above tier 1.
-const AUTO_MAX_TIER = 1;
+// distance-scaled duration ×2.2). 4.1/M8 — shots are sized by visible world
+// area: the wide rests at `scales.wide` (z2 at 5120 × 1440 DPR 1) and
+// cohorts and chapters at `scales.medium` at most (z3 there); ordinary Auto
+// never rests closer than `scales.wide`.
 // 5.2 — the chapter's bars stay up this long after the move settles.
 const AMBIENT_CHAPTER_LETTERBOX_MS = 3000;
-const AMBIENT_CHAPTER_GRADE = Object.freeze({ vignette: 0.34, worldTint: '#c0392b' });
+
+// 4.3 — `A` holds the attention set after its glide lands: a soft follow of
+// the included bodies (and where the moving ones are headed) for up to 12 s,
+// ending once every one of them has stood still for 1.5 s.
+const ATTENTION_HOLD_MAX_MS = 12000;
+const ATTENTION_HOLD_SETTLE_MS = 1500;
+const ATTENTION_HOLD_PADDING_PX = 32;
+// Fast enough to keep ahead of a working walk at z3 (≈ 270 screen px/s).
+const ATTENTION_HOLD_MAX_SPEED_PX_PER_MS = 0.6;
+const ATTENTION_HOLD_STIFFNESS_MS = 600;
 
 const ORDINARY_PADDING_PX = 220;
 const EVENT_PADDING_PX = Object.freeze({
@@ -122,6 +142,41 @@ function valuesOfAgentSprites(agentSprites) {
     if (typeof agentSprites.values === 'function') return [...agentSprites.values()];
     if (Array.isArray(agentSprites)) return agentSprites;
     return [];
+}
+
+// The world box of an Ambient subject's bodies standing at `points`.
+function ambientSubjectBox(points) {
+    const finite = (points || []).filter(point => finiteNumber(point?.x) != null && finiteNumber(point?.y) != null);
+    if (!finite.length) return null;
+    const xs = finite.map(point => Number(point.x));
+    const ys = finite.map(point => Number(point.y));
+    return {
+        minX: Math.min(...xs) - AMBIENT_SUBJECT_BODY.side,
+        maxX: Math.max(...xs) + AMBIENT_SUBJECT_BODY.side,
+        minY: Math.min(...ys) - AMBIENT_SUBJECT_BODY.up,
+        maxY: Math.max(...ys) + AMBIENT_SUBJECT_BODY.down,
+    };
+}
+
+// 4.3 — the world box the `A` hold keeps in view: every held body with its
+// plate, and for a walking body the same footprint where its path ends.
+function attentionHoldBox(sprites) {
+    const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    const extend = (point) => {
+        const bounds = attentionCandidateBounds(point);
+        box.minX = Math.min(box.minX, bounds.minX);
+        box.minY = Math.min(box.minY, bounds.minY);
+        box.maxX = Math.max(box.maxX, bounds.maxX);
+        box.maxY = Math.max(box.maxY, bounds.maxY);
+    };
+    for (const sprite of sprites) {
+        extend({ x: sprite.x, y: sprite.y });
+        if (!sprite.moving) continue;
+        const path = Array.isArray(sprite.waypoints) ? sprite.waypoints : [];
+        const end = path.length ? path[path.length - 1] : { x: sprite.targetX, y: sprite.targetY };
+        if (finiteNumber(end?.x) != null && finiteNumber(end?.y) != null) extend({ x: end.x, y: end.y });
+    }
+    return box;
 }
 
 export function collectLiveAgents(agentSprites, { includePending = false } = {}) {
@@ -345,6 +400,7 @@ export class CameraDirector {
             phase: 'none',
             chapters: 0,
             subjectType: null,
+            subjectIds: null,
             shotKey: '',
             caption: null,
             wide: null,
@@ -386,7 +442,15 @@ export class CameraDirector {
             width: camera._viewportWidth() / pixelScale,
             height: camera._viewportHeight() / pixelScale,
         };
-        const frame = fitAttentionFrame(candidates, viewport);
+        const tiers = this._attentionTiers();
+        // 4.3 — a walking body is framed with where its path ends, so the shot
+        // the glide lands on already holds the walk the hold then follows.
+        const sprites = new Map(valuesOfAgentSprites(agentSprites).map(sprite => [String(sprite?.agent?.id || ''), sprite]));
+        const framed = candidates.map((candidate) => {
+            const sprite = sprites.get(candidate.id);
+            return sprite?.moving ? { ...candidate, bounds: attentionHoldBox([sprite]) } : candidate;
+        });
+        const frame = fitAttentionFrame(framed, viewport, { zooms: tiers });
         camera.noteUserInput();
         camera.glideToWorld({
             minX: frame.center.x, maxX: frame.center.x,
@@ -394,10 +458,117 @@ export class CameraDirector {
         }, { maxZoom: frame.zoom, paddingPx: 0, owner: 'user', userAdjustedOnComplete: true });
         this.attentionFrame = {
             ...frame,
+            tiers,
             focusedAgentId: frame.included[0] || frame.excluded[0],
             inputAt: camera._lastUserInputAt,
+            // 4.3 — the hold starts when the glide lands (_updateAttentionHold).
+            hold: { startedAt: null, stillSince: null, done: false },
         };
         return this.attentionFrame;
+    }
+
+    // 4.1 — `A` tries the close, medium and wide scales, then tier 1 (the
+    // whole island on the ultrawide, where the wide is z2) before it would
+    // leave an action-needed agent out of the shot.
+    _attentionTiers() {
+        const camera = this.camera;
+        const scales = ['close', 'medium', 'wide'].map(name => camera?.shotTier?.(name)).filter(Number.isFinite);
+        if (!scales.length) return [3, 2, 1];
+        return [...new Set([...scales, 1])].sort((a, b) => b - a);
+    }
+
+    // 4.3 — hold the attention set after its glide lands. Each update, until
+    // genuine input, soft-follow the included bodies (each moving body's box
+    // extended to where it is headed) on the operator's own frame: owner
+    // 'user', pans preferred, never zooming in. The hold ends once every
+    // included body has stood still 1.5 s, after 12 s, or the moment anything
+    // else takes the frame (input clears the frame in update(); a follow, `F`,
+    // Ambient or the replay change the owner). A body the frame can no longer
+    // hold moves to `excluded`, never silently. Reduced motion never follows:
+    // it re-cuts once, when the set settles.
+    _updateAttentionHold(now, dt, agentSprites) {
+        const frame = this.attentionFrame;
+        const hold = frame?.hold;
+        const camera = this.camera;
+        if (!hold || hold.done || !camera) return;
+        if (camera.owner !== 'user' || camera._cameraOwner !== 'user' || camera.followTarget) {
+            hold.done = true;
+            return;
+        }
+        // The attention glide is still landing.
+        if (camera.isDirectorGliding?.()) return;
+        hold.startedAt ??= now;
+        const sprites = this._attentionHoldSprites(agentSprites);
+        if (!sprites.length) {
+            hold.done = true;
+            return;
+        }
+        if (sprites.some(sprite => sprite.moving)) hold.stillSince = null;
+        else hold.stillSince ??= now;
+        const settled = hold.stillSince != null && now - hold.stillSince >= ATTENTION_HOLD_SETTLE_MS;
+        const expired = now - hold.startedAt >= ATTENTION_HOLD_MAX_MS;
+        if (this.motionScale <= 0 || camera._reducedMotion) {
+            if (settled || expired) {
+                this._followAttentionSet(sprites, dt);
+                hold.done = true;
+            }
+            return;
+        }
+        if (expired) {
+            hold.done = true;
+            return;
+        }
+        const moved = this._followAttentionSet(sprites, dt);
+        if (settled && !moved) hold.done = true;
+    }
+
+    // The included sprites still in the village, oldest decision first.
+    _attentionHoldSprites(agentSprites) {
+        const byId = new Map();
+        for (const sprite of valuesOfAgentSprites(agentSprites)) {
+            const id = String(sprite?.agent?.id || '');
+            if (id) byId.set(id, sprite);
+        }
+        const sprites = [];
+        for (const id of this.attentionFrame.included) {
+            const sprite = byId.get(id);
+            if (!sprite || sprite._archiveAnim || sprite.agent?.isDeparted) continue;
+            if (finiteNumber(sprite.x) == null || finiteNumber(sprite.y) == null) continue;
+            sprites.push(sprite);
+        }
+        return sprites;
+    }
+
+    _followAttentionSet(sprites, dt) {
+        const camera = this.camera;
+        const frame = this.attentionFrame;
+        const minTier = Math.min(...frame.tiers);
+        const fitZoom = camera.tierZoom?.(minTier) || 1;
+        const width = camera._viewportWidth();
+        const height = camera._viewportHeight();
+        const fits = box => (box.maxX - box.minX) * fitZoom + ATTENTION_HOLD_PADDING_PX * 2 <= width
+            && (box.maxY - box.minY) * fitZoom + ATTENTION_HOLD_PADDING_PX * 2 <= height;
+        const members = [...sprites];
+        let box = attentionHoldBox(members);
+        // Overflow: the newest decisions leave the held set first, into the
+        // excluded count the overlay states.
+        while (members.length > 1 && !fits(box)) {
+            const id = String(members.pop().agent?.id || '');
+            frame.included = frame.included.filter(included => included !== id);
+            frame.excluded = [...frame.excluded, id];
+            box = attentionHoldBox(members);
+        }
+        return camera.softFollowWorldBox(box, {
+            dt,
+            paddingPx: ATTENTION_HOLD_PADDING_PX,
+            maxZoom: frame.zoom,
+            minZoom: minTier,
+            owner: 'user',
+            preferPan: true,
+            allowZoomIn: false,
+            maxSpeedPxPerMs: ATTENTION_HOLD_MAX_SPEED_PX_PER_MS,
+            stiffnessMs: ATTENTION_HOLD_STIFFNESS_MS,
+        });
     }
 
     dispose() {
@@ -414,11 +585,12 @@ export class CameraDirector {
         this._lastEventKindAt.clear();
     }
 
-    update({ now = nowMs(), agentSprites = null, snapshot = null } = {}) {
+    update({ now = nowMs(), dt = 16, agentSprites = null, snapshot = null } = {}) {
         this._latestSnapshot = snapshot || null;
         if (this.attentionFrame && this.attentionFrame.inputAt !== this.camera?._lastUserInputAt) {
             this.attentionFrame = null;
         }
+        if (this.attentionFrame) this._updateAttentionHold(now, dt, agentSprites);
         // C6 — Ambient owns the frame exclusively while its claim stands; the
         // timed Auto policy below never runs against it. A revoked claim (any
         // genuine input) drops the schedule and hands Auto back untouched.
@@ -509,7 +681,7 @@ export class CameraDirector {
             this._startAmbientWide(state, cohorts, agentSprites, now);
             return;
         }
-        this._startAmbientCohort(state, cohorts, now);
+        this._startAmbientCohort(state, cohorts, now, agentSprites);
     }
 
     // Reduced motion holds exactly one composition: the overview, cut to once,
@@ -519,18 +691,14 @@ export class CameraDirector {
         if (state.staticFrame) return;
         const box = this._ambientWideBoxOrAgents(cohorts, agentSprites);
         if (!validBox(box)) return;
-        // Under reduced motion glideToWorld cuts directly — this is the cut.
-        const started = this.camera.glideToWorld(box, {
-            maxZoom: SURVEY_TIER,
-            minZoom: SURVEY_TIER,
+        // Under reduced motion glideToWorld cuts directly — this is the cut,
+        // at the wide shot scale like the moving broadcast's wide.
+        const started = this.camera.glideToWorld(box, this._ambientGlideOptions('ambient:wide', {
             paddingPx: AMBIENT_WIDE_PADDING_PX,
-            owner: 'ambient:wide',
             composition: { x: 0.5, y: 0.55 },
-            preferPan: true,
-            allowZoomIn: false,
-            zoomHysteresis: 1.35,
-            userAdjustedOnComplete: true,
-        });
+            wide: true,
+            bodies: collectLiveAgents(agentSprites),
+        }));
         if (!started) return;
         state.staticFrame = true;
         state.phase = 'wide';
@@ -568,27 +736,37 @@ export class CameraDirector {
         state.holdUntil = now + AMBIENT_HOLD_MIN_MS;
     }
 
-    _ambientGlideOptions(owner, { paddingPx, composition, grade = null, letterboxHoldMs = 0, wide = false }) {
-        // Leaving the survey wide for a cohort or chapter is the one ambient
-        // zoom: a single tier step in at the end of the pan (8.1).
-        const fromSurvey = !wide && this.camera?.currentZoomTier?.() === SURVEY_TIER;
-        return {
+    _ambientGlideOptions(owner, { paddingPx, composition, letterboxHoldMs = 0, wide = false, bodies = null }) {
+        const camera = this.camera;
+        const wideTier = camera?.shotTier?.('wide') ?? 1;
+        const base = {
             motion: 'ambient',
-            // Only resting tiers: ambient pans, it does not drum the zoom.
-            maxZoom: wide ? SURVEY_TIER : (fromSurvey ? AUTO_MAX_TIER : this._currentMaxZoom()),
-            minZoom: wide ? SURVEY_TIER : 1,
             paddingPx,
             owner,
             composition,
-            grade,
             letterboxHoldMs,
             letterbox: letterboxHoldMs > 0,
-            preferPan: true,
-            allowZoomIn: fromSurvey,
-            zoomHysteresis: fromSurvey ? 0 : 1.35,
             // Ambient's composition survives a relayout instead of being
             // re-framed to content behind the broadcast's back.
             userAdjustedOnComplete: true,
+        };
+        // 4.1 — the wide is a fixed shot scale: the active village at
+        // `scales.wide` from wherever the camera stands. 4.2 — as the
+        // establishing shot it keeps landmark crowns and plates whole, never
+        // at the expense of a villager (`bodies`) it already shows whole.
+        if (wide) return { ...base, maxZoom: wideTier, minZoom: wideTier, keepLandmarks: true, bodies };
+        // Leaving the wide for a cohort or chapter is the one ambient zoom: a
+        // single step in to `scales.medium` at the end of the pan (8.1).
+        // Between cohorts Ambient pans; it does not drum the zoom.
+        const tier = camera?.currentZoomTier?.();
+        const fromWide = !Number.isFinite(tier) || tier <= wideTier;
+        return {
+            ...base,
+            maxZoom: camera?.shotTier?.('medium') ?? 2,
+            minZoom: 1,
+            preferPan: true,
+            allowZoomIn: fromWide,
+            zoomHysteresis: fromWide ? 0 : 1.35,
         };
     }
 
@@ -599,6 +777,7 @@ export class CameraDirector {
             paddingPx: AMBIENT_WIDE_PADDING_PX,
             composition: { x: 0.5, y: 0.55 },
             wide: true,
+            bodies: collectLiveAgents(agentSprites),
         });
 
         // The same wide, exactly: the saved pose, while the districts and the
@@ -644,6 +823,7 @@ export class CameraDirector {
         state.phase = 'wide';
         state.chapters = 0;
         state.subjectType = null;
+        state.subjectIds = null;
         state.shotKey = `wide:${key}`;
         state.caption = { text: ambientWideCaption(cohorts), kind: 'wide' };
         state.lastMoveAt = now;
@@ -651,7 +831,7 @@ export class CameraDirector {
         return true;
     }
 
-    _startAmbientCohort(state, cohorts, now) {
+    _startAmbientCohort(state, cohorts, now, agentSprites = null) {
         // Cohorts arrive busiest-first and every one of them has live work, so
         // the broadcast never travels to an empty building to fill time.
         const candidate = cohorts.find(cohort => cohort.type !== state.subjectType) || null;
@@ -661,8 +841,8 @@ export class CameraDirector {
         }
         const shotKey = `cohort:${candidate.contextKey}`;
         const options = this._ambientGlideOptions('ambient:cohort', {
-            paddingPx: AMBIENT_COHORT_PADDING_PX,
-            composition: { x: 0.5, y: 0.55 },
+            paddingPx: AMBIENT_SUBJECT_PADDING_PX,
+            composition: { x: 0.5, y: 0.5 },
         });
         // A comfortable frame, or the same real context as the shot already on
         // screen, is not worth a move.
@@ -670,18 +850,41 @@ export class CameraDirector {
             this._extendAmbientHold(state, now);
             return false;
         }
-        if (!this._wouldMoveEnough(candidate.box, options) || !this.camera.glideToWorld(candidate.box, options)) {
+        const cohortSubject = this._cohortSubject(candidate, agentSprites);
+        const subject = cohortSubject?.box || candidate.box;
+        if (!this._wouldMoveEnough(subject, options) || !this.camera.glideToWorld(subject, options)) {
             this._extendAmbientHold(state, now);
             return false;
         }
         state.phase = 'cohort';
         state.chapters += 1;
         state.subjectType = candidate.type;
+        state.subjectIds = cohortSubject?.ids || [];
         state.shotKey = shotKey;
         state.caption = { text: ambientCohortCaption(candidate), kind: 'cohort' };
         state.lastMoveAt = now;
         state.settled = false;
         return true;
+    }
+
+    // 4.1/4.2 — the bodies of the members standing at the district's building
+    // (see AMBIENT_COHORT_APRON_TILES), with the building; the building alone
+    // when none of them is there yet. `ids` are the shot's cohort, published on
+    // the Ambient state as `subjectIds` once the move starts.
+    _cohortSubject(cohort, agentSprites) {
+        const ids = new Set(cohort.agentIds || []);
+        const center = cohort.center;
+        const span = BUILDING_SPAN_TILES.get(cohort.type) ?? 1;
+        const radius = (span + AMBIENT_COHORT_APRON_TILES) * TILE_HALF_WIDTH;
+        const present = valuesOfAgentSprites(agentSprites).filter((sprite) => {
+            if (!ids.has(String(sprite?.agent?.id || ''))) return false;
+            if (!Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) return false;
+            const fold = sprite._foldBuildingType || null;
+            if (fold) return fold === cohort.type;
+            return Boolean(center) && Math.hypot(sprite.x - center.x, sprite.y - center.y) <= radius;
+        });
+        const box = ambientSubjectBox([...present.map(sprite => ({ x: sprite.x, y: sprite.y })), center]);
+        return box ? { box, ids: present.map(sprite => String(sprite.agent.id)).sort() } : null;
     }
 
     // 5.2 — one chapter per real incident identity. Concurrent incidents reach
@@ -706,15 +909,15 @@ export class CameraDirector {
         }
 
         const options = this._ambientGlideOptions('ambient:chapter', {
-            paddingPx: AMBIENT_CHAPTER_PADDING_PX,
-            composition: { x: 0.5, y: 0.53 },
-            grade: AMBIENT_CHAPTER_GRADE,
+            paddingPx: AMBIENT_SUBJECT_PADDING_PX,
+            composition: { x: 0.5, y: 0.5 },
             letterboxHoldMs: AMBIENT_CHAPTER_LETTERBOX_MS,
         });
+        const subject = ambientSubjectBox([chapter.center]) || chapter.box;
         // Already in frame: the chapter is its caption, not a pointless move.
         if (this._isFrameComfortable(chapter.box, { event: true })
-            || !this._wouldMoveEnough(chapter.box, options)
-            || !camera.glideToWorld(chapter.box, options)) {
+            || !this._wouldMoveEnough(subject, options)
+            || !camera.glideToWorld(subject, options)) {
             state.caption = caption;
             this._extendAmbientHold(state, now);
             return false;
@@ -722,6 +925,7 @@ export class CameraDirector {
         state.phase = 'chapter';
         state.chapters += 1;
         state.subjectType = null;
+        state.subjectIds = null;
         state.shotKey = `chapter:${chapter.id}`;
         state.caption = caption;
         state.lastMoveAt = now;
@@ -749,7 +953,7 @@ export class CameraDirector {
         if (now - (this._lastEventKindAt.get(kind) ?? -Infinity) < kindCooldown) return;
         if (this._isFrameComfortable(cue.box, { event: true })) return;
 
-        const options = this._eventGlideOptions(kind, cue.grade || null);
+        const options = this._eventGlideOptions(kind, cue.letterbox === true);
         if (!this._wouldMoveEnough(cue.box, options)) return;
         if (!this._canCameraMove(now, { snapshot: this._latestSnapshot, event: true })) return;
 
@@ -804,11 +1008,13 @@ export class CameraDirector {
         };
     }
 
-    _eventGlideOptions(kind, grade) {
+    // 5.7 — release and incident cues carry their own letterbox; a cue never
+    // grades the world (V3).
+    _eventGlideOptions(kind, letterbox = false) {
         return {
             maxZoom: this._currentMaxZoom(),
             paddingPx: EVENT_PADDING_PX[kind] || EVENT_PADDING_PX.default,
-            grade,
+            letterbox,
             owner: `cue:${kind}`,
             composition: { x: 0.5, y: kind === 'release' ? 0.56 : 0.53 },
             preferPan: true,
@@ -817,10 +1023,13 @@ export class CameraDirector {
         };
     }
 
-    // The automatic cap: the current resting tier, never above tier 1.
+    // 4.1/M8 — the automatic cap: the current resting tier, never closer than
+    // the wide shot scale (z1 at 1920, z2 at 5120 × 1440 DPR 1). It is a tier
+    // label, so a DPR-2 half rung the operator rests on caps like any tier.
     _currentMaxZoom() {
+        const wide = this.camera?.shotTier?.('wide') ?? 1;
         const tier = this.camera?.currentZoomTier?.();
-        return Number.isFinite(tier) ? Math.min(AUTO_MAX_TIER, tier) : AUTO_MAX_TIER;
+        return Number.isFinite(tier) ? Math.min(wide, tier) : wide;
     }
 
     _distanceFromCurrentCenter(point) {

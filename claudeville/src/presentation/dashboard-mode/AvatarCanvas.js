@@ -8,7 +8,7 @@ import { Compositor } from '../character-mode/Compositor.js';
 
 let SPRITE_METADATA_PROMISE = null;
 let SPRITE_ASSET_VERSION = '2026-04-26-visual-revamp'; // overwritten asynchronously on first load
-// Portrait entries resolved from the manifest: spriteId -> { crop, bust }.
+// Portrait entries resolved from the manifest: spriteId -> { crop, bust, face }.
 let PORTRAIT_ENTRIES = new Map();
 const AVATAR_CANVASES = new Set();
 
@@ -21,6 +21,16 @@ function normalizeCrop(raw) {
     if (![x, y, w, h].every(Number.isInteger)) return null;
     if (x < 0 || y < 0 || w <= 0 || h <= 0) return null;
     return { x, y, w, h };
+}
+
+// 9.9 — optional `portraitFace: { x, y }`: the face centre (cell-local pixels
+// of the composed south idle frame) for characters whose crop anchors badly.
+function normalizeFace(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const x = Number(raw.x);
+    const y = Number(raw.y);
+    if (![x, y].every(Number.isInteger) || x < 0 || y < 0) return null;
+    return { x, y };
 }
 
 async function yamlParser() {
@@ -50,7 +60,7 @@ function loadSpriteMetadata() {
                     if (!entry?.id) continue;
                     const crop = normalizeCrop(entry.portraitCrop);
                     const bust = typeof entry.portrait === 'string' && entry.portrait ? entry.portrait : null;
-                    if (crop || bust) portraits.set(entry.id, { crop, bust });
+                    if (crop || bust) portraits.set(entry.id, { crop, bust, face: crop ? normalizeFace(entry.portraitFace) : null });
                 }
             } catch {
                 // Manifest shape or parser unavailable: portraits stay empty
@@ -82,7 +92,25 @@ loadSpriteMetadata().then(({ assetVersion, portraits }) => {
 // full-body avatar.
 function portraitSourceFor(spriteId) {
     const entry = PORTRAIT_ENTRIES.get(spriteId);
-    return { crop: entry?.crop || null, bust: entry?.bust || null };
+    return { crop: entry?.crop || null, bust: entry?.bust || null, face: entry?.face || null };
+}
+
+// 9.9 — where a fixed-scale window sits in the authored crop. `top` (the
+// Activity Panel sheet) keeps the crop's top edge. `face` (the Dashboard
+// niche) sits three quarters of the way down the crop's spare height, so a
+// tall hat gives way to eyes and hair; a manifest `portraitFace` centres the
+// window on the face instead (eyes just above the middle), inside the cell.
+function cropWindow(crop, face, winW, winH, cellSize, anchor) {
+    if (anchor === 'face' && face) {
+        return {
+            sx: Math.max(0, Math.min(cellSize - winW, face.x - Math.floor(winW / 2))),
+            sy: Math.max(0, Math.min(cellSize - winH, face.y - Math.floor(winH * 0.45))),
+        };
+    }
+    return {
+        sx: crop.x + Math.floor((crop.w - winW) / 2),
+        sy: anchor === 'face' ? crop.y + Math.floor((crop.h - winH) * 0.75) : crop.y,
+    };
 }
 
 const SPRITE_IMAGE_CACHE = new Map();
@@ -150,11 +178,15 @@ export function fitAvatarFrame(width, height, maxWidth, maxHeight, integer = fal
 // Canvas box and the frame area the sprite is fitted into, per size.
 const AVATAR_SIZES = Object.freeze({
     hero: { w: 96, h: 96, bodyW: 88, bodyH: 82, portraitW: 92, portraitH: 92 },
-    // 7.8 — Dashboard row niche and child-strip chip. `crisp` sizes blit the
-    // portrait at an exact integer scale (1x clipped when the crop is larger
-    // than the box), with no vector ground ellipse and no effort crest: a
-    // static face on the art-pixel grid, nothing that implies motion.
-    niche: { w: 44, h: 40, bodyW: 44, bodyH: 40, portraitW: 44, portraitH: 40, crisp: true },
+    // 7.8 + 9.9 — Dashboard row niche and child-strip chip. `crisp` sizes blit
+    // the portrait at an exact integer scale (1x clipped when the crop is
+    // larger than the box), with no vector ground ellipse and no effort crest:
+    // a static face on the art-pixel grid, nothing that implies motion. The
+    // niche shows a 22x20 face window at exactly 2x.
+    niche: { w: 44, h: 40, bodyW: 44, bodyH: 40, portraitW: 44, portraitH: 40, crisp: true, cropScale: 2, window: 'face' },
+    // 9.9 — the roomy row tier on an uncrowded ultrawide Dashboard: a 32x32
+    // face window at 2x.
+    nicheRoomy: { w: 64, h: 64, bodyW: 64, bodyH: 64, portraitW: 64, portraitH: 64, crisp: true, cropScale: 2, window: 'face' },
     chip: { w: 26, h: 26, bodyW: 26, bodyH: 26, portraitW: 26, portraitH: 26, crisp: true },
     // 7.4 — Activity Panel character-sheet portrait: a 32x32 top-anchored
     // window of the authored crop drawn at exactly 2x (64x64), crisp.
@@ -162,9 +194,9 @@ const AVATAR_SIZES = Object.freeze({
 });
 
 export class AvatarCanvas {
-    // size: 'niche' (44x40 Dashboard row) | 'chip' (26x26 child strip) |
-    // 'hero' (96x96 Dashboard call card / selected detail) | 'sheet' (64x64
-    // Activity Panel).
+    // size: 'niche' (44x40 Dashboard row) | 'nicheRoomy' (64x64 roomy
+    // Dashboard row) | 'chip' (26x26 child strip) | 'hero' (96x96 Dashboard
+    // call card / selected detail) | 'sheet' (64x64 Activity Panel).
     constructor(agent, size = 'niche') {
         this.agent = agent;
         this.size = AVATAR_SIZES[size] ? size : 'niche';
@@ -197,6 +229,18 @@ export class AvatarCanvas {
     redraw() {
         this._paintedKey = null;
         this.draw();
+    }
+
+    // 9.9 — switch between the compact and roomy Dashboard niche in place.
+    resize(size) {
+        if (!AVATAR_SIZES[size] || size === this.size) return;
+        this.size = size;
+        const dim = AVATAR_SIZES[size];
+        this.canvas.width = dim.w;
+        this.canvas.height = dim.h;
+        this.canvas.style.width = `${dim.w}px`;
+        this.canvas.style.height = `${dim.h}px`;
+        this.redraw();
     }
 
     draw() {
@@ -402,7 +446,7 @@ export class AvatarCanvas {
     _drawPortrait(ctx, identity, accent, spriteId) {
         const box = AVATAR_SIZES[this.size];
         if (!box.portraitW || !box.portraitH) return false;
-        const { crop, bust } = portraitSourceFor(spriteId);
+        const { crop, bust, face } = portraitSourceFor(spriteId);
 
         const bustImage = bust ? this._bustImage(bust) : null;
         if (bustImage) {
@@ -421,14 +465,14 @@ export class AvatarCanvas {
         if (crop.x + crop.w > cellSize || crop.y + crop.h > cellSize) return false;
 
         if (box.cropScale) {
-            // 7.4 — fixed integer enlargement: clip the crop to the window the
-            // box holds at that scale (centred, top-anchored), bottom-aligned.
+            // 7.4 / 9.9 — fixed integer enlargement: clip the crop to the
+            // window the box holds at that scale, bottom-aligned in the box.
             const winW = Math.min(crop.w, Math.floor(box.w / box.cropScale));
             const winH = Math.min(crop.h, Math.floor(box.h / box.cropScale));
-            const sx = crop.x + Math.floor((crop.w - winW) / 2);
+            const { sx, sy } = cropWindow(crop, face, winW, winH, cellSize, box.window);
             const drawW = winW * box.cropScale;
             const drawH = winH * box.cropScale;
-            ctx.drawImage(source.image, sx, IDLE_SOUTH_ROW * cellSize + crop.y, winW, winH,
+            ctx.drawImage(source.image, sx, IDLE_SOUTH_ROW * cellSize + sy, winW, winH,
                 Math.round((this.canvas.width - drawW) / 2), this.canvas.height - drawH, drawW, drawH);
             return true;
         }
@@ -553,7 +597,7 @@ export class AvatarCanvas {
     _renderKey(identity, appearance) {
         const app = appearance || {};
         const spriteId = identity.spriteId || '';
-        const portrait = spriteId ? portraitSourceFor(spriteId) : { crop: null, bust: null };
+        const portrait = spriteId ? portraitSourceFor(spriteId) : { crop: null, bust: null, face: null };
         const crop = portrait.crop;
         return [
             this.size,
@@ -569,6 +613,7 @@ export class AvatarCanvas {
             this.spriteFailed ? 'failed' : '',
             portrait.bust || '',
             crop ? `${crop.x},${crop.y},${crop.w},${crop.h}` : '',
+            portrait.face ? `${portrait.face.x},${portrait.face.y}` : '',
             app.skin || '',
             app.shirt || '',
             app.pants || '',

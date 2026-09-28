@@ -60,7 +60,7 @@ test('health buckets retain stable order and omit zero counts', () => {
     }), ['errors', 'quota', 'watchlist']);
 });
 
-test('dashboard CSS covers every emitted health-strip class without width media queries', async () => {
+test('dashboard CSS covers every emitted health-strip class and never shrinks by width', async () => {
     const [rendererSource, dashboardCss] = await Promise.all([
         readFile(rendererUrl, 'utf8'),
         readFile(dashboardCssUrl, 'utf8'),
@@ -93,7 +93,11 @@ test('dashboard CSS covers every emitted health-strip class without width media 
         );
     }
 
-    assert.doesNotMatch(dashboardCss, /@media[^\{]*(?:min|max)-width\s*:/i);
+    // Desktop-only: the one width query widens the layout for ultrawide
+    // windows (0.9); nothing shrinks for narrow ones.
+    assert.doesNotMatch(dashboardCss, /@media[^\{]*max-width\s*:/i);
+    const minWidths = [...dashboardCss.matchAll(/@media[^\{]*min-width\s*:\s*(\d+)px/gi)].map(match => Number(match[1]));
+    assert.ok(minWidths.every(width => width >= 2400), `width queries below the ultrawide breakpoint: ${minWidths}`);
 });
 
 

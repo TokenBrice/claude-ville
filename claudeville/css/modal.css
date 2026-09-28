@@ -1,8 +1,9 @@
 /* ── Modal family (plan 7.6): Settings, Chronicle, Changelog ──
-   Same system as the frame: --bg-1 body, 1px --line-2 bevel + 1px black seam,
-   --line-1 dividers, the parchment ink ramp, and type on the C5 grid only
-   (PS2P 8/16, DM 11/22; never bold). Gold is reserved for focus and the
-   engaged state of a control. */
+   Same system as the frame: a --bg-1 body inside the frame kit's walnut
+   slice (`cv-frame cv-frame--walnut` on `.modal`, plan 9.5), --line-1
+   dividers, the parchment ink ramp, and type on the C5 grid only (PS2P 8/16,
+   DM 11/22; never bold). Gold is reserved for focus and the engaged state of
+   a control. */
 .modal-overlay {
     position: fixed;
     inset: 0;
@@ -11,7 +12,11 @@
     align-items: center;
     justify-content: center;
     z-index: 1000;
-    animation: modal-overlay-in 160ms steps(4, end);
+    /* 9.6 — the dim steps in and out on `--cv-step-in`; `display` holds
+       until the exit has played. Closed hook: `aria-hidden="true"`. */
+    transition:
+        opacity var(--cv-step-in),
+        display var(--cv-step-in) allow-discrete;
 }
 
 .modal {
@@ -21,19 +26,30 @@
     display: flex;
     flex-direction: column;
     color: var(--ink-2);
-    background: var(--bg-1);
-    border: 1px solid var(--line-2);
-    box-shadow: 0 0 0 1px var(--seam);
-    animation: modal-overlay-in 160ms steps(4, end);
+    /* 9.6 — the dialog rises 12px in three whole 4px steps. */
+    transition: transform var(--cv-step-in);
 }
 
 .modal--wide {
     max-width: 720px;
 }
 
-@keyframes modal-overlay-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
+.modal-overlay[aria-hidden="true"] {
+    opacity: 0;
+}
+
+.modal-overlay[aria-hidden="true"] .modal {
+    transform: translateY(12px);
+}
+
+@starting-style {
+    .modal-overlay {
+        opacity: 0;
+    }
+
+    .modal-overlay .modal {
+        transform: translateY(12px);
+    }
 }
 
 .modal__header {
@@ -71,11 +87,11 @@
     font: var(--fs-body)/var(--lh-body) var(--font-body);
 }
 
-/* Reduced motion: dialogs appear and vanish instantly. */
+/* Reduced motion: dialogs appear and vanish in one frame. */
 @media (prefers-reduced-motion: reduce) {
     .modal-overlay,
     .modal {
-        animation: none;
+        transition: none;
     }
 }
 

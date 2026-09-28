@@ -161,9 +161,24 @@ try {
             await Promise.resolve();
             const unavailableText = panel.panelEl.textContent;
 
+            // CU-7 — detail without usage: with no token snapshot the context
+            // stat says so; with snapshot counts it renders them as a snapshot
+            // and never labels a cost numeral's neighbour "No usage data".
             detailMode = 'b-empty';
+            const originalTokensB = agentB.tokens;
+            agentB.tokens = { availability: 'unavailable' };
             await panel._fetchDetail();
             const noUsageText = panel.dom.panelContextSize.textContent;
+            agentB.tokens = { input: 1200, output: 300, contextWindow: 800, availability: 'observed' };
+            await panel._fetchDetail();
+            const snapshotUsage = {
+                caption: panel.dom.panelContextSize.textContent,
+                numeral: panel.dom.panelContextNumeral.textContent,
+                contextShown: !panel.dom.panelContextNumeral.parentElement.hidden,
+                costShown: !panel.dom.panelCostRow.hidden && panel.dom.panelEstCost.textContent !== '-',
+                input: panel.dom.panelInputTokens.textContent,
+            };
+            agentB.tokens = originalTokensB;
 
             document.getElementById('btnModeDashboard').click();
             await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -204,6 +219,7 @@ try {
                 failureCleared: !unavailableText.includes('SENTINEL_ACTIVITY_A')
                     && unavailableText.includes('Activity unavailable'),
                 noUsageText,
+                snapshotUsage,
                 obsoleteFooterCleared: !dashboard.usageFooters.has(agentA.id)
                     && card._elements.usage.style.display === 'none',
                 teamInvalidatesAvatar: teamSignature !== baseSignature,
@@ -223,6 +239,13 @@ try {
     assert.equal(detailState.pendingCleared, true);
     assert.equal(detailState.failureCleared, true);
     assert.equal(detailState.noUsageText, 'No usage data');
+    assert.deepEqual(detailState.snapshotUsage, {
+        caption: 'context · from snapshot',
+        numeral: '800',
+        contextShown: true,
+        costShown: true,
+        input: '1.2K',
+    });
     assert.equal(detailState.obsoleteFooterCleared, true);
     assert.equal(detailState.teamInvalidatesAvatar, true);
     assert.equal(detailState.teamRemovalInvalidatesAvatar, true);

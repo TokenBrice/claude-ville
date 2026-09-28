@@ -195,6 +195,40 @@ function itineraryFromIntentDraft(draft, { phase, goal, intentId, previous = nul
     };
 }
 
+// V8 — the one working-visitor predicate. A body counts as working at a
+// building only while its session really works (status WORKING, or a tool call
+// in flight), it is not an action-needed agent (waiting occupants are counted,
+// never lit), it is not resting or queued, and it is not merely walking a leg
+// of an inferred work cycle: the archive → forge → taskboard → harbor route
+// above is a guess from a tool's phase (`inferred: true`), so a body passing
+// another building's visit tiles on it is travelling, not working there. Every
+// building light, emitter boost, part gate, door, room and smoke column reads
+// this, so a lit window or a cycling hearth always means real work (V4).
+//
+// `visit` describes the body at one building, every field optional:
+//   building — the building type the body stands at;
+//   intent   — the route intent it follows ({ building, itinerary });
+//   role     — its occupancy role; 'rest' (a 7.1 seat) and 'queue' (a 7.2
+//              petitioner slot) never count. Falls back to `agent.visitRole`.
+export const NON_WORKING_VISIT_ROLES = Object.freeze(['rest', 'queue']);
+const NON_WORKING_STATUSES = new Set(['waiting_on_user', 'errored', 'rate_limited']);
+
+export function isInferredWorkLeg(intent, building) {
+    if (!intent || !building || intent.itinerary?.inferred !== true) return false;
+    const target = normalizeRouteStop(intent.building);
+    return Boolean(target) && target !== normalizeRouteStop(building);
+}
+
+export function isWorkingVisitor(agent, { building = null, intent = null, role = null } = {}) {
+    if (!agent || agent.isDeparted === true) return false;
+    const departedAt = Number(agent.departedAt);
+    if (Number.isFinite(departedAt) && departedAt !== 0) return false;
+    if (NON_WORKING_VISIT_ROLES.includes(role ?? agent.visitRole)) return false;
+    if (NON_WORKING_STATUSES.has(agent.status)) return false;
+    if (agent.status !== 'working' && agent.turnState !== 'tool_pending') return false;
+    return !isInferredWorkLeg(intent, building);
+}
+
 export class VisitIntentManager {
     constructor({ world = null, now = null } = {}) {
         this.world = world;

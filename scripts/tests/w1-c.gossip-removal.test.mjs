@@ -4,11 +4,6 @@ import { readFileSync } from 'node:fs';
 
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 import { RelationshipState } from '../../claudeville/src/presentation/character-mode/RelationshipState.js';
-import {
-    inDutyPause,
-    IDLE_STRIDE_PERIOD_MS,
-    IDLE_STRIDE_PAUSE_FRACTION,
-} from '../../claudeville/src/presentation/character-mode/MotionClock.js';
 
 // AgentSprite.js and CouncilRing.js import Canvas/DOM-backed modules, so they
 // cannot be loaded in plain Node without inventing a fake DOM. Source-contract
@@ -55,14 +50,6 @@ test('real pairwise talk identifiers remain in the files that own them', () => {
     assert.match(state, /_rebuildChatPairs/);
 });
 
-test('idle stride uses elapsed-ms duty cycle, not update-tick counting', () => {
-    const sprite = readSource('AgentSprite.js');
-    assert.match(sprite, /_idleStrideMs/);
-    assert.match(sprite, /inDutyPause/);
-    assert.match(sprite, /IDLE_STRIDE_PERIOD_MS/);
-    assert.doesNotMatch(sprite, /_idleStrideTick/);
-});
-
 test('two unrelated IDLE agents co-located at one point produce no cluster and no chatting state', () => {
     const agents = new Map([
         ['idle-a', { id: 'idle-a', status: AgentStatus.IDLE }],
@@ -86,24 +73,3 @@ test('two unrelated IDLE agents co-located at one point produce no cluster and n
     assert.equal(sprites.get('idle-b').chatPartner, null);
 });
 
-function pausedFractionAtHz(hz, durationMs = 2000) {
-    const dt = 1000 / hz;
-    let paused = 0;
-    let samples = 0;
-    for (let elapsed = dt; elapsed <= durationMs + 1e-9; elapsed += dt) {
-        samples += 1;
-        if (inDutyPause(elapsed, IDLE_STRIDE_PERIOD_MS, IDLE_STRIDE_PAUSE_FRACTION)) paused += 1;
-    }
-    return paused / samples;
-}
-
-test('idle stride duty cycle yields the same paused fraction (~0.5) at 30, 60, and 120 Hz', () => {
-    const at30 = pausedFractionAtHz(30);
-    const at60 = pausedFractionAtHz(60);
-    const at120 = pausedFractionAtHz(120);
-    for (const [hz, fraction] of [[30, at30], [60, at60], [120, at120]]) {
-        assert.ok(Math.abs(fraction - 0.5) < 0.02, `${hz} Hz paused fraction ${fraction}`);
-    }
-    assert.ok(Math.abs(at30 - at60) < 0.02);
-    assert.ok(Math.abs(at120 - at60) < 0.02);
-});

@@ -1,6 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { CANVAS_BUDGET, canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { tileToWorld, worldToTile } from './Projection.js';
+import { dottedCurve } from './EffectStamps.js';
 
 const CAPTURE_INTERVAL_MS = 1000;
 const FLUSH_INTERVAL_MS = 30000;
@@ -126,35 +127,48 @@ function createCameraMotionStats() {
     }]));
 }
 
-// Shared trail-stroke vocabulary (plan 3.10 — one trail language). Both the
+// Shared trail vocabulary (plan 3.10 — one trail language). Both the
 // persisted hour-trails below and the director's live replay trails in
-// VillageDirectorOverlay stroke through here: round-capped per-segment
-// polylines whose alpha decays with sample age. Color semantics stay with the
-// caller (phase palette vs status/team palette); `points` are screen/world
-// `{ x, y, ts }` in the caller's current transform.
-export function strokeAgedTrailSegments(ctx, points, {
+// VillageDirectorOverlay draw through here: whole-texel dotted runs on the
+// art grid (`dot`×`dot` texels every `step` texels of arc length, the dot
+// phase carried across segments so the spacing never restarts), with alpha
+// in TRAIL_ALPHA_STEPS whole steps by sample age — never an AA `stroke()`.
+// Color semantics stay with the caller (phase palette vs status/team
+// palette); `points` are world `{ x, y, ts }` in the caller's transform.
+export const TRAIL_ALPHA_STEPS = 3;
+
+export function drawAgedTrailDots(ctx, points, {
     now = Date.now(),
     maxAgeMs = RETAIN_MS,
     baseAlpha = 0.18,
-    width = 1,
+    dot = 1,
+    step = 3,
     rgbForPoint = null,
 } = {}) {
-    if (!ctx || !Array.isArray(points) || points.length < 2) return;
+    if (!ctx || !Array.isArray(points) || points.length < 2 || !(baseAlpha > 0)) return;
     ctx.save();
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = width;
+    let travelled = 0;
     for (let i = 1; i < points.length; i++) {
         const previous = points[i - 1];
         const current = points[i];
+        const x0 = Number(previous.x) || 0;
+        const y0 = Number(previous.y) || 0;
+        const x1 = Number(current.x) || 0;
+        const y1 = Number(current.y) || 0;
+        const length = Math.hypot(x1 - x0, y1 - y0);
+        if (!(length > 0)) continue;
         const age = Math.max(0, now - (Number(current.ts) || now));
-        const alpha = Math.max(0.02, 1 - age / maxAgeMs) * baseAlpha;
+        const fresh = Math.max(0, 1 - age / maxAgeMs);
+        const level = Math.max(1, Math.ceil(fresh * TRAIL_ALPHA_STEPS)) / TRAIL_ALPHA_STEPS;
         const color = rgbForPoint ? rgbForPoint(current, i) : '232, 224, 194';
-        ctx.strokeStyle = `rgba(${color}, ${alpha.toFixed(3)})`;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(previous.x), Math.round(previous.y));
-        ctx.lineTo(Math.round(current.x), Math.round(current.y));
-        ctx.stroke();
+        dottedCurve(ctx, x0, y0, (x0 + x1) / 2, (y0 + y1) / 2, x1, y1, {
+            step,
+            dot,
+            color: `rgba(${color}, ${(level * baseAlpha).toFixed(3)})`,
+            phase: -travelled,
+            maxDots: 256,
+        });
+        travelled += length;
     }
     ctx.restore();
 }
@@ -604,10 +618,7 @@ export class TrailRenderer {
         ctx.setTransform(scale, 0, 0, scale, -left * scale, -top * scale);
         ctx.clearRect(left, top, cacheWidth, cacheHeight);
         for (const points of trails) {
-            this._drawTrailPoints(ctx, points, now, 'ambient', {
-                coordinateSpace: 'world-cache',
-                cacheScale: scale,
-            });
+            this._drawTrailPoints(ctx, points, now, 'ambient');
         }
 
         this.cache = canvas;
@@ -623,7 +634,6 @@ export class TrailRenderer {
     }
 
     _drawSemanticTrailOverlays(ctx, camera, now, preserveTransform = false) {
-        const zoom = Math.max(0.25, Number(camera?.zoom) || 1);
         let drewAny = false;
         ctx.save();
         if (!preserveTransform) camera.applyTransform?.(ctx);
@@ -635,10 +645,7 @@ export class TrailRenderer {
                 ? MAX_SELECTED_RENDER_SAMPLES
                 : MAX_ACTION_RENDER_SAMPLES;
             const renderSamples = samples.slice(-limit);
-            this._drawTrailPoints(ctx, this._worldTrailPoints(renderSamples), now, importance, {
-                coordinateSpace: 'world',
-                zoom,
-            });
+            this._drawTrailPoints(ctx, this._worldTrailPoints(renderSamples), now, importance);
             if (importance === 'selected') this._stats.selectedOverlayDraws++;
             else this._stats.actionOverlayDraws++;
             drewAny = true;
@@ -672,22 +679,19 @@ export class TrailRenderer {
         return points;
     }
 
-    _drawTrailPoints(ctx, points, now, importance = 'ambient', {
-        coordinateSpace = 'screen',
-        zoom = 1,
-        cacheScale = 1,
-    } = {}) {
+    // Trails are whole-texel dotted runs in world texels: the dot is one art
+    // texel (zoom screen px) at every scale, so no importance widens it into
+    // a sub-texel smear. Selection packs the dots closer instead.
+    _drawTrailPoints(ctx, points, now, importance = 'ambient') {
         if (points.length < 2) return;
         const selected = importance === 'selected';
         const actionNeeded = importance === 'action-needed';
-        let width = selected ? 2 : actionNeeded ? 1.5 : 1;
-        if (coordinateSpace === 'world') width /= Math.max(0.25, zoom);
-        if (coordinateSpace === 'world-cache') width /= Math.max(0.25, cacheScale);
-        strokeAgedTrailSegments(ctx, points, {
+        drawAgedTrailDots(ctx, points, {
             now,
             maxAgeMs: RETAIN_MS,
             baseAlpha: selected ? 0.30 : actionNeeded ? 0.28 : 0,
-            width,
+            dot: 1,
+            step: selected ? 2 : 3,
             rgbForPoint: (point) => PHASE_COLORS[point.phase] || PHASE_COLORS.afternoon,
         });
     }

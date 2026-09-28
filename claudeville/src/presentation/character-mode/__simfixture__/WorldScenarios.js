@@ -816,7 +816,7 @@ export const QUOTA_RATE_LIMIT_SCENARIO = {
         },
     ],
     metadata: {
-        qaTags: ['quota', 'rate-limited', 'mine', 'director-incident', 'weather-nudge'],
+        qaTags: ['quota', 'rate-limited', 'mine', 'director-incident', 'timeline-weather'],
         selectedAgentId: 'sim-quota-watch',
         selectedBuildingType: 'mine',
         camera: { centerTile: { tileX: 13, tileY: 34 }, zoom: 2.75 },

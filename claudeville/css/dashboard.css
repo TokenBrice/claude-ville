@@ -15,7 +15,45 @@
     gap: 12px;
     --dash-row-pad: 13px;   /* 5px spine + 8px air */
     --dash-col-gap: 12px;
-    --dash-cols: 44px minmax(150px, 200px) minmax(180px, 1fr) 120px 56px 64px 76px;
+    --dash-cols: 44px minmax(150px, 200px) minmax(180px, 1fr) 160px 56px 64px 76px;
+}
+
+/* 0.9 — on an ultrawide window the project panels flow into ~1100 px
+   columns in reading order (the exception-first project sort stays
+   top-left) and the bell lane spans them all. Multicol, not
+   `display: grid-lanes` (unsupported in Chrome 153). Sticky headers do not
+   work inside multicol and are not needed when nothing scrolls. Widening
+   only: below 2400 px the single column is unchanged. */
+@media (min-width: 2400px) {
+    #dashboardGrid.dashboard__grid {
+        display: block;
+        column-width: 1100px;
+        column-gap: 16px;
+    }
+    #dashboardGrid > .dashboard__bell,
+    #dashboardGrid > .dashboard__filtered-empty {
+        column-span: all;
+        margin-bottom: 12px;
+    }
+    /* Two call cards to a project column (DashboardRenderer sets the count),
+       so the lane's card edges meet the columns below. */
+    #dashboardGrid.dashboard__grid--lanes > .dashboard__bell {
+        grid-template-columns: repeat(var(--dash-lane-cols), minmax(0, 1fr));
+        gap: 8px 16px;
+    }
+    #dashboardGrid > .dashboard__section {
+        break-inside: avoid;
+        margin-bottom: 12px;
+    }
+    #dashboardGrid .dashboard__section-header { position: static; }
+    /* 9.9 — the roomy tier (DashboardRenderer._syncRoomy) while the columns
+       leave room to spare: a 64 px face window at 2x in a 66 px row. */
+    #dashboardGrid.dashboard__grid--roomy {
+        --dash-cols: 64px minmax(150px, 200px) minmax(180px, 1fr) 160px 56px 64px 76px;
+    }
+    .dashboard__grid--roomy .dash-card__row { grid-template-rows: 66px; }
+    .dashboard__grid--roomy .dash-card__niche { width: 64px; height: 64px; }
+    .dashboard__grid--roomy .dash-card__kid { grid-template-columns: 64px 26px auto minmax(0, 1fr) auto; }
 }
 
 /* ─ Shape-coded status pips (colour-blind safe; same grammar as the spines) ─ */
@@ -508,7 +546,7 @@
     align-items: center;
     height: 40px;
 }
-.dash-card__tape-canvas { width: 120px; height: 12px; }
+.dash-card__tape-canvas { width: 160px; height: 16px; }
 
 .dash-card__for,
 .dash-card__usage-tokens,
@@ -563,6 +601,9 @@
 .dash-card--selected .dash-card__name { color: var(--gold); }
 .dash-card--selected > .dash-card__row:hover { background: none; }
 .dash-card--parent-flash { box-shadow: inset 0 0 0 1px var(--brass); }
+/* 9.7a — a card crossing between its row and the bell lane travels above
+   the section headers (z 20) and under the tally bar (z 24). */
+.dash-card--flying { z-index: 22; }
 
 /* ─ 7.12 child strip: children listed under their parent ─ */
 .dash-card__kids {
@@ -609,23 +650,12 @@
     grid-template-columns: repeat(auto-fill, minmax(460px, 1fr));
     gap: 8px;
 }
-.dash-card--call {
-    border: 1px solid var(--line-2);
-    background: var(--bg-2);
-    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--spine) 30%, var(--line-2)), 0 1px 0 var(--seam);
-}
-.dash-card--call.dash-card--waiting_on_user {
-    background: color-mix(in srgb, var(--cv-status-waiting-user) 6%, var(--bg-2));
-    border-color: color-mix(in srgb, var(--cv-status-waiting-user) 40%, var(--line-1));
-}
-.dash-card--call.dash-card--errored {
-    background: color-mix(in srgb, var(--cv-status-errored) 6%, var(--bg-2));
-    border-color: color-mix(in srgb, var(--cv-status-errored) 40%, var(--line-1));
-}
-.dash-card--call.dash-card--rate_limited {
-    border-color: color-mix(in srgb, var(--cv-status-rate-limited) 40%, var(--line-1));
-}
-.dash-card--call.dash-card--selected { box-shadow: inset 0 0 0 1px var(--gold); border-color: var(--gold); }
+/* 9.5 — one ask, one frame: a lane card is `cv-frame cv-frame--attn`
+   (attn-error / attn-limit by status, DashboardRenderer), the same slice as
+   the World call card and the lit slot. The frame is its 3 px border and its
+   face, so no border, background or status spine of its own. */
+.dash-card--call::before { display: none; }
+.dash-card--call.dash-card--selected { box-shadow: inset 0 0 0 1px var(--gold); }
 .dash-card--call > .dash-card__row {
     display: block;
     height: auto;
@@ -639,8 +669,9 @@
     grid-template-columns: 96px minmax(0, 1fr) auto;
     column-gap: 16px;
     align-items: start;
-    min-height: 116px;
-    padding: 10px 14px 10px 18px;
+    min-height: 112px;
+    /* 3 px frame + 8/12/16 keeps the content where the 1 px border + spine put it. */
+    padding: 8px 12px 8px 16px;
 }
 .dash-card__call-hero {
     display: block;
@@ -674,7 +705,7 @@
 .dash-card__call-meta {
     min-width: 0;
     overflow: hidden;
-    color: var(--ink-3);
+    color: var(--ink-2); /* on the attn face ink-3 falls under 4.5:1 */
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -713,7 +744,7 @@
 }
 .dash-card__gauge-segs i.on { background: var(--cv-status-rate-limited); box-shadow: none; }
 .dash-card__gauge-segs i.on.hot { background: color-mix(in srgb, var(--cv-status-rate-limited) 50%, var(--ink-1)); }
-.dash-card__call-usage { color: var(--ink-3); font: var(--fs-body)/var(--lh-body) var(--font-body); }
+.dash-card__call-usage { color: var(--ink-2); font: var(--fs-body)/var(--lh-body) var(--font-body); }
 .dash-card__call-side {
     display: flex;
     flex-direction: column;
@@ -721,13 +752,36 @@
     gap: 6px;
     padding-top: 2px;
 }
+/* 9.10 — the clock's own plate carries the wait's age, from the same anchor
+   the numeral shows: >= 1 min a 2px rim, >= 5 min a filled plate in the
+   status hue with ground ink. Static: the tier changes on the 1 Hz clock
+   tick and never pulses. The negative margin keeps the numeral where it
+   sits without a plate. */
 .dash-card__call-elapsed {
+    margin: -2px -6px 0 0;
+    padding: 2px 6px;
     color: var(--spine);
     font: var(--fs-numeral)/var(--lh-numeral) var(--font-body);
     font-variant-numeric: tabular-nums;
 }
+.dash-card--call[data-age='1'] .dash-card__call-elapsed { box-shadow: inset 0 0 0 2px var(--spine); }
+.dash-card--call[data-age='2'] .dash-card__call-elapsed {
+    background: var(--spine);
+    color: var(--bg-0);
+}
+/* M18 — under the clock of the card `A` focuses first, only while the lane
+   holds more than one card. Stacked on two right-aligned lines (min-content
+   53 px, under the narrowest 4-glyph clock plate) so the side column keeps
+   the clock's width and the card lays out exactly like its neighbours. */
+.dash-card__call-first {
+    width: min-content;
+    color: var(--ink-2);
+    font: var(--fs-label)/12px var(--font-display); /* 4 px air between the two lines */
+    letter-spacing: 1px;
+    text-align: right;
+}
 .dash-card__call-prov {
-    color: var(--ink-3);
+    color: var(--ink-2);
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     white-space: nowrap;
 }
@@ -827,6 +881,48 @@
     border: 1px solid var(--line-2);
     color: var(--cv-status-waiting);
     font: var(--fs-body)/var(--lh-body) var(--font-body);
+}
+
+/* 9.11 — the selected agent's session strip beside the hero: the row tape at
+   exactly 3x (observed blocks on the baseline, the status band under it)
+   and the fetched transcript's calls as 1px ticks hanging from a rail along
+   the top, each at its own timestamp on the same 10-minute axis. The rail
+   spans only what the fetched transcript covers. */
+.dash-card__strip {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 4px;
+    width: 480px;
+}
+.dash-card__strip-key,
+.dash-card__strip-axis {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: var(--ink-3);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    white-space: nowrap;
+}
+.dash-card__strip-axis { justify-content: space-between; color: var(--ink-4); }
+.dash-card__strip-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--ink-2);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+}
+.dash-card__strip-label::before { content: ''; flex: none; background: #d9c9a3; }
+.dash-card__strip-label--transcript::before { width: 1px; height: 8px; }
+.dash-card__strip-label--observed { margin-left: auto; }
+.dash-card__strip-label--observed::before { width: 9px; height: 9px; }
+.dash-card__strip-canvas {
+    display: block;
+    width: 480px;
+    height: 56px; /* STRIP_HEIGHT: an 8 px tick lane over the 3x tape */
+    image-rendering: pixelated;
 }
 
 .dash-card__activity {

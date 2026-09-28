@@ -7,9 +7,9 @@ import {
     MIDNIGHT_OIL_RISE_MS,
     advanceNightOccupancyGate,
     buildingEmissiveGate,
-    lightsBuildingWindows,
     nightWindowGate,
 } from '../../claudeville/src/presentation/character-mode/NightOccupancyGate.js';
+import { isWorkingVisitor } from '../../claudeville/src/presentation/character-mode/VisitIntentManager.js';
 import { buildGpuWorldRecords } from '../../claudeville/src/presentation/character-mode/gpu/GpuSceneBuilder.js';
 import { normalizeGpuRecord } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import { MIDNIGHT_OIL_SCENARIO } from '../../claudeville/src/presentation/character-mode/__simfixture__/WorldScenarios.js';
@@ -27,11 +27,11 @@ function lightFixture(phase, forgeGate) {
             { id: 'forge', kind: 'point', buildingType: 'forge', building: forge, radius: 64, intensity: 1, alpha: 0.4, color: '#fff' },
             { id: 'watchtower', kind: 'point', buildingType: 'watchtower', building: watchtower, radius: 64, intensity: 1, alpha: 0.4, color: '#fff' },
         ],
-        _visitorCountFor: () => 0,
+        _workingVisitorCountFor: () => 0,
         _forgeGlowIntensity: () => 1,
         _watchtowerIntensity: () => 0,
         _beaconScaleFor: () => 1,
-        _presenceTierFor: () => 'dormant',
+        _workTierFor: () => 'dormant',
         _ritualLightSources: () => [],
         _forgeSpillLightSources: () => [],
         _archiveSpillLightSources: () => [],
@@ -52,14 +52,29 @@ test('day is unchanged while night follows only live working occupancy', () => {
     assert.deepEqual(nightWorkingLights.map(light => light.id), ['forge', 'watchtower']);
 });
 
-test('only present mid-turn agents light building windows', () => {
-    assert.equal(lightsBuildingWindows({ status: 'working' }), true);
-    assert.equal(lightsBuildingWindows({ status: 'waiting', turnState: 'tool_pending' }), true);
+test('only present mid-turn working agents light building windows (V8 isWorkingVisitor)', () => {
+    assert.equal(isWorkingVisitor({ status: 'working' }), true);
+    assert.equal(isWorkingVisitor({ status: 'waiting', turnState: 'tool_pending' }), true);
     for (const status of ['idle', 'completed', 'waiting', 'waiting_on_user', 'rate_limited', 'errored']) {
-        assert.equal(lightsBuildingWindows({ status }), false, status);
+        assert.equal(isWorkingVisitor({ status }), false, status);
     }
-    assert.equal(lightsBuildingWindows({ status: 'working', isDeparted: true }), false);
-    assert.equal(lightsBuildingWindows({ status: 'working', departedAt: 1234 }), false);
+    // An approval prompt is a pending tool, but the agent is waiting on the
+    // operator: counted, never lit.
+    assert.equal(isWorkingVisitor({ status: 'waiting_on_user', turnState: 'tool_pending' }), false);
+    assert.equal(isWorkingVisitor({ status: 'working', isDeparted: true }), false);
+    assert.equal(isWorkingVisitor({ status: 'working', departedAt: 1234 }), false);
+    // Rest-seat and queue occupants never count, from the visit or the agent.
+    assert.equal(isWorkingVisitor({ status: 'working' }, { role: 'rest' }), false);
+    assert.equal(isWorkingVisitor({ status: 'working', visitRole: 'queue' }), false);
+    // A body walking an inferred work-cycle leg through another building's
+    // visit tiles is travelling; at its own stop it works.
+    const intent = { building: 'forge', itinerary: { inferred: true, route: ['archive', 'forge'] } };
+    assert.equal(isWorkingVisitor({ status: 'working' }, { building: 'archive', intent }), false);
+    assert.equal(isWorkingVisitor({ status: 'working' }, { building: 'forge', intent }), true);
+    assert.equal(isWorkingVisitor({ status: 'working' }, {
+        building: 'archive',
+        intent: { building: 'forge', itinerary: { inferred: false } },
+    }), true);
 });
 
 test('frame-fresh physical visitor tally drives the rise and completion fade', () => {
@@ -129,7 +144,7 @@ test('GPU building records carry the shared emissive gate and omitted gates norm
             getAnchor: () => [10, 25],
         },
         buildingRenderer: {
-            _buildingOccupancyInfo: () => ({ state: 'idle' }),
+            _workTierFor: () => 'dormant',
             _emissiveGateFor: () => 0,
         },
         camera: { zoom: 1 },
@@ -158,11 +173,11 @@ test('midnight-oil fixture pins two working buildings and non-working buildings 
     assert.equal(MIDNIGHT_OIL_SCENARIO.metadata.atmosphere.clock.hours, 23);
     assert.equal(MIDNIGHT_OIL_SCENARIO.metadata.atmosphere.weather.type, 'clear');
     assert.deepEqual(
-        MIDNIGHT_OIL_SCENARIO.agents.filter(agent => lightsBuildingWindows(agent)).map(agent => agent.id),
+        MIDNIGHT_OIL_SCENARIO.agents.filter(agent => isWorkingVisitor(agent)).map(agent => agent.id),
         ['oil-forge', 'oil-archive'],
     );
     assert.deepEqual(
-        MIDNIGHT_OIL_SCENARIO.agents.filter(agent => !lightsBuildingWindows(agent)).map(agent => agent.id),
+        MIDNIGHT_OIL_SCENARIO.agents.filter(agent => !isWorkingVisitor(agent)).map(agent => agent.id),
         ['oil-idle', 'oil-waiting'],
     );
 });

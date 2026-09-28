@@ -2,7 +2,7 @@ import { drawEventShape } from '../shared/EventShapes.js';
 import { BUILDING_ACCENTS_RGB, INCIDENT_COLORS_RGB, WORLD_BODY_FONT_11 } from '../../config/theme.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { pulseBand01 } from './PulsePolicy.js';
-import { strokeAgedTrailSegments } from './TrailRenderer.js';
+import { TRAIL_ALPHA_STEPS, drawAgedTrailDots } from './TrailRenderer.js';
 import { attentionCandidateBounds } from './AttentionFraming.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { cueNoteDue } from '../shared/audio/CueScore.js';
@@ -171,38 +171,48 @@ function drawReplay(ctx, samples, now, selectedAgentId = null) {
         const latest = points.at(-1);
         const rgb = agentTrailColor(latest);
         const selected = latest?.id && latest.id === selectedAgentId;
-        // 3.10 — the replay polyline shares the hour-trail stroke vocabulary
-        // (TrailRenderer.strokeAgedTrailSegments); the tick marks + tail blob
-        // below stay replay-only "live mode" extras.
-        strokeAgedTrailSegments(ctx, points, {
+        // 3.10 — the replay run shares the hour-trail vocabulary
+        // (TrailRenderer.drawAgedTrailDots: whole-texel dots, stepped alpha);
+        // the tick marks + tail diamond below stay replay-only "live mode"
+        // extras, also whole texels.
+        drawAgedTrailDots(ctx, points, {
             now,
             maxAgeMs: 60_000,
             baseAlpha: selected ? 0.5 : 0.18,
-            width: selected ? 2 : 1,
+            dot: selected ? 2 : 1,
+            step: selected ? 4 : 3,
             rgbForPoint: () => rgb,
         });
 
         const tickEvery = selected ? 2 : 4;
-        ctx.fillStyle = rgba(rgb, selected ? 0.52 : 0.24);
+        const tick = selected ? 2 : 1;
         for (let i = Math.max(0, points.length - 16); i < points.length; i += tickEvery) {
             const p = points[i];
-            const age = clamp((now - p.ts) / 60_000);
-            const size = selected ? 2.6 : 1.7;
-            ctx.globalAlpha = selected ? 0.8 * (1 - age * 0.45) : 0.42 * (1 - age * 0.55);
-            ctx.beginPath();
-            ctx.ellipse(p.x, p.y - 2, size, size * 0.7, 0, 0, TAU);
-            ctx.fill();
+            const alpha = (selected ? 0.8 : 0.42) * steppedFreshness(now - p.ts);
+            ctx.fillStyle = rgba(rgb, (selected ? 0.52 : 0.24) * alpha);
+            ctx.fillRect(Math.round(p.x) - (tick >> 1), Math.round(p.y) - 2 - (tick >> 1), tick, tick);
         }
-        ctx.globalAlpha = 1;
 
+        // The live head: a small texel diamond (rows never overlap, so the
+        // screen blend lands once per texel).
         const tail = points.at(-1);
-        const age = clamp((now - tail.ts) / 60_000);
-        ctx.fillStyle = rgba(rgb, 0.35 * (1 - age) + 0.12);
-        ctx.beginPath();
-        ctx.ellipse(tail.x, tail.y - 2, selected ? 5 : 3.5, selected ? 3.2 : 2.2, 0, 0, TAU);
-        ctx.fill();
+        ctx.fillStyle = rgba(rgb, 0.12 + 0.35 * steppedFreshness(now - tail.ts));
+        const tx = Math.round(tail.x);
+        const ty = Math.round(tail.y) - 2;
+        const half = selected ? 2 : 1;
+        for (let row = -half; row <= half; row++) {
+            const span = half - Math.abs(row) + (selected ? 2 : 1);
+            ctx.fillRect(tx - span, ty + row, span * 2 + 1, 1);
+        }
     }
     ctx.restore();
+}
+
+// 1 while fresh, then down in TRAIL_ALPHA_STEPS whole steps across the
+// replay's minute: stepped, never a smooth ramp.
+function steppedFreshness(ageMs) {
+    const fresh = 1 - clamp(ageMs / 60_000);
+    return Math.max(1, Math.ceil(fresh * TRAIL_ALPHA_STEPS)) / TRAIL_ALPHA_STEPS;
 }
 
 function drawSignalRoutes(ctx, selected, { alphaScale = 1, dash = [6, 7], lineWidth = 1.2, grade = null } = {}) {
@@ -248,15 +258,10 @@ function drawIncidents(ctx, incidents, grade = null) {
     }
 }
 
-// Handoff retains its message identity at both travel and landing.
+// The handoff's message identity while it travels the arc.
 function drawScrollMote(ctx, x, y, rgb, alpha, scale = 1) {
     const step = Math.max(1, Math.round(scale));
     drawEventShape(ctx, 'message-scroll', x - 8 * step, y - 8 * step, step, rgba(rgb, alpha));
-}
-
-function drawHandoffSpark(ctx, x, y, rgb, alpha) {
-    if (alpha <= 0) return;
-    drawScrollMote(ctx, x, y, rgb, alpha);
 }
 
 // A five-step relief diamond: the mark that lands on the recovery cue's
@@ -312,6 +317,9 @@ function drawRecoveries(ctx, recoveries, motionScale, grade = null) {
 // Handoff arcs leave and land at mid-body of the 1:1 villager (plan 2.1:
 // 48–75 texels tall), not at the knees of the old 1.65× giant.
 const HANDOFF_LIFT = 28;
+// Below this sender→receiver distance (texels) the bodies overlap and the
+// whole flight would sit on them as an extra chip, so only the arc draws.
+const HANDOFF_MIN_TRAVEL = 48;
 
 function drawHandoffs(ctx, handoffs, now, motionScale, grade = null, wallNow = 0) {
     if (!handoffs?.length) return;
@@ -321,7 +329,15 @@ function drawHandoffs(ctx, handoffs, now, motionScale, grade = null, wallNow = 0
     const governor = getActiveMarkGovernor();
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
-    for (const handoff of handoffs) {
+    // SM-7 — at most one chip per body. The scroll mote only travels: once it
+    // lands it is absorbed into the receiver, whose own TALK prop or chat
+    // bubble is that body's one chip (the old landing spark and the landed
+    // mote were two more scrolls on it). Only the newest in-flight handoff to
+    // a receiver standing apart from its sender carries a mote; every arc
+    // still draws.
+    const chipped = new Set();
+    const newestFirst = [...handoffs].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+    for (const handoff of newestFirst) {
         const from = handoff.from;
         const to = handoff.to;
         if (!from || !to) continue;
@@ -332,7 +348,7 @@ function drawHandoffs(ctx, handoffs, now, motionScale, grade = null, wallNow = 0
         const fade = (1 - clamp(handoff.progress ?? 0)) * gate.alpha;
         const pulse = motionPulse(now, motionScale, ((handoff.startedAt || 0) / 1000) % TAU, 'working');
         // Baton travel along the arc: 0 at parent, 1 at child. Reduced motion
-        // pins it at the terminus (static arc + landed dot).
+        // pins it at the terminus: a static arc with no mote.
         // 5.8 — the director stamps `startedAt` on Date.now() while `now` here
         // is performance.now(); mixing the two pinned the baton at the parent
         // forever. Wall-clock math uses the snapshot's Date.now-domain clock.
@@ -358,18 +374,14 @@ function drawHandoffs(ctx, handoffs, now, motionScale, grade = null, wallNow = 0
         ctx.quadraticCurveTo(midX, midY, to.x, to.y - HANDOFF_LIFT);
         ctx.stroke();
         ctx.setLineDash([]);
+        if (t >= 1 || Math.hypot(to.x - from.x, to.y - from.y) < HANDOFF_MIN_TRAVEL) continue;
+        const bodyId = to.id ?? `${Math.round(to.x)},${Math.round(to.y)}`;
+        if (chipped.has(bodyId)) continue;
+        chipped.add(bodyId);
         const inv = 1 - t;
         const x = inv * inv * fromX + 2 * inv * t * midX + t * t * to.x;
         const y = inv * inv * fromY + 2 * inv * t * midY + t * t * (to.y - HANDOFF_LIFT);
         drawScrollMote(ctx, x, y, handoffRgb, fade);
-        // Terminal spark as the baton lands (last stretch of travel). Under
-        // reduced motion t is pinned at 1, so the spark holds as a static frame.
-        const sparkAlpha = motionScale
-            ? clamp((t - 0.82) / 0.18) * fade
-            : fade;
-        if (sparkAlpha > 0.02) {
-            drawHandoffSpark(ctx, to.x, to.y - HANDOFF_LIFT, handoffRgb, sparkAlpha);
-        }
     }
     ctx.restore();
 }
@@ -438,39 +450,21 @@ export function drawVillageDirectorOverlays(ctx, snapshot, now = Date.now(), gra
 
 export function drawVillageDirectorScreen(ctx, snapshot, viewport) {
     if (!ctx || !snapshot || !viewport) return;
-    if (!snapshot.replayActive && !(snapshot.sceneOverflow?.count > 0)) return;
+    if (!snapshot.replayActive) return;
     ctx.save();
     ctx.font = WORLD_BODY_FONT_11;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
     const y = Math.max(76, Math.round(viewport.height - 34));
-    if (snapshot.replayActive) {
-        const text = `REPLAY 60S · ${snapshot.replayAgentCount || 0} AGENTS`;
-        const width = Math.ceil(ctx.measureText(text).width) + 18;
-        const x = 18;
-        ctx.fillStyle = 'rgba(18, 24, 28, 0.78)';
-        ctx.strokeStyle = 'rgba(125, 211, 252, 0.58)';
-        ctx.fillRect(x, y - 12, width, 22);
-        ctx.strokeRect(x + 0.5, y - 11.5, width - 1, 21);
-        ctx.fillStyle = '#dff7ff';
-        ctx.fillText(text, x + 9, y + 4);
-    }
-
-    // Overflow is one static, screen-space PRIMARY mark. It does not join the
-    // world collision plane, animate, or create hit state; reduced motion is
-    // therefore pixel-identical. Logical expiry in VillageDirector removes it.
-    const overflow = snapshot.sceneOverflow;
-    if (overflow?.count > 0) {
-        const text = String(overflow.label || `+${overflow.count} more incidents`).toUpperCase();
-        const width = Math.ceil(ctx.measureText(text).width) + 18;
-        const x = Math.max(18, Math.round(viewport.width - width - 18));
-        ctx.fillStyle = 'rgba(28, 20, 16, 0.86)';
-        ctx.strokeStyle = 'rgba(250, 204, 21, 0.72)';
-        ctx.fillRect(x, y - 12, width, 22);
-        ctx.strokeRect(x + 0.5, y - 11.5, width - 1, 21);
-        ctx.fillStyle = '#fff4cf';
-        ctx.fillText(text, x + 9, y + 4);
-    }
+    const text = `REPLAY 60S · ${snapshot.replayAgentCount || 0} AGENTS`;
+    const width = Math.ceil(ctx.measureText(text).width) + 18;
+    const x = 18;
+    ctx.fillStyle = 'rgba(18, 24, 28, 0.78)';
+    ctx.strokeStyle = 'rgba(125, 211, 252, 0.58)';
+    ctx.fillRect(x, y - 12, width, 22);
+    ctx.strokeRect(x + 0.5, y - 11.5, width - 1, 21);
+    ctx.fillStyle = '#dff7ff';
+    ctx.fillText(text, x + 9, y + 4);
     ctx.restore();
 }
 
@@ -522,7 +516,8 @@ function wireEdgeCues(renderer) {
         state.cues.push({
             kind: cue.kind || 'default',
             box: cue.box,
-            tint: cue.grade?.worldTint || null,
+            tint: cue.tint || null,
+            letterbox: cue.letterbox === true,
             ts: Date.now(),
         });
         while (state.cues.length > EDGE_CUE_LIMIT) state.cues.shift();
@@ -537,7 +532,7 @@ function wireEdgeCues(renderer) {
             renderer.camera?.glideToWorld?.(hit.cue.box, {
                 duration: 3200,
                 paddingPx: 220,
-                grade: hit.cue.tint ? { vignette: 0.3, worldTint: hit.cue.tint } : null,
+                letterbox: hit.cue.letterbox,
                 owner: `cue:${hit.cue.kind}`,
                 composition: { x: 0.5, y: 0.53 },
                 preferPan: true,

@@ -121,6 +121,13 @@
     --cv-divider: var(--line-1);
     --cv-focus: var(--gold-hi);   /* global focus ring color */
     --cv-texture: none;           /* 7.2: the 18px stripe texture is retired */
+
+    /* ─── Motion (9.6). One stepped curve for every chrome surface that
+       enters or leaves: three steps in 120 ms, so a 12px travel moves in
+       whole 4px steps and bitmap text never lands on a fractional x. The
+       tooltip stays instant; every user of the curve cuts under reduced
+       motion. ─── */
+    --cv-step-in: 120ms steps(3, end);
 }
 
 html, body {
@@ -194,3 +201,36 @@ a {
 .cv-inspection[open] > summary { color: var(--ink-1); }
 .cv-inspection__text { margin-top: 8px; padding: 8px; background: var(--bg-0); color: var(--ink-1); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: var(--fs-body)/var(--lh-body) var(--font-body); }
 .cv-inspection__note { margin-top: 4px; color: var(--ink-3); font: var(--fs-body)/var(--lh-body) var(--font-body); }
+
+/* ─── 9.6 Stepped enter and exit for popovers ───
+   Native popovers (the World controls; the chrome tooltip `#cvTip` stays
+   instant) and the top bar's drop panels step 12px down out of the bar and
+   back up on `--cv-step-in`; `display` and the top layer hold until the exit
+   has played. Closed-state hooks: `:popover-open`, `[hidden]` (SOUND), and
+   the inline `display: none` the connection and spend panels toggle.
+   Zero specificity, so each surface's own rules still win. */
+:where([popover]:not(#cvTip), .topbar__connection-panel, .topbar__spend-panel, .topbar__sound-panel) {
+    transition:
+        opacity var(--cv-step-in),
+        transform var(--cv-step-in),
+        overlay var(--cv-step-in) allow-discrete,
+        display var(--cv-step-in) allow-discrete;
+}
+
+:where([popover]:not(#cvTip):not(:popover-open), .topbar__sound-panel[hidden], .topbar__connection-panel[style*="display: none"], .topbar__spend-panel[style*="display: none"]) {
+    opacity: 0;
+    transform: translateY(-12px);
+}
+
+@starting-style {
+    :where([popover]:not(#cvTip):popover-open, .topbar__connection-panel, .topbar__spend-panel, .topbar__sound-panel) {
+        opacity: 0;
+        transform: translateY(-12px);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :where([popover]:not(#cvTip), .topbar__connection-panel, .topbar__spend-panel, .topbar__sound-panel) {
+        transition: none;
+    }
+}

@@ -1,3 +1,6 @@
+import { BUILDING_VISUAL_REGISTRY } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
+import { collectSpriteEntries, loadSpriteManifest, spritesRoot } from '../sprites/manifest-utils.mjs';
+import { validateFrameStripParts, validateWindowGeometry } from './building-art-geometry.mjs';
 import { loadConfigExports, loadManifestIds } from './config-loader.mjs';
 import {
     buildingRect,
@@ -378,5 +381,12 @@ if (!Array.isArray(BUILDING_DEFS) || BUILDING_DEFS.length === 0) {
     validateSpriteManifest(reporter, BUILDING_DEFS, manifestIds);
     validateGroundingProfiles(reporter, BUILDING_DEFS, groundingConfig);
 }
+// BL-6 — art geometry: window/room rects on the sidecar glass, frame-strip
+// parts well-formed (plan 6.1).
+validateWindowGeometry(reporter, { registry: BUILDING_VISUAL_REGISTRY, spritesRoot });
+validateFrameStripParts(reporter, {
+    entries: collectSpriteEntries(loadSpriteManifest(), ['buildings']),
+    spritesRoot,
+});
 
 reporter.finish(`${BUILDING_DEFS.length} building definition(s) checked against ${manifestIds.size} manifest id(s).`);

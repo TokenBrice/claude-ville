@@ -29,6 +29,7 @@ import {
     statusPresentation,
     waitReasonLabel,
 } from './AgentPresentation.js';
+import { AvatarCanvas } from '../dashboard-mode/AvatarCanvas.js';
 
 const SIDEBAR_EMPTY_COPY = Object.freeze({
     [VillagePhase.STARTING]: Object.freeze({ title: 'LISTENING…', cta: 'Reading local sessions. Agents appear here as each one is read.' }),
@@ -38,6 +39,13 @@ const SIDEBAR_EMPTY_COPY = Object.freeze({
     [VillagePhase.READY_NO_PROVIDERS]: Object.freeze({ title: 'NO PROVIDERS FOUND', cta: 'No supported coding CLI is installed on this machine.' }),
     [VillagePhase.READY_EMPTY]: Object.freeze({ title: 'THE VILLAGE AWAITS', cta: 'Start a coding session to populate the village.' }),
     [VillagePhase.READY_LIVE]: Object.freeze({ title: 'THE VILLAGE AWAITS', cta: 'Start a coding session to populate the village.' }),
+});
+
+// 9.5 — the frame kit's attn slice per shelf lead bucket (frame-kit.css).
+const SHELF_FRAME = Object.freeze({
+    needsYou: 'cv-frame--attn',
+    errors: 'cv-frame--attn-error',
+    quota: 'cv-frame--attn-limit',
 });
 
 // Preserve a workflow's expanded/collapsed choice through brief ingestion gaps,
@@ -76,6 +84,17 @@ function lowerFirst(text) {
     const value = String(text || '');
     return value ? value.charAt(0).toLowerCase() + value.slice(1) : '';
 }
+
+// 9.3 — what a row's bust depends on. The avatar repaints only when this
+// changes (AvatarCanvas.draw also skips an unchanged render key).
+function bustIdentityKey(agent) {
+    return [agent?.id, agent?.name, agent?.agentName, agent?.model, agent?.effort, agent?.provider, agent?.teamName]
+        .map(value => value ?? '')
+        .join('\u0001');
+}
+
+// Busts are created when a row comes within four rows of the list's view.
+const BUST_ROOT_MARGIN = '176px 0px';
 
 export function buildHarborLedgerRows(repos = [], now = Date.now()) {
     return [...(Array.isArray(repos) ? repos : [])]
@@ -142,6 +161,7 @@ export class Sidebar {
         this._reactiveRenderPending = false;
         this._destroyed = false;
         this._agentRows = new Map();
+        this._bustObserver = null;
         this._projectGroups = new Map();
         this._workflowGroups = new Map();
         this._emptyLegendEl = null;
@@ -531,7 +551,7 @@ export class Sidebar {
             this.toggleEl.textContent = this.isCollapsed ? '>' : '<';
             this.toggleEl.setAttribute('aria-label', label);
             this.toggleEl.setAttribute('aria-expanded', String(!this.isCollapsed));
-            this.toggleEl.title = this.isCollapsed ? 'Expand sidebar' : 'Collapse sidebar';
+            this.toggleEl.dataset.tip = this.isCollapsed ? 'Expand sidebar' : 'Collapse sidebar';
         }
     }
 
@@ -560,6 +580,9 @@ export class Sidebar {
         this._setText(this._shelfHeading, heading);
         const lead = buckets.needsYou.length ? 'needsYou' : buckets.errors.length ? 'errors' : 'quota';
         if (this.shelfEl.dataset) this.shelfEl.dataset.lead = lead;
+        // 9.5 / one ask, one frame: the shelf wears the attn slice of its lead.
+        const shelfClass = `attention-shelf cv-frame ${SHELF_FRAME[lead]}`;
+        if (this.shelfEl.className !== shelfClass) this.shelfEl.className = shelfClass;
         const liveIds = new Set(exceptions.map(agent => agent.id));
         for (const [id, row] of this._shelfRows) {
             if (liveIds.has(id)) continue;
@@ -590,7 +613,7 @@ export class Sidebar {
             row.agent = agent;
             this._setText(row.name, agent.name || agent.id);
             this._setText(row.age, waitAnchor(agent) ? formatElapsed(Date.now() - waitAnchor(agent)) : '');
-            row.button.title = `${agent.name || agent.id} · ${agent.status}`;
+            row.button.dataset.tip = `${agent.name || agent.id} · ${agent.status}`;
             if (!focused) {
                 row.button.hidden = !this._shelfExpanded && index >= 2;
                 this._shelfList.append(row.button);
@@ -1000,7 +1023,7 @@ export class Sidebar {
                 const label = `Team ${shortTeamName(teamName)}`;
                 const swatch = el('span', {
                     className: 'sidebar__team-swatch',
-                    title: label,
+                    dataset: { tip: label },
                     ariaLabel: label,
                     style: { background: getTeamColor(teamName).accent },
                 });
@@ -1072,8 +1095,10 @@ export class Sidebar {
         return row;
     }
 
-    // 7.5 — one row on a 16px rhythm: `8px status square | name / Model · state
-    // | age`. Provider and team left the row; both stay in the row title.
+    // 7.5, 9.3 — one 44px row: `32px bust | name / state · Model | age`, the
+    // status as an 8px pip on the bust's corner. Provider and team left the
+    // row; both stay in the row title. A subagent's parent link sits on the
+    // second line under the age, so every age keeps the same right edge.
     _createAgentRow(agentId) {
         const nameText = document.createTextNode('');
         const workflow = el('span', { className: 'sidebar__workflow-icon', text: 'W' });
@@ -1088,12 +1113,13 @@ export class Sidebar {
         });
         const info = el('span', { className: 'sidebar__agent-info' }, [name, model]);
         const dot = el('span', { className: 'sidebar__agent-dot' });
-        dot.setAttribute('aria-hidden', 'true');
+        const bust = el('span', { className: 'sidebar__bust' }, [dot]);
+        bust.setAttribute('aria-hidden', 'true');
         const age = el('span', { className: 'sidebar__agent-age' });
         const select = el('button', {
             className: 'sidebar__agent-select',
             dataset: { agentId },
-        }, [dot, info, age]);
+        }, [bust, info, age]);
         select.type = 'button';
         select.tabIndex = -1;
         const parent = el('button', { className: 'sidebar__agent-parent' });
@@ -1104,7 +1130,8 @@ export class Sidebar {
         }, [select]);
         row._sidebarRefs = {
             nameText, workflow, name, modelText, state, age, model,
-            match, info, dot, select, parent,
+            match, info, dot, bust, select, parent,
+            avatar: null, bustAgent: null, bustKey: '', bustObserved: false,
         };
         row._elapsedUnsubscribe = subscribeElapsedText(age, () => {
             const current = this.world.agents.get(agentId);
@@ -1120,6 +1147,7 @@ export class Sidebar {
         const status = statusClass(agent.status);
         const agentClasses = ['sidebar__agent', `sidebar__agent--${status}`];
         if (this.selection.isSelected(agent.id)) agentClasses.push('sidebar__agent--selected');
+        if (agent.parentSessionId) agentClasses.push('sidebar__agent--child');
         const refs = row._sidebarRefs;
         const className = agentClasses.join(' ');
         if (row.className !== className) row.className = className;
@@ -1132,7 +1160,7 @@ export class Sidebar {
         this._toggleOptional(refs.name, refs.workflow, Boolean(agent.workflowName), refs.nameText);
         const workflowLabel = agent.workflowName ? `Workflow ${agent.workflowName}` : '';
         if (workflowLabel) {
-            this._setAttribute(refs.workflow, 'title', workflowLabel);
+            this._setAttribute(refs.workflow, 'data-tip', workflowLabel);
             this._setAttribute(refs.workflow, 'aria-label', workflowLabel);
         }
 
@@ -1142,11 +1170,11 @@ export class Sidebar {
         const stateText = reason ? lowerFirst(reason) : statusPresentation(agent.status).label.toLowerCase();
         this._setNodeText(refs.modelText, model.label ? ` · ${model.label}` : '');
         this._setText(refs.state, stateText);
-        this._setAttribute(refs.age, 'title', extras.ageText || '');
+        this._setAttribute(refs.age, 'data-tip', extras.ageText || '');
         this._toggleOptional(refs.info, refs.match, Boolean(extras.searchContext));
         if (extras.searchContext) {
             this._setText(refs.match, extras.searchContext);
-            this._setAttribute(refs.match, 'title', extras.searchContext);
+            this._setAttribute(refs.match, 'data-tip', extras.searchContext);
         }
 
         const hasParent = Boolean(agent.parentSessionId);
@@ -1155,8 +1183,10 @@ export class Sidebar {
             const parentLabel = parentAgent
                 ? `Select parent ${extras.parentLabel}`
                 : 'Parent session ended';
-            this._setText(refs.parent, `↩ ${extras.parentLabel}`);
-            this._setAttribute(refs.parent, 'title', parentLabel);
+            // `↰` is a Departure Mono glyph (7px advance), so the right-anchored
+            // link starts on a whole pixel; `↩` fell back to a fractional font.
+            this._setText(refs.parent, `↰ ${extras.parentLabel}`);
+            this._setAttribute(refs.parent, 'data-tip', parentLabel);
             this._setAttribute(refs.parent, 'aria-label', parentLabel);
             if (parentAgent) refs.parent.dataset.parentId = agent.parentSessionId;
             else delete refs.parent.dataset.parentId;
@@ -1165,9 +1195,10 @@ export class Sidebar {
 
         const dotClass = `sidebar__agent-dot sidebar__agent-dot--${status}`;
         if (refs.dot.className !== dotClass) refs.dot.className = dotClass;
+        this._syncBust(row, agent);
         this._setAttribute(
             refs.select,
-            'title',
+            'data-tip',
             [
                 agent.name || agent.id,
                 [provider.badge.label, model.label].filter(Boolean).join(' '),
@@ -1188,6 +1219,62 @@ export class Sidebar {
         );
     }
 
+    // 9.3 — the row's bust is the Activity Panel's 'sheet' portrait (the
+    // authored 32px window drawn 2x on a 64px canvas) shown at 32 CSS px:
+    // the authored 1x at DPR 1, native at DPR 2, nearest-neighbour either
+    // way. The canvas is created when the row first comes near the list's
+    // view and repaints only when the villager's identity changes.
+    _syncBust(row, agent) {
+        const refs = row._sidebarRefs;
+        refs.bustAgent = agent;
+        if (!refs.avatar) {
+            this._observeBust(row);
+            return;
+        }
+        refs.avatar.agent = agent;
+        const key = bustIdentityKey(agent);
+        if (key === refs.bustKey) return;
+        refs.bustKey = key;
+        refs.avatar.draw();
+    }
+
+    _observeBust(row) {
+        const refs = row._sidebarRefs;
+        if (refs.bustObserved) return;
+        refs.bustObserved = true;
+        if (typeof IntersectionObserver !== 'function') {
+            this._mountBust(row);
+            return;
+        }
+        this._bustObserver ||= new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                if (!entry.isIntersecting) continue;
+                this._bustObserver.unobserve(entry.target);
+                this._mountBust(entry.target);
+            }
+        }, { root: this.listEl?.parentElement || null, rootMargin: BUST_ROOT_MARGIN });
+        this._bustObserver.observe(row);
+    }
+
+    _mountBust(row) {
+        const refs = row._sidebarRefs;
+        if (this._destroyed || refs.avatar || !refs.bustAgent) return;
+        const avatar = new AvatarCanvas(refs.bustAgent, 'sheet');
+        // The stylesheet sizes it: 32 CSS px, pixelated.
+        avatar.canvas.removeAttribute('style');
+        refs.avatar = avatar;
+        refs.bustKey = bustIdentityKey(refs.bustAgent);
+        refs.bust.prepend(avatar.canvas);
+    }
+
+    _releaseBust(row) {
+        const refs = row._sidebarRefs;
+        this._bustObserver?.unobserve(row);
+        refs.avatar?.destroy();
+        refs.avatar = null;
+        refs.bustAgent = null;
+    }
+
     _prunePersistentElements(agents, visibleProjectPaths, visibleWorkflowKeys) {
         const liveIds = new Set(agents.map(agent => agent.id));
         const liveProjects = new Set(agents.map(agent => agent.projectPath || '_unknown'));
@@ -1198,6 +1285,7 @@ export class Sidebar {
             if (liveIds.has(id)) continue;
             row._elapsedUnsubscribe?.();
             row._elapsedUnsubscribe = null;
+            this._releaseBust(row);
             row.remove();
             this._agentRows.delete(id);
         }
@@ -1269,7 +1357,7 @@ export class Sidebar {
             const sub = `${repo.branch || 'unknown branch'}${repo.ageLabel ? ` · oldest ${repo.ageLabel}` : ''}`;
             const row = el('div', {
                 className: ['sidebar__agent', 'sidebar__harbor-row'],
-                title: `${sourceTitle} - ${repo.detailText} - ${disclosure}`,
+                dataset: { tip: `${sourceTitle} - ${repo.detailText} - ${disclosure}` },
             }, [
                 el('div', { className: 'sidebar__agent-select' }, [
                     el('span', { className: ['sidebar__agent-dot', 'sidebar__harbor-dot'] }),
@@ -1327,7 +1415,12 @@ export class Sidebar {
         if (this.countEl) this.countEl.textContent = '0';
         if (this.harborCountEl) this.harborCountEl.textContent = '0';
         this.harborRepos = [];
-        for (const row of this._agentRows?.values?.() || []) row._elapsedUnsubscribe?.();
+        for (const row of this._agentRows?.values?.() || []) {
+            row._elapsedUnsubscribe?.();
+            this._releaseBust(row);
+        }
+        this._bustObserver?.disconnect();
+        this._bustObserver = null;
         this._agentRows?.clear?.();
         this._harborSignature = '';
         this._renderSignature = '';

@@ -2,32 +2,51 @@ import {
     MATERIAL_CLASS_IDS,
     materialClassId as registryMaterialClassId,
 } from '../MaterialRegistry.js';
+import { RECEIVER_LUMA_CEILING } from '../../../config/artPalette.js';
+import { WATER_MAX_SATURATION } from '../GradeEvaluator.js';
 
 export const GPU_WORLD_RENDERER_MODES = Object.freeze({
     WEBGL: 'webgl',
     CANVAS: 'canvas',
 });
 
-// C3 effect receipts for the optional work the resident renderer ships today.
-// Measured with the 0.1 per-pass sampler on `ANGLE Metal Renderer: Apple M5 Pro`,
-// 1680x1026, fixed 22:00 clear, FULL, 13-24 rotating samples per pass, 2026-09-05;
-// bands span the dense-24 and dense-100 observations. Bands are observed pass
-// means on a shared host, not portable entitlements.
+// EFFECT_BUDGET — the optional work the resident renderer ships and what each
+// quality level keeps. Key order is the shedding order: embellishment first,
+// depth cues and the night's light last. Every level entry states what ships
+// at that ladder level (a mode, or for `light-admission` a count), so the
+// table is the only authority the renderer reads: there is no second ladder,
+// and Shift-D's shed line lists every entry below its FULL value.
+//
+// Receipt rule (V2, plan 0.1). A band is a K8 slope, not a timer sample:
+// interleave K in {0, 1, 8} copies of the candidate per frame in the real
+// frame (`node scripts/smoke/world-fps-benchmark.mjs --mode=kslope`; the
+// candidate's loop injected into the pass it will live in, so it is priced on
+// the cumulative shader), price = (T8 - T0) / 8, with the A/A slope of the
+// same session beside it. A receipt resolves only above 2x its A/A spread;
+// below that the band is written `[0, ceiling]` — the resolvable limit, not a
+// claim of zero cost. Take it at 1920x1080 and 5120x1440, add the
+// vsync-unlocked FULL-vs-MINIMAL frame delta (`--mode=unlocked`) and real-frame
+// throughput per level (`node scripts/world/gpu-burst.mjs`), on a quiet host
+// (load < 4; 3 x 12 s fresh contexts), and state the refresh rate the receipt
+// assumes. Isolated per-pass `TIME_ELAPSED` samples are not evidence on
+// ANGLE-Metal: the query flushes the command buffer and reports its GPU wall
+// span, which grows with contention and DVFS, not with this frame's work.
+// Rows dated before 2026-09-28 predate this rule: their bands are per-pass or
+// paired timer observations on a shared host (`ANGLE Metal Renderer: Apple M5
+// Pro`), upper bounds until re-receipted, never portable entitlements. The
+// undated rows (`bloom` through `water-reflection`) are the 0.1 per-pass
+// sampler at 1680x1026, fixed 22:00 clear, FULL, 13-24 rotating samples per
+// pass, 2026-09-05, spanning the dense-24 and dense-100 observations.
 //
 // `cost.scope` says how to read the band. `own-pass`: the effect is its own
-// pass, so the band is what shedding returns. `shared-scene-envelope`: the
-// effect is a branch inside the scene pass, so shedding it returns nothing of
-// its band; where a paired A/B never resolved the branch above the host noise
-// floor the band is written `[0, ceiling]` — the resolvable limit, not a claim
-// of zero cost. A row prices added time as `cost.gpuMsBand` or removed time as
-// `cost.gpuMsSavedBand`, never both: work that a substitution *removes* is not
-// an optional effect, ships at every level, and is never shed. Attachment
-// bytes stay allocated across levels (`GpuWorldRenderer._ensureTargets`);
-// `bytes` prices what an effect keeps resident, not what it returns when shed.
-//
-// Key order is the shedding order: embellishment first, depth cues last. Every
-// level entry states what ships at that ladder level, so the table is the only
-// authority the renderer reads — there is no second ladder.
+// pass, so the band is what shedding returns. `shared-scene-envelope` /
+// `shared-composite-envelope`: the effect is a branch inside that pass, so
+// shedding it returns nothing of its band. A row prices added time as
+// `cost.gpuMsBand` or removed time as `cost.gpuMsSavedBand`, never both: work
+// that a substitution *removes* is not an optional effect, ships at every
+// level, and is never shed. Attachment bytes stay allocated across levels
+// (`GpuWorldRenderer._ensureTargets`); `bytes` prices what an effect keeps
+// resident, not what it returns when shed.
 export const EFFECT_BUDGET = Object.freeze({
     bloom: Object.freeze({
         id: 'bloom',
@@ -153,14 +172,58 @@ export const EFFECT_BUDGET = Object.freeze({
         staticFallback: 'authored-albedo',
         canvas: 'authored-albedo',
     }),
+    // 0.1 — light admission is a declared row: how many ranked local lights
+    // (attention lights always first, `clampGpuLights`) the scene pass admits.
+    // The night's pools ship at every level (V2 tier contract: never below 12
+    // at MINIMAL), replacing the undeclared 32/10/4 cut that deleted the lamp
+    // pools at REDUCED — which makes this new light-loop work at REDUCED and
+    // MINIMAL. Band: the ceiling is the whole FULL - MINIMAL real-frame delta
+    // (WebPlatformGPU appburst, dense-24 22:00 z2 4880x1392, 4.02 - 1.55 ms,
+    // which also sheds bloom and occlusion) until per-level `gpu-burst.mjs`
+    // receipts land; 60 Hz assumed.
+    'light-admission': Object.freeze({
+        id: 'light-admission',
+        levels: Object.freeze({ FULL: 32, REDUCED: 24, MINIMAL: 12 }),
+        cost: Object.freeze({ gpuMsBand: [0, 2.47], cpuMsBand: [0, 0.01], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'ranked-admission',
+        canvas: 'feed-ranked-48',
+    }),
+    // 0.6 — painter's depth and one instanced particle draw. Opaque sprite
+    // records write a DEPTH_COMPONENT16 key from their painter sortY with
+    // `depthFunc(ALWAYS)` (painter order still decides every colour), then
+    // the <= 240 live particles draw once with LEQUAL and no depth write, so
+    // an ember behind a building front or a nearer body is hidden and one in
+    // front shows. It substitutes the ungraded, unsorted overlay replay of the
+    // open-air layer and draws the foot/hand-height effects layer the resident
+    // path used to drop, so it ships at every level and is never shed.
+    // `bytes` stays 0 because the depth attachment is baseline, not optional:
+    // it scales with the backing store at `attachmentBytesPerPixel` (3.5 MB at
+    // 1680x1032, 13.6 MB at 4880x1392; Shift-D `resources.attachments.sceneDepth`).
+    // Band: WebPlatformGPU's standalone WebGL2/WebGPU prototype (depth + 240
+    // particles, <= 0.15 ms at 4880x1392, ~0 at 1680x1032); the V2 K8 receipt
+    // in the real scene pass waits for a quiet host.
+    'particle-depth': Object.freeze({
+        id: 'particle-depth',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'on' }),
+        cost: Object.freeze({
+            gpuMsBand: [0, 0.15],
+            cpuMsBand: [0, 0.03],
+            bytes: 0,
+            attachmentBytesPerPixel: 2,
+            scope: 'shared-scene-envelope',
+        }),
+        staticFallback: 'same-depth-pass',
+        canvas: 'depth-sorted-drawables',
+    }),
 });
 
 const EFFECT_LEVEL_NAMES = ['FULL', 'REDUCED', 'MINIMAL'];
 
 /**
  * What the named effect does at a resident quality level: `on`, a named
- * degraded mode, or `off`. Levels beyond MINIMAL (the minimal-resident probe)
- * keep MINIMAL's row; the renderer never renders below it.
+ * degraded mode, `off`, or a count (`light-admission`). Levels beyond MINIMAL
+ * (the minimal-resident override) keep MINIMAL's row; the renderer never
+ * renders below it.
  */
 export function effectBudgetMode(id, level) {
     const effect = EFFECT_BUDGET[id];
@@ -225,6 +288,19 @@ vec3 applyTimeGrade(vec3 albedo, bool lift) {
     return c / max(1.0, max(c.r, max(c.g, c.b)));
 }
 
+// V6 — graded water held at WATER_MAX_SATURATION (HSV), pulled toward its
+// own luma so hue, luma and the cool R−B sign are kept. The CPU twin is
+// GradeEvaluator \`capSaturation\` (CoastBake's outer ocean).
+const float WATER_MAX_SATURATION = ${WATER_MAX_SATURATION.toFixed(3)};
+vec3 capSaturation(vec3 c, float maxS) {
+    float hi = max(c.r, max(c.g, c.b));
+    float spread = hi - min(c.r, min(c.g, c.b));
+    if (hi <= 0.0 || spread <= maxS * hi) return c;
+    float y = dot(c, GRADE_LUMA);
+    float k = clamp(maxS * y / max(1e-6, spread - maxS * (hi - y)), 0.0, 1.0);
+    return y + (c - y) * k;
+}
+
 // 1.2 — stepped light pools. Each light is stepped on its own falloff
 // \`shape\` (0..1, occlusion applied): three courses at 0.12 / 0.40 / 0.75
 // with an ordered dither (\`order\` in [0, 1)) on the edges, so every pool has
@@ -244,28 +320,166 @@ float poolWeight(float steps) {
 // Warm sources (lanterns, braziers, windows) land on the C1 emissive ramp —
 // #ff9d4a rim, #ffcf7a mid, #ffe9b8 core, luma-normalised — so each course
 // reads as its own amber step; cool/rune lights keep 70 % of their own hue.
-// The light multiplies the albedo's luminance with a tenth of its chroma,
-// so a lantern on grass reads amber on the grass texture, never
-// yellow-green. Under a warm light the graded ambient trades its blue night
-// cast for the course's own hue (blue + amber would grey the pool into
-// peach), then the pool is added. Returns the lit colour.
 const vec3 POOL_RIM = vec3(1.484, 0.914, 0.430);
 const vec3 POOL_MID = vec3(1.208, 0.981, 0.577);
 const vec3 POOL_CORE = vec3(1.089, 0.995, 0.786);
-vec3 stepPool(vec3 graded, vec3 light, float steps, vec3 albedo) {
+// The course tint of an accumulated light (luma-normalised) and its strength.
+vec3 poolTint(vec3 light, float steps, out float strength, out float warm) {
     float l = dot(light, GRADE_LUMA);
-    if (steps < 0.5 || l <= 0.01) return graded;
     vec3 hue = light / l;
-    float warm = clamp((hue.r - hue.b) * 1.25, 0.0, 1.0);
+    warm = clamp((hue.r - hue.b) * 1.25, 0.0, 1.0);
+    strength = min(l, 1.0);
     vec3 ramp = steps < 1.5 ? POOL_RIM : steps < 2.5 ? POOL_MID : POOL_CORE;
-    float strength = min(l, 1.0);
-    vec3 tint = mix(mix(vec3(1.0), hue, 0.7), ramp, warm);
-    vec3 pool = tint * strength;
-    vec3 base = mix(vec3(dot(albedo, GRADE_LUMA)), albedo, 0.1);
-    // Only once the pools carry the frame (poolGain rises as the ambient falls).
-    float adapt = min(1.0, strength * 1.5) * warm * 0.85 * clamp((u_poolGain - 0.15) / 1.05, 0.0, 1.0);
-    vec3 ambient = mix(graded, dot(graded, GRADE_LUMA) * tint, adapt);
-    return ambient + base * pool * u_poolGain + pool * 0.035 * u_poolGain;
+    return mix(mix(vec3(1.0), hue, 0.7), ramp, warm);
+}
+
+// 1.2 — where a warm pool lands. Light added onto a receiver keeps the
+// receiver's hue (blue night grass + amber = lime, blue-grey stone + amber =
+// khaki), so each warm course also pulls the lit pixel toward its own stop on
+// the C1 emissive ramp at the pixel's luma: the rim on #ff9d4a, the mid ring
+// half way to #ffcf7a, the core on #ffcf7a. The core lands one stop below the
+// flame core (#ffe9b8), so the source still reads brighter and the core keeps
+// its chroma. Luma is kept, so the receiver's texture stays in the value.
+const vec3 LAND_RIM = POOL_RIM;
+const vec3 LAND_MID = vec3(1.346, 0.948, 0.504);
+const vec3 LAND_CORE = POOL_MID;
+// Share of the landing per course (rim, mid, core) at full pool light.
+const vec3 LAND_SHARE = vec3(0.62, 0.74, 0.84);
+// The stop at luma \`y\`, pulled toward grey only as far as the gamut needs
+// (hue and luma kept).
+vec3 onStop(vec3 stop, float y) {
+    vec3 c = stop * y;
+    float hi = max(c.r, max(c.g, c.b));
+    return hi > 1.0 ? y + (c - y) * ((1.0 - y) / (hi - y)) : c;
+}
+
+// V5 — the receiver ceiling (C1 \`RECEIVER_LUMA_CEILING\`, encoded Rec.709
+// luma, okL 0.80). Light that lifts a receiver above it, or above the
+// receiver's own graded value where daylight already put it higher, keeps a
+// quarter of the excess at the knee, so the cobble under a pool core keeps
+// its texture instead of clipping to cream. Summed lamps can put several
+// times the ceiling on bright stone, so the quarter-slope eases into a fixed
+// headroom (0.018 luma) instead of running on to white; the course steps stay
+// distinct because the curve never goes flat. The knee takes value only: the
+// colour's offset from its luma is kept (fitted into gamut), so a pool keeps
+// its warmth and chroma instead of greying as it is pulled down — scaling the
+// colour by y2/y cost the plaza pools a third of their R−B.
+const float RECEIVER_LUMA_CEILING = ${RECEIVER_LUMA_CEILING.toFixed(4)};
+const float RECEIVER_HEADROOM = 0.018;
+vec3 kneeValue(vec3 lit, float y, float ceilY) {
+    float kneed = ceilY + RECEIVER_HEADROOM * (1.0 - exp(-(y - ceilY) * 0.25 / RECEIVER_HEADROOM));
+    vec3 chroma = lit - y;
+    float lo = min(chroma.r, min(chroma.g, chroma.b));
+    float hi = max(chroma.r, max(chroma.g, chroma.b));
+    float fit = 1.0;
+    if (lo < 0.0) fit = min(fit, kneed / -lo);
+    if (hi > 0.0) fit = min(fit, (1.0 - kneed) / hi);
+    return kneed + chroma * fit;
+}
+vec3 lumaKnee(vec3 lit, float floorLuma) {
+    float y = dot(lit, GRADE_LUMA);
+    float ceilY = max(RECEIVER_LUMA_CEILING, floorLuma);
+    return y <= ceilY ? lit : kneeValue(lit, y, ceilY);
+}
+// V5 — encoded luma under-reads saturated yellow and amber (#ffc71a sits at
+// luma 0.80 but okL 0.87), so a lit receiver is also held at okL
+// \`RECEIVER_OKL_CEILING\` (0.836: under 0.84 after 8-bit rounding), or at its
+// own graded value (\`floorColour\`) where daylight or an authored emitter
+// already put it higher. Scaling linear light by k scales okL by cbrt(k), so
+// the cap is exact and keeps hue. Only a pixel with a channel above 0.74 can
+// reach it (grey 0.74 is okL 0.79).
+const float RECEIVER_OKL_CEILING = 0.836;
+const float ATTENTION_OKL_CEILING = 0.852;
+vec3 decodeSrgb(vec3 c) {
+    c = max(c, vec3(0.0));
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+vec3 encodeSrgb(vec3 l) {
+    l = max(l, vec3(0.0));
+    return mix(l * 12.92, 1.055 * pow(l, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), l));
+}
+float okLightness(vec3 lin) {
+    vec3 lms = vec3(
+        dot(lin, vec3(0.4122214708, 0.5363325363, 0.0514459929)),
+        dot(lin, vec3(0.2119034982, 0.6806995451, 0.1073969566)),
+        dot(lin, vec3(0.0883024619, 0.2817188376, 0.6299787005))
+    );
+    lms = pow(max(lms, vec3(0.0)), vec3(1.0 / 3.0));
+    return dot(lms, vec3(0.2104542553, 0.7936177850, -0.0040720468));
+}
+vec3 okCeiling(vec3 lit, vec3 floorColour, float ceilL) {
+    if (max(lit.r, max(lit.g, lit.b)) <= 0.74) return lit;
+    vec3 lin = decodeSrgb(lit);
+    float l = okLightness(lin);
+    if (l <= ceilL) return lit;
+    float floorL = max(ceilL, okLightness(decodeSrgb(floorColour)));
+    if (l <= floorL) return lit;
+    float k = floorL / l;
+    return encodeSrgb(lin * (k * k * k));
+}
+vec3 receiverKnee(vec3 lit, float floorLuma) {
+    return okCeiling(lumaKnee(lit, floorLuma), vec3(floorLuma), RECEIVER_OKL_CEILING);
+}
+
+// V5 — the single landing function for local light. \`ambient\` is the summed
+// ambient pool light and \`ambientSteps\` its deepest course; \`attention\` the
+// strongest action-needed light at the pixel (max, never summed) and its
+// course; \`reflection\` the summed water and wet-ground reflection adds. The
+// light multiplies the albedo's luminance with 55 % of its chroma (AD-5).
+// Once the pools carry the frame (poolGain rises as the ambient falls), a
+// warm course trades part of the graded ambient's blue night cast for its own
+// hue (blue + amber would grey the pool into peach), and lands on its C1 stop
+// in proportion to the share of the pixel's value the pool supplies: grass,
+// stone and timber under a lantern read as warm courses of their own value,
+// never lime or khaki (maintainer, round 2: warmer pools). Ambient pools and
+// reflections land together through one receiver knee against the graded
+// (pre-loop) luma. The attention course is added after that knee, so it is
+// always the brightest pool, and eases into its own ceiling one headroom
+// above the receivers' (okL <= 0.852): the T1 plate fill (okL 0.862) stays
+// brighter than every lit world pixel. Returns the lit colour.
+vec3 stepPool(vec3 graded, vec3 ambient, float ambientSteps, vec3 attention, float attentionSteps, vec3 albedo, vec3 reflection) {
+    bool lit = ambientSteps > 0.5 && dot(ambient, GRADE_LUMA) > 0.01;
+    bool marked = attentionSteps > 0.5 && dot(attention, GRADE_LUMA) > 0.01;
+    if (!lit && !marked && reflection == vec3(0.0)) return graded;
+    float gradedLuma = dot(graded, GRADE_LUMA);
+    vec3 base = mix(vec3(dot(albedo, GRADE_LUMA)), albedo, 0.55);
+    float carry = clamp((u_poolGain - 0.15) / 1.05, 0.0, 1.0);
+    float strength;
+    float warm;
+    float landWarm = 0.0;
+    vec3 result = graded;
+    vec3 add = reflection;
+    if (lit) {
+        vec3 tint = poolTint(ambient, ambientSteps, strength, warm);
+        vec3 pool = tint * strength;
+        float adapt = min(1.0, strength * 1.5) * warm * (0.85 * 0.6) * carry;
+        result = mix(graded, gradedLuma * tint, adapt);
+        add += base * pool * u_poolGain + pool * 0.035 * u_poolGain;
+        landWarm = warm;
+    }
+    result = lumaKnee(result + add, gradedLuma);
+    if (landWarm > 0.0) {
+        float y = dot(result, GRADE_LUMA);
+        float share = clamp((y - gradedLuma) / max(y, 0.02) * 1.6, 0.0, 1.0);
+        vec3 stop = ambientSteps < 1.5 ? LAND_RIM : ambientSteps < 2.5 ? LAND_MID : LAND_CORE;
+        float course = ambientSteps < 1.5 ? LAND_SHARE.x : ambientSteps < 2.5 ? LAND_SHARE.y : LAND_SHARE.z;
+        result = mix(result, onStop(stop, y), landWarm * share * course);
+    }
+    result = okCeiling(result, graded, RECEIVER_OKL_CEILING);
+    if (marked) {
+        vec3 tint = poolTint(attention, attentionSteps, strength, warm);
+        vec3 pool = tint * strength;
+        if (!lit) {
+            float adapt = min(1.0, strength * 1.5) * warm * (0.85 * 0.6) * carry;
+            result = mix(result, dot(result, GRADE_LUMA) * tint, adapt);
+        }
+        result += base * pool * u_poolGain + pool * 0.035 * u_poolGain;
+        float y = dot(result, GRADE_LUMA);
+        float ceilY = max(RECEIVER_LUMA_CEILING + RECEIVER_HEADROOM, gradedLuma);
+        if (y > ceilY) result = kneeValue(result, y, ceilY);
+        result = okCeiling(result, graded, ATTENTION_OKL_CEILING);
+    }
+    return result;
 }
 
 // The stepped edge darkening. \`topLeftPx\` is in top-left screen pixels.
@@ -498,6 +712,85 @@ export function materialClassId(value) {
     return registryMaterialClassId(value);
 }
 
+// V9 — the GPU record contract (docs/material-channel-contract.md, "V9 GPU
+// record layout"). Flag bits ride instance loc3.w. Bits 4 and 5 are reserved
+// by name so 2.3's surface code and B.2's packed geometry cannot collide.
+export const GPU_RECORD_FLAGS = Object.freeze({
+    writesDepth: 1,
+    reflect: 2,
+    fatOptOut: 4,
+    screenSpace: 8,
+    surfaceCode: 16,
+    packedGeometry: 32,
+});
+
+// V9 / 0.6 — painter's depth. A record's or particle's painter `sortY` is
+// clamped to [GPU_DEPTH_SORT_Y_MIN, GPU_DEPTH_SORT_Y_MIN + 65535/8] world px
+// and quantized to 1/8 px: exactly the 65,536 steps of the DEPTH_COMPONENT16
+// attachment, so a particle and the record it shares a sortY with store the
+// same depth and LEQUAL keeps the particle visible over its own owner. Key 0
+// is the cleared far plane (terrain, haze, ground and cue records carry it
+// and never write); a nearer sortY is a larger key. Shaders write
+// `depth = 1 - key / 65535`. A raw `1 - sortY / 4096` would leave [0, 1] for
+// split back halves at negative sortY (StaticPropDrawables.propBackSortY).
+export const GPU_DEPTH_SORT_Y_MIN = -2048;
+export const GPU_DEPTH_KEY_STEPS_PER_PX = 8;
+export const GPU_DEPTH_KEY_MAX = 65535;
+
+export function gpuDepthKey(sortY) {
+    const value = sortY == null ? Number.NaN : Number(sortY);
+    if (Number.isNaN(value)) return 0;
+    const key = Math.round((value - GPU_DEPTH_SORT_Y_MIN) * GPU_DEPTH_KEY_STEPS_PER_PX);
+    return key <= 0 ? 0 : key >= GPU_DEPTH_KEY_MAX ? GPU_DEPTH_KEY_MAX : key;
+}
+
+// 0.6 — one GPU particle instance (ParticleSystem.packGpuInstances writes it,
+// GpuWorldRenderer draws it in one instanced call):
+//   bytes  0-15  FLOAT  x4  left, top, width, height (whole world texels)
+//   bytes 16-19  UBYTE  x4  straight RGBA, normalized
+//   bytes 20-23  UBYTE  x4  shape, flags, motif index, 0 (integer)
+//   bytes 24-25  USHORT     painter depth key (`gpuDepthKey` of its sortY)
+//   bytes 26-27  USHORT     0
+// `graded` particles are matter and take the C2 grade in the shader; `emits`
+// particles are light and feed bloom. A particle with neither (a pre-graded
+// night smoke tone, a fire-lit smoke underside) keeps its colour unlit.
+export const GPU_PARTICLE_INSTANCE_BYTES = 28;
+export const GPU_PARTICLE_SHAPES = Object.freeze({ rect: 0, blob: 1, wings: 2, motif: 3 });
+export const GPU_PARTICLE_FLAGS = Object.freeze({ graded: 1, emits: 2 });
+// Event-shape motifs are 8x8 masks stacked vertically in one R8 texture.
+export const GPU_PARTICLE_MOTIF_SIZE = 8;
+
+function uint16Field(value) {
+    const number = Math.round(finite(value, 0));
+    return number <= 0 ? 0 : number >= 65535 ? 65535 : number;
+}
+
+// Writes every V9 field onto `target` (a normalized record or a producer's
+// own prenormalized record). `writesDepth` is the writer's per-kind opt-in
+// (opaque sprite kinds); soft alpha and additive blending never write, so a
+// departed body at 0.58 or an archive fade cannot hide particles behind it.
+// Receiver geometry is integer world px: `footY` defaults to the painter sortY
+// (the drawable's ground line), -1 = ground self; `frontCornerY` -1 = none.
+export function assignGpuRecordV9Fields(target, record, alpha, blend) {
+    const depthSortY = record.depthSortY == null ? Number.NaN : Number(record.depthSortY);
+    const hasDepth = !Number.isNaN(depthSortY);
+    const writesDepth = hasDepth && record.writesDepth === true && alpha >= 1 && blend === 'normal';
+    target.depthSortY = hasDepth ? depthSortY : null;
+    target.depthKey = hasDepth ? gpuDepthKey(depthSortY) : 0;
+    target.writesDepth = writesDepth;
+    target.flags = (writesDepth ? GPU_RECORD_FLAGS.writesDepth : 0)
+        | (record.reflect === true ? GPU_RECORD_FLAGS.reflect : 0)
+        | (record.fatOptOut === true ? GPU_RECORD_FLAGS.fatOptOut : 0)
+        | (record.screenSpace === true ? GPU_RECORD_FLAGS.screenSpace : 0);
+    target.footY = finite(record.footY, Number.isFinite(depthSortY) ? depthSortY : -1);
+    target.frontCornerX = finite(record.frontCornerX, 0);
+    target.frontCornerY = finite(record.frontCornerY, -1);
+    target.ownerSlot = uint16Field(record.ownerSlot);
+    target.landmarkId = uint16Field(record.landmarkId);
+    target.paletteRamp = Boolean(record.paletteRamp);
+    return target;
+}
+
 export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     const source = record.source || record.image || null;
     const sourceWidth = Math.max(1, finite(record.sourceWidth, source?.width || 1));
@@ -547,7 +840,7 @@ export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     normalized.textureUpdates = record.textureUpdates ?? null;
     normalized.materialTextureUpdates = record.materialTextureUpdates ?? null;
     normalized.emissiveTextureUpdates = record.emissiveTextureUpdates ?? null;
-    return normalized;
+    return assignGpuRecordV9Fields(normalized, record, alpha, blend);
 }
 
 export function validGpuRecord(record) {
@@ -564,9 +857,11 @@ export function validGpuRecord(record) {
 
 // A producer that emits many small records per frame (0.2 ground cues) may
 // hand them over already normalized: `prenormalized: true` promises every
-// field normalizeGpuRecord would write is present, finite and in range, and
+// field normalizeGpuRecord would write — the V9 fields of
+// `assignGpuRecordV9Fields` included — is present, finite and in range, and
 // that the record is valid. Those records skip the per-record copy and are
-// batched as-is.
+// batched as-is. 0.6 — `writesDepth` joins the batch key: one batch is drawn
+// under one `depthMask`.
 export function buildStableGpuBatches(records = [], batches = [], normalizedRecords = []) {
     let batchCount = 0;
     let current = null;
@@ -584,6 +879,7 @@ export function buildStableGpuBatches(records = [], batches = [], normalizedReco
         if (!current || current.textureKey !== record.textureKey
             || current.sidecarKey !== record.sidecarKey
             || current.blend !== record.blend
+            || current.writesDepth !== record.writesDepth
             || current.source !== record.source
             || current.materialSource !== record.materialSource
             || current.emissiveSource !== record.emissiveSource
@@ -595,9 +891,11 @@ export function buildStableGpuBatches(records = [], batches = [], normalizedReco
             }
             if (current.textureKey !== record.textureKey
                 || current.sidecarKey !== record.sidecarKey
-                || current.blend !== record.blend) {
-                current.key = `${record.textureKey}|${record.sidecarKey}|${record.blend}`;
+                || current.blend !== record.blend
+                || current.writesDepth !== record.writesDepth) {
+                current.key = `${record.textureKey}|${record.sidecarKey}|${record.blend}|${record.writesDepth ? 'depth' : 'flat'}`;
             }
+            current.writesDepth = record.writesDepth;
             current.source = record.source;
             current.materialSource = record.materialSource;
             current.emissiveSource = record.emissiveSource;

@@ -113,6 +113,16 @@ const PURKINJE_BLUE = Object.freeze(lumaNormalized([0.93, 1.0, 1.07]));
 //   vignetteEdge/Alpha   the stepped edge darkening
 //   sky/void/haze        colours for the sky, void and aerial-perspective
 //                        consumers
+//   approach             optional ease exponent on the segment INTO this key
+//                        (t = smoothstep(local) ^ approach): > 1 holds the
+//                        previous key longer and arrives late
+//
+// 1.1 (The Waking Isle) — the authored colour script, contract V6: each key
+// has its own identity (rose mist at dawn, clean daylight, an amber key over
+// violet shadows at golden hour, a cobalt blue hour, a moonlit night in which
+// the lamps give colour back), measured on the fixed `readme-showcase` camera
+// and asserted over the C1 ramps by scripts/tests/grade-colour-script.test.mjs.
+// The 8 key names are a contract: the audio arrangement couples to them.
 export const GRADE_KEYFRAMES = Object.freeze([
     Object.freeze({
         name: 'deep-night', minute: 2 * 60, side: 'night',
@@ -132,15 +142,15 @@ export const GRADE_KEYFRAMES = Object.freeze([
         vignetteEdge: [0.74, 0.74, 0.84], vignetteAlpha: 0.42,
         skyTop: '#0f1732', skyHorizon: '#46405e', voidColor: '#0e151f', horizonHaze: '#2e3452',
     }),
-    // Sunrise is a rosy key light, not a cold wash: warm gain and a warm
-    // highlight lift the sunlit faces while the violet split stays weak (most
-    // world pixels sit in shadow luminance and a strong split greys the
-    // frame). The long dawn cast comes from the authored `rake`.
+    // Sunrise is rose and mist (M17), not a second golden hour: a faint rose
+    // key over cool, lifted shadows, less saturated and with less value spread
+    // than noon, so 06:00 no longer twins 18:00. The long dawn cast comes from
+    // the authored `rake`.
     Object.freeze({
         name: 'sunrise', minute: 6 * 60, side: 'dawn',
-        exposure: 0.86, saturation: 0.94,
-        gain: [1.10, 0.94, 0.86], lift: [0.014, 0.010, 0.018], gamma: 1.02,
-        shadowTint: [0.92, 0.88, 1.00], highlightTint: [1.18, 1.02, 0.86],
+        exposure: 0.84, saturation: 0.82,
+        gain: [1.03, 0.96, 0.97], lift: [0.030, 0.027, 0.040], gamma: 0.97,
+        shadowTint: [0.88, 0.92, 1.12], highlightTint: [1.16, 0.99, 0.98],
         purkinje: 0.1, sunBand: 0.8, daylight: 0.55, night: 0.1, rake: 0.875,
         vignetteEdge: [0.80, 0.74, 0.80], vignetteAlpha: 0.34,
         skyTop: '#2e4a7a', skyHorizon: '#e2a98a', voidColor: '#141c26', horizonHaze: '#a88478',
@@ -163,23 +173,40 @@ export const GRADE_KEYFRAMES = Object.freeze([
         vignetteEdge: [0.86, 0.89, 0.92], vignetteAlpha: 0.24,
         skyTop: '#4a86c0', skyHorizon: '#b8d6e6', voidColor: '#16222b', horizonHaze: '#a2becf',
     }),
+    // Golden hour is a low sun: an amber key over violet shadows, more
+    // colourful than noon. V6 measures it on land (V6 holds the water at
+    // WATER_MAX_SATURATION, so the sea no longer carries the cool fill): the
+    // violet lives in the land split tone — a violet shadow tint and a blue
+    // lift for the fill, an amber highlight tint for the key and the value
+    // spread. The shadow tint's green stays high enough that mid-dark water
+    // and grass keep their value, so golden hour stays brighter than blue
+    // hour, and exposure keeps the 5120 arc, where the frame is mostly sea,
+    // with golden above blue hour. The T1 salience guard (18:00 z1,
+    // readme-showcase, DPR 2, ten samples: the old flat split at 0.95 left
+    // the T1 plates 18 % of the top-1 % salience, this violet split 26 % at
+    // 0.92) keeps exposure from rising further; saturation stays inside M17's
+    // 1.12–1.20 band (1.20 cost six salience points). The
+    // highlight tint keeps G well under R so lit ground stays amber, never
+    // the plates' yellow. The approach holds the afternoon: 15:00 is 13 %
+    // golden, gold lands 16:30–17:45.
     Object.freeze({
-        name: 'golden-hour', minute: 18 * 60, side: 'dusk',
-        exposure: 0.92, saturation: 1.06,
-        gain: [1.09, 0.94, 0.79], lift: [0.010, 0.004, 0.018], gamma: 1.03,
-        shadowTint: [0.80, 0.74, 0.98], highlightTint: [1.16, 1.04, 0.83],
+        name: 'golden-hour', minute: 18 * 60, side: 'dusk', approach: 2.4,
+        exposure: 0.95, saturation: 1.15,
+        gain: [1.05, 0.97, 0.88], lift: [0.004, 0.000, 0.040], gamma: 1.08,
+        shadowTint: [0.72, 0.64, 1.40], highlightTint: [1.36, 1.10, 0.78],
         purkinje: 0, sunBand: 1, daylight: 0.9, night: 0, rake: 1,
         vignetteEdge: [0.78, 0.70, 0.78], vignetteAlpha: 0.32,
         skyTop: '#3f6ea0', skyHorizon: '#f0b27a', voidColor: '#1a1f28', horizonHaze: '#c09878',
     }),
-    // Blue hour is bluer than dusk but never bluer than night: it keeps more
-    // of the albedo's colour than the night key does.
+    // Blue hour is a cobalt dusk: bluer than golden hour, never darker than
+    // night (the arc stays monotone), keeping more of the albedo's colour than
+    // the night key does.
     Object.freeze({
         name: 'blue-hour', minute: 19 * 60 + 45, side: 'dusk',
-        exposure: 0.64, saturation: 0.44,
-        gain: [0.84, 0.89, 1.02], lift: [0.016, 0.017, 0.026], gamma: 1.04,
-        shadowTint: [0.86, 0.90, 1.08], highlightTint: [1.08, 0.98, 0.96],
-        purkinje: 0.5, sunBand: 0.2, daylight: 0.1, night: 0.5, rake: 0.375,
+        exposure: 0.82, saturation: 0.62,
+        gain: [0.80, 0.90, 1.10], lift: [0.018, 0.020, 0.034], gamma: 1.02,
+        shadowTint: [0.86, 0.90, 1.14], highlightTint: [1.04, 0.98, 1.02],
+        purkinje: 0.3, sunBand: 0.2, daylight: 0.1, night: 0.5, rake: 0.375,
         vignetteEdge: [0.74, 0.74, 0.84], vignetteAlpha: 0.40,
         skyTop: '#1c2c52', skyHorizon: '#6a6488', voidColor: '#10171f', horizonHaze: '#3a4262',
     }),
@@ -240,7 +267,8 @@ export function gradeKeysAt(minuteOfDay, { sunriseShift = 0, sunsetShift = 0 } =
         let local = minute;
         if (local < start) local += DAY_MINUTES;
         if (local >= start && local < end) {
-            return { from, to, t: smoothstep((local - start) / (end - start)) };
+            const eased = smoothstep((local - start) / (end - start));
+            return { from, to, t: eased ** (to.approach ?? 1) };
         }
     }
     return { from: keys[0], to: keys[0], t: 0 };
@@ -369,7 +397,16 @@ export function evaluateGrade({
         // 1.2 — how hard local light pools multiply the surface: they carry
         // the frame once the ambient has fallen (blue hour, night) and stay a
         // faint accent while daylight or a bright overcast still lights it.
-        poolGain: 0.15 + 1.05 * Math.max(1 - smoothstep((exposure - 0.55) / 0.35), night),
+        // 1.1 — the blue-hour key is brighter than before, so the lamps would
+        // lose the dusk to it; from the lamplight course on (19:30, the same
+        // step the source energy takes) they carry the frame at the lamp
+        // course's share. The settling course and the dawn keep the ambient
+        // term, so sunrise stays rose mist.
+        poolGain: 0.15 + 1.05 * Math.max(
+            1 - smoothstep((exposure - 0.55) / 0.35),
+            night,
+            lampCarry(minuteOfDay, sunriseShift, sunsetShift),
+        ),
         sunBand: clamp(sunBand),
         daylight: clamp(daylight),
         cloudShadow: clamp(cloudShadow),
@@ -409,6 +446,30 @@ export function applyGradeToRgb(rgb, grade) {
     return [out[0] / peak, out[1] / peak, out[2] / peak];
 }
 
+// V6 — outside the sun and moon path the sea stays cool and quiet at every
+// hour: graded water (the outer ocean in CoastBake and the island's water
+// material in the resident scene pass) is held at this HSV saturation, so a
+// golden or blue-hour frame that is mostly sea never reads as a saturated
+// navy slab. Sun glitter, the moon path and lamp reflections are drawn after
+// this cap and keep their own colour. 0.37 leaves the composite (haze, cloud
+// courses, foam) under V6's 0.40.
+export const WATER_MAX_SATURATION = 0.37;
+
+/**
+ * Pull `rgb` (0..1) toward its own Rec.709 luma just far enough that its HSV
+ * saturation is at most `maxS`: luma and hue are kept, so a cool sea stays
+ * cool (the sign of R−B never flips). The GLSL twin is `capSaturation` in
+ * GpuWorldPolicy's GRADE_GLSL.
+ */
+export function capSaturation(rgb, maxS = WATER_MAX_SATURATION) {
+    const hi = Math.max(rgb[0], rgb[1], rgb[2]);
+    const spread = hi - Math.min(rgb[0], rgb[1], rgb[2]);
+    if (hi <= 0 || spread <= maxS * hi) return rgb;
+    const y = luma(rgb);
+    const k = Math.max(0, Math.min(1, (maxS * y) / Math.max(1e-6, spread - maxS * (hi - y))));
+    return [y + (rgb[0] - y) * k, y + (rgb[1] - y) * k, y + (rgb[2] - y) * k];
+}
+
 // The clear-noon grade, for feeds and fixtures authored without an
 // atmosphere snapshot.
 export const NEUTRAL_GRADE = Object.freeze(evaluateGrade({ minuteOfDay: 12 * 60 + 30 }));
@@ -432,4 +493,11 @@ export function lampCourseAt(minuteOfDay, { sunriseShift = 0, sunsetShift = 0 } 
     if (minute < sunrise - 20) return 2;
     if (minute < sunrise + 30) return 1;
     return 0;
+}
+
+// The lamps' share of the pool gain: the lamp course's own share from the
+// lamplight course on, nothing before it.
+function lampCarry(minuteOfDay, sunriseShift, sunsetShift) {
+    const course = lampCourseAt(minuteOfDay, { sunriseShift, sunsetShift });
+    return course >= 2 ? course / 3 : 0;
 }

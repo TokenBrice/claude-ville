@@ -14,6 +14,7 @@ import {
     BUSH_DENSITY,
     GRASS_TUFT_DENSITY,
     FLOWER_DENSITY,
+    FOREST_FLOOR_REGIONS,
 } from '../../config/scenery.js';
 
 const CARDINAL_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -24,6 +25,23 @@ const TREE_CLUMP_PROBES = 20;
 const TREE_CLUMP_STEP = 0.72;
 const TREE_TRUNK_SPACING_SQ = 0.5;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+// 5.3 — canopy variants: 0 authored, 1 deep/cool, 2 sunlit/yellow. Deep woods
+// turn up to this share of their sunlit trees deep, meadow edges the same
+// share of their deep trees sunlit; flowers within MEADOW_REACH tiles mark a
+// meadow (MEADOW_FLOWERS of them is a full meadow).
+const CANOPY_VARIANTS = 3;
+const CANOPY_BIAS_SHARE = 0.7;
+const MEADOW_REACH = 3;
+const MEADOW_FLOWERS = 4;
+
+const fract = (value) => value - Math.floor(value);
+
+// The plan's per-tree hash (TF-3). Every tree record carries the biased
+// result as `variant`; the canopy caches and the ground bake's litter both
+// read it, so a tree and the leaves under it agree.
+function canopyVariantHash(tileX, tileY) {
+    return fract(Math.sin(tileX * 91.7 + tileY * 17.3) * 43758.55);
+}
 
 export class SceneryEngine {
     constructor({ world, terrainSeed, tileNoise, smoothNoise = null }) {
@@ -45,7 +63,7 @@ export class SceneryEngine {
         this.grassTuftTiles = new Map(); // key -> { variant: 0..1 }
         this.flowerTiles = new Map();  // key -> { variant: 0..2 }
         this.smallRockTiles = new Set();
-        this.treeProps = [];           // { tileX, tileY, species, size }
+        this.treeProps = [];           // { tileX, tileY, species, size, variant }
         this.boulderProps = [];        // { tileX, tileY, variant, scale }
 
         this._buildingFootprints = this._collectBuildingFootprints();
@@ -778,6 +796,45 @@ export class SceneryEngine {
                 }
             }
         }
+        for (const tree of this.treeProps) tree.variant = this._canopyVariant(tree);
+    }
+
+    // 5.3 — the tree's canopy variant (0 authored, 1 deep/cool, 2 sunlit):
+    // the plan's hash, then biased deep inside the forest-floor woods and
+    // sunlit at meadow edges by flipping a hashed share of the other extreme.
+    _canopyVariant(tree) {
+        let variant = Math.min(CANOPY_VARIANTS - 1, Math.floor(canopyVariantHash(tree.tileX, tree.tileY) * CANOPY_VARIANTS));
+        const flip = fract(Math.sin(tree.tileX * 12.9898 + tree.tileY * 78.233) * 43758.5453);
+        if (variant === 2 && flip < this._forestFloorWeight(tree.tileX, tree.tileY) * CANOPY_BIAS_SHARE) variant = 1;
+        else if (variant === 1 && flip < this._meadowWeight(tree.tileX, tree.tileY) * CANOPY_BIAS_SHARE) variant = 2;
+        return variant;
+    }
+
+    // 0 outside the authored forest floors, 1 in their cores.
+    _forestFloorWeight(tileX, tileY) {
+        let weight = 0;
+        for (const region of FOREST_FLOOR_REGIONS) {
+            const dx = (tileX + 0.5 - region.centerX) / region.radiusX;
+            const dy = (tileY + 0.5 - region.centerY) / region.radiusY;
+            const d = dx * dx + dy * dy;
+            if (d >= 1) continue;
+            weight = Math.max(weight, Math.min(1, (1 - d) * 2) * (region.strength ?? 1));
+        }
+        return weight;
+    }
+
+    // Flower tiles are the meadow dressing (generateFlatVegetation runs before
+    // the trees), so their count nearby measures how much meadow a tree faces.
+    _meadowWeight(tileX, tileY) {
+        const cx = Math.floor(tileX);
+        const cy = Math.floor(tileY);
+        let flowers = 0;
+        for (let dy = -MEADOW_REACH; dy <= MEADOW_REACH; dy++) {
+            for (let dx = -MEADOW_REACH; dx <= MEADOW_REACH; dx++) {
+                if (dx * dx + dy * dy <= MEADOW_REACH * MEADOW_REACH && this.flowerTiles.has(`${cx + dx},${cy + dy}`)) flowers++;
+            }
+        }
+        return Math.min(1, flowers / MEADOW_FLOWERS);
     }
 
     // Grow one clump around (cx, cy) along a golden-angle spiral. Returns true

@@ -23,31 +23,22 @@ export class ModeManager {
         eventBus.emit('mode:changed', mode);
     }
 
+    // 0.3 — a mode switch is a cut, whole within one task: the incoming
+    // surface is shown and the outgoing one hidden together, then
+    // `mode:changed` lets the Dashboard lay itself out (it renders
+    // synchronously) and the World measure its last frame into the
+    // container's bands before it suspends. The browser paints only after
+    // all of that, so the World stays on screen until the Dashboard is laid
+    // out and no frame ever shows neither. There is no fade: fading the
+    // Dashboard in from opacity 0 was itself the black frame. Coming back,
+    // the World container shows the measured bands and its canvases fade in
+    // on `world:first-frame` (App).
     _applyMode(mode) {
-        if (mode === 'character') {
-            if (this.characterEl) this.characterEl.style.display = '';
-            if (this.dashboardEl) this.dashboardEl.style.display = 'none';
-            this.btnCharacter?.classList.add('topbar__mode-btn--active');
-            this.btnDashboard?.classList.remove('topbar__mode-btn--active');
-            // 0.5 — the World container is the sky from its first paint and
-            // its canvases fade in on the renderer's first presented frame; a
-            // container fade on top would dip the sky through the page black.
-            this.characterEl?.classList.remove('content__mode--enter');
-            return;
-        }
-        if (this.characterEl) this.characterEl.style.display = 'none';
-        if (this.dashboardEl) this.dashboardEl.style.display = '';
-        this.btnDashboard?.classList.add('topbar__mode-btn--active');
-        this.btnCharacter?.classList.remove('topbar__mode-btn--active');
-        // 4.9 — fade the incoming Dashboard (CSS `cv-mode-fade-in`, 180ms).
-        // Reduced motion: the CSS media query disables the animation, so this
-        // stays an instant cut with no extra JS branching.
-        const shownEl = this.dashboardEl;
-        if (shownEl) {
-            shownEl.classList.remove('content__mode--enter');
-            void shownEl.offsetWidth;
-            shownEl.classList.add('content__mode--enter');
-        }
+        const dashboard = mode === 'dashboard';
+        if (this.dashboardEl) this.dashboardEl.style.display = dashboard ? '' : 'none';
+        if (this.characterEl) this.characterEl.style.display = dashboard ? 'none' : '';
+        this.btnCharacter?.classList.toggle('topbar__mode-btn--active', !dashboard);
+        this.btnDashboard?.classList.toggle('topbar__mode-btn--active', dashboard);
     }
 
     getCurrentMode() {

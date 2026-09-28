@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-09-25-opus55-painted-isle"
+  assetVersion: "2026-09-28-waking-isle-emitters"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -37,6 +37,7 @@ atlases:
       - building.archive
       - prop.lantern
       - prop.runeBrazier
+      - prop.bridgeLanternPost
       - terrain.shore-shallow
       - terrain.shallow-deep
       - atmosphere.light.lighthouse-beam
@@ -286,6 +287,7 @@ characters:
     generationMode: pro
     animations: [walk, breathing-idle]
     portraitCrop: { x: 23, y: 12, w: 46, h: 42 }
+    portraitFace: { x: 45, y: 24 }
     palette_layer: codex
     anchor: [46, 80]
     materialClass: metal
@@ -585,6 +587,7 @@ characters:
       grip: { hand: both, sheathe: true }
       provenance: { characterId: 52c6aee3-fdf6-42a4-b5f5-8851b0145094, animationGroupId: 08784557-f6ca-4c25-bbd3-34dd605b4ad1, generationSize: 140 }
     portraitCrop: { x: 30, y: 12, w: 34, h: 30 }
+    portraitFace: { x: 47, y: 22 }
     provenance: { characterId: 52c6aee3-fdf6-42a4-b5f5-8851b0145094 }
     palette_layer: deepseek
     # Sampled from sheet.png (plan 0.5): dark forest-green leathers + teal rune
@@ -618,6 +621,7 @@ characters:
       grip: { hand: both, sheathe: true }
       provenance: { characterId: b43a2e2e-8e6e-40a0-ba6c-b9d4514ffb57, animationGroupId: 0157e4c7-afb9-45df-a655-dcde185657c0, generationSize: 136 }
     portraitCrop: { x: 29, y: 12, w: 34, h: 32 }
+    portraitFace: { x: 45, y: 25 }
     provenance: { characterId: b43a2e2e-8e6e-40a0-ba6c-b9d4514ffb57 }
     palette_layer: deepseek
     # Sampled from sheet.png (plan 0.5): near-black hood/wrap + muted teal trim;
@@ -655,6 +659,7 @@ characters:
     generationMode: pro
     animations: [walk, breathing-idle]
     portraitCrop: { x: 31, y: 15, w: 32, h: 32 }
+    portraitFace: { x: 47, y: 23 }
     palette_layer: deepseek
     paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
     anchor: [46, 80]
@@ -686,6 +691,7 @@ characters:
     generationMode: pro
     animations: [walk, breathing-idle]
     portraitCrop: { x: 31, y: 15, w: 32, h: 32 }
+    portraitFace: { x: 46, y: 24 }
     palette_layer: deepseek
     paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
     anchor: [46, 80]
@@ -717,6 +723,7 @@ characters:
     generationMode: pro
     animations: [walk, breathing-idle]
     portraitCrop: { x: 30, y: 12, w: 34, h: 30 }
+    portraitFace: { x: 47, y: 23 }
     palette_layer: deepseek
     paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
     anchor: [46, 80]
@@ -1299,6 +1306,9 @@ buildings:
     materialClass: stone
     materialSidecar: true
     emissiveSidecar: true
+    # 1.3 — the teal crystals are a cool emitter family; only the warm
+    # lanterns and tunnel glow take the reserved light ramp.
+    emissiveFamily: cool
     occluderSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.mine }
     elevation: { base: 0, top: 232, unit: sprite-px }
@@ -1453,6 +1463,7 @@ props:
     size: 32
     anchor: [16, 28]
     materialClass: metal
+    emissiveSidecar: true
     atlasFrame: { atlas: world-pilot, key: prop.lantern }
     elevation: { base: 0, top: 28, unit: sprite-px }
     emissive:
@@ -1633,6 +1644,7 @@ props:
     size: 48
     anchor: [24, 38]
     materialClass: fire
+    emissiveSidecar: true
     atlasFrame: { atlas: world-pilot, key: prop.runeBrazier }
     elevation: { base: 0, top: 38, unit: sprite-px }
     emissive:
@@ -1749,6 +1761,18 @@ props:
     prompt: "epic fantasy RPG bridge lantern post, carved dark wood and mossy stone base, tiny blue rune lantern glow, transparent background only, isolated pixel art sprite, no ground tile, no square base, no baked shadow, empty transparent corners"
     size: 32
     anchor: [16, 28]
+    # 1.3 — the blue rune glass is a script-derived cool emitter
+    # (scripts/sprites/emissive-sidecars.mjs); the carved timber stays albedo.
+    materialClass: timber
+    emissiveSidecar: true
+    emissiveFamily: cool
+    atlasFrame: { atlas: world-pilot, key: prop.bridgeLanternPost }
+    elevation: { base: 0, top: 28, unit: sprite-px }
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.prop.bridgeLanternPost.glass, kind: rune, geometry: authored-albedo, strength: 0.8 }
+    occluder: { mode: alpha-silhouette, strength: 0.85 }
 
   - id: prop.bridgeBannerRune
     tool: map_object
@@ -2105,14 +2129,9 @@ atmosphere:
     prompt: "cool silver gibbous moon, mostly illuminated disk with dark navy crescent shadow, pale blue rim light, no face, transparent background, pixel art"
     size: 64
 
-  # 5.3 — authored pixel-art sun (plan claudeville-visual-quality-plan), baked
-  # over the wave-1 procedural placeholder. `no rays` — the renderer draws
-  # procedural rays behind the body; SkyRenderer falls back to its stepped-disc
-  # stamp if this PNG ever goes missing.
-  - id: atmosphere.sun
-    tool: map_object
-    prompt: "warm golden pixel art sun disc, flat stepped dithered circle with crisp stair-stepped edge, bright yellow core with warm orange rim band, no face, no rays, no glow halo, no soft gradient, isolated object, transparent background"
-    size: 64
+  # atmosphere.sun retired to output/attic (Waking Isle 0.10 dead-inventory
+  # sweep): zero code references — SkyRenderer draws the sun as its own
+  # flat-to-core stepped disc on a 2 px cell (`_getSunStamp`).
 
   - id: atmosphere.fog.wisp.low
     tool: map_object

@@ -20,6 +20,7 @@ export class Modal {
         };
         this._destroyed = false;
         this._isOpen = false;
+        this._exitSeq = 0;
         this._requestVersion = 0;
         this._inertRecords = [];
         this._owner = null;
@@ -86,9 +87,7 @@ export class Modal {
         this._owner = null;
         this.overlay.style.display = 'none';
         this.overlay.setAttribute('aria-hidden', 'true');
-        this.titleEl.textContent = '';
-        this.contentEl.innerHTML = '';
-        this.box.classList.remove('modal--wide');
+        this._clearAfterExit();
         document.removeEventListener('keydown', this._onKeydown);
         this._setBackgroundInert(false);
         const previous = this._previousFocus;
@@ -96,6 +95,25 @@ export class Modal {
         if (wasOpen && previous && previous.isConnected && typeof previous.focus === 'function') {
             previous.focus();
         }
+    }
+
+    // 9.6 — the dialog steps out as it was: title, content and width clear
+    // once the exit transition has played (at once when there is none, or on
+    // destroy). A reopen in the meantime keeps its own content.
+    _clearAfterExit() {
+        const seq = ++this._exitSeq;
+        const clear = () => {
+            if (seq !== this._exitSeq || this._isOpen || !this.box) return;
+            this.titleEl.textContent = '';
+            this.contentEl.innerHTML = '';
+            this.box.classList.remove('modal--wide');
+        };
+        const exit = this._destroyed ? [] : (this.overlay.getAnimations?.({ subtree: true }) || []);
+        if (!exit.length) {
+            clear();
+            return;
+        }
+        Promise.allSettled(exit.map(animation => animation.finished)).then(clear);
     }
 
     _trapFocus(event) {

@@ -25,6 +25,8 @@ import {
 } from './Formatters.js';
 import { emitAgentDeselected, emitAgentSelected } from './AgentSelection.js';
 import { toolCategory } from '../../domain/services/ToolIdentity.js';
+import { bucketForStatus, isActionableStatus, waitAnchor } from '../../domain/services/SignalLedger.js';
+import { ATTENTION_PARTS } from './TopBar.js';
 import { Toast } from './Toast.js';
 import {
     currentToolPresentation,
@@ -151,7 +153,6 @@ export const BOOK_OF_LIVES_VISIBLE_CHAPTER_LIMIT = 6;
 export const BOOK_OF_LIVES_CHAPTER_LIMIT = 32;
 export const BOOK_OF_LIVES_MILESTONE_LIMIT = 6;
 export const SECTION_ORDER = Object.freeze([
-    'blocked',
     'current-tool',
     'tool-history',
     'messages',
@@ -169,15 +170,35 @@ export const SECTION_ORDER = Object.freeze([
     'village-bonds',
 ]);
 
-function safePromptDetail(agent, limit = PROMPT_DETAIL_MAX_LENGTH) {
+// The full request, redacted and on one line. The call card clamps it in CSS
+// and keeps the complete text behind the shared disclosure.
+function safePromptDetail(agent) {
     const source = agent?.promptDetail
         || (agent?.signalSource === 'hook' ? agent?.lastToolInput : '');
-    const clean = redactSecrets(source || '')
+    return redactSecrets(source || '')
         .replace(/[\u0000-\u001f\u007f]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
-    if (clean.length <= limit) return clean;
-    return `${clean.slice(0, limit - 1).trimEnd()}…`;
+}
+
+// 9.2 — the call card leads the panel for an agent in the needs-you bucket,
+// the one state that carries an ask the operator answers. Its word is the lit
+// slot's and the plates' (`ATTENTION_PARTS`, V8); the reason word names the
+// adapter's `waitReason` (AgentPresentation's WAIT_REASON_LABELS keys), while
+// the header status keeps the full `waitReasonLabel`.
+const CALL_PART = ATTENTION_PARTS.find(part => part.key === 'needsYou');
+const CALL_REASON_WORDS = Object.freeze({
+    question: 'QUESTION',
+    approval: 'APPROVAL',
+    plan_review: 'PLAN REVIEW',
+});
+
+// Backtick spans in the request read as the command they are: ink-1 against
+// the ink-2 prose, backticks dropped. Unpaired backticks stay literal.
+function callAskNodes(text) {
+    return String(text).split(/`([^`]+)`/)
+        .map((part, index) => (index % 2 ? el('code', { className: 'activity-panel__call-code', text: part }) : part))
+        .filter(part => part !== '');
 }
 
 const BOOK_OF_LIVES_EPISODE_LABELS = Object.freeze({
@@ -522,24 +543,33 @@ export class ActivityPanel {
             this._statusElapsedEl,
             this.dom.panelAgentStatus.nextSibling,
         );
-        this._blockedPromptEl = el('div', {
-            className: 'activity-panel__value',
-        });
-        this._blockedProvenanceEl = el('span', {
-            className: 'activity-panel__narration-provenance',
-        });
-        this._blockedBannerEl = el('div', {
-            className: 'activity-panel__blocked',
-            style: {
-                display: 'none',
-            },
-        }, [this._blockedPromptEl, this._blockedProvenanceEl]);
-        this._elapsedUnsubscribe = subscribeElapsedText(this._statusElapsedEl, () => {
-            if (this._mode !== 'agent' || !this.currentAgent) return '';
-            if (resolveObservation(this.currentAgent, Date.now()).state === 'stale') return '';
-            const since = Number(this.currentAgent.statusSince);
-            return Number.isFinite(since) && since > 0 ? `\u00a0·\u00a0${formatElapsed(Math.max(0, Date.now() - since))}` : '';
-        });
+        // 9.2 — the call card sits directly under the header. Observed facts
+        // only (M25): the attention word and wait reason, the wait age on the
+        // anchor the sidebar and the plates read, the redacted request, and
+        // where the signal came from. Nothing on it can answer the ask.
+        this._callKindEl = el('span', { className: 'activity-panel__call-kind' });
+        this._callKindEl.id = 'panelCallKind';
+        this._callAgeEl = el('span', { className: 'activity-panel__call-age' });
+        this._callAskEl = el('p', { className: 'activity-panel__call-ask' });
+        this._callFullEl = el('div', { className: 'activity-panel__call-full' });
+        this._callProvenanceEl = el('div', { className: 'activity-panel__call-provenance' });
+        this._callCardEl = el('section', {
+            className: ['activity-panel__call', 'cv-frame', 'cv-frame--attn'],
+        }, [
+            el('div', { className: 'activity-panel__call-eyebrow' }, [this._callKindEl, this._callAgeEl]),
+            this._callAskEl,
+            this._callFullEl,
+            this._callProvenanceEl,
+        ]);
+        this._callCardEl.setAttribute('aria-labelledby', 'panelCallKind');
+        this._callCardEl.hidden = true;
+        this._callAnchor = 0;
+        this._callSignature = '';
+        this.panelEl?.querySelector('.activity-panel__header')?.after(this._callCardEl);
+        this._callAgeUnsubscribe = subscribeElapsedText(this._callAgeEl, now => (
+            this._callAnchor ? formatElapsed(Math.max(0, now - this._callAnchor)) : ''
+        ));
+        this._elapsedUnsubscribe = subscribeElapsedText(this._statusElapsedEl, now => this._statusAgeText(now));
         this._toolEls = {
             icon: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-icon'),
             name: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-name'),
@@ -605,8 +635,6 @@ export class ActivityPanel {
         this._ensureWorkingDirectoryAction();
         this._ensureVillageSection();
         this._mountExistingSections();
-        this._mountSection('blocked', this._blockedBannerEl);
-        this._registerAgentSection(this._blockedBannerEl);
         this._ensurePromptPlanSection();
         this._ensureExecutionTreeSection();
         this._ensureCausalWaterfallSection();
@@ -633,6 +661,9 @@ export class ActivityPanel {
         this._selectionTrigger = null;
         this._focusRequestVersion = 0;
         this._panelKeydownBound = false;
+        // 9.6 — visual teardown deferred until the stepped exit has played.
+        this._exitTasks = [];
+        this._exitSeq = 0;
 
         this._detailFreshnessEl = el('div', { className: 'activity-panel__freshness' });
         this._detailFreshnessEl.hidden = true;
@@ -1272,6 +1303,7 @@ export class ActivityPanel {
             this.currentAgent = agent;
             return;
         }
+        this._flushExitCleanup();
         this._preparePanelFocus();
         const agentId = agent?.id ?? null;
         if (agentId !== this._narrationAgentId) this._resetNarration(agentId);
@@ -1293,7 +1325,7 @@ export class ActivityPanel {
         this._showAgentSections();
         this._ingestNarration(agent);
         this._renderNarration(agent);
-        this.panelEl.style.display = '';
+        this._revealPanel();
         this.panelEl.scrollTop = 0;
         document.body.classList.add('cv-panel-open');
         this._startPanelKeyboardHandling();
@@ -1318,6 +1350,7 @@ export class ActivityPanel {
 
     showBuilding(building) {
         if (this._destroyed) return;
+        this._flushExitCleanup();
         this._preparePanelFocus();
         this._detailFetchSeq++;
         this._chronicleFetchSeq++;
@@ -1333,7 +1366,7 @@ export class ActivityPanel {
         this._teardownHeroPortrait();
         this._mode = 'building';
         this._selectedBuilding = building;
-        this._updateBlockedBanner(null);
+        this._updateCallCard(null);
         this._renderSignatures.buildingSignal = '';
         this._renderSignatures.buildingDetail = '';
         this._hideAgentSections();
@@ -1341,7 +1374,7 @@ export class ActivityPanel {
         this._updateWorkingDirectory(null);
         this._renderPinCompare();
         this._ensureBuildingContentEl();
-        this.panelEl.style.display = '';
+        this._revealPanel();
         document.body.classList.add('cv-panel-open');
         this._startPanelKeyboardHandling();
         this._renderBuildingView();
@@ -1364,21 +1397,28 @@ export class ActivityPanel {
         // Closing the panel leaves the score: the badge must never outlive the
         // surface that owns its cursor.
         this._closeWorkScore({ restoreSelection: false });
-        this.panelEl.style.display = 'none';
+        // 9.6 — the leaving frames show the panel as it was: its visual
+        // teardown waits for the stepped exit, and a mode switch cuts at once
+        // so the Dashboard lays out a single time.
+        this._exitTasks.push(() => {
+            this._teardownHeroPortrait();
+            this._updateCallCard(null);
+            this._updatePinToggle(retainedAgent);
+            this._updateWorkingDirectory(retainedAgent);
+            if (wasBuilding) this._teardownBuildingView();
+        });
+        this._concealPanel({ cut: origin === 'mode' });
         document.body.classList.remove('cv-panel-open');
-        this._teardownHeroPortrait();
         this.currentAgent = retainedAgent;
         this._currentBiographyIdentityKey = keepCurrentAgent
             ? this._biographyIdentityKey(retainedAgent)
             : null;
         this._renderSignatures = this._emptyRenderSignatures();
-        this._updatePinToggle(retainedAgent);
-        this._updateWorkingDirectory(retainedAgent);
         if (stopPolling) {
             this._stopPolling();
             this._stopBuildingPolling();
         }
-        if (wasBuilding) this._teardownBuildingView();
+        if (wasBuilding) this._selectedBuilding = null;
         this._mode = null;
         if (wasAgent && emit) emitAgentDeselected();
         if (moveFocus) {
@@ -1392,9 +1432,41 @@ export class ActivityPanel {
         this._close({ origin: 'panel' });
     }
 
+    // 9.6 — the panel enters and leaves on the one stepped curve
+    // (`--cv-step-in`: three 4 px steps, activity-panel.css). The inline
+    // `display` toggle stays the open/closed truth; `inert` marks a leaving
+    // panel, keeps it from taking input, and is the closed-state hook the
+    // exit transition keys on. The canvas resizes once: when the panel takes
+    // its column on entry, and when it gives it back after the exit.
+    _revealPanel() {
+        this.panelEl.removeAttribute('data-cut');
+        this.panelEl.inert = false;
+        this.panelEl.style.display = '';
+    }
+
+    _concealPanel({ cut = false } = {}) {
+        this.panelEl.toggleAttribute('data-cut', cut);
+        this.panelEl.inert = true;
+        this.panelEl.style.display = 'none';
+        const exit = cut ? [] : (this.panelEl.getAnimations?.() || []);
+        if (!exit.length) {
+            this._flushExitCleanup();
+            return;
+        }
+        const seq = this._exitSeq;
+        Promise.allSettled(exit.map(animation => animation.finished)).then(() => {
+            if (seq === this._exitSeq && !this._destroyed) this._flushExitCleanup();
+        });
+    }
+
+    _flushExitCleanup() {
+        this._exitSeq++;
+        for (const task of this._exitTasks.splice(0)) task();
+    }
+
     _updateInfo(agent) {
         const statusInfo = statusPresentation(agent.status);
-        this._refreshHeroPortrait(agent, statusInfo);
+        this._refreshHeroPortrait(agent);
         this.dom.panelAgentName.textContent = agent.name;
         const statusEl = this.dom.panelAgentStatus;
         // When the adapter knows why an agent is blocked, that is the headline.
@@ -1408,7 +1480,8 @@ export class ActivityPanel {
         statusLine.style.color = statusInfo.color;
         statusLine.dataset.status = statusInfo.status;
         statusEl.title = reason ? statusInfo.label : '';
-        this._updateBlockedBanner(agent, reason);
+        this._statusElapsedEl.textContent = this._statusAgeText();
+        this._updateCallCard(agent);
 
         // 7.4 — provenance line `Model · provider · role` in quiet ink; the
         // model's identity accent no longer tints text (colour reads as status).
@@ -1451,39 +1524,70 @@ export class ActivityPanel {
         }
     }
 
+    // `· 13s` after the status label: time in state, painted on open and on
+    // the shared 1 Hz tick; blank while the signal is stale.
+    _statusAgeText(now = Date.now()) {
+        if (this._mode !== 'agent' || !this.currentAgent) return '';
+        if (resolveObservation(this.currentAgent, now).state === 'stale') return '';
+        const since = Number(this.currentAgent.statusSince);
+        return Number.isFinite(since) && since > 0 ? `\u00a0·\u00a0${formatElapsed(Math.max(0, now - since))}` : '';
+    }
+
     _setMetaRowVisible(row, visible) {
         if (row) row.style.display = visible ? '' : 'none';
     }
 
-    _updateBlockedBanner(agent, reason = waitReasonLabel(agent)) {
-        if (!this._blockedBannerEl) return;
-        if (!agent || !reason) {
-            this._blockedBannerEl.style.display = 'none';
-            this._blockedPromptEl.textContent = '';
-            this._blockedProvenanceEl.textContent = '';
+    // 9.2 — the call card, painted from observed facts and hidden unless the
+    // agent is in the needs-you bucket. Text work runs only when the facts
+    // change; the age rides the shared 1 Hz tick on the plates' anchor.
+    _updateCallCard(agent) {
+        const card = this._callCardEl;
+        if (!card) return;
+        if (!agent || bucketForStatus(agent.status) !== CALL_PART.key) {
+            this._callAnchor = 0;
+            this._callSignature = '';
+            card.hidden = true;
+            this._callAgeEl.textContent = '';
             return;
         }
+        this._callAnchor = waitAnchor(agent) || Number(agent.statusSince) || 0;
+        this._callAgeEl.textContent = this._callAnchor ? formatElapsed(Math.max(0, Date.now() - this._callAnchor)) : '';
+        const kind = [CALL_PART.word, CALL_REASON_WORDS[agent.waitReason]].filter(Boolean).join(' · ');
+        const ask = safePromptDetail(agent);
         const tool = agent.pendingTool || agent.currentTool || agent.lastTool || '';
-        const detail = safePromptDetail(agent);
-        const prompt = [tool ? `${tool} ${String(reason).toLowerCase()}` : reason, safePromptDetail(agent, Infinity)].filter(Boolean).join(' · ');
-        replaceDetailRows(this._blockedPromptEl, [inspectableText(prompt, { summary: detail || reason, key: 'blocked-request' })]);
-        this._blockedProvenanceEl.textContent = signalProvenance(agent);
-        this._blockedBannerEl.style.color = statusPresentation(agent.status).color;
-        this._blockedBannerEl.style.display = 'flex';
+        const provenance = [tool, signalProvenance(agent)].filter(Boolean).join(' · ');
+        const signature = `${kind}\u0001${ask}\u0001${provenance}`;
+        card.hidden = false;
+        if (signature === this._callSignature) return;
+        this._callSignature = signature;
+        this._callKindEl.textContent = kind;
+        this._callProvenanceEl.textContent = provenance;
+        this._callAskEl.classList.toggle('activity-panel__call-ask--unobserved', !ask);
+        replaceChildren(this._callAskEl, ask ? callAskNodes(ask) : ['Request text not observed']);
+        // Past four lines the complete request sits behind the shared
+        // disclosure; a request that fits shows no second copy. Glyph ink may
+        // overhang the last line box by a few px, so only a hidden line
+        // (more than half a line of overflow) counts as clamped.
+        const askEl = this._callAskEl;
+        const clamped = Boolean(ask) && askEl.scrollHeight - askEl.clientHeight
+            > (parseFloat(getComputedStyle(askEl).lineHeight) || 22) / 2;
+        replaceDetailRows(this._callFullEl, clamped
+            ? [inspectableText(ask, { summary: 'Full request', key: 'call-ask' })]
+            : []);
     }
 
     // ─── Character-sheet portrait (#46, 2.6, 7.4) ─────────
     // A 64×64 portrait: the authored 32 px bust window at exactly 2×, nearest
-    // neighbour, inside a 1px line + 1px black double frame with a status-
-    // tinted outer ring. Created on open, destroyed on close, so only the
-    // watched villager ever holds a canvas. The sheet is the one likeness in
-    // the header (7.4); the full body is on screen in the World.
+    // neighbour, in the frame kit's walnut slice (9.5). Created on open,
+    // destroyed once the panel has left, so only the watched villager ever
+    // holds a canvas. The sheet is the one likeness in the header (7.4); the
+    // full body is on screen in the World.
 
     _mountHeroPortrait(agent) {
         const info = this.panelEl?.querySelector('.activity-panel__agent-info');
         if (!info) return;
         this._teardownHeroPortrait();
-        const frame = el('div', { className: 'activity-panel__hero-portrait' });
+        const frame = el('div', { className: ['activity-panel__hero-portrait', 'cv-frame', 'cv-frame--walnut'] });
         this._heroAvatar = new AvatarCanvas(agent, 'sheet');
         frame.appendChild(this._heroAvatar.canvas);
         // Sit the portrait ahead of the name/status text.
@@ -1491,17 +1595,12 @@ export class ActivityPanel {
         this._heroPortraitEl = frame;
     }
 
-    _refreshHeroPortrait(agent, statusInfo = statusPresentation(agent.status)) {
-        if (!this._heroAvatar || !this._heroPortraitEl) return;
+    _refreshHeroPortrait(agent) {
+        if (!this._heroAvatar) return;
         // AvatarCanvas tracks the same agent reference; draw() repaints only
-        // when the identity signature changed, and restyle the aura/status
-        // frame.
+        // when the identity signature changed.
         this._heroAvatar.agent = agent;
         this._heroAvatar.draw();
-        const aura = this._heroAvatar.auraColor();
-        this._heroPortraitEl.style.setProperty('--cv-hero-aura', aura);
-        this._heroPortraitEl.className =
-            `activity-panel__hero-portrait activity-panel__hero-portrait--${statusInfo.status}`;
     }
 
     _teardownHeroPortrait() {
@@ -2271,14 +2370,29 @@ export class ActivityPanel {
 
         const normalizedUsage = TokenUsage.normalize(usage);
         if (normalizedUsage.availability === 'unavailable') {
-            this._clearTokenUsage('Usage unavailable');
+            // The detail says usage is unavailable: that is an answer, so the
+            // agent's token snapshot does not stand in for it.
+            this._clearTokenUsage('Usage unavailable', { snapshot: false });
             if (normalizedUsage.contextWindow > 0) {
                 this._setContextStat(formatTokens(normalizedUsage.contextWindow), 'context · billing unavailable');
             }
             return;
         }
+        this._renderUsage(normalizedUsage);
+    }
+
+    // CU-7 — the agent's own token counts, when session detail has no usage
+    // for it. Null when the snapshot has nothing to show.
+    _snapshotTokenUsage() {
+        const tokens = this.currentAgent?.tokens;
+        if (!tokens) return null;
+        const usage = TokenUsage.normalize(tokens);
+        return usage.availability !== 'unavailable' && TokenUsage.totalTokens(usage) > 0 ? usage : null;
+    }
+
+    _renderUsage(normalizedUsage, { fromSnapshot = false } = {}) {
         const cost = this._costForUsage(normalizedUsage);
-        const usageSignature = `${normalizedUsage.availability}|${normalizedUsage.totalInput}|${normalizedUsage.totalOutput}|${normalizedUsage.cacheRead}|${normalizedUsage.cacheCreate}|${normalizedUsage.contextWindow}|${normalizedUsage.contextWindowMax}|${normalizedUsage.turnCount}|${cost.usd}|${cost.source}|${cost.rateMatch}|${cost.rateRevision}|${cost.unknownModel}`;
+        const usageSignature = `${fromSnapshot ? 'snapshot' : 'detail'}|${normalizedUsage.availability}|${normalizedUsage.totalInput}|${normalizedUsage.totalOutput}|${normalizedUsage.cacheRead}|${normalizedUsage.cacheCreate}|${normalizedUsage.contextWindow}|${normalizedUsage.contextWindowMax}|${normalizedUsage.turnCount}|${cost.usd}|${cost.source}|${cost.rateMatch}|${cost.rateRevision}|${cost.unknownModel}`;
         if (usageSignature === this._renderSignatures.tokenUsage) return;
         this._renderSignatures.tokenUsage = usageSignature;
 
@@ -2287,11 +2401,15 @@ export class ActivityPanel {
             this.currentAgent?.provider,
         );
         const contextPct = maxContext ? Math.min(100, (normalizedUsage.contextWindow / maxContext) * 100) : 0;
+        // A snapshot without a context size has no context to show: the stat
+        // and its bar hide rather than claim a zero-token context.
+        const showContext = !fromSnapshot || normalizedUsage.contextWindow > 0;
 
         // Context size: the 22px numeral, then its ceiling as the caption.
         this._setContextStat(
             formatTokens(normalizedUsage.contextWindow),
-            maxContext ? `of ${formatTokens(maxContext)} context` : 'context',
+            fromSnapshot ? 'context · from snapshot' : maxContext ? `of ${formatTokens(maxContext)} context` : 'context',
+            showContext,
         );
 
         // Context bar
@@ -2300,7 +2418,8 @@ export class ActivityPanel {
         bar.className = 'activity-panel__context-bar';
         if (contextPct > 80) bar.classList.add('activity-panel__context-bar--danger');
         else if (contextPct > 50) bar.classList.add('activity-panel__context-bar--warning');
-        bar.parentElement?.removeAttribute('hidden');
+        if (showContext) bar.parentElement?.removeAttribute('hidden');
+        else bar.parentElement?.setAttribute('hidden', '');
         this.dom.panelTokenGrid.hidden = false;
         this.dom.panelCostRow.hidden = false;
         this.dom.panelNoUsage.hidden = normalizedUsage.availability !== 'partial';
@@ -2316,8 +2435,11 @@ export class ActivityPanel {
         this.dom.panelCacheCreate.textContent =
             formatTokens(normalizedUsage.cacheCreate);
         this.dom.panelCacheHit.textContent = formatTokens(TokenUsage.totalTokens(normalizedUsage));
-        this.dom.panelTurnCount.textContent =
-            normalizedUsage.turnCount.toLocaleString();
+        // A snapshot rarely carries a turn count; an absent count is unknown,
+        // not zero turns.
+        this.dom.panelTurnCount.textContent = fromSnapshot && !normalizedUsage.turnCount
+            ? '-'
+            : normalizedUsage.turnCount.toLocaleString();
 
         this._renderCost(cost);
     }
@@ -2376,11 +2498,12 @@ export class ActivityPanel {
         ]);
     }
 
-    _setContextStat(numeralText, caption) {
+    _setContextStat(numeralText, caption, visible = true) {
         const numeral = this.dom.panelContextNumeral;
         if (numeral) {
             numeral.textContent = numeralText;
             numeral.classList.toggle('activity-panel__stat-value--empty', numeralText === '-');
+            if (numeral.parentElement) numeral.parentElement.hidden = !visible;
         }
         this.dom.panelContextSize.textContent = caption;
     }
@@ -2396,9 +2519,16 @@ export class ActivityPanel {
         this._clearTokenUsage(usageText);
     }
 
-    _clearTokenUsage(label = 'No usage data') {
+    _clearTokenUsage(label = 'No usage data', { snapshot = true } = {}) {
+        // CU-7 — session detail carried no usage. When the agent's own token
+        // snapshot has counts, show those (captioned as a snapshot) rather than
+        // a "no usage" label beside a cost estimated from the same tokens.
+        const snapshotUsage = snapshot ? this._snapshotTokenUsage() : null;
+        if (snapshotUsage) {
+            this._renderUsage(snapshotUsage, { fromSnapshot: true });
+            return;
+        }
         this._renderSignatures.tokenUsage = `state:${label}`;
-        this._setContextStat('-', label);
         this.dom.panelContextBar.style.transform = 'scaleX(0)';
         this.dom.panelContextBar.className = 'activity-panel__context-bar';
         // An empty context bar implies a measurement of zero; with no usage
@@ -2425,6 +2555,9 @@ export class ActivityPanel {
                 && supplied.availability !== 'unavailable'
                 && (supplied.source === 'provider' || suppliedUsd > 0))
             || (tokens && TokenUsage.totalTokens(TokenUsage.normalize(tokens)) > 0);
+        // A "no usage" label never captions the context beside a cost
+        // numeral: with a measured cost the context stat hides instead.
+        this._setContextStat('-', label, !measured);
         this._renderCost(measured ? this._costForUsage(tokens) : null);
     }
 
@@ -3504,13 +3637,20 @@ export class ActivityPanel {
                 || snapshot.itinerary
                 || snapshot.routeIntent?.itinerary,
         );
-        const why = this._journeyExplanation({
-            state,
-            moving: snapshot.moving,
-            buildingLabel,
-            phase,
-            reason,
-        });
+        // #13 — an agent that needs action is waiting on the operator, not
+        // running an errand: the headline never narrates a trip under the
+        // call card. At rest it says where it waits; on the move it is hidden.
+        const actionNeeded = isActionableStatus(agent.status);
+        const stopped = !snapshot.moving && String(state || '').toLowerCase() !== 'traveling';
+        const why = actionNeeded
+            ? (stopped && buildingLabel ? `Waiting at ${buildingLabel}` : '')
+            : this._journeyExplanation({
+                state,
+                moving: snapshot.moving,
+                buildingLabel,
+                phase,
+                reason,
+            });
 
         // The Why sentence is the always-visible headline; everything else is
         // secondary detail. Drop rows the sentence already conveys.
@@ -4426,13 +4566,19 @@ export class ActivityPanel {
         this._stopPolling();
         this._stopBuildingPolling();
         this._stopPanelKeyboardHandling();
+        this._flushExitCleanup();
         this._teardownHeroPortrait();
         this._teardownBuildingView();
         this._elapsedUnsubscribe?.();
         this._elapsedUnsubscribe = null;
+        this._callAgeUnsubscribe?.();
+        this._callAgeUnsubscribe = null;
         this._clearCausalWaterfallSubscriptions();
         this._closeWorkScore({ restoreSelection: false });
-        if (this.panelEl) this.panelEl.style.display = 'none';
+        if (this.panelEl) {
+            this.panelEl.setAttribute('data-cut', '');
+            this.panelEl.style.display = 'none';
+        }
         document.body.classList.remove('cv-panel-open');
         this.currentAgent = null;
         this._narrationAgentId = null;
@@ -4469,7 +4615,7 @@ export class ActivityPanel {
             this._pinToggleBtn,
             this._workingDirectoryRowEl,
             this._statusElapsedEl,
-            this._blockedBannerEl,
+            this._callCardEl,
             this._promptPlanSectionEl,
             this._executionTreeSectionEl,
             this._causalWaterfallSectionEl,

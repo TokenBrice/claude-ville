@@ -1,8 +1,17 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { bucketAgents, bucketCounts, bucketForStatus } from '../../domain/services/SignalLedger.js';
+import { bucketAgents, bucketCounts, bucketForStatus, compareByWaitAge } from '../../domain/services/SignalLedger.js';
 import { toolCategory } from '../../domain/services/ToolIdentity.js';
 import { AvatarCanvas } from './AvatarCanvas.js';
-import { ObservedCallTapeStore, paintTape, TAPE_BUCKET_MS, TAPE_HEIGHT, TAPE_WIDTH } from './ObservedCallTape.js';
+import {
+    ObservedCallTapeStore,
+    paintSessionStrip,
+    paintTape,
+    STRIP_HEIGHT,
+    STRIP_WIDTH,
+    TAPE_BUCKET_MS,
+    TAPE_HEIGHT,
+    TAPE_WIDTH,
+} from './ObservedCallTape.js';
 import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
@@ -64,7 +73,22 @@ const BELL_STATUS_WORD = Object.freeze({
     errored: 'ERROR',
     rate_limited: 'QUOTA',
 });
+// 9.5 — the frame kit's attn slice per lane status (frame-kit.css).
+const CALL_FRAME_BY_STATUS = Object.freeze({
+    waiting_on_user: 'cv-frame--attn',
+    errored: 'cv-frame--attn-error',
+    rate_limited: 'cv-frame--attn-limit',
+});
 const GAUGE_SEGMENTS = 12;
+// 9.7a — one motion voice for every Dashboard FLIP: translate only, never
+// scaled, so text and portraits stay pixel-true at both ends.
+const FLIP_MS = 240;
+const FLIP_TRANSITION = `transform ${FLIP_MS}ms cubic-bezier(0.2, 0, 0, 1)`;
+// 9.10 — bell-lane age tiers on the clock's plate.
+const AGE_RIM_MS = 60_000;
+const AGE_FILL_MS = 5 * 60_000;
+// 0.9 — the ultrawide multicol track (keep in step with dashboard.css).
+const ULTRAWIDE_COLUMN = Object.freeze({ width: 1100, gap: 16 });
 const ROW_STATUS_RANK = Object.freeze({
     waiting_on_user: 0,
     errored: 1,
@@ -508,7 +532,8 @@ export class DashboardRenderer {
         this._avatarDrawFrame = null;
         this._flipTimers = new Set();
         // 7.12 — observation starts when the Dashboard module loads; every
-        // earlier bucket paints hatched. Fed in every mode, O(1) per update.
+        // earlier bucket paints as a dotted baseline. Fed in every mode, O(1)
+        // per update.
         this._tapes = new ObservedCallTapeStore();
         for (const agent of world?.agents?.values?.() || []) this._tapes.observe(agent);
         this._tapeTimer = null;
@@ -516,6 +541,11 @@ export class DashboardRenderer {
         this._motionQuery = typeof window !== 'undefined'
             ? window.matchMedia?.('(prefers-reduced-motion: reduce)')
             : null;
+        // 0.9 / 9.9 — the ultrawide column layout and its roomy row tier.
+        this._ultrawideQuery = typeof window !== 'undefined'
+            ? window.matchMedia?.('(min-width: 2400px)')
+            : null;
+        this._roomy = false;
         this.selection = new AgentSelectionMirror({
             notifyOnRepeat: true,
             onChange: (nextId, previousId) => {
@@ -538,6 +568,7 @@ export class DashboardRenderer {
                 const parentCard = parentId ? this.cards.get(parentId) : null;
                 if (parent && parentCard) this._updateChildProgress(parentCard, parent);
                 this._renderAttentionQueue(Array.from(this.world.agents.values()));
+                this._syncAnswerFirst();
             }
         };
         this._onAgentRemoved = (agent) => {
@@ -587,6 +618,12 @@ export class DashboardRenderer {
         eventBus.on('mode:changed', this._onModeChanged);
         eventBus.on(DASHBOARD_FILTER_EVENT, this._onSharedFilterChanged);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
+        // The view's own box (window resize, sidebar collapse), never the
+        // grid's, so toggling the roomy tier cannot re-trigger it.
+        this._viewObserver = typeof ResizeObserver === 'function' && this.gridEl?.parentElement
+            ? new ResizeObserver(() => this._syncUltrawide())
+            : null;
+        this._viewObserver?.observe(this.gridEl.parentElement);
         window.addEventListener('keydown', this._onDashboardKeyDown);
         this.gridEl?.addEventListener('focusin', this._onDashboardFocusIn);
         eventBus.emit(DASHBOARD_FILTER_REQUEST_EVENT);
@@ -626,6 +663,8 @@ export class DashboardRenderer {
 
         const groups = [...groupAgentsByProject(visibleAgents.filter(agent => !laneIds.has(agent.id)))];
         this._sortProjectGroups(groups);
+        // 9.7a — measured before any card or section moves.
+        const flip = this._beginLaneFlip(laneIds);
 
         const existingIds = new Set();
         const existingSections = new Set();
@@ -639,20 +678,28 @@ export class DashboardRenderer {
             laneCards.push(cardEl);
             this._updateCard(cardEl, agent);
         }
-        this._placeCardsInOrder(bellEl, laneCards);
+        this._placeCardsInOrder(bellEl, laneCards, { animate: !flip });
         bellEl.hidden = laneCards.length === 0;
 
-        for (const [projectPath, groupAgents] of groups) {
-            existingSections.add(projectPath);
-            this._sortAgentsExceptionFirst(groupAgents);
-
-            // Create/get section element
+        // Sections move only when their order changed: re-appending a node
+        // detaches it, which cancels every FLIP running inside it.
+        const orderedSections = groups.map(([projectPath]) => {
             let sectionEl = this._sectionEls.get(projectPath);
             if (!sectionEl) {
                 sectionEl = this._createSection(projectPath);
                 this._sectionEls.set(projectPath, sectionEl);
             }
-            this.gridEl.appendChild(sectionEl);
+            return sectionEl;
+        });
+        const placedSections = [...this.gridEl.children].filter(el => el.classList.contains('dashboard__section'));
+        if (orderedSections.some((sectionEl, index) => placedSections[index] !== sectionEl)) {
+            for (const sectionEl of orderedSections) this.gridEl.appendChild(sectionEl);
+        }
+
+        for (const [index, [projectPath, groupAgents]] of groups.entries()) {
+            existingSections.add(projectPath);
+            this._sortAgentsExceptionFirst(groupAgents);
+            const sectionEl = orderedSections[index];
             this._updateSectionHeader(sectionEl, projectPath, groupAgents, laneByProject.get(projectPath) || []);
 
             const gridInner = sectionEl._sectionRefs?.grid || sectionEl.querySelector('.dashboard__section-grid');
@@ -672,7 +719,7 @@ export class DashboardRenderer {
             }
 
             // 4.3 — keep DOM order in sync with the status sort, FLIP-animated.
-            this._placeCardsInOrder(gridInner, orderedCards);
+            this._placeCardsInOrder(gridInner, orderedCards, { animate: !flip });
         }
 
         // Remove missing agent cards
@@ -690,6 +737,9 @@ export class DashboardRenderer {
                 this._sectionEls.delete(path);
             }
         }
+        this._syncUltrawide();
+        this._finishLaneFlip(flip);
+        this._syncAnswerFirst();
         sessionDetailsService.sweep(agents);
         this._syncCardTabStops();
     }
@@ -737,9 +787,181 @@ export class DashboardRenderer {
         const id = cardEl?.dataset?.agentId;
         if (!canvas || !id || !this._tapes) return;
         const signature = this._tapes.signature(id, now);
-        if (canvas._tapeSignature === signature) return;
-        canvas._tapeSignature = signature;
-        paintTape(canvas, this._tapes.cells(id, now));
+        if (canvas._tapeSignature !== signature) {
+            canvas._tapeSignature = signature;
+            paintTape(canvas, this._tapes.cells(id, now));
+        }
+        if (this.selection?.isSelected(id)) this._paintStrip(cardEl, id, now);
+    }
+
+    // 9.11 — the selected row's session strip: built the first time the row
+    // is selected (never for every row), repainted on the tape clock, on a
+    // tape change and when a transcript fetch lands.
+    _paintStrip(cardEl, id, now = Date.now()) {
+        const refs = cardEl?._elements;
+        if (!refs?.strip || !this._tapes) return;
+        if (!refs.stripCanvas) {
+            const canvas = document.createElement('canvas');
+            canvas.width = STRIP_WIDTH;
+            canvas.height = STRIP_HEIGHT;
+            canvas.className = 'dash-card__strip-canvas';
+            canvas.setAttribute('aria-hidden', 'true');
+            refs.strip.insertBefore(canvas, refs.stripAxis);
+            refs.stripCanvas = canvas;
+            refs.strip.hidden = false;
+        }
+        const history = this.toolHistories.get(id) || null;
+        const signature = [
+            this._tapes.signature(id, now),
+            history ? toolHistorySignature(history, { limit: history.length, detailLength: 0 }) : 'pending',
+        ].join('|');
+        if (refs.stripCanvas._stripSignature === signature) return;
+        refs.stripCanvas._stripSignature = signature;
+        const { drawn, coveredFrom } = paintSessionStrip(refs.stripCanvas, this._tapes.cells(id, now), history || [], now);
+        // The fetch returns a contiguous tail of the transcript: the count is
+        // exact only when that tail reaches back past the 10-minute window.
+        let count = 'loading';
+        if (history && coveredFrom === null) count = 'no calls fetched';
+        else if (history) count = coveredFrom === 0 ? `${drawn} in 10 min` : `last ${drawn} fetched`;
+        this._setText(refs.stripCount, count);
+        refs.strip.title = 'Ticks: tool calls from the fetched transcript at their own times; the rail marks the span it covers. Blocks: calls this tab observed, 15 s per column.';
+    }
+
+    // 9.7a — when bell-lane membership changes, the card that crosses between
+    // its row and the lane, the cards around it and the sections below travel
+    // to their new places on one curve. Rects are read only on a membership
+    // change; reduced motion or an inactive Dashboard cuts.
+    _beginLaneFlip(nextLaneIds) {
+        const bell = this._bellEl;
+        if (!bell || !this.active || this._destroyed || this._motionQuery?.matches) return null;
+        const current = [...bell.children].map(card => card.dataset.agentId);
+        const next = new Set([...nextLaneIds].map(String));
+        if (current.length === next.size && current.every(id => next.has(id))) return null;
+        const first = new Map();
+        for (const section of this._sectionEls.values()) {
+            if (section.isConnected) first.set(section, { rect: section.getBoundingClientRect(), inLane: false });
+        }
+        for (const card of this.cards.values()) {
+            if (card.isConnected) first.set(card, { rect: card.getBoundingClientRect(), inLane: card.parentElement === bell });
+        }
+        return first;
+    }
+
+    _finishLaneFlip(first) {
+        if (!first) return;
+        const bell = this._bellEl;
+        // Measure layout positions: an interrupted flight restarts from where
+        // it was drawn (its first rect), not from its old offset.
+        const stopped = [];
+        for (const el of first.keys()) {
+            if (!el.style.transform) continue;
+            this._stopFlip(el);
+            stopped.push(el);
+        }
+        const deltas = new Map();
+        for (const [el, before] of first) {
+            if (!el.isConnected) continue;
+            const after = el.getBoundingClientRect();
+            deltas.set(el, [Math.round(before.rect.left - after.left), Math.round(before.rect.top - after.top)]);
+        }
+        const moved = [];
+        for (const [el, [dx, dy]] of deltas) {
+            // A row rides inside its section: subtract the section's own offset
+            // so the two translations compose to the row's true path.
+            const section = el.classList.contains('dash-card') ? el.closest('.dashboard__section') : null;
+            const [sx, sy] = (section && deltas.get(section)) || [0, 0];
+            const x = dx - sx;
+            const y = dy - sy;
+            if (!x && !y) continue;
+            el.style.transition = 'none';
+            el.style.transform = `translate(${x}px, ${y}px)`;
+            moved.push([el, first.get(el).inLane !== (el.parentElement === bell)]);
+        }
+        for (const el of stopped) {
+            if (!el.style.transform) el.style.transition = '';
+        }
+        if (!moved.length) return;
+        void this.gridEl.offsetWidth; // one reflow so the inverted offsets apply
+        for (const [el, crossed] of moved) this._playFlip(el, crossed);
+    }
+
+    _stopFlip(el) {
+        if (el._flipTimer) {
+            clearTimeout(el._flipTimer);
+            this._flipTimers.delete(el._flipTimer);
+            el._flipTimer = null;
+        }
+        el.style.transition = 'none';
+        el.style.transform = '';
+        el.classList.remove('dash-card--flying');
+    }
+
+    _playFlip(el, crossed = false) {
+        if (el._flipTimer) {
+            clearTimeout(el._flipTimer);
+            this._flipTimers.delete(el._flipTimer);
+        }
+        el.classList.toggle('dash-card--flying', crossed);
+        el.style.transition = FLIP_TRANSITION;
+        el.style.transform = '';
+        const timer = setTimeout(() => {
+            this._flipTimers.delete(timer);
+            el._flipTimer = null;
+            el.style.transition = '';
+            el.classList.remove('dash-card--flying');
+        }, FLIP_MS + 40);
+        el._flipTimer = timer;
+        this._flipTimers.add(timer);
+    }
+
+    // M18 — `ANSWER FIRST` under the clock of the lane card that `A` focuses
+    // first (the longest-waiting, the order AttentionService uses), shown only
+    // while the lane holds more than one card.
+    _syncAnswerFirst() {
+        const cards = this._bellEl ? [...this._bellEl.children] : [];
+        let firstId = null;
+        if (cards.length > 1) {
+            const agents = cards.map(card => this.world.agents.get(card.dataset.agentId)).filter(Boolean);
+            firstId = agents.sort(compareByWaitAge)[0]?.id ?? null;
+        }
+        for (const card of cards) {
+            const caption = card._elements?.call?.first;
+            if (caption) caption.hidden = firstId === null || String(card.dataset.agentId) !== String(firstId);
+        }
+    }
+
+    // 0.9 / 9.9 — ultrawide layout state that CSS alone cannot derive.
+    // - The bell lane lays its cards two to a project column, so their edges
+    //   meet the columns below (multicol's own count:
+    //   floor((W + gap) / (width + gap))). A lane that wraps balances its
+    //   rows instead (9 cards on 8 slots: 5 + 4, never 8 + an orphan).
+    // - With room to spare, rows grow to a 64 px face. Enter while the compact
+    //   content fills < 60 % of the view; a row grows at most 67 / 47 px
+    //   (1.43x) and nothing else grows, so the roomy content stays under 86 %
+    //   and only a later change can push it past 88 %, which leaves.
+    _syncUltrawide() {
+        const view = this.gridEl?.parentElement;
+        if (!view || !this.active) return;
+        const ultrawide = Boolean(this._ultrawideQuery?.matches) && this.gridEl.style.display !== 'none';
+        const columns = ultrawide
+            ? Math.floor((this.gridEl.clientWidth + ULTRAWIDE_COLUMN.gap) / (ULTRAWIDE_COLUMN.width + ULTRAWIDE_COLUMN.gap))
+            : 0;
+        const laneSlots = columns * 2;
+        const laneCards = this._bellEl?.children.length || 0;
+        const laneColumns = columns >= 2
+            ? String(laneCards > laneSlots ? Math.ceil(laneCards / Math.ceil(laneCards / laneSlots)) : laneSlots)
+            : '';
+        this._setCustomProperty(this.gridEl, '--dash-lane-cols', laneColumns);
+        this.gridEl.classList.toggle('dashboard__grid--lanes', Boolean(laneColumns));
+        let roomy = false;
+        if (ultrawide && this.cards.size) {
+            const content = this.gridEl.getBoundingClientRect().bottom - view.getBoundingClientRect().top + view.scrollTop;
+            roomy = content < view.clientHeight * (this._roomy ? 0.88 : 0.6);
+        }
+        if (roomy === this._roomy) return;
+        this._roomy = roomy;
+        this.gridEl.classList.toggle('dashboard__grid--roomy', roomy);
+        for (const card of this.cards.values()) card._avatarCanvas?.resize(roomy ? 'nicheRoomy' : 'niche');
     }
 
     _rememberStableOrder(agents) {
@@ -830,7 +1052,7 @@ export class DashboardRenderer {
     // created cards have no "first" rect and simply appear. Reduced motion
     // (or an inactive dashboard) skips the animation — the reorder is an
     // instant cut. Rects are read only when an order change is detected.
-    _placeCardsInOrder(gridEl, orderedCards) {
+    _placeCardsInOrder(gridEl, orderedCards, { animate = true } = {}) {
         if (!gridEl || orderedCards.length < 2) return;
         const cardSet = new Set(orderedCards);
         let index = 0;
@@ -842,7 +1064,7 @@ export class DashboardRenderer {
         }
         if (!orderChanged && index === orderedCards.length) return;
 
-        const canAnimate = this.active && !this._destroyed && !(this._motionQuery?.matches);
+        const canAnimate = animate && this.active && !this._destroyed && !(this._motionQuery?.matches);
         const firstRects = new Map();
         if (canAnimate) {
             for (const card of orderedCards) {
@@ -853,12 +1075,18 @@ export class DashboardRenderer {
         for (const card of orderedCards) gridEl.appendChild(card);
         if (!canAnimate || firstRects.size === 0) return;
 
+        for (const card of firstRects.keys()) {
+            if (card.style.transform) this._stopFlip(card);
+        }
         const moved = [];
         for (const [card, first] of firstRects) {
             const last = card.getBoundingClientRect();
-            const dx = first.left - last.left;
-            const dy = first.top - last.top;
-            if (!dx && !dy) continue;
+            const dx = Math.round(first.left - last.left);
+            const dy = Math.round(first.top - last.top);
+            if (!dx && !dy) {
+                card.style.transition = '';
+                continue;
+            }
             card.style.transition = 'none';
             card.style.transform = `translate(${dx}px, ${dy}px)`;
             moved.push(card);
@@ -866,15 +1094,7 @@ export class DashboardRenderer {
         if (moved.length === 0) return;
 
         void gridEl.offsetWidth; // single reflow so the inverted offsets apply
-        for (const card of moved) {
-            card.style.transition = 'transform 240ms ease';
-            card.style.transform = '';
-            const timer = setTimeout(() => {
-                this._flipTimers.delete(timer);
-                card.style.transition = '';
-            }, 280);
-            this._flipTimers.add(timer);
-        }
+        for (const card of moved) this._playFlip(card);
     }
 
     _createSection(projectPath) {
@@ -901,7 +1121,7 @@ export class DashboardRenderer {
                 <span></span>
                 <span>AGENT</span>
                 <span>NOW</span>
-                <span title="Tool calls observed by this tab, 15 s per tick">LAST 10 MIN</span>
+                <span title="Tool calls this tab observed, one column per 15 s: a block per call (bright = write/run/task), a band while it needed you, errored or hit quota, dots before the tab was watching">LAST 10 MIN</span>
                 <span class="dashboard__col--num">FOR</span>
                 <span class="dashboard__col--num">TOKENS</span>
                 <span class="dashboard__col--num">COST</span>
@@ -1087,6 +1307,15 @@ export class DashboardRenderer {
                             <button type="button" class="dash-card__parent-chip" style="display: none"></button>
                         </span>
                     </span>
+                    <span class="dash-card__strip" hidden>
+                        <span class="dash-card__strip-key">
+                            <span class="dash-card__strip-label dash-card__strip-label--transcript">TRANSCRIPT</span>
+                            <span class="dash-card__strip-count"></span>
+                            <span class="dash-card__strip-label dash-card__strip-label--observed">OBSERVED</span>
+                            <span>this tab</span>
+                        </span>
+                        <span class="dash-card__strip-axis" aria-hidden="true"><span>10 min ago</span><span>now</span></span>
+                    </span>
                     <button type="button" class="dash-card__copy-id" title="Copy session ID" aria-label="Copy session ID">ID</button>
                     <span class="dash-card__stale-badge" style="display: none" title="Showing cached data; latest refresh did not complete">STALE</span>
                 </div>
@@ -1116,7 +1345,7 @@ export class DashboardRenderer {
         card.dataset.loading = 'true';
 
         // 7.8 — static portrait niche (integer scale, idle frame, never animated).
-        const avatarCanvas = new AvatarCanvas(agent, 'niche');
+        const avatarCanvas = new AvatarCanvas(agent, this._roomy ? 'nicheRoomy' : 'niche');
         avatarCanvas.canvas.setAttribute('aria-hidden', 'true');
         card.querySelector('.dash-card__niche').appendChild(avatarCanvas.canvas);
         card._avatarCanvas = avatarCanvas;
@@ -1200,6 +1429,10 @@ export class DashboardRenderer {
             usageTokens: card.querySelector('.dash-card__usage-tokens'),
             usageCost: card.querySelector('.dash-card__usage-cost'),
             buildingEmblem: card.querySelector('.dash-card__building-emblem'),
+            strip: card.querySelector('.dash-card__strip'),
+            stripCount: card.querySelector('.dash-card__strip-count'),
+            stripAxis: card.querySelector('.dash-card__strip-axis'),
+            stripCanvas: null,
             call: null,
         };
         card._elapsedUnsubscribe = subscribeElapsedText(card._elements.forCell, (now) => {
@@ -1250,6 +1483,7 @@ export class DashboardRenderer {
             </span>
             <span class="dash-card__call-side">
                 <span class="dash-card__call-elapsed"></span>
+                <span class="dash-card__call-first" hidden>ANSWER FIRST</span>
             </span>
         `;
         cardEl._elements.select.appendChild(call);
@@ -1266,10 +1500,15 @@ export class DashboardRenderer {
             usage: call.querySelector('.dash-card__call-usage'),
             elapsed: call.querySelector('.dash-card__call-elapsed'),
             prov: call.querySelector('.dash-card__call-prov'),
+            first: call.querySelector('.dash-card__call-first'),
         };
         cardEl._elements.call = refs;
+        // 9.10 — the age tier comes from the same elapsed time the clock
+        // prints, so the plate can never disagree with its numeral.
         cardEl._callElapsedUnsubscribe = subscribeElapsedText(refs.elapsed, (now) => {
             const ms = statusSinceMs(this.world.agents.get(cardEl.dataset.agentId), now);
+            const age = ms == null || ms < AGE_RIM_MS ? '0' : (ms < AGE_FILL_MS ? '1' : '2');
+            if (cardEl.dataset.age !== age) cardEl.dataset.age = age;
             return ms == null ? '—' : formatClock(ms);
         });
         return refs;
@@ -1481,7 +1720,10 @@ export class DashboardRenderer {
             this._cardRenderSignatures.set(agent.id, signature);
 
             const selected = this.selection.isSelected(agent.id);
-            const nextClass = `dash-card dash-card--${status}${inLane ? ' dash-card--call' : ''}${selected ? ' dash-card--selected' : ''}`;
+            // 9.5 / one ask, one frame: a lane card wears the call card's attn
+            // slice in its status hue instead of the row's status spine.
+            const frame = inLane ? ` cv-frame ${CALL_FRAME_BY_STATUS[status] || 'cv-frame--attn'}` : '';
+            const nextClass = `dash-card dash-card--${status}${inLane ? ' dash-card--call' : ''}${frame}${selected ? ' dash-card--selected' : ''}`;
             if (cardEl.className !== nextClass) cardEl.className = nextClass;
             const now = rowNow(agent);
             refs.select.setAttribute('aria-label', `Select agent ${agent.name || agent.id}, ${statusInfo.label}: ${now.lead} ${now.detail}`.trim());
@@ -1837,7 +2079,10 @@ export class DashboardRenderer {
             const agent = this.world.agents.get(id);
             const card = this.cards.get(id);
             if (agent && card) {
-                if (selected) this._syncHero(card, agent);
+                if (selected) {
+                    this._syncHero(card, agent);
+                    this._paintStrip(card, id);
+                }
                 this._renderUsageFooter(card, selected
                     ? (this.usageFooters.get(id) || this._usageFooterFor(agent, null))
                     : this._usageFooterFor(agent, null));
@@ -2136,11 +2381,13 @@ export class DashboardRenderer {
                 if (footer) this.usageFooters.set(agent.id, footer);
                 else this.usageFooters.delete(agent.id);
                 if (cardEl) this._renderUsageFooter(cardEl, footer);
-                const toolHistory = data.toolHistory || [];
-                this.toolHistories.set(agent.id, toolHistory.slice(-DASHBOARD_TOOL_HISTORY_LIMIT));
+                // The strip places every fetched call; the list shows the newest.
+                const toolHistory = Array.isArray(data.toolHistory) ? data.toolHistory : [];
+                this.toolHistories.set(agent.id, toolHistory);
                 if (cardEl) {
                     this._renderToolHistory(cardEl, agent.id, toolHistory);
                     this._updateStaleBadge(cardEl, agent);
+                    this._paintStrip(cardEl, agent.id);
                 }
             }
         } finally {
@@ -2271,6 +2518,7 @@ export class DashboardRenderer {
         this._clearAllCardsAndSections();
         this.selection?.destroy?.();
         window.removeEventListener('keydown', this._onDashboardKeyDown);
+        this._viewObserver?.disconnect();
         this.gridEl?.removeEventListener('focusin', this._onDashboardFocusIn);
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
         eventBus.off('agent:added', this._onAgentAdded);

@@ -17,7 +17,32 @@
     z-index: 1;
     color: var(--ink-1);
     font: var(--fs-body)/var(--lh-body) var(--font-body);
-    animation: ap-fade-in 0.16s ease;
+    /* 9.6 — enter and exit on the one stepped curve (`--cv-step-in`,
+       reset.css): three whole 4 px steps and three opacity steps, so no
+       frame puts bitmap text at a fractional x. `display` rides along
+       (allow-discrete), so the column is taken at the start of the entry
+       and given back at the end of the exit: one canvas resize each way.
+       `inert` marks a leaving panel; `data-cut` (a mode switch) cuts. */
+    transition:
+        opacity var(--cv-step-in),
+        transform var(--cv-step-in),
+        display var(--cv-step-in) allow-discrete;
+}
+
+.activity-panel[inert] {
+    opacity: 0;
+    transform: translateX(12px);
+}
+
+@starting-style {
+    .activity-panel {
+        opacity: 0;
+        transform: translateX(12px);
+    }
+}
+
+.activity-panel[data-cut] {
+    transition: none;
 }
 
 .activity-panel::-webkit-scrollbar {
@@ -26,11 +51,6 @@
 
 .activity-panel::-webkit-scrollbar-thumb {
     background: var(--line-2);
-}
-
-@keyframes ap-fade-in {
-    from { opacity: 0; transform: translateX(12px); }
-    to { opacity: 1; transform: translateX(0); }
 }
 
 /* ─── Header: `64px | name / status / provenance` ─────────────────── */
@@ -62,21 +82,14 @@
     padding-top: 2px;
 }
 
-/* 64px portrait: a 1px black + 1px line-2 double frame inside a status-tinted
-   1px outer ring (70px box). Static — the ring states status, it does not
-   breathe. */
+/* 64px portrait inside the frame kit's walnut slice (`cv-frame
+   cv-frame--walnut`, 9.5): the 3px frame is the border, so the box is 70px
+   and sets no background or shadow of its own. Static. */
 .activity-panel__hero-portrait {
-    --cv-hero-status: var(--line-2);
     grid-column: 1;
     grid-row: 1;
-    width: 64px;
-    height: 64px;
-    margin: 3px;
-    background: var(--bg-0);
-    box-shadow:
-        0 0 0 1px var(--seam),
-        0 0 0 2px var(--line-2),
-        0 0 0 3px var(--cv-hero-status);
+    width: 70px;
+    height: 70px;
     overflow: hidden;
 }
 
@@ -86,14 +99,6 @@
     height: 64px;
     image-rendering: pixelated;
 }
-
-.activity-panel__hero-portrait--working { --cv-hero-status: var(--cv-status-working); }
-.activity-panel__hero-portrait--waiting { --cv-hero-status: var(--cv-status-waiting); }
-.activity-panel__hero-portrait--waiting_on_user { --cv-hero-status: var(--cv-status-waiting-user); }
-.activity-panel__hero-portrait--errored { --cv-hero-status: var(--cv-status-errored); }
-.activity-panel__hero-portrait--rate_limited { --cv-hero-status: var(--cv-status-rate-limited); }
-.activity-panel__hero-portrait--completed { --cv-hero-status: var(--cv-status-completed); }
-.activity-panel__hero-portrait--idle { --cv-hero-status: var(--cv-status-idle); }
 
 .activity-panel__name-row {
     display: flex;
@@ -121,34 +126,29 @@
     margin-right: -4px;
 }
 
-/* Status line: `■ Waiting for you · 13s`, all in the status colour. */
+/* Status line: `■ Waiting for approval — Bash · 1m39s`, all in the status
+   colour. It wraps instead of clipping (9.2): wrapped lines hang past the
+   square, and the age stays glued to the last word. */
 .activity-panel__status-line {
-    display: flex;
-    align-items: baseline;
     min-width: 0;
+    padding-left: 16px;
+    text-indent: -16px;
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     color: var(--ink-2);
+    overflow-wrap: anywhere;
 }
 
 .activity-panel__status-line[data-status]::before {
     content: '';
-    flex-shrink: 0;
-    align-self: center;
+    display: inline-block;
+    vertical-align: top;
     width: 8px;
     height: 8px;
-    margin-right: 8px;
+    margin: 4px 8px 0 0;
     background: currentColor;
 }
 
-.activity-panel__status {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
 .activity-panel__status-age {
-    flex-shrink: 0;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
 }
@@ -346,23 +346,78 @@
     margin-bottom: 8px;
 }
 
-.activity-panel__blocked {
+/* ─── 9.2 Call card: the ask leads a needs-you agent's panel ──────────
+   Directly under the header, framed by the frame kit's `attn` slice
+   (`cv-frame cv-frame--attn`: the 3px border-image and the status-tinted
+   fill, so this rule sets neither border nor background). Eyebrow: the lit
+   slot's word and the wait reason in PS2P 8, the wait age right-aligned in
+   DM 11 like every other age (sidebar, plate, header).
+   The ask in DM 22 (the one prose use of DM 2x), clamped at four lines with
+   the full text behind the shared disclosure; provenance in DM 11. On the
+   attn fill every ink is ink-2 or brighter (ink-3 falls under 4.5:1). */
+.activity-panel__call {
     display: flex;
     flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
-    margin: 0;
-    padding: 8px 12px 8px 13px;
-    border-left: 3px solid currentColor;
-    border-bottom: 1px solid var(--line-1);
-    background: var(--bg-2);
+    gap: 8px;
+    margin: 12px 12px 0 16px;
+    padding: 9px;
     flex-shrink: 0;
 }
 
-.activity-panel__blocked .activity-panel__value {
-    flex: 0 1 auto;
-    white-space: normal;
+.activity-panel__call[hidden] {
+    display: none;
+}
+
+.activity-panel__call-eyebrow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0 8px;
+}
+
+.activity-panel__call-kind {
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--cv-status-waiting-user);
+}
+
+.activity-panel__call-age {
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    color: var(--ink-1);
+    font-variant-numeric: tabular-nums;
+}
+
+.activity-panel__call-ask {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    overflow: hidden;
+    margin: 0;
+    font: var(--fs-numeral)/var(--lh-numeral) var(--font-body);
+    color: var(--ink-2);
     overflow-wrap: anywhere;
+}
+
+.activity-panel__call-code {
+    font: inherit;
+    color: var(--ink-1);
+}
+
+.activity-panel__call-ask--unobserved {
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+}
+
+.activity-panel__call-full:empty {
+    display: none;
+}
+
+.activity-panel__call-full .cv-inspection,
+.activity-panel__call-provenance {
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    color: var(--ink-2);
 }
 
 /* ─── Current tool ────────────────────────────────── */
@@ -1547,11 +1602,13 @@
     color: var(--ink-4);
 }
 
+/* Captions carry provenance (`context · from snapshot`, `estimate`), so they
+   wrap onto a second line instead of clipping the word that qualifies the
+   numeral. */
 .activity-panel__stat-caption {
     color: var(--ink-3);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .activity-panel__context-bar-wrap {
@@ -1785,8 +1842,9 @@
 /* ─── Reduced motion ─────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
+    /* 9.6 — the panel cuts in and out in one frame. */
     .activity-panel {
-        animation: none;
+        transition: none;
     }
 
     .activity-panel__context-bar {
@@ -1808,7 +1866,6 @@
 
 .activity-panel__messages:has(details[open]), .activity-panel__tool-history:has(details[open]) { max-height: none; overflow: visible; }
 
-.activity-panel__blocked .activity-panel__narration-provenance { flex: none; color: var(--ink-3); font: var(--fs-body)/var(--lh-body) var(--font-body); overflow-wrap: normal; }
 .activity-panel__empty { color: var(--ink-3); }
 
 /* Cost provenance (`estimate`, `provider`, `partial`, `default rate`) reads

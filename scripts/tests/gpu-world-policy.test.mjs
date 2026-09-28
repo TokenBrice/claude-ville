@@ -133,7 +133,7 @@ test('scene builder preserves terrain-first and painter-order records', () => {
       getDims: () => ({ w: 20, h: 30 }),
       getAnchor: () => [10, 25],
     },
-    buildingRenderer: { _buildingOccupancyInfo: () => ({ state: 'occupied' }) },
+    buildingRenderer: { _workTierFor: () => 'occupied' },
     camera: { zoom: 1 },
   };
   const records = buildGpuWorldRecords(renderer, {

@@ -19,13 +19,14 @@
 //
 // Time of day never enters the terrain cache (0.3). Night and storm water
 // change through `waterMoodFor()`: the resident scene shader applies it to
-// water-material fragments, the Canvas fallback draws a mood-recoloured copy
-// of the baked water (rebuilt per mood bucket), and the cached outer ocean
-// bakes it into its palette.
+// water-material fragments, the Canvas and hybrid PostFx paths draw a
+// recoloured copy of the baked water (the mood, then V6's water saturation
+// cap in front of their frame grade; rebuilt per mood bucket and grade
+// key), and the cached outer ocean bakes both into its palette.
 
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
-import { applyGradeToRgb } from './GradeEvaluator.js';
+import { applyGradeToRgb, capSaturation } from './GradeEvaluator.js';
 import * as CanvasGrade from './CanvasGrade.js';
 
 const HALF_W = TILE_WIDTH / 2;
@@ -936,13 +937,20 @@ function wateryPixel(r, g, b) {
 }
 
 /**
- * Canvas fallback: draw a mood-recoloured copy of the baked water over the
- * terrain. Built lazily from the terrain cache on the first non-day frame and
- * rebuilt only when the mood bucket changes; day frames draw nothing.
+ * Canvas and hybrid PostFx: draw a recoloured copy of the baked water over
+ * the terrain: the night/storm mood, then V6's water saturation cap moved in
+ * front of the grade that runs over the finished frame (CanvasGrade
+ * `canvasWaterPreimage`). Built lazily from the terrain cache and rebuilt
+ * when the mood bucket changes, or the grade key does (at most once per
+ * OCEAN_REBAKE_MIN_MS, like the outer ocean); frames that change no water
+ * colour draw nothing.
  */
 export function drawCanvasWaterMood(ctx, renderer, atmosphere) {
     const mood = waterMoodFor(atmosphere);
-    if (moodIsIdentity(mood)) return;
+    const grade = atmosphere?.lightGrade || null;
+    const postFx = renderer?.postFx?.isActive?.() === true;
+    const gradeKey = CanvasGrade.canvasGradeKey(grade, { postFx });
+    if (moodIsIdentity(mood) && !gradeKey) return;
     const coast = renderer._coastBake?.coast;
     const cache = renderer.terrainCache;
     const bounds = renderer.terrainCacheBounds;
@@ -987,28 +995,39 @@ export function drawCanvasWaterMood(ctx, renderer, atmosphere) {
         };
     }
     const moodKey = `${mood.night}:${mood.storm}`;
-    if (layer.moodKey !== moodKey) {
-        const image = new ImageData(layer.w, layer.h);
-        const data = image.data;
+    const now = performance.now();
+    const due = layer.moodKey !== moodKey || !(now - layer.bakedAt < OCEAN_REBAKE_MIN_MS);
+    if (due && (layer.moodKey !== moodKey || layer.gradeKey !== gradeKey)) {
         const memo = new Map();
-        for (let k = 0; k < layer.pixels.length; k++) {
+        let changed = false;
+        for (let k = 0; k < layer.colours.length; k++) {
             const colour = layer.colours[k];
-            let out = memo.get(colour);
-            if (out === undefined) {
-                const rgb = applyWaterMood([(colour >> 16) / 255, ((colour >> 8) & 255) / 255, (colour & 255) / 255], mood);
-                out = (Math.round(rgb[0] * 255) << 16) | (Math.round(rgb[1] * 255) << 8) | Math.round(rgb[2] * 255);
-                memo.set(colour, out);
-            }
-            const p = layer.pixels[k];
-            data[p] = out >> 16;
-            data[p + 1] = (out >> 8) & 255;
-            data[p + 2] = out & 255;
-            data[p + 3] = 255;
+            if (memo.has(colour)) continue;
+            let rgb = applyWaterMood([(colour >> 16) / 255, ((colour >> 8) & 255) / 255, (colour & 255) / 255], mood);
+            rgb = CanvasGrade.canvasWaterPreimage(rgb, grade, { postFx });
+            const out = (Math.round(rgb[0] * 255) << 16) | (Math.round(rgb[1] * 255) << 8) | Math.round(rgb[2] * 255);
+            memo.set(colour, out);
+            if (out !== colour) changed = true;
         }
-        layer.ctx.putImageData(image, 0, 0);
+        layer.identity = !changed;
+        if (changed) {
+            const image = new ImageData(layer.w, layer.h);
+            const data = image.data;
+            for (let k = 0; k < layer.pixels.length; k++) {
+                const out = memo.get(layer.colours[k]);
+                const p = layer.pixels[k];
+                data[p] = out >> 16;
+                data[p + 1] = (out >> 8) & 255;
+                data[p + 2] = out & 255;
+                data[p + 3] = 255;
+            }
+            layer.ctx.putImageData(image, 0, 0);
+        }
         layer.moodKey = moodKey;
+        layer.gradeKey = gradeKey;
+        layer.bakedAt = now;
     }
-    ctx.drawImage(layer.canvas, layer.x, layer.y);
+    if (!layer.identity) ctx.drawImage(layer.canvas, layer.x, layer.y);
 }
 
 // ---------------------------------------------------------------------------
@@ -1114,7 +1133,7 @@ function hexTo01(hex) {
 
 // The ocean palette: the deepest stop, three lighter stops toward the
 // horizon, then two haze courses meeting the sky's horizon colour.
-function oceanPalette(atmosphere, gpuGraded) {
+function oceanPalette(atmosphere, gpuGraded, postFx) {
     const mood = waterMoodFor(atmosphere);
     const grade = atmosphere?.lightGrade || null;
     const stops = [
@@ -1128,11 +1147,17 @@ function oceanPalette(atmosphere, gpuGraded) {
         let c = applyWaterMood(rgb.map(channel => channel / 255), mood);
         if (gpuGraded && grade) {
             // Mirror what the resident scene pass does to island water
-            // albedo (cool cast, water sun band, then the C2 grade), so the
-            // ocean meets the island's own deepest stop without a seam.
+            // albedo (cool cast, water sun band, the C2 grade, then V6's
+            // water saturation cap), so the ocean meets the island's own
+            // deepest stop without a seam.
             const band = 1 + (0.86 - 1) * sunBand;
             c = c.map((channel, k) => Math.min(1, channel * WATER_CAST[k] * band));
-            c = applyGradeToRgb(c, grade);
+            c = capSaturation(applyGradeToRgb(c, grade));
+        } else if (grade) {
+            // The finished 2D frame is graded afterwards (the hybrid PostFx
+            // pass or the Canvas fills): paint the preimage whose frame
+            // grade is held at the same cap.
+            c = CanvasGrade.canvasWaterPreimage(c, grade, { postFx });
         }
         return css255(c);
     });
@@ -1165,14 +1190,14 @@ function colourTo01(value) {
     return match ? [Number(match[1]) / 255, Number(match[2]) / 255, Number(match[3]) / 255] : null;
 }
 
-function oceanKey(atmosphere, gpuGraded) {
-    const palette = oceanPalette(atmosphere, gpuGraded);
+function oceanKey(atmosphere, gpuGraded, postFx) {
+    const palette = oceanPalette(atmosphere, gpuGraded, postFx);
     const q = rgb => rgb.map(channel => channel >> 2).join('.');
     const fog = Math.round(Math.max(0, Math.min(1, atmosphere?.weather?.fog ?? 0)) * 4);
     return {
         palette,
         fog,
-        key: `${gpuGraded ? 'g' : 'c'}|${palette.water.map(q).join(',')}|${palette.haze.map(q).join(',')}|${fog}`,
+        key: `${gpuGraded ? 'g' : postFx ? 'p' : 'c'}|${palette.water.map(q).join(',')}|${palette.haze.map(q).join(',')}|${fog}`,
     };
 }
 
@@ -1277,8 +1302,9 @@ export function drawOuterOcean(ctx, renderer, atmosphere, { gpuGraded = false } 
     if (!view || view.y1 <= OCEAN_HORIZON_WORLD_Y) return;
     const state = renderer._outerOcean || (renderer._outerOcean = { key: '', bakedAt: -Infinity });
     const now = performance.now();
-    const spec = oceanKey(atmosphere, gpuGraded);
-    const weatherKey = `${atmosphere?.weather?.type || 'clear'}|${gpuGraded}`;
+    const postFx = !gpuGraded && renderer?.postFx?.isActive?.() === true;
+    const spec = oceanKey(atmosphere, gpuGraded, postFx);
+    const weatherKey = `${atmosphere?.weather?.type || 'clear'}|${gpuGraded}|${postFx}`;
     const due = now - state.bakedAt >= OCEAN_REBAKE_MIN_MS || state.weatherKey !== weatherKey;
     if (!state.strip || (state.key !== spec.key && due)) {
         const started = performance.now();

@@ -82,6 +82,5 @@ test('banner waits behind a full budget and incidents displace celebrations firs
     for (let index = 0; index < 8; index++) director._addScene(incident(index + 8, now + 10_001));
     assert.equal(director.scenes.filter(scene => scene.type === 'incident').length, 8);
     assert.equal(director.scenes.some(scene => scene.kind === 'biography-banner'), false);
-    assert.equal(director._sceneOverflowSummary(now + 10_001)?.label, '+1 more moment');
     director.dispose();
 });

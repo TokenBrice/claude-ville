@@ -22,6 +22,7 @@
     <link rel="stylesheet" href="css/topbar.css">
     <link rel="stylesheet" href="css/sidebar.css">
     <link rel="stylesheet" href="css/character.css">
+    <link rel="stylesheet" href="css/frame-kit.css">
 </head>
 <body>
     <!-- Top bar -->
@@ -30,11 +31,11 @@
             <div class="topbar__brand">
                 <span class="topbar__logo">ClaudeVille</span>
                 <div class="topbar__meta">
-                    <span id="topbarConnection" class="topbar__conn topbar__conn--syncing" title="Connection state and data freshness">SYNCING</span>
+                    <span id="topbarConnection" class="topbar__conn topbar__conn--syncing">SYNCING</span>
                     <span class="topbar__version" tabindex="0" role="button">v0.47</span>
-                    <span id="statFps" class="topbar__fps" title="World render loop is idle">FPS idle</span>
-                    <span id="statTime" class="topbar__uptime" title="Village uptime" hidden>00:00:00</span>
-                    <span id="villageClock" class="topbar__clock" title="Modeled village weather" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor"></path></svg><span class="topbar__clock-time"></span><span class="topbar__clock-phase"></span><span class="topbar__clock-override" hidden></span></span>
+                    <span id="statFps" class="topbar__fps" data-tip="World render loop is idle">FPS idle</span>
+                    <span id="statTime" class="topbar__uptime" data-tip="Village uptime" hidden>00:00:00</span>
+                    <span id="villageClock" class="topbar__clock" data-tip="Modeled village weather" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor"></path></svg><span class="topbar__clock-time"></span><span class="topbar__clock-phase"></span><span class="topbar__clock-override" hidden></span></span>
                 </div>
             </div>
         </div>
@@ -61,56 +62,41 @@
                         <span id="statTokens" class="topbar__stat-value">–</span>
                         <span id="statRate" class="topbar__stat-rate"></span>
                     </span>
-                    <span class="topbar__stat-label" title="New tokens this page has seen sessions spend today (cache reads excluded); a session's lifetime total is on its row">TOKENS SEEN TODAY</span>
+                    <span class="topbar__stat-label" data-tip="New tokens this page has seen sessions spend today (cache reads excluded); a session's lifetime total is on its row">TOKENS SEEN TODAY</span>
                 </span>
             </div>
         </div>
         <div class="topbar__right">
-            <button id="topbarChronicle" class="topbar__sound-btn topbar__icon-btn topbar__icon-btn--action" type="button" aria-label="Open Village Chronicle" aria-haspopup="dialog" title="Village Chronicle — what happened today">
+            <button id="topbarChronicle" class="topbar__sound-btn topbar__icon-btn topbar__icon-btn--action" type="button" aria-label="Open Village Chronicle" aria-haspopup="dialog" data-tip="Village Chronicle · what happened today">
                 <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                    <path fill="currentColor" fill-rule="evenodd" d="M3 1h10v1h1v4h-3V4H5v8h6v-1h3v3h-1v1H3v-1H2v-4h2V6H2V2h1V1Zm2 5h5v1H5V6Zm0 3h4v1H5V9Z"/>
+                    <path fill="currentColor" d="M0 2h3v1H0ZM12 2h3v1H12ZM0 3h1v10H0ZM3 3h3v1H3ZM9 3h3v1H9ZM14 3h1v10H14ZM6 4h3v1H6ZM7 5h1v9H7ZM2 6h3v1H2ZM10 6h3v1H10ZM2 8h3v1H2ZM10 8h3v1H10ZM2 10h3v1H2ZM10 10h3v1H10ZM1 12h2v1H1ZM12 12h2v1H12ZM3 13h3v1H3ZM9 13h3v1H9ZM6 14h3v1H6Z"/>
                 </svg>
             </button>
-            <button id="topbarAlertsToggle" class="topbar__sound-btn topbar__icon-btn" type="button" aria-label="Desktop alerts" aria-pressed="false" title="Enable desktop notifications">
+            <button id="topbarAlertsToggle" class="topbar__sound-btn topbar__icon-btn" type="button" aria-label="Desktop alerts" aria-pressed="false" data-tip="Enable desktop notifications">
                 <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                     <path fill="currentColor" d="M3 1h10v2h-2v1h1v1h1v5h2v2H1v-2h2V5h1V4h1V3H3V1Zm3 12h4v2H6v-2Z"/>
                 </svg>
             </button>
             <div class="topbar__sound" role="group" aria-label="Sound">
-                <button id="topbarSoundToggle" class="topbar__sound-btn topbar__icon-btn" type="button" aria-label="Sound" aria-pressed="false" data-sound-state="off" title="Sound off — click to choose what you hear">
+                <button id="topbarSoundToggle" class="topbar__sound-btn topbar__icon-btn" type="button" aria-label="Sound" aria-pressed="false" data-sound-state="off" data-tip="Sound off · click to choose what you hear" data-tip-key="M">
                     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                         <path fill="currentColor" d="M5 2h9v9h-1v2h-2v1H9v-1H8v-2h1v-1h3V5H7v7H6v2H4v1H2v-1H1v-2h1v-1h3V2Zm2 1v1h5V3H7Z"/>
                     </svg>
                 </button>
-                <button id="topbarSoundMenu" class="topbar__sound-btn topbar__sound-caret" type="button" aria-label="Sound settings" title="Sound settings" aria-haspopup="dialog" aria-controls="soundPanel" aria-expanded="false">
+                <button id="topbarSoundMenu" class="topbar__sound-btn topbar__sound-caret" type="button" aria-label="Sound settings" data-tip="Sound settings" aria-haspopup="dialog" aria-controls="soundPanel" aria-expanded="false">
                     <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
                         <path fill="currentColor" d="M0 2h2v1H0V2Zm6 0h2v1H6V2ZM1 3h2v1H1V3Zm4 0h2v1H5V3ZM2 4h4v1H2V4Zm1 1h2v1H3V5Z"/>
                     </svg>
                 </button>
             </div>
-            <button id="topbarCinemaToggle" class="topbar__cinema-btn topbar__icon-btn" type="button" aria-label="Automatic camera" aria-pressed="true" title="Auto-camera on: frames live action when idle">
-                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                    <path fill="currentColor" fill-rule="evenodd" d="M6 2h4v1h2v1h1v1h2v2h1v2h-1v2h-2v1h-1v1h-2v1H6v-1H4v-1H3v-1H1V9H0V7h1V6h2V5h1V4h2V2Zm0 4v6h4V6H6Z"/>
-                    <path fill="currentColor" d="M7 7h2v4H7V7Z"/>
-                </svg>
-            </button>
-            <button id="topbarWorldControls" class="topbar__sound-btn topbar__icon-btn topbar__icon-btn--action" type="button" popovertarget="worldGrammar" aria-label="Open World controls" title="World controls and keyboard shortcuts">
-                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                    <path fill="currentColor" d="M6 1h4v3h3v2h2v4h-2v2h-3v3H6v-3H3v-2H1V6h2V4h3V1Zm1 2v3H4v4h3v3h2v-3h3V6H9V3H7Zm0 4h2v2H7V7Z"/>
-                </svg>
-            </button>
-            <div class="topbar__well" role="group" aria-label="World view">
-                <button id="worldRead" class="topbar__sound-btn world-read" type="button" aria-label="Hold to read the village (B)" aria-pressed="false" title="Hold B or this button to read work labels">READ <kbd>B</kbd></button>
-                <button id="worldAmbient" class="topbar__sound-btn world-ambient" type="button" aria-pressed="false" data-state="off" title="Ambient camera: a patient broadcast of the work that is actually happening. Any camera input or selection hands the frame back.">AMBIENT CAM</button>
-            </div>
-            <div class="topbar__well" role="group" aria-label="Mode">
+            <div class="topbar__well cv-frame cv-frame--well" role="group" aria-label="Mode">
                 <button id="btnModeCharacter" data-i18n="world" class="topbar__mode-btn topbar__mode-btn--active">WORLD</button>
                 <button id="btnModeDashboard" data-i18n="dashboard" class="topbar__mode-btn">DASHBOARD</button>
             </div>
         </div>
     </header>
 
-    <aside id="firstRunHint" class="first-run-hint" aria-label="World controls hint" hidden>
+    <aside id="firstRunHint" class="first-run-hint cv-frame cv-frame--bg2" aria-label="World controls hint" hidden>
         <button id="firstRunHintDismiss" class="first-run-hint__dismiss" type="button" aria-label="Dismiss hint">×</button>
         <span class="first-run-hint__title">WORLD CONTROLS</span>
         <span class="first-run-hint__copy">Open the compass for camera keys. Press <kbd>A</kbd> to frame agents needing attention.</span>
@@ -127,7 +113,7 @@
                         <span data-i18n="agents" class="sidebar__title">AGENTS</span>
                         <span id="agentCount" class="sidebar__count">0</span>
                     </div>
-                    <button id="sidebarToggle" class="sidebar__toggle" type="button" aria-label="Collapse agent sidebar" aria-expanded="true" title="Collapse sidebar">&lt;</button>
+                    <button id="sidebarToggle" class="sidebar__toggle" type="button" aria-label="Collapse agent sidebar" aria-expanded="true" data-tip="Collapse sidebar">&lt;</button>
                 </div>
                 <section id="attentionShelf" class="attention-shelf" aria-label="Agents needing you, reporting errors, or quota limited" hidden></section>
                 <div class="sidebar__body">
@@ -135,7 +121,7 @@
                         <!-- Agent items are added dynamically -->
                     </div>
                     <section class="sidebar__project-group sidebar__project-group--harbor" aria-label="Harbor">
-                        <div class="sidebar__project-header sidebar__harbor-header" title="Pending commits per repo/branch - best-effort git scan (newest 120 commits on each repo's current branch; repo-watch rows cover the last 7 days; repos without an active session in the last 6h may be missing)">
+                        <div class="sidebar__project-header sidebar__harbor-header" data-tip="Pending commits per repo/branch - best-effort git scan (newest 120 commits on each repo's current branch; repo-watch rows cover the last 7 days; repos without an active session in the last 6h may be missing)">
                             <span class="sidebar__project-name">HARBOR</span>
                             <span id="harborCount" class="sidebar__project-count">0</span>
                         </div>
@@ -150,25 +136,85 @@
             <div class="content">
                 <!-- Character mode -->
                 <div id="characterMode" class="content__character">
-                    <canvas id="worldCanvas" class="content__canvas"></canvas>
-                    <canvas id="worldFxCanvas" class="content__canvas" aria-hidden="true"></canvas>
-                    <canvas id="worldOverlayCanvas" class="content__canvas" aria-hidden="true"></canvas>
+                    <!-- 0.3 — before the first paint, the container predicts the opening frame
+                         (colours in character.css): the local-clock band, and where the opening
+                         shot puts the sea horizon and the island's grass core. It mirrors the
+                         opening rule — CanvasBudget.effectiveCanvasDpr, Camera.shotScaleTiers
+                         (survey, else wide), Camera.establishingShot's wide pose (4.5 sky room,
+                         else the 0.54 anchor) and _clampedCenter; keep them in step. Under reduced
+                         motion the opening cuts to the land-weighted content frame (sea ≤ 30 %,
+                         4.2): all island. -->
+                    <script>{
+                        const root = document.currentScript.parentElement;
+                        const hour = new Date().getHours();
+                        root.dataset.skyBand = hour >= 5 && hour < 7 ? 'dawn' : hour >= 7 && hour < 17 ? 'day' : hour >= 17 && hour < 20 ? 'dusk' : 'night';
+                        const { width: w, height: h } = root.getBoundingClientRect();
+                        const device = window.devicePixelRatio > 0 ? Math.max(0.25, window.devicePixelRatio) : 1;
+                        let dpr = device;
+                        for (let n = 1; device / n >= 0.25; n++) { dpr = device / n; if (w * h * dpr * dpr <= 7.5e6) break; }
+                        // Island diamond (40 tiles): half-extents, centroid y, box centre and foot; horizon y.
+                        const A = 1248, B = 624, CY = 624, BOX_CY = 640, BOX_MAX_Y = 1280, HORIZON = -144;
+                        const scale = Math.max(1, Math.round(dpr)) / dpr;
+                        const steps = [1, 2, 3].map(step => step * scale);
+                        const share = z => { const a = w / (2 * z), b = h / (2 * z); return 1 - (a < A ? ((A - a) / A) ** 2 : 0) - (b < B ? ((B - b) / B) ** 2 : 0); };
+                        let zoom = null;
+                        for (const z of dpr >= 2 ? [1 / dpr, ...steps] : steps) if (share(z) >= 0.95 && (zoom == null || z > zoom)) zoom = z;
+                        if (zoom == null) zoom = steps.reduce((best, z) => Math.abs(Math.log(w * h / (z * z) / 1.4e6)) < Math.abs(Math.log(w * h / (best * best) / 1.4e6)) ? z : best);
+                        if (window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) {
+                            root.style.setProperty('--cv-world-land-top', '0%');
+                        } else if (w > 0 && h > 0) {
+                            let top = BOX_CY - 0.54 * h / zoom;
+                            const short = Math.min(w, h);
+                            const floor = Math.max(0.10, (Math.max(22, short * 0.042, 32, short * 0.026) * 2.3 + 1) / h);
+                            const sky = Math.min(Math.max(0.11, floor), 0.96 - (BOX_MAX_Y - HORIZON) * zoom / h);
+                            if (floor <= 0.12 && sky >= floor) top = HORIZON - sky * h / zoom;
+                            const padY = Math.max(160, h / (zoom * 2.2));
+                            top = Math.max(-padY, Math.min(2 * B + padY, top + h / (2 * zoom))) - h / (2 * zoom);
+                            const horizon = Math.max(0, Math.min(1, (HORIZON - top) * zoom / h));
+                            root.style.setProperty('--cv-world-horizon', `${(horizon * 100).toFixed(2)}%`);
+                            // The grass core: the island's centre rows, a fifth of its height, where
+                            // the island spans most of the frame's width (else sea holds every row).
+                            if (2 * A * zoom >= 0.6 * w) {
+                                const centre = (CY - top) * zoom / h, half = 0.1 * 2 * B * zoom / h;
+                                root.style.setProperty('--cv-world-land-top', `${(Math.max(horizon, centre - half) * 100).toFixed(2)}%`);
+                                root.style.setProperty('--cv-world-land-bottom', `${(Math.min(1, centre + half) * 100).toFixed(2)}%`);
+                            }
+                        }
+                    }</script>
+                    <div id="worldStack">
+                        <canvas id="worldCanvas" class="content__canvas"></canvas>
+                        <canvas id="worldFxCanvas" class="content__canvas" aria-hidden="true"></canvas>
+                        <canvas id="worldOverlayCanvas" class="content__canvas" aria-hidden="true"></canvas>
+                    </div>
                     <div id="worldEmpty" class="world-empty" role="status">
                         <span class="world-empty__crest" aria-hidden="true">⌂</span>
                         <span class="world-empty__title">OPENING THE VILLAGE</span>
                         <span class="world-empty__copy">Preparing the local watchtowers.</span>
                         <dl class="world-empty__legend" hidden></dl>
                     </div>
-                    <div id="worldGrammar" class="world-grammar" popover>
+                    <div id="worldGrammar" class="world-grammar cv-frame cv-frame--bg2" popover>
                         <div class="world-grammar__header">
                             <span>WORLD CONTROLS</span>
                             <button class="world-grammar__close" type="button" popovertarget="worldGrammar" popovertargetaction="hide" aria-label="Close World controls">×</button>
                         </div>
                         <div class="world-grammar__body"><b>/ or Ctrl/Cmd+K</b> search agents · <b>↑/↓/Home/End</b> move · <b>Enter</b> select and follow · <b>Esc</b> clear search / close panel · <b>A</b> frame attention · <b>F</b> frame village · <b>drag / arrows</b> pan · <b>wheel / +/-</b> zoom · <b>R</b> replay · <b>M</b> sound on/off</div>
                         <div class="world-grammar__body"><b>Hold B / READ</b> reveal work labels; release to restore names.</div>
-                        <div class="world-grammar__body"><b>AMBIENT CAM</b> hands the camera to the working-village broadcast; any pan, zoom, key, or selection hands it straight back.</div>
+                        <div class="world-grammar__body"><b>FREE · AUTO · AMBIENT</b> who moves the camera: only you, the idle auto-framer, or the working-village broadcast. Any pan, zoom, key, or selection hands Ambient straight back; it waits as a lit pip on AMBIENT.</div>
                     </div>
                     <div id="worldSemanticSummary" class="world-semantic-summary" role="status" aria-live="polite"></div>
+                    <div id="worldDock" class="world-dock cv-frame" role="group" aria-label="World camera">
+                        <div class="topbar__well world-dock__camera cv-frame cv-frame--well" role="group" aria-label="Camera">
+                            <button id="worldCameraFree" class="topbar__sound-btn world-camera" type="button" aria-pressed="false" data-camera-mode="free" data-tip="Free camera · it moves only when you move it">FREE</button>
+                            <button id="topbarCinemaToggle" class="topbar__sound-btn world-camera" type="button" aria-pressed="true" data-camera-mode="auto" data-tip="Auto camera · frames live action while you are idle">AUTO</button>
+                            <button id="worldAmbient" class="topbar__sound-btn world-camera world-ambient" type="button" aria-pressed="false" data-camera-mode="ambient" data-state="off" data-tip="Ambient camera · a patient broadcast of the work that is actually happening. Any camera input or selection hands the frame back.">AMBIENT</button>
+                        </div>
+                        <button id="worldRead" class="topbar__sound-btn world-read" type="button" aria-label="Hold to read the village (B)" aria-pressed="false" data-tip="Hold to read work labels" data-tip-key="B">READ <kbd>B</kbd></button>
+                        <button id="topbarWorldControls" class="topbar__sound-btn topbar__icon-btn topbar__icon-btn--action" type="button" popovertarget="worldGrammar" aria-label="Open World controls" data-tip="World controls and keyboard shortcuts">
+                            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                                <path fill="currentColor" d="M6 1h4v3h3v2h2v4h-2v2h-3v3H6v-3H3v-2H1V6h2V4h3V1Zm1 2v3H4v4h3v3h2v-3h3V6H9V3H7Zm0 4h2v2H7V7Z"/>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Dashboard mode -->
@@ -295,7 +341,7 @@
 
     <!-- Modal container -->
     <div id="modalOverlay" class="modal-overlay" style="display: none;" aria-hidden="true">
-        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <div class="modal cv-frame cv-frame--walnut" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
             <div class="modal__header">
                 <span id="modalTitle" class="modal__title"></span>
                 <button id="modalClose" class="modal__close" type="button" aria-label="Close dialog">X</button>
@@ -306,6 +352,9 @@
 
     <!-- Toast container -->
     <div id="toastContainer" class="toast-container" role="status" aria-live="polite" aria-relevant="additions text"></div>
+
+    <!-- The one chrome tooltip (9.4): ChromeTooltip.js fills and anchors it -->
+    <div id="cvTip" class="cv-tip cv-frame cv-frame--bg2" popover="manual" role="tooltip"></div>
 
     <script type="module" src="src/presentation/App.js"></script>
 </body>

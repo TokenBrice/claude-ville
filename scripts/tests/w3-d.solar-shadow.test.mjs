@@ -1,10 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-    DISTRICT_LIGHTING_BANDS,
-    solarVectorForMinute,
-} from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { solarVectorForMinute } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 
 const SEASONS = ['winter', 'spring', 'summer', 'autumn'];
 const PHASE_BOUNDARIES = {
@@ -91,8 +88,4 @@ test('solar noon preserves the authored upper-left shadow convention', () => {
         assert.ok(Math.abs(noon.shadowAngleRad - 0.28) < tolerance, season);
         assert.ok(noon.sunDirIso.x < 0 && noon.sunDirIso.y < 0, `${season} noon sun must remain upper-left`);
     }
-});
-
-test('directional lighting retains the four authored response bands', () => {
-    assert.deepEqual([...DISTRICT_LIGHTING_BANDS], [0.72, 0.86, 1, 1.12]);
 });

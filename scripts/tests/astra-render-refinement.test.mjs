@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
-import { CameraDirector } from '../../claudeville/src/presentation/character-mode/CameraDirector.js';
 import { prepareSemanticGround, recordLiveGroundCues } from '../../claudeville/src/presentation/character-mode/WorldFrameRenderer.js';
 import { Camera } from '../../claudeville/src/presentation/character-mode/Camera.js';
 import { GpuWorldRenderer } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
@@ -119,11 +118,6 @@ test('crowd congestion tightens annotations but never shrinks bodies below the p
     const mode = modeAt(large);
     assert.notEqual(mode.body, 'full');
     assert.notEqual(mode.annotation, 'full');
-    // Automatic camera moves never rest above tier 1, and never zoom in past a
-    // wider tier the operator is already on (the survey tier stays survey).
-    const autoCap = (tier) => CameraDirector.prototype._currentMaxZoom.call({ camera: { currentZoomTier: () => tier } });
-    assert.equal(autoCap(3), 1);
-    assert.equal(autoCap(0.5), 0.5);
 });
 
 test('selected, hovered and action-needed agents never enter the compact body branch', () => {

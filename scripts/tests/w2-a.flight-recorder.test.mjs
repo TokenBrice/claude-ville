@@ -16,10 +16,8 @@ import {
     snapshotFrameEnvelope,
 } from '../../claudeville/src/presentation/shared/ClientPerfMetrics.js';
 
-const rendererUrl = new URL('../../claudeville/src/presentation/character-mode/IsometricRenderer.js', import.meta.url);
 const worldFrameUrl = new URL('../../claudeville/src/presentation/character-mode/WorldFrameRenderer.js', import.meta.url);
 const metricsUrl = new URL('../../claudeville/src/presentation/shared/ClientPerfMetrics.js', import.meta.url);
-const rendererSource = fs.readFileSync(rendererUrl, 'utf8');
 const worldFrameSource = fs.readFileSync(worldFrameUrl, 'utf8');
 const metricsSource = fs.readFileSync(metricsUrl, 'utf8');
 
@@ -188,28 +186,4 @@ test('WorldFrameRenderer per-frame profiling path no longer sorts, maps, or copi
     assert.doesNotMatch(perFrame, /percentile\s*\(/);
     assert.match(perFrame, /writeBoundedRing/);
     assert.match(worldFrameSource, /createBoundedRing/);
-});
-
-test('IsometricRenderer records a frame envelope on every loop and exposes frameHealth', () => {
-    const loopStart = rendererSource.indexOf('    _loop()');
-    const loopEnd = rendererSource.indexOf('    _reportFrameFailure', loopStart);
-    assert.ok(loopStart >= 0 && loopEnd > loopStart, '_loop must remain discoverable');
-    const loopSource = rendererSource.slice(loopStart, loopEnd);
-
-    assert.match(loopSource, /_recordFrameEnvelope\(/);
-    assert.match(loopSource, /beginRenderStage\(\s*['"]world-update['"]\s*\)/);
-    assert.match(loopSource, /beginRenderStage\(\s*['"]world-render['"]\s*\)/);
-    assert.match(loopSource, /endRenderStage\(/);
-    const profileGateStart = loopSource.indexOf('if (this._performanceSamples)');
-    assert.ok(profileGateStart >= 0, 'the opt-in profile ring gate must remain discoverable');
-    assert.match(
-        loopSource.slice(0, profileGateStart),
-        /_recordFrameEnvelope\(/,
-        'the always-on envelope must be recorded before the opt-in profile ring',
-    );
-
-    assert.match(rendererSource, /frameHealth\s*\(\s*\)/);
-    assert.match(rendererSource, /__claudeVillePerf/);
-    assert.match(rendererSource, /frameHealth:\s*this\._frameHealthHelper/);
-    assert.match(rendererSource, /createFrameEnvelope\(/);
 });

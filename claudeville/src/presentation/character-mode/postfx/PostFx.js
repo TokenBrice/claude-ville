@@ -169,7 +169,9 @@ vec3 applyGrade(vec3 color) {
 // light is stepped on its own falloff per art pixel, in iso ground space
 // (screen y doubled, a 2:1 ellipse), the courses accumulate, and the pool
 // multiplies the ungraded source colour on the C1 ramp. Action-needed lights
-// take the same courses, but the strongest one at the pixel wins (no sum).
+// take the same courses, but the strongest one at the pixel wins (no sum),
+// and land outside V5's receiver knee, as on the resident path. The hybrid
+// path carries no water or wet reflection term.
 vec3 applyPools(vec3 graded, vec3 albedo) {
     vec2 cell = artCell();
     vec2 p = artCellPixels();
@@ -178,6 +180,7 @@ vec3 applyPools(vec3 graded, vec3 albedo) {
     float depth = 0.0;
     vec3 attention = vec3(0.0);
     float attentionLuma = 0.0;
+    float attentionDepth = 0.0;
     for (int i = 0; i < 48; i++) {
         if (i >= u_lightCount) break;
         vec4 light = u_lights[i];
@@ -192,12 +195,13 @@ vec3 applyPools(vec3 graded, vec3 albedo) {
                 attention = lit;
                 attentionLuma = litLuma;
             }
+            attentionDepth = max(attentionDepth, steps);
         } else {
             acc += lit;
+            depth = max(depth, steps);
         }
-        depth = max(depth, steps);
     }
-    return stepPool(graded, acc + attention, depth, albedo);
+    return stepPool(graded, acc, depth, attention, attentionDepth, albedo, vec3(0.0));
 }
 
 vec3 applyGodRays(vec3 color, vec2 uv) {
@@ -1077,11 +1081,11 @@ class PostFxInstance {
                 lastTransitionMetrics: ladder.lastTransitionMetrics
                     ? { ...ladder.lastTransitionMetrics }
                     : null,
-                overBudgetFrames: ladder.overBudgetFrames,
-                healthySinceMs: ladder.healthySinceMs,
                 override: ladder.override,
-                budgetMs: ladder.options?.budgetMs ?? null,
-                healthyMs: ladder.options?.healthyMs ?? null,
+                budgetMs: ladder.budgetMs ?? null,
+                refreshHz: ladder.refreshHz ?? null,
+                missShare: ladder.missShare ?? null,
+                timerVeto: ladder.timerVeto ?? null,
             },
             frames: this.frames,
         };

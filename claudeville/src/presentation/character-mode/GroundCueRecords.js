@@ -523,6 +523,8 @@ export class GroundCueRecorder {
             record = {
                 // Every field normalizeGpuRecord writes, already valid: the
                 // batcher takes these records as-is (see buildStableGpuBatches).
+                // V9: a ground cue never writes painter depth (key 0, the far
+                // plane) and is its own receiver (footY -1).
                 prenormalized: true,
                 id: 'ground:cue',
                 stableKey: 'ground:cue',
@@ -544,6 +546,15 @@ export class GroundCueRecorder {
                 emissive: 0,
                 emissiveGate: 1,
                 paletteRamp: false,
+                depthSortY: null,
+                depthKey: 0,
+                writesDepth: false,
+                flags: 0,
+                footY: -1,
+                frontCornerX: 0,
+                frontCornerY: -1,
+                ownerSlot: 0,
+                landmarkId: 0,
                 sequence: 0,
                 textureRevision: 0,
                 sidecarRevision: null,

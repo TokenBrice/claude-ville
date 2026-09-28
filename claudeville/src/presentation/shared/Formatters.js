@@ -12,6 +12,15 @@ const RELATIVE_TIME_THRESHOLDS = [
 const ELAPSED_PATCH_INTERVAL_MS = 1000;
 const elapsedTargets = new Set();
 let elapsedTimer = null;
+// The instant the shared 1 Hz patch last read the clock: every elapsed age
+// on screen (sidebar, cards, the World's T1 plates) formats from this one
+// value, so no surface ever runs a second ahead of another.
+let elapsedTickAt = 0;
+
+/** The shared 1 Hz tick's clock (Date.now() while no tick is running). */
+export function elapsedTickNow() {
+    return elapsedTimer !== null && elapsedTickAt > 0 ? elapsedTickAt : Date.now();
+}
 
 export function hashRows(rows, fields) {
     let hash = 2166136261;
@@ -113,6 +122,7 @@ export function formatStatusElapsed(agent, now = Date.now()) {
 
 function patchElapsedTargets() {
     const now = Date.now();
+    elapsedTickAt = now;
     for (const target of [...elapsedTargets]) {
         if (!target.node?.isConnected) {
             elapsedTargets.delete(target);
@@ -136,10 +146,13 @@ export function subscribeElapsedText(node, text) {
     if (!node || typeof text !== 'function') return () => {};
     const target = { node, text };
     elapsedTargets.add(target);
-    const initial = String(text(Date.now()) ?? '');
+    const initial = String(text(elapsedTickNow()) ?? '');
     if (node.nodeType === 3) node.nodeValue = initial;
     else node.textContent = initial;
-    if (elapsedTimer === null) elapsedTimer = setInterval(patchElapsedTargets, ELAPSED_PATCH_INTERVAL_MS);
+    if (elapsedTimer === null) {
+        elapsedTickAt = Date.now();
+        elapsedTimer = setInterval(patchElapsedTargets, ELAPSED_PATCH_INTERVAL_MS);
+    }
     return () => {
         elapsedTargets.delete(target);
         if (elapsedTargets.size === 0 && elapsedTimer !== null) {

@@ -20,6 +20,16 @@
 //   Tier C  L 0.15-0.45           shadow faces, roofs, props, foliage.
 //   Tier D  L < 0.15              ground body, water body, void.
 // No ramp below reaches Tier A except `emissive`; status hues live in theme.js.
+// At night Tier A belongs to authored emitters and unresolved action-needed
+// marks only: a lit receiver (ground, wall or prop under a light pool, a wet
+// or water reflection) stays at or below RECEIVER_LUMA_CEILING, encoded
+// Rec.709 luma 0.74 (okL 0.80): above it a receiver keeps a quarter of the
+// excess, easing into a small headroom, and no lit receiver passes okL 0.836
+// (the V5 receiver knee and okL cap in GpuWorldPolicy `stepPool`; they take
+// value, not colour). A warm pool lands each course on its `emissive` stop
+// (rim #ff9d4a, core #ffcf7a) at the receiver's own value, so pools stay warm
+// on grass and stone alike. A lamp always reads brighter than the ground it
+// lights, and pool cores keep their texture.
 //
 // Ramp roles:
 //   void          Beyond the sea at the frame edge. Darkest plane, cool slate;
@@ -68,6 +78,35 @@ export const ART_RAMPS = Object.freeze({
     clothCrimson: ['#732a31', '#a4463f'],
     clothOchre: ['#987638', '#c9a04a'],
     emissive: ['#ff9d4a', '#ffcf7a', '#ffe9b8'],
+    // Seasonal and per-tree ramps (plan items 5.1 and 5.3 of
+    // agents/plans/claudeville-opus55-xhigh-visual-plan.md). FoliageRenderer
+    // remaps canopy pixels onto them by luminance rank, dark -> light; the
+    // eight-stop canopy ramps follow the authored tree value ladder (lum
+    // 34-170), so a remap keeps the painted form. `npm run art:analyze`
+    // checks their rules and that every remapped canopy pixel is on-ramp.
+    //   snow         5.2 ground and roof snow (achromatic; its top stops are
+    //                the M9 winter exception to Tier A).
+    //   leafAutumn   baked leaf litter under deciduous crowns (S <= 0.65).
+    //   canopyRusset autumn oak, plum shadow -> rust -> amber.
+    //   canopyOchre  autumn oak and the turning crown, brown -> burnt amber,
+    //                lifted a step (turning leaves read lighter than summer
+    //                green). Its lit stops stay under hue 36 (S <= 0.62).
+    //   willowGold   autumn willow, olive -> muted straw, lifted like ochre;
+    //                its lit stops keep S <= 0.43.
+    //   Both leave the 40-60 deg high-S / high-V band (S >= 0.45 at V > 0.55)
+    //   to the status hues: a NEEDS YOU plate never competes with a crown.
+    //   blossom      spring blossom speckle and fallen petals.
+    //   foliageDeep  variant 1: the authored ladder one value step darker,
+    //                hue +8 deg (mid hue 90-110, S <= 0.5).
+    //   foliageSun   variant 2: one value step lighter, hue -8 deg.
+    snow: ['#98a5b4', '#b0bcc7', '#c7d0d6', '#d9dfe1', '#e6e9e6'],
+    leafAutumn: ['#5a2a1c', '#7a3b22', '#a4563a', '#987638', '#c9a04a'],
+    canopyRusset: ['#311b20', '#4a2125', '#652f26', '#7b412c', '#945535', '#ab6c41', '#c38650', '#d7a461'],
+    canopyOchre: ['#40251b', '#573721', '#6f4e28', '#896830', '#ad7f42', '#c79554', '#dbac69', '#efc386'],
+    willowGold: ['#293119', '#3e4420', '#585a28', '#767230', '#918852', '#aa9e64', '#c1b376', '#d8c98d'],
+    blossom: ['#9c5a78', '#b76f8c', '#c98aa3', '#dcb4c0'],
+    foliageDeep: ['#121e19', '#17291c', '#203822', '#2c4828', '#3c5932', '#526e3d', '#6b8448', '#899c54'],
+    foliageSun: ['#213627', '#2a482b', '#3a5a33', '#506f3e', '#698548', '#869d53', '#abb85f', '#cfcf68'],
 });
 
 // Ramps that make up the ground plane (terrain bakes, off-ramp analysis).
@@ -89,6 +128,9 @@ export const RESERVED_STATUS = Object.freeze({
 export const GROUND_SATURATION = Object.freeze({ min: 0.45, max: 0.50 });
 export const GROUND_LOCAL_CONTRAST_MAX_RATIO = 0.6;
 export const WATER_VOID_SATURATION_MAX = 0.40;
+// V5 receiver ceiling (see the brightest-thing rule above). Attention
+// courses are exempt: they are always the brightest pool.
+export const RECEIVER_LUMA_CEILING = 0.74;
 
 // Status-free identity hues (repo pennants, Harbor ships, Sidebar rails).
 // None may read as a status colour: every entry sits at okL 0.54-0.62,
