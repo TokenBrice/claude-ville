@@ -6,21 +6,37 @@
 //   ambient   — the Ambient broadcast and the empty-village tour: easeInOutSine,
 //               durations ×2.2 with a 5 s cap
 //
-// A glide interpolates the SCREEN-CENTRE world point (a straight line between
-// the two frames) and the zoom in log space. A glide that both pans and changes
-// zoom is split so the pan runs at a resting integer tier and the zoom is one
-// step (C3: ≥ 75 % of every glide is pixel-exact): zooming in pans first and
-// steps in at the target; zooming out steps out first and then pans. A zoom
-// step is never squeezed to fit the 25 % share: it takes ZOOM_STEP_MS per
-// resting rung it crosses and the glide grows around it.
+// 4.6 (M4) — a glide is one continuous dolly. The SCREEN-CENTRE world point
+// and the zoom move together on one eased parameter e (the family curve):
+// the zoom in log space, z(e) = z0·(z1/z0)^e, and the centre along the
+// straight line between the two frames by the zoom-weighted share
+// w(e) = (1 − r^−e) / (1 − r^−1), r = z1/z0, which moves the picture across
+// the screen at one rate for the whole move (dw/de ∝ 1/z(e)): a push-in
+// covers its ground while it is still wide and closes on the subject, a
+// pull-out opens before it travels. There is no pan-then-step split and no
+// plateau: flight frames are fractional and render fat-pixel (4.6, C3
+// "resting frames integer-k nearest; flight frames fat-pixel"), and every
+// glide ends exactly on its target, a resting tier.
+//
+// Without the GL fat path (the Canvas world) a fractional k is a nearest
+// crawl, so the same dolly is planned STEPPED (`rungs`): the zoom rests on the
+// resting rung nearest (in log space) to the dolly's zoom and changes rung in
+// one short easeInOutCubic step centred where the dolly crosses the log
+// midpoint between two rungs. Each step takes a quarter of the glide shared
+// among its rungs, held to 150–450 ms, so ≥ 75 % of the frames sit at an
+// integer k (a short glide crossing many rungs spends a little more on 150 ms
+// steps). The centre is derived from the zoom actually shown: the tighter
+// frame's centre (the target of a push-in, the start of a pull-out) keeps the
+// continuous dolly's screen path exactly, so it and the other frame's centre
+// both travel one way, never backing up while a rung step scales the picture.
 
 export const WHEEL_STEP_MS = 150;
 export const FOLLOW_ENTRY_MS = 500;
+// The longest rung step of a stepped glide (also the Canvas soft-follow
+// tier step, which has no pan to share).
 export const ZOOM_STEP_MS = 450;
-// A glide never spends more than this share of its time at a fractional zoom.
+// A stepped glide spends at most this share of its time between rungs.
 const MAX_FRACTIONAL_SHARE = 0.25;
-// Below this screen distance a zooming glide is a pure tier step, not a pan.
-const PAN_EPSILON_PX = 2;
 
 const DURATION_MIN_MS = 700;
 const DURATION_MAX_MS = 2400;
@@ -65,108 +81,136 @@ export function glideDurationMs({ screenPx = 0, fromZoom = 1, toZoom = 1, family
     return base;
 }
 
-// Plan one glide between two frames given as { cx, cy, zoom } (screen-centre
-// world point plus zoom). Returns the segments the camera samples with
-// `sampleGlide`. `duration` overrides the formula (the opening is authored);
-// it is still lengthened if the zoom steps need more room.
-//
-// `tiers` is the resting ladder: a zoom that crosses N rungs of it takes
-// N × ZOOM_STEP_MS (at least one step), so 3→1 is a 900 ms step, never a
-// 325 ms lurch. The total then grows until the fractional share is ≤ 25 %.
-// `restingLeadMs` is time the camera already spends resting at `from` as
-// part of the same shot (the opening's survey hold); it counts toward the
-// pixel-exact share.
-//
-// `stepped` (the opening dolly) keeps the pan running for the whole move and
-// climbs the resting ladder one step per rung, spaced evenly through the
-// move, so a multi-tier dolly reads as a continuous push-in with crisp
-// landings instead of one long fractional zoom.
-export function planGlide(from, to, {
-    family = 'director',
-    duration = null,
-    stepped = false,
-    tiers = null,
-    restingLeadMs = 0,
-} = {}) {
-    const fromZoom = from.zoom;
-    const toZoom = to.zoom;
-    const zoomChanges = Math.abs(toZoom - fromZoom) > 1e-6;
-    const zoomingIn = toZoom > fromZoom;
-    // The pan runs at the resting tier on the pixel-exact side of the move.
-    const panZoom = zoomChanges ? (zoomingIn ? fromZoom : toZoom) : fromZoom;
-    const screenPx = Math.hypot(to.cx - from.cx, to.cy - from.cy) * panZoom;
-    const requested = Math.max(1, Number.isFinite(duration) && duration > 0
-        ? duration
-        : glideDurationMs({ screenPx, fromZoom, toZoom, family }));
-    const curve = curveForFamily(family);
-
-    if (!zoomChanges) {
-        return { total: requested, curve, from, to, segments: [{ kind: 'pan', start: 0, end: requested }] };
-    }
-    const between = (Array.isArray(tiers) ? tiers : [])
-        .filter((z) => z > Math.min(fromZoom, toZoom) + 1e-6 && z < Math.max(fromZoom, toZoom) - 1e-6)
-        .sort((a, b) => (zoomingIn ? a - b : b - a));
-    const ladder = [fromZoom, ...between, toZoom];
-    const rungs = ladder.length - 1;
-    const zoomMs = ZOOM_STEP_MS * rungs;
-    // Smallest total that keeps the zoom at ≤ 25 % of the shot.
-    const lead = Math.max(0, Number(restingLeadMs) || 0);
-    const shareFloor = Math.max(0, zoomMs / MAX_FRACTIONAL_SHARE - lead);
-    if (stepped) {
-        // Rung centres sit at total·(i+1)/(rungs+1); keep a resting gap
-        // between neighbouring steps.
-        const total = Math.max(requested, shareFloor, (rungs + 1) * ZOOM_STEP_MS);
-        const segments = [{ kind: 'pan', start: 0, end: total }];
-        for (let index = 0; index < rungs; index++) {
-            const middle = (total * (index + 1)) / (rungs + 1);
-            segments.push({
-                kind: 'zoom',
-                start: middle - ZOOM_STEP_MS / 2,
-                end: middle + ZOOM_STEP_MS / 2,
-                fromZoom: ladder[index],
-                toZoom: ladder[index + 1],
-            });
-        }
-        return { total, curve, from, to, segments };
-    }
-    if (screenPx < PAN_EPSILON_PX) {
-        // A pure tier change: one zoom step, no pan to hide it behind.
-        return { total: zoomMs, curve, from, to, segments: [{ kind: 'zoom', start: 0, end: zoomMs }] };
-    }
-    const total = Math.max(requested, shareFloor);
-    const segments = zoomingIn
-        ? [{ kind: 'pan', start: 0, end: total - zoomMs }, { kind: 'zoom', start: total - zoomMs, end: total }]
-        : [{ kind: 'zoom', start: 0, end: zoomMs }, { kind: 'pan', start: zoomMs, end: total }];
-    return { total, curve, from, to, segments };
+// 4.6 — the centre's share of the move at eased parameter e for a zoom ratio
+// r = z1/z0: w(e) = (1 − r^−e) / (1 − r^−1), which is e when the zoom holds.
+// Its slope is proportional to 1/z(e), so the screen travels at one rate.
+function dollyShare(ratio, eased) {
+    const e = clamp01(eased);
+    const lnRatio = Math.log(ratio);
+    if (!Number.isFinite(lnRatio) || Math.abs(lnRatio) < 1e-9) return e;
+    return (1 - Math.exp(-lnRatio * e)) / (1 - Math.exp(-lnRatio));
 }
 
-// Sample a planned glide at `elapsed` ms → { cx, cy, zoom, done }. Zoom steps
-// always use easeInOutCubic in log space; the pan uses the family curve.
-export function sampleGlide(plan, elapsed) {
-    const { from, to, segments, curve, total } = plan;
-    const t = Math.max(0, Math.min(total, elapsed));
-    let cx = from.cx;
-    let cy = from.cy;
-    let zoom = from.zoom;
-    for (const segment of segments) {
-        if (t <= segment.start) continue;
-        const span = Math.max(1e-6, segment.end - segment.start);
-        const local = Math.min(1, (t - segment.start) / span);
-        if (segment.kind === 'pan') {
-            const e = curve(local);
-            cx = from.cx + (to.cx - from.cx) * e;
-            cy = from.cy + (to.cy - from.cy) * e;
-        } else {
-            zoom = logZoom(segment.fromZoom ?? from.zoom, segment.toZoom ?? to.zoom, easeInOutCubic(local));
+// The screen distance a dolly's picture travels: |Δcentre| · z0 · ln r / (1 − 1/r)
+// (|Δcentre| · z0 when the zoom holds).
+function dollyScreenPx(from, to) {
+    const distance = Math.hypot(to.cx - from.cx, to.cy - from.cy);
+    const ratio = to.zoom / from.zoom;
+    const lnRatio = Math.log(ratio);
+    if (!Number.isFinite(lnRatio) || Math.abs(lnRatio) < 1e-9) return distance * from.zoom;
+    return (distance * from.zoom * lnRatio) / (1 - 1 / ratio);
+}
+
+// Plan one glide between two frames given as { cx, cy, zoom } (screen-centre
+// world point plus zoom) for `sampleGlide`. The duration is the formula on the
+// dolly's own screen travel and zoom ratio; `duration` overrides it (the
+// opening is authored). `rungs` (the resting zooms a stepped glide may rest
+// on) plans the stepped family for a renderer without fat flight frames.
+export function planGlide(from, to, { family = 'director', duration = null, rungs = null } = {}) {
+    const ratio = from.zoom > 0 && to.zoom > 0 ? to.zoom / from.zoom : 1;
+    const total = Math.max(1, Number.isFinite(duration) && duration > 0
+        ? duration
+        : glideDurationMs({
+            screenPx: dollyScreenPx(from, to),
+            fromZoom: from.zoom,
+            toZoom: to.zoom,
+            family,
+        }));
+    const curve = curveForFamily(family);
+    const steps = Array.isArray(rungs) && Math.abs(Math.log(ratio)) > 1e-9
+        ? rungSteps(from.zoom, to.zoom, rungs, curve, total)
+        : null;
+    return { total, curve, from, to, ratio, steps };
+}
+
+// The stepped family's rung steps in time order, { start, end, fromZoom,
+// toZoom }: one per rung crossed, each centred where the dolly's zoom crosses
+// the log midpoint of its two rungs, all the same length, fitted inside the
+// glide without overlapping.
+function rungSteps(fromZoom, toZoom, rungs, curve, total) {
+    const zoomingIn = toZoom > fromZoom;
+    const low = Math.min(fromZoom, toZoom) * (1 + 1e-6);
+    const high = Math.max(fromZoom, toZoom) * (1 - 1e-6);
+    const between = rungs
+        .filter((zoom) => zoom > low && zoom < high)
+        .sort((a, b) => (zoomingIn ? a - b : b - a));
+    const ladder = [fromZoom, ...between, toZoom];
+    const count = ladder.length - 1;
+    const stepMs = Math.min(
+        total / count,
+        Math.max(WHEEL_STEP_MS, Math.min(ZOOM_STEP_MS, (MAX_FRACTIONAL_SHARE * total) / count)),
+    );
+    const lnRatio = Math.log(toZoom / fromZoom);
+    const steps = [];
+    let floor = 0;
+    for (let index = 0; index < count; index++) {
+        const crossing = Math.log(Math.sqrt(ladder[index] * ladder[index + 1]) / fromZoom) / lnRatio;
+        const start = Math.max(floor, total * inverseCurve(curve, crossing) - stepMs / 2);
+        steps.push({ start, end: start + stepMs, fromZoom: ladder[index], toZoom: ladder[index + 1] });
+        floor = start + stepMs;
+    }
+    let ceiling = total;
+    for (let index = count - 1; index >= 0; index--) {
+        const step = steps[index];
+        step.end = Math.min(step.end, ceiling);
+        step.start = step.end - stepMs;
+        ceiling = step.start;
+    }
+    return steps;
+}
+
+// t in [0, 1] with curve(t) = eased, for a monotone family curve.
+function inverseCurve(curve, eased) {
+    const target = clamp01(eased);
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 40; i++) {
+        const mid = (lo + hi) / 2;
+        if (curve(mid) < target) lo = mid;
+        else hi = mid;
+    }
+    return (lo + hi) / 2;
+}
+
+// A stepped glide's zoom at `t` ms: the rung it rests on, or the eased
+// log-zoom inside a rung step.
+function steppedZoom(steps, fromZoom, t) {
+    let zoom = fromZoom;
+    for (const step of steps) {
+        if (t >= step.end) {
+            zoom = step.toZoom;
+            continue;
         }
+        if (t > step.start) return logZoom(step.fromZoom, step.toZoom, easeInOutCubic((t - step.start) / (step.end - step.start)));
+        break;
     }
-    const done = t >= total;
-    if (done) {
-        cx = to.cx;
-        cy = to.cy;
-        zoom = to.zoom;
+    return zoom;
+}
+
+// Sample a planned glide at `elapsed` ms → { cx, cy, zoom, done }: centre and
+// zoom on the one family curve; the final sample is exactly the target. A
+// stepped plan shows its rung zoom z_s where the dolly has z_c, and moves the
+// centre so the tighter frame's centre sits where the dolly would put it:
+// push-in (1 − w′)·z_s = (1 − w)·z_c, pull-out w′·z_s = w·z_c.
+export function sampleGlide(plan, elapsed) {
+    const { from, to, curve, total, ratio, steps } = plan;
+    const t = Math.max(0, Math.min(total, elapsed));
+    if (t >= total) return { cx: to.cx, cy: to.cy, zoom: to.zoom, done: true };
+    const e = curve(t / total);
+    const dolly = dollyShare(ratio, e);
+    let zoom = logZoom(from.zoom, to.zoom, e);
+    let share = dolly;
+    if (steps) {
+        const shown = steppedZoom(steps, from.zoom, t);
+        share = clamp01(ratio > 1 ? 1 - ((1 - dolly) * zoom) / shown : (dolly * zoom) / shown);
+        zoom = shown;
     }
-    return { cx, cy, zoom, done };
+    return {
+        cx: from.cx + (to.cx - from.cx) * share,
+        cy: from.cy + (to.cy - from.cy) * share,
+        zoom,
+        done: false,
+    };
 }
 
 // 8.2 — one exact step of a critically damped spring toward `target`

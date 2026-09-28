@@ -9,6 +9,13 @@ import { footprintFieldRect } from '../FootprintField.js';
 const FOOTPRINT_FIELD_RECT = footprintFieldRect();
 const FOOTPRINT_FIELD_BYTES = FOOTPRINT_FIELD_RECT.width * FOOTPRINT_FIELD_RECT.height * 2;
 
+// 1.2 — the pool strength (luma of colour x course weight x energy, the
+// `strength` stepPool reads) at which a warm course lands on its C1 stop in
+// full: a village lantern's or brazier's thin rim course at night (0.21-0.26)
+// already does, a faint light lands in proportion. The Canvas pool stamp
+// (CanvasGrade) lands on the same rule.
+export const LAND_FULL_STRENGTH = 0.2;
+
 export const GPU_WORLD_RENDERER_MODES = Object.freeze({
     WEBGL: 'webgl',
     CANVAS: 'canvas',
@@ -174,7 +181,7 @@ export const EFFECT_BUDGET = Object.freeze({
         levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
         cost: Object.freeze({ gpuMsBand: [0, 0.25], cpuMsBand: [0, 0.005], bytes: 1179648, scope: 'shared-scene-envelope' }),
         staticFallback: 'frozen-static-dashes',
-        canvas: 'static-dashes',
+        canvas: 'step-overlay',
     }),
     // 3.2 — the sun/moon path on in-map water (replaces the FULL-only moon
     // silver course): sparse seaPath dashes under the body's screen x, one
@@ -184,7 +191,7 @@ export const EFFECT_BUDGET = Object.freeze({
         levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'static' }),
         cost: Object.freeze({ gpuMsBand: [0, 0.08], cpuMsBand: [0, 0.005], bytes: 0, scope: 'shared-scene-envelope' }),
         staticFallback: 'static-speck-set',
-        canvas: 'none',
+        canvas: 'step-overlay',
     }),
     // 3.9 — rain rings on water stops, only while it rains; MINIMAL and
     // reduced motion hold a fixed 20 % ring set.
@@ -193,7 +200,7 @@ export const EFFECT_BUDGET = Object.freeze({
         levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'static' }),
         cost: Object.freeze({ gpuMsBand: [0, 0.08], cpuMsBand: [0, 0.005], bytes: 0, scope: 'shared-scene-envelope' }),
         staticFallback: 'static-ring-set',
-        canvas: 'none',
+        canvas: 'step-overlay',
     }),
     // 3.6 — lapping swash and the drying wet band on the terrain batch,
     // from the RG8 coast field (unit 8; also read by 3.7's ripple and 3.11's
@@ -203,7 +210,7 @@ export const EFFECT_BUDGET = Object.freeze({
         levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
         cost: Object.freeze({ gpuMsBand: [0, 0.12], cpuMsBand: [0, 0.005], bytes: 2359296, scope: 'shared-scene-envelope' }),
         staticFallback: 'baked-foam-lace',
-        canvas: 'baked-foam-lace',
+        canvas: 'step-overlay',
     }),
     // 3.10 — the clear-day caustic net on the two shallowest stops at zoom
     // >= 2 (the 2x1 seabed specks are static at every level).
@@ -212,7 +219,7 @@ export const EFFECT_BUDGET = Object.freeze({
         levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
         cost: Object.freeze({ gpuMsBand: [0, 0.05], cpuMsBand: [0, 0.005], bytes: 0, scope: 'shared-scene-envelope' }),
         staticFallback: 'seabed-specks',
-        canvas: 'none',
+        canvas: 'step-overlay',
     }),
     // 1.1/1.2 — the C2 keyframed grade (~20 ALU on the albedo before the
     // light loop) and the multiplicative stepped light pools replace the
@@ -252,21 +259,65 @@ export const EFFECT_BUDGET = Object.freeze({
         staticFallback: 'authored-albedo',
         canvas: 'authored-albedo',
     }),
-    // 0.1 — light admission is a declared row: how many ranked local lights
-    // (attention lights always first, `clampGpuLights`) the scene pass admits.
-    // The night's pools ship at every level (V2 tier contract: never below 12
-    // at MINIMAL), replacing the undeclared 32/10/4 cut that deleted the lamp
-    // pools at REDUCED — which makes this new light-loop work at REDUCED and
-    // MINIMAL. Band: the ceiling is the whole FULL - MINIMAL real-frame delta
-    // (WebPlatformGPU appburst, dense-24 22:00 z2 4880x1392, 4.02 - 1.55 ms,
-    // which also sheds bloom and occlusion) until per-level `gpu-burst.mjs`
-    // receipts land; 60 Hz assumed.
+    // 0.1 / 2.4 — light admission is a declared row: how many ranked local
+    // lights the scene pass admits (`clampGpuLights` ranks attention >
+    // aperture > fixture > point; `binGpuLights` then admits in that order
+    // while every 64x64 backing-px tile the light reaches has one of its 16
+    // slots free; attention lights are admitted past the count). The night's
+    // pools ship at every level (V2 tier contract: never below 12 at
+    // MINIMAL). 2.4 moved the records into the RGBA32F light texture (unit
+    // 9, MAX_LIGHT_RECORDS 256, 16 KiB baseline, like the uniform arrays it
+    // replaced), so the count now covers every visible window, lamp and
+    // opening at 5120x1440. Band: the ceiling is the whole FULL - MINIMAL
+    // real-frame delta (WebPlatformGPU appburst, dense-24 22:00 z2
+    // 4880x1392, 4.02 - 1.55 ms, which also sheds bloom and occlusion) until
+    // per-level `gpu-burst.mjs` receipts land; 60 Hz assumed.
     'light-admission': Object.freeze({
         id: 'light-admission',
-        levels: Object.freeze({ FULL: 32, REDUCED: 24, MINIMAL: 12 }),
+        levels: Object.freeze({ FULL: 128, REDUCED: 64, MINIMAL: 24 }),
         cost: Object.freeze({ gpuMsBand: [0, 2.47], cpuMsBand: [0, 0.01], bytes: 0, scope: 'shared-scene-envelope' }),
         staticFallback: 'ranked-admission',
         canvas: 'feed-ranked-48',
+    }),
+    // 2.4 (M6: clustering only if its receipt pays) — the switch between the
+    // two walks of the SAME admitted list: `on`, each fragment walks only
+    // its 64x64 tile's <= 16 lights from the R16UI tile index (unit 10,
+    // tilesX*17 x tilesY: count, then light indices); `off`, every fragment
+    // walks every admitted light (the flat path). Admission is binned in
+    // both, so the admitted set and every lit pixel are identical and the
+    // Phase 5 A/B prices only the walk: `gpuWorld.setLightClusterOverride
+    // (true | false | null)` forces a mode (null = this row). MINIMAL's 24
+    // lights keep the flat walk and skip the index upload. Bytes: the index
+    // at 4880x1392 (77 x 22 tiles x 17 x 2 B). Band [INFERENCE]: one extra
+    // integer fetch per walked light; the per-fragment saving and the
+    // receipt land with the Phase 5 A/B (V2), 60 Hz assumed.
+    'light-clusters': Object.freeze({
+        id: 'light-clusters',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.05], cpuMsBand: [0, 0.1], bytes: 57596, scope: 'shared-scene-envelope' }),
+        staticFallback: 'flat-light-walk',
+        canvas: 'none',
+    }),
+    // 2.10 (M6 pilot, V2 bend: RGBA16F cascades) — ground-plane radiance
+    // cascades and one warm bounce (gpu/GroundRadiance.js): a 176x192-probe,
+    // 4-cascade solve over the island's ground plane, re-run only when the
+    // light state moves (<= 4 Hz; 6 draws: emit, 4 cascades, resolve), read
+    // once per lit-candidate fragment on unit 15. OFF AT EVERY LEVEL (pilot
+    // verdict, 2026-09-28: at z2 the wall-base course and the door fans do
+    // not clearly improve the night frame; see the character-mode README).
+    // `gpuWorld.setRadianceOverride(true | false | null)` forces it for the
+    // Phase 5 A/B; to land it, set FULL 'on' and `bytes` to RADIANCE_BYTES
+    // (4,071,424: scene 352x384 + 2 cascades 352x384 + result 528x192,
+    // RGBA16F, and the 256x4 RGBA32F emitter rows; released whenever off, so
+    // 0 resident as shipped). Band [INFERENCE] (LGI-8: ~0.3-1 ms per solve,
+    // amortized; one filtered fetch per candidate fragment); the K8 receipt
+    // lands with the Phase 5 A/B, 60 Hz assumed.
+    'radiance-bounce': Object.freeze({
+        id: 'radiance-bounce',
+        levels: Object.freeze({ FULL: 'off', REDUCED: 'off', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.25], cpuMsBand: [0, 0.05], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'direct-light',
+        canvas: 'none',
     }),
     // 0.6 — painter's depth and one instanced particle draw. Opaque sprite
     // records write a DEPTH_COMPONENT16 key from their painter sortY with
@@ -443,10 +494,13 @@ const vec3 LAND_SHARE = vec3(0.84, 0.88, 0.90);
 // The least share of the value a course lands with, whatever the pool adds:
 // the thin outer course on night grass adds little value, so without a floor
 // its green kept most of the pixel and it read khaki-olive beside the amber
-// inner course. The rim course lands in full (its LAND_SHARE, as the inner
-// courses do where the pool carries the pixel). Luma is kept, so the value
-// ladder is unchanged.
-const vec3 LAND_FLOOR = vec3(1.0, 0.0, 0.0);
+// inner course. The floor is the pool's own strength over
+// LAND_FULL_STRENGTH, one rule on every course: a deeper course only lies
+// where more light falls, so an inner course never lands duller than the rim
+// round it and no light, however faint, lands as a ring (a lantern lands
+// every course in full, a faint light every course in part). Luma is kept,
+// so the value ladder is unchanged.
+const float LAND_FULL_STRENGTH = ${LAND_FULL_STRENGTH.toFixed(2)};
 // The stop at luma \`y\`, pulled toward grey only as far as the gamut needs
 // (hue and luma kept).
 vec3 onStop(vec3 stop, float y) {
@@ -568,7 +622,7 @@ vec3 stepPool(vec3 graded, vec3 ambient, float ambientSteps, vec3 attention, flo
         float share = clamp((y - gradedLuma) / max(y, 0.02) * 1.6, 0.0, 1.0);
         vec3 stop = ambientSteps < 1.5 ? LAND_RIM : ambientSteps < 2.5 ? LAND_MID : LAND_CORE;
         float course = ambientSteps < 1.5 ? LAND_SHARE.x : ambientSteps < 2.5 ? LAND_SHARE.y : LAND_SHARE.z;
-        share = max(share, ambientSteps < 1.5 ? LAND_FLOOR.x : ambientSteps < 2.5 ? LAND_FLOOR.y : LAND_FLOOR.z);
+        share = max(share, min(1.0, strength / LAND_FULL_STRENGTH));
         result = mix(result, onStop(stop, y), landWarm * share * course * land);
     }
     result = okCeiling(result, graded, RECEIVER_OKL_CEILING);
@@ -871,16 +925,26 @@ export function isSoftwareRasterizer(rendererString) {
     return SOFTWARE_RASTER_PATTERN.test(String(rendererString || ''));
 }
 
-// `?renderer=webgl` forces WebGL wherever WebGL2 exists (a software
-// rasterizer included); `?renderer=canvas` forces Canvas; otherwise WebGL2 on
-// a hardware rasterizer is the default.
-export function resolveGpuWorldRendererMode(search = '', { webgl2 = true, softwareRaster = false } = {}) {
+// The renderer `?renderer=` forces: exactly `webgl` or `canvas` (any case),
+// else null. Only a forced mode may skip the software-raster probe; an empty
+// or unknown value takes the default like no parameter at all.
+export function forcedGpuWorldRendererMode(search = '') {
     const params = search instanceof URLSearchParams
         ? search
         : new URLSearchParams(String(search || '').replace(/^\?/, ''));
     const requested = String(params.get('renderer') || '').trim().toLowerCase();
-    if (requested === GPU_WORLD_RENDERER_MODES.CANVAS) return GPU_WORLD_RENDERER_MODES.CANVAS;
-    if (requested === GPU_WORLD_RENDERER_MODES.WEBGL) {
+    return requested === GPU_WORLD_RENDERER_MODES.CANVAS || requested === GPU_WORLD_RENDERER_MODES.WEBGL
+        ? requested
+        : null;
+}
+
+// `?renderer=webgl` forces WebGL wherever WebGL2 exists (a software
+// rasterizer included); `?renderer=canvas` forces Canvas; otherwise WebGL2 on
+// a hardware rasterizer is the default.
+export function resolveGpuWorldRendererMode(search = '', { webgl2 = true, softwareRaster = false } = {}) {
+    const forced = forcedGpuWorldRendererMode(search);
+    if (forced === GPU_WORLD_RENDERER_MODES.CANVAS) return GPU_WORLD_RENDERER_MODES.CANVAS;
+    if (forced === GPU_WORLD_RENDERER_MODES.WEBGL) {
         return webgl2 ? GPU_WORLD_RENDERER_MODES.WEBGL : GPU_WORLD_RENDERER_MODES.CANVAS;
     }
     return webgl2 && !softwareRaster ? GPU_WORLD_RENDERER_MODES.WEBGL : GPU_WORLD_RENDERER_MODES.CANVAS;
@@ -907,6 +971,14 @@ export const GPU_RECORD_FLAGS = Object.freeze({
     // frontCornerX is its pivot x, footY its waterline): the light loop gives
     // it the body's wrap response without any ownerSlot attention.
     receiverAxis: 64,
+    // B.3 — a ground-cue dot run (GroundCueRecords): loc1 carries the run's
+    // packed integer payload instead of UVs, and the vertex stage expands it
+    // into one quad per dot on the cue atlas's swatch texel.
+    cueRun: 128,
+    // 2.9 — a building or tree ground cast (GpuSceneBuilder): over painted
+    // water (3.6 coast flag `water`, not `covered`) the scene fragment holds
+    // it to RakingLight.GROUND_CAST_WATER_SHARE and breaks it by the ripple rows.
+    groundCast: 256,
 });
 
 // V9 / 0.6 — painter's depth. A record's or particle's painter `sortY` is
@@ -974,7 +1046,8 @@ export function assignGpuRecordV9Fields(target, record, alpha, blend) {
         | (record.screenSpace === true ? GPU_RECORD_FLAGS.screenSpace : 0)
         | (record.surfaceCode === true ? GPU_RECORD_FLAGS.surfaceCode : 0)
         | (record.packedGeometry === true ? GPU_RECORD_FLAGS.packedGeometry : 0)
-        | (record.receiverAxis === true ? GPU_RECORD_FLAGS.receiverAxis : 0);
+        | (record.receiverAxis === true ? GPU_RECORD_FLAGS.receiverAxis : 0)
+        | (record.groundCast === true ? GPU_RECORD_FLAGS.groundCast : 0);
     target.footY = finite(record.footY, Number.isFinite(depthSortY) ? depthSortY : -1);
     target.frontCornerX = finite(record.frontCornerX, 0);
     target.frontCornerY = finite(record.frontCornerY, -1);
@@ -1048,19 +1121,41 @@ export function validGpuRecord(record) {
     );
 }
 
+// B.1b — a record may live on the albedo texture-array page when it has no
+// sidecar (material, emissive, occluder), is not screen-space, and samples a
+// whole-source rect of a source no larger than `limit` texels a side (a page
+// layer less its gutter). The renderer's pager decides whether it fits.
+export function gpuRecordPageable(record, limit) {
+    if (record.materialSource || record.emissiveSource || record.occluderSource || record.sidecarKey
+        || (record.flags & GPU_RECORD_FLAGS.screenSpace)) return false;
+    const source = record.source;
+    if (!source || source.gpuResident === true) return false;
+    const width = record.sourceWidth;
+    const height = record.sourceHeight;
+    return width === source.width && height === source.height
+        && width <= limit && height <= limit
+        && record.sx >= 0 && record.sy >= 0
+        && record.sx + record.sw <= width && record.sy + record.sh <= height;
+}
+
 // A producer that emits many small records per frame (0.2 ground cues) may
 // hand them over already normalized: `prenormalized: true` promises every
 // field normalizeGpuRecord would write — the V9 fields of
 // `assignGpuRecordV9Fields` included — is present, finite and in range, and
 // that the record is valid. Those records skip the per-record copy and are
 // batched as-is. 0.6 — `writesDepth` joins the batch key: one batch is drawn
-// under one `depthMask`.
-export function buildStableGpuBatches(records = [], batches = [], normalizedRecords = []) {
+// under one `depthMask`. B.1b — `pager(record)` (optional) places a normalized
+// record on the albedo page and returns the page, writing `pageLayer`,
+// `pageX`, `pageY` onto it, or returns null; paged records batch by page (any
+// texture on it), everything else by texture and sidecars as before.
+// Prenormalized records are never paged.
+export function buildStableGpuBatches(records = [], batches = [], normalizedRecords = [], pager = null) {
     let batchCount = 0;
     let current = null;
     for (let index = 0; index < records.length; index++) {
         const raw = records[index];
         let record;
+        let page = null;
         if (raw?.prenormalized === true) {
             if (!raw.source) continue;
             record = raw;
@@ -1068,12 +1163,14 @@ export function buildStableGpuBatches(records = [], batches = [], normalizedReco
             const normalized = normalizedRecords[index] || (normalizedRecords[index] = {});
             record = normalizeGpuRecord(raw, index, normalized);
             if (!validGpuRecord(record)) continue;
+            record.pageLayer = -1;
+            if (pager) page = pager(record);
         }
-        if (!current || current.textureKey !== record.textureKey
+        if (!current || current.page !== page
+            || (!page && (current.textureKey !== record.textureKey || current.source !== record.source))
             || current.sidecarKey !== record.sidecarKey
             || current.blend !== record.blend
             || current.writesDepth !== record.writesDepth
-            || current.source !== record.source
             || current.materialSource !== record.materialSource
             || current.emissiveSource !== record.emissiveSource
             || current.occluderSource !== record.occluderSource) {
@@ -1082,18 +1179,20 @@ export function buildStableGpuBatches(records = [], batches = [], normalizedReco
                 current = { records: [] };
                 batches[batchCount] = current;
             }
-            if (current.textureKey !== record.textureKey
+            const textureKey = page ? page.key : record.textureKey;
+            if (current.textureKey !== textureKey
                 || current.sidecarKey !== record.sidecarKey
                 || current.blend !== record.blend
                 || current.writesDepth !== record.writesDepth) {
-                current.key = `${record.textureKey}|${record.sidecarKey}|${record.blend}|${record.writesDepth ? 'depth' : 'flat'}`;
+                current.key = `${textureKey}|${record.sidecarKey}|${record.blend}|${record.writesDepth ? 'depth' : 'flat'}`;
             }
+            current.page = page;
             current.writesDepth = record.writesDepth;
-            current.source = record.source;
+            current.source = page ? null : record.source;
             current.materialSource = record.materialSource;
             current.emissiveSource = record.emissiveSource;
             current.occluderSource = record.occluderSource;
-            current.textureKey = record.textureKey;
+            current.textureKey = textureKey;
             current.sidecarKey = record.sidecarKey;
             current.blend = record.blend;
             current.records.length = 0;
@@ -1133,7 +1232,20 @@ export function estimateGpuWorldTextureBytes({
 // 3.1 — action-needed overlays are outside the exposure budget: the renderer
 // asks this before applying the envelope's spill share to a light.
 export function isAttentionLight(light) {
-    return Boolean(light?.attention) || String(light?.id || '').startsWith('attention:');
+    return Boolean(light?.attention) || String(light?.id || '').startsWith('attention:')
+        || light?.role === LIGHT_ROLE_CODES.attention;
+}
+
+// V5 / 2.1 — the role codes the resident loop reads (light record row 1 w),
+// set on each feed slot by PostFxFeed.
+export const LIGHT_ROLE_CODES = Object.freeze({ point: 0, aperture: 1, fixture: 2, attention: 3 });
+// 2.4 — admission order by role: attention > aperture > fixture > point.
+const LIGHT_ROLE_RANK = Object.freeze([3, 1, 2, 0]);
+
+function lightRoleRank(light) {
+    if (isAttentionLight(light)) return 0;
+    const code = Math.round(finite(light?.role, LIGHT_ROLE_CODES.point));
+    return LIGHT_ROLE_RANK[code] ?? 3;
 }
 
 export function clampGpuLights(lights = [], limit = 16, hardLimit = limit, cache = null) {
@@ -1149,7 +1261,8 @@ export function clampGpuLights(lights = [], limit = 16, hardLimit = limit, cache
             if (!snapshot || snapshot.light !== light
                 || snapshot.x !== light?.x || snapshot.y !== light?.y
                 || snapshot.priority !== light?.priority || snapshot.intensity !== light?.intensity
-                || snapshot.id !== light?.id || snapshot.attention !== light?.attention) {
+                || snapshot.id !== light?.id || snapshot.attention !== light?.attention
+                || snapshot.role !== light?.role) {
                 unchanged = false;
                 break;
             }
@@ -1170,10 +1283,11 @@ export function clampGpuLights(lights = [], limit = 16, hardLimit = limit, cache
                 snapshot.intensity = light?.intensity;
                 snapshot.id = light?.id;
                 snapshot.attention = light?.attention;
+                snapshot.role = light?.role;
             }
         }
         ranked.sort((a, b) => (
-            Number(isAttentionLight(b)) - Number(isAttentionLight(a))
+            lightRoleRank(a) - lightRoleRank(b)
             || finite(b.priority, 0) - finite(a.priority, 0)
             || finite(b.intensity, 1) - finite(a.intensity, 1)
             || String(a.id || '').localeCompare(String(b.id || ''))
@@ -1191,6 +1305,196 @@ export function clampGpuLights(lights = [], limit = 16, hardLimit = limit, cache
     admitted.length = admittedCount;
     for (let index = 0; index < admittedCount; index++) admitted[index] = ranked[index];
     return admitted;
+}
+
+// 2.4 — the resident light list: up to MAX_LIGHT_RECORDS admitted lights in
+// an RGBA32F texture (unit 9) of LIGHT_RECORD_ROWS rows x 256 texels; light i
+// is column i: row 0 (foot x, foot y, ground radius, intensity), row 1
+// (emitter height, face normal nx, ng, role code), row 2 (shader rgb,
+// envelope share), row 3 (owner slot, landmark id, LIGHT_RECORD_FLAGS,
+// column reach). The R16UI tile index (unit 10) holds, per 64x64 backing-px
+// tile (tx, ty), texel (tx * LIGHT_TILE_STRIDE, ty) = count and the next
+// `count` texels the admitted light indices in admission order.
+export const MAX_LIGHT_RECORDS = 256;
+export const LIGHT_RECORD_ROWS = 4;
+export const LIGHT_TILE_PX = 64;
+export const LIGHT_TILE_SLOTS = 16;
+export const LIGHT_TILE_STRIDE = LIGHT_TILE_SLOTS + 1;
+export const LIGHT_RECORD_FLAGS = Object.freeze({
+    // 3.2 — lays its hue on wet ground (the first `wetReflectionCount`
+    // admitted non-attention lights).
+    wetReflection: 1,
+    // 2.9 — lays a broken column on the water in front of its foot
+    // (apertures and fixtures; never attention or omni effect lights).
+    waterColumn: 2,
+    // 2.9 — lights nothing but its column (the Lighthouse lamp).
+    waterOnly: 4,
+});
+// 2.9 — a column runs this many ground radii toward the camera from the foot.
+export const WATER_COLUMN_REACH = 1.8;
+// The tallest body (hat included) above its foot, in world px.
+const LIGHT_BODY_REACH_UP = 96;
+// A body takes one falloff from its foot, so its art below that foot (the
+// feet and hem under the placement point) lights with it: the rect's ground
+// reach below the foot carries this much more for them, in world px. Every
+// other upright record's art below its foot is its own ground there.
+const LIGHT_BODY_REACH_DOWN = 8;
+
+/** 2.9 — does this admitted light lay a water column? */
+export function lightLaysColumn(light) {
+    if (isAttentionLight(light)) return false;
+    const role = Math.round(finite(light?.role, LIGHT_ROLE_CODES.point));
+    return role === LIGHT_ROLE_CODES.aperture || role === LIGHT_ROLE_CODES.fixture;
+}
+
+/**
+ * The world rect `{ x0, y0, x1, y1 }` holding every art pixel SCENE_FRAGMENT
+ * can light from `light` (a feed slot: footX/footY, radiusWorld, height,
+ * waterOnly, columnReach). A conservative superset of the loop's tests, so
+ * binning by it never changes a lit pixel: the reach in iso ground space
+ * (`sqrt(r^2 + max(0, h - 24)^2)`, 1.25x for a body's axis, plus its 10 px
+ * half-width), a receiver's ground point up to half a reach behind the foot
+ * and its pixel up to `h + 24 + reach` above that point (a wall), or a body's
+ * height; below the foot, half a reach on the ground, 1.3 radii of wet
+ * reflection (`wet`) and the water column (WATER_COLUMN_REACH x radius x
+ * columnReach; a water-only lamp's column starts at its mirror point, its
+ * height below the foot; dashes at most 2 + floor(r/32) texels either side
+ * plus a hashed end, the row wobble and a flight frame's covered cell).
+ */
+export function lightReachRect(light, { wet = false } = {}, out = {}) {
+    const x = finite(light?.footX);
+    const y = finite(light?.footY);
+    const radius = Math.max(1, finite(light?.radiusWorld, 64));
+    const height = Math.max(0, finite(light?.height, 0));
+    const column = lightLaysColumn(light) || light?.waterOnly === true;
+    const columnDown = column ? WATER_COLUMN_REACH * radius * Math.max(1, finite(light?.columnReach, 1)) : 0;
+    if (light?.waterOnly === true) {
+        const columnHalf = 7 + Math.floor(radius / 32);
+        out.x0 = x - columnHalf;
+        out.x1 = x + columnHalf;
+        out.y0 = y + height - 2;
+        out.y1 = y + height + columnDown + 2;
+        return out;
+    }
+    const reach = Math.hypot(radius, Math.max(0, height - 24));
+    const body = reach * 1.25;
+    out.x0 = x - body - 12;
+    out.x1 = x + body + 12;
+    out.y0 = y - body * 0.5 - Math.max(height + 24 + reach, LIGHT_BODY_REACH_UP);
+    out.y1 = y + Math.max(body * 0.5 + LIGHT_BODY_REACH_DOWN, wet && !isAttentionLight(light) ? radius * 1.3 : 0, columnDown) + 1;
+    return out;
+}
+
+export function createLightBinScratch() {
+    return {
+        admitted: [],
+        counts: new Uint8Array(0),
+        index: new Uint16Array(0),
+        tilesX: 0,
+        tilesY: 0,
+        rect: {},
+        visible: 0,
+        culled: 0,
+        tileFull: 0,
+        overCap: 0,
+        maxPerTile: 0,
+    };
+}
+
+/**
+ * 2.4 — admission by binning. Walks `ranked` (clampGpuLights order) and
+ * admits a light while the count allows (`cap`; attention lights always) and
+ * every LIGHT_TILE_PX tile its reach rect covers on the `width x height`
+ * backing store has a free slot (LIGHT_TILE_SLOTS). A light whose rect misses
+ * the backing store is culled (it lights no visible pixel). The camera is the
+ * scene pass's `u_camera` triple: backing px = (world + camera) x scale.
+ * Fills `scratch` (createLightBinScratch): `admitted`, the tile `index`
+ * (Uint16Array, tilesX * LIGHT_TILE_STRIDE x tilesY) and the counters
+ * `visible` (offered and on screen), `culled`, `tileFull`, `overCap`,
+ * `maxPerTile`. The clustered and the flat walk both read this one list, so
+ * the admitted set never depends on the walk.
+ */
+export function binGpuLights(ranked = [], {
+    cap = 0, cameraX = 0, cameraY = 0, scale = 1, width = 0, height = 0, wet = false,
+} = {}, scratch = createLightBinScratch()) {
+    const tilesX = Math.max(1, Math.ceil(Math.max(1, finite(width)) / LIGHT_TILE_PX));
+    const tilesY = Math.max(1, Math.ceil(Math.max(1, finite(height)) / LIGHT_TILE_PX));
+    const tiles = tilesX * tilesY;
+    if (scratch.counts.length !== tiles) {
+        scratch.counts = new Uint8Array(tiles);
+        scratch.index = new Uint16Array(tiles * LIGHT_TILE_STRIDE);
+    } else {
+        scratch.counts.fill(0);
+    }
+    scratch.tilesX = tilesX;
+    scratch.tilesY = tilesY;
+    const counts = scratch.counts;
+    const index = scratch.index;
+    const admitted = scratch.admitted;
+    admitted.length = 0;
+    scratch.visible = 0;
+    scratch.culled = 0;
+    scratch.tileFull = 0;
+    scratch.overCap = 0;
+    scratch.maxPerTile = 0;
+    const limit = Math.max(0, Math.floor(finite(cap)));
+    const s = Math.max(1e-6, finite(scale, 1));
+    const w = finite(width);
+    const h = finite(height);
+    const rect = scratch.rect;
+    for (let n = 0; n < ranked.length; n++) {
+        const light = ranked[n];
+        const attention = isAttentionLight(light);
+        if (!Number.isFinite(light?.footX) || !Number.isFinite(light?.footY)) {
+            scratch.culled++;
+            continue;
+        }
+        lightReachRect(light, { wet }, rect);
+        // One world px (an art cell's centre) plus two backing px of margin.
+        const sx0 = (rect.x0 - 1 + cameraX) * s - 2;
+        const sx1 = (rect.x1 + 1 + cameraX) * s + 2;
+        const sy0 = (rect.y0 - 1 + cameraY) * s - 2;
+        const sy1 = (rect.y1 + 1 + cameraY) * s + 2;
+        if (sx1 < 0 || sy1 < 0 || sx0 >= w || sy0 >= h) {
+            scratch.culled++;
+            continue;
+        }
+        scratch.visible++;
+        if (admitted.length >= MAX_LIGHT_RECORDS || (!attention && admitted.length >= limit)) {
+            scratch.overCap++;
+            continue;
+        }
+        const tx0 = Math.max(0, Math.floor(sx0 / LIGHT_TILE_PX));
+        const tx1 = Math.min(tilesX - 1, Math.floor(sx1 / LIGHT_TILE_PX));
+        const ty0 = Math.max(0, Math.floor(sy0 / LIGHT_TILE_PX));
+        const ty1 = Math.min(tilesY - 1, Math.floor(sy1 / LIGHT_TILE_PX));
+        let fits = true;
+        for (let ty = ty0; ty <= ty1 && fits; ty++) {
+            for (let tx = tx0; tx <= tx1; tx++) {
+                if (counts[ty * tilesX + tx] >= LIGHT_TILE_SLOTS) {
+                    fits = false;
+                    break;
+                }
+            }
+        }
+        if (!fits) {
+            scratch.tileFull++;
+            continue;
+        }
+        const slot = admitted.length;
+        for (let ty = ty0; ty <= ty1; ty++) {
+            for (let tx = tx0; tx <= tx1; tx++) {
+                const tile = ty * tilesX + tx;
+                const count = counts[tile];
+                index[(ty * tilesX + tx) * LIGHT_TILE_STRIDE + 1 + count] = slot;
+                counts[tile] = count + 1;
+                if (count + 1 > scratch.maxPerTile) scratch.maxPerTile = count + 1;
+            }
+        }
+        admitted.push(light);
+    }
+    for (let tile = 0; tile < tiles; tile++) index[tile * LIGHT_TILE_STRIDE] = counts[tile];
+    return scratch;
 }
 
 /**

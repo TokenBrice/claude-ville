@@ -1,6 +1,16 @@
 import {
     buildStableGpuBatches,
+    binGpuLights,
     clampGpuLights,
+    createLightBinScratch,
+    LIGHT_RECORD_FLAGS,
+    LIGHT_RECORD_ROWS,
+    LIGHT_ROLE_CODES,
+    LIGHT_TILE_PX,
+    LIGHT_TILE_STRIDE,
+    lightLaysColumn,
+    MAX_LIGHT_RECORDS,
+    WATER_COLUMN_REACH,
     createGpuTimingMetricsScratch,
     effectBudgetMode,
     shedEffectsForLevel,
@@ -29,12 +39,20 @@ import {
     SMOKE_PUFF_SHADE_GAIN,
     GPU_RECORD_FLAGS,
     isSoftwareRasterizer,
+    gpuRecordPageable,
 } from './GpuWorldPolicy.js';
+import { ALBEDO_PAGE_GUTTER, ALBEDO_PAGE_SIZE, GpuAlbedoPage } from './GpuAlbedoPage.js';
+import { buildRadianceEmitters, GroundRadiance, RADIANCE_MIN_SOLVE_MS, RADIANCE_SCENE_GLSL } from './GroundRadiance.js';
 import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import {
+    COAST_FIELD_FLAGS,
     COAST_PALETTE,
+    MIRROR_STORM,
+    coastFieldTexels,
     OCEAN_HORIZON_WORLD_Y,
     OPEN_SEA_BAND_DEPTH,
+    OPEN_SEA_BAND_MARK_LIFT,
+    OPEN_SEA_BAND_TAIL,
     OPEN_SEA_BAND_WEIGHTS,
     OPEN_SEA_DEEPEST,
     OPEN_SEA_LIGHT_REACH,
@@ -43,6 +61,7 @@ import {
     SEA_SEAM_OCTAVES,
     SEA_SEAM_PERIOD,
     SEA_SEAM_ROWS,
+    WATER_CAST,
     openSeaHazeRows,
     openSeaSky,
     openSeaSquall,
@@ -59,6 +78,9 @@ import { NEUTRAL_SOURCE_ENERGY, sourceEnergyFor } from '../AtmosphereState.js';
 import { growTypedArray } from '../AssetManager.js';
 import { particleMotifMask } from '../ParticleSystem.js';
 import { baseWindX, cloudCourseDrift, gustinessFor, windAt } from '../Wind.js';
+import { CUE_RUN_GLSL, CUE_RUN_VERTICES, GROUND_CUE_TEXTURE_KEY } from '../GroundCueRecords.js';
+import { GROUND_CAST_WATER_SHARE } from '../RakingLight.js';
+import { APERTURE_SPILL } from '../LightSourceRegistry.js';
 
 // 3.4 — the open sea's C-W3 gust field (R8, SEA_GUST_SIZE^2 over the view),
 // refreshed on SEA_GUST_STEP_MS steps of the motion clock (an 8 Hz band).
@@ -67,48 +89,169 @@ const SEA_GUST_STEP_MS = 125;
 const OPEN_SEA_ZERO4 = new Float32Array(4);
 const OPEN_SEA_ZERO6 = new Float32Array(6);
 
-const MAX_LIGHTS = 32;
-// V5 / 2.1 — the resident loop's light role codes (u_lightShape.w, fed by
-// PostFxFeed's LIGHT_ROLE_CODES): point (omni), aperture (lobed facade
+// V5 / 2.1 — the resident loop's light role codes (light record row 1 w, fed
+// by PostFxFeed from LIGHT_ROLE_CODES): point (omni), aperture (lobed facade
 // emitter), fixture (free-standing lamp), attention (its owner only).
-const LIGHT_ROLE_POINT = 0;
-const LIGHT_ROLE_ATTENTION = 3;
-// 2.2 — the footprint march step count per ladder mode.
-const FOOTPRINT_MARCH_STEPS = Object.freeze({ on: 8, 'four-steps': 4, off: 0 });
+const LIGHT_ROLE_POINT = LIGHT_ROLE_CODES.point;
+const LIGHT_ROLE_ATTENTION = LIGHT_ROLE_CODES.attention;
+// 2.9 — the water column's shared ripple clock: the 4 Hz water step of the
+// reflection row ripple (u_time * 0.004 x the water clock; frozen at 0 under
+// reduced motion and at MINIMAL).
+const WATER_COLUMN_TICK_RATE = 0.004;
+// 2.9 — the column's form (columnLift in SCENE_FRAGMENT, its Canvas twin in
+// CanvasWaterState): a row is present on a hashed draw thinning from
+// ROW_NEAR at the column's start to ROW_FAR at its end, re-drawn every
+// ROW_HOLD ticks on its own phase; a hashed GLINT share of the rows in the
+// near half take one stop more.
+export const WATER_COLUMN_ROW_NEAR = 0.64;
+export const WATER_COLUMN_ROW_FAR = 0.22;
+export const WATER_COLUMN_ROW_HOLD = 3;
+export const WATER_COLUMN_GLINT = 0.22;
+// R3 — how far in front of a window's face line (iso world px, the ground
+// plane with y doubled) a wall's ground point must stand to take its light:
+// clear of the 4 px height quantization of the surface code on the window's
+// own facade.
+const APERTURE_WALL_AHEAD = 8;
+const NO_LIGHTS = Object.freeze([]);
+
+// 2.4 — the light records and tile index upload only when they change.
+function sameLightRecords(next, prev, count, rowStride, prevCount) {
+    if (count !== prevCount) return false;
+    for (let row = 0; row < 4; row++) {
+        const start = row * rowStride;
+        for (let i = start; i < start + count * 4; i++) if (next[i] !== prev[i]) return false;
+    }
+    return true;
+}
+
+function sameTypedArray(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+}
+// 2.2 — the footprint march step count per ladder mode (the Canvas column
+// march in CanvasWaterState reads it too).
+export const FOOTPRINT_MARCH_STEPS = Object.freeze({ on: 8, 'four-steps': 4, off: 0 });
 // 3.1 — dash presence of the palette cycle: near-shore swell and river
 // current dashes, and deep-stop swell dashes inside a set (storm raises both
-// to 0.7); SWELL_SET_SHARE of each deep crest's 48-texel runs carry dashes.
-// Tuned against M7 (<= 35 % of deep water ever changes over 3 s, 2-5 % per
-// step): see docs/motion-budget.md.
-const NEAR_SHORE_DASH_DENSITY = 0.3;
-const DEEP_DASH_DENSITY = 0.5;
-const SWELL_SET_SHARE = 0.5;
+// to 0.7); SWELL_SET_SHARE of each deep crest's DEEP_CREST_RUN-texel runs
+// carry dashes (short runs, so a level crest spreads its lit share evenly
+// over a 100 px box). Tuned against M7 (<= 35 % of deep water ever changes
+// over 3 s, 2-5 % per step): see docs/motion-budget.md.
+export const NEAR_SHORE_DASH_DENSITY = 0.3;
+export const DEEP_DASH_DENSITY = 0.5;
+export const SWELL_SET_SHARE = 0.5;
+export const DEEP_CREST_RUN = 24;
 // 3.2 — peak presence of path dashes at the path's centre, full strength.
-const GLINT_DASH_DENSITY = 0.3;
+export const GLINT_DASH_DENSITY = 0.3;
 // 3.2 — water ticks (6 Hz) a moon-path dash holds before it re-rolls.
-const MOON_DASH_HOLD = 6;
+export const MOON_DASH_HOLD = 6;
 // 3.2 — the pale day path (kind 2) is a broad sparse sparkle: its half-width
 // starts at this many texels and grows NOON_GLINT_GROW_GAIN x faster down
 // the frame than the gold and silver paths.
-const GLINT_NOON_BASE = 14;
-const NOON_GLINT_GROW_GAIN = 2.5;
+export const GLINT_NOON_BASE = 14;
+export const NOON_GLINT_GROW_GAIN = 2.5;
+// The pale path keeps its full dash density up to this many backing px per
+// world texel, and thins as 1/texelPx past it (z2 x0.75, z3 x0.5).
+export const NOON_GLINT_FULL_TEXEL = 1.5;
 // 3.3 / N3 — long swell contours (`seaContourRows`): lattice cell of the
 // smooth field (world px along x, y) and its amplitude (world rows).
 const SEA_CONTOUR_CELL = Object.freeze([520, 170]);
 const SEA_CONTOUR_ROWS = 14;
-// 3.4 — a cat's paw: where the ruffled gust passes SEA_PAW_THRESHOLD (a
-// light clear-day breeze already lays sparse paws), SEA_PAW_DASH_BASE of
-// its 3x1 dash cells (plus 0.6 x gust) catch the sky two stops lighter.
-const SEA_PAW_THRESHOLD = 0.12;
-const SEA_PAW_DASH_BASE = 0.16;
-// 3.3 (a) — swell sets on the open sea: the static dashes gather in long
-// 2:1 bands (SWELL_SET_PERIOD world rows along the swell's normal, the
-// set taking SWELL_SET_SHARE_OPEN of it) at SWELL_SET_GAIN x presence,
-// with calm gaps between at SWELL_GAP_GAIN x.
-const SWELL_SET_PERIOD = 150;
-const SWELL_SET_SHARE_OPEN = 0.38;
-const SWELL_SET_GAIN = 1.7;
-const SWELL_GAP_GAIN = 0.35;
+// 3.4 — a cat's paw: where the ruffled gust passes SEA_PAW_THRESHOLD, the
+// wind lays extra swell caps (`swellCap`): presence + SEA_PAW_CAP_BASE +
+// SEA_PAW_CAP_GAIN x gust, so a paw reads as a patch of wave caps in the
+// sea's own grammar, never a separate speckle.
+export const SEA_PAW_THRESHOLD = 0.12;
+export const SEA_PAW_CAP_BASE = 0.12;
+export const SEA_PAW_CAP_GAIN = 0.5;
+// 3.3 (a) — swell sets (`swellPhase`, `swellCap`, `seaBodyStop`): the sea
+// rolls in long sets SWELL_SET_PERIOD world rows apart along the swell's
+// normal, bent on two octaves of a slow field (SWELL_SET_WARP and
+// SWELL_SET_WARP_FINE set periods over the SWELL_WARP_CELL lattices), so a
+// set wanders, spaces unevenly and never rules a line across the frame. The
+// static caps gather over each set's lit slope and crest (SWELL_SET_SHARE_OPEN
+// of the period, starting SWELL_SET_LEAD before the crest) at SWELL_SET_GAIN
+// x presence, with calm gaps at SWELL_GAP_GAIN x (the mean stays the plan's
+// presence). One cap per SWELL_CAP_CELL texel cell; the near-island ramp
+// fades over SWELL_NEAR_FADE tiles past the shelf.
+export const SWELL_SET_PERIOD = 150;
+export const SWELL_SET_SHARE_OPEN = 0.38;
+export const SWELL_SET_LEAD = 0.28;
+export const SWELL_SET_GAIN = 2.2;
+export const SWELL_GAP_GAIN = 0.26;
+export const SWELL_CAP_CELL = Object.freeze([12, 5]);
+export const SWELL_NEAR_FADE = 8;
+// Crest clusters: one 2.5:1 cluster cell (world texels), the share of cap
+// cells inside a cluster that carry a cap, the lone-cap presence between
+// clusters (far, near), and the sets' normal (x per unit y: near level, like
+// swell seen toward a horizon, off the iso axes so a set never echoes the
+// map diamond).
+export const SWELL_CLUSTER_CELL = Object.freeze([40, 16]);
+export const SWELL_CLUSTER_CAPS = 0.7;
+export const SWELL_LONE_CAPS = Object.freeze([0.03, 0.08]);
+export const SWELL_SET_NORMAL = Object.freeze([0.08, 1]);
+export const SWELL_SET_WARP = 1.2;
+export const SWELL_SET_WARP_FINE = 0.35;
+export const SWELL_WARP_CELL = Object.freeze([1100, 500]);
+export const SWELL_WARP_FINE_CELL = Object.freeze([341, 185]);
+// A set's form (`seaBodyStop`): its swell height along the set is value noise
+// over SWELL_AMP_RUN world px, calm below SWELL_AMP_FLOOR and full
+// SWELL_AMP_SPAN above it. A set's crest rides on its lit slope (rows above
+// it, one stop lighter, facing the upper-left key) over its trough (rows
+// below it, one stop darker), each [far, near] the sun-key ring (SEA_KEY_*)
+// and scaled by the height; the trough stills toward the island over
+// SWELL_CALM_TILES (tiles past the map edge: none, full). Each holds solid
+// for its first half and Bayer-fades over the rest.
+export const SWELL_AMP_RUN = 420;
+export const SWELL_AMP_FLOOR = 0.2;
+export const SWELL_AMP_SPAN = 0.4;
+export const SWELL_CALM_TILES = Object.freeze([1, 4]);
+export const SWELL_LIT_ROWS = Object.freeze([16, 56]);
+export const SWELL_TROUGH_ROWS = Object.freeze([64, 16]);
+// The chop (`seaBodyStop`): a shorter swell under the sets that fills their
+// calm with its own lit slopes and troughs (never over a set's form):
+// SWELL_CHOP_PERIOD rows along the same normal, bent SWELL_CHOP_WARP chop
+// periods over the SWELL_CHOP_WARP_CELL lattice, its height value noise over
+// SWELL_CHOP_RUN world px (calm below SWELL_CHOP_FLOOR, full SWELL_AMP_SPAN
+// above it), its lit and trough rows [far, near] the sun key.
+export const SWELL_CHOP_PERIOD = 46;
+export const SWELL_CHOP_WARP = 0.7;
+export const SWELL_CHOP_WARP_CELL = Object.freeze([600, 260]);
+export const SWELL_CHOP_RUN = 190;
+export const SWELL_CHOP_FLOOR = 0.3;
+export const SWELL_CHOP_LIT_ROWS = Object.freeze([4, 10]);
+export const SWELL_CHOP_TROUGH_ROWS = Object.freeze([16, 6]);
+// A set's crest (`swellCap`): SWELL_CREST_ROWS rows (SWELL_CREST_RISE stops
+// lighter: the lead, the underline) broken along the set into SWELL_CREST_RUN
+// cells, each drawing one stroke of 0.55-1 of its cell (60-110 world px) or
+// none (SWELL_CREST_GAPS of them), its ends stepping down 2:1 into the
+// trough, where the set runs high (height above SWELL_CREST_HEIGHT).
+export const SWELL_CREST_ROWS = 2;
+export const SWELL_CREST_RISE = Object.freeze([3, 2]);
+export const SWELL_CREST_RUN = 110;
+export const SWELL_CREST_GAPS = 0.35;
+export const SWELL_CREST_HEIGHT = 0.35;
+// 3.3 (a) — the sea's sun-key gradient (`seaKeyReach`, `seaBodyStop`), told
+// through the swell rather than a painted blob: each set's lit slope widens
+// and its trough narrows toward a ring around the island whose centre sits
+// SEA_KEY_SHIFT world px toward the upper-left key, SEA_KEY_REACH iso px
+// across (x, 2y from that centre, an iso circle that never echoes the map
+// diamond), its edge wandering SEA_KEY_WOBBLE px on value noise; the key
+// runs from 1 inside to 0 over SEA_KEY_SPAN iso px across that edge, and a
+// set's lit slope and trough rows go from SWELL_LIT_ROWS / SWELL_TROUGH_ROWS
+// [far, near] with it. So the sea reads lighter toward the key and the
+// island and deeper away, in the sea's own grammar. The sea body field takes
+// over from the horizon's stops between SEA_BODY_ROWS world rows below the
+// horizon (clear of the sky band).
+export const SEA_KEY_SHIFT = Object.freeze([-450, -225]);
+export const SEA_KEY_REACH = 1750;
+export const SEA_KEY_WOBBLE = 220;
+export const SEA_KEY_SPAN = 2400;
+export const SEA_BODY_ROWS = Object.freeze([190, 350]);
+// The sea's shelf takes swell caps only this far (tiles) off the beach, so
+// the swash and the near-shore cycle keep the shore band to themselves.
+export const SWELL_SHORE_SD = 0.8;
 // 3.2 — the C1 `seaPath` ramp as (hi, lo) pairs per u_glint kind, 0..1:
 // 1 gold (sunrise / golden hour), 2 pale (day), 3 silver (moon).
 function seaPathPair(lo, hi) {
@@ -122,15 +265,16 @@ const SEA_PATH_STOPS = Object.freeze({
 // V9 / B.1a — one instance per record, drawn as a 4-vertex TRIANGLE_STRIP
 // with every attribute at divisor 1 (docs/material-channel-contract.md):
 //   loc0 FLOAT  x4  rect (x, y, w, h), world px                  bytes  0-15
-//   loc1 FLOAT  x4  uv rect (u0, v0, u1, v1)                            16-31
+//   loc1 FLOAT  x4  uv rect (u0, v0, u1, v1); a paged record's rect is its
+//                   slot in its albedo-page layer                       16-31
 //   loc2 FLOAT  x4  (alpha, material, elevation, emissive)              32-47
-//   loc3 USHORT x4  (reserved 0, gate x 65535), ramp, flags             48-55
+//   loc3 USHORT x4  (page layer, gate x 65535), ramp, flags             48-55
 //   loc4 USHORT x4  depth key, footY, frontCornerX, frontCornerY        56-63
 //                   (receiver coordinates integer world px + 32768)
 //   loc5 USHORT x2  (ownerSlot, landmarkId), vertexAttribIPointer        64-67
 // Continuous surface values stay float32, so the frame is bit-exact with the
 // six-vertex staging it replaced; the integer fields pack as uint16. A batch
-// whose records all carry the default V9 tail (loc3-loc5: gate
+// whose records all carry the default V9 tail (loc3-loc5: layer 0, gate
 // 1, no ramp or flags, far-plane depth, ground-self receiver, no identity) —
 // terrain, ground casts and marks, every ground-cue chord — stages only the
 // 48-byte head; its draw disables arrays 3-5 and the vertex stage reads the
@@ -163,6 +307,12 @@ export const SCENE_SAMPLER_UNITS = Object.freeze({
     // 3.3 / 3.4 — the C-W3 gust field the in-map open water shares with the
     // composite's open sea (cat's paws).
     seaGust: 13,
+    // B.1b — the albedo texture-array page (GpuAlbedoPage): a paged batch's
+    // albedo, a record's layer at loc3.x.
+    albedoPage: 14,
+    // 2.10 — the ground radiance field (GroundRadiance result panels,
+    // RGBA16F, filtered): fluence and the light arriving from SW and SE.
+    radiance: 15,
 });
 export const PARTICLE_SAMPLER_UNITS = Object.freeze({ motifs: 0, cloudTile: 1 });
 // 3.3 / 3.4 — the composite's open sea reads the cloud tile and the C-W3
@@ -256,32 +406,36 @@ function recordHasDefaultTail(record) {
         && !record.frontCornerX
         && (record.frontCornerY ?? -1) === -1
         && !record.ownerSlot
-        && !record.landmarkId;
+        && !record.landmarkId
+        && !(record.pageLayer > 0);
 }
 
 // One V9 instance at `byteOffset`; `tail` false stages the 48-byte head only.
 // The float and uint16 views share one ArrayBuffer.
 function writeGpuRecordInstance(f32, u16, byteOffset, record, tail) {
     const f = byteOffset >> 2;
-    const sourceWidth = record.sourceWidth;
-    const sourceHeight = record.sourceHeight;
+    // B.1b — a paged record addresses its slot in a page layer.
+    const paged = record.pageLayer >= 0;
+    const sourceWidth = paged ? ALBEDO_PAGE_SIZE : record.sourceWidth;
+    const sourceHeight = paged ? ALBEDO_PAGE_SIZE : record.sourceHeight;
+    const sx = paged ? record.pageX + record.sx : record.sx;
+    const sy = paged ? record.pageY + record.sy : record.sy;
     f32[f] = record.x;
     f32[f + 1] = record.y;
     f32[f + 2] = record.width;
     f32[f + 3] = record.height;
-    f32[f + 4] = record.sx / sourceWidth;
-    f32[f + 5] = record.sy / sourceHeight;
-    f32[f + 6] = (record.sx + record.sw) / sourceWidth;
-    f32[f + 7] = (record.sy + record.sh) / sourceHeight;
+    f32[f + 4] = sx / sourceWidth;
+    f32[f + 5] = sy / sourceHeight;
+    f32[f + 6] = (sx + record.sw) / sourceWidth;
+    f32[f + 7] = (sy + record.sh) / sourceHeight;
     f32[f + 8] = record.alpha;
     f32[f + 9] = record.material;
     f32[f + 10] = record.elevation;
     f32[f + 11] = record.emissive;
     if (!tail) return;
     const h = (byteOffset >> 1) + RECORD_HEAD_BYTES / 2;
-    // loc3.x is reserved (2.2 deleted the screen occlusion pass, its only
-    // reader): staged as 0.
-    u16[h] = 0;
+    // loc3.x — the record's albedo-page layer (0 when unpaged).
+    u16[h] = paged ? record.pageLayer : 0;
     u16[h + 1] = unitToUint16(record.emissiveGate ?? 1);
     u16[h + 2] = record.paletteRamp ? 1 : 0;
     u16[h + 3] = record.flags || 0;
@@ -307,6 +461,10 @@ layout(location = 5) in uvec2 a_identity;
 uniform vec3 u_camera;
 uniform vec2 u_resolution;
 uniform sampler2D u_albedo;
+// B.1b — the batch's texture-array page (unit 14) when u_albedoPaged; the
+// record's layer rides loc3.x.
+uniform highp sampler2DArray u_albedoPage;
+uniform bool u_albedoPaged;
 out vec2 v_uv;
 out vec2 v_world;
 out float v_alpha;
@@ -320,23 +478,37 @@ flat out vec4 v_uvClamp;
 flat out vec3 v_receiver;
 flat out uvec2 v_identity;
 flat out uint v_flags;
+flat out float v_layer;
+// 4.6 / B.1b — the fat path's record-local texel position (0 at the source
+// rect's origin corner, whole texels at the corners) and the rect in whole
+// albedo texels (origin in the texture or page layer, last local texel), so a
+// paged and an unpaged record compute bit-identical tap weights.
+out vec2 v_texel;
+flat out ivec4 v_texelRect;
 // 3.8 / 3.11 — a reflect record's mirror axis (world y of its rect base) and
 // its rect height; zero for every other record.
 flat out vec2 v_reflect;
+${CUE_RUN_GLSL}
 void main() {
     // Strip corners (0,0) (1,0) (0,1) (1,1). Each coordinate is selected from
     // the staged rect, never interpolated, so every edge is the staged value.
-    bool right = (gl_VertexID & 1) == 1;
-    bool bottom = gl_VertexID >= 2;
-    vec2 world = vec2(right ? a_rect.x + a_rect.z : a_rect.x, bottom ? a_rect.y + a_rect.w : a_rect.y);
+    // B.3 — a ground-cue batch holding dot runs draws six vertices per dot
+    // (GroundCueRecords.CUE_RUN_GLSL); the rect and uv rect become the dot's.
     uint flags = uint(a_response.w + 0.5);
+    int corner = gl_VertexID;
+    vec4 rect = a_rect;
+    vec4 uvRect = a_uvRect;
+    if (u_cueRuns) cueRunVertex(gl_VertexID, flags, corner, rect, uvRect);
+    bool right = (corner & 1) == 1;
+    bool bottom = corner >= 2;
+    vec2 world = vec2(right ? rect.x + rect.z : rect.x, bottom ? rect.y + rect.w : rect.y);
     // 3.8 / 3.11 — a \`reflect\` record is its source's water twin: the rect is
     // the source's own, mirrored here about its base (the waterline or the
     // feet), so the top row lands deepest and the uv runs unchanged.
     bool mirrored = (flags & ${GPU_RECORD_FLAGS.reflect}u) != 0u;
-    float reflectBase = a_rect.y + a_rect.w;
+    float reflectBase = rect.y + rect.w;
     if (mirrored) world.y = 2.0 * reflectBase - world.y;
-    v_reflect = mirrored ? vec2(reflectBase, a_rect.w) : vec2(0.0);
+    v_reflect = mirrored ? vec2(reflectBase, rect.w) : vec2(0.0);
     vec2 screen = (world + u_camera.xy) * u_camera.z;
     vec2 clip = vec2(
         screen.x / max(1.0, u_resolution.x) * 2.0 - 1.0,
@@ -344,7 +516,7 @@ void main() {
     );
     // 0.6 — the painter depth key (0 = far plane, 65535 = nearest).
     gl_Position = vec4(clip, (1.0 - a_receiver.x / 65535.0) * 2.0 - 1.0, 1.0);
-    v_uv = vec2(right ? a_uvRect.z : a_uvRect.x, bottom ? a_uvRect.w : a_uvRect.y);
+    v_uv = vec2(right ? uvRect.z : uvRect.x, bottom ? uvRect.w : uvRect.y);
     v_world = world;
     v_alpha = a_surface.x;
     v_material = a_surface.y;
@@ -357,16 +529,22 @@ void main() {
     // still lights in whole k x k blocks. Ground-self records (footY -1:
     // terrain, casts, marks, cues) and screen-space records keep the world grid.
     bool worldGrid = (flags & ${GPU_RECORD_FLAGS.screenSpace}u) != 0u || a_receiver.y == ${RECEIVER_BIAS - 1}.0;
-    v_originFrac = worldGrid ? vec2(0.0) : fract(a_rect.xy);
+    v_originFrac = worldGrid ? vec2(0.0) : fract(rect.xy);
     // The record-rect clamp: sampling never leaves the record's own source
     // rect (atlas neighbours), inset half a texel but never past its centre.
-    vec2 uvLow = min(a_uvRect.xy, a_uvRect.zw);
-    vec2 uvHigh = max(a_uvRect.xy, a_uvRect.zw);
-    vec2 inset = min(0.5 / vec2(textureSize(u_albedo, 0)), (uvHigh - uvLow) * 0.5);
+    vec2 uvLow = min(uvRect.xy, uvRect.zw);
+    vec2 uvHigh = max(uvRect.xy, uvRect.zw);
+    vec2 albedoTexels = vec2(u_albedoPaged ? textureSize(u_albedoPage, 0).xy : textureSize(u_albedo, 0));
+    vec2 inset = min(0.5 / albedoTexels, (uvHigh - uvLow) * 0.5);
     v_uvClamp = vec4(uvLow + inset, uvHigh - inset);
+    vec4 texRect = floor(uvRect * albedoTexels.xyxy + 0.5);
+    vec2 texOrigin = min(texRect.xy, texRect.zw);
+    v_texel = vec2(right ? texRect.z : texRect.x, bottom ? texRect.w : texRect.y) - texOrigin;
+    v_texelRect = ivec4(texOrigin, max(abs(texRect.zw - texRect.xy) - 1.0, vec2(0.0)));
     v_receiver = a_receiver.yzw - ${RECEIVER_BIAS}.0;
     v_identity = a_identity;
     v_flags = flags;
+    v_layer = a_response.x;
 }`;
 }
 
@@ -478,11 +656,12 @@ vec3 applyWaterMood(vec3 color) {
 // `p` is a world texel (world px), `tick` the 6 Hz water step
 // floor(u_time * 0.006 * scale), `storm` 0/1.
 //  - deepSwellLit: 3x1 dash cells present at `density` (0.7 in a storm), a
-//    phase field over world texels (wavelength 22, 14 in a storm) stepped 16
-//    times a period; the lead band is lit and the band behind it half-lit on
-//    a 4x4 Bayer. Crests travel toward decreasing phase (up the screen, onto
-//    the island's camera-facing shores). 0 unlit, 1 lit (the next shallower
-//    stop), 2 storm whitecap (FOAM, one lit crest cell in four).
+//    phase field over world texels along the swell's normal (SWELL_SET_NORMAL,
+//    wavelength 22, 14 in a storm) stepped 16 times a period; the lead band
+//    is lit and the band behind it half-lit on a 4x4 Bayer. Crests travel
+//    toward decreasing phase (up the screen, onto the island's camera-facing
+//    shores), level with the swell sets they ride. 0 unlit, 1 lit (the next
+//    shallower stop), 2 storm whitecap (FOAM, one lit crest cell in four).
 //  - glintDash: sparse 3x1 dashes under the sky body's screen x, half-width
 //    5 + fragY * grow texels, re-hashed every tick; `texelPx` is backing px
 //    per world texel. 0 none, 1 the lo seaPath stop, 2 the hi stop. The moon
@@ -513,16 +692,17 @@ float deepSwellLit(vec2 p, float tick, float storm, float density) {
     if (waterHash12(cell) >= mix(density, 0.7, storm)) return 0.0;
     vec2 o = cell * vec2(3.0, 1.0);
     float wavelength = mix(22.0, 14.0, storm);
-    float phase = dot(o, vec2(0.5, 1.0)) / wavelength + 0.35 * sin(o.x * 0.031) + 0.2 * sin(o.y * 0.07 + o.x * 0.013);
+    float phase = dot(o, vec2(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) / wavelength + 0.35 * sin(o.x * 0.031) + 0.2 * sin(o.y * 0.07 + o.x * 0.013);
     float wave = phase + tick / 16.0;
     float band = fract(wave);
     bool lit = band < 0.0625 || (band < 0.125 && waterBayer4(floor(p)) >= 0.5);
     if (!lit) return 0.0;
     // Swell arrives in sets: each crest (its id is constant as it travels)
-    // is broken into 48-texel runs along its length and SWELL_SET_SHARE of
-    // them carry dashes, re-drawn for the next crest. Dense crest lines,
-    // a calm sea: M7's ever-changed share stays near density x share.
-    vec2 run = vec2(floor(wave), floor(dot(o, vec2(1.0, -0.5)) / 48.0));
+    // is broken into DEEP_CREST_RUN-texel runs along its length and
+    // SWELL_SET_SHARE of them carry dashes, re-drawn for the next crest.
+    // Dense crest lines, a calm sea: M7's ever-changed share stays near
+    // density x share.
+    vec2 run = vec2(floor(wave), floor(dot(o, vec2(1.0, -${SWELL_SET_NORMAL[0].toFixed(2)})) / ${DEEP_CREST_RUN.toFixed(1)}));
     if (waterHash12(run + vec2(59.0, 11.0)) >= ${SWELL_SET_SHARE.toFixed(2)}) return 0.0;
     return storm > 0.5 && waterHash12(cell + vec2(17.0, 31.0)) < 0.25 ? 2.0 : 1.0;
 }
@@ -530,8 +710,11 @@ float glintDash(vec2 p, vec2 fragPx, vec4 glint, float texelPx, float tick) {
     if (glint.z < 0.5 || glint.y <= 0.0) return 0.0;
     bool moon = glint.z > 2.5;
     // The pale day path is a broad sparse sparkle (3.2): a wider base under a
-    // high sun (its grow rate is wider too, see _resolveWaterFx).
-    float base = glint.z > 1.5 && !moon ? ${GLINT_NOON_BASE.toFixed(1)} : 5.0;
+    // high sun (its grow rate is wider too, see _resolveWaterFx), thinning as
+    // texels grow past NOON_GLINT_FULL_TEXEL backing px, so a close zoom shows
+    // single glints, not a field of dashes.
+    bool pale = glint.z > 1.5 && !moon;
+    float base = pale ? ${GLINT_NOON_BASE.toFixed(1)} : 5.0;
     float halfWidth = (base + fragPx.y * glint.w) * (moon ? 0.7 : 1.0);
     float weight = 1.0 - abs(fragPx.x - glint.x) / max(texelPx, 1e-3) / halfWidth;
     if (weight <= 0.0) return 0.0;
@@ -541,7 +724,8 @@ float glintDash(vec2 p, vec2 fragPx, vec4 glint, float texelPx, float tick) {
         return waterHash12(cell + vec2(life * 5.0, life * 2.0)) < ${(GLINT_DASH_DENSITY * 0.5).toFixed(3)} * glint.y * weight * weight ? 1.0 : 0.0;
     }
     vec2 cell = floor(floor(p) / vec2(3.0, 1.0));
-    if (waterHash12(cell + vec2(tick * 7.0, tick * 3.0)) >= ${GLINT_DASH_DENSITY.toFixed(2)} * glint.y * weight) return 0.0;
+    float density = ${GLINT_DASH_DENSITY.toFixed(2)} * (pale ? min(1.0, ${NOON_GLINT_FULL_TEXEL.toFixed(1)} / max(texelPx, 1e-3)) : 1.0);
+    if (waterHash12(cell + vec2(tick * 7.0, tick * 3.0)) >= density * glint.y * weight) return 0.0;
     return waterHash12(cell + vec2(5.0, tick * 11.0)) < weight ? 2.0 : 1.0;
 }
 vec3 seaPathCap(vec3 c) {
@@ -599,6 +783,145 @@ float seaContourRows(vec2 cell) {
         + seaNoise(cell / vec2(${(SEA_CONTOUR_CELL[0] * 0.29).toFixed(1)}, ${(SEA_CONTOUR_CELL[1] * 0.36).toFixed(1)}) + vec2(17.0, 5.0)) * 0.3;
     return floor((n - 0.5) * 2.0 * ${SEA_CONTOUR_ROWS.toFixed(1)} + 0.5);
 }
+// Tiles past the island diamond (CoastBake's outer-shelf \`excess\`: Euclidean
+// in tile space, so its contours round past the map corners); 0 in the map.
+float islandExcess(vec2 w) {
+    vec2 uv = vec2(w.y / ${TILE_HEIGHT.toFixed(1)} + w.x / ${TILE_WIDTH.toFixed(1)}, w.y / ${TILE_HEIGHT.toFixed(1)} - w.x / ${TILE_WIDTH.toFixed(1)});
+    vec2 edge = clamp(uv, vec2(-0.44), vec2(${(MAP_SIZE - 0.56).toFixed(2)}));
+    return length(uv - edge);
+}
+// 3.3 (a) — how near the island a sea texel is, from its excess: 0.6 in the
+// map, 1 on the outer shelf (1.5 tiles out, where the swell shoals), 0 past
+// SWELL_NEAR_FADE tiles. Continuous across the map edge (excess 0 there).
+float seaNear(float excess) {
+    return excess < 1.5 ? mix(0.6, 1.0, excess / 1.5) : clamp(1.0 - (excess - 1.5) / ${SWELL_NEAR_FADE.toFixed(1)}, 0.0, 1.0);
+}
+// 3.3 (a) — the swell's set coordinate at world texel p: whole units count
+// sets, fract x SWELL_SET_PERIOD is the rows below the set's crest. Sets run
+// near level along SWELL_SET_NORMAL, bent by two octaves of a slow field.
+float swellPhase(vec2 p) {
+    return dot(p, vec2(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) / ${SWELL_SET_PERIOD.toFixed(1)}
+        + ${SWELL_SET_WARP.toFixed(2)} * seaNoise(p / vec2(${SWELL_WARP_CELL[0].toFixed(1)}, ${SWELL_WARP_CELL[1].toFixed(1)}) + vec2(3.0, 11.0))
+        + ${SWELL_SET_WARP_FINE.toFixed(2)} * seaNoise(p / vec2(${SWELL_WARP_FINE_CELL[0].toFixed(1)}, ${SWELL_WARP_FINE_CELL[1].toFixed(1)}) + vec2(29.0, 5.0));
+}
+// A set's height (0 calm .. 1) at \`along\` (world px along the set) on set
+// \`set\`: value noise over SWELL_AMP_RUN, calm below SWELL_AMP_FLOOR.
+float swellHeight(float along, float set) {
+    return clamp((seaNoise(vec2(along / ${SWELL_AMP_RUN.toFixed(1)} + 17.0, set * 7.3)) - ${SWELL_AMP_FLOOR.toFixed(2)}) / ${SWELL_AMP_SPAN.toFixed(2)}, 0.0, 1.0);
+}
+// A set's crest at world texel p (\`s\` its swellPhase): SWELL_CREST_ROWS rows
+// on the crest, broken along the set into one stroke per SWELL_CREST_RUN
+// cell (0.55-1 of the cell, SWELL_CREST_GAPS of the cells none), drawn only
+// where the set runs high at the stroke's centre; the stroke's last texels
+// step down 2:1 into the trough. 0 none, 1 the underline, 2 the lead row.
+float swellCrest(vec2 p, float s) {
+    float rowsIn = fract(s) * ${SWELL_SET_PERIOD.toFixed(1)};
+    if (rowsIn >= ${(SWELL_CREST_ROWS + 2).toFixed(1)}) return 0.0;
+    float set = floor(s);
+    float along = dot(p, vec2(1.0, -${SWELL_SET_NORMAL[0].toFixed(2)}));
+    float jit = waterHash12(vec2(set, 5.0));
+    float k = floor(along / ${SWELL_CREST_RUN.toFixed(1)} + jit);
+    if (waterHash12(vec2(k + 13.0, set * 7.0 + 3.0)) < ${SWELL_CREST_GAPS.toFixed(2)}) return 0.0;
+    float centre = (k - jit + 0.5) * ${SWELL_CREST_RUN.toFixed(1)};
+    float halfLen = ${(SWELL_CREST_RUN * 0.5).toFixed(1)} * (0.55 + 0.45 * waterHash12(vec2(k + 5.0, set + 1.0)));
+    float dx = abs(along - centre);
+    if (dx >= halfLen || swellHeight(centre, set) <= ${SWELL_CREST_HEIGHT.toFixed(2)}) return 0.0;
+    float r = rowsIn - floor(max(0.0, dx - halfLen + 4.0) * 0.5);
+    return r < 0.0 ? 0.0 : (r < 1.0 ? ${SWELL_CREST_RISE[0].toFixed(1)} : (r < ${SWELL_CREST_ROWS.toFixed(1)} ? ${SWELL_CREST_RISE[1].toFixed(1)} : 0.0));
+}
+// 3.3 (a) / 3.4 — static swell caps on the sea (in-map open water, the sea's
+// shelf and the open sea alike, so they cross the map edge unbroken), for a
+// texel whose swellPhase is \`s\`. Each set leads with its crest strokes
+// (swellCrest). A cap is a 3-7 texel lead row with a solid trail row beneath
+// it two texels shorter, one per SWELL_CAP_CELL texel cell on a
+// half-staggered grid. Caps gather into crest clusters: one 2.5:1 cluster per
+// SWELL_CLUSTER_CELL cell, present at 0.10 far out to 0.45 near the island
+// (3.3 (a)'s presence), SWELL_SET_GAIN x over each set's lit slope and crest
+// and SWELL_GAP_GAIN x in the calm between, so the sea reads in sets of crest
+// clusters at z1, never an even grain. Inside a cluster SWELL_CLUSTER_CAPS of
+// the cells carry a cap; between clusters a sparse background
+// (SWELL_LONE_CAPS far to near). A C-W3 cat's paw (\`paw\`, from its gust)
+// adds clusters: the wind lays a patch of extra caps. A cluster's leads are
+// two stops lighter, a lone cap's one (two where the swell shoals near the
+// island); the trail one. Static (no clock).
+// Returns the stops lighter: 0 none, 1, 2.
+float swellCap(vec2 p, float s, float near, float paw) {
+    float crest = swellCrest(p, s);
+    if (crest > 0.5) return crest;
+    float row = floor(p.y / ${SWELL_CAP_CELL[1].toFixed(1)});
+    float x = p.x + mod(row, 2.0) * ${(SWELL_CAP_CELL[0] * 0.5).toFixed(1)};
+    vec2 k = vec2(floor(x / ${SWELL_CAP_CELL[0].toFixed(1)}), row);
+    // The cap cell's centre (world texels) decides its cluster, so a cluster
+    // edge never cuts a cap.
+    vec2 centre = vec2(k.x * ${SWELL_CAP_CELL[0].toFixed(1)} + ${(SWELL_CAP_CELL[0] * 0.5).toFixed(1)} - mod(row, 2.0) * ${(SWELL_CAP_CELL[0] * 0.5).toFixed(1)}, (row + 0.5) * ${SWELL_CAP_CELL[1].toFixed(1)});
+    bool inSet = fract(swellPhase(centre) + ${SWELL_SET_LEAD.toFixed(2)}) < ${SWELL_SET_SHARE_OPEN.toFixed(2)};
+    // Near the island the swell shoals and breaks up: the calm gaps between
+    // sets fill with clusters too (the gap gain rises to 1 as near^2).
+    float clusters = mix(0.10, 0.45, near) * (inSet ? ${SWELL_SET_GAIN.toFixed(2)} : mix(${SWELL_GAP_GAIN.toFixed(2)}, 1.0, near * near)) + paw;
+    float crow = floor(centre.y / ${SWELL_CLUSTER_CELL[1].toFixed(1)});
+    float cx = centre.x + mod(crow, 2.0) * ${(SWELL_CLUSTER_CELL[0] * 0.5).toFixed(1)};
+    vec2 ck = vec2(floor(cx / ${SWELL_CLUSTER_CELL[0].toFixed(1)}), crow);
+    bool inCluster = false;
+    if (waterHash12(ck + vec2(101.0, 7.0)) < clusters) {
+        vec2 at = (ck + 0.35 + 0.3 * vec2(waterHash12(ck + vec2(103.0, 9.0)), waterHash12(ck + vec2(107.0, 3.0)))) * vec2(${SWELL_CLUSTER_CELL[0].toFixed(1)}, ${SWELL_CLUSTER_CELL[1].toFixed(1)});
+        vec2 d = (vec2(cx, centre.y) - at) / vec2(${(SWELL_CLUSTER_CELL[0] * 0.5).toFixed(1)}, ${(SWELL_CLUSTER_CELL[1] * 0.5).toFixed(1)});
+        inCluster = dot(d, d) < 1.0;
+    }
+    float presence = inCluster ? ${SWELL_CLUSTER_CAPS.toFixed(2)} : mix(${SWELL_LONE_CAPS[0].toFixed(2)}, ${SWELL_LONE_CAPS[1].toFixed(2)}, near);
+    if (waterHash12(k + vec2(211.0, 17.0)) >= presence) return 0.0;
+    vec2 local = vec2(x - k.x * ${SWELL_CAP_CELL[0].toFixed(1)}, p.y - row * ${SWELL_CAP_CELL[1].toFixed(1)});
+    float len = 3.0 + floor(waterHash12(k + vec2(223.0, 5.0)) * 5.0);
+    float x0 = floor(waterHash12(k + vec2(227.0, 41.0)) * (${SWELL_CAP_CELL[0].toFixed(1)} - len));
+    float y0 = floor(waterHash12(k + vec2(229.0, 83.0)) * ${(SWELL_CAP_CELL[1] - 1).toFixed(1)});
+    if (local.y == y0 && local.x >= x0 && local.x < x0 + len) {
+        return inCluster || near > 0.8 ? 2.0 : 1.0;
+    }
+    return local.y == y0 + 1.0 && local.x >= x0 + 1.0 && local.x < x0 + len - 1.0 ? 1.0 : 0.0;
+}
+// 3.3 (a) — how far world texel p sits past the sun-key ring (iso px, x and
+// 2y from the ring's centre SEA_KEY_SHIFT toward the upper-left key, less
+// SEA_KEY_REACH, the edge wandering on value noise): negative inside.
+float seaKeyReach(vec2 p) {
+    vec2 d = vec2(p.x + 0.5 - ${SEA_KEY_SHIFT[0].toFixed(1)}, (p.y + 0.5 - ${((MAP_SIZE - 1) * TILE_HEIGHT * 0.5 + SEA_KEY_SHIFT[1]).toFixed(1)}) * 2.0);
+    return length(d) - ${SEA_KEY_REACH.toFixed(1)} + (seaNoise(p / vec2(700.0, 350.0) + vec2(5.0, 9.0)) - 0.5) * ${(2 * SEA_KEY_WOBBLE).toFixed(1)};
+}
+// A swell's form at \`rowsIn\` rows below its crest (\`crestRows\` of crest,
+// \`period\` rows to the next): +1 inside its trough (the \`trough\` rows under
+// the crest), -1 on its lit slope (the \`lit\` rows above the next crest),
+// each solid for its first half and Bayer-faded over the rest; else 0.
+float swellForm(float rowsIn, float period, float crestRows, float lit, float trough, float order) {
+    float tin = rowsIn - crestRows;
+    if (tin >= 0.0 && tin < trough && (tin < trough * 0.5 || order >= (tin - trough * 0.5) / (trough * 0.5))) return 1.0;
+    float lin = period - rowsIn;
+    return lin < lit && (lin < lit * 0.5 || order >= (lin - lit * 0.5) / (lit * 0.5)) ? -1.0 : 0.0;
+}
+// 3.3 (a) — the sea body's stop at an open-water texel p (in-map water as
+// deep as the open sea, or the open sea) over its horizon stop \`stop\`, \`s\`
+// its swellPhase: the set's form (its lit slope one stop lighter above the
+// crest, its trough one stop darker below it, each scaled by the set's
+// height and widening, the lit slope, or narrowing, the trough, with the sun
+// key; the trough stilled near the island), else the chop's form; taking
+// over from the horizon's stops across SEA_BODY_ROWS on a Bayer ramp. 0..6
+// (6 is WATER_TROUGH, one stop below the deepest). Static (no clock).
+float seaBodyStop(vec2 p, float s, float stop, float excess, float order) {
+    if (clamp((p.y - OPEN_SEA_HORIZON_Y - ${SEA_BODY_ROWS[0].toFixed(1)}) / ${(SEA_BODY_ROWS[1] - SEA_BODY_ROWS[0]).toFixed(1)}, 0.0, 1.0) <= order) return stop;
+    float key = clamp(0.5 - seaKeyReach(p) / ${SEA_KEY_SPAN.toFixed(1)}, 0.0, 1.0);
+    float calm = clamp((excess - ${SWELL_CALM_TILES[0].toFixed(1)}) / ${(SWELL_CALM_TILES[1] - SWELL_CALM_TILES[0]).toFixed(1)}, 0.0, 1.0);
+    float along = dot(p, vec2(1.0, -${SWELL_SET_NORMAL[0].toFixed(2)}));
+    float h = swellHeight(along, floor(s));
+    float form = swellForm(fract(s) * ${SWELL_SET_PERIOD.toFixed(1)}, ${SWELL_SET_PERIOD.toFixed(1)}, ${SWELL_CREST_ROWS.toFixed(1)},
+        mix(${SWELL_LIT_ROWS[0].toFixed(1)}, ${SWELL_LIT_ROWS[1].toFixed(1)}, key) * h,
+        mix(${SWELL_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_TROUGH_ROWS[1].toFixed(1)}, key) * h * calm, order);
+    if (form == 0.0) {
+        float c = dot(p, vec2(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) / ${SWELL_CHOP_PERIOD.toFixed(1)}
+            + ${SWELL_CHOP_WARP.toFixed(2)} * seaNoise(p / vec2(${SWELL_CHOP_WARP_CELL[0].toFixed(1)}, ${SWELL_CHOP_WARP_CELL[1].toFixed(1)}) + vec2(41.0, 23.0));
+        float ch = clamp((seaNoise(vec2(along / ${SWELL_CHOP_RUN.toFixed(1)} + 7.0, floor(c) * 5.1)) - ${SWELL_CHOP_FLOOR.toFixed(2)}) / ${SWELL_AMP_SPAN.toFixed(2)}, 0.0, 1.0);
+        form = swellForm(fract(c) * ${SWELL_CHOP_PERIOD.toFixed(1)}, ${SWELL_CHOP_PERIOD.toFixed(1)}, 0.0,
+            mix(${SWELL_CHOP_LIT_ROWS[0].toFixed(1)}, ${SWELL_CHOP_LIT_ROWS[1].toFixed(1)}, key) * ch,
+            mix(${SWELL_CHOP_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_CHOP_TROUGH_ROWS[1].toFixed(1)}, key) * ch * calm, order);
+    }
+    return clamp(stop + form, 0.0, 6.0);
+}
 const float OPEN_SEA_REACH = ${OPEN_SEA_LIGHT_REACH.toFixed(1)};
 const float OPEN_SEA_DEEPEST = ${OPEN_SEA_DEEPEST.toFixed(1)};
 const float OPEN_SEA_SEAM = ${OPEN_SEA_STOP_SEAM.toFixed(5)};
@@ -622,9 +945,9 @@ float openSeaStop(float depth, float order) {
 //    below u_seaSunlit (0 = off: no clouds, no sun, or MINIMAL);
 //  - C-W3 cat's paws: where a gust (bilinear R8 field, u_seaGustRect origin
 //    and texel size; z 0 = calm) ruffled by a static octave of the cloud tile
-//    stretched 3:1 along the wind crosses 0.24, the water is ruffled: hashed
-//    3x1 dashes one stop lighter, denser with the gust, on an ordered edge.
-//    No flat darkening (a soft dark patch reads as a smudge, not wind).
+//    stretched 3:1 along the wind crosses SEA_PAW_THRESHOLD, the wind lays
+//    extra swell caps (`seaPawCaps`, the presence `swellCap` adds), denser
+//    with the gust. No flat darkening and no separate speckle.
 // Needs ATMOSPHERE_COURSES_GLSL (u_cloudTile) and waterHash12.
 const SEA_WEATHER_GLSL = `
 uniform float u_seaSunlit;
@@ -644,8 +967,9 @@ bool seaPawAt(vec2 cell, float gust, float order) {
     float ruffle = texture(u_cloudTile, fract((cell + vec2(517.0, 229.0)) / vec2(768.0, 256.0))).r;
     return gust + (ruffle - 0.5) * 0.36 + (order - 0.5) * 0.06 > ${SEA_PAW_THRESHOLD.toFixed(2)};
 }
-bool seaPawDash(vec2 cell, float gust) {
-    return waterHash12(floor(cell / vec2(3.0, 1.0)) + vec2(61.0, 7.0)) < ${SEA_PAW_DASH_BASE.toFixed(2)} + 0.6 * gust;
+float seaPawCaps(vec2 cell, float order) {
+    float gust = seaGustAt(cell);
+    return seaPawAt(cell, gust, order) ? ${SEA_PAW_CAP_BASE.toFixed(2)} + ${SEA_PAW_CAP_GAIN.toFixed(2)} * gust : 0.0;
 }`;
 const SEA_WEATHER_UNIFORM_NAMES = ['u_seaSunlit', 'u_seaGust', 'u_seaGustRect'];
 
@@ -742,10 +1066,45 @@ const WATER_PALETTE_GLSL = [
     `const vec3 WET_SAND_DARK = ${glslRgb(COAST_PALETTE.wetSandDark)};`,
     glslRgbArray('SEABED_SPECKS', COAST_PALETTE.seabedSpecks),
     glslRgbArray('CAUSTICS', COAST_PALETTE.caustics),
-    // The light cool cast every water texel takes (CPU mirror: CoastBake
-    // WATER_CAST); the time-of-day hue is the C2 grade's job.
-    'const vec3 WATER_CAST = vec3(0.94, 0.98, 1.03);',
+    // The light cool cast every water texel takes (CoastBake WATER_CAST, the
+    // Canvas layers' `waterSurfaceRgb`); the time-of-day hue is the C2 grade's job.
+    `const vec3 WATER_CAST = vec3(${WATER_CAST.join(', ')});`,
+    // 3.3 (a) — the open water's shown stop (seaBodyStop, 0..6) as albedo:
+    // the depth stops, then the trough one stop below the deepest.
+    `const vec3 WATER_TROUGH = ${glslRgb(COAST_PALETTE.trough)};`,
+    'vec3 seaStopRgb(float stop) { return stop > 5.5 ? WATER_TROUGH : WATER_STOPS[int(max(stop, 0.0))]; }',
 ].join('\n');
+
+// 4.6 (PT-2) — the fat-pixel coverage of one screen pixel on a texel grid
+// (albedo texels, or world texels for the world-grid terms): the 2x2 tap
+// block's low corner and its blend weights from the pixel's footprint `fw`
+// (grid units per screen px). A pixel inside one texel gets that texel alone;
+// a pixel a seam crosses gets the adjacent texels by the share it covers.
+// Shared by SCENE_FRAGMENT (albedo, terrain chain, atmosphere courses) and
+// COMPOSITE_FRAGMENT (the open sea).
+const FAT_TAPS_GLSL = `
+// Coverage below 1/64 of a pixel snaps to the texel the pixel sits in, so a
+// frame at integer k and offset is exactly the nearest frame.
+const float FAT_SNAP = 1.0 / 64.0;
+struct FatTaps { vec2 base; vec2 w; };
+FatTaps fatTaps(vec2 pix, vec2 fw) {
+    vec2 seam = floor(pix + 0.5);
+    vec2 q = seam + clamp((pix - seam) / fw, -0.5, 0.5) - 0.5;
+    vec2 base = floor(q);
+    vec2 w = q - base;
+    vec2 up = step(1.0 - FAT_SNAP, w);
+    base += up;
+    w *= (1.0 - up) * step(FAT_SNAP, w);
+    return FatTaps(base, w);
+}
+bool fatSeam(FatTaps t) { return t.w.x > 0.0 || t.w.y > 0.0; }
+// Tap i of the 2x2 block: offset (i & 1, i >> 1) and its coverage weight.
+vec2 fatTapOffset(int i) { return vec2(float(i & 1), float(i >> 1)); }
+float fatTapWeight(FatTaps t, int i) {
+    vec2 o = fatTapOffset(i);
+    return mix(1.0 - t.w.x, t.w.x, o.x) * mix(1.0 - t.w.y, t.w.y, o.y);
+}
+`;
 
 const SCENE_FRAGMENT = `#version 300 es
 precision highp float;
@@ -767,9 +1126,82 @@ flat in vec3 v_receiver;
 flat in uvec2 v_identity;
 flat in uint v_flags;
 flat in vec2 v_reflect;
+in vec2 v_texel;
+flat in ivec4 v_texelRect;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outEmission;
 uniform sampler2D u_albedo;
+// B.1b — a paged record's albedo is its layer (v_layer, loc3.x) of the
+// batch's texture-array page on unit 14; every other record samples its own
+// 2D texture on unit 0. The branch is uniform per batch. Every albedo read
+// goes through these three helpers; a paged uv rect is a sub-rect of a
+// layer, so a texel clamp is always the record rect (v_uvClamp), never the
+// texture size.
+uniform highp sampler2DArray u_albedoPage;
+uniform bool u_albedoPaged;
+flat in float v_layer;
+vec4 albedoTexture(vec2 uv) {
+    return u_albedoPaged ? texture(u_albedoPage, vec3(uv, v_layer)) : texture(u_albedo, uv);
+}
+vec4 albedoTexel(ivec2 texel) {
+    return u_albedoPaged ? texelFetch(u_albedoPage, ivec3(texel, int(v_layer)), 0) : texelFetch(u_albedo, texel, 0);
+}
+ivec2 albedoSize() {
+    return u_albedoPaged ? textureSize(u_albedoPage, 0).xy : textureSize(u_albedo, 0);
+}
+// 4.6 (PT-2, M4) — fat-pixel flight frames. On a flight frame (u_fatPixels,
+// per batch: k or the camera offset is fractional; a V9 fatOptOut record
+// keeps nearest) every albedo texel covers its exact screen area: inside a
+// texel the fragment takes that texel as authored, and a pixel a texel seam
+// crosses blends the two (at a corner four) adjacent authored colours by
+// coverage, premultiplied and divided by the blended alpha, so no texel is
+// ever 2 px wide beside a 3 px one. The taps stay inside the record's own
+// source rect (atlas and page neighbours never bleed). Positions and weights
+// are measured in record-local texels (v_texel), the slot or atlas origin is
+// added as an integer in the fetch, so a paged record is bit-identical to
+// its unpaged twin. The footprints are
+// fwidth taken at the top of main(), before any discard or record branch;
+// material, emissive and occluder sidecars stay nearest. Resting frames never
+// enter this path.
+uniform bool u_fatPixels;
+${FAT_TAPS_GLSL}
+bool fatOn = false;
+vec2 fatTexelFw = vec2(1.0);
+vec2 fatWorldFw = vec2(1.0);
+// The last fat albedo sample: its record-local texel position, taps (straight
+// colours, in fatTapOffset order) and weights, for the per-tap terrain chain.
+vec2 fatAlbedoPix = vec2(0.0);
+FatTaps fatAlbedoTaps;
+vec4 fatTap[4];
+vec4 fatPremultiplied(vec4 c) { return vec4(c.rgb * c.a, c.a); }
+vec4 sampleAlbedo(vec2 uv) {
+    if (!fatOn) return albedoTexture(uv);
+    // main() clamps uv to the record rect (edge texel centres) and moves it
+    // only by whole texels (row ripples, the cast wobble), each clamped
+    // again: the same steps in record-local texels.
+    ivec2 hi = v_texelRect.zw;
+    vec2 edge = vec2(hi) + 0.5;
+    vec2 shift = floor((uv - clamp(v_uv, v_uvClamp.xy, v_uvClamp.zw)) * vec2(albedoSize()) + 0.5);
+    fatAlbedoPix = clamp(clamp(v_texel, vec2(0.5), edge) + shift, vec2(0.5), edge);
+    // A shift the clamp cut short rests on the edge texel's centre.
+    fatAlbedoPix = mix(fatAlbedoPix, vec2(0.5), vec2(equal(uv, v_uvClamp.xy)));
+    fatAlbedoPix = mix(fatAlbedoPix, edge, vec2(equal(uv, v_uvClamp.zw)));
+    FatTaps t = fatTaps(fatAlbedoPix, fatTexelFw);
+    fatAlbedoTaps = t;
+    ivec2 lo = ivec2(0);
+    ivec2 origin = v_texelRect.xy;
+    ivec2 b = ivec2(t.base);
+    fatTap[0] = albedoTexel(origin + clamp(b, lo, hi));
+    if (!fatSeam(t)) return fatTap[0];
+    fatTap[1] = albedoTexel(origin + clamp(b + ivec2(1, 0), lo, hi));
+    fatTap[2] = albedoTexel(origin + clamp(b + ivec2(0, 1), lo, hi));
+    fatTap[3] = albedoTexel(origin + clamp(b + ivec2(1, 1), lo, hi));
+    vec4 m = mix(
+        mix(fatPremultiplied(fatTap[0]), fatPremultiplied(fatTap[1]), t.w.x),
+        mix(fatPremultiplied(fatTap[2]), fatPremultiplied(fatTap[3]), t.w.x),
+        t.w.y);
+    return m.a > 0.0 ? vec4(m.rgb / m.a, m.a) : vec4(0.0);
+}
 uniform sampler2D u_materialMap;
 uniform sampler2D u_emissiveMap;
 uniform bool u_hasMaterialMap;
@@ -803,16 +1235,24 @@ uniform sampler2D u_footprint;
 uniform vec3 u_footprintRect;
 uniform ivec2 u_footprintSize;
 uniform int u_marchSteps;
+// 2.4 — the admitted lights (GpuWorldPolicy binGpuLights), u_lightCount of
+// them, as columns of the RGBA32F light records on unit 9: row 0 = (foot x,
+// foot y, ground radius, intensity) in world px, row 1 = (emitter height
+// above the foot, face normal nx, ng (0, 0 = omni), role code 0 point /
+// 1 aperture / 2 fixture / 3 attention), row 2 = rgb + the envelope share,
+// row 3 = (owner slot, landmark id, LIGHT_RECORD_FLAGS, column reach). With
+// u_lightTileGrid.z set, a fragment walks only its 64x64 backing-px tile's
+// list in the R16UI index on unit 10 (texel (tx * 17, ty) = count, then the
+// light indices); otherwise it walks all u_lightCount lights. Both walks
+// visit the same lights in the same order wherever a light can reach.
 uniform int u_lightCount;
-// V5 / 2.1 — admitted lights in world space: u_lights = (foot x, foot y,
-// ground radius, intensity); u_lightShape = (emitter height above the foot,
-// face normal nx, ng (0, 0 = omni), role code 0 point / 1 aperture /
-// 2 fixture / 3 attention); u_lightIds = (owner slot, landmark id);
-// u_lightColors = rgb + the envelope share.
-uniform vec4 u_lights[32];
-uniform vec4 u_lightShape[32];
-uniform uvec2 u_lightIds[32];
-uniform vec4 u_lightColors[32];
+uniform highp sampler2D u_lightData;
+uniform highp usampler2D u_lightTiles;
+uniform ivec3 u_lightTileGrid;
+// 2.10 — the ground radiance field on unit 15 (GroundRadiance): the one warm
+// bounce off the lit ground and the lit openings' soft fans, read at the
+// receiver's foot; u_radianceGrid.w 0 = off (day, shed, not yet solved).
+${RADIANCE_SCENE_GLSL}
 // 3.1 — the emissive-core share of the shared source-energy envelope. The
 // spill/reflection share rides each light's own alpha channel (staged on the
 // CPU) so action-needed overlays stay outside this budget, and the bloom share
@@ -820,9 +1260,11 @@ uniform vec4 u_lightColors[32];
 uniform float u_coreEnergy;
 // 3.1 / 3.6 — the coast lattice fields, one texel per 2x2 world-px coast
 // cell (CoastBake bakeWaterFields): unit 7 cycle offset (R8: 0-15 shoreward
-// swell band, 16-31 river current band, 255 none), unit 8 coast field (RG8:
-// R = sd * 64 + 128 in tiles, > 0 water; G = COAST_FIELD_FLAGS bits 1
-// reflection, 2 swash-eligible, 4 painted water, 8 wet sand). u_coastRect =
+// swell band, 16-31 river current band, 255 none), unit 8 coast field (RGBA8,
+// \`coastFieldTexels\`: R = sd * 64 + 128 in tiles, > 0 water; G =
+// COAST_FIELD_FLAGS bits 1 reflection, 2 swash-eligible, 4 painted water, 8
+// wet sand, 16 sea, 64 covered by a dock or bridge; B / A = the 3.7 mirror
+// stops of the cell's top / bottom texel row, see mirrorBaseStop). u_coastRect =
 // (x0, y0, cols, rows) in world px / cells; z == 0 means absent.
 uniform sampler2D u_cycleOffset;
 uniform sampler2D u_coastField;
@@ -849,9 +1291,8 @@ uniform int u_wetReflectionCount;
 // scaled by PALETTE_LUT_LIFT. Nearest-sampled; absent table = today response.
 uniform sampler2D u_paletteLut;
 uniform bool u_hasPaletteLut;
-// 3.2 — bit i is set when admitted light i lays a wet-ground reflection: the
-// first u_wetReflectionCount non-attention lights in admission order.
-uniform uint u_wetMask;
+// 3.2 — the first u_wetReflectionCount non-attention lights in admission
+// order carry LIGHT_RECORD_FLAGS.wetReflection (light record row 3 z).
 // 5.2 — puddles on the terrain record only (u_puddleGround): GroundBake's R8
 // site mask (unit 11, one byte per 2x1-world-px texel over u_puddleRect =
 // origin xy, cols, rows) holds water where mask >= 1 - u_puddles, the C-W2
@@ -875,20 +1316,37 @@ float materialNear(float value, float target) {
 // receiver's own landmark or the light's own landmark, or within 10 world px
 // of a fixture's foot, never blocks: a facade never shadows its own window
 // and a lamp post never shadows its lamp. Blocked when the field stands more
-// than 2 world px above the ray.
+// than 2 world px above the ray. R4 — a light whose foot stands inside an
+// occluder (a gathering's centre on a statue, a lamp in its post) is never
+// shadowed by that housing: walking from the light, the samples still
+// inside it are skipped. Without that, the sparse march blocks only the
+// receivers near the foot (their samples crowd into the housing) and the
+// pool becomes a ring round an unlit centre: status grammar, never a lamp.
 float footprintBlocked(vec2 from, vec2 to, float fromH, float toH, uint ownLandmark, uint lightLandmark, bool fixture) {
     float steps = float(u_marchSteps);
-    for (int s = 1; s <= 8; s++) {
-        if (s > u_marchSteps) break;
+    ivec2 lightCell = ivec2(floor((to - u_footprintRect.xy) / u_footprintRect.z));
+    bool housed = u_marchSteps > 0 && lightCell.x >= 0 && lightCell.y >= 0
+        && lightCell.x < u_footprintSize.x && lightCell.y < u_footprintSize.y
+        && texelFetch(u_footprint, lightCell, 0).r * 255.0 > toH + 2.0;
+    for (int k = 0; k < 8; k++) {
+        if (k >= u_marchSteps) break;
+        int s = u_marchSteps - k;
         float t = float(s) / (steps + 1.0);
         vec2 p = mix(from, to, t);
         if (fixture && distance(p, to) < 10.0) continue;
         ivec2 cell = ivec2(floor((p - u_footprintRect.xy) / u_footprintRect.z));
-        if (cell.x < 0 || cell.y < 0 || cell.x >= u_footprintSize.x || cell.y >= u_footprintSize.y) continue;
-        vec2 field = texelFetch(u_footprint, cell, 0).rg;
-        uint landmark = uint(field.g * 255.0 + 0.5);
-        if (landmark != 0u && (landmark == ownLandmark || landmark == lightLandmark)) continue;
-        if (field.r * 255.0 > mix(fromH, toH, t) + 2.0) return 1.0;
+        bool occupied = false;
+        if (cell.x >= 0 && cell.y >= 0 && cell.x < u_footprintSize.x && cell.y < u_footprintSize.y) {
+            vec2 field = texelFetch(u_footprint, cell, 0).rg;
+            uint landmark = uint(field.g * 255.0 + 0.5);
+            occupied = !(landmark != 0u && (landmark == ownLandmark || landmark == lightLandmark))
+                && field.r * 255.0 > mix(fromH, toH, t) + 2.0;
+        }
+        if (housed) {
+            housed = occupied;
+            continue;
+        }
+        if (occupied) return 1.0;
     }
     return 0.0;
 }
@@ -1142,6 +1600,41 @@ vec3 staticWaterDashes(vec3 color, vec2 px) {
     return color * WATER_CAST * (1.0 + contrast * onDash * lit);
 }
 
+// 3.7 — the water stop the bake painted this texel's mirror over (0
+// shallowest .. 4 deepest), or -1: not a mirror, or one in a cell a dock,
+// deck or bridge covers (CoastBake \`mirrorStops\`: one nibble a texel, stop +
+// 1, B the cell's top row, A its bottom row, low nibble the left texel).
+int mirrorBaseStop(vec2 world) {
+    if (u_coastRect.z <= 0.0) return -1;
+    ivec2 texel = ivec2(floor(world - u_coastRect.xy));
+    ivec2 cell = texel >> 1;
+    if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_coastRect.z) || cell.y >= int(u_coastRect.w)) return -1;
+    vec2 rows = texelFetch(u_coastField, cell, 0).ba;
+    int packed = int(((texel.y & 1) == 0 ? rows.x : rows.y) * 255.0 + 0.5);
+    return (((texel.x & 1) == 0 ? packed : packed >> 4) & 15) - 1;
+}
+
+// 3.7 — heavy rain breaks the still mirrors: past MIRROR_STORM.from
+// precipitation a baked mirror texel gives way to the exact water stop the
+// bake painted it over, on a Bayer share, all of them by from + span
+// (CoastBake \`mirrorStormDrop\`; the Canvas mood layer reads the same
+// stops). \`gone\` says the texel is water again, so it takes the water state
+// (the open sea's body, crests, mood) exactly as the stops beside it.
+float mirrorStormDrop() {
+    float share = clamp((u_weather.x - ${MIRROR_STORM.from.toFixed(2)}) / ${MIRROR_STORM.span.toFixed(2)}, 0.0, 1.0);
+    return floor(share * ${MIRROR_STORM.steps.toFixed(1)} + 0.5) / ${MIRROR_STORM.steps.toFixed(1)};
+}
+vec3 mirrorStormColour(vec3 color, vec2 px, out bool gone) {
+    gone = false;
+    if (!u_terrainBatch || u_weather.x <= ${MIRROR_STORM.from.toFixed(2)}) return color;
+    float drop = mirrorStormDrop();
+    if (drop <= 0.0 || waterBayer4(floor(px)) >= drop) return color;
+    int stop = mirrorBaseStop(px);
+    if (stop < 0) return color;
+    gone = true;
+    return WATER_STOPS[stop];
+}
+
 // 3.1 / 3.2 / 3.9 / 3.10 — the resident water state on ungraded albedo.
 // Palette-true cycling (V4): a lit texel takes the next shallower depth
 // stop, FOAM_CREST on the two shallowest, FOAM for a storm whitecap; a rain
@@ -1189,16 +1682,30 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
         return lighthouseStop(beam);
     }
     int base = stop;
-    bool pawDash = false;
+    // 3.3 (a) / 3.4 — open water (as deep as the open sea on its row) takes
+    // the open sea's body field (its sun-key course and each set's lit slope
+    // and trough, seaBodyStop), its sunlit course, its swell caps and cat's
+    // paws; the sea's shelf (the coast field's sea flag, past SWELL_SHORE_SD
+    // off the beach, never a lagoon, pond or river) takes the swell caps, so
+    // they wrap the island's halo and cross the map edge unbroken.
+    float cap = 0.0;
+    float near = 0.0;
     if (stop >= 2) {
         float order = waterBayer4(p);
-        if (float(stop) >= openSeaStop(openSeaDepth(p), order)) {
-            if (u_seaSunlit > 0.0 && cloudSeamField(p, cloudNoiseAt(p), order, u_seaSunlit) < u_seaSunlit) base = stop - 1;
-            float gust = seaGustAt(p);
-            if (seaPawAt(p, gust, order)) pawDash = seaPawDash(p, gust);
+        bool open = float(stop) >= openSeaStop(openSeaDepth(p), order);
+        float sd;
+        uint flags;
+        bool shelf = !open && coastFieldAt(p, sd, flags) && (flags & ${COAST_FIELD_FLAGS.sea}u) != 0u && sd > ${SWELL_SHORE_SD.toFixed(2)};
+        if (open || shelf) {
+            float excess = islandExcess(p + 0.5);
+            float s = swellPhase(p);
+            near = seaNear(excess);
+            if (open) base = int(seaBodyStop(p, s, float(stop), excess, order));
+            if (open && u_seaSunlit > 0.0 && cloudSeamField(p, cloudNoiseAt(p), order, u_seaSunlit) < u_seaSunlit) base = max(base - 1, 0);
+            cap = swellCap(p, s, near, open ? seaPawCaps(p, order) : 0.0);
         }
     }
-    if (base != stop) color = WATER_STOPS[base];
+    if (base != stop) color = seaStopRgb(float(base));
     int lighter = max(base - 1, 0);
     vec3 shallower = base <= 1 ? WATER_FOAM_CREST : WATER_STOPS[lighter];
     if (u_waterFx.y > 0.0 && rainRingAt(p, u_waterFx.y, storm, clock)) {
@@ -1208,7 +1715,7 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     if (shallows && waterHash12(floor(p / vec2(2.0, 1.0)) + vec2(3.0, 71.0)) < 0.04) {
         return applyWaterMood(SEABED_SPECKS[stop]) * WATER_CAST;
     }
-    if (pawDash) return applyWaterMood(WATER_STOPS[max(base - 2, 0)]) * WATER_CAST;
+    if (cap > 0.5 && clock <= 0.0) return applyWaterMood(WATER_STOPS[max(base - int(cap), 0)]) * WATER_CAST;
     if (clock <= 0.0) {
         if (shallows && u_waterFx.z > 0.0 && causticAt(p, 0.0)) return applyWaterMood(CAUSTICS[stop]) * WATER_CAST;
         return staticWaterDashes(color, px);
@@ -1232,9 +1739,59 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     }
     if (course > 2.5) return applyWaterMood(WATER_FOAM) * WATER_CAST;
     if (course > 1.5) return applyWaterMood(shallower) * WATER_CAST;
-    if (course > 0.5) return applyWaterMood(WATER_STOPS[lighter]) * WATER_CAST;
+    // A swell cap, or a deep crest one stop lighter (two where the swell
+    // shoals near the island), whichever is lighter.
+    int rise = max(int(cap), course > 0.5 ? (offset > 31.5 && near > 0.8 ? 2 : 1) : 0);
+    if (rise > 0) return applyWaterMood(WATER_STOPS[max(base - rise, 0)]) * WATER_CAST;
     if (shallows && u_waterFx.z > 0.0 && causticAt(p, clock)) return applyWaterMood(CAUSTICS[stop]) * WATER_CAST;
     return applyWaterMood(color) * WATER_CAST;
+}
+
+// 4.6 — a terrain pixel a world-texel seam crosses on a flight frame: the
+// per-cell surface chain (3.6 swash, 3.2 weather, 3.1–3.10 water state) runs
+// on each tap's own authored texel at that texel's world point, and the
+// results blend by the same coverage as the albedo. Every stepped sea term
+// (dashes, cycle, path, rings, paws, foam) then gets a 1-px coverage seam
+// instead of a 2- or 3-px cell, and exact-colour tests never see a blend.
+// The seaPath and lighthouse flags follow the dominant tap; waterHue reads
+// the blended colour before the water state, as the resting path does.
+vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, out bool seaPath) {
+    FatTaps t = fatAlbedoTaps;
+    vec2 worldPerTexel = fatWorldFw / fatTexelFw;
+    bool weather = u_weather.x > 0.001 || u_wetness > 0.001;
+    bool anyWater = waterMaterial;
+    vec4 surface = vec4(0.0);
+    vec4 before = vec4(0.0);
+    float dominant = -1.0;
+    bool dominantPath = false;
+    bool dominantDash = false;
+    for (int i = 0; i < 4; i++) {
+        float w = fatTapWeight(t, i) * fatTap[i].a;
+        if (w <= 0.0) continue;
+        vec2 world = v_world + (t.base + fatTapOffset(i) + 0.5 - fatAlbedoPix) * worldPerTexel;
+        vec3 c = fatTap[i].rgb;
+        bool gone;
+        c = mirrorStormColour(c, world, gone);
+        bool tapWater = waterMaterial || gone;
+        anyWater = anyWater || gone;
+        if (u_waterFx.w > 0.0) c = applyCoastSwash(c, world);
+        if (weather && !tapWater) c = applyMaterialWeather(c, material, world);
+        before += vec4(c, 1.0) * w;
+        bool tapPath = false;
+        lighthouseDash = false;
+        if (tapWater) c = applyWaterState(c, world, tapPath);
+        if (w > dominant) {
+            dominant = w;
+            dominantPath = tapPath;
+            dominantDash = lighthouseDash;
+        }
+        surface += vec4(c, 1.0) * w;
+    }
+    lighthouseDash = dominantDash;
+    seaPath = dominantPath;
+    vec3 pre = before.rgb / max(before.a, 1e-6);
+    waterHue = anyWater && !(pre.b < pre.r + 0.02 || pre.g < pre.r);
+    return surface.a > 0.0 ? surface.rgb / surface.a : pre;
 }
 
 vec3 applyAuthoredSunBand(vec3 color, float material) {
@@ -1253,13 +1810,88 @@ vec3 applyAuthoredSunBand(vec3 color, float material) {
     return color * mix(1.0, quantized, clamp(u_sun.w, 0.0, 1.0));
 }
 
+// 4.6 — the atmosphere courses (cloud shadow and aerial haze, stepped on the
+// art cell) at a flight frame's seam pixel: each covered cell's courses on
+// the pixel's own colour, blended by coverage, so a course edge or a Bayer
+// dither cell never renders 2 px beside 3 px.
+vec3 fatAtmosphereCourses(vec3 color, FatTaps t, bool waterMaterial) {
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < 4; i++) {
+        float w = fatTapWeight(t, i);
+        if (w <= 0.0) continue;
+        vec2 cell = t.base + fatTapOffset(i);
+        float rowPx = (cell.y + v_originFrac.y + 0.5 + u_camera.y) * u_camera.z
+            + (waterMaterial ? seaContourRows(cell) * u_camera.z : 0.0);
+        sum += applyAtmosphereCourses(color, cell, bayer4(cell), rowPx, u_additive) * w;
+    }
+    return sum;
+}
+
+// 2.9 — one light's water column at the art cell \`cell\`: how many water
+// stops (0 = no column texel, 1..5) the texel is lifted. \`along\` runs from
+// the column's start toward the camera over \`reach\` (world px). Every term
+// is a whole texel on the art grid and steps with the 4 Hz ripple tick (0, a
+// still column, under reduced motion and at MINIMAL):
+// - rows: each is present on a hashed draw that thins from ROW_NEAR at the
+//   start to ROW_FAR at the end and is re-drawn every ROW_HOLD ticks on its
+//   own phase, so the breaks never run a fixed period;
+// - dashes: a present row is a dash about the foot's texel shifted by the
+//   row wobble floor(1.5 sin(row 0.7 + tick)), its half-width tapering from
+//   \`halfNear\` at the start to 1 at the end, each end a hashed texel in or
+//   out; a dash of 5 texels or more often loses its second texel from one
+//   end, so a spark breaks off it;
+// - value: the course share falls from 0.8 of the light's energy at the
+//   start to 0.3 at the end, stepped (a hashed per-row jitter dithers each
+//   course edge row by row, never a checker inside a one-row dash) to a
+//   lift of 1 to 4 (a dim window's far end drops out; 4 needs more than a
+//   window's energy); within a dash the end texels sit one stop under its
+//   body and its middle texel (two on an even dash) one stop over, and a
+//   hashed GLINT share of the near half's rows lifts the body one stop more
+//   (never past 5).
+float columnLift(vec2 cell, float footX, float along, float reach, float energy, float halfNear, float tick) {
+    if (along < 0.0 || along >= reach) return 0.0;
+    float t = along / reach;
+    vec2 row = vec2(cell.y, floor(footX));
+    float hold = ${WATER_COLUMN_ROW_HOLD.toFixed(1)};
+    float life = floor((tick + floor(waterHash12(row + vec2(3.0, 17.0)) * hold)) / hold);
+    float present = mix(${WATER_COLUMN_ROW_NEAR.toFixed(2)}, ${WATER_COLUMN_ROW_FAR.toFixed(2)}, t);
+    if (waterHash12(row + vec2(life * 7.0 + 11.0, life * 3.0 + 29.0)) >= present) return 0.0;
+    float dx = cell.x - floor(footX) - floor(1.5 * sin(cell.y * 0.7 + tick));
+    float halfWidth = floor(mix(halfNear, 1.0, t) + 0.5);
+    float lo = -max(0.0, halfWidth + floor(waterHash12(row + vec2(life * 5.0 + 41.0, 13.0)) * 3.0) - 1.0);
+    float hi = max(0.0, halfWidth + floor(waterHash12(row + vec2(life * 13.0 + 47.0, 19.0)) * 3.0) - 1.0);
+    if (dx < lo || dx > hi) return 0.0;
+    float spark = waterHash12(row + vec2(life * 17.0 + 61.0, 23.0));
+    if (hi - lo >= 4.0 && spark < 0.55 && dx == (spark < 0.275 ? lo + 1.0 : hi - 1.0)) return 0.0;
+    float q = mix(0.8, 0.3, t) * energy + (waterHash12(row + vec2(life * 19.0 + 71.0, 31.0)) - 0.5) * 0.3;
+    float lift = step(0.12, q) * (1.0 + step(0.35, q) + step(0.75, q) + step(1.15, q));
+    if (lift < 0.5) return 0.0;
+    if (hi > lo && (dx == lo || dx == hi)) return lift - 1.0;
+    if (abs(dx - 0.5 * (lo + hi)) < 0.75) lift += 1.0;
+    if (t < 0.5 && waterHash12(row + vec2(life * 11.0 + 53.0, 7.0)) < ${WATER_COLUMN_GLINT.toFixed(2)}) lift += 1.0;
+    return min(lift, 5.0);
+}
+
+// 2.9 — the luma \`lift\` stops above the local water stop on the water ramp
+// (the CoastBake depth stops, then foam and its crest above the shallowest).
+float columnRampLuma(int stop, float lift) {
+    int i = stop - int(lift + 0.5);
+    vec3 c = i >= 0 ? WATER_STOPS[i] : (i == -1 ? WATER_FOAM : WATER_FOAM_CREST);
+    return dot(c, GRADE_LUMA);
+}
+
 void main() {
     // V9 — sample inside the record's own source rect (never an atlas
     // neighbour), whatever sub-texel offset the record rests at.
     vec2 uv = clamp(v_uv, v_uvClamp.xy, v_uvClamp.zw);
     // 2.1 — one source texel along world +x (a mirrored record's u runs
     // backwards), for the body rim; taken before any non-uniform branch.
-    float uvStepX = (dFdx(v_uv.x) < 0.0 ? -1.0 : 1.0) / float(textureSize(u_albedo, 0).x);
+    float uvStepX = (dFdx(v_uv.x) < 0.0 ? -1.0 : 1.0) / float(albedoSize().x);
+    // 4.6 — flight-frame footprints (albedo texels and world px per screen
+    // px), in uniform control flow before any discard or record branch.
+    fatTexelFw = max(fwidth(v_texel), vec2(1e-5));
+    fatWorldFw = max(fwidth(v_world), vec2(1e-5));
+    fatOn = u_fatPixels && (v_flags & ${GPU_RECORD_FLAGS.fatOptOut}u) == 0u;
     // 3.8 / 3.11 — reflect records (hull and body water twins): only over
     // painted water (3.6's coast field, flag 4), every fifth row dropped, a
     // whole-texel row ripple on the shared palette tick (a fixed per-row
@@ -1268,18 +1900,51 @@ void main() {
     bool reflectRecord = (v_flags & ${GPU_RECORD_FLAGS.reflect}u) != 0u;
     float reflectRow = 0.0;
     float reflectSd = 0.0;
+    // 4.6 — the share of this pixel the dropped rows below leave standing:
+    // at a flight frame's seam pixel a dropped world row keeps alpha by the
+    // share of the pixel it covers instead of a hard 2- or 3-px row.
+    float rowKeep = 1.0;
     if (reflectRecord) {
         reflectRow = floor(v_world.y - v_reflect.x);
-        if (mod(reflectRow, 5.0) > 3.5) discard;
+        FatTaps reflectTaps = FatTaps(vec2(0.0, reflectRow), vec2(0.0));
+        if (fatOn) reflectTaps = fatTaps(v_world - vec2(0.0, v_reflect.x), fatWorldFw);
+        rowKeep = mix(step(mod(reflectTaps.base.y, 5.0), 3.5), step(mod(reflectTaps.base.y + 1.0, 5.0), 3.5), reflectTaps.w.y);
+        if (rowKeep <= 0.0) discard;
         uint reflectFlags = 0u;
         if (!coastFieldAt(v_world, reflectSd, reflectFlags) || (reflectFlags & 4u) == 0u) discard;
         float tick = u_motionScale <= 0.0 ? 0.0 : floor(u_time * 0.004 * u_motionScale);
         float ripple = clamp(floor(1.5 * sin(reflectRow * 0.9 + tick * 0.7)), -1.0, 1.0);
         uv.x = clamp(uv.x + ripple * uvStepX, v_uvClamp.x, v_uvClamp.z);
     }
+    // 2.9 (WS) — a building or tree ground cast over painted water (3.6
+    // flag 4; a dock, pier deck, bridge span or foundation the terrain bake
+    // laid over the water carries flag \`covered\` and keeps the land cast):
+    // held to GROUND_CAST_WATER_SHARE and broken by the water column's ripple
+    // rows (every row with mod(row + tick, 3) == 2 dropped, each row shifted
+    // by the column's wobble; the tick is frozen under reduced motion and at
+    // MINIMAL), so a raking cast never lies on the sea as a hard
+    // parallelogram. Canvas bakes the same rule at tick 0 (RakingLight).
+    bool castOnWater = false;
+    if ((v_flags & ${GPU_RECORD_FLAGS.groundCast}u) != 0u) {
+        float castSd;
+        uint castFlags;
+        castOnWater = coastFieldAt(v_world, castSd, castFlags)
+            && (castFlags & ${COAST_FIELD_FLAGS.water}u) != 0u
+            && (castFlags & ${COAST_FIELD_FLAGS.covered}u) == 0u;
+        if (castOnWater) {
+            float castRow = floor(v_world.y);
+            float castTick = floor(u_time * ${WATER_COLUMN_TICK_RATE} * u_waterFx.x);
+            FatTaps castTaps = FatTaps(vec2(0.0, castRow), vec2(0.0));
+            if (fatOn) castTaps = fatTaps(v_world, fatWorldFw);
+            rowKeep = mix(step(mod(castTaps.base.y + castTick, 3.0), 1.5), step(mod(castTaps.base.y + 1.0 + castTick, 3.0), 1.5), castTaps.w.y);
+            if (rowKeep <= 0.0) discard;
+            float castWobble = floor(1.5 * sin(castRow * 0.7 + castTick));
+            uv.x = clamp(uv.x - castWobble * uvStepX, v_uvClamp.x, v_uvClamp.z);
+        }
+    }
     if (u_terrainBatch && u_waterFx.x > 0.0) uv = reflectionRippleUv(uv, uvStepX);
-    vec4 albedo = texture(u_albedo, uv);
-    float alpha = albedo.a * v_alpha;
+    vec4 albedo = sampleAlbedo(uv);
+    float alpha = albedo.a * v_alpha * rowKeep * (castOnWater ? ${GROUND_CAST_WATER_SHARE.toFixed(2)} : 1.0);
     if (alpha < 0.01) discard;
     if (reflectRecord) {
         float course = clamp(floor(reflectRow / max(1.0, v_reflect.y) * 3.0 + bayer4(floor(v_world)) - 0.5), 0.0, 2.0);
@@ -1327,16 +1992,26 @@ void main() {
     // Water is never "wet": its storm/rain look is the water mood (mirrored
     // by the outer ocean), so the island's sea and the ocean stay one value.
     bool waterMaterial = materialNear(material, 8.0) > 0.5;
-    // 3.6 — the swash laps the baked shore before any weather darkening.
-    if (u_terrainBatch && u_waterFx.w > 0.0) color = applyCoastSwash(color, v_world);
-    if (!waterMaterial && (u_weather.x > 0.001 || u_wetness > 0.001)) color = applyMaterialWeather(color, material, v_world);
     bool seaPath = false;
     // V6 — the water cap holds the sea's own stops. A sprite record carrying
     // the water material (a red buoy) and a baked full-colour mirror (3.7)
     // keep their colour: only water-hued texels (applyWaterState's own gate)
     // are capped.
-    bool waterHue = waterMaterial && !(color.b < color.r + 0.02 || color.g < color.r);
-    if (waterMaterial) color = applyWaterState(color, v_world, seaPath);
+    bool waterHue = false;
+    if (u_terrainBatch && fatOn && fatSeam(fatAlbedoTaps)) {
+        // 4.6 — a seam pixel on a flight frame runs the chain below per tap.
+        color = fatTerrainSurface(material, waterMaterial, waterHue, seaPath);
+    } else {
+        // 3.7 — a mirror texel the rain gave back to the water is water.
+        bool mirrorGone;
+        color = mirrorStormColour(color, v_world, mirrorGone);
+        waterMaterial = waterMaterial || mirrorGone;
+        // 3.6 — the swash laps the baked shore before any weather darkening.
+        if (u_terrainBatch && u_waterFx.w > 0.0) color = applyCoastSwash(color, v_world);
+        if (!waterMaterial && (u_weather.x > 0.001 || u_wetness > 0.001)) color = applyMaterialWeather(color, material, v_world);
+        waterHue = waterMaterial && !(color.b < color.r + 0.02 || color.g < color.r);
+        if (waterMaterial) color = applyWaterState(color, v_world, seaPath);
+    }
     color = applyAuthoredSunBand(color, material);
     // 1.2 — the pools light the ungraded surface, so warm light shows the real
     // cobble, grass and wall texture instead of a desaturated night albedo.
@@ -1377,6 +2052,9 @@ void main() {
     // light does to this material.
     bool rampPixel = u_hasPaletteLut && v_ramp > 0.5;
     float admitted = 0.0;
+    // The strongest ramp light's own colour and pool course (3.5 landing).
+    vec3 rampHue = vec3(0.0);
+    float rampSteps = 0.0;
     // 1.2 — ambient light pools: each light is stepped on its own falloff
     // (poolSteps), accumulated, and lands once after the loop. Distances are
     // measured from the art-pixel centre so course edges sit on the world
@@ -1426,7 +2104,11 @@ void main() {
         if (surfaceCoded) {
             float code = floor(geometry.b * 255.0 + 0.5);
             float face = floor(code / 64.0);
-            recvH = (code - face * 64.0) * 4.0;
+            // R is the texel's true height (B carries it only to 4 px, beside
+            // the face): an exact ground point per texel, so a wall's courses
+            // follow its base line instead of a 4-row height stair (R3), and
+            // the same height _lightFootFor stands a source on.
+            recvH = floor(geometry.r * 255.0 + 0.5);
             recvGround = vec2(artPoint.x, artPoint.y + recvH);
             if (face > 0.5 && face < 2.5) {
                 recvClass = 1;
@@ -1444,7 +2126,11 @@ void main() {
         } else {
             bool axisProp = (v_flags & ${GPU_RECORD_FLAGS.receiverAxis}u) != 0u;
             recvClass = ownOwner != 0u ? 2 : (axisProp ? 4 : 3);
-            recvGround = vec2(artPoint.x, v_receiver.x);
+            // Art hanging below its record's foot (a fence panel, a hull's
+            // keel) is its own ground there, never a point above it: the
+            // reach rect (lightReachRect) then holds every pixel it can light.
+            // A body keeps its foot (one falloff for the whole figure).
+            recvGround = vec2(artPoint.x, recvClass == 2 ? v_receiver.x : max(v_receiver.x, artPoint.y));
             recvH = max(0.0, v_receiver.x - artPoint.y);
             if (recvClass == 2 || recvClass == 4) {
                 // A body (or hull) wraps round its axis (frontCornerX): the
@@ -1456,6 +2142,33 @@ void main() {
                 float across = clamp((artPoint.x - v_receiver.y) / recvHalfWidth, -0.85, 0.85);
                 recvNormal = vec2(across, sqrt(1.0 - across * across));
             }
+        }
+    }
+    // R3 — a wall, or a raised face-0 texel of a landmark (a deck, a soffit),
+    // takes its courses per 2x2 art cell: the four texels share one ground
+    // point (the cell's centre; a wall keeps its base line, stepping 1:2
+    // along it), one height and one Bayer order, so a course edge on a
+    // facade steps in whole 2x2 cells and never scatters single speckle
+    // texels or a 1-px dotted vertical over timber and masonry. A 3.5 ramp
+    // record standing upright (class 3: the Command gate layer's jambs and
+    // threshold face the camera, its course edges run across its height)
+    // takes the same cells about its own foot, so its warm landing never
+    // leaves single orange texels on the stone. Flat ground, bodies, props
+    // and the 3.5 ramp's steps keep the per-texel course.
+    bool rampUpright = rampPixel && recvClass == 3;
+    if (rampUpright || (ownLandmark != 0u && (recvClass == 1 || (recvClass == 0 && recvH > 0.5 && !rampPixel)))) {
+        vec2 cellShift = floor(artCell * 0.5) * 2.0 + 0.5 - artCell;
+        poolOrder = bayer4(floor(artCell * 0.5));
+        if (recvClass == 1) {
+            float footShift = -sign(recvNormal.x) * 0.5 * cellShift.x;
+            recvGround += vec2(cellShift.x, footShift);
+            recvH += footShift - cellShift.y;
+        } else if (rampUpright) {
+            vec2 cellPoint = artPoint + cellShift;
+            recvGround = vec2(cellPoint.x, max(v_receiver.x, cellPoint.y));
+            recvH = max(0.0, v_receiver.x - cellPoint.y);
+        } else {
+            recvGround += cellShift;
         }
     }
     // 2.5 / 2.1 — a translucent edge texel over a lit pool would show that
@@ -1480,24 +2193,99 @@ void main() {
     bool rimInner = false;
     // 2.3 — a roof (face 3) takes no local light at all: every lamp in the
     // village stands below or beside the roofs, so any course there would
-    // be the old disc on the slates.
-    int receiverLights = roofFace ? 0 : u_lightCount;
-    for (int i = 0; i < 32; i++) {
-        if (i >= receiverLights) break;
-        vec4 light = u_lights[i];
-        vec4 lightShape = u_lightShape[i];
+    // be the old disc on the slates. A 3.11 reflection twin keeps its own
+    // water-toned courses and takes none either (water takes no pool).
+    // 2.4 — the walk: this fragment's 64x64 tile list when clustered, else
+    // every admitted light; the same lights either way wherever one reaches.
+    bool clusteredLights = u_lightTileGrid.z != 0;
+    ivec2 lightTile = ivec2(0);
+    int receiverLights = roofFace || reflectRecord ? 0 : u_lightCount;
+    if (clusteredLights && receiverLights > 0) {
+        lightTile = clamp(
+            ivec2(int(gl_FragCoord.x) / ${LIGHT_TILE_PX}, int(u_resolution.y - gl_FragCoord.y) / ${LIGHT_TILE_PX}),
+            ivec2(0),
+            u_lightTileGrid.xy - 1
+        );
+        receiverLights = int(texelFetch(u_lightTiles, ivec2(lightTile.x * ${LIGHT_TILE_STRIDE}, lightTile.y), 0).r);
+    }
+    // 4.6 — the art cells a flight frame's seam pixel covers (elsewhere one
+    // cell at weight 1): the water columns, the flat-ground pools and the
+    // atmosphere courses below take each covered cell's own course and blend
+    // by coverage, so no course edge renders 2 px beside 3 px in flight.
+    FatTaps cellTaps = FatTaps(artCell, vec2(0.0));
+    if (fatOn) cellTaps = fatTaps(v_world - v_originFrac, fatWorldFw);
+    bool seamTaps = fatSeam(cellTaps);
+    // 2.9 — only painted, uncovered terrain water takes a column (3.6 coast
+    // flags, as the raking casts): never a sprite whose quarter-resolution
+    // material says water (a bridge rail, a log, pier beams, a facade) and
+    // never a dock, deck, bridge span or foundation the terrain bake laid
+    // over the water. The ripple step freezes under reduced motion; the
+    // columns' summed hue and each covered cell's lift land after the loop.
+    float columnSd = 0.0;
+    uint columnCoast = 0u;
+    bool columnReceiver = waterMaterial && u_terrainBatch && receiverLights > 0
+        && coastFieldAt(v_world, columnSd, columnCoast)
+        && (columnCoast & ${COAST_FIELD_FLAGS.water}u) != 0u
+        && (columnCoast & ${COAST_FIELD_FLAGS.covered}u) == 0u;
+    float columnTick = floor(u_time * ${WATER_COLUMN_TICK_RATE} * u_waterFx.x);
+    vec3 columnLight = vec3(0.0);
+    vec4 columnTap = vec4(0.0);
+    // 4.6 — a flat ground receiver's ambient and action-needed pools per
+    // covered cell (a wall, deck, body or ramp keeps the fragment's course).
+    bool poolTaps = seamTaps && recvClass == 0 && recvH < 0.5 && !rampPixel && !waterMaterial && receiverLights > 0;
+    vec3 poolTapLight[4] = vec3[4](vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0));
+    vec4 poolTapDepth = vec4(0.0);
+    vec3 attentionTapLight[4] = vec3[4](vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0));
+    vec4 attentionTapLuma = vec4(0.0);
+    vec4 attentionTapDepth = vec4(0.0);
+    for (int n = 0; n < ${MAX_LIGHT_RECORDS}; n++) {
+        if (n >= receiverLights) break;
+        int i = clusteredLights
+            ? int(texelFetch(u_lightTiles, ivec2(lightTile.x * ${LIGHT_TILE_STRIDE} + 1 + n, lightTile.y), 0).r)
+            : n;
+        vec4 light = texelFetch(u_lightData, ivec2(i, 0), 0);
+        vec4 lightShape = texelFetch(u_lightData, ivec2(i, 1), 0);
         float lightH = lightShape.x;
         float role = lightShape.w;
         bool attention = role > ${(LIGHT_ROLE_ATTENTION - 0.5).toFixed(1)};
-        // 2.5 — an attention light lights its owner's ground and its owner's
-        // body only: never a neighbour, a wall, a prop or water.
-        if (attention && (waterMaterial || (recvClass != 0 && (ownOwner == 0u || ownOwner != u_lightIds[i].x)))) {
+        bool backlitRim = false;
+        // 2.9 — water takes no diffuse pool (warm light on blue water would
+        // lay a green disc on the sea) and never an attention light (2.5):
+        // an aperture or fixture whose gate is lit (it is admitted) lays a
+        // broken column of its own hue (columnLift) on column-receiving water
+        // in front of its start: its foot, or for a water-only lamp high on
+        // its tower (the Lighthouse) the lamp's mirror point, its height
+        // below the foot. It runs WATER_COLUMN_REACH radii times its column
+        // reach, its dashes taper from 2 texels either side of the foot's
+        // texel (one more per 32 px of radius), and the footprint march clips
+        // it so it never crosses a building. Each covered cell keeps its
+        // strongest lift; the hue sums by the lights' energy.
+        if (waterMaterial) {
+            if (!columnReceiver || attention) continue;
+            vec4 columnMeta = texelFetch(u_lightData, ivec2(i, 3), 0);
+            uint columnFlags = uint(columnMeta.z + 0.5);
+            if ((columnFlags & ${LIGHT_RECORD_FLAGS.waterColumn}u) == 0u) continue;
+            float columnStart = light.y + ((columnFlags & ${LIGHT_RECORD_FLAGS.waterOnly}u) != 0u ? lightH : 0.0);
+            float columnReach = light.z * ${WATER_COLUMN_REACH.toFixed(2)} * max(1.0, columnMeta.w);
+            float columnAlong = artCell.y + 0.5 - columnStart;
+            if (columnAlong < -1.0 || columnAlong >= columnReach + 1.0) continue;
+            vec4 columnColor = texelFetch(u_lightData, ivec2(i, 2), 0);
+            float columnEnergy = light.w * columnColor.a;
+            float halfNear = 2.0 + floor(light.z / 32.0);
+            vec4 lift = vec4(0.0);
+            for (int t = 0; t < 4; t++) {
+                if (t > 0 && !seamTaps) break;
+                if (fatTapWeight(cellTaps, t) <= 0.0) continue;
+                vec2 cell = cellTaps.base + fatTapOffset(t);
+                lift[t] = columnLift(cell, light.x, cell.y + 0.5 - columnStart, columnReach, columnEnergy, halfNear, columnTick);
+            }
+            if (max(max(lift.x, lift.y), max(lift.z, lift.w)) < 0.5) continue;
+            if (u_marchSteps > 0 && footprintBlocked(recvGround, light.xy, 0.0, lightH, ownLandmark,
+                uint(columnMeta.y + 0.5), role > 1.5 && role < 2.5) > 0.5) continue;
+            columnTap = max(columnTap, lift);
+            columnLight += columnColor.rgb * columnEnergy;
             continue;
         }
-        bool backlitRim = false;
-        // V5 — the sea behind a light's foot stays dark: water takes a light
-        // only on the near side of its foot (no ring behind the Lighthouse).
-        if (waterMaterial && recvGround.y < light.y) continue;
         // V5 — falloff between the receiver's ground point and the light's
         // foot in iso ground space (y doubled). Height counts only beyond a
         // 24 world px band around the lamp: a lantern, brazier or door light
@@ -1506,25 +2294,51 @@ void main() {
         // Lighthouse) reaches the street only faintly, and a facade far above
         // a low door light stays dark. The reach keeps the ground radius
         // under the foot. toReceiver keeps the true height for facing.
+        // 2.4 — a window's light spills down its own face onto the street:
+        // below a facade aperture its height counts at APERTURE_SPILL, so an
+        // upper-floor window still lays a stepped course in front of its
+        // wall base (fainter the higher it sits), never on the wall round it.
+        bool facadeAperture = role > 0.5 && role < 1.5 && dot(lightShape.yz, lightShape.yz) > 0.25;
+        float spill = facadeAperture ? ${APERTURE_SPILL.toFixed(2)} : 1.0;
         vec3 toReceiver = vec3(recvGround.x - light.x, (recvGround.y - light.y) * 2.0, recvH - lightH);
         float d = length(toReceiver);
-        float lampBand = max(0.0, lightH - 24.0);
-        float falloffD = length(vec3(toReceiver.xy, max(0.0, abs(recvH - lightH) - 24.0)));
+        float lampBand = max(0.0, lightH - 24.0) * spill;
+        float falloffD = length(vec3(toReceiver.xy, max(0.0, abs(recvH - lightH) - 24.0) * (recvH < lightH ? spill : 1.0)));
         float falloffReach = sqrt(light.z * light.z + lampBand * lampBand);
         // A body takes one falloff for the whole figure, from its foot on its
         // axis at mid-body height (only its facing varies across the
         // silhouette), and as a small upright cylinder it still catches a lamp
         // a little past the edge of the pool the lamp throws on the ground.
         if (recvClass == 2) {
-            falloffD = length(vec3(v_receiver.y - light.x, (v_receiver.x - light.y) * 2.0, max(0.0, abs(20.0 - lightH) - 24.0)));
+            falloffD = length(vec3(v_receiver.y - light.x, (v_receiver.x - light.y) * 2.0,
+                max(0.0, abs(20.0 - lightH) - 24.0) * (lightH > 20.0 ? spill : 1.0)));
             falloffReach *= 1.25;
         }
         if (falloffD >= falloffReach) continue;
+        vec4 lightMeta = texelFetch(u_lightData, ivec2(i, 3), 0);
+        uint lightFlags = uint(lightMeta.z + 0.5);
+        // 2.9 — a water-only light (the Lighthouse lamp) lights nothing else.
+        if ((lightFlags & ${LIGHT_RECORD_FLAGS.waterOnly}u) != 0u) continue;
+        // 2.5 — an attention light lights its owner's ground and its owner's
+        // body only: never a neighbour, a wall or a prop.
+        if (attention && recvClass != 0 && (ownOwner == 0u || ownOwner != uint(lightMeta.x + 0.5))) continue;
+        vec4 lightColor = texelFetch(u_lightData, ivec2(i, 2), 0);
         float falloff = 1.0 - smoothstep(0.0, falloffReach, falloffD);
         // An aperture (window, door) emits into its face's half-space: the
-        // street in front of the facade, never the wall around it.
-        if (role > 0.5 && role < 1.5 && dot(lightShape.yz, lightShape.yz) > 0.25) {
-            falloff *= clamp(0.30 + 1.4 * dot(lightShape.yz, toReceiver.xy) / max(d, 1.0), 0.0, 1.0);
+        // street in front of the facade, never the wall around it (judged
+        // on the ground plane, so a high window's spill still leans out).
+        // R3 — a wall takes a window's light only across the street: its
+        // ground point at least APERTURE_WALL_AHEAD world px (iso) in front
+        // of the window's face line, at or below the window's own height
+        // (a window spills down and out, never up a chimney), and facing it
+        // (no 0.15 floor, below). A wall on or behind that line — the
+        // window's own facade, a chimney or gable over the same base, a
+        // lower house's wall facing the same way — stays dark, instead of
+        // catching a thin course that the dither breaks into speckle.
+        float ahead = dot(lightShape.yz, toReceiver.xy);
+        if (facadeAperture) {
+            falloff *= clamp(0.30 + 1.4 * ahead / max(length(toReceiver.xy), 1.0), 0.0, 1.0);
+            if (recvClass == 1 && (ahead < ${APERTURE_WALL_AHEAD.toFixed(1)} || recvH > lightH)) falloff = 0.0;
         }
         // Receiver response: an up-facing surface takes the light while the
         // lamp stands above it, and a deck, step or apron (face 0) up to 12
@@ -1563,9 +2377,9 @@ void main() {
                         vec2 rimUv = uv + rimStep;
                         vec2 innerUv = uv + 2.0 * rimStep;
                         bool outer = any(lessThan(rimUv, v_uvClamp.xy)) || any(greaterThan(rimUv, v_uvClamp.zw))
-                            || texture(u_albedo, rimUv).a < 0.01;
+                            || albedoTexture(rimUv).a < 0.01;
                         bool inner = !outer && (any(lessThan(innerUv, v_uvClamp.xy)) || any(greaterThan(innerUv, v_uvClamp.zw))
-                            || texture(u_albedo, innerUv).a < 0.01);
+                            || albedoTexture(innerUv).a < 0.01);
                         if ((outer || inner) && recvH <= lightH + 28.0 && falloff >= rimReach) {
                             response = 0.95;
                             backlitRim = true;
@@ -1579,54 +2393,69 @@ void main() {
                     response = max(facing, fill / max(falloff, 0.01));
                 }
             } else {
-                response = clamp(0.15 + 0.85 * facing, 0.0, 1.0);
+                response = clamp((facadeAperture && recvClass == 1 ? 0.0 : 0.15) + 0.85 * facing, 0.0, 1.0);
             }
         }
         float shape = falloff * response;
+        // 4.6 — per covered cell (poolTaps, flat ground only): the falloff
+        // above at each covered cell's own ground point (its offset from this
+        // cell added in iso ground space), on that cell's Bayer order.
+        vec4 tapShape = vec4(0.0);
+        bool tapCourse = false;
+        if (poolTaps) {
+            float tapZ = max(0.0, abs(recvH - lightH) - 24.0) * (recvH < lightH ? spill : 1.0);
+            for (int t = 0; t < 4; t++) {
+                if (fatTapWeight(cellTaps, t) <= 0.0) continue;
+                vec2 tapCell = cellTaps.base + fatTapOffset(t);
+                vec2 tapTo = toReceiver.xy + (tapCell - artCell) * vec2(1.0, 2.0);
+                float tapFalloff = 1.0 - smoothstep(0.0, falloffReach, length(vec3(tapTo, tapZ)));
+                if (facadeAperture) {
+                    tapFalloff *= clamp(0.30 + 1.4 * dot(lightShape.yz, tapTo) / max(length(tapTo), 1.0), 0.0, 1.0);
+                }
+                tapShape[t] = tapFalloff * response;
+                tapCourse = tapCourse || poolSteps(tapShape[t], bayer4(tapCell)) > 0.5;
+            }
+        }
         // 2.2 — the footprint march, only where this light lays a course.
         float blocked = 0.0;
-        if (!attention && u_marchSteps > 0 && poolSteps(shape, poolOrder) > 0.5) {
-            blocked = footprintBlocked(recvGround, light.xy, recvH, lightH, ownLandmark, u_lightIds[i].y,
+        if (!attention && u_marchSteps > 0 && (poolSteps(shape, poolOrder) > 0.5 || tapCourse)) {
+            blocked = footprintBlocked(recvGround, light.xy, recvH, lightH, ownLandmark, uint(lightMeta.y + 0.5),
                 role > 1.5 && role < 2.5);
         }
         shape *= 1.0 - blocked * 0.92;
+        tapShape *= 1.0 - blocked * 0.92;
         if (backlitRim) {
             rimReach = falloff;
             // One course for the whole rim (no Bayer order): dithered along
             // a one-texel line it would read as a stitched dotted outline.
             rimSteps = poolSteps(shape, 0.5);
-            rimLight = u_lightColors[i].rgb * light.w * u_lightColors[i].a;
+            rimLight = lightColor.rgb * light.w * lightColor.a;
             continue;
         }
         if (attention) {
             // Outside the exposure budget (colour alpha is 1), inside the
             // courses; no water or wet reflection streak.
             float steps = poolSteps(shape, poolOrder);
-            vec3 lit = u_lightColors[i].rgb * poolWeight(steps) * light.w * u_lightColors[i].a;
+            vec3 lit = lightColor.rgb * poolWeight(steps) * light.w * lightColor.a;
             float litLuma = dot(lit, GRADE_LUMA);
             if (litLuma > attentionLuma) {
                 attentionLight = lit;
                 attentionLuma = litLuma;
             }
             attentionDepth = max(attentionDepth, steps);
-            continue;
-        }
-        // V5 — water takes no diffuse pool (warm light on blue water would
-        // lay a green disc on the sea); it takes the source's hue only as a
-        // broken column in front of its foot, never behind it (the sea behind
-        // the Lighthouse stays dark): every other world row, in dashes. A
-        // lamp high on a tower lays no column at its foot (2.7: the
-        // Lighthouse's light on the sea is its beam).
-        if (waterReceiver > 0.5) {
-            if (lightH > 96.0) continue;
-            float ahead = v_world.y - light.y;
-            float reflectionX = 1.0 - smoothstep(0.0, light.z * 0.30, abs(v_world.x - light.x));
-            float reflectionY = step(0.0, ahead) * (1.0 - smoothstep(0.0, light.z * 1.70, ahead));
-            float row = floor(v_world.y);
-            float reflectionCourse = step(0.5, fract(row * 0.5))
-                * step(0.45, fract(floor(v_world.x) * 0.125 + fract(row * 0.618)));
-            reflectionLight += u_lightColors[i].rgb * reflectionX * reflectionY
-                * reflectionCourse * light.w * u_lightColors[i].a * 0.10;
+            if (poolTaps) {
+                for (int t = 0; t < 4; t++) {
+                    if (fatTapWeight(cellTaps, t) <= 0.0) continue;
+                    float tapSteps = poolSteps(tapShape[t], bayer4(cellTaps.base + fatTapOffset(t)));
+                    vec3 tapLit = lightColor.rgb * poolWeight(tapSteps) * light.w * lightColor.a;
+                    float tapLuma = dot(tapLit, GRADE_LUMA);
+                    if (tapLuma > attentionTapLuma[t]) {
+                        attentionTapLight[t] = tapLit;
+                        attentionTapLuma[t] = tapLuma;
+                    }
+                    attentionTapDepth[t] = max(attentionTapDepth[t], tapSteps);
+                }
+            }
             continue;
         }
         float steps = poolSteps(shape, poolOrder);
@@ -1637,16 +2466,29 @@ void main() {
             // course edges sit where the pool's do: a door light standing
             // on its steps lays its core on the middle of the flight and its
             // mid course round it, not one flat band.
-            admitted = max(admitted, steps * 0.15 * light.w * u_lightColors[i].a);
+            float rampShare = steps * 0.15 * light.w * lightColor.a;
+            if (rampShare > admitted) {
+                admitted = rampShare;
+                rampHue = lightColor.rgb;
+                rampSteps = steps;
+            }
         } else {
-            poolLight += u_lightColors[i].rgb * poolWeight(steps) * light.w * u_lightColors[i].a;
+            poolLight += lightColor.rgb * poolWeight(steps) * light.w * lightColor.a;
             poolDepth = max(poolDepth, steps);
+            if (poolTaps) {
+                for (int t = 0; t < 4; t++) {
+                    if (fatTapWeight(cellTaps, t) <= 0.0) continue;
+                    float tapSteps = poolSteps(tapShape[t], bayer4(cellTaps.base + fatTapOffset(t)));
+                    poolTapLight[t] += lightColor.rgb * poolWeight(tapSteps) * light.w * lightColor.a;
+                    poolTapDepth[t] = max(poolTapDepth[t], tapSteps);
+                }
+            }
         }
         // The source's own hue lies on wet ground in front of its foot,
         // broken on the world grid and clipped by the footprint march, so it
         // never crosses a building. Action-needed lights never spend one of
-        // these slots (u_wetMask).
-        if (recvClass == 0 && (u_wetMask & (1u << uint(i))) != 0u) {
+        // these slots (LIGHT_RECORD_FLAGS.wetReflection).
+        if (recvClass == 0 && (lightFlags & ${LIGHT_RECORD_FLAGS.wetReflection}u) != 0u) {
             if (wetReceiver < 0.0) {
                 wetReceiver = max(
                     materialNear(material, 7.0),
@@ -1658,25 +2500,104 @@ void main() {
                 float footprint = step(0.0, drop) * (1.0 - smoothstep(0.0, light.z * 1.30, drop));
                 float lateral = 1.0 - smoothstep(0.0, light.z * 0.26, abs(v_world.x - light.x));
                 float wetCourse = step(0.55, fract((floor(v_world.x) + floor(v_world.y) * 0.5) * 0.125 + 0.37));
-                reflectionLight += u_lightColors[i].rgb * wetReceiver * footprint * lateral * wetCourse
-                    * light.w * u_lightColors[i].a * (1.0 - blocked) * 0.22;
+                reflectionLight += lightColor.rgb * wetReceiver * footprint * lateral * wetCourse
+                    * light.w * lightColor.a * (1.0 - blocked) * 0.22;
             }
         }
+    }
+    // 2.10 — the one warm bounce (GroundRadiance, unit 15): the lit ground's
+    // albedo re-emitted across the plane and each lit opening's light leaving
+    // its wall as a fan, with 2.2's footprints opaque. A ground receiver reads
+    // the openings' soft fans at its foot (the ground's own bounce would only
+    // widen every pool); a landmark wall reads the bounce arriving from the
+    // direction its face looks, just in front of its foot, at its base only
+    // (never an opening's fan: no light round a window). It lands only where
+    // no direct light lays a course, and at most as course 1
+    // (radianceShape is capped under course 2's threshold before
+    // poolSteps, on the pools' own Bayer order), so bounce never outshines
+    // direct light and every edge is a dithered step. A 3.5 ramp pixel that
+    // no direct light reaches takes it through the same pool landing (the
+    // authored ramp stays the direct light's). Roofs, water, reflection
+    // twins, lit authored emitters (a source is never its own receiver),
+    // bodies and props take none.
+    bool bounceOnly = false;
+    if (u_radianceGrid.w > 0.5 && (recvClass == 0 || recvClass == 1) && !roofFace && !reflectRecord && emitterWeight < 0.05
+        && !waterMaterial && waterReceiver < 0.5 && (rampPixel ? admitted <= 0.0 : poolDepth < 0.5)) {
+        vec3 bounceLight;
+        float bounceShape = radianceShape(recvGround, recvNormal, recvH, recvClass == 1, bounceLight);
+        if (poolSteps(bounceShape, poolOrder) > 0.5) {
+            poolLight += bounceLight * poolWeight(1.0);
+            poolDepth = 1.0;
+            bounceOnly = true;
+            for (int t = 0; t < 4; t++) {
+                if (!poolTaps || poolTapDepth[t] > 0.5) continue;
+                poolTapLight[t] += bounceLight * poolWeight(1.0);
+                poolTapDepth[t] = 1.0;
+            }
+        }
+    }
+    // 2.9 — the columns land once, emissive-exempt: a column texel takes the
+    // value \`lift\` stops above its local water stop on the water ramp
+    // (columnRampLuma; never under the graded water plus 0.03 a stop), in
+    // the light's hue on the C1 emissive ramp (lift 3 on the core stop, 2
+    // half way, 1 on #ff9d4a; a cool light keeps 70 % of its own hue: the
+    // Lighthouse lamp's column on its lampBeam silver), 12 % of the graded
+    // water kept. The value follows the water's own ramp and the hue the
+    // light, never one flat emissive stop. Held under the receiver okL
+    // ceiling (the value ladder). A seam pixel blends its covered cells'
+    // landings by coverage (4.6).
+    if (max(max(columnTap.x, columnTap.y), max(columnTap.z, columnTap.w)) > 0.5) {
+        vec3 columnHue = columnLight / max(dot(columnLight, GRADE_LUMA), 0.001);
+        float columnWarm = clamp((columnHue.r - columnHue.b) * 1.25, 0.0, 1.0);
+        vec3 columnCool = mix(vec3(1.0), columnHue, 0.7);
+        int columnStop = waterStopForSd(columnSd);
+        vec3 columnLanded = vec3(0.0);
+        for (int t = 0; t < 4; t++) {
+            float w = fatTapWeight(cellTaps, t);
+            if (w <= 0.0) continue;
+            float lift = columnTap[t];
+            vec3 tapOut = color;
+            if (lift > 0.5) {
+                float y = max(columnRampLuma(columnStop, lift), receiverLuma + 0.03 * lift);
+                vec3 stop = mix(columnCool, lift > 3.5 ? LAND_CORE : (lift > 2.5 ? LAND_MID : LAND_RIM), columnWarm);
+                tapOut = mix(color, onStop(stop, y), 0.88);
+                tapOut = okCeiling(tapOut, color, RECEIVER_OKL_CEILING);
+            }
+            columnLanded += tapOut * w;
+        }
+        color = columnLanded;
     }
     // 3.5 — two reviewed thresholds pick the dark / mid / light course. The
     // ramp multiplies the authored albedo and adds one authored lift, so slate
     // stays slate and gold reaches its own highlight instead of bleaching. The
     // ramp light and the pilot's reflections land through the receiver knee.
+    // A lit course then lands on the strongest light's C1 stop by its pool
+    // course, as the ground pool beside it does (a warm door light: the rim
+    // on #ff9d4a, the mid half way to #ffcf7a, the core on #ffcf7a; a cool
+    // light keeps 70 % of its own hue), at the course's value and its full
+    // LAND_SHARE (the authored ramp already carries the light's value; the
+    // landing only names its hue): blue-grey stone plus amber alone reads as
+    // a cool grey lift, not lamplight.
     if (rampPixel && admitted > 0.0) {
         float course = step(0.14, admitted) + step(0.45, admitted);
         vec4 ramp = texture(u_paletteLut, vec2(
             (material + 0.5) / 11.0,
             (course + 0.5) / 3.0
         ));
-        color = receiverKnee(
+        vec3 rampLit = receiverKnee(
             color * (ramp.rgb * 2.0) + vec3(ramp.a * 0.25) * step(0.14, admitted) + reflectionLight,
             receiverLuma
         );
+        if (course > 0.5) {
+            vec3 hue = rampHue / max(dot(rampHue, GRADE_LUMA), 0.001);
+            float warm = clamp((hue.r - hue.b) * 1.25, 0.0, 1.0);
+            vec3 stop = mix(mix(vec3(1.0), hue, 0.7),
+                rampSteps < 1.5 ? LAND_RIM : (rampSteps < 2.5 ? LAND_MID : LAND_CORE), warm);
+            float y = dot(rampLit, GRADE_LUMA);
+            float share = rampSteps < 1.5 ? LAND_SHARE.x : (rampSteps < 2.5 ? LAND_SHARE.y : LAND_SHARE.z);
+            rampLit = okCeiling(mix(rampLit, onStop(stop, y), share), color, RECEIVER_OKL_CEILING);
+        }
+        color = rampLit;
         reflectionLight = vec3(0.0);
     }
     // 1.2 / V5 — the pools land once, stepped, multiplying the ungraded
@@ -1690,8 +2611,32 @@ void main() {
     vec3 bodyLift = recvClass == 2
         ? poolLight * min(0.15 * u_poolGain, 0.045 / max(dot(poolLight, GRADE_LUMA), 0.01))
         : vec3(0.0);
-    color = stepPool(color, poolLight, poolDepth, attentionLight, attentionDepth, poolAlbedo, reflectionLight + bodyLift,
-        recvClass == 2 ? 0.4 : 1.0);
+    // 2.10 — a pixel lit only by the bounce keeps more of its own colour
+    // (RADIANCE_LAND of the warm landing): a warm cast, never a painted band.
+    float poolLand = recvClass == 2 ? 0.4 : (bounceOnly ? RADIANCE_LAND : 1.0);
+    if (poolTaps) {
+        // 4.6 — each covered cell's pools land on this pixel's colour and
+        // blend by coverage; a cell whose lights equal the previous cell's
+        // reuses that landing.
+        vec3 poolLanded = vec3(0.0);
+        vec3 tapOut = color;
+        int prev = -1;
+        for (int t = 0; t < 4; t++) {
+            float w = fatTapWeight(cellTaps, t);
+            if (w <= 0.0) continue;
+            if (prev < 0 || poolTapLight[t] != poolTapLight[prev] || poolTapDepth[t] != poolTapDepth[prev]
+                || attentionTapLight[t] != attentionTapLight[prev] || attentionTapDepth[t] != attentionTapDepth[prev]) {
+                tapOut = stepPool(color, poolTapLight[t], poolTapDepth[t], attentionTapLight[t], attentionTapDepth[t],
+                    poolAlbedo, reflectionLight + bodyLift, poolLand);
+                prev = t;
+            }
+            poolLanded += tapOut * w;
+        }
+        color = poolLanded;
+    } else {
+        color = stepPool(color, poolLight, poolDepth, attentionLight, attentionDepth, poolAlbedo, reflectionLight + bodyLift,
+            poolLand);
+    }
     // 2.1 — a lit rim texel is the silhouette's outline on the lamp's side:
     // a multiply would leave the dark outline dark, so the rim takes the
     // lamp's own hue at a stepped value (one step per course), the pixel art
@@ -1725,8 +2670,10 @@ void main() {
     // 1.4 + 1.6 — cloud courses and aerial haze on this record's own grid;
     // on water the haze courses follow the sea's swell contours (N3, the
     // open sea's own rows, so they cross the map edge unbroken).
-    color = applyAtmosphereCourses(color, artCell, poolOrder,
-        artTopLeftPx.y + (waterMaterial ? seaContourRows(artCell) * u_camera.z : 0.0), u_additive);
+    color = seamTaps
+        ? fatAtmosphereCourses(color, cellTaps, waterMaterial)
+        : applyAtmosphereCourses(color, artCell, poolOrder,
+            artTopLeftPx.y + (waterMaterial ? seaContourRows(artCell) * u_camera.z : 0.0), u_additive);
     if (bakedRim && !u_additive) alpha = mix(alpha, max(alpha, v_alpha), nightCarry);
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
     outEmission = vec4(emission * alpha, alpha > 0.0 ? 1.0 : 0.0);
@@ -1771,7 +2718,7 @@ void main() {
 
 // 2.7 — the Lighthouse fan's half-width at the lamp's foot (ground px); the
 // rest of its shape, sweep and sheen step come from lighthouseBeam.
-const BEAM_NEAR_HALF_WIDTH = 6;
+export const BEAM_NEAR_HALF_WIDTH = 6;
 
 // 3.3 / 3.4 / 3.2 (outer) — the open sea. Every scene.a < 1 pixel below the
 // horizon is shaded here on the world texel grid, under whatever the scene
@@ -1807,24 +2754,6 @@ uniform vec3 u_seaSky;
 uniform vec4 u_squall;
 uniform float u_squallFall;
 const float OPEN_SEA_BAND = ${OPEN_SEA_BAND_DEPTH.toFixed(1)};
-const float OPEN_SEA_MAP_LAST = ${(MAP_SIZE - 0.56).toFixed(2)};
-// Tiles past the island diamond (CoastBake's outer-shelf \`excess\`: Euclidean
-// in tile space, so its contours round past the map corners).
-float islandExcess(vec2 w) {
-    vec2 uv = vec2(w.y / ${TILE_HEIGHT.toFixed(1)} + w.x / ${TILE_WIDTH.toFixed(1)}, w.y / ${TILE_HEIGHT.toFixed(1)} - w.x / ${TILE_WIDTH.toFixed(1)});
-    vec2 edge = clamp(uv, vec2(-0.44), vec2(OPEN_SEA_MAP_LAST));
-    return length(uv - edge);
-}
-// One 3-5 texel dash per 10x5 texel cell, present at \`presence\`.
-bool openSeaSwell(vec2 cell, float presence) {
-    vec2 k = floor(cell / vec2(10.0, 5.0));
-    if (waterHash12(k + vec2(211.0, 17.0)) >= presence) return false;
-    vec2 local = cell - k * vec2(10.0, 5.0);
-    float len = 3.0 + floor(waterHash12(k + vec2(223.0, 5.0)) * 3.0);
-    float x0 = floor(waterHash12(k + vec2(227.0, 41.0)) * (10.0 - len));
-    float y0 = floor(waterHash12(k + vec2(229.0, 83.0)) * 5.0);
-    return local.y == y0 && local.x >= x0 && local.x < x0 + len;
-}
 vec3 shadeOpenSea(vec2 cell) {
     float order = waterBayer4(cell);
     // Screen terms (path width, vignette) read the texel's centre pixel, so
@@ -1848,8 +2777,7 @@ vec3 shadeOpenSea(vec2 cell) {
     float reach = clamp((excess - 1.5) / 4.5, 0.0, 1.0);
     float n = (u_cloud.z > 0.0 || u_squall.w > 0.0 || u_seaSunlit > 0.0) ? cloudNoiseAt(cell) : 1.0;
     float m = u_cloud.z > 0.0 || u_seaSunlit > 0.0 ? cloudSeamField(cell, n, order, u_seaSunlit) : n;
-    float gust = seaGustAt(cell);
-    bool paw = seaPawAt(cell, gust, order);
+    float near = seaNear(excess);
     bool marked = false;
     vec3 c;
     float glint = glintDash(cell, texelPx, u_glint, u_camera.z, tick);
@@ -1864,31 +2792,25 @@ vec3 shadeOpenSea(vec2 cell) {
         c = lighthouseStop(beam) * mix(1.0, 0.86, u_seaSunBand);
         marked = true;
     } else {
-        // Swell presence (3.3 (a)): rising from the shelf to 0.45 three tiles
-        // out, easing to 0.10 far out, gathered into long 2:1 sets (the
-        // swell's own direction, wandering on a slow field) with calm gaps
-        // between, so the calm sea reads in sets, not an even speckle. The
-        // leading half of a set carries its crest: dashes there catch the
-        // sky two stops lighter.
-        float presence = excess < 3.0
-            ? clamp((excess - 0.5) * 0.18, 0.0, 0.45)
-            : mix(0.45, 0.10, clamp((excess - 3.0) / 12.0, 0.0, 1.0));
-        float setAt = fract(dot(cell, vec2(0.5, 1.0)) / ${SWELL_SET_PERIOD.toFixed(1)} + 1.3 * seaNoise(cell / vec2(640.0, 320.0) + vec2(3.0, 11.0)));
-        bool inSet = setAt < ${SWELL_SET_SHARE_OPEN.toFixed(2)};
-        presence *= inSet ? ${SWELL_SET_GAIN.toFixed(2)} : ${SWELL_GAP_GAIN.toFixed(2)};
-        float lighter = openSeaSwell(cell, presence) ? (inSet && setAt < ${(SWELL_SET_SHARE_OPEN * 0.5).toFixed(2)} ? 2.0 : 1.0) : 0.0;
+        // The body field (3.3 (a)): the sun-key course and each set's lit
+        // slope and trough. Swell caps: static 2:1 sets led by their crest
+        // strokes, dense near the island where the swell shoals, with cat's
+        // paws laying extra caps (3.4); the deep crests on the shared phase
+        // ride over them, two stops lighter near the island. The same rule
+        // as the in-map open water.
+        float s = swellPhase(cell);
+        stop = seaBodyStop(cell, s, stop, excess, order);
+        float lighter = swellCap(cell, s, near, seaPawCaps(cell, order));
         bool whitecap = false;
         if (clock > 0.0) {
             float lit = deepSwellLit(cell, tick, storm, ${DEEP_DASH_DENSITY.toFixed(2)});
             whitecap = lit > 1.5;
-            if (lit > 0.5) lighter = max(lighter, 1.0);
+            if (lit > 0.5) lighter = max(lighter, near > 0.8 ? 2.0 : 1.0);
         }
-        // A cat's paw's ruffle catches the sky two stops lighter.
-        if (paw && seaPawDash(cell, gust)) lighter = 2.0;
         marked = lighter > 0.0 || whitecap;
         // Sun on water: one stop lighter where the cloud field is lowest.
         if (u_seaSunlit > 0.0 && m < u_seaSunlit) lighter += 1.0;
-        vec3 albedo = whitecap ? WATER_FOAM : WATER_STOPS[int(max(stop - lighter, 0.0))];
+        vec3 albedo = whitecap ? WATER_FOAM : seaStopRgb(max(stop - lighter, 0.0));
         c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, u_seaSunBand);
         c = capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION);
     }
@@ -1897,16 +2819,22 @@ vec3 shadeOpenSea(vec2 cell) {
     // (warm at golden hour, like the path is the sun's) in four courses fading
     // into the sea, held at HSL L <= 0.70 like the path; V6's cool cap rules
     // the sea body below it. Its seams follow the swell contours, deepening
-    // from level at the haze.
-    float band = t - hazeRows + floor(contour * clamp((t - hazeRows) / 96.0, 0.0, 1.0) + 0.5);
-    if (!marked && t >= hazeRows && band >= 0.0 && band < OPEN_SEA_BAND) {
-        // Four solid courses, each handing to the next in a 2-row seam.
+    // from level at the haze. A swell mark (a cap, a crest) is broken out of
+    // its course by catching more of the sky (OPEN_SEA_BAND_MARK_LIFT heavier), so the
+    // band carries the sea's texture as light marks; the path keeps its stop.
+    // Under the haze courses the band holds its first course, so the haze
+    // hands to the band without a darker row between them.
+    float band = max(0.0, t - hazeRows) + floor(contour * clamp((t - hazeRows) / 96.0, 0.0, 1.0) + 0.5);
+    if (glint < 0.5 && beam < 0.5 && band < OPEN_SEA_BAND) {
+        // Four solid courses, each handing to the next in a 2-row seam; the
+        // last dithers out into the sea over OPEN_SEA_BAND_TAIL of its depth.
         float p = band / OPEN_SEA_BAND * 4.0;
         float k = floor(p);
-        float seam = 8.0 / OPEN_SEA_BAND;
+        float seam = k > 2.5 ? ${OPEN_SEA_BAND_TAIL.toFixed(2)} : 8.0 / OPEN_SEA_BAND;
         if (p - k > 1.0 - seam && (p - k - (1.0 - seam)) / seam > order) k += 1.0;
         float w = k < 0.5 ? ${OPEN_SEA_BAND_WEIGHTS[0].toFixed(2)} : k < 1.5 ? ${OPEN_SEA_BAND_WEIGHTS[1].toFixed(2)}
             : k < 2.5 ? ${OPEN_SEA_BAND_WEIGHTS[2].toFixed(2)} : k < 3.5 ? ${OPEN_SEA_BAND_WEIGHTS[3].toFixed(2)} : 0.0;
+        if (marked && w > 0.0) w += ${OPEN_SEA_BAND_MARK_LIFT.toFixed(2)};
         c = seaPathCap(mix(c, u_seaSky, w));
     }
     if (t < hazeRows) {
@@ -1965,6 +2893,10 @@ uniform vec3 u_flash;
 // The camera (offset xy, zoom z) and backing size, for world-grid shading.
 uniform vec3 u_camera;
 uniform vec2 u_resolution;
+// 4.6 — a flight frame (fractional k or camera offset): the open sea's world
+// texels take the scene's coverage seams.
+uniform bool u_fatPixels;
+${FAT_TAPS_GLSL}
 ${GRADE_GLSL}
 ${ATMOSPHERE_COURSES_GLSL}
 ${WATER_MOOD_GLSL}
@@ -1982,7 +2914,20 @@ void main() {
     if (u_seaOn && alpha < 1.0) {
         vec2 fragPx = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
         vec2 world = fragPx / u_camera.z - u_camera.xy;
-        if (world.y >= OPEN_SEA_HORIZON_Y) {
+        FatTaps taps = FatTaps(floor(world), vec2(0.0));
+        if (u_fatPixels) taps = fatTaps(world, vec2(1.0 / u_camera.z));
+        if (fatSeam(taps)) {
+            // 4.6 — a pixel a world-texel seam crosses: each covered cell's
+            // shade by coverage; cells above the horizon are clear sky.
+            vec4 sea = vec4(0.0);
+            for (int i = 0; i < 4; i++) {
+                float w = fatTapWeight(taps, i);
+                vec2 cell = taps.base + fatTapOffset(i);
+                if (w > 0.0 && cell.y >= OPEN_SEA_HORIZON_Y) sea += vec4(shadeOpenSea(cell), 1.0) * w;
+            }
+            color += sea.rgb * (1.0 - alpha);
+            alpha += sea.a * (1.0 - alpha);
+        } else if (world.y >= OPEN_SEA_HORIZON_Y) {
             color += shadeOpenSea(floor(world)) * (1.0 - alpha);
             alpha = 1.0;
         }
@@ -2270,7 +3215,23 @@ export class GpuWorldRenderer {
             this._pendingPresentIntervalMs = null;
             this.qualityLadder.clearPacing();
         };
-        this.lightAdmission = { cap: 0, admitted: 0, offered: 0, daylight: true };
+        // 2.4 — admission counters for Shift-D: `offered` lights on screen,
+        // `admitted`, and why the rest were not (`overCap`: past the ladder
+        // count, `tileFull`: a tile they reach had 16 lights), plus the walk.
+        this.lightAdmission = {
+            cap: 0, admitted: 0, offered: 0, culled: 0, overCap: 0, tileFull: 0, maxPerTile: 0,
+            clusters: false, tiles: 0, daylight: true,
+        };
+        // 2.4 — the Phase 5 A/B switch: true / false forces the clustered or
+        // the flat walk; null follows EFFECT_BUDGET `light-clusters`.
+        this.lightClusterOverride = null;
+        // 2.10 — the Phase 5 A/B switch for the ground radiance pilot: true
+        // / false forces it on or off at any level; null follows EFFECT_BUDGET
+        // `radiance-bounce`.
+        this.radianceOverride = null;
+        this._radiance = null;
+        this._radianceFeedKey = 0;
+        this._radianceCheckMs = -Infinity;
         this._debugLoad = null;
         this._frameLoadPasses = 0;
         this._frameLoadArm = null;
@@ -2304,14 +3265,30 @@ export class GpuWorldRenderer {
         this._particleMotifTexture = null;
         this.particleInstances = 0;
         this._batchScratch = [];
+        // B.1b — the albedo texture-array page and the pager the batcher
+        // calls for every normalized record.
+        this._albedoPage = null;
+        this.emptyAlbedoPage = null;
+        this._albedoPagedBound = false;
+        this._pageRecord = (record) => (
+            this._albedoPage && gpuRecordPageable(record, ALBEDO_PAGE_SIZE - ALBEDO_PAGE_GUTTER)
+                ? this._albedoPage.place(record)
+                : null
+        );
         this._normalizedRecordScratch = [];
         this._lightAdmissionCache = { source: null, sourceLength: 0, ranked: [], admitted: [], snapshots: [] };
         this._singleLightColorScratch = [0, 0, 0];
-        // V5 — the admitted lights' world-space uniforms (see SCENE_FRAGMENT).
-        this._lightScratch = new Float32Array(MAX_LIGHTS * 4);
-        this._lightShapeScratch = new Float32Array(MAX_LIGHTS * 4);
-        this._lightIdScratch = new Uint32Array(MAX_LIGHTS * 2);
-        this._lightColorScratch = new Float32Array(MAX_LIGHTS * 4);
+        // 2.4 — the admitted lights' RGBA32F records (unit 9: LIGHT_RECORD_ROWS
+        // rows x MAX_LIGHT_RECORDS) and the binning that admits them and
+        // fills the R16UI tile index (unit 10). Uploaded only on change.
+        this._lightBins = createLightBinScratch();
+        this._lightRecords = new Float32Array(MAX_LIGHT_RECORDS * LIGHT_RECORD_ROWS * 4);
+        this._lightRecordsPrev = new Float32Array(MAX_LIGHT_RECORDS * LIGHT_RECORD_ROWS * 4);
+        this._lightRecordsRevision = 0;
+        this._lightRecordsCount = -1;
+        this._lightTilesPrev = new Uint16Array(0);
+        this._lightTilesRevision = 0;
+        this._lightTilesEmpty = new Uint16Array(1);
         this.cloudCourses = 0;
         this.aerialHaze = 0;
         this.footprintMarchSteps = 0;
@@ -2380,19 +3357,20 @@ export class GpuWorldRenderer {
         this.compositeProgram = createProgram(gl, FULLSCREEN_VERTEX, COMPOSITE_FRAGMENT);
         this.timerExtension = gl.getExtension?.('EXT_disjoint_timer_query_webgl2') || null;
         this.sceneUniforms = uniformLocations(gl, this.sceneProgram, [
-            'u_camera', 'u_resolution', 'u_albedo', 'u_materialMap', 'u_emissiveMap',
+            'u_camera', 'u_resolution', 'u_fatPixels', 'u_albedo', 'u_albedoPage', 'u_albedoPaged', 'u_materialMap', 'u_emissiveMap',
             'u_hasMaterialMap', 'u_occluderMap', 'u_hasOccluderMap', 'u_packedGeometry', 'u_hasEmissiveMap',
             ...GRADE_UNIFORM_NAMES,
             'u_fogColor', 'u_weather', 'u_time', 'u_motionScale',
             'u_sun', 'u_overcast', 'u_additive',
-            'u_lightCount', 'u_lights[0]', 'u_lightShape[0]', 'u_lightIds[0]', 'u_lightColors[0]',
+            'u_lightCount', 'u_lightData', 'u_lightTiles', 'u_lightTileGrid',
+            'u_radiance', 'u_radianceGrid', 'u_radianceGain', 'u_radianceStrength',
             'u_footprint', 'u_footprintRect', 'u_footprintSize', 'u_marchSteps',
             'u_coreEnergy', 'u_waterMood',
             'u_cycleOffset', 'u_coastField', 'u_coastRect', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
-            'u_terrainBatch',
+            'u_terrainBatch', 'u_cueRuns',
             'u_wetness', 'u_wetReflectionCount', 'u_beamGround', 'u_beamShape', 'u_beamCourseEnds', 'u_beamCourseShares',
             'u_puddleMask', 'u_puddleRect', 'u_puddles', 'u_puddleSky', 'u_puddleGround',
-            'u_paletteLut', 'u_hasPaletteLut', 'u_wetMask',
+            'u_paletteLut', 'u_hasPaletteLut',
             ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
             ...SEA_WEATHER_UNIFORM_NAMES,
         ]);
@@ -2407,7 +3385,7 @@ export class GpuWorldRenderer {
             ...GRADE_UNIFORM_NAMES, ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
             'u_waterMood', 'u_seaOn', 'u_time', 'u_weather', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_seaSunBand', 'u_fogColor', 'u_seaHaze', 'u_seaSky', 'u_seaSunlit',
-            'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall',
+            'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall', 'u_fatPixels',
         ]);
         // V9 record VAO: six instance attributes (divisor 1), re-pointed per
         // batch by `_pointRecordInstances`; the strip corner is gl_VertexID.
@@ -2454,6 +3432,23 @@ export class GpuWorldRenderer {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
         gl.bindTexture(gl.TEXTURE_2D, null);
+        // B.1b — the page reallocates on demand; its 1x1x1 stand-in keeps
+        // unit 14 complete for batches drawn before any page exists.
+        this._albedoPage = new GpuAlbedoPage(gl, SCENE_SAMPLER_UNITS.albedoPage);
+        this.emptyAlbedoPage = gl.createTexture();
+        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedoPage);
+        gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyAlbedoPage);
+        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        // 2.10 — the ground radiance pilot: programs and targets are made on
+        // its first solve and released whenever `radiance-bounce` is off.
+        this._radiance = new GroundRadiance(gl, {
+            createProgram,
+            unit: SCENE_SAMPLER_UNITS.radiance,
+            apertureSpill: APERTURE_SPILL,
+        });
+        gl.activeTexture(gl.TEXTURE0);
         this._textureEntries.clear();
     }
 
@@ -2480,6 +3475,27 @@ export class GpuWorldRenderer {
         if (format !== 'rgba8') gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
         gl.bindTexture(gl.TEXTURE_2D, null);
         return texture;
+    }
+
+    /**
+     * 2.4 (M6) — the A/B switch for the light walk: true forces the clustered
+     * walk (R16UI tile index), false the flat walk over every admitted light,
+     * null follows EFFECT_BUDGET `light-clusters`. The admitted set is the
+     * same either way (`binGpuLights`). Returns the override now in force.
+     */
+    setLightClusterOverride(value = null) {
+        this.lightClusterOverride = value == null ? null : Boolean(value);
+        return this.lightClusterOverride;
+    }
+
+    /**
+     * 2.10 — the Phase 5 A/B switch for the ground radiance pilot: true forces
+     * the bounce on at any level, false off, null follows EFFECT_BUDGET
+     * `radiance-bounce`. Returns the override now in force.
+     */
+    setRadianceOverride(value = null) {
+        this.radianceOverride = value == null ? null : Boolean(value);
+        return this.radianceOverride;
     }
 
     /**
@@ -2607,6 +3623,12 @@ export class GpuWorldRenderer {
             if (entry.texture) gl.deleteTexture(entry.texture);
         }
         this._textureEntries?.clear?.();
+        this._albedoPage?.release();
+        this._albedoPage = null;
+        this._radiance?.release();
+        this._radiance = null;
+        if (this.emptyAlbedoPage) gl.deleteTexture(this.emptyAlbedoPage);
+        this.emptyAlbedoPage = null;
         this._cachedTextureBytes = 0;
         this._textureCacheNeedsTrim = false;
         if (this.emptyMaterialTexture) gl.deleteTexture(this.emptyMaterialTexture);
@@ -2641,6 +3663,11 @@ export class GpuWorldRenderer {
         this.bloomA = null;
         this.bloomB = null;
         this._textureEntries?.clear?.();
+        this._albedoPage?.abandon();
+        this._albedoPage = null;
+        this._radiance?.abandon();
+        this._radiance = null;
+        this.emptyAlbedoPage = null;
         this.emptyMaterialTexture = null;
         this.cloudTileTexture = null;
         this.vertexBuffer = null;
@@ -2695,7 +3722,8 @@ export class GpuWorldRenderer {
         const sceneDepthBytes = this.sceneTarget?.depthBuffer
             ? this.width * this.height * SCENE_DEPTH_BYTES_PER_PIXEL
             : 0;
-        this.textureBytes = estimate.total + this.width * this.height * 4 + sceneDepthBytes + this._cachedTextureBytes;
+        this.textureBytes = estimate.total + this.width * this.height * 4 + sceneDepthBytes + this._cachedTextureBytes
+            + (this._albedoPage?.bytes || 0) + (this._radiance?.bytes || 0);
     }
 
     resize(width, height) {
@@ -2805,7 +3833,12 @@ export class GpuWorldRenderer {
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
             gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+            // A patch list holds only this revision's changes: it applies
+            // only to a texture that saw every earlier revision, i.e. one used
+            // on the previous frame (a source that spent frames on the albedo
+            // page, B.1b, returns with a whole upload).
             const canPatch = !storageChanged
+                && (entry.lastUsedFrame === this.frames || entry.lastUsedFrame === this.frames + 1)
                 && Array.isArray(updates)
                 && updates.length > 0
                 && updates.every((update) => {
@@ -3050,6 +4083,9 @@ export class GpuWorldRenderer {
                 tail = !recordHasDefaultTail(records[recordIndex]);
             }
             batch.tail = tail;
+            // B.3 — plain ground-cue records keep the default tail, so a cue
+            // batch with a tail holds dot runs (flag cueRun).
+            batch.cueRuns = tail && batch.textureKey === GROUND_CUE_TEXTURE_KEY;
             batch.instanceOffset = byteLength;
             batch.count = records.length;
             byteLength += records.length * (tail ? RECORD_INSTANCE_BYTES : RECORD_HEAD_BYTES);
@@ -3112,16 +4148,34 @@ export class GpuWorldRenderer {
         this._pointedInstance = offset;
     }
 
+    // 4.6 (PT-5) — the GL layer's camera: Camera.renderOffsetGpuX/Y (the
+    // unrounded offset on a flight frame at k >= 2, else the rounded one), in
+    // world px, and the backing scale. `_cameraUniform` keeps the exact triple
+    // uploaded for CPU consumers (2.4's light tiles, the fallback light lift).
     _setCameraUniforms(uniforms, camera, scale = 1) {
-        const gl = this.gl;
         const dpr = Math.max(0.25, finite(camera?._dpr?.(), 1));
         const zoom = Math.max(0.01, finite(camera?.zoom, 1));
-        gl.uniform3f(
-            uniforms.u_camera,
-            finite(camera?.renderOffsetX, Math.round(finite(camera?.x) * zoom * dpr) / dpr) / zoom,
-            finite(camera?.renderOffsetY, Math.round(finite(camera?.y) * zoom * dpr) / dpr) / zoom,
-            zoom * dpr * scale,
-        );
+        const rounded = (value) => Math.round(finite(value) * zoom * dpr) / dpr;
+        const cam = this._cameraUniform || (this._cameraUniform = [0, 0, 0]);
+        cam[0] = finite(camera?.renderOffsetGpuX, finite(camera?.renderOffsetX, rounded(camera?.x))) / zoom;
+        cam[1] = finite(camera?.renderOffsetGpuY, finite(camera?.renderOffsetY, rounded(camera?.y))) / zoom;
+        cam[2] = zoom * dpr * scale;
+        this.gl.uniform3f(uniforms.u_camera, cam[0], cam[1], cam[2]);
+    }
+
+    // 4.6 (PT-2) — a flight frame samples fat pixels: exactly when the backing
+    // scale k = zoom × dpr or the GL camera offset (in backing px) is
+    // fractional. Resting frames keep today's nearest path untouched.
+    // `fatPixelsOverride` (true / false; null = derived) forces the gate for
+    // the byte-identity A/B.
+    _resolveFatPixels(camera) {
+        if (typeof this.fatPixelsOverride === 'boolean') return this.fatPixelsOverride;
+        const dpr = Math.max(0.25, finite(camera?._dpr?.(), 1));
+        const zoom = Math.max(0.01, finite(camera?.zoom, 1));
+        const fractional = (value) => Math.abs(value - Math.round(value)) > 1e-4;
+        const offsetX = finite(camera?.renderOffsetGpuX, finite(camera?.renderOffsetX, 0)) * dpr;
+        const offsetY = finite(camera?.renderOffsetGpuY, finite(camera?.renderOffsetY, 0)) * dpr;
+        return fractional(zoom * dpr) || fractional(offsetX) || fractional(offsetY);
     }
 
     // Resolve (and, when a revision moved, upload) every channel texture for
@@ -3130,8 +4184,28 @@ export class GpuWorldRenderer {
     // texSubImage/texImage cost is attributed to the upload phase rather than
     // appearing inside whichever pass happened to bind the batch first.
     _uploadBatchTextures(batches, occluderChannelEnabled = true) {
+        // B.1b — the page's queued slot uploads first; a paged batch binds
+        // the page and has no sidecars.
+        const page = this._albedoPage;
+        if (page) {
+            const started = performance.now();
+            const uploads = page.uploads;
+            const bytes = page.flushUploads();
+            if (bytes) {
+                this.uploads += page.uploads - uploads;
+                this.uploadBytes += bytes;
+                this._frameUploadMs += performance.now() - started;
+            }
+        }
         for (let index = 0; index < batches.length; index++) {
             const batch = batches[index];
+            if (batch.page) {
+                batch.albedoTexture = batch.page.texture;
+                batch.materialTexture = null;
+                batch.emissiveTexture = null;
+                batch.occluderTexture = null;
+                continue;
+            }
             const first = batch.records[0];
             const sidecar = batch.sidecarKey || batch.textureKey;
             batch.albedoTexture = this._textureFor(
@@ -3162,9 +4236,17 @@ export class GpuWorldRenderer {
         if (!albedo) return 0;
         const material = batch.materialTexture;
         const units = SCENE_SAMPLER_UNITS;
-        gl.activeTexture(gl.TEXTURE0 + units.albedo);
-        gl.bindTexture(gl.TEXTURE_2D, albedo);
-        gl.uniform1i(uniforms.u_albedo, units.albedo);
+        // B.1b — a paged batch samples the page already bound on its unit.
+        const paged = Boolean(batch.page);
+        if (paged !== this._albedoPagedBound) {
+            gl.uniform1i(uniforms.u_albedoPaged, paged ? 1 : 0);
+            this._albedoPagedBound = paged;
+        }
+        if (!paged) {
+            gl.activeTexture(gl.TEXTURE0 + units.albedo);
+            gl.bindTexture(gl.TEXTURE_2D, albedo);
+            gl.uniform1i(uniforms.u_albedo, units.albedo);
+        }
         gl.activeTexture(gl.TEXTURE0 + units.material);
         gl.bindTexture(gl.TEXTURE_2D, material || this.emptyMaterialTexture);
         gl.uniform1i(uniforms.u_materialMap, units.material);
@@ -3186,8 +4268,22 @@ export class GpuWorldRenderer {
             if (uniforms.u_puddleGround) gl.uniform1i(uniforms.u_puddleGround, this._puddleActive && terrain ? 1 : 0);
             if (uniforms.u_terrainBatch) gl.uniform1i(uniforms.u_terrainBatch, terrain ? 1 : 0);
         }
+        // 4.6 — fat pixels per batch: on a flight frame, unless the batch's
+        // records opt out (V9 fatOptOut: backing-pixel textures such as the
+        // ground-cue layer).
+        if (uniforms.u_fatPixels) {
+            const optOut = ((batch.records[0]?.flags || 0) & GPU_RECORD_FLAGS.fatOptOut) !== 0;
+            gl.uniform1i(uniforms.u_fatPixels, this.fatPixelsFrame && !optOut ? 1 : 0);
+        }
         this._pointRecordInstances(batch);
-        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.count);
+        if (batch.cueRuns) {
+            // B.3 — six vertices per dot of every run (GroundCueRecords).
+            gl.uniform1i(uniforms.u_cueRuns, 1);
+            gl.drawArraysInstanced(gl.TRIANGLES, 0, CUE_RUN_VERTICES, batch.count);
+            gl.uniform1i(uniforms.u_cueRuns, 0);
+        } else {
+            gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.count);
+        }
         return batch.records.length;
     }
 
@@ -3253,7 +4349,7 @@ export class GpuWorldRenderer {
     }
 
     // 3.1 / 3.6 — the coast lattice fields on units 7 (cycle offset, R8) and
-    // 8 (coast field, RG8), uploaded through the V9 typed path once per coast
+    // 8 (coast field + 3.7 mirror stops, RGBA8), uploaded through the V9 typed path once per coast
     // bake. MINIMAL (crests frozen, swash off) leaves both unbound and
     // `u_coastRect.z` 0, so every reader early-outs.
     _bindWaterFields(uniforms, fields, qualityLevel) {
@@ -3267,7 +4363,7 @@ export class GpuWorldRenderer {
                 width: fields.cols, height: fields.rows, format: 'r8', data: fields.cycleOffset, revision: fields.revision,
             });
             coast = this.uploadTypedTexture('field:coast', {
-                width: fields.cols, height: fields.rows, format: 'rg8', data: fields.coastField, revision: fields.revision,
+                width: fields.cols, height: fields.rows, format: 'rgba8', data: coastFieldTexels(fields), revision: fields.revision,
             });
         }
         const present = Boolean(cycle && coast);
@@ -3370,80 +4466,138 @@ export class GpuWorldRenderer {
 
         this.localLightPhase = localLightPhaseForLighting(feed.lighting);
         const daylightSuppressesLights = this.localLightPhase <= LOCAL_LIGHT_VISIBILITY_FLOOR;
-        // 0.1 — admission is the declared `light-admission` row (FULL 32,
-        // REDUCED 24, MINIMAL 12): the night's pools ship at every level.
+        // 0.1 / 2.4 — admission: `clampGpuLights` ranks the feed (attention >
+        // aperture > fixture > point), `binGpuLights` admits in that order up
+        // to the declared `light-admission` count (FULL 128, REDUCED 64,
+        // MINIMAL 24; attention past it) while every 64x64 backing-px tile a
+        // light reaches has one of its 16 slots free. Binning runs whichever
+        // walk `light-clusters` picks, so both walks light the same set.
         const lightLimit = daylightSuppressesLights
             ? 0
-            : Math.min(MAX_LIGHTS, effectBudgetMode('light-admission', qualityLevel));
-        const lights = clampGpuLights(
-            feed.lights,
-            lightLimit,
-            daylightSuppressesLights ? 0 : MAX_LIGHTS,
-            this._lightAdmissionCache,
-        );
+            : Math.min(MAX_LIGHT_RECORDS, effectBudgetMode('light-admission', qualityLevel));
+        const ranked = daylightSuppressesLights
+            ? NO_LIGHTS
+            : clampGpuLights(feed.lights, MAX_LIGHT_RECORDS, MAX_LIGHT_RECORDS, this._lightAdmissionCache);
+        // The scene pass's own u_camera triple (backing px = (world + xy) x z),
+        // so a tile holds exactly the lights that can reach its fragments.
+        const cameraUniform = this._cameraUniform;
+        const dpr = Math.max(0.25, finite(camera?._dpr?.(), 1));
+        const zoom = Math.max(0.01, finite(camera?.zoom, 1));
+        const cameraX = cameraUniform
+            ? cameraUniform[0]
+            : finite(camera?.renderOffsetX, Math.round(finite(camera?.x) * zoom * dpr) / dpr) / zoom;
+        const cameraY = cameraUniform
+            ? cameraUniform[1]
+            : finite(camera?.renderOffsetY, Math.round(finite(camera?.y) * zoom * dpr) / dpr) / zoom;
+        const backingScale = cameraUniform ? cameraUniform[2] : zoom * dpr;
+        const bins = binGpuLights(ranked, {
+            cap: lightLimit,
+            cameraX,
+            cameraY,
+            scale: backingScale,
+            width: this.width,
+            height: this.height,
+            wet: this.wetReflectionCount > 0,
+        }, this._lightBins);
+        const lights = bins.admitted;
+        const clusters = lights.length > 0 && (this.lightClusterOverride == null
+            ? effectBudgetMode('light-clusters', qualityLevel) === 'on'
+            : Boolean(this.lightClusterOverride));
         const admission = this.lightAdmission;
         admission.cap = lightLimit;
         admission.admitted = lights.length;
-        admission.offered = feed.lights?.length || 0;
+        admission.offered = bins.visible;
+        admission.culled = bins.culled;
+        admission.overCap = bins.overCap;
+        admission.tileFull = bins.tileFull;
+        admission.maxPerTile = bins.maxPerTile;
+        admission.clusters = clusters;
+        admission.tiles = bins.tilesX * bins.tilesY;
         admission.daylight = daylightSuppressesLights;
-        // V5 — the admitted lights in world space: foot, ground radius,
-        // intensity; emitter height, face normal, role; owner slot and
-        // landmark id. PostFxFeed supplies the world geometry; a light
-        // without it (a bare backing-px producer) is lifted back into the
-        // world through the camera, standing on its own point.
-        const dpr = Math.max(0.25, finite(camera?._dpr?.(), 1));
-        const zoom = Math.max(0.01, finite(camera?.zoom, 1));
-        const backingScale = zoom * dpr;
-        const cameraX = finite(camera?.renderOffsetX, Math.round(finite(camera?.x) * zoom * dpr) / dpr) / zoom;
-        const cameraY = finite(camera?.renderOffsetY, Math.round(finite(camera?.y) * zoom * dpr) / dpr) / zoom;
-        const lightValues = this._lightScratch;
-        const lightShapes = this._lightShapeScratch;
-        const lightIds = this._lightIdScratch;
-        const lightColors = this._lightColorScratch;
-        lightValues.fill(0);
-        lightShapes.fill(0);
-        lightIds.fill(0);
-        lightColors.fill(0);
-        let wetMask = 0;
+        // V5 / 2.4 — each admitted light's record (see SCENE_FRAGMENT): foot,
+        // ground radius, intensity; emitter height, face normal, role; colour
+        // and envelope share; owner slot, landmark id, flags, column reach.
+        // PostFxFeed supplies every light's world geometry.
+        const records = this._lightRecords;
+        const rowStride = MAX_LIGHT_RECORDS * 4;
         let wetSlots = this.wetReflectionCount;
         for (let index = 0; index < lights.length; index++) {
             const light = lights[index];
             const color = gpuLightColorForShader(light, DEFAULT_LIGHT_COLOR, this._singleLightColorScratch);
             const offset = index * 4;
-            const world = Number.isFinite(light.footX) && Number.isFinite(light.footY);
-            lightValues[offset] = world ? light.footX : finite(light.x) / backingScale - cameraX;
-            lightValues[offset + 1] = world ? light.footY : finite(light.y) / backingScale - cameraY;
-            lightValues[offset + 2] = Math.max(1, Number.isFinite(light.radiusWorld)
-                ? light.radiusWorld
-                : finite(light.radius, 64) / backingScale);
-            lightValues[offset + 3] = clamp(finite(light.intensity, 1), 0, 3);
             const attention = isAttentionLight(light);
-            lightShapes[offset] = Math.max(0, finite(light.height, 0));
-            lightShapes[offset + 1] = finite(light.nx, 0);
-            lightShapes[offset + 2] = finite(light.ng, 0);
-            lightShapes[offset + 3] = attention ? LIGHT_ROLE_ATTENTION : finite(light.role, LIGHT_ROLE_POINT);
-            lightIds[index * 2] = Math.max(0, Math.round(finite(light.ownerSlot, 0)));
-            lightIds[index * 2 + 1] = Math.max(0, Math.round(finite(light.landmarkId, 0)));
-            if (!attention && wetSlots > 0) {
-                wetMask |= (1 << index) >>> 0;
-                wetSlots--;
-            }
-            lightColors[offset] = color[0];
-            lightColors[offset + 1] = color[1];
-            lightColors[offset + 2] = color[2];
+            records[offset] = finite(light.footX);
+            records[offset + 1] = finite(light.footY);
+            records[offset + 2] = Math.max(1, finite(light.radiusWorld, 64));
+            records[offset + 3] = clamp(finite(light.intensity, 1), 0, 3);
+            records[rowStride + offset] = Math.max(0, finite(light.height, 0));
+            records[rowStride + offset + 1] = finite(light.nx, 0);
+            records[rowStride + offset + 2] = finite(light.ng, 0);
+            records[rowStride + offset + 3] = attention ? LIGHT_ROLE_ATTENTION : finite(light.role, LIGHT_ROLE_POINT);
+            records[2 * rowStride + offset] = color[0];
+            records[2 * rowStride + offset + 1] = color[1];
+            records[2 * rowStride + offset + 2] = color[2];
             // The spill share of the envelope rides here, so an action-needed
             // overlay light keeps its full read outside the exposure budget.
-            lightColors[offset + 3] = (light.night
+            records[2 * rowStride + offset + 3] = (light.night
                 ? clamp(finite(feed.lighting?.beaconIntensity, 0), 0, 1)
                 : 1) * (attention ? 1 : clamp(finite(energy.spill, 1), 0, 2));
+            let flags = 0;
+            if (!attention && wetSlots > 0) {
+                flags |= LIGHT_RECORD_FLAGS.wetReflection;
+                wetSlots--;
+            }
+            if (light.waterOnly === true) flags |= LIGHT_RECORD_FLAGS.waterOnly | LIGHT_RECORD_FLAGS.waterColumn;
+            else if (lightLaysColumn(light)) flags |= LIGHT_RECORD_FLAGS.waterColumn;
+            records[3 * rowStride + offset] = Math.max(0, Math.round(finite(light.ownerSlot, 0)));
+            records[3 * rowStride + offset + 1] = Math.max(0, Math.round(finite(light.landmarkId, 0)));
+            records[3 * rowStride + offset + 2] = flags;
+            records[3 * rowStride + offset + 3] = Math.max(1, finite(light.columnReach, 1));
+        }
+        if (!sameLightRecords(records, this._lightRecordsPrev, lights.length, rowStride, this._lightRecordsCount)) {
+            this._lightRecordsPrev.set(records);
+            this._lightRecordsRevision++;
+        }
+        this._lightRecordsCount = lights.length;
+        const recordTexture = this.uploadTypedTexture('light:records', {
+            width: MAX_LIGHT_RECORDS,
+            height: LIGHT_RECORD_ROWS,
+            format: 'rgba32f',
+            data: records,
+            revision: this._lightRecordsRevision,
+        });
+        let tileTexture;
+        if (clusters) {
+            const index = bins.index;
+            if (this._lightTilesPrev.length !== index.length) {
+                this._lightTilesPrev = new Uint16Array(index.length);
+                this._lightTilesRevision++;
+                this._lightTilesPrev.set(index);
+            } else if (!sameTypedArray(index, this._lightTilesPrev)) {
+                this._lightTilesPrev.set(index);
+                this._lightTilesRevision++;
+            }
+            tileTexture = this.uploadTypedTexture('light:tiles', {
+                width: bins.tilesX * LIGHT_TILE_STRIDE,
+                height: bins.tilesY,
+                format: 'r16ui',
+                data: this._lightTilesPrev,
+                revision: this._lightTilesRevision,
+            });
+        } else {
+            tileTexture = this.uploadTypedTexture('light:tiles-empty', {
+                width: 1, height: 1, format: 'r16ui', data: this._lightTilesEmpty,
+            });
         }
         this.lightCount = lights.length;
         gl.uniform1i(uniforms.u_lightCount, lights.length);
-        gl.uniform4fv(uniforms['u_lights[0]'], lightValues);
-        gl.uniform4fv(uniforms['u_lightShape[0]'], lightShapes);
-        gl.uniform2uiv(uniforms['u_lightIds[0]'], lightIds);
-        gl.uniform4fv(uniforms['u_lightColors[0]'], lightColors);
-        gl.uniform1ui(uniforms.u_wetMask, wetMask >>> 0);
+        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.lightData);
+        gl.bindTexture(gl.TEXTURE_2D, recordTexture);
+        gl.uniform1i(uniforms.u_lightData, SCENE_SAMPLER_UNITS.lightData);
+        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.lightTiles);
+        gl.bindTexture(gl.TEXTURE_2D, tileTexture);
+        gl.uniform1i(uniforms.u_lightTiles, SCENE_SAMPLER_UNITS.lightTiles);
+        gl.uniform3i(uniforms.u_lightTileGrid, bins.tilesX, bins.tilesY, clusters ? 1 : 0);
         // 2.2 — the footprint field on unit 6, uploaded once per map/scenery
         // revision, and this level's march length (FULL 8, REDUCED 4,
         // MINIMAL 0; 0 in daylight or before a field exists).
@@ -3466,6 +4620,75 @@ export class GpuWorldRenderer {
         gl.uniform3f(uniforms.u_footprintRect, finite(field?.originX), finite(field?.originY), fieldTexture ? finite(field.cell, 4) : 0);
         gl.uniform2i(uniforms.u_footprintSize, fieldTexture ? field.width : 0, fieldTexture ? field.height : 0);
         gl.uniform1i(uniforms.u_marchSteps, this.footprintMarchSteps);
+        // 2.10 — the ground radiance field on unit 15 (off: the empty texture
+        // and u_radianceGrid.w 0, so the branch never runs by day).
+        this._radiance?.bind(uniforms, this.emptyMaterialTexture);
+    }
+
+    // 2.10 — the ground radiance pilot (GroundRadiance): on at the levels
+    // EFFECT_BUDGET `radiance-bounce` names (or by `setRadianceOverride`),
+    // at night only (the same daylight gate that empties the light list).
+    // The light state is read every RADIANCE_MIN_SOLVE_MS: the island-wide
+    // emitter list (PostFxFeed `feed.radiance`, never viewport-culled, so a
+    // pan never re-solves), the 2.2 footprint field, the terrain bake (the
+    // bounce's albedo) and the coast field (water bounces nothing). The solve
+    // re-runs only when that state's key moves.
+    _updateRadiance(records, feed, qualityLevel) {
+        const radiance = this._radiance;
+        if (!radiance) return;
+        const on = this.radianceOverride ?? effectBudgetMode('radiance-bounce', qualityLevel) === 'on';
+        const night = localLightPhaseForLighting(feed.lighting) > LOCAL_LIGHT_VISIBILITY_FLOOR;
+        const field = feed.footprint;
+        const bytes = radiance.bytes;
+        if (!on || !night || !field?.data || !feed.radiance?.sources || !radiance.supported) {
+            radiance.update({ enabled: false });
+            if (radiance.bytes !== bytes) this._updateTextureBytes();
+            return;
+        }
+        const nowMs = performance.now();
+        if (radiance.ready && nowMs - this._radianceCheckMs < RADIANCE_MIN_SOLVE_MS) return;
+        this._radianceCheckMs = nowMs;
+        const spill = clamp(finite(sourceEnergyFor(feed.lighting).spill, 1), 0, 2);
+        const emitters = buildRadianceEmitters(feed.radiance, spill, radiance.emitters);
+        radiance.emitterCount = emitters.count;
+        const footprint = this.uploadTypedTexture('field:footprint', {
+            width: field.width,
+            height: field.height,
+            format: 'rg8',
+            data: field.data,
+            revision: field.revision ?? null,
+        });
+        let terrain = null;
+        for (let index = 0; index < records.length; index++) {
+            const record = records[index];
+            if (record?.id !== 'terrain:static') continue;
+            const texture = this._textureEntries.get(record.textureKey)?.texture || null;
+            if (texture) {
+                terrain = {
+                    texture,
+                    rect: { x: record.x, y: record.y, w: record.width, h: record.height },
+                    revision: record.textureRevision,
+                };
+            }
+            break;
+        }
+        const water = feed.coastWater;
+        const coast = water?.cols > 0 && water?.rows > 0
+            ? {
+                texture: this.uploadTypedTexture('field:coast', {
+                    width: water.cols, height: water.rows, format: 'rgba8', data: coastFieldTexels(water), revision: water.revision,
+                }),
+                rect: { x: water.x, y: water.y, cols: water.cols, rows: water.rows },
+            }
+            : null;
+        radiance.update({
+            enabled: true,
+            key: `${emitters.key}|${field.revision}|${terrain?.revision ?? ''}|${coast ? water.revision : ''}`,
+            count: emitters.count,
+            nowMs,
+            inputs: { footprint: { texture: footprint, rect: field }, terrain, coast },
+        });
+        if (radiance.bytes !== bytes) this._updateTextureBytes();
     }
 
     _renderScene(batches, camera, feed, qualityLevel = POST_FX_LEVELS.FULL) {
@@ -3487,6 +4710,17 @@ export class GpuWorldRenderer {
         let depthWrites = true;
         gl.useProgram(this.sceneProgram);
         this._setSceneUniforms(feed, camera, qualityLevel);
+        // B.1b — the albedo page (or its stand-in) stays on unit 14 for the
+        // pass; unit 0 starts on the empty texture in case a paged batch
+        // draws first.
+        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedoPage);
+        gl.bindTexture(gl.TEXTURE_2D_ARRAY, this._albedoPage?.texture || this.emptyAlbedoPage);
+        gl.uniform1i(this.sceneUniforms.u_albedoPage, SCENE_SAMPLER_UNITS.albedoPage);
+        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedo);
+        gl.bindTexture(gl.TEXTURE_2D, this.emptyMaterialTexture);
+        gl.uniform1i(this.sceneUniforms.u_albedo, SCENE_SAMPLER_UNITS.albedo);
+        gl.uniform1i(this.sceneUniforms.u_albedoPaged, 0);
+        this._albedoPagedBound = false;
         let additive = false;
         for (const batch of batches) {
             const add = batch.blend === 'add';
@@ -3584,6 +4818,7 @@ export class GpuWorldRenderer {
         // The composite's world mapping (the scene pass's camera at full
         // backing resolution), read by the beam and the open-sea route.
         this._setCameraUniforms(this.compositeUniforms, camera, 1);
+        gl.uniform1i(this.compositeUniforms.u_fatPixels, this.fatPixelsFrame ? 1 : 0);
         gl.uniform2f(this.compositeUniforms.u_resolution, this.width, this.height);
         this._uploadBeamUniforms(this.compositeUniforms, feed.beam || null);
         this._uploadOpenSeaUniforms(qualityLevel, camera, feed);
@@ -3958,13 +5193,24 @@ export class GpuWorldRenderer {
             }
         }
         this._occluderChannelSkipped = !occluderChannelEnabled;
+        // 4.6 — this frame's fat-pixel gate (Camera.latchGpuFrame ran first).
+        this.fatPixelsFrame = this._resolveFatPixels(camera);
         try {
             // Timer results are asynchronous. Polling only availability keeps
             // this path non-blocking; until the first clean result arrives the
             // existing CPU submission measurement remains the ladder fallback.
             this._pollGpuQueries();
             this._ensureTargets();
-            const batches = buildStableGpuBatches(records, this._batchScratch, this._normalizedRecordScratch);
+            // B.1b — pageable records go onto the albedo page; a frame whose
+            // sources overflow it repacks once and is batched again.
+            const page = this._albedoPage;
+            page?.beginFrame(this.frames);
+            let batches = buildStableGpuBatches(records, this._batchScratch, this._normalizedRecordScratch, this._pageRecord);
+            if (page?.repackIfOverflowed()) {
+                batches = buildStableGpuBatches(records, this._batchScratch, this._normalizedRecordScratch, this._pageRecord);
+                page.endRepackPass();
+                this._updateTextureBytes();
+            }
             if (!batches.length) return false;
             // One pass replaces (never nests inside) the whole-frame query on
             // one frame in twelve. Only whole-frame results feed the ladder.
@@ -3990,6 +5236,9 @@ export class GpuWorldRenderer {
                 });
             }
             this._endPass('upload', 0, this._vertexScratchUsed * 4);
+            // 2.10 — the radiance solve renders into its own targets, so it
+            // runs before the scene pass binds anything.
+            this._updateRadiance(records, feed, qualityLevel);
             let atlasRecords = 0;
             let individualRecords = 0;
             for (let index = 0; index < records.length; index++) {
@@ -4145,6 +5394,10 @@ export class GpuWorldRenderer {
             cachedTextureCapBytes: MAX_CACHED_TEXTURE_BYTES,
             cachedTextureCapExceeded: this._cachedTextureBytes > MAX_CACHED_TEXTURE_BYTES,
             cachedTextures: this._textureEntries.size,
+            // B.1b — layers, bytes, slots, paged/overflow records this frame.
+            albedoPage: this._albedoPage?.getDiagnostics() || null,
+            // 2.10 — the ground radiance pilot: solves, emitters, bytes.
+            radiance: this._radiance ? { ...this._radiance.getDiagnostics(), override: this.radianceOverride } : null,
             textureEvictions: this.textureEvictions,
             maxCachedTextureBytes: MAX_CACHED_TEXTURE_BYTES,
             maxCachedTextures: MAX_CACHED_TEXTURES,
@@ -4212,9 +5465,16 @@ export class GpuWorldRenderer {
         const attachmentBytes = targetBytes(this.sceneTarget) * 2 + depthBytes(this.sceneTarget)
             + targetBytes(this.bloomA) + targetBytes(this.bloomB);
         const bufferBytes = (this.vertexBufferBytes || 0) + (this.particleBuffer ? this._particleBytes.byteLength : 0);
-        const pinnedBytes = pinnedSourceBytes + attachmentBytes + bufferBytes;
+        const pageBytes = this._albedoPage?.bytes || 0;
+        const radianceBytes = this._radiance?.bytes || 0;
+        const pinnedBytes = pinnedSourceBytes + pageBytes + radianceBytes + attachmentBytes + bufferBytes;
         return {
-            textures: { pinnedSources: pinnedSourceBytes, evictableSources: evictableSourceBytes },
+            textures: {
+                pinnedSources: pinnedSourceBytes,
+                evictableSources: evictableSourceBytes,
+                albedoPage: pageBytes,
+                radiance: radianceBytes,
+            },
             pinnedBytes,
             evictableBytes: evictableSourceBytes,
             totalBytes: pinnedBytes + evictableSourceBytes,

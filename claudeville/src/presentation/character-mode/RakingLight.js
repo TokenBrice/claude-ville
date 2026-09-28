@@ -15,6 +15,7 @@
 // work beyond placing the cached stamps.
 
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
+import { COAST_FIELD_FLAGS } from './CoastBake.js';
 
 const COLD = [15, 22, 30];      // #0f161e — the midday contact shadow
 const VIOLET = [42, 35, 70];    // #2a2346 — the golden-hour shadow
@@ -276,11 +277,89 @@ export function treeCast(width, height, cast) {
     return entry;
 }
 
+// 2.9 (WS) — a raking cast over painted water keeps this share of its
+// strength there and is broken by the water column's ripple rows (every row
+// with mod(row + tick, 3) == 2 dropped, each row shifted by
+// floor(1.5·sin(row·0.7 + tick)) texels), so a golden-hour cast never lies
+// on the sea as a hard parallelogram. SCENE_FRAGMENT applies it per fragment
+// on the live 4 Hz water tick (V9 record flag `groundCast`); Canvas bakes it
+// at tick 0, the resident path's reduced-motion frame.
+export const GROUND_CAST_WATER_SHARE = 0.35;
+
+/**
+ * Canvas: the cast `baked` (a structureCast / treeCast entry) placed with its
+ * top-left at world (x, y), with every texel over painted water (3.6 coast
+ * field flag `water`, not `covered`: a dock, pier deck, bridge span or
+ * foundation keeps the land cast) held to GROUND_CAST_WATER_SHARE and broken
+ * by the ripple rows at tick 0. Returns `baked.canvas` itself when no texel
+ * lies on such water; cached on the entry per position and coast bake.
+ */
+export function castOverWater(baked, x, y, fields) {
+    const canvas = baked?.canvas;
+    if (!canvas || !fields?.cols || !fields.coastField) return canvas || null;
+    if (baked.overWaterRevision !== fields.revision) {
+        baked.overWater = new Map();
+        baked.overWaterRevision = fields.revision;
+    }
+    const key = `${x},${y}`;
+    const hit = baked.overWater.get(key);
+    if (hit) return hit;
+    const { width: w, height: h } = canvas;
+    const water = new Uint8Array(w * h);
+    let any = false;
+    for (let j = 0; j < h; j++) {
+        const r = Math.floor((y + j - fields.y) / 2);
+        if (r < 0 || r >= fields.rows) continue;
+        for (let i = 0; i < w; i++) {
+            const c = Math.floor((x + i - fields.x) / 2);
+            if (c < 0 || c >= fields.cols) continue;
+            const flags = fields.coastField[(r * fields.cols + c) * 2 + 1];
+            if ((flags & COAST_FIELD_FLAGS.water) && !(flags & COAST_FIELD_FLAGS.covered)) {
+                water[j * w + i] = 1;
+                any = true;
+            }
+        }
+    }
+    if (!any) {
+        baked.overWater.set(key, canvas);
+        return canvas;
+    }
+    const out = makeCanvas(w, h);
+    if (!out) return canvas;
+    const image = canvas.getContext('2d').getImageData(0, 0, w, h);
+    const src = image.data;
+    const dst = new Uint8ClampedArray(src);
+    for (let j = 0; j < h; j++) {
+        const row = y + j;
+        const dropped = ((row % 3) + 3) % 3 === 2;
+        const wobble = Math.floor(1.5 * Math.sin(row * 0.7));
+        for (let i = 0; i < w; i++) {
+            if (!water[j * w + i]) continue;
+            const o = (j * w + i) * 4;
+            const si = i - wobble;
+            if (dropped || si < 0 || si >= w) {
+                dst[o + 3] = 0;
+                continue;
+            }
+            const so = (j * w + si) * 4;
+            dst[o] = src[so];
+            dst[o + 1] = src[so + 1];
+            dst[o + 2] = src[so + 2];
+            dst[o + 3] = Math.round(src[so + 3] * GROUND_CAST_WATER_SHARE);
+        }
+    }
+    image.data.set(dst);
+    out.getContext('2d').putImageData(image, 0, 0);
+    baked.overWater.set(key, out);
+    return out;
+}
+
 /**
  * Canvas fallback: blit the cached tree casts for the trees on screen, in
- * world space (the caller holds the camera transform), on the ground layer.
+ * world space (the caller holds the camera transform), on the ground layer;
+ * `waterFields` (the coast bake's resident fields) break them over water.
  */
-export function drawTreeCasts(ctx, trees, cast, camera, viewport) {
+export function drawTreeCasts(ctx, trees, cast, camera, viewport, waterFields = null) {
     if (!ctx || !trees?.length || !cast || !camera?.worldToScreen) return;
     const margin = 160;
     ctx.save();
@@ -291,7 +370,10 @@ export function drawTreeCasts(ctx, trees, cast, camera, viewport) {
         if (p.x < -margin || p.y < -margin || p.x > viewport.width + margin || p.y > viewport.height + margin) continue;
         const bounds = tree.bounds || {};
         const baked = treeCast(finite(bounds.right) - finite(bounds.left), -finite(bounds.top), cast);
-        if (baked) ctx.drawImage(baked.canvas, Math.round(tree.x) + baked.offsetX, Math.round(tree.y) + baked.offsetY);
+        if (!baked) continue;
+        const x = Math.round(tree.x) + baked.offsetX;
+        const y = Math.round(tree.y) + baked.offsetY;
+        ctx.drawImage(castOverWater(baked, x, y, waterFields), x, y);
     }
     ctx.restore();
 }

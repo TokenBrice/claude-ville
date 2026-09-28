@@ -10,6 +10,13 @@
 // records that sample one shared cue atlas. The atlas holds, per colour, a
 // swatch texel and the 66 one-pixel line stamps a 16-pixel chord can take, so
 // a hairline costs one record per 16 pixels and fills cost one record per row.
+// B.3 — texel dots (`dottedCurve`, `ellipseArcDots`, trails: every council
+// ring and tether) arrive as a stream of tiny `fillRect`s, one record each.
+// Consecutive dots of one paint and size now join a run record (up to
+// CUE_RUN_DOTS dots, their integer steps packed into loc1), and the scene
+// vertex stage expands a run back into one quad per dot, in call order. The
+// quads, their rasterization and their blending are the per-dot records'
+// own, so the pixels are too (dots, stepped alpha, marching phase).
 // The atlas uploads only when a new colour first appears: a moving agent
 // moves records, never texels.
 //
@@ -22,6 +29,8 @@
 // images and gradients are not ground-cue vocabulary; they are counted as
 // unsupported and skipped, and any cue that needs them stays in the retained
 // cue texture.
+
+import { GPU_RECORD_FLAGS } from './gpu/GpuWorldPolicy.js';
 
 // One chord of a hairline: 16 art pixels along its major axis.
 const STAMP_SPAN = 16;
@@ -39,6 +48,66 @@ const MIN_RECORD_ALPHA = 0.004;
 // far above any observed frame (dense-100 at the overview stays under 3k).
 export const GROUND_CUE_RECORD_LIMIT = 32768;
 export const GROUND_CUE_TEXTURE_KEY = 'ground:cue-atlas';
+
+// B.3 — dot runs. A run holds up to CUE_RUN_DOTS dots of one paint and one
+// size (at most CUE_RUN_MAX_DOT texels a side). Its rect is the dots'
+// bounding box; loc1 carries four 24-bit integer words (exact in float32):
+//   w0  band (6 bits) | dot w-1 (2) | dot h-1 (2) | count-1 (4)
+//       | base step x + 8 (4) | base step y + 8 (4)
+//   w1  first dot x (8) | first dot y (8), both from the rect origin
+//       | steps 0-1 (4 bits each)
+//   w2  steps 2-7    w3  steps 8-13
+// Step j moves dot j to dot j+1 by (base x + bits 0-1, base y + bits 2-3), so
+// every step of a run lies within 3 texels of the run's smallest one per
+// axis; a step outside that window, or outside -8..10, starts a new run.
+export const CUE_RUN_DOTS = 15;
+const CUE_RUN_MAX_DOT = 4;
+const CUE_RUN_STEP_MIN = -8;
+const CUE_RUN_STEP_MAX = 10;
+const CUE_RUN_BASE_MAX = 7;
+// Six vertices per dot: the two triangles of the per-dot strip, in its order.
+export const CUE_RUN_VERTICES = CUE_RUN_DOTS * 6;
+
+// The vertex-stage half of B.3 (GpuWorldRenderer's record vertex shader).
+// With `u_cueRuns` set (a ground-cue batch holding runs, drawn with
+// CUE_RUN_VERTICES vertices per instance) it picks this vertex's dot and
+// strip corner and rewrites the record's rect and uv rect to that dot's own
+// rect on its colour's swatch texel, exactly the record the dot used to be.
+// A plain cue record in such a batch keeps its rect as dot 0; every vertex
+// past a record's last dot collapses to a point.
+export const CUE_RUN_GLSL = `
+uniform bool u_cueRuns;
+void cueRunVertex(int vertexId, uint flags, inout int corner, inout vec4 rect, inout vec4 uvRect) {
+    int index = vertexId / 6;
+    int tri = vertexId - index * 6;
+    // A strip's triangles are (0, 1, 2) then (2, 1, 3).
+    corner = tri < 3 ? tri : (tri == 3 ? 2 : (tri == 4 ? 1 : 3));
+    if ((flags & ${GPU_RECORD_FLAGS.cueRun}u) == 0u) {
+        if (index > 0) rect.zw = vec2(0.0);
+        return;
+    }
+    // Exact integers below 2^24: no +0.5 (at 2^23 and up it rounds to even).
+    uvec4 words = uvec4(uvRect);
+    uint head = words.x;
+    if (index > int((head >> 10u) & 15u)) {
+        rect.zw = vec2(0.0);
+        return;
+    }
+    ivec2 base = ivec2(int((head >> 14u) & 15u), int((head >> 18u) & 15u)) + ${CUE_RUN_STEP_MIN};
+    ivec2 at = ivec2(int(words.y & 255u), int((words.y >> 8u) & 255u));
+    for (int j = 0; j < ${CUE_RUN_DOTS - 1}; j++) {
+        if (j >= index) break;
+        uint word = j < 2 ? words.y : (j < 8 ? words.z : words.w);
+        uint shift = uint(j < 2 ? 16 + 4 * j : 4 * (j < 8 ? j - 2 : j - 8));
+        uint bits = (word >> shift) & 15u;
+        at += base + ivec2(int(bits & 3u), int(bits >> 2u));
+    }
+    rect = vec4(rect.xy + vec2(at), float(((head >> 6u) & 3u) + 1u), float(((head >> 8u) & 3u) + 1u));
+    vec2 atlas = vec2(textureSize(u_albedo, 0));
+    vec2 swatch = vec2(${SWATCH_X}.25, float(head & 63u) * ${BAND_HEIGHT}.0 + 0.25);
+    uvRect = vec4(swatch / atlas, (swatch + 0.5) / atlas);
+}`;
+
 const COORD_BIAS = 32768;
 const COORD_SPAN = 65536;
 const TAU = Math.PI * 2;
@@ -182,6 +251,16 @@ export class GroundCueRecorder {
         this.bounds = null;
         this.unsupported = 0;
         this.dropped = 0;
+        // B.3 — the open dot run (see _emitDot).
+        this._run = {
+            count: 0,
+            xs: new Int32Array(CUE_RUN_DOTS),
+            ys: new Int32Array(CUE_RUN_DOTS),
+            w: 0,
+            h: 0,
+            paint: null,
+            minDx: 0, maxDx: 0, minDy: 0, maxDy: 0,
+        };
         this._resetState();
     }
 
@@ -216,17 +295,20 @@ export class GroundCueRecorder {
         this.bounds = bounds;
         this.unsupported = 0;
         this.dropped = 0;
+        this._run.count = 0;
         this._resetState();
         return this;
     }
 
     end() {
+        this._flushRun();
         // A colour first seen late in the frame bumps the atlas revision; every
         // record must carry the final one or the batch would skip the upload.
         const revision = this.atlas.revision;
         const atlasWidth = this.atlas.canvas?.width || 1;
         const atlasHeight = this.atlas.canvas?.height || 1;
         const records = this.records;
+        const runFlag = GPU_RECORD_FLAGS.cueRun;
         // One batch per blend mode: the GPU renderer starts a new draw call at
         // every blend change, and interleaved screen halos and normal strokes
         // would split hundreds of runs into hundreds of draws. Normal cues keep
@@ -239,8 +321,12 @@ export class GroundCueRecorder {
             const record = records[i];
             record.textureRevision = revision;
             // The atlas may have grown mid-frame; UVs follow its final size.
-            record.sourceWidth = atlasWidth;
-            record.sourceHeight = atlasHeight;
+            // A dot run's loc1 is its payload (unit source size); the vertex
+            // stage reads the atlas size itself.
+            if (!(record.flags & runFlag)) {
+                record.sourceWidth = atlasWidth;
+                record.sourceHeight = atlasHeight;
+            }
             if (record.blend === 'add') additive.push(record);
             else records[write++] = record;
         }
@@ -515,7 +601,7 @@ export class GroundCueRecorder {
     _emit(x, y, width, height, paint, sx = -1, sy = 0, sw = 0, sh = 0) {
         if (this.records.length >= GROUND_CUE_RECORD_LIMIT) {
             this.dropped++;
-            return;
+            return null;
         }
         const index = this.records.length;
         let record = this._pool[index];
@@ -586,8 +672,102 @@ export class GroundCueRecorder {
         record.height = height;
         record.alpha = paint.alpha;
         record.blend = paint.add ? 'add' : 'normal';
+        record.flags = 0;
         record.textureRevision = this.atlas.revision;
         this.records.push(record);
+        return record;
+    }
+
+    // B.3 — one texel dot (a small `fillRect`, already on the art grid and
+    // culled). It joins the open run when paint, size and step allow, else
+    // the run is flushed and a new one starts here. Anything else that emits
+    // (`stroke`, `fill`, `end`) flushes first, so records keep call order.
+    _emitDot(x, y, width, height, paint) {
+        const run = this._run;
+        if (width > CUE_RUN_MAX_DOT || height > CUE_RUN_MAX_DOT) {
+            this._flushRun();
+            this._emit(x, y, width, height, paint);
+            return;
+        }
+        const count = run.count;
+        if (count) {
+            const last = run.paint;
+            if (count < CUE_RUN_DOTS && width === run.w && height === run.h
+                && paint.top === last.top && paint.alpha === last.alpha && paint.add === last.add) {
+                const dx = x - run.xs[count - 1];
+                const dy = y - run.ys[count - 1];
+                const minDx = count > 1 ? Math.min(run.minDx, dx) : dx;
+                const maxDx = count > 1 ? Math.max(run.maxDx, dx) : dx;
+                const minDy = count > 1 ? Math.min(run.minDy, dy) : dy;
+                const maxDy = count > 1 ? Math.max(run.maxDy, dy) : dy;
+                if (maxDx - minDx <= 3 && minDx >= CUE_RUN_STEP_MIN && maxDx <= CUE_RUN_STEP_MAX
+                    && maxDy - minDy <= 3 && minDy >= CUE_RUN_STEP_MIN && maxDy <= CUE_RUN_STEP_MAX) {
+                    run.minDx = minDx;
+                    run.maxDx = maxDx;
+                    run.minDy = minDy;
+                    run.maxDy = maxDy;
+                    run.xs[count] = x;
+                    run.ys[count] = y;
+                    run.count = count + 1;
+                    return;
+                }
+            }
+            this._flushRun();
+        }
+        run.paint = paint;
+        run.w = width;
+        run.h = height;
+        run.xs[0] = x;
+        run.ys[0] = y;
+        run.count = 1;
+    }
+
+    _flushRun() {
+        const run = this._run;
+        const count = run.count;
+        if (!count) return;
+        run.count = 0;
+        const paint = run.paint;
+        const xs = run.xs;
+        const ys = run.ys;
+        if (count === 1) {
+            this._emit(xs[0], ys[0], run.w, run.h, paint);
+            return;
+        }
+        let minX = xs[0];
+        let maxX = minX;
+        let minY = ys[0];
+        let maxY = minY;
+        for (let i = 1; i < count; i++) {
+            if (xs[i] < minX) minX = xs[i];
+            else if (xs[i] > maxX) maxX = xs[i];
+            if (ys[i] < minY) minY = ys[i];
+            else if (ys[i] > maxY) maxY = ys[i];
+        }
+        const baseX = Math.min(run.minDx, CUE_RUN_BASE_MAX);
+        const baseY = Math.min(run.minDy, CUE_RUN_BASE_MAX);
+        const w0 = (paint.top / BAND_HEIGHT)
+            | ((run.w - 1) << 6) | ((run.h - 1) << 8) | ((count - 1) << 10)
+            | ((baseX - CUE_RUN_STEP_MIN) << 14) | ((baseY - CUE_RUN_STEP_MIN) << 18);
+        let w1 = (xs[0] - minX) | ((ys[0] - minY) << 8);
+        let w2 = 0;
+        let w3 = 0;
+        for (let j = 0; j + 1 < count; j++) {
+            const bits = (xs[j + 1] - xs[j] - baseX) | ((ys[j + 1] - ys[j] - baseY) << 2);
+            if (j < 2) w1 |= bits << (16 + 4 * j);
+            else if (j < 8) w2 |= bits << (4 * (j - 2));
+            else w3 |= bits << (4 * (j - 8));
+        }
+        const record = this._emit(minX, minY, maxX - minX + run.w, maxY - minY + run.h, paint);
+        if (!record) return;
+        // loc1 stages sx, sy, sx + sw, sy + sh over a unit source: the words.
+        record.flags = GPU_RECORD_FLAGS.cueRun;
+        record.sourceWidth = 1;
+        record.sourceHeight = 1;
+        record.sx = w0;
+        record.sy = w1;
+        record.sw = w2 - w0;
+        record.sh = w3 - w1;
     }
 
     _emitChord(minX, minY, minor, xMajor, paint) {
@@ -744,6 +924,7 @@ export class GroundCueRecorder {
     stroke() {
         const paint = this._paint(this.strokeStyle);
         if (!paint) return;
+        this._flushRun();
         const scale = this._linearScale();
         const width = Math.max(1, Math.round((Number(this.lineWidth) || 1) * scale));
         const half = (width - 1) / 2;
@@ -792,6 +973,7 @@ export class GroundCueRecorder {
     fill() {
         const paint = this._paint(this.fillStyle);
         if (!paint) return;
+        this._flushRun();
         // Edges are stored top-down ([xTop, yTop, xBottom, yBottom]) and
         // walked with an active-edge list, so each row touches only the edges
         // that span it instead of the whole outline.
@@ -944,7 +1126,7 @@ export class GroundCueRecorder {
         if (b) {
             if (right < b.left || left > b.right || bottom < b.top || top > b.bottom) return;
         }
-        this._emit(left, top, right - left, bottom - top, paint);
+        this._emitDot(left, top, right - left, bottom - top, paint);
     }
 
     strokeRect(x, y, w, h) {

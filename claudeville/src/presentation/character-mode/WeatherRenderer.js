@@ -64,7 +64,6 @@ const SNOW_AREA_DENSITY = 3200;
 const SNOW_MAX_FLAKES = 420;
 const SNOW_MIN_FLAKES = 24;
 
-const RAIN_RIPPLE_SPRITE_ID = 'atmosphere.water.ripple.rain';
 const SPLASH_PRECIP_THRESHOLD = 0.15;
 const SPLASH_STAMP_INTERVAL_MS = 120;
 const SPLASH_STAMP_MIN_COUNT = 4;
@@ -83,8 +82,6 @@ const SPLASH_FRAMES = Object.freeze([
 ]);
 const RAIN_LIGHT = '#c4d6e2';
 const RAIN_DIM = '#96aabb';
-const RIPPLE_TILE_THROTTLE_MS = 2000;
-const RIPPLE_TILE_TRACK_LIMIT = 256;
 
 const DEFAULT_INTENSITY = {
     overcast: 0.38,
@@ -188,7 +185,6 @@ export class WeatherRenderer {
         this._splashStampSeed = 0;
         this._splashes = [];
         this._lightGrade = null;
-        this._rippleStampTimes = new Map();
         this._washTile = null;
         this._washPattern = null;
         this._washKey = '';
@@ -310,7 +306,6 @@ export class WeatherRenderer {
         this._lastSplashStamp = 0;
         this._splashStampSeed = 0;
         this._splashes.length = 0;
-        this._rippleStampTimes.clear();
         this.sceneContext = null;
         const fogTiles = Object.values(this._fogVariants || {}).map(variant => variant.canvas);
         for (const tile of [this._washTile, ...fogTiles]) {
@@ -725,68 +720,6 @@ export class WeatherRenderer {
         const a = camera.screenToWorld(0, 0);
         const b = camera.screenToWorld(width, height);
         return { left: a.x - 8, top: a.y - 8, right: b.x + 8, bottom: b.y + 8 };
-    }
-
-    // Public stamp helper for IsometricRenderer's water draw loop. Stamps a
-    // single rain ripple sprite at the supplied screen coordinates, throttled
-    // per tile to avoid re-stamping the same water cell within 2 seconds. The
-    // caller is responsible for selecting a small fraction of water tiles per
-    // frame so the global ripple budget stays bounded. No-op when the sprite
-    // is missing or the throttle is still active.
-    maybeStampWaterRipple(ctx, tileX, tileY, tileScreenX, tileScreenY) {
-        if (!ctx || !this._hasRippleSprite()) return false;
-        const key = `${tileX | 0},${tileY | 0}`;
-        const now = this.elapsedMs;
-        const last = this._rippleStampTimes.get(key);
-        if (last !== undefined && now - last < RIPPLE_TILE_THROTTLE_MS) return false;
-        this._trackRippleStamp(key, now);
-        this._stampSpriteAt(ctx, RAIN_RIPPLE_SPRITE_ID, {
-            x: tileScreenX,
-            y: tileScreenY,
-            alpha: 0.28,
-            scale: 1,
-        });
-        return true;
-    }
-
-    _hasRippleSprite() {
-        return Boolean(this.assets?.has?.(RAIN_RIPPLE_SPRITE_ID));
-    }
-
-    _stampSpriteAt(ctx, id, { x, y, alpha = 1, scale = 1, rotation = 0 } = {}) {
-        if (!ctx || !this.assets || alpha <= 0.005) return false;
-        const img = this.assets.get?.(id);
-        if (!img) return false;
-        const dims = this.assets.getDims?.(id) || { w: img.width || 0, h: img.height || 0 };
-        if (!dims.w || !dims.h) return false;
-        ctx.save();
-        ctx.globalAlpha *= alpha;
-        ctx.translate(Math.round(x), Math.round(y));
-        if (rotation) ctx.rotate(rotation);
-        if (scale !== 1) ctx.scale(scale, scale);
-        ctx.drawImage(img, Math.round(-dims.w / 2), Math.round(-dims.h / 2));
-        ctx.restore();
-        return true;
-    }
-
-    _trackRippleStamp(key, nowMs) {
-        if (this._rippleStampTimes.size >= RIPPLE_TILE_TRACK_LIMIT) {
-            // Cheap GC: evict the oldest half when we hit the cap so the map
-            // does not grow unbounded across long sessions.
-            const cutoff = nowMs - RIPPLE_TILE_THROTTLE_MS;
-            for (const [k, t] of this._rippleStampTimes) {
-                if (t < cutoff) this._rippleStampTimes.delete(k);
-            }
-            if (this._rippleStampTimes.size >= RIPPLE_TILE_TRACK_LIMIT) {
-                const drop = Math.ceil(this._rippleStampTimes.size / 2);
-                let i = 0;
-                for (const k of this._rippleStampTimes.keys()) {
-                    if (i++ >= drop) break;
-                    this._rippleStampTimes.delete(k);
-                }
-            }
-        }
-        this._rippleStampTimes.set(key, nowMs);
     }
 
     // 0.10 — the lightning bolt: midpoint displacement planned once per strike

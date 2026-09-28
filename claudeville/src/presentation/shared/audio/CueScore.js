@@ -15,9 +15,11 @@
 //
 // Silence is not a special case. With no audio context the score is published
 // on the monotonic clock immediately, so every accent still appears; nothing in
-// the world ever waits for sound. Governor aggregation keeps the representative
-// identity: the score belongs to the cue that actually sounded, never to the
-// collapsed announcement.
+// the world ever waits for sound. A body-led accent declared before its cue
+// (the release crown's cream frame) anchors the silent score as it would the
+// bells: the carrying note is the accent's own time. Governor aggregation keeps
+// the representative identity: the score belongs to the cue that actually
+// sounded, never to the collapsed announcement.
 
 import { eventBus } from '../../../domain/events/DomainEvent.js';
 import { AURORA_FIGURE, HOUR_FIGURE } from './Motifs.js';
@@ -86,11 +88,11 @@ const DIGEST_SPACING_MS = 220;
 
 // The note a body-led accent claims, for cues whose visual mark belongs to a
 // moving body rather than to the moment the cue was admitted. The release
-// peal lands its closing chord on the crown's cream frame.
+// peal strikes its first note on the crown's cream frame.
 export const CUE_ACCENT_NOTE = Object.freeze({
     arrival: 1,
     departure: 1,
-    release: 4,
+    release: 0,
 });
 
 export function councilBellCount(teamSize) {

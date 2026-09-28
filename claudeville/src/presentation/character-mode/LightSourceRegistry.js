@@ -30,7 +30,11 @@ function faceNormal(normal) {
  * an omni light; `ownerId` names the agent an attention light belongs to;
  * `landmarkId` (GPU_LANDMARK_IDS) the building a light is mounted on, so the
  * footprint march never shadows a light with its own building. `kind` keeps
- * its drawing meaning for its readers.
+ * its drawing meaning for its readers. 2.9: every aperture and fixture lays
+ * a broken column on the water in front of its foot; `columnReach` scales
+ * that column's length (the Lighthouse lamp: 1.2) and `waterOnly` marks a
+ * light that lights nothing but that column (the lamp high on its tower,
+ * whose column starts at its mirror point, `height` below the foot).
  */
 export function normalizeLightSource(source = {}, defaults = {}) {
     const kind = SUPPORTED_KINDS.has(source.kind) ? source.kind : 'point';
@@ -68,6 +72,8 @@ export function normalizeLightSource(source = {}, defaults = {}) {
             || (source.fire === true && (source.buildingType || defaults.buildingType)
                 ? `fire:${source.buildingType || defaults.buildingType}`
                 : null),
+        waterOnly: source.waterOnly === true,
+        columnReach: Number.isFinite(source.columnReach) && source.columnReach > 0 ? source.columnReach : 1,
         endpoints: Array.isArray(source.endpoints) ? source.endpoints : undefined,
         controlPoint: source.controlPoint,
         parent: source.parent,
@@ -86,6 +92,21 @@ export function normalizeLightSource(source = {}, defaults = {}) {
         intensity: Number.isFinite(source.intensity) ? source.intensity : defaults.intensity ?? 1,
         overlay: source.overlay || defaults.overlay || null,
     };
+}
+
+// V5 — a light's height above the ground in SCENE_FRAGMENT's ground course
+// (a receiver on the ground under a raised lamp): height counts only beyond
+// LIGHT_HEIGHT_BAND world px, and below a facade aperture (a window or door
+// on a wall: role `aperture` with a face normal) at APERTURE_SPILL (2.4: a
+// window's light spills down its own face to the street). The Canvas pool
+// stamps and the hybrid pools step their ground course on it.
+export const LIGHT_HEIGHT_BAND = 24;
+export const APERTURE_SPILL = 0.35;
+export function groundCourseHeight(light) {
+    const band = Math.max(0, (Number(light?.height) || 0) - LIGHT_HEIGHT_BAND);
+    const n = Array.isArray(light?.normal) ? light.normal : null;
+    const facade = light?.role === 'aperture' && n && (Number(n[0]) || 0) ** 2 + (Number(n[1]) || 0) ** 2 > 0.25;
+    return facade ? band * APERTURE_SPILL : band;
 }
 
 // 2.5 — V9's integer owner slot for an agent id: records and attention lights

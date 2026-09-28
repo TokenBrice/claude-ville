@@ -153,24 +153,53 @@ re-points its attributes at its own byte range (`_pointRecordInstances`).
 | Loc | Type | Fields | Bytes |
 | --- | --- | --- | --- |
 | 0 | `FLOAT x4` | rect `(x, y, w, h)`, world px | 0-15 |
-| 1 | `FLOAT x4` | uv rect `(u0, v0, u1, v1)` | 16-31 |
+| 1 | `FLOAT x4` | uv rect `(u0, v0, u1, v1)`; a paged record's rect addresses its slot in its page layer | 16-31 |
 | 2 | `FLOAT x4` | `(alpha, material, elevation, emissive)` | 32-47 |
-| 3 | `USHORT x4` | `(occluder x 65535, gate x 65535, ramp, flags)` | 48-55 |
+| 3 | `USHORT x4` | `(page layer, gate x 65535, ramp, flags)` | 48-55 |
 | 4 | `USHORT x4` | `(depth key, footY, frontCornerX, frontCornerY)`; receiver coordinates are integer world px + 32768 | 56-63 |
 | 5 | `USHORT x2`, `vertexAttribIPointer`, flat | `(ownerSlot, landmarkId)` | 64-67 |
 
 Continuous values stay float32, so the instanced frame is hash-identical with the
 six-vertex staging it replaced. A batch whose records all hold the default tail
-(locs 3-5: no occluder, gate 1, no ramp or flags, depth key 0, footY -1,
+(locs 3-5: page layer 0, gate 1, no ramp or flags, depth key 0, footY -1,
 frontCorner `(0, -1)`, no identity) stages the 48-byte head only and reads the
-tail as constant generic attributes: terrain, ground casts and marks, and every
-ground-cue chord.
+tail as constant generic attributes: terrain, ground marks and every
+ground-cue chord. A cue batch holding dot runs and a batch holding building or
+tree ground casts stage the tail (their flags).
 
 - **Flags** (`GPU_RECORD_FLAGS`, loc3.w): 1 `writesDepth`, 2 `reflect`
   (3.11), 4 `fatOptOut` (4.6), 8 `screenSpace` (haze, `ground:semantics`),
   16 `surfaceCode` (2.3: occluder B is the surface code, R true height),
-  32 `packedGeometry` (B.2). loc3.x is reserved (0): its only reader, the
-  screen occlusion pass, was deleted by 2.2.
+  32 `packedGeometry` (B.2), 64 `receiverAxis` (3.8: an upright prop turning
+  round a vertical axis), 128 `cueRun` (B.3: a ground-cue dot run; loc1
+  holds four packed 24-bit integer words, not UVs, and the batch draws
+  `CUE_RUN_VERTICES` vertices per instance so the vertex stage rebuilds each
+  dot's own rect and swatch uv, `GroundCueRecords.CUE_RUN_GLSL`), 256
+  `groundCast` (2.9: a building or tree ground cast; over painted water,
+  coast flag `water` and not `covered`, the scene fragment keeps
+  `RakingLight.GROUND_CAST_WATER_SHARE` of it and breaks it by the water
+  column's ripple rows).
+- **Albedo page** (B.1b, `GpuAlbedoPage.js`, unit 14): one `TEXTURE_2D_ARRAY`
+  of 1024² RGBA8 layers (at most 6; 3 at dense-100) holding the sources of
+  sidecar-less records (`gpuRecordPageable`: no material, emissive or occluder
+  source, no sidecar key, not screen-space, a whole-source rect of a source at
+  most 1022 px a side): tree lean frames, tree and building ground casts, agent
+  ground stamps (contact shadows, 2.8 point casts, rings), static prop caches,
+  and the agent frame atlas while it has no channel atlas. loc3.x carries the
+  record's layer (0 for every unpaged record; its only earlier reader, the
+  screen occlusion pass, was deleted by 2.2) and its uv rect addresses its
+  shelf-packed slot (2 px transparent gutter right and below). Paged records
+  batch by page, so consecutive trees, casts, stamps, props and bodies share
+  one draw; records with sidecars keep their own 2D textures and break on
+  texture as before. Each slot uploads through a scratch 2D texture and a GPU
+  copy (`copyTexSubImage3D`), so its texels equal the 2D path's byte for byte
+  (a direct canvas `texSubImage3D` un-premultiplies differently). A frame whose
+  sources do not fit repacks the page once (reallocated at the layer count its
+  live set needs at ≤ 60 % fill, slots dropped, the frame batched again); a
+  90-frame cooldown keeps an over-full page on the 2D path instead of
+  thrashing. Every albedo read in `SCENE_FRAGMENT` goes through
+  `albedoTexture(uv)`, `albedoTexel(ivec2)` and `albedoSize()`; a texel clamp
+  is always the record rect (`v_uvClamp`), never the texture size.
 - **Painter depth** (0.6): `depthKey = round((clamp(sortY) + 2048) x 8)`, i.e.
   sortY clamped to [-2048, 6143.875] at 1/8 world px, exactly the 65,536 steps of
   the `DEPTH_COMPONENT16` attachment (`gpuDepthKey`). Shaders write
@@ -206,7 +235,7 @@ fragment units). Scene program (`SCENE_SAMPLER_UNITS`):
 
 | Unit | Field | Format | Reader |
 | ---: | --- | --- | --- |
-| 0 | albedo | RGBA8 | every record |
+| 0 | albedo | RGBA8 | every unpaged record |
 | 1 | material | RGBA8 | every record |
 | 2 | free | | (2.2 deleted the screen occlusion target) |
 | 3 | emissive | RGBA8 | every record |
@@ -215,12 +244,13 @@ fragment units). Scene program (`SCENE_SAMPLER_UNITS`):
 | 6 | footprint height + landmark id | RG8 | 2.2 light loop: the footprint march (`FootprintField.js`, 704x384, 4 world px/texel) |
 | 7 | water cycle offset | R8 | reserved: 3.1 (terrain/water only) |
 | 8 | coast field | RG8 | reserved: 3.6 (terrain/water only) |
-| 9 | light records | RGBA32F | reserved: 2.4 |
-| 10 | light tile index | R16UI (`usampler2D`) | reserved: 2.4 |
+| 9 | light records | RGBA32F, 256 x 4 (`highp sampler2D`, `texelFetch`) | 2.4 light loop: admitted light i is column i; row 0 (foot x, foot y, ground radius, intensity) world px, row 1 (emitter height, face normal nx, ng, role code 0 point / 1 aperture / 2 fixture / 3 attention), row 2 (shader rgb, envelope share), row 3 (owner slot, landmark id, `LIGHT_RECORD_FLAGS` 1 wet reflection / 2 water column / 4 water only, column reach). 16 KiB baseline, uploaded only on change |
+| 10 | light tile index | R16UI (`highp usampler2D`), tilesX*17 x tilesY | 2.4 clustered walk (`light-clusters` on): per 64x64 backing-px tile (tx, ty), texel (tx*17, ty) = count (<= 16), the next `count` texels the admitted light indices in admission order; a 1x1 zero texture when the flat walk runs. 57,596 B at 4880x1392 |
 | 11 | puddle mask | R8 | reserved: 5.2 (ground only) |
 | 12 | cloud-course noise tile | RGBA8 (linear) | 1.4 cloud courses + 1.6 aerial haze, per record; 3.4 sunlit course on in-map open water |
 | 13 | C-W3 sea gust field | R8 (linear) | 3.4 cat's paws on in-map open water (the composite's own field, one upload per frame) |
-| 14-15 | free | | |
+| 14 | albedo page | RGBA8 `TEXTURE_2D_ARRAY` (`highp sampler2DArray`, also read by the vertex stage for the rect clamp) | B.1b: every paged record, layer at loc3.x |
+| 15 | ground radiance | RGBA16F (filtered), 528 x 192: three 176 x 192 probe panels | 2.10 pilot (`GroundRadiance`, `radiance-bounce`, off by default; `gpuWorld.setRadianceOverride`): panel 0 fluence, 1 light arriving from the SW, 2 from the SE, one texel per 16 ground units (world x, world y x 2) over the footprint rect; rgb everything (bounce + ground-level openings), a the openings' fans alone (luma). Read at the receiver's foot, only where no direct course lands; the empty texture and `u_radianceGrid.w` 0 when off. 4,071,424 B with its scene, cascade and emitter targets, released whenever off |
 
 Particle program (`PARTICLE_SAMPLER_UNITS`): 0 = event-shape motif mask (R8),
 1 = cloud-course noise tile. Composite (`COMPOSITE_SAMPLER_UNITS`): 0 scene,
@@ -229,8 +259,11 @@ sunlit course and cat's paws on the world grid; the island's clouds and haze
 are shaded per record). `uploadTypedTexture` restores the active unit's
 binding, so an upload never blanks a sampler a caller already bound. `SCENE_FRAGMENT` stays one program:
 the table fits one unit budget, and a terrain/water split would need a uniform
-buffer to avoid uploading the grade and 32 lights twice per frame; the
-terrain/water-only units are marked so a split stays mechanical.
+buffer to avoid uploading the grade twice per frame (the lights live in units
+9/10 since 2.4); the terrain/water-only units are marked so a split stays
+mechanical. Admission (`GpuWorldPolicy.binGpuLights`) bins every light's
+conservative reach rect (`lightReachRect`) into the tiles before either walk,
+so the clustered and the flat walk light the identical set of pixels.
 
 **Typed uploads**: `GpuWorldRenderer.uploadTypedTexture(key, { width, height,
 format, data, revision })` takes `r8`/`rg8` (`Uint8Array`), `r16ui`
@@ -341,7 +374,11 @@ sidecar, `--out=<dir>` writes previews.
   base rules cannot see: stairs (face 0, height ramps), decks and piers (face
   0 at deck height, matched by plank colour with seams closed), set-back
   masses with their own front corner (towers, the Command drum and dome, the
-  Forge chimney), and masses standing on a deck (`lift`). Per M5 the Harbor
+  Forge chimney), and masses standing on a deck (`lift`). The Command dome's
+  roof region matches only its slate and gold (`match`); the drum wall under
+  the gold ring and the lantern's stone fall through to an `auto` region on
+  the dome's corner and are walls (faces 1/2), as are three unlit slate-glass
+  panes the emissive sidecar leaves dark. Per M5 the Harbor
   (water line; decks and piers at h 8, houses lifted 8), Lighthouse (stair,
   footing apron, bronze cap = roof), Observatory (door steps, dome shell and
   maroon eaves = roof) and Portal (stairs 0->23, dais flagstones at h 23, the
@@ -352,6 +389,18 @@ sidecar, `--out=<dir>` writes previews.
 - The sprite audit (`npm run sprites:channels-validate`) fails a landmark
   without `occluderSidecar` + `surfaceCode`, and one whose occluder R or B is
   all zero.
+- Face 3 has a second reader: roof weather (5.2 roofs, 6.6,
+  `RoofWeather.js`). Snow, the wet-slate course and the eave drips lie only
+  on face-3 texels whose albedo is roof material (slate, metal, or the ink
+  between them — a mis-tagged wall stays bare), minus lit glass,
+  fabric/rune/fire material and trim (metal on a slate roof, any other
+  face-3 colour such as the Observatory's maroon cornice), and on silhouette
+  caps; a landmark without the
+  channel takes none. They draw as a patch record right after the landmark
+  (after its glass patch, before its parts) that carries crops of the
+  landmark's own material and occluder companions, so the patch shades as
+  the slate under it (surface-coded, unlit by lamps). Re-baking the surface
+  channel re-classes roof weather with it.
 
 ### Room masks (plan 6.3)
 

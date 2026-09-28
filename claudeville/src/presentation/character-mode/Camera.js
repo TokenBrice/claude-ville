@@ -5,6 +5,7 @@ import {
     FOLLOW_ENTRY_MS,
     WHEEL_STEP_MS,
     ZOOM_STEP_MS,
+    glideDurationMs,
     criticalSpringStep,
     easeInOutCubic,
     easeOutCubic,
@@ -22,6 +23,10 @@ const IDLE_DRIFT_DELAY_MS = 45000;
 const IDLE_DRIFT_AMPLITUDE_PX = 8;
 const IDLE_DRIFT_PERIOD_X_MS = 38000;
 const IDLE_DRIFT_PERIOD_Y_MS = 47000;
+
+// 4.6 — a GL frame is a flight frame when the pose moved more than this many
+// backing px since the last GL frame (`latchGpuFrame`).
+const GPU_FLIGHT_EPSILON_PX = 1e-3;
 
 // #54 — empty-village tour. Once the village has been empty for a stretch AND
 // the operator idle, the camera takes a slow Ken-Burns circuit of the
@@ -42,8 +47,8 @@ const TOUR_STOP_ORDER = Object.freeze([
 // is itself an exact integer block of device pixels (see CanvasBudget's
 // divisor ladder), so an integer backing scale is an integer device scale —
 // the two together are what keep pixel text readable at any display scale.
-// The 150ms tween may pass through fractional values; every settled pose is
-// display-pixel aligned.
+// Tweens and glides pass through fractional values (flight frames render
+// fat-pixel on the GL path, 4.6); every settled pose is display-pixel aligned.
 const NOMINAL_ZOOM_STEPS = Object.freeze([1, 2, 3]);
 
 // 8.3 — the survey tier label. It names the survey SHOT (4.1): the widest
@@ -130,10 +135,8 @@ const DISC_HORIZON_CLEARANCE_RADII = 1.3;
 // that fits). M21 keeps it at 3 on the DPR-2 laptop too.
 export const DEFAULT_FRAME_TIER = 3;
 
-// 8.3 — the opening: survey hold, then one authored dolly to the content.
-// Each rung of the dolly is a full ZOOM_STEP_MS step; the hold (at the
-// survey tier) and the dolly together stay ≥ 75 % pixel-exact, and
-// `planGlide` lengthens the dolly past this when the ladder has more rungs.
+// 8.3 — the opening: survey hold (pixel-exact, at rest), then one authored
+// continuous dolly (4.6) to the content.
 const OPENING_HOLD_MS = 1600;
 const OPENING_DOLLY_MS = 2400;
 // The island's centre sits 4 % below screen centre; 4.5's sky room replaces
@@ -368,6 +371,11 @@ export class Camera {
         // `_userAdjusted` for its own duration and aborts the instant the user
         // touches the camera (drag/wheel/keyboard) so the cinema never fights.
         this._directorGlide = null;
+        // 4.6 — whether flight frames render fat-pixel (the GL world is live;
+        // WorldFrameRenderer sets it every frame). Without it a glide is
+        // planned stepped (CameraCurves `rungs`) so the Canvas world rests on
+        // integer rungs instead of crawling through fractional k.
+        this.fatFlight = false;
 
         // Drag momentum (world px/ms, decays after release)
         this._momentum = null;
@@ -492,8 +500,8 @@ export class Camera {
         this.zoomTiers = tiers;
         this.minZoom = steps[0];
         this.maxZoom = steps[steps.length - 1];
-        // Glides land on the logical tiers only: 4.8's half rungs are operator
-        // rests, so a DPR-2 glide takes no more zoom steps than it did.
+        // A stepped (Canvas) glide rests on the logical tiers only: 4.8's half
+        // rungs are operator rests, so a DPR-2 glide takes no more steps.
         this._glideRungs = Object.freeze(steps.filter((_, index) => isShotTier(tiers[index])));
         this._refreshShotScales();
         this._displayPixelZoomScale = this.tierZoom(1);
@@ -578,9 +586,10 @@ export class Camera {
             if (motion.plan) {
                 motion.plan.from.zoom = motion.fromZoom;
                 motion.plan.to.zoom = motion.toZoom;
-                for (const segment of motion.plan.segments) {
-                    if (segment.fromZoom != null) segment.fromZoom = remap(segment.fromZoom);
-                    if (segment.toZoom != null) segment.toZoom = remap(segment.toZoom);
+                motion.plan.ratio = motion.toZoom / motion.fromZoom;
+                for (const step of motion.plan.steps || []) {
+                    step.fromZoom = remap(step.fromZoom);
+                    step.toZoom = remap(step.toZoom);
                 }
             }
         }
@@ -827,17 +836,20 @@ export class Camera {
         return { zoom, x: pose.x, y: pose.y };
     }
 
-    // 8.1 — one glide in the shared vocabulary: the screen-centre world point
-    // travels a straight line, zoom moves in log space, and a zoom change is
-    // one 450 ms step per resting rung, taken at the end (zooming in) or start
-    // (zooming out) of a pan held at a resting tier; the glide grows to keep
-    // it ≥ 75 % pixel-exact. `durationMs` is only for the authored opening.
+    // 8.1 / 4.6 — one glide in the shared vocabulary: a continuous dolly in
+    // which the screen-centre world point and the log-zoom move together on
+    // the family curve (CameraCurves.planGlide), ending on the target's
+    // resting tier. Its flight frames render fat-pixel on a sub-pixel offset
+    // (`renderOffsetGpuX`); the target is snapped to a whole backing pixel so
+    // the landing frame is today's nearest frame with no settling nudge.
+    // Without fat flight frames (`fatFlight` false: the Canvas world) the same
+    // dolly is planned stepped on the logical rungs. `durationMs` is only for
+    // the authored opening.
     _startGlide(pose, {
         owner = 'director',
         motion = 'director',
         holdMs = 0,
         durationMs = null,
-        stepped = false,
         letterbox = false,
         letterboxHoldMs = 0,
         userAdjustedOnComplete = false,
@@ -862,20 +874,17 @@ export class Camera {
             return true;
         }
 
-        const toCenter = this._clampedCenter(w / (2 * pose.zoom) - pose.x, h / (2 * pose.zoom) - pose.y, pose.zoom);
+        const clampedTo = this._clampedCenter(w / (2 * pose.zoom) - pose.x, h / (2 * pose.zoom) - pose.y, pose.zoom);
+        const backingScale = pose.zoom * this._dpr();
+        const toCenter = {
+            x: w / (2 * pose.zoom) - Math.round((w / (2 * pose.zoom) - clampedTo.x) * backingScale) / backingScale,
+            y: h / (2 * pose.zoom) - Math.round((h / (2 * pose.zoom) - clampedTo.y) * backingScale) / backingScale,
+        };
         const fromCenter = this.currentCenterWorld();
-        // A hold spent at a resting tier is part of the shot's pixel-exact time.
-        const fromResting = this.zoomSteps.some((step) => Math.abs(step - this.zoom) < 1e-6);
         const plan = planGlide(
             { cx: fromCenter.x, cy: fromCenter.y, zoom: this.zoom },
             { cx: toCenter.x, cy: toCenter.y, zoom: pose.zoom },
-            {
-                family: motion,
-                duration: durationMs,
-                stepped,
-                tiers: this._glideRungs,
-                restingLeadMs: fromResting ? Math.max(0, Number(holdMs) || 0) : 0,
-            },
+            { family: motion, duration: durationMs, rungs: this.fatFlight ? null : this._glideRungs },
         );
         this._cameraOwner = owner;
         this._userAdjusted = false;
@@ -899,13 +908,11 @@ export class Camera {
     // 8.3/4.1 — the opening shot. The first presented frame is the whole
     // island at the survey scale (the wide where the viewport has no survey),
     // with 4.5's sky room wherever the island leaves vertical slack; it holds
-    // 1.6 s, then one ≥ 2.4 s move settles on the target: a content box between
-    // the wide and medium scales (a box too big for the wide is land-weighted,
-    // not widened back to the survey), or an authored pose (scenario metadata). The move
-    // is a stepped dolly (C3): the pan runs the whole move while the zoom
-    // climbs the logical tiers one 450 ms step per rung (survey → 1 → 2), so
-    // ≥ 75 % of hold + dolly is pixel-exact. Reduced motion cuts straight to
-    // the target frame.
+    // 1.6 s at rest, then one 2.4 s continuous dolly (4.6) settles on the
+    // target: a content box between the wide and medium scales (a box too big
+    // for the wide is land-weighted, not widened back to the survey), or an
+    // authored pose (scenario metadata). Reduced motion cuts straight to the
+    // target frame.
     establishingShot(wideBox, { targetBox = null, targetPose = null, maxZoom = this.shotTier('medium') } = {}) {
         const w = this._viewportWidth();
         const h = this._viewportHeight();
@@ -936,7 +943,6 @@ export class Camera {
             owner: 'system',
             holdMs: OPENING_HOLD_MS,
             durationMs: OPENING_DOLLY_MS,
-            stepped: true,
         });
     }
 
@@ -1513,13 +1519,17 @@ export class Camera {
         this._setCenter(center.x + dx * step, center.y + dy * step);
 
         // 8.1 — once hysteresis decides a zoom change is genuinely needed, it is
-        // one 450 ms tier step, never a slow crawl through fractional zooms.
+        // one log-zoom to the resting tier, never a slow crawl: on the glide
+        // formula's duration where flight frames render fat-pixel (4.6), one
+        // ZOOM_STEP_MS rung step where they do not (the Canvas world).
         if (Math.abs(pose.zoom - this.zoom) >= 0.01 && !this._snapZoom) {
             this._snapZoom = {
                 fromZoom: this.zoom,
                 toZoom: pose.zoom,
                 elapsed: 0,
-                duration: ZOOM_STEP_MS,
+                duration: this.fatFlight
+                    ? glideDurationMs({ fromZoom: this.zoom, toZoom: pose.zoom })
+                    : ZOOM_STEP_MS,
                 source: 'soft-follow',
             };
         }
@@ -1529,6 +1539,32 @@ export class Camera {
     get renderOffsetX() { return Math.round(this.x * this.zoom * this._dpr()) / this._dpr(); }
 
     get renderOffsetY() { return Math.round(this.y * this.zoom * this._dpr()) / this._dpr(); }
+
+    // 4.6 (PT-5) — the resident GL layer's offset (CSS px). On a flight frame
+    // at k = zoom × dpr ≥ 2 (the pose moved since the last GL frame, and not
+    // by a drag or the idle drift: a glide past its hold, a tour leg, a follow
+    // spring or soft-follow chase, momentum, a zoom step) it is the unrounded
+    // offset, so a slow move advances the GL layer every frame and renders
+    // fat-pixel; on every other frame, including the first settled one, it is
+    // exactly `renderOffsetX/Y`. The overlay, the 2D backdrop and Canvas keep
+    // the rounded offsets. `latchGpuFrame()` runs once per frame before the GL
+    // world renders (WorldFrameRenderer).
+    latchGpuFrame() {
+        const latch = this._gpuLatch || (this._gpuLatch = { x: NaN, y: NaN, zoom: NaN, subPixel: false });
+        const k = this.zoom * this._dpr();
+        const moved = Math.abs(this.x - latch.x) * k > GPU_FLIGHT_EPSILON_PX
+            || Math.abs(this.y - latch.y) * k > GPU_FLIGHT_EPSILON_PX
+            || Math.abs(this.zoom - latch.zoom) > 1e-9;
+        latch.subPixel = moved && k >= 2 - 1e-6 && !this.dragging && !this._idleDrift;
+        latch.x = this.x;
+        latch.y = this.y;
+        latch.zoom = this.zoom;
+        return latch.subPixel;
+    }
+
+    get renderOffsetGpuX() { return this._gpuLatch?.subPixel ? this.x * this.zoom : this.renderOffsetX; }
+
+    get renderOffsetGpuY() { return this._gpuLatch?.subPixel ? this.y * this.zoom : this.renderOffsetY; }
 
     applyTransform(ctx) {
         const dpr = this._dpr();

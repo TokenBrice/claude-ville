@@ -93,6 +93,10 @@ export class ChronicleDressingLedger {
         this.counts = { release: 0, featFix: 0, records: 0 };
         this._ids = [];
         this._idSet = new Set();
+        // 8.2 / M16 — counted releases whose crown has not played yet: the
+        // bunting withholds their pennants until `reveal` (the crown's end),
+        // so no gold fact lands before the crown.
+        this._held = new Set();
         this._loaded = false;
         this._loading = null;
     }
@@ -119,7 +123,16 @@ export class ChronicleDressingLedger {
     }
 
     frameFor(type, name, frames) {
-        return chronicleDressingFrame(this.counts, type, name, frames);
+        const counts = this._held.size
+            ? { ...this.counts, release: Math.max(0, this.counts.release - this._held.size) }
+            : this.counts;
+        return chronicleDressingFrame(counts, type, name, frames);
+    }
+
+    // The crown of these release records is over (no ids: every held one).
+    reveal(ids = null) {
+        if (ids == null) this._held.clear();
+        else for (const id of ids) this._held.delete(String(id));
     }
 
     _remember(id) {
@@ -129,13 +142,16 @@ export class ChronicleDressingLedger {
         while (this._ids.length > DRESSING_ID_LIMIT) this._idSet.delete(this._ids.shift());
     }
 
-    // Counts a freshly planted record once, if its source event is verified.
-    async note(store, record, event) {
+    // Counts a freshly planted record once, if its source event is verified;
+    // `hold` withholds a release from the bunting until `reveal`.
+    async note(store, record, event, { hold = false } = {}) {
         if (!record?.id || this._idSet.has(record.id) || !verifiedOutcomeFromGitEvent(event)) return false;
         this._remember(record.id);
         this.counts.records += 1;
-        if (record.kind === 'release') this.counts.release += 1;
-        else if (isFeatFixCommit(event)) this.counts.featFix += 1;
+        if (record.kind === 'release') {
+            this.counts.release += 1;
+            if (hold) this._held.add(String(record.id));
+        } else if (isFeatFixCommit(event)) this.counts.featFix += 1;
         if (typeof store?.setMeta === 'function') {
             await store.setMeta(CHRONICLE_DRESSING_META_KEY, { ...this.counts, ids: [...this._ids] });
         }
@@ -159,10 +175,43 @@ function commitMessageFromCommand(command) {
     return textOf(match?.[1] || match?.[2] || match?.[3] || '');
 }
 
+// A version-shaped name (`v1.2`, `2.0.1-rc.1`) and a strict semver name
+// (`v?MAJOR.MINOR.PATCH[-pre]`).
+const VERSION_NAME = /^v?\d+\.\d+/;
+const STRICT_SEMVER_NAME = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+// The release tag a push names, or ''. A known tag counts when it reads as a
+// version: the adapter's `event.tag` (a `git tag <name>` earlier in the same
+// command chain, or a refs/tags/ destination), the `git push <remote> tag
+// <name>` refspec pair, or a refs/tags/ ref. Otherwise only a bare strict
+// semver refspec counts (`git push origin v1.2.0`): a refspec whose source is
+// another ref (`HEAD:1.2.3`), a refs/heads/ destination and an inferred
+// upstream push (its target is the pushing branch) stay branch pushes, as do
+// version-like branch names (`1.2-maint`, `v2.0`).
 function targetReleaseRef(event) {
-    const ref = textOf(event.targetRef || event.ref || event.tag);
-    const cleaned = ref.replace(/^refs\/tags\//, '');
-    return /^v?\d+\.\d+/.test(cleaned) ? cleaned : '';
+    const specs = Array.isArray(event.refspecs) ? event.refspecs.map(textOf) : [];
+    const tagAt = specs.indexOf('tag');
+    let name = tagAt >= 0 && specs[tagAt + 1] ? specs[tagAt + 1] : textOf(event.tag);
+    if (!name) {
+        for (const ref of [event.targetRef, event.ref, ...specs]) {
+            const text = textOf(ref).replace(/^\+/, '');
+            const dst = text.includes(':') ? text.slice(text.lastIndexOf(':') + 1) : text;
+            if (dst.startsWith('refs/tags/')) {
+                name = dst.slice('refs/tags/'.length);
+                break;
+            }
+        }
+    }
+    if (name) return VERSION_NAME.test(name) ? name : '';
+    if (event.inferred === true) return '';
+    for (const ref of specs.length ? specs : [event.targetRef]) {
+        const text = textOf(ref).replace(/^\+/, '');
+        const colon = text.lastIndexOf(':');
+        const dst = colon >= 0 ? text.slice(colon + 1) : text;
+        const src = colon >= 0 ? text.slice(0, colon) : text;
+        if (src === dst && STRICT_SEMVER_NAME.test(dst)) return dst;
+    }
+    return '';
 }
 
 function eventTs(event, fallback = Date.now()) {
@@ -238,8 +287,14 @@ export class MonumentRules {
         const type = textOf(event.type).toLowerCase();
         if (!['commit', 'push', 'tag', 'pr-merge'].includes(type)) return null;
 
-        if ((type === 'tag' || type === 'push') && targetReleaseRef(event)) {
-            return this._releaseStone(event);
+        // 8.2 — a release is a verified push of a release tag: gold (the crown,
+        // the sloop, the day pennant, the bunting) is verified success only, so
+        // a local tag, an unverified or failed push, a branch push or a tag
+        // deletion plants nothing.
+        if (type === 'tag' || type === 'push') {
+            return type === 'push' && !event.deleted && targetReleaseRef(event) && verifiedOutcomeFromGitEvent(event)
+                ? this._releaseStone(event)
+                : null;
         }
         if (type === 'commit' || type === 'pr-merge') {
             return this._featureStone(event);
@@ -248,14 +303,14 @@ export class MonumentRules {
     }
 
     _releaseStone(event) {
-        const ref = targetReleaseRef(event) || textOf(event.targetRef || event.ref || event.tag || 'release');
+        const ref = targetReleaseRef(event);
         const project = textOf(event.project || event.repository || event.repo || 'unknown');
         return {
             kind: 'release',
             district: 'harbor',
             weight: 'major',
-            label: ref.replace(/^refs\/tags\//, '') || 'release',
-            dedupKey: `release:${project}:${ref || event.id || event.commandHash || event.ts}`,
+            label: ref,
+            dedupKey: `release:${project}:${ref}`,
         };
     }
 
@@ -390,9 +445,16 @@ export class MonumentPlanter {
                 if (!isActive()) break;
                 if (existing) continue;
                 await this.store.put('monuments', record);
-                await this.dressing.note(this.store, record, event);
+                // `holdReleases` (the release crown's owner): the bunting
+                // waits for the crown, which reveals the record when it ends.
+                await this.dressing.note(this.store, record, event, { hold: context.holdReleases === true });
                 if (!isActive()) break;
                 planted.push(record);
+                // `onPlanted(record, event)` runs in the same task as the
+                // milestone emit, before it: a body-led accent (the release
+                // crown) declares its draw time before the cue it anchors is
+                // scheduled (CueScore `scheduleAccent`).
+                context.onPlanted?.(record, event);
                 this.eventBus?.emit?.('chronicle:milestone', record);
             } catch {
                 // Chronicle writes are best-effort and must not break live rendering.

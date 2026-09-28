@@ -14,6 +14,8 @@ import {
     sectionForCounts,
     updateWorkingSection,
 } from '../../claudeville/src/presentation/shared/audio/BgmDirector.js';
+import { CueGovernor } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
+import { CueKit } from '../../claudeville/src/presentation/shared/audio/cues/CueKit.js';
 
 test('a council cue carries one note per gathered member, capped at five', () => {
     assert.equal(cueNoteOffsetsMs('council', { teamSize: 2 }).length, 2);
@@ -119,6 +121,24 @@ test('a kind with no body accent is never anchored', () => {
     resetCueScore();
     scheduleAccent('agent-9', 4000, 'recovery', 1000);
     assert.equal(anchoredCueDelayMs('recovery', 'agent-9', [0, 200], 180, 30, 1000), 180);
+});
+
+test('a muted release peal takes its first note on the crown frame declared before it', () => {
+    // The Signals preset voices a release announce-only: a silent score. The
+    // crown declares its cream frame first, so note 0 is that frame, not the
+    // admission time (whose notes would all be past when the crown peaks).
+    resetCueScore();
+    const kit = new CueKit({ context: null, started: false }, new CueGovernor({ minSpacingMs: 0 }));
+    const crownAt = performance.now() + 817;
+    scheduleAccent(null, crownAt, 'release');
+    kit.play('release', { agentId: null });
+    assert.equal(cueNoteDue('release', null, 0, crownAt - 1), false);
+    assert.equal(cueNoteDue('release', null, 0, crownAt + 0.01), true);
+
+    // With no accent declared the muted score is due at once, as before.
+    resetCueScore();
+    new CueKit({ context: null, started: false }, new CueGovernor({ minSpacingMs: 0 })).play('release', { agentId: null });
+    assert.equal(cueNoteDue('release', null, 0, performance.now()), true);
 });
 
 test('the score diagnostics report drawn accents and their lag', () => {

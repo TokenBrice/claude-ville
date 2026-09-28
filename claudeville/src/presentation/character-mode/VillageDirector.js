@@ -2,7 +2,7 @@ import { normalizeBuildingType } from '../../config/buildings.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { buildingCenterToWorld } from './Projection.js';
+import { TILE_HALF_HEIGHT, buildingCenterToWorld } from './Projection.js';
 import { shortProjectName } from '../shared/Formatters.js';
 import {
     replaySampleLookup,

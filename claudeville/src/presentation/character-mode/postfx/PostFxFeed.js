@@ -5,12 +5,15 @@
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../../config/constants.js';
 import { RENDERER_RESOURCE_BYTES_PER_PIXEL, canvasPixelCount, releaseCanvasBackingStore } from '../CanvasBudget.js';
-import { setGpuLightColor } from '../gpu/GpuWorldPolicy.js';
-import { ownerSlotFor } from '../LightSourceRegistry.js';
+import { LIGHT_ROLE_CODES, setGpuLightColor } from '../gpu/GpuWorldPolicy.js';
+import { groundCourseHeight, ownerSlotFor } from '../LightSourceRegistry.js';
 import { footprintFieldFor } from '../FootprintField.js';
 import { GPU_LANDMARK_IDS } from '../gpu/GpuSceneBuilder.js';
+import { radianceApertureSpans } from '../gpu/GroundRadiance.js';
 
-const MAX_LIGHTS = 48;
+// 2.4 — the resident light texture holds 256 records (GpuWorldPolicy
+// MAX_LIGHT_RECORDS); the hybrid PostFx walks its own first 48.
+const MAX_LIGHTS = 256;
 const MAX_HAZE = 8;
 const LIGHT_CULL_MARGIN_CSS = 120;
 // WHY: water mask is 1/4 backing res — cheap to sample, coarse enough for
@@ -80,25 +83,27 @@ function incidentRgb(kind) {
     return INCIDENT_RGB[kind] || INCIDENT_RGB.errored;
 }
 
-// V5 — role codes the resident loop reads (u_lightShape.w).
-const LIGHT_ROLE_CODES = Object.freeze({ point: 0, aperture: 1, fixture: 2, attention: 3 });
-
 // V5 — a light slot's world geometry beside its backing-px projection: the
 // foot (world px), the emitter height, ground radius and face normal, the
 // role, the owner's V9 slot (2.5) and the landmark the light is mounted on
-// (2.2). `heightPx` is the height in backing px for the hybrid pools.
+// (2.2). `heightPx` is the hybrid pools' ground-course height in backing px
+// (`groundCourseHeight`: the resident loop's 24 px band and aperture spill).
+// 2.9 — `waterOnly` / `columnReach` shape the light's broken column on the
+// water.
 function setLightGeometry(slot, src, footX, footY, radiusWorld, scale) {
     const normal = Array.isArray(src?.normal) ? src.normal : null;
     slot.footX = footX;
     slot.footY = footY;
     slot.radiusWorld = radiusWorld;
     slot.height = Math.max(0, finite(src?.height, 0));
-    slot.heightPx = slot.height * scale;
+    slot.heightPx = groundCourseHeight(src) * scale;
     slot.nx = normal ? finite(normal[0], 0) : 0;
     slot.ng = normal ? finite(normal[1], 0) : 0;
     slot.role = LIGHT_ROLE_CODES[src?.role] ?? (src?.attention ? LIGHT_ROLE_CODES.attention : LIGHT_ROLE_CODES.point);
     slot.ownerSlot = ownerSlotFor(src?.ownerId);
     slot.landmarkId = Math.max(0, Math.round(finite(src?.landmarkId, 0)));
+    slot.waterOnly = src?.waterOnly === true;
+    slot.columnReach = Math.max(1, finite(src?.columnReach, 1));
 }
 
 function emptyFeed(nowMs) {
@@ -144,6 +149,10 @@ export function createPostFxFeed() {
     const sunObj = { x: 0, y: 0, intensity: 0 };
     const viewportObj = { width: 0, height: 0, dpr: 1 };
     const waterObj = { mask: null, flowX: 0, flowY: 0, maskRevision: 0 };
+    // 2.10 — the island-wide light list for the ground radiance solve
+    // (GroundRadiance), never viewport-culled, with the motion clock that
+    // divides the fire breath back out; resident renderer only.
+    const radianceObj = { sources: null, spans: null, motionTimeMs: 0, motionScale: 1 };
     const lightSlotPool = [];
     const hazeSlotPool = [];
     const lightColorScratch = [0, 0, 0];
@@ -259,6 +268,10 @@ export function createPostFxFeed() {
         const art = Math.max(1, viewportObj.zoom * dpr);
         const originX = finite(renderer?.camera?.renderOffsetX, 0) * dpr;
         const originY = finite(renderer?.camera?.renderOffsetY, 0) * dpr;
+        // V5 — the render offset itself (backing px): PostFx maps the pool
+        // receiver mask's world rect to the screen with it.
+        viewportObj.offsetX = originX;
+        viewportObj.offsetY = originY;
         viewportObj.artOriginX = ((originX % art) + art) % art;
         viewportObj.artOriginY = ((originY % art) + art) % art;
         return viewportObj;
@@ -300,9 +313,13 @@ export function createPostFxFeed() {
         const margin = LIGHT_CULL_MARGIN_CSS;
         let lightCount = 0;
         let hazeCount = 0;
+        // 2.9 — the Lighthouse lamp's water-only column rides after the
+        // shared list: the resident loop is its only reader.
+        const column = renderer?.buildingRenderer?.lighthouseColumnSource?.() || null;
+        const total = sources.length + (column ? 1 : 0);
 
-        for (let i = 0; i < sources.length; i++) {
-            const src = sources[i];
+        for (let i = 0; i < total; i++) {
+            const src = i < sources.length ? sources[i] : column;
             if (!src) continue;
             const wx = finite(src.x ?? src.origin?.x, NaN);
             const wy = finite(src.y ?? src.origin?.y, NaN);
@@ -313,7 +330,10 @@ export function createPostFxFeed() {
             const footY = finite(src.ground?.y, wy);
 
             // Cull in CSS/screen space (same space as worldToScreen), then
-            // scale: a light stays while its emitter or its foot is near.
+            // scale: a light stays while its emitter or its reach from its
+            // foot is near (2.9: a column runs up to 1.8 radii toward the
+            // camera, a wall above a low lamp takes it up to its own height;
+            // the resident binning then keeps only lights that reach a tile).
             let sx;
             let sy;
             let fx;
@@ -332,7 +352,9 @@ export function createPostFxFeed() {
                 fy = footY;
             }
             const emitterOut = sx < -margin || sy < -margin || sx > cssW + margin || sy > cssH + margin;
-            const footOut = fx < -margin || fy < -margin || fx > cssW + margin || fy > cssH + margin;
+            const footMargin = margin + (2 * Math.max(0, finite(src.radius, 64)) * Math.max(1, finite(src.columnReach, 1))
+                + Math.max(0, finite(src.height, 0))) * zoom;
+            const footOut = fx < -footMargin || fy < -footMargin || fx > cssW + footMargin || fy > cssH + footMargin;
             if (emitterOut && footOut) continue;
 
             const kind = src.kind || 'point';
@@ -758,6 +780,7 @@ export function createPostFxFeed() {
                 feed.wetness = 0;
                 feed.pulse = null;
                 feed.footprint = null;
+                feed.radiance = null;
                 return feed;
             }
 
@@ -799,6 +822,15 @@ export function createPostFxFeed() {
             feed.footprint = args.gpuWorldActive === true
                 ? footprintFieldFor(renderer, GPU_LANDMARK_IDS)
                 : null;
+            if (args.gpuWorldActive === true) {
+                radianceObj.sources = renderer._frameLightSources?.ambient || null;
+                radianceObj.spans = radianceApertureSpans(renderer.buildingRenderer);
+                radianceObj.motionTimeMs = finite(renderer.motionTimeMs, 0);
+                radianceObj.motionScale = finite(renderer.motionScale, 1);
+                feed.radiance = radianceObj;
+            } else {
+                feed.radiance = null;
+            }
             return feed;
         } catch {
             diagnostics.buildFailures++;

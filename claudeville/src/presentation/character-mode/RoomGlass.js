@@ -25,7 +25,7 @@ export const ROOM_GLASS_STEPS = 4;
 const NONE = -1;
 const HALL = 0;
 
-function readPixels(image, w, h) {
+export function readPixels(image, w, h) {
     if (!image || typeof document === 'undefined') return null;
     const canvas = document.createElement('canvas');
     canvas.width = w;
@@ -37,7 +37,7 @@ function readPixels(image, w, h) {
     canvas.height = 0;
     return data;
 }
-function glassRects(type) {
+export function glassRects(type) {
     return [
         ...(getBuildingWindowRects(type) || []),
         ...(getBuildingRoomProfile(type)?.slots || []),
@@ -45,12 +45,12 @@ function glassRects(type) {
     ].filter((rect) => Array.isArray(rect?.at));
 }
 
-function sidecarUrl(albedo, suffix) {
+export function sidecarUrl(albedo, suffix) {
     const src = typeof albedo?.src === 'string' ? albedo.src : '';
     return src ? src.replace(/\.png(?=([?#]|$))/, `.${suffix}.png`) : '';
 }
 
-function loadImage(url) {
+export function loadImage(url) {
     return new Promise((resolve) => {
         if (!url || typeof Image === 'undefined') {
             resolve(null);
@@ -174,6 +174,13 @@ export class RoomGlass {
 
     roomCount(type) {
         return this.map(type)?.rooms || 0;
+    }
+
+    // True once `map(type)` has its final answer (a map, or null for a
+    // landmark without authored glass), false while it loads.
+    resolved(type) {
+        const cached = this._maps.get(type);
+        return cached !== undefined && cached !== 'loading';
     }
 
     _crop(image, map) {

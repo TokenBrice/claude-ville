@@ -18,7 +18,9 @@
 //    overlay, before weather and marks. A cut cannot know what the depth pass
 //    later drew over it, so every villager, tree or prop in front whose drawn
 //    pixels cross the cut is cut back out by its own drawn silhouette — an
-//    approximation of the painter's order that errs on the graded side.
+//    approximation of the painter's order that errs on the graded side. On
+//    the hybrid path the same carved texels' own emission is also the PostFx
+//    bloom's source, as authored emission is the resident bloom's.
 //
 // Emitters follow the same gates as the scene pass: a building's cut takes
 // its NightOccupancyGate emissive gate, every cut the source-energy envelope's
@@ -28,7 +30,9 @@ import { AMBIENT_GROUND_PROPS, DISTRICT_PROPS, SCENIC_POINT_PROPS } from '../../
 import { atlasSourceRect } from './AssetManager.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
 import { buildEmitterCut } from './CanvasGrade.js';
+import { mirrorAccentGate, mirrorAccentLayers } from './CoastBake.js';
 import { materialClassId } from './gpu/GpuWorldPolicy.js';
+import { hullGeometry } from './HarborHulls.js';
 import { tileToWorld } from './Projection.js';
 
 let cacheProps = null;
@@ -64,6 +68,7 @@ export function cacheEmitterRecords(renderer, channelRevision) {
     const assets = renderer?.assets;
     if (!assets) return [];
     const records = cacheWaterRecords(renderer);
+    mirrorAccentRecords(renderer, records);
     if (!renderer._gpuAtlasResident) return records;
     for (const prop of cacheLayerProps()) {
         if (!hasEmissiveSidecar(assets, prop.id)) continue;
@@ -106,13 +111,58 @@ export function cacheEmitterRecords(renderer, channelRevision) {
     return records;
 }
 
+// 3.7 — the lit mirror accents (CoastBake `mirrorAccentLayers`): one record
+// per landmark glass group right after the terrain, on the accent texels
+// only, with an all-emitter sidecar that carries no emission of its own, so
+// a lit room's mirrored window skips the grade at its room's gate (the
+// scene pass's emitter rule) and a dark room's stays the baked, graded pane.
+// Water material: no pool, bounce or wet weather lands on it.
+const MIRROR_ACCENT_MATERIAL = materialClassId('water');
+
+function mirrorAccentRecords(renderer, records) {
+    for (const layer of mirrorAccentLayers(renderer)) {
+        const gate = mirrorAccentGate(renderer, layer, renderer._lastAtmosphere);
+        if (!(gate > 0.02)) continue;
+        records.push({
+            id: layer.key,
+            stableKey: layer.key,
+            textureKey: layer.key,
+            sidecarKey: `${layer.key}:channels`,
+            source: layer.canvas,
+            materialSource: null,
+            emissiveSource: layer.emissive,
+            occluderSource: null,
+            sourceWidth: layer.w,
+            sourceHeight: layer.h,
+            sx: 0,
+            sy: 0,
+            sw: layer.w,
+            sh: layer.h,
+            x: layer.x,
+            y: layer.y,
+            width: layer.w,
+            height: layer.h,
+            material: MIRROR_ACCENT_MATERIAL,
+            elevation: 0,
+            emissive: 0,
+            emissiveGate: gate,
+            occluder: 0,
+            textureRevision: layer.key,
+            sidecarRevision: layer.key,
+            sequence: -0.55,
+            sourceKind: 'individual',
+        });
+    }
+}
+
 // 2.1 / V5 — terrain-baked props that hold water (the plaza rune fountain,
 // the well): the terrain's quarter-resolution class map paints their basin
 // as the plaza cobble under them, so a brazier pool laid lime on the
-// fountain water. One record per prop redraws its identical pixels right
-// after the terrain with a material sidecar marking its water texels
-// (blue-dominant) as water, which the light loop keeps out of every
-// diffuse pool; the rest keeps the plaza's own class.
+// fountain water. One record per prop redraws its water texels only
+// (blue-dominant on the authored sprite) right after the terrain, with a
+// material sidecar marking them as water, which the light loop keeps out of
+// every diffuse pool. Everything else stays the terrain bake's own pixels
+// and class, so a cache prop baked in front of the basin is never covered.
 const CACHE_WATER_PROPS = new Set(['prop.runeFountain', 'prop.well']);
 const CACHE_WATER_GROUND_CLASS = 7;
 const waterMaps = new Map();
@@ -143,6 +193,25 @@ function waterMaterialMap(image, key) {
     return map;
 }
 
+// The record's source: the drawn sprite (authored or its winter state) cut
+// to the water texels, one canvas per prop, rebuilt when its texture key
+// changes.
+const waterSources = new Map();
+
+function waterOnlySource(source, materialSource, propKey, textureKey) {
+    const cached = waterSources.get(propKey);
+    if (cached?.textureKey === textureKey) return cached.canvas;
+    const canvas = document.createElement('canvas');
+    canvas.width = materialSource.width;
+    canvas.height = materialSource.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(source, 0, 0);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(materialSource, 0, 0);
+    waterSources.set(propKey, { textureKey, canvas });
+    return canvas;
+}
+
 function cacheWaterRecords(renderer) {
     const assets = renderer.assets;
     const records = [];
@@ -151,17 +220,23 @@ function cacheWaterRecords(renderer) {
         const image = assets.get?.(prop.id);
         if (!image?.width) continue;
         const version = assets.assetVersion || 0;
-        const textureKey = `cache-water:${prop.id}:${version}`;
-        const materialSource = waterMaterialMap(image, textureKey);
+        const waterKey = `cache-water:${prop.id}:${version}`;
+        const materialSource = waterMaterialMap(image, waterKey);
         if (!materialSource) continue;
+        // 5.2 — the terrain bakes the prop's winter state (PropWinter: the
+        // well's roof snow): its water texels come from that one, found on
+        // the authored sprite.
+        const winter = renderer.propWinter?.image?.(prop.id) || null;
+        const textureKey = winter ? `${waterKey}:${renderer.propWinter.key}` : waterKey;
         const [ax, ay] = assets.getAnchor(prop.id);
         const key = `cache-water:${prop.id}:${prop.tileX},${prop.tileY}`;
+        const source = waterOnlySource(winter || image, materialSource, key, textureKey);
         records.push({
             id: key,
             stableKey: key,
             textureKey,
             sidecarKey: `${textureKey}:channels`,
-            source: image,
+            source,
             materialSource,
             emissiveSource: null,
             occluderSource: null,
@@ -230,9 +305,10 @@ function cutFor(assets, id) {
 // Canvas mode loads no material companions, so an over-base part (a cycle or
 // rest frame drawn over its building's own texels: the Task board lanterns)
 // has no channel strip there: its emissive strip is cropped from the
-// building's `.emissive.png` sidecar, fetched once beside the albedo.
+// building's `.emissive.png` sidecar, fetched once beside the albedo (also
+// CoastBake's 3.7 lit mirror accents, identical on both backends).
 const sidecars = new Map();
-function emissiveSidecarFor(assets, id) {
+export function emissiveSidecarFor(assets, id) {
     const companion = assets.getCompanion?.(id, 'emissive');
     if (companion) return companion;
     const key = `${assets.assetVersion || ''}|${id}`;
@@ -240,6 +316,12 @@ function emissiveSidecarFor(assets, id) {
     if (cached !== undefined) return cached === 'loading' ? null : cached;
     const albedo = assets.get?.(id);
     const src = typeof albedo?.src === 'string' ? albedo.src : '';
+    // A sprite without an authored sidecar (manifest `emissiveSidecar` absent)
+    // must never trigger a request (MaterialRegistry.companionPathFor).
+    if (assets.getEntry && !assets.getEntry(id)?.emissiveSidecar) {
+        sidecars.set(key, null);
+        return null;
+    }
     if (!src || typeof Image === 'undefined') {
         sidecars.set(key, null);
         return null;
@@ -289,7 +371,7 @@ let partScratch = null;
 // Draws the lit emitter texels of the frame each part shows now, carved by
 // whatever the depth pass drew in front of the building, after the
 // building's own cut (a part covers the base texels under it).
-function drawPartCuts(ctx, renderer, emitter, core, scale) {
+function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx) {
     const buildings = renderer.buildingRenderer;
     if (!buildings?.partDrawsFor || !emitter.entry?.layers) return;
     partScratch ||= [];
@@ -312,14 +394,18 @@ function drawPartCuts(ctx, renderer, emitter, core, scale) {
         const h = bottom - top;
         const occluders = occludersFor(renderer, emitter.sortY, emitter.sortY, x, y, w, h);
         ctx.globalAlpha = alpha;
-        if (occluders.length) {
-            const frame = { canvas: partFrameCanvas(cut.canvas, left - cut.x, top - cut.y, w, h) };
-            const carved = carvedCut(frame, x, y, occluders, scale);
-            ctx.drawImage(carved.canvas, 0, 0, carved.w, carved.h, x, y, carved.w / scale, carved.h / scale);
-        } else {
-            ctx.drawImage(cut.canvas, left - cut.x, top - cut.y, w, h, x, y, w, h);
+        drawPartFrame(ctx, cut.canvas, left - cut.x, top - cut.y, w, h, x, y, occluders, scale);
+        if (bloomCtx) {
+            bloomCtx.globalAlpha = alpha;
+            drawPartFrame(bloomCtx, cut.bloom, left - cut.x, top - cut.y, w, h, x, y, occluders, scale);
         }
     }
+}
+
+// The (sx, sy, w, h) frame of a part strip at world (x, y), carved.
+function drawPartFrame(ctx, source, sx, sy, w, h, x, y, occluders, scale) {
+    if (occluders.length) drawCarved(ctx, partFrameCanvas(source, sx, sy, w, h), x, y, occluders, scale);
+    else ctx.drawImage(source, sx, sy, w, h, x, y, w, h);
 }
 
 let partFrame = null;
@@ -377,7 +463,7 @@ function overlaps(a, x, y, w, h) {
 // wherever the rect is transparent and leave the graded flame showing there
 // as a grey-green ghost. The body rect stands in only where no 1:1 body cell
 // was laid out this frame (the overview and crowd impostors).
-function villagerOccluder(sprite) {
+export function villagerOccluder(sprite) {
     const box = sprite._bodyBox;
     const cell = typeof sprite.currentPoseCell === 'function' ? sprite.currentPoseCell() : null;
     const placeX = sprite._placeX;
@@ -452,14 +538,19 @@ function carvedCut(cut, x, y, occluders, scale) {
 
 /**
  * Draws every lit emitter's cut on `ctx` (the world overlay) in world space.
- * Call only when the resident scene pass did not render the frame.
+ * Call only when the resident scene pass did not render the frame. With
+ * `bloomScale` > 0 (the hybrid PostFx path) the same carved texels' own
+ * emission (each cut's `bloom` half, at gate x core) is also summed onto one
+ * transparent layer at `bloomScale` of the overlay's backing store and
+ * returned: the hybrid bloom's source, as authored emission is the resident
+ * bloom's. Returns null when nothing emits.
  */
-export function drawCanvasEmitterCuts(ctx, renderer, atmosphere) {
+export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0) {
     const assets = renderer?.assets;
     const camera = renderer?.camera;
-    if (!ctx || !assets || !camera) return;
+    if (!ctx || !assets || !camera) return null;
     const core = sourceEnergyFor(atmosphere?.lighting).core;
-    if (!(core > 0.02)) return;
+    if (!(core > 0.02)) return null;
     const viewport = renderer._screenViewport?.() || null;
     const topLeft = viewport ? camera.screenToWorld(0, 0) : null;
     const bottomRight = viewport ? camera.screenToWorld(viewport.width, viewport.height) : null;
@@ -469,17 +560,148 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere) {
     ctx.globalCompositeOperation = 'source-over';
     const transform = ctx.getTransform();
     const scale = Math.max(1, Math.hypot(transform.a, transform.b));
+    const bloomCtx = bloomScale > 0 && ctx.canvas ? bloomTarget(ctx.canvas, transform, bloomScale) : null;
+    ctx.globalAlpha = 1;
+    drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight);
     for (const emitter of emitterPlacements(renderer)) {
-        drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight);
-        if (emitter.building) drawPartCuts(ctx, renderer, emitter, core, scale);
+        drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight, bloomCtx);
+        if (emitter.building) drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx);
     }
     // 2.7 — the Lighthouse lamp's own light (halo, lens flash, fans).
     ctx.globalAlpha = 1;
     renderer.buildingRenderer?.drawLanternLight?.(ctx);
     ctx.restore();
+    return bloomCtx ? bloomLayer : null;
 }
 
-function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight) {
+let bloomLayer = null;
+
+// The hybrid bloom source, cleared, sized `scale` x the overlay's backing
+// store and carrying the overlay's world transform at that scale. Cuts sum
+// on it (`lighter`, smoothed: the bloom blurs it anyway).
+function bloomTarget(overlay, transform, scale) {
+    bloomLayer ||= document.createElement('canvas');
+    const width = Math.max(1, Math.ceil(overlay.width * scale));
+    const height = Math.max(1, Math.ceil(overlay.height * scale));
+    if (bloomLayer.width !== width) bloomLayer.width = width;
+    if (bloomLayer.height !== height) bloomLayer.height = height;
+    const context = bloomLayer.getContext('2d');
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = 'source-over';
+    context.clearRect(0, 0, width, height);
+    context.setTransform(transform.a * scale, transform.b * scale, transform.c * scale,
+        transform.d * scale, transform.e * scale, transform.f * scale);
+    context.imageSmoothingEnabled = true;
+    context.globalCompositeOperation = 'lighter';
+    return context;
+}
+
+// 3.7 — the Canvas twin of the lit mirror accent records: each lit glass
+// group's accents at its gate, under every building cut. The gate is an
+// ordered 4x4 Bayer share of the accent texels (world-locked), never a
+// partial alpha: a half-alpha amber over the graded teal water mixes to
+// lime, so every drawn accent texel stays its own palette colour.
+function drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight) {
+    for (const layer of mirrorAccentLayers(renderer)) {
+        const share = Math.min(1, mirrorAccentGate(renderer, layer, atmosphere) * core);
+        if (share < 0.02) continue;
+        const { x, y, w, h } = layer;
+        if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + w < topLeft.x || y + h < topLeft.y)) continue;
+        const gated = bayerGated(layer, share);
+        if (gated) drawCarvedTerrainLayer(ctx, renderer, { canvas: gated, x, y, w, h });
+    }
+}
+
+const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const bayerCopies = new WeakMap();
+
+// `layer.canvas` keeping the texels whose world-locked 4x4 Bayer rank is
+// under `share` (16 steps, cached per layer and step; null when none is).
+function bayerGated(layer, share) {
+    const step = Math.min(16, Math.round(share * 16));
+    if (step <= 0) return null;
+    if (step >= 16) return layer.canvas;
+    let copies = bayerCopies.get(layer.canvas);
+    if (!copies) bayerCopies.set(layer.canvas, copies = new Map());
+    let copy = copies.get(step);
+    if (copy) return copy;
+    const { width, height } = layer.canvas;
+    copy = document.createElement('canvas');
+    copy.width = width;
+    copy.height = height;
+    const copyCtx = copy.getContext('2d');
+    copyCtx.drawImage(layer.canvas, 0, 0);
+    const image = copyCtx.getImageData(0, 0, width, height);
+    const data = image.data;
+    const ox = Math.round(layer.x);
+    const oy = Math.round(layer.y);
+    for (let j = 0; j < height; j++) {
+        const row = ((oy + j) & 3) * 4;
+        for (let i = 0; i < width; i++) {
+            if (BAYER4[row + ((ox + i) & 3)] >= step) data[(j * width + i) * 4 + 3] = 0;
+        }
+    }
+    copyCtx.putImageData(image, 0, 0);
+    copies.set(step, copy);
+    return copy;
+}
+
+// Every harbour hull the Canvas depth pass drew this frame, as its drawn
+// frame (HarborHulls `drawHullFallback`): hulls float on the water, so each
+// covers whatever lies on the water under it.
+function hullOccluders(renderer, x, y, w, h, out) {
+    for (const drawable of renderer._drawables || []) {
+        const pose = drawable?.payload?.pose;
+        if (!pose?.strip?.image) continue;
+        const g = hullGeometry(pose);
+        const rect = { x: g.x, y: g.y, w: g.width, h: g.height, image: pose.strip.image, sx: g.sx, sy: 0 };
+        if (overlaps(rect, x, y, w, h)) out.push(rect);
+    }
+}
+
+/**
+ * Draws a world-space layer that lies on the terrain (`{ canvas, x, y }`,
+ * world px) on the ungraded overlay `ctx` (camera transform applied), carved
+ * by every villager, static sprite, landmark and harbour hull the depth pass
+ * drew over it, by their own drawn pixels. Used by the 3.7 mirror accents
+ * and the 2.9 water columns (CanvasWaterState `drawCanvasWaterColumns`).
+ */
+export function drawCarvedTerrainLayer(ctx, renderer, layer) {
+    const x = layer.x;
+    const y = layer.y;
+    const w = layer.canvas.width;
+    const h = layer.canvas.height;
+    const transform = ctx.getTransform();
+    const scale = Math.max(1, Math.hypot(transform.a, transform.b));
+    const occluders = occludersFor(renderer, -Infinity, -Infinity, x, y, w, h);
+    for (const rect of landmarkOccluders(renderer)) {
+        if (overlaps(rect, x, y, w, h)) occluders.push(rect);
+    }
+    hullOccluders(renderer, x, y, w, h, occluders);
+    drawCarved(ctx, layer.canvas, x, y, occluders, scale);
+}
+
+// Each landmark's drawn base image at its placement.
+function landmarkOccluders(renderer) {
+    const assets = renderer.assets;
+    const out = [];
+    const seen = new Set();
+    for (const drawable of renderer.buildingRenderer?.enumerateDrawables?.() || []) {
+        if (!drawable.building || seen.has(drawable.building)) continue;
+        seen.add(drawable.building);
+        const id = drawable.entry?.id;
+        const image = id ? assets.get?.(id) : null;
+        const anchor = id ? assets.getAnchor?.(id) : null;
+        if (!image || !anchor) continue;
+        const w = image.naturalWidth || image.width;
+        const h = image.naturalHeight || image.height;
+        out.push({ x: Math.round(drawable.wx - anchor[0]), y: Math.round(drawable.wy - anchor[1]), w, h, image });
+    }
+    return out;
+}
+
+function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight, bloomCtx) {
     const assets = renderer.assets;
     const alpha = Math.min(1, Math.max(0, emitter.gate) * core);
     if (alpha < 0.02) return;
@@ -496,10 +718,19 @@ function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight
         occluders.push({ x: x - cut.x + glass.left, y: y - cut.y + glass.top, w: glass.w, h: glass.h, image: glass.canvas });
     }
     ctx.globalAlpha = alpha;
-    if (occluders.length) {
-        const carved = carvedCut(cut, x, y, occluders, scale);
-        ctx.drawImage(carved.canvas, 0, 0, carved.w, carved.h, x, y, carved.w / scale, carved.h / scale);
-    } else {
-        ctx.drawImage(cut.canvas, x, y);
+    drawCarved(ctx, cut.canvas, x, y, occluders, scale);
+    if (bloomCtx) {
+        bloomCtx.globalAlpha = alpha;
+        drawCarved(bloomCtx, cut.bloom, x, y, occluders, scale);
     }
+}
+
+// `canvas` at world (x, y) on `ctx`, minus the occluders' drawn pixels.
+function drawCarved(ctx, canvas, x, y, occluders, scale) {
+    if (!occluders.length) {
+        ctx.drawImage(canvas, x, y);
+        return;
+    }
+    const carved = carvedCut({ canvas }, x, y, occluders, scale);
+    ctx.drawImage(carved.canvas, 0, 0, carved.w, carved.h, x, y, carved.w / scale, carved.h / scale);
 }

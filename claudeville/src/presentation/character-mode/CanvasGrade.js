@@ -18,6 +18,7 @@
 // Everything here is cached by the caller; nothing runs a smooth gradient.
 
 import { applyGradeToRgb, capSaturation, WATER_MAX_SATURATION } from './GradeEvaluator.js';
+import { LAND_FULL_STRENGTH } from './gpu/GpuWorldPolicy.js';
 import { ART_RAMPS, RECEIVER_LUMA_CEILING } from '../../config/artPalette.js';
 
 const LUMA = [0.2126, 0.7152, 0.0722];
@@ -149,6 +150,23 @@ export function canvasWaterPreimage(rgb, grade, { postFx = false, maxS = WATER_M
 }
 
 /**
+ * 3.12 — the frame grade off the resident path (the hybrid PostFx pass with
+ * `postFx`, else the Canvas fills) of one ungraded colour, and its inverse:
+ * the colour to paint so the finished frame lands on `target`. For marks the
+ * resident pass grades and then caps (the sea path) or leaves ungraded (the
+ * Lighthouse sheen), which the 2D frame can only reach through a preimage.
+ */
+export function canvasFrameGradeRgb(rgb, grade, { postFx = false } = {}) {
+    if (!grade) return rgb;
+    return postFx ? applyGradeToRgb(rgb, grade) : canvasGradeRgb(rgb, grade);
+}
+
+export function canvasFramePreimage(target, grade, { postFx = false } = {}) {
+    if (!grade) return target;
+    return postFx ? ungradeRgb(target, grade) : canvasUngradeRgb(target, canvasGradeTerms(grade));
+}
+
+/**
  * A key that moves when `canvasWaterPreimage` can: every grade term either
  * frame grade reads, in 1/128 steps.
  */
@@ -175,9 +193,6 @@ const POOL_WEIGHTS = [0.30, 0.54, 0.76];
 const LAND_MID = [1.346, 0.948, 0.504];
 const LAND_STOPS = [POOL_RIM, LAND_MID, POOL_MID];
 const LAND_SHARE = [0.84, 0.88, 0.90];
-// The least share each course lands with (GPU LAND_FLOOR): the thin outer
-// course on night grass lands in full, warm instead of khaki-olive.
-const LAND_FLOOR = [1, 0, 0];
 // V5 — the brightest ground stop (dressed plaza) is the receiver the stamp
 // clamps against.
 const PLAZA_PEAK = ART_RAMPS.plaza[ART_RAMPS.plaza.length - 1];
@@ -190,6 +205,61 @@ function hexToRgb01(hex) {
 /** The graded plaza receiver for one grade (0..1 channels). */
 export function gradedPoolReceiver(grade) {
     return grade ? applyGradeToRgb(hexToRgb01(PLAZA_PEAK), grade) : null;
+}
+
+// V5 — the receiver okL ceiling (GpuWorldPolicy `onStop`, `okCeiling`),
+// 0..1 channels.
+const RECEIVER_OKL_CEILING = 0.836;
+
+function lumaOf(rgb) {
+    return rgb[0] * LUMA[0] + rgb[1] * LUMA[1] + rgb[2] * LUMA[2];
+}
+
+function onStop(stop, y) {
+    const c = stop.map(channel => channel * y);
+    const hi = Math.max(...c);
+    return hi > 1 ? c.map(channel => y + (channel - y) * ((1 - y) / (hi - y))) : c;
+}
+
+const decodeSrgb = c => (c < 0.04045 ? Math.max(0, c) / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+const encodeSrgb = l => (l < 0.0031308 ? Math.max(0, l) * 12.92 : 1.055 * l ** (1 / 2.4) - 0.055);
+
+function okLightness(lin) {
+    const l = Math.cbrt(Math.max(0, 0.4122214708 * lin[0] + 0.5363325363 * lin[1] + 0.0514459929 * lin[2]));
+    const m = Math.cbrt(Math.max(0, 0.2119034982 * lin[0] + 0.6806995451 * lin[1] + 0.1073969566 * lin[2]));
+    const s = Math.cbrt(Math.max(0, 0.0883024619 * lin[0] + 0.2817188376 * lin[1] + 0.6299787005 * lin[2]));
+    return 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+}
+
+function okCeiling(lit, floorColour, ceilL) {
+    if (Math.max(...lit) <= 0.74) return lit;
+    const lin = lit.map(decodeSrgb);
+    const l = okLightness(lin);
+    if (l <= ceilL) return lit;
+    const floorL = Math.max(ceilL, okLightness(floorColour.map(decodeSrgb)));
+    if (l <= floorL) return lit;
+    const k = floorL / l;
+    return lin.map(channel => encodeSrgb(channel * k * k * k));
+}
+
+/**
+ * 2.9 — the resident water column landing (SCENE_FRAGMENT after the light
+ * loop) on one graded water colour: the texel takes `rampY`, the luma `lift`
+ * stops above its local water stop on the water ramp (never under the water
+ * plus 0.03 a stop), in the light's hue (`light`, summed, any scale) on the
+ * C1 emissive ramp by lift (#ff9d4a up to 3, half way at 4, the core stop at
+ * 5; a cool light keeps 70 % of its hue), 12 % of the water kept, under the
+ * receiver okL ceiling. Graded 0..1 channels in and out.
+ */
+export function landWaterColumn(water, light, lift, rampY) {
+    const y = Math.max(rampY, lumaOf(water) + 0.03 * lift);
+    const ly = Math.max(lumaOf(light), 0.001);
+    const hue = light.map(channel => channel / ly);
+    const warm = clamp((hue[0] - hue[2]) * 1.25);
+    const land = LAND_STOPS[lift > 3.5 ? 2 : lift > 2.5 ? 1 : 0];
+    const stop = hue.map((channel, index) => (1 + (channel - 1) * 0.7) * (1 - warm) + land[index] * warm);
+    const on = onStop(stop, y);
+    return okCeiling(water.map((channel, index) => channel + (on[index] - channel) * 0.88), water, RECEIVER_OKL_CEILING);
 }
 
 /**
@@ -223,11 +293,13 @@ export function gradedPoolReceiver(grade) {
  * resident pool's 55 % albedo chroma has no Canvas twin: the dodge multiplies
  * the already-graded surface, whose chroma the grade has set.
  *
- * V5 — `height` (px, the stamp's units) raises the light above the stamp's
- * centre, the light's foot: the ground course is stepped on the 3D distance
- * `|(dx, 2dy, height)|` over the reach `sqrt(radius^2 + height^2)`, and a facade
- * aperture's `normal [nx, ng]` confines it to its face's half-space
- * (`0.30 + 1.4 n.d / |d|`), exactly the resident loop's ground receiver.
+ * V5 — `height` (px, the stamp's units: the light's ground-course height,
+ * `LightSourceRegistry.groundCourseHeight`) raises the light above the
+ * stamp's centre, the light's foot: the ground course is stepped on the 3D
+ * distance `|(dx, 2dy, height)|` over the reach `sqrt(radius^2 + height^2)`,
+ * and a facade aperture's `normal [nx, ng]` confines it to its face's
+ * half-space (`0.30 + 1.4 n.g / |g|`, g the ground offset), exactly the
+ * resident loop's ground receiver.
  */
 export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell = 1, energy = 1, ambientTint = [0.4, 0.4, 0.4], poolGain = 1, receiver = null, height = 0, normal = null } = {}) {
     const size = Math.max(2, Math.ceil(radius * 2));
@@ -268,7 +340,7 @@ export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell =
             const d = Math.hypot(gx, gy, heightCells);
             const t = d / reachCells;
             if (t >= 1) continue;
-            const lobe = lobed ? clamp(0.30 + 1.4 * (normal[0] * gx + normal[1] * gy) / Math.max(d, 1)) : 1;
+            const lobe = lobed ? clamp(0.30 + 1.4 * (normal[0] * gx + normal[1] * gy) / Math.max(Math.hypot(gx, gy), 1)) : 1;
             const falloff = (1 - t * t * (3 - 2 * t)) * lobe;
             const q = falloff + (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 0.08;
             const step = (q >= 0.12 ? 1 : 0) + (q >= 0.40 ? 1 : 0) + (q >= 0.75 ? 1 : 0);
@@ -278,7 +350,7 @@ export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell =
             const landTint = landTints[step - 1];
             const offset = (y * canvas.width + x) * 4;
             const lift = poolGain * strength / ambientLuma;
-            const land = warm * LAND_SHARE[step - 1] * Math.max(LAND_FLOOR[step - 1], clamp(1.6 * lift / (1 + lift)));
+            const land = warm * LAND_SHARE[step - 1] * Math.max(Math.min(1, strength / LAND_FULL_STRENGTH), clamp(1.6 * lift / (1 + lift)));
             const adapt = shade ? Math.max(Math.min(1, strength * 1.5) * adaptGain, land) : 0;
             const towards = [0, 0, 0];
             const gains = [0, 0, 0];
@@ -331,9 +403,11 @@ function receiverScale(receiver, towards, gains) {
  * brightest channel. Drawn `source-over` after the frame's grade at alpha w,
  * the cut reproduces that: colour albedo + 0.42 x emission x max(1, 2a),
  * hue-protected the same way. The caller scales it by gate x core energy
- * through `globalAlpha`. Returns `{ canvas, x, y }` trimmed to the emitter
- * pixels (x, y the offset inside the sprite), or null when the sidecar is
- * empty.
+ * through `globalAlpha`. `bloom` is the same texels' own emission, the
+ * resident bloom source (sidecar rgb x 2a): stored at half (rgb x a, opaque)
+ * so 8 bits hold it; the hybrid bloom doubles it back. Returns
+ * `{ canvas, bloom, x, y }` trimmed to the emitter pixels (x, y the offset
+ * inside the sprite), or null when the sidecar is empty.
  */
 export function buildEmitterCut(albedo, emissive) {
     const width = albedo?.width | 0;
@@ -371,6 +445,11 @@ export function buildEmitterCut(albedo, emissive) {
     canvas.height = cutHeight;
     const ctx = canvas.getContext('2d');
     const image = ctx.createImageData(cutWidth, cutHeight);
+    const bloom = document.createElement('canvas');
+    bloom.width = cutWidth;
+    bloom.height = cutHeight;
+    const bloomCtx = bloom.getContext('2d');
+    const bloomImage = bloomCtx.createImageData(cutWidth, cutHeight);
     for (let y = 0; y < cutHeight; y++) {
         for (let x = 0; x < cutWidth; x++) {
             const i = ((y + y0) * width + x + x0) * 4;
@@ -386,10 +465,16 @@ export function buildEmitterCut(albedo, emissive) {
             image.data[o + 1] = Math.round(g / peak * 255);
             image.data[o + 2] = Math.round(b / peak * 255);
             image.data[o + 3] = Math.round(Math.min(1, contribution) * (base[i + 3] / 255) * 255);
+            const share = light[i + 3] / 255;
+            bloomImage.data[o] = Math.round(light[i] * share);
+            bloomImage.data[o + 1] = Math.round(light[i + 1] * share);
+            bloomImage.data[o + 2] = Math.round(light[i + 2] * share);
+            bloomImage.data[o + 3] = 255;
         }
     }
     ctx.putImageData(image, 0, 0);
-    return { canvas, x: x0, y: y0 };
+    bloomCtx.putImageData(bloomImage, 0, 0);
+    return { canvas, bloom, x: x0, y: y0 };
 }
 
 function releaseScratch(canvas) {

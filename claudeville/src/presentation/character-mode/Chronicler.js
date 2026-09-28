@@ -1,8 +1,10 @@
-import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+// The Chronicler's errand route: which landmark a verified outcome, milestone
+// or incident sends it to, queued and coalesced, walked at a fixed pace and
+// paused there. It carries no body: the resident renderer never drew one,
+// and the Canvas fallback's procedural robe walked a straight tile line
+// across the water, so it was cut for backend parity (Waking Isle Phase 3).
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { VERIFIED_OUTCOME_EVENT } from './ChronicleEvents.js';
-import { fillConvex } from './EffectStamps.js';
-import { fillPixelEllipse } from './PixelShapes.js';
 
 export const CHRONICLER_HOME = Object.freeze({ tileX: 8, tileY: 17 });
 export const CHRONICLER_QUEUE_LIMIT = 4;
@@ -15,11 +17,6 @@ const LANDMARKS = Object.freeze({
     watchtower: Object.freeze({ tileX: 28, tileY: 14 }),
 });
 const SPEED_TILES_PER_FRAME = 0.018;
-const SPRITE_ID = 'character.chronicler';
-// Procedural fallback body in world texels (pixel grammar: scanline fills
-// only). The outline polygon is the robe grown by one texel.
-const ROBE_OUTLINE = Object.freeze([[0, -30], [11, -7], [6, 6], [-7, 6], [-11, -7]]);
-const ROBE = Object.freeze([[0, -28], [10, -7], [5, 5], [-6, 5], [-10, -7]]);
 
 function finiteTarget(event, fallback) {
     const tileX = event?.tileX == null || event?.tileX === '' ? NaN : Number(event.tileX);
@@ -77,22 +74,12 @@ export function coalesceChroniclerRoute(queue, route, {
     return next;
 }
 
-function toWorld(tileX, tileY) {
-    return {
-        x: (tileX - tileY) * TILE_WIDTH / 2,
-        y: (tileX + tileY) * TILE_HEIGHT / 2,
-    };
-}
-
 export class Chronicler {
-    constructor({ assets = null, sprites = null, motionScale = 1, eventTarget = eventBus } = {}) {
-        this.assets = assets;
-        this.sprites = sprites;
+    constructor({ motionScale = 1, eventTarget = eventBus } = {}) {
         this.motionScale = motionScale;
         this.tileX = CHRONICLER_HOME.tileX;
         this.tileY = CHRONICLER_HOME.tileY;
         this.pauseUntil = 0;
-        this.frame = 0;
         this.phase = 'home';
         this._activeErrand = null;
         this._errandQueue = [];
@@ -157,7 +144,6 @@ export class Chronicler {
         const step = SPEED_TILES_PER_FRAME * (dt / 16);
         this.tileX += dx / distance * Math.min(step, distance);
         this.tileY += dy / distance * Math.min(step, distance);
-        this.frame += dt / 120;
         return false;
     }
 
@@ -184,50 +170,5 @@ export class Chronicler {
         this._unsubscribers = [];
         this._errandQueue.length = 0;
         this._activeErrand = null;
-    }
-
-    enumerateDrawables() {
-        const world = toWorld(this.tileX, this.tileY);
-        return [{
-            kind: 'chronicler',
-            sortY: world.y,
-            payload: { ...world, tileX: this.tileX, tileY: this.tileY },
-        }];
-    }
-
-    draw(ctx, drawable) {
-        const payload = drawable?.payload || drawable || {};
-        const x = Math.round(payload.x || 0);
-        const y = Math.round(payload.y || 0);
-        if (this.assets?.has?.(SPRITE_ID)) {
-            const img = this.assets.get(SPRITE_ID);
-            const dims = this.assets.getDims(SPRITE_ID) || { w: 92, h: 92 };
-            ctx.drawImage(img, Math.round(x - dims.w / 2), Math.round(y - dims.h + 10));
-            return;
-        }
-        this._drawProcedural(ctx, x, y);
-    }
-
-    _drawProcedural(ctx, x, y) {
-        const walking = this.phase === 'outbound' || this.phase === 'returning';
-        const bob = this.motionScale && walking ? Math.round(Math.sin(this.frame) * 1.2) : 0;
-        ctx.save();
-        ctx.translate(x, y + bob);
-        fillPixelEllipse(ctx, 0, 6, 10, 4, 'rgba(20, 16, 12, 0.28)');
-        ctx.fillStyle = '#2f2638';
-        fillConvex(ctx, ROBE_OUTLINE);
-        ctx.fillStyle = '#5b4a68';
-        fillConvex(ctx, ROBE);
-        ctx.fillStyle = '#d7b979';
-        ctx.fillRect(3, -9, 9, 6);
-        ctx.fillStyle = '#f1dfae';
-        ctx.fillRect(4, -8, 7, 4);
-        // Staff: a one-texel stepped line from the hand up to the scroll.
-        ctx.fillStyle = '#33283a';
-        for (let row = -24; row <= -5; row++) ctx.fillRect(Math.round(-12 + (row + 24) * 4 / 19), row, 1, 1);
-        ctx.fillStyle = '#d7b979';
-        ctx.fillRect(-13, -25, 3, 7);
-        fillPixelEllipse(ctx, 0, -20, 6, 6, '#f2d9a0');
-        ctx.restore();
     }
 }

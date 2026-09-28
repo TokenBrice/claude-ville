@@ -59,6 +59,9 @@ const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
   '--receive-pack',
   '--repo',
 ]);
+// `git tag` forms that list, delete or verify rather than create a tag.
+const GIT_TAG_NON_CREATE_FLAGS = new Set(['-l', '--list', '-d', '--delete', '-v', '--verify', '-n']);
+const GIT_TAG_FLAGS_WITH_VALUE = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user']);
 // Git-state probes invalidate a project's cache when refs change. Keep a slow
 // fallback for missed/provider-external changes without launching a subprocess
 // burst at every 30-second watcher reconciliation.
@@ -1256,15 +1259,16 @@ function isEnvAssignment(token) {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
 }
 
-function findGitCommand(tokens) {
+// Index of the git subcommand token (after env assignments and global flags),
+// or -1 when the segment is not a git invocation.
+function gitSubcommandIndex(tokens) {
   let index = 0;
   while (index < tokens.length && isEnvAssignment(tokens[index])) index++;
-  if (tokens[index] !== 'git') return null;
+  if (tokens[index] !== 'git') return -1;
 
   index++;
   while (index < tokens.length) {
     const token = tokens[index];
-    if (GIT_EVENT_TYPES.has(token)) return { type: token, subcommandIndex: index };
 
     if (GIT_GLOBAL_FLAGS_WITH_VALUE.has(token)) {
       index += 2;
@@ -1287,11 +1291,56 @@ function findGitCommand(tokens) {
       continue;
     }
 
-    return null;
+    return index;
   }
 
+  return -1;
+}
+
+function findGitCommand(tokens) {
+  const index = gitSubcommandIndex(tokens);
+  return index >= 0 && GIT_EVENT_TYPES.has(tokens[index]) ? { type: tokens[index], subcommandIndex: index } : null;
+}
+
+// The tag a `git tag [-a|-s] [-m msg] <name> [<commit>]` segment creates, or
+// null (not `git tag`, or a list/delete/verify form).
+function createdTagName(tokens) {
+  const index = gitSubcommandIndex(tokens);
+  if (index < 0 || tokens[index] !== 'tag') return null;
+  for (let i = index + 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--') return tokens[i + 1] || null;
+    if (GIT_TAG_NON_CREATE_FLAGS.has(token) || token.startsWith('--list=') || token.startsWith('--contains')
+      || token.startsWith('--no-contains') || token.startsWith('--points-at') || token.startsWith('--merged')
+      || token.startsWith('--no-merged')) return null;
+    if (GIT_TAG_FLAGS_WITH_VALUE.has(token) || /^-[a-zA-Z]*[mFu]$/.test(token)) {
+      i++;
+      continue;
+    }
+    if (token.startsWith('-')) continue;
+    return token;
+  }
   return null;
 }
+
+// The tag a push publishes, or null: the `tag <name>` refspec pair, a
+// destination under refs/tags/, or a refspec naming a tag an earlier
+// `git tag <name>` in the same command chain created.
+function pushedTagName(tokens, subcommandIndex, createdTags) {
+  const { positionals, repositoryFromFlag } = pushPositionals(tokens, subcommandIndex);
+  const refspecs = repositoryFromFlag ? positionals : positionals.slice(1);
+  if (refspecs[0] === 'tag' && refspecs[1]) return normalizeRefName(refspecs[1]);
+  for (const refspec of refspecs) {
+    const text = String(refspec).replace(/^\+/, '');
+    const colon = text.lastIndexOf(':');
+    const src = colon >= 0 ? text.slice(0, colon) : text;
+    const dst = colon >= 0 ? text.slice(colon + 1) : text;
+    if (dst.startsWith('refs/tags/') && dst.length > 'refs/tags/'.length) return dst.slice('refs/tags/'.length);
+    if (src && createdTags.has(src) && dst && !dst.startsWith('refs/')) return dst;
+  }
+  return null;
+}
+
 function findGhCommand(tokens) {
   let index = 0;
   while (index < tokens.length && isEnvAssignment(tokens[index])) index++;
@@ -1604,6 +1653,7 @@ function createGitEvent(command, type, dryRun, context, parsed = {}) {
   if (parsed.targetRef) event.targetRef = parsed.targetRef;
   if (parsed.refspec) event.refspec = parsed.refspec;
   if (Array.isArray(parsed.refspecs) && parsed.refspecs.length) event.refspecs = parsed.refspecs;
+  if (type === 'push' && parsed.tag) event.tag = parsed.tag;
   if (project && type === 'push') {
     const targetBranch = normalizeRefName(parsed.targetRef);
     const branch = targetBranch || currentBranch(project, { deferOnWorker: true });
@@ -1663,8 +1713,11 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
   const events = [];
   const ignoreDryRun = options.ignoreDryRun !== false;
 
+  const createdTags = new Set();
   for (const segment of splitShellCommands(command)) {
     const tokens = tokenizeShellSegment(segment);
+    const createdTag = createdTagName(tokens);
+    if (createdTag) createdTags.add(createdTag);
     const match = findGitCommand(tokens);
     if (match) {
       if (isHelpRequest(tokens, match.subcommandIndex)) continue;
@@ -1684,6 +1737,8 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
         const pushInfo = pushPositionals(tokens, match.subcommandIndex);
         if (pushInfo.force) parsed.force = pushInfo.force;
         if (isPushDelete(tokens, match.subcommandIndex)) parsed.deleted = true;
+        const tag = pushedTagName(tokens, match.subcommandIndex, createdTags);
+        if (tag) parsed.tag = tag;
       } else if (match.type === 'pull' || match.type === 'fetch') {
         parsed.remote = extractRemote(match.type, tokens, match.subcommandIndex);
         const pullInfo = pullFetchPositionals(tokens, match.subcommandIndex);

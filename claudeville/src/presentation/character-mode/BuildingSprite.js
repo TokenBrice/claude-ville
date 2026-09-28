@@ -33,7 +33,7 @@ import { isWorkingVisitor, NON_WORKING_VISIT_ROLES } from './VisitIntentManager.
 import { BuildingPartGates } from './BuildingPartGates.js';
 import { bakeEmitterCycle, emitterCyclePhase } from './EmitterCycle.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
-import { castLightingFor, structureCast } from './RakingLight.js';
+import { castLightingFor, castOverWater, structureCast } from './RakingLight.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
 import { frontEdgeFoot, landmarkFootprint } from './FootprintField.js';
@@ -74,11 +74,14 @@ import {
     isBuildingApertureLayer,
 } from './BuildingVisualRegistry.js';
 import { APERTURE_MIN_ZOOM, assignRoomSlots, buildApertureModel } from './BuildingApertureModel.js';
-import { RoomGlass } from './RoomGlass.js';
+import { RoomGlass, readPixels } from './RoomGlass.js';
+import { mirrorRowOf, waterlineProfile } from './CoastBake.js';
+import { ApertureLights, APERTURE_GLASS_SNAP, APERTURE_REGISTRY_CLEARANCE, apertureIntensity, apertureOverRoof, apertureRadius } from './ApertureLights.js';
+import { RoofWeather } from './RoofWeather.js';
 import { drawPennant, pennantFrame, pennantWind } from './PixelPennant.js';
 import { resolveObservation } from './ObservationCertainty.js';
 import { VillagePhase } from '../../application/VillageState.js';
-import { dottedCurve, fillConvex, gradeTone, pixelLine, ringDots, snap } from './EffectStamps.js';
+import { GOLD, GOLD_RAMP, dottedCurve, fillConvex, gradeTone, pixelLine, ringDots, snap } from './EffectStamps.js';
 
 // READ translates canonical classifier reasons, never tool names or input text.
 const READ_VERBS = Object.freeze({
@@ -122,12 +125,17 @@ const FORGE_BANKED_GLOW = 0.07;
 // the harbour lantern are safety lights, not work signals.
 const REST_SAFETY_LIGHT_TYPES = new Set(['watchtower', 'harbor']);
 // 6.5 — the Harbor mast pennants: [y offset from the signal anchor, cloth,
-// shaded hem]. Albedo, so they take the C2 grade on the overlay.
+// shaded hem]. Albedo, so they take the C2 grade on the overlay. The top
+// hoist flies white: gold is verified success only.
 const HARBOR_SIGNAL_PENNANTS = Object.freeze([
-    [-18, '#f2d36b', '#8f7a3e'],
+    [-18, '#d2dcd8', '#7a929c'],
     [-8, '#5bc0c9', '#356f74'],
     [2, '#c23f36', '#71251f'],
 ]);
+// 8.2 (M16) — on the local day of a verified release the top hoist flies the
+// release's gold pennant (the sloop's and the 6.7 bunting's pennant family)
+// in place of the white: the same flag slot, no added flag.
+const HARBOR_RELEASE_PENNANT = Object.freeze([GOLD, GOLD_RAMP[0]]);
 // 2.7 — the Lighthouse beam's stepped courses: [from, to] along the fan and
 // the share of sea dash cells each lights (a near core of 0.9 from the
 // tower's waterline, then 0.6 and 0.3: no gradient). The resident shaders'
@@ -167,6 +175,16 @@ const WATCHTOWER_SEARCHLIGHT = Object.freeze(getBuildingEffectAnchor('watchtower
 const SEARCHLIGHT_SWEEP_RAD_PER_S = 0.45;
 const SEARCHLIGHT_REST_ANGLE = -0.34;
 const SEARCHLIGHT_SHEEN_STEP_MS = 200;
+// 2.9 — the Lighthouse lamp's column on the water: the beam's lampBeam
+// silver (one hue family with the beam, M22; the column keeps 70 % of a cool
+// light's hue, so its low stop lands on the beam's own mid silver), a gain
+// over the lamp's core energy (the lens concentrates it: its column's near
+// third lifts one stop more than any window's, and a silver lit no brighter
+// than an amber would read as stone), and its length in a lamp's column
+// reaches, from the lamp's mirror point toward the camera.
+const LIGHTHOUSE_COLUMN_COLOR = ART_RAMPS.lampBeam[0];
+const LIGHTHOUSE_COLUMN_GAIN = 1.4;
+const LIGHTHOUSE_COLUMN_REACH = 1.2;
 // The lens angle (ground-plane radians, 0 = +x) at `ms` on the motion clock.
 function searchlightAngleAt(ms) {
     const t = Math.max(0, Number(ms) || 0) / 1000;
@@ -456,6 +474,14 @@ export class BuildingSprite {
         this._roomSlotsByType = new Map();
         this._roomLitByType = new Map();
         this.roomGlass = new RoomGlass(this.assets);
+        // 2.4 — emitter-blob templates from each landmark's emissive sidecar.
+        this.apertureLights = new ApertureLights(this.assets);
+        this._apertureSourcesCache = null;
+        this._apertureSourcesKey = null;
+        this._apertureSourcesStatics = null;
+        // 5.2 roofs / 6.6 — snow, wet slate and eave drips on the roofs
+        // (RoofWeather), from the village's own weather only.
+        this.roofWeather = new RoofWeather(this.assets);
         this._onBuildingSelected = (building) => {
             const type = building?.type || null;
             if (type === this._selectedBuildingType) return;
@@ -984,8 +1010,9 @@ export class BuildingSprite {
     }
 
     // Physical shadows follow declared structural contact, never sprite canvas
-    // width or the outer terrain apron.
-    drawShadows(ctx) {
+    // width or the outer terrain apron. 2.9 — `waterFields` (the coast bake's
+    // resident fields) break a cast's texels over painted water.
+    drawShadows(ctx, waterFields = null) {
         // 1.5 — the same baked RakingLight cast the resident path uploads.
         const cast = castLightingFor(this.atmosphereState);
         for (const b of this.buildings) {
@@ -999,11 +1026,9 @@ export class BuildingSprite {
                 if (baked) {
                     ctx.imageSmoothingEnabled = false;
                     ctx.globalAlpha = cast.alpha * (contact.opacity ?? 0.75);
-                    ctx.drawImage(
-                        baked.canvas,
-                        Math.round(c.x + (contact.offsetX || 0) + baked.offsetX),
-                        Math.round(c.y + (contact.offsetY || 0) + baked.offsetY),
-                    );
+                    const x = Math.round(c.x + (contact.offsetX || 0) + baked.offsetX);
+                    const y = Math.round(c.y + (contact.offsetY || 0) + baked.offsetY);
+                    ctx.drawImage(castOverWater(baked, x, y, waterFields), x, y);
                     ctx.globalAlpha = 1;
                 }
             }
@@ -1603,6 +1628,62 @@ export class BuildingSprite {
         return this.agentSprites.filter(sprite => sprite?.agent?.status === 'WORKING').length;
     }
 
+    // 2.9 — the Lighthouse lamp's column on the water: a water-only fixture
+    // record at the tower base (`waterOnly`; the column starts at the lamp in
+    // its tower's mirror, `height` below the foot, and runs
+    // LIGHTHOUSE_COLUMN_REACH times a lamp's column reach), in the beam's own
+    // C1 lampBeam silver (M22: one hue family with the beam, never the
+    // lantern's amber), lit exactly while the beam turns (lampCourse >=
+    // lamplight). A safety light: it reads the clock only, never work,
+    // distress or a failed push. PostFxFeed adds it to the resident light
+    // list; nothing else reads it. With the halo radius capped
+    // (SOURCE_HALO_RADIUS_CAP) the column ends ~40 rows short of the terrain
+    // record's edge, so its tail tapers out on the in-map water.
+    lighthouseColumnSource(lightingState = this.lightingState) {
+        if (lampCourseFor(this.atmosphereState) < LAMP_COURSE_LAMPLIGHT) return null;
+        const energy = sourceEnergyFor(lightingState ?? this.atmosphereState?.lighting);
+        if (!(energy.core > 0.02)) return null;
+        const source = this._staticLightSources().find(light => light.buildingType === 'watchtower');
+        const drop = this._lighthouseMirrorDrop();
+        if (!source || drop == null) return null;
+        return normalizeLightSource({
+            ...source,
+            id: `${source.id}:column`,
+            color: LIGHTHOUSE_COLUMN_COLOR,
+            intensity: energy.core * LIGHTHOUSE_COLUMN_GAIN,
+            radius: Math.min(source.radius * energy.halo, SOURCE_HALO_RADIUS_CAP),
+            height: drop,
+            waterOnly: true,
+            columnReach: LIGHTHOUSE_COLUMN_REACH,
+            origin: source.origin || { x: source.x, y: source.y },
+        }, {
+            buildingType: source.buildingType,
+            building: source.building,
+        });
+    }
+
+    // 2.9 — where the lamp sits in its tower's mirror, in world px below the
+    // lamp's foot: CoastBake mirrors each sprite column about its own
+    // waterline (`waterlineProfile`), a tall tower squashed so the whole
+    // shaft and lantern fit its reach (`mirrorRowOf`), so the lamp's column
+    // starts under the mirrored lantern, never a full tower height below the
+    // waterline. Read once from the tower sprite (null until it has loaded).
+    _lighthouseMirrorDrop() {
+        if (this._lighthouseMirrorDropValue != null) return this._lighthouseMirrorDropValue;
+        const entry = this.assets.getEntry('building.watchtower');
+        const image = this.assets.get(entry?.id || 'building.watchtower');
+        const w = image?.naturalWidth || image?.width || 0;
+        const h = image?.naturalHeight || image?.height || 0;
+        const data = w && h ? readPixels(image, w, h) : null;
+        const foot = WATCHTOWER_LANTERN_FIRE.foot;
+        if (!data || !foot) return null;
+        const [lampX, lampY] = WATCHTOWER_LANTERN_FIRE.light;
+        const axis = waterlineProfile({ w, h, data }, 0).axis[Math.round(lampX)];
+        if (axis == null) return null;
+        this._lighthouseMirrorDropValue = Math.max(0, axis + mirrorRowOf(h, axis - lampY) - foot[1]);
+        return this._lighthouseMirrorDropValue;
+    }
+
     // Light sources for water/wall additive light passes (Phase 2.5.5).
     // `overlay` is the atmosphere sprite id used for the additive reflection.
     //
@@ -1612,16 +1693,23 @@ export class BuildingSprite {
     // is lit; the envelope decides how much energy that light may spend, and
     // `SOURCE_HALO_RADIUS_CAP` caps halo area by authored source geometry, so
     // the wide Lighthouse and Harbor lamps stop out-glowing the work (D4).
+    // 2.4 — plus every lit window, lantern and opening of the landmarks'
+    // emissive art (`_apertureSources`), each gated by its own room.
     getLightSources(lightingState = this.lightingState) {
         const energy = sourceEnergyFor(lightingState ?? this.atmosphereState?.lighting);
         const windowWarmth = this.atmosphereState?.reactions?.windowWarmth || 0;
         const staticSources = this._staticLightSources();
+        const apertures = this._apertureSources();
+        const standIns = this._apertureStandIns;
+        const nightGate = this._nightWindowGate();
         const out = [];
         for (const source of staticSources) {
             // 2.7 (M22) — the Lighthouse lamp stands 40+ world px up its tower:
             // it lights no ground, apron, steps or masonry below it (AD #6). Its
             // light is the lantern's own halo and flash (_drawWatchtowerFire)
-            // and the beam on the sea (lighthouseBeam).
+            // and the beam on the sea (lighthouseBeam); 2.9 adds its column on
+            // the water through `lighthouseColumnSource`, fed to the resident
+            // loop only (no pool, cast or wet reflection reads it).
             if (source.buildingType === 'watchtower') continue;
             // V8 — only real work (isWorkingVisitor) warms a building's light;
             // seated, queued or passing bodies leave it exactly as empty.
@@ -1639,7 +1727,13 @@ export class BuildingSprite {
                 ? PRESENCE_TIER_TABLE[this._workTierFor(source.building)].radius
                 : 1;
             const radius = Math.min(source.radius * energy.halo, SOURCE_HALO_RADIUS_CAP) * presenceRadiusMult;
-            const emissiveGate = source.buildingType ? this._emissiveGateFor(source.building) : 1;
+            // A registry point standing on a room's glass (`_apertureSources`)
+            // is that room's light: it takes the room's gate, never the
+            // building's, so a lit room lights and a dark room stays dark.
+            const standIn = standIns?.get(source) || 0;
+            const emissiveGate = standIn > 0
+                ? 1 - nightGate + this.roomGate(source.buildingType, standIn - 1)
+                : source.buildingType ? this._emissiveGateFor(source.building) : 1;
             const intensity = (activity + warmthBoost) * typeResponse * energy.core * emissiveGate;
             if (intensity < 0.02) continue;
             if (alpha != null) alpha *= energy.core * emissiveGate;
@@ -1657,6 +1751,28 @@ export class BuildingSprite {
         for (const source of this._ritualLightSources(energy.core)) out.push(this._withLightFoot(source, 'point'));
         for (const source of this._forgeSpillLightSources(energy.core)) out.push(this._withLightFoot(source, 'aperture'));
         for (const source of this._archiveSpillLightSources(energy.core)) out.push(this._withLightFoot(source, 'aperture'));
+        // 2.4 — the lit panes and openings of each landmark's emissive art:
+        // a room's glass by that room's gate (roomGate: a dark room lights
+        // nothing), a lantern or opening by the building's night shift (a
+        // real worker inside, V8), each on its own wall base facing its face.
+        for (const aperture of apertures) {
+            const type = aperture.building.type;
+            const template = aperture.template;
+            const gate = template.group > 0
+                ? this.roomGate(type, template.group - 1)
+                : this._nightShiftLit(type) * nightGate;
+            if (!(gate > 0)) continue;
+            const intensity = apertureIntensity(template.area, energy.core, gate);
+            if (intensity < 0.02) continue;
+            out.push(normalizeLightSource({
+                ...aperture.source,
+                intensity,
+                radius: apertureRadius(template.area),
+            }, {
+                buildingType: type,
+                building: aperture.building,
+            }));
+        }
         return out;
     }
 
@@ -1664,7 +1780,9 @@ export class BuildingSprite {
     // lamplight bleeds out the door and across the entrance steps via the
     // screen-composite light path (overlay sprite). Brightness tracks the read
     // counter (_archiveReadIntensity). Lamplight, not fire: it never flickers
-    // (2.6).
+    // (2.6). V8 — the read counter is village-wide; the spill stands on the
+    // Archive's own night shift (a real worker inside), so a dark Archive
+    // lights no step whatever is read elsewhere.
     _archiveSpillLightSources(coreEnergy = 1) {
         const readIntensity = this._archiveReadIntensity || 0;
         if (readIntensity <= 0.4) return [];
@@ -1672,6 +1790,8 @@ export class BuildingSprite {
         const sources = [];
         for (const building of this.buildings) {
             if (building.type !== 'archive') continue;
+            const gate = this._emissiveGateFor(building);
+            if (!(gate > 0)) continue;
             const entry = this.assets.getEntry(`building.${building.type}`);
             const center = this._buildingScreenCenter(building);
             const baseAnchor = this.assets.getAnchor(entry?.id || `building.${building.type}`);
@@ -1688,8 +1808,8 @@ export class BuildingSprite {
                 // WorldFrameRenderer's reflection pass scales overlay alpha by
                 // `intensity`; drive it from the read counter so the spill
                 // brightens with reading. `alpha` is kept for any alpha-aware path.
-                intensity: 0.6 + strength * 0.9,
-                alpha: (0.18 + strength * 0.30) * 0.9 * coreEnergy,
+                intensity: (0.6 + strength * 0.9) * gate,
+                alpha: (0.18 + strength * 0.30) * 0.9 * coreEnergy * gate,
                 overlay: 'atmosphere.light.lantern-glow',
                 buildingType: building.type,
                 building,
@@ -1705,15 +1825,16 @@ export class BuildingSprite {
     // the world is dark, the apron glow bleeds onto adjacent tiles/water via the
     // screen-composite light path. Brightness tracks _forgeGlow (#11); as a
     // fire source it breathes in the stepped quanta of 2.6 (`fire: true`,
-    // applied once per frame by the renderer), never a continuous sine.
+    // applied once per frame by the renderer), never a continuous sine. V8 —
+    // it stands on the Forge's own night shift, like its registry hearth.
     _forgeSpillLightSources(coreEnergy = 1) {
         const night = clamp01(this.atmosphereState?.reactions?.nightReflection ?? 0);
         const heat = clamp01((this._forgeGlowIntensity() - FORGE_GLOW_BASELINE) / (1 - FORGE_GLOW_BASELINE));
-        const strength = night * heat;
-        if (strength <= 0.05) return [];
         const sources = [];
         for (const building of this.buildings) {
             if (building.type !== 'forge') continue;
+            const strength = night * heat * this._emissiveGateFor(building);
+            if (strength <= 0.05) continue;
             const entry = this.assets.getEntry(`building.${building.type}`);
             const center = this._buildingScreenCenter(building);
             const baseAnchor = this.assets.getAnchor(entry?.id || `building.${building.type}`);
@@ -1789,6 +1910,9 @@ export class BuildingSprite {
     // docs/material-channel-contract.md), or null (not coded, transparent
     // there, or no pixel access). While the occluder is still loading, marks
     // the static light cache pending so it is rebuilt once the pixels land.
+    // Canvas mode loads no material companions: the occluder sidecar is then
+    // fetched once beside the versioned albedo (as EmitterCuts and RoofWeather
+    // do), so both backends stand a light on the same foot.
     _surfaceCodeAt(type, at) {
         const id = `building.${type}`;
         const entry = this.assets?.getEntry?.(id);
@@ -1807,11 +1931,19 @@ export class BuildingSprite {
             ox = frame?.rect?.x ?? 0;
             oy = frame?.rect?.y ?? 0;
         }
+        let loading = false;
+        if (!image) {
+            const sidecar = this._occluderSidecar(id, entry);
+            loading = sidecar === undefined;
+            image = sidecar || null;
+            ox = 0;
+            oy = 0;
+        }
         const scratch = this._surfaceCodeCanvas || (this._surfaceCodeCanvas = typeof OffscreenCanvas !== 'undefined'
             ? new OffscreenCanvas(1, 1)
             : typeof document !== 'undefined' ? Object.assign(document.createElement('canvas'), { width: 1, height: 1 }) : null);
         if (!image || !(image.width > 0) || !scratch) {
-            if (scratch) this._lightFootPending = true;
+            if (scratch && loading) this._lightFootPending = true;
             return null;
         }
         const ctx = scratch.getContext('2d', { willReadFrequently: true });
@@ -1821,6 +1953,27 @@ export class BuildingSprite {
         const code = a > 0 ? { height: r, face: b >> 6 } : null;
         cache.set(key, code);
         return code;
+    }
+
+    // The `.occluder.png` sidecar of `id` fetched beside its albedo: the
+    // image, null (no sidecar, failed or no albedo url) or undefined while
+    // it loads.
+    _occluderSidecar(id, entry) {
+        const key = `${this.assets.assetVersion ?? ''}|${id}`;
+        const sidecars = this._occluderSidecars || (this._occluderSidecars = new Map());
+        const cached = sidecars.get(key);
+        if (cached !== undefined) return cached === 'loading' ? undefined : cached;
+        const src = typeof this.assets.get?.(id)?.src === 'string' ? this.assets.get(id).src : '';
+        if (entry?.occluderSidecar !== true || !src || typeof Image === 'undefined') {
+            sidecars.set(key, null);
+            return null;
+        }
+        const image = new Image();
+        sidecars.set(key, 'loading');
+        image.onload = () => sidecars.set(key, image);
+        image.onerror = () => sidecars.set(key, null);
+        image.src = src.replace(/\.png(?=([?#]|$))/, '.occluder.png');
+        return undefined;
     }
 
     // The per-frame building sources (rituals, spills) stand on the same feet.
@@ -1912,6 +2065,94 @@ export class BuildingSprite {
         // A landmark whose surface code has not loaded yet keeps its analytic
         // foot for this frame only.
         if (!this._lightFootPending) this._lightSourcesCache = out;
+        return out;
+    }
+
+    // 2.4 — every landmark's aperture templates (ApertureLights) placed in the
+    // world: `{ building, template, source }` where `source` is the static
+    // part of the light record (V5 foot, height, face normal and role from
+    // `_lightFootFor` at the template's centroid, its own emissive colour).
+    // A registry point standing on a room's glass (inside the room's glass
+    // box grown by APERTURE_GLASS_SNAP px) stands in for that room: the room
+    // template is skipped and `_apertureStandIns` maps the point to the room's
+    // glass group, so `getLightSources` gates the point by that room (its
+    // authored radius, height and normal kept). Any other room's glass lays
+    // its own aperture however near a registry point stands; an off-glass
+    // template within APERTURE_REGISTRY_CLEARANCE px of a building-gated
+    // registry point is skipped: that point already lights it on the same
+    // gate. Rebuilt when a template list lands or the static sources rebuild.
+    _apertureSources() {
+        const statics = this._staticLightSources();
+        const key = this.apertureLights.revision;
+        if (this._apertureSourcesCache && this._apertureSourcesKey === key
+            && this._apertureSourcesStatics === statics && this._lightSourcesCache === statics) {
+            return this._apertureSourcesCache;
+        }
+        const pendingBefore = this._lightFootPending;
+        this._lightFootPending = false;
+        const out = [];
+        const standIns = new Map();
+        let loading = false;
+        for (const b of this.buildings) {
+            const templates = this.apertureLights.templates(b.type);
+            if (templates === null) {
+                loading = true;
+                continue;
+            }
+            if (!templates.length) continue;
+            const entry = this.assets.getEntry(`building.${b.type}`);
+            const c = this._buildingScreenCenter(b);
+            const baseAnchor = this.assets.getAnchor(entry?.id || `building.${b.type}`);
+            const toWorld = ([lx, ly]) => ({ x: c.x - baseAnchor[0] + lx, y: c.y - baseAnchor[1] + ly });
+            const registry = statics.filter(source => source.building === b);
+            const stoodIn = new Set();
+            for (const source of registry) {
+                const room = templates.find(template => {
+                    if (!(template.group > 0)) return false;
+                    const a = toWorld([template.x0 - APERTURE_GLASS_SNAP, template.y0 - APERTURE_GLASS_SNAP]);
+                    const z = toWorld([template.x1 + 1 + APERTURE_GLASS_SNAP, template.y1 + 1 + APERTURE_GLASS_SNAP]);
+                    return source.x >= a.x && source.x <= z.x && source.y >= a.y && source.y <= z.y;
+                });
+                if (!room) continue;
+                standIns.set(source, room.group);
+                stoodIn.add(room.group);
+            }
+            const clearing = registry.filter(source => !standIns.has(source));
+            for (const template of templates) {
+                const origin = toWorld([template.cx, template.cy]);
+                if (template.group > 0
+                    ? stoodIn.has(template.group)
+                    : clearing.some(source => Math.hypot(source.x - origin.x, source.y - origin.y) < APERTURE_REGISTRY_CLEARANCE)) continue;
+                // A window over its own roofs stands on the footprint's front
+                // edge below it (the analytic foot, facing that edge): its
+                // light reaches the street in front of its own face.
+                const at = apertureOverRoof(b.type, template) ? null : [template.cx, template.cy];
+                out.push({
+                    building: b,
+                    template,
+                    source: {
+                        id: `aperture:${b.type}:${template.key}`,
+                        kind: 'point',
+                        origin,
+                        x: origin.x,
+                        y: origin.y,
+                        ...this._lightFootFor(b, origin, { at, role: 'aperture' }, toWorld),
+                        color: template.color,
+                        overlay: 'atmosphere.light.lantern-glow',
+                        buildingType: b.type,
+                        building: b,
+                    },
+                });
+            }
+        }
+        const pending = this._lightFootPending;
+        this._lightFootPending = pendingBefore || pending;
+        if (!loading && !pending && this._lightSourcesCache === statics) {
+            this._apertureSourcesCache = out;
+            this._apertureSourcesKey = key;
+            this._apertureSourcesStatics = statics;
+        }
+        this._apertureStandIns = standIns;
         return out;
     }
 
@@ -2054,7 +2295,8 @@ export class BuildingSprite {
     drawDrawable(ctx, d) {
         const id = d.entry.id;
         if (d.kind === 'building') {
-            this.sprites.drawSprite(ctx, id, d.wx, d.wy);
+            const placed = this.sprites.drawSprite(ctx, id, d.wx, d.wy);
+            if (placed) this._drawRoofWeather(ctx, d, placed.dx, placed.dy);
             this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'whole');
         } else {
             const dims = this.assets.getDims(id);
@@ -2065,10 +2307,12 @@ export class BuildingSprite {
             if (!img) return;
             if (d.kind === 'building-back') {
                 ctx.drawImage(img, 0, 0, dims.w, d.horizonY, dx, dy, dims.w, d.horizonY);
+                this._drawRoofWeather(ctx, d, dx, dy);
                 this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'back', d.horizonY);
             } else {
                 ctx.drawImage(img, 0, d.horizonY, dims.w, dims.h - d.horizonY,
                                    dx, dy + d.horizonY, dims.w, dims.h - d.horizonY);
+                this._drawRoofWeather(ctx, d, dx, dy);
                 this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'front', d.horizonY);
             }
         }
@@ -3219,10 +3463,12 @@ export class BuildingSprite {
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
+        const releaseDay = this.releaseDay?.dayPennantUp?.(Date.now()) === true;
         HARBOR_SIGNAL_PENNANTS.forEach(([dy, color, shade], index) => {
+            const release = index === 0 && releaseDay;
             drawPennant(ctx, signal.x + 3, signal.y + dy + 14, {
-                accent: color,
-                shade,
+                accent: release ? HARBOR_RELEASE_PENNANT[0] : color,
+                shade: release ? HARBOR_RELEASE_PENNANT[1] : shade,
                 grade,
                 frame: pennantFrame(tMs, windX, { motion: this.motionScale > 0, phase: index }),
                 windX,
@@ -4954,6 +5200,43 @@ export class BuildingSprite {
         const type = building?.type;
         if (!type) return null;
         return this.roomGlass.patch(type, (group) => this._glassGroupGate(type, group));
+    }
+
+    // 5.2 roofs / 6.6 — steps the roof weather once a frame from the C-W2
+    // ground state and the live precipitation (WorldFrameRenderer).
+    syncRoofWeather(atmosphere, ground, motionScale = this.motionScale, motionTimeMs = 0) {
+        this.roofWeather.sync(atmosphere, ground, motionScale, motionTimeMs);
+    }
+
+    // The roof snow / wet-course patch of `building` (RoofWeather.patch),
+    // shared by the resident patch record and the Canvas building pass; null
+    // in clear, dry weather.
+    roofPatchFor(building) {
+        const type = building?.type;
+        return type ? this.roofWeather.patch(type) : null;
+    }
+
+    // The eave-drip strip of `building` at the current drip frame, while it
+    // rains and motion is on (RoofWeather.drip); null otherwise.
+    roofDripFor(building) {
+        const type = building?.type;
+        return type ? this.roofWeather.drip(type) : null;
+    }
+
+    // Canvas twin of the resident roof records: the patch and the drip frame
+    // on the landmark's own texels, cut at the split horizon like the base.
+    _drawRoofWeather(ctx, d, dx, dy) {
+        const layers = [this.roofPatchFor(d.building), this.roofDripFor(d.building)];
+        for (const layer of layers) {
+            if (!layer) continue;
+            let top = layer.top;
+            let bottom = layer.top + layer.h;
+            if (d.kind === 'building-back') bottom = Math.min(bottom, d.horizonY);
+            else if (d.kind === 'building-front') top = Math.max(top, d.horizonY);
+            if (bottom <= top) continue;
+            ctx.drawImage(layer.canvas, layer.sx || 0, top - layer.top, layer.w, bottom - top,
+                dx + layer.left, dy + top, layer.w, bottom - top);
+        }
     }
 
     // 6.7 — the static frame of a `dressing: true` layer (partDrawsFor, both

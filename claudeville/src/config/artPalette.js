@@ -85,6 +85,9 @@ export const ART_RAMPS = Object.freeze({
     stone: ['#25262d', '#373944', '#4d4f5a', '#686a72', '#8c8b8a'],
     timber: ['#2a1c14', '#45301f', '#654629', '#8a6337'],
     slate: ['#1e2433', '#2c3650', '#3e4d6c', '#5a6c8c'],
+    // 6.6 wet slate: the 1-art-px wet course on upper-left-facing slate
+    // edges, one stop per wetness quantum (dry-most first), and the eave drips.
+    wetSlate: ['#5a6c8c', '#6b7ea0', '#7d91b0', '#8fa3c0'],
     clothCrimson: ['#732a31', '#a4463f'],
     clothOchre: ['#987638', '#c9a04a'],
     emissive: ['#ff9d4a', '#ffcf7a', '#ffe9b8'],

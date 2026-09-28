@@ -45,6 +45,14 @@ layout(location = 0) out vec4 outColor;
 
 uniform sampler2D u_source;
 uniform sampler2D u_waterMask;
+// V5 — the pools' ground-receiver mask (world px, one texel each): a pool
+// lands only where it is set (open water, wall faces and roofs stay out).
+// Origin and size are staged in backing px (the world rect through the
+// camera: x zoom·dpr, plus the render offset), so a cell maps onto its own
+// world texel.
+uniform sampler2D u_poolMask;
+uniform vec2 u_poolMaskOrigin;
+uniform vec2 u_poolMaskSize;
 uniform vec2 u_resolution;
 uniform vec2 u_sourceTexel;
 uniform vec2 u_maskTexel;
@@ -63,7 +71,6 @@ uniform float u_motionScale;
 uniform bool u_reducedMotion;
 uniform bool u_waterEnabled;
 uniform bool u_displacementEnabled;
-uniform bool u_reflectionEnabled;
 uniform bool u_godRaysEnabled;
 uniform bool u_pulseEnabled;
 uniform bool u_grainEnabled;
@@ -175,9 +182,22 @@ vec3 applyGrade(vec3 color) {
 // ungraded source colour on the C1 ramp. Action-needed lights take the same
 // courses, but the strongest one at the pixel wins (no sum), and land outside
 // V5's receiver knee, as on the resident path. No water or wet reflection.
+// V5 — the receiver mask at one art cell: 1 where a pool may land. A cell
+// outside the mask rect is a receiver (the mask only covers the frame's pool
+// reach), so a missing or unbounded mask changes nothing.
+float poolReceiver(vec2 cellPx) {
+    if (u_poolMaskSize.x < 1.0 || u_poolMaskSize.y < 1.0) return 1.0;
+    vec2 local = (cellPx - u_poolMaskOrigin) / u_poolMaskSize;
+    if (local.x < 0.0 || local.y < 0.0 || local.x >= 1.0 || local.y >= 1.0) return 1.0;
+    // Uploaded with UNPACK_FLIP_Y: the canvas's top row sits at v = 1.
+    return texture(u_poolMask, vec2(local.x, 1.0 - local.y)).a;
+}
+
 vec3 applyPools(vec3 graded, vec3 albedo) {
     vec2 cell = artCell();
     vec2 p = artCellPixels();
+    float receiver = poolReceiver(p);
+    if (receiver <= 0.0) return graded;
     float order = bayer4(cell);
     vec3 acc = vec3(0.0);
     float depth = 0.0;
@@ -189,14 +209,16 @@ vec3 applyPools(vec3 graded, vec3 albedo) {
         vec4 light = u_lights[i];
         vec4 geo = u_lightGeo[i];
         float radius = max(1.0, light.z);
-        // V5 — the ground course from the light's foot: the height term over
-        // the reach sqrt(r^2 + h^2), and an aperture's half-space lobe.
+        // V5 — the ground course from the light's foot: the height term
+        // (geo.x, PostFxFeed's ground-course height: the resident 24 px band
+        // and aperture spill) over the reach sqrt(r^2 + h^2), and a facade
+        // aperture's half-space lobe judged on the ground plane.
         vec2 ground = (p - light.xy) * vec2(1.0, 2.0);
         float d = length(vec3(ground, geo.x));
         float t = d / sqrt(radius * radius + geo.x * geo.x);
         if (t >= 1.0) continue;
         float lobe = geo.w > 0.5 && geo.w < 1.5 && dot(geo.yz, geo.yz) > 0.25
-            ? clamp(0.30 + 1.4 * dot(geo.yz, ground) / max(d, 1.0), 0.0, 1.0)
+            ? clamp(0.30 + 1.4 * dot(geo.yz, ground) / max(length(ground), 1.0), 0.0, 1.0)
             : 1.0;
         float steps = poolSteps((1.0 - smoothstep(0.0, 1.0, t)) * lobe, order);
         vec3 lit = u_lightColors[i].rgb * poolWeight(steps) * light.w * u_lightColors[i].a;
@@ -212,7 +234,7 @@ vec3 applyPools(vec3 graded, vec3 albedo) {
             depth = max(depth, steps);
         }
     }
-    return stepPool(graded, acc, depth, attention, attentionDepth, albedo, vec3(0.0), 1.0);
+    return stepPool(graded, acc * receiver, depth, attention * receiver, attentionDepth, albedo, vec3(0.0), 1.0);
 }
 
 vec3 applyGodRays(vec3 color, vec2 uv) {
@@ -253,14 +275,6 @@ void main() {
         scene.rgb += u_pulse.rgb * pulseStrength * 0.012;
     }
 
-    if (u_reflectionEnabled) {
-        float water = waterAt(v_uv);
-        float below = waterAt(v_uv + vec2(0.0, 3.0 * u_maskTexel.y));
-        float upperEdge = water * (1.0 - below);
-        vec3 reflection = sourceAt(vec2(sceneUv.x, 1.0 - sceneUv.y)).rgb;
-        scene.rgb += reflection * upperEdge * 0.08;
-    }
-
     vec3 albedo = scene.rgb;
     scene.rgb = applyGrade(scene.rgb);
     scene.rgb = applyPools(scene.rgb, albedo);
@@ -279,6 +293,10 @@ void main() {
     outColor = vec4(max(scene.rgb, vec3(0.0)), 1.0);
 }`;
 
+// 1.3 — the hybrid bloom is the resident one: its source is the emitter
+// cuts' own emission (EmitterCuts `drawCanvasEmitterCuts`, rgb x a stored at
+// half, so x 2 here), never a threshold over the graded frame, and the same
+// 3x3 box extract and five-tap blur as GpuWorldRenderer's BLOOM_FRAGMENT.
 const BLOOM_FRAGMENT = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -288,27 +306,26 @@ uniform vec2 u_texel;
 uniform bool u_extract;
 
 vec3 sampleAt(vec2 uv) { return texture(u_input, clamp(uv, vec2(0.0), vec2(1.0))).rgb; }
+vec3 emissionAt(vec2 uv) {
+    vec4 e = texture(u_input, clamp(uv, vec2(0.0), vec2(1.0)));
+    return e.rgb * e.a * 2.0;
+}
 
 void main() {
     vec3 sum = vec3(0.0);
     if (u_extract) {
-        // Bright extraction plus the first Kawase taps in one pass keeps the
-        // full chain at four draws and the reduced chain at three.
         for (int x = -1; x <= 1; x++) {
             for (int y = -1; y <= 1; y++) {
-                vec3 c = sampleAt(v_uv + vec2(float(x), float(y)) * u_texel * 2.0);
-                sum += max(c - vec3(0.62), vec3(0.0));
+                sum += emissionAt(v_uv + vec2(float(x), float(y)) * u_texel * 2.0);
             }
         }
-        sum = sum / 9.0 * 1.35;
+        sum /= 9.0;
     } else {
         sum = sampleAt(v_uv) * 0.20;
-        sum += sampleAt(v_uv + vec2( 1.0,  1.0) * u_texel * 2.0) * 0.16;
-        sum += sampleAt(v_uv + vec2(-1.0,  1.0) * u_texel * 2.0) * 0.16;
-        sum += sampleAt(v_uv + vec2( 1.0, -1.0) * u_texel * 2.0) * 0.16;
-        sum += sampleAt(v_uv + vec2(-1.0, -1.0) * u_texel * 2.0) * 0.16;
-        sum += sampleAt(v_uv + vec2( 2.0,  0.0) * u_texel * 2.0) * 0.08;
-        sum += sampleAt(v_uv + vec2(-2.0,  0.0) * u_texel * 2.0) * 0.08;
+        sum += sampleAt(v_uv + vec2( 1.0,  1.0) * u_texel * 2.0) * 0.20;
+        sum += sampleAt(v_uv + vec2(-1.0,  1.0) * u_texel * 2.0) * 0.20;
+        sum += sampleAt(v_uv + vec2( 1.0, -1.0) * u_texel * 2.0) * 0.20;
+        sum += sampleAt(v_uv + vec2(-1.0, -1.0) * u_texel * 2.0) * 0.20;
     }
     outColor = vec4(sum, 1.0);
 }`;
@@ -412,6 +429,13 @@ class PostFxInstance {
         this.ladder = createPostFxLadder();
         this.sourceTexture = null;
         this.waterMaskTexture = null;
+        this.poolMaskTexture = null;
+        this.poolMaskCanvas = null;
+        this.poolMaskRevision = null;
+        this.poolMaskSize = [0, 0];
+        this.emissionTexture = null;
+        this.emissionWidth = 0;
+        this.emissionHeight = 0;
         this.sceneTarget = null;
         this.bloomA = null;
         this.bloomB = null;
@@ -491,6 +515,14 @@ class PostFxInstance {
         this.timerExtension = gl.getExtension?.('EXT_disjoint_timer_query_webgl2') || null;
         this.sourceTexture = this._createTexture(1, 1);
         this.waterMaskTexture = this._createTexture(1, 1);
+        this.poolMaskTexture = this._createTexture(1, 1);
+        this.poolMaskOrigin = [0, 0];
+        this.poolMaskSize = [0, 0];
+        this.poolMaskCanvas = null;
+        this.poolMaskRevision = null;
+        this.emissionTexture = this._createTexture(1, 1);
+        this.emissionWidth = 1;
+        this.emissionHeight = 1;
         this.maskCanvas = null;
         this.maskWidth = 1;
         this.maskHeight = 1;
@@ -506,11 +538,11 @@ class PostFxInstance {
             return out;
         }, {});
         this.mainUniforms = locations(this.mainProgram, [
-            'u_source', 'u_waterMask', 'u_resolution', 'u_sourceTexel', 'u_maskTexel', 'u_rayTexel',
+            'u_source', 'u_waterMask', 'u_poolMask', 'u_poolMaskOrigin', 'u_poolMaskSize', 'u_resolution', 'u_sourceTexel', 'u_maskTexel', 'u_rayTexel',
             'u_flow', 'u_sun', 'u_pulse', ...GRADE_UNIFORM_NAMES, 'u_artPixel', 'u_artOrigin',
             'u_time', 'u_motionScale',
             'u_reducedMotion', 'u_waterEnabled', 'u_displacementEnabled',
-            'u_reflectionEnabled', 'u_godRaysEnabled', 'u_pulseEnabled',
+            'u_godRaysEnabled', 'u_pulseEnabled',
             'u_grainEnabled', 'u_hazeCount', 'u_lightCount', 'u_attentionCount',
             'u_haze[0]', 'u_lights[0]', 'u_lightGeo[0]', 'u_lightColors[0]',
         ]);
@@ -568,8 +600,14 @@ class PostFxInstance {
         this.bloomB = null;
         if (this.sourceTexture) gl.deleteTexture(this.sourceTexture);
         if (this.waterMaskTexture) gl.deleteTexture(this.waterMaskTexture);
+        if (this.poolMaskTexture) gl.deleteTexture(this.poolMaskTexture);
+        if (this.emissionTexture) gl.deleteTexture(this.emissionTexture);
         this.sourceTexture = null;
         this.waterMaskTexture = null;
+        this.poolMaskTexture = null;
+        this.poolMaskCanvas = null;
+        this.poolMaskRevision = null;
+        this.emissionTexture = null;
         if (this.mainProgram) gl.deleteProgram(this.mainProgram);
         if (this.bloomProgram) gl.deleteProgram(this.bloomProgram);
         if (this.compositeProgram) gl.deleteProgram(this.compositeProgram);
@@ -586,6 +624,10 @@ class PostFxInstance {
         this.bloomB = null;
         this.sourceTexture = null;
         this.waterMaskTexture = null;
+        this.poolMaskTexture = null;
+        this.poolMaskCanvas = null;
+        this.poolMaskRevision = null;
+        this.emissionTexture = null;
         this.mainProgram = null;
         this.bloomProgram = null;
         this.compositeProgram = null;
@@ -606,6 +648,8 @@ class PostFxInstance {
             textures: {
                 source: this.sourceTexture ? this.width * this.height * 4 : 0,
                 waterMask: this.waterMaskTexture ? this.maskWidth * this.maskHeight * 4 : 0,
+                poolMask: this.poolMaskTexture ? Math.max(1, this.poolMaskSize[0]) * Math.max(1, this.poolMaskSize[1]) * 4 : 0,
+                emission: this.emissionTexture ? this.emissionWidth * this.emissionHeight * 4 : 0,
             },
             attachments: {
                 presentation: this.gl ? this.width * this.height * 4 : 0,
@@ -771,6 +815,62 @@ class PostFxInstance {
         return true;
     }
 
+    // V5 — the pools' receiver mask (world px, one texel each). Same reuse
+    // rule as the water mask: identity plus a revision counter, since the
+    // producer redraws one canvas in place.
+    _uploadPoolMask(mask) {
+        const gl = this.gl;
+        if (!mask?.canvas || !this.poolMaskTexture) return false;
+        const width = Math.max(1, Math.floor(mask.canvas.width || 1));
+        const height = Math.max(1, Math.floor(mask.canvas.height || 1));
+        this.poolMaskOrigin[0] = finite(mask.x, 0);
+        this.poolMaskOrigin[1] = finite(mask.y, 0);
+        this.poolMaskSize[0] = width;
+        this.poolMaskSize[1] = height;
+        const storageChanged = this.poolMaskCanvas !== mask.canvas
+            || this.poolMaskWidth !== width
+            || this.poolMaskHeight !== height;
+        const contentChanged = mask.revision !== this.poolMaskRevision;
+        if (!storageChanged && !contentChanged) return true;
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, this.poolMaskTexture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        if (storageChanged) {
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, mask.canvas);
+            this.poolMaskCanvas = mask.canvas;
+            this.poolMaskWidth = width;
+            this.poolMaskHeight = height;
+            this._updateTextureBytes();
+        } else {
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, mask.canvas);
+        }
+        this.poolMaskRevision = mask.revision;
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        return true;
+    }
+
+    // 1.3 — the bloom source (EmitterCuts' emission layer), redrawn every
+    // frame, so uploaded every frame; timed with the auxiliary uploads.
+    _uploadEmission(canvas) {
+        const gl = this.gl;
+        if (!canvas?.width || !canvas?.height || !this.emissionTexture) return false;
+        const started = timingNow();
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.emissionTexture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        if (this.emissionWidth !== canvas.width || this.emissionHeight !== canvas.height) {
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            this.emissionWidth = canvas.width;
+            this.emissionHeight = canvas.height;
+            this._updateTextureBytes();
+        } else {
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+        }
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        this._frameMaskUploadMs += Math.max(0, timingNow() - started);
+        return true;
+    }
+
     _beginTimer() {
         if (!this.timerExtension) return null;
         const gl = this.gl;
@@ -830,6 +930,15 @@ class PostFxInstance {
 
         gl.uniform1i(uniforms.u_source, 0);
         gl.uniform1i(uniforms.u_waterMask, 1);
+        gl.uniform1i(uniforms.u_poolMask, 2);
+        // V5 — the pool mask rect in backing px: world x zoom·dpr + the
+        // camera's render offset (PostFxFeed `offsetX/Y`), unclamped.
+        const worldScale = Math.max(0.01, finite(feed?.viewport?.zoom, 1) * finite(feed?.viewport?.dpr, 1));
+        gl.uniform2f(uniforms.u_poolMaskOrigin,
+            finite(this.poolMaskOrigin?.[0], 0) * worldScale + finite(feed?.viewport?.offsetX, 0),
+            finite(this.poolMaskOrigin?.[1], 0) * worldScale + finite(feed?.viewport?.offsetY, 0));
+        gl.uniform2f(uniforms.u_poolMaskSize,
+            finite(this.poolMaskSize?.[0], 0) * worldScale, finite(this.poolMaskSize?.[1], 0) * worldScale);
         // The source, scene target, and presentation coordinates always match
         // backing pixels; only auxiliary bloom buffers are sub-resolution.
         gl.uniform2f(uniforms.u_resolution, this.width, this.height);
@@ -858,7 +967,6 @@ class PostFxInstance {
         const waterEnabled = effectRich && Boolean(feed?.water?.mask);
         gl.uniform1i(uniforms.u_waterEnabled, waterEnabled ? 1 : 0);
         gl.uniform1i(uniforms.u_displacementEnabled, effectRich ? 1 : 0);
-        gl.uniform1i(uniforms.u_reflectionEnabled, fullEffects && waterEnabled ? 1 : 0);
         gl.uniform1i(uniforms.u_godRaysEnabled, fullEffects ? 1 : 0);
         gl.uniform1i(uniforms.u_pulseEnabled, effectRich ? 1 : 0);
         gl.uniform1i(uniforms.u_grainEnabled, effectRich ? 1 : 0);
@@ -896,6 +1004,7 @@ class PostFxInstance {
                 const attention = isAttentionLight(light);
                 if (attention !== (pass === 0)) continue;
                 if (light.kind === 'beam') continue; // beam wedges are not radial stamps in the 2D path
+                if (light.waterOnly) continue; // 2.9: the Lighthouse lamp lights only its water column (GPU)
                 if (light.night && !lanternsVisible) continue; // 2D gate: prop halos only after dusk
                 if (!light.night && this._localLightPhase <= 0.04) continue;
                 if (!Number.isFinite(Number(light.x)) || !Number.isFinite(Number(light.y))) continue;
@@ -945,6 +1054,12 @@ class PostFxInstance {
             if (level <= POST_FX_LEVELS.REDUCED && feed?.water?.mask) {
                 this._uploadMask(feed.water.mask, feed.water.maskRevision ?? null);
             }
+            if (level <= POST_FX_LEVELS.REDUCED && feed?.poolMask) {
+                this._uploadPoolMask(feed.poolMask);
+            }
+            const emission = level <= POST_FX_LEVELS.REDUCED && feed?.emission
+                ? this._uploadEmission(feed.emission)
+                : false;
             const setupSample = Math.max(0, timingNow() - setupStart - this._frameMaskUploadMs);
             this.setupCpuMs = setEma(this.setupCpuMs, setupSample);
             this.maskUploadMs = setEma(this.maskUploadMs, this._frameMaskUploadMs);
@@ -962,29 +1077,35 @@ class PostFxInstance {
             if (!minimal) {
                 gl.activeTexture(gl.TEXTURE1);
                 gl.bindTexture(gl.TEXTURE_2D, this.waterMaskTexture);
+                gl.activeTexture(gl.TEXTURE2);
+                gl.bindTexture(gl.TEXTURE_2D, this.poolMaskTexture);
             }
             gl.drawArrays(gl.TRIANGLES, 0, 3);
 
             if (!minimal) {
-                gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomA.framebuffer);
-                gl.viewport(0, 0, this.bloomA.width, this.bloomA.height);
-                gl.useProgram(this.bloomProgram);
-                gl.uniform1i(this.bloomUniforms.u_input, 0);
-                gl.uniform2f(this.bloomUniforms.u_texel, 1 / this.width, 1 / this.height);
-                gl.uniform1i(this.bloomUniforms.u_extract, 1);
-                gl.activeTexture(gl.TEXTURE0);
-                gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.texture);
-                gl.drawArrays(gl.TRIANGLES, 0, 3);
-
+                // 1.3 — the resident rule: the emitters' own emission blooms,
+                // at 0.72 (FULL) or 0.42 (REDUCED) of the envelope's bloom
+                // share; nothing emitting means no bloom at all.
                 let bloomTexture = this.bloomA.texture;
-                if (level === POST_FX_LEVELS.FULL) {
-                    gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomB.framebuffer);
-                    gl.viewport(0, 0, this.bloomB.width, this.bloomB.height);
-                    gl.uniform1i(this.bloomUniforms.u_extract, 0);
-                    gl.uniform2f(this.bloomUniforms.u_texel, 1 / this.bloomA.width, 1 / this.bloomA.height);
-                    gl.bindTexture(gl.TEXTURE_2D, this.bloomA.texture);
+                if (emission) {
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomA.framebuffer);
+                    gl.viewport(0, 0, this.bloomA.width, this.bloomA.height);
+                    gl.useProgram(this.bloomProgram);
+                    gl.uniform1i(this.bloomUniforms.u_input, 0);
+                    gl.uniform2f(this.bloomUniforms.u_texel, 1 / this.width, 1 / this.height);
+                    gl.uniform1i(this.bloomUniforms.u_extract, 1);
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_2D, this.emissionTexture);
                     gl.drawArrays(gl.TRIANGLES, 0, 3);
-                    bloomTexture = this.bloomB.texture;
+                    if (level === POST_FX_LEVELS.FULL) {
+                        gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomB.framebuffer);
+                        gl.viewport(0, 0, this.bloomB.width, this.bloomB.height);
+                        gl.uniform1i(this.bloomUniforms.u_extract, 0);
+                        gl.uniform2f(this.bloomUniforms.u_texel, 1 / this.bloomA.width, 1 / this.bloomA.height);
+                        gl.bindTexture(gl.TEXTURE_2D, this.bloomA.texture);
+                        gl.drawArrays(gl.TRIANGLES, 0, 3);
+                        bloomTexture = this.bloomB.texture;
+                    }
                 }
 
                 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -992,12 +1113,9 @@ class PostFxInstance {
                 gl.useProgram(this.compositeProgram);
                 gl.uniform1i(this.compositeUniforms.u_scene, 0);
                 gl.uniform1i(this.compositeUniforms.u_bloom, 1);
-                // No light records means no emissive source: keep the contract's
-                // safe "grade only" fallback instead of blooming bright terrain.
-                gl.uniform1f(
-                    this.compositeUniforms.u_bloomStrength,
-                    this.lightCount > 0 ? 0.72 : 0,
-                );
+                const bloomShare = level === POST_FX_LEVELS.FULL ? 0.72 : 0.42;
+                const bloomEnergy = clamp(finite(sourceEnergyFor(feed?.lighting).bloom, 1), 0, 2);
+                gl.uniform1f(this.compositeUniforms.u_bloomStrength, emission ? bloomShare * bloomEnergy : 0);
                 gl.activeTexture(gl.TEXTURE0);
                 gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.texture);
                 gl.activeTexture(gl.TEXTURE1);

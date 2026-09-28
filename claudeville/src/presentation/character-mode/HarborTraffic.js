@@ -1,3 +1,4 @@
+import { ART_RAMPS } from '../../config/artPalette.js';
 import { MAP_SIZE } from '../../config/constants.js';
 import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
@@ -18,11 +19,12 @@ import { WILDLIFE_SCENE_CATEGORY } from './WildlifeRenderer.js';
 import {
     FAILURE,
     FAILURE_OUTLINE,
+    GOLD,
+    GOLD_RAMP,
     PEAK,
     bracket,
     defineMoment,
     diamond,
-    dottedCurve,
     ellipseArcDots,
     fillConvex,
     createCueGate,
@@ -36,9 +38,10 @@ import {
     pixelLine,
     resolveMomentAnchor,
     snap,
+    wakeV,
 } from './EffectStamps.js';
 import { drawPixelFlame, fillPixelEllipse } from './PixelShapes.js';
-import { currentPennantTime, currentPennantWind, drawMiniPennant, drawPennant, pennantFrame } from './PixelPennant.js';
+import { PENNANT_REST_FRAME, currentPennantTime, currentPennantWind, drawMiniPennant, drawPennant, pennantFrame } from './PixelPennant.js';
 
 import { drawHullFallback, hullGeometry, hullMasthead, hullRecords, hullStrip, liveryStrip, rollFrameIndex } from './HarborHulls.js';
 
@@ -131,6 +134,43 @@ const INBOUND_SHIP_CLASS_KEY = 'cutter';
 const NO_SINK = Object.freeze({ progress: 0, px: 0, alphaScale: 1 });
 // The repo flag's staff foot laps this many texels down the mast top.
 const FLAG_MAST_OVERLAP = 3;
+// 8.2 — a verified release sails from the pier (SM-3). The release's own
+// sloop (the existing sloop hull: one more ship record) appears at the
+// Harbor's release slip on a 4×4 Bayer order in four steps (whole texels of
+// the hull and its reflection, never translucent; bare-masted; the crown
+// waits for it), then follows the release crown's moment clock
+// (ChronicleMonuments): a gold pennant of the 6.5 family climbs the mast in
+// three held steps through the anticipation, the sail outline takes the one
+// cream peak frame, the sloop casts off bow-first (screen-right, the way
+// every hull frame faces) along the channel route through the follow with
+// two wake chevrons astern (its V wake starts once they are spent), and sails
+// on past the buoys to open water, dissolving on the same order over its last
+// stretch. Reduced motion ties it up at the slip at once for the static crown
+// and clears it when the moment ends.
+// Pennant cloth texels below its flown position per hoist step (3 = flown).
+const RELEASE_SAIL_HOIST_DROP = Object.freeze([24, 16, 8, 0]);
+// World px per ms at cruise, reached over the crown's 1200 ms follow.
+const RELEASE_SAIL_CRUISE = 0.036;
+const RELEASE_SAIL_ACCEL_MS = 1200;
+const RELEASE_SAIL_FADE_PX = 160;
+// The arrival: 1/4, 2/4, 3/4 and all of the hull's texels, each held this
+// long.
+const RELEASE_SAIL_ARRIVE_STEP_MS = 150;
+const RELEASE_SAIL_LIMIT = 2;
+const RELEASE_SAIL_BAYER4 = Object.freeze([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+// The release slip: open water in front of the Harbor jetty's east arm, and
+// the one leg out of it (bow-first, about 27° below screen-right — the way
+// the hull faces — passing below the east arm's front posts) where the sloop
+// joins the channel route every departure takes.
+const RELEASE_SAIL_SLIP = Object.freeze({ tileX: 32.025, tileY: 21.1 });
+const RELEASE_SAIL_OUT = Object.freeze({ tileX: 34.5, tileY: 21.1 });
+// The chevrons: 7-step V arms two texels thick (they must read over the sea
+// glitter), the first 3 texels astern of the stern, the
+// second a further 8 back; foam and crest are the hull wake's tones.
+const RELEASE_SAIL_CHEVRON_LENGTH = 7;
+const RELEASE_SAIL_CHEVRON_GAP = 8;
+const RELEASE_SAIL_FOAM = ART_RAMPS.shallowWater[2];
+const RELEASE_SAIL_CREST = '#b5cabf';
 // The rejected caution beat: one 2 Hz step of four is the lit tone (V4).
 const CAUTION_BEAT_STEP_MS = 500;
 const UNTETHERED_MIN_COMMITS = 2;
@@ -164,6 +204,11 @@ const HARBOR_SHIP_CLASSES = Object.freeze([
     { key: 'cutter', spriteId: 'prop.harborShip.cutter', minCommits: 2, wakeScale: 1.15, cargoRows: 1, mastCount: 1, labelLift: 45, flagOffsetX: 2, flagOffsetY: 12, badge: '2+' },
     { key: 'skiff', spriteId: 'prop.harborShip.skiff', minCommits: 1, wakeScale: 0.88, cargoRows: 0, mastCount: 1, labelLift: 38, flagOffsetX: 0, flagOffsetY: 6, badge: '' },
 ]);
+const RELEASE_SAIL_CLASS = Object.freeze({
+    ...HARBOR_SHIP_CLASSES.find(item => item.key === 'sloop'),
+    packSize: 1,
+    trim: 0,
+});
 // Stack hull per titan tier, chosen by the pack's exact commit count.
 const HARBOR_SHIP_STACK_CLASSES = Object.freeze([
     { key: 'stack50', spriteId: 'prop.harborShip.stack50', minCommits: 50, wakeScale: 2.80, cargoRows: 10, mastCount: 7, labelLift: 154, flagOffsetX: 40, flagOffsetY: 118 },
@@ -1335,6 +1380,96 @@ function pushMarksCommitsLanded(event = {}) {
     if (event.status === 'success' || event.success === true) return true;
     const exitCode = event.exitCode ?? event.exit_code;
     return exitCode != null && Number.isFinite(Number(exitCode)) && Number(exitCode) === 0;
+}
+
+// 8.2 — the release sloop's partial reveal (arrival and last stretch): a copy
+// of its hull strip keeping only the texels whose 4×4 Bayer order is under
+// `level` (1/4, 2/4, 3/4), so the hull and its reflection come and go in
+// whole palette texels at full strength instead of a translucent ghost.
+// Cached per strip image and level; `liveryKey` gives each its own texture.
+const _revealStrips = new WeakMap();
+
+function releaseRevealStrip(strip, level) {
+    let levels = _revealStrips.get(strip.image);
+    if (!levels) {
+        levels = new Map();
+        _revealStrips.set(strip.image, levels);
+    }
+    const keep = Math.round(level * 16);
+    if (levels.has(keep)) return levels.get(keep);
+    let revealed = strip;
+    if (typeof document !== 'undefined') {
+        const canvas = document.createElement('canvas');
+        canvas.width = strip.image.width;
+        canvas.height = strip.image.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(strip.image, 0, 0);
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const px = data.data;
+        for (let y = 0; y < canvas.height; y++) {
+            for (let x = 0; x < canvas.width; x++) {
+                if (RELEASE_SAIL_BAYER4[((y & 3) << 2) | (x & 3)] >= keep) px[(y * canvas.width + x) * 4 + 3] = 0;
+            }
+        }
+        ctx.putImageData(data, 0, 0);
+        revealed = { ...strip, image: canvas, liveryKey: `${strip.liveryKey || strip.spriteId}|reveal${keep}` };
+    }
+    levels.set(keep, revealed);
+    return revealed;
+}
+
+// 8.2 — the release sloop's one cream peak frame: a 1-texel rim around its
+// sails (every texel above the deck that is not cloth but touches the pale,
+// unsaturated cloth), per roll frame of the hull strip, in the peak cream.
+// The cloth is cream already, so the rim sits outside it. Cached per strip
+// image and frame.
+const _sailOutlines = new WeakMap();
+
+function releaseSailOutline(strip, frame) {
+    let frames = _sailOutlines.get(strip.image);
+    if (!frames) {
+        frames = new Map();
+        _sailOutlines.set(strip.image, frames);
+    }
+    if (frames.has(frame)) return frames.get(frame);
+    let canvas = null;
+    if (typeof document !== 'undefined') {
+        const w = strip.frameWidth;
+        const h = strip.frameHeight;
+        const source = document.createElement('canvas');
+        source.width = w;
+        source.height = h;
+        const sctx = source.getContext('2d', { willReadFrequently: true });
+        sctx.drawImage(strip.image, frame * w, 0, w, h, 0, 0, w, h);
+        const data = sctx.getImageData(0, 0, w, h).data;
+        const cloth = new Uint8Array(w * h);
+        // The deck and waterline rows (the lip is pale too) stay out.
+        const lastRow = Math.max(0, strip.anchorY - 3);
+        for (let y = 0; y < lastRow; y++) {
+            for (let x = 0; x < w; x++) {
+                const i = (y * w + x) * 4;
+                if (data[i + 3] < 128) continue;
+                const lo = Math.min(data[i], data[i + 1], data[i + 2]);
+                const hi = Math.max(data[i], data[i + 1], data[i + 2]);
+                if (lo >= 0x80 && hi - lo <= 70) cloth[y * w + x] = 1;
+            }
+        }
+        canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = PEAK;
+        const at = (x, y) => x >= 0 && y >= 0 && x < w && y < h && cloth[y * w + x] === 1;
+        for (let y = 0; y < lastRow; y++) {
+            for (let x = 0; x < w; x++) {
+                if (cloth[y * w + x]) continue;
+                if (!at(x - 1, y) && !at(x + 1, y) && !at(x, y - 1) && !at(x, y + 1)) continue;
+                ctx.fillRect(x, y, 1, 1);
+            }
+        }
+    }
+    frames.set(frame, canvas);
+    return canvas;
 }
 
 function pointAlongPath(points, progress) {
@@ -2567,6 +2702,8 @@ function harborShipStackClass(packSize) {
 }
 
 function harborShipClass(ship = {}) {
+    // 8.2 — the release sloop is always the one sloop hull.
+    if (ship.releaseSail) return RELEASE_SAIL_CLASS;
     // 3.2 — inbound ships use a small fixed class so the inbound ramp is visually consistent.
     if (ship.isInbound) {
         const variant = inboundShipClass();
@@ -3381,6 +3518,8 @@ export class HarborTraffic {
         this._departingBuffer = [];
         this._crateDrawnForKeys = new Set();
         this._convoyGroups = new Map();
+        // 8.2 — release sloops by crown key (see launchReleaseSail).
+        this._releaseSails = new Map();
         this._enumeratedFrame = -1;
         this._previousDebugHarbor = null;
         this._disposed = false;
@@ -3568,6 +3707,7 @@ export class HarborTraffic {
         this._pendingRepoSummaries = [];
         this.harborCrates.clear();
         this.storageTransfers.clear();
+        this._releaseSails.clear();
         this._lastDockLayoutByShipId.clear();
         this._shipHitEntries = [];
         this.hoveredShipId = null;
@@ -4088,6 +4228,10 @@ export class HarborTraffic {
         for (const drawable of departing) {
             visible.push(drawable);
         }
+        for (const sail of this._releaseSails.values()) {
+            const drawable = this._releaseSailDrawable(sail, now);
+            if (drawable) visible.push(drawable);
+        }
         for (const drawable of this._harborCrateDrawables(markerByRepo, crateDrawnForKeys)) {
             visible.push(drawable);
         }
@@ -4196,78 +4340,6 @@ export class HarborTraffic {
                 ts: now,
             },
         };
-    }
-
-    enumerateWakeDescriptors(now = Date.now()) {
-        if (!this.state?.ships?.size) return [];
-        const drawables = this.enumerateDrawables(now);
-        const wakes = [];
-        for (const item of drawables) {
-            const drawable = item.payload;
-            if (!drawable || drawable.type !== 'ship') continue;
-            const shipClass = harborShipClass(drawable);
-            const waterRegion = this._shipWaterRegion(drawable);
-            // 3.8 — a hull under way throws its V wake from the harbor-hulls
-            // category (EffectStamps.wakeV, a ground-band record on the
-            // resident path); only berth rings and sink rings remain here.
-            if (drawable.storageTransfer && drawable.storageTransferProgress > 0.002 && drawable.storageTransferProgress < 1) continue;
-            if (drawable.status === 'docked') {
-                const pulse = this.motionScale > 0
-                    ? 0.55 + 0.25 * Math.sin(this.frame * 0.08 + drawable.berthIndex)
-                    : 0.58;
-                wakes.push({
-                    type: 'docked',
-                    x: drawable.x,
-                    y: drawable.y,
-                    alpha: 0.08 + pulse * 0.045,
-                    radiusX: 26 * shipClass.wakeScale,
-                    radiusY: 12 * shipClass.wakeScale,
-                    waterRegion,
-                    projectAccent: trafficProfile(drawable.project, drawable.branch).accent,
-                });
-                continue;
-            }
-            if (drawable.status === 'departing' && drawable.progress > 0.002 && drawable.progress < 0.94) {
-                // #35 — force-push hulls list and sink in the last 4s of departure;
-                // emit a widening foam ring scaled by hull class so the size of the
-                // doomed push is viscerally readable. Renderer draws the ring + a
-                // white-foam fleck burst; no per-frame particle pool here.
-                if (drawable.pushForce === true) {
-                    const departMs = Math.max(1, Number(drawable.departMsOverride) || FORCE_DEPARTURE_MS);
-                    const sinkWindow = Math.min(4000, departMs * 0.5);
-                    const elapsed = Math.max(0, Number(drawable.elapsed) || 0);
-                    const sinkProgress = Math.max(0, Math.min(1, (elapsed - (departMs - sinkWindow)) / sinkWindow));
-                    if (sinkProgress > 0) {
-                        wakes.push({
-                            type: 'sinkRing',
-                            x: drawable.x,
-                            y: drawable.y,
-                            sinkProgress,
-                            wakeScale: shipClass.wakeScale,
-                            alpha: 0.22 * (1 - sinkProgress * 0.6),
-                            waterRegion,
-                            projectAccent: trafficProfile(drawable.project, drawable.branch).accent,
-                        });
-                    }
-                }
-            }
-        }
-        return wakes;
-    }
-
-    _shipWaterRegion(ship = {}) {
-        if (Number.isFinite(Number(ship.storageTransferProgress))) {
-            const progress = Number(ship.storageTransferProgress);
-            if (progress < 0.24) return 'harbor';
-            if (progress > 0.74) return 'lagoon';
-            return 'sea';
-        }
-        if (isCommitLagoonZone(ship.departWaterZone || ship.waitingZone)) {
-            return ship.status === 'departing' && Number(ship.progress || 0) > 0.72
-                ? 'sea'
-                : 'lagoon';
-        }
-        return 'harbor';
     }
 
     _harborCrateDrawables(markerByRepo, skipKeys = new Set()) {
@@ -4811,6 +4883,256 @@ export class HarborTraffic {
         return HARBOR_JETTY_SLIPS[index % HARBOR_JETTY_SLIPS.length];
     }
 
+    // ─── 8.2 — a verified release sails from the pier ────────────────────────
+    // ChronicleMonuments drives the sloop from the release crown's moment
+    // clock: `launchReleaseSail` reveals it at the release slip (bare mast)
+    // with `clock(now)` → { phase, step, reduced } | null, read before the
+    // drawables of each frame so the hoist, the peak rim and the chevrons land
+    // on the crown's own frames; `releaseSailArrived` holds the crown until the
+    // sloop is fully in; `stageReleaseSail` re-reads the phase at overlay time
+    // and returns the masthead the crown blooms over; `endReleaseSail` hands
+    // the sloop to open water (under reduced motion: clears it). Only a
+    // planted, verified release record ever launches one. Returns the ms
+    // until it has arrived (what the crown waits), or null when none launched.
+    launchReleaseSail({ key, project = null, label = null, clock = null, now = Date.now() } = {}) {
+        if (!key || this._releaseSails.has(key)) return null;
+        while (this._releaseSails.size >= RELEASE_SAIL_LIMIT) {
+            this._releaseSails.delete(this._releaseSails.keys().next().value);
+        }
+        const id = `release-sail:${key}`;
+        const route = [RELEASE_SAIL_SLIP, ...this._shipRouteTiles({ id, departFromTile: RELEASE_SAIL_OUT, laneIndex: 0 })]
+            .map(point => toWorld(point.tileX, point.tileY));
+        let length = 0;
+        for (let i = 1; i < route.length; i++) length += Math.hypot(route[i].x - route[i - 1].x, route[i].y - route[i - 1].y);
+        // The first leg's unit heading, for the stern while still at the slip.
+        const next = route[1] || route[0];
+        const leadLength = Math.hypot(next.x - route[0].x, next.y - route[0].y) || 1;
+        const lead = { x: (next.x - route[0].x) / leadLength, y: (next.y - route[0].y) / leadLength };
+        this._releaseSails.set(key, {
+            key,
+            id,
+            project,
+            label,
+            route,
+            length,
+            lead,
+            launchedAt: now,
+            castOffAt: null,
+            ended: false,
+            still: false,
+            hoist: -1,
+            peak: false,
+            chevrons: -1,
+            drawn: null,
+            clock: typeof clock === 'function' ? clock : null,
+        });
+        this._enumeratedFrame = -1;
+        return this.motionScale > 0 ? RELEASE_SAIL_ARRIVE_STEP_MS * 4 : 0;
+    }
+
+    // Whether the release sloop has revealed at its slip and sat whole for
+    // one step (so no frame hoists on a part-revealed hull); at once under
+    // reduced motion, and a sloop that is gone never holds the crown.
+    releaseSailArrived(key, now = Date.now(), { reduced = false } = {}) {
+        const sail = this._releaseSails.get(key);
+        if (!sail || reduced || sail.still || this.motionScale <= 0) return true;
+        return now - sail.launchedAt >= RELEASE_SAIL_ARRIVE_STEP_MS * 4;
+    }
+
+    // The arrival's reveal level (the share of hull texels up): 1/4 → 4/4,
+    // one step per RELEASE_SAIL_ARRIVE_STEP_MS; 1 when motion is off.
+    _releaseSailArrivalAlpha(sail, now, reduced = false) {
+        if (reduced || sail.still || this.motionScale <= 0) return 1;
+        const step = Math.floor(Math.max(0, now - sail.launchedAt) / RELEASE_SAIL_ARRIVE_STEP_MS);
+        return Math.min(4, step + 1) / 4;
+    }
+
+    // `phase`/`step`: the crown's momentPhase this frame. Returns the world
+    // masthead { x, y, flagTop, depthY, tiedUp } of the pose drawn this frame
+    // (the slip while the hull strip loads), or null for an unknown key.
+    stageReleaseSail(key, { phase = null, step = 0, reduced = false, now = Date.now() } = {}) {
+        const sail = this._releaseSails.get(key);
+        if (!sail) return null;
+        this._stageReleaseSail(sail, phase, step, reduced, now);
+        return this._releaseSailMast(sail);
+    }
+
+    // `phase`/`step`: the crown's momentPhase this frame.
+    _stageReleaseSail(sail, phase, step, reduced, now) {
+        const still = reduced || this.motionScale <= 0;
+        const hoist = phase === 'anticipation' ? Math.min(2, step) : 3;
+        const peak = phase === 'peak';
+        const chevrons = !still && phase === 'follow' ? step : -1;
+        if (!still && sail.castOffAt == null && (phase === 'follow' || phase === 'residue')) sail.castOffAt = now;
+        if (still !== sail.still || hoist !== sail.hoist || peak !== sail.peak || chevrons !== sail.chevrons) {
+            sail.still = still;
+            sail.hoist = hoist;
+            sail.peak = peak;
+            sail.chevrons = chevrons;
+            this._enumeratedFrame = -1;
+        }
+    }
+
+    // The crown's moment is over (or was never staged): a sloop still at its
+    // slip casts off now, bare-masted if it never hoisted; under reduced
+    // motion it is cleared with the static crown.
+    endReleaseSail(key, now = Date.now()) {
+        const sail = this._releaseSails.get(key);
+        if (!sail) return;
+        sail.ended = true;
+        sail.peak = false;
+        sail.chevrons = -1;
+        if (sail.still || this.motionScale <= 0) this._releaseSails.delete(key);
+        else if (sail.castOffAt == null) sail.castOffAt = now;
+        this._enumeratedFrame = -1;
+    }
+
+    _releaseSailMast(sail) {
+        const ship = sail.drawn;
+        const start = sail.route[0];
+        if (!ship) return { x: Math.round(start.x), y: Math.round(start.y) - 40, flagTop: Math.round(start.y) - 40, depthY: start.y, tiedUp: true };
+        const pose = this._hullPose(ship);
+        const mast = pose ? hullMasthead(pose) : { x: Math.round(ship.x), y: Math.round(ship.y) - 40 };
+        const flag = this._flagAnchor(ship, RELEASE_SAIL_CLASS);
+        return {
+            x: mast.x,
+            y: mast.y,
+            flagTop: Math.min(mast.y, flag.y),
+            depthY: ship.y,
+            tiedUp: ship.status === 'docked',
+        };
+    }
+
+    // Distance sailed `ms` after cast-off: an even acceleration over the
+    // follow to cruise, then cruise.
+    _releaseSailDistance(ms) {
+        const t = Math.max(0, ms);
+        if (t < RELEASE_SAIL_ACCEL_MS) return RELEASE_SAIL_CRUISE * t * t / (2 * RELEASE_SAIL_ACCEL_MS);
+        return RELEASE_SAIL_CRUISE * (t - RELEASE_SAIL_ACCEL_MS / 2);
+    }
+
+    _releaseSailDrawable(sail, now) {
+        if (!sail.ended && sail.clock) {
+            const clock = sail.clock(now);
+            // The clock may end the crown (and with it, under reduced motion,
+            // this sloop).
+            if (!this._releaseSails.has(sail.key)) return null;
+            if (clock) this._stageReleaseSail(sail, clock.phase, clock.step, clock.reduced, now);
+        }
+        const route = sail.route;
+        const start = route[0];
+        let x = start.x;
+        let y = start.y;
+        let tailX = x;
+        let tailY = y;
+        // Fading in at the slip until it has arrived (the crown waits).
+        let alpha = this._releaseSailArrivalAlpha(sail, now);
+        let progress = 0;
+        const sailing = sail.castOffAt != null && !sail.still;
+        if (sailing) {
+            const d = this._releaseSailDistance(now - sail.castOffAt);
+            if (!(sail.length > 0) || d >= sail.length) {
+                this._releaseSails.delete(sail.key);
+                return null;
+            }
+            progress = d / sail.length;
+            const pos = pointAlongPath(route, progress);
+            // The heading: a point 12 px back along the route (along the first
+            // leg while fewer than 12 px out).
+            const back = d >= 12
+                ? pointAlongPath(route, (d - 12) / sail.length)
+                : { x: pos.x - sail.lead.x * 12, y: pos.y - sail.lead.y * 12 };
+            x = pos.x;
+            y = pos.y;
+            tailX = back.x;
+            tailY = back.y;
+            const left = sail.length - d;
+            if (left < RELEASE_SAIL_FADE_PX) alpha = Math.ceil(left / RELEASE_SAIL_FADE_PX * 4) / 4;
+        }
+        const payload = sail.drawn || (sail.drawn = { type: 'ship', releaseSail: true });
+        payload.id = sail.id;
+        payload.project = sail.project;
+        payload.branch = null;
+        payload.label = sail.label;
+        payload.status = sailing ? 'departing' : 'docked';
+        payload.x = x;
+        payload.y = y;
+        payload.tailX = tailX;
+        payload.tailY = tailY;
+        payload.progress = progress;
+        payload.releaseAlpha = alpha;
+        // The V wake waits until the cast-off chevrons are spent.
+        payload.releaseWake = sailing && sail.chevrons < 0 && progress > 0;
+        payload.hoist = sail.hoist;
+        payload.peak = sail.peak;
+        payload.chevrons = sail.chevrons;
+        return { kind: 'harbor-traffic', sortY: y, payload };
+    }
+
+    // The sloop's marks (its hull, reflection and wake are the harbor-hulls
+    // records): the sail outline on the one cream frame, the gold pennant on
+    // its hoist, the two cast-off chevrons astern. No repo flag, plate or
+    // badge: the release pennant is this ship's one flag. Marks are drawn at
+    // full strength (never translucent) while at least 3/4 of the hull's
+    // texels are up.
+    _drawReleaseSailMarks(ctx, ship) {
+        const alpha = ship.releaseAlpha ?? 1;
+        if (alpha < 0.75) return;
+        ctx.save();
+        const strip = hullStrip(this.sprites?.assets, RELEASE_SAIL_CLASS.spriteId);
+        const pose = strip ? this._hullPose(ship) : null;
+        if (ship.peak && pose) {
+            const outline = releaseSailOutline(strip, pose.frame);
+            if (outline) {
+                const g = hullGeometry(pose);
+                ctx.drawImage(outline, g.x, g.y);
+            }
+        }
+        if (ship.hoist >= 0) {
+            const { x, y } = this._flagAnchor(ship, RELEASE_SAIL_CLASS);
+            const flown = ship.hoist >= 3;
+            const windX = currentPennantWind();
+            drawPennant(ctx, x, y + 16 + RELEASE_SAIL_HOIST_DROP[Math.min(3, ship.hoist)], {
+                accent: GOLD,
+                shade: GOLD_RAMP[0],
+                frame: flown ? pennantFrame(currentPennantTime(), windX, { motion: this.motionScale > 0, phase: 1 }) : PENNANT_REST_FRAME,
+                windX,
+                withPole: flown,
+            });
+        }
+        if (ship.chevrons >= 0) {
+            // Every hull frame faces screen-right, so the waterline stern
+            // sits left of the pivot: the chevrons open astern of it on the
+            // water (never over the hull), trailing back along the route's
+            // heading (the first leg runs bow-first, down and to the right),
+            // the pair stepping back 2 texels on the follow's last step.
+            const sternX = Math.round(ship.x) - (strip ? Math.round(strip.frameWidth * 0.3) : 16);
+            const waterY = Math.round(ship.y);
+            let hx = ship.x - ship.tailX;
+            let hy = ship.y - ship.tailY;
+            const heading = Math.hypot(hx, hy);
+            if (heading > 1e-3) {
+                hx /= heading;
+                hy /= heading;
+            } else {
+                hx = 1;
+                hy = 0;
+            }
+            const count = ship.chevrons === 0 ? 1 : 2;
+            for (let i = 0; i < count; i++) {
+                const back = 3 + i * RELEASE_SAIL_CHEVRON_GAP + (ship.chevrons === 2 ? 2 : 0);
+                wakeV(ctx, Math.round(sternX - hx * back), Math.round(waterY - hy * back), hx, hy, {
+                    length: RELEASE_SAIL_CHEVRON_LENGTH,
+                    halfAngle: 0.7,
+                    thick: 2,
+                    color: RELEASE_SAIL_FOAM,
+                    crest: RELEASE_SAIL_CREST,
+                });
+            }
+        }
+        ctx.restore();
+    }
+
     _drawFailureBracket(ctx, mark, now) {
         if (!mark.tile) return;
         const point = toWorld(mark.tile.tileX, mark.tile.tileY);
@@ -5148,6 +5470,10 @@ export class HarborTraffic {
         // A hull the Harbor hides takes its flags and plates with it, as a
         // body behind a building drops its name.
         if (this._marksHiddenBehindBuilding(ship)) return;
+        if (ship.releaseSail) {
+            this._drawReleaseSailMarks(ctx, ship);
+            return;
+        }
         const profile = trafficProfile(ship.project, ship.branch);
         const shipClass = harborShipClass(ship);
 
@@ -5302,6 +5628,7 @@ export class HarborTraffic {
     // 3.2 — inbound ships fade in over the first 8 s of approach; departing
     // ships fade out at the end of their route.
     _shipAlpha(ship = {}) {
+        if (ship.releaseSail) return ship.releaseAlpha ?? 1;
         if (ship.status === 'departing') return this._departureAlpha(ship);
         if (ship.status === 'arriving' || ship.status === 'anchored') {
             const elapsed = Math.max(0, Number(ship.elapsed) || 0);
@@ -5330,11 +5657,16 @@ export class HarborTraffic {
         let strip = hullStrip(this.sprites?.assets, shipClass.spriteId);
         if (!strip) return null;
         const sink = this._shipSink(ship);
-        const alpha = Math.round(this._shipAlpha(ship) * sink.alphaScale * 4) / 4;
+        let alpha = Math.round(this._shipAlpha(ship) * sink.alphaScale * 4) / 4;
         if (alpha <= 0) return null;
         if (shipClass.key === 'skiff') {
             const accent = trafficProfile(ship.project, ship.branch).accent;
             strip = liveryStrip(strip, accent, 4 + (stableHash(`${ship.id || ''}:skiff`) % 4));
+        }
+        // 8.2 — the release sloop comes and goes in whole texels.
+        if (ship.releaseSail && alpha < 1) {
+            strip = releaseRevealStrip(strip, alpha);
+            alpha = 1;
         }
         const frame = sink.progress > 0 ? 4 : rollFrameIndex(this._shipRoll(ship));
         return {
@@ -5366,6 +5698,7 @@ export class HarborTraffic {
     // A hull is under way (throws a V wake) while it sails a route: departing
     // past cast-off, rejecting, cancelling, arriving, or mid storage transfer.
     _shipUnderWay(ship = {}) {
+        if (ship.releaseSail) return ship.releaseWake === true;
         if (!Number.isFinite(ship.tailX) || !Number.isFinite(ship.tailY)) return false;
         if (Math.abs(ship.x - ship.tailX) + Math.abs(ship.y - ship.tailY) < 0.5) return false;
         if (ship.storageTransfer) return true;
@@ -5632,53 +5965,6 @@ export class HarborTraffic {
         if (elapsed <= fadeStart) return 1;
         const fadeDuration = Math.max(1, arrivalAt - fadeStart);
         return Math.max(0, Math.min(1, 1 - (elapsed - fadeStart) / fadeDuration));
-    }
-
-    // Docked berth mark in pixel grammar: a static dotted ring over a scanline
-    // pool in the repo glow (no breathing, no AA ellipse).
-    _drawDockedShipWake(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch)) {
-        const s = 1 / Math.max(1, zoom || 1);
-        const x = Math.round(ship.x);
-        ctx.save();
-        ctx.globalAlpha = 0.45;
-        fillPixelEllipse(ctx, x, Math.round(ship.y + 5 * s), 26 * s, 13 * s, profile.glow);
-        ctx.globalAlpha = 0.62;
-        ellipseArcDots(ctx, x, Math.round(ship.y + 4 * s), 30 * s, 16 * s, {
-            step: 3, dot: Math.max(1, Math.round(2 * s)), color: profile.accent,
-        });
-        ctx.restore();
-    }
-
-    // Moving wake: three dotted quadratic trails (one-texel dots on the art
-    // grid) instead of AA curve strokes.
-    _drawWake(ctx, ship, alpha = 1) {
-        const phase = this.frame * 0.18 + ship.berthIndex;
-        const dx = ship.x - (ship.tailX ?? ship.x - 1);
-        const dy = ship.y - (ship.tailY ?? ship.y);
-        const length = Math.hypot(dx, dy) || 1;
-        const ux = dx / length;
-        const uy = dy / length;
-        const px = -uy;
-        const py = ux;
-        ctx.save();
-        ctx.globalAlpha = Math.max(0.12, 0.34 * (1 - ship.progress)) * alpha;
-        for (let i = 0; i < 3; i++) {
-            const offset = i * 8 + Math.sin(phase + i) * 2;
-            const spread = 4 + i * 2;
-            const startBack = 14 + offset;
-            const endBack = 30 + offset;
-            dottedCurve(
-                ctx,
-                ship.x - ux * startBack + px * spread,
-                ship.y - uy * startBack + py * spread,
-                ship.x - ux * ((startBack + endBack) / 2) + px * Math.sin(phase + i) * 3,
-                ship.y - uy * ((startBack + endBack) / 2) + py * Math.sin(phase + i) * 3,
-                ship.x - ux * endBack - px * spread,
-                ship.y - uy * endBack - py * spread,
-                { step: 2, dot: 1, color: 'rgba(198, 236, 241, 0.7)' },
-            );
-        }
-        ctx.restore();
     }
 
     _drawMooringTick(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), options = {}) {

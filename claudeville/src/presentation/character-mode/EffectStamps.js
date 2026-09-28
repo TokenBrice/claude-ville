@@ -882,42 +882,141 @@ export function comet(ctx, x, y, dirX, dirY, { length = 4, ramp = MAGIC_RAMP, he
     rect(ctx, hx - 1, hy - 1, 3, 3);
 }
 
-// Eight spokes around (x, y): axis spokes as solid runs, diagonals as 1-texel
-// staircases shortened by ~1/sqrt(2) so all eight read the same length, each
-// tipped with a lighter 2×2. `inner` leaves a gap around the core.
-export function crown(ctx, x, y, { radius = 18, inner = 3, ramp = GOLD_RAMP, tip = null, core = null } = {}) {
+// Eight 2-texel spokes around the texel corner (x, y), lit on the side facing
+// the upper-left key (the N/S spokes' west column, the W/E spokes' north row,
+// the NE/SW diagonals' west texel), each ending in a 4×4 jewel (corners cut,
+// a cream glint at its upper-left, its lower-right edge one stop down).
+// `core` fills a 6×6 octagon at the centre (its upper-left half lit, the
+// middle 2×2 in the `core` tone); `inner` > 0 opens a gap round the centre
+// instead (the spokes opening outward). `outline` rims the figure with a
+// 1-texel ink (every empty texel touching it) so the gold reads over timber,
+// slate or sail alike. `fade` < 1 drops texels on a world-locked 4×4 Bayer
+// order (ink included), so the figure dissolves in whole texels, never
+// translucent. The figure is laid into a texel mask first and filled once per
+// texel.
+const CROWN_EMPTY = 0;
+const CROWN_INK = 1;
+const CROWN_SHADE = 2;
+const CROWN_BODY = 3;
+const CROWN_LIT = 4;
+const CROWN_JEWEL = 5;
+const CROWN_GLINT = 6;
+const CROWN_CORE = 7;
+const CROWN_BAYER4 = Object.freeze([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+// The farthest texel from the centre corner: a jewel overhangs its spoke by
+// two texels, then one texel of ink.
+export const CROWN_OVERHANG = 3;
+let crownMask = new Uint8Array(4096);
+
+export function crown(ctx, x, y, { radius = 12, inner = 0, ramp = GOLD_RAMP, jewel = null, core = null, outline = null, fade = 1 } = {}) {
     const cx = snap(x);
     const cy = snap(y);
-    const r = Math.max(inner + 1, Math.round(radius));
-    const diag = Math.max(inner + 1, Math.round(r * 0.72));
-    const diagInner = Math.max(1, Math.round(inner * 0.72));
-    ctx.fillStyle = ramp[1];
-    // Axis spokes (N, S, E, W).
-    rect(ctx, cx, cy - r, 1, r - inner);
-    rect(ctx, cx, cy + inner + 1, 1, r - inner);
-    rect(ctx, cx - r, cy, r - inner, 1);
-    rect(ctx, cx + inner + 1, cy, r - inner, 1);
-    // Diagonal staircases.
-    for (let i = diagInner + 1; i <= diag; i++) {
-        rect(ctx, cx + i, cy - i, 1, 1);
-        rect(ctx, cx - i, cy - i, 1, 1);
-        rect(ctx, cx + i, cy + i, 1, 1);
-        rect(ctx, cx - i, cy + i, 1, 1);
+    const r = Math.max(inner + 3, Math.round(radius));
+    const d = Math.max(2, Math.round(r * 0.72));
+    const dInner = Math.round(inner * 0.72);
+    // Mask bounds: the overhang plus one texel of margin (the ink scan never
+    // leaves the mask).
+    const reach = r + CROWN_OVERHANG + 1;
+    const left = cx - reach;
+    const top = cy - reach;
+    const w = reach * 2;
+    const h = reach * 2;
+    if (crownMask.length < w * h) crownMask = new Uint8Array(w * h * 2);
+    const mask = crownMask;
+    mask.fill(CROWN_EMPTY, 0, w * h);
+    // Texel (i, j) relative to the centre corner: i, j ∈ {-1, 0} is the
+    // middle 2×2.
+    const put = (i, j, cls) => {
+        mask[(cy + j - top) * w + (cx + i - left)] = cls;
+    };
+    for (let k = inner; k < r; k++) {
+        // Axis spokes: N and S (west column lit), W and E (north row lit).
+        for (const j of [-1 - k, k]) {
+            put(-1, j, CROWN_LIT);
+            put(0, j, CROWN_BODY);
+        }
+        for (const i of [-1 - k, k]) {
+            put(i, -1, CROWN_LIT);
+            put(i, 0, CROWN_BODY);
+        }
     }
-    // Tips: 2×2 lighter pixels at every spoke end.
-    ctx.fillStyle = tip || ramp[2];
-    rect(ctx, cx - 1, cy - r - 1, 2, 2);
-    rect(ctx, cx, cy + r, 2, 2);
-    rect(ctx, cx - r - 1, cy, 2, 2);
-    rect(ctx, cx + r, cy - 1, 2, 2);
-    rect(ctx, cx + diag, cy - diag - 1, 2, 2);
-    rect(ctx, cx - diag - 1, cy - diag - 1, 2, 2);
-    rect(ctx, cx + diag, cy + diag, 2, 2);
-    rect(ctx, cx - diag - 1, cy + diag, 2, 2);
+    for (let k = dInner; k < d; k++) {
+        // Diagonal staircases, two texels a row.
+        put(k, -1 - k, CROWN_LIT);
+        put(k + 1, -1 - k, CROWN_BODY);
+        put(-2 - k, k, CROWN_LIT);
+        put(-1 - k, k, CROWN_BODY);
+        put(k, k, CROWN_BODY);
+        put(k + 1, k, CROWN_SHADE);
+        put(-1 - k, -1 - k, CROWN_BODY);
+        put(-2 - k, -1 - k, CROWN_BODY);
+    }
     if (core) {
-        ctx.fillStyle = core;
-        rect(ctx, cx - 1, cy - 2, 3, 5);
-        rect(ctx, cx - 2, cy - 1, 5, 3);
+        for (let j = -3; j <= 2; j++) {
+            for (let i = -3; i <= 2; i++) {
+                const px = i + 0.5;
+                const py = j + 0.5;
+                if (Math.abs(px) + Math.abs(py) > 4) continue;
+                put(i, j, px + py < 0 ? CROWN_LIT : CROWN_BODY);
+            }
+        }
+        for (let j = -1; j <= 0; j++) for (let i = -1; i <= 0; i++) put(i, j, CROWN_CORE);
+    }
+    // Jewels: 4×4, corners cut, top-left corner (i0, j0).
+    const gem = (i0, j0) => {
+        for (let b = 0; b < 4; b++) {
+            for (let a = 0; a < 4; a++) {
+                if ((a === 0 || a === 3) && (b === 0 || b === 3)) continue;
+                const edge = a === 3 || b === 3;
+                put(i0 + a, j0 + b, a === 1 && b === 1 ? CROWN_GLINT : edge ? CROWN_BODY : CROWN_JEWEL);
+            }
+        }
+    };
+    gem(-2, -r - 2);
+    gem(-2, r - 2);
+    gem(-r - 2, -2);
+    gem(r - 2, -2);
+    gem(d - 2, -d - 2);
+    gem(-d - 2, -d - 2);
+    gem(d - 2, d - 2);
+    gem(-d - 2, d - 2);
+    if (outline) {
+        // Ink every empty texel with a lit 8-neighbour.
+        for (let row = 1; row < h - 1; row++) {
+            for (let col = 1; col < w - 1; col++) {
+                const at = row * w + col;
+                if (mask[at] !== CROWN_EMPTY) continue;
+                if (mask[at - w - 1] > CROWN_INK || mask[at - w] > CROWN_INK || mask[at - w + 1] > CROWN_INK
+                    || mask[at - 1] > CROWN_INK || mask[at + 1] > CROWN_INK
+                    || mask[at + w - 1] > CROWN_INK || mask[at + w] > CROWN_INK || mask[at + w + 1] > CROWN_INK) {
+                    mask[at] = CROWN_INK;
+                }
+            }
+        }
+    }
+    if (fade < 1) {
+        const keep = Math.round(Math.max(0, fade) * 16);
+        for (let row = 0; row < h; row++) {
+            const wy = (top + row) & 3;
+            for (let col = 0; col < w; col++) {
+                if (CROWN_BAYER4[(wy << 2) | ((left + col) & 3)] >= keep) mask[row * w + col] = CROWN_EMPTY;
+            }
+        }
+    }
+    const tones = [null, outline, ramp[0], ramp[1], ramp[2], jewel || ramp[2], PEAK, core];
+    for (let cls = CROWN_INK; cls <= CROWN_CORE; cls++) {
+        if (!tones[cls]) continue;
+        ctx.fillStyle = tones[cls];
+        for (let row = 0; row < h; row++) {
+            const base = row * w;
+            for (let col = 0; col < w; col++) {
+                if (mask[base + col] !== cls) continue;
+                let end = col + 1;
+                while (end < w && mask[base + end] === cls) end++;
+                ctx.fillRect(left + col, top + row, end - col, 1);
+                col = end;
+            }
+        }
     }
 }
 

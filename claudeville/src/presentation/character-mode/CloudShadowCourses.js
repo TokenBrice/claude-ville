@@ -93,6 +93,64 @@ function courseCanvas(covered, darkening) {
     return canvas;
 }
 
+/** The course field's world offset (whole world px) at `timeMs`: the pattern
+ * shift the courses draw with (frozen under reduced motion). */
+export function cloudCourseOffset(timeMs, weather, reducedMotion = false) {
+    const drift = cloudCourseDrift(reducedMotion ? null : (Number(timeMs) || 0), weather);
+    return {
+        x: Math.round(((-drift.x % PERIOD) + PERIOD) % PERIOD) % PERIOD,
+        y: Math.round(((-drift.y % PERIOD) + PERIOD) % PERIOD) % PERIOD,
+    };
+}
+
+/** The cloud tile at tile-texel coords (u, v), bilinear with wrap: the
+ * resident LINEAR sampler on `u_cloudTile` (3.4's paw ruffle reads it). */
+export function cloudTileSample(u, v) {
+    return sample(field().values, u, v);
+}
+
+let _sunlit = null;
+/**
+ * 3.4 — the sea's sunlit course on Canvas: the field's clearest share (0.8 of
+ * the covered share, the resident `u_seaSunlit` rule) as a world-locked tile
+ * of PERIOD world px, one world texel per mask texel, its edge solid with the
+ * courses' 1-2 texel ordered seam. `mask` is 1 where the sea takes one stop
+ * lighter; `canvas` the same as an alpha mask. Offset it by
+ * `cloudCourseOffset`, as the courses are.
+ */
+export function cloudSunlitTile(covered) {
+    const key = Math.round(Math.max(0, Math.min(1, covered)) * 40);
+    if (_sunlit?.key === key) return _sunlit;
+    const { values } = field();
+    const t = threshold(1 - (key / 40) * 0.8);
+    const size = PERIOD;
+    const mask = new Uint8Array(size * size);
+    const canvas = _sunlit?.canvas || document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const image = ctx.createImageData(size, size);
+    const step = 1 / CLOUD_TILE_WORLD_SCALE;
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const u = (x + 0.5) * step;
+            const v = (y + 0.5) * step;
+            let n = sample(values, u, v);
+            if (Math.abs(n - t) < 0.03) {
+                const slope = Math.max(Math.abs(sample(values, u + step, v) - n), Math.abs(sample(values, u, v + step) - n));
+                n += (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 2 * slope;
+            }
+            if (n >= t) continue;
+            const i = y * size + x;
+            mask[i] = 1;
+            image.data[i * 4 + 3] = 255;
+        }
+    }
+    ctx.putImageData(image, 0, 0);
+    _sunlit = { key, mask, canvas, size };
+    return _sunlit;
+}
+
 /**
  * Draw the courses over the terrain and the sea. `ctx` carries the camera
  * world transform; `region` is the world-space polygon to shade (3.4: the

@@ -1,6 +1,7 @@
 import { ART_RAMPS } from '../../config/artPalette.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
 import { snowBucketOf } from './GroundState.js';
+import { roofSnowPixels } from './RoofWeather.js';
 
 // Winter states for district flora props (5.2): planters, flower beds, wild
 // flower clumps, the lily pads (the pond's clump under Command's steps and the
@@ -42,7 +43,29 @@ export const WINTER_PROPS = Object.freeze({
     'veg.root.arch': { dormancy: 'evergreen', surface: 'round' },
     'prop.mangroveRoot.twisted': { dormancy: 'evergreen', surface: 'round' },
     'prop.mangroveRoot.arch': { dormancy: 'evergreen', surface: 'round' },
+    // Roofed props: the roof takes the landmarks' course snow
+    // (RoofWeather.roofSnowPixels), the tufts the round plant cap. The well
+    // goes by the slate colour rule; the scenery's roof is its polygon in
+    // sprite px (their stone shares the slate's blue), the stall's awning
+    // one smooth cloth sheet, and the gate arch's crenels and copings take
+    // silhouette caps only. The gate towers draw at 0.72, where 1-row course
+    // lips resample to static, so their roof snows down from the ridge by
+    // pitch (joints buried as it goes).
+    'prop.well': { dormancy: 'evergreen', surface: 'round', roof: true },
+    'prop.villageGateTower': { dormancy: 'evergreen', surface: 'round', roof: { poly: [[60, 18], [112, 30], [112, 50], [96, 100], [38, 78]], pitch: true } },
+    'prop.villageWallSeaTower': { dormancy: 'evergreen', surface: 'round', roof: { poly: [[96, 28], [154, 58], [152, 64], [96, 90], [38, 58], [40, 52]] } },
+    'prop.marketStall': { dormancy: 'evergreen', surface: 'round', roof: { poly: [[30, 5], [62, 20], [60, 26], [33, 38], [5, 19]], sheet: true } },
+    'prop.villageGateArch': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
 });
+
+// The village wall's walk (the procedural cap of IsometricRenderer
+// `_drawVillageWallSegment`): the snow bucket's quarter share of the walk's
+// depth from its front lip lies under the `snow` ramp's lit-plane stop; null
+// on a bare walk.
+export function wallWalkSnow(bucket) {
+    const b = Math.max(0, Math.min(4, bucket | 0));
+    return b ? { share: b / 4, body: ART_RAMPS.snow[3] } : null;
+}
 
 // Snow rows per bucket and surface: a dusting that thickens a quarter at a
 // time, then a cap (a flat bed's full cap runs until its mass ends).
@@ -180,10 +203,12 @@ function isOutline(data, width, height, x, y) {
  * `dormancy` and `surface` come from WINTER_PROPS; `winter` is the calendar
  * season; `bucket` the C-W2 snow bucket 0-4. Returns the pixels changed.
  */
-export function winterPropPixels(data, width, height, { dormancy, surface = 'round', winter = false, bucket = 0 }) {
+export function winterPropPixels(data, width, height, { dormancy, surface = 'round', winter = false, bucket = 0, roof = false }) {
     const depth = (SNOW_DEPTH[surface] || SNOW_DEPTH.round)[Math.max(0, Math.min(4, bucket | 0))];
     const dormant = winter && (dormancy === 'plant' || dormancy === 'bloom');
     if (!depth && !dormant) return 0;
+    // The slate roof first: its snow texels are never plant pixels.
+    const roofed = roof ? roofSnowPixels(data, width, height, bucket, roof) : 0;
     const mask = plantMask(data, width, height);
     let lo = Infinity;
     let hi = -Infinity;
@@ -193,7 +218,7 @@ export function winterPropPixels(data, width, height, { dormancy, surface = 'rou
         if (l < lo) lo = l;
         if (l > hi) hi = l;
     }
-    if (lo === Infinity) return 0;
+    if (lo === Infinity) return roofed;
     const span = Math.max(1, hi - lo);
     const rank = (i) => (lumOf(data, i) - lo) / span;
     const pick = (ramp, t) => ramp[Math.min(ramp.length - 1, Math.floor(t * ramp.length))];
@@ -214,7 +239,7 @@ export function winterPropPixels(data, width, height, { dormancy, surface = 'rou
             else if (y > 0 && rim[p - width] && isDark(data, p * 4)) rim[p] = 1;
         }
     }
-    let changed = 0;
+    let changed = roofed;
     if (dormant) {
         for (let p = 0; p < mask.length; p++) {
             if (!mask[p] || mask[p] === SHADE) continue;

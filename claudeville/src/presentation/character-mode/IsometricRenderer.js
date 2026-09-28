@@ -26,7 +26,7 @@ import {
 } from '../shared/ClientPerfMetrics.js';
 import { getReservedRects } from '../shared/ReservedRects.js';
 import { CameraDirector } from './CameraDirector.js';
-import { ParticleSystem, WAKE_FOAM_COLORS } from './ParticleSystem.js';
+import { ParticleSystem } from './ParticleSystem.js';
 import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
 import { BuildingSprite, SOURCE_HALO_RADIUS_CAP } from './BuildingSprite.js';
 
@@ -37,16 +37,16 @@ import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
 import { AtmosphereState, sourceEnergyFor } from './AtmosphereState.js';
 import { WeatherRenderer } from './WeatherRenderer.js';
-import { baseWindX } from './Wind.js';
 import { WildlifeRenderer } from './WildlifeRenderer.js';
 import { FoliageRenderer } from './FoliageRenderer.js';
-import { PropWinter, WINTER_PROPS } from './PropWinter.js';
+import { PropWinter, WINTER_PROPS, wallWalkSnow } from './PropWinter.js';
 import { SeasonalAmbience, seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { ChimneySmoke } from './ChimneySmoke.js';
 import { setPennantWeather } from './PixelPennant.js';
 import { openGroundTiles } from './AmbientGround.js';
 import { installGroundBake } from './GroundBake.js';
 import { OCEAN_HORIZON_WORLD_Y, drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
+import { drawCanvasWaterState } from './CanvasWaterState.js';
 import { sampleRevealBands } from './RevealBands.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
@@ -57,15 +57,10 @@ import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
 import VisitTileAllocator, { standsOnFixture } from './VisitTileAllocator.js';
-import { getPulsePriority, pulseValue } from './PulsePolicy.js';
+import { getPulsePriority } from './PulsePolicy.js';
 import { annotationModeForPressure, calculateScenePressure, getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
-import { fireBreath, fireBreathDepth, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
-import {
-    applyTeamPlazaPreferences,
-    getCouncilRingDiagnostics,
-    releaseCouncilRingState,
-    relationshipLightSources,
-} from './CouncilRing.js';
+import { fireBreath, fireBreathDepth, groundCourseHeight, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
+import { applyTeamPlazaPreferences, getCouncilRingDiagnostics, releaseCouncilRingState } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
 import { extractRecipientName } from '../../domain/services/RecipientResolver.js';
 import { bucketCounts, buckets as signalBuckets } from '../../domain/services/SignalLedger.js';
@@ -92,10 +87,12 @@ import { createPostFxFeed } from './postfx/PostFxFeed.js';
 import { createGpuWorldRenderer, probeWebgl2Raster } from './gpu/GpuWorldRenderer.js';
 import {
     GPU_ATTENTION_LIGHT_PRIORITY,
+    forcedGpuWorldRendererMode,
     localLightPhaseForLighting,
     resolveGpuWorldRendererMode,
 } from './gpu/GpuWorldPolicy.js';
 import { NEUTRAL_GRADE } from './GradeEvaluator.js';
+import { poolReceiverMask } from './CanvasPoolMask.js';
 import {
     buildPoolDodgeStamp,
     drawCanvasGradeLift,
@@ -115,14 +112,6 @@ import {
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
-// B1 — river-flow streak cadence: fraction of a full along-tile travel cycle
-// advanced per unit of `waterFrame` (~1.8/s at 60fps → ~1.1s per streak pass).
-const RIVER_FLOW_SPEED = 0.5;
-const CURRENT_WAVE_SCREEN_X = (0.42 - (-0.28)) * TILE_WIDTH / 2;
-const CURRENT_WAVE_SCREEN_Y = (0.42 + (-0.28)) * TILE_HEIGHT / 2;
-const CURRENT_WAVE_SCREEN_LENGTH = Math.hypot(CURRENT_WAVE_SCREEN_X, CURRENT_WAVE_SCREEN_Y) || 1;
-const CURRENT_WAVE_UNIT_X = CURRENT_WAVE_SCREEN_X / CURRENT_WAVE_SCREEN_LENGTH;
-const CURRENT_WAVE_UNIT_Y = CURRENT_WAVE_SCREEN_Y / CURRENT_WAVE_SCREEN_LENGTH;
 const LIGHT_FADE_COLOR_CACHE_LIMIT = 1024;
 const LIGHT_COLOR_RGB_CACHE_LIMIT = 256;
 const LIGHT_COLOR_QUANTIZATION_STEPS = 32;
@@ -356,54 +345,8 @@ const AGENT_BUBBLE_HEAD_OFFSET = 18;
 // Vertical step per stacked slot, in screen pixels; must match AgentSprite
 // STATUS_BUBBLE_STACK_STEP so assigned slots line up with the drawn offset.
 const AGENT_BUBBLE_STACK_STEP = 24;
-const WATER_TOKENS = {
-    lagoon: {
-        shallow: 'rgb(10,180,190)',
-        deep: 'rgb(22,152,160)',
-        glint: '120, 230, 200',
-        rainRipple: '210, 255, 242',
-        fogWash: '205, 238, 228',
-        wake: '206, 252, 236',
-    },
-    river: {
-        shallow: 'rgb(12,136,166)',
-        deep: 'rgb(8,92,126)',
-        glint: '150, 226, 236',
-        rainRipple: '202, 242, 250',
-        fogWash: '202, 232, 232',
-        wake: '198, 238, 246',
-    },
-    sea: {
-        shallow: '#0e9aa5',
-        deep: '#074276',
-        glint: '132, 211, 240',
-        rainRipple: '188, 226, 244',
-        fogWash: '190, 220, 232',
-        wake: '224, 249, 255',
-    },
-    harbor: {
-        shallow: '#0a8192',
-        deep: '#075274',
-        glint: '154, 218, 224',
-        rainRipple: '202, 236, 242',
-        fogWash: '198, 226, 226',
-        wake: '216, 246, 246',
-    },
-    water: {
-        shallow: '#0e9aa5',
-        deep: '#0b6c8d',
-        glint: '188, 253, 246',
-        rainRipple: '210, 245, 255',
-        fogWash: '205, 232, 236',
-        wake: '220, 248, 250',
-    },
-};
 const ATMOSPHERE_EFFECT_ASSETS = Object.freeze({
-    fogWisp: 'atmosphere.fog.wisp.low',
     rainSplash: 'atmosphere.rain.splash',
-    rainRipple: 'atmosphere.water.ripple.rain',
-    shoreFoam: 'atmosphere.water.foam.corner',
-    harborWake: 'atmosphere.water.harbor.wake',
 });
 // Archive fade: keep the sprite in the draw loop for this many ms after
 // `agent:removed` so the sibling AgentSprite fade/sparkle animation can play.
@@ -642,20 +585,22 @@ export class IsometricRenderer {
             store: this.chronicleStore,
             assets: this.assets,
             particles: this.particleSystem,
+            // 8.2 — the release crown rides the release's own sloop.
+            harbor: this.harborTraffic,
         });
-        // 6.7 — the Chronicle dressing layers read the planter's lifetime ledger.
-        if (this.buildingRenderer) this.buildingRenderer.chronicleDressing = this.chronicleMonuments.planter.dressing;
+        // 6.7 — the Chronicle dressing layers read the planter's lifetime ledger;
+        // 8.2 (M16) — the Harbor's day pennant reads the release records.
+        if (this.buildingRenderer) {
+            this.buildingRenderer.chronicleDressing = this.chronicleMonuments.planter.dressing;
+            this.buildingRenderer.releaseDay = this.chronicleMonuments;
+        }
         this.trailRenderer = new TrailRenderer({
             store: this.chronicleStore,
             world: this.world,
             sprites: this.agentSprites,
             motionScale: this.motionScale,
         });
-        this.chronicler = new Chronicler({
-            assets: this.assets,
-            sprites: this.sprites,
-            motionScale: this.motionScale,
-        });
+        this.chronicler = new Chronicler({ motionScale: this.motionScale });
         this.particleSystem.setMotionEnabled(this.motionScale > 0);
         this._onMotionPreferenceChange = (event) => this._setMotionScale(event.matches ? 0 : 1);
         this._motionPreferenceBound = false;
@@ -699,7 +644,6 @@ export class IsometricRenderer {
             parentCoherentChildren: 0,
             handoffIntents: 0,
         };
-        this._chroniclerPauseUntil = 0;
         this._chronicleNextUpdateAt = 0;
         this._chronicleUpdating = false;
         this._chronicleUpdatePromise = null;
@@ -770,12 +714,6 @@ export class IsometricRenderer {
         this.bridgeLanterns = new BridgeLanterns({ renderer: this });
         this.bridgeSpans = this._buildBridgeSpans();
         this._waterTileDescriptors = this._buildWaterTileDescriptors();
-        this._shoreWaterEdgeDescriptors = this._buildShoreWaterEdgeDescriptors();
-        this._visibleWaterFrame = [];
-        this._visibleShoreFrame = [];
-        this._weatherWaterFrame = [];
-        this._visibleWaterCullKey = '';
-        this._visibleShoreCullKey = '';
         for (const key of this.bridgeTiles.keys()) {
             this.pathTiles.add(key);
         }
@@ -837,9 +775,14 @@ export class IsometricRenderer {
             ...this.boulderPropSprites,
             ...this.districtPropSprites,
         ];
-        // The cached flora props (and the bridge's near-rail slices, cut from
-        // the bridge image) that repaint when the winter state steps.
-        this._winterPropSprites = this._staticPropSprites.filter((sprite) => WINTER_PROPS[sprite.id] || sprite.id?.startsWith?.('bridge.rail.'));
+        // The cached flora and roofed props (and the bridge's near-rail
+        // slices, cut from the bridge image; the gatehouse, whose towers and
+        // arch take roof snow; the wall runs, whose walk takes it) that
+        // repaint when the winter state steps.
+        this._winterPropSprites = this._staticPropSprites.filter((sprite) => WINTER_PROPS[sprite.id]
+            || sprite.id === VILLAGE_GATE.id
+            || sprite.id?.startsWith?.('bridge.rail.')
+            || sprite.id?.startsWith?.('village.wall.'));
         this._staticPropDrawables = this._buildStaticPropDrawables();
         this._staticPropFastDrawables = this._buildStaticPropFastDrawables();
         this._staticPropFastFrameDrawables = [];
@@ -1059,153 +1002,33 @@ export class IsometricRenderer {
         return region;
     }
 
-    _waterTokenAt(tileX, tileY, key = `${tileX},${tileY}`) {
-        const region = this._waterRegionAt(tileX, tileY, key);
-        if (region === 'openSea') return WATER_TOKENS.sea;
-        return WATER_TOKENS[region] || WATER_TOKENS.water;
-    }
-
-    _isLagoonWaterTile(tileX, tileY, key = `${tileX},${tileY}`) {
-        const meta = this._waterMetaAt(tileX, tileY, key);
-        return meta?.region === 'lagoon' || meta?.weatherProfile === 'lagoon' || this.lagoonWaterTiles?.has(key);
-    }
-
+    // One record per open water tile: its screen centre and downstream unit
+    // vector, for the Canvas lamp columns and PostFxFeed's water mask.
     _buildWaterTileDescriptors() {
         const descriptors = [];
         if (!this.waterTiles?.size) return descriptors;
-        const fraction = (value) => value - Math.floor(value);
         for (const key of this.waterTiles) {
             if (this.bridgeTiles?.has(key)) continue;
             const tile = this._parseTileKey(key);
             if (!tile) continue;
             const { tileX: x, tileY: y } = tile;
-            const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-            const openness = this._waterOpenness(x, y);
-            const profile = this._waterProfileAt(x, y, key);
-            const token = this._waterTokenAt(x, y, key);
             const meta = this._waterMetaAt(x, y, key);
-            const isDeep = this.deepWaterTiles.has(key);
-            const isHarbor = this._isHarborWater(x, y);
-            const isLagoon = this._isLagoonWaterTile(x, y, key);
-            const isOpenSea = this._isOpenSeaTile(x, y, openness);
             const flowDirX = Number(meta?.flowDirX) || 0;
             const flowDirY = Number(meta?.flowDirY) || 0;
             const flowScreenX = (flowDirX - flowDirY) * TILE_WIDTH / 2;
             const flowScreenY = (flowDirX + flowDirY) * TILE_HEIGHT / 2;
             const flowScreenLength = Math.hypot(flowScreenX, flowScreenY) || 1;
-            const flowUnitX = flowScreenX / flowScreenLength;
-            const flowUnitY = flowScreenY / flowScreenLength;
-            const glitterCount = 2 + (Math.floor(seed * 97) % 2);
-            const glitterSpecks = [];
-            for (let i = 0; i < glitterCount; i++) {
-                const hx = fraction(Math.sin(seed * 127.1 + i * 311.7) * 43758.5453);
-                const hy = fraction(Math.sin(seed * 269.5 + i * 183.3) * 24634.6345);
-                const hp = fraction(Math.sin(seed * 419.2 + i * 71.9) * 51294.1234);
-                glitterSpecks.push({
-                    offsetX: (hx - 0.5) * TILE_WIDTH * 0.7,
-                    offsetY: (hy - 0.5) * TILE_HEIGHT * 0.7,
-                    phase: hp * 6.28,
-                    rate: 2.2 + hp * 1.6,
-                    alphaScale: 0.14 + hy * 0.16,
-                    size: hp > 0.62 ? 2 : 1,
-                });
-            }
             descriptors.push({
                 x,
                 y,
                 key,
-                seed,
                 screenX: (x - y) * TILE_WIDTH / 2,
                 screenY: (x + y) * TILE_HEIGHT / 2,
-                edge: this._waterEdgeMask(x, y),
-                openness,
-                profile,
-                token,
-                isDeep,
-                isHarbor,
-                isLagoon,
-                isOpenSea,
-                animatedCurrentEligible: openness >= 0.56 || isHarbor || isOpenSea,
-                glitterSpecks,
-                // B1 — flowing river/current tiles carry a downstream unit vector
-                // (tile space) so the flow-streak pass can drift highlights along it.
-                isCurrent: meta?.surface === 'current',
-                flowDirX,
-                flowDirY,
-                flowUnitX,
-                flowUnitY,
-                flowPerpendicularX: -flowUnitY,
-                flowPerpendicularY: flowUnitX,
-                riverSpan: TILE_WIDTH * 0.42,
-                riverHalfLength: 3.5 + openness * 3,
-                riverLaneSeeds: [seed % 1, (seed + 0.41) % 1],
+                flowUnitX: flowScreenX / flowScreenLength,
+                flowUnitY: flowScreenY / flowScreenLength,
             });
         }
         return descriptors;
-    }
-
-    _buildShoreWaterEdgeDescriptors() {
-        const descriptors = [];
-        if (!this.shoreTiles?.size) return descriptors;
-        for (const key of this.shoreTiles) {
-            if (this.bridgeTiles?.has(key)) continue;
-            const tile = this._parseTileKey(key);
-            if (!tile) continue;
-            const { tileX: x, tileY: y } = tile;
-            const edge = this._shoreWaterEdgeMask(x, y);
-            if (!edge) continue;
-            const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-            const adjacent = this._firstAdjacentWaterMeta(x, y);
-            descriptors.push({
-                x,
-                y,
-                key,
-                seed,
-                edge,
-                screenX: (x - y) * TILE_WIDTH / 2,
-                screenY: (x + y) * TILE_HEIGHT / 2,
-                adjacent,
-                token: adjacent ? this._waterTokenAt(adjacent.x, adjacent.y, adjacent.key) : WATER_TOKENS.water,
-                profile: adjacent ? this._waterProfileAt(adjacent.x, adjacent.y, adjacent.key) : 'water',
-            });
-        }
-        return descriptors;
-    }
-
-    _visibleWaterTileDescriptors(bounds) {
-        const out = this._visibleWaterFrame;
-        if (!bounds || !this._waterTileDescriptors?.length) {
-            out.length = 0;
-            this._visibleWaterCullKey = '';
-            return out;
-        }
-        const { startX, endX, startY, endY } = bounds;
-        const key = `${startX},${endX},${startY},${endY}|${this._waterTileDescriptors.length}`;
-        if (key === this._visibleWaterCullKey) return out;
-        this._visibleWaterCullKey = key;
-        out.length = 0;
-        for (const tile of this._waterTileDescriptors) {
-            if (tile.x >= startX && tile.x <= endX && tile.y >= startY && tile.y <= endY) out.push(tile);
-        }
-        return out;
-    }
-
-    _visibleShoreWaterEdgeDescriptors(bounds) {
-        const out = this._visibleShoreFrame;
-        if (!bounds || !this._shoreWaterEdgeDescriptors?.length) {
-            out.length = 0;
-            this._visibleShoreCullKey = '';
-            return out;
-        }
-        const { startX, endX, startY, endY } = bounds;
-        const key = `${startX},${endX},${startY},${endY}|${this._shoreWaterEdgeDescriptors.length}`;
-        if (key === this._visibleShoreCullKey) return out;
-        this._visibleShoreCullKey = key;
-        out.length = 0;
-        for (const tile of this._shoreWaterEdgeDescriptors) {
-            if (tile.x >= startX && tile.x <= endX && tile.y >= startY && tile.y <= endY) out.push(tile);
-        }
-        return out;
     }
 
     _generatePlannedRoads() {
@@ -1628,10 +1451,12 @@ export class IsometricRenderer {
         // the GPU-resident diorama to the default on a hardware rasterizer; a
         // software one (SwiftShader, llvmpipe) takes the Canvas world.
         // `?renderer=canvas` keeps the production fallback, `?renderer=webgl`
-        // forces WebGL, and `?postfx=0` is the allocation-free escape.
+        // forces WebGL (only these two skip the probe; an empty or unknown
+        // value probes like no parameter), and `?postfx=0` is the
+        // allocation-free escape.
         const params = new URLSearchParams(window.location.search);
         const postFxEnabled = params.get('postfx') !== '0';
-        const raster = params.has('renderer') ? { webgl2: true, softwareRaster: false } : probeWebgl2Raster();
+        const raster = forcedGpuWorldRendererMode(params) ? { webgl2: true, softwareRaster: false } : probeWebgl2Raster();
         const requestedMode = resolveGpuWorldRendererMode(params, raster);
         this.gpuWorld = (postFxEnabled && requestedMode === 'webgl' && this.fxCanvas)
             ? createGpuWorldRenderer({ canvas: this.fxCanvas, enabled: true })
@@ -4030,12 +3855,6 @@ export class IsometricRenderer {
         ) return true;
         if (this.ritualConductor?.rituals?.length || this.particleSystem?.particles?.length) return true;
 
-        const chronicler = this.chronicler;
-        if (
-            chronicler?._activeErrand
-            || chronicler?._errandQueue?.length
-            || (chronicler?.phase && chronicler.phase !== 'home')
-        ) return true;
         if (now >= this._chronicleNextUpdateAt) return true;
 
         const director = this.villageDirector;
@@ -7188,7 +7007,7 @@ export class IsometricRenderer {
             bounds: this._assetPropBounds(VILLAGE_WALL_SEA_TOWER_SPRITE_ID, 0.66),
             splitForOcclusion: true,
             sortY: world.y - 8,
-            drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, VILLAGE_WALL_SEA_TOWER_SPRITE_ID, x, y),
+            drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, VILLAGE_WALL_SEA_TOWER_SPRITE_ID, x, y, this._winterPropOpts(VILLAGE_WALL_SEA_TOWER_SPRITE_ID)),
         })];
     }
 
@@ -7365,7 +7184,7 @@ export class IsometricRenderer {
     }
 
     _drawVillageGateTower(ctx, x, y, side = 1) {
-        const tower = this.assets?.get?.(VILLAGE_GATE_TOWER_SPRITE_ID);
+        const tower = this.propWinter.image(VILLAGE_GATE_TOWER_SPRITE_ID) || this.assets?.get?.(VILLAGE_GATE_TOWER_SPRITE_ID);
         if (tower) {
             const [ax, ay] = this.assets.getAnchor(VILLAGE_GATE_TOWER_SPRITE_ID);
             ctx.save();
@@ -7626,7 +7445,7 @@ export class IsometricRenderer {
         const length = Math.max(1, Math.hypot(dx, dy));
         const ux = dx / length;
         const uy = dy / length;
-        const arch = this.assets?.get?.(VILLAGE_GATE_ARCH_SPRITE_ID);
+        const arch = this.propWinter.image(VILLAGE_GATE_ARCH_SPRITE_ID) || this.assets?.get?.(VILLAGE_GATE_ARCH_SPRITE_ID);
         if (arch) {
             const [ax, ay] = this.assets.getAnchor(VILLAGE_GATE_ARCH_SPRITE_ID);
             const scale = length / VILLAGE_GATE_ARCH_COLUMN_SPAN;
@@ -8036,6 +7855,16 @@ export class IsometricRenderer {
         traceQuad(faceTop1, faceTop2, capBack2, capBack1);
         ctx.fillStyle = palette.dark;
         ctx.fill();
+        // 5.2 — the walk under snow from its front lip back, the bucket's
+        // share of its depth; the outline and the rope stay on top.
+        const walkSnow = wallWalkSnow(this.propWinter.bucket);
+        if (walkSnow) {
+            const back = (a, b) => ({ x: a.x + (b.x - a.x) * walkSnow.share, y: a.y + (b.y - a.y) * walkSnow.share });
+            traceQuad(faceTop1, faceTop2, back(faceTop2, capBack2), back(faceTop1, capBack1));
+            ctx.fillStyle = walkSnow.body;
+            ctx.fill();
+            traceQuad(faceTop1, faceTop2, capBack2, capBack1);
+        }
         ctx.strokeStyle = palette.outline;
         ctx.lineWidth = 2;
         ctx.stroke();
@@ -8329,78 +8158,14 @@ export class IsometricRenderer {
         };
     }
 
+    // 3.12 — the Canvas water on the resident grammar: the mood copy of the
+    // baked water (3.4), then its state (CanvasWaterState: the sunlit course,
+    // swell caps and paws, crests, current, swash, rings, caustics, specks,
+    // reflection ripple, the Lighthouse sheen, the sun/moon path and the 2.9
+    // lamp columns).
     _drawDynamicWaterHighlights(ctx) {
-        const bounds = this._getVisibleTileBounds(3);
-        const waterTiles = this._visibleWaterTileDescriptors(bounds);
-        const shoreEdges = this._visibleShoreWaterEdgeDescriptors(bounds);
-        let detailTiles = waterTiles;
-        if ((this._waterWeather?.rain || 0) > 0.65) {
-            detailTiles = this._weatherWaterFrame;
-            detailTiles.length = 0;
-            for (const tile of waterTiles) {
-                if ((tile.x * 3 + tile.y * 5) % 3 === 0) detailTiles.push(tile);
-            }
-        }
-        // 3.4 — night/storm water: a mood-recoloured copy of the baked coast
-        // water, rebuilt per mood bucket (the Canvas twin of the GPU shader).
         drawCanvasWaterMood(ctx, this, this._lastAtmosphere);
-        this._drawWeatherWaterRipples(ctx, waterTiles);
-        this._drawWaterFogEdgeWash(ctx, shoreEdges);
-        this._drawHarborWakeWaterDescriptors(ctx);
-        this._drawNightWaterReflections(ctx, detailTiles);
-        this._drawSeaGlitter(ctx, detailTiles);
-        this._drawBuildingLightReflections(ctx, waterTiles);
-        // B1 — river-flow streaks carry their own reduced-motion static fallback,
-        // so they draw before the motion gate below.
-        this._drawRiverFlowStreaks(ctx, waterTiles);
-        if (!this.motionScale) return;
-        this._drawAnimatedCurrentBands(ctx, detailTiles);
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (const tile of detailTiles) {
-            if (tile.seed <= 0.82) continue;
-            // B7: in storms, increase shimmer t frequency for lagoon tiles.
-            const stormFreqMult = tile.isLagoon && this._stormIntensity
-                ? 1 + 0.5 * this._stormIntensity
-                : 1;
-            const shimmerT = this.waterFrame * 2.2 * stormFreqMult + tile.seed * 10;
-            const shimmer = 0.035 + Math.max(0, Math.sin(shimmerT)) * 0.045;
-            const warm = this._atmosphereReactions?.warmGlint || 0;
-            const glintColor = warm > 0.15 ? '255, 212, 142' : tile.token.glint;
-            ctx.fillStyle = `rgba(${glintColor}, ${shimmer * (1 + warm * 0.42)})`;
-            this._fillSteppedDash(ctx, tile.screenX - 12, tile.screenY - 2, tile.screenX + 10, tile.screenY - 6);
-        }
-        ctx.restore();
-    }
-
-    // W-F9 — Canvas water marks stay on the art-pixel grid (the resident
-    // path's water has no anti-aliased strokes): a line becomes one flat
-    // run of whole world texels per row (per column when steep), filled in
-    // the current fillStyle. Rows never overlap, so a translucent screen
-    // fill stays one colour.
-    _fillSteppedDash(ctx, x0, y0, x1, y1, thickness = 1) {
-        const ax = Math.round(x0);
-        const ay = Math.round(y0);
-        const bx = Math.round(x1);
-        const by = Math.round(y1);
-        const dx = bx - ax;
-        const dy = by - ay;
-        const size = Math.max(1, Math.round(thickness));
-        if (Math.abs(dx) >= Math.abs(dy)) {
-            const rows = Math.abs(dy) + 1;
-            for (let s = 0; s < rows; s++) {
-                const from = ax + Math.round((dx * s) / rows);
-                const to = ax + Math.round((dx * (s + 1)) / rows);
-                ctx.fillRect(Math.min(from, to), ay + Math.sign(dy) * s, Math.max(1, Math.abs(to - from)), size);
-            }
-            return;
-        }
-        const cols = Math.abs(dx) + 1;
-        for (let s = 0; s < cols; s++) {
-            const from = ay + Math.round((dy * s) / cols);
-            const to = ay + Math.round((dy * (s + 1)) / cols);
-            ctx.fillRect(ax + Math.sign(dx) * s, Math.min(from, to), size, Math.max(1, Math.abs(to - from)));
-        }
+        drawCanvasWaterState(ctx, this, this._lastAtmosphere);
     }
 
     _drawWeatherPuddles(ctx) {
@@ -8629,445 +8394,6 @@ export class IsometricRenderer {
         ctx.drawImage(sprite.img, Math.round(-sprite.dims.w / 2), Math.round(-sprite.dims.h / 2));
         ctx.restore();
         return true;
-    }
-
-    _waterWeatherState(atmosphere = null) {
-        const wx = atmosphere?.weather || {};
-        const type = wx.type || 'clear';
-        const intensity = Math.max(0, Math.min(1, Number(wx.intensity) || 0));
-        const precipitation = Math.max(0, Math.min(1, Number(wx.precipitation ?? (type === 'rain' || type === 'storm' ? intensity : 0)) || 0));
-        const storm = type === 'storm' || (type === 'rain' && intensity > 0.72);
-        return {
-            rain: precipitation,
-            storm: storm ? intensity : 0,
-            fog: type === 'fog' ? intensity : Math.max(0, Math.min(1, Number(wx.fog) || 0)),
-            // C-W3 — the one knot wind (a calm 0 stays calm).
-            windX: baseWindX(wx),
-            reactions: atmosphere?.reactions || {},
-            phase: atmosphere?.phase || 'day',
-        };
-    }
-
-    _drawWeatherWaterRipples(ctx, waterTiles) {
-        const weather = this._waterWeather || {};
-        const reactions = weather.reactions || {};
-        const rain = weather.rain || 0;
-        if (rain <= 0.08 || !waterTiles?.length) return;
-
-        // Stamp the manifest-driven rain ripple sprite for a small random
-        // fraction of visible water tiles per frame. The WeatherRenderer
-        // self-throttles per tile (2s) so the global ripple budget stays
-        // bounded. Skipped under reduced motion.
-        const stampRipples = (this.motionScale ?? 1) > 0
-            && typeof this.weatherRenderer?.maybeStampWaterRipple === 'function';
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        const rippleScale = reactions.waterRippleScale || rain;
-        const stride = rain > 0.65 ? 4 : 3;
-        for (const tile of waterTiles) {
-            const localStride = tile.profile === 'openSea' ? stride + 1 : tile.profile === 'harbor' ? stride : Math.max(1, stride - 1);
-            if (((tile.x * 3 + tile.y * 5 + Math.floor(tile.seed * 11)) % localStride) !== 0) continue;
-            if (stampRipples && Math.random() < 1 / 30) {
-                this.weatherRenderer.maybeStampWaterRipple(ctx, tile.x, tile.y, tile.screenX, tile.screenY);
-            }
-            const phase = (this.motionScale ? this.waterFrame : STATIC_WATER_SHIMMER) * (1.8 + rain * 1.3) + tile.seed * 6.28;
-            const pulse = (Math.sin(phase) + 1) / 2;
-            const profileScale = tile.profile === 'openSea' ? 0.72 : tile.profile === 'harbor' ? 0.90 : 1.14;
-            const radius = (4 + pulse * (5 + rain * 5)) * profileScale * (0.76 + rippleScale * 0.36);
-            const nightReflection = reactions.nightReflection || 0;
-            const alpha = (0.030 + rain * 0.078) * (1 - pulse * 0.45) * (tile.profile === 'openSea' ? 0.72 : 1) * (1 + nightReflection * 0.18);
-            if (this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.rainRipple, {
-                x: tile.screenX + (tile.seed - 0.5) * 18,
-                y: tile.screenY - 2 + (tile.seed - 0.5) * 8,
-                alpha: Math.min(0.28, alpha * 1.9),
-                scaleX: (0.62 + pulse * 0.38) * profileScale,
-                scaleY: (0.52 + pulse * 0.20) * profileScale,
-                rotation: -0.18,
-                flipX: tile.seed > 0.5,
-            })) {
-                continue;
-            }
-            ctx.strokeStyle = `rgba(${tile.token.rainRipple}, ${alpha})`;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.ellipse(
-                Math.round(tile.screenX + (tile.seed - 0.5) * 18),
-                Math.round(tile.screenY - 2 + (tile.seed - 0.5) * 8),
-                radius,
-                radius * 0.38,
-                -0.18,
-                0,
-                Math.PI * 2,
-            );
-            ctx.stroke();
-        }
-        ctx.restore();
-    }
-
-    _drawWaterFogEdgeWash(ctx, shoreEdges) {
-        const fogAlpha = this._waterWeather?.reactions?.waterFogAlpha || this._waterWeather?.fog * 0.24 || 0;
-        if (fogAlpha <= 0.025 || !shoreEdges?.length) return;
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (const tile of shoreEdges) {
-            if ((this._waterWeather?.rain || 0) > 0.65 && (tile.x + tile.y) % 2 !== 0) continue;
-            const profileAlpha = tile.profile === 'openSea' ? 0.54 : tile.profile === 'harbor' ? 1.05 : 1.16;
-            if (tile.seed > 0.58) {
-                this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.fogWisp, {
-                    x: tile.screenX + (tile.seed - 0.5) * 24,
-                    y: tile.screenY - 5 + (tile.seed - 0.5) * 8,
-                    alpha: Math.min(0.22, fogAlpha * profileAlpha * (0.24 + tile.seed * 0.20)),
-                    scaleX: 0.42 + tile.seed * 0.24,
-                    scaleY: 0.34 + tile.seed * 0.12,
-                    rotation: -0.20 + tile.seed * 0.24,
-                    flipX: tile.seed > 0.5,
-                });
-            }
-        }
-        ctx.restore();
-    }
-
-    _drawNightWaterReflections(ctx, waterTiles) {
-        const nightReflection = this._atmosphereReactions?.nightReflection || 0;
-        if (nightReflection <= 0.05 || !waterTiles?.length) return;
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (const tile of waterTiles) {
-            if (tile.seed < 0.46) continue;
-            if (tile.profile === 'lagoon' && tile.seed < 0.68) continue;
-            const width = 8 + tile.seed * (tile.profile === 'openSea' ? 20 : 14);
-            const alpha = Math.min(0.16, nightReflection * (0.032 + tile.seed * 0.052));
-            ctx.fillStyle = `rgba(${tile.token.glint}, ${alpha})`;
-            this._fillSteppedDash(
-                ctx,
-                tile.screenX - width,
-                tile.screenY - 7 + tile.seed * 3,
-                tile.screenX + width * 0.72,
-                tile.screenY - 10 - tile.seed * 2,
-            );
-        }
-        ctx.restore();
-    }
-
-    // #10 — Night water light reflections. Building fire (forge glow, harbor
-    // torches, lighthouse lantern) bleeds onto adjacent water as wavering
-    // vertical reflection columns at dusk/night. Origins and tile centers share
-    // the same unzoomed world-screen space, so a reflection falls on water that
-    // sits just below a light source in screen Y. Scaled by `nightReflection`
-    // and the atmosphere `buildingGlowScale`/source intensity; shimmer rides the
-    // slow intrinsic pulse band. Reduced-motion (`motionScale<=0`) collapses
-    // `pulseValue` to its band base, leaving a static reflection column.
-    _drawBuildingLightReflections(ctx, waterTiles) {
-        const nightReflection = this._atmosphereReactions?.nightReflection || 0;
-        if (nightReflection <= 0.05 || !waterTiles?.length || !this.buildingRenderer) return;
-        const lighting = this._lastAtmosphere?.lighting || null;
-        const glowScale = lighting?.lightBoost ?? this._lastAtmosphere?.grade?.buildingGlowScale ?? 1;
-        const sources = (this.buildingRenderer.getLightSources?.(lighting) || [])
-            .filter(s => (s.kind || 'point') === 'point' && Number.isFinite(s.x) && Number.isFinite(s.y));
-        if (!sources.length) return;
-
-        // Slow intrinsic band shimmer; static base under reduced motion.
-        const shimmer = pulseValue('intrinsic', this.waterFrame, this.motionScale);
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        let drawn = 0;
-        for (const tile of waterTiles) {
-            if (drawn >= 48) break;
-            let best = null;
-            let bestDist = Infinity;
-            for (const source of sources) {
-                const dx = tile.screenX - source.x;
-                if (Math.abs(dx) > 22) continue;
-                const dy = tile.screenY - source.y;
-                // Reflection only reads on water below the emitter within reach.
-                if (dy < 4 || dy > 96) continue;
-                const dist = Math.abs(dx) + dy * 0.5;
-                if (dist < bestDist) { bestDist = dist; best = { source, dx, dy }; }
-            }
-            if (!best) continue;
-            const { source, dx, dy } = best;
-            // Fade with vertical distance from the emitter and lateral offset.
-            const reach = (1 - dy / 96) * (1 - Math.abs(dx) / 22);
-            const intensity = Math.max(0, Math.min(1.6, source.intensity || 1));
-            const alpha = Math.min(
-                0.20,
-                nightReflection * glowScale * intensity * reach * (0.10 + shimmer * 0.10),
-            );
-            if (alpha <= 0.01) continue;
-            const colX = Math.round(tile.screenX - dx * 0.5);
-            const top = Math.round(tile.screenY - 9);
-            const bottom = Math.round(tile.screenY + 8);
-            // Lateral sway tracks the same shimmer so the column wavers on water.
-            const sway = (shimmer - 0.55) * 6 * (this.motionScale ? 1 : 0);
-            // Three flat courses fading down the column (alpha 1, 0.6, 0.25)
-            // on whole texels, each shifted by its share of the sway.
-            const halfW = Math.round(2.2 + reach * 3.4);
-            const course = Math.max(1, Math.round((bottom - top) / 3));
-            [1, 0.6, 0.25].forEach((share, k) => {
-                ctx.fillStyle = this._withAlpha(source.color, alpha * share);
-                ctx.fillRect(Math.round(colX - halfW + sway * (k / 2)), top + course * k, halfW * 2, k === 2 ? bottom - top - course * 2 : course);
-            });
-            drawn++;
-        }
-        ctx.restore();
-    }
-
-    _firstAdjacentWaterMeta(tileX, tileY) {
-        const candidates = [
-            [tileX, tileY - 1],
-            [tileX + 1, tileY],
-            [tileX, tileY + 1],
-            [tileX - 1, tileY],
-        ];
-        for (const [x, y] of candidates) {
-            const key = `${x},${y}`;
-            if (this.waterTiles.has(key)) return { x, y, key, meta: this._waterMetaAt(x, y, key) };
-        }
-        return null;
-    }
-
-    _drawHarborWakeWaterDescriptors(ctx) {
-        const descriptors = this.harborTraffic?.enumerateWakeDescriptors?.(Date.now()) || [];
-        if (!descriptors.length) return;
-        const roughness = this._waterWeather?.storm || 0;
-        // #35 — reduced motion ships a static stern foam dab only: no diverging
-        // arcs, no V bow ripple, no widening sink ring or fleck burst.
-        const reduced = !(this.motionScale > 0);
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (const wake of descriptors.slice(0, 16)) {
-            const alpha = Math.min(0.22, (wake.alpha ?? 0.12) * (1 + roughness * 0.28));
-            if (alpha <= 0.01) continue;
-            const token = WATER_TOKENS[wake.waterRegion] || WATER_TOKENS.harbor;
-            // #35 — hull class scales every wake feature so push size reads at a
-            // glance (skiff ~0.88 → flagship ~2.38).
-            const hullScale = Math.max(0.85, Number(wake.wakeScale) || 1);
-            if (wake.type === 'sinkRing') {
-                this._drawWakeSinkRing(ctx, wake, token, alpha, hullScale, reduced);
-                continue;
-            }
-            const dx = wake.x - (wake.tailX ?? wake.x - 1);
-            const dy = wake.y - (wake.tailY ?? wake.y);
-            const wakeRotation = wake.type === 'departing' ? Math.atan2(dy, dx) * 0.55 : -0.18;
-            const drewWakeSprite = this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.harborWake, {
-                x: wake.type === 'departing' ? wake.x - dx * 0.42 : wake.x,
-                y: wake.type === 'departing' ? wake.y - dy * 0.42 + 5 : wake.y + 4,
-                alpha: alpha * 0.70,
-                scaleX: (wake.type === 'departing' ? 0.54 + (wake.spread || 0) * 0.24 : 0.48) * (0.7 + hullScale * 0.22),
-                scaleY: wake.type === 'departing' ? 0.44 + (wake.progress || 0) * 0.18 : 0.36,
-                rotation: wakeRotation,
-                flipX: dx < 0,
-            });
-            if (drewWakeSprite) continue;
-            ctx.strokeStyle = `rgba(${token.wake}, ${alpha})`;
-            ctx.fillStyle = `rgba(${token.wake}, ${alpha * 0.24})`;
-            ctx.lineWidth = wake.type === 'departing' ? 1.2 + hullScale * 0.5 : 1;
-            if (wake.type === 'departing') {
-                const len = Math.max(1, Math.hypot(dx, dy));
-                const ux = dx / len;
-                const uy = dy / len;
-                const px = -uy;
-                const py = ux;
-                if (reduced) {
-                    // Static stern foam dab — a single short crescent behind the bow.
-                    ctx.beginPath();
-                    ctx.moveTo(wake.x - ux * 8 + px * 5, wake.y - uy * 8 + py * 5);
-                    ctx.quadraticCurveTo(wake.x - ux * 14, wake.y - uy * 14, wake.x - ux * 8 - px * 5, wake.y - uy * 8 - py * 5);
-                    ctx.stroke();
-                    continue;
-                }
-                // Diverging stern arcs, widened by hull class.
-                const spread = (10 + (wake.spread || 0) * 18) * (0.6 + hullScale * 0.34);
-                const back = 18 + (wake.progress || 0) * 22;
-                ctx.beginPath();
-                ctx.moveTo(wake.x - ux * 8 + px * 5, wake.y - uy * 8 + py * 5);
-                ctx.quadraticCurveTo(wake.x - ux * back, wake.y - uy * back, wake.x - ux * (back + 18) + px * spread, wake.y - uy * (back + 18) + py * spread * 0.55);
-                ctx.moveTo(wake.x - ux * 8 - px * 5, wake.y - uy * 8 - py * 5);
-                ctx.quadraticCurveTo(wake.x - ux * back, wake.y - uy * back, wake.x - ux * (back + 18) - px * spread, wake.y - uy * (back + 18) - py * spread * 0.55);
-                ctx.stroke();
-                // V-shaped bow ripple thrown ahead of the bow, scaled by hull class.
-                if (wake.bowRipple) {
-                    const bowReach = (5 + hullScale * 6);
-                    const bowSpread = (4 + hullScale * 5);
-                    const bx = wake.x + ux * 6;
-                    const by = wake.y + uy * 6;
-                    ctx.beginPath();
-                    ctx.moveTo(bx - ux * bowReach * 0.4 + px * bowSpread, by - uy * bowReach * 0.4 + py * bowSpread * 0.55);
-                    ctx.lineTo(bx + ux * bowReach, by + uy * bowReach);
-                    ctx.lineTo(bx - ux * bowReach * 0.4 - px * bowSpread, by - uy * bowReach * 0.4 - py * bowSpread * 0.55);
-                    ctx.stroke();
-                }
-            } else {
-                ctx.beginPath();
-                ctx.ellipse(Math.round(wake.x), Math.round(wake.y + 4), wake.radiusX || 30, wake.radiusY || 13, -0.18, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.stroke();
-            }
-        }
-        ctx.restore();
-    }
-
-    // #35 — widening foam ring on a force-push sink, broader for larger hulls, plus
-    // a short white-foam fleck burst (shared `wakeFoam` palette). The ring expands
-    // and fades over `sinkProgress`; reduced motion collapses it to a single static
-    // stern foam dab and never spawns the burst.
-    _drawWakeSinkRing(ctx, wake, token, alpha, hullScale, reduced) {
-        const cx = Math.round(wake.x);
-        const cy = Math.round(wake.y + 4);
-        if (reduced) {
-            ctx.strokeStyle = `rgba(${token.wake}, ${alpha})`;
-            ctx.lineWidth = 1.4;
-            ctx.beginPath();
-            ctx.ellipse(cx, cy, 9 * hullScale, 4.5 * hullScale, -0.18, 0, Math.PI * 2);
-            ctx.stroke();
-            return;
-        }
-        const t = Math.max(0, Math.min(1, Number(wake.sinkProgress) || 0));
-        const radiusX = (10 + t * 30) * hullScale;
-        const radiusY = radiusX * 0.5;
-        ctx.strokeStyle = `rgba(${token.wake}, ${alpha})`;
-        ctx.fillStyle = `rgba(${token.wake}, ${alpha * 0.3})`;
-        ctx.lineWidth = 1.2 + hullScale * 0.6;
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, radiusX, radiusY, -0.18, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        // White-foam fleck burst flung outward, widening with the ring. Throttled
-        // to ~every 6th frame so the short-lived flecks read as spray, not a flood.
-        if ((Math.floor(this.waterFrame) % 6) !== 0) return;
-        const burst = Math.round(2 + hullScale * 2);
-        this.particleSystem?.spawn?.('wakeFoam', wake.x, wake.y + 4, burst, {
-            colors: WAKE_FOAM_COLORS,
-            speed: [0.5, 0.6 + hullScale * 0.8],
-            spread: radiusX * 0.4,
-            alpha: [0.4, 0.85 * (1 - t * 0.4)],
-        });
-    }
-
-    _drawAnimatedCurrentBands(ctx, waterTiles) {
-        if (!waterTiles?.length) return;
-        const slideRange = 0.35 * TILE_HEIGHT;
-        const roughness = this._waterWeather?.storm || 0;
-        const warm = this._atmosphereReactions?.warmGlint || 0;
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (const tile of waterTiles) {
-            if (!tile.animatedCurrentEligible) continue;
-            if (roughness > 0.65 && (tile.x + tile.y) % 2 !== 0) continue;
-            const primary = Math.sin(this.waterFrame * 0.82 + tile.x * 0.42 - tile.y * 0.28 + tile.seed * 2.6);
-            const secondary = Math.sin(this.waterFrame * 1.17 - tile.x * 0.24 - tile.y * 0.36 + tile.seed * 5.1);
-            const crest = ((primary * 0.72 + secondary * 0.28) + 1) / 2;
-            const threshold = (tile.isOpenSea ? 0.73 : 0.76) - roughness * (tile.isOpenSea ? 0.10 : tile.isHarbor ? 0.055 : 0.075);
-            if (crest < threshold) continue;
-            // Slide the crest across the tile interior so it reads as travelling,
-            // and taper alpha as the stroke nears the diamond edge.
-            const slide = primary * slideRange;
-            const edgeTaper = 1 - Math.abs(primary) * 0.28;
-            const crestStrength = (crest - threshold) / Math.max(0.001, 1 - threshold);
-            const anchorX = tile.screenX + CURRENT_WAVE_UNIT_X * slide;
-            const anchorY = tile.screenY + CURRENT_WAVE_UNIT_Y * slide;
-            const alpha = Math.min(
-                tile.isOpenSea ? 0.24 + roughness * 0.08 : 0.16 + roughness * 0.04,
-                (crest - threshold) * (tile.isDeep ? (tile.isOpenSea ? 0.62 : 0.48) : 0.32) * (0.62 + tile.openness * 0.5) * (1 + roughness * 0.35) * edgeTaper
-            );
-            const drift = Math.sin(this.waterFrame * 0.45 + tile.seed * 6.28) * 2;
-            const glintColor = warm > 0.18 ? '255, 210, 136' : tile.token.glint;
-            ctx.fillStyle = `rgba(${glintColor}, ${alpha})`;
-            const baseWidth = tile.isOpenSea ? 1.7 + roughness * 0.6 : (tile.isDeep ? 1.4 : 1);
-            const thickness = baseWidth * (1 + crestStrength * 0.6) >= 1.8 ? 2 : 1;
-            // The crest arch as two stepped runs through the curve's midpoint.
-            const x0 = anchorX - TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40);
-            const y0 = anchorY - 2 + drift;
-            const cx = anchorX - TILE_WIDTH * 0.02;
-            const cy = anchorY - (tile.isOpenSea ? 10 : 8) + drift * 0.35;
-            const x2 = anchorX + TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40);
-            const y2 = anchorY - 5 - drift * 0.25;
-            const mx = (x0 + 2 * cx + x2) / 4;
-            const my = (y0 + 2 * cy + y2) / 4;
-            this._fillSteppedDash(ctx, x0, y0, mx, my, thickness);
-            this._fillSteppedDash(ctx, mx + 1, my, x2, y2, thickness);
-        }
-        ctx.restore();
-    }
-
-    // B1 — directional river flow. Each flowing river/current tile drifts 1–2
-    // short elongated highlights along its downstream unit vector; the along-flow
-    // offset wraps every cycle and a sine window fades each streak in/out at the
-    // wrap so nothing pops. Reduced motion draws one static streak at mid-tile.
-    _drawRiverFlowStreaks(ctx, waterTiles) {
-        if (!waterTiles?.length) return;
-        const reduced = !this.motionScale;
-        const warm = this._atmosphereReactions?.warmGlint || 0;
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (const tile of waterTiles) {
-            if (!tile.isCurrent) continue;
-            const fx = tile.flowDirX;
-            const fy = tile.flowDirY;
-            if (fx === 0 && fy === 0) continue;
-            const ux = tile.flowUnitX;
-            const uy = tile.flowUnitY;
-            const px = tile.flowPerpendicularX;
-            const py = tile.flowPerpendicularY;
-            const span = tile.riverSpan;
-            const half = tile.riverHalfLength;
-            const glint = warm > 0.15 ? '255, 214, 150' : tile.token.glint;
-            const lanes = reduced ? 1 : 2;
-            for (let l = 0; l < lanes; l++) {
-                const laneSeed = tile.riverLaneSeeds[l];
-                const frac = reduced
-                    ? 0.5
-                    : ((this.waterFrame * RIVER_FLOW_SPEED + laneSeed) % 1 + 1) % 1;
-                const laneOff = (lanes === 1 ? 0 : (l === 0 ? -0.2 : 0.2)) * TILE_WIDTH * 0.5;
-                const win = reduced ? 0.7 : Math.sin(Math.PI * frac);
-                const alpha = Math.min(0.15, (0.05 + tile.openness * 0.05) * win);
-                if (alpha <= 0.012) continue;
-                const cx = tile.screenX + ux * (frac - 0.5) * span + px * laneOff;
-                const cy = tile.screenY - 3 + uy * (frac - 0.5) * span + py * laneOff;
-                ctx.fillStyle = `rgba(${glint}, ${alpha})`;
-                this._fillSteppedDash(ctx, cx - ux * half, cy - uy * half, cx + ux * half, cy + uy * half);
-            }
-        }
-        ctx.restore();
-    }
-
-    // B3 — sun/moon glitter field. Sparse deterministic sub-tile sparkles on
-    // open water: warm-white by day (scaled by the midday `dayGlitter` reaction),
-    // pale blue at night (scaled by `nightReflection`). Sharp `sin^3` twinkle,
-    // `screen` composite. Reduced motion drops to one steady speck per tile.
-    _drawSeaGlitter(ctx, waterTiles) {
-        if (!waterTiles?.length) return;
-        const dayGlitter = this._atmosphereReactions?.dayGlitter || 0;
-        const nightReflection = this._atmosphereReactions?.nightReflection || 0;
-        if (dayGlitter <= 0.04 && nightReflection <= 0.08) return;
-        const isDay = dayGlitter >= nightReflection;
-        const color = isDay ? '255, 246, 214' : '196, 224, 255';
-        const scale = isDay ? dayGlitter : nightReflection;
-        const reduced = !this.motionScale;
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (const tile of waterTiles) {
-            if (tile.openness <= 0.5) continue;
-            const specks = tile.glitterSpecks || [];
-            const count = reduced ? Math.min(1, specks.length) : specks.length;
-            for (let i = 0; i < count; i++) {
-                const speck = specks[i];
-                const twinkle = reduced
-                    ? 0.5
-                    : Math.max(0, Math.sin(this.waterFrame * speck.rate + speck.phase)) ** 3;
-                const alpha = Math.min(0.5, scale * speck.alphaScale * twinkle);
-                if (alpha <= 0.02) continue;
-                ctx.fillStyle = `rgba(${color}, ${alpha})`;
-                ctx.fillRect(
-                    Math.round(tile.screenX + speck.offsetX),
-                    Math.round(tile.screenY + speck.offsetY),
-                    speck.size,
-                    speck.size,
-                );
-            }
-        }
-        ctx.restore();
     }
 
     // Structures that sit on the baked ground and water: dock/causeway decks
@@ -9406,41 +8732,6 @@ export class IsometricRenderer {
         drawOuterOcean(ctx, this, atmosphere, { gpuGraded });
     }
 
-    // Shoreline mask: which edges of this water tile face something that is not
-    // water. Foam belongs on those edges.
-    //
-    // Neighbours outside the map are NOT shore. They used to count as land,
-    // which drew a foam line along the entire map perimeter — a perfectly
-    // straight, tile-aligned pale streak running across open ocean where there
-    // is no coast at all. The map boundary is an artefact of the array bounds,
-    // not a feature of the world.
-    _waterEdgeMask(tileX, tileY) {
-        const shore = (x, y) => {
-            if (x < 0 || y < 0 || x >= MAP_SIZE || y >= MAP_SIZE) return false;
-            return !this.waterTiles.has(`${x},${y}`);
-        };
-        let mask = 0;
-        if (shore(tileX, tileY - 1)) mask |= 1;
-        if (shore(tileX + 1, tileY)) mask |= 2;
-        if (shore(tileX, tileY + 1)) mask |= 4;
-        if (shore(tileX - 1, tileY)) mask |= 8;
-        return mask;
-    }
-
-    _shoreWaterEdgeMask(tileX, tileY) {
-        let mask = 0;
-        if (this._isOpenWaterTile(tileX, tileY - 1)) mask |= 1;
-        if (this._isOpenWaterTile(tileX + 1, tileY)) mask |= 2;
-        if (this._isOpenWaterTile(tileX, tileY + 1)) mask |= 4;
-        if (this._isOpenWaterTile(tileX - 1, tileY)) mask |= 8;
-        return mask;
-    }
-
-    _isOpenWaterTile(tileX, tileY) {
-        const key = `${tileX},${tileY}`;
-        return this.waterTiles.has(key) && !this.bridgeTiles?.has(key);
-    }
-
     _waterOpenness(tileX, tileY) {
         const meta = this._waterMetaAt(tileX, tileY);
         if (Number.isFinite(Number(meta?.openness))) return Number(meta.openness);
@@ -9454,12 +8745,6 @@ export class IsometricRenderer {
             }
         }
         return checks ? waterNeighbors / checks : 0;
-    }
-
-    _isHarborWater(tileX, tileY) {
-        const key = `${tileX},${tileY}`;
-        const region = this._waterRegionAt(tileX, tileY, key);
-        return region === 'harbor' || this._waterProfileAt(tileX, tileY, key) === 'harbor';
     }
 
     _isOpenSeaTile(tileX, tileY, openness = null) {
@@ -9500,61 +8785,6 @@ export class IsometricRenderer {
 
     _tileToWorld(tileX, tileY) {
         return tileToWorld(tileX, tileY);
-    }
-
-    _chroniclerWorldPosition(a, b) {
-        if (!this.motionScale) {
-            const point = this._tileToWorld(a.tileX, a.tileY);
-            return { ...point, facing: 1 };
-        }
-        const loopMs = 16000;
-        const pauseMs = 6000;
-        const movingMs = (loopMs - pauseMs * 2) / 2;
-        const t = (performance.now() % loopMs);
-        let progress = 0;
-        let from = a;
-        let to = b;
-        if (t < pauseMs) {
-            progress = 0;
-        } else if (t < pauseMs + movingMs) {
-            progress = (t - pauseMs) / movingMs;
-        } else if (t < pauseMs + movingMs + pauseMs) {
-            progress = 1;
-        } else {
-            from = b;
-            to = a;
-            progress = (t - pauseMs - movingMs - pauseMs) / movingMs;
-        }
-        const ease = progress * progress * (3 - 2 * progress);
-        const tileX = from.tileX + (to.tileX - from.tileX) * ease;
-        const tileY = from.tileY + (to.tileY - from.tileY) * ease;
-        const point = this._tileToWorld(tileX, tileY);
-        return {
-            ...point,
-            facing: to.tileX >= from.tileX ? 1 : -1,
-        };
-    }
-
-    _drawChroniclerScaffold(ctx, x, y, facing = 1) {
-        const bob = this.motionScale ? Math.sin(this.waterFrame * 2.1) * 1.2 : 0;
-        ctx.save();
-        ctx.translate(Math.round(x), Math.round(y + bob));
-        ctx.scale(facing >= 0 ? 1 : -1, 1);
-        ctx.fillStyle = 'rgba(16, 22, 32, 0.24)';
-        ctx.beginPath();
-        ctx.ellipse(0, 5, 11, 4, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#c9b27a';
-        ctx.fillRect(-5, -22, 10, 21);
-        ctx.fillStyle = '#f3dfb1';
-        ctx.fillRect(-4, -31, 8, 8);
-        ctx.fillStyle = '#5f4a2f';
-        ctx.fillRect(-7, -25, 4, 18);
-        ctx.fillRect(3, -25, 4, 18);
-        ctx.fillStyle = '#8bd7ff';
-        ctx.globalAlpha = 0.42;
-        ctx.fillRect(5, -19, 5, 7);
-        ctx.restore();
     }
 
     _familiarMoteLightSources(lighting = null) {
@@ -9682,14 +8912,12 @@ export class IsometricRenderer {
     _computeFrameLightSources(atmosphere = null, now = performance.now()) {
         const lighting = atmosphere?.lighting || null;
         const building = this.buildingRenderer?.getLightSources?.(lighting) || [];
+        // V3 — council rings and talk arcs are the relationship status
+        // grammar (drawn as ground cues); they throw no light, so no pool,
+        // column or cast ever restates agent state on the ground.
         const ambient = [
             ...this._attentionLightSources(),
             ...building,
-            ...relationshipLightSources({
-                relationship: this.relationshipState,
-                agentSprites: this.agentSprites,
-                lighting,
-            }),
             ...this._familiarMoteLightSources(lighting),
             ...(this.arrivalDeparture?.getLightSources?.({ now }) || []),
             ...this._villageGateLightSources(lighting),
@@ -9963,7 +9191,7 @@ export class IsometricRenderer {
         let drawn = 0;
         for (const light of ambientLightSources || this._ambientLightSources(atmosphere)) {
             if (drawn >= maxCount) break;
-            if (light.kind && !['point', 'spark', 'orbit', 'arc'].includes(light.kind)) continue;
+            if (light.kind && !['point', 'spark', 'orbit'].includes(light.kind)) continue;
             // V5 — Canvas parity is the ground courses only: the stamp lands
             // on the light's foot with the same height term and aperture lobe
             // as the resident loop (no facing, rim or occlusion here).
@@ -10059,6 +9287,7 @@ export class IsometricRenderer {
         if (!rect || !this._poolLayer) return;
         const w = rect.x1 - rect.x0;
         const h = rect.y1 - rect.y0;
+        this._maskPoolLayers(rect);
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.imageSmoothingEnabled = false;
@@ -10069,6 +9298,36 @@ export class IsometricRenderer {
         ctx.globalCompositeOperation = 'color-dodge';
         ctx.drawImage(this._poolLayer, rect.x0, rect.y0, w, h, rect.x0, rect.y0, w, h);
         ctx.restore();
+    }
+
+    // V5 — both pool layers keep only the frame's ground receivers
+    // (`poolReceiverMask`: open water, wall faces, roofs and static props
+    // drop out; villagers lay their own bodies back in), as the resident
+    // light loop's receivers do. The mask is one texel per world px — the
+    // pools' own art-pixel grid.
+    _maskPoolLayers(rect) {
+        const pools = this._poolLayerContexts;
+        if (!pools?.dodge) return;
+        const dpr = this._screenDpr?.() || 1;
+        const topLeft = this.camera.screenToWorld(rect.x0 / dpr, rect.y0 / dpr);
+        const bottomRight = this.camera.screenToWorld(rect.x1 / dpr, rect.y1 / dpr);
+        const mask = poolReceiverMask(this, {
+            x0: Math.min(topLeft.x, bottomRight.x),
+            y0: Math.min(topLeft.y, bottomRight.y),
+            x1: Math.max(topLeft.x, bottomRight.x),
+            y1: Math.max(topLeft.y, bottomRight.y),
+        });
+        if (!mask) return;
+        for (const layerCtx of [pools.dodge, pools.shade]) {
+            if (!layerCtx) continue;
+            layerCtx.save();
+            layerCtx.setTransform(1, 0, 0, 1, 0, 0);
+            layerCtx.imageSmoothingEnabled = false;
+            layerCtx.globalCompositeOperation = 'destination-in';
+            this.camera.applyTransform(layerCtx);
+            layerCtx.drawImage(mask.canvas, mask.x, mask.y);
+            layerCtx.restore();
+        }
     }
 
     // C3 — torchlight at the baked lantern/brazier props, as the same stepped
@@ -10230,7 +9489,7 @@ export class IsometricRenderer {
         const cy = canvas.height / 2;
         const visible = [];
         for (const light of sources) {
-            if (light.kind && !['point', 'spark', 'orbit', 'arc'].includes(light.kind)) continue;
+            if (light.kind && !['point', 'spark', 'orbit'].includes(light.kind)) continue;
             const p = this.camera.worldToScreen(light.x, light.y);
             if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
             visible.push({ light, d2: (p.x - cx) ** 2 + (p.y - cy) ** 2 });
@@ -10258,9 +9517,10 @@ export class IsometricRenderer {
         const ambientTint = grade.ambientTint || [1, 1, 1];
         // V5 — each course clamps the graded plaza under the receiver ceiling.
         const receiver = gradedPoolReceiver(grade);
-        // V5 — the ground course of a raised light (height term) and of a
+        // V5 — the ground course of a raised light (its height beyond the
+        // resident 24 px band, a facade aperture's at its spill) and of a
         // facade aperture (its face's half-space lobe), as on the GPU.
-        const height = Math.max(0, Number(light.height) || 0) * (this.camera?.zoom || 1);
+        const height = groundCourseHeight(light) * (this.camera?.zoom || 1);
         const normal = Array.isArray(light.normal) ? light.normal : null;
         const key = [
             lightSourceCacheKey(light, 'pool'),
@@ -10383,7 +9643,7 @@ export class IsometricRenderer {
             },
             waterDescriptors: {
                 total: this._waterTileDescriptors?.length || 0,
-                currentEligible: this._waterTileDescriptors?.filter?.(tile => tile.animatedCurrentEligible).length || 0,
+                canvasWater: this._canvasWater?.stats || null,
             },
             harbor: this.harborTraffic?.getDiagnostics?.() || null,
             trails: this.trailRenderer?.getDiagnostics?.() || null,
@@ -10619,7 +9879,7 @@ export class IsometricRenderer {
                 const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
                 const id = `prop.${prop.type}`;
                 this._drawPropContactShadow(ctx, x, y, id, prop.tileX, prop.tileY);
-                this.sprites.drawSprite(ctx, id, x, y);
+                this.sprites.drawSprite(ctx, id, x, y, this._winterPropOpts(id));
             }
             for (const prop of DISTRICT_PROPS) {
                 if (prop.layer !== 'cache') continue;

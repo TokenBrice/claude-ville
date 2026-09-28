@@ -748,8 +748,8 @@
   "channelSha256": {
     "albedo": "791ee5c94b76c37fd917415960fd0b9ac87ab6caf0c5ff366a3b9b54fd528ae8",
     "emissive": "47cb4cffe2f67b48dac0dac43d94ec7c467e92786c678c9cdaef63f2f3f6c9a5",
-    "material": "2fe826b9f1f6a9a0bc0f5c5f96209113dfc90da1326a107a4e857194d3ed0d4f",
-    "occluder": "5591aa99090a48ead98b0d770dc4ec7800f58cd225a0c6a3e9e053d09f7c0a24"
+    "material": "8880126c764526b1457813a1a9a174f20ab7f03a1948e9052dc2ed33480e934f",
+    "occluder": "37a3fe9b450ad3028a06b4e5f0ef1b7e9bc724bfae655543266352192c701edb"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",

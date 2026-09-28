@@ -31,6 +31,8 @@ import { drawCanvasAerialHaze, drawResidentBackdropGrade } from './BackdropGrade
 import { castLightingFor, drawTreeCasts, setFrameCastLighting, setFramePointCastLights } from './RakingLight.js';
 import { drawFlashExposure, stormStrikeAt, weatherPressureLevel } from './WeatherRenderer.js';
 import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
+import { poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
+import { drawCanvasWaterColumns } from './CanvasWaterState.js';
 import { drawCanvasEmitterCuts } from './EmitterCuts.js';
 import { groundOptionsFor, groundStateAt } from './GroundState.js';
 import { ungradeRgb } from './CanvasGrade.js';
@@ -544,6 +546,9 @@ export function renderWorldFrame(renderer, dt = 16) {
     );
     emitSceneCategoryDiagnostics(renderer, sceneCategoryResolution.diagnostics);
     const gpuWorldActive = gpuWorldRequested && !sceneCategoryResolution.requireCanvasFrame;
+    // 4.6 — a glide planned now is a continuous dolly only where its flight
+    // frames will render fat-pixel; the Canvas world takes the stepped family.
+    if (renderer.camera) renderer.camera.fatFlight = gpuWorldActive;
     const postFxActive = !gpuWorldActive && renderer.postFx?.isActive?.() === true;
     renderer._setPostFxCanvasVisible?.(gpuWorldActive || postFxActive);
     renderer._resetScreenTransform(overlayCtx);
@@ -575,10 +580,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     // flash exposure both backends apply and the bolt WeatherRenderer draws.
     const strike = stormStrikeAt(renderer.motionTimeMs, atmosphere, renderer.motionScale ?? 1);
     const wx = atmosphere?.weather;
-    renderer._stormIntensity = (wx?.type === 'overcast' || wx?.type === 'rain' || wx?.type === 'storm') && wx.intensity > 0.4
-        ? wx.intensity
-        : 0;
-    renderer._waterWeather = renderer._waterWeatherState(atmosphere);
     // C-W2 — the ground remembers the village's own weather: wetness,
     // puddles, snow cover and frost integrated from the timeline history
     // (today and the two previous days), memoized per 10-minute bucket, so a
@@ -588,6 +589,9 @@ export function renderWorldFrame(renderer, dt = 16) {
     // 5.2 — flora props step their winter state with the season and bucket.
     renderer._syncPropWinter?.();
     renderer._surfaceWetness = Math.max(clamp01(Number(wx?.precipitation) || 0), renderer._groundState.wetness);
+    // 5.2 roofs / 6.6 — roof snow, wet slate and eave drips step with the
+    // same ground state and the live precipitation.
+    renderer.buildingRenderer?.syncRoofWeather?.(atmosphere, renderer._groundState, renderer.motionScale ?? 1, renderer.motionTimeMs);
     const reactions = applySurfaceWetnessToReactions(atmosphere?.reactions || {}, renderer._surfaceWetness);
     renderer._atmosphereReactions = reactions;
     renderer.buildingRenderer?.setLightingState(atmosphere?.lighting);
@@ -693,10 +697,12 @@ export function renderWorldFrame(renderer, dt = 16) {
     if (!gpuWorldActive) {
         drawGroundSemantics(renderer, ctx, groundOptions, GROUND_CUES_ALL);
         drawBuildingLightReflections(renderer, ctx, atmosphere);
-        renderer.buildingRenderer?.drawShadows(ctx);
+        // 2.9 — casts over painted water stay faint and ripple-broken.
+        const waterFields = renderer._coastBake?.waterFields || null;
+        renderer.buildingRenderer?.drawShadows(ctx, waterFields);
         // 1.5 — tree casts on the ground layer (the resident path emits them
         // as ground records with each tree).
-        drawTreeCasts(ctx, renderer.treePropSprites, castLightingFor(atmosphere), renderer.camera, viewport);
+        drawTreeCasts(ctx, renderer.treePropSprites, castLightingFor(atmosphere), renderer.camera, viewport, waterFields);
     } else {
         // 0.2 — the resident path splits the ground cues: the text-bearing
         // work score stays in the retained texture (re-uploaded only when it
@@ -727,7 +733,6 @@ export function renderWorldFrame(renderer, dt = 16) {
         eventBus.emit('harbor:updated', harborPendingRepos);
     }
     const chronicleMonumentDrawables = renderer.chronicleMonuments?.enumerateDrawables?.(renderNow, renderer.camera) ?? [];
-    const chroniclerDrawables = renderer.chronicler?.enumerateDrawables?.() ?? [];
     const familiarDrawables = renderer._enumerateFamiliarMoteDrawables?.(atmosphere) ?? [];
     const zoom = renderer.camera.zoom;
     const renderModes = renderer._agentRenderMode?.(viewport, sortedSprites);
@@ -744,7 +749,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawableAssembly.agentSprites = sortedSprites;
     drawableAssembly.sceneCategoryFrame = sceneCategoryFrame;
     drawableAssembly.chronicleMonumentDrawables = chronicleMonumentDrawables;
-    drawableAssembly.chroniclerDrawables = chroniclerDrawables;
     drawableAssembly.familiarDrawables = familiarDrawables;
     // 0.6 — Canvas paints world particles as small depth drawables at their
     // painter sortY; the resident path draws them in its own depth pass.
@@ -769,7 +773,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawableContext.harborTraffic = renderer.harborTraffic;
     drawableContext.landmarkActivity = renderer.landmarkActivity;
     drawableContext.chronicleMonuments = renderer.chronicleMonuments;
-    drawableContext.chronicler = renderer.chronicler;
     drawableContext.agentRenderMode = agentRenderMode;
     drawableContext.gpuWorldActive = gpuWorldActive;
     drawableContext.paintCounts = paintCounts;
@@ -808,7 +811,17 @@ export function renderWorldFrame(renderer, dt = 16) {
     const feed = needsGpuFeed
         ? renderer.postFxFeed?.build?.(postFxFeedContext) || null
         : null;
+    // V5 — the hybrid pools' ground-receiver mask (CanvasPoolMask), built
+    // here so both grade owners read one mask.
+    if (feed && postFxActive) {
+        const maskRect = poolMaskRect(renderer, viewport);
+        feed.poolMask = maskRect ? poolReceiverMask(renderer, maskRect) : null;
+    }
     if (gpuWorldActive) {
+        // 4.6 — the camera feed: whether this GL frame is a flight frame (the
+        // unrounded `renderOffsetGpuX/Y` and fat-pixel sampling) is decided
+        // once, before any GL consumer reads the offset.
+        renderer.camera?.latchGpuFrame?.();
         const gpuBuildContext = renderer._gpuBuildContext || (renderer._gpuBuildContext = {});
         gpuBuildContext.drawables = drawables;
         const gpuFeed = Object.assign(renderer._gpuFeedEnvelope ||= {}, feed || {});
@@ -855,6 +868,13 @@ export function renderWorldFrame(renderer, dt = 16) {
         gpuWorldRendered = renderer.gpuWorld?.render?.(gpuRenderContext) === true;
         markFrameTiming(frameTimer, 'gpu-world');
     } else if (postFxActive) {
+        // 1.3 — on the hybrid path the water columns and emitter cuts land on
+        // the (still empty) overlay before the PostFx pass: the cuts' own
+        // emission, at the FULL bloom target's half scale, is its bloom
+        // source, as authored emission is the resident bloom's.
+        drawCanvasWaterColumns(overlayCtx, renderer);
+        const emission = drawCanvasEmitterCuts(overlayCtx, renderer, atmosphere, 0.5);
+        if (feed) feed.emission = emission;
         postFxRendered = renderer.postFx?.render?.(canvas, feed) === true;
         markFrameTiming(frameTimer, 'postfx');
     }
@@ -873,8 +893,13 @@ export function renderWorldFrame(renderer, dt = 16) {
 
     // 1.3 — the Canvas and hybrid PostFx paths grade the whole 2D frame, so
     // authored emitters keep their own light as cached cuts on the ungraded
-    // overlay, under weather, marks and labels.
-    if (!gpuWorldRendered) drawCanvasEmitterCuts(overlayCtx, renderer, atmosphere);
+    // overlay, under weather, marks and labels; the 2.9 water columns land
+    // there first, as the resident pass lands them after its grade (the
+    // hybrid path drew both above, before its pass).
+    if (!gpuWorldRendered && !postFxActive) {
+        drawCanvasWaterColumns(overlayCtx, renderer);
+        drawCanvasEmitterCuts(overlayCtx, renderer, atmosphere);
+    }
     renderer._resetScreenTransform(overlayCtx);
     renderer.weatherRenderer?.drawForeground(overlayCtx, {
         canvas: viewport,
@@ -996,7 +1021,6 @@ export function renderWorldFrame(renderer, dt = 16) {
                     entry.items.length,
                 ])),
                 monuments: chronicleMonumentDrawables.length,
-                chronicler: chroniclerDrawables.length,
                 familiars: familiarDrawables.length,
             },
             agentRenderMode,

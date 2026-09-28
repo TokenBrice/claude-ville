@@ -264,7 +264,7 @@ test('timing assessment attributes upload, auxiliary upload, shader, GPU, and fr
 
 test('light admission is a declared row: the night keeps its pools at every level', () => {
     const caps = [FULL, REDUCED, MINIMAL].map(level => effectBudgetMode('light-admission', level));
-    assert.equal(caps[0], 32);
+    assert.equal(caps[0], 128);
     assert.ok(caps[1] >= 24 && caps[1] <= caps[0]);
     assert.ok(caps[2] >= 12 && caps[2] <= caps[1]);
     assert.deepEqual(shedEffectsForLevel(FULL), []);

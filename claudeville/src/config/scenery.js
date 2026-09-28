@@ -469,7 +469,7 @@ export const DISTRICT_PROPS = [
     { tileX: 26.2, tileY: 31.5, id: 'prop.runeBrazier', layer: 'cache', district: 'workshop' },
     // Civic north promenade: Command Center → Observatory corridor.
     { tileX: 18.5, tileY: 17.5, id: 'prop.well', layer: 'cache', district: 'civic' },
-    { tileX: 19.0, tileY: 18.0, id: 'prop.flowerCart', layer: 'cache', district: 'civic' },
+    { tileX: 19.9, tileY: 17.3, id: 'prop.flowerCart', layer: 'cache', district: 'civic' },
     // Gate-avenue spine between river bridge and village gate.
     { tileX: 17.5, tileY: 30.0, id: 'prop.marketStall', layer: 'sorted', district: 'gate' },
     { tileX: 20.0, tileY: 27.5, id: 'prop.noticePillar', layer: 'sorted', district: 'gate' },

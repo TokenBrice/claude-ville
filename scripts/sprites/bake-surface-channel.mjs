@@ -42,6 +42,9 @@ const APRON_TOLERANCE_PX = 2;
 // colours. Slate roofs sit on a saturated blue/teal band that the cool-grey
 // masonry never reaches.
 const SLATE = { hue: [186, 242], minSat: 0.2, minValue: 0.12 };
+// Gold and brass trim (dome ribs, rings, finials): warm and saturated, never
+// the warm-grey masonry (S <= 0.16).
+const GOLD = { hue: [20, 60], minSat: 0.45, minValue: 0.2 };
 
 // Every coordinate is a sprite px of the landmark's base.png. `base` is the
 // visual base (where the art meets the ground); regions are first-match.
@@ -54,9 +57,19 @@ export const SURFACE_SPECS = Object.freeze({
             { face: 'up', poly: [[96, 200], [118, 186], [153, 191], [153, 213], [124, 216], [96, 209]], height: { ramp: [[110, 213, 0], [134, 192, 8]] } },
             // Dome shell, gold ribs and finial, standing on the keep: the drum
             // rises from the keep roof, so its foot is the gate wall's foot.
-            { face: 'roof', poly: [[124, 90], [126, 62], [140, 40], [160, 26], [168, 4], [176, -1], [184, 4], [192, 26], [212, 40], [225, 62], [226, 90], [175, 98]], base: { corner: [175, 214] } },
+            // Only the shell's slate and gold are roof; the stone drum wall
+            // under the gold ring and the lantern's stone are walls on the
+            // same centre (the next region), so roof weather never lies on them.
+            { face: 'roof', poly: [[124, 90], [126, 62], [140, 40], [160, 26], [168, 4], [176, -1], [184, 4], [192, 26], [212, 40], [225, 62], [226, 90], [175, 98]], match: [SLATE, GOLD], base: { corner: [175, 214] } },
+            { face: 'auto', poly: [[124, 90], [126, 62], [140, 40], [160, 26], [168, 4], [176, -1], [184, 4], [192, 26], [212, 40], [225, 62], [226, 90], [175, 98]], base: { corner: [175, 214] } },
             // Dome drum (windowed ring) on the same centre.
             { face: 'auto', poly: [[126, 88], [226, 88], [226, 112], [126, 112]], base: { corner: [175, 214] } },
+            // Slate-glass panes the emissive sidecar leaves unlit (on the
+            // spire, the round tower and the keep): wall, never roof, on their
+            // own masses' corners.
+            { face: 'auto', roof: [], poly: [[70, 98], [75, 98], [75, 106], [70, 106]], base: { corner: [78, 170] } },
+            { face: 'auto', roof: [], poly: [[263, 96], [268, 96], [268, 105], [263, 105]], base: { corner: [254, 185] } },
+            { face: 'auto', roof: [], poly: [[212, 128], [218, 128], [218, 138], [212, 138]], base: { corner: [165, 213] } },
             // Left spire tower: its own front corner.
             { face: 'auto', poly: [[56, 10], [101, 10], [101, 172], [56, 172]], base: { corner: [78, 170] } },
             // Round crenellated tower behind the east wing.

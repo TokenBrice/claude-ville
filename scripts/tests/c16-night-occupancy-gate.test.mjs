@@ -34,6 +34,7 @@ function lightFixture(phase, forgeGate) {
         _ritualLightSources: () => [],
         _forgeSpillLightSources: () => [],
         _archiveSpillLightSources: () => [],
+        _apertureSources: () => [],
     });
 }
 

@@ -10,6 +10,7 @@ import {
   localLightPhaseForLighting,
   materialClassId,
   isSoftwareRasterizer,
+  forcedGpuWorldRendererMode,
   resolveGpuWorldRendererMode,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import {
@@ -34,6 +35,14 @@ test('a software rasterizer defaults to the Canvas world unless WebGL is forced'
   assert.equal(resolveGpuWorldRendererMode('', software), 'canvas');
   assert.equal(resolveGpuWorldRendererMode('?renderer=webgl', software), 'webgl');
   assert.equal(resolveGpuWorldRendererMode('?renderer=canvas', software), 'canvas');
+  // Only exactly `webgl` / `canvas` (any case) forces a mode and may skip the
+  // software-raster probe; an empty or unknown value takes the default.
+  assert.equal(forcedGpuWorldRendererMode('?renderer=WebGL'), 'webgl');
+  assert.equal(forcedGpuWorldRendererMode('?renderer=CANVAS'), 'canvas');
+  for (const search of ['', '?renderer=', '?renderer=bogus', '?renderer=webgl2', '?postfx=0']) {
+    assert.equal(forcedGpuWorldRendererMode(search), null, search);
+    assert.equal(resolveGpuWorldRendererMode(search, software), 'canvas', search);
+  }
   for (const name of [
     'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)',
     'llvmpipe (LLVM 15.0.7, 256 bits)',

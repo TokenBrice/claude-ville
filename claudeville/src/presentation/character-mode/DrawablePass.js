@@ -16,7 +16,6 @@ const KIND_ORDER = Object.freeze({
     agent: 50,
     'landmark-activity': 60,
     'chronicle-monument': 70,
-    chronicler: 75,
     'familiar-motes': 80,
     'building-front': 90,
     building: 95,
@@ -125,10 +124,6 @@ function drawChronicleMonument(ctx, zoom, context, drawable) {
     context.chronicleMonuments?.draw?.(ctx, drawable, zoom, context.renderNow);
 }
 
-function drawChronicler(ctx, zoom, context, drawable) {
-    context.chronicler?.draw?.(ctx, drawable, zoom);
-}
-
 
 function drawFamiliarMotes(ctx, zoom, context, drawable) {
     drawable?.draw?.(ctx, zoom, context);
@@ -231,7 +226,6 @@ export function appendDepthSortedDrawables(target, {
     agentSprites = [],
     sceneCategoryFrame = null,
     chronicleMonumentDrawables = [],
-    chroniclerDrawables = [],
     familiarDrawables = [],
     particles = null,
 } = {}) {
@@ -296,9 +290,6 @@ export function appendDepthSortedDrawables(target, {
     }
     for (const drawable of chronicleMonumentDrawables) {
         pushDepthDrawable(target, pooledDepthDrawable(target, 'chronicle-monument', drawable.sortY, drawable, drawChronicleMonument));
-    }
-    for (const drawable of chroniclerDrawables) {
-        pushDepthDrawable(target, pooledDepthDrawable(target, 'chronicler', drawable.sortY, drawable, drawChronicler));
     }
     for (const drawable of familiarDrawables) {
         pushDepthDrawable(target, pooledDepthDrawable(target, drawable.kind || 'familiar-motes', drawable.sortY, drawable, drawFamiliarMotes));

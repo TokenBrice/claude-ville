@@ -441,6 +441,8 @@ function buildingShadowRecords(renderer, drawable, sequence) {
         occluder: 0,
         emissive: 0,
         sequence: sequence - 0.5,
+        // 2.9 — held faint and broken by the ripple rows over painted water.
+        groundCast: true,
         textureRevision: baked.key,
         sourceKind: 'individual',
     }];
@@ -482,6 +484,7 @@ function treeCastRecords(renderer, sprite, part, sequence) {
         occluder: 0,
         emissive: 0,
         sequence: sequence - 0.5,
+        groundCast: true,
         textureRevision: baked.key,
         sourceKind: 'individual',
     }];
@@ -611,9 +614,11 @@ function recordForBuilding(renderer, drawable, sequence) {
     };
     const shadows = buildingShadowRecords(renderer, drawable, sequence);
     const glass = glassPatchRecord(renderer, drawable, record, split ? horizon : null, front);
+    const roof = roofWeatherRecords(renderer, drawable, record, split ? horizon : null, front, sequence);
     const parts = buildingPartRecords(renderer, drawable, record, sequence);
-    if (!shadows.length && !glass && !parts.length) return record;
+    if (!shadows.length && !glass && !roof.length && !parts.length) return record;
     const out = glass ? [...shadows, record, glass] : [...shadows, record];
+    for (let index = 0; index < roof.length; index++) out.push(roof[index]);
     for (let index = 0; index < parts.length; index++) out.push(parts[index]);
     return out;
 }
@@ -723,6 +728,66 @@ function glassPatchRecord(renderer, drawable, record, horizon, front) {
         sidecarRevision: `${version}:glass`,
         sourceKind: 'individual',
     };
+}
+
+// 5.2 roofs / 6.6 — the roof weather (BuildingSprite.roofPatchFor /
+// roofDripFor, RoofWeather): the snow / wet-course patch on the landmark's
+// own roof texels, with the roof's own material and surface-code crops so it
+// shades exactly like the slate under it (roofs stay unlit by lamps, 2.3),
+// then the eave-drip strip frame while it rains. Both after the glass patch
+// and before the parts, so doors, banners and pennants stay on top. Clear,
+// dry weather emits nothing.
+const NO_ROOF_RECORDS = Object.freeze([]);
+
+function roofWeatherRecords(renderer, drawable, record, horizon, front, sequence) {
+    const buildings = renderer?.buildingRenderer;
+    if (!buildings?.roofPatchFor) return NO_ROOF_RECORDS;
+    const patch = buildings.roofPatchFor(drawable.building);
+    const drip = buildings.roofDripFor?.(drawable.building) || null;
+    if (!patch && !drip) return NO_ROOF_RECORDS;
+    const out = [];
+    const spriteTop = record.y - (horizon != null && front ? horizon : 0);
+    const id = drawable.entry.id;
+    const version = renderer.assets?.assetVersion || '';
+    const layer = (source, suffix, channels, revision, order) => {
+        let sy = 0;
+        let sh = source.h;
+        if (horizon != null) {
+            const cut = Math.max(0, Math.min(source.h, horizon - source.top));
+            if (front) sy = cut;
+            sh = front ? source.h - cut : cut;
+            if (sh <= 0) return;
+        }
+        out.push({
+            ...record,
+            id: `${record.id}:${suffix}`,
+            stableKey: `${record.stableKey}:${suffix}`,
+            textureKey: `${id}:${suffix}`,
+            sidecarKey: `${id}:${suffix}`,
+            source: source.canvas,
+            materialSource: channels?.material || null,
+            emissiveSource: null,
+            occluderSource: channels?.occluder || null,
+            sourceWidth: source.canvas.width,
+            sourceHeight: source.canvas.height,
+            sx: source.sx || 0,
+            sy,
+            sw: source.w,
+            sh,
+            x: record.x + source.left,
+            y: spriteTop + source.top + sy,
+            width: source.w,
+            height: sh,
+            emissive: 0,
+            textureRevision: `${version}:${revision}`,
+            sidecarRevision: `${version}:${suffix}`,
+            sequence: sequence + order / 1000,
+            sourceKind: 'individual',
+        });
+    };
+    if (patch) layer(patch, 'roof', patch.channels, patch.revision, 1);
+    if (drip) layer(drip, 'roof-drip', null, 'drip', 1.5);
+    return out;
 }
 
 // A prop's cached image: its own padded cache canvas, or for a tree the shared
@@ -1544,6 +1609,9 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
             x: -camera.renderOffsetX / camera.zoom, y: -camera.renderOffsetY / camera.zoom,
             width: renderer._semanticGroundViewport.width / camera.zoom, height: renderer._semanticGroundViewport.height / camera.zoom,
             textureRevision: renderer._semanticGroundRevision, elevation: 0, occluder: 0, screenSpace: true,
+            // 4.6 — its texels are backing pixels drawn at the rounded offset:
+            // nearest on flight frames too (V9 fatOptOut).
+            fatOptOut: true,
             // B.2 — the redraw's dirty rect (null = full upload).
             textureUpdates: renderer._semanticGroundUpdates || null });
     }

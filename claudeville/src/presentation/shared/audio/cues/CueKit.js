@@ -510,9 +510,14 @@ export class CueKit {
         if (!canSound) {
             // The muted route uses the same score at the monotonic now, so
             // every accent appears at once instead of waiting for an audio
-            // permission that may never arrive.
+            // permission that may never arrive. A body-led cue whose accent
+            // is already declared (the release crown's cream frame, declared
+            // before its peal is admitted) takes its carrying note on the
+            // accent's own time: the mark keeps the time it chose.
             const pitches = this._voice(kind, 0, offsetsMs, cue, null);
-            publishCueScore({ ...identity, startMs: monotonicNow(), offsetsMs, pitches, silent: true });
+            const now = monotonicNow();
+            const startMs = now + anchoredCueDelayMs(kind, cueScoreKey(cue), offsetsMs, 0, 0, now);
+            publishCueScore({ ...identity, startMs, offsetsMs, pitches, silent: true });
             if (prepare) return () => {};
             return this._emitCue(cue);
         }
@@ -737,8 +742,8 @@ export class CueKit {
                 break;
             }
             case 'release': {
-                // The civic bell (day recipe always) under a gold peal of
-                // open fifths, landing its chord on the crown.
+                // The civic bell (day recipe always) on the crown's cream
+                // frame, then a gold peal of open fifths closing on a chord.
                 const tower = material('tower', 'day');
                 const glock = material('glock');
                 strike(0, P.fixed(OUTCOME_SEMIS.A3, 0), tower, { gain: G.tower * 0.8, Dmul: 0.9 });

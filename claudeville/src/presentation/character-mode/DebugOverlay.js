@@ -342,6 +342,7 @@ export class DebugOverlay {
             `gpu timer: p25 ${formatMicroMs(gpu.gpuMsP25)} · ema ${formatMicroMs(gpu.gpuMs)} · 1/${gpu.gpuTimerEvery ?? '?'} frames · n=${gpu.gpuTimerSamples ?? 0}`,
             `gpu frame: cpu ${formatOptionalMs(gpu.cpuMs)} · gap ${formatOptionalMs(gpu.frameGapMs)} · source ${gpu.qualityTimingSource}`,
             ...shedRows(gpu),
+            ...lightRows(gpu),
             `pass sampling ${gpu.passSamplingEnabled ? 'on' : 'off'} · disjoint discards ${gpu.gpuDisjointDiscards} · timer errors ${gpu.gpuTimerErrors}`,
             ...Object.entries(gpu.passes).map(([name, pass]) => `  ${name}: gpu ${formatMicroMs(pass.gpuMs)}`
                 + ` · cpu ${formatMicroMs(pass.cpuMs)} · ${pass.draws ?? 0} draws · ${formatBytes(pass.bytes)} · n=${pass.samples}`),
@@ -482,6 +483,25 @@ function shedRows(gpu) {
         parts.push(`light-admission ${admission.cap}${note}`);
     }
     return wrapRows(`shed (${gpu.shedReason}): `, parts.length ? parts : ['none'], ', ');
+}
+
+// 2.4 — the light list at every level: admitted of the lights offered on
+// screen (the acceptance count), why the rest missed (past the ladder count,
+// or a 64x64 tile they reach already held 16), the busiest tile, and which
+// walk the scene pass ran (clustered tile lists or the flat list).
+function lightRows(gpu) {
+    const a = gpu.lightAdmission;
+    if (!a) return [];
+    if (a.daylight) return ['lights: day (local lights off)'];
+    const parts = [
+        `${a.admitted}/${a.offered} admitted`,
+        `over count ${a.overCap ?? 0}`,
+        `tile full ${a.tileFull ?? 0}`,
+        `busiest tile ${a.maxPerTile ?? 0}/16`,
+        `${a.clusters ? 'clustered' : 'flat'} walk over ${a.tiles ?? 0} tiles`,
+        `off screen ${a.culled ?? 0}`,
+    ];
+    return wrapRows('lights: ', parts, ' · ');
 }
 
 function formatMs(value) {

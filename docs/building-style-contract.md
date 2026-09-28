@@ -23,6 +23,7 @@ The master palette is code-owned; authoring, the ground bake, and `npm run art:a
 |---|---|---|
 | `stone` | `#25262D` · `#373944` · `#4D4F5A` · `#686A72` · `#8C8B8A` | masonry and props |
 | `slate` | `#1E2433` · `#2C3650` · `#3E4D6C` · `#5A6C8C` | all roofs |
+| `wetSlate` | `#5A6C8C` · `#6B7EA0` · `#7D91B0` · `#8FA3C0` | 6.6 wet course on the roof's upper-left edges, one stop per wetness quantum; eave drips (runtime only, never authored) |
 | `timber` | `#2A1C14` · `#45301F` · `#654629` · `#8A6337` | beams, planks, doors, hulls |
 | `clothCrimson` | `#732A31` · `#A4463F` | banners and awnings; the only red on buildings |
 | `clothOchre` | `#987638` · `#C9A04A` | awnings, pennant fringes, brass-toned cloth |
@@ -30,6 +31,8 @@ The master palette is code-owned; authoring, the ground bake, and `npm run art:a
 | `grass`, `dirt`, `road`, `plaza` | see `artPalette.js` | terrain-owned; never baked into a land sprite |
 
 Thematic palettes (Portal violet, Mine cyan ore, Harbor warm wood) are **allowed deviations** layered on the same craft rules — not separate art styles.
+
+**Roof weather is runtime, not art.** Snow (5.2), the wet-slate course and eave drips (6.6) are derived at runtime from the landmark's 2.3 surface channel (`RoofWeather.js`): paint roofs as dry slate on face class 3, keep banners, doors and pennants as fabric/timber parts or material, and keep gold trim gold. A new landmark needs its surface channel before its roof can take weather.
 
 ## Grounding profiles
 

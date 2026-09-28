@@ -58,7 +58,7 @@ A single pure function `evaluateGrade(minuteOfDay, weather, moonPhase) → { lif
 
 ### C3 — One pixel grid
 
-Every world sprite draws at an **integer multiple of the world texel** at every crisp zoom tier. Villagers at 1×, trees at 1×, effects and glyphs on the art-pixel grid. Sprite record positions are snapped (`pipeline-budget` found a half-art-pixel offset). The semantic ground texture draws at scale 1 or 0.5 only (today 0.61 stretched 1.64×, `WorldFrameRenderer.js:928`). Camera glides that change zoom spend ≥ 75 % of their duration at integer tiers (item 8.1). Doors and thresholds of re-authored buildings are ≥ 1.2× the median 1:1 body (~65–70 world px).
+Every world sprite draws at an **integer multiple of the world texel** at every crisp zoom tier. Villagers at 1×, trees at 1×, effects and glyphs on the art-pixel grid. Sprite record positions are snapped (`pipeline-budget` found a half-art-pixel offset). The semantic ground texture draws at scale 1 or 0.5 only (today 0.61 stretched 1.64×, `WorldFrameRenderer.js:928`). Camera motion: resting frames integer-k nearest; flight frames fat-pixel (item 8.1; bent by the Waking Isle plan's 4.6, M4, which made glides one continuous dolly). Doors and thresholds of re-authored buildings are ≥ 1.2× the median 1:1 body (~65–70 world px).
 
 ### C4 — Effect language
 

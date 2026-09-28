@@ -1,14 +1,15 @@
 import { MonumentPlanter, MonumentRules } from '../../application/MonumentRules.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { collectCommitEvents } from './ChronicleEvents.js';
-import { buildingCenterToWorld, tileToWorld } from './Projection.js';
-import { BUILDING_DEFS } from '../../config/buildings.js';
+import { tileToWorld } from './Projection.js';
 import {
+    ALPHA_QUANTA,
     GOLD,
     GOLD_RAMP,
     PEAK,
     claimMajorMoment,
     createCueGate,
+    CROWN_OVERHANG,
     crown,
     crownSeal,
     cueGatedAge,
@@ -19,10 +20,10 @@ import {
     queueMomentEdgePlate,
     releaseMajorMoment,
     resolveMomentAnchor,
-    streak,
     successGrammarDeferred,
 } from './EffectStamps.js';
 import { repoProfile } from '../shared/RepoColor.js';
+import { scheduleAccent } from '../shared/audio/CueScore.js';
 import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { LABEL_INK, measureLabelText, snapScreenOrigin } from './WorldLabelKit.js';
 import { fillPixelEllipse } from './PixelShapes.js';
@@ -79,24 +80,36 @@ function hashText(value) {
     return Math.abs(hash);
 }
 
-// 6.4 — the release crown: one Major moment above the Harbor plaque, only for
-// a planted release record (verified by MonumentRules). Rocket anticipation,
-// one cream flash, 8 gold spokes grown in three held steps, a 4-quantum
-// falloff, then a small static crown for 6 s. One at a time; further releases
-// fold into its count. A verified failure on screen defers it.
+// 6.4 / 8.2 — the release crown: one Major moment over the release's own
+// sloop, only for a planted release record (MonumentRules plants only
+// verified releases). The sloop (HarborTraffic) hoists a gold pennant in
+// three held steps through the anticipation and takes the one cream frame on
+// its sail outline at the peak (with a cream crown just above the pennant
+// staff); 8 gold spokes grow in three held steps as it casts off, the core
+// opens and the figure dissolves on a Bayer order in the falloff, then a
+// small static seal rides out over the masthead for 6 s. One at a time;
+// further releases fold into its count. A verified failure on screen defers
+// it.
 const RELEASE_CROWN = defineMoment('major', { anticipation: 200, peak: 80, follow: 1200, residue: 6000 });
 const CROWN_GROW_MS = 300;
-const CROWN_RADIUS = 18;
-const CROWN_ROCKET_RISE = 22;
+const CROWN_RADIUS = 12;
 const CROWN_DEFER_MAX_MS = 30000;
 const CROWN_MAJOR_ID = 'release-crown';
-// Harbor plaques are screen-fixed: landmark plates sit 28 screen px above the
-// sprite top and run ~26 px tall; the crown hangs a little above that band.
-const HARBOR_PLAQUE_CLEARANCE_PX = 28 + 26 + 8;
-const HARBOR_BUILDING = BUILDING_DEFS.find(building => building.type === 'harbor') || null;
-// V8 — the crown's largest frame around its seat, in world texels: the
-// falloff's widest spokes and tips (±24) and the rocket's lowest step (+28).
-const CROWN_EXTENT = Object.freeze({ left: -24, top: -24, right: 24, bottom: 28 });
+// V8 — the largest frame around its seat, in world texels: the grown crown's
+// jewels and ink (CROWN_RADIUS + CROWN_OVERHANG), the residue seal (±7); the
+// frame's bottom stands CROWN_MAST_GAP texels above the top of the sloop's
+// pennant staff, so the crown sits on the masthead with no stem.
+const CROWN_REACH = CROWN_RADIUS + CROWN_OVERHANG;
+const CROWN_EXTENT = Object.freeze({ left: -CROWN_REACH, top: -CROWN_REACH, right: CROWN_REACH, bottom: CROWN_REACH });
+const SEAL_EXTENT = Object.freeze({ left: -7, top: -7, right: 7, bottom: 7 });
+const CROWN_MAST_GAP = 2;
+// 8.3 — the peal's first note is declared this long after the predicted
+// cream frame (one 60 Hz frame), so the gate holds the peak onto it.
+const CROWN_ACCENT_LATE_MS = 17;
+// The crown's 1-texel ink rim (the world labels' plate ink).
+const CROWN_INK = LABEL_INK.plateOutline;
+// M16 — the day pennant's answer is re-derived at most this often.
+const DAY_PENNANT_REFRESH_MS = 500;
 // Mirrored from HarborTraffic.js HARBOR_SQUAD_ANCHORAGES[1] "Inner Quay Basin"
 // — kept here so this module stays self-contained without exporting harbor
 // internals.
@@ -169,6 +182,7 @@ export class ChronicleMonuments {
         auroraGate = null,
         assets = null,
         particles = null,
+        harbor = null,
     } = {}) {
         this.store = store;
         this.rules = rules;
@@ -184,6 +198,10 @@ export class ChronicleMonuments {
         this.assets = assets;
         this.particles = particles;
         this._lastMonumentMoteAt = 0;
+        // 8.2 — the HarborTraffic whose release sloop the crown rides (wired by
+        // the renderer); without it no crown is staged.
+        this.harbor = harbor;
+        this._dayPennant = { at: -Infinity, up: false };
         // ChronicleStore is used for lifetime commit-count milestones. It may
         // be the same instance as `store`, but kept as a separate slot so tests
         // can inject a stub.
@@ -235,23 +253,26 @@ export class ChronicleMonuments {
         const gitEvents = collectCommitEvents(agents);
         const pushEvents = this._collectPushEvents(agents);
         const sourceEvents = [...gitEvents, ...pushEvents].slice(-MAX_PLANTER_SEEN);
+        // 8.2 / M16 — a planted release's bunting pennant waits for its crown
+        // (`_endReleaseCrown` reveals it), like the day pennant. The crown is
+        // scheduled at the plant itself, in the task that emits the milestone
+        // its peal answers (8.3: the cream frame declares its time first).
         const planted = await this.planter.processEvents(sourceEvents, {
             ...context,
             now,
             monuments: [...this.records.values()],
+            holdReleases: true,
             isActive: () => !this._disposed && generation === this._lifecycleGeneration,
+            onPlanted: (record, event) => {
+                // The releasing agent, for the residue thread (V8).
+                if (record.kind === 'release') this._scheduleReleaseCrown(record, Date.now(), event?.agentId ?? null);
+            },
         });
         if (this._disposed || generation !== this._lifecycleGeneration) return [];
         if (this.planter?.seen?.size > MAX_PLANTER_SEEN) {
             this.planter.seen = new Set([...this.planter.seen].slice(-MAX_PLANTER_SEEN));
         }
         for (const record of planted) this.records.set(record.id, record);
-        for (const record of planted) {
-            if (record.kind !== 'release') continue;
-            // The releasing agent, for the residue thread (V8).
-            const source = pushEvents.find(event => String(event.id || event.sourceId || event.commandHash || '') === record.sourceEventId);
-            this._scheduleReleaseCrown(record, now, source?.agentId ?? null);
-        }
         await this._processCommitMilestones(gitEvents, now, generation);
         if (this._disposed || generation !== this._lifecycleGeneration) return [];
         this._dropExpired(now);
@@ -308,7 +329,7 @@ export class ChronicleMonuments {
             planterSeen: this.planter?.seen?.size || 0,
             christenedRepos: this._christenedRepos.size,
             releaseCrown: this._crown
-                ? { count: this._crown.count, started: this._crown.startedAt != null }
+                ? { count: this._crown.count, started: this._crown.startedAt != null, phase: this._crown.stage?.phase ?? null }
                 : null,
             activeBanners: this._activeBanners.length,
             disposed: this._disposed,
@@ -329,9 +350,11 @@ export class ChronicleMonuments {
         this.records.clear();
         this._seenCommitIds.clear();
         this.planter?.seen?.clear?.();
+        this.planter?.dressing?.reveal?.();
         this._christenedRepos.clear();
         if (this._crown?.startedAt != null) releaseMajorMoment(CROWN_MAJOR_ID);
         this._crown = null;
+        this.harbor = null;
         this._activeBanners.length = 0;
         this._pendingMilestones.length = 0;
         this.store = null;
@@ -725,9 +748,12 @@ export class ChronicleMonuments {
         // Max one crown: a release landing while one is up folds into it.
         if (this._crown) {
             this._crown.count += 1;
+            this._crown.recordIds.push(record.id);
             return;
         }
         this._crown = {
+            key: record.id,
+            recordIds: [record.id],
             queuedAt: now,
             startedAt: null,
             reduced: false,
@@ -736,92 +762,113 @@ export class ChronicleMonuments {
             label: record.label || null,
             actorId,
             cue: null,
+            stage: null,
         };
+        this._dayPennant.at = -Infinity;
+        // 8.2 — the release's sloop reveals at the Harbor's release slip,
+        // bare-masted, and reads the crown's clock before the overlay draws.
+        const key = record.id;
+        const arrivesInMs = this.harbor?.launchReleaseSail?.({
+            key,
+            project: record.project,
+            label: record.label,
+            clock: at => this._sailClock(key, at),
+            now,
+        });
+        // 8.3 — the crown's cream frame is a body-led accent: declared now,
+        // in the task that emits the milestone, so the peal's first note is
+        // scheduled onto it (the sloop's arrival, then the anticipation; one
+        // frame late, so the gate holds the peak rather than chasing a note
+        // already struck). Keyed as the peal is (AgentManager voices it from
+        // the record's agent). Reduced motion never gates.
+        if (Number.isFinite(arrivesInMs) && !reducedMotionPreferred() && !successGrammarDeferred()) {
+            scheduleAccent(record.agentId == null ? null : String(record.agentId), performance.now() + arrivesInMs + RELEASE_CROWN.anticipation + CROWN_ACCENT_LATE_MS, 'release');
+        }
     }
 
-    // 6.4 — drawn on the upper overlay (both backends) in world space. The
-    // crown waits while a verified failure holds success grammar, and for the
-    // single Major slot; a crown that cannot start within 30 s is dropped (the
-    // monument and the parade plate still record the release).
-    drawMoments(ctx, zoom = 1, now = Date.now()) {
+    // The crown is over (or dropped before it could start): the sloop sails
+    // on (bare-masted if it never hoisted), the day pennant may fly and the
+    // bunting strings its pennants.
+    _endReleaseCrown(now) {
         const state = this._crown;
-        if (!ctx || !state) return;
-        if (state.startedAt == null) {
-            if (successGrammarDeferred()) {
-                if (now - state.queuedAt > CROWN_DEFER_MAX_MS) this._crown = null;
-                return;
-            }
-            const reduced = reducedMotionPreferred();
-            if (!reduced && !claimMajorMoment(CROWN_MAJOR_ID, RELEASE_CROWN.active)) {
-                if (now - state.queuedAt > CROWN_DEFER_MAX_MS) this._crown = null;
-                return;
-            }
-            state.startedAt = now;
-            state.reduced = reduced;
-            // 8.3 — the cream frame waits for the peal's first note; the seal
-            // for its closing chord.
-            state.cue = reduced ? null : createCueGate('release', null);
-        }
-        const age = cueGatedAge(state.cue, now - state.startedAt, RELEASE_CROWN.anticipation,
-            RELEASE_CROWN.anticipation + RELEASE_CROWN.peak + RELEASE_CROWN.follow, { reduced: state.reduced });
-        const phase = momentPhase(age, RELEASE_CROWN, { reduced: state.reduced });
-        if (phase.phase === 'done') {
-            releaseMajorMoment(CROWN_MAJOR_ID);
-            this._crown = null;
-            return;
-        }
-        const seat = this._harborCrownAnchor(zoom);
-        if (!seat) return;
-        // 8.1 — V8: inside the safe area, clear of chrome and of anything
-        // standing in front of the Harbor; else down the Harbor's own column;
-        // else an edge plate.
-        const anchor = resolveMomentAnchor(seat, {
-            building: 'harbor',
+        if (!state) return;
+        this.harbor?.endReleaseSail?.(state.key, now);
+        this.planter?.dressing?.reveal?.(state.recordIds);
+        this._crown = null;
+        this._dayPennant.at = -Infinity;
+    }
+
+    // 6.4 / 8.2 — drawn on the upper overlay (both backends) in world space,
+    // over the release's own sloop: above its pennant staff, kept in the safe
+    // area, off chrome and plaques and clear of any building in front of the
+    // ship by V8's resolveMomentAnchor (else up the ship's own column, else an
+    // edge plate). Seated just above the masthead's pennant staff (no stem),
+    // the cream frame and the gold spokes carry a 1-texel ink rim, so the
+    // crown reads as the sloop's own over the Harbor's timber behind it. The
+    // crown waits while a verified failure holds success grammar, for the
+    // single Major slot and for its sloop to reveal at the slip; a crown that
+    // cannot start within 30 s is dropped (the monument and the parade plate
+    // still record the release, and the sloop sails bare-masted).
+    drawMoments(ctx, _zoom = 1, now = Date.now()) {
+        if (!ctx) return;
+        const phase = this._crownClock(now);
+        const state = this._crown;
+        if (!phase || !state) return;
+        const mast = this.harbor?.stageReleaseSail?.(state.key, {
+            phase: phase.phase,
+            step: phase.step,
+            reduced: state.reduced,
+            now,
+        });
+        if (!mast) return;
+        const residue = phase.phase === 'residue';
+        const extent = residue ? SEAL_EXTENT : CROWN_EXTENT;
+        // The crown's centre is a texel corner: its middle 2×2 takes the
+        // staff's column and the one east of it.
+        const anchor = resolveMomentAnchor({ x: mast.x + 1, y: mast.flagTop - CROWN_MAST_GAP - extent.bottom }, {
             actorId: state.actorId,
-            extent: CROWN_EXTENT,
+            depthY: mast.depthY,
+            extent,
             id: CROWN_MAJOR_ID,
             kind: 'release',
             tier: 'major',
             phase: phase.phase,
         });
+        state.stage = { phase: phase.phase, step: phase.step, mode: anchor.mode, screen: anchor.screen, world: anchor.rect, depthY: anchor.depthY, tiedUp: mast.tiedUp };
         if (anchor.mode === 'edge') {
             queueMomentEdgePlate(anchor, { word: 'RELEASE', color: GOLD, peak: phase.phase === 'peak', ctx });
             return;
         }
+        // The anticipation is the pennant climbing the sloop's mast.
+        if (phase.phase === 'anticipation') return;
         const x = Math.round(anchor.x);
         const y = Math.round(anchor.y);
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
         switch (phase.phase) {
-        case 'anticipation': {
-            // A gold rocket rises from the quay in three held steps.
-            const rise = CROWN_ROCKET_RISE * (1 - (phase.step + 1) / 3);
-            streak(ctx, x, y + rise, { length: 4, color: GOLD_RAMP[1], head: GOLD_RAMP[2] });
-            ctx.fillStyle = GOLD_RAMP[0];
-            ctx.fillRect(Math.round(x), Math.round(y + rise) + 6, 1, 1);
-            ctx.fillRect(Math.round(x), Math.round(y + rise) + 9, 1, 1);
-            break;
-        }
         case 'peak':
-            // The one cream frame.
-            crown(ctx, x, y, { radius: 7, inner: 1, ramp: [PEAK, PEAK, PEAK], core: PEAK });
+            // The one cream frame (with the sloop's sail outline).
+            crown(ctx, x, y, { radius: 9, ramp: [PEAK, PEAK, PEAK], jewel: PEAK, core: PEAK, outline: CROWN_INK });
             break;
         case 'follow': {
             const ms = phase.t * RELEASE_CROWN.follow;
             if (ms < CROWN_GROW_MS) {
                 const step = quantStep(ms / CROWN_GROW_MS, 3);
-                crown(ctx, x, y, {
-                    radius: [8, 13, CROWN_RADIUS][step],
-                    inner: 3,
-                    ramp: GOLD_RAMP,
-                    core: step === 0 ? PEAK : GOLD_RAMP[2],
-                });
+                crown(ctx, x, y, { radius: [8, 10, CROWN_RADIUS][step], ramp: GOLD_RAMP, core: PEAK, outline: CROWN_INK });
             } else {
-                // Falloff: the spokes open outward as they step down in alpha.
+                // Falloff: full strength for its first step, then the core
+                // opens and the spokes retreat outward as the figure drops
+                // whole texels on a Bayer order.
                 const u = (ms - CROWN_GROW_MS) / Math.max(1, RELEASE_CROWN.follow - CROWN_GROW_MS);
                 const step = quantStep(u, 3);
-                ctx.globalAlpha = [1, 0.66, 0.33][step];
-                crown(ctx, x, y, { radius: CROWN_RADIUS + step * 2, inner: [4, 8, 12][step], ramp: GOLD_RAMP });
+                crown(ctx, x, y, {
+                    radius: CROWN_RADIUS,
+                    inner: [0, 4, 8][step],
+                    ramp: GOLD_RAMP,
+                    core: step === 0 ? PEAK : null,
+                    outline: CROWN_INK,
+                    fade: ALPHA_QUANTA[step],
+                });
             }
             break;
         }
@@ -836,24 +883,75 @@ export class ChronicleMonuments {
         ctx.restore();
     }
 
-    // Harbor crown anchor in world space: above the screen-fixed Harbor plaque
-    // band, which sits over the Harbor sprite's first opaque row.
-    _harborCrownAnchor(zoom = 1) {
-        if (!HARBOR_BUILDING) return null;
-        const center = buildingCenterToWorld(HARBOR_BUILDING);
-        const id = 'building.harbor';
-        const dims = this.assets?.getDims?.(id);
-        const anchor = this.assets?.getAnchor?.(id);
-        let spriteTop = center.y - 110;
-        if (dims && anchor) {
-            const first = this.assets.getMask?.(id)?.indexOf?.(1) ?? 0;
-            spriteTop = Math.round(center.y - anchor[1]) + Math.floor(Math.max(0, first) / dims.w);
+    // The crown's moment clock at `now`, idempotent within a frame (like
+    // cueGatedAge): starts a queued crown once success grammar is free, its
+    // sloop has faded in at the slip and the Major slot is its, drops one that
+    // waited 30 s, ends a finished one. The release sloop (HarborTraffic,
+    // before the overlay draws) and the overlay both read it. Returns the
+    // momentPhase, or null.
+    _crownClock(now) {
+        const state = this._crown;
+        if (!state) return null;
+        if (state.startedAt == null) {
+            if (successGrammarDeferred()) {
+                if (now - state.queuedAt > CROWN_DEFER_MAX_MS) this._endReleaseCrown(now);
+                return null;
+            }
+            const reduced = reducedMotionPreferred();
+            if (this.harbor?.releaseSailArrived?.(state.key, now, { reduced }) === false) return null;
+            if (!reduced && !claimMajorMoment(CROWN_MAJOR_ID, RELEASE_CROWN.active)) {
+                if (now - state.queuedAt > CROWN_DEFER_MAX_MS) this._endReleaseCrown(now);
+                return null;
+            }
+            state.startedAt = now;
+            state.reduced = reduced;
+            // 8.3 — the cream frame waits for the peal's first note; the seal
+            // for its closing chord.
+            state.cue = reduced ? null : createCueGate('release', null);
         }
-        const z = Math.max(0.01, Number(zoom) || 1);
-        return {
-            x: Math.round(center.x),
-            y: Math.round(spriteTop - HARBOR_PLAQUE_CLEARANCE_PX / z - CROWN_RADIUS - 2),
-        };
+        // Callers' clocks may trail the start by a millisecond within a frame.
+        const age = cueGatedAge(state.cue, Math.max(0, now - state.startedAt), RELEASE_CROWN.anticipation,
+            RELEASE_CROWN.anticipation + RELEASE_CROWN.peak + RELEASE_CROWN.follow, { reduced: state.reduced });
+        const phase = momentPhase(age, RELEASE_CROWN, { reduced: state.reduced });
+        if (phase.phase === 'done') {
+            releaseMajorMoment(CROWN_MAJOR_ID);
+            this._endReleaseCrown(now);
+            return null;
+        }
+        return phase;
+    }
+
+    // The release sloop's view of the crown clock (HarborTraffic).
+    _sailClock(key, now) {
+        const phase = this._crownClock(now);
+        const state = this._crown;
+        return phase && state?.key === key ? { phase: phase.phase, step: phase.step, reduced: state.reduced } : null;
+    }
+
+    // 8.2 / M16 — a verified release flies one gold pennant on the Harbor for
+    // the local day: once its crown is over (the sloop has carried its own
+    // pennant out; at once for a release planted earlier today) until local
+    // midnight. A static fact from the Chronicle store, never motion;
+    // MonumentRules plants release records only for verified releases, so an
+    // unverified or failed release flies nothing.
+    dayPennantUp(now = Date.now()) {
+        const cache = this._dayPennant;
+        if (now - cache.at < DAY_PENNANT_REFRESH_MS && now >= cache.at) return cache.up;
+        const midnight = new Date(now);
+        midnight.setHours(0, 0, 0, 0);
+        const since = midnight.getTime();
+        const pending = this._crown?.recordIds ?? null;
+        let up = false;
+        for (const record of this.records.values()) {
+            if (record.kind !== 'release' || pending?.includes(record.id)) continue;
+            if (Number(record.plantedAt || record.ts || 0) >= since) {
+                up = true;
+                break;
+            }
+        }
+        cache.at = now;
+        cache.up = up;
+        return up;
     }
 
     async _processCommitMilestones(gitEvents, now, generation = this._lifecycleGeneration) {
