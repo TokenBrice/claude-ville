@@ -1003,12 +1003,12 @@ Status: **done** = implemented and its acceptance met; **done with deviation** =
 | 9.10 | done with deviation | `3e0d876` | `audit/AuditChromeDash/p910-age.json` | Age tier reads `statusSinceMs` (the printed clock), not `rowWaitAnchor`; same for waiting cards, differs on errored and quota cards |
 | 9.11 | done with deviation | `3e0d876` | `audit/AuditChromeDash/p911-strip.json` | Strip widened to 480 × 56 (an 8 px tick lane) after the audit passed 480 × 48; not re-audited |
 | B.1a | done | `3e0d876` | `GpuCore/` | |
-| B.1b | done | `6559335` | `Batches/` | |
+| B.1b | done; regressed after P3 | `6559335` | `Batches/`, `Receipts/` | Met at P3 (58/61 batches at dense-100 z1 1080p); the P5 quiet-host receipt reads 123/131 (> 80), [INFERENCE] from the P5 wall and gate props' own channel canvases; pager still saves 0.30–0.40 ms ([OF-024](open-followups.md)) |
 | B.2 | done with deviation | `5f4abfe` | `audit2/AuditMemory2/` | Footprint 821–877 MB, sheet estimate 0 MB, 0 px diff; world-pilot packing skipped (V9 surface-code conflict); texture-cache cap resized 48 → 160 MiB on measured numbers ([OF-012](open-followups.md)) |
-| B.3 | done | `6559335` | `CueSegments/` | |
+| B.3 | done with deviation | `6559335` | `CueSegments/`, `Receipts/` | Records ≤ 900 met (118–391 runs); appRender saving 0.40 ms at WebGPU dense-100 day, below the ≥ 0.5 target ([OF-024](open-followups.md)) |
 | 10.1 Stage A | done with deviation | `ee145a3` | `audit7/AuditWGPU/parity/report.json`, `output/webgpu-parity/2026-09-29T06-25-34-928Z/` | `smoke:webgpu-parity` 36/36 at ≤ 1 LSB with device loss; 2.10 not ported (off at every level, reports unsupported on WebGPU) |
 | 10.1 Stage B | done with deviation | `ee145a3` | `StageB/`, `WGPUPerf/`, `audit8/ReAuditP4/` | Default in Chromium (decisions 8, 12, 16); ReAuditP4 13/13 after the swap and recovery fixes; real Safari and Firefox unmeasured ([OF-018](open-followups.md)) |
-| 10.2 | done with deviation | `ee145a3` | `audit7/AuditHDR/`, `HDR/xdr-check.json` | Every AuditHDR line passes; headless plus one headed XDR run (EDR headroom 1 → 16 → 1); G95C and by-eye judgement open ([OF-016](open-followups.md), [OF-017](open-followups.md)) |
+| 10.2 | done with deviation | `ee145a3` | `audit7/AuditHDR/`, `HDR/xdr-check.json`, `HDR/g95c-check-*.json` | Every AuditHDR line passes; headed XDR (EDR 1 → 16 → 1) and, after `28ddff3`, headed G95C at 5120×1440 (dynamic-range high, P3, EDR 1 → 2.03 → 1; [OF-016](open-followups.md) closed); by-eye judgement open ([OF-017](open-followups.md)) |
 | 10.3 | done with deviation | `ee145a3` | `P3Fix/` | Forced-P3 headless passes on both backends; on-screen ΔE_ok on the XDR unmeasured ([OF-017](open-followups.md)) |
 | PixelLab A | done | `3e0d876` | `AssetsA/` | 84.8 generations: 7.3 pilot (feet held by copied keypoints), 7.1 sit pilot (template failed, skeleton-v3 passed), 5.5 tall oak |
 | PixelLab B | done | `5f4abfe` | `Ships/`, `Woodland/` | ≈ 35 generations: hulls 16 of 40, trees 19 of 246; 6.1, 6.2 and 6.7 hand-authored at 0 |
@@ -1054,7 +1054,7 @@ Carried in [open-followups](open-followups.md):
 
 - **OF-009** `read` strips for six strip-less profiles; 15 of 20 pre-existing `read` strips fail the ±2 px feet audit.
 - **OF-011** quiet-host ladder receipt (dense-100 soak). **OF-012** GPU-owned estimate at DPR 2; ~44 MB of Chrome transfer-cache textures unattributed.
-- **OF-016** G95C HDR re-probe. **OF-017** headed by-eye HDR and P3 on the XDR. **OF-018** real Safari and Firefox runs.
+- **OF-016** G95C HDR re-probe (closed after `28ddff3`: dynamic-range high, P3, EDR 1 → 2.03 → 1). **OF-017** headed by-eye HDR and P3 on the XDR. **OF-018** real Safari and Firefox runs.
 - **OF-019** art-director carries that need maintainer decisions (clone-crowd identity, overlay density at z1/z2, static z1, night light on volumes).
 - **OF-020** 7.5 run gait. **OF-021** 4.9 overlay panel, conditional.
 - **OF-022** the Chronicler has no body on any backend.
@@ -1080,7 +1080,7 @@ One lane (`ReceiptsA`, 2026-09-29, load < 4 before every context, 3 contexts) ra
 | Receipt | Result |
 | --- | --- |
 | Stage B go condition (`gpu-burst` FULL, dense-24 22:00) | Holds everywhere: WebGPU vs WebGL2 2.226 vs 2.364 ms (1680 z1), 2.229 vs 2.446 (1680 z2), 4.820 vs 4.982 (4880 z1), 7.323 vs 7.732 (4880 z2) |
-| M6 `light-clusters` | Clustered walk cheaper in all 32 cases (1.42–16.96 ms saved at FULL, 1.28–11.46 at MINIMAL); default now on at every level |
+| M6 `light-clusters` | Clustered walk cheaper in all 32 cases (1.42–16.96 ms saved at FULL, 1.28–11.46 at MINIMAL; each case measured with clusters forced on vs off at that level); default now on at every level. The per-level `gpu-burst` sweep after the switch (confirming MINIMAL is no longer costlier than FULL) was not run ([OF-025](open-followups.md)) |
 | EFFECT_BUDGET rows (per-frame interleaved shed A/B, not true K8 — no per-row K hook) | Resolved savings at 4880: waterCrests 0.51–0.66 ms, light-admission 0.38–0.39, footprint-occlusion 0.40 (WebGL2), cloud-courses 0.29 (WebGL2), aerial-perspective / coastSwash / bodyReflections 0.13–0.16 (WebGPU); bloom 0.82 at DPR 2 storm; radiance-bounce would cost +0.09. Recorded in the `EFFECT_BUDGET` header |
 | Unlocked frame (FULL, dense-24) | p50/p95 WebGL2 4.3/7.4 ms (1080p), 5.9/10.4 (5120); WebGPU 3.9/12.6, 4.3/20.9 — p95 above the pre-plan 4.8/5.0 ([OF-024](open-followups.md)) |
 | B.1b / B.3 | Pager saves 0.30–0.40 ms (WebGPU) and 0.14–0.22 (WebGL2) of gpu-world p50; cue runs save 0.40 ms appRender (WebGPU dense-100 day); batches now 123/131 at dense-100 z1 1080p against the P3 58/61 ([OF-024](open-followups.md)) |

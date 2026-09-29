@@ -151,14 +151,6 @@ Items the [Waking Isle plan](claudeville-opus55-xhigh-visual-plan.md) could
 not close with the hardware, engines or generations available, or that its
 art-director reviews raised outside its scope.
 
-- [ ] **Re-probe the G95C with HDR on**
-
-  - **ID:** `OF-016`
-  - **Added:** 2026-09-29
-  - **Trigger:** The G95C is connected with HDR enabled in macOS.
-  - **Source:** [Waking Isle plan — Maintainer decisions, M1](claudeville-opus55-xhigh-visual-plan.md#maintainer-decisions-settled-2026-09-28) and [10.2](claudeville-opus55-xhigh-visual-plan.md#102-tier-h-hdr-highlights-on-the-webgpu-presenter-ch-3).
-  - **Current status:** Open — blocked on hardware. The plan asked for ColorHDR's probe (`output/claudeville-opus55-xhigh-visual/tools/color-hdr-probe.mjs`, local only) to be re-run after the G95C switches to HDR, recording `dynamic-range`, `color-gamut` and EDR headroom before 10.2/10.3. The display was not connected, so 10.2/10.3 landed in `ee145a3` on the XDR alone: headed Chromium on the built-in XDR read EDR headroom 1 → 16 with HDR highlights on and back to 1 with the setting off (`output/waking-isle/HDR/xdr-check.json`, local only). On the G95C, record the three values, then check 10.2's acceptance there (headroom > 1 on a lit night scene, 1 with the setting off) at 5120×1440 DPR 1.
-
 - [ ] **Headed by-eye HDR and P3 judgement on the XDR**
 
   - **ID:** `OF-017`
@@ -238,6 +230,16 @@ art-director reviews raised outside its scope.
   - **Source:** [Waking Isle plan — Definition of done](claudeville-opus55-xhigh-visual-plan.md#definition-of-done) and [9.7](claudeville-opus55-xhigh-visual-plan.md#97-calm-dashboard-transitions-d2).
   - **Current status:** Open — stopped at the maintainer's request after the first receipts lane. Not run: the free-ladder 180 s soak (≥ 98 % FULL at 5120×1440 60 Hz, dense-24 and dense-100, OF-011's trigger); the deferred R1 receipts (rain re-price, particle depth, 2.1 A/B against `3e0d876`, 4.1 rest zooms); the post-M6 `gpu-burst` per-level check; the cold-shader-cache boot arm; and the 9.7b View Transition gate (W → D crossfade starting ≤ 150 ms on a quiet host, snapshot memory acceptable) — 9.7b stays unimplemented until it passes. The maintainer reports a flat 60 FPS in daily use with other load on the machine.
 ## Already landed; do not carry forward as open
+
+- [x] **Re-probe the G95C with HDR on**
+
+  - **ID:** `OF-016`
+  - **Added:** 2026-09-29
+  - **Last reviewed:** 2026-09-29
+  - **Trigger:** The G95C is connected with HDR enabled in macOS.
+  - **Source:** [Waking Isle plan — Maintainer decisions, M1](claudeville-opus55-xhigh-visual-plan.md#maintainer-decisions-settled-2026-09-28) and [10.2](claudeville-opus55-xhigh-visual-plan.md#102-tier-h-hdr-highlights-on-the-webgpu-presenter-ch-3).
+  - **Reopen when:** The G95C's HDR mode is turned off, or the headroom stops engaging with HDR highlights on.
+  - **Current status:** Closed — probed 2026-09-29 after `28ddff3`. `NSScreen` (`color-hdr-screens.swift`): Odyssey G95C, 5120×1440, backing scale 1, 60 Hz, potential EDR 10.15, P3 representable. Headed Chrome (system Chrome, Stage B default WebGPU, `many-waiting` 22:00, window at 5120×1440 DPR 1; Playwright launched without its forced sRGB profile): `dynamic-range: high` true, `color-gamut: p3` true; HDR highlights on → canvas `rgba16float` / `display-p3` / `extended`, EDR headroom 1 → 2.03; setting off → `bgra8unorm` / `standard`, headroom back to 1 within 6 s, and 1 on a fresh page with the setting off. 10.2's acceptance holds on the G95C. The current headroom (2.03) sits below the full mode's 2.5× mark gain, so full-mode marks clip at the panel's headroom while staying above the emitter cap (1.60). Evidence: `output/waking-isle/HDR/g95c-check-{modes,offpoll}.json` (local only).
 
 - [x] **WebGPU backend behind the WebGL2 fallback**
 
