@@ -1,35 +1,24 @@
 import {
     buildStableGpuBatches,
-    binGpuLights,
-    clampGpuLights,
-    createLightBinScratch,
     LIGHT_RECORD_FLAGS,
     LIGHT_RECORD_ROWS,
     LIGHT_ROLE_CODES,
     LIGHT_TILE_PX,
     LIGHT_TILE_STRIDE,
-    lightLaysColumn,
     MAX_LIGHT_RECORDS,
     WATER_COLUMN_REACH,
     createGpuTimingMetricsScratch,
     effectBudgetMode,
     shedEffectsForLevel,
     estimateGpuWorldTextureBytes,
-    gpuLightColorForShader,
-    isAttentionLight,
     localLightPhaseForLighting,
     selectGpuTimingMetrics,
     GRADE_GLSL,
     GRADE_UNIFORM_NAMES,
     uploadGradeUniforms,
-    buildCloudShadowTile,
-    cloudCoveredShare,
     CLOUD_TILE_SIZE,
     CLOUD_TILE_WORLD_SCALE,
-    CLOUD_FIELD_PERIOD,
     CLOUD_SECOND_OCTAVE,
-    sortedCloudField,
-    aerialPerspectiveStrength,
     EFFECT_BUDGET,
     GPU_PARTICLE_FLAGS,
     GPU_PARTICLE_INSTANCE_BYTES,
@@ -41,6 +30,40 @@ import {
     isSoftwareRasterizer,
     gpuRecordPageable,
 } from './GpuWorldPolicy.js';
+import {
+    cloudTile,
+    createAtmosphereCourses,
+    createBeamUniforms,
+    createLightFrameState,
+    createPuddleUniforms,
+    createSeaWeather,
+    createWaterFx,
+    LOCAL_LIGHT_VISIBILITY_FLOOR,
+    PALETTE_LUT_HEIGHT,
+    PALETTE_LUT_WIDTH,
+    resolveAtmosphereCourses,
+    resolveBeam,
+    resolveCamera,
+    resolveFatPixels,
+    resolveFrameGrade,
+    resolveLights,
+    resolveOccluderChannel,
+    resolvePaletteLut,
+    resolvePuddles,
+    resolveSeaWeather,
+    resolveWaterFx,
+    resolveWeatherUniform,
+} from './GpuFrameState.js';
+import {
+    createRecordStaging,
+    RECEIVER_BIAS,
+    RECORD_HEAD_BYTES,
+    RECORD_INSTANCE_BYTES,
+    RECORD_OFFSETS,
+    RECORD_TAIL_RECEIVER,
+    RECORD_TAIL_RESPONSE,
+    stageGpuRecords,
+} from './GpuRecordLayout.js';
 import { ALBEDO_PAGE_GUTTER, ALBEDO_PAGE_SIZE, GpuAlbedoPage } from './GpuAlbedoPage.js';
 import { buildRadianceEmitters, GroundRadiance, RADIANCE_MIN_SOLVE_MS, RADIANCE_SCENE_GLSL } from './GroundRadiance.js';
 import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
@@ -75,29 +98,35 @@ import {
 } from '../postfx/PostFxLadder.js';
 import { glslMaterialWeatherFunctions } from '../MaterialRegistry.js';
 import { NEUTRAL_SOURCE_ENERGY, sourceEnergyFor } from '../AtmosphereState.js';
-import { growTypedArray } from '../AssetManager.js';
+import {
+    columnMajor,
+    EMISSION_LUMA,
+    HDR_EMITTER_COURSE_LUMA,
+    HDR_HIGHLIGHTS_DEFAULT,
+    LINEAR_SRGB_FROM_OKLAB_LMS,
+    LMS_CBRT_FROM_OKLAB,
+    OKLAB_FROM_LMS_CBRT,
+    OKLAB_LMS_FROM_LINEAR_SRGB,
+    P3_ROLE_CHROMA,
+    resolveDisplayColor,
+    SRGB_TO_P3,
+} from '../DisplayColor.js';
 import { particleMotifMask } from '../ParticleSystem.js';
-import { baseWindX, cloudCourseDrift, gustinessFor, windAt } from '../Wind.js';
-import { CUE_RUN_GLSL, CUE_RUN_VERTICES, GROUND_CUE_TEXTURE_KEY } from '../GroundCueRecords.js';
+import { CUE_RUN_GLSL, CUE_RUN_VERTICES } from '../GroundCueRecords.js';
 import { GROUND_CAST_WATER_SHARE } from '../RakingLight.js';
 import { APERTURE_SPILL } from '../LightSourceRegistry.js';
 
-// 3.4 — the open sea's C-W3 gust field (R8, SEA_GUST_SIZE^2 over the view),
-// refreshed on SEA_GUST_STEP_MS steps of the motion clock (an 8 Hz band).
-const SEA_GUST_SIZE = 128;
-const SEA_GUST_STEP_MS = 125;
 const OPEN_SEA_ZERO4 = new Float32Array(4);
-const OPEN_SEA_ZERO6 = new Float32Array(6);
 
-// V5 / 2.1 — the resident loop's light role codes (light record row 1 w, fed
-// by PostFxFeed from LIGHT_ROLE_CODES): point (omni), aperture (lobed facade
-// emitter), fixture (free-standing lamp), attention (its owner only).
-const LIGHT_ROLE_POINT = LIGHT_ROLE_CODES.point;
+// V5 / 2.1 — the resident loop's attention light role code (light record
+// row 1 w, fed by PostFxFeed from LIGHT_ROLE_CODES: point (omni), aperture
+// (lobed facade emitter), fixture (free-standing lamp), attention (its
+// owner only)).
 const LIGHT_ROLE_ATTENTION = LIGHT_ROLE_CODES.attention;
 // 2.9 — the water column's shared ripple clock: the 4 Hz water step of the
 // reflection row ripple (u_time * 0.004 x the water clock; frozen at 0 under
 // reduced motion and at MINIMAL).
-const WATER_COLUMN_TICK_RATE = 0.004;
+export const WATER_COLUMN_TICK_RATE = 0.004;
 // 2.9 — the column's form (columnLift in SCENE_FRAGMENT, its Canvas twin in
 // CanvasWaterState): a row is present on a hashed draw thinning from
 // ROW_NEAR at the column's start to ROW_FAR at its end, re-drawn every
@@ -111,27 +140,7 @@ export const WATER_COLUMN_GLINT = 0.22;
 // plane with y doubled) a wall's ground point must stand to take its light:
 // clear of the 4 px height quantization of the surface code on the window's
 // own facade.
-const APERTURE_WALL_AHEAD = 8;
-const NO_LIGHTS = Object.freeze([]);
-
-// 2.4 — the light records and tile index upload only when they change.
-function sameLightRecords(next, prev, count, rowStride, prevCount) {
-    if (count !== prevCount) return false;
-    for (let row = 0; row < 4; row++) {
-        const start = row * rowStride;
-        for (let i = start; i < start + count * 4; i++) if (next[i] !== prev[i]) return false;
-    }
-    return true;
-}
-
-function sameTypedArray(a, b) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-    return true;
-}
-// 2.2 — the footprint march step count per ladder mode (the Canvas column
-// march in CanvasWaterState reads it too).
-export const FOOTPRINT_MARCH_STEPS = Object.freeze({ on: 8, 'four-steps': 4, off: 0 });
+export const APERTURE_WALL_AHEAD = 8;
 // 3.1 — dash presence of the palette cycle: near-shore swell and river
 // current dashes, and deep-stop swell dashes inside a set (storm raises both
 // to 0.7); SWELL_SET_SHARE of each deep crest's DEEP_CREST_RUN-texel runs
@@ -147,17 +156,16 @@ export const GLINT_DASH_DENSITY = 0.3;
 // 3.2 — water ticks (6 Hz) a moon-path dash holds before it re-rolls.
 export const MOON_DASH_HOLD = 6;
 // 3.2 — the pale day path (kind 2) is a broad sparse sparkle: its half-width
-// starts at this many texels and grows NOON_GLINT_GROW_GAIN x faster down
-// the frame than the gold and silver paths.
+// starts at this many texels and grows GpuFrameState NOON_GLINT_GROW_GAIN x
+// faster down the frame than the gold and silver paths.
 export const GLINT_NOON_BASE = 14;
-export const NOON_GLINT_GROW_GAIN = 2.5;
 // The pale path keeps its full dash density up to this many backing px per
 // world texel, and thins as 1/texelPx past it (z2 x0.75, z3 x0.5).
 export const NOON_GLINT_FULL_TEXEL = 1.5;
 // 3.3 / N3 — long swell contours (`seaContourRows`): lattice cell of the
 // smooth field (world px along x, y) and its amplitude (world rows).
-const SEA_CONTOUR_CELL = Object.freeze([520, 170]);
-const SEA_CONTOUR_ROWS = 14;
+export const SEA_CONTOUR_CELL = Object.freeze([520, 170]);
+export const SEA_CONTOUR_ROWS = 14;
 // 3.4 — a cat's paw: where the ruffled gust passes SEA_PAW_THRESHOLD, the
 // wind lays extra swell caps (`swellCap`): presence + SEA_PAW_CAP_BASE +
 // SEA_PAW_CAP_GAIN x gust, so a paw reads as a patch of wave caps in the
@@ -252,40 +260,13 @@ export const SEA_BODY_ROWS = Object.freeze([190, 350]);
 // The sea's shelf takes swell caps only this far (tiles) off the beach, so
 // the swash and the near-shore cycle keep the shore band to themselves.
 export const SWELL_SHORE_SD = 0.8;
-// 3.2 — the C1 `seaPath` ramp as (hi, lo) pairs per u_glint kind, 0..1:
-// 1 gold (sunrise / golden hour), 2 pale (day), 3 silver (moon).
-function seaPathPair(lo, hi) {
-    return [hi, lo].flatMap(hex => [1, 3, 5].map(at => parseInt(hex.slice(at, at + 2), 16) / 255));
-}
-const SEA_PATH_STOPS = Object.freeze({
-    1: Object.freeze(seaPathPair(ART_RAMPS.seaPath[0], ART_RAMPS.seaPath[1])),
-    2: Object.freeze(seaPathPair(ART_RAMPS.seaPath[2], ART_RAMPS.seaPath[3])),
-    3: Object.freeze(seaPathPair(ART_RAMPS.seaPath[4], ART_RAMPS.seaPath[5])),
-});
-// V9 / B.1a — one instance per record, drawn as a 4-vertex TRIANGLE_STRIP
-// with every attribute at divisor 1 (docs/material-channel-contract.md):
-//   loc0 FLOAT  x4  rect (x, y, w, h), world px                  bytes  0-15
-//   loc1 FLOAT  x4  uv rect (u0, v0, u1, v1); a paged record's rect is its
-//                   slot in its albedo-page layer                       16-31
-//   loc2 FLOAT  x4  (alpha, material, elevation, emissive)              32-47
-//   loc3 USHORT x4  (page layer, gate x 65535), ramp, flags             48-55
-//   loc4 USHORT x4  depth key, footY, frontCornerX, frontCornerY        56-63
-//                   (receiver coordinates integer world px + 32768)
-//   loc5 USHORT x2  (ownerSlot, landmarkId), vertexAttribIPointer        64-67
-// Continuous surface values stay float32, so the frame is bit-exact with the
-// six-vertex staging it replaced; the integer fields pack as uint16. A batch
-// whose records all carry the default V9 tail (loc3-loc5: layer 0, gate
-// 1, no ramp or flags, far-plane depth, ground-self receiver, no identity) —
-// terrain, ground casts and marks, every ground-cue chord — stages only the
-// 48-byte head; its draw disables arrays 3-5 and the vertex stage reads the
-// tail as constant generic attributes. WebGL2 has no base instance: every
-// batch re-points its attributes at its own byte range
+// V9 / B.1a — one instance per record (GpuRecordLayout: the 68-byte layout,
+// the head-only default tail, the shared staging), drawn as a 4-vertex
+// TRIANGLE_STRIP with every attribute at divisor 1; loc5 is read through
+// vertexAttribIPointer. A head-only batch's draw disables arrays 3-5 and the
+// vertex stage reads the tail as constant generic attributes. WebGL2 has no
+// base instance: every batch re-points its attributes at its own byte range
 // (`_pointRecordInstances`).
-const RECORD_HEAD_BYTES = 48;
-const RECORD_INSTANCE_BYTES = 68;
-const RECEIVER_BIAS = 32768;
-const RECORD_TAIL_RESPONSE = Object.freeze([0, 65535, 0, 0]);
-const RECORD_TAIL_RECEIVER = Object.freeze([0, RECEIVER_BIAS - 1, RECEIVER_BIAS, RECEIVER_BIAS - 1]);
 const SCENE_DEPTH_BYTES_PER_PIXEL = EFFECT_BUDGET['particle-depth'].cost.attachmentBytesPerPixel;
 // V9 sampler table: one fixed texture unit per field per program, never
 // reassigned (WebGL2 guarantees 16 fragment units). A `reserved` unit is held
@@ -329,7 +310,7 @@ const TEXTURE_FORMATS = Object.freeze({
 });
 // 0.6 — an emissive particle's bloom share, scaled by the same source-energy
 // core as authored emission (fire props without a sidecar sit at 0.35).
-const PARTICLE_EMISSION = 0.5;
+export const PARTICLE_EMISSION = 0.5;
 // The app caps live particles at 240 (ParticleSystem MAX_PARTICLES).
 const MAX_PARTICLE_INSTANCES = 240;
 const BLOOM_SCALE = 0.375;
@@ -345,16 +326,12 @@ const EMA_ALPHA = 0.1;
 // agent atlases (0.7 k² slots: 1.9 MB each; 4.7 walk strips at 840x3080:
 // 9.9 MB each, three channels) = 105-111 MB at dense-100 / readme-showcase,
 // 134-137 MB at dense-24 (2560 and 5120 wide).
-const PALETTE_LUT_WIDTH = 11;
-const PALETTE_LUT_HEIGHT = 3;
 const PALETTE_LUT_BYTES = PALETTE_LUT_WIDTH * PALETTE_LUT_HEIGHT * 4;
 const SPILL_FIELD_WIDTH = 256;
 const SPILL_FIELD_HEIGHT = 144;
 const SPILL_FIELD_BYTES = SPILL_FIELD_WIDTH * SPILL_FIELD_HEIGHT * 4 * 2;
 const MAX_CACHED_TEXTURE_BYTES = 160 * 1024 * 1024 - PALETTE_LUT_BYTES - SPILL_FIELD_BYTES;
 const MAX_CACHED_TEXTURES = 512;
-const LOCAL_LIGHT_VISIBILITY_FLOOR = 0.04;
-const DEFAULT_LIGHT_COLOR = Object.freeze([1, 0.78, 0.42]);
 const GPU_PASS_NAMES = ['upload', 'scene', 'bloom', 'present'];
 const PASS_RING_CAPACITY = 32;
 // 0.1 — the whole-frame GPU timer is a veto, not a clock. It is begun on 1
@@ -382,70 +359,6 @@ void main() {
     g = pow(max(g, vec3(0.0)), vec3(1.08));
     outColor = vec4(max(g - vec3(4.0), vec3(0.0)), 0.0);
 }`;
-
-function unitToUint16(value) {
-    const number = Number(value);
-    if (!(number > 0)) return 0;
-    return number >= 1 ? 65535 : Math.round(number * 65535);
-}
-
-function receiverToUint16(value) {
-    const number = Math.round(Number(value)) + RECEIVER_BIAS;
-    if (!(number > 0)) return 0;
-    return number >= 65535 ? 65535 : number;
-}
-
-// True when a record's V9 tail (loc3-loc5) is all defaults, so its batch may
-// stage the head alone.
-function recordHasDefaultTail(record) {
-    return (record.emissiveGate ?? 1) >= 1
-        && !record.paletteRamp
-        && !record.flags
-        && !record.depthKey
-        && (record.footY ?? -1) === -1
-        && !record.frontCornerX
-        && (record.frontCornerY ?? -1) === -1
-        && !record.ownerSlot
-        && !record.landmarkId
-        && !(record.pageLayer > 0);
-}
-
-// One V9 instance at `byteOffset`; `tail` false stages the 48-byte head only.
-// The float and uint16 views share one ArrayBuffer.
-function writeGpuRecordInstance(f32, u16, byteOffset, record, tail) {
-    const f = byteOffset >> 2;
-    // B.1b — a paged record addresses its slot in a page layer.
-    const paged = record.pageLayer >= 0;
-    const sourceWidth = paged ? ALBEDO_PAGE_SIZE : record.sourceWidth;
-    const sourceHeight = paged ? ALBEDO_PAGE_SIZE : record.sourceHeight;
-    const sx = paged ? record.pageX + record.sx : record.sx;
-    const sy = paged ? record.pageY + record.sy : record.sy;
-    f32[f] = record.x;
-    f32[f + 1] = record.y;
-    f32[f + 2] = record.width;
-    f32[f + 3] = record.height;
-    f32[f + 4] = sx / sourceWidth;
-    f32[f + 5] = sy / sourceHeight;
-    f32[f + 6] = (sx + record.sw) / sourceWidth;
-    f32[f + 7] = (sy + record.sh) / sourceHeight;
-    f32[f + 8] = record.alpha;
-    f32[f + 9] = record.material;
-    f32[f + 10] = record.elevation;
-    f32[f + 11] = record.emissive;
-    if (!tail) return;
-    const h = (byteOffset >> 1) + RECORD_HEAD_BYTES / 2;
-    // loc3.x — the record's albedo-page layer (0 when unpaged).
-    u16[h] = paged ? record.pageLayer : 0;
-    u16[h + 1] = unitToUint16(record.emissiveGate ?? 1);
-    u16[h + 2] = record.paletteRamp ? 1 : 0;
-    u16[h + 3] = record.flags || 0;
-    u16[h + 4] = record.depthKey || 0;
-    u16[h + 5] = receiverToUint16(record.footY ?? -1);
-    u16[h + 6] = receiverToUint16(record.frontCornerX ?? 0);
-    u16[h + 7] = receiverToUint16(record.frontCornerY ?? -1);
-    u16[h + 8] = record.ownerSlot || 0;
-    u16[h + 9] = record.landmarkId || 0;
-}
 
 // The shared record vertex stage.
 function quadVertexSource() {
@@ -509,7 +422,12 @@ void main() {
     float reflectBase = rect.y + rect.w;
     if (mirrored) world.y = 2.0 * reflectBase - world.y;
     v_reflect = mirrored ? vec2(reflectBase, rect.w) : vec2(0.0);
-    vec2 screen = (world + u_camera.xy) * u_camera.z;
+    // V9 \`screenSpace\` (Wave 10 S5) — the rect is already in backing pixels
+    // (top-left origin): it passes straight through, never world->screen, so
+    // camera pan and zoom cannot move it. Only the T1 mark pass draws such
+    // records; their v_world is that backing position (no world shading).
+    bool screenSpace = (flags & ${GPU_RECORD_FLAGS.screenSpace}u) != 0u;
+    vec2 screen = screenSpace ? world : (world + u_camera.xy) * u_camera.z;
     vec2 clip = vec2(
         screen.x / max(1.0, u_resolution.x) * 2.0 - 1.0,
         1.0 - screen.y / max(1.0, u_resolution.y) * 2.0
@@ -528,7 +446,7 @@ void main() {
     // origin, so a body resting between world texels (the backing-pixel grid)
     // still lights in whole k x k blocks. Ground-self records (footY -1:
     // terrain, casts, marks, cues) and screen-space records keep the world grid.
-    bool worldGrid = (flags & ${GPU_RECORD_FLAGS.screenSpace}u) != 0u || a_receiver.y == ${RECEIVER_BIAS - 1}.0;
+    bool worldGrid = screenSpace || a_receiver.y == ${RECEIVER_BIAS - 1}.0;
     v_originFrac = worldGrid ? vec2(0.0) : fract(rect.xy);
     // The record-rect clamp: sampling never leaves the record's own source
     // rect (atlas neighbours), inset half a texel but never past its centre.
@@ -710,7 +628,7 @@ float glintDash(vec2 p, vec2 fragPx, vec4 glint, float texelPx, float tick) {
     if (glint.z < 0.5 || glint.y <= 0.0) return 0.0;
     bool moon = glint.z > 2.5;
     // The pale day path is a broad sparse sparkle (3.2): a wider base under a
-    // high sun (its grow rate is wider too, see _resolveWaterFx), thinning as
+    // high sun (its grow rate is wider too, see GpuFrameState resolveWaterFx), thinning as
     // texels grow past NOON_GLINT_FULL_TEXEL backing px, so a close zoom shows
     // single glints, not a field of dashes.
     bool pale = glint.z > 1.5 && !moon;
@@ -2716,10 +2634,6 @@ void main() {
     outColor = sum;
 }`;
 
-// 2.7 — the Lighthouse fan's half-width at the lamp's foot (ground px); the
-// rest of its shape, sweep and sheen step come from lighthouseBeam.
-export const BEAM_NEAR_HALF_WIDTH = 6;
-
 // 3.3 / 3.4 / 3.2 (outer) — the open sea. Every scene.a < 1 pixel below the
 // horizon is shaded here on the world texel grid, under whatever the scene
 // drew, with the in-map water's own pipeline so the two meet without a seam
@@ -2878,6 +2792,25 @@ vec3 shadeOpenSea(vec2 cell) {
     return applyAerialHaze(c, order, (cell.y + 0.5 + seaContourRows(cell) + u_camera.y) * u_camera.z, false);
 }`;
 
+// Wave 10 S5 / T1 (contract §7.4) — the attention-mark pass: the V9 mark
+// records (AttentionPlates `attentionMarkRecords`, flag screenSpace, rects in
+// backing pixels) drawn after the composite onto the presented frame, so no
+// grade, fog, flash, bloom or particle ever touches them, exactly like the
+// ungraded overlay they replace. Every mark texel is opaque or empty, so the
+// premultiplied source-over leaves the texel's own bytes (or the frame). The
+// §7.1 role rides the record flags (actionMark = role 2); 10.2's mark gain
+// applies here, per record — the SDR frame writes the texel unchanged.
+const MARK_FRAGMENT = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+flat in vec4 v_uvClamp;
+layout(location = 0) out vec4 outColor;
+uniform sampler2D u_albedo;
+void main() {
+    vec4 texel = texture(u_albedo, clamp(v_uv, v_uvClamp.xy, v_uvClamp.zw));
+    outColor = vec4(texel.rgb * texel.a, texel.a);
+}`;
+
 const COMPOSITE_FRAGMENT = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -2935,6 +2868,81 @@ void main() {
     color *= vec3(1.0) + u_flash;
     outColor = vec4(color + bloom * u_bloomStrength, alpha);
 }`;
+
+// 10.3 (contract §7.5) — the P3 twins of the composite and the mark pass,
+// derived from the shipped sources (which stay untouched: an sRGB screen
+// never compiles these). The end of the frame becomes Display P3 numbers for
+// the same colour (`drawingBufferColorSpace = 'display-p3'`); role-1 pixels
+// (the emission MRT's alpha is the batch role, as on WebGPU: a building/prop
+// emitter batch with an authored emissive sidecar, never a character) on an
+// emitter course (luma >= 0.10) and action-needed mark records gain OKLab
+// chroma x1.22 at their own lightness and hue. HDR never reaches WebGL (no
+// drawing-buffer tone mapping).
+const P3_EMISSION_UNIT = 4;
+const DISPLAY_COLOR_GLSL = `
+const mat3 SRGB_TO_P3 = mat3(${columnMajor(SRGB_TO_P3)});
+const mat3 OKLAB_LMS = mat3(${columnMajor(OKLAB_LMS_FROM_LINEAR_SRGB, 10)});
+const mat3 OKLAB_LAB = mat3(${columnMajor(OKLAB_FROM_LMS_CBRT, 10)});
+const mat3 OKLAB_LMS_INV = mat3(${columnMajor(LMS_CBRT_FROM_OKLAB, 10)});
+const mat3 OKLAB_RGB = mat3(${columnMajor(LINEAR_SRGB_FROM_OKLAB_LMS, 10)});
+const vec3 EMISSION_LUMA = vec3(${EMISSION_LUMA.join(', ')});
+const float EMISSION_COURSE_LUMA = ${HDR_EMITTER_COURSE_LUMA[0].toFixed(2)};
+const float P3_ROLE_CHROMA = ${P3_ROLE_CHROMA.toFixed(2)};
+vec3 srgbEotf(vec3 c) { return mix(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, vec3(lessThanEqual(c, vec3(0.04045)))); }
+vec3 srgbOetf(vec3 c) {
+    c = max(c, vec3(0.0));
+    return mix(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, 12.92 * c, vec3(lessThanEqual(c, vec3(0.0031308))));
+}
+vec3 oklabFromLinearSrgb(vec3 c) {
+    vec3 lms = OKLAB_LMS * c;
+    return OKLAB_LAB * (sign(lms) * pow(abs(lms), vec3(1.0 / 3.0)));
+}
+vec3 p3FromOklab(vec3 lab) {
+    vec3 lms = OKLAB_LMS_INV * lab;
+    return SRGB_TO_P3 * (OKLAB_RGB * (lms * lms * lms));
+}
+bool outsideUnit(vec3 c) { return any(lessThan(c, vec3(-1e-4))) || any(greaterThan(c, vec3(1.0 + 1e-4))); }
+vec3 p3RoleChroma(vec3 lin) {
+    vec3 lab = oklabFromLinearSrgb(lin);
+    vec3 p3 = p3FromOklab(vec3(lab.x, lab.yz * P3_ROLE_CHROMA));
+    if (outsideUnit(p3)) {
+        p3 = SRGB_TO_P3 * lin;
+        float lo = 1.0;
+        float hi = P3_ROLE_CHROMA;
+        for (int i = 0; i < 8; i++) {
+            float mid = 0.5 * (lo + hi);
+            vec3 t = p3FromOklab(vec3(lab.x, lab.yz * mid));
+            if (outsideUnit(t)) { hi = mid; } else { lo = mid; p3 = t; }
+        }
+    }
+    return clamp(p3, vec3(0.0), vec3(1.0));
+}
+`;
+
+function p3Twin(source, declarations, finalLine, tail) {
+    if (source.split(finalLine).length !== 2 || source.split('void main() {').length !== 2) {
+        throw new Error('P3 twin: the shipped shader changed shape');
+    }
+    return source.replace('void main() {', `${declarations}${DISPLAY_COLOR_GLSL}void main() {`).replace(finalLine, tail);
+}
+
+const COMPOSITE_P3_FRAGMENT = p3Twin(COMPOSITE_FRAGMENT,
+    'uniform sampler2D u_emission;\nuniform bool u_roles;\n',
+    '    outColor = vec4(color + bloom * u_bloomStrength, alpha);',
+    `    vec3 rgb = clamp(color + bloom * u_bloomStrength, 0.0, 1.0);
+    float a = clamp(alpha, 0.0, 1.0);
+    vec3 lin = srgbEotf(rgb / max(a, 1.0 / 255.0));
+    vec4 emission = texture(u_emission, clamp(v_uv, vec2(0.0), vec2(1.0)));
+    bool role = u_roles && emission.a >= 0.5 && dot(emission.rgb, EMISSION_LUMA) >= EMISSION_COURSE_LUMA;
+    lin = role ? p3RoleChroma(lin) : SRGB_TO_P3 * lin;
+    outColor = vec4(srgbOetf(lin) * a, a);`);
+
+const MARK_P3_FRAGMENT = p3Twin(MARK_FRAGMENT,
+    'flat in uint v_flags;\n',
+    '    outColor = vec4(texel.rgb * texel.a, texel.a);',
+    `    vec3 lin = srgbEotf(texel.rgb);
+    lin = (v_flags & ${GPU_RECORD_FLAGS.actionMark}u) != 0u ? p3RoleChroma(lin) : SRGB_TO_P3 * lin;
+    outColor = vec4(srgbOetf(lin) * texel.a, texel.a);`);
 
 // 0.6 — one instanced draw for every live world particle, after the record
 // loop, depth-tested LEQUAL against the painter depth the sprite records
@@ -3057,13 +3065,6 @@ function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
 
-// `#rrggbb` → [r, g, b] in 0..1, or `fallback` for anything else.
-function hexRgb01(hex, fallback) {
-    const text = String(hex || '');
-    if (!/^#[0-9a-f]{6}$/i.test(text)) return fallback;
-    return [1, 3, 5].map(index => parseInt(text.slice(index, index + 2), 16) / 255);
-}
-
 function ema(previous, sample) {
     const value = Math.max(0, finite(sample));
     return previous == null ? value : previous + (value - previous) * EMA_ALPHA;
@@ -3105,47 +3106,6 @@ function uniformLocations(gl, program, names) {
     }, {});
 }
 
-function frameGrade(feed = {}) {
-    return feed.atmosphere?.lightGrade || feed.lightGrade || NEUTRAL_GRADE;
-}
-
-// The baked tile plus the combined field's sorted values (3.4: two octaves
-// of the tile, CLOUD_SECOND_OCTAVE), so a cover fraction maps to an exact
-// noise threshold (the covered share of the ground equals the cover).
-let _cloudTile = null;
-function cloudTile() {
-    if (_cloudTile) return _cloudTile;
-    const data = buildCloudShadowTile(CLOUD_TILE_SIZE);
-    _cloudTile = { data, sorted: sortedCloudField(data, CLOUD_TILE_SIZE) };
-    return _cloudTile;
-}
-
-function cloudThreshold(coveredShare) {
-    const { sorted } = cloudTile();
-    const index = Math.round(clamp(1 - coveredShare, 0, 1) * (sorted.length - 1));
-    return sorted[index];
-}
-
-function weatherUniform(feed = {}) {
-    const weather = feed.weather || feed.atmosphere?.weather || {};
-    const type = String(weather.type || 'clear');
-    const rainy = type === 'rain' || type === 'storm' || type === 'overcast';
-    return [
-        rainy ? clamp(finite(weather.precipitation, weather.intensity), 0, 1) : 0,
-        clamp(finite(weather.fog, type === 'storm' ? 0.35 : 0), 0, 1),
-        type === 'storm' ? 1 : 0,
-        clamp(finite(weather.intensity), 0, 1),
-    ];
-}
-
-// 2.2 — the occluder companions (2.3's surface code, fog elevation) upload
-// whenever the local-light phase is up, at every ladder level (MINIMAL still
-// ships its lights), or while fog reads their height; never on a clear day.
-function occluderChannelFor(feed = {}) {
-    return localLightPhaseForLighting(feed.lighting) > LOCAL_LIGHT_VISIBILITY_FLOOR
-        || weatherUniform(feed)[1] !== 0;
-}
-
 export class GpuWorldRenderer {
     constructor(canvas, { enabled = true } = {}) {
         this.canvas = canvas || null;
@@ -3159,6 +3119,12 @@ export class GpuWorldRenderer {
         this.frames = 0;
         this.records = 0;
         this.batches = 0;
+        // Wave 10 S5 — T1 mark records drawn this frame (and those with role 2).
+        this.markRecords = 0;
+        this.markRoleRecords = 0;
+        // 10.2 — the late mark pass this frame (the C4 verified-success peak).
+        this.lateMarkRecords = 0;
+        this.lateMarkRoleRecords = 0;
         this.lightCount = 0;
         this.sourceEnergy = NEUTRAL_SOURCE_ENERGY;
         this.wetReflectionCount = 0;
@@ -3218,10 +3184,9 @@ export class GpuWorldRenderer {
         // 2.4 — admission counters for Shift-D: `offered` lights on screen,
         // `admitted`, and why the rest were not (`overCap`: past the ladder
         // count, `tileFull`: a tile they reach had 16 lights), plus the walk.
-        this.lightAdmission = {
-            cap: 0, admitted: 0, offered: 0, culled: 0, overCap: 0, tileFull: 0, maxPerTile: 0,
-            clusters: false, tiles: 0, daylight: true,
-        };
+        // GpuFrameState.resolveLights fills this block every frame.
+        this._lightFrame = createLightFrameState();
+        this.lightAdmission = this._lightFrame.admission;
         // 2.4 — the Phase 5 A/B switch: true / false forces the clustered or
         // the flat walk; null follows EFFECT_BUDGET `light-clusters`.
         this.lightClusterOverride = null;
@@ -3246,9 +3211,9 @@ export class GpuWorldRenderer {
         this._cachedTextureBytes = 0;
         this._textureCacheNeedsTrim = false;
         this._lastTextureTrimFrame = 0;
-        // V9 instance staging: one ArrayBuffer seen as float32 and uint16.
-        this._instanceF32 = new Float32Array(64);
-        this._instanceU16 = new Uint16Array(this._instanceF32.buffer);
+        // V9 instance staging (GpuRecordLayout): one ArrayBuffer seen as
+        // float32 and uint16.
+        this._recordStaging = createRecordStaging();
         this._vertexScratchUsed = 0;
         this.vertexBufferBytes = 0;
         this._pointedInstance = -1;
@@ -3276,19 +3241,16 @@ export class GpuWorldRenderer {
                 : null
         );
         this._normalizedRecordScratch = [];
-        this._lightAdmissionCache = { source: null, sourceLength: 0, ranked: [], admitted: [], snapshots: [] };
-        this._singleLightColorScratch = [0, 0, 0];
-        // 2.4 — the admitted lights' RGBA32F records (unit 9: LIGHT_RECORD_ROWS
-        // rows x MAX_LIGHT_RECORDS) and the binning that admits them and
-        // fills the R16UI tile index (unit 10). Uploaded only on change.
-        this._lightBins = createLightBinScratch();
-        this._lightRecords = new Float32Array(MAX_LIGHT_RECORDS * LIGHT_RECORD_ROWS * 4);
-        this._lightRecordsPrev = new Float32Array(MAX_LIGHT_RECORDS * LIGHT_RECORD_ROWS * 4);
-        this._lightRecordsRevision = 0;
-        this._lightRecordsCount = -1;
-        this._lightTilesPrev = new Uint16Array(0);
-        this._lightTilesRevision = 0;
+        // GpuFrameState scratch, filled once per frame by its resolvers (the
+        // light records and tile index live in `_lightFrame`, uploaded to
+        // units 9 and 10 only on a revision change).
         this._lightTilesEmpty = new Uint16Array(1);
+        this._camera = { xy: [0, 0], scale: 0 };
+        this._waterFx = createWaterFx();
+        this._atmosphereCourses = createAtmosphereCourses();
+        this._seaWeather = createSeaWeather();
+        this._beam = createBeamUniforms();
+        this._puddles = createPuddleUniforms();
         this.cloudCourses = 0;
         this.aerialHaze = 0;
         this.footprintMarchSteps = 0;
@@ -3322,6 +3284,23 @@ export class GpuWorldRenderer {
                 this.contextHealthy = false;
             }
         };
+        // 10.2 / 10.3 — the display path. WebGL never presents HDR (the
+        // setting is only reported); P3 swaps in the P3 twins and the
+        // display-p3 drawing buffer (DisplayColor.resolveDisplayColor).
+        this.hdrMode = HDR_HIGHLIGHTS_DEFAULT;
+        this.dynamicRangeHigh = false;
+        this.colorGamutP3 = false;
+        this._displayWant = resolveDisplayColor({ backend: 'webgl' });
+        this._p3 = false;
+        // 10.3 — the scene pass staged batch roles in the emission MRT's
+        // alpha this frame (`_roleBlend`: OES_draw_buffers_indexed, fetched
+        // with the P3 twins; without it no pixel is a role pixel).
+        this._rolesWritten = false;
+        this._roleBlend = null;
+        this.compositeP3Program = null;
+        this.compositeP3Uniforms = null;
+        this.markP3Program = null;
+        this.markP3Uniforms = null;
 
         if (!canvas?.getContext) return;
         canvas.addEventListener?.('webglcontextlost', this._onContextLost, false);
@@ -3355,6 +3334,7 @@ export class GpuWorldRenderer {
         this.particleProgram = createProgram(gl, PARTICLE_VERTEX, PARTICLE_FRAGMENT);
         this.bloomProgram = createProgram(gl, FULLSCREEN_VERTEX, BLOOM_FRAGMENT);
         this.compositeProgram = createProgram(gl, FULLSCREEN_VERTEX, COMPOSITE_FRAGMENT);
+        this.markProgram = createProgram(gl, QUAD_VERTEX, MARK_FRAGMENT);
         this.timerExtension = gl.getExtension?.('EXT_disjoint_timer_query_webgl2') || null;
         this.sceneUniforms = uniformLocations(gl, this.sceneProgram, [
             'u_camera', 'u_resolution', 'u_fatPixels', 'u_albedo', 'u_albedoPage', 'u_albedoPaged', 'u_materialMap', 'u_emissiveMap',
@@ -3387,6 +3367,9 @@ export class GpuWorldRenderer {
             'u_seaSunBand', 'u_fogColor', 'u_seaHaze', 'u_seaSky', 'u_seaSunlit',
             'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall', 'u_fatPixels',
         ]);
+        this.markUniforms = uniformLocations(gl, this.markProgram, [
+            'u_resolution', 'u_albedo', 'u_albedoPage',
+        ]);
         // V9 record VAO: six instance attributes (divisor 1), re-pointed per
         // batch by `_pointRecordInstances`; the strip corner is gl_VertexID.
         this.vao = gl.createVertexArray();
@@ -3399,6 +3382,17 @@ export class GpuWorldRenderer {
         gl.bindVertexArray(null);
         this._pointedInstance = -1;
         this._recordTailArrays = true;
+        // T1 mark VAO: the same six V9 attributes over the mark pass's own
+        // buffer, full 68-byte records (every mark carries its flags).
+        this.markVao = gl.createVertexArray();
+        this.markBuffer = gl.createBuffer();
+        this.markBufferBytes = 0;
+        gl.bindVertexArray(this.markVao);
+        for (let location = 0; location <= 5; location++) {
+            gl.enableVertexAttribArray(location);
+            gl.vertexAttribDivisor(location, 1);
+        }
+        gl.bindVertexArray(null);
         // 0.6 particle VAO: one static layout over its own small buffer.
         this.particleVao = gl.createVertexArray();
         this.particleBuffer = gl.createBuffer();
@@ -3637,9 +3631,14 @@ export class GpuWorldRenderer {
         if (this.vao) gl.deleteVertexArray(this.vao);
         if (this.particleBuffer) gl.deleteBuffer(this.particleBuffer);
         if (this.particleVao) gl.deleteVertexArray(this.particleVao);
-        for (const program of [this.sceneProgram, this.particleProgram, this.bloomProgram, this.compositeProgram]) {
+        if (this.markBuffer) gl.deleteBuffer(this.markBuffer);
+        if (this.markVao) gl.deleteVertexArray(this.markVao);
+        for (const program of [this.sceneProgram, this.particleProgram, this.bloomProgram, this.compositeProgram, this.markProgram, this.compositeP3Program, this.markP3Program]) {
             if (program) gl.deleteProgram(program);
         }
+        this.compositeP3Program = null;
+        this.markP3Program = null;
+        this._roleBlend = null;
         this.emptyMaterialTexture = null;
         this.cloudTileTexture = null;
         this.vertexBuffer = null;
@@ -3650,6 +3649,10 @@ export class GpuWorldRenderer {
         this.particleProgram = null;
         this.bloomProgram = null;
         this.compositeProgram = null;
+        this.markProgram = null;
+        this.markBuffer = null;
+        this.markVao = null;
+        this.markBufferBytes = 0;
         this._pointedInstance = -1;
         this._particleMotifTexture = null;
         // The next _initResources creates a zero-size VBO; a stale capacity
@@ -3678,6 +3681,13 @@ export class GpuWorldRenderer {
         this.particleProgram = null;
         this.bloomProgram = null;
         this.compositeProgram = null;
+        this.markProgram = null;
+        this.compositeP3Program = null;
+        this.markP3Program = null;
+        this._roleBlend = null;
+        this.markBuffer = null;
+        this.markVao = null;
+        this.markBufferBytes = 0;
         this._pointedInstance = -1;
         this._particleMotifTexture = null;
         this.textureBytes = 0;
@@ -3770,6 +3780,13 @@ export class GpuWorldRenderer {
 
     resume() {
         if (this.disposed || !this.suspended || !this.gl) return this.isActive();
+        if (this.gl.isContextLost?.()) {
+            // Resumed while the context is lost (a GPU-process crash): the
+            // pending `webglcontextrestored` rebuilds an unsuspended world.
+            this.suspended = false;
+            this.contextHealthy = false;
+            return false;
+        }
         try {
             this.suspended = false;
             this._initResources();
@@ -4071,41 +4088,12 @@ export class GpuWorldRenderer {
     }
 
     // V9 / B.1a — one instance per record, every batch in one buffer at its
-    // own byte offset: 68 bytes, or the 48-byte head alone when every record
-    // of the batch has the default tail.
+    // own byte offset (GpuRecordLayout.stageGpuRecords): 68 bytes, or the
+    // 48-byte head alone when every record of the batch has the default tail.
     _stageFrameVertices(batches) {
-        let byteLength = 0;
-        for (let index = 0; index < batches.length; index++) {
-            const batch = batches[index];
-            const records = batch.records;
-            let tail = false;
-            for (let recordIndex = 0; !tail && recordIndex < records.length; recordIndex++) {
-                tail = !recordHasDefaultTail(records[recordIndex]);
-            }
-            batch.tail = tail;
-            // B.3 — plain ground-cue records keep the default tail, so a cue
-            // batch with a tail holds dot runs (flag cueRun).
-            batch.cueRuns = tail && batch.textureKey === GROUND_CUE_TEXTURE_KEY;
-            batch.instanceOffset = byteLength;
-            batch.count = records.length;
-            byteLength += records.length * (tail ? RECORD_INSTANCE_BYTES : RECORD_HEAD_BYTES);
-        }
+        const staging = this._recordStaging;
+        const byteLength = stageGpuRecords(batches, staging);
         const floats = byteLength / Float32Array.BYTES_PER_ELEMENT;
-        const grown = growTypedArray(Float32Array, this._instanceF32, floats, 64);
-        if (grown !== this._instanceF32) {
-            this._instanceF32 = grown;
-            this._instanceU16 = new Uint16Array(grown.buffer);
-        }
-        const f32 = this._instanceF32;
-        const u16 = this._instanceU16;
-        for (let index = 0; index < batches.length; index++) {
-            const batch = batches[index];
-            const records = batch.records;
-            const stride = batch.tail ? RECORD_INSTANCE_BYTES : RECORD_HEAD_BYTES;
-            for (let recordIndex = 0; recordIndex < records.length; recordIndex++) {
-                writeGpuRecordInstance(f32, u16, batch.instanceOffset + recordIndex * stride, records[recordIndex], batch.tail);
-            }
-        }
         this._vertexScratchUsed = floats;
         const gl = this.gl;
         gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
@@ -4114,7 +4102,7 @@ export class GpuWorldRenderer {
             gl.bufferData(gl.ARRAY_BUFFER, byteLength, gl.DYNAMIC_DRAW);
             this.vertexBufferBytes = byteLength;
         }
-        gl.bufferSubData(gl.ARRAY_BUFFER, 0, f32, 0, floats);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, staging.f32, 0, floats);
         this._pointedInstance = -1;
     }
 
@@ -4127,17 +4115,17 @@ export class GpuWorldRenderer {
         if (this._pointedInstance === offset) return;
         const gl = this.gl;
         const stride = batch.tail ? RECORD_INSTANCE_BYTES : RECORD_HEAD_BYTES;
-        gl.vertexAttribPointer(0, 4, gl.FLOAT, false, stride, offset);
-        gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, offset + 16);
-        gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, offset + 32);
+        gl.vertexAttribPointer(0, 4, gl.FLOAT, false, stride, offset + RECORD_OFFSETS.loc0);
+        gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, offset + RECORD_OFFSETS.loc1);
+        gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, offset + RECORD_OFFSETS.loc2);
         if (batch.tail) {
             if (!this._recordTailArrays) {
                 for (let location = 3; location <= 5; location++) gl.enableVertexAttribArray(location);
                 this._recordTailArrays = true;
             }
-            gl.vertexAttribPointer(3, 4, gl.UNSIGNED_SHORT, false, stride, offset + 48);
-            gl.vertexAttribPointer(4, 4, gl.UNSIGNED_SHORT, false, stride, offset + 56);
-            gl.vertexAttribIPointer(5, 2, gl.UNSIGNED_SHORT, stride, offset + 64);
+            gl.vertexAttribPointer(3, 4, gl.UNSIGNED_SHORT, false, stride, offset + RECORD_OFFSETS.loc3);
+            gl.vertexAttribPointer(4, 4, gl.UNSIGNED_SHORT, false, stride, offset + RECORD_OFFSETS.loc4);
+            gl.vertexAttribIPointer(5, 2, gl.UNSIGNED_SHORT, stride, offset + RECORD_OFFSETS.loc5);
         } else if (this._recordTailArrays !== false) {
             for (let location = 3; location <= 5; location++) gl.disableVertexAttribArray(location);
             gl.vertexAttrib4fv(3, RECORD_TAIL_RESPONSE);
@@ -4148,34 +4136,13 @@ export class GpuWorldRenderer {
         this._pointedInstance = offset;
     }
 
-    // 4.6 (PT-5) — the GL layer's camera: Camera.renderOffsetGpuX/Y (the
-    // unrounded offset on a flight frame at k >= 2, else the rounded one), in
-    // world px, and the backing scale. `_cameraUniform` keeps the exact triple
-    // uploaded for CPU consumers (2.4's light tiles, the fallback light lift).
+    // 4.6 (PT-5) — the GL layer's camera (GpuFrameState.resolveCamera).
+    // `_camera` keeps the exact values uploaded for CPU consumers (2.4's
+    // light tiles).
     _setCameraUniforms(uniforms, camera, scale = 1) {
-        const dpr = Math.max(0.25, finite(camera?._dpr?.(), 1));
-        const zoom = Math.max(0.01, finite(camera?.zoom, 1));
-        const rounded = (value) => Math.round(finite(value) * zoom * dpr) / dpr;
-        const cam = this._cameraUniform || (this._cameraUniform = [0, 0, 0]);
-        cam[0] = finite(camera?.renderOffsetGpuX, finite(camera?.renderOffsetX, rounded(camera?.x))) / zoom;
-        cam[1] = finite(camera?.renderOffsetGpuY, finite(camera?.renderOffsetY, rounded(camera?.y))) / zoom;
-        cam[2] = zoom * dpr * scale;
-        this.gl.uniform3f(uniforms.u_camera, cam[0], cam[1], cam[2]);
-    }
-
-    // 4.6 (PT-2) — a flight frame samples fat pixels: exactly when the backing
-    // scale k = zoom × dpr or the GL camera offset (in backing px) is
-    // fractional. Resting frames keep today's nearest path untouched.
-    // `fatPixelsOverride` (true / false; null = derived) forces the gate for
-    // the byte-identity A/B.
-    _resolveFatPixels(camera) {
-        if (typeof this.fatPixelsOverride === 'boolean') return this.fatPixelsOverride;
-        const dpr = Math.max(0.25, finite(camera?._dpr?.(), 1));
-        const zoom = Math.max(0.01, finite(camera?.zoom, 1));
-        const fractional = (value) => Math.abs(value - Math.round(value)) > 1e-4;
-        const offsetX = finite(camera?.renderOffsetGpuX, finite(camera?.renderOffsetX, 0)) * dpr;
-        const offsetY = finite(camera?.renderOffsetGpuY, finite(camera?.renderOffsetY, 0)) * dpr;
-        return fractional(zoom * dpr) || fractional(offsetX) || fractional(offsetY);
+        const view = resolveCamera(camera, scale, this._camera);
+        this._camera = view;
+        this.gl.uniform3f(uniforms.u_camera, view.xy[0], view.xy[1], view.scale);
     }
 
     // Resolve (and, when a revision moved, upload) every channel texture for
@@ -4287,67 +4254,6 @@ export class GpuWorldRenderer {
         return batch.records.length;
     }
 
-    // 3.1 / 3.2 / 3.6 / 3.9 / 3.10 — per-frame water state from the clock,
-    // the village's own weather and sky, and the ladder (EFFECT_BUDGET rows
-    // `waterCrests`, `glitterPath`, `rainRings`, `coastSwash`,
-    // `shallowCaustics`). `_glint` / `_glintStops` are the exact values the
-    // scene pass uploads; the composite's open-ocean strip reuses them.
-    _resolveWaterFx(feed, camera, qualityLevel, grade, moonFill) {
-        const fx = this._waterFx || (this._waterFx = new Float32Array(4));
-        const glint = this._glint || (this._glint = new Float32Array(4));
-        const stops = this._glintStops || (this._glintStops = new Float32Array(6));
-        const motion = feed.reducedMotion ? 0 : clamp(finite(feed.motionScale, 1), 0, 2);
-        // One water clock: every cycle freezes on its static frame under
-        // reduced motion and at MINIMAL.
-        fx[0] = effectBudgetMode('waterCrests', qualityLevel) === 'on' ? motion : 0;
-        const weather = feed.weather || feed.atmosphere?.weather || {};
-        const type = String(weather.type || 'clear');
-        const raining = type === 'rain' || type === 'storm';
-        fx[1] = raining && effectBudgetMode('rainRings', qualityLevel) !== 'off'
-            ? clamp(finite(weather.precipitation, weather.intensity), 0, 1)
-            : 0;
-        const cloudCover = clamp(finite(weather.cloudCover, 0), 0, 1);
-        const zoom = finite(camera?.zoom, 1);
-        fx[2] = effectBudgetMode('shallowCaustics', qualityLevel) === 'on'
-            && !raining
-            && finite(grade.sunBand, 0) > 0.3
-            && cloudCover < 0.5
-            && finite(grade.night, 0) < 0.5
-            && zoom >= 2
-            ? 1 : 0;
-        fx[3] = effectBudgetMode('coastSwash', qualityLevel) === 'on' && motion > 0 ? 1 : 0;
-        // 3.2 — the sky body's screen x (the sky spans the canvas), gold near
-        // sunrise and golden hour (the grade's rake) at full strength, pale
-        // and sparse (0.35) toward noon, silver under a moon at least half
-        // full in clear air; none under heavy cloud or when the body is hidden.
-        glint.fill(0);
-        stops.fill(0);
-        if (effectBudgetMode('glitterPath', qualityLevel) === 'off') return;
-        const sun = feed.atmosphere?.sky?.sun;
-        const moon = feed.atmosphere?.sky?.moon;
-        let kind = 0;
-        let strength = 0;
-        let xFrac = 0;
-        if (sun?.visible && cloudCover < 0.7) {
-            const rake = clamp(finite(grade.rake, 0), 0, 1);
-            kind = rake >= 0.4 ? 1 : 2;
-            strength = 0.35 + 0.65 * rake;
-            xFrac = finite(sun.xFrac, 0.5);
-        } else if (moon?.visible && moonFill >= 0.5 && cloudCover < 0.5 && !raining) {
-            kind = 3;
-            strength = moonFill;
-            xFrac = finite(moon.xFrac, 0.5);
-        }
-        if (!kind) return;
-        const texelPx = Math.max(0.01, zoom * Math.max(0.25, finite(camera?._dpr?.(), 1)));
-        glint[0] = xFrac * this.width;
-        glint[1] = strength;
-        glint[2] = kind;
-        // The pale day path spreads into a broad sparse sparkle under a high sun.
-        glint[3] = (kind === 2 ? 0.12 * NOON_GLINT_GROW_GAIN : 0.12) / texelPx;
-        stops.set(SEA_PATH_STOPS[kind]);
-    }
-
     // 3.1 / 3.6 — the coast lattice fields on units 7 (cycle offset, R8) and
     // 8 (coast field + 3.7 mirror stops, RGBA8), uploaded through the V9 typed path once per coast
     // bake. MINIMAL (crests frozen, swash off) leaves both unbound and
@@ -4381,17 +4287,8 @@ export class GpuWorldRenderer {
     _setSceneUniforms(feed, camera, qualityLevel = POST_FX_LEVELS.FULL) {
         const gl = this.gl;
         const uniforms = this.sceneUniforms;
-        const grade = frameGrade(feed);
-        const weather = weatherUniform(feed);
-        const weatherMode = effectBudgetMode('weather-amplitude', qualityLevel);
-        if (weatherMode === 'reduced') {
-            weather[0] *= 0.72;
-            weather[3] *= 0.72;
-        } else if (weatherMode === 'off') {
-            weather[0] = 0;
-            weather[2] = 0;
-            weather[3] = 0;
-        }
+        const grade = resolveFrameGrade(feed);
+        const weather = resolveWeatherUniform(feed, qualityLevel);
         // B.2 — packed agent geometry follows the occluder channel toggle
         // (render() sets it before the scene pass), as its uploads did.
         gl.uniform1i(uniforms.u_packedGeometry, this._occluderChannelSkipped ? 0 : 1);
@@ -4414,9 +4311,10 @@ export class GpuWorldRenderer {
             clamp(finite(grade.sunBand, 1), 0, 1),
         );
         this._frameGradeForComposite = grade;
-        this._compositeCloudCover = cloudCover;
         this._compositeQualityLevel = qualityLevel;
-        this._resolveAtmosphereCourses(qualityLevel, camera, feed, grade);
+        const courses = resolveAtmosphereCourses(qualityLevel, camera, feed, grade, this._atmosphereCourses);
+        this.cloudCourses = courses.courses;
+        this.aerialHaze = courses.aerialHaze;
         this._resolveSeaWeather(qualityLevel, camera, feed);
         this._uploadAtmosphereCourses(uniforms, SCENE_SAMPLER_UNITS.cloudTile);
         this._uploadSeaWeather(uniforms, SCENE_SAMPLER_UNITS.seaGust);
@@ -4428,28 +4326,33 @@ export class GpuWorldRenderer {
         // 3.1 / 3.2 / 3.6 / 3.9 / 3.10 — the water clock, rings, caustics,
         // swash and the sun/moon path, then the coast lattice fields.
         const moonFill = clamp(finite(feed.lighting?.moonFill, 0), 0, 1);
-        this._resolveWaterFx(feed, camera, qualityLevel, grade, moonFill);
-        gl.uniform4fv(uniforms.u_waterFx, this._waterFx);
-        gl.uniform4fv(uniforms.u_glint, this._glint);
-        gl.uniform3fv(uniforms['u_glintStops[0]'], this._glintStops);
+        const water = resolveWaterFx(feed, camera, qualityLevel, grade, moonFill, this.width, this._waterFx);
+        gl.uniform4fv(uniforms.u_waterFx, water.fx);
+        gl.uniform4fv(uniforms.u_glint, water.glint);
+        gl.uniform3fv(uniforms['u_glintStops[0]'], water.stops);
         this._bindWaterFields(uniforms, feed.coastWater, qualityLevel);
         const mood = waterMoodFor({ lightGrade: grade, weather: feed.weather || feed.atmosphere?.weather });
         gl.uniform2f(uniforms.u_waterMood, mood.night, mood.storm);
-        // 3.2 — real accumulated wetness; FULL reflects eight admitted sources,
-        // REDUCED four, MINIMAL none (the static wet darkening still reads).
+        // 0.1 / 2.2 / 2.4 / 3.2 — the frame's lights (resolveLights): ranked
+        // admission, the tile index, the wet-reflection slots (FULL eight,
+        // REDUCED four, MINIMAL none; the static wet darkening still reads)
+        // and the footprint march, all on the scene pass's own camera.
+        const lightFrame = resolveLights(feed, camera, qualityLevel, {
+            width: this.width,
+            height: this.height,
+            view: this._camera,
+            clusterOverride: this.lightClusterOverride,
+            state: this._lightFrame,
+        });
         const wetness = clamp(finite(feed.wetness, 0), 0, 1);
         gl.uniform1f(uniforms.u_wetness, wetness);
-        this.wetReflectionCount = wetness <= 0.01 || qualityLevel >= POST_FX_LEVELS.MINIMAL
-            ? 0
-            : qualityLevel >= POST_FX_LEVELS.REDUCED ? 4 : 8;
+        this.wetReflectionCount = lightFrame.wetReflectionCount;
         gl.uniform1i(uniforms.u_wetReflectionCount, this.wetReflectionCount);
         this._uploadPuddles(uniforms, feed);
         // 3.5 — the authored ramp table. An absent, wrong-sized, or shed table
         // leaves the pilot with today's additive response.
-        const lutSource = qualityLevel >= POST_FX_LEVELS.MINIMAL ? null : feed.paletteLut || null;
+        const lutSource = resolvePaletteLut(qualityLevel, feed);
         const lut = lutSource
-            && lutSource.width === PALETTE_LUT_WIDTH
-            && lutSource.height === PALETTE_LUT_HEIGHT
             ? this._textureFor('lut:palette-ramp', lutSource, feed.paletteLutRevision ?? null)
             : null;
         this.paletteLutActive = Boolean(lut);
@@ -4462,146 +4365,39 @@ export class GpuWorldRenderer {
         const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
         gl.uniform1f(uniforms.u_time, shaderTimeMs);
         gl.uniform1f(uniforms.u_motionScale, feed.reducedMotion ? 0 : clamp(finite(feed.motionScale, 1), 0, 2));
-        this._uploadBeamUniforms(uniforms, feed.beam || null);
+        this._uploadBeamUniforms(uniforms, feed);
 
-        this.localLightPhase = localLightPhaseForLighting(feed.lighting);
-        const daylightSuppressesLights = this.localLightPhase <= LOCAL_LIGHT_VISIBILITY_FLOOR;
-        // 0.1 / 2.4 — admission: `clampGpuLights` ranks the feed (attention >
-        // aperture > fixture > point), `binGpuLights` admits in that order up
-        // to the declared `light-admission` count (FULL 128, REDUCED 64,
-        // MINIMAL 24; attention past it) while every 64x64 backing-px tile a
-        // light reaches has one of its 16 slots free. Binning runs whichever
-        // walk `light-clusters` picks, so both walks light the same set.
-        const lightLimit = daylightSuppressesLights
-            ? 0
-            : Math.min(MAX_LIGHT_RECORDS, effectBudgetMode('light-admission', qualityLevel));
-        const ranked = daylightSuppressesLights
-            ? NO_LIGHTS
-            : clampGpuLights(feed.lights, MAX_LIGHT_RECORDS, MAX_LIGHT_RECORDS, this._lightAdmissionCache);
-        // The scene pass's own u_camera triple (backing px = (world + xy) x z),
-        // so a tile holds exactly the lights that can reach its fragments.
-        const cameraUniform = this._cameraUniform;
-        const dpr = Math.max(0.25, finite(camera?._dpr?.(), 1));
-        const zoom = Math.max(0.01, finite(camera?.zoom, 1));
-        const cameraX = cameraUniform
-            ? cameraUniform[0]
-            : finite(camera?.renderOffsetX, Math.round(finite(camera?.x) * zoom * dpr) / dpr) / zoom;
-        const cameraY = cameraUniform
-            ? cameraUniform[1]
-            : finite(camera?.renderOffsetY, Math.round(finite(camera?.y) * zoom * dpr) / dpr) / zoom;
-        const backingScale = cameraUniform ? cameraUniform[2] : zoom * dpr;
-        const bins = binGpuLights(ranked, {
-            cap: lightLimit,
-            cameraX,
-            cameraY,
-            scale: backingScale,
-            width: this.width,
-            height: this.height,
-            wet: this.wetReflectionCount > 0,
-        }, this._lightBins);
-        const lights = bins.admitted;
-        const clusters = lights.length > 0 && (this.lightClusterOverride == null
-            ? effectBudgetMode('light-clusters', qualityLevel) === 'on'
-            : Boolean(this.lightClusterOverride));
-        const admission = this.lightAdmission;
-        admission.cap = lightLimit;
-        admission.admitted = lights.length;
-        admission.offered = bins.visible;
-        admission.culled = bins.culled;
-        admission.overCap = bins.overCap;
-        admission.tileFull = bins.tileFull;
-        admission.maxPerTile = bins.maxPerTile;
-        admission.clusters = clusters;
-        admission.tiles = bins.tilesX * bins.tilesY;
-        admission.daylight = daylightSuppressesLights;
-        // V5 / 2.4 — each admitted light's record (see SCENE_FRAGMENT): foot,
-        // ground radius, intensity; emitter height, face normal, role; colour
-        // and envelope share; owner slot, landmark id, flags, column reach.
-        // PostFxFeed supplies every light's world geometry.
-        const records = this._lightRecords;
-        const rowStride = MAX_LIGHT_RECORDS * 4;
-        let wetSlots = this.wetReflectionCount;
-        for (let index = 0; index < lights.length; index++) {
-            const light = lights[index];
-            const color = gpuLightColorForShader(light, DEFAULT_LIGHT_COLOR, this._singleLightColorScratch);
-            const offset = index * 4;
-            const attention = isAttentionLight(light);
-            records[offset] = finite(light.footX);
-            records[offset + 1] = finite(light.footY);
-            records[offset + 2] = Math.max(1, finite(light.radiusWorld, 64));
-            records[offset + 3] = clamp(finite(light.intensity, 1), 0, 3);
-            records[rowStride + offset] = Math.max(0, finite(light.height, 0));
-            records[rowStride + offset + 1] = finite(light.nx, 0);
-            records[rowStride + offset + 2] = finite(light.ng, 0);
-            records[rowStride + offset + 3] = attention ? LIGHT_ROLE_ATTENTION : finite(light.role, LIGHT_ROLE_POINT);
-            records[2 * rowStride + offset] = color[0];
-            records[2 * rowStride + offset + 1] = color[1];
-            records[2 * rowStride + offset + 2] = color[2];
-            // The spill share of the envelope rides here, so an action-needed
-            // overlay light keeps its full read outside the exposure budget.
-            records[2 * rowStride + offset + 3] = (light.night
-                ? clamp(finite(feed.lighting?.beaconIntensity, 0), 0, 1)
-                : 1) * (attention ? 1 : clamp(finite(energy.spill, 1), 0, 2));
-            let flags = 0;
-            if (!attention && wetSlots > 0) {
-                flags |= LIGHT_RECORD_FLAGS.wetReflection;
-                wetSlots--;
-            }
-            if (light.waterOnly === true) flags |= LIGHT_RECORD_FLAGS.waterOnly | LIGHT_RECORD_FLAGS.waterColumn;
-            else if (lightLaysColumn(light)) flags |= LIGHT_RECORD_FLAGS.waterColumn;
-            records[3 * rowStride + offset] = Math.max(0, Math.round(finite(light.ownerSlot, 0)));
-            records[3 * rowStride + offset + 1] = Math.max(0, Math.round(finite(light.landmarkId, 0)));
-            records[3 * rowStride + offset + 2] = flags;
-            records[3 * rowStride + offset + 3] = Math.max(1, finite(light.columnReach, 1));
-        }
-        if (!sameLightRecords(records, this._lightRecordsPrev, lights.length, rowStride, this._lightRecordsCount)) {
-            this._lightRecordsPrev.set(records);
-            this._lightRecordsRevision++;
-        }
-        this._lightRecordsCount = lights.length;
+        this.localLightPhase = lightFrame.localLightPhase;
         const recordTexture = this.uploadTypedTexture('light:records', {
             width: MAX_LIGHT_RECORDS,
             height: LIGHT_RECORD_ROWS,
             format: 'rgba32f',
-            data: records,
-            revision: this._lightRecordsRevision,
+            data: lightFrame.records,
+            revision: lightFrame.recordsRevision,
         });
-        let tileTexture;
-        if (clusters) {
-            const index = bins.index;
-            if (this._lightTilesPrev.length !== index.length) {
-                this._lightTilesPrev = new Uint16Array(index.length);
-                this._lightTilesRevision++;
-                this._lightTilesPrev.set(index);
-            } else if (!sameTypedArray(index, this._lightTilesPrev)) {
-                this._lightTilesPrev.set(index);
-                this._lightTilesRevision++;
-            }
-            tileTexture = this.uploadTypedTexture('light:tiles', {
-                width: bins.tilesX * LIGHT_TILE_STRIDE,
-                height: bins.tilesY,
+        const tileTexture = lightFrame.tiles
+            ? this.uploadTypedTexture('light:tiles', {
+                width: lightFrame.tilesX * LIGHT_TILE_STRIDE,
+                height: lightFrame.tilesY,
                 format: 'r16ui',
-                data: this._lightTilesPrev,
-                revision: this._lightTilesRevision,
-            });
-        } else {
-            tileTexture = this.uploadTypedTexture('light:tiles-empty', {
+                data: lightFrame.tiles,
+                revision: lightFrame.tilesRevision,
+            })
+            : this.uploadTypedTexture('light:tiles-empty', {
                 width: 1, height: 1, format: 'r16ui', data: this._lightTilesEmpty,
             });
-        }
-        this.lightCount = lights.length;
-        gl.uniform1i(uniforms.u_lightCount, lights.length);
+        this.lightCount = lightFrame.count;
+        gl.uniform1i(uniforms.u_lightCount, lightFrame.count);
         gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.lightData);
         gl.bindTexture(gl.TEXTURE_2D, recordTexture);
         gl.uniform1i(uniforms.u_lightData, SCENE_SAMPLER_UNITS.lightData);
         gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.lightTiles);
         gl.bindTexture(gl.TEXTURE_2D, tileTexture);
         gl.uniform1i(uniforms.u_lightTiles, SCENE_SAMPLER_UNITS.lightTiles);
-        gl.uniform3i(uniforms.u_lightTileGrid, bins.tilesX, bins.tilesY, clusters ? 1 : 0);
+        gl.uniform3i(uniforms.u_lightTileGrid, lightFrame.tilesX, lightFrame.tilesY, lightFrame.clusters ? 1 : 0);
         // 2.2 — the footprint field on unit 6, uploaded once per map/scenery
-        // revision, and this level's march length (FULL 8, REDUCED 4,
-        // MINIMAL 0; 0 in daylight or before a field exists).
-        const field = lights.length > 0 ? feed.footprint : null;
+        // revision, and this level's march length.
+        const field = lightFrame.footprint;
         const fieldTexture = field?.data
             ? this.uploadTypedTexture('field:footprint', {
                 width: field.width,
@@ -4611,9 +4407,7 @@ export class GpuWorldRenderer {
                 revision: field.revision ?? null,
             })
             : null;
-        this.footprintMarchSteps = fieldTexture
-            ? FOOTPRINT_MARCH_STEPS[effectBudgetMode('footprint-occlusion', qualityLevel)] ?? 0
-            : 0;
+        this.footprintMarchSteps = fieldTexture ? lightFrame.marchSteps : 0;
         gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.footprint);
         gl.bindTexture(gl.TEXTURE_2D, fieldTexture || this.emptyMaterialTexture);
         gl.uniform1i(uniforms.u_footprint, SCENE_SAMPLER_UNITS.footprint);
@@ -4696,7 +4490,15 @@ export class GpuWorldRenderer {
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.framebuffer);
         const bloomEnabled = effectBudgetMode('bloom', qualityLevel) !== 'off'
             && localLightPhaseForLighting(feed.lighting) > LOCAL_LIGHT_VISIBILITY_FLOOR;
-        gl.drawBuffers(bloomEnabled
+        // 10.3 — on a P3 screen the emission MRT is always written (bloom or
+        // not, like WebGPU's roles target) and its alpha carries each batch's
+        // role: attachment 1's alpha blends by the blend constant (1 for a
+        // building/prop emitter batch, 0 otherwise; additive batches keep the
+        // role beneath) while its colour and attachment 0 blend exactly as
+        // shipped, so bloom and the SDR bytes never see it.
+        const roles = this._p3 && this._ensureP3Programs() ? this._roleBlend : null;
+        this._rolesWritten = roles !== null;
+        gl.drawBuffers(bloomEnabled || roles
             ? [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]
             : [gl.COLOR_ATTACHMENT0]);
         gl.viewport(0, 0, this.width, this.height);
@@ -4722,10 +4524,20 @@ export class GpuWorldRenderer {
         gl.uniform1i(this.sceneUniforms.u_albedoPaged, 0);
         this._albedoPagedBound = false;
         let additive = false;
+        let boundRole = 0;
+        if (roles) gl.blendColor(0, 0, 0, 0);
         for (const batch of batches) {
             const add = batch.blend === 'add';
             if (add) gl.blendFunc(gl.ONE, gl.ONE);
             else gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+            if (roles) {
+                this._blendRole(roles, add);
+                const role = batch.emissiveTexture && !(batch.records[0]?.ownerSlot > 0) ? 1 : 0;
+                if (role !== boundRole) {
+                    gl.blendColor(0, 0, 0, role);
+                    boundRole = role;
+                }
+            }
             if (add !== additive) {
                 additive = add;
                 gl.uniform1i(this.sceneUniforms.u_additive, add ? 1 : 0);
@@ -4738,7 +4550,8 @@ export class GpuWorldRenderer {
             }
             this._bindBatch(this.sceneProgram, this.sceneUniforms, batch);
         }
-        this._renderParticles(camera);
+        if (boundRole) gl.blendColor(0, 0, 0, 0);
+        this._renderParticles(camera, roles);
         // The painter depth never leaves the pass.
         gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.DEPTH_ATTACHMENT]);
         return bloomEnabled;
@@ -4747,7 +4560,7 @@ export class GpuWorldRenderer {
     // 0.6 — every live world particle in one instanced draw, LEQUAL against
     // the painter depth, never writing it. Lit particles take the frame grade
     // uploaded here; emissive ones feed bloom with their own coverage.
-    _renderParticles(camera) {
+    _renderParticles(camera, roles = null) {
         const count = this._particleCount;
         if (!count || !this._particleMotifTexture) return;
         const gl = this.gl;
@@ -4760,17 +4573,27 @@ export class GpuWorldRenderer {
         gl.activeTexture(gl.TEXTURE0 + PARTICLE_SAMPLER_UNITS.motifs);
         gl.bindTexture(gl.TEXTURE_2D, this._particleMotifTexture);
         gl.uniform1i(uniforms.u_motifs, PARTICLE_SAMPLER_UNITS.motifs);
-        if (this._atmosphereCourses) this._uploadAtmosphereCourses(uniforms, PARTICLE_SAMPLER_UNITS.cloudTile);
+        this._uploadAtmosphereCourses(uniforms, PARTICLE_SAMPLER_UNITS.cloudTile);
         gl.bindVertexArray(this.particleVao);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.particleBuffer);
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, this._particleViews.u8, 0, count * GPU_PARTICLE_INSTANCE_BYTES);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        if (roles) this._blendRole(roles, false);
         gl.depthFunc(gl.LEQUAL);
         gl.depthMask(false);
         gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
         gl.depthFunc(gl.ALWAYS);
         gl.bindVertexArray(this.vao);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+    }
+
+    // 10.3 — attachment 1 (emission) under staged roles: colour exactly as
+    // the pass's blendFunc, alpha = the blend constant's role (source-over)
+    // or the role beneath (additive).
+    _blendRole(ext, additive) {
+        const gl = this.gl;
+        if (additive) ext.blendFuncSeparateiOES(1, gl.ONE, gl.ONE, gl.ZERO, gl.ONE);
+        else ext.blendFuncSeparateiOES(1, gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.CONSTANT_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     }
 
     _renderBloom() {
@@ -4794,6 +4617,42 @@ export class GpuWorldRenderer {
         gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
+    /**
+     * 10.2 / 10.3 — the HDR setting and the screen's media queries (the
+     * caller re-sends them on the setting's event and on each query's
+     * `change`). WebGL only takes the P3 path: a display-p3 drawing buffer
+     * and the P3 twins; everything else stays the shipped program and bytes.
+     */
+    setDisplayColor({ hdrMode = this.hdrMode, dynamicRangeHigh = this.dynamicRangeHigh, colorGamutP3 = this.colorGamutP3 } = {}) {
+        this._displayWant = resolveDisplayColor({ backend: 'webgl', hdrMode, dynamicRangeHigh, colorGamutP3 });
+        this.hdrMode = this._displayWant.mode;
+        this.dynamicRangeHigh = dynamicRangeHigh === true;
+        this.colorGamutP3 = colorGamutP3 === true;
+        const p3 = this._displayWant.p3 && 'drawingBufferColorSpace' in (this.gl || {});
+        if (p3 === this._p3) return;
+        this._p3 = p3;
+        if (this.gl) this.gl.drawingBufferColorSpace = p3 ? 'display-p3' : 'srgb';
+    }
+
+    // The P3 twins compile on first use (a P3 screen only).
+    _ensureP3Programs() {
+        if (this.compositeP3Program && this.markP3Program) return true;
+        const gl = this.gl;
+        try {
+            this._roleBlend = gl.getExtension('OES_draw_buffers_indexed') || null;
+            this.compositeP3Program = createProgram(gl, FULLSCREEN_VERTEX, COMPOSITE_P3_FRAGMENT);
+            this.compositeP3Uniforms = uniformLocations(gl, this.compositeP3Program, [...Object.keys(this.compositeUniforms), 'u_emission', 'u_roles']);
+            this.markP3Program = createProgram(gl, QUAD_VERTEX, MARK_P3_FRAGMENT);
+            this.markP3Uniforms = uniformLocations(gl, this.markP3Program, Object.keys(this.markUniforms));
+            return true;
+        } catch (error) {
+            console.warn('[GpuWorldRenderer] P3 twins unavailable; staying sRGB:', error);
+            this._p3 = false;
+            gl.drawingBufferColorSpace = 'srgb';
+            return false;
+        }
+    }
+
     _present(qualityLevel = POST_FX_LEVELS.FULL, camera = null, feed = {}) {
         const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -4801,47 +4660,149 @@ export class GpuWorldRenderer {
         gl.viewport(0, 0, this.width, this.height);
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
-        gl.useProgram(this.compositeProgram);
-        gl.uniform1i(this.compositeUniforms.u_scene, COMPOSITE_SAMPLER_UNITS.scene);
-        gl.uniform1i(this.compositeUniforms.u_bloom, COMPOSITE_SAMPLER_UNITS.bloom);
+        // 10.3 — the P3 twin on a display-p3 drawing buffer, else the shipped program.
+        const p3 = this._p3 && this._ensureP3Programs();
+        const uniforms = p3 ? this.compositeP3Uniforms : this.compositeUniforms;
+        gl.useProgram(p3 ? this.compositeP3Program : this.compositeProgram);
+        gl.uniform1i(uniforms.u_scene, COMPOSITE_SAMPLER_UNITS.scene);
+        gl.uniform1i(uniforms.u_bloom, COMPOSITE_SAMPLER_UNITS.bloom);
         const bloomMode = effectBudgetMode('bloom', qualityLevel);
         const bloomStrength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
         // 3.1 — bloom is served last from the same envelope, so broad halo
         // energy shrinks while the cores it came from stay readable.
         const bloomEnergy = clamp(finite(this.sourceEnergy?.bloom, 1), 0, 2);
         gl.uniform1f(
-            this.compositeUniforms.u_bloomStrength,
+            uniforms.u_bloomStrength,
             this.lightCount > 0 ? bloomStrength * bloomEnergy : 0,
         );
         const flash = feed.flash;
-        gl.uniform3f(this.compositeUniforms.u_flash, finite(flash?.[0], 0), finite(flash?.[1], 0), finite(flash?.[2], 0));
+        gl.uniform3f(uniforms.u_flash, finite(flash?.[0], 0), finite(flash?.[1], 0), finite(flash?.[2], 0));
         // The composite's world mapping (the scene pass's camera at full
         // backing resolution), read by the beam and the open-sea route.
-        this._setCameraUniforms(this.compositeUniforms, camera, 1);
-        gl.uniform1i(this.compositeUniforms.u_fatPixels, this.fatPixelsFrame ? 1 : 0);
-        gl.uniform2f(this.compositeUniforms.u_resolution, this.width, this.height);
-        this._uploadBeamUniforms(this.compositeUniforms, feed.beam || null);
-        this._uploadOpenSeaUniforms(qualityLevel, camera, feed);
+        this._setCameraUniforms(uniforms, camera, 1);
+        gl.uniform1i(uniforms.u_fatPixels, this.fatPixelsFrame ? 1 : 0);
+        gl.uniform2f(uniforms.u_resolution, this.width, this.height);
+        this._uploadBeamUniforms(uniforms, feed);
+        this._uploadOpenSeaUniforms(qualityLevel, camera, feed, uniforms);
         gl.activeTexture(gl.TEXTURE0 + COMPOSITE_SAMPLER_UNITS.scene);
         gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.textures[0]);
         gl.activeTexture(gl.TEXTURE0 + COMPOSITE_SAMPLER_UNITS.bloom);
         gl.bindTexture(gl.TEXTURE_2D, this.bloomB.textures[0]);
+        if (p3) {
+            gl.uniform1i(uniforms.u_emission, P3_EMISSION_UNIT);
+            gl.uniform1i(uniforms.u_roles, this._rolesWritten ? 1 : 0);
+            gl.activeTexture(gl.TEXTURE0 + P3_EMISSION_UNIT);
+            gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.textures[1]);
+        }
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         if (this._frameLoadPasses > 0) this._drawDebugLoad(this._frameLoadPasses);
     }
 
-    // 2.7 — the Lighthouse fan (LIGHTHOUSE_BEAM_GLSL) for either program:
-    // the in-map water and the open sea light the same dash cells. Off when
-    // `beam` is null (day, dusk settling, dawn, or no Lighthouse).
-    _uploadBeamUniforms(uniforms, beam) {
+    // Wave 10 S5 / T1 — the attention-mark pass (MARK_FRAGMENT) onto the
+    // presented frame: `marks` are V9 screen-space records in draw order
+    // (AttentionPlates `attentionMarkRecords`), batched by texture without
+    // reordering, full 68-byte records on the mark VAO. `markRecords` is how
+    // many were drawn this frame; the overlay prints only the plate ink when
+    // it equals the frame's mark count, else it draws the whole plate.
+    // `late` (drawLateMarks) counts into `lateMarkRecords` instead.
+    _renderMarks(marks, late = false) {
+        if (late) {
+            this.lateMarkRecords = 0;
+            this.lateMarkRoleRecords = 0;
+        } else {
+            this.markRecords = 0;
+            this.markRoleRecords = 0;
+        }
+        if (!marks?.length || !this.markProgram) return;
         const gl = this.gl;
-        gl.uniform4f(uniforms.u_beamGround, finite(beam?.foot?.x, 0), finite(beam?.foot?.y, 0), finite(beam?.angle, 0), beam ? 1 : 0);
-        if (!beam) return;
-        gl.uniform4f(uniforms.u_beamShape, finite(beam.length, 320), BEAM_NEAR_HALF_WIDTH, finite(beam.farWidth, 58) / 2, finite(beam.sheenStep, 0));
-        const courses = beam.courses || [];
-        gl.uniform3f(uniforms.u_beamCourseEnds, finite(courses[0]?.[1], 0.34), finite(courses[1]?.[1], 0.68), finite(courses[2]?.[1], 1));
-        gl.uniform3f(uniforms.u_beamCourseShares, finite(courses[0]?.[2], 1), finite(courses[1]?.[2], 0.6), finite(courses[2]?.[2], 0.3));
+        const batches = buildStableGpuBatches(marks, this._markBatches ||= [], this._markNormalized ||= []);
+        const staging = this._markStaging ||= createRecordStaging();
+        const byteLength = stageGpuRecords(batches, staging, { fullTail: true });
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.markBuffer);
+        if (byteLength > this.markBufferBytes) {
+            gl.bufferData(gl.ARRAY_BUFFER, byteLength, gl.DYNAMIC_DRAW);
+            this.markBufferBytes = byteLength;
+        }
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, staging.f32, 0, byteLength / Float32Array.BYTES_PER_ELEMENT);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.drawBuffers([gl.BACK]);
+        gl.viewport(0, 0, this.width, this.height);
+        gl.disable(gl.DEPTH_TEST);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        const p3 = this._p3 && this._ensureP3Programs();
+        const markUniforms = p3 ? this.markP3Uniforms : this.markUniforms;
+        gl.useProgram(p3 ? this.markP3Program : this.markProgram);
+        gl.uniform2f(markUniforms.u_resolution, this.width, this.height);
+        gl.uniform1i(markUniforms.u_albedo, SCENE_SAMPLER_UNITS.albedo);
+        // The shared vertex stage declares the page sampler: keep it off the
+        // albedo unit (two sampler types on one unit fail the draw).
+        gl.uniform1i(markUniforms.u_albedoPage, SCENE_SAMPLER_UNITS.albedoPage);
+        gl.bindVertexArray(this.markVao);
+        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedo);
+        const stride = RECORD_INSTANCE_BYTES;
+        let drawn = 0;
+        let role = 0;
+        for (let index = 0; index < batches.length; index++) {
+            const batch = batches[index];
+            const first = batch.records[0];
+            const texture = this._textureFor(batch.textureKey, batch.source, first?.textureRevision);
+            if (!texture) continue;
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            const offset = batch.instanceOffset;
+            gl.vertexAttribPointer(0, 4, gl.FLOAT, false, stride, offset + RECORD_OFFSETS.loc0);
+            gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, offset + RECORD_OFFSETS.loc1);
+            gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, offset + RECORD_OFFSETS.loc2);
+            gl.vertexAttribPointer(3, 4, gl.UNSIGNED_SHORT, false, stride, offset + RECORD_OFFSETS.loc3);
+            gl.vertexAttribPointer(4, 4, gl.UNSIGNED_SHORT, false, stride, offset + RECORD_OFFSETS.loc4);
+            gl.vertexAttribIPointer(5, 2, gl.UNSIGNED_SHORT, stride, offset + RECORD_OFFSETS.loc5);
+            gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.count);
+            drawn += batch.count;
+            for (let recordIndex = 0; recordIndex < batch.count; recordIndex++) {
+                if (batch.records[recordIndex].flags & GPU_RECORD_FLAGS.actionMark) role++;
+            }
+        }
+        gl.bindVertexArray(null);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+        if (late) {
+            this.lateMarkRecords = drawn;
+            this.lateMarkRoleRecords = role;
+        } else {
+            this.markRecords = drawn;
+            this.markRoleRecords = role;
+        }
+    }
+
+    /**
+     * 10.2 — marks the overlay hands over after this frame rendered (the C4
+     * verified-success cream peak frame, then the frame's T1 marks again so
+     * they stay above it, as the overlay stacks them): the mark pass once
+     * more onto the same drawing buffer, later in the task. Call it in the
+     * same task as a `render` that returned true. Returns the records drawn
+     * (`lateMarkRecords`); the caller repaints on the overlay when that falls
+     * short of `marks.length`.
+     */
+    drawLateMarks(marks) {
+        this.lateMarkRecords = 0;
+        this.lateMarkRoleRecords = 0;
+        if (!this.isActive() || !marks?.length) return 0;
+        this._renderMarks(marks, true);
+        return this.lateMarkRecords;
+    }
+
+    // 2.7 — the Lighthouse fan (LIGHTHOUSE_BEAM_GLSL, GpuFrameState.resolveBeam)
+    // for either program: the in-map water and the open sea light the same
+    // dash cells. Off when `feed.beam` is null (day, dusk settling, dawn, or
+    // no Lighthouse).
+    _uploadBeamUniforms(uniforms, feed) {
+        const gl = this.gl;
+        const beam = resolveBeam(feed, this._beam);
+        gl.uniform4fv(uniforms.u_beamGround, beam.ground);
+        if (!beam.active) return;
+        gl.uniform4fv(uniforms.u_beamShape, beam.shape);
+        gl.uniform3fv(uniforms.u_beamCourseEnds, beam.courseEnds);
+        gl.uniform3fv(uniforms.u_beamCourseShares, beam.courseShares);
     }
 
     /**
@@ -4913,75 +4874,16 @@ export class GpuWorldRenderer {
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     }
 
-    // 1.4 + 1.6 — the frame's world-locked cloud-shadow courses and screen-Y
-    // aerial perspective, resolved once per frame with the scene uniforms.
-    // The scene and particle programs shade them per record, on each record's
-    // own texel grid (ATMOSPHERE_COURSES_GLSL), so a body resting between
-    // world texels keeps whole k x k blocks.
-    _resolveAtmosphereCourses(qualityLevel, camera, feed, grade) {
-        const courses = this._atmosphereCourses || (this._atmosphereCourses = {
-            cloud: new Float32Array(4),
-            thresholds: new Float32Array(3),
-            haze: new Float32Array(4),
-            // 3.4 — noise ceiling of the open sea's sunlit course (0 = off).
-            sunlit: 0,
-        });
-        // Cover sets the covered share (`cloudCoveredShare`: none below cover
-        // 0.15, so a fair-weather sky casts no blobs; partly cloudy ~38 %);
-        // overcast/rain get none (the grade flattens instead) and the night
-        // has no sun to cast them. Darkening per course is 8.5 %: three
-        // courses reach ~25 % at the thickest core (course 1 ~0.92).
-        const cover = clamp(finite(this._compositeCloudCover, 0), 0, 1);
-        const cloudMode = effectBudgetMode('cloud-courses', qualityLevel);
-        const cloudStrength = cloudMode === 'off' ? 0 : clamp(finite(grade.cloudShadow, 0), 0, 1);
-        const covered = cloudCoveredShare(cover);
-        // C-W3 — the one wind: the courses drift at 3 + 7·|windX| world px/s
-        // along it (a third of that down-screen), integrated over the motion
-        // clock in Wind.js so both backends agree and a wind change never
-        // jumps them; frozen under reduced motion.
-        const moving = !feed.reducedMotion && finite(feed.motionScale, 1) > 0;
-        const drift = cloudCourseDrift(moving ? finite(feed.timeMs, 0) : null, feed.atmosphere?.weather);
-        this.cloudCourses = cloudStrength > 0.02 && covered > 0 ? 3 : 0;
-        if (this.cloudCourses) {
-            // Wrapped to the combined field's period for float precision.
-            const period = CLOUD_FIELD_PERIOD;
-            courses.cloud[0] = ((-drift.x % period) + period) % period;
-            courses.cloud[1] = ((-drift.y % period) + period) % period;
-            courses.cloud[2] = 0.085 * cloudStrength;
-            courses.thresholds[0] = cloudThreshold(covered);
-            courses.thresholds[1] = cloudThreshold(covered * 0.55);
-            courses.thresholds[2] = cloudThreshold(covered * 0.22);
-            // 3.4 — sun on water: the sea's clearest share, 0.8 of the
-            // covered share (where the field is lowest), takes one stop
-            // lighter while the sun band is up; no clouds, no course (the
-            // sea keeps its own stops, uniform).
-            courses.sunlit = clamp(finite(grade.sunBand, 0), 0, 1) > 0.3 ? cloudThreshold(1 - covered * 0.8) : 0;
-        } else {
-            courses.cloud.fill(0);
-            courses.thresholds.fill(2);
-            courses.sunlit = 0;
-        }
-
-        const hazeMode = effectBudgetMode('aerial-perspective', qualityLevel);
-        const fog = clamp(finite(feed.atmosphere?.weather?.fog, 0), 0, 1);
-        const haze = hazeMode === 'off' ? 0 : aerialPerspectiveStrength(finite(camera?.zoom, 1), fog);
-        this.aerialHaze = haze;
-        const hazeColor = grade.fogColor || [0.6, 0.7, 0.78];
-        courses.haze[0] = hazeColor[0];
-        courses.haze[1] = hazeColor[1];
-        courses.haze[2] = hazeColor[2];
-        courses.haze[3] = haze;
-    }
-
-    // 5.2 — the puddle courses: GroundBake's R8 site mask on scene unit 11
-    // (uploaded once per ground bake through the V9 typed path, bound only
-    // while the C-W2 ground history holds puddles), the puddle level, and
-    // the graded sky palette's upper band and horizon the water reflects.
+    // 5.2 — the puddle courses (GpuFrameState.resolvePuddles): GroundBake's
+    // R8 site mask on scene unit 11 (uploaded once per ground bake through
+    // the V9 typed path, bound only while the C-W2 ground history holds
+    // puddles), the puddle level, and the graded sky palette's upper band
+    // and horizon the water reflects.
     _uploadPuddles(uniforms, feed) {
         const gl = this.gl;
-        const puddles = clamp(finite(feed.puddles, 0), 0, 1);
-        const mask = feed.puddleMask;
-        const texture = puddles > 0.001 && mask?.data
+        const puddles = resolvePuddles(feed, this._puddles);
+        const mask = puddles.mask;
+        const texture = mask
             ? this.uploadTypedTexture('ground:puddle-mask', {
                 width: mask.cols,
                 height: mask.rows,
@@ -4994,18 +4896,10 @@ export class GpuWorldRenderer {
         gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.puddleMask);
         gl.bindTexture(gl.TEXTURE_2D, texture || this.emptyMaterialTexture);
         gl.uniform1i(uniforms.u_puddleMask, SCENE_SAMPLER_UNITS.puddleMask);
-        gl.uniform1f(uniforms.u_puddles, texture ? puddles : 0);
+        gl.uniform1f(uniforms.u_puddles, texture ? puddles.puddles : 0);
         if (!texture) return;
-        gl.uniform4f(uniforms.u_puddleRect, finite(mask.x0, 0), finite(mask.y0, 0), mask.cols, mask.rows);
-        const palette = feed.skyPalette;
-        if (palette !== this._puddleSkyPalette) {
-            this._puddleSkyPalette = palette;
-            this._puddleSky = new Float32Array([
-                ...hexRgb01(palette?.upperBand, [0.62, 0.72, 0.80]),
-                ...hexRgb01(palette?.horizon, [0.80, 0.84, 0.86]),
-            ]);
-        }
-        gl.uniform3fv(uniforms.u_puddleSky, this._puddleSky);
+        gl.uniform4fv(uniforms.u_puddleRect, puddles.rect);
+        gl.uniform3fv(uniforms.u_puddleSky, puddles.sky);
     }
 
     _uploadAtmosphereCourses(uniforms, unit) {
@@ -5020,14 +4914,13 @@ export class GpuWorldRenderer {
     }
 
     // 3.3 / 3.4 — the composite's open sea: the scene pass's grade, water
-    // mood, weather, water clock and path (`_waterFx`, `_glint`), the sky's
-    // horizon colours, this frame's cloud courses, the gust field and the
-    // forecast squall. `sea-weather` sheds the sunlit course, the cat's paws
-    // and the squall at MINIMAL (the island's cloud courses shed there too).
-    _uploadOpenSeaUniforms(qualityLevel, camera, feed) {
+    // mood, weather, water clock and path (`_waterFx`), the sky's horizon
+    // colours, this frame's cloud courses, the gust field and the forecast
+    // squall. `sea-weather` sheds the sunlit course, the cat's paws and the
+    // squall at MINIMAL (the island's cloud courses shed there too).
+    _uploadOpenSeaUniforms(qualityLevel, camera, feed, uniforms = this.compositeUniforms) {
         const gl = this.gl;
-        const uniforms = this.compositeUniforms;
-        const grade = this._frameGradeForComposite || frameGrade(feed);
+        const grade = this._frameGradeForComposite || resolveFrameGrade(feed);
         const atmosphere = feed.atmosphere || null;
         const weather = feed.weather || atmosphere?.weather || null;
         gl.uniform1i(uniforms.u_seaOn, 1);
@@ -5036,17 +4929,17 @@ export class GpuWorldRenderer {
         gl.uniform1f(uniforms.u_seaSunBand, clamp(finite(grade.sunBand, 1), 0, 1));
         const mood = waterMoodFor({ lightGrade: grade, weather });
         gl.uniform2f(uniforms.u_waterMood, mood.night, mood.storm);
-        gl.uniform4fv(uniforms.u_weather, this._frameWeather || weatherUniform(feed));
+        gl.uniform4fv(uniforms.u_weather, this._frameWeather || resolveWeatherUniform(feed));
         const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
         gl.uniform1f(uniforms.u_time, shaderTimeMs);
-        gl.uniform4fv(uniforms.u_waterFx, this._waterFx || OPEN_SEA_ZERO4);
-        gl.uniform4fv(uniforms.u_glint, this._glint || OPEN_SEA_ZERO4);
-        gl.uniform3fv(uniforms['u_glintStops[0]'], this._glintStops || OPEN_SEA_ZERO6);
+        gl.uniform4fv(uniforms.u_waterFx, this._waterFx.fx);
+        gl.uniform4fv(uniforms.u_glint, this._waterFx.glint);
+        gl.uniform3fv(uniforms['u_glintStops[0]'], this._waterFx.stops);
         const sky = openSeaSky(atmosphere);
         gl.uniform4f(uniforms.u_seaHaze, sky.haze[0], sky.haze[1], sky.haze[2], openSeaHazeRows(weather?.fog));
         gl.uniform3fv(uniforms.u_seaSky, sky.horizon);
         const seaWeather = effectBudgetMode('sea-weather', qualityLevel) === 'on';
-        if (this._atmosphereCourses) this._uploadAtmosphereCourses(uniforms, COMPOSITE_SAMPLER_UNITS.cloudTile);
+        this._uploadAtmosphereCourses(uniforms, COMPOSITE_SAMPLER_UNITS.cloudTile);
         this._uploadSeaWeather(uniforms, COMPOSITE_SAMPLER_UNITS.seaGust);
         const squall = seaWeather ? openSeaSquall(weather, feed.timeMs) : null;
         gl.uniform4f(uniforms.u_squall, squall?.x ?? 0, squall?.y ?? 0, squall?.halfWidth ?? 1, squall?.strength ?? 0);
@@ -5054,17 +4947,29 @@ export class GpuWorldRenderer {
         this.openSeaDiagnostics = { squall: Boolean(squall), paws: Boolean(this._seaWeatherFrame?.gust), sunlit: finite(this._seaWeatherFrame?.sunlit, 0) > 0 };
     }
 
-    // 3.3 / 3.4 — the frame's sea weather (SEA_WEATHER_GLSL) for both the
-    // scene's in-map open water and the composite's open sea: the sunlit
-    // ceiling and the gust field, resolved once per frame so both passes read
-    // the same step. `sea-weather` sheds both at MINIMAL. The gust upload (V9
+    // 3.3 / 3.4 — the frame's sea weather (GpuFrameState.resolveSeaWeather,
+    // SEA_WEATHER_GLSL) for both the scene's in-map open water and the
+    // composite's open sea: the sunlit ceiling and the gust field, resolved
+    // once per frame so both passes read the same step. The gust upload (V9
     // typed path) runs here, before either pass binds a sampler.
     _resolveSeaWeather(qualityLevel, camera, feed) {
         const frame = this._seaWeatherFrame || (this._seaWeatherFrame = { sunlit: 0, gust: null });
-        const seaWeather = effectBudgetMode('sea-weather', qualityLevel) === 'on';
-        const weather = feed.weather || feed.atmosphere?.weather || null;
-        frame.sunlit = seaWeather ? finite(this._atmosphereCourses?.sunlit, 0) : 0;
-        frame.gust = seaWeather ? this._resolveSeaGust(camera, feed, weather) : null;
+        const sea = resolveSeaWeather(qualityLevel, camera, feed, {
+            courses: this._atmosphereCourses,
+            width: this.width,
+            height: this.height,
+        }, this._seaWeather);
+        const gust = sea.gust;
+        frame.sunlit = sea.sunlit;
+        frame.gust = gust
+            ? this.uploadTypedTexture('sea:gust', {
+                width: gust.width,
+                height: gust.height,
+                format: 'r8',
+                data: gust.data,
+                revision: gust.revision,
+            })
+            : null;
     }
 
     _uploadSeaWeather(uniforms, unit) {
@@ -5079,55 +4984,7 @@ export class GpuWorldRenderer {
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         }
         gl.uniform1i(uniforms.u_seaGust, unit);
-        gl.uniform4fv(uniforms.u_seaGustRect, gust ? this._seaGust.rect : OPEN_SEA_ZERO4);
-    }
-
-    // 3.4 — C-W3 cat's paws: `Wind.windAt` gusts on a world-locked 128 x 128
-    // grid over the view (texels 2:1, at least 16 x 8 world px), refreshed on
-    // 125 ms steps of the motion clock (frozen under reduced motion) or when
-    // the grid moves. Null in calm air.
-    _resolveSeaGust(camera, feed, weather) {
-        if (gustinessFor(baseWindX(weather)) <= 0) return null;
-        const dpr = Math.max(0.25, finite(camera?._dpr?.(), 1));
-        const zoom = Math.max(0.01, finite(camera?.zoom, 1));
-        const originX = -finite(camera?.renderOffsetX, Math.round(finite(camera?.x) * zoom * dpr) / dpr) / zoom;
-        const originY = -finite(camera?.renderOffsetY, Math.round(finite(camera?.y) * zoom * dpr) / dpr) / zoom;
-        const viewW = this.width / (zoom * dpr);
-        const viewH = this.height / (zoom * dpr);
-        const cellX = Math.max(16, Math.ceil(viewW / (SEA_GUST_SIZE - 8) / 8) * 8);
-        const cellY = Math.max(cellX / 2, Math.ceil(viewH / (SEA_GUST_SIZE - 8) / 4) * 4);
-        const x0 = Math.floor(originX / cellX) * cellX - cellX * 4;
-        const y0 = Math.floor(originY / cellY) * cellY - cellY * 4;
-        const t = Math.floor(finite(feed.timeMs, 0) / SEA_GUST_STEP_MS) * SEA_GUST_STEP_MS;
-        const state = this._seaGust || (this._seaGust = {
-            data: new Uint8Array(SEA_GUST_SIZE * SEA_GUST_SIZE),
-            rect: new Float32Array(4),
-            key: '',
-            revision: 0,
-            wind: { x: 0, gust: 0 },
-        });
-        const key = `${x0},${y0},${cellX},${cellY},${t},${weather?.windX},${weather?.type},${weather?.seed}`;
-        if (key !== state.key) {
-            for (let j = 0; j < SEA_GUST_SIZE; j++) {
-                const wy = y0 + (j + 0.5) * cellY;
-                for (let i = 0; i < SEA_GUST_SIZE; i++) {
-                    state.data[j * SEA_GUST_SIZE + i] = Math.round(windAt(x0 + (i + 0.5) * cellX, wy, t, weather, state.wind).gust * 255);
-                }
-            }
-            state.key = key;
-            state.revision += 1;
-            state.rect[0] = x0;
-            state.rect[1] = y0;
-            state.rect[2] = cellX;
-            state.rect[3] = cellY;
-        }
-        return this.uploadTypedTexture('sea:gust', {
-            width: SEA_GUST_SIZE,
-            height: SEA_GUST_SIZE,
-            format: 'r8',
-            data: state.data,
-            revision: state.revision,
-        });
+        gl.uniform4fv(uniforms.u_seaGustRect, gust ? this._seaWeather.gustState.rect : OPEN_SEA_ZERO4);
     }
 
     /**
@@ -5166,10 +5023,10 @@ export class GpuWorldRenderer {
         const qualityLevel = Math.min(this.qualityLadder.getLevel(), POST_FX_LEVELS.MINIMAL);
         this._preparedQualityLevel = qualityLevel;
         this._preparedFeed = feed;
-        return occluderChannelFor(feed);
+        return resolveOccluderChannel(feed);
     }
 
-    render({ records = [], camera = null, feed = {}, particles = null } = {}) {
+    render({ records = [], camera = null, feed = {}, particles = null, marks = null } = {}) {
         if (!this.isActive() || !camera || !records.length) return false;
         const gl = this.gl;
         const started = performance.now();
@@ -5182,7 +5039,7 @@ export class GpuWorldRenderer {
         this._pendingPresentIntervalMs = null;
         this._frameUploadMs = 0;
         const occluderChannelEnabled = this._preparedFeed === feed
-            ? occluderChannelFor(feed)
+            ? resolveOccluderChannel(feed)
             : this.prepareFrame(feed);
         const qualityLevel = this._preparedQualityLevel;
         this._preparedFeed = null;
@@ -5193,8 +5050,10 @@ export class GpuWorldRenderer {
             }
         }
         this._occluderChannelSkipped = !occluderChannelEnabled;
-        // 4.6 — this frame's fat-pixel gate (Camera.latchGpuFrame ran first).
-        this.fatPixelsFrame = this._resolveFatPixels(camera);
+        // 4.6 — this frame's fat-pixel gate (Camera.latchGpuFrame ran first);
+        // `fatPixelsOverride` (true / false; null = derived) forces it for the
+        // byte-identity A/B.
+        this.fatPixelsFrame = resolveFatPixels(camera, this.fatPixelsOverride);
         try {
             // Timer results are asynchronous. Polling only availability keeps
             // this path non-blocking; until the first clean result arrives the
@@ -5274,7 +5133,7 @@ export class GpuWorldRenderer {
             gpuTimer = this._sampledPass || !timeThisFrame ? null : this._beginGpuTimer();
             this._beginPass('scene');
             const bloomEnabled = this._renderScene(batches, camera, feed, qualityLevel);
-            this._endPass('scene', batches.length, this.width * this.height * 4 * (bloomEnabled ? 2 : 1));
+            this._endPass('scene', batches.length, this.width * this.height * 4 * (bloomEnabled || this._rolesWritten ? 2 : 1));
             gl.disable(gl.BLEND);
             gl.disable(gl.DEPTH_TEST);
             this._beginPass('bloom');
@@ -5284,6 +5143,9 @@ export class GpuWorldRenderer {
             gl.enable(gl.BLEND);
             this._beginPass('present');
             this._present(qualityLevel, camera, feed);
+            this._renderMarks(marks);
+            this.lateMarkRecords = 0;
+            this.lateMarkRoleRecords = 0;
             this._endPass('present', 1, this.width * this.height * 4);
             this._endGpuTimer(gpuTimer, this._frameLoadArm !== null ? { arm: this._frameLoadArm } : null);
             gpuTimer = null;
@@ -5348,6 +5210,21 @@ export class GpuWorldRenderer {
             frames: this.frames,
             records: this.records,
             batches: this.batches,
+            markRecords: this.markRecords,
+            markRoleRecords: this.markRoleRecords,
+            lateMarkRecords: this.lateMarkRecords,
+            lateMarkRoleRecords: this.lateMarkRoleRecords,
+            // 10.2 / 10.3 — the display path (Shift-D's display row). WebGL
+            // never presents HDR; P3 swaps the drawing buffer's colour space.
+            hdrEnabled: false,
+            hdrMode: this.hdrMode,
+            hdrReason: this._displayWant.reason,
+            dynamicRangeHigh: this.dynamicRangeHigh,
+            colorGamutP3: this.colorGamutP3,
+            p3Enabled: this._p3,
+            canvasFormat: 'rgba8unorm',
+            canvasColorSpace: this.gl?.drawingBufferColorSpace || 'srgb',
+            canvasToneMapping: 'standard',
             lights: this.lightCount,
             localLightPhase: this.localLightPhase,
             // 3.1/3.2 receipts an operator can read in Shift-D beside the bands.

@@ -41,6 +41,7 @@ import { ClientPerfMetrics } from './shared/ClientPerfMetrics.js';
 import { getModelVisualIdentity } from './shared/ModelVisualIdentity.js';
 import { installChromeTooltip } from './shared/ChromeTooltip.js';
 import { publishReservedRect } from './shared/ReservedRects.js';
+import { overlayContextAttributes } from './shared/DisplaySettings.js';
 import { isKeyboardEditTarget } from './dashboard-mode/DashboardKeyboardNavigation.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
@@ -117,6 +118,24 @@ const BOOT_FAILURE_COPY = Object.freeze({
     'aborted': 'Opening the village was interrupted.',
     'boot-failed': 'The village did not finish opening.',
 });
+
+// GPU-process crash recovery (`_bindGraphicsRecovery`): the last crash reload,
+// per tab; a second crash inside the window rebuilds in place instead.
+const GPU_CRASH_RELOAD_STORAGE_KEY = 'cv-gpu-crash-reload-at';
+const GPU_CRASH_RELOAD_WINDOW_MS = 2 * 60 * 1000;
+
+// Whether this crash may reload the page (and records it when it may).
+function claimGpuCrashReload(now = Date.now()) {
+    try {
+        const last = Number(window.sessionStorage.getItem(GPU_CRASH_RELOAD_STORAGE_KEY));
+        if (Number.isFinite(last) && last > 0 && now - last < GPU_CRASH_RELOAD_WINDOW_MS) return false;
+        window.sessionStorage.setItem(GPU_CRASH_RELOAD_STORAGE_KEY, String(now));
+        return true;
+    } catch {
+        // No session storage: never risk a reload loop.
+        return false;
+    }
+}
 
 export class App {
     constructor() {
@@ -257,6 +276,11 @@ export class App {
             if (!this.assets) this.assets = new AssetManager();
             const assetMetadataPromise = this._prepareAssetMetadata({ signal });
             const rendererModulePromise = this._getRendererModule();
+            // Stage B — the default WebGPU world (adapter, device, pipelines)
+            // resolves beside the asset fetch; `_loadRenderer` takes it over.
+            rendererModulePromise
+                .then(module => module.IsometricRenderer?.prewarmBackend?.(window.location.search))
+                .catch(() => {});
             // Dashboard is fetched concurrently with the renderer module rather
             // than lazily on click: a mode switch must paint immediately, and a
             // click can land the instant boot reports ready. Concurrent here, so
@@ -1600,6 +1624,15 @@ export class App {
                 biographyService: this.biographyService,
                 affinityService: this.affinityService,
             });
+            // Wave 10 — the WebGPU world (`?renderer=webgpu`, and Stage B's
+            // Chromium default) is resolved before the synchronous mount, so
+            // no frame is presented before the backend is known. The default
+            // never waits: one still compiling mounts WebGL2 and switches.
+            await candidate.resolveBackend?.(window.location.search);
+            if (this._destroyed) {
+                candidate.releaseResolvedBackend?.();
+                return;
+            }
             if (candidate.show(canvas) === false) {
                 throw new Error('IsometricRenderer failed to mount');
             }
@@ -1792,11 +1825,17 @@ export class App {
 
     _bindResize() {
         const canvas = document.getElementById('worldCanvas');
-        const fxCanvas = document.getElementById('worldFxCanvas');
-        const overlayCanvas = document.getElementById('worldOverlayCanvas');
         const container = canvas?.parentElement;
         if (!canvas || !container) return;
-        const canvasSurfaces = [canvas, fxCanvas, overlayCanvas].filter(Boolean);
+        // Resolved on every resize: the renderer replaces #worldFxCanvas (the
+        // live WebGL2→WebGPU switch, a WebGPU start failure, a GPU-failure
+        // fallback), and a surface captured once would leave the new one at
+        // its old CSS box while its backing follows the viewport.
+        const canvasSurfaces = () => [
+            canvas,
+            container.querySelector('#worldFxCanvas'),
+            container.querySelector('#worldOverlayCanvas'),
+        ].filter(Boolean);
         this._worldCanvas = canvas;
         if (this._resizeHandle) {
             cancelAnimationFrame(this._resizeHandle);
@@ -1825,12 +1864,15 @@ export class App {
             const dpr = effectiveCanvasDpr(cssWidth, cssHeight, window.devicePixelRatio || 1);
             const newW = Math.round(cssWidth * dpr);
             const newH = Math.round(cssHeight * dpr);
+            const surfaces = canvasSurfaces();
             if (
                 !force &&
-                canvasSurfaces.every(surface => (
+                surfaces.every(surface => (
                     surface.width === newW &&
                     surface.height === newH &&
-                    surface._claudeVilleDpr === dpr
+                    surface._claudeVilleDpr === dpr &&
+                    surface._claudeVilleCssWidth === cssWidth &&
+                    surface._claudeVilleCssHeight === cssHeight
                 ))
             ) return;
             // 0.3 — the screen-centre world point before the canvases change
@@ -1839,7 +1881,7 @@ export class App {
             const heldCenter = this.renderer?.camera && canvas._claudeVilleCssWidth > 0
                 ? this.renderer.camera.currentCenterWorld()
                 : null;
-            for (const surface of canvasSurfaces) {
+            for (const surface of surfaces) {
                 surface.width = newW;
                 surface.height = newH;
                 surface._claudeVilleDpr = dpr;
@@ -1855,7 +1897,9 @@ export class App {
             ctx.imageSmoothingEnabled = false;
             ctx.mozImageSmoothingEnabled = false;
             ctx.webkitImageSmoothingEnabled = false;
-            const overlayCtx = overlayCanvas?.getContext?.('2d', { alpha: true });
+            // 10.3 — display-p3 on a P3 screen; the renderer passes the same.
+            const overlayCanvas = surfaces.find(surface => surface.id === 'worldOverlayCanvas');
+            const overlayCtx = overlayCanvas?.getContext?.('2d', overlayContextAttributes());
             if (overlayCtx) {
                 overlayCtx.imageSmoothingEnabled = false;
                 overlayCtx.mozImageSmoothingEnabled = false;
@@ -1920,13 +1964,31 @@ export class App {
             canvas.removeEventListener('contextlost', this._onWorldContextLost);
             canvas.removeEventListener('contextrestored', this._onWorldContextRestored);
         }
-        this._onWorldContextLost = (event) => {
-            event.preventDefault?.();
+        // A real 2D context loss (a GPU-process crash) blanks every
+        // accelerated canvas in the page, including the module-level sprite,
+        // bake and avatar caches no World path rebuilds; the state is
+        // server-driven, so the complete recovery is a reload. A second crash
+        // within GPU_CRASH_RELOAD_WINDOW_MS does not reload again (no reload
+        // loop): the World rebuilds in place on the Canvas world and the
+        // Shift-D backend row says so. A synthetic or GPU-world-only loss
+        // keeps the in-place resume. Never cancel the 2D `contextlost`: for a
+        // 2D canvas that tells the browser NOT to restore the context.
+        let canvasFallback = false;
+        this._onWorldContextLost = () => {
+            canvasFallback = false;
+            if (this.renderer?.ctx?.isContextLost?.() === true) {
+                if (claimGpuCrashReload()) {
+                    window.location.reload();
+                    return;
+                }
+                canvasFallback = true;
+            }
             this.renderer?.handleContextLost?.();
         };
         this._onWorldContextRestored = () => {
             resize({ force: true });
-            this.renderer?.handleContextRestored?.();
+            this.renderer?.handleContextRestored?.({ canvasFallback });
+            canvasFallback = false;
         };
         canvas.addEventListener('contextlost', this._onWorldContextLost, false);
         canvas.addEventListener('contextrestored', this._onWorldContextRestored, false);

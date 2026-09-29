@@ -1,7 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
-import { drawAttentionPlates } from './AttentionPlates.js';
+import { attentionMarkRecords, drawAttentionPlates, inkMarkRecords } from './AttentionPlates.js';
 import { fitLabelText, measureLabelText } from './WorldLabelKit.js';
 import { drawCouncilRings, drawFamilyTethers, drawAdvisorTethers, drawAllyTethers, drawTalkArcs, admitTalkArcMarks } from './CouncilRing.js';
 import { drawCrowdClusterAuras, drawCrowdClusterBadges } from './CrowdClusterOverlay.js';
@@ -36,7 +36,7 @@ import { drawCanvasWaterColumns } from './CanvasWaterState.js';
 import { drawCanvasEmitterCuts } from './EmitterCuts.js';
 import { groundOptionsFor, groundStateAt } from './GroundState.js';
 import { ungradeRgb } from './CanvasGrade.js';
-import { drawMomentEdgePlates, setMomentStage } from './EffectStamps.js';
+import { PEAK, armPeakMarks, drawMomentEdgePlates, setMomentStage, takePeakMarks } from './EffectStamps.js';
 import { getReservedRects, publishReservedBox } from '../shared/ReservedRects.js';
 
 const FRAME_TIMING_RING_CAPACITY = 90;
@@ -800,6 +800,8 @@ export function renderWorldFrame(renderer, dt = 16) {
         drawFlashExposure(ctx, viewport.width, viewport.height, strike);
     }
     let gpuWorldRendered = false;
+    let gpuMarksDrawn = false;
+    let gpuMarks = null;
     let postFxRendered = false;
     const needsGpuFeed = gpuWorldActive || postFxActive;
     const postFxFeedContext = renderer._postFxFeedContext || (renderer._postFxFeedContext = {});
@@ -865,7 +867,26 @@ export function renderWorldFrame(renderer, dt = 16) {
         // 0.6 — every live world particle, depth-tested against the painter
         // depth the records write (one instanced draw).
         gpuRenderContext.particles = renderer.particleSystem || null;
+        // Wave 10 S5 / T1 — the attention marks' graphical pixels as V9
+        // screen-space records the GPU draws above its composite (§7.4). Only
+        // where the backing pixels are exactly the overlay's: an integer
+        // device scale and the same backing size (a fractional DPR edge is the
+        // overlay's antialiased fill, which the plates keep drawing).
+        const markScale = renderer._screenDpr();
+        gpuRenderContext.marks = renderer._attentionLayout?.count
+            && Number.isInteger(markScale)
+            && overlayCtx.canvas?.width === renderer.gpuWorld.width
+            && overlayCtx.canvas?.height === renderer.gpuWorld.height
+            ? attentionMarkRecords(renderer._attentionLayout, {
+                scale: markScale,
+                out: renderer._attentionMarkRecords || (renderer._attentionMarkRecords = []),
+            })
+            : null;
         gpuWorldRendered = renderer.gpuWorld?.render?.(gpuRenderContext) === true;
+        gpuMarksDrawn = gpuWorldRendered
+            && gpuRenderContext.marks?.length > 0
+            && renderer.gpuWorld.markRecords === gpuRenderContext.marks.length;
+        if (gpuMarksDrawn) gpuMarks = gpuRenderContext.marks;
         markFrameTiming(frameTimer, 'gpu-world');
     } else if (postFxActive) {
         // 1.3 — on the hybrid path the water columns and emitter cuts land on
@@ -900,6 +921,17 @@ export function renderWorldFrame(renderer, dt = 16) {
         drawCanvasWaterColumns(overlayCtx, renderer);
         drawCanvasEmitterCuts(overlayCtx, renderer, atmosphere);
     }
+    // 10.2 — on the resident path, with the overlay's backing pixels exactly
+    // the GPU's (an integer device scale, the same size), a verified-success
+    // moment's cream peak frame goes to the GPU mark pass after the overlay
+    // is drawn (EffectStamps.peakMarkSink, drawPeakMarks below); otherwise it
+    // stays on the overlay.
+    const peakMarksArmed = gpuWorldRendered
+        && typeof renderer.gpuWorld?.drawLateMarks === 'function'
+        && Number.isInteger(renderer._screenDpr())
+        && overlayCtx.canvas?.width === renderer.gpuWorld.width
+        && overlayCtx.canvas?.height === renderer.gpuWorld.height;
+    armPeakMarks(peakMarksArmed ? overlayCtx : null);
     renderer._resetScreenTransform(overlayCtx);
     renderer.weatherRenderer?.drawForeground(overlayCtx, {
         canvas: viewport,
@@ -1040,6 +1072,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawOffscreenCueEdges(overlayCtx, renderer, viewport, renderNow);
     // V8 — moments that could not stand in their column dock here.
     drawMomentEdgePlates(overlayCtx);
+    if (peakMarksArmed) drawPeakMarks(renderer, overlayCtx, gpuMarks);
     // 5.7/5.2 — cinematic letterbox bars: they ride a release/incident cue
     // glide, and an ambient chapter holds them for a beat after settling so
     // the caption is read at rest. Reduced motion draws none.
@@ -1047,7 +1080,9 @@ export function renderWorldFrame(renderer, dt = 16) {
     // T1 — attention plates and beacons (plan 5.1), laid out from live status
     // in _assignAgentOverlaySlots. Drawn once, ungraded, after the letterbox
     // so no bar, focus or Ambient state can hide an agent that needs you.
-    drawAttentionPlates(overlayCtx, renderer._attentionLayout);
+    // When the GPU drew the marks' graphics this frame, the overlay clears
+    // their footprint here and prints only the ink (Wave 10 S5).
+    drawAttentionPlates(overlayCtx, renderer._attentionLayout, { inkOnly: gpuMarksDrawn });
     // 5.1/5.2/5.5 — the lower-third caption, drawn after the bars so they
     // never cover it. Static text, no motion of its own.
     drawAmbientCaption(overlayCtx, ambientCaption);
@@ -1057,6 +1092,38 @@ export function renderWorldFrame(renderer, dt = 16) {
         const renderStats = renderer._lastRenderStats || (renderer._lastRenderStats = {});
         renderStats.timings = timings;
     }
+}
+
+// 10.2 — this frame's verified-success peak texels (cleared from the overlay
+// by EffectStamps.peakMarkSink) as role-2 GPU mark records on the presented
+// frame, with the frame's GPU T1 marks drawn again above them, as the overlay
+// stacks the plates over every moment. If the late pass cannot draw them
+// all, the overlay paints the cream back where it cleared it.
+function drawPeakMarks(renderer, overlayCtx, t1Marks) {
+    const rects = takePeakMarks();
+    if (rects.length && !handPeakMarksToGpu(renderer, rects, t1Marks)) {
+        overlayCtx.save();
+        overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
+        overlayCtx.globalAlpha = 1;
+        overlayCtx.globalCompositeOperation = 'source-over';
+        overlayCtx.fillStyle = PEAK;
+        for (const rect of rects) overlayCtx.fillRect(rect.left, rect.top, rect.width, rect.height);
+        overlayCtx.restore();
+    }
+    armPeakMarks(null);
+}
+
+function handPeakMarksToGpu(renderer, rects, t1Marks) {
+    const peak = inkMarkRecords(rects, PEAK, {
+        out: renderer._peakMarkRecords || (renderer._peakMarkRecords = []),
+        pool: renderer._peakMarkPool || (renderer._peakMarkPool = []),
+    });
+    if (!peak) return false;
+    const late = renderer._lateMarkRecords || (renderer._lateMarkRecords = []);
+    late.length = 0;
+    for (let index = 0; index < peak.length; index++) late.push(peak[index]);
+    for (let index = 0; index < (t1Marks?.length || 0); index++) late.push(t1Marks[index]);
+    return renderer.gpuWorld.drawLateMarks(late) === late.length;
 }
 
 // 0.2 — which ground cues a pass paints. Canvas paints all of them into the
@@ -1738,8 +1805,8 @@ function groundFogRecords(renderer, atmosphere, viewport) {
                 occluder: 0,
                 sequence: -0.85,
                 sourceKind: 'individual',
-                // V9 — like the haze field, the fog's texels sit on the screen.
-                screenSpace: true,
+                // World-px rects (not V9 screenSpace): kept off the albedo page.
+                pageable: false,
             });
             record.source = layer.canvas;
             record.sourceWidth = layer.canvas.width;

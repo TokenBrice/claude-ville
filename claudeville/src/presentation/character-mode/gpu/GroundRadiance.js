@@ -506,11 +506,11 @@ export const RADIANCE_GROUND_GAIN = 0;
 export const RADIANCE_WALL_GAIN = 0.1;
 export const RADIANCE_GROUND_STRENGTH = 0.5;
 export const RADIANCE_WALL_STRENGTH = 0.5;
-const RADIANCE_CONTRAST = 8;
-const RADIANCE_WALL_REACH = 32;
-const RADIANCE_LAND = 0.45;
+export const RADIANCE_CONTRAST = 8;
+export const RADIANCE_WALL_REACH = 32;
+export const RADIANCE_LAND = 0.45;
 // A wall reads the field this far in front of its foot (ground units).
-const RADIANCE_WALL_OFFSET = 14;
+export const RADIANCE_WALL_OFFSET = 14;
 
 /**
  * The scene pass's reader (SCENE_FRAGMENT, unit 15). `u_radianceGrid` =

@@ -664,6 +664,66 @@ export function recentMomentPeaks() {
 }
 
 // ---------------------------------------------------------------------------
+// 10.2 — the verified-success cream peak frame at the mark gain. The overlay
+// cannot present HDR, so on the resident path the renderer arms the overlay
+// context for the frame (`armPeakMarks`) and a verified-success moment's one
+// peak frame routes its cream texels through `peakMarkSink`: each run is
+// cleared from the overlay (what the overlay drew there before goes, as the
+// cream covered it; what it draws later stays on top) and kept as a
+// backing-px rect that the GPU mark pass draws as a role-2 record once the
+// overlay is drawn (`takePeakMarks`, WorldFrameRenderer). Only whole texels
+// on whole backing pixels qualify — an integer device scale and offset, full
+// alpha, source-over — so the GPU pixels are the overlay's exactly; anything
+// else, the Canvas renderer, follow frames, residues and every other
+// moment's cream draw on the overlay as before.
+// ---------------------------------------------------------------------------
+
+const peakMarks = { ctx: null, rects: [] };
+
+function whole(value) {
+    return Math.abs(value - Math.round(value)) < 1e-6;
+}
+
+/** Arm `ctx` (the overlay) for this frame's peak marks, or disarm with null. */
+export function armPeakMarks(ctx = null) {
+    peakMarks.ctx = ctx;
+    peakMarks.rects.length = 0;
+}
+
+/** This frame's peak-mark rects in backing px (`{ left, top, width, height }`), in draw order. */
+export function takePeakMarks() {
+    return peakMarks.rects;
+}
+
+/**
+ * Where a verified-success peak frame's cream texels go on `ctx`: a
+ * `fill(x, y, width, height)` in the context's user space that hands each
+ * whole-texel run to the GPU and clears it from the overlay (a run off the
+ * texel grid is filled as usual, in the caller's fillStyle), or null when
+ * the context is not armed or its transform does not put whole texels on
+ * whole backing pixels — draw as usual then.
+ */
+export function peakMarkSink(ctx) {
+    if (!ctx || ctx !== peakMarks.ctx) return null;
+    if (ctx.globalAlpha !== 1 || ctx.globalCompositeOperation !== 'source-over') return null;
+    const t = ctx.getTransform();
+    if (t.b !== 0 || t.c !== 0 || !(t.a > 0) || !(t.d > 0)) return null;
+    if (!whole(t.a) || !whole(t.d) || !whole(t.e) || !whole(t.f)) return null;
+    const a = Math.round(t.a);
+    const d = Math.round(t.d);
+    const e = Math.round(t.e);
+    const f = Math.round(t.f);
+    return (x, y, width, height) => {
+        if (!whole(x) || !whole(y) || !whole(width) || !whole(height)) {
+            ctx.fillRect(x, y, width, height);
+            return;
+        }
+        peakMarks.rects.push({ left: a * Math.round(x) + e, top: d * Math.round(y) + f, width: a * Math.round(width), height: d * Math.round(height) });
+        ctx.clearRect(x, y, width, height);
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Edge plates and the residue thread.
 // ---------------------------------------------------------------------------
 
@@ -681,9 +741,11 @@ const EDGE_STACK_STEP = EDGE_PLATE_H + 4;
  * Queue a screen-fixed edge plate for a moment whose anchor resolved to
  * `edge`: the family colour cell with a stepped arrow pointing past the frame
  * and one word; `peak` fills the cell cream for the moment's one peak frame.
- * Drawn by `drawMomentEdgePlates` after the world pass.
+ * `peakMark` (a verified-success moment) hands that cream cell to the GPU as
+ * a role-2 mark (`peakMarkSink`). Drawn by `drawMomentEdgePlates` after the
+ * world pass.
  */
-export function queueMomentEdgePlate(anchor, { word = '', color = PEAK, peak = false, ctx = null } = {}) {
+export function queueMomentEdgePlate(anchor, { word = '', color = PEAK, peak = false, peakMark = false, ctx = null } = {}) {
     if (!anchor || anchor.mode !== 'edge' || !stage.viewport) return null;
     if (stage.plates.some(plate => plate.id != null && plate.id === anchor.id)) return null;
     let textWidth = String(word).length * 8;
@@ -695,7 +757,7 @@ export function queueMomentEdgePlate(anchor, { word = '', color = PEAK, peak = f
     }
     const width = 2 + EDGE_WORD_PAD * 2 + EDGE_ARROW_CELL + Math.ceil(textWidth);
     const rect = edgePlateRect(anchor.side, anchor.screen, width);
-    const plate = { id: anchor.id, side: anchor.side, word: String(word), color, peak: Boolean(peak), rect };
+    const plate = { id: anchor.id, side: anchor.side, word: String(word), color, peak: Boolean(peak), peakMark: Boolean(peak && peakMark), rect };
     stage.plates.push(plate);
     if (peak) logPeak(anchor, rect);
     return plate;
@@ -749,7 +811,9 @@ export function drawMomentEdgePlates(ctx) {
         ctx.fillStyle = LABEL_INK.plateOutline;
         ctx.fillRect(rect.left, rect.top, width, EDGE_PLATE_H);
         ctx.fillStyle = plate.peak ? PEAK : plate.color;
-        ctx.fillRect(rect.left + 1, rect.top + 1, width - 2, EDGE_PLATE_H - 2);
+        const sink = plate.peakMark ? peakMarkSink(ctx) : null;
+        if (sink) sink(rect.left + 1, rect.top + 1, width - 2, EDGE_PLATE_H - 2);
+        else ctx.fillRect(rect.left + 1, rect.top + 1, width - 2, EDGE_PLATE_H - 2);
         const x0 = rect.left + 1 + EDGE_WORD_PAD;
         const y0 = rect.top + 5;
         const size = EDGE_ARROW.length;
@@ -892,8 +956,9 @@ export function comet(ctx, x, y, dirX, dirY, { length = 4, ramp = MAGIC_RAMP, he
 // 1-texel ink (every empty texel touching it) so the gold reads over timber,
 // slate or sail alike. `fade` < 1 drops texels on a world-locked 4×4 Bayer
 // order (ink included), so the figure dissolves in whole texels, never
-// translucent. The figure is laid into a texel mask first and filled once per
-// texel.
+// translucent. `peakMark` (the verified-success peak frame, 10.2) hands its
+// cream texels to `peakMarkSink`. The figure is laid into a texel mask first
+// and filled once per texel.
 const CROWN_EMPTY = 0;
 const CROWN_INK = 1;
 const CROWN_SHADE = 2;
@@ -908,7 +973,7 @@ const CROWN_BAYER4 = Object.freeze([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 
 export const CROWN_OVERHANG = 3;
 let crownMask = new Uint8Array(4096);
 
-export function crown(ctx, x, y, { radius = 12, inner = 0, ramp = GOLD_RAMP, jewel = null, core = null, outline = null, fade = 1 } = {}) {
+export function crown(ctx, x, y, { radius = 12, inner = 0, ramp = GOLD_RAMP, jewel = null, core = null, outline = null, fade = 1, peakMark = false } = {}) {
     const cx = snap(x);
     const cy = snap(y);
     const r = Math.max(inner + 3, Math.round(radius));
@@ -1004,16 +1069,19 @@ export function crown(ctx, x, y, { radius = 12, inner = 0, ramp = GOLD_RAMP, jew
         }
     }
     const tones = [null, outline, ramp[0], ramp[1], ramp[2], jewel || ramp[2], PEAK, core];
+    const sink = peakMark ? peakMarkSink(ctx) : null;
     for (let cls = CROWN_INK; cls <= CROWN_CORE; cls++) {
         if (!tones[cls]) continue;
         ctx.fillStyle = tones[cls];
+        const fill = sink && tones[cls] === PEAK ? sink : null;
         for (let row = 0; row < h; row++) {
             const base = row * w;
             for (let col = 0; col < w; col++) {
                 if (mask[base + col] !== cls) continue;
                 let end = col + 1;
                 while (end < w && mask[base + end] === cls) end++;
-                ctx.fillRect(left + col, top + row, end - col, 1);
+                if (fill) fill(left + col, top + row, end - col, 1);
+                else ctx.fillRect(left + col, top + row, end - col, 1);
                 col = end;
             }
         }

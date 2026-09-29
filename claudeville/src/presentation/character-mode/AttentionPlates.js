@@ -28,12 +28,28 @@
 // Cost: layout is O(n²) over on-screen action-needed agents only (usually
 // 0–10); drawing is ≤ 8 fills + 2 fillText per plate and one cached stamp
 // blit per beacon. Static: no motion, so reduced motion is identical.
+//
+// Resident WebGL2 path (Wave 10 S5, contract §7.4): the mark's graphical
+// pixels — leader, beacon, plate rim, status cell, text cell, notch and edge
+// arrow — are V9 mark records (`attentionMarkRecords`, flag `screenSpace`,
+// rects in backing pixels) that the GPU draws above its composite, and the
+// overlay keeps only the ink (`drawAttentionPlates(..., { inkOnly: true })`):
+// at the plates' slot it clears each graphic's exact footprint, so nothing
+// drawn earlier on the overlay covers a mark, then prints the word, name and
+// time. Same geometry, same inks, same order: the page is byte-identical.
+// Role 2 (§7.1, action-needed) rides the status-colour pixels — the status
+// cell, the notch's status rows and the beacon's colour stamp (flag
+// `actionMark`); rim, text cell, leader, the beacon's outline stamp and the
+// edge arrow (plate ink) are role 0. Canvas and non-integer DPR keep the
+// overlay plates.
 
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { waitAnchor } from '../../domain/services/SignalLedger.js';
 import { STATUS_VISUALS, WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { EFFECT_COLORS } from '../../config/artPalette.js';
 import { elapsedTickNow, formatElapsed } from '../shared/Formatters.js';
-import { LABEL_INK, drawOutlinedMotif, fitLabelText, measureLabelText } from './WorldLabelKit.js';
+import { LABEL_INK, drawOutlinedMotif, fitLabelText, measureLabelText, outlinedMotifStamp } from './WorldLabelKit.js';
+import { GPU_RECORD_FLAGS } from './gpu/GpuWorldPolicy.js';
 
 export const ATTENTION_STATUSES = Object.freeze([
     AgentStatus.WAITING_ON_USER,
@@ -532,8 +548,13 @@ export function attentionScreenRects(layout) {
     return out;
 }
 
-/** Draws a layout from layoutAttentionPlates. `ctx` must be in CSS-pixel screen space. */
-export function drawAttentionPlates(ctx, layout) {
+/**
+ * Draws a layout from layoutAttentionPlates. `ctx` must be in CSS-pixel screen space.
+ * `inkOnly` (the resident path, whose GPU drew `attentionMarkRecords` this
+ * frame): clear every graphic's footprint instead of filling it, then print
+ * the text — the overlay above the GPU marks carries only the ink.
+ */
+export function drawAttentionPlates(ctx, layout, { inkOnly = false } = {}) {
     if (!ctx || !layout?.count) return;
     ctx.save();
     ctx.globalAlpha = 1;
@@ -541,7 +562,15 @@ export function drawAttentionPlates(ctx, layout) {
     ctx.shadowColor = 'transparent';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    for (const plate of layout.plates) drawLeader(ctx, plate);
+    const fill = inkOnly
+        ? (ink, left, top, width, height) => ctx.clearRect(left, top, width, height)
+        : (ink, left, top, width, height) => {
+            ctx.fillStyle = ink;
+            ctx.fillRect(left, top, width, height);
+        };
+    for (const plate of layout.plates) leaderFills(plate, fill);
+    // A beacon stamp's opaque pixels erase exactly what they would cover.
+    if (inkOnly) ctx.globalCompositeOperation = 'destination-out';
     for (const beacon of layout.beacons) {
         drawOutlinedMotif(ctx, beacon.kind.motif, beacon.left + 1, beacon.top + 1, {
             step: BEACON_STEP,
@@ -549,8 +578,174 @@ export function drawAttentionPlates(ctx, layout) {
             outline: LABEL_INK.plateOutline,
         });
     }
-    for (const plate of layout.plates) drawPlate(ctx, plate);
+    if (inkOnly) ctx.globalCompositeOperation = 'source-over';
+    for (const plate of layout.plates) {
+        plateFills(plate, fill);
+        drawPlateText(ctx, plate);
+    }
     ctx.restore();
+}
+
+// §7.1 roles a mark record carries: 2 = action-needed (the solid status-colour
+// areas: status cell, notch status rows, the beacon's colour pixels), 0 = rim
+// and plate ink (the beacon's dark outline and the edge arrow included), so
+// 10.2's mark gain never lifts a dark ink.
+const ROLE_RIM = 0;
+const ROLE_MARK = 2;
+
+// One texel per plate ink, sampled by the fill records (nearest, clamped to
+// the texel, so every record is its ink's exact bytes). The C4 peak cream
+// rides the same atlas for the verified-success peak frame (`inkMarkRecords`).
+const MARK_INKS = Object.freeze([
+    LABEL_INK.plateOutline,
+    LABEL_INK.plate,
+    ...Object.values(KIND).map(kind => kind.color),
+    EFFECT_COLORS.peak,
+]);
+let markInkAtlas = null;
+
+function markInks() {
+    if (markInkAtlas) return markInkAtlas;
+    if (typeof document === 'undefined') return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = MARK_INKS.length;
+    canvas.height = 1;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    const texel = new Map();
+    MARK_INKS.forEach((ink, index) => {
+        ctx.fillStyle = ink;
+        ctx.fillRect(index, 0, 1, 1);
+        texel.set(ink, index);
+    });
+    markInkAtlas = { canvas, texel };
+    return markInkAtlas;
+}
+
+const MARK_RECORD_POOL = [];
+
+function markRecord(index, source, textureKey, pool = MARK_RECORD_POOL) {
+    const record = pool[index] || (pool[index] = {
+        prenormalized: true,
+        blend: 'normal',
+        alpha: 1,
+        material: 0,
+        elevation: 0,
+        emissive: 0,
+        emissiveGate: 1,
+        occluder: 0,
+        paletteRamp: false,
+        writesDepth: false,
+        depthKey: 0,
+        footY: -1,
+        frontCornerX: 0,
+        frontCornerY: -1,
+        ownerSlot: 0,
+        landmarkId: 0,
+        pageLayer: -1,
+        textureRevision: 0,
+    });
+    record.source = source;
+    record.textureKey = textureKey;
+    record.sourceWidth = source.width;
+    record.sourceHeight = source.height;
+    record.sequence = index;
+    return record;
+}
+
+/**
+ * T1 on the resident path (§7.4): the layout's graphical pixels as V9 mark
+ * records in draw order — leaders, beacons, then each plate's fills — with
+ * rects in backing pixels (`scale` = the overlay's integer device scale) and
+ * flag `screenSpace` (+ `actionMark` for role 2). Returns `out` (emptied
+ * first), or null when the layout cannot be expressed exactly (no DOM, an
+ * ink or motif without a texel), in which case the overlay draws the plates.
+ */
+export function attentionMarkRecords(layout, { scale = 1, out = [] } = {}) {
+    out.length = 0;
+    if (!layout?.count) return out;
+    const inks = markInks();
+    if (!inks) return null;
+    let complete = true;
+    const fill = (ink, left, top, width, height, role) => {
+        const sx = inks.texel.get(ink);
+        if (sx === undefined) {
+            complete = false;
+            return;
+        }
+        const record = markRecord(out.length, inks.canvas, 'mark:inks');
+        record.sx = sx;
+        record.sy = 0;
+        record.sw = 1;
+        record.sh = 1;
+        record.x = left * scale;
+        record.y = top * scale;
+        record.width = width * scale;
+        record.height = height * scale;
+        record.role = role;
+        record.flags = GPU_RECORD_FLAGS.screenSpace | (role === ROLE_MARK ? GPU_RECORD_FLAGS.actionMark : 0);
+        out.push(record);
+    };
+    for (const plate of layout.plates) leaderFills(plate, fill);
+    for (const beacon of layout.beacons) {
+        // Two stamps, outline under colour: the silhouette in the outline
+        // ink (role 0), then only the motif's colour pixels (role 2). Both
+        // are opaque-or-empty, so together they are drawOutlinedMotif's
+        // pixels exactly.
+        const stamps = [
+            [outlinedMotifStamp(beacon.kind.motif, { step: BEACON_STEP, color: LABEL_INK.plateOutline, outline: LABEL_INK.plateOutline, scale }), ROLE_RIM],
+            [outlinedMotifStamp(beacon.kind.motif, { step: BEACON_STEP, color: beacon.kind.color, outline: 'transparent', scale }), ROLE_MARK],
+        ];
+        for (const [stamp, role] of stamps) {
+            if (!stamp) return null;
+            const record = markRecord(out.length, stamp.canvas, `mark:beacon:${stamp.key}`);
+            record.sx = 0;
+            record.sy = 0;
+            record.sw = stamp.canvas.width;
+            record.sh = stamp.canvas.height;
+            // drawOutlinedMotif's device origin: one pixel up-left of the motif.
+            record.x = Math.round(beacon.left * scale);
+            record.y = Math.round(beacon.top * scale);
+            record.width = stamp.canvas.width;
+            record.height = stamp.canvas.height;
+            record.role = role;
+            record.flags = GPU_RECORD_FLAGS.screenSpace | (role === ROLE_MARK ? GPU_RECORD_FLAGS.actionMark : 0);
+            out.push(record);
+        }
+    }
+    for (const plate of layout.plates) plateFills(plate, fill);
+    return complete ? out : null;
+}
+
+/**
+ * 10.2 — other overlay marks the GPU draws in one mark ink (the C4
+ * verified-success cream peak frame, EffectStamps `takePeakMarks`): each
+ * backing-px `{ left, top, width, height }` as a role-2 (`actionMark`) V9
+ * screen-space record on the ink atlas. `pool` is the caller's own record
+ * pool: this module's pool holds the frame's T1 records, which the same late
+ * pass draws again above these. Returns `out` (emptied first), or null when
+ * the ink has no texel (no DOM, or not a mark ink).
+ */
+export function inkMarkRecords(rects, ink, { out = [], pool = [] } = {}) {
+    out.length = 0;
+    const inks = markInks();
+    const sx = inks?.texel.get(ink);
+    if (sx === undefined) return null;
+    for (const rect of rects) {
+        const record = markRecord(out.length, inks.canvas, 'mark:inks', pool);
+        record.sx = sx;
+        record.sy = 0;
+        record.sw = 1;
+        record.sh = 1;
+        record.x = rect.left;
+        record.y = rect.top;
+        record.width = rect.width;
+        record.height = rect.height;
+        record.role = ROLE_MARK;
+        record.flags = GPU_RECORD_FLAGS.screenSpace | GPU_RECORD_FLAGS.actionMark;
+        out.push(record);
+    }
+    return out;
 }
 
 function notchX(plate) {
@@ -560,55 +755,54 @@ function notchX(plate) {
 
 // A displaced plate keeps a one-pixel elbow back to its beacon: vertical from
 // the notch, then horizontal to the anchor column. Axis-aligned only.
-function drawLeader(ctx, plate) {
+// `fill(ink, left, top, width, height, role)` in CSS px, in draw order.
+function leaderFills(plate, fill) {
     if (plate.side) return;
     const nx = notchX(plate);
     const fromY = plate.rect.bottom + NOTCH_ROWS;
     const toY = plate.tip;
     if (toY - fromY < 1 && nx === plate.anchorX) return;
-    ctx.fillStyle = LABEL_INK.plateOutline;
     const top = Math.min(fromY, toY);
-    ctx.fillRect(nx - 1, top, 3, Math.abs(toY - fromY) + 1);
+    fill(LABEL_INK.plateOutline, nx - 1, top, 3, Math.abs(toY - fromY) + 1, ROLE_RIM);
     if (nx !== plate.anchorX) {
         const left = Math.min(nx, plate.anchorX);
-        ctx.fillRect(left - 1, toY - 1, Math.abs(plate.anchorX - nx) + 3, 3);
+        fill(LABEL_INK.plateOutline, left - 1, toY - 1, Math.abs(plate.anchorX - nx) + 3, 3, ROLE_RIM);
     }
-    ctx.fillStyle = plate.color;
-    ctx.fillRect(nx, top, 1, Math.abs(toY - fromY) + 1);
+    fill(plate.color, nx, top, 1, Math.abs(toY - fromY) + 1, ROLE_RIM);
     if (nx !== plate.anchorX) {
-        ctx.fillRect(Math.min(nx, plate.anchorX), toY, Math.abs(plate.anchorX - nx) + 1, 1);
+        fill(plate.color, Math.min(nx, plate.anchorX), toY, Math.abs(plate.anchorX - nx) + 1, 1, ROLE_RIM);
     }
 }
 
-function drawPlate(ctx, plate) {
+function plateFills(plate, fill) {
     const { rect, widths } = plate;
     const left = rect.left;
     const top = rect.top;
     const width = rect.right - rect.left;
-    ctx.fillStyle = LABEL_INK.plateOutline;
-    ctx.fillRect(left, top, width, PLATE_H);
-    ctx.fillStyle = plate.color;
-    ctx.fillRect(left + 1, top + 1, widths.wordCell, PLATE_H - 2);
-    ctx.fillStyle = LABEL_INK.plate;
-    ctx.fillRect(left + 1 + widths.wordCell, top + 1, widths.textCell, PLATE_H - 2);
+    fill(LABEL_INK.plateOutline, left, top, width, PLATE_H, ROLE_RIM);
+    fill(plate.color, left + 1, top + 1, widths.wordCell, PLATE_H - 2, ROLE_MARK);
+    fill(LABEL_INK.plate, left + 1 + widths.wordCell, top + 1, widths.textCell, PLATE_H - 2, ROLE_RIM);
 
     if (plate.side) {
-        drawEdgeArrow(ctx, plate);
+        edgeArrowFills(plate, fill);
     } else {
         // Notch: three stepped rows under the plate in the status colour,
         // with a dark outline, pointing down at the beacon.
         const nx = notchX(plate);
         const bottom = top + PLATE_H;
-        ctx.fillStyle = LABEL_INK.plateOutline;
-        ctx.fillRect(nx - 3, bottom, 7, 1);
-        ctx.fillRect(nx - 2, bottom + 1, 5, 1);
-        ctx.fillRect(nx - 1, bottom + 2, 3, 1);
-        ctx.fillStyle = plate.color;
-        ctx.fillRect(nx - 2, bottom - 1, 5, 1);
-        ctx.fillRect(nx - 1, bottom, 3, 1);
-        ctx.fillRect(nx, bottom + 1, 1, 1);
+        fill(LABEL_INK.plateOutline, nx - 3, bottom, 7, 1, ROLE_RIM);
+        fill(LABEL_INK.plateOutline, nx - 2, bottom + 1, 5, 1, ROLE_RIM);
+        fill(LABEL_INK.plateOutline, nx - 1, bottom + 2, 3, 1, ROLE_RIM);
+        fill(plate.color, nx - 2, bottom - 1, 5, 1, ROLE_MARK);
+        fill(plate.color, nx - 1, bottom, 3, 1, ROLE_MARK);
+        fill(plate.color, nx, bottom + 1, 1, 1, ROLE_MARK);
     }
+}
 
+function drawPlateText(ctx, plate) {
+    const { rect, widths } = plate;
+    const left = rect.left;
+    const top = rect.top;
     ctx.font = WORLD_DISPLAY_FONT_8;
     ctx.fillStyle = LABEL_INK.plate;
     ctx.fillText(plate.word, left + 1 + WORD_PAD + (plate.wordOffset || 0), top + 13);
@@ -625,19 +819,18 @@ function drawPlate(ctx, plate) {
 // Edge plate arrow: a 7×7 pixel arrow in plate ink at the head of the status
 // cell, pointing past the frame toward the agent (the authored down arrow,
 // flipped or transposed for the other sides).
-function drawEdgeArrow(ctx, plate) {
+function edgeArrowFills(plate, fill) {
     const { rect, side } = plate;
     const x0 = rect.left + 1 + WORD_PAD;
     const y0 = rect.top + 5;
     const size = EDGE_ARROW_DOWN.length;
-    ctx.fillStyle = LABEL_INK.plate;
     for (let row = 0; row < size; row++) {
         for (let col = 0; col < size; col++) {
             const filled = side === 'bottom' ? EDGE_ARROW_DOWN[row][col]
                 : side === 'top' ? EDGE_ARROW_DOWN[size - 1 - row][col]
                     : side === 'right' ? EDGE_ARROW_DOWN[col][row]
                         : EDGE_ARROW_DOWN[size - 1 - col][row];
-            if (filled === '#') ctx.fillRect(x0 + col, y0 + row, 1, 1);
+            if (filled === '#') fill(LABEL_INK.plate, x0 + col, y0 + row, 1, 1, ROLE_RIM);
         }
     }
 }

@@ -150,9 +150,22 @@ The resident renderer draws **one instance per record**
 the strip corner from `gl_VertexID`). WebGL2 has no base instance, so each batch
 re-points its attributes at its own byte range (`_pointRecordInstances`).
 
+The layout below has one owner, `gpu/GpuRecordLayout.js`, so every world
+backend stages from the same bytes: `RECORD_LAYOUT` / `RECORD_OFFSETS` (field
+byte offsets), `RECORD_HEAD_BYTES` 48, `RECORD_INSTANCE_BYTES` 68,
+`recordHasDefaultTail`, `writeGpuRecordInstance(f32, u16, byteOffset, record,
+tail)` and `stageGpuRecords(batches, staging, { fullTail })` (one growable
+buffer from `createRecordStaging()`; sets each batch's `tail`, `cueRuns`,
+`instanceOffset`, `count`; `fullTail` stages every record at 68 bytes for a
+backend with base-instance draws). `assertRecordStride(stride)` checks the
+field table tiles the record at module load and rejects any other stride: a
+WebGPU storage struct must use scalar lanes (stride 68), never `vec4` lanes
+(stride 80). The uint16 pairs are little-endian, so a reader of 32-bit lanes
+takes each lane's low half first.
+
 | Loc | Type | Fields | Bytes |
 | --- | --- | --- | --- |
-| 0 | `FLOAT x4` | rect `(x, y, w, h)`, world px | 0-15 |
+| 0 | `FLOAT x4` | rect `(x, y, w, h)`, world px (backing px, top-left origin, for a `screenSpace` record) | 0-15 |
 | 1 | `FLOAT x4` | uv rect `(u0, v0, u1, v1)`; a paged record's rect addresses its slot in its page layer | 16-31 |
 | 2 | `FLOAT x4` | `(alpha, material, elevation, emissive)` | 32-47 |
 | 3 | `USHORT x4` | `(page layer, gate x 65535, ramp, flags)` | 48-55 |
@@ -168,8 +181,11 @@ ground-cue chord. A cue batch holding dot runs and a batch holding building or
 tree ground casts stage the tail (their flags).
 
 - **Flags** (`GPU_RECORD_FLAGS`, loc3.w): 1 `writesDepth`, 2 `reflect`
-  (3.11), 4 `fatOptOut` (4.6), 8 `screenSpace` (haze, `ground:semantics`),
-  16 `surfaceCode` (2.3: occluder B is the surface code, R true height),
+  (3.11), 4 `fatOptOut` (4.6), 8 `screenSpace` (Wave 10 S5: loc0 is in
+  backing pixels and the vertex stage passes it straight through, skipping
+  world→screen, so camera pan and zoom never move it; only the T1 mark
+  records carry it — see below), 16 `surfaceCode` (2.3: occluder B is the
+  surface code, R true height),
   32 `packedGeometry` (B.2), 64 `receiverAxis` (3.8: an upright prop turning
   round a vertical axis), 128 `cueRun` (B.3: a ground-cue dot run; loc1
   holds four packed 24-bit integer words, not UVs, and the batch draws
@@ -178,11 +194,106 @@ tree ground casts stage the tail (their flags).
   `groundCast` (2.9: a building or tree ground cast; over painted water,
   coast flag `water` and not `covered`, the scene fragment keeps
   `RakingLight.GROUND_CAST_WATER_SHARE` of it and breaks it by the water
-  column's ripple rows).
+  column's ripple rows), 512 `actionMark` (Wave 10 S5: a mark record's
+  role 2 — a T1 mark or the C4 verified-success peak frame).
+- **T1 mark records** (Wave 10 S5, WebGPU contract §7.4): `AttentionPlates
+  .attentionMarkRecords(layout, { scale })` turns an attention layout's
+  graphical pixels into prenormalized V9 records in the overlay's draw order —
+  leaders, beacons, then per plate its rim, status cell, text cell and notch
+  or edge arrow — at `scale` (the overlay's integer device scale) in backing
+  pixels, all `screenSpace`. Fills sample one texel of a small ink atlas
+  (`mark:inks`: plate outline, plate, the three status colours, the C4 peak
+  cream); a beacon is two stamp records over the same origin, its silhouette
+  in the outline ink and then only its colour pixels
+  (`WorldLabelKit.outlinedMotifStamp` with a `transparent` outline), which
+  together are exactly the stamp the overlay
+  blits. `GpuWorldRenderer.render({ …, marks })` draws them after the
+  composite, straight onto the presented frame (`MARK_FRAGMENT`: the texel,
+  premultiplied, source-over), so no grade, fog, flash, bloom or particle
+  touches them; `markRecords` / `markRoleRecords` report the frame's count.
+  When every mark drew, the overlay prints only the ink
+  (`drawAttentionPlates(ctx, layout, { inkOnly: true })` clears each graphic's
+  footprint at the plates' slot, then draws the word, name and time), so the
+  page is byte-identical to the overlay-only path. Canvas, a non-integer DPR
+  or a GPU backing that is not the overlay's keep the overlay plates.
+- **Roles** (Wave 10 plan items 10.2 / 10.3, M1): 0 none, 1 building/prop
+  emitter, 2 action-needed mark (and the C4 verified-success cream peak
+  frame). Roles exist only on an HDR or P3 screen; the SDR path never reads
+  or writes one.
+  - *Role 2* rides a mark record's flags (`actionMark`): only the
+    status-colour pixels — the plate status cell, the notch's status rows and
+    each beacon's colour stamp. The rim, text cell, leader, the beacon's
+    outline stamp and the edge arrow are dark inks and role 0, so no gain
+    ever lifts an ink. Role 2 never enters the scene MRT: the mark pass draws
+    after the composite and its roles fragment (`markRolesFs`, WebGPU;
+    `MARK_P3_FRAGMENT`, WebGL2 P3) applies the mark gain per record
+    (`oetf(eotf(c) * markGain)` under HDR) and the P3 role chroma.
+  - *The C4 verified-success peak frame* is role 2 for one art frame, the
+    80 ms C4 peak phase (several display frames: 4–5 at 60 Hz, 9–10 at
+    120 Hz; not one display frame) (10.2): the release crown's cream frame,
+    its sloop's cream sail rim and, when the crown docks at the edge, the
+    `RELEASE` plate's cream cell. On
+    the resident path (an integer device scale, the overlay's backing size)
+    `WorldFrameRenderer` arms the overlay (`EffectStamps.armPeakMarks`); the
+    peak frame hands each whole-texel cream run to `peakMarkSink`, which
+    clears it from the overlay and keeps its backing-px rect, and after the
+    edge plates the rects become `mark:inks` peak-cream records
+    (`AttentionPlates.inkMarkRecords`, `screenSpace | actionMark`) drawn in a
+    late mark pass on the same presented frame (`drawLateMarks`, both
+    backends), followed by the frame's T1 mark records again so the plates
+    stay above the moment as the overlay stacks them. Overlay content drawn
+    after the moment stays on top; what it drew before is cleared exactly
+    where the cream covered it, so the SDR page is byte-identical to the
+    overlay-only path. A transform off the whole-pixel grid, the Canvas
+    renderer, follow frames, residues and every other moment's cream stay on
+    the overlay; a late pass that draws fewer records than it was given
+    repaints the cream on the overlay. `lateMarkRecords` /
+    `lateMarkRoleRecords` report the frame's late pass.
+  - *Role 1* rides the emission attachment's alpha. It is staged through the
+    blend state, not the fragment: on an HDR/P3 screen the scene and particle
+    pipelines take the role variants (`GpuWgpuPipelines.BLEND_NORMAL_ROLE` /
+    `BLEND_ADD_ROLE`: colour exactly as Stage A, alpha `src.a × constant +
+    dst.a × (1 − src.a)`, additive batches never change it) and the pass's
+    blend constant is 1 for a batch with an authored emissive sidecar whose
+    records carry no owner slot (a building or prop, never a character), 0
+    otherwise, so a covering fragment writes its batch's role and the
+    emission colour is untouched (bloom reads the same bytes). The emission
+    target is `rgba16float` only while HDR presents (8-bit otherwise). The
+    roles composite (`compositeRolesFs`) treats a pixel as role 1 when its
+    emission alpha is ≥ 0.5 and its emission luma reaches the first course
+    (0.10). WebGL2's P3 twin reads the same channel: on a P3 screen its
+    scene pass writes the emission MRT every frame (bloom or not) and
+    stages the role in attachment 1's alpha with `OES_draw_buffers_indexed`
+    (`blendFuncSeparateiOES(1, ONE, ONE_MINUS_SRC_ALPHA, CONSTANT_ALPHA,
+    ONE_MINUS_SRC_ALPHA)`, additive `ZERO, ONE` for alpha; `blendColor` alpha
+    = the batch role); without the extension no WebGL2 pixel is role 1.
+  - *Gains* (`DisplayColor.hdrGainTable`): emitter courses at emission luma
+    0.10 / 0.30 / 0.55 gain 1 + (peak − 1) × 0.35 / 0.65 / 1.0 (peak 1.5
+    subtle, 2.0 full) while the lamps are lit (`settling` lamp course);
+    marks gain peak + `HDR_MARKS_ABOVE_EMITTER` (0.5): 2.0 subtle, 2.5 full.
+    An emitter pixel's gain stops where its linear luminance (in the canvas's
+    own primaries) would pass `emitterCap` — the NEEDS YOU hue
+    (`HDR_CAP_MARK_HUE`, `#e8d44d`) at the mark gain less
+    `HDR_EMITTER_CAP_MARGIN` (0.02): 1.276 subtle, 1.599 full, the frame
+    uniform `hdrEmitterCap` — so no emitter outshines the primary action
+    mark; the cap is at least SDR white, so the gain never falls below 1.
+    It is a per-mode constant, whatever marks are on screen. The absolute
+    ordering holds against the NEEDS YOU hue; darker marks (the error red,
+    the limit violet) keep only the gain ordering, since outranking a white
+    flame core in light would dim the core below its SDR value.
+    Under HDR bloom is off, and every non-role pixel holds the 8-bit value
+    the SDR canvas would store.
+  - *P3*: every pixel becomes Display P3 numbers for the same colour; role
+    pixels gain OKLab chroma ×1.22 at their own OKLab lightness and hue,
+    bisected back inside the P3 gamut. The overlay's reserved-hue inks
+    (`config/p3Variants.js`) are generated by the same mapping
+    (`DisplayColor.p3RoleInk`), so a hue drawn as a GPU mark and as an
+    overlay or Canvas ink lands on the same P3 colour (within 1 LSB).
 - **Albedo page** (B.1b, `GpuAlbedoPage.js`, unit 14): one `TEXTURE_2D_ARRAY`
   of 1024² RGBA8 layers (at most 6; 3 at dense-100) holding the sources of
   sidecar-less records (`gpuRecordPageable`: no material, emissive or occluder
-  source, no sidecar key, not screen-space, a whole-source rect of a source at
+  source, no sidecar key, not screen-space nor `pageable: false` — the
+  world-px field layers: ground haze, fog, `ground:semantics` — a whole-source rect of a source at
   most 1022 px a side): tree lean frames, tree and building ground casts, agent
   ground stamps (contact shadows, 2.8 point casts, rings), static prop caches,
   and the agent frame atlas while it has no channel atlas. loc3.x carries the
@@ -269,7 +380,9 @@ so the clustered and the flat walk light the identical set of pixels.
 format, data, revision })` takes `r8`/`rg8` (`Uint8Array`), `r16ui`
 (`Uint16Array`, read through `usampler2D`) and `rgba32f` (`Float32Array`) with
 `UNPACK_ALIGNMENT 1`, nearest sampling and `texelFetch`; it re-uploads only on
-a revision or size change (`texSubImage2D` when the size holds). Every cache
+a revision or size change (`texSubImage2D` when the size holds). The frame
+fields' bytes and revisions (light records and tile index, sea gust, footprint,
+puddle mask) come from `gpu/GpuFrameState.js` (below). Every cache
 entry counts its real bytes (`width x height x bytesPerTexel`), so the 160 MiB
 cached-source ceiling and Shift-D see an R8 field at a quarter of an RGBA
 canvas. First consumer: the particle motif mask. The ceiling was 48 MiB until
@@ -277,6 +390,30 @@ B.2; every frame already samples 105-137 MB of sources (terrain bake 25 MB,
 four world-pilot pages 64 MB, ground fields ~10.5 MB, agent atlases 6-30 MB),
 so a 48 MiB cap was permanently exceeded and only evicted what the camera had
 just left.
+
+**Frame state** (`gpu/GpuFrameState.js`, pure: no GL, no DOM): every
+per-frame value a world backend uploads is resolved there once from the feed,
+the camera and the ladder level, and the WebGL2 renderer only uploads what it
+returns. `resolveCamera(camera, scale, out)` → `{ xy, scale }` (backing px =
+(world + xy) x scale, doubles); `resolveFatPixels(camera, override)`;
+`resolveFrameGrade(feed)`; `resolveWeatherUniform(feed, level)` (`u_weather`
+with the `weather-amplitude` shear); `resolveOccluderChannel(feed)`;
+`resolveWaterFx(feed, camera, level, grade, moonFill, width, out)` →
+`{ fx, glint, stops }`; `resolveAtmosphereCourses(level, camera, feed, grade,
+out)` → `{ cloud, thresholds, haze, sunlit, courses, aerialHaze }`;
+`resolveSeaWeather(level, camera, feed, { courses, width, height }, out)` →
+`{ sunlit, gust }` (gust = `resolveSeaGustRect`'s R8 field `{ data, width,
+height, rect, revision }` or null); `resolveLights(feed, camera, level, { width,
+height, view, clusterOverride, state })` → the light records, `count`,
+`tiles` (null unless clustered), `tilesX`/`tilesY`, `clusters`, `admission`
+(`getDiagnostics().lightAdmission`), `wetReflectionCount`, `footprint`,
+`marchSteps`, `localLightPhase` and the record/tile revisions;
+`resolveBeam(feed, out)` → `{ active, ground, shape, courseEnds, courseShares
+}`; `resolvePuddles(feed, out)` → `{ mask, rect, puddles, sky, ground }`;
+`resolvePaletteLut(level, feed)` → the 11x3 ramp source or null. The `create*`
+factories build the per-backend scratch the resolvers fill in place;
+`scripts/tests/gpu-frame-state.test.mjs` pins each resolver to the values the
+renderer computed inline before the extraction.
 
 **Patch uploads** (record `textureUpdates`, `materialTextureUpdates`,
 `emissiveTextureUpdates`): each entry `{ x, y, width, height, source }`
@@ -347,6 +484,51 @@ its upload; the terrain bake uses it and re-bakes when the texture is gone.
   runs its first live job; a tick forced by the idle timeout (`didTimeout`,
   `timeRemaining()` 0) runs exactly that one, a real idle period keeps going
   until the 2 ms slice or the deadline ends.
+
+**WebGPU backend** (Wave 10, 10.1 Stage A, `?renderer=webgpu` opt-in;
+`gpu/GpuWorldRendererWebGPU.js`, `gpu/wgpu/`, `gpu/wgsl/`). It consumes this
+contract unchanged:
+
+- Records: every batch stages the full 68-byte record
+  (`stageGpuRecords(batches, staging, { fullTail: true })`) into one storage
+  buffer read in the vertex stage as `array<RecordInstance>` of scalar lanes
+  (`wgsl/common.js`, built from `RECORD_LAYOUT`: `loc0x..loc2w` f32, then
+  `loc3xy`, `loc3zw`, `loc4xy`, `loc4zw`, `loc5xy` u32 with the first uint16 in
+  the low half; `recordLoc0..5()` return what the GL attributes read). A batch
+  draws its own slice with `firstInstance = instanceOffset / 68` (WebGPU's
+  `instance_index` includes it), so the head-only default tail is a WebGL2
+  detail. A compute probe on every new device reads the lanes back through the
+  shader's own storage layout and calls `assertRecordStride` (68, never 80).
+- Samplers become named bindings (no sampler arrays): group 0 per frame (frame
+  uniforms, cloud tile, gust field, light records/tiles, footprint, cycle
+  offset, coast field, puddle mask, palette LUT, radiance, particle motifs and
+  their samplers), group 1 per batch (batch uniforms at a 256-byte dynamic
+  offset, the record buffer, albedo 2D + albedo page array, material,
+  emissive, occluder/packed-geometry sidecars, one nearest clamp sampler).
+  Both albedo bindings always exist; the inactive one is a 1×1 stand-in, as
+  the page's is on unit 14. Every `texture()` read is `textureSampleLevel(…,
+  0.0)` with the same filter, every `texelFetch` a `textureLoad`, except the
+  light records: the floats WebGL2 uploads as its 256×4 RGBA32F record
+  texture sit verbatim in a read-only storage buffer (`lightData[row * 256 +
+  i]`, rewritten when `recordsRevision` moves). The light walk reads them per
+  light per pixel, and the buffer load costs measurably less than the texture
+  fetch (Stage B gpu-burst); the tile index stays an R16UI texture (a buffer
+  read measured slower there).
+- Uploads: the same bytes as WebGL2. Typed fields (`uploadTypedTexture`: r8,
+  rg8, r16ui, rgba32f, rgba8) go through `queue.writeTexture` from the same
+  arrays (tight rows; only buffer copies need the 256-byte pitch). Canvas and
+  image sources, their sub-rect patches and albedo-page slots go through
+  `copyExternalImageToTexture` with `premultipliedAlpha: false, flipY: false`,
+  measured byte-identical to `texImage2D` with `UNPACK_PREMULTIPLY_ALPHA_WEBGL
+  false` at every alpha 0–255 (`output/waking-isle/WGPUCore/probe-bytes.html`),
+  so no atlas byte changes for the port. The texture cache keeps each entry's
+  source beside its GPU handle, so a device rebuild re-uploads from source; a
+  B.2 GPU-resident stand-in reports `hasResidentTexture` false after a loss and
+  its owner re-bakes, exactly as after a WebGL context loss.
+- The shared numbers are generated, never copied: `GRADE_WGSL`
+  (`wgsl/grade.js`) interpolates `GpuWorldPolicy.GRADE_CONSTANTS` through the
+  same formatter as `GRADE_GLSL`, and every twin include interpolates the JS
+  constants its GLSL twin does.
 
 ### Landmark surface channel (plan 2.3)
 

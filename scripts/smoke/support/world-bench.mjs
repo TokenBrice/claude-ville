@@ -15,8 +15,10 @@ export const BENCH_WEATHER = Object.freeze({
   storm: Object.freeze({ type: 'storm', intensity: 1, precipitation: 1, fog: 0.34, cloudCover: 1, windX: -0.78 }),
 });
 
-// Real-GPU Chromium on macOS; the unlocked arm adds vsync and frame-rate
-// limits off so the rAF interval is the frame's own cost.
+// Real-GPU Chromium on macOS (a hardware WebGPU adapter, so the World's
+// default backend is WebGPU: pass `query: { renderer: 'webgl' }` to measure
+// WebGL2); the unlocked arm adds vsync and frame-rate limits off so the rAF
+// interval is the frame's own cost.
 export const GPU_LAUNCH_ARGS = Object.freeze(['--use-angle=metal', '--ignore-gpu-blocklist', '--enable-gpu-rasterization']);
 export const UNLOCKED_LAUNCH_ARGS = Object.freeze(['--disable-gpu-vsync', '--disable-frame-rate-limit']);
 
@@ -102,11 +104,14 @@ export function poseWorld(page, { hour = 22, weather = 'clear', zoom = 1, tile =
     const cameraZoom = camera.tierZoom(zoom === 'survey' ? 0.5 : Number(zoom));
     renderer.setCameraPose({ x: point.x, y: point.y, zoom: cameraZoom });
     const gpu = renderer.gpuWorld;
+    // WebGL2 names its driver; WebGPU its adapter (Stage B: the Chromium default).
     const gl = gpu?.gl;
     const info = gl?.getExtension?.('WEBGL_debug_renderer_info');
     return {
       gpuWorldActive: gpu?.isActive?.() === true,
+      backend: renderer.worldRendererMode ?? null,
       glRenderer: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : null,
+      gpuAdapter: gpu?.adapterInfo ?? null,
       dpr: window.devicePixelRatio,
       zoom: camera.zoom,
       backing: gpu ? [gpu.width, gpu.height] : null,

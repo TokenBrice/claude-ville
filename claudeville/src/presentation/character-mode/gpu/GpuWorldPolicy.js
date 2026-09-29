@@ -19,6 +19,8 @@ export const LAND_FULL_STRENGTH = 0.2;
 export const GPU_WORLD_RENDERER_MODES = Object.freeze({
     WEBGL: 'webgl',
     CANVAS: 'canvas',
+    // Wave 10 Stage A — opt-in only (`?renderer=webgpu`), never a default.
+    WEBGPU: 'webgpu',
 });
 
 // EFFECT_BUDGET — the optional work the resident renderer ships and what each
@@ -398,7 +400,34 @@ export const GRADE_UNIFORM_NAMES = Object.freeze([
     'u_gradeEdge', 'u_edgeAlpha', 'u_poolGain',
 ]);
 
-export const GRADE_GLSL = `
+// The numbers GRADE_GLSL and its WebGPU twin (wgsl/grade.js GRADE_WGSL) share,
+// each interpolated into both dialects at the precision written here, so the
+// two shaders cannot drift apart and a change here changes both (CanvasGrade
+// mirrors the pool/land stops on the CPU).
+export const GRADE_CONSTANTS = Object.freeze({
+    WATER_MAX_SATURATION: Object.freeze({ value: WATER_MAX_SATURATION, digits: 3 }),
+    POOL_RIM: Object.freeze({ value: Object.freeze([1.484, 0.914, 0.430]), digits: 3 }),
+    POOL_MID: Object.freeze({ value: Object.freeze([1.208, 0.981, 0.577]), digits: 3 }),
+    POOL_CORE: Object.freeze({ value: Object.freeze([1.089, 0.995, 0.786]), digits: 3 }),
+    LAND_MID: Object.freeze({ value: Object.freeze([1.346, 0.948, 0.504]), digits: 3 }),
+    LAND_SHARE: Object.freeze({ value: Object.freeze([0.84, 0.88, 0.90]), digits: 2 }),
+    LAND_FULL_STRENGTH: Object.freeze({ value: LAND_FULL_STRENGTH, digits: 2 }),
+    RECEIVER_LUMA_CEILING: Object.freeze({ value: RECEIVER_LUMA_CEILING, digits: 4 }),
+    RECEIVER_HEADROOM: Object.freeze({ value: 0.018, digits: 3 }),
+    RECEIVER_OKL_CEILING: Object.freeze({ value: 0.836, digits: 3 }),
+    ATTENTION_OKL_CEILING: Object.freeze({ value: 0.852, digits: 3 }),
+});
+
+/** One GRADE_CONSTANTS entry as shader literal text (`1.484, 0.914, 0.430` for a triple). */
+export function gradeLiteral(constants, name) {
+    const { value, digits } = constants[name];
+    return Array.isArray(value) ? value.map(lane => lane.toFixed(digits)).join(', ') : value.toFixed(digits);
+}
+
+/** GRADE_GLSL from a constants table (the shipped one is `GRADE_CONSTANTS`). */
+export function gradeGlsl(constants = GRADE_CONSTANTS) {
+    const k = name => gradeLiteral(constants, name);
+    return `
 uniform float u_gradeExposure;
 uniform float u_gradeSaturation;
 uniform vec3 u_gradeGain;
@@ -435,7 +464,7 @@ vec3 applyTimeGrade(vec3 albedo, bool lift) {
 // V6 — graded water held at WATER_MAX_SATURATION (HSV), pulled toward its
 // own luma so hue, luma and the cool R−B sign are kept. The CPU twin is
 // GradeEvaluator \`capSaturation\` (CoastBake's outer ocean).
-const float WATER_MAX_SATURATION = ${WATER_MAX_SATURATION.toFixed(3)};
+const float WATER_MAX_SATURATION = ${k('WATER_MAX_SATURATION')};
 vec3 capSaturation(vec3 c, float maxS) {
     float hi = max(c.r, max(c.g, c.b));
     float spread = hi - min(c.r, min(c.g, c.b));
@@ -464,9 +493,9 @@ float poolWeight(float steps) {
 // Warm sources (lanterns, braziers, windows) land on the C1 emissive ramp —
 // #ff9d4a rim, #ffcf7a mid, #ffe9b8 core, luma-normalised — so each course
 // reads as its own amber step; cool/rune lights keep 70 % of their own hue.
-const vec3 POOL_RIM = vec3(1.484, 0.914, 0.430);
-const vec3 POOL_MID = vec3(1.208, 0.981, 0.577);
-const vec3 POOL_CORE = vec3(1.089, 0.995, 0.786);
+const vec3 POOL_RIM = vec3(${k('POOL_RIM')});
+const vec3 POOL_MID = vec3(${k('POOL_MID')});
+const vec3 POOL_CORE = vec3(${k('POOL_CORE')});
 // The course tint of an accumulated light (luma-normalised) and its strength.
 vec3 poolTint(vec3 light, float steps, out float strength, out float warm) {
     float l = dot(light, GRADE_LUMA);
@@ -485,12 +514,12 @@ vec3 poolTint(vec3 light, float steps, out float strength, out float warm) {
 // flame core (#ffe9b8), so the source still reads brighter and the core keeps
 // its chroma. Luma is kept, so the receiver's texture stays in the value.
 const vec3 LAND_RIM = POOL_RIM;
-const vec3 LAND_MID = vec3(1.346, 0.948, 0.504);
+const vec3 LAND_MID = vec3(${k('LAND_MID')});
 const vec3 LAND_CORE = POOL_MID;
 // Share of the landing per course (rim, mid, core) at full pool light: high
 // enough that a pool on night grass lands on its amber stop instead of
 // reading as khaki or olive (the grass's own green keeps a sixth at most).
-const vec3 LAND_SHARE = vec3(0.84, 0.88, 0.90);
+const vec3 LAND_SHARE = vec3(${k('LAND_SHARE')});
 // The least share of the value a course lands with, whatever the pool adds:
 // the thin outer course on night grass adds little value, so without a floor
 // its green kept most of the pixel and it read khaki-olive beside the amber
@@ -500,7 +529,7 @@ const vec3 LAND_SHARE = vec3(0.84, 0.88, 0.90);
 // round it and no light, however faint, lands as a ring (a lantern lands
 // every course in full, a faint light every course in part). Luma is kept,
 // so the value ladder is unchanged.
-const float LAND_FULL_STRENGTH = ${LAND_FULL_STRENGTH.toFixed(2)};
+const float LAND_FULL_STRENGTH = ${k('LAND_FULL_STRENGTH')};
 // The stop at luma \`y\`, pulled toward grey only as far as the gamut needs
 // (hue and luma kept).
 vec3 onStop(vec3 stop, float y) {
@@ -520,8 +549,8 @@ vec3 onStop(vec3 stop, float y) {
 // colour's offset from its luma is kept (fitted into gamut), so a pool keeps
 // its warmth and chroma instead of greying as it is pulled down — scaling the
 // colour by y2/y cost the plaza pools a third of their R−B.
-const float RECEIVER_LUMA_CEILING = ${RECEIVER_LUMA_CEILING.toFixed(4)};
-const float RECEIVER_HEADROOM = 0.018;
+const float RECEIVER_LUMA_CEILING = ${k('RECEIVER_LUMA_CEILING')};
+const float RECEIVER_HEADROOM = ${k('RECEIVER_HEADROOM')};
 vec3 kneeValue(vec3 lit, float y, float ceilY) {
     float kneed = ceilY + RECEIVER_HEADROOM * (1.0 - exp(-(y - ceilY) * 0.25 / RECEIVER_HEADROOM));
     vec3 chroma = lit - y;
@@ -544,8 +573,8 @@ vec3 lumaKnee(vec3 lit, float floorLuma) {
 // already put it higher. Scaling linear light by k scales okL by cbrt(k), so
 // the cap is exact and keeps hue. Only a pixel with a channel above 0.74 can
 // reach it (grey 0.74 is okL 0.79).
-const float RECEIVER_OKL_CEILING = 0.836;
-const float ATTENTION_OKL_CEILING = 0.852;
+const float RECEIVER_OKL_CEILING = ${k('RECEIVER_OKL_CEILING')};
+const float ATTENTION_OKL_CEILING = ${k('ATTENTION_OKL_CEILING')};
 vec3 decodeSrgb(vec3 c) {
     c = max(c, vec3(0.0));
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
@@ -652,6 +681,9 @@ vec3 applyGradeVignette(vec3 color, vec2 topLeftPx, vec2 resolution) {
     return color * mix(vec3(1.0), u_gradeEdge, edge);
 }
 `;
+}
+
+export const GRADE_GLSL = gradeGlsl();
 
 /** Upload one evaluated C2 grade to a program that includes GRADE_GLSL. */
 export function uploadGradeUniforms(gl, uniforms, grade) {
@@ -685,8 +717,8 @@ export const CLOUD_FIELD_PERIOD = 7168;
 
 /**
  * 1.4 / 3.4 — the share of the ground and sea under a cloud course at a
- * weather's cloud cover, one rule for both backends (GpuWorldRenderer
- * `_resolveAtmosphereCourses`, CloudShadowCourses). A fair-weather sky (cover
+ * weather's cloud cover, one rule for both backends (GpuFrameState
+ * `resolveAtmosphereCourses`, CloudShadowCourses). A fair-weather sky (cover
  * below 0.15) casts none, so a clear day reads clear on the 5120 sea; the
  * share then rises on one slope (partly cloudy 0.45 -> 0.38) to 0.45.
  */
@@ -925,29 +957,76 @@ export function isSoftwareRasterizer(rendererString) {
     return SOFTWARE_RASTER_PATTERN.test(String(rendererString || ''));
 }
 
-// The renderer `?renderer=` forces: exactly `webgl` or `canvas` (any case),
-// else null. Only a forced mode may skip the software-raster probe; an empty
-// or unknown value takes the default like no parameter at all.
+// The renderer `?renderer=` forces: exactly `webgl`, `webgpu` or `canvas` (any
+// case), else null. Only a forced mode may skip the software-raster probe; an
+// empty or unknown value takes the default like no parameter at all.
 export function forcedGpuWorldRendererMode(search = '') {
     const params = search instanceof URLSearchParams
         ? search
         : new URLSearchParams(String(search || '').replace(/^\?/, ''));
     const requested = String(params.get('renderer') || '').trim().toLowerCase();
-    return requested === GPU_WORLD_RENDERER_MODES.CANVAS || requested === GPU_WORLD_RENDERER_MODES.WEBGL
-        ? requested
-        : null;
+    return Object.values(GPU_WORLD_RENDERER_MODES).includes(requested) ? requested : null;
 }
 
-// `?renderer=webgl` forces WebGL wherever WebGL2 exists (a software
-// rasterizer included); `?renderer=canvas` forces Canvas; otherwise WebGL2 on
-// a hardware rasterizer is the default.
-export function resolveGpuWorldRendererMode(search = '', { webgl2 = true, softwareRaster = false } = {}) {
+// Stage B (webgpu contract §8.1, §9.3): WebGPU is the default only in a
+// Chromium-family browser (Dawn: the engine the parity gate measured).
+// `navigator.userAgentData.brands` names Chromium in Chrome, Edge, Brave and
+// Opera; where it is absent or empty (an insecure context, a UA override) the
+// UA string decides. Safari (its own WebGPU compiler, not yet gated in
+// Safari) and Firefox never match: they default to WebGL2.
+const CHROMIUM_BRAND_PATTERN = /^(chromium|google chrome)$/i;
+const CHROMIUM_UA_PATTERN = /\b(?:headless)?(?:chrome|chromium)\/\d/i;
+
+export function isChromiumBrowser(nav = globalThis.navigator) {
+    const brands = nav?.userAgentData?.brands;
+    if (Array.isArray(brands) && brands.length) {
+        return brands.some(entry => CHROMIUM_BRAND_PATTERN.test(String(entry?.brand || '').trim()));
+    }
+    return CHROMIUM_UA_PATTERN.test(String(nav?.userAgent || ''));
+}
+
+// Whether backend selection should request a WebGPU adapter, device and
+// pipelines before `show()`: `?renderer=webgpu` anywhere, or no forced mode
+// in a Chromium browser (`chromium`) whose WebGL2 rasterizer is hardware (a
+// software one takes the Canvas world before any adapter is requested).
+// Never under `?postfx=0` or without `navigator.gpu` (`gpu`).
+export function shouldProbeWebGpu(search = '', { chromium = false, gpu = false, softwareRaster = false } = {}) {
+    const params = search instanceof URLSearchParams
+        ? search
+        : new URLSearchParams(String(search || '').replace(/^\?/, ''));
+    if (!gpu || params.get('postfx') === '0') return false;
+    const forced = forcedGpuWorldRendererMode(params);
+    if (forced) return forced === GPU_WORLD_RENDERER_MODES.WEBGPU;
+    return chromium && !softwareRaster;
+}
+
+// Precedence, first match wins:
+// 1. `?renderer=canvas` → Canvas.
+// 2. `?renderer=webgpu` → WebGPU when a hardware adapter, its device and the
+//    world's pipelines were had (`webgpu`); Canvas on a fallback (software)
+//    adapter (`webgpuSoftware`); else WebGL2, else Canvas.
+// 3. `?renderer=webgl` → WebGL2 wherever it exists (a software rasterizer
+//    included), else Canvas.
+// 4. No forced mode: a software WebGL2 rasterizer or a fallback WebGPU
+//    adapter → Canvas; a Chromium browser (`chromium`) with a WebGPU world
+//    (`webgpu`) → WebGPU (Stage B); else hardware WebGL2 → WebGL2; else
+//    Canvas. Safari and Firefox (`chromium` false) default to WebGL2.
+export function resolveGpuWorldRendererMode(search = '', {
+    webgl2 = true, softwareRaster = false, webgpu = false, webgpuSoftware = false, chromium = false,
+} = {}) {
     const forced = forcedGpuWorldRendererMode(search);
     if (forced === GPU_WORLD_RENDERER_MODES.CANVAS) return GPU_WORLD_RENDERER_MODES.CANVAS;
+    if (forced === GPU_WORLD_RENDERER_MODES.WEBGPU) {
+        if (webgpu) return GPU_WORLD_RENDERER_MODES.WEBGPU;
+        if (webgpuSoftware) return GPU_WORLD_RENDERER_MODES.CANVAS;
+        return webgl2 ? GPU_WORLD_RENDERER_MODES.WEBGL : GPU_WORLD_RENDERER_MODES.CANVAS;
+    }
     if (forced === GPU_WORLD_RENDERER_MODES.WEBGL) {
         return webgl2 ? GPU_WORLD_RENDERER_MODES.WEBGL : GPU_WORLD_RENDERER_MODES.CANVAS;
     }
-    return webgl2 && !softwareRaster ? GPU_WORLD_RENDERER_MODES.WEBGL : GPU_WORLD_RENDERER_MODES.CANVAS;
+    if (softwareRaster || webgpuSoftware) return GPU_WORLD_RENDERER_MODES.CANVAS;
+    if (chromium && webgpu) return GPU_WORLD_RENDERER_MODES.WEBGPU;
+    return webgl2 ? GPU_WORLD_RENDERER_MODES.WEBGL : GPU_WORLD_RENDERER_MODES.CANVAS;
 }
 
 export function materialClassId(value) {
@@ -979,6 +1058,10 @@ export const GPU_RECORD_FLAGS = Object.freeze({
     // water (3.6 coast flag `water`, not `covered`) the scene fragment holds
     // it to RakingLight.GROUND_CAST_WATER_SHARE and breaks it by the ripple rows.
     groundCast: 256,
+    // Wave 10 S5 — a T1 attention-mark record's §7.1 role 2 (action-needed:
+    // status cell, notch status rows, beacon, edge arrow). Mark records are
+    // `screenSpace`; the rest of a mark (rim, text cell, leader) is role 0.
+    actionMark: 512,
 });
 
 // V9 / 0.6 — painter's depth. A record's or particle's painter `sortY` is
@@ -1101,6 +1184,9 @@ export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     normalized.material = materialClassId(record.material ?? record.materialId);
     normalized.blend = blend;
     normalized.sequence = finite(record.sequence, sequence);
+    // B.1b — written every time: a reused scratch record must not keep a
+    // previous occupant's opt-out.
+    normalized.pageable = record.pageable !== false;
     normalized.textureRevision = record.textureRevision ?? null;
     normalized.sidecarRevision = record.sidecarRevision ?? null;
     normalized.textureUpdates = record.textureUpdates ?? null;
@@ -1122,12 +1208,14 @@ export function validGpuRecord(record) {
 }
 
 // B.1b — a record may live on the albedo texture-array page when it has no
-// sidecar (material, emissive, occluder), is not screen-space, and samples a
-// whole-source rect of a source no larger than `limit` texels a side (a page
-// layer less its gutter). The renderer's pager decides whether it fits.
+// sidecar (material, emissive, occluder), is not screen-space nor opted out
+// (`pageable: false`: a screen-sized field such as the ground haze, fog or
+// the semantic cue layer), and samples a whole-source rect of a source no
+// larger than `limit` texels a side (a page layer less its gutter). The
+// renderer's pager decides whether it fits.
 export function gpuRecordPageable(record, limit) {
     if (record.materialSource || record.emissiveSource || record.occluderSource || record.sidecarKey
-        || (record.flags & GPU_RECORD_FLAGS.screenSpace)) return false;
+        || record.pageable === false || (record.flags & GPU_RECORD_FLAGS.screenSpace)) return false;
     const source = record.source;
     if (!source || source.gpuResident === true) return false;
     const width = record.sourceWidth;

@@ -86,6 +86,10 @@ Common options:
   --repetitions=<n>           Fresh browser contexts per case (matrix/kslope/unlocked 3,
                               soak/inject/dashboard 1)
   --out=<file>                Also write runs and summary as JSON
+  --renderer=<mode>           Force the World backend: webgl | webgpu | canvas
+                              (default: the app's default; WebGPU in Chromium
+                              with a GPU). Receipts that measure WebGL2 pass
+                              --renderer=webgl; every run records its backend.
   --headed                    Show the Chromium window (use on the 120 Hz panel)
   --help                      Print this help
 
@@ -135,6 +139,7 @@ function parseArgs(argv) {
     headed: false,
     maxRainRegressionPct: null,
     out: null,
+    renderer: null,
     scenarios: ['dense-24-agents'],
     viewports: [parseViewport('1920x1080')],
     dpr: 1,
@@ -175,6 +180,7 @@ function parseArgs(argv) {
       '--warmup-seconds',
       '--repetitions',
       '--out',
+      '--renderer',
       ...MATRIX_ONLY_FLAGS,
       ...LADDER_ONLY_FLAGS,
     ].includes(flag) || flag === '--profile') {
@@ -192,6 +198,7 @@ function parseArgs(argv) {
     if (flag === '--warmup-seconds') options.warmupSeconds = Number(value);
     if (flag === '--repetitions') options.repetitions = Number(value);
     if (flag === '--out') options.out = value;
+    if (flag === '--renderer') options.renderer = value;
     if (flag === '--counts') options.counts = parseList(value).map(Number);
     if (flag === '--weather') options.weather = parseList(value);
     if (flag === '--max-rain-regression-pct') options.maxRainRegressionPct = Number(value);
@@ -212,6 +219,9 @@ function parseArgs(argv) {
   }
 
   if (!MODES.includes(options.mode)) throw new Error(`mode must be one of ${MODES.join(', ')}`);
+  if (options.renderer != null && !['webgl', 'webgpu', 'canvas'].includes(options.renderer)) {
+    throw new Error('renderer must be webgl, webgpu or canvas');
+  }
   const onlyFor = options.mode === 'matrix' ? LADDER_ONLY_FLAGS : MATRIX_ONLY_FLAGS;
   for (const flag of seen) {
     if (onlyFor.has(flag)) throw new Error(`${flag} does not apply to --mode=${options.mode}`);
@@ -417,6 +427,7 @@ async function runCase(browser, options, count, weatherName, repetition) {
   const pageUrl = new URL(options.url);
   pageUrl.searchParams.set('sim', '1');
   pageUrl.searchParams.set('scenario', `perf-${count}-agents`);
+  if (options.renderer) pageUrl.searchParams.set('renderer', options.renderer);
 
   try {
     await page.goto(pageUrl.href, { waitUntil: 'domcontentloaded', timeout: 60_000 });
@@ -487,6 +498,7 @@ async function runCase(browser, options, count, weatherName, repetition) {
         postFx,
         postFxFeed,
         gpuWorld: renderer?.gpuWorld?.getDiagnostics?.() || null,
+        worldRendererMode: renderer?.worldRendererMode ?? null,
         resources: canvasBudget?.resources || null,
         trails: renderer?.trailRenderer?.getDiagnostics?.() || null,
       };
@@ -640,6 +652,7 @@ function* ladderCases(options) {
             zoom,
             hour: condition.hour,
             weather: condition.weather,
+            renderer: options.renderer,
           };
         }
       }
@@ -655,6 +668,7 @@ function caseFields(spec) {
     zoom: spec.zoom,
     hour: spec.hour,
     weather: spec.weather,
+    renderer: spec.renderer || 'default',
   };
 }
 
@@ -663,6 +677,7 @@ function caseFields(spec) {
 async function openPosedWorld(browser, baseUrl, spec, warmupSeconds) {
   const opened = await openWorld(browser, {
     baseUrl, scenario: spec.scenario, width: spec.width, height: spec.height, dpr: spec.dpr,
+    query: spec.renderer ? { renderer: spec.renderer } : {},
   });
   try {
     await sleep(4500);
@@ -1185,6 +1200,7 @@ async function runLadderMode(options) {
       ok: cases.every(item => item.ok),
       server: server.isolated ? 'isolated' : server.baseUrl,
       browserVersion: browser.version(),
+      backend: runs[0]?.pose?.backend ?? null,
       glRenderer: runs[0]?.pose?.glRenderer ?? null,
       host: hostSnapshot(),
       options: {

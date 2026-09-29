@@ -243,7 +243,7 @@ Bottom-right of the viewport (16px in from the edge and the bottom), moving left
 - **Ground:** the Dashboard sits on flat `--bg-0` at every hour; it takes no time-of-day tint and no hearth glow from the world.
 
 ### Panels (Guild Ledger & Quest Log)
-- **Sidebar (240px) and activity panel (320px):** `--bg-1`, the Single-Bevel edge on the side facing the world; no texture, no radial highlight.
+- **Sidebar (240px) and activity panel (320px, plus its 1px seam as its own left border so the seam never covers the world's last column):** `--bg-1`, the Single-Bevel edge on the side facing the world; no texture, no radial highlight.
 - **Entrance:** the activity panel fades in; reduced-motion removes the animation.
 - **Selected row:** `--bg-3` plus a gold 3px rail and a `--gold-hi` name.
 

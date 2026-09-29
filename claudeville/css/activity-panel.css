@@ -4,11 +4,17 @@
    in ink-3, Departure Mono 11/22 for everything readable. Gold is light
    (focus, pressed); status colour appears only where it states status. */
 
+/* The seam is the panel's own 1px border (321px = the 320px column + its
+   seam), not an outer shadow: an outer shadow covered the world's last
+   column under the world and fx canvases but not under the overlay, so a
+   GPU-drawn mark and an overlay mark disagreed there. Same pixels on screen;
+   the world simply ends where the seam begins. */
 .activity-panel {
-    width: 320px;
+    width: 321px;
     flex-shrink: 0;
     background: var(--bg-1);
-    box-shadow: inset 1px 0 0 var(--line-2), -1px 0 0 var(--seam);
+    border-left: 1px solid var(--seam);
+    box-shadow: inset 1px 0 0 var(--line-2);
     display: flex;
     flex-direction: column;
     overflow-x: hidden;

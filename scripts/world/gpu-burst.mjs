@@ -36,6 +36,8 @@ Options:
   --contexts=<n>          Fresh browser contexts per case (default: 3)
   --settle-seconds=<n>    Wait after posing before measuring (default: 8)
   --debug-load=<passes>   Also measure each level with this many injected passes
+  --renderer=<mode>       Force the World backend: webgl | webgpu (default: the app's
+                          default, WebGPU in Chromium; pass webgl to measure WebGL2)
   --out=<file>            Write the full JSON report here as well
   --headed                Show the Chromium window
   --help                  Print this help
@@ -58,6 +60,7 @@ function parseArgs(argv) {
     contexts: 3,
     settleSeconds: 8,
     debugLoad: 0,
+    renderer: null,
     out: null,
     headed: false,
   };
@@ -88,6 +91,7 @@ function parseArgs(argv) {
       case '--contexts': options.contexts = Number(value); break;
       case '--settle-seconds': options.settleSeconds = Number(value); break;
       case '--debug-load': options.debugLoad = Number(value); break;
+      case '--renderer': options.renderer = value; break;
       case '--out': options.out = value; break;
       default: throw new Error(`Unknown argument: ${arg}`);
     }
@@ -101,20 +105,29 @@ function parseArgs(argv) {
   if (!(options.dpr > 0)) throw new Error('dpr must be positive');
   if (!(options.settleSeconds >= 0)) throw new Error('settle seconds must be zero or positive');
   if (!Number.isInteger(options.debugLoad) || options.debugLoad < 0) throw new Error('debug load must be a whole number of passes');
+  if (options.renderer != null && !['webgl', 'webgpu'].includes(options.renderer)) throw new Error('renderer must be webgl or webgpu');
   return options;
 }
 
 // In-page: the burst itself. Restores the loop, override and load afterwards.
-async function burst(page, { levels, frames, reps, debugLoad }) {
-  return page.evaluate(({ levels, frames, reps, debugLoad }) => {
+// The GPU is drained through the backend's own `drain()` when it has one
+// (WebGPU: onSubmittedWorkDone), else with a 1-px readPixels (WebGL2).
+async function burst(page, { levels, frames, reps, debugLoad, renderer: requested }) {
+  return page.evaluate(async ({ levels, frames, reps, debugLoad, requested }) => {
     const renderer = window.__claudeVilleApp.renderer;
     const gpu = renderer.gpuWorld;
     if (!gpu?.isActive?.()) throw new Error('the resident GPU world is not active');
+    const backend = gpu.backend || 'webgl';
+    if (requested && backend !== requested) throw new Error(`the ${requested} backend is not active (${backend} is)`);
     const context = renderer._gpuRenderContext;
     if (!context?.records?.length) throw new Error('no resident frame to replay');
-    const gl = gpu.gl;
     const pixel = new Uint8Array(4);
-    const drain = () => {
+    const drain = async () => {
+      if (typeof gpu.drain === 'function') {
+        await gpu.drain();
+        return;
+      }
+      const gl = gpu.gl;
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
     };
@@ -136,7 +149,7 @@ async function burst(page, { levels, frames, reps, debugLoad }) {
           gpu.qualityLadder.setOverride(level);
           gpu.setDebugLoad(loadPasses > 0 ? { passes: loadPasses, levels: 'all' } : null);
           renderOnce();
-          drain();
+          await drain();
           const walls = [];
           const cpus = [];
           for (let rep = 0; rep < reps; rep++) {
@@ -147,7 +160,7 @@ async function burst(page, { levels, frames, reps, debugLoad }) {
               renderOnce();
               cpu += performance.now() - submit;
             }
-            drain();
+            await drain();
             walls.push((performance.now() - started) / frames);
             cpus.push(cpu / frames);
           }
@@ -170,8 +183,8 @@ async function burst(page, { levels, frames, reps, debugLoad }) {
       gpu.qualityLadder.setOverride(previousOverride);
       renderer._startLoop();
     }
-    return { backing: [gpu.width, gpu.height], arms };
-  }, { levels, frames, reps, debugLoad });
+    return { backend, backing: [gpu.width, gpu.height], arms };
+  }, { levels, frames, reps, debugLoad, requested });
 }
 
 async function main() {
@@ -188,6 +201,7 @@ async function main() {
               const loadStart = hostSnapshot().loadAverage;
               const { context, page, errors } = await openWorld(browser, {
                 baseUrl: server.baseUrl, scenario, width: viewport.width, height: viewport.height, dpr: options.dpr,
+                query: options.renderer ? { renderer: options.renderer } : {},
               });
               try {
                 // The opening glide owns the camera for its first seconds.
@@ -209,6 +223,7 @@ async function main() {
                   context: contextIndex,
                   frames: options.frames,
                   reps: options.reps,
+                  backend: result.backend,
                   glRenderer: pose.glRenderer,
                   backing: result.backing,
                   hostLoadAverage: { start: loadStart, end: hostSnapshot().loadAverage },

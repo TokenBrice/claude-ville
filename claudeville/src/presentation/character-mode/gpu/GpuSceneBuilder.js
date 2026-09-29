@@ -1598,8 +1598,9 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     records.push(...cacheEmitterRecords(renderer, atlasChannelRevision));
     const haze = recordForHaze(renderer);
     if (haze) {
-        // V9 — the haze field's texels sit on the screen, not the world grid.
-        haze.screenSpace = true;
+        // A baked field over its own world rect (world px, so not V9
+        // screenSpace): kept off the albedo page; footY -1 keeps the world grid.
+        haze.pageable = false;
         records.push(haze);
     }
     const cue = renderer?._semanticGroundCanvas;
@@ -1608,7 +1609,7 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
         records.push({ id: 'ground:semantics', source: cue, textureKey: 'ground:semantics',
             x: -camera.renderOffsetX / camera.zoom, y: -camera.renderOffsetY / camera.zoom,
             width: renderer._semanticGroundViewport.width / camera.zoom, height: renderer._semanticGroundViewport.height / camera.zoom,
-            textureRevision: renderer._semanticGroundRevision, elevation: 0, occluder: 0, screenSpace: true,
+            textureRevision: renderer._semanticGroundRevision, elevation: 0, occluder: 0, pageable: false,
             // 4.6 — its texels are backing pixels drawn at the rounded offset:
             // nearest on flight frames too (V9 fatOptOut).
             fatOptOut: true,

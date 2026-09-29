@@ -59,7 +59,7 @@ An isometric pixel island where each session is a villager whose sprite follows 
 - **Instruments.** Hold **B** (or READ) to swap routine names for work verbs. **A** frames every agent needing attention and states how many fell outside the frame. **AMBIENT CAM** hands the camera to a patient broadcast of the busiest real work; any input takes it back. **F** frames the village; `/` or `Ctrl/Cmd+K` searches agents.
 - **Light and weather.** One colour grade from the local clock, a seeded daily weather timeline, the moon phase, and the season. After dusk, windows light only where someone works. Weather is modelled locally, never fetched.
 - **Moments.** Arrivals rise as a violet column at the gate, sub-agents fly out as comets and land near their parent, and a finished top-level agent walks out through the gate while a finished sub-agent merges back into its parent.
-- **Renderer.** A resident WebGL2 world by default on a hardware GPU. The World falls back to Canvas 2D on a software rasterizer (SwiftShader, llvmpipe) or with `?renderer=canvas`; `?renderer=webgl` forces WebGL. Shift-D shows the debug overlay.
+- **Renderer.** A resident GPU world by default on a hardware GPU: WebGPU in Chrome and other Chromium browsers, WebGL2 in Safari and Firefox (and wherever WebGPU cannot start; both draw the same picture). The World falls back to Canvas 2D on a software rasterizer (SwiftShader, llvmpipe) or with `?renderer=canvas`; `?renderer=webgl` forces WebGL2 and `?renderer=webgpu` forces WebGPU (Safari's opt-in). On an HDR screen the WebGPU world lets lit windows, lamps and action-needed marks glow above paper white (Settings → *HDR highlights*: Off, Subtle by default, or Full; every other pixel and every SDR screen keeps the standard picture), and on a Display P3 screen either GPU world draws the reserved status and lamp colours in the wider gamut. Shift-D shows the debug overlay, whose first row names the World backend and why it was chosen.
 
 ### Dashboard mode
 
@@ -75,7 +75,7 @@ DOM rows grouped by project, for exact state without the world:
 - **Sidebar:** project-grouped agent list, an exception shelf for agents that need you, errored, or hit a quota limit, and the Harbor ledger of unpushed commits per repository and branch.
 - **Activity Panel:** a character sheet for the selected agent: session, cost and tokens, current tool, tool history, messages, prompt and plan, working set with overlap warnings, and a causal waterfall of the last 20 minutes that SCORE can draw over the village.
 - **Village Chronicle:** a day ledger of arrivals, departures, waits, errors, commits, and pushes, stored in the browser's IndexedDB.
-- **Settings and health:** sound options, provider watchtower roster, storage ledger, pricing revision, and frame-time health.
+- **Settings and health:** sound options, controls (automatic camera, desktop alerts, reduced motion, HDR highlights), provider watchtower roster, storage ledger, pricing revision, and frame-time health.
 - **Desktop alerts:** optional browser notifications.
 
 ### Sound
@@ -183,7 +183,7 @@ The frontend boot path is `claudeville/src/presentation/App.js`:
 5. In parallel: sprite metadata, the `IsometricRenderer` module, the `DashboardRenderer` module, and the initial snapshot over the WebSocket (REST is the fallback).
 6. Start `SessionWatcher` (skipped under `?sim=1`, which starts the simulator instead).
 7. Bind the World container `ResizeObserver`.
-8. Mount `IsometricRenderer` once assets and module are ready: resident WebGL2 on a hardware rasterizer unless `?renderer=canvas` or `?postfx=0` (Canvas on a software rasterizer unless `?renderer=webgl`); the canvases fade in on the first presented frame.
+8. Mount `IsometricRenderer` once assets and module are ready: WebGPU in a Chromium browser whose adapter, device and pipelines resolved (they start resolving beside the asset fetch; a cold shader cache mounts WebGL2 and switches to WebGPU once compiled), else resident WebGL2 on a hardware rasterizer, unless `?renderer=` or `?postfx=0` says otherwise (Canvas on a software rasterizer unless `?renderer=webgl`); the canvases fade in on the first presented frame.
 9. Bind agent follow and `#agent=<id>` deep links. The Activity Panel and Chronicle panel load with their stylesheets on first use; audio loads after boot.
 10. Apply English UI strings.
 
@@ -278,7 +278,7 @@ curl http://localhost:4000/api/sessions
 - Keep port `4000` unless all dependent docs and local workflows are updated together.
 - No framework, bundler, transpiler, TypeScript, or runtime dependency. Keep changes within vanilla JavaScript ES modules and static CSS.
 - `DEBUG_STATIC=1` logs static file requests; `DEBUG_WATCH=1` logs watch-path refresh details; `CLAUDEVILLE_DEBUG_JSONL=1` logs skipped transcript lines.
-- Useful URL flags: `?sim=1` (simulator), `?renderer=canvas` (Canvas 2D fallback), `?renderer=webgl` (force WebGL, even on a software rasterizer), `?postfx=0` (no WebGL layer at all).
+- Useful URL flags: `?sim=1` (simulator), `?renderer=canvas` (Canvas 2D fallback), `?renderer=webgl` (force WebGL2, even on a software rasterizer or in Chrome), `?renderer=webgpu` (force WebGPU, the only HDR presenter; the opt-in in Safari), `?postfx=0` (no GPU layer at all).
 - Add models through `models.json` and `npm run models:generate`, never by hand-editing the generated files.
 - Do not edit sprite PNGs without also checking `claudeville/assets/sprites/manifest.yaml` and the sprite validation rules.
 - This repo is often edited by multiple agents. Check `git status --short` before changes and preserve unrelated local edits.
@@ -306,7 +306,7 @@ For setup and troubleshooting, start with [SUPPORT.md](./SUPPORT.md) and [docs/t
 | [`docs/README.md`](./docs/README.md) | Everyone | Documentation catalogue and task routing. |
 | [`claudeville/CLAUDE.md`](./claudeville/CLAUDE.md) | Work inside `claudeville/` | Server, adapters, layout, event flow, invariants. |
 | [`claudeville/adapters/README.md`](./claudeville/adapters/README.md) | Adapter work | Provider contract, normalized session fields, token and git-event extraction. |
-| [`claudeville/src/presentation/character-mode/README.md`](./claudeville/src/presentation/character-mode/README.md) | World mode work | WebGL2 and Canvas render pipeline, camera, selection, sprite and world contracts. |
+| [`claudeville/src/presentation/character-mode/README.md`](./claudeville/src/presentation/character-mode/README.md) | World mode work | WebGPU, WebGL2 and Canvas render pipeline, backend selection, camera, selection, sprite and world contracts. |
 | [`claudeville/src/presentation/dashboard-mode/README.md`](./claudeville/src/presentation/dashboard-mode/README.md) | Dashboard work | Row layout, bell lane, detail polling, selection contract. |
 | [`claudeville/src/presentation/shared/README.md`](./claudeville/src/presentation/shared/README.md) | Shared UI work | Top bar, sidebar, Activity Panel, sound, model identity, session-detail cache. |
 | [`docs/agent-provider-addition.md`](./docs/agent-provider-addition.md) | Provider and model work | Adding providers, models, and agent visual identities. |

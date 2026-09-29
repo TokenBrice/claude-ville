@@ -207,15 +207,30 @@ Cost is computed locally from token counts in session files multiplied by static
 
 If a model is missing or its price has changed, update one row in `claudeville/src/config/models.json`, run `npm run models:generate`, inspect it with `npm run models:resolve <provider> <model>`, and run the model registry and pricing tests before verifying browser and `/api/sessions` cost displays.
 
-## World looks flatter than the screenshots, or runs the Canvas renderer
+## World looks flatter than the screenshots, runs the Canvas renderer, or you need a different GPU backend
 
-ClaudeVille draws the resident WebGL2 world only on a hardware rasterizer. When the browser's WebGL2 runs on a software rasterizer, the World uses the Canvas renderer instead. Software rasterizers include SwiftShader (hardware acceleration off, a blocklisted GPU, headless Chromium, many VMs and remote desktops), llvmpipe/lavapipe (Linux without a GPU driver) and the Microsoft Basic Render Driver. On a software rasterizer the resident shaders stall the first frame for seconds and then hold the page at a few frames per second. To check which one is active:
+ClaudeVille picks the World backend once per page load. In Chrome and other Chromium browsers with a hardware GPU it draws the WebGPU world; in Safari and Firefox, and in Chrome whenever WebGPU cannot start (no adapter, a failed device or pipeline), it draws the resident WebGL2 world. Both draw the same picture on an SDR screen. The first boot after a browser, driver or ClaudeVille shader update may open on WebGL2 while the WebGPU shaders compile and switch to WebGPU a few seconds later; nothing on screen changes.
+
+ClaudeVille draws a GPU world only on a hardware rasterizer. When the browser's WebGL2 runs on a software rasterizer, or its only WebGPU adapter is a fallback (software) one, the World uses the Canvas renderer instead. Software rasterizers include SwiftShader (hardware acceleration off, a blocklisted GPU, headless Chromium, many VMs and remote desktops), llvmpipe/lavapipe (Linux without a GPU driver) and the Microsoft Basic Render Driver. On a software rasterizer the resident shaders stall the first frame for seconds and then hold the page at a few frames per second. To check which backend is active and why:
 
 ```js
-window.__claudeVilleApp.renderer.worldRendererMode   // 'webgl' or 'canvas'
+window.__claudeVilleApp.renderer.worldRendererMode    // 'webgpu', 'webgl' or 'canvas'
+window.__claudeVilleApp.renderer.worldBackendReason   // e.g. 'default · webgpu ready · webgl2 hardware'
 ```
 
-To confirm the rasterizer, open `chrome://gpu`: look for "WebGL: Software only" or a SwiftShader renderer. Turning on "Use graphics acceleration when available" (Chrome settings, System) and restarting the browser brings the WebGL world back. `?renderer=webgl` forces the WebGL world on any WebGL2 browser (slow on a software rasterizer); `?renderer=canvas` forces Canvas. Headless Playwright captures get the WebGL world only with `--use-angle=metal --ignore-gpu-blocklist` (macOS; `GPU_LAUNCH_ARGS` in `scripts/smoke/support/world-bench.mjs`) or with `?renderer=webgl`.
+The same selection opens the Shift-D overlay as short rows: `world backend: <mode> · <selection>`, then `session: …` when a session policy overrode the selection (the GPU-crash Canvas world below), `webgpu: …` and `webgl2: …`; the console logs the full line once per change (`[IsometricRenderer] world backend: …`). Under the GPU world's rows, `display:` names HDR, P3 and the dynamic range, `canvas:` the configured canvas format, colour space and tone mapping, and `gpu errors outside the frame: N` counts GPU errors the World did not cause (the browser's own work on the device, such as its copy of the canvas for a page readback): they are logged, never a World failure.
+
+If the WebGPU world fails while running (a frame throws, its own frame work raises a validation or out-of-memory error, or its device is destroyed or cannot be rebuilt), the World switches to a fresh WebGL2 world and the reason reads `webgpu failed in frame: <stage>: <message>`. A failure found between frames (a validation error, a destroyed device) holds the last presented frame for about half a second while the WebGL2 world builds and the terrain re-bakes off the frame, then switches; a frame that throws is drawn again on WebGL2 in the same task. Nothing black or half-drawn is presented either way. Without WebGL2 it stays on the Canvas world (`… · WebGL2 unavailable`). A plain WebGPU device loss the browser causes (`reason: 'unknown'`) rebuilds the device in place instead.
+
+To force a backend, add a URL flag (an explicit flag always wins):
+
+- `?renderer=webgl` forces the WebGL2 world on any WebGL2 browser (slow on a software rasterizer). Use it if the WebGPU world misbehaves in Chrome.
+- `?renderer=canvas` forces the Canvas world; `?postfx=0` gives the Canvas world with no GPU layer at all.
+- `?renderer=webgpu` forces the WebGPU world where it can start (the opt-in in Safari); if it cannot start, the World falls back to WebGL2, then Canvas.
+
+To confirm the rasterizer, open `chrome://gpu`: look for "WebGL: Software only", "WebGPU: Disabled" or a SwiftShader renderer. Turning on "Use graphics acceleration when available" (Chrome settings, System) and restarting the browser brings the GPU world back. Headless Playwright captures get a GPU world only with `--use-angle=metal --ignore-gpu-blocklist` (macOS; `GPU_LAUNCH_ARGS` in `scripts/smoke/support/world-bench.mjs`), which gives WebGPU by default, or with `?renderer=webgl`; plain headless Chromium has no WebGPU adapter and captures the Canvas world.
+
+**Settings → HDR highlights by backend.** Only the WebGPU world presents HDR. On WebGPU the row is live: on an HDR screen (`(dynamic-range: high)`) Subtle or Full lets lamps, fires, action-needed marks and release moments glow brighter than white (lamp halos are dropped while HDR shows), and on an SDR screen it says the screen gets the standard picture; the copy follows the screen while Settings is open. Safari's opt-in WebGPU has no extended canvas tone mapping: after its first HDR attempt the row is disabled with "This browser cannot show HDR on a web page". On WebGL2 (Safari, Firefox, `?renderer=webgl`, or Chrome while WebGPU cannot start) and on Canvas the row is disabled with "Needs the WebGPU renderer": those renderers always show the standard picture. A disabled row stays in the tab order (`aria-disabled`, its reason as the description) so keyboard and screen-reader users hear why. A Display P3 screen gets the wider-gamut status and lamp colours on either GPU world, and the overlay's reserved inks drop back to sRGB when the window moves to an sRGB screen.
 
 ## Desktop graphics reset or compositor crash while ClaudeVille is open
 
@@ -237,6 +252,8 @@ curl http://localhost:4000/api/perf
 ```
 
 If the journal shows GPU ring timeouts, compositor `GL_CONTEXT_LOST`, or Xwayland/browser core dumps without OOM-killer entries, treat it as a graphics-stack reset. ClaudeVille should reduce load by pausing World mode in Dashboard, releasing renderer-owned canvas caches, and capping canvas backing-store pixels, but driver/compositor resets can still originate below the app.
+
+**A GPU-process crash** (the browser's GPU process restarting: a driver reset, a GPU switch on some laptops, `chrome://gpucrash`) blanks every GPU-backed canvas in the page, including the sprite, terrain and avatar caches no renderer can rebuild on its own. ClaudeVille therefore reloads the page once; the village state comes from the server, so nothing is lost but the camera pose and open panels. It remembers the reload for the tab (`sessionStorage` key `cv-gpu-crash-reload-at`): a second crash within two minutes does not reload again (no reload loop) but drops to the Canvas world and rebuilds its resources in place, and Shift-D's `session:` row reads `GPU process crashed twice in 2 min: Canvas world, no reload`. Some cached art can then stay blank until you reload by hand; repeated crashes point at the driver or GPU, so check `chrome://gpu` and the system log above. A WebGPU device or WebGL2 context lost on its own (the 2D canvases survive) never reloads: the GPU world rebuilds and the World resumes.
 
 ## Linux reports an out-of-memory kill
 

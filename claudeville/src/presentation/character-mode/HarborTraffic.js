@@ -34,6 +34,7 @@ import {
     momentPhase,
     quantStep,
     queueMomentEdgePlate,
+    peakMarkSink,
     releaseSuccessGrammar,
     pixelLine,
     resolveMomentAnchor,
@@ -1422,7 +1423,8 @@ function releaseRevealStrip(strip, level) {
 // sails (every texel above the deck that is not cloth but touches the pale,
 // unsaturated cloth), per roll frame of the hull strip, in the peak cream.
 // The cloth is cream already, so the rim sits outside it. Cached per strip
-// image and frame.
+// image and frame as `{ canvas, runs }`: the rim stamp, and the same texels
+// as row runs `[x, y, width, ...]` (10.2 hands them to the GPU mark pass).
 const _sailOutlines = new WeakMap();
 
 function releaseSailOutline(strip, frame) {
@@ -1432,7 +1434,7 @@ function releaseSailOutline(strip, frame) {
         _sailOutlines.set(strip.image, frames);
     }
     if (frames.has(frame)) return frames.get(frame);
-    let canvas = null;
+    let outline = null;
     if (typeof document !== 'undefined') {
         const w = strip.frameWidth;
         const h = strip.frameHeight;
@@ -1454,22 +1456,27 @@ function releaseSailOutline(strip, frame) {
                 if (lo >= 0x80 && hi - lo <= 70) cloth[y * w + x] = 1;
             }
         }
-        canvas = document.createElement('canvas');
+        const canvas = document.createElement('canvas');
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = PEAK;
+        const runs = [];
         const at = (x, y) => x >= 0 && y >= 0 && x < w && y < h && cloth[y * w + x] === 1;
         for (let y = 0; y < lastRow; y++) {
             for (let x = 0; x < w; x++) {
                 if (cloth[y * w + x]) continue;
                 if (!at(x - 1, y) && !at(x + 1, y) && !at(x, y - 1) && !at(x, y + 1)) continue;
                 ctx.fillRect(x, y, 1, 1);
+                const last = runs.length - 3;
+                if (last >= 0 && runs[last + 1] === y && runs[last] + runs[last + 2] === x) runs[last + 2]++;
+                else runs.push(x, y, 1);
             }
         }
+        outline = { canvas, runs };
     }
-    frames.set(frame, canvas);
-    return canvas;
+    frames.set(frame, outline);
+    return outline;
 }
 
 function pointAlongPath(points, progress) {
@@ -5085,7 +5092,16 @@ export class HarborTraffic {
             const outline = releaseSailOutline(strip, pose.frame);
             if (outline) {
                 const g = hullGeometry(pose);
-                ctx.drawImage(outline, g.x, g.y);
+                // 10.2 — a verified release's peak frame: on the resident
+                // path its cream rim is a role-2 GPU mark (peakMarkSink).
+                const sink = peakMarkSink(ctx);
+                if (sink) {
+                    ctx.fillStyle = PEAK;
+                    const { runs } = outline;
+                    for (let index = 0; index < runs.length; index += 3) sink(g.x + runs[index], g.y + runs[index + 1], runs[index + 2], 1);
+                } else {
+                    ctx.drawImage(outline.canvas, g.x, g.y);
+                }
             }
         }
         if (ship.hoist >= 0) {

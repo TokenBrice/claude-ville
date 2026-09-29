@@ -11,7 +11,9 @@ import {
   materialClassId,
   isSoftwareRasterizer,
   forcedGpuWorldRendererMode,
+  isChromiumBrowser,
   resolveGpuWorldRendererMode,
+  shouldProbeWebGpu,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import {
   applyGradeToRgb,
@@ -28,6 +30,63 @@ test('GPU renderer is the default after parity gates pass with a Canvas escape h
   assert.equal(resolveGpuWorldRendererMode('', { webgl2: true }), 'webgl');
   assert.equal(resolveGpuWorldRendererMode('?renderer=canvas', { webgl2: true }), 'canvas');
   assert.equal(resolveGpuWorldRendererMode('?renderer=webgl', { webgl2: false }), 'canvas');
+});
+
+test('Stage B: Chromium defaults to WebGPU; Safari and Firefox default to WebGL2', () => {
+  const hardware = { webgl2: true, softwareRaster: false };
+  assert.equal(resolveGpuWorldRendererMode('', { ...hardware, webgpu: true, chromium: true }), 'webgpu');
+  assert.equal(resolveGpuWorldRendererMode('?renderer=bogus', { ...hardware, webgpu: true, chromium: true }), 'webgpu');
+  // Not Chromium (Safari has WebGPU; it stays opt-in): WebGL2.
+  assert.equal(resolveGpuWorldRendererMode('', { ...hardware, webgpu: true, chromium: false }), 'webgl');
+  // Chromium whose adapter, device or pipelines failed: WebGL2, never Canvas.
+  assert.equal(resolveGpuWorldRendererMode('', { ...hardware, webgpu: false, chromium: true }), 'webgl');
+  // A software rasterizer or a fallback adapter still takes the Canvas world.
+  assert.equal(resolveGpuWorldRendererMode('', { webgl2: true, softwareRaster: true, webgpu: true, chromium: true }), 'canvas');
+  assert.equal(resolveGpuWorldRendererMode('', { ...hardware, webgpu: false, webgpuSoftware: true, chromium: true }), 'canvas');
+  // An explicit mode always wins over the default.
+  assert.equal(resolveGpuWorldRendererMode('?renderer=webgl', { ...hardware, webgpu: true, chromium: true }), 'webgl');
+  assert.equal(resolveGpuWorldRendererMode('?renderer=canvas', { ...hardware, webgpu: true, chromium: true }), 'canvas');
+  assert.equal(resolveGpuWorldRendererMode('?renderer=webgpu', { ...hardware, webgpu: true, chromium: false }), 'webgpu');
+});
+
+test('WebGPU is requested when forced anywhere, or by default in Chromium on hardware', () => {
+  const chrome = { chromium: true, gpu: true, softwareRaster: false };
+  assert.equal(shouldProbeWebGpu('', chrome), true);
+  assert.equal(shouldProbeWebGpu('?renderer=bogus', chrome), true);
+  assert.equal(shouldProbeWebGpu('?renderer=webgl', chrome), false);
+  assert.equal(shouldProbeWebGpu('?renderer=canvas', chrome), false);
+  assert.equal(shouldProbeWebGpu('?postfx=0', chrome), false);
+  assert.equal(shouldProbeWebGpu('?renderer=webgpu&postfx=0', chrome), false);
+  assert.equal(shouldProbeWebGpu('', { ...chrome, gpu: false }), false);
+  assert.equal(shouldProbeWebGpu('', { ...chrome, softwareRaster: true }), false);
+  assert.equal(shouldProbeWebGpu('', { ...chrome, chromium: false }), false);
+  assert.equal(shouldProbeWebGpu('?renderer=webgpu', { ...chrome, chromium: false }), true);
+});
+
+test('Chromium detection prefers UA-CH brands and falls back to the UA string', () => {
+  const brands = (...names) => ({ userAgentData: { brands: names.map(brand => ({ brand, version: '153' })) }, userAgent: '' });
+  assert.equal(isChromiumBrowser(brands('Google Chrome', 'Not_A Brand', 'Chromium')), true);
+  assert.equal(isChromiumBrowser(brands('HeadlessChrome', 'Not_A Brand', 'Chromium')), true);
+  assert.equal(isChromiumBrowser(brands('Microsoft Edge', 'Chromium')), true);
+  assert.equal(isChromiumBrowser(brands('Not_A Brand')), false);
+  const ua = userAgent => ({ userAgent, userAgentData: { brands: [] } });
+  assert.equal(isChromiumBrowser(ua('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36')), true);
+  assert.equal(isChromiumBrowser(ua('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36')), true);
+  assert.equal(isChromiumBrowser({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15' }), false);
+  assert.equal(isChromiumBrowser({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) Gecko/20100101 Firefox/140.0' }), false);
+  assert.equal(isChromiumBrowser({ userAgent: 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/153.0 Mobile/15E148 Safari/604.1' }), false);
+  assert.equal(isChromiumBrowser(undefined), false);
+});
+
+test('?renderer=webgpu always lands on a backend that can run', () => {
+  const hardware = { webgl2: true, softwareRaster: false };
+  assert.equal(resolveGpuWorldRendererMode('?renderer=webgpu', { ...hardware, webgpu: true }), 'webgpu');
+  assert.equal(forcedGpuWorldRendererMode('?renderer=WebGPU'), 'webgpu');
+  // No adapter, device or pipelines: WebGL2 first, Canvas second.
+  assert.equal(resolveGpuWorldRendererMode('?renderer=webgpu', { ...hardware, webgpu: false }), 'webgl');
+  assert.equal(resolveGpuWorldRendererMode('?renderer=webgpu', { webgl2: false, webgpu: false }), 'canvas');
+  // A fallback (software) adapter takes the Canvas world, like a software rasterizer.
+  assert.equal(resolveGpuWorldRendererMode('?renderer=webgpu', { ...hardware, webgpu: false, webgpuSoftware: true }), 'canvas');
 });
 
 test('a software rasterizer defaults to the Canvas world unless WebGL is forced', () => {

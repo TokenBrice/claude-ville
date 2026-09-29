@@ -13,8 +13,12 @@
 // Sampling must run in the same task as a render: the WebGL surface does not
 // preserve its drawing buffer, so outside that task it reads as transparent.
 
-const SAMPLE_W = 96;
-const SAMPLE_H = 64;
+// The point-sample grid; a surface already this size is drawn 1:1 (the
+// WebGPU HDR canvas's SDR readout, GpuWorldRendererWebGPU.readoutSurface).
+export const REVEAL_SAMPLE_W = 96;
+export const REVEAL_SAMPLE_H = 64;
+const SAMPLE_W = REVEAL_SAMPLE_W;
+const SAMPLE_H = REVEAL_SAMPLE_H;
 // A band is at least 4 sample rows (1/16 of the height) unless the horizon
 // pins a thinner sky.
 const MIN_BAND_ROWS = 4;

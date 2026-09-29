@@ -33,6 +33,13 @@ import {
     writePresetVolumeStep,
     writeSoundChipSeen,
 } from './SoundSettings.js';
+import {
+    HDR_HIGHLIGHTS_DEFAULT,
+    HDR_HIGHLIGHTS_EVENT,
+    HDR_HIGHLIGHTS_STORAGE_KEY,
+    readHdrHighlights,
+    writeHdrHighlights,
+} from './DisplaySettings.js';
 
 const SETTINGS_MODAL_OWNER = 'topbar-settings';
 const UNKNOWN_MODEL_DATE_KEY = 'claudeville.pricing.unknownModelDate';
@@ -91,6 +98,7 @@ export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
     'cv-ambient-standing': '0',
     'claudeville.alerts.desktop': '0',
     'claudeville.sidebarCollapsed': 'false',
+    [HDR_HIGHLIGHTS_STORAGE_KEY]: HDR_HIGHLIGHTS_DEFAULT,
 });
 
 function storageValue(storage, key) {
@@ -108,6 +116,7 @@ export function readPersistedSettings(storage = globalThis.window?.localStorage)
         autoCamera: storageValue(storage, 'cv-auto-camera') !== '0',
         desktopAlerts: storageValue(storage, 'claudeville.alerts.desktop') === '1',
         sidebarCollapsed: storageValue(storage, 'claudeville.sidebarCollapsed') === 'true',
+        hdrHighlights: readHdrHighlights(storage),
     };
 }
 
@@ -530,6 +539,7 @@ export class TopBar {
             onDesktopAlerts: (enabled) => this._setDesktopAlerts(enabled),
             onSidebarCollapsed: (collapsed) => this._setSidebarCollapsed(collapsed),
             onReducedMotion: (reduced) => this._setReducedMotion(reduced),
+            onHdrHighlights: (mode) => this._setHdrHighlights(mode),
             onReset: () => this._resetSettings(),
             getVillageState: () => this._villageState,
             getChronicleStatus: () => globalThis.window?.__chronicle?.status || this._chronicleStatus,
@@ -562,6 +572,7 @@ export class TopBar {
         }
         eventBus.emit('sound:town-band-voice', { voice: DEFAULT_TOWN_BAND_VOICE });
         eventBus.emit('camera:auto-camera', { enabled: true });
+        eventBus.emit(HDR_HIGHLIGHTS_EVENT, { mode: HDR_HIGHLIGHTS_DEFAULT });
         if (this.attention) {
             void this.attention.setDesktopAlerts(false).then((on) => this._applyAlertsState(on));
         }
@@ -625,6 +636,13 @@ export class TopBar {
         // Soften sudden sounds follows Reduce motion unless set (7.7).
         this.audio?.syncReducedMotion?.();
         return applied;
+    }
+
+    // 10.2 — SET persists HDR highlights; the World re-reads it on the event.
+    _setHdrHighlights(mode) {
+        const kept = writeHdrHighlights(mode);
+        eventBus.emit(HDR_HIGHLIGHTS_EVENT, { mode: kept });
+        return kept;
     }
 
     _observeHookSignal(agent) {

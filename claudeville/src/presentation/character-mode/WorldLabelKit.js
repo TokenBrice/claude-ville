@@ -155,20 +155,30 @@ function bakeOutlinedMotif(id, color, outline, step, scale) {
     return { canvas, size, unit };
 }
 
-export function drawOutlinedMotif(ctx, id, x, y, { step = 1, color = LABEL_INK.text, outline = LABEL_INK.outline } = {}) {
-    const transform = ctx.getTransform();
-    const scale = Math.abs(transform.a) || 1;
+// The cached stamp for (motif, colour, outline, step) at a device `scale`:
+// `{ canvas, size, unit }`, `canvas` in device pixels (`size * unit` square).
+// T1 — the resident path samples the same stamp as a GPU mark record.
+export function outlinedMotifStamp(id, { step = 1, color = LABEL_INK.text, outline = LABEL_INK.outline, scale = 1 } = {}) {
     const key = `${id}|${color}|${outline}|${step}|${Math.round(scale * 100)}`;
     let stamp = MOTIF_STAMPS.get(key);
     if (!stamp) {
         stamp = bakeOutlinedMotif(id, color, outline, Math.max(1, Math.round(step)), scale);
-        if (!stamp) return;
+        if (!stamp) return null;
         if (MOTIF_STAMPS.size >= MOTIF_STAMP_LIMIT) {
             const oldest = MOTIF_STAMPS.keys().next().value;
             MOTIF_STAMPS.delete(oldest);
         }
+        stamp.key = key;
         MOTIF_STAMPS.set(key, stamp);
     }
+    return stamp;
+}
+
+export function drawOutlinedMotif(ctx, id, x, y, { step = 1, color = LABEL_INK.text, outline = LABEL_INK.outline } = {}) {
+    const transform = ctx.getTransform();
+    const scale = Math.abs(transform.a) || 1;
+    const stamp = outlinedMotifStamp(id, { step, color, outline, scale });
+    if (!stamp) return;
     const deviceX = Math.round((x - 1) * transform.a + transform.e);
     const deviceY = Math.round((y - 1) * transform.d + transform.f);
     ctx.save();

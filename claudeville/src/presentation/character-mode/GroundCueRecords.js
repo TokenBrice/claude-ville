@@ -37,8 +37,8 @@ const STAMP_SPAN = 16;
 const STAMP_VARIANTS = STAMP_SPAN * 2 + 1;
 // Per-colour band: shallow stamps (x-major) in the top row, steep stamps
 // (y-major) below, the colour's swatch texel after the stamp columns.
-const BAND_HEIGHT = STAMP_SPAN * 2;
-const SWATCH_X = STAMP_SPAN * STAMP_VARIANTS;
+export const BAND_HEIGHT = STAMP_SPAN * 2;
+export const SWATCH_X = STAMP_SPAN * STAMP_VARIANTS;
 const ATLAS_WIDTH = SWATCH_X + 4;
 const ATLAS_START_BANDS = 16;
 const ATLAS_MAX_BANDS = 64;
@@ -62,7 +62,7 @@ export const GROUND_CUE_TEXTURE_KEY = 'ground:cue-atlas';
 // axis; a step outside that window, or outside -8..10, starts a new run.
 export const CUE_RUN_DOTS = 15;
 const CUE_RUN_MAX_DOT = 4;
-const CUE_RUN_STEP_MIN = -8;
+export const CUE_RUN_STEP_MIN = -8;
 const CUE_RUN_STEP_MAX = 10;
 const CUE_RUN_BASE_MAX = 7;
 // Six vertices per dot: the two triangles of the per-dot strip, in its order.

@@ -25,6 +25,8 @@ import {
     percentileAtSnapshot,
 } from '../shared/ClientPerfMetrics.js';
 import { getReservedRects } from '../shared/ReservedRects.js';
+import { HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, readHdrHighlights } from '../shared/DisplaySettings.js';
+import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayMedia } from './DisplayColor.js';
 import { CameraDirector } from './CameraDirector.js';
 import { ParticleSystem } from './ParticleSystem.js';
 import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
@@ -47,7 +49,7 @@ import { openGroundTiles } from './AmbientGround.js';
 import { installGroundBake } from './GroundBake.js';
 import { OCEAN_HORIZON_WORLD_Y, drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
 import { drawCanvasWaterState } from './CanvasWaterState.js';
-import { sampleRevealBands } from './RevealBands.js';
+import { REVEAL_SAMPLE_H, REVEAL_SAMPLE_W, sampleRevealBands } from './RevealBands.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
 import { BridgeLanterns } from './BridgeLanterns.js';
@@ -88,8 +90,10 @@ import { createGpuWorldRenderer, probeWebgl2Raster } from './gpu/GpuWorldRendere
 import {
     GPU_ATTENTION_LIGHT_PRIORITY,
     forcedGpuWorldRendererMode,
+    isChromiumBrowser,
     localLightPhaseForLighting,
     resolveGpuWorldRendererMode,
+    shouldProbeWebGpu,
 } from './gpu/GpuWorldPolicy.js';
 import { NEUTRAL_GRADE } from './GradeEvaluator.js';
 import { poolReceiverMask } from './CanvasPoolMask.js';
@@ -120,6 +124,50 @@ const NICKNAME_CACHE_LIMIT = 256;
 const WORLD_FRAME_ERROR_REPORT_INTERVAL_MS = 5000;
 const WORLD_FRAME_MAX_CONSECUTIVE_FAILURES = 3;
 const DEBUG_GLOBAL_OWNERS = new WeakMap();
+
+// Stage B (webgpu contract §8.1) — the default WebGPU world (module, hardware
+// adapter, device, every pipeline) resolves from the moment App has loaded
+// this module (`IsometricRenderer.prewarmBackend`, beside the asset fetch),
+// so on a warm shader cache it is ready by the mount. One still compiling at
+// the mount (a cold cache: the first boot after a WGSL, browser or driver
+// change) never delays the first frame: the World mounts WebGL2 and switches
+// to WebGPU once it is ready and the reveal is done (`_queueWebGpuSwitch`).
+// `?renderer=webgpu` waits for it instead.
+let earlyWebGpu = null;
+
+function wantsWebGpu(params) {
+    const softwareRaster = !forcedGpuWorldRendererMode(params) && probeWebgl2Raster().softwareRaster;
+    return shouldProbeWebGpu(params, {
+        chromium: isChromiumBrowser(globalThis.navigator),
+        gpu: Boolean(globalThis.navigator?.gpu),
+        softwareRaster,
+    });
+}
+
+function resolveWebGpuWorld() {
+    const entry = { settled: false, value: null, promise: null };
+    entry.promise = import('./gpu/GpuWorldRendererWebGPU.js')
+        .then(async module => ({ ...(await module.prepareGpuWorldWebGPU()), create: module.createGpuWorldRendererWebGPU }))
+        .catch(error => ({ available: false, reason: String(error?.message || error) }))
+        .then((value) => {
+            entry.settled = true;
+            entry.value = value;
+            return value;
+        });
+    return entry;
+}
+
+function releaseWebGpuWorld(entry) {
+    entry?.promise.then(value => value?.device?.destroy?.());
+}
+
+// Work kept off the frame (a WebGPU failure's WebGL2 build and terrain
+// re-bake): an idle task, or the next task where idle callbacks are missing.
+function whenIdle(callback) {
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => callback(), { timeout: 100 });
+    else setTimeout(callback, 0);
+}
+
 const MAX_LIGHT_GRADIENT_CACHE_PIXELS = CANVAS_BUDGET.maxLightCachePixels;
 const MAX_LIGHT_GRADIENT_STAMP_PIXELS = Math.floor(MAX_LIGHT_GRADIENT_CACHE_PIXELS / 5);
 // 3.2 — Canvas/hybrid wet source reflections. FULL resident reflects eight
@@ -451,6 +499,15 @@ export class IsometricRenderer {
         this.postFxFeed = null;
         this.gpuWorld = null;
         this.worldRendererMode = 'canvas';
+        this.worldBackendReason = null;
+        this.worldBackendNotes = null;
+        this._backendSessionNote = null;
+        this._backendSelection = null;
+        this._pendingWebGpu = null;
+        this._worldSwap = null;
+        // A failed WebGPU world's WebGL2 fallback while it is being built off
+        // the frame (`_fallBackFromWebGpu`); the loop holds the last frame.
+        this._fallbackPrep = null;
         this._postFxCanvasVisible = null;
         this.camera = null;
         this.cameraDirector = null;
@@ -1418,6 +1475,258 @@ export class IsometricRenderer {
         this._debugGlobals.clear();
     }
 
+    /**
+     * Stage B — start resolving the WebGPU world for `search` now (App calls
+     * this as soon as the module loads, beside the asset fetch). A no-op when
+     * the search does not want WebGPU (`shouldProbeWebGpu`: `?renderer=webgpu`,
+     * or no forced mode in a Chromium browser with `navigator.gpu` and a
+     * hardware WebGL2 rasterizer). Returns whether a resolution is running.
+     */
+    static prewarmBackend(search = globalThis.location?.search || '') {
+        const key = String(search || '');
+        if (earlyWebGpu?.search === key) return true;
+        releaseWebGpuWorld(earlyWebGpu?.entry);
+        earlyWebGpu = null;
+        if (!wantsWebGpu(new URLSearchParams(key))) return false;
+        earlyWebGpu = { search: key, entry: resolveWebGpuWorld() };
+        return true;
+    }
+
+    /**
+     * Wave 10 (contract §4.1, §8.1) — the async half of backend selection,
+     * awaited by App before the synchronous `show()`. It takes over the
+     * `prewarmBackend` resolution (or starts one). `?renderer=webgpu` waits
+     * for it; the default takes it only when it has already settled, else
+     * `show()` mounts WebGL2 and switches once it is ready. Any failure is a
+     * resolved `{ available: false, reason }`, never a throw, and `show()`
+     * takes WebGL2 (a fallback adapter takes Canvas).
+     */
+    async resolveBackend(search = window.location.search) {
+        this.releaseResolvedBackend();
+        const key = String(search || '');
+        IsometricRenderer.prewarmBackend(key);
+        const entry = earlyWebGpu?.search === key ? earlyWebGpu.entry : null;
+        earlyWebGpu = null;
+        if (!entry) return null;
+        if (forcedGpuWorldRendererMode(new URLSearchParams(key)) === 'webgpu') await entry.promise;
+        if (entry.settled) {
+            this._resolvedBackend = entry.value;
+            return entry.value;
+        }
+        this._pendingWebGpu = entry;
+        return { available: false, pending: true, reason: 'compiling' };
+    }
+
+    releaseResolvedBackend() {
+        this._resolvedBackend?.device?.destroy?.();
+        this._resolvedBackend = null;
+        releaseWebGpuWorld(this._pendingWebGpu);
+        this._pendingWebGpu = null;
+    }
+
+    // §8.1 — `worldBackendReason` (Shift-D, diagnostics) and one console line
+    // naming the World backend and why, so a field report is diagnosable;
+    // `worldBackendNotes` holds the same parts for Shift-D's rows. A session
+    // note (`_backendSessionNote`: the GPU-crash Canvas policy) belongs to the
+    // selection, not to either backend's outcome.
+    _noteWorldBackend(webgpuNote) {
+        const { forced = null, postFxEnabled = true, webglNote = 'not probed' } = this._backendSelection || {};
+        const selection = `${forced ? `?renderer=${forced}` : 'default'}${postFxEnabled ? '' : ' ?postfx=0'}`;
+        const session = this._backendSessionNote || null;
+        this.worldBackendNotes = { selection, session, webgpu: String(webgpuNote), webgl2: webglNote };
+        this.worldBackendReason = `${selection}${session ? ` (${session})` : ''} · webgpu ${webgpuNote} · webgl2 ${webglNote}`;
+        console.info(`[IsometricRenderer] world backend: ${this.worldRendererMode} (${this.worldBackendReason})`);
+    }
+
+    // Stage B — the WebGPU world finished compiling after a WebGL2 mount:
+    // build it on a fresh fx canvas (off the document) and hand it to the
+    // loop, which swaps it in at a frame boundary (`_beginWorldSwap`).
+    _queueWebGpuSwitch(entry) {
+        this._pendingWebGpu = entry;
+        entry.promise.then((prepared) => {
+            if (this._pendingWebGpu !== entry) {
+                prepared?.device?.destroy?.();
+                return;
+            }
+            this._pendingWebGpu = null;
+            if (!prepared?.available || !this.running || this._disposed || this.worldRendererMode !== 'webgl' || !this.fxCanvas) {
+                prepared?.device?.destroy?.();
+                if (this.running && this.worldRendererMode === 'webgl') this._noteWorldBackend(`unavailable: ${prepared?.reason || 'renderer changed'}`);
+                return;
+            }
+            const canvas = this.fxCanvas.cloneNode(false);
+            const next = prepared.create({ canvas, enabled: true, device: prepared.device, adapter: prepared.adapter, pipelines: prepared.pipelines });
+            if (!next?.isActive?.()) {
+                next?.dispose?.();
+                prepared.device?.destroy?.();
+                this._noteWorldBackend('failed to start');
+                return;
+            }
+            this._worldSwap = { gpuWorld: next, canvas, previous: null };
+            this._invalidateIdleFrame();
+        });
+    }
+
+    // The swap waits for a healthy WebGL2 world and no armed first-frame
+    // signal (the reveal samples the fx canvas it presented). The frame then
+    // renders on the WebGPU world; `_endWorldSwap` keeps it only if it drew.
+    // The WebGPU ladder starts at the level WebGL2 shows (and any override):
+    // a fresh ladder would open at MINIMAL while it latches, a visible drop.
+    // A fallback swap (`_fallBackFromWebGpu`) runs the other way, from a
+    // failed (inactive) WebGPU world to a fresh WebGL2 one, and runs on an
+    // armed first frame too: that frame's reveal then samples the WebGL2
+    // canvas it drew, never a Canvas-world frame of the failed one.
+    _beginWorldSwap() {
+        const swap = this._worldSwap;
+        if (!swap || (this._firstFrameReason && !swap.fallback) || !this.gpuWorld) return null;
+        if (!swap.fallback && !this.gpuWorld.isActive?.()) return null;
+        this._worldSwap = null;
+        swap.previous = this.gpuWorld;
+        swap.gpuWorld.resize?.(swap.previous.width, swap.previous.height);
+        const ladder = swap.previous.qualityLadder?.getState?.();
+        if (ladder && swap.gpuWorld.qualityLadder) {
+            swap.gpuWorld.qualityLadder.reset(ladder.level);
+            if (ladder.override != null) swap.gpuWorld.qualityLadder.setOverride(ladder.override);
+        }
+        this.gpuWorld = swap.gpuWorld;
+        this.worldRendererMode = swap.gpuWorld.backend || 'webgl';
+        this._applyDisplayColor();
+        return swap;
+    }
+
+    _endWorldSwap(swap) {
+        const next = swap.gpuWorld;
+        if (this.gpuWorld === next && next.isActive?.() && next.frames > 0) {
+            // The frame drew on the new canvas in this task: it replaces the
+            // old canvas before the page presents, so no frame is skipped.
+            this._replaceFxCanvas(swap.canvas);
+            this._postFxCanvasVisible = null;
+            this._setPostFxCanvasVisible(true);
+            swap.previous.dispose?.();
+            this._noteWorldBackend(swap.fallback || 'ready (switched from WebGL2 after compiling)');
+            return;
+        }
+        // Not drawn (a Canvas-required frame, or a failure): this frame's
+        // Canvas fallback stands and the previous world resumes (a failed
+        // WebGPU one stays inactive, so Canvas draws); a healthy next world
+        // retries on the next frame.
+        if (this.gpuWorld === next) {
+            this.gpuWorld = swap.previous;
+            this.worldRendererMode = swap.previous.backend || 'webgl';
+            this._applyDisplayColor();
+        }
+        if (next.isActive?.() && this.running && this.gpuWorld === swap.previous) {
+            this._worldSwap = { gpuWorld: next, canvas: swap.canvas, previous: null, fallback: swap.fallback };
+            return;
+        }
+        next.dispose?.();
+        if (!this.running) return;
+        if (swap.fallback && this.gpuWorld === swap.previous) this._dropToCanvasWorld(`${swap.fallback} · WebGL2 fallback failed`);
+        else if (!swap.fallback) this._noteWorldBackend('failed to start');
+    }
+
+    // An unrecoverable WebGPU world (its `failure`: a frame exception, a
+    // validation or out-of-memory error in its frame scope, a destroyed
+    // device, a failed rebuild) swaps in reverse to a fresh WebGL2 world on
+    // a cloned fx canvas (without WebGL2, the Canvas world for the session).
+    // An asynchronous failure, found at a frame's start, left the last good
+    // frame presented: the loop holds it (draws nothing) while idle tasks
+    // build the WebGL2 world, re-bake the terrain canvas and draw the swap
+    // frame (`_stepFallbackPrep`, through `renderNow`), so no loop frame
+    // carries that work and the camera resumes with an ordinary step. A frame
+    // exception (`inFrame`) left a broken frame in this task: the fallback
+    // resolves now and `_loop` renders that frame again in the same task.
+    _fallBackFromWebGpu({ inFrame = false } = {}) {
+        const failure = this.gpuWorld?.failure;
+        if (!failure || this.worldRendererMode !== 'webgpu' || this._worldSwap || this._fallbackPrep || !this.fxCanvas) return;
+        const prep = { note: `failed in frame: ${failure.summary}`, failed: this.gpuWorld, stage: 'build', canvas: null, next: null };
+        this._fallbackPrep = prep;
+        if (inFrame) this._stepFallbackPrep({ now: true });
+        else whenIdle(() => this._stepFallbackPrep({ prep }));
+    }
+
+    // One idle step of the pending fallback: build the WebGL2 world; re-bake
+    // the terrain canvas it uploads; arm the swap and draw it (`renderNow`).
+    // `now` (a frame exception, or `renderNow` drawing during the hold) builds
+    // and arms in this task and leaves the bake to the frame about to draw.
+    // A World that stopped, left for Dashboard or changed world meanwhile
+    // drops the pending fallback; the next frame starts it again.
+    _stepFallbackPrep({ now = false, prep = this._fallbackPrep } = {}) {
+        if (!prep || prep !== this._fallbackPrep) return;
+        if (
+            !this.running
+            || this._disposed
+            || !this._worldModeActive
+            || this._worldResourcesSuspended
+            || this.gpuWorld !== prep.failed
+        ) {
+            this._cancelFallbackPrep();
+            return;
+        }
+        if (prep.stage === 'build') {
+            prep.stage = 'bake';
+            prep.canvas = this.fxCanvas.cloneNode(false);
+            prep.next = createGpuWorldRenderer({ canvas: prep.canvas, enabled: true });
+            if (!now) {
+                whenIdle(() => this._stepFallbackPrep({ prep }));
+                return;
+            }
+        } else if (prep.stage === 'bake' && !now) {
+            prep.stage = 'swap';
+            this._getTerrainCache();
+            whenIdle(() => this._stepFallbackPrep({ prep }));
+            return;
+        }
+        this._fallbackPrep = null;
+        if (prep.next?.isActive?.()) {
+            this._worldSwap = { gpuWorld: prep.next, canvas: prep.canvas, previous: null, fallback: prep.note };
+        } else {
+            prep.next?.dispose?.();
+            this._dropToCanvasWorld(`${prep.note} · WebGL2 unavailable`);
+        }
+        this._invalidateIdleFrame();
+        if (now) return;
+        // The hold is no frame interval: the next loop frame steps the camera
+        // and the clock as an ordinary one (`_loop`'s first-frame dt).
+        this._lastFrameTime = null;
+        this.renderNow();
+    }
+
+    _cancelFallbackPrep() {
+        this._fallbackPrep?.next?.dispose?.();
+        this._fallbackPrep = null;
+    }
+
+    // The Canvas world for the rest of the session (no GPU world at all).
+    _dropToCanvasWorld(note) {
+        this._cancelFallbackPrep();
+        this._worldSwap?.gpuWorld?.dispose?.();
+        this._worldSwap = null;
+        this.gpuWorld?.dispose?.();
+        this.gpuWorld = null;
+        this.worldRendererMode = 'canvas';
+        this._postFxCanvasVisible = null;
+        this._setPostFxCanvasVisible(false);
+        this._applyDisplayColor();
+        this._noteWorldBackend(note);
+    }
+
+    // Every #worldFxCanvas replacement goes through here: the new element
+    // takes the live one's CSS box and App's resize bookkeeping (a resize
+    // since the clone would otherwise leave it at a stale box), and App's
+    // resize resolves the surfaces from the DOM, so later resizes reach it.
+    _replaceFxCanvas(next) {
+        const current = this.fxCanvas;
+        if (!current || !next || current === next) return;
+        next.style.width = current.style.width;
+        next.style.height = current.style.height;
+        next._claudeVilleDpr = current._claudeVilleDpr;
+        next._claudeVilleCssWidth = current._claudeVilleCssWidth;
+        next._claudeVilleCssHeight = current._claudeVilleCssHeight;
+        current.replaceWith(next);
+        this.fxCanvas = next;
+    }
+
     show(canvas) {
         if (this._disposed) {
             console.warn('[IsometricRenderer] show skipped: renderer is disposed');
@@ -1450,18 +1759,64 @@ export class IsometricRenderer {
         // The parity, lifecycle, memory, and reference-hardware gates promote
         // the GPU-resident diorama to the default on a hardware rasterizer; a
         // software one (SwiftShader, llvmpipe) takes the Canvas world.
+        // Stage B: a Chromium browser takes WebGPU when `resolveBackend` had
+        // its adapter, device and pipelines (still compiling: WebGL2 now, and
+        // the switch once ready); Safari and Firefox take WebGL2.
         // `?renderer=canvas` keeps the production fallback, `?renderer=webgl`
-        // forces WebGL (only these two skip the probe; an empty or unknown
-        // value probes like no parameter), and `?postfx=0` is the
-        // allocation-free escape.
+        // forces WebGL2 and `?renderer=webgpu` WebGPU (only these skip the
+        // probe; an empty or unknown value probes like no parameter), and
+        // `?postfx=0` is the allocation-free escape. Any WebGPU failure
+        // before or at this synchronous mount lands on WebGL2 first.
         const params = new URLSearchParams(window.location.search);
         const postFxEnabled = params.get('postfx') !== '0';
-        const raster = forcedGpuWorldRendererMode(params) ? { webgl2: true, softwareRaster: false } : probeWebgl2Raster();
-        const requestedMode = resolveGpuWorldRendererMode(params, raster);
-        this.gpuWorld = (postFxEnabled && requestedMode === 'webgl' && this.fxCanvas)
-            ? createGpuWorldRenderer({ canvas: this.fxCanvas, enabled: true })
-            : null;
-        this.worldRendererMode = this.gpuWorld?.isActive?.() ? 'webgl' : 'canvas';
+        const forced = forcedGpuWorldRendererMode(params);
+        const chromium = isChromiumBrowser(globalThis.navigator);
+        const webgpu = this._resolvedBackend;
+        const pendingWebGpu = this._pendingWebGpu;
+        this._resolvedBackend = null;
+        this._pendingWebGpu = null;
+        const raster = forced ? { webgl2: true, softwareRaster: false } : probeWebgl2Raster();
+        const requestedMode = resolveGpuWorldRendererMode(params, {
+            ...raster,
+            webgpu: webgpu?.available === true,
+            webgpuSoftware: webgpu?.isFallbackAdapter === true,
+            chromium,
+        });
+        this.gpuWorld = null;
+        let webgpuStartFailed = false;
+        if (postFxEnabled && requestedMode === 'webgpu' && this.fxCanvas) {
+            this.gpuWorld = webgpu.create({ canvas: this.fxCanvas, enabled: true, device: webgpu.device, adapter: webgpu.adapter, pipelines: webgpu.pipelines });
+            if (!this.gpuWorld?.isActive?.()) {
+                // The canvas already holds a WebGPU context: WebGL2 needs a
+                // fresh element in its place.
+                console.warn('[IsometricRenderer] WebGPU world failed to start; falling back to WebGL2');
+                webgpuStartFailed = true;
+                this.gpuWorld?.dispose?.();
+                this.gpuWorld = null;
+                this._replaceFxCanvas(this.fxCanvas.cloneNode(false));
+            }
+        } else {
+            webgpu?.device?.destroy?.();
+        }
+        if (!this.gpuWorld && postFxEnabled && (requestedMode === 'webgl' || requestedMode === 'webgpu') && this.fxCanvas) {
+            this.gpuWorld = createGpuWorldRenderer({ canvas: this.fxCanvas, enabled: true });
+        }
+        this.worldRendererMode = this.gpuWorld?.isActive?.() ? (this.gpuWorld.backend || 'webgl') : 'canvas';
+        const switchLater = Boolean(pendingWebGpu) && this.worldRendererMode === 'webgl';
+        if (pendingWebGpu && !switchLater) releaseWebGpuWorld(pendingWebGpu);
+        // §8.1 — one console line naming the backend and why (field reports).
+        let webgpuNote = chromium ? 'not requested' : 'not requested (not Chromium)';
+        if (webgpuStartFailed) webgpuNote = 'failed to start';
+        else if (switchLater) webgpuNote = 'compiling (switches when ready)';
+        else if (webgpu) webgpuNote = webgpu.available ? 'ready' : `unavailable: ${webgpu.reason}`;
+        this._backendSelection = {
+            forced,
+            postFxEnabled,
+            webglNote: forced ? 'not probed' : (raster.webgl2 ? (raster.softwareRaster ? 'software' : 'hardware') : 'none'),
+        };
+        this._noteWorldBackend(webgpuNote);
+        if (switchLater) this._queueWebGpuSwitch(pendingWebGpu);
+        this._applyDisplayColor();
         this.postFx = (!this.gpuWorld && postFxEnabled && this.fxCanvas)
             ? createPostFx({ canvas: this.fxCanvas, enabled: true })
             : null;
@@ -1602,6 +1957,10 @@ export class IsometricRenderer {
             eventBus.on(BUILDING_EVENTS.DESELECTED, () => this._invalidateIdleFrame()),
             // #attract — topbar toggle flips the idle-attract camera live.
             eventBus.on('camera:auto-camera', (payload) => this.cameraDirector?.setAutoMode?.(payload?.enabled !== false)),
+            // 10.2 / 10.3 — SET's HDR highlights and the screen's media
+            // queries (a window moved to or from an HDR / P3 screen).
+            eventBus.on(HDR_HIGHLIGHTS_EVENT, () => this._applyDisplayColor()),
+            watchDisplayMedia(() => this._applyDisplayColor()),
             // 4.8 — earned nicknames garnish agent name tags.
             eventBus.on('biography:updated', (payload) => {
                 const identityKey = payload?.identityKey;
@@ -1728,6 +2087,32 @@ export class IsometricRenderer {
         return Boolean(this._readMode);
     }
 
+    // 10.2 / 10.3 — the world renderer's display path from the stored HDR
+    // setting and the media queries (DisplayColor.resolveDisplayColor picks
+    // the path; WebGL and Canvas never present HDR). SET reads the status.
+    // The overlay's reserved-hue P3 inks follow the live gamut query.
+    _applyDisplayColor() {
+        const media = readDisplayMedia();
+        const hdrMode = readHdrHighlights();
+        setOverlayInksP3(media.colorGamutP3);
+        const world = this.gpuWorld;
+        // A WebGPU backend learns on its first HDR configure whether the
+        // canvas tone-maps (Safari's opt-in does not) and reports it here.
+        if (world) world.onDisplayChange = () => this._publishDisplayStatus(hdrMode, media);
+        world?.setDisplayColor?.({ hdrMode, ...media });
+        this._publishDisplayStatus(hdrMode, media);
+        this._invalidateIdleFrame();
+    }
+
+    _publishDisplayStatus(hdrMode, media) {
+        publishDisplayStatus({
+            backend: this.worldRendererMode,
+            hdrMode,
+            ...media,
+            toneMappingSupported: this.gpuWorld?.toneMappingSupported !== false,
+        });
+    }
+
     _toggleDebugOverlay(method) {
         if (this.debugOverlay) {
             this.debugOverlay[method]?.();
@@ -1762,6 +2147,12 @@ export class IsometricRenderer {
         this.gpuWorld?.dispose?.();
         this.gpuWorld = null;
         this.worldRendererMode = 'canvas';
+        this.worldBackendReason = null;
+        this.worldBackendNotes = null;
+        this.releaseResolvedBackend();
+        this._cancelFallbackPrep();
+        this._worldSwap?.gpuWorld?.dispose?.();
+        this._worldSwap = null;
         this.postFxFeed?.dispose?.();
         this.postFxFeed = null;
         this._setPostFxCanvasVisible(false);
@@ -1916,21 +2307,34 @@ export class IsometricRenderer {
         }
     }
 
+    // A lost 2D World context. App reloads the page on a real GPU-process
+    // crash (it blanks every accelerated canvas, module caches included);
+    // this in-place path serves a crash App may not reload for
+    // (`canvasFallback`: a second one within its window, which also drops the
+    // GPU world for the Canvas world) and a synthetic loss. The loss only
+    // stops the loop (resizing a DOM canvas to zero here would stop the
+    // browser restoring it); the restore runs a Dashboard trip: drop every
+    // World resource, rebuild them all.
     handleContextLost() {
         this._contextLost = true;
+        this._worldResourceGeneration++;
         this._stopLoop();
         this.releaseVolatileCaches();
     }
 
-    handleContextRestored() {
-        this.ctx = this.canvas?.getContext?.('2d') || null;
+    handleContextRestored({ canvasFallback = false } = {}) {
         this._contextLost = false;
-        if (this._worldModeActive) this.trailRenderer?.resume?.();
         this._resumeFrameFailures();
-        this.invalidateViewportCaches();
-        this.camera?.onViewportResize?.();
         this._lastFrameTime = performance.now();
-        if (this._worldModeActive) this._startLoop();
+        if (canvasFallback && this.worldRendererMode !== 'canvas') {
+            // A session policy, not a WebGPU outcome: the note sits in the
+            // selection slot (the webgpu/webgl2 slots keep what they said).
+            this._backendSessionNote = 'GPU process crashed twice in 2 min: Canvas world, no reload';
+            this._dropToCanvasWorld(this.worldBackendNotes?.webgpu ?? 'not probed');
+        }
+        if (!this._worldModeActive) return Promise.resolve(false);
+        this._suspendWorldModeResources({ keepSurfaces: true });
+        return this._beginWorldModeResume();
     }
 
     releaseVolatileCaches() {
@@ -2006,7 +2410,10 @@ export class IsometricRenderer {
         });
     }
 
-    _suspendWorldModeResources() {
+    // `keepSurfaces` (a context restore): the viewport canvases stay sized, so
+    // the page's loading bands show through the cleared surfaces while the
+    // resources rebuild, never a black 0x0 opaque canvas.
+    _suspendWorldModeResources({ keepSurfaces = false } = {}) {
         // Always forward suspension so an in-flight decoded-asset reload is
         // aborted even when the renderer already released its own surfaces.
         this.assets?.suspend?.();
@@ -2024,11 +2431,13 @@ export class IsometricRenderer {
         this.postFxFeed?.dispose?.();
         this.postFx?.suspend?.();
         this.gpuWorld?.suspend?.();
-        releaseCanvasBackingStore(this.fxCanvas);
-        releaseCanvasBackingStore(this.canvas);
-        // The UI surface is as volatile as the world backing store; keeping it
-        // alive in Dashboard mode would retain a full-screen alpha canvas.
-        releaseCanvasBackingStore(this.overlayCanvas);
+        if (!keepSurfaces) {
+            releaseCanvasBackingStore(this.fxCanvas);
+            releaseCanvasBackingStore(this.canvas);
+            // The UI surface is as volatile as the world backing store; keeping it
+            // alive in Dashboard mode would retain a full-screen alpha canvas.
+            releaseCanvasBackingStore(this.overlayCanvas);
+        }
         this._worldResourcesSuspended = true;
     }
 
@@ -2037,6 +2446,7 @@ export class IsometricRenderer {
             this._disposed
             || !this.running
             || !this._worldModeActive
+            || this._contextLost
             || (typeof document !== 'undefined' && document.visibilityState === 'hidden')
         ) return Promise.resolve(false);
 
@@ -2616,8 +3026,15 @@ export class IsometricRenderer {
         return Math.max(1, Math.round(this.camera?.zoom || 1));
     }
 
+    // The fx canvas is read through the World renderer's readout when it has
+    // one: the WebGPU HDR canvas (rgba16float) cannot be drawn into a 2D
+    // canvas, so it hands over an SDR copy of the frame this task presented.
     _sampleFrameBands(count, horizonY) {
-        return sampleRevealBands([this.canvas, this.fxCanvas, this.overlayCanvas], { count, horizonY });
+        let fx = this.fxCanvas;
+        if (fx && fx.style.display !== 'none' && this.gpuWorld?.readoutSurface) {
+            fx = this.gpuWorld.readoutSurface(REVEAL_SAMPLE_W, REVEAL_SAMPLE_H);
+        }
+        return sampleRevealBands([this.canvas, fx, this.overlayCanvas], { count, horizonY });
     }
 
     // 0.3 (c) — the World is about to be suspended for Dashboard: draw one
@@ -2634,6 +3051,8 @@ export class IsometricRenderer {
     // closure calls it after reallocating the canvases (which clears them), so
     // a cleared backing store never presents. Nothing draws before the loop's
     // first frame (which runs the first update). Returns whether it drew.
+    // A failed WebGPU world's pending fallback resolves here and the frame
+    // draws on it, never on the failed world's Canvas stand-in.
     renderNow() {
         if (
             !this.running
@@ -2647,7 +3066,13 @@ export class IsometricRenderer {
         ) return false;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
         try {
-            this._render(0);
+            this._stepFallbackPrep({ now: true });
+            const swap = this._worldSwap?.fallback ? this._beginWorldSwap() : null;
+            try {
+                this._render(0);
+            } finally {
+                if (swap) this._endWorldSwap(swap);
+            }
         } catch (error) {
             this._reportFrameFailure(error, 'render');
             return false;
@@ -3106,7 +3531,11 @@ export class IsometricRenderer {
             surface._claudeVilleCssWidth = this.canvas?._claudeVilleCssWidth || this.canvas?.clientWidth || 0;
             surface._claudeVilleCssHeight = this.canvas?._claudeVilleCssHeight || this.canvas?.clientHeight || 0;
         }
-        this.overlayCtx = this.overlayCanvas?.getContext?.('2d', { alpha: true }) || null;
+        // 10.3 — on a P3 screen the overlay is display-p3 from its first
+        // getContext (App's resize or here; attributes never change later),
+        // and its reserved status and C4 hues draw as their P3 variants.
+        this.overlayCtx = this.overlayCanvas?.getContext?.('2d', overlayContextAttributes()) || null;
+        if (this.overlayCtx) installP3OverlayInks(this.overlayCtx);
         if (this.overlayCtx) SpriteRenderer.disableSmoothing(this.overlayCtx);
         if (backingWidth > 0 && backingHeight > 0) {
             this.postFx?.resize?.(backingWidth, backingHeight);
@@ -3959,6 +4388,15 @@ export class IsometricRenderer {
         this._lastVsyncTime = vsyncTime;
         this._lastLoopFrameTime = now;
         this._lastFrameTime = now;
+        // A failed WebGPU world starts its WebGL2 fallback; while that builds
+        // off the frame the loop holds the last presented frame (no update,
+        // no render), and the swap then dirties the idle frame, so a
+        // reduced-motion session swaps too.
+        this._fallBackFromWebGpu();
+        if (this._fallbackPrep) {
+            this._startLoop();
+            return;
+        }
         if (this._canSkipIdleFrame(Date.now())) {
             this._recordFrameEnvelope(0, 0, 0, frameGapMs, null);
             if (this._performanceSamples) this._recordPerformanceSample(0, 0, 0);
@@ -3989,7 +4427,33 @@ export class IsometricRenderer {
             stage = 'render';
             renderStart = afterUpdate;
             if (perf?.enabled) renderToken = perf.beginRenderStage('world-render');
-            this._render(dt);
+            // Stage B — a WebGPU world that finished compiling after a
+            // WebGL2 mount takes over at this frame when it draws it; a
+            // failed WebGPU world hands over to its WebGL2 fallback the same way.
+            const worldSwap = this._beginWorldSwap();
+            try {
+                this._render(dt);
+            } finally {
+                if (worldSwap) this._endWorldSwap(worldSwap);
+            }
+            // A WebGPU frame that failed mid-render left only the Canvas
+            // atmosphere under the overlay (its records were the GPU's): the
+            // same frame renders again on the WebGL2 fallback (or, without
+            // WebGL2, on the Canvas world) in this task, so the page never
+            // presents the broken one.
+            if (!worldSwap && this.worldRendererMode === 'webgpu' && this.gpuWorld?.failure) {
+                this._fallBackFromWebGpu({ inFrame: true });
+                const fallbackSwap = this._beginWorldSwap();
+                if (fallbackSwap) {
+                    try {
+                        this._render(0);
+                    } finally {
+                        this._endWorldSwap(fallbackSwap);
+                    }
+                } else if (this.worldRendererMode === 'canvas') {
+                    this._render(0);
+                }
+            }
             const afterRender = performance.now();
             renderMs = afterRender - renderStart;
             this._recordIdleRenderState();
@@ -6582,7 +7046,9 @@ export class IsometricRenderer {
     // B.2 — `allowResident` (the resident GPU path): once the GPU holds this
     // bake's texture the CPU canvas is released (`releaseTerrainCanvas`) and a
     // same-size GPU-resident stand-in answers instead. The Canvas path, a lost
-    // context or an evicted texture re-bakes the canvas (12-16 ms, once).
+    // context or an evicted texture re-bakes the canvas synchronously (the
+    // coast passes dominate; ~285 ms was measured on a loaded host), so the
+    // canvas stays while a WebGPU switch is pending (`releaseTerrainCanvas`).
     _getTerrainCache({ allowResident = false } = {}) {
         const bounds = this._terrainCacheBounds();
         const meta = this._getTerrainCacheMeta(bounds);
@@ -6628,9 +7094,13 @@ export class IsometricRenderer {
     }
 
     // B.2 — drop the terrain bake's CPU canvas once the GPU holds its upload.
+    // Not while a WebGPU switch is compiling or armed: the new world starts
+    // without the texture and would re-bake in the swap frame (a visible
+    // freeze and a camera step mid-glide); it uploads the kept canvas instead,
+    // and the first frame after the swap releases it.
     releaseTerrainCanvas() {
         const canvas = this.terrainCache;
-        if (!canvas) return;
+        if (!canvas || this._pendingWebGpu || this._worldSwap) return;
         this._terrainResident = { width: canvas.width, height: canvas.height, gpuResident: true, key: this.terrainCacheKey };
         releaseCanvasBackingStore(canvas);
         this.terrainCache = null;
@@ -9657,6 +10127,7 @@ export class IsometricRenderer {
             pathfinder: this.pathfinder?.getDiagnostics?.() || null,
             gpuWorld: this.gpuWorld?.getDiagnostics?.() || null,
             worldRendererMode: this.worldRendererMode,
+            worldBackendReason: this.worldBackendReason,
         };
     }
 

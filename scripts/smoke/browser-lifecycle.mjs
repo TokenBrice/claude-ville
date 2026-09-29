@@ -931,6 +931,8 @@ async function runContextRecoveryProbe(page) {
       volatilePixels: renderer.getCanvasBudget().volatilePixels,
     };
     canvas.dispatchEvent(new Event('contextrestored'));
+    // A restore rebuilds every World resource (the Dashboard-trip resume).
+    await renderer._worldResumePromise;
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     return {
       lost,
@@ -1590,7 +1592,7 @@ async function main() {
     assert.equal(frameProbe.contextResets, 3, 'render failures did not reset context state');
     const contextProbe = await runContextRecoveryProbe(page);
     assert.deepEqual(contextProbe.lost, {
-      defaultPrevented: true,
+      defaultPrevented: false,
       contextLost: true,
       frameStopped: true,
       volatilePixels: 0,

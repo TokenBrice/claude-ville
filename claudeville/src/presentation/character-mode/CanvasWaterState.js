@@ -71,17 +71,15 @@ import {
     waterSunBandFor,
     waterSurfaceRgb,
 } from './CoastBake.js';
+import { BEAM_NEAR_HALF_WIDTH, FOOTPRINT_MARCH_STEPS, NOON_GLINT_GROW_GAIN } from './gpu/GpuFrameState.js';
 import {
-    BEAM_NEAR_HALF_WIDTH,
     DEEP_CREST_RUN,
     DEEP_DASH_DENSITY,
-    FOOTPRINT_MARCH_STEPS,
     GLINT_DASH_DENSITY,
     GLINT_NOON_BASE,
     MOON_DASH_HOLD,
     NEAR_SHORE_DASH_DENSITY,
     NOON_GLINT_FULL_TEXEL,
-    NOON_GLINT_GROW_GAIN,
     SEA_PAW_CAP_BASE,
     SEA_PAW_CAP_GAIN,
     SEA_PAW_THRESHOLD,
@@ -896,7 +894,7 @@ function buildPalette(atmosphere, postFx, storm) {
 }
 
 // ---------------------------------------------------------------------------
-// The frame's water state (the resident `_resolveWaterFx` for this canvas).
+// The frame's water state (the resident GpuFrameState `resolveWaterFx` for this canvas).
 
 function resolveFx(renderer, atmosphere) {
     const level = renderer.postFx?.isActive?.() === true ? (renderer.postFx?.ladder?.effectiveLevel ?? 0) : 0;

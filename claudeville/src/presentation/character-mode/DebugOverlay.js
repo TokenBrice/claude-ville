@@ -330,7 +330,18 @@ export class DebugOverlay {
         if (this._backendRows && now - this._backendRowsAt < 1000) return this._backendRows;
         this._backendRowsAt = now;
         const gpu = renderer?.gpuWorld?.getDiagnostics?.();
-        this._backendRows = gpu?.active ? this._residentGpuRows(gpu) : this._hybridPostFxRows(renderer);
+        // Stage B — which World backend is live, and why it was chosen: one
+        // short row per part (a long failure message would otherwise be
+        // squeezed unreadable by fillText's maxWidth).
+        const mode = renderer?.worldRendererMode || 'canvas';
+        const notes = renderer?.worldBackendNotes;
+        const backendRows = [
+            `world backend: ${mode}${mode !== 'canvas' && !gpu?.active ? ' (inactive)' : ''}`
+                + (notes?.selection ? ` · ${notes.selection}` : ''),
+        ];
+        if (notes?.session) backendRows.push(`  session: ${briefReason(notes.session)}`);
+        if (notes) backendRows.push(`  webgpu: ${briefReason(notes.webgpu)}`, `  webgl2: ${briefReason(notes.webgl2)}`);
+        this._backendRows = [...backendRows, ...(gpu?.active ? this._residentGpuRows(gpu) : this._hybridPostFxRows(renderer))];
         return this._backendRows;
     }
 
@@ -338,6 +349,14 @@ export class DebugOverlay {
         const resources = gpu.resources || {};
         return [
             `gpu world: level ${gpu.qualityLevel} · ${gpu.qualityReason} · ${gpu.records} records / ${gpu.batches} batches · ${gpu.lights} lights`,
+            // 10.2 / 10.3 — the display path, one short row per part (as the
+            // backend rows: fillText's maxWidth squeezes a long one).
+            `display: hdr ${gpu.hdrEnabled ? 'on' : 'off'} (${gpu.hdrMode}) · p3 ${gpu.colorGamutP3 ? (gpu.p3Enabled ? 'on' : 'screen') : 'no'}`
+                + ` · dynamic-range ${gpu.dynamicRangeHigh ? 'high' : 'standard'}`,
+            gpu.hdrEnabled ? null : `  hdr off: ${briefReason(gpu.hdrReason)}`,
+            `  canvas: ${gpu.canvasFormat} ${gpu.canvasColorSpace} ${gpu.canvasToneMapping}`,
+            gpu.uncapturedErrors ? `  gpu errors outside the frame: ${gpu.uncapturedErrors} (world kept)` : null,
+            gpu.uncapturedErrors ? `  last: ${briefReason(gpu.lastUncapturedError)}` : null,
             ...pacingRows(gpu.pacing),
             `gpu timer: p25 ${formatMicroMs(gpu.gpuMsP25)} · ema ${formatMicroMs(gpu.gpuMs)} · 1/${gpu.gpuTimerEvery ?? '?'} frames · n=${gpu.gpuTimerSamples ?? 0}`,
             `gpu frame: cpu ${formatOptionalMs(gpu.cpuMs)} · gap ${formatOptionalMs(gpu.frameGapMs)} · source ${gpu.qualityTimingSource}`,
@@ -502,6 +521,14 @@ function lightRows(gpu) {
         `off screen ${a.culled ?? 0}`,
     ];
     return wrapRows('lights: ', parts, ' · ');
+}
+
+// A backend note on one row: whitespace collapsed, and a long browser error
+// message cut to what fits beside its label within WRAP_CHARS.
+function briefReason(note) {
+    const text = String(note ?? 'n/a').replace(/\s+/g, ' ').trim();
+    const limit = WRAP_CHARS - 10;
+    return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 }
 
 function formatMs(value) {

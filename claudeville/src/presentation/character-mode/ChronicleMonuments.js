@@ -836,7 +836,8 @@ export class ChronicleMonuments {
         });
         state.stage = { phase: phase.phase, step: phase.step, mode: anchor.mode, screen: anchor.screen, world: anchor.rect, depthY: anchor.depthY, tiedUp: mast.tiedUp };
         if (anchor.mode === 'edge') {
-            queueMomentEdgePlate(anchor, { word: 'RELEASE', color: GOLD, peak: phase.phase === 'peak', ctx });
+            // 10.2 — a verified release: its cream peak cell is a role-2 mark.
+            queueMomentEdgePlate(anchor, { word: 'RELEASE', color: GOLD, peak: phase.phase === 'peak', peakMark: true, ctx });
             return;
         }
         // The anticipation is the pennant climbing the sloop's mast.
@@ -847,8 +848,10 @@ export class ChronicleMonuments {
         ctx.globalCompositeOperation = 'source-over';
         switch (phase.phase) {
         case 'peak':
-            // The one cream frame (with the sloop's sail outline).
-            crown(ctx, x, y, { radius: 9, ramp: [PEAK, PEAK, PEAK], jewel: PEAK, core: PEAK, outline: CROWN_INK });
+            // The one cream frame (with the sloop's sail outline). 10.2 — a
+            // verified success: on the resident path its cream is a role-2
+            // GPU mark at the mark gain for this frame only.
+            crown(ctx, x, y, { radius: 9, ramp: [PEAK, PEAK, PEAK], jewel: PEAK, core: PEAK, outline: CROWN_INK, peakMark: true });
             break;
         case 'follow': {
             const ms = phase.t * RELEASE_CROWN.follow;

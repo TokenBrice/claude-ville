@@ -27,6 +27,14 @@ import {
     writeStoredSoundMode,
     writeTownBandVoice,
 } from './SoundSettings.js';
+import {
+    HDR_HIGHLIGHT_LABELS,
+    HDR_HIGHLIGHT_MODES,
+    normalizeHdrHighlights,
+    onDisplayStatus,
+    readDisplayStatus,
+    writeHdrHighlights,
+} from './DisplaySettings.js';
 
 export const REDUCED_MOTION_OVERRIDE_KEY = 'claudeville.motion.reduce';
 const HOOK_LIVE_WINDOW_MS = 15_000;
@@ -73,6 +81,26 @@ const TOWN_BAND_VOICE_CHOICES = Object.freeze([
     ['isle', 'Isle Band'],
     ['chip', 'Chip restored'],
 ]);
+// 10.2: HDR highlights. The detail says what this renderer and screen can
+// show and follows the published display status while the panel is open;
+// where the choice cannot apply (Canvas and WebGL never present HDR, nor a
+// WebGPU canvas without tone mapping) it is aria-disabled: dimmed and inert
+// but still focusable, so keyboard and screen-reader users reach the reason.
+const HDR_HIGHLIGHT_CHOICES = Object.freeze(HDR_HIGHLIGHT_MODES.map(mode => [mode, HDR_HIGHLIGHT_LABELS[mode]]));
+const HDR_DETAIL_ID = 'settingsHdrHighlightsDetail';
+
+function hdrHighlightsAvailability(status) {
+    if (status && status.backend !== 'webgpu') {
+        return { disabled: true, detail: 'Needs the WebGPU renderer. This renderer always shows the standard picture.' };
+    }
+    if (status && status.toneMappingSupported === false) {
+        return { disabled: true, detail: 'This browser cannot show HDR on a web page. It shows the standard picture.' };
+    }
+    if (status && !status.dynamicRangeHigh) {
+        return { disabled: false, detail: 'Shows on an HDR screen. This screen gets the standard picture.' };
+    }
+    return { disabled: false, detail: 'Lamps, fires, action-needed marks and release moments glow brighter than white; lamp halos are dropped.' };
+}
 
 let motionOverrideController = null;
 
@@ -252,6 +280,7 @@ export class SettingsPanel {
         onDesktopAlerts,
         onSidebarCollapsed,
         onReducedMotion,
+        onHdrHighlights,
         onReset,
         getVillageState,
         getChronicleStatus,
@@ -292,6 +321,7 @@ export class SettingsPanel {
         this.onDesktopAlerts = onDesktopAlerts;
         this.onSidebarCollapsed = onSidebarCollapsed;
         this.onReducedMotion = onReducedMotion;
+        this.onHdrHighlights = onHdrHighlights || (value => writeHdrHighlights(value, storage));
         this.onReset = onReset;
         this.getVillageState = getVillageState;
         this.getChronicleStatus = getChronicleStatus;
@@ -309,6 +339,8 @@ export class SettingsPanel {
         this._metricsStartedHere = false;
         this._sound = null;
         this._offSoundState = null;
+        this._offDisplayStatus = null;
+        this._hdrDisabled = false;
     }
 
     build() {
@@ -407,6 +439,21 @@ export class SettingsPanel {
 
     _buildControls(settings) {
         const grid = el('div', { className: 'settings-controls' });
+        const hdrRow = this._select('hdrHighlights', 'HDR highlights', hdrHighlightsAvailability(readDisplayStatus()).detail, HDR_HIGHLIGHT_CHOICES,
+            normalizeHdrHighlights(settings.hdrHighlights), value => this._chooseHdr(value));
+        const hdrSelect = this.controls.get('hdrHighlights');
+        hdrRow.querySelector('.settings-control__detail').id = HDR_DETAIL_ID;
+        hdrSelect.setAttribute('aria-describedby', HDR_DETAIL_ID);
+        // aria-disabled keeps the select in the tab order: swallow the keys
+        // and the press that would open or step it.
+        hdrSelect.addEventListener('mousedown', (event) => {
+            if (this._hdrDisabled) event.preventDefault();
+        });
+        hdrSelect.addEventListener('keydown', (event) => {
+            if (this._hdrDisabled && event.key !== 'Tab' && event.key !== 'Escape') event.preventDefault();
+        });
+        this._renderHdr(readDisplayStatus());
+        this._offDisplayStatus = onDisplayStatus(status => this._renderHdr(status));
         grid.append(
             this._checkbox('autoCamera', 'Automatic camera', 'Frame live action while the World is idle.', settings.autoCamera, this.onAutoCamera),
             this._checkbox('desktopAlerts', 'Desktop alerts', this.alertsAvailable
@@ -414,8 +461,28 @@ export class SettingsPanel {
                 : 'Unavailable in this browser.', settings.desktopAlerts, this.onDesktopAlerts, !this.alertsAvailable),
             this._checkbox('sidebarCollapsed', 'Collapse sidebar', 'Keep the agent roster folded.', settings.sidebarCollapsed, this.onSidebarCollapsed),
             this._checkbox('reducedMotion', 'Reduce motion', 'Override the system preference for this browser.', settings.reducedMotion, this.onReducedMotion),
+            hdrRow,
         );
         return this._section('CONTROLS', 'settings-section--controls', [grid]);
+    }
+
+    // The HDR row from the published display status: its detail and whether
+    // the choice can apply here.
+    _renderHdr(status) {
+        const select = this.controls.get('hdrHighlights');
+        if (this._destroyed || !select) return;
+        const { disabled, detail } = hdrHighlightsAvailability(status);
+        this._hdrDisabled = disabled;
+        if (disabled) select.setAttribute('aria-disabled', 'true');
+        else select.removeAttribute('aria-disabled');
+        const copy = select.closest('.settings-control')?.querySelector('.settings-control__detail');
+        if (copy && copy.textContent !== detail) copy.textContent = detail;
+    }
+
+    // An inert (aria-disabled) choice keeps the stored value.
+    _chooseHdr(value) {
+        if (this._hdrDisabled) return normalizeHdrHighlights(this.readSettings?.()?.hdrHighlights);
+        return this.onHdrHighlights?.(value);
     }
 
     async _choosePreset(value) {
@@ -727,6 +794,9 @@ export class SettingsPanel {
             const input = this.controls.get(key);
             if (input) input.checked = Boolean(settings[key]);
         }
+        const hdrSelect = this.controls.get('hdrHighlights');
+        const hdrMode = normalizeHdrHighlights(settings.hdrHighlights);
+        if (hdrSelect && hdrSelect.value !== hdrMode) hdrSelect.value = hdrMode;
         this._syncSound(settings);
         this._refreshOperationalRows();
     }
@@ -766,6 +836,8 @@ export class SettingsPanel {
         this._destroyed = true;
         this._offSoundState?.();
         this._offSoundState = null;
+        this._offDisplayStatus?.();
+        this._offDisplayStatus = null;
         this._sound = null;
         this._providerController?.abort?.();
         this._providerController = null;

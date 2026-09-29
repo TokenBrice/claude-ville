@@ -101,6 +101,7 @@ test('settings review reads every operator preference, sound levels as steps', (
         'cv-auto-camera': '0',
         'claudeville.alerts.desktop': '1',
         'claudeville.sidebarCollapsed': 'true',
+        'claudeville.display.hdrHighlights': 'full',
     });
 
     assert.deepEqual(readPersistedSettings(storage), {
@@ -123,6 +124,7 @@ test('settings review reads every operator preference, sound levels as steps', (
         autoCamera: false,
         desktopAlerts: true,
         sidebarCollapsed: true,
+        hdrHighlights: 'full',
     });
 });
 
