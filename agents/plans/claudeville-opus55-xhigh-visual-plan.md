@@ -1054,7 +1054,7 @@ Carried in [open-followups](open-followups.md):
 
 - **OF-009** `read` strips for six strip-less profiles; 15 of 20 pre-existing `read` strips fail the ±2 px feet audit.
 - **OF-011** quiet-host ladder receipt (dense-100 soak). **OF-012** GPU-owned estimate at DPR 2; ~44 MB of Chrome transfer-cache textures unattributed.
-- **OF-016** G95C HDR re-probe (closed after `28ddff3`: dynamic-range high, P3, EDR 1 → 2.03 → 1). **OF-017** headed by-eye HDR and P3 on the XDR. **OF-018** real Safari and Firefox runs.
+- **OF-017** headed by-eye HDR and P3 on the XDR. **OF-018** real Safari and Firefox runs. (OF-016, the G95C HDR re-probe, closed after `28ddff3`.)
 - **OF-019** art-director carries that need maintainer decisions (clone-crowd identity, overlay density at z1/z2, static z1, night light on volumes).
 - **OF-020** 7.5 run gait. **OF-021** 4.9 overlay panel, conditional.
 - **OF-022** the Chronicler has no body on any backend.
