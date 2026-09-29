@@ -2,7 +2,7 @@
 
 **Status:** `live checklist`
 
-**As of:** 2026-09-29, release `v0.47.1` plus the Waking Isle phases 1–4 (`3e0d876`, `5f4abfe`, `6559335`, `ee145a3`)
+**As of:** 2026-09-29, release `v0.48.0` (*The Waking Isle*, phases 1–5)
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs
@@ -83,7 +83,7 @@ linked from each source plan below.
   - **Trigger:** Before a release push, run and pass the long pressure soak against the correct server process.
   - **Source:** [post-OOM plan — Definition of done](claudeville-post-oom-reliability-performance-plan.md#definition-of-done) and [release verification gate](claudeville-post-oom-reliability-performance-plan.md#package-9--release-verification-gate).
   - **Reopen when:** before a release push, run the long pressure soak against the correct server process and pass both the JavaScript heap/RSS gates and deduplicated native-resource gates.
-  - **Current status:** Satisfied for v0.47.1 (default 10/30-minute run against the maintained server, exit 0); recurring before the next release push. v0.46.0 history: The first 10/30-minute run against an isolated server failed `DOM listener count changed during World soak` (116 vs 114). The count was not climbing: it spiked at the 300 s and 600 s checkpoints and was back at the floor within 1 s. Cause: the 5-minute Chronicle prune ran as seven chained IndexedDB transactions, and the soak's quiescence barrier only waited for the one in flight, so each checkpoint sampled the chain's request handlers mid-flight. `ChronicleStore.prune()` now runs as one atomic readwrite transaction over all pruned stores. The soak and its assertion are unchanged. Re-run exit 0: listeners flat at 114 at every checkpoint; browser heap projected growth 1.57 MB against the 8 MiB limit; server RSS slope ≤ 0. Earlier evidence for v0.42.0: [release evidence](../research/claudeville-astra-refinement/README.md#v0420-release-verification).
+  - **Current status:** Satisfied for v0.48.0 (default 10/30-minute run against an isolated server, since release agents never touch `:4000`, exit 0) and for v0.47.1 (against the maintained server); recurring before the next release push. v0.46.0 history: The first 10/30-minute run against an isolated server failed `DOM listener count changed during World soak` (116 vs 114). The count was not climbing: it spiked at the 300 s and 600 s checkpoints and was back at the floor within 1 s. Cause: the 5-minute Chronicle prune ran as seven chained IndexedDB transactions, and the soak's quiescence barrier only waited for the one in flight, so each checkpoint sampled the chain's request handlers mid-flight. `ChronicleStore.prune()` now runs as one atomic readwrite transaction over all pruned stores. The soak and its assertion are unchanged. Re-run exit 0: listeners flat at 114 at every checkpoint; browser heap projected growth 1.57 MB against the 8 MiB limit; server RSS slope ≤ 0. Earlier evidence for v0.42.0: [release evidence](../research/claudeville-astra-refinement/README.md#v0420-release-verification).
   - **Current gate values:** **8 MiB** browser-heap projected-growth limit, **64 MiB** server-RSS allowance above the second-half median, with steady and trailing growth-slope limits, **250 ms** event-loop p95 limit, plus native canvas/asset drift checks in `scripts/smoke/performance-soak.mjs`.
 
 ### Additional conditional follow-ups from the semantic rendering plan
@@ -213,7 +213,6 @@ art-director reviews raised outside its scope.
   - **Source:** [Waking Isle plan — 10.1](claudeville-opus55-xhigh-visual-plan.md#101-a-webgpu-backend-behind-the-webgl2-fallback-staged-wpg-3-of-008) and [Execution record](claudeville-opus55-xhigh-visual-plan.md#execution-record).
   - **Current status:** Open. `npm run verify:render` launches plain headless Chromium, which has no WebGPU adapter and a software (SwiftShader) WebGL2, so Stage B's selection gives it the Canvas world: the automated gates render only the Canvas world. CI (`.github/workflows/ci.yml`) runs `validate:full`, which renders no browser frame at all. The WebGPU and WebGL2 resident paths are covered only by `npm run smoke:webgpu-parity` (36 cases at ≤ 1 LSB plus device loss) and `npm run smoke:v3-truth` (no environment pixel reads agent state), which need a real GPU (Chromium with `--use-angle=metal`) and are not in CI.
 
-
 - [ ] **Frame-cost regressions found by the Phase 5 receipts**
 
   - **ID:** `OF-024`
@@ -229,6 +228,7 @@ art-director reviews raised outside its scope.
   - **Trigger:** The next quiet-host measurement session, or before claiming the plan's ladder Definition of done.
   - **Source:** [Waking Isle plan — Definition of done](claudeville-opus55-xhigh-visual-plan.md#definition-of-done) and [9.7](claudeville-opus55-xhigh-visual-plan.md#97-calm-dashboard-transitions-d2).
   - **Current status:** Open — stopped at the maintainer's request after the first receipts lane. Not run: the free-ladder 180 s soak (≥ 98 % FULL at 5120×1440 60 Hz, dense-24 and dense-100, OF-011's trigger); the deferred R1 receipts (rain re-price, particle depth, 2.1 A/B against `3e0d876`, 4.1 rest zooms); the post-M6 `gpu-burst` per-level check; the cold-shader-cache boot arm; and the 9.7b View Transition gate (W → D crossfade starting ≤ 150 ms on a quiet host, snapshot memory acceptable) — 9.7b stays unimplemented until it passes. The maintainer reports a flat 60 FPS in daily use with other load on the machine.
+
 ## Already landed; do not carry forward as open
 
 - [x] **Re-probe the G95C with HDR on**
