@@ -75,7 +75,7 @@
 //                 gold. Its three low stops are the beam's courses on the
 //                 water (far, mid, near; a receiver, okL <= 0.83, ungraded
 //                 like an emitter's own light); the two high stops are the
-//                 lantern's flash and halo (an emitter).
+//                 lantern's flash, halo and fans in the air (an emitter).
 //
 // Ground (grass+dirt+road+plaza as they cover the island, grass-majority)
 // lands at median S ~0.46-0.50: inside GROUND_SATURATION.

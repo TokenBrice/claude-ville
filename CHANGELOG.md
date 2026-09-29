@@ -2,6 +2,17 @@
 
 ---
 
+## v0.48.1 — *The Keeper's Lamp* · Sep 29, 2026
+
+At night the Lighthouse swept two long fans of light across the sea, yet the lamp that cast them showed only two finger-length wedges at the glass, so the light on the water looked far larger than its source. The lamp now throws its beam through the air as far as it lights the sea.
+
+- **A beam as long as its light on the water.** Each of the lens's two fans has a twin in the air leaving the lantern: the sea fan's own shape (520 px long, widening to 200 px) laid flat at the lamp's height, turning with it at the same 0.45 rad/s. It is translucent silver in the fan's own stepped courses (0.27 near the glass, then 0.18, then a far course stepping down to nothing), on whole pixels and under the lens flash and halo, so the village and the sea stay readable through it. There is still no beam by day or through the dusk settling.
+- **Never cropped.** On WebGPU and WebGL2 the lamp's light was clipped to the tower sprite's box; it now draws once, after the tower's occlusion split is released, so the beam reaches as far on every backend as on Canvas.
+
+Validation: 1279 tests passed; `validate:quick`, `verify:render`, `verify:architecture` and `gate:release` clean; headed checks at 23:00 on WebGPU, WebGL2 and Canvas at zoom 1–3 over several headings show each air fan parallel to its sea fan with labels above it, and no beam at 12:00; the lamp's light costs about 0.18 ms a frame.
+
+---
+
 ## v0.48.0 — *The Waking Isle* · Sep 29, 2026
 
 The island had its light, but it still told small lies and slept through the day: agents nudged the weather, villagers slid and faced away from their work, the sea was a flat slab, night light fell only on floors, and the wall around the town looked like it came from an older game. This release wakes the whole picture, from the sea at the horizon to the stones of the gate, and moves the world onto WebGPU with HDR highlights.
