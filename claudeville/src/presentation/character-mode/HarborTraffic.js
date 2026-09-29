@@ -176,7 +176,6 @@ const RELEASE_SAIL_CREST = '#b5cabf';
 const CAUTION_BEAT_STEP_MS = 500;
 const UNTETHERED_MIN_COMMITS = 2;
 const UNTETHERED_HOLD_MS = 5 * 60 * 1000;
-const PUSH_SIGNAL_EXPIRY_MS = 8000;
 const HARBOR_BEACON_BUOY_TILE = { tileX: 26.0, tileY: 6.0 };
 const REPO_DOCK_SHIP_Y_OFFSET = 236;
 const REPO_DOCK_SHIP_SORT_OFFSET = 8;
@@ -6242,74 +6241,6 @@ export class HarborTraffic {
             ctx.globalCompositeOperation = 'source-over';
         }
         ctx.restore();
-    }
-
-    // 3.4 — public API: lighthouse beam (WU3-B) consumes this to drive its strobe.
-    // Returns the most informative signal for the current tick.
-    getActivePushSignal(now = Date.now()) {
-        // 1. Active failed push → strobe red briefly.
-        for (const batch of this.state.batches.values()) {
-            const status = batch.status || 'unknown';
-            if (status !== 'failed') continue;
-            const ts = batch.statusUpdatedAt || batch.eventTime || batch.startedAt || now;
-            if (now - ts > PUSH_SIGNAL_EXPIRY_MS) continue;
-            const profile = trafficProfile(batch.project, batch.branch);
-            return {
-                state: 'failed',
-                accent: profile.accent || PUSH_STATUS_STYLE.failed.accent,
-                ts,
-                expiresAt: ts + PUSH_SIGNAL_EXPIRY_MS,
-            };
-        }
-        // 2. Active rejected push → strobe yellow briefly.
-        for (const batch of this.state.batches.values()) {
-            const status = batch.status || 'unknown';
-            if (status !== 'rejected') continue;
-            const ts = batch.statusUpdatedAt || batch.eventTime || batch.startedAt || now;
-            if (now - ts > PUSH_SIGNAL_EXPIRY_MS) continue;
-            const profile = trafficProfile(batch.project, batch.branch);
-            return {
-                state: 'rejected',
-                accent: profile.accent || PUSH_STATUS_STYLE.rejected.accent,
-                ts,
-                expiresAt: ts + PUSH_SIGNAL_EXPIRY_MS,
-            };
-        }
-        // 3. Departing squad → sweep beam from origin to departure tile in the squad accent.
-        let activeDeparting = null;
-        for (const ship of this.state.ships.values()) {
-            if (ship.status !== 'departing') continue;
-            if (!activeDeparting || (ship.departStartedAt || 0) > (activeDeparting.departStartedAt || 0)) {
-                activeDeparting = ship;
-            }
-        }
-        if (activeDeparting) {
-            const profile = trafficProfile(activeDeparting.project, activeDeparting.branch);
-            const originTile = this._shipStartTile(activeDeparting);
-            const route = this._shipRouteTiles(activeDeparting);
-            const departTile = route?.[route.length - 1] || originTile;
-            return {
-                state: 'departing',
-                squadId: activeDeparting.batchId || activeDeparting.departEventId || activeDeparting.id || null,
-                originTile: { tileX: originTile.tileX, tileY: originTile.tileY },
-                departingTile: { tileX: departTile.tileX, tileY: departTile.tileY },
-                accent: profile.accent,
-                ts: activeDeparting.departStartedAt || now,
-            };
-        }
-        // 4. Untethered (no remote) + lagoon non-empty for > 5min → steady caution.
-        const untethered = this._computeUntetheredProjects(now);
-        if (untethered.size > 0) {
-            return { state: 'untethered' };
-        }
-        // 5. Unpushed commits sitting in home waters (coast or lagoon) → gentle pulse.
-        for (const ship of this.state.ships.values()) {
-            if (ship.status !== 'docked') continue;
-            const meta = this._lastDockLayoutByShipId.get(ship.id);
-            const zone = meta?.waitingZone || ship.waitingZone;
-            if (isCommitLagoonZone(zone) || isCoastZone(zone)) return { state: 'pulsing' };
-        }
-        return { state: 'idle' };
     }
 
     // 6.5 / 3.8 — the flag hoist: the repo flag's pole stands on the hull's

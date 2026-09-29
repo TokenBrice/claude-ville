@@ -2,7 +2,7 @@ import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { INCIDENT_COLORS_RGB, THEME, WORLD_BODY_FONT_11 } from '../../config/theme.js';
 import { drawPixelFlame, fillPixelEllipse, fillTileDiamond } from './PixelShapes.js';
 import { normalizeBuildingType } from '../../config/buildings.js';
-import { PORTAL_SPAWN_TILE, TOWN_ROAD_ROUTES, VILLAGE_GATE, VILLAGE_GATE_BOUNDS, VILLAGE_WALL_ROUTES, YARD_MATERIALS } from '../../config/townPlan.js';
+import { inVillageMasonry, PORTAL_SPAWN_TILE, TOWN_ROAD_ROUTES, VILLAGE_GATE, VILLAGE_GATE_BOUNDS, VILLAGE_GATE_GEOMETRY, VILLAGE_WALL_ROUTES, YARD_MATERIALS } from '../../config/townPlan.js';
 import {
     AMBIENT_GROUND_PROPS,
     AMBIENT_SCENIC_POINTS,
@@ -41,7 +41,8 @@ import { AtmosphereState, sourceEnergyFor } from './AtmosphereState.js';
 import { WeatherRenderer } from './WeatherRenderer.js';
 import { WildlifeRenderer } from './WildlifeRenderer.js';
 import { FoliageRenderer } from './FoliageRenderer.js';
-import { PropWinter, WINTER_PROPS, wallWalkSnow } from './PropWinter.js';
+import { PropWinter, WINTER_PROPS } from './PropWinter.js';
+import { WALL_SPEC, drawWallLantern, lanternLit, paintWallRun, wallLanternLight, wallRunLayout } from './VillageWall.js';
 import { SeasonalAmbience, seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { ChimneySmoke } from './ChimneySmoke.js';
 import { setPennantWeather } from './PixelPennant.js';
@@ -404,48 +405,15 @@ const ARCHIVE_FADE_DURATION_MS = 800;
 // drift bounded in dense worlds).
 const AFFINITY_PROXIMITY_INTERVAL_MS = 5000;
 const MAX_AFFINITY_PROXIMITY_PAIRS = 6;
-const VILLAGE_WOOD_PALETTE = Object.freeze({
-    shadow: 'rgba(28, 15, 7, 0.34)',
-    outline: '#1b1009',
-    deep: '#2b170c',
-    dark: '#3f2412',
-    mid: '#62391d',
-    light: '#8b542a',
-    cut: '#c18345',
-    rope: '#c9a15d',
-    ropeDark: '#7f5b2b',
-    moss: '#4f7b3d',
-    tealDark: '#1f4c51',
-    teal: '#347b83',
-    tealLight: '#6fb1a9',
-    lantern: '#ffd56a',
-    glow: 'rgba(255, 202, 94, 0.26)',
-});
-const VILLAGE_STONE_PALETTE = Object.freeze({
-    light: '#aaa6ad',
-    mid: '#777480',
-    shadow: '#514b5c',
-    mortar: '#302b37',
-    moss: '#4f7b3d',
-    outline: '#1b1009',
-});
 // drawSprite options for a prop drawn as authored (no winter state).
 const NO_PROP_OPTS = Object.freeze({});
-const VILLAGE_GATE_TOWER_HALF_TILES = 1.55;
-const VILLAGE_GATE_TOWER_SPRITE_ID = 'prop.villageGateTower';
-const VILLAGE_GATE_ARCH_SPRITE_ID = 'prop.villageGateArch';
+// The gatehouse's door leaves (frame 0 shut, 1 open) and how far each curtain
+// stub runs into its tower (tiles).
+const VILLAGE_GATE_DOORS_SPRITE_ID = 'prop.villageGateDoors';
+const VILLAGE_GATE_STUB_INSET = 0.3;
 // The gatehouse sorts as world-Y slices of its wall line (see
 // _buildDistrictPropSprites). 16 px keeps each slice's depth error to 4 px.
 const VILLAGE_GATE_OCCLUSION_COLUMN_PX = 16;
-// Basket, flame, and its 72 px screen-blended glow around the brazier foot.
-const VILLAGE_GATE_BRAZIER_BOUNDS = Object.freeze({ left: -36, right: 36, top: -60, bottom: 12 });
-const VILLAGE_GATE_LINTEL_INSET = 22;
-const VILLAGE_GATE_DOOR_BOTTOM_LIFT = 14;
-// The open-door threshold glow: two iso ellipses around the door foot
-// midpoint, 14 px north of the gate origin. It sorts at its far edge so every
-// villager standing on it paints over it.
-const VILLAGE_GATE_GLOW_BOUNDS = Object.freeze({ left: -36, right: 36, top: -40, bottom: 10 });
-const VILLAGE_GATE_GLOW_SORT_OFFSET_Y = -36;
 // Canvas counterpart to the GPU wetness shader's four-pixel ordered dither.
 // Keep the same 2x2 Bayer ordering so the two paths share the same stepped
 // visual grammar without introducing a second pattern.
@@ -455,32 +423,10 @@ export function orderedDither4(x = 0, y = 0) {
     return ((px + 2 * py) & 3) / 3;
 }
 
-
-
-const VILLAGE_GATE_ARCH_COLUMN_SPAN = 104;
-// Inscription band inside prop.villageGateArch.png, in sprite pixels. The PNG
-// carries the empty burgundy band; the lettering is drawn over it at runtime.
-const VILLAGE_GATE_ARCH_BAND_MID_Y = 27.5;
-const VILLAGE_GATE_ARCH_BAND_WIDTH = 76;
-const VILLAGE_GATE_ARCH_BAND_HEIGHT = 8;
-const VILLAGE_GATE_INSCRIPTION = 'CLAUDEVILLE';
-const VILLAGE_GATE_INSCRIPTION_INK = '#e2bd6b';
-const VILLAGE_GATE_INSCRIPTION_SHADOW = 'rgba(38, 16, 28, 0.85)';
-// The inscription is carved art, not type: a 5-row pixel alphabet laid on the
-// band's own texel grid, so it lands on whole pixels wherever the masonry does
-// (a font face cannot fit an 8-texel band on the C5 8/11 px grid).
-const VILLAGE_GATE_GLYPHS = Object.freeze({
-    A: ['.##.', '#..#', '####', '#..#', '#..#'],
-    C: ['.###', '#...', '#...', '#...', '.###'],
-    D: ['###.', '#..#', '#..#', '#..#', '###.'],
-    E: ['####', '#...', '###.', '#...', '####'],
-    I: ['###', '.#.', '.#.', '.#.', '###'],
-    L: ['#...', '#...', '#...', '#...', '####'],
-    U: ['#..#', '#..#', '#..#', '#..#', '.##.'],
-    V: ['#...#', '#...#', '.#.#.', '.#.#.', '..#..'],
-});
-const VILLAGE_GATE_GLYPH_ROWS = 5;
 const VILLAGE_WALL_SEA_TOWER_SPRITE_ID = 'prop.villageWallSeaTower';
+// The curtain runs' layout seeds (VillageWall.wallRunLayout): the same run
+// always lays the same piers, lanterns, loops and ivy.
+const VILLAGE_WALL_SEEDS = Object.freeze({ west: 101, east: 211 });
 
 export class IsometricRenderer {
     constructor(world, options = {}) {
@@ -5000,10 +4946,18 @@ export class IsometricRenderer {
         return out;
     }
 
+    // Walk-blocked ground for a steering step (lane discipline, pair pushes,
+    // the bend round standing bodies): the walk grid's nearest node
+    // (buildings, water, `walkBlock` props such as the well and its cart,
+    // the masonry's closed nodes), and the village's stone itself at a
+    // body's half-width of reach (townPlan `inVillageMasonry`), which is
+    // finer than the one-tile grid round the gate towers' drums. A step that
+    // fails keeps the walker where it is; its own path step still moves it.
     _isSpritePositionWalkable(sprite, x, y) {
         if (!this.pathfinder || typeof sprite?._screenToTile !== 'function') return true;
         const tile = sprite._screenToTile(x, y);
-        return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY));
+        return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY))
+            && !inVillageMasonry(tile.tileX, tile.tileY);
     }
 
     // A place `sprite` may stand on: walkable, and covering no fixture
@@ -5586,6 +5540,18 @@ export class IsometricRenderer {
         };
     }
 
+    // The anchor of the fan `occupant` stands in: its recorded anchor while it
+    // still stands on that anchor's ring, else its own foot. A body keeps
+    // `_fanAnchor` after it walks on, and fanning round a stale anchor aimed
+    // a walker's last leg straight across the island (over water and baked
+    // fixtures such as the well) to a ring by some old stop.
+    _fanAnchorOf(occupant) {
+        const anchor = occupant._fanAnchor;
+        if (anchor && Math.abs(occupant.x - anchor.x) <= PERFORMING_FAN.radiusXPx + 1
+            && Math.abs(occupant.y - anchor.y) <= PERFORMING_FAN.radiusYPx + 1) return anchor;
+        return occupant;
+    }
+
     // The first walkable ring place around `anchor` for `sprite` whose body
     // box is clear of every other standing body and claimed place; failing
     // that, the first one at least stackPx from all of them.
@@ -5647,7 +5613,7 @@ export class IsometricRenderer {
                 landing.push({ x: stop.x, y: stop.y, building });
                 continue;
             }
-            const anchor = occupant ? occupant._fanAnchor || occupant : { x: stop.x, y: stop.y };
+            const anchor = occupant ? this._fanAnchorOf(occupant) : { x: stop.x, y: stop.y };
             const place = this._freeFanPlace(sprite, anchor, 1, [...standing, ...landing], `${building}|${anchor.x | 0},${anchor.y | 0}`);
             if (!place) {
                 landing.push({ x: stop.x, y: stop.y, building });
@@ -5876,7 +5842,7 @@ export class IsometricRenderer {
             const occupant = standing.find(other => other !== sprite && boxHit(other, sprite.x, sprite.y));
             // A body that stopped on a fixture steps off it the same way.
             if (!occupant && !standsOnFixture(sprite.x, sprite.y, sprite._restSeat?.id || null)) continue;
-            const anchor = occupant ? occupant._fanAnchor || occupant : { x: sprite.x, y: sprite.y };
+            const anchor = occupant ? this._fanAnchorOf(occupant) : { x: sprite.x, y: sprite.y };
             const hashKey = `${occupant?._lastBuildingType || sprite._lastBuildingType}|${anchor.x | 0},${anchor.y | 0}`;
             let best = null;
             let bestHop = PERFORMING_FAN.settleHopPx;
@@ -7274,31 +7240,22 @@ export class IsometricRenderer {
                 originY: gateOrigin.y,
                 slope: TILE_HEIGHT / TILE_WIDTH,
             }),
+            materialClass: 'stone',
             drawFn: (ctx, x, y) => this._drawVillageGatehouse(ctx, x, y),
+            channels: {
+                occluder: (ctx, x, y) => this._drawVillageGatehouse(ctx, x, y, 'surface'),
+                emissive: (ctx, x, y) => this._drawVillageGatehouse(ctx, x, y, 'emissive'),
+            },
         });
-        // Drawn under the gatehouse slices and under any villager in the gate
-        // mouth, so it is its own prop rather than part of the gatehouse image.
-        const thresholdGlow = new StaticPropSprite({
-            tileX: VILLAGE_GATE.tileX,
-            tileY: VILLAGE_GATE.tileY,
-            id: 'village.gate.threshold-glow',
-            bounds: VILLAGE_GATE_GLOW_BOUNDS,
-            sortY: gateOrigin.y + VILLAGE_GATE_GLOW_SORT_OFFSET_Y,
-            drawFn: (ctx, x, y) => this._drawVillageGateThresholdGlow(ctx, x, y),
-        });
-        this._gateDoorStateSprites = [gateSprite, thresholdGlow];
-        sprites.push(thresholdGlow, gateSprite);
-        // Braziers flicker in front of the gate; as their own props they keep
-        // that flicker out of the gatehouse image the slices share.
-        for (const { tileX, tileY } of this._villageGateBrazierTiles()) {
-            sprites.push(new StaticPropSprite({
-                tileX,
-                tileY,
-                id: 'village.gate.brazier',
-                bounds: VILLAGE_GATE_BRAZIER_BOUNDS,
-                drawFn: (ctx, x, y) => this._drawGateBrazier(ctx, x, y),
-            }));
-        }
+        gateSprite.emitterGate = () => (this._wallLanternsLit === true ? 1 : 0);
+        this._gateDoorStateSprites = [gateSprite];
+        this._lampGlassSprites = [gateSprite];
+        sprites.push(gateSprite);
+        // The two wall lanterns flanking the arch (VillageWall's bracket
+        // lantern), lit with the rest of the village's lamps.
+        const gateLanterns = this._villageGateLanternSprites();
+        (this._wallLanternSprites ||= []).push(...gateLanterns);
+        sprites.push(...gateLanterns);
         sprites.push(...this._buildVillageWallTerminalSprites());
         sprites.push(...this._buildWatchtowerBeaconBuoySprites());
         sprites.push(...DISTRICT_PROPS
@@ -7396,8 +7353,13 @@ export class IsometricRenderer {
         ];
     }
 
+    // The two curtain runs (VillageWall), each one cached image with its 2.3
+    // surface channel, and the bracket lanterns on some of their piers as
+    // their own small props (their glass follows the village's lamplight,
+    // so the runs' caches never repaint for it).
     _buildVillageWallSprites() {
         const out = [];
+        const lanterns = [];
         for (const route of VILLAGE_WALL_ROUTES) {
             for (let i = 0; i < route.points.length - 1; i++) {
                 const startTile = route.points[i];
@@ -7413,18 +7375,101 @@ export class IsometricRenderer {
                 const localStart = { x: start.x - mid.x, y: start.y - mid.y };
                 const localEnd = { x: end.x - mid.x, y: end.y - mid.y };
                 const wallBounds = this._villageWallBounds(localStart, localEnd);
+                // The west run meets the gatehouse's west stub at its end, the
+                // east run the east stub at its start: open there (no end
+                // face, no ink), so the curtain reads as one wall.
+                const options = {
+                    piers: true,
+                    ivy: true,
+                    seed: VILLAGE_WALL_SEEDS[route.id] ?? 331 + i,
+                    openStart: route.id === 'east' && i === 0,
+                    openEnd: route.id === 'west' && i === route.points.length - 2,
+                    // The west run rises from the island's west tip at a
+                    // corner turret.
+                    startTurret: route.id === 'west' && i === 0,
+                };
+                const sortY = Math.max(start.y, end.y) - 14;
                 out.push(new StaticPropSprite({
                     tileX: midTile.tileX,
                     tileY: midTile.tileY,
                     id: `village.wall.${route.id}.${i}`,
                     bounds: wallBounds,
                     splitForOcclusion: false,
-                    sortY: Math.max(start.y, end.y) - 14,
-                    drawFn: (ctx, x, y) => this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i),
+                    sortY,
+                    materialClass: 'stone',
+                    drawFn: (ctx, x, y) => this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i, options),
+                    channels: {
+                        occluder: (ctx, x, y) => this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i, { ...options, channel: 'surface' }),
+                    },
                 }));
+                lanterns.push(...this._villageWallLanternSprites(route.id, i, start, end, options, sortY));
             }
         }
+        this._wallLanternSprites = lanterns;
+        out.push(...lanterns);
         return out;
+    }
+
+    // The lantern piers of one run (the painter's own layout), each lantern
+    // a prop standing on the ground under its glass, sorted just after its
+    // run.
+    _villageWallLanternSprites(routeId, index, start, end, { seed, startTurret = false }, wallSortY) {
+        const x1 = Math.round(start.x);
+        const y1 = Math.round(start.y);
+        const x2 = Math.round(end.x);
+        const y2 = Math.round(end.y);
+        const slope = (y2 - y1) / Math.max(1, x2 - x1);
+        const layout = wallRunLayout({ x1, x2, seed, piers: true, ivy: true, startTurret });
+        const arm = WALL_SPEC.lanternArmH;
+        const out = [];
+        for (const pier of layout.piers) {
+            if (!pier.lantern) continue;
+            // The arm tip stands `pier.project + lanternReach` in front of
+            // the base line under the pier's centre; its foot is the ground
+            // there (the lattice row yb(c) - d).
+            const d = -(WALL_SPEC.pier.project + WALL_SPEC.lanternReach);
+            const c = pier.u0 + Math.floor(WALL_SPEC.pier.width / 2) + d;
+            const fx = c;
+            const fy = y1 + Math.floor((c - x1) * slope + 0.5) - d;
+            const tile = worldToTile(fx, fy);
+            const sprite = new StaticPropSprite({
+                tileX: tile.tileX,
+                tileY: tile.tileY,
+                id: `village.wallLantern.${routeId}.${index}.${pier.n}`,
+                bounds: { left: -5, right: 8, top: -arm - 3, bottom: 2, splitY: 0 },
+                sortY: wallSortY + 0.5,
+                materialClass: 'metal',
+                drawFn: (ctx) => drawWallLantern(ctx, fx, fy - arm, { lit: this._wallLanternsLit === true }),
+                channels: {
+                    emissive: (ctx) => drawWallLantern(ctx, fx, fy - arm, { lit: this._wallLanternsLit === true, emissive: true }),
+                },
+            });
+            sprite.lanternFoot = { x: fx, y: fy, height: arm - 7 };
+            out.push(sprite);
+        }
+        return out;
+    }
+
+    // The wall lanterns' fixture lights while the village's lamps are lit;
+    // a change of state repaints the lantern props (glass lit or unlit) and
+    // the gatehouse and sea tower, whose lamp glass is lit with them.
+    _villageWallLanternLightSources(lighting = null) {
+        const lit = lanternLit(lighting);
+        if (lit !== this._wallLanternsLit) {
+            this._wallLanternsLit = lit;
+            for (const sprite of this._wallLanternSprites || []) sprite.invalidateCache();
+            for (const sprite of this._lampGlassSprites || []) sprite.invalidateCache();
+        }
+        if (!lit) return [];
+        const core = sourceEnergyFor(lighting).core;
+        return (this._wallLanternSprites || []).map((sprite) => wallLanternLight({
+            id: sprite.id,
+            fx: sprite.lanternFoot.x,
+            fy: sprite.lanternFoot.y,
+            height: sprite.lanternFoot.height,
+            lighting,
+            core,
+        }));
     }
 
     _villageWallVisualEndTile(route, startTile, endTile) {
@@ -7470,15 +7515,26 @@ export class IsometricRenderer {
         const prevTile = route.points[route.points.length - 2];
         const towerTile = this._villageWallSeaTowerTile(endTile, prevTile);
         const world = this._tileToWorld(towerTile.tileX, towerTile.tileY);
-        return [new StaticPropSprite({
+        const id = VILLAGE_WALL_SEA_TOWER_SPRITE_ID;
+        const tower = new StaticPropSprite({
             tileX: towerTile.tileX,
             tileY: towerTile.tileY,
-            id: VILLAGE_WALL_SEA_TOWER_SPRITE_ID,
-            bounds: this._assetPropBounds(VILLAGE_WALL_SEA_TOWER_SPRITE_ID, 0.66),
+            id,
+            bounds: this._assetPropBounds(id, 0.66),
             splitForOcclusion: true,
             sortY: world.y - 8,
-            drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, VILLAGE_WALL_SEA_TOWER_SPRITE_ID, x, y, this._winterPropOpts(VILLAGE_WALL_SEA_TOWER_SPRITE_ID)),
-        })];
+            materialClass: 'stone',
+            drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, id, x, y, this._winterPropOpts(id)),
+            // The baked 2.3 surface channel, and the lamp room's glass while
+            // the village's lamps are lit (a fixture: never a work light).
+            channels: {
+                occluder: (ctx, x, y) => this.sprites.drawCompanion(ctx, id, 'occluder', x, y),
+                emissive: (ctx, x, y) => { if (this._wallLanternsLit === true) this.sprites.drawCompanion(ctx, id, 'emissive', x, y); },
+            },
+        });
+        tower.emitterGate = () => (this._wallLanternsLit === true ? 1 : 0);
+        (this._lampGlassSprites ||= []).push(tower);
+        return [tower];
     }
 
     _villageWallSeaTowerTile(endTile, prevTile) {
@@ -7550,1001 +7606,104 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _drawVillageGatehouse(ctx, originX, originY) {
-        const centerTileX = VILLAGE_GATE.tileX;
-        const tileY = VILLAGE_GATE.tileY;
+    // The gatehouse (prop.villageGate, baked at scale 1 from
+    // VILLAGE_GATE_GEOMETRY by scripts/sprites/bake-village-gate.mjs): the
+    // curtain's two stubs, the door leaves, then the towers and the arch
+    // block over them. `channel` paints the same composite's 2.3 surface
+    // channel ('surface') or its glass ('emissive': the towers' guard lamps,
+    // only while the village's lamps are lit; a fixture, never a work light).
+    _drawVillageGatehouse(ctx, originX, originY, channel = null) {
+        const id = VILLAGE_GATE.id;
+        if (channel === 'emissive') {
+            if (this._wallLanternsLit === true) this.sprites?.drawCompanion(ctx, id, 'emissive', originX, originY);
+            return;
+        }
+        const [west, east] = VILLAGE_GATE_GEOMETRY.towerX;
         const halfWidth = VILLAGE_GATE.widthTiles / 2;
-        const towerHalf = VILLAGE_GATE_TOWER_HALF_TILES;
-        const sideStubInset = 0.3;
-        const center = this._tileToWorld(centerTileX, tileY);
-        const localPoint = (tileX) => {
-            const p = this._tileToWorld(tileX, tileY);
+        const center = this._tileToWorld(VILLAGE_GATE.tileX, VILLAGE_GATE.tileY);
+        const localPoint = (dx) => {
+            const p = this._tileToWorld(VILLAGE_GATE.tileX + dx, VILLAGE_GATE.tileY);
             return { x: p.x - center.x, y: p.y - center.y };
         };
-        const leftEnd = localPoint(centerTileX - halfWidth);
-        const leftInner = localPoint(centerTileX - towerHalf - sideStubInset);
-        const rightInner = localPoint(centerTileX + towerHalf + sideStubInset);
-        const rightEnd = localPoint(centerTileX + halfWidth);
-        const leftTower = localPoint(centerTileX - towerHalf);
-        const rightTower = localPoint(centerTileX + towerHalf);
-
-        this._drawVillageWallSegment(ctx, originX, originY, leftEnd, leftInner, 0);
-        this._drawVillageWallSegment(ctx, originX, originY, rightInner, rightEnd, 1);
-
-        const leftBase = { x: originX + leftTower.x, y: originY + leftTower.y };
-        const rightBase = { x: originX + rightTower.x, y: originY + rightTower.y };
-        const hasGateArchSprite = Boolean(this.assets?.get?.(VILLAGE_GATE_ARCH_SPRITE_ID));
-        // The open-door glow is a ground pool, drawn by its own sprite under
-        // any villager standing in the gate mouth (_drawVillageGateThresholdGlow).
-        if (!hasGateArchSprite) this._drawVillageGateArch(ctx, leftBase, rightBase);
-        this._drawVillageGateDoors(ctx, leftBase, rightBase);
-        // Towers mask the animated door endpoints. The asset-backed connector
-        // is cropped to its central masonry, so it can cap that joint cleanly.
-        this._drawVillageGateTower(ctx, leftBase.x, leftBase.y, -1);
-        this._drawVillageGateTower(ctx, rightBase.x, rightBase.y, 1);
-        if (hasGateArchSprite) this._drawVillageGateArch(ctx, leftBase, rightBase);
+        const surface = channel === 'surface';
+        const pass = surface ? { channel: 'surface' } : {};
+        // Each stub leaves open the end where it meets its curtain run (the
+        // run's own gate-side end is open too), so the courses run on.
+        this._drawVillageWallSegment(ctx, originX, originY, localPoint(-halfWidth), localPoint(west - VILLAGE_GATE_STUB_INSET), 0, { ...pass, openStart: true });
+        this._drawVillageWallSegment(ctx, originX, originY, localPoint(east + VILLAGE_GATE_STUB_INSET), localPoint(halfWidth), 1, { ...pass, openEnd: true });
+        this._drawVillageGateDoors(ctx, originX, originY, surface);
+        if (surface) this.sprites?.drawCompanion(ctx, id, 'occluder', originX, originY);
+        else this.sprites?.drawSprite(ctx, id, originX, originY, this._winterPropOpts(id));
     }
 
-    // Tile positions of the two fire-baskets flanking the gate mouth, just
-    // outboard of each tower foot and in front of the wall line.
-    _villageGateBrazierTiles() {
-        const towerHalf = VILLAGE_GATE_TOWER_HALF_TILES;
-        return [
-            { tileX: VILLAGE_GATE.tileX - towerHalf, offsetX: -9 },
-            { tileX: VILLAGE_GATE.tileX + towerHalf, offsetX: 9 },
-        ].map(({ tileX, offsetX }) => {
-            const base = this._tileToWorld(tileX, VILLAGE_GATE.tileY);
-            return worldToTile(base.x + offsetX, base.y + 13);
-        });
+    // The door leaves under the arch (prop.villageGateDoors): frame 1 while
+    // the doors stand open for a villager passing (_updateGateDoorState),
+    // frame 0 shut. `surface` paints their 2.3 surface channel.
+    _drawVillageGateDoors(ctx, originX, originY, surface = false) {
+        const id = VILLAGE_GATE_DOORS_SPRITE_ID;
+        const image = surface ? this.assets?.getCompanion?.(id, 'occluder') : this.assets?.get?.(id);
+        if (!image) return;
+        const frameW = Math.floor(image.width / 2);
+        const [ax, ay] = this.assets.getAnchor(id);
+        ctx.drawImage(image, this.gateDoorsOpen ? frameW : 0, 0, frameW, image.height,
+            Math.round(originX - ax), Math.round(originY - ay), frameW, image.height);
     }
 
-    // Warm interior glow at the threshold midline while the doors stand open,
-    // rotated with the iso slope. Centred where _drawVillageGateDoors puts the
-    // door foot midpoint.
-    _drawVillageGateThresholdGlow(ctx, originX, originY) {
-        if (!this.gateDoorsOpen) return;
-        const left = this._tileToWorld(VILLAGE_GATE.tileX - VILLAGE_GATE_TOWER_HALF_TILES, VILLAGE_GATE.tileY);
-        const right = this._tileToWorld(VILLAGE_GATE.tileX + VILLAGE_GATE_TOWER_HALF_TILES, VILLAGE_GATE.tileY);
-        const length = Math.max(1, Math.hypot(right.x - left.x, right.y - left.y));
-        const isoAngle = Math.atan2(right.y - left.y, right.x - left.x);
-        const glowRadius = Math.max(8, length / 2 - VILLAGE_GATE_LINTEL_INSET);
-        const x = Math.round(originX);
-        const y = Math.round(originY - VILLAGE_GATE_DOOR_BOTTOM_LIFT);
-        ctx.save();
-        ctx.fillStyle = VILLAGE_WOOD_PALETTE.glow;
-        ctx.beginPath();
-        ctx.ellipse(x, y, glowRadius, 16, isoAngle, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = 'rgba(255, 212, 142, 0.32)';
-        ctx.beginPath();
-        ctx.ellipse(x, y - 6, Math.max(6, glowRadius - 4), 10, isoAngle, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-    }
-
-    // Iron fire-basket flanking the gate mouth — frames the coastal gate with
-    // warm light. Gentle flicker when motion is on; steady under reduced motion.
-    _drawGateBrazier(ctx, x, y) {
-        ctx.save();
-        SpriteRenderer.disableSmoothing(ctx);
-        ctx.fillStyle = '#3a2a1a';
-        ctx.fillRect(Math.round(x - 2), Math.round(y - 18), 4, 18);
-        ctx.fillStyle = '#4a4a52';
-        ctx.beginPath();
-        ctx.moveTo(Math.round(x - 7), Math.round(y - 18));
-        ctx.lineTo(Math.round(x + 7), Math.round(y - 18));
-        ctx.lineTo(Math.round(x + 4), Math.round(y - 24));
-        ctx.lineTo(Math.round(x - 4), Math.round(y - 24));
-        ctx.closePath();
-        ctx.fill();
-        ctx.strokeStyle = '#1a1410';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-        const flick = this.motionScale ? (Math.sin(this.waterFrame * 3.2 + x) * 0.5 + 0.5) : 0.5;
-        drawPixelFlame(ctx, x, y - 24, 10 + flick * 5, 5, {
-            lean: this.motionScale ? Math.sin(this.waterFrame * 1.7 + x) * 1.5 : 0,
-        });
-        ctx.globalCompositeOperation = 'screen';
-        const glow = ctx.createRadialGradient(x, y - 26, 2, x, y - 26, 34);
-        glow.addColorStop(0, 'rgba(255, 175, 75, 0.50)');
-        glow.addColorStop(1, 'rgba(255, 175, 75, 0)');
-        ctx.fillStyle = glow;
-        ctx.fillRect(Math.round(x - 36), Math.round(y - 60), 72, 72);
-        ctx.restore();
-    }
-
-    _drawVillageGateTower(ctx, x, y, side = 1) {
-        const tower = this.propWinter.image(VILLAGE_GATE_TOWER_SPRITE_ID) || this.assets?.get?.(VILLAGE_GATE_TOWER_SPRITE_ID);
-        if (tower) {
-            const [ax, ay] = this.assets.getAnchor(VILLAGE_GATE_TOWER_SPRITE_ID);
-            ctx.save();
-            SpriteRenderer.disableSmoothing(ctx);
-            ctx.translate(Math.round(x), Math.round(y));
-            ctx.scale(0.72, 0.72);
-            ctx.drawImage(tower, Math.round(-ax), Math.round(-ay));
-            ctx.restore();
-            return;
-        }
-
-        const wood = VILLAGE_WOOD_PALETTE;
-        const stone = VILLAGE_STONE_PALETTE;
-        const w = 64;
-        const hStone = 64;
-        const hWood = 42;
-        const roofH = 36;
-        const outward = side >= 0 ? 1 : -1;
-        ctx.save();
-        SpriteRenderer.disableSmoothing(ctx);
-
-        // Foot shadow (single ellipse, integrated with threshold)
-        ctx.globalAlpha = 0.32;
-        ctx.fillStyle = stone.outline;
-        ctx.beginPath();
-        ctx.ellipse(Math.round(x), Math.round(y + 14), w / 2 + 14, 12, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-
-        // Side face peek (3D depth on outward side, stone material)
-        const sideDepth = 14 * outward;
-        const sideDrop = 8;
-        const stoneTop = y - hStone;
-        const trace = (...points) => {
-            ctx.beginPath();
-            ctx.moveTo(Math.round(points[0].x), Math.round(points[0].y));
-            for (const p of points.slice(1)) ctx.lineTo(Math.round(p.x), Math.round(p.y));
-            ctx.closePath();
-        };
-
-        if (outward > 0) {
-            trace(
-                { x: x + w / 2, y: stoneTop },
-                { x: x + w / 2 + sideDepth, y: stoneTop + sideDrop },
-                { x: x + w / 2 + sideDepth, y: y + sideDrop },
-                { x: x + w / 2, y },
-            );
-        } else {
-            trace(
-                { x: x - w / 2 + sideDepth, y: stoneTop + sideDrop },
-                { x: x - w / 2, y: stoneTop },
-                { x: x - w / 2, y },
-                { x: x - w / 2 + sideDepth, y: y + sideDrop },
-            );
-        }
-        ctx.fillStyle = stone.shadow;
-        ctx.fill();
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        // Stone foundation front face — solid base with mortared courses
-        const stoneLeft = x - w / 2;
-        const stoneRight = x + w / 2;
-        ctx.fillStyle = stone.mid;
-        ctx.fillRect(Math.round(stoneLeft), Math.round(stoneTop), w, hStone);
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(Math.round(stoneLeft), Math.round(stoneTop), w, hStone);
-
-        // Mottled stone blocks (light/mid alternation)
-        const courseH = 16;
-        for (let row = 0; row < 4; row++) {
-            const rowY = stoneTop + row * courseH;
-            const offset = row % 2 ? 12 : 0;
-            for (let col = -offset; col < w; col += 24) {
-                const sx = stoneLeft + col;
-                const ex = Math.min(stoneLeft + col + 24, stoneRight);
-                if (ex <= stoneLeft) continue;
-                const seed = this._tileNoise(row * 13 + 7, col + side * 31);
-                ctx.fillStyle = seed > 0.55 ? stone.light : stone.shadow;
-                ctx.fillRect(Math.round(Math.max(stoneLeft, sx)), Math.round(rowY),
-                             Math.round(ex - Math.max(stoneLeft, sx)), courseH);
-            }
-        }
-
-        // Mortar lines (horizontal courses)
-        ctx.strokeStyle = stone.mortar;
-        ctx.lineWidth = 1;
-        for (let row = 1; row < 4; row++) {
-            const rowY = stoneTop + row * courseH;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(stoneLeft), Math.round(rowY));
-            ctx.lineTo(Math.round(stoneRight), Math.round(rowY));
-            ctx.stroke();
-        }
-
-        // Mortar verticals (offset per course for brick-like pattern)
-        for (let row = 0; row < 4; row++) {
-            const rowY1 = stoneTop + row * courseH;
-            const rowY2 = rowY1 + courseH;
-            const offset = row % 2 ? 12 : 0;
-            for (let col = 24 - offset; col < w; col += 24) {
-                const cx = stoneLeft + col;
-                ctx.beginPath();
-                ctx.moveTo(Math.round(cx), Math.round(rowY1));
-                ctx.lineTo(Math.round(cx), Math.round(rowY2));
-                ctx.stroke();
-            }
-        }
-
-        // Re-stroke perimeter to keep outline crisp
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(Math.round(stoneLeft), Math.round(stoneTop), w, hStone);
-
-        // Archer slit centered on stone front
-        ctx.fillStyle = stone.outline;
-        ctx.fillRect(Math.round(x - 4), Math.round(stoneTop + hStone / 2 - 11), 8, 22);
-
-        // Moss tuft at base
-        ctx.fillStyle = stone.moss;
-        ctx.fillRect(Math.round(stoneRight - 18), Math.round(y - 4), 14, 4);
-        ctx.fillRect(Math.round(stoneLeft + 4), Math.round(y - 4), 10, 3);
-
-        // Floor band — visible structural transition between stone and wood
-        const woodTop = stoneTop - hWood;
-        const bandH = 6;
-        ctx.fillStyle = wood.deep;
-        ctx.fillRect(Math.round(stoneLeft - 2), Math.round(stoneTop - bandH), w + 4, bandH);
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(Math.round(stoneLeft - 2), Math.round(stoneTop - bandH), w + 4, bandH);
-
-        // Wood-frame upper — vertical planks matching wall plank rule
-        ctx.fillStyle = wood.mid;
-        ctx.fillRect(Math.round(stoneLeft), Math.round(woodTop), w, hWood - bandH);
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(Math.round(stoneLeft), Math.round(woodTop), w, hWood - bandH);
-
-        // Plank lines (vertical)
-        ctx.strokeStyle = '#2c190d';
-        ctx.lineWidth = 1;
-        for (let plank = stoneLeft + 8; plank < stoneRight; plank += 12) {
-            ctx.beginPath();
-            ctx.moveTo(Math.round(plank), Math.round(woodTop + 4));
-            ctx.lineTo(Math.round(plank), Math.round(stoneTop - bandH - 2));
-            ctx.stroke();
-        }
-
-        // Highlight planks (subtle warm streaks)
-        ctx.strokeStyle = 'rgba(214, 151, 78, 0.4)';
-        for (let plank = stoneLeft + 14; plank < stoneRight; plank += 24) {
-            ctx.beginPath();
-            ctx.moveTo(Math.round(plank), Math.round(woodTop + 4));
-            ctx.lineTo(Math.round(plank), Math.round(stoneTop - bandH - 2));
-            ctx.stroke();
-        }
-
-        // Narrow window slit in wood
-        ctx.fillStyle = stone.outline;
-        ctx.fillRect(Math.round(x - 4), Math.round(woodTop + 10), 8, 16);
-
-        // Eave shadow under roof
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
-        ctx.fillRect(Math.round(stoneLeft), Math.round(woodTop), w, 3);
-
-        // Teal pitched roof — front gable
-        const roofLeft = stoneLeft - 8;
-        const roofRight = stoneRight + 8;
-        const ridgeY = woodTop - roofH;
-        trace(
-            { x: roofLeft, y: woodTop },
-            { x: x, y: ridgeY },
-            { x: roofRight, y: woodTop },
-        );
-        ctx.fillStyle = wood.teal;
-        ctx.fill();
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        // Roof shadow side (the half away from the light)
-        const lightSide = outward > 0 ? -1 : 1; // light comes from the inward side
-        if (lightSide < 0) {
-            trace(
-                { x: roofLeft, y: woodTop },
-                { x: x, y: ridgeY },
-                { x: x, y: woodTop },
-            );
-        } else {
-            trace(
-                { x: x, y: ridgeY },
-                { x: roofRight, y: woodTop },
-                { x: x, y: woodTop },
-            );
-        }
-        ctx.fillStyle = 'rgba(20, 63, 67, 0.46)';
-        ctx.fill();
-
-        // Ridge highlight
-        ctx.strokeStyle = wood.tealLight;
-        ctx.lineWidth = 1;
-        for (let i = -2; i <= 2; i++) {
-            ctx.beginPath();
-            ctx.moveTo(Math.round(x), Math.round(ridgeY + 2));
-            ctx.lineTo(Math.round(x + i * 8), Math.round(woodTop - 4));
-            ctx.stroke();
-        }
-
-        // Ridge cap accent
-        ctx.fillStyle = stone.outline;
-        ctx.fillRect(Math.round(x - 2), Math.round(ridgeY - 4), 4, 6);
-
-        ctx.restore();
-    }
-
-    // The town's name, carved into the gate band.
-    //
-    // Called inside the same sheared space as the arch masonry, so the baseline
-    // follows the band while every glyph stem stays vertical (the old
-    // ctx.rotate() tipped stems off the grid). The letters are
-    // VILLAGE_GATE_GLYPHS cells in sprite pixels — the same texel grid as the
-    // masonry around them — so they scale with the arch exactly as its stone
-    // does, never a bold font squeezed to fit.
-    _drawGateInscription(ctx, { centerX, centerY, bandWidth, bandHeight }) {
-        if (!(bandWidth > 8) || !(bandHeight > VILLAGE_GATE_GLYPH_ROWS)) return;
-        const glyphs = [...VILLAGE_GATE_INSCRIPTION].map((letter) => VILLAGE_GATE_GLYPHS[letter]).filter(Boolean);
-        if (!glyphs.length) return;
-        const width = glyphs.reduce((sum, rows) => sum + rows[0].length, 0) + glyphs.length - 1;
-        if (width > bandWidth - 3) return;
-        const left = Math.round(centerX - width / 2);
-        const top = Math.round(centerY - VILLAGE_GATE_GLYPH_ROWS / 2);
-
-        ctx.save();
-        // A one-pixel dark drop reads as a chiselled edge and keeps the gold
-        // legible against the burgundy at every time of day.
-        for (const [color, dy] of [[VILLAGE_GATE_INSCRIPTION_SHADOW, 1], [VILLAGE_GATE_INSCRIPTION_INK, 0]]) {
-            ctx.fillStyle = color;
-            let x = left;
-            for (const rows of glyphs) {
-                for (let row = 0; row < rows.length; row++) {
-                    const line = rows[row];
-                    for (let col = 0; col < line.length; col++) {
-                        if (line[col] === '#') ctx.fillRect(x + col, top + row + dy, 1, 1);
-                    }
-                }
-                x += rows[0].length + 1;
-            }
-        }
-        ctx.restore();
-    }
-
-    _drawVillageGateArch(ctx, leftBase, rightBase) {
-        const dx = rightBase.x - leftBase.x;
-        const dy = rightBase.y - leftBase.y;
-        const length = Math.max(1, Math.hypot(dx, dy));
-        const ux = dx / length;
-        const uy = dy / length;
-        const arch = this.propWinter.image(VILLAGE_GATE_ARCH_SPRITE_ID) || this.assets?.get?.(VILLAGE_GATE_ARCH_SPRITE_ID);
-        if (arch) {
-            const [ax, ay] = this.assets.getAnchor(VILLAGE_GATE_ARCH_SPRITE_ID);
-            const scale = length / VILLAGE_GATE_ARCH_COLUMN_SPAN;
-            const midBase = {
-                x: (leftBase.x + rightBase.x) / 2,
-                y: (leftBase.y + rightBase.y) / 2,
-            };
-            ctx.save();
-            SpriteRenderer.disableSmoothing(ctx);
-            ctx.translate(Math.round(midBase.x), Math.round(midBase.y));
-            // Preserve screen-vertical masonry while mapping the baked span
-            // onto the same isometric axis as the gate threshold.
-            ctx.transform(ux * scale, uy * scale, 0, scale, 0, 0);
-            ctx.drawImage(arch, Math.round(-ax), Math.round(-ay));
-            // Painted live inside the same shear, over an inscription band the
-            // PNG now leaves empty. Baking the name into the sprite meant the
-            // town's own name was resampled along with the masonry: stone
-            // survives that, a five-pixel letterform does not.
-            this._drawGateInscription(ctx, {
-                centerX: 0,
-                centerY: VILLAGE_GATE_ARCH_BAND_MID_Y - ay,
-                bandWidth: VILLAGE_GATE_ARCH_BAND_WIDTH,
-                bandHeight: VILLAGE_GATE_ARCH_BAND_HEIGHT,
+    // The gate's two bracket lanterns on the arch block's face, either side
+    // of the arch (VILLAGE_GATE_GEOMETRY.lanternX): VillageWall's lantern,
+    // each a prop standing on the ground under its arm tip, the arm reaching
+    // back up-right into the face.
+    _villageGateLanternSprites() {
+        const G = VILLAGE_GATE_GEOMETRY;
+        const arm = WALL_SPEC.lanternArmH;
+        const reach = WALL_SPEC.lanternReach;
+        return G.lanternX.map((dx, k) => {
+            const base = this._tileToWorld(VILLAGE_GATE.tileX + dx, VILLAGE_GATE.tileY + G.blockHalfDepth);
+            const fx = Math.round(base.x) - reach;
+            const fy = Math.round(base.y) + Math.floor(reach / 2);
+            const tile = worldToTile(fx, fy);
+            const sprite = new StaticPropSprite({
+                tileX: tile.tileX,
+                tileY: tile.tileY,
+                id: `village.gateLantern.${k}`,
+                bounds: { left: -5, right: 8, top: -arm - 3, bottom: 2, splitY: 0 },
+                materialClass: 'metal',
+                drawFn: (ctx) => drawWallLantern(ctx, fx, fy - arm, { lit: this._wallLanternsLit === true }),
+                channels: {
+                    emissive: (ctx) => drawWallLantern(ctx, fx, fy - arm, { lit: this._wallLanternsLit === true, emissive: true }),
+                },
             });
-            ctx.restore();
-            return;
-        }
-
-        const wood = VILLAGE_WOOD_PALETTE;
-        const stone = VILLAGE_STONE_PALETTE;
-        const lintelInset = 22;
-        const lintelHeight = 26;
-        const start = { x: leftBase.x + ux * lintelInset, y: leftBase.y + uy * lintelInset - 110 };
-        const end = { x: rightBase.x - ux * lintelInset, y: rightBase.y - uy * lintelInset - 110 };
-
-        ctx.save();
-        SpriteRenderer.disableSmoothing(ctx);
-
-        // Stone lintel locks the two tower bases into a single civic gateway.
-        const trace = (...points) => {
-            ctx.beginPath();
-            ctx.moveTo(Math.round(points[0].x), Math.round(points[0].y));
-            for (const p of points.slice(1)) ctx.lineTo(Math.round(p.x), Math.round(p.y));
-            ctx.closePath();
-        };
-        trace(
-            { x: start.x, y: start.y },
-            { x: end.x, y: end.y },
-            { x: end.x, y: end.y + lintelHeight },
-            { x: start.x, y: start.y + lintelHeight },
-        );
-        ctx.fillStyle = stone.mid;
-        ctx.fill();
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        // Top edge highlight
-        ctx.strokeStyle = stone.light;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(start.x), Math.round(start.y + 1));
-        ctx.lineTo(Math.round(end.x), Math.round(end.y + 1));
-        ctx.stroke();
-
-        // Bottom shadow line
-        ctx.strokeStyle = stone.mortar;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(start.x), Math.round(start.y + lintelHeight - 1));
-        ctx.lineTo(Math.round(end.x), Math.round(end.y + lintelHeight - 1));
-        ctx.stroke();
-
-        // Iron straps (two evenly spaced)
-        ctx.fillStyle = stone.mortar;
-        for (const t of [0.32, 0.68]) {
-            const sx = start.x + (end.x - start.x) * t;
-            const sy = start.y + (end.y - start.y) * t;
-            ctx.fillRect(Math.round(sx - 1.5), Math.round(sy), 3, lintelHeight);
-        }
-
-        // Corbel brackets at each end (carved support pieces)
-        for (const corbel of [
-            { x: start.x, y: start.y + lintelHeight, dir: 1 },
-            { x: end.x, y: end.y + lintelHeight, dir: -1 },
-        ]) {
-            trace(
-                { x: corbel.x, y: corbel.y },
-                { x: corbel.x, y: corbel.y + 12 },
-                { x: corbel.x + corbel.dir * 12, y: corbel.y },
-            );
-            ctx.fillStyle = wood.deep;
-            ctx.fill();
-            ctx.strokeStyle = stone.outline;
-            ctx.lineWidth = 1;
-            ctx.stroke();
-        }
-
-        // Recess the village name into the masonry. The shallow arch echoes a
-        // carved entrance panel and keeps the lettering clear of both doors.
-        const plaqueSpan = Math.min(88, length * 0.76);
-        const plaqueHeight = 15;
-        const plaqueInset = (length - plaqueSpan) / 2;
-        const plaqueStart = {
-            x: start.x + ux * plaqueInset,
-            y: start.y + uy * plaqueInset + 3,
-        };
-        const plaqueEnd = {
-            x: end.x - ux * plaqueInset,
-            y: end.y - uy * plaqueInset + 3,
-        };
-        const plaqueMid = {
-            x: (plaqueStart.x + plaqueEnd.x) / 2,
-            y: (plaqueStart.y + plaqueEnd.y) / 2,
-        };
-        ctx.fillStyle = stone.shadow;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(plaqueStart.x), Math.round(plaqueStart.y + plaqueHeight));
-        ctx.lineTo(Math.round(plaqueStart.x), Math.round(plaqueStart.y + 4));
-        ctx.quadraticCurveTo(
-            Math.round(plaqueMid.x),
-            Math.round(plaqueMid.y - 4),
-            Math.round(plaqueEnd.x),
-            Math.round(plaqueEnd.y + 4),
-        );
-        ctx.lineTo(Math.round(plaqueEnd.x), Math.round(plaqueEnd.y + plaqueHeight));
-        ctx.closePath();
-        ctx.fill();
-        ctx.strokeStyle = stone.light;
-        ctx.lineWidth = 1;
-        ctx.stroke();
-        ctx.strokeStyle = stone.mortar;
-        ctx.beginPath();
-        ctx.moveTo(
-            Math.round(plaqueStart.x + ux * 3),
-            Math.round(plaqueStart.y + uy * 3 + plaqueHeight - 2),
-        );
-        ctx.lineTo(
-            Math.round(plaqueEnd.x - ux * 3),
-            Math.round(plaqueEnd.y - uy * 3 + plaqueHeight - 2),
-        );
-        ctx.stroke();
-        // Same sheared treatment as the sprite path — see _drawGateInscription.
-        ctx.save();
-        ctx.translate(Math.round(plaqueMid.x), Math.round(plaqueMid.y + 9));
-        ctx.transform(ux, uy, 0, 1, 0, 0);
-        this._drawGateInscription(ctx, {
-            centerX: 0,
-            centerY: 0,
-            bandWidth: plaqueSpan,
-            bandHeight: plaqueHeight - 4,
+            sprite.lanternFoot = { x: fx, y: fy, height: arm - 7 };
+            return sprite;
         });
-        ctx.restore();
-
-        ctx.restore();
     }
 
-    _drawVillageGateDoors(ctx, leftBase, rightBase) {
-        const wood = VILLAGE_WOOD_PALETTE;
-        const stone = VILLAGE_STONE_PALETTE;
-        const dx = rightBase.x - leftBase.x;
-        const dy = rightBase.y - leftBase.y;
-        const length = Math.max(1, Math.hypot(dx, dy));
-        const ux = dx / length;
-        const uy = dy / length;
-        const lintelInset = VILLAGE_GATE_LINTEL_INSET;
-        const lintelHeight = 26;
-        const doorTopPad = 2;
-        const doorBottomLift = VILLAGE_GATE_DOOR_BOTTOM_LIFT;
-
-        // Lintel-aligned anchors (must match _drawVillageGateArch math exactly).
-        const lintelStart = { x: leftBase.x + ux * lintelInset, y: leftBase.y + uy * lintelInset - 110 };
-        const lintelEnd = { x: rightBase.x - ux * lintelInset, y: rightBase.y - uy * lintelInset - 110 };
-
-        // Door corners: trapezoid following the iso slope.
-        const tl = { x: lintelStart.x, y: lintelStart.y + lintelHeight + doorTopPad };
-        const tr = { x: lintelEnd.x, y: lintelEnd.y + lintelHeight + doorTopPad };
-        const bl = { x: lintelStart.x, y: leftBase.y - doorBottomLift };
-        const br = { x: lintelEnd.x, y: rightBase.y - doorBottomLift };
-        const tc = { x: (tl.x + tr.x) / 2, y: (tl.y + tr.y) / 2 };
-        const bc = { x: (bl.x + br.x) / 2, y: (bl.y + br.y) / 2 };
-
-        const trace = (...pts) => {
-            ctx.beginPath();
-            ctx.moveTo(Math.round(pts[0].x), Math.round(pts[0].y));
-            for (const p of pts.slice(1)) ctx.lineTo(Math.round(p.x), Math.round(p.y));
-            ctx.closePath();
-        };
-        const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-
-        ctx.save();
-        SpriteRenderer.disableSmoothing(ctx);
-
-        if (this.gateDoorsOpen) {
-            // Open state: thin strips tucked against the inner jambs.
-            const tuck = 7;
-            // Left leaf strip: along the left edge of the opening.
-            trace(
-                tl,
-                { x: tl.x + ux * tuck, y: tl.y + uy * tuck },
-                { x: bl.x + ux * tuck, y: bl.y + uy * tuck },
-                bl,
-            );
-            ctx.fillStyle = '#2c190d';
-            ctx.fill();
-            ctx.strokeStyle = stone.outline;
-            ctx.lineWidth = 1.2;
-            ctx.stroke();
-            // Right leaf strip.
-            trace(
-                { x: tr.x - ux * tuck, y: tr.y - uy * tuck },
-                tr,
-                br,
-                { x: br.x - ux * tuck, y: br.y - uy * tuck },
-            );
-            ctx.fillStyle = '#2c190d';
-            ctx.fill();
-            ctx.strokeStyle = stone.outline;
-            ctx.lineWidth = 1.2;
-            ctx.stroke();
-        } else {
-            // Closed state: two trapezoidal leaves following the iso slope.
-            const doorGradient = ctx.createLinearGradient(0, Math.min(tl.y, tr.y), 0, Math.max(bl.y, br.y));
-            doorGradient.addColorStop(0, wood.light);
-            doorGradient.addColorStop(0.42, wood.mid);
-            doorGradient.addColorStop(1, wood.deep);
-            trace(tl, tc, bc, bl);
-            ctx.fillStyle = doorGradient;
-            ctx.fill();
-            ctx.strokeStyle = stone.outline;
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-
-            trace(tc, tr, br, bc);
-            ctx.fillStyle = doorGradient;
-            ctx.fill();
-            ctx.stroke();
-
-            // Iron bands at vertical fractions, sloping with the iso projection.
-            ctx.strokeStyle = '#2c190d';
-            ctx.lineWidth = 3;
-            for (const t of [0.22, 0.78]) {
-                const bandLeft = lerp(tl, bl, t);
-                const bandRight = lerp(tr, br, t);
-                ctx.beginPath();
-                ctx.moveTo(Math.round(bandLeft.x), Math.round(bandLeft.y));
-                ctx.lineTo(Math.round(bandRight.x), Math.round(bandRight.y));
-                ctx.stroke();
-            }
-
-            // Plank lines per leaf, sloping with the door axis.
-            ctx.strokeStyle = '#2c190d';
-            ctx.lineWidth = 0.6;
-            // Left leaf planks
-            for (const f of [0.25, 0.5, 0.75]) {
-                const plankTop = lerp(tl, tc, f);
-                const plankBot = lerp(bl, bc, f);
-                ctx.beginPath();
-                ctx.moveTo(Math.round(plankTop.x), Math.round(plankTop.y + 2));
-                ctx.lineTo(Math.round(plankBot.x), Math.round(plankBot.y - 2));
-                ctx.stroke();
-            }
-            // Right leaf planks
-            for (const f of [0.25, 0.5, 0.75]) {
-                const plankTop = lerp(tc, tr, f);
-                const plankBot = lerp(bc, br, f);
-                ctx.beginPath();
-                ctx.moveTo(Math.round(plankTop.x), Math.round(plankTop.y + 2));
-                ctx.lineTo(Math.round(plankBot.x), Math.round(plankBot.y - 2));
-                ctx.stroke();
-            }
-
-            // Heavy diagonal straps keep the closed state readable as two
-            // engineered leaves instead of one broad undifferentiated slab.
-            ctx.strokeStyle = '#2c190d';
-            ctx.lineWidth = 2.5;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(tl.x + ux * 4), Math.round(tl.y + uy * 4 + 4));
-            ctx.lineTo(Math.round(bc.x - ux * 4), Math.round(bc.y - uy * 4 - 4));
-            ctx.moveTo(Math.round(tc.x - ux * 4), Math.round(tc.y - uy * 4 + 4));
-            ctx.lineTo(Math.round(bl.x + ux * 4), Math.round(bl.y + uy * 4 - 4));
-            ctx.moveTo(Math.round(tc.x + ux * 4), Math.round(tc.y + uy * 4 + 4));
-            ctx.lineTo(Math.round(br.x - ux * 4), Math.round(br.y - uy * 4 - 4));
-            ctx.moveTo(Math.round(tr.x - ux * 4), Math.round(tr.y - uy * 4 + 4));
-            ctx.lineTo(Math.round(bc.x + ux * 4), Math.round(bc.y + uy * 4 - 4));
-            ctx.stroke();
-
-            // Center seam.
-            ctx.strokeStyle = stone.outline;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(tc.x), Math.round(tc.y));
-            ctx.lineTo(Math.round(bc.x), Math.round(bc.y));
-            ctx.stroke();
-
-            // Ring handles near the center seam at mid-height per leaf.
-            ctx.fillStyle = '#9aa0a6';
-            for (const dir of [-1, 1]) {
-                const top = lerp(tc, dir < 0 ? tl : tr, 0.18);
-                const bot = lerp(bc, dir < 0 ? bl : br, 0.18);
-                const handle = lerp(top, bot, 0.5);
-                ctx.beginPath();
-                ctx.arc(Math.round(handle.x), Math.round(handle.y), 1.6, 0, Math.PI * 2);
-                ctx.fill();
-            }
-        }
-
-        ctx.restore();
+    // One run of the stone curtain (VillageWall.paintWallRun) between two
+    // local points of a prop drawn at (originX, originY). The gatehouse
+    // stubs call it bare; the full runs pass `{ piers, ivy, seed }`. The
+    // paint is memoized per run and snow bucket, so the albedo cache and the
+    // surface channel (`channel: 'surface'`) share one rasterization.
+    _drawVillageWallSegment(ctx, originX, originY, start, end, phase = 0, options = {}) {
+        const out = this._villageWallPaint(originX + start.x, originY + start.y, originX + end.x, originY + end.y, phase, options);
+        if (!out) return null;
+        ctx.drawImage(options.channel === 'surface' ? out.surface : out.albedo, out.left, out.top);
+        return out;
     }
 
-    _drawVillageWallSegment(ctx, originX, originY, start, end, phase = 0) {
-        const palette = VILLAGE_WOOD_PALETTE;
-        const stone = VILLAGE_STONE_PALETTE;
-        const x1 = Math.round(originX + start.x);
-        const y1 = Math.round(originY + start.y);
-        const x2 = Math.round(originX + end.x);
-        const y2 = Math.round(originY + end.y);
-        const dx = x2 - x1;
-        const dy = y2 - y1;
-        const length = Math.max(1, Math.hypot(dx, dy));
-        const ux = dx / length;
-        const uy = dy / length;
-        let nx = -uy;
-        let ny = ux;
-        if (ny < 0) {
-            nx *= -1;
-            ny *= -1;
-        }
-        const wallHeight = 56;
-        const stoneBandHeight = 18;
-        const capWidth = 14;
-        const capLift = 5;
-        const faceTop1 = { x: x1, y: y1 - wallHeight };
-        const faceTop2 = { x: x2, y: y2 - wallHeight };
-        const capBack1 = { x: faceTop1.x + nx * capWidth, y: faceTop1.y + ny * capWidth - capLift };
-        const capBack2 = { x: faceTop2.x + nx * capWidth, y: faceTop2.y + ny * capWidth - capLift };
-        const shadowDrop = 14;
-        const postStep = 24;
-        const stakeWidth = 10;
-        const stakeHeight = 11;
-        const offset = (phase % 2) * 5;
-
-        const traceQuad = (a, b, c, d) => {
-            ctx.beginPath();
-            ctx.moveTo(Math.round(a.x), Math.round(a.y));
-            ctx.lineTo(Math.round(b.x), Math.round(b.y));
-            ctx.lineTo(Math.round(c.x), Math.round(c.y));
-            ctx.lineTo(Math.round(d.x), Math.round(d.y));
-            ctx.closePath();
-        };
-
-        ctx.save();
-        SpriteRenderer.disableSmoothing(ctx);
-
-        ctx.globalAlpha = 0.32;
-        ctx.fillStyle = palette.shadow;
-        traceQuad(
-            { x: x1 - nx * 7, y: y1 + shadowDrop },
-            { x: x2 - nx * 7, y: y2 + shadowDrop },
-            { x: x2 + nx * 11, y: y2 + shadowDrop + 8 },
-            { x: x1 + nx * 11, y: y1 + shadowDrop + 8 },
-        );
-        ctx.fill();
-        ctx.globalAlpha = 1;
-
-        traceQuad({ x: x1, y: y1 }, { x: x2, y: y2 }, faceTop2, faceTop1);
-        const faceGradient = ctx.createLinearGradient(0, Math.min(y1, y2) - wallHeight, 0, Math.max(y1, y2));
-        faceGradient.addColorStop(0, palette.light);
-        faceGradient.addColorStop(0.46, palette.mid);
-        faceGradient.addColorStop(1, palette.deep);
-        ctx.fillStyle = faceGradient;
-        ctx.fill();
-        ctx.strokeStyle = palette.outline;
-        ctx.lineWidth = 3;
-        ctx.stroke();
-
-        // A continuous masonry plinth visually carries the whole perimeter and
-        // ties it to the gate towers. The previous timber-to-ground edge made
-        // the long wall read as a flat fence instead of village fortification.
-        const stoneTop1 = { x: x1, y: y1 - stoneBandHeight };
-        const stoneTop2 = { x: x2, y: y2 - stoneBandHeight };
-        traceQuad({ x: x1, y: y1 }, { x: x2, y: y2 }, stoneTop2, stoneTop1);
-        const stoneGradient = ctx.createLinearGradient(0, Math.min(y1, y2) - stoneBandHeight, 0, Math.max(y1, y2));
-        stoneGradient.addColorStop(0, stone.light);
-        stoneGradient.addColorStop(1, stone.shadow);
-        ctx.fillStyle = stoneGradient;
-        ctx.fill();
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.strokeStyle = stone.mortar;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(x1), Math.round(y1 - stoneBandHeight / 2));
-        ctx.lineTo(Math.round(x2), Math.round(y2 - stoneBandHeight / 2));
-        ctx.stroke();
-        for (let d = 18; d < length - 8; d += 28) {
-            const jointX = x1 + ux * d;
-            const jointY = y1 + uy * d;
-            const upperCourse = Math.floor(d / 28) % 2 === 0;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(jointX), Math.round(jointY - (upperCourse ? stoneBandHeight : stoneBandHeight / 2)));
-            ctx.lineTo(Math.round(jointX), Math.round(jointY - (upperCourse ? stoneBandHeight / 2 : 0)));
-            ctx.stroke();
-        }
-
-        traceQuad(faceTop1, faceTop2, capBack2, capBack1);
-        ctx.fillStyle = palette.dark;
-        ctx.fill();
-        // 5.2 — the walk under snow from its front lip back, the bucket's
-        // share of its depth; the outline and the rope stay on top.
-        const walkSnow = wallWalkSnow(this.propWinter.bucket);
-        if (walkSnow) {
-            const back = (a, b) => ({ x: a.x + (b.x - a.x) * walkSnow.share, y: a.y + (b.y - a.y) * walkSnow.share });
-            traceQuad(faceTop1, faceTop2, back(faceTop2, capBack2), back(faceTop1, capBack1));
-            ctx.fillStyle = walkSnow.body;
-            ctx.fill();
-            traceQuad(faceTop1, faceTop2, capBack2, capBack1);
-        }
-        ctx.strokeStyle = palette.outline;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.strokeStyle = palette.rope;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(faceTop1.x + nx * 2), Math.round(faceTop1.y + ny * 2 - 2));
-        ctx.lineTo(Math.round(faceTop2.x + nx * 2), Math.round(faceTop2.y + ny * 2 - 2));
-        ctx.stroke();
-
-        ctx.save();
-        traceQuad({ x: x1, y: y1 }, { x: x2, y: y2 }, faceTop2, faceTop1);
-        ctx.clip();
-        for (let d = 8 + offset; d < length; d += 13) {
-            const baseX = x1 + ux * d;
-            const baseY = y1 + uy * d;
-            const plankNoise = Math.floor(d / 13) % 3;
-            ctx.strokeStyle = plankNoise === 0 ? '#2c190d' : '#593317';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(baseX), Math.round(baseY - 4));
-            ctx.lineTo(Math.round(baseX), Math.round(baseY - wallHeight + 7 + plankNoise * 2));
-            ctx.stroke();
-            if (plankNoise === 1) {
-                ctx.strokeStyle = 'rgba(219, 151, 76, 0.35)';
-                ctx.beginPath();
-                ctx.moveTo(Math.round(baseX + ux * 2), Math.round(baseY - 8));
-                ctx.lineTo(Math.round(baseX + ux * 2), Math.round(baseY - wallHeight + 12));
-                ctx.stroke();
-            }
-        }
-        for (const row of [22, 39]) {
-            ctx.strokeStyle = palette.dark;
-            ctx.lineWidth = 5;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(x1), Math.round(y1 - row));
-            ctx.lineTo(Math.round(x2), Math.round(y2 - row));
-            ctx.stroke();
-            ctx.strokeStyle = palette.rope;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(x1), Math.round(y1 - row - 2));
-            ctx.lineTo(Math.round(x2), Math.round(y2 - row - 2));
-            ctx.stroke();
-        }
-        for (let d = 10; d < length - 32; d += 54) {
-            const next = Math.min(length - 4, d + 42);
-            const ax = x1 + ux * d;
-            const ay = y1 + uy * d;
-            const bx = x1 + ux * next;
-            const by = y1 + uy * next;
-            ctx.strokeStyle = palette.dark;
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(ax), Math.round(ay - stoneBandHeight - 4));
-            ctx.lineTo(Math.round(bx), Math.round(by - wallHeight + 8));
-            ctx.moveTo(Math.round(ax), Math.round(ay - wallHeight + 8));
-            ctx.lineTo(Math.round(bx), Math.round(by - stoneBandHeight - 4));
-            ctx.stroke();
-        }
-        ctx.restore();
-
-        for (let d = 7 + offset; d < length - 2; d += postStep) {
-            const half = stakeWidth / 2;
-            const a = { x: x1 + ux * (d - half), y: y1 + uy * (d - half) - wallHeight };
-            const b = { x: x1 + ux * (d + half), y: y1 + uy * (d + half) - wallHeight };
-            const cadence = Math.floor(d / postStep);
-            const tip = { x: x1 + ux * d, y: y1 + uy * d - wallHeight - stakeHeight - (cadence % 3 === 0 ? 4 : 0) };
-            ctx.beginPath();
-            ctx.moveTo(Math.round(a.x), Math.round(a.y + 8));
-            ctx.lineTo(Math.round(a.x), Math.round(a.y));
-            ctx.lineTo(Math.round(tip.x), Math.round(tip.y));
-            ctx.lineTo(Math.round(b.x), Math.round(b.y));
-            ctx.lineTo(Math.round(b.x), Math.round(b.y + 8));
-            ctx.closePath();
-            ctx.fillStyle = cadence % 2 ? palette.mid : palette.dark;
-            ctx.fill();
-            ctx.strokeStyle = palette.outline;
-            ctx.lineWidth = 2;
-            ctx.stroke();
-        }
-
-        for (let d = 32 + offset; d < length - 12; d += 72) {
-            const p = { x: x1 + ux * d, y: y1 + uy * d };
-            const w = 13;
-            const h = wallHeight + 13;
-            ctx.fillStyle = palette.deep;
-            ctx.fillRect(Math.round(p.x - w / 2), Math.round(p.y - h + 7), w, h - stoneBandHeight);
-            ctx.fillStyle = stone.mid;
-            ctx.fillRect(Math.round(p.x - w / 2), Math.round(p.y - stoneBandHeight), w, stoneBandHeight + 7);
-            ctx.strokeStyle = palette.outline;
-            ctx.lineWidth = 2;
-            ctx.strokeRect(Math.round(p.x - w / 2), Math.round(p.y - h + 7), w, h);
-            ctx.fillStyle = palette.tealDark;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(p.x - 10), Math.round(p.y - h + 6));
-            ctx.lineTo(Math.round(p.x), Math.round(p.y - h));
-            ctx.lineTo(Math.round(p.x + 10), Math.round(p.y - h + 6));
-            ctx.lineTo(Math.round(p.x), Math.round(p.y - h + 11));
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            ctx.fillStyle = palette.tealLight;
-            ctx.fillRect(Math.round(p.x - 2), Math.round(p.y - h + 2), 4, 2);
-        }
-
-        for (let d = 18 + offset; d < length - 8; d += 38) {
-            const p = { x: x1 + ux * d, y: y1 + uy * d };
-            ctx.strokeStyle = palette.ropeDark;
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(p.x - nx * 6), Math.round(p.y - 18 - ny * 6));
-            ctx.lineTo(Math.round(p.x + nx * 6), Math.round(p.y - 18 + ny * 6));
-            ctx.moveTo(Math.round(p.x - nx * 6), Math.round(p.y - 36 - ny * 6));
-            ctx.lineTo(Math.round(p.x + nx * 6), Math.round(p.y - 36 + ny * 6));
-            ctx.stroke();
-        }
-
-        for (let d = 24 + offset; d < length - 12; d += 74) {
-            const p = { x: x1 + ux * d, y: y1 + uy * d - 30 };
-            ctx.fillStyle = palette.moss;
-            ctx.fillRect(Math.round(p.x - 3), Math.round(p.y), 9, 3);
-            ctx.fillStyle = '#d8c79a';
-            ctx.fillRect(Math.round(p.x + 6), Math.round(p.y + 4), 2, 2);
-            ctx.fillRect(Math.round(p.x - 7), Math.round(p.y + 11), 2, 2);
-        }
-
-        // Trailing ivy down the wall face — breaks up the bare planks.
-        //
-        // Stepped one pixel at a time rather than stroked as a polyline. A 2px
-        // diagonal stroke antialiases into a soft grey-green smear that reads
-        // as a marker scribble next to hard-edged planks; a stepped column of
-        // rects stays on the pixel grid like everything around it.
-        for (let d = 58 + offset; d < length - 16; d += 116) {
-            const ix = Math.round(x1 + ux * d);
-            const iy = Math.round(y1 + uy * d);
-            const top = iy - wallHeight + 10;
-            const drop = 46;
-            const phase = d * 0.37;
-            for (let k = 0; k <= drop; k++) {
-                const wander = Math.round(Math.sin(k * 0.16 + phase) * 3);
-                const yy = top + k;
-                // Two tones: a darker core with a lit left edge, so the vine has
-                // a direction of light like the masonry does.
-                ctx.fillStyle = 'rgba(58, 92, 38, 0.92)';
-                ctx.fillRect(ix + wander, yy, 2, 1);
-                if (k % 3 === 0) {
-                    ctx.fillStyle = 'rgba(96, 140, 60, 0.85)';
-                    ctx.fillRect(ix + wander, yy, 1, 1);
-                }
-            }
-            // Leaves hang off alternating sides of the stem.
-            for (let k = 1; k <= 4; k++) {
-                const yy = top + 4 + k * 10;
-                const xx = ix + Math.round(Math.sin((yy - top) * 0.16 + phase) * 3);
-                const side = k % 2 === 0 ? 1 : -1;
-                ctx.fillStyle = 'rgba(96, 140, 60, 0.92)';
-                ctx.fillRect(xx + (side > 0 ? 2 : -3), yy, 3, 2);
-                ctx.fillStyle = 'rgba(126, 170, 78, 0.75)';
-                ctx.fillRect(xx + (side > 0 ? 2 : -3), yy, 1, 1);
-            }
-        }
-
-        // Low shrubs tucked against the wall footing. Stepped mounds rather
-        // than ctx.ellipse, for the same reason as the ivy above.
-        for (let d = 30 + offset; d < length - 10; d += 52) {
-            const sx = Math.round(x1 + ux * d + nx * 4);
-            const sy = Math.round(y1 + uy * d + ny * 4 + 4);
-            const rows = [
-                { dy: -3, half: 2 },
-                { dy: -2, half: 4 },
-                { dy: -1, half: 6 },
-                { dy: 0, half: 7 },
-                { dy: 1, half: 5 },
-            ];
-            ctx.fillStyle = 'rgba(44, 76, 30, 0.95)';
-            for (const row of rows) ctx.fillRect(sx - row.half, sy + row.dy, row.half * 2, 1);
-            ctx.fillStyle = 'rgba(74, 116, 50, 0.92)';
-            ctx.fillRect(sx - 4, sy - 2, 5, 1);
-            ctx.fillRect(sx - 3, sy - 3, 3, 1);
-        }
-
-        // Mounted torches — warm pools of light along the palisade. Gentle
-        // flicker when motion is enabled; steady glow under reduced motion.
-        for (let d = 50 + offset * 2; d < length - 18; d += 92) {
-            const bx = x1 + ux * d;
-            const topY = y1 + uy * d - wallHeight + 9;
-            ctx.fillStyle = palette.dark;
-            ctx.fillRect(Math.round(bx - 2), Math.round(topY), 4, 11);
-            const flick = this.motionScale ? (Math.sin(this.waterFrame * 3 + d) * 0.5 + 0.5) : 0.5;
-            drawPixelFlame(ctx, bx, topY, 7 + flick * 3, 3, {
-                lean: this.motionScale ? Math.sin(this.waterFrame * 1.4 + d) * 1.2 : 0,
-            });
-            ctx.save();
-            ctx.globalCompositeOperation = 'screen';
-            const glow = ctx.createRadialGradient(bx, topY - 2, 1, bx, topY - 2, 22);
-            glow.addColorStop(0, 'rgba(255, 180, 80, 0.40)');
-            glow.addColorStop(1, 'rgba(255, 180, 80, 0)');
-            ctx.fillStyle = glow;
-            ctx.fillRect(Math.round(bx - 24), Math.round(topY - 26), 48, 48);
-            ctx.restore();
-        }
-
-        ctx.strokeStyle = palette.outline;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(x1), Math.round(y1));
-        ctx.lineTo(Math.round(x2), Math.round(y2));
-        ctx.stroke();
-        ctx.restore();
+    _villageWallPaint(ax, ay, bx, by, phase = 0, { piers = false, ivy = false, seed = null, endFace = true, openStart = false, openEnd = false, startTurret = false } = {}) {
+        const snowBucket = this.propWinter?.bucket || 0;
+        const x1 = Math.round(ax);
+        const y1 = Math.round(ay);
+        const x2 = Math.round(bx);
+        const y2 = Math.round(by);
+        const runSeed = seed ?? (phase + 1) * 977;
+        const key = `${x1},${y1},${x2},${y2}|${runSeed}|${piers ? 1 : 0}${ivy ? 1 : 0}${endFace ? 1 : 0}${openStart ? 1 : 0}${openEnd ? 1 : 0}${startTurret ? 1 : 0}|${snowBucket}`;
+        const cache = this._wallPaintCache || (this._wallPaintCache = new Map());
+        if (cache.has(key)) return cache.get(key);
+        if (cache.size > 24) cache.clear();
+        const out = paintWallRun({ x1, y1, x2, y2, seed: runSeed, piers, ivy, endFace, snowBucket, openStart, openEnd, startTurret });
+        cache.set(key, out);
+        return out;
     }
 
     _terrainCacheBounds() {
@@ -9287,34 +8446,6 @@ export class IsometricRenderer {
         return sources;
     }
 
-    _villageGateLightSources(lighting = null) {
-        if (!VILLAGE_GATE) return [];
-        const leftBase = this._tileToWorld(VILLAGE_GATE.tileX - VILLAGE_GATE_TOWER_HALF_TILES, VILLAGE_GATE.tileY);
-        const rightBase = this._tileToWorld(VILLAGE_GATE.tileX + VILLAGE_GATE_TOWER_HALF_TILES, VILLAGE_GATE.tileY);
-        // 3.1 — the gate braziers spend the same exposure envelope as every
-        // other motivated source; the floor keeps them lit while the sky is up.
-        const phaseBoost = Math.max(0.35, sourceEnergyFor(lighting).core);
-        // V5 — each brazier is a fixture standing on its tower's base line,
-        // its flame 13 world px up.
-        return [
-            { id: 'left', x: leftBase.x - 9, y: leftBase.y - 13, footY: leftBase.y },
-            { id: 'right', x: rightBase.x + 9, y: rightBase.y - 13, footY: rightBase.y },
-        ].map((fixture) => normalizeLightSource({
-            id: `gate.brazier.${fixture.id}`,
-            kind: 'point',
-            role: 'fixture',
-            x: fixture.x,
-            y: fixture.y,
-            ground: { x: fixture.x, y: fixture.footY },
-            height: fixture.footY - fixture.y,
-            fire: true,
-            radius: 62,
-            color: '#ffd56a',
-            intensity: phaseBoost * 0.82,
-            buildingType: 'village.gate',
-        }));
-    }
-
     _lanternGroundLightSources(lighting = null) {
         const beaconIntensity = Math.max(0, Math.min(1, Number(lighting?.beaconIntensity) || 0));
         if (beaconIntensity <= 0.05) return [];
@@ -9390,8 +8521,8 @@ export class IsometricRenderer {
             ...building,
             ...this._familiarMoteLightSources(lighting),
             ...(this.arrivalDeparture?.getLightSources?.({ now }) || []),
-            ...this._villageGateLightSources(lighting),
             ...this._lanternGroundLightSources(lighting),
+            ...this._villageWallLanternLightSources(lighting),
             ...(this.bridgeLanterns?.getLightSources?.(lighting) || []),
         ];
         // 2.6 — fire sources (forge door and spill, torches, village and gate

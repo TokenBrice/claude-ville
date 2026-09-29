@@ -1,6 +1,6 @@
 # ClaudeVille state-of-the-art visual plan — *The Waking Isle*
 
-**Status:** `decisions settled 2026-09-28 — not started`
+**Status:** `implemented (P1–P5, 2026-09-29); 7.5 deferred, 9.7b and the free-ladder soak not run`
 
 **As of:** 2026-09-27, `main` at `44eabb5` (`v0.47.1` *The Minstrels' Gallery*), clean tree. Maintainer decisions M1–M27 settled 2026-09-28 (see [Maintainer decisions](#maintainer-decisions-settled-2026-09-28)).
 
@@ -914,4 +914,175 @@ Three read-only Opus 5.5 reviewers (max effort) checked the draft on 2026-09-27:
 
 ## Execution record
 
-Not started.
+Executed 2026-09-28 → 2026-09-29 by an orchestrator and Opus 5.5 implementer, fixer and auditor agents, one commit per phase: P1 `3e0d876` (foundations and truth), P2 `5f4abfe` (light, sea, land, buildings, villagers), P3 `6559335` (aperture light, sea form, fat-pixel flight, roofs, release sail), P4 `ee145a3` (WebGPU, GPU marks, HDR, P3); **P5** is the closure commit that carries this record (3.5 completion, V3 probes and `smoke:v3-truth`, the docs sweep, the ledger). Each phase was audited, fixed and re-verified before its commit, and each commit records `validate:full` and `verify:render` green. Evidence paths are relative to `output/waking-isle/` (gitignored; local evidence). Performance acceptance (V2 receipts, frame ms) is not judged per row: every run in P1–P4 was on a host at load 4–27, so the receipts come from the quiet-host wave below.
+
+Status: **done** = implemented and its acceptance met; **done with deviation** = implemented, with an acceptance line missed, met another way or scoped down (reason given); **not done** = reason given.
+
+### Items
+
+| Item | Status | Commit | Evidence (local) | Deviation or reason |
+| --- | --- | --- | --- | --- |
+| 0.1 | done | `3e0d876` | `Ladder/` | Ladder histograms and the dense-100 soak wait for quiet-host receipts ([OF-011](open-followups.md)) |
+| 0.2 | done | `3e0d876` + P5 | `audit/AuditWeather/`, `V3Probes/PROBE-TABLE.md` | P5's V3 probes found and removed two late leaks: the Canvas hybrid PostFx "incident pulse" (a full-frame tint on failed push, quota, waiting) and a null override seed coerced to 0 |
+| 0.3 | done | `3e0d876` | `FixFrames2/` | |
+| 0.4 | done | `3e0d876` | `FixBodies/` | |
+| 0.5 | done with deviation | `3e0d876` | `FixBodies/` | `mixed-tools` side-facing share dips to 50 % in 6 of 11 samples (n = 4); dense-24 meets every line |
+| 0.6 | done with deviation | `3e0d876` | `GpuCore/` | Footfall parity, reduced-motion and 5120/DPR-2 particle captures not run; magenta probe 315/0, Forge depth A/B and Canvas parity pass |
+| 0.7 | done | `3e0d876` + `5f4abfe` | `audit/AuditLand/` | Harbor pennants joined the wind with 6.5 |
+| 0.8 | done with deviation | `3e0d876` | `CraftContract/` | No-beam-by-day gate (AD-6) checked by an hour test in Node, never rendered by day; validator, usage stat, chips and plaques verified |
+| 0.9 | done | `3e0d876` | `audit/AuditChromeDash/` | |
+| 0.10 | done | `3e0d876` | `AtmosFinish/` | |
+| 1.1 | done with deviation | `3e0d876` + `5f4abfe` | `FixPools2/` | Land V6 rows pass at 5120 and DPR 2 (sea basis: decision 1); 5120 WebGL golden Y below blue hour (51.0 < 51.8); Canvas T1 salience 12–17 % < 20 % |
+| 1.2 | done with deviation | `3e0d876` + `5f4abfe` | `FixPools/` | Knee ships as a value-only variant of V5's `y2/y`; all ladder numbers pass the P3 re-audits (max non-emitter OKLab L 0.837 < 0.84, 0 px reach the T1 plate) |
+| 1.3 | done with deviation | `3e0d876` + `5f4abfe` | `Colour/after/` | Forge, Command and Observatory emitters pass; 9–321 px in the 65–160° hue window on some frames, untraced (suspected bloom) |
+| 2.1 | done with deviation | `5f4abfe` + `6559335` | `LightCore2/s10/` | Command bodies +50 % lit px unreachable (decision 3; reached ×1.27–1.32); DPR-2 ground coverage outside ±10 % |
+| 2.2 | done | `5f4abfe` + `6559335` | `LightCore/s3/` | |
+| 2.3 | done with deviation | `5f4abfe` + `6559335` | `Surfaces/viz/` | Storm-night Harbor clause unmeasurable: the Harbor emits no light in that scenario |
+| 2.4 | done with deviation | `6559335` | `LightApertures/r7/`, `LightCloseout/` | One aperture per room (merged blobs), `APERTURE_SPILL` 0.35; Command drum room 1's light hidden inside the brazier pool (documented exception) |
+| 2.5 | done with deviation | `5f4abfe` + `6559335` | `LightCore2/s11/` | Owner bodies 0 px leak; ~363–400 translucent prop and wall fringe texels still take the owner hue (making them opaque would solidify smoke) |
+| 2.6 | done | `5f4abfe` + `6559335` | `LightFx2/fire3/` | |
+| 2.7 | done with deviation | `5f4abfe` + `6559335` | `audit3/ReAuditWorld/ReLighthouse/lh/` | Beam ships as lit dash cells on the water footprint, not the sky-additive fan (the open sea fills the void; the fan read as a flat quad); every audited clause passes |
+| 2.8 | done | `5f4abfe` + `6559335` | `audit3/ReAuditWorld/ReLighthouse/c28/` | |
+| 2.9 | done | `6559335` | `audit6/ReAuditWorldP3/light-columns/` | |
+| 2.10 | done with deviation | `6559335` | `RCPilot/final/` | Pilot built and verified, never landed: off at every level (decision 7) |
+| 3.1 | done | `5f4abfe` + `6559335` | `audit6/ReAuditSeaP3/` | |
+| 3.2 | done | `5f4abfe` + `6559335` | `audit3/ReAuditSea/` | Golden horizon courses: decision 2 |
+| 3.3 | done | `5f4abfe` + `6559335` | `audit6/ReAuditSeaP3/` | z1 noon open-sea mode share 60.3 % against the sub-60 % example |
+| 3.4 | done | `5f4abfe` + `6559335` | `FixSea2/squall-sweep.json` | Squall precedes rain (10:01–10:30, rain 10:31) in FixSea2's sweep; cloud edges across the coastline not re-audited |
+| 3.5 | done with deviation | `5f4abfe` + P5 | `Coast35/` | Boulder coverage brought into 60–80 %, palisade band in the face reflection, `world:validate-terrain` passes; 22:00 face-reflection \|ΔL\| 5.6–5.7 under the ≥ 6 target; at z1 the SW edge still reads straight (map geometry) |
+| 3.6 | done | `5f4abfe` | `audit3/ReAuditSea/` | |
+| 3.7 | done | `5f4abfe` + `6559335` | `MirrorRoof/` | ReAuditSeaP3's Lighthouse-mirror and storm-ghost fails fixed with measurements; not re-audited |
+| 3.8 | done | `5f4abfe` + `6559335` | `audit3/ReAuditWorld/ReShips/` | |
+| 3.9 | done | `5f4abfe` | `audit3/ReAuditSea/` | |
+| 3.10 | done with deviation | `5f4abfe` | `SeaSurface/` | Caustic net re-derived (the `fract(v1 + v2)` form draws straight stripes); seabed specks authored in the shader, not baked |
+| 3.11 | done | `5f4abfe` | `audit2/AuditShipsMoments/` | |
+| 3.12 | done | `6559335` | `CanvasParity2/`, `CanvasCloseout2/` | 12:00, 22:00 and rain pairs match; the Canvas cloud field keeps one octave, so partly-cloudy shadow shapes differ |
+| 4.1 | done with deviation | `3e0d876` + `5f4abfe` | `FixCamera/` | DPR-2 Ambient wide rests at z1, not 0.5 (rule and acceptance line conflict, README documents it); 5120 establishing shot crops the Archive crown (decision 17) |
+| 4.2 | done with deviation | `3e0d876` + `5f4abfe` | `FixCamera/` | Sea ≤ 0.30 everywhere; the 12 % margin holds for at-building cohort members only (Portal chat walkers are not subjects) |
+| 4.3 | done | `3e0d876` | `audit/AuditMotionCam/` | |
+| 4.4 | done | `3e0d876` | `ChromeA/` | |
+| 4.5 | done | `3e0d876` | `audit/AuditMotionCam/` | |
+| 4.6 | done with deviation | `6559335` | `audit6/ReAuditWorldP3/dolly/` | Night flight keeps hard 2–3 px lamp columns and pool-rim teeth (accepted, AuditMotion3); Canvas stepped glide reverses off-centre content mid-step (ReDolly rank 1, open) |
+| 4.7 | done | `5f4abfe` | `Gait/` | |
+| 4.8 | done | `3e0d876` | `audit/AuditMotionCam/` | |
+| 4.9 | not done | — (recorded in `6559335`) | `Decisions/` | M24 not triggered: 0/10 open and 0/10 close cycles over 2× the period at 2560 and 5120 ([OF-021](open-followups.md)) |
+| 5.1 | done | `3e0d876` + `5f4abfe` | `FixLand/` | |
+| 5.2 | done | `5f4abfe` + `6559335` | `audit3/ReAuditWorld/ReGround/`, `FixRoofs2/` | Ground re-audit 10/10; Canvas roof residuals closed later (pool mask off roofs in `CanvasCloseout/`, roof band ruled intended in `CanvasCloseout2/`, well and cart in `WellCart/`) |
+| 5.3 | done | `3e0d876` | `audit/AuditLand/` | |
+| 5.4 | done | `3e0d876` + `5f4abfe` | `FixLand/` | |
+| 5.5 | done | `5f4abfe` + `6559335` | `Woodland/`, `FixGround/` | |
+| 5.6 | done as 0.10 | `3e0d876` | — | Moved to 0.10 |
+| 5.7 | done | `5f4abfe` + `6559335` | `Ground/` | The deck is off-frame in the DPR-1 opening (reach depends on 4.1/4.5, as the item says) |
+| 5.8 | done | `5f4abfe` + `6559335` | `audit2/AuditLandSky2/` | |
+| 5.9 | not done | — | — | Rejected (M13) |
+| 6.1 | done with deviation | `5f4abfe` | `BuildingsA2/` | Canvas night part emitters (Pharos lens, portal runes, Task board lanterns) grade cooler than GPU; Canvas lantern flicker 4–13 px per step at z1 (ReMotionBldg) |
+| 6.2 | done | `5f4abfe` | `BuildingsA/`, `FixBuildings/` | |
+| 6.3 | done | `5f4abfe` | `BuildingsB2/` | |
+| 6.4 | done | `5f4abfe` | `BuildingsB2/` | |
+| 6.5 | done | `5f4abfe` | `BuildingsB2/` | |
+| 6.6 | done with deviation | `6559335` | `Roofs3/`, `FixRoofs2/` | Drips and wet course seen live by Roofs3, the final FixRoofs2 round checked offline only; Canvas 22:00 snow parity uncaptured |
+| 6.7 | done | `5f4abfe` | `BuildingsB2/` | |
+| 7.1 | done with deviation | `5f4abfe` | `FixSeats/`, `FixVillagers/` | Two DeepSeek profiles use the lowered-body fallback (two-fails rule); grok and haiku sit rows hand-edited, not re-checked in scene; seat reached in ≤ 15 s on a settled village, 16.6 s from boot |
+| 7.2 | done | `5f4abfe` | `FixVillagers/` | |
+| 7.3 | done | `5f4abfe` | `Strips73b/` | All 26 profiles carry wait, strike and tinker in E/W/SE/SW, 10 carry gaze; audit 1,720 frames in 88 groups, feet ±2 px; `read` for six profiles stays open ([OF-009](open-followups.md)) |
+| 7.4 | done with deviation | `5f4abfe` | `FixMotion/`, `Gait2/` | Fan ring ±16 × ±8 px, not ±6 (±6 cannot reach ≤ 0.3 overlaps); overlaps ≤ 0.098 per sample, 0 same-heading road pairs |
+| 7.5 | deferred | — (recorded in `6559335`) | `Decisions/`, `RunGait/` | Deferred by the maintainer to after the 2026-10-09 PixelLab reset. Pilot (19 generations, 338.6 → 319.6): template failed identity on the robed profile; skeleton-v3 kept identity at ~24 generations per profile; nothing shipped ([OF-020](open-followups.md)) |
+| 8.1 | done | `5f4abfe` | `Moments/`, `FixMoments/` | Plaques became moment occluders (0/365 bad anchors) |
+| 8.2 | done | `6559335` | `MotionRelease/`, `CueAnchor/` | Crown redrawn after ReRelease's z2 taste fail and tag pushes classify as releases; not re-audited after the redraw |
+| 8.3 | done | `5f4abfe` + `6559335` | `FixMoments/`, `CueAnchor/` | `pushFailed` score chain fixed; release crown on peal note 0 (decision 10) |
+| 9.1 | done | `3e0d876` | `audit/AuditChromeDash/p91-topbar.json` | Closes OF-014 |
+| 9.2 | done with deviation | `3e0d876` | `audit/AuditChromeDash/p92-age.json` | World plate age 1 s ahead of card, sidebar and shelf in 3/77 and 3/32 samples at second boundaries |
+| 9.3 | done | `3e0d876` | `audit/AuditChromeDash/p93-busts.json` | |
+| 9.4 | done | `3e0d876` | `audit/AuditChromeDash/p94-tip.json` | |
+| 9.5 | done | `3e0d876` | `audit/AuditChromeDash/p95-frames.json` | |
+| 9.6 | done | `3e0d876` | `audit/AuditChromeDash/p96-steps.json` | |
+| 9.7a | done | `3e0d876` | `audit/AuditChromeDash/p97-flip.json` | |
+| 9.7b | not done | — | `Dashboard-2/` | Optional (M18); its quiet-host W → D start ≤ 150 ms gate was never run, so no View Transition ships; the bands and no-black cut shipped with 0.3 |
+| 9.8 | done | `3e0d876` | `audit/AuditChromeDash/p98-tape.json` | |
+| 9.9 | done | `3e0d876` | `audit/AuditChromeDash/p99-faces.json` | |
+| 9.10 | done with deviation | `3e0d876` | `audit/AuditChromeDash/p910-age.json` | Age tier reads `statusSinceMs` (the printed clock), not `rowWaitAnchor`; same for waiting cards, differs on errored and quota cards |
+| 9.11 | done with deviation | `3e0d876` | `audit/AuditChromeDash/p911-strip.json` | Strip widened to 480 × 56 (an 8 px tick lane) after the audit passed 480 × 48; not re-audited |
+| B.1a | done | `3e0d876` | `GpuCore/` | |
+| B.1b | done | `6559335` | `Batches/` | |
+| B.2 | done with deviation | `5f4abfe` | `audit2/AuditMemory2/` | Footprint 821–877 MB, sheet estimate 0 MB, 0 px diff; world-pilot packing skipped (V9 surface-code conflict); texture-cache cap resized 48 → 160 MiB on measured numbers ([OF-012](open-followups.md)) |
+| B.3 | done | `6559335` | `CueSegments/` | |
+| 10.1 Stage A | done with deviation | `ee145a3` | `audit7/AuditWGPU/parity/report.json`, `output/webgpu-parity/2026-09-29T06-25-34-928Z/` | `smoke:webgpu-parity` 36/36 at ≤ 1 LSB with device loss; 2.10 not ported (off at every level, reports unsupported on WebGPU) |
+| 10.1 Stage B | done with deviation | `ee145a3` | `StageB/`, `WGPUPerf/`, `audit8/ReAuditP4/` | Default in Chromium (decisions 8, 12, 16); ReAuditP4 13/13 after the swap and recovery fixes; real Safari and Firefox unmeasured ([OF-018](open-followups.md)) |
+| 10.2 | done with deviation | `ee145a3` | `audit7/AuditHDR/`, `HDR/xdr-check.json` | Every AuditHDR line passes; headless plus one headed XDR run (EDR headroom 1 → 16 → 1); G95C and by-eye judgement open ([OF-016](open-followups.md), [OF-017](open-followups.md)) |
+| 10.3 | done with deviation | `ee145a3` | `P3Fix/` | Forced-P3 headless passes on both backends; on-screen ΔE_ok on the XDR unmeasured ([OF-017](open-followups.md)) |
+| PixelLab A | done | `3e0d876` | `AssetsA/` | 84.8 generations: 7.3 pilot (feet held by copied keypoints), 7.1 sit pilot (template failed, skeleton-v3 passed), 5.5 tall oak |
+| PixelLab B | done | `5f4abfe` | `Ships/`, `Woodland/` | ≈ 35 generations: hulls 16 of 40, trees 19 of 246; 6.1, 6.2 and 6.7 hand-authored at 0 |
+| PixelLab C | done | `5f4abfe` | `Strips73b/`, `pixellab-ledger.jsonl` | ≈ 813.6 generations (B's unspent budget rolled forward): 24 sit rows, wait/strike/tinker for 26 profiles, gaze for 10 |
+
+### Orchestrator decisions taken during execution
+
+| # | Decision | Basis |
+| --- | --- | --- |
+| 1 | **V6 sea basis.** V6's sea clause caps outer ocean and in-map water at HSV S ≤ 0.40 outside the sun/moon path; golden S ≥ 1.15× noon is measured on land only (island minus in-map water) | The global grade pushed ocean S to 0.45–0.53; the sea's golden warmth comes from 3.2's `seaPath`, not saturation |
+| 2 | **Golden-horizon courses are sky reflection**, not sea body: exempt from the sea cap and the 24-hour sea sweep | P2 closeout read 2 warm courses of 4 (R−B +27/+12/+1/−11); SeaPolish then set 4 warm courses (+44.5/+33.4/+14.3/+7.4), passed by AuditSea3 and ReAuditSeaP3 |
+| 3 | **Unreachable acceptance lines recorded, not chased**: 2.1 Command bodies +50 % lit px; DPR-2 ground lit coverage within ±10 % | Base lights already cover 73 % (ceiling ×1.38); the base loop is not DPR-invariant (brazier ×5.48 vs ×4.00) |
+| 4 | **Body backlight rule.** A lamp draws a body rim, and counts toward back reach, only when its foot stands ≥ 0.8 × the figure's half-width off the axis; elsewhere the body keeps its dark 1-px outline | The Command door wizards wore an amber outline all round from a lamp straight behind them (FixOutline) |
+| 5 | **4.9 not triggered** | 0/10 hitches (decision M24's bar is 3/10) |
+| 6 | **7.5 deferred to after the 2026-10-09 PixelLab reset** | Pilot (19 generations): the `running-6-frames` template failed identity on the robed profile (props pop in, robe redrawn as trousers); skeleton-v3 kept identity at ~24 generations per profile (≈ 624 for 26). Recipe in [OF-020](open-followups.md) |
+| 7 | **2.10 kept off at every level** (`EFFECT_BUDGET['radiance-bounce']`) | The forge-door fan read as a larger pool; value-ladder excess with it on (64 px at 5120 z3); needs `EXT_color_buffer_float` |
+| 8 | **Software GL → Canvas by default** (SwiftShader WebGL2 or a fallback adapter); an explicit `?renderer=` still wins | Stage B's order: hardware adapter → WebGPU (Chromium), hardware WebGL2 → WebGL2, software → Canvas |
+| 9 | **Chronicler Canvas draw removed for parity** (P3); the errand logic stays | Canvas-only procedural body that walked over water; the GPU path never drew it ([OF-022](open-followups.md)) |
+| 10 | **Release accent on peal note 0.** The crown's peak anchors to a declared body-led accent keyed by the peal's own agent id | 8.3 had it on the carrying note 4 (91–157 ms late); after: lag ≤ 12.4 ms, 8/8 Signals and 4/4 Town-band runs (CueAnchor) |
+| 11 | **P1 exact bytes.** WebGPU uploads with `writeTexture` from the same decoded bytes as WebGL2; atlas bytes unchanged | Translucent texels match by construction; the gate is ≤ 1 LSB on ≥ 99.9 % of pixels |
+| 12 | **Safari opt-in (`?renderer=webgpu`), Firefox WebGL2** | No in-Safari parity run; Firefox exposes no adapter |
+| 13 | **Marks: role-2 rim.** Rim, status cell, notch, leader, beacon and edge arrow are GPU mark records; the two text runs stay on the 2D overlay | SDR pixel identity with the overlay held on both backends |
+| 14 | **HDR emitter luminance cap under the NEEDS-YOU mark.** Mark gain ≥ emitter gain + 0.5, and a lifted emitter pixel may not exceed `#e8d44d` at its mode's mark gain; never below its SDR value | Subtle: max emitter Y 1.2753 vs min NEEDS-YOU 1.2948; white flame cores trimmed to ×1.28 (subtle) and ×1.6 (full) |
+| 15 | **GPU-process crash: reload once**, at most once per 2 min, then the in-place Canvas world with the reason on Shift-D | Crash 1 reloads, crashes 2–3 inside 2 min do not, a crash after 121 s reloads once; after 4 crashes Chrome itself disabled the GPU (HDRRecovery) |
+| 16 | **Device-loss gate bounded at 3 frames** (`DEVICE_LOSS_MAX_FRAMES`), not "within one frame" | `device.lost` resolves asynchronously (0.4–23 ms after `destroy()`); inactive after 1 frame in 3 of 10 runs, 2 in 7; 0 dark frames over ~440 screencast frames |
+| 17 | **Camera priority at 5120**: villagers first and sea ≤ 0.30, above keeping every landmark crown in frame | 4.1/4.2 could not meet every constraint at once (FixCamera) |
+| 18 | **WebGPU is the Chromium default** after it measured cheaper than WebGL2 | `world:gpu-burst` (dense-24, 22:00, FULL) with light records in a storage buffer: 2.19 vs 2.35 ms at 1680, 4.85 vs 5.02 ms at 4880 (shared host) |
+
+### PixelLab spend
+
+Balance 1,272 → 338.6 generations: **933.4 used under the 1,000 cap** (floor 272 never crossed), from the balance deltas in `pixellab-ledger.jsonl` (local evidence; 410 lines). Phase B and C jobs overlapped, so their split is approximate.
+
+| Phase | Cap | Used | Shipped |
+| --- | --- | --- | --- |
+| A — pilots | ≤ 100 | 84.8 (1,272 → 1,187.2) | 7.3 strike and wait pilot, 7.1 sit pilot, 5.5 tall oak, feet-audit and spend tooling |
+| B — landmark and world assets | ≤ 400 | ≈ 35 | 13 hull strips, tall pine and willow, bare-winter and snow-laden states |
+| C — villager rollout | ≤ 500 + B's roll-forward | ≈ 813.6 | 24 sit rows; wait, strike and tinker for 26 profiles; gaze for 10 |
+| Left under the cap | | 66.6 | 7.5 deferred (its 19-generation pilot ran on the raised budget, after the cap) |
+
+### Known limits and carried items
+
+Carried in [open-followups](open-followups.md):
+
+- **OF-009** `read` strips for six strip-less profiles; 15 of 20 pre-existing `read` strips fail the ±2 px feet audit.
+- **OF-011** quiet-host ladder receipt (dense-100 soak). **OF-012** GPU-owned estimate at DPR 2; ~44 MB of Chrome transfer-cache textures unattributed.
+- **OF-016** G95C HDR re-probe. **OF-017** headed by-eye HDR and P3 on the XDR. **OF-018** real Safari and Firefox runs.
+- **OF-019** art-director carries that need maintainer decisions (clone-crowd identity, overlay density at z1/z2, static z1, night light on volumes).
+- **OF-020** 7.5 run gait. **OF-021** 4.9 overlay panel, conditional.
+- **OF-022** the Chronicler has no body on any backend.
+- **OF-023** automated gates render only the Canvas world headless; the GPU paths rely on `smoke:webgpu-parity` and `smoke:v3-truth`, which need a real GPU and are not in CI.
+- **OF-024** frame-cost regressions found by the Phase 5 receipts (unlocked p95, B.1b batch count, boot). **OF-025** quiet-host receipts not run (ladder soak, deferred R1 receipts, post-M6 per-level check, 9.7b gate).
+
+Residuals recorded, not carried (auditor in brackets):
+
+- Canvas: night part emitters cooler than GPU and lantern flicker 4–13 px per step [ReMotionBldg]; stepped glide reverses off-centre content [ReDolly]; storm water ~8 luma darker than WebGL and one cloud octave [ReAuditSeaP3]; fog brighter on WebGL (~34–42 vs ~25 luma) [FixWeather].
+- WebGPU: an in-frame fallback to WebGL2 re-bakes terrain in-task (440–620 ms); after two GPU-process crashes in 2 min the in-place Canvas world keeps blank module caches until reload [ReAuditP4, RecoveryFix]. A window opened on sRGB and moved to P3 keeps an sRGB overlay; WebGL2 without `OES_draw_buffers_indexed` loses P3 emitter chroma [P3Fix].
+- Bodies: walk-to-idle head pop up to 5.2 world px on `claude.fable` and `claude.opus` [AuditMotionCam]; the dense-100 gate queue drains in ~40 s; reduced-motion chat pairing cuts a body across the map in one frame [FixMotion]; 23 sheet frame-consistency defects predate the round [AssetsA].
+- Chrome: Escape cannot close a `#worldGrammar` popover opened from script [ChromeB]; `#panelClose` keeps a native title [FixChrome]; two roster faces read dark at 2× in the niche [AuditChromeDash].
+- Sea: the Forge mirror is faint [ReAuditSeaP3]; a reduced-motion load once showed no ships for over 60 s, not reproduced [ShipsFinish].
+
+### Phase 5 additions
+
+Phase 5 added, after this record's item table was written: the maintainer's two requests — the Command well and flower cart moved to the south-bank green with walk-blocking footprints (and a stale fan-anchor bug that sent walkers across water fixed), and the wall, gatehouse and sea tower rebuilt as one full-stone family at native scale (`VillageWall.js`, `bake-village-gate.mjs`; masonry walk blocking via `inVillageMasonry`); the Forge hearth and Command braziers now climb their authored flame tongues (EmitterCycle `mode: tongues`); 3.5 shoreline completion (palisade mirror band, boulder coverage, halo-width noise); V3 fixes (the Canvas incident pulse removed, the weather-override null seed) and the permanent `smoke:v3-truth`; 7.5 deferred by the maintainer to after the 2026-10-09 PixelLab reset (pilot 19 generations, reverted).
+
+### Receipts (quiet host)
+
+One lane (`ReceiptsA`, 2026-09-29, load < 4 before every context, 3 contexts) ran before the maintainer asked to wrap up — they report a flat 60 FPS in daily use. Tables: `Receipts/RECEIPTS-tables.md` (local evidence).
+
+| Receipt | Result |
+| --- | --- |
+| Stage B go condition (`gpu-burst` FULL, dense-24 22:00) | Holds everywhere: WebGPU vs WebGL2 2.226 vs 2.364 ms (1680 z1), 2.229 vs 2.446 (1680 z2), 4.820 vs 4.982 (4880 z1), 7.323 vs 7.732 (4880 z2) |
+| M6 `light-clusters` | Clustered walk cheaper in all 32 cases (1.42–16.96 ms saved at FULL, 1.28–11.46 at MINIMAL); default now on at every level |
+| EFFECT_BUDGET rows (per-frame interleaved shed A/B, not true K8 — no per-row K hook) | Resolved savings at 4880: waterCrests 0.51–0.66 ms, light-admission 0.38–0.39, footprint-occlusion 0.40 (WebGL2), cloud-courses 0.29 (WebGL2), aerial-perspective / coastSwash / bodyReflections 0.13–0.16 (WebGPU); bloom 0.82 at DPR 2 storm; radiance-bounce would cost +0.09. Recorded in the `EFFECT_BUDGET` header |
+| Unlocked frame (FULL, dense-24) | p50/p95 WebGL2 4.3/7.4 ms (1080p), 5.9/10.4 (5120); WebGPU 3.9/12.6, 4.3/20.9 — p95 above the pre-plan 4.8/5.0 ([OF-024](open-followups.md)) |
+| B.1b / B.3 | Pager saves 0.30–0.40 ms (WebGPU) and 0.14–0.22 (WebGL2) of gpu-world p50; cue runs save 0.40 ms appRender (WebGPU dense-100 day); batches now 123/131 at dense-100 z1 1080p against the P3 58/61 ([OF-024](open-followups.md)) |
+| Boot (warm Metal cache) | First world frame 1838 / 1852 ms (WebGPU, 2560 / 5120), 1901 / 1865 (WebGL2), against 1479 / 1430 at `3e0d876` ([OF-024](open-followups.md)) |
+| Not run | Free-ladder soak (≥ 98 % FULL), deferred R1 receipts, post-M6 per-level `gpu-burst`, cold-cache boot, 9.7b gate ([OF-025](open-followups.md)) |

@@ -9,6 +9,14 @@ import {
     roofWeatherMap,
     roofWetQuantum,
 } from '../../claudeville/src/presentation/character-mode/RoofWeather.js';
+import { WINTER_PROPS } from '../../claudeville/src/presentation/character-mode/PropWinter.js';
+
+// A baked scenery prop and its roof polygons (PropWinter's spec, without caps).
+function sceneryRoof(id) {
+    const png = PNG.sync.read(readFileSync(new URL(`../../claudeville/assets/sprites/props/${id}.png`, import.meta.url)));
+    const { poly, polys } = WINTER_PROPS[id].roof;
+    return { png, roof: polys ? { polys } : { poly } };
+}
 
 const DIR = new URL('../../claudeville/assets/sprites/buildings/', import.meta.url);
 const FABRIC = 5;
@@ -208,14 +216,19 @@ test('a full cover keeps the lit pitch lighter than the shaded one', () => {
     assert.ok(lit - shade > 10, `lit ${lit.toFixed(1)} vs shade ${shade.toFixed(1)}`);
 });
 
-test('a scenery roof takes snow only inside its roof polygon', () => {
-    // The gate tower's stone shares the slate's blue: only the roof snows.
-    const png = PNG.sync.read(readFileSync(new URL('../../claudeville/assets/sprites/props/prop.villageGateTower.png', import.meta.url)));
-    const poly = [[60, 18], [112, 30], [112, 50], [96, 100], [38, 78]];
+test('a scenery roof takes snow only inside its roof polygons', () => {
+    // The gatehouse's glass and portcullis share the slate's blue and its
+    // sign is gilt on crimson: only the two cones snow as roof.
+    const { png, roof } = sceneryRoof('prop.villageGate');
     const data = Uint8ClampedArray.from(png.data);
-    assert.ok(roofSnowPixels(data, png.width, png.height, 4, { poly }) > 500);
-    for (let y = 101; y < png.height; y++) {
+    assert.ok(roofSnowPixels(data, png.width, png.height, 4, roof) > 500);
+    const lowest = Math.max(...roof.polys.flat().map(([, y]) => y));
+    const westEdge = Math.max(...roof.polys[0].map(([x]) => x));
+    const eastEdge = Math.min(...roof.polys[1].map(([x]) => x));
+    for (let y = 0; y < png.height; y++) {
         for (let x = 0; x < png.width; x++) {
+            // Below the lower cone, and the arch block between the cones.
+            if (!(y > lowest || (x > westEdge && x < eastEdge))) continue;
             const i = (y * png.width + x) * 4;
             assert.deepEqual([...data.subarray(i, i + 4)], [...png.data.subarray(i, i + 4)], `stone texel ${x},${y} stays bare`);
         }
@@ -247,48 +260,13 @@ test('a full cover leaves no dark specks where joints cross', () => {
         const outline = (p) => [p - 1, p + 1, p - width, p + width].some((q) => face(sprite, q) !== 3);
         assert.equal(specks(width, sprite.albedo.height, painted, outline), 0, type);
     }
-    for (const [id, poly, pitch] of [
-        ['prop.villageGateTower', [[60, 18], [112, 30], [112, 50], [96, 100], [38, 78]], true],
-        ['prop.villageWallSeaTower', [[96, 28], [154, 58], [152, 64], [96, 90], [38, 58], [40, 52]], false],
-    ]) {
-        const png = PNG.sync.read(readFileSync(new URL(`../../claudeville/assets/sprites/props/${id}.png`, import.meta.url)));
+    for (const id of ['prop.villageGate', 'prop.villageWallSeaTower']) {
+        const { png, roof } = sceneryRoof(id);
         const data = Uint8ClampedArray.from(png.data);
-        roofSnowPixels(data, png.width, png.height, 4, { poly, pitch });
+        roofSnowPixels(data, png.width, png.height, 4, roof);
         const painted = new Uint8Array(png.width * png.height);
         for (let p = 0; p < painted.length; p++) if (data[p * 4] !== png.data[p * 4] || data[p * 4 + 2] !== png.data[p * 4 + 2]) painted[p] = 1;
         assert.equal(specks(png.width, png.height, painted), 0, id);
-    }
-});
-
-test('a gate tower roof snows as one cap down from its top, never in streaks', () => {
-    // Drawn at 0.72, its 1-row course lips would resample to static: each
-    // column's snow is one run from the column's top roof texel.
-    const png = PNG.sync.read(readFileSync(new URL('../../claudeville/assets/sprites/props/prop.villageGateTower.png', import.meta.url)));
-    const poly = [[60, 18], [112, 30], [112, 50], [96, 100], [38, 78]];
-    for (const bucket of [1, 2, 3]) {
-        const data = Uint8ClampedArray.from(png.data);
-        roofSnowPixels(data, png.width, png.height, bucket, { poly, pitch: true });
-        // Columns whose snow breaks into several runs (a gap of 2+ bare
-        // texels; a single one is the cap's dithered edge).
-        let broken = 0;
-        let columns = 0;
-        for (let x = 0; x < png.width; x++) {
-            let runs = 0;
-            let gap = 2;
-            for (let y = 0; y < png.height; y++) {
-                const i = (y * png.width + x) * 4;
-                if (data[i] !== png.data[i] || data[i + 2] !== png.data[i + 2]) {
-                    if (gap >= 2) runs++;
-                    gap = 0;
-                } else {
-                    gap++;
-                }
-            }
-            if (runs) columns++;
-            if (runs > 1) broken++;
-        }
-        assert.ok(columns > 40, `b${bucket}: the cap spans the roof`);
-        assert.ok(broken <= columns * 0.2, `b${bucket}: ${broken} of ${columns} columns break into several runs`);
     }
 });
 

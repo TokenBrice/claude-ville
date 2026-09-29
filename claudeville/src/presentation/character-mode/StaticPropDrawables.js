@@ -10,9 +10,13 @@ const CACHE_PAD = 8;
 // explicit `sortY`. A tall prop can `splitForOcclusion` into a back and a front
 // half so a villager can stand between them. A long prop can instead carry
 // `occlusionColumns` (see `lineOcclusionColumns`): vertical slices of one
-// cached image, each sorted on its own.
+// cached image, each sorted on its own. A prop may also paint its own GPU
+// channels (`channels: { occluder?, emissive? }`, each a drawFn in the same
+// world transform): the cache then carries matching canvases, which the
+// resident record binds as its occluder (a 2.3 surface channel) and emissive
+// maps (GpuSceneBuilder `recordForProp`).
 export class StaticPropSprite {
-    constructor({ tileX, tileY, drawFn, id = null, bounds = null, splitForOcclusion = false, sortY = null, occlusionColumns = null }) {
+    constructor({ tileX, tileY, drawFn, id = null, bounds = null, splitForOcclusion = false, sortY = null, occlusionColumns = null, channels = null, materialClass = null }) {
         this.tileX = tileX;
         this.tileY = tileY;
         const world = tileToWorld(tileX, tileY);
@@ -26,6 +30,8 @@ export class StaticPropSprite {
         this.bounds = bounds || { left: -32, right: 32, top: -64, bottom: 12, splitY: -18 };
         this.splitForOcclusion = splitForOcclusion;
         this.occlusionColumns = occlusionColumns?.length ? occlusionColumns : null;
+        this.channels = channels;
+        if (materialClass) this.materialClass = materialClass;
         this._cacheCanvas = null;
         this._gpuCacheRevision = 0;
     }
@@ -123,18 +129,33 @@ export class StaticPropSprite {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (!ctx) return null;
+        const originX = -(this.x + left - CACHE_PAD);
+        const originY = -(this.y + top - CACHE_PAD);
         SpriteRenderer.disableSmoothing(ctx);
-        ctx.translate(-(this.x + left - CACHE_PAD), -(this.y + top - CACHE_PAD));
+        ctx.translate(originX, originY);
         this.drawFn(ctx, this.x, this.y, zoom);
         this._cacheCanvas = {
             canvas,
             x: Math.floor(this.x + left - CACHE_PAD),
             y: Math.floor(this.y + top - CACHE_PAD),
         };
+        for (const [name, paint] of Object.entries(this.channels || {})) {
+            if (typeof paint !== 'function') continue;
+            const channel = document.createElement('canvas');
+            channel.width = width;
+            channel.height = height;
+            const channelCtx = channel.getContext('2d');
+            if (!channelCtx) continue;
+            SpriteRenderer.disableSmoothing(channelCtx);
+            channelCtx.translate(originX, originY);
+            paint(channelCtx, this.x, this.y, zoom);
+            this._cacheCanvas[name] = channel;
+        }
         return this._cacheCanvas;
     }
     releaseCache() {
         releaseCanvasBackingStore(this._cacheCanvas?.canvas);
+        for (const name of Object.keys(this.channels || {})) releaseCanvasBackingStore(this._cacheCanvas?.[name]);
         this._cacheCanvas = null;
     }
     // The drawn state changed (e.g. the gate doors): repaint the cache on the

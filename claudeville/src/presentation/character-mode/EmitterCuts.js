@@ -441,7 +441,11 @@ function* emitterPlacements(renderer) {
     }
     for (const sprite of renderer.districtPropSprites || []) {
         if (!sprite?.id || !hasEmissiveSidecar(assets, sprite.id)) continue;
-        yield { id: sprite.id, x: sprite.x, y: sprite.y, sortY: sprite.sortY, gate: 1 };
+        // A fixture's glass (the gatehouse and sea tower lamps) says when it
+        // is lit (`emitterGate`: the village's lamplight); others always are.
+        const gate = typeof sprite.emitterGate === 'function' ? sprite.emitterGate() : 1;
+        if (!(gate > 0)) continue;
+        yield { id: sprite.id, x: sprite.x, y: sprite.y, sortY: sprite.sortY, gate };
     }
     for (const prop of cacheLayerProps()) {
         if (!hasEmissiveSidecar(assets, prop.id)) continue;

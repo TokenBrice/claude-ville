@@ -67,6 +67,30 @@ export const GPU_WORLD_RENDERER_MODES = Object.freeze({
 // thread: +0.18 ms/frame at dense-24 2560x1440 with 17 strips (14.0-14.3 vs
 // 3.2-3.5 ms/s GPU-backed; per upload p95 0.3 ms, max 0.6 ms), in exchange
 // for 80-150 MB less GPU-process memory at dense-100 1080p.
+//
+// Phase 5 quiet-host receipts (2026-09-29, Apple M5 Pro, headless Chromium,
+// 60 Hz, every context started at load < 4; tables in the local evidence
+// `output/waking-isle/Receipts/RECEIPTS-tables.md`). Rows are priced by what
+// shedding returns: per-frame interleaved arms, each row forced to its
+// MINIMAL mode on its own frames, whole-frame GPU ms, dense-24 forced FULL,
+// 3 contexts x 24 s, A/A arms alongside. Resolved (> 2x A/A), ms at
+// WebGPU 4880x1392 / WebGPU DPR-2 2544x1868 / WebGL2 4880x1392:
+// `light-admission` 0.39 / 0.46 / 0.38; `waterCrests` 0.66 / 0.36 / 0.51;
+// `footprint-occlusion` WebGL2 0.40; `aerial-perspective`, `coastSwash`,
+// `bodyReflections` WebGPU 4880 0.13-0.16; `cloud-courses` WebGL2 0.29
+// (12:00 z2); `bloom` DPR-2 storm 0.82. Every other cell is unresolved
+// (ceilings 0.07-2.3 ms; the day scenes' A/A spreads are the widest), and
+// no row resolved at 1680x1032 (`light-clusters` has its own receipt
+// below). `glitterPath` and `rainRings` shed to
+// `static`, which the GPU path reads as on (only `off` gates them): forcing
+// either alone changes no pixel, and their static frame at MINIMAL comes
+// from `waterCrests` stopping the water clock. Rows with no switch
+// (`water-reflection`, `exposure-envelope`, `time-grade`, `wet-reflection`,
+// `palette-ramp`, `particle-depth`) cannot be priced this way; their bands
+// stand. The rig's own K8 (one composite-sized pass per K, one context per
+// run): 0.164 ms at WebGPU 4880, 0.123 at DPR 2, 0.191 at WebGL2 4880;
+// 0.066 at WebGPU 1680 is unresolved (A/A 0.041). `radiance-bounce` on:
+// +0.09 ms at WebGL2 4880 (1680 unresolved).
 export const EFFECT_BUDGET = Object.freeze({
     bloom: Object.freeze({
         id: 'bloom',
@@ -286,17 +310,22 @@ export const EFFECT_BUDGET = Object.freeze({
     // its 64x64 tile's <= 16 lights from the R16UI tile index (unit 10,
     // tilesX*17 x tilesY: count, then light indices); `off`, every fragment
     // walks every admitted light (the flat path). Admission is binned in
-    // both, so the admitted set and every lit pixel are identical and the
-    // Phase 5 A/B prices only the walk: `gpuWorld.setLightClusterOverride
-    // (true | false | null)` forces a mode (null = this row). MINIMAL's 24
-    // lights keep the flat walk and skip the index upload. Bytes: the index
-    // at 4880x1392 (77 x 22 tiles x 17 x 2 B). Band [INFERENCE]: one extra
-    // integer fetch per walked light; the per-fragment saving and the
-    // receipt land with the Phase 5 A/B (V2), 60 Hz assumed.
+    // both, so the admitted set and every lit pixel are identical:
+    // `gpuWorld.setLightClusterOverride(true | false | null)` forces a walk
+    // (null = this row). M6 receipt (Phase 5 quiet host, 2026-09-29): the
+    // gpu-burst method with on / off / on-again arms interleaved (3 fresh
+    // contexts x 8 reps x 60 frames), 22:00 clear, dense-24 and dense-100,
+    // 1680x1032 and 4880x1392, z1 and z2, WebGPU and WebGL2: the flat walk
+    // costs 1.42-16.96 ms more at FULL (A/A <= 0.32) and 1.28-11.46 ms more
+    // with MINIMAL's 24 lights (A/A <= 1.45), all 32 cases resolved. So the
+    // clustered walk ships at every level (MINIMAL included) and the row is
+    // a substitution that prices the time it removes; the flat walk is only
+    // the override's A/B arm. Bytes: the index at 4880x1392 (77 x 22 tiles
+    // x 17 x 2 B), resident at every level. 60 Hz assumed.
     'light-clusters': Object.freeze({
         id: 'light-clusters',
-        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
-        cost: Object.freeze({ gpuMsBand: [0, 0.05], cpuMsBand: [0, 0.1], bytes: 57596, scope: 'shared-scene-envelope' }),
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'on' }),
+        cost: Object.freeze({ gpuMsSavedBand: [1.28, 16.96], cpuMsBand: [0, 0.1], bytes: 57596, scope: 'shared-scene-envelope' }),
         staticFallback: 'flat-light-walk',
         canvas: 'none',
     }),

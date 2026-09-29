@@ -897,16 +897,24 @@ function recordForProp(renderer, drawable, sequence) {
     const emissiveSource = (useAtlas
         ? assets?.getAtlas?.(atlasFrame.atlas, 'emissive')
         : (isPilot && resolved?.origin !== 'fallback' ? resolved.emissive : null)) || null;
+    // A procedural prop's own channels, painted beside its cached albedo
+    // (StaticPropSprite `channels`): an occluder canvas is a 2.3 surface
+    // channel (the village wall), an emissive canvas its lit glass.
+    const ownOccluder = useAtlas ? null : cached.occluder || null;
+    const ownEmissive = useAtlas || emissiveSource ? null : cached.emissive || null;
+    const ownChannels = Boolean(ownOccluder || ownEmissive);
     const record = {
         id: `prop:${propId || `${sprite.tileX},${sprite.tileY}`}:${part}${column ? `:${column.index}` : ''}`,
         stableKey: drawable.stableKey || propId || `${sprite.tileX},${sprite.tileY}`,
         textureKey,
         sidecarKey: materialSource
             ? (useAtlas && atlasFrame?.atlas ? `${atlasFrame.atlas}:channels` : `${propId}:channels`)
-            : '',
+            : (ownChannels ? `${textureKey}:own` : ''),
         source,
         materialSource,
-        emissiveSource,
+        emissiveSource: emissiveSource || ownEmissive,
+        occluderSource: ownOccluder,
+        surfaceCode: Boolean(ownOccluder),
         sourceWidth,
         sourceHeight,
         sx,
@@ -922,12 +930,12 @@ function recordForProp(renderer, drawable, sequence) {
         footY: Math.round(finite(sprite.y)),
         material: materialClassId(materialName),
         elevation: materialName === 'foliage' ? 0.64 : elevated > 70 ? 0.58 : 0.34,
-        emissive: emissiveSource ? 0 : (materialName === 'fire' ? 0.35 : 0),
+        emissive: emissiveSource || ownEmissive ? 0 : (materialName === 'fire' ? 0.35 : 0),
         occluder: elevated > 36 ? 0.58 : 0.2,
         textureRevision: useAtlas ? (assets.assetVersion || 0) : (sprite._gpuCacheRevision || 0),
         sidecarRevision: useAtlas && atlasFrame?.atlas
             ? atlasChannelRevision(assets, atlasFrame.atlas)
-            : (resolved?.revision || null),
+            : (resolved?.revision || (ownChannels ? `own:${sprite._gpuCacheRevision || 0}` : null)),
         sequence,
         sourceKind,
     };

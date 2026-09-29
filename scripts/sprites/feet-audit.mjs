@@ -52,6 +52,19 @@
 //   clearance  the `wait` group's held frame must rise at least --clearance px
 //              (default 3) above the idle cell's top row: the raised hand
 //              clears the hat or helm.
+//
+// Gait groups (GAIT_GROUPS: the 7.5 `run` cycle) carry the feet off the ground
+// by design, so the planted-feet match does not apply. Per frame instead:
+//   dy  = the foot line, frame maxY − anchor maxY (the cycle stands on the
+//         anchor; a flight frame may float at most the tolerance), and
+//   dx  = the body's sideways hop: the idle head band's (top HEAD_BAND rows)
+//         best-overlap x shift in the frame, minus its median over the cycle
+//         (a steady forward lean is legal, a frame-to-frame jump is not).
+// Fragments apply as above; identity is n/a (a gait redraws the legs). Gait
+// frames also fail on `flicker`: a frame's colour histogram against the
+// cycle's other frames (median L1, share of body pixels) above --flicker-max
+// (default max(0.3, 1.5 × the profile's own worst walk frame)): a cape, robe
+// or prop that comes and goes between frames.
 // Exit code 1 when any audited strip frame fails a check.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -74,6 +87,8 @@ const FOOT_SEARCH = 8;
 const IDLE_ROW = 6;
 const BASE_ROWS = 10;
 const BASE_GROUPS = { walk: [0, 5], idle: [6, 9] };
+const GAIT_GROUPS = new Set(['run']);
+const HEAD_BAND = 14;
 
 const args = process.argv.slice(2);
 const option = (name, fallback = null) => {
@@ -94,6 +109,7 @@ const islandMin = Number(option('island-min', '3'));
 const identityMaxOption = option('identity-max');
 const clearance = Number(option('clearance', '3'));
 const keypointsOption = option('keypoints');
+const flickerMaxOption = option('flicker-max');
 
 for (const name of directions) {
     if (!DIRECTIONS.includes(name)) fail(`unknown direction "${name}"; use ${DIRECTIONS.join(', ')}`);
@@ -226,16 +242,76 @@ function feetShift(ref, frame) {
     return best;
 }
 
+// Gait placement: the x shift at which the idle cell's top HEAD_BAND rows
+// (hat, helm, head) best overlap the frame, searched ±FOOT_SEARCH in x and y
+// (a run bobs); ties go to the smallest move.
+function headShiftX(idle, frame) {
+    const bottom = Math.min(CELL - 1, idle.minY + HEAD_BAND - 1);
+    let best = { dx: 0, dy: 0, iou: -1 };
+    for (let dy = -FOOT_SEARCH; dy <= FOOT_SEARCH; dy++) {
+        for (let dx = -FOOT_SEARCH; dx <= FOOT_SEARCH; dx++) {
+            let inter = 0, a = 0, b = 0;
+            for (let y = idle.minY; y <= bottom; y++) {
+                for (let x = 0; x < CELL; x++) {
+                    const r = idle.mask[y * CELL + x];
+                    const fy = y + dy, fx = x + dx;
+                    const f = fy >= 0 && fy < CELL && fx >= 0 && fx < CELL ? frame.mask[fy * CELL + fx] : 0;
+                    a += r; b += f; inter += r & f;
+                }
+            }
+            const iou = inter / Math.max(1, a + b - inter);
+            if (iou > best.iou + 1e-9 || (Math.abs(iou - best.iou) <= 1e-9 && Math.abs(dx) + Math.abs(dy) < Math.abs(best.dx) + Math.abs(best.dy))) best = { dx, dy, iou };
+        }
+    }
+    return best.dx;
+}
+
 function anchorsFor(sheet) {
     if (sheet.width !== CELL * DIRECTIONS.length || sheet.height < CELL * BASE_ROWS) {
         fail(`base sheet is ${sheet.width}×${sheet.height}, not the 8×10 grid of ${CELL}px cells`);
     }
+    // The profile's own walk flicker: the worst frame of any facing's walk
+    // cycle against the rest of that cycle (the gait flicker check's scale).
+    const walkDrift = Math.max(...DIRECTIONS.map((_, col) => Math.max(...cycleDrift(
+        Array.from({ length: BASE_GROUPS.walk[1] - BASE_GROUPS.walk[0] + 1 }, (_, index) => cellHistogram(sheet, col, BASE_GROUPS.walk[0] + index)),
+    ))));
     return DIRECTIONS.map((dir, col) => {
         const idle = measureCell(sheet, col, IDLE_ROW);
         if (!idle) fail(`base sheet idle row ${IDLE_ROW} is empty for ${dir}`);
         let maxY = -1;
         for (let row = 0; row < BASE_ROWS; row++) maxY = Math.max(maxY, measureCell(sheet, col, row)?.maxY ?? -1);
-        return { cx2: idle.cx2, maxY, idle, summary: { cx2: idle.cx2, maxY, idleMaxY: idle.maxY } };
+        return { cx2: idle.cx2, maxY, idle, walkDrift, summary: { cx2: idle.cx2, maxY, idleMaxY: idle.maxY } };
+    });
+}
+
+// Gait flicker: a cell's colour histogram (3 bits per channel, alpha >= 16)
+// and, per frame of a cycle, the median L1 distance (share of body pixels) to
+// the cycle's other frames. A cape, robe or prop that comes and goes between
+// frames stands out; a pose change does not.
+function cellHistogram(png, col, row) {
+    const bins = new Map();
+    let count = 0;
+    for (let y = 0; y < CELL; y++) {
+        for (let x = 0; x < CELL; x++) {
+            const i = ((row * CELL + y) * png.width + col * CELL + x) * 4;
+            if (png.data[i + 3] < ALPHA_MIN) continue;
+            const key = ((png.data[i] >> 5) << 6) | ((png.data[i + 1] >> 5) << 3) | (png.data[i + 2] >> 5);
+            bins.set(key, (bins.get(key) || 0) + 1);
+            count++;
+        }
+    }
+    return { bins, count };
+}
+
+function cycleDrift(histograms) {
+    const distance = (a, b) => {
+        let sum = 0;
+        for (const key of new Set([...a.bins.keys(), ...b.bins.keys()])) sum += Math.abs((a.bins.get(key) || 0) - (b.bins.get(key) || 0));
+        return sum / Math.max(1, a.count, b.count);
+    };
+    return histograms.map((frame, index) => {
+        const others = histograms.filter((_, other) => other !== index).map((other) => distance(frame, other)).sort((a, b) => a - b);
+        return others.length ? others[Math.floor(others.length / 2)] : 0;
     });
 }
 
@@ -253,13 +329,22 @@ function auditGroup(png, group, anchors, { reference: mode = reference, keypoint
         const identityMax = identityMaxOption !== null
             ? Number(identityMaxOption)
             : Math.max(24, Math.round(0.025 * anchor.idle.mask.reduce((sum, v) => sum + v, 0)));
+        // Gait frames: the foot line and the body's sideways hop (see header).
+        const gait = GAIT_GROUPS.has(group.name) && mode === 'anchor';
+        const heads = gait ? frames.map((frame) => (frame ? headShiftX(anchor.idle, frame) : 0)) : null;
+        const headMedian = gait ? [...heads].sort((a, b) => a - b)[Math.floor(heads.length / 2)] : 0;
+        const flicker = gait ? cycleDrift(frames.map((_, index) => cellHistogram(png, col, group.rows[0] + index))) : null;
+        const flickerMax = flickerMaxOption !== null ? Number(flickerMaxOption) : Math.max(0.3, 1.5 * anchor.walkDrift);
         const rows = frames.map((frame, index) => {
             if (!frame) return { frame: index, empty: true, pass: false, why: ['empty'] };
-            const shift = feetShift(ref, frame);
+            const shift = gait
+                ? { dx: heads[index] - headMedian, dy: frame.maxY - anchor.maxY, iou: 1 }
+                : feetShift(ref, frame);
             const why = [];
             if (Math.abs(shift.dx) > tolerance || Math.abs(shift.dy) > tolerance) why.push(`dx${signed(shift.dx)},dy${signed(shift.dy)}`);
             const fragments = newIslands(frame.mask, anchor.idle.mask, CELL).filter((island) => island.size >= islandMin);
             if (fragments.length) why.push(`fragment${fragments.map((island) => ` ${island.size}px@${island.minX},${island.minY}`).join('')}`);
+            if (flicker && flicker[index] > flickerMax) why.push(`flicker ${flicker[index].toFixed(2)}>${flickerMax.toFixed(2)}`);
             // Seat poses (`--reference=group`) redraw hips and legs by design,
             // so the non-arm identity diff applies to standing work poses.
             let identity = null;
@@ -280,6 +365,7 @@ function auditGroup(png, group, anchors, { reference: mode = reference, keypoint
                 line: frame.maxY - anchor.maxY,
                 fragments: fragments.map((island) => island.size),
                 identity,
+                flicker: flicker ? Number(flicker[index].toFixed(2)) : null,
                 rise,
                 pass: why.length === 0,
                 why,
@@ -437,7 +523,8 @@ function printGroup(status, group) {
         const rise = entry.frames.find((row) => row.rise !== null && row.rise !== undefined)?.rise;
         return `${dir}: ${steps}${pose}${identity}${fragments ? ` frag×${fragments}` : ''}${rise !== undefined ? ` rise ${rise}` : ''}`;
     });
-    console.log(`    ${status.padEnd(4)} ${group.name} rows ${group.rows.join('–')} feet dx/dy  ${cells.join('  |  ')}`);
+    const metric = GAIT_GROUPS.has(group.name) && group.reference === 'anchor' ? 'hop dx/foot line dy' : 'feet dx/dy';
+    console.log(`    ${status.padEnd(4)} ${group.name} rows ${group.rows.join('–')} ${metric}  ${cells.join('  |  ')}`);
 }
 
 // 2× review sheet: each audited cell with the anchor foot line (dotted cyan),
@@ -480,11 +567,12 @@ function writeContactSheet(path, tiles) {
                 }
             }
             const frameCell = measureCell(item.png, col, srcRow);
-            const shift = frameCell ? feetShift(ref, frameCell) : null;
-            const ok = shift && Math.abs(shift.dx) <= tolerance && Math.abs(shift.dy) <= tolerance;
             // Green: every check passes. Red: the feet moved. Amber: the feet
             // hold but a fragment, identity or wait-clearance check fails.
             const row = item.result?.directions?.[item.dir]?.frames?.[frame];
+            // The audited row's shift (a gait frame's foot line and hop).
+            const shift = row && !row.empty ? row : frameCell ? feetShift(ref, frameCell) : null;
+            const ok = shift && Math.abs(shift.dx) <= tolerance && Math.abs(shift.dy) <= tolerance;
             // Identity drift pixels (outside the arm envelope, unmatched) in magenta.
             for (const p of row?.identity?.drift || []) {
                 setPixel(out, ox + (p % CELL) * scale, oy + ((p / CELL) | 0) * scale, [236, 64, 220, 255]);

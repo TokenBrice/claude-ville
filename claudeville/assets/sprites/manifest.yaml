@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-09-28-waking-isle-action-roster"
+  assetVersion: "2026-09-29-waking-isle-gatehouse"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -1382,18 +1382,20 @@ buildings:
         oneShot: true
         restIsBase: true
         materialClass: timber
-      # 6.1 / V4 — the two gate braziers' flames cycle their own authored
-      # colours (EmitterCycle), rising in 4-px bands, while the village lamps
-      # are lit (`lamps`, like the Pharos lens): fixtures of the lamp course
-      # that never read agent state, so by day an empty Command is its
-      # authored base. Mask only: never drawn as art.
+      # 6.1 / V4 — the two gate braziers' painted tongues climb (EmitterCycle
+      # `mode: tongues`, 2-column lanes over a 1-texel bed) while the village
+      # lamps are lit (`lamps`, like the Pharos lens): fixtures of the lamp
+      # course that never read agent state, so by day an empty Command is its
+      # authored base. Mask only: never drawn as art. The first cut's rank wave
+      # swapped whole 4-row bands of these 7-row flames onto the tan edge shade
+      # #d4984e.
       braziers:
         tool: hand-authored
         prompt: "cycle mask: the baked flame texels of the two gate braziers; authored, not generated"
         width: 360
         height: 240
         anchor: [199, 164]
-        cycle: { gate: lamps, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.3333, hz: 6 }
+        cycle: { gate: lamps, mode: tongues, lanePx: 2, keepPx: 1, hz: 6 }
     # The two gate braziers (architectural fires) and the gold finial/crest.
     emitters:
       torch: [94, 180]
@@ -1720,19 +1722,23 @@ buildings:
         height: 232
         anchor: [128, 169]
         materialClass: stone
-      # 6.1 / V4 (OE-1) — the hearth cycle mask: the banked mask's fire texels
-      # only (warm, saturated; the fire-lit jamb stone is left out so the ramp
-      # is the 12 authored flame colours). While the Forge has a working
-      # visitor and its glow is above the banked ember, the fire's own colours
-      # step up the flame at 8 Hz (EmitterCycle); banked, idle or reduced
-      # motion shows the base art. Mask only: never drawn as art.
+      # 6.1 / V4 (OE-1) — the hearth cycle mask: the flame body inside the
+      # doorway arch only (the fire-lit jamb reveal and rim stones are stone and
+      # stay still). While the Forge has a working visitor and its glow is above
+      # the banked ember, the painted tongues climb at 8 Hz (EmitterCycle
+      # `mode: tongues`): 3-column lanes lift their own authored texels 0..3 up
+      # out of step and pinch off 2-texel wisps as they drop back, above a
+      # 3-texel bed that never moves; banked, idle or reduced motion shows the
+      # base art. Mask only: never drawn as art. A rank wave over the same fire
+      # (the first 6.1 cut) replaced the tongues with a blocky mosaic of luma
+      # bands in every phase.
       hearth:
         tool: hand-authored
-        prompt: "cycle mask: the hearth fire texels of banked.png whose base colour is a saturated flame colour; authored, not generated"
+        prompt: "cycle mask: the doorway flame body of base.png inside the arch outline (the lit jamb reveal and rim stones left out); authored, not generated"
         width: 256
         height: 232
         anchor: [128, 169]
-        cycle: { gate: work.forge, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.3333, hz: 8 }
+        cycle: { gate: work.forge, mode: tongues, lanePx: 3, keepPx: 3, hz: 8 }
       # 6.1 — a leather bellows at the hearth's left jamb, nozzle into the
       # fire, pumping at 4 fps while the Forge has a working visitor; at rest
       # it lies still (frame 0), a physical object in the yard.
@@ -2045,36 +2051,57 @@ props:
         - { id: emissive.prop.lantern.flame, kind: lantern, geometry: authored-albedo, strength: 0.9 }
     occluder: { mode: alpha-silhouette, strength: 0.85 }
 
+  # The gatehouse and the sea tower are baked at art resolution (scale 1) by
+  # scripts/sprites/bake-village-gate.mjs from VILLAGE_GATE_GEOMETRY and
+  # SEA_TOWER_GEOMETRY (townPlan.js): the landmarks' ashlar, the Command
+  # dome's slate, PS2P lettering. Their lamp-room glass is an emissive
+  # sidecar lit as a fixture (lamps at night); the occluder sidecar is the
+  # 2.3 surface channel (R height, B face * 64 + height / 4).
   - id: prop.villageGate
-    tool: map_object
-    prompt: "isolated open fantasy RPG city gatehouse, two tall square stone-and-timber towers with teal slate roofs, massive central stone archway, wide open black tunnel, raised iron portcullis, warm torches, small red pennants, mossy stone footings, transparent background, no foreground fence, no courtyard, no enclosed yard, no platform, no drawbridge, no text, no characters"
-    width: 384
-    height: 280
-    anchor: [192, 260]
+    tool: procedural
+    width: 222
+    height: 271
+    anchor: [119, 222]
+    materialClass: stone
+    emissiveSidecar: true
+    occluderSidecar: true
+    surfaceCode: true
+    emissive:
+      strength: 0.9
+      sources:
+        - { id: emissive.prop.villageGate.lamps, kind: lantern, geometry: authored-albedo, strength: 0.9 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+    provenance: { item: 'GateTowerArt', source: 'scripts/sprites/bake-village-gate.mjs', generations: 0, generatedAt: '2026-09-29' }
 
-  - id: prop.villageGateTower
-    tool: map_object
-    prompt: "isolated square fortified village gate tower, cool-grey mortared stone lower story with narrow archer slit, dark walnut timber-framed upper guard room, warm amber windows, steep slate-blue tiled roof, tiny crimson pennant, mossy grounded footing, transparent background, no attached wall, no courtyard, no text, no characters"
-    width: 160
-    height: 240
-    anchor: [80, 224]
+  # Door leaves under the gatehouse arch: frame 0 shut, frame 1 open (the
+  # leaves folded against the passage walls).
+  - id: prop.villageGateDoors
+    tool: procedural
+    width: 90
+    height: 57
+    frames: 2
+    anchor: [30, 51]
+    materialClass: timber
+    occluderSidecar: true
+    surfaceCode: true
+    occluder: { mode: alpha-silhouette, strength: 1 }
+    provenance: { item: 'GateTowerArt', source: 'scripts/sprites/bake-village-gate.mjs', generations: 0, generatedAt: '2026-09-29' }
 
-  - id: prop.villageGateArch
-    tool: map_object
-    prompt: "isolated vertical medieval fortified gateway architrave, long raised cool-grey stone connector between two guard towers, broad shallow arch opening, dark timber underside, empty inset burgundy civic inscription band with no lettering, slate-blue coping, transparent background, no doors, no ground, no characters, no text"
-    width: 96
-    height: 96
-    anchor: [48, 88]
-
-  # QAWorld F8 — the generator's baked iso water tile (teal/navy squares with
-  # contour lines) is keyed out to alpha by hue, leaving legs, braces and rock
-  # footings; CoastBake paints the sea and foam around the stilts.
   - id: prop.villageWallSeaTower
-    tool: map_object
-    prompt: "wooden sea watchtower at the end of a fantasy village wall, square timber tower over rocky shoreline, dark wooden legs and cross braces, covered lookout platform with teal slate roof, palisade wall socket on left side, rope ladder, amber lantern, crimson pennant, mossy stone footings, transparent background, no text, no characters, no water tile, no ground tile"
-    width: 192
-    height: 260
-    anchor: [96, 244]
+    tool: procedural
+    width: 94
+    height: 226
+    anchor: [47, 201]
+    materialClass: stone
+    emissiveSidecar: true
+    occluderSidecar: true
+    surfaceCode: true
+    emissive:
+      strength: 0.9
+      sources:
+        - { id: emissive.prop.villageWallSeaTower.lamp, kind: lantern, geometry: authored-albedo, strength: 0.9 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+    provenance: { item: 'GateTowerArt', source: 'scripts/sprites/bake-village-gate.mjs', generations: 0, generatedAt: '2026-09-29' }
 
   - id: prop.signpost
     tool: isometric_tile

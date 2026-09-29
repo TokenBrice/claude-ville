@@ -287,8 +287,11 @@ test('MINIMAL admits no optional GPU pass and no optional resident bytes', () =>
     for (const effect of rows.filter((row) => row.cost.bytes > 0)) {
         assert.equal(effectBudgetMode(effect.id, POST_FX_LEVELS.FULL), 'on');
     }
-    // ...and nothing still running at MINIMAL prices any.
+    // ...and no optional effect still running at MINIMAL prices any. A
+    // substitution that removes time (`gpuMsSavedBand`, e.g. the clustered
+    // light walk's tile index) ships at every level with its bytes.
     const residentAtMinimal = rows
+        .filter((effect) => !effect.cost.gpuMsSavedBand)
         .filter((effect) => effectBudgetMode(effect.id, POST_FX_LEVELS.MINIMAL) !== 'off')
         .reduce((bytes, effect) => bytes + effect.cost.bytes, 0);
     assert.equal(residentAtMinimal, 0);

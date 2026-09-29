@@ -1,7 +1,7 @@
 import { normalizeBuildingType, VISIT_OVERFLOW_TILES } from '../../config/buildings.js';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { AMBIENT_GROUND_PROPS, DISTRICT_PROPS, SCENIC_POINT_PROPS } from '../../config/scenery.js';
-import { COMMAND_QUEUE, REST_SEATS } from '../../config/townPlan.js';
+import { COMMAND_QUEUE, inVillageMasonry, REST_SEATS } from '../../config/townPlan.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { compareByWaitAge, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
@@ -81,9 +81,12 @@ const FIXTURE_FEET = Object.freeze([
     .concat(REST_SEATS.filter(seat => seat.occluder === 'bench')
         .map(seat => fixtureFoot(seat.tileX, seat.tileY, FIXTURE_PARTS.bench, seat.id))));
 
-// True when a body standing at world (x, y) covers a fixture. `seatId` is the
-// bench its body sits on, which it may cover.
+// True when a body standing at world (x, y) covers a fixture, or stands on
+// the village's stone (the curtain, gatehouse or sea tower: townPlan
+// `inVillageMasonry`, a body's half-width of reach). `seatId` is the bench
+// its body sits on, which it may cover.
 export function standsOnFixture(x, y, seatId = null) {
+    if (inVillageMasonry((x / (TILE_WIDTH / 2) + y / (TILE_HEIGHT / 2)) / 2, (y / (TILE_HEIGHT / 2) - x / (TILE_WIDTH / 2)) / 2, 0.3)) return true;
     for (const foot of FIXTURE_FEET) {
         if (seatId && foot.seatId === seatId) continue;
         const dy = y - foot.y;

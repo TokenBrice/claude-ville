@@ -19,16 +19,6 @@ const LIGHT_CULL_MARGIN_CSS = 120;
 // WHY: water mask is 1/4 backing res — cheap to sample, coarse enough for
 // flow distortion and reflection gating without a full-res alpha upload.
 const WATER_MASK_SCALE = 0.25;
-const PULSE_ENVELOPE_MS = 600;
-
-// Mirrors theme INCIDENT_COLORS_RGB so the feed stays free of UI imports.
-const INCIDENT_RGB = Object.freeze({
-    quota: [251, 146, 60],
-    'failed-push': [248, 113, 113],
-    rate_limited: [250, 204, 21],
-    waiting_on_user: [250, 204, 21],
-    errored: [248, 113, 113],
-});
 
 const HAZE_HINT = /forge|fire|torch|brazier|flame|hearth|camp|ember|kiln|smelt/;
 
@@ -79,10 +69,6 @@ function isHazeLight(light) {
     return HAZE_HINT.test(id) || HAZE_HINT.test(type) || /fire/.test(overlay);
 }
 
-function incidentRgb(kind) {
-    return INCIDENT_RGB[kind] || INCIDENT_RGB.errored;
-}
-
 // V5 — a light slot's world geometry beside its backing-px projection: the
 // foot (world px), the emitter height, ground radius and face normal, the
 // role, the owner's V9 slot (2.5) and the landmark the light is mounted on
@@ -122,7 +108,6 @@ function emptyFeed(nowMs) {
         // 3.2 — accumulated surface wetness (0..1) from real precipitation
         // history, so the resident shader never re-derives rain history.
         wetness: 0,
-        pulse: null,
         // 2.2 — the RG8 footprint field (FootprintField.js), resident only.
         footprint: null,
     };
@@ -137,15 +122,6 @@ export function createPostFxFeed() {
     const lightsOut = [];
     const hazeOut = [];
     const colorCache = new Map();
-    const pulseState = {
-        strength: 0,
-        lastMs: -1,
-        r: 248,
-        g: 113,
-        b: 113,
-        hasColor: false,
-    };
-    const pulseObj = { strength: 0, r: 248, g: 113, b: 113 };
     const sunObj = { x: 0, y: 0, intensity: 0 };
     const viewportObj = { width: 0, height: 0, dpr: 1 };
     const waterObj = { mask: null, flowX: 0, flowY: 0, maskRevision: 0 };
@@ -668,89 +644,11 @@ export function createPostFxFeed() {
         return waterObj;
     }
 
-    function fillPulse(villageSnapshot, nowMs) {
-        const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Math.max(0, pulseState.lastMs);
-        let dt = 0;
-        if (pulseState.lastMs >= 0) {
-            dt = Math.max(0, Math.min(100, now - pulseState.lastMs));
-        } else {
-            // First sample: assume one frame so attack begins immediately.
-            dt = 1000 / 60;
-        }
-        pulseState.lastMs = now;
-
-        const incidents = villageSnapshot?.incidents;
-        let target = 0;
-        let bestIntensity = -1;
-        let bestKind = null;
-
-        if (Array.isArray(incidents)) {
-            for (let i = 0; i < incidents.length; i++) {
-                const scene = incidents[i];
-                if (!scene) continue;
-                // Fade with scene progress so a dying incident eases out.
-                const progress = clamp01(scene.progress ?? 0);
-                const fade = 1 - progress;
-                const intensity = clamp01(scene.intensity ?? 0.7) * fade;
-                if (intensity > bestIntensity) {
-                    bestIntensity = intensity;
-                    bestKind = scene.kind;
-                    target = intensity;
-                }
-            }
-        }
-
-        // failed-push also rides buildingSignals when incidents array is empty.
-        if (target <= 0 && Array.isArray(villageSnapshot?.buildingSignals)) {
-            for (let i = 0; i < villageSnapshot.buildingSignals.length; i++) {
-                const sig = villageSnapshot.buildingSignals[i];
-                const reason = String(sig?.reason || sig?.kind || '');
-                if (reason !== 'failed-push' && sig?.kind !== 'failed-push') continue;
-                const intensity = clamp01(sig.intensity ?? 0.85);
-                if (intensity > target) {
-                    target = intensity;
-                    bestKind = 'failed-push';
-                }
-            }
-        }
-
-        if (bestKind) {
-            const rgb = incidentRgb(bestKind);
-            pulseState.r = rgb[0];
-            pulseState.g = rgb[1];
-            pulseState.b = rgb[2];
-            pulseState.hasColor = true;
-        }
-
-        // ~600ms attack toward target, ~600ms decay toward rest.
-        const step = dt / PULSE_ENVELOPE_MS;
-        if (target > pulseState.strength) {
-            pulseState.strength = Math.min(target, pulseState.strength + step);
-        } else {
-            pulseState.strength = Math.max(target, pulseState.strength - step);
-        }
-        pulseState.strength = clamp01(pulseState.strength);
-
-        if (pulseState.strength <= 0.01 && target <= 0) {
-            pulseState.strength = 0;
-            return null;
-        }
-
-        // Keep a live pulse object while target is up even if strength is tiny
-        // mid-attack, so the GL tint channel is ready on the first incident frame.
-        pulseObj.strength = pulseState.strength;
-        pulseObj.r = pulseState.r;
-        pulseObj.g = pulseState.g;
-        pulseObj.b = pulseState.b;
-        return pulseObj;
-    }
-
     function build(args = {}) {
         try {
             diagnostics.builds++;
             const renderer = args?.renderer ?? null;
             const atmosphere = args?.atmosphere ?? renderer?._lastAtmosphere ?? null;
-            const villageSnapshot = args?.villageSnapshot ?? null;
             const nowMs = args?.nowMs ?? (typeof performance !== 'undefined' ? performance.now() : 0);
 
             if (!renderer) {
@@ -778,7 +676,6 @@ export function createPostFxFeed() {
                 waterObj.maskRevision = maskRevision;
                 feed.water = waterObj;
                 feed.wetness = 0;
-                feed.pulse = null;
                 feed.footprint = null;
                 feed.radiance = null;
                 return feed;
@@ -816,7 +713,6 @@ export function createPostFxFeed() {
             feed.water = waterObj;
             feed.haze = hazeOut;
             feed.wetness = clamp01(renderer?._surfaceWetness);
-            feed.pulse = fillPulse(villageSnapshot, nowMs);
             // 2.2 — the resident renderer's footprint field (baked once per
             // map/scenery revision); the hybrid pass has no receivers to march.
             feed.footprint = args.gpuWorldActive === true

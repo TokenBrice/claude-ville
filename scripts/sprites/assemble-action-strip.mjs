@@ -32,7 +32,8 @@ import { collectSpriteEntries, loadSpriteManifest, repoRoot, spritesRoot } from 
 const CELL = 92;
 const DIRECTIONS = ['south', 'south-east', 'east', 'north-east', 'north', 'north-west', 'west', 'south-west'];
 const SHORT = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
-const ORDER = ['read', 'wait', 'sit', 'strike', 'tinker', 'gaze'];
+const ORDER = ['read', 'wait', 'sit', 'strike', 'tinker', 'gaze', 'run'];
+const SHIPPED_NAME = { 'run-skel': 'run' };
 
 const args = process.argv.slice(2);
 const option = (name, fallback = null) => {
@@ -71,6 +72,10 @@ if (existsSync(shippedKeypoints)) {
     Object.assign(keypoints.groups, previous.groups || {});
 }
 const jobs = {};
+// Template-route groups (7.5 run): the rig animation group id per facing.
+const templateGroups = {};
+// …and the PixelLab animation mode that produced them (template or skeleton-v3).
+let templateMode = null;
 
 for (const stagePath of list(option('stage')).map((path) => join(repoRoot, path))) {
     if (!existsSync(stagePath)) fail(`stage ${stagePath} does not exist`);
@@ -79,7 +84,9 @@ for (const stagePath of list(option('stage')).map((path) => join(repoRoot, path)
     if (!existsSync(sidecar)) fail(`stage ${stagePath} has no .json sidecar`);
     const meta = JSON.parse(readFileSync(sidecar, 'utf8'));
     if (meta.id !== id) fail(`${sidecar} is for ${meta.id}, not ${id}`);
-    for (const [name, group] of Object.entries(meta.groups || {})) {
+    for (const [stageName, group] of Object.entries(meta.groups || {})) {
+        // A generator variant ships under the runtime's group name.
+        const name = SHIPPED_NAME[stageName] || stageName;
         if (only.size && !only.has(name)) continue;
         const extra = {};
         if (Number.isInteger(group.contactFrame)) extra.contactFrame = group.contactFrame;
@@ -89,10 +96,15 @@ for (const stagePath of list(option('stage')).map((path) => join(repoRoot, path)
             Object.assign(keypoints.base, meta.keypoints.base || {});
         }
         // One job per facing per clip: groups packed into one clip share it.
-        const clipName = meta.jobs?.[name]?.clip || name;
-        const dirs = meta.jobs?.[name]?.directions || {};
+        const clipName = meta.jobs?.[stageName]?.clip || name;
+        const dirs = meta.jobs?.[stageName]?.directions || {};
         for (const [direction, job] of Object.entries(dirs)) {
-            if (job?.jobId) (jobs[clipName] ||= {})[SHORT[DIRECTIONS.indexOf(direction)]] = job.jobId;
+            const short = SHORT[DIRECTIONS.indexOf(direction)];
+            if (job?.jobId) (jobs[clipName] ||= {})[short] = job.jobId;
+            else if (job?.animationGroupId) {
+                (templateGroups[name] ||= {})[short] = job.animationGroupId;
+                templateMode = job.mode || 'template';
+            }
         }
     }
 }
@@ -161,6 +173,7 @@ const record = {
         // Skeleton candidates use the padded canvas, not the 92px packed cell.
         generationSize: entry.actionStrip?.provenance?.generationSize ?? keypoints.pad,
         ...(Object.keys(jobs).length ? { poseStrips: { generationMode: 'skeleton-v3', jobs: mergeJobs(entry.actionStrip?.provenance?.poseStrips?.jobs, jobs) } } : {}),
+        ...(Object.keys(templateGroups).length ? { templateStrips: { generationMode: templateMode, groups: mergeJobs(entry.actionStrip?.provenance?.templateStrips?.groups, templateGroups) } } : {}),
     },
 };
 

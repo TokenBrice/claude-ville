@@ -1,6 +1,7 @@
 # Semantic Drawable, Material, and Atlas Contract
 
-This contract feeds the GPU-resident WebGL2 World renderer, which is the default;
+This contract feeds both GPU-resident World backends: WebGPU (the Chromium
+default) and WebGL2 (the default elsewhere; `?renderer=webgl` forces it).
 `?renderer=canvas` selects the Canvas-2D fallback.
 Albedo PNGs remain authoritative. Material data, sidecars, atlases, and GPU
 records are optional and use deterministic defaults.
@@ -41,8 +42,8 @@ adds the following fields:
 
 `draw` remains an alias of `drawFallback`; existing Canvas call sites do not
 change. `buildGpuRecordsFromDrawables()` walks the already-sorted stream and
-adds `drawOrder` without reordering painter semantics. Future batching may only
-combine consecutive compatible records.
+adds `drawOrder` without reordering painter semantics. Batching
+(`buildStableGpuBatches`) only combines consecutive compatible records.
 
 `summarizeDrawableLayers()` exposes counts by material plus GPU-ready,
 emissive, and occluder counts for Shift-D integration. `AssetManager` exposes a
@@ -67,7 +68,10 @@ Stable material classes, in numeric encoding order, are:
 | 10 | `fire` | Semantic emission, no key-light response |
 
 Append new classes; never reorder these indices. The authored key convention is
-warm light from screen upper-left. The direct GPU renderer currently reaches two restrained material-wide response bands, `0.86 / 1.00`; it does not infer roof or wall normals.
+warm light from screen upper-left. The GPU sun-key material response
+(`applyAuthoredSunBand`) has two restrained material-wide bands, `0.86 / 1.00`,
+and infers no roof or wall normal; only the local-light loop reads faces (the
+2.3 surface code or a landmark's analytic footprint, below).
 
 ## Manifest Fields
 
@@ -116,28 +120,28 @@ The committed pilot atlas has identical rectangles and padding in every channel:
 - `material`: R = stable material-class index; G/B reserved; A = albedo alpha.
 - `emissive`: authored RGB with A as contribution; transparent black by default.
 - `occluder`: R = authored height (zero in the flat default), G = occlusion
-  strength, B = surface code (V9, below), A = albedo alpha. `mode: none` is
-  transparent.
+  strength, B = surface code on surface-coded landmarks (*Occluder channel
+  contract*, below), A = albedo alpha. `mode: none` is transparent.
 
-The direct GPU renderer samples the occluder companion separately from the raw
-material map. Material alpha also marks presence: opaque class zero is authored unlit, not the provider fallback. Nonzero occluder companion alpha explicitly marks authored geometry:
-R (including zero) overrides default elevation; G overrides default occlusion
-strength. Uncovered pixels use record defaults. Default strength is per vertex,
-never a batch-wide height floor. Agent geometry follows the same atlas slots and
-update cadence as albedo, including padded equipped Codex frames; since B.2 it
-rides the packed geometry map (below) instead of an occluder atlas.
+The GPU samples the occluder companion separately from the raw material map.
+Material alpha also marks presence: opaque class zero is authored unlit, not
+the provider fallback. Nonzero occluder alpha marks authored geometry: R
+(including zero) replaces the record's elevation (loc2.z); uncovered pixels
+keep it. Agent geometry follows the same atlas slots and update cadence as
+albedo, including padded equipped Codex frames; since B.2 it rides the packed
+geometry map (below) instead of an occluder atlas.
 
 Generated emissive defaults come only from named semantic sources and existing
 window/light anchors. The tooling does not infer emission from luminance.
 
-Every building except the Portal now ships an authored `base.emissive.png`
+Every building except the Portal ships an authored `base.emissive.png`
 (Command, Observatory, Archive, Forge, Mine, Task board, Harbor, and the
 Lighthouse `building.watchtower`); lit panes live only in the sidecar and the
 albedo keeps dark glass, so a building is never lit by day or by an empty
-night. Prefer an authored sidecar: `scripts/sprites/atlas-bake.mjs` reads a
-`registry.windowRects` entry's `at` as the rectangle's top-left corner, while
-`BuildingSprite` and the window tests treat it as the centre, so generated
-window emission lands off the panes for any building without a sidecar.
+night. Generated emission for a building without a sidecar
+(`scripts/sprites/atlas-bake.mjs`, `geometry: registry.windowRects`) reads each
+rect through `BuildingVisualRegistry.windowRectBounds`, the same glass-centre
+convention `BuildingSprite` and the window tests use.
 
 Each frame has a two-pixel extruded gutter to prevent atlas bleeding. Runtime
 sampling is still nearest; gutters protect edge texels when future passes sample
@@ -180,22 +184,25 @@ tail as constant generic attributes: terrain, ground marks and every
 ground-cue chord. A cue batch holding dot runs and a batch holding building or
 tree ground casts stage the tail (their flags).
 
-- **Flags** (`GPU_RECORD_FLAGS`, loc3.w): 1 `writesDepth`, 2 `reflect`
-  (3.11), 4 `fatOptOut` (4.6), 8 `screenSpace` (Wave 10 S5: loc0 is in
-  backing pixels and the vertex stage passes it straight through, skipping
-  world→screen, so camera pan and zoom never move it; only the T1 mark
-  records carry it — see below), 16 `surfaceCode` (2.3: occluder B is the
-  surface code, R true height),
-  32 `packedGeometry` (B.2), 64 `receiverAxis` (3.8: an upright prop turning
-  round a vertical axis), 128 `cueRun` (B.3: a ground-cue dot run; loc1
-  holds four packed 24-bit integer words, not UVs, and the batch draws
-  `CUE_RUN_VERTICES` vertices per instance so the vertex stage rebuilds each
-  dot's own rect and swatch uv, `GroundCueRecords.CUE_RUN_GLSL`), 256
-  `groundCast` (2.9: a building or tree ground cast; over painted water,
-  coast flag `water` and not `covered`, the scene fragment keeps
-  `RakingLight.GROUND_CAST_WATER_SHARE` of it and breaks it by the water
-  column's ripple rows), 512 `actionMark` (Wave 10 S5: a mark record's
-  role 2 — a T1 mark or the C4 verified-success peak frame).
+**Flags** (`GPU_RECORD_FLAGS` in `gpu/GpuWorldPolicy.js`, loc3.w). One bit per
+meaning, never reused. `assignGpuRecordV9Fields` packs bits 1-256 from the
+record's booleans; the mark and cue producers set `flags` directly;
+`wgsl/common.js` generates the WGSL `RECORD_FLAG_*` constants from the same
+object. Bits 1024 and up are free.
+
+| Bit | Name | Writer | Reader |
+| ---: | --- | --- | --- |
+| 1 | `writesDepth` | the writer's per-kind opt-in (`GpuSceneBuilder.stampPainterDepth`: buildings, props, bodies), kept only at alpha 1 and normal blend | no shader test: it joins the batch key, so the batch draws with `depthMask` true (WebGL2) or a depth-writing pipeline variant (WebGPU) |
+| 2 | `reflect` | `WaterReflections` (3.11 body twins), `HarborHulls` (3.8 hull twins) | vertex: mirrors the rect about its base row; fragment: only over coast flag `water`, every fifth row dropped, a whole-texel row ripple, three Bayer alpha courses (0.42 / 0.28 / 0.16), 38 % toward the local water stop, no local lights |
+| 4 | `fatOptOut` | `ground:semantics` (4.6: its texels are backing pixels) | the batch's first record turns the flight-frame fat-pixel taps off (`u_fatPixels`, `batch.fatPixels`) |
+| 8 | `screenSpace` | mark records (`AttentionPlates.attentionMarkRecords`, `inkMarkRecords`) | vertex: loc0 is in backing px and passes straight through, skipping world→screen, so pan and zoom never move it; `originFrac` 0; never paged |
+| 16 | `surfaceCode` | `GpuSceneBuilder` landmark records whose manifest entry says `surfaceCode: true` (their glass and roof-weather patch records inherit it) | fragment: occluder R is the true height, B >> 6 the face class (*Occluder channel contract*) |
+| 32 | `packedGeometry` | `AgentGpuOverlayRenderer` body records carrying a packed material + geometry map (B.2) | fragment: geometry comes from the material map (*Occluder channel contract*) |
+| 64 | `receiverAxis` | `HarborHulls` hull records (3.8) | light loop receiver class 4: wraps round the vertical axis at `frontCornerX` like a body, never lit by an attention light |
+| 128 | `cueRun` | `GroundCueRecords` dot runs (B.3) | vertex (`GroundCueRecords.CUE_RUN_GLSL`, `wgsl/cueRun.js`): loc1 holds four packed 24-bit integer words, not UVs; the batch draws `CUE_RUN_VERTICES` vertices per instance (a triangle list) and rebuilds each dot's rect and swatch uv |
+| 256 | `groundCast` | `GpuSceneBuilder` building and tree ground casts (2.9) | fragment: over coast flag `water` and not `covered`, alpha x `RakingLight.GROUND_CAST_WATER_SHARE`, broken by the water column's ripple rows |
+| 512 | `actionMark` | mark records with role 2 (T1 status pixels, the C4 verified-success peak cream) | mark pass: `MARK_P3_FRAGMENT` (WebGL2, P3) and `markRolesFs` (WebGPU, HDR/P3) apply the role; counted into `markRoleRecords` / `lateMarkRoleRecords` |
+
 - **T1 mark records** (Wave 10 S5, WebGPU contract §7.4): `AttentionPlates
   .attentionMarkRecords(layout, { scale })` turns an attention layout's
   graphical pixels into prenormalized V9 records in the overlay's draw order —
@@ -216,18 +223,24 @@ tree ground casts stage the tail (their flags).
   footprint at the plates' slot, then draws the word, name and time), so the
   page is byte-identical to the overlay-only path. Canvas, a non-integer DPR
   or a GPU backing that is not the overlay's keep the overlay plates.
-- **Roles** (Wave 10 plan items 10.2 / 10.3, M1): 0 none, 1 building/prop
-  emitter, 2 action-needed mark (and the C4 verified-success cream peak
-  frame). Roles exist only on an HDR or P3 screen; the SDR path never reads
-  or writes one.
+- **Roles** (Wave 10 plan items 10.2 / 10.3, M1; `DisplayColor.js`). Roles
+  exist only on an HDR or P3 screen; the SDR path never reads or writes one.
+
+  | Role | Pixels | Carried by | Staged by | Read by |
+  | ---: | --- | --- | --- | --- |
+  | 0 | every other pixel, every dark mark ink and the leader | — | — | the roles composite converts it to P3 numbers on a P3 screen; otherwise it keeps the SDR bytes |
+  | 1 | building and prop emitters with an authored emissive sidecar, never a character | emission attachment alpha | scene and particle blend state (blend constant a = 1 for such a batch) | roles composite: emission alpha >= 0.5 and emission luma >= 0.10 |
+  | 2 | action-needed mark status pixels; the C4 verified-success cream peak frame | mark record flag `actionMark` (512) | `AttentionPlates.attentionMarkRecords` / `inkMarkRecords` | the mark pass, after the composite |
+
   - *Role 2* rides a mark record's flags (`actionMark`): only the
     status-colour pixels — the plate status cell, the notch's status rows and
-    each beacon's colour stamp. The rim, text cell, leader, the beacon's
-    outline stamp and the edge arrow are dark inks and role 0, so no gain
-    ever lifts an ink. Role 2 never enters the scene MRT: the mark pass draws
-    after the composite and its roles fragment (`markRolesFs`, WebGPU;
-    `MARK_P3_FRAGMENT`, WebGL2 P3) applies the mark gain per record
-    (`oetf(eotf(c) * markGain)` under HDR) and the P3 role chroma.
+    each beacon's colour stamp. The rim, text cell, leader (its status-colour
+    centre line included), the beacon's outline stamp and the edge arrow are
+    role 0, so no gain ever lifts an ink or a leader. Role 2 never enters the
+    scene MRT: the mark pass draws after the composite and its roles fragment
+    (`markRolesFs`, WebGPU; `MARK_P3_FRAGMENT`, WebGL2 P3) applies the mark
+    gain per record (`oetf(eotf(c) * markGain)` under HDR) and the P3 role
+    chroma.
   - *The C4 verified-success peak frame* is role 2 for one art frame, the
     80 ms C4 peak phase (several display frames: 4–5 at 60 Hz, 9–10 at
     120 Hz; not one display frame) (10.2): the release crown's cream frame,
@@ -341,43 +354,56 @@ tree ground casts stage the tail (their flags).
   (`assignGpuRecordV9Fields`) for ordinary records, and the literal pool in
   `GroundCueRecords` for `prenormalized` cues.
 
-**Sampler table** (fixed per program, never reassigned; WebGL2 guarantees 16
-fragment units). Scene program (`SCENE_SAMPLER_UNITS`):
+**WebGL2 sampler units** (fixed per program, never reassigned; WebGL2
+guarantees 16 fragment units). Terrain, water and sprites share one program,
+`SCENE_FRAGMENT` (`SCENE_SAMPLER_UNITS`):
 
-| Unit | Field | Format | Reader |
-| ---: | --- | --- | --- |
-| 0 | albedo | RGBA8 | every unpaged record |
-| 1 | material | RGBA8 | every record |
-| 2 | free | | (2.2 deleted the screen occlusion target) |
-| 3 | emissive | RGBA8 | every record |
-| 4 | occluder companion | RGBA8 | every record |
-| 5 | palette-ramp LUT | RGBA8 | 3.5 pilot |
-| 6 | footprint height + landmark id | RG8 | 2.2 light loop: the footprint march (`FootprintField.js`, 704x384, 4 world px/texel) |
-| 7 | water cycle offset | R8 | reserved: 3.1 (terrain/water only) |
-| 8 | coast field | RG8 | reserved: 3.6 (terrain/water only) |
-| 9 | light records | RGBA32F, 256 x 4 (`highp sampler2D`, `texelFetch`) | 2.4 light loop: admitted light i is column i; row 0 (foot x, foot y, ground radius, intensity) world px, row 1 (emitter height, face normal nx, ng, role code 0 point / 1 aperture / 2 fixture / 3 attention), row 2 (shader rgb, envelope share), row 3 (owner slot, landmark id, `LIGHT_RECORD_FLAGS` 1 wet reflection / 2 water column / 4 water only, column reach). 16 KiB baseline, uploaded only on change |
-| 10 | light tile index | R16UI (`highp usampler2D`), tilesX*17 x tilesY | 2.4 clustered walk (`light-clusters` on): per 64x64 backing-px tile (tx, ty), texel (tx*17, ty) = count (<= 16), the next `count` texels the admitted light indices in admission order; a 1x1 zero texture when the flat walk runs. 57,596 B at 4880x1392 |
-| 11 | puddle mask | R8 | reserved: 5.2 (ground only) |
-| 12 | cloud-course noise tile | RGBA8 (linear) | 1.4 cloud courses + 1.6 aerial haze, per record; 3.4 sunlit course on in-map open water |
-| 13 | C-W3 sea gust field | R8 (linear) | 3.4 cat's paws on in-map open water (the composite's own field, one upload per frame) |
-| 14 | albedo page | RGBA8 `TEXTURE_2D_ARRAY` (`highp sampler2DArray`, also read by the vertex stage for the rect clamp) | B.1b: every paged record, layer at loc3.x |
-| 15 | ground radiance | RGBA16F (filtered), 528 x 192: three 176 x 192 probe panels | 2.10 pilot (`GroundRadiance`, `radiance-bounce`, off by default; `gpuWorld.setRadianceOverride`): panel 0 fluence, 1 light arriving from the SW, 2 from the SE, one texel per 16 ground units (world x, world y x 2) over the footprint rect; rgb everything (bounce + ground-level openings), a the openings' fans alone (luma). Read at the receiver's foot, only where no direct course lands; the empty texture and `u_radianceGrid.w` 0 when off. 4,071,424 B with its scene, cascade and emitter targets, released whenever off |
+| Unit | Uniform | Content | Format | Reader |
+| ---: | --- | --- | --- | --- |
+| 0 | `u_albedo` | an unpaged batch's albedo | RGBA8 | every unpaged record |
+| 1 | `u_materialMap` | material sidecar, or the B.2 packed geometry map (flag 32) | RGBA8 | material class; packed geometry |
+| 2 | — | free (2.2 deleted the screen occlusion target) | | |
+| 3 | `u_emissiveMap` | emissive sidecar | RGBA8 | authored emission (RGB hue, A contribution) |
+| 4 | `u_occluderMap` | occluder companion | RGBA8 | elevation; 2.3 surface code |
+| 5 | `u_paletteLut` | palette-ramp LUT, 11 material classes x 3 courses | RGBA8 | 3.5 ramp records (`paletteRamp`: the Command gate) |
+| 6 | `u_footprint` | footprint height (R, world px) + landmark id (G) (`FootprintField.js`, 704x384, 4 world px/texel) | RG8 | 2.2 light loop: the footprint march |
+| 7 | `u_cycleOffset` | 3.1 water cycle offset per coast cell | R8 | water crests and the near-shore cycle |
+| 8 | `u_coastField` | 3.6 coast field: R signed distance, G `COAST_FIELD_FLAGS`; BA 3.7 mirror stops | RGBA8 | swash, reflection ripple, the open-sea shelf, 2.9 water columns; `reflect` and `groundCast` records |
+| 9 | `u_lightData` | light records, 256 x 4 (`highp sampler2D`, `texelFetch`) | RGBA32F | 2.4 light loop: admitted light i is column i; row 0 (foot x, foot y, ground radius, intensity) world px, row 1 (emitter height, face normal nx, ng, role code 0 point / 1 aperture / 2 fixture / 3 attention), row 2 (shader rgb, envelope share), row 3 (owner slot, landmark id, `LIGHT_RECORD_FLAGS` 1 wet reflection / 2 water column / 4 water only, column reach). 16 KiB, uploaded only on change |
+| 10 | `u_lightTiles` | light tile index (`highp usampler2D`), tilesX*17 x tilesY | R16UI | 2.4 clustered walk (`light-clusters` on): per 64x64 backing-px tile (tx, ty), texel (tx*17, ty) = count (<= 16), the next `count` texels the admitted light indices in admission order; a 1x1 zero texture when the flat walk runs. 57,596 B at 4880x1392 |
+| 11 | `u_puddleMask` | 5.2 puddle site mask (GroundBake) | R8 | puddle courses on the terrain batch, while C-W2 holds puddles |
+| 12 | `u_cloudTile` | cloud-course noise tile, 256² | RGBA8 (linear) | 1.4 cloud courses + 1.6 aerial haze, per record; 3.4 sunlit course on in-map open water |
+| 13 | `u_seaGust` | C-W3 sea gust field (the composite's own field, one upload per frame) | R8 (linear) | 3.4 cat's paws on in-map open water |
+| 14 | `u_albedoPage` | albedo page (`highp sampler2DArray`, also read by the vertex stage for the rect clamp) | RGBA8 `TEXTURE_2D_ARRAY` | B.1b: every paged record, layer at loc3.x |
+| 15 | `u_radiance` | ground radiance, 528 x 192: three 176 x 192 probe panels | RGBA16F (filtered) | 2.10 pilot, WebGL2 only (`GroundRadiance`, `radiance-bounce`, off at every level; `gpuWorld.setRadianceOverride`): panel 0 fluence, 1 light arriving from the SW, 2 from the SE, one texel per 16 ground units (world x, world y x 2) over the footprint rect; rgb everything (bounce + ground-level openings), a the openings' fans alone (luma). Read at the receiver's foot, only where no direct course lands; the empty texture and `u_radianceGrid.w` 0 when off. 4,071,424 B with its scene, cascade and emitter targets, released whenever off |
 
-Particle program (`PARTICLE_SAMPLER_UNITS`): 0 = event-shape motif mask (R8),
-1 = cloud-course noise tile. Composite (`COMPOSITE_SAMPLER_UNITS`): 0 scene,
-1 bloom, 2 cloud-course noise tile, 3 sea gust field (the open sea's clouds,
-sunlit course and cat's paws on the world grid; the island's clouds and haze
-are shaded per record). `uploadTypedTexture` restores the active unit's
-binding, so an upload never blanks a sampler a caller already bound. `SCENE_FRAGMENT` stays one program:
-the table fits one unit budget, and a terrain/water split would need a uniform
-buffer to avoid uploading the grade twice per frame (the lights live in units
-9/10 since 2.4); the terrain/water-only units are marked so a split stays
-mechanical. Admission (`GpuWorldPolicy.binGpuLights`) bins every light's
-conservative reach rect (`lightReachRect`) into the tiles before either walk,
-so the clustered and the flat walk light the identical set of pixels.
+The other WebGL2 programs:
+
+| Program | Units |
+| --- | --- |
+| Particle (`PARTICLE_FRAGMENT`, `PARTICLE_SAMPLER_UNITS`) | 0 `u_motifs`: event-shape motif masks (R8); 1 `u_cloudTile`: cloud-course noise tile |
+| Bloom (`BLOOM_FRAGMENT`, two passes) | 0 `u_input`: the scene's emission attachment (pass 1), then the bloomA target (pass 2) |
+| Composite (`COMPOSITE_FRAGMENT`, `COMPOSITE_SAMPLER_UNITS`) | 0 `u_scene`: scene colour; 1 `u_bloom`: bloomB; 2 `u_cloudTile`; 3 `u_seaGust` (the open sea's clouds, sunlit course and cat's paws on the world grid; the Lighthouse beam and the squall are uniforms only) |
+| Composite, P3 twin (`COMPOSITE_P3_FRAGMENT`) | the composite's units, plus 4 `u_emission` (`P3_EMISSION_UNIT`): the emission attachment, for role 1 |
+| Mark (`MARK_FRAGMENT`; P3 twin `MARK_P3_FRAGMENT`) | 0 `u_albedo`: the mark batch's texture (`mark:inks` or a beacon stamp); 14 `u_albedoPage`: declared by the shared vertex stage, kept on unit 14 so two sampler types never share a unit |
+| Debug load (`DEBUG_LOAD_FRAGMENT`) | 0 `u_scene`: the scene colour target the composite left bound |
+| Radiance emit (`GroundRadiance`) | 12 `u_emitters`: emitter list, 256 x 4 RGBA32F; 13 `u_footprint`; 14 `u_terrain`: the terrain bake; 15 `u_coast`: the coast field |
+| Radiance cascade | 12 `u_scene`: the radiance scene (352 x 384 RGBA16F); 13 `u_upper`: the cascade above |
+| Radiance resolve | 12 `u_cascade0` |
+
+The radiance solve saves and restores units 12-15 around itself, and the scene
+pass rebinds every unit it reads each frame. `uploadTypedTexture` restores the
+active unit's binding, so an upload never blanks a sampler a caller already
+bound. `SCENE_FRAGMENT` stays one program: the table fits one unit budget, a
+terrain/water split would need a uniform buffer to avoid uploading the grade
+twice per frame (the lights live in units 9/10 since 2.4), and sprite records
+read the coast field too (`reflect`, `groundCast`). Admission
+(`GpuWorldPolicy.binGpuLights`) bins every light's conservative reach rect
+(`lightReachRect`) into the tiles before either walk, so the clustered and the
+flat walk light the identical set of pixels.
 
 **Typed uploads**: `GpuWorldRenderer.uploadTypedTexture(key, { width, height,
-format, data, revision })` takes `r8`/`rg8` (`Uint8Array`), `r16ui`
+format, data, revision })` takes `r8`/`rg8`/`rgba8` (`Uint8Array`), `r16ui`
 (`Uint16Array`, read through `usampler2D`) and `rgba32f` (`Float32Array`) with
 `UNPACK_ALIGNMENT 1`, nearest sampling and `texelFetch`; it re-uploads only on
 a revision or size change (`texSubImage2D` when the size holds). The frame
@@ -385,15 +411,14 @@ fields' bytes and revisions (light records and tile index, sea gust, footprint,
 puddle mask) come from `gpu/GpuFrameState.js` (below). Every cache
 entry counts its real bytes (`width x height x bytesPerTexel`), so the 160 MiB
 cached-source ceiling and Shift-D see an R8 field at a quarter of an RGBA
-canvas. First consumer: the particle motif mask. The ceiling was 48 MiB until
-B.2; every frame already samples 105-137 MB of sources (terrain bake 25 MB,
-four world-pilot pages 64 MB, ground fields ~10.5 MB, agent atlases 6-30 MB),
-so a 48 MiB cap was permanently exceeded and only evicted what the camera had
-just left.
+canvas. The ceiling was 48 MiB until B.2; every frame already samples
+105-137 MB of sources (terrain bake 25 MB, four world-pilot pages 64 MB,
+ground fields ~10.5 MB, agent atlases 6-30 MB), so a 48 MiB cap was
+permanently exceeded and only evicted what the camera had just left.
 
 **Frame state** (`gpu/GpuFrameState.js`, pure: no GL, no DOM): every
 per-frame value a world backend uploads is resolved there once from the feed,
-the camera and the ladder level, and the WebGL2 renderer only uploads what it
+the camera and the ladder level, and both backends only upload what it
 returns. `resolveCamera(camera, scale, out)` → `{ xy, scale }` (backing px =
 (world + xy) x scale, doubles); `resolveFatPixels(camera, override)`;
 `resolveFrameGrade(feed)`; `resolveWeatherUniform(feed, level)` (`u_weather`
@@ -431,34 +456,52 @@ only to a live texture of the same key, revision and size
 (`hasResidentTexture(key, revision)`), so a CPU canvas can be released after
 its upload; the terrain bake uses it and re-bakes when the texture is gone.
 
-**One occluder channel contract** (before 2.3 or B.2 lands):
+**Occluder channel contract** (V9; 2.3 and B.2 share it). One layout, read
+three ways; the record's flags choose the reading:
 
-- Occluder companion: R = height. On a record with flag 16 `surfaceCode`
-  (2.3; `GpuSceneBuilder` sets it from the manifest entry's
-  `surfaceCode: true`) R is the true height above the landmark's visual base
-  line, `min(255, round(h))` world px, and the scene pass lifts fog off it
-  over 128 world px (`min(1, R x 255 / 128)`); elsewhere R stays the authored
-  fog elevation. G = occlusion strength, **B = surface
-  code `face x 64 + min(63, round(heightAboveGround / 4))`** (face 0 up/apron,
-  1 left wall, 2 right wall, 3 roof), A = presence. B is read only on records
-  with flag 16 `surfaceCode`; everywhere else it must be 0 and is ignored.
-- B.2's merged material + geometry packing lives in the **material** map, never
-  the occluder companion, and is read only on records with flag 32
-  `packedGeometry`: R material id (**255 = no material**, record default), G
-  occluder height, B occlusion strength (**0 = no geometry**, record defaults;
-  an authored strength of 0 packs as 1/255), A presence (255 wherever either
-  channel is present). The shader reads it as `geometry = vec4(G, B, 0, 1)`
-  only while the occluder channel's frame toggle is on (`u_packedGeometry`),
-  exactly where the old occluder upload was skipped. A source that carries
-  2.3 surface codes keeps the separate occluder companion, so the two B
-  channels never collide.
+| Channel | Ordinary record (no flag 16 or 32) | Landmark, flag 16 `surfaceCode` (2.3) | Body, flag 32 `packedGeometry` (B.2: the **material** map, not the occluder) |
+| --- | --- | --- | --- |
+| R | authored fog elevation, 0-1; replaces loc2.z where A > 0 | true height above the landmark's visual base line, `min(255, round(h))` world px; fog lifts off it over 128 world px (`min(1, R x 255 / 128)`); the receiver's ground point is R px straight below the texel | material id (**255 = no material**, record default) |
+| G | occlusion strength (`alpha x occluder.strength`) | the same | occluder height, read as the elevation |
+| B | 0 | surface code `face x 64 + min(63, round(h / 4))`: face 0 up/apron, 1 left wall (SW-facing), 2 right wall (SE-facing), 3 roof | occlusion strength, read only as presence (**0 = no geometry**, record defaults; an authored 0 packs as 1/255) |
+| A | albedo alpha: presence | the same | 255 wherever material or geometry is present |
+
+- The surface code's readers take only the face class, `B >> 6`; the low six
+  bits (`h / 4`) are inverted by the bake's `decodeSurface` alone, and R is
+  the height every reader uses. They are: the scene fragment (`SCENE_FRAGMENT`,
+  `wgsl/scene.js`: face 1/2 is a wall receiver facing (∓0.7071, 0.7071), face 0
+  faces up at its own height (apron, deck, stair), face 3 is roof and takes no
+  local light and no 2.10 bounce); `BuildingSprite._surfaceCodeAt`
+  (`{ height: R, face: B >> 6 }`), through which `_lightFootFor` stands a light
+  source on a wall on its wall base as an `aperture` and one on steps or a
+  deck as a `fixture`, for both backends; `RoofWeather.roofWeatherMap` (face 3,
+  below); and `CanvasPoolMask`, whose Canvas pool mask lands pools on a
+  landmark's face-0 texels and cuts every other face. B is 0 on every record
+  without flag 16.
+- Procedural props may carry the same surface channel: a `StaticPropSprite`
+  with `channels.occluder` paints it beside its cached albedo (same size and
+  transform) and `GpuSceneBuilder.recordForProp` binds it as the record's
+  occluder with flag 16. The village wall (`VillageWall.rasterWallRun`) does:
+  R = texel height above its base line, B = face 1 on its SW face and pier
+  fronts, 2 on SE faces, 0 on the walk, merlon and ledge tops, so a lamp
+  pool lands on the stone by its own base line. `channels.emissive` is bound
+  the same way (the wall lanterns' lit glass, A 144 like `prop.lantern`).
+- G has no GPU reader: the screen occlusion pass that read it was deleted by
+  2.2 (the footprint field on unit 6 replaced it), and the record's own
+  `occluder` strength is normalized but never staged (loc3.x carries the page
+  layer). The bakes still write G and the packer keeps it, as B, for presence.
+- The packed map is read as `geometry = vec4(G, B, 0, 1)`, and the occluder
+  companion at all, only while `GpuFrameState.resolveOccluderChannel` holds
+  (the local-light phase is up, or fog reads elevation); otherwise the
+  occluder uploads are skipped and `u_packedGeometry` is off. A source that
+  carries 2.3 surface codes keeps the separate occluder companion, so the two
+  B channels never collide.
 - **Deviation from plan B.2 (world-pilot stays unpacked).** B.2 asked for the
   world-pilot channel atlases to be packed like the agent atlas. They are not:
   `world-pilot` holds all nine landmarks, whose occluder page carries 2.3
-  surface codes in B (V9 reserves occluder B for 2.3's surface code), so it
-  keeps four separate 2048² channel pages (albedo, material, emissive,
-  occluder: 16 MB of GL texture each). Packing it would have saved one page
-  (~16.8 MB) at the cost of the surface channel.
+  surface codes in B, so it keeps four separate 2048² channel pages (albedo,
+  material, emissive, occluder: 16 MB of GL texture each). Packing it would
+  have saved one page (~16.8 MB) at the cost of the surface channel.
 - B.2 memory rules (agents): `packGeometryPixels` (`GpuSceneBuilder.js`)
   packs one canvas per material + occluder sidecar pair
   (`AgentSprite` packed-geometry cache, 16 M px; a frame crop packs inline, a
@@ -485,9 +528,9 @@ its upload; the terrain bake uses it and re-bakes when the texture is gone.
   `timeRemaining()` 0) runs exactly that one, a real idle period keeps going
   until the 2 ms slice or the deadline ends.
 
-**WebGPU backend** (Wave 10, 10.1 Stage A, `?renderer=webgpu` opt-in;
-`gpu/GpuWorldRendererWebGPU.js`, `gpu/wgpu/`, `gpu/wgsl/`). It consumes this
-contract unchanged:
+**WebGPU backend** (Wave 10, 10.1; the Chromium default since Stage B,
+`?renderer=webgpu` forces it; `gpu/GpuWorldRendererWebGPU.js`, `gpu/wgpu/`,
+`gpu/wgsl/`). It consumes this contract unchanged:
 
 - Records: every batch stages the full 68-byte record
   (`stageGpuRecords(batches, staging, { fullTail: true })`) into one storage
@@ -499,21 +542,15 @@ contract unchanged:
   `instance_index` includes it), so the head-only default tail is a WebGL2
   detail. A compute probe on every new device reads the lanes back through the
   shader's own storage layout and calls `assertRecordStride` (68, never 80).
-- Samplers become named bindings (no sampler arrays): group 0 per frame (frame
-  uniforms, cloud tile, gust field, light records/tiles, footprint, cycle
-  offset, coast field, puddle mask, palette LUT, radiance, particle motifs and
-  their samplers), group 1 per batch (batch uniforms at a 256-byte dynamic
-  offset, the record buffer, albedo 2D + albedo page array, material,
-  emissive, occluder/packed-geometry sidecars, one nearest clamp sampler).
-  Both albedo bindings always exist; the inactive one is a 1×1 stand-in, as
-  the page's is on unit 14. Every `texture()` read is `textureSampleLevel(…,
-  0.0)` with the same filter, every `texelFetch` a `textureLoad`, except the
-  light records: the floats WebGL2 uploads as its 256×4 RGBA32F record
-  texture sit verbatim in a read-only storage buffer (`lightData[row * 256 +
-  i]`, rewritten when `recordsRevision` moves). The light walk reads them per
-  light per pixel, and the buffer load costs measurably less than the texture
-  fetch (Stage B gpu-burst); the tile index stays an R16UI texture (a buffer
-  read measured slower there).
+- Samplers become named bindings (no sampler arrays; *WebGPU bind groups*
+  below). Both albedo bindings always exist; the inactive one is a 1×1
+  stand-in, as the page's is on unit 14. Every `texture()` read is
+  `textureSampleLevel(…, 0.0)` with the same filter, every `texelFetch` a
+  `textureLoad`, except the light records: the floats WebGL2 uploads as its
+  256×4 RGBA32F record texture sit verbatim in a read-only storage buffer. The
+  light walk reads them per light per pixel, and the buffer load costs
+  measurably less than the texture fetch (Stage B gpu-burst); the tile index
+  stays an R16UI texture (a buffer read measured slower there).
 - Uploads: the same bytes as WebGL2. Typed fields (`uploadTypedTexture`: r8,
   rg8, r16ui, rgba32f, rgba8) go through `queue.writeTexture` from the same
   arrays (tight rows; only buffer copies need the 256-byte pitch). Canvas and
@@ -529,6 +566,50 @@ contract unchanged:
   (`wgsl/grade.js`) interpolates `GpuWorldPolicy.GRADE_CONSTANTS` through the
   same formatter as `GRADE_GLSL`, and every twin include interpolates the JS
   constants its GLSL twin does.
+
+**WebGPU bind groups** (`wgsl/common.js` `FRAME_BINDING`, `BATCH_BINDING`,
+`COMPOSITE_BINDING`; layouts in `wgpu/GpuWgpuPipelines.js`
+`createWorldLayouts`; every entry is visible to the vertex and fragment
+stages). Group 0 is rebound per frame, group 1 per batch:
+
+| Group / binding | Name | Resource | Content |
+| --- | --- | --- | --- |
+| 0 / 0 | `frame` | uniform buffer | `FrameUniforms` (`GpuFrameState` values) |
+| 0 / 1 | `cloudTile` | `texture_2d<f32>` | cloud-course noise tile, RGBA8 |
+| 0 / 2 | `cloudSampler` | sampler | linear, repeat |
+| 0 / 3 | `seaGust` | `texture_2d<f32>` | C-W3 gust field (R8), else a 1x1 stand-in |
+| 0 / 4 | `seaGustSampler` | sampler | linear, clamp |
+| 0 / 5 | `lightData` | **read-only storage buffer**, `array<vec4f>`, `LIGHT_RECORD_BUFFER_BYTES` = 256 x 4 x 16 B (16 KiB) | the WebGL2 light-record texels verbatim: light i, row r at `lightData[r * 256 + i]`; rewritten only when `recordsRevision` moves |
+| 0 / 6 | `lightTiles` | `texture_2d<u32>` | light tile index, R16UI |
+| 0 / 7 | `footprint` | `texture_2d<f32>` | footprint field, RG8 |
+| 0 / 8 | `cycleOffset` | `texture_2d<f32>` | water cycle offset, R8 |
+| 0 / 9 | `coastField` | `texture_2d<f32>` | coast field + mirror stops, RGBA8 |
+| 0 / 10 | `puddleMask` | `texture_2d<f32>` | puddle mask, R8 |
+| 0 / 11 | `paletteLut` | `texture_2d<f32>` | 3.5 ramp LUT |
+| 0 / 12 | `nearestSampler` | sampler | nearest, clamp |
+| 0 / 13 | `radianceTex` | `texture_2d<f32>` | always the 1x1 stand-in: the 2.10 solve is not ported (`radianceGrid.w` 0) |
+| 0 / 14 | `radianceSampler` | sampler | linear, clamp |
+| 0 / 15 | `motifs` | `texture_2d<f32>` | particle motif masks, R8 |
+| 0 / 16 | `linearSampler` | sampler | linear, clamp |
+| 1 / 0 | `batch` | uniform buffer, dynamic offset (one 256-byte slot per batch) | `BatchUniforms` |
+| 1 / 1 | `recs` | read-only storage buffer, `array<RecordInstance>` | the frame's 68-byte records (the mark pass binds its own record buffer) |
+| 1 / 2 | `albedo` | `texture_2d<f32>` | unpaged albedo, else a 1x1 stand-in |
+| 1 / 3 | `albedoPage` | `texture_2d_array<f32>` | albedo page, else a 1x1 stand-in |
+| 1 / 4 | `materialMap` | `texture_2d<f32>` | material sidecar or packed geometry |
+| 1 / 5 | `emissiveMap` | `texture_2d<f32>` | emissive sidecar |
+| 1 / 6 | `occluderMap` | `texture_2d<f32>` | occluder companion |
+| 1 / 7 | `albedoSampler` | sampler | nearest, clamp |
+
+| Pipeline | Groups |
+| --- | --- |
+| scene (`sceneVs` / `sceneFs`; add, depth, no-emission, cue and role variants) and marks (`markVs` with `markFs`, or `markRolesFs` on an HDR/P3 screen) | 0 frame, 1 batch |
+| particles (`particleVs` / `particleFs`; instances from the `PARTICLE_VERTEX_LAYOUT` vertex buffer) | 0 frame |
+| composite (`compositeFs`) | 0 frame; 1: 0 `sceneColor` (`textureLoad`), 1 `bloomColor` (group 0's `linearSampler`) |
+| roles composite (`compositeRolesFs`, HDR/P3 only) | as the composite, plus 1 / 2 `sceneEmission`: the emission attachment (role 1) |
+| bloom (`bloomVs` / `bloomFs`, two passes) | 0: 0 `bloomInput` (the emission attachment, then bloomA), 1 `bloomSampler` (nearest, then linear), 2 `bloom` params (uniform, 16 B at offsets 0 and 256) |
+| debug load (`debugLoadFs`) | 0: 0 `loadScene` (scene colour), 1 `loadSampler` (nearest) |
+| HDR readout (`hdrReadoutFs`, `layout: 'auto'`) | 0: 0 `presented` (the HDR canvas texture) |
+| record-stride probe (compute, `probeRecordStride`) | 0: 0 `recs` (read-only storage), 1 `probe` (read-write storage) |
 
 ### Landmark surface channel (plan 2.3)
 
@@ -701,8 +782,9 @@ actionStrip:
 
 ## Pilot
 
-`world-pilot` covers 18 reviewed IDs: all nine landmarks; lantern, rune brazier,
-and three light overlays; shallow/deep water transitions; one Claude class; and
+`world-pilot` covers 19 reviewed IDs: all nine landmarks; the lantern, rune
+brazier and bridge lantern post; three light overlays; shallow/deep water
+transitions; one Claude class; and
 one Codex class. Building overlay layers are included with their parent. No
 individual sidecar PNG is required for the pilot.
 

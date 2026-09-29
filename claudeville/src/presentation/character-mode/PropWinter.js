@@ -45,23 +45,22 @@ export const WINTER_PROPS = Object.freeze({
     'prop.mangroveRoot.arch': { dormancy: 'evergreen', surface: 'round' },
     // Roofed props: the roof takes the landmarks' course snow
     // (RoofWeather.roofSnowPixels), the tufts the round plant cap. The well
-    // goes by the slate colour rule; the scenery's roof is its polygon in
-    // sprite px (their stone shares the slate's blue), the stall's awning
-    // one smooth cloth sheet, and the gate arch's crenels and copings take
-    // silhouette caps only. The gate towers draw at 0.72, where 1-row course
-    // lips resample to static, so their roof snows down from the ridge by
-    // pitch (joints buried as it goes).
+    // goes by the slate colour rule; the scenery's roofs are polygons in
+    // sprite px (their glass and iron share the slate's blue), the stall's
+    // awning one smooth cloth sheet. The gatehouse (both cones) and the sea
+    // tower are baked at scale 1 (scripts/sprites/bake-village-gate.mjs
+    // prints their roof polygons): their 4-px slate courses fill from each
+    // lip, and their merlons, rings, string course, sills and rock take
+    // silhouette caps.
     'prop.well': { dormancy: 'evergreen', surface: 'round', roof: true },
-    'prop.villageGateTower': { dormancy: 'evergreen', surface: 'round', roof: { poly: [[60, 18], [112, 30], [112, 50], [96, 100], [38, 78]], pitch: true } },
-    'prop.villageWallSeaTower': { dormancy: 'evergreen', surface: 'round', roof: { poly: [[96, 28], [154, 58], [152, 64], [96, 90], [38, 58], [40, 52]] } },
+    'prop.villageGate': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, flats: true, polys: [[[36, 9], [0, 75], [1, 80], [5, 84], [10, 88], [18, 91], [27, 93], [36, 93], [45, 93], [54, 91], [61, 88], [67, 84], [70, 80], [72, 75]], [[186, 85], [150, 151], [152, 155], [155, 160], [161, 163], [168, 166], [177, 168], [186, 169], [195, 168], [204, 166], [212, 163], [217, 160], [221, 155], [222, 151]]] } },
+    'prop.villageWallSeaTower': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, flats: true, poly: [[47, 10], [18, 66], [19, 70], [22, 73], [27, 76], [33, 78], [40, 80], [47, 80], [54, 80], [61, 78], [67, 76], [72, 73], [75, 70], [76, 66]] } },
     'prop.marketStall': { dormancy: 'evergreen', surface: 'round', roof: { poly: [[30, 5], [62, 20], [60, 26], [33, 38], [5, 19]], sheet: true } },
-    'prop.villageGateArch': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
 });
 
-// The village wall's walk (the procedural cap of IsometricRenderer
-// `_drawVillageWallSegment`): the snow bucket's quarter share of the walk's
-// depth from its front lip lies under the `snow` ramp's lit-plane stop; null
-// on a bare walk.
+// The village wall's walk (VillageWall `paintWallRun`, the stone curtain's
+// top): the snow bucket's quarter share of the walk's depth from its front
+// lip lies under the `snow` ramp's lit-plane stop; null on a bare walk.
 export function wallWalkSnow(bucket) {
     const b = Math.max(0, Math.min(4, bucket | 0));
     return b ? { share: b / 4, body: ART_RAMPS.snow[3] } : null;
@@ -291,6 +290,51 @@ export function winterPropPixels(data, width, height, { dormancy, surface = 'rou
     return changed;
 }
 
+// Snow on a baked prop's sky-facing flats (`roof.flats`): texels its 2.3
+// surface channel (`surface`, the `.occluder.png` RGBA: B >> 6 = face) marks
+// face 0 (up) above the ground — a walk, a merlon top, a string course, a
+// ring, a sill, a rock's crown. Down each column a flat run fills from its
+// top edge, 1, 2, 3 rows by bucket and all of it at 4, in the `snow` stop of
+// the texel's own light (lit flags the top stop, their joints two down), so
+// the parapets carry the same cover as the curtain's walk. Pure.
+const FLAT_SNOW_ROWS = Object.freeze([0, 1, 2, 3, 256]);
+export function flatSnowPixels(data, surface, width, height, bucket) {
+    const depth = FLAT_SNOW_ROWS[Math.max(0, Math.min(4, bucket | 0))];
+    if (!depth || !surface || surface.length < width * height * 4) return 0;
+    // Ink and crevice lines keep their line (the silhouette's top edge stays
+    // on the snow, as on a roof's cap); a run starts under them.
+    const flat = (p) => data[p * 4 + 3] >= 128 && surface[p * 4 + 3] > 0 && (surface[p * 4 + 2] >> 6) === 0 && surface[p * 4] > 1
+        && Math.max(data[p * 4], data[p * 4 + 1], data[p * 4 + 2]) >= 48;
+    let lo = 255;
+    let hi = 0;
+    for (let p = 0; p < width * height; p++) {
+        if (!flat(p)) continue;
+        const l = lumOf(data, p * 4);
+        if (l < lo) lo = l;
+        if (l > hi) hi = l;
+    }
+    const span = Math.max(1, hi - lo);
+    let changed = 0;
+    for (let x = 0; x < width; x++) {
+        let row = -1;
+        for (let y = 0; y < height; y++) {
+            const p = y * width + x;
+            if (!flat(p)) {
+                row = -1;
+                continue;
+            }
+            row++;
+            if (row >= depth) continue;
+            const rank = (lumOf(data, p * 4) - lo) / span;
+            const stop = rank >= 0.66 ? 4 : rank >= 0.33 ? 3 : 2;
+            const i = p * 4;
+            [data[i], data[i + 1], data[i + 2]] = SNOW[stop];
+            changed++;
+        }
+    }
+    return changed;
+}
+
 // The per-renderer cache: `sync` once per frame after the ground state;
 // `image(id)` answers the derived canvas for the current state, or null to
 // draw the authored sprite (summer, not a flora prop, or its sheet loading).
@@ -302,16 +346,28 @@ export class PropWinter {
         this.season = 'summer';
         this.bucket = 0;
         this._images = new Map();
+        this._surfaces = new Map();
+        this._surfaceArrived = false;
     }
 
     get key() {
         return `${this.season === 'winter' ? 'w' : ''}${this.bucket}`;
     }
 
-    // True when the state changed (callers repaint their flora prop caches).
+    // True when the state changed (callers repaint their flora prop caches),
+    // or when a baked prop's surface channel arrived for a snowed state.
     sync(season, snowCover) {
         const next = season || 'summer';
         const bucket = snowBucketOf(snowCover);
+        if (this._surfaceArrived) {
+            this._surfaceArrived = false;
+            if (this.bucket) {
+                this.season = next;
+                this.bucket = bucket;
+                this.release();
+                return true;
+            }
+        }
         if (next === this.season && bucket === this.bucket) return false;
         const was = this.key;
         this.season = next;
@@ -340,9 +396,47 @@ export class PropWinter {
         ctx.drawImage(source, 0, 0);
         const image = ctx.getImageData(0, 0, width, height);
         winterPropPixels(image.data, width, height, { ...kind, winter, bucket: this.bucket });
+        if (kind.roof?.flats && this.bucket) {
+            const surface = this._surfacePixels(id, width, height);
+            if (surface) flatSnowPixels(image.data, surface, width, height, this.bucket);
+        }
         ctx.putImageData(image, 0, 0);
         this._images.set(id, canvas);
         return canvas;
+    }
+
+    // A baked prop's surface channel as RGBA bytes: the GPU modes hold it as
+    // a material companion; Canvas fetches the `.occluder.png` beside the
+    // albedo once (null until it arrives; `sync` then repaints).
+    _surfacePixels(id, width, height) {
+        const assets = this.host?.assets;
+        let image = assets?.getCompanion?.(id, 'occluder') || null;
+        if (!image) {
+            const cached = this._surfaces.get(id);
+            if (cached === undefined) {
+                this._surfaces.set(id, null);
+                const src = assets?.get?.(id)?.src;
+                if (typeof src === 'string' && typeof Image !== 'undefined' && assets?.getEntry?.(id)?.occluderSidecar) {
+                    const loading = new Image();
+                    loading.onload = () => {
+                        this._surfaces.set(id, loading);
+                        this._surfaceArrived = true;
+                    };
+                    loading.src = src.replace(/\.png(?=([?#]|$))/, '.occluder.png');
+                }
+            }
+            image = this._surfaces.get(id) || null;
+        }
+        if (!image || (image.naturalWidth || image.width) !== width || (image.naturalHeight || image.height) !== height) return null;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return null;
+        ctx.drawImage(image, 0, 0);
+        const data = ctx.getImageData(0, 0, width, height).data;
+        releaseCanvasBackingStore(canvas);
+        return data;
     }
 
     release() {

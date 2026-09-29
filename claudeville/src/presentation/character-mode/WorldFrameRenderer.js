@@ -808,7 +808,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     postFxFeedContext.renderer = renderer;
     postFxFeedContext.gpuWorldActive = gpuWorldActive;
     postFxFeedContext.atmosphere = atmosphere;
-    postFxFeedContext.villageSnapshot = villageSnapshot;
+    // V3 — the feed carries no director or agent state (no incident tint).
     postFxFeedContext.nowMs = renderNow;
     const feed = needsGpuFeed
         ? renderer.postFxFeed?.build?.(postFxFeedContext) || null

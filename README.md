@@ -56,7 +56,7 @@ An isometric pixel island where each session is a villager whose sprite follows 
 | Harbor Master | Unpushed commits as ships moored per repository, push departures, a crown for a verified release, and a broken bracket for a failed push. |
 
 - **Signal layer.** One attention plate per waiting, errored, or rate-limited agent, grouped by kind and docked at the frame edge when the agent is off-screen. District plaques state the exact count of agents routed there (`FORGE │ 8`).
-- **Instruments.** Hold **B** (or READ) to swap routine names for work verbs. **A** frames every agent needing attention and states how many fell outside the frame. **AMBIENT CAM** hands the camera to a patient broadcast of the busiest real work; any input takes it back. **F** frames the village; `/` or `Ctrl/Cmd+K` searches agents.
+- **Instruments.** Hold **B** (or READ) to swap routine names for work verbs. **A** frames every agent needing attention and states how many fell outside the frame. The World dock's **FREE | AUTO | AMBIENT** control says who moves the camera: only you, the automatic camera while you are idle, or a patient broadcast of the busiest real work that any camera input or selection hands back. **F** frames the village; `/` or `Ctrl/Cmd+K` searches agents.
 - **Light and weather.** One colour grade from the local clock, a seeded daily weather timeline, the moon phase, and the season. After dusk, windows light only where someone works. Weather is modelled locally, never fetched.
 - **Moments.** Arrivals rise as a violet column at the gate, sub-agents fly out as comets and land near their parent, and a finished top-level agent walks out through the gate while a finished sub-agent merges back into its parent.
 - **Renderer.** A resident GPU world by default on a hardware GPU: WebGPU in Chrome and other Chromium browsers, WebGL2 in Safari and Firefox (and wherever WebGPU cannot start; both draw the same picture). The World falls back to Canvas 2D on a software rasterizer (SwiftShader, llvmpipe) or with `?renderer=canvas`; `?renderer=webgl` forces WebGL2 and `?renderer=webgpu` forces WebGPU (Safari's opt-in). On an HDR screen the WebGPU world lets lit windows, lamps and action-needed marks glow above paper white (Settings → *HDR highlights*: Off, Subtle by default, or Full; every other pixel and every SDR screen keeps the standard picture), and on a Display P3 screen either GPU world draws the reserved status and lamp colours in the wider gamut. Shift-D shows the debug overlay, whose first row names the World backend and why it was chosen.
@@ -75,7 +75,7 @@ DOM rows grouped by project, for exact state without the world:
 - **Sidebar:** project-grouped agent list, an exception shelf for agents that need you, errored, or hit a quota limit, and the Harbor ledger of unpushed commits per repository and branch.
 - **Activity Panel:** a character sheet for the selected agent: session, cost and tokens, current tool, tool history, messages, prompt and plan, working set with overlap warnings, and a causal waterfall of the last 20 minutes that SCORE can draw over the village.
 - **Village Chronicle:** a day ledger of arrivals, departures, waits, errors, commits, and pushes, stored in the browser's IndexedDB.
-- **Settings and health:** sound options, controls (automatic camera, desktop alerts, reduced motion, HDR highlights), provider watchtower roster, storage ledger, pricing revision, and frame-time health.
+- **Settings and health:** sound options, controls (automatic camera, desktop alerts, collapsed sidebar, reduced motion, HDR highlights), provider watchtower roster, storage ledger, pricing revision, and frame-time health.
 - **Desktop alerts:** optional browser notifications.
 
 ### Sound
@@ -254,6 +254,8 @@ All providers derive a turn state (`working`, `tool_pending`, `awaiting_input`, 
 | `world:capture-render-baselines` | Capture the render-baseline matrix ([`docs/rendering-baselines.md`](./docs/rendering-baselines.md)). |
 | `world:verify-dpr` | Pixel-scaling contract across device pixel ratios. *Server.* |
 | `world:benchmark-fps`, `world:benchmark-trails` | Renderer FPS across agent counts; trail cache and camera-motion budgets. *Server.* |
+| `world:gpu-burst` | Timer-independent throughput of the real resident frame per quality level (the V2 receipt arm); isolated server unless `--url`. Needs a real GPU. |
+| `smoke:webgpu-parity` | WebGPU-vs-WebGL2 pixel-parity gate: one frozen frame per scenario rendered through both GPU backends and compared; isolated server unless `--url`. Needs a real GPU. |
 | `sprites:validate` | `claudeville/assets/sprites/manifest.yaml` against PNG files and sheet shapes. |
 | `sprites:audit-ids`, `sprites:audit-refresh` | Renderer sprite references against the manifest; the audit plus manifest, roster-channel, and channel validation together. |
 | `sprites:plan` | Dry-run plan for manifest-backed generation. |
@@ -278,7 +280,7 @@ curl http://localhost:4000/api/sessions
 - Keep port `4000` unless all dependent docs and local workflows are updated together.
 - No framework, bundler, transpiler, TypeScript, or runtime dependency. Keep changes within vanilla JavaScript ES modules and static CSS.
 - `DEBUG_STATIC=1` logs static file requests; `DEBUG_WATCH=1` logs watch-path refresh details; `CLAUDEVILLE_DEBUG_JSONL=1` logs skipped transcript lines.
-- Useful URL flags: `?sim=1` (simulator), `?renderer=canvas` (Canvas 2D fallback), `?renderer=webgl` (force WebGL2, even on a software rasterizer or in Chrome), `?renderer=webgpu` (force WebGPU, the only HDR presenter; the opt-in in Safari), `?postfx=0` (no GPU layer at all).
+- Useful URL flags: `?sim=1` (simulator; add `&scenario=<id>` for a deterministic World fixture from `claudeville/src/presentation/character-mode/__simfixture__/WorldScenarios.js`), `?renderer=canvas` (Canvas 2D fallback), `?renderer=webgl` (force WebGL2, even on a software rasterizer or in Chrome), `?renderer=webgpu` (force WebGPU, the only HDR presenter; the opt-in in Safari), `?postfx=0` (no GPU layer at all).
 - Add models through `models.json` and `npm run models:generate`, never by hand-editing the generated files.
 - Do not edit sprite PNGs without also checking `claudeville/assets/sprites/manifest.yaml` and the sprite validation rules.
 - This repo is often edited by multiple agents. Check `git status --short` before changes and preserve unrelated local edits.

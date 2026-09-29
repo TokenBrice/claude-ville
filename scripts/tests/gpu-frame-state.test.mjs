@@ -208,14 +208,15 @@ const GOLDEN = {
             lanes: [[], [], [], []], wetReflectionCount: 0, marchSteps: 0, tiles: null, localLightPhase: 0,
         },
         'clearMoon/z1/2': {
-            admission: { cap: 24, admitted: 3, offered: 3, culled: 0, overCap: 0, tileFull: 0, maxPerTile: 2, clusters: false, tiles: 459, daylight: false },
+            // M6 (Phase 5 receipts): the clustered walk ships at every level, MINIMAL included.
+            admission: { cap: 24, admitted: 3, offered: 3, culled: 0, overCap: 0, tileFull: 0, maxPerTile: 2, clusters: true, tiles: 459, daylight: false },
             lanes: [
                 [700, 380, 48, 2, 812, 410, 96, 1.2000000476837158, 900, 460, 64, 0.8999999761581421],
                 [0, 0, 0, 3, 18, 0.699999988079071, 0.30000001192092896, 1, 0, 0, 0, 2],
                 [1, 0.3137255012989044, 0.23529411852359772, 1, 1, 0.7450980544090271, 0.47058823704719543, 0.6000000238418579, 0.9411764740943909, 0.7843137383460999, 0.5490196347236633, 0.6000000238418579],
                 [5, 0, 0, 1, 0, 3, 2, 1.5, 0, 4, 2, 1],
             ],
-            wetReflectionCount: 0, marchSteps: 0, tiles: null, localLightPhase: 0.8,
+            wetReflectionCount: 0, marchSteps: 0, tiles: '10e06d11d039c149', localLightPhase: 0.8,
         },
     },
     beam: {

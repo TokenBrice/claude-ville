@@ -1027,11 +1027,6 @@ export class ChronicleMonuments {
             tileY: INNER_QUAY_BASIN_TILE.tileY,
             text: this._milestoneText(tier, repo, count),
         };
-        if (tier === 'flagship') {
-            // Trigger lighthouse lock via event so HarborTraffic / Lighthouse can
-            // subscribe without us editing them directly.
-            this.eventBus?.emit?.('harbor:milestone-lock', { project, repo, durationMs: 4000, ts: now });
-        }
         if (tier === 'aurora') {
             // 1000th commit: force aurora regardless of daily cap.
             this.auroraGate?.forceTrigger?.('milestone-1000', now);

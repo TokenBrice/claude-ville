@@ -7,15 +7,154 @@ export const VILLAGE_GATE = Object.freeze({
     tileX: 19.0,
     tileY: 39.1,
     widthTiles: 9.0,
-    outside: { tileX: 18.4, tileY: 39.25 },
-    inside: { tileX: 20.5, tileY: 37.85 },
+    // In the arch's mouth (half-width 0.72): with the renderer's ±0.3 jitter
+    // an arriving or departing body never stands in the jambs.
+    outside: { tileX: 19.05, tileY: 39.3 },
+    // Where bodies already in the village appear at load (±0.32 / ±0.22
+    // jitter, then spread): far enough in that the spread never backs a
+    // body into the east gate tower's drum.
+    inside: { tileX: 20.4, tileY: 37.4 },
 });
+
+// True when a foot at (tileX, tileY) lies within `reach` tiles of the
+// village's stone: a wall run's line (the curtain, 0.1875 tile either side),
+// the gatehouse's span between the runs, a gate tower's drum, or the sea
+// tower's drum on the east run's end (where IsometricRenderer places it on
+// this map: SEA_TOWER_GEOMETRY.endInset tiles back from the run's end). The
+// arch passage is open. SceneryEngine closes the walk nodes it returns true
+// for; VisitTileAllocator.standsOnFixture keeps every standing place off it.
+// Steering asks it per walker per frame, so the stone's segments and the sea
+// tower's centre are laid out once (`villageMasonryShape`).
+export function inVillageMasonry(tileX, tileY, reach = 0.3) {
+    const G = VILLAGE_GATE_GEOMETRY;
+    const X = tileX - VILLAGE_GATE.tileX;
+    const Y = tileY - VILLAGE_GATE.tileY;
+    if (Math.abs(X) < G.archHalfWidth && Math.abs(Y) <= G.blockHalfDepth + reach) return false;
+    for (const cx of G.towerX) if (Math.hypot(X - cx, Y) < G.towerR + reach) return true;
+    const { segments, seaX, seaY } = villageMasonryShape();
+    if (Math.hypot(tileX - seaX, tileY - seaY) < SEA_TOWER_GEOMETRY.towerR + reach) return true;
+    for (let i = 0; i < segments.length; i += 4) {
+        const ax = segments[i];
+        const ay = segments[i + 1];
+        const dx = segments[i + 2] - ax;
+        const dy = segments[i + 3] - ay;
+        const t = Math.max(0, Math.min(1, ((tileX - ax) * dx + (tileY - ay) * dy) / Math.max(1e-6, dx * dx + dy * dy)));
+        if (Math.hypot(tileX - (ax + t * dx), tileY - (ay + t * dy)) < reach) return true;
+    }
+    return false;
+}
+
+let villageMasonry = null;
+function villageMasonryShape() {
+    if (villageMasonry) return villageMasonry;
+    const half = VILLAGE_GATE.widthTiles / 2;
+    const segments = [VILLAGE_GATE.tileX - half, VILLAGE_GATE.tileY, VILLAGE_GATE.tileX + half, VILLAGE_GATE.tileY];
+    let seaX = NaN;
+    let seaY = NaN;
+    for (const { id, points } of VILLAGE_WALL_ROUTES) {
+        for (let i = 1; i < points.length; i++) segments.push(points[i - 1].tileX, points[i - 1].tileY, points[i].tileX, points[i].tileY);
+        if (id !== 'east') continue;
+        const [a, b] = points.slice(-2);
+        const len = Math.max(1e-6, Math.hypot(b.tileX - a.tileX, b.tileY - a.tileY));
+        const k = SEA_TOWER_GEOMETRY.endInset / len;
+        seaX = b.tileX - (b.tileX - a.tileX) * k;
+        seaY = b.tileY - (b.tileY - a.tileY) * k;
+    }
+    villageMasonry = { segments: Float64Array.from(segments), seaX, seaY };
+    return villageMasonry;
+}
 
 export const VILLAGE_GATE_BOUNDS = Object.freeze({
     left: -236,
     right: 236,
-    top: -180,
+    top: -236,
     bottom: 96,
+});
+
+// The gatehouse as authored (scripts/sprites/bake-village-gate.mjs bakes
+// prop.villageGate from it; the renderer hangs the doors, lanterns and wall
+// stubs on the same numbers). Tiles along +tileX from VILLAGE_GATE (X) and
+// +tileY off the wall line (Y); heights in world px. The arch and the sign sit
+// on X = 0; the towers stand a quarter tile west of symmetric so the sign, on
+// the block's face a quarter tile in front of the wall line, is centred in
+// the gap between their silhouettes.
+export const VILLAGE_GATE_GEOMETRY = Object.freeze({
+    towerX: Object.freeze([-2.6, 2.1]),
+    towerR: 0.6,
+    blockHalfDepth: 0.25,
+    plinthTop: 10,
+    plinthOut: 0.05,
+    archHalfWidth: 0.72,
+    archSpring: 20,
+    archRise: 1.25,
+    voussoirDepth: 8,
+    voussoirs: 13,
+    portcullisBottom: 47,
+    stringZ: Object.freeze([75, 79]),
+    stringOut: 0.04,
+    blockTop: 81,
+    merlon: Object.freeze({ width: 11, gap: 7, depth: 3, height: 10 }),
+    railHeight: 4,
+    corbelZ: Object.freeze([92, 98]),
+    corbels: 16,
+    ringOut: 0.08,
+    ringTop: 106,
+    eaveOut: 0.16,
+    roofApex: 170,
+    // Angles round each tower (radians, atan2(tileY, tileX); pi/4 faces the
+    // camera, 3pi/4 the lit west). `lit` glass is the guard room's lamp.
+    towerWindows: Object.freeze([
+        Object.freeze({ angle: 1.25, z0: 62, z1: 76, width: 6, pointed: true, lit: true }),
+        Object.freeze({ angle: 0.55, z0: 28, z1: 38, width: 3, pointed: false, lit: false }),
+    ]),
+    sign: Object.freeze({ text: 'CLAUDEVILLE', z0: 59, z1: 74, textTop: 4, field: '#5b132a', fieldShadow: '#3f1c1a' }),
+    // Door leaves hang a little behind the wall line.
+    doorY: -0.06,
+    // Wall lanterns flank the arch on the block's face.
+    lanternX: Object.freeze([-1.28, 1.28]),
+    lanternZ: 36,
+});
+
+// The sea tower at the east wall's coastal end (prop.villageWallSeaTower,
+// baked by the same script): a round lookout on its rock, a crenellated
+// gallery and a glazed lamp room under a slate cone.
+export const SEA_TOWER_GEOMETRY = Object.freeze({
+    towerR: 0.6,
+    // Tiles back from the east run's end where the renderer stands it on this
+    // map (IsometricRenderer._villageWallSeaTowerTile: every nearer candidate
+    // is water).
+    endInset: 1.45,
+    plinthTop: 12,
+    plinthOut: 0.06,
+    corbelZ: Object.freeze([98, 104]),
+    corbels: 16,
+    ringOut: 0.09,
+    galleryFloor: 108,
+    merlons: 12,
+    merlonShare: 0.55,
+    merlonHeight: 7,
+    lampR: 0.44,
+    eaveZ: 136,
+    eaveOut: 0.16,
+    roofApex: 190,
+    windows: Object.freeze([
+        Object.freeze({ angle: 1.1, z0: 34, z1: 46, width: 3, pointed: false, lit: false }),
+        Object.freeze({ angle: 0.35, z0: 70, z1: 82, width: 3, pointed: false, lit: false }),
+    ]),
+    // The lamp room's three lancets on the camera's half of the drum.
+    lampWindows: Object.freeze([
+        Object.freeze({ angle: -0.2, z0: 116, z1: 131, width: 6, pointed: true, lit: true }),
+        Object.freeze({ angle: 0.8, z0: 116, z1: 131, width: 7, pointed: true, lit: true }),
+        Object.freeze({ angle: 1.8, z0: 116, z1: 131, width: 6, pointed: true, lit: true }),
+    ]),
+    // Half-sunk boulders round the foot (tiles, px; centres at the waterline).
+    rocks: Object.freeze([
+        Object.freeze({ x: 0.52, y: 0.5, z: 0, rx: 0.4, ry: 0.34, rz: 13 }),
+        Object.freeze({ x: -0.34, y: 0.66, z: 0, rx: 0.34, ry: 0.28, rz: 10 }),
+        Object.freeze({ x: 0.74, y: -0.22, z: 0, rx: 0.32, ry: 0.38, rz: 11 }),
+        Object.freeze({ x: 0.16, y: 0.8, z: 0, rx: 0.24, ry: 0.2, rz: 7 }),
+        Object.freeze({ x: 0.92, y: 0.3, z: 0, rx: 0.2, ry: 0.18, rz: 6 }),
+    ]),
 });
 
 // Center of Portal Gate footprint (origin 2,29 size 4x4). Subagents spawn here

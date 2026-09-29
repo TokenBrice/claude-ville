@@ -78,6 +78,7 @@
     "world:benchmark-fps": "node scripts/smoke/world-fps-benchmark.mjs --profile",
     "world:gpu-burst": "node scripts/world/gpu-burst.mjs",
     "smoke:webgpu-parity": "NODE_NO_WARNINGS=1 node scripts/smoke/webgpu-parity.mjs",
+    "smoke:v3-truth": "NODE_NO_WARNINGS=1 node scripts/smoke/v3-environment-truth.mjs",
     "vendor:refresh-js-yaml": "node scripts/vendor/refresh-js-yaml.mjs"
   },
   "devDependencies": {

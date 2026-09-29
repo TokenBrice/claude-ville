@@ -59,7 +59,6 @@ uniform vec2 u_maskTexel;
 uniform vec2 u_rayTexel;
 uniform vec2 u_flow;
 uniform vec3 u_sun;
-uniform vec4 u_pulse;
 ${GRADE_GLSL}
 // Backing pixels per art pixel (zoom x dpr): light pools step on this grid.
 uniform float u_artPixel;
@@ -72,7 +71,6 @@ uniform bool u_reducedMotion;
 uniform bool u_waterEnabled;
 uniform bool u_displacementEnabled;
 uniform bool u_godRaysEnabled;
-uniform bool u_pulseEnabled;
 uniform bool u_grainEnabled;
 uniform int u_hazeCount;
 uniform int u_lightCount;
@@ -261,19 +259,6 @@ void main() {
     vec2 displacement = effectOffset(v_uv);
     vec2 sceneUv = clamp(v_uv + displacement, vec2(0.0), vec2(1.0));
     vec4 scene = sourceAt(sceneUv);
-
-    if (u_pulseEnabled) {
-        // The pulse is a channel-separated sample, limited to two source texels.
-        float pulseStrength = clamp(u_pulse.a, 0.0, 1.0);
-        vec2 pulsePx = quantizedPixels(vec2(2.0, -1.0) * pulseStrength);
-        vec3 pulseColor = vec3(
-            sourceAt(sceneUv + pulsePx).r,
-            sourceAt(sceneUv).g,
-            sourceAt(sceneUv - pulsePx).b
-        );
-        scene.rgb = mix(scene.rgb, pulseColor, pulseStrength * 0.78);
-        scene.rgb += u_pulse.rgb * pulseStrength * 0.012;
-    }
 
     vec3 albedo = scene.rgb;
     scene.rgb = applyGrade(scene.rgb);
@@ -539,10 +524,10 @@ class PostFxInstance {
         }, {});
         this.mainUniforms = locations(this.mainProgram, [
             'u_source', 'u_waterMask', 'u_poolMask', 'u_poolMaskOrigin', 'u_poolMaskSize', 'u_resolution', 'u_sourceTexel', 'u_maskTexel', 'u_rayTexel',
-            'u_flow', 'u_sun', 'u_pulse', ...GRADE_UNIFORM_NAMES, 'u_artPixel', 'u_artOrigin',
+            'u_flow', 'u_sun', ...GRADE_UNIFORM_NAMES, 'u_artPixel', 'u_artOrigin',
             'u_time', 'u_motionScale',
             'u_reducedMotion', 'u_waterEnabled', 'u_displacementEnabled',
-            'u_godRaysEnabled', 'u_pulseEnabled',
+            'u_godRaysEnabled',
             'u_grainEnabled', 'u_hazeCount', 'u_lightCount', 'u_attentionCount',
             'u_haze[0]', 'u_lights[0]', 'u_lightGeo[0]', 'u_lightColors[0]',
         ]);
@@ -914,16 +899,9 @@ class PostFxInstance {
         const flow = feed?.water
             ? [clamp(finite(feed.water.flowX), -1, 1), clamp(finite(feed.water.flowY), -1, 1)]
             : [0, 0];
-        const pulse = feed?.pulse || null;
         const sun = feed?.sun || null;
-        const pulseValues = [
-            clamp(finite(pulse?.r, 0) / 255, 0, 1),
-            clamp(finite(pulse?.g, 0) / 255, 0, 1),
-            clamp(finite(pulse?.b, 0) / 255, 0, 1),
-        ];
         const effectRich = level <= POST_FX_LEVELS.REDUCED;
         const fullEffects = level === POST_FX_LEVELS.FULL;
-        const pulseStrength = effectRich ? clamp(finite(pulse?.strength, 0), 0, 1) : 0;
         const sunValues = fullEffects && sun ? [
             finite(sun.x), finite(sun.y), clamp(finite(sun.intensity, 0), 0, 1),
         ] : [0, 0, 0];
@@ -947,7 +925,6 @@ class PostFxInstance {
         gl.uniform2f(uniforms.u_rayTexel, 1 / (this.width * GOD_RAY_SCALE), 1 / (this.height * GOD_RAY_SCALE));
         gl.uniform2f(uniforms.u_flow, flow[0], flow[1]);
         gl.uniform3f(uniforms.u_sun, sunValues[0], sunValues[1], sunValues[2]);
-        gl.uniform4f(uniforms.u_pulse, pulseValues[0], pulseValues[1], pulseValues[2], pulseStrength);
         uploadGradeUniforms(gl, uniforms, lightGrade);
         const viewport = feed?.viewport || {};
         gl.uniform1f(uniforms.u_artPixel, Math.max(1, finite(viewport.zoom, 1) * finite(viewport.dpr, 1)));
@@ -968,7 +945,6 @@ class PostFxInstance {
         gl.uniform1i(uniforms.u_waterEnabled, waterEnabled ? 1 : 0);
         gl.uniform1i(uniforms.u_displacementEnabled, effectRich ? 1 : 0);
         gl.uniform1i(uniforms.u_godRaysEnabled, fullEffects ? 1 : 0);
-        gl.uniform1i(uniforms.u_pulseEnabled, effectRich ? 1 : 0);
         gl.uniform1i(uniforms.u_grainEnabled, effectRich ? 1 : 0);
 
         this.hazeValues.fill(0);

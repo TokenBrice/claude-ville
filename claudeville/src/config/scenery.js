@@ -467,9 +467,14 @@ export const DISTRICT_PROPS = [
     // Workshop district: Forge → Task Board handoff yard (brazier, bed, hedge
     // and the handoff crates at the scenic point below).
     { tileX: 26.2, tileY: 31.5, id: 'prop.runeBrazier', layer: 'cache', district: 'workshop' },
-    // Civic north promenade: Command Center → Observatory corridor.
-    { tileX: 18.5, tileY: 17.5, id: 'prop.well', layer: 'cache', district: 'civic' },
-    { tileX: 19.9, tileY: 17.3, id: 'prop.flowerCart', layer: 'cache', district: 'civic' },
+    // South-bank green between the Token Mine's rock and the central bridge:
+    // the village well on the river bank, the flower cart parked at its side
+    // and the south-lawn bench beyond. No lane, visit slot or queue place
+    // reaches the green (the lanes pass the bridge foot and the mine road), and
+    // `walkBlock` takes the lattice nodes round each foot out of the walk grid
+    // (SceneryEngine), so no body stands on or crosses the baked sprites.
+    { tileX: 12.5, tileY: 27.5, id: 'prop.well', layer: 'cache', district: 'civic', walkBlock: true },
+    { tileX: 13.7, tileY: 28.5, id: 'prop.flowerCart', layer: 'cache', district: 'civic', walkBlock: true },
     // Gate-avenue spine between river bridge and village gate.
     { tileX: 17.5, tileY: 30.0, id: 'prop.marketStall', layer: 'sorted', district: 'gate' },
     { tileX: 20.0, tileY: 27.5, id: 'prop.noticePillar', layer: 'sorted', district: 'gate' },
@@ -501,7 +506,7 @@ export const AMBIENT_GROUND_PROPS = [
 
     // Civic core: utility props around the square, not scattered through the
     // woods. The Command gate steps own the front of the plaza (row 20); the
-    // square's well is the one on the north promenade (DISTRICT_PROPS).
+    // village well stands on the south-bank green (DISTRICT_PROPS).
     { tileX: 12.1, tileY: 20.0, type: 'marketStall' },
     { tileX: 17.8, tileY: 19.4, type: 'signpost' },
 

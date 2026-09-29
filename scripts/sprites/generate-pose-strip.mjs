@@ -184,6 +184,30 @@ const GROUPS = Object.freeze({
         // animation_type = the template id, so the group is found by type.
         animationName: 'crouching',
     },
+    // 7.5 run gait: PixelLab's `running-6-frames` humanoid template on the
+    // rig, all eight facings (it plays while moving). Rows are the six-frame
+    // cycle in template order; `hold` is never shown (reduced motion never
+    // plays a gait cycle).
+    run: {
+        route: 'template',
+        template: 'running-6-frames',
+        animationName: 'running-6-frames',
+        hold: 0,
+        // V7 foot anchor: the cycle stands on the sheet's foot line (seatGait).
+        seatGait: true,
+    },
+    // The same cycle through `skeleton-v3` mode (the template posed onto the
+    // rig by the skeleton video model: steadier identity, 2–4 generations per
+    // facing). Pinned apart from `run` by its stage json's record ids.
+    'run-skel': {
+        route: 'template',
+        mode: 'skeleton-v3',
+        template: 'running-6-frames',
+        animationName: 'running-6-frames',
+        maxCost: 4,
+        hold: 0,
+        seatGait: true,
+    },
     // Rest seat, front three-quarter (7.1, SE/SW only; seatFrontSkeleton): the
     // hips drop onto the seat, the thighs point at the camera (short in screen
     // space, a visible lap), the shins hang under the knees, the free hands
@@ -276,6 +300,9 @@ const freezeBoxes = Object.fromEntries((option('freeze') || '').split(';').filte
 // `--freeze-detached`: every group freezes detached props (freezeProps), e.g.
 // gpt54's floating wrench, which the model drops or moves on some facings.
 const freezeDetachedAll = flag('freeze-detached');
+// `--gait-lift=<px>` (default 2): the most a `seatGait` frame's feet may float
+// above the foot line after the cycle is seated (V7's ±2 px).
+const gaitLift = Number(option('gait-lift', '2'));
 
 if (!id) fail('--id=<manifest character id> is required');
 if (!groupNames.length) fail(`--groups= one or more of ${Object.keys(GROUPS).join(', ')}`);
@@ -292,6 +319,9 @@ const token = readPixellabToken();
 const spend = createSpend({ token, agent, floor });
 const description = descriptionOverride || subjectOf(entry.prompt || id);
 const rel = (path) => path.slice(repoRoot.length).replace(/^\//, '');
+// The previous stage json of this id and group set pins template records.
+const stem = `${id}.${groupNames.join('+')}`;
+const previousStage = existsSync(join(outDir, `${stem}.json`)) ? JSON.parse(readFileSync(join(outDir, `${stem}.json`), 'utf8')) : null;
 
 // ─── plan ─────────────────────────────────────────────────────────────────────
 
@@ -304,7 +334,7 @@ const quote = clip
     ? [{ name: groupNames.join('+'), route: 'skeleton clip', perDirection: skeletonCost(skeletonFrames(groupNames)), total: skeletonCost(skeletonFrames(groupNames)) * directions.length }]
     : groupNames.map((name) => {
         const group = GROUPS[name];
-        const perDirection = group.route === 'skeleton' ? skeletonCost(group.frames.length) : 1;
+        const perDirection = group.route === 'skeleton' ? skeletonCost(group.frames.length) : (group.maxCost || 1);
         return { name, route: group.route, perDirection, total: perDirection * directions.length };
     });
 const worst = quote.reduce((sum, row) => sum + row.total, 0) + (quote.some((row) => row.route !== 'template') ? directions.length * 0.1 : 0);
@@ -364,7 +394,6 @@ for (const name of groupNames) {
     }
 }
 mkdirSync(outDir, { recursive: true });
-const stem = `${id}.${groupNames.join('+')}`;
 writeFileSync(join(outDir, `${stem}.png`), PNG.sync.write(strip));
 writeFileSync(join(outDir, `${stem}.json`), `${JSON.stringify({ ...provenance, cell: CELL, groups: layout, jobs: provenance.groups, keypoints: keypointLog }, null, 2)}\n`);
 console.log(`[pose-strip] wrote ${rel(join(outDir, `${stem}.png`))} (${strip.width}×${strip.height}); groups ${JSON.stringify(layout)}`);
@@ -782,19 +811,30 @@ async function imagePng(image, label) {
 
 // ─── template route ───────────────────────────────────────────────────────────
 
+// Template records share the template's animation_type whatever their mode
+// (display_name is null), so a facing that has several records (a `template`
+// run and a `skeleton-v3` run) is pinned by the animation group id the stage
+// json recorded; a new request takes the record it produced.
 async function templateDirection(name, group, direction) {
     const characterId = entry.provenance?.characterId;
     if (!characterId) fail(`${id} has no provenance.characterId (the PixelLab rig)`);
+    const mode = group.mode || 'template';
+    const pinned = previousStage?.jobs?.[name]?.directions?.[direction]?.animationGroupId || null;
+    const framesOf = (character, groupId) => character?.animations
+        ?.find((animation) => animation.animation_group_id === groupId)
+        ?.directions?.find((item) => item.direction === direction)?.frames || null;
     let character = await getCharacter(token, characterId);
-    let known = characterAnimationFrames(character, group.animationName, { frameCount: 1 });
-    if (!known.byDirection.has(direction) || forced.has(name)) {
-        if (assembleOnly) fail(`${name}/${direction} is not on the rig and --assemble-only was requested`);
-        const stale = forced.has(name) ? new Set(known.groupIds) : null;
+    const known = characterAnimationFrames(character, group.animationName, { frameCount: 1 });
+    let groupId = pinned && framesOf(character, pinned) ? pinned
+        : mode === 'template' && known.byDirection.has(direction) ? known.byDirectionGroup.get(direction) : null;
+    if (!groupId || forced.has(name)) {
+        if (assembleOnly) fail(`${name}/${direction} has no ${mode} record on the rig and --assemble-only was requested`);
+        const stale = new Set(known.groupIds);
         await spend.job({
             item,
-            endpoint: '/characters/animations (template)',
+            endpoint: `/characters/animations (${mode})`,
             target: `${id} ${group.template} ${direction}`,
-            maxCost: 1,
+            maxCost: group.maxCost || 1,
             run: async () => {
                 const queued = await api(token, '/characters/animations', {
                     method: 'POST',
@@ -803,7 +843,7 @@ async function templateDirection(name, group, direction) {
                         character_id: characterId,
                         animation_name: group.animationName,
                         template_animation_id: group.template,
-                        mode: 'template',
+                        mode,
                         directions: [direction],
                     },
                 });
@@ -815,20 +855,57 @@ async function templateDirection(name, group, direction) {
                     pollIntervalMs: 10_000,
                     label: `${name}/${direction}`,
                 });
-                return { queued, usage: queued?.usage || null, groupId: settled.byDirectionGroup.get(direction), ledgerDetail: { characterId, groupId: settled.byDirectionGroup.get(direction) } };
+                groupId = settled.byDirectionGroup.get(direction);
+                return { queued, usage: queued?.usage || null, groupId, ledgerDetail: { characterId, mode, groupId } };
             },
         });
         character = await getCharacter(token, characterId);
-        known = characterAnimationFrames(character, group.animationName, { frameCount: 1 });
     }
-    const urls = known.byDirection.get(direction) || [];
+    const urls = framesOf(character, groupId) || [];
+    if (!urls.length) fail(`${name}/${direction}: record ${groupId} carries no frames`);
     const cells = [];
     for (let index = 0; index < urls.length; index++) {
         const png = await fetchPng(urls[index], { label: `${name}-${direction}-${index}` });
         writePng(join(cacheDir, `${name}-${direction}-${index}.png`), png);
         cells.push(snapToSheet(fitCenterToCell(png, CELL)));
     }
-    return { cells, provenance: { characterId, animationGroupId: known.byDirectionGroup.get(direction), frames: urls.length } };
+    const seat = group.seatGait ? seatGait(cells, direction) : null;
+    return { cells, provenance: { characterId, mode, animationGroupId: groupId, frames: urls.length, ...(seat ? { seat } : {}) } };
+}
+
+// 7.5 — the template draws its cycle in place with the feet floating a few px
+// above the rig's ground, and its flight frame higher still. V7: the whole
+// cycle drops by one per-facing amount so its most grounded frame stands on the
+// base sheet's foot line (the anchor maxY over rows 0–9), which keeps the
+// template's own bob; then a frame whose feet still float more than
+// `--gait-lift` px (default 2) comes down to that lift. Returns the per-frame
+// downward shifts (px) for the stage provenance.
+function seatGait(cells, direction) {
+    const col = DIRECTIONS.indexOf(direction);
+    let anchorMaxY = -1;
+    for (let row = 0; row < 10; row++) {
+        for (let y = CELL - 1; y > anchorMaxY; y--) {
+            let hit = false;
+            for (let x = 0; x < CELL && !hit; x++) hit = sheet.data[((row * CELL + y) * sheet.width + col * CELL + x) * 4 + 3] >= 16;
+            if (hit) { anchorMaxY = y; break; }
+        }
+    }
+    const lowest = (cell) => {
+        for (let y = CELL - 1; y >= 0; y--) for (let x = 0; x < CELL; x++) if (cell.data[(y * CELL + x) * 4 + 3] >= 16) return y;
+        return -1;
+    };
+    const lines = cells.map((cell) => lowest(cell) - anchorMaxY);
+    const grounded = Math.max(...lines);
+    const shifts = lines.map((line) => Math.max(line - grounded, -gaitLift) - line);
+    cells.forEach((cell, index) => {
+        const shift = shifts[index];
+        if (!shift) return;
+        if (lowest(cell) + shift >= CELL) fail(`${direction} frame ${index}: seating by ${shift}px leaves the cell`);
+        const moved = new PNG({ width: CELL, height: CELL });
+        PNG.bitblt(cell, moved, 0, Math.max(0, -shift), CELL, CELL - Math.abs(shift), 0, Math.max(0, shift));
+        moved.data.copy(cell.data);
+    });
+    return { anchorMaxY, lift: gaitLift, shifts };
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

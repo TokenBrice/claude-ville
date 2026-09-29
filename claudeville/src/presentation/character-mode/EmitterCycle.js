@@ -24,8 +24,29 @@
 // rank is its course, and a lit/dimmed band takes the neighbouring course's
 // colour (a band at 0 keeps the texel's own colour). Still only authored
 // colours, still a hard index change.
+//
+// Tongue climb (`mode: 'tongues'`): a painted fire whose tongues are the
+// boundaries between its colour courses (the Forge doorway, the Command
+// braziers) would have those silhouettes scrambled by a rank wave, so this
+// mode moves the tongues instead of the colours. The mask's columns fall
+// into `lanePx`-wide lanes; each phase a lane lifts its column's own
+// authored texels 0..3 texels up (a texel shows the texel `lift` below it),
+// climbing 0 1 2 3 then 0 1 2 then a beat at rest (`TONGUE_LIFT`), each lane
+// offset by `TONGUE_LANE_ORDER` so neighbouring tongues climb out of step.
+// When a lane drops back, the tip it held climbs one texel more as a
+// detached `TONGUE_WISP_PX`-tall wisp (at least 2 texels wide, never a lone
+// speck) above the rested tongue: the tongue pinches off and rises. The
+// bottom `keepPx` texels of each column (the bed, a threshold edge) never
+// move and the lift never reaches below them; a texel whose own and source
+// courses both lie below `fixedBelowRankFrac` (the dark crown) keeps its
+// colour. Every output texel is an authored texel of its own column, so the
+// silhouettes at every phase are the rest tongues shifted by at most four
+// texels. The strip is always `TONGUE_LIFT.length` (8) frames.
 
 const WAVE = [1, 0, -1, 0];
+const TONGUE_LIFT = [0, 1, 2, 3, 0, 1, 2, 0];
+const TONGUE_LANE_ORDER = [0, 3, 6, 1, 5, 2, 7, 4];
+const TONGUE_WISP_PX = 2;
 
 function luma(r, g, b) {
     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -40,13 +61,17 @@ export function bakeEmitterCycle(baseImg, maskImg, {
     shearPx = 3,
     heightFromMask = false,
     rampStops = 0,
+    mode = 'wave',
+    lanePx = 3,
+    keepPx = 3,
 } = {}) {
     const width = baseImg?.width | 0;
     const height = baseImg?.height | 0;
     const base = baseImg?.data;
     const mask = maskImg?.data;
     if (!base || !mask || maskImg.width !== width || maskImg.height !== height) return null;
-    const count = Math.max(1, frames | 0);
+    const tongues = mode === 'tongues';
+    const count = tongues ? TONGUE_LIFT.length : Math.max(1, frames | 0);
 
     let minX = width;
     let minY = height;
@@ -83,7 +108,22 @@ export function bakeEmitterCycle(baseImg, maskImg, {
     const frameH = maxY - minY + 1;
     const stripW = frameW * count;
     const data = new Uint8ClampedArray(stripW * frameH * 4);
+    const strip = {
+        data,
+        width: stripW,
+        height: frameH,
+        frames: count,
+        frameW,
+        frameH,
+        offsetX: minX,
+        offsetY: minY,
+        rampSize: n,
+    };
 
+    if (tongues) {
+        bakeTongues({ texels, rankOf, fixedBelow, base, width, minX, minY, frameW, frameH, stripW, data, lanePx, keepPx });
+        return strip;
+    }
     for (let t = 0; t < texels.length; t += 5) {
         const x = texels[t];
         const y = texels[t + 1];
@@ -109,17 +149,67 @@ export function bakeEmitterCycle(baseImg, maskImg, {
             data[o + 3] = texels[t + 4];
         }
     }
-    return {
-        data,
-        width: stripW,
-        height: frameH,
-        frames: count,
-        frameW,
-        frameH,
-        offsetX: minX,
-        offsetY: minY,
-        rampSize: n,
+    return strip;
+}
+
+// The tongue climb (see the header): writes all `TONGUE_LIFT.length` phases
+// of the mask's texels into `data`, each texel copied from an authored texel
+// of its own column.
+function bakeTongues({ texels, rankOf, fixedBelow, base, width, minX, minY, frameW, frameH, stripW, data, lanePx, keepPx }) {
+    const rank = new Int16Array(frameW * frameH).fill(-1);
+    const bottom = new Int32Array(frameW).fill(-1);
+    for (let t = 0; t < texels.length; t += 5) {
+        const lx = texels[t] - minX;
+        const ly = texels[t + 1] - minY;
+        rank[ly * frameW + lx] = rankOf.get(texels[t + 2]);
+        if (ly > bottom[lx]) bottom[lx] = ly;
+    }
+    const lane = Math.max(1, lanePx | 0);
+    const keep = Math.max(0, keepPx | 0);
+    const period = TONGUE_LIFT.length;
+    // The row a texel shows at `lift`: the cycled texel `lift` below it,
+    // never reaching into the column's kept base rows; the base rows, and a
+    // texel whose source would fall in a hole of the mask, keep their own.
+    const source = (lx, ly, lift) => {
+        const cap = bottom[lx] - keep;
+        if (lift <= 0 || ly >= cap) return ly;
+        const sy = Math.min(ly + lift, cap);
+        return rank[sy * frameW + lx] >= 0 ? sy : ly;
     };
+    const liftAt = (lx, phase) => TONGUE_LIFT[(phase + TONGUE_LANE_ORDER[Math.floor(lx / lane) % TONGUE_LANE_ORDER.length]) % period];
+    const wisp = new Int32Array(frameW * frameH);
+    for (let phase = 0; phase < period; phase++) {
+        // A lane that has just dropped back shows its last tip one texel
+        // higher, TONGUE_WISP_PX tall, with the rested tongue below it.
+        wisp.fill(-1);
+        for (let t = 0; t < texels.length; t += 5) {
+            const lx = texels[t] - minX;
+            const ly = texels[t + 1] - minY;
+            const prev = liftAt(lx, phase + period - 1);
+            if (liftAt(lx, phase) >= prev) continue;
+            const own = rank[ly * frameW + lx];
+            const top = rank[source(lx, ly, prev + 1) * frameW + lx];
+            const under = rank[source(lx, ly, prev + 1 - TONGUE_WISP_PX) * frameW + lx];
+            if (top > own && under <= own && !(own < fixedBelow && top < fixedBelow)) {
+                wisp[ly * frameW + lx] = source(lx, ly, prev + 1);
+            }
+        }
+        for (let t = 0; t < texels.length; t += 5) {
+            const lx = texels[t] - minX;
+            const ly = texels[t + 1] - minY;
+            const cell = ly * frameW + lx;
+            let sy = source(lx, ly, liftAt(lx, phase));
+            const paired = (lx > 0 && wisp[cell - 1] >= 0) || (lx < frameW - 1 && wisp[cell + 1] >= 0);
+            if (wisp[cell] >= 0 && paired) sy = wisp[cell];
+            if (rank[cell] < fixedBelow && rank[sy * frameW + lx] < fixedBelow) sy = ly;
+            const i = ((minY + sy) * width + minX + lx) * 4;
+            const o = (ly * stripW + phase * frameW + lx) * 4;
+            data[o] = base[i];
+            data[o + 1] = base[i + 1];
+            data[o + 2] = base[i + 2];
+            data[o + 3] = texels[t + 4];
+        }
+    }
 }
 
 // The ramp a cycle steps along: every authored colour (sorted by luma), or

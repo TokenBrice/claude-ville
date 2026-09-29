@@ -264,13 +264,11 @@ function hash2(x, y) {
  * arrays (all `width × height`). `occluder` carries the 2.3 surface code;
  * `region` (a prop's authored roof mask, 1 = roof) stands in for it where a
  * sprite has none, and `sheet` marks that region as one smooth sheet (cloth:
- * no joints, no courses, one light). `pitch` drops the courses: snow grows
- * down each column of the roof from its top (for a prop drawn scaled, whose
- * course lips would resample to static). With neither, roofs go by the slate
+ * no joints, no courses, one light). With neither, roofs go by the slate
  * colour rule, and no silhouette caps unless `caps`. Returns null when
  * nothing can take weather.
  */
-export function roofWeatherMap({ width, height, albedo, occluder = null, region = null, sheet = false, pitch = false, material = null, emissive = null, caps = occluder != null }) {
+export function roofWeatherMap({ width, height, albedo, occluder = null, region = null, sheet = false, material = null, emissive = null, caps = occluder != null }) {
     if (!albedo || !(width > 0) || !(height > 0)) return null;
     const n = width * height;
     const cls = new Uint8Array(n);
@@ -541,10 +539,9 @@ export function roofWeatherMap({ width, height, albedo, occluder = null, region 
     };
     // Rows down each slate course, from its sky-facing lip, the course's run
     // length (lip to its last row) in that column, and the rows under the
-    // roof's top. A `pitch` roof, and a metal roof (one sheet, no courses),
-    // counts its rows from the column's top, over trim too, so its cap is
-    // one piece.
-    const columns = pitch || metalRoof;
+    // roof's top. A metal roof (one sheet, no courses) counts its rows from
+    // the column's top, over trim too, so its cap is one piece.
+    const columns = metalRoof;
     const run = new Int16Array(n);
     const fromTop = new Int16Array(n);
     const inPitch = (q) => cls[q] !== NONE || trimmed[q] === 1;
@@ -701,8 +698,8 @@ export function paintRoofWeather(map, albedo, out, { bucket = 0, wetQ = 0 } = {}
                     // A slate course fills `depth` rows from its lip; a long
                     // smooth pitch fills the same share of its run, so a
                     // sheet roof takes a cap that grows down from the ridge,
-                    // and so does every column of a `pitch` roof, joints
-                    // and all. The next row is an ordered 2x2 dither.
+                    // and so does every column of a metal roof (`map.pitch`),
+                    // joints and all. The next row is an ordered 2x2 dither.
                     let lies = false;
                     if (c === SLATE || (map.pitch && thin[p])) {
                         const reach = Math.max(depth, Math.floor(run[p] * share));
@@ -795,17 +792,16 @@ export function paintRoofDrips(map) {
 /**
  * Pure: snow on a prop's roof, in place. Returns the texels changed. Used by
  * PropWinter for props with a `roof`: `true` (the well: the slate colour
- * rule) or `{ poly, sheet, pitch, caps }` — the roof's polygon in sprite px
- * (tile colours and ink inside it are roof; a `sheet` takes all of it as one
- * smooth cloth, a `pitch` snows down from its top without courses; no
- * polygon, no roof texels), and `caps` for silhouette caps on crenels and
- * copings.
+ * rule) or `{ poly | polys, sheet, caps }` — the roof's polygon (or several:
+ * the gatehouse's two cones) in sprite px (tile colours and ink inside it
+ * are roof; a `sheet` takes all of it as one smooth cloth; no polygon, no
+ * roof texels), and `caps` for silhouette caps on crenels and copings.
  */
 export function roofSnowPixels(data, width, height, bucket, roof = true) {
     if (!(bucket > 0) || !roof) return 0;
     const spec = roof === true ? null : roof;
-    const region = spec ? polygonMask(spec.poly || [], width, height) : null;
-    const map = roofWeatherMap({ width, height, albedo: data, region, sheet: spec?.sheet === true, pitch: spec?.pitch === true, caps: spec?.caps === true });
+    const region = spec ? polygonMask(spec.polys || (spec.poly ? [spec.poly] : []), width, height) : null;
+    const map = roofWeatherMap({ width, height, albedo: data, region, sheet: spec?.sheet === true, caps: spec?.caps === true });
     if (!map) return 0;
     const out = new Uint8ClampedArray(map.w * map.h * 4);
     const written = paintRoofWeather(map, data, out, { bucket });
@@ -822,20 +818,23 @@ export function roofSnowPixels(data, width, height, bucket, roof = true) {
     return written;
 }
 
-// 1 on the texels whose centres lie inside `poly` ([[x, y], …], sprite px).
-function polygonMask(poly, width, height) {
+// 1 on the texels whose centres lie inside any of `polys` ([[[x, y], …]],
+// sprite px).
+function polygonMask(polys, width, height) {
     const mask = new Uint8Array(width * height);
-    for (let y = 0; y < height; y++) {
-        const py = y + 0.5;
-        for (let x = 0; x < width; x++) {
-            const px = x + 0.5;
-            let inside = false;
-            for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-                const [xi, yi] = poly[i];
-                const [xj, yj] = poly[j];
-                if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+    for (const poly of polys) {
+        for (let y = 0; y < height; y++) {
+            const py = y + 0.5;
+            for (let x = 0; x < width; x++) {
+                const px = x + 0.5;
+                let inside = false;
+                for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                    const [xi, yi] = poly[i];
+                    const [xj, yj] = poly[j];
+                    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+                }
+                if (inside) mask[y * width + x] = 1;
             }
-            if (inside) mask[y * width + x] = 1;
         }
     }
     return mask;

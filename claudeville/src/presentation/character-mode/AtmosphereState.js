@@ -811,9 +811,10 @@ function normalizeWeatherOverride(override, fallbackSeed = null) {
             ? clamp(Number(override.fog))
             : clamp(base.fog * (0.72 + intensity * 0.5)),
         windX: Number.isFinite(windValue) ? clamp(windValue, -WIND_MAX, WIND_MAX) : windSpeedForType(type),
-        seed: Number.isFinite(Number(override?.seed))
+        // C-W1 — `null`/`undefined` never coerce to seed 0 (`Number(null)`).
+        seed: override?.seed != null && Number.isFinite(Number(override.seed))
             ? Number(override.seed) >>> 0
-            : Number.isFinite(Number(fallbackSeed))
+            : fallbackSeed != null && Number.isFinite(Number(fallbackSeed))
                 ? Number(fallbackSeed) >>> 0
                 : hashString(`weather-override|${type}`),
         cause: 'timeline',

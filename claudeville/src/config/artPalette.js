@@ -51,6 +51,16 @@
 //                 grass so canopies model form; S <= 0.47.
 //   stone         Building masonry and props: cool blue-grey shadow to neutral
 //                 lit face (S <= 0.19).
+//   ashlar        The landmarks' own coursed masonry (sampled from the
+//                 Command and Archive base art): the village wall, gatehouse
+//                 and sea tower. Warm grey lit faces, mauve shade, plum
+//                 crevice, the landmark ink at 0. SW faces take 5-7, SE faces
+//                 2-4, top planes 7-8, joints one stop below their block.
+//   domeSlate     The Command dome's slate (joint, shade, body, lit, glint):
+//                 the gatehouse and sea tower cones, so the civic roofs share
+//                 one blue.
+//   trimGold      The Command's gilt trim, dark -> light: finials and the
+//                 gate's sign (its letters and frame).
 //   timber        Beams, planks, hulls, bridge decks.
 //   slate         Roof slate, blue-violet shadow family.
 //   clothCrimson  Banners and awnings; the only red allowed on buildings.
@@ -85,6 +95,9 @@ export const ART_RAMPS = Object.freeze({
     stone: ['#25262d', '#373944', '#4d4f5a', '#686a72', '#8c8b8a'],
     timber: ['#2a1c14', '#45301f', '#654629', '#8a6337'],
     slate: ['#1e2433', '#2c3650', '#3e4d6c', '#5a6c8c'],
+    ashlar: ['#050302', '#231821', '#4c3a4c', '#685c67', '#7f767f', '#9b8c82', '#a99f9a', '#b4aaa6', '#c4baad'],
+    domeSlate: ['#0c2246', '#1e2433', '#2d4467', '#375676', '#547793', '#6d94ad'],
+    trimGold: ['#8a5a28', '#d4984e', '#ebb754', '#fae174'],
     // 6.6 wet slate: the 1-art-px wet course on upper-left-facing slate
     // edges, one stop per wetness quantum (dry-most first), and the eave drips.
     wetSlate: ['#5a6c8c', '#6b7ea0', '#7d91b0', '#8fa3c0'],

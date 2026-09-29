@@ -16,9 +16,10 @@ import {
     FLOWER_DENSITY,
     FOREST_FLOOR_REGIONS,
     TALL_TREE_RULES,
+    DISTRICT_PROPS,
 } from '../../config/scenery.js';
 import { TREE_SPRITES } from './FoliageRenderer.js';
-import { VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
+import { inVillageMasonry, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
 
 const CARDINAL_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 // Tree clumps: spiral probe count, ring step (tiles) and minimum trunk
@@ -39,6 +40,10 @@ const TALL_STAND_JITTER = 0.3;
 // wall line and never stands on its seaward side (its roots would show on the
 // footing below the palisade).
 const WALL_TREE_CLEARANCE = 0.3;
+// A body's foot keeps this many tiles from the village's masonry: the
+// curtain's half-thickness (0.1875) plus a body's half-width, so the lattice
+// nodes 0.1 tile inside the wall line are closed and the row inside stays open.
+const WALL_MASS_REACH = 0.3;
 // 5.5 — a tall crown stays over the island: every point of its outline (an
 // ellipse filling the crown box, sampled at CROWN_OUTLINE_SAMPLES points)
 // stands over ground inside the map and off the sea and the harbour, so no
@@ -88,7 +93,7 @@ export class SceneryEngine {
         this.boulderProps = [];        // { tileX, tileY, variant, scale }
 
         this._buildingFootprints = this._collectBuildingFootprints();
-        this._buildingWalkBlocks = this._collectBuildingWalkBlocks();
+        this._walkBlocks = this._collectWalkBlocks();
         this._buildingSceneryZones = this._collectBuildingSceneryZones();
 
         this._generateWater();
@@ -132,8 +137,22 @@ export class SceneryEngine {
         return set;
     }
 
-    _collectBuildingWalkBlocks() {
+    // Tiles no body may stand on or cross: building footprints, their walk
+    // exclusion rects, the lattice nodes round the foot of a baked fixture
+    // marked `walkBlock` (DISTRICT_PROPS), and every node under the village's
+    // stone (`_wallMassNodes`). A baked fixture is drawn under every body, so
+    // a body behind or beside it would stand on it; with the nodes round its
+    // foot blocked no path stops there or steps across it (a diagonal step
+    // needs both corner nodes).
+    _collectWalkBlocks() {
         const set = new Set(this._buildingFootprints);
+        for (const key of this._wallMassNodes()) set.add(key);
+        for (const prop of DISTRICT_PROPS) {
+            if (!prop.walkBlock) continue;
+            for (const x of new Set([Math.floor(prop.tileX), Math.ceil(prop.tileX)])) {
+                for (const y of new Set([Math.floor(prop.tileY), Math.ceil(prop.tileY)])) set.add(`${x},${y}`);
+            }
+        }
         if (!this.world?.buildings) return set;
         for (const b of this.world.buildings.values()) {
             const rects = typeof b.walkExclusionRects === 'function'
@@ -148,6 +167,20 @@ export class SceneryEngine {
             }
         }
         return set;
+    }
+
+    // The lattice nodes whose foot lies within WALL_MASS_REACH of the
+    // village's stone (townPlan `inVillageMasonry`: the curtain, the
+    // gatehouse and its drums, the sea tower). The arch passage stays open:
+    // the gate's one way in.
+    _wallMassNodes() {
+        const out = [];
+        for (let y = 0; y < MAP_SIZE; y++) {
+            for (let x = 0; x < MAP_SIZE; x++) {
+                if (inVillageMasonry(x, y, WALL_MASS_REACH)) out.push(`${x},${y}`);
+            }
+        }
+        return out;
     }
 
     _collectBuildingSceneryZones() {
@@ -520,7 +553,7 @@ export class SceneryEngine {
         return this.waterTiles.has(key)
             || pathTiles.has(key)
             || bridgeTiles.has(key)
-            || this._buildingWalkBlocks.has(key);
+            || this._walkBlocks.has(key);
     }
 
     isBlockedForTallScenery(tileX, tileY, pathTiles, bridgeTiles) {
@@ -1107,7 +1140,7 @@ export class SceneryEngine {
             for (let x = 0; x < MAP_SIZE; x++) {
                 const key = `${x},${y}`;
                 const idx = y * MAP_SIZE + x;
-                if (this._buildingWalkBlocks.has(key)) continue; // 0
+                if (this._walkBlocks.has(key)) continue; // 0
                 const bridge = this.bridgeTiles.get(key);
                 if (this.waterTiles.has(key) && (!bridge || bridge.walkable === false)) continue; // 0
                 grid[idx] = 1;

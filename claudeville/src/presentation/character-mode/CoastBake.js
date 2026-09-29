@@ -81,6 +81,19 @@ const SHELF_FAR_RATE = 1.6;
 // a half, so the stop 3-4-5 contours meander instead of running as straight
 // 2:1 lines parallel to the map edge.
 const SHELF_FAR_WOBBLE = 0.7;
+// The halo's width: a low-frequency value noise along the map edge (period
+// ~14 tiles, sampled at the nearest in-map point) scales how fast the water
+// past the surf deepens, 0.3x (a wide bank) to 1.55x (a drop-off), so the
+// island's outline stops echoing the map diamond. The scale hands back to 1
+// between SHELF_NEAR_TILES and SHELF_WIDTH_FADE_TILES, so at the shelf's
+// limit (OUTER_SHELF_TILES) every contour has reached the open sea's body
+// exactly as before. 1.55x is the most that keeps the depth monotonic across
+// the hand-back (1 - 4 x 0.55 / 2.5 > 0); a slower rate always is.
+const SHELF_WIDTH_WIDEN = 0.7;
+const SHELF_WIDTH_NARROW = 0.55;
+const SHELF_WIDTH_CONTRAST = 1.8;
+const SHELF_WIDTH_FREQ = 0.21;
+const SHELF_WIDTH_FADE_TILES = OUTER_SHELF_TILES;
 // 3.3 — the outer shelf continues the in-map sea's own field (stops 2-4)
 // into the open sea's body (stop 5). Where the sea already reaches stop 5 at
 // the edge, the field is held deep enough that no wobble can lift a texel
@@ -680,6 +693,11 @@ function outerShelfSd(field, u, v, uc, vc, excess, lower) {
         base = SHELF_CLIFF_SD * landShare;
         reach = Math.max(0, excess - (CLIFF_FACE / TILE_HEIGHT) * landShare);
     } else base = Math.max(edgeSd, -BACK_SHORE_SD) + (valueNoise(uc, vc) - 0.5) * 2 * BACK_SHORE_WOBBLE * landShare;
+    // Only the water past the surf widens or narrows: a far-edge beach and
+    // its foam keep their own width, so the halo never grows a sand or foam
+    // flat.
+    const shore = Math.max(0, Math.min(reach, (FOAM_SPARSE_BAND - base) / SHELF_NEAR_RATE));
+    reach = shore + (reach - shore) * shelfWidthScale(uc, vc, excess);
     const deepen = Math.min(reach, SHELF_NEAR_TILES) * SHELF_NEAR_RATE
         + Math.max(0, reach - SHELF_NEAR_TILES) * SHELF_FAR_RATE;
     // Past the edge the depth contours wobble on value noise (growing with
@@ -688,6 +706,18 @@ function outerShelfSd(field, u, v, uc, vc, excess, lower) {
     return base + deepen + (valueNoise(u + 17, v - 11) - 0.5) * 2 * SHELF_WOBBLE * Math.min(1, reach)
         + (valueNoise(u * 0.35 + 41, v * 0.35 - 23) - 0.5) * 2 * SHELF_FAR_WOBBLE
             * Math.min(1, Math.max(0, (reach - 0.5) / 1.5));
+}
+
+// The halo width's scale on the reach at `excess` tiles past the map edge
+// point (uc, vc): low-frequency noise (contrast stretched, so the extremes
+// are common rather than rare) near the edge, handing back to 1 by
+// SHELF_WIDTH_FADE_TILES (monotonic in `excess`).
+function shelfWidthScale(uc, vc, excess) {
+    const n = valueNoise(uc * SHELF_WIDTH_FREQ + 13, vc * SHELF_WIDTH_FREQ + 29);
+    const spread = Math.min(1, Math.max(-1, (n - 0.5) * 2 * SHELF_WIDTH_CONTRAST));
+    const scale = 1 + spread * (spread < 0 ? SHELF_WIDTH_WIDEN : SHELF_WIDTH_NARROW);
+    const hand = Math.min(1, Math.max(0, (excess - SHELF_NEAR_TILES) / (SHELF_WIDTH_FADE_TILES - SHELF_NEAR_TILES)));
+    return scale + (1 - scale) * hand;
 }
 
 // An outer-shelf texel's class at world texel (x, y): the shelf paints only
@@ -877,10 +907,11 @@ const CLIFF_FACE_GRAIN_PX = 7;
 const CLIFF_FACE_OCTAVE_AMPS = Object.freeze([6, 6, 3]);
 // The revetment: a back row seated up on the wet foot and a front row
 // standing in the water, each present at a low-frequency "heap" share, so
-// the rubble runs in heaps and thin stretches, never as an even dotted row.
+// the rubble runs in heaps and thin stretches, never as an even dotted row;
+// together they cover 60-80 % of the foot (3.5).
 const BOULDER_ROWS = Object.freeze([
-    Object.freeze({ salt: 0, lift: 3, presence: 0.3, heap: 0.6 }),
-    Object.freeze({ salt: 1, lift: 0, presence: 0.5, heap: 0.45 }),
+    Object.freeze({ salt: 0, lift: 3, presence: 0.25, heap: 0.55 }),
+    Object.freeze({ salt: 1, lift: 0, presence: 0.38, heap: 0.45 }),
 ]);
 const BOULDER_HEAP_PX = 56;
 // Rock fractures: at most one per cell of this many columns (upper / lower
@@ -889,7 +920,15 @@ const BOULDER_HEAP_PX = 56;
 const FRACTURE_CELL_UPPER = 13;
 const FRACTURE_CELL_LOWER = 8;
 const FRACTURE_SHARE = 0.6;
+// The palisade band of the cliff's mirror: the village wall stands back from
+// the edge (its base PALISADE_SETBACK_MAX rows above it at most), so in the
+// water its lowest 2 x setback rows hide behind the face's own mirror and the
+// band shows the wall from there up (within PALISADE_REACH rows of its base),
+// at most PALISADE_ROWS rows (`palisadeColumns`).
 const PALISADE_ROWS = 14;
+const PALISADE_SETBACK_MAX = 16;
+const PALISADE_SPAN = 4;
+const PALISADE_REACH = 72;
 const STONE = ART_RAMPS.stone.map(hexRgb);
 
 function edgeSides() {
@@ -969,6 +1008,44 @@ function wallTexel(walls, x, y) {
         if (wall.data[o + 3] >= 128) return readRgb(wall.data, o);
     }
     return null;
+}
+
+// Per column of one side, where the palisade stands behind the edge: `lift`
+// (2 x its setback, the rows of it the face's mirror hides) and `rows` (how
+// many of its rows above those the band shows). The setback is the median of
+// the nearest wall texel over +-PALISADE_SPAN columns, so neither the gaps
+// between pickets nor a low post foot moves the base.
+function palisadeColumns(walls, side, x0, x1) {
+    const out = new Map();
+    if (!walls.length) return out;
+    const setback = new Map();
+    for (let x = x0; x < x1; x++) {
+        const edgeY = edgeYAt(side, x);
+        for (let k = 0; k < PALISADE_SETBACK_MAX; k++) {
+            if (!wallTexel(walls, x, edgeY - 1 - k)) continue;
+            setback.set(x, k);
+            break;
+        }
+    }
+    for (let x = x0; x < x1; x++) {
+        const near = [];
+        for (let dx = -PALISADE_SPAN; dx <= PALISADE_SPAN; dx++) {
+            const k = setback.get(x + dx);
+            if (k != null) near.push(k);
+        }
+        if (!near.length) continue;
+        near.sort((a, b) => a - b);
+        const base = near[near.length >> 1];
+        const edgeY = edgeYAt(side, x);
+        let top = -1;
+        for (let k = base + PALISADE_REACH; k >= base && top < 0; k--) {
+            if (wallTexel(walls, x, edgeY - 1 - k)) top = k;
+        }
+        const lift = base * 2;
+        const rows = Math.min(PALISADE_ROWS, top + 1 - lift);
+        if (rows > 0) out.set(x, { lift, rows });
+    }
+    return out;
 }
 
 // The boulder revetment along one side: two rows of overlapping 2:1 boulders
@@ -1059,6 +1136,7 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
             const at = info.get(Math.round(x));
             return !at || !at.land || at.plain;
         });
+        const palisade = palisadeColumns(walls, side, x0, x1);
         // Face strata, one texel column at a time: the stepped courses, block
         // joints (dark, with the next block's left edge lit by the upper-left
         // key) in both strata, grit in the sandstone and short water stains
@@ -1143,12 +1221,12 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
                 markCell(coast, x, y + k, { water: true });
             }
             // The mirror: the face (with its boulders) above the waterline,
-            // then the palisade standing on the edge, three alpha courses by
-            // distance, every 3rd row dropped, jittered a texel on a hash.
+            // then the palisade standing behind the edge (`palisadeColumns`),
+            // three alpha courses by distance, every 3rd row dropped,
+            // jittered a texel on a hash.
             const faceRows = waterline - col.edgeY;
-            let palisade = 0;
-            while (palisade < PALISADE_ROWS && wallTexel(walls, x, col.edgeY - 1 - palisade)) palisade += 1;
-            const length = faceRows + palisade;
+            const wall = palisade.get(x);
+            const length = faceRows + (wall ? wall.rows : 0);
             for (let k = 0; k < length; k++) {
                 const ty = y + k;
                 const at = bufferIndex(buf, x, ty);
@@ -1163,7 +1241,7 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
                     const from = bufferIndex(buf, x + jitter, sy);
                     if (from >= 0 && buf.role[from] === TEXEL_LAND) src = readRgb(data, from * 4);
                 } else {
-                    src = wallTexel(walls, x + jitter, sy);
+                    src = wallTexel(walls, x + jitter, sy - wall.lift);
                 }
                 if (!src) continue;
                 const course = Math.min(REFLECTION_ALPHAS.length - 1, Math.floor((k * REFLECTION_ALPHAS.length) / length));
@@ -1171,6 +1249,32 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
                 set(x, ty, mirrorRgb(base, src, REFLECTION_ALPHAS[course]), TEXEL_MIRROR);
                 markCell(coast, x, ty, { water: true, reflect: course + 1 });
                 markMirrorBase(coast, buf.w, at, stop);
+            }
+        }
+    }
+    fillMirrorCellHoles(buf, coast);
+}
+
+// A mirror cell's texels the open sea would paint (a dropped row, a gap
+// between pickets, the end of a shorter column's mirror) take that stop in the
+// bake, so no clear hole opens inside it: the Canvas mood copy treats every
+// texel of a mirror cell as water, and a clear one lands black.
+function fillMirrorCellHoles(buf, coast) {
+    const { reflect } = coast;
+    if (!reflect) return;
+    for (let cell = 0; cell < reflect.length; cell++) {
+        if (!reflect[cell]) continue;
+        const c = cell % coast.cols;
+        const r = (cell - c) / coast.cols;
+        for (let oy = 0; oy < 2; oy++) {
+            for (let ox = 0; ox < 2; ox++) {
+                const x = coast.x + c * 2 + ox;
+                const y = coast.y + r * 2 + oy;
+                const at = bufferIndex(buf, x, y);
+                if (at < 0 || buf.role[at] !== TEXEL_OPEN) continue;
+                const stop = texelStop(buf, at, x, y);
+                putRgb(buf.data, at * 4, COAST_WATER_STOPS[stop]);
+                buf.role[at] = CLASS_WATER + stop;
             }
         }
     }

@@ -25,6 +25,13 @@ test('two dates yield different weather timelines (no null seed coerces to 0)', 
         knotsOf(buildWeatherTimeline(new Date(2026, 8, 27, 12), 7)),
         knotsOf(buildWeatherTimeline(new Date(2026, 8, 28, 12), 7)),
     );
+    // A pinned override with no seed of its own takes the type hash, not 0.
+    const date = new Date(2026, 8, 27, 12);
+    for (const seedOverride of [null, undefined]) {
+        assert.notEqual(resolveWeather(date, { type: 'rain' }, { seedOverride }).seed, 0);
+        assert.notEqual(resolveWeather(date, { type: 'rain', seed: null }, { seedOverride }).seed, 0);
+    }
+    assert.equal(resolveWeather(date, { type: 'rain' }, { seedOverride: 7 }).seed, 7);
 });
 
 test('a year of village weather covers every type near the authored odds', () => {

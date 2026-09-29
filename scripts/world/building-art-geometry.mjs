@@ -243,7 +243,7 @@ const CYCLE_MAX_HZ = 8;
 
 function validateEmitterCycle(reporter, { id, name, layer, entry, spritesRoot }) {
     const path = `manifest.${id}.layers.${name}.cycle`;
-    const { gate, hz = 8, frames = 8, art } = layer.cycle;
+    const { gate, hz = 8, frames = 8, art, mode = 'wave' } = layer.cycle;
     if (typeof gate !== 'string' || !/^(lamps|work\.[a-z]+)$/.test(gate.trim())) {
         reporter.error(path, '`gate` must be `lamps` (lampsLitAt) or `work.<type>` (real work via isWorkingVisitor)');
     }
@@ -251,6 +251,9 @@ function validateEmitterCycle(reporter, { id, name, layer, entry, spritesRoot })
         reporter.error(path, `\`hz\` must be in (0, ${CYCLE_MAX_HZ}] (the V4 slow band)`);
     }
     if (!isPositiveInt(frames)) reporter.error(path, '`frames` must be a positive integer');
+    if (mode !== 'wave' && mode !== 'tongues') {
+        reporter.error(path, `\`mode\` must be \`wave\` (a rank wave) or \`tongues\` (a tongue climb) (got "${mode}")`);
+    }
     if (art !== undefined) {
         const artLayer = entry.layers[art];
         if (!artLayer || artLayer.cycle || artLayer.frames !== undefined || !Array.isArray(artLayer.anchor)) {

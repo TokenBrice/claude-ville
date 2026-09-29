@@ -193,6 +193,41 @@ plus `<id>.sit.json` (`groups.sit.hold`, per-facing `seatLine`, provenance),
 judged over a bench front covering everything below `seatLine`, and audited
 with `feet-audit.mjs --groups=sit:0-1 --reference=group --directions=se,sw`.
 
+### Run gait strips (plan 7.5, deferred; recipe in OF-020)
+
+No profile ships a `run` group yet: the 2026-09-29 pilot was deferred to
+after the October 9 PixelLab reset ([OF-020](../../agents/plans/open-followups.md)).
+The tooling is ready:
+
+1. `node scripts/sprites/generate-pose-strip.mjs --id=<id> --groups=run-skel
+   --directions=south,south-east,east,north-east,north,north-west,west,south-west
+   --agent=<name> --item=7.5 --plan` quotes the `running-6-frames` template
+   posed by `skeleton-v3` mode (≈ 3 generations per facing measured, 2–4
+   documented). `--groups=run` is the plain `template` mode (1 per facing);
+   the pilot rejected it for robed and caped profiles (props popping in,
+   robes redrawn as trousers, capes coming and going). Both groups share the
+   rig's `running-6-frames` animation type, so each facing's record is pinned
+   by the animation group id in the stage json; a skeleton job can outlast
+   `waitForCharacterAnimation`'s 6-minute stall guard, so rerun with
+   `--assemble-only` once the record lands instead of requesting again.
+2. Staging seats the cycle (`seatGait`): each facing drops by one amount so
+   its most grounded frame stands on the base sheet's V7 foot line, then a
+   flight frame floats at most `--gait-lift` px (default 2).
+3. `feet-audit.mjs --id=<id> --strip=<stage png> --groups=run:0-5` audits
+   `run` in gait mode: the planted-feet match does not apply to a cycle
+   that lifts its feet, so per frame `dy` is the foot line against the
+   anchor and `dx` the body's sideways hop (idle head band against the
+   cycle median), both ±2 px; fragments as usual; `flicker` fails a frame
+   whose colour histogram differs from the rest of its cycle by more than
+   `--flicker-max` (default max(0.3, 1.5 × the profile's own worst walk
+   frame)). Judge the contact sheet at z2 as well: cloth smear and a staff
+   popping in pass the numbers.
+4. `assemble-action-strip.mjs --stage=<stage png> --groups=run` appends the
+   rows after `gaze` (a `run-skel` stage ships as group `run`) and records
+   `provenance.templateStrips` (the animation mode and the animation group id
+   per facing). The runtime has no `run` consumer yet: land the wiring in
+   OF-020 with the first shipped strips.
+
 ## Manifest-Driven Bulk Bake + Contact Sheets
 
 `scripts/sprites/bake-manifest.mjs` is the supported bulk-rebake path: it reads prompt, dimensions, and output path straight from `manifest.yaml` (`style.anchor` + entry prompt), calls REST pixflux, keys out the edge background, and writes the manifest-implied PNG. Building overlay layers are addressed as `--ids=building.<id>.<layerName>`. Raw API responses cache under `output/pixellab-cache/bake/`; `--force` ignores the cache, `--dry-run` prints the plan. Characters and terrain tilesets are out of scope (different generation surfaces).
