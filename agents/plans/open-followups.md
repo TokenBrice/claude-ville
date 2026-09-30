@@ -2,7 +2,7 @@
 
 **Status:** `live checklist`
 
-**As of:** 2026-09-30, release `v0.48.2.1` (js-yaml hotfix after *Heralds of Sun and Moon*; follows *The Keeper's Lamp* and *The Waking Isle*, phases 1–5)
+**As of:** 2026-09-30, release `v0.48.2.2` (CI hook-latency hotfix after the js-yaml hotfix and *Heralds of Sun and Moon*; follows *The Keeper's Lamp* and *The Waking Isle*, phases 1–5)
 
 This is the active ledger for deferred work extracted from completed plans. A
 source plan can remain `implemented` or `release-verified`; an item belongs

@@ -202,6 +202,12 @@ const HOOK_RUN_BUDGET_MS = 500; // half the configured timeout: early warning wi
 const HOOK_MEDIAN_BUDGET_MS = 200;
 
 test('each hook mode stays under 500 ms per run (half the 1 s hook timeout) with a sub-200 ms median', () => {
+  // A fresh checkout (CI) can leave the index's stat data stale, so `git status`
+  // must re-read tracked content (~100 MB of sprites) before it can answer. The
+  // session hook kills git at 150 ms, so that refresh is never written back and
+  // every timed run pays the whole git timeout (CI runs clustered at Node startup
+  // + 150 ms, right on the median budget). Refresh once so the runs time the hook.
+  spawnSync('git', ['update-index', '-q', '--refresh'], { cwd: repoRoot, stdio: 'ignore' });
   const fixtures = {
     session: { cwd: repoRoot, hook_event_name: 'SessionStart', tool_input: {} },
     guard: bash('git status --short'),

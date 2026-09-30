@@ -2,6 +2,14 @@
 
 ---
 
+## v0.48.2.2 · Sep 30, 2026 — Hotfix
+
+- **CI green again: the hook-latency test times the hook, not git's index rebuild.** v0.48.2.1 failed CI on Node 24 (the `SessionStart` hook's median was 200.5 ms and 203.5 ms against the 200 ms budget) although no hook code changed. On a fresh checkout the index's stat data can be stale, so `git status --short` has to re-read the tracked sprites before it answers; the session hook kills it at 150 ms, the refreshed index is never written back, and every timed run cost Node startup plus the whole git timeout. `scripts/tests/agent-hooks.test.mjs` now refreshes the index once (`git update-index -q --refresh`) before timing. The hook itself is unchanged.
+
+Validation: 1285 tests passed; `gate:release` clean. In a fresh clone with a stale index, ten session runs sat at 179–184 ms (Node startup plus the 150 ms git kill); after one refresh they dropped to a 51 ms median.
+
+---
+
 ## v0.48.2.1 · Sep 30, 2026 — Hotfix
 
 - **js-yaml 4.3.1 → 4.3.2** (CVE-2026-84375, GHSA-2883-xcg3-v3hh, high): empty mappings in a YAML merge sequence did not count toward `maxTotalMergeKeys`, so a crafted merge could burn CPU without limit. Merged Dependabot PR #9 and refreshed the vendored browser copy at `claudeville/vendor/js-yaml.min.js`, which the dependency bump alone does not touch. 4.3.2 also caps a merge sequence at 100 sources; the sprite manifest parses unchanged.
