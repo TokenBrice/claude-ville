@@ -1,6 +1,6 @@
 // GENERATED FROM models.json + scripts/models/resolver.template.js — DO NOT EDIT
 
-const MODEL_REVISION = "2026-09-10";
+const MODEL_REVISION = "2026-09-30";
 const MODEL_REGISTRY = [
     {
         "accent": [
@@ -464,6 +464,105 @@ const MODEL_REGISTRY = [
             "#d8bcff",
             "#e6f1ff",
             "#8be9f5"
+        ]
+    },
+    {
+        "accent": [
+            "#fff6d8",
+            "#ffd76a",
+            "#bff7ee"
+        ],
+        "color": "#ffd76a",
+        "contextWindow": 1050000,
+        "id": "codex.gpt-6-1-sol",
+        "label": "GPT-6.1 Sol",
+        "match": [
+            "gpt-6-1-sol"
+        ],
+        "modelClass": "gpt56sol",
+        "modelTier": "mythic",
+        "mood": "deliberate",
+        "paletteKey": "codex",
+        "pricing": {
+            "cacheCreate": 2.5,
+            "cacheRead": 0.1,
+            "input": 2,
+            "output": 10
+        },
+        "provider": "codex",
+        "sample": "gpt-6.1-sol",
+        "shortLabel": "6.1 Sol",
+        "spriteId": "agent.codex.gpt56sol",
+        "trim": [
+            "#ffd76a",
+            "#ffedb3",
+            "#7be3d7"
+        ]
+    },
+    {
+        "accent": [
+            "#fff6d8",
+            "#ffd76a",
+            "#bff7ee"
+        ],
+        "color": "#ffd76a",
+        "contextWindow": 1050000,
+        "id": "codex.gpt-6-sol",
+        "label": "GPT-6 Sol",
+        "match": [
+            "gpt-6-sol"
+        ],
+        "modelClass": "gpt56sol",
+        "modelTier": "mythic",
+        "mood": "deliberate",
+        "paletteKey": "codex",
+        "pricing": {
+            "cacheCreate": 2.5,
+            "cacheRead": 0.2,
+            "input": 2,
+            "output": 10
+        },
+        "provider": "codex",
+        "sample": "gpt-6-sol",
+        "shortLabel": "6 Sol",
+        "spriteId": "agent.codex.gpt56sol",
+        "trim": [
+            "#ffd76a",
+            "#ffedb3",
+            "#7be3d7"
+        ]
+    },
+    {
+        "accent": [
+            "#f0f7ff",
+            "#cfe4ff",
+            "#bff7ee"
+        ],
+        "color": "#cfe4ff",
+        "contextWindow": 1050000,
+        "id": "codex.gpt-6-luna",
+        "label": "GPT-6 Luna",
+        "match": [
+            "gpt-6-luna"
+        ],
+        "modelClass": "gpt56luna",
+        "modelTier": "balanced",
+        "mood": "quick",
+        "paletteKey": "codex",
+        "pricing": {
+            "cacheCreate": 0.125,
+            "cacheRead": 0.01,
+            "input": 0.1,
+            "output": 0.5
+        },
+        "provider": "codex",
+        "sample": "gpt-6-luna",
+        "shortLabel": "6 Luna",
+        "spriteId": "agent.codex.gpt56luna",
+        "trim": [
+            "#cfe4ff",
+            "#9db8d9",
+            "#7be3d7"
         ]
     },
     {

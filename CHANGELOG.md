@@ -2,6 +2,18 @@
 
 ---
 
+## v0.48.2 — *Heralds of Sun and Moon* · Sep 30, 2026
+
+OpenAI's sixth generation reached the gate unannounced. GPT-6 Sol and Luna (Sep 22) and GPT-6.1 Sol (Sep 29) matched no registry row, so every one of them, including OMP's `openai-codex/…` subagents, marched in as a nameless Codex battle-engineer with the `Codex` label and default OpenAI pricing. They now join the celestial guard under their own names.
+
+- **Sol and Luna, sixth generation.** `gpt-6-sol` and `gpt-6.1-sol` wear the radiant sun-warlord armor with the dawn greatblade, labelled `6 Sol` and `6.1 Sol`; `gpt-6-luna` wears the moonlit skirmisher's armor with the crescent saber, labelled `6 Luna`. Each keeps the celestial effort ladder from `low` to `max` in World, Dashboard, and the Activity Panel. Bare, `openai/`-qualified, and `openai-codex/`-qualified IDs all resolve; unknown GPT-6 IDs such as bare `gpt-6` still fall back to the generic Codex identity.
+- **Honest prices and context.** Registry revision `2026-09-30`, verified against OpenAI's model pages: GPT-6 Sol $2 input, $10 output, $0.20 cache read, $2.50 cache write per MTok; GPT-6 Luna $0.10, $0.50, $0.01, $0.125; GPT-6.1 Sol $2, $10, $0.10, $2.50. All three carry a 1,050,000-token context window. The static estimate does not apply the >272K-input long-context multipliers.
+- **A trap for future rows.** Registry aliases are matched against the normalized model, where dots become hyphens and only `gpt-5-N` is re-dotted, so an alias written in the GPT-5.6 style (`gpt-6.1-sol`) can never match. The new rows use the hyphenated form (`gpt-6-1-sol`), and `docs/design-decisions.md` records the rule.
+
+Validation: 1285 tests passed; `gate:release` (`validate:quick`, integration replay, `verify:server`) and `verify:render` clean; `models:resolve` maps the bare, `openai/`, and `openai-codex/` forms of all three IDs to their rows, with matching server and browser pricing, context, label, and sprite; a reloaded live village shows 16 OMP GPT-6.1 Sol subagents in Sol's armor.
+
+---
+
 ## v0.48.1 — *The Keeper's Lamp* · Sep 29, 2026
 
 At night the Lighthouse swept two long fans of light across the sea, yet the lamp that cast them showed only two finger-length wedges at the glass, so the light on the water looked far larger than its source. The lamp now throws its beam through the air as far as it lights the sea.
