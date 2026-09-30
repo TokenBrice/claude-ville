@@ -2,6 +2,14 @@
 
 ---
 
+## v0.48.2.1 · Sep 30, 2026 — Hotfix
+
+- **js-yaml 4.3.1 → 4.3.2** (CVE-2026-84375, GHSA-2883-xcg3-v3hh, high): empty mappings in a YAML merge sequence did not count toward `maxTotalMergeKeys`, so a crafted merge could burn CPU without limit. Merged Dependabot PR #9 and refreshed the vendored browser copy at `claudeville/vendor/js-yaml.min.js`, which the dependency bump alone does not touch. 4.3.2 also caps a merge sequence at 100 sources; the sprite manifest parses unchanged.
+
+Validation: 1285 tests passed; `gate:release` and `verify:render` clean; the refreshed vendor file is byte-identical to the npm 4.3.2 `dist/js-yaml.min.js`; a 5,000-source empty merge that the old vendored parser accepted is now rejected (`abnormal merge sequence size`) in Node and in the live page, while ordinary merges and the sprite manifest parse unchanged.
+
+---
+
 ## v0.48.2 — *Heralds of Sun and Moon* · Sep 30, 2026
 
 OpenAI's sixth generation reached the gate unannounced. GPT-6 Sol and Luna (Sep 22) and GPT-6.1 Sol (Sep 29) matched no registry row, so every one of them, including OMP's `openai-codex/…` subagents, marched in as a nameless Codex battle-engineer with the `Codex` label and default OpenAI pricing. They now join the celestial guard under their own names.
