@@ -134,9 +134,9 @@ geometry map (below) instead of an occluder atlas.
 Generated emissive defaults come only from named semantic sources and existing
 window/light anchors. The tooling does not infer emission from luminance.
 
-Every building except the Portal ships an authored `base.emissive.png`
-(Command, Observatory, Archive, Forge, Mine, Task board, Harbor, and the
-Lighthouse `building.watchtower`); lit panes live only in the sidecar and the
+Every building ships an authored `base.emissive.png` (Command, Observatory,
+Archive, Forge, Mine, Task board, Harbor, Portal, and the Lighthouse
+`building.watchtower`); lit panes live only in the sidecar and the
 albedo keeps dark glass, so a building is never lit by day or by an empty
 night. Generated emission for a building without a sidecar
 (`scripts/sprites/atlas-bake.mjs`, `geometry: registry.windowRects`) reads each

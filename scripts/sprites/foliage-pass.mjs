@@ -108,12 +108,12 @@ for (const target of TARGETS) {
 }
 console.log(`[foliage-pass] ${processed} sprite(s) ${previewDir ? `previewed to ${previewDir}` : dryRun ? 'checked (dry run)' : 'written'}`);
 
-// Plan 5.5 sheets (tall woodland trees and the bare/snow winter states) were
-// authored palette-snapped and plinth-free, so the pass never re-tones them
-// (a re-tone would move them off the C1 stops); it checks them instead:
-// binary alpha, every pixel a stop of the leaf/wood/snow ramps, nothing below
-// the trunk-base row, and each winter state on its leafy sheet's canvas and
-// trunk base. Exits 1 on a failed check.
+// Plan 5.5 sheets (tall woodland trees and the bare/snow winter states) and
+// the world ash's sheets were authored palette-snapped and plinth-free, so the
+// pass never re-tones them (a re-tone would move them off the C1 stops); it
+// checks them instead: binary alpha, every pixel a stop of the
+// leaf/wood/snow ramps, nothing below the trunk-base row, and each winter
+// state on its leafy sheet's canvas and trunk base. Exits 1 on a failed check.
 const AUTHORED_RAMPS = ['foliage', 'foliageSun', 'foliageDeep', 'timber', 'snow'];
 const authoredStops = new Set(AUTHORED_RAMPS.flatMap((key) => ART_RAMPS[key].map((hex) => hex.toLowerCase())));
 const baseRow = (png) => {
@@ -125,7 +125,7 @@ const baseRow = (png) => {
 let failures = 0;
 for (const [key, sprite] of Object.entries(TREE_SPRITES)) {
     const leafy = Object.entries(TREE_SPRITES).find(([, s]) => s.bare === key || s.snow === key);
-    if (!key.endsWith('.tall') && !leafy) continue;
+    if (!/\.(tall|world)$/.test(key) && !leafy) continue;
     const png = PNG.sync.read(readFileSync(join(VEG, `${sprite.id}.png`)));
     const problems = [];
     const off = new Set();

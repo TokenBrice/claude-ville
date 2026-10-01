@@ -155,10 +155,10 @@ function mirrorAccentRecords(renderer, records) {
     }
 }
 
-// 2.1 / V5 — terrain-baked props that hold water (the plaza rune fountain,
-// the well): the terrain's quarter-resolution class map paints their basin
-// as the plaza cobble under them, so a brazier pool laid lime on the
-// fountain water. One record per prop redraws its water texels only
+// 2.1 / V5 — terrain-baked props that hold water (the rune fountain on the
+// Archive lawn, the well): the terrain's quarter-resolution class map paints
+// their basin as the ground under them, so a brazier pool would lay its
+// ground tint on the water. One record per prop redraws its water texels only
 // (blue-dominant on the authored sprite) right after the terrain, with a
 // material sidecar marking them as water, which the light loop keeps out of
 // every diffuse pool. Everything else stays the terrain bake's own pixels

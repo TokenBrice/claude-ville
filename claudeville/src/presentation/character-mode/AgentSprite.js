@@ -4199,7 +4199,7 @@ export class AgentSprite {
         return mark;
     }
 
-    // 7.1 — the stone seat (Command step, fountain rim) this villager sits
+    // 7.1 — the stone seat (a Command step) this villager sits
     // on: { back, front } stamps drawn in its own depth slot, so the stone
     // exists only under a sitter. Null standing, or on a timber seat.
     _seatStoneStamps() {

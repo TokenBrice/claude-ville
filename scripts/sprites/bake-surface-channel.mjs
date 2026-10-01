@@ -158,15 +158,27 @@ export const SURFACE_SPECS = Object.freeze({
         ],
     },
     portal: {
-        base: { left: [57, 146], bottom: [153, 194], right: [258, 141] },
+        // The dais's front corner; its two coursed faces run off it.
+        base: { corner: [178, 258] },
         roof: [],
         regions: [
-            // Stairs from the ground up to the dais.
-            { face: 'up', poly: [[86, 152], [104, 142], [126, 152], [126, 172], [108, 182], [86, 172]], height: { ramp: [[96, 176, 0], [116, 150, 23]] } },
-            // Dais flagstones.
-            { face: 'up', height: 23, poly: [[57, 123], [88, 108], [100, 112], [118, 104], [135, 122], [165, 118], [178, 125], [192, 150], [153, 171]] },
-            // Arch, crystals and rock slabs standing on the dais.
-            { face: 'auto', lift: 23, base: { corner: [190, 152] }, poly: [[0, -1], [312, -1], [312, 121], [253, 124], [192, 150], [178, 125], [135, 122], [118, 104], [88, 108], [57, 123], [0, 123]] },
+            // Steps from the ground up to the dais, under the vortex.
+            { face: 'up', poly: [[104, 184], [146, 205], [135, 214], [135, 240], [117, 248], [73, 225], [78, 214], [99, 191]], height: { ramp: [[96, 236, 0], [124, 195, 23]] } },
+            // The two crystal braziers standing on the dais.
+            { face: 'auto', lift: 23, base: { corner: [92, 179] }, poly: [[80, 152], [106, 152], [106, 180], [80, 180]] },
+            { face: 'auto', lift: 23, base: { corner: [171, 216] }, poly: [[158, 188], [185, 188], [185, 217], [158, 217]] },
+            // Dais flagstones, up to the feet of the towers, the arch and the vortex.
+            { face: 'up', height: 23, poly: [[36, 171], [80, 149], [100, 152], [129, 163], [182, 190], [205, 203], [221, 209], [235, 203], [236, 163], [277, 183], [277, 188], [178, 237], [135, 214], [101, 187], [81, 195], [36, 172]] },
+            // The left wing's faces stand 5 px proud of the right block's.
+            { face: 'auto', base: { corner: [81, 217] }, poly: [[30, 166], [100, 166], [100, 232], [30, 232]] },
+            // The two slate spires are roofs (snow, wet course); their gold
+            // bands and finials stay walls.
+            { face: 'roof', lift: 23, base: { corner: [96, 154] }, poly: [[83, 4], [109, 4], [111, 59], [81, 59]], match: [SLATE] },
+            { face: 'roof', lift: 23, base: { corner: [221, 209] }, poly: [[207, 59], [237, 59], [238, 111], [206, 111]], match: [SLATE] },
+            // The left tower on its own front corner; its slate-glass slits are walls.
+            { face: 'auto', lift: 23, base: { corner: [96, 154] }, poly: [[78, -1], [111, -1], [111, 64], [102, 70], [101, 153], [80, 150], [78, 150]] },
+            // The arch, the vortex and the right tower, on the right tower's front corner.
+            { face: 'auto', lift: 23, base: { corner: [221, 209] }, poly: [[60, -1], [250, -1], [250, 163], [236, 163], [235, 203], [221, 210], [205, 204], [182, 191], [129, 164], [100, 153], [80, 150], [60, 150]] },
         ],
     },
 });

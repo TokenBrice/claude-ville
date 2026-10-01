@@ -1,6 +1,6 @@
 // GroundBake — the land surface as one art-directed bake (plan items 3.2,
 // 3.3, 4.7 and the ground half of 4.2 in
-// agents/plans/claudeville-opus55-aesthetic-plan.md).
+// the Opus 5.5 aesthetic plan).
 //
 // Replaces per-tile land stamping (square Wang cells stretched into the iso
 // diamond, per-tile tone diamonds, 1×1 flecks, cube-shaped vegetation
@@ -31,7 +31,7 @@
 //                    (flagstone, gravel, cinder, earth) with low baked kerbs
 //                    or wattle edging where it meets grass.
 //   8. living ground (plan 5.1 and 5.4 of
-//                    agents/plans/claudeville-opus55-xhigh-visual-plan.md)
+//                    the Waking Isle plan)
 //                    a chamfer distance from grass to the paths and a crown
 //                    field pushed downwind under every tree place clustered
 //                    micro-detail: an unmown verge of blades and seed heads
@@ -743,6 +743,8 @@ const CROWN_RADIUS = Object.freeze({
     'oak.large': 26, 'oak.small': 9, 'pine.large': 13, 'willow.large': 20, 'willow.small': 12,
     // 5.5 — the woodland-only tall sheets (≈ 1.85× the large crowns).
     'oak.tall': 48, 'pine.tall': 20, 'willow.tall': 34,
+    // The world ash (scenery.js WORLD_TREE): its crown shades its whole islet.
+    'ash.world': 119,
 });
 // Leaves and needles fall around the trunk and drift downwind: the prevailing
 // knot wind blows toward screen right, so the drop zone sits a fifth of a
@@ -757,8 +759,8 @@ function buildCrownField(r, { cols, rows, x0, y0 }) {
     const dist = new Float32Array(cols * rows).fill(9);
     const owner = new Int16Array(cols * rows).fill(-1);
     trees.forEach((tree, index) => {
-        const species = tree.species === 'pine' || tree.species === 'willow' ? tree.species : 'oak';
-        const size = tree.size === 'tall' ? 'tall' : tree.size === 'small' && species !== 'pine' ? 'small' : 'large';
+        const species = tree.species === 'pine' || tree.species === 'willow' || tree.species === 'ash' ? tree.species : 'oak';
+        const size = species === 'ash' ? 'world' : tree.size === 'tall' ? 'tall' : tree.size === 'small' && species !== 'pine' ? 'small' : 'large';
         const radius = CROWN_RADIUS[`${species}.${size}`] / 2;
         const cc = ((tree.tileX - tree.tileY) * HALF_W - x0) / TEXEL_W + DROP_DRIFT * radius;
         const rc = (tree.tileX + tree.tileY) * HALF_H - y0;
@@ -923,6 +925,8 @@ function drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put
 
             if (tree && cd < 1) {
                 // Under a crown: litter by season, then needles, twigs, moss.
+                // The evergreen world ash sheds no seasonal litter: twigs and
+                // moss all year.
                 const near = 1 - cd;
                 const drift = 0.6 + 0.8 * vnoise(sx / 14, sy / 7, 1203);
                 if (tree.species === 'pine') {
@@ -932,7 +936,7 @@ function drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put
                     }
                     continue;
                 }
-                if ((autumn || winter) && cellCandidate(col, row, 3, 2, 1214)) {
+                if ((autumn || winter) && tree.species !== 'ash' && cellCandidate(col, row, 3, 2, 1214)) {
                     if (h < near ** 1.2 * (autumn ? 1.1 : 0.3) * drift) {
                         const litter = litterFor(tree, season);
                         const k = Math.floor(pick * litter.length);
@@ -954,7 +958,7 @@ function drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put
                 }
                 continue;
             }
-            if (tree && autumn && tree.species !== 'pine' && cellCandidate(col, row, 3, 2, 1214)
+            if (tree && autumn && tree.species !== 'pine' && tree.species !== 'ash' && cellCandidate(col, row, 3, 2, 1214)
                 && h < (CROWN_REACH - cd) * 0.25) {
                 // A few leaves blown past the drop zone.
                 const litter = litterFor(tree, season);

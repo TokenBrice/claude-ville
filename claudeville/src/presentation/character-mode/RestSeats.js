@@ -7,9 +7,9 @@
 // BACK slice (its top face) sorts just behind the seat point, the FRONT slice
 // (the faces toward the camera) just in front of it, so a villager seated at
 // the seat point is drawn between them and the front slice hides its legs
-// (M12). A stone seat (a step at Command, the fountain rim) is part of the
-// masonry it sits against, so it is never drawn empty: the sitter carries its
-// two slices in its own depth slot (`seatStoneStamps`), back before the body
+// (M12). A stone seat (a step at Command) is part of the masonry it sits
+// against, so it is never drawn empty: the sitter carries its two slices in
+// its own depth slot (`seatStoneStamps`), back before the body
 // and front after it. The sitter's seat line lands on the front slice's top
 // edge (`seatLineOffset`).
 //
@@ -49,7 +49,6 @@ export const FALLBACK_SEAT_DROP = 5;
 const SEAT_KINDS = Object.freeze({
     bench: { half: 0.36, depth: 0.1, height: 8, ramp: 'timber', recess: true, planks: true, backrest: 8 },
     step: { half: 0.3, depth: 0.13, height: 7, ramp: 'masonry', courses: 4, block: 8, stone: true },
-    well: { half: 0.28, depth: 0.12, height: 8, ramp: 'masonry', courses: 4, block: 7, lip: true, stone: true },
     pier: { half: 0.4, depth: 0.1, height: 6, ramp: 'timber', seam: true, post: true },
 });
 
@@ -142,7 +141,6 @@ function seatPixels(seat) {
         if (cell.face === 'long') {
             if (kind.recess && lift < H - 2 && !nearLeg(cell, project, kind)) colour = colours.dark;
             if (kind.seam && Math.round(lift) === Math.round(H / 2)) colour = colours.seam;
-            if (kind.lip && lift >= H - 1.5) colour = colours.top;
         }
         if (kind.courses && (cell.face === 'long' || cell.face === 'cap')) {
             // Dressed blocks: a mortar row atop each course below the top one,
@@ -150,7 +148,7 @@ function seatPixels(seat) {
             const faceLift = cell.face === 'long' ? lift : capLift(cell, project, kind);
             const row = Math.floor(faceLift);
             const course = Math.floor(row / kind.courses);
-            const topRow = row >= H - 1 || (kind.lip && faceLift >= H - 1.5);
+            const topRow = row >= H - 1;
             const offset = course % 2 ? Math.floor(kind.block / 2) : 0;
             if (!topRow && positiveMod(row, kind.courses) === kind.courses - 1) colour = colours.seam;
             else if (!topRow && positiveMod(x + offset, kind.block) === 0) colour = colours.seam;

@@ -196,7 +196,7 @@ with `feet-audit.mjs --groups=sit:0-1 --reference=group --directions=se,sw`.
 ### Run gait strips (plan 7.5, deferred; recipe in OF-020)
 
 No profile ships a `run` group yet: the 2026-09-29 pilot was deferred to
-after the October 9 PixelLab reset ([OF-020](../../agents/plans/open-followups.md)).
+after the October 9 PixelLab reset (open follow-up OF-020).
 The tooling is ready:
 
 1. `node scripts/sprites/generate-pose-strip.mjs --id=<id> --groups=run-skel

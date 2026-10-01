@@ -33,9 +33,9 @@ export const BUILDING_MATERIAL_REGISTRY = Object.freeze({
         emissiveSource('emissive.observatory.windows', 'windows', 'windowRects', 0.62),
         emissiveSource('emissive.observatory.dome', 'rune', 'effectAnchors.domeAperture', 0.78),
     ]),
-    portal: landmarkMaterial('portal', 'glass-rune', 208, 130, [
-        emissiveSource('emissive.portal.aperture', 'rune', 'windowRects', 0.78),
+    portal: landmarkMaterial('portal', 'stone', 264, 150, [
         emissiveSource('emissive.portal.vortex', 'rune', 'layers.portalGlow', 1),
+        emissiveSource('emissive.portal.runes', 'rune', 'layers.runes', 0.8),
     ]),
     watchtower: landmarkMaterial('watchtower', 'stone', 384, 300, [
         emissiveSource('emissive.watchtower.windows', 'windows', 'windowRects', 0.68),
@@ -361,7 +361,6 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
     portal: {
         material: BUILDING_MATERIAL_REGISTRY.portal,
         grounding: BUILDING_GROUNDING_PROFILES.portal,
-        nativeSize: { w: 312, h: 208 },
         labelAccent: '#8bd7ff',
         emblem: 'rune',
         districtTint: 'rgba(139, 215, 255, 0.2)',
@@ -370,17 +369,12 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.86 },
         labelPriority: 'landmark',
         beaconBase: 0.92,
-        // Violet rune aperture; kept separate from the mine's amber fire.
-        // No emissive sidecar to validate against: centred by eye on the
-        // aperture (x 139-164) between the arch's inner stones.
-        windowColor: '#b38cff',
-        windowRects: [
-            { at: [142, 92], w: 5, h: 26 },
-            { at: [152, 84], w: 8, h: 32, shape: 'ellipse' },
-            { at: [161, 92], w: 5, h: 26 },
-        ],
+        // The vortex is no window and no room: its glass is the emissive
+        // sidecar plus the `portalGlow` fixture overlay, so the Portal carries
+        // no `windowRects`. The vortex's violet pools on the flagstones in
+        // front of it while the Portal works (kept apart from the mine's amber).
         doorSpill: {
-            at: [144, 128],
+            at: [149, 183],
             color: '#9b7cff',
             maxAlpha: 0.2,
             steps: [
@@ -389,7 +383,15 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
                 { offset: [-16, 3], w: 32, h: 1 },
             ],
         },
-        pennant: { at: [170, 30] },
+        // The right tower's gilt finial.
+        pennant: { at: [222, 62] },
+        // 2026-10-01 re-author: `gate` is the vortex threshold on the dais
+        // floor (the ritual rings, plaque and summon curve's origin),
+        // `vortex` the vortex's heart (the status rings and the ritual light).
+        effectAnchors: {
+            gate: [150, 186],
+            vortex: [156, 128],
+        },
     },
     watchtower: {
         material: BUILDING_MATERIAL_REGISTRY.watchtower,
@@ -480,8 +482,8 @@ export const BUILDING_EMITTER_FALLBACKS = {
         { type: 'mining', at: [70, 194], chance: 0.026, count: 1 },
     ],
     portal: [
-        { type: 'portalRune', at: [144, 60], chance: 0.05, count: 1 },
-        { type: 'sparkle', at: [122, 80], chance: 0.025, count: 1 },
+        { type: 'portalRune', at: [156, 128], chance: 0.05, count: 1 },
+        { type: 'sparkle', at: [92, 158], chance: 0.025, count: 1 },
     ],
     watchtower: [
         { type: 'beaconMote', at: WATCHTOWER_LANTERN_FIRE.particle, chance: 0.038, count: 1 },

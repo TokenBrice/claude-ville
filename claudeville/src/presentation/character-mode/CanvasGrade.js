@@ -1,4 +1,4 @@
-// Canvas-fallback half of C2 + 1.2 (agents/plans/claudeville-opus55-aesthetic-plan.md).
+// Canvas-fallback half of C2 + 1.2 (the Opus 5.5 aesthetic plan).
 //
 // The resident renderer grades each albedo fragment with GRADE_GLSL and then
 // adds stepped multiplicative light pools. Canvas cannot read the albedo back

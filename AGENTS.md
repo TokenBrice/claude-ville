@@ -30,7 +30,7 @@ Start the maintained local server with `npm run dev` at `http://localhost:4000`.
 | CI | `.github/workflows/ci.yml` | `npm ci` + `validate:full` on Node 22 and 24 |
 | Documentation | `docs/` | [`docs/README.md`](docs/README.md) |
 
-Retained agent artifacts belong under `/agents/`; read [`agents/README.md`](agents/README.md) before using or adding one.
+`/agents/` is gitignored local scratch for agent plans, research, and handovers: never commit it, and never link to it from tracked files.
 
 ## Validation
 
@@ -42,7 +42,7 @@ Match the command to the change:
 | Anything under `src/` | `npm run verify:render` for screenshot and console evidence, then judgment on the maintained server |
 | Server / adapters | `npm run verify:server` |
 | Structure / docs | `npm run verify:architecture` (includes root-doc parity) |
-| Retained artifacts | `npm run check:artifacts` |
+| Agent scratch | `npm run check:artifacts` (`/agents/` stays ignored and untracked) |
 | Integration replay | `npm run test:integration` |
 | Sprite assets / `manifest.yaml` | `npm run sprites:audit-refresh`; visuals: `npm run sprites:capture-fresh` then `npm run sprites:visual-diff` |
 | World buildings / terrain config | `npm run world:validate-buildings`; `npm run world:validate-terrain` |

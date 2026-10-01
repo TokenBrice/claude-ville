@@ -1,7 +1,7 @@
 // claudeville/src/presentation/character-mode/GroundState.js
 //
 // C-W2 — the ground remembers the weather (plan 5.2 of
-// agents/plans/claudeville-opus55-xhigh-visual-plan.md). One pure function of
+// the Waking Isle plan). One pure function of
 // (local date, minute, timeline inputs):
 //
 //   groundStateAt(date, options) → { wetness, puddles, snowCover, frost }

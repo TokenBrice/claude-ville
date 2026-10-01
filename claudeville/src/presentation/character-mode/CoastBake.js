@@ -1,6 +1,6 @@
 // 3.4 / 3.5 / 3.7 — the continuous coast field, the baked water ramp, the
 // land-only stratified cliff, the cached outer ocean and the baked landmark
-// reflections (agents/plans/claudeville-opus55-aesthetic-plan.md, Wave 3).
+// reflections (the Opus 5.5 aesthetic plan, Wave 3).
 //
 // Water used to be stamped per tile: two flat tones met at hard 64x32 diamond
 // steps, outlined by contour strokes, and the map edge fenced the east sea in
@@ -26,7 +26,7 @@
 
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
-import { WATER_POLYLINES } from '../../config/scenery.js';
+import { WATER_POLYLINES, WORLD_TREE, inWorldTreeIslet } from '../../config/scenery.js';
 import * as CanvasGrade from './CanvasGrade.js';
 import { emissiveSidecarFor } from './EmitterCuts.js';
 
@@ -343,10 +343,27 @@ function buildCoastField(renderer) {
             tileGrow[index] = !water && inside && growableLand(renderer, key, footprints) ? 1 : 0;
         }
     }
+    // The world ash's islet (scenery.js WORLD_TREE.islet) is seeded per
+    // sub-sample from its oval, not from whole tiles, so its shore rounds and
+    // wanders like a basin coast; those samples skip the land clamp below.
+    const islet = WORLD_TREE.islet;
+    const isletReach = Math.max(islet.radiusX, islet.radiusY) * 1.3;
+    const isletSample = new Uint8Array(n * n);
     for (let gy = 0; gy < n; gy++) {
         const ty = Math.floor(gy / SUB);
+        const y = (gy + 0.5) / SUB - PAD;
         for (let gx = 0; gx < n; gx++) {
-            seed[gy * n + gx] = tileWater[ty * tiles + Math.floor(gx / SUB)];
+            const index = gy * n + gx;
+            seed[index] = tileWater[ty * tiles + Math.floor(gx / SUB)];
+            const x = (gx + 0.5) / SUB - PAD;
+            const wx = (x - y) * TILE_WIDTH / 2;
+            const wy = (x + y) * TILE_HEIGHT / 2;
+            if (Math.abs(wx - islet.centerX) > isletReach || Math.abs(wy - islet.centerY) > isletReach) continue;
+            // Only open water and the islet's own tiles take the oval; other
+            // land in reach (the peninsula) keeps its tiles.
+            if (!seed[index] && !renderer.scenery?.isWorldTreeIslet?.(`${Math.floor(x)},${Math.floor(y)}`)) continue;
+            isletSample[index] = 1;
+            seed[index] = inWorldTreeIslet(wx, wy) ? 0 : 1;
         }
     }
     const blurred = new Float32Array(n * n);
@@ -362,7 +379,7 @@ function buildCoastField(renderer) {
             const index = gy * n + gx;
             let f = value[index] + (valueNoise(u, v) - 0.5) * 2 * NOISE_AMPLITUDE;
             const tIndex = ty * tiles + Math.floor(gx / SUB);
-            if (!tileWater[tIndex] && !tileGrow[tIndex]) f = Math.min(f, 0.48);
+            if (!tileWater[tIndex] && !tileGrow[tIndex] && !isletSample[index]) f = Math.min(f, 0.48);
             value[index] = f;
         }
     }

@@ -162,9 +162,8 @@ claude-ville/
 |   |-- release/               # Changelog validation and version bump
 |   |-- adapters/              # Adapter fixtures and their validator
 |   |-- agent-hooks/           # Claude Code hook helper
-|   `-- agents/                # Retained-artifact index check
+|   `-- agents/                # Agent-scratch guard (check:artifacts)
 |-- docs/                      # Contracts, runbooks, troubleshooting; assets/github/ screenshots
-|-- agents/                    # Retained plans and research (see agents/README.md)
 |-- .claude/                   # Claude Code skills and hooks
 |-- .github/workflows/ci.yml   # npm ci + validate:full on Node 22 and 24
 `-- package.json
@@ -245,7 +244,7 @@ All providers derive a turn state (`working`, `tool_pending`, `awaiting_input`, 
 | `check:server`, `check:adapters`, `check:services`, `check:frontend-syntax`, `check:scripts` | JavaScript syntax checks. |
 | `check:git-events`, `check:adapter-fixtures` | Git-event parsing and adapter fixture validation. |
 | `check:theme-tokens` | Status colour tokens agree between `theme.js` and CSS, with the literal allowlist. |
-| `check:artifacts` | `agents/README.md` inventory and plan statuses match the artifacts. |
+| `check:artifacts` | `/agents/` (local agent scratch) stays gitignored and untracked. |
 | `audio:probe` | Local audio gate: renders Signals and the Town band and checks loudness, audibility, timing, captions, and music invariants. Not in CI. See [`scripts/audio/README.md`](./scripts/audio/README.md). |
 | `models:generate`, `models:check` | Generate `models.generated.js`/`.cjs` from `models.json`; fail on drift. |
 | `models:resolve -- <provider> <model>` | Print how a model resolves on server and browser (pricing, context, label, sprite, sheet) and exit non-zero on disagreement. |
@@ -315,7 +314,6 @@ For setup and troubleshooting, start with [SUPPORT.md](./SUPPORT.md) and [docs/t
 | [`docs/design-decisions.md`](./docs/design-decisions.md) | Maintainers | Load-bearing constraints and what to update if one changes. |
 | [`docs/troubleshooting.md`](./docs/troubleshooting.md) | Operators and agents | Common failures, diagnosis paths, and CLI hook setup. |
 | [`scripts/sprites/generate.md`](./scripts/sprites/generate.md) | Sprite work | Manifest-first PixelLab generation and asset validation. |
-| [`agents/README.md`](./agents/README.md) | Agents | Retained artifact policy and index. |
 
 ## License
 

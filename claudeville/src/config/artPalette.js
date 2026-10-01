@@ -1,5 +1,5 @@
 // Master palette and value ladder (contract C1 of
-// agents/plans/claudeville-opus55-aesthetic-plan.md).
+// the Opus 5.5 aesthetic plan).
 //
 // Plain data, importable from the browser and from Node scripts. Ramps run
 // dark -> light and shift hue as they climb: shadows lean cool (blue/teal),
@@ -107,7 +107,7 @@ export const ART_RAMPS = Object.freeze({
     seaPath: ['#c48054', '#ecb068', '#969d8f', '#c0bea4', '#849ab0', '#c4d6e2'],
     lampBeam: ['#7a929c', '#98adb3', '#b8c8c8', '#d2dcd8', '#f4f1e2'],
     // Seasonal and per-tree ramps (plan items 5.1 and 5.3 of
-    // agents/plans/claudeville-opus55-xhigh-visual-plan.md). FoliageRenderer
+    // the Waking Isle plan). FoliageRenderer
     // remaps canopy pixels onto them by luminance rank, dark -> light; the
     // eight-stop canopy ramps follow the authored tree value ladder (lum
     // 34-170), so a remap keeps the painted form. `npm run art:analyze`

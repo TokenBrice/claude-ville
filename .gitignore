@@ -3,6 +3,8 @@ node_modules/
 *.log
 docs/plans/
 docs/superpowers/
+# Agent scratch (plans, research, handovers): local only, never committed.
+/agents/
 output/
 smoke-*.png
 /*.png

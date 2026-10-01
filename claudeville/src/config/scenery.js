@@ -335,6 +335,37 @@ export const TREE_CLUMPS = [
     { tileX: 30.4, tileY: 31.6, trees: 4, species: 'pine', mix: { oak: 1 } },
 ];
 
+// The world ash (user item 5): one colossal evergreen (FoliageRenderer
+// `ash.world`, 240×271 px) planted on the northern lagoon islet between the
+// Observatory and the Lighthouse. `tileX`/`tileY` is the sheet's anchor, its
+// front root tip; the trunk meets the ground about 30 px up the sheet.
+// `islet` is the islet's land, an authored oval in world px (centre, radii,
+// `edgeNoise` the share its radius wanders round the rim) sized so every root
+// stands on sand or grass with a sand rim past the outermost tips.
+// `inWorldTreeIslet` is the one test: SceneryEngine takes the tiles whose
+// centre it covers back from the lagoon and sea basins (and blocks them for
+// walking and generated scenery), and CoastBake seeds its sub-tile coast
+// field from the oval itself, so the shore, sand ring and foam follow a
+// rounded, gently irregular rim like every basin coast, never whole tiles.
+// SceneryEngine adds the tree after the generated trees, outside every clump
+// and woodland rule.
+export const WORLD_TREE = Object.freeze({
+    tileX: 21.16,
+    tileY: 7.69,
+    islet: Object.freeze({ centerX: 428, centerY: 431, radiusX: 105, radiusY: 63, edgeNoise: 0.05 }),
+});
+
+// True when world point (x, y) lies on the world ash's islet: inside its oval,
+// whose radius wanders by `edgeNoise` on a smooth five-lobed angular wave.
+export const inWorldTreeIslet = (x, y) => {
+    const { centerX, centerY, radiusX, radiusY, edgeNoise } = WORLD_TREE.islet;
+    const dx = (x - centerX) / radiusX;
+    const dy = (y - centerY) / radiusY;
+    const angle = Math.atan2(dy, dx);
+    const wave = 0.6 * Math.sin(angle * 3 + 0.9) + 0.4 * Math.sin(angle * 5 + 2.3);
+    return Math.hypot(dx, dy) <= 1 + edgeNoise * wave;
+};
+
 // Static large boulders. Drawn Y-sorted (occlude behind agents).
 export const BOULDERS = [
     { tileX: 7.4, tileY: 14.2, scale: 1.1, variant: 'a' },
@@ -407,8 +438,6 @@ export const ANCIENT_RUINS = [
 
 export const DISTRICT_PROPS = [
     { tileX: 11.9, tileY: 21.0, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
-    { tileX: 19.2, tileY: 21.1, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
-    { tileX: 15.4, tileY: 21.6, id: 'prop.runeFountain', layer: 'cache', district: 'civic' },
     { tileX: 2.2, tileY: 14.4, id: 'veg.root.arch', layer: 'sorted', district: 'elderwood' },
     { tileX: 6.2, tileY: 26.5, id: 'veg.standingStone.mossy', layer: 'cache', district: 'elderwood' },
     { tileX: 6.9, tileY: 27.3, id: 'prop.lakeShrine', layer: 'cache', district: 'elderwood' },
@@ -436,14 +465,14 @@ export const DISTRICT_PROPS = [
     // Driftwood logs: west shore shallows.
     { tileX: 7.2, tileY: 10.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
     { tileX: 8.6, tileY: 9.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
-    // Central island shrine and restored lily pool composition. The pond's
-    // open water (coast field) spans tileX ~15.9-17.1 north of the
-    // command-pond plank row, so pads and the buoy keep to tileX 16.1-17.0,
-    // tileY <= 21.05: in the water, never over the plaza, the planks or the
-    // bridge landing. Roots and shrine props ring the dry west and south
-    // banks, clear of the avenue and bridge.
+    // Central island lily pool composition. The pond's open water (coast
+    // field) spans tileX ~15.9-17.1 north of the command-pond plank row, so
+    // pads and the buoy keep to tileX 16.1-17.0, tileY <= 21.05: in the
+    // water, never over the plaza, the planks or the bridge landing. Roots,
+    // the standing stone and the driftwood ring the dry west and south banks,
+    // clear of the avenue and bridge. The plaza in front of Command carries no
+    // fixture: it is where the briefing, the queue and the overflow crowd.
     { tileX: 15.3, tileY: 22.5, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
-    { tileX: 14.8, tileY: 22.3, id: 'prop.runeBrazier', layer: 'cache', district: 'civic' },
     { tileX: 16.15, tileY: 20.95, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
     { tileX: 16.6, tileY: 20.8, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
     { tileX: 16.55, tileY: 21.05, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
@@ -475,6 +504,14 @@ export const DISTRICT_PROPS = [
     // (SceneryEngine), so no body stands on or crosses the baked sprites.
     { tileX: 12.5, tileY: 27.5, id: 'prop.well', layer: 'cache', district: 'civic', walkBlock: true },
     { tileX: 13.7, tileY: 28.5, id: 'prop.flowerCart', layer: 'cache', district: 'civic', walkBlock: true },
+    // Archive west lawn: the rune fountain between its two braziers, a
+    // reading-garden shrine on the open grass between the Archive's bell
+    // tower and the shore. No lane, path, visit slot, queue place, seat or
+    // loiter point reaches the lawn (the archive walk and the bank benches
+    // stop at x >= 4), and `walkBlock` keeps every body off the baked group.
+    { tileX: 1.15, tileY: 19.0, id: 'prop.runeFountain', layer: 'cache', district: 'knowledge', walkBlock: true },
+    { tileX: 1.9, tileY: 18.25, id: 'prop.runeBrazier', layer: 'cache', district: 'knowledge', walkBlock: true },
+    { tileX: 0.4, tileY: 19.75, id: 'prop.runeBrazier', layer: 'cache', district: 'knowledge', walkBlock: true },
     // Gate-avenue spine between river bridge and village gate.
     { tileX: 17.5, tileY: 30.0, id: 'prop.marketStall', layer: 'sorted', district: 'gate' },
     { tileX: 20.0, tileY: 27.5, id: 'prop.noticePillar', layer: 'sorted', district: 'gate' },

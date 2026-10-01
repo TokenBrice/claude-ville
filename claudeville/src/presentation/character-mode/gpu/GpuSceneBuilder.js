@@ -34,7 +34,7 @@ const MATERIAL_BY_BUILDING = Object.freeze({
     harbor: 'timber',
     watchtower: 'stone',
     observatory: 'stone',
-    portal: 'rune',
+    portal: 'stone',
 });
 
 // V9 `landmarkId` (instance loc5.y, uint16): 0 = not a landmark. A stable id
@@ -624,7 +624,7 @@ function recordForBuilding(renderer, drawable, sequence) {
 }
 
 // 6.1 / 6.2 — one small record per drawn manifest layer (static overlay such
-// as the Pharos lamp or the Portal's rune brazier, active frame-strip part,
+// as the Pharos lamp or the Portal's vortex, active frame-strip part,
 // door or cycled emitter), right after its building record (and its glass
 // patch): the same painter depth and split half (stampPainterDepth gives
 // every record of the drawable its sortY), the frame

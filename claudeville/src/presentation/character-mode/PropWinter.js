@@ -53,7 +53,7 @@ export const WINTER_PROPS = Object.freeze({
     // lip, and their merlons, rings, string course, sills and rock take
     // silhouette caps.
     'prop.well': { dormancy: 'evergreen', surface: 'round', roof: true },
-    'prop.villageGate': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, flats: true, polys: [[[36, 9], [0, 75], [1, 80], [5, 84], [10, 88], [18, 91], [27, 93], [36, 93], [45, 93], [54, 91], [61, 88], [67, 84], [70, 80], [72, 75]], [[186, 85], [150, 151], [152, 155], [155, 160], [161, 163], [168, 166], [177, 168], [186, 169], [195, 168], [204, 166], [212, 163], [217, 160], [221, 155], [222, 151]]] } },
+    'prop.villageGate': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, flats: true, polys: [[[35, 10], [0, 76], [1, 80], [4, 85], [10, 88], [17, 91], [26, 93], [35, 94], [45, 93], [53, 91], [61, 88], [67, 85], [70, 80], [71, 76]], [[187, 86], [151, 152], [152, 156], [156, 161], [162, 164], [169, 167], [178, 169], [187, 170], [196, 169], [205, 167], [213, 164], [218, 161], [222, 156], [223, 152]]] } },
     'prop.villageWallSeaTower': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, flats: true, poly: [[47, 10], [18, 66], [19, 70], [22, 73], [27, 76], [33, 78], [40, 80], [47, 80], [54, 80], [61, 78], [67, 76], [72, 73], [75, 70], [76, 66]] } },
     'prop.marketStall': { dormancy: 'evergreen', surface: 'round', roof: { poly: [[30, 5], [62, 20], [60, 26], [33, 38], [5, 19]], sheet: true } },
 });

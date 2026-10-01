@@ -1,4 +1,4 @@
-// C2 — one grade evaluator (agents/plans/claudeville-opus55-aesthetic-plan.md).
+// C2 — one grade evaluator (the Opus 5.5 aesthetic plan).
 //
 // A single pure function turns the real clock, the real weather and the moon
 // into the whole world grade. It is evaluated on the CPU (once per atmosphere

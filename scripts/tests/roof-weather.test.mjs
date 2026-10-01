@@ -141,7 +141,7 @@ test('the wet course follows the roof edges, a small share of the roof, stepping
 });
 
 test('a landmark without roof faces still takes silhouette caps but no wet course', () => {
-    const sprite = landmark('portal');
+    const sprite = landmark('mine');
     assert.ok(paint(sprite, { bucket: 4, wetQ: 0 }).written > 0);
     assert.equal(paint(sprite, { bucket: 0, wetQ: 4 }).written, 0);
     assert.equal(sprite.map.drips.length, 0);

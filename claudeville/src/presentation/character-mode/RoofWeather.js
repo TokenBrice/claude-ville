@@ -39,8 +39,9 @@
 // roof's lit pitch takes the top stop and a shaded pitch one stop per 0.15
 // darker (at most two), so the upper-left key survives a full cover; a
 // texel's own highlight or shadow line steps one stop. Silhouette caps are
-// 1, 2, 3, 3 rows by bucket. The pines' snow (FoliageRenderer.dustPineCanopy)
-// thickens by the same bucket, 1 → 3 rows, then the laden sheet.
+// 1, 2, 3, 3 rows by bucket. The pines' and the world ash's snow
+// (FoliageRenderer.dustSnowCanopy) thickens by the same bucket, 1 → 3 rows,
+// then the laden sheet.
 //
 // Wet slate (6.6). `roofEdge`: the roof's own upper-left-facing edges — a
 // slate texel whose upper or left neighbour is off the roof or the roof's

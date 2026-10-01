@@ -56,17 +56,17 @@ Every sidecar is a same-size companion of `base.png`, opted in on the manifest e
 
 | Sidecar | Manifest flag | Content | Buildings |
 |---|---|---|---|
-| `base.material.png` | `materialSidecar: true` | material class per texel | command, forge, mine, taskboard, archive |
-| `base.emissive.png` | `emissiveSidecar: true` | the only light the art emits: lit glass, fire, lanterns, crystals | all but portal |
+| `base.material.png` | `materialSidecar: true` | material class per texel | command, forge, mine, taskboard, archive, portal |
+| `base.emissive.png` | `emissiveSidecar: true` | the only light the art emits: lit glass, fire, lanterns, crystals | all nine |
 | `base.occluder.png` | `occluderSidecar: true` + `surfaceCode: true` | 2.3 surface channel: R = true height above ground (world px, clamped 255), G = occlusion strength, B = `face·64 + min(63, round(height/4))`, face 0 up/apron, 1 left wall, 2 right wall, 3 roof | all nine |
-| `base.rooms.png` | `roomsSidecar: true` | 6.3 room index 1..N in R on each room's glass | all but portal |
+| `base.rooms.png` | `roomsSidecar: true` | 6.3 room index 1..N in R on each room's glass | all but portal (its vortex is no room: no `windowRects`) |
 
 - `scripts/sprites/bake-surface-channel.mjs` writes the occluder sidecar from the footprint's visual base (the `BUILDING_DEFS` diamond through the sprite anchor) plus authored `SURFACE_SPECS` regions (first match wins) for decks, piers, stairs, daises and set-back masses. M5 approved hand authoring for the Harbor, Lighthouse, Observatory and Portal; Command, Archive and Forge also carry authored regions. `--check` verifies the on-disk bytes; rerun `npm run sprites:atlas-bake -- --atlas=world-pilot` after writing.
 - `scripts/sprites/bake-room-masks.mjs` writes the room masks (`--check` verifies them). Glass is the emissive alpha after a 1-texel closing, split into 4-connected components. With `rooms.slots`, room k + 1 is the component under slot k; otherwise every component under a `windowRects` entry is a room, numbered by first reference. Fire, lantern-body, crystal and door-spill emission that no rect names stays 0.
 
 ## Windows (`windowRects`, `rooms.slots`, `glassRects`)
 
-`BuildingVisualRegistry` rects name a landmark's glass on its emissive sidecar: `windowRects` the windows, `rooms.slots` the per-room panes (Command, Archive), and `glassRects` hall panes that belong to no room (Archive). On every rect, `at` is the **glass centre** in base-local texels, with `w`/`h` the pane size (at least 3; default 6 × 8). `windowRectBounds(rect)` is the single reader of that convention, used by `RoomGlass`, `bake-room-masks.mjs`, `scripts/sprites/atlas-bake.mjs`, the validator, and the flat warmth stamps that only a building without an emissive sidecar (Portal) still draws. A building with a sidecar is lit by its art-shaped glass texels, never a rect. A `windowRects` or `rooms.slots` rect must cover at least **60%** (`WINDOW_SIDECAR_MIN_COVERAGE`) of its emissive sidecar's alpha. Coverage is measured against a 1-texel closed alpha mask, because glass sidecars are striped (lit every other column), so raw alpha under-scores. `npm run world:validate-buildings` enforces this and names a rect that only fits as a top-left corner. When the sidecar lights only a sliver of a pane, fit the rect to the lit texels or leave that pane without a rect; never stamp light the sidecar does not have.
+`BuildingVisualRegistry` rects name a landmark's glass on its emissive sidecar: `windowRects` the windows, `rooms.slots` the per-room panes (Command, Archive), and `glassRects` hall panes that belong to no room (Archive). On every rect, `at` is the **glass centre** in base-local texels, with `w`/`h` the pane size (at least 3; default 6 × 8). `windowRectBounds(rect)` is the single reader of that convention, used by `RoomGlass`, `bake-room-masks.mjs`, `scripts/sprites/atlas-bake.mjs`, the validator, and the flat warmth stamps that only a building without an emissive sidecar would still draw (none ships today). A building with a sidecar is lit by its art-shaped glass texels, never a rect. A `windowRects` or `rooms.slots` rect must cover at least **60%** (`WINDOW_SIDECAR_MIN_COVERAGE`) of its emissive sidecar's alpha. Coverage is measured against a 1-texel closed alpha mask, because glass sidecars are striped (lit every other column), so raw alpha under-scores. `npm run world:validate-buildings` enforces this and names a rect that only fits as a top-left corner. When the sidecar lights only a sliver of a pane, fit the rect to the lit texels or leave that pane without a rect; never stamp light the sidecar does not have.
 
 ## Parts (frame-strip layers)
 
@@ -138,7 +138,7 @@ Shipped:
 | Forge `hearth` | base | `work.forge`, and only while the hearth glow is above the banked ember | 8 Hz | `tongues`, `lanePx: 3`, `keepPx: 3`; the mask is the flame body inside the arch (the lit jamb reveal is left out) |
 | Command `braziers` | base | `lamps` | 6 Hz | `tongues`, `lanePx: 2`, `keepPx: 1` |
 | Lighthouse `lens` | `beacon` | `lamps` (`fixture`) | 4 Hz | `wave`, `rampStops: 6`, R = rows above the bowl |
-| Portal `runes` | base | `work.portal` | 6 Hz | `wave`, `rampStops: 6`, `shearPx: 0`, R = around the rune ring from the front, then up the vortex (the ring's white eye and dark outlines excluded) |
+| Portal `runes` | base | `work.portal` | 6 Hz | `wave`, `rampStops: 6`, `shearPx: 0`, R = the eleven arch-ring glyphs from the left foot over the keystone to the right foot, then a two-arm spiral phase about the vortex heart, so the bands wind inward round it (never rows: a row-ordered vortex reads as scan lines); the vortex itself also glows every night through the `portalGlow` fixture overlay |
 
 ```yaml
   hearth:
@@ -154,8 +154,8 @@ Shipped:
     cycle: { gate: lamps, art: beacon, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.25, rampStops: 6, heightFromMask: true, hz: 4 }
   runes:
     width: 312
-    height: 208
-    anchor: [156, 182]
+    height: 264
+    anchor: [156, 202]
     cycle: { gate: work.portal, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.3333, rampStops: 6, heightFromMask: true, shearPx: 0, hz: 6 }
 ```
 
@@ -190,17 +190,17 @@ Rule of thumb: **sprite width ≈ 1.2 × iso-diamond width** = `1.2 · (w+h) · 
 
 | Tier | Buildings | Native W × H (manifest) |
 |---|---|---|
-| Hero hall | command, archive, harbor, portal | 312–360 × 208–240 |
+| Hero hall | command, archive, harbor, portal | 312–360 × 208–264 |
 | Standard structure | forge, mine, taskboard | 256 × 232 |
 | Tower (narrow, tall) | observatory, watchtower | 256 × 288, 288 × 384 |
 
 ## The village's stone family (gatehouse, sea tower, curtain)
 
-The Village Gate's gatehouse (`prop.villageGate`, with its door strip `prop.villageGateDoors`) and the east wall's sea tower (`prop.villageWallSeaTower`) follow these craft rules as scenery: baked at scale 1 (never drawn scaled) by `scripts/sprites/bake-village-gate.mjs`, an orthographic ray cast of the solids in `VILLAGE_GATE_GEOMETRY` / `SEA_TOWER_GEOMETRY` (`townPlan.js`), on the curtain's own grammar (`VillageWall.js`): `ashlar` masonry (SW faces 5, the camera 4, SE faces 3, a drum's far edge 2; joints one or two stops down; half the block tops +1; tops, ledges and string-course lips 7–8; cast shadows two stops), 6-px courses from a 10-px plinth, `domeSlate` cones in 4-px courses, `trimGold` finials, `timber` doors, and the gate's name in Press Start 2P (the chrome's display face) at one texel per font px, each letter upright in its 8-px cell on a plaque that steps down the wall. Glass is slate by day; the towers' lamp glass is an emissive sidecar lit with the village's lamps (a fixture, never a work light), and the occluder sidecar is the 2.3 surface channel, so lanterns land on the walls by face and height and the cones take no local light. Rerun the bake with `--check` after any change to the geometry or the ramps; it prints the manifest size, anchor and PropWinter roof polygons.
+The Village Gate's gatehouse (`prop.villageGate`, with its door strip `prop.villageGateDoors`) and the east wall's sea tower (`prop.villageWallSeaTower`) follow these craft rules as scenery: baked at scale 1 (never drawn scaled) by `scripts/sprites/bake-village-gate.mjs`, an orthographic ray cast of the solids in `VILLAGE_GATE_GEOMETRY` / `SEA_TOWER_GEOMETRY` (`townPlan.js`), on the curtain's own grammar (`VillageWall.js`): `ashlar` masonry (SW faces 5, the camera 4, SE faces 3, a drum's far edge 2; joints one or two stops down; half the block tops +1; tops, ledges and string-course lips 7–8; cast shadows two stops), 6-px courses from a 10-px plinth, `domeSlate` cones in 4-px courses, `trimGold` finials, `timber` doors, and the gate's name in Press Start 2P (the chrome's display face) at one texel per font px, each letter upright in its 8-px cell on a plaque that steps down the wall. The drums stand symmetric about the arch (within 0.08 tile), so the plaque and the arch sit centred, an equal margin either side, in the face the drums leave open: from where the face leaves the west drum to the east drum's silhouette. Their corbels stand 9 px clear of the merlon tops, so the parapet meets each drum below its machicolation. A crevice line marks a nearer mass over a farther one, and a joint line marks the west drum where the arch block runs flush into it. Glass is slate by day; the towers' lamp glass is an emissive sidecar lit with the village's lamps (a fixture, never a work light), and the occluder sidecar is the 2.3 surface channel, so lanterns land on the walls by face and height and the cones take no local light. The sea tower is drawn whole after the east run that ends inside its drum (never split for occlusion, at any zoom). Rerun the bake with `--check` after any change to the geometry or the ramps; it prints the manifest size, anchor and PropWinter roof polygons.
 
 ## Generation recipe
 
-- Tool: REST `generate-image-v2` (Pro, with `building.observatory` as the style image) or MCP `create_map_object` (≤400px, transparent BG). Smoke-test the tool per building; `generate-image-v2` produced Command, Archive, Task Board, Forge, and Mine; `create_map_object` produced Harbor, Observatory, Watchtower, and Portal. The manifest `tool` field names the surface, and the Pro re-authors carry a `provenance` block with endpoint, job, and style image.
+- Tool: REST `generate-image-v2` (Pro, with `building.observatory` as the style image) or MCP `create_map_object` (≤400px, transparent BG). Smoke-test the tool per building; `generate-image-v2` produced Command, Archive, Task Board, Forge, Mine, and Portal (2026-10-01, `building.command` as the style image); `create_map_object` produced Harbor, Observatory, and Watchtower. The manifest `tool` field names the surface, and the Pro re-authors carry a `provenance` block with endpoint, job, and style image.
 - `create_map_object` params (not in the description): `view: low top-down`, `outline: selective outline`, `shading: detailed shading`, `detail: high detail`, transparent background.
 - Description for `terrain-apron`: prepend the manifest `style.anchor`; add subject identity, palette cues, silhouette intent, "true wall/post/rock footings and attached steps only", and "transparent ground around the structure". Explicitly forbid ground tile, lawn, slab, plinth, retaining lip, complete perimeter, and baked shadow.
 - Description for a structural exception: name the physical platform (`dais`, `quay`, `deck/pilings`), its support, and its terrain/water transition. Still forbid a larger generic ground tile.

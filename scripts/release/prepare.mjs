@@ -196,7 +196,6 @@ export function main(args = process.argv.slice(2), root = process.cwd(), output 
     if (options.verify) {
         const inspected = verifyRelease(root);
         output(`Validation passed: CHANGELOG.md, package.json, and UI agree on v${inspected.version.value} (${inspected.version.ui}).`);
-        output('Reminder: update the "As of" header in agents/plans/open-followups.md.');
         return;
     }
 
@@ -211,7 +210,6 @@ export function main(args = process.argv.slice(2), root = process.cwd(), output 
     output(releaseCommand(inspected));
     if (options.write) output(`Wrote version files and ${inspected.notesPath}.`);
     if (options.tag) output(`Created annotated local tag ${createTag(root, inspected)} at HEAD.`);
-    output('Reminder: update the "As of" header in agents/plans/open-followups.md.');
 }
 
 const isMain = process.argv[1]

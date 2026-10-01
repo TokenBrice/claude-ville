@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-09-29-waking-isle-gatehouse"
+  assetVersion: "2026-10-01-perfect-isle"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -1618,56 +1618,88 @@ buildings:
         restIsBase: true
         materialClass: timber
 
-  # ── HERO: Portal Gate ── (single-image; was composeGrid [3,2], converted losslessly)
+  # ── HERO: Portal Gate ── re-authored 2026-10-01 into the Painted Isle family
+  # (it was a dark charcoal rock heap with a boxy brazier overlay). REST
+  # generate-image-v2 (Pro) with building.command as the style image and the
+  # first Pro candidate (v2a, style building.observatory, job f7b3e698) as the
+  # layout reference; snapped to Command's masonry/gold/slate and the Portal
+  # violet ramp (34 colours), cream stone -> family cool grey and the baked
+  # vortex spill on the flagstones removed by hand-run script, 8 empty rows
+  # cropped. A tall pale ashlar arch with gilt voussoir bands, keystone and
+  # finial and violet rune glyphs holds the vortex between two slender towers
+  # with slate spires, on a stepped dais that fills the 4x4 footprint (the
+  # anchor is the dais's ground diamond centre), steps down toward the
+  # lower-left work slots. Sidecars: emissive = vortex, rune glyphs and the two
+  # crystal braziers (night-shift gated like every landmark); material = stone,
+  # gold metal, glass-rune on the vortex/runes/crystals and the slate-glass
+  # tower slits; occluder = 2.3 surface channel (SURFACE_SPECS.portal).
   - id: building.portal
-    tool: map_object
-    prompt: "epic portal gate archway, ancient stone arch with swirling arcane energy, violet and gold runes, massive scale, isometric, on an intentional structural dark-stone dais with connected stairs; no larger generic ground tile, no unsupported plinth, no baked cast shadow"
+    tool: generate-image-v2
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, the Portal Gate, the magical counterpart of the town's grand castle: one very tall majestic pointed archway of cool pale grey dressed ashlar stone standing in the middle of a broad low square stone dais, the arch opening faces the lower-left and is as tall as two thirds of the whole gate, filled with a swirling violet and lilac magic vortex, the thick arch ring is made of large carved voussoir stones with gold trim bands and a gold keystone, small glowing violet rune glyphs inlaid along the arch ring, a gold finial crowns the arch, two slender square cool grey stone towers with slate-blue pyramid spires and gold finials stand against both sides of the arch, one broad flight of stone steps centred directly in front of the vortex descends from the dais toward the lower-left, two small violet crystal braziers in gold-rimmed stone bowls flank the foot of the steps, the dais is two courses of cool grey coursed ashlar blocks with a pale flagstone top, warm sunlight from the upper left, cool shade on the right-facing walls, crisp dark outline, structure only with empty transparent space around it, no grass, no lawn, no ground tile, no cast shadow"
+    provenance: { item: 'perfect-4', endpoint: generate-image-v2, jobId: b2b5d895-d809-44b2-a402-aa57aa788149, seed: 5151, styleImage: building.command, referenceImage: 'v2a candidate (generate-image-v2 job f7b3e698-4bfd-4b74-9025-da50b435b4ba, style building.observatory)', generationSize: 312x272, generations: 25, pilotGenerations: 29, recolor: 'cream -> family cool grey, palette snap (script, not generated)', generatedAt: '2026-10-01' }
     width: 312
-    height: 208
-    anchor: [156, 182]
-    materialClass: glass-rune
+    height: 264
+    anchor: [156, 202]
+    materialClass: stone
+    materialSidecar: true
+    emissiveSidecar: true
     occluderSidecar: true
+    # 2.3 — occluder R = true height, B = surface code (face x 64 + h/4),
+    # baked by scripts/sprites/bake-surface-channel.mjs; the slate spires are
+    # roof (snow, wet course).
     surfaceCode: true
     atlasFrame: { atlas: world-pilot, key: building.portal }
-    elevation: { base: 0, top: 208, unit: sprite-px }
+    elevation: { base: 0, top: 264, unit: sprite-px }
     emissive:
       strength: 1
       sources:
         - { id: emissive.portal.vortex, kind: rune, geometry: layer.portalGlow, strength: 1 }
-    occluder: { mode: alpha-silhouette, strength: 0.92, horizonY: 130 }
+        - { id: emissive.portal.runes, kind: rune, geometry: layer.runes, strength: 0.8 }
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 150 }
     splitForOcclusion: true
-    horizonY: 130
+    horizonY: 150
     layers:
+      # The vortex texels of base.png, cut out as a static overlay that is a
+      # fixture: identical to the base by day, it emits its own violet through
+      # no occupancy gate, so the vortex keeps glowing on an empty night (like
+      # the Pharos lamp) while the runes and crystals wait for real work.
       portalGlow:
-        tool: isometric_tile
-        prompt: "isolated swirling violet portal vortex flame, arcane purple energy spiral with magenta core and faint gold rune sparks, thin tile, transparent background only, no ground tile, no square base, no platform, no cube block, empty transparent corners"
-        size: 64
-        anchor: [144, 60]
+        tool: hand-authored
+        prompt: "the vortex texels of base.png (x 129-184, y 68-188) as an exact overlay; authored, not generated"
+        width: 56
+        height: 121
+        anchor: [157, 189]
+        fixture: true
         materialClass: glass-rune
         emissive:
           strength: 1
           sources:
             - { id: emissive.portal.vortex, kind: rune, geometry: authored-albedo, strength: 1 }
         occluder: { mode: none, strength: 0 }
-      # 6.1 / V4 (OE-1) — the Portal runes cycle mask: the arch's vortex and
-      # rune-ring texels (dark outlines and the ring's white eye left out).
-      # R orders them around the ring from the front, then up the vortex, so
-      # the vortex's own colours (6 luma courses) chase round the ring and
-      # rise through the arch at 6 Hz — only while the Portal has a working
-      # visitor (work.portal, isWorkingVisitor). Mask only: never drawn as art.
+      # 6.1 / V4 (OE-1) — the Portal runes cycle mask: the eleven rune glyphs
+      # on the arch ring, then every vortex texel. R orders the glyphs around
+      # the ring from its left foot over the keystone to its right foot (one
+      # step of 6 per glyph); on the vortex R is a two-arm spiral phase about
+      # its heart (156, 123): R = −32 · (θ/2π + 0.6 · ρ/27) mod 256, with y
+      # squashed 1/1.7 to the arch's oval. The vortex's own colours (6 luma
+      # courses; the darkest third holds still) chase round the ring and
+      # wind inward round the heart at 6 Hz — only while the Portal has a
+      # working visitor (work.portal, isWorkingVisitor). Mask only: never
+      # drawn as art.
       runes:
         tool: hand-authored
-        prompt: "cycle mask: the portal arch's vortex and rune-ring texels, ordered around the ring then up the vortex; authored, not generated"
+        prompt: "cycle mask: the portal arch's rune glyphs ordered around the ring, and the vortex texels ordered by a two-arm spiral phase about its heart; authored, not generated"
         width: 312
-        height: 208
-        anchor: [156, 182]
+        height: 264
+        anchor: [156, 202]
         cycle: { gate: work.portal, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.3333, rampStops: 6, heightFromMask: true, shearPx: 0, hz: 6 }
+    # Vortex heart and the right crystal brazier.
     emitters:
-      sparkle: [144, 60]
-      sparkle2: [120, 80]
+      sparkle: [156, 128]
+      sparkle2: [171, 192]
     # Phase 2.5.5: light-reflection compositing reads these to additively
-    # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [144, 60]
+    # tint nearby water tiles. Anchor is sprite-local pixels (the vortex).
+    lightSource: [156, 128]
     lightColor: '#cc99ff'
     lightRadius: 70
 
@@ -2059,9 +2091,9 @@ props:
   # 2.3 surface channel (R height, B face * 64 + height / 4).
   - id: prop.villageGate
     tool: procedural
-    width: 222
-    height: 271
-    anchor: [119, 222]
+    width: 223
+    height: 280
+    anchor: [110, 226]
     materialClass: stone
     emissiveSidecar: true
     occluderSidecar: true
@@ -2632,6 +2664,32 @@ vegetation:
     size: 64
     anchor: [32, 51]
     provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: 4092a15a-99a6-4e9a-bb1a-599e88f9c957, seed: 5, source: veg.tree.pine.large, generations: 1, snap: 'snow ramp by rank (M9), foliageDeep needles, timber', generatedAt: '2026-09-28' }
+
+  # ── The world ash (user item 5) ──
+  # One colossal evergreen on the northern lagoon islet (scenery.js
+  # WORLD_TREE; FoliageRenderer `ash.world`, species 'ash'), about 2.4× the
+  # tall oak. The leafy sheet is a REST create-image-pixen candidate (240x272,
+  # 1 generation; 13 others rejected) snapped onto C1 by luminance rank with
+  # the tall oak's own stop shares (foliage + foliageSun[6] leaf, timber bark,
+  # foliageDeep[0]/timber[0] outline by neighbourhood); the snow sheet is that
+  # sheet under the winter canopy plan (foliageDeep) plus the snow caps of an
+  # edit-image-pixen re-render, shaded onto the snow ramp from the leaf light
+  # beneath (scratch tools: output/yggdrasil). Same canvas and trunk base.
+  - id: veg.tree.ash.world
+    tool: create_image_pixen
+    prompt: "The mythic world tree of Norse legend, an immense ancient ash, fantasy RPG pixel art sprite seen from a low 3/4 top-down angle, lit from the upper left. Its colossal twisted trunk splits into great spreading limbs that carry a huge layered canopy: three broad tiers of dense rounded leaf clusters, the widest tier in the middle, deep shadow under each tier. Gnarled buttress roots grip the ground and arch outward. Sage green leaves, warm brown bark, clean dark outline, detailed shading. Transparent background, isolated tree, no ground, no grass, no water, no sky holes, no shadow."
+    width: 240
+    height: 271
+    anchor: [120, 270]
+    provenance: { item: 'perfect-5', endpoint: create-image-pixen, seed: 10, canvas: 240x272, outline: selective outline, view: low top-down, generations: 1, snap: 'leaf foliage[0-4] + foliageSun[6] and bark timber by luminance rank (tall-oak stop shares); dark px to foliageDeep[0]/timber[0] by 5x5 side', generatedAt: '2026-10-01' }
+
+  - id: veg.tree.ash.world.snow
+    tool: edit_image_pixen
+    prompt: "The same tree after a heavy snowfall: thick white snow resting on top of every leaf clump and on the upper side of the big limbs and roots, dark green leaves still showing below each snow cap, the same trunk, shape, size and outline, nothing else changed"
+    width: 240
+    height: 271
+    anchor: [120, 270]
+    provenance: { item: 'perfect-5', endpoint: edit-image-pixen, jobId: 3ae13a8a-56f3-4404-a7f5-29ca2745e993, seed: 29, source: 'veg.tree.ash.world rows 0-255 (the edit source limit is 256 px)', generations: 1, snap: 'leaves = veg.tree.ash.world under the winter plan (foliageDeep by rank); the edit''s flat-white snow px shaded onto the snow ramp by the leaf light beneath (tall-pine stop shares), lower lip one stop darker', generatedAt: '2026-10-01' }
 
   - id: veg.boulder.mossy.large
     tool: isometric_tile

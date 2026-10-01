@@ -10,17 +10,15 @@ import {
     getBuildingWindowRects,
 } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
 
-test('mine and portal windows stay inside their native sprite dimensions', () => {
-    for (const type of ['mine', 'portal']) {
-        const visual = BUILDING_VISUAL_REGISTRY[type];
-        assert.ok(visual.windowRects.length >= 2 && visual.windowRects.length <= 4);
-        for (const rect of visual.windowRects) {
-            const [x, y] = rect.at;
-            assert.ok(x - rect.w / 2 >= 0, `${type} window crosses the left edge`);
-            assert.ok(x + rect.w / 2 <= visual.nativeSize.w, `${type} window crosses the right edge`);
-            assert.ok(y - rect.h / 2 >= 0, `${type} window crosses the top edge`);
-            assert.ok(y + rect.h / 2 <= visual.nativeSize.h, `${type} window crosses the bottom edge`);
-        }
+test('mine windows stay inside their native sprite dimensions', () => {
+    const visual = BUILDING_VISUAL_REGISTRY.mine;
+    assert.ok(visual.windowRects.length >= 2 && visual.windowRects.length <= 4);
+    for (const rect of visual.windowRects) {
+        const [x, y] = rect.at;
+        assert.ok(x - rect.w / 2 >= 0, 'mine window crosses the left edge');
+        assert.ok(x + rect.w / 2 <= visual.nativeSize.w, 'mine window crosses the right edge');
+        assert.ok(y - rect.h / 2 >= 0, 'mine window crosses the top edge');
+        assert.ok(y + rect.h / 2 <= visual.nativeSize.h, 'mine window crosses the bottom edge');
     }
 });
 
@@ -41,7 +39,7 @@ test('every calibrated window sits on its building\'s opaque art', () => {
         assert.equal(png.width, entry.width, `${type} manifest width matches base.png`);
         assert.equal(png.height, entry.height, `${type} manifest height matches base.png`);
         const alphaAt = (x, y) => png.data[(y * png.width + x) * 4 + 3];
-        for (const rect of visual.windowRects) {
+        for (const rect of visual.windowRects || []) {
             const [cx, cy] = rect.at;
             const left = Math.round(cx - rect.w / 2);
             const top = Math.round(cy - rect.h / 2);
@@ -57,10 +55,14 @@ test('every calibrated window sits on its building\'s opaque art', () => {
     }
 });
 
+// A building is lit either by its authored emissive sidecar (the Portal's
+// vortex, which is no window) or by calibrated rects; neither reaches the
+// legacy radial warmth blobs.
 test('calibrated windows never select the legacy radial warmth fallback', () => {
     for (const [type, visual] of Object.entries(BUILDING_VISUAL_REGISTRY)) {
-        assert.ok(visual.windowRects?.length, `${type} has no calibrated windows`);
-        assert.strictEqual(getBuildingWindowRects(type), visual.windowRects, type);
+        const { entry } = loadBaseArt(type);
+        assert.ok(visual.windowRects?.length || entry.emissiveSidecar === true, `${type} has no calibrated windows and no emissive sidecar`);
+        if (visual.windowRects) assert.strictEqual(getBuildingWindowRects(type), visual.windowRects, type);
     }
 });
 
@@ -98,6 +100,5 @@ test('reduced motion keeps door spill alpha static with no animation phase', () 
 });
 
 test('portal rune light stays distinct from mine fire', () => {
-    assert.notEqual(BUILDING_VISUAL_REGISTRY.portal.windowColor, BUILDING_VISUAL_REGISTRY.mine.windowColor);
     assert.notEqual(BUILDING_VISUAL_REGISTRY.portal.doorSpill.color, BUILDING_VISUAL_REGISTRY.mine.doorSpill.color);
 });

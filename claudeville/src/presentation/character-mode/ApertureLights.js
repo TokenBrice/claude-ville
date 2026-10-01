@@ -247,9 +247,13 @@ export class ApertureLights {
         this._templates.set(type, 'loading');
         const version = this.assets.assetVersion || '';
         const emissive = this.assets.getCompanion?.(id, 'emissive') || null;
+        const rects = glassRects(type);
+        // Only a landmark with glass and a declared rooms mask has one to
+        // read; the Portal (vortex, runes and crystals, no rooms) has none.
+        const withRooms = rects.length > 0 && entry.roomsSidecar === true;
         Promise.all([
             emissive ? Promise.resolve(emissive) : loadImage(sidecarUrl(albedo, 'emissive')),
-            loadImage(sidecarUrl(albedo, 'rooms')),
+            withRooms ? loadImage(sidecarUrl(albedo, 'rooms')) : Promise.resolve(null),
         ]).then(([emissiveImage, roomsImage]) => {
             if ((this.assets.assetVersion || '') !== version) {
                 this._templates.delete(type);
@@ -258,7 +262,6 @@ export class ApertureLights {
             const width = dims.w;
             const height = dims.h;
             const emissivePx = readPixels(emissiveImage, width, height);
-            const rects = glassRects(type);
             const glass = emissivePx && rects.length
                 ? buildGlassMap({
                     width,

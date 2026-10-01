@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Live visual verification captures for agents/plans/claudeville-visual-quality-plan.md
+// Live visual verification captures for the World visual-quality plan.
 // Usage: node scripts/world/capture-verify.mjs   (server must run on :4000)
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';

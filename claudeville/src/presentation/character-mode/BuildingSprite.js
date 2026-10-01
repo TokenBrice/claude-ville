@@ -2641,7 +2641,7 @@ export class BuildingSprite {
     }
 
     // Every drawn manifest layer (static overlays such as the Pharos lamp and
-    // the Portal's rune brazier, frame-strip parts, doors, emitter cycles)
+    // the Portal's vortex, frame-strip parts, doors, emitter cycles)
     // comes from `partDrawsFor`, the descriptor list the GPU part records
     // read too, so both backends draw the same layers at the same depth.
     _drawManifestLayers(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null, building = null) {
@@ -2664,7 +2664,7 @@ export class BuildingSprite {
     // descriptors in world px shared by the Canvas pass and the GPU part
     // records, so both backends always pick the same frame.
     // A plain layer with art and an `anchor` (the Pharos lamp, the Portal's
-    // rune brazier) is a static overlay, bottom-centre anchored in base-local
+    // vortex) is a static overlay, bottom-centre anchored in base-local
     // px; aperture and rest layers (4.1, 4.6) are drawn elsewhere.
     // A part is a manifest layer with `frames` (strip of `frames × frameW`,
     // bottom-centre `anchor` in base-local px). Its frame comes from
@@ -3042,29 +3042,34 @@ export class BuildingSprite {
                 this._drawMineAssayBench(ctx, localPoint);
             }
         } else if (building.type === 'portal') {
-            if (!shouldDrawLocalY(60)) {
-                ctx.restore();
-                return;
-            }
-            const gate = localPoint(144, 60);
-            const working = this._workingVisitorCountFor(building);
+            // The status rings orbit the vortex's heart in the air (registry
+            // `vortex`), each inside the vortex's own width; the ritual rings,
+            // curve and plaque stand on the threshold in front of it on the
+            // dais floor (registry `gate`). Each draws in the split pass that
+            // holds its row.
+            const [vortexX, vortexY] = getBuildingEffectAnchor('portal', 'vortex', [156, 128]);
+            const [gateX, gateY] = getBuildingEffectAnchor('portal', 'gate', [150, 186]);
             const portalRitual = this._latestRitual('portal');
-            // Three rings of snapped dots on the 2:1 ground ellipse, stepping
-            // round one dot slot on the slow band (held under reduced motion).
-            // A working visitor (V8) turns the inner ring violet; the plaque
-            // carries the exact count.
-            const tick = this.motionScale ? Math.floor(this.frame * 0.05) : 0;
-            const grow = portalRitual ? 2 : 0;
-            for (let i = 0; i < 3; i++) {
-                const count = 10 + i * 2;
-                ringDots(ctx, gate.x, gate.y, 19 + i * 8 + grow, {
-                    count,
-                    dot: 1,
-                    color: i === 0 && working > 0 ? '#bda7ff' : '#8feaff',
-                    phase: ((tick + i) % count) * (Math.PI * 2 / count) * (i % 2 ? -1 : 1),
-                });
+            if (shouldDrawLocalY(vortexY)) {
+                const heart = localPoint(vortexX, vortexY);
+                const working = this._workingVisitorCountFor(building);
+                // Three rings of snapped dots on 2:1 ellipses, stepping round
+                // one dot slot on the slow band (held under reduced motion). A
+                // working visitor (V8) turns the inner ring violet; the plaque
+                // carries the exact count.
+                const tick = this.motionScale ? Math.floor(this.frame * 0.05) : 0;
+                const grow = portalRitual ? 2 : 0;
+                for (let i = 0; i < 3; i++) {
+                    const count = 10 + i * 2;
+                    ringDots(ctx, heart.x, heart.y, 14 + i * 7 + grow, {
+                        count,
+                        dot: 1,
+                        color: i === 0 && working > 0 ? '#bda7ff' : '#8feaff',
+                        phase: ((tick + i) % count) * (Math.PI * 2 / count) * (i % 2 ? -1 : 1),
+                    });
+                }
             }
-            this._drawPortalRitual(ctx, gate, portalRitual);
+            if (shouldDrawLocalY(gateY)) this._drawPortalRitual(ctx, localPoint(gateX, gateY), portalRitual);
         } else if (building.type === 'watchtower') {
             // 2.7 — the lantern only (halo, flash and the sea fans' twins in
             // the air); the sea fans are the resident shaders' stepped fans
@@ -3317,7 +3322,7 @@ export class BuildingSprite {
                     sources.push(normalizeLightSource({
                         id: `ritual:${ritual.id}:portal`,
                         kind: 'orbit',
-                        origin: toOrigin([144, 60]),
+                        origin: toOrigin(getBuildingEffectAnchor('portal', 'vortex', [156, 128])),
                         color,
                         radius: 58,
                         alpha: fade * 0.26 * lightBoost,

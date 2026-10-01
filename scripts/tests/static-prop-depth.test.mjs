@@ -4,6 +4,7 @@ import test from 'node:test';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../claudeville/src/config/constants.js';
 import { VILLAGE_GATE, VILLAGE_GATE_BOUNDS } from '../../claudeville/src/config/townPlan.js';
 import { appendDepthSortedDrawables } from '../../claudeville/src/presentation/character-mode/DrawablePass.js';
+import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import {
     StaticPropSprite,
@@ -83,5 +84,46 @@ test('props standing in front of the village gate paint over it', () => {
         assert.ok(column >= 0, `no gate column under ${tileX},${tileY}`);
         assert.ok(partIndex(order, inFront, 'whole') > column,
             `prop at ${tileX},${tileY} (south of the wall) must paint after the gate column under it`);
+    }
+});
+
+// The east curtain run and the sea tower its coastal end stands in, as the
+// renderer builds them (the tower's dims and anchor as manifest.yaml
+// declares them). `waterAt` picks how far back from the run's end the tower
+// stands (_villageWallSeaTowerTile).
+function eastRunAndSeaTower(waterAt) {
+    const renderer = Object.create(IsometricRenderer.prototype);
+    renderer.waterTiles = { has: waterAt };
+    renderer.assets = {
+        has: (id) => id === 'prop.villageWallSeaTower',
+        getDims: () => ({ w: 94, h: 226 }),
+        getAnchor: () => [47, 201],
+    };
+    const run = renderer._buildVillageWallSprites().find((sprite) => sprite.id === 'village.wall.east.0');
+    const [tower] = renderer._buildVillageWallTerminalSprites();
+    return { renderer, run, tower };
+}
+
+test('the sea tower paints after the east run that ends in its drum, at every zoom and with a villager near', () => {
+    for (const waterAt of [() => true, () => false]) {
+        const { renderer, run, tower } = eastRunAndSeaTower(waterAt);
+        // Below FAST_PROP_MIN_ZOOM every prop goes through the static drawables.
+        const slow = buildStaticPropDrawables([run, tower]);
+        // At and above it, with a villager standing just behind the drum.
+        renderer._staticPropSprites = [run, tower];
+        renderer._staticPropFastDrawables = renderer._buildStaticPropFastDrawables();
+        renderer._staticPropFastFrameDrawables = [];
+        renderer._screenViewport = () => null;
+        renderer._isGateTransit = () => false;
+        renderer._snapshotSortedSprites = () => [{ x: tower.x + 20, y: tower.y - 14 }];
+        const fast = renderer._enumerateFastPropDrawables();
+        for (const [path, drawables] of [['slow', slow], ['fast', fast]]) {
+            const order = [];
+            appendDepthSortedDrawables(order, { propDrawables: drawables });
+            const runAt = order.findIndex(({ payload }) => payload.sprite === run);
+            const towerAt = order.map(({ payload }, index) => (payload.sprite === tower ? index : -1)).filter((index) => index >= 0);
+            assert.ok(runAt >= 0 && towerAt.length > 0, `${path} path: run and tower both draw`);
+            assert.ok(towerAt.every((index) => index > runAt), `${path} path: a part of the sea tower paints before the run, so the run's parapet covers its drum`);
+        }
     }
 });

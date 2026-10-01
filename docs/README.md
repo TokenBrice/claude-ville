@@ -1,6 +1,6 @@
 # Documentation
 
-ClaudeVille documentation stays current, task-oriented, and close to the code it governs. Historical plans and raw proofs belong under `agents/` only when they remain useful enough to retain.
+ClaudeVille documentation stays current, task-oriented, and close to the code it governs. Plans, research, and raw proofs live in the gitignored local `agents/` scratch folder and are never committed.
 
 ## Start Here
 
@@ -35,15 +35,14 @@ ClaudeVille documentation stays current, task-oriented, and close to the code it
 | Adapter fixtures | Add redacted synthetic transcripts under `scripts/adapters/fixtures/<provider>/` following its [README](../scripts/adapters/fixtures/README.md); `npm run check:adapter-fixtures` runs the adapter contract. |
 | Releases | [`CONTRIBUTING.md`](../CONTRIBUTING.md#releases) and [`.claude/skills/release/SKILL.md`](../.claude/skills/release/SKILL.md); `scripts/release/prepare.mjs` owns changelog grammar and version edits. |
 | Sprite generation | Follow [`scripts/sprites/generate.md`](../scripts/sprites/generate.md); use the PixelLab reference only for tool/API specifics. |
-| Retained proofs and plans | Check [`agents/README.md`](../agents/README.md) before adding or relying on an artifact. |
 
 ## Documentation Rules
 
 - Prefer one maintained authority. Code-owner detail belongs in the nearest README; project-wide decisions belong in the relevant contract or decision record.
 - Keep runbooks executable: name exact commands, symptoms, and files. Remove stale line references.
-- Keep large proofs and screenshots out of `docs/`; retain them under `agents/research/` only when future work needs them. The README images in `docs/assets/github/` are the only committed screenshots here.
+- Keep large proofs and screenshots out of `docs/`; keep them in local `agents/` or `output/` scratch. The README images in `docs/assets/github/` are the only committed screenshots here.
 - Use English for edited documentation and UI copy.
-- Validate structure and links with `npm run verify:architecture`; use `npm run check:artifacts` when retained artifacts change.
+- Validate structure and links with `npm run verify:architecture`; `npm run check:artifacts` keeps `agents/` scratch out of the repository.
 
 ## Related Owner Docs
 
@@ -63,4 +62,3 @@ ClaudeVille documentation stays current, task-oriented, and close to the code it
 | [`scripts/smoke/README.md`](../scripts/smoke/README.md) | Smoke and runtime verification catalog with the change-to-check matrix. |
 | [`scripts/adapters/fixtures/README.md`](../scripts/adapters/fixtures/README.md) | Synthetic adapter transcript fixtures, redaction rule, and consumers. |
 | [`scripts/sprites/generate.md`](../scripts/sprites/generate.md) | Manifest-first sprite generation runbook. |
-| [`agents/README.md`](../agents/README.md) | Retained plans, research, and handover artifacts, plus the open-followups checklist. |

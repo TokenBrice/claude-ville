@@ -244,7 +244,7 @@ test('scene builder preserves terrain-first and painter-order records', () => {
 
 test('scene material inference follows semantic sprite identity', () => {
   assert.equal(gpuMaterialNameForBuilding('harbor'), 'timber');
-  assert.equal(gpuMaterialNameForBuilding('portal'), 'rune');
+  assert.equal(gpuMaterialNameForBuilding('portal'), 'stone');
   assert.equal(gpuMaterialNameForProp({ id: 'veg.tree.oak.large' }), 'foliage');
   assert.equal(gpuMaterialNameForProp({ id: 'prop.runeBrazier' }), 'fire');
 });

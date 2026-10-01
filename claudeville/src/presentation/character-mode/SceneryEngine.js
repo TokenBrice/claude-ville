@@ -16,6 +16,8 @@ import {
     FLOWER_DENSITY,
     FOREST_FLOOR_REGIONS,
     TALL_TREE_RULES,
+    WORLD_TREE,
+    inWorldTreeIslet,
     DISTRICT_PROPS,
 } from '../../config/scenery.js';
 import { TREE_SPRITES } from './FoliageRenderer.js';
@@ -28,6 +30,14 @@ const CARDINAL_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 const TREE_CLUMP_PROBES = 20;
 const TREE_CLUMP_STEP = 0.72;
 const TREE_TRUNK_SPACING_SQ = 0.5;
+// The world ash's islet tiles: every tile whose centre the islet's oval covers
+// (scenery.js `inWorldTreeIslet`, the same test CoastBake seeds its shore from).
+const WORLD_TREE_ISLET = new Set();
+for (let ty = 0; ty < MAP_SIZE; ty++) {
+    for (let tx = 0; tx < MAP_SIZE; tx++) {
+        if (inWorldTreeIslet((tx - ty) * TILE_WIDTH / 2, (tx + ty + 1) * TILE_HEIGHT / 2)) WORLD_TREE_ISLET.add(`${tx},${ty}`);
+    }
+}
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 // 5.5 — where a villager may stand on a walk tile when a tall crown is tested
 // for hiding it (tile-space offsets from the tile centre).
@@ -139,14 +149,16 @@ export class SceneryEngine {
 
     // Tiles no body may stand on or cross: building footprints, their walk
     // exclusion rects, the lattice nodes round the foot of a baked fixture
-    // marked `walkBlock` (DISTRICT_PROPS), and every node under the village's
-    // stone (`_wallMassNodes`). A baked fixture is drawn under every body, so
-    // a body behind or beside it would stand on it; with the nodes round its
-    // foot blocked no path stops there or steps across it (a diagonal step
-    // needs both corner nodes).
+    // marked `walkBlock` (DISTRICT_PROPS), every node under the village's
+    // stone (`_wallMassNodes`) and the world ash's islet (WORLD_TREE.islet:
+    // its roots cover it, so nothing is generated there either). A baked
+    // fixture is drawn under every body, so a body behind or beside it would
+    // stand on it; with the nodes round its foot blocked no path stops there
+    // or steps across it (a diagonal step needs both corner nodes).
     _collectWalkBlocks() {
         const set = new Set(this._buildingFootprints);
         for (const key of this._wallMassNodes()) set.add(key);
+        for (const key of WORLD_TREE_ISLET) set.add(key);
         for (const prop of DISTRICT_PROPS) {
             if (!prop.walkBlock) continue;
             for (const x of new Set([Math.floor(prop.tileX), Math.ceil(prop.tileX)])) {
@@ -213,6 +225,9 @@ export class SceneryEngine {
         return zones;
     }
 
+    // Polylines, then basins; the world ash's islet is land whatever the
+    // basins cover (its keys never enter the water mask, so depth, shore and
+    // coast all read it as land).
     _generateWater() {
         for (const poly of WATER_POLYLINES) {
             this._rasterizePolyline(poly);
@@ -220,6 +235,15 @@ export class SceneryEngine {
         for (const basin of WATER_BASINS) {
             this._rasterizeBasin(basin);
         }
+        for (const key of WORLD_TREE_ISLET) {
+            this.waterTiles.delete(key);
+            this.waterMeta.delete(key);
+        }
+    }
+
+    // True on the world ash's islet (WORLD_TREE.islet).
+    isWorldTreeIslet(key) {
+        return WORLD_TREE_ISLET.has(key);
     }
 
     _rasterizePolyline({ kind, width, points, region = null, surface = null, weatherProfile = null, flowX = null, flowY = null }) {
@@ -807,7 +831,9 @@ export class SceneryEngine {
     // breathes. Authored TREE_CLUMPS compose the settlement (framing districts
     // and water edges); TREE_CLUSTERS seed the outer woodlands procedurally.
     // Species follow the biome: willow only within one tile of water, oak for
-    // the civic and scholars' ground, pine for the windbreaks.
+    // the civic and scholars' ground, pine for the windbreaks. The world ash
+    // (WORLD_TREE) is authored: added last, variant 0 (its canopy follows the
+    // season, not a variant).
     generateTrees(pathTiles, bridgeTiles, isExcluded = null) {
         this.treeProps = [];
         const clumpCentres = [];
@@ -853,6 +879,7 @@ export class SceneryEngine {
         }
         this._promoteWoodlandTrees(ctx);
         for (const tree of this.treeProps) tree.variant = this._canopyVariant(tree);
+        this.treeProps.push({ tileX: WORLD_TREE.tileX, tileY: WORLD_TREE.tileY, species: 'ash', size: 'world', variant: 0 });
     }
 
     // 5.5 — woodland scale: a hashed share (`TREE_CLUSTERS[].tall`) of the large

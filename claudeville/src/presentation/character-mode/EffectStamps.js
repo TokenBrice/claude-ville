@@ -1,6 +1,6 @@
 // 6.1 — the pixel effect kit: the rendering half of the C5 shape grammar
 // (`shared/EventShapes.js`) for transient moments, under contract C4 of
-// agents/plans/claudeville-opus55-aesthetic-plan.md.
+// the Opus 5.5 aesthetic plan.
 //
 // Shape says the family, colour says the outcome, timing says the weight:
 //   arrive / depart  -> column        magic violet

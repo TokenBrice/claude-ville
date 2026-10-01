@@ -1185,7 +1185,9 @@ export class IsometricRenderer {
         for (let y = 0; y < MAP_SIZE; y++) {
             for (let x = 0; x < MAP_SIZE; x++) {
                 const key = `${x},${y}`;
-                if (this.waterTiles.has(key) || this.sceneryClearTiles.has(key)) continue;
+                // The world ash's roots cover its islet: no reeds, stones or
+                // flowers there.
+                if (this.waterTiles.has(key) || this.sceneryClearTiles.has(key) || this.scenery.isWorldTreeIslet(key)) continue;
                 // Low-frequency feature field (2.1): reeds form shoreline beds
                 // and stones/mushrooms clump instead of peppering single tiles.
                 const noise = this._smoothNoise(x + 41, y + 17, 3.5);
@@ -1317,7 +1319,7 @@ export class IsometricRenderer {
             { tileX: 8.5, tileY: 12.0, particleType: 'sparkle', chance: 0.01 },
             { tileX: 13.4, tileY: 34.3, particleType: 'mineDust', chance: 0.016 },
             { tileX: 27.8, tileY: 29.2, particleType: 'forgeEmber', chance: 0.02 },
-            { tileX: 4.8, tileY: 32.2, particleType: 'portalRune', chance: 0.022 },
+            { tileX: 3.4, tileY: 30.6, particleType: 'portalRune', chance: 0.022 },
             { tileX: 22.4, tileY: 33.1, particleType: 'questPing', chance: 0.014 },
             { tileX: 8.5, tileY: 16.8, particleType: 'archiveMote', chance: 0.022 },
             { tileX: 23.4, tileY: 17.8, particleType: 'sparkle', chance: 0.012 },
@@ -7516,12 +7518,21 @@ export class IsometricRenderer {
         const towerTile = this._villageWallSeaTowerTile(endTile, prevTile);
         const world = this._tileToWorld(towerTile.tileX, towerTile.tileY);
         const id = VILLAGE_WALL_SEA_TOWER_SPRITE_ID;
+        // One whole sprite at every zoom, sorted after the east run: the run
+        // ends inside its drum (_villageWallVisualEndTile) and sorts at that
+        // end's world Y - 14, about the tower's foot - 21. A split back half
+        // would sort at the foot - 60, before the run, and the curtain's
+        // parapet would paint over the upper drum (the slow prop path below
+        // FAST_PROP_MIN_ZOOM, and any zoom with a villager near). No villager
+        // stands between the two: the drum and the wall are masonry
+        // (inVillageMasonry) and the sea lies beyond. The bounds' 0.66 split
+        // only places the name-tag clamp's front band.
         const tower = new StaticPropSprite({
             tileX: towerTile.tileX,
             tileY: towerTile.tileY,
             id,
             bounds: this._assetPropBounds(id, 0.66),
-            splitForOcclusion: true,
+            splitForOcclusion: false,
             sortY: world.y - 8,
             materialClass: 'stone',
             drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, id, x, y, this._winterPropOpts(id)),

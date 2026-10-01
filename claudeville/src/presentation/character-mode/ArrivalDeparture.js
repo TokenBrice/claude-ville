@@ -71,10 +71,10 @@ const PROVIDER_COLORS = {
     default: '#f2d36b',
 };
 
-// Mirrors PORTAL_SPAWN_TILE in IsometricRenderer.js (Portal Gate footprint
-// center). Used as the fallback target when the renderer cannot project a
-// screen point for an orphan subagent's return.
-const PORTAL_SPAWN_TILE = { tileX: 4, tileY: 32 };
+// Mirrors PORTAL_SPAWN_TILE in config/townPlan.js (the first walkable tile at
+// the foot of the Portal Gate's stairs). Used as the fallback target when the
+// renderer cannot project a screen point for an orphan subagent's return.
+const PORTAL_SPAWN_TILE = { tileX: 5, tileY: 34 };
 
 function nowMs() {
     if (typeof performance !== 'undefined' && performance.now) return performance.now();

@@ -10,9 +10,11 @@
 // baked upper-left key: SW-facing faces lit, SE-facing faces in shade, tops
 // lit, one ashlar stop per block (per-block jitter, a bevel row on each
 // block's top, joints one stop down), hard cast shadows from the solids
-// themselves, a 1-px ink outline on the outer silhouette and a crevice line
-// wherever a nearer surface overlaps a farther one. No ground is baked: the
-// ground bake owns yards and contact.
+// themselves, a 1-px ink outline on the outer silhouette, a crevice line
+// wherever a nearer surface overlaps a farther one, and a joint line on a
+// drum wherever the gatehouse's straight masonry runs into it flush (the
+// inside corner, which has no depth step to outline). No ground is baked:
+// the ground bake owns yards and contact.
 //
 // Outputs (claudeville/assets/sprites/props/):
 //   prop.villageGate.png            gatehouse: two round towers, the arch
@@ -131,7 +133,8 @@ const T = (X, Y, Z) => [X * TU, Y * TU, Z * ZU];
 
 // ---------------------------------------------------------------- solids
 // A solid: { id, kind, sdf(p), ...paint params }. The painter picks the
-// solid nearest the hit and paints by its kind.
+// solid nearest the hit and paints by its kind. `gatehouse` and `drum` mark
+// the two masonry masses whose flush meeting takes a joint line.
 function gatehouseSolids(G, { doors = null } = {}) {
     const s = [];
     const Yf = G.blockHalfDepth;
@@ -141,11 +144,11 @@ function gatehouseSolids(G, { doors = null } = {}) {
     const arch = (p) => sdArch2(p[0], p[2], G.archHalfWidth * TU, G.archSpring * ZU, G.archRise);
     const archCut = (p, d) => Math.max(d, -Math.max(arch(p), Math.abs(p[1]) - (Yf + 0.3) * TU));
     // The arch block, its battered plinth and the string course.
-    s.push({ id: 'block', kind: 'ashlar', plane: true, z0: G.plinthTop, course: 6,
+    s.push({ id: 'block', kind: 'ashlar', gatehouse: true, plane: true, z0: G.plinthTop, course: 6,
         sdf: (p) => archCut(p, sdBox(p, T(bx, 0, G.blockTop / 2), [bh * TU, Yf * TU, (G.blockTop / 2) * ZU])) });
-    s.push({ id: 'plinth', kind: 'ashlar', plane: true, z0: 0, course: 5, plinth: true,
+    s.push({ id: 'plinth', kind: 'ashlar', gatehouse: true, plane: true, z0: 0, course: 5, plinth: true,
         sdf: (p) => archCut(p, sdBox(p, T(bx, 0, G.plinthTop / 2), [bh * TU, (Yf + G.plinthOut) * TU, (G.plinthTop / 2) * ZU])) });
-    s.push({ id: 'string', kind: 'band', band: G.stringZ,
+    s.push({ id: 'string', kind: 'band', gatehouse: true, band: G.stringZ,
         sdf: (p) => sdBox(p, T(bx, 0, (G.stringZ[0] + G.stringZ[1]) / 2), [bh * TU, (Yf + G.stringOut) * TU, ((G.stringZ[1] - G.stringZ[0]) / 2) * ZU]) });
     // Parapet: merlons on the outer lip, a low rail on the inner one.
     const mw = G.merlon.width / 32;
@@ -158,14 +161,14 @@ function gatehouseSolids(G, { doors = null } = {}) {
         const k = Math.round(x / period);
         return { k, cx: k * period };
     };
-    s.push({ id: 'merlons', kind: 'merlon',
+    s.push({ id: 'merlons', kind: 'merlon', gatehouse: true,
         sdf: (p) => {
             const X = p[0] / TU;
             const { cx } = merlonAt(X);
             const box = sdBox(p, T(cx, Yf - md / 2, (mz0 + mz1) / 2), [(mw / 2) * TU, (md / 2) * TU, ((mz1 - mz0) / 2) * ZU]);
             return Math.max(box, Math.abs(p[0] - bx * TU) - (bh - 0.2) * TU);
         } });
-    s.push({ id: 'rail', kind: 'merlon',
+    s.push({ id: 'rail', kind: 'merlon', gatehouse: true,
         sdf: (p) => sdBox(p, T(bx, -Yf + md / 2, mz0 + G.railHeight / 2), [(bh - 0.2) * TU, (md / 2) * TU, (G.railHeight / 2) * ZU]) });
     // Raised portcullis: its teeth hang in the arch head.
     s.push({ id: 'portcullis', kind: 'iron',
@@ -178,15 +181,15 @@ function gatehouseSolids(G, { doors = null } = {}) {
     for (const [k, cx] of G.towerX.entries()) {
         const side = k ? 1 : -1;
         const r = G.towerR;
-        s.push({ id: `tower${side}`, kind: 'ashlar', cyl: { cx, cy: 0, r }, z0: G.plinthTop, course: 6, windows: G.towerWindows,
+        s.push({ id: `tower${side}`, kind: 'ashlar', drum: true, cyl: { cx, cy: 0, r }, z0: G.plinthTop, course: 6, windows: G.towerWindows,
             sdf: (p) => sdCyl(p, cx * TU, 0, r * TU, G.plinthTop * ZU, G.corbelZ[1] * ZU) });
-        s.push({ id: `towerPlinth${side}`, kind: 'ashlar', cyl: { cx, cy: 0, r: r + G.plinthOut }, z0: 0, course: 5, plinth: true,
+        s.push({ id: `towerPlinth${side}`, kind: 'ashlar', drum: true, cyl: { cx, cy: 0, r: r + G.plinthOut }, z0: 0, course: 5, plinth: true,
             sdf: (p) => Math.min(
                 sdCyl(p, cx * TU, 0, (r + G.plinthOut) * TU, 0, (G.plinthTop / 2) * ZU),
                 sdCyl(p, cx * TU, 0, (r + G.plinthOut / 2) * TU, 0, G.plinthTop * ZU)) });
         // Corbels under the machicolation ring.
         const corbels = G.corbels;
-        s.push({ id: `corbels${side}`, kind: 'corbel', cyl: { cx, cy: 0, r: r + G.ringOut },
+        s.push({ id: `corbels${side}`, kind: 'corbel', drum: true, cyl: { cx, cy: 0, r: r + G.ringOut },
             sdf: (p) => {
                 const ang = Math.atan2(p[1], p[0] - cx * TU);
                 const per = (Math.PI * 2) / corbels;
@@ -195,7 +198,7 @@ function gatehouseSolids(G, { doors = null } = {}) {
                 const ring = sdCyl(p, cx * TU, 0, (r + G.ringOut) * TU, G.corbelZ[0] * ZU, G.corbelZ[1] * ZU);
                 return Math.max(ring, arc);
             } });
-        s.push({ id: `ring${side}`, kind: 'band', band: [G.corbelZ[1], G.ringTop], cyl: { cx, cy: 0, r: r + G.ringOut },
+        s.push({ id: `ring${side}`, kind: 'band', drum: true, band: [G.corbelZ[1], G.ringTop], cyl: { cx, cy: 0, r: r + G.ringOut },
             sdf: (p) => sdCyl(p, cx * TU, 0, (r + G.ringOut) * TU, G.corbelZ[1] * ZU, G.ringTop * ZU) });
         s.push({ id: `roof${side}`, kind: 'roof', cone: { cx, cy: 0, r0: r + G.eaveOut, z0: G.ringTop, z1: G.roofApex },
             sdf: (p) => sdCone(p, cx * TU, 0, (r + G.eaveOut) * TU, G.ringTop * ZU, G.roofApex * ZU) });
@@ -669,7 +672,9 @@ function render(solids, { width, height, ax, ay, zTop, glyphs, gate, onlyDoors =
         }
     }
     // Outline: the outer silhouette in ink; a crevice line on a farther
-    // surface wherever a nearer one overlaps it.
+    // surface wherever a nearer one overlaps it, and on a drum's masonry
+    // wherever the gatehouse's masonry meets it without standing behind it
+    // (the inside corner where the arch block runs into the west drum).
     const out = Uint8ClampedArray.from(albedo);
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
@@ -678,12 +683,14 @@ function render(solids, { width, height, ax, ay, zTop, glyphs, gate, onlyDoors =
             const nb = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
             let edge = false;
             let behind = false;
+            const joins = solids[ids[p]].drum === true;
             for (const [qx, qy] of nb) {
                 if (qx < 0 || qy < 0 || qx >= width || qy >= height) { edge = true; continue; }
                 const q = qy * width + qx;
                 if (!covered[q]) edge = true;
                 else if (ids[q] < 0) continue;
                 else if (depth[q] > depth[p] + 0.12 && Math.abs(heights[q] - heights[p]) > 2 && solids[ids[q]].kind !== 'iron') behind = true;
+                else if (joins && solids[ids[q]].gatehouse && depth[q] > depth[p] - 0.12) behind = true;
             }
             const i = p * 4;
             if (edge) { out.set(INK, i); emit[i + 3] = 0; }

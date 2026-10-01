@@ -75,11 +75,15 @@ export const VILLAGE_GATE_BOUNDS = Object.freeze({
 // prop.villageGate from it; the renderer hangs the doors, lanterns and wall
 // stubs on the same numbers). Tiles along +tileX from VILLAGE_GATE (X) and
 // +tileY off the wall line (Y); heights in world px. The arch and the sign sit
-// on X = 0; the towers stand a quarter tile west of symmetric so the sign, on
-// the block's face a quarter tile in front of the wall line, is centred in
-// the gap between their silhouettes.
+// on X = 0, on the block's face a quarter tile in front of the wall line
+// (screen x 32 (X - Y) = -8). At the sign's height that face shows from where
+// it leaves the west drum (screen x 32 (west + 0.295)) to the east drum's
+// silhouette (32 (east - 0.849)), so towers at -2.33 and 2.41 (symmetric
+// within 0.08 tile) leave the sign and the arch an equal margin either side.
+// The corbels stand 9 px above the merlon tops: the parapet meets each drum
+// below its machicolation.
 export const VILLAGE_GATE_GEOMETRY = Object.freeze({
-    towerX: Object.freeze([-2.6, 2.1]),
+    towerX: Object.freeze([-2.33, 2.41]),
     towerR: 0.6,
     blockHalfDepth: 0.25,
     plinthTop: 10,
@@ -95,17 +99,19 @@ export const VILLAGE_GATE_GEOMETRY = Object.freeze({
     blockTop: 81,
     merlon: Object.freeze({ width: 11, gap: 7, depth: 3, height: 10 }),
     railHeight: 4,
-    corbelZ: Object.freeze([92, 98]),
+    corbelZ: Object.freeze([100, 106]),
     corbels: 16,
     ringOut: 0.08,
-    ringTop: 106,
+    ringTop: 114,
     eaveOut: 0.16,
-    roofApex: 170,
+    roofApex: 178,
     // Angles round each tower (radians, atan2(tileY, tileX); pi/4 faces the
-    // camera, 3pi/4 the lit west). `lit` glass is the guard room's lamp.
+    // camera, 3pi/4 the lit west). `lit` glass is the guard room's lamp; the
+    // slit stands under it, clear of the arch block, which hides the west
+    // drum below 0.43.
     towerWindows: Object.freeze([
         Object.freeze({ angle: 1.25, z0: 62, z1: 76, width: 6, pointed: true, lit: true }),
-        Object.freeze({ angle: 0.55, z0: 28, z1: 38, width: 3, pointed: false, lit: false }),
+        Object.freeze({ angle: 1.0, z0: 28, z1: 38, width: 3, pointed: false, lit: false }),
     ]),
     sign: Object.freeze({ text: 'CLAUDEVILLE', z0: 59, z1: 74, textTop: 4, field: '#5b132a', fieldShadow: '#3f1c1a' }),
     // Door leaves hang a little behind the wall line.
@@ -157,10 +163,17 @@ export const SEA_TOWER_GEOMETRY = Object.freeze({
     ]),
 });
 
-// Center of Portal Gate footprint (origin 2,29 size 4x4). Subagents spawn here
-// so dispatch reads as "child stepped through the portal" rather than the
-// generic Village Gate arrival used by top-level sessions.
-export const PORTAL_SPAWN_TILE = Object.freeze({ tileX: 4, tileY: 32 });
+// The first walkable tile at the foot of the Portal Gate's stairs, centred
+// under the vortex (footprint origin 2,29 size 4x4; the stairs run down its SW
+// face to the walk-excluded row y 33). Subagents appear here, so dispatch
+// reads as "child stepped out of the portal and down its steps" rather than
+// the generic Village Gate arrival used by top-level sessions. A body cannot
+// stand at the dais's height, and on the dais floor its feet would sit on the
+// building's front sort line (footprint centre + 16 px), so the spawn jitter
+// would hide it behind the dais and arch; a tile inside the footprint or on
+// row 33 is also snapped to the nearest walkable tile by the first walk leg.
+// Here (centre + 64 px) it always draws in front of the stairs.
+export const PORTAL_SPAWN_TILE = Object.freeze({ tileX: 5, tileY: 34 });
 
 export const VILLAGE_WALL_ROUTES = Object.freeze([
     {
@@ -289,16 +302,15 @@ export const YARD_MATERIALS = Object.freeze({
 // `facing` is the sitter's front three-quarter facing (the sit strips are
 // authored for south-east and south-west only). `occluder` names the front
 // slice drawn over the sitter's legs (RestSeats.js): a timber bench on the
-// greens, the Harbor pier kerb, and stone (a step against Command's wings, the
-// fountain's rim) that is drawn only under a sitter. Seats on building visit
-// points (Command wings, the pier) never count as visitors (V8). None sits on
-// the Command approach (7.2) or behind a wall the camera cannot see past.
+// greens, the Harbor pier kerb, and stone (a step against Command's wings)
+// that is drawn only under a sitter. Seats on building visit points (Command
+// wings, the pier) never count as visitors (V8). None sits on the Command
+// approach (7.2) or behind a wall the camera cannot see past.
 export const REST_SEATS = Object.freeze([
     { id: 'command-east-step-n', tileX: 18, tileY: 18, facing: 'south-east', occluder: 'step' },
     { id: 'command-east-step-s', tileX: 18, tileY: 19, facing: 'south-east', occluder: 'step' },
     { id: 'command-west-step', tileX: 12, tileY: 19, facing: 'south-west', occluder: 'step' },
     { id: 'taskboard-green', tileX: 24, tileY: 28, facing: 'south-west', occluder: 'bench' },
-    { id: 'fountain-rim', tileX: 14, tileY: 21, facing: 'south-west', occluder: 'well' },
     { id: 'harbor-pier', tileX: 26, tileY: 21, facing: 'south-west', occluder: 'pier' },
     { id: 'archive-green-e', tileX: 10, tileY: 13, facing: 'south-east', occluder: 'bench' },
     { id: 'archive-green-w', tileX: 12, tileY: 13, facing: 'south-west', occluder: 'bench' },
@@ -320,8 +332,8 @@ export const REST_SEATS = Object.freeze([
 // leaves the foot of Command's steps, crosses the bridge landing, runs down
 // the bridge deck and folds at its foot, between the watch lantern, the
 // notice pillar, the avenue stall and the Task Board roof (32-36 world px
-// between slots). The 13th petitioner onward stands on the plaza west of the
-// fountain (`overflow`). No slot stands on a fixture's footprint
+// between slots). The 13th petitioner onward stands on the civic west arm
+// beyond the market stall (`overflow`). No slot stands on a fixture's footprint
 // (VisitTileAllocator `standsOnFixture`) or behind a roof. `door` is the point
 // the head of the line faces; each later slot faces the slot ahead of it.
 export const COMMAND_QUEUE = Object.freeze({
