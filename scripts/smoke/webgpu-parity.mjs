@@ -377,8 +377,16 @@ function installParityHelpers() {
     } else {
       reason = 'renderer has no debugCaptureTargets()';
     }
+    const { effectBudgetMode } = await import(`${GPU}GpuWorldPolicy.js`);
+    const level = Math.min(renderer.qualityLadder.getLevel(), 2);
+    const needsBloom = effectBudgetMode('bloom', level) !== 'off'
+      && renderer.lightCount > 0 && (renderer.sourceEnergy?.bloom ?? 1) > 0 && !renderer._display?.hdr;
+    const emissionRequired = needsBloom || Boolean(renderer._display || renderer._rolesWritten);
+    const emissionWritten = renderer._targetNeedsEmission === true;
+    const emissionAllocated = backend === 'webgl'
+      ? Boolean(renderer.sceneTarget?.textures[1]) : Boolean(renderer.sceneTarget?.emission);
     if (backend === 'webgpu') await renderer.drain?.();
-    return { ok, capture, reason };
+    return { ok, capture, reason, emissionRequired, emissionWritten, emissionAllocated };
   };
 
   T.makeWebgl = async () => {
@@ -661,6 +669,24 @@ function installParityHelpers() {
     for (const name of ['composite', 'scene', 'emission']) {
       const ref = a.capture?.[name];
       const test = g?.capture?.[name];
+      if (name === 'emission' && a.ok && g?.ok) {
+        if (a.emissionRequired || g.emissionRequired) {
+          if (!a.emissionRequired || !g.emissionRequired || !a.emissionWritten || !g.emissionWritten
+            || !a.emissionAllocated || !g.emissionAllocated || !ref || !test) {
+            out.targets.emission = { status: 'fail', reason: 'required emission was not allocated, written and captured by both backends' };
+            continue;
+          }
+        } else {
+          // Unread emission has no output contract. A retained target can hold
+          // an older frame; normalize both absent/retained cases to zero.
+          if (a.emissionWritten || g.emissionWritten) {
+            out.targets.emission = { status: 'fail', reason: 'unused emission was unexpectedly written' };
+            continue;
+          }
+          out.targets.emission = { status: 'pass', contract: 'unused-zero', pixels: T.width * T.height, shareLe1: 1, shareEq0: 1, maxAbsDiff: 0 };
+          continue;
+        }
+      }
       if (!ref) { out.targets[name] = { status: 'n/a', reason: `webgl ${name} not captured` }; continue; }
       if (!test) {
         out.targets[name] = { status: 'n/a', reason: out.webgpu.reason || g?.capture?.[`${name}Error`] || `webgpu ${name} not captured` };
@@ -668,7 +694,7 @@ function installParityHelpers() {
       }
       if (!out.webgpu.ok) { out.targets[name] = { status: 'n/a', reason: out.webgpu.reason }; continue; }
       const metric = await T.compare(ref, test, images ? (name === 'composite' ? 'always' : 'diff') : false);
-      out.targets[name] = { status: metric.verdict, ...metric };
+      out.targets[name] = { status: name === 'emission' && metric.maxAbsDiff > 0 ? 'fail' : metric.verdict, ...metric };
     }
     if (images) {
       if (a.capture?.composite) out.webglImage = await T.png(a.capture.composite, T.width, T.height);
@@ -859,6 +885,7 @@ function targetCell(target) {
 function caseVerdict(row) {
   if (row.error) return 'fail';
   if (row.webglSelfStable === false) return 'fail';
+  if (row.targets?.emission?.status === 'fail') return 'fail';
   const composite = row.targets?.composite;
   if (!composite || composite.status === 'n/a') return 'n/a';
   return composite.status;

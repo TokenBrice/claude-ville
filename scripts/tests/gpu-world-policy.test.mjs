@@ -5,7 +5,6 @@ import {
   GPU_MATERIAL_CLASSES,
   buildStableGpuBatches,
   clampGpuLights,
-  estimateGpuWorldTextureBytes,
   isAttentionLight,
   localLightPhaseForLighting,
   materialClassId,
@@ -194,18 +193,6 @@ test('local point lights disappear at noon and rise with darkness or weather bea
   assert.equal(localLightPhaseForLighting({ ambientLight: 0.65, beaconIntensity: 0.2 }), 0.35);
   assert.equal(localLightPhaseForLighting({ ambientLight: 0.9, beaconIntensity: 0.42 }), 0.42);
   assert.equal(localLightPhaseForLighting({ ambientLight: 0, beaconIntensity: 1 }), 1);
-});
-
-test('texture byte estimates include render targets and cached sources', () => {
-  const estimate = estimateGpuWorldTextureBytes({
-    width: 100,
-    height: 80,
-    bloomScale: 0.5,
-    cachedTextures: [{ width: 20, height: 10, copies: 2 }],
-  });
-  assert.equal(estimate.targets, (8000 + 2000 * 2) * 4);
-  assert.equal(estimate.textures, 20 * 10 * 4 * 2);
-  assert.equal(estimate.total, estimate.targets + estimate.textures);
 });
 
 test('scene builder preserves terrain-first and painter-order records', () => {

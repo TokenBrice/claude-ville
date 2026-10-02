@@ -10,7 +10,6 @@ import {
     createGpuTimingMetricsScratch,
     effectBudgetMode,
     shedEffectsForLevel,
-    estimateGpuWorldTextureBytes,
     localLightPhaseForLighting,
     selectGpuTimingMetrics,
     GRADE_GLSL,
@@ -314,6 +313,8 @@ export const PARTICLE_EMISSION = 0.5;
 // The app caps live particles at 240 (ParticleSystem MAX_PARTICLES).
 const MAX_PARTICLE_INSTANCES = 240;
 const BLOOM_SCALE = 0.375;
+// Retain optional targets through short ladder/light changes, not all day.
+const TARGET_RETENTION_MS = 5000;
 const EMA_ALPHA = 0.1;
 // 3.5's ramp table (11x3 RGBA = 132 B) and 3.3's ground-receiver field
 // (2 x 256x144 RGBA8 = 294,912 B) are new resident bytes, so the evictable
@@ -2840,7 +2841,10 @@ ${WATER_PALETTE_GLSL}
 ${OPEN_SEA_GLSL}
 void main() {
     vec4 scene = texture(u_scene, clamp(v_uv, vec2(0.0), vec2(1.0)));
-    vec3 bloom = texture(u_bloom, clamp(v_uv, vec2(0.0), vec2(1.0))).rgb;
+    vec3 bloom = vec3(0.0);
+    if (u_bloomStrength != 0.0) {
+        bloom = texture(u_bloom, clamp(v_uv, vec2(0.0), vec2(1.0))).rgb;
+    }
     vec3 color = scene.rgb;
     float alpha = scene.a;
     // 3.3 — the open sea below the horizon, under everything the scene drew.
@@ -3613,6 +3617,10 @@ export class GpuWorldRenderer {
         this.sceneTarget = null;
         this.bloomA = null;
         this.bloomB = null;
+        this._targetNeedsEmission = false;
+        this._targetNeedsBloom = false;
+        this._lastEmissionUseAt = -Infinity;
+        this._lastBloomUseAt = -Infinity;
         for (const entry of this._textureEntries?.values?.() || []) {
             if (entry.texture) gl.deleteTexture(entry.texture);
         }
@@ -3665,6 +3673,10 @@ export class GpuWorldRenderer {
         this.sceneTarget = null;
         this.bloomA = null;
         this.bloomB = null;
+        this._targetNeedsEmission = false;
+        this._targetNeedsBloom = false;
+        this._lastEmissionUseAt = -Infinity;
+        this._lastBloomUseAt = -Infinity;
         this._textureEntries?.clear?.();
         this._albedoPage?.abandon();
         this._albedoPage = null;
@@ -3700,39 +3712,61 @@ export class GpuWorldRenderer {
         this.qualityTimingSource = 'cpu-fallback';
     }
 
-    _ensureTargets() {
+    _ensureTargets(needsEmission = this._targetNeedsEmission, needsBloom = this._targetNeedsBloom) {
         const gl = this.gl;
+        const now = performance.now();
+        if (needsEmission) this._lastEmissionUseAt = now;
+        if (needsBloom) this._lastBloomUseAt = now;
+        this._targetNeedsEmission = needsEmission;
+        this._targetNeedsBloom = needsBloom;
+        const sameSize = this.sceneTarget?.width === this.width && this.sceneTarget?.height === this.height;
+        const keepEmission = needsEmission || (sameSize && this.sceneTarget?.textures[1]
+            && now - this._lastEmissionUseAt < TARGET_RETENTION_MS);
+        const keepBloom = needsBloom || (sameSize && this.bloomA
+            && now - this._lastBloomUseAt < TARGET_RETENTION_MS);
         const bloomWidth = Math.max(1, Math.floor(this.width * BLOOM_SCALE));
         const bloomHeight = Math.max(1, Math.floor(this.height * BLOOM_SCALE));
-        const matches = this.sceneTarget?.width === this.width
-            && this.sceneTarget?.height === this.height
-            && this.bloomA?.width === bloomWidth
-            && this.bloomA?.height === bloomHeight
-            && this.bloomB?.width === bloomWidth
-            && this.bloomB?.height === bloomHeight;
-        if (matches) return;
-        this._releaseTarget(this.sceneTarget);
-        this._releaseTarget(this.bloomA);
-        this._releaseTarget(this.bloomB);
-        this.sceneTarget = this._createTarget(this.width, this.height, { attachments: 2, filter: gl.NEAREST, depth: true });
-        this.bloomA = this._createTarget(bloomWidth, bloomHeight, { filter: gl.LINEAR });
-        this.bloomB = this._createTarget(bloomWidth, bloomHeight, { filter: gl.LINEAR });
+        const emissionChanged = Boolean(this.sceneTarget?.textures[1]) !== Boolean(keepEmission);
+        const bloomChanged = Boolean(this.bloomA) !== Boolean(keepBloom)
+            || (this.bloomA && (this.bloomA.width !== bloomWidth || this.bloomA.height !== bloomHeight));
+        if (sameSize && !emissionChanged && !bloomChanged) return;
+        // Allocation binds on the current unit; preserve the scene uniforms'
+        // source binding when promotion happens after their resolution.
+        const bound = gl.getParameter(gl.TEXTURE_BINDING_2D);
+        if (!sameSize) {
+            this._releaseTarget(this.sceneTarget);
+            this.sceneTarget = this._createTarget(this.width, this.height, { attachments: keepEmission ? 2 : 1, filter: gl.NEAREST, depth: true });
+        } else if (emissionChanged) {
+            const target = this.sceneTarget;
+            gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+            gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+            if (keepEmission) {
+                target.textures[1] = this._createTexture(this.width, this.height, { filter: gl.NEAREST });
+                gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, target.textures[1], 0);
+            } else {
+                gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, null, 0);
+                gl.deleteTexture(target.textures.pop());
+            }
+            target.attachments = target.textures.length;
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        }
+        if (bloomChanged) {
+            this._releaseTarget(this.bloomA);
+            this._releaseTarget(this.bloomB);
+            this.bloomA = keepBloom ? this._createTarget(bloomWidth, bloomHeight, { filter: gl.LINEAR }) : null;
+            this.bloomB = keepBloom ? this._createTarget(bloomWidth, bloomHeight, { filter: gl.LINEAR }) : null;
+        }
+        gl.bindTexture(gl.TEXTURE_2D, bound && gl.isTexture(bound) ? bound : null);
         this._updateTextureBytes();
     }
 
     _updateTextureBytes() {
-        const estimate = estimateGpuWorldTextureBytes({
-            width: this.width,
-            height: this.height,
-            bloomScale: BLOOM_SCALE,
-        });
-        // The scene target has two full-resolution colour attachments rather
-        // than the policy helper's one, plus 0.6's DEPTH_COMPONENT16 painter
-        // depth, so add both explicitly.
-        const sceneDepthBytes = this.sceneTarget?.depthBuffer
-            ? this.width * this.height * SCENE_DEPTH_BYTES_PER_PIXEL
-            : 0;
-        this.textureBytes = estimate.total + this.width * this.height * 4 + sceneDepthBytes + this._cachedTextureBytes
+        const target = this.sceneTarget;
+        const sceneBytes = target ? target.width * target.height * 4 * target.textures.length : 0;
+        const sceneDepthBytes = target?.depthBuffer ? target.width * target.height * SCENE_DEPTH_BYTES_PER_PIXEL : 0;
+        const bloomBytes = (this.bloomA ? this.bloomA.width * this.bloomA.height * 4 : 0)
+            + (this.bloomB ? this.bloomB.width * this.bloomB.height * 4 : 0);
+        this.textureBytes = sceneBytes + sceneDepthBytes + bloomBytes + this._cachedTextureBytes
             + (this._albedoPage?.bytes || 0) + (this._radiance?.bytes || 0);
     }
 
@@ -4487,9 +4521,13 @@ export class GpuWorldRenderer {
 
     _renderScene(batches, camera, feed, qualityLevel = POST_FX_LEVELS.FULL) {
         const gl = this.gl;
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.framebuffer);
-        const bloomEnabled = effectBudgetMode('bloom', qualityLevel) !== 'off'
-            && localLightPhaseForLighting(feed.lighting) > LOCAL_LIGHT_VISIBILITY_FLOOR;
+        gl.useProgram(this.sceneProgram);
+        this._setSceneUniforms(feed, camera, qualityLevel);
+        const bloomMode = effectBudgetMode('bloom', qualityLevel);
+        const bloomStrength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
+        this._frameBloomStrength = this.lightCount > 0
+            ? bloomStrength * clamp(finite(this.sourceEnergy?.bloom, 1), 0, 2) : 0;
+        const bloomEnabled = this._frameBloomStrength > 0;
         // 10.3 — on a P3 screen the emission MRT is always written (bloom or
         // not, like WebGPU's roles target) and its alpha carries each batch's
         // role: attachment 1's alpha blends by the blend constant (1 for a
@@ -4498,6 +4536,8 @@ export class GpuWorldRenderer {
         // shipped, so bloom and the SDR bytes never see it.
         const roles = this._p3 && this._ensureP3Programs() ? this._roleBlend : null;
         this._rolesWritten = roles !== null;
+        this._ensureTargets(bloomEnabled || roles !== null, bloomEnabled);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.framebuffer);
         gl.drawBuffers(bloomEnabled || roles
             ? [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]
             : [gl.COLOR_ATTACHMENT0]);
@@ -4510,8 +4550,6 @@ export class GpuWorldRenderer {
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         gl.depthFunc(gl.ALWAYS);
         let depthWrites = true;
-        gl.useProgram(this.sceneProgram);
-        this._setSceneUniforms(feed, camera, qualityLevel);
         // B.1b — the albedo page (or its stand-in) stays on unit 14 for the
         // pass; unit 0 starts on the empty texture in case a paged batch
         // draws first.
@@ -4666,15 +4704,8 @@ export class GpuWorldRenderer {
         gl.useProgram(p3 ? this.compositeP3Program : this.compositeProgram);
         gl.uniform1i(uniforms.u_scene, COMPOSITE_SAMPLER_UNITS.scene);
         gl.uniform1i(uniforms.u_bloom, COMPOSITE_SAMPLER_UNITS.bloom);
-        const bloomMode = effectBudgetMode('bloom', qualityLevel);
-        const bloomStrength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
-        // 3.1 — bloom is served last from the same envelope, so broad halo
-        // energy shrinks while the cores it came from stay readable.
-        const bloomEnergy = clamp(finite(this.sourceEnergy?.bloom, 1), 0, 2);
-        gl.uniform1f(
-            uniforms.u_bloomStrength,
-            this.lightCount > 0 ? bloomStrength * bloomEnergy : 0,
-        );
+        // The same resolved strength controls target allocation and sampling.
+        gl.uniform1f(uniforms.u_bloomStrength, this._frameBloomStrength);
         const flash = feed.flash;
         gl.uniform3f(uniforms.u_flash, finite(flash?.[0], 0), finite(flash?.[1], 0), finite(flash?.[2], 0));
         // The composite's world mapping (the scene pass's camera at full
@@ -4687,12 +4718,12 @@ export class GpuWorldRenderer {
         gl.activeTexture(gl.TEXTURE0 + COMPOSITE_SAMPLER_UNITS.scene);
         gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.textures[0]);
         gl.activeTexture(gl.TEXTURE0 + COMPOSITE_SAMPLER_UNITS.bloom);
-        gl.bindTexture(gl.TEXTURE_2D, this.bloomB.textures[0]);
+        gl.bindTexture(gl.TEXTURE_2D, this._targetNeedsBloom ? this.bloomB.textures[0] : this.emptyMaterialTexture);
         if (p3) {
             gl.uniform1i(uniforms.u_emission, P3_EMISSION_UNIT);
             gl.uniform1i(uniforms.u_roles, this._rolesWritten ? 1 : 0);
             gl.activeTexture(gl.TEXTURE0 + P3_EMISSION_UNIT);
-            gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.textures[1]);
+            gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.textures[1] || this.emptyMaterialTexture);
         }
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -5059,7 +5090,6 @@ export class GpuWorldRenderer {
             // this path non-blocking; until the first clean result arrives the
             // existing CPU submission measurement remains the ladder fallback.
             this._pollGpuQueries();
-            this._ensureTargets();
             // B.1b — pageable records go onto the albedo page; a frame whose
             // sources overflow it repacks once and is batched again.
             const page = this._albedoPage;
@@ -5278,7 +5308,7 @@ export class GpuWorldRenderer {
             textureEvictions: this.textureEvictions,
             maxCachedTextureBytes: MAX_CACHED_TEXTURE_BYTES,
             maxCachedTextures: MAX_CACHED_TEXTURES,
-            materialAttachments: 2,
+            materialAttachments: this.sceneTarget?.textures.length || 0,
             // 0.6 — live world particles drawn this frame (one instanced draw).
             particleInstances: this.particleInstances,
             // 2.2 — the footprint march length this frame (0 = off).
@@ -5339,7 +5369,8 @@ export class GpuWorldRenderer {
         const depthBytes = target => target?.depthBuffer
             ? target.width * target.height * SCENE_DEPTH_BYTES_PER_PIXEL
             : 0;
-        const attachmentBytes = targetBytes(this.sceneTarget) * 2 + depthBytes(this.sceneTarget)
+        const emissionBytes = this.sceneTarget?.textures[1] ? targetBytes(this.sceneTarget) : 0;
+        const attachmentBytes = targetBytes(this.sceneTarget) + emissionBytes + depthBytes(this.sceneTarget)
             + targetBytes(this.bloomA) + targetBytes(this.bloomB);
         const bufferBytes = (this.vertexBufferBytes || 0) + (this.particleBuffer ? this._particleBytes.byteLength : 0);
         const pageBytes = this._albedoPage?.bytes || 0;
@@ -5360,7 +5391,7 @@ export class GpuWorldRenderer {
             cachedSourceOverageBytes: Math.max(0, pinnedSourceBytes + evictableSourceBytes - MAX_CACHED_TEXTURE_BYTES),
             attachments: {
                 sceneColor: targetBytes(this.sceneTarget),
-                sceneEmission: targetBytes(this.sceneTarget),
+                sceneEmission: emissionBytes,
                 sceneDepth: depthBytes(this.sceneTarget),
                 bloomA: targetBytes(this.bloomA),
                 bloomB: targetBytes(this.bloomB),

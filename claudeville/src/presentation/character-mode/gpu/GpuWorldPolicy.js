@@ -1325,27 +1325,6 @@ export function buildStableGpuBatches(records = [], batches = [], normalizedReco
     return batches;
 }
 
-export function estimateGpuWorldTextureBytes({
-    width = 0,
-    height = 0,
-    bloomScale = 0.5,
-    cachedTextures = [],
-} = {}) {
-    const w = Math.max(0, Math.floor(finite(width)));
-    const h = Math.max(0, Math.floor(finite(height)));
-    const bloomW = Math.max(0, Math.floor(w * Math.max(0, finite(bloomScale, 0.5))));
-    const bloomH = Math.max(0, Math.floor(h * Math.max(0, finite(bloomScale, 0.5))));
-    const targets = (w * h + bloomW * bloomH * 2) * 4;
-    let textures = 0;
-    for (const texture of cachedTextures || []) {
-        const tw = Math.max(0, Math.floor(finite(texture?.width)));
-        const th = Math.max(0, Math.floor(finite(texture?.height)));
-        const copies = Math.max(1, Math.floor(finite(texture?.copies, 1)));
-        textures += tw * th * 4 * copies;
-    }
-    return { targets, textures, total: targets + textures };
-}
-
 // 3.1 — action-needed overlays are outside the exposure budget: the renderer
 // asks this before applying the envelope's spill share to a light.
 export function isAttentionLight(light) {

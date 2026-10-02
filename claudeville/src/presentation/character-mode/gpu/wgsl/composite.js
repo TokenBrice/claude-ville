@@ -30,7 +30,10 @@ import {
 
 const COMPOSITE_SCENE_WGSL = /* wgsl */ `
   let scene = textureLoad(sceneColor, vec2i(i32(in.position.x), i32(textureDimensions(sceneColor).y) - 1 - i32(in.position.y)), 0);
-  let bloomRgb = textureSampleLevel(bloomColor, linearSampler, clamp(in.uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb;
+  var bloomRgb = vec3f(0.0);
+  if (frame.bloomStrength != 0.0) {
+    bloomRgb = textureSampleLevel(bloomColor, linearSampler, clamp(in.uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb;
+  }
   var color = scene.rgb;
   var alpha = scene.a;
   if (frame.seaOn != 0u && alpha < 1.0) {

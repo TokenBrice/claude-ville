@@ -2,9 +2,9 @@
 // render pipelines of the WebGPU world. `prepareWorldPipelines` compiles every
 // module and the base pipelines asynchronously and throws on any compilation
 // or validation error, so a backend that cannot build its shaders is known
-// before a canvas context is taken (the caller then keeps WebGL2). Scene and
-// particle variants (blend, painter-depth write, cue-run topology, emission
-// write) are created lazily from the validated modules.
+// before a canvas context is taken (the caller then keeps WebGL2). Every
+// reachable scene and particle variant, with or without an emission attachment,
+// is prewarmed asynchronously before its display path can render.
 import { LIGHT_RECORD_ROWS, MAX_LIGHT_RECORDS } from '../GpuWorldPolicy.js';
 import { assertRecordStride, RECORD_INSTANCE_BYTES, RECORD_OFFSETS } from '../GpuRecordLayout.js';
 import {
@@ -166,15 +166,15 @@ const writeAll = () => globalThis.GPUColorWrite.ALL;
 // (SCENE_EMISSION_FORMAT on a P3 SDR screen, SCENE_EMISSION_HDR_FORMAT under
 // HDR), always written, alpha = the batch role (BLEND_*_ROLE); null is the
 // shipped Stage A target.
-function emissionTarget(add, emission, roles) {
+function emissionTarget(add, roles) {
     if (roles) return { format: roles, blend: add ? BLEND_ADD_ROLE : BLEND_NORMAL_ROLE, writeMask: writeAll() };
-    return { format: SCENE_EMISSION_FORMAT, blend: add ? BLEND_ADD : BLEND_NORMAL, writeMask: emission ? writeAll() : 0 };
+    return { format: SCENE_EMISSION_FORMAT, blend: add ? BLEND_ADD : BLEND_NORMAL, writeMask: writeAll() };
 }
 
-function sceneDescriptor(layouts, module, { add = false, depth = false, emission = true, cue = false, roles = null } = {}) {
+function sceneDescriptor(layouts, module, { add = false, depth = false, cue = false, roles = null, attachment = true } = {}) {
     const blend = add ? BLEND_ADD : BLEND_NORMAL;
     return {
-        label: `world-scene${add ? '-add' : ''}${depth ? '-depth' : ''}${emission ? '' : '-noemit'}${cue ? '-cue' : ''}${roles ? `-roles-${roles}` : ''}`,
+        label: `world-scene${add ? '-add' : ''}${depth ? '-depth' : ''}${cue ? '-cue' : ''}${roles ? `-roles-${roles}` : ''}${attachment ? '' : '-color-only'}`,
         layout: layouts.scenePipeline,
         vertex: { module, entryPoint: 'sceneVs' },
         primitive: { topology: cue ? 'triangle-list' : 'triangle-strip', cullMode: 'none' },
@@ -184,15 +184,15 @@ function sceneDescriptor(layouts, module, { add = false, depth = false, emission
             entryPoint: 'sceneFs',
             targets: [
                 { format: SCENE_COLOR_FORMAT, blend },
-                emissionTarget(add, emission, roles),
+                ...(attachment ? [emissionTarget(add, roles)] : []),
             ],
         },
     };
 }
 
-function particleDescriptor(layouts, module, { emission = true, roles = null } = {}) {
+function particleDescriptor(layouts, module, { roles = null, attachment = true } = {}) {
     return {
-        label: `world-particles${emission ? '' : '-noemit'}${roles ? `-roles-${roles}` : ''}`,
+        label: `world-particles${roles ? `-roles-${roles}` : ''}${attachment ? '' : '-color-only'}`,
         layout: layouts.particlePipeline,
         vertex: { module, entryPoint: 'particleVs', buffers: [PARTICLE_VERTEX_LAYOUT] },
         primitive: { topology: 'triangle-strip', cullMode: 'none' },
@@ -202,7 +202,7 @@ function particleDescriptor(layouts, module, { emission = true, roles = null } =
             entryPoint: 'particleFs',
             targets: [
                 { format: SCENE_COLOR_FORMAT, blend: BLEND_NORMAL },
-                emissionTarget(false, emission, roles),
+                ...(attachment ? [emissionTarget(false, roles)] : []),
             ],
         },
     };
@@ -262,21 +262,28 @@ export async function prepareWorldPipelines(device, canvasFormat) {
         ]);
         const sceneVariants = new Map([['0000', sceneBase]]);
         const particleVariants = new Map([['1', particleBase]]);
-        // Stage B — every non-role scene variant and the no-emission particle
-        // pipeline, compiled asynchronously here (in parallel, off the frame)
+        // Stage B — every reachable non-role scene and particle variant:
+        // emission is always written when attached, otherwise the pass is
+        // color-only. Compile asynchronously here (in parallel, off the frame)
         // instead of by `scene()`/`particles()` inside a frame: on a cold
         // shader cache those synchronous builds held the first WebGPU frame's
         // GPU work for seconds.
         await Promise.all([
-            ...Array.from({ length: 15 }, (_, index) => {
+            ...Array.from({ length: 7 }, (_, index) => {
                 const bits = index + 1;
-                const options = { add: (bits & 8) !== 0, depth: (bits & 4) !== 0, emission: (bits & 2) === 0, cue: (bits & 1) !== 0 };
-                const key = `${options.add ? 1 : 0}${options.depth ? 1 : 0}${options.emission ? 0 : 1}${options.cue ? 1 : 0}`;
+                const options = { add: (bits & 4) !== 0, depth: (bits & 2) !== 0, cue: (bits & 1) !== 0 };
+                const key = `${options.add ? 1 : 0}${options.depth ? 1 : 0}0${options.cue ? 1 : 0}`;
                 return device.createRenderPipelineAsync(sceneDescriptor(layouts, scene, options))
                     .then(pipeline => sceneVariants.set(key, pipeline));
             }),
-            device.createRenderPipelineAsync(particleDescriptor(layouts, particle, { emission: false }))
-                .then(pipeline => particleVariants.set('0', pipeline)),
+            ...Array.from({ length: 8 }, (_, bits) => {
+                const options = { add: (bits & 4) !== 0, depth: (bits & 2) !== 0, cue: (bits & 1) !== 0, attachment: false };
+                const key = `${options.add ? 1 : 0}${options.depth ? 1 : 0}1${options.cue ? 1 : 0}:color`;
+                return device.createRenderPipelineAsync(sceneDescriptor(layouts, scene, options))
+                    .then(pipeline => sceneVariants.set(key, pipeline));
+            }),
+            device.createRenderPipelineAsync(particleDescriptor(layouts, particle, { attachment: false }))
+                .then(pipeline => particleVariants.set('0:color', pipeline)),
         ]);
         // 10.2 / 10.3 — the display variants (an HDR and/or P3 canvas): the
         // roles composite, the roles mark fragment and a debug-load pipeline
@@ -322,6 +329,19 @@ export async function prepareWorldPipelines(device, canvasFormat) {
                     fragment: { module, entryPoint: 'hdrReadoutFs', targets: [{ format: canvasFormat }] },
                 })) : null,
             ]);
+            // Role staging always writes emission. Prewarm its scene/particle
+            // variants before publishing the display variant, never in render().
+            const roles = hdr ? SCENE_EMISSION_HDR_FORMAT : SCENE_EMISSION_FORMAT;
+            await Promise.all([
+                ...Array.from({ length: 8 }, (_, bits) => {
+                    const options = { add: (bits & 4) !== 0, depth: (bits & 2) !== 0, cue: (bits & 1) !== 0, roles };
+                    const key = `${options.add ? 1 : 0}${options.depth ? 1 : 0}0${options.cue ? 1 : 0}${roles}`;
+                    return device.createRenderPipelineAsync(sceneDescriptor(layouts, scene, options))
+                        .then(pipeline => sceneVariants.set(key, pipeline));
+                }),
+                device.createRenderPipelineAsync(particleDescriptor(layouts, particle, { roles }))
+                    .then(pipeline => particleVariants.set(`1${roles}`, pipeline)),
+            ]);
             return Object.freeze({
                 hdr,
                 p3,
@@ -341,24 +361,18 @@ export async function prepareWorldPipelines(device, canvasFormat) {
             bloom: bloomPipeline,
             debugLoad: debugLoadPipeline,
             marks: markPipeline,
-            // §3.1 — at most 16 scene variants, made on first use; `roles`
-            // (an emission format, 10.2/10.3) adds the role-staging variants.
-            scene(add, depth, emission, cue, roles = null) {
-                const key = `${add ? 1 : 0}${depth ? 1 : 0}${emission ? 0 : 1}${cue ? 1 : 0}${roles || ''}`;
-                let pipeline = sceneVariants.get(key);
-                if (!pipeline) {
-                    pipeline = device.createRenderPipeline(sceneDescriptor(layouts, scene, { add, depth, emission, cue, roles }));
-                    sceneVariants.set(key, pipeline);
-                }
+            // Every lookup is a prewarmed variant, including color-only passes
+            // and display-role staging. Missing preparation is a backend error.
+            scene(add, depth, emission, cue, roles = null, attachment = true) {
+                const key = `${add ? 1 : 0}${depth ? 1 : 0}${emission ? 0 : 1}${cue ? 1 : 0}${roles || ''}${attachment ? '' : ':color'}`;
+                const pipeline = sceneVariants.get(key);
+                if (!pipeline) throw new Error(`World scene pipeline was not prepared: ${key}`);
                 return pipeline;
             },
-            particles(emission, roles = null) {
-                const key = `${emission ? '1' : '0'}${roles || ''}`;
-                let pipeline = particleVariants.get(key);
-                if (!pipeline) {
-                    pipeline = device.createRenderPipeline(particleDescriptor(layouts, particle, { emission, roles }));
-                    particleVariants.set(key, pipeline);
-                }
+            particles(emission, roles = null, attachment = true) {
+                const key = `${emission ? '1' : '0'}${roles || ''}${attachment ? '' : ':color'}`;
+                const pipeline = particleVariants.get(key);
+                if (!pipeline) throw new Error(`World particle pipeline was not prepared: ${key}`);
                 return pipeline;
             },
             /** Resolves to the frozen display variant for `{ hdr, p3 }` (at least one true). */

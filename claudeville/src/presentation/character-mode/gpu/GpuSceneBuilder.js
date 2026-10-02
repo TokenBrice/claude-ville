@@ -1070,7 +1070,7 @@ function buildAgentAtlasTextureUpdates(atlas, records, slots, columns, cell) {
         const slot = slots.get(record.id) || 0;
         const x = (slot % columns) * cell;
         const y = Math.floor(slot / columns) * cell;
-        updates.push({ x, y, sx: x, sy: y, width: cell, height: cell, source: atlas });
+        updates.push({ x, y, sx: x, sy: y, width: record.sw, height: record.sh, source: atlas });
     }
     return updates;
 }
@@ -1187,8 +1187,8 @@ function walkStripOrigin(index, layout) {
 
 // One freshly filled strip cell as a sub-rect patch read straight from its
 // atlas canvas (GpuWorldRenderer._textureFor honours `sx/sy`).
-function walkStripCellUpdate(atlas, x, y, cell) {
-    return { x, y, sx: x, sy: y, width: cell, height: cell, source: atlas };
+function walkStripCellUpdate(atlas, x, y, source) {
+    return { x, y, sx: x, sy: y, width: source.sw, height: source.sh, source: atlas };
 }
 
 function fillWalkStrips(renderer, agentRecords, assigned, layout) {
@@ -1231,7 +1231,7 @@ function fillWalkStrips(renderer, agentRecords, assigned, layout) {
         ctx.clearRect(x, origin.y, cell, cell);
         ctx.drawImage(source.source, source.sx, source.sy, source.sw, source.sh, x, origin.y, source.sw, source.sh);
         if (!resized) {
-            renderer._gpuAgentAlbedoTextureUpdates.push(walkStripCellUpdate(atlas, x, origin.y, cell));
+            renderer._gpuAgentAlbedoTextureUpdates.push(walkStripCellUpdate(atlas, x, origin.y, source));
         }
         for (const channel of channels) {
             const channelAtlas = channel.state.atlas;
@@ -1241,7 +1241,7 @@ function fillWalkStrips(renderer, agentRecords, assigned, layout) {
             channelCtx.clearRect(x, origin.y, cell, cell);
             drawAgentChannelFrame(channelCtx, source, channel.name, x, origin.y);
             if (!channel.state.resized) {
-                renderer[channel.updates].push(walkStripCellUpdate(channelAtlas, x, origin.y, cell));
+                renderer[channel.updates].push(walkStripCellUpdate(channelAtlas, x, origin.y, source));
             }
             channelFills++;
         }

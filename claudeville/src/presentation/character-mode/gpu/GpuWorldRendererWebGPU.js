@@ -14,12 +14,10 @@ import {
     createGpuTimingMetricsScratch,
     effectBudgetMode,
     EFFECT_BUDGET,
-    estimateGpuWorldTextureBytes,
     GPU_PARTICLE_INSTANCE_BYTES,
     GPU_RECORD_FLAGS,
     gpuRecordPageable,
     LIGHT_TILE_STRIDE,
-    localLightPhaseForLighting,
     selectGpuTimingMetrics,
     shedEffectsForLevel,
 } from './GpuWorldPolicy.js';
@@ -31,7 +29,6 @@ import {
     createPuddleUniforms,
     createSeaWeather,
     createWaterFx,
-    LOCAL_LIGHT_VISIBILITY_FLOOR,
     resolveAtmosphereCourses,
     resolveBeam,
     resolveCamera,
@@ -88,6 +85,8 @@ export { probeWebGpu };
 const SCENE_DEPTH_BYTES_PER_PIXEL = EFFECT_BUDGET['particle-depth'].cost.attachmentBytesPerPixel;
 const MAX_PARTICLE_INSTANCES = 240;
 const BLOOM_SCALE = 0.375;
+// Keep recently used optional targets through brief ladder/light changes.
+const TARGET_RETENTION_MS = 5000;
 const EMA_ALPHA = 0.1;
 // The same evictable-source ceiling as the WebGL2 cache (GpuWorldRenderer).
 const PALETTE_LUT_BYTES = 11 * 3 * 4;
@@ -594,6 +593,7 @@ export class GpuWorldRendererWebGPU {
         this._lightRecordsRevision = null;
         this.emptyMaterialTexture = createWgpuTexture(device, 1, 1, 'rgba8', { label: 'empty' });
         this.emptyMaterialView = this.emptyMaterialTexture.createView();
+        writeTextureRows(device, this.emptyMaterialTexture, new Uint8Array(4), 1, 1, 4);
         this.emptyAlbedoPage = createWgpuTexture(device, 1, 1, 'rgba8', { label: 'empty-page' });
         this.emptyAlbedoPageView = this.emptyAlbedoPage.createView({ dimension: '2d-array' });
         const tile = cloudTile().data;
@@ -633,6 +633,10 @@ export class GpuWorldRendererWebGPU {
         this.sceneTarget = null;
         this.bloomA = null;
         this.bloomB = null;
+        this._targetNeedsEmission = false;
+        this._targetNeedsBloom = false;
+        this._lastEmissionUseAt = -Infinity;
+        this._lastBloomUseAt = -Infinity;
         this._textureEntries.clear();
         this._albedoPage?.abandon();
         this._albedoPage = null;
@@ -686,49 +690,62 @@ export class GpuWorldRendererWebGPU {
         return { texture, view: texture.createView() };
     }
 
-    _ensureTargets() {
+    _ensureTargets(needsEmission = this._targetNeedsEmission, needsBloom = this._targetNeedsBloom) {
+        needsEmission ||= Boolean(this._display);
+        const now = performance.now();
+        if (needsEmission) this._lastEmissionUseAt = now;
+        if (needsBloom) this._lastBloomUseAt = now;
         const bloomWidth = Math.max(1, Math.floor(this.width * BLOOM_SCALE));
         const bloomHeight = Math.max(1, Math.floor(this.height * BLOOM_SCALE));
         const emissionFormat = this._display?.emissionFormat || SCENE_EMISSION_FORMAT;
-        const matches = this.sceneTarget?.width === this.width
-            && this.sceneTarget?.height === this.height
-            && this.sceneTarget?.emissionFormat === emissionFormat
-            && this.bloomA?.width === bloomWidth
-            && this.bloomA?.height === bloomHeight;
-        if (matches) {
+        const sameSize = this.sceneTarget?.width === this.width && this.sceneTarget?.height === this.height;
+        const keepEmission = needsEmission || (sameSize && this.sceneTarget?.emission
+            && now - this._lastEmissionUseAt < TARGET_RETENTION_MS);
+        const keepBloom = needsBloom || (sameSize && this.bloomA
+            && now - this._lastBloomUseAt < TARGET_RETENTION_MS);
+        let changed = this._targetNeedsBloom !== needsBloom;
+        this._targetNeedsEmission = needsEmission;
+        this._targetNeedsBloom = needsBloom;
+        if (!sameSize) {
+            for (const texture of this.sceneTarget?.textures || []) texture.destroy();
+            const color = this._createTarget(this.width, this.height, SCENE_COLOR_FORMAT, { label: 'scene-color' });
+            const depth = this._createTarget(this.width, this.height, SCENE_DEPTH_FORMAT, { transient: true, label: 'scene-depth' });
+            this.sceneTarget = { width: this.width, height: this.height, emissionFormat, color, emission: null, depth, textures: [color.texture, depth.texture] };
+            changed = true;
+        }
+        const target = this.sceneTarget;
+        if (Boolean(target.emission) !== Boolean(keepEmission) || target.emissionFormat !== emissionFormat) {
+            target.emission?.texture.destroy();
+            target.emission = keepEmission
+                ? this._createTarget(this.width, this.height, emissionFormat, { label: 'scene-emission' }) : null;
+            target.emissionFormat = emissionFormat;
+            target.textures = [target.color.texture, target.depth.texture, ...(target.emission ? [target.emission.texture] : [])];
+            changed = true;
+        }
+        if (Boolean(this.bloomA) !== Boolean(keepBloom)
+            || (this.bloomA && (this.bloomA.width !== bloomWidth || this.bloomA.height !== bloomHeight))) {
+            this.bloomA?.texture.destroy();
+            this.bloomB?.texture.destroy();
+            const bloom = (label) => {
+                const value = this._createTarget(bloomWidth, bloomHeight, BLOOM_FORMAT, { label });
+                return { width: bloomWidth, height: bloomHeight, ...value, textures: [value.texture] };
+            };
+            this.bloomA = keepBloom ? bloom('bloom-a') : null;
+            this.bloomB = keepBloom ? bloom('bloom-b') : null;
+            changed = true;
+        }
+        if (!changed) {
             if (this._display && !this._compositeRolesBindGroup) this._createCompositeRolesBindGroup();
             return;
         }
-        for (const target of [this.sceneTarget, this.bloomA, this.bloomB]) {
-            for (const texture of target?.textures || []) texture.destroy();
-        }
-        const color = this._createTarget(this.width, this.height, SCENE_COLOR_FORMAT, { label: 'scene-color' });
-        // 10.2 — rgba16float only while HDR presents; 8-bit (Stage A) else.
-        const emission = this._createTarget(this.width, this.height, emissionFormat, { label: 'scene-emission' });
-        // 0.6 — the painter depth never leaves the pass (storeOp discard).
-        const depth = this._createTarget(this.width, this.height, SCENE_DEPTH_FORMAT, { transient: true, label: 'scene-depth' });
-        this.sceneTarget = {
-            width: this.width,
-            height: this.height,
-            emissionFormat,
-            color,
-            emission,
-            depth,
-            textures: [color.texture, emission.texture, depth.texture],
-        };
-        const bloom = (label) => {
-            const target = this._createTarget(bloomWidth, bloomHeight, BLOOM_FORMAT, { label });
-            return { width: bloomWidth, height: bloomHeight, ...target, textures: [target.texture] };
-        };
-        this.bloomA = bloom('bloom-a');
-        this.bloomB = bloom('bloom-b');
+        const { color, emission } = target;
         const device = this.device;
         const layouts = this.pipelines.layouts;
         this._compositeBindGroup = device.createBindGroup({
             layout: layouts.composite,
             entries: [
                 { binding: COMPOSITE_BINDING.sceneColor, resource: color.view },
-                { binding: COMPOSITE_BINDING.bloomColor, resource: this.bloomB.view },
+                { binding: COMPOSITE_BINDING.bloomColor, resource: needsBloom ? this.bloomB.view : this.emptyMaterialView },
             ],
         });
         const bloomGroup = (input, sampler, offset) => device.createBindGroup({
@@ -741,10 +758,10 @@ export class GpuWorldRendererWebGPU {
         });
         // Pass 1 reads the NEAREST emission target, pass 2 the LINEAR bloomA
         // (the WebGL2 targets' own filters), all in GL row order (bloom.js).
-        this._bloomBindGroups = [
+        this._bloomBindGroups = needsBloom ? [
             bloomGroup(emission.view, this._samplers.nearest, 0),
             bloomGroup(this.bloomA.view, this._samplers.linear, 256),
-        ];
+        ] : null;
         const f32 = this._bloomParams.f32;
         const u32 = this._bloomParams.u32;
         f32[0] = 1 / this.width; f32[1] = 1 / this.height; u32[2] = 0;
@@ -758,7 +775,7 @@ export class GpuWorldRendererWebGPU {
             ],
         });
         this._compositeRolesBindGroup = null;
-        if (this._display) this._createCompositeRolesBindGroup();
+        if (this._display && emission) this._createCompositeRolesBindGroup();
         this._updateTextureBytes();
     }
 
@@ -767,17 +784,19 @@ export class GpuWorldRendererWebGPU {
             layout: this.pipelines.layouts.compositeRoles,
             entries: [
                 { binding: COMPOSITE_BINDING.sceneColor, resource: this.sceneTarget.color.view },
-                { binding: COMPOSITE_BINDING.bloomColor, resource: this.bloomB.view },
+                { binding: COMPOSITE_BINDING.bloomColor, resource: this._targetNeedsBloom ? this.bloomB.view : this.emptyMaterialView },
                 { binding: COMPOSITE_ROLES_BINDING.sceneEmission, resource: this.sceneTarget.emission.view },
             ],
         });
     }
 
     _updateTextureBytes() {
-        const estimate = estimateGpuWorldTextureBytes({ width: this.width, height: this.height, bloomScale: BLOOM_SCALE });
-        const sceneDepthBytes = this.sceneTarget ? this.width * this.height * SCENE_DEPTH_BYTES_PER_PIXEL : 0;
-        const emissionBytes = this.width * this.height * texelBytes(this.sceneTarget?.emissionFormat || SCENE_EMISSION_FORMAT);
-        this.textureBytes = estimate.total + emissionBytes + sceneDepthBytes + this._cachedTextureBytes
+        const target = this.sceneTarget;
+        const sceneBytes = target ? target.width * target.height * (4 + SCENE_DEPTH_BYTES_PER_PIXEL) : 0;
+        const emissionBytes = target?.emission ? target.width * target.height * texelBytes(target.emissionFormat) : 0;
+        const bloomBytes = (this.bloomA ? this.bloomA.width * this.bloomA.height * 4 : 0)
+            + (this.bloomB ? this.bloomB.width * this.bloomB.height * 4 : 0);
+        this.textureBytes = sceneBytes + emissionBytes + bloomBytes + this._cachedTextureBytes
             + (this._albedoPage?.bytes || 0);
     }
 
@@ -1507,7 +1526,6 @@ export class GpuWorldRendererWebGPU {
         this.fatPixelsFrame = resolveFatPixels(camera, this.fatPixelsOverride);
         this._openFrameScope(device);
         try {
-            this._ensureTargets();
             const page = this._albedoPage;
             page?.beginFrame(this.frames);
             let batches = buildStableGpuBatches(records, this._batchScratch, this._normalizedRecordScratch, this._pageRecord);
@@ -1557,8 +1575,11 @@ export class GpuWorldRendererWebGPU {
                 this._frameLoadPasses = load.passes;
             }
             this._resolveFrame(feed, camera, qualityLevel);
-            const bloomEnabled = effectBudgetMode('bloom', qualityLevel) !== 'off'
-                && localLightPhaseForLighting(feed.lighting) > LOCAL_LIGHT_VISIBILITY_FLOOR;
+            const bloomOn = this._frameState.bloomStrength > 0;
+            const display = this._display;
+            const roles = display ? display.emissionFormat : null;
+            const writeEmission = bloomOn || roles !== null;
+            this._ensureTargets(writeEmission, bloomOn);
             const markBatches = this._stageMarks(marks);
             // Batch uniforms: scene batches then mark batches, one slot each.
             this._ensureBatchSlots(batches.length + markBatches.length);
@@ -1587,9 +1608,6 @@ export class GpuWorldRendererWebGPU {
             // always written and its alpha carries each batch's role (the
             // blend constant: 1 for a building/prop emitter batch — an
             // authored emissive sidecar, never a character — else 0).
-            const display = this._display;
-            const roles = display ? display.emissionFormat : null;
-            const writeEmission = bloomEnabled || roles !== null;
             // [scene] — MRT colour + emission, painter depth, then particles.
             mark = performance.now();
             const target = this.sceneTarget;
@@ -1597,9 +1615,9 @@ export class GpuWorldRendererWebGPU {
                 label: 'world-scene',
                 colorAttachments: [
                     { view: target.color.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
-                    // WebGL2 leaves the emission attachment out of drawBuffers
-                    // (uncleared, unwritten) when bloom is off: load it.
-                    { view: target.emission.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: writeEmission ? 'clear' : 'load', storeOp: 'store' },
+                    ...(writeEmission ? [
+                        { view: target.emission.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
+                    ] : []),
                 ],
                 depthStencilAttachment: { view: target.depth.view, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
                 timestampWrites: timer?.writes(slot, 'scene'),
@@ -1612,7 +1630,7 @@ export class GpuWorldRendererWebGPU {
                 const batch = batches[index];
                 if (!batch.albedoTexture) continue;
                 const cue = Boolean(batch.cueRuns);
-                const pipeline = this.pipelines.scene(batch.blend === 'add', batch.writesDepth === true, writeEmission, cue, roles);
+                const pipeline = this.pipelines.scene(batch.blend === 'add', batch.writesDepth === true, writeEmission, cue, roles, writeEmission);
                 if (pipeline !== bound) {
                     scene.setPipeline(pipeline);
                     bound = pipeline;
@@ -1630,7 +1648,7 @@ export class GpuWorldRendererWebGPU {
             }
             if (this._particleCount > 0 && this._particleMotifTexture) {
                 if (boundRole) scene.setBlendConstant({ r: 0, g: 0, b: 0, a: 0 });
-                scene.setPipeline(this.pipelines.particles(writeEmission, roles));
+                scene.setPipeline(this.pipelines.particles(writeEmission, roles, writeEmission));
                 scene.setVertexBuffer(0, this._particleBuffer);
                 scene.draw(4, this._particleCount, 0, 0);
             }
@@ -1638,7 +1656,6 @@ export class GpuWorldRendererWebGPU {
             passCpu.scene = { cpuMs: performance.now() - mark, draws, bytes: this.width * this.height * 4 * (writeEmission ? 2 : 1) };
             // [bloom] — none while HDR presents (its role gain replaces the halo).
             mark = performance.now();
-            const bloomOn = bloomEnabled && this.lightCount > 0 && !display?.hdr;
             if (bloomOn) {
                 const writes = timer?.writes(slot, 'bloom');
                 const passes = [
@@ -1881,7 +1898,7 @@ export class GpuWorldRendererWebGPU {
         // wgsl/scene.js) and so read bottom-up]
         const sources = [
             ['scene', this.sceneTarget.color.texture, SCENE_COLOR_FORMAT, true],
-            ['emission', this.sceneTarget.emission.texture, this.sceneTarget.emissionFormat, true],
+            ['emission', this.sceneTarget.emission?.texture, this.sceneTarget.emissionFormat, true],
             ['composite', this._lastCanvasTexture, this.presentFormat, false],
         ].filter(([, texture]) => texture);
         device.pushErrorScope('validation');
@@ -2064,7 +2081,7 @@ export class GpuWorldRendererWebGPU {
             textureEvictions: this.textureEvictions,
             maxCachedTextureBytes: MAX_CACHED_TEXTURE_BYTES,
             maxCachedTextures: MAX_CACHED_TEXTURES,
-            materialAttachments: 2,
+            materialAttachments: this.sceneTarget ? (this.sceneTarget.emission ? 2 : 1) : 0,
             particleInstances: this.particleInstances,
             footprintMarchSteps: this.footprintMarchSteps,
             bloomScale: BLOOM_SCALE,
@@ -2119,7 +2136,7 @@ export class GpuWorldRendererWebGPU {
         }
         const targetBytes = (target, format) => target ? target.width * target.height * texelBytes(format) : 0;
         const colorBytes = targetBytes(this.sceneTarget, SCENE_COLOR_FORMAT);
-        const emissionBytes = targetBytes(this.sceneTarget, this.sceneTarget?.emissionFormat);
+        const emissionBytes = this.sceneTarget?.emission ? targetBytes(this.sceneTarget, this.sceneTarget.emissionFormat) : 0;
         const bloomABytes = targetBytes(this.bloomA, BLOOM_FORMAT);
         const bloomBBytes = targetBytes(this.bloomB, BLOOM_FORMAT);
         // The configured canvas (rgba16float while HDR presents).
