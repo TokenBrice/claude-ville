@@ -169,8 +169,8 @@ test('raw Codex/Gemini hook IDs update their actual HTTP and WebSocket sessions'
     await hook('gemini', 'PermissionRequest');
     live = await sessions(); assert.equal(live.find(s => s.sessionId === gemini.sessionId).waitReason, 'approval');
     const deadline = Date.now() + 5000;
-    while (Date.now() < deadline && ![codex, gemini].every(session => client._state?.sessions.find(s => s.sessionId === session.sessionId)?.waitReason === 'approval')) await new Promise(resolve => setTimeout(resolve, 25));
-    for (const session of [codex, gemini]) assert.equal(client._state.sessions.find(s => s.sessionId === session.sessionId).waitReason, 'approval', 'WebSocket updates the intended public session');
+    while (Date.now() < deadline && ![codex, gemini].every(session => client._state?.sessionsById[session.sessionId]?.waitReason === 'approval')) await new Promise(resolve => setTimeout(resolve, 25));
+    for (const session of [codex, gemini]) assert.equal(client._state.sessionsById[session.sessionId].waitReason, 'approval', 'WebSocket updates the intended public session');
     await hook('codex', 'PostToolUse');
     live = await sessions(); assert.equal(live.find(s => s.sessionId === codex.sessionId).waitReason, null);
     assert.equal(live.find(s => s.sessionId === gemini.sessionId).waitReason, 'approval');

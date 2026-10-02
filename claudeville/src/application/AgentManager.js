@@ -12,7 +12,8 @@ import {
     VERIFIED_OUTCOME_EVENT,
 } from '../domain/services/VerifiedOutcome.js';
 
-const GENERATED_NAMES_STORAGE_KEY = 'claudeville.generatedAgentNames.v1';
+const LEGACY_GENERATED_NAMES_STORAGE_KEY = 'claudeville.generatedAgentNames.v1';
+const GENERATED_NAME_STORAGE_PREFIX = 'claudeville.generatedAgentName.v2:';
 
 // Sessions leave the server's live roster after two quiet minutes. Keep their
 // villagers present just long enough for a short parallel fan-out to still be
@@ -286,7 +287,8 @@ export class AgentManager {
         this._teamMembers = new Map();
         this._usageGetter = null;
         this._agentSignatures = new Map();
-        this._generatedNames = this._loadGeneratedNames();
+        this._generatedNames = new Map();
+        this._generatedNamesMigrationDone = false;
         this._verifiedOutcomeKeys = new Set();
         this._departureSweepTimer = null;
         this._unsubscribeVerifiedMilestones = [
@@ -346,9 +348,12 @@ export class AgentManager {
 
     handleWebSocketMessage(data) {
         if (!data.sessions) return;
+        const changedIds = data.changes && !data.changes.shared
+            ? new Set(data.changes.sessionIds)
+            : null;
 
         // Update when team data is included
-        if (data.teams) {
+        if (data.teams && !changedIds) {
             this._teamMembers = this._buildTeamMembers(data.teams);
         }
 
@@ -358,6 +363,24 @@ export class AgentManager {
         const collisionsByAgent = this._collisionsByAgent(data.collisions || data.sessions.collisions);
         for (const session of data.sessions) {
             currentIds.add(session.sessionId);
+            const agent = this.world.agents.get(session.sessionId);
+            if (changedIds && !changedIds.has(String(session.sessionId)) && agent && !agent.isDeparted) {
+                const { status, activityAgeMs } = this._sessionTiming(session);
+                const activityAgeMinute = Number.isFinite(activityAgeMs)
+                    ? Math.floor(activityAgeMs / 60_000)
+                    : null;
+                const previousAgeMinute = Number.isFinite(agent.activityAgeMs)
+                    ? Math.floor(agent.activityAgeMs / 60_000)
+                    : null;
+                // Status includes activity/quota thresholds and git-failure
+                // expiry; a change also refreshes status-derived tools/dialogue.
+                // Preserve the full signature's age-bucket update cadence.
+                if (status === agent.status && activityAgeMinute === previousAgeMinute) {
+                    this._refreshUnchangedAgent(agent, activityAgeMs);
+                    this._noteVerifiedGitOutcomes(session, agent.gitEvents);
+                    continue;
+                }
+            }
             this._upsertAgent(
                 session,
                 this._teamMembers,
@@ -463,8 +486,7 @@ export class AgentManager {
         if (this.world.agents.has(id)) {
             const agent = this.world.agents.get(id);
             if (!agent.isDeparted && this._agentSignatures.get(id) === signature) {
-                agent.activityAgeMs = payload.activityAgeMs;
-                agent.lastActive = Date.now();
+                this._refreshUnchangedAgent(agent, payload.activityAgeMs);
                 return;
             }
             this._agentSignatures.set(id, signature);
@@ -483,7 +505,7 @@ export class AgentManager {
             // after a restart.
             if (!agent._customName) {
                 const initialIdentityKey = AgentBiography.identityKeyFor(agent);
-                agent.name = this._generatedNames.get(initialIdentityKey)
+                agent.name = this._generatedNameFor(initialIdentityKey)
                     || agent.generateName(this._usedAgentNames());
                 const identityKey = AgentBiography.identityKeyFor(agent);
                 this._rememberGeneratedName(initialIdentityKey, agent.name);
@@ -494,8 +516,20 @@ export class AgentManager {
         }
     }
 
+    _refreshUnchangedAgent(agent, activityAgeMs) {
+        agent.activityAgeMs = activityAgeMs;
+        agent.lastActive = Date.now();
+    }
+
     _agentSignature(payload) {
         return digestAgentPayload(payload);
+    }
+
+    _sessionTiming(session) {
+        const status = this._resolveStatus(session);
+        const lastSessionActivity = Number(session.lastActivity || 0) || null;
+        const activityAgeMs = lastSessionActivity ? Math.max(0, Date.now() - lastSessionActivity) : null;
+        return { status, lastSessionActivity, activityAgeMs };
     }
 
     _noteVerifiedGitOutcomes(session, gitEvents = session?.gitEvents) {
@@ -541,29 +575,70 @@ export class AgentManager {
         return used;
     }
 
-    _loadGeneratedNames() {
-        if (typeof localStorage === 'undefined') return new Map();
+    _migrateGeneratedNames() {
+        if (this._generatedNamesMigrationDone) return;
+        this._generatedNamesMigrationDone = true;
         try {
-            const entries = JSON.parse(localStorage.getItem(GENERATED_NAMES_STORAGE_KEY) || '[]');
-            if (!Array.isArray(entries)) return new Map();
-            return new Map(entries.filter(entry => (
+            if (typeof localStorage === 'undefined') return;
+            const legacy = localStorage.getItem(LEGACY_GENERATED_NAMES_STORAGE_KEY);
+            if (legacy === null) return;
+            const parsed = JSON.parse(legacy);
+            const entries = new Map(Array.isArray(parsed) ? parsed.filter(entry => (
                 Array.isArray(entry)
                 && typeof entry[0] === 'string'
                 && typeof entry[1] === 'string'
-            )));
+            )) : []);
+            for (const [identityKey, name] of entries) {
+                const key = `${GENERATED_NAME_STORAGE_PREFIX}${identityKey}`;
+                if (localStorage.getItem(key) === null) localStorage.setItem(key, name);
+            }
+            // Keep the legacy record if any write failed, so quota-limited
+            // profiles never lose names that have not yet been migrated.
+            localStorage.removeItem(LEGACY_GENERATED_NAMES_STORAGE_KEY);
         } catch {
-            return new Map();
+            // Storage can be unavailable in private or restricted contexts.
         }
+    }
+
+    _generatedNameFor(identityKey) {
+        if (!identityKey) return null;
+        if (this._generatedNames.has(identityKey)) return this._generatedNames.get(identityKey);
+        this._migrateGeneratedNames();
+        let name = null;
+        try {
+            if (typeof localStorage !== 'undefined') {
+                name = localStorage.getItem(`${GENERATED_NAME_STORAGE_PREFIX}${identityKey}`);
+                if (name === null) {
+                    // Only degraded/partially migrated storage retains v1.
+                    const record = localStorage.getItem(LEGACY_GENERATED_NAMES_STORAGE_KEY);
+                    if (record !== null) {
+                        const legacy = JSON.parse(record);
+                        if (Array.isArray(legacy)) {
+                            for (const entry of legacy) {
+                                if (Array.isArray(entry) && entry[0] === identityKey && typeof entry[1] === 'string') {
+                                    name = entry[1];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch {
+            // In-memory naming remains available even when reads fail.
+        }
+        this._generatedNames.set(identityKey, name);
+        return name;
     }
 
     _rememberGeneratedName(identityKey, name) {
         if (!identityKey || !name || this._generatedNames.get(identityKey) === name) return;
         this._generatedNames.set(identityKey, name);
-        if (typeof localStorage === 'undefined') return;
         try {
-            localStorage.setItem(GENERATED_NAMES_STORAGE_KEY, JSON.stringify([...this._generatedNames]));
+            if (typeof localStorage !== 'undefined') {
+                localStorage.setItem(`${GENERATED_NAME_STORAGE_PREFIX}${identityKey}`, name);
+            }
         } catch {
-            // Storage can be unavailable in private or restricted contexts.
+            // Names still persist for the lifetime of this manager in memory.
         }
     }
 
@@ -571,9 +646,7 @@ export class AgentManager {
         const id = session.sessionId;
         const teamInfo = teamMembers ? teamMembers.get(session.agentId) : null;
         const agentName = teamInfo?.name || session.name || session.agentName || session.nickname || null;
-        const status = this._resolveStatus(session);
-        const lastSessionActivity = Number(session.lastActivity || 0) || null;
-        const activityAgeMs = lastSessionActivity ? Math.max(0, Date.now() - lastSessionActivity) : null;
+        const { status, lastSessionActivity, activityAgeMs } = this._sessionTiming(session);
         const hasFreshTool = status === AgentStatus.WORKING && !!session.lastTool;
 
         // Team name is an explicit provider field. Do not infer it from project

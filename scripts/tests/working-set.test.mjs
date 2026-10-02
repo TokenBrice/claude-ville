@@ -243,6 +243,7 @@ test('HTTP fallback and WebSocket delta hydration preserve F1, F2, and F3', asyn
     const unsubscribe = eventBus.on('ws:update', payload => { wsUpdate = payload; });
     t.after(unsubscribe);
     client._handleDelta({
+        deltaVersion: 2,
         baseSeq: 1,
         seq: 2,
         patch: [{ op: 'replace', path: '/collisions', value: collisions }],

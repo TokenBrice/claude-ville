@@ -182,8 +182,8 @@ test('HTTP fallback and WebSocket snapshot transport retain execution fields', a
     const { WebSocketClient } = await import(`../../claudeville/src/infrastructure/WebSocketClient.js?execution=${Date.now()}`);
     const client = new WebSocketClient();
     client._rememberSnapshot({ sessions: [session], teams: [] });
-    assert.deepEqual(client._state.sessions[0].taskProgress, session.taskProgress);
-    assert.deepEqual(client._state.sessions[0].tasks, session.tasks);
+    assert.deepEqual(client._state.sessionsById[session.sessionId].taskProgress, session.taskProgress);
+    assert.deepEqual(client._state.sessionsById[session.sessionId].tasks, session.tasks);
   } finally {
     globalThis.window = previousWindow;
     globalThis.fetch = previousFetch;

@@ -9,58 +9,6 @@ function unescapeJsonPointerToken(token) {
 function cloneContainer(value) {
     return Array.isArray(value) ? value.slice() : { ...value };
 }
-const SESSION_EXECUTION_FIELDS = Object.freeze([
-    'parentSessionId',
-    'agentType',
-    'subagentKind',
-    'taskProgress',
-    'tasks',
-    'todos',
-]);
-
-function cloneSessionPayload(session) {
-    if (!session || typeof session !== 'object') return session;
-    const next = { ...session };
-    for (const field of SESSION_EXECUTION_FIELDS) {
-        if (!Object.prototype.hasOwnProperty.call(session, field)) continue;
-        if (field === 'taskProgress') {
-            const progress = session.taskProgress;
-            next.taskProgress = progress && typeof progress === 'object'
-                ? {
-                    done: progress.done,
-                    total: progress.total,
-                    source: progress.source,
-                }
-                : progress;
-        } else if (field === 'tasks') {
-            next.tasks = Array.isArray(session.tasks)
-                ? session.tasks.slice(0, 12).flatMap(task => {
-                    const subject = typeof task?.subject === 'string'
-                        ? task.subject.trim().slice(0, 120)
-                        : '';
-                    const status = typeof task?.status === 'string'
-                        ? task.status.trim().slice(0, 64)
-                        : '';
-                    return subject && status ? [{ subject, status }] : [];
-                })
-                : session.tasks;
-        } else if (field === 'todos') {
-            next.todos = Array.isArray(session.todos)
-                ? session.todos.slice(0, 64).map(todo => (
-                    todo && typeof todo === 'object' ? { ...todo } : todo
-                ))
-                : session.todos;
-        } else {
-            next[field] = session[field];
-        }
-    }
-    return next;
-}
-
-function cloneSessionPayloads(sessions) {
-    return Array.isArray(sessions) ? sessions.map(cloneSessionPayload) : [];
-}
-
 
 function resolveArrayIndex(array, token, allowAppend) {
     if (token === '-' && allowAppend) return array.length;
@@ -72,51 +20,89 @@ function resolveArrayIndex(array, token, allowAppend) {
     return index;
 }
 
-// Applies one JSON-Patch op (add/replace/remove) with path copying: every
-// container along the op path is shallow-cloned, so consumers holding
-// references into previously emitted payloads never see in-place mutation.
-function applyJsonPatchOp(root, op) {
-    if (!op || typeof op.path !== 'string' || op.path[0] !== '/') {
-        throw new Error('Invalid patch op');
-    }
-    const tokens = op.path.split('/').slice(1).map(unescapeJsonPointerToken);
-    const newRoot = cloneContainer(root);
-    let parent = newRoot;
-    for (let i = 0; i < tokens.length - 1; i++) {
-        const key = Array.isArray(parent)
-            ? resolveArrayIndex(parent, tokens[i], false)
-            : tokens[i];
-        const child = parent[key];
-        if (child === null || typeof child !== 'object') {
-            throw new Error(`Missing patch target: ${op.path}`);
-        }
-        const cloned = cloneContainer(child);
-        parent[key] = cloned;
-        parent = cloned;
-    }
-    const last = tokens[tokens.length - 1];
-    if (Array.isArray(parent)) {
-        if (op.op === 'add') parent.splice(resolveArrayIndex(parent, last, true), 0, op.value);
-        else if (op.op === 'replace') parent[resolveArrayIndex(parent, last, false)] = op.value;
-        else if (op.op === 'remove') parent.splice(resolveArrayIndex(parent, last, false), 1);
-        else throw new Error(`Unsupported patch op: ${op.op}`);
-    } else if (op.op === 'add' || op.op === 'replace') {
-        parent[last] = op.value;
-    } else if (op.op === 'remove') {
-        delete parent[last];
-    } else {
-        throw new Error(`Unsupported patch op: ${op.op}`);
-    }
-    return newRoot;
-}
-
+// Copy each changed ancestor once per message. Untouched branches remain shared
+// with the baseline, and no operation can mutate an earlier emitted snapshot.
 function applyJsonPatch(state, patch) {
     if (!Array.isArray(patch)) throw new Error('Patch must be an array');
+    const copied = new WeakSet();
+    const mutable = (value) => {
+        if (!value || typeof value !== 'object') throw new Error('Missing patch target');
+        if (copied.has(value)) return value;
+        const clone = cloneContainer(value);
+        copied.add(clone);
+        return clone;
+    };
     let root = state;
+    const sessionIds = new Set();
+    let shared = false;
+    let order = false;
     for (const op of patch) {
-        root = applyJsonPatchOp(root, op);
+        if (
+            !op || typeof op.path !== 'string'
+            || (op.path !== '' && op.path[0] !== '/')
+            || !['add', 'replace', 'remove'].includes(op.op)
+        ) throw new Error('Invalid patch op');
+        if (op.path === '') {
+            shared = true;
+            root = op.op === 'remove' ? null : op.value;
+            continue;
+        }
+        const tokens = op.path.split('/').slice(1).map(unescapeJsonPointerToken);
+        if (tokens[0] === 'sessionsById' && tokens.length > 1) {
+            sessionIds.add(tokens[1]);
+        } else if (tokens[0] === 'sessionOrder' && tokens.length > 1) {
+            order = true;
+        } else {
+            shared = true;
+        }
+        root = mutable(root);
+        let parent = root;
+        for (let index = 0; index < tokens.length - 1; index++) {
+            const token = tokens[index];
+            const key = Array.isArray(parent)
+                ? resolveArrayIndex(parent, token, false)
+                : token;
+            if (!Object.prototype.hasOwnProperty.call(parent, key)) {
+                throw new Error(`Missing patch target: ${op.path}`);
+            }
+            const child = mutable(parent[key]);
+            Object.defineProperty(parent, key, {
+                value: child, enumerable: true, writable: true, configurable: true,
+            });
+            parent = child;
+        }
+        const token = tokens[tokens.length - 1];
+        if (Array.isArray(parent)) {
+            if (op.op === 'add') parent.splice(resolveArrayIndex(parent, token, true), 0, op.value);
+            else if (op.op === 'replace') parent[resolveArrayIndex(parent, token, false)] = op.value;
+            else parent.splice(resolveArrayIndex(parent, token, false), 1);
+        } else {
+            if (op.op !== 'add' && !Object.prototype.hasOwnProperty.call(parent, token)) {
+                throw new Error(`Missing patch target: ${op.path}`);
+            }
+            if (op.op === 'remove') delete parent[token];
+            else Object.defineProperty(parent, token, {
+                value: op.value, enumerable: true, writable: true, configurable: true,
+            });
+        }
     }
-    return root;
+    return { state: root, changes: { sessionIds: [...sessionIds], shared, order } };
+}
+
+function sessionsFromKeyedState(state) {
+    if (
+        !Array.isArray(state?.sessionOrder)
+        || !state.sessionsById || typeof state.sessionsById !== 'object'
+        || Array.isArray(state.sessionsById)
+    ) throw new Error('Invalid keyed snapshot');
+    return state.sessionOrder.map((id) => {
+        if (
+            typeof id !== 'string' || !id
+            || !Object.prototype.hasOwnProperty.call(state.sessionsById, id)
+            || String(state.sessionsById[id]?.sessionId ?? '') !== id
+        ) throw new Error('Missing session in keyed snapshot');
+        return state.sessionsById[id];
+    });
 }
 
 export class WebSocketClient {
@@ -137,13 +123,12 @@ export class WebSocketClient {
         });
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         this.url = `${protocol}//${window.location.host}/ws`;
-        // Delta protocol state: last full {sessions, collisions, teams, usage}
-        // snapshot
-        // and its server sequence number. Old servers never send deltas, so
-        // these simply stay unused against a full-payload-only server.
+        // Delta v2 baseline is keyed by stable session identity, separate from
+        // the activity-ordered sessions array emitted to application consumers.
         this._state = null;
         this._seq = null;
         this._resyncRequested = false;
+        this._deltasDisabled = false;
     }
 
     get isConnected() {
@@ -164,9 +149,10 @@ export class WebSocketClient {
                 if (this.ws !== socket) return;
                 this.connected = true;
                 this._resyncRequested = false;
+                this._deltasDisabled = false;
                 console.log('[WS] Connected');
-                // Announce delta support; old servers ignore unknown types.
-                this.send({ type: 'hello', deltas: true });
+                // Announce v2 support; incompatible servers are switched to full updates.
+                this.send({ type: 'hello', deltas: true, deltaVersion: 2 });
                 eventBus.emit('ws:connected');
                 this._clearReconnect();
                 this._publishState({
@@ -277,8 +263,21 @@ export class WebSocketClient {
     }
 
     _rememberSnapshot(data) {
+        const sessionsById = Object.create(null);
+        const sessionOrder = [];
+        let valid = true;
+        for (const session of Array.isArray(data.sessions) ? data.sessions : []) {
+            const id = String(session?.sessionId ?? '');
+            if (!id || Object.prototype.hasOwnProperty.call(sessionsById, id)) {
+                valid = false;
+                break;
+            }
+            sessionsById[id] = session;
+            sessionOrder.push(id);
+        }
         this._state = {
-            sessions: cloneSessionPayloads(data.sessions),
+            sessionsById,
+            sessionOrder,
             gitEventFields: Array.isArray(data.gitEventFields) ? data.gitEventFields : [],
             gitEventStringTables: Array.isArray(data.gitEventStringTables)
                 ? data.gitEventStringTables
@@ -290,6 +289,7 @@ export class WebSocketClient {
             teams: Array.isArray(data.teams) ? data.teams : [],
             usage: data.usage ?? null,
         };
+        if (!valid) this._state = null;
         this._seq = Number.isFinite(data.seq) ? data.seq : null;
         this._resyncRequested = false;
     }
@@ -298,10 +298,11 @@ export class WebSocketClient {
         this._state = null;
         this._seq = null;
         this._resyncRequested = false;
+        this._deltasDisabled = false;
     }
 
     getDebugSnapshot() {
-        const sessions = this._state?.sessions || [];
+        const sessionOrder = this._state?.sessionOrder || [];
         const teams = this._state?.teams || [];
         let retainedBytes = 0;
         if (this._state) {
@@ -309,7 +310,7 @@ export class WebSocketClient {
         }
         return {
             connected: this.connected,
-            retainedSessions: sessions.length,
+            retainedSessions: sessionOrder.length,
             retainedTeams: teams.length,
             retainedBytes,
             sequence: this._seq,
@@ -321,16 +322,34 @@ export class WebSocketClient {
         const deltaPerf = metrics && metrics.enabled !== false
             ? metrics.beginDelta?.(messagePerf) || null
             : null;
-        if (!this._state || this._seq === null || data.baseSeq !== this._seq) {
+        if (data.deltaVersion !== 2) {
+            if (deltaPerf) metrics.discardDelta?.(deltaPerf, 'unsupported-version');
+            // A v1 server accepts the v2 hello as delta-capable. Resyncing would
+            // force another scan without fixing the incompatible wire format.
+            if (!this._deltasDisabled) {
+                this._deltasDisabled = true;
+                this.send({ type: 'hello', deltas: false });
+            }
+            return;
+        }
+        if (
+            !this._state || this._seq === null
+            || data.baseSeq !== this._seq || !Number.isFinite(data.seq)
+        ) {
             if (deltaPerf) metrics.discardDelta?.(deltaPerf, 'resync');
             this._publishState({ lastErrorCode: 'delta-baseline-mismatch' });
             this._requestResync();
             return;
         }
         let next;
+        let sessions;
+        let changes;
         if (deltaPerf) metrics.markPatchStart?.(deltaPerf);
         try {
-            next = applyJsonPatch(this._state, data.patch);
+            const applied = applyJsonPatch(this._state, data.patch);
+            next = applied.state;
+            changes = applied.changes;
+            sessions = sessionsFromKeyedState(next);
         } catch (err) {
             if (deltaPerf) metrics.discardDelta?.(deltaPerf, 'resync');
             console.warn('[WS] Failed to apply delta, requesting resync:', err.message);
@@ -339,14 +358,15 @@ export class WebSocketClient {
             return;
         }
         if (deltaPerf) metrics.markPatchApplied?.(deltaPerf, data.patch.length);
-        next = { ...next, sessions: cloneSessionPayloads(next.sessions) };
         this._state = next;
         this._seq = data.seq;
         this.reconnectAttempts = 0;
         this._publishSnapshot();
         const payload = {
             type: 'update',
-            sessions: next.sessions,
+            sessions,
+            changes,
+            seq: data.seq,
             gitEventFields: next.gitEventFields,
             gitEventStringTables: next.gitEventStringTables,
             gitEventsById: next.gitEventsById,

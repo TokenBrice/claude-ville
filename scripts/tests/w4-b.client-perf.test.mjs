@@ -221,20 +221,19 @@ test('bounded rings retain recent samples while counters retain totals', () => {
     metrics.stop();
 });
 
-test('WebSocketClient hooks surround patching and synchronous event fan-out', () => {
+test('WebSocketClient delta diagnostics include patching and synchronous fan-out through next paint', () => {
     const previousWindow = globalThis.window;
     globalThis.window = { location: { protocol: 'http:', host: 'localhost:4000' } };
-    const calls = [];
-    const perf = {
-        beginDelta() { calls.push('beginDelta'); return {}; },
-        markPatchStart() { calls.push('patchStart'); },
-        markPatchApplied(token, count) {
-            calls.push(`patchApplied:${count}`);
-        },
-        markFanoutStart() { calls.push('fanoutStart'); },
-        markFanoutEnd() { calls.push('fanoutEnd'); },
-        finishDelta() { calls.push('finish'); },
-    };
+    let now = 0;
+    const frames = frameDriver();
+    const perf = new ClientPerfMetrics({
+        clock: () => now++,
+        requestFrame: frames.requestFrame,
+        cancelFrame: frames.cancelFrame,
+    });
+    perf.start();
+    frames.tick(0);
+    now = 10;
     const client = new WebSocketClient({ performanceMetrics: perf });
     client._rememberSnapshot({
         seq: 1,
@@ -243,26 +242,32 @@ test('WebSocketClient hooks surround patching and synchronous event fan-out', ()
     });
 
     const updates = [];
-    const unsubscribe = eventBus.on('ws:update', payload => updates.push(payload));
+    const unsubscribe = eventBus.on('ws:update', payload => {
+        updates.push(payload);
+        now += 5;
+    });
     try {
         client._handleMessage({
             type: 'update-delta',
+            deltaVersion: 2,
             baseSeq: 1,
             seq: 2,
-            patch: [{ op: 'replace', path: '/sessions/0/status', value: 'waiting_on_user' }],
+            patch: [{ op: 'replace', path: '/sessionsById/one/status', value: 'waiting_on_user' }],
         });
+        now = 40;
+        frames.tick(40);
+        assert.equal(updates[0].sessions[0].status, 'waiting_on_user');
+        const sample = perf.getSnapshot().deltaToPaint.samples[0];
+        assert.equal(sample.operationCount, 1);
+        assert.ok(sample.patchApplyMs > 0);
+        assert.ok(sample.eventFanoutMs >= 5);
+        assert.equal(sample.nextFrameAt, 40);
+        assert.equal(sample.messageToPaintMs, 30);
     } finally {
+        perf.stop();
+        client.disconnect();
         unsubscribe();
         globalThis.window = previousWindow;
     }
 
-    assert.equal(updates[0].sessions[0].status, 'waiting_on_user');
-    assert.deepEqual(calls, [
-        'beginDelta',
-        'patchStart',
-        'patchApplied:1',
-        'fanoutStart',
-        'fanoutEnd',
-        'finish',
-    ]);
 });

@@ -92,6 +92,7 @@ test('WebSocket state requires a snapshot and instruments reconnect recovery', a
         assert.equal(client.state.lastSnapshotAt, null);
         assert.equal(states.some(state => state.state === 'live'), false);
         assert.equal(connected, 1);
+        assert.deepEqual(first.sent[0], { type: 'hello', deltas: true, deltaVersion: 2 });
 
         first.message({ type: 'init', seq: 1, sessions: [], teams: [] });
         assert.equal(client.state.state, 'live');
@@ -152,6 +153,7 @@ test('delta baseline mismatch emits a safe code and requests resync', async () =
         socket.message({ type: 'init', seq: 7, sessions: [], teams: [] });
         socket.message({
             type: 'update-delta',
+            deltaVersion: 2,
             baseSeq: 6,
             seq: 8,
             patch: [],
