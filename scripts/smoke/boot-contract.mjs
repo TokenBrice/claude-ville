@@ -238,7 +238,7 @@ class BootWebSocket {
     this.closedError = null;
   }
 
-  async connect() {
+  async connect(hello = { type: 'hello', deltas: true, deltaVersion: 2 }) {
     const key = crypto.randomBytes(16).toString('base64');
     const statusCode = await new Promise((resolve, reject) => {
       const socket = net.createConnection({ host: '127.0.0.1', port: this.port });
@@ -306,7 +306,7 @@ class BootWebSocket {
         );
       });
     });
-    this.sendJson({ type: 'hello', deltas: true });
+    this.sendJson(hello);
     return statusCode;
   }
 
@@ -475,8 +475,32 @@ function applyJsonPatch(document, patch) {
 function coreState(message) {
   return {
     sessions: message.sessions,
+    gitEventFields: message.gitEventFields,
+    gitEventStringTables: message.gitEventStringTables,
+    gitEventsById: message.gitEventsById,
+    collisions: message.collisions,
     teams: message.teams,
     usage: message.usage,
+  };
+}
+
+function keyedState(message) {
+  const { sessions, ...shared } = coreState(message);
+  return {
+    sessionsById: Object.fromEntries(sessions.map(session => [String(session.sessionId), session])),
+    sessionOrder: sessions.map(session => String(session.sessionId)),
+    ...shared,
+  };
+}
+
+function reconstructState(keyed) {
+  const { sessionsById, sessionOrder, ...shared } = keyed;
+  return {
+    sessions: sessionOrder.map(id => {
+      assert.ok(Object.hasOwn(sessionsById, id), `Missing keyed session ${id}`);
+      return sessionsById[id];
+    }),
+    ...shared,
   };
 }
 
@@ -538,6 +562,7 @@ async function cleanup(context) {
   let cleanupError = null;
   try {
     context.websocket?.close();
+    context.legacyWebsocket?.close();
   } catch (error) {
     cleanupError = error;
   }
@@ -607,14 +632,24 @@ async function run(context) {
   assertSnapshot(baseline, 'baseline');
   assert.ok(baseline.seq > initial.seq, 'Full update must advance the initial sequence');
 
+  context.legacyWebsocket = new BootWebSocket(server.port);
+  await context.legacyWebsocket.connect({ type: 'hello', deltas: true });
+  const legacyInitial = await context.legacyWebsocket.waitForMessage(message => message?.type === 'init');
+  assert.equal(legacyInitial.seq, baseline.seq);
+
   appendDeltaFixture(fixture);
   const delta = await context.websocket.waitForMessage(message => message?.type === 'update-delta');
+  assert.equal(delta.deltaVersion, 2, 'Delta must negotiate the keyed v2 protocol');
   assert.equal(delta.baseSeq, baseline.seq, 'Delta must use the full snapshot sequence as its base');
   assert.equal(delta.seq, baseline.seq + 1, 'Delta sequence must advance by one');
-  const reconstructed = applyJsonPatch(coreState(baseline), delta.patch);
+  const reconstructed = reconstructState(applyJsonPatch(keyedState(baseline), delta.patch));
   const changedSession = sessionForId(reconstructed.sessions);
   assert.equal(changedSession.lastMessage, DELTA_MESSAGE);
   assert.equal(changedSession.lastTool, 'Write');
+  const legacyUpdate = await context.legacyWebsocket.waitForMessage(message => message?.seq === delta.seq);
+  assert.equal(legacyUpdate.type, 'update', 'A legacy deltas:true hello must receive a full update');
+  assert.deepEqual(coreState(legacyUpdate), reconstructed, 'Keyed reconstruction must equal the same full broadcast');
+  assert.equal(context.legacyWebsocket.messages.some(message => message?.type === 'update-delta'), false);
 
   context.websocket.sendJson({ type: 'resync' });
   const resynced = await context.websocket.waitForMessage(
@@ -630,6 +665,7 @@ async function main() {
     server: null,
     port: null,
     websocket: null,
+    legacyWebsocket: null,
   };
   let failure = null;
   let overallTimer = null;

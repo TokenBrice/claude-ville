@@ -80,6 +80,8 @@ const _sessionListCache = {
   at: 0,
   threshold: null,
   sessions: [],
+  normalizedSessions: null,
+  normalizedThreshold: null,
 };
 const _sessionsByProvider = new Map();
 const _dirtySessionProviders = new Set();
@@ -361,11 +363,40 @@ function getRepositoryScanProjects() {
   return _repositoryScanCache.projects;
 }
 
+function foldSessionOverlays(sessions, now) {
+  hookOverlay.prune(now);
+  return sessions.map((normalized) => {
+    const prefix = `${normalized.provider}-`;
+    const aliases = [normalized.sessionId, normalized.sourceSessionId, normalized.agentId,
+      normalized.sessionId.startsWith(prefix) ? normalized.sessionId.slice(prefix.length) : normalized.sessionId].filter(Boolean);
+    const overlay = aliases.map(id => hookOverlay.overlayFor(id, now, normalized.provider)).filter(Boolean)
+      .sort((a, b) => b.eventAt - a.eventAt)[0];
+    return mergeOverlay(normalized, overlay, now);
+  }).sort((a, b) => b.lastActivity - a.lastActivity);
+}
+
+// A pending provider refresh must not hide newer hooks on a stale REST read.
+// This fold leaves provider dirtiness, observation timestamps and TTLs intact.
+function getCachedSessionsWithOverlays(activeThresholdMs) {
+  if (_sessionListCache.normalizedThreshold !== activeThresholdMs
+    || !_sessionListCache.normalizedSessions) return null;
+  return foldSessionOverlays(_sessionListCache.normalizedSessions, Date.now());
+}
+
 /**
  * Collect sessions from all active adapters
  */
-function getAllSessions(activeThresholdMs, { force = false } = {}) {
+function getAllSessions(activeThresholdMs, { force = false, overlayOnly = false } = {}) {
   const now = Date.now();
+  if (overlayOnly && !force
+    && _sessionListCache.threshold === activeThresholdMs
+    && _sessionListCache.normalizedSessions
+    && _dirtySessionProviders.size === 0) {
+    // Overlay reception is not a provider observation: retain the original
+    // freshness and scan timestamp, even after the normal list TTL expires.
+    _sessionListCache.sessions = getCachedSessionsWithOverlays(activeThresholdMs);
+    return _sessionListCache.sessions;
+  }
   const canRefreshProviders = !force
     && _sessionListCache.threshold === activeThresholdMs
     && (now - _sessionListCache.at) < SESSION_LIST_CACHE_TTL_MS;
@@ -438,23 +469,16 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
   }
   const allSessions = adapters.flatMap((adapter) => _sessionsByProvider.get(adapter.provider) || []);
   const repositoryScanProjects = isGitEnrichmentDisabled() ? [] : getRepositoryScanProjects();
-  hookOverlay.prune(now);
-  const sessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(allSessions, {
+  const normalizedSessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(allSessions, {
     projects: repositoryScanProjects,
-  }))
-    .map((session) => {
-      const normalized = normalizeSession(session);
-      const aliases = [normalized.sessionId, normalized.sourceSessionId, normalized.agentId,
-        normalized.sessionId.replace(new RegExp(`^${normalized.provider}-`), '')].filter(Boolean);
-      const overlay = aliases.map(id => hookOverlay.overlayFor(id, now, normalized.provider)).filter(Boolean)
-        .sort((a, b) => b.eventAt - a.eventAt)[0];
-      return mergeOverlay(normalized, overlay, now);
-    })
-    .sort((a, b) => b.lastActivity - a.lastActivity);
+  })).map(session => normalizeSession(session));
+  const sessions = foldSessionOverlays(normalizedSessions, now);
 
   _sessionListCache.at = Date.now();
   _sessionListCache.threshold = activeThresholdMs;
   _sessionListCache.sessions = sessions;
+  _sessionListCache.normalizedSessions = normalizedSessions;
+  _sessionListCache.normalizedThreshold = activeThresholdMs;
   if (canRefreshProviders) {
     for (const provider of refreshedProviders) _dirtySessionProviders.delete(provider);
   } else {
@@ -674,6 +698,7 @@ module.exports = {
   adapters,
   getAdapterMetadata,
   getAllSessions,
+  getCachedSessionsWithOverlays,
   getSessionDetailByProvider,
   getSessionDetailsBatch,
   getAllWatchPaths,

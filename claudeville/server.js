@@ -8,6 +8,7 @@ const { monitorEventLoopDelay, performance } = require('perf_hooks');
 // ─── Load adapters ─────────────────────────────────────
 const {
   getAllSessions,
+  getCachedSessionsWithOverlays,
   getSessionDetailByProvider,
   getSessionDetailsBatch,
   getAllWatchPaths,
@@ -61,6 +62,8 @@ const MIME_TYPES = {
   '.mjs': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.yaml': 'text/yaml; charset=utf-8',
+  '.yml': 'text/yaml; charset=utf-8',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
@@ -92,7 +95,6 @@ const PROCESS_ERROR_DETAIL_MAX_LENGTH = 256;
 const LINUX_WATCH_SAMPLE_INTERVAL_MS = 15_000;
 const GIT_STATE_SCAN_INTERVAL_MS = 5000;
 const GIT_STATE_MAX_PROJECTS = 40;
-const GIT_STATE_MAX_REF_ENTRIES = 800;
 
 // ─── Utility functions ──────────────────────────────────────
 
@@ -526,14 +528,12 @@ function handlePostIngestHook(req, res) {
     }
     try {
       const overlay = hookOverlay.ingest(body);
-      nextSessionScanAt = 0;
       markProviderDataDirty({
         provider: overlay.provider,
-        kind: 'transcript',
+        kind: 'overlay',
         reason: 'hook-ingest',
         sessionId: overlay.sessionId,
       }, null, { coalesce: false });
-      debouncedBroadcast();
       scheduleHookOverlayExpiry();
       return sendJson(res, 202, { accepted: true });
     } catch (ingestError) {
@@ -780,7 +780,7 @@ function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Stat
         console.log(`[${label}] serving`, filePath, 'bytes', byteLength, 'type', contentType);
       }
 
-      const canGzip = ['.css', '.js', '.mjs', '.json'].includes(ext);
+      const canGzip = ['.css', '.js', '.mjs', '.json', '.html', '.yaml', '.yml', '.svg', '.webmanifest'].includes(ext);
       const useGzip = canGzip && acceptsGzip(req);
       const etag = strongStaticEtag(filePath, fileStat, data, { gzip: useGzip });
       const headers = {
@@ -892,7 +892,7 @@ function handleWebSocketUpgrade(req, socket, head = Buffer.alloc(0)) {
   socket.write(responseStr, () => {
     socket._cvLastSeen = Date.now();
     socket._cvDraining = false;
-    socket._cvSupportsDeltas = false;
+    socket._cvDeltaVersion = null;
     socket._cvFrameBuffer = Buffer.alloc(0);
     const wasEmpty = wsClients.size === 0;
     wsClients.add(socket);
@@ -1045,9 +1045,8 @@ function handleTextMessage(socket, message) {
     if (data.type === 'ping') {
       wsSend(socket, { type: 'pong', timestamp: Date.now() });
     } else if (data.type === 'hello') {
-      // Delta-capable clients announce themselves; legacy clients never send
-      // this and keep receiving full update payloads.
-      socket._cvSupportsDeltas = data.deltas === true;
+      // Only v2 clients share the keyed baseline; cached v1 tabs stay on full updates.
+      socket._cvDeltaVersion = data.deltas === true && data.deltaVersion === 2 ? 2 : null;
     } else if (data.type === 'resync') {
       // A delta client lost its patch baseline (missed frame or seq mismatch)
       // and needs a fresh full snapshot to resume patching.
@@ -1098,7 +1097,7 @@ function wsBroadcast(fullMessage, deltaMessage = null) {
   let fullFrame = null;
   let deltaFrame = null;
   for (const socket of wsClients) {
-    if (deltaMessage && socket._cvSupportsDeltas) {
+    if (deltaMessage && socket._cvDeltaVersion === 2) {
       if (!deltaFrame) deltaFrame = createWebSocketFrame(JSON.stringify(deltaMessage));
       writeWebSocketFrame(socket, deltaFrame, { queueLatest: true });
     } else {
@@ -1177,36 +1176,68 @@ function sendInitialData(socket, { scanning = null, staleAt = null, forceFresh =
     // multi-second scan that originally justified deferring them.
     let state = lastBroadcastState;
     let seq = broadcastSeq;
-    if (!state || forceFresh) {
+    let replacesBaseline = !state || forceFresh;
+    let rejectedFreshSnapshot = false;
+    if (replacesBaseline) {
+      const previousSnapshot = sessionCollectionSnapshot;
       const clientSnapshot = collectSessionsForClients({
         force: true,
         reason: forceFresh ? 'ws-resync' : 'ws-init',
       });
-      const compacted = compactGitEventsForWire(clientSnapshot.sessions);
-      state = {
-        sessions: compacted.sessions,
-        gitEventFields: compacted.gitEventFields,
-        gitEventStringTables: compacted.gitEventStringTables,
-        gitEventsById: compacted.gitEventsById,
-        collisions: clientSnapshot.collisions,
-        teams: getTeamsCached({ force: true }),
-        usage: usageQuota.fetchUsage(),
-      };
-      broadcastSeq++;
-      seq = broadcastSeq;
-      lastBroadcastState = state;
+      if (clientSnapshot.sessions.length === 0
+        && (state?.sessions.length > 0 || previousSnapshot?.sessions.length > 0)) {
+        // A failed/reentrant forced collect must not erase a known roster or
+        // advance peers to an empty delta baseline.
+        if (state?.sessions.length > 0) replacesBaseline = false;
+        else {
+          clientSnapshot.sessions = previousSnapshot.sessions;
+          clientSnapshot.collisions = previousSnapshot.collisions;
+        }
+        rejectedFreshSnapshot = true;
+        sessionCollectionSnapshot = previousSnapshot;
+        providerSessionsDirty = true;
+        providerDataDirty = true;
+        lastBroadcastStamp = -1;
+        sessionSnapshotStaleAt ??= Date.now();
+      }
+      if (replacesBaseline) {
+        const compacted = compactGitEventsForWire(clientSnapshot.sessions);
+        state = {
+          sessions: compacted.sessions,
+          gitEventFields: compacted.gitEventFields,
+          gitEventStringTables: compacted.gitEventStringTables,
+          gitEventsById: compacted.gitEventsById,
+          collisions: clientSnapshot.collisions,
+          teams: getTeamsCached({ force: true }),
+          usage: usageQuota.fetchUsage(),
+        };
+        broadcastSeq++;
+        seq = broadcastSeq;
+        lastBroadcastState = state;
+        lastBroadcastKeyedState = keyedBroadcastState(state);
+        const serializedState = JSON.stringify(state);
+        lastBroadcastSignature = crypto.createHash('sha1').update(serializedState).digest('hex');
+        lastBroadcastStamp = rejectedFreshSnapshot ? -1 : cacheStampCounter;
+        serverPerf.lastBroadcastStateBytes = Buffer.byteLength(serializedState);
+      }
     }
-    const isScanning = scanning === null
-      ? providerDataDirty || sessionScanRunning
-      : scanning;
+    const isScanning = rejectedFreshSnapshot || (scanning === null
+      ? sessionScanRunning || (replacesBaseline
+        ? sessionCollectionSnapshot?.generation !== sessionDirtyGeneration
+        : providerDataDirty)
+      : scanning);
     const snapshotStaleAt = isScanning
       ? staleAt || sessionSnapshotStaleAt || serverPerf.lastDirty?.at || Date.now()
       : null;
     if (isScanning) {
       provisionalInitPending = true;
       lastDeltaSnapshotAt = 0;
+    } else if (replacesBaseline) {
+      provisionalInitPending = false;
+      lastDeltaSnapshotAt = Date.now();
+      providerDataDirty = false;
     }
-    wsSend(socket, {
+    const initialMessage = {
       type: 'init',
       sessions: state.sessions,
       gitEventFields: state.gitEventFields,
@@ -1219,7 +1250,18 @@ function sendInitialData(socket, { scanning = null, staleAt = null, forceFresh =
       scanning: isScanning,
       staleAt: snapshotStaleAt,
       timestamp: Date.now(),
-    });
+    };
+    wsSend(socket, initialMessage);
+    if (replacesBaseline) {
+      // Every delta client shares this sequence. Peers need the new full state,
+      // but not the requesting client's init/boot semantics.
+      let peerFrame = null;
+      for (const peer of wsClients) {
+        if (peer === socket) continue;
+        if (!peerFrame) peerFrame = createWebSocketFrame(JSON.stringify({ ...initialMessage, type: 'update' }));
+        writeWebSocketFrame(peer, peerFrame, { queueLatest: true });
+      }
+    }
   } catch (err) {
     // Ignore initial data send failures.
   }
@@ -1228,6 +1270,7 @@ function sendInitialData(socket, { scanning = null, staleAt = null, forceFresh =
 let watchDebounce = null;
 let watchRefreshDebounce = null;
 let hookOverlayExpiryTimer = null;
+let hookOverlayBroadcastTimer = null;
 let dynamicWatchRetireTimer = null;
 let heartbeatTimer = null;
 let watcherSchedulerTimer = null;
@@ -1240,6 +1283,7 @@ let lastBroadcastSignature = null;
 let cacheStampCounter = 0;
 let lastBroadcastStamp = -1;
 let providerDataDirty = true;
+let providerSessionsDirty = true;
 let teamsDirty = true;
 let lastFullDiscoveryAt = 0;
 let lastFullBroadcastAt = 0;
@@ -1249,6 +1293,7 @@ let lastReconciliationAt = 0;
 // clients can detect a broken patch chain and ask for a resync.
 let broadcastSeq = 0;
 let lastBroadcastState = null;
+let lastBroadcastKeyedState = null;
 let lastDeltaSnapshotAt = 0;
 let provisionalInitPending = false;
 let sessionDirtyGeneration = 1;
@@ -1387,6 +1432,7 @@ function markProviderDataDirty(value = 'watch', provider = null, { coalesce = tr
   if (sessionSnapshotStaleAt === null) sessionSnapshotStaleAt = now;
   sessionDirtyGeneration++;
   providerDataDirty = true;
+  if (dirty.kind !== 'overlay') providerSessionsDirty = true;
   if (dirty.kind === 'teams'
     || (dirty.provider === 'claude' && ['discovery', 'metadata', 'reconcile'].includes(dirty.kind))
     || (!dirty.provider && dirty.kind === 'reconcile')) {
@@ -1402,7 +1448,8 @@ function markProviderDataDirty(value = 'watch', provider = null, { coalesce = tr
   }
   serverPerf.dirtyMarks++;
   serverPerf.lastDirty = { ...dirty, at: now };
-  invalidateSessionCaches({ provider: dirty.provider, dirty });
+  if (dirty.kind !== 'overlay') invalidateSessionCaches({ provider: dirty.provider, dirty });
+  else scheduleHookOverlayBroadcast(dirty.reason);
   if (process.env.DEBUG_WATCH) {
     const scope = dirty.provider ? ` provider=${dirty.provider}` : ' provider=all';
     console.log(`[Watch] dirty: ${dirty.reason} kind=${dirty.kind}${scope}`);
@@ -1431,12 +1478,25 @@ function sessionScanBackoffMs() {
   );
 }
 
+function scheduleHookOverlayBroadcast(reason) {
+  if (shutdownStarted || hookOverlayBroadcastTimer) return;
+  hookOverlayBroadcastTimer = setTimeout(() => {
+    hookOverlayBroadcastTimer = null;
+    if (shutdownStarted) return;
+    broadcastUpdate({ overlayOnly: true, reason });
+    // Hook delivery never consumes or postpones the pending transcript pass.
+    if (providerSessionsDirty && wsClients.size > 0) {
+      scheduleCoordinatedSessionWork({ broadcastReason: 'hook-transcript-follow-up' });
+    }
+  }, 0);
+}
+
 function scheduleCoordinatedSessionWork({ refreshWatchPaths: refresh = false, broadcastReason = null } = {}) {
   if (shutdownStarted) return;
   if (refresh) pendingWatchPathRefresh = true;
   if (broadcastReason) pendingBroadcastReason = broadcastReason;
   if (sessionScanTimer || sessionScanSchedulerRunning) return;
-  const delay = Math.max(0, nextSessionScanAt - Date.now());
+  const delay = providerSessionsDirty ? Math.max(0, nextSessionScanAt - Date.now()) : 0;
   sessionScanTimer = setTimeout(runCoordinatedSessionWork, delay);
 }
 
@@ -1471,37 +1531,42 @@ function runCoordinatedSessionWork() {
 }
 
 function collectSessionSnapshot({ force = false, reason = 'collection' } = {}) {
-  if (sessionCollectionSnapshot?.generation === sessionDirtyGeneration) {
+  if (!providerSessionsDirty && sessionCollectionSnapshot?.generation === sessionDirtyGeneration) {
     return sessionCollectionSnapshot;
   }
   if (sessionScanRunning) {
     scheduleCoordinatedSessionWork({ broadcastReason: wsClients.size > 0 ? reason : null });
     return null;
   }
-  if (!force && Date.now() < nextSessionScanAt) return null;
+  const overlayOnly = !force && !providerSessionsDirty;
+  if (!force && !overlayOnly && Date.now() < nextSessionScanAt) return null;
 
   const generation = sessionDirtyGeneration;
   const startedAt = Date.now();
   sessionScanRunning = true;
   try {
-    const live = getAllSessions(ACTIVE_THRESHOLD_MS, { force });
+    const live = getAllSessions(ACTIVE_THRESHOLD_MS, { force, overlayOnly });
     updateCanonicalActiveProjects(live);
     const sessions = sessionResidency.merge(live);
     const collisions = detectCollisions(sessions);
-    lastSessionScanDurationMs = Date.now() - startedAt;
+    const elapsed = Date.now() - startedAt;
+    if (!overlayOnly) lastSessionScanDurationMs = elapsed;
     sessionCollectionSnapshot = {
       generation,
       live,
       sessions,
       collisions,
       collectedAt: Date.now(),
-      elapsed: lastSessionScanDurationMs,
+      elapsed,
       reason,
     };
-    if (generation === sessionDirtyGeneration) sessionSnapshotStaleAt = null;
+    if (generation === sessionDirtyGeneration) {
+      sessionSnapshotStaleAt = null;
+      providerSessionsDirty = false;
+    }
   } finally {
     sessionScanRunning = false;
-    nextSessionScanAt = Date.now() + sessionScanBackoffMs();
+    if (!overlayOnly) nextSessionScanAt = Date.now() + sessionScanBackoffMs();
   }
 
   if (generation !== sessionDirtyGeneration) {
@@ -1519,6 +1584,18 @@ function collectSessionsForClients({ force = false, allowStale = false, reason =
   const snapshot = collectSessionSnapshot({ force, reason });
   if (snapshot) return { sessions: snapshot.sessions, collisions: snapshot.collisions };
   if (allowStale && sessionCollectionSnapshot) {
+    const live = getCachedSessionsWithOverlays(ACTIVE_THRESHOLD_MS);
+    if (live) {
+      const sessions = sessionResidency.merge(live);
+      // Keep the old generation and scan timing: the pending transcript pass
+      // still owns those, even though hooks are visible immediately.
+      sessionCollectionSnapshot = {
+        ...sessionCollectionSnapshot,
+        live,
+        sessions,
+        collisions: detectCollisions(sessions),
+      };
+    }
     return {
       sessions: sessionCollectionSnapshot.sessions,
       collisions: sessionCollectionSnapshot.collisions,
@@ -1545,10 +1622,31 @@ function escapeJsonPointerToken(token) {
   return String(token).replace(/~/g, '~0').replace(/\//g, '~1');
 }
 
-// Minimal JSON-Patch (RFC 6902 subset: add/replace/remove) diff. Arrays are
-// diffed index-wise, which is cheap and correct for our mostly-stable,
-// activity-sorted session lists; heavy reorders just produce a large patch
-// that the size guard below converts back into a full broadcast.
+function keyedBroadcastState(state) {
+  const sessionsById = Object.create(null);
+  const sessionOrder = [];
+  for (const session of state.sessions) {
+    if (session?.sessionId === null || session?.sessionId === undefined) return null;
+    const id = String(session.sessionId);
+    if (!id.trim() || Object.hasOwn(sessionsById, id)) return null;
+    sessionsById[id] = session;
+    sessionOrder.push(id);
+  }
+  return {
+    sessionsById,
+    sessionOrder,
+    gitEventFields: state.gitEventFields,
+    gitEventStringTables: state.gitEventStringTables,
+    gitEventsById: state.gitEventsById,
+    collisions: state.collisions,
+    teams: state.teams,
+    usage: state.usage,
+  };
+}
+
+// Minimal JSON-Patch (RFC 6902 subset: add/replace/remove) diff. Session
+// identities are object keys; only explicit sessionOrder and other arrays
+// are diffed index-wise.
 function appendJsonPatchOps(prev, next, basePath, ops) {
   if (prev === next || ops.length > DELTA_MAX_PATCH_OPS) return;
   const prevIsArray = Array.isArray(prev);
@@ -1570,11 +1668,11 @@ function appendJsonPatchOps(prev, next, basePath, ops) {
   const nextIsObject = !nextIsArray && next !== null && typeof next === 'object';
   if (prevIsObject && nextIsObject) {
     for (const key of Object.keys(prev)) {
-      if (!(key in next)) ops.push({ op: 'remove', path: `${basePath}/${escapeJsonPointerToken(key)}` });
+      if (!Object.hasOwn(next, key)) ops.push({ op: 'remove', path: `${basePath}/${escapeJsonPointerToken(key)}` });
     }
     for (const key of Object.keys(next)) {
       const childPath = `${basePath}/${escapeJsonPointerToken(key)}`;
-      if (key in prev) appendJsonPatchOps(prev[key], next[key], childPath, ops);
+      if (Object.hasOwn(prev, key)) appendJsonPatchOps(prev[key], next[key], childPath, ops);
       else ops.push({ op: 'add', path: childPath, value: next[key] });
     }
     return;
@@ -1592,7 +1690,7 @@ function createJsonPatch(prevState, nextState) {
   }
 }
 
-function collectBroadcastPayload({ force = false } = {}) {
+function collectBroadcastPayload({ force = false, overlayOnly = false } = {}) {
   const stages = {};
   const stage = (label, fn) => {
     const start = Date.now();
@@ -1600,7 +1698,14 @@ function collectBroadcastPayload({ force = false } = {}) {
     stages[label] = Date.now() - start;
     return value;
   };
-  const sessionSnapshot = stage('sessions', () => collectSessionSnapshot({ force, reason: 'broadcast' }));
+  const pendingTranscript = overlayOnly && !force && providerSessionsDirty;
+  const sessionSnapshot = stage('sessions', () => {
+    if (!pendingTranscript) return collectSessionSnapshot({ force, reason: 'broadcast' });
+    const live = getCachedSessionsWithOverlays(ACTIVE_THRESHOLD_MS);
+    if (!live) return null;
+    const sessions = sessionResidency.merge(live);
+    return { sessions, collisions: detectCollisions(sessions), generation: sessionDirtyGeneration };
+  });
   if (!sessionSnapshot || sessionSnapshot.generation !== sessionDirtyGeneration) {
     return { payload: null, stages, generation: null };
   }
@@ -1614,14 +1719,14 @@ function collectBroadcastPayload({ force = false } = {}) {
     collisions: sessionSnapshot.collisions,
     teams: stage('teams', () => getTeamsCached({ force })),
     usage: stage('usage', () => usageQuota.fetchUsage()),
-    scanning: false,
-    staleAt: null,
+    scanning: pendingTranscript,
+    staleAt: pendingTranscript ? sessionSnapshotStaleAt : null,
     timestamp: Date.now(),
   };
   return { payload, stages, generation: sessionSnapshot.generation };
 }
 
-function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
+function broadcastUpdate({ force = false, overlayOnly = false, reason = 'poll' } = {}) {
   if (wsClients.size === 0) return;
   const now = Date.now();
   if (!force && !providerDataDirty) return;
@@ -1629,7 +1734,7 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
   try {
     const collectStart = Date.now();
     const stampAtCollect = cacheStampCounter;
-    const { payload, stages, generation } = collectBroadcastPayload({ force });
+    const { payload, stages, generation } = collectBroadcastPayload({ force, overlayOnly });
     if (!payload || generation !== sessionDirtyGeneration) {
       scheduleCoordinatedSessionWork({ broadcastReason: reason });
       return;
@@ -1661,8 +1766,8 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
 
     if ((signatureSkipped || signature === lastBroadcastSignature) && !provisionalInitPending) {
       // Stamp or payload matched; nothing changed since the last broadcast.
-      if (generation === sessionDirtyGeneration) providerDataDirty = false;
-      lastBroadcastStamp = stampAtCollect;
+      if (generation === sessionDirtyGeneration && !providerSessionsDirty) providerDataDirty = false;
+      lastBroadcastStamp = payload.scanning ? -1 : stampAtCollect;
       lastFullBroadcastAt = now;
       return;
     }
@@ -1677,9 +1782,10 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
       teams: payload.teams,
       usage: payload.usage,
     };
+    const nextKeyedState = keyedBroadcastState(nextState);
     const snapshotDue = now - lastDeltaSnapshotAt >= DELTA_SNAPSHOT_INTERVAL_MS;
-    const patch = lastBroadcastState && !snapshotDue
-      ? createJsonPatch(lastBroadcastState, nextState)
+    const patch = lastBroadcastKeyedState && nextKeyedState && !snapshotDue
+      ? createJsonPatch(lastBroadcastKeyedState, nextKeyedState)
       : null;
     stages.delta = Date.now() - deltaStart;
 
@@ -1687,9 +1793,10 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
       // Structurally identical to the last broadcast (e.g. key-order churn
       // changed the signature); refresh bookkeeping without waking clients.
       lastBroadcastSignature = signature;
-      lastBroadcastStamp = stampAtCollect;
+      lastBroadcastStamp = payload.scanning ? -1 : stampAtCollect;
       lastBroadcastState = nextState;
-      if (generation === sessionDirtyGeneration) providerDataDirty = false;
+      lastBroadcastKeyedState = nextKeyedState;
+      if (generation === sessionDirtyGeneration && !providerSessionsDirty) providerDataDirty = false;
       lastFullBroadcastAt = now;
       return;
     }
@@ -1697,9 +1804,10 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
     let deltaMessage = null;
     if (patch && patch.length <= DELTA_MAX_PATCH_OPS) {
       const serializedPatch = JSON.stringify(patch);
-      if (serializedState === null || serializedPatch.length < serializedState.length) {
+      if (serializedState !== null && serializedPatch.length < serializedState.length) {
         deltaMessage = {
           type: 'update-delta',
+          deltaVersion: 2,
           baseSeq: broadcastSeq,
           seq: broadcastSeq + 1,
           patch,
@@ -1711,12 +1819,13 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
     broadcastSeq++;
     payload.seq = broadcastSeq;
     lastBroadcastSignature = signature;
-    lastBroadcastStamp = stampAtCollect;
+    lastBroadcastStamp = payload.scanning ? -1 : stampAtCollect;
     lastBroadcastState = nextState;
+    lastBroadcastKeyedState = nextKeyedState;
     if (!deltaMessage) lastDeltaSnapshotAt = now;
     wsBroadcast(payload, deltaMessage);
-    provisionalInitPending = false;
-    if (generation === sessionDirtyGeneration) providerDataDirty = false;
+    if (!payload.scanning) provisionalInitPending = false;
+    if (generation === sessionDirtyGeneration && !providerSessionsDirty) providerDataDirty = false;
     lastFullBroadcastAt = now;
     const elapsed = Date.now() - collectStart;
     serverPerf.lastBroadcast = { elapsed, stages, reason, sessions: payload.sessions.length, clients: wsClients.size, mode: deltaMessage ? 'delta' : 'full', deltaOps: patch ? patch.length : null, ts: now };
@@ -1751,13 +1860,11 @@ function scheduleHookOverlayExpiry() {
   hookOverlayExpiryTimer = setTimeout(() => {
     hookOverlayExpiryTimer = null;
     if (shutdownStarted) return;
-    nextSessionScanAt = 0;
     markProviderDataDirty(
-      { kind: 'reconcile', reason: 'hook-overlay-inactive' },
+      { kind: 'overlay', reason: 'hook-overlay-inactive' },
       null,
       { coalesce: false },
     );
-    debouncedBroadcast();
     scheduleHookOverlayExpiry();
   }, Math.max(1, expiresAt - now + 5));
   hookOverlayExpiryTimer.unref?.();
@@ -2543,78 +2650,9 @@ function startRuntimePerfSampling() {
   perfSampleTimer = setInterval(sampleRuntimePerf, PERF_SAMPLE_INTERVAL_MS);
 }
 
-function resolveProjectGitDir(project) {
-  if (!project) return null;
-  try {
-    const dotGit = path.join(project, '.git');
-    const stat = fs.statSync(dotGit);
-    if (stat.isDirectory()) return dotGit;
-    if (!stat.isFile()) return null;
-
-    const content = fs.readFileSync(dotGit, 'utf8');
-    const match = content.match(/^\s*gitdir:\s*(.+?)\s*$/im);
-    if (!match) return null;
-    return path.resolve(project, match[1]);
-  } catch {
-    return null;
-  }
-}
-
-function gitStateFilePart(filePath, label) {
-  try {
-    const stat = fs.statSync(filePath);
-    if (!stat.isFile()) return null;
-    return `${label}:${Math.round(stat.mtimeMs)}:${stat.size}`;
-  } catch {
-    return null;
-  }
-}
-
-function appendGitRefDirParts(parts, root, label) {
-  const stack = [{ dir: root, depth: 0 }];
-  let entries = 0;
-
-  while (stack.length > 0 && entries < GIT_STATE_MAX_REF_ENTRIES) {
-    const current = stack.pop();
-    let dirents = [];
-    try {
-      dirents = fs.readdirSync(current.dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const dirent of dirents.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (++entries > GIT_STATE_MAX_REF_ENTRIES) break;
-      const entryPath = path.join(current.dir, dirent.name);
-      const rel = path.relative(root, entryPath);
-      if (dirent.isDirectory()) {
-        if (current.depth < 8) stack.push({ dir: entryPath, depth: current.depth + 1 });
-        continue;
-      }
-      if (!dirent.isFile()) continue;
-      const part = gitStateFilePart(entryPath, `${label}/${rel}`);
-      if (part) parts.push(part);
-    }
-  }
-
-  if (entries >= GIT_STATE_MAX_REF_ENTRIES) parts.push(`${label}:truncated`);
-}
-
-function projectGitStateSignature(project) {
-  const gitDir = resolveProjectGitDir(project);
-  if (!gitDir) return null;
-
-  const parts = [];
-  for (const fileName of ['HEAD', 'FETCH_HEAD', 'ORIG_HEAD', 'packed-refs', path.join('logs', 'HEAD')]) {
-    const part = gitStateFilePart(path.join(gitDir, fileName), fileName);
-    if (part) parts.push(part);
-  }
-  appendGitRefDirParts(parts, path.join(gitDir, 'refs', 'heads'), 'refs/heads');
-  appendGitRefDirParts(parts, path.join(gitDir, 'refs', 'remotes'), 'refs/remotes');
-  appendGitRefDirParts(parts, path.join(gitDir, 'logs', 'refs', 'heads'), 'logs/refs/heads');
-  appendGitRefDirParts(parts, path.join(gitDir, 'logs', 'refs', 'remotes'), 'logs/refs/remotes');
-  return parts.sort().join('|');
-}
+// Share bounded ref metadata with enrichment without adding watchers or
+// changing the five-second invalidation backstop below.
+const { projectGitStateSignature } = require('./adapters/gitEvents');
 
 function activeGitProjects() {
   return Array.from(lastCanonicalActiveProjects).slice(0, GIT_STATE_MAX_PROJECTS);
@@ -2830,15 +2868,18 @@ function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true
   clearRuntimeTimer(watchDebounce);
   clearRuntimeTimer(watchRefreshDebounce);
   clearRuntimeTimer(hookOverlayExpiryTimer);
+  clearRuntimeTimer(hookOverlayBroadcastTimer);
   clearRuntimeTimer(sessionScanTimer);
   clearRuntimeTimer(dynamicWatchRetireTimer);
-  clearRuntimeTimer(heartbeatTimer);
-  clearRuntimeTimer(watcherSchedulerTimer);
-  clearRuntimeTimer(perfSampleTimer);
+  // Match interval handles to their own cancellation API.
+  clearInterval(heartbeatTimer);
+  clearInterval(watcherSchedulerTimer);
+  clearInterval(perfSampleTimer);
   startupTimer = null;
   watchDebounce = null;
   watchRefreshDebounce = null;
   hookOverlayExpiryTimer = null;
+  hookOverlayBroadcastTimer = null;
   sessionScanTimer = null;
   dynamicWatchRetireTimer = null;
   heartbeatTimer = null;
@@ -2915,6 +2956,19 @@ if (require.main === module) {
 module.exports = {
   startServer,
   shutdownRuntime,
+  _wireTest: {
+    keyedBroadcastState,
+    createJsonPatch,
+    handleTextMessage,
+    sendInitialData,
+    broadcastUpdate,
+    markProviderDataDirty,
+    wsClients,
+    serverPerf,
+  },
+  _staticTest: {
+    serveContainedFile,
+  },
   _providerHealthTest: {
     buildProvidersPayload,
     serializeProviderHealth,

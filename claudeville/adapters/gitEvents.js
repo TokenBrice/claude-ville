@@ -79,6 +79,11 @@ const GIT_TRACKING_TTL_MS = 6 * 60 * 60 * 1000;
 const GIT_TRACKING_MAX_PROJECTS = 512;
 const GIT_REMOTE_REF_SCAN_MAX_ENTRIES = 800;
 const GIT_REMOTE_REF_SCAN_MAX_DEPTH = 8;
+const GIT_STATE_MAX_REF_ENTRIES = 800;
+const GIT_METADATA_MAX_PROJECTS = 128;
+// Four server ref/reflog roots in each of the checkout/common git dirs.
+const GIT_METADATA_MAX_CACHED_ENTRIES = 8 * GIT_STATE_MAX_REF_ENTRIES;
+const _gitMetadataSnapshots = new Map();
 const GIT_WORKER_MAX_CONCURRENCY = boundedIntegerEnv(
   'CLAUDEVILLE_GIT_WORKER_CONCURRENCY',
   2,
@@ -227,6 +232,7 @@ function pruneGitTrackingState(activeProjects = [], now = Date.now()) {
     _gitTrackingLastSeen.delete(project);
     _gitStatusActiveProjects.delete(project);
     _gitHeadSignatureByProject.delete(project);
+    _gitMetadataSnapshots.delete(project);
     invalidateGitStatusCaches({ project });
   }
 
@@ -266,6 +272,144 @@ function resolveGitCommonDir(gitDir) {
   }
 }
 
+function gitMetadataSnapshot(project) {
+  let snapshot = _gitMetadataSnapshots.get(project);
+  if (!snapshot) snapshot = { directories: new Map(), entryCount: 0 };
+  _gitMetadataSnapshots.delete(project);
+  _gitMetadataSnapshots.set(project, snapshot);
+  while (_gitMetadataSnapshots.size > GIT_METADATA_MAX_PROJECTS) {
+    _gitMetadataSnapshots.delete(_gitMetadataSnapshots.keys().next().value);
+  }
+  // Never retain leaf stats between probes: a nested ref can be rewritten
+  // without changing its directory. Only directory listings are reusable.
+  const stats = new Map();
+  return {
+    snapshot,
+    stat(file) {
+      if (!stats.has(file)) {
+        try { stats.set(file, fs.statSync(file)); } catch { stats.set(file, null); }
+      }
+      return stats.get(file);
+    },
+  };
+}
+
+function gitDirectoryIdentity(stat) {
+  return stat
+    ? `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`
+    : null;
+}
+
+function rememberGitDirectory(metadata, directory, identity, entries) {
+  const { snapshot } = metadata;
+  const previous = snapshot.directories.get(directory);
+  if (previous) snapshot.entryCount -= previous.entries.length + 1;
+  snapshot.directories.delete(directory);
+  const weight = entries.length + 1;
+  if (weight > GIT_METADATA_MAX_CACHED_ENTRIES) return;
+  while (snapshot.entryCount + weight > GIT_METADATA_MAX_CACHED_ENTRIES) {
+    const oldest = snapshot.directories.keys().next().value;
+    snapshot.entryCount -= snapshot.directories.get(oldest).entries.length + 1;
+    snapshot.directories.delete(oldest);
+  }
+  snapshot.directories.set(directory, { identity, entries });
+  snapshot.entryCount += weight;
+}
+
+function gitDirectoryEntries(metadata, directory, limit, full = false) {
+  const identity = gitDirectoryIdentity(metadata.stat(directory));
+  const cached = metadata.snapshot.directories.get(directory);
+  if (identity && cached?.identity === identity) {
+    if (full) return { entries: cached.entries.slice(), truncated: false };
+    return { entries: cached.entries.slice(0, limit), truncated: cached.entries.length > limit };
+  }
+  if (cached) {
+    metadata.snapshot.entryCount -= cached.entries.length + 1;
+    metadata.snapshot.directories.delete(directory);
+  }
+  const entries = [];
+  let dir;
+  let truncated = false;
+  try {
+    dir = fs.opendirSync(directory);
+    const bound = full ? GIT_STATE_MAX_REF_ENTRIES : limit;
+    while (entries.length < bound) {
+      const entry = dir.readSync();
+      if (!entry) break;
+      entries.push(entry);
+    }
+    if (entries.length >= bound && dir.readSync()) truncated = true;
+  } finally {
+    try { dir?.closeSync(); } catch { /* ignore */ }
+  }
+  if (!truncated && identity) rememberGitDirectory(metadata, directory, identity, entries);
+  // The server historically sorts the entire directory before applying its
+  // traversal cap. Oversized roots must keep that behavior; the worker must
+  // instead keep its bounded native-order prefix, so these are not cached.
+  if (full && truncated) {
+    return { entries: fs.readdirSync(directory, { withFileTypes: true }), truncated: false };
+  }
+  return { entries, truncated };
+}
+
+function gitStateFilePart(metadata, file, label) {
+  const stat = metadata.stat(file);
+  return stat?.isFile() ? `${label}:${Math.round(stat.mtimeMs)}:${stat.size}` : null;
+}
+
+function appendGitRefDirParts(metadata, parts, root, label) {
+  const stack = [{ dir: root, depth: 0 }];
+  let entries = 0;
+  while (stack.length > 0 && entries < GIT_STATE_MAX_REF_ENTRIES) {
+    const current = stack.pop();
+    let dirents;
+    try {
+      dirents = gitDirectoryEntries(metadata, current.dir, GIT_STATE_MAX_REF_ENTRIES, true).entries;
+    } catch {
+      continue;
+    }
+    for (const dirent of dirents.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (++entries > GIT_STATE_MAX_REF_ENTRIES) break;
+      const entryPath = path.join(current.dir, dirent.name);
+      if (dirent.isDirectory()) {
+        if (current.depth < 8) stack.push({ dir: entryPath, depth: current.depth + 1 });
+        continue;
+      }
+      if (!dirent.isFile()) continue;
+      const part = gitStateFilePart(metadata, entryPath, `${label}/${path.relative(root, entryPath)}`);
+      if (part) parts.push(part);
+    }
+  }
+  if (entries >= GIT_STATE_MAX_REF_ENTRIES) parts.push(`${label}:truncated`);
+}
+
+function projectGitStateSignature(project) {
+  if (!project) return null;
+  let gitDir;
+  try {
+    const dotGit = path.join(project, '.git');
+    const stat = fs.statSync(dotGit);
+    if (stat.isDirectory()) gitDir = dotGit;
+    else if (stat.isFile()) {
+      const match = fs.readFileSync(dotGit, 'utf8').match(/^\s*gitdir:\s*(.+?)\s*$/im);
+      if (match) gitDir = path.resolve(project, match[1]);
+    }
+  } catch {
+    return null;
+  }
+  if (!gitDir) return null;
+  const metadata = gitMetadataSnapshot(project);
+  const parts = [];
+  for (const fileName of ['HEAD', 'FETCH_HEAD', 'ORIG_HEAD', 'packed-refs', path.join('logs', 'HEAD')]) {
+    const part = gitStateFilePart(metadata, path.join(gitDir, fileName), fileName);
+    if (part) parts.push(part);
+  }
+  for (const label of ['refs/heads', 'refs/remotes', 'logs/refs/heads', 'logs/refs/remotes']) {
+    appendGitRefDirParts(metadata, parts, path.join(gitDir, label), label);
+  }
+  return parts.sort().join('|');
+}
+
 function gitHeadFiles(gitDir) {
   // logs/HEAD changes on local commits, HEAD on checkout, and remote/packed-ref
   // metadata on fetch/push.
@@ -279,7 +423,7 @@ function gitHeadFiles(gitDir) {
   ];
 }
 
-function looseRemoteRefsSignature(gitDir) {
+function looseRemoteRefsSignature(gitDir, metadata) {
   const root = path.join(gitDir, 'refs', 'remotes');
   const hash = crypto.createHash('sha256');
   const pending = [{ directory: root, relative: '', depth: 0 }];
@@ -289,28 +433,17 @@ function looseRemoteRefsSignature(gitDir) {
   _perf.remoteRefScans++;
   while (pending.length && scannedEntries < GIT_REMOTE_REF_SCAN_MAX_ENTRIES) {
     const { directory, relative, depth } = pending.pop();
-    let dir;
-    const entries = [];
+    let entries;
     try {
-      const stat = fs.statSync(directory);
+      const stat = metadata.stat(directory);
+      if (!stat) continue;
       hash.update(`dir:${relative}\0${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino || 0}\0`);
       observed = true;
-      dir = fs.opendirSync(directory);
-      while (entries.length < GIT_REMOTE_REF_SCAN_MAX_ENTRIES - scannedEntries) {
-        const entry = dir.readSync();
-        if (!entry) break;
-        entries.push(entry);
-      }
-      if (
-        entries.length >= GIT_REMOTE_REF_SCAN_MAX_ENTRIES - scannedEntries
-        && dir.readSync()
-      ) {
-        truncated = true;
-      }
+      const listing = gitDirectoryEntries(metadata, directory, GIT_REMOTE_REF_SCAN_MAX_ENTRIES - scannedEntries);
+      entries = listing.entries;
+      if (listing.truncated) truncated = true;
     } catch {
       continue;
-    } finally {
-      try { dir?.closeSync(); } catch { /* ignore */ }
     }
     entries.sort((left, right) => left.name.localeCompare(right.name));
     scannedEntries += entries.length;
@@ -351,10 +484,12 @@ function gitHeadSignature(project) {
   const gitDir = resolveGitDir(project);
   if (!gitDir) return null;
   const gitDirs = [...new Set([gitDir, resolveGitCommonDir(gitDir)])];
+  const metadata = gitMetadataSnapshot(project);
   const fileSignature = [...new Set(gitDirs.flatMap(gitHeadFiles))]
     .map((file) => {
       try {
-        const stat = fs.statSync(file);
+        const stat = metadata.stat(file);
+        if (!stat) return '-';
         return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino || 0}`;
       } catch {
         return '-';
@@ -362,7 +497,7 @@ function gitHeadSignature(project) {
     })
     .join('|');
   const remoteRefSignature = gitDirs
-    .map(looseRemoteRefsSignature)
+    .map((directory) => looseRemoteRefsSignature(directory, metadata))
     .join('|');
   return `${fileSignature}|${remoteRefSignature}`;
 }
@@ -2926,6 +3061,7 @@ module.exports = {
   isGitEnrichmentDisabled,
   mergeUnpushedGitEvents,
   parseGitEventsFromCommand,
+  projectGitStateSignature,
   requestGitWorkerRefresh,
   shutdownGitEnrichmentWorker,
   stableHash,

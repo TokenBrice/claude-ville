@@ -399,7 +399,7 @@ class ReplayWebSocket {
     this.closedError = null;
   }
 
-  async connect() {
+  async connect(hello = { type: 'hello', deltas: true, deltaVersion: 2 }) {
     const key = crypto.randomBytes(16).toString('base64');
     const handshake = new Promise((resolve, reject) => {
       const socket = net.createConnection({ host: '127.0.0.1', port: this.port });
@@ -456,7 +456,7 @@ class ReplayWebSocket {
     });
 
     await handshake;
-    this.sendJson({ type: 'hello', deltas: true });
+    this.sendJson(hello);
     return this;
   }
 
@@ -693,8 +693,32 @@ function applyJsonPatch(document, patch) {
 function coreState(message) {
   return {
     sessions: message.sessions,
+    gitEventFields: message.gitEventFields,
+    gitEventStringTables: message.gitEventStringTables,
+    gitEventsById: message.gitEventsById,
+    collisions: message.collisions,
     teams: message.teams,
     usage: message.usage,
+  };
+}
+
+function keyedState(message) {
+  const { sessions, ...shared } = coreState(message);
+  return {
+    sessionsById: Object.fromEntries(sessions.map(session => [String(session.sessionId), session])),
+    sessionOrder: sessions.map(session => String(session.sessionId)),
+    ...shared,
+  };
+}
+
+function reconstructState(keyed) {
+  const { sessionsById, sessionOrder, ...shared } = keyed;
+  return {
+    sessions: sessionOrder.map(id => {
+      assert.ok(Object.hasOwn(sessionsById, id), `Missing keyed session ${id}`);
+      return sessionsById[id];
+    }),
+    ...shared,
   };
 }
 
@@ -744,6 +768,7 @@ export async function runReplay({ assertPeriodicSnapshot = true } = {}) {
   let fixtures = null;
   let serverProcess = null;
   let websocket = null;
+  let legacyWebsocket = null;
   let replayError = null;
 
   try {
@@ -781,17 +806,26 @@ export async function runReplay({ assertPeriodicSnapshot = true } = {}) {
     assert.deepEqual({ ...coreState(warmup), sessions: null }, { ...coreState(initial), sessions: null });
     assert.deepEqual(warmup.sessions.map(stableSessionObservation), initial.sessions.map(stableSessionObservation));
 
+    legacyWebsocket = await new ReplayWebSocket(serverProcess.port).connect({ type: 'hello', deltas: true });
+    const legacyInitial = await legacyWebsocket.waitForMessage(message => message.type === 'init');
+    assert.equal(legacyInitial.seq, warmup.seq);
+
     const phaseOne = appendClaudeReplay(fixtures, 1);
     const delta = await websocket.waitForMessage(message => message.type === 'update-delta', FRAME_TIMEOUT_MS);
+    assert.equal(delta.deltaVersion, 2);
     const deltaObservedAt = Date.now();
     assert.equal(delta.baseSeq, warmup.seq);
     assert.equal(delta.seq, warmup.seq + 1);
     assert.ok(Array.isArray(delta.patch) && delta.patch.length > 0);
 
-    const reconstructed = applyJsonPatch(coreState(warmup), delta.patch);
+    const reconstructed = reconstructState(applyJsonPatch(keyedState(warmup), delta.patch));
     const reconstructedClaude = sessionForProvider(reconstructed.sessions, 'claude');
     assert.equal(reconstructedClaude.lastMessage, phaseOne.message);
     assert.equal(reconstructedClaude.lastTool, phaseOne.tool);
+    const legacyUpdate = await legacyWebsocket.waitForMessage(message => message.seq === delta.seq);
+    assert.equal(legacyUpdate.type, 'update', 'Legacy deltas:true clients must receive full updates only');
+    assert.deepEqual(coreState(legacyUpdate), reconstructed);
+    assert.equal(legacyWebsocket.messages.some(message => message.type === 'update-delta'), false);
     const deltaApi = await requestJson(serverProcess.port, '/api/sessions?force=1');
     assert.deepEqual(reconstructed.sessions.map(stableSessionObservation), deltaApi.sessions.map(stableSessionObservation));
 
@@ -842,6 +876,7 @@ export async function runReplay({ assertPeriodicSnapshot = true } = {}) {
     throw error;
   } finally {
     websocket?.close();
+    legacyWebsocket?.close();
     let shutdownError = null;
     try {
       if (serverProcess) await stopIsolatedServer(serverProcess);

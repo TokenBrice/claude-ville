@@ -109,7 +109,7 @@ function readInitFrame(port) {
         }
         upgraded = true;
         buffer = buffer.subarray(boundary + 4);
-        socket.write(clientFrame({ type: 'hello', deltas: true }));
+        socket.write(clientFrame({ type: 'hello', deltas: true, deltaVersion: 2 }));
       }
       while (buffer.length >= 2) {
         const opcode = buffer[0] & 0x0f;

@@ -350,7 +350,7 @@ function openWebSocketProbeOnce(page, url, timeoutMs) {
       () => finish(new Error(`WebSocket reconnect probe timed out after ${probeTimeoutMs} ms`)),
       probeTimeoutMs,
     );
-    socket.onopen = () => socket.send(JSON.stringify({ type: 'hello', deltas: true }));
+    socket.onopen = () => socket.send(JSON.stringify({ type: 'hello', deltas: true, deltaVersion: 2 }));
     socket.onmessage = event => {
       try {
         const message = JSON.parse(String(event.data));
