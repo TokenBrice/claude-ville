@@ -152,6 +152,8 @@ Add both events to your own Gemini CLI `settings.json`. Gemini hook timeouts are
 
 If the overlay does not appear, POST one normalized fixture with `curl`, confirm a `202` response, and fetch `/api/sessions` immediately. A `401` means the token header does not match; `403`/`421` means the Origin/Host is not local; `400` means the provider, event, session id, or JSON is invalid. Match the returned public session, not just the HTTP acceptance: Codex hook thread IDs and Gemini payload session IDs can differ from dashboard filename IDs, and matching is provider-qualified. Ordinary overlays stop merging after 10 seconds and expire after 30 seconds. Exact unanswered approvals instead become last-observed waits after 10 seconds; a resolving hook/newer recorded turn clears them, and a 30-minute bound prevents indefinite retention.
 
+A hook only overlays an already-discovered provider session; it cannot create a resident from an unknown ID. Check the cached roster and provider/source-ID match before investigating transcript latency. Hook delivery and expiry do not wait for a backed-off transcript scan (the separate scheduler contract is in [`claudeville/CLAUDE.md`](../claudeville/CLAUDE.md), *Server*), so a still-missing overlay is not fixed by lowering polling intervals.
+
 ## WebSocket never connects / port 4000 collision (`EADDRINUSE`)
 
 The port is hardcoded at `claudeville/server.js` (`const PORT = 4000;`). On startup, `server.on('error', ...)` prints `Port 4000 is already in use.` and the process stays up but cannot serve.
@@ -222,6 +224,8 @@ The same selection opens the Shift-D overlay as short rows: `world backend: <mod
 
 If the WebGPU world fails while running (a frame throws, its own frame work raises a validation or out-of-memory error, or its device is destroyed or cannot be rebuilt), the World switches to a fresh WebGL2 world and the reason reads `webgpu failed in frame: <stage>: <message>`. A failure found between frames (a validation error, a destroyed device) holds the last presented frame for about half a second while the WebGL2 world builds and the terrain re-bakes off the frame, then switches; a frame that throws is drawn again on WebGL2 in the same task. Nothing black or half-drawn is presented either way. Without WebGL2 it stays on the Canvas world (`… · WebGL2 unavailable`). A plain WebGPU device loss the browser causes (`reason: 'unknown'`) rebuilds the device in place instead.
 
+For repeated non-GPU frame errors, the `World <stage> failed: … Retrying automatically.` warning stays visible until recovery. `FPS idle` during this outage does not mean a permanent pause: World retries with bounded backoff. Inspect the named stage/message and `world:frame-error` diagnostics; the lifecycle, reporting limits and recovery contract are in the [World README](../claudeville/src/presentation/character-mode/README.md#event-bus-integration).
+
 To force a backend, add a URL flag (an explicit flag always wins):
 
 - `?renderer=webgl` forces the WebGL2 world on any WebGL2 browser (slow on a software rasterizer). Use it if the WebGPU world misbehaves in Chrome.
@@ -251,7 +255,7 @@ window.__claudeVillePerf.canvasBudget()
 curl http://localhost:4000/api/perf
 ```
 
-If the journal shows GPU ring timeouts, compositor `GL_CONTEXT_LOST`, or Xwayland/browser core dumps without OOM-killer entries, treat it as a graphics-stack reset. ClaudeVille should reduce load by pausing World mode in Dashboard, releasing renderer-owned canvas caches, and capping canvas backing-store pixels, but driver/compositor resets can still originate below the app.
+If the journal shows GPU ring timeouts, compositor `GL_CONTEXT_LOST`, or Xwayland/browser core dumps without OOM-killer entries, treat it as a graphics-stack reset. ClaudeVille reduces load by stopping the World loop in Dashboard, releasing viewport/GPU and volatile derived caches, and capping canvas backing-store pixels; committed source art remains resident for network-independent return and context recovery. Driver/compositor resets can still originate below the app.
 
 **A GPU-process crash** (the browser's GPU process restarting: a driver reset, a GPU switch on some laptops, `chrome://gpucrash`) blanks every GPU-backed canvas in the page, including the sprite, terrain and avatar caches no renderer can rebuild on its own. ClaudeVille therefore reloads the page once; the village state comes from the server, so nothing is lost but the camera pose and open panels. It remembers the reload for the tab (`sessionStorage` key `cv-gpu-crash-reload-at`): a second crash within two minutes does not reload again (no reload loop) but drops to the Canvas world and rebuilds its resources in place, and Shift-D's `session:` row reads `GPU process crashed twice in 2 min: Canvas world, no reload`. Some cached art can then stay blank until you reload by hand; repeated crashes point at the driver or GPU, so check `chrome://gpu` and the system log above. A WebGPU device or WebGL2 context lost on its own (the 2D canvases survive) never reloads: the GPU world rebuilds and the World resumes.
 
@@ -335,7 +339,7 @@ If installing dependencies is out of scope, fall back to:
 
 ## Agent display name keeps changing
 
-Names are deterministic from the agent ID hash via `Agent.generateNameForLang` (`claudeville/src/domain/entities/Agent.js`). Names assigned by a team are preserved because `_customName` is set when the agent is constructed with an explicit name (the `Agent` constructor, honored by `AgentManager`, which never renames an agent whose `_customName` is set).
+Generated villager names are deterministic candidates from `Agent.generateNameForLang` (`claudeville/src/domain/entities/Agent.js`), with the assigned name saved synchronously per identity at `claudeville.generatedAgentName.v2:<identityKey>` and loaded lazily by `AgentManager`. The legacy `claudeville.generatedAgentNames.v1` array migrates once, preserving saved names; its record is removed only after successful migration. New names use constant-size writes independent of historical identity count. Restricted or quota-limited storage keeps in-memory naming, and failed migration leaves legacy names recoverable. Provider/team names remain explicit: the manager does not rename an agent whose `_customName` is set.
 
 If you renamed an agent in code and the rename was overwritten, check that the constructor received `name` and `_customName` is true on that instance.
 

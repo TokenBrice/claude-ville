@@ -16,7 +16,9 @@ If you change this, update: `claudeville/server.js`, README, both `CLAUDE.md` fi
 
 `POST /api/ingest/hook` accepts normalized lifecycle events from local CLI hooks. The server applies the same local Host/Origin validation as its other routes with `requireOrigin: false`, because a shell hook has no browser `Origin`; the `127.0.0.1` bind remains the network boundary. Set `CLAUDEVILLE_INGEST_TOKEN` to require the same value in `X-ClaudeVille-Ingest-Token`. Requests are capped at 256 KiB and their bodies are never logged.
 
-The hook registry is not a provider and performs no discovery. It holds at most 256 sessions in process memory, expires records after 30 seconds, and only merges a signal during its first 10 seconds. A fresh hook can escalate or refresh transcript state, but cannot suppress transcript-derived `awaiting_input`. Prompt detail is secret-stripped and capped at 200 characters before it reaches the session payload; nothing from the hook overlay is persisted.
+The hook registry is not a provider and performs no discovery. It holds at most 256 sessions in process memory. Ordinary signals merge for 10 seconds and expire after 30 seconds; exact unanswered approvals become last-observed waits after the fresh window and remain until a resolving hook/newer recorded turn or a 30-minute bound. A fresh hook can escalate or refresh transcript state, but cannot suppress transcript-derived `awaiting_input`. Prompt detail is secret-stripped and capped at 200 characters before it reaches the session payload; nothing from the hook overlay is persisted.
+
+Hook reception, merge-window changes and expiry refold cached normalized observations rather than invalidating adapters or reading transcripts. Provider freshness and cache timestamps stay unchanged; the zero-delay overlay path is independent of pending transcript backoff, while filesystem dirtiness and reconciliation still trigger ordinary provider observations (see `claudeville/CLAUDE.md`, *Server*).
 
 ClaudeVille never creates or edits Claude Code, Codex, or other provider configuration. Operators may opt in by copying the examples in `docs/troubleshooting.md`; stopping or restarting ClaudeVille immediately falls back to transcript inference. Approval stays in the terminal: the dashboard deliberately has no approve action. OTLP ingestion is outside this route's scope.
 
@@ -39,6 +41,14 @@ The frontend uses `<script type="module">` and relative-path `import`s. There is
 Same rationale as the previous entry. The constraint this places on the frontend: no JSX, no path aliases, no automatic vendoring of third-party libraries. If a third-party module is needed, vendor a single ES-module file under `claudeville/src/` and import it relatively.
 
 If you change this, update: `claudeville/CLAUDE.md` and the boot path described in `src/presentation/App.js`.
+
+## Static text compression preserves byte validators
+
+`claudeville/server.js` gzip-compresses CSS, JavaScript, MJS, JSON, HTML, YAML/YML, SVG, and webmanifest text when accepted; PNGs remain uncompressed. YAML/YML use `text/yaml; charset=utf-8`, and webmanifest uses `application/manifest+json; charset=utf-8`.
+
+Strong identity/gzip ETags are distinct, byte equality validates cached content, and compressible responses carry `Vary: Accept-Encoding`. Versioned sprite/font URLs keep immutable caching; expanding text compression does not change their cache policy.
+
+If this changes, update: `server.js` MIME/compression handling, static serving tests, and browser asset-cache troubleshooting.
 
 ## Read-only adapter contract
 
@@ -118,6 +128,10 @@ If you change this, update: `claudeville/CLAUDE.md`, root `AGENTS.md`/`CLAUDE.md
 
 The runtime no-dependencies rule rules out `ws` and similar packages. Browser clients only need text frames, ping/pong, and clean close, so a couple of hundred lines of framing code is cheaper than a runtime dependency.
 
+The application delta protocol is versioned independently of framing. Only `{ type: 'hello', deltas: true, deltaVersion: 2 }` enables `update-delta`. RFC 6902 add/replace/remove patches target `sessionsById` and activity-ordered `sessionOrder`, plus `gitEventFields`, `gitEventStringTables`, `gitEventsById`, `collisions`, `teams`, and `usage`; full snapshots keep the `sessions` array. Missing, empty or duplicate session IDs, patches above 500 operations, a patch not smaller than the full state (or unavailable full-state size), and the 20-second full-snapshot floor select full updates.
+
+Sequence gaps still request fresh init. A successful fresh resync establishes one canonical sequence: the requester receives `init`, existing peers receive the same state as a full `update`, and subsequent v2 deltas resume from it. An empty or unavailable forced init/resync collection cannot replace a known non-empty roster: the retained snapshot is marked scanning/stale, without erasing peer baselines. Client ingestion and incompatible-server downgrade behavior live in `claudeville/CLAUDE.md`, *Frontend Ownership*.
+
 If you change this, audit close handling, masking, and the 64-bit length path before swapping in a library.
 
 ## Multi-agent shared checkout
@@ -188,6 +202,8 @@ If this changes, update: `claudeville/src/application/AgentManager.js`, `claudev
 The normal server path enables the Git worker through `configureGitEnrichmentWorker({ enabled: true })` (`claudeville/server.js:2307-2319`). Session enrichment returns the cached per-project snapshot immediately, then requests a refresh when the snapshot is absent, stale, or invalidated (`claudeville/adapters/gitEvents.js:2186-2222`). A successful refresh publishes only a changed, generation-current snapshot; a Git-head change during the job marks the completion stale and requests a rerun (`gitEvents.js:772-848`).
 
 The bounds are deliberate: at most 2 active jobs, a 32-deep queue, and shedding when that queue is full (`gitEvents.js:63-92`, `854-921`). Requests for a project already queued, running, or inside its retry delay coalesce; a change observed during a running job sets a rerun flag instead of adding an unbounded duplicate (`gitEvents.js:889-907`). Each `git` child process uses a 750 ms timeout and a 256 KiB stdout buffer cap (`gitEvents.js:470-518`). Failures retry with exponential backoff from 1 second up to 30 seconds by default (`gitEvents.js:418-438`); the environment variables in the constants block can change those defaults, so the effective values are exposed in worker diagnostics.
+
+Git-state invalidation and enrichment share bounded per-project ref-directory metadata snapshots in `gitEvents.js`: at most 128 projects with least-recently-used project eviction and a 6,400-entry per-project cap. Every probe validates directory identity and timestamps and reads fresh leaf metadata, so nested ref rewrites remain detectable without extra watchers. The five-second backstop, worker queue limits, signature values and ref traversal bounds are unchanged; oversized roots retain each consumer's original ordering and truncation behavior.
 
 These limits respond to measured pressure, not theoretical neatness: the post-OOM performance audit recorded about 92,600 cumulative Git subprocess calls and 443 seconds of command time, including one nine-project refresh that launched 43 synchronous commands and blocked for about 151 ms. The worker keeps the hot server path asynchronous while retaining synchronous fallback helpers for worker-disabled or direct legacy paths (`claudeville/adapters/index.js:146-151`; `gitEvents.js:1651-1660`). Do not remove the bounds or mistake the fallback for the normal configured path.
 
