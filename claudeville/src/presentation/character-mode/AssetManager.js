@@ -286,6 +286,7 @@ export class AssetManager {
         this.dimensions = new Map();   // id → { w, h }
         this.anchors = new Map();      // id → [cx, cy] in sprite-local px
         this.outlines = new Map();     // interactive id → HTMLCanvasElement (1-px gold edge)
+        this._interactionArtIds = new Set();
         this.companions = new Map(MATERIAL_CHANNELS
             .filter((channel) => channel !== 'albedo')
             .map((channel) => [channel, new Map()]));
@@ -293,6 +294,7 @@ export class AssetManager {
         this.atlasMetadata = new Map();// atlas id → deterministic metadata JSON
         this.actionStrips = new Map(); // agent id → { image, meta, path, channels }
         this._actionStripLoads = new Map();
+        this._actionStripLoadControllers = new Map();
         this._entriesCache = null;
         this._entryById = new Map();
         this.assetVersion = null;
@@ -342,37 +344,49 @@ export class AssetManager {
     }
 
     /**
-     * Reload decoded World assets after Dashboard mode released them. The
-     * parsed manifest/palettes stay resident, so a resume only fetches images.
+     * Resume from the last committed exact-art sources. New identities and
+     * unfinished material work never gate a World that already has core art.
      */
     resume({ signal = null, characterIds = null } = {}) {
         if (this._disposed) return Promise.resolve(false);
+        if (signal?.aborted) return Promise.resolve(false);
         this._rememberCharacterIds(characterIds);
         this._suspended = false;
+        if (this._decodedLoaded) {
+            const ready = Promise.resolve(true);
+            ready.then(() => {
+                if (this._disposed || this._suspended || signal?.aborted) return;
+                const materials = this._materialAssetsEnabled && !this._materialDecodedLoaded
+                    ? this._ensureMaterialDecoded({ signal }) : Promise.resolve(true);
+                materials.then((loaded) => (
+                    loaded ? this._ensureRequestedCharacters({ signal }) : false
+                )).catch((error) => {
+                    console.warn('[AssetManager] background asset load failed:', error);
+                });
+            });
+            return ready;
+        }
         return this._ensureDecoded({ signal, loadManifest: !this.manifest }).then((loaded) => (
             loaded ? this._ensureRequestedCharacters({ signal }) : false
         ));
     }
 
     /**
-     * Dashboard does not consume this manager. Abort any partial reload and
-     * drop all decoded image/canvas, mask, and outline ownership immediately.
+     * Pause work and release volatile art, retaining immutable committed sources
+     * for a network-independent World return or graphics-context recovery.
      */
     suspend() {
         if (this._disposed) return;
         this._suspended = true;
-        this._decodedLoaded = false;
-        this._materialDecodedLoaded = false;
         this._loadGeneration++;
         this._loadController?.abort?.();
         this._materialLoadController?.abort?.();
         this._abortCharacterLoads();
-        // Pins protect live-World pressure eviction only. A mode-driven
-        // suspension is authoritative and must leave no stale ownership that
-        // can influence the next generation's reload.
+        // Rendering pins are rebuilt by the resumed World. The exact source
+        // set remains owned here until disposal, independently of those pins.
         this._activeProfilePins.clear();
         this._invalidateDerivedArt();
-        this._releaseDecodedEntries();
+        this._releaseInteractionArt();
     }
 
     _ensureDecoded({ signal = null, loadManifest = false } = {}) {
@@ -404,10 +418,6 @@ export class AssetManager {
             generation,
             loadManifest: loadManifest || !this.manifest,
         }).catch((err) => {
-            if (generation === this._loadGeneration) {
-                this._decodedLoaded = false;
-                this._releaseDecodedEntries();
-            }
             if (
                 controller.signal.aborted
                 || this._disposed
@@ -447,7 +457,6 @@ export class AssetManager {
         }
 
         const entries = this._entriesCache || [];
-        this._releaseDecodedEntries();
         this._loadMisses = [];
         const criticalEntries = entries.filter((entry) => (
             !this._isCharacterEntry(entry)
@@ -492,7 +501,12 @@ export class AssetManager {
     _ensureMaterialDecoded({ signal = null } = {}) {
         if (this._disposed || this._suspended || !this._materialAssetsEnabled) return Promise.resolve(false);
         if (this._materialDecodedLoaded) return Promise.resolve(true);
-        if (this._materialLoadPromise) return this._materialLoadPromise;
+        if (this._materialLoadPromise) {
+            if (!this._materialLoadController?.signal?.aborted) return this._materialLoadPromise;
+            return this._materialLoadPromise.catch(() => false).then(() => (
+                this._ensureMaterialDecoded({ signal })
+            ));
+        }
 
         const controller = new AbortController();
         const generation = this._loadGeneration;
@@ -616,7 +630,10 @@ export class AssetManager {
     async _loadCharacterEntry(entry, { signal, generation }) {
         const path = this._pathFor(entry);
         const { img, ok, reason } = await this._loadOptionalImage(path, { signal });
-        if (!this._canCommitLoad(signal, generation)) return false;
+        if (!this._canCommitLoad(signal, generation)) {
+            this._releaseImage(img);
+            return false;
+        }
         if (!ok || !img) {
             this._recordCharacterFailure(entry.id, path, reason || 'load failed');
             return false;
@@ -627,16 +644,15 @@ export class AssetManager {
             // Keep the albedo private until its declared material channels have
             // settled. This prevents a draw from caching a fallback material in
             // the narrow window between sheet and sidecar completion.
-            this.dimensions.set(entry.id, { w: img.width, h: img.height });
             try {
-                await this._loadCharacterCompanions(entry, { signal, generation });
+                await this._loadCharacterCompanions(entry, {
+                    signal, generation, dimensions: { w: img.width, h: img.height },
+                });
             } catch (error) {
-                this.dimensions.delete(entry.id);
                 this._releaseImage(img);
                 throw error;
             }
             if (!this._canCommitLoad(signal, generation)) {
-                this.dimensions.delete(entry.id);
                 this._releaseImage(img);
                 return false;
             }
@@ -657,7 +673,7 @@ export class AssetManager {
         const meta = entry?.actionStrip;
         const path = actionStripPathFor(meta);
         if (!path) return;
-        if (this.actionStrips.get(entry.id)?.generation === generation) return;
+        if (this.actionStrips.has(entry.id)) return;
         const { img, ok, reason } = await this._loadOptionalImage(path, { signal });
         if (!this._canCommitLoad(signal, generation)) {
             if (img) this._releaseImage(img);
@@ -709,7 +725,7 @@ export class AssetManager {
             return;
         }
         this._releaseActionStrip(entry.id);
-        this.actionStrips.set(entry.id, { image: img, meta, path, channels, generation });
+        this.actionStrips.set(entry.id, { image: img, meta, path, channels });
     }
 
     _releaseActionStrip(id) {
@@ -719,12 +735,12 @@ export class AssetManager {
         this.actionStrips.delete(id);
     }
 
-    async _loadCharacterCompanions(entry, { signal, generation }) {
+    async _loadCharacterCompanions(entry, { signal, generation, dimensions }) {
         const loads = [];
         for (const channel of MATERIAL_CHANNELS) {
             if (channel === 'albedo') continue;
             const path = companionPathFor(entry, channel, this._pathFor(entry));
-            if (path) loads.push(this._loadCompanion(entry, channel, path, { signal, generation }));
+            if (path) loads.push(this._loadCompanion(entry, channel, path, { signal, generation, dimensions }));
         }
         await Promise.all(loads);
     }
@@ -745,6 +761,9 @@ export class AssetManager {
         for (const controller of this._characterLoadControllers.values()) controller.abort();
         this._characterLoadControllers.clear();
         this._characterLoads.clear();
+        for (const controller of this._actionStripLoadControllers.values()) controller.abort();
+        this._actionStripLoadControllers.clear();
+        this._actionStripLoads.clear();
     }
 
     async _fetchText(path, { signal = null } = {}) {
@@ -796,10 +815,24 @@ export class AssetManager {
     }
 
     async _loadEntry(entry, { signal = null, generation = this._loadGeneration } = {}) {
+        if (!this._canCommitLoad(signal, generation)) return;
         // Single-PNG entry (buildings are all single-image; composeGrid retired).
         const path = this._pathFor(entry);
-        const { img: loadedImg, ok } = await this._loadImage(path, { signal });
-        if (!this._canCommitLoad(signal, generation)) return;
+        if (this.has(entry.id, { request: false })
+            && (!entry.layers || Object.keys(entry.layers).every((name) => (
+                name === 'base' || this.has(`${entry.id}.${name}`, { request: false })
+            )))) {
+            if (this._isCharacterEntry(entry)) await this._loadActionStrip(entry, { signal, generation });
+            return;
+        }
+        const resident = this.get(entry.id, { request: false });
+        const { img: loadedImg, ok } = resident && !this.missing.has(entry.id)
+            ? { img: resident, ok: true }
+            : await this._loadImage(path, { signal });
+        if (!this._canCommitLoad(signal, generation)) {
+            if (loadedImg !== resident) this._releaseImage(loadedImg);
+            return;
+        }
         if (!ok) {
             this.missing.add(entry.id);
             this._loadMisses.push({ id: entry.id, path });
@@ -810,9 +843,12 @@ export class AssetManager {
                     retryAt: Date.now() + CHARACTER_RETRY_BASE_MS,
                 });
             }
+        } else {
+            this.missing.delete(entry.id);
         }
-        const normalizedImg = this._normalizeImageToManifestSize(entry, loadedImg);
-        const img = this._applyStructureMask(entry, normalizedImg);
+        const normalizedImg = resident === loadedImg
+            ? loadedImg : this._normalizeImageToManifestSize(entry, loadedImg);
+        const img = resident === loadedImg ? loadedImg : this._applyStructureMask(entry, normalizedImg);
         const anchor = entry.anchor
             ? entry.anchor
             : entry.id.startsWith('building.')
@@ -858,6 +894,7 @@ export class AssetManager {
         this.bitmaps.set(id, img);
         this.dimensions.set(id, { w: img.width, h: img.height });
         if (anchor) this.anchors.set(id, anchor);
+        if (buildMask) this._interactionArtIds.add(id);
         if (!buildMask) return;
         const alphaMask = mask || this._buildAlphaMask(img);
         this.alphaMasks.set(id, alphaMask);
@@ -870,11 +907,17 @@ export class AssetManager {
         layerPath,
         { signal = null, generation = this._loadGeneration } = {},
     ) {
+        if (this.has(layerId, { request: false })) return;
         const { img: loadedImg, ok } = await this._loadImage(layerPath, { signal });
-        if (!this._canCommitLoad(signal, generation)) return;
+        if (!this._canCommitLoad(signal, generation)) {
+            this._releaseImage(loadedImg);
+            return;
+        }
         if (!ok) {
             this.missing.add(layerId);
             this._loadMisses.push({ id: layerId, path: layerPath });
+        } else {
+            this.missing.delete(layerId);
         }
         const img = this._normalizeImageToManifestSize({ id: layerId, ...layer }, loadedImg);
         this._storeBitmap(layerId, img, {
@@ -885,7 +928,6 @@ export class AssetManager {
     }
 
     async _decodeMaterialAssets({ signal, generation }) {
-        this._releaseMaterialEntries();
         this._optionalLoadMisses = [];
         const entries = [...this._entryById.values()].filter((entry) => (
             !this._isCharacterEntry(entry) || this.bitmaps.has(entry.id)
@@ -904,6 +946,7 @@ export class AssetManager {
         ));
         await Promise.all([...sidecarLoads, ...atlasLoads]);
         if (!this._canCommitLoad(signal, generation)) return false;
+        this._invalidateDerivedArt();
         this._materialDecodedLoaded = true;
         if (this._optionalLoadMisses.length > 0) {
             console.warn(
@@ -914,14 +957,18 @@ export class AssetManager {
         return true;
     }
 
-    async _loadCompanion(entry, channel, path, { signal, generation }) {
+    async _loadCompanion(entry, channel, path, { signal, generation, dimensions } = {}) {
+        if (this.companions.get(channel)?.has(entry.id)) return;
         const { img, ok, reason } = await this._loadOptionalImage(path, { signal });
-        if (!this._canCommitLoad(signal, generation)) return;
+        if (!this._canCommitLoad(signal, generation)) {
+            this._releaseImage(img);
+            return;
+        }
         if (!ok || !img) {
             this._optionalLoadMisses.push({ id: entry.id, channel, path, reason });
             return;
         }
-        const albedoDims = this.dimensions.get(entry.id);
+        const albedoDims = dimensions || this.dimensions.get(entry.id);
         if (albedoDims && (img.width !== albedoDims.w || img.height !== albedoDims.h)) {
             this._releaseImage(img);
             this._optionalLoadMisses.push({
@@ -937,10 +984,12 @@ export class AssetManager {
 
     async _loadAtlas(atlas, { signal, generation }) {
         if (!atlas?.id || !atlas?.metadata || !atlas?.channels) return;
-        let metadata = null;
+        let metadata = this.atlasMetadata.get(atlas.id) || null;
         try {
-            const text = await this._fetchText(this._versionedPath(atlas.metadata), { signal });
-            metadata = JSON.parse(text);
+            if (!metadata) {
+                const text = await this._fetchText(this._versionedPath(atlas.metadata), { signal });
+                metadata = JSON.parse(text);
+            }
         } catch (err) {
             if (signal?.aborted) return;
             this._optionalLoadMisses.push({
@@ -955,8 +1004,12 @@ export class AssetManager {
         this.atlasMetadata.set(atlas.id, metadata);
         await Promise.all(Object.entries(atlas.channels).map(async ([channel, path]) => {
             if (!MATERIAL_CHANNELS.includes(channel) || !path) return;
+            if (this.atlasImages.has(`${atlas.id}:${channel}`)) return;
             const { img, ok, reason } = await this._loadOptionalImage(path, { signal });
-            if (!this._canCommitLoad(signal, generation)) return;
+            if (!this._canCommitLoad(signal, generation)) {
+                this._releaseImage(img);
+                return;
+            }
             if (!ok || !img) {
                 this._optionalLoadMisses.push({ id: atlas.id, channel, path, reason });
                 return;
@@ -1272,13 +1325,32 @@ export class AssetManager {
         }
         return available;
     }
-    getMask(id) { return this.alphaMasks.get(id); }
+    getMask(id) {
+        this._ensureInteractionArt(id);
+        return this.alphaMasks.get(id);
+    }
     getDims(id) {
         if (typeof id === 'string' && id.startsWith('agent.') && !this.has(id)) return undefined;
         return this.dimensions.get(id);
     }
     getAnchor(id) { return this.anchors.get(id) ?? [0, 0]; }
-    getOutline(id) { return this.outlines.get(id); }
+    getOutline(id) {
+        this._ensureInteractionArt(id, { outline: true });
+        return this.outlines.get(id);
+    }
+    _ensureInteractionArt(id, { outline = false } = {}) {
+        if (this._disposed || this._suspended || !this._interactionArtIds.has(id)) return;
+        const image = this.bitmaps.get(id);
+        if (!image) return;
+        let mask = this.alphaMasks.get(id);
+        if (!mask) {
+            mask = this._buildAlphaMask(image);
+            this.alphaMasks.set(id, mask);
+        }
+        if (outline && !this.outlines.has(id)) {
+            this.outlines.set(id, this._bakeOutline(image.width, image.height, mask));
+        }
+    }
     getEntry(id) {
         return this._entryById.get(id);
     }
@@ -1301,10 +1373,17 @@ export class AssetManager {
         if (inFlight) return inFlight;
         const entry = this.getEntry(id);
         if (!entry?.actionStrip || this._disposed || this._suspended) return Promise.resolve();
-        const operation = this._loadActionStrip(entry, { signal: null, generation: this._loadGeneration })
+        const controller = new AbortController();
+        this._actionStripLoadControllers.set(id, controller);
+        const operation = this._loadActionStrip(entry, {
+            signal: controller.signal, generation: this._loadGeneration,
+        })
             .catch(() => {})
             .finally(() => {
                 if (this._actionStripLoads.get(id) === operation) this._actionStripLoads.delete(id);
+                if (this._actionStripLoadControllers.get(id) === controller) {
+                    this._actionStripLoadControllers.delete(id);
+                }
             });
         this._actionStripLoads.set(id, operation);
         return operation;
@@ -1377,7 +1456,11 @@ export class AssetManager {
         const cropRequested = Boolean(hint.crop || frameKey);
         const resolvedFrameKey = frameKey
             || (cropRequested ? `${declaration?.key || id || ''}#local` : (declaration?.key || id || ''));
-        const cacheKey = materialChannelCacheKey(this.assetVersion, atlasKey, resolvedFrameKey);
+        // Frame names such as walk/s/0 are local to a character, not an atlas.
+        // This same qualified identity also owns the queued crop job.
+        const cacheKey = materialChannelCacheKey(
+            this.assetVersion, atlasKey, `${id}::${resolvedFrameKey}`,
+        );
         const cached = this._materialChannelCache.get(cacheKey);
         if (cached && cached.generation === this._loadGeneration) return cached;
 
@@ -1661,6 +1744,10 @@ export class AssetManager {
             decodedImageEstimateBytes: { value: decodedImageEstimateBytes },
             derivedCanvasEstimateBytes: { value: derivedCanvasEstimateBytes },
             materialTextureEstimateBytes: { value: optionalMaterialImageEstimateBytes },
+            retainedSourceEstimateBytes: { value: (
+                bitmapPixels + companionPixels + atlasPixels
+                + actionStripPixels + actionStripCompanionPixels
+            ) * 4 },
             optionalSidecarHighWaterEstimateBytes: { value: OPTIONAL_SIDECAR_HIGH_WATER_ESTIMATE_BYTES },
             actionStrips: { value: this.actionStrips.size },
             actionStripPixels: { value: actionStripPixels + actionStripCompanionPixels },
@@ -1733,7 +1820,9 @@ export class AssetManager {
             });
         }
         let residentEstimateBytes = candidates.reduce((sum, entry) => sum + entry.estimateBytes, 0);
-        if (!shouldEvictAtHighWater(residentEstimateBytes, highWaterEstimateBytes)) {
+        // Suspension temporarily has no rendering pins, but its committed
+        // source generation is the only network-independent return path.
+        if (this._suspended || !shouldEvictAtHighWater(residentEstimateBytes, highWaterEstimateBytes)) {
             return { evicted: [], residentEstimateBytes };
         }
         const pinnedKeys = this._optionalSidecarPins();
@@ -1769,6 +1858,7 @@ export class AssetManager {
     }
 
     _reloadOptionalEntry(key) {
+        if (this._disposed || this._suspended) return;
         if (!this._evictedOptionalEntries.has(key) || this._optionalReloads.has(key)) return;
         const parts = key.split(':');
         const generation = this._loadGeneration;
@@ -1806,7 +1896,10 @@ export class AssetManager {
         const metadata = this.atlasMetadata.get(atlas?.id);
         if (!path || !metadata) return;
         const { img, ok, reason } = await this._loadOptionalImage(path);
-        if (!this._canCommitLoad(null, generation)) return;
+        if (!this._canCommitLoad(null, generation)) {
+            this._releaseImage(img);
+            return;
+        }
         if (
             !ok
             || !img
@@ -1825,13 +1918,20 @@ export class AssetManager {
         this.atlasImages.set(`${atlas.id}:${channel}`, img);
     }
 
-    _releaseDecodedEntries() {
+    _releaseInteractionArt() {
         for (const outline of this.outlines.values()) {
             if (outline && typeof outline === 'object' && 'width' in outline && 'height' in outline) {
                 outline.width = 0;
                 outline.height = 0;
             }
         }
+        this.alphaMasks.clear();
+        this.outlines.clear();
+    }
+
+    _releaseDecodedEntries() {
+        this._releaseInteractionArt();
+        this._interactionArtIds.clear();
         for (const bitmap of this.bitmaps.values()) {
             if (typeof bitmap?.close === 'function') {
                 try { bitmap.close(); } catch { /* best-effort ImageBitmap release */ }

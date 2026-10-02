@@ -386,7 +386,7 @@ export class Toast {
         });
     }
 
-    show(message, type = 'info') {
+    show(message, type = 'info', { dismissMs = AUTO_DISMISS_MS } = {}) {
         if (this._destroyed || !this.container) return;
 
         const cleanMessage = cleanLabel(message);
@@ -396,7 +396,8 @@ export class Toast {
         const attention = isAttentionNotice(cleanMessage) && (type === 'warning' || type === 'error');
         const agentId = isAttentionNotice(cleanMessage) ? this._agentIdForMessage(cleanMessage) : '';
         return this._show(message, type, {
-            dismissMs: AUTO_DISMISS_MS,
+            dismissMs,
+            primary: dismissMs === null,
             attentionAgentId: agentId,
             attentionExpectedMessages: agentId ? [cleanMessage] : [],
             frame: attention ? (type === 'error' ? ATTENTION_FRAME.errored : ATTENTION_FRAME.waiting_on_user) : '',
@@ -813,6 +814,9 @@ export class Toast {
 
     _restartDismissTimer(entry, dismissMs) {
         if (entry.dismissTimer) clearTimeout(entry.dismissTimer);
+        entry.dismissTimer = null;
+        // Persistent episode notices are removed by their owner on recovery.
+        if (dismissMs === null) return;
         entry.dismissTimer = setTimeout(() => {
             entry.dismissTimer = null;
             this._fadeOut(entry);

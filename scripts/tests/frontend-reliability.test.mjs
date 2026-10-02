@@ -530,101 +530,234 @@ test('AssetManager settles image callbacks after success, fallback, failure and 
     }
 });
 
-test('AssetManager releases decoded World assets and restarts an interrupted resume', async () => {
-    const manager = new AssetManager();
-    manager.manifest = { style: { assetVersion: 'test' } };
+test('AssetManager retains exact sources and resumes warm Worlds with sprite routes held', async () => {
+    const previousImage = globalThis.Image;
+    const previousDocument = globalThis.document;
+    const previousCanvas = globalThis.HTMLCanvasElement;
+    const previousFetch = globalThis.fetch;
+    const requests = [];
+    const pendingImages = [];
+    let holdRoutes = false;
+    globalThis.Image = class {
+        width = 8;
+        height = 8;
+        pixels = new Uint8ClampedArray(8 * 8 * 4).fill(255);
+        set src(path) {
+            if (!path) return;
+            requests.push(path);
+            if (holdRoutes) pendingImages.push(this);
+            else queueMicrotask(() => this.onload?.());
+        }
+    };
+    globalThis.HTMLCanvasElement = class {
+        width = 0;
+        height = 0;
+        getContext() {
+            return {
+                drawImage: (source) => { this.pixels = source.pixels; },
+                getImageData: () => ({ data: this.pixels }),
+                fillRect() {},
+            };
+        }
+    };
+    globalThis.document = { createElement: () => new globalThis.HTMLCanvasElement() };
+    globalThis.fetch = async (path) => {
+        requests.push(path);
+        return {
+            ok: true,
+            text: async () => JSON.stringify({
+                width: 8, height: 8,
+                frames: { 'prop.test': { rect: { x: 0, y: 0, w: 8, h: 8 } } },
+            }),
+        };
+    };
+    const manager = new AssetManager({ materialAssets: true });
+    const baseId = 'agent.test.base';
+    const newId = 'agent.test.new';
+    const entries = [
+        {
+            id: baseId,
+            materialSidecar: true,
+            actionStrip: { path: 'characters/test/read.png', cell: 1, groups: { read: { rows: [0, 1] } } },
+        },
+        { id: newId },
+        { id: 'building.test' },
+        { id: 'prop.test', atlasFrame: { atlas: 'test', key: 'prop.test' } },
+    ];
+    manager.manifest = {
+        style: { assetVersion: 'test' },
+        atlases: [{
+            id: 'test', metadata: 'assets/sprites/atlases/test.json',
+            channels: {
+                albedo: 'assets/sprites/atlases/test.png',
+                material: 'assets/sprites/atlases/test.material.png',
+            },
+        }],
+    };
     manager.palettes = {};
     manager.assetVersion = 'test';
-    manager._entriesCache = [{ id: 'agent.test.base' }];
-    manager._entryById.set('agent.test.base', manager._entriesCache[0]);
+    manager._entriesCache = entries;
+    manager._entryById = new Map(entries.map(entry => [entry.id, entry]));
+    try {
+        assert.equal(await manager.load({ characterIds: [baseId] }), true);
+        const base = manager.get(baseId);
+        const building = manager.get('building.test');
+        const prop = manager.get('prop.test');
+        const material = manager.getCompanion(baseId, 'material');
+        const strip = manager.getActionStrip(baseId);
+        const atlas = manager.getAtlas('test');
+        const atlasMaterial = manager.getAtlas('test', 'material');
+        const atlasMetadata = manager.getAtlasMetadata('test');
+        manager.resolveMaterialChannels('prop.test', null, { crop: true });
+        manager._derivedArtQueue.tick();
+        const crop = manager.resolveMaterialChannels('prop.test', null, { crop: true });
+        assert.equal(crop.ready, true);
+        const mask = manager.getMask('building.test').slice();
+        const outline = manager.getOutline('building.test');
+        const sourceBytes = manager.cacheStats().retainedSourceEstimateBytes;
+        requests.length = 0;
+        holdRoutes = true;
+        manager.suspend();
+        assert.equal(outline.width, 0);
+        assert.equal(outline.height, 0);
+        assert.equal(crop.material.width, 0);
+        assert.equal(crop.albedo.width, 0);
+        assert.equal(manager.cacheStats().masks, 0);
+        assert.equal(manager.cacheStats().outlines, 0);
+        assert.equal(manager.cacheStats().retainedSourceEstimateBytes, sourceBytes);
+        manager.evictUnpinnedOptionalSidecars({ highWaterEstimateBytes: 0 });
+        assert.equal(manager.cacheStats().retainedSourceEstimateBytes, sourceBytes);
 
-    const pendingLoads = [];
-    manager._loadEntry = (_entry, { signal, generation }) => new Promise((resolve) => {
-        pendingLoads.push(() => {
-            if (manager._canCommitLoad(signal, generation)) {
-                manager._storeBitmap(
-                    'agent.test.base',
-                    { width: 64, height: 32 },
-                    { anchor: [32, 28], generation },
-                );
-                manager.alphaMasks.set('agent.test.base', new Uint8Array(64));
-                manager.outlines.set('agent.test.base', { width: 64, height: 32 });
-            }
-            resolve();
-        });
-    });
-    const waitForPendingLoad = async () => {
-        for (let attempt = 0; attempt < 10 && pendingLoads.length === 0; attempt++) {
-            await new Promise(resolve => setImmediate(resolve));
-        }
-        assert.ok(pendingLoads.length > 0, 'decode pass did not request its entry');
-        return pendingLoads.shift();
+        assert.equal(await manager.resume(), true);
+        assert.deepEqual(requests, [], 'a warm return must not refetch immutable sprite sources');
+        assert.equal(manager.get(baseId), base);
+        assert.equal(manager.get('building.test'), building);
+        assert.equal(manager.get('prop.test'), prop);
+        assert.equal(manager.getCompanion(baseId, 'material'), material);
+        assert.equal(manager.getActionStrip(baseId), strip);
+        assert.equal(manager.getAtlas('test'), atlas);
+        assert.equal(manager.getAtlas('test', 'material'), atlasMaterial);
+        assert.equal(manager.getAtlasMetadata('test'), atlasMetadata);
+        assert.deepEqual(manager.getMask('building.test'), mask);
+        assert.notEqual(manager.getOutline('building.test'), outline);
+
+        manager.suspend();
+        const ready = await Promise.race([
+            manager.resume({ characterIds: [newId] }),
+            new Promise(resolve => setImmediate(() => resolve('network-blocked'))),
+        ]);
+        assert.equal(ready, true, 'new identities must not gate retained World art');
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(manager.get(baseId), base);
+        assert.equal(manager.has(newId, { request: false }), false);
+        assert.deepEqual(requests, ['assets/sprites/characters/agent.test.new/sheet.png?v=test']);
+        const staleImage = pendingImages.shift();
+        const staleCompletion = staleImage.onload;
+        manager.suspend();
+        assert.equal(await manager.resume(), true);
+        await new Promise(resolve => setImmediate(resolve));
+        await staleCompletion();
+        assert.equal(manager.has(newId, { request: false }), false);
+        assert.equal(manager.get(baseId), base);
+        const replacement = pendingImages.shift();
+        const loaded = manager.requestCharacterAssets(newId);
+        await replacement.onload();
+        assert.equal(await loaded, true);
+        assert.equal(manager.get(newId), replacement);
+        assert.equal(manager.get(baseId), base);
+    } finally {
+        manager.dispose();
+        globalThis.Image = previousImage;
+        globalThis.document = previousDocument;
+        globalThis.HTMLCanvasElement = previousCanvas;
+        globalThis.fetch = previousFetch;
+    }
+});
+
+test('AssetManager ignores an aborted cold decode and commits only the resumed sources', async () => {
+    const previousImage = globalThis.Image;
+    const pendingImages = [];
+    globalThis.Image = class {
+        width = 8;
+        height = 8;
+        set src(path) { if (path) pendingImages.push(this); }
     };
+    const manager = new AssetManager();
+    manager.manifest = {};
+    manager.palettes = {};
+    manager._entriesCache = [{ id: 'prop.test' }];
+    manager._entryById.set('prop.test', manager._entriesCache[0]);
+    try {
+        const interrupted = manager.resume();
+        const stale = pendingImages.shift();
+        const staleCompletion = stale.onload;
+        manager.suspend();
+        const resumed = manager.resume();
+        assert.equal(await interrupted, false);
+        await new Promise(resolve => setImmediate(resolve));
+        const replacement = pendingImages.shift();
+        assert.ok(replacement, 'the interrupted generation must allow a fresh decode');
+        await staleCompletion();
+        assert.equal(manager.get('prop.test'), undefined);
+        await replacement.onload();
+        assert.equal(await resumed, true);
+        assert.equal(manager.get('prop.test'), replacement);
+    } finally {
+        manager.dispose();
+        globalThis.Image = previousImage;
+    }
+});
 
-    const initial = manager.resume();
-    (await waitForPendingLoad())();
-    assert.equal(await initial, true);
-    assert.deepEqual(manager.cacheStats(), {
-        bitmaps: 1,
-        bitmapPixels: 2048,
-        masks: 1,
-        maskBytes: 64,
-        outlines: 1,
-        outlinePixels: 2048,
-        companions: 0,
-        companionPixels: 0,
-        atlasImages: 0,
-        atlasPixels: 0,
-        atlasMetadata: 0,
-        materialTextureBytes: 0,
-        missing: 0,
-        optionalMissing: 0,
-        decodedLoaded: true,
-        materialAssetsEnabled: false,
-        materialDecodedLoaded: false,
-        suspended: false,
-        loadInFlight: false,
-        decodePasses: 1,
-    });
-
-    const releasedOutline = manager.outlines.get('agent.test.base');
-    manager.suspend();
-    assert.equal(releasedOutline.width, 0);
-    assert.deepEqual(
-        {
-            bitmaps: manager.cacheStats().bitmaps,
-            bitmapPixels: manager.cacheStats().bitmapPixels,
-            masks: manager.cacheStats().masks,
-            maskBytes: manager.cacheStats().maskBytes,
-            outlines: manager.cacheStats().outlines,
-            outlinePixels: manager.cacheStats().outlinePixels,
-            suspended: manager.cacheStats().suspended,
-        },
-        {
-            bitmaps: 0,
-            bitmapPixels: 0,
-            masks: 0,
-            maskBytes: 0,
-            outlines: 0,
-            outlinePixels: 0,
-            suspended: true,
-        },
-    );
-
-    const interrupted = manager.resume();
-    const finishInterrupted = await waitForPendingLoad();
-    manager.suspend();
-    const resumed = manager.resume();
-    finishInterrupted();
-    const finishResumed = await waitForPendingLoad();
-    finishResumed();
-
-    assert.equal(await interrupted, false);
-    assert.equal(await resumed, true);
-    assert.equal(manager.cacheStats().decodedLoaded, true);
-    assert.equal(manager.cacheStats().decodePasses, 2);
-    assert.equal(manager.cacheStats().bitmaps, 1);
-    manager.dispose();
+test('unfinished material decoding cannot gate a retained World generation', async () => {
+    const previousImage = globalThis.Image;
+    const pendingImages = [];
+    let holdRoutes = false;
+    globalThis.Image = class {
+        width = 8;
+        height = 8;
+        set src(path) {
+            if (!path) return;
+            if (holdRoutes) pendingImages.push(this);
+            else queueMicrotask(() => this.onload?.());
+        }
+    };
+    const id = 'agent.test.base';
+    const manager = new AssetManager();
+    manager.manifest = {};
+    manager.palettes = {};
+    manager._entriesCache = [{ id, materialSidecar: true }];
+    manager._entryById.set(id, manager._entriesCache[0]);
+    try {
+        assert.equal(await manager.load({ characterIds: [id] }), true);
+        const base = manager.get(id);
+        holdRoutes = true;
+        const interrupted = manager.loadMaterialAssets();
+        await new Promise(resolve => setImmediate(resolve));
+        const stale = pendingImages.shift();
+        const staleCompletion = stale.onload;
+        manager.suspend();
+        assert.equal(await Promise.race([
+            manager.resume(),
+            new Promise(resolve => setImmediate(() => resolve('network-blocked'))),
+        ]), true);
+        assert.equal(manager.get(id), base);
+        assert.equal(await interrupted, false);
+        await new Promise(resolve => setImmediate(resolve));
+        const replacement = pendingImages.shift();
+        assert.ok(replacement, 'unfinished material work must restart independently');
+        const fallback = manager.resolveMaterialChannels(id, 'walk/s/0');
+        assert.equal(fallback.material, null);
+        await staleCompletion();
+        assert.equal(manager.getCompanion(id, 'material'), null);
+        const loaded = manager.loadMaterialAssets();
+        await replacement.onload();
+        assert.equal(await loaded, true);
+        assert.equal(manager.resolveMaterialChannels(id, 'walk/s/0').material, replacement);
+        assert.equal(manager.get(id), base);
+    } finally {
+        manager.dispose();
+        globalThis.Image = previousImage;
+    }
 });
 
 test('World resume waits for decoded assets and ignores stale completion', async () => {

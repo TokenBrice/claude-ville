@@ -14,6 +14,18 @@ import { DEFAULT_CELL, DIRECTIONS, WALK_FRAMES, IDLE_FRAMES } from './SpriteShee
 
 const CACHE_ENTRY_LIMIT = 24;
 const CACHE_PIXEL_LIMIT = 12_500_000;
+// Reuse still-live outputs across compositor registration/LRU misses without
+// owning a second set of backing stores. Metadata has the same entry bound.
+const LIVE_COMPOSED_SHEETS = new WeakMap();
+
+function liveComposedSheets(assets) {
+    let sheets = LIVE_COMPOSED_SHEETS.get(assets);
+    if (!sheets) {
+        sheets = new Map();
+        LIVE_COMPOSED_SHEETS.set(assets, sheets);
+    }
+    return sheets;
+}
 
 // Direction columns that show the back of the head — face-side accessory
 // detail (goggle lenses, veil openings) must not appear here.
@@ -85,7 +97,7 @@ export class Compositor {
         const teamHash = teamTrim ? String(teamTrim).toLowerCase() : '_';
         const variantKey = this._resolvedVariantKey(palette, paletteVariant, teamTrim);
         const key = `${baseId}|${palette}|${variantKey}|${runtimeAccessory ?? '_'}|${teamHash}|${outline ? 'rim' : '_'}`;
-        if (this.cache.has(key)) {
+        if (this.cache.has(key) && this.cache.get(key)?.width > 0 && this.cache.get(key)?.height > 0) {
             const cached = this.cache.get(key);
             this.cache.delete(key);
             this.cache.set(key, cached);
@@ -94,6 +106,24 @@ export class Compositor {
 
         const baseImg = this.assets.get(baseId);
         if (!baseImg) return null;
+        const overlayId = runtimeAccessory
+            ? runtimeAccessory.startsWith('overlay.') ? runtimeAccessory : `overlay.accessory.${runtimeAccessory}`
+            : null;
+        const overlayImg = overlayId ? this.assets.get(overlayId) : null;
+        const live = liveComposedSheets(this.assets);
+        const generationKey = `${key}|${this.assets.assetVersion || ''}`;
+        const previous = live.get(generationKey);
+        const reused = previous?.baseImg === baseImg && previous?.overlayImg === overlayImg
+            ? previous.canvas.deref()
+            : null;
+        if (reused?.width > 0 && reused?.height > 0) {
+            live.delete(generationKey);
+            live.set(generationKey, previous);
+            this.cache.set(key, reused);
+            this.cachePixels += reused.width * reused.height;
+            this._trimCache();
+            return reused;
+        }
         const dims = this.assets.getDims(baseId);
         // 0.5 — per-sheet sampled swap sources (manifest `paletteSource`) so
         // variants and team sashes recolor sheets whose generated garment hues
@@ -113,6 +143,9 @@ export class Compositor {
         this._applyPaletteSwap(ctx, canvas.width, canvas.height, palette, paletteVariant, teamTrim, sheetSource);
         if (runtimeAccessory) this._compositeAccessory(ctx, baseId, runtimeAccessory, palette);
         if (outline) bakeSpriteOutline(ctx, canvas.width, canvas.height, dims.w / DIRECTIONS.length || DEFAULT_CELL);
+        live.delete(generationKey);
+        live.set(generationKey, { baseImg, overlayImg, canvas: new WeakRef(canvas) });
+        while (live.size > CACHE_ENTRY_LIMIT) live.delete(live.keys().next().value);
         this.cache.set(key, canvas);
         this.cachePixels += canvas.width * canvas.height;
         this._trimCache();
@@ -199,10 +232,8 @@ export class Compositor {
     }
 
     releaseCache() {
-        for (const canvas of this.cache.values()) {
-            canvas.width = 0;
-            canvas.height = 0;
-        }
+        // Bodies, avatars and a replacement compositor can still sample the
+        // same output. Drop ownership; never invalidate their backing stores.
         this.cache.clear();
         this.cachePixels = 0;
     }

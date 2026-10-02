@@ -174,7 +174,7 @@ test('FPS counts elapsed intervals accurately and excludes suspended time', asyn
     const { eventBus } = await import('../../claudeville/src/domain/events/DomainEvent.js');
     const samples = [];
     const off = eventBus.on('fps:updated', value => samples.push(value));
-    const renderer = { frameId: null };
+    const renderer = Object.assign(Object.create(IsometricRenderer.prototype), { frameId: null });
     const frame = now => IsometricRenderer.prototype._trackFps.call(renderer, now);
     try {
         for (const hz of [30, 60, 120, 144]) {

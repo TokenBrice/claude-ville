@@ -10,7 +10,6 @@ import {
     derivedArtPriority,
     DERIVED_ART_PRIORITY,
     growTypedArray,
-    materialChannelCacheKey,
     resolveMaterialChannelSources,
     shouldUseAtlasForCategory,
 } from '../../claudeville/src/presentation/character-mode/AssetManager.js';
@@ -160,14 +159,6 @@ test('a transparent emissive sidecar stays dark and is not replaced by atlas glo
     assert.notEqual(resolved.emissive, glow);
 });
 
-test('cache keys change with asset version, atlas key, and frame key', () => {
-    const base = materialChannelCacheKey('v1', 'world-pilot', 'walk/s/0');
-    assert.notEqual(base, materialChannelCacheKey('v2', 'world-pilot', 'walk/s/0'));
-    assert.notEqual(base, materialChannelCacheKey('v1', 'other-atlas', 'walk/s/0'));
-    assert.notEqual(base, materialChannelCacheKey('v1', 'world-pilot', 'idle/n/1'));
-    assert.equal(base, materialChannelCacheKey('v1', 'world-pilot', 'walk/s/0'));
-});
-
 test('atlas rect maths preserve nearest integer UVs and split horizons', () => {
     const rect = { x: 2, y: 390, w: 312, h: 208 };
     assert.deepEqual(atlasSourceRect(rect), { sx: 2, sy: 390, sw: 312, sh: 208 });
@@ -306,7 +297,109 @@ test('AssetManager resolver is sidecar-first and never infers emission from albe
     assert.equal(resolved.origin, 'sidecar');
     assert.equal(resolved.material, 'sidecar-material');
     assert.equal(resolved.emissive, null);
-    assert.equal(resolved.revision, materialChannelCacheKey('assets-v1', '', 'walk/s/0'));
+});
+
+test('successful asset retries make previously missing entries and layers available', async () => {
+    const manager = new AssetManager();
+    const entry = { id: 'terrain.retry' };
+    const layerId = `${entry.id}.overlay`;
+    let ok = false;
+    manager._loadImage = async () => ({ img: { width: 2, height: 3 }, ok });
+    try {
+        await manager._loadEntry(entry);
+        await manager._loadLayer(layerId, {}, 'overlay.png');
+        assert.equal(manager.has(entry.id, { request: false }), false);
+        assert.equal(manager.has(layerId, { request: false }), false);
+
+        ok = true;
+        await manager._loadEntry(entry);
+        await manager._loadLayer(layerId, {}, 'overlay.png');
+        assert.equal(manager.has(entry.id, { request: false }), true);
+        assert.equal(manager.has(layerId, { request: false }), true);
+        assert.deepEqual(manager.getDims(entry.id), { w: 2, h: 3 });
+        assert.deepEqual(manager.getDims(layerId), { w: 2, h: 3 });
+    } finally {
+        manager.dispose();
+    }
+});
+
+test('characters sharing local frame names retain their own sidecar channels', () => {
+    const manager = new AssetManager({ materialAssets: true });
+    const ids = ['agent.codex.gpt6astra', 'agent.deepseek.flash.high'];
+    const sources = ids.map(() => ({
+        material: { width: 736, height: 920 },
+        occluder: { width: 736, height: 920 },
+    }));
+    try {
+        for (let index = 0; index < ids.length; index++) {
+            for (const [channel, source] of Object.entries(sources[index])) {
+                manager.companions.get(channel).set(ids[index], source);
+            }
+        }
+        for (const id of [ids[0], ids[1], ids[1], ids[0]]) {
+            const result = manager.resolveMaterialChannels(id, 'walk/s/0');
+            const expected = sources[ids.indexOf(id)];
+            assert.equal(result.id, id);
+            assert.equal(result.material, expected.material);
+            assert.equal(result.occluder, expected.occluder);
+        }
+    } finally {
+        manager.dispose();
+    }
+});
+
+test('queued atlas crops with the same local frame keep each character’s exact pixels', () => {
+    const previousDocument = globalThis.document;
+    globalThis.document = {
+        createElement() {
+            const canvas = { width: 0, height: 0, pixels: null };
+            canvas.getContext = () => ({
+                drawImage(source, x, _y, width) {
+                    canvas.pixels = source.pixels.slice(x * 4, (x + width) * 4);
+                },
+                getImageData() { return { data: canvas.pixels }; },
+            });
+            return canvas;
+        },
+    };
+    const manager = new AssetManager({ materialAssets: true });
+    manager._derivedArtQueue.cancelAll();
+    manager._derivedArtQueue = createDerivedArtQueue({
+        sliceMs: 50, scheduleIdle: () => 0, scheduleTimeout: () => 0,
+    });
+    const ids = ['agent.codex.gpt6astra', 'agent.deepseek.flash.high'];
+    const material = new Uint8ClampedArray([10, 0, 0, 255, 20, 0, 0, 255]);
+    const occluder = new Uint8ClampedArray([0, 30, 0, 255, 0, 40, 0, 255]);
+    try {
+        const frames = {};
+        ids.forEach((id, x) => {
+            manager._entryById.set(id, { id, atlasFrame: { atlas: 'characters', keyPrefix: id } });
+            frames[`${id}/walk/s/0`] = { rect: { x, y: 0, w: 1, h: 1 } };
+        });
+        manager.atlasMetadata.set('characters', { width: 2, height: 1, frames });
+        manager.atlasImages.set('characters:material', { width: 2, height: 1, pixels: material });
+        manager.atlasImages.set('characters:occluder', { width: 2, height: 1, pixels: occluder });
+        for (const id of ids) {
+            const pending = manager.resolveMaterialChannels(id, 'walk/s/0');
+            assert.equal(pending.ready, false);
+            assert.equal(pending.material, null);
+            assert.equal(pending.emissive, null);
+            assert.equal(pending.occluder, null);
+        }
+        manager._derivedArtQueue.tick();
+        ids.forEach((id, index) => {
+            const result = manager.resolveMaterialChannels(id, 'walk/s/0');
+            assert.equal(result.ready, true);
+            assert.equal(result.id, id);
+            assert.deepEqual(result.material.getContext('2d').getImageData().data,
+                material.slice(index * 4, (index + 1) * 4));
+            assert.deepEqual(result.occluder.getContext('2d').getImageData().data,
+                occluder.slice(index * 4, (index + 1) * 4));
+        });
+    } finally {
+        manager.dispose();
+        globalThis.document = previousDocument;
+    }
 });
 
 test('no getImageData call remains reachable from a GPU draw path', () => {
@@ -328,45 +421,6 @@ test('no getImageData call remains reachable from a GPU draw path', () => {
 
     const assets = sourceFile('AssetManager.js');
     assert.match(assets, /requestIdleCallback/);
-    const atlasCropBody = functionBody(assets, '_composeAtlasFrameCrop');
-    assert.match(atlasCropBody, /drawImage\s*\(/);
-    assert.doesNotMatch(atlasCropBody, readback);
-    const resolverBody = functionBody(assets, 'resolveMaterialChannels');
-    assert.doesNotMatch(resolverBody, /_composeAtlasFrameCrop\s*\(/);
-    const pendingStart = resolverBody.indexOf('const pending = {');
-    assert.ok(pendingStart >= 0, 'atlas resolution must expose a pending state');
-    const pendingEnd = resolverBody.indexOf('return pending;', pendingStart);
-    assert.ok(pendingEnd > pendingStart, 'atlas resolution must return its pending state');
-    const pendingBody = resolverBody.slice(pendingStart, pendingEnd);
-    assert.match(pendingBody, /ready:\s*false/);
-    assert.match(pendingBody, /material:\s*null/);
-    assert.match(pendingBody, /emissive:\s*null/);
-    assert.match(pendingBody, /occluder:\s*null/);
-
-    const enqueueBody = functionBody(assets, '_enqueueAtlasFrameCrop');
-    assert.match(enqueueBody, /this\._derivedArtQueue\.enqueue\s*\(/);
-    const buildMarker = 'build: () => {';
-    const buildStart = enqueueBody.indexOf(buildMarker);
-    assert.ok(buildStart >= 0, 'atlas crop must be built by a queued callback');
-    const buildBody = balancedBlock(
-        enqueueBody,
-        enqueueBody.indexOf('{', buildStart),
-        '_enqueueAtlasFrameCrop build callback',
-    );
-    const composeCall = buildBody.indexOf('_composeAtlasFrameCrop(');
-    const publish = buildBody.indexOf('this._materialChannelCache.set(cacheKey, result)');
-    assert.ok(composeCall >= 0, 'queued atlas work must call the atlas crop composer');
-    assert.ok(publish > composeCall, 'the composed artifact must publish after composition');
-    assert.match(
-        buildBody.slice(composeCall, publish),
-        /if\s*\(!composed\s*\|\|\s*generation\s*!==\s*this\._loadGeneration\)\s*\{\s*if\s*\(composed\)\s*this\._releaseCroppedChannels\(composed\);\s*return;\s*\}/s,
-        'a stale composed artifact must be released before publication',
-    );
-    assert.match(buildBody.slice(0, composeCall), /generation\s*!==\s*this\._loadGeneration/);
-    assert.match(buildBody.slice(composeCall, publish), /ready:\s*true/);
-    const revision = buildBody.indexOf('this._materialChannelRevision += 1', publish);
-    assert.ok(revision > publish, 'the material revision must advance with cache publication');
-
     const reachable = reachableFunctionBodies(
         assets,
         ['resolveMaterialChannels'],

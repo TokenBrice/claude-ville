@@ -178,9 +178,33 @@ const WORK_STRIP_GROUPS = new Set(['strike', 'tinker', 'gaze']);
 // bounded to the lifecycle event that earned it.
 const SEALED_SLIP_MS = 1800;
 
-// Opaque content bounds of one cell inside a composed character sheet. Shared
-// by the per-sprite bounds cache and by miniature snapshots of foreign sheets.
+// Immutable composed sheets share alpha archaeology, not body placement.
+const SHEET_CONTENT_METADATA = new WeakMap();
+
+function sheetContentMetadata(source) {
+    let metadata = SHEET_CONTENT_METADATA.get(source);
+    if (!metadata) {
+        metadata = new Map();
+        SHEET_CONTENT_METADATA.set(source, metadata);
+    }
+    return metadata;
+}
+
+function validSpriteSource(source) {
+    return Boolean(source?.width > 0 && source?.height > 0);
+}
+
+function fallbackCellContentBounds(cell) {
+    return { minX: 24, minY: 12, maxX: cell.sw - 24, maxY: cell.sh - 18 };
+}
+
+// Opaque content bounds of one cell inside an immutable composed sheet.
 function measureCellContentBounds(source, cell) {
+    if (!validSpriteSource(source)) return fallbackCellContentBounds(cell);
+    const metadata = sheetContentMetadata(source);
+    const key = `${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
+    const cached = metadata.get(key);
+    if (cached) return cached;
     const scratch = document.createElement('canvas');
     scratch.width = cell.sw;
     scratch.height = cell.sh;
@@ -201,9 +225,11 @@ function measureCellContentBounds(source, cell) {
             if (y > maxY) maxY = y;
         }
     }
-    return maxX > minX && maxY > minY
+    const bounds = maxX > minX && maxY > minY
         ? { minX, minY, maxX, maxY }
-        : { minX: 24, minY: 12, maxX: cell.sw - 24, maxY: cell.sh - 18 };
+        : fallbackCellContentBounds(cell);
+    metadata.set(key, bounds);
+    return bounds;
 }
 
 function easeOutCubic(t) {
@@ -362,11 +388,11 @@ const GPU_AGENT_CHANNEL_ATLAS_RECORDS = new Map();
 // B.2 — V9 packed geometry (flag 32): one canvas per authored material +
 // occluder sidecar pair, R material id (255 = none), G height, B strength
 // (0 = none), A presence. It replaces the separate occluder companion, so the
-// agent atlas carries one geometry channel instead of two. Keyed by the
-// material (else occluder) source. A frame crop packs inline; a sheet-size
-// pair packs inline at most once per CHANNEL_WORK_GAP_MS, and otherwise waits
-// for the next slot or the derived-art queue (one job per idle tick, even
-// when every tick arrives through its timeout under a busy crowd).
+// agent atlas carries one geometry channel instead of two. Keyed by both
+// source identities (including null); regenerated art has new source objects.
+// A frame crop packs inline; a sheet-size pair packs inline at most once per
+// CHANNEL_WORK_GAP_MS, and otherwise waits for the derived-art queue (one job
+// per idle tick, even when every tick arrives through its timeout under a busy crowd).
 const PACKED_GEOMETRY_CACHE = new Map();
 const PACKED_GEOMETRY_CACHE_PIXEL_LIMIT = 16_000_000;
 const PACKED_GEOMETRY_INLINE_PIXELS = 65_536;
@@ -464,27 +490,29 @@ function trimPackedGeometryCache() {
 // The packed geometry canvas for one sidecar pair, or null while it is being
 // packed (the body then takes its record defaults, like a pending crop).
 function packedGeometrySource(material, occluder, assets) {
-    const key = material || occluder;
-    if (!key) return null;
+    const base = material || occluder;
+    if (!validSpriteSource(base)) return null;
+    const key = `${material ? channelSourceId(material) : 0}:${occluder ? channelSourceId(occluder) : 0}:${base.width}x${base.height}`;
     let entry = PACKED_GEOMETRY_CACHE.get(key);
-    if (entry && (entry.occluder !== occluder || entry.material !== material)) {
-        if (entry.canvas) packedGeometryCachePixels -= entry.canvas.width * entry.canvas.height;
-        PACKED_GEOMETRY_CACHE.delete(key);
-        entry = null;
-    }
     if (entry?.canvas) {
         PACKED_GEOMETRY_CACHE.delete(key);
         PACKED_GEOMETRY_CACHE.set(key, entry);
         return entry.canvas;
     }
     if (!entry) {
-        entry = { material, occluder, canvas: null };
+        entry = { canvas: null };
         PACKED_GEOMETRY_CACHE.set(key, entry);
     }
     const pending = entry;
     const build = () => {
-        if (PACKED_GEOMETRY_CACHE.get(key) !== pending || pending.canvas) return;
+        if (PACKED_GEOMETRY_CACHE.get(key) !== pending || pending.canvas) {
+            material = null;
+            occluder = null;
+            return;
+        }
         pending.canvas = packGeometryChannels(material, occluder);
+        material = null;
+        occluder = null;
         if (!pending.canvas) {
             PACKED_GEOMETRY_CACHE.delete(key);
             return;
@@ -492,7 +520,7 @@ function packedGeometrySource(material, occluder, assets) {
         packedGeometryCachePixels += pending.canvas.width * pending.canvas.height;
         trimPackedGeometryCache();
     };
-    runChannelWork((key.width || 0) * (key.height || 0), `packed-geometry:${channelSourceId(key)}:${occluder ? channelSourceId(occluder) : 0}`, assets, build);
+    runChannelWork(base.width * base.height, `packed-geometry:${key}`, assets, build);
     return pending.canvas;
 }
 
@@ -1160,6 +1188,7 @@ export class AgentSprite {
         this.spriteCanvas = null;
         this.spriteSheet = null;     // cached SpriteSheet wrapper, set on first draw
         this._spriteProfileKey = '';
+        this._spriteIdentity = null;
         // Plan 2.1 — the body actually laid out this frame, relative to the
         // feet anchor, in world texels. Drives hit-testing, head-anchored
         // particles and the resident overlay's label clearance.
@@ -1189,6 +1218,7 @@ export class AgentSprite {
         this.spriteCanvas = null;
         this.spriteSheet = null;
         this._spriteProfileKey = '';
+        this._spriteIdentity = null;
         this._gpuFrameRecord = null;
         this._gpuBaseSpriteCanvas = null;
         this._gpuEquippedSheetKey = '';
@@ -3528,10 +3558,10 @@ export class AgentSprite {
             return;
         }
 
-        const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
+        let identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
         const provider = this._providerKey();
         const variant = this._hashVariant();
-        const spriteId = identity.spriteId || `agent.${provider}.base`;
+        let spriteId = identity.spriteId || `agent.${provider}.base`;
         // 2.4 — the signature belongs to (agent id, canonical sprite family).
         this.signature(spriteId);
         const paletteKey = identity.paletteKey || provider;
@@ -3545,14 +3575,13 @@ export class AgentSprite {
         // and cache hits remain identical to the pre-team behavior.
         const teamTrim = this._teamTrimAccent();
         const teamHash = teamTrim || '_';
-        const profileKey = `${spriteId}|${paletteKey}|${variant}|${accessory || '_'}|${equipmentKey}|${cleanupKey}|${teamHash}`;
+        let profileKey = `${spriteId}|${paletteKey}|${variant}|${accessory || '_'}|${equipmentKey}|${cleanupKey}|${teamHash}`;
         const equipmentAssetId = CODEX_WEAPON_ASSETS[equipmentKey]?.id || null;
         const accessoryAssetId = accessory
             ? accessory.startsWith('overlay.') ? accessory : `overlay.accessory.${accessory}`
             : null;
-        this._syncProfileOwnership(profileKey, [spriteId, equipmentAssetId, accessoryAssetId]);
 
-        if (!this.spriteCanvas || this._spriteProfileKey !== profileKey) {
+        if (!validSpriteSource(this.spriteCanvas) || this._spriteProfileKey !== profileKey) {
             const profileRefs = ACTIVE_PROFILE_REFS.get(profileKey);
             // Plan 2.4 — the shared rim is baked into the sheet both backends
             // sample. Sheets that get their baked weapon scrubbed take the rim
@@ -3562,32 +3591,38 @@ export class AgentSprite {
                 || this.compositor.spriteFor(spriteId, paletteKey, variant, accessory, teamTrim, {
                     outline: !this._shouldScrubBakedCodexWeapon(identity),
                 });
-            if (baseCanvas) {
+            const spriteCanvas = this._prepareSpriteCanvas(baseCanvas, identity, profileKey);
+            if (validSpriteSource(spriteCanvas)) {
+                // Commit the body, bounds and GPU source generation together.
+                // A pending lazy sheet leaves the previous generation intact.
+                const spriteSheet = new SpriteSheet(spriteCanvas);
+                this._syncProfileOwnership(profileKey, [spriteId, equipmentAssetId, accessoryAssetId]);
                 baseCanvas.__cvProfileKeys ||= new Set();
                 baseCanvas.__cvProfileKeys.add(profileKey);
-                if (profileRefs) profileRefs.baseCanvas = baseCanvas;
-            }
-            // GPU animation samples this sheet as a texture. Start from the
-            // untouched generated sheet — the scrubbed Canvas sheet alone
-            // shows missing limbs during movement — and let
-            // _syncGpuEquippedSheet replace it with an equipment-baked copy
-            // for codex classes, or WebGL villagers render empty-handed.
-            this._gpuBaseSpriteCanvas = baseCanvas;
-            this._gpuPlainSpriteCanvas = baseCanvas;
-            this.spriteCanvas = this._prepareSpriteCanvas(baseCanvas, identity, profileKey);
-            if (this.spriteCanvas) {
-                this.spriteSheet = new SpriteSheet(this.spriteCanvas);
+                const committedRefs = ACTIVE_PROFILE_REFS.get(profileKey);
+                if (committedRefs) committedRefs.baseCanvas = baseCanvas;
+                this._gpuBaseSpriteCanvas = baseCanvas;
+                this._gpuPlainSpriteCanvas = baseCanvas;
+                this.spriteCanvas = spriteCanvas;
+                this.spriteSheet = spriteSheet;
                 this._spriteProfileKey = profileKey;
+                this._spriteIdentity = identity;
                 releaseCanvasMap(this._frozenTintCellCache);
                 this._updatePrivateDerivedEstimate();
                 this._cellBoundsCache.clear();
             }
         }
 
-        if (!this.spriteCanvas || !this.spriteSheet) {
+        if (!validSpriteSource(this.spriteCanvas) || !this.spriteSheet) {
             if (archivePushed) ctx.restore();
             return;
         }
+        if (this._spriteProfileKey !== profileKey) {
+            identity = this._spriteIdentity;
+            profileKey = this._spriteProfileKey;
+            spriteId = identity.spriteId || profileKey.split('|')[0];
+        }
+        this._syncProfileOwnership(profileKey, []);
 
         // B.2 — false while this 1:1 body's released equipped sheet waits for
         // its recompose turn: the 1:1 body samples its LOD sheet meanwhile.
@@ -3917,7 +3952,8 @@ export class AgentSprite {
     }
 
     _prepareSpriteCanvas(baseCanvas, identity, cacheKey) {
-        if (!baseCanvas || !this._shouldScrubBakedCodexWeapon(identity)) return baseCanvas;
+        if (!validSpriteSource(baseCanvas)) return null;
+        if (!this._shouldScrubBakedCodexWeapon(identity)) return baseCanvas;
         if (PROCESSED_SPRITE_CACHE.has(cacheKey)) {
             const cached = PROCESSED_SPRITE_CACHE.get(cacheKey);
             PROCESSED_SPRITE_CACHE.delete(cacheKey);
@@ -3942,7 +3978,8 @@ export class AgentSprite {
             || processedSpriteCachePixels > PROCESSED_SPRITE_CACHE_PIXEL_LIMIT
         ) {
             const oldestKey = oldestUnpinnedCacheKey(PROCESSED_SPRITE_CACHE);
-            if (oldestKey == null) break;
+            // The new generation is pinned only after preparation succeeds.
+            if (oldestKey == null || oldestKey === cacheKey) break;
             const oldest = PROCESSED_SPRITE_CACHE.get(oldestKey);
             PROCESSED_SPRITE_CACHE.delete(oldestKey);
             processedSpriteCachePixels -= (oldest?.width || 0) * (oldest?.height || 0);
@@ -4157,7 +4194,7 @@ export class AgentSprite {
     // Contact-shadow width follows the body's idle silhouette for its current
     // facing, so the shadow does not shimmer with swinging arms mid-stride.
     _stableContentWidth() {
-        if (!this.spriteSheet) return DEFAULT_BODY_BOX.right - DEFAULT_BODY_BOX.left;
+        if (!validSpriteSource(this.spriteCanvas) || !this.spriteSheet) return DEFAULT_BODY_BOX.right - DEFAULT_BODY_BOX.left;
         const bounds = this._getCellContentBounds(this.spriteSheet.cell('idle', this.direction, 0));
         return bounds.maxX - bounds.minX + 1;
     }
@@ -4553,6 +4590,7 @@ export class AgentSprite {
     }
 
     _getCellContentBounds(cell) {
+        if (!validSpriteSource(this.spriteCanvas)) return fallbackCellContentBounds(cell);
         const key = `${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
         const cached = this._cellBoundsCache.get(key);
         if (cached) return cached;
@@ -4564,10 +4602,14 @@ export class AgentSprite {
     // V7 — the foot anchor of one facing: `cx2` (minX + maxX) of idle row 6
     // and `maxY`, the lowest opaque row over all ten rows of that column. Every
     // cell of the facing is placed by it, so the body shows the sway the
-    // artist drew and no more. Cached with the bounds (cleared per profile).
+    // artist drew and no more. Shared only by the immutable source generation.
     _stableFootAnchor(direction) {
+        if (!validSpriteSource(this.spriteCanvas) || !this.spriteSheet) {
+            return { cx2: DEFAULT_CELL - 1, maxY: DEFAULT_CELL - 18 };
+        }
         const key = FOOT_ANCHOR_KEYS[direction] ?? `anchor:${direction}`;
-        const cached = this._cellBoundsCache.get(key);
+        const metadata = sheetContentMetadata(this.spriteCanvas);
+        const cached = metadata.get(key);
         if (cached) return cached;
         const sheet = this.spriteSheet;
         const idle = this._getCellContentBounds(sheet.cell('idle', direction, 0));
@@ -4579,7 +4621,7 @@ export class AgentSprite {
             maxY = Math.max(maxY, this._getCellContentBounds(sheet.cell('idle', direction, frame)).maxY);
         }
         const anchor = { cx2: idle.minX + idle.maxX, maxY };
-        this._cellBoundsCache.set(key, anchor);
+        metadata.set(key, anchor);
         return anchor;
     }
 
@@ -5619,9 +5661,8 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    // Content bounds of one cell inside an arbitrary composed sheet. The
-    // per-cell cache is keyed on the sprite's own sheet, so foreign sources
-    // (miniature snapshots) scan without polluting it.
+    // Foreign miniature sheets share exact source/cell bounds without
+    // polluting the instance's committed generation cache.
     _cellContentBoundsOf(source, cell) {
         if (source === this.spriteCanvas) return this._getCellContentBounds(cell);
         return measureCellContentBounds(source, cell);

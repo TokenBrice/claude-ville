@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 
 import {
     RESOURCE_OWNERSHIP,
@@ -63,62 +62,29 @@ test('the unified total equals the sum of its named ownership leaves', () => {
     );
 });
 
-test('sharedCacheStats reports the GPU-equipped sheet cache', async () => {
-    const sourceUrl = new URL(
-        '../../claudeville/src/presentation/character-mode/AgentSprite.js',
-        import.meta.url,
+test('suspension accounts retained exact sources while releasing interaction buffers', async () => {
+    const { AssetManager } = await import(
+        '../../claudeville/src/presentation/character-mode/AssetManager.js'
     );
-    const source = await readFile(sourceUrl, 'utf8');
-    const statsStart = source.indexOf('static sharedCacheStats()');
-    const statsEnd = source.indexOf('static evictUnpinnedSharedCaches', statsStart);
-    const statsSource = source.slice(statsStart, statsEnd);
-    assert.match(statsSource, /GPU_EQUIPPED_SHEET_CACHE/);
-    assert.match(statsSource, /gpuEquippedSheetEstimateBytes/);
-    assert.match(statsSource, /gpuAgentMaterialAtlasEstimateBytes/);
-    assert.match(statsSource, /gpuAgentEmissiveAtlasEstimateBytes/);
-});
-
-test('DOM-coupled cache modules remain importable without browser stubs', async () => {
-    const [assetsModule, spritesModule] = await Promise.all([
-        import('../../claudeville/src/presentation/character-mode/AssetManager.js'),
-        import('../../claudeville/src/presentation/character-mode/AgentSprite.js'),
-    ]);
-    assert.equal(typeof assetsModule.AssetManager, 'function');
-    assert.equal(typeof spritesModule.AgentSprite, 'function');
-    const manager = new assetsModule.AssetManager();
-    const stats = manager.cacheStats();
-    assert.deepEqual(Object.keys(stats), [
-        'bitmaps',
-        'bitmapPixels',
-        'masks',
-        'maskBytes',
-        'outlines',
-        'outlinePixels',
-        'companions',
-        'companionPixels',
-        'atlasImages',
-        'atlasPixels',
-        'atlasMetadata',
-        'materialTextureBytes',
-        'missing',
-        'optionalMissing',
-        'decodedLoaded',
-        'materialAssetsEnabled',
-        'materialDecodedLoaded',
-        'suspended',
-        'loadInFlight',
-        'decodePasses',
-    ]);
-    assert.equal(stats.decodedImageEstimateBytes, 0);
-    assert.equal(stats.derivedCanvasEstimateBytes, 0);
-    manager.retainProfileAssets('active-profile', ['agent.test.base'], { selected: true });
-    manager.bitmaps.set('agent.test.base', { width: 8, height: 8 });
-    manager.alphaMasks.set('agent.test.base', new Uint8Array(64));
-    manager.outlines.set('agent.test.base', { width: 8, height: 8 });
-    manager.suspend();
-    const suspended = manager.cacheStats();
-    assert.equal(suspended.decodedImageEstimateBytes, 0);
-    assert.equal(suspended.derivedCanvasEstimateBytes, 0);
-    assert.deepEqual(suspended.activeProfileKeys, []);
-    manager.dispose();
+    const manager = new AssetManager();
+    try {
+        manager.retainProfileAssets('active-profile', ['agent.test.base'], { selected: true });
+        const source = { width: 8, height: 8 };
+        manager.bitmaps.set('agent.test.base', source);
+        manager.alphaMasks.set('agent.test.base', new Uint8Array(64));
+        manager.outlines.set('agent.test.base', { width: 8, height: 8 });
+        assert.equal(manager.cacheStats().decodedImageEstimateBytes, 256);
+        assert.equal(manager.cacheStats().derivedCanvasEstimateBytes, 320);
+        manager.suspend();
+        const suspended = manager.cacheStats();
+        assert.equal(suspended.decodedImageEstimateBytes, 256);
+        assert.equal(suspended.retainedSourceEstimateBytes, 256);
+        assert.equal(suspended.derivedCanvasEstimateBytes, 0);
+        assert.equal(manager.get('agent.test.base', { request: false }), source);
+        assert.deepEqual(suspended.activeProfileKeys, []);
+        manager.dispose();
+        assert.equal(manager.cacheStats().retainedSourceEstimateBytes, 0);
+    } finally {
+        manager.dispose();
+    }
 });

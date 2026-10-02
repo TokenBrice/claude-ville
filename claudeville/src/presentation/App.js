@@ -178,6 +178,9 @@ export class App {
         this._worldRevealRoot = null;
         this._worldReturnPose = null;
         this._revealHoldPainted = false;
+        this._worldFrameRecoveryBound = false;
+        this._worldFrameFailureNotified = false;
+        this._worldFrameFailureToast = null;
         this._onWindowResize = null;
         this._watchDevicePixelRatio = null;
         this._onDevicePixelRatioChange = null;
@@ -481,6 +484,7 @@ export class App {
         this._initCameraModeControl();
         this._initWorldDock();
         this._initWorldReveal();
+        this._initWorldFrameRecovery();
 
         // 4. Initialize application services
         if (!this.agentManager) {
@@ -1246,6 +1250,25 @@ export class App {
         }));
     }
 
+    _initWorldFrameRecovery() {
+        if (this._worldFrameRecoveryBound) return;
+        this._worldFrameRecoveryBound = true;
+        this._eventUnsubscribers.push(eventBus.on('world:frame-error', (detail = {}) => {
+            if (!detail.paused || !detail.retrying || this._worldFrameFailureNotified) return;
+            this._worldFrameFailureNotified = true;
+            this._worldFrameFailureToast = this.toast?.show(
+                `World ${detail.stage || 'render'} failed: ${detail.message || 'unknown error'}. Retrying automatically.`,
+                'warning',
+                { dismissMs: null },
+            ) || null;
+        }));
+        this._eventUnsubscribers.push(eventBus.on('world:frame-recovered', () => {
+            this._worldFrameFailureNotified = false;
+            if (this._worldFrameFailureToast) this.toast?._remove?.(this._worldFrameFailureToast);
+            this._worldFrameFailureToast = null;
+        }));
+    }
+
     _paintRevealBands({ bands = null, cell = 1 } = {}) {
         const root = this._worldRevealRoot;
         return paintRevealBands(root, bands, {
@@ -1609,7 +1632,7 @@ export class App {
                         this._loadRendererRetryHandle = null;
                         this._loadRendererRetryScheduled = false;
                         if (this._destroyed) return;
-                        void this._loadRenderer();
+                        void this._loadRenderer().catch(error => this._handleBootFailure(error));
                     });
                 }
                 console.warn('[App] worldCanvas not found yet (retrying render mount)');
@@ -1662,15 +1685,21 @@ export class App {
             // the opening pose (0.3), so the first frame shown is the opening.
             this._centerCameraHandle = requestAnimationFrame(() => {
                 this._centerCameraHandle = null;
-                if (this.renderer !== candidate || !candidate.camera) return;
-                this._openWorld(candidate, scenarioApplied ? scenarioMetadata : null);
+                if (this._destroyed || this.renderer !== candidate || !candidate.camera) return;
+                try {
+                    this._openWorld(candidate, scenarioApplied ? scenarioMetadata : null);
+                } catch (error) {
+                    console.error('[App] World opening failed:', error);
+                } finally {
+                    candidate.armFirstFrameSignal?.('boot');
+                }
             });
 
             console.log('[App] IsometricRenderer loaded');
         } catch (err) {
             candidate?.hide?.();
             if (this.renderer === candidate) this.renderer = null;
-            console.warn('[App] IsometricRenderer not available yet (waiting on canvas-artist work):', err.message);
+            throw err;
         }
     }
 
@@ -1689,7 +1718,6 @@ export class App {
         } else {
             renderer.camera.centerOnMap();
         }
-        renderer.armFirstFrameSignal?.('boot');
     }
 
     async _loadDashboard() {
@@ -2138,6 +2166,9 @@ export class App {
         this._villageBound = false;
         this._foundationReady = false;
         this._surfacesBound = false;
+        this._worldFrameRecoveryBound = false;
+        this._worldFrameFailureNotified = false;
+        this._worldFrameFailureToast = null;
         this._deferredActivityBound = false;
         this._characterAssetsBound = false;
         this._chronicleSignalsBound = false;

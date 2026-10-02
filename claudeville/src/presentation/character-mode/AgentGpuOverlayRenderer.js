@@ -367,7 +367,8 @@ export class AgentGpuOverlayRenderer {
             || current.source !== record.source
             || current.materialSource !== record.materialSource
             || current.emissiveSource !== record.emissiveSource
-            || current.occluderSource !== record.occluderSource;
+            || current.occluderSource !== record.occluderSource
+            || current.channelRevision !== record.channelRevision;
         const retry = cached && !cached.complete && now - cached.builtAt >= WALK_STRIP_RETRY_MS;
         if (!stale && !retry) return cached;
         const cells = [];

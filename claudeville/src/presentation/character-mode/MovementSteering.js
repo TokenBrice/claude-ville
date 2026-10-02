@@ -28,19 +28,22 @@ export function constrainSteeringToTarget({
     targetX,
     targetY,
 }) {
-    const values = [x, y, nextX, nextY, targetX, targetY].map(Number);
-    if (values.some(value => !Number.isFinite(value))) {
+    const currentX = Number(x);
+    const currentY = Number(y);
+    const candidateX = Number(nextX);
+    const candidateY = Number(nextY);
+    const waypointX = Number(targetX);
+    const waypointY = Number(targetY);
+    if (
+        !Number.isFinite(currentX)
+        || !Number.isFinite(currentY)
+        || !Number.isFinite(candidateX)
+        || !Number.isFinite(candidateY)
+        || !Number.isFinite(waypointX)
+        || !Number.isFinite(waypointY)
+    ) {
         return { x: nextX, y: nextY, constrained: false };
     }
-
-    const [
-        currentX,
-        currentY,
-        candidateX,
-        candidateY,
-        waypointX,
-        waypointY,
-    ] = values;
     const currentDistance = Math.hypot(waypointX - currentX, waypointY - currentY);
     const candidateDistance = Math.hypot(waypointX - candidateX, waypointY - candidateY);
 

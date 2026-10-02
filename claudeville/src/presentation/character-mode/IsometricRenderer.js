@@ -124,6 +124,9 @@ const LIGHT_COLOR_MIX_STEPS = 16;
 const NICKNAME_CACHE_LIMIT = 256;
 const WORLD_FRAME_ERROR_REPORT_INTERVAL_MS = 5000;
 const WORLD_FRAME_MAX_CONSECUTIVE_FAILURES = 3;
+const WORLD_FRAME_RETRY_INITIAL_MS = 1000;
+const WORLD_FRAME_RETRY_MAX_MS = 8000;
+const WORLD_FALLBACK_PREP_TIMEOUT_MS = 5000;
 const DEBUG_GLOBAL_OWNERS = new WeakMap();
 
 // Stage B (webgpu contract §8.1) — the default WebGPU world (module, hardware
@@ -531,8 +534,11 @@ export class IsometricRenderer {
         this._visibleSpriteCandidates = new Set();
         this._movingSprites = [];
         this._pairBuckets = new Map();
+        this._pairColumnPool = [];
+        this._pairBucketPool = [];
         this._pairIds = new Map();
-        this._pairVisited = new Set();
+        this._pairIdentityRanks = new Map();
+        this._pairDuplicatePairs = new Map();
         this._spritesNeedSort = true;
         this._overlayPrioritizedSprites = [];
         this._overlayBubbleSprites = [];
@@ -654,6 +660,7 @@ export class IsometricRenderer {
         this._worldResourcesSuspended = false;
         this._worldResourceGeneration = 0;
         this._worldResumePromise = null;
+        this._worldResumeGeneration = null;
         this._worldResumeFailures = 0;
         // 0.3 — the boot reveal waits for the opening pose (App._openWorld).
         this._firstFrameReason = 'boot-pending';
@@ -675,6 +682,9 @@ export class IsometricRenderer {
             byStage: {},
             paused: false,
         };
+        this._frameFailureRecoveryTimer = null;
+        this._frameFailureRetryMs = WORLD_FRAME_RETRY_INITIAL_MS;
+        this._frameFailureEpisode = false;
         this._performanceSamples = null;
         this._frameEnvelope = createFrameEnvelope();
         this._frameTimer = null;
@@ -1587,10 +1597,21 @@ export class IsometricRenderer {
     _fallBackFromWebGpu({ inFrame = false } = {}) {
         const failure = this.gpuWorld?.failure;
         if (!failure || this.worldRendererMode !== 'webgpu' || this._worldSwap || this._fallbackPrep || !this.fxCanvas) return;
-        const prep = { note: `failed in frame: ${failure.summary}`, failed: this.gpuWorld, stage: 'build', canvas: null, next: null };
+        const prep = {
+            note: `failed in frame: ${failure.summary}`,
+            failed: this.gpuWorld,
+            stage: 'build',
+            startedAt: performance.now(),
+            canvas: null,
+            next: null,
+        };
         this._fallbackPrep = prep;
-        if (inFrame) this._stepFallbackPrep({ now: true });
-        else whenIdle(() => this._stepFallbackPrep({ prep }));
+        try {
+            if (inFrame) this._stepFallbackPrep({ now: true });
+            else whenIdle(() => this._stepFallbackPrep({ prep }));
+        } catch (error) {
+            this._failFallbackPrep(prep, error);
+        }
     }
 
     // One idle step of the pending fallback: build the WebGL2 world; re-bake
@@ -1601,62 +1622,107 @@ export class IsometricRenderer {
     // drops the pending fallback; the next frame starts it again.
     _stepFallbackPrep({ now = false, prep = this._fallbackPrep } = {}) {
         if (!prep || prep !== this._fallbackPrep) return;
-        if (
-            !this.running
-            || this._disposed
-            || !this._worldModeActive
-            || this._worldResourcesSuspended
-            || this.gpuWorld !== prep.failed
-        ) {
-            this._cancelFallbackPrep();
-            return;
-        }
-        if (prep.stage === 'build') {
-            prep.stage = 'bake';
-            prep.canvas = this.fxCanvas.cloneNode(false);
-            prep.next = createGpuWorldRenderer({ canvas: prep.canvas, enabled: true });
-            if (!now) {
+        try {
+            if (
+                !this.running
+                || this._disposed
+                || !this._worldModeActive
+                || this._worldResourcesSuspended
+                || this._contextLost
+                || (typeof document !== 'undefined' && document.visibilityState === 'hidden')
+                || this.gpuWorld !== prep.failed
+            ) {
+                this._cancelFallbackPrep();
+                return;
+            }
+            if (performance.now() - prep.startedAt >= WORLD_FALLBACK_PREP_TIMEOUT_MS) {
+                throw new Error('World fallback preparation exceeded its 5 s frame hold');
+            }
+            if (prep.stage === 'build') {
+                prep.canvas = this.fxCanvas.cloneNode(false);
+                prep.next = createGpuWorldRenderer({ canvas: prep.canvas, enabled: true });
+                prep.stage = 'bake';
+                if (!now) {
+                    whenIdle(() => this._stepFallbackPrep({ prep }));
+                    return;
+                }
+            } else if (prep.stage === 'bake' && !now) {
+                this._getTerrainCache();
+                prep.stage = 'swap';
                 whenIdle(() => this._stepFallbackPrep({ prep }));
                 return;
             }
-        } else if (prep.stage === 'bake' && !now) {
-            prep.stage = 'swap';
-            this._getTerrainCache();
-            whenIdle(() => this._stepFallbackPrep({ prep }));
-            return;
+            if (prep.next?.isActive?.()) {
+                this._worldSwap = { gpuWorld: prep.next, canvas: prep.canvas, previous: null, fallback: prep.note };
+                this._fallbackPrep = null;
+            } else {
+                this._cancelFallbackPrep();
+                this._dropToCanvasWorld(`${prep.note} · WebGL2 unavailable`);
+            }
+            this._invalidateIdleFrame();
+            if (now) return;
+            // A hold is not a motion interval; resume with an ordinary step.
+            this._lastFrameTime = null;
+            this.renderNow();
+        } catch (error) {
+            this._failFallbackPrep(prep, error);
         }
-        this._fallbackPrep = null;
-        if (prep.next?.isActive?.()) {
-            this._worldSwap = { gpuWorld: prep.next, canvas: prep.canvas, previous: null, fallback: prep.note };
-        } else {
+    }
+
+    _failFallbackPrep(prep, error) {
+        if (this._fallbackPrep === prep) this._fallbackPrep = null;
+        if (this._worldSwap?.gpuWorld === prep.next) this._worldSwap = null;
+        try {
             prep.next?.dispose?.();
-            this._dropToCanvasWorld(`${prep.note} · WebGL2 unavailable`);
+        } catch (disposeError) {
+            this._reportFrameFailure(disposeError, 'fallback-dispose');
         }
-        this._invalidateIdleFrame();
-        if (now) return;
-        // The hold is no frame interval: the next loop frame steps the camera
-        // and the clock as an ordinary one (`_loop`'s first-frame dt).
-        this._lastFrameTime = null;
-        this.renderNow();
+        prep.next = null;
+        this._reportFrameFailure(error, `fallback-${prep.stage}`);
+        try {
+            this._dropToCanvasWorld(`${prep.note} · ${error?.message || error} · Canvas recovery`);
+        } catch (recoveryError) {
+            this._reportFrameFailure(recoveryError, 'fallback-canvas');
+        } finally {
+            this._lastFrameTime = null;
+            this._invalidateIdleFrame();
+            this._startLoop();
+        }
     }
 
     _cancelFallbackPrep() {
-        this._fallbackPrep?.next?.dispose?.();
+        const prep = this._fallbackPrep;
         this._fallbackPrep = null;
+        const next = prep?.next;
+        if (prep) prep.next = null;
+        next?.dispose?.();
     }
 
     // The Canvas world for the rest of the session (no GPU world at all).
     _dropToCanvasWorld(note) {
-        this._cancelFallbackPrep();
-        this._worldSwap?.gpuWorld?.dispose?.();
+        const prep = this._fallbackPrep;
+        const swap = this._worldSwap;
+        const previous = this.gpuWorld;
+        this._fallbackPrep = null;
         this._worldSwap = null;
-        this.gpuWorld?.dispose?.();
         this.gpuWorld = null;
         this.worldRendererMode = 'canvas';
         this._postFxCanvasVisible = null;
-        this._setPostFxCanvasVisible(false);
-        this._applyDisplayColor();
-        this._noteWorldBackend(note);
+        try {
+            this._setPostFxCanvasVisible(false);
+            this._applyDisplayColor();
+            this._noteWorldBackend(note);
+        } finally {
+            try {
+                prep?.next?.dispose?.();
+            } finally {
+                try {
+                    swap?.gpuWorld?.dispose?.();
+                } finally {
+                    previous?.dispose?.();
+                }
+            }
+        }
     }
 
     // Every #worldFxCanvas replacement goes through here: the new element
@@ -2182,6 +2248,12 @@ export class IsometricRenderer {
         this.visitIntentManager?.dispose?.();
         this.visitTileAllocator?.dispose?.();
         this._crowdBumpCooldowns.clear();
+        this._pairBuckets.clear();
+        this._pairIds.clear();
+        this._pairIdentityRanks.clear();
+        this._pairDuplicatePairs.clear();
+        this._pairColumnPool.length = 0;
+        this._pairBucketPool.length = 0;
         this.foliageRenderer?.clear?.();
         this._atmosphereEffectSpriteCache.clear();
         this.weatherRenderer?.dispose?.();
@@ -2210,6 +2282,7 @@ export class IsometricRenderer {
     }
 
     _stopLoop() {
+        this._cancelFrameFailureRecovery();
         if (this.frameId !== null) {
             cancelAnimationFrame(this.frameId);
             this.frameId = null;
@@ -2223,6 +2296,7 @@ export class IsometricRenderer {
         const nextActive = Boolean(active);
         if (this._worldModeActive === nextActive) {
             if (!nextActive) this._suspendWorldModeResources();
+            else void this._beginWorldModeResume();
             return;
         }
         this._worldModeActive = nextActive;
@@ -2362,6 +2436,7 @@ export class IsometricRenderer {
     // the page's loading bands show through the cleared surfaces while the
     // resources rebuild, never a black 0x0 opaque canvas.
     _suspendWorldModeResources({ keepSurfaces = false } = {}) {
+        this._cancelFrameFailureRecovery();
         // Always forward suspension so an in-flight decoded-asset reload is
         // aborted even when the renderer already released its own surfaces.
         this.assets?.suspend?.();
@@ -2398,10 +2473,13 @@ export class IsometricRenderer {
             || (typeof document !== 'undefined' && document.visibilityState === 'hidden')
         ) return Promise.resolve(false);
 
-        const generation = ++this._worldResourceGeneration;
-        this._stopLoop();
+        const generation = this._worldResourceGeneration;
+        if (this._worldResumePromise && this._worldResumeGeneration === generation) {
+            return this._worldResumePromise;
+        }
+        if (this._worldResourcesSuspended) this._stopLoop();
         const operation = Promise.resolve()
-            .then(() => this._resumeWorldModeResources())
+            .then(() => this._resumeWorldModeResources(generation))
             .then((ready) => {
                 if (
                     !ready
@@ -2409,6 +2487,8 @@ export class IsometricRenderer {
                     || !this.running
                     || !this._worldModeActive
                     || generation !== this._worldResourceGeneration
+                    || this._contextLost
+                    || (typeof document !== 'undefined' && document.visibilityState === 'hidden')
                 ) return false;
                 this._resumeFrameFailures();
                 if (this._worldSpritesDirty) this._reconcileSpritesWithWorld();
@@ -2428,13 +2508,21 @@ export class IsometricRenderer {
                 return false;
             });
         const wrapped = operation.finally(() => {
-            if (this._worldResumePromise === wrapped) this._worldResumePromise = null;
+            if (this._worldResumePromise === wrapped) {
+                this._worldResumePromise = null;
+                this._worldResumeGeneration = null;
+            }
+            if (generation === this._worldResourceGeneration && this.frameId === null) {
+                this._startLoop();
+            }
         });
         this._worldResumePromise = wrapped;
+        this._worldResumeGeneration = generation;
         return wrapped;
     }
 
-    async _resumeWorldModeResources() {
+    async _resumeWorldModeResources(generation = this._worldResourceGeneration) {
+        if (this._disposed || !this.running || !this._worldModeActive) return false;
         if (!this._worldResourcesSuspended) {
             this.trailRenderer?.resume?.();
             return true;
@@ -2443,7 +2531,14 @@ export class IsometricRenderer {
             const assetsReady = await this.assets.resume();
             if (!assetsReady) return false;
         }
-        if (this._disposed || !this._worldModeActive || !this._worldResourcesSuspended) return false;
+        if (
+            this._disposed
+            || !this.running
+            || !this._worldModeActive
+            || this._contextLost
+            || generation !== this._worldResourceGeneration
+        ) return false;
+        if (!this._worldResourcesSuspended) return true;
         const width = Math.round(
             (this.canvas?._claudeVilleCssWidth || this.canvas?.clientWidth || 0)
             * (this.canvas?._claudeVilleDpr || 1),
@@ -3021,12 +3116,13 @@ export class IsometricRenderer {
             } finally {
                 if (swap) this._endWorldSwap(swap);
             }
+            this._recordIdleRenderState();
+            this._signalFirstFrame();
+            this._recordFrameSuccess();
         } catch (error) {
             this._reportFrameFailure(error, 'render');
             return false;
         }
-        this._recordIdleRenderState();
-        this._signalFirstFrame();
         return true;
     }
 
@@ -4322,48 +4418,50 @@ export class IsometricRenderer {
         this.frameId = null;
         if (!this._worldModeActive || this._contextLost) return;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-        const now = performance.now();
-        const frameGapMs = Number.isFinite(this._lastFrameTime) ? now - this._lastFrameTime : 0;
-        const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
-        // 0.1 — the resident ladder's pacing sample: the gap between rAF
-        // timestamps (vsync-aligned frame begin times, steadier than callback
-        // wall time). A gap across a pause or resume — anything that reset
-        // `_lastFrameTime` outside this loop — is not a display interval.
-        const vsyncTime = Number.isFinite(frameTime) ? frameTime : now;
-        if (this._lastFrameTime === this._lastLoopFrameTime && Number.isFinite(this._lastVsyncTime)) {
-            this.gpuWorld?.notePresentInterval?.(vsyncTime - this._lastVsyncTime);
-        }
-        this._lastVsyncTime = vsyncTime;
-        this._lastLoopFrameTime = now;
-        this._lastFrameTime = now;
-        // A failed WebGPU world starts its WebGL2 fallback; while that builds
-        // off the frame the loop holds the last presented frame (no update,
-        // no render), and the swap then dirties the idle frame, so a
-        // reduced-motion session swaps too.
-        this._fallBackFromWebGpu();
-        if (this._fallbackPrep) {
-            this._startLoop();
-            return;
-        }
-        if (this._canSkipIdleFrame(Date.now())) {
-            this._recordFrameEnvelope(0, 0, 0, frameGapMs, null);
-            if (this._performanceSamples) this._recordPerformanceSample(0, 0, 0);
-            this._trackFps(now);
-            this._frameFailureStats.consecutive = 0;
-            this._startLoop();
-            return;
-        }
-        advanceMotionClock(this._motionClock, dt, this.motionScale ?? 1);
-        this.waterFrame = virtualFramesFor(this.motionTimeMs) * WATER_FRAME_STEP;
-        const perf = getClientPerfMetrics();
+        let now = 0;
+        let frameGapMs = 0;
+        let perf = null;
         let updateToken = null;
         let renderToken = null;
-        let stage = 'update';
+        let stage = 'pacing';
         let updateMs = 0;
         let renderMs = 0;
-        const updateStart = now;
-        let renderStart = now;
+        let updateStart = 0;
+        let renderStart = 0;
         try {
+            now = performance.now();
+            updateStart = now;
+            renderStart = now;
+            frameGapMs = Number.isFinite(this._lastFrameTime) ? now - this._lastFrameTime : 0;
+            const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
+            // Only uninterrupted rAF timestamps are display-interval samples.
+            const vsyncTime = Number.isFinite(frameTime) ? frameTime : now;
+            if (this._lastFrameTime === this._lastLoopFrameTime && Number.isFinite(this._lastVsyncTime)) {
+                this.gpuWorld?.notePresentInterval?.(vsyncTime - this._lastVsyncTime);
+            }
+            this._lastVsyncTime = vsyncTime;
+            this._lastLoopFrameTime = now;
+            this._lastFrameTime = now;
+            stage = 'fallback-prep';
+            this._fallBackFromWebGpu();
+            if (this._fallbackPrep) {
+                const prep = this._fallbackPrep;
+                if (now - prep.startedAt < WORLD_FALLBACK_PREP_TIMEOUT_MS) return;
+                this._failFallbackPrep(prep, new Error('World fallback preparation exceeded its 5 s frame hold'));
+            }
+            if (this._frameFailureStats.paused) return;
+            stage = 'idle';
+            if (this._canSkipIdleFrame(Date.now())) {
+                this._recordFrameEnvelope(0, 0, 0, frameGapMs, null);
+                if (this._performanceSamples) this._recordPerformanceSample(0, 0, 0);
+                this._trackFps(now);
+                return;
+            }
+            stage = 'clock';
+            advanceMotionClock(this._motionClock, dt, this.motionScale ?? 1);
+            this.waterFrame = virtualFramesFor(this.motionTimeMs) * WATER_FRAME_STEP;
+            perf = getClientPerfMetrics();
+            stage = 'update';
             if (perf?.enabled) updateToken = perf.beginRenderStage('world-update');
             this._update(dt);
             const afterUpdate = performance.now();
@@ -4416,7 +4514,7 @@ export class IsometricRenderer {
             }
             stage = 'telemetry';
             this._trackFps(now);
-            this._frameFailureStats.consecutive = 0;
+            this._recordFrameSuccess();
         } catch (error) {
             const failedAt = performance.now();
             if (stage === 'update') {
@@ -4425,29 +4523,42 @@ export class IsometricRenderer {
                 updateMs = renderStart - updateStart;
                 renderMs = failedAt - renderStart;
             }
-            this._recordFrameEnvelope(updateMs, renderMs, failedAt - updateStart, frameGapMs, stage);
             this._reportFrameFailure(error, stage, now);
+            this._recordFrameEnvelope(updateMs, renderMs, failedAt - updateStart, frameGapMs, stage);
         } finally {
-            if (updateToken) perf?.endRenderStage?.(updateToken);
-            if (renderToken) perf?.endRenderStage?.(renderToken);
-            this._startLoop();
+            try {
+                if (updateToken) perf?.endRenderStage?.(updateToken);
+                if (renderToken) perf?.endRenderStage?.(renderToken);
+            } catch (error) {
+                this._reportFrameFailure(error, 'telemetry');
+            } finally {
+                this._startLoop();
+            }
         }
     }
 
     _reportFrameFailure(error, stage, now = performance.now()) {
         const stats = this._frameFailureStats;
+        const message = error instanceof Error ? error.message : String(error);
+        const changed = stats.lastStage !== stage || stats.lastMessage !== message;
         stats.total++;
         stats.consecutive++;
         stats.lastStage = stage;
-        stats.lastMessage = error instanceof Error ? error.message : String(error);
+        stats.lastMessage = message;
         stats.lastAt = now;
         stats.byStage[stage] = (stats.byStage[stage] || 0) + 1;
+        this._invalidateIdleFrame();
         if (stage === 'render') this._resetContextAfterFrameFailure();
         const tripped = !stats.paused && stats.consecutive >= WORLD_FRAME_MAX_CONSECUTIVE_FAILURES;
         if (tripped) {
             stats.paused = true;
+            this._frameFailureEpisode = true;
+            this._stopLoop();
+            this._scheduleFrameFailureRecovery();
         }
-        if (!tripped && now - stats.lastReportedAt < WORLD_FRAME_ERROR_REPORT_INTERVAL_MS) return;
+        // A changing fault can report sooner, but never at frame rate.
+        const reportIntervalMs = changed ? 1000 : WORLD_FRAME_ERROR_REPORT_INTERVAL_MS;
+        if (!tripped && now - stats.lastReportedAt < reportIntervalMs) return;
         stats.lastReportedAt = now;
         const detail = {
             stage,
@@ -4455,6 +4566,7 @@ export class IsometricRenderer {
             total: stats.total,
             consecutive: stats.consecutive,
             paused: stats.paused,
+            retrying: this._frameFailureEpisode,
         };
         try { console.error(`[IsometricRenderer] ${stage} frame failed`, error); } catch (_) { /* no-op */ }
         try { eventBus.emit('world:frame-error', detail); } catch (_) { /* keep the frame loop alive */ }
@@ -4477,16 +4589,60 @@ export class IsometricRenderer {
     }
 
     _resumeFrameFailures() {
+        this._cancelFrameFailureRecovery();
         this._frameFailureStats.paused = false;
         this._frameFailureStats.consecutive = 0;
     }
 
-    resumeAfterFrameFailure() {
-        if (this._disposed || !this.running) return false;
+    _cancelFrameFailureRecovery() {
+        if (this._frameFailureRecoveryTimer != null) {
+            clearTimeout(this._frameFailureRecoveryTimer);
+            this._frameFailureRecoveryTimer = null;
+        }
+    }
+
+    _scheduleFrameFailureRecovery() {
+        if (
+            this._frameFailureRecoveryTimer !== null
+            || this._disposed
+            || !this.running
+            || !this._worldModeActive
+            || this._worldResourcesSuspended
+            || this._contextLost
+            || (typeof document !== 'undefined' && document.visibilityState === 'hidden')
+        ) return;
+        const generation = this._worldResourceGeneration;
+        const delay = this._frameFailureRetryMs;
+        this._frameFailureRetryMs = Math.min(WORLD_FRAME_RETRY_MAX_MS, delay * 2);
+        this._frameFailureRecoveryTimer = setTimeout(() => {
+            this._frameFailureRecoveryTimer = null;
+            if (generation !== this._worldResourceGeneration) return;
+            this.resumeAfterFrameFailure();
+        }, delay);
+    }
+
+    _recordFrameSuccess() {
+        const recovering = this._frameFailureEpisode;
         this._resumeFrameFailures();
+        this._frameFailureRetryMs = WORLD_FRAME_RETRY_INITIAL_MS;
+        this._frameFailureEpisode = false;
+        if (recovering) eventBus.emit('world:frame-recovered', { total: this._frameFailureStats.total });
+    }
+
+    resumeAfterFrameFailure() {
+        if (
+            this._disposed
+            || !this.running
+            || !this._worldModeActive
+            || this._worldResourcesSuspended
+            || this._contextLost
+            || (typeof document !== 'undefined' && document.visibilityState === 'hidden')
+        ) return false;
+        this._resumeFrameFailures();
+        this._invalidateIdleFrame();
         this._lastFrameTime = performance.now();
         this._startLoop();
-        return true;
+        return this.frameId !== null;
     }
 
     // Emit a smoothed FPS reading roughly twice a second; TopBar renders it.
@@ -5654,36 +5810,87 @@ export class IsometricRenderer {
     _forEachNearbySpritePair(sprites, cellSize, visitor) {
         const size = Math.max(1, Number(cellSize) || LOCAL_AVOIDANCE.bucketPx);
         const buckets = this._pairBuckets;
+        const columns = this._pairColumnPool;
+        const pool = this._pairBucketPool;
         const ids = this._pairIds;
-        const visited = this._pairVisited;
+        const identityRanks = this._pairIdentityRanks;
+        const duplicatePairs = this._pairDuplicatePairs;
         buckets.clear();
         ids.clear();
-        visited.clear();
+        identityRanks.clear();
+        duplicatePairs.clear();
+        for (let index = 0; index < columns.length; index++) columns[index].clear();
+        for (let index = 0; index < pool.length; index++) pool[index].sprites.length = 0;
+        let columnCount = 0;
+        let bucketCount = 0;
         for (let index = 0; index < sprites.length; index++) {
             const sprite = sprites[index];
             if (!sprite) continue;
+            const repeated = ids.has(sprite);
             ids.set(sprite, this._spriteStableId(sprite, index));
-            const key = `${Math.floor(sprite.x / size)},${Math.floor(sprite.y / size)}`;
-            const bucket = buckets.get(key) || [];
-            bucket.push(sprite);
-            buckets.set(key, bucket);
+            if (repeated) continue;
+            const cellX = Math.floor(sprite.x / size);
+            const cellY = Math.floor(sprite.y / size);
+            let column = buckets.get(cellX);
+            if (!column) {
+                column = columns[columnCount] || (columns[columnCount] = new Map());
+                columnCount++;
+                buckets.set(cellX, column);
+            }
+            let bucket = column.get(cellY);
+            if (!bucket) {
+                bucket = pool[bucketCount] || (pool[bucketCount] = { cellX: 0, cellY: 0, rank: 0, sprites: [] });
+                bucket.cellX = cellX;
+                bucket.cellY = cellY;
+                bucket.rank = bucketCount++;
+                column.set(cellY, bucket);
+            }
+            bucket.sprites.push(sprite);
+        }
+        let duplicateIdentities = false;
+        for (let index = 0; index < bucketCount; index++) {
+            const entries = pool[index].sprites;
+            for (let entry = 0; entry < entries.length; entry++) {
+                const sprite = entries[entry];
+                const id = ids.get(sprite);
+                let rank = identityRanks.get(id);
+                if (rank === undefined) {
+                    rank = identityRanks.size;
+                    identityRanks.set(id, rank);
+                } else {
+                    duplicateIdentities = true;
+                }
+                ids.set(sprite, rank);
+            }
         }
 
-        for (const [key, bucket] of buckets.entries()) {
-            const [cellX, cellY] = key.split(',').map(Number);
+        // Earlier insertion ranks already visited the reverse neighborhood.
+        // Keep the old ox/oy and sprite order: separation steering is ordered.
+        for (let index = 0; index < bucketCount; index++) {
+            const bucket = pool[index];
             for (let ox = -1; ox <= 1; ox++) {
+                if (!Number.isFinite(bucket.cellX) && ox !== -1) continue;
+                const column = buckets.get(bucket.cellX + ox);
+                if (!column) continue;
                 for (let oy = -1; oy <= 1; oy++) {
-                    const other = buckets.get(`${cellX + ox},${cellY + oy}`);
-                    if (!other) continue;
-                    for (const a of bucket) {
-                        for (const b of other) {
-                            if (a === b) continue;
-                            const idA = ids.get(a);
+                    if (!Number.isFinite(bucket.cellY) && oy !== -1) continue;
+                    const other = column.get(bucket.cellY + oy);
+                    if (!other || other.rank < bucket.rank) continue;
+                    for (let ai = 0; ai < bucket.sprites.length; ai++) {
+                        const a = bucket.sprites[ai];
+                        const idA = ids.get(a);
+                        const start = other === bucket ? ai + 1 : 0;
+                        for (let bi = start; bi < other.sprites.length; bi++) {
+                            const b = other.sprites[bi];
                             const idB = ids.get(b);
-                            if (!idA || !idB || idA === idB) continue;
-                            const pairKey = idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`;
-                            if (visited.has(pairKey)) continue;
-                            visited.add(pairKey);
+                            if (a === b || idA === idB) continue;
+                            // Normal rosters have one sprite per identity. If an
+                            // identity repeats, retain the old first-pair rule.
+                            if (duplicateIdentities) {
+                                const pair = Math.min(idA, idB) * identityRanks.size + Math.max(idA, idB);
+                                if (duplicatePairs.has(pair)) continue;
+                                duplicatePairs.set(pair, true);
+                            }
                             if (visitor(a, b) === false) return false;
                         }
                     }

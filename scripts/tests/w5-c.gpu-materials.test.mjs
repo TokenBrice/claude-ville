@@ -46,7 +46,6 @@ test('agent overlay and profile lookup use the provider table for every provider
     const emissive = { width: 16, height: 16 };
     const occluder = { width: 16, height: 16 };
     const packed = { width: 16, height: 16 };
-    const packedFrom = [];
     const host = {
         gpuWorldEnabled: true,
         spriteCanvas: source,
@@ -59,9 +58,8 @@ test('agent overlay and profile lookup use the provider table for every provider
             },
         },
         // B.2 — material and occluder travel as one packed geometry map.
-        _packedGeometrySource(...pair) {
-            packedFrom.push(pair);
-            return packed;
+        _packedGeometrySource(materialSource, occluderSource) {
+            return materialSource === material && occluderSource === occluder ? packed : null;
         },
         _authoredEmissionSource: channel => channel,
     };
@@ -76,7 +74,6 @@ test('agent overlay and profile lookup use the provider table for every provider
     });
 
     assert.equal(host._gpuFrameRecord.material, 'glass-rune');
-    assert.deepEqual(packedFrom.at(-1), [material, occluder]);
     assert.equal(host._gpuFrameRecord.materialSource, packed);
     assert.equal(host._gpuFrameRecord.packedGeometry, true);
     assert.equal(host._gpuFrameRecord.emissiveSource, emissive);
