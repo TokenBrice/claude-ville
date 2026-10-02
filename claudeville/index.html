@@ -11,6 +11,12 @@
     <link rel="modulepreload" href="src/presentation/character-mode/WorldFrameRenderer.js">
     <link rel="modulepreload" href="src/presentation/character-mode/gpu/GpuSceneBuilder.js">
     <link rel="modulepreload" href="src/presentation/character-mode/AtmosphereState.js">
+    <!-- Boot roots App reaches only through dynamic import(): preloading them
+         starts their fetch with the document instead of after App's own module
+         graph settles. Execution and backend selection are unchanged. -->
+    <link rel="modulepreload" href="src/presentation/character-mode/IsometricRenderer.js">
+    <link rel="modulepreload" href="src/presentation/character-mode/gpu/GpuWorldRendererWebGPU.js">
+    <link rel="modulepreload" href="vendor/js-yaml.min.js">
     <!-- Dashboard stays out of the boot execution path, but a mode switch must
          paint immediately. These warm its bytes without blocking first paint:
          modulepreload populates the module map, and preload fetches the

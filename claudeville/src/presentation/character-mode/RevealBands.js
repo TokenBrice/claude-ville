@@ -10,8 +10,8 @@
 // change material (Ward merging of row colours), with one always on the sea
 // horizon. Averaging sea, grass and roofs into one colour reads as mud.
 //
-// Sampling must run in the same task as a render: the WebGL surface does not
-// preserve its drawing buffer, so outside that task it reads as transparent.
+// Snapshotting must run in the render task: the WebGL drawing buffer expires
+// afterwards. First-frame CPU readback waits asynchronously for GPU completion.
 
 // The point-sample grid; a surface already this size is drawn 1:1 (the
 // WebGPU HDR canvas's SDR readout, GpuWorldRendererWebGPU.readoutSurface).
@@ -38,7 +38,7 @@ function hex(rgb) {
 // Point samples (sRGB bytes) of the surfaces as the compositor stacks them,
 // on an opaque black base: nearest-neighbour, so every sample is a real
 // scene pixel. One GPU downsample and a 96×64 readback.
-function samplePixels(surfaces) {
+function snapshotPixels(surfaces, canvas) {
     const live = surfaces.filter(surface => (
         surface
         && surface.width > 0
@@ -46,16 +46,75 @@ function samplePixels(surfaces) {
         && surface.style?.display !== 'none'
     ));
     if (!live.length || typeof document === 'undefined') return null;
-    scratch ||= document.createElement('canvas');
-    scratch.width = SAMPLE_W;
-    scratch.height = SAMPLE_H;
-    const ctx = scratch.getContext('2d');
+    canvas ||= document.createElement('canvas');
+    canvas.width = SAMPLE_W;
+    canvas.height = SAMPLE_H;
+    const ctx = canvas.getContext('2d');
     if (!ctx) return null;
     ctx.imageSmoothingEnabled = false;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, SAMPLE_W, SAMPLE_H);
     for (const surface of live) ctx.drawImage(surface, 0, 0, SAMPLE_W, SAMPLE_H);
-    return ctx.getImageData(0, 0, SAMPLE_W, SAMPLE_H).data;
+    return canvas;
+}
+
+function samplePixels(surfaces) {
+    scratch ||= typeof document !== 'undefined' ? document.createElement('canvas') : null;
+    const canvas = snapshotPixels(surfaces, scratch);
+    return canvas?.getContext('2d').getImageData(0, 0, SAMPLE_W, SAMPLE_H).data || null;
+}
+
+/**
+ * Capture every visible surface now, then read the tiny immutable composite
+ * once the optional GPU completion fence signals. No worker/bitmap startup
+ * and no CPU readback while that fence is unfinished. Loss, read errors and
+ * a two-second deadline yield the synchronous path's unreadable-frame result.
+ */
+export function sampleRevealBandsAsync(surfaces, {
+    count = 4, horizonY = 0, timeoutMs = 2000, ready = null, deviceLost = null, cancel = null,
+} = {}) {
+    let snapshot;
+    try {
+        snapshot = snapshotPixels(surfaces);
+    } catch {
+        cancel?.();
+        return Promise.resolve(null);
+    }
+    if (!snapshot) {
+        cancel?.();
+        return Promise.resolve(null);
+    }
+    return new Promise(resolve => {
+        let settled = false;
+        let timer;
+        const finish = data => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            snapshot.width = snapshot.height = 0;
+            snapshot = null;
+            cancel?.();
+            let measured = null;
+            try {
+                if (data) measured = bandsFromPixels(data, { count, horizonY });
+            } catch {}
+            resolve(measured);
+        };
+        timer = setTimeout(() => finish(null), Math.min(2000, Math.max(0, timeoutMs)));
+        if (deviceLost) Promise.resolve(deviceLost).then(() => finish(null), () => finish(null));
+        Promise.resolve(ready).then(available => {
+            if (settled) return;
+            if (available === false) {
+                finish(null);
+                return;
+            }
+            try {
+                finish(snapshot.getContext('2d').getImageData(0, 0, SAMPLE_W, SAMPLE_H).data);
+            } catch {
+                finish(null);
+            }
+        }, () => finish(null));
+    });
 }
 
 // The dominant material of rows [from, to): the samples split into water
@@ -94,6 +153,10 @@ function materialColour(data, from, to) {
 export function sampleRevealBands(surfaces, { count = 4, horizonY = 0 } = {}) {
     const data = samplePixels(surfaces);
     if (!data) return null;
+    return bandsFromPixels(data, { count, horizonY });
+}
+
+function bandsFromPixels(data, { count, horizonY }) {
     const h = Number(horizonY);
     const horizonRow = h > 0 && h < 1 ? Math.max(1, Math.min(SAMPLE_H - 1, Math.round(h * SAMPLE_H))) : 0;
     const segments = [];

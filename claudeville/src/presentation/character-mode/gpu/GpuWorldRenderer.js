@@ -63,6 +63,7 @@ import {
     RECORD_TAIL_RESPONSE,
     stageGpuRecords,
 } from './GpuRecordLayout.js';
+import { GpuFrameReuse, stageGpuFrameBindings } from './GpuFrameReuse.js';
 import { ALBEDO_PAGE_GUTTER, ALBEDO_PAGE_SIZE, GpuAlbedoPage } from './GpuAlbedoPage.js';
 import { buildRadianceEmitters, GroundRadiance, RADIANCE_MIN_SOLVE_MS, RADIANCE_SCENE_GLSL } from './GroundRadiance.js';
 import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
@@ -3078,29 +3079,66 @@ function compileShader(gl, type, source) {
     const shader = gl.createShader(type);
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const message = gl.getShaderInfoLog(shader) || 'unknown shader error';
-        gl.deleteShader(shader);
-        throw new Error(message);
-    }
     return shader;
 }
 
-function createProgram(gl, vertexSource, fragmentSource) {
+function validateShader(gl, shader) {
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(shader) || 'unknown shader error');
+    }
+}
+
+function validateProgram(gl, program, vertex, fragment) {
+    try {
+        // Preserve vertex/fragment/link error precedence, even though all
+        // compilation and linking commands have already been issued.
+        validateShader(gl, vertex);
+        validateShader(gl, fragment);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            throw new Error(gl.getProgramInfoLog(program) || 'unknown program link error');
+        }
+    } catch (error) {
+        gl.deleteProgram(program);
+        throw error;
+    } finally {
+        gl.deleteShader(vertex);
+        gl.deleteShader(fragment);
+    }
+}
+
+function createProgram(gl, vertexSource, fragmentSource, pendingPrograms = null) {
     const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
     const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
     const program = gl.createProgram();
     gl.attachShader(program, vertex);
     gl.attachShader(program, fragment);
     gl.linkProgram(program);
-    gl.deleteShader(vertex);
-    gl.deleteShader(fragment);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        const message = gl.getProgramInfoLog(program) || 'unknown program link error';
-        gl.deleteProgram(program);
-        throw new Error(message);
+    if (pendingPrograms) {
+        pendingPrograms.push({ program, vertex, fragment });
+    } else {
+        // On-demand P3, debug-load and radiance programs remain synchronous.
+        validateProgram(gl, program, vertex, fragment);
     }
     return program;
+}
+
+function validatePrograms(gl, pendingPrograms) {
+    for (let index = 0; index < pendingPrograms.length; index++) {
+        const { program, vertex, fragment } = pendingPrograms[index];
+        try {
+            validateProgram(gl, program, vertex, fragment);
+        } catch (error) {
+            // The failed program is already released. Commands for the rest
+            // of the batch were issued, but none of their handles may leak.
+            for (let remaining = index + 1; remaining < pendingPrograms.length; remaining++) {
+                const pending = pendingPrograms[remaining];
+                gl.deleteShader(pending.vertex);
+                gl.deleteShader(pending.fragment);
+                gl.deleteProgram(pending.program);
+            }
+            throw error;
+        }
+    }
 }
 
 function uniformLocations(gl, program, names) {
@@ -3334,11 +3372,15 @@ export class GpuWorldRenderer {
     _initResources() {
         const gl = this.gl;
         this._releaseGpuResources();
-        this.sceneProgram = createProgram(gl, QUAD_VERTEX, SCENE_FRAGMENT);
-        this.particleProgram = createProgram(gl, PARTICLE_VERTEX, PARTICLE_FRAGMENT);
-        this.bloomProgram = createProgram(gl, FULLSCREEN_VERTEX, BLOOM_FRAGMENT);
-        this.compositeProgram = createProgram(gl, FULLSCREEN_VERTEX, COMPOSITE_FRAGMENT);
-        this.markProgram = createProgram(gl, QUAD_VERTEX, MARK_FRAGMENT);
+        // Submit the entire cold batch before any status/location query can
+        // fence the driver's shader compiler. Construction stays synchronous.
+        const pendingPrograms = [];
+        this.sceneProgram = createProgram(gl, QUAD_VERTEX, SCENE_FRAGMENT, pendingPrograms);
+        this.particleProgram = createProgram(gl, PARTICLE_VERTEX, PARTICLE_FRAGMENT, pendingPrograms);
+        this.bloomProgram = createProgram(gl, FULLSCREEN_VERTEX, BLOOM_FRAGMENT, pendingPrograms);
+        this.compositeProgram = createProgram(gl, FULLSCREEN_VERTEX, COMPOSITE_FRAGMENT, pendingPrograms);
+        this.markProgram = createProgram(gl, QUAD_VERTEX, MARK_FRAGMENT, pendingPrograms);
+        validatePrograms(gl, pendingPrograms);
         this.timerExtension = gl.getExtension?.('EXT_disjoint_timer_query_webgl2') || null;
         this.sceneUniforms = uniformLocations(gl, this.sceneProgram, [
             'u_camera', 'u_resolution', 'u_fatPixels', 'u_albedo', 'u_albedoPage', 'u_albedoPaged', 'u_materialMap', 'u_emissiveMap',
@@ -3771,6 +3813,7 @@ export class GpuWorldRenderer {
     }
 
     resize(width, height) {
+        this._canvasGeneration = (this._canvasGeneration || 0) + 1;
         this.width = Math.max(1, Math.floor(finite(width, this.width)));
         this.height = Math.max(1, Math.floor(finite(height, this.height)));
         if (this.canvas) {
@@ -4124,11 +4167,18 @@ export class GpuWorldRenderer {
     // V9 / B.1a — one instance per record, every batch in one buffer at its
     // own byte offset (GpuRecordLayout.stageGpuRecords): 68 bytes, or the
     // 48-byte head alone when every record of the batch has the default tail.
-    _stageFrameVertices(batches) {
+    _stageFrameVertices(batches, upload = true) {
         const staging = this._recordStaging;
         const byteLength = stageGpuRecords(batches, staging);
         const floats = byteLength / Float32Array.BYTES_PER_ELEMENT;
         this._vertexScratchUsed = floats;
+        if (upload) this._uploadFrameVertices(byteLength);
+        return byteLength;
+    }
+
+    _uploadFrameVertices(byteLength) {
+        const staging = this._recordStaging;
+        const floats = byteLength / Float32Array.BYTES_PER_ELEMENT;
         const gl = this.gl;
         gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
         const allocatedBytes = this.vertexBufferBytes || 0;
@@ -4176,7 +4226,7 @@ export class GpuWorldRenderer {
     _setCameraUniforms(uniforms, camera, scale = 1) {
         const view = resolveCamera(camera, scale, this._camera);
         this._camera = view;
-        this.gl.uniform3f(uniforms.u_camera, view.xy[0], view.xy[1], view.scale);
+        (this._uniformGl || this.gl).uniform3f(uniforms.u_camera, view.xy[0], view.xy[1], view.scale);
     }
 
     // Resolve (and, when a revision moved, upload) every channel texture for
@@ -4231,8 +4281,8 @@ export class GpuWorldRenderer {
         }
     }
 
-    _bindBatch(program, uniforms, batch) {
-        const gl = this.gl;
+    _setBatchUniforms(uniforms, batch) {
+        const gl = this._uniformGl || this.gl;
         const albedo = batch.albedoTexture;
         if (!albedo) return 0;
         const material = batch.materialTexture;
@@ -4276,12 +4326,16 @@ export class GpuWorldRenderer {
             const optOut = ((batch.records[0]?.flags || 0) & GPU_RECORD_FLAGS.fatOptOut) !== 0;
             gl.uniform1i(uniforms.u_fatPixels, this.fatPixelsFrame && !optOut ? 1 : 0);
         }
+        gl.uniform1i(uniforms.u_cueRuns, batch.cueRuns ? 1 : 0);
+    }
+
+    _drawBatch(batch) {
+        if (!batch.albedoTexture) return 0;
+        const gl = this.gl;
         this._pointRecordInstances(batch);
         if (batch.cueRuns) {
             // B.3 — six vertices per dot of every run (GroundCueRecords).
-            gl.uniform1i(uniforms.u_cueRuns, 1);
             gl.drawArraysInstanced(gl.TRIANGLES, 0, CUE_RUN_VERTICES, batch.count);
-            gl.uniform1i(uniforms.u_cueRuns, 0);
         } else {
             gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.count);
         }
@@ -4293,7 +4347,7 @@ export class GpuWorldRenderer {
     // bake. MINIMAL (crests frozen, swash off) leaves both unbound and
     // `u_coastRect.z` 0, so every reader early-outs.
     _bindWaterFields(uniforms, fields, qualityLevel) {
-        const gl = this.gl;
+        const gl = this._uniformGl || this.gl;
         let cycle = null;
         let coast = null;
         const live = effectBudgetMode('waterCrests', qualityLevel) === 'on'
@@ -4319,7 +4373,7 @@ export class GpuWorldRenderer {
     }
 
     _setSceneUniforms(feed, camera, qualityLevel = POST_FX_LEVELS.FULL) {
-        const gl = this.gl;
+        const gl = this._uniformGl || this.gl;
         const uniforms = this.sceneUniforms;
         const grade = resolveFrameGrade(feed);
         const weather = resolveWeatherUniform(feed, qualityLevel);
@@ -4521,22 +4575,9 @@ export class GpuWorldRenderer {
 
     _renderScene(batches, camera, feed, qualityLevel = POST_FX_LEVELS.FULL) {
         const gl = this.gl;
-        gl.useProgram(this.sceneProgram);
-        this._setSceneUniforms(feed, camera, qualityLevel);
-        const bloomMode = effectBudgetMode('bloom', qualityLevel);
-        const bloomStrength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
-        this._frameBloomStrength = this.lightCount > 0
-            ? bloomStrength * clamp(finite(this.sourceEnergy?.bloom, 1), 0, 2) : 0;
+        this._sceneCommands.replay();
         const bloomEnabled = this._frameBloomStrength > 0;
-        // 10.3 — on a P3 screen the emission MRT is always written (bloom or
-        // not, like WebGPU's roles target) and its alpha carries each batch's
-        // role: attachment 1's alpha blends by the blend constant (1 for a
-        // building/prop emitter batch, 0 otherwise; additive batches keep the
-        // role beneath) while its colour and attachment 0 blend exactly as
-        // shipped, so bloom and the SDR bytes never see it.
-        const roles = this._p3 && this._ensureP3Programs() ? this._roleBlend : null;
-        this._rolesWritten = roles !== null;
-        this._ensureTargets(bloomEnabled || roles !== null, bloomEnabled);
+        const roles = this._rolesWritten ? this._roleBlend : null;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.framebuffer);
         gl.drawBuffers(bloomEnabled || roles
             ? [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]
@@ -4550,21 +4591,10 @@ export class GpuWorldRenderer {
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         gl.depthFunc(gl.ALWAYS);
         let depthWrites = true;
-        // B.1b — the albedo page (or its stand-in) stays on unit 14 for the
-        // pass; unit 0 starts on the empty texture in case a paged batch
-        // draws first.
-        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedoPage);
-        gl.bindTexture(gl.TEXTURE_2D_ARRAY, this._albedoPage?.texture || this.emptyAlbedoPage);
-        gl.uniform1i(this.sceneUniforms.u_albedoPage, SCENE_SAMPLER_UNITS.albedoPage);
-        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedo);
-        gl.bindTexture(gl.TEXTURE_2D, this.emptyMaterialTexture);
-        gl.uniform1i(this.sceneUniforms.u_albedo, SCENE_SAMPLER_UNITS.albedo);
-        gl.uniform1i(this.sceneUniforms.u_albedoPaged, 0);
-        this._albedoPagedBound = false;
-        let additive = false;
         let boundRole = 0;
         if (roles) gl.blendColor(0, 0, 0, 0);
-        for (const batch of batches) {
+        for (let index = 0; index < batches.length; index++) {
+            const batch = batches[index];
             const add = batch.blend === 'add';
             if (add) gl.blendFunc(gl.ONE, gl.ONE);
             else gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
@@ -4576,17 +4606,14 @@ export class GpuWorldRenderer {
                     boundRole = role;
                 }
             }
-            if (add !== additive) {
-                additive = add;
-                gl.uniform1i(this.sceneUniforms.u_additive, add ? 1 : 0);
-            }
             // Painter order still decides every colour (depthFunc ALWAYS);
             // opaque sprite batches also leave their depth key behind.
             if (batch.writesDepth !== depthWrites) {
                 depthWrites = batch.writesDepth === true;
                 gl.depthMask(depthWrites);
             }
-            this._bindBatch(this.sceneProgram, this.sceneUniforms, batch);
+            this._batchCommands[index].replay();
+            this._drawBatch(batch);
         }
         if (boundRole) gl.blendColor(0, 0, 0, 0);
         this._renderParticles(camera, roles);
@@ -4598,10 +4625,8 @@ export class GpuWorldRenderer {
     // 0.6 — every live world particle in one instanced draw, LEQUAL against
     // the painter depth, never writing it. Lit particles take the frame grade
     // uploaded here; emissive ones feed bloom with their own coverage.
-    _renderParticles(camera, roles = null) {
-        const count = this._particleCount;
-        if (!count || !this._particleMotifTexture) return;
-        const gl = this.gl;
+    _setParticleUniforms(camera) {
+        const gl = this._uniformGl || this.gl;
         const uniforms = this.particleUniforms;
         gl.useProgram(this.particleProgram);
         this._setCameraUniforms(uniforms, camera, 1);
@@ -4612,6 +4637,13 @@ export class GpuWorldRenderer {
         gl.bindTexture(gl.TEXTURE_2D, this._particleMotifTexture);
         gl.uniform1i(uniforms.u_motifs, PARTICLE_SAMPLER_UNITS.motifs);
         this._uploadAtmosphereCourses(uniforms, PARTICLE_SAMPLER_UNITS.cloudTile);
+    }
+
+    _renderParticles(camera, roles = null) {
+        const count = this._particleCount;
+        if (!count || !this._particleMotifTexture) return;
+        const gl = this.gl;
+        this._particleCommands.replay();
         gl.bindVertexArray(this.particleVao);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.particleBuffer);
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, this._particleViews.u8, 0, count * GPU_PARTICLE_INSTANCE_BYTES);
@@ -4634,24 +4666,30 @@ export class GpuWorldRenderer {
         else ext.blendFuncSeparateiOES(1, gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.CONSTANT_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     }
 
-    _renderBloom() {
-        const gl = this.gl;
+    _setBloomUniforms(blur) {
+        const gl = this._uniformGl || this.gl;
         gl.useProgram(this.bloomProgram);
         gl.uniform1i(this.bloomUniforms.u_input, 0);
+        gl.uniform2f(this.bloomUniforms.u_texel,
+            1 / (blur ? this.bloomA.width : this.width),
+            1 / (blur ? this.bloomA.height : this.height));
+        gl.uniform1i(this.bloomUniforms.u_blur, blur ? 1 : 0);
+    }
+
+    _renderBloom() {
+        const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomA.framebuffer);
         gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
         gl.viewport(0, 0, this.bloomA.width, this.bloomA.height);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.textures[1]);
-        gl.uniform2f(this.bloomUniforms.u_texel, 1 / this.width, 1 / this.height);
-        gl.uniform1i(this.bloomUniforms.u_blur, 0);
+        this._bloomCommandsA.replay();
         gl.drawArrays(gl.TRIANGLES, 0, 3);
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomB.framebuffer);
         gl.viewport(0, 0, this.bloomB.width, this.bloomB.height);
         gl.bindTexture(gl.TEXTURE_2D, this.bloomA.textures[0]);
-        gl.uniform2f(this.bloomUniforms.u_texel, 1 / this.bloomA.width, 1 / this.bloomA.height);
-        gl.uniform1i(this.bloomUniforms.u_blur, 1);
+        this._bloomCommandsB.replay();
         gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
@@ -4691,13 +4729,8 @@ export class GpuWorldRenderer {
         }
     }
 
-    _present(qualityLevel = POST_FX_LEVELS.FULL, camera = null, feed = {}) {
-        const gl = this.gl;
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.drawBuffers([gl.BACK]);
-        gl.viewport(0, 0, this.width, this.height);
-        gl.clearColor(0, 0, 0, 0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
+    _setCompositeUniforms(qualityLevel, camera, feed) {
+        const gl = this._uniformGl || this.gl;
         // 10.3 — the P3 twin on a display-p3 drawing buffer, else the shipped program.
         const p3 = this._p3 && this._ensureP3Programs();
         const uniforms = p3 ? this.compositeP3Uniforms : this.compositeUniforms;
@@ -4725,6 +4758,16 @@ export class GpuWorldRenderer {
             gl.activeTexture(gl.TEXTURE0 + P3_EMISSION_UNIT);
             gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.textures[1] || this.emptyMaterialTexture);
         }
+    }
+
+    _present(qualityLevel = POST_FX_LEVELS.FULL, camera = null, feed = {}) {
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.drawBuffers([gl.BACK]);
+        gl.viewport(0, 0, this.width, this.height);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        this._compositeCommands.replay();
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         if (this._frameLoadPasses > 0) this._drawDebugLoad(this._frameLoadPasses);
@@ -4737,7 +4780,17 @@ export class GpuWorldRenderer {
     // many were drawn this frame; the overlay prints only the plate ink when
     // it equals the frame's mark count, else it draws the whole plate.
     // `late` (drawLateMarks) counts into `lateMarkRecords` instead.
-    _renderMarks(marks, late = false) {
+    _setMarkUniforms() {
+        const gl = this._uniformGl || this.gl;
+        const p3 = this._p3 && this._ensureP3Programs();
+        const uniforms = p3 ? this.markP3Uniforms : this.markUniforms;
+        gl.useProgram(p3 ? this.markP3Program : this.markProgram);
+        gl.uniform2f(uniforms.u_resolution, this.width, this.height);
+        gl.uniform1i(uniforms.u_albedo, SCENE_SAMPLER_UNITS.albedo);
+        gl.uniform1i(uniforms.u_albedoPage, SCENE_SAMPLER_UNITS.albedoPage);
+    }
+
+    _renderMarks(marks, late = false, prepared = null) {
         if (late) {
             this.lateMarkRecords = 0;
             this.lateMarkRoleRecords = 0;
@@ -4747,9 +4800,9 @@ export class GpuWorldRenderer {
         }
         if (!marks?.length || !this.markProgram) return;
         const gl = this.gl;
-        const batches = buildStableGpuBatches(marks, this._markBatches ||= [], this._markNormalized ||= []);
-        const staging = this._markStaging ||= createRecordStaging();
-        const byteLength = stageGpuRecords(batches, staging, { fullTail: true });
+        const batches = prepared || this._stageMarkInputs(marks);
+        const staging = this._markStaging;
+        const byteLength = this._markByteLength;
         gl.bindBuffer(gl.ARRAY_BUFFER, this.markBuffer);
         if (byteLength > this.markBufferBytes) {
             gl.bufferData(gl.ARRAY_BUFFER, byteLength, gl.DYNAMIC_DRAW);
@@ -4762,14 +4815,8 @@ export class GpuWorldRenderer {
         gl.disable(gl.DEPTH_TEST);
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-        const p3 = this._p3 && this._ensureP3Programs();
-        const markUniforms = p3 ? this.markP3Uniforms : this.markUniforms;
-        gl.useProgram(p3 ? this.markP3Program : this.markProgram);
-        gl.uniform2f(markUniforms.u_resolution, this.width, this.height);
-        gl.uniform1i(markUniforms.u_albedo, SCENE_SAMPLER_UNITS.albedo);
-        // The shared vertex stage declares the page sampler: keep it off the
-        // albedo unit (two sampler types on one unit fail the draw).
-        gl.uniform1i(markUniforms.u_albedoPage, SCENE_SAMPLER_UNITS.albedoPage);
+        if (prepared) this._markCommands.replay();
+        else this._setMarkUniforms();
         gl.bindVertexArray(this.markVao);
         gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedo);
         const stride = RECORD_INSTANCE_BYTES;
@@ -4817,8 +4864,9 @@ export class GpuWorldRenderer {
     drawLateMarks(marks) {
         this.lateMarkRecords = 0;
         this.lateMarkRoleRecords = 0;
-        if (!this.isActive() || !marks?.length) return 0;
+        if (!this._freshOutputThisTask || !this.isActive() || !marks?.length) return 0;
         this._renderMarks(marks, true);
+        if (this.lateMarkRecords) this._frameReuse?.invalidate();
         return this.lateMarkRecords;
     }
 
@@ -4827,7 +4875,7 @@ export class GpuWorldRenderer {
     // dash cells. Off when `feed.beam` is null (day, dusk settling, dawn, or
     // no Lighthouse).
     _uploadBeamUniforms(uniforms, feed) {
-        const gl = this.gl;
+        const gl = this._uniformGl || this.gl;
         const beam = resolveBeam(feed, this._beam);
         gl.uniform4fv(uniforms.u_beamGround, beam.ground);
         if (!beam.active) return;
@@ -4911,7 +4959,7 @@ export class GpuWorldRenderer {
     // puddles), the puddle level, and the graded sky palette's upper band
     // and horizon the water reflects.
     _uploadPuddles(uniforms, feed) {
-        const gl = this.gl;
+        const gl = this._uniformGl || this.gl;
         const puddles = resolvePuddles(feed, this._puddles);
         const mask = puddles.mask;
         const texture = mask
@@ -4934,7 +4982,7 @@ export class GpuWorldRenderer {
     }
 
     _uploadAtmosphereCourses(uniforms, unit) {
-        const gl = this.gl;
+        const gl = this._uniformGl || this.gl;
         const courses = this._atmosphereCourses;
         gl.activeTexture(gl.TEXTURE0 + unit);
         gl.bindTexture(gl.TEXTURE_2D, this.cloudTileTexture);
@@ -4950,7 +4998,7 @@ export class GpuWorldRenderer {
     // squall. `sea-weather` sheds the sunlit course, the cat's paws and the
     // squall at MINIMAL (the island's cloud courses shed there too).
     _uploadOpenSeaUniforms(qualityLevel, camera, feed, uniforms = this.compositeUniforms) {
-        const gl = this.gl;
+        const gl = this._uniformGl || this.gl;
         const grade = this._frameGradeForComposite || resolveFrameGrade(feed);
         const atmosphere = feed.atmosphere || null;
         const weather = feed.weather || atmosphere?.weather || null;
@@ -5004,7 +5052,7 @@ export class GpuWorldRenderer {
     }
 
     _uploadSeaWeather(uniforms, unit) {
-        const gl = this.gl;
+        const gl = this._uniformGl || this.gl;
         const frame = this._seaWeatherFrame;
         const gust = frame?.gust || null;
         gl.uniform1f(uniforms.u_seaSunlit, finite(frame?.sunlit, 0));
@@ -5057,17 +5105,121 @@ export class GpuWorldRenderer {
         return resolveOccluderChannel(feed);
     }
 
-    render({ records = [], camera = null, feed = {}, particles = null, marks = null } = {}) {
+    hasPendingGpuQueries() {
+        return this.pendingGpuQueries.length > 0;
+    }
+
+    ensureFreshOutput(force = false) {
+        if (!force && this._freshOutputThisTask) return true;
+        const input = this._lastRenderInput;
+        if (!input) return false;
+        const previous = input.forceFreshOutput;
+        input.forceFreshOutput = true;
+        try {
+            // A readback/late-mark rescue repaints the same logical frame; it
+            // must not add a second pacing or timing sample.
+            return this.render(input, true);
+        } finally {
+            input.forceFreshOutput = previous;
+        }
+    }
+
+    _stageMarkInputs(marks) {
+        this._markByteLength = 0;
+        const batches = this._markBatches ||= [];
+        if (!marks?.length) {
+            batches.length = 0;
+            return batches;
+        }
+        buildStableGpuBatches(marks, batches, this._markNormalized ||= []);
+        this._markStaging ||= createRecordStaging();
+        this._markByteLength = stageGpuRecords(batches, this._markStaging, { fullTail: true });
+        for (const batch of batches) {
+            batch.albedoTexture = this._textureFor(batch.textureKey, batch.source, batch.records[0]?.textureRevision);
+        }
+        return batches;
+    }
+
+    _stageGlUniforms(feed, camera, qualityLevel, batches, marks) {
+        const gl = this.gl;
+        const scene = this._sceneCommands ||= new GlFrameCommands(gl);
+        const particle = this._particleCommands ||= new GlFrameCommands(gl);
+        const composite = this._compositeCommands ||= new GlFrameCommands(gl);
+        const bloomA = this._bloomCommandsA ||= new GlFrameCommands(gl);
+        const bloomB = this._bloomCommandsB ||= new GlFrameCommands(gl);
+        const mark = this._markCommands ||= new GlFrameCommands(gl);
+        const batchCommands = this._batchCommands ||= [];
+        scene.begin();
+        particle.begin();
+        composite.begin();
+        bloomA.begin();
+        bloomB.begin();
+        mark.begin();
+        try {
+            this._uniformGl = scene.gl;
+            if (this._radiance) this._radiance.gl = scene.gl;
+            scene.gl.useProgram(this.sceneProgram);
+            this._setSceneUniforms(feed, camera, qualityLevel);
+            // B.1b — the albedo page (or its stand-in) stays on unit 14;
+            // unit 0 starts empty in case a paged batch draws first.
+            scene.gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedoPage);
+            scene.gl.bindTexture(gl.TEXTURE_2D_ARRAY, this._albedoPage?.texture || this.emptyAlbedoPage);
+            scene.gl.uniform1i(this.sceneUniforms.u_albedoPage, SCENE_SAMPLER_UNITS.albedoPage);
+            scene.gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedo);
+            scene.gl.bindTexture(gl.TEXTURE_2D, this.emptyMaterialTexture);
+            scene.gl.uniform1i(this.sceneUniforms.u_albedo, SCENE_SAMPLER_UNITS.albedo);
+            scene.gl.uniform1i(this.sceneUniforms.u_albedoPaged, 0);
+            const bloomMode = effectBudgetMode('bloom', qualityLevel);
+            const strength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
+            this._frameBloomStrength = this.lightCount > 0
+                ? strength * clamp(finite(this.sourceEnergy?.bloom, 1), 0, 2) : 0;
+            const bloomEnabled = this._frameBloomStrength > 0;
+            const roles = this._p3 && this._ensureP3Programs() ? this._roleBlend : null;
+            this._rolesWritten = roles !== null;
+            this._ensureTargets(bloomEnabled || roles !== null, bloomEnabled);
+            this._albedoPagedBound = false;
+            for (let index = 0; index < batches.length; index++) {
+                const commands = batchCommands[index] ||= new GlFrameCommands(gl);
+                commands.begin();
+                this._uniformGl = commands.gl;
+                commands.gl.uniform1i(this.sceneUniforms.u_additive, batches[index].blend === 'add' ? 1 : 0);
+                this._setBatchUniforms(this.sceneUniforms, batches[index]);
+            }
+            if (bloomEnabled) {
+                this._uniformGl = bloomA.gl;
+                this._setBloomUniforms(false);
+                this._uniformGl = bloomB.gl;
+                this._setBloomUniforms(true);
+            }
+            if (marks?.length && this.markProgram) {
+                this._uniformGl = mark.gl;
+                this._setMarkUniforms();
+            }
+            this._uniformGl = particle.gl;
+            if (this._particleCount && this._particleMotifTexture) this._setParticleUniforms(camera);
+            this._uniformGl = composite.gl;
+            this._setCompositeUniforms(qualityLevel, camera, feed);
+        } finally {
+            this._uniformGl = null;
+            if (this._radiance) this._radiance.gl = gl;
+        }
+    }
+
+    render(input = {}, repeatOutput = false) {
+        const { records = [], camera = null, feed = {}, particles = null, marks = null, forceFreshOutput = false } = input;
+        this._freshOutputThisTask = false;
         if (!this.isActive() || !camera || !records.length) return false;
         const gl = this.gl;
+        const timerWasPending = this.hasPendingGpuQueries();
         const started = performance.now();
-        const frameGapMs = this._lastRenderAtMs == null ? 0 : started - this._lastRenderAtMs;
-        this._lastRenderAtMs = started;
+        const frameGapMs = repeatOutput || this._lastRenderAtMs == null ? 0 : started - this._lastRenderAtMs;
+        if (!repeatOutput) this._lastRenderAtMs = started;
         // 0.1 — the pacing sample is the display interval the loop noted for
         // this frame; a render outside that cadence (a resize redraw, a
         // gpu-burst) carries none. Without a noting loop the render gap stands in.
-        const presentIntervalMs = this._presentIntervalsNoted ? this._pendingPresentIntervalMs : frameGapMs;
-        this._pendingPresentIntervalMs = null;
+        const presentIntervalMs = repeatOutput ? null
+            : this._presentIntervalsNoted ? this._pendingPresentIntervalMs : frameGapMs;
+        if (!repeatOutput) this._pendingPresentIntervalMs = null;
         this._frameUploadMs = 0;
         const occluderChannelEnabled = this._preparedFeed === feed
             ? resolveOccluderChannel(feed)
@@ -5103,10 +5255,10 @@ export class GpuWorldRenderer {
             if (!batches.length) return false;
             // One pass replaces (never nests inside) the whole-frame query on
             // one frame in twelve. Only whole-frame results feed the ladder.
-            this._sampledPass = this.passSamplingEnabled && this.frames % 12 === 0
+            this._sampledPass = !repeatOutput && this.passSamplingEnabled && this.frames % 12 === 0
                 ? GPU_PASS_NAMES[this._passCursor++ % GPU_PASS_NAMES.length] : null;
             this._beginPass('upload');
-            this._stageFrameVertices(batches);
+            const byteLength = this._stageFrameVertices(batches, false);
             this._uploadBatchTextures(batches, occluderChannelEnabled);
             // 0.6 — the live world particles, packed with the Canvas geometry;
             // the event-shape motifs ride one cached R8 field (V9 typed path).
@@ -5159,7 +5311,33 @@ export class GpuWorldRenderer {
             } else if (load && (load.levels === 'all' || qualityLevel === POST_FX_LEVELS.FULL)) {
                 this._frameLoadPasses = load.passes;
             }
-            const timeThisFrame = this._frameLoadArm !== null || this.frames % this._gpuTimerEvery === 0;
+            this._stageGlUniforms(feed, camera, qualityLevel, batches, marks);
+            const markBatches = this._stageMarkInputs(marks);
+            const reuse = (this._frameReuse ||= new GpuFrameReuse()).begin();
+            reuse.bytes(this._recordStaging.f32, byteLength);
+            reuse.bytes(this._particleViews.u8, this._particleCount * GPU_PARTICLE_INSTANCE_BYTES);
+            if (this._markStaging) reuse.bytes(this._markStaging.f32, this._markByteLength);
+            this._sceneCommands.track(reuse);
+            this._particleCommands.track(reuse);
+            this._compositeCommands.track(reuse);
+            this._bloomCommandsA.track(reuse);
+            this._bloomCommandsB.track(reuse);
+            this._markCommands.track(reuse);
+            for (let index = 0; index < batches.length; index++) this._batchCommands[index].track(reuse);
+            stageGpuFrameBindings(reuse, this, batches, markBatches);
+            // The radiance sampler is recorded above, but its cached texture
+            // is rewritten in place on each solve. Treat that solve count as
+            // a content revision, not "ready" as an unconditional repaint.
+            reuse.scalar(this._radiance?.solves);
+            const fresh = forceFreshOutput || timerWasPending || this.hasPendingGpuQueries()
+                || this._debugLoad || this.passSamplingEnabled;
+            if (!fresh && reuse.unchanged()) {
+                this.skippedFrames = (this.skippedFrames || 0) + 1;
+                return true;
+            }
+            this._uploadFrameVertices(byteLength);
+            const timeThisFrame = !repeatOutput
+                && (this._frameLoadArm !== null || this.frames % this._gpuTimerEvery === 0);
             gpuTimer = this._sampledPass || !timeThisFrame ? null : this._beginGpuTimer();
             this._beginPass('scene');
             const bloomEnabled = this._renderScene(batches, camera, feed, qualityLevel);
@@ -5173,7 +5351,7 @@ export class GpuWorldRenderer {
             gl.enable(gl.BLEND);
             this._beginPass('present');
             this._present(qualityLevel, camera, feed);
-            this._renderMarks(marks);
+            this._renderMarks(marks, false, markBatches);
             this.lateMarkRecords = 0;
             this.lateMarkRoleRecords = 0;
             this._endPass('present', 1, this.width * this.height * 4);
@@ -5190,6 +5368,11 @@ export class GpuWorldRenderer {
             this.records = renderedRecords;
             this.batches = batches.length;
             this.frames++;
+            reuse.commit();
+            this._lastRenderInput = input;
+            this._freshOutputThisTask = true;
+            queueMicrotask(this._expireFreshOutput ||= () => { this._freshOutputThisTask = false; });
+            if (repeatOutput) return true;
             const totalMs = performance.now() - started;
             const shaderCpuMs = Math.max(0, totalMs - this._frameUploadMs);
             this.uploadMs = ema(this.uploadMs, this._frameUploadMs);
@@ -5238,6 +5421,7 @@ export class GpuWorldRenderer {
             width: this.width,
             height: this.height,
             frames: this.frames,
+            skippedFrames: this.skippedFrames || 0,
             records: this.records,
             batches: this.batches,
             markRecords: this.markRecords,
@@ -5416,10 +5600,149 @@ export class GpuWorldRenderer {
     }
 }
 
+// Stage the actual uniform setter stream and its sampler bindings once, then
+// replay it only when repainting. Float/int conversion matches the GPU API.
+// Command arguments and vector storage grow only when the stream shape grows.
+class GlFrameCommands {
+    constructor(gl) {
+        this._gl = gl;
+        this._commands = [];
+        this._count = 0;
+        const functions = new Map();
+        const stage = this;
+        this.gl = new Proxy(gl, {
+            get(target, name) {
+                const value = target[name];
+                if (typeof value !== 'function') return value;
+                let fn = functions.get(name);
+                if (!fn) {
+                    const recorded = String(name).startsWith('uniform')
+                        || name === 'useProgram' || name === 'activeTexture'
+                        || name === 'bindTexture' || name === 'texParameteri';
+                    fn = recorded
+                        ? function () { stage._record(name, arguments); }
+                        : value.bind(target);
+                    functions.set(name, fn);
+                }
+                return fn;
+            },
+        });
+    }
+
+    begin() {
+        this._count = 0;
+    }
+
+    _record(name, args) {
+        const index = this._count++;
+        const command = this._commands[index] ||= {
+            args: [], vectors: [], f32: new Float32Array(4), i32: new Int32Array(4),
+        };
+        command.name = name;
+        command.uniform = String(name).startsWith('uniform');
+        command.integer = /[iu]v?$/.test(name);
+        command.args.length = args.length;
+        command.args[0] = args[0];
+        const numeric = command.integer ? command.i32 : command.f32;
+        for (let arg = 1; arg < args.length; arg++) {
+            const value = args[arg];
+            if (command.uniform && (Array.isArray(value) || ArrayBuffer.isView(value))) {
+                const Type = command.integer ? Int32Array : Float32Array;
+                let vector = command.vectors[arg];
+                if (!(vector instanceof Type) || vector.length !== value.length) {
+                    vector = command.vectors[arg] = new Type(value.length);
+                }
+                vector.set(value);
+                command.args[arg] = vector;
+                numeric[arg - 1] = 0;
+            } else if (command.uniform) {
+                numeric[arg - 1] = value;
+                command.args[arg] = numeric[arg - 1];
+            } else {
+                command.args[arg] = value;
+            }
+        }
+    }
+
+    track(reuse) {
+        reuse.scalar(this._count);
+        for (let index = 0; index < this._count; index++) {
+            const command = this._commands[index];
+            reuse.scalar(command.name);
+            reuse.scalar(command.args.length);
+            reuse.scalar(command.args[0]);
+            if (command.uniform) {
+                reuse.bytes(command.integer ? command.i32 : command.f32, (command.args.length - 1) * 4);
+                for (let arg = 1; arg < command.args.length; arg++) {
+                    const value = command.args[arg];
+                    if (ArrayBuffer.isView(value)) reuse.bytes(value);
+                }
+            } else {
+                for (let arg = 1; arg < command.args.length; arg++) reuse.scalar(command.args[arg]);
+            }
+        }
+    }
+
+    replay() {
+        for (let index = 0; index < this._count; index++) {
+            const command = this._commands[index];
+            this._gl[command.name].apply(this._gl, command.args);
+        }
+    }
+}
+
 export function createGpuWorldRenderer({ canvas, enabled = true } = {}) {
     if (!canvas?.getContext) return null;
     const renderer = new GpuWorldRenderer(canvas, { enabled });
     return renderer.supported ? renderer : null;
+}
+
+// Fence a resident or hybrid WebGL2 frame without ever waiting on the CPU.
+// The caller snapshots the drawing buffer in this task, then reads its tiny
+// Canvas composite after completion; cancellation owns the fence and RAF.
+export function snapshotWebglFence(gl) {
+    if (!gl || gl.isContextLost() || typeof requestAnimationFrame !== 'function') return null;
+    let sync;
+    try {
+        sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (!sync) return null;
+        gl.flush();
+    } catch {
+        if (sync) gl.deleteSync(sync);
+        return null;
+    }
+    let frame = null;
+    let settled = false;
+    let complete;
+    const ready = new Promise(resolve => { complete = resolve; });
+    const finish = available => {
+        if (settled) return;
+        settled = true;
+        if (frame !== null) cancelAnimationFrame(frame);
+        try { gl.deleteSync(sync); } catch {}
+        complete(available);
+    };
+    const poll = () => {
+        frame = null;
+        try {
+            if (gl.isContextLost()) {
+                finish(false);
+                return;
+            }
+            const status = gl.clientWaitSync(sync, 0, 0);
+            if (status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED) {
+                finish(true);
+            } else if (status === gl.TIMEOUT_EXPIRED) {
+                frame = requestAnimationFrame(poll);
+            } else {
+                finish(false);
+            }
+        } catch {
+            finish(false);
+        }
+    };
+    frame = requestAnimationFrame(poll);
+    return { ready, cancel: () => finish(false) };
 }
 
 // The browser's WebGL2 rasterizer, probed once per page on throwaway

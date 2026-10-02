@@ -279,6 +279,12 @@ export class App {
             if (!this.assets) this.assets = new AssetManager();
             const assetMetadataPromise = this._prepareAssetMetadata({ signal });
             const rendererModulePromise = this._getRendererModule();
+            // Fetch the most-recent terrain candidate while sprite assets load;
+            // the first frame validates its key against settled season/snow.
+            this._terrainArtifactBoot ||= import('./character-mode/TerrainArtifactStore.js').then(({ TerrainArtifactStore }) => {
+                const store = new TerrainArtifactStore();
+                return { store, prefetched: store.prefetchLatest() };
+            }).catch(() => null);
             // Stage B — the default WebGPU world (adapter, device, pipelines)
             // resolves beside the asset fetch; `_loadRenderer` takes it over.
             rendererModulePromise
@@ -1224,7 +1230,11 @@ export class App {
         const root = document.getElementById('characterMode');
         if (!root || this._worldRevealRoot) return;
         this._worldRevealRoot = root;
+        this._worldRevealActive = true;
         this._eventUnsubscribers.push(eventBus.on('world:first-frame', (payload = {}) => {
+            // The bounded readback can finish after a Dashboard trip. Never
+            // re-open hidden World canvases with that obsolete activation.
+            if (!this._worldRevealActive) return;
             this._worldReturnPose = null;
             // A Dashboard hold is this frame's own colour already; anything
             // else (the boot sky, a trip the World never drew for) repaints.
@@ -1234,6 +1244,7 @@ export class App {
         }));
         this._eventUnsubscribers.push(eventBus.on('mode:changed', mode => {
             const renderer = this.renderer;
+            this._worldRevealActive = mode !== 'dashboard';
             if (mode === 'dashboard') {
                 this._worldReturnPose = renderer?.camera?.capturePose?.() || null;
                 // Measured before the renderer suspends its surfaces (its own
@@ -1641,12 +1652,14 @@ export class App {
 
             candidate = new module.IsometricRenderer(this.world, {
                 assets: this.assets,
+                terrainArtifactBoot: this._terrainArtifactBoot,
                 chronicleStore: this.chronicleStore,
                 modal: this.modal,
                 moodService: this.moodService,
                 biographyService: this.biographyService,
                 affinityService: this.affinityService,
             });
+            this._terrainArtifactBoot = null;
             // Wave 10 — the WebGPU world (`?renderer=webgpu`, and Stage B's
             // Chromium default) is resolved before the synchronous mount, so
             // no frame is presented before the backend is known. The default

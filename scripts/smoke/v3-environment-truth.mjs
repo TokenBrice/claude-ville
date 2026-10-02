@@ -446,6 +446,9 @@ async function capture(page, { pose, zoom, keepAmbient = false }) {
   if (keepAmbient) await reassertPose(page, pose, zoom);
   else await pinPose(page, pose, zoom);
   await page.waitForTimeout(300);
+  await page.evaluate(() => {
+    if (!window.__claudeVilleApp.renderer.renderNow()) throw new Error('environment capture repaint failed');
+  });
   const before = await collectDom(page);
   const png = PNG.sync.read(await page.screenshot());
   const after = await collectDom(page);

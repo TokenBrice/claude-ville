@@ -464,9 +464,22 @@ function buildCoastField(renderer) {
         }
     }
 
+    return coastFieldFrom({
+        key: coastFieldKey(renderer),
+        sub: SUB,
+        pad: PAD,
+        grid: n,
+        signed,
+        caps,
+        buildMs: performance.now() - started,
+    });
+}
+
+function coastFieldFrom(snapshot) {
+    const { signed, caps, sub, pad, grid: n } = snapshot;
     const signedDistance = (u, v) => {
-        let gx = (u + 0.5 + PAD) * SUB - 0.5;
-        let gy = (v + 0.5 + PAD) * SUB - 0.5;
+        let gx = (u + 0.5 + pad) * sub - 0.5;
+        let gy = (v + 0.5 + pad) * sub - 0.5;
         if (gx < 0) gx = 0; else if (gx > n - 1.001) gx = n - 1.001;
         if (gy < 0) gy = 0; else if (gy > n - 1.001) gy = n - 1.001;
         const x0 = gx | 0;
@@ -480,13 +493,7 @@ function buildCoastField(renderer) {
     };
 
     return {
-        key: coastFieldKey(renderer),
-        sub: SUB,
-        pad: PAD,
-        grid: n,
-        signed,
-        caps,
-        buildMs: performance.now() - started,
+        ...snapshot,
         signedDistance,
         isWater: (u, v) => signedDistance(u, v) > 0,
         // Iso inverse of the tile projection: world px -> fractional tile.
@@ -510,6 +517,102 @@ export function getCoastField(renderer) {
     renderer._coastField = buildCoastField(renderer);
     renderer.coastField = renderer._coastField;
     return renderer._coastField;
+}
+
+export function coastArtifactInputsSettled(renderer) {
+    for (const building of renderer.world?.buildings?.values?.() || []) {
+        const id = `building.${building.type}`;
+        if (!renderer.assets?.getEntry?.(id)?.emissiveSidecar) continue;
+        const glow = emissiveSidecarFor(renderer.assets, id);
+        if (!glow || !(glow.naturalWidth || glow.width) || !(glow.naturalHeight || glow.height)
+            || glow.complete === false) return false;
+    }
+    return true;
+}
+
+// Installed coast state: the continuous field and its accessors, the classified
+// coast/depth/cap/outer arrays, cliff/reflection roles, mirror bases and accents,
+// coverage, and all cycle/RG/mirror-stop texture inputs (including lazy texels).
+// Building references must resolve to this World's objects, never IDB clones.
+export function captureCoastArtifact(renderer) {
+    const field = renderer._coastField;
+    const bake = renderer._coastBake;
+    if (!field || !bake || bake.coast?.layer || bake.coast?.baked) return null;
+    const { signedDistance, isWater, signedDistanceAtWorld, depthCapAt, ...fieldData } = field;
+    const coast = bake.coast ? { ...bake.coast } : null;
+    if (coast?.mirrorAccents) {
+        const buildingKey = new Map([...renderer.world.buildings].map(([id, building]) => [building, id]));
+        coast.mirrorAccents = coast.mirrorAccents.map(({ building, texels, ...accent }) => ({
+            ...accent,
+            buildingId: buildingKey.get(building),
+            texels: texels.map(({ building: owner, ...texel }) => ({ ...texel, buildingId: buildingKey.get(owner) })),
+        }));
+    }
+    return { field: fieldData, bake: { ...bake, coast, waterFields: bake.waterFields ? { ...bake.waterFields } : null } };
+}
+
+function byteField(value, count, Type = Uint8Array) {
+    return value instanceof Type && value.length === count;
+}
+
+export function validCoastArtifact(snapshot) {
+    const field = snapshot?.field;
+    const bake = snapshot?.bake;
+    if (field?.sub !== SUB || field.pad !== PAD || field.grid !== GRID
+        || typeof field.key !== 'string' || !Number.isFinite(field.buildMs)
+        || !byteField(field.signed, GRID * GRID, Float32Array)
+        || !byteField(field.caps, MAP_SIZE * MAP_SIZE)
+        || !bake || typeof bake.key !== 'string' || !Number.isFinite(bake.fieldMs) || !Number.isFinite(bake.bakeMs)) return false;
+    const coast = bake.coast;
+    if (coast === null) return bake.waterFields === null;
+    if (!coast || !Number.isInteger(coast.x) || !Number.isInteger(coast.y)
+        || !Number.isInteger(coast.cols) || !Number.isInteger(coast.rows)
+        || coast.cols <= 0 || coast.rows <= 0 || coast.cols * coast.rows > 7_000_000
+        || coast.baked !== null || coast.layer !== undefined) return false;
+    const count = coast.cols * coast.rows;
+    if (!byteField(coast.classes, count) || !byteField(coast.depth, count, Float32Array)
+        || !byteField(coast.caps, count) || !byteField(coast.outer, count)) return false;
+    for (const name of ['reflect', 'covered']) if (coast[name] !== undefined && !byteField(coast[name], count)) return false;
+    if (coast.mirrorBase !== undefined && !byteField(coast.mirrorBase, count * 4)) return false;
+    if (!Array.isArray(coast.mirrorAccents)) return false;
+    for (const accent of coast.mirrorAccents) {
+        if (accent.buildingId === undefined || typeof accent.type !== 'string' || !Array.isArray(accent.texels)) return false;
+        for (const t of accent.texels) {
+            // Fixture lamps use their baked RGB directly; only emissive window
+            // accents carry sheet coordinates for the later room-gate lookup.
+            if (t.buildingId !== accent.buildingId || !['at', 'x', 'y'].every(k => Number.isInteger(t[k]))
+                || typeof t.lamp !== 'boolean'
+                || (t.lamp ? !['sx', 'sy'].every(k => t[k] === undefined || Number.isInteger(t[k]))
+                    : !['sx', 'sy'].every(k => Number.isInteger(t[k])))
+                || !Array.isArray(t.rgb) || t.rgb.length !== 3 || !t.rgb.every(Number.isFinite)) return false;
+        }
+    }
+    const water = bake.waterFields;
+    return water?.cols === coast.cols && water.rows === coast.rows && water.x === coast.x && water.y === coast.y
+        && typeof water.key === 'string' && typeof water.revision === 'string' && Number.isFinite(water.bakeMs)
+        && byteField(water.cycleOffset, count) && byteField(water.coastField, count * 2) && byteField(water.mirrorStops, count * 2)
+        && (water.texels === undefined || byteField(water.texels, count * 4));
+}
+
+export function restoreCoastArtifact(renderer, snapshot) {
+    if (!validCoastArtifact(snapshot)) throw new Error('Invalid terrain coast artifact');
+    const coast = snapshot.bake.coast ? { ...snapshot.bake.coast } : null;
+    if (coast?.mirrorAccents) {
+        coast.mirrorAccents = coast.mirrorAccents.map(({ buildingId, texels, ...accent }) => {
+            const building = renderer.world.buildings.get(buildingId);
+            if (!building || building.type !== accent.type) throw new Error('Unresolved terrain mirror building');
+            return {
+                ...accent,
+                building,
+                texels: texels.map(({ buildingId: owner, ...texel }) => ({ ...texel, building })),
+            };
+        });
+    }
+    const field = coastFieldFrom(snapshot.field);
+    renderer._coastField = renderer.coastField = field;
+    renderer._coastBake = { ...snapshot.bake, coast };
+    renderer._coastMoodLayer = null;
+    renderer._mirrorAccentLayers = null;
 }
 
 // ---------------------------------------------------------------------------

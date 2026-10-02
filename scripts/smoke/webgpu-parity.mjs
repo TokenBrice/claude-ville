@@ -301,6 +301,7 @@ function installParityHelpers() {
     const records = snapshotSources(ctx.records);
     const marks = ctx.marks ? snapshotSources(ctx.marks) : null;
     T.frame = {
+      forceFreshOutput: true,
       records: records.records,
       camera: ctx.camera,
       feed: ctx.feed,
@@ -327,6 +328,7 @@ function installParityHelpers() {
   // top-left rows. Called in the render's own task (the drawing buffer is not
   // preserved across tasks).
   const glReadback = (renderer) => {
+    if (!renderer.ensureFreshOutput()) return null;
     const gl = renderer.gl;
     const width = renderer.width;
     const height = renderer.height;

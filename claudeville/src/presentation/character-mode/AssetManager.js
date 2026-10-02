@@ -304,6 +304,11 @@ export class AssetManager {
         // Per-asset miss records ({id, path}) collected across this load() pass;
         // flushed as one summary warn when load() resolves.
         this._loadMisses = [];
+        // TerrainArtifactStore's settled-input gate reads assetVersion,
+        // manifest, _entryById, _decodedLoaded, _materialAssetsEnabled,
+        // _materialDecodedLoaded, _suspended, _disposed, _evictedOptionalEntries,
+        // _optionalReloads and _optionalLoadMisses; its config hash also reads
+        // atlasMetadata. Keep these decode/readiness semantics together.
         this._decodedLoaded = false;
         this._materialAssetsEnabled = options.materialAssets === true;
         this._materialDecodedLoaded = false;

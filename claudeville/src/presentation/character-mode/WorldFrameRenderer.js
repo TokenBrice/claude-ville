@@ -505,12 +505,12 @@ export function collectDampMarks({
 
 // Follow-up after layer extraction: move private renderer calls used here into
 // explicit layer/context methods so this module stays a frame orchestrator.
-export function renderWorldFrame(renderer, dt = 16) {
+export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = false) {
     const ctx = renderer.ctx;
     const canvas = renderer.canvas;
     const overlayCtx = renderer.overlayCtx;
-    if (!ctx || !canvas || !overlayCtx) return;
-    if (!canvas.width || !canvas.height) return;
+    if (!ctx || !canvas || !overlayCtx) return false;
+    if (!canvas.width || !canvas.height) return false;
     const frameTimer = beginFrameTiming(renderer);
     const collectStructuralDiagnostics = renderer.debugOverlay?.enabled === true;
     const paintCounts = collectStructuralDiagnostics
@@ -550,9 +550,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     // frames will render fat-pixel; the Canvas world takes the stepped family.
     if (renderer.camera) renderer.camera.fatFlight = gpuWorldActive;
     const postFxActive = !gpuWorldActive && renderer.postFx?.isActive?.() === true;
-    renderer._setPostFxCanvasVisible?.(gpuWorldActive || postFxActive);
-    renderer._resetScreenTransform(overlayCtx);
-    overlayCtx.clearRect(0, 0, viewport.width, viewport.height);
     // #28 integration — fire the child sprite's one-shot handoff ack-bob once the
     // director's baton reaches it (progress near terminus), deduped per scene id.
     if (villageSnapshot?.handoffs?.length) {
@@ -588,6 +585,12 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer._groundState = groundStateForAtmosphere(atmosphere);
     // 5.2 — flora props step their winter state with the season and bucket.
     renderer._syncPropWinter?.();
+    // Settle the terrain key before any presented surface changes. Only the
+    // initial boot loop may briefly wait for a matching artifact read.
+    if (renderer._prepareTerrainArtifactFrame?.(allowTerrainArtifactWait) === false) return false;
+    renderer._setPostFxCanvasVisible?.(gpuWorldActive || postFxActive);
+    renderer._resetScreenTransform(overlayCtx);
+    overlayCtx.clearRect(0, 0, viewport.width, viewport.height);
     renderer._surfaceWetness = Math.max(clamp01(Number(wx?.precipitation) || 0), renderer._groundState.wetness);
     // 5.2 roofs / 6.6 — roof snow, wet slate and eave drips step with the
     // same ground state and the live precipitation.
@@ -882,6 +885,7 @@ export function renderWorldFrame(renderer, dt = 16) {
                 out: renderer._attentionMarkRecords || (renderer._attentionMarkRecords = []),
             })
             : null;
+        gpuRenderContext.forceFreshOutput = renderer._requiresFreshGpuOutput?.() === true;
         gpuWorldRendered = renderer.gpuWorld?.render?.(gpuRenderContext) === true;
         gpuMarksDrawn = gpuWorldRendered
             && gpuRenderContext.marks?.length > 0
@@ -1092,6 +1096,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         const renderStats = renderer._lastRenderStats || (renderer._lastRenderStats = {});
         renderStats.timings = timings;
     }
+    return true;
 }
 
 // 10.2 — this frame's verified-success peak texels (cleared from the overlay
@@ -1101,7 +1106,11 @@ export function renderWorldFrame(renderer, dt = 16) {
 // all, the overlay paints the cream back where it cleared it.
 function drawPeakMarks(renderer, overlayCtx, t1Marks) {
     const rects = takePeakMarks();
-    if (rects.length && !handPeakMarksToGpu(renderer, rects, t1Marks)) {
+    // A peak is discovered by the overlay after the resident submission. If
+    // that submission reused output, repaint it in this task before the late
+    // pass (WebGPU's prior getCurrentTexture is no longer drawable).
+    const fresh = !rects.length || renderer.gpuWorld.ensureFreshOutput?.() !== false;
+    if (rects.length && (!fresh || !handPeakMarksToGpu(renderer, rects, t1Marks))) {
         overlayCtx.save();
         overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
         overlayCtx.globalAlpha = 1;

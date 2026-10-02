@@ -49,8 +49,13 @@ import { setPennantWeather } from './PixelPennant.js';
 import { openGroundTiles } from './AmbientGround.js';
 import { installGroundBake } from './GroundBake.js';
 import { OCEAN_HORIZON_WORLD_Y, drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
+import { snowBucketOf } from './GroundState.js';
+import {
+    TerrainArtifactStore, terrainArtifactConfiguration, terrainArtifactInputsSettled, terrainArtifactKey, terrainContentHash,
+    captureTerrainArtifactFields, captureTerrainArtifact, restoreTerrainArtifact,
+} from './TerrainArtifactStore.js';
 import { drawCanvasWaterState } from './CanvasWaterState.js';
-import { REVEAL_SAMPLE_H, REVEAL_SAMPLE_W, sampleRevealBands } from './RevealBands.js';
+import { REVEAL_SAMPLE_H, REVEAL_SAMPLE_W, sampleRevealBands, sampleRevealBandsAsync } from './RevealBands.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
 import { BridgeLanterns } from './BridgeLanterns.js';
@@ -81,13 +86,14 @@ import { buildRestSeatPropSprites } from './RestSeats.js';
 import { createDepthDrawable, propPartSortY } from './DrawablePass.js';
 import {
     renderWorldFrame,
+    groundStateForAtmosphere,
     collectDampMarks,
     isoFromTileKey,
     isoFromTile,
 } from './WorldFrameRenderer.js';
 import { createPostFx } from './postfx/PostFx.js';
 import { createPostFxFeed } from './postfx/PostFxFeed.js';
-import { createGpuWorldRenderer, probeWebgl2Raster } from './gpu/GpuWorldRenderer.js';
+import { createGpuWorldRenderer, probeWebgl2Raster, snapshotWebglFence } from './gpu/GpuWorldRenderer.js';
 import {
     GPU_ATTENTION_LIGHT_PRIORITY,
     forcedGpuWorldRendererMode,
@@ -826,6 +832,8 @@ export class IsometricRenderer {
         this._unsubscribers = [];
         this.debugOverlay = null;
         this._debugOverlayModulePromise = null;
+        this._terrainArtifactBoot = options.terrainArtifactBoot;
+        this._prepareTerrainArtifactRead();
     }
 
     _generatePaths() {
@@ -2360,8 +2368,10 @@ export class IsometricRenderer {
     }
 
     releaseVolatileCaches() {
+        this._releaseTerrainArtifactWork();
         releaseCanvasBackingStore(this.terrainCache);
         this.terrainCache = null;
+        this._terrainResident = null;
         this.terrainCacheKey = '';
         this.terrainCacheBounds = null;
         this.terrainCacheMeta = null;
@@ -2528,7 +2538,9 @@ export class IsometricRenderer {
             return true;
         }
         if (this.assets?.resume) {
-            const assetsReady = await this.assets.resume();
+            const assetsReadyPromise = this.assets.resume();
+            this._prepareTerrainArtifactRead();
+            const assetsReady = await assetsReadyPromise;
             if (!assetsReady) return false;
         }
         if (
@@ -3031,28 +3043,40 @@ export class IsometricRenderer {
         // A Dashboard return that lands before the opening keeps the boot gate.
         if (this._firstFrameReason === 'boot-pending' && reason !== 'boot') return;
         this._firstFrameReason = reason;
+        this._revealSnapshotPending = null;
         this.camera?.setPresented?.(false);
         // A static scene may skip idle frames; the armed frame has to draw.
         this._invalidateIdleFrame();
     }
 
-    // Runs right after a render, in the same task, so the bands it measures
-    // are the frame the compositor is about to present (the WebGL surface
-    // does not preserve its drawing buffer past that task).
+    // Snapshot in the render task (WebGL's drawing buffer expires after it),
+    // then publish after GPU completion and the tiny readback, or the bounded
+    // null fallback. Keep the activation armed so a backend swap cannot pass it.
     _signalFirstFrame() {
         const reason = this._firstFrameReason;
-        if (!reason || reason === 'boot-pending') return;
-        this._firstFrameReason = null;
-        this.camera?.setPresented?.(true);
+        if (!reason || reason === 'boot-pending' || this._revealSnapshotPending) return;
         const horizonY = this._horizonScreenFraction();
-        const measured = this._sampleFrameBands(4, horizonY);
-        eventBus.emit('world:first-frame', {
-            reason,
+        const snapshot = this._revealSnapshotPending = {
+            reason, horizonY, cell: this._revealCell(),
             sky: this._lastAtmosphere?.sky?.palette || null,
-            sea: measured?.sea || null,
-            horizonY,
-            bands: measured?.bands || null,
-            cell: this._revealCell(),
+        };
+        let pending;
+        try {
+            pending = this._sampleFrameBands(4, horizonY, true);
+        } catch {
+            pending = null;
+        }
+        Promise.resolve(pending).catch(() => null).then(measured => {
+            // A Dashboard trip/re-arm or renderer teardown supersedes this
+            // snapshot; it must never reveal a different activation.
+            if (this._revealSnapshotPending !== snapshot || this._disposed) return;
+            this._revealSnapshotPending = null;
+            this._firstFrameReason = null;
+            this.camera?.setPresented?.(true);
+            eventBus.emit('world:first-frame', {
+                ...snapshot, sea: measured?.sea || null, bands: measured?.bands || null,
+            });
+            this._scheduleTerrainArtifactWrite();
         });
     }
 
@@ -3072,12 +3096,26 @@ export class IsometricRenderer {
     // The fx canvas is read through the World renderer's readout when it has
     // one: the WebGPU HDR canvas (rgba16float) cannot be drawn into a 2D
     // canvas, so it hands over an SDR copy of the frame this task presented.
-    _sampleFrameBands(count, horizonY) {
+    _sampleFrameBands(count, horizonY, asyncReadback = false) {
         let fx = this.fxCanvas;
-        if (fx && fx.style.display !== 'none' && this.gpuWorld?.readoutSurface) {
-            fx = this.gpuWorld.readoutSurface(REVEAL_SAMPLE_W, REVEAL_SAMPLE_H);
+        let readout = null;
+        if (fx && fx.style.display !== 'none') {
+            if (asyncReadback) {
+                readout = this.gpuWorld?.snapshotReadoutSurface
+                    ? this.gpuWorld.snapshotReadoutSurface(REVEAL_SAMPLE_W, REVEAL_SAMPLE_H)
+                    : snapshotWebglFence((this.gpuWorld || this.postFx)?.gl);
+                // A missing GPU fence/readout is an unreadable whole frame,
+                // not a partial measurement of just the two Canvas layers.
+                if (!readout) return Promise.resolve(null);
+                fx = readout.surface || fx;
+            } else if (this.gpuWorld?.readoutSurface) {
+                fx = this.gpuWorld.readoutSurface(REVEAL_SAMPLE_W, REVEAL_SAMPLE_H);
+            }
         }
-        return sampleRevealBands([this.canvas, fx, this.overlayCanvas], { count, horizonY });
+        const surfaces = [this.canvas, fx, this.overlayCanvas];
+        return asyncReadback
+            ? sampleRevealBandsAsync(surfaces, { count, horizonY, ...readout })
+            : sampleRevealBands(surfaces, { count, horizonY });
     }
 
     // 0.3 (c) — the World is about to be suspended for Dashboard: draw one
@@ -3108,13 +3146,20 @@ export class IsometricRenderer {
             || !this._lastAtmosphere
         ) return false;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+        const previousFreshOutput = this._forceFreshGpuOutput;
+        this._forceFreshGpuOutput = true;
         try {
             this._stepFallbackPrep({ now: true });
             const swap = this._worldSwap?.fallback ? this._beginWorldSwap() : null;
+            let painted;
             try {
-                this._render(0);
+                painted = this._render(0);
             } finally {
                 if (swap) this._endWorldSwap(swap);
+            }
+            if (painted === false) {
+                this._recordFrameSuccess();
+                return false;
             }
             this._recordIdleRenderState();
             this._signalFirstFrame();
@@ -3122,6 +3167,8 @@ export class IsometricRenderer {
         } catch (error) {
             this._reportFrameFailure(error, 'render');
             return false;
+        } finally {
+            this._forceFreshGpuOutput = previousFreshOutput;
         }
         return true;
     }
@@ -4288,6 +4335,19 @@ export class IsometricRenderer {
         this._idleFrameDirty = true;
     }
 
+    _requiresFreshGpuOutput() {
+        return Boolean(
+            this._forceFreshGpuOutput
+            || this._firstFrameReason
+            || this._revealSnapshotPending
+            || this._idleFrameDirty
+            || this._worldSwap
+            || this._contextLost
+            || this.gpuWorld?.hasPendingGpuQueries?.()
+            || this.gpuWorld?._readbackPending
+        );
+    }
+
     _cameraIdleStable() {
         const camera = this.camera;
         if (!camera) return false;
@@ -4380,7 +4440,9 @@ export class IsometricRenderer {
             || assets?._materialLoadPromise
             || assets?._characterLoads?.size
             || assets?._derivedArtQueue?.size
-            || this.gpuWorld?.pendingGpuQueries?.length
+            || this.gpuWorld?.hasPendingGpuQueries?.()
+            || this._firstFrameReason
+            || this._revealSnapshotPending
         );
         if (pending) {
             this._idleResourceWorkObserved = true;
@@ -4396,6 +4458,9 @@ export class IsometricRenderer {
     }
 
     _canSkipIdleFrame(now = Date.now()) {
+        // Resident frames always stage their exact GPU inputs. The tableau
+        // shortcut is only for Canvas; it must never bypass the byte gate.
+        if (this.gpuWorld?.isActive?.()) return false;
         return this.motionScale <= 0
             && !this._idleFrameDirty
             && this._cameraIdleStable()
@@ -4404,6 +4469,7 @@ export class IsometricRenderer {
     }
 
     _recordIdleRenderState() {
+        this._worldFramePresented = true;
         const camera = this.camera;
         if (camera) {
             this._idleLastRenderCamera.x = camera.x;
@@ -4451,12 +4517,7 @@ export class IsometricRenderer {
             }
             if (this._frameFailureStats.paused) return;
             stage = 'idle';
-            if (this._canSkipIdleFrame(Date.now())) {
-                this._recordFrameEnvelope(0, 0, 0, frameGapMs, null);
-                if (this._performanceSamples) this._recordPerformanceSample(0, 0, 0);
-                this._trackFps(now);
-                return;
-            }
+            const skipIdlePaint = this._canSkipIdleFrame(Date.now());
             stage = 'clock';
             advanceMotionClock(this._motionClock, dt, this.motionScale ?? 1);
             this.waterFrame = virtualFramesFor(this.motionTimeMs) * WATER_FRAME_STEP;
@@ -4470,6 +4531,14 @@ export class IsometricRenderer {
                 perf.endRenderStage(updateToken);
                 updateToken = null;
             }
+            if (skipIdlePaint && !this._requiresFreshGpuOutput()) {
+                stage = 'telemetry';
+                this._recordFrameEnvelope(updateMs, 0, afterUpdate - updateStart, frameGapMs, null);
+                if (this._performanceSamples) this._recordPerformanceSample(updateMs, 0, afterUpdate - updateStart);
+                this._trackFps(now);
+                this._recordFrameSuccess();
+                return;
+            }
             stage = 'render';
             renderStart = afterUpdate;
             if (perf?.enabled) renderToken = perf.beginRenderStage('world-render');
@@ -4477,8 +4546,12 @@ export class IsometricRenderer {
             // WebGL2 mount takes over at this frame when it draws it; a
             // failed WebGPU world hands over to its WebGL2 fallback the same way.
             const worldSwap = this._beginWorldSwap();
+            let painted;
             try {
-                this._render(dt);
+                const allowTerrainArtifactWait = !this._worldFramePresented
+                    && this._worldResourceGeneration === 0
+                    && (this._firstFrameReason === 'boot' || this._firstFrameReason === 'boot-pending');
+                painted = this._render(dt, allowTerrainArtifactWait);
             } finally {
                 if (worldSwap) this._endWorldSwap(worldSwap);
             }
@@ -4487,23 +4560,25 @@ export class IsometricRenderer {
             // same frame renders again on the WebGL2 fallback (or, without
             // WebGL2, on the Canvas world) in this task, so the page never
             // presents the broken one.
-            if (!worldSwap && this.worldRendererMode === 'webgpu' && this.gpuWorld?.failure) {
+            if (painted !== false && !worldSwap && this.worldRendererMode === 'webgpu' && this.gpuWorld?.failure) {
                 this._fallBackFromWebGpu({ inFrame: true });
                 const fallbackSwap = this._beginWorldSwap();
                 if (fallbackSwap) {
                     try {
-                        this._render(0);
+                        painted = this._render(0);
                     } finally {
                         this._endWorldSwap(fallbackSwap);
                     }
                 } else if (this.worldRendererMode === 'canvas') {
-                    this._render(0);
+                    painted = this._render(0);
                 }
             }
             const afterRender = performance.now();
             renderMs = afterRender - renderStart;
-            this._recordIdleRenderState();
-            this._signalFirstFrame();
+            if (painted !== false) {
+                this._recordIdleRenderState();
+                this._signalFirstFrame();
+            }
             if (renderToken) {
                 perf.endRenderStage(renderToken);
                 renderToken = null;
@@ -6273,7 +6348,7 @@ export class IsometricRenderer {
         return 0.65;
     }
 
-    _render(dt = 16) {
+    _render(dt = 16, allowTerrainArtifactWait = false) {
         // #2 — reset the mark governor once per frame before any draw pass runs.
         // Region size scales with zoom so a "screen region" stays roughly fixed
         // in screen pixels regardless of the integer zoom level.
@@ -6282,7 +6357,7 @@ export class IsometricRenderer {
             motionScale: this.motionScale,
         });
         this._syncSemanticSummary();
-        renderWorldFrame(this, dt);
+        return renderWorldFrame(this, dt, allowTerrainArtifactWait);
     }
 
     _syncSemanticSummary() {
@@ -7228,6 +7303,7 @@ export class IsometricRenderer {
         const bounds = this._terrainCacheBounds();
         const meta = this._getTerrainCacheMeta(bounds);
         if (!meta.singleSurfaceWithinBudget) {
+            this._releaseTerrainArtifactWork();
             releaseCanvasBackingStore(this.terrainCache);
             this.terrainCache = null;
             this.terrainCacheKey = '';
@@ -7250,6 +7326,24 @@ export class IsometricRenderer {
             return { canvas: this._terrainResident, bounds, resident: true };
         }
         this._terrainResident = null;
+        const persistedKey = this._persistedTerrainKey(bounds, dpr, season);
+        const ready = this._terrainArtifactRead?.ready;
+        if (persistedKey && ready?.key === persistedKey) {
+            this._discardTerrainArtifactWrite();
+            releaseCanvasBackingStore(this.terrainCache);
+            Object.assign(this, ready.host);
+            this.terrainCache = ready.canvas;
+            this.terrainCacheBounds = bounds;
+            this.terrainCacheKey = key;
+            this._terrainArtifactRead = null;
+            this._terrainArtifactStats.hits++;
+            this._terrainArtifactStats.state = 'hit';
+            return { canvas: this.terrainCache, bounds };
+        }
+        // Only the initial loop frame may briefly hold for a matching read.
+        // Every other miss keeps today's synchronous bake in this same frame.
+        this._discardTerrainArtifactRead();
+        this._discardTerrainArtifactWrite();
 
         releaseCanvasBackingStore(this.terrainCache);
 
@@ -7265,6 +7359,10 @@ export class IsometricRenderer {
         this.terrainCache = canvas;
         this.terrainCacheBounds = bounds;
         this.terrainCacheKey = key;
+        this._terrainArtifactStats.bakes++;
+        this._terrainArtifactStats.misses++;
+        this._terrainArtifactStats.state = 'baked';
+        this._queueTerrainArtifactWrite(canvas, bounds, dpr, season);
         return { canvas, bounds };
     }
 
@@ -7277,14 +7375,212 @@ export class IsometricRenderer {
         const canvas = this.terrainCache;
         if (!canvas || this._pendingWebGpu || this._worldSwap) return;
         this._terrainResident = { width: canvas.width, height: canvas.height, gpuResident: true, key: this.terrainCacheKey };
-        releaseCanvasBackingStore(canvas);
+        if (this._terrainArtifactWrite?.canvas === canvas) this._terrainArtifactWrite.ownsCanvas = true;
+        else releaseCanvasBackingStore(canvas);
         this.terrainCache = null;
+    }
+
+    _persistedTerrainInputs(bounds, dpr, season) {
+        const atmosphere = this._lastAtmosphere ?? this.atmosphereState?.snapshot?.();
+        const ground = this._groundState ?? groundStateForAtmosphere(atmosphere);
+        return { assetVersion: this.assets?.assetVersion, bounds, dpr, season,
+            sceneryRevision: this._terrainSceneryRevision || 0, snowBucket: snowBucketOf(ground?.snowCover), frost: ground?.frost ? 1 : 0 };
+    }
+
+    _persistedTerrainKey(bounds, dpr, season) {
+        if (!this._terrainArtifactConfigHash || !terrainArtifactInputsSettled(this)) return null;
+        return terrainArtifactKey({ ...this._persistedTerrainInputs(bounds, dpr, season), configHash: this._terrainArtifactConfigHash });
+    }
+
+    _prepareTerrainArtifactRead() {
+        this._terrainArtifactStats ||= { reads: 0, hits: 0, misses: 0, bakes: 0, writes: 0, state: 'unavailable' };
+        if (this._disposed || !globalThis.indexedDB || !globalThis.crypto?.subtle) return;
+        this._terrainArtifactNeedsRead = false;
+        const generation = this._terrainArtifactGeneration || 0;
+        this._terrainArtifactConfigPromise ||= Promise.resolve()
+            .then(() => terrainContentHash(terrainArtifactConfiguration(this), true)).catch(() => null);
+        const boot = this._terrainArtifactBoot;
+        this._terrainArtifactBoot = null;
+        this._terrainArtifactPreparationPending = true;
+        this._terrainArtifactStats.state = 'prefetching';
+        const candidate = Promise.resolve(boot).then(early => {
+            this._terrainArtifactStore ||= early?.store || new TerrainArtifactStore();
+            return early ? early.prefetched : this._terrainArtifactStore.prefetchLatest();
+        }).catch(() => null);
+        this._terrainArtifactPreparation = Promise.all([this._terrainArtifactConfigPromise, candidate]).then(([configHash, prefetched]) => {
+            if (generation !== (this._terrainArtifactGeneration || 0) || this._disposed) return;
+            this._terrainArtifactConfigHash = configHash;
+            this._terrainArtifactPrefetch = prefetched;
+            this._terrainArtifactPreparationPending = false;
+            // Later releases already have settled configuration and atmosphere
+            // inputs. Verify their candidate while decoded sources reload;
+            // publication still requires the frame's settled-source/key gate.
+            // Boot has no frame atmosphere yet and never keys on defaults.
+            if (this._lastAtmosphere && !this.terrainCache && !this._terrainResident) {
+                const bounds = this._terrainCacheBounds();
+                const key = terrainArtifactKey({ ...this._persistedTerrainInputs(bounds, 1, this._currentSeasonToken()), configHash });
+                if (key && this._getTerrainCacheMeta(bounds).singleSurfaceWithinBudget) this._readTerrainArtifact(key, bounds);
+            }
+        });
+    }
+
+    _readTerrainArtifact(key, bounds) {
+        if (!this._terrainArtifactStore || this._terrainArtifactRead?.key === key) return;
+        this._discardTerrainArtifactRead();
+        const read = this._terrainArtifactRead = { key, ready: null, settled: false };
+        const prefetched = this._terrainArtifactPrefetch;
+        this._terrainArtifactPrefetch = undefined;
+        this._terrainArtifactStats.reads++;
+        this._terrainArtifactStats.state = 'reading';
+        this._terrainArtifactReadPromise = this._terrainArtifactStore.get(key, prefetched).then(artifact => {
+            if (this._terrainArtifactRead !== read || this._disposed) return;
+            read.settled = true;
+            if (!artifact) { this._terrainArtifactStats.state = 'miss'; return; }
+            const current = terrainArtifactKey({ ...this._persistedTerrainInputs(bounds, 1, this._currentSeasonToken()),
+                configHash: this._terrainArtifactConfigHash });
+            if (current !== key) { this._terrainArtifactStats.state = 'miss'; return; }
+            if (artifact.dpr !== 1 || ['x', 'y', 'w', 'h'].some(k => artifact.bounds[k] !== bounds[k])) {
+                this._terrainArtifactStore.delete(key);
+                return;
+            }
+            const host = { world: this.world };
+            try {
+                read.ready = { key, host, canvas: restoreTerrainArtifact(host, artifact) };
+                this._terrainArtifactStats.state = 'ready';
+            } catch {
+                this._terrainArtifactStore.delete(key);
+                this._terrainArtifactStats.state = 'miss';
+            }
+        }).catch(() => {
+            if (this._terrainArtifactRead !== read) return;
+            read.settled = true;
+            this._terrainArtifactStats.state = 'miss';
+        });
+    }
+
+    _prepareTerrainArtifactFrame(allowWait = false) {
+        if (this._disposed || !globalThis.indexedDB || !globalThis.crypto?.subtle || !terrainArtifactInputsSettled(this)) return true;
+        if (this._terrainArtifactNeedsRead) this._prepareTerrainArtifactRead();
+        const bounds = this._terrainCacheBounds();
+        if (!this._getTerrainCacheMeta(bounds).singleSurfaceWithinBudget) return true;
+        const season = this._currentSeasonToken();
+        const bakeKey = this._terrainBakeKey(bounds, 1, season);
+        if ((this.terrainCache && this.terrainCacheKey === bakeKey) || this._terrainResident?.key === bakeKey) return true;
+        const key = this._persistedTerrainKey(bounds, 1, season);
+        const candidate = this._terrainArtifactPrefetch;
+        // A known empty/mismatching early lookup never postpones a frame.
+        const canWait = allowWait && !this._worldFramePresented
+            && candidate !== null && (!key || candidate === undefined || candidate.key === key)
+            && (!this._terrainArtifactRead || this._terrainArtifactRead.key === key);
+        if (key && !this._terrainArtifactPreparationPending) this._readTerrainArtifact(key, bounds);
+        const read = this._terrainArtifactRead;
+        if (read?.ready || read?.settled || (!read && !this._terrainArtifactPreparationPending)
+            || (!key && !this._terrainArtifactPreparationPending) || !canWait) return true;
+        const now = performance.now();
+        // Lifetime deadline: changing inputs or restarting a lookup cannot
+        // extend the first-frame hold. A timeout bakes in this same frame.
+        this._terrainArtifactWaitDeadline ??= now + 250;
+        return now >= this._terrainArtifactWaitDeadline;
+    }
+
+    _queueTerrainArtifactWrite(canvas, bounds, dpr, season) {
+        if (!this._terrainArtifactStore || !terrainArtifactInputsSettled(this)) return;
+        // The arrays are immutable once this bake completes. Keep references to
+        // this bake, so a later season/revision cannot change the idle snapshot.
+        const host = { world: this.world, groundField: this.groundField, groundPuddleMask: this.groundPuddleMask,
+            groundBakeMs: this.groundBakeMs, groundWinterBakeMs: this.groundWinterBakeMs,
+            _coastField: this._coastField, _coastBake: this._coastBake };
+        this._terrainArtifactWrite = { canvas, host, bounds: { ...bounds }, dpr,
+            inputs: this._persistedTerrainInputs(bounds, dpr, season), config: this._terrainArtifactConfigPromise,
+            ownsCanvas: false, cancelled: false, scheduled: false, artifact: null };
+        this._scheduleTerrainArtifactWrite();
+    }
+
+    _canPersistTerrainArtifact(write) {
+        return this._terrainArtifactWrite === write && !write.cancelled && !this._disposed
+            && this._worldModeActive && !this._worldResourcesSuspended
+            && !this._firstFrameReason && !this._revealSnapshotPending;
+    }
+
+    _scheduleTerrainArtifactWrite() {
+        const write = this._terrainArtifactWrite;
+        if (!write || write.scheduled || !this._canPersistTerrainArtifact(write)) return;
+        write.scheduled = true;
+        whenIdle(async () => {
+            try {
+                if (this._canPersistTerrainArtifact(write)) {
+                    this._terrainArtifactWritePromise = this._persistTerrainArtifact(write);
+                    await this._terrainArtifactWritePromise;
+                }
+            } finally {
+                write.scheduled = false;
+                this._scheduleTerrainArtifactWrite();
+            }
+        });
+    }
+
+    async _persistTerrainArtifact(write) {
+        try {
+            if (!this._canPersistTerrainArtifact(write)) return false;
+            if (!write.artifact) {
+                try {
+                    // The reveal has published before this idle readback. Keep
+                    // extraction separate from hashing/IDB in the next slice.
+                    write.artifact = captureTerrainArtifact(write.canvas, write.bounds, write.dpr, captureTerrainArtifactFields(write.host));
+                } finally {
+                    if (write.ownsCanvas) releaseCanvasBackingStore(write.canvas);
+                    write.canvas = null;
+                    write.host = null;
+                }
+                if (!write.artifact) this._discardTerrainArtifactWrite();
+                return false;
+            }
+            const configHash = await write.config;
+            if (!this._canPersistTerrainArtifact(write)) return false;
+            const key = terrainArtifactKey({ ...write.inputs, configHash });
+            const saved = key && await this._terrainArtifactStore.put(key, write.artifact,
+                () => this._canPersistTerrainArtifact(write));
+            if (!this._canPersistTerrainArtifact(write)) return false;
+            if (saved) this._terrainArtifactStats.writes++;
+            this._discardTerrainArtifactWrite();
+            return Boolean(saved);
+        } catch {
+            if (this._terrainArtifactWrite === write) this._discardTerrainArtifactWrite();
+            return false;
+        }
+    }
+
+    _discardTerrainArtifactRead() {
+        releaseCanvasBackingStore(this._terrainArtifactRead?.ready?.canvas);
+        this._terrainArtifactRead = null;
+    }
+
+    _discardTerrainArtifactWrite() {
+        const write = this._terrainArtifactWrite;
+        if (!write) return;
+        write.cancelled = true;
+        if (write.ownsCanvas) releaseCanvasBackingStore(write.canvas);
+        write.canvas = null;
+        write.host = null;
+        write.artifact = null;
+        this._terrainArtifactWrite = null;
+    }
+
+    _releaseTerrainArtifactWork() {
+        this._terrainArtifactGeneration = (this._terrainArtifactGeneration || 0) + 1;
+        this._discardTerrainArtifactRead();
+        this._discardTerrainArtifactWrite();
+        this._terrainArtifactPrefetch = undefined;
+        this._terrainArtifactPreparationPending = false;
+        this._terrainArtifactNeedsRead = true;
     }
 
     // B.2 — the resident stand-in no longer has a texture behind it (context
     // loss, eviction): the next terrain request re-bakes the canvas.
     dropTerrainResident() {
         this._terrainResident = null;
+        this._discardTerrainArtifactRead();
+        this._prepareTerrainArtifactRead();
     }
 
     // 0.3 — the bake is keyed only on what changes its pixels: the cache
@@ -7299,12 +7595,6 @@ export class IsometricRenderer {
             passes += `${pass.id}:${pass.revision?.(this) ?? 0},`;
         }
         return `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|season:${season}|scenery:${this._terrainSceneryRevision || 0}|passes:${passes}`;
-    }
-
-    // Anything that changes what the static terrain paints (scenery edits, a
-    // re-authored tileset) calls this once; the next frame rebakes.
-    invalidateTerrainBake() {
-        this._terrainSceneryRevision = (this._terrainSceneryRevision || 0) + 1;
     }
 
     // The plug-in point for later terrain bakes (splat ground, coast field).
@@ -8002,6 +8292,8 @@ export class IsometricRenderer {
             maxSingleSurfacePixels: meta.maxSingleSurfacePixels,
             singleSurfaceWithinBudget: meta.singleSurfaceWithinBudget,
             retainedPixels: canvasPixelCount(this.terrainCache),
+            artifact: { ...this._terrainArtifactStats, pendingWritePixels: canvasPixelCount(this._terrainArtifactWrite?.canvas),
+                readyPixels: canvasPixelCount(this._terrainArtifactRead?.ready?.canvas) },
         };
     }
 

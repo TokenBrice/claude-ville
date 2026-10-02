@@ -121,12 +121,15 @@ async function burst(page, { levels, frames, reps, debugLoad, renderer: requeste
     if (requested && backend !== requested) throw new Error(`the ${requested} backend is not active (${backend} is)`);
     const context = renderer._gpuRenderContext;
     if (!context?.records?.length) throw new Error('no resident frame to replay');
+    const previousFreshOutput = context.forceFreshOutput;
+    context.forceFreshOutput = true;
     const pixel = new Uint8Array(4);
     const drain = async () => {
       if (typeof gpu.drain === 'function') {
         await gpu.drain();
         return;
       }
+      if (!gpu.ensureFreshOutput()) throw new Error('resident readback repaint failed');
       const gl = gpu.gl;
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
@@ -179,6 +182,7 @@ async function burst(page, { levels, frames, reps, debugLoad, renderer: requeste
         }
       }
     } finally {
+      context.forceFreshOutput = previousFreshOutput;
       gpu.setDebugLoad(null);
       gpu.qualityLadder.setOverride(previousOverride);
       renderer._startLoop();

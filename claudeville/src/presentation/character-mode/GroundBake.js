@@ -428,6 +428,23 @@ function segmentDistance(s, x, y) {
 
 // ---- bake -----------------------------------------------------------------
 
+function groundFieldFrom({ bounds, cols, rows, texelW, classes }) {
+    return {
+        bounds,
+        cols,
+        rows,
+        texelW,
+        classes,
+        CLASS: GROUND_CLASS,
+        classAt(worldX, worldY) {
+            const col = Math.floor((worldX - bounds.x) / texelW);
+            const row = Math.floor(worldY - bounds.y);
+            if (col < 0 || row < 0 || col >= cols || row >= rows) return GROUND_CLASS.NONE;
+            return classes[row * cols + col];
+        },
+    };
+}
+
 export function bakeGround(r) {
     const started = performance.now();
     const N = MAP_SIZE;
@@ -624,20 +641,7 @@ export function bakeGround(r) {
     canvas.width = w;
     canvas.height = h;
     canvas.getContext('2d').putImageData(image, 0, 0);
-    const field = {
-        bounds: { x: x0, y: y0, w, h },
-        cols,
-        rows,
-        texelW: TEXEL_W,
-        classes,
-        CLASS: GROUND_CLASS,
-        classAt(worldX, worldY) {
-            const col = Math.floor((worldX - x0) / TEXEL_W);
-            const row = Math.floor(worldY - y0);
-            if (col < 0 || row < 0 || col >= cols || row >= rows) return GROUND_CLASS.NONE;
-            return classes[row * cols + col];
-        },
-    };
+    const field = groundFieldFrom({ bounds: { x: x0, y: y0, w, h }, cols, rows, texelW: TEXEL_W, classes });
     const puddleMask = bakePuddleSites({ cols, rows, surfaces, aoBuf });
     return { canvas, field, ms: performance.now() - started, x0, y0, cols, rows, surfaces, aoBuf, puddleMask };
 }
@@ -1376,6 +1380,46 @@ export function installGroundBake(renderer) {
             ctx.drawImage(winter.canvas, cached.x0, cached.y0);
         },
     });
+}
+
+// Complete installed ground outputs. The base/winter canvases and their scratch
+// surfaces/AO are private to the bake closure, not later-pass inputs; the final
+// terrain RGBA carries their pixels. Keep the accessors on one implementation.
+export function captureGroundArtifact(renderer) {
+    const field = renderer.groundField;
+    if (!field || !renderer.groundPuddleMask) return null;
+    return {
+        field: { bounds: { ...field.bounds }, cols: field.cols, rows: field.rows, texelW: field.texelW, classes: field.classes },
+        puddleMask: { ...renderer.groundPuddleMask },
+        groundBakeMs: renderer.groundBakeMs,
+        groundWinterBakeMs: renderer.groundWinterBakeMs,
+    };
+}
+
+export function validGroundArtifact(ground) {
+    const field = ground?.field;
+    const mask = ground?.puddleMask;
+    const w = MAP_SIZE * TILE_WIDTH;
+    const h = MAP_SIZE * TILE_HEIGHT;
+    const cols = w / TEXEL_W;
+    return field?.cols === cols && field.rows === h && field.texelW === TEXEL_W
+        && field.bounds?.x === -MAP_SIZE * HALF_W && field.bounds.y === -HALF_H
+        && field.bounds.w === w && field.bounds.h === h
+        && field.classes instanceof Uint8Array && field.classes.length === cols * h
+        && mask?.cols === cols && mask.rows === h && mask.texelW === TEXEL_W
+        && mask.x0 === field.bounds.x && mask.y0 === field.bounds.y
+        && mask.data instanceof Uint8Array && mask.data.length === cols * h
+        && typeof mask.revision === 'string'
+        && (ground.groundBakeMs === undefined || Number.isFinite(ground.groundBakeMs))
+        && (ground.groundWinterBakeMs === undefined || Number.isFinite(ground.groundWinterBakeMs));
+}
+
+export function restoreGroundArtifact(renderer, ground) {
+    if (!validGroundArtifact(ground)) throw new Error('Invalid terrain ground artifact');
+    renderer.groundField = groundFieldFrom(ground.field);
+    renderer.groundPuddleMask = ground.puddleMask;
+    renderer.groundBakeMs = ground.groundBakeMs;
+    renderer.groundWinterBakeMs = ground.groundWinterBakeMs;
 }
 
 // ---- GPU material sidecar -------------------------------------------------

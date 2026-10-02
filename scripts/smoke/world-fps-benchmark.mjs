@@ -996,6 +996,7 @@ async function runKSlope(browser, baseUrl, options, spec, repetition) {
   try {
     await page.evaluate((level) => {
       const gpu = window.__claudeVilleApp.renderer.gpuWorld;
+      window.__claudeVilleApp.renderer._forceFreshGpuOutput = true;
       gpu.setPassSamplingEnabled(false);
       gpu.qualityLadder.setOverride(level);
     }, options.level);
@@ -1015,6 +1016,7 @@ async function runKSlope(browser, baseUrl, options, spec, repetition) {
       const samples = gpu.takeDebugLoadSamples();
       gpu.setDebugLoad(null);
       gpu.qualityLadder.setOverride(null);
+      window.__claudeVilleApp.renderer._forceFreshGpuOutput = false;
       const state = gpu.qualityLadder.getState();
       return { samples, refreshHz: state.refreshHz, backing: [gpu.width, gpu.height] };
     });
@@ -1057,7 +1059,10 @@ async function runUnlocked(browser, baseUrl, options, spec, repetition) {
     // Alternating 60-frame blocks at forced FULL and MINIMAL; the first five
     // intervals of a block still carry the previous level's frames.
     const measured = await page.evaluate((durationMs) => new Promise((resolve) => {
-      const gpu = window.__claudeVilleApp.renderer.gpuWorld;
+      const renderer = window.__claudeVilleApp.renderer;
+      const gpu = renderer.gpuWorld;
+      const previousFreshOutput = renderer._forceFreshGpuOutput;
+      renderer._forceFreshGpuOutput = true;
       const previous = gpu.qualityLadder.getState().override;
       const block = 60;
       const skip = 5;
@@ -1077,6 +1082,7 @@ async function runUnlocked(browser, baseUrl, options, spec, repetition) {
         }
         if (ts - started >= durationMs) {
           gpu.qualityLadder.setOverride(previous);
+          renderer._forceFreshGpuOutput = previousFreshOutput;
           resolve({ arms, backing: [gpu.width, gpu.height] });
         } else {
           requestAnimationFrame(tick);

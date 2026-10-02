@@ -79,6 +79,7 @@ import {
     writeTextureRows,
 } from './wgpu/GpuWgpuTextures.js';
 import { GpuWgpuTimer } from './wgpu/GpuWgpuTimestamps.js';
+import { GpuFrameReuse, stageGpuFrameBindings } from './GpuFrameReuse.js';
 
 export { probeWebGpu };
 
@@ -801,6 +802,7 @@ export class GpuWorldRendererWebGPU {
     }
 
     resize(width, height) {
+        this._canvasGeneration = (this._canvasGeneration || 0) + 1;
         this.width = Math.max(1, Math.floor(finite(width, this.width)));
         this.height = Math.max(1, Math.floor(finite(height, this.height)));
         if (this.canvas) {
@@ -1321,7 +1323,6 @@ export class GpuWorldRendererWebGPU {
         s.flash = [finite(flash?.[0], 0), finite(flash?.[1], 0), finite(flash?.[2], 0)];
         s.fatPixels = this.fatPixelsFrame;
         writeFrameUniforms(this._frameViews, s);
-        this.device.queue.writeBuffer(this._frameBuffer, 0, this._frameViews.buffer);
         this._bindFrameGroup({
             seaGust: gust,
             lightTiles: tiles,
@@ -1459,13 +1460,18 @@ export class GpuWorldRendererWebGPU {
         this._ensureBuffer('_batchBuffer', '_batchBufferSlotsBytes', count * BATCH_UNIFORM_STRIDE, u.UNIFORM | u.COPY_DST, 'world-batches');
     }
 
-    _stageMarks(marks) {
-        if (!marks?.length) return [];
+    _stageMarks(marks, upload = true) {
+        this._markByteLength = 0;
+        if (!marks?.length) {
+            this._markBatches.length = 0;
+            return this._markBatches;
+        }
         const batches = buildStableGpuBatches(marks, this._markBatches, this._markNormalized);
         const byteLength = stageGpuRecords(batches, this._markStaging, { fullTail: true });
+        this._markByteLength = byteLength;
         const u = globalThis.GPUBufferUsage;
         this._ensureBuffer('_markRecordBuffer', '_markRecordBufferBytes', byteLength, u.STORAGE | u.COPY_DST, 'world-mark-records');
-        this.device.queue.writeBuffer(this._markRecordBuffer, 0, this._markStaging.f32.buffer, 0, byteLength);
+        if (upload) this.device.queue.writeBuffer(this._markRecordBuffer, 0, this._markStaging.f32.buffer, 0, byteLength);
         for (const batch of batches) {
             const first = batch.records[0];
             batch.albedoTexture = this._textureFor(batch.textureKey, batch.source, first?.textureRevision);
@@ -1505,14 +1511,37 @@ export class GpuWorldRendererWebGPU {
         return resolveOccluderChannel(feed);
     }
 
-    render({ records = [], camera = null, feed = {}, particles = null, marks = null } = {}) {
+    hasPendingGpuQueries() {
+        return (this._timer?.pending ?? 0) > 0;
+    }
+
+    ensureFreshOutput(force = false) {
+        if (!force && this._freshOutputThisTask) return true;
+        const input = this._lastRenderInput;
+        if (!input) return false;
+        const previous = input.forceFreshOutput;
+        input.forceFreshOutput = true;
+        try {
+            // A readback/late-mark rescue repaints the same logical frame; it
+            // must not add a second pacing or timing sample.
+            return this.render(input, true);
+        } finally {
+            input.forceFreshOutput = previous;
+        }
+    }
+
+    render(input = {}, repeatOutput = false) {
+        const { records = [], camera = null, feed = {}, particles = null, marks = null, forceFreshOutput = false } = input;
+        this._freshOutputThisTask = false;
         if (!this.isActive() || !camera || !records.length) return false;
         const device = this.device;
+        const timerWasPending = this.hasPendingGpuQueries();
         const started = performance.now();
-        const frameGapMs = this._lastRenderAtMs == null ? 0 : started - this._lastRenderAtMs;
-        this._lastRenderAtMs = started;
-        const presentIntervalMs = this._presentIntervalsNoted ? this._pendingPresentIntervalMs : frameGapMs;
-        this._pendingPresentIntervalMs = null;
+        const frameGapMs = repeatOutput || this._lastRenderAtMs == null ? 0 : started - this._lastRenderAtMs;
+        if (!repeatOutput) this._lastRenderAtMs = started;
+        const presentIntervalMs = repeatOutput ? null
+            : this._presentIntervalsNoted ? this._pendingPresentIntervalMs : frameGapMs;
+        if (!repeatOutput) this._pendingPresentIntervalMs = null;
         this._frameUploadMs = 0;
         const occluderChannelEnabled = this._preparedFeed === feed ? resolveOccluderChannel(feed) : this.prepareFrame(feed);
         const qualityLevel = this._preparedQualityLevel;
@@ -1536,7 +1565,7 @@ export class GpuWorldRendererWebGPU {
                 this._updateTextureBytes();
             }
             if (!batches.length) return false;
-            this._sampledPass = this.passSamplingEnabled && this.frames % 12 === 0
+            this._sampledPass = !repeatOutput && this.passSamplingEnabled && this.frames % 12 === 0
                 ? GPU_PASS_NAMES[this._passCursor++ % GPU_PASS_NAMES.length] : null;
             const passCpu = {};
             let mark = performance.now();
@@ -1545,7 +1574,6 @@ export class GpuWorldRendererWebGPU {
             const byteLength = stageGpuRecords(batches, this._recordStaging, { fullTail: true });
             const u = globalThis.GPUBufferUsage;
             this._ensureBuffer('_recordBuffer', '_recordBufferBytes', byteLength, u.STORAGE | u.COPY_DST, 'world-records');
-            device.queue.writeBuffer(this._recordBuffer, 0, this._recordStaging.f32.buffer, 0, byteLength);
             this.vertexBufferBytes = this._recordBufferBytes;
             this._uploadBatchTextures(batches, occluderChannelEnabled);
             this._particleCount = particles?.packGpuInstances ? particles.packGpuInstances(this._particleViews) : 0;
@@ -1555,7 +1583,6 @@ export class GpuWorldRendererWebGPU {
                 this._particleMotifTexture = this.uploadTypedTexture('particle:motifs', {
                     width: motifs.width, height: motifs.height, format: 'r8', data: motifs.data, revision: motifs.revision,
                 });
-                device.queue.writeBuffer(this._particleBuffer, 0, this._particleBytes, 0, this._particleCount * GPU_PARTICLE_INSTANCE_BYTES);
             }
             let atlasRecords = 0;
             let individualRecords = 0;
@@ -1580,7 +1607,7 @@ export class GpuWorldRendererWebGPU {
             const roles = display ? display.emissionFormat : null;
             const writeEmission = bloomOn || roles !== null;
             this._ensureTargets(writeEmission, bloomOn);
-            const markBatches = this._stageMarks(marks);
+            const markBatches = this._stageMarks(marks, false);
             // Batch uniforms: scene batches then mark batches, one slot each.
             this._ensureBatchSlots(batches.length + markBatches.length);
             for (let index = 0; index < batches.length; index++) {
@@ -1594,11 +1621,31 @@ export class GpuWorldRendererWebGPU {
             for (let index = 0; index < markBatches.length; index++) {
                 this._writeBatchSlot(batches.length + index, markBatches[index], { mark: true });
             }
-            device.queue.writeBuffer(this._batchBuffer, 0, this._batchViews.buffer, 0, (batches.length + markBatches.length) * BATCH_UNIFORM_STRIDE);
+            const batchByteLength = (batches.length + markBatches.length) * BATCH_UNIFORM_STRIDE;
+            const reuse = (this._frameReuse ||= new GpuFrameReuse()).begin();
+            reuse.bytes(this._recordStaging.f32, byteLength);
+            reuse.bytes(this._frameViews.buffer);
+            reuse.bytes(this._batchViews.buffer, batchByteLength);
+            reuse.bytes(this._particleBytes, this._particleCount * GPU_PARTICLE_INSTANCE_BYTES);
+            reuse.bytes(this._markStaging.f32, this._markByteLength);
+            reuse.bytes(this._bloomParams.buffer);
+            stageGpuFrameBindings(reuse, this, batches, markBatches);
+            const fresh = forceFreshOutput || timerWasPending || this.hasPendingGpuQueries()
+                || this._readbackPending || this._debugLoad || this.passSamplingEnabled;
+            if (!fresh && reuse.unchanged()) {
+                this.skippedFrames = (this.skippedFrames || 0) + 1;
+                return true;
+            }
+            device.queue.writeBuffer(this._recordBuffer, 0, this._recordStaging.f32.buffer, 0, byteLength);
+            device.queue.writeBuffer(this._frameBuffer, 0, this._frameViews.buffer);
+            device.queue.writeBuffer(this._batchBuffer, 0, this._batchViews.buffer, 0, batchByteLength);
+            if (this._particleCount) device.queue.writeBuffer(this._particleBuffer, 0, this._particleBytes, 0, this._particleCount * GPU_PARTICLE_INSTANCE_BYTES);
+            if (this._markByteLength) device.queue.writeBuffer(this._markRecordBuffer, 0, this._markStaging.f32.buffer, 0, this._markByteLength);
             passCpu.upload = { cpuMs: performance.now() - mark, draws: 0, bytes: byteLength + this.uploadBytes - passUploadBytes };
             // GPU timer: 1 frame in 4 (every frame while the pacing window
             // misses), or every K-slope arm frame.
-            const timeThisFrame = this._frameLoadArm !== null || this.frames % this._gpuTimerEvery === 0;
+            const timeThisFrame = !repeatOutput
+                && (this._frameLoadArm !== null || this.frames % this._gpuTimerEvery === 0);
             const timer = this._timer;
             const slot = timer && timeThisFrame
                 ? timer.begin({ arm: this._frameLoadArm, passes: this.passSamplingEnabled ? passCpu : null })
@@ -1704,6 +1751,10 @@ export class GpuWorldRendererWebGPU {
             passCpu.present = { cpuMs: performance.now() - mark, draws: 1, bytes: this.width * this.height * 4 };
             timer?.resolve(encoder, slot);
             device.queue.submit([encoder.finish()]);
+            reuse.commit();
+            this._lastRenderInput = input;
+            this._freshOutputThisTask = true;
+            queueMicrotask(this._expireFreshOutput ||= () => { this._freshOutputThisTask = false; });
             timer?.collect(slot, result => this._onTimerResult(result));
             if (this._sampledPass && !(slot >= 0 && this.passSamplingEnabled)) {
                 const sample = passCpu[this._sampledPass];
@@ -1716,6 +1767,7 @@ export class GpuWorldRendererWebGPU {
             this.records = renderedRecords;
             this.batches = batches.length;
             this.frames++;
+            if (repeatOutput) return true;
             const totalMs = performance.now() - started;
             const shaderCpuMs = Math.max(0, totalMs - this._frameUploadMs);
             this.uploadMs = ema(this.uploadMs, this._frameUploadMs);
@@ -1784,7 +1836,7 @@ export class GpuWorldRendererWebGPU {
     drawLateMarks(marks) {
         this.lateMarkRecords = 0;
         this.lateMarkRoleRecords = 0;
-        if (!this.isActive() || !marks?.length || !this._lastCanvasTexture) return 0;
+        if (!this._freshOutputThisTask || !this.isActive() || !marks?.length || !this._lastCanvasTexture) return 0;
         const device = this.device;
         this._openFrameScope(device);
         try {
@@ -1800,6 +1852,7 @@ export class GpuWorldRendererWebGPU {
             this._drawMarkBatches(pass, markBatches, 0, true);
             pass.end();
             device.queue.submit([encoder.finish()]);
+            this._frameReuse?.invalidate();
             return this.lateMarkRecords;
         } catch (error) {
             if (!this._renderErrorLogged) {
@@ -1824,6 +1877,7 @@ export class GpuWorldRendererWebGPU {
      * same task as a `render` that returned true; null when it cannot read.
      */
     readoutSurface(width, height) {
+        if (!this.ensureFreshOutput()) return null;
         const display = this._display;
         if (!display?.hdr) return this.canvas;
         const texture = this._lastCanvasTexture;
@@ -1839,13 +1893,18 @@ export class GpuWorldRendererWebGPU {
             if (readout.canvas.width !== width) readout.canvas.width = width;
             if (readout.canvas.height !== height) readout.canvas.height = height;
             if (readout.colorSpace !== this.canvasColorSpace) {
-                readout.context.configure({ device, format: this.canvasFormat, colorSpace: this.canvasColorSpace, alphaMode: 'premultiplied' });
+                readout.context.configure({
+                    device, format: this.canvasFormat, colorSpace: this.canvasColorSpace,
+                    alphaMode: 'premultiplied',
+                    usage: globalThis.GPUTextureUsage.RENDER_ATTACHMENT | globalThis.GPUTextureUsage.COPY_SRC,
+                });
                 readout.colorSpace = this.canvasColorSpace;
             }
             const encoder = device.createCommandEncoder({ label: 'world-hdr-readout' });
+            readout.texture = readout.context.getCurrentTexture();
             const pass = encoder.beginRenderPass({
                 label: 'world-hdr-readout',
-                colorAttachments: [{ view: readout.context.getCurrentTexture().createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' }],
+                colorAttachments: [{ view: readout.texture.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' }],
             });
             pass.setPipeline(display.readout);
             pass.setBindGroup(0, device.createBindGroup({
@@ -1863,6 +1922,25 @@ export class GpuWorldRendererWebGPU {
             device.popErrorScope().then((error) => {
                 if (error) console.warn('[GpuWorldRendererWebGPU] HDR readout failed:', error);
             }, () => {});
+        }
+    }
+
+    /**
+     * Fence this task's presented surface, including the HDR clamped readout.
+     * The caller snapshots it through Canvas in this task and reads the tiny
+     * composite only after completion, preserving browser alpha/P3 conversion
+     * without any staging buffer or a full-resolution GPU copy.
+     */
+    snapshotReadoutSurface(width, height) {
+        if (!this.ensureFreshOutput() || !this.isActive() || !this._lastCanvasTexture) return null;
+        const surface = this.readoutSurface(width, height);
+        if (!surface) return null;
+        const device = this.device;
+        try {
+            const ready = device.queue.onSubmittedWorkDone().then(() => true, () => false);
+            return { surface, ready, deviceLost: device.lost };
+        } catch {
+            return null;
         }
     }
 
@@ -1888,6 +1966,18 @@ export class GpuWorldRendererWebGPU {
      * `formats` names each target's format.
      */
     async debugCaptureTargets() {
+        if (!this.ensureFreshOutput()) {
+            return { scene: null, composite: null, emission: null, formats: {}, width: this.width, height: this.height, rowOrder: 'top-left', channelOrder: 'rgba' };
+        }
+        this._readbackPending = (this._readbackPending || 0) + 1;
+        try {
+            return await this._captureTargets();
+        } finally {
+            this._readbackPending--;
+        }
+    }
+
+    async _captureTargets() {
         const out = { scene: null, composite: null, emission: null, formats: {}, width: this.width, height: this.height, rowOrder: 'top-left', channelOrder: 'rgba' };
         if (!this.isActive() || !this.sceneTarget) return out;
         const device = this.device;
@@ -2013,6 +2103,7 @@ export class GpuWorldRendererWebGPU {
             width: this.width,
             height: this.height,
             frames: this.frames,
+            skippedFrames: this.skippedFrames || 0,
             records: this.records,
             batches: this.batches,
             markRecords: this.markRecords,

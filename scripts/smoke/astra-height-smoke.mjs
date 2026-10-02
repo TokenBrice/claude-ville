@@ -32,7 +32,7 @@ try {
             for (let y = 0; y < 16; y++) for (let x = 16; x <= 20; x++) data[(y * 40 + x) * 2] = blockHeight;
             feed.footprint = { originX: 0, originY: 0, cell: 4, width: 40, height: 16, data, revision: `block-${blockHeight}` };
             renderer.qualityLadder.reset(0);
-            const ok = renderer.render({ camera, feed, records: [
+            const ok = renderer.render({ camera, feed, forceFreshOutput: true, records: [
                 { id: 'ground', source: albedo, x: 0, y: 0, width: 160, height: 64 },
             ] });
             const gl = renderer.gl;
@@ -48,7 +48,7 @@ try {
         const materialSample = (opaque) => {
             const material = source(opaque ? 'rgb(0,0,0)' : 'rgba(0,0,0,0)');
             renderer.qualityLadder.reset(0);
-            renderer.render({ camera, feed: { lighting: { ambientLight: 1 }, reducedMotion: true }, records: [
+            renderer.render({ camera, forceFreshOutput: true, feed: { lighting: { ambientLight: 1 }, reducedMotion: true }, records: [
                 { id: 'material', source: albedo, materialSource: material, material: 3,
                     width: 160, height: 64, x: 0, y: 0 },
             ] });
