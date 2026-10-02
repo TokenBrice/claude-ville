@@ -28,6 +28,14 @@ const TRANSCRIPT_TAIL_LINES = 2500;
 const DETAIL_TAIL_LINES = 5000;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const MAX_TRANSCRIPTS = 4096;
+const RECONCILE_INTERVAL_MS = 30 * 1000;
+const MAX_DIRECTORIES = 4096;
+const DETAIL_DISCOVERY_MAX_FILES = 512;
+const DETAIL_DISCOVERY_MAX_BYTES = 2 * 1024 * 1024;
+const DETAIL_HEADER_MAX_BYTES = 4096;
+const REDUCED_CACHE_MAX = 512;
+const REDUCED_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const NEGATIVE_CACHE_MAX = 512;
 const TOOL_INPUT_FIELDS = Object.freeze([
   'command',
   'cmd',
@@ -238,12 +246,10 @@ function workingSetPath(value, project, readSelector = false) {
   return canonical.split(path.sep).join('/');
 }
 
-function parseOmpTranscript(records, {
+function reduceOmpTranscript(records, {
   filePath = '',
   parentSessionId = null,
   childAgentName = null,
-  now = Date.now(),
-  activeThresholdMs = null,
   fallbackProject = null,
   detail = true,
   fileMtimeMs = null,
@@ -439,7 +445,6 @@ function parseOmpTranscript(records, {
       try { return fs.statSync(filePath).mtimeMs; } catch { return 0; }
     })();
   latestActivity = Math.max(latestActivity, statActivity);
-  if (activeThresholdMs != null && (now - latestActivity) > Number(activeThresholdMs)) return null;
   const dialogueCandidates = [];
   for (const bucket of dialogueBuckets.values()) {
     for (const raw of bucket) {
@@ -454,7 +459,6 @@ function parseOmpTranscript(records, {
       if (candidate) dialogueCandidates.push(candidate);
     }
   }
-  const dialogue = pickDialogue(dialogueCandidates, { now });
 
   const tokenUsage = usage.turnCount > 0 ? {
     input: usage.input,
@@ -469,13 +473,13 @@ function parseOmpTranscript(records, {
     turnCount: usage.turnCount,
   } : null;
   const pending = pendingTools.values().next().value || null;
-  const turn = deriveTurnState({
+  const turnDescriptor = {
     pendingTool: pending?.tool || null,
     pendingSince: pending?.ts || null,
     turnEnded,
     turnEndedAt,
     permissionMode: 'bypassPermissions',
-  }, now);
+  };
   const resolvedModel = model || 'omp';
   const resolvedProvider = underlyingProvider || modelProvider(resolvedModel);
   const newestPaths = [];
@@ -489,6 +493,8 @@ function parseOmpTranscript(records, {
   }
 
   return {
+    dialogueCandidates,
+    turnDescriptor,
     session: {
       sessionId,
       provider: 'omp',
@@ -504,14 +510,13 @@ function parseOmpTranscript(records, {
       lastTool: latestTool,
       lastToolInput: latestToolInput,
       lastMessage: latestAssistantText,
-      dialogue,
+      dialogue: null,
       observedSources,
       tokenUsage,
       parentSessionId: parentSessionId ? transcriptId(parentSessionId) : null,
       lastPrompt,
       todos: todos.slice(0, 64).map(({ subject, status, phase }) => ({ subject, status, phase })),
       gitBranch,
-      ...turn,
       signalSource: 'transcript',
       turnStartedAt,
       workingSet: newestPaths,
@@ -529,6 +534,38 @@ function parseOmpTranscript(records, {
   };
 }
 
+function presentOmpTranscript(reduced, { now = Date.now(), activeThresholdMs = null } = {}) {
+  if (!reduced) return null;
+  if (activeThresholdMs != null && now - reduced.session.lastActivity > Number(activeThresholdMs)) return null;
+  const tokenUsage = reduced.session.tokenUsage ? { ...reduced.session.tokenUsage } : null;
+  const dialogue = pickDialogue(reduced.dialogueCandidates, { now });
+  return {
+    session: {
+      ...reduced.session,
+      tokenUsage,
+      observedSources: { ...reduced.session.observedSources },
+      todos: reduced.session.todos.map(item => ({ ...item })),
+      workingSet: reduced.session.workingSet.map(item => ({ ...item })),
+      dialogue: dialogue ? { ...dialogue } : null,
+      ...deriveTurnState(reduced.turnDescriptor, now),
+    },
+    detail: {
+      ...reduced.detail,
+      tokenUsage,
+      toolHistory: reduced.detail.toolHistory.map(item => ({ ...item })),
+      messages: reduced.detail.messages.map(item => ({ ...item })),
+    },
+  };
+}
+
+function parseOmpTranscript(records, options = {}) {
+  return presentOmpTranscript(reduceOmpTranscript(records, options), options);
+}
+
+function statIdentity(stat) {
+  return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
+}
+
 class OmpAdapter {
   constructor({ sessionsDir = null, rootDir = null, now = () => Date.now() } = {}) {
     this.sessionsDir = path.resolve(sessionsDir || rootDir || DEFAULT_SESSIONS_DIR);
@@ -536,7 +573,18 @@ class OmpAdapter {
     this.now = now;
     this._index = new Map();
     this._detailIndex = new Map();
-    this._detailScanDirectoryMtimes = null;
+    this._directories = new Map();
+    this._files = new Map();
+    this._activePaths = new Set();
+    this._changedPaths = new Set();
+    this._dirtyDirectories = new Set();
+    this._discoveryGeneration = 0;
+    this._negativeDetails = new Map();
+    this._reconciledAt = null;
+    this._forceReconcile = false;
+    this._lastThreshold = undefined;
+    this._reducedCache = new Map();
+    this._reducedCacheBytes = 0;
     this._perf = {
       activePasses: 0,
       filesDiscovered: 0,
@@ -548,6 +596,20 @@ class OmpAdapter {
       cacheHits: 0,
       cacheMisses: 0,
       statErrors: 0,
+      reducedHits: 0,
+      reducedMisses: 0,
+      reducedEvictions: 0,
+      directoryReads: 0,
+      directoryStats: 0,
+      detailLookups: 0,
+      detailMetadataStats: 0,
+      lastDetailMetadataStats: 0,
+      detailHeaderFiles: 0,
+      detailHeaderBytes: 0,
+      detailNegativeHits: 0,
+      detailCappedLookups: 0,
+      lastDetailHeaderFiles: 0,
+      lastDetailHeaderBytes: 0,
       lastPassAt: null,
       lastPassDurationMs: 0,
       lastFilesDiscovered: 0,
@@ -570,33 +632,109 @@ class OmpAdapter {
     try { return fs.statSync(this.sessionsDir).isDirectory(); } catch (error) { noteReadFailure(error); return false; }
   }
 
-  _listTranscriptFiles(directoryMtimes = null) {
-    const files = [];
-    const visit = (directory) => {
-      if (files.length >= MAX_TRANSCRIPTS) return;
-      if (directoryMtimes) {
-        try { directoryMtimes.set(directory, fs.statSync(directory).mtimeMs); } catch (error) { noteReadFailure(error); return; }
+  _directoryListing(directory, { revalidate = false, fileStat = null } = {}) {
+    const cached = this._directories.get(directory);
+    if (cached && !revalidate && !this._dirtyDirectories.has(directory)) return cached;
+    try {
+      if (!fileStat) {
+        this._perf.directoryStats += 1;
+        fileStat = fs.statSync(directory);
       }
-      let entries;
-      try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch (error) { noteReadFailure(error); return; }
+      const signature = statIdentity(fileStat);
+      if (cached?.signature === signature) return cached;
+      this._perf.directoryReads += 1;
+      const entries = fs.readdirSync(directory, { withFileTypes: true });
+      const listing = { signature, mtimeMs: fileStat.mtimeMs, entries: [] };
+      let files = 0;
+      let children = 0;
       for (const entry of entries) {
-        if (files.length >= MAX_TRANSCRIPTS) break;
         const current = path.join(directory, entry.name);
-        if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(current);
-        else if (entry.isDirectory() && !entry.name.startsWith('.')) visit(current);
+        if (entry.isFile() && entry.name.endsWith('.jsonl') && files < MAX_TRANSCRIPTS) {
+          listing.entries.push({ path: current, directory: false });
+          files += 1;
+        } else if (entry.isDirectory() && !entry.name.startsWith('.') && children < MAX_DIRECTORIES) {
+          listing.entries.push({ path: current, directory: true });
+          children += 1;
+        }
       }
-    };
-    visit(this.sessionsDir);
-    return files;
+      this._directories.set(directory, listing);
+      this._discoveryGeneration += 1;
+      return listing;
+    } catch (error) {
+      noteReadFailure(error);
+      return cached || null;
+    }
   }
 
-  _directoryMtimesChanged(current) {
-    const previous = this._detailScanDirectoryMtimes;
-    if (!previous || previous.size !== current.size) return true;
-    for (const [directory, mtimeMs] of current) {
-      if (previous.get(directory) !== mtimeMs) return true;
+  _refreshTopology({ force = false } = {}) {
+    const now = this.now();
+    const reconcile = force || this._forceReconcile || this._reconciledAt === null
+      || now - this._reconciledAt >= RECONCILE_INTERVAL_MS;
+    const root = this._directoryListing(this.sessionsDir, { revalidate: true });
+    if (!root) return reconcile;
+    const rootChanged = this._rootSignature !== root.signature;
+    if (!reconcile && !rootChanged && this._dirtyDirectories.size === 0) return false;
+    const files = new Map();
+    const visited = new Set();
+    const visit = (directory, listing = null) => {
+      if (files.size >= MAX_TRANSCRIPTS || visited.size >= MAX_DIRECTORIES) return;
+      visited.add(directory);
+      listing ||= this._directoryListing(directory, { revalidate: reconcile });
+      if (!listing) return;
+      for (const entry of listing.entries) {
+        if (files.size >= MAX_TRANSCRIPTS) break;
+        if (entry.directory) visit(entry.path);
+        else files.set(entry.path, this._files.get(entry.path) || { stat: null, rawId: null, headerGeneration: null });
+      }
+    };
+    visit(this.sessionsDir, root);
+    for (const filePath of this._files.keys()) {
+      if (!files.has(filePath)) this._forgetFile(filePath);
     }
-    return false;
+    for (const directory of this._directories.keys()) {
+      if (!visited.has(directory)) this._directories.delete(directory);
+    }
+    this._files = files;
+    this._rootSignature = root.signature;
+    this._dirtyDirectories.clear();
+    this._forceReconcile = false;
+    if (reconcile) this._reconciledAt = now;
+    return reconcile;
+  }
+
+  _deleteReduced(filePath) {
+    const cached = this._reducedCache.get(filePath);
+    if (cached) this._reducedCacheBytes -= cached.estimatedBytes;
+    this._reducedCache.delete(filePath);
+  }
+
+  _forgetFile(filePath) {
+    const rawId = this._files.get(filePath)?.rawId;
+    if (rawId && this._detailIndex.get(rawId)?.filePath === filePath) this._detailIndex.delete(rawId);
+    if (rawId && this._index.get(rawId)?.filePath === filePath) this._index.delete(rawId);
+    this._files.delete(filePath);
+    this._activePaths.delete(filePath);
+    this._changedPaths.delete(filePath);
+    this._deleteReduced(filePath);
+  }
+
+  _rememberIdentity(rawId, filePath, fileStat) {
+    const file = this._files.get(filePath);
+    if (file?.rawId && file.rawId !== rawId) {
+      if (this._detailIndex.get(file.rawId)?.filePath === filePath) this._detailIndex.delete(file.rawId);
+      this._index.delete(file.rawId);
+      this._discoveryGeneration += 1;
+    }
+    if (file) {
+      file.rawId = rawId;
+      file.stat = fileStat;
+      file.headerGeneration = this._discoveryGeneration;
+    }
+    const entry = { filePath, dev: fileStat.dev, ino: fileStat.ino };
+    this._detailIndex.delete(rawId);
+    this._detailIndex.set(rawId, entry);
+    while (this._detailIndex.size > MAX_TRANSCRIPTS) this._detailIndex.delete(this._detailIndex.keys().next().value);
+    return entry;
   }
 
   _readRecords(filePath, lines = TRANSCRIPT_TAIL_LINES) {
@@ -616,25 +754,80 @@ class OmpAdapter {
   }
 
   _parseFile(filePath, { activeThresholdMs = null, detail = false, fileStat = null } = {}) {
-    const records = this._readRecords(filePath, detail ? DETAIL_TAIL_LINES : TRANSCRIPT_TAIL_LINES);
-    return parseOmpTranscript(records, {
-      filePath,
-      parentSessionId: childParentId(filePath, this.sessionsDir),
-      childAgentName: childName(filePath, this.sessionsDir),
-      now: this.now(),
-      activeThresholdMs,
-      detail,
-      fileMtimeMs: fileStat?.mtimeMs,
-    });
+    fileStat ||= fs.statSync(filePath);
+    let signature = statIdentity(fileStat);
+    let cached = this._reducedCache.get(filePath);
+    if (cached && cached.signature !== signature) {
+      this._deleteReduced(filePath);
+      cached = null;
+    }
+    const kind = detail ? 'detail' : 'summary';
+    if (cached && Object.prototype.hasOwnProperty.call(cached, kind)) {
+      this._perf.reducedHits += 1;
+      this._reducedCache.delete(filePath);
+      this._reducedCache.set(filePath, cached);
+    } else {
+      this._perf.reducedMisses += 1;
+      let reduced;
+      let observed;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        reduced = reduceOmpTranscript(this._readRecords(filePath, detail ? DETAIL_TAIL_LINES : TRANSCRIPT_TAIL_LINES), {
+          filePath,
+          parentSessionId: childParentId(filePath, this.sessionsDir),
+          childAgentName: childName(filePath, this.sessionsDir),
+          detail,
+          fileMtimeMs: fileStat.mtimeMs,
+        });
+        try {
+          observed = fs.statSync(filePath);
+        } catch (error) {
+          if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+            this._forgetFile(filePath);
+            return null;
+          }
+          throw error;
+        }
+        if (statIdentity(observed) === signature) break;
+        // Retry once with the new metadata; a busy writer is not a read failure.
+        this._deleteReduced(filePath);
+        cached = null;
+        if (attempt === 1) {
+          this._activePaths.add(filePath);
+          return null;
+        }
+        fileStat = observed;
+        signature = statIdentity(fileStat);
+      }
+      cached ||= { signature, estimatedBytes: 0 };
+      this._deleteReduced(filePath);
+      cached[kind] = reduced;
+      cached.estimatedBytes = 256 + filePath.length * 2 + Buffer.byteLength(JSON.stringify(cached), 'utf8') * 2;
+      this._reducedCache.set(filePath, cached);
+      this._reducedCacheBytes += cached.estimatedBytes;
+      while (this._reducedCache.size > REDUCED_CACHE_MAX || this._reducedCacheBytes > REDUCED_CACHE_MAX_BYTES) {
+        this._deleteReduced(this._reducedCache.keys().next().value);
+        this._perf.reducedEvictions += 1;
+      }
+      if (reduced) this._rememberIdentity(rawSessionId(reduced.session.sessionId), filePath, observed);
+    }
+    return presentOmpTranscript(cached[kind], { now: this.now(), activeThresholdMs });
   }
 
   getActiveSessions(activeThresholdMs) {
     const startedAt = Date.now();
     this._index.clear();
     const sessions = [];
-    const files = this._listTranscriptFiles();
+    const reconcile = this._refreshTopology({ force: this._lastThreshold !== activeThresholdMs });
+    this._lastThreshold = activeThresholdMs;
+    const candidates = reconcile || activeThresholdMs == null
+      ? new Set(this._files.keys())
+      : new Set([...this._activePaths, ...this._changedPaths]);
+    for (const [filePath, file] of this._files) {
+      if (!file.stat) candidates.add(filePath);
+    }
+    const activePaths = new Set();
     const pass = {
-      filesDiscovered: files.length,
+      filesDiscovered: this._files.size,
       filesStatted: 0,
       filesSkippedBeforeRead: 0,
       filesOpened: 0,
@@ -646,19 +839,31 @@ class OmpAdapter {
     };
     const diagnosticsBefore = getJsonlDiagnostics()[this.provider]?.parsedLines || 0;
     const tailBefore = getTailCacheDiagnostics().parsed;
+    const reducedHitsBefore = this._perf.reducedHits;
+    const reducedMissesBefore = this._perf.reducedMisses;
     const threshold = activeThresholdMs == null ? null : Number(activeThresholdMs);
     const now = this.now();
 
-    for (const filePath of files) {
+    for (const filePath of candidates) {
+      if (!this._files.has(filePath)) continue;
       let fileStat;
       pass.filesStatted += 1;
       try {
         fileStat = fs.statSync(filePath);
-      } catch {
+      } catch (error) {
+        noteReadFailure(error);
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') this._forgetFile(filePath);
+        else activePaths.add(filePath);
         pass.statErrors += 1;
         pass.filesSkippedBeforeRead += 1;
         continue;
       }
+      const file = this._files.get(filePath);
+      if (!fileStat.isFile()) {
+        this._forgetFile(filePath);
+        continue;
+      }
+      if (file) file.stat = fileStat;
 
       const ageMs = now - fileStat.mtimeMs;
       const inactive = threshold != null && (
@@ -670,23 +875,27 @@ class OmpAdapter {
         continue;
       }
 
-      pass.filesOpened += 1;
-      pass.bytesRead += Math.min(fileStat.size, TRANSCRIPT_HEAD_MAX_BYTES);
       const parsed = this._parseFile(filePath, { activeThresholdMs, fileStat });
-      if (!parsed) continue;
+      if (!parsed) {
+        if (this._files.has(filePath)) activePaths.add(filePath);
+        continue;
+      }
       const rawId = rawSessionId(parsed.session.sessionId);
-      const entry = { filePath, parentSessionId: parsed.session.parentSessionId };
-      this._index.set(rawId, entry);
-      this._detailIndex.set(rawId, entry);
+      activePaths.add(filePath);
+      this._index.set(rawId, this._rememberIdentity(rawId, filePath, fileStat));
       sessions.push(parsed.session);
     }
+    this._activePaths = activePaths;
+    this._changedPaths.clear();
 
     const diagnosticsAfter = getJsonlDiagnostics()[this.provider]?.parsedLines || 0;
     const tailAfter = getTailCacheDiagnostics().parsed;
-    pass.bytesRead += Math.max(0, tailAfter.bytesRead - tailBefore.bytesRead);
+    pass.bytesRead = Math.max(0, tailAfter.bytesRead - tailBefore.bytesRead)
+      + Math.max(0, tailAfter.headBytesRead - tailBefore.headBytesRead);
     pass.linesParsed = Math.max(0, diagnosticsAfter - diagnosticsBefore);
-    pass.cacheHits = Math.max(0, tailAfter.hits - tailBefore.hits);
-    pass.cacheMisses = Math.max(0, tailAfter.misses - tailBefore.misses);
+    pass.cacheHits = this._perf.reducedHits - reducedHitsBefore;
+    pass.cacheMisses = this._perf.reducedMisses - reducedMissesBefore;
+    pass.filesOpened = pass.cacheMisses;
     this._recordActivePass(startedAt, pass);
     return sessions;
   }
@@ -711,27 +920,122 @@ class OmpAdapter {
     this._perf.lastPassDurationMs = this._perf.lastPassAt - startedAt;
   }
 
-  getSessionDetail(sessionId, project) {
-    const rawId = rawSessionId(sessionId);
-    let entry = this._index.get(rawId) || this._detailIndex.get(rawId);
-    if (!entry) {
-      const directoryMtimes = new Map();
-      const files = this._listTranscriptFiles(directoryMtimes);
-      if (this._directoryMtimesChanged(directoryMtimes)) {
-        for (const filePath of files) {
-          const parsed = this._parseFile(filePath);
-          if (!parsed) continue;
-          const parsedRawId = rawSessionId(parsed.session.sessionId);
-          const parsedEntry = { filePath, parentSessionId: parsed.session.parentSessionId };
-          this._detailIndex.set(parsedRawId, parsedEntry);
-          if (parsedRawId === rawId) entry = parsedEntry;
+  _discoverIdentity(rawId) {
+    let filesRead = 0;
+    let bytesRead = 0;
+    const readIdentity = (filePath, file) => {
+      if (file.headerGeneration === this._discoveryGeneration) return null;
+      if (filesRead >= DETAIL_DISCOVERY_MAX_FILES || bytesRead >= DETAIL_DISCOVERY_MAX_BYTES) return null;
+      filesRead += 1;
+      let fd;
+      try {
+        fd = fs.openSync(filePath, 'r');
+        const stat = fs.fstatSync(fd);
+        const buffer = Buffer.allocUnsafe(Math.min(DETAIL_HEADER_MAX_BYTES, DETAIL_DISCOVERY_MAX_BYTES - bytesRead));
+        const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        bytesRead += read;
+        file.headerGeneration = this._discoveryGeneration;
+        file.stat = stat;
+        const text = buffer.toString('utf8', 0, read);
+        const lines = text.split('\n').slice(0, TRANSCRIPT_HEAD_LINES);
+        for (let index = 0; index < lines.length; index++) {
+          if (index === lines.length - 1 && read < stat.size && !text.endsWith('\n')) break;
+          let record;
+          try { record = JSON.parse(lines[index]); } catch { continue; }
+          if (record?.type !== 'session' || !record.id) continue;
+          const discoveredId = String(record.id);
+          const entry = this._rememberIdentity(discoveredId, filePath, stat);
+          return discoveredId === rawId ? entry : null;
         }
-        this._detailScanDirectoryMtimes = directoryMtimes;
+      } catch (error) {
+        noteReadFailure(error);
+        if (error?.code === 'ENOENT') this._forgetFile(filePath);
+      } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+      }
+      return null;
+    };
+    let matched = null;
+    // Parent names expose their id. Verify that candidate before unrelated headers.
+    for (const [filePath, file] of this._files) {
+      if (!path.basename(filePath).endsWith(`${rawId}.jsonl`)) continue;
+      matched = readIdentity(filePath, file);
+      if (matched || filesRead >= DETAIL_DISCOVERY_MAX_FILES || bytesRead >= DETAIL_DISCOVERY_MAX_BYTES) break;
+    }
+    if (!matched) {
+      // A cold topology has no file stats yet. Populate only those missing
+      // observations once; active passes and later lookups reuse the same map.
+      const recentFiles = [...this._files.entries()];
+      for (const [filePath, file] of recentFiles) {
+        if (file.stat) continue;
+        this._perf.detailMetadataStats += 1;
+        this._perf.lastDetailMetadataStats += 1;
+        try {
+          file.stat = fs.statSync(filePath);
+        } catch (error) {
+          noteReadFailure(error);
+          if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') this._forgetFile(filePath);
+        }
+      }
+      recentFiles.sort((left, right) => (right[1].stat?.mtimeMs ?? 0) - (left[1].stat?.mtimeMs ?? 0));
+      for (const [filePath, file] of recentFiles) {
+        if (!this._files.has(filePath)) continue;
+        matched = readIdentity(filePath, file);
+        if (matched || filesRead >= DETAIL_DISCOVERY_MAX_FILES || bytesRead >= DETAIL_DISCOVERY_MAX_BYTES) break;
       }
     }
-    if (!entry) return createDetailResponse({ provider: this.provider, sessionId, project: project || '' });
-    const parsed = this._parseFile(entry.filePath, { detail: true });
-    if (!parsed) return createDetailResponse({ provider: this.provider, sessionId, project: project || '' });
+    this._perf.lastDetailHeaderFiles = filesRead;
+    this._perf.lastDetailHeaderBytes = bytesRead;
+    this._perf.detailHeaderFiles += filesRead;
+    this._perf.detailHeaderBytes += bytesRead;
+    if (!matched && (filesRead >= DETAIL_DISCOVERY_MAX_FILES || bytesRead >= DETAIL_DISCOVERY_MAX_BYTES)) {
+      this._perf.detailCappedLookups += 1;
+    }
+    return matched;
+  }
+
+  getSessionDetail(sessionId, project) {
+    this._perf.detailLookups += 1;
+    this._perf.lastDetailHeaderFiles = 0;
+    this._perf.lastDetailHeaderBytes = 0;
+    this._perf.lastDetailMetadataStats = 0;
+    this._refreshTopology();
+    const rawId = rawSessionId(sessionId);
+    const empty = () => createDetailResponse({ provider: this.provider, sessionId, project: project || '' });
+    let entry = this._index.get(rawId) || this._detailIndex.get(rawId);
+    if (!entry && this._negativeDetails.get(rawId) === this._discoveryGeneration) {
+      this._perf.detailNegativeHits += 1;
+      return empty();
+    }
+    if (!entry) entry = this._discoverIdentity(rawId);
+    if (!entry) {
+      this._negativeDetails.delete(rawId);
+      this._negativeDetails.set(rawId, this._discoveryGeneration);
+      while (this._negativeDetails.size > NEGATIVE_CACHE_MAX) this._negativeDetails.delete(this._negativeDetails.keys().next().value);
+      return empty();
+    }
+    let fileStat;
+    try {
+      fileStat = fs.statSync(entry.filePath);
+    } catch (error) {
+      noteReadFailure(error);
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+        this._forgetFile(entry.filePath);
+        this._detailIndex.delete(rawId);
+        this._index.delete(rawId);
+      }
+      return empty();
+    }
+    const parsed = this._parseFile(entry.filePath, { detail: true, fileStat });
+    if (!parsed) {
+      if (this._files.has(entry.filePath)) throw new Error('Transcript changed during detail read');
+      return empty();
+    }
+    if (rawSessionId(parsed.session.sessionId) !== rawId) {
+      this._detailIndex.delete(rawId);
+      this._index.delete(rawId);
+      return empty();
+    }
     if (project && !parsed.detail.project) parsed.detail.project = project;
     return parsed.detail;
   }
@@ -740,20 +1044,60 @@ class OmpAdapter {
     return [{ type: 'directory', path: this.sessionsDir, recursive: true, filter: '.jsonl' }];
   }
 
-  invalidateCachesForDirty() {
-    this._index.clear();
-    this._detailIndex.clear();
-    this._detailScanDirectoryMtimes = null;
+  invalidateCachesForDirty(dirty = {}) {
+    if (dirty.kind === 'reconcile' || !dirty.kind) this._forceReconcile = true;
+    if (!dirty.path) return;
+    const changed = path.resolve(dirty.path);
+    const relative = path.relative(this.sessionsDir, changed);
+    if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) return;
+    if (changed.endsWith('.jsonl')) {
+      if (this._changedPaths.size < MAX_TRANSCRIPTS) this._changedPaths.add(changed);
+      if (!this._files.has(changed)) this._markDirectoryDirty(path.dirname(changed));
+    } else {
+      this._markDirectoryDirty(changed);
+    }
+  }
+
+  _markDirectoryDirty(directory) {
+    while (this._dirtyDirectories.size < MAX_DIRECTORIES) {
+      this._dirtyDirectories.add(directory);
+      if (directory === this.sessionsDir) break;
+      directory = path.dirname(directory);
+    }
   }
 
   getPerfStats() {
-    return { ...this._perf };
+    return {
+      ...this._perf,
+      discoveryGeneration: this._discoveryGeneration,
+      knownTranscripts: this._files.size,
+      knownDirectories: this._directories.size,
+      detailMappings: this._detailIndex.size,
+      negativeDetails: this._negativeDetails.size,
+      detailDiscoveryFileLimit: DETAIL_DISCOVERY_MAX_FILES,
+      detailDiscoveryByteLimit: DETAIL_DISCOVERY_MAX_BYTES,
+      reducedEntries: this._reducedCache.size,
+      reducedBytes: this._reducedCacheBytes,
+      reducedEntryLimit: REDUCED_CACHE_MAX,
+      reducedByteLimit: REDUCED_CACHE_MAX_BYTES,
+    };
   }
 
   shutdown() {
     this._index.clear();
     this._detailIndex.clear();
-    this._detailScanDirectoryMtimes = null;
+    this._directories.clear();
+    this._files.clear();
+    this._activePaths.clear();
+    this._changedPaths.clear();
+    this._dirtyDirectories.clear();
+    this._negativeDetails.clear();
+    this._reducedCache.clear();
+    this._reducedCacheBytes = 0;
+    this._rootSignature = null;
+    this._reconciledAt = null;
+    this._forceReconcile = false;
+    this._lastThreshold = undefined;
   }
 }
 

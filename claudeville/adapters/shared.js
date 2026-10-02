@@ -31,6 +31,7 @@ const _parsedTailStats = {
   rejectedEntries: 0,
   rejectedBytes: 0,
   bytesRead: 0,
+  headBytesRead: 0,
 };
 
 const DEFAULT_TOOL_FIELDS = Object.freeze([
@@ -69,6 +70,7 @@ function readHeadText(filePath, maxBytes = DEFAULT_HEAD_BYTES) {
       const bytesToRead = Math.min(stat.size, maxBytes);
       const buffer = Buffer.allocUnsafe(bytesToRead);
       const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0);
+      _parsedTailStats.headBytesRead += bytesRead;
       return buffer.toString('utf-8', 0, bytesRead);
     } finally {
       fs.closeSync(fd);
@@ -121,6 +123,7 @@ function readTailRaw(filePath, count, chunkBytes, maxBytes) {
 
       const buffer = Buffer.allocUnsafe(bytesToRead);
       const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
+      _parsedTailStats.bytesRead += Math.max(0, bytesRead);
       if (bytesRead <= 0) break;
 
       const chunk = buffer.subarray(0, bytesRead);
@@ -136,6 +139,7 @@ function readTailRaw(filePath, count, chunkBytes, maxBytes) {
     if (position > 0) {
       const boundary = Buffer.allocUnsafe(1);
       const boundaryBytes = fs.readSync(fd, boundary, 0, 1, position - 1);
+      _parsedTailStats.bytesRead += Math.max(0, boundaryBytes);
       const startsOnLineBoundary = boundaryBytes === 1 && boundary[0] === 10;
       if (!startsOnLineBoundary) {
         // The bounded window starts in the middle of an older line. Drop that
@@ -237,7 +241,7 @@ function readTailLines(filePath, count, {
     const cacheCoversRequest = cached
       && cached.capacity >= requestedCount
       && (cached.lines.length >= requestedCount || cached.maxBytes >= maxBytes);
-    if (cacheCoversRequest && cached.ino === (stat.ino || 0) && stat.size >= cached.size) {
+    if (cacheCoversRequest && cached.dev === stat.dev && cached.ino === (stat.ino || 0) && stat.size >= cached.size) {
       if (
         stat.size === cached.size
         && stat.mtimeMs === cached.mtimeMs
@@ -266,6 +270,7 @@ function readTailLines(filePath, count, {
             size: cached.size + appendedBuffer.length,
             mtimeMs: stat.mtimeMs,
             ctimeMs: stat.ctimeMs,
+            dev: stat.dev,
             ino: cached.ino,
             guard: tailGuard(Buffer.concat([guard, appendedBuffer])),
             lines,
@@ -284,7 +289,6 @@ function readTailLines(filePath, count, {
     const capacity = Math.max(requestedCount, cached?.capacity || 0);
     const readMaxBytes = Math.max(maxBytes, cached?.maxBytes || 0);
     const { stat: readStat, buffer } = readTailRaw(filePath, capacity, chunkBytes, readMaxBytes);
-    _parsedTailStats.bytesRead += buffer.length;
     if (!buffer.length) {
       deleteTailState(filePath);
       return [];
@@ -295,6 +299,7 @@ function readTailLines(filePath, count, {
       size: readStat.size,
       mtimeMs: readStat.mtimeMs,
       ctimeMs: readStat.ctimeMs,
+      dev: readStat.dev,
       ino: readStat.ino || 0,
       guard: tailGuard(buffer),
       lines,
@@ -514,6 +519,7 @@ function estimateJsonViewBytes(view) {
 
 function tailJsonSignature(state) {
   return [
+    state.dev,
     state.ino,
     state.size,
     state.mtimeMs,
