@@ -481,7 +481,7 @@ async function run() {
         if (!founding || founding.identityKey === 'live:founder' || !(biography?.lifetimeTokens >= 1234)) {
           throw new Error('Simulator did not persist its own founding and token biography');
         }
-        await store.putAffinity({ pairKey: 'sim:a|sim:b', score: 999 });
+        await store.putAffinities([{ pairKey: 'sim:a|sim:b', score: 999 }]);
       });
       assert.deepEqual(await history.evaluate(() => window.readLiveHistory()), liveBefore);
       assert.deepEqual(await history.evaluate(() => window.liveMessages), []);

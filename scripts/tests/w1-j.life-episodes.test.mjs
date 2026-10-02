@@ -30,9 +30,9 @@ function memoryStore() {
             const record = biographies.get(identityKey);
             return record ? structuredClone(record) : null;
         },
-        async putBiography(record) {
-            biographies.set(record.identityKey, structuredClone(record));
-            return record;
+        async putBiographies(records) {
+            for (const record of records) biographies.set(record.identityKey, structuredClone(record));
+            return records.length;
         },
         async put(storeName, record) {
             assert.equal(storeName, 'events');

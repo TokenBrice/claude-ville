@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { MonumentPlanter } from '../../claudeville/src/application/MonumentRules.js';
 import { ChronicleStore } from '../../claudeville/src/infrastructure/ChronicleStore.js';
 import { ChronicleMonuments } from '../../claudeville/src/presentation/character-mode/ChronicleMonuments.js';
+import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 import { LandmarkActivity } from '../../claudeville/src/presentation/character-mode/LandmarkActivity.js';
 import { RelationshipState } from '../../claudeville/src/presentation/character-mode/RelationshipState.js';
 import { TrailRenderer } from '../../claudeville/src/presentation/character-mode/TrailRenderer.js';
@@ -261,6 +262,92 @@ function checkPostDisposeNoMutation() {
   assert.equal(relationships.getDiagnostics().rememberedSpriteTiles, 0);
 }
 
+function checkRelationshipGateTileBounds() {
+  const world = { agents: new Map() };
+  const relationships = new RelationshipState(world);
+  const sprites = new Map();
+  for (let index = 0; index < 1000; index++) {
+    const agent = { id: `gate-${index}`, position: { x: 99, y: 99 } };
+    const sprite = { agent, x: 64, y: 32 };
+    sprites.set(agent.id, sprite);
+    world.agents.set(agent.id, agent);
+    relationships.reconcile({ agentSprites: sprites });
+    const departureTile = worldToTile(sprite.x, sprite.y);
+    world.agents.delete(agent.id);
+    eventBus.emit('agent:removed', agent);
+    sprite.x += 64;
+    relationships.reconcile({ agentSprites: sprites });
+    assert.equal(relationships.getDiagnostics().rememberedSpriteTiles, 1);
+    assert.deepEqual(relationships.getSnapshot().recentDepartures.at(-1).lastTile, departureTile);
+    sprites.delete(agent.id);
+    relationships.reconcile({ agentSprites: sprites });
+    assert.equal(relationships.getDiagnostics().rememberedSpriteTiles, 0);
+    assert.deepEqual(relationships.getSnapshot().recentDepartures.at(-1).lastTile, departureTile);
+  }
+  relationships.dispose();
+}
+
+async function checkMonumentProjectionRetention() {
+  const now = 3_000_000_000;
+  const month = 30 * 24 * 60 * 60 * 1000;
+  const records = Array.from({ length: 7 }, (_, index) => ({
+    id: `forge-${index}`,
+    district: 'forge',
+    kind: 'feature',
+    weight: 'minor',
+    project: '/repo/projection',
+    label: `Milestone ${index}`,
+    lore: `Recorded lore ${index}`,
+    tileX: index,
+    tileY: index,
+    plantedAt: index === 0 ? now - month : now - (7 - index) * 100,
+    ts: index === 0 ? now - 700 : now - Math.max(1, index - 1) * 100,
+  }));
+  const persisted = new Map(records.map(record => [record.id, record]));
+  const monuments = new ChronicleMonuments({
+    store: {
+      queryRange: async () => [...persisted.values()],
+      get: async (_store, id) => persisted.get(id),
+      put: async (_store, record) => persisted.set(record.id, record),
+    },
+    eventTarget: { on: () => () => {}, emit() {} },
+  });
+  await monuments.hydrate(now);
+  const ids = at => monuments.enumerateDrawables(at).map(drawable => drawable.payload.id);
+  const visible = records.slice(1).map(record => record.id);
+  assert.deepEqual(ids(now), [...visible, 'founding:forge'], 'equal ts values preserve record insertion order');
+  const founding = monuments.enumerateDrawables(now).at(-1).payload;
+  assert.equal(founding.lore, records[0].lore);
+  assert.equal(founding.tileX, records[0].tileX);
+  assert.equal(founding.plantedAt, records[0].plantedAt);
+  assert.deepEqual(monuments.ledgerFor(founding, now), {
+    district: 'forge',
+    rows: [records[6], records[5], records[4]],
+    overflow: 4,
+    total: 7,
+  });
+  assert.deepEqual(monuments.enumerateDrawables(now, {
+    getViewportTileBounds: () => ({ startX: 1, endX: 1, startY: 1, endY: 1 }),
+  }).map(drawable => drawable.payload.id), ['forge-1']);
+  assert.deepEqual(ids(now + 1), visible, 'the founding row expires just after its month boundary, before update');
+  assert.equal(monuments.ledgerFor(records[1], now + 1).total, 6);
+  const planted = await monuments.update([{
+    id: 'planter',
+    gitEvents: [gitEvent('projection-new', now + 2, {
+      project: '/repo/projection',
+      message: 'feat: new retained monument',
+    })],
+  }], {}, now + 2);
+  assert.equal(planted.length, 1);
+  assert.deepEqual(ids(now + 2), [planted[0].id, ...visible.slice(0, 5), 'founding:forge']);
+  assert.equal(monuments.enumerateDrawables(now + 2).at(-1).payload.lore, records[1].lore);
+  assert.equal(monuments.ledgerFor(planted[0], now + 2).total, 7);
+  assert.equal(monuments.ledgerFor(planted[0], now + 2).rows[0].id, planted[0].id);
+  assert.equal(monuments.records.has(records[0].id), false, 'expired hydrated memory is released on update');
+  assert.equal(persisted.has(records[0].id), true, 'projection expiry never deletes persisted monument history');
+  monuments.dispose();
+}
+
 async function checkTrailHydrateDisposeBoundary() {
   let resolveQuery;
   const trail = new TrailRenderer({
@@ -366,6 +453,44 @@ function checkTrailSamplingBounds() {
   };
 }
 
+function checkTrailSingletonBounds() {
+  const startedAt = 1_000_000;
+  const live = { id: 'live-overlay', status: 'working', position: { tileX: 0, tileY: 0 } };
+  const action = { id: 'action-overlay', status: 'waiting_on_user', position: { tileX: 0, tileY: 1 } };
+  const selected = { id: 'selected-overlay', position: { tileX: 0, tileY: 2 } };
+  const trail = new TrailRenderer({ world: { agents: new Map([[live.id, live], [action.id, action]]) } });
+  trail.setSelectedAgent(selected.id);
+  for (let second = 0; second < 30; second++) {
+    for (const agent of [live, action, selected]) agent.position.tileX = second;
+    trail.capture([live, action, selected], startedAt + second * 1000);
+  }
+  const selectedTail = trail.samplesByAgent.get(selected.id).slice(-24);
+  const actionTail = trail.samplesByAgent.get(action.id).slice(-12);
+  const historical = Array.from({ length: 13_000 }, (_, index) => ({
+    id: `one-shot-${index}`,
+    position: { tileX: index % 40, tileY: Math.floor(index / 40) % 40 },
+  }));
+  trail.capture(historical.slice(0, 6500), startedAt + 60_000);
+  trail.capture(historical.slice(6500), startedAt + 30_000);
+  const diagnostics = trail.getDiagnostics();
+  assert.ok(diagnostics.totalSamples <= diagnostics.globalLimit, 'unique singleton identities must obey the global bound');
+  assert.equal(
+    [...trail.samplesByAgent.values()].reduce((sum, samples) => sum + samples.length, 0),
+    diagnostics.totalSamples,
+    'whole-bucket eviction must preserve exact accounting',
+  );
+  assert.equal(trail.samplesByAgent.has(historical[6500].id), false, 'oldest historical singleton is evicted first, not first inserted');
+  assert.equal(trail.samplesByAgent.has(historical[0].id), true);
+  assert.equal(trail.samplesByAgent.has(historical.at(-1).id), true);
+  assert.deepEqual(trail.samplesByAgent.get(selected.id), selectedTail, 'departed selection keeps its complete recent overlay');
+  assert.deepEqual(trail.samplesByAgent.get(action.id), actionTail, 'action-needed overlay keeps its complete recent path');
+  assert.ok(trail.samplesByAgent.get(live.id).length >= 2, 'live route survives historical eviction');
+  trail._pruneMemory(startedAt + 60_000 + 60 * 60 * 1000 + 1, { force: true });
+  assert.equal(trail.getDiagnostics().totalSamples, 0, 'one-hour expiry still releases every retained sample');
+  trail.dispose();
+  return { singletonSamples: diagnostics.totalSamples, singletonAgents: diagnostics.agentsWithSamples };
+}
+
 async function checkTrailPauseHydrationBoundary() {
   let resolveQuery;
   let leaseAcquisitions = 0;
@@ -405,8 +530,10 @@ await checkPlanterDisposeBoundary();
 checkVisitReplayWindow();
 const sharedRepositoryVisitMs = checkSharedRepositoryVisitCost();
 checkPostDisposeNoMutation();
+checkRelationshipGateTileBounds();
+await checkMonumentProjectionRetention();
 await checkTrailHydrateDisposeBoundary();
-const trailBounds = checkTrailSamplingBounds();
+const trailBounds = { ...checkTrailSamplingBounds(), ...checkTrailSingletonBounds() };
 await checkTrailPauseHydrationBoundary();
 
 console.log(JSON.stringify({

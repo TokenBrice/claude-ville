@@ -44,6 +44,7 @@ export class RelationshipState {
         // it never stacks onto those rings.
         this.fileOverlap = null;
         this._lastSpriteTiles = new Map();
+        this._currentSpriteIds = new Set();
         this._membershipDirty = true;
         this._lastMembership = new Map();
         this._cachedSnapshotTeamToMembersArrays = new Map();
@@ -98,6 +99,7 @@ export class RelationshipState {
         this.recentDepartures = [];
         this.chatPairs = [];
         this._lastSpriteTiles.clear();
+        this._currentSpriteIds.clear();
         this._lastMembership.clear();
         this._cachedSnapshotTeamToMembersArrays.clear();
         this._snapshot = null;
@@ -333,10 +335,17 @@ export class RelationshipState {
     }
 
     _rememberSpriteTiles(sprites) {
+        this._currentSpriteIds.clear();
         for (const sprite of sprites) {
             const id = sprite.agent?.id;
             if (!id) continue;
+            this._currentSpriteIds.add(id);
             this._lastSpriteTiles.set(id, this._screenToTile(sprite.x, sprite.y));
+        }
+        // Gate-transit bodies remain current sprites after agent:removed.
+        // Departure cues own their tile already; only finished bodies leave here.
+        for (const id of this._lastSpriteTiles.keys()) {
+            if (!this._currentSpriteIds.has(id)) this._lastSpriteTiles.delete(id);
         }
     }
 

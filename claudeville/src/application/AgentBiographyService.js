@@ -77,7 +77,7 @@ function nameFromIdentityKey(identityKey) {
  *
  * Emits `biography:updated` on the event bus whenever milestones are
  * earned; cross-tab consumers get `biography-updated` messages on the
- * chronicle BroadcastChannel via `ChronicleStore.putBiography`.
+ * chronicle BroadcastChannel via `ChronicleStore.putBiographies`.
  *
  * Only the tab holding the write lease accumulates and persists, so
  * multiple open tabs do not double-count the same telemetry.
@@ -197,16 +197,17 @@ export class AgentBiographyService {
         const keys = [...this._dirty];
         this._dirty.clear();
         for (const identityKey of keys) this._flushingKeys.add(identityKey);
-        for (const identityKey of keys) {
-            try {
-                const biography = await this._biographies.get(identityKey);
-                if (biography) await this.store.putBiography(biography.toRecord());
-            } catch (err) {
-                this._dirty.add(identityKey);
-                console.warn('[AgentBiographyService] flush failed:', err?.message || err);
-            } finally {
-                this._flushingKeys.delete(identityKey);
-            }
+        try {
+            const biographies = await Promise.all(keys.map(key => this._biographies.get(key)));
+            const records = biographies.filter(Boolean).map(biography => biography.toRecord());
+            if (records.length) await this.store.putBiographies(records);
+        } catch (err) {
+            // The transaction is atomic; retry the entire snapshot. Mutations
+            // made while it was in flight already remain in the dirty set.
+            for (const identityKey of keys) this._dirty.add(identityKey);
+            console.warn('[AgentBiographyService] flush failed:', err?.message || err);
+        } finally {
+            for (const identityKey of keys) this._flushingKeys.delete(identityKey);
         }
         this._pruneBiographyCache();
     }

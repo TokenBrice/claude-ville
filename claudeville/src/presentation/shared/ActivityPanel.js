@@ -632,6 +632,8 @@ export class ActivityPanel {
         const rendererPinnedIds = this._getRenderer()?.getPinnedAgentIds?.() || [];
         this._pinned = new Set(rendererPinnedIds.length ? rendererPinnedIds : this._loadPinnedAgentIds());
         this._pinnedDetails = new Map();
+        this._pinIdentities = new Map();
+        this._pinCompareDirty = true;
         this._agentSections = [];
         this._viewMode = document.getElementById('dashboardMode')?.style.display === '' ? 'dashboard' : 'character';
         this._workingDirectoryRowEl = null;
@@ -675,7 +677,7 @@ export class ActivityPanel {
         this._detailFreshnessEl.hidden = true;
         this.panelEl.querySelector('.activity-panel__header')?.appendChild(this._detailFreshnessEl);
         this._bind();
-        this._renderPinCompare();
+        this._refreshPinCompare();
         eventBus.emit('agents:pins-changed', {
             pinnedAgentIds: [...this._pinned].slice(0, PIN_COMPARE_LIMIT),
         });
@@ -741,8 +743,7 @@ export class ActivityPanel {
         };
         this._onAgentUpdated = (agent) => {
             if (agent?.id && this._pinned.has(agent.id)) {
-                this._renderPinCompare();
-                this._fetchPinnedDetails();
+                this._refreshPinCompare({ fetch: true });
             }
             if (this._mode === 'agent'
                 && this.currentAgent
@@ -785,7 +786,7 @@ export class ActivityPanel {
                 if (this._mode === 'agent') this.hide();
                 else this.currentAgent = null;
             }
-            this._renderPinCompare();
+            this._refreshPinCompare();
         };
         this._onBuildingSelected = (building) => {
             if (building) this.showBuilding(building);
@@ -824,7 +825,7 @@ export class ActivityPanel {
             }
         };
         this._onMoodChanged = ({ agent } = {}) => {
-            if (agent?.id && this._pinned.has(agent.id)) this._renderPinCompare();
+            if (agent?.id && this._pinned.has(agent.id)) this._refreshPinCompare();
             if (this._mode === 'agent' && this.currentAgent && agent?.id === this.currentAgent.id) {
                 this.currentAgent = agent;
                 this._updateInfo(agent);
@@ -1136,6 +1137,7 @@ export class ActivityPanel {
         if (!agent?.id) return;
         if (this._pinned.has(agent.id)) {
             this._pinned.delete(agent.id);
+            this._pinnedDetails.delete(agent.id);
         } else {
             while (this._pinned.size >= PIN_COMPARE_LIMIT) {
                 const [oldest] = this._pinned;
@@ -1148,9 +1150,8 @@ export class ActivityPanel {
         eventBus.emit('agents:pins-changed', {
             pinnedAgentIds: [...this._pinned].slice(0, PIN_COMPARE_LIMIT),
         });
-        this._renderPinCompare();
-        this._updatePinToggle(agent);
-        this._fetchPinnedDetails();
+        this._refreshPinCompare({ fetch: true });
+        if (this._mode !== null) this._updatePinToggle(agent);
     }
 
     _updatePinToggle(agent) {
@@ -1171,8 +1172,48 @@ export class ActivityPanel {
         this._pinToggleBtn.setAttribute('aria-label', label);
     }
 
+    _refreshPinCompare({ fetch = false } = {}) {
+        if (this._destroyed) return;
+        const world = this._getWorld();
+        let identityChanged = false;
+        for (const [id, key] of this._pinIdentities) {
+            const agent = this._pinned.has(id) ? world?.agents?.get?.(id) : null;
+            if (!agent || sessionDetailsService.getSessionDetailKey(agent) !== key) {
+                this._pinIdentities.delete(id);
+                this._pinnedDetails.delete(id);
+                identityChanged = true;
+            }
+        }
+        for (const id of this._pinned) {
+            const agent = world?.agents?.get?.(id);
+            if (agent && !this._pinIdentities.has(id)) {
+                this._pinIdentities.set(id, sessionDetailsService.getSessionDetailKey(agent));
+                identityChanged = true;
+            }
+        }
+        if (identityChanged) this._pinFetchSeq++;
+        this._pinCompareDirty = true;
+        if (this._mode === null) return;
+        this._renderPinCompare();
+        if (fetch) this._fetchPinnedDetails();
+    }
+
+    _pinDetailsSignature() {
+        const world = this._getWorld();
+        return JSON.stringify([...this._pinned].map(id => {
+            const agent = world?.agents?.get?.(id);
+            return [id, agent ? sessionDetailsService.getSessionDetailKey(agent) : null];
+        }));
+    }
+
     async _fetchPinnedDetails() {
         if (this._destroyed) return;
+        if (this._mode === null) {
+            this._pinCompareDirty = true;
+            return;
+        }
+        const seq = ++this._pinFetchSeq;
+        const signature = this._pinDetailsSignature();
         const pinnedAgents = [...this._pinned]
             .map(id => this._getWorld()?.agents?.get?.(id))
             .filter(Boolean);
@@ -1180,20 +1221,32 @@ export class ActivityPanel {
             this._renderPinCompare();
             return;
         }
-        const seq = ++this._pinFetchSeq;
         try {
             const details = await sessionDetailsService.fetchSessionDetailsBatch(pinnedAgents);
-            if (this._destroyed || seq !== this._pinFetchSeq) return;
+            if (this._destroyed || seq !== this._pinFetchSeq || signature !== this._pinDetailsSignature()) return;
+            if (this._mode === null) {
+                this._pinCompareDirty = true;
+                return;
+            }
             for (const [agentId, detail] of details) {
                 if (this._pinned.has(agentId) && detail) this._pinnedDetails.set(agentId, detail);
             }
             this._renderPinCompare();
         } catch {
-            if (!this._destroyed && seq === this._pinFetchSeq) this._renderPinCompare();
+            if (!this._destroyed && seq === this._pinFetchSeq && signature === this._pinDetailsSignature()) {
+                if (this._mode === null) this._pinCompareDirty = true;
+                else this._renderPinCompare();
+            }
         }
     }
 
     _renderPinCompare() {
+        if (this._destroyed) return;
+        if (this._mode === null) {
+            this._pinCompareDirty = true;
+            return;
+        }
+        this._pinCompareDirty = false;
         if (!this._pinStripEl) return;
         const ids = [...this._pinned].slice(0, PIN_COMPARE_LIMIT);
         if (!ids.length) {
@@ -1349,8 +1402,7 @@ export class ActivityPanel {
         this._renderDirectorFeed();
         this._renderRelationships(agent);
         this._updatePinToggle(agent);
-        this._renderPinCompare();
-        this._fetchPinnedDetails();
+        this._refreshPinCompare({ fetch: true });
         this._startPolling();
     }
 
@@ -1378,7 +1430,7 @@ export class ActivityPanel {
         this._hideAgentSections();
         this._updatePinToggle(null);
         this._updateWorkingDirectory(null);
-        this._renderPinCompare();
+        this._refreshPinCompare({ fetch: this._pinCompareDirty });
         this._ensureBuildingContentEl();
         this._revealPanel();
         document.body.classList.add('cv-panel-open');
@@ -1398,6 +1450,7 @@ export class ActivityPanel {
         if (!keepCurrentAgent) this._resetNarration();
         this._chronicleFetchSeq++;
         this._pinFetchSeq++;
+        this._pinCompareDirty = true;
         this._focusRequestVersion++;
         this._stopPanelKeyboardHandling();
         // Closing the panel leaves the score: the badge must never outlive the
@@ -4642,6 +4695,7 @@ export class ActivityPanel {
         this._causalWaterfallToolHistory = [];
         this._agentSections = [];
         this._pinnedDetails.clear();
+        this._pinIdentities.clear();
         eventBus.emit('agents:pins-changed', { pinnedAgentIds: [] });
         this._pinned.clear();
         this._buildingSignalByType.clear();

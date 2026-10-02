@@ -312,6 +312,8 @@ export class TopBar {
         this._changelogHtml = null;
         this._changelogController = null;
         this._destroyed = false;
+        this._reactiveFrame = null;
+        this._reactiveFrameGeneration = 0;
         this._villageState = initialVillageState();
         this._connectionAnnouncementKey = null;
         this._recoverySweepPending = false;
@@ -340,8 +342,10 @@ export class TopBar {
         this._initSettingsButton();
 
         this._onUpdate = (agent) => {
+            if (this._destroyed) return;
             this._observeHookSignal(agent);
-            this.render();
+            if (this.world?.agents?.has?.(agent?.id)) this._unknownModelSeenToday(agent);
+            this._scheduleReactiveRender();
         };
         eventBus.on('agent:added', this._onUpdate);
         eventBus.on('agent:updated', this._onUpdate);
@@ -364,7 +368,7 @@ export class TopBar {
             this._applyConnectionChrome(connected);
             this._renderConnection();
             // The first snapshot turns the count placeholders into real numbers.
-            if (this._countsPending !== countsPending(state)) this.render();
+            if (this._countsPending !== countsPending(state)) this._scheduleReactiveRender();
         };
         eventBus.on('village:state', this._onVillageState);
         this._onChronicleStatus = (payload = {}) => {
@@ -390,6 +394,29 @@ export class TopBar {
         this.render();
     }
 
+    _scheduleReactiveRender() {
+        if (this._destroyed || this._reactiveFrame !== null) return;
+        const generation = ++this._reactiveFrameGeneration;
+        const callback = () => {
+            if (generation !== this._reactiveFrameGeneration) return;
+            this._reactiveFrame = null;
+            if (!this._destroyed) this.render();
+        };
+        const frame = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(callback) : null;
+        if (frame === null || frame === undefined) {
+            callback();
+            return;
+        }
+        this._reactiveFrame = frame;
+    }
+
+    _cancelReactiveFrame() {
+        if (this._reactiveFrame === null) return;
+        this._reactiveFrameGeneration++;
+        if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this._reactiveFrame);
+        this._reactiveFrame = null;
+    }
+
     _renderWitnessClock(snapshot) {
         const clock = snapshot?.clock;
         const node = this.els.clock;
@@ -403,10 +430,10 @@ export class TopBar {
         if (signature === this._clockSignature) return;
         this._clockSignature = signature;
         node.hidden = false;
-        node.querySelector('.topbar__clock-time').textContent = clock.label;
-        node.querySelector('.topbar__clock-phase').textContent = phase;
+        setText(node.querySelector('.topbar__clock-time'), clock.label);
+        setText(node.querySelector('.topbar__clock-phase'), phase);
         const tag = node.querySelector('.topbar__clock-override');
-        tag.textContent = override;
+        setText(tag, override);
         tag.hidden = !override;
         const glyph = /rain|storm|snow/.test(weather) ? 'weather-rain'
             : /cloud|fog|overcast/.test(weather) ? 'weather-cloud' : 'weather-clear';
@@ -656,12 +683,12 @@ export class TopBar {
         return Number.isFinite(seenAt) ? Math.max(0, now - seenAt) : null;
     }
 
-    _unknownModelSeenToday() {
+    _unknownModelSeenToday(changedAgent = null) {
         const date = new Date();
         const month = String(date.getMonth() + 1).padStart(2, '0');
         const day = String(date.getDate()).padStart(2, '0');
         const today = `${date.getFullYear()}-${month}-${day}`;
-        const agents = this.world?.agents?.values?.() || [];
+        const agents = changedAgent ? [changedAgent] : this.world?.agents?.values?.() || [];
         if ([...agents].some((agent) => agent.cost?.unknownModel === true)) {
             try { window.localStorage?.setItem(UNKNOWN_MODEL_DATE_KEY, today); } catch { /* persistence is optional */ }
             return true;
@@ -1135,6 +1162,8 @@ export class TopBar {
     }
 
     render() {
+        if (this._destroyed) return;
+        this._cancelReactiveFrame();
         const stats = this.world.getStats();
         for (const agent of this.world?.agents?.values?.() || []) this._observeHookSignal(agent);
         this._unknownModelSeenToday();
@@ -1163,7 +1192,7 @@ export class TopBar {
             const refs = this.els.attentionParts?.[key];
             if (refs) {
                 refs.part.hidden = count <= 0;
-                refs.num.textContent = String(count);
+                setText(refs.num, String(count));
             }
             if (count > 0) lit.push({ key, count, noun });
         }
@@ -1181,7 +1210,7 @@ export class TopBar {
     _renderCount(node, value, pending) {
         if (!node) return;
         const count = Number(value) || 0;
-        node.textContent = pending ? '–' : String(count);
+        setText(node, pending ? '–' : String(count));
         node.parentElement?.classList.toggle('topbar__seg--zero', !pending && count === 0);
     }
 
@@ -1191,11 +1220,11 @@ export class TopBar {
     // moved for reasons that had nothing to do with spending.
     _renderSpend(pending = this._countsPending) {
         const now = Date.now();
-        const today = this.spendLedger?.sample?.(now) || { tokens: 0, cacheRead: 0, cost: 0 };
+        const today = this.spendLedger?.current?.(now) || { tokens: 0, cacheRead: 0, cost: 0 };
         const coverage = usageCoverage(this.world?.agents?.values?.() || []);
         const incomplete = coverage.partial + coverage.unavailable;
         this._coverageNote = incomplete ? `Partial coverage: ${coverage.partial} partial, ${coverage.unavailable} unavailable among current sessions.` : '';
-        this.els.tokens.textContent = pending ? '–' : formatNumber(today.tokens);
+        setText(this.els.tokens, pending ? '–' : formatNumber(today.tokens));
         this.els.rateWrap?.classList.toggle('topbar__seg-stat--zero', !pending && !(today.tokens > 0));
 
         // The rate and the coverage caveat ride beside today's total — two
@@ -1203,7 +1232,7 @@ export class TopBar {
         const rate = this.spendLedger?.burnRate?.(now);
         this._spendRollups = this.spendLedger?.rollups?.(now) || { projects: [], providers: [] };
         const rateText = rate ? `${formatNumber(Math.round(rate.tokensPerHour))}/h` : '';
-        this.els.rate.textContent = pending ? '' : [rateText, incomplete ? 'partial' : ''].filter(Boolean).join(' · ');
+        setText(this.els.rate, pending ? '' : [rateText, incomplete ? 'partial' : ''].filter(Boolean).join(' · '));
         if (this.els.rateWrap) {
             this.els.rateWrap.dataset.tip = rate
                 ? `Tokens observed today, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates. Rate match: mixed session models; revision ${TokenUsage.rateRevision}. Click for project and provider detail.`
@@ -1433,7 +1462,7 @@ export class TopBar {
         const chip = this.els.connection;
         if (!chip) return;
         const { label, state, stale } = connectionChip(this._villageState, now);
-        chip.textContent = label;
+        setText(chip, label);
         chip.classList.toggle('topbar__conn--connected', state === LinkState.LIVE);
         chip.classList.toggle('topbar__conn--disconnected', state === LinkState.RECONNECTING);
         chip.classList.toggle('topbar__conn--syncing', state === LinkState.SYNCING);
@@ -1443,7 +1472,7 @@ export class TopBar {
         const announcementKey = stale ? LinkState.STALE : state;
         if (announcementKey !== this._connectionAnnouncementKey) {
             this._connectionAnnouncementKey = announcementKey;
-            if (this._connectionLiveEl) this._connectionLiveEl.textContent = `Connection ${label}`;
+            setText(this._connectionLiveEl, `Connection ${label}`);
         }
         this._renderConnectionDetails(now);
         if (stale) this._scheduleStaleTick();
@@ -1571,7 +1600,7 @@ export class TopBar {
         this._lastFps = typeof fps === 'number' && Number.isFinite(fps) && fps >= 0 ? fps : null;
         const counter = this.els.fps;
         if (!counter) return;
-        counter.textContent = this._lastFps === null ? 'FPS idle' : `${Math.round(this._lastFps)} FPS`;
+        setText(counter, this._lastFps === null ? 'FPS idle' : `${Math.round(this._lastFps)} FPS`);
         counter.dataset.tip = this._lastFps === null
             ? 'World render loop is idle'
             : 'World render-loop frames per second, averaged over at least 500 ms; includes reused idle frames';
@@ -1583,7 +1612,7 @@ export class TopBar {
             const h = String(Math.floor(seconds / 3600)).padStart(2, '0');
             const m = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0');
             const s = String(seconds % 60).padStart(2, '0');
-            if (this.els.time) this.els.time.textContent = `${h}:${m}:${s}`;
+            setText(this.els.time, `${h}:${m}:${s}`);
         }, 1000);
     }
 
@@ -1681,6 +1710,7 @@ export class TopBar {
     destroy() {
         if (this._destroyed) return this._destroyPromise;
         this._destroyed = true;
+        this._cancelReactiveFrame();
         eventBus.off('atmosphere:updated', this._onAtmosphere);
         this._unpublishReservedRect?.();
         this.els.attention?.remove();

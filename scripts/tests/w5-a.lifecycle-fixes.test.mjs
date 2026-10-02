@@ -53,7 +53,7 @@ function agent(id, extra = {}) {
 function affinityStore(getAllAffinities) {
     return {
         getAllAffinities,
-        async putAffinity(record) { return record; },
+        async putAffinities(records) { return records.length; },
     };
 }
 

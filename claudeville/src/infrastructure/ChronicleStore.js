@@ -311,11 +311,20 @@ export class ChronicleStore {
     }
 
     async bulkPut(storeName, records = []) {
+        if (!records.length) return 0;
         await this.open();
         const tx = this.db.transaction(storeName, 'readwrite');
-        const store = tx.objectStore(storeName);
-        for (const record of records) store.put(record);
-        await txDone(tx);
+        const done = txDone(tx);
+        try {
+            const store = tx.objectStore(storeName);
+            for (const record of records) store.put(record);
+        } catch (error) {
+            // A synchronous clone/key error must not commit a partial batch.
+            try { tx.abort(); } catch { /* transaction may already be aborted */ }
+            await done.catch(() => {});
+            throw error;
+        }
+        await done;
         return records.length;
     }
 
@@ -652,14 +661,17 @@ export class ChronicleStore {
         return this.get('biographies', identityKey);
     }
 
-    async putBiography(record) {
-        await this.put('biographies', record);
-        this.channel?.postMessage?.({
-            type: 'biography-updated',
-            identityKey: record.identityKey,
-            schemaVersion: record.schemaVersion,
-        });
-        return record;
+    /** One atomic dirty snapshot; followers are notified only after commit. */
+    async putBiographies(records = []) {
+        await this.bulkPut('biographies', records);
+        for (const record of records) {
+            this.channel?.postMessage?.({
+                type: 'biography-updated',
+                identityKey: record.identityKey,
+                schemaVersion: record.schemaVersion,
+            });
+        }
+        return records.length;
     }
 
     /** Founding record: `{ identityKey, name, foundedAt }` or null. */
@@ -703,14 +715,17 @@ export class ChronicleStore {
         return requestToPromise(tx.objectStore('affinities').getAll());
     }
 
-    async putAffinity(record) {
-        await this.put('affinities', record);
-        this.channel?.postMessage?.({
-            type: 'affinity-updated',
-            pairKey: record.pairKey,
-            schemaVersion: record.schemaVersion,
-        });
-        return record;
+    /** One atomic dirty snapshot; followers are notified only after commit. */
+    async putAffinities(records = []) {
+        await this.bulkPut('affinities', records);
+        for (const record of records) {
+            this.channel?.postMessage?.({
+                type: 'affinity-updated',
+                pairKey: record.pairKey,
+                schemaVersion: record.schemaVersion,
+            });
+        }
+        return records.length;
     }
 
     acquireCaptureLease({ ttlMs = DEFAULT_LEASE_TTL_MS } = {}) {

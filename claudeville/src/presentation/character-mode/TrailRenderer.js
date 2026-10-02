@@ -52,7 +52,7 @@ function viewportMetrics(viewport = {}) {
     return { dpr, width, height };
 }
 
-function sampleListToLimit(samples, limit) {
+function sampleListToLimit(samples, limit, recentTailLimit = 0) {
     const target = Math.max(1, Math.floor(limit));
     if (!Array.isArray(samples) || samples.length <= target) return samples;
     if (target === 1) return [samples.at(-1)];
@@ -60,8 +60,9 @@ function sampleListToLimit(samples, limit) {
 
     // Keep a denser recent tail while preserving evenly spaced history so the
     // one-hour route remains recognizable after compaction.
-    const recentCount = Math.min(Math.floor(target / 4), 120);
+    const recentCount = Math.min(target, Math.max(Math.min(Math.floor(target / 4), 120), recentTailLimit));
     const historyCount = target - recentCount;
+    if (historyCount === 0) return samples.slice(-target);
     const historyEnd = samples.length - recentCount;
     const compacted = [];
     for (let index = 0; index < historyCount; index++) {
@@ -732,8 +733,10 @@ export class TrailRenderer {
             Math.floor(MAX_TOTAL_SAMPLES * COMPACT_TO_RATIO / Math.max(1, this.samplesByAgent.size)),
         );
         for (const [agentId, samples] of this.samplesByAgent) {
-            if (samples.length <= targetPerAgent) continue;
-            const compacted = sampleListToLimit(samples, targetPerAgent);
+            const minimum = this._minimumRetainedSamples(agentId);
+            const target = Math.max(targetPerAgent, minimum);
+            if (samples.length <= target) continue;
+            const compacted = sampleListToLimit(samples, target, minimum > 2 ? minimum : 0);
             const removed = samples.length - compacted.length;
             this.samplesByAgent.set(agentId, compacted);
             this._totalSamples -= removed;
@@ -742,15 +745,39 @@ export class TrailRenderer {
         if (this._totalSamples > MAX_TOTAL_SAMPLES) {
             for (const [agentId, samples] of this.samplesByAgent) {
                 if (this._totalSamples <= MAX_TOTAL_SAMPLES) break;
-                const remove = Math.min(samples.length - 1, this._totalSamples - MAX_TOTAL_SAMPLES);
+                const remove = Math.min(
+                    samples.length - this._minimumRetainedSamples(agentId),
+                    this._totalSamples - MAX_TOTAL_SAMPLES,
+                );
                 if (remove <= 0) continue;
                 samples.splice(0, remove);
                 this._totalSamples -= remove;
                 this._recordCompaction(remove);
-                if (!samples.length) this.samplesByAgent.delete(agentId);
+            }
+        }
+        if (this._totalSamples > MAX_TOTAL_SAMPLES) {
+            // A singleton per departed ID otherwise defeats the global bound.
+            // Evict the least recently seen historical route, never a live body
+            // or the recent points needed by selected/action-needed overlays.
+            const historical = [...this.samplesByAgent]
+                .filter(([agentId]) => this._minimumRetainedSamples(agentId) === 1)
+                .sort((a, b) => a[1].at(-1).ts - b[1].at(-1).ts);
+            for (const [agentId, samples] of historical) {
+                if (this._totalSamples <= MAX_TOTAL_SAMPLES) break;
+                this.samplesByAgent.delete(agentId);
+                this._totalSamples -= samples.length;
+                this._recordCompaction(samples.length);
             }
         }
         this._needsRepaint = true;
+    }
+
+    _minimumRetainedSamples(agentId) {
+        const importance = this._trailImportance(agentId);
+        if (importance === 'selected') return MAX_SELECTED_RENDER_SAMPLES;
+        if (importance === 'action-needed') return MAX_ACTION_RENDER_SAMPLES;
+        if (this.world?.agents?.has?.(agentId) || this.sprites?.has?.(agentId)) return 2;
+        return 1;
     }
 
     _recordCompaction(removed) {

@@ -124,6 +124,58 @@ function isLiveAgent(agent) {
     return Boolean(agent) && !isDepartedAgent(agent);
 }
 
+function recipientAliases(agent) {
+    return [agent?.name, agent?.agentName, agent?.agentId].map(normalizeAlias);
+}
+
+function addressesAliases(agent, aliases) {
+    if ((agent.sendMessages || []).some(message => aliases.has(normalizeAlias(message?.recipient)))) {
+        return true;
+    }
+    return agent.currentTool === 'SendMessage'
+        && aliases.has(normalizeAlias(extractRecipientName(agent.currentToolInput || '')));
+}
+
+// Fixed-size revisions, independent of the retained provider history length.
+// Length framing distinguishes fields without retaining another telemetry copy.
+function revisionWriter() {
+    let a = 2166136261;
+    let b = 5381;
+    let length = 0;
+    return {
+        add(value) {
+            const text = String(value ?? '');
+            const framed = `${text.length}:${text}`;
+            length += framed.length;
+            for (let index = 0; index < framed.length; index++) {
+                const code = framed.charCodeAt(index);
+                a = Math.imul(a ^ code, 16777619);
+                b = Math.imul(b, 33) ^ code;
+            }
+        },
+        value() { return `${length}:${a >>> 0}:${b >>> 0}`; },
+    };
+}
+
+function telemetryRevisions(agent) {
+    const chat = revisionWriter();
+    const git = revisionWriter();
+    (agent.sendMessages || []).forEach((message, index) => {
+        chat.add(chatEventKey(agent, message, index));
+        chat.add(eventTimestamp(message));
+    });
+    if (agent.currentTool === 'SendMessage') {
+        chat.add('SendMessage');
+        chat.add(agent.currentToolInput);
+    }
+    for (const event of agent.gitEvents || []) {
+        if (!isCountableGitEvent(event)) continue;
+        git.add(gitEventKey(event));
+        git.add(eventTimestamp(event));
+    }
+    return { chat: chat.value(), git: git.value() };
+}
+
 /** Two live agents share context when they could plausibly "meet". */
 function sharesContext(a, b) {
     if (a.parentSessionId && a.parentSessionId === b.id) return true;
@@ -149,10 +201,16 @@ function sharesContext(a, b) {
  * - sharedCommit: a countable commit/push git event, credited to every
  *   other live agent in the same project.
  *
+ * Fixed-size per-resident telemetry revisions skip unrelated updates.
+ * Membership/alias changes revisit affected senders so late recipients and
+ * returning project peers still consume retained telemetry. Failed git pair
+ * admissions remain pending until a later observation can retry them.
+ * Dirty snapshots commit atomically before per-pair follower invalidations.
+ *
  * Emits `affinity:changed` on the event bus (`{ pairKey, affinity, kind }`)
  * whenever a pair record changes; cross-tab consumers get
  * `affinity-updated` messages on the chronicle BroadcastChannel via
- * `ChronicleStore.putAffinity`. Only the tab holding the write lease
+ * `ChronicleStore.putAffinities`. Only the tab holding the write lease
  * accumulates, so multiple open tabs do not double-count.
  */
 export class RelationshipAffinityService {
@@ -162,6 +220,7 @@ export class RelationshipAffinityService {
         this._affinities = new Map(); // pairKey -> PairAffinity
         this._roster = new Map(); // agent.id -> resident telemetry + observation baseline
         this._metSessionPairs = new Set();
+        this._pendingGit = new Set(); // roster IDs whose pair admission must retry
         this._dirty = new Set();
         this._flushing = new Set();
         this._flushTimer = null;
@@ -244,6 +303,7 @@ export class RelationshipAffinityService {
                 this._affinities.clear();
                 this._roster.clear();
                 this._metSessionPairs.clear();
+                this._pendingGit.clear();
                 this._dirty.clear();
                 this._flushing.clear();
                 this._readyState = 'stopped';
@@ -322,20 +382,15 @@ export class RelationshipAffinityService {
         const keys = [...this._dirty];
         this._dirty.clear();
         for (const pairKey of keys) this._flushing.add(pairKey);
-        for (const pairKey of keys) {
-            const affinity = this._affinities.get(pairKey);
-            if (!affinity) {
-                this._flushing.delete(pairKey);
-                continue;
-            }
-            try {
-                await this.store.putAffinity(affinity.toRecord());
-            } catch (err) {
-                this._dirty.add(pairKey);
-                console.warn('[RelationshipAffinityService] flush failed:', err?.message || err);
-            } finally {
-                this._flushing.delete(pairKey);
-            }
+        try {
+            const records = keys.map(key => this._affinities.get(key))
+                .filter(Boolean).map(affinity => affinity.toRecord());
+            if (records.length) await this.store.putAffinities(records);
+        } catch (err) {
+            for (const pairKey of keys) this._dirty.add(pairKey);
+            console.warn('[RelationshipAffinityService] flush failed:', err?.message || err);
+        } finally {
+            for (const pairKey of keys) this._flushing.delete(pairKey);
         }
         this._pruneAffinityCache();
     }
@@ -356,6 +411,7 @@ export class RelationshipAffinityService {
                     .find(candidate => isDepartedAgent(candidate.agent))?.agent?.id;
                 if (!departedId) return null;
                 this._roster.delete(departedId);
+                this._pendingGit.delete(departedId);
             }
             entry = {
                 agent,
@@ -365,6 +421,9 @@ export class RelationshipAffinityService {
                 countedChatKeys: new Set(),
                 lastChatSignature: null,
                 observed: false,
+                recipientContext: null,
+                chatRevision: null,
+                gitRevision: null,
             };
             this._roster.set(agent.id, entry);
         }
@@ -373,35 +432,96 @@ export class RelationshipAffinityService {
         return { entry, firstObservation: !entry.observed };
     }
 
-    _processAgentSeen(entry, firstObservation = false) {
+    _processAgentSeen(entry, firstObservation = false, primeRoster = false) {
         if (!entry) return;
         entry.observed = true;
-        if (!entry.identityKey || !isLiveAgent(entry.agent) || !this._holdsWriteLease()) return;
+        if (!isLiveAgent(entry.agent)) {
+            // Return is a membership change even when aliases/project did not
+            // change while the resident was departed.
+            entry.recipientContext = null;
+            entry.chatRevision = null;
+            entry.gitRevision = null;
+            this._pendingGit.delete(entry.agent.id);
+            return;
+        }
+        if (!entry.identityKey || !this._holdsWriteLease()) return;
         const nextMeetingContext = meetingContextSignature(entry);
-        if (firstObservation || entry.meetingContextSignature !== nextMeetingContext) {
+        const contextChanged = firstObservation || entry.meetingContextSignature !== nextMeetingContext;
+        if (contextChanged) {
             entry.meetingContextSignature = nextMeetingContext;
             this._recordMeetings(entry);
         }
-        // A recipient or project peer can arrive after the sender. Revisit the
-        // small live roster so already-visible telemetry is baselined once the
-        // pair becomes resolvable.
-        for (const rosterEntry of this._roster.values()) {
-            if (!isLiveAgent(rosterEntry.agent)) continue;
-            this._recordChats(rosterEntry, rosterEntry === entry && firstObservation);
-            this._recordSharedCommits(rosterEntry, rosterEntry === entry && firstObservation);
+        const previous = entry.recipientContext;
+        const aliases = recipientAliases(entry.agent);
+        const recipientChanged = !previous
+            || previous.identityKey !== entry.identityKey
+            || aliases.some((alias, index) => alias !== previous.aliases[index]);
+        const projectChanged = !previous
+            || previous.identityKey !== entry.identityKey
+            || previous.project !== entry.agent.projectPath;
+        entry.recipientContext = { identityKey: entry.identityKey, aliases, project: entry.agent.projectPath };
+        const revisions = telemetryRevisions(entry.agent);
+        const chatChanged = firstObservation || revisions.chat !== entry.chatRevision;
+        const gitChanged = firstObservation || projectChanged || revisions.git !== entry.gitRevision;
+        entry.chatRevision = revisions.chat;
+        entry.gitRevision = revisions.git;
+        if (primeRoster) {
+            // Preload retains the whole roster before observing its first
+            // resident. Prime it once in the original roster order: other
+            // senders are not first-observation baselines in this pass.
+            for (const sender of this._roster.values()) {
+                if (!isLiveAgent(sender.agent)) continue;
+                const revision = sender === entry ? revisions : telemetryRevisions(sender.agent);
+                this._recordChats(sender, sender === entry && firstObservation);
+                const admitted = this._recordSharedCommits(sender, sender === entry && firstObservation);
+                sender.chatRevision = revision.chat;
+                sender.gitRevision = admitted ? revision.git : null;
+            }
+            return;
+        }
+        if (!recipientChanged && !projectChanged && !this._pendingGit.size) {
+            if (chatChanged) this._recordChats(entry, firstObservation);
+            if (gitChanged && !this._recordSharedCommits(entry, firstObservation)) entry.gitRevision = null;
+            return;
+        }
+
+        // Membership/identity changes replay only senders addressing the affected
+        // aliases and commits in the affected project, against the arriving peer.
+        // Roster order and chat-before-git preserve admission and baseline order.
+        const affectedAliases = new Set([...aliases, ...(previous?.aliases || [])].filter(Boolean));
+        for (const sender of this._roster.values()) {
+            if (!isLiveAgent(sender.agent)) continue;
+            if (sender === entry) {
+                if (chatChanged) this._recordChats(entry, firstObservation);
+                if (gitChanged && !this._recordSharedCommits(entry, firstObservation)) entry.gitRevision = null;
+                continue;
+            }
+            if (recipientChanged && addressesAliases(sender.agent, affectedAliases)) {
+                this._recordChats(sender, false, affectedAliases);
+            }
+            if (this._pendingGit.has(sender.agent.id)) {
+                if (!this._recordSharedCommits(sender)) sender.gitRevision = null;
+            } else if (projectChanged && entry.agent.projectPath
+                && sender.agent.projectPath === entry.agent.projectPath) {
+                if (!this._recordSharedCommits(sender, false, entry)) sender.gitRevision = null;
+            }
         }
     }
 
     _replayRoster() {
+        let primed = false;
         for (const entry of this._roster.values()) {
             if (!this._accepting || entry.observed) continue;
-            this._processAgentSeen(entry, true);
+            const prime = !primed && entry.identityKey && isLiveAgent(entry.agent) && this._holdsWriteLease();
+            this._processAgentSeen(entry, true, prime);
+            if (prime) primed = true;
         }
     }
 
     _handleAgentRemoved(agent) {
         if (!this._accepting || !agent?.id) return;
         this._roster.delete(agent.id);
+        this._pendingGit.delete(agent.id);
         // Forget session-pair meeting memory so a future re-arrival counts
         // as a new meeting.
         for (const key of this._metSessionPairs) {
@@ -423,13 +543,13 @@ export class RelationshipAffinityService {
         }
     }
 
-    _recordChats(entry, firstObservation = false) {
+    _recordChats(entry, firstObservation = false, aliases = null) {
         const agent = entry.agent;
         if (!isLiveAgent(agent)) return;
         const messages = Array.isArray(agent.sendMessages) ? agent.sendMessages : [];
         messages.forEach((message, index) => {
             const alias = normalizeAlias(message?.recipient);
-            if (!alias) return;
+            if (!alias || (aliases && !aliases.has(alias))) return;
             const other = this._findRecipient(entry, alias);
             if (!other) return;
             const key = chatEventKey(agent, message, index);
@@ -448,7 +568,7 @@ export class RelationshipAffinityService {
         const signature = String(agent.currentToolInput || '');
         if (!signature || entry.lastChatSignature === signature) return;
         const alias = normalizeAlias(extractRecipientName(signature));
-        if (!alias) return;
+        if (!alias || (aliases && !aliases.has(alias))) return;
         const other = this._findRecipient(entry, alias);
         if (!other) return;
         entry.lastChatSignature = signature;
@@ -472,20 +592,35 @@ export class RelationshipAffinityService {
         return null;
     }
 
-    _recordSharedCommits(entry, firstObservation = false) {
+    _recordSharedCommits(entry, firstObservation = false, peer = null) {
         const project = entry.agent.projectPath;
-        if (!project || !isLiveAgent(entry.agent)) return;
+        if (!project || !isLiveAgent(entry.agent)) {
+            if (!peer) this._pendingGit.delete(entry.agent.id);
+            return true;
+        }
+        let admitted = true;
+        // Build the peer subset once, not once per retained commit.
+        const peers = peer ? [peer] : [...this._roster.values()].filter(other => (
+            other !== entry && other.identityKey && isLiveAgent(other.agent)
+            && other.agent.projectPath === project
+        ));
+        if (!peers.length) {
+            if (!peer) this._pendingGit.delete(entry.agent.id);
+            return true;
+        }
         for (const event of entry.agent.gitEvents || []) {
             if (!isCountableGitEvent(event)) continue;
             const key = `git:${gitEventKey(event)}`;
             const at = eventTimestamp(event);
             const baseline = firstObservation || (at > 0 && at <= entry.observedAt);
-            for (const other of this._roster.values()) {
-                if (other === entry || !other.identityKey || !isLiveAgent(other.agent)) continue;
-                if (other.agent.projectPath !== project) continue;
-                this._mutatePair(entry, other, 'sharedCommit', key, { baseline });
+            for (const other of peers) {
+                if (!affinityPairKey(entry.identityKey, other.identityKey)) continue;
+                if (this._mutatePair(entry, other, 'sharedCommit', key, { baseline }) === null) admitted = false;
             }
         }
+        if (!admitted) this._pendingGit.add(entry.agent.id);
+        else if (!peer) this._pendingGit.delete(entry.agent.id);
+        return admitted;
     }
 
     _mutatePair(entryA, entryB, kind, interactionKey, { baseline = false } = {}) {

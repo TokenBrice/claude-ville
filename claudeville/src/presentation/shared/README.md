@@ -43,12 +43,15 @@ Desktop-only constraint: shared UI only needs to support browser widths of 1280p
 - `ActivityPanel.hide()` emits `agent:deselected`; `App.js` bridges that event back to World mode so camera follow stops.
 - Empty world clicks clear renderer selection/follow but do not close the panel. The panel remains open until its close button or selected-agent removal.
 - `usage:updated` feeds shared status surfaces such as `TopBar`. `TopBar` consumes App’s canonical `village:state`; it does not separately reduce WebSocket/watcher events. Simulator state reads `SIMULATED`. The FPS counter is a permanent header instrument beside the witness clock; do not remove it or hide it behind settings. It consumes the World render-loop sample (completed frame intervals over at least 500 ms, including reused idle frames), also shared with Settings > Health. Suspension, Dashboard mode, and unavailable samples read `FPS idle`; a genuine numeric zero reads `0 FPS`. Resume starts a fresh sampling window. Render smoke checks visibility and mode-switch recovery to protect this contract.
+- Resident events keep hook freshness and sticky unknown-model observations immediate; TopBar paints their final chrome state once on the next animation frame and cancels queued work on destroy. SpendLedger observes only the changed resident, banks counters and attribution immediately, and persists the latest daily snapshot once per microtask cohort (including draining the previous day before rollover). Read-side totals and rollups do not resample the village; explicit `sample()` remains available for snapshot reconciliation.
 
 ## Session Detail Fetching
 
 Use `sessionDetailsService.fetchSessionDetail(agent)` for one-agent surfaces or `sessionDetailsService.fetchSessionDetailsBatch(agents)` for card grids that need tools/messages/tokens. Do not add direct `/api/session-detail` or `/api/session-details` fetches in components.
 
 Activity Panel and Dashboard expose complete available message/tool text through native disclosures, preserve unchanged DOM across refresh, and show cache/server observation age when stale. Provider truncation flags remain visible. Empty successful activity sections collapse; loading and unavailable states remain explicit. Usage and cost distinguish unavailable, partial, and observed zero, and the spend headline discloses incomplete active-session coverage.
+
+Pinned identities remain current while Activity Panel is closed, but comparisons are only marked dirty: no pin-detail fetch or comparison DOM work runs until agent or building mode opens. Reopening refreshes immediately, and detail responses are accepted only for the current visible pin set and session identities.
 
 Service behavior:
 

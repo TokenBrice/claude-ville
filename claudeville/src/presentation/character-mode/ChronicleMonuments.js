@@ -188,6 +188,11 @@ export class ChronicleMonuments {
         this.rules = rules;
         this.eventBus = eventTarget;
         this.records = new Map();
+        this._visibleRecords = null;
+        this._districtLedgers = new Map();
+        this._projectionRecordCount = -1;
+        this._projectionAt = -Infinity;
+        this._nextRecordExpiry = Infinity;
         this.planter = new MonumentPlanter({ store, rules, eventTarget });
         this._loaded = false;
         this._pendingHydrate = null;
@@ -236,6 +241,7 @@ export class ChronicleMonuments {
             .then((records) => {
                 if (this._disposed || generation !== this._lifecycleGeneration) return;
                 for (const record of records || []) this.records.set(record.id, record);
+                this._visibleRecords = null;
                 this._loaded = true;
             })
             .catch(() => {
@@ -273,6 +279,7 @@ export class ChronicleMonuments {
             this.planter.seen = new Set([...this.planter.seen].slice(-MAX_PLANTER_SEEN));
         }
         for (const record of planted) this.records.set(record.id, record);
+        if (planted.length) this._visibleRecords = null;
         await this._processCommitMilestones(gitEvents, now, generation);
         if (this._disposed || generation !== this._lifecycleGeneration) return [];
         this._dropExpired(now);
@@ -348,6 +355,8 @@ export class ChronicleMonuments {
         this._unsubscribeRepoChristened = null;
         this._onRepoChristened = null;
         this.records.clear();
+        this._visibleRecords = null;
+        this._districtLedgers.clear();
         this._seenCommitIds.clear();
         this.planter?.seen?.clear?.();
         this.planter?.dressing?.reveal?.();
@@ -364,23 +373,52 @@ export class ChronicleMonuments {
         this.particles = null;
     }
 
-    enumerateDrawables(now = Date.now(), camera = null) {
-        const bounds = camera?.getViewportTileBounds?.(2);
+    _refreshProjection(now) {
+        if (this._visibleRecords
+            && this._projectionRecordCount === this.records.size
+            && now >= this._projectionAt
+            && now <= this._nextRecordExpiry) return;
         const byDistrict = new Map();
+        let nextExpiry = Infinity;
         for (const record of this.records.values()) {
-            if (now - Number(record.plantedAt || record.ts || 0) > MONTH_MS) continue;
+            const plantedAt = Number(record.plantedAt || record.ts || 0);
+            if (now - plantedAt > MONTH_MS) continue;
+            const expiresAt = plantedAt + MONTH_MS;
+            if (expiresAt < nextExpiry) nextExpiry = expiresAt;
             const group = byDistrict.get(record.district) || [];
             group.push(record);
             byDistrict.set(record.district, group);
         }
         const visible = [];
+        this._districtLedgers.clear();
         for (const [district, records] of byDistrict) {
+            // Keep the existing stable timestamp ordering and oldest founding
+            // record; only derive them when history or its retention changes.
             const capped = MonumentRules.applyDistrictCap(records);
             visible.push(...capped.visible);
             if (capped.foundingLayer) visible.push(this._foundingLayerRecord(district, records));
+            const ledgerRows = records
+                .filter(record => now - Number(record.plantedAt || record.ts || 0) <= MONTH_MS)
+                .sort((a, b) => Number(b.plantedAt || b.ts || 0) - Number(a.plantedAt || a.ts || 0));
+            this._districtLedgers.set(district, {
+                rows: ledgerRows.slice(0, LEDGER_ROWS),
+                total: ledgerRows.length,
+                overflow: Math.max(0, ledgerRows.length - LEDGER_ROWS),
+            });
         }
+        this._visibleRecords = visible;
+        this._projectionRecordCount = this.records.size;
+        this._projectionAt = now;
+        // Records remain visible at exactly one month; invalidate just after
+        // that boundary, including when enumerate runs before the next update.
+        this._nextRecordExpiry = nextExpiry;
+    }
 
-        const drawables = visible
+    enumerateDrawables(now = Date.now(), camera = null) {
+        this._refreshProjection(now);
+        const bounds = camera?.getViewportTileBounds?.(2);
+
+        const drawables = this._visibleRecords
             .filter(record => now - Number(record.plantedAt || record.ts || 0) <= MONTH_MS)
             .filter(record => !bounds || (
                 record.tileX >= bounds.startX && record.tileX <= bounds.endX &&
@@ -551,16 +589,14 @@ export class ChronicleMonuments {
 
     ledgerFor(record, now = Date.now()) {
         if (!record) return null;
+        this._refreshProjection(now);
         const district = record.district;
-        const rows = [...this.records.values()]
-            .filter((entry) => entry.district === district
-                && now - Number(entry.plantedAt || entry.ts || 0) <= MONTH_MS)
-            .sort((a, b) => Number(b.plantedAt || b.ts || 0) - Number(a.plantedAt || a.ts || 0));
+        const ledger = this._districtLedgers.get(district);
         return {
             district,
-            rows: rows.slice(0, LEDGER_ROWS),
-            overflow: Math.max(0, rows.length - LEDGER_ROWS),
-            total: rows.length,
+            rows: ledger ? ledger.rows.slice() : [],
+            overflow: ledger?.overflow || 0,
+            total: ledger?.total || 0,
         };
     }
 
@@ -1155,7 +1191,10 @@ export class ChronicleMonuments {
 
     _dropExpired(now) {
         for (const [id, record] of this.records) {
-            if (now - Number(record.plantedAt || record.ts || 0) > MONTH_MS) this.records.delete(id);
+            if (now - Number(record.plantedAt || record.ts || 0) > MONTH_MS) {
+                this.records.delete(id);
+                this._visibleRecords = null;
+            }
         }
     }
 

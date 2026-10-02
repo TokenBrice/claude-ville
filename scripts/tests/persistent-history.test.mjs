@@ -14,6 +14,7 @@ import { affinityPairKey, PairAffinity } from '../../claudeville/src/domain/valu
 import { MoodService } from '../../claudeville/src/application/MoodService.js';
 import { Mood } from '../../claudeville/src/domain/value-objects/AgentMood.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
+import { ChronicleStore } from '../../claudeville/src/infrastructure/ChronicleStore.js';
 
 function biographyStore() {
     const biographies = new Map();
@@ -22,9 +23,9 @@ function biographyStore() {
         biographies,
         channel: null,
         async getBiography(key) { return biographies.get(key) || null; },
-        async putBiography(record) {
-            biographies.set(record.identityKey, structuredClone(record));
-            return record;
+        async putBiographies(records) {
+            for (const record of records) biographies.set(record.identityKey, structuredClone(record));
+            return records.length;
         },
         async getFounding() { return founding; },
         async recordFounding(record) {
@@ -47,9 +48,9 @@ function affinityStore() {
                 .map(record => structuredClone(record));
         },
         async getAffinity(key) { return affinities.get(key) || null; },
-        async putAffinity(record) {
-            affinities.set(record.pairKey, structuredClone(record));
-            return record;
+        async putAffinities(records) {
+            for (const record of records) affinities.set(record.pairKey, structuredClone(record));
+            return records.length;
         },
     };
 }
@@ -295,4 +296,196 @@ test('mood uses git timestamps and bounds remembered event identities', () => {
     service._handleAgentSeen(villager);
     assert.ok(record.countedStreakKeys.size <= 256);
     assert.ok(record.pushTimestamps.length <= 256);
+});
+
+test('unchanged telemetry discovers late aliases and project peers, including returning residents', () => {
+    const service = new RelationshipAffinityService();
+    service._accepting = true;
+    service._scheduleFlush = () => {};
+    const ada = agent('Ada', { projectPath: '/one' });
+    let bess = agent('Bess', { agentName: 'NotYet', projectPath: '/two' });
+    service._handleAgentSeen(ada);
+    const at = service._roster.get('Ada').observedAt + 1;
+    ada.sendMessages = [{ recipient: 'FutureAlias', ts: at, summary: 'hello' }];
+    ada.gitEvents = [{ id: 'late-peer', type: 'commit', ts: at }];
+    service._handleAgentSeen(ada);
+    service._handleAgentSeen(bess);
+    const pair = () => service.getAffinity(
+        AgentBiography.identityKeyFor(ada), AgentBiography.identityKeyFor(bess),
+    );
+    assert.equal(pair(), null, 'cross-project, unresolved telemetry has no recipient');
+    bess = { ...bess, agentName: 'FutureAlias', projectPath: '/one' };
+    service._handleAgentSeen(bess);
+    assert.equal(pair().chats, 1);
+    assert.equal(pair().sharedCommits, 1);
+    service._handleAgentSeen({ ...bess, isDeparted: true });
+    ada.gitEvents.push({ id: 'while-away', type: 'push', ts: at + 1 });
+    service._handleAgentSeen(ada);
+    assert.equal(pair().sharedCommits, 1);
+    service._handleAgentSeen(bess);
+    assert.equal(pair().sharedCommits, 2, 'returning peer receives retained new commits once');
+    for (let index = 0; index < 4; index++) {
+        service._handleAgentSeen({ ...ada, tokens: { output: index } });
+        service._handleAgentSeen(bess);
+    }
+    assert.equal(pair().chats, 1);
+    assert.equal(pair().sharedCommits, 2);
+    service._handleAgentRemoved(bess);
+    service._handleAgentSeen(bess);
+    assert.equal(pair().meetings, 1, 'persisted session-key dedup is unchanged on re-arrival');
+    assert.equal(pair().sharedCommits, 2);
+});
+
+for (const kind of ['biography', 'affinity']) {
+    test(`${kind} bulk snapshot survives abort and mutations made during commit`, async () => {
+        const store = kind === 'biography' ? biographyStore() : affinityStore();
+        const service = kind === 'biography'
+            ? new AgentBiographyService({ store })
+            : new RelationshipAffinityService({ store });
+        const value = kind === 'biography'
+            ? AgentBiography.create('villager:claude:ada')
+            : PairAffinity.create('villager:claude:ada', 'villager:claude:bess', 1000);
+        const key = kind === 'biography' ? value.identityKey : value.pairKey;
+        const cache = kind === 'biography' ? service._biographies : service._affinities;
+        const records = kind === 'biography' ? store.biographies : store.affinities;
+        const method = kind === 'biography' ? 'putBiographies' : 'putAffinities';
+        cache.set(key, kind === 'biography' ? Promise.resolve(value) : value);
+        service._dirty.add(key);
+        let release;
+        let entered;
+        const started = new Promise(resolve => { entered = resolve; });
+        store[method] = async snapshot => {
+            entered(snapshot);
+            await new Promise((resolve, reject) => { release = { resolve, reject }; });
+            for (const record of snapshot) records.set(key, structuredClone(record));
+        };
+        const first = service.flush();
+        const snapshot = await started;
+        if (kind === 'biography') value.addLifetimeTokens(7, 2000);
+        else value.recordInteraction('chat', 2000, 'chat:new');
+        service._dirty.add(key);
+        assert.notDeepEqual(value.toRecord(), snapshot[0], 'the in-flight record is an immutable snapshot');
+        release.reject(new Error('transaction aborted'));
+        await first;
+        assert.equal(records.has(key), false, 'an aborted batch publishes no partial durable state');
+        assert.equal(service._dirty.has(key), true);
+        let finishCommit;
+        let enteredCommit;
+        let delay = true;
+        const committing = new Promise(resolve => { enteredCommit = resolve; });
+        store[method] = async batch => {
+            if (delay) {
+                delay = false;
+                enteredCommit();
+                await new Promise(resolve => { finishCommit = resolve; });
+            }
+            for (const record of batch) records.set(key, structuredClone(record));
+        };
+        const second = service.flush();
+        await committing;
+        if (kind === 'biography') value.addLifetimeTokens(11, 3000);
+        else value.recordInteraction('chat', 3000, 'chat:during-successful-commit');
+        service._dirty.add(key);
+        const stopped = service.stop();
+        finishCommit();
+        await second;
+        await stopped;
+        assert.deepEqual(records.get(key), value.toRecord(), 'stop retries the latest mutation before clearing caches');
+    });
+}
+
+test('bulk record invalidations are published only after a successful atomic commit', async () => {
+    for (const [method, storeName, keyField, type] of [
+        ['putBiographies', 'biographies', 'identityKey', 'biography-updated'],
+        ['putAffinities', 'affinities', 'pairKey', 'affinity-updated'],
+    ]) {
+        const messages = [];
+        let tx;
+        const durable = new Map();
+        const store = Object.create(ChronicleStore.prototype);
+        store.open = async () => {};
+        store.channel = { postMessage: message => messages.push(message) };
+        store.db = {
+            transaction(name, mode) {
+                assert.equal(name, storeName);
+                assert.equal(mode, 'readwrite');
+                const staged = [];
+                tx = {
+                    objectStore: () => ({ put: record => staged.push(structuredClone(record)) }),
+                    complete() {
+                        for (const record of staged) durable.set(record[keyField], record);
+                        this.oncomplete();
+                    },
+                    abort() { this.error = new Error('abort'); this.onabort(); },
+                };
+                return tx;
+            },
+        };
+        const batch = [{ [keyField]: 'one', schemaVersion: 2 }, { [keyField]: 'two', schemaVersion: 2 }];
+        const committed = store[method](batch);
+        await Promise.resolve();
+        assert.deepEqual(messages, []);
+        assert.equal(durable.has('one'), false);
+        tx.complete();
+        await committed;
+        assert.deepEqual([...durable.values()], batch);
+        assert.deepEqual(messages, batch.map(record => ({ type, [keyField]: record[keyField], schemaVersion: 2 })));
+        const aborted = store[method]([{ [keyField]: 'three', schemaVersion: 2 }]);
+        await Promise.resolve();
+        tx.abort();
+        await assert.rejects(aborted);
+        assert.equal(durable.has('three'), false);
+        assert.equal(messages.some(message => message[keyField] === 'three'), false);
+    }
+});
+
+test('git pair admission retries after durability frees the cache, even on another resident update', async () => {
+    const store = affinityStore();
+    const service = new RelationshipAffinityService({ store }).start();
+    service._scheduleFlush = () => {};
+    await service._ready;
+    const ada = agent('Ada');
+    const bess = agent('Bess');
+    service._handleAgentSeen(ada);
+    for (let index = 0; index < AFFINITY_CACHE_LIMIT; index++) {
+        service._mutatePair(
+            { identityKey: 'villager:claude:capacity-source' },
+            { identityKey: `villager:claude:capacity-${index}` },
+            'meeting', `meeting:capacity-${index}`,
+        );
+    }
+    const at = service._roster.get('Ada').observedAt + 1;
+    ada.gitEvents = [{ id: 'awaiting-admission', type: 'commit', ts: at }];
+    service._handleAgentSeen(ada);
+    service._handleAgentSeen(bess);
+    const pair = () => service.getAffinity(
+        AgentBiography.identityKeyFor(ada), AgentBiography.identityKeyFor(bess),
+    );
+    assert.equal(pair(), null, 'dirty capacity refuses new pair admission');
+    await service.flush();
+    service._handleAgentSeen(agent('Unrelated', { projectPath: '/another-project' }));
+    assert.equal(pair().sharedCommits, 1, 'retained telemetry is not consumed by a failed admission');
+    await service.stop();
+});
+
+test('unchanged git history cannot cycle the durable dedup window and recount commits', () => {
+    const service = new RelationshipAffinityService();
+    service._accepting = true;
+    service._scheduleFlush = () => {};
+    const ada = agent('Ada');
+    const bess = agent('Bess');
+    service._handleAgentSeen(ada);
+    service._handleAgentSeen(bess);
+    const at = service._roster.get('Ada').observedAt + 1;
+    ada.gitEvents = Array.from({ length: 65 }, (_, index) => ({
+        id: `history-${index}`, type: 'commit', ts: at,
+    }));
+    service._handleAgentSeen(ada);
+    const affinity = service.getAffinity(
+        AgentBiography.identityKeyFor(ada), AgentBiography.identityKeyFor(bess),
+    );
+    assert.equal(affinity.sharedCommits, 65);
+    service._handleAgentSeen({ ...ada, tokens: { output: 100 } });
+    service._handleAgentSeen(bess);
+    assert.equal(affinity.sharedCommits, 65, 'unrelated updates do not replay unchanged history');
 });
