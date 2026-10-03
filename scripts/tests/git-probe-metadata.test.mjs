@@ -98,7 +98,7 @@ test('the depth bound excludes deeper refs without losing a file at depth eight'
   assert.equal(projectGitStateSignature(project), part(included, `${nested}/main`));
 });
 
-test('worktree pointers retain checkout-local HEAD and the existing server signature scope', (t) => {
+test('worktree pointers sign checkout-local HEAD and the shared refs a push from the worktree moves', (t) => {
   const { project, gitDir } = fixture(t);
   fs.rmSync(gitDir, { recursive: true });
   const actualGitDir = path.join(project, 'metadata', 'worktrees', 'checkout');
@@ -106,10 +106,16 @@ test('worktree pointers retain checkout-local HEAD and the existing server signa
   fs.writeFileSync(gitDir, 'gitdir: metadata/worktrees/checkout\n');
   const head = put(actualGitDir, 'HEAD', 'ref: refs/heads/topic\n');
   put(actualGitDir, 'commondir', '../..\n');
-  put(path.join(project, 'metadata'), 'refs/remotes/origin/main', 'a'.repeat(40));
-  assert.equal(projectGitStateSignature(project), part(head, 'HEAD'));
+  const commonDir = path.join(project, 'metadata');
+  const remoteRef = put(commonDir, 'refs/remotes/origin/main', 'a'.repeat(40));
+  const signed = () => [part(head, 'HEAD'), part(remoteRef, 'common/refs/remotes/origin/main')].sort().join('|');
+  assert.equal(projectGitStateSignature(project), signed());
   put(actualGitDir, 'HEAD', 'b'.repeat(40), 1_700_000_002);
-  assert.equal(projectGitStateSignature(project), part(head, 'HEAD'));
+  assert.equal(projectGitStateSignature(project), signed());
+  const beforePush = projectGitStateSignature(project);
+  put(commonDir, 'refs/remotes/origin/main', 'c'.repeat(40), 1_700_000_003);
+  assert.notEqual(projectGitStateSignature(project), beforePush);
+  assert.equal(projectGitStateSignature(project), signed());
   fs.writeFileSync(gitDir, 'not a gitdir pointer\n');
   assert.equal(projectGitStateSignature(project), null);
 });

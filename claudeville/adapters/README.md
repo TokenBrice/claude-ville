@@ -186,6 +186,8 @@ Claude quota utilization is provider-qualified pressure, never evidence of enfor
 
 Adapters attach `gitEvents` to active session objects. `/api/session-detail` and `POST /api/session-details` currently focus on tool history, messages, and tokens, so consumers that need git events should read them from the session list data.
 
+Git enrichment also lists each session project's unpushed commits (`source: 'git-upstream-status'`), measured against the branch's upstream, else a same-name remote branch, else `origin/HEAD`, `origin/main`, `origin/master`, `main` or `master`. When a branch's commits leave that list, a `git-upstream-transition` push is emitted if the branch's configured upstream now contains it, or if a remote-tracking ref contains the branch's last listed commit. The second rule covers upstream-less branches (typical of `git worktree add -b`) pushed without `-u`, pushed to another name (`HEAD:main`), or merged into a branch that was pushed, including after HEAD moved to another branch. A reset or branch switch that publishes nothing emits no push. The Harbor departs ships only on push events, so without this event a pushed commit's ship stays docked until a reload drops it. For a linked worktree, the server's git-state probe watches both the worktree's own git dir and the shared ref stores in its common dir, where a push from the worktree lands.
+
 Git enrichment diagnostics are exposed through `/api/perf` as `gitEnrichment`, including project counts, git command counts, elapsed time, cache hits, errors, and timeouts. Set `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1` before starting the server to disable inferred git enrichment for diagnosis without changing provider parsing.
 
 ### Token normalization

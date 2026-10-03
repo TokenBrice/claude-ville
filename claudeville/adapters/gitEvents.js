@@ -404,8 +404,20 @@ function projectGitStateSignature(project) {
     const part = gitStateFilePart(metadata, path.join(gitDir, fileName), fileName);
     if (part) parts.push(part);
   }
-  for (const label of ['refs/heads', 'refs/remotes', 'logs/refs/heads', 'logs/refs/remotes']) {
+  const refRoots = ['refs/heads', 'refs/remotes', 'logs/refs/heads', 'logs/refs/remotes'];
+  for (const label of refRoots) {
     appendGitRefDirParts(metadata, parts, path.join(gitDir, label), label);
+  }
+  // A linked worktree keeps HEAD and its reflog in its own git dir, but its
+  // branches, remote-tracking refs and packed refs live in the common dir, so
+  // a push from the worktree changes only those.
+  const commonDir = resolveGitCommonDir(gitDir);
+  if (commonDir !== gitDir) {
+    const part = gitStateFilePart(metadata, path.join(commonDir, 'packed-refs'), 'common/packed-refs');
+    if (part) parts.push(part);
+    for (const label of refRoots) {
+      appendGitRefDirParts(metadata, parts, path.join(commonDir, label), `common/${label}`);
+    }
   }
   return parts.sort().join('|');
 }
@@ -894,6 +906,47 @@ async function readUnpushedCommitEventsAsync(project, context = {}) {
   return dedupeGitEvents(events);
 }
 
+// A branch lists its unpushed commits oldest first, so its last listed SHA
+// was its tip when it was last observed.
+function listedTipSha(commitEvents = []) {
+  for (let index = commitEvents.length - 1; index >= 0; index--) {
+    const sha = eventSha(commitEvents[index]);
+    if (/^[0-9a-f]{7,64}$/.test(sha)) return sha;
+  }
+  return '';
+}
+
+function remoteContainmentArgs(sha) {
+  return ['for-each-ref', `--contains=${sha}`, '--format=%(refname)', 'refs/remotes/'];
+}
+
+// Commits that left a branch's unpushed list were pushed when its configured
+// upstream now contains the branch, or when a remote-tracking ref contains
+// its listed tip: a push without -u, to another name (HEAD:main), or of a
+// branch merged from this one, also after HEAD moved or the branch was
+// deleted. A reset that only drops the commits publishes nothing.
+function remoteContainmentPushState(output, branch, commitEvents = []) {
+  const refs = String(output || '')
+    .split('\n')
+    .map((ref) => ref.trim())
+    .filter((ref) => ref.startsWith('refs/remotes/') && !ref.endsWith('/HEAD'))
+    .map((ref) => ref.slice('refs/remotes/'.length));
+  if (!refs.length) return null;
+  const tip = commitEvents[commitEvents.length - 1] || {};
+  const upstream = [tip.upstream, `origin/${normalizeLocalBranchName(branch)}`]
+    .find((ref) => ref && refs.includes(ref)) || refs[0];
+  return { pushedToUpstream: true, upstream };
+}
+
+async function readTransitionPushStateAsync(project, previous) {
+  const pushState = await readPushStateAsync(project, previous.branch, { force: true });
+  if (pushState.pushedToUpstream) return pushState;
+  const sha = listedTipSha(previous.events);
+  if (!sha) return pushState;
+  const output = await tryRunGitWorker(project, remoteContainmentArgs(sha));
+  return remoteContainmentPushState(output, previous.branch, previous.events) || pushState;
+}
+
 async function observeRepositoryPushTransitionsAsync(project, unpushedEvents = [], now = Date.now()) {
   if (!project) return;
   expireRecentRepositoryPushEvents(now);
@@ -910,7 +963,7 @@ async function observeRepositoryPushTransitionsAsync(project, unpushedEvents = [
   for (const [key, previous] of _lastUnpushedByProjectBranch) {
     if (previous.project !== project || currentByBranch.has(previous.branch)) continue;
     try {
-      const pushState = await readPushStateAsync(project, previous.branch, { force: true });
+      const pushState = await readTransitionPushStateAsync(project, previous);
       if (pushState.pushedToUpstream) {
         const event = syntheticRepositoryPushFromTransition(project, previous.branch, previous.events, pushState, now);
         if (event) _recentRepositoryPushEvents.set(event.id, event);
@@ -2428,6 +2481,19 @@ function readPushState(project, branch = null) {
   return value;
 }
 
+// Containment can only change when the project's refs do, so a warm pass
+// whose head signature matches the last check launches no subprocess.
+function readTransitionPushState(project, previous) {
+  const pushState = readPushState(project, previous.branch);
+  if (pushState.pushedToUpstream) return pushState;
+  const sha = listedTipSha(previous.events);
+  const signature = _gitHeadSignatureByProject.get(project);
+  if (!sha || (signature && previous.containmentSignature === signature)) return pushState;
+  previous.containmentSignature = signature;
+  const output = tryRunGit(project, remoteContainmentArgs(sha));
+  return remoteContainmentPushState(output, previous.branch, previous.events) || pushState;
+}
+
 function buildSyntheticPushForState(project, commitEvents, pushState, now = Date.now()) {
   const commits = (commitEvents || [])
     .filter((event) => event?.type === 'commit' && event.project === project && event.success !== false)
@@ -2593,7 +2659,7 @@ function observeRepositoryPushTransitions(project, unpushedEvents = [], now = Da
     if (previous.project !== project) continue;
     if (currentByBranch.has(previous.branch)) continue;
 
-    const pushState = readPushState(project, previous.branch);
+    const pushState = readTransitionPushState(project, previous);
     if (pushState.pushedToUpstream) {
       const event = syntheticRepositoryPushFromTransition(project, previous.branch, previous.events, pushState, now);
       if (event) _recentRepositoryPushEvents.set(event.id, event);

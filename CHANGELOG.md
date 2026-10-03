@@ -2,6 +2,15 @@
 
 ---
 
+## v0.50.0.1 · Oct 03, 2026 — Hotfix
+
+- **Pushed ships set sail again, including from worktrees.** A Harbor ship departs only on a push event, and for Oh My Pi sessions, which carry no transcript git commands, the only push signal is the server noticing that a branch's commits have left its unpushed list. That check accepted only a branch's configured upstream. A branch with none, which is what `git worktree add -b` creates and what an integration branch usually is, has its commits measured against a same-name remote branch or `origin/main` instead. A push without `-u`, a push to `HEAD:main`, a merge into `main` that was pushed, or a release branch cut from `origin/main`, merged and pushed all emptied the list without a push. The ship stayed docked until a reload dropped it without its departure. A transition now also counts as a push when a remote-tracking ref contains the branch's last listed commit, which still holds after HEAD has moved to the release branch. A reset or branch switch that publishes nothing still emits no push.
+- **Worktree pushes are noticed on the next 5-second probe.** For a linked worktree, the server's git-state probe read only the worktree's own git dir, but a push from the worktree only moves refs in the shared common dir. The push waited for the 30-second reconciliation. The probe now also signs the common dir's packed refs, branches and remote-tracking refs; main checkouts keep a byte-identical signature.
+
+Validation: 1525 tests passed, including six new push-transition cases on real repositories (four fail on v0.50.0, and two guard against false pushes after a reset or a local-only merge) and a worktree probe case. `gate:release` clean. On an isolated server with a Claude session in a linked worktree, the transition push reached the WebSocket 0.8 s after `git push origin feat/x`; v0.50.0 saw nothing for 22.5 s, then dropped the commit with no push. Fed into the client Harbor, the ships now go docked, departing, retired; on v0.50.0 they stayed docked.
+
+---
+
 ## v0.50.0 — *The Swift Thaw* · Oct 02, 2026
 
 Long working sessions could freeze the village for good: villagers stopped mid-stride, a resize stretched the stale frame, and a reload left only the slate-and-green placeholder until the server was restarted. The freeze had three layers, a server stall that grew with transcript history, a sprite swap that drew a missing image, and a render loop that never restarted after three failed frames, and all three are gone. A full speed pass then made the World, the server and the wire much lighter without changing a single pixel of the look.
