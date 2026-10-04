@@ -2,6 +2,16 @@
 
 ---
 
+## v0.50.1 — *The Full Muster* · Oct 04, 2026
+
+A busy Oh My Pi history could leave the village empty while agents were working: once the sessions folder held more than 4,096 transcripts, the newest sessions were never discovered at all.
+
+- **Live Oh My Pi agents always answer the muster.** Discovery tracks at most 4,096 transcripts, and it used to fill that budget in filesystem order: project by project, alphabetically, descending into every session folder on the way. A store with 4,426 transcripts, one old session alone holding 990 nested agents, ran out of budget before it reached the newest session of the last project, so a live Opus agent, its four Sol workers and its advisor never appeared, while a session in an earlier project did. Discovery now lists project folders first, then visits session trees newest-first by their `<timestamp>_` name; nested agents rank with their parent. Above the cap, the oldest sessions are dropped. On that store all nine live sessions now appear in one 200 ms cold pass, where only two appeared before.
+
+Validation: 1526 tests passed, including a new over-cap discovery case that fails on v0.50.0.1. `gate:release` and `verify:server` are clean. On the real 4,426-transcript store, a fresh adapter now reports the Opus lead, its Sol advisor and four Sol workers alongside the session that was already visible.
+
+---
+
 ## v0.50.0.1 · Oct 03, 2026 — Hotfix
 
 - **Pushed ships set sail again, including from worktrees.** A Harbor ship departs only on a push event, and for Oh My Pi sessions, which carry no transcript git commands, the only push signal is the server noticing that a branch's commits have left its unpushed list. That check accepted only a branch's configured upstream. A branch with none, which is what `git worktree add -b` creates and what an integration branch usually is, has its commits measured against a same-name remote branch or `origin/main` instead. A push without `-u`, a push to `HEAD:main`, a merge into `main` that was pushed, or a release branch cut from `origin/main`, merged and pushed all emptied the list without a push. The ship stayed docked until a reload dropped it without its departure. A transition now also counts as a push when a remote-tracking ref contains the branch's last listed commit, which still holds after HEAD has moved to the release branch. A reset or branch switch that publishes nothing still emits no push.

@@ -30,6 +30,9 @@ const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const MAX_TRANSCRIPTS = 4096;
 const RECONCILE_INTERVAL_MS = 30 * 1000;
 const MAX_DIRECTORIES = 4096;
+// OMP names session transcripts and their child directories
+// <ISO start>_<id>, e.g. 2026-10-04T09-58-47-155Z_01a1...; lexical order is age order.
+const SESSION_STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_/;
 const DETAIL_DISCOVERY_MAX_FILES = 512;
 const DETAIL_DISCOVERY_MAX_BYTES = 2 * 1024 * 1024;
 const DETAIL_HEADER_MAX_BYTES = 4096;
@@ -192,6 +195,15 @@ function mergeRecords(head, tail) {
     records.push(record);
   }
   return records;
+}
+
+function sessionStamp(name) {
+  const match = SESSION_STAMP.exec(name);
+  return match ? match[0] : '';
+}
+
+function descending(left, right) {
+  return left < right ? 1 : left > right ? -1 : 0;
 }
 
 function childParentId(filePath, sessionsDir) {
@@ -643,10 +655,11 @@ class OmpAdapter {
       const signature = statIdentity(fileStat);
       if (cached?.signature === signature) return cached;
       this._perf.directoryReads += 1;
-      const entries = fs.readdirSync(directory, { withFileTypes: true });
+      const entries = fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => descending(left.name, right.name));
       const listing = { signature, mtimeMs: fileStat.mtimeMs, entries: [] };
       let files = 0;
       let children = 0;
+      // Caps keep the newest stamped names; readdir order is not age order.
       for (const entry of entries) {
         const current = path.join(directory, entry.name);
         if (entry.isFile() && entry.name.endsWith('.jsonl') && files < MAX_TRANSCRIPTS) {
@@ -674,20 +687,44 @@ class OmpAdapter {
     if (!root) return reconcile;
     const rootChanged = this._rootSignature !== root.signature;
     if (!reconcile && !rootChanged && this._dirtyDirectories.size === 0) return false;
-    const files = new Map();
+    const found = [];
     const visited = new Set();
-    const visit = (directory, listing = null) => {
-      if (files.size >= MAX_TRANSCRIPTS || visited.size >= MAX_DIRECTORIES) return;
+    const sessionDirectories = [];
+    // Session directories inherit their stamp so nested agents rank with their parent.
+    const visit = (directory, stamp, listing = null) => {
+      if (visited.size >= MAX_DIRECTORIES) return;
       visited.add(directory);
       listing ||= this._directoryListing(directory, { revalidate: reconcile });
       if (!listing) return;
       for (const entry of listing.entries) {
-        if (files.size >= MAX_TRANSCRIPTS) break;
-        if (entry.directory) visit(entry.path);
-        else files.set(entry.path, this._files.get(entry.path) || { stat: null, rawId: null, headerGeneration: null });
+        const name = path.basename(entry.path);
+        if (!entry.directory) {
+          found.push({ path: entry.path, stamp: sessionStamp(name) || stamp });
+        } else if (stamp) {
+          visit(entry.path, stamp);
+        } else {
+          const ownStamp = sessionStamp(name);
+          if (ownStamp) sessionDirectories.push({ path: entry.path, stamp: ownStamp });
+          else visit(entry.path, '');
+        }
       }
     };
-    visit(this.sessionsDir, root);
+    // Project containers first, then session trees newest-first, so the
+    // directory cap and transcript cap both drop the oldest sessions.
+    visit(this.sessionsDir, '', root);
+    sessionDirectories.sort((left, right) => descending(left.stamp, right.stamp));
+    for (const directory of sessionDirectories) {
+      if (visited.size >= MAX_DIRECTORIES) break;
+      visit(directory.path, directory.stamp);
+    }
+    if (found.length > MAX_TRANSCRIPTS) {
+      found.sort((left, right) => descending(left.stamp, right.stamp));
+      found.length = MAX_TRANSCRIPTS;
+    }
+    const files = new Map();
+    for (const { path: filePath } of found) {
+      files.set(filePath, this._files.get(filePath) || { stat: null, rawId: null, headerGeneration: null });
+    }
     for (const filePath of this._files.keys()) {
       if (!files.has(filePath)) this._forgetFile(filePath);
     }

@@ -616,6 +616,30 @@ test('OMP topology discovers exact new nested paths and reconciles missed file e
   }
 });
 
+test('OMP discovery over the transcript cap keeps the newest sessions instead of the first-listed history', () => {
+  const root = makeTempDir('claudeville-omp-capped-');
+  const now = Date.parse('2026-09-01T12:00:00.000Z');
+  const historyDir = path.join(root, 'a-project', '2026-08-01T00-00-00-000Z_01900000-0000-7000-8000-000000000401');
+  fs.mkdirSync(historyDir, { recursive: true });
+  for (let index = 0; index < 4100; index++) fs.writeFileSync(path.join(historyDir, `Worker${index}.jsonl`), '');
+  const sessionName = '2026-09-01T11-00-00-000Z_01900000-0000-7000-8000-000000000402';
+  const parentPath = path.join(root, 'b-project', `${sessionName}.jsonl`);
+  const childPath = path.join(root, 'b-project', sessionName, 'LiveWorker.jsonl');
+  writeJsonl(parentPath, fixtureRecords('live-parent', now));
+  writeJsonl(childPath, fixtureRecords('live-child', now));
+  stamp(parentPath, now);
+  stamp(childPath, now);
+  const adapter = new OmpAdapter({ rootDir: root, now: () => now });
+  try {
+    const sessions = adapter.getActiveSessions(120_000);
+    assert.deepEqual(new Set(sessions.map(session => session.sessionId)), new Set(['omp-live-parent', 'omp-live-child']));
+    assert.equal(adapter.getPerfStats().knownTranscripts, 4096);
+  } finally {
+    adapter.shutdown();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('OMP cold detail discovery prioritizes recently modified inactive workers over old history', () => {
   const root = makeTempDir('claudeville-omp-recent-detail-');
   const now = Date.parse('2026-09-01T12:00:00.000Z');
