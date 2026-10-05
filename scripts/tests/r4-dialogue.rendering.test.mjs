@@ -7,6 +7,104 @@ import assert from 'node:assert/strict';
 
 import { AgentSprite, CODEX_WEAPON_ASSETS } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { Agent } from '../../claudeville/src/domain/entities/Agent.js';
+import { AgentGpuOverlayRenderer } from '../../claudeville/src/presentation/character-mode/AgentGpuOverlayRenderer.js';
+
+function speakingSprite(id, now) {
+    const agent = new Agent({
+        id,
+        status: 'working',
+        dialogue: {
+            text: 'Checking the renderer', kind: 'intent', source: 'omp.tool.i',
+            fidelity: 'verbatim', observedAt: now - 5_000, actionId: 'call-1',
+        },
+    });
+    const sprite = Object.assign(Object.create(AgentSprite.prototype), {
+        agent,
+        _activityTrail: [],
+        _providerTrimColor: () => '#ffffff',
+        _archiveFadeProgress: () => 0,
+    });
+    sprite._activitySnapshot = sprite._captureActivitySnapshot(agent, now);
+    return sprite;
+}
+
+test('new thoughts expire independently after thirty seconds, measured from receipt', (t) => {
+    const now = 1_800_000_000_000;
+    t.mock.timers.enable({ apis: ['Date'], now });
+    const first = speakingSprite('first', now);
+    t.mock.timers.tick(500);
+    const second = speakingSprite('second', Date.now());
+    t.mock.timers.tick(29_499);
+    assert.equal(first._activityThread().length, 1);
+    t.mock.timers.tick(1);
+    assert.deepEqual(first._activityThread(), []);
+    assert.equal(second._activityThread().length, 1);
+    assert.equal(IsometricRenderer.prototype._spriteWantsBubble.call({}, first), false);
+    assert.equal(IsometricRenderer.prototype._spriteWantsBubble.call({}, second), true);
+    t.mock.timers.tick(500);
+    assert.deepEqual(second._activityThread(), []);
+});
+
+test('duplicate snapshots and temporarily missing dialogue do not replay an expired thought', (t) => {
+    const now = 1_800_000_000_000;
+    t.mock.timers.enable({ apis: ['Date'], now });
+    const sprite = speakingSprite('first', now);
+    t.mock.timers.tick(20_000);
+    sprite.agent.dialogue = { ...sprite.agent.dialogue };
+    sprite._activitySnapshot = sprite._captureActivitySnapshot();
+    t.mock.timers.tick(10_000);
+    assert.deepEqual(sprite._activityThread(), []);
+    const dialogue = sprite.agent.dialogue;
+    sprite.agent.dialogue = null;
+    assert.deepEqual(sprite._activityThread(), []);
+    sprite.agent.dialogue = dialogue;
+    assert.deepEqual(sprite._activityThread(), []);
+    // The same words in a genuinely new source event still deserve a window.
+    sprite.agent.dialogue = { ...dialogue, observedAt: Date.now() };
+    assert.equal(sprite._activityThread().length, 1);
+    t.mock.timers.tick(30_000);
+    assert.deepEqual(sprite._activityThread(), []);
+});
+
+test('expired history cannot keep bubbles alive after the current thought expires', (t) => {
+    const now = 1_800_000_000_000;
+    t.mock.timers.enable({ apis: ['Date'], now });
+    const sprite = speakingSprite('first', now);
+    sprite._rememberActivitySnapshot({ text: 'An earlier thought', key: 'earlier', timestamp: now });
+    t.mock.timers.tick(30_000);
+    assert.deepEqual(sprite._activityThread(), []);
+});
+
+test('a new thought gets its own window without reviving expired history', (t) => {
+    const now = 1_800_000_000_000;
+    t.mock.timers.enable({ apis: ['Date'], now });
+    const sprite = speakingSprite('first', now);
+    const previous = sprite._activitySnapshot;
+    t.mock.timers.tick(30_000);
+    sprite.agent.dialogue = { ...sprite.agent.dialogue, text: 'Running the tests', observedAt: Date.now() };
+    sprite._rememberActivitySnapshot(previous);
+    assert.deepEqual(sprite._activityThread().map(entry => entry.text), ['Running the tests']);
+    t.mock.timers.tick(29_999);
+    assert.deepEqual(sprite._activityThread().map(entry => entry.text), ['Running the tests']);
+    t.mock.timers.tick(1);
+    assert.deepEqual(sprite._activityThread(), []);
+});
+
+test('GPU annotation mode changes do not switch live bubbles off together', () => {
+    let bubbles = 0;
+    const host = {
+        agent: { status: 'working' }, gpuWorldEnabled: true, selected: false,
+        chatting: false, gpuActionOverlay: false,
+        _gpuFrameRecord: { contentTopY: 40 },
+        _labelTopY: y => y,
+        _drawStatus: () => bubbles++,
+        _drawStatusEmote() {}, _drawPlanModeGlyph() {}, _drawRetryGlyph() {}, _drawNameTag() {},
+    };
+    const renderer = new AgentGpuOverlayRenderer(host);
+    for (const mode of ['full', 'compact', 'minimal', 'full']) renderer.draw({}, 1, mode);
+    assert.equal(bubbles, 4);
+});
 
 // Monospace stand-in: every glyph is 6px wide, so expected widths are exact and
 // the assertions do not depend on a real font being present.

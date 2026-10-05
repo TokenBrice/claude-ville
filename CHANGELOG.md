@@ -2,6 +2,17 @@
 
 ---
 
+## v0.50.2 — *The Quiet Council* · Oct 05, 2026
+
+Villagers' thought bubbles used to disappear and return together as crowd pressure changed the World's shared annotation mode. Each agent now speaks on its own cadence.
+
+- **Independent thought windows.** Each new thought gets a 30-second display window from client receipt. Repeated snapshots of the same thought do not restart its timer, and a new thought refreshes only that villager's window. Older thoughts keep their original deadline rather than returning with the next line.
+- **No village-wide bubble flashing.** GPU speech visibility no longer follows the shared full, compact, or minimal annotation mode. Existing overlap handling, building occlusion, and attention framing still keep the village readable.
+
+Validation: 1531 unit tests and both integration tests passed; `gate:release` and `verify:render` are clean. Five new regression cases cover independent expiry, duplicate snapshots, new thoughts, expired history, and GPU annotation-mode changes. The updated bubbles were also checked on the maintained local village.
+
+---
+
 ## v0.50.1 — *The Full Muster* · Oct 04, 2026
 
 A busy Oh My Pi history could leave the village empty while agents were working: once the sessions folder held more than 4,096 transcripts, the newest sessions were never discovered at all.

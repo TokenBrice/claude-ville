@@ -6748,7 +6748,7 @@ export class IsometricRenderer {
         bubbleSprites.length = 0;
         for (const sprite of prioritized) {
             if (sprite.decisionFocusMuted || (sprite._behindBuilding && !sprite.selected)) continue;
-            if (agentRenderMode === 'full' || sprite.gpuActionOverlay || sprite.selected) bubbleSprites.push(sprite);
+            bubbleSprites.push(sprite);
         }
         this._assignAgentBubbleSlots(
             bubbleSprites,
@@ -6985,7 +6985,9 @@ export class IsometricRenderer {
         // A silent villager draws nothing, so it must not reserve a slot and
         // push a speaking neighbour into a higher one. Reads the snapshot the
         // sprite already computed rather than rebuilding its activity thread.
-        if (!sprite._activitySnapshot?.text && !sprite._shouldUseLongWaitClock?.()) return false;
+        const hasSpeech = sprite._activitySnapshot?.text
+            && (!sprite._activityBubbleVisible || sprite._activityBubbleVisible());
+        if (!hasSpeech && !sprite._shouldUseLongWaitClock?.()) return false;
         return true;
     }
 

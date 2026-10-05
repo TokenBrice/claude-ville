@@ -320,6 +320,7 @@ const PROVIDER_HOME_BUILDINGS = {
     zai: 'archive',
 };
 const ACTION_TRAIL_LIMIT = 2;
+const DIALOGUE_BUBBLE_DISPLAY_MS = 30_000;
 const ACTIVITY_BUBBLE_TTL_MS = 12000;
 const ACTION_TRAIL_TTL_MS = ACTIVITY_BUBBLE_TTL_MS;
 const STATUS_BUBBLE_MAIN_MAX_WIDTH = Object.freeze({
@@ -1204,6 +1205,8 @@ export class AgentSprite {
         this._bubbleLayoutCacheKey = '';
         this._bubbleLayoutCache = null;
         this._activityTrail = [];
+        this._dialogueDisplayKey = null;
+        this._dialogueDisplayUntil = 0;
         this._activitySnapshot = this._captureActivitySnapshot(agent);
 
         this._pickTarget();
@@ -6310,11 +6313,13 @@ export class AgentSprite {
         this._pruneActivityTrail(now);
         const current = this._captureActivitySnapshot(this.agent, now);
         this._activitySnapshot = current;
+        if (!this._activityBubbleVisible(now)) return [];
         const all = [current, ...this._activityTrail];
         const deduped = [];
         const seen = new Set();
         for (const entry of all) {
             if (!entry?.text) continue;
+            if (entry.displayUntil <= now) continue;
             const dedupeKey = entry.key || entry.text;
             if (seen.has(dedupeKey)) continue;
             seen.add(dedupeKey);
@@ -6357,7 +6362,22 @@ export class AgentSprite {
     // already skips textless entries, so silence propagates naturally: no
     // bubble, no chip, no fabricated 'IDLE' line.
     _captureActivitySnapshot(agent = this.agent, timestamp = Date.now()) {
-        return this._activityEntryForAgent(agent, timestamp);
+        const entry = this._activityEntryForAgent(agent, timestamp);
+        if (entry) {
+            // Source identity survives duplicate polls and temporary silence.
+            // Time the display from receipt, independently for each villager.
+            const key = `${entry.key}:${entry.timestamp}`;
+            if (key !== this._dialogueDisplayKey) {
+                this._dialogueDisplayKey = key;
+                this._dialogueDisplayUntil = timestamp + DIALOGUE_BUBBLE_DISPLAY_MS;
+            }
+            entry.displayUntil = this._dialogueDisplayUntil;
+        }
+        return entry;
+    }
+
+    _activityBubbleVisible(now = Date.now()) {
+        return Boolean(this._activitySnapshot?.text) && now < this._dialogueDisplayUntil;
     }
 
     _activityEntryForAgent(agent = this.agent, timestamp = Date.now()) {
@@ -6427,6 +6447,7 @@ export class AgentSprite {
             category: entry.category || null,
             confidence: Number.isFinite(Number(entry.confidence)) ? Number(entry.confidence) : null,
             timestamp: Number.isFinite(Number(entry.timestamp)) ? Number(entry.timestamp) : timestamp,
+            displayUntil: entry.displayUntil,
         });
         if (this._activityTrail.length > ACTION_TRAIL_LIMIT) {
             this._activityTrail.length = ACTION_TRAIL_LIMIT;

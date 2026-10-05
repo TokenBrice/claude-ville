@@ -89,11 +89,15 @@ export class AgentGpuOverlayRenderer {
         // state, so reduced motion receives the complete visual treatment.
         if (departedTableau(host)) this.drawDepartedTreatment(ctx);
 
+        // Speech has a per-villager lifetime; shared annotation pressure must
+        // not switch every live thought off and back on together.
+        if (!departedTableau(host) && !host.chatting) {
+            host._drawStatus(ctx, host._labelTopY(contentTopY));
+        }
         if (!departedTableau(host) && (primary || host.selected || annotationMode === 'full' || host.gpuActionOverlay)) {
             // Head-anchored labels clear the chevron: nothing crosses the body.
             const labelTopY = host._labelTopY(contentTopY);
             if (host.chatting) host._drawChatEffect(ctx, labelTopY);
-            else host._drawStatus(ctx, labelTopY);
             if (!overview) host._drawStatusEmote(ctx, labelTopY);
             host._drawPlanModeGlyph(ctx, labelTopY);
             host._drawRetryGlyph(ctx, labelTopY);

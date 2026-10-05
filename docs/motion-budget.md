@@ -146,6 +146,11 @@ Travel, turns, gait beats, fidgets and seats run on the sprite update clock (the
 
 ## Reduced Motion
 
+Villager speech is a static display window: each new source event stays visible
+for 30 seconds from client receipt, independently per agent. Duplicate snapshots
+do not restart it, and shared annotation pressure does not toggle it. Historical
+lines keep their original deadline. Reduced motion uses the same window.
+
 Reduced motion means:
 
 - State machines may advance logical time if downstream state depends on completion.
