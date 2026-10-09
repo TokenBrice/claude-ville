@@ -3,11 +3,10 @@
 // Harbor has one per stack) or a `chimney` effect anchor gets a column of
 // round three-tone puffs (ParticleSystem shape 'smoke': radius 2 -> 5 art px
 // over life, lit `#d3d6dc` / body `#a9aeb8` / shade `#787c86`, four alpha
-// quanta by height, gone at 60 world px), and only while the building has a
-// working visitor (V8 `isWorkingVisitor`): smoke says someone is working
-// inside, so an empty building never smokes. Puffs sort just in front of the
-// chimney's own building half (0.6), so a nearer tower hides them on both
-// backends and their own roof never does.
+// quanta by height, gone at 60 world px). Workshops require working visitors
+// (V8); the watchtower crown alone burns on full lamplight's clock gate.
+// Puffs sort just in front of the chimney's own building half (0.6),
+// so nearer buildings hide them on both backends; their own roof never does.
 //
 // Weather: the one wind (C-W3, `windAt` at each chimney mouth, gusts
 // included) leans the column — fog barely tilts it, a storm lays it flat —
@@ -19,8 +18,9 @@
 import { getBuildingEffectAnchor } from './BuildingVisualRegistry.js';
 import { drawSmokePuff, smokePuffAlpha, SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
 import { buildingCenterToWorld } from './Projection.js';
-import { applyGradeToRgb } from './GradeEvaluator.js';
-import { smokeWindDrift } from './AtmosphereState.js';
+import { applyGradeToRgb, lampCourseAt } from './GradeEvaluator.js';
+import { seasonShiftFor, smokeWindDrift } from './AtmosphereState.js';
+import { seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { baseWindX } from './Wind.js';
 
 // Spawn cadence per occupancy tier. With puffs living 1.7–2.2 s this keeps
@@ -33,7 +33,7 @@ const MAX_PUFFS_PER_CHIMNEY = 10;
 const WET_LIFE = Object.freeze([70, 92]);
 const WET_SPEED = Object.freeze([0.32, 0.38]);
 // Buildings whose smoke rises off a live fire.
-const HEARTH_TYPES = new Set(['forge']);
+const HEARTH_TYPES = new Set(['forge', 'watchtower']);
 const HEARTH_UNDERSIDE = '#9a5a36';
 // After dark the column must stay the palest thing over the dark roofs and
 // lawns: moonlit soot. The Canvas frame is graded after the fact, so the
@@ -59,6 +59,13 @@ function chimneyAnchors(type) {
     const top = getBuildingEffectAnchor(type, 'smokeTop', null) || getBuildingEffectAnchor(type, 'chimney', null);
     if (!Array.isArray(top)) return [];
     return Array.isArray(top[0]) ? top.filter(Array.isArray) : [top];
+}
+
+function smokeInterval(source, presence, atmosphere) {
+    if (source.type !== 'watchtower') return PUFF_INTERVAL_MS[presence?.get?.(source.type)?.tier] || 0;
+    const minute = Number(atmosphere?.clock?.minuteOfDay);
+    return Number.isFinite(minute)
+        && lampCourseAt(minute, seasonShiftFor(seasonTokenForAtmosphere(atmosphere))) >= 2 ? 700 : 0;
 }
 
 export class ChimneySmoke {
@@ -107,12 +114,14 @@ export class ChimneySmoke {
         const dark = Number(atmosphere?.lightGrade?.night) > 0.35
             || atmosphere?.phase === 'night' || atmosphere?.phase === 'dusk';
         for (const source of this.sources(buildings, assets)) {
-            const tier = presence?.get?.(source.type)?.tier;
-            const interval = PUFF_INTERVAL_MS[tier];
+            const interval = smokeInterval(source, presence, atmosphere);
             if (!interval) continue;
+            // Only the atmosphere fire uses stepped motion time for cadence;
+            // workshop smoke keeps its existing work-presence scheduling.
+            const stamp = source.type === 'watchtower' ? Math.floor(timeMs / 140) * 140 : now;
             const last = this._lastPuff.get(source.key) || 0;
-            if (now - last < interval) continue;
-            this._lastPuff.set(source.key, now);
+            if (stamp - last < interval) continue;
+            this._lastPuff.set(source.key, stamp);
             const tag = `chimney:${source.key}`;
             if (particleSystem.countTagged(tag) >= MAX_PUFFS_PER_CHIMNEY) continue;
             const options = {
@@ -144,14 +153,13 @@ export class ChimneySmoke {
     // ungraded resident overlay pass the C2 `lightGrade` so it takes the
     // scene's light (moonlit soot after dark); the Canvas frame is graded
     // after the fact. The wisp leans with the knot wind (never a gust).
-    drawStatic(ctx, { buildings, assets, presence, lightGrade = null, weather = null } = {}) {
+    drawStatic(ctx, { buildings, assets, presence, atmosphere = null, lightGrade = null, weather = null } = {}) {
         const tone = !lightGrade ? STATIC_TONE
             : Number(lightGrade.night) > 0.35 ? moonlitTones(lightGrade)[0]
                 : gradedHex(STATIC_TONE, lightGrade);
         const lean = baseWindX(weather) < 0 ? -1 : 1;
         for (const source of this.sources(buildings, assets)) {
-            const tier = presence?.get?.(source.type)?.tier;
-            if (!PUFF_INTERVAL_MS[tier]) continue;
+            if (!smokeInterval(source, presence, atmosphere)) continue;
             ctx.save();
             for (const puff of STATIC_WISP) {
                 drawSmokePuff(ctx, source.x + puff.dx * lean, source.y + puff.dy, puff.radius, tone, smokePuffAlpha(-puff.dy));

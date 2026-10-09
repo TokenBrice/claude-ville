@@ -27,7 +27,7 @@ import { classifyTool, toolVerbLabel } from '../../domain/services/ToolIdentity.
 import { repoProfile } from '../shared/RepoColor.js';
 import { squadMusterLines } from './RelationshipState.js';
 import { getReservedRects } from '../shared/ReservedRects.js';
-import { normalizeLightSource } from './LightSourceRegistry.js';
+import { fireBreath, normalizeLightSource } from './LightSourceRegistry.js';
 import { normalizeLightingState, seasonShiftFor, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
 import { lampCourseAt } from './GradeEvaluator.js';
 import { seasonTokenForAtmosphere } from './SeasonalAmbience.js';
@@ -155,14 +155,11 @@ const HARBOR_SIGNAL_PENNANTS = Object.freeze([
 // release's gold pennant (the sloop's and the 6.7 bunting's pennant family)
 // in place of the white: the same flag slot, no added flag.
 const HARBOR_RELEASE_PENNANT = Object.freeze([GOLD, GOLD_RAMP[0]]);
-// 2.7 — the Lighthouse beam's stepped courses: [from, to] along the fan and
-// the share of sea dash cells each lights (a near core of 0.9 from the
-// tower's waterline, then 0.6 and 0.3: no gradient). The resident shaders'
-// LIGHTHOUSE_BEAM_GLSL draws them; this is the one source.
+// Warm glints admitted only on existing swell/crest texels, thinning outward.
 const SEARCHLIGHT_COURSES = Object.freeze([
     [0, 0.3, 0.9],
-    [0.3, 0.65, 0.6],
-    [0.65, 1, 0.3],
+    [0.3, 0.65, 0.48],
+    [0.65, 1, 0.24],
 ]);
 // 4.4 — the result shelf. Only records that say how a call *ended* land here
 // (`tool:result`, from the adapters' bounded last-result summary); invocation
@@ -181,11 +178,8 @@ const WATCHTOWER_LANTERN_FIRE = Object.freeze(getBuildingEffectAnchor('watchtowe
     light: [200, 66],
     particle: [200, 66],
 }));
-// 2.7 — the Lighthouse beam: two world-locked fans (a bi-form lens, 180
-// degrees apart) over the sea from the lamp's foot at the tower base (V5),
-// lighting dash cells on the C1 cool-white lampBeam stops; its sheen band
-// steps outward every SEARCHLIGHT_SHEEN_STEP_MS. Constant sweep (M22):
-// nothing about it reads agent, push or distress state.
+// One warm mirror shaft descends from the glass to a sea landing; its
+// remaining cone lights swell texels only. Clock-only, never agent state.
 const WATCHTOWER_SEARCHLIGHT = Object.freeze(getBuildingEffectAnchor('watchtower', 'searchlight', {
     pivot: [200, 68],
     length: 520,
@@ -193,43 +187,18 @@ const WATCHTOWER_SEARCHLIGHT = Object.freeze(getBuildingEffectAnchor('watchtower
 }));
 const SEARCHLIGHT_LENGTH = WATCHTOWER_SEARCHLIGHT.length || 320;
 const SEARCHLIGHT_FAR_WIDTH = WATCHTOWER_SEARCHLIGHT.width || 58;
-const SEARCHLIGHT_SWEEP_RAD_PER_S = 0.45;
-const SEARCHLIGHT_REST_ANGLE = -0.34;
+const SEARCHLIGHT_SWEEP_RAD_PER_S = 0.2;
+const SEARCHLIGHT_REST_ANGLE = 0.18;
 const SEARCHLIGHT_SHEEN_STEP_MS = 200;
-// 2.7 — each sea fan's twin in the air (_drawWatchtowerFire): the same fan
-// laid flat at the lamp's height in translucent steps, [from, to] along the
-// fan and the step's alpha: each SEARCHLIGHT_COURSES course at its dash share
-// times LANTERN_FAN_ALPHA, the far course thinning to nothing in three steps
-// as its dashes thin out on the water (no square cut at the fan's end).
-const LANTERN_FAN_ALPHA = 0.3;
-const LANTERN_FAN_FAR_STEPS = 3;
-const LANTERN_FAN_STEPS = Object.freeze(SEARCHLIGHT_COURSES.flatMap(([from, to, share], index) => {
-    const steps = index === SEARCHLIGHT_COURSES.length - 1 ? LANTERN_FAN_FAR_STEPS : 1;
-    return Array.from({ length: steps }, (_, step) => Object.freeze([
-        from + (to - from) * step / steps,
-        from + (to - from) * (step + 1) / steps,
-        share * LANTERN_FAN_ALPHA * (steps - step) / steps,
-    ]));
-}));
-// 2.9 — the Lighthouse lamp's column on the water: the beam's lampBeam
-// silver (one hue family with the beam, M22; the column keeps 70 % of a cool
-// light's hue, so its low stop lands on the beam's own mid silver), a gain
-// over the lamp's core energy (the lens concentrates it: its column's near
-// third lifts one stop more than any window's, and a silver lit no brighter
-// than an amber would read as stone), and its length in a lamp's column
-// reaches, from the lamp's mirror point toward the camera.
-const LIGHTHOUSE_COLUMN_COLOR = ART_RAMPS.lampBeam[0];
+const SEARCHLIGHT_LANDING_SHARE = 0.35;
+// Water reflection is the same subdued warm cream as the beam receivers.
+const LIGHTHOUSE_COLUMN_COLOR = ART_RAMPS.beaconFire[0];
 const LIGHTHOUSE_COLUMN_GAIN = 1.4;
 const LIGHTHOUSE_COLUMN_REACH = 1.2;
 // The lens angle (ground-plane radians, 0 = +x) at `ms` on the motion clock.
 function searchlightAngleAt(ms) {
-    const t = Math.max(0, Number(ms) || 0) / 1000;
+    const t = Math.floor(Math.max(0, Number(ms) || 0) / 140) * 0.14;
     return (SEARCHLIGHT_REST_ANGLE + t * SEARCHLIGHT_SWEEP_RAD_PER_S) % (Math.PI * 2);
-}
-// Screen px from the lamp's centre where a fan leaves the glass: a fan turned
-// away from the camera leaves from behind it.
-function lanternGlassOffset(heading) {
-    return Math.sin(heading) < -0.2 ? 10 : 6;
 }
 // AD-6 — no beam by day. The Lighthouse beam draws only once the lamp course
 // reaches `settling` (GradeEvaluator.lampCourseAt), the same minutes at which
@@ -945,14 +914,8 @@ export class BuildingSprite {
         return false;
     }
 
-    // 2.7 — the Lighthouse beam for the resident shaders, or null outside
-    // full lamplight (AD-6: no beam by day, at dusk settling or at dawn).
-    // World px: `foot` is the tower base under the lantern (V5); the lens's
-    // two fans (`angle` and `angle + PI`) sweep at a constant 0.45 rad/s on
-    // the one motion clock and the sheen band steps outward every
-    // SEARCHLIGHT_SHEEN_STEP_MS (`sheenStep` 0..2), so reduced motion (a
-    // frozen clock) holds both still. Reads no agent, push or distress state
-    // (M22). One object, rewritten per call.
+    // One stepped, clock-only mirror beam. `foot` is the sea landing, not
+    // the tower base: the air shaft and water glints share that exact origin.
     lighthouseBeam(motionTimeMs = 0) {
         if (lampCourseFor(this.atmosphereState) < LAMP_COURSE_LAMPLIGHT) return null;
         const building = this.buildings.find(b => b.type === 'watchtower');
@@ -965,21 +928,20 @@ export class BuildingSprite {
         const beam = this._lighthouseBeamState || (this._lighthouseBeamState = {
             foot: { x: 0, y: 0 },
             angle: 0,
-            length: SEARCHLIGHT_LENGTH,
+            length: SEARCHLIGHT_LENGTH * (1 - SEARCHLIGHT_LANDING_SHARE),
             farWidth: SEARCHLIGHT_FAR_WIDTH,
             courses: SEARCHLIGHT_COURSES,
             sheenStep: 0,
         });
-        beam.foot.x = center.x - anchorX + footX;
-        beam.foot.y = center.y - anchorY + footY;
         beam.angle = searchlightAngleAt(ms);
+        const landing = SEARCHLIGHT_LENGTH * SEARCHLIGHT_LANDING_SHARE;
+        beam.foot.x = Math.round(center.x - anchorX + footX + Math.cos(beam.angle) * landing);
+        beam.foot.y = Math.round(center.y - anchorY + footY + Math.sin(beam.angle) * landing * 0.5);
         beam.sheenStep = Math.floor(ms / SEARCHLIGHT_SHEEN_STEP_MS) % 3;
         return beam;
     }
 
-    // 2.7 / 1.3 — Canvas and hybrid: the Lighthouse lamp's own light (halo,
-    // lens flash and fans) on the ungraded overlay after the grade, like an
-    // emitter cut (EmitterCuts), in world px on `ctx`'s current transform.
+    // Shared ungraded warm halo and descending shaft on Canvas/GPU overlay.
     drawLanternLight(ctx) {
         for (const building of this.buildings) {
             if (building.type !== 'watchtower') continue;
@@ -1791,17 +1753,8 @@ export class BuildingSprite {
         return this.agentSprites.filter(sprite => sprite?.agent?.status === 'WORKING').length;
     }
 
-    // 2.9 — the Lighthouse lamp's column on the water: a water-only fixture
-    // record at the tower base (`waterOnly`; the column starts at the lamp in
-    // its tower's mirror, `height` below the foot, and runs
-    // LIGHTHOUSE_COLUMN_REACH times a lamp's column reach), in the beam's own
-    // C1 lampBeam silver (M22: one hue family with the beam, never the
-    // lantern's amber), lit exactly while the beam turns (lampCourse >=
-    // lamplight). A safety light: it reads the clock only, never work,
-    // distress or a failed push. PostFxFeed adds it to the resident light
-    // list; nothing else reads it. With the halo radius capped
-    // (SOURCE_HALO_RADIUS_CAP) the column ends ~40 rows short of the terrain
-    // record's edge, so its tail tapers out on the in-map water.
+    // Water-only reflection of the lantern fire, clock-gated independently
+    // of working occupants. The beam/column share subdued warm cream.
     lighthouseColumnSource(lightingState = this.lightingState) {
         if (lampCourseFor(this.atmosphereState) < LAMP_COURSE_LAMPLIGHT) return null;
         const energy = sourceEnergyFor(lightingState ?? this.atmosphereState?.lighting);
@@ -1867,9 +1820,8 @@ export class BuildingSprite {
         const nightGate = this._nightWindowGate();
         const out = [];
         for (const source of staticSources) {
-            // 2.7 (M22) — the Lighthouse lamp stands 40+ world px up its tower:
-            // it lights no ground, apron, steps or masonry below it (AD #6). Its
-            // light is the lantern's own halo, flash and air fans
+            // The Lighthouse fire lights no ground, apron, steps or masonry.
+            // Its own light is the warm halo and descending mirror shaft
             // (_drawWatchtowerFire) and the beam on the sea (lighthouseBeam);
             // 2.9 adds its column on the water through
             // `lighthouseColumnSource`, fed to the resident loop only (no
@@ -3252,9 +3204,8 @@ export class BuildingSprite {
         // roof and not a foreground prop), so it is drawn after the split clip
         // is released, once, on the front pass only.
         let openAperture = null;
-        // 2.7 — the Lighthouse lamp's air fans reach far past the tower's
-        // box, so its light is drawn after the split clip is released too,
-        // once, on the pass that holds the lantern.
+        // The descending mirror shaft reaches past the tower box; draw once
+        // after its split clip is released. Its rear arc is suppressed.
         let lanternBeacon = null;
 
         ctx.save();
@@ -3384,11 +3335,8 @@ export class BuildingSprite {
             }
             if (shouldDrawLocalY(gateY)) this._drawPortalRitual(ctx, localPoint(gateX, gateY), portalRitual);
         } else if (building.type === 'watchtower') {
-            // 2.7 — the lantern only (halo, flash and the sea fans' twins in
-            // the air); the sea fans are the resident shaders' stepped fans
-            // (`lighthouseBeam`), and no work or distress ring circles the
-            // lamp (M22). The lamp's own light lands ungraded: on the GPU
-            // overlay here, on Canvas through `drawLanternLight`.
+            // Warm halo and one descending shaft, ungraded on the shared
+            // overlay; sea glints use lighthouseBeam in the water backends.
             if (this._ungradedOverlay && shouldDrawLocalY(WATCHTOWER_LANTERN_FIRE.flame[1])) {
                 lanternBeacon = localPoint(...WATCHTOWER_LANTERN_FIRE.flame);
             }
@@ -5231,141 +5179,73 @@ export class BuildingSprite {
         return 4;
     }
 
-    // 2.7 (M22) — the lantern is a calm safety light. Its flame is the
-    // manifest `beacon` layer (one authored lamp drawn on both backends by
-    // partDrawsFor; the `lens` cycle steps its colours while the lamps are
-    // lit). Here, only while the lamps are lit (AD-6), the lamp's own light
-    // on the C1 cool-white lampBeam stops: a fixed stepped halo, a lens flash
-    // one or two courses up while a fan of the bi-form lens turns toward the
-    // camera, each fan's two-course flash leaving the glass along its heading
-    // (the same angles `lighthouseBeam` gives the resident shaders), and each
-    // sea fan's twin in the air under them. Nothing here reads fleet work,
-    // distress or a failed push. GPU: drawn on the ungraded overlay outside
-    // the tower's split clip; Canvas: EmitterCuts draws it after the grade.
+    // Authored flame/lens art stays intact. Only the clock drives its warm
+    // halo and one descending mirror shaft; the rear arc is suppressed so
+    // the upper overlay can never paint through the tower's split.
     _drawWatchtowerFire(ctx, beacon) {
-        if (!lampsLitAt(this.atmosphereState)) return;
-        const [, , rim, mid, core] = ART_RAMPS.lampBeam;
-        // The lens turns (flash and fans) only in full lamplight, like the
-        // beam; the halo already holds through the settling course.
-        const turning = lampCourseFor(this.atmosphereState) >= LAMP_COURSE_LAMPLIGHT;
-        const angle = searchlightAngleAt(this._partClockMs());
-        // The fan nearer the camera (+y on the iso ground) sets the flash.
-        const toward = turning ? Math.abs(Math.sin(angle)) : 0;
-        const flash = toward > 0.8 ? 2 : toward > 0.45 ? 1 : 0;
-        const headings = turning ? [angle, angle + Math.PI] : [];
+        if (lampCourseFor(this.atmosphereState) < LAMP_COURSE_LAMPLIGHT) return;
+        const ms = this._partClockMs();
+        const angle = searchlightAngleAt(ms);
+        const breath = fireBreath(ms, 'fire:watchtower', this.motionScale);
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
-        // Each sea fan's twin in the air: the sea fan's own shape (as long,
-        // as wide, the same courses) laid flat at the lamp's height and
-        // leaving the glass, in LANTERN_FAN_STEPS translucent steps, so the
-        // light in the air reaches as far as the light it lays on the water.
-        ctx.fillStyle = mid;
-        for (const heading of headings) {
-            const glass = lanternGlassOffset(heading) / Math.hypot(Math.cos(heading), Math.sin(heading) * 0.5);
-            for (const [from, to, alpha] of LANTERN_FAN_STEPS) {
-                ctx.globalAlpha = alpha;
-                this._fillLanternFan(ctx, beacon.x, beacon.y, heading, Math.max(glass, from * SEARCHLIGHT_LENGTH), to * SEARCHLIGHT_LENGTH);
-            }
-        }
-        for (const heading of headings) {
-            const sx = Math.cos(heading);
-            const sy = Math.sin(heading) * 0.5;
-            const length = Math.hypot(sx, sy);
-            // Three opaque courses, each a ray widening from the glass on
-            // whole pixels and closing to a point (the rim widest and
-            // longest, the core a thin spike), so the flash steps out on the
-            // pixel grid instead of a flat bar.
-            const from = lanternGlassOffset(heading);
-            const dx = sx / length;
-            const dy = sy / length;
-            ctx.globalAlpha = 1;
-            ctx.fillStyle = rim;
-            this._fillPixelWedge(ctx, beacon.x, beacon.y, dx, dy, from, from + 26, 0.5, 4.5);
-            ctx.fillStyle = mid;
-            this._fillPixelWedge(ctx, beacon.x, beacon.y, dx, dy, from, from + 18, 0, 2.5);
-            ctx.fillStyle = core;
-            this._fillPixelWedge(ctx, beacon.x, beacon.y, dx, dy, from, from + 11, 0, 1);
-        }
-        const halo = [[14, 0.25, rim], [flash > 0 ? 10 : 8, flash > 0 ? 0.66 : 0.4, mid], [flash > 1 ? 7 : 4, 1, core]];
+        if (Math.sin(angle) >= -0.2) this._fillBeaconShaft(ctx, beacon, angle);
+        const [, , , rim, mid, hot, core] = ART_RAMPS.beaconFire;
+        const facing = Math.sin(angle) > 0.25 ? 1 : 0;
+        const course = (breath < 0.9 ? -1 : breath < 0.98 ? 0 : 1) + facing;
+        const halo = [[28 + course, 0.12, rim], [18 + course, 0.2, mid], [10 + course, 0.32, hot], [5, 0.5, core]];
         for (const [radius, alpha, color] of halo) {
-            ctx.globalAlpha = alpha;
+            ctx.globalAlpha = alpha + facing * 0.04;
             ctx.fillStyle = color;
             this._fillPixelCircle(ctx, beacon.x, beacon.y, radius);
         }
         ctx.restore();
     }
 
-    // Fills the integer pixels of a straight ray from (cx, cy) along the
-    // unit direction (dx, dy), `from`..`to` px out: its half-width grows from
-    // `near` to `far` and its tip closes to a point (a stair-stepped edge on
-    // whole pixels at any heading): one fillRect per row run.
-    _fillPixelWedge(ctx, cx, cy, dx, dy, from, to, near, far) {
-        const ox = Math.round(cx);
-        const oy = Math.round(cy);
-        const reach = Math.ceil(to);
-        const span = Math.max(1, to - from);
-        for (let y = -reach; y <= reach; y++) {
-            let run = null;
-            for (let x = -reach; x <= reach + 1; x++) {
-                let inside = false;
-                if (x <= reach) {
-                    const px = x + 0.5;
-                    const py = y + 0.5;
-                    const along = px * dx + py * dy;
-                    const across = Math.abs(px * dy - py * dx);
-                    inside = along >= from && along < to - across * 2
-                        && across <= near + (far - near) * (along - from) / span + 0.5;
-                }
-                if (inside && run === null) run = x;
-                if (!inside && run !== null) {
-                    ctx.fillRect(ox + run, oy + y, x - run, 1);
-                    run = null;
-                }
+    // Scan-convert the shaft between the glass and the exact sea landing,
+    // in world texels. Ordered coverage breaks both edges and the tail;
+    // alpha and colour hold in three courses, never a smooth gradient.
+    _fillBeaconShaft(ctx, beacon, angle) {
+        const distance = SEARCHLIGHT_LENGTH * SEARCHLIGHT_LANDING_SHARE;
+        const c = Math.cos(angle);
+        const s = Math.sin(angle);
+        const foot = WATCHTOWER_LANTERN_FIRE.foot || WATCHTOWER_SEARCHLIGHT.pivot;
+        const height = foot[1] - WATCHTOWER_LANTERN_FIRE.flame[1];
+        const dx = Math.round(foot[0] - WATCHTOWER_LANTERN_FIRE.flame[0] + c * distance);
+        const dy = Math.round(height + s * distance * 0.5);
+        const length = Math.hypot(dx, dy);
+        // Cross-sections use the sea cone's 2:1 ground-plane perpendicular,
+        // so its landing edges and the shaft's edges have the same geometry.
+        const nx = -s;
+        const ny = c * 0.5;
+        const determinant = dx * ny - dy * nx;
+        if (Math.abs(determinant) < 1) return;
+        const spreadX = Math.abs(nx) * BEAM_NEAR_HALF_WIDTH + 2;
+        const spreadY = Math.abs(ny) * BEAM_NEAR_HALF_WIDTH + 2;
+        const minX = Math.floor(Math.min(0, dx) - spreadX);
+        const maxX = Math.ceil(Math.max(0, dx) + spreadX);
+        const minY = Math.floor(Math.min(0, dy) - spreadY);
+        const maxY = Math.ceil(Math.max(0, dy) + spreadY);
+        const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+        const ox = Math.round(beacon.x);
+        const oy = Math.round(beacon.y);
+        for (let y = minY; y <= maxY; y++) {
+            for (let x = minX; x <= maxX; x++) {
+                const px = x + 0.5;
+                const py = y + 0.5;
+                const t = (px * ny - py * nx) / determinant;
+                if (t < 6 / length || t >= 1) continue;
+                const width = 4 + (BEAM_NEAR_HALF_WIDTH - 4) * t;
+                const across = Math.abs((dx * py - dy * px) / determinant);
+                const coverage = Math.max(0, Math.min(1, (width - across) / 3))
+                    * (t < 0.78 ? 1 : t < 0.87 ? 0.75 : t < 0.94 ? 0.5 : 0.25);
+                const order = (bayer[((oy + y) & 3) * 4 + ((ox + x) & 3)] + 0.5) / 16;
+                if (coverage <= order) continue;
+                const course = t < 0.3 ? 0 : t < 0.65 ? 1 : 2;
+                ctx.globalAlpha = course === 0 ? 0.4 : course === 1 ? 0.27 : 0.16;
+                ctx.fillStyle = ART_RAMPS.beaconFire[course === 0 ? 5 : 4];
+                ctx.fillRect(ox + x, oy + y, 1, 1);
             }
-        }
-    }
-
-    // Fills the integer pixels whose centres lie on the Lighthouse sea fan's
-    // shape laid flat at (cx, cy): LIGHTHOUSE_BEAM_GLSL's fan on the 2:1 iso
-    // ground (ground y = twice world y), `from`..`to` ground px along
-    // `heading`, its half-width BEAM_NEAR_HALF_WIDTH at the pivot widening to
-    // half of SEARCHLIGHT_FAR_WIDTH at SEARCHLIGHT_LENGTH. The fan is convex,
-    // so each row is one run: one fillRect per row. A run is half-open on
-    // `to`, so abutting courses share no pixel (no double alpha).
-    _fillLanternFan(ctx, cx, cy, heading, from, to) {
-        const ox = Math.round(cx);
-        const oy = Math.round(cy);
-        const c = Math.cos(heading);
-        const s = Math.sin(heading);
-        const near = BEAM_NEAR_HALF_WIDTH;
-        const k = (SEARCHLIGHT_FAR_WIDTH / 2 - near) / SEARCHLIGHT_LENGTH;
-        // Ground y of the course's corners: along * s +/- halfWidth * c.
-        const spreadFrom = (near + k * from) * Math.abs(c);
-        const spreadTo = (near + k * to) * Math.abs(c);
-        const top = Math.floor(Math.min(from * s - spreadFrom, to * s - spreadTo) / 2);
-        const bottom = Math.ceil(Math.max(from * s + spreadFrom, to * s + spreadTo) / 2);
-        let lo = 0;
-        let hi = 0;
-        // Narrows the run [lo, hi) of ground x to where a * x + b >= 0.
-        const keep = (a, b) => {
-            if (a > 1e-9) lo = Math.max(lo, -b / a);
-            else if (a < -1e-9) hi = Math.min(hi, -b / a);
-            else if (b < 0) hi = -Infinity;
-        };
-        for (let y = top; y <= bottom; y++) {
-            const gy = (y + 0.5) * 2;
-            // along = c * x + s * gy; across = c * gy - s * x.
-            const along = s * gy;
-            const across = c * gy;
-            lo = -Infinity;
-            hi = Infinity;
-            keep(c, along - from);
-            keep(-c, to - along);
-            keep(k * c + s, near + k * along - across);
-            keep(k * c - s, near + k * along + across);
-            const x0 = Math.ceil(lo - 0.5);
-            const x1 = Math.ceil(hi - 0.5);
-            if (x1 > x0) ctx.fillRect(ox + x0, oy + y, x1 - x0, 1);
         }
     }
 
@@ -5375,9 +5255,28 @@ export class BuildingSprite {
         const center = this._buildingScreenCenter(b);
         const entryId = entry?.id || `building.${b.type}`;
         const baseAnchor = this.assets.getAnchor(entryId);
+        // The safety fire has one low-rate, clock-only ember source. It
+        // bypasses occupancy/beacon-density multipliers; ParticleSystem owns
+        // ornament admission, pressure shedding and the shared hard cap.
+        if (b.type === 'watchtower') {
+            if (lampCourseFor(this.atmosphereState) >= LAMP_COURSE_LAMPLIGHT) {
+                const emitter = BUILDING_EMITTER_FALLBACKS.watchtower[0];
+                const tick = Math.floor(this._partClockMs() / emitter.stepMs);
+                if (tick === this._watchtowerEmberTick) return;
+                this._watchtowerEmberTick = tick;
+                this._spawnBuildingParticle(b, emitter.type, center, baseAnchor, emitter.at, 1, 1, 16, {
+                    colors: ART_RAMPS.beaconFire.slice(4, 6),
+                    life: [45, 70],
+                    size: [1, 1],
+                    speed: [0.4, 0.7],
+                    spread: [3, 1],
+                });
+            }
+            return;
+        }
         for (const [particleType, [lx, ly]] of Object.entries(entry?.emitters || {})) {
             const normalizedType = PARTICLE_ALIASES[particleType] || particleType;
-            const at = b.type === 'watchtower' ? WATCHTOWER_LANTERN_FIRE.particle : [lx, ly];
+            const at = [lx, ly];
             this._spawnBuildingParticle(b, normalizedType, center, baseAnchor, at, 0.035, 1, dt);
         }
         const presenceMult = PRESENCE_TIER_TABLE[this._workTierFor(b)].emitter;

@@ -32,7 +32,7 @@ import { squallApproach, distantShowerFront } from './CoastBake.js';
 import { cloudCoveredShare, effectBudgetMode } from './gpu/GpuWorldPolicy.js';
 import { ornamentPlan, readCalmGateOverride, sampleFramePressure, PRESSURE_LEVELS } from './MarkGovernor.js';
 import { seasonTokenForAtmosphere, seasonalDriftCap, monthIndexForAtmosphere } from './SeasonalAmbience.js';
-import { songbirdBudget, fireflyBudget, dragonflyBudget, livestockBudget } from './WildlifeRenderer.js';
+import { songbirdBudget, fireflyBudget, ashMoteBudget, dragonflyBudget, livestockBudget } from './WildlifeRenderer.js';
 import { CALM_WATER_FAUNA, SHORE_FAUNA } from '../../config/scenery.js';
 import { horizonLifeStats, liveHorizonEvents } from './HorizonLife.js';
 
@@ -517,8 +517,9 @@ export function ambientDebugSnapshot(renderer) {
     const gulls = wildlife?.lastGullStats || {};
     const context = { zoom, motionScale, phase, weatherType: weather.type || 'clear', month: monthIndexForAtmosphere(atmosphere), approach: gates.approach };
     const songbirds = songbirdBudget(context);
-    const fireflies = fireflyBudget(context);
     const pressure = Number(sampleFramePressure()?.level) || 0;
+    const fireflies = fireflyBudget({ ...context, level: pressure });
+    const ashMotes = ashMoteBudget({ ...context, level: pressure });
     const dragonflies = dragonflyBudget({ ...context, level: pressure, calm: readCalmGateOverride() === 'quiet' });
     const livestock = livestockBudget({ ...context, level: pressure, calm: readCalmGateOverride() === 'quiet' });
     const driftCap = seasonalDriftCap(zoom);
@@ -548,6 +549,7 @@ export function ambientDebugSnapshot(renderer) {
             gulls: { live: (gulls.visible || 0) + (gulls.roosting || 0), cap: gulls.cap || 0, reason: gulls.mode === 'flying' ? null : gulls.mode || 'not-drawn' },
             songbirds: { live: drawn.songbirds || 0, cap: songbirds.cap, reason: wildlife?._songbirdsSettling ? 'squall-settling' : songbirds.reason },
             fireflies: { live: drawn.fireflies || 0, cap: fireflies.cap, reason: fireflies.reason },
+            'ash motes': { live: drawn.ashMotes || 0, cap: ashMotes.cap, reason: ashMotes.reason },
             'seasonal drift': { live: renderer?.particleSystem?.countTagged?.('seasonal-drift') || 0, cap: driftReason ? 0 : driftCap, reason: driftReason },
             'ducks/herons': { live: (drawn.ducks || 0) + (drawn.herons || 0), cap: (weather.type === 'storm' ? 0 : CALM_WATER_FAUNA.length) + SHORE_FAUNA.length, reason: weather.type === 'storm' ? 'storm-cover' : gates.wet || gates.approach ? 'cover' : !(motionScale > 0) ? 'reduced-motion' : null },
             dragonflies: { live: drawn.dragonflies || 0, cap: dragonflies.cap, reason: dragonflies.reason },

@@ -464,6 +464,31 @@ export const ANCIENT_RUINS = [
     { tileX: 36, tileY: 34, scale: 0.95 },
 ];
 
+// Night's low street-lantern chain, linking the existing scenic lamps at
+// both landmark bridges to the road verges and Harbor quay. Whole-tile
+// feet close one unused walk node apiece, never a path, approach-file,
+// queue, seat or visit node; the lantern/body fixture box clears those
+// standing places as well. All sites are dry land, not the harbor's
+// water-only loiter points. Cache-baked like the scenic bridge lamps:
+// no new tall prop can occlude a landmark, and EmitterCuts restores only
+// the clock-gated glass. The posts stay dark by day, with no occupancy gate.
+export const VILLAGE_NIGHT_LAMPS = Object.freeze([
+    { tileX: 5, tileY: 21, district: 'knowledge' },
+    { tileX: 6, tileY: 22, district: 'civic' },
+    { tileX: 15, tileY: 26, district: 'civic' },
+    { tileX: 16, tileY: 28, district: 'civic' },
+    { tileX: 19, tileY: 29, district: 'gate' },
+    { tileX: 20, tileY: 30, district: 'gate' },
+    { tileX: 20, tileY: 32, district: 'gate' },
+    { tileX: 17, tileY: 34, district: 'gate' },
+    { tileX: 18, tileY: 35, district: 'gate' },
+    { tileX: 18, tileY: 37, district: 'gate' },
+    { tileX: 6, tileY: 35, district: 'arcane' },
+    { tileX: 9, tileY: 36, district: 'resource' },
+    { tileX: 25, tileY: 21, district: 'harbor' },
+    { tileX: 25, tileY: 22, district: 'harbor' },
+].map(row => Object.freeze({ ...row, id: 'prop.lantern', layer: 'cache', walkBlock: true })));
+
 export const DISTRICT_PROPS = [
     { tileX: 11.9, tileY: 21.0, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
     { tileX: 2.2, tileY: 14.4, id: 'veg.root.arch', layer: 'sorted', district: 'elderwood' },
@@ -680,6 +705,7 @@ export const DISTRICT_PROPS = [
     { tileX: 7.9, tileY: 13.6, id: 'prop.fence.gate', layer: 'cache', district: 'farm', walkBlock: true },
     { tileX: 8.8, tileY: 12.85, id: 'prop.fence.nwSe', layer: 'cache', district: 'farm', walkBlock: true },
     { tileX: 8.9, tileY: 13.6, id: 'prop.farm.trough', layer: 'cache', district: 'farm', walkBlock: true },
+    ...VILLAGE_NIGHT_LAMPS,
 ];
 
 // Living Isle W2.2: three awning colourways of one stall (manifest

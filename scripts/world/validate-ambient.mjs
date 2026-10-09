@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { WildlifeRenderer, songbirdBudget, fireflyBudget, dragonflyBudget } from '../../claudeville/src/presentation/character-mode/WildlifeRenderer.js';
+import { WildlifeRenderer, songbirdBudget, fireflyBudget, ashMoteBudget, dragonflyBudget } from '../../claudeville/src/presentation/character-mode/WildlifeRenderer.js';
 import { SeasonalAmbience, seasonalDriftCap, seasonTokenForMonth } from '../../claudeville/src/presentation/character-mode/SeasonalAmbience.js';
 import { ambientGates, createAmbientScheduler, AMBIENT_TIERS } from '../../claudeville/src/presentation/character-mode/AmbientEvents.js';
 import { CALM_WATER_FAUNA, SHORE_FAUNA } from '../../claudeville/src/config/scenery.js';
@@ -29,6 +29,7 @@ for (const { label: seasonLabel, month } of MONTHS) {
                 gulls: gullPlan.flying ? Math.min(gullPlan.cap, wildlife._gullActiveBand()[0]) : gullPlan.lighthouse ? 1 : gullPlan.roost ? 4 : 0,
                 songbirds: songbirdBudget(context).cap,
                 fireflies: fireflyBudget(context).cap,
+                ashMotes: ashMoteBudget(context).cap,
                 dragonflies: dragonflyBudget({ ...context, level: 0, calm: false }).cap,
                 drift: drift._driftSeason() ? seasonalDriftCap(1) : 0,
                 waterfowl: (spec.type === 'storm' ? 0 : CALM_WATER_FAUNA.length) + SHORE_FAUNA.length,
@@ -40,6 +41,8 @@ for (const { label: seasonLabel, month } of MONTHS) {
             // its deliberately weaker floor is one. Seasonal/event life is bonus.
             const minimum = spec.type === 'rain' ? 1 : 2;
             assert.ok(live.length >= minimum, `${seasonLabel} ${hourLabel} ${spec.label}: ${live.length} classes < ${minimum}; ${JSON.stringify(caps)}`);
+            assert.equal(caps.fireflies, month >= 3 && month <= 9 && (phase === 'dusk' || phase === 'night') && spec.type !== 'rain' ? 12 : 0);
+            assert.equal(caps.ashMotes, phase === 'night' ? 12 : 0, 'ash motes live year-round, including rainy nights');
             rows.push({ season: seasonLabel, hour: hourLabel, weather: spec.label, classes: live.length, minimum, live: live.join(', '), frequent: events.frequent?.kind || events.held.frequent });
         }
     }

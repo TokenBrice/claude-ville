@@ -71,11 +71,11 @@
 //                 sunrise and golden hour, pale by day, silver under a moon
 //                 at least half full. The only water above S 0.40 (gold
 //                 S 0.56); graded, and held at HSL L <= 0.70 on screen.
-//   lampBeam      The Lighthouse lamp (2.7): cool white, never the seaPath
-//                 gold. Its three low stops are the beam's courses on the
-//                 water (far, mid, near; a receiver, okL <= 0.83, ungraded
-//                 like an emitter's own light); the two high stops are the
-//                 lantern's flash, halo and fans in the air (an emitter).
+//   beaconFire    The Lighthouse fire (2.7): warm mirror light, never an
+//                 electric-white optic. Stops 0..2 are subdued warm cream
+//                 receivers on water (okL <= 0.83; S < 0.40, so seaPath alone
+//                 owns saturated gold); stops 3..6 are the ember rim, flame
+//                 mid, hot glass and core of its dithered air shaft/halo.
 //
 // Ground (grass+dirt+road+plaza as they cover the island, grass-majority)
 // lands at median S ~0.46-0.50: inside GROUND_SATURATION.
@@ -105,7 +105,7 @@ export const ART_RAMPS = Object.freeze({
     clothOchre: ['#987638', '#c9a04a'],
     emissive: ['#ff9d4a', '#ffcf7a', '#ffe9b8'],
     seaPath: ['#c48054', '#ecb068', '#969d8f', '#c0bea4', '#849ab0', '#c4d6e2'],
-    lampBeam: ['#7a929c', '#98adb3', '#b8c8c8', '#d2dcd8', '#f4f1e2'],
+    beaconFire: ['#928575', '#b3a58f', '#d0c1a7', '#c8743a', '#f0a850', '#ffd88a', '#fff4d6'],
     // Seasonal and per-tree ramps (plan items 5.1 and 5.3 of
     // the Waking Isle plan). FoliageRenderer
     // remaps canopy pixels onto them by luminance rank, dark -> light; the

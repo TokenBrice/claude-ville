@@ -6392,6 +6392,7 @@ export class IsometricRenderer {
             buildings: this.world?.buildings,
             assets: this.assets,
             presence: this.buildingRenderer?.getWorkingPresence?.() || null,
+            atmosphere: this._lastAtmosphere,
             lightGrade,
             weather: this._lastAtmosphere?.weather || null,
         });
@@ -9401,9 +9402,14 @@ export class IsometricRenderer {
         return sources;
     }
 
+    // Shared fixture gate for cached emission and light records, without
+    // importing BuildingSprite into the terrain/emitter helper graph.
+    villageLampsLit() {
+        return lampsLitAt(this._lastAtmosphere);
+    }
+
     _lanternGroundLightSources(lighting = null) {
-        const beaconIntensity = Math.max(0, Math.min(1, Number(lighting?.beaconIntensity) || 0));
-        if (beaconIntensity <= 0.05) return [];
+        if (!this.villageLampsLit()) return [];
         const core = sourceEnergyFor(lighting).core;
         // V5 — a village lantern or brazier stands on its tile (the flame
         // source sits 10 px above it), its flame 16 (brazier) / 24 (lantern)
@@ -9908,6 +9914,7 @@ export class IsometricRenderer {
     // Only runs in the full atmosphere path (the fast path drops them by
     // design — that's E3's territory). `ctx` is the pool layer.
     _drawLanternGlows(ctx, canvas, atmosphere = null) {
+        if (!lampsLitAt(atmosphere || this._lastAtmosphere)) return;
         const nightFactor = this._lanternNightFactor(atmosphere);
         if (nightFactor <= 0.05) return;
         const spill = sourceEnergyFor(atmosphere?.lighting).spill;
@@ -10114,6 +10121,7 @@ export class IsometricRenderer {
             receiver ? receiver.map(channel => Math.round(channel * 64)).join(',') : '',
             Math.round(height),
             normal ? normal.map(value => Math.round(value * 8)).join(',') : '',
+            light.attention || light.role === 'attention' ? 'attention' : 'ambient',
         ].join('|');
         const cached = this.lightGradientCache.get(key);
         if (cached) {
@@ -10132,6 +10140,7 @@ export class IsometricRenderer {
             receiver,
             height,
             normal,
+            attention: light.attention === true || light.role === 'attention',
         });
         const stampPixels = canvasPixelCount(stamp);
         if (stampPixels <= MAX_LIGHT_GRADIENT_STAMP_PIXELS) {

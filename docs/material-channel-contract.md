@@ -424,7 +424,9 @@ returns. `resolveCamera(camera, scale, out)` → `{ xy, scale }` (backing px =
 `resolveFrameGrade(feed)`; `resolveWeatherUniform(feed, level)` (`u_weather`
 with the `weather-amplitude` shear); `resolveOccluderChannel(feed)`;
 `resolveWaterFx(feed, camera, level, grade, moonFill, width, out)` →
-`{ fx, glint, stops }`; `resolveAtmosphereCourses(level, camera, feed, grade,
+`{ fx, glint, stops, starlight }` (night/star/weather/moon density, zero at
+MINIMAL; `FrameUniforms.starlight` is appended after `cloudLone`);
+`resolveAtmosphereCourses(level, camera, feed, grade,
 out)` → `{ cloud, thresholds, haze, sunlit, courses, aerialHaze }`;
 `resolveSeaWeather(level, camera, feed, { courses, width, height }, out)` →
 `{ sunlit, gust }` (gust = `resolveSeaGustRect`'s R8 field `{ data, width,

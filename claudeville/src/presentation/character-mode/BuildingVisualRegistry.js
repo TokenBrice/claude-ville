@@ -423,18 +423,17 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         ],
         pennant: { at: [166, 80] },
         effectAnchors: {
+            // Fire exhaust leaves the lantern crown, not its occupancy rooms.
+            smokeTop: [144, 35],
             lanternFire: {
                 flame: [144, 68],
                 light: [144, 68],
                 particle: [144, 68],
-                // 2.7 (V5) — the tower base under the lantern: the foot the
-                // beam fans leave from (the lamp itself lights no ground).
+                // Tower foot under the lantern; the mirror shaft lands 35 %
+                // of its reach out from here (the lamp lights no ground).
                 foot: [145, 316],
             },
-            // 2.7 — pivot, length and far width of the Lighthouse beam fans
-            // (ground px) the resident shaders sweep from the lantern: long
-            // enough to read at z1 on a 5120 frame, and a fan (about 11
-            // degrees each side), never a parallel strip.
+            // Full reach before its air/sea split, in ground texels.
             searchlight: {
                 pivot: [144, 68],
                 length: 520,
@@ -492,7 +491,7 @@ export const BUILDING_EMITTER_FALLBACKS = {
         { type: 'sparkle', at: [92, 158], chance: 0.025, count: 1 },
     ],
     watchtower: [
-        { type: 'beaconMote', at: WATCHTOWER_LANTERN_FIRE.particle, chance: 0.038, count: 1 },
+        { type: 'forgeEmber', at: WATCHTOWER_LANTERN_FIRE.particle, stepMs: 1120, count: 1 },
     ],
     harbor: [
         { type: 'sparkle', at: [249, 88], chance: 0.014, count: 1 },
@@ -522,7 +521,8 @@ export const LIGHT_SOURCE_REGISTRY = {
             role: 'fixture',
             at: WATCHTOWER_LANTERN_FIRE.light,
             foot: WATCHTOWER_LANTERN_FIRE.foot,
-            color: '#ffb347',
+            color: '#f0a850',
+            fire: true,
             // 2.7 — a 2.5D ground radius from the tower base: the gallery
             // masonry near the lantern is lit and the base takes one course.
             radius: 200,
@@ -534,8 +534,7 @@ export const LIGHT_SOURCE_REGISTRY = {
 // 2.6 — `fire: true` marks flame sources that breathe in stepped quanta. A
 // `torch` emitter is fire only where its building's manifest declares an
 // emissive `kind: fire` source on that emitter geometry (the Command gate
-// braziers); glazed lanterns and flameless harbour/Lighthouse torches stay
-// steady.
+// braziers); glazed flameless lanterns stay steady.
 export const EMITTER_LIGHTS = {
     torch: { color: '#ffbc62', radius: 42, overlay: 'atmosphere.light.fire-glow' },
     signal: { color: '#ffd37a', radius: 48, overlay: 'atmosphere.light.lantern-glow' },

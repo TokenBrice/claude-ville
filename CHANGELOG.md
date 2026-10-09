@@ -2,6 +2,31 @@
 
 ---
 
+## v0.51.1 — *The Kindled Night* · Oct 10, 2026
+
+Night on the island used to fall flat and grey. Now it stays its own scene, a cool moonlit blue under warm lights, and it is as worth watching as the day.
+
+- **A moonlit night instead of a grey wash.**
+  - The night and deep-night grades keep more colour and pull less toward grey. They also take a bluer moonlight tint and darken the screen edges less.
+  - The dusk-to-night brightness order and the cool sea are unchanged. Dawn, day and dusk are untouched.
+- **The Pharos burns like a fire.**
+  - The lighthouse light is now a warm fire palette instead of cool electric white.
+  - The flat light sheet, the blade-like lens flashes and the second opposite beam are gone.
+  - One mirror beam sweeps slowly. It is a widening cone from the lantern down to the sea, with dithered edges.
+  - On the water it becomes warm glints riding the wave crests, instead of a block of white dots.
+  - The lantern has a breathing halo that brightens as the beam turns toward you, plus embers and crown smoke.
+  - All of it follows the clock only, as before: none by day, and nothing reads agent state.
+- **A lit village.**
+  - Fourteen new lanterns along the roads, bridges, plaza approaches, gate avenue and Harbor quay join the existing lamps into one connected chain.
+  - They light on the clock only, and windows still light only for working agents.
+  - Lamp pools now fade out over six dithered steps instead of ending as flat orange discs. Their total brightness is lower than before.
+- **Night magic.**
+  - The Mine's rock crystals glow cyan with a faint halo. Its quota, cart and assay pieces are unchanged.
+  - More fireflies, glowing longer, now show at the wide shot.
+  - Pale-teal spirits drift round the great ash tree every night.
+  - On clear nights, starlight glints twinkle on the wave caps and give way to the moon path as the moon grows.
+- All of this works the same on WebGPU, WebGL2 and Canvas. Reduced motion holds every new effect on a still frame, and the frame-rate budget sheds it under load.
+
 ## v0.51.0 — *The Living Isle* · Oct 09, 2026
 
 A round for the peripheral, all-day viewer. The town now goes where the work goes, shows every thought, tells you what is waiting without making you read, and stays alive between commits.

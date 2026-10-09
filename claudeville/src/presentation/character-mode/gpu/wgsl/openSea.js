@@ -13,7 +13,7 @@ import {
     OPEN_SEA_BAND_TAIL,
     OPEN_SEA_BAND_WEIGHTS,
 } from '../../CoastBake.js';
-import { DEEP_DASH_DENSITY } from '../GpuWorldRenderer.js';
+import { DEEP_DASH_DENSITY } from '../GpuFrameState.js';
 
 export const OPEN_SEA_WGSL = /* wgsl */ `
 const OPEN_SEA_BAND: f32 = ${OPEN_SEA_BAND_DEPTH.toFixed(1)};
@@ -36,18 +36,19 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
     var marked = false;
     var c: vec3f;
     let glint = glintDash(cell, texelPx, frame.glint, frame.cameraScale, tick);
-    let beam = lighthouseSheen(cell);
+    let beam = lighthouseSheen(cell, tick, storm);
     if (glint > 0.5) {
         c = frame.glintStops[select(1, 0, glint > 1.5)].xyz * mix(1.0, 0.86, frame.seaSunBand);
         c = seaPathCap(applyTimeGrade(c, true));
         marked = true;
     } else if (beam > 0.5) {
-        c = lighthouseStop(beam) * mix(1.0, 0.86, frame.seaSunBand);
+        c = beaconWaterStop(beam) * mix(1.0, 0.86, frame.seaSunBand);
         marked = true;
     } else {
         let s = swellPhase(cell);
         stop = seaBodyStop(cell, s, stop, excess, order);
-        var lighter = swellCap(cell, s, near, seaPawCaps(cell, order));
+        let cap = swellCap(cell, s, near, seaPawCaps(cell, order));
+        var lighter = cap;
         var whitecap = false;
         if (clock > 0.0) {
             let lit = deepSwellLit(cell, tick, storm, ${DEEP_DASH_DENSITY.toFixed(2)});
@@ -58,6 +59,7 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
         if (frame.seaSunlit > 0.0 && m < frame.seaSunlit) { lighter += 1.0; }
         var albedo = WATER_FOAM;
         if (!whitecap) { albedo = seaStopRgb(max(stop - lighter, 0.0)); }
+        if (starlightAt(cell, cap, frame.starlight, tick)) { albedo = WATER_FOAM_CREST; }
         c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, frame.seaSunBand);
         c = capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION);
     }

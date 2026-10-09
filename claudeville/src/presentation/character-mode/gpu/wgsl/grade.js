@@ -49,6 +49,23 @@ fn poolWeight(steps: f32) -> f32 {
     return 0.76;
 }
 
+// Ambient-only six-course falloff; attention retains its three courses.
+const AMBIENT_POOL_STOPS = array<f32, 6>(${k('AMBIENT_POOL_STOPS')});
+const AMBIENT_POOL_WEIGHTS = array<f32, 6>(${k('AMBIENT_POOL_WEIGHTS')});
+const AMBIENT_POOL_CHROMA = array<f32, 6>(${k('AMBIENT_POOL_CHROMA')});
+const AMBIENT_POOL_SHARE = array<f32, 6>(${k('AMBIENT_POOL_SHARE')});
+fn ambientPoolIndex(steps: f32) -> i32 { return clamp(i32(steps) - 1, 0, 5); }
+fn ambientPoolSteps(shape: f32, order: f32) -> f32 {
+    let q = shape + (order - 0.5) * 0.08;
+    var steps = 0.0;
+    for (var i = 0; i < 6; i++) { steps += step(AMBIENT_POOL_STOPS[i], q); }
+    return steps;
+}
+fn ambientPoolWeight(steps: f32) -> f32 {
+    if (steps < 0.5) { return 0.0; }
+    return AMBIENT_POOL_WEIGHTS[ambientPoolIndex(steps)];
+}
+
 const POOL_RIM: vec3f = vec3f(${k('POOL_RIM')});
 const POOL_MID: vec3f = vec3f(${k('POOL_MID')});
 const POOL_CORE: vec3f = vec3f(${k('POOL_CORE')});
@@ -60,6 +77,17 @@ fn poolTint(light: vec3f, steps: f32, strength: ptr<function, f32>, warm: ptr<fu
     var ramp = POOL_CORE;
     if (steps < 1.5) { ramp = POOL_RIM; } else if (steps < 2.5) { ramp = POOL_MID; }
     return mix(mix(vec3f(1.0), hue, 0.7), ramp, *warm);
+}
+
+fn ambientPoolTint(light: vec3f, steps: f32, strength: ptr<function, f32>, warm: ptr<function, f32>) -> vec3f {
+    let l = dot(light, GRADE_LUMA);
+    let hue = light / l;
+    *warm = clamp((hue.r - hue.b) * 1.25, 0.0, 1.0);
+    *strength = min(l, 1.0);
+    let course = ambientPoolIndex(steps);
+    let ramp = mix(POOL_RIM, POOL_CORE, f32(course) / 5.0);
+    let tint = mix(mix(vec3f(1.0), hue, 0.7), ramp, *warm);
+    return mix(vec3f(1.0), tint, AMBIENT_POOL_CHROMA[course]);
 }
 
 const LAND_RIM: vec3f = POOL_RIM;
@@ -138,7 +166,7 @@ fn stepPool(graded: vec3f, ambient: vec3f, ambientSteps: f32, attention: vec3f, 
     var result = graded;
     var add = reflection;
     if (lit) {
-        let tint = poolTint(ambient, ambientSteps, &strength, &warm);
+        let tint = ambientPoolTint(ambient, ambientSteps, &strength, &warm);
         let pool = tint * strength;
         let adapt = min(1.0, strength * 1.5) * warm * (0.85 * 0.6) * carry * land;
         result = mix(graded, gradedLuma * tint, adapt);
@@ -149,10 +177,9 @@ fn stepPool(graded: vec3f, ambient: vec3f, ambientSteps: f32, attention: vec3f, 
     if (landWarm > 0.0) {
         let y = dot(result, GRADE_LUMA);
         var share = clamp((y - gradedLuma) / max(y, 0.02) * 1.6, 0.0, 1.0);
-        var stop = LAND_CORE;
-        if (ambientSteps < 1.5) { stop = LAND_RIM; } else if (ambientSteps < 2.5) { stop = LAND_MID; }
-        var course = LAND_SHARE.z;
-        if (ambientSteps < 1.5) { course = LAND_SHARE.x; } else if (ambientSteps < 2.5) { course = LAND_SHARE.y; }
+        let index = ambientPoolIndex(ambientSteps);
+        let stop = mix(vec3f(1.0), mix(LAND_RIM, LAND_CORE, f32(index) / 5.0), AMBIENT_POOL_CHROMA[index]);
+        let course = AMBIENT_POOL_SHARE[index];
         share = max(share, min(1.0, strength / LAND_FULL_STRENGTH));
         result = mix(result, onStop(stop, y), landWarm * share * course * land);
     }

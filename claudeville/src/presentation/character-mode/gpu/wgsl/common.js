@@ -160,6 +160,8 @@ export const FRAME_UNIFORM_LAYOUT = uniformLayout('FrameUniforms', [
     ['hdrEmitterCap', 'f32'], ['grassGust', 'f32'],
     // W6.3 — the lone fair-weather cumulus (GpuFrameState courses.lone).
     ['cloudLone', 'vec4f'],
+    // Night sea glints; appended so every existing frame offset stays fixed.
+    ['starlight', 'f32'],
 ]);
 
 // §2.6 — the per-batch block, one 256-byte slot per batch in a frame ring

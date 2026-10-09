@@ -586,7 +586,7 @@ fn sceneSurface() -> SurfaceSample {
       color = capSaturation(color, WATER_MAX_SATURATION);
     }
   }
-  // 2.7 — a Lighthouse-lit dash keeps its lampBeam stop.
+  // Fire glints preserve their beaconFire receiver stop.
   if (lighthouseDash) { color = poolAlbedo; }
   // 5.2 — puddles take the graded sky over the graded street.
   if (batch.puddleGround != 0u && frame.puddles > 0.0) { color = applyPuddle(color, v_world); }
@@ -887,12 +887,12 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
           tapFalloff *= clamp(0.30 + 1.4 * dot(lightShape.yz, tapTo) / max(length(tapTo), 1.0), 0.0, 1.0);
         }
         tapShape[t] = tapFalloff * response;
-        tapCourse = tapCourse || poolSteps(tapShape[t], bayer4(tapCell)) > 0.5;
+        tapCourse = tapCourse || ambientPoolSteps(tapShape[t], bayer4(tapCell)) > 0.5;
       }
     }
     // 2.2 — the footprint march, only where this light lays a course.
     var blocked = 0.0;
-    if (!attention && frame.marchSteps > 0 && (poolSteps(shape, poolOrder) > 0.5 || tapCourse)) {
+    if (!attention && frame.marchSteps > 0 && (ambientPoolSteps(shape, poolOrder) > 0.5 || tapCourse)) {
       blocked = footprintBlocked(recvGround, light.xy, recvH, lightH, ownLandmark, u32(lightMeta.y + 0.5),
         role > 1.5 && role < 2.5);
     }
@@ -930,7 +930,7 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
       }
       continue;
     }
-    let steps = poolSteps(shape, poolOrder);
+    let steps = select(ambientPoolSteps(shape, poolOrder), poolSteps(shape, poolOrder), rampPixel);
     if (rampPixel) {
       // 3.5 / 2.1 — a ramp pixel takes the strongest light's stepped course.
       let rampShare = steps * 0.15 * light.w * lightColor.a;
@@ -940,13 +940,13 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
         rampSteps = steps;
       }
     } else {
-      poolLight += lightColor.rgb * poolWeight(steps) * light.w * lightColor.a;
+      poolLight += lightColor.rgb * ambientPoolWeight(steps) * light.w * lightColor.a;
       poolDepth = max(poolDepth, steps);
       if (poolTaps) {
         for (var t = 0; t < 4; t++) {
           if (fatTapWeight(cellTaps, t) <= 0.0) { continue; }
-          let tapSteps = poolSteps(tapShape[t], bayer4(cellTaps.base + fatTapOffset(t)));
-          poolTapLight[t] += lightColor.rgb * poolWeight(tapSteps) * light.w * lightColor.a;
+          let tapSteps = ambientPoolSteps(tapShape[t], bayer4(cellTaps.base + fatTapOffset(t)));
+          poolTapLight[t] += lightColor.rgb * ambientPoolWeight(tapSteps) * light.w * lightColor.a;
           poolTapDepth[t] = max(poolTapDepth[t], tapSteps);
         }
       }

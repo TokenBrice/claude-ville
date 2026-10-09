@@ -130,6 +130,7 @@ const DEEP = ART_RAMPS.deepWater.map(hexRgb);
 const SAND = ART_RAMPS.sand.map(hexRgb);
 const DIRT = ART_RAMPS.dirt.map(hexRgb);
 const TIMBER = ART_RAMPS.timber.map(hexRgb);
+const BEACON_MIRROR_RGB = hexRgb(ART_RAMPS.beaconFire[2]);
 
 // The depth stops, shallow -> deep, all on the C1 water ramps (S <= 0.40).
 // Rivers stop at 2, lagoons at 3; the sea runs to 5, the open sea's body.
@@ -2152,10 +2153,10 @@ function staticReflections(ctx, renderer) {
                 core ? coreScale : alphaScale, drop);
             const emitter = hit[2];
             if (!emitter || !source.building) continue;
-            // The lit lamp: its own flame colour. A lit window: its albedo
-            // plus the scene pass's emission.
+            // The mirror lamp takes subdued warm cream; glass keeps its
+            // authored albedo plus scene emission.
             const lit = emitter.lamp
-                ? hit[0].map(c => c * MIRROR_ACCENT_VALUE)
+                ? BEACON_MIRROR_RGB.map(c => c * MIRROR_ACCENT_VALUE)
                 : [0, 1, 2].map(c => Math.min(255, (hit[0][c] + ((0.84 * emitter.emission) / 255) * glow.data[emitter.o + c]) * MIRROR_ACCENT_VALUE));
             accentAt[at] = accents.length;
             accents.push({ building: source.building, at, x, y, sx: emitter.sx, sy: emitter.sy, lamp: emitter.lamp === true, rgb: mixRgb(base, lit, MIRROR_LIT_ALPHA) });
@@ -3070,7 +3071,7 @@ function oceanPalette(atmosphere, postFx) {
     const mood = waterMoodFor(atmosphere);
     const grade = atmosphere?.lightGrade || null;
     const sunBand = waterSunBandFor(atmosphere);
-    const pre = [...OPEN_SEA_STOPS, SEA_TROUGH].map((rgb) => {
+    const pre = [...OPEN_SEA_STOPS, SEA_TROUGH, FOAM_CREST].map((rgb) => {
         const c = waterSurfaceRgb(rgb.map(channel => channel / 255), mood, sunBand);
         return grade ? CanvasGrade.canvasWaterPreimage(c, grade, { postFx }) : c;
     });
@@ -3182,7 +3183,7 @@ function bandCourseAt(spec, x, j, order) {
 // texel (a cap, a crest) taking OPEN_SEA_BAND_MARK_LIFT more of it, then the
 // haze courses; painted as the frame preimage. Memoized per bake.
 function seaShade(spec, stop, bk, hk, marked) {
-    const s = Math.max(0, Math.min(OPEN_SEA_STOPS.length, stop));
+    const s = stop === 'crest' ? OPEN_SEA_STOPS.length + 1 : Math.max(0, Math.min(OPEN_SEA_STOPS.length, stop));
     const key = ((s * 8 + bk) * 4 + hk) * 2 + (marked ? 1 : 0);
     let out = spec.shades.get(key);
     if (out) return out;
@@ -3315,6 +3316,8 @@ export function canvasSeaKey(renderer) {
  * (after its marks' and the sunlit course's lightening), as the ocean bake
  * shades it: band and haze courses by row, a mark (`marked`) catching
  * OPEN_SEA_BAND_MARK_LIFT more of the sky. Memoized per bake; -1 before it.
+ * `stop = 'crest'` selects the named FOAM_CREST for sparse night starlight,
+ * through the same water grade, band and haze as numeric depth stops.
  */
 export function canvasSeaMarkRgb(renderer, stop, x, y, marked) {
     const state = renderer?._outerOcean;

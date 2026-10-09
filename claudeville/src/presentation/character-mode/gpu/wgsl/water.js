@@ -20,7 +20,6 @@ import {
 } from '../../CoastBake.js';
 import {
     DEEP_CREST_RUN,
-    DEEP_DASH_DENSITY,
     GLINT_DASH_DENSITY,
     GLINT_NOON_BASE,
     MOON_DASH_HOLD,
@@ -34,6 +33,8 @@ import {
     SEA_PAW_CAP_BASE,
     SEA_PAW_CAP_GAIN,
     SEA_PAW_THRESHOLD,
+    STARLIGHT_DENSITY,
+    STARLIGHT_HOLD,
     SWELL_AMP_FLOOR,
     SWELL_AMP_RUN,
     SWELL_AMP_SPAN,
@@ -71,6 +72,7 @@ import {
     SWELL_WARP_FINE_CELL,
 } from '../GpuWorldRenderer.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../../../config/constants.js';
+import { DEEP_DASH_DENSITY } from '../GpuFrameState.js';
 
 // GpuWorldRenderer glslRgb / glslRgbArray, in WGSL spelling: the same
 // channel / 255 at six decimals, so both dialects hold the same f32.
@@ -110,6 +112,14 @@ fn deepSwellLit(p: vec2f, tick: f32, storm: f32, density: f32) -> f32 {
     let run = vec2f(floor(wave), floor(dot(o, vec2f(1.0, -${SWELL_SET_NORMAL[0].toFixed(2)})) / ${DEEP_CREST_RUN.toFixed(1)}));
     if (waterHash12(run + vec2f(59.0, 11.0)) >= ${SWELL_SET_SHARE.toFixed(2)}) { return 0.0; }
     return select(1.0, 2.0, storm > 0.5 && waterHash12(cell + vec2f(17.0, 31.0)) < 0.25);
+}
+fn starlightAt(p: vec2f, cap: f32, strength: f32, tick: f32) -> bool {
+    if (strength <= 0.0 || cap < 0.5) { return false; }
+    let cell = floor(p / vec2f(3.0, 1.0));
+    let seed = waterHash12(cell + vec2f(307.0, 43.0));
+    let life = floor((tick + floor(seed * ${STARLIGHT_HOLD.toFixed(1)})) / ${STARLIGHT_HOLD.toFixed(1)});
+    return p.x - cell.x * 3.0 < 2.0
+        && waterHash12(cell + vec2f(311.0 + life * 7.0, 47.0 + life * 3.0)) < ${STARLIGHT_DENSITY.toFixed(2)} * strength;
 }
 fn glintDash(p: vec2f, fragPx: vec2f, glint: vec4f, texelPx: f32, tick: f32) -> f32 {
     if (glint.z < 0.5 || glint.y <= 0.0) { return 0.0; }
@@ -449,11 +459,11 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
         *seaPath = true;
         return frame.glintStops[select(1, 0, glint > 1.5)].xyz;
     }
-    let beam = lighthouseSheen(p);
+    let beam = lighthouseSheen(p, deepTick, storm);
     if (beam > 0.5) {
         *seaPath = true;
         lighthouseDash = true;
-        return lighthouseStop(beam);
+        return beaconWaterStop(beam);
     }
     var base = stop;
     var cap = 0.0;
@@ -473,6 +483,9 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
             var paw = 0.0;
             if (open) { paw = seaPawCaps(p, order); }
             cap = swellCap(p, s, near, paw);
+            if (starlightAt(p, cap, frame.starlight, deepTick)) {
+                return applyWaterMood(WATER_FOAM_CREST) * WATER_CAST;
+            }
         }
     }
     if (base != stop) { color = seaStopRgb(f32(base)); }

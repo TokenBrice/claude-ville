@@ -220,8 +220,8 @@ const GOLDEN = {
         },
     },
     beam: {
-        'golden/z1/0': { ground: [1500, 700, 1.2, 1], shape: [280, 6, 32, 2], courseEnds: [0.3, 0.7, 1], courseShares: [1, 0.5, 0.25] },
-        'moonStorm/z1/1': { ground: [1500, 700, 2.4, 1], shape: [320, 6, 29, 1], courseEnds: [0.34, 0.68, 1], courseShares: [1, 0.6, 0.3] },
+        'golden/z1/0': { ground: [1500, 700, 1.2, 1], shape: [280, 32, 32, 2], courseEnds: [0.3, 0.7, 1], courseShares: [1, 0.5, 0.25] },
+        'moonStorm/z1/1': { ground: [1500, 700, 2.4, 1], shape: [320, 32, 29, 1], courseEnds: [0.34, 0.68, 1], courseShares: [1, 0.6, 0.3] },
     },
     puddles: {
         'moonStorm/z1/1': { puddles: 0.6, rect: [-64, 32, 8, 8], sky: [0.20000000298023224, 0.3333333432674408, 0.46666666865348816, 0.5333333611488342, 0.6000000238418579, 0.6666666865348816] },

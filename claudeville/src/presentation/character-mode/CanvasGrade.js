@@ -18,7 +18,7 @@
 // Everything here is cached by the caller; nothing runs a smooth gradient.
 
 import { applyGradeToRgb, capSaturation, WATER_MAX_SATURATION } from './GradeEvaluator.js';
-import { LAND_FULL_STRENGTH } from './gpu/GpuWorldPolicy.js';
+import { GRADE_CONSTANTS, LAND_FULL_STRENGTH } from './gpu/GpuWorldPolicy.js';
 import { ART_RAMPS, RECEIVER_LUMA_CEILING } from '../../config/artPalette.js';
 
 const LUMA = [0.2126, 0.7152, 0.0722];
@@ -187,12 +187,14 @@ const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 const POOL_RIM = [1.484, 0.914, 0.430];
 const POOL_MID = [1.208, 0.981, 0.577];
 const POOL_CORE = [1.089, 0.995, 0.786];
-const POOL_WEIGHTS = [0.30, 0.54, 0.76];
+const POOL_STOPS = GRADE_CONSTANTS.AMBIENT_POOL_STOPS.value;
+const POOL_WEIGHTS = GRADE_CONSTANTS.AMBIENT_POOL_WEIGHTS.value;
+const POOL_CHROMA = GRADE_CONSTANTS.AMBIENT_POOL_CHROMA.value;
+const POOL_SHARE = GRADE_CONSTANTS.AMBIENT_POOL_SHARE.value;
 // 1.2 — the resident `stepPool` landing stops (rim #ff9d4a, mid half way,
 // core #ffcf7a) and each course's share of the landing at full pool light.
 const LAND_MID = [1.346, 0.948, 0.504];
 const LAND_STOPS = [POOL_RIM, LAND_MID, POOL_MID];
-const LAND_SHARE = [0.84, 0.88, 0.90];
 // V5 — the brightest ground stop (dressed plaza) is the receiver the stamp
 // clamps against.
 const PLAZA_PEAK = ART_RAMPS.plaza[ART_RAMPS.plaza.length - 1];
@@ -266,10 +268,10 @@ export function landWaterColumn(water, light, lift, rampY) {
  * One cached pool stamp whose cells are `cell` CSS px (one art pixel at the
  * current zoom): a 2:1 iso ground ellipse `2 * radius` CSS px wide and
  * `radius` tall, as the resident pool measures distance with screen y
- * doubled. As in the resident `poolSteps`, the light's falloff shape alone
- * picks the course (0.12 / 0.40 / 0.75, 4x4 ordered dither), so every pool
- * has a rim, a mid ring and a core; energy sets how bright they are. Warm
- * lights take the C1 ramp per course, cool lights 70 % of their own hue.
+ * doubled. As in the resident `ambientPoolSteps`, falloff picks one of six
+ * held courses, with 4x4 ordered-dither seams. The faint outer courses keep
+ * little chroma; the inner courses resolve to warm amber. Course weights
+ * spend less energy than the old three-ring discs, never more.
  * The left `cells` columns are a `color-dodge` image: it multiplies the
  * graded backdrop per channel by (1 + poolGain x strength x tint / ambient),
  * dividing by the grade's ambient tint channel by channel, so a lantern on
@@ -301,7 +303,7 @@ export function landWaterColumn(water, light, lift, rampY) {
  * half-space (`0.30 + 1.4 n.g / |g|`, g the ground offset), exactly the
  * resident loop's ground receiver.
  */
-export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell = 1, energy = 1, ambientTint = [0.4, 0.4, 0.4], poolGain = 1, receiver = null, height = 0, normal = null } = {}) {
+export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell = 1, energy = 1, ambientTint = [0.4, 0.4, 0.4], poolGain = 1, receiver = null, height = 0, normal = null, attention = false } = {}) {
     const size = Math.max(2, Math.ceil(radius * 2));
     const cellPx = Math.max(1, Math.round(cell));
     const cells = Math.max(1, Math.ceil(size / cellPx));
@@ -311,8 +313,15 @@ export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell =
     const hue = color.map(channel => channel / colorLuma);
     const warm = clamp((hue[0] - hue[2]) * 1.25);
     const tintFor = ramp => hue.map((channel, index) => (1 + (channel - 1) * 0.7) * (1 - warm) + ramp[index] * warm);
-    const tints = [tintFor(POOL_RIM), tintFor(POOL_MID), tintFor(POOL_CORE)];
-    const landTints = LAND_STOPS.map(tintFor);
+    const stops = attention ? [0.12, 0.40, 0.75] : POOL_STOPS;
+    const weights = attention ? [0.30, 0.54, 0.76] : POOL_WEIGHTS;
+    const shares = attention ? [0.84, 0.88, 0.90] : POOL_SHARE;
+    const tints = attention ? [POOL_RIM, POOL_MID, POOL_CORE].map(tintFor)
+        : POOL_CHROMA.map((chroma, course) => tintFor(POOL_RIM.map((channel, i) =>
+            channel + (POOL_CORE[i] - channel) * course / 5)).map(channel => 1 + (channel - 1) * chroma));
+    const landTints = attention ? LAND_STOPS.map(tintFor)
+        : POOL_CHROMA.map((chroma, course) => tintFor(POOL_RIM.map((channel, i) =>
+            channel + (POOL_MID[i] - channel) * course / 5)).map(channel => 1 + (channel - 1) * chroma));
     const ambient = [0, 1, 2].map(index => Math.max(0.12, Number(ambientTint?.[index]) || 0.4));
     const ambientLuma = ambient[0] * LUMA[0] + ambient[1] * LUMA[1] + ambient[2] * LUMA[2];
     const adaptGain = warm * 0.85 * 0.6 * clamp((poolGain - 0.15) / 1.05);
@@ -343,14 +352,15 @@ export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell =
             const lobe = lobed ? clamp(0.30 + 1.4 * (normal[0] * gx + normal[1] * gy) / Math.max(Math.hypot(gx, gy), 1)) : 1;
             const falloff = (1 - t * t * (3 - 2 * t)) * lobe;
             const q = falloff + (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 0.08;
-            const step = (q >= 0.12 ? 1 : 0) + (q >= 0.40 ? 1 : 0) + (q >= 0.75 ? 1 : 0);
+            let step = 0;
+            for (const stop of stops) if (q >= stop) step++;
             if (step <= 0) continue;
-            const strength = Math.min(1, POOL_WEIGHTS[step - 1] * energy * colorLuma);
+            const strength = Math.min(1, weights[step - 1] * energy * colorLuma);
             const tint = tints[step - 1];
             const landTint = landTints[step - 1];
             const offset = (y * canvas.width + x) * 4;
             const lift = poolGain * strength / ambientLuma;
-            const land = warm * LAND_SHARE[step - 1] * Math.max(Math.min(1, strength / LAND_FULL_STRENGTH), clamp(1.6 * lift / (1 + lift)));
+            const land = warm * shares[step - 1] * Math.max(Math.min(1, strength / LAND_FULL_STRENGTH), clamp(1.6 * lift / (1 + lift)));
             const adapt = shade ? Math.max(Math.min(1, strength * 1.5) * adaptGain, land) : 0;
             const towards = [0, 0, 0];
             const gains = [0, 0, 0];

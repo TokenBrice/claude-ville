@@ -17,6 +17,7 @@ import {
     OPEN_SEA_FLOCK_FORMATION,
     OPEN_SEA_FLOCK_ROUTES,
     WATCHTOWER_GULL_ORBIT,
+    WORLD_TREE,
 } from '../../config/scenery.js';
 import { fireflyGroundTiles } from './AmbientGround.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
@@ -79,16 +80,24 @@ const LILY_CLUSTER_TILES = 1.6;
 // trees once the forecast squall is on the sea (W6.4); one perched bird
 // under reduced motion.
 export const SONGBIRD_ZOOM_CAPS = Object.freeze([[3, 3], [2, 2], [0.9, 1]]);
-// Fireflies: warm months (Apr–Oct), dusk and night, clear air, over grass
-// near water (the lake and river belt); 5 at the wide shot (W6.1), 8 at z2,
-// 12 from z3. Blink 600 ms on / 1400 ms off, each on its own phase.
-// Emissive: they are light, so they never take the grade.
+// Fireflies: Apr–Oct, dusk and night, clear air, on fixed grass homes near
+// water. Twelve at the wide shot and z2, sixteen from z3. Their 2 s blink
+// holds a dim course around a longer core + halo course; all light is drawn
+// after the grade. Drift and blink use only the stepped motion clock.
 const FIREFLY_HOMES = 48;
-export const FIREFLY_ZOOM_CAPS = Object.freeze([[3, 12], [2, 8], [0.9, 5]]);
+export const FIREFLY_ZOOM_CAPS = Object.freeze([[3, 16], [2, 12], [0.9, 12]]);
 const FIREFLY_CYCLE_MS = 2000;
-const FIREFLY_ON_MS = 600;
-const FIREFLY_CORE = '#f6e27a';
-const FIREFLY_HALO = '#b8a04a';
+const FIREFLY_ON_MS = 1400;
+const FIREFLY_CORE = '#e4d594';
+const FIREFLY_HALO = '#9e9155';
+const FIREFLY_OUTER = '#57553a';
+// Twelve year-round ash spirits: eight at the roots, four rising softly
+// through the trunk/canopy band. Fixed homes, 250 ms steps and a 6 s blink.
+const ASH_MOTE_COUNT = 12;
+const ASH_MOTE_CORE = '#d1e3d8';
+const ASH_MOTE_HALO = '#729e94';
+const ASH_MOTE_OUTER = '#3e625e';
+const ASH_MOTE_DIM = '#91b8aa';
 // W6.4 — ducks paddle for cover (the root and lily margins of their own
 // water) while a squall approaches and through the rain, then back out;
 // a storm still sends them in. One per CALM_WATER_FAUNA entry; every home,
@@ -339,9 +348,10 @@ export class WildlifeRenderer {
         this._point = { tileX: 0, tileY: 0 };
         this._heronPose = { tileX: 0, tileY: 0, altitude: 0, flying: false, frame: 0, facing: -1, stab: -1 };
         // W0.2 — what the last frame drew, and the budgets it drew under.
-        this._drawn = { songbirds: 0, fireflies: 0, ducks: 0, herons: 0, fish: 0, dragonflies: 0, livestock: 0, deer: 0 };
+        this._drawn = { songbirds: 0, fireflies: 0, ashMotes: 0, ducks: 0, herons: 0, fish: 0, dragonflies: 0, livestock: 0, deer: 0 };
         this._songbirdBudget = { cap: 0, reason: null };
         this._fireflyBudget = { cap: 0, reason: null };
+        this._ashMoteBudget = { cap: 0, reason: null };
         this._songbirdsSettling = false;
         // W8.4a — each livestock actor's own walk clock (ms; it runs only
         // while that actor may walk), the eased away shares (0 out, 1 in) and
@@ -828,6 +838,8 @@ export class WildlifeRenderer {
     // around a fixed home tile (a deterministic spread over the whole map), so
     // panning reveals the same swarm instead of re-rolling it.
     drawFireflies(ctx, frameNow = null) {
+        // Both backends call this after the grade, even outside firefly season.
+        this.drawAshMotes(ctx);
         this._drawn.fireflies = 0;
         const cap = this._fireflyCap();
         if (cap <= 0) {
@@ -836,7 +848,7 @@ export class WildlifeRenderer {
         }
         const homes = this._fireflyHomeTiles();
         if (!homes.length) return;
-        const now = Number.isFinite(frameNow) && frameNow > 0 ? frameNow : (this._sceneFrameNow || Date.now());
+        const now = Math.floor((Number(this.host.motionTimeMs) || 0) / 125) * 125;
         const view = this._viewCenter();
         const bounds = this.host._getVisibleTileBounds(1);
         const lit = [];
@@ -858,14 +870,14 @@ export class WildlifeRenderer {
             const t = now * 0.0006 + home.seed * 40;
             const x = Math.round(home.x + Math.sin(t * 1.3) * 9);
             const y = Math.round(home.y - 6 + Math.sin(t * 0.9 + 1.7) * 3);
-            // Blink envelope in three frames: core, core + halo, core.
-            const halo = blink >= 120 && blink < FIREFLY_ON_MS - 120;
+            // Two square-texel glow courses, never a blur or additive bloom.
+            ctx.fillStyle = FIREFLY_OUTER;
+            ctx.fillRect(x - 2, y, 5, 1);
+            ctx.fillRect(x, y - 2, 1, 5);
+            const halo = blink >= 250 && blink < FIREFLY_ON_MS - 250;
             if (halo) {
                 ctx.fillStyle = FIREFLY_HALO;
-                ctx.fillRect(x - 1, y, 1, 1);
-                ctx.fillRect(x + 1, y, 1, 1);
-                ctx.fillRect(x, y - 1, 1, 1);
-                ctx.fillRect(x, y + 1, 1, 1);
+                ctx.fillRect(x - 1, y - 1, 3, 3);
             }
             ctx.fillStyle = FIREFLY_CORE;
             ctx.fillRect(x, y, 1, 1);
@@ -873,6 +885,45 @@ export class WildlifeRenderer {
         }
         ctx.restore();
         this._drawn.fireflies = drawn;
+    }
+
+    drawAshMotes(ctx) {
+        this._drawn.ashMotes = 0;
+        const cap = ashMoteBudget({
+            zoom: this._zoom(), phase: this._phase(), weatherType: this._weatherType(),
+            motionScale: this.host.motionScale,
+            level: Number(sampleFramePressure()?.level) || 0,
+        }, this._ashMoteBudget).cap;
+        if (!cap) return;
+        const { centerX, centerY, radiusX, radiusY } = WORLD_TREE.islet;
+        const bounds = this.host._getVisibleTileBounds(2);
+        // Frozen MotionClock means a frozen position and blink, not a new
+        // wall-clock phase when reduced motion is toggled.
+        const time = Math.floor((Number(this.host.motionTimeMs) || 0) / 250) * 250;
+        ctx.save();
+        for (let i = 0; i < cap; i++) {
+            const rising = i >= 8;
+            const angle = i * Math.PI * 2 / (rising ? 4 : 8);
+            const drift = time * 0.00012 + i * 2.3;
+            const x = Math.round(centerX + Math.cos(angle) * radiusX * (rising ? 0.45 : 0.78) + Math.sin(drift) * 7);
+            const y = Math.round(rising
+                ? centerY - 70 - (i - 8) * 40 + Math.sin(drift * 0.75) * 18
+                : centerY + Math.sin(angle) * radiusY * 0.65 - 12 + Math.cos(drift * 0.8) * 4);
+            const tileX = (x / (TILE_WIDTH / 2) + y / (TILE_HEIGHT / 2)) / 2;
+            const tileY = (y / (TILE_HEIGHT / 2) - x / (TILE_WIDTH / 2)) / 2;
+            if (tileX < bounds.startX || tileX > bounds.endX || tileY < bounds.startY || tileY > bounds.endY) continue;
+            const blink = (time + i * 875) % 6000;
+            const bright = blink >= 1000 && blink < 4250;
+            ctx.fillStyle = ASH_MOTE_OUTER;
+            ctx.fillRect(x - 2, y, 5, 1);
+            ctx.fillRect(x, y - 2, 1, 5);
+            ctx.fillStyle = ASH_MOTE_HALO;
+            if (bright) ctx.fillRect(x - 1, y - 1, 3, 3);
+            ctx.fillStyle = bright ? ASH_MOTE_CORE : ASH_MOTE_DIM;
+            ctx.fillRect(x, y, bright ? 2 : 1, 1);
+            this._drawn.ashMotes++;
+        }
+        ctx.restore();
     }
 
     // AW-P8a — dragonflies over the lily-pad clusters. The pool lives on the
@@ -999,6 +1050,7 @@ export class WildlifeRenderer {
             weatherType: this._weatherType(),
             phase: this._phase(),
             motionScale: this.host.motionScale,
+            level: Number(sampleFramePressure()?.level) || 0,
         }, this._fireflyBudget).cap;
     }
 
@@ -1983,16 +2035,31 @@ export function songbirdBudget({ zoom = 1, weatherType = 'clear', phase = 'day',
     return out;
 }
 
-export function fireflyBudget({ zoom = 1, month = null, weatherType = 'clear', phase = 'day', motionScale = 1 } = {}, out = {}) {
+export function fireflyBudget({ zoom = 1, month = null, weatherType = 'clear', phase = 'day', motionScale = 1, level = 0 } = {}, out = {}) {
     out.cap = 0;
     out.reason = null;
     if (!(Number(motionScale) > 0)) out.reason = 'reduced-motion';
     else if (month == null || month < 3 || month > 9) out.reason = 'month';
     else if (phase !== 'dusk' && phase !== 'night') out.reason = 'phase';
     else if (weatherType === 'rain' || weatherType === 'storm') out.reason = 'weather';
+    else if (ornamentPlan({ level, calm: false, motionScale: 1 }).faunaCadence !== 'on') out.reason = 'pressure';
     else {
         out.cap = zoomCap(FIREFLY_ZOOM_CAPS, Number(zoom) || 1);
         if (out.cap <= 0) out.reason = 'zoom';
+    }
+    return out;
+}
+
+export function ashMoteBudget({ zoom = 1, weatherType = 'clear', phase = 'day', motionScale = 1, level = 0 } = {}, out = {}) {
+    out.cap = 0;
+    out.reason = null;
+    if (phase !== 'night') out.reason = 'phase';
+    else if (weatherType === 'storm') out.reason = 'weather';
+    else if (Number(zoom) < 0.9) out.reason = 'zoom';
+    else if (ornamentPlan({ level, calm: false, motionScale: 1 }).ambientParticles !== 'on') out.reason = 'pressure';
+    else {
+        out.cap = ASH_MOTE_COUNT;
+        if (!(Number(motionScale) > 0)) out.reason = 'reduced-motion';
     }
     return out;
 }

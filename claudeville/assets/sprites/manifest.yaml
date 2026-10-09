@@ -1628,6 +1628,8 @@ buildings:
   # Single-image (was composeGrid [4,3]); narrow/tall Pharos per the building
   # style contract. The lamp is the `beacon` layer seated in the lantern glass
   # (6.1: drawn by partDrawsFor on both backends; the `lens` cycle steps it).
+  # Night light: one warm mirror shaft, clock-gated embers and crown exhaust
+  # at registry.effectAnchors.smokeTop; windows still require working visitors.
   # QAWorld F8 — the baked blue grid-tile plinth is cleared to alpha (the
   # terrain/coast bakes paint the ground around it); a hand-authored 7 px
   # limestone footing on the tower's own stone colours replaces it, the stair

@@ -101,6 +101,7 @@ export function cacheEmitterRecords(renderer, channelRevision) {
             material: materialClassId(assets.getMaterialMetadata?.(prop.id)?.materialClass || 'default'),
             elevation: 0.34,
             emissive: 0,
+            emissiveGate: prop.id === 'prop.lantern' ? Number(renderer.villageLampsLit?.() === true) : 1,
             occluder: 0,
             textureRevision: assets.assetVersion || 0,
             sidecarRevision: channelRevision(assets, atlasId),
@@ -452,7 +453,9 @@ function* emitterPlacements(renderer) {
         // Baked into the terrain, so every villager and every static sprite
         // draws over it: static sprites carve by their own drawn silhouette
         // whatever their depth.
-        yield { id: prop.id, x: prop.x, y: prop.y, sortY: -Infinity, staticSortY: -Infinity, gate: 1 };
+        const gate = prop.id === 'prop.lantern' ? Number(renderer.villageLampsLit?.() === true) : 1;
+        if (!(gate > 0)) continue;
+        yield { id: prop.id, x: prop.x, y: prop.y, sortY: -Infinity, staticSortY: -Infinity, gate };
     }
 }
 
@@ -684,6 +687,111 @@ export function drawCarvedTerrainLayer(ctx, renderer, layer) {
     }
     hullOccluders(renderer, x, y, w, h, occluders);
     drawCarved(ctx, layer.canvas, x, y, occluders, scale);
+}
+
+// Static rock crystals only: existing authored cool emission, not reserve,
+// cargo or assay art. Restore their own cyan/mint palette faintly after C2.
+export function drawMineCrystalGlow(ctx, renderer) {
+    if (renderer.villageLampsLit?.() !== true) return;
+    const buildings = renderer.buildingRenderer;
+    const drawable = buildings?.enumerateDrawables?.().find(d => d.building?.type === 'mine');
+    if (!drawable) return;
+    const assets = renderer.assets;
+    const id = 'building.mine';
+    const image = assets.get(id);
+    const mask = emissiveSidecarFor(assets, id);
+    if (!image || !mask) return;
+    const version = assets.assetVersion || '';
+    let cut = buildings._mineCrystalCut;
+    if (!cut || cut.image !== image || cut.mask !== mask || cut.version !== version) {
+        const w = image.naturalWidth || image.width;
+        const h = image.naturalHeight || image.height;
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const c = canvas.getContext('2d', { willReadFrequently: true });
+        c.drawImage(mask, 0, 0, w, h);
+        const emission = c.getImageData(0, 0, w, h).data;
+        c.clearRect(0, 0, w, h);
+        c.drawImage(image, 0, 0);
+        const art = c.getImageData(0, 0, w, h);
+        for (let i = 0; i < art.data.length; i += 4) {
+            // Warm cave/lantern texels remain occupancy-gated; slate rock is
+            // not emissive. Only sidecar-authored cyan/mint survives.
+            if (!emission[i + 3] || emission[i + 1] < emission[i] * 1.15 || emission[i + 2] < emission[i] * 1.15) art.data[i + 3] = 0;
+        }
+        c.putImageData(art, 0, 0);
+        // Two small cyan dilation courses outside the authored crystal
+        // texels, checker-dithered at the rim. No radial blur, no data art:
+        // the mask only lives high on the static rock, above the carts and
+        // reserve. Warm cave/lantern emission is explicitly excluded.
+        const haloArt = c.getImageData(0, 0, w, h);
+        haloArt.data.fill(0);
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const index = (y * w + x) * 4;
+                if (emission[index + 3]) continue;
+                let distance = 5;
+                for (let dy = -4; dy <= 4; dy++) {
+                    const row = y + dy;
+                    if (row < 0 || row >= h) continue;
+                    for (let dx = -4; dx <= 4; dx++) {
+                        const column = x + dx;
+                        const d = Math.abs(dx) + Math.abs(dy);
+                        if (column < 0 || column >= w || d >= distance) continue;
+                        if (art.data[(row * w + column) * 4 + 3]) distance = d;
+                    }
+                }
+                if (distance > 4 || (distance > 2 && ((x + y) & 1))) continue;
+                haloArt.data[index] = 103;
+                haloArt.data[index + 1] = 190;
+                haloArt.data[index + 2] = 191;
+                haloArt.data[index + 3] = distance <= 2 ? 76 : 32;
+            }
+        }
+        const halo = document.createElement('canvas');
+        halo.width = w;
+        halo.height = h;
+        halo.getContext('2d').putImageData(haloArt, 0, 0);
+        cut = buildings._mineCrystalCut = { image, mask, version, canvas, halo };
+    }
+    const [ax, ay] = assets.getAnchor(id);
+    ctx.save();
+    ctx.globalAlpha = 0.65;
+    drawCarvedBuildingLayer(ctx, renderer, {
+        canvas: cut.halo, x: Math.round(drawable.wx - ax), y: Math.round(drawable.wy - ay),
+    }, drawable.building, drawable.sortY);
+    drawCarvedBuildingLayer(ctx, renderer, {
+        canvas: cut.canvas, x: Math.round(drawable.wx - ax), y: Math.round(drawable.wy - ay),
+    }, drawable.building, drawable.sortY);
+    ctx.restore();
+}
+
+/**
+ * A building-local emitter layer, carved at its owner's painter depth on
+ * every backend. Unlike terrain light, the owner's own rock must not erase
+ * the cut; later landmarks, props and body silhouettes still cover it.
+ */
+export function drawCarvedBuildingLayer(ctx, renderer, layer, owner, sortY) {
+    const { canvas, x, y } = layer;
+    const w = canvas.width;
+    const h = canvas.height;
+    const transform = ctx.getTransform();
+    const scale = Math.max(1, Math.hypot(transform.a, transform.b));
+    const occluders = occludersFor(renderer, sortY, sortY, x, y, w, h);
+    const assets = renderer.assets;
+    for (const drawable of renderer.buildingRenderer?.enumerateDrawables?.() || []) {
+        if (!drawable.building || drawable.building === owner || !(drawable.sortY > sortY)) continue;
+        const image = assets.get?.(drawable.entry?.id);
+        const anchor = assets.getAnchor?.(drawable.entry?.id);
+        if (!image || !anchor) continue;
+        const rect = {
+            x: Math.round(drawable.wx - anchor[0]), y: Math.round(drawable.wy - anchor[1]),
+            w: image.naturalWidth || image.width, h: image.naturalHeight || image.height, image,
+        };
+        if (overlaps(rect, x, y, w, h)) occluders.push(rect);
+    }
+    drawCarved(ctx, canvas, x, y, occluders, scale);
 }
 
 // Each landmark's drawn base image at its placement.

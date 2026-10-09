@@ -37,7 +37,7 @@
 //
 // Every lit texel takes an authored palette entry (the next shallower
 // COAST_WATER_STOPS colour, FOAM_CREST, FOAM, a seabed speck, a caustic, the
-// seaPath and lampBeam stops, a column landed on the C1 emissive ramp), then
+// seaPath and beaconFire stops, a column landed on the C1 emissive ramp), then
 // the Canvas water transform (the night / storm mood and V6's saturation cap
 // moved before the frame grade, as the mood copy does), so it lands within
 // palette tolerance of the resident frame. Reads no agent state; reduced
@@ -71,10 +71,9 @@ import {
     waterSunBandFor,
     waterSurfaceRgb,
 } from './CoastBake.js';
-import { BEAM_NEAR_HALF_WIDTH, FOOTPRINT_MARCH_STEPS, NOON_GLINT_GROW_GAIN } from './gpu/GpuFrameState.js';
+import { BEAM_NEAR_HALF_WIDTH, DEEP_DASH_DENSITY, FOOTPRINT_MARCH_STEPS, NOON_GLINT_GROW_GAIN, resolveStarlight } from './gpu/GpuFrameState.js';
 import {
     DEEP_CREST_RUN,
-    DEEP_DASH_DENSITY,
     GLINT_DASH_DENSITY,
     GLINT_NOON_BASE,
     MOON_DASH_HOLD,
@@ -86,6 +85,8 @@ import {
     SEA_PAW_CAP_BASE,
     SEA_PAW_CAP_GAIN,
     SEA_PAW_THRESHOLD,
+    STARLIGHT_DENSITY,
+    STARLIGHT_HOLD,
     SEA_BODY_ROWS,
     SEA_KEY_REACH,
     SEA_KEY_SHIFT,
@@ -894,7 +895,7 @@ function buildPalette(atmosphere, postFx, storm) {
     classes[CLS_WET] = u32Of(to01(COAST_PALETTE.wetSand));
     classes[CLS_WET_DARK] = u32Of(to01(COAST_PALETTE.wetSandDark));
     // The path: graded, held at HSL L <= 0.70 (seaPathCap), painted as the
-    // preimage of that; the beam keeps its lampBeam stop through the grade.
+    // preimage of that; fire glints preserve their warm receiver stops.
     const pathOut = (hex) => {
         const raw = hexRgb01(hex).map(v => v * band);
         if (!grade) return u32Of(raw);
@@ -903,8 +904,10 @@ function buildPalette(atmosphere, postFx, storm) {
         return u32Of(l > 0.70 ? CanvasGrade.canvasFramePreimage(graded.map(v => v * 0.70 / l), grade, { postFx }) : raw);
     };
     const path = ART_RAMPS.seaPath.map(pathOut);
-    const beamOut = hex => u32Of(CanvasGrade.canvasFramePreimage(hexRgb01(hex).map(v => v * band), grade, { postFx }));
-    const beam = [beamOut(ART_RAMPS.lampBeam[0]), beamOut(ART_RAMPS.lampBeam[0]), beamOut(ART_RAMPS.lampBeam[1])];
+    // Beacon receivers land after the frame grade, like warm lamp columns:
+    // the cool night grade's inverse clips and would turn these creams teal.
+    const beaconOut = hex => u32Of(hexRgb01(hex).map(v => v * band));
+    const beam = ART_RAMPS.beaconFire.slice(0, 3).map(beaconOut);
     const mirrorMemo = new Map();
     const waterMemo = new Map();
     const convert = (memo, colour, capped) => {
@@ -952,6 +955,7 @@ function resolveFx(renderer, atmosphere) {
     return {
         clock,
         t,
+        starlight: resolveStarlight(atmosphere, weather, grade, atmosphere?.lighting?.moonFill ?? atmosphere?.sky?.moon?.fill, level),
         storm: type === 'storm' ? 1 : 0,
         rain: raining && effectBudgetMode('rainRings', level) !== 'off'
             ? clamp01(weather.precipitation ?? weather.intensity)
@@ -1251,6 +1255,27 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
             }
         }
     }
+    // Night starlight: two-texel tips on the existing swell caps. Sample
+    // each 3x1 cell once, with the resident hash and independently held life.
+    if (fx.starlight > 0) {
+        for (let y = Math.max(y0, fx.horizonTop); y < y1; y++) {
+            for (let cx = Math.floor(x0 / 3); cx * 3 < x1; cx++) {
+                const seed = hash12(cx + 307, y + 43);
+                const life = Math.floor((fx.deepTick + Math.floor(seed * STARLIGHT_HOLD)) / STARLIGHT_HOLD);
+                if (hash12(cx + 311 + life * 7, y + 47 + life * 3) >= STARLIGHT_DENSITY * fx.starlight) continue;
+                for (let x = Math.max(x0, cx * 3); x < Math.min(x1, cx * 3 + 2); x++) {
+                    const p = at(x, y);
+                    if (riseMap[p] <= 0) continue;
+                    let colour = palette.classes[CLS_CREST];
+                    if (infoAt(x, y) & SEA_OPEN_SEA) {
+                        const c = canvasSeaMarkRgb(renderer, 'crest', x, y, true);
+                        if (c >= 0) colour = ((255 << 24) | ((c & 255) << 16) | (c & 0xff00) | (c >> 16)) >>> 0;
+                    }
+                    out[p] = colour;
+                }
+            }
+        }
+    }
     // 3.10 — seabed specks, every level.
     eachTexel(base.specks, 1, (i, x, y) => { out[at(x, y)] = palette.specks[cls[i]]; });
     // 3.9 — rain rings, one stop lighter (FOAM on the shallowest stop).
@@ -1522,9 +1547,7 @@ function rebuildPath(state, base, fx, palette, view, glint) {
     return true;
 }
 
-// 2.7 — the Lighthouse sheen (lighthouseSheen): both fans of the lens on the
-// ground plane from the lamp's foot, its three courses as shares of 3x1
-// dash cells with a Bayer edge, the sheen band stepping outward.
+// One warm cone from the sea landing, on existing swell/crest texels only.
 function rebuildBeam(state, base, fx, palette, view, beam) {
     const L = Number(beam.length) || 320;
     const near = BEAM_NEAR_HALF_WIDTH;
@@ -1551,7 +1574,7 @@ function rebuildBeam(state, base, fx, palette, view, beam) {
     const fan = (gx, gy, sx, sy, order, cellX, y) => {
         const along = gx * sx + gy * sy;
         const t = (along + order * 12) / L;
-        if (t <= 0 || t >= ends[2]) return 0;
+        if (along <= 0 || t >= ends[2]) return 0;
         const halfWidth = near + (far - near) * Math.max(0, Math.min(1, along / L));
         if (Math.abs(-gx * sy + gy * sx) + order * 6 >= halfWidth) return 0;
         const course = t < ends[0] ? 2 : t < ends[1] ? 1 : 0;
@@ -1564,20 +1587,36 @@ function rebuildBeam(state, base, fx, palette, view, beam) {
         const sheen = (((Math.floor(along / 16) - step) % 3) + 3) % 3 === 0 ? 1 : 0;
         return 1 + Math.min(2, course + sheen);
     };
+    const field = state.beaconField || (state.beaconField = seaField());
+    const path = state.pathLive ? state.path : null;
     for (let y = top; y < bottom; y++) {
-        for (let cellX = Math.floor(left / 3); cellX * 3 < right; cellX++) {
-            const gx = cellX * 3 + 1.5 - footX;
+        for (let x = left; x < right; x++) {
+            const gx = x + 0.5 - footX;
             const gy = (y + 0.5 - footY) * 2;
-            // Cheap reject: outside both fans' reach.
             if (gx * gx + gy * gy > (reach + 12) * (reach + 12)) continue;
-            const order = beamBayer4(cellX, y) - 0.5;
-            const lit = Math.max(fan(gx, gy, dirX, dirY, order, cellX, y), fan(gx, gy, -dirX, -dirY, order, cellX, y));
-            if (lit < 0.5) continue;
-            const colour = palette.beam[Math.max(0, Math.min(2, lit - 1))];
-            for (let x = cellX * 3; x < cellX * 3 + 3; x++) {
-                if (x < bx0 || x >= bx0 + bw || !waterTexel(state, base, fx, x, y)) continue;
-                out[(y - by0) * bw + (x - bx0)] = colour;
+            const order = beamBayer4(x, y) - 0.5;
+            const lit = fan(gx, gy, dirX, dirY, order, x, y);
+            if (lit < 0.5 || !waterTexel(state, base, fx, x, y)) continue;
+            const crest = field.crest(x, y, field.phase(x, y));
+            let wave = false;
+            const cellX = Math.floor(x / 3);
+            if (hash12(cellX, y) < (fx.storm ? 0.7 : DEEP_DASH_DENSITY)) {
+                const ox = cellX * 3;
+                const phase = (ox * SWELL_SET_NORMAL[0] + y) / (fx.storm ? 14 : 22)
+                    + 0.35 * Math.sin(ox * 0.031) + 0.2 * Math.sin(y * 0.07 + ox * 0.013);
+                const moving = phase + fx.deepTick / 16;
+                const band = fract(moving);
+                wave = (band < 0.0625 || (band < 0.125 && waterBayer4(x, y) >= 0.5))
+                    && hash12(Math.floor(moving) + 59, Math.floor((ox - y * SWELL_SET_NORMAL[0]) / DEEP_CREST_RUN) + 11) < SWELL_SET_SHARE;
             }
+            if (crest <= 0.5 && !wave) continue;
+            if (path) {
+                const px = x - path.x;
+                const py = y - path.y;
+                if (px >= 0 && py >= 0 && px < path.canvas.width && py < path.canvas.height
+                    && path.u32[py * path.canvas.width + px] !== 0) continue;
+            }
+            out[(y - by0) * bw + (x - bx0)] = palette.beam[Math.max(0, Math.min(2, lit - 1))];
         }
     }
     layer.ctx.putImageData(layer.image, 0, 0);
@@ -1846,24 +1885,28 @@ function rebuildColumns(state, base, fx, palette, rect, lights, grade, postFx, f
 }
 
 /**
- * 2.9 — the lamp columns `drawCanvasWaterState` built this frame, laid on
- * the ungraded overlay after the frame grade (the resident pass lands them
- * after its grade too), carved by every sprite the depth pass drew over the
+ * 2.7 / 2.9 — warm beacon glints and lamp columns built this frame land on
+ * the ungraded overlay after the frame grade (the resident pass does too),
+ * carved by every sprite the depth pass drew over the
  * water (`drawCarvedTerrainLayer`). Call where the emitter cuts land, only
  * when the resident scene pass did not render the frame.
  */
 export function drawCanvasWaterColumns(overlayCtx, renderer) {
     const state = renderer?._canvasWater;
-    if (!state?.columnsLive) return;
-    state.columnsLive = false;
-    const layer = state.columns;
-    if (!layer?.canvas || !renderer.camera) return;
+    if (!state || (!state.columnsLive && !state.beamLive) || !renderer.camera) return;
     overlayCtx.save();
     renderer.camera.applyTransform(overlayCtx);
     overlayCtx.imageSmoothingEnabled = false;
     overlayCtx.globalCompositeOperation = 'source-over';
     overlayCtx.globalAlpha = 1;
-    drawCarvedTerrainLayer(overlayCtx, renderer, layer);
+    if (state.beamLive) {
+        state.beamLive = false;
+        drawCarvedTerrainLayer(overlayCtx, renderer, state.beam);
+    }
+    if (state.columnsLive) {
+        state.columnsLive = false;
+        drawCarvedTerrainLayer(overlayCtx, renderer, state.columns);
+    }
     overlayCtx.restore();
 }
 
@@ -2017,6 +2060,7 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
     const gust = resolveGust(state, fx, rect, weather);
     const overlayKey = [
         base.key, paletteKey, rect.x0, rect.y0, rect.w, rect.h, fx.clock > 0 ? 1 : 0,
+        fx.starlight,
         fx.deepTick, fx.nearTick, fx.ringTick, fx.swashCyc, fx.rippleTick,
         fx.caustics ? Math.floor(fx.t * 0.004 * fx.clock) % 8 : -1,
         Math.round(fx.rain * 64), fx.swash ? 1 : 0, fx.grassGust ? 1 : 0, fx.horizonTop, pending,
@@ -2042,18 +2086,6 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
         state.stats.overlayBuilds++;
     }
     ctx.drawImage(state.overlay.canvas, state.overlay.x, state.overlay.y);
-    // 2.7 — the sheen, under the path (the resident order).
-    const beam = renderer.buildingRenderer?.lighthouseBeam?.(renderer.motionTimeMs) || null;
-    if (beam) {
-        const beamKey = `${beam.angle}|${beam.sheenStep}|${beam.foot.x},${beam.foot.y}|${state.overlayKey}|${Math.floor(view.x0)},${Math.floor(view.y0)},${Math.ceil(view.x1)},${Math.ceil(view.y1)}`;
-        if (beamKey !== state.beamKey) {
-            const started = performance.now();
-            rebuildBeam(state, base, fx, palette, view, beam);
-            state.beamKey = beamKey;
-            state.stats.beamMs = performance.now() - started;
-        }
-        ctx.drawImage(state.beam.canvas, state.beam.x, state.beam.y);
-    }
     // 3.2 — the path.
     const glint = canvasGlint(atmosphere);
     if (glint) {
@@ -2065,6 +2097,20 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
             state.stats.pathMs = performance.now() - started;
         }
         if (state.pathOn) ctx.drawImage(state.path.canvas, state.path.x, state.path.y);
+    }
+    state.pathLive = Boolean(glint && state.pathOn);
+    // Beacon glints preserve warm receiver stops after the cool frame grade.
+    // Build after the path so path texels keep precedence, as on the GPU.
+    const beam = renderer.buildingRenderer?.lighthouseBeam?.(renderer.motionTimeMs) || null;
+    state.beamLive = Boolean(beam);
+    if (beam) {
+        const beamKey = `${beam.angle}|${beam.sheenStep}|${beam.foot.x},${beam.foot.y}|${state.overlayKey}|${state.pathLive}:${state.pathKey}|${Math.floor(view.x0)},${Math.floor(view.y0)},${Math.ceil(view.x1)},${Math.ceil(view.y1)}`;
+        if (beamKey !== state.beamKey) {
+            const started = performance.now();
+            rebuildBeam(state, base, fx, palette, view, beam);
+            state.beamKey = beamKey;
+            state.stats.beamMs = performance.now() - started;
+        }
     }
     // 2.9 — the lamp columns land last, over the water state and the path,
     // clipped by the 2.2 footprint march (the field the resident pass binds).

@@ -31,6 +31,8 @@ import { POST_FX_LEVELS } from '../postfx/PostFxLadder.js';
 import { sourceEnergyFor } from '../AtmosphereState.js';
 import { baseWindX, cloudCourseDrift, gustinessFor, windAt } from '../Wind.js';
 
+// Shared crest density: a leaf export, also used by the WGSL beacon twin.
+export const DEEP_DASH_DENSITY = 0.5;
 // Local lights (and the occluder companions) come up past this phase.
 export const LOCAL_LIGHT_VISIBILITY_FLOOR = 0.04;
 // 2.2 — the footprint march step count per ladder mode (the Canvas column
@@ -39,9 +41,8 @@ export const FOOTPRINT_MARCH_STEPS = Object.freeze({ on: 8, 'four-steps': 4, off
 // 3.2 — the pale day path (kind 2) grows NOON_GLINT_GROW_GAIN x faster down
 // the frame than the gold and silver paths.
 export const NOON_GLINT_GROW_GAIN = 2.5;
-// 2.7 — the Lighthouse fan's half-width at the lamp's foot (ground px); the
-// rest of its shape, sweep and sheen step come from lighthouseBeam.
-export const BEAM_NEAR_HALF_WIDTH = 6;
+// Half-width at the descending shaft's sea landing (ground texels).
+export const BEAM_NEAR_HALF_WIDTH = 32;
 // 3.5 — the authored ramp table: 11 material classes x 3 courses.
 export const PALETTE_LUT_WIDTH = 11;
 export const PALETTE_LUT_HEIGHT = 3;
@@ -174,7 +175,19 @@ export function resolveFatPixels(camera, override = null) {
 }
 
 export function createWaterFx() {
-    return { fx: new Float32Array(4), glint: new Float32Array(4), stops: new Float32Array(6) };
+    return { fx: new Float32Array(4), glint: new Float32Array(4), stops: new Float32Array(6), starlight: 0 };
+}
+
+// Night-only sparkle shares the water/path budget but not the moon-path gate:
+// a small moon leaves the sea to the stars; a full moon takes it over.
+export function resolveStarlight(atmosphere, weather, grade, moonFill, level) {
+    if (effectBudgetMode('waterCrests', level) !== 'on'
+        || weather?.type === 'rain' || weather?.type === 'storm') return 0;
+    const night = clamp(finite(grade?.night, 0), 0, 1);
+    const stars = clamp(finite(atmosphere?.sky?.starsAlpha, night), 0, 1);
+    const clear = 1 - clamp(finite(weather?.cloudCover, 0), 0, 1);
+    const darkMoon = 1 - clamp(finite(moonFill, 0), 0, 1);
+    return night * stars * clear * darkMoon * darkMoon;
 }
 
 /**
@@ -199,6 +212,7 @@ export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out 
         ? clamp(finite(weather.precipitation, weather.intensity), 0, 1)
         : 0;
     const cloudCover = clamp(finite(weather.cloudCover, 0), 0, 1);
+    out.starlight = resolveStarlight(feed.atmosphere, weather, grade, moonFill, level);
     const zoom = finite(camera?.zoom, 1);
     fx[2] = effectBudgetMode('shallowCaustics', level) === 'on'
         && !raining

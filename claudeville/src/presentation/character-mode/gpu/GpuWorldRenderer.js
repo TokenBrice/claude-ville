@@ -33,6 +33,7 @@ import {
     cloudTile,
     createAtmosphereCourses,
     createBeamUniforms,
+    DEEP_DASH_DENSITY,
     createLightFrameState,
     createPuddleUniforms,
     createSeaWeather,
@@ -149,13 +150,16 @@ export const APERTURE_WALL_AHEAD = 8;
 // over a 100 px box). Tuned against M7 (<= 35 % of deep water ever changes
 // over 3 s, 2-5 % per step): see docs/motion-budget.md.
 export const NEAR_SHORE_DASH_DENSITY = 0.3;
-export const DEEP_DASH_DENSITY = 0.5;
 export const SWELL_SET_SHARE = 0.5;
 export const DEEP_CREST_RUN = 24;
 // 3.2 — peak presence of path dashes at the path's centre, full strength.
 export const GLINT_DASH_DENSITY = 0.3;
 // 3.2 — water ticks (6 Hz) a moon-path dash holds before it re-rolls.
 export const MOON_DASH_HOLD = 6;
+// Starlight samples existing swell caps, never a separate glitter field.
+// Two-texel silver tips hold four water ticks (~667 ms), out of phase.
+export const STARLIGHT_DENSITY = 0.12;
+export const STARLIGHT_HOLD = 4;
 // 3.2 — the pale day path (kind 2) is a broad sparse sparkle: its half-width
 // starts at this many texels and grows GpuFrameState NOON_GLINT_GROW_GAIN x
 // faster down the frame than the gold and silver paths.
@@ -638,6 +642,14 @@ float deepSwellLit(vec2 p, float tick, float storm, float density) {
     if (waterHash12(run + vec2(59.0, 11.0)) >= ${SWELL_SET_SHARE.toFixed(2)}) return 0.0;
     return storm > 0.5 && waterHash12(cell + vec2(17.0, 31.0)) < 0.25 ? 2.0 : 1.0;
 }
+bool starlightAt(vec2 p, float cap, float strength, float tick) {
+    if (strength <= 0.0 || cap < 0.5) return false;
+    vec2 cell = floor(p / vec2(3.0, 1.0));
+    float seed = waterHash12(cell + vec2(307.0, 43.0));
+    float life = floor((tick + floor(seed * ${STARLIGHT_HOLD.toFixed(1)})) / ${STARLIGHT_HOLD.toFixed(1)});
+    return p.x - cell.x * 3.0 < 2.0
+        && waterHash12(cell + vec2(311.0 + life * 7.0, 47.0 + life * 3.0)) < ${STARLIGHT_DENSITY.toFixed(2)} * strength;
+}
 float glintDash(vec2 p, vec2 fragPx, vec4 glint, float texelPx, float tick) {
     if (glint.z < 0.5 || glint.y <= 0.0) return 0.0;
     bool moon = glint.z > 2.5;
@@ -905,39 +917,21 @@ float seaPawCaps(vec2 cell, float order) {
 }`;
 const SEA_WEATHER_UNIFORM_NAMES = ['u_seaSunlit', 'u_seaGust', 'u_seaGustRect'];
 
-// 2.7 — the Lighthouse beam (M22) lands on the sea, shared by the in-map
-// water (SCENE_FRAGMENT applyWaterState) and the open sea (COMPOSITE_FRAGMENT
-// shadeOpenSea) so the fan crosses the map edge with no seam. The lantern
-// turns a bi-form lens: two fans 180 degrees apart lie on the ground plane
-// from the lamp's foot at the tower base (world px, 2:1 iso depth), sweeping
-// at the constant rate BuildingSprite.lighthouseBeam sets on the one motion
-// clock, so one of them is always out over the sea while the other crosses
-// the land (water only takes it). Each fan widens from the foot (near to far
-// half-width) and its three SEARCHLIGHT_COURSES are the share of 3x1 dash
-// cells each lights (near 0.9 from the tower's waterline out, mid 0.6, far
-// 0.3 thinning to nothing at the fan's end), with an ordered 4x4 Bayer edge
-// on the dash-cell grid, so every lit texel is a whole dash. Lit dashes take
-// the C1 cool-white lampBeam low stops (near: mid stop, mid and far: low
-// stop; never the seaPath gold, always under the T1 plate text); the band
-// that steps outward every sheen step (u_beamShape.w) lifts a dash one stop.
-// Reads no agent state; 0 by day (u_beamGround.w = 0).
-// Needs waterHash12 (SEA_SWELL_GLSL).
-function lampBeamStop(index) {
-    const hex = ART_RAMPS.lampBeam[index];
+// One warm cone beyond the shaft's sea landing, shared across the map edge.
+// Only existing static swell crests / moving wave texels can catch its light.
+function beaconFireStop(index) {
+    const hex = ART_RAMPS.beaconFire[index];
     return `vec3(${[1, 3, 5].map(at => (parseInt(hex.slice(at, at + 2), 16) / 255).toFixed(4)).join(', ')})`;
 }
 const LIGHTHOUSE_BEAM_GLSL = `
-// xy: the lamp's foot (world px), z: sweep angle, w: 1 while the lamps are lit.
+// xy: sea landing (world px), z: heading, w: full lamplight clock gate.
 uniform vec4 u_beamGround;
 // x: fan length, y/z: near/far half-width (ground px), w: sheen step 0..2.
 uniform vec4 u_beamShape;
-// The three courses' outer ends (share of length) and dash shares.
+// Three outer ends and crest admission shares.
 uniform vec3 u_beamCourseEnds;
 uniform vec3 u_beamCourseShares;
-// The lamp's light on the water stays under the T1 plates: the near course
-// takes the ramp's mid stop, the mid and far courses its low stop (a sheen
-// dash lifts one stop), so a dash never reaches the plate text.
-const vec3 BEAM_STOPS[3] = vec3[3](${lampBeamStop(0)}, ${lampBeamStop(0)}, ${lampBeamStop(1)});
+const vec3 BEACON_WATER_STOPS[3] = vec3[3](${beaconFireStop(0)}, ${beaconFireStop(1)}, ${beaconFireStop(2)});
 float beamBayer2(vec2 p) {
     vec2 q = mod(floor(p), 2.0);
     return q.x == q.y ? (q.x > 0.5 ? 0.25 : 0.0) : (q.x > 0.5 ? 0.5 : 0.75);
@@ -945,17 +939,12 @@ float beamBayer2(vec2 p) {
 float beamBayer4(vec2 p) {
     return beamBayer2(0.5 * p) * 0.25 + beamBayer2(p);
 }
-// Set by the scene's applyWaterState when this fragment is a beam-lit dash,
-// so main() keeps its colour through the night grade.
+// The scene preserves beam glints through the night grade.
 bool lighthouseDash = false;
-// One fan along dir: 0 unlit, else 1 + the BEAM_STOPS index (0 far .. 2
-// near) for the dash cell at g (ground offset from the foot). The fan widens
-// from the lamp's foot and its far course thins out to nothing, so it ends in
-// scattered dashes, never a square cut.
 float lighthouseFan(vec2 g, vec2 dir, float order, vec2 cell) {
     float along = dot(g, dir);
     float t = (along + order * 12.0) / u_beamShape.x;
-    if (t <= 0.0 || t >= u_beamCourseEnds.z) return 0.0;
+    if (along <= 0.0 || t >= u_beamCourseEnds.z) return 0.0;
     float halfWidth = mix(u_beamShape.y, u_beamShape.z, clamp(along / u_beamShape.x, 0.0, 1.0));
     if (abs(dot(g, vec2(-dir.y, dir.x))) + order * 6.0 >= halfWidth) return 0.0;
     float course = t < u_beamCourseEnds.x ? 2.0 : t < u_beamCourseEnds.y ? 1.0 : 0.0;
@@ -968,18 +957,22 @@ float lighthouseFan(vec2 g, vec2 dir, float order, vec2 cell) {
     float sheen = mod(floor(along / 16.0) - u_beamShape.w, 3.0) < 0.5 ? 1.0 : 0.0;
     return 1.0 + min(2.0, course + sheen);
 }
-// 0 unlit, else 1 + the BEAM_STOPS index for the dash cell holding p.
-float lighthouseSheen(vec2 p) {
+// Individual world texels, not a filled dash matrix; one direction only.
+float lighthouseSheen(vec2 p, float tick, float storm) {
     if (u_beamGround.w <= 0.0) return 0.0;
-    vec2 cell = floor(p / vec2(3.0, 1.0));
-    vec2 d = cell * vec2(3.0, 1.0) + vec2(1.5, 0.5) - u_beamGround.xy;
+    vec2 cell = floor(p);
+    vec2 d = cell + 0.5 - u_beamGround.xy;
     vec2 g = vec2(d.x, d.y * 2.0);
     vec2 dir = vec2(cos(u_beamGround.z), sin(u_beamGround.z));
     float order = beamBayer4(cell) - 0.5;
-    return max(lighthouseFan(g, dir, order, cell), lighthouseFan(g, -dir, order, cell));
+    float beam = lighthouseFan(g, dir, order, cell);
+    if (beam <= 0.0) return 0.0;
+    float crest = swellCrest(cell, swellPhase(cell));
+    float wave = deepSwellLit(cell, tick, storm, ${DEEP_DASH_DENSITY.toFixed(2)});
+    return max(crest, wave) > 0.5 ? beam : 0.0;
 }
-vec3 lighthouseStop(float beam) {
-    return BEAM_STOPS[int(clamp(beam - 1.0, 0.0, 2.0))];
+vec3 beaconWaterStop(float beam) {
+    return BEACON_WATER_STOPS[int(clamp(beam - 1.0, 0.0, 2.0))];
 }`;
 
 // The water palette the scene pass compares against and writes (CoastBake
@@ -1240,6 +1233,7 @@ uniform vec4 u_coastRect;
 // MINIMAL = the static frame), y: precipitation for rain rings (0 = none),
 // z: 3.10 caustics on, w: 3.6 swash on.
 uniform vec4 u_waterFx;
+uniform float u_starlight;
 // 3.2 — the sky body's path: (screenX backing px, strength, kind 0 off /
 // 1 gold / 2 pale / 3 silver, grow = texels of half-width per backing row).
 uniform vec4 u_glint;
@@ -1643,11 +1637,11 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
         return u_glintStops[glint > 1.5 ? 0 : 1];
     }
     // 2.7 — the Lighthouse fan's lit dashes, under the sky body's path.
-    float beam = lighthouseSheen(p);
+    float beam = lighthouseSheen(p, deepTick, storm);
     if (beam > 0.5) {
         seaPath = true;
         lighthouseDash = true;
-        return lighthouseStop(beam);
+        return beaconWaterStop(beam);
     }
     int base = stop;
     // 3.3 (a) / 3.4 — open water (as deep as the open sea on its row) takes
@@ -1671,6 +1665,9 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
             if (open) base = int(seaBodyStop(p, s, float(stop), excess, order));
             if (open && u_seaSunlit > 0.0 && cloudSeamField(p, cloudNoiseAt(p), order, u_seaSunlit) < u_seaSunlit) base = max(base - 1, 0);
             cap = swellCap(p, s, near, open ? seaPawCaps(p, order) : 0.0);
+            if (starlightAt(p, cap, u_starlight, deepTick)) {
+                return applyWaterMood(WATER_FOAM_CREST) * WATER_CAST;
+            }
         }
     }
     if (base != stop) color = seaStopRgb(float(base));
@@ -1996,7 +1993,7 @@ void main() {
     // is held at HSL L <= 0.70 instead.
     if (waterHue) color = seaPath ? seaPathCap(color) : capSaturation(color, WATER_MAX_SATURATION);
     // 2.7 — a Lighthouse-lit dash is the lamp's own light (like 1.3's
-    // emitters below): it keeps its lampBeam stop (okL <= 0.83) instead of
+    // emitters below): it keeps its beaconFire stop (okL <= 0.83) instead of
     // the night Purkinje grey.
     if (lighthouseDash) color = poolAlbedo;
     // 5.2 — puddles take the graded sky over the graded street.
@@ -2384,12 +2381,12 @@ void main() {
                     tapFalloff *= clamp(0.30 + 1.4 * dot(lightShape.yz, tapTo) / max(length(tapTo), 1.0), 0.0, 1.0);
                 }
                 tapShape[t] = tapFalloff * response;
-                tapCourse = tapCourse || poolSteps(tapShape[t], bayer4(tapCell)) > 0.5;
+                tapCourse = tapCourse || ambientPoolSteps(tapShape[t], bayer4(tapCell)) > 0.5;
             }
         }
         // 2.2 — the footprint march, only where this light lays a course.
         float blocked = 0.0;
-        if (!attention && u_marchSteps > 0 && (poolSteps(shape, poolOrder) > 0.5 || tapCourse)) {
+        if (!attention && u_marchSteps > 0 && (ambientPoolSteps(shape, poolOrder) > 0.5 || tapCourse)) {
             blocked = footprintBlocked(recvGround, light.xy, recvH, lightH, ownLandmark, uint(lightMeta.y + 0.5),
                 role > 1.5 && role < 2.5);
         }
@@ -2429,7 +2426,7 @@ void main() {
             }
             continue;
         }
-        float steps = poolSteps(shape, poolOrder);
+        float steps = rampPixel ? poolSteps(shape, poolOrder) : ambientPoolSteps(shape, poolOrder);
         if (rampPixel) {
             // 3.5 / 2.1 — a ramp pixel takes the strongest light's stepped
             // course (0.15 per course of its own intensity, on the pools'
@@ -2444,13 +2441,13 @@ void main() {
                 rampSteps = steps;
             }
         } else {
-            poolLight += lightColor.rgb * poolWeight(steps) * light.w * lightColor.a;
+            poolLight += lightColor.rgb * ambientPoolWeight(steps) * light.w * lightColor.a;
             poolDepth = max(poolDepth, steps);
             if (poolTaps) {
                 for (int t = 0; t < 4; t++) {
                     if (fatTapWeight(cellTaps, t) <= 0.0) continue;
-                    float tapSteps = poolSteps(tapShape[t], bayer4(cellTaps.base + fatTapOffset(t)));
-                    poolTapLight[t] += lightColor.rgb * poolWeight(tapSteps) * light.w * lightColor.a;
+                    float tapSteps = ambientPoolSteps(tapShape[t], bayer4(cellTaps.base + fatTapOffset(t)));
+                    poolTapLight[t] += lightColor.rgb * ambientPoolWeight(tapSteps) * light.w * lightColor.a;
                     poolTapDepth[t] = max(poolTapDepth[t], tapSteps);
                 }
             }
@@ -2511,8 +2508,8 @@ void main() {
     // value \`lift\` stops above its local water stop on the water ramp
     // (columnRampLuma; never under the graded water plus 0.03 a stop), in
     // the light's hue on the C1 emissive ramp (lift 3 on the core stop, 2
-    // half way, 1 on #ff9d4a; a cool light keeps 70 % of its own hue: the
-    // Lighthouse lamp's column on its lampBeam silver), 12 % of the graded
+    // half way, 1 on #ff9d4a; subdued receiver lights keep 70 % of their hue,
+    // including the Lighthouse's warm cream), 12 % of the graded
     // water kept. The value follows the water's own ramp and the hue the
     // light, never one flat emissive stop. Held under the receiver okL
     // ceiling (the value ladder). A seam pixel blends its covered cells'
@@ -2708,6 +2705,7 @@ uniform bool u_seaOn;
 uniform float u_time;
 uniform vec4 u_weather;
 uniform vec4 u_waterFx;
+uniform float u_starlight;
 uniform vec4 u_glint;
 uniform vec3 u_glintStops[2];
 uniform float u_seaSunBand;
@@ -2749,14 +2747,14 @@ vec3 shadeOpenSea(vec2 cell) {
     vec3 c;
     float glint = glintDash(cell, texelPx, u_glint, u_camera.z, tick);
     // 2.7 — the Lighthouse fan's lit dashes, the same cells as the in-map water.
-    float beam = lighthouseSheen(cell);
+    float beam = lighthouseSheen(cell, tick, storm);
     if (glint > 0.5) {
         c = u_glintStops[glint > 1.5 ? 0 : 1] * mix(1.0, 0.86, u_seaSunBand);
         c = seaPathCap(applyTimeGrade(c, true));
         marked = true;
     } else if (beam > 0.5) {
-        // The lamp's own light keeps its lampBeam stop through the night grade.
-        c = lighthouseStop(beam) * mix(1.0, 0.86, u_seaSunBand);
+        // Fire glints keep their subdued warm receiver stop through the grade.
+        c = beaconWaterStop(beam) * mix(1.0, 0.86, u_seaSunBand);
         marked = true;
     } else {
         // The body field (3.3 (a)): the sun-key course and each set's lit
@@ -2767,7 +2765,8 @@ vec3 shadeOpenSea(vec2 cell) {
         // as the in-map open water.
         float s = swellPhase(cell);
         stop = seaBodyStop(cell, s, stop, excess, order);
-        float lighter = swellCap(cell, s, near, seaPawCaps(cell, order));
+        float cap = swellCap(cell, s, near, seaPawCaps(cell, order));
+        float lighter = cap;
         bool whitecap = false;
         if (clock > 0.0) {
             float lit = deepSwellLit(cell, tick, storm, ${DEEP_DASH_DENSITY.toFixed(2)});
@@ -2778,6 +2777,7 @@ vec3 shadeOpenSea(vec2 cell) {
         // Sun on water: one stop lighter where the cloud field is lowest.
         if (u_seaSunlit > 0.0 && m < u_seaSunlit) lighter += 1.0;
         vec3 albedo = whitecap ? WATER_FOAM : seaStopRgb(max(stop - lighter, 0.0));
+        if (starlightAt(cell, cap, u_starlight, tick)) albedo = WATER_FOAM_CREST;
         c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, u_seaSunBand);
         c = capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION);
     }
@@ -3444,6 +3444,7 @@ export class GpuWorldRenderer {
             'u_footprint', 'u_footprintRect', 'u_footprintSize', 'u_marchSteps',
             'u_coreEnergy', 'u_waterMood',
             'u_cycleOffset', 'u_coastField', 'u_coastRect', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
+            'u_starlight',
             'u_terrainBatch', 'u_cueRuns',
             'u_wetness', 'u_wetReflectionCount', 'u_beamGround', 'u_beamShape', 'u_beamCourseEnds', 'u_beamCourseShares',
             'u_puddleMask', 'u_puddleRect', 'u_puddles', 'u_puddleSky', 'u_puddleGround',
@@ -3462,6 +3463,7 @@ export class GpuWorldRenderer {
             'u_camera', 'u_resolution', 'u_beamGround', 'u_beamShape', 'u_beamCourseEnds', 'u_beamCourseShares',
             ...GRADE_UNIFORM_NAMES, ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
             'u_waterMood', 'u_seaOn', 'u_time', 'u_weather', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
+            'u_starlight',
             'u_seaSunBand', 'u_fogColor', 'u_seaHaze', 'u_seaSky', 'u_seaSunlit',
             'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall', 'u_fatPixels',
         ]);
@@ -4468,6 +4470,7 @@ export class GpuWorldRenderer {
         const moonFill = clamp(finite(feed.lighting?.moonFill, 0), 0, 1);
         const water = resolveWaterFx(feed, camera, qualityLevel, grade, moonFill, this.width, this._waterFx);
         gl.uniform4fv(uniforms.u_waterFx, water.fx);
+        gl.uniform1f(uniforms.u_starlight, water.starlight);
         gl.uniform4fv(uniforms.u_glint, water.glint);
         gl.uniform3fv(uniforms['u_glintStops[0]'], water.stops);
         this._bindWaterFields(uniforms, feed.coastWater, qualityLevel);
@@ -5065,6 +5068,7 @@ export class GpuWorldRenderer {
         const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
         gl.uniform1f(uniforms.u_time, shaderTimeMs);
         gl.uniform4fv(uniforms.u_waterFx, this._waterFx.fx);
+        gl.uniform1f(uniforms.u_starlight, this._waterFx.starlight);
         gl.uniform4fv(uniforms.u_glint, this._waterFx.glint);
         gl.uniform3fv(uniforms['u_glintStops[0]'], this._waterFx.stops);
         const sky = openSeaSky(atmosphere);

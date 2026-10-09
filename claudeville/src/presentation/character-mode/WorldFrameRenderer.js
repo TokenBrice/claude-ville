@@ -34,7 +34,7 @@ import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
 import { drawOffshoreScenery, isOffshoreRecordId } from './OffshoreScenery.js';
 import { poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
 import { drawCanvasWaterColumns } from './CanvasWaterState.js';
-import { drawCanvasEmitterCuts } from './EmitterCuts.js';
+import { drawCanvasEmitterCuts, drawMineCrystalGlow } from './EmitterCuts.js';
 import { groundOptionsFor, groundStateAt } from './GroundState.js';
 import { ungradeRgb } from './CanvasGrade.js';
 import { PEAK, armPeakMarks, drawMomentEdgePlates, setMomentStage, takePeakMarks } from './EffectStamps.js';
@@ -961,6 +961,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         renderer._drawChimneySmokeStatic?.(overlayCtx, atmosphere?.lightGrade || null);
         renderer.buildingRenderer?.drawGpuFunctionalOverlays?.(overlayCtx);
     }
+    // Static Mine crystals are clock-lit, on the same carved ungraded
+    // overlay for Canvas, WebGL and WebGPU; cargo/reserve art stays graded.
+    drawMineCrystalGlow(overlayCtx, renderer);
     drawTalkArcs(overlayCtx, {
         relationship: renderer.relationshipState,
         agentSprites: renderer.agentSprites,

@@ -456,6 +456,12 @@ export const GRADE_CONSTANTS = Object.freeze({
     POOL_CORE: Object.freeze({ value: Object.freeze([1.089, 0.995, 0.786]), digits: 3 }),
     LAND_MID: Object.freeze({ value: Object.freeze([1.346, 0.948, 0.504]), digits: 3 }),
     LAND_SHARE: Object.freeze({ value: Object.freeze([0.84, 0.88, 0.90]), digits: 2 }),
+    // Ambient-only falloff: six held courses, lower energy than the old
+    // three-course discs; attention and authored ramp receivers stay unchanged.
+    AMBIENT_POOL_STOPS: Object.freeze({ value: Object.freeze([0.04, 0.12, 0.25, 0.40, 0.58, 0.75]), digits: 2 }),
+    AMBIENT_POOL_WEIGHTS: Object.freeze({ value: Object.freeze([0.035, 0.10, 0.20, 0.32, 0.50, 0.76]), digits: 3 }),
+    AMBIENT_POOL_CHROMA: Object.freeze({ value: Object.freeze([0.18, 0.30, 0.46, 0.64, 0.82, 1.00]), digits: 2 }),
+    AMBIENT_POOL_SHARE: Object.freeze({ value: Object.freeze([0.18, 0.32, 0.50, 0.66, 0.80, 0.90]), digits: 2 }),
     LAND_FULL_STRENGTH: Object.freeze({ value: LAND_FULL_STRENGTH, digits: 2 }),
     RECEIVER_LUMA_CEILING: Object.freeze({ value: RECEIVER_LUMA_CEILING, digits: 4 }),
     RECEIVER_HEADROOM: Object.freeze({ value: 0.018, digits: 3 }),
@@ -535,6 +541,23 @@ float poolWeight(float steps) {
     return steps < 0.5 ? 0.0 : steps < 1.5 ? 0.30 : steps < 2.5 ? 0.54 : 0.76;
 }
 
+// Six ambient courses on the same world-texel Bayer seams. The outer veil
+// is near-neutral and very faint, not another saturated orange ring.
+const float AMBIENT_POOL_STOPS[6] = float[6](${k('AMBIENT_POOL_STOPS')});
+const float AMBIENT_POOL_WEIGHTS[6] = float[6](${k('AMBIENT_POOL_WEIGHTS')});
+const float AMBIENT_POOL_CHROMA[6] = float[6](${k('AMBIENT_POOL_CHROMA')});
+const float AMBIENT_POOL_SHARE[6] = float[6](${k('AMBIENT_POOL_SHARE')});
+int ambientPoolIndex(float steps) { return clamp(int(steps) - 1, 0, 5); }
+float ambientPoolSteps(float shape, float order) {
+    float q = shape + (order - 0.5) * 0.08;
+    float steps = 0.0;
+    for (int i = 0; i < 6; i++) steps += step(AMBIENT_POOL_STOPS[i], q);
+    return steps;
+}
+float ambientPoolWeight(float steps) {
+    return steps < 0.5 ? 0.0 : AMBIENT_POOL_WEIGHTS[ambientPoolIndex(steps)];
+}
+
 // Warm sources (lanterns, braziers, windows) land on the C1 emissive ramp —
 // #ff9d4a rim, #ffcf7a mid, #ffe9b8 core, luma-normalised — so each course
 // reads as its own amber step; cool/rune lights keep 70 % of their own hue.
@@ -549,6 +572,17 @@ vec3 poolTint(vec3 light, float steps, out float strength, out float warm) {
     strength = min(l, 1.0);
     vec3 ramp = steps < 1.5 ? POOL_RIM : steps < 2.5 ? POOL_MID : POOL_CORE;
     return mix(mix(vec3(1.0), hue, 0.7), ramp, warm);
+}
+
+vec3 ambientPoolTint(vec3 light, float steps, out float strength, out float warm) {
+    float l = dot(light, GRADE_LUMA);
+    vec3 hue = light / l;
+    warm = clamp((hue.r - hue.b) * 1.25, 0.0, 1.0);
+    strength = min(l, 1.0);
+    int course = ambientPoolIndex(steps);
+    vec3 ramp = mix(POOL_RIM, POOL_CORE, float(course) / 5.0);
+    vec3 tint = mix(mix(vec3(1.0), hue, 0.7), ramp, warm);
+    return mix(vec3(1.0), tint, AMBIENT_POOL_CHROMA[course]);
 }
 
 // 1.2 — where a warm pool lands. Light added onto a receiver keeps the
@@ -683,7 +717,7 @@ vec3 stepPool(vec3 graded, vec3 ambient, float ambientSteps, vec3 attention, flo
     vec3 result = graded;
     vec3 add = reflection;
     if (lit) {
-        vec3 tint = poolTint(ambient, ambientSteps, strength, warm);
+        vec3 tint = ambientPoolTint(ambient, ambientSteps, strength, warm);
         vec3 pool = tint * strength;
         float adapt = min(1.0, strength * 1.5) * warm * (0.85 * 0.6) * carry * land;
         result = mix(graded, gradedLuma * tint, adapt);
@@ -694,8 +728,9 @@ vec3 stepPool(vec3 graded, vec3 ambient, float ambientSteps, vec3 attention, flo
     if (landWarm > 0.0) {
         float y = dot(result, GRADE_LUMA);
         float share = clamp((y - gradedLuma) / max(y, 0.02) * 1.6, 0.0, 1.0);
-        vec3 stop = ambientSteps < 1.5 ? LAND_RIM : ambientSteps < 2.5 ? LAND_MID : LAND_CORE;
-        float course = ambientSteps < 1.5 ? LAND_SHARE.x : ambientSteps < 2.5 ? LAND_SHARE.y : LAND_SHARE.z;
+        int index = ambientPoolIndex(ambientSteps);
+        vec3 stop = mix(vec3(1.0), mix(LAND_RIM, LAND_CORE, float(index) / 5.0), AMBIENT_POOL_CHROMA[index]);
+        float course = AMBIENT_POOL_SHARE[index];
         share = max(share, min(1.0, strength / LAND_FULL_STRENGTH));
         result = mix(result, onStop(stop, y), landWarm * share * course * land);
     }

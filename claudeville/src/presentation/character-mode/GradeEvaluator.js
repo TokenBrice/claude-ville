@@ -126,11 +126,11 @@ const PURKINJE_BLUE = Object.freeze(lumaNormalized([0.93, 1.0, 1.07]));
 export const GRADE_KEYFRAMES = Object.freeze([
     Object.freeze({
         name: 'deep-night', minute: 2 * 60, side: 'night',
-        exposure: 0.66, saturation: 0.38,
-        gain: [0.86, 0.94, 1.00], lift: [0.024, 0.027, 0.032], gamma: 1.03,
-        shadowTint: [0.84, 0.93, 1.10], highlightTint: [0.94, 1.03, 1.03],
-        purkinje: 1, sunBand: 0, daylight: 0, night: 1, rake: 0,
-        vignetteEdge: [0.74, 0.76, 0.83], vignetteAlpha: 0.44,
+        exposure: 0.70, saturation: 0.52,
+        gain: [0.82, 0.94, 1.06], lift: [0.024, 0.027, 0.034], gamma: 1.03,
+        shadowTint: [0.82, 0.92, 1.12], highlightTint: [0.96, 1.04, 1.02],
+        purkinje: 0.7, sunBand: 0, daylight: 0, night: 1, rake: 0,
+        vignetteEdge: [0.74, 0.76, 0.83], vignetteAlpha: 0.36,
         skyTop: '#070b16', skyHorizon: '#141d2e', voidColor: '#0b1218', horizonHaze: '#1a2436',
     }),
     Object.freeze({
@@ -218,11 +218,11 @@ export const GRADE_KEYFRAMES = Object.freeze([
     // saturation sits between 0.5x and 0.85x, and night is bluer than noon.
     Object.freeze({
         name: 'night', minute: 22 * 60, side: 'night',
-        exposure: 0.74, saturation: 0.42,
-        gain: [0.86, 0.94, 1.00], lift: [0.024, 0.027, 0.032], gamma: 1.02,
-        shadowTint: [0.84, 0.94, 1.10], highlightTint: [0.94, 1.03, 1.03],
-        purkinje: 1, sunBand: 0, daylight: 0, night: 1, rake: 0,
-        vignetteEdge: [0.76, 0.78, 0.85], vignetteAlpha: 0.42,
+        exposure: 0.76, saturation: 0.58,
+        gain: [0.82, 0.94, 1.06], lift: [0.024, 0.027, 0.034], gamma: 1.02,
+        shadowTint: [0.82, 0.92, 1.12], highlightTint: [0.96, 1.04, 1.02],
+        purkinje: 0.6, sunBand: 0, daylight: 0, night: 1, rake: 0,
+        vignetteEdge: [0.76, 0.78, 0.85], vignetteAlpha: 0.34,
         skyTop: '#0a1122', skyHorizon: '#1a2438', voidColor: '#0b1218', horizonHaze: '#1e2a3e',
     }),
 ]);

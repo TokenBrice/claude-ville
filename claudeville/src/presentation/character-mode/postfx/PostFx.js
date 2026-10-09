@@ -218,8 +218,11 @@ vec3 applyPools(vec3 graded, vec3 albedo) {
         float lobe = geo.w > 0.5 && geo.w < 1.5 && dot(geo.yz, geo.yz) > 0.25
             ? clamp(0.30 + 1.4 * dot(geo.yz, ground) / max(length(ground), 1.0), 0.0, 1.0)
             : 1.0;
-        float steps = poolSteps((1.0 - smoothstep(0.0, 1.0, t)) * lobe, order);
-        vec3 lit = u_lightColors[i].rgb * poolWeight(steps) * light.w * u_lightColors[i].a;
+        float shape = (1.0 - smoothstep(0.0, 1.0, t)) * lobe;
+        bool marked = i < u_attentionCount;
+        float steps = marked ? poolSteps(shape, order) : ambientPoolSteps(shape, order);
+        float weight = marked ? poolWeight(steps) : ambientPoolWeight(steps);
+        vec3 lit = u_lightColors[i].rgb * weight * light.w * u_lightColors[i].a;
         if (i < u_attentionCount) {
             float litLuma = dot(lit, GRADE_LUMA);
             if (litLuma > attentionLuma) {
