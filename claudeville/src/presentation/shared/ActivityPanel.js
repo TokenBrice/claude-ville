@@ -265,7 +265,8 @@ function generatedMilestoneLabel(milestone) {
  */
 export function buildBookOfLivesViewModel(biography, { now = Date.now() } = {}) {
     const identityKey = String(biography?.identityKey || '');
-    const sessionScoped = identityKey.startsWith('anonymous:') || !identityKey.startsWith('named:');
+    const projectScoped = identityKey.startsWith('project:');
+    const sessionScoped = !projectScoped && !identityKey.startsWith('named:');
     const firstSeenAt = Number(biography?.firstSeenAt) || 0;
     const lastSeenAt = Number(biography?.lastSeenAt) || firstSeenAt;
     const episodes = (Array.isArray(biography?.extensions?.lifeEpisodes)
@@ -308,7 +309,9 @@ export function buildBookOfLivesViewModel(biography, { now = Date.now() } = {}) 
         sessionScoped,
         scopeLabel: sessionScoped
             ? 'This history is scoped to this session; this villager has no durable identity.'
-            : 'This history follows this named villager across sessions.',
+            : projectScoped
+                ? 'This history follows the project lead across sessions. Concurrent mains on one repo share this project identity.'
+                : 'This history follows this named villager across sessions.',
         firstSeenAt,
         firstSeenLabel: firstSeenAt ? bookOfLivesDate(firstSeenAt) : 'Not recorded',
         lastSeenAt,

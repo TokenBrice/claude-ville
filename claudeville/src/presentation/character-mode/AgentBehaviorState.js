@@ -1,4 +1,3 @@
-import { eventBus } from '../../domain/events/DomainEvent.js';
 import {
     clampRouteIndex,
     cloneItinerary,
@@ -177,7 +176,7 @@ export class AgentBehaviorState {
     } = {}) {
         const time = this.now();
         const intentId = intent?.id || null;
-        this.finishVisit();
+        this.finishVisit({ advanceItinerary: false });
         if (this.intentId !== intentId || this.building !== building) {
             this.lastRerouteAt = time;
             this.reroutes++;
@@ -306,8 +305,8 @@ export class AgentBehaviorState {
         return entry;
     }
 
-    finishVisit() {
-        if (this.visitStartedAt) {
+    finishVisit({ advanceItinerary = true } = {}) {
+        if (this.visitStartedAt != null) {
             const completedAt = this.now();
             const dwellMs = Math.max(0, completedAt - this.visitStartedAt);
             this.totalDwellMs += dwellMs;
@@ -325,6 +324,16 @@ export class AgentBehaviorState {
                 targetTile: this.targetTile ? { ...this.targetTile } : null,
             }, COMPLETED_VISIT_HISTORY_LIMIT);
             this.visitStartedAt = null;
+            const itinerary = this.currentItinerary;
+            if (advanceItinerary && dwellMs > 0 && itinerary?.inferred === false
+                && itinerary.currentStop === this.building && itinerary.nextStop) {
+                itinerary.currentIndex++;
+                itinerary.currentStop = itinerary.route[itinerary.currentIndex];
+                itinerary.nextStop = itinerary.route[itinerary.currentIndex + 1] || null;
+                itinerary.updatedAt = completedAt;
+                if (this.currentIntent) this.currentIntent.itinerary = cloneItinerary(itinerary);
+                this._recordItinerary(itinerary);
+            }
         }
     }
 
@@ -354,7 +363,7 @@ export class AgentBehaviorState {
         return { ...this.familyPlazaPreference };
     }
 
-    observeToolTransition({ agentId = null, tool = null, input = null, reason = null } = {}) {
+    observeToolTransition({ tool = null, input = null, reason = null } = {}) {
         const toolKey = String(tool || '').trim();
         const time = this.now();
 
@@ -385,14 +394,6 @@ export class AgentBehaviorState {
                 this.lastRetryAt = time;
                 this.lastRetryCount = retryCount;
                 this.lastRetryTool = toolKey;
-                if (agentId) {
-                    eventBus.emit('tool:retried', {
-                        agentId,
-                        tool: toolKey,
-                        retryCount,
-                        ts: time,
-                    });
-                }
             }
         }
 

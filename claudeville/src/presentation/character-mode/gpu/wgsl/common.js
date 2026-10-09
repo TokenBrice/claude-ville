@@ -155,7 +155,11 @@ export const FRAME_UNIFORM_LAYOUT = uniformLayout('FrameUniforms', [
     ['flash', 'vec3f'], ['hdrMarkGain', 'f32'],
     ['hdrEmitterGain', 'vec3f'], ['p3Enabled', 'u32'],
     // 10.2 — DisplayColor hdrGainTable(mode).emitterCap (linear luminance).
-    ['hdrEmitterCap', 'f32'],
+    // W6.11 — `grassGust` (GpuFrameState.resolveSeaWeather) takes the pad
+    // before `cloudLone`, so the block's size is unchanged.
+    ['hdrEmitterCap', 'f32'], ['grassGust', 'f32'],
+    // W6.3 — the lone fair-weather cumulus (GpuFrameState courses.lone).
+    ['cloudLone', 'vec4f'],
 ]);
 
 // §2.6 — the per-batch block, one 256-byte slot per batch in a frame ring

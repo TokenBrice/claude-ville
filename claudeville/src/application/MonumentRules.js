@@ -6,12 +6,50 @@ import { BUILDING_DEFS } from '../config/buildings.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { verifiedOutcomeFromGitEvent } from '../domain/services/VerifiedOutcome.js';
 
+// W7.9 (SW-P9) — every conventional type a day's work commonly carries plants
+// in a district: writing in the Archive, proving and mending at the Task
+// board, upkeep (chore/build/ci) at the Harbor. `style:` stays unplanted.
 const DISTRICT_BY_TYPE = {
     feat: 'forge',
     fix: 'taskboard',
     refactor: 'forge',
     perf: 'mine',
+    docs: 'archive',
+    test: 'taskboard',
+    chore: 'harbor',
+    build: 'harbor',
+    ci: 'harbor',
 };
+
+const KIND_BY_TYPE = {
+    fix: 'fix',
+    perf: 'performance',
+    docs: 'docs',
+    test: 'test',
+    chore: 'upkeep',
+    build: 'upkeep',
+    ci: 'upkeep',
+};
+
+// A merged pull request without a conventional title docks at the Harbor.
+const PR_MERGE_DEFAULT_DISTRICT = 'harbor';
+
+// Upkeep stones stand below every other kind in a district's cap and stone
+// ledger, so a run of chores never pushes a release out of the newest three.
+const LOW_STANDING_KINDS = new Set(['upkeep']);
+
+export function monumentStanding(record) {
+    return LOW_STANDING_KINDS.has(record?.kind) ? 0 : 1;
+}
+
+function recordTs(record) {
+    return Number(record?.plantedAt || record?.ts || 0);
+}
+
+// Standing first, then newest first: the order of the visible cap and ledger.
+export function compareMonumentStanding(a, b) {
+    return (monumentStanding(b) - monumentStanding(a)) || (recordTs(b) - recordTs(a));
+}
 
 const DISTRICT_ALIASES = {
     code: 'forge',
@@ -40,6 +78,21 @@ export function lifetimeTierFor(count) {
         if (value >= threshold) return tier;
     }
     return null;
+}
+
+// W7.7 — the repo standing stone's sprite for a project's lifetime commit
+// count: the 1 / 10 / 100 / 1000 tiers grow cairn → stone → pillar →
+// obelisk. Null below one commit (no stone). Only the frame is chosen here.
+export const REPO_STONE_SPRITES = Object.freeze({
+    maiden: 'prop.repoStone.cairn',
+    ribbon: 'prop.repoStone.stone',
+    flagship: 'prop.repoStone.pillar',
+    aurora: 'prop.repoStone.obelisk',
+});
+
+export function repoStoneSpriteFor(count) {
+    const tier = lifetimeTierFor(count);
+    return tier ? REPO_STONE_SPRITES[tier] : null;
 }
 
 // 6.7 — Chronicle dressing (M16): one static manifest layer per building,
@@ -267,7 +320,26 @@ const LORE_BY_KIND = {
     fix: (label, repo) => `Marks the mending of "${label}" in ${repo}.`,
     performance: (label, repo) => `Honors the quickening of ${repo}: "${label}".`,
     release: (label, repo) => `Commemorates the launch of ${label} from the ${repo} harbor.`,
+    docs: (label, repo) => `Shelved when "${label}" was written down for ${repo}.`,
+    test: (label, repo) => `Marks the proving of "${label}" in ${repo}.`,
+    upkeep: (label, repo) => `Notes the upkeep of ${repo}: "${label}".`,
+    merge: (label, repo) => `Marks ${label} brought in to the ${repo} quay.`,
 };
+
+// A finished command that reported failure (an explicit false, a non-zero
+// exit, a failed status) plants nothing.
+function gitEventFailed(event) {
+    if (event?.success === false) return true;
+    const exitCode = Number(event?.exitCode ?? event?.exit_code);
+    if (Number.isFinite(exitCode) && exitCode !== 0) return true;
+    return /^(failed|error|rejected|cancel+ed)$/i.test(textOf(event?.status));
+}
+
+// `PR #12` from the pull URL the adapter scraped, else a plain noun.
+function pullRequestLabel(event) {
+    const match = textOf(event?.url).match(/\/pull\/(\d+)\/?$/);
+    return match ? `PR #${match[1]}` : 'a pull request';
+}
 
 function monumentLore(kind, label, repoName) {
     const template = LORE_BY_KIND[kind];
@@ -296,8 +368,11 @@ export class MonumentRules {
                 ? this._releaseStone(event)
                 : null;
         }
-        if (type === 'commit' || type === 'pr-merge') {
+        if (type === 'commit') {
             return this._featureStone(event);
+        }
+        if (type === 'pr-merge') {
+            return gitEventFailed(event) ? null : this._pullRequestStone(event);
         }
         return null;
     }
@@ -321,11 +396,26 @@ export class MonumentRules {
         if (!parsed || !DISTRICT_BY_TYPE[parsed.type]) return null;
         const project = textOf(event.project || event.repository || event.repo || 'unknown');
         return {
-            kind: parsed.type === 'fix' ? 'fix' : parsed.type === 'perf' ? 'performance' : 'feature',
+            kind: KIND_BY_TYPE[parsed.type] || 'feature',
             district: DISTRICT_BY_TYPE[parsed.type],
             weight: parsed.type === 'feat' ? 'medium' : 'minor',
             label: parsed.subject || parsed.type,
             dedupKey: `commit:${project}:${event.sha || event.commandHash || event.id || textOf(parsed.subject).slice(0, 80)}`,
+        };
+    }
+
+    // W7.9 — a merged pull request stands in its title type's district when
+    // the title is conventional, else at the Harbor quay it sailed in to.
+    _pullRequestStone(event) {
+        const project = textOf(event.project || event.repository || event.repo || 'unknown');
+        const parsed = conventionalType(event.subject || event.title || event.label);
+        const typed = parsed && DISTRICT_BY_TYPE[parsed.type] ? parsed : null;
+        return {
+            kind: typed ? (KIND_BY_TYPE[typed.type] || 'feature') : 'merge',
+            district: typed ? DISTRICT_BY_TYPE[typed.type] : PR_MERGE_DEFAULT_DISTRICT,
+            weight: 'medium',
+            label: typed?.subject || pullRequestLabel(event),
+            dedupKey: `pr-merge:${project}:${textOf(event.url) || event.commandHash || event.id || event.sha || ''}`,
         };
     }
 
@@ -374,7 +464,7 @@ export class MonumentRules {
 
     static applyDistrictCap(monumentsForDistrict = [], cap = DISTRICT_CAP) {
         const list = Array.isArray(monumentsForDistrict) ? [...monumentsForDistrict] : [];
-        list.sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
+        list.sort(compareMonumentStanding);
         return {
             visible: list.slice(0, cap),
             foundingLayer: list.length > cap,

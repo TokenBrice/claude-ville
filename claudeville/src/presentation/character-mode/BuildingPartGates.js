@@ -19,9 +19,32 @@
 //                  part that IS a room's glass (the Task board lanterns)
 //                  burns for exactly the worker that holds it: N workers
 //                  light min(N, rooms). Loops like `work.<type>`.
+//   status.<bucket> — W5.3: true while <bucket> (`needsYou`, `errors`,
+//                  `quota`) is the lead actionable bucket — SignalLedger
+//                  precedence, the TopBar ATTENTION_PARTS lead rule. A status
+//                  part is never work-coupled and never animates: open, it
+//                  shows frame 1 + SignalLedger.waitAgeTier of the oldest
+//                  actionable wait (a hard swap when the tier steps); closed,
+//                  its staticFrame. Reduced motion changes nothing.
+//   clock.<beat> — W6.8: a FIXTURE gate, never work-coupled: true while the
+//                  day-part beat <beat> (AmbientEvents.DAY_PART_BEATS, the
+//                  atmosphere clock only) is live. A clock part plays its
+//                  `sequence` of strip frames (one per `stepMs`) once when
+//                  the beat opens, then holds `staticFrame` until the beat
+//                  closes and opens again (the next day). Reduced motion
+//                  holds `staticFrame`. Like the `lamps` emitter cycles (the
+//                  Pharos lens, the Command braziers), it reads no agent.
 //
 // Every frame is a function of (gate truth, the motion clock), so the Canvas
 // blit and the GPU record read the same answer.
+
+import {
+    ACTIONABLE_BUCKETS,
+    bucketForStatus,
+    isActionableBucket,
+    waitAgeTier,
+    waitAnchor,
+} from '../../domain/services/SignalLedger.js';
 
 export const DOOR_FRAME_MS = 110;
 
@@ -37,8 +60,35 @@ export function parsePartGate(gate) {
         const match = /^([a-z]+)\.(\d+)$/.exec(rest);
         return match ? { kind, type: match[1], room: Number(match[2]) } : null;
     }
+    if (kind === 'status') return ACTIONABLE_BUCKETS.includes(rest) ? { kind, bucket: rest } : null;
+    if (kind === 'clock') return rest ? { kind, beat: rest } : null;
     if (!rest || (kind !== 'work' && kind !== 'door')) return null;
     return { kind, type: rest };
+}
+
+/**
+ * W5.3 — the attention banner's state for a set of live agents: null when no
+ * one needs action, else `{ bucket, tier, count }` — the lead actionable
+ * bucket, the wait-age tier (0–3) of the oldest actionable wait with a known
+ * anchor (unknown ages hang the shortest drop: the banner never claims a
+ * wait it cannot date) and the exact actionable count.
+ */
+export function attentionBannerState(agents, now = Date.now()) {
+    const counts = { needsYou: 0, errors: 0, quota: 0 };
+    let total = 0;
+    let oldest = 0;
+    for (const agent of agents || EMPTY) {
+        const bucket = bucketForStatus(agent?.status);
+        if (!isActionableBucket(bucket)) continue;
+        counts[bucket]++;
+        total++;
+        const anchor = waitAnchor(agent);
+        if (anchor > 0 && (oldest === 0 || anchor < oldest)) oldest = anchor;
+    }
+    if (!total) return null;
+    const bucket = ACTIONABLE_BUCKETS.find(name => counts[name] > 0);
+    const tier = oldest > 0 ? (waitAgeTier(now - oldest) ?? 0) : 0;
+    return { bucket, tier, count: total };
 }
 
 // Looping frame for a stepped clock: frames [loopFrom, frames) at `fps`.
@@ -58,15 +108,22 @@ export class BuildingPartGates {
         this._timeMs = 0;
         this._roomSlots = null; // type -> { assignment: Map<agentId, roomIndex> }
         this._motion = true;
+        this._attention = null; // W5.3 — { bucket, tier, count } or null
+        this._clockBeats = EMPTY; // W6.8 — live day-part beat ids
+        this._sequences = new Map(); // `${type}:${name}` -> { startAt }
     }
 
     // `workingIdsByType`: Map<type, Set<agentId>> of isWorkingVisitor bodies.
     // `roomSlotsByType`: Map<type, { assignment }> (BuildingSprite 6.3 slots).
     // `timeMs`: the one motion clock (frozen under reduced motion).
-    update({ workingIdsByType = null, roomSlotsByType = null, timeMs = 0, motion = true } = {}) {
+    // `attention`: attentionBannerState() for the `status.<bucket>` gates.
+    // `clockBeats`: the live day-part beat ids for the `clock.<beat>` gates.
+    update({ workingIdsByType = null, roomSlotsByType = null, timeMs = 0, motion = true, attention = null, clockBeats = null } = {}) {
         this._timeMs = Number(timeMs) || 0;
         this._motion = motion !== false;
         this._roomSlots = roomSlotsByType;
+        this._attention = attention || null;
+        this._clockBeats = clockBeats || EMPTY;
         const next = this._working;
         for (const mine of next.values()) mine.stale = true;
         if (workingIdsByType) {
@@ -94,6 +151,8 @@ export class BuildingPartGates {
     isOpen(gate) {
         const parsed = typeof gate === 'string' ? parsePartGate(gate) : gate;
         if (!parsed) return false;
+        if (parsed.kind === 'status') return this._attention?.bucket === parsed.bucket;
+        if (parsed.kind === 'clock') return this._clockBeats.has(parsed.beat);
         if (parsed.kind === 'room') {
             const assignment = this._roomSlots?.get(parsed.type)?.assignment;
             if (!assignment) return false;
@@ -124,6 +183,10 @@ export class BuildingPartGates {
         const staticFrame = Math.max(0, Math.min(frames - 1, layer?.staticFrame | 0));
         const parsed = parsePartGate(layer?.gate);
         const open = parsed ? this.isOpen(parsed) : false;
+        if (parsed?.kind === 'status') {
+            return open ? Math.min(frames - 1, 1 + Math.max(0, this._attention.tier | 0)) : staticFrame;
+        }
+        if (parsed?.kind === 'clock') return this._clockFrame(`${buildingType}:${name}`, layer, staticFrame, open);
         if (layer?.oneShot) return this._oneShotFrame(`${buildingType}:${name}`, frames, staticFrame, open);
         if (!open || !this._motion) return staticFrame;
         return loopingPartFrame(layer, this._timeMs);
@@ -152,5 +215,21 @@ export class BuildingPartGates {
             state.stepAt = this._timeMs;
         }
         return state.frame;
+    }
+
+    _clockFrame(key, layer, staticFrame, open) {
+        if (!open) {
+            this._sequences.delete(key);
+            return staticFrame;
+        }
+        if (!this._motion) return staticFrame;
+        let state = this._sequences.get(key);
+        if (!state) {
+            state = { startAt: this._timeMs };
+            this._sequences.set(key, state);
+        }
+        const sequence = Array.isArray(layer?.sequence) ? layer.sequence : [];
+        const step = Math.floor((this._timeMs - state.startAt) / Math.max(1, Number(layer?.stepMs) || 320));
+        return step >= 0 && step < sequence.length ? sequence[step] : staticFrame;
     }
 }

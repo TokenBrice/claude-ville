@@ -176,6 +176,39 @@ const RAINBOW_MAX_ALPHA = 0.35;
 const RAINBOW_MAX_SUN_ELEVATION_DEG = 42;
 const LIVE_TWINKLE_STARS_CALM = 3;
 const LIVE_TWINKLE_RATE_SCALE_CALM = 0.28;
+// W8.8 (AD-P14) — aurora nights: three baked ribbon phases (A → B → C,
+// pixflux on one forced 5-colour palette, per-course alpha baked in) drawn
+// as three ribbons in the sky band above the sea horizon. Gate: the meteor
+// gate (night phases, stars ≥ 0.45, cover ≤ 0.35) in Nov–Feb, read off the
+// village clock and weather only, never agent state (V3). Each ribbon steps
+// to its next phase every AURORA_STEP_MS on the slow band, the three offset
+// by a third of a step so only one changes at a time (one swap every 2.4 s:
+// a phase is a whole new curtain silhouette, so a faster swap reads as
+// flicker from the corner of the eye); reduced motion holds each on its own
+// fixed phase. The ribbons lay over the sky at AURORA_ALPHA, emitted light
+// the stars and the moon show through rather than a painted hedge, and only
+// where the sky band holds a whole ribbon: a lower edge cut by the frame top
+// reads as debris, not sky. Unlit sky art: no glow, no HDR role.
+const AURORA_IDS = Object.freeze(['atmosphere.aurora.a', 'atmosphere.aurora.b', 'atmosphere.aurora.c']);
+// The sprites' courses (edge, body, teal, violet, fringe) and the final
+// colour each is painted as: the authored hues pulled down to OKLab L 0.54 /
+// 0.50 / 0.46 / 0.42 / 0.38, so the brightest course stays under 0.55 and
+// far under every attention plate, and the fringe still sits above the
+// night zenith (an aurora never darkens the sky).
+const AURORA_SOURCE = Object.freeze(['#86d8a2', '#4fb08a', '#2f8280', '#455c96', '#4c3d7c']);
+export const AURORA_COURSES = Object.freeze(['#2d8150', '#037554', '#006664', '#344a82', '#453574']);
+export const AURORA_MONTHS = Object.freeze([10, 11, 0, 1]);
+export const AURORA_STEP_MS = 7200;
+export const AURORA_ALPHA = 0.7;
+// Ribbon placement on the sky band B = horizonY: centre x as a share of the
+// frame, and the lift of the ribbon's lower edge above the sea horizon.
+const AURORA_RIBBONS = Object.freeze([
+    Object.freeze({ xFrac: 0.17, lift: 0.30 }),
+    Object.freeze({ xFrac: 0.48, lift: 0.44 }),
+    Object.freeze({ xFrac: 0.77, lift: 0.24 }),
+]);
+const AURORA_MAX_CELL = 2;
+const AURORA_BAND_SHARE = 0.8;
 
 export function liveTwinkleBudget({ calm = false, motionScale = 1 } = {}) {
     const plan = ornamentPlan({ calm, motionScale, level: 0 });
@@ -194,6 +227,29 @@ export function allowAmbientMeteor({ motionScale = 1 } = {}) {
     return ornamentPlan({ calm: false, motionScale, level: 0 }).ambientMeteors === 'on';
 }
 
+// W8.8 — the aurora shares the meteor gate, in the winter months only. It
+// reads the atmosphere snapshot's phase, stars, cloud cover and effective
+// date and nothing else: no agent, roster, mood or director input (V3).
+export function auroraGateOpen(atmosphere) {
+    if (!SHOOTING_STAR_NIGHT_PHASES.has(atmosphere?.phase)) return false;
+    if ((atmosphere.sky?.starsAlpha ?? 0) < AMBIENT_METEOR_MIN_STARS_ALPHA) return false;
+    if (clamp(atmosphere.weather?.cloudCover ?? 0) > AMBIENT_METEOR_MAX_CLOUD_COVER) return false;
+    const date = atmosphere.effectiveDate;
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return false;
+    return AURORA_MONTHS.includes(date.getMonth());
+}
+
+// W8.8 — ribbon `ribbon`'s phase (0 A, 1 B, 2 C) at motion time `timeMs`:
+// one step per AURORA_STEP_MS, each ribbon a third of a step after the one
+// before and a phase ahead of it. Without motion (reduced motion, a held
+// clock) each ribbon holds its own fixed phase.
+export function auroraPhaseIndex(ribbon, timeMs, motionScale = 1) {
+    const phases = AURORA_IDS.length;
+    if (!(motionScale > 0) || !Number.isFinite(timeMs)) return ribbon % phases;
+    const step = Math.floor((timeMs + (ribbon * AURORA_STEP_MS) / phases) / AURORA_STEP_MS);
+    return (((step + ribbon) % phases) + phases) % phases;
+}
+
 // Weather plate is a vertical, canvas-wide sky condition. Spatial ground
 // haze lives in WorldFrameRenderer (ground-atmosphere stage).
 export const SKY_WEATHER_PLATE_SPACE = 'vertical-canvas';
@@ -208,6 +264,7 @@ export class SkyRenderer {
         this._deck = null;
         this._deckKey = '';
         this._rainbowStamp = null;
+        this._aurora = null;
         this.deckBakes = 0;
         this._fallbackAtmosphere = null;
         this._shootingStars = [];
@@ -247,6 +304,8 @@ export class SkyRenderer {
         // 5.8 then 5.7 — the rainbow sits behind the horizon deck, and the
         // deck in front of the low sun and moon.
         this._drawRainbow(ctx, canvas, snapshot, motionScale);
+        // W8.8 — the aurora sits behind the horizon deck too.
+        this._drawAurora(ctx, canvas, snapshot, motionScale, motionScale > 0 ? timeMs : null);
         this._drawHorizonDeck(ctx, camera, canvas, snapshot, motionScale > 0 ? timeMs : null);
         this._maybeTriggerAmbientMeteor(snapshot);
     }
@@ -1089,6 +1148,83 @@ export class SkyRenderer {
         return true;
     }
 
+    // W8.8 — three aurora ribbons in the sky band above the sea horizon, on
+    // a whole cell (the largest of 1–2 that keeps a ribbon inside 80 % of
+    // the band) at whole-cell positions, clipped to the sky; nothing when
+    // even a 1-cell ribbon overflows that share. The phase strips are
+    // recoloured to the capped courses (the preimage where the frame is
+    // graded afterwards) and held until the colour set changes.
+    _drawAurora(ctx, canvas, atmosphere, motionScale, timeMs) {
+        const horizonY = this._horizonY;
+        if (!(horizonY > 0) || !this.assets || !auroraGateOpen(atmosphere)) return false;
+        const stamps = this._auroraStamps(atmosphere);
+        if (!stamps) return false;
+        const { width, height } = stamps[0];
+        const fit = Math.floor((horizonY * AURORA_BAND_SHARE) / height);
+        if (fit < 1) return false;
+        const cell = Math.min(AURORA_MAX_CELL, fit);
+        const drawWidth = width * cell;
+        const drawHeight = height * cell;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, canvas.width, horizonY);
+        ctx.clip();
+        ctx.imageSmoothingEnabled = false;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = AURORA_ALPHA;
+        AURORA_RIBBONS.forEach((ribbon, index) => {
+            const stamp = stamps[auroraPhaseIndex(index, timeMs, motionScale)];
+            const x = Math.round((ribbon.xFrac * canvas.width - drawWidth / 2) / cell) * cell;
+            const y = Math.round((horizonY - ribbon.lift * horizonY - drawHeight) / cell) * cell;
+            ctx.drawImage(stamp, x, y, drawWidth, drawHeight);
+        });
+        ctx.restore();
+        return true;
+    }
+
+    _auroraStamps(atmosphere) {
+        if (!AURORA_IDS.every(id => this.assets.has(id))) return null;
+        const grade = atmosphere.lightGrade || null;
+        const colors = AURORA_COURSES.map(hexToRgb01)
+            .map(rgb => (!this._backdropGraded && grade ? ungradeRgb(rgb, grade) : rgb))
+            .map(rgb => rgb.map(channel => Math.round(clamp(channel) * 255)));
+        const key = colors.map(rgb => rgb.join(',')).join('|');
+        if (this._aurora?.key === key) return this._aurora.stamps;
+        const images = AURORA_IDS.map(id => this.assets.get(id));
+        if (!images.every(img => img?.width > 0 && img?.height > 0)) return null;
+        this._releaseAurora();
+        const lookup = new Map(AURORA_SOURCE.map((hex, index) => [
+            hexToRgb01(hex).map(channel => Math.round(channel * 255)).join(','),
+            colors[index],
+        ]));
+        const stamps = images.map((img) => {
+            const stamp = document.createElement('canvas');
+            stamp.width = img.width;
+            stamp.height = img.height;
+            const sctx = stamp.getContext('2d', { willReadFrequently: true });
+            sctx.drawImage(img, 0, 0);
+            const pixels = sctx.getImageData(0, 0, stamp.width, stamp.height);
+            const data = pixels.data;
+            for (let i = 0; i < data.length; i += 4) {
+                if (data[i + 3] === 0) continue;
+                const rgb = lookup.get(`${data[i]},${data[i + 1]},${data[i + 2]}`);
+                if (!rgb) continue;
+                data[i] = rgb[0];
+                data[i + 1] = rgb[1];
+                data[i + 2] = rgb[2];
+            }
+            sctx.putImageData(pixels, 0, 0);
+            return stamp;
+        });
+        this._aurora = { key, stamps };
+        return stamps;
+    }
+
+    _releaseAurora() {
+        for (const stamp of this._aurora?.stamps || []) releaseCanvasBackingStore(stamp);
+        this._aurora = null;
+    }
+
     // Live star twinkle over the cached night sky. Walks the same deterministic
     // PRNG as _drawStars (same seed / next() sequence / hot test / drift) so the
     // first LIVE_TWINKLE_STARS hot stars land exactly on their baked positions,
@@ -1256,6 +1392,7 @@ export class SkyRenderer {
         this._deckKey = '';
         releaseCanvasBackingStore(this._rainbowStamp?.canvas);
         this._rainbowStamp = null;
+        this._releaseAurora();
     }
 
     dispose() {

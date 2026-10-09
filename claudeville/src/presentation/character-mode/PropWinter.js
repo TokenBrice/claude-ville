@@ -43,6 +43,18 @@ export const WINTER_PROPS = Object.freeze({
     'veg.root.arch': { dormancy: 'evergreen', surface: 'round' },
     'prop.mangroveRoot.twisted': { dormancy: 'evergreen', surface: 'round' },
     'prop.mangroveRoot.arch': { dormancy: 'evergreen', surface: 'round' },
+    // W8.3c dressing: the hedgerow and bramble keep their leaves; reeds,
+    // cattails and bracken die back to straw (willowGold); the rose arbor's
+    // roses go dormant while its vine leaves stay green.
+    'veg.hedgerow': { dormancy: 'evergreen', surface: 'round' },
+    'veg.bramblePatch': { dormancy: 'evergreen', surface: 'round' },
+    'veg.reedClump': { dormancy: 'plant', surface: 'round' },
+    'veg.cattailClump': { dormancy: 'plant', surface: 'round' },
+    'veg.fernCluster': { dormancy: 'plant', surface: 'round' },
+    'prop.trellisArch': { dormancy: 'bloom', surface: 'round' },
+    // W8.3b farm pocket: the crop beds go dormant to straw under a flat cap.
+    'prop.farm.cropRows.long': { dormancy: 'plant', surface: 'flat' },
+    'prop.farm.cropRows.short': { dormancy: 'plant', surface: 'flat' },
     // Roofed props: the roof takes the landmarks' course snow
     // (RoofWeather.roofSnowPixels), the tufts the round plant cap. The well
     // goes by the slate colour rule; the scenery's roofs are polygons in
@@ -56,6 +68,16 @@ export const WINTER_PROPS = Object.freeze({
     'prop.villageGate': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, flats: true, polys: [[[35, 10], [0, 76], [1, 80], [4, 85], [10, 88], [17, 91], [26, 93], [35, 94], [45, 93], [53, 91], [61, 88], [67, 85], [70, 80], [71, 76]], [[187, 86], [151, 152], [152, 156], [156, 161], [162, 164], [169, 167], [178, 169], [187, 170], [196, 169], [205, 167], [213, 164], [218, 161], [222, 156], [223, 152]]] } },
     'prop.villageWallSeaTower': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, flats: true, poly: [[47, 10], [18, 66], [19, 70], [22, 73], [27, 76], [33, 78], [40, 80], [47, 80], [54, 80], [61, 78], [67, 76], [72, 73], [75, 70], [76, 66]] } },
     'prop.marketStall': { dormancy: 'evergreen', surface: 'round', roof: { poly: [[30, 5], [62, 20], [60, 26], [33, 38], [5, 19]], sheet: true } },
+    'prop.marketStall.ochre': { dormancy: 'evergreen', surface: 'round', roof: { poly: [[30, 5], [62, 20], [60, 26], [33, 38], [5, 19]], sheet: true } },
+    'prop.marketStall.canvas': { dormancy: 'evergreen', surface: 'round', roof: { poly: [[30, 5], [62, 20], [60, 26], [33, 38], [5, 19]], sheet: true } },
+    // W8.3b: the avenue's bread stall (awning hull in sprite px) and the
+    // slate-roofed dovecote (slate colour rule).
+    'prop.marketStall.bread': { dormancy: 'evergreen', surface: 'round', roof: { poly: [[14, 20], [35, 15], [40, 15], [46, 20], [46, 23], [44, 27], [31, 27]], sheet: true } },
+    'prop.farm.dovecote': { dormancy: 'evergreen', surface: 'round', roof: true },
+    // W8.3a: the smithy's log store and the mine's tool rack carry slate
+    // pent roofs (slate colour rule).
+    'prop.firewoodStack': { dormancy: 'evergreen', surface: 'round', roof: true },
+    'prop.toolRack': { dormancy: 'evergreen', surface: 'round', roof: true },
 });
 
 // The village wall's walk (VillageWall `paintWallRun`, the stone curtain's

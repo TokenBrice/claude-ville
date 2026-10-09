@@ -31,12 +31,14 @@ import { drawCanvasAerialHaze, drawResidentBackdropGrade } from './BackdropGrade
 import { castLightingFor, drawTreeCasts, setFrameCastLighting, setFramePointCastLights } from './RakingLight.js';
 import { drawFlashExposure, stormStrikeAt, weatherPressureLevel } from './WeatherRenderer.js';
 import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
+import { drawOffshoreScenery, isOffshoreRecordId } from './OffshoreScenery.js';
 import { poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
 import { drawCanvasWaterColumns } from './CanvasWaterState.js';
 import { drawCanvasEmitterCuts } from './EmitterCuts.js';
 import { groundOptionsFor, groundStateAt } from './GroundState.js';
 import { ungradeRgb } from './CanvasGrade.js';
 import { PEAK, armPeakMarks, drawMomentEdgePlates, setMomentStage, takePeakMarks } from './EffectStamps.js';
+import { THOUGHT_PAINT } from './ThoughtColumn.js';
 import { getReservedRects, publishReservedBox } from '../shared/ReservedRects.js';
 
 const FRAME_TIMING_RING_CAPACITY = 90;
@@ -671,6 +673,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
             ctx,
             frameTimer ? label => markFrameTiming(frameTimer, label) : null,
         );
+        // W8.5a — the offshore backdrop on the sea, in its painter order,
+        // under puddles, cloud shadows, haze, fog and every island drawable.
+        drawOffshoreScenery(ctx, renderer);
         // 5.2 — the Canvas twin of the resident puddle courses.
         drawCanvasPuddles(renderer, ctx, atmosphere);
         // 1.4 — world-locked stepped cloud-shadow courses over the terrain.
@@ -833,6 +838,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         gpuFeed.timeMs = renderer.motionTimeMs ?? feed?.timeMs;
         gpuFeed.atmosphere = atmosphere;
         gpuFeed.weather = atmosphere?.weather || null;
+        // W6.3 — the lone fair-weather cumulus pose (AmbientEvents, posed in
+        // IsometricRenderer's update); null on every other minute.
+        gpuFeed.loneCloud = renderer.ambientLoneCloud || null;
         // 0.10 — the lightning exposure scale the composite applies (0 = none).
         gpuFeed.flash = strike.exposure;
         // 2.7 — the Lighthouse beam fan (null by day), swept on the motion clock.
@@ -1004,6 +1012,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         }
     }
     drawSelectedAgentXray(renderer, overlayCtx, buildingDrawables);
+    drawThoughtLayer(overlayCtx, sortedSprites, zoom);
     // 4.5 — the shared-file overlap plate. The thread and knot live in the
     // occluded ground texture; the exact counts belong here, once, in both
     // backends, so dense load keeps the numbers when the lines are dropped.
@@ -1039,6 +1048,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
             ? [...renderer._collectAgentLabelHitRects(sortedSprites), captionWorldBox]
             : renderer._collectAgentLabelHitRects(sortedSprites),
         harborPendingRepos,
+        squads: villageSnapshot?.squads || [],
         readMode: renderer.getReadMode(),
         selectedType: villageSnapshot?.selectedBuildingSignal?.type || null,
     });
@@ -1842,7 +1852,7 @@ function insertGroundFogRecords(ordered, fogRecords) {
     let at = 0;
     while (at < ordered.length) {
         const id = ordered[at]?.id;
-        if (id === 'terrain:static' || id === 'ground:haze') at++;
+        if (id === 'terrain:static' || id === 'ground:haze' || isOffshoreRecordId(id)) at++;
         else break;
     }
     ordered.splice(at, 0, ...fogRecords);
@@ -1953,6 +1963,18 @@ function drawBuildingLightReflections(renderer, ctx, atmosphere) {
         );
     }
     ctx.restore();
+}
+
+// W3.1–W3.4 — the thought layer, on the ungraded upper overlay of both
+// backends: above every body, building and per-agent mark (so no roof, spire
+// or portal paints over a reserved thought, and none is graded at night),
+// below building labels and T1 plates. Every leader first, then every column,
+// so a leader that must pass a neighbour runs under its bubble, not across
+// its text. Behind-building speakers are included: their columns sit above
+// the occluding crown (W3.4).
+function drawThoughtLayer(ctx, sprites, zoom) {
+    for (const sprite of sprites) sprite.drawThought?.(ctx, zoom, THOUGHT_PAINT.LEADER);
+    for (const sprite of sprites) sprite.drawThought?.(ctx, zoom, THOUGHT_PAINT.COLUMN);
 }
 
 function drawSelectedAgentXray(renderer, ctx, buildingDrawables) {

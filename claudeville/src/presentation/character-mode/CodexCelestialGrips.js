@@ -1,5 +1,9 @@
 // Wrist centers in 92px sheet coordinates: six walk frames, then four idle
 // frames. Track the same hand through turns; E/NE hide the far forearm.
+// `poseWrists.<group>` holds the same hand for an action-strip group, one
+// entry per strip frame (W8.7: the run rows, measured from actions.png rows
+// 21–26). E/W/SE/NW follow the fist that pumps forward, so the blade swings
+// with the stride instead of parking when the body breaks into a run.
 export const CODEX_CELESTIAL_GRIPS = {
     'agent.codex.gpt56sol': {
         wrists: {
@@ -18,6 +22,18 @@ export const CODEX_CELESTIAL_GRIPS = {
         backDirections: [],
         angles: { s: -0.40, se: -0.35, e: -0.10, ne: -0.35, n: -0.40, nw: -0.35, w: -0.10, sw: -0.40 },
         scale: 0.78,
+        poseWrists: {
+            run: {
+                s:  [[61,55], [59,53], [59,52], [59,55], [58,55], [58,53]],
+                se: [[57,56], [58,56], [61,53], [68,50], [69,49], [65,50]],
+                e:  [[65,52], [64,52], [59,56], [68,45], [68,42], [59,48]],
+                ne: [[35,52], [34,51], [33,52], [33,51], [34,50], [34,51]],
+                n:  [[28,50], [28,47], [29,47], [27,47], [28,45], [28,47]],
+                nw: [[31,61], [32,61], [31,57], [22,48], [21,46], [26,49]],
+                w:  [[23,50], [22,47], [30,52], [22,52], [22,51], [27,48]],
+                sw: [[58,57], [60,53], [58,55], [56,53], [55,53], [55,54]],
+            },
+        },
     },
     'agent.codex.gpt56terra': {
         wrists: {
@@ -55,5 +71,17 @@ export const CODEX_CELESTIAL_GRIPS = {
         backDirections: [],
         angles: { s: -0.35, se: -0.30, e: -0.10, ne: -0.30, n: -0.35, nw: -0.30, w: -0.10, sw: -0.35 },
         scale: 0.80,
+        poseWrists: {
+            run: {
+                s:  [[59,54], [58,51], [58,51], [58,55], [58,53], [58,55]],
+                se: [[53,55], [53,55], [57,53], [65,53], [63,53], [60,53]],
+                e:  [[60,52], [58,52], [55,56], [61,48], [61,43], [57,49]],
+                ne: [[29,44], [29,45], [30,45], [31,45], [31,44], [31,44]],
+                n:  [[32,51], [32,51], [34,50], [33,49], [35,51], [33,51]],
+                nw: [[36,55], [34,53], [35,52], [27,49], [27,48], [31,55]],
+                w:  [[30,47], [29,48], [36,53], [30,52], [29,51], [35,51]],
+                sw: [[59,50], [58,49], [57,49], [55,50], [54,47], [53,47]],
+            },
+        },
     },
 };

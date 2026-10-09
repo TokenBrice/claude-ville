@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const hookPath = path.join(repoRoot, 'scripts/agent-hooks/claude-hook.cjs');
 const require = createRequire(import.meta.url);
 const { mapClaudeHookEvent, runIngest } = require(hookPath);
+const addedHookKinds = [
+  'SessionStart', 'SessionEnd', 'SubagentStart', 'SubagentStop',
+  'UserPromptSubmit', 'PermissionRequest', 'Notification'
+];
 
 function run(mode, input, options = {}) {
   const started = performance.now();
@@ -172,6 +176,68 @@ test('ingest maps Claude lifecycle fixtures to allowlisted normalized payloads',
     ts: 123458
   });
   assert.equal(mapClaudeHookEvent({ ...base, hook_event_name: 'Notification' }), null);
+  assert.equal(mapClaudeHookEvent({ ...base, hook_event_name: 'Notification', notification_type: 'idle_prompt' }), null);
+  assert.equal(mapClaudeHookEvent({ ...base, hook_event_name: 'Unknown' }), null);
+  for (const kind of addedHookKinds) {
+    const mapped = mapClaudeHookEvent({
+      ...base,
+      hook_event_name: kind,
+      notification_type: 'permission_prompt',
+      message: 'private notification prose',
+      agent_id: 'private child identity'
+    }, 123459);
+    assert.deepEqual(mapped, { ...pre, kind, ts: 123459 });
+    assert.equal(JSON.stringify(mapped).includes('private'), false);
+  }
+});
+
+test('committed hooks send each added lifecycle kind with scoped permission notifications', () => {
+  const { hooks } = JSON.parse(readFileSync(path.join(repoRoot, '.claude/settings.json'), 'utf8'));
+  for (const kind of addedHookKinds) {
+    const entries = hooks[kind];
+    assert.ok(entries?.length, kind);
+    assert.ok(entries.some(entry => entry.hooks.some(hook => (
+      hook.command === 'node scripts/agent-hooks/claude-hook.cjs ingest' && hook.timeout === 1
+    ))), kind);
+  }
+  assert.equal(hooks.Notification[0].matcher, 'permission_prompt');
+  assert.ok(hooks.SessionStart[0].hooks.some(hook => hook.command.endsWith('claude-hook.cjs session')));
+});
+
+test('enabled added hooks retain redaction, authentication, and the 150 ms request timeout', () => {
+  for (const kind of addedHookKinds) {
+    let posted = null;
+    let options = null;
+    const handlers = {};
+    let destroyed = false;
+    const request = (value) => {
+      options = value;
+      return {
+        on(event, listener) { handlers[event] = listener; },
+        end(body) { posted = JSON.parse(body); },
+        destroy() { destroyed = true; }
+      };
+    };
+    assert.equal(runIngest({
+      env: { CLAUDEVILLE_DOGFOOD_HOOKS: '1', CLAUDEVILLE_INGEST_TOKEN: 'synthetic-token' },
+      read: () => ({
+        hook_event_name: kind,
+        notification_type: 'permission_prompt',
+        session_id: 'session-added',
+        cwd: '/tmp/project',
+        tool_input: { command: 'npm test token=secret', content: 'private' }
+      }),
+      request,
+      now: () => 123460
+    }), 0);
+    assert.equal(posted.kind, kind);
+    assert.deepEqual(posted.input, { command: 'npm test token=[REDACTED]' });
+    assert.equal(options.timeout, 150);
+    assert.equal(options.headers['X-ClaudeVille-Ingest-Token'], 'synthetic-token');
+    handlers.timeout();
+    assert.equal(destroyed, true);
+    assert.doesNotThrow(() => handlers.error(new Error('offline')));
+  }
 });
 
 test('ingest flag unset exits zero without reading input or opening a request', () => {
@@ -225,4 +291,40 @@ test('each hook mode stays under 500 ms per run (half the 1 s hook timeout) with
     const median = elapsed.sort((a, b) => a - b)[Math.floor(elapsed.length / 2)];
     assert.ok(median < HOOK_MEDIAN_BUDGET_MS, `${mode} median ${median.toFixed(1)} ms over ten runs`);
   }
+});
+
+test('added hook mappings and enabled sender fit the sub-200 ms process latency budget offline', () => {
+  // Inject transport only: exercise opt-in ingestion and its real redaction,
+  // payload serialization, and process startup without touching port 4000.
+  const runner = `
+    const assert = require('node:assert/strict');
+    const fs = require('node:fs');
+    const { runIngest } = require(${JSON.stringify(hookPath)});
+    const kinds = JSON.parse(fs.readFileSync(0, 'utf8'));
+    const posted = [];
+    for (const kind of kinds) {
+      runIngest({
+        env: { CLAUDEVILLE_DOGFOOD_HOOKS: '1' },
+        read: () => ({ hook_event_name: kind, session_id: 'latency-fixture', notification_type: 'permission_prompt' }),
+        request: (options) => {
+          assert.equal(options.timeout, 150);
+          return { on() {}, end(body) { posted.push(JSON.parse(body).kind); } };
+        }
+      });
+    }
+    assert.deepEqual(posted, kinds);
+  `;
+  const elapsed = [];
+  for (let runNumber = 1; runNumber <= 10; runNumber += 1) {
+    const started = performance.now();
+    const result = spawnSync(process.execPath, ['-e', runner], {
+      cwd: repoRoot, input: JSON.stringify(addedHookKinds), encoding: 'utf8', timeout: HOOK_TIMEOUT_MS
+    });
+    const duration = performance.now() - started;
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(duration < HOOK_RUN_BUDGET_MS, `added hooks run ${runNumber} took ${duration.toFixed(1)} ms`);
+    elapsed.push(duration);
+  }
+  const median = elapsed.sort((a, b) => a - b)[Math.floor(elapsed.length / 2)];
+  assert.ok(median < HOOK_MEDIAN_BUDGET_MS, `added hooks median ${median.toFixed(1)} ms over ten runs`);
 });

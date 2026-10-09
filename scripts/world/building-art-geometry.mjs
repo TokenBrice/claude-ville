@@ -200,14 +200,21 @@ export function validateFrameStripParts(reporter, { entries, spritesRoot }) {
                 continue;
             }
             if (layer.dressing !== true) {
-                if (!(Number(fps) >= PART_FPS_RANGE[0] && Number(fps) <= PART_FPS_RANGE[1])) {
+                // W5.3 — a `status.<bucket>` part (the Command attention
+                // banner) is static: a hard frame swap per wait-age tier, no
+                // clock, so it carries no `fps`.
+                const statusPart = typeof gate === 'string' && /^status\.(needsYou|errors|quota)$/.test(gate.trim());
+                if (!statusPart && !(Number(fps) >= PART_FPS_RANGE[0] && Number(fps) <= PART_FPS_RANGE[1])) {
                     reporter.error(path, `\`fps\` must be ${PART_FPS_RANGE[0]}-${PART_FPS_RANGE[1]} (stepped, not smooth)`);
+                }
+                if (statusPart && fps !== undefined) {
+                    reporter.error(path, 'a `status.<bucket>` part is static: it takes no `fps`');
                 }
                 if (!Number.isInteger(staticFrame) || staticFrame < 0 || staticFrame >= frames) {
                     reporter.error(path, '`staticFrame` must index a frame of the strip (the gated-off and reduced-motion frame)');
                 }
-                if (typeof gate !== 'string' || !/^((work|door)\.[a-z]+|room\.[a-z]+\.\d+)$/.test(gate.trim())) {
-                    reporter.error(path, '`gate` must name a BuildingPartGates gate (`work.<type>`, `door.<type>` or `room.<type>.<k>`, real work via isWorkingVisitor)');
+                if (typeof gate !== 'string' || !/^((work|door)\.[a-z]+|room\.[a-z]+\.\d+|status\.(needsYou|errors|quota))$/.test(gate.trim())) {
+                    reporter.error(path, '`gate` must name a BuildingPartGates gate (`work.<type>`, `door.<type>` or `room.<type>.<k>`, real work via isWorkingVisitor; or `status.<bucket>`, the static attention banner)');
                 }
             }
             if (!Array.isArray(layer.anchor) || !layer.anchor.every(Number.isFinite)) {

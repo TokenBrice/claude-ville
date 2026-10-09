@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 
 import { AgentSprite, CODEX_WEAPON_ASSETS } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { createThoughtColumn, layoutThoughtColumn, THOUGHT_HEAD, THOUGHT_STACK_STEP, THOUGHT_PAINT } from '../../claudeville/src/presentation/character-mode/ThoughtColumn.js';
 import { Agent } from '../../claudeville/src/domain/entities/Agent.js';
 import { AgentGpuOverlayRenderer } from '../../claudeville/src/presentation/character-mode/AgentGpuOverlayRenderer.js';
 
@@ -91,7 +92,7 @@ test('a new thought gets its own window without reviving expired history', (t) =
     assert.deepEqual(sprite._activityThread(), []);
 });
 
-test('GPU annotation mode changes do not switch live bubbles off together', () => {
+test('GPU per-agent overlays leave thought painting to the dedicated layer in every annotation mode', () => {
     let bubbles = 0;
     const host = {
         agent: { status: 'working' }, gpuWorldEnabled: true, selected: false,
@@ -103,7 +104,32 @@ test('GPU annotation mode changes do not switch live bubbles off together', () =
     };
     const renderer = new AgentGpuOverlayRenderer(host);
     for (const mode of ['full', 'compact', 'minimal', 'full']) renderer.draw({}, 1, mode);
-    assert.equal(bubbles, 4);
+    assert.equal(bubbles, 0);
+});
+
+test('dedicated thought painting stays live across annotation modes and receives both phases', () => {
+    const ctx = {};
+    const phases = [];
+    const host = {
+        agent: { status: 'working' }, bubbleSlot: 0, chatting: false,
+        _drawStatus: (paintCtx, phase) => {
+            assert.equal(paintCtx, ctx);
+            phases.push(phase);
+        },
+    };
+    for (const mode of ['full', 'compact', 'minimal', 'full']) {
+        host.annotationMode = mode;
+        AgentSprite.prototype.drawThought.call(host, ctx, 2, THOUGHT_PAINT.LEADER);
+        AgentSprite.prototype.drawThought.call(host, ctx, 2, THOUGHT_PAINT.COLUMN);
+    }
+    assert.deepEqual(phases, Array.from({ length: 4 }, () => [THOUGHT_PAINT.LEADER, THOUGHT_PAINT.COLUMN]).flat());
+    assert.equal(host._zoom, 2);
+    host.bubbleSlot = null;
+    AgentSprite.prototype.drawThought.call(host, ctx, 2, THOUGHT_PAINT.COLUMN);
+    host.bubbleSlot = 0;
+    host.chatting = true;
+    AgentSprite.prototype.drawThought.call(host, ctx, 2, THOUGHT_PAINT.COLUMN);
+    assert.equal(phases.length, 8);
 });
 
 // Monospace stand-in: every glyph is 6px wide, so expected widths are exact and
@@ -215,46 +241,48 @@ test('a silent villager has no tooltip', () => {
 // renderer after three consecutive frame failures — which is exactly how it
 // escaped review once already.
 function slotHost() {
-    return {
-        camera: { zoom: 1 },
-        // Real method, so the constants it reads are genuinely evaluated.
-        _agentBubbleWidth: IsometricRenderer.prototype._agentBubbleWidth,
-    };
+    const renderer = Object.create(IsometricRenderer.prototype);
+    renderer.camera = { zoom: 1 };
+    return renderer;
 }
 
-test('slot reservation widens with the real line length and stays bounded', () => {
-    const host = slotHost();
-    const width = (text) => IsometricRenderer.prototype._agentBubbleWidth.call(host, {
-        _activitySnapshot: text === null ? null : { text },
-    });
-
-    // Silent villager: falls back to the short-label floor.
-    const floor = width(null);
-    assert.equal(floor > 0, true);
-    // A short status label does not exceed the floor.
-    assert.equal(width('IDLE'), floor);
-    // A real intent phrase reserves more room than the old fixed estimate.
-    assert.equal(width('Checking git state and largest files') > floor, true);
-    // A long reasoning excerpt is capped at the width the sprite truncates to.
-    assert.equal(width('x'.repeat(400)), 232);
+test('column reservation widens with the real line length and stays bounded', () => {
+    const width = text => layoutThoughtColumn(createThoughtColumn(), [{ text }]).width;
+    assert.ok(width('IDLE') > 0);
+    assert.ok(width('Checking git state and largest files') > width('IDLE'));
+    // The capped text cells plus padding and the stroke are all reserved.
+    assert.equal(width('x'.repeat(400)), width('x'.repeat(Math.floor(THOUGHT_HEAD.maxText / 7))));
+    assert.ok(width('x'.repeat(400)) <= THOUGHT_HEAD.maxText + THOUGHT_HEAD.pad * 2 + 2);
 });
 
-test('stacked slots step upward without overlapping', () => {
+test('stacked candidates step upward and placement avoids occupied column geometry', () => {
     const host = slotHost();
-    const sprite = { x: 100, y: 200, _activitySnapshot: { text: 'Running the checks' } };
-    const slot0 = IsometricRenderer.prototype._agentBubbleSlotRect.call(host, sprite, 0);
-    const slot1 = IsometricRenderer.prototype._agentBubbleSlotRect.call(host, sprite, 1);
-
+    const entry = { text: 'Running the checks' };
+    const sprite = {
+        agent: { id: 'slot-speaker', status: 'working' },
+        x: 100, y: 200,
+        _activitySnapshot: entry,
+        _activityThread: () => [entry],
+    };
+    assert.equal(host._prepareThought(sprite, 1), true);
+    // Candidate rect storage is reused; copy before requesting the next one.
+    const slot0 = { ...host._thoughtCandidateRects(sprite, 0, 1).body };
+    const slot1 = { ...host._thoughtCandidateRects(sprite, 3, 1).body };
     for (const rect of [slot0, slot1]) {
         for (const key of ['x', 'y', 'w', 'h']) {
             assert.equal(Number.isFinite(rect[key]), true, `${key} must be finite, got ${rect[key]}`);
         }
+        assert.ok(rect.h > 0 && rect.w > 0);
     }
-    assert.equal(slot0.h > 0, true);
-    assert.equal(slot0.w > 0, true);
-    // Higher slots sit above lower ones and do not share vertical space.
-    assert.equal(slot1.y < slot0.y, true);
-    assert.equal(slot1.y + slot1.h <= slot0.y + 1, true);
+    assert.equal(slot0.y - slot1.y, THOUGHT_STACK_STEP);
+    // A neighbouring reservation clips the home column but not its anchor.
+    const blocker = { x: slot0.x + 1, y: slot0.y + 1, w: 1, h: 1 };
+    const occupied = [blocker];
+    host._placeThought(sprite, 1, 1000, null, occupied, false);
+    assert.notEqual(sprite._bubbleCandidate, 0);
+    const placed = host._thoughtCandidateRects(sprite, sprite._bubbleCandidate, 1);
+    // Exclude this placement's own reservations from the collision query.
+    assert.equal(host._thoughtRectsCollide(placed, null, [blocker], false), false);
 });
 
 test('only villagers with something to show reserve a slot', () => {

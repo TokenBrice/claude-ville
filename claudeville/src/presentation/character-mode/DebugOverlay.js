@@ -2,6 +2,7 @@ import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { WORLD_BODY_FONT_11 } from '../../config/theme.js';
 import { CANVAS_BUDGET } from './CanvasBudget.js';
 import { AgentSprite } from './AgentSprite.js';
+import { ambientDebugSnapshot } from './AmbientEvents.js';
 
 export class DebugOverlay {
     constructor() {
@@ -9,6 +10,11 @@ export class DebugOverlay {
         this.pathDebugEnabled = false;
         this._backendRows = null;
         this._backendRowsAt = 0;
+        this._behaviorRowsCache = [];
+        this._behaviorRowsAt = null;
+        this._behaviorRowsSource = null;
+        this._ambientRowsAt = 0;
+        this._ambientRowsCache = null;
     }
 
     toggle() {
@@ -218,6 +224,7 @@ export class DebugOverlay {
             this._cameraStateRow(viewport, cameraState),
             ...this._rendererBackendRows(renderer),
             ...this._trailRows(renderer),
+            ...this._behaviorRows(behaviorStats?.rollingBehavior),
             renderStats?.drawables ? `drawables: ${renderStats.drawables.total} drawn / ${renderStats.drawables.culling?.culled || 0} culled` : null,
             renderStats?.harbor ? `harbor: pending ${renderStats.harbor.pendingRepos || 0} commits ${renderStats.harbor.pendingCommits || 0} lanterns ${renderStats.harbor.bridgeLanterns || 0}` : null,
             renderStats?.canvas ? `light/cache: ${renderStats.canvas.lightGradients || 0} gradients / particles ${renderStats.canvas.particles || 0}` : null,
@@ -271,6 +278,76 @@ export class DebugOverlay {
             ctx.fillText(row, x + padding, y + padding + index * lineHeight, Math.max(120, Math.min(width - padding * 2, maxWidth)));
         });
         ctx.restore();
+        this._drawAmbientBlock(ctx, renderer, viewport, panelY);
+    }
+
+    // Independent of the behaviour block: ambient never reads session state.
+    _drawAmbientBlock(ctx, renderer, viewport, panelY) {
+        if (!renderer) return;
+        const now = performance.now();
+        if (!this._ambientRowsCache || now - this._ambientRowsAt >= 1000) {
+            const snapshot = ambientDebugSnapshot(renderer);
+            this._ambientRowsAt = now;
+            this._ambientRowsCache = [
+                'ambient: live / cap / gate-reason',
+                ...Object.entries(snapshot.actors).map(([name, row]) => `${name}: ${row.live} / ${row.cap} / ${row.reason || 'open'}`),
+                ...Object.entries(snapshot.tiers).map(([tier, row]) => `${tier}: ${row.kind || row.reason || 'between'}`),
+                ...Object.entries(snapshot.tiers).map(([tier, row]) => `next ${tier}: ${row.next ? `${ambientTime(row.next.startMs)} ${row.next.kind || 'weather-held'}` : 'none today'}`),
+                'weather knots:',
+                ...snapshot.weatherKnots.map(knot => `  ${ambientTime(knot.minute * 60000, true)} ${knot.type}`),
+            ];
+        }
+        const rows = this._ambientRowsCache;
+        const padding = 8;
+        const lineHeight = 14;
+        ctx.save();
+        ctx.font = WORLD_BODY_FONT_11;
+        ctx.textBaseline = 'top';
+        const width = Math.max(250, ...rows.map(row => ctx.measureText(row).width + padding * 2));
+        const x = Math.max(584, (viewport?.width || 1280) - width - 12);
+        const height = rows.length * lineHeight + padding * 2;
+        ctx.fillStyle = 'rgba(20, 24, 31, 0.86)';
+        ctx.strokeStyle = 'rgba(242, 211, 107, 0.72)';
+        ctx.lineWidth = 1;
+        ctx.fillRect(x, panelY, width, height);
+        ctx.strokeRect(x + 0.5, panelY + 0.5, width, height);
+        ctx.fillStyle = '#f5e6a8';
+        rows.forEach((row, index) => ctx.fillText(row, x + padding, panelY + padding + index * lineHeight));
+        ctx.restore();
+    }
+
+    _behaviorRows(metrics) {
+        if (!metrics) return [];
+        if (this._behaviorRowsSource === metrics && this._behaviorRowsAt === metrics.sampledAt) return this._behaviorRowsCache;
+        const agents = Object.entries(metrics.distinctDestinationsByAgent);
+        const counts = agents.map(([, count]) => count);
+        const distribution = new Map();
+        for (const count of counts) distribution.set(count, (distribution.get(count) || 0) + 1);
+        const visits = [...distribution].sort((a, b) => a[0] - b[0])
+            .map(([destinations, agents]) => `${agents}×${destinations}`).join(' ');
+        const agentRows = [];
+        for (let index = 0; index < agents.length; index += 4) {
+            const labels = agents.slice(index, index + 4).map(([id, count], offset) => (
+                `${index + offset + 1}:${id.length > 8 ? `…${id.slice(-8)}` : id}=${count}`
+            ));
+            agentRows.push(`visits: ${labels.join(' · ')}`);
+        }
+        this._behaviorRowsSource = metrics;
+        this._behaviorRowsAt = metrics.sampledAt;
+        this._behaviorRowsCache = [
+            `behaviour: rolling 5 min · ${Math.round(metrics.observedWindowMs / 1000)}s observed · 250ms samples`,
+            `moving samples: ${metrics.movingSamplePercent.toFixed(1)}% · ${metrics.agentSamples} samples`,
+            `over-capacity alloc: ${(metrics.overCapacityAllocationRatio * 100).toFixed(1)}% (${metrics.overCapacityAllocations}/${metrics.allocations})`,
+            `bubbles: suppressed ${metrics.suppressedBubbleCount} · slot changes ${metrics.bubbleSlotChangesPerMinute.toFixed(1)}/min`,
+            `destinations/agent: ${metrics.meanDistinctDestinations.toFixed(1)} mean · agents×visits ${visits || 'none'}`,
+            ...Object.entries(metrics.buildings).map(([type, row]) => (
+                `residence ${type}: ${(row.occupancyShare * 100).toFixed(1)}% · dwell ${type === 'outside' ? '—' : `${row.meanDwellSeconds.toFixed(1)}s`} · ${row.agentSeconds.toFixed(1)} agent-s`
+            )),
+            ...agentRows,
+            metrics.droppedAgentSamples || metrics.droppedDestinationSamples
+                ? `telemetry cap: dropped ${metrics.droppedAgentSamples} agent / ${metrics.droppedDestinationSamples} destination samples` : null,
+        ].filter(Boolean);
+        return this._behaviorRowsCache;
     }
 
     _renderLayerRows(renderStats) {
@@ -566,4 +643,12 @@ function formatPixels(value) {
     if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(2)}M`;
     if (number >= 1_000) return `${Math.round(number / 1_000)}k`;
     return String(Math.round(number));
+}
+
+
+function ambientTime(value, minuteOffset = false) {
+    const date = minuteOffset ? null : new Date(value);
+    const hour = minuteOffset ? Math.floor(value / 3600000) : date.getHours();
+    const minute = minuteOffset ? Math.floor(value / 60000) % 60 : date.getMinutes();
+    return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }

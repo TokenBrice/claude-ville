@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-01-perfect-isle"
+  assetVersion: "2026-10-09-living-isle-art"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -52,8 +52,13 @@ atlases:
 # pose consistency matters across generated animation frames.
 # Optional `paletteSource` pins the per-sheet garment pixel colors the
 # Compositor keys on (sampled from the actual PNG; up to two garment families
-# per role): `trim` takes the provider trim ramp, `robe` takes the variant's
-# value step, `pants` is informational. A role without a source is untouched.
+# per role): `trim` takes the provider trim ramp, `robe` takes the agent's
+# crowd variant (value step + hue turn clamped to ±18°, W2.3), `pants` is
+# informational. A role without a source is untouched.
+# `headCovered: true` marks a sheet whose authored head is already headgear
+# (hat, helm, hood, crown): a cosmetic head overlay must skip it, so it takes
+# only the robe variant. `headBare: true` marks a shaved head: the only kind
+# of sheet a cosmetic hair tuft (overlay.accessory.hairTuft*) may sit on.
 characters:
   # Pro mode fixed cross-direction consistency (standard mode produced
   # different outfits per angle). Avoid ambiguous color language like
@@ -86,6 +91,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): crimson gown + gold filigree; the
     # declared claude sources match nothing on this sheet.
     paletteSource: { robe: ['#8a1d34', '#20143e'], trim: '#dfc18a' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: fabric
     materialSidecar: true
@@ -127,6 +133,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): midnight-blue robe, ivory hem, dusty
     # rose trim; the declared claude sources are inert here.
     paletteSource: { robe: ['#1b1b32', '#2f3251'], pants: '#eee4c1', trim: '#ab8a81' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: fabric
     atlasFrame: { atlas: world-pilot, keyPrefix: agent.claude.opus }
@@ -168,6 +175,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): dark violet robe + cobalt cloak; the
     # declared claude sources are inert here.
     paletteSource: { robe: ['#34184f', '#522c6b'], pants: '#2a4791' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: fabric
     materialSidecar: true
@@ -209,6 +217,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): mint scarf (robe role) + bronze clasp;
     # declared pants source already matches the moss-green lower robe.
     paletteSource: { robe: ['#c0e9c3', '#78894d'], pants: '#0e8c44', trim: '#a49159' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: fabric
     materialSidecar: true
@@ -249,6 +258,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): navy armor + steel-blue limbs + teal
     # core glow; the declared codex sources are inert here.
     paletteSource: { robe: ['#222945', '#333c5c'], pants: '#404b6d', trim: '#55a6a0' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: metal
     materialSidecar: true
@@ -290,6 +300,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): indigo plate + steel-blue pauldrons +
     # pale teal visor; the declared codex sources are inert here.
     paletteSource: { robe: ['#1f1d36', '#2d3a54'], pants: '#495c77', trim: '#79aabb' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: metal
     materialSidecar: true
@@ -333,6 +344,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): near-black navy plate + violet cape;
     # the declared trim source already matches the teal reactor glow.
     paletteSource: { robe: ['#191c2a', '#202a45'], pants: '#4a2868' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: metal
     materialSidecar: true
@@ -384,6 +396,7 @@ characters:
     portraitCrop: { x: 23, y: 12, w: 46, h: 42 }
     portraitFace: { x: 45, y: 24 }
     palette_layer: codex
+    headCovered: true
     anchor: [46, 80]
     materialClass: metal
     elevation: { base: 0, top: 80, unit: sprite-px }
@@ -411,18 +424,21 @@ characters:
         sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 69, south-west: 69 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "0509dbf8-5163-4e02-a5dd-97ec3a757def", sw: "13fda14a-f494-4221-81b2-92b59d41365b" } }, directions: [se, sw] }
         strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [61, 48], w: [23, 47], se: [50, 54], sw: [23, 50] } }
         tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [68, 46], w: [36, 49], se: [49, 55], sw: [44, 54] } }
+        run: { rows: [21, 26], hold: 21 }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "c3424b1d-2a37-47db-bc9a-dfb88bf53885"
         animationGroupId: "b9ee8a17-e595-4302-b0a2-a721331d163b"
         generationSize: 128
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "d3d0018c-75a7-4e44-948f-6ec1a47c8ff6", w: "d2fe3fd1-87ee-4b05-9c47-df883e05f8f9", se: "d2f06dcf-3437-4ac9-89f1-934c0cc362b7", sw: "932d670b-f99d-4eb2-b552-6350039cf252" } } }
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "0ef145f0-7a88-42e6-8b55-92d99d07a67d", se: "3dcfd3e0-5eff-4c52-909a-ff9465236efa", e: "d8ded118-5a79-4254-a323-978a7c56d695", ne: "bc7c8700-06d5-4073-93fd-3ef16a370356", n: "88ef54ec-8090-474f-842e-a8daa6cd4d8c", nw: "272a0259-0287-46d4-92ba-bf213086061b", w: "97e04757-c702-4a3a-a820-8e6362d46845", sw: "fa29f881-d019-4d70-ade8-5c07a7be5696" } } }
     portraitCrop: { x: 26, y: 13, w: 40, h: 34 }
     provenance: { characterId: c3424b1d-2a37-47db-bc9a-dfb88bf53885 }
     palette_layer: codex
     # Sampled from sheet.png (plan 0.5): navy plate only — the signature gold
     # armor stays untouched so Sol keeps his radiant identity on every variant.
     paletteSource: { robe: '#2d2f41' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: metal
     atlasFrame: { atlas: world-pilot, keyPrefix: agent.codex.gpt56sol }
@@ -463,6 +479,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): navy plate + moss-green sash; the
     # declared codex sources are inert here.
     paletteSource: { robe: ['#32384a', '#292f42'], pants: '#697b59' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: metal
     materialSidecar: true
@@ -493,18 +510,21 @@ characters:
         sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 69, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "eabff481-02df-40ad-9073-e7c9483e06a7", sw: "99a939af-3809-4102-a2ac-184e9d92b32e" } }, directions: [se, sw] }
         strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [58, 48], w: [31, 47], se: [51, 52], sw: [31, 50] } }
         tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [59, 46], w: [38, 48], se: [50, 53], sw: [44, 52] } }
+        run: { rows: [21, 26], hold: 21 }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "4c14cc02-74fc-48bc-8968-d4594c2ae150"
         animationGroupId: "c4039946-9cc6-47e0-9f09-393c0c33572c"
         generationSize: 120
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "c150b335-8e45-49c4-a2d5-e5027a5640e4", w: "34d28e8f-8eac-4dda-a12f-fe2e46604c9f", se: "5c8a6550-4cee-4e9c-9a12-52c974cabb98", sw: "0698be6d-47fe-4121-aeef-fa2d4cc76a0f" } } }
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "da1d9061-316d-499b-b865-c825a561d2e1", se: "5cefa775-d459-4142-9d6e-046b104c4d90", e: "dcdbcb91-1ab3-4328-8473-4a2bf431b249", ne: "8db776c3-ef14-46bb-b108-c5fbf15f8946", n: "52c02837-9307-4eba-8998-5469bd8355ec", nw: "2c08eeea-391a-4ce2-9e85-dd6d967cd544", w: "6bce23e9-4ffd-420d-a523-c0115d48ca1a", sw: "7aae759e-3882-4f92-8125-a1779d097190" } } }
     portraitCrop: { x: 29, y: 14, w: 34, h: 36 }
     provenance: { characterId: 4c14cc02-74fc-48bc-8968-d4594c2ae150 }
     palette_layer: codex
     # Sampled from sheet.png (plan 0.5): silver-blue light armor + navy
     # under-suit + steel accent; the declared codex sources are inert here.
     paletteSource: { robe: ['#bdd2e3', '#a6b8cd'], pants: '#24263e', trim: '#8c9bb5' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: metal
     materialSidecar: true
@@ -545,6 +565,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): deep teal half-plate; declared pants
     # source already matches, and the cyan visor is too small to key trim on.
     paletteSource: { robe: ['#22575d', '#1e4651'] }
+    headCovered: true
     anchor: [46, 80]
     materialClass: metal
     materialSidecar: true
@@ -584,6 +605,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): light teal armor, darker teal limbs,
     # muted cyan lens; the declared codex sources are inert here.
     paletteSource: { robe: '#7bb9b0', pants: '#3d676f', trim: '#73ada8' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: metal
     materialSidecar: true
@@ -621,6 +643,7 @@ characters:
     portraitCrop: { x: 30, y: 13, w: 34, h: 34 }
     provenance: { characterId: f38d99a1-4cf7-4cca-aaaf-120737e6fdee }
     palette_layer: claude
+    headCovered: true
     anchor: [46, 80]
     materialClass: fabric
     materialSidecar: true
@@ -701,6 +724,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): violet robe + steel-indigo starlight
     # trim; the declared pants source already matches the deep indigo folds.
     paletteSource: { robe: ['#52337d', '#362361'], trim: '#8692c3' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: glass-rune
     materialSidecar: true
@@ -785,6 +809,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): dark forest-green leathers + teal rune
     # edging; the declared pants source already matches the leggings.
     paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: earth
     materialSidecar: true
@@ -827,6 +852,7 @@ characters:
     # Sampled from sheet.png (plan 0.5): near-black hood/wrap + muted teal trim;
     # the declared pants source already matches the dark leggings.
     paletteSource: { robe: '#171f1f', trim: '#4d7762' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: earth
     materialSidecar: true
@@ -871,6 +897,7 @@ characters:
     portraitFace: { x: 47, y: 23 }
     palette_layer: deepseek
     paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: earth
     materialSidecar: true
@@ -912,6 +939,7 @@ characters:
     portraitFace: { x: 46, y: 24 }
     palette_layer: deepseek
     paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: earth
     materialSidecar: true
@@ -952,6 +980,7 @@ characters:
     portraitFace: { x: 47, y: 23 }
     palette_layer: deepseek
     paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
+    headCovered: true
     anchor: [46, 80]
     materialClass: earth
     materialSidecar: true
@@ -1088,6 +1117,8 @@ characters:
     # Sampled from sheet.png: vermilion robe + shade; the peach sash shares the
     # skin ramp so only the jade prayer beads form a confident trim cluster.
     paletteSource: { robe: ['#b7362f', '#88242e'], trim: '#73b493' }
+    # Shaved head: the only sheet a cosmetic hair tuft may sit on (W8.2a).
+    headBare: true
     anchor: [46, 80]
     materialClass: fabric
     materialSidecar: true
@@ -1142,9 +1173,9 @@ characters:
 # ─── PALETTES ────────────────────────────────────────────────────────────────
 # Canonical palette definitions. claudeville/assets/sprites/palettes.yaml mirrors
 # this block for standalone tooling — keep both in sync if you edit either.
-# Provider hue lives in trim only (plan 2.6): the compositor recolours each
-# sheet's declared `paletteSource.trim` to this ramp; authored robes keep their
-# colours and take a per-variant value step.
+# Provider hue lives in trim (plan 2.6): the compositor recolours each sheet's
+# declared `paletteSource.trim` to this ramp; declared robes keep their family
+# and take the agent's crowd variant (value step + bounded hue turn, W2.3).
 palettes:
   claude:
     trim: ['#d97757', '#e08a64', '#c86a4a']
@@ -1245,6 +1276,140 @@ accessories:
     size: 32
     n_directions: 8
     anchor: [16, 20]
+
+  # W8.2a cosmetic head overlays (AD-P1b). A bare-head villager without an
+  # effort crest wears one, picked by hash(agent.id); sheets flagged
+  # `headCovered` never take one, hair tufts need `headBare`. Authored by
+  # create_map_object inpainting on the agent.zai.glm south idle head (64 px
+  # background, a mask per shape class), then diff-extracted from the head:
+  # the hat keeps the sheet's own texel scale and light. Canvas 34x32; the
+  # anchor is the head apex, two texels deep so hats seat into hair.
+  # turban was re-toned offline from saffron to undyed ivory.
+  - id: overlay.accessory.hoodUp
+    tool: map_object
+    prompt: "a soft rounded cloth hood pulled up over the head, draping down both sides of the face to the neck, the face itself left bare and uncovered, dusty olive-green wool with darker olive folds"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: bf7d97f8-a9fc-4e36-909e-5d08f2bedf19, route: "create_map_object inpaint, agent.zai.glm south head, mask hood" }
+
+  - id: overlay.accessory.flatCap
+    tool: map_object
+    prompt: "a flat cap with a short stiff visor brim projecting forward over the brow, low flat crown, dark chocolate-brown wool cloth, brown not red"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: 6dab31ce-8c6c-4324-9466-c20ca818fc64, route: "create_map_object inpaint, agent.zai.glm south head, mask cap" }
+
+  - id: overlay.accessory.strawHat
+    tool: map_object
+    prompt: "a wide-brimmed woven straw sun hat worn on the head, broad flat round brim and low round crown, pale ochre-gold straw with a thin dark crimson ribbon band"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: 4d67b211-9ec0-4ae6-a355-2cb32331bb1a, route: "create_map_object inpaint, agent.zai.glm south head, mask brim" }
+
+  - id: overlay.accessory.bandana
+    tool: map_object
+    prompt: "a cloth bandana tied tightly over the top of the head with a small knot at the side, faded indigo-blue cloth with tiny white dots"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: bccfcba1-fd30-4135-9165-65a4f2c12fee, route: "create_map_object inpaint, agent.zai.glm south head, mask cap" }
+
+  - id: overlay.accessory.biretta
+    tool: map_object
+    prompt: "a box-shaped black scholar's biretta cap worn on the head, flat square top with sharp corners and three short upright fins along the top edges, small black pompom in the center, matte black cloth, no point, no curl"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: 3d31e6b8-94f5-42d8-a9a8-d784e4ec272f, route: "create_map_object inpaint, agent.zai.glm south head, mask helm" }
+
+  - id: overlay.accessory.circlet
+    tool: map_object
+    prompt: "a thin gold circlet band resting low on the forehead just above the eyebrows, touching the skin, one small sky-blue gem at the front center, the bald scalp unchanged above it, not floating, not a halo"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: 99ddc1f5-ec09-4dcf-b6c3-70334e594804, route: "create_map_object inpaint, agent.zai.glm south head, mask cap" }
+
+  - id: overlay.accessory.laurelCrown
+    tool: map_object
+    prompt: "a laurel wreath of small pointed leaves encircling the head, leaves angled backward, olive-green and bright leaf-green, bald head showing above it"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: e3889669-d683-4d1f-a048-5058b60e714b, route: "create_map_object inpaint, agent.zai.glm south head, mask cap" }
+
+  - id: overlay.accessory.hornedHelm
+    tool: map_object
+    prompt: "a rounded cool grey iron helmet worn on the head with two short ivory horns curving upward from the sides, riveted brow band, open face"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: a66f2d1e-0094-413b-9704-c020d124b2ef, route: "create_map_object inpaint, agent.zai.glm south head, mask helm" }
+
+  - id: overlay.accessory.featherCap
+    tool: map_object
+    prompt: "a small round brown felt cap with one single long white feather standing straight up from one side of the band"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: 4c52049f-2a19-46fb-b415-7e89c4bfda50, route: "create_map_object inpaint, agent.zai.glm south head, mask helm" }
+
+  - id: overlay.accessory.wingedHelm
+    tool: map_object
+    prompt: "a round polished silver steel helmet worn on the head with two small white feathered wings swept up from the sides, open face"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: a2a0bd14-1ac1-4910-81b4-53a9d2ace9bb, route: "create_map_object inpaint, agent.zai.glm south head, mask helm" }
+
+  - id: overlay.accessory.turban
+    tool: map_object
+    prompt: "a wrapped cloth turban worn on the head with layered diagonal folds, saffron-ochre cloth with a small teal jewel at the front"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: 99924a6f-959e-481c-a58c-33a2e94e5d2b, route: "create_map_object inpaint, agent.zai.glm south head, mask cap" }
+
+  - id: overlay.accessory.pinnedHood
+    tool: map_object
+    prompt: "a short pointed cloth hood pulled up over the head with a small round bronze pin at the front of the neck, the face itself left bare and uncovered, deep slate-blue wool"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: 86b6ef84-f051-49d0-9913-bf30ce864582, route: "create_map_object inpaint, agent.zai.glm south head, mask hood" }
+
+  - id: overlay.accessory.hairTuftLight
+    tool: map_object
+    prompt: "short soft cropped sandy-blond hair close to the scalp, smooth rounded shape with a small side-swept fringe, no spikes, no hat"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: a624c124-b1ed-4d52-b99b-0dd2073fe156, route: "create_map_object inpaint, agent.zai.glm south head, mask cap" }
+
+  - id: overlay.accessory.hairTuftDark
+    tool: map_object
+    prompt: "short tousled dark brown-black hair growing on top of the head, messy fringe over the forehead, no hat"
+    width: 34
+    height: 32
+    anchor: [17, 10]
+    cosmetic: true
+    provenance: { objectId: a7370404-88a4-436f-ac10-2d42ec0de4c9, route: "create_map_object inpaint, agent.zai.glm south head, mask cap" }
 
 # ─── STATUS OVERLAYS ─────────────────────────────────────────────────────────
 statusOverlays:
@@ -1382,6 +1547,57 @@ buildings:
         oneShot: true
         restIsBase: true
         materialClass: timber
+      # W5.3 / W8.1 — the attention banner: one cloth hung from an iron rod
+      # under the flag tower's cornice, on the tower's front face. A STATUS
+      # part (BuildingPartGates `status.<bucket>`), never a work part: the
+      # lead actionable bucket (needs-you > error > limit, the TopBar
+      # ATTENTION_PARTS rule) hangs its own layer, and the frame is the drop
+      # for SignalLedger.waitAgeTier of the oldest actionable wait — frame 0
+      # empty (restIsBase), frames 1–4 hang 25 / 45 / 65 / 85 cloth rows (< 1,
+      # 1–5, 5–15, >= 15 min). Hard frame swaps only; no light, no motion.
+      # One pixflux cloth (init 120, colour image on the needs-you ramp);
+      # drops, the baked EventShapes motif and the error / limit hue re-tones
+      # are offline (scripts/sprites/bake-banner-stones.mjs).
+      banner:
+        tool: generated
+        prompt: "long vertical heraldic cloth banner hanging straight down from a short dark iron rod with gold end caps, saturated warm yellow cloth with a darker ochre stitched border, plain cloth face, swallowtail bottom edge, flat front view, castle wall banner"
+        provenance: { item: 'W8.1', endpoint: create-image-pixflux, seed: 11, generationSize: 32x96, initImageStrength: 120, colorImage: 'needs-you ramp #e8d44d + iron + gold', generations: 1, pilotGenerations: 2, post: 'drops 25/45/65/85, needs-you motif, hue-snapped to #e8d44d (bake-banner-stones.mjs)', generatedAt: '2026-10-09' }
+        width: 150
+        height: 89
+        frames: 5
+        frameW: 30
+        frameH: 89
+        anchor: [89, 155]
+        staticFrame: 0
+        gate: status.needsYou
+        restIsBase: true
+        materialClass: fabric
+      bannerError:
+        tool: generated
+        prompt: "the attention banner re-toned offline onto the errored hue #e06c5b with the alert motif (derived from building.command.banner by scripts/sprites/bake-banner-stones.mjs)"
+        width: 150
+        height: 89
+        frames: 5
+        frameW: 30
+        frameH: 89
+        anchor: [89, 155]
+        staticFrame: 0
+        gate: status.errors
+        restIsBase: true
+        materialClass: fabric
+      bannerLimit:
+        tool: generated
+        prompt: "the attention banner re-toned offline onto the rate-limited hue #f06ae0 with the limit-gate motif (derived from building.command.banner by scripts/sprites/bake-banner-stones.mjs)"
+        width: 150
+        height: 89
+        frames: 5
+        frameW: 30
+        frameH: 89
+        anchor: [89, 155]
+        staticFrame: 0
+        gate: status.quota
+        restIsBase: true
+        materialClass: fabric
       # 6.1 / V4 — the two gate braziers' painted tongues climb (EmitterCycle
       # `mode: tongues`, 2-column lanes over a 1-texel bed) while the village
       # lamps are lit (`lamps`, like the Pharos lens): fixtures of the lamp
@@ -2135,11 +2351,73 @@ props:
     occluder: { mode: alpha-silhouette, strength: 1 }
     provenance: { item: 'GateTowerArt', source: 'scripts/sprites/bake-village-gate.mjs', generations: 0, generatedAt: '2026-09-29' }
 
+  # Living Isle W8.5b (AD-P10) — four non-semantic landmarks: no occupancy,
+  # label, gate or semantics; sorted props with `walkBlock` placements
+  # (config/scenery.js `ISLE_LANDMARKS`), drawn by IsleLandmarks.js. The
+  # windmill's sails are their own strip (`prop.windmillSails`), stepped
+  # only by the wind field's gusts (Wind.windAt), never by agent state.
+  - id: prop.windmill
+    tool: map_object
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, an old tall stone tower windmill: one tapering round tower of cool pale grey dressed ashlar stone laid in even courses, a small arched dark walnut timber door at its foot with two attached stone steps, two narrow slit windows of unlit dark slate glass, a conical slate-blue tiled cap with a thin gold trim ring and a small gold finial, a stout walnut timber windshaft hub jutting from the cap toward the lower-left with no sails fitted, bare round hub only, warm key light from the upper-left, cool shade on the right, stepped cel shading, 1px selective dark outline, structure only, the tower wall ends directly at its footing, empty transparent background, no ground tile, no grass, no slab, no plinth, no platform, no baked shadow, empty transparent corners"
+    width: 128
+    height: 208
+    anchor: [64, 168]
+    materialClass: stone
+    provenance: { item: 'W8.5b', tool: create_map_object, objectId: 9e0d3633-5d2c-4848-b8f1-5387b7e531c2, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09' }
+
+  # The sail cross, 4 frames of 112 x 112 (hub at the frame centre, seated on
+  # the windmill's windshaft at base-local [50, 86]); frame k is the cross
+  # turned 22.5 deg * k. Rasterised on the sail plane by
+  # finish-isle-landmarks.mjs. Steps at 4 fps only while a wind gust crosses
+  # the mill (Wind.windAt); calm or reduced motion holds frame 0.
+  - id: prop.windmillSails
+    tool: procedural
+    width: 112
+    height: 112
+    frames: 4
+    anchor: [56, 56]
+    materialClass: timber
+    provenance: { item: 'W8.5b', source: 'scripts/sprites/finish-isle-landmarks.mjs', generations: 0, generatedAt: '2026-10-09' }
+
+  - id: prop.watermill
+    tool: map_object
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a small old stone watermill house: walls of cool pale grey dressed ashlar stone, a steep slate-blue tiled gable roof with a thin gold ridge trim and a short stone chimney, a dark walnut timber door and shutters, small windows of unlit dark slate glass, a large dark walnut timber water wheel with flat paddles standing upright against the long wall that faces the lower-left, the wheel's lower rim reaching below the footing line, warm key light from the upper-left, cool shade on the right, stepped cel shading, 1px selective dark outline, structure only, walls end directly at their footings, empty transparent background, no water, no ground tile, no grass, no slab, no plinth, no platform, no baked shadow, empty transparent corners"
+    width: 176
+    height: 160
+    anchor: [79, 116]
+    materialClass: stone
+    provenance: { item: 'W8.5b', tool: create_map_object, objectId: 5bc38f00-7d60-4cd9-91ac-84383be697cf, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09' }
+
+  - id: prop.waysideChapel
+    tool: map_object
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a tiny wayside chapel: one small single-room hut of cool pale grey dressed ashlar stone, a steep slate-blue tiled gable roof, a small open stone bell cote on the front gable holding one bronze bell under a tiny slate cap with a gold finial, a small arched dark walnut timber door in the gable end facing the lower-left, one small black iron lantern with unlit dark glass hanging on a bracket beside the door, one narrow lancet window of unlit dark slate glass, a little moss at the footing, warm key light from the upper-left, cool shade on the right, stepped cel shading, 1px selective dark outline, structure only, walls end directly at their footings, empty transparent background, no ground tile, no grass, no slab, no plinth, no platform, no baked shadow, empty transparent corners"
+    width: 112
+    height: 144
+    anchor: [53, 104]
+    materialClass: stone
+    provenance: { item: 'W8.5b', tool: create_map_object, objectId: f2367bd7-2b9c-4bf9-9ca1-b45e87e89055, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, lit window and lantern glass unlit, lantern emissive sidecar, mirrored)', generatedAt: '2026-10-09' }
+    emissiveSidecar: true
+    emissive:
+      strength: 0.9
+      sources:
+        - { id: emissive.prop.waysideChapel.lantern, kind: lantern, geometry: authored-albedo, strength: 0.9 }
+
+  - id: prop.ruinedTower
+    tool: map_object
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a ruined old square stone watchtower: walls of cool pale grey weathered ashlar stone, its top broken off in a jagged stepped silhouette with missing blocks, no roof, two charred dark walnut timber beam stubs poking out of the broken top, thick dark green ivy climbing the left face, a broken stone stair climbing the right face and ending in mid-air, an empty dark arched doorway, a few fallen stone blocks lying against the footing, warm key light from the upper-left, cool shade on the right, stepped cel shading, 1px selective dark outline, structure only, walls end directly at their footings, empty transparent background, no ground tile, no grass, no slab, no plinth, no platform, no baked shadow, empty transparent corners"
+    width: 112
+    height: 176
+    anchor: [54, 131]
+    materialClass: stone
+    provenance: { item: 'W8.5b', tool: create_map_object, objectId: 5f036128-7f08-4948-bfd3-8479afcd8532, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09' }
+
   - id: prop.signpost
-    tool: isometric_tile
-    prompt: "weathered wooden signpost, carved directional arrows, guild rune mark, isometric"
-    size: 32
-    anchor: [16, 28]
+    tool: map_object
+    prompt: "tall weathered wooden village signpost, one square timber post with a pointed cap, three carved plank arrow arms pointing different ways at staggered heights, small carved guild rune on the top arm, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark brown and warm oak timber, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no deck, no shadow slab, no characters, no text, empty transparent corners"
+    width: 26
+    height: 46
+    anchor: [12, 44]
+    provenance: { item: 'W8.2b', endpoint: create_map_object, jobId: c9455696-0528-413d-b39d-8301719d6dd7, generations: 1, candidates: 2, post: 'baked grass plate erased below the post foot, foot closed with timber[0]; trimmed to the silhouette', generatedAt: '2026-10-09' }
 
   - id: prop.runestone
     tool: isometric_tile
@@ -2165,17 +2443,35 @@ props:
     size: 48
     anchor: [24, 36]
 
+  # Living Isle W2.2: re-toned offline (scripts/sprites/retone-props.mjs)
+  # from magenta/plum onto clothCrimson + clothOchre stripes and a timber
+  # frame, quantised to 40 colours. The .ochre and .canvas colourways swap
+  # the awning stripes only; scenery.js picks one per placement by hash.
   - id: prop.marketStall
     tool: isometric_tile
     prompt: "market stall with striped canvas awning, goods laid out on table, lantern hung at corner, isometric"
     size: 64
     anchor: [32, 40]
 
-  - id: prop.flowerCart
+  - id: prop.marketStall.ochre
     tool: isometric_tile
-    prompt: "wooden flower cart with bright blooms, painted wheels, isometric"
-    size: 32
-    anchor: [16, 24]
+    prompt: "market stall, clothOchre and clothCrimson striped awning (derived offline from prop.marketStall by scripts/sprites/retone-props.mjs)"
+    size: 64
+    anchor: [32, 40]
+
+  - id: prop.marketStall.canvas
+    tool: isometric_tile
+    prompt: "market stall, clothCrimson and undyed canvas striped awning (derived offline from prop.marketStall by scripts/sprites/retone-props.mjs)"
+    size: 64
+    anchor: [32, 40]
+
+  - id: prop.flowerCart
+    tool: map_object
+    prompt: "small wooden two-wheeled flower handcart, open plank bed heaped with red, gold and white blooms and green leaves, two long wooden pull shafts resting forward, two spoked wheels, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, warm oak and dark brown timber, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 49
+    height: 37
+    anchor: [24, 32]
+    provenance: { item: 'W8.2b', endpoint: create_map_object, jobId: 9eb70837-bd85-4a2e-ad0c-dfc962420f4a, generations: 1, candidates: 2, post: 'trimmed to the silhouette, hard alpha', generatedAt: '2026-10-09' }
 
   - id: prop.noticePillar
     tool: isometric_tile
@@ -2322,10 +2618,12 @@ props:
     masthead: [113, 2]
 
   - id: prop.harborCrates
-    tool: isometric_tile
-    prompt: "harbor cargo crates stacked, weathered oak planks with stencilled dark guild marks, rope nets and iron bands, warm wood tones, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
-    size: 48
-    anchor: [24, 36]
+    tool: edit_image_pixen
+    prompt: "low irregular pile of harbor cargo: two weathered wooden crates side by side, a smaller crate set crooked on top, a small wooden barrel beside them, a slate grey canvas tarp half pulled over the top crate, coiled rope, iron corner bands, isometric view, single sprite on transparent background, warm oak and dark brown timber, crisp stepped pixel shading, warm key light from the upper left, no ground, no floor, no pallet, no platform, no shadow"
+    width: 38
+    height: 35
+    anchor: [19, 29]
+    provenance: { item: 'W8.2b', endpoint: 'create-image-pixflux (isometric, seed 34) then edit-image-pixen (pallet removed, seed 9)', jobId: b14fa3e2-db97-4de2-badd-a628faa987e1, sourceJobId: f793f238-2393-4f81-804b-4a96fdfd0756, generations: 2, candidates: 8, post: 'trimmed to the silhouette, hard alpha', generatedAt: '2026-10-09' }
 
   - id: prop.runeBrazier
     tool: isometric_tile
@@ -2354,40 +2652,44 @@ props:
     size: 32
     anchor: [16, 18]
 
-  # 6.7 — gulls re-authored by hand at 16 px (wingspan about a third of a
-  # villager) on one 8-colour ramp with a consistent right-facing silhouette;
-  # the renderer mirrors them. No generations.
+  # W8.2b (AD-Q8) — gulls redrawn at 24 px (wingspan 24, about half a
+  # villager; the 16 px set read as dust at z1) on one 11-colour ramp taken
+  # from a PixelLab glide study (pixflux 40017bfe… / fed0178d…): white body,
+  # pale-grey mantle, black tips, a 1-px violet-ink outline so they hold on
+  # sand and foam. One right-facing silhouette, body centred on the anchor in
+  # every frame so a flap never jumps; the renderer mirrors them. Wings are
+  # hand-authored (the animate_image flap studies kept the wings still).
   - id: prop.gullFlight
     tool: hand-authored
-    prompt: "16 px seagull gliding, wings level in a shallow gull-wing M, grey wings with dark tips, white body, amber beak; authored, not generated"
-    size: 16
-    anchor: [8, 10]
+    prompt: "24 px seagull gliding, wings level in a shallow gull-wing M, pale grey wings with black tips, white body, amber beak; authored over a generated glide study"
+    size: 24
+    anchor: [12, 12]
 
   - id: prop.gullFlight.up
     tool: hand-authored
-    prompt: "16 px seagull flap-up frame, wings raised in a deep V, dark tips; authored, not generated"
-    size: 16
-    anchor: [8, 10]
+    prompt: "24 px seagull flap-up frame, wings raised in a deep V, black tips; authored"
+    size: 24
+    anchor: [12, 12]
 
   - id: prop.gullFlight.level
     tool: hand-authored
-    prompt: "16 px seagull gliding, wings level; the same frame as prop.gullFlight; authored, not generated"
-    size: 16
-    anchor: [8, 10]
+    prompt: "24 px seagull gliding, wings level; the same frame as prop.gullFlight; authored"
+    size: 24
+    anchor: [12, 12]
     # Alias: the level-glide frame is the base gull frame, so it loads that PNG.
     assetPath: assets/sprites/props/prop.gullFlight.png
 
   - id: prop.gullFlight.down
     tool: hand-authored
-    prompt: "16 px seagull flap-down frame and fishing dive, wings swept below the body; authored, not generated"
-    size: 16
-    anchor: [8, 10]
+    prompt: "24 px seagull flap-down frame and fishing dive, wings swept below the body; authored"
+    size: 24
+    anchor: [12, 12]
 
   - id: prop.gullFlight.bank
     tool: hand-authored
-    prompt: "16 px seagull banking turn, far wing high, near wing low; authored, not generated"
-    size: 16
-    anchor: [8, 10]
+    prompt: "24 px seagull banking turn, far wing high, near wing low and in front of the body; authored"
+    size: 24
+    anchor: [12, 12]
 
   - id: prop.gullPerch
     tool: hand-authored
@@ -2427,6 +2729,87 @@ props:
     height: 48
     anchor: [16, 42]
 
+  # W8.4a (AD-P11 / AW-P15) — land fauna drawn by WildlifeRenderer's
+  # livestock region. Each is a 4-direction PixelLab quadruped
+  # (`create_character` standard, `walk-4-frames` template) assembled into its
+  # own small sheet: rows south/east/north/west, column 0 the standing
+  # rotation, columns 1-4 the walk cycle; `frameW`/`frameH` is one cell and
+  # `anchor` the feet point inside a cell. Read by `faunaSheetFrame`
+  # (WildlifeRenderer), never SpriteSheet.js's 8x10 character contract, and
+  # never registered under `agent.*`.
+  - id: prop.fauna.sheep
+    tool: create_character
+    prompt: "a woolly farm sheep, thick cream-white fleece, dark charcoal face and legs, small and round, earthy muted colours, no glow"
+    width: 250
+    height: 160
+    frameW: 50
+    frameH: 40
+    anchor: [25, 39]
+    provenance: { item: 'W8.4a', characterId: f356da91-2cf9-4cd5-b2f8-5badc49ef8d5, bodyType: quadruped, template: bear, generationSize: 40, animation: walk-4-frames, generations: 5, generatedAt: '2026-10-09' }
+
+  - id: prop.fauna.goat
+    tool: create_character
+    prompt: "a small farm goat, tan and brown coat with a white belly, short curved horns, little beard, earthy muted colours, no glow"
+    width: 220
+    height: 152
+    frameW: 44
+    frameH: 38
+    anchor: [22, 37]
+    provenance: { item: 'W8.4a', characterId: 7bcaee66-ff24-4bfc-97e9-7b9ae0f01ae9, bodyType: quadruped, template: dog, generationSize: 40, animation: walk-4-frames, generations: 5, generatedAt: '2026-10-09' }
+
+  - id: prop.fauna.cow
+    tool: create_character
+    prompt: "a stocky dairy cow, brown and white patched hide, short horns, pink muzzle, earthy muted colours, no glow"
+    width: 290
+    height: 188
+    frameW: 58
+    frameH: 47
+    anchor: [29, 45]
+    provenance: { item: 'W8.4a', characterId: d2fe1bfe-4efc-4274-b653-b6006c8b2966, bodyType: quadruped, template: horse, generationSize: 48, animation: walk-4-frames, generations: 5, generatedAt: '2026-10-09' }
+
+  - id: prop.fauna.dog
+    tool: create_character
+    prompt: "a friendly village sheepdog, russet-brown and white coat, floppy ears, wagging tail, earthy muted colours, no glow"
+    width: 220
+    height: 136
+    frameW: 44
+    frameH: 34
+    anchor: [22, 32]
+    provenance: { item: 'W8.4a', characterId: 55f2495a-5923-4905-b18a-5bd25d36b06f, bodyType: quadruped, template: dog, generationSize: 36, animation: walk-4-frames, generations: 5, generatedAt: '2026-10-09' }
+
+  - id: prop.fauna.cat
+    tool: create_character
+    prompt: "a small grey tabby village cat with darker stripes, white paws, tail held up, earthy muted colours, no glow"
+    width: 220
+    height: 116
+    frameW: 44
+    frameH: 29
+    anchor: [22, 28]
+    provenance: { item: 'W8.4a', characterId: 8be4a887-0b42-44a4-bb97-16bb21ba139e, bodyType: quadruped, template: cat, generationSize: 32, animation: walk-4-frames, generations: 5, generatedAt: '2026-10-09' }
+
+  - id: prop.fauna.deer
+    tool: create_character
+    prompt: "a slender red deer stag, warm russet-brown coat, pale rump, small branching antlers, graceful long legs, forest animal, earthy muted colours, no glow"
+    width: 270
+    height: 196
+    frameW: 54
+    frameH: 49
+    anchor: [27, 48]
+    provenance: { item: 'W8.4a', characterId: f679835e-f09b-4071-b5c7-5ea1022e9404, bodyType: quadruped, template: horse, generationSize: 48, animation: walk-4-frames, generations: 5, generatedAt: '2026-10-09' }
+
+  # The hen is one side-view map object (the humanoid-rig attempt drew a
+  # bird-man and was rejected) facing east, mirrored to face west: column 0
+  # standing, 1 pecking (head rows sheared down by hand), 2 a one-texel hop.
+  - id: prop.fauna.chicken
+    tool: map_object
+    prompt: "a single small plump farm hen seen from the side facing right, russet-brown feathers with darker wing and tail, small red comb and wattle, short yellow beak, two thin yellow legs, standing, natural colours, no glow, transparent background only, no ground, no grass, no shadow, no base, empty transparent corners"
+    width: 72
+    height: 24
+    frameW: 24
+    frameH: 24
+    anchor: [12, 23]
+    provenance: { item: 'W8.4a', objectId: 0ec97e79-e675-45f7-a5b7-0a6b4f96b1c1, generationSize: 32x32, generations: 1, rejected: 'humanoid-rig hen 51740774-d547-4b60-8514-cec5cc37210b (5 generations)', post: 'peck and hop frames authored from the standing frame', generatedAt: '2026-10-09' }
+
   - id: prop.runeFountain
     tool: isometric_tile
     prompt: "small ancient stone fountain basin, glowing blue rune water, mossy carved rim, heroic fantasy RPG town prop, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
@@ -2440,10 +2823,12 @@ props:
     anchor: [16, 24]
 
   - id: prop.netRack
-    tool: isometric_tile
-    prompt: "shore fishing net rack with cork floats, rope bundles, weathered posts, fantasy harbor prop, transparent background only, isolated sprite, no ground tile, no square base, no baked shadow, empty transparent corners"
-    size: 32
-    anchor: [16, 28]
+    tool: map_object
+    prompt: "freestanding fishing-net drying rack: two thin weathered timber poles with a crossbar between them, a brown knotted fishing net hung over the crossbar in loose sagging folds, a string of round tan cork floats along the bottom of the net, a coil of rope looped on one pole, the poles end in plain cut feet, isolated single object, low top-down isometric fantasy RPG scenery, dark brown timber and tan cord, crisp stepped pixel shading, warm key light from the upper left, the object floats on pure transparency like an inventory icon, nothing under it, no floor tile, no ground plane, no dirt, no grass, no sand, no water, no square base, no platform, no pallet, no shadow slab, no characters, no text, empty transparent corners"
+    width: 30
+    height: 45
+    anchor: [15, 41]
+    provenance: { item: 'W8.2b', endpoint: create_map_object, jobId: 146b2244-59cc-46fa-9cf4-5533997d23ca, generations: 1, candidates: 4, post: 'trimmed to the silhouette, hard alpha', generatedAt: '2026-10-09' }
 
   - id: prop.bridgeLanternPost
     tool: map_object
@@ -2465,9 +2850,11 @@ props:
 
   - id: prop.bridgeBannerRune
     tool: map_object
-    prompt: "small epic fantasy bridge banner pennant on short carved post, deep red cloth with gold rune trim, weathered wood, transparent background only, isolated pixel art sprite, no ground tile, no square base, no baked shadow, empty transparent corners"
-    size: 32
-    anchor: [16, 28]
+    prompt: "tall carved wooden banner pole with a short crossbar at the top, a long deep crimson cloth banner hanging still from the crossbar with gold rune trim and a swallowtail hem, small gold finial on the pole top, the pole planted straight into the earth, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark brown timber, crimson and ochre cloth, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no stand, no pedestal, no shadow slab, no characters, no text, empty transparent corners"
+    width: 25
+    height: 55
+    anchor: [6, 53]
+    provenance: { item: 'W8.2b', endpoint: create_map_object, jobId: c01b5049-dd22-4229-b2b9-be6ebd31ad16, generations: 1, candidates: 2, post: 'grass plate and flared stand cut away, pole carried 4 rows down from its own column and closed with timber[0]; trimmed', generatedAt: '2026-10-09' }
 
   - id: prop.lakeShrine
     tool: map_object
@@ -2492,6 +2879,115 @@ props:
     prompt: "weathered driftwood log washed up at lagoon shore, bleached pale wood with cracked bark, half-submerged in shallow water, small barnacles and a single small green sprout growing from one end, transparent background, no water tile, no platform, isometric"
     size: 48
     anchor: [24, 30]
+
+  # ── HARBOUR + WORKSHOP SET DRESSING (Living Isle W8.3a, AD-P5 group D) ──
+  # MCP create_map_object (view low top-down, selective outline, detailed
+  # shading, high detail), keyed with scripts/sprites/key-out-bg.mjs. Props
+  # only: no ground plate, no shadow slab, and no hull of any kind (hulls are
+  # the git channel). Placed as yard groupings in scenery.js DISTRICT_PROPS.
+  - id: prop.crabPots
+    tool: create_map_object
+    prompt: "stack of three slatted timber crab pots with rope bindings and one cork float, small fisherman's harbour clutter, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, weathered dark walnut and oak-brown timber slats, hemp rope, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 48
+    height: 48
+    anchor: [25, 41]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 333e4899-6759-4136-aedb-3abfcd338d6b, generations: 9, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.anchorChain
+    tool: create_map_object
+    prompt: "heavy dark iron ship's anchor lying on its side with a thick coiled iron chain heaped beside it, harbour quay clutter, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, cool slate-grey and near-black wrought iron with a little rust brown, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 48
+    height: 40
+    anchor: [25, 23]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 3de6573c-645c-4d49-80d8-7ccf62bd3859, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.bollardPair
+    tool: create_map_object
+    prompt: "pair of short squat dark iron mooring bollards side by side with a thick hemp rope loop wound around one of them, harbour quay fitting, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, cool slate-grey cast iron caps, ochre-brown rope, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no quay deck, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 48
+    height: 40
+    anchor: [24, 27]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: f6faaa64-09b1-4e3f-ba46-ba8771476a50, generations: 9, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.fishRack
+    tool: create_map_object
+    prompt: "upright timber fish-drying rack, two A-frame posts with two cross poles, rows of split silver fish hanging to dry on twine, harbour drying frame, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, weathered dark walnut timber poles, pale silver-grey fish, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 64
+    height: 64
+    anchor: [31, 48]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 024f964a-e3c6-4a03-8ddf-c68d76bb5157, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.saltCrates
+    tool: create_map_object
+    prompt: "two stacked timber salt crates with iron corner bands, one open crate heaped with coarse white sea salt, a tied burlap salt sack leaning against them, harbour store, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, oak-brown timber, ochre burlap, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 48
+    height: 48
+    anchor: [24, 39]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 6cdc015b-974e-4fd7-a723-ed4b6ef5d65f, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.barrelStack
+    tool: create_map_object
+    prompt: "three oak barrels with dark iron hoops, two standing upright side by side and one lying on top across them, workshop yard store, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, warm oak-brown staves, slate-grey iron hoops, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 48
+    height: 48
+    anchor: [24, 30]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 69dee93f-756c-4c62-8e49-e7b0214fb85b, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.firewoodStack
+    tool: create_map_object
+    prompt: "neat stack of split firewood logs between two upright posts under a small slate-blue tiled lean-to roof, a chopping block with a hand axe at one end, forge fuel store, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, pale split ends and dark walnut bark, slate-blue roof tiles, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 64
+    height: 56
+    anchor: [32, 40]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 13b61eda-b06c-4902-a33e-5233c0178f6e, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.grindstone
+    tool: create_map_object
+    prompt: "round sandstone grinding wheel mounted upright in a sturdy timber frame with an iron crank handle and a small wooden water trough beneath it, blacksmith's sharpening stone, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, cool grey stone wheel, dark walnut timber frame, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 48
+    height: 48
+    anchor: [24, 35]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: e38f1006-fab3-4be4-a77c-2a99ce09554c, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.bellowsBench
+    tool: create_map_object
+    prompt: "heavy timber workbench with a large leather hand bellows lying on it, iron tongs and a hammer beside it, a small anvil-shaped iron block at one end, blacksmith's yard bench, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark walnut timber, brown leather, slate-grey iron, crisp stepped pixel shading, warm key light from the upper left, no fire, no glow, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 64
+    height: 48
+    anchor: [32, 34]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 16a69e5d-9adb-4c3b-981b-7b02e5c62092, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.slagHeap
+    tool: create_map_object
+    prompt: "small heap of dark forge slag and fused black clinker lumps with a few rusty iron offcuts, a mine spoil pile, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, charcoal, near-black and slate-grey rock lumps with rust-brown flecks, crisp stepped pixel shading, warm key light from the upper left, no glow, no fire, no floor tile, no ground plane, no grass, no dirt patch, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 64
+    height: 40
+    anchor: [32, 26]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 8ce5671d-b1ec-46f9-8ac8-3b59602e0ddc, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.oreSacks
+    tool: create_map_object
+    prompt: "three bulging tied burlap sacks of mined ore, one open sack showing dark rock chunks with a few small cyan crystal ore pieces, mine yard store, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, ochre-brown burlap, slate-grey rock, muted cyan crystal, crisp stepped pixel shading, warm key light from the upper left, no glow, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 48
+    height: 40
+    anchor: [25, 27]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 97b84e37-0548-46a2-b71a-1cd0a124f640, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.toolRack
+    tool: create_map_object
+    prompt: "upright timber tool rack under a narrow slate-blue tiled pent roof, a pickaxe, a shovel, a sledgehammer and a saw hanging from pegs, mine and workshop tool stand, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark walnut timber, slate-grey iron tool heads, slate-blue roof tiles, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 48
+    height: 64
+    anchor: [23, 52]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 49f79fca-c7d1-4096-9e2c-f1f369092c5c, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
+
+  - id: prop.wheelbarrow
+    tool: create_map_object
+    prompt: "old timber wheelbarrow with one iron-rimmed spoked wheel at the front and two long handles at the back, loaded with grey rock and ore chunks, parked at rest, mine yard barrow, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, oak-brown planks, slate-grey iron, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 48
+    height: 40
+    anchor: [27, 28]
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 6fee7f36-e36b-4ee7-a903-e8679dc589cf, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
 
   # ── CHRONICLE MONUMENTS (plan 6.1) ─────────────────────────────────────────
   # Release-history monuments drawn by ChronicleMonuments (vector fallback when
@@ -2527,6 +3023,387 @@ props:
     size: 64
     anchor: [32, 58]
     assetPath: assets/sprites/props/monument.founding.png
+
+  # ── REPO STANDING STONES (Living Isle W7.7 / W8.1) ─────────────────────────
+  # One stone per repo with >= 1 lifetime commit, on the land behind its
+  # Harbor quay pennant (ChronicleMonuments + townPlan REPO_STONE_ANCHORS),
+  # grown through the MonumentRules lifetime tiers 1 / 10 / 100 / 1000. The
+  # face carries a repo crest painted once per (tier, accent) at runtime.
+  # Pixflux without init (colour image: building.archive ashlar greys +
+  # moss), trimmed and OKLab-snapped onto the Archive's greys and the mossy
+  # standing stone's greens by scripts/sprites/bake-banner-stones.mjs.
+  - id: prop.repoStone.cairn
+    tool: generated
+    prompt: "small low cairn of four stacked rough weathered cool grey stones, one flat-faced stone at the front, no grass, no ground, medieval fantasy, isometric three-quarter view"
+    provenance: { item: 'W8.1', endpoint: create-image-pixflux, seed: 17, generationSize: 32x32, colorImage: 'building.archive ashlar greys + moss', generations: 1, pilotGenerations: 3, post: 'trim + OKLab snap (bake-banner-stones.mjs)', generatedAt: '2026-10-09' }
+    width: 30
+    height: 29
+    anchor: [15, 26]
+
+  - id: prop.repoStone.stone
+    tool: generated
+    prompt: "single weathered cool grey standing stone, roughly dressed upright slab with a smooth flat face, no grass, no ground, medieval fantasy, isometric three-quarter view"
+    provenance: { item: 'W8.1', endpoint: create-image-pixflux, seed: 17, generationSize: 32x48, colorImage: 'building.archive ashlar greys + moss', generations: 1, pilotGenerations: 2, post: 'trim + OKLab snap (bake-banner-stones.mjs)', generatedAt: '2026-10-09' }
+    width: 30
+    height: 44
+    anchor: [15, 41]
+
+  - id: prop.repoStone.pillar
+    tool: generated
+    prompt: "short square dressed ashlar stone pillar with a simple carved capital and a low stepped plinth, smooth flat front face, cool grey stone, no grass, no ground, medieval fantasy, isometric three-quarter view"
+    provenance: { item: 'W8.1', endpoint: create-image-pixflux, seed: 17, generationSize: 48x64, colorImage: 'building.archive ashlar greys + moss', generations: 1, pilotGenerations: 2, post: 'trim + OKLab snap (bake-banner-stones.mjs)', generatedAt: '2026-10-09' }
+    width: 36
+    height: 55
+    anchor: [18, 53]
+
+  - id: prop.repoStone.obelisk
+    tool: generated
+    prompt: "tall tapering dressed ashlar obelisk with a pyramidion tip on a two-step stone plinth, smooth flat front face, cool grey stone, medieval fantasy, isometric three-quarter view"
+    provenance: { item: 'W8.1', endpoint: create-image-pixflux, seed: 11, generationSize: 64x96, colorImage: 'building.archive ashlar greys + moss', generations: 1, pilotGenerations: 2, post: 'trim + OKLab snap (bake-banner-stones.mjs)', generatedAt: '2026-10-09' }
+    width: 40
+    height: 86
+    anchor: [20, 84]
+
+  # ── OFFSHORE BACKDROP (Living Isle W8.5a, AD-P2 group E) ───────────────────
+  # Open-sea scenery past the map diamond (config/scenery.js OFFSHORE_SCENERY,
+  # drawn by OffshoreScenery.js in the water pass under every island
+  # drawable). create_map_object at the prompt's canvas (generationSize), then
+  # cleaned by hand-recipe (provenance `post`): baked water and foam keyed out,
+  # the base cut at the waterline, trimmed, then the distance haze (every
+  # texel lerped toward the open sea's deepWater[1] #31424a by `haze`) and a
+  # 1-texel shallowWater foam lip under the base. Static, never animated,
+  # never walkable. No boats: the reef wreck is a broken-off bow on rocks with
+  # bare ribs, no mast or sail (user-approved).
+  - id: prop.seaStack.a
+    tool: create_map_object
+    prompt: "tall natural sea stack, an irregular jagged tapering pillar of layered weathered grey basalt rock with uneven eroded sides, cracked ledges and deep fissures, a rough grassy flat summit for perching gulls, a little dark moss in the cracks, the base cut off flat at the waterline, lit from the upper left with cool blue shadow on the right, transparent background, no water, no foam, no birds, no glow, no text"
+    width: 65
+    height: 126
+    anchor: [32, 124]
+    provenance: { item: 'W8.5a', objectId: 8027e591-8bb3-411f-b3d8-4856362e95c2, generationSize: 96x160, generations: 1, pilotGenerations: 2, rejected: 'ab437876 (blocky chimney, lit from the right)', post: 'water ring keyed out, cut at row 128; warm rock hue -> cool grey (hue 216, sat x0.4); haze 0.22; foam lip', generatedAt: '2026-10-09' }
+    materialClass: stone
+
+  - id: prop.seaStack.b
+    tool: create_map_object
+    prompt: "weathered sea stack, a squat leaning pillar of dark cool grey basalt rock rising out of the sea, two stepped ledges and vertical fissures, pale guano-streaked flat top for perching gulls, a little dark moss in the cracks, the base cut off flat at the waterline, stepped cel shading lit from the upper left with cool blue lower-right shadow, transparent background, no water, no foam, no waves, no ground plate, no cast shadow, no birds, no glow, no text"
+    width: 56
+    height: 102
+    anchor: [28, 100]
+    provenance: { item: 'W8.5a', objectId: 8562af52-6b0d-4c51-a661-fbf7c54f786f, generationSize: 80x120, generations: 1, post: 'baked water strip cut at row 107; haze 0.26; foam lip', generatedAt: '2026-10-09' }
+    materialClass: stone
+
+  - id: prop.seaStack.c
+    tool: create_map_object
+    prompt: "small weathered sea stack, a short broken stump of dark cool grey basalt rock rising out of the sea, one ledge, pale guano-streaked flat top for a perching gull, the base cut off flat at the waterline, stepped cel shading lit from the upper left with cool blue lower-right shadow, transparent background, no water, no foam, no waves, no ground plate, no cast shadow, no birds, no glow, no text"
+    width: 51
+    height: 63
+    anchor: [25, 61]
+    provenance: { item: 'W8.5a', objectId: 29fc5423-1ae7-41f8-90cd-18c59b087c7d, generationSize: 64x96, generations: 1, post: 'mirrored (key light to the upper left); haze 0.30; foam lip', generatedAt: '2026-10-09' }
+    materialClass: stone
+
+  - id: prop.reefWreck
+    tool: create_map_object
+    prompt: "the wreck of an old wooden ship broken in half and mostly sunk, only the snapped bow section and a few bare curved grey timber ribs sticking up out of a jagged reef of dark wet rocks like a skeleton, broken planks, barnacles, no mast, no sails, no rigging, the reef cut off flat at the waterline, lit from the upper left with cool blue shadow on the right, transparent background, no water, no foam, no glow, no text"
+    width: 109
+    height: 90
+    anchor: [54, 88]
+    provenance: { item: 'W8.5a', objectId: c87770c1-8296-4787-b093-7e033d181ac3, generationSize: 220x120, generations: 1, pilotGenerations: 2, rejected: '82e133d4 (rocks and baked sea, no wreck)', post: 'the intact hull broken by hand: stern cut away on a stepped jag at x 112, three bare ribs drawn up from the break, water and splash foam keyed out (cut at row 94), plum planking re-toned by luminance rank onto a weathered timber ramp (#2a1c14 #45301f #5e4732 #7a6550 #958571); haze 0.30; then sunk (hull below a wavy waterline y 70..64 removed, foam along it) and holed (ragged breach through the side planking, sea showing through, three curved ribs across it, dark rim)', generatedAt: '2026-10-09' }
+    materialClass: timber
+
+  - id: prop.farShore.a
+    tool: create_map_object
+    prompt: "a distant mainland headland seen far across the sea, one long low silhouette of a rising cliff cape with a gentle rounded hill and a few tiny tree bumps on the ridge, simple flat shapes, very low contrast, only three flat tones of hazy dark blue grey, transparent background, no water, no sky, no buildings, no glow, no text"
+    width: 248
+    height: 44
+    anchor: [124, 43]
+    provenance: { item: 'W8.5a', objectId: b2e6fbe4-e12a-4f01-9e3f-92fc471d343a, generationSize: 400x96, generations: 1, post: 'trimmed; luminance terciles -> three tones #1f2830 #2c3844 #3e5060', generatedAt: '2026-10-09' }
+    materialClass: stone
+
+  - id: prop.farShore.b
+    tool: create_map_object
+    prompt: "a distant low far cape seen across the sea, one long thin flat silhouette of low hills tapering into the water at both ends with a small notch of a cove, simple flat shapes, very low contrast, only three flat tones of hazy dark blue grey, transparent background, no water, no sky, no buildings, no glow, no text"
+    width: 126
+    height: 31
+    anchor: [63, 30]
+    provenance: { item: 'W8.5a', objectId: 25760806-0e33-463f-9a11-a8e97c2c84d2, generationSize: 400x96, generations: 1, post: 'trimmed; luminance -> the farShore tones (two of three present)', generatedAt: '2026-10-09' }
+    materialClass: stone
+
+  - id: prop.farHamlet
+    tool: create_map_object
+    prompt: "a small rocky islet in the sea with three tiny fishermen's cottages of pale grey stone with steep slate-blue roofs and little chimneys, a short wooden jetty on stilts reaching out from the rocks, two dark pine trees, grassy top, the islet cut off flat at the waterline, stepped cel shading lit from the upper left with cool blue lower-right shadow, transparent background, no boats, no people, no water, no foam, no ground plate, no cast shadow, no glow, no text"
+    width: 168
+    height: 90
+    anchor: [84, 88]
+    provenance: { item: 'W8.5a', objectId: 2498ea1d-6bcb-4c76-be1c-60e760fcf38a, generationSize: 200x140, generations: 1, post: 'a red speck on the path (read as a figure) painted out; haze 0.34; foam lip', generatedAt: '2026-10-09' }
+    materialClass: stone
+
+  - id: prop.beaconRock
+    tool: create_map_object
+    prompt: "a craggy dark grey rock islet rising from the sea topped by a small old round stone beacon tower of pale weathered grey ashlar with a cold dark iron fire basket on its crown, worn steps cut into the rock, the rock cut off flat at the waterline, stepped cel shading lit from the upper left with cool blue lower-right shadow, transparent background, no fire, no light, no water, no foam, no ground plate, no cast shadow, no glow, no text"
+    width: 88
+    height: 115
+    anchor: [44, 113]
+    provenance: { item: 'W8.5a', objectId: 37972d1a-6bf6-4d56-bfe6-7f09ee4cfed3, generationSize: 120x160, generations: 1, post: 'flame painted out to a cold basket; water ring keyed out and the rock base filled; mirrored (key light to the upper left); haze 0.30; foam lip', generatedAt: '2026-10-09' }
+    materialClass: stone
+
+  # ── SET DRESSING: CIVIC / GARDEN (Living Isle W8.3c, AD-P5 group D) ────────
+  # Garden furniture for the Archive and Observatory lawns and the south-bank
+  # well green (config/scenery.js DISTRICT_PROPS). create_map_object, no
+  # ground plate (building-style-contract grounding rule), keyed off grey by
+  # key-out-bg.mjs. The sconce's torch is cold pitch: no flame, no sidecar.
+  - id: prop.laundryLine
+    tool: map_object
+    prompt: "village laundry line, two weathered dark oak posts with a sagging rope strung between them, undyed linen sheets, a faded crimson shirt and an ochre cloth pegged on the rope, the line running diagonally from lower left to upper right, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 64
+    height: 56
+    anchor: [33, 45]
+    provenance: { item: 'W8.3c', endpoint: create_map_object, objectId: a0e445f3-774f-4c46-9c74-24e8d24242a7, generations: 1, post: 'plum posts -> timber, cloth -> clothCrimson / clothOchre / linen greys (OKLab lightness order kept)', generatedAt: '2026-10-09' }
+
+  - id: prop.trellisArch
+    tool: map_object
+    prompt: "wooden rose arbor archway, two slim dark oak posts with lattice sides and a rounded lattice arch on top, densely covered in climbing green rose vines with many small pink and white roses, leafy green all over the arch, open passage underneath, isolated single object, no floor tile, no ground plane, no grass, no soil, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 48
+    height: 64
+    anchor: [24, 58]
+    provenance: { item: 'W8.3c', endpoint: create_map_object, objectId: fc947f50-9b41-4039-9583-c4936e03d1b3, generations: 1, pilotGenerations: 1, post: 'baked stone threshold slab cut; posts -> timber, leaves -> foliageDeep + foliageSun, roses -> blossom', generatedAt: '2026-10-09' }
+
+  - id: prop.wellTrough
+    tool: map_object
+    prompt: "long low wooden water trough of dark oak planks bound with iron bands, still blue water inside, a wooden well bucket with a rope handle standing at one end, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 48
+    height: 40
+    anchor: [22, 30]
+    provenance: { item: 'W8.3c', endpoint: create_map_object, objectId: 70e45253-ac09-4245-a00f-d3908ca18ffc, generations: 1, post: 'planks -> timber, neon water -> slate + shallowWater, bucket rim -> clothOchre', generatedAt: '2026-10-09' }
+
+  # A freestanding torch post, not wall-mounted: the garden lawns have no
+  # wall to carry a bracket. Cold pitch head hand-drawn over the generated
+  # flame, so it never reads as lit by day and needs no emissive sidecar.
+  - id: prop.torchSconce
+    tool: map_object
+    prompt: "short square stone garden pillar post of warm grey fieldstone, waist high, a black wrought iron torch holder bracket fixed to its side holding one unlit wooden torch with a dark charred cloth head, freestanding pillar, unlit, no flame, no fire, no door, no wall, no arch, isolated single object, no floor tile, no ground plane, no grass, no soil, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 32
+    height: 48
+    anchor: [16, 40]
+    provenance: { item: 'W8.3c', endpoint: create_map_object, objectId: 6e7d047d-4532-4658-9741-ae76c51f8d9f, generations: 1, pilotGenerations: 1, post: 'grass plate cut; generated flame replaced by a hand-drawn cold pitch head on an iron cup (timber + stone); pillar -> stone', generatedAt: '2026-10-09' }
+
+  - id: prop.cairn
+    tool: map_object
+    prompt: "tall balanced waymarker cairn, seven flat weathered grey fieldstones stacked into a slim tapering column, a little green moss on the upper stones, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 32
+    height: 48
+    anchor: [15, 37]
+    provenance: { item: 'W8.3c', endpoint: create_map_object, objectId: 7bd540fc-7944-4df7-982f-17a8e8253a20, generations: 1, post: 'grass plate cut; stones -> stone + plaza lights', generatedAt: '2026-10-09' }
+
+  # W8.3d (AD-P12) — curtain-wall dressing. The ivy curtain is hung by
+  # VillageWall.paintWallRun at its layout's `ivySprites` slots (sheared onto
+  # the face one column at a time, baked into the run's cached albedo). The
+  # sentry brazier stands on one pier's lookout crown per run (`pier.brazier`):
+  # the cold sheet by day, the lit sheet plus its flame sidecar while the
+  # village lamps burn (a `lamps` FIXTURE light, never occupancy). The barrel
+  # store at the wall foot reuses prop.barrelStack (W8.3a).
+  - id: prop.wallIvyCurtain
+    tool: create_map_object
+    prompt: "a hanging curtain of climbing ivy draping straight down from a level top edge, a dense mass of small pointed ivy leaves along the top thinning downward into a ragged fringe of long trailing leafy strands of uneven length, deep green and dark olive-green leaves with a few lit leaf tips, thin brown stems, seen flat face-on, isolated single object on fully transparent background, crisp stepped pixel shading, warm key light from the upper left, no wall, no stone, no ground, no pot, no frame, no flowers, no characters, no text, empty transparent corners"
+    width: 32
+    height: 48
+    anchor: [16, 0]
+    materialClass: foliage
+    provenance: { item: 'W8.3d', endpoint: create_map_object, objectId: be0df248-2fc3-4bde-b478-880733d4088d, generations: 1, post: 'snapped to the foliage and timber ramps', generatedAt: '2026-10-09' }
+
+  - id: prop.wallBrazier
+    tool: create_map_object
+    prompt: "a small sentry brazier: one round wrought-iron fire basket of riveted near-black iron bands standing on three short splayed iron legs, heaped with glowing orange embers and a small low yellow-orange flame, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, slate-grey and near-black iron, crisp stepped pixel shading, warm key light from the upper left, no smoke, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 32
+    height: 32
+    anchor: [16, 27]
+    materialClass: metal
+    provenance: { item: 'W8.3d', endpoint: create_map_object, objectId: 0373e845-77b2-44a9-a615-7ceddceb5711, generations: 1, post: 'cold day sheet derived from the lit generation: flame tongue above the basket cut, ember bed re-toned to ashlar coal stops; iron snapped to slate plus ashlar ink', generatedAt: '2026-10-09' }
+
+  - id: prop.wallBrazier.lit
+    tool: create_map_object
+    prompt: "a small sentry brazier: one round wrought-iron fire basket of riveted near-black iron bands standing on three short splayed iron legs, heaped with glowing orange embers and a small low yellow-orange flame, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, slate-grey and near-black iron, crisp stepped pixel shading, warm key light from the upper left, no smoke, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 32
+    height: 32
+    anchor: [16, 27]
+    materialClass: fire
+    provenance: { item: 'W8.3d', endpoint: create_map_object, objectId: 0373e845-77b2-44a9-a615-7ceddceb5711, generations: 1, post: 'iron snapped to slate plus ashlar ink, flame to the emissive ramp; emissive sidecar = the flame and ember texels only (A 200)', generatedAt: '2026-10-09' }
+    emissiveSidecar: true
+    emissive:
+      strength: 1
+      sources:
+        - { id: emissive.prop.wallBrazier.flame, kind: fire, geometry: authored-albedo, strength: 1 }
+
+  # W8.4b (AW-P15) — calendar dressing sprites. Each replaces a code-drawn
+  # stamp in VillageCalendar.js under the same dressing row (config/
+  # villageCalendar.js `sprite`), drawn by the row's StaticPropSprite at the
+  # whole-px origin `calendarPropTile` snaps. create_map_object, keyed off
+  # grey by key-out-bg.mjs; no ground plate, no cast shadow, unlit (the
+  # midsummer bonfire's night flame stays the code-drawn emissive frame laid
+  # on these logs). Static, never animated. The garland and the door wreaths
+  # stay code-drawn (a 7-texel wreath and a swag tied to the gate lanterns
+  # have no sprite-sized equivalent).
+  - id: prop.festival.pine
+    tool: create_map_object
+    prompt: "small solstice fir tree standing in a round dark oak tub bound with an iron hoop, three tiers of deep green needles, a few round red and gold baubles and a short red ribbon garland wound around it, a small pale gold star on the top, stepped cel shading lit from the upper left with cool lower-right shadow, isolated single object on transparent background, no glow, no lights, no snow, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 32
+    height: 48
+    anchor: [16, 42]
+    materialClass: foliage
+    provenance: { item: 'W8.4b', endpoint: create_map_object, jobId: f9dd2d2f-8886-4fe3-ac42-27a0f75039b7, generations: 1, post: 'baked snow plate keyed out by its three exact colours (fbfcfc, b0bcde, 545a85); stray fragments < 6 px cleared', generatedAt: '2026-10-09' }
+
+  - id: prop.festival.pumpkins
+    tool: create_map_object
+    prompt: "small harvest heap of three ribbed orange pumpkins of different sizes and one pale yellow squash, short green-brown stems, two pumpkins resting against each other, stepped cel shading lit from the upper left with cool lower-right shadow, isolated single object on transparent background, no basket, no crate, no straw, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 32
+    height: 32
+    anchor: [16, 25]
+    materialClass: foliage
+    provenance: { item: 'W8.4b', endpoint: create_map_object, jobId: 5ffda05a-d8ca-42b9-bc55-fcbcf0a4510b, generations: 1, post: 'olive ground plate erased below each column''s lowest pumpkin texel; open columns closed with one ink texel', generatedAt: '2026-10-09' }
+
+  - id: prop.festival.stook
+    tool: create_map_object
+    prompt: "a single harvest stook of golden wheat sheaves leaned together into a tall cone, bound with a twist of straw near the top, ripe ears fanning out at the crown, straw butts splayed at the foot, stepped cel shading lit from the upper left with cool lower-right shadow, isolated single object on transparent background, no field, no stubble, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 32
+    height: 40
+    anchor: [16, 36]
+    materialClass: foliage
+    provenance: { item: 'W8.4b', endpoint: create_map_object, jobId: c00928b8-3db1-4354-a1d1-4b1c40949d3e, generations: 1, generatedAt: '2026-10-09' }
+
+  - id: prop.festival.bonfire
+    tool: create_map_object
+    prompt: "a conical woodpile of about ten long brown split logs stood on end and leaning together to meet in a point like a tipi frame, a few short logs and sticks heaped around its foot, encircled by a ring of small grey stones, dry unburnt wood, stepped cel shading lit from the upper left with cool lower-right shadow, isolated single object on transparent background, no fire, no flame, no smoke, no glow, no tower, no ladder, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 32
+    height: 32
+    anchor: [16, 27]
+    materialClass: timber
+    provenance: { item: 'W8.4b', endpoint: create_map_object, jobId: be5b0e2b-c6d6-43d2-9120-f5ac59c12237, generations: 3, rejected: ['c30c31fc-540e-4dc9-8d33-22c3188fe76b (drew a lit fire with smoke)', '57cab037-12a4-45b2-a1a5-b6e3159a6b49 (a ladder tower on a grass plate)'], post: 'pale khaki stone disc re-toned onto ART_RAMPS.stone by luma, every fourth ring texel one stop down so it reads as separate fieldstones', generatedAt: '2026-10-09' }
+
+  - id: prop.festival.produceAwning
+    tool: create_map_object
+    prompt: "small weekend market side table under a lean-to canvas awning, two dark oak posts holding a sloped awning of alternating faded crimson and ochre stripes with a scalloped front edge, a plank table beneath with woven baskets of green cabbages, red apples and orange carrots, stepped cel shading lit from the upper left with cool lower-right shadow, isolated single object on transparent background, no glow, no floor tile, no ground plane, no grass, no rug, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 48
+    height: 48
+    anchor: [24, 41]
+    materialClass: timber
+    provenance: { item: 'W8.4b', endpoint: create_map_object, jobId: 091cb37f-bba5-4fac-8b55-ccb6449ddc55, generations: 1, post: 'magenta stripes re-toned onto clothCrimson (#a4463f / #732a31, shade #521f25, ink #2a1416); apples untouched', generatedAt: '2026-10-09' }
+
+  # W8.4b (AW-P15) — everyday dressing on the north road (the observatory
+  # promenade): a parked two-wheel handcart of firewood bundles. Static
+  # scenery, never a moving actor; carries nothing that reads agent state.
+  - id: prop.handcart
+    tool: create_map_object
+    prompt: "small parked two-wheel wooden handcart seen from the side and above, warm brown oak planks and side rails, two large spoked wooden wheels with dark iron tyres, two long pull handles resting on the ground at the front, the cart bed piled high with long bundles of split grey-brown firewood sticks tied with rope, stepped cel shading lit from the upper left with cool lower-right shadow, isolated single object on transparent background, no horse, no glow, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 48
+    height: 40
+    anchor: [24, 32]
+    materialClass: timber
+    provenance: { item: 'W8.4b', endpoint: create_map_object, jobId: 002bdf11-34b5-47a2-9d95-01ef88484e7c, generations: 2, rejected: ['f52e8ef4-a07b-4b87-a3c7-ae73e5248f54 (mauve timber, load read as round blobs)'], post: 'purple-magenta wheel and rail texels re-toned onto ART_RAMPS.timber by luma', generatedAt: '2026-10-09' }
+
+  # ── SET DRESSING: GATE AVENUE + FARM POCKET (Living Isle W8.3b, AD-P5 D) ──
+  # One bread stall, fence runs and a paddock gate, and a milestone for the
+  # gate avenue (the fish and cloth stalls and the notice board were
+  # withdrawn: no visible verge left clear of standing places); crop beds,
+  # scarecrow, hay cart, skeps,
+  # dovecote and trough for the farm pocket on the green between the Archive
+  # gable and the lagoon (config/scenery.js DISTRICT_PROPS). MCP
+  # create_map_object (view low top-down, selective outline, detailed
+  # shading, high detail), keyed off grey by key-out-bg.mjs. No ground
+  # plate, no shadow slab, no hull (hulls are the git channel).
+  - id: prop.marketStall.bread
+    tool: create_map_object
+    prompt: "small village bakery market stall, a timber trestle table under a pitched striped awning of ochre and undyed linen on four dark oak posts, round golden-brown bread loaves, braided loaves and a wicker basket of rolls on the table, a flour sack leaning on one post, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark oak timber, ochre and cream cloth, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 64
+    height: 64
+    anchor: [31, 46]
+    provenance: { item: 'W8.3b', generations: 2, accepted: 'retry 2 (prompt + cutout clause: nothing underneath, posts end in transparency)', post: 'crimson awning stripes remapped onto clothOchre by luminance (/tmp finalize step)' }
+
+  - id: prop.fence.nwSe
+    tool: create_map_object
+    prompt: "short straight section of rustic split-rail timber fence, three weathered upright posts joined by two rough horizontal rails, the whole fence runs diagonally from the upper left of the frame down to the lower right, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark oak and grey-brown weathered timber, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 64
+    height: 48
+    anchor: [32, 34]
+    provenance: { item: 'W8.3b', generations: 2, accepted: 'none: both attempts drew a NE-SW run; this sprite is prop.fence.neSw mirrored horizontally (lit post faces flip to the right)' }
+
+  - id: prop.fence.neSw
+    tool: create_map_object
+    prompt: "short straight section of rustic split-rail timber fence, three weathered upright posts joined by two rough horizontal rails, the whole fence runs diagonally from the upper right of the frame down to the lower left, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark oak and grey-brown weathered timber, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 64
+    height: 48
+    anchor: [31, 34]
+    provenance: { item: 'W8.3b', generations: 2, accepted: 'retry 2 (cutout clause)' }
+
+  - id: prop.fence.gate
+    tool: create_map_object
+    prompt: "rustic timber paddock gate hung between two stout square gateposts, a closed five-bar farm gate with one diagonal brace and an iron latch, the gate runs diagonally from the upper right of the frame down to the lower left, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark oak and grey-brown weathered timber, dark iron hinges, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 48
+    height: 48
+    anchor: [23, 38]
+    provenance: { item: 'W8.3b', generations: 1 }
+
+  - id: prop.milestone
+    tool: create_map_object
+    prompt: "old roadside milestone, a short upright dressed stone post with a rounded top and a carved notch band, weathered edges and a small tuft of moss at its foot, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, cool grey stone, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, no letters, empty transparent corners"
+    width: 32
+    height: 40
+    anchor: [16, 28]
+    provenance: { item: 'W8.3b', generations: 2, accepted: 'attempt 1 (retry 2 had a glowing glyph)', post: 'grass foot plate removed offline (green below row 24, everything below row 31)' }
+
+  - id: prop.farm.cropRows.long
+    tool: create_map_object
+    prompt: "long kitchen-garden crop bed, four parallel raised ridges of dark tilled soil planted with leafy green cabbages and lettuces, the ridges run diagonally from the upper left of the frame down to the lower right, uneven hand-dug ends, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark umber soil, fresh and deep leaf greens, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no rectangular plot, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 96
+    height: 56
+    anchor: [48, 36]
+    provenance: { item: 'W8.3b', generations: 1 }
+
+  - id: prop.farm.cropRows.short
+    tool: create_map_object
+    prompt: "short kitchen-garden crop bed, three raised ridges of dark tilled soil with climbing green bean vines tied to slim timber stakes, the ridges run diagonally from the upper left of the frame down to the lower right, uneven hand-dug ends, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark umber soil, leaf greens, pale timber stakes, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no rectangular plot, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 64
+    height: 48
+    anchor: [31, 27]
+    provenance: { item: 'W8.3b', generations: 2, accepted: 'retry 2 (bare ridges, no border clause): raised cabbage beds' }
+
+  - id: prop.farm.scarecrow
+    tool: create_map_object
+    prompt: "rustic field scarecrow on a wooden cross post, sackcloth head with a stitched face and a wide-brimmed straw hat, patched faded crimson coat, straw tufts poking from the sleeves and hem, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, weathered timber, straw gold, faded crimson cloth, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no birds, no text, empty transparent corners"
+    width: 40
+    height: 56
+    anchor: [20, 45]
+    provenance: { item: 'W8.3b', generations: 2, accepted: 'retry 2 (single post ends in transparency, no mound)' }
+
+  - id: prop.farm.hayWagon
+    tool: create_map_object
+    prompt: "small two-wheeled wooden farm hay cart heaped high with golden hay, large spoked wooden wheels, two long shafts resting on the ground, a pitchfork leaning on the side, no horse, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark oak timber, iron wheel rims, straw gold hay, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no animals, no characters, no text, empty transparent corners"
+    width: 72
+    height: 56
+    anchor: [31, 40]
+    provenance: { item: 'W8.3b', generations: 1 }
+
+  - id: prop.farm.beehives
+    tool: create_map_object
+    prompt: "row of three domed woven straw beehive skeps standing on a low timber bench, small dark entrance holes at their bases, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, straw gold and ochre coils, dark oak bench, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no bees, no characters, no text, empty transparent corners"
+    width: 64
+    height: 40
+    anchor: [31, 31]
+    provenance: { item: 'W8.3b', generations: 2, accepted: 'retry 2 (cutout clause, bench on four short plank legs)' }
+
+  - id: prop.farm.dovecote
+    tool: create_map_object
+    prompt: "small timber dovecote, a square wooden pigeon house with rows of little arched nesting holes raised on one tall stout post, a small pitched slate-blue shingle roof with a tiny finial, two white doves perched on the ledge, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark oak and weathered timber, slate-blue shingles, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
+    width: 40
+    height: 72
+    anchor: [21, 59]
+    provenance: { item: 'W8.3b', generations: 2, accepted: 'attempt 1', post: 'grass tuft at the post foot removed offline (green below row 50 + post column mask)' }
+
+  - id: prop.farm.trough
+    tool: create_map_object
+    prompt: "long rectangular wooden livestock water trough made of dark oak planks bound with two iron bands, filled to the brim with still dark water, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, dark oak timber, dark iron bands, deep blue-grey water surface, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no square base, no platform, no shadow slab, no boat, no animals, no characters, no text, empty transparent corners"
+    width: 48
+    height: 32
+    anchor: [24, 24]
+    provenance: { item: 'W8.3b', generations: 1 }
 
 # ─── VEGETATION ──────────────────────────────────────────────────────────────
 vegetation:
@@ -2665,6 +3542,103 @@ vegetation:
     anchor: [32, 51]
     provenance: { item: '5.5', endpoint: edit-image-pixen, jobId: 4092a15a-99a6-4e9a-bb1a-599e88f9c957, seed: 5, source: veg.tree.pine.large, generations: 1, snap: 'snow ramp by rank (M9), foliageDeep needles, timber', generatedAt: '2026-09-28' }
 
+  # ── Tree species (Living Isle W8.3d, AD-P8 / Group G) ──
+  # Birch (north ridge), maple (inhabited belt) and Lombardy poplar (avenue
+  # rows): edit_image_pixen from the shipped oak/pine sheets so scale,
+  # outline and light stay native; canopies snapped to C1 ramps by luminance
+  # rank (green, so FoliageRenderer's canopy remap turns them: birch to
+  # canopyOchre, maple to canopyScarlet), bark to ashlar/timber. Bare sheets
+  # are pixen edits of the snapped leafy sheet with the leafy trunk restored
+  # below the crown (same canvas and trunk base).
+
+  - id: veg.tree.birch.small
+    tool: edit_image_pixen
+    prompt: "Change the oak into a young silver birch, same pixel art style and scale: a slender straight white-barked trunk with small black bark marks, a light airy crown of small rounded bright-green leaf clumps with sky gaps, root flare at the base, same dark outline, upper-left light"
+    size: 32
+    anchor: [16, 27]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: 5ee9f320-663e-44b6-a672-7da8f902b993, seed: 5, source: 'veg.tree.oak.small', generations: 1, snap: 'foliageSun[0-6] by luminance rank (sky-gap px filled from the crown), ashlar + timber[0-1] bark', generatedAt: '2026-10-09' }
+
+  - id: veg.tree.birch.small.bare
+    tool: edit_image_pixen
+    prompt: "The same birch tree in winter with every leaf fallen: a bare leafless birch, the same white trunk with black scars and the same roots, thin pale branches splitting into many fine dark twigs spreading to the same crown silhouette, upper-left light, dark outline, no leaves, no green"
+    size: 32
+    anchor: [16, 27]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: 08d282ae-ab40-4e92-8ae9-9f1234068c2e, seed: 5, source: veg.tree.birch.small, generations: 1, snap: 'nearest of the leafy sheet bark set (OKLab); leafy trunk restored below the crown; specks under 12 px dropped', generatedAt: '2026-10-09' }
+
+  - id: veg.tree.birch.large
+    tool: edit_image_pixen
+    prompt: "Change the oak into a silver birch tree, same pixel art style and scale: a slender straight white-barked trunk with black horizontal scars and dark knots, thin upward branches, a light airy oval crown of small rounded bright-green leaf clumps with sky gaps showing the white branches, root flare at the base, same dark outline, upper-left light"
+    size: 64
+    anchor: [32, 60]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: 5912c741-5c83-4ba0-aa2e-dabf5934de65, seed: 5, source: 'veg.tree.oak.large', generations: 1, snap: 'foliageSun[0-6] by luminance rank (sky-gap px filled from the crown), ashlar + timber[0-1] bark', generatedAt: '2026-10-09' }
+
+  - id: veg.tree.birch.large.bare
+    tool: edit_image_pixen
+    prompt: "The same birch tree in winter with every leaf fallen: a bare leafless birch, the same white trunk with black scars and the same roots, thin pale branches splitting into many fine dark twigs spreading to the same crown silhouette, upper-left light, dark outline, no leaves, no green"
+    size: 64
+    anchor: [32, 60]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: 2907de98-6290-4011-8621-fd20546d49e6, seed: 5, source: veg.tree.birch.large, generations: 1, snap: 'nearest of the leafy sheet bark set (OKLab); leafy trunk restored below the crown; specks under 12 px dropped', generatedAt: '2026-10-09' }
+
+  - id: veg.tree.birch.tall
+    tool: edit_image_pixen
+    prompt: "The same birch tree but much taller, filling the canvas height: a tall slender white-barked trunk with black scars, a tall oval crown of many overlapping small leaf clumps, dense and full with only a few small sky gaps, same small pixel scale, same dark outline, upper-left light, roots at the bottom"
+    width: 64
+    height: 112
+    anchor: [32, 108]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: eb753a7f-5fc8-46eb-897e-8cf5bf9490ed, seed: 5, source: 'veg.tree.birch.large (padded to 64x112, after a rejected pine.tall-sourced candidate)', generations: 1, snap: 'foliageSun[0-6] by luminance rank (sky-gap px filled from the crown), ashlar + timber[0-1] bark', generatedAt: '2026-10-09' }
+
+  - id: veg.tree.birch.tall.bare
+    tool: edit_image_pixen
+    prompt: "The same birch tree in winter with every leaf fallen: a bare leafless birch, the same white trunk with black scars and the same roots, thin pale branches splitting into many fine dark twigs spreading to the same crown silhouette, upper-left light, dark outline, no leaves, no green"
+    width: 64
+    height: 112
+    anchor: [32, 108]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: 234d84c4-c1be-4f74-bef7-82aab0a9064a, seed: 5, source: veg.tree.birch.tall, generations: 1, snap: 'nearest of the leafy sheet bark set (OKLab); leafy trunk restored below the crown; specks under 12 px dropped', generatedAt: '2026-10-09' }
+
+  - id: veg.tree.maple.large
+    tool: edit_image_pixen
+    prompt: "Change the oak into a maple tree, same pixel art style and scale: a short thick grey-brown trunk with root flare, a broad dense rounded crown of many stepped leaf clumps in fresh green, hard cel-shaded edges, deep shadow under the crown, same dark outline, upper-left light"
+    size: 64
+    anchor: [32, 50]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: 04007a94-adef-42c9-abbb-4aad6ffbc5fa, seed: 5, source: 'veg.tree.oak.large', generations: 1, snap: 'foliage[1-4] + foliageSun[6] by rank, ashlar[0] + timber + stone[1-3] bark', generatedAt: '2026-10-09' }
+
+  - id: veg.tree.maple.large.bare
+    tool: edit_image_pixen
+    prompt: "The same tree in winter with every leaf fallen: a bare leafless maple, the same trunk and roots, thick boughs splitting into many thinner branches and fine twigs spreading to the same broad rounded crown silhouette, grey-brown bark, upper-left light, dark outline, no leaves, no green"
+    size: 64
+    anchor: [32, 50]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: ff458d04-e15f-413c-a112-0cbc719dc3d9, seed: 5, source: veg.tree.maple.large, generations: 1, snap: 'nearest of the leafy sheet bark set (OKLab); leafy trunk restored below the crown; specks under 12 px dropped', generatedAt: '2026-10-09' }
+
+  - id: veg.tree.maple.tall
+    tool: edit_image_pixen
+    prompt: "Change the oak into a great old maple tree, same pixel art style and scale: a short thick grey-brown trunk with root flare, a very broad dense rounded crown of many stepped leaf clumps in fresh green, hard cel-shaded edges, deep shadow under the crown, same dark outline, upper-left light"
+    size: 112
+    anchor: [56, 111]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: 6dc7e885-30d7-4213-b1fe-743261ba0258, seed: 5, source: 'veg.tree.oak.tall', generations: 1, snap: 'foliage[1-4] + foliageSun[6] by rank, ashlar[0] + timber + stone[1-3] bark', generatedAt: '2026-10-09' }
+
+  - id: veg.tree.maple.tall.bare
+    tool: edit_image_pixen
+    prompt: "The same tree in winter with every leaf fallen: a bare leafless maple, the same trunk and roots, thick boughs splitting into many thinner branches and fine twigs spreading to the same broad rounded crown silhouette, grey-brown bark, upper-left light, dark outline, no leaves, no green"
+    size: 112
+    anchor: [56, 111]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: 3e51aeec-362f-40d9-a839-b1f86ea8e854, seed: 5, source: veg.tree.maple.tall, generations: 1, snap: 'nearest of the leafy sheet bark set (OKLab); leafy trunk restored below the crown; specks under 12 px dropped', generatedAt: '2026-10-09' }
+
+  - id: veg.tree.poplar.tall
+    tool: edit_image_pixen
+    prompt: "Change the pine into a Lombardy poplar filling the canvas height, same pixel art style and scale: a narrow upright column of dense dark-green leaf clumps, tapering to a point at the top, a short straight grey-brown trunk with root flare showing below, hard cel-shaded clumps, same dark outline, upper-left light"
+    width: 64
+    height: 128
+    anchor: [32, 127]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: 1b806b18-88fb-4b33-b966-19a1307e2b3f, seed: 5, source: 'veg.tree.pine.tall (padded to 64x128)', generations: 1, snap: 'foliageDeep[1-7] by rank, ashlar[0] + timber + stone[1-3] bark', generatedAt: '2026-10-09' }
+
+  - id: veg.tree.poplar.tall.bare
+    tool: edit_image_pixen
+    prompt: "Remove every leaf: the same Lombardy poplar as a bare winter skeleton. Only the brown trunk and many thin bare branches that rise steeply upward from the trunk, fanning slightly, forming the same tall narrow pointed silhouette, with transparent gaps between the branches, grey-brown bark, dark outline, no leaves, no foliage, no green, no snow"
+    width: 64
+    height: 128
+    anchor: [32, 127]
+    provenance: { item: 'W8.3d', endpoint: edit-image-pixen, jobId: e9f0a81e-b0f4-496c-a922-ee85918f4a8b, seed: 17, source: veg.tree.poplar.tall, generations: 2, snap: 'nearest of the leafy sheet bark set (OKLab); leafy trunk restored below the crown; specks under 12 px dropped', rejected: 1 (seed 5 kept the leaves), generatedAt: '2026-10-09' }
+
   # ── The world ash (user item 5) ──
   # One colossal evergreen on the northern lagoon islet (scenery.js
   # WORLD_TREE; FoliageRenderer `ash.world`, species 'ash'), about 2.4× the
@@ -2727,22 +3701,28 @@ vegetation:
 
   # Birdsong & Bloom (v0.16): living-ground flower scatter + cultivated plants.
   - id: veg.flower.a
-    tool: isometric_tile
-    prompt: "small clump of wild garden flowers, mixed red and gold blooms on bright green stems, isometric"
-    size: 32
-    anchor: [16, 20]
+    tool: map_object
+    prompt: "small loose clump of wild meadow flowers, a tuft of slender green stems and narrow leaves with red poppies and golden buttercups at different heights, isolated single plant, low top-down isometric fantasy RPG scenery, sage green leaves, crisp stepped pixel shading, warm key light from the upper left, the object floats on pure transparency like an inventory icon, nothing under it, no floor tile, no ground plane, no dirt, no grass, no soil, no pot, no box, no shadow slab, empty transparent corners"
+    width: 22
+    height: 26
+    anchor: [11, 23]
+    provenance: { item: 'W8.2b', endpoint: create_map_object, jobId: 44c0c39e-a6a9-48f4-8227-ac1ee4671a76, generations: 1, candidates: 2, post: 'trimmed to the silhouette', generatedAt: '2026-10-09' }
 
   - id: veg.flower.b
-    tool: isometric_tile
-    prompt: "cluster of blue and white wildflowers with green foliage, isometric"
-    size: 32
-    anchor: [16, 20]
+    tool: map_object
+    prompt: "small loose clump of wild meadow flowers, slender green stems and narrow leaves with blue cornflowers and white daisies at different heights, isolated single object, low top-down isometric fantasy RPG scenery, sage green leaves, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no soil, no pot, no box, no shadow slab, empty transparent corners"
+    width: 24
+    height: 26
+    anchor: [12, 23]
+    provenance: { item: 'W8.2b', endpoint: create_map_object, jobId: 38bfa2c5-f4dd-4332-8006-3e4b564a05ad, generations: 1, post: 'trimmed to the silhouette', generatedAt: '2026-10-09' }
 
   - id: veg.flower.c
-    tool: isometric_tile
-    prompt: "patch of pink and violet meadow flowers, soft petals and green leaves, isometric"
-    size: 32
-    anchor: [16, 20]
+    tool: map_object
+    prompt: "small loose clump of wild meadow flowers, slender green stems and narrow leaves with pink campion and violet heather sprigs at different heights, isolated single object, low top-down isometric fantasy RPG scenery, sage green leaves, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no soil, no pot, no box, no shadow slab, empty transparent corners"
+    width: 25
+    height: 25
+    anchor: [12, 22]
+    provenance: { item: 'W8.2b', endpoint: create_map_object, jobId: b0d4ec6e-29be-46b1-849e-2951d1571278, generations: 1, post: 'trimmed to the silhouette', generatedAt: '2026-10-09' }
 
   - id: veg.flowerBed
     tool: map_object
@@ -2762,6 +3742,53 @@ vegetation:
     prompt: "neatly trimmed dense green garden hedge, flat top, tiny berries, isometric"
     size: 32
     anchor: [16, 22]
+
+  # ── SET DRESSING: GARDEN / WETLAND / FOREST (Living Isle W8.3c, AD-P5 D) ──
+  # Hedgerow for the garden lawns; reed and cattail clumps for the lagoon and
+  # river margins (dry bank tiles only, never fauna water); fern and bramble
+  # for the north forest edge. Winter states are runtime (PropWinter
+  # WINTER_PROPS), never authored. create_map_object, keyed off grey.
+  # A hedge clump of four bushes; a hedgerow run is two or three clumps laid
+  # along a line in scenery.js.
+  - id: veg.hedgerow
+    tool: map_object
+    prompt: "low wild hedgerow, a row of three dense rounded bushes merged into one continuous hedge, rich deep forest green and moss green leaves, darker green undersides, sparse tiny red berries, hedge row oriented diagonally like an isometric fence, isolated single object, no floor tile, no ground plane, no grass, no soil, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 64
+    height: 48
+    anchor: [32, 28]
+    provenance: { item: 'W8.3c', endpoint: create_map_object, objectId: d678432a-e39d-40ab-a8d9-a85def3bc9cd, generations: 1, pilotGenerations: 1, post: 'baked dirt-and-grass slab cut (bush palette flood + column gap); leaves -> foliageDeep 0-5 + foliageSun 5-6', generatedAt: '2026-10-09' }
+
+  - id: veg.reedClump
+    tool: map_object
+    prompt: "clump of tall marsh reeds, slender upright and leaning blades in sage green and dry straw ochre, a few feathery tan plume heads, tight base fanning upward, no water, no floor tile, no ground plane, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 32
+    height: 48
+    anchor: [17, 42]
+    provenance: { item: 'W8.3c', endpoint: create_map_object, objectId: 840a5064-ad6d-488c-a6e7-70c06314d0cc, generations: 1, post: 'pale grass tuft at the foot cut; blades -> foliageDeep + willowGold, plumes -> timber + clothOchre', generatedAt: '2026-10-09' }
+
+  - id: veg.cattailClump
+    tool: map_object
+    prompt: "clump of cattails, bulrush plants with long flat green leaves and five tall stems topped by dark brown velvet seed heads, tight base fanning upward, no water, no floor tile, no ground plane, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 32
+    height: 48
+    anchor: [15, 43]
+    provenance: { item: 'W8.3c', endpoint: create_map_object, objectId: e8b8652b-72bf-44f8-aeb7-593a2b82e66c, generations: 1, post: 'navy ink and leaves -> foliageDeep 0-6, maroon heads -> timber', generatedAt: '2026-10-09' }
+
+  - id: veg.fernCluster
+    tool: map_object
+    prompt: "lush cluster of woodland ferns, many long arching pinnate fronds in deep forest green and fresh mid green, curling fiddleheads, fronds spreading outward from one centre, forest floor plant, isolated single object, no floor tile, no ground plane, no grass, no soil, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 52
+    height: 40
+    anchor: [26, 34]
+    provenance: { item: 'W8.3c', endpoint: create_map_object, objectId: bc56faa7-36f7-4e08-bf54-fd35a088c5e2, generations: 1, pilotGenerations: 1, post: 'fronds -> foliageDeep + foliageSun by OKLab lightness; 48x35 frond mass re-seated on a 52x40 canvas with clear margins (edge-touching fronds would be eaten by key-out-bg)', generatedAt: '2026-10-09' }
+
+  - id: veg.bramblePatch
+    tool: map_object
+    prompt: "single small bramble bush, a rounded mound of arching thorny blackberry canes with dark green leaves, a few clusters of black and dark red blackberries and three tiny white flowers, small shrub, isolated single object, no floor tile, no ground plane, no grass, no soil, no square base, no platform, no shadow slab, no characters, no text, empty transparent corners"
+    width: 48
+    height: 40
+    anchor: [23, 30]
+    provenance: { item: 'W8.3c', endpoint: create_map_object, objectId: d0e3d74c-21aa-4937-8a44-680d9597044c, generations: 1, pilotGenerations: 2, post: 'teal leaves -> foliageDeep 0-6, berries -> timber + clothCrimson, flowers -> sand', generatedAt: '2026-10-09' }
 
 # ─── TERRAIN ─────────────────────────────────────────────────────────────────
 # Wang 4-bit tilesets — each produces 16 adjacency variants.
@@ -2836,6 +3863,81 @@ terrain:
     materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
+
+  # W8.2c (AD-P9) — luminance-only sources for GroundBake: only the full-upper
+  # cell (15) is read, as a z-scored luminance drawing re-toned onto the C1
+  # ground ramps, so the sheets' own colours never reach the screen. Upper
+  # texts ask for stationary grain (no centre wear, ruts or single blobs):
+  # each cell repeats once per tile, so a non-stationary feature draws the grid.
+  - id: terrain.gravel-yard
+    tool: tileset
+    lower: "ancient forest grass, painterly hand-textured blades, scattered wildflowers and moss clumps, soft dappled color variation, rich olive-green ground"
+    upper: "crushed grey quarry gravel yard, small angular chippings evenly spread, fine dust between stones, uniform all-over texture"
+    size: 32
+    materialClass: stone
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
+
+  - id: terrain.cinder-slag
+    tool: tileset
+    lower: "ancient forest grass, painterly hand-textured blades, scattered wildflowers and moss clumps, soft dappled color variation, rich olive-green ground"
+    upper: "dark forge cinder and slag yard, charcoal grit, small fused black clinker lumps, soft grey ash dusting, uniform all-over texture"
+    size: 32
+    materialClass: earth
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
+
+  - id: terrain.flagstone
+    tool: tileset
+    lower: "weathered cobblestone road, varied grey-blue stones with worn edges, carved guild marks, moss in the cracks"
+    upper: "large dressed flagstone paving, irregular rectangular slabs, narrow sanded joints, faint chisel marks, evenly worn surface"
+    size: 32
+    materialClass: cobble
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
+
+  - id: terrain.cobble-alt
+    tool: tileset
+    lower: "ancient forest grass, painterly hand-textured blades, scattered wildflowers and moss clumps, soft dappled color variation, rich olive-green ground"
+    upper: "older rounded river-cobble lane, mixed stone sizes packed tightly, thin mossy joints, uniform all-over texture"
+    size: 32
+    materialClass: cobble
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
+
+  - id: terrain.sand-alt
+    tool: tileset
+    lower: "pale limestone harbor shore, glossy wet sand band, pebbles, broken sea foam lace"
+    upper: "coarse shell-and-shingle beach, fine sand with broken shell flecks and scattered small dark pebbles, uniform all-over texture"
+    size: 32
+    materialClass: earth
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
+
+  - id: terrain.forest-duff
+    tool: tileset
+    lower: "ancient forest grass, painterly hand-textured blades, scattered wildflowers and moss clumps, soft dappled color variation, rich olive-green ground"
+    upper: "deep forest floor duff, scattered pine needles, small fallen twigs, leaf mould, little moss tufts, uniform all-over texture"
+    size: 32
+    materialClass: foliage
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
+
+  - id: terrain.marsh-reed
+    tool: tileset
+    lower: "clear turquoise shallow harbor water, sunlit sandy bed visible through ripple highlights, small baked wavelets"
+    upper: "reedy marsh bank, silty mud, short broken reed stems and stubble, small weed tufts, uniform all-over texture"
+    size: 32
+    materialClass: earth
     elevation: { base: 0, top: 0, unit: sprite-px }
     emissive: { strength: 0, sources: [] }
     occluder: { mode: none, strength: 0 }
@@ -2923,11 +4025,32 @@ atmosphere:
     width: 48
     height: 32
 
-  # optional — include for polish pass
-  # - id: atmosphere.aurora
-  #   tool: isometric_tile
-  #   prompt: "northern aurora borealis shimmer, green and violet ribbons, transparent background"
-  #   size: 64
+  # Living Isle W8.8 (AD-P14) — three aurora ribbon phases, A → B → C, drawn by
+  # SkyRenderer (`_drawAurora`) above the sea horizon on clear Nov–Feb nights
+  # (the meteor gate; clock only, V3). Each is pixflux img2img over an
+  # authored ray-curtain sketch (strength 260) on one forced 5-colour palette;
+  # the per-course alpha (edge 0.85, body 0.70, teal 0.55, violet 0.45,
+  # fringe 0.35) is baked offline. Unlit sky art, no glow, no HDR role.
+  - id: atmosphere.aurora.a
+    tool: create_image_pixflux
+    prompt: "pixel art aurora borealis curtain in a night sky, thin vertical light rays rising from a crisp bright green lower edge, fading upward through teal into violet streaks, one gentle fold, flat stepped colour bands, transparent background"
+    width: 320
+    height: 96
+    provenance: { item: 'W8.8', endpoint: create-image-pixflux, jobId: 0ca39680-9293-4327-b7de-f1a0becfdb4a, seed: 31, generationSize: 320x96, initImage: 'authored ray-curtain sketch, phase A', initImageStrength: 260, colorImage: '#86d8a2 #4fb08a #2f8280 #455c96 #4c3d7c', options: 'no_background, side, lineless, flat shading, medium detail', generations: 1, post: 'per-course alpha 0.85/0.70/0.55/0.45/0.35', generatedAt: '2026-10-09' }
+
+  - id: atmosphere.aurora.b
+    tool: create_image_pixflux
+    prompt: "pixel art aurora borealis curtain in a night sky, thin vertical light rays rising from a crisp bright green lower edge, fading upward through teal into violet streaks, one gentle fold, flat stepped colour bands, transparent background"
+    width: 320
+    height: 96
+    provenance: { item: 'W8.8', endpoint: create-image-pixflux, jobId: b1066086-da73-4faa-b8d6-bf6735d405d1, seed: 37, generationSize: 320x96, initImage: 'authored ray-curtain sketch, phase B', initImageStrength: 260, colorImage: '#86d8a2 #4fb08a #2f8280 #455c96 #4c3d7c', options: 'no_background, side, lineless, flat shading, medium detail', generations: 1, post: 'per-course alpha 0.85/0.70/0.55/0.45/0.35', generatedAt: '2026-10-09' }
+
+  - id: atmosphere.aurora.c
+    tool: create_image_pixflux
+    prompt: "pixel art aurora borealis curtain in a night sky, thin vertical light rays rising from a crisp bright green lower edge, fading upward through teal into violet streaks, one gentle fold, flat stepped colour bands, transparent background"
+    width: 320
+    height: 96
+    provenance: { item: 'W8.8', endpoint: create-image-pixflux, jobId: 85f19d3a-ba3d-4d1b-9e95-284f1c673426, seed: 43, generationSize: 320x96, initImage: 'authored ray-curtain sketch, phase C', initImageStrength: 260, colorImage: '#86d8a2 #4fb08a #2f8280 #455c96 #4c3d7c', options: 'no_background, side, lineless, flat shading, medium detail', generations: 1, post: 'per-course alpha 0.85/0.70/0.55/0.45/0.35', generatedAt: '2026-10-09' }
 
 # ─── BRIDGES ─────────────────────────────────────────────────────────────────
 bridges:

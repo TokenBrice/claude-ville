@@ -62,6 +62,7 @@ import { YARD_MATERIALS } from '../../config/townPlan.js';
 import { readTerrainCellLuma } from './TerrainTileset.js';
 import { getCoastField } from './CoastBake.js';
 import { snowBucketOf } from './GroundState.js';
+import { treeSpriteKey } from './FoliageRenderer.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
 
 export const GROUND_CLASS = Object.freeze({
@@ -118,6 +119,29 @@ const BLOSSOM = ramp('blossom');
 // grass leans toward the earth ramp, lush grass toward the sage foliage.
 const GRASS_DRY = GRASS.map((c, i) => mixRgb(c, DIRT[Math.max(0, i - 1)], 0.18));
 const GRASS_LUSH = GRASS.map((c, i) => mixRgb(c, FOLIAGE[Math.min(4, i + 1)], 0.18));
+// The terrain cache's far-row haze (IsometricRenderer
+// `_bakeAtmosphericPerspective`): six flat courses, far apex first, each
+// multiplied over the baked ground (half-strength cool tint toward white),
+// so no land texel keeps its raw ramp colour. Exported so the cache-matching
+// palette steps below can name the colours the cache really holds.
+const HAZE_PROFILE = [[0, [196, 214, 232]], [0.5, [232, 240, 248]], [1, [255, 255, 255]]];
+export const TERRAIN_HAZE_COURSES = Object.freeze(Array.from({ length: 6 }, (_, course) => {
+    const t = (course + 0.5) / 6;
+    const k = t < 0.5 ? 0 : 1;
+    const [t0, c0] = HAZE_PROFILE[k];
+    const [t1, c1] = HAZE_PROFILE[k + 1];
+    const f = (t - t0) / (t1 - t0);
+    return Object.freeze(c0.map((c, i) => Math.round(255 - (255 - (c + (c1[i] - c) * f)) * 0.5)));
+}));
+// W6.11 — the grass gust course's palette step: [from, to] pairs, a grass
+// ramp's stop 3 (the verge stems and the meadow's upper course) to its stop
+// 4, under each haze course (the canvas multiply rounds a·h/255). The GPU
+// scene and the Canvas overlay match `from` exactly on the terrain cache and
+// write `to`, so a lifted texel keeps its row's haze.
+const hazed = (rgb, h) => Object.freeze(rgb.map((c, i) => Math.round(c * h[i] / 255)));
+export const GRASS_GUST_STOPS = Object.freeze([GRASS, GRASS_DRY, GRASS_LUSH].flatMap((r) => TERRAIN_HAZE_COURSES
+    .map((h) => Object.freeze([hazed(r[3], h), hazed(r[4], h)])))
+    .filter((pair, i, all) => all.findIndex(other => other[0].join() === pair[0].join()) === i));
 
 // Per surface: ramp, texture set, ramp offset (steps), texture contrast,
 // published class.
@@ -127,10 +151,10 @@ const SURFACES = [
     /* dirt   */ { ramp: DIRT, tex: 'dirt', offset: 0, contrast: 1.0, cls: GROUND_CLASS.DIRT },
     /* road   */ { ramp: ROAD, tex: 'cobble', offset: 0.1, contrast: 0.95, cls: GROUND_CLASS.ROAD },
     /* plaza  */ { ramp: PLAZA, tex: 'square', offset: 0.9, contrast: 0.85, cls: GROUND_CLASS.PLAZA },
-    /* flag   */ { ramp: PLAZA, tex: 'square', offset: -0.7, contrast: 0.95, cls: GROUND_CLASS.PLAZA },
-    /* gravel */ { ramp: ROAD, tex: 'dirt', offset: -0.2, contrast: 0.75, cls: GROUND_CLASS.ROAD },
-    /* cinder */ { ramp: DIRT, tex: 'dirt', offset: -1.5, contrast: 1.0, cls: GROUND_CLASS.DIRT },
-    /* earth  */ { ramp: DIRT, tex: 'dirt', offset: 0.3, contrast: 0.95, cls: GROUND_CLASS.DIRT },
+    /* flag   */ { ramp: PLAZA, tex: 'flag', offset: -0.7, contrast: 0.95, cls: GROUND_CLASS.PLAZA },
+    /* gravel */ { ramp: ROAD, tex: 'gravel', offset: -0.2, contrast: 0.75, cls: GROUND_CLASS.ROAD },
+    /* cinder */ { ramp: DIRT, tex: 'cinder', offset: -1.5, contrast: 1.0, cls: GROUND_CLASS.DIRT },
+    /* earth  */ { ramp: DIRT, tex: 'earth', offset: 0.3, contrast: 0.95, cls: GROUND_CLASS.DIRT },
 ];
 
 const SURFACE_EDGE = new Array(SURFACES.length).fill(null);
@@ -139,13 +163,41 @@ SURFACE_EDGE[S_PLAZA] = 'kerb';
 // Texture sources: full-class cells of the land Wang sheets (cell 0 = all
 // lower class, 15 = all upper class). Colours are discarded; only the
 // luminance drawing is kept and re-toned onto the ramps.
+// W8.2c (AD-P9) — each yard reads its own luminance sheet (gravel-yard,
+// cinder-slag, flagstone), road, plaza and sand gain a second period from
+// their alternates, and two context textures replace a surface's own set in
+// place: forest duff for grass inside the forest floors, marsh reed for the
+// sand of freshwater (river and lagoon) banks. Earth keeps the loam drawing
+// mirrored, a period of its own beside the dirt paths. Grass takes a fourth
+// period (a mirrored copy of the cobble sheet's meadow cell). Trailing source
+// fields are transforms, applied in order: 'mirror' flips the drawing,
+// 'destripe' strips the full-length row and column lines the tileset model
+// rolls into organic ground (a cell repeats every tile, so such a line
+// draws the tile grid across a whole district).
 const TEXTURE_SOURCES = Object.freeze({
-    grass: [['terrain.grass-dirt', 0], ['terrain.grass-cobble', 0], ['terrain.grass-shore', 0]],
+    grass: [['terrain.grass-dirt', 0], ['terrain.grass-cobble', 0], ['terrain.grass-shore', 0], ['terrain.grass-cobble', 0, 'mirror']],
+    duff: [['terrain.forest-duff', 15, 'destripe']],
     dirt: [['terrain.grass-dirt', 15]],
-    cobble: [['terrain.grass-cobble', 15]],
-    square: [['terrain.cobble-square', 15]],
-    sand: [['terrain.grass-shore', 15]],
+    earth: [['terrain.grass-dirt', 15, 'mirror']],
+    gravel: [['terrain.gravel-yard', 15, 'destripe']],
+    cinder: [['terrain.cinder-slag', 15, 'destripe']],
+    cobble: [['terrain.grass-cobble', 15], ['terrain.cobble-alt', 15]],
+    square: [['terrain.cobble-square', 15], ['terrain.flagstone', 15]],
+    flag: [['terrain.flagstone', 15]],
+    sand: [['terrain.grass-shore', 15], ['terrain.sand-alt', 15, 'destripe']],
+    marsh: [['terrain.marsh-reed', 15, 'destripe']],
 });
+// Forest duff takes over grass where the forest-floor weight beats a noise
+// threshold (a ragged woodland edge, not the region's ellipse); marsh reed
+// takes over sand where the bilinear freshwater share of the tile's depth
+// caps (river 2, lagoon 3) does, its silt half a ramp step darker.
+const DUFF_THRESHOLD = 0.45;
+const FRESHWATER_CAP = 3;
+const MARSH_OFFSET = -0.5;
+// Grass switches between its sources over a wider field (tiles per noise
+// cell) than other surfaces, so neighbouring tiles rarely repeat a period.
+const GRASS_VARIANT_SCALE = 3.6;
+const SURFACE_VARIANT_SCALE = 2.2;
 
 // ---- tile codes and layer membership --------------------------------------
 
@@ -300,16 +352,64 @@ function readTextures(r) {
     const assets = r.assets;
     for (const [name, sources] of Object.entries(TEXTURE_SOURCES)) {
         const list = [];
-        for (const [id, cell] of sources) {
+        for (const [id, cell, ...transforms] of sources) {
             const image = assets?.get?.(id, { request: false }) ?? null;
-            const luma = image ? readTerrainCellLuma(image, cell) : null;
-            if (luma) list.push(luma);
+            let luma = image ? readTerrainCellLuma(image, cell) : null;
+            if (!luma) continue;
+            for (const transform of transforms) luma = TEXTURE_TRANSFORMS[transform](luma);
+            list.push(clipTexture(luma));
         }
         if (!list.length) list.push(proceduralTexture(name.length * 17));
         out[name] = list;
     }
     return out;
 }
+
+// Removes each column's and row's mean (the separable stripe component) and
+// re-normalises to unit deviation: a line running the whole cell goes, the
+// 2D grain around it stays.
+function destripeTexture(t) {
+    const colMean = new Float32Array(32);
+    const rowMean = new Float32Array(32);
+    for (let v = 0; v < 32; v++) {
+        for (let u = 0; u < 32; u++) {
+            colMean[u] += t[v * 32 + u] / 32;
+            rowMean[v] += t[v * 32 + u] / 32;
+        }
+    }
+    const out = new Float32Array(t.length);
+    let variance = 0;
+    for (let v = 0; v < 32; v++) {
+        for (let u = 0; u < 32; u++) {
+            const z = t[v * 32 + u] - colMean[u] - rowMean[v];
+            out[v * 32 + u] = z;
+            variance += z * z;
+        }
+    }
+    const sd = Math.sqrt(Math.max(1e-6, variance / out.length));
+    for (let i = 0; i < out.length; i++) out[i] /= sd;
+    return out;
+}
+
+// Punch-through guard: a drawing's sparse highlights or joints past ±Z_CLIP
+// deviations (a specular arc on every cobble, a black slag fleck) would land
+// two ramp stops off the surface and sparkle; clip them so grain stays grain.
+const Z_CLIP = 1.8;
+function clipTexture(t) {
+    return Float32Array.from(t, (z) => (z > Z_CLIP ? Z_CLIP : z < -Z_CLIP ? -Z_CLIP : z));
+}
+
+// Horizontal mirror of a 32x32 luminance texture: a new period from the same
+// authored drawing.
+function mirrorTexture(t) {
+    const out = new Float32Array(t.length);
+    for (let v = 0; v < 32; v++) {
+        for (let u = 0; u < 32; u++) out[v * 32 + u] = t[v * 32 + (31 - u)];
+    }
+    return out;
+}
+
+const TEXTURE_TRANSFORMS = Object.freeze({ mirror: mirrorTexture, destripe: destripeTexture });
 
 // No-assets fallback: a z-scored value-noise texture that tiles at 32.
 function proceduralTexture(seed) {
@@ -463,6 +563,10 @@ export function bakeGround(r) {
     const occluders = buildOccluders(r);
     const wear = buildWearSegments(r);
     const texBySurface = SURFACES.map(s => textures[s.tex]);
+    // 1 where the tile's depth cap is a river's or lagoon's (land inherits
+    // the cap of water within a tile), sampled bilinearly for the marsh bank.
+    const freshwater = new Float32Array(N * N);
+    for (let i = 0; i < freshwater.length; i++) freshwater[i] = coast.caps?.[i] <= FRESHWATER_CAP ? 1 : 0;
 
     const classes = new Uint8Array(cols * rows);
     const surfaces = new Uint8Array(cols * rows).fill(255);
@@ -583,18 +687,6 @@ export function bakeGround(r) {
             const ao = ob ? occlusionAt(ob, tx, ty) : 0;
             aoBuf[ti] = Math.round(ao * 255);
 
-            // Texture (iso-oriented) with variant switching on noise contours.
-            const S = SURFACES[surface];
-            const texList = texBySurface[surface];
-            const variantField = vnoise(tx / 2.2, ty / 2.2, 41 + surface);
-            const vi = Math.min(texList.length * 4 - 1, Math.floor(variantField * texList.length * 4));
-            const tex = texList[vi >> 2];
-            const shift = vi & 2 ? 16 : 0;
-            let u = (Math.floor((tx + 0.5) * 32) + shift) & 31;
-            const v = (Math.floor((ty + 0.5) * 32) + shift) & 31;
-            if (vi & 1) u = 31 - u;
-            const z = tex[v * 32 + u];
-
             const bx = clampI(Math.floor(tx));
             const by = clampI(Math.floor(ty));
             const dfx = tx - bx;
@@ -603,12 +695,36 @@ export function bakeGround(r) {
             const by1 = clampI(by + 1);
             const lerp4 = (g) => (g[by * N + bx] * (1 - dfx) + g[by * N + bx1] * dfx) * (1 - dfy)
                 + (g[by1 * N + bx] * (1 - dfx) + g[by1 * N + bx1] * dfx) * dfy;
+
+            // Texture (iso-oriented) with variant switching on noise contours;
+            // forest duff and marsh reed replace grass and sand in context.
+            const S = SURFACES[surface];
+            let texList = texBySurface[surface];
+            let forestW = 0;
+            let contextStep = 0;
+            if (surface === S_GRASS) {
+                forestW = lerp4(drift.forest);
+                if (forestW > 0 && forestW > DUFF_THRESHOLD + (vnoise(tx / 1.6, ty / 1.6, 47) - 0.5) * 0.6) texList = textures.duff;
+            } else if (surface === S_SAND && lerp4(freshwater) > 0.5 + (vnoise(tx / 1.4, ty / 1.4, 53) - 0.5) * 0.4) {
+                texList = textures.marsh;
+                contextStep = MARSH_OFFSET;
+            }
+            const variantScale = surface === S_GRASS ? GRASS_VARIANT_SCALE : SURFACE_VARIANT_SCALE;
+            const variantField = vnoise(tx / variantScale, ty / variantScale, 41 + surface);
+            const vi = Math.min(texList.length * 4 - 1, Math.floor(variantField * texList.length * 4));
+            const tex = texList[vi >> 2];
+            const shift = vi & 2 ? 16 : 0;
+            let u = (Math.floor((tx + 0.5) * 32) + shift) & 31;
+            const v = (Math.floor((ty + 0.5) * 32) + shift) & 31;
+            if (vi & 1) u = 31 - u;
+            const z = tex[v * 32 + u];
+
             const macro = lerp4(drift.value);
             const dither = BAYER[(row & 1) * 2 + (col & 1)];
 
-            let k = 2 + S.offset + z * S.contrast + macro + dither * 0.75
+            let k = 2 + S.offset + contextStep + z * S.contrast + macro + dither * 0.75
                 + lip * 0.8 - tuck * 1.0 - ao * 3.2 + wearStep;
-            if (surface === S_GRASS) k -= FOREST_FLOOR_STEP * lerp4(drift.forest);
+            if (surface === S_GRASS) k -= FOREST_FLOOR_STEP * forestW;
             k = k < 0 ? 0 : k > 4 ? 4 : Math.round(k);
 
             let rampColors = S.ramp;
@@ -747,6 +863,9 @@ const CROWN_RADIUS = Object.freeze({
     'oak.large': 26, 'oak.small': 9, 'pine.large': 13, 'willow.large': 20, 'willow.small': 12,
     // 5.5 — the woodland-only tall sheets (≈ 1.85× the large crowns).
     'oak.tall': 48, 'pine.tall': 20, 'willow.tall': 34,
+    // W8.3d species: the crown half-widths of their sheets.
+    'birch.small': 6, 'birch.large': 18, 'birch.tall': 20,
+    'maple.large': 26, 'maple.tall': 50, 'poplar.tall': 16,
     // The world ash (scenery.js WORLD_TREE): its crown shades its whole islet.
     'ash.world': 119,
 });
@@ -763,9 +882,7 @@ function buildCrownField(r, { cols, rows, x0, y0 }) {
     const dist = new Float32Array(cols * rows).fill(9);
     const owner = new Int16Array(cols * rows).fill(-1);
     trees.forEach((tree, index) => {
-        const species = tree.species === 'pine' || tree.species === 'willow' || tree.species === 'ash' ? tree.species : 'oak';
-        const size = species === 'ash' ? 'world' : tree.size === 'tall' ? 'tall' : tree.size === 'small' && species !== 'pine' ? 'small' : 'large';
-        const radius = CROWN_RADIUS[`${species}.${size}`] / 2;
+        const radius = CROWN_RADIUS[treeSpriteKey(tree)] / 2;
         const cc = ((tree.tileX - tree.tileY) * HALF_W - x0) / TEXEL_W + DROP_DRIFT * radius;
         const rc = (tree.tileX + tree.tileY) * HALF_H - y0;
         const reach = radius * CROWN_REACH;
@@ -784,8 +901,9 @@ function buildCrownField(r, { cols, rows, x0, y0 }) {
     return { trees, dist, owner };
 }
 
-// Litter colours (leafAutumn stops) by the crown above: russet oaks drop
-// russet, ochre oaks gold, turning oaks a mix, willows straw gold.
+// Litter colours (leafAutumn stops) by the crown above: russet oaks and
+// scarlet maples drop russet, ochre oaks gold, turning oaks a mix, willows,
+// birches and poplars straw gold.
 const LITTER = Object.freeze({
     russet: [LEAF[0], LEAF[1], LEAF[2]],
     ochre: [LEAF[3], LEAF[4], LEAF[1]],
@@ -835,7 +953,8 @@ function cellCandidate(col, row, w, h, salt) {
 
 function litterFor(tree, season) {
     if (season === 'winter') return LITTER.mould;
-    if (tree.species === 'willow') return LITTER.willow;
+    if (tree.species === 'willow' || tree.species === 'birch' || tree.species === 'poplar') return LITTER.willow;
+    if (tree.species === 'maple') return LITTER.russet;
     return tree.variant === 1 ? LITTER.russet : tree.variant === 2 ? LITTER.ochre : LITTER.turning;
 }
 

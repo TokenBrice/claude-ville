@@ -235,10 +235,6 @@ export class VillageDirector {
         const next = Boolean(active);
         if (this.replayActive === next) return this.replayActive;
         this.replayActive = next;
-        eventBus.emit('village:replay', {
-            active: this.replayActive,
-            ts: Date.now(),
-        });
         return this.replayActive;
     }
 
@@ -474,6 +470,9 @@ export class VillageDirector {
             releaseParade,
             activeSceneCount: this.scenes.length,
             workCohorts,
+            // W7.5 — the Command plaque's muster rows: one exact out ▸ returned
+            // rollup per live parent (RelationshipState, slow-systems tick).
+            squads: renderer?.relationshipState?.getSnapshot?.()?.squads || [],
             incidentChapter,
             workScore,
         };
@@ -724,6 +723,7 @@ export class VillageDirector {
             recoveries: [],
             lifecycle: [],
             buildingSignals: [],
+            squads: [],
             selectedBuildingSignal: null,
             hoverBuildingSignal: null,
             releaseParade: null,

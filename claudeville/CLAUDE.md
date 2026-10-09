@@ -14,6 +14,8 @@ Main surfaces are `/api/sessions`, `/api/session-detail`, `POST /api/session-det
 
 Client session collection runs through `collectSessionsForClients()`, which folds unresolved `tool_pending` residents from `services/sessionResidency.js` into the live list. Completed turns use the shorter departed-villager grace. Discovery, canonical active projects, and watch topology remain on the raw `ACTIVE_THRESHOLD_MS` window so residency never widens the watcher footprint.
 
+Explicit `sessionEndedAt` evidence (OMP `session_exit`, or an opt-in Claude `SessionEnd` hook) bypasses roster-absence grace and removes village presence immediately via the existing gate departure. A completed turn is not a session end; a resumed session clears the marker and arrives normally.
+
 Cadence constants live in `src/config/constants.js`, `server.js`, `adapters/index.js`, and `adapters/gitEvents.js`. The client fallback poll is two seconds, server session-list cache TTL is 2000 ms, and WebSocket heartbeat is 30 seconds. Never lower the client poll below half the server cache TTL.
 
 WebSocket updates use the keyed v2 delta contract only after `{ type: 'hello', deltas: true, deltaVersion: 2 }`; cached tabs with an older hello receive full updates. Full snapshots and REST retain activity-ordered `sessions` arrays. Keyed baselines separate session identity from activity order; guards, full-update fallbacks, and canonical resync sequencing are documented in [`docs/design-decisions.md#hand-written-websocket-framing`](../docs/design-decisions.md#hand-written-websocket-framing).

@@ -53,12 +53,19 @@ import {
     WATER_COLUMN_ROW_HOLD,
     WATER_COLUMN_ROW_NEAR,
     WATER_COLUMN_TICK_RATE,
+    GRASS_GUST_ORDER_BASE,
+    GRASS_GUST_ORDER_CAP,
+    GRASS_GUST_ORDER_GAIN,
 } from '../GpuWorldRenderer.js';
+import { GRASS_GUST_STOPS } from '../../GroundBake.js';
 import { COAST_FIELD_FLAGS } from '../../CoastBake.js';
 import { GROUND_CAST_WATER_SHARE } from '../../RakingLight.js';
 import { APERTURE_SPILL } from '../../LightSourceRegistry.js';
 
 const LIGHT_ROLE_ATTENTION = LIGHT_ROLE_CODES.attention;
+// GpuWorldRenderer glslRgb in WGSL spelling (channel / 255 at six decimals).
+const wgslRgb = (rgb) => `vec3f(${rgb.map(channel => (channel / 255).toFixed(6)).join(', ')})`;
+const grassGustRgb = (side) => `array<vec3f, ${GRASS_GUST_STOPS.length}>(${GRASS_GUST_STOPS.map(pair => wgslRgb(pair[side])).join(', ')})`;
 
 export const SCENE_WGSL = /* wgsl */ `
 // ---- The record vertex stage (quadVertexSource) ----------------------------
@@ -321,6 +328,27 @@ fn applyPuddle(color: vec3f, world: vec2f) -> vec3f {
   return body;
 }
 
+// W6.11 — GpuWorldRenderer GRASS_GUST_GLSL: a grass ramp's hazed stop 3
+// steps to its hazed stop 4 where the gust field passes the texel's static
+// order.
+const GRASS_GUST_FROM = ${grassGustRgb(0)};
+const GRASS_GUST_TO = ${grassGustRgb(1)};
+fn applyGrassGust(color: vec3f, world: vec2f) -> vec3f {
+  if (frame.grassGust <= 0.0 || color.g <= color.r || color.g <= color.b) { return color; }
+  var k = -1;
+  for (var i = 0; i < ${GRASS_GUST_STOPS.length}; i++) {
+    if (sameColour(color, GRASS_GUST_FROM[i])) { k = i; break; }
+  }
+  if (k < 0) { return color; }
+  let texel = vec2f(floor(world.x * 0.5), floor(world.y));
+  let gust = seaGustAt(vec2f(texel.x * 2.0, texel.y));
+  if (gust <= 0.0) { return color; }
+  let ruffle = textureSampleLevel(cloudTile, cloudSampler, fract((texel + vec2f(311.0, 173.0)) / vec2f(384.0, 256.0)), 0.0).r;
+  let order = ruffle * 0.5 + waterBayer4(texel) * 0.5;
+  if (order >= min(${GRASS_GUST_ORDER_CAP.toFixed(2)}, ${GRASS_GUST_ORDER_BASE.toFixed(2)} + ${GRASS_GUST_ORDER_GAIN.toFixed(2)} * gust)) { return color; }
+  return GRASS_GUST_TO[k];
+}
+
 // 4.6 — a terrain pixel a world-texel seam crosses on a flight frame: the
 // per-cell surface chain runs on each tap's own authored texel at that
 // texel's world point, blended by coverage.
@@ -344,6 +372,7 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
     let tapWater = waterMaterial || gone;
     anyWater = anyWater || gone;
     if (frame.waterFx.w > 0.0) { c = applyCoastSwash(c, world); }
+    if (!tapWater) { c = applyGrassGust(c, world); }
     if (weather && !tapWater) { c = applyMaterialWeather(c, material, world); }
     before += vec4f(c, 1.0) * w;
     var tapPath = false;
@@ -538,6 +567,8 @@ fn sceneSurface() -> SurfaceSample {
     waterMaterial = waterMaterial || mirrorGone;
     // 3.6 — the swash laps the baked shore before any weather darkening.
     if (batch.terrainBatch != 0u && frame.waterFx.w > 0.0) { color = applyCoastSwash(color, v_world); }
+    // W6.11 — the grass gust course steps the authored albedo first.
+    if (batch.terrainBatch != 0u && !waterMaterial) { color = applyGrassGust(color, v_world); }
     if (!waterMaterial && (frame.weather.x > 0.001 || frame.wetness > 0.001)) { color = applyMaterialWeather(color, material, v_world); }
     waterHue = waterMaterial && !(color.b < color.r + 0.02 || color.g < color.r);
     if (waterMaterial) { color = applyWaterState(color, v_world, &seaPath); }

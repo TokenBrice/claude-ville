@@ -114,7 +114,9 @@ console.log(`[foliage-pass] ${processed} sprite(s) ${previewDir ? `previewed to 
 // checks them instead: binary alpha, every pixel a stop of the
 // leaf/wood/snow ramps, nothing below the trunk-base row, and each winter
 // state on its leafy sheet's canvas and trunk base. Exits 1 on a failed check.
-const AUTHORED_RAMPS = ['foliage', 'foliageSun', 'foliageDeep', 'timber', 'snow'];
+// W8.3d bark: the birch's white trunk sits on `ashlar`, the maple's and
+// poplar's grey bark on `stone`.
+const AUTHORED_RAMPS = ['foliage', 'foliageSun', 'foliageDeep', 'timber', 'snow', 'ashlar', 'stone'];
 const authoredStops = new Set(AUTHORED_RAMPS.flatMap((key) => ART_RAMPS[key].map((hex) => hex.toLowerCase())));
 const baseRow = (png) => {
     for (let y = png.height - 1; y >= 0; y--) {

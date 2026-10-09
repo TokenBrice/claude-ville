@@ -363,3 +363,59 @@ export const COMMAND_QUEUE = Object.freeze({
         { tileX: 8, tileY: 22 },
     ].map(Object.freeze)),
 });
+
+// W7.7 — repo standing stones: one land tile per Harbor Home-Waters
+// anchorage (HarborTraffic COAST_ANCHORAGE_SLOTS, same index order), the
+// nearest shore tile behind that slot's buoy and pennant, so a repo's stone
+// stands on the island its fleet anchors off. Lagoon slots 0–1 take the
+// lagoon's south bank and the spit; the east-coast slots take the Pharos
+// shore and the southern strand (the two northern sea slots have no nearer
+// land than the strand north of the Pharos). Stones are drawn props only:
+// never a walk exclusion, never a fixture, never a visit tile.
+export const REPO_STONE_ANCHORS = Object.freeze([
+    { slot: 0, tileX: 7, tileY: 12 },   // Commit Lagoon West → lagoon south bank
+    { slot: 1, tileX: 14, tileY: 7 },   // Commit Lagoon Spring → the spit
+    { slot: 2, tileX: 28, tileY: 13 },  // Pharos Reach → Pharos shore
+    { slot: 3, tileX: 30, tileY: 30 },  // Southern Strand
+    { slot: 4, tileX: 26, tileY: 10 },  // North Shoal → strand north of the Pharos
+    { slot: 5, tileX: 30, tileY: 31 },  // Reed Point
+    { slot: 6, tileX: 24, tileY: 10 },  // Far North Sea → strand north of the Pharos
+    { slot: 7, tileX: 31, tileY: 34 },  // Wall Tower Bank
+    { slot: 8, tileX: 28, tileY: 14 },  // Pharos Bank
+    { slot: 9, tileX: 30, tileY: 29 },  // Strand Shallows
+].map(Object.freeze));
+
+// W4.2 — door discipline. A landmark at capacity lines its next working
+// visitors up on its approach file, in order of arrival (VisitTileAllocator
+// `_lineSlot`): place 0 is the head and faces the building's entrance, each
+// later place faces the place ahead, and a body steps up a place when one
+// frees. Past the file a body takes the building's ranked outer ring
+// (`VISIT_OVERFLOW_TILES`, buildings.js). Every step runs along a tile axis
+// (36 world px) or across the screen at one depth (64 px), never toward the
+// camera, so a line trails away from the camera-near side and its heads keep
+// open sky for their thoughts. No place stands on a fixture, a road, a
+// footprint, a walk exclusion or another standing place, except that a file
+// may take over its own building's queue or scenic slot (the Harbor quay),
+// which the allocator then leaves to the line. Command's petitioners keep
+// their own queue (`COMMAND_QUEUE`); this file is for Command's visitors.
+const approachFile = (...points) => Object.freeze(points.map(([tileX, tileY]) => Object.freeze({ tileX, tileY })));
+export const APPROACH_FILES = Object.freeze({
+    // Along the Archive's front steps, west from its south-east corner.
+    archive: approachFile([7, 19], [6, 19], [5, 19], [4, 19]),
+    // Up the lane between Command's east wing and the Observatory terrace.
+    command: approachFile([20, 18], [19, 18], [19, 17], [19, 16]),
+    // Up the Forge's cinder yard, parallel to its west wall.
+    forge: approachFile([23, 30], [23, 29], [23, 28], [23, 27]),
+    // West along the Task Board's front, then up beside the gate avenue.
+    taskboard: approachFile([21, 36], [20, 36], [20, 35], [20, 34], [20, 33]),
+    // West from the Mine's mouth along its yard, beside the production row.
+    mine: approachFile([10, 35], [9, 35], [8, 35], [7, 35]),
+    // Up the Portal's east flank, then across its lawn.
+    portal: approachFile([7, 33], [7, 32], [7, 31], [8, 30], [9, 29]),
+    // Up the lawn east of the Observatory's door, turning short of the tower.
+    observatory: approachFile([26, 16], [26, 15], [26, 14], [25, 14]),
+    // North-west from the Lighthouse, between the tower and the dome.
+    watchtower: approachFile([26, 12], [25, 12], [24, 12], [24, 11]),
+    // Up the Harbor's quay front, along its west wall.
+    harbor: approachFile([27, 19], [27, 18], [27, 17], [27, 16]),
+});

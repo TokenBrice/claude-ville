@@ -8,7 +8,7 @@ import { captureGroundArtifact, restoreGroundArtifact, validGroundArtifact } fro
 import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastArtifactInputsSettled } from './CoastBake.js';
 
 // Bump on ANY GroundBake, CoastBake or static terrain-pass pixel change.
-export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.50-terrain-1';
+export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.50-terrain-3';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 export const TERRAIN_ARTIFACT_MAX_BYTES = 96 * 1024 * 1024;
 const SCHEMA = 1;

@@ -10,6 +10,7 @@ import {
     buildCloudShadowTile,
     clampGpuLights,
     CLOUD_FIELD_PERIOD,
+    LONE_CLOUD_THRESHOLDS,
     CLOUD_TILE_SIZE,
     cloudCoveredShare,
     createLightBinScratch,
@@ -245,6 +246,8 @@ export function createAtmosphereCourses() {
         cloud: new Float32Array(4),
         thresholds: new Float32Array(3),
         haze: new Float32Array(4),
+        // W6.3 — the lone fair-weather cumulus: (field x, field y, radius, 0).
+        lone: new Float32Array(4),
         // 3.4 — noise ceiling of the open sea's sunlit course (0 = off).
         sunlit: 0,
         // Diagnostics: courses drawn (0 or 3) and the aerial haze strength.
@@ -295,6 +298,26 @@ export function resolveAtmosphereCourses(level, camera, feed, grade, out = creat
         out.cloud.fill(0);
         out.thresholds.fill(2);
         out.sunlit = 0;
+    }
+    // W6.3 — a lone cumulus (AmbientEvents `lone-cloud`, posed by
+    // CloudShadowCourses.loneCloudPose) only where the field casts nothing
+    // of its own: the drift puts its field point under the pose's centre,
+    // the shader leans the field on a dome there, and two courses cut it.
+    // Off at MINIMAL (`cloud-courses`) and frozen out under reduced motion.
+    out.lone.fill(0);
+    const lone = feed.loneCloud;
+    if (!out.courses && moving && cloudStrength > 0.02 && lone?.active && lone.radius > 0) {
+        const period = CLOUD_FIELD_PERIOD;
+        out.courses = 2;
+        out.cloud[0] = (((lone.fieldX - lone.x) % period) + period) % period;
+        out.cloud[1] = (((lone.fieldY - lone.y) % period) + period) % period;
+        out.cloud[2] = 0.085 * cloudStrength;
+        out.thresholds[0] = LONE_CLOUD_THRESHOLDS[0];
+        out.thresholds[1] = LONE_CLOUD_THRESHOLDS[1];
+        out.thresholds[2] = 2;
+        out.lone[0] = lone.fieldX;
+        out.lone[1] = lone.fieldY;
+        out.lone[2] = lone.radius;
     }
 
     const hazeMode = effectBudgetMode('aerial-perspective', level);
@@ -361,7 +384,7 @@ export function resolveSeaGustRect(camera, feed, weather, width, height, state =
 }
 
 export function createSeaWeather() {
-    return { sunlit: 0, gust: null, gustState: createSeaGustState() };
+    return { sunlit: 0, gust: null, grassGust: 0, gustState: createSeaGustState() };
 }
 
 /**
@@ -369,12 +392,17 @@ export function createSeaWeather() {
  * scene's in-map open water and the composite's open sea: `sunlit` (the
  * atmosphere courses' sunlit ceiling) and `gust` (the gust field, see
  * `resolveSeaGustRect`, or null). `sea-weather` sheds both at MINIMAL.
+ * W6.11 — `grassGust` (1 or 0): the scene's grass gust course reads the same
+ * field while `grassGust` is on (FULL only) and the motion clock runs; the
+ * reduced-motion and shed frame is the baked grass, unlifted.
  */
 export function resolveSeaWeather(level, camera, feed, { courses = null, width = 0, height = 0 } = {}, out = createSeaWeather()) {
     const seaWeather = effectBudgetMode('sea-weather', level) === 'on';
     const weather = feed.weather || feed.atmosphere?.weather || null;
     out.sunlit = seaWeather ? finite(courses?.sunlit, 0) : 0;
     out.gust = seaWeather ? resolveSeaGustRect(camera, feed, weather, width, height, out.gustState) : null;
+    const moving = !feed.reducedMotion && finite(feed.motionScale, 1) > 0;
+    out.grassGust = out.gust && moving && effectBudgetMode('grassGust', level) === 'on' ? 1 : 0;
     return out;
 }
 

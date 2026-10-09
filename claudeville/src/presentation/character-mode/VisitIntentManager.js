@@ -12,9 +12,12 @@ import {
     WORK_ITINERARY_PHASE_INDEX,
     WORK_ITINERARY_ROUTE,
 } from './VisitIntentSemantics.js';
+import { isPlanMode } from './ActionVocabulary.js';
 
-const CASH_OUT_TOKEN_DELTA = 1024;
-const CASH_OUT_PRIORITY = 95;
+const CASH_OUT_TOKEN_DELTA = 8000;
+const CASH_OUT_CONTEXT_SHARE = 0.04;
+const CASH_OUT_COOLDOWN_MS = 90000;
+const CASH_OUT_PRIORITY = 55;
 const CASH_OUT_TTL_MS = 8000;
 const CASH_OUT_STICKY_MS = 8000;
 const QUOTA_THROTTLE_PRIORITY = 20;
@@ -29,6 +32,8 @@ const DEFAULT_TTLS = Object.freeze({
     alert: { priority: 90, ttlMs: 45000, stickyMs: 10000 },
     git: { priority: 85, ttlMs: 90000, stickyMs: 20000 },
     handoff: { priority: 82, ttlMs: 45000, stickyMs: 12000 },
+    // W7.10b — plan mode outranks the tool's building (80), never git, alerts or chat.
+    plan: { priority: 84, ttlMs: 30000, stickyMs: 8000 },
     tool: { priority: 80, ttlMs: 30000, stickyMs: 8000 },
     token: { priority: 65, ttlMs: 25000, stickyMs: 8000 },
     team: { priority: 60, ttlMs: 45000, stickyMs: 12000 },
@@ -37,7 +42,6 @@ const DEFAULT_TTLS = Object.freeze({
     ambient: { priority: 10, ttlMs: 20000, stickyMs: 0 },
 });
 
-const TOKEN_DELTA_THRESHOLD = 128;
 const CONTEXT_PRESSURE_THRESHOLD = 0.82;
 const MAX_SEEN_GIT_EVENTS = 600;
 const MAX_PENDING_GATHERS = 64;
@@ -160,6 +164,13 @@ function itineraryFromIntentDraft(draft, { phase, goal, intentId, previous = nul
             currentIndex = clampRouteIndex(WORK_ITINERARY_PHASE_INDEX[phase], explicitRoute);
         }
         if (currentIndex < 0) currentIndex = 0;
+        // Refreshing the same observed itinerary must not send its body back to
+        // stop zero after the dwell-driven router has advanced it.
+        const prior = previous?.itinerary;
+        if (raw?.inferred !== true && prior?.inferred === false
+            && prior.route?.join('|') === explicitRoute.join('|')) {
+            currentIndex = Math.max(currentIndex, prior.currentIndex);
+        }
         return {
             id: raw?.id || intentId || null,
             label: raw?.label || '',
@@ -208,9 +219,11 @@ function itineraryFromIntentDraft(draft, { phase, goal, intentId, previous = nul
 // `visit` describes the body at one building, every field optional:
 //   building — the building type the body stands at;
 //   intent   — the route intent it follows ({ building, itinerary });
-//   role     — its occupancy role; 'rest' (a 7.1 seat) and 'queue' (a 7.2
-//              petitioner slot) never count. Falls back to `agent.visitRole`.
-export const NON_WORKING_VISIT_ROLES = Object.freeze(['rest', 'queue']);
+//   role     — its occupancy role; 'rest' (a 7.1 seat), 'queue' (a 7.2
+//              petitioner slot) and the living-crowd legs 'stroll', 'errand'
+//              and 'winddown' (W4.3/W4.4/W4.8) never count. Falls back to
+//              `agent.visitRole`.
+export const NON_WORKING_VISIT_ROLES = Object.freeze(['rest', 'queue', 'stroll', 'errand', 'winddown']);
 const NON_WORKING_STATUSES = new Set(['waiting_on_user', 'errored', 'rate_limited']);
 
 export function isInferredWorkLeg(intent, building) {
@@ -235,6 +248,7 @@ export class VisitIntentManager {
         this.now = typeof now === 'function' ? now : timeNow;
         this.intentsByAgent = new Map();
         this.tokenSnapshots = new Map();
+        this.cashOutSnapshots = new Map();
         this.seenGitEventIds = new Set();
         this.lastForgeByAgent = new Map();
         this.lastToolBuildingByAgent = new Map();
@@ -301,6 +315,7 @@ export class VisitIntentManager {
         }
         for (const agentId of Array.from(this.tokenSnapshots.keys())) {
             if (!activeIds.has(agentId)) this.tokenSnapshots.delete(agentId);
+            if (!activeIds.has(agentId)) this.cashOutSnapshots.delete(agentId);
         }
         for (const agentId of Array.from(this.lastForgeByAgent.keys())) {
             if (!activeIds.has(agentId)) this.lastForgeByAgent.delete(agentId);
@@ -384,6 +399,7 @@ export class VisitIntentManager {
         this._disposed = true;
         this.intentsByAgent.clear();
         this.tokenSnapshots.clear();
+        this.cashOutSnapshots.clear();
         this.seenGitEventIds.clear();
         this.lastForgeByAgent.clear();
         this.lastToolBuildingByAgent.clear();
@@ -404,6 +420,33 @@ export class VisitIntentManager {
         this._deriveGitIntents(agent, now);
         this._deriveRelationshipIntents(agent, now);
         this._deriveLongRunningIntents(agent, now);
+        this._derivePlanModeIntent(agent, now);
+    }
+
+    // W7.10b — a working session in plan mode is thinking, not changing code:
+    // it stands at the Task board (the board's scroll pose) instead of its
+    // tool's building. Evidence is the adapter's `permissionMode` (Claude
+    // only; see ActionVocabulary.isPlanMode). The intent is dropped the
+    // moment plan mode or work ends, never left to run out its TTL.
+    _derivePlanModeIntent(agent, now) {
+        if (!isPlanMode(agent) || String(agent.status || '').toLowerCase() !== 'working') {
+            const intents = this.intentsByAgent.get(agent.id);
+            if (!intents) return;
+            for (const [key, intent] of intents) {
+                if (intent.source === 'plan') intents.delete(key);
+            }
+            return;
+        }
+        this._upsertIntent(agent.id, {
+            source: 'plan',
+            sourceKey: 'plan-mode',
+            building: 'taskboard',
+            reason: 'plan-mode',
+            phase: 'coordinating',
+            confidence: 0.94,
+            label: 'plan',
+            payload: { permissionMode: 'plan' },
+        }, now);
     }
 
     _deriveToolIntent(agent, now) {
@@ -465,9 +508,31 @@ export class VisitIntentManager {
         const previous = this.tokenSnapshots.get(agent.id);
         this.tokenSnapshots.set(agent.id, current);
 
-        if (previous != null && current > previous) {
-            const delta = current - previous;
-            if (delta >= CASH_OUT_TOKEN_DELTA) {
+        let cashOut = this.cashOutSnapshots.get(agent.id);
+        if (!cashOut || (previous != null && current < previous)) {
+            cashOut = { total: current, at: cashOut?.at ?? null };
+            this.cashOutSnapshots.set(agent.id, cashOut);
+        }
+        const intents = this.intentsByAgent.get(agent.id);
+        const liveTool = (String(agent.status || '').toLowerCase() === 'working'
+            && (agent.currentTool || agent.turnState === 'tool_pending'))
+            || [...(intents?.values() || [])].some(intent => intent.source === 'tool' && intent.expiresAt > now);
+        // Token receipts already feed LandmarkActivity's assay and ore carts,
+        // independently of visits. Never queue a deferred commute mid-tool.
+        if (liveTool && intents) {
+            for (const [key, intent] of intents) {
+                if (intent.reason === 'cash-out' || intent.reason === 'token-delta') intents.delete(key);
+            }
+        }
+        const delta = current - cashOut.total;
+        const contextMax = Number(agent.tokens?.contextWindowMax) || 0;
+        const threshold = contextMax > 0
+            ? Math.min(CASH_OUT_TOKEN_DELTA, contextMax * CASH_OUT_CONTEXT_SHARE)
+            : CASH_OUT_TOKEN_DELTA;
+        if (delta >= threshold && (cashOut.at == null || now - cashOut.at >= CASH_OUT_COOLDOWN_MS)) {
+            cashOut.total = current;
+            cashOut.at = now;
+            if (!liveTool) {
                 this._upsertIntent(agent.id, {
                     source: 'token',
                     sourceKey: `cash-out-${agent.id}-${now}`,
@@ -478,17 +543,6 @@ export class VisitIntentManager {
                     priority: CASH_OUT_PRIORITY,
                     ttlMs: CASH_OUT_TTL_MS,
                     stickyMs: CASH_OUT_STICKY_MS,
-                    label: `+${delta}`,
-                    payload: { delta, total: current, ratio: contextRatio(agent) },
-                }, now);
-            } else if (delta >= TOKEN_DELTA_THRESHOLD) {
-                this._upsertIntent(agent.id, {
-                    source: 'token',
-                    sourceKey: `${Math.floor(current / TOKEN_DELTA_THRESHOLD)}:${delta}`,
-                    building: 'mine',
-                    reason: 'token-delta',
-                    phase: 'quota/resource',
-                    confidence: Math.min(0.95, 0.55 + delta / 3000),
                     label: `+${delta}`,
                     payload: { delta, total: current, ratio: contextRatio(agent) },
                 }, now);
@@ -884,7 +938,7 @@ export class VisitIntentManager {
         const intent = {
             id,
             agentId,
-            building: draft.building,
+            building: itinerary?.inferred === false ? itinerary.currentStop : draft.building,
             source: draft.source,
             reason: draft.reason || draft.source,
             priority,

@@ -12,6 +12,21 @@ const TILE_WEIGHTS = Object.freeze({
     congestionMax: 1.2,
 });
 
+// Four shared profiles, not a unique set of weights per session.
+export const ROUTE_PERSONALITIES = Object.freeze([
+    Object.freeze({ road: 0.65 * 0.92, plaza: 0.68 * 1.08, lane: 0.58 * 0.92, bridgePreference: 0 }),
+    Object.freeze({ road: 0.65 * 1.08, plaza: 0.68 * 0.92, lane: 0.58 * 1.08, bridgePreference: 1 }),
+    Object.freeze({ road: 0.65 * 0.96, plaza: 0.68 * 1.04, lane: 0.58 * 1.08, bridgePreference: 0 }),
+    Object.freeze({ road: 0.65 * 1.04, plaza: 0.68 * 0.96, lane: 0.58 * 0.92, bridgePreference: 1 }),
+]);
+
+export function routePersonalityFor(id) {
+    const value = String(id || '');
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
+    return (hash >>> 0) % ROUTE_PERSONALITIES.length;
+}
+
 export class Pathfinder {
     constructor(grid) {
         this.grid = grid;
@@ -64,7 +79,7 @@ export class Pathfinder {
     }
 
     _cacheResult(key, value) {
-        if (this._pathCache.size >= 256) {
+        if (this._pathCache.size >= 384) {
             this._pathCache.delete(this._pathCache.keys().next().value);
         }
         // The cache owns both the array and its waypoint objects. AgentSprite
@@ -82,7 +97,7 @@ export class Pathfinder {
     getDiagnostics() {
         return {
             cacheEntries: this._pathCache.size,
-            cacheLimit: 256,
+            cacheLimit: 384,
             cacheHits: this._cacheHits,
             cacheMisses: this._cacheMisses,
         };
@@ -286,11 +301,19 @@ export class Pathfinder {
     _tileTravelWeight(tileX, tileY, bridgeTiles, pathOptions) {
         const key = `${tileX},${tileY}`;
         let weight = 1;
-        if (bridgeTiles?.has(key) || pathOptions.bridgeTiles?.has(key)) weight = TILE_WEIGHTS.bridge;
-        else if (pathOptions.dockTiles?.has(key)) weight = TILE_WEIGHTS.dock;
-        else if (pathOptions.plazaTiles?.has(key)) weight = TILE_WEIGHTS.plaza;
-        else if (pathOptions.roadTiles?.has(key) || pathOptions.preferredTiles?.has(key)) weight = TILE_WEIGHTS.road;
-        if (pathOptions.laneTiles?.has(key)) weight = Math.min(weight, TILE_WEIGHTS.lane);
+        const weights = pathOptions.weights || TILE_WEIGHTS;
+        if (bridgeTiles?.has(key) || pathOptions.bridgeTiles?.has(key)) {
+            const info = bridgeTiles?.get?.(key) || pathOptions.bridgeTiles?.get?.(key);
+            const preference = pathOptions.preferredBridgeId && info?.bridgeId
+                ? (info.bridgeId === pathOptions.preferredBridgeId ? 0.92 : 1.08)
+                : 1;
+            weight = TILE_WEIGHTS.bridge * preference;
+        } else if (pathOptions.dockTiles?.has(key)) weight = TILE_WEIGHTS.dock;
+        else if (pathOptions.plazaTiles?.has(key)) weight = weights.plaza ?? TILE_WEIGHTS.plaza;
+        else if (pathOptions.roadTiles?.has(key) || pathOptions.preferredTiles?.has(key)) weight = weights.road ?? TILE_WEIGHTS.road;
+        if (pathOptions.laneTiles?.has(key) && !pathOptions.plazaTiles?.has(key)) {
+            weight = Math.min(weight, weights.lane ?? TILE_WEIGHTS.lane);
+        }
         if (pathOptions.avoidTiles?.has(key)) weight += TILE_WEIGHTS.avoid;
         const congestion = Number(pathOptions.congestionTiles?.get?.(key) || 0);
         if (congestion > 0) {
@@ -331,13 +354,18 @@ export class Pathfinder {
             avoidTiles,
             congestionTiles,
             bridgeTiles: optionBridgeTiles,
+            personalityBucket: Math.max(0, Math.min(3, Math.floor(Number(options?.personalityBucket) || 0))),
+            preferredBridgeId: options?.preferredBridgeId || '',
+            weights: options?.weights || (options?.personalityBucket != null
+                ? ROUTE_PERSONALITIES[Math.max(0, Math.min(3, Math.floor(Number(options.personalityBucket) || 0)))]
+                : TILE_WEIGHTS),
         };
     }
 
     _normalizeTileSet(input) {
         if (!input) return null;
         if (input instanceof Set) return input;
-        if (input instanceof Map) return new Set(input.keys());
+        if (input instanceof Map) return input;
         if (!Array.isArray(input)) return null;
         const out = new Set();
         for (const tile of input) {
@@ -354,6 +382,7 @@ export class Pathfinder {
 
     _normalizeTileWeights(input) {
         if (!input) return null;
+        if (input instanceof Map) return input.size ? input : null;
         const out = new Map();
         const add = (tile, weight = 1) => {
             if (typeof tile === 'string') {
@@ -385,8 +414,10 @@ export class Pathfinder {
 
     _pathOptionsCacheKey(pathOptions) {
         if (!pathOptions.weighted) return '';
-        if (pathOptions.cacheKey) return `|${pathOptions.cacheKey}`;
-        return `|weighted:${pathOptions.roadTiles?.size || 0}:${pathOptions.preferredTiles?.size || 0}:${pathOptions.plazaTiles?.size || 0}:${pathOptions.dockTiles?.size || 0}:${pathOptions.laneTiles?.size || 0}:${pathOptions.avoidTiles?.size || 0}:${pathOptions.congestionTiles?.size || 0}:${pathOptions.bridgeTiles?.size || 0}:${pathOptions.congestionVersion}`;
+        const policyKey = `:p${pathOptions.personalityBucket}:${pathOptions.preferredBridgeId}:c${pathOptions.congestionVersion}`;
+        const weightsKey = pathOptions.weights ? `:${pathOptions.weights.road}:${pathOptions.weights.plaza}:${pathOptions.weights.lane}` : '';
+        if (pathOptions.cacheKey) return `|${pathOptions.cacheKey}${policyKey}${weightsKey}`;
+        return `|weighted:${pathOptions.roadTiles?.size || 0}:${pathOptions.preferredTiles?.size || 0}:${pathOptions.plazaTiles?.size || 0}:${pathOptions.dockTiles?.size || 0}:${pathOptions.laneTiles?.size || 0}:${pathOptions.avoidTiles?.size || 0}:${pathOptions.congestionTiles?.size || 0}:${pathOptions.bridgeTiles?.size || 0}${policyKey}${weightsKey}`;
     }
 
     describeRoute(tiles, options = null) {

@@ -80,6 +80,9 @@ import {
     MOON_DASH_HOLD,
     NEAR_SHORE_DASH_DENSITY,
     NOON_GLINT_FULL_TEXEL,
+    GRASS_GUST_ORDER_BASE,
+    GRASS_GUST_ORDER_CAP,
+    GRASS_GUST_ORDER_GAIN,
     SEA_PAW_CAP_BASE,
     SEA_PAW_CAP_GAIN,
     SEA_PAW_THRESHOLD,
@@ -139,6 +142,7 @@ import {
     WATER_COLUMN_REACH,
 } from './gpu/GpuWorldPolicy.js';
 import { baseWindX, gustinessFor, windAt } from './Wind.js';
+import { GRASS_GUST_STOPS } from './GroundBake.js';
 
 // Texel classes of the terrain bake (one byte per world texel).
 const CLS_FOAM = 6;
@@ -147,7 +151,12 @@ const CLS_WET = 8;
 const CLS_WET_DARK = 9;
 const CLS_BEACH = 10;
 const CLS_OTHER = 11;
+// W6.11 — a grass gust stop's `from` (GRASS_GUST_STOPS[k][0]) is CLS_GRASS + k.
+const CLS_GRASS = 12;
 const CLS_EMPTY = 255;
+// W6.11 — the grass gust course's lifted colour per stop (hazed cache albedo,
+// like the terrain cache it lands on; the frame's grade applies to both).
+const GRASS_GUST_LIFT = GRASS_GUST_STOPS.map(pair => u32Of(to01(pair[1])));
 
 // The step overlay covers the view snapped out to this grid (world px), so a
 // slow pan or the continuous dolly reuses it until a water step comes due.
@@ -466,6 +475,7 @@ function buildBase(renderer) {
     keys.set(rgbKey(COAST_PALETTE.foamCrest), CLS_CREST);
     keys.set(rgbKey(COAST_PALETTE.wetSand), CLS_WET);
     keys.set(rgbKey(COAST_PALETTE.wetSandDark), CLS_WET_DARK);
+    GRASS_GUST_STOPS.forEach((pair, k) => keys.set(rgbKey(pair[0]), CLS_GRASS + k));
     for (let i = 0, p = 0; i < n; i++, p += 4) {
         if (src[p + 3] === 0) { cls[i] = CLS_EMPTY; continue; }
         const r = src[p];
@@ -804,6 +814,34 @@ function buildCapChunk(base, cx, cy) {
     for (let idx = 0; idx < info.length; idx++) {
         if (info[idx] >> SEA_RISE_SHIFT & 3) lit.push(idx);
     }
+    // W6.11 — the grass gust course's candidates (the resident
+    // GRASS_GUST_GLSL): each grass pixel at a ramp's stop 3 (classified on
+    // its own, as the resident test reads each fragment's albedo) whose 2x1
+    // texel's static order can pass, with the gust it needs to lift.
+    const grassIdx = [];
+    const grassNeed = [];
+    const grassK = [];
+    for (let ly = 0; ly < CHUNK_H; ly++) {
+        const y = Y0 + ly;
+        let lastTx = NaN;
+        let need = -1;
+        for (let lx = 0; lx < CHUNK_W; lx++) {
+            const i = base.texelAt(X0 + lx, y);
+            const k = i < 0 ? -1 : cls[i] - CLS_GRASS;
+            if (k < 0 || k >= GRASS_GUST_STOPS.length) continue;
+            const tx = Math.floor((X0 + lx) / 2);
+            if (tx !== lastTx) {
+                lastTx = tx;
+                const ruffle = cloudTileSample(fract((tx + 311) / 384) * 256, fract((y + 173) / 256) * 256);
+                const order = ruffle * 0.5 + waterBayer4(tx, y) * 0.5;
+                need = order >= GRASS_GUST_ORDER_CAP ? -1 : Math.max(0, (order - GRASS_GUST_ORDER_BASE) / GRASS_GUST_ORDER_GAIN);
+            }
+            if (need < 0) continue;
+            grassIdx.push(ly * CHUNK_W + lx);
+            grassNeed.push(need);
+            grassK.push(k);
+        }
+    }
     return {
         info,
         lit: Int32Array.from(lit),
@@ -813,6 +851,11 @@ function buildCapChunk(base, cx, cy) {
         pawRise: Uint8Array.from(pawRise),
         pawKey: '',
         pawLit: null,
+        grassIdx: Int32Array.from(grassIdx),
+        grassNeed: Float32Array.from(grassNeed),
+        grassK: Uint8Array.from(grassK),
+        grassKey: '',
+        grassLit: null,
         // The chunk's body and sunlit canvases (`chunkSeaCanvas`), per palette.
         bodyCanvas: null,
         bodyKey: '',
@@ -922,6 +965,8 @@ function resolveFx(renderer, atmosphere) {
         swash: effectBudgetMode('coastSwash', level) === 'on' && motion > 0,
         // 3.4 — the sunlit course and the cat's paws shed at MINIMAL.
         seaWeather: effectBudgetMode('sea-weather', level) === 'on',
+        // W6.11 — the grass gust course: FULL only, never under reduced motion.
+        grassGust: effectBudgetMode('grassGust', level) === 'on' && motion > 0,
         deepTick: Math.floor(t * 0.006 * clock),
         nearTick: Math.floor(t * 0.004 * clock),
         ringTick: Math.floor(t * 0.007 * clock),
@@ -1056,6 +1101,35 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
                 const p = at(x, y);
                 riseMap[p] = rise;
                 out[p] = markColour(v, x, y, rise + sunAt(v, x, y));
+            }
+            if (!fx.grassGust) continue;
+            // W6.11 — the chunk's grass gust course for this gust step: the
+            // gust is read at each 2x1 texel's left pixel (the resident
+            // `seaGustAt(texel.x * 2)`), and each lifted stop-3 pixel takes
+            // its own ramp's stop 4.
+            if (chunk.grassKey !== gust.key) {
+                const on = [];
+                let lastLeft = -1;
+                let g = 0;
+                for (let n = 0; n < chunk.grassIdx.length; n++) {
+                    const idx = chunk.grassIdx[n];
+                    const left = idx & ~1;
+                    if (left !== lastLeft) {
+                        lastLeft = left;
+                        const ly = (left / CHUNK_W) | 0;
+                        g = gustAt(gust, X0 + left - ly * CHUNK_W, Y0 + ly);
+                    }
+                    if (g > 0 && g > chunk.grassNeed[n]) on.push(n);
+                }
+                chunk.grassLit = Int32Array.from(on);
+                chunk.grassKey = gust.key;
+            }
+            for (const n of chunk.grassLit) {
+                const idx = chunk.grassIdx[n];
+                const ly = (idx / CHUNK_W) | 0;
+                const x = X0 + idx - ly * CHUNK_W;
+                const y = Y0 + ly;
+                if (inRect(x, y)) out[at(x, y)] = GRASS_GUST_LIFT[chunk.grassK[n]];
             }
         }
     }
@@ -1945,7 +2019,7 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
         base.key, paletteKey, rect.x0, rect.y0, rect.w, rect.h, fx.clock > 0 ? 1 : 0,
         fx.deepTick, fx.nearTick, fx.ringTick, fx.swashCyc, fx.rippleTick,
         fx.caustics ? Math.floor(fx.t * 0.004 * fx.clock) % 8 : -1,
-        Math.round(fx.rain * 64), fx.swash ? 1 : 0, fx.horizonTop, pending,
+        Math.round(fx.rain * 64), fx.swash ? 1 : 0, fx.grassGust ? 1 : 0, fx.horizonTop, pending,
         sun?.key ?? '', gust?.key ?? '', seaKey,
     ].join('|');
     // 3.4 — the sunlit course, under every mark.

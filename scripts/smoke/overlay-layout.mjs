@@ -10,6 +10,7 @@ const proto = IsometricRenderer.prototype;
 function renderer(annotationMode = 'compact', occupancy = 0) {
   const instance = Object.create(proto);
   instance.camera = { zoom: 1 };
+  instance.agentSprites = { size: occupancy };
   instance._annotationMode = annotationMode;
   instance._overlayBubbleOrder = [];
   instance._overlayBubbleBaseRects = [];
@@ -40,6 +41,7 @@ function sprite({ id, x, y, status = AgentStatus.WORKING, text = 'Working', sele
     foldedIntoBuilding: false,
     _foldBuildingType: 'forge',
     _activitySnapshot: { text, accent: '#f2d36b', confidence: 1 },
+    _activityThread() { return [this._activitySnapshot]; },
     agent: {
       id,
       name: id,
@@ -66,7 +68,8 @@ function snapshot(sprites) {
   return sprites.map((item) => ({
     id: item.agent.id,
     bubbleSlot: item.bubbleSlot,
-    bubbleSuppressed: item.bubbleSuppressed,
+    bubbleLateral: item.bubbleLateral,
+    bubbleOccluded: item.bubbleOccluded,
     bubbleMergedCount: item.bubbleMergedCount,
     bubbleMergedInto: item.bubbleMergedInto?.agent?.id || null,
     foldedIntoBuilding: item.foldedIntoBuilding,

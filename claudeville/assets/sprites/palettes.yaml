@@ -1,8 +1,9 @@
 # Mirror of the `palettes:` block in manifest.yaml. Source of truth is the manifest.
 # Keep both files in sync if either is edited.
-# Provider hue lives in trim only (plan 2.6): the compositor recolours each
-# sheet's declared `paletteSource.trim` to this ramp (indexed by the agent's
-# variant); authored robes keep their colours and take a per-variant value step.
+# Provider hue lives in trim (plan 2.6): the compositor recolours each sheet's
+# declared `paletteSource.trim` to this ramp (indexed by the agent's historical
+# variant, `variant % 4`); declared robes keep their family and take the
+# agent's crowd variant (value step + bounded hue turn, W2.3).
 claude:
   trim: ['#d97757', '#e08a64', '#c86a4a']
 codex:

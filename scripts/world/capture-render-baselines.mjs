@@ -287,7 +287,7 @@ async function profileCapture(page, durationMs) {
         };
         for (const sprite of sprites) {
             const tier = tierFor(sprite);
-            const bubbleVisible = !sprite.bubbleSuppressed && !sprite.bubbleMergedInto && !sprite.foldedIntoBuilding;
+            const bubbleVisible = sprite.bubbleSlot != null && !sprite.bubbleMergedInto;
             if (bubbleVisible) {
                 census.bubbles.total++;
                 census.bubbles.byTier[tier]++;
@@ -339,7 +339,7 @@ async function collectOverlaySignature(page) {
             || ['waiting_on_user', 'errored'].includes(String(sprite?.agent?.status || '').toLowerCase())
         ));
         const visiblePrimaryLabels = primary.filter(sprite => sprite.nameTagSlot != null || sprite.overlaySlot != null).length;
-        const visiblePrimaryBubbles = primary.filter(sprite => !sprite.bubbleSuppressed && !sprite.bubbleMergedInto).length;
+        const visiblePrimaryBubbles = primary.filter(sprite => sprite.bubbleSlot != null && !sprite.bubbleMergedInto).length;
         const overlay = document.getElementById('worldOverlayCanvas');
         const summary = document.getElementById('worldSemanticSummary');
         return {

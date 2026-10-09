@@ -16,6 +16,7 @@ import {
     FLOWER_DENSITY,
     FOREST_FLOOR_REGIONS,
     TALL_TREE_RULES,
+    TREE_AVENUES,
     WORLD_TREE,
     inWorldTreeIslet,
     DISTRICT_PROPS,
@@ -879,7 +880,25 @@ export class SceneryEngine {
         }
         this._promoteWoodlandTrees(ctx);
         for (const tree of this.treeProps) tree.variant = this._canopyVariant(tree);
+        this._plantTreeAvenues(ctx);
         this.treeProps.push({ tileX: WORLD_TREE.tileX, tileY: WORLD_TREE.tileY, species: 'ash', size: 'world', variant: 0 });
+    }
+
+    // W8.3d — avenue rows (TREE_AVENUES): authored tall trunks beside a walk,
+    // one canopy variant per row so the row turns as one. A trunk stands only
+    // where a new tree may grow and its crown hides no villager on any walk
+    // tile (the tall-tree body test); the row's own `verge` replaces the
+    // woodland path clearance and the district clearance is waived (an avenue
+    // lines the walk on purpose).
+    _plantTreeAvenues({ pathTiles, bridgeTiles, isExcluded }) {
+        for (const avenue of TREE_AVENUES) {
+            for (const [tileX, tileY] of avenue.points) {
+                const tree = { tileX, tileY, species: avenue.species, size: 'tall', variant: avenue.variant ?? 0, avenue: avenue.name };
+                if (!this._clearForNewTree(tileX, tileY, pathTiles, bridgeTiles, isExcluded)) continue;
+                if (!this._clearForTallTree(tree, pathTiles, bridgeTiles, { pathClearance: avenue.verge, districtClearance: 0 })) continue;
+                this.treeProps.push(tree);
+            }
+        }
     }
 
     // 5.5 — woodland scale: a hashed share (`TREE_CLUSTERS[].tall`) of the large
@@ -890,7 +909,7 @@ export class SceneryEngine {
     _promoteWoodlandTrees(ctx) {
         const { pathTiles, bridgeTiles } = ctx;
         const shares = new Map(TREE_CLUSTERS.map((cluster) => [cluster.name, cluster.tall ?? 0]));
-        const widest = Math.max(...['oak', 'pine', 'willow'].map((species) => TREE_SPRITES[`${species}.tall`].width));
+        const widest = Math.max(...Object.values(TREE_SPRITES).filter((sprite) => sprite.crown).map((sprite) => sprite.width));
         // Two tall trunks stand `spacing` tiles apart when both are the widest
         // crown, proportionally closer for narrower crowns (two tall pines).
         const reach = (tree) => TALL_TREE_RULES.spacing * TREE_SPRITES[`${tree.species}.tall`].width / widest / 2;
@@ -1020,8 +1039,11 @@ export class SceneryEngine {
         return true;
     }
 
-    _clearForTallTree(tree, pathTiles, bridgeTiles) {
-        const { pathClearance, districtClearance, villager: [bodyW, bodyH], hiddenShare } = TALL_TREE_RULES;
+    _clearForTallTree(tree, pathTiles, bridgeTiles, {
+        pathClearance = TALL_TREE_RULES.pathClearance,
+        districtClearance = TALL_TREE_RULES.districtClearance,
+    } = {}) {
+        const { villager: [bodyW, bodyH], hiddenShare } = TALL_TREE_RULES;
         const sprite = TREE_SPRITES[`${tree.species}.tall`];
         if (!sprite?.crown || !this._crownOverIsland(tree, sprite)) return false;
         const { halfWidth, bottom } = sprite.crown;

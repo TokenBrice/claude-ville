@@ -52,6 +52,12 @@ export function toolGlyphKey(tool, building = null) {
     return CATEGORY_GLYPH[toolCategory(tool)] || 'dot';
 }
 
+// W7.10b — the plan-mode glyph is the authored motif `EnterPlanMode` already
+// draws (ToolIdentity category `task` → `scroll` → `task-slip`), so a body in
+// plan mode carries the same mark its plan tool would. Static.
+export const PLAN_MODE_GLYPH = toolGlyphKey('EnterPlanMode');
+export const PLAN_MODE_GLYPH_COLOR = '#8fc4ff';
+
 /**
  * Draw a tool glyph with its 8×8 motif's top-left at (x, y) in the caller's
  * screen-space frame. `step` 1 below zoom 3, 2 at close range.

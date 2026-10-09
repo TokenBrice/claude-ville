@@ -809,13 +809,144 @@ function randFrom(rng, min, max) {
     return min + rng() * (max - min);
 }
 
+// AW-P8a — dragonflies over the lily pads on summer days, on their own small
+// pool: never in `particles`, so they never count against MAX_PARTICLES or
+// evict a semantic particle. WildlifeRenderer owns them (it spawns to its
+// budget, sheds them under pressure and draws them in the fauna layer, on
+// both backends). The look is the `dragonfly` preset's colours and sizes; the
+// life is its own: a dragonfly holds still over the water, darts a short hop
+// to another hover point near its home, holds again, and leaves after 30–60 s,
+// fading in and out over DRAGONFLY_FADE frames. Wings are drawn open, never
+// flickered. With motion off a dragonfly holds its pose: no hop, no fade, no
+// ageing.
+export const DRAGONFLY_POOL_MAX = 4;
+const DRAGONFLY_LIFE = Object.freeze([1800, 3600]);
+const DRAGONFLY_HOVER = Object.freeze([110, 260]);
+const DRAGONFLY_FADE = 45;
+const DRAGONFLY_DART_SPEED = 3;
+const DRAGONFLY_WING = '#e6f6f4';
+const DRAGONFLY_HEAD = 'rgba(12, 40, 44, 0.6)';
+const DRAGONFLY_SHADOW = 'rgba(7, 18, 30, 0.18)';
+
+class Dragonfly {
+    constructor(x, y, { color, size, altitude, rangeX, rangeY, seed }) {
+        this._seed = Number.isFinite(Number(seed)) ? Number(seed) : Math.floor(Math.random() * 0x7fffffff);
+        this._draw = 0;
+        const preset = PARTICLE_PRESETS.dragonfly;
+        this.homeX = x;
+        this.homeY = y;
+        this.rangeX = rangeX;
+        this.rangeY = rangeY;
+        this.x = x;
+        this.y = y;
+        this.fromX = x;
+        this.fromY = y;
+        this.toX = x;
+        this.toY = y;
+        this.color = color || preset.colors[Math.floor(this._rand() * preset.colors.length)];
+        const bodySize = Number.isFinite(size) ? size : randFrom(() => this._rand(), preset.size[0], preset.size[1]);
+        this.length = Math.max(3, Math.round(bodySize) + 2);
+        this.speed = randFrom(() => this._rand(), preset.speed[0], preset.speed[1]) * DRAGONFLY_DART_SPEED;
+        this.altitude = Number.isFinite(altitude) ? altitude : 5 + Math.floor(this._rand() * 4);
+        this.maxLife = Math.floor(randFrom(() => this._rand(), DRAGONFLY_LIFE[0], DRAGONFLY_LIFE[1]));
+        this.life = this.maxLife;
+        this.age = 0;
+        this.facing = this._rand() < 0.5 ? -1 : 1;
+        this.dart = 0;
+        this.dartFrames = 0;
+        this.hover = randFrom(() => this._rand(), DRAGONFLY_HOVER[0], DRAGONFLY_HOVER[1]);
+    }
+
+    _rand() {
+        return seededRandom(this._seed, this._draw++);
+    }
+
+    get alive() {
+        return this.life > 0;
+    }
+
+    get leaving() {
+        return this.life <= DRAGONFLY_FADE;
+    }
+
+    // Start the fade-out now (or keep the one already running).
+    release() {
+        this.life = Math.min(this.life, DRAGONFLY_FADE);
+    }
+
+    update(frameScale) {
+        this.age += frameScale;
+        this.life -= frameScale;
+        if (this.dartFrames > 0) {
+            this.dart = Math.min(this.dartFrames, this.dart + frameScale);
+            const t = this.dart / this.dartFrames;
+            const ease = 1 - (1 - t) * (1 - t) * (1 - t);
+            this.x = this.fromX + (this.toX - this.fromX) * ease;
+            this.y = this.fromY + (this.toY - this.fromY) * ease;
+            if (this.dart >= this.dartFrames) {
+                this.dartFrames = 0;
+                this.hover = randFrom(() => this._rand(), DRAGONFLY_HOVER[0], DRAGONFLY_HOVER[1]);
+            }
+            return;
+        }
+        this.hover -= frameScale;
+        if (this.hover > 0 || this.leaving) return;
+        // A hop to another hover point inside the home ellipse.
+        const angle = this._rand() * Math.PI * 2;
+        const reach = 0.35 + this._rand() * 0.65;
+        this.fromX = this.x;
+        this.fromY = this.y;
+        this.toX = this.homeX + Math.cos(angle) * this.rangeX * reach;
+        this.toY = this.homeY + Math.sin(angle) * this.rangeY * reach;
+        const dx = this.toX - this.fromX;
+        if (Math.abs(dx) >= 1) this.facing = dx < 0 ? -1 : 1;
+        this.dart = 0;
+        this.dartFrames = Math.max(8, Math.hypot(dx, this.toY - this.fromY) / Math.max(0.1, this.speed));
+    }
+
+    alphaFor(motionEnabled) {
+        if (!motionEnabled) return 1;
+        return Math.max(0, Math.min(1, this.age / DRAGONFLY_FADE, this.life / DRAGONFLY_FADE));
+    }
+
+    // On the art grid: a faint shadow on the water, then a 3–5 px body with
+    // the head at the leading end (shaded so it reads which way it faces)
+    // and one pale wing pixel pair above and below, just behind the head.
+    // `color` is the caller's graded body.
+    draw(ctx, motionEnabled = true, color = this.color) {
+        const alpha = this.alphaFor(motionEnabled);
+        if (alpha <= 0) return false;
+        const cx = Math.round(this.x);
+        const cy = Math.round(this.y);
+        const top = cy - this.altitude;
+        const tail = this.facing > 0 ? cx - this.length + 1 : cx;
+        const wingX = this.facing > 0 ? cx - 2 : cx + 1;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = DRAGONFLY_SHADOW;
+        ctx.fillRect(tail + 1, cy, this.length - 2, 1);
+        ctx.fillStyle = color;
+        ctx.fillRect(tail, top, this.length, 1);
+        ctx.fillStyle = DRAGONFLY_HEAD;
+        ctx.fillRect(cx, top, 1, 1);
+        ctx.globalAlpha = alpha * 0.75;
+        ctx.fillStyle = DRAGONFLY_WING;
+        ctx.fillRect(wingX, top - 1, 2, 1);
+        ctx.fillRect(wingX, top + 1, 2, 1);
+        ctx.globalAlpha = 1;
+        return true;
+    }
+}
+
 export class ParticleSystem {
     constructor({ maxParticles = MAX_PARTICLES } = {}) {
         this.particles = [];
         this.maxParticles = maxParticles;
         this.motionEnabled = true;
+        // AW-P8a — the dragonfly sub-pool (see Dragonfly); outside `particles`.
+        this.dragonflies = [];
     }
 
+    // Dragonflies are not cleared with motion off: they hold their pose.
     setMotionEnabled(enabled) {
         this.motionEnabled = enabled;
         if (!enabled) {
@@ -958,6 +1089,44 @@ export class ParticleSystem {
             }
         }
         this.particles.length = next;
+        if (this.motionEnabled && this.dragonflies.length) {
+            const frameScale = Math.max(0, Math.min(3, dt / 16));
+            next = 0;
+            for (let i = 0; i < this.dragonflies.length; i++) {
+                const dragonfly = this.dragonflies[i];
+                dragonfly.update(frameScale);
+                if (dragonfly.alive) this.dragonflies[next++] = dragonfly;
+            }
+            this.dragonflies.length = next;
+        }
+    }
+
+    /**
+     * AW-P8a — one dragonfly hovering about world point (x, y) (its water
+     * surface point), hopping within `rangeX` × `rangeY` px of it. Returns
+     * the dragonfly, or null once DRAGONFLY_POOL_MAX are alive. The caller
+     * owns the gate (WildlifeRenderer's `dragonflyBudget`); with motion off
+     * the dragonfly is placed and held still.
+     */
+    spawnDragonfly(x, y, { rangeX = 16, rangeY = 8, seed, color, size, altitude } = {}) {
+        if (this.dragonflies.length >= DRAGONFLY_POOL_MAX) return null;
+        const dragonfly = new Dragonfly(x, y, { color, size, altitude, rangeX, rangeY, seed });
+        this.dragonflies.push(dragonfly);
+        return dragonfly;
+    }
+
+    // Shed the dragonflies: each fades out over DRAGONFLY_FADE frames, or
+    // goes at once while motion is off (a held frame has no fade to play).
+    releaseDragonflies(count = Infinity) {
+        let released = 0;
+        for (let i = this.dragonflies.length - 1; i >= 0 && released < count; i--) {
+            const dragonfly = this.dragonflies[i];
+            if (dragonfly.leaving) continue;
+            dragonfly.release();
+            released++;
+        }
+        if (!this.motionEnabled) this.dragonflies = this.dragonflies.filter(dragonfly => !dragonfly.leaving);
+        return released;
     }
 
     // 0.6 — the resident GPU particle instances (GpuWorldPolicy layout) in

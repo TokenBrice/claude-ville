@@ -4,7 +4,7 @@
  */
 import { getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
 import { getTeamColor } from '../shared/TeamColor.js';
-import { Compositor } from '../character-mode/Compositor.js';
+import { Compositor, agentPaletteVariant, resolveHeadAccessory } from '../character-mode/Compositor.js';
 
 let SPRITE_METADATA_PROMISE = null;
 let SPRITE_ASSET_VERSION = '2026-04-26-visual-revamp'; // overwritten asynchronously on first load
@@ -528,8 +528,15 @@ export class AvatarCanvas {
         if (compositor) {
             const providerKey = providerPaletteKey(this.agent);
             const paletteKey = identity.paletteKey || providerKey;
-            const accessory = withAccessory && identity.allowRuntimeEffortAccessory !== false
-                ? (identity.effortAccessory || null)
+            const entry = compositor.assets?.getEntry?.(spriteId) || null;
+            const accessory = withAccessory
+                ? resolveHeadAccessory({
+                    effortAccessory: identity.effortAccessory || null,
+                    allowEffort: identity.allowRuntimeEffortAccessory !== false,
+                    agentId: this.agent?.id ?? null,
+                    headCovered: entry?.headCovered === true,
+                    headBare: entry?.headBare === true,
+                })
                 : null;
             const composited = compositor.spriteFor(
                 spriteId,
@@ -545,16 +552,10 @@ export class AvatarCanvas {
         return { image: this.spriteImage };
     }
 
-    // Mirrors AgentSprite._hashVariant so the avatar lands on the same
+    // Same variant as AgentSprite._hashVariant so the avatar lands on the same
     // Compositor cache entry the world uses.
     _paletteVariant(providerKey) {
-        const text = `${this.agent?.id ?? ''}:${this.agent?.model || ''}:${providerKey}`;
-        let hash = 0;
-        for (let i = 0; i < text.length; i++) {
-            hash = ((hash << 5) - hash) + text.charCodeAt(i);
-            hash |= 0;
-        }
-        return Math.abs(hash) % 4;
+        return agentPaletteVariant(this.agent?.id, this.agent?.model, providerKey);
     }
 
     // Mirrors AgentSprite._teamTrimAccent (team sash override, null solo).

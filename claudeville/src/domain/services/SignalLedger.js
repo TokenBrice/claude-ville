@@ -80,6 +80,28 @@ export function waitAnchor(agent) {
 }
 
 /**
+ * The one wait-age ladder (Living Isle W5.4): the minute marks where a wait
+ * escalates — 1, 5 and 15 minutes. Every surface that grows with wait age
+ * (the T1 beacon and plate notches, the Command gate banner, the petitioners'
+ * candles) steps at exactly these thresholds, as size or structure, never as
+ * a blink. The Dashboard bell lane's rim (>= 1 min) and filled plate
+ * (>= 5 min) sit on the same marks.
+ */
+export const WAIT_AGE_STEPS_MS = Object.freeze([60_000, 300_000, 900_000]);
+
+/**
+ * The ladder rung for a wait age in ms: 0 (< 1 min), 1 (1–5 min), 2 (5–15
+ * min) or 3 (>= 15 min). An unknown age (not a finite, non-negative number)
+ * is null: absence of an age is never read as a fresh wait.
+ */
+export function waitAgeTier(ageMs) {
+    if (typeof ageMs !== 'number' || !Number.isFinite(ageMs) || ageMs < 0) return null;
+    let tier = 0;
+    while (tier < WAIT_AGE_STEPS_MS.length && ageMs >= WAIT_AGE_STEPS_MS[tier]) tier++;
+    return tier;
+}
+
+/**
  * Longest-waiting first — the ordering `AttentionService.list()` has always
  * used. Ties break on id so a rendered list never reshuffles between polls.
  */
@@ -161,4 +183,23 @@ export function actionableAgents(source) {
     const out = [];
     for (const name of ACTIONABLE_BUCKETS) out.push(...bucketed[name]);
     return out.sort(compareByWaitAge);
+}
+
+/**
+ * The longest-waiting actionable agent with a known `waitAnchor`, or null when
+ * nobody needs action or no actionable agent has a known anchor. Unknown
+ * anchors never stand in for "oldest": `compareByWaitAge` sorts them first, so
+ * this takes the smallest positive anchor instead of the list's head.
+ */
+export function oldestActionable(source) {
+    let oldest = null;
+    let oldestAnchor = 0;
+    for (const agent of actionableAgents(source)) {
+        const anchor = waitAnchor(agent);
+        if (anchor > 0 && (oldestAnchor === 0 || anchor < oldestAnchor)) {
+            oldest = agent;
+            oldestAnchor = anchor;
+        }
+    }
+    return oldest;
 }

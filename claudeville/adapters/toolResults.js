@@ -3,11 +3,11 @@
  *
  * A result record exists only where a provider explicitly reported the outcome
  * of a call it already finished: Codex `item_completed.CommandExecution`, Kimi
- * Code `tool.result` with an exit code or an error flag, and OpenCode tool
- * state with a numeric `metadata.exit`. Invocation is not a result, and a tool
- * call disappearing from a transcript tail is not a result either. Providers
- * without such a record (Claude, Gemini, Grok, OMP) carry no `lastResults`, and
- * nothing downstream may synthesize one for them.
+ * Code `tool.result` with an exit code or an error flag, OpenCode tool
+ * state with a numeric `metadata.exit`, and OMP paired `toolResult` records.
+ * Invocation is not a result, and a tool call disappearing from a transcript
+ * tail is not a result either. Providers without such a record (Claude, Gemini,
+ * Grok) carry no `lastResults`, and nothing downstream may synthesize one.
  *
  * The id is derived from provider, session, and call identity so the same
  * finished command keeps one identity across polls; consumers deduplicate on it

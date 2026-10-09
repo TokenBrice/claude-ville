@@ -29,6 +29,7 @@ const {
 } = require('../../claudeville/adapters');
 const { KimiAdapter } = require('../../claudeville/adapters/kimi');
 const { CodexAdapter } = require('../../claudeville/adapters/codex');
+const { OmpAdapter } = require('../../claudeville/adapters/omp');
 const {
   OpenCodeAdapter,
   _test: openCodeTest,
@@ -54,6 +55,7 @@ assert.equal(normalizedSession.status, 'active');
 assert.equal(normalizedSession.lastActivity, now);
 assert.deepEqual(normalizedSession.gitEvents, []);
 assert.deepEqual(normalizedSession.tokenUsage, rawSession.tokens);
+assert.equal(normalizedSession.sessionEndedAt, null);
 
 const normalizedOpenCodeSession = normalizeSession({
   sessionId: 'opencode-fixture',
@@ -420,6 +422,34 @@ if (fixture) {
   fs.rmSync(fixture.root, { recursive: true, force: true });
 } else {
   console.log('opencode adapter fixture skipped: node:sqlite unavailable');
+}
+
+const ompRoot = makeTempDir('claudeville-omp-outcomes-fixture-');
+try {
+  const fixtureAt = Date.parse('2026-09-01T12:00:07.000Z');
+  const sessionsDir = path.join(ompRoot, '.omp', 'agent', 'sessions');
+  const transcriptPath = path.join(sessionsDir, '-fixture-project', '2026-09-01T12-00-00-000Z_outcomes-fixture.jsonl');
+  const content = fs.readFileSync(path.join(__dirname, 'fixtures', 'omp', 'tool-results-session-exit.jsonl'), 'utf8')
+    .replaceAll('__PROJECT__', path.join(ompRoot, 'project'));
+  writeTextFile(transcriptPath, content);
+  fs.utimesSync(transcriptPath, new Date(fixtureAt), new Date(fixtureAt));
+  const adapter = new OmpAdapter({ sessionsDir, now: () => fixtureAt });
+  const sessions = adapter.getActiveSessions(10 * 60 * 1000).map(session => normalizeSession(session));
+  const session = sessions.find(item => item.sessionId === 'omp-outcomes-fixture');
+  assert.ok(session, 'OMP fixture must be discovered');
+  assert.equal(session.sessionEndedAt, fixtureAt);
+  assert.equal(session.turnState, 'awaiting_input');
+  assert.equal(session.pendingTool, null);
+  assert.deepEqual(session.lastResults.map(result => [result.tool, result.detail, result.exitCode, result.durationMs]), [
+    ['read', 'example.js', null, 3000],
+    ['bash', 'npm test', 1, 2000],
+    ['bash', 'npm run build', 0, 1000],
+  ]);
+  assert.ok(session.lastResults.every(result => result.source === 'transcript'));
+  assert.deepEqual(adapter.getActiveSessions(10 * 60 * 1000)[0].lastResults, session.lastResults);
+  adapter.shutdown();
+} finally {
+  fs.rmSync(ompRoot, { recursive: true, force: true });
 }
 
 console.log('adapter fixture normalization checks passed');

@@ -1,3 +1,5 @@
+import { VILLAGE_GATE, VILLAGE_GATE_GEOMETRY } from '../../config/townPlan.js';
+
 const SUPPORTED_KINDS = new Set(['point', 'beam', 'spark', 'arc', 'orbit']);
 // V5 — what a light is in the 2.5D model, beside its drawing `kind`: an omni
 // `point` (effects, motes), a facade `aperture` (window or door, emitting into
@@ -183,4 +185,70 @@ export function fireBreath(motionTimeMs, sourceId, motionScale = 1, depth = 1) {
     h = Math.imul(h, 0xc2b2ae35);
     h ^= h >>> 16;
     return 1 - (1 - FIRE_BREATH_QUANTA[(h >>> 0) % 3]) * Math.min(1, Math.max(0, Number(depth) || 0));
+}
+
+// W6.9 (AW-P12) — honest warmth for an empty town. Hearth lights stand only
+// in non-work structures — the gatehouse guard rooms' lit glass (the
+// `lit: true` tower window, VILLAGE_GATE_GEOMETRY.towerWindows) and the lake
+// shrine's candle — and on the `lamps` clock gate alone, like the Command
+// braziers and the Lighthouse lens: they never read occupancy, so the nine
+// work buildings keep the midnight-oil rule (one lit room per working
+// occupant). The tone is warmer and dimmer than glass and never breathes.
+// The renderer adds the dressing fires it owns (the midsummer bonfire, the
+// W7.8 ledger lamp) through `extra`.
+export const HEARTH_TONE = '#ff9248';
+const HEARTH_RADIUS = 30;
+const HEARTH_INTENSITY = 0.46;
+
+function gatehouseHearths() {
+    const glass = VILLAGE_GATE_GEOMETRY.towerWindows.find((win) => win.lit);
+    if (!glass) return [];
+    const r = VILLAGE_GATE_GEOMETRY.towerR;
+    const height = Math.round((glass.z0 + glass.z1) / 2);
+    return VILLAGE_GATE_GEOMETRY.towerX.map((towerX, side) => Object.freeze({
+        id: `hearth.gatehouse.${side ? 'east' : 'west'}`,
+        site: 'gatehouse',
+        tileX: VILLAGE_GATE.tileX + towerX + Math.cos(glass.angle) * r,
+        tileY: VILLAGE_GATE.tileY + Math.sin(glass.angle) * r,
+        height,
+        intensity: HEARTH_INTENSITY,
+    }));
+}
+
+export const HEARTH_FIXTURES = Object.freeze([
+    ...gatehouseHearths(),
+    // The shrine's candle on its low altar (scenery.js prop.lakeShrine).
+    Object.freeze({ id: 'hearth.lakeShrine', site: 'lakeShrine', tileX: 6.9, tileY: 27.3, height: 9, intensity: 0.36, radius: 22 }),
+]);
+
+/**
+ * The hearth fixtures as V5 light records while the village lamps are lit
+ * (`lampsLit`, BuildingSprite.lampsLitAt), else none. `core` is the source
+ * energy bucket's core (AtmosphereState.sourceEnergyFor), so a hearth spends
+ * inside the lamplight / deep-night buckets like every other fixture.
+ * `extra` rows `{ id, tileX, tileY, height, intensity?, radius?, color?,
+ * fire? }` join on the same gate. No argument carries agent state.
+ */
+export function hearthLightSources({ lampsLit = false, core = 1, extra = [], fixtures = HEARTH_FIXTURES } = {}) {
+    if (!lampsLit) return [];
+    const out = [];
+    for (const row of [...fixtures, ...extra]) {
+        if (!Number.isFinite(row?.tileX) || !Number.isFinite(row?.tileY)) continue;
+        const foot = { x: (row.tileX - row.tileY) * 32, y: (row.tileX + row.tileY) * 16 };
+        const height = Math.max(0, Number(row.height) || 0);
+        out.push(normalizeLightSource({
+            id: row.id,
+            kind: 'point',
+            role: 'fixture',
+            x: foot.x,
+            y: foot.y - height,
+            ground: foot,
+            height,
+            fire: row.fire === true,
+            color: row.color || HEARTH_TONE,
+            radius: row.radius || HEARTH_RADIUS,
+            intensity: (Number(row.intensity) || HEARTH_INTENSITY) * core,
+        }));
+    }
+    return out;
 }

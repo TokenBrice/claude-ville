@@ -1,5 +1,7 @@
-import { MonumentPlanter, MonumentRules } from '../../application/MonumentRules.js';
+import { MonumentPlanter, MonumentRules, compareMonumentStanding } from '../../application/MonumentRules.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { DuskLedger } from '../../application/ChronicleLog.js';
+import { RepoStones } from './RepoStones.js';
 import { collectCommitEvents } from './ChronicleEvents.js';
 import { tileToWorld } from './Projection.js';
 import {
@@ -27,6 +29,7 @@ import { scheduleAccent } from '../shared/audio/CueScore.js';
 import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { LABEL_INK, measureLabelText, snapScreenOrigin } from './WorldLabelKit.js';
 import { fillPixelEllipse } from './PixelShapes.js';
+import { materialClassId } from './MaterialRegistry.js';
 
 // 4.7 — the selected monument's stone ledger: the last three real records of
 // its district, the exact count of the rest, and the period those records
@@ -51,6 +54,10 @@ const KIND_COLORS = {
     fix: '#8fd48e',
     performance: '#d5a6ff',
     verified: '#f7f0a3',
+    docs: '#a9c4e6',
+    test: '#c6dc86',
+    upkeep: '#b49f80',
+    merge: '#e8dcb8',
 };
 
 // 6.1 — sprite ids for the PixelLab monument set. When the asset is missing
@@ -69,6 +76,23 @@ const MONUMENT_SPRITE_GEM = Object.freeze({
     major: { fx: 0.5, fy: 0.42, r: 8 },
     founding: { fx: 0.5, fy: 0.5, r: 7 },
 });
+const MONUMENT_WEIGHTS = new Set(['minor', 'medium', 'major']);
+// Baked-face boxes relative to the ground point, in world texels (right and
+// bottom exclusive): the contact shadow (fillPixelEllipse 0, 11, 13 x 5) and
+// the vector fallback's tallest shape (the obelisk tip at -34) with its gem.
+const MONUMENT_SHADOW_BOX = Object.freeze({ left: -13, right: 14, bottom: 17 });
+const MONUMENT_VECTOR_BOX = Object.freeze({ left: -16, top: -40, right: 17, bottom: 18 });
+// Every Chronicle stone grades and takes light as masonry on the resident path.
+const STONE_MATERIAL = materialClassId('stone');
+// A reused record per stone; past this many ids the map starts over.
+const MAX_GPU_RECORDS = 128;
+
+/** A monument fades from 1 to 0.55 over its 30 days. */
+function monumentAlpha(record, now) {
+    const age = Math.max(0, now - Number(record.plantedAt || record.ts || now));
+    return Math.max(0.55, 1 - age / MONTH_MS * 0.45);
+}
+
 // 6.5 — quiet mote presence over major monuments: one slow trickle shared by
 // all majors (update cadence is ~1s; the modulo staggers them deterministically).
 const MONUMENT_MOTE_INTERVAL_MS = 900;
@@ -168,6 +192,10 @@ function kindIcon(kind) {
         case 'fix': return '~';
         case 'performance': return '!';
         case 'verified': return '#';
+        case 'docs': return '"';
+        case 'test': return '^';
+        case 'upkeep': return '.';
+        case 'merge': return '>';
         case 'founding-layer': return '=';
         default: return '-';
     }
@@ -231,6 +259,18 @@ export class ChronicleMonuments {
         this._selectedMonumentId = null;
         this._disposed = false;
         this._lifecycleGeneration = 0;
+        // W7.8 — the dusk ledger's day stone (persisted, one per local day).
+        this.duskLedger = new DuskLedger({ store });
+        this._lampsLit = false;
+        // W7.7 — repo standing stones on the Harbor quay slots.
+        this.repoStones = new RepoStones({ assets });
+        // Static Chronicle faces on the resident GPU path: the drawables carry
+        // `buildGpuRecord` (the DrawablePass seam), answered from the same
+        // baked images the Canvas draw blits; one reused record per stone.
+        this._monumentImages = new Map();
+        this._dayStoneImage = null;
+        this._gpuRecords = new Map();
+        this._buildGpuRecord = (context, drawable) => this._gpuRecordFor(drawable, context);
     }
 
     async hydrate(now = Date.now()) {
@@ -281,6 +321,8 @@ export class ChronicleMonuments {
         for (const record of planted) this.records.set(record.id, record);
         if (planted.length) this._visibleRecords = null;
         await this._processCommitMilestones(gitEvents, now, generation);
+        if (this._disposed || generation !== this._lifecycleGeneration) return [];
+        await this.repoStones?.refresh(this.harbor, this.chronicleStore, now);
         if (this._disposed || generation !== this._lifecycleGeneration) return [];
         this._dropExpired(now);
         this._dropExpiredOverlays(now);
@@ -371,6 +413,7 @@ export class ChronicleMonuments {
         this.auroraGate = null;
         this.assets = null;
         this.particles = null;
+        this.repoStones?.dispose();
     }
 
     _refreshProjection(now) {
@@ -397,9 +440,10 @@ export class ChronicleMonuments {
             const capped = MonumentRules.applyDistrictCap(records);
             visible.push(...capped.visible);
             if (capped.foundingLayer) visible.push(this._foundingLayerRecord(district, records));
+            // W7.9 — upkeep sorts below every other kind, then newest first.
             const ledgerRows = records
                 .filter(record => now - Number(record.plantedAt || record.ts || 0) <= MONTH_MS)
-                .sort((a, b) => Number(b.plantedAt || b.ts || 0) - Number(a.plantedAt || a.ts || 0));
+                .sort(compareMonumentStanding);
             this._districtLedgers.set(district, {
                 rows: ledgerRows.slice(0, LEDGER_ROWS),
                 total: ledgerRows.length,
@@ -415,6 +459,9 @@ export class ChronicleMonuments {
     }
 
     enumerateDrawables(now = Date.now(), camera = null) {
+        // The resident records fade monuments at this frame's clock, as the
+        // Canvas draw does with the same `now`.
+        this._drawablesAt = now;
         this._refreshProjection(now);
         const bounds = camera?.getViewportTileBounds?.(2);
 
@@ -430,6 +477,7 @@ export class ChronicleMonuments {
                     kind: 'chronicle-monument',
                     sortY: world.y + 18,
                     payload: { ...record, worldX: world.x, worldY: world.y },
+                    buildGpuRecord: this._buildGpuRecord,
                 };
             });
 
@@ -444,17 +492,136 @@ export class ChronicleMonuments {
                 payload: { ...banner, worldX: world.x, worldY: world.y },
             });
         }
+        // W7.8 — the day stone beside the Archive lectern, from its first dusk.
+        const stone = this.duskLedger?.stone;
+        if (stone) {
+            const world = toWorld(DAY_STONE_TILE.tileX, DAY_STONE_TILE.tileY);
+            drawables.push({
+                kind: 'chronicle-day-stone',
+                sortY: world.y,
+                payload: { kind: 'chronicle-day-stone', stone, lit: this._lampsLit, worldX: world.x, worldY: world.y },
+                buildGpuRecord: this._buildGpuRecord,
+            });
+        }
+        if (this.repoStones) {
+            for (const drawable of this.repoStones.drawables(camera)) {
+                drawable.buildGpuRecord = this._buildGpuRecord;
+                drawables.push(drawable);
+            }
+        }
         return drawables;
     }
 
     draw(ctx, drawable, zoom = 1, now = Date.now()) {
         const record = drawable?.payload || drawable;
         if (!record) return;
+        if (drawable?.kind === 'chronicle-day-stone' || record.kind === 'chronicle-day-stone') {
+            const image = this._dayStoneImageFor(record);
+            if (image) ctx.drawImage(image.canvas, image.x, image.y);
+            return;
+        }
+        if (record.kind === 'repo-stone') {
+            // The renderer may wire `assets` after construction.
+            if (this.repoStones) {
+                this.repoStones.assets = this.assets;
+                this.repoStones.draw(ctx, record);
+            }
+            return;
+        }
         if (drawable?.kind === 'chronicle-banner' || record.kind === 'chronicle-banner') {
             this._drawBanner(ctx, record, zoom, now);
             return;
         }
         this._drawMonument(ctx, record, zoom, now);
+    }
+
+    // The resident twin of `draw` for the static faces (monuments, the day
+    // stone, repo stones): one V9 record over the very image the Canvas draw
+    // blits, at the same world rect, graded and lit as stone, depth-keyed by
+    // GpuSceneBuilder from the drawable's sortY. Milestone banners animate,
+    // carry no builder and stay on the Canvas path.
+    _gpuRecordFor(drawable, context = {}) {
+        const record = drawable?.payload;
+        if (!record) return null;
+        const sequence = context?.sequence ?? 0;
+        if (drawable.kind === 'chronicle-day-stone') {
+            const image = this._dayStoneImageFor(record);
+            return image
+                ? this._stoneRecord('chronicle:day-stone', image, image.x, image.y, record.worldY, 1, sequence)
+                : null;
+        }
+        if (record.kind === 'repo-stone') {
+            if (!this.repoStones) return null;
+            this.repoStones.assets = this.assets;
+            const image = this.repoStones.image(record);
+            return image
+                ? this._stoneRecord(`chronicle:repo:${record.slot}`, image,
+                    Math.round(record.worldX - image.ax), Math.round(record.worldY - image.ay),
+                    record.worldY, 1, sequence)
+                : null;
+        }
+        if (drawable.kind !== 'chronicle-monument') return null;
+        const image = this._monumentImage(record);
+        if (!image) return null;
+        return this._stoneRecord(`chronicle:monument:${record.id}`, image,
+            Math.round(record.worldX) + image.ox, Math.round(record.worldY) + image.oy,
+            record.worldY, monumentAlpha(record, this._drawablesAt ?? Date.now()), sequence);
+    }
+
+    _stoneRecord(id, image, x, y, groundY, alpha, sequence) {
+        let record = this._gpuRecords.get(id);
+        if (!record) {
+            if (this._gpuRecords.size >= MAX_GPU_RECORDS) this._gpuRecords.clear();
+            record = { id, stableKey: id, sx: 0, sy: 0, material: STONE_MATERIAL, emissive: 0, sourceKind: 'individual' };
+            this._gpuRecords.set(id, record);
+        }
+        const width = image.canvas.width;
+        const height = image.canvas.height;
+        record.textureKey = `chronicle:${image.key}`;
+        record.source = image.canvas;
+        record.textureRevision = image.revision;
+        // The lit day-stone lamp: its own emissive channel, like the calendar
+        // bonfire's flame (StaticPropSprite `channels.emissive`).
+        record.emissiveSource = image.emissive || null;
+        record.sidecarKey = image.emissive ? `chronicle:${image.key}:own` : '';
+        record.sidecarRevision = image.emissive ? `own:${image.revision}` : null;
+        record.sourceWidth = width;
+        record.sourceHeight = height;
+        record.sw = width;
+        record.sh = height;
+        record.x = x;
+        record.y = y;
+        record.width = width;
+        record.height = height;
+        // V5 — a stone receives light at its own ground line.
+        record.footY = Math.round(groundY);
+        record.alpha = alpha;
+        record.elevation = height > 70 ? 0.58 : 0.34;
+        record.occluder = height > 36 ? 0.58 : 0.2;
+        // Opaque faces write painter depth (an aged, faded monument cannot:
+        // assignGpuRecordV9Fields gates it on alpha 1); stamped per frame.
+        record.writesDepth = true;
+        record.depthSortY = null;
+        record.sequence = sequence;
+        return record;
+    }
+
+    _dayStoneImageFor(payload) {
+        const lit = payload.lit === true;
+        const held = this._dayStoneImage;
+        if (held && held.stone === payload.stone && held.lit === lit
+            && held.worldX === payload.worldX && held.worldY === payload.worldY) return held;
+        const geometry = dayStoneGeometry(payload);
+        const revision = dayStoneRevision(geometry, lit);
+        if (held?.revision === revision) {
+            held.stone = payload.stone;
+            held.worldX = payload.worldX;
+            held.worldY = payload.worldY;
+            return held;
+        }
+        if (typeof document === 'undefined') return null;
+        this._dayStoneImage = bakeDayStone(payload, geometry, revision);
+        return this._dayStoneImage;
     }
 
     hitTest(worldX, worldY, now = Date.now()) {
@@ -522,56 +689,18 @@ export class ChronicleMonuments {
 
     _drawMonument(ctx, record, zoom, now) {
         const world = record.worldX == null ? toWorld(record.tileX, record.tileY) : record;
-        const age = Math.max(0, now - Number(record.plantedAt || record.ts || now));
-        const alpha = Math.max(0.55, 1 - age / MONTH_MS * 0.45);
-        const color = KIND_COLORS[record.kind] || '#d8b96d';
         // 4.7 — only the selected stone opens its ledger; everything else keeps
         // its silence.
         const selected = this._selectedMonumentId && record.id === this._selectedMonumentId;
-
-        // 6.1 — PixelLab sprite path; the vector draws below remain the
-        // asset-missing fallback.
-        if (this._drawMonumentSprite(ctx, record, world, alpha, color)) {
-            if (selected) this._drawMonumentLedger(ctx, record, world, now, zoom);
-            return;
-        }
-
-        ctx.save();
-        ctx.translate(Math.round(world.worldX ?? world.x), Math.round(world.worldY ?? world.y));
-        ctx.globalAlpha = alpha;
-        ctx.fillStyle = 'rgba(26, 22, 18, 0.35)';
-        ctx.beginPath();
-        ctx.ellipse(0, 11, 13, 5, 0, 0, Math.PI * 2);
-        ctx.fill();
-        if (record.kind === 'founding-layer') {
-            this._drawFoundingLayer(ctx, alpha, zoom);
+        const image = this._monumentImage(record);
+        if (image) {
+            ctx.save();
+            ctx.globalAlpha = monumentAlpha(record, now);
+            ctx.drawImage(image.canvas,
+                Math.round(world.worldX ?? world.x) + image.ox,
+                Math.round(world.worldY ?? world.y) + image.oy);
             ctx.restore();
-            return;
         }
-
-        const weight = record.weight || 'medium';
-        if (weight === 'minor') {
-            this._drawMinorCairn(ctx, alpha, zoom);
-        } else if (weight === 'major') {
-            this._drawMajorObelisk(ctx, alpha, zoom, color);
-        } else {
-            this._drawMediumStone(ctx, alpha, zoom);
-        }
-
-        // Energy inset varies with weight: brighter / taller on major releases.
-        ctx.globalCompositeOperation = 'screen';
-        ctx.fillStyle = color;
-        if (weight === 'major') {
-            ctx.globalAlpha = alpha * 0.62;
-            ctx.fillRect(-3, -16, 6, 18);
-        } else if (weight === 'minor') {
-            ctx.globalAlpha = alpha * 0.28;
-            ctx.fillRect(-2, -6, 4, 7);
-        } else {
-            ctx.globalAlpha = alpha * 0.42;
-            ctx.fillRect(-3, -11, 6, 13);
-        }
-        ctx.restore();
         if (selected) this._drawMonumentLedger(ctx, record, world, now, zoom);
     }
 
@@ -651,42 +780,97 @@ export class ChronicleMonuments {
         ctx.restore();
     }
 
-    // 6.1 — draw the monument from its PixelLab sprite. Returns false when the
-    // sprite is unavailable so the caller falls back to the vector draws. The
-    // KIND_COLORS gem glow stays a screen-composite overlay on top of the art,
-    // and the contact shadow is shared with the vector path.
-    _drawMonumentSprite(ctx, record, world, alpha, color) {
+    // 6.1 — one baked face per (shape, kind colour), shared by the Canvas blit
+    // and the resident record (`_gpuRecordFor`): the contact shadow, the
+    // PixelLab sprite (the vector draws while the asset is missing) and the
+    // KIND_COLORS gem glow, two stepped pixel discs screen-composited onto
+    // the art at the calibrated sprite spot. The age fade is applied at the
+    // blit (Canvas globalAlpha, record alpha), so a face never rebakes as it
+    // ages; a sprite arriving after a vector bake takes a new key.
+    _monumentImage(record) {
+        if (typeof document === 'undefined') return null;
+        const weight = record.kind === 'founding-layer'
+            ? 'founding'
+            : (MONUMENT_WEIGHTS.has(record.weight) ? record.weight : 'medium');
+        const color = KIND_COLORS[record.kind] || '#d8b96d';
         const spriteId = this._monumentSpriteId(record);
-        if (!this._monumentSpriteAvailable(spriteId)) return false;
-        const img = this.assets.get(spriteId);
-        const dims = this.assets.getDims(spriteId);
-        if (!img || !dims) return false;
+        const img = this._monumentSpriteAvailable(spriteId) ? this.assets.get(spriteId) : null;
+        const dims = img ? this.assets.getDims(spriteId) : null;
+        const key = `monument:${dims ? spriteId : 'vector'}|${weight}|${color}`;
+        let image = this._monumentImages.get(key);
+        if (!image) {
+            image = dims
+                ? this._bakeMonumentSprite(spriteId, img, dims, weight, color)
+                : this._bakeMonumentVector(weight, color);
+            image.key = key;
+            image.revision = 0;
+            this._monumentImages.set(key, image);
+        }
+        return image;
+    }
+
+    _bakeMonumentSprite(spriteId, img, dims, weight, color) {
         // Honor a registered manifest anchor; default to bottom-center on the
         // ground point (the engine-wide anchor convention).
         const [ax, ay] = this.assets.anchors?.has?.(spriteId)
             ? this.assets.getAnchor(spriteId)
             : [dims.w / 2, dims.h];
-        const wx = Math.round(world.worldX ?? world.x);
-        const wy = Math.round(world.worldY ?? world.y);
-        const weight = record.kind === 'founding-layer' ? 'founding' : (record.weight || 'medium');
-        const gem = MONUMENT_SPRITE_GEM[weight] || MONUMENT_SPRITE_GEM.medium;
-
-        ctx.save();
-        ctx.translate(wx, wy);
-        ctx.globalAlpha = alpha;
+        const sx = Math.round(-ax);
+        const sy = Math.round(-ay);
+        const ox = Math.min(sx, MONUMENT_SHADOW_BOX.left);
+        const oy = Math.min(sy, 0);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(sx + dims.w, MONUMENT_SHADOW_BOX.right) - ox;
+        canvas.height = Math.max(sy + dims.h, MONUMENT_SHADOW_BOX.bottom) - oy;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.translate(-ox, -oy);
         fillPixelEllipse(ctx, 0, 11, 13, 5, 'rgba(26, 22, 18, 0.35)');
-        ctx.drawImage(img, Math.round(-ax), Math.round(-ay));
-        // Gem glow overlay (screen composite) at the calibrated sprite spot:
-        // two stepped pixel discs, not a radial gradient (pixel grammar).
+        ctx.drawImage(img, sx, sy);
+        const gem = MONUMENT_SPRITE_GEM[weight] || MONUMENT_SPRITE_GEM.medium;
         const gx = Math.round(-ax + dims.w * gem.fx);
         const gy = Math.round(-ay + dims.h * gem.fy);
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = alpha * 0.2;
+        ctx.globalAlpha = 0.2;
         fillPixelEllipse(ctx, gx, gy, gem.r, gem.r, color);
-        ctx.globalAlpha = alpha * 0.3;
+        ctx.globalAlpha = 0.3;
         fillPixelEllipse(ctx, gx, gy, gem.r * 0.5, gem.r * 0.5, color);
-        ctx.restore();
-        return true;
+        return { canvas, ox, oy };
+    }
+
+    // The asset-missing fallback, baked at one world texel per pixel.
+    _bakeMonumentVector(weight, color) {
+        const box = MONUMENT_VECTOR_BOX;
+        const canvas = document.createElement('canvas');
+        canvas.width = box.right - box.left;
+        canvas.height = box.bottom - box.top;
+        const ctx = canvas.getContext('2d');
+        ctx.translate(-box.left, -box.top);
+        ctx.fillStyle = 'rgba(26, 22, 18, 0.35)';
+        ctx.beginPath();
+        ctx.ellipse(0, 11, 13, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        if (weight === 'founding') {
+            this._drawFoundingLayer(ctx, 1, 1);
+            return { canvas, ox: box.left, oy: box.top };
+        }
+        if (weight === 'minor') this._drawMinorCairn(ctx, 1, 1);
+        else if (weight === 'major') this._drawMajorObelisk(ctx, 1, 1, color);
+        else this._drawMediumStone(ctx, 1, 1);
+        // Energy inset varies with weight: brighter / taller on major releases.
+        ctx.globalCompositeOperation = 'screen';
+        ctx.fillStyle = color;
+        if (weight === 'major') {
+            ctx.globalAlpha = 0.62;
+            ctx.fillRect(-3, -16, 6, 18);
+        } else if (weight === 'minor') {
+            ctx.globalAlpha = 0.28;
+            ctx.fillRect(-2, -6, 4, 7);
+        } else {
+            ctx.globalAlpha = 0.42;
+            ctx.fillRect(-3, -11, 6, 13);
+        }
+        return { canvas, ox: box.left, oy: box.top };
     }
 
     _drawMediumStone(ctx, alpha, zoom) {
@@ -1175,9 +1359,12 @@ export class ChronicleMonuments {
             for (const source of sources) {
                 for (const event of source) {
                     const type = String(event?.type || event?.kind || '').toLowerCase();
-                    if (type === 'push' || type === 'tag') {
+                    // W7.9 — a `gh pr merge` is a pr-merge stone candidate.
+                    const prMerge = type === 'pr' && String(event?.action || '').toLowerCase() === 'merge';
+                    if (type === 'push' || type === 'tag' || prMerge) {
                         events.push({
                             ...event,
+                            ...(prMerge ? { type: 'pr-merge' } : null),
                             project: event.project || agent.project,
                             provider: event.provider || agent.provider,
                             agentId: event.agentId ?? agent.id ?? null,
@@ -1203,4 +1390,166 @@ export class ChronicleMonuments {
             this._activeBanners = this._activeBanners.filter(b => Number(b.expiresAt || 0) > now);
         }
     }
+
+    // W7.8 — set the day's stone at the blue-hour lamp course (once a local
+    // day; DuskLedger persists the date so a reload sets nothing new). The
+    // stone and its lamp are static; `lampsLit` only says whether the lamp
+    // burns tonight, never occupancy.
+    async updateDuskLedger(now = Date.now(), { lampsLit = false, minuteOfDay = NaN, chronicleLog = null } = {}) {
+        if (this._disposed || !this.duskLedger) return null;
+        this._lampsLit = lampsLit === true;
+        return this.duskLedger.evaluate(now, { lampsLit: this._lampsLit, minuteOfDay, chronicleLog });
+    }
+
+    /** The ledger lamp on the day stone: a `lamps` fixture while a stone stands. */
+    ledgerLampFixture() {
+        if (!this._lampsLit || !this.duskLedger?.stone) return null;
+        return {
+            id: 'archive.ledgerLamp',
+            tileX: DAY_STONE_TILE.tileX,
+            tileY: DAY_STONE_TILE.tileY,
+            height: DAY_STONE_LAMP_HEIGHT,
+            intensity: 0.42,
+            radius: 24,
+            color: '#ffc06a',
+        };
+    }
+
+    /** True while a release crown is queued or playing (the calendar holds its turn). */
+    releaseRevealLive() {
+        return Boolean(this._crown);
+    }
+}
+
+// ── W7.8 day stone ──────────────────────────────────────────────────────────
+// A slate tablet on the Archive's door-step green carrying four carved rows,
+// glyph then exact number: shipped (a sail), mended (a hammer), waited (an
+// hourglass), tokens (a coin). Numbers only, no prose; a small lamp in its
+// crown niche burns while the village lamps are lit.
+export const DAY_STONE_TILE = Object.freeze({ tileX: 10.45, tileY: 19.55 });
+const DAY_STONE_LAMP_HEIGHT = 34;
+const DAY_STONE = Object.freeze({ face: '#4a525c', light: '#6c7682', dark: '#2f353c', ink: '#1d2126', carve: '#d9c58a', lamp: '#ffd27a', lampCore: '#fff0c8' });
+const DIGITS = Object.freeze([
+    '111101101101111', '010110010010111', '111001111100111', '111001111001111', '101101111001001',
+    '111100111001111', '111100111101111', '111001010010010', '111101111101111', '111101111001111',
+]);
+const GLYPHS = Object.freeze({
+    shipped: '010110111010111', // a sail over a hull
+    mended: '111111010010010',  // a hammer
+    waited: '111010010010111',  // an hourglass
+    tokens: '010111101111010',  // a coin
+});
+const DAY_STONE_ROWS = Object.freeze(['shipped', 'mended', 'waited', 'tokens']);
+
+function paintBits(ctx, bits, x, y) {
+    for (let i = 0; i < 15; i++) {
+        if (bits[i] === '1') ctx.fillRect(x + (i % 3), y + Math.floor(i / 3), 1, 1);
+    }
+}
+
+/** Whole digits of a non-negative count (exact; never abbreviated). */
+export function dayStoneRows(stone) {
+    return DAY_STONE_ROWS.map((key) => ({ key, text: String(Math.max(0, Math.floor(Number(stone?.[key]) || 0))) }));
+}
+
+function dayStoneGeometry(payload) {
+    const rows = dayStoneRows(payload.stone);
+    const digits = Math.max(...rows.map((row) => row.text.length));
+    const w = 3 + 3 + 2 + digits * 4 + 1;
+    const h = rows.length * 7 + 4;
+    return {
+        rows,
+        w,
+        h,
+        x0: Math.round(payload.worldX - w / 2),
+        y0: Math.round(payload.worldY - h - 3),
+        cx: Math.round(payload.worldX),
+    };
+}
+
+/** The baked face's identity: its world origin, its numbers and its lamp. */
+function dayStoneRevision(geometry, lit) {
+    return `${geometry.x0},${geometry.y0}|${geometry.rows.map((row) => row.text).join(',')}|${lit ? 'lit' : 'dark'}`;
+}
+
+function paintDayStoneLamp(ctx, { cx, y0 }) {
+    ctx.fillStyle = DAY_STONE.lamp;
+    ctx.fillRect(cx - 1, y0 - 4, 2, 3);
+    ctx.fillStyle = DAY_STONE.lampCore;
+    ctx.fillRect(cx - 1, y0 - 3, 1, 1);
+}
+
+function paintDayStone(ctx, geometry, lit) {
+    const { rows, w, h, x0, y0, cx } = geometry;
+    ctx.fillStyle = DAY_STONE.ink;
+    ctx.fillRect(x0 - 1, y0 - 1, w + 2, h + 2);
+    ctx.fillRect(x0 + 2, y0 + h + 1, w - 4, 2);
+    ctx.fillStyle = DAY_STONE.face;
+    ctx.fillRect(x0, y0, w, h);
+    ctx.fillStyle = DAY_STONE.light;
+    ctx.fillRect(x0, y0, w, 1);
+    ctx.fillRect(x0, y0, 1, h);
+    ctx.fillStyle = DAY_STONE.dark;
+    ctx.fillRect(x0 + w - 1, y0 + 1, 1, h - 1);
+    ctx.fillRect(x0 + 1, y0 + h - 1, w - 1, 1);
+    // Crown niche and its lamp.
+    ctx.fillStyle = DAY_STONE.ink;
+    ctx.fillRect(cx - 3, y0 - 5, 6, 4);
+    ctx.fillStyle = DAY_STONE.face;
+    ctx.fillRect(cx - 2, y0 - 4, 4, 3);
+    if (lit) paintDayStoneLamp(ctx, geometry);
+    else {
+        ctx.fillStyle = DAY_STONE.dark;
+        ctx.fillRect(cx - 1, y0 - 4, 2, 3);
+    }
+    ctx.fillStyle = DAY_STONE.carve;
+    rows.forEach((row, i) => {
+        const y = y0 + 2 + i * 7;
+        paintBits(ctx, GLYPHS[row.key], x0 + 2, y);
+        const right = x0 + w - 2;
+        for (let d = 0; d < row.text.length; d++) {
+            const digit = row.text.charCodeAt(row.text.length - 1 - d) - 48;
+            paintBits(ctx, DIGITS[digit], right - 3 - d * 4, y);
+        }
+    });
+}
+
+/**
+ * The day stone baked once per state (`dayStoneRevision`) into a world-placed
+ * image: the niche (5 texels over the face) to the base (3 under it). A lit
+ * lamp is also painted alone on an emissive channel of the same size, so the
+ * resident record keeps it burning through the night grade.
+ */
+function bakeDayStone(payload, geometry, revision) {
+    const lit = payload.lit === true;
+    const x = geometry.x0 - 1;
+    const y = geometry.y0 - 5;
+    const layer = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = geometry.w + 2;
+        canvas.height = geometry.h + 8;
+        const ctx = canvas.getContext('2d');
+        ctx.translate(-x, -y);
+        return { canvas, ctx };
+    };
+    const face = layer();
+    paintDayStone(face.ctx, geometry, lit);
+    let emissive = null;
+    if (lit) {
+        const lamp = layer();
+        paintDayStoneLamp(lamp.ctx, geometry);
+        emissive = lamp.canvas;
+    }
+    return {
+        canvas: face.canvas,
+        emissive,
+        x,
+        y,
+        key: 'day-stone',
+        revision,
+        stone: payload.stone,
+        lit,
+        worldX: payload.worldX,
+        worldY: payload.worldY,
+    };
 }

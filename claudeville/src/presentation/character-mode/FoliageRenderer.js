@@ -12,8 +12,9 @@ import { snowBucketOf } from './GroundState.js';
 // the Waking Isle plan): canopy pixels are
 // remapped by luminance rank onto a C1 ramp from `ART_RAMPS` — variant 1 onto
 // `foliageDeep`, variant 2 onto `foliageSun`, autumn oaks onto `canopyRusset`
-// / `canopyOchre` (variant 0 turns only its upper leaf clumps), autumn willows
-// onto `willowGold`, `blossom` clusters on spring's sunlit oaks. Partial
+// / `canopyOchre` (variant 0 turns only its upper leaf clumps), autumn willows,
+// birches and poplars onto `willowGold`, autumn maples onto `canopyScarlet`,
+// `blossom` clusters on spring's sunlit oaks. Partial
 // recolours pick whole leaf clumps (`canopyClumps`, a watershed of the
 // canopy's luminance), so a colour boundary runs along a shadow crease. Variant
 // 0 keeps the authored art; pines keep their colours through the seasons.
@@ -76,21 +77,40 @@ export const TREE_SPRITES = Object.freeze({
     'oak.tall.bare': Object.freeze({ id: 'veg.tree.oak.tall.bare', width: 112, height: 112, lean: 2, planted: 0.3, canopy: false }),
     'pine.tall.snow': Object.freeze({ id: 'veg.tree.pine.tall.snow', width: 64, height: 102, lean: 1, planted: 0.4, canopy: false }),
     'willow.tall.bare': Object.freeze({ id: 'veg.tree.willow.tall.bare', width: 88, height: 107, lean: 2, planted: 0.3, canopy: false }),
+    // Living Isle W8.3d (AD-P8): birch (white trunk, airy crown; the north
+    // ridge), maple (broad dense crown; the inhabited belt) and the Lombardy
+    // poplar (a narrow column, tall only: avenue rows, scenery.js
+    // TREE_AVENUES). A slender trunk bends higher up (planted 0.4).
+    'birch.small': Object.freeze({ id: 'veg.tree.birch.small', width: 32, height: 28, lean: 1, planted: 0.4, bare: 'birch.small.bare' }),
+    'birch.large': Object.freeze({ id: 'veg.tree.birch.large', width: 64, height: 61, lean: 1, planted: 0.4, bare: 'birch.large.bare' }),
+    'birch.tall': Object.freeze({ id: 'veg.tree.birch.tall', width: 64, height: 109, lean: 2, planted: 0.4, bare: 'birch.tall.bare', crown: Object.freeze({ halfWidth: 20, bottom: 46 }) }),
+    'maple.large': Object.freeze({ id: 'veg.tree.maple.large', width: 64, height: 51, lean: 1, planted: 0.3, bare: 'maple.large.bare' }),
+    'maple.tall': Object.freeze({ id: 'veg.tree.maple.tall', width: 112, height: 112, lean: 2, planted: 0.3, bare: 'maple.tall.bare', crown: Object.freeze({ halfWidth: 50, bottom: 34 }) }),
+    'poplar.tall': Object.freeze({ id: 'veg.tree.poplar.tall', width: 64, height: 128, lean: 1, planted: 0.4, bare: 'poplar.tall.bare', crown: Object.freeze({ halfWidth: 16, bottom: 27 }) }),
+    'birch.small.bare': Object.freeze({ id: 'veg.tree.birch.small.bare', width: 32, height: 28, lean: 1, planted: 0.4, canopy: false }),
+    'birch.large.bare': Object.freeze({ id: 'veg.tree.birch.large.bare', width: 64, height: 61, lean: 1, planted: 0.4, canopy: false }),
+    'birch.tall.bare': Object.freeze({ id: 'veg.tree.birch.tall.bare', width: 64, height: 109, lean: 2, planted: 0.4, canopy: false }),
+    'maple.large.bare': Object.freeze({ id: 'veg.tree.maple.large.bare', width: 64, height: 51, lean: 1, planted: 0.3, canopy: false }),
+    'maple.tall.bare': Object.freeze({ id: 'veg.tree.maple.tall.bare', width: 112, height: 112, lean: 2, planted: 0.3, canopy: false }),
+    'poplar.tall.bare': Object.freeze({ id: 'veg.tree.poplar.tall.bare', width: 64, height: 128, lean: 1, planted: 0.4, canopy: false }),
     // The world ash: a colossus barely moves (one texel, planted high).
     'ash.world': Object.freeze({ id: 'veg.tree.ash.world', width: 240, height: 271, lean: 1, planted: 0.5, snow: 'ash.world.snow' }),
     'ash.world.snow': Object.freeze({ id: 'veg.tree.ash.world.snow', width: 240, height: 271, lean: 1, planted: 0.5, canopy: false }),
 });
-const TREE_SPECIES = Object.freeze(['oak', 'pine', 'willow', 'ash']);
+const TREE_SPECIES = Object.freeze(['oak', 'pine', 'willow', 'birch', 'maple', 'poplar', 'ash']);
 export const CANOPY_VARIANTS = Object.freeze([0, 1, 2]);
 export const CANOPY_SEASONS = Object.freeze(['spring', 'summer', 'autumn', 'winter']);
 const LEAN_PAD = 2;
 
-// Resolve a tree record to its leafy sprite key. Pines have no small sheet, so
-// a small pine draws the large one; the world ash has its one sheet.
-function treeSpriteKey(tree) {
+// Resolve a tree record to its leafy sprite key: the record's size where the
+// species has that sheet, else the nearest one it has (pines and maples have
+// no small sheet and draw large; a poplar is tall only; the world ash has its
+// one sheet). GroundBake sizes its leaf-drop crowns from the same key.
+export function treeSpriteKey(tree) {
     const species = TREE_SPECIES.includes(tree?.species) ? tree.species : 'oak';
     if (species === 'ash') return 'ash.world';
-    const size = tree?.size === 'tall' ? 'tall' : tree?.size === 'small' && species !== 'pine' ? 'small' : 'large';
+    if (species === 'poplar') return 'poplar.tall';
+    const size = tree?.size === 'tall' ? 'tall' : tree?.size === 'small' && TREE_SPRITES[`${species}.small`] ? 'small' : 'large';
     return `${species}.${size}`;
 }
 
@@ -167,21 +187,30 @@ const PLAN_OCHRE = plan({ ramp: 'canopyOchre' });
 const PLAN_TURNING = plan({ turning: 'canopyOchre' });
 const PLAN_WILLOW_GOLD = plan({ ramp: 'willowGold' });
 const PLAN_WILLOW_GOLD_LIT = plan({ ramp: 'willowGold', shift: 1 });
+const PLAN_GOLD_TURNING = plan({ turning: 'willowGold' });
+const PLAN_SCARLET = plan({ ramp: 'canopyScarlet' });
+const PLAN_SCARLET_LIT = plan({ ramp: 'canopyScarlet', shift: 1 });
+const PLAN_SCARLET_TURNING = plan({ turning: 'canopyScarlet' });
 // The evergreen world ash by season: a fresh, lighter crown in spring, its
 // authored crown through summer and autumn (it stays green while the woods
 // turn), a cool deep crown in winter (the leaves under its snow sheet).
 const WORLD_ASH_PLANS = Object.freeze({ spring: PLAN_SUN, summer: null, autumn: null, winter: PLAN_DEEP });
 
 // How a canopy is recoloured; null keeps the authored pixels. Autumn oaks turn
-// russet (deep), ochre (sunlit) or only at the crown (authored); willows go
-// gold except the deep ones, which hold their green; sunlit oaks blossom in
+// russet (deep), ochre (sunlit) or only at the crown (authored); willows and
+// poplars go gold except the deep ones, which hold their green; birches go
+// pale straw gold, the deep ones only at the crown; maples go scarlet, the
+// deep ones only at the crown, the sunlit a stop lighter, so the woods turn
+// in three hue families instead of one russet mass; sunlit oaks blossom in
 // spring; pines never change with the season; the world ash follows
 // WORLD_ASH_PLANS whatever its variant.
 export function canopyPlan(species, variant, season) {
     if (species === 'ash') return WORLD_ASH_PLANS[season] ?? null;
     if (species === 'pine') return variant === 1 ? PLAN_DEEP : variant === 2 ? PLAN_PINE_SUN : null;
     if (season === 'autumn') {
-        if (species === 'willow') return variant === 1 ? PLAN_DEEP : variant === 2 ? PLAN_WILLOW_GOLD_LIT : PLAN_WILLOW_GOLD;
+        if (species === 'willow' || species === 'poplar') return variant === 1 ? PLAN_DEEP : variant === 2 ? PLAN_WILLOW_GOLD_LIT : PLAN_WILLOW_GOLD;
+        if (species === 'birch') return variant === 1 ? PLAN_GOLD_TURNING : variant === 2 ? PLAN_WILLOW_GOLD : PLAN_WILLOW_GOLD_LIT;
+        if (species === 'maple') return variant === 1 ? PLAN_SCARLET_TURNING : variant === 2 ? PLAN_SCARLET_LIT : PLAN_SCARLET;
         return variant === 1 ? PLAN_RUSSET : variant === 2 ? PLAN_OCHRE : PLAN_TURNING;
     }
     if (variant === 1) return PLAN_DEEP;

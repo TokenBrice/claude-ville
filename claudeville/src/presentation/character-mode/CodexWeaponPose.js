@@ -1,5 +1,5 @@
 import { astraWeaponPose } from './AstraWeaponPose.js';
-import { DEFAULT_CELL } from './SpriteSheet.js';
+import { DEFAULT_CELL, DIRECTIONS } from './SpriteSheet.js';
 import { CODEX_CELESTIAL_GRIPS } from './CodexCelestialGrips.js';
 import { CODEX_PALADIN_GRIPS } from './CodexPaladinGrips.js';
 import { CODEX_ENGINEER_GRIPS } from './CodexEngineerGrips.js';
@@ -11,13 +11,25 @@ export const CODEX_GRIP_PROFILES = {
 };
 const ASTRA_PALETTE = ['#151b2b', '#303c52', '#53627a', '#c49a52'];
 
+// True when the profile authors its held-weapon hand for every facing of an
+// action-strip group, so that strip carries the weapon instead of parking it
+// (`grip.sheathe` only covers groups whose hands are posed for a prop).
+export function codexPoseGripped(spriteId, group) {
+    const table = group ? CODEX_GRIP_PROFILES[spriteId]?.poseWrists?.[group] : null;
+    return Boolean(table) && DIRECTIONS.every(direction => Array.isArray(table[direction]) && table[direction].length > 0);
+}
+
+// `geometry.cell` is the base sheet cell (walk/idle row); an authored strip
+// pose names its group and frame instead (`poseGroup`, `poseFrame`).
 export function codexWeaponPose(spriteId, geometry, direction, equipment) {
     if (spriteId === 'agent.codex.gpt6astra') {
         const pose = astraWeaponPose(geometry, direction, equipment);
         return pose && { ...pose, backLayer: pose.behindBody || direction === 'n', palette: ASTRA_PALETTE };
     }
     const profile = CODEX_GRIP_PROFILES[spriteId];
-    const wrist = profile?.wrists[direction]?.[geometry.cell?.sy / DEFAULT_CELL];
+    const wrist = geometry.poseGroup
+        ? profile?.poseWrists?.[geometry.poseGroup]?.[direction]?.[geometry.poseFrame]
+        : profile?.wrists[direction]?.[geometry.cell?.sy / DEFAULT_CELL];
     if (!wrist) return null;
     const { dx, dy, drawScale = 1 } = geometry;
     return {

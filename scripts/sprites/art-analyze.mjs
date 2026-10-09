@@ -529,6 +529,7 @@ const SEASONAL_RAMP_RULES = Object.freeze({
     canopyRusset: {},
     canopyOchre: {},
     willowGold: {},
+    canopyScarlet: {},
     blossom: {},
     foliageDeep: { maxSat: 0.5, midHue: [90, 110] },
     foliageSun: { maxSat: 0.5, midHue: [90, 110] },

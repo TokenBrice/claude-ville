@@ -195,10 +195,62 @@ const TOOL_METADATA = Object.freeze({
     },
 
     AskUserQuestion: { icon: '❓' },
+
+    ask: {
+        classification: { building: 'command', reason: 'ask-decision', confidence: 0.86 },
+        category: 'task',
+        actionLabel: 'Asking',
+    },
+    yield: {
+        classification: { building: 'taskboard', reason: 'report-work', confidence: 0.95 },
+        category: 'task',
+        actionLabel: 'Reporting',
+    },
+    browser: {
+        classification: { building: 'portal', reason: 'browser-preview', confidence: 0.84 },
+        category: 'exec',
+        actionLabel: 'Previewing',
+        hostLabel: true,
+    },
+    github: {
+        classification: { building: 'harbor', reason: 'github-flow', confidence: 0.84 },
+        category: 'exec',
+        actionLabel: 'Managing GitHub',
+    },
+    debug: {
+        classification: { building: 'command', reason: 'debug-session', confidence: 0.82 },
+        category: 'exec',
+        actionLabel: 'Debugging',
+    },
 });
 
+// OMP preserves these names in transcripts. Reuse canonical metadata and
+// classifier branches rather than maintaining a second provider-specific table.
+const TOOL_NAME_ALIASES = Object.freeze({
+    read: 'Read',
+    grep: 'Grep',
+    glob: 'Glob',
+    find: 'Glob',
+    search: 'Grep',
+    edit: 'Edit',
+    write: 'Write',
+    ast_edit: 'Edit',
+    lsp: 'Read',
+    ast_grep: 'Grep',
+    bash: 'Bash',
+    eval: 'Bash',
+    task: 'Task',
+    todo: 'TodoWrite',
+    web_search: 'WebSearch',
+});
+
+function canonicalToolName(tool) {
+    const name = String(tool || '');
+    return TOOL_NAME_ALIASES[name] || name;
+}
+
 function toolMetadata(tool) {
-    return TOOL_METADATA[String(tool || '')] || null;
+    return TOOL_METADATA[canonicalToolName(tool)] || null;
 }
 
 function toolNamesWhere(predicate) {
@@ -233,6 +285,7 @@ const NORMALIZED_INPUT_FIELDS = Object.freeze([
     'cmd',
     'command',
     'script',
+    'code',
     'args',
     'arguments',
     'url',
@@ -471,7 +524,7 @@ export function classifyShellInput(input) {
 }
 
 export function classifyTool(toolName, input) {
-    const tool = String(toolName || '');
+    const tool = canonicalToolName(toolName);
     if (!tool) return null;
     const metadata = toolMetadata(tool);
 
@@ -539,7 +592,7 @@ export function classifyTool(toolName, input) {
         const base = metadata.classification;
         if (LOCAL_INSPECTION_TOOLS.has(tool)) {
             const split = classifyShellInput(input);
-            if (split && ['forge', 'taskboard', 'harbor'].includes(split.building)) return split;
+            if (split && split.reason !== 'run-shell' && ['forge', 'taskboard', 'harbor'].includes(split.building)) return split;
             if (isCodeToolInput(input)) {
                 return { building: 'forge', reason: 'inspect-code', confidence: 0.78, label: compactToolLabel(input || tool, 'code') };
             }
@@ -609,6 +662,27 @@ export function toolIcon(tool) {
 // lower-case with any `functions.` namespace stripped. Only the category
 // (glyph, call-tape class) is aliased; building classification is unchanged.
 const TOOL_CATEGORY_ALIASES = Object.freeze({
+    read: 'read',
+    grep: 'search',
+    glob: 'search',
+    find: 'search',
+    search: 'search',
+    lsp: 'read',
+    ast_grep: 'search',
+    edit: 'write',
+    write: 'write',
+    ast_edit: 'write',
+    bash: 'exec',
+    eval: 'exec',
+    browser: 'exec',
+    debug: 'exec',
+    github: 'exec',
+    task: 'task',
+    todo: 'task',
+    ask: 'task',
+    wait: 'task',
+    yield: 'task',
+
     apply_patch: 'write',
     write_file: 'write',
     writefile: 'write',
@@ -696,6 +770,7 @@ const TOOL_VERBS = Object.freeze({
     'coordinate-team': 'coordinate',
     'agent-orchestration': 'coordinate',
     'ask-decision': 'ask',
+    'debug-session': 'debug',
     'edit-file': 'edit',
     'write-file': 'write',
     'patch-file': 'patch',
@@ -720,6 +795,7 @@ const TOOL_VERBS = Object.freeze({
     'update-task': 'update tasks',
     'review-tasks': 'review tasks',
     'plan-work': 'plan',
+    'report-work': 'report',
     'plan-mode-enter': 'plan',
     'plan-mode-exit': 'plan',
     verify: 'verify',

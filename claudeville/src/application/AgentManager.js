@@ -62,6 +62,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'waitReason',
     'awaitingSince',
     'turnStartedAt',
+    'sessionEndedAt',
     'lastTurnDurationMs',
     'signalSource',
     'signalCertainty',
@@ -481,6 +482,21 @@ export class AgentManager {
         const payload = this._sessionToAgentPayload(session, teamMembers, gitEventWire, collisions);
         this._noteVerifiedGitOutcomes(session, payload.gitEvents);
         const { id } = payload;
+        // An explicit provider end removes presence now. Removal owns the
+        // existing gate staging; a repeated closed transcript never re-adds a
+        // body, while a resumed session (end cleared) takes the normal arrival.
+        if (payload.sessionEndedAt) {
+            this._agentSignatures.delete(id);
+            if (this.world.agents.has(id)) {
+                this.world.updateAgent(id, {
+                    sessionEndedAt: payload.sessionEndedAt,
+                    gitEvents: payload.gitEvents,
+                    lastResults: payload.lastResults,
+                });
+                this.world.removeAgent(id);
+            }
+            return;
+        }
         const signature = this._agentSignature(payload);
 
         if (this.world.agents.has(id)) {
@@ -717,6 +733,11 @@ export class AgentManager {
                 && session.turnStartedAt !== undefined
                 && Number.isFinite(Number(session.turnStartedAt))
                 ? Number(session.turnStartedAt)
+                : null,
+            sessionEndedAt: session.sessionEndedAt != null
+                && Number.isFinite(Number(session.sessionEndedAt))
+                && Number(session.sessionEndedAt) > 0
+                ? Number(session.sessionEndedAt)
                 : null,
             lastTurnDurationMs: session.lastTurnDurationMs !== null
                 && session.lastTurnDurationMs !== undefined

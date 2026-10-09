@@ -8,6 +8,81 @@
             "type": "command",
             "command": "node scripts/agent-hooks/claude-hook.cjs session",
             "timeout": 1
+          },
+          {
+            "type": "command",
+            "command": "node scripts/agent-hooks/claude-hook.cjs ingest",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/agent-hooks/claude-hook.cjs ingest",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/agent-hooks/claude-hook.cjs ingest",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/agent-hooks/claude-hook.cjs ingest",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/agent-hooks/claude-hook.cjs ingest",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/agent-hooks/claude-hook.cjs ingest",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/agent-hooks/claude-hook.cjs ingest",
+            "timeout": 1
           }
         ]
       }

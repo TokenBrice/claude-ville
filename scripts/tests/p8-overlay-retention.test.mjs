@@ -39,6 +39,7 @@ test('shrinking clusters release departed members when spatial layout switches o
     const sprites = ['a', 'b', 'c'].map(id => ({
         agent: { id },
         _activitySnapshot: { text: 'Working', accent: '#ffffff' },
+        _statusThread: [{ text: 'Working', accent: '#ffffff' }],
         bubbleMergedCount: 1,
         bubbleMergedInto: null,
     }));

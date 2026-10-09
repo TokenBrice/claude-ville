@@ -81,11 +81,156 @@ test('biography event memory is backward-compatible and bounded', () => {
         assert.equal(biography.rememberPushEvent(`push-${index}`, index + 1), true);
     }
     const record = biography.toRecord();
-    assert.equal(record.schemaVersion, 3);
+    assert.equal(record.schemaVersion, 4);
     assert.equal(record.extensions.biographyEvents.recentPushKeys.length, 96);
     assert.equal(record.extensions.biographyEvents.pushWatermarkAt, 140);
     assert.equal(biography.rememberPushEvent('push-139', 140), false);
     assert.equal(biography.rememberPushEvent('push-0', 1), false);
+});
+
+test('biography identities prioritize names, then unnamed project leads, then anonymous sessions', () => {
+    const main = agent('day-one', { agentName: null, agentType: 'main', provider: 'omp' });
+    assert.equal(AgentBiography.identityKeyFor(main), 'project:omp:demo');
+    assert.equal(AgentBiography.identityKeyFor({ ...main, id: 'day-two', name: 'Generated' }), 'project:omp:demo');
+    assert.equal(AgentBiography.identityKeyFor({ ...main, agentName: 'Ada' }), 'named:omp:ada');
+    assert.equal(AgentBiography.identityKeyFor({ ...main, _customName: true, name: 'Bess' }), 'named:omp:bess');
+    assert.equal(AgentBiography.identityKeyFor({ ...main, provider: 'codex' }), 'project:codex:demo');
+    assert.equal(AgentBiography.identityKeyFor({ ...main, projectPath: 'C:\\work\\Demo\\' }), 'project:omp:demo');
+    assert.equal(AgentBiography.identityKeyFor({ ...main, projectPath: '' }), 'anonymous:omp:day-one');
+    assert.equal(AgentBiography.identityKeyFor({ ...main, agentType: 'sub-agent' }), 'anonymous:omp:day-one');
+    assert.equal(AgentBiography.identityKeyFor({ ...main, parentSessionId: 'parent' }), 'anonymous:omp:day-one');
+});
+
+test('v4 lazily imports old mains once while retaining historical rows by their original keys', async () => {
+    const store = biographyStore();
+    const main = agent('old-main', { agentName: null, agentType: 'main', provider: 'omp' });
+    const oldKey = AgentBiography.sessionIdentityKeyFor(main);
+    const oldRecord = {
+        identityKey: oldKey, schemaVersion: 3, firstSeenAt: 100, lastSeenAt: 200,
+        sessionsCompleted: 2, commitsPushed: 3, lifetimeTokens: 40, errorsRecovered: 1,
+        milestones: [{ id: 'nickname-sessionsCompleted-25', at: 150, nickname: 'the Veteran' }],
+        extensions: { lifeEpisodes: [{ id: 'old-arrival', kind: 'arrived', at: 100 }] },
+    };
+    store.biographies.set(oldKey, oldRecord);
+    store.biographies.set('anonymous:omp:unattributed', { ...oldRecord, identityKey: 'anonymous:omp:unattributed' });
+    const first = new AgentBiographyService({ store }).start();
+    eventBus.emit('agent:added', main);
+    await first.stop();
+    const projectKey = AgentBiography.identityKeyFor(main);
+    const imported = store.biographies.get(projectKey);
+    assert.equal(imported.schemaVersion, 4);
+    assert.equal(imported.sessionsCompleted, 2);
+    assert.equal(imported.commitsPushed, 3);
+    assert.equal(imported.lifetimeTokens, 40);
+    assert.equal(imported.errorsRecovered, 1);
+    assert.equal(imported.firstSeenAt, 100);
+    assert.equal(imported.extensions.lifeEpisodes[0].id, 'old-arrival');
+    assert.equal(imported.milestones.some(entry => entry.nickname === 'the Veteran'), true);
+    assert.equal(store.biographies.get(oldKey).extensions.projectIdentity.migratedTo, projectKey);
+
+    const second = new AgentBiographyService({ store }).start();
+    assert.equal((await second.getBiography(oldKey)).sessionsCompleted, 2);
+    assert.equal((await second.getBiography('anonymous:omp:unattributed')).lifetimeTokens, 40);
+    eventBus.emit('agent:added', main);
+    eventBus.emit('agent:updated', { ...main, tokens: { input: 10, output: 0 } });
+    eventBus.emit('agent:added', { ...main, id: 'new-day' });
+    await second.stop();
+    assert.equal(store.biographies.get(projectKey).sessionsCompleted, 2);
+    assert.equal(store.biographies.get(projectKey).lifetimeTokens, 50);
+});
+
+test('concurrent project mains merge old session biographies without replacing project memory', async () => {
+    const store = biographyStore();
+    const mains = ['one', 'two'].map(id => agent(id, { agentName: null, agentType: 'main' }));
+    const projectKey = AgentBiography.identityKeyFor(mains[0]);
+    store.biographies.set(projectKey, { identityKey: projectKey, schemaVersion: 4, lifetimeTokens: 100 });
+    for (const main of mains) {
+        const identityKey = AgentBiography.sessionIdentityKeyFor(main);
+        store.biographies.set(identityKey, { identityKey, schemaVersion: 3, lifetimeTokens: 10 });
+    }
+    const service = new AgentBiographyService({ store }).start();
+    for (const main of mains) eventBus.emit('agent:added', main);
+    for (const main of mains) eventBus.emit('agent:updated', { ...main, tokens: { input: 5 } });
+    await service.stop();
+    assert.equal(store.biographies.get(projectKey).lifetimeTokens, 130);
+});
+
+test('clean parent-recorded subagent returns count once across listener orders and reloads', async () => {
+    const store = biographyStore();
+    const parent = agent('parent');
+    const child = agent('worker', { agentType: 'sub-agent', parentSessionId: parent.id, status: 'completed' });
+    const key = AgentBiography.identityKeyFor(child);
+    for (const returnFirst of [true, false, true]) {
+        const service = new AgentBiographyService({ store }).start();
+        eventBus.emit('agent:added', parent);
+        eventBus.emit('agent:added', child);
+        if (returnFirst) eventBus.emit('subagent:completed', { parentId: parent.id, childId: child.id });
+        eventBus.emit('agent:removed', child);
+        eventBus.emit('subagent:completed', { parentId: parent.id, childId: child.id });
+        eventBus.emit('subagent:completed', { parentId: parent.id, childId: child.id });
+        await service.stop();
+        assert.equal(store.biographies.get(key).sessionsCompleted, 1);
+    }
+});
+
+test('absence, failed children, wrong parents, and missing parents never imply a clean return', async () => {
+    const store = biographyStore();
+    const service = new AgentBiographyService({ store }).start();
+    eventBus.emit('agent:added', agent('parent'));
+    const children = [
+        agent('absent', { parentSessionId: 'parent', status: 'completed' }),
+        agent('working', { parentSessionId: 'parent' }),
+        agent('failed', { parentSessionId: 'parent', status: 'errored', sessionEndedAt: Date.now() }),
+        agent('limited', { parentSessionId: 'parent', status: 'rate_limited', turnState: 'awaiting_input' }),
+        agent('wrong-parent', { parentSessionId: 'other', status: 'completed' }),
+        agent('no-parent', { parentSessionId: 'missing', status: 'completed' }),
+    ];
+    for (const child of children) {
+        eventBus.emit('agent:added', child);
+        eventBus.emit('agent:removed', child);
+        if (child.id !== 'absent') {
+            eventBus.emit('subagent:completed', {
+                parentId: child.id === 'no-parent' ? 'missing' : 'parent',
+                childId: child.id,
+            });
+        }
+    }
+    await service.stop();
+    for (const child of children) {
+        assert.equal(store.biographies.get(AgentBiography.identityKeyFor(child)).sessionsCompleted, 0, child.id);
+    }
+});
+
+test('completion dedupe survives serialization and stays within the event-memory bound', () => {
+    let biography = AgentBiography.create('named:omp:worker', 1);
+    biography.recordSessionCompleted(2, 'anonymous:omp:child-one');
+    biography = AgentBiography.fromRecord(biography.toRecord());
+    assert.deepEqual(biography.recordSessionCompleted(3, 'anonymous:omp:child-one'), []);
+    assert.equal(biography.sessionsCompleted, 1);
+    for (let index = 0; index < 140; index++) {
+        biography.recordSessionCompleted(index + 4, `anonymous:omp:child-${index + 2}`);
+    }
+    const record = biography.toRecord();
+    assert.equal(record.extensions.biographyEvents.recentCompletedSessionKeys.length, 96);
+    assert.equal(record.sessionsCompleted, 141);
+});
+
+test('distinct clean children sharing a name each complete the durable worker biography', async () => {
+    const store = biographyStore();
+    const service = new AgentBiographyService({ store }).start();
+    const parent = agent('parent');
+    eventBus.emit('agent:added', parent);
+    const children = [
+        agent('one', { agentName: 'worker', parentSessionId: parent.id, turnState: 'awaiting_input' }),
+        agent('two', { agentName: 'worker', parentSessionId: parent.id, sessionEndedAt: Date.now() }),
+    ];
+    for (const child of children) {
+        eventBus.emit('agent:added', child);
+        eventBus.emit('agent:removed', child);
+        eventBus.emit('subagent:completed', { parentId: parent.id, childId: child.id });
+    }
+    await service.stop();
+    assert.equal(store.biographies.get(AgentBiography.identityKeyFor(children[0])).sessionsCompleted, 2);
 });
 
 test('reloading the same push telemetry does not increment biography totals', async () => {

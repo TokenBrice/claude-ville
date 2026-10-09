@@ -90,6 +90,7 @@ import {
     openSeaSquall,
     waterMoodFor,
 } from '../CoastBake.js';
+import { GRASS_GUST_STOPS } from '../GroundBake.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../../config/constants.js';
 import { ART_RAMPS } from '../../../config/artPalette.js';
 import {
@@ -491,6 +492,11 @@ uniform sampler2D u_cloudTile;
 // xy: world-space drift offset (world px, wrapped to CLOUD_FIELD_PERIOD),
 // z: darkening per course (0 = off).
 uniform vec4 u_cloud;
+// W6.3 — a lone fair-weather cumulus: xy the field point under its centre
+// (the drift puts it there), z its radius in world px (0 = the field as is).
+// Inside, the field leans on a dome (0.3 field + 0.7 dome), so one soft
+// patch shows instead of the field's 1024 px lattice of peaks.
+uniform vec4 u_cloudLone;
 // Noise thresholds for course 1/2/3 at the current cover.
 uniform vec3 u_cloudThresholds;
 // rgb: C2 horizon haze, a: strength at the top of the frame (0 = off).
@@ -500,7 +506,13 @@ float cloudNoiseAt(vec2 cell) {
     float n1 = texture(u_cloudTile, fract(p / ${(CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1)})).r;
     float n2 = texture(u_cloudTile, fract((p / ${CLOUD_SECOND_OCTAVE.scale.toFixed(4)} + vec2(${CLOUD_SECOND_OCTAVE.offset.map(v => v.toFixed(1)).join(', ')}))
         / ${(CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1)})).r;
-    return max(n1, n2 * ${CLOUD_SECOND_OCTAVE.weight.toFixed(3)});
+    float n = max(n1, n2 * ${CLOUD_SECOND_OCTAVE.weight.toFixed(3)});
+    if (u_cloudLone.z > 0.0) {
+        vec2 d = p - u_cloudLone.xy;
+        d -= 7168.0 * floor(d / 7168.0 + 0.5);
+        n = mix(n, 1.0 - length(d) / u_cloudLone.z, 0.7);
+    }
+    return n;
 }
 // Solid courses, dithered only in a 1-2 texel seam at each edge: the field is
 // smooth, so a fixed dither band in field units spread a Bayer checker over
@@ -547,7 +559,7 @@ vec3 applyAtmosphereCourses(vec3 color, vec2 cell, float order, float cellCentre
     if (u_cloud.z > 0.0) color = applyCloudCourse(color, cloudCourseAt(cloudSeamField(cell, cloudNoiseAt(cell), order, 2.0)));
     return applyAerialHaze(color, order, cellCentreY, additive);
 }`;
-const ATMOSPHERE_COURSE_UNIFORM_NAMES = ['u_cloudTile', 'u_cloud', 'u_cloudThresholds', 'u_haze'];
+const ATMOSPHERE_COURSE_UNIFORM_NAMES = ['u_cloudTile', 'u_cloud', 'u_cloudThresholds', 'u_haze', 'u_cloudLone'];
 
 // 3.4 — water mood (x: night, y: storm), CoastBake.waterMoodFor: night sits
 // shallow water below lit ground in value, storm reads grey-green. The
@@ -995,6 +1007,41 @@ const WATER_PALETTE_GLSL = [
     'vec3 seaStopRgb(float stop) { return stop > 5.5 ? WATER_TROUGH : WATER_STOPS[int(max(stop, 0.0))]; }',
 ].join('\n');
 
+// W6.11 (AW-P13) — the grass gust course. On the terrain batch a texel at a
+// grass ramp's hazed stop 3 (GroundBake.GRASS_GUST_STOPS, exact cache
+// albedo: the verge stems and the meadow's upper course) steps to that ramp's
+// hazed stop 4
+// while the C-W3 gust field (the sea's R8 grid, `seaGustAt`) passes it: per
+// 2x1 world texel, a static order (half the cloud tile's ruffle stretched
+// 3:1 along the wind, half Bayer) under GRASS_GUST_ORDER_BASE +
+// GRASS_GUST_ORDER_GAIN x gust (capped at GRASS_GUST_ORDER_CAP). The order
+// is world-locked, so a texel lifts and drops only as a gust front crosses
+// it (one decision per 125 ms gust step), never a re-hashed shimmer.
+// `u_grassGust` 0 (REDUCED, MINIMAL, reduced motion, calm air) is the baked
+// grass. Needs sameColour, waterBayer4, seaGustAt and u_cloudTile.
+export const GRASS_GUST_ORDER_BASE = 0.12;
+export const GRASS_GUST_ORDER_GAIN = 0.6;
+export const GRASS_GUST_ORDER_CAP = 0.55;
+const GRASS_GUST_GLSL = `
+uniform float u_grassGust;
+${glslRgbArray('GRASS_GUST_FROM', GRASS_GUST_STOPS.map(pair => pair[0]))}
+${glslRgbArray('GRASS_GUST_TO', GRASS_GUST_STOPS.map(pair => pair[1]))}
+vec3 applyGrassGust(vec3 color, vec2 world) {
+    if (u_grassGust <= 0.0 || color.g <= color.r || color.g <= color.b) return color;
+    int k = -1;
+    for (int i = 0; i < ${GRASS_GUST_STOPS.length}; i++) {
+        if (sameColour(color, GRASS_GUST_FROM[i])) { k = i; break; }
+    }
+    if (k < 0) return color;
+    vec2 texel = vec2(floor(world.x * 0.5), floor(world.y));
+    float gust = seaGustAt(vec2(texel.x * 2.0, texel.y));
+    if (gust <= 0.0) return color;
+    float ruffle = texture(u_cloudTile, fract((texel + vec2(311.0, 173.0)) / vec2(384.0, 256.0))).r;
+    float order = ruffle * 0.5 + waterBayer4(texel) * 0.5;
+    if (order >= min(${GRASS_GUST_ORDER_CAP.toFixed(2)}, ${GRASS_GUST_ORDER_BASE.toFixed(2)} + ${GRASS_GUST_ORDER_GAIN.toFixed(2)} * gust)) return color;
+    return GRASS_GUST_TO[k];
+}`;
+
 // 4.6 (PT-2) — the fat-pixel coverage of one screen pixel on a texel grid
 // (albedo texels, or world texels for the world-grid terms): the 2x2 tap
 // block's low corner and its blend weights from the pixel's footprint `fw`
@@ -1363,6 +1410,7 @@ ${WATER_PALETTE_GLSL}
 bool sameColour(vec3 a, vec3 b) {
     return all(lessThan(abs(a - b), vec3(0.0019)));
 }
+${GRASS_GUST_GLSL}
 
 // Index of the CoastBake depth stop an UNGRADED albedo is (0 shallowest ..
 // 4 deepest), or -1: a texel cycles only by exact match, so reflections,
@@ -1695,6 +1743,7 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
         bool tapWater = waterMaterial || gone;
         anyWater = anyWater || gone;
         if (u_waterFx.w > 0.0) c = applyCoastSwash(c, world);
+        if (!tapWater) c = applyGrassGust(c, world);
         if (weather && !tapWater) c = applyMaterialWeather(c, material, world);
         before += vec4(c, 1.0) * w;
         bool tapPath = false;
@@ -1928,6 +1977,8 @@ void main() {
         waterMaterial = waterMaterial || mirrorGone;
         // 3.6 — the swash laps the baked shore before any weather darkening.
         if (u_terrainBatch && u_waterFx.w > 0.0) color = applyCoastSwash(color, v_world);
+        // W6.11 — the grass gust course steps the authored albedo first.
+        if (u_terrainBatch && !waterMaterial) color = applyGrassGust(color, v_world);
         if (!waterMaterial && (u_weather.x > 0.001 || u_wetness > 0.001)) color = applyMaterialWeather(color, material, v_world);
         waterHue = waterMaterial && !(color.b < color.r + 0.02 || color.g < color.r);
         if (waterMaterial) color = applyWaterState(color, v_world, seaPath);
@@ -3399,6 +3450,7 @@ export class GpuWorldRenderer {
             'u_paletteLut', 'u_hasPaletteLut',
             ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
             ...SEA_WEATHER_UNIFORM_NAMES,
+            'u_grassGust',
         ]);
         this.particleUniforms = uniformLocations(gl, this.particleProgram, [
             'u_camera', 'u_resolution', 'u_motifs', 'u_coreEnergy', ...GRADE_UNIFORM_NAMES,
@@ -4989,6 +5041,7 @@ export class GpuWorldRenderer {
         gl.uniform1i(uniforms.u_cloudTile, unit);
         gl.uniform4fv(uniforms.u_cloud, courses.cloud);
         gl.uniform3fv(uniforms.u_cloudThresholds, courses.thresholds);
+        gl.uniform4fv(uniforms.u_cloudLone, courses.lone);
         gl.uniform4fv(uniforms.u_haze, courses.haze);
     }
 
@@ -5032,7 +5085,7 @@ export class GpuWorldRenderer {
     // once per frame so both passes read the same step. The gust upload (V9
     // typed path) runs here, before either pass binds a sampler.
     _resolveSeaWeather(qualityLevel, camera, feed) {
-        const frame = this._seaWeatherFrame || (this._seaWeatherFrame = { sunlit: 0, gust: null });
+        const frame = this._seaWeatherFrame || (this._seaWeatherFrame = { sunlit: 0, gust: null, grassGust: 0 });
         const sea = resolveSeaWeather(qualityLevel, camera, feed, {
             courses: this._atmosphereCourses,
             width: this.width,
@@ -5040,6 +5093,7 @@ export class GpuWorldRenderer {
         }, this._seaWeather);
         const gust = sea.gust;
         frame.sunlit = sea.sunlit;
+        frame.grassGust = sea.grassGust;
         frame.gust = gust
             ? this.uploadTypedTexture('sea:gust', {
                 width: gust.width,
@@ -5064,6 +5118,8 @@ export class GpuWorldRenderer {
         }
         gl.uniform1i(uniforms.u_seaGust, unit);
         gl.uniform4fv(uniforms.u_seaGustRect, gust ? this._seaWeather.gustState.rect : OPEN_SEA_ZERO4);
+        // W6.11 — the scene's grass gust course (the composite has no grass).
+        if (uniforms.u_grassGust) gl.uniform1f(uniforms.u_grassGust, gust ? finite(frame?.grassGust, 0) : 0);
     }
 
     /**

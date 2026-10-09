@@ -31,6 +31,7 @@
 // cue texture.
 
 import { GPU_RECORD_FLAGS } from './gpu/GpuWorldPolicy.js';
+import { isOffshoreRecordId } from './OffshoreScenery.js';
 
 // One chord of a hairline: 16 art pixels along its major axis.
 const STAMP_SPAN = 16;
@@ -1191,7 +1192,7 @@ export function insertGroundCueRecords(ordered, cueRecords) {
     let at = 0;
     while (at < ordered.length) {
         const id = ordered[at]?.id;
-        if (id === 'terrain:static' || id === 'ground:semantics') at++;
+        if (id === 'terrain:static' || id === 'ground:semantics' || isOffshoreRecordId(id)) at++;
         else break;
     }
     const tail = ordered.length - at;

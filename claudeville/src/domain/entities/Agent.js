@@ -82,6 +82,7 @@ export class Agent {
         waitReason,
         awaitingSince,
         turnStartedAt,
+        sessionEndedAt,
         lastTurnDurationMs,
         signalSource,
         signalCertainty,
@@ -145,6 +146,7 @@ export class Agent {
         this.waitReason = waitReason || null;
         this.awaitingSince = optionalNumber(awaitingSince);
         this.turnStartedAt = optionalNumber(turnStartedAt);
+        this.sessionEndedAt = optionalNumber(sessionEndedAt);
         this.lastTurnDurationMs = optionalNumber(lastTurnDurationMs, { nonnegative: true });
         this.signalSource = signalSource === 'hook' || signalSource === 'transcript'
             ? signalSource

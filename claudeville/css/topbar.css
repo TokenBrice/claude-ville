@@ -565,6 +565,13 @@
     shape-rendering: crispEdges;
 }
 
+/* W5.5b — the oldest actionable wait after the counts (`12m` over OLDEST).
+   TopBar adds the oldest agent's bucket modifier below, so the age wears
+   that bucket's hue; the neutral ink is the unmodified fallback. */
+.topbar__attn-part--age {
+    color: var(--ink-1);
+}
+
 .topbar__attn-part--needs-you { color: var(--cv-status-waiting-user); }
 .topbar__attn-part--error { color: var(--cv-status-errored); }
 .topbar__attn-part--limit { color: var(--cv-status-rate-limited); }

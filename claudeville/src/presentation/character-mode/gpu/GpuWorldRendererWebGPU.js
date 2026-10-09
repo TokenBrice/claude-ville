@@ -1193,6 +1193,7 @@ export class GpuWorldRendererWebGPU {
         this.aerialHaze = courses.aerialHaze;
         s.cloud = courses.cloud;
         s.cloudThresholds = courses.thresholds;
+        s.cloudLone = courses.lone;
         s.haze = courses.haze;
         // Sea weather: the sunlit ceiling and the C-W3 gust field.
         const sea = resolveSeaWeather(qualityLevel, camera, feed, {
@@ -1206,6 +1207,8 @@ export class GpuWorldRendererWebGPU {
         this._seaWeatherFrame.sunlit = sea.sunlit;
         this._seaWeatherFrame.gust = gust;
         s.seaSunlit = finite(sea.sunlit, 0);
+        // W6.11 — the scene's grass gust course reads the same field.
+        s.grassGust = gust ? finite(sea.grassGust, 0) : 0;
         s.seaGustRect = gust ? this._seaWeather.gustState.rect : ZERO4;
         const energy = sourceEnergyFor(feed.lighting);
         this.sourceEnergy = energy;

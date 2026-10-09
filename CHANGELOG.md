@@ -2,6 +2,68 @@
 
 ---
 
+## v0.51.0 — *The Living Isle* · Oct 09, 2026
+
+A round for the peripheral, all-day viewer. The town now goes where the work goes, shows every thought, tells you what is waiting without making you read, and stays alive between commits.
+
+- **The crowd goes where the work is.**
+  - Lower-case tool names (`read`, `grep`, `task`, `yield` and others) now map to the right buildings, so Oh My Pi reads land at the Archive and dispatches at Command instead of piling onto Command.
+  - Token receipts no longer pull every body to the Mine; the Mine's cart carries them instead.
+  - Working bodies now commit to a place for about five seconds instead of shuttling every 1.6 s.
+  - Sessions with no tool signal settle in a stable home district weighted by project and live load.
+  - Busy landmarks form authored lines and outer rings instead of blobs.
+  - Idle villagers alternate between sitting and strolling to scenic points.
+  - Working agents run short, truthful errands between tool calls, real itineraries are walked stop by stop, and finished sessions wind down via the quay or a bench before the gate.
+  - A daypart table shapes all of the above, and routes prefer lanes, avoid congestion and vary per villager.
+- **Every thought stays on screen.**
+  - Crowded bubbles are no longer replaced by dots: a 2-D placement search with elbow leaders, a reservation that covers the whole drawn column, and sticky slots keep each thought visible and still.
+  - Speakers behind buildings lift their bubble over the roof.
+  - Each bubble carries a repo-colour pennant chip.
+  - Identical-line merges now require the whole thread and its attribution to match.
+- **Signals you can read from across the room.**
+  - A Command gate banner hangs while anyone needs you; its drop length grows with the oldest wait.
+  - One shared 1 / 5 / 15-minute ladder scales beacons, plate notches and queue candles.
+  - The Command plaque gains an exact attention cell, and the top bar shows the oldest wait.
+  - Walnut tabs count agents who are off-frame.
+  - AUTO is much calmer, and automatic poses keep the island centred.
+- **Meaning on the ground.**
+  - Oh My Pi now publishes tool outcomes, so pass and fail marks appear at the building that owned the call.
+  - Sessions that exit leave through the gate right away.
+  - Squads get a leader pennon and ground tethers, and every villager gets a quiet repo-colour ring.
+  - Shared-file collisions show without selection.
+  - The Command plaque musters each wave (`out ▸ returned`).
+  - The Task board shows the fleet's plans when nothing is selected, and plan-mode agents study at the Task board.
+  - Repos plant standing stones that grow with their lifetime commits.
+  - A dusk ledger stone records the day's shipped, mended and waited counts and tokens.
+  - `docs`, `test`, `chore` and PR merges plant monuments.
+  - PR cutters moor and sail in on `gh pr create` and `gh pr merge`.
+  - Unnamed lead sessions keep one biography per repo.
+  - Chronicle monuments, which never drew on WebGPU, now render on every backend.
+- **A world that lives between commits.**
+  - Songbirds, fireflies and seasonal drift now appear at the wide shot, and summer dragonflies hover over the lilies.
+  - A date-seeded scheduler brings a lone cloud shadow across fair days, gull fishing runs, heron hops, duck days and nights, schools that scatter, and far-sea whales, dolphins and gull wisps in the open water.
+  - Gulls lift at dawn and wheel inland ahead of squalls.
+  - The Archive bell swings at noon.
+  - Hearths warm the gatehouse and shrine at night without lighting empty workshops.
+  - Seasonal dressing marks solstice, equinox, midsummer, harvest and weekends.
+  - Livestock graze a farm paddock, and a stag visits at dawn.
+  - Grass ripples under gusts on every backend, and an aurora hangs over clear winter nights.
+  - No ambient vessel was added: ships remain a git channel.
+- **A richer island.**
+  - Twelve robe-hue variants and fourteen cosmetic hats individuate bare-headed bodies.
+  - Baked ground plates are stripped from nine props, and the market stall and monuments are re-toned.
+  - Seven new ground textures, birch, maple and a poplar avenue.
+  - About forty set-dressing props across the harbour, workshops, Mine, avenue, farm, gardens and wetlands.
+  - Wall bays with ivy, stairs, braziers and barrels.
+  - An offshore backdrop of sea stacks, a wreck, a far hamlet and a beacon rock.
+  - Four quiet landmarks: a windmill with wind-driven sails, a watermill, a wayside chapel and a ruined tower.
+  - Sol and Luna run on urgent legs, sword in hand.
+- **Diagnostics.** Shift-D adds rolling behaviour metrics and an ambient audit, and `npm run world:validate-ambient` checks ambient coverage. The compositor cache was evicting composites still being drawn every frame, which held the median frame interval at about 200–233 ms (roughly 4 FPS) with nine waiting villagers. Recently drawn composites are now kept, and that scenario is back to its v0.50.2 median of 16.7 ms.
+
+Validation: `validate:full` is clean with 1781 unit tests and both integration tests passing, and `verify:render`, `world:validate-ambient` and `sprites:channels-validate` are clean. In headless Chromium with hardware GL at 1624×789 DPR 1.5, the median browser frame interval (180 rAF samples) was 16.7 ms on `no-agents`, `dense-24-agents`, `many-waiting` and `readme-showcase`; p90 ranged from 16.7 ms to 50 ms (`readme-showcase`). These are page frame intervals, not backend-attributed GPU timings. Visual changes were judged in-world on WebGPU and Canvas.
+
+---
+
 ## v0.50.2 — *The Quiet Council* · Oct 05, 2026
 
 Villagers' thought bubbles used to disappear and return together as crowd pressure changed the World's shared annotation mode. Each agent now speaks on its own cadence.

@@ -14,14 +14,16 @@
 // edge (`seatLineOffset`).
 //
 // A petitioner's floor candle is a ground stamp beside its feet whose wax
-// steps down by wait age (< 1 min 12 texels, 1–4 min 9, 4–16 min 6, >= 16 min
-// 3), with the C4 cream cap and an ember flame. It never animates: the stamp
+// steps down on the shared wait-age ladder (`SignalLedger.waitAgeTier`:
+// < 1 min 12 texels, 1–5 min 9, 5–15 min 6, >= 15 min 3), with the C4 cream
+// cap and an ember flame. It never animates: the stamp
 // only changes when the age crosses a step. An unknown age shows an unlit stub.
 
 import { REST_SEATS } from '../../config/townPlan.js';
 import { ART_RAMPS, EFFECT_COLORS } from '../../config/artPalette.js';
 import { StaticPropSprite } from './StaticPropDrawables.js';
 import { tileToWorld } from './Projection.js';
+import { waitAgeTier } from '../../domain/services/SignalLedger.js';
 
 const TILE_HALF_W = 32;
 const TILE_HALF_H = 16;
@@ -333,13 +335,13 @@ export function buildRestSeatPropSprites() {
 
 // ─── petitioner candles (7.2) ────────────────────────────────────────────────
 
+// Wax texels per wait-age rung (< 1 / 1–5 / 5–15 / >= 15 min).
+const CANDLE_WAX_BY_TIER = Object.freeze([12, 9, 6, 3]);
+
 // Wax texels for a wait age; null age (unknown) is the unlit 3-texel stub.
 export function candleWaxTexels(ageMs) {
-    if (!Number.isFinite(ageMs)) return 3;
-    if (ageMs < 60000) return 12;
-    if (ageMs < 240000) return 9;
-    if (ageMs < 960000) return 6;
-    return 3;
+    const tier = waitAgeTier(ageMs);
+    return tier === null ? 3 : CANDLE_WAX_BY_TIER[tier];
 }
 
 // World px from the petitioner's foot to the candle's base: right of its feet,

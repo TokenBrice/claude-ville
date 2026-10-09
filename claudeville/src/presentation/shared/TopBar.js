@@ -1,5 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { formatCost, formatNumber, shortProjectName } from './Formatters.js';
+import { elapsedTickNow, formatCost, formatNumber, formatWaitAge, shortProjectName, subscribeElapsedText } from './Formatters.js';
 import { el, replaceChildren } from './DomSafe.js';
 import {
     installReducedMotionOverride,
@@ -15,6 +15,7 @@ import {
     VillagePhase,
 } from '../../application/VillageState.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
+import { bucketForStatus, oldestActionable, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { eventShapeSvgPath } from './EventShapes.js';
 import { publishReservedRect } from './ReservedRects.js';
 import {
@@ -298,8 +299,21 @@ export class TopBar {
             part.hidden = true;
             return [key, { part, num }];
         }));
+        // W5.5b — the oldest actionable wait (`12m` over `OLDEST`), in the hue
+        // of that agent's bucket, aged from `SignalLedger.waitAnchor` (the
+        // anchor the plates and sidebar sort by) on the shared 1 Hz tick at
+        // minute grain. Hidden with the slot, and when no age is known.
+        const ageNum = el('span', { className: 'topbar__kpi-num' });
+        const agePart = el('span', { className: 'topbar__attn-part topbar__attn-part--age' }, [
+            ageNum,
+            el('span', { className: 'topbar__kpi-cap', text: 'OLDEST' }),
+        ]);
+        agePart.hidden = true;
+        this.els.attentionAge = { part: agePart, num: ageNum, modifier: '' };
+        this._oldestWaitAnchor = 0;
+        this._unsubscribeOldestWait = null;
         this.els.attention = el('span', { className: 'topbar__seg topbar__seg--attention cv-frame cv-frame--attn' },
-            ATTENTION_PARTS.map(({ key }) => this.els.attentionParts[key].part));
+            [...ATTENTION_PARTS.map(({ key }) => this.els.attentionParts[key].part), agePart]);
         this.els.attention.id = 'badgeAttention';
         this.els.attention.hidden = true;
         this.els.waiting?.parentElement?.parentElement?.prepend(this.els.attention);
@@ -1197,6 +1211,7 @@ export class TopBar {
             if (count > 0) lit.push({ key, count, noun });
         }
         frame.hidden = lit.length === 0;
+        this._renderOldestWait(lit.length ? this.world : null);
         if (!lit.length) return;
         const lead = ATTENTION_PARTS.find(({ key }) => key === lit[0].key);
         if (frame.dataset.lead !== lead.key) {
@@ -1205,6 +1220,36 @@ export class TopBar {
         }
         frame.dataset.tip = `Needs action: ${lit.map(({ count, noun }) => `${count} ${noun}`).join(' · ')} · frame them`;
         frame.dataset.tipKey = 'A';
+    }
+
+    // The oldest-wait part: shown only beside lit counts with a known anchor;
+    // its text patches on the shared 1 Hz tick, so it never runs ahead of the
+    // plate or sidebar age beside it.
+    _renderOldestWait(world) {
+        const refs = this.els.attentionAge;
+        if (!refs) return;
+        const agent = world ? oldestActionable(world.agents) : null;
+        const anchor = agent ? waitAnchor(agent) : 0;
+        this._oldestWaitAnchor = anchor;
+        refs.part.hidden = !anchor;
+        if (!anchor) {
+            this._unsubscribeOldestWait?.();
+            this._unsubscribeOldestWait = null;
+            return;
+        }
+        const modifier = ATTENTION_PARTS.find(({ key }) => key === bucketForStatus(agent.status))?.modifier || '';
+        if (refs.modifier !== modifier) {
+            if (refs.modifier) refs.part.classList.remove(`topbar__attn-part--${refs.modifier}`);
+            if (modifier) refs.part.classList.add(`topbar__attn-part--${modifier}`);
+            refs.modifier = modifier;
+        }
+        if (!this._unsubscribeOldestWait) {
+            this._unsubscribeOldestWait = subscribeElapsedText(refs.num, now => (
+                this._oldestWaitAnchor ? formatWaitAge(now - this._oldestWaitAnchor) : ''
+            ));
+        } else {
+            setText(refs.num, formatWaitAge(elapsedTickNow() - anchor));
+        }
     }
 
     _renderCount(node, value, pending) {
@@ -1714,6 +1759,8 @@ export class TopBar {
         eventBus.off('atmosphere:updated', this._onAtmosphere);
         this._unpublishReservedRect?.();
         this.els.attention?.remove();
+        this._unsubscribeOldestWait?.();
+        this._unsubscribeOldestWait = null;
         if (this.timeInterval) {
             clearInterval(this.timeInterval);
             this.timeInterval = null;

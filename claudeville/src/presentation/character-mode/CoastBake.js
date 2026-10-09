@@ -3003,16 +3003,51 @@ function squallFlipProgress(progress, precipitation) {
     return Math.min(0.5, RAIN_START_PRECIPITATION * progress / precipitation);
 }
 
-export function openSeaSquall(weather, motionTimeMs = 0) {
+// The squall's approach phase in [0, 1) while the forecast squall is on the
+// sea (0 as it appears, 1 as the first rain falls), or -1 when there is none.
+function squallApproachPhase(weather) {
     const type = weather?.type || 'clear';
     const next = weather?.nextType || type;
     const progress = Number(weather?.transitionProgress);
-    if (type === 'rain' || type === 'storm' || (next !== 'rain' && next !== 'storm')) return null;
+    if (type === 'rain' || type === 'storm' || (next !== 'rain' && next !== 'storm')) return -1;
     const flip = squallFlipProgress(progress, Number(weather?.precipitation));
     // The approach may use the whole transition before the first rain.
     const span = Math.min(SQUALL_WINDOW, flip);
-    if (!(progress >= flip - span && progress < flip)) return null;
-    const s = (progress - (flip - span)) / span;
+    if (!(progress >= flip - span && progress < flip)) return -1;
+    return (progress - (flip - span)) / span;
+}
+
+/**
+ * W6.4 — the weather is about to turn: true over exactly the window the
+ * forecast squall crosses the sea (the timeline's next knot is rain or
+ * storm and the first rain is minutes away), so the fauna that anticipate
+ * it and the squall itself agree. A pure function of the timeline (V3).
+ */
+export function squallApproach(weather) {
+    return squallApproachPhase(weather) >= 0;
+}
+
+/**
+ * W6.7 — the distant shower's qualifying window, wider than the squall's:
+ * while the island is still dry and the timeline turns to overcast, rain or
+ * storm, from the start of that transition until the first rain falls (the
+ * whole transition toward an overcast knot). A far column on the horizon,
+ * never rain on the island. A pure function of the timeline (V3).
+ */
+export function distantShowerFront(weather) {
+    const type = weather?.type || 'clear';
+    const next = weather?.nextType || type;
+    if (type === 'rain' || type === 'storm' || type === 'fog' || type === next) return false;
+    if (next !== 'overcast' && next !== 'rain' && next !== 'storm') return false;
+    const progress = Number(weather?.transitionProgress);
+    if (!(progress >= 0)) return false;
+    if (next === 'overcast') return progress < 1;
+    return progress < squallFlipProgress(progress, Number(weather?.precipitation));
+}
+
+export function openSeaSquall(weather, motionTimeMs = 0) {
+    const s = squallApproachPhase(weather);
+    if (s < 0) return null;
     const windX = Number(weather?.windX);
     const sign = Number.isFinite(windX) && windX < 0 ? -1 : 1;
     const islandHalf = MAP_SIZE * HALF_W;

@@ -19,7 +19,14 @@ fn cloudNoiseAt(cell: vec2f) -> f32 {
     let n1 = textureSampleLevel(cloudTile, cloudSampler, fract(p / ${CLOUD_FIELD_SPAN}), 0.0).r;
     let n2 = textureSampleLevel(cloudTile, cloudSampler, fract((p / ${CLOUD_SECOND_OCTAVE.scale.toFixed(4)} + vec2f(${CLOUD_SECOND_OCTAVE.offset.map(v => v.toFixed(1)).join(', ')}))
         / ${CLOUD_FIELD_SPAN}), 0.0).r;
-    return max(n1, n2 * ${CLOUD_SECOND_OCTAVE.weight.toFixed(3)});
+    var n = max(n1, n2 * ${CLOUD_SECOND_OCTAVE.weight.toFixed(3)});
+    // W6.3 — the lone fair-weather cumulus (GLSL u_cloudLone).
+    if (frame.cloudLone.z > 0.0) {
+        var d = p - frame.cloudLone.xy;
+        d = d - 7168.0 * floor(d / 7168.0 + 0.5);
+        n = mix(n, 1.0 - length(d) / frame.cloudLone.z, 0.7);
+    }
+    return n;
 }
 fn cloudSeamField(cell: vec2f, n: f32, order: f32, seamAt: f32) -> f32 {
     let near = min(min(abs(n - frame.cloudThresholds.x), abs(n - frame.cloudThresholds.y)),

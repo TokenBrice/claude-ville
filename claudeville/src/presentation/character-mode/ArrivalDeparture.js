@@ -75,6 +75,20 @@ const PROVIDER_COLORS = {
 // the foot of the Portal Gate's stairs). Used as the fallback target when the
 // renderer cannot project a screen point for an orphan subagent's return.
 const PORTAL_SPAWN_TILE = { tileX: 5, tileY: 34 };
+// W4.8 — the wind-down hand-off. A finished session's last leg ends on one
+// of these stand points just inside the gate, off both entry lanes (x 18.65 /
+// 19.55), facing out through the arch; when the session is really removed,
+// `recordDeparture` drops its sigil where the body stands. Nothing here
+// delays removal: a body still on the way leaves from wherever it is.
+export const WIND_DOWN_GATE_FACING = Object.freeze({ x: 19.1, y: 39.1 });
+export const WIND_DOWN_GATE_TILES = Object.freeze([
+    Object.freeze({ tileX: 17, tileY: 36 }),
+    Object.freeze({ tileX: 21, tileY: 36 }),
+    Object.freeze({ tileX: 17, tileY: 35 }),
+    Object.freeze({ tileX: 21, tileY: 35 }),
+    Object.freeze({ tileX: 16, tileY: 35 }),
+    Object.freeze({ tileX: 22, tileY: 35 }),
+]);
 
 function nowMs() {
     if (typeof performance !== 'undefined' && performance.now) return performance.now();

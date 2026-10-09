@@ -45,6 +45,8 @@ export class AgentGpuOverlayRenderer {
         host._zoom = zoom;
         // W-F16 — a body the depth pass hid behind a building keeps its marks
         // and name hidden with it; the selected one is x-rayed, so keeps both.
+        // Its thought is not hidden: the thought layer lifts it above the
+        // building's crown (AgentSprite.drawThought, W3.4).
         if (host._behindBuilding && !host.selected) return;
         // Action-needed agents are marked by the overlay's T1 beacon and
         // attention plate (AttentionPlates.js) at every zoom, not here.
@@ -89,11 +91,9 @@ export class AgentGpuOverlayRenderer {
         // state, so reduced motion receives the complete visual treatment.
         if (departedTableau(host)) this.drawDepartedTreatment(ctx);
 
-        // Speech has a per-villager lifetime; shared annotation pressure must
-        // not switch every live thought off and back on together.
-        if (!departedTableau(host) && !host.chatting) {
-            host._drawStatus(ctx, host._labelTopY(contentTopY));
-        }
+        // Thoughts are not drawn here: the thought layer (WorldFrameRenderer,
+        // AgentSprite.drawThought) paints every leader, then every column,
+        // above all per-agent marks on both backends.
         if (!departedTableau(host) && (primary || host.selected || annotationMode === 'full' || host.gpuActionOverlay)) {
             // Head-anchored labels clear the chevron: nothing crosses the body.
             const labelTopY = host._labelTopY(contentTopY);
@@ -199,20 +199,23 @@ export class AgentGpuOverlayRenderer {
         }
         // 2.2 — an authored C2 pose replaces both the sampled sheet and the
         // source rect, so the resident body shows the same hands the Canvas
-        // body does. Equipment padding never applies: the strip owns its grip.
-        let source = pose ? pose.source : (host._gpuBaseSpriteCanvas || host.spriteCanvas);
+        // body does. A strip owns its grip; only a group that authors the
+        // weapon hand (W8.7 run rows) samples its padded equipped copy.
+        const equippedPose = pose?.equipped || null;
+        let source = pose ? (equippedPose?.canvas || pose.source) : (host._gpuBaseSpriteCanvas || host.spriteCanvas);
         const status = host.agent?.status;
         // Equipped codex sheets are re-laid on a padded cell grid so baked
         // blade tips survive past the 92px body cell; remap the cell UVs and
         // grow the on-screen quad by the same padding. The channel companions
         // stay unpadded: `channelRect` places their sheet cell at the pad.
-        const layout = host._gpuEquippedSheetLayout;
-        const pad = layout && source === host._gpuBaseSpriteCanvas ? layout.pad : 0;
+        const layout = equippedPose || host._gpuEquippedSheetLayout;
+        const pad = equippedPose ? equippedPose.pad : (layout && source === host._gpuBaseSpriteCanvas ? layout.pad : 0);
         const cellSize = pad ? layout.cellSize : 0;
         const padded = pad ? cellSize + pad * 2 : 0;
-        const col = pad ? Math.floor(cell.sx / cellSize) : 0;
-        const row = pad ? Math.floor(cell.sy / cellSize) : 0;
         const bodyCell = pose ? pose.cell : cell;
+        const gridCell = equippedPose ? bodyCell : cell;
+        const col = pad ? Math.floor(gridCell.sx / cellSize) : 0;
+        const row = pad ? Math.floor(gridCell.sy / cellSize) - (equippedPose?.firstRow || 0) : 0;
         // 7.1 — a seated body arrives clipped at its seat line (sh < cell);
         // the padded slot keeps its top pad and drops the rows below the clip.
         const paddedRows = pad && bodyCell.sh < cellSize ? pad + bodyCell.sh : padded;
@@ -235,7 +238,7 @@ export class AgentGpuOverlayRenderer {
         }
         const sourceScale = lodSheet ? 0.5 : 1;
         if (lodSheet) source = lodSheet;
-        const sheetCell = pad && !lodSheet;
+        const sheetCell = pad && !lodSheet && !pose;
         const sheetMaterial = sheetCell
             ? host.assets?.getSidecar?.(spriteId, 'material') || host.assets?.getMaterialSidecar?.(spriteId, 'material') || null
             : null;
@@ -282,15 +285,20 @@ export class AgentGpuOverlayRenderer {
         const materialSource = host._packedGeometrySource?.(authoredMaterial, authoredOccluder) || null;
         const emissiveSource = host._authoredEmissionSource?.(authoredEmissive) || null;
         // Sheet-layout companions of an equipped body: the unpadded cell,
-        // drawn at the pad offset inside the padded atlas slot.
-        const channelRect = sheetCell && (materialSource || emissiveSource) && (sheetMaterial || sheetEmissive || authoredOccluder)
-            ? { sx: col * cellSize, sy: row * cellSize, sw: cellSize, sh: cellSize, dx: pad, dy: pad }
-            : null;
+        // drawn at the pad offset inside the padded atlas slot. A padded strip
+        // pose keeps its strip-layout companions at the strip cell.
+        const channelRect = !(materialSource || emissiveSource)
+            ? null
+            : sheetCell && (sheetMaterial || sheetEmissive || authoredOccluder)
+                ? { sx: col * cellSize, sy: row * cellSize, sw: cellSize, sh: cellSize, dx: pad, dy: pad }
+                : pad && pose
+                    ? { sx: bodyCell.sx, sy: bodyCell.sy, sw: bodyCell.sw, sh: bodyCell.sh, dx: pad, dy: pad }
+                    : null;
         host._gpuFrameRecord = {
             id: `agent:${host.agent?.id || profileKey}`,
             stableKey: host.agent?.id || profileKey,
             textureKey: pose
-                ? `agent-strip:${profileKey}:${pose.group}`
+                ? `agent-strip${equippedPose ? '-equipped' : ''}:${profileKey}:${pose.group}`
                 : `agent-sheet${lodSheet ? '-lod' : ''}:${profileKey}`,
             sidecarKey: materialSource || emissiveSource ? `${spriteId}:${pose ? 'strip' : 'channels'}` : '',
             source,
@@ -325,7 +333,7 @@ export class AgentGpuOverlayRenderer {
             // The equipped-sheet key folds in the asset version, so a weapon
             // asset arriving after a fallback-vector bake re-uploads the sheet.
             textureRevision: pose
-                ? `strip:${profileKey}:${pose.group}`
+                ? `strip:${profileKey}:${pose.group}${equippedPose ? `:${equippedPose.key}` : ''}`
                 : `${lodSheet ? 'lod:' : ''}${host._gpuEquippedSheetKey || profileKey}`,
             sidecarRevision: resolved?.revision || host.assets?.assetVersion || null,
             contentTopY,

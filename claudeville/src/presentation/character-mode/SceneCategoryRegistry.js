@@ -1,6 +1,7 @@
 import { BRIDGE_LANTERN_SCENE_CATEGORY } from './BridgeLanterns.js';
 import { HARBOR_HULL_SCENE_CATEGORY, HARBOR_TRAFFIC_SCENE_CATEGORY } from './HarborTraffic.js';
 import { LANDMARK_ACTIVITY_SCENE_CATEGORY } from './LandmarkActivity.js';
+import { HORIZON_LIFE_SCENE_CATEGORY } from './HorizonLife.js';
 
 const UNSUPPORTED_POLICIES = new Set([
     'overlay-safe',
@@ -309,4 +310,5 @@ export const worldSceneCategoryRegistry = new SceneCategoryRegistry([
     HARBOR_TRAFFIC_SCENE_CATEGORY,
     LANDMARK_ACTIVITY_SCENE_CATEGORY,
     BRIDGE_LANTERN_SCENE_CATEGORY,
+    HORIZON_LIFE_SCENE_CATEGORY,
 ]);

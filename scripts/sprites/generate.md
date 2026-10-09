@@ -195,9 +195,12 @@ with `feet-audit.mjs --groups=sit:0-1 --reference=group --directions=se,sw`.
 
 ### Run gait strips (plan 7.5, deferred; recipe in OF-020)
 
-No profile ships a `run` group yet: the 2026-09-29 pilot was deferred to
-after the October 9 PixelLab reset (open follow-up OF-020).
-The tooling is ready:
+W8.7 (2026-10-09) ships `run` on `agent.codex.gpt56sol` and
+`agent.codex.gpt56luna`. `agent.claude.opus` stays strip-less: its cycle
+passed the numbers in six facings but popped the staff in and out (S, SE, W)
+and blotted the north hem, so it walks byte-identically. Luna's stage needed
+two deterministic touch-ups (a 16 px stray island cleared in W#2, the SW#5
+silhouette outline restored, which also cleared its `flicker`). The recipe:
 
 1. `node scripts/sprites/generate-pose-strip.mjs --id=<id> --groups=run-skel
    --directions=south,south-east,east,north-east,north,north-west,west,south-west
@@ -225,8 +228,9 @@ The tooling is ready:
 4. `assemble-action-strip.mjs --stage=<stage png> --groups=run` appends the
    rows after `gaze` (a `run-skel` stage ships as group `run`) and records
    `provenance.templateStrips` (the animation mode and the animation group id
-   per facing). The runtime has no `run` consumer yet: land the wiring in
-   OF-020 with the first shipped strips.
+   per facing). The runtime consumer is `AgentSprite._runGaitDue` /
+   `ActionVocabulary.resolveTravelGait` (top rung, urgent trip, one run frame
+   per 9 px of travel; see the Run gait row in `docs/motion-budget.md`).
 
 ## Manifest-Driven Bulk Bake + Contact Sheets
 

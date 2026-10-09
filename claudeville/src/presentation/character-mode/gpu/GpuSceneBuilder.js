@@ -1,5 +1,6 @@
 import { materialClassId } from './GpuWorldPolicy.js';
 import { tileToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH } from '../Projection.js';
+import { offshoreSceneryRecords } from '../OffshoreScenery.js';
 import { landmarkFootprint } from '../FootprintField.js';
 import { ownerSlotFor } from '../LightSourceRegistry.js';
 import {
@@ -1604,6 +1605,10 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     // 1.3 — terrain-baked emitter props (plaza braziers, street lanterns)
     // redraw over the terrain with their emissive sidecars.
     records.push(...cacheEmitterRecords(renderer, atlasChannelRevision));
+    // W8.5a — the offshore backdrop (`ground:offshore:*`): the open sea's
+    // stacks, wreck and islets, ordered with the ground records right after
+    // the terrain, under the island's casts, haze, fog and every drawable.
+    offshoreSceneryRecords(renderer, records);
     const haze = recordForHaze(renderer);
     if (haze) {
         // A baked field over its own world rect (world px, so not V9

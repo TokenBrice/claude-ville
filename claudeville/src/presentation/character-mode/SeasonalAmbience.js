@@ -15,8 +15,8 @@
 //   autumn (Sep–Nov): 'leaf'       rust and gold leaves from tree canopies
 // Summer nights carry fireflies instead (fauna; WildlifeRenderer's own budget).
 //
-// 6.7 ambient budget: none at z < 2 (the wide shot keeps its silhouette), at
-// most 6 live at z >= 2, none at night, no petals, butterflies or leaves in
+// 6.7 / W6.1 ambient budget: none below zoom 0.9, at most 3 live below z2
+// (the wide shot, the user's resting zoom), 6 at z >= 2, none at night, no petals, butterflies or leaves in
 // rain or storm, and none under reduced motion — the season already lives in
 // the terrain rebake, so the honest static fallback is nothing (no
 // screen-locked specks). The drift reads only the calendar and the weather,
@@ -25,7 +25,15 @@
 const SPAWNS_PER_SECOND = 2;
 const SEASONAL_TAG = 'seasonal-drift';
 export const SEASONAL_DRIFT_CAP = 6;
-export const SEASONAL_DRIFT_MIN_ZOOM = 2;
+export const SEASONAL_DRIFT_WIDE_CAP = 3;
+export const SEASONAL_DRIFT_MIN_ZOOM = 0.9;
+
+/** W6.1 — the live drift cap at a camera zoom: 6 from z2, 3 at the wide shot, 0 below 0.9. */
+export function seasonalDriftCap(zoom) {
+    const z = Number(zoom) || 0;
+    if (z >= 2) return SEASONAL_DRIFT_CAP;
+    return z >= SEASONAL_DRIFT_MIN_ZOOM ? SEASONAL_DRIFT_WIDE_CAP : 0;
+}
 // The weather layer's own precipitation threshold (WeatherRenderer draws
 // rain, or snow in winter, above it).
 const PRECIPITATING = 0.02;
@@ -111,7 +119,7 @@ export class SeasonalAmbience {
         this._spawnAccumulator += SPAWNS_PER_SECOND * motionScale * (frameDt / 1000);
         while (this._spawnAccumulator >= 1) {
             this._spawnAccumulator -= 1;
-            if (this.particleSystem.countTagged(SEASONAL_TAG) >= SEASONAL_DRIFT_CAP) continue;
+            if (this.particleSystem.countTagged(SEASONAL_TAG) >= seasonalDriftCap(this.cameraGetter()?.zoom)) continue;
             this._spawnDriftParticle(season);
         }
     }

@@ -224,6 +224,11 @@ function normalizeSession(session, context = {}) {
       && Number.isFinite(Number(session.turnStartedAt))
       ? Number(session.turnStartedAt)
       : null,
+    sessionEndedAt: session?.sessionEndedAt != null
+      && Number.isFinite(Number(session.sessionEndedAt))
+      && Number(session.sessionEndedAt) > 0
+      ? Number(session.sessionEndedAt)
+      : null,
     lastTurnDurationMs: session?.lastTurnDurationMs !== null
       && session?.lastTurnDurationMs !== undefined
       && Number.isFinite(Number(session.lastTurnDurationMs))

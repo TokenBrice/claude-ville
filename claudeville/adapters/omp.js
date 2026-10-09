@@ -19,6 +19,7 @@ const {
 } = require('./shared');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 const { deriveTurnState } = require('./turnState');
+const { normalizeToolResults, toolResultId, TOOL_RESULT_LIMIT } = require('./toolResults');
 
 const OMP_HOME = path.join(os.homedir(), '.omp');
 const DEFAULT_SESSIONS_DIR = path.join(OMP_HOME, 'agent', 'sessions');
@@ -279,9 +280,11 @@ function reduceOmpTranscript(records, {
   let turnStartedAt = null;
   let turnEnded = false;
   let turnEndedAt = null;
+  let sessionEndedAt = null;
   let latestTool = null;
   let latestToolInput = null;
   const pendingTools = new Map();
+  const lastResults = [];
   const todos = [];
   const toolHistory = [];
   const messages = [];
@@ -349,6 +352,8 @@ function reduceOmpTranscript(records, {
     if (record?.type === 'custom' && record.customType === 'session_exit') {
       turnEnded = true;
       turnEndedAt = recordTs || customTs || turnEndedAt;
+      sessionEndedAt = recordTs || customTs || null;
+      pendingTools.clear();
       continue;
     }
 
@@ -362,6 +367,7 @@ function reduceOmpTranscript(records, {
 
     const role = String(message.role || '');
     if (role === 'assistant') {
+      sessionEndedAt = null;
       const text = extractText(message.content);
       if (text) {
         latestAssistantText = compactText(text);
@@ -424,13 +430,14 @@ function reduceOmpTranscript(records, {
         latestTool = tool;
         latestToolInput = entry.detail || null;
         if (detail) toolHistory.push(entry);
-        pendingTools.set(toolCallId, { tool, ts: messageTs });
+        pendingTools.set(toolCallId, { ...entry });
         turnEnded = false;
         turnEndedAt = null;
       }
       continue;
     }
     if (role === 'user') {
+      sessionEndedAt = null;
       const text = extractText(message.content);
       const prompt = projectPrompt(message.content);
       if (prompt) lastPrompt = prompt;
@@ -441,7 +448,21 @@ function reduceOmpTranscript(records, {
       continue;
     }
     if (role === 'toolResult' || role === 'tool') {
-      if (message.toolCallId) pendingTools.delete(String(message.toolCallId));
+      const callId = message.toolCallId ? String(message.toolCallId) : null;
+      const call = callId ? pendingTools.get(callId) : null;
+      if (call) {
+        lastResults.push({
+          id: toolResultId({ provider: 'omp', sessionId: transcriptId(session?.id), callId }),
+          tool: call.tool,
+          detail: call.detail,
+          exitCode: Object.hasOwn(message, 'isError') ? (message.isError ? 1 : 0) : null,
+          durationMs: call.ts && messageTs ? messageTs - call.ts : null,
+          completedAt: messageTs,
+          source: 'transcript',
+        });
+        if (lastResults.length > TOOL_RESULT_LIMIT) lastResults.shift();
+        pendingTools.delete(callId);
+      }
       if (message.toolName === 'edit' && !message.isError && Array.isArray(message.details?.perFileResults)) {
         for (const result of message.details.perFileResults) rememberPath(result?.path, 'write', messageTs);
       }
@@ -486,8 +507,8 @@ function reduceOmpTranscript(records, {
   } : null;
   const pending = pendingTools.values().next().value || null;
   const turnDescriptor = {
-    pendingTool: pending?.tool || null,
-    pendingSince: pending?.ts || null,
+    pendingTool: sessionEndedAt ? null : pending?.tool || null,
+    pendingSince: sessionEndedAt ? null : pending?.ts || null,
     turnEnded,
     turnEndedAt,
     permissionMode: 'bypassPermissions',
@@ -531,7 +552,9 @@ function reduceOmpTranscript(records, {
       gitBranch,
       signalSource: 'transcript',
       turnStartedAt,
+      sessionEndedAt,
       workingSet: newestPaths,
+      lastResults: normalizeToolResults(lastResults),
     },
     detail: createDetailResponse({
       provider: 'omp',

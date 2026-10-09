@@ -121,8 +121,13 @@ export const ART_RAMPS = Object.freeze({
     //                green). Its lit stops stay under hue 36 (S <= 0.62).
     //   willowGold   autumn willow, olive -> muted straw, lifted like ochre;
     //                its lit stops keep S <= 0.43.
-    //   Both leave the 40-60 deg high-S / high-V band (S >= 0.45 at V > 0.55)
-    //   to the status hues: a NEEDS YOU plate never competes with a crown.
+    //   canopyScarlet autumn maple (Living Isle W8.3d), wine shadow ->
+    //                crimson -> coral, hue 348-18 deg so it reads apart from
+    //                the russet/ochre oaks; S <= 0.64 above V 0.55, kept a
+    //                step under the failure red (S 0.73, V 0.85).
+    //   All four leave the 40-60 deg high-S / high-V band (S >= 0.45 at
+    //   V > 0.55) to the status hues: a NEEDS YOU plate never competes with
+    //   a crown.
     //   blossom      spring blossom speckle and fallen petals.
     //   foliageDeep  variant 1: the authored ladder one value step darker,
     //                hue +8 deg (mid hue 90-110, S <= 0.5).
@@ -132,6 +137,7 @@ export const ART_RAMPS = Object.freeze({
     canopyRusset: ['#311b20', '#4a2125', '#652f26', '#7b412c', '#945535', '#ab6c41', '#c38650', '#d7a461'],
     canopyOchre: ['#40251b', '#573721', '#6f4e28', '#896830', '#ad7f42', '#c79554', '#dbac69', '#efc386'],
     willowGold: ['#293119', '#3e4420', '#585a28', '#767230', '#918852', '#aa9e64', '#c1b376', '#d8c98d'],
+    canopyScarlet: ['#33161c', '#4d1b23', '#6b2228', '#863130', '#a2413a', '#b55745', '#c6705a', '#d68f73'],
     blossom: ['#9c5a78', '#b76f8c', '#c98aa3', '#dcb4c0'],
     foliageDeep: ['#121e19', '#17291c', '#203822', '#2c4828', '#3c5932', '#526e3d', '#6b8448', '#899c54'],
     foliageSun: ['#213627', '#2a482b', '#3a5a33', '#506f3e', '#698548', '#869d53', '#abb85f', '#cfcf68'],

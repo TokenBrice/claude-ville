@@ -21,16 +21,20 @@ import {
 } from './WorldLabelKit.js';
 import { fillPixelEllipse } from './PixelShapes.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
+import { ACTIONABLE_BUCKETS, bucketForStatus, isActionableBucket } from '../../domain/services/SignalLedger.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { classifyTool, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
+import { squadMusterLines } from './RelationshipState.js';
 import { getReservedRects } from '../shared/ReservedRects.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
 import { normalizeLightingState, seasonShiftFor, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
 import { lampCourseAt } from './GradeEvaluator.js';
 import { seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { isWorkingVisitor, NON_WORKING_VISIT_ROLES } from './VisitIntentManager.js';
-import { BuildingPartGates } from './BuildingPartGates.js';
+import { attentionBannerState, BuildingPartGates } from './BuildingPartGates.js';
+import { dayPartBeatsAt } from './AmbientEvents.js';
+import { paintWreath } from './VillageCalendar.js';
 import { bakeEmitterCycle, emitterCyclePhase } from './EmitterCycle.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
 import { castLightingFor, castOverWater, structureCast } from './RakingLight.js';
@@ -52,6 +56,7 @@ import {
     BUILDING_EMITTER_FALLBACKS,
     BUILDING_LIGHT_FALLBACKS,
     EMITTER_LIGHTS,
+    getBuildingAttentionBanner,
     getBuildingBeaconBase,
     getBuildingDoorSpillDescriptor,
     getBuildingEffectAnchor,
@@ -105,15 +110,28 @@ const LABEL_VISIBLE_ZOOM = 1;
 const LABEL_DETAIL_ZOOM = 3;
 // T3 plaque geometry (screen pixels): 5 px pads, a 17-row head band holding
 // the motif, 8 px Press Start 2P name and 11 px Departure Mono count, and
-// 12-row ledger lines (harbor commits, READ verbs).
+// 12-row ledger lines (harbor commits, READ verbs, Command muster lines).
 const PLAQUE_PAD = 5;
 const PLAQUE_HEAD_H = 17;
 const PLAQUE_ROW_H = 12;
+// W7.5 — the muster line's carved ▸ (3 px, a space either side) and its row
+// budget: up to three squads, else two and one exact `+N squads` line.
+const PLAQUE_MUSTER_ARROW_W = 3;
+const PLAQUE_MUSTER_MAX_ROWS = 3;
 const DISTRICT_MOTIFS = Object.freeze(Object.fromEntries(
     BUILDING_DEFS
         .map((building) => [building.type, `district-${building.type}`])
         .filter(([, motif]) => Boolean(EVENT_SHAPES[motif])),
 ));
+// W5.5a — the Command plaque's attention cell takes the lead actionable
+// bucket (SignalLedger precedence: needs-you, error, limit) in the T1 plate's
+// status hue and motif, so it reads as the same mark the plates carry.
+const PLAQUE_ATTENTION = Object.freeze({
+    needsYou: Object.freeze({ motif: 'needs-you', color: STATUS_VISUALS.waiting_on_user.color }),
+    errors: Object.freeze({ motif: 'alert', color: STATUS_VISUALS.errored.color }),
+    quota: Object.freeze({ motif: 'limit-gate', color: STATUS_VISUALS.rate_limited.color }),
+});
+const PLAQUE_ATTENTION_GAP = 4;
 const LABEL_OVERLAP_TOLERANCE = 0.45;
 const LABEL_COMPACT_OVERLAP_TOLERANCE = 0.62;
 const MAX_TASKBOARD_PAPERS = 4;
@@ -690,11 +708,38 @@ export class BuildingSprite {
         this._zoom = Number.isFinite(zoom) ? zoom : 0;
     }
 
-    _taskboardBoardAgent() {
-        return this._taskboardBoardModel.resolve({
+    // W7.10a — selection wins; else two or more live plans make the slate a
+    // fleet rollup (`board.fleet`), which has no single board agent.
+    _taskboardBoard() {
+        return this._taskboardBoardModel.board({
             candidates: this._taskboardCandidates || [],
             agentSprites: this.agentSprites,
         });
+    }
+
+    _taskboardBoardAgent() {
+        return this._taskboardBoard()?.agent || null;
+    }
+
+    // The fleet rollup as a chalk view: `Plans · N` over one row per plan,
+    // a finished plan in dim struck chalk. Rebuilt only when a row changes.
+    _taskboardFleetView(fleet) {
+        const signature = fleet.map((plan) => `${plan.agentId}|${plan.text}|${plan.done}/${plan.total}`).join('\n');
+        if (this._taskboardFleetCache?.signature === signature) return this._taskboardFleetCache.view;
+        const view = {
+            layout: {
+                rows: fleet.map((plan) => ({
+                    kind: 'plan',
+                    text: plan.text,
+                    done: plan.done,
+                    total: plan.total,
+                    status: plan.total > 0 && plan.done === plan.total ? 'completed' : '',
+                })),
+            },
+            header: `Plans · ${fleet.length}`,
+        };
+        this._taskboardFleetCache = { signature, view };
+        return view;
     }
 
     _taskboardViewFor(agent, maxItemRows) {
@@ -765,6 +810,15 @@ export class BuildingSprite {
                 splitPass,
                 drawable.horizonY ?? null,
             );
+            this._drawAttentionBannerBoard(
+                ctx,
+                drawable.building,
+                drawable.entry,
+                drawable.wx,
+                drawable.wy,
+                splitPass,
+                drawable.horizonY ?? null,
+            );
         }
         this._ungradedOverlay = false;
     }
@@ -784,11 +838,14 @@ export class BuildingSprite {
         // Selectable instruments are re-registered by this frame's draw pass.
         this._instrumentHits.length = 0;
         this._updateVisitorCounts();
+        this.attentionBanner = attentionBannerState(this._attentionBannerAgents(), Date.now());
         this.partGates.update({
             workingIdsByType: this._workingIdsByType,
             roomSlotsByType: this._roomSlotsByType,
             timeMs: this._partClockMs(),
             motion: (this.motionScale || 0) > 0,
+            attention: this.attentionBanner,
+            clockBeats: this._clockBeatSet(),
         });
         this._updateInspection();
         this._updateNightLightGates(dt);
@@ -798,6 +855,20 @@ export class BuildingSprite {
         this._updateForgeGlow(dt);
         this._updateObservatoryClockSpin(dt);
         for (const b of this.buildings) this._spawnEmittersFor(b, dt);
+    }
+
+    // W5.3 — the live bodies the attention banner reads: the same population
+    // as the plaque's attention cell (departed, archiving and not-yet-arrived
+    // bodies excluded). Reuses one scratch array per frame.
+    _attentionBannerAgents() {
+        const out = this._attentionScratch || (this._attentionScratch = []);
+        out.length = 0;
+        for (const sprite of this.agentSprites || []) {
+            const agent = sprite?.agent;
+            if (!agent || agent.isDeparted || sprite._archiveAnim || sprite.isArrivalPending?.()) continue;
+            out.push(agent);
+        }
+        return out;
     }
 
     // #54 — publish the live village population whenever it changes so the
@@ -1082,6 +1153,7 @@ export class BuildingSprite {
         zoom = 1,
         occupiedBoxes = [],
         harborPendingRepos = [],
+        squads = [],
         scaleMode = 'screen-fixed',
         readMode = false,
         selectedType = null,
@@ -1095,6 +1167,7 @@ export class BuildingSprite {
         this.plaqueWorldRects = plaqueRects;
         const normalizedOccupiedBoxes = this._normalizeBoxes(occupiedBoxes);
         const harborLedgerRows = this._harborLedgerRows(harborPendingRepos);
+        const musterRows = this._musterRows(squads);
         const plaqueCounts = this._plaqueCountsByType();
         const view = this._plaqueWorldViewport(ctx, labelScale);
         // SM-7 — a plaque never covers a drawn identity label (T4 name or T2
@@ -1142,11 +1215,15 @@ export class BuildingSprite {
                 zoom,
                 localLabelDensity,
                 harborLedgerRows,
+                musterRows,
                 readRows: readMode ? this._readPlaques?.get(b.type) : null,
             });
             let chosen = null;
             for (const attempt of labelAttempts) {
-                const plaque = this._measurePlaque(ctx, b, attempt, { count, zoom, isHovered, isLandmark, scaleMode });
+                const plaque = this._measurePlaque(ctx, b, attempt, {
+                    count, zoom, isHovered, isLandmark, scaleMode,
+                    attention: b.type === 'command' ? this.plaqueAttention : null,
+                });
                 if (!plaque.title && !plaque.motif) continue;
                 const layout = this._resolveLabelLayout({
                     candidates: this._labelLayoutCandidates(isLandmark, isHovered || isSelected).map(({ dx, dy }) => ({ dx: dx * labelScale, dy: dy * labelScale })),
@@ -1342,12 +1419,24 @@ export class BuildingSprite {
     // else its session's assigned building. A body only crossing another
     // district's footprint on its walk counts at its destination. One pass
     // over the sprites per label frame.
+    // W5.5a — the same pass counts every live body that needs action
+    // (SignalLedger's actionable buckets, the T1 beacon population) into
+    // `plaqueAttention`: null at zero, else the exact count and the lead
+    // bucket's hue and motif for the Command plaque's attention cell.
     _plaqueCountsByType() {
         const counts = this._plaqueCounts || (this._plaqueCounts = new Map());
         counts.clear();
+        const actionable = this._plaqueActionable || (this._plaqueActionable = Object.fromEntries(ACTIONABLE_BUCKETS.map(name => [name, 0])));
+        for (const name of ACTIONABLE_BUCKETS) actionable[name] = 0;
+        let actionableTotal = 0;
         for (const sprite of this.agentSprites || []) {
             const agent = sprite?.agent;
             if (!agent || agent.isDeparted || sprite._archiveAnim || sprite.isArrivalPending?.()) continue;
+            const bucket = bucketForStatus(agent.status);
+            if (isActionableBucket(bucket)) {
+                actionable[bucket]++;
+                actionableTotal++;
+            }
             // V8 (M12) — a plaque number means work: a resting body (7.1 seat)
             // counts nowhere, and a petitioner in the Command queue (7.2)
             // counts at its own district, never at Command.
@@ -1367,11 +1456,13 @@ export class BuildingSprite {
             if (!type) continue;
             counts.set(type, (counts.get(type) || 0) + 1);
         }
+        const lead = actionableTotal ? ACTIONABLE_BUCKETS.find(name => actionable[name] > 0) : null;
+        this.plaqueAttention = lead ? { count: actionableTotal, bucket: lead, ...PLAQUE_ATTENTION[lead] } : null;
         return counts;
     }
 
     // Plaque geometry in screen pixels (before the 1/zoom counter-scale).
-    _measurePlaque(ctx, building, attempt, { count, zoom, isHovered, isLandmark, scaleMode }) {
+    _measurePlaque(ctx, building, attempt, { count, zoom, isHovered, isLandmark, scaleMode, attention = null }) {
         const motif = attempt.motif ? DISTRICT_MOTIFS[building.type] || null : null;
         ctx.save();
         ctx.font = WORLD_DISPLAY_FONT_8;
@@ -1389,20 +1480,34 @@ export class BuildingSprite {
         ctx.font = WORLD_BODY_FONT_11;
         const countText = count > 0 ? String(count) : '';
         const countWidth = countText ? measureLabelText(ctx, countText) : 0;
-        const rows = (attempt.rows || []).map(row => ({
-            ...row,
-            label: fitLabelText(ctx, row.label, attempt.rowMaxWidth || 180),
-        }));
-        const rowsWidth = rows.reduce((max, row) => Math.max(max, measureLabelText(ctx, row.label) + (row.profile ? 8 : 0)), 0);
+        // W7.5 — a muster row keeps its exact `· out ▸ returned` tail whole
+        // and shortens only the parent's name to make room.
+        const rowMaxWidth = attempt.rowMaxWidth || 180;
+        const rows = (attempt.rows || []).map(row => {
+            if (!row.muster) return { ...row, label: fitLabelText(ctx, row.label, rowMaxWidth) };
+            const musterLeft = ` · ${row.muster.out} `;
+            const musterRight = ` ${row.muster.returned}`;
+            const leftWidth = Math.round(measureLabelText(ctx, musterLeft));
+            const tailWidth = leftWidth + PLAQUE_MUSTER_ARROW_W + Math.round(measureLabelText(ctx, musterRight));
+            const label = fitLabelText(ctx, row.label, Math.max(0, rowMaxWidth - (row.profile ? 8 : 0) - tailWidth));
+            return { ...row, label, musterLeft, musterRight, leftWidth, tailWidth };
+        });
+        const rowsWidth = rows.reduce((max, row) => Math.max(max, Math.round(measureLabelText(ctx, row.label)) + (row.profile ? 8 : 0) + (row.tailWidth || 0)), 0);
+        const attentionText = attention?.count > 0 ? String(attention.count) : '';
+        const attentionWidth = attentionText ? measureLabelText(ctx, attentionText) : 0;
         ctx.restore();
         const titleWidth = Math.round(title.width);
         const motifWidth = motif ? 8 + 5 : 0;
         let headWidth = PLAQUE_PAD + motifWidth + titleWidth + (titleWidth ? PLAQUE_PAD : 0);
         if (!titleWidth && motif) headWidth = PLAQUE_PAD + 8 + PLAQUE_PAD;
         const countCell = countText ? 1 + PLAQUE_PAD + countWidth + PLAQUE_PAD : 0;
-        const width = Math.max(headWidth + countCell, rowsWidth + PLAQUE_PAD * 2) + 2;
+        // W5.5a — `COMMAND │ 7 │ ⟡3`: a status-hue cell at the head band's
+        // right end, the lead bucket's motif and the exact actionable count in
+        // plate ink. Absent at zero, so the plaque is then unchanged.
+        const attentionCell = attentionText ? PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP + attentionWidth + PLAQUE_PAD : 0;
+        const width = Math.max(headWidth + countCell + attentionCell, rowsWidth + PLAQUE_PAD * 2) + 2;
         const height = PLAQUE_HEAD_H + (rows.length ? rows.length * PLAQUE_ROW_H + 3 : 0);
-        return {
+        const plaque = {
             motif,
             title: title.displayText,
             titleWidth,
@@ -1412,6 +1517,12 @@ export class BuildingSprite {
             width,
             height,
         };
+        if (attentionText) {
+            plaque.attention = attention;
+            plaque.attentionText = attentionText;
+            plaque.attentionCell = attentionCell;
+        }
+        return plaque;
     }
 
     _paintPlaque(ctx, plaque, { x, y, labelScale, poleBottom, isHovered, isSelected, isLandmark, alert, accent }) {
@@ -1466,6 +1577,20 @@ export class BuildingSprite {
             ctx.fillStyle = WALNUT.count;
             ctx.fillText(plaque.countText, dividerX + 1 + PLAQUE_PAD, top + 12);
         }
+        if (plaque.attention) {
+            // Right-aligned inside the outline, over the head band's bevel
+            // and shade rows like the T1 plate's status cell.
+            const cellLeft = left + width - 1 - plaque.attentionCell;
+            ctx.fillStyle = plaque.attention.color;
+            ctx.fillRect(cellLeft, top + 1, plaque.attentionCell, PLAQUE_HEAD_H - 2);
+            drawOutlinedMotif(ctx, plaque.attention.motif, cellLeft + PLAQUE_PAD, top + 4, {
+                color: LABEL_INK.plate,
+                outline: 'transparent',
+            });
+            ctx.font = WORLD_BODY_FONT_11;
+            ctx.fillStyle = LABEL_INK.plate;
+            ctx.fillText(plaque.attentionText, cellLeft + PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP, top + 12);
+        }
         if (plaque.rows.length) {
             ctx.fillStyle = WALNUT.shade;
             ctx.fillRect(left + 2, top + PLAQUE_HEAD_H - 1, width - 4, 1);
@@ -1482,6 +1607,18 @@ export class BuildingSprite {
                 }
                 ctx.fillStyle = row.color || WALNUT.count;
                 ctx.fillText(row.label, rowX, baseline);
+                if (row.musterLeft) {
+                    // `· 6 ▸ 2` in count ink; the ▸ is a 3×5 carved
+                    // triangle (Departure Mono has no U+25B8).
+                    let tailX = rowX + Math.round(measureLabelText(ctx, row.label));
+                    ctx.fillStyle = WALNUT.count;
+                    ctx.fillText(row.musterLeft, tailX, baseline);
+                    tailX += row.leftWidth;
+                    ctx.fillRect(tailX, baseline - 6, 1, 5);
+                    ctx.fillRect(tailX + 1, baseline - 5, 1, 3);
+                    ctx.fillRect(tailX + 2, baseline - 4, 1, 1);
+                    ctx.fillText(row.musterRight, tailX + PLAQUE_MUSTER_ARROW_W, baseline);
+                }
             });
         }
         ctx.restore();
@@ -1514,7 +1651,7 @@ export class BuildingSprite {
         ];
     }
 
-    _labelRenderAttempts(building, { isHovered, isLandmark, zoom, localLabelDensity = 0, harborLedgerRows = [], readRows = null }) {
+    _labelRenderAttempts(building, { isHovered, isLandmark, zoom, localLabelDensity = 0, harborLedgerRows = [], musterRows = [], readRows = null }) {
         if (readRows?.length) {
             return [{
                 text: readRows[0],
@@ -1531,9 +1668,12 @@ export class BuildingSprite {
         const baseText = this._labelTextFor(building, zoom, isHovered);
         const compactText = this._labelTextFor(building, LABEL_VISIBLE_ZOOM, false);
         const isHarborLedger = building.type === 'harbor' && harborLedgerRows.length > 0;
+        // W7.5 — the Command plaque's muster rows ride the compact name like
+        // the harbor ledger; the fallbacks below drop them, as they do there.
+        const isMuster = building.type === 'command' && musterRows.length > 0;
         const attempts = [{
-            text: isHarborLedger ? compactText : baseText,
-            rows: isHarborLedger ? harborLedgerRows : [],
+            text: isHarborLedger || isMuster ? compactText : baseText,
+            rows: isHarborLedger ? harborLedgerRows : isMuster ? musterRows : [],
             rowMaxWidth: isHovered ? 214 : 184,
             motif: true,
             maxTextWidth: isHovered ? 190 : isLandmark ? 132 : 96,
@@ -2351,7 +2491,45 @@ export class BuildingSprite {
             this._drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass, horizonY);
             this._drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass, horizonY);
             this._drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass, horizonY);
+            this._drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass, horizonY);
         }
+    }
+
+    // W5.3 — the attention banner's walnut count board: the exact actionable
+    // count, screen-fixed (zoom cancelled, whole pixels) under the tip of the
+    // cloth the status part (`status.<bucket>`) hangs. Static: it moves only
+    // when the drop steps, and is absent when no one needs action.
+    _drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
+        const state = this.attentionBanner;
+        if (!state?.count) return;
+        const banner = getBuildingAttentionBanner(building.type);
+        if (!banner) return;
+        const drop = banner.drops[Math.max(0, Math.min(banner.drops.length - 1, state.tier | 0))];
+        const [lx, clothTop] = banner.at;
+        const ly = clothTop + drop + (banner.boardGap ?? 2);
+        if (
+            splitPass !== 'whole'
+            && Number.isFinite(horizonY)
+            && (splitPass === 'back' ? ly >= horizonY : ly < horizonY)
+        ) return;
+        const baseAnchor = this.assets.getAnchor(entry.id);
+        if (!baseAnchor) return;
+        const zoom = this._zoom > 0 ? this._zoom : 1;
+        const text = String(state.count);
+        ctx.save();
+        ctx.translate(Math.round(wx - baseAnchor[0] + lx), Math.round(wy - baseAnchor[1] + ly));
+        ctx.scale(1 / zoom, 1 / zoom);
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_BODY_FONT_11;
+        const width = Math.round(measureLabelText(ctx, text)) + PLAQUE_PAD * 2 + 2;
+        const height = 15;
+        const left = -Math.round(width / 2);
+        paintWalnutBoard(ctx, left, 0, width, height, { nails: false, lit: false });
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = WALNUT.count;
+        ctx.fillText(text, left + 1 + PLAQUE_PAD, 11);
+        ctx.restore();
     }
 
     // #53 / 6.5 — occupancy pennant: hero buildings fly a small roofline
@@ -2776,7 +2954,142 @@ export class BuildingSprite {
                 fixture: layer.fixture === true,
             });
         }
+        this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out);
         return out;
+    }
+
+    // W6.8 / W6.10 — procedural fixture parts in the same part records (both
+    // backends read them): the Archive bell louvre, a clock fixture on
+    // `clock.noon-bell` (BuildingPartGates; frames 1-2-1 once at noon, then
+    // the bell hangs still at frame 0, also under reduced motion), and the
+    // calendar's door wreaths (static). Neither is a work part: no gate here
+    // reads occupancy, and neither emits light.
+    _fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out) {
+        if (typeof document === 'undefined') return;
+        const parts = [];
+        if (type === 'archive') parts.push(this._bellLouvrePart());
+        for (const row of this.villageCalendar?.partStampsFor?.(type) || []) parts.push(this._wreathPart(row));
+        for (const part of parts) {
+            if (!part) continue;
+            const frame = part.layer.gate ? this.partGates.frameFor(type, part.name, part.layer) : 0;
+            let sy = 0;
+            let sh = part.frameH;
+            if (splitPass !== 'whole' && Number.isFinite(horizonY)) {
+                const cut = Math.max(0, Math.min(part.frameH, horizonY - part.top));
+                if (splitPass === 'back') sh = cut;
+                else {
+                    sy = cut;
+                    sh = part.frameH - cut;
+                }
+                if (sh <= 0) continue;
+            }
+            out.push({
+                id: `${entry.id}.${part.name}`,
+                name: part.name,
+                layer: part.layer,
+                image: part.image,
+                textureKey: part.textureKey,
+                frame,
+                sx: frame * part.frameW,
+                sy,
+                sw: part.frameW,
+                sh,
+                x: originX + part.left,
+                y: originY + part.top + sy,
+                localLeft: part.left,
+                localTop: part.top,
+                frameW: part.frameW,
+                frameH: part.frameH,
+                materialClass: part.layer.materialClass,
+                fixture: false,
+            });
+        }
+    }
+
+    _procPart(key, build) {
+        const cache = (this._procParts ||= new Map());
+        if (!cache.has(key)) cache.set(key, build());
+        return cache.get(key);
+    }
+
+    // The bell in each of the Archive tower's two louvre openings (base
+    // texels: dark interiors x 52-56 and 72-76 below the sky-lit arch heads,
+    // centred on x 54 / 74, from y 64). Each hangs centred from a headstock
+    // beam (which also closes the base art's see-through texels at y 64-65):
+    // a 3-texel waist over a 5-texel flared lip and a clapper. Frame 0 hangs
+    // plumb; frames 1 and 2 swing the flare and lip one texel west / east
+    // about the headstock while the clapper hangs plumb, so the mouth reads
+    // as swinging past it.
+    _bellLouvrePart() {
+        return this._procPart('archive.bellLouvre', () => {
+            const frameW = 27;
+            const frameH = 6;
+            const canvas = document.createElement('canvas');
+            canvas.width = frameW * 3;
+            canvas.height = frameH;
+            const ctx = canvas.getContext('2d');
+            const [beam, dark, shade, mid, light] = ['#2e1f12', '#5a3a1a', '#87591f', '#a8732a', '#e0b05a'];
+            const put = (color, x, y, w = 1) => { ctx.fillStyle = color; ctx.fillRect(x, y, w, 1); };
+            for (let f = 0; f < 3; f++) {
+                const tilt = f === 1 ? -1 : f === 2 ? 1 : 0;
+                for (const centre of [3, 23]) {
+                    const cx = f * frameW + centre;
+                    put(beam, cx - 1, 0, 3);
+                    for (const y of [1, 2]) {
+                        put(mid, cx - 1, y, 3);
+                        put(light, cx - 1, y);
+                        put(shade, cx + 1, y);
+                    }
+                    put(mid, cx - 2 + tilt, 3, 5);
+                    put(light, cx - 1 + tilt, 3);
+                    put(dark, cx + 2 + tilt, 3);
+                    put(dark, cx - 2 + tilt, 4, 5);
+                    put(dark, cx, 5);
+                }
+            }
+            return {
+                name: 'bellLouvre',
+                image: canvas,
+                textureKey: 'proc:building.archive.bellLouvre:2',
+                frameW,
+                frameH,
+                left: 51,
+                top: 64,
+                layer: Object.freeze({ frames: 3, staticFrame: 0, gate: 'clock.noon-bell', sequence: Object.freeze([1, 2, 1]), stepMs: 320, materialClass: 'metal' }),
+            };
+        });
+    }
+
+    _wreathPart(row) {
+        return this._procPart(`wreath:${row.id}`, () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 7;
+            canvas.height = 9;
+            paintWreath(canvas.getContext('2d'), 3, 3);
+            return {
+                name: `wreath.${row.id}`,
+                image: canvas,
+                textureKey: `proc:wreath:${row.id}:1`,
+                frameW: 7,
+                frameH: 9,
+                left: row.at[0] - 3,
+                top: row.at[1] - 3,
+                layer: Object.freeze({ frames: 1, materialClass: 'timber' }),
+            };
+        });
+    }
+
+    // W6.8 — the live day-part beats on the atmosphere clock, for the
+    // `clock.<beat>` fixture gates (never agent state).
+    _clockBeatSet() {
+        const minute = Number(this.atmosphereState?.clock?.minuteOfDay);
+        const beats = Number.isFinite(minute) ? dayPartBeatsAt(minute) : [];
+        const key = beats.join(',');
+        if (key !== this._clockBeatKey || !this._clockBeats) {
+            this._clockBeatKey = key;
+            this._clockBeats = new Set(beats);
+        }
+        return this._clockBeats;
     }
 
     // V4 — a work-coupled cycle runs only while its gate reads real work; the
@@ -3649,7 +3962,10 @@ export class BuildingSprite {
 
     // 4.4 — a record that says how a call ended. Deduplicated on the adapters'
     // stable result id, so the same finished command never stamps twice across
-    // polls, and bounded so a busy Forge cannot grow this list.
+    // polls, and bounded so a busy Forge cannot grow this list. W7.2 — every
+    // building's outcomes (the Forge's included) land as apron chits through
+    // `LandmarkActivity._observeToolResult`; this shelf stays the Forge's own
+    // longer, selectable memory of its last results, so it keeps Forge calls.
     _observeToolResult(event) {
         if (event?.building !== 'forge') return;
         const id = typeof event.id === 'string' ? event.id : '';
@@ -4441,8 +4757,10 @@ export class BuildingSprite {
     }
 
     _drawTaskboardBoard(ctx, localPoint) {
-        const agent = this._taskboardBoardAgent();
-        const view = this._taskboardViewFor(agent, 3);
+        const board = this._taskboardBoard();
+        const view = board?.fleet
+            ? this._taskboardFleetView(board.fleet)
+            : this._taskboardViewFor(board?.agent || null, 3);
         if (!view) return false;
         const zoom = this._zoom > 0 ? this._zoom : 1;
         this._drawOnTaskboardSlate(ctx, localPoint, `board|${zoom}|${JSON.stringify(view)}`, (slateCtx, slateTopLeft) => (
@@ -4551,6 +4869,7 @@ export class BuildingSprite {
             for (const row of hidden) {
                 if (row.kind === 'item') items += 1;
                 else if (row.kind === 'phase') phases += 1;
+                else if (row.kind === 'plan') items += 1;
                 else if (row.kind === 'more') items += Number(row.count) || 0;
             }
             const parts = [];
@@ -4568,9 +4887,11 @@ export class BuildingSprite {
             const baseline = contentTop + 9 * k + index * lineHeight;
             let rowText = row.kind === 'phase'
                 ? `${taskboardPhaseMarker(phaseIndex++)}. ${row.text} · ${row.done}/${row.total}`
-                : row.text;
+                : row.kind === 'plan'
+                    ? `${row.text} · ${row.done}/${row.total}`
+                    : row.text;
             if (row.compact && measureLabelText(ctx, rowText) > inner.w - itemIndent) rowText = row.compact;
-            const text = row.kind === 'phase'
+            const text = row.kind === 'phase' || row.kind === 'plan'
                 ? fitKeepingCount(rowText, inner.w - itemIndent)
                 : fitLabelText(ctx, rowText, inner.w - itemIndent);
             if ((row.kind === 'phase' && row.active) || row.status === 'in_progress') {
@@ -5958,6 +6279,21 @@ export class BuildingSprite {
             };
         }
         return visible;
+    }
+
+    // W7.5 — muster rows for the Command plaque: the parent's name in its
+    // repo ink behind the repo swatch, then the exact `· out ▸ returned`.
+    _musterRows(squads = []) {
+        return squadMusterLines(squads, { maxRows: PLAQUE_MUSTER_MAX_ROWS }).map((line) => {
+            if (line.kind === 'more') return { label: line.text, color: WALNUT.text };
+            const profile = line.project ? repoProfile(line.project) : null;
+            return {
+                label: line.name,
+                color: profile?.labelText || profile?.accent || WALNUT.count,
+                profile,
+                muster: { out: line.out, returned: line.returned },
+            };
+        });
     }
 
     _labelTextFor(building, zoom, isHovered) {

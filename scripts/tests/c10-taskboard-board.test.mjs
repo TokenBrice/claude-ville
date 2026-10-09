@@ -206,7 +206,7 @@ test('taskboard chalk is C5 grid type with camera zoom cancelled at every zoom l
     const { BuildingSprite } = await import('../../claudeville/src/presentation/character-mode/BuildingSprite.js');
     const agent = { id: 'plan', todos: [{ subject: 'Ship', status: 'in_progress' }] };
     const building = Object.create(BuildingSprite.prototype);
-    building._taskboardBoardAgent = () => agent;
+    building._taskboardBoard = () => ({ agent, fleet: null });
     building._taskboardViewFor = () => ({ header: 'Plan · 0/1', layout: taskboardBoardLayout(agent.todos) });
     const grid = new Set([WORLD_DISPLAY_FONT_8, WORLD_DISPLAY_FONT_16, WORLD_BODY_FONT_11, WORLD_BODY_FONT_22]);
     for (const zoom of [1, 2, 3]) {
@@ -243,7 +243,7 @@ test('taskboard chalk folds rows that do not fit into one exact overflow line', 
         { subject: 'F', status: 'pending', phase: 'III' },
     ];
     const building = Object.create(BuildingSprite.prototype);
-    building._taskboardBoardAgent = () => ({ id: 'plan', todos });
+    building._taskboardBoard = () => ({ agent: { id: 'plan', todos }, fleet: null });
     building._taskboardViewFor = () => ({ header: 'P · 1/6', layout: taskboardBoardLayout(todos, { maxItemRows: 2 }) });
     const calls = [];
     const ctx = new Proxy({ measureText: text => ({ width: text.length * 3 }) }, {

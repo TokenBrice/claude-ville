@@ -115,6 +115,60 @@ export function taskboardPlanSummaries({ candidates, agentSprites } = {}) {
     return ordered;
 }
 
+function projectLabel(agent) {
+    const raw = String(agent?.projectPath || agent?.project || '').trim();
+    const segments = raw.split(/[\\/]+/).filter(Boolean);
+    return segments.at(-1) || String(agent?.teamName || agent?.provider || '').trim();
+}
+
+/**
+ * W7.10a — the fleet rollup the slate shows when nothing selected or pinned
+ * owns a plan: one row per live plan (`project · phase · done/total`), most
+ * recently changed first (todos change, then session activity, then id).
+ * `phase` is the plan's active named phase (the first with work left, else
+ * the last); a plan without named phases has none. Two plans in one project
+ * are told apart by their owner's name, never merged: a task list is one
+ * session's plan, not a project backlog.
+ */
+export function taskboardFleetRollup({ agentSprites, todosUpdatedAt } = {}) {
+    const plans = [];
+    const seen = new Set();
+    for (const sprite of agentSpritesList(agentSprites)) {
+        const agent = sprite?.agent || null;
+        if (!hasTodos(agent) || seen.has(agent.id)) continue;
+        seen.add(agent.id);
+        const groups = groupTodosByPhase(agent.todos);
+        const named = groups.filter((group) => group.phase !== null);
+        const active = named.find((group) => group.done < group.total) || named.at(-1) || null;
+        const done = groups.reduce((count, group) => count + group.done, 0);
+        plans.push({
+            agentId: agent.id,
+            name: String(agent.displayName || agent.name || agent.id),
+            project: projectLabel(agent),
+            phase: active?.phase || '',
+            done,
+            total: agent.todos.length,
+            updatedAt: Number(todosUpdatedAt?.get?.(agent.id)) || 0,
+            activity: latestActivity(agent),
+        });
+    }
+    plans.sort((a, b) => (b.updatedAt - a.updatedAt)
+        || (b.activity - a.activity)
+        || String(a.agentId).localeCompare(String(b.agentId)));
+    const projectCounts = new Map();
+    for (const plan of plans) projectCounts.set(plan.project, (projectCounts.get(plan.project) || 0) + 1);
+    return plans.map((plan) => {
+        const label = plan.project && projectCounts.get(plan.project) === 1 ? plan.project : plan.name;
+        return {
+            kind: 'plan',
+            agentId: plan.agentId,
+            text: plan.phase ? `${label} · ${plan.phase}` : label,
+            done: plan.done,
+            total: plan.total,
+        };
+    });
+}
+
 export class TaskboardBoardModel {
     constructor({ now = Date.now } = {}) {
         this._now = now;
@@ -149,6 +203,20 @@ export class TaskboardBoardModel {
             agentSprites,
             todosUpdatedAt: this.todosUpdatedAt,
         });
+    }
+
+    /**
+     * What the slate shows. Selection wins: a selected or pinned agent with a
+     * plan owns the board. Otherwise two or more live plans show the fleet
+     * rollup; a lone live plan is the whole fleet, shown in full.
+     */
+    board({ candidates, agentSprites } = {}) {
+        const agent = this.resolve({ candidates, agentSprites });
+        if (!agent) return null;
+        const ids = Array.isArray(candidates) ? candidates : [];
+        if (ids.includes(agent.id)) return { agent, fleet: null };
+        const fleet = taskboardFleetRollup({ agentSprites, todosUpdatedAt: this.todosUpdatedAt });
+        return fleet.length >= 2 ? { agent: null, fleet } : { agent, fleet: null };
     }
 
     summaries({ candidates, agentSprites } = {}) {

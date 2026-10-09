@@ -96,26 +96,18 @@ function threadGeometry(from, to) {
     };
 }
 
-/**
- * Ground pass. Draws at most one thread and one knot for the selected agent.
- * `allowThread` is false under annotation pressure: a hundred agents get the
- * label's exact counts and no lines at all.
- */
-export function drawSharedFileKnot(ctx, {
-    overlap = null,
-    agentSprites = null,
-    zoom = 1,
-    lighting = null,
-    grade = null,
-    allowThread = true,
-} = {}) {
-    if (!ctx || !allowThread) return false;
-    const pair = edgeSprites(overlap, agentSprites);
-    if (!pair) return false;
+function knotSprites(knot, agentSprites) {
+    if (!knot || !agentSprites?.get) return null;
+    const from = agentSprites.get(String(knot.aId));
+    const to = agentSprites.get(String(knot.bId));
+    if (!from || !to || from === to) return null;
+    if (from.isArrivalPending?.() || to.isArrivalPending?.()) return null;
+    return { from, to };
+}
+
+function drawThreadAndKnot(ctx, pair, write, { zoom, lighting, grade }) {
     const geometry = threadGeometry(pair.from, pair.to);
     if (!geometry) return false;
-
-    const write = overlap.edge.kind === 'write-write';
     const boost = lightBoost(lighting);
     const thread = gradeColor(write ? THREAD_WRITE : THREAD_READ, grade);
     const knot = gradeColor(write ? KNOT_WRITE : KNOT_READ, grade);
@@ -144,6 +136,41 @@ export function drawSharedFileKnot(ctx, {
         rgba(knot, Math.min(0.95, alpha + 0.3)),
     );
     return true;
+}
+
+/**
+ * Ground pass. Draws the W7.6 ambient knots (`overlap.knots`: the loudest
+ * write-write and concurrent read-write files, with or without a selection)
+ * and the one thread and knot for the selected agent. `allowThread` is false
+ * under annotation pressure: a hundred agents get the plates' exact counts
+ * and no lines at all. Returns whether any thread was drawn.
+ */
+export function drawSharedFileKnot(ctx, {
+    overlap = null,
+    agentSprites = null,
+    zoom = 1,
+    lighting = null,
+    grade = null,
+    allowThread = true,
+} = {}) {
+    if (!ctx || !allowThread || !overlap) return false;
+    const options = { zoom, lighting, grade };
+    let drawn = false;
+    for (const knot of overlap.knots || []) {
+        const pair = knotSprites(knot, agentSprites);
+        if (pair && drawThreadAndKnot(ctx, pair, knot.kind === 'write-write', options)) drawn = true;
+    }
+    const pair = edgeSprites(overlap, agentSprites);
+    if (pair && drawThreadAndKnot(ctx, pair, overlap.edge.kind === 'write-write', options)) drawn = true;
+    return drawn;
+}
+
+// W7.6 — an ambient knot's plate is one exact line: who, how many, which file.
+function knotLine(knot) {
+    if (knot.writers === null || knot.writers === undefined) return `${knot.participants} agents · ${knot.basename}`;
+    if (knot.kind === 'write-write') return `${knot.writers} writers · ${knot.basename}`;
+    const readerText = knot.readers === 1 ? '1 reader' : `${knot.readers} readers`;
+    return `${knot.writers} writer · ${readerText} · ${knot.basename}`;
 }
 
 function overlapLines(overlap) {
@@ -180,30 +207,9 @@ function overlapLines(overlap) {
     return lines;
 }
 
-/**
- * Upper-overlay pass. One plate per selected agent, anchored over the knot when
- * a thread was drawn and over the agent itself otherwise, so the exact counts
- * survive dense load, night grade and the GPU backend alike.
- */
-export function drawSharedFileOverlapLabel(ctx, {
-    overlap = null,
-    agentSprites = null,
-    zoom = 1,
-    threaded = true,
-} = {}) {
-    if (!ctx || !overlap?.edge) return false;
-    const selected = agentSprites?.get?.(String(overlap.selectedId));
-    if (!selected) return false;
-    const lines = overlapLines(overlap);
-    if (!lines.length) return false;
-
-    const pair = threaded ? edgeSprites(overlap, agentSprites) : null;
-    const geometry = pair ? threadGeometry(pair.from, pair.to) : null;
-    const anchorX = geometry ? geometry.bend.x : selected.x;
-    const anchorY = geometry ? geometry.bend.y - KNOT_CELL : selected.y - 46;
-
+// One walnut-dark plate of exact lines, screen-fixed at the anchor.
+function drawPlate(ctx, anchorX, anchorY, lines, rimHex, zoom) {
     const scale = 1 / (zoom || 1);
-
     ctx.save();
     ctx.translate(anchorX, anchorY);
     ctx.scale(scale, scale);
@@ -219,7 +225,7 @@ export function drawSharedFileOverlapLabel(ctx, {
     ctx.fillStyle = PLATE_FILL;
     ctx.fillRect(left, top, width, height);
     // 1 px rim as four fills: no stroked half-pixel edge.
-    ctx.fillStyle = rgba(overlap.edge.kind === 'write-write' ? KNOT_WRITE : KNOT_READ, 0.8);
+    ctx.fillStyle = rgba(rimHex, 0.8);
     ctx.fillRect(left, top, width, 1);
     ctx.fillRect(left, -1, width, 1);
     ctx.fillRect(left, top + 1, 1, height - 2);
@@ -231,5 +237,44 @@ export function drawSharedFileOverlapLabel(ctx, {
         baseline += PLATE_LINE_HEIGHT;
     }
     ctx.restore();
+}
+
+/**
+ * Upper-overlay pass. One plate per ambient knot and one per selected agent,
+ * anchored over the knot when a thread was drawn and over the agent itself
+ * otherwise, so the exact counts survive dense load, night grade and the GPU
+ * backend alike.
+ */
+export function drawSharedFileOverlapLabel(ctx, {
+    overlap = null,
+    agentSprites = null,
+    zoom = 1,
+    threaded = true,
+} = {}) {
+    if (!ctx || !overlap) return false;
+    let drawn = false;
+    // W7.6 — one exact line per ambient knot, over its knot while threads
+    // draw, else over the pair's writer (dense load keeps the counts).
+    for (const knot of overlap.knots || []) {
+        const pair = knotSprites(knot, agentSprites);
+        if (!pair) continue;
+        const geometry = threaded ? threadGeometry(pair.from, pair.to) : null;
+        const anchorX = geometry ? geometry.bend.x : pair.from.x;
+        const anchorY = geometry ? geometry.bend.y - KNOT_CELL : pair.from.y - 46;
+        drawPlate(ctx, anchorX, anchorY, [{ text: knotLine(knot), muted: false }],
+            knot.kind === 'write-write' ? KNOT_WRITE : KNOT_READ, zoom);
+        drawn = true;
+    }
+    if (!overlap.edge) return drawn;
+    const selected = agentSprites?.get?.(String(overlap.selectedId));
+    if (!selected) return drawn;
+    const lines = overlapLines(overlap);
+    if (!lines.length) return drawn;
+
+    const pair = threaded ? edgeSprites(overlap, agentSprites) : null;
+    const geometry = pair ? threadGeometry(pair.from, pair.to) : null;
+    const anchorX = geometry ? geometry.bend.x : selected.x;
+    const anchorY = geometry ? geometry.bend.y - KNOT_CELL : selected.y - 46;
+    drawPlate(ctx, anchorX, anchorY, lines, overlap.edge.kind === 'write-write' ? KNOT_WRITE : KNOT_READ, zoom);
     return true;
 }

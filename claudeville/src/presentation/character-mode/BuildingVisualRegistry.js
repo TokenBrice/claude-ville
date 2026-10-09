@@ -75,6 +75,12 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         ],
         // #53 — sprite-local pole base for the occupancy pennant (right turret).
         pennant: { at: [254, 60] },
+        // W5.3 — the attention banner (manifest layers banner / bannerError /
+        // bannerLimit, status gates): `at` is the cloth's top-centre under
+        // the rod on the flag tower's front face, `drops` the cloth rows per
+        // wait-age tier (frames 1–4; bake-banner-stones.mjs BANNER_DROPS).
+        // The walnut count board hangs `boardGap` px under the cloth's tip.
+        attentionBanner: { at: [89, 70], drops: [25, 45, 65, 85], boardGap: 2 },
         // 4.2 — drawing anchors on the re-authored keep: `keep` is the dome
         // crown under the finial (activity rings, carrier-bird source),
         // `standard` the finial tip the ritual standard rises from, `hall`
@@ -674,6 +680,12 @@ export function getBuildingPlanTabProfile(type) {
 export function getBuildingPennantAnchor(type) {
     const pennant = getBuildingVisual(type)?.pennant;
     return Array.isArray(pennant?.at) ? pennant : null;
+}
+
+// W5.3 — optional attention banner geometry; only Command carries one.
+export function getBuildingAttentionBanner(type) {
+    const banner = getBuildingVisual(type)?.attentionBanner;
+    return Array.isArray(banner?.at) && Array.isArray(banner?.drops) && banner.drops.length ? banner : null;
 }
 
 // Per-building responsiveness to the global beacon intensity (0..1). Strong

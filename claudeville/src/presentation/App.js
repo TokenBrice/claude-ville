@@ -2056,6 +2056,8 @@ export class App {
         this._perfDebugStartProfile = () => this.renderer?.startPerformanceProfile?.() || false;
         this._perfDebugStopProfile = () => this.renderer?.stopPerformanceProfile?.() || null;
         this._perfDebugFrameProfile = () => this.renderer?.getPerformanceProfile?.() || null;
+        this._perfDebugBehavior = () => this.renderer?.behaviorTelemetry?.metrics || null;
+        this._perfDebugAmbient = () => this.renderer?.ambientDiagnostics?.() || null;
         this._cameraSetHelper = (pose = {}) => this.renderer?.setCameraPose?.(pose) || false;
         this._clientPerfHelpers = this.clientPerfMetrics?.getDebugHelpers?.() || {};
         window.__claudeVillePerf = {
@@ -2065,6 +2067,8 @@ export class App {
             startFrameProfile: this._perfDebugStartProfile,
             stopFrameProfile: this._perfDebugStopProfile,
             frameProfile: this._perfDebugFrameProfile,
+            behavior: this._perfDebugBehavior,
+            ambient: this._perfDebugAmbient,
         };
         window.cameraSet = this._cameraSetHelper;
     }
@@ -2315,6 +2319,12 @@ export class App {
             }
             if (window.__claudeVillePerf?.frameProfile === this._perfDebugFrameProfile) {
                 delete window.__claudeVillePerf.frameProfile;
+            }
+            if (window.__claudeVillePerf?.behavior === this._perfDebugBehavior) {
+                delete window.__claudeVillePerf.behavior;
+            }
+            if (window.__claudeVillePerf?.ambient === this._perfDebugAmbient) {
+                delete window.__claudeVillePerf.ambient;
             }
         }
 

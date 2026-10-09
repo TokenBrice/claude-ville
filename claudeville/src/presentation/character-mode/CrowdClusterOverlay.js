@@ -1,7 +1,7 @@
 import { TILE_HALF_WIDTH, TILE_HALF_HEIGHT } from './Projection.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
-import { WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { BUILDING_ACCENTS_RGB, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { worldToTile } from './Projection.js';
 import { isAttentionStatus } from './AttentionPlates.js';
 import { paintWalnutBoard, snapScreenOrigin } from './WorldLabelKit.js';
@@ -11,6 +11,12 @@ import { ringDots } from './EffectStamps.js';
 // Crowd cluster group visuals: when CrowdClusters reports a dense group
 // (3+ agents in a cell), draw one subtle shared ground aura under the group
 // and an "×N" count badge above it so swarms stay readable.
+//
+// W7.11 (SW-P14) — a VillageDirector work cohort is a cluster of this same
+// system (`kind: 'cohort'`, one per working building, CrowdClusters): the
+// same pool + ringDots aura in its building's district material instead of a
+// status hue, and the same T5 tab, so there is never a second aura or a
+// doubled tab for one crowd.
 //
 // Pulse band: static (no repeating motion), matching council rings. Alpha is
 // modulated only by the slow-changing lighting boost, so there is no
@@ -119,6 +125,27 @@ function statusAura(status) {
     return STATUS_AURA[status] || STATUS_AURA_FALLBACK;
 }
 
+const _cohortAuraCache = new Map();
+
+// A cohort's ground material: its building's district accent, the rim one
+// step darker (whole-texel fills, no new hue).
+function cohortAura(type) {
+    let aura = _cohortAuraCache.get(type);
+    if (!aura) {
+        const rgb = BUILDING_ACCENTS_RGB[type];
+        if (!rgb) return STATUS_AURA_FALLBACK;
+        const [r, g, b] = String(rgb).split(',').map(part => Number(part.trim()) || 0);
+        const rim = `${Math.round(r * 0.78)}, ${Math.round(g * 0.78)}, ${Math.round(b * 0.78)}`;
+        aura = Object.freeze({ fill: `rgba(${rgb}, 1)`, stroke: `rgba(${rim}, 1)`, badge: `rgba(${rim}, 0.8)` });
+        _cohortAuraCache.set(type, aura);
+    }
+    return aura;
+}
+
+function clusterAura(cluster) {
+    return cluster.kind === 'cohort' ? cohortAura(cluster.building) : statusAura(cluster.dominantStatus);
+}
+
 // Ground pass: one faint scanline isometric ellipse per dense cluster, rimmed
 // with a dotted ring (pixel grammar: whole-texel fills, no AA path), drawn with
 // the other pre-sprite relationship layers so agents render on top of it.
@@ -141,7 +168,7 @@ export function drawCrowdClusterAuras(ctx, { crowdStats, lighting = null } = {})
             : { draw: true, alpha: 1 };
         if (!gate.draw) continue;
         const rx = auraRadiusX(cluster);
-        const aura = statusAura(cluster.dominantStatus);
+        const aura = clusterAura(cluster);
 
         ctx.globalAlpha = fillAlpha * gate.alpha;
         fillPixelEllipse(ctx, x, y, rx, rx * 0.5, aura.fill);
@@ -158,6 +185,7 @@ export function drawCrowdClusterAuras(ctx, { crowdStats, lighting = null } = {})
 // by 1/zoom so the standard keeps a constant on-screen size. Static — no motion,
 // so the prefers-reduced-motion rendering is identical.
 const _namedPerCell = new Map();
+const _cohortOfAgent = new Map();
 // A body's head-chip column: its drawn body plus the screen-fixed chip slot
 // above the head (chat bubble, TALK scroll, status emote, …), in world px.
 const CHIP_SLOT_SCREEN_H = 30;
@@ -252,11 +280,21 @@ export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1, agentSprites
     // plates are excluded, so `+N` is exactly the unnamed remainder.
     const named = _namedPerCell;
     named.clear();
+    // A cohort member is counted against its cohort's tab, not its cell's.
+    const cohortOf = _cohortOfAgent;
+    cohortOf.clear();
+    for (let i = 0; i < clusters.length; i++) {
+        const ids = clusters[i].kind === 'cohort' ? clusters[i].agentIds : null;
+        if (ids) for (let j = 0; j < ids.length; j++) cohortOf.set(ids[j], clusters[i].id);
+    }
     for (const sprite of agentSprites?.values?.() || []) {
         const shown = sprite.overlaySlot != null || sprite.selected || isAttentionStatus(sprite.agent?.status);
         if (!shown || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
-        const tile = worldToTile(sprite.x, sprite.y);
-        const key = `${Math.floor(tile.tileX / cellSize)},${Math.floor(tile.tileY / cellSize)}`;
+        let key = cohortOf.get(sprite.agent?.id);
+        if (!key) {
+            const tile = worldToTile(sprite.x, sprite.y);
+            key = `${Math.floor(tile.tileX / cellSize)},${Math.floor(tile.tileY / cellSize)}`;
+        }
         named.set(key, (named.get(key) || 0) + 1);
     }
     const s = 1 / (zoom || 1);

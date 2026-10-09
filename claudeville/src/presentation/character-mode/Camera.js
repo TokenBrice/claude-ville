@@ -93,11 +93,31 @@ const ISLAND_AREA = polygonArea(ISLAND_POLYGON);
 
 // 4.2 — automatic shots keep at most this much sea: the centre steps toward
 // the island centroid in 16 world px steps, never pushing the subject's box
-// into a 12 % inner margin.
+// into a 12 % inner margin. W5.1 (PI-P5) — 30 % is the floor of the cap, not
+// the cap: a view larger than the island can fill (the DPR-1 ultrawide's
+// survey, the 2560 pane's z1) shows at least `1 − island / view` sea even
+// centred, so the cap there is that least share plus 5 points — a promise the
+// stepping loop can keep, so it still pulls an off-centre pose home. On such a
+// roomy view the sea share barely changes once the whole island is in frame,
+// so the loop also keeps stepping until the island's centre lies within 10 %
+// of the frame's centre on each axis: the ocean is an even margin, not one
+// empty side (the subject's 12 % margin still wins).
 const LAND_WEIGHT_MAX_SEA = 0.30;
+const LAND_WEIGHT_SEA_SLACK = 0.05;
+const LAND_WEIGHT_CENTRE_BAND = 0.10;
 const LAND_WEIGHT_STEP_PX = 16;
 const LAND_WEIGHT_MARGIN = 0.12;
 const LAND_WEIGHT_MAX_STEPS = 256;
+
+// W5.1 (PI-P5) — how far past the island diamond's extreme corners the screen
+// centre may sit (world px). The operator keeps a generous pad (panning out
+// over open sea is exploration); a pose an automatic owner composes gets a
+// tight one, so the camera never parks the island in a corner of the pane on
+// its own. The release cue frames the Harbor's sea slip and keeps the
+// operator's pad.
+const OPERATOR_PAD = Object.freeze({ x: 220, y: 160, viewDivisor: 2.2 });
+const AUTOMATIC_PAD = Object.freeze({ floor: 96, viewShare: 0.12 });
+const RELEASE_CUE_OWNER = 'cue:release';
 
 // 4.2 — an automatic shot does not crop a landmark at the top: every building
 // whose silhouette stands in the frame keeps its crown, and its plate (drawn
@@ -307,6 +327,40 @@ function composesForLand(owner) {
     const name = String(owner || '');
     return name === 'system' || name === 'director' || name === 'idle-auto' || name === 'village-tour'
         || name.startsWith('ambient') || name.startsWith('cue:');
+}
+
+// W5.1 — the clamp pad `{ x, y }` (world px past the island's extreme corners)
+// for a screen centre at `zoom` on a `viewportW × viewportH` (CSS px) canvas.
+// Automatic owners (`composesForLand`) get max(96, 12 % of the view); the
+// operator, follow, the resting clamp (`owner` null) and the release cue keep
+// max(220 × 160, view / 2.2).
+export function clampPadFor(owner, viewportW, viewportH, zoom) {
+    if (composesForLand(owner) && String(owner) !== RELEASE_CUE_OWNER) {
+        return {
+            x: Math.max(AUTOMATIC_PAD.floor, (viewportW * AUTOMATIC_PAD.viewShare) / zoom),
+            y: Math.max(AUTOMATIC_PAD.floor, (viewportH * AUTOMATIC_PAD.viewShare) / zoom),
+        };
+    }
+    return {
+        x: Math.max(OPERATOR_PAD.x, viewportW / (zoom * OPERATOR_PAD.viewDivisor)),
+        y: Math.max(OPERATOR_PAD.y, viewportH / (zoom * OPERATOR_PAD.viewDivisor)),
+    };
+}
+
+// W5.1 — the most sea (share of the frame) an automatic shot of a
+// `viewW × viewH` world px view may keep: 30 %, or the least sea that view can
+// show plus 5 points where the island cannot fill it.
+export function landWeightSeaCap(viewW, viewH) {
+    const area = viewW * viewH;
+    if (!(area > 0)) return LAND_WEIGHT_MAX_SEA;
+    return Math.max(LAND_WEIGHT_MAX_SEA, 1 - ISLAND_AREA / area + LAND_WEIGHT_SEA_SLACK);
+}
+
+// W5.1 — does the island's centre lie within the 10 % centring band of a
+// view whose top-left world corner is `left, top`?
+function islandCentred(left, top, viewW, viewH) {
+    return Math.abs(ISLAND_CENTROID.x - (left + viewW / 2)) <= viewW * LAND_WEIGHT_CENTRE_BAND
+        && Math.abs(ISLAND_CENTROID.y - (top + viewH / 2)) <= viewH * LAND_WEIGHT_CENTRE_BAND;
 }
 
 // 4.2 — would moving a view (viewW × viewH world px) from `left,top` to
@@ -874,7 +928,7 @@ export class Camera {
             return true;
         }
 
-        const clampedTo = this._clampedCenter(w / (2 * pose.zoom) - pose.x, h / (2 * pose.zoom) - pose.y, pose.zoom);
+        const clampedTo = this._clampedCenter(w / (2 * pose.zoom) - pose.x, h / (2 * pose.zoom) - pose.y, pose.zoom, owner);
         const backingScale = pose.zoom * this._dpr();
         const toCenter = {
             x: w / (2 * pose.zoom) - Math.round((w / (2 * pose.zoom) - clampedTo.x) * backingScale) / backingScale,
@@ -1629,11 +1683,23 @@ export class Camera {
         // shots); everything else an automatic owner frames is land-weighted,
         // and an establishing shot (`keepLandmarks`: the opening's settle and
         // the Ambient wide) is then kept clear of cropped landmark crowns and
-        // plates.
-        if (composition?.skyRoom) return this._skyRoomPose(pose, box) || pose;
-        if (!composesForLand(owner)) return pose;
-        const landed = this._landWeightedPose(pose, box);
+        // plates. W5.1 — an automatic owner composes inside its own tight pad.
+        const automatic = composesForLand(owner);
+        const placed = automatic ? this._clampPose(pose, owner) : pose;
+        if (composition?.skyRoom) return this._skyRoomPose(placed, box) || placed;
+        if (!automatic) return placed;
+        const landed = this._landWeightedPose(placed, box);
         return keepLandmarks ? this._landmarkClearPose(landed, box, bodies) : landed;
+    }
+
+    // W5.1 — `pose` with its screen centre clamped to `owner`'s pad.
+    _clampPose(pose, owner) {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        const halfW = w / (2 * pose.zoom);
+        const halfH = h / (2 * pose.zoom);
+        const clamped = this._clampedCenter(halfW - pose.x, halfH - pose.y, pose.zoom, owner);
+        return { ...pose, x: halfW - clamped.x, y: halfH - clamped.y };
     }
 
     // 4.5 (AD-7) — lift the pose so the sea horizon sits at 11 % of the world
@@ -1656,7 +1722,10 @@ export class Camera {
         return { ...pose, y: (share * h) / pose.zoom - OCEAN_HORIZON_WORLD_Y };
     }
 
-    // 4.2 (CC-3) — while more than 30 % of the frame is sea, step the centre
+    // 4.2 (CC-3) — while the frame holds more sea than `landWeightSeaCap`
+    // allows (30 %, or the view's least sea plus 5 points, W5.1) — or, on a
+    // view the island cannot fill, while the island's centre sits outside the
+    // 10 % centring band (W5.1) — step the centre
     // toward the island centroid 16 world px at a time. A step is refused when
     // it would push an edge of the subject box into the 12 % inner margin (or,
     // for an edge already in it, deeper toward the frame edge); edges already
@@ -1671,8 +1740,11 @@ export class Camera {
         const area = viewW * viewH;
         let left = -pose.x;
         let top = -pose.y;
+        const cap = landWeightSeaCap(viewW, viewH);
+        const roomy = cap > LAND_WEIGHT_MAX_SEA;
         const sea = () => 1 - islandAreaInWorldRect(left, top, left + viewW, top + viewH) / area;
-        if (!(area > 0) || sea() <= LAND_WEIGHT_MAX_SEA) return pose;
+        const composed = () => sea() <= cap && (!roomy || islandCentred(left, top, viewW, viewH));
+        if (!(area > 0) || composed()) return pose;
         const intrudes = (nextLeft, nextTop) => pushesIntoMargin(box, viewW, viewH, left, top, nextLeft, nextTop);
         for (let step = 0; step < LAND_WEIGHT_MAX_STEPS; step++) {
             const dx = ISLAND_CENTROID.x - (left + viewW / 2);
@@ -1689,7 +1761,7 @@ export class Camera {
             if (!move) break;
             left += move[0];
             top += move[1];
-            if (sea() <= LAND_WEIGHT_MAX_SEA) break;
+            if (composed()) break;
         }
         return { ...pose, x: -left, y: -top };
     }
@@ -1700,7 +1772,8 @@ export class Camera {
     // distance. Villagers never give way to landmarks: no subject edge moves
     // into the 12 % margin (or deeper into it), no body in `bodies` (feet
     // points) shown whole leaves the frame, and the sea share may not rise
-    // past max(0.30, the pose's own).
+    // past max(`landWeightSeaCap`, the pose's own); a roomy view whose island
+    // is centred keeps it inside the 10 % band (W5.1).
     _landmarkClearPose(pose, box, bodies = null) {
         const marks = this._landmarkSilhouettes();
         const w = this._viewportWidth();
@@ -1741,7 +1814,9 @@ export class Camera {
         const shown = (Array.isArray(bodies) ? bodies : [])
             .filter(body => Number.isFinite(body?.x) && Number.isFinite(body?.y) && bodyWhole(body, left, top));
         const sea = (l, t) => 1 - islandAreaInWorldRect(l, t, l + viewW, t + viewH) / area;
-        const seaCap = Math.max(LAND_WEIGHT_MAX_SEA, sea(left, top));
+        const seaCap = Math.max(landWeightSeaCap(viewW, viewH), sea(left, top));
+        // W5.1 — a roomy view that starts centred stays centred.
+        const holdCentre = landWeightSeaCap(viewW, viewH) > LAND_WEIGHT_MAX_SEA && islandCentred(left, top, viewW, viewH);
         for (let i = -LANDMARK_SEARCH_STEPS; i <= LANDMARK_SEARCH_STEPS; i++) {
             for (let j = -LANDMARK_SEARCH_STEPS; j <= LANDMARK_SEARCH_STEPS; j++) {
                 const dx = i * LAND_WEIGHT_STEP_PX;
@@ -1755,6 +1830,7 @@ export class Camera {
                 if (shown.some(body => !bodyWhole(body, left + dx, top + dy))) continue;
                 if (pushesIntoMargin(box, viewW, viewH, left, top, left + dx, top + dy)) continue;
                 if (sea(left + dx, top + dy) > seaCap) continue;
+                if (holdCentre && !islandCentred(left + dx, top + dy, viewW, viewH)) continue;
                 best = { dx, dy, cost, distance };
             }
         }
@@ -1799,14 +1875,15 @@ export class Camera {
         this.y = h / (2 * this.zoom) - clamped.y;
     }
 
-    // The screen-centre world point kept inside the island bounds for `zoom`.
-    _clampedCenter(centerX, centerY, zoom = this.zoom) {
+    // The screen-centre world point kept inside the island bounds for `zoom`,
+    // on `owner`'s pad (W5.1 `clampPadFor`; null is the operator's pad, which
+    // the resting clamp keeps so a resize or a breath never shifts a frame).
+    _clampedCenter(centerX, centerY, zoom = this.zoom, owner = null) {
         const w = this._viewportWidth();
         const h = this._viewportHeight();
         if (!w || !h || !(zoom > 0)) return { x: centerX, y: centerY };
         const worldCorners = mapWorldCorners(MAP_SIZE);
-        const padX = Math.max(220, w / (zoom * 2.2));
-        const padY = Math.max(160, h / (zoom * 2.2));
+        const { x: padX, y: padY } = clampPadFor(owner, w, h, zoom);
         const minX = Math.min(...worldCorners.map(p => p.x)) - padX;
         const maxX = Math.max(...worldCorners.map(p => p.x)) + padX;
         const minY = Math.min(...worldCorners.map(p => p.y)) - padY;
@@ -1861,6 +1938,13 @@ export class Camera {
             || this._villageTour || this._frameClaim) {
             this._endIdleDrift();
             this._lastInputAt = renderNow;
+            return;
+        }
+        // W5.2 (PI-P6) — the breath is a depth cue for a closer shot. At the
+        // widest crisp rung (tier 1, or the survey below it) it would sway the
+        // whole island, so the frame holds still there.
+        if (!(this.zoom > this.tierZoom(1) + 1e-6)) {
+            this._endIdleDrift();
             return;
         }
         if (renderNow - this._lastInputAt < IDLE_DRIFT_DELAY_MS) {

@@ -291,6 +291,25 @@ test('resolveSeaWeather keeps the sunlit course and the gust field, re-baked onl
     assert.equal(out.gust.revision, 2, 'the next step re-bakes it');
 });
 
+test('resolveSeaWeather gates the W6.11 grass gust course on the motion clock, the ladder and the field', () => {
+    const feed = feeds().noon;
+    const opts = { courses: null, width: W, height: H };
+    const at = (level, patch = {}) => resolveSeaWeather(level, CAMERAS.z2, { ...feed, ...patch }, opts);
+    const full = at(0);
+    assert.ok(full.gust, 'the noon fixture carries a gust field');
+    assert.equal(full.grassGust, 1, 'FULL with the motion clock running lifts');
+    assert.equal(at(0, { reducedMotion: true }).grassGust, 0, 'reduced motion holds the baked grass');
+    assert.equal(at(0, { motionScale: 0 }).grassGust, 0, 'a stopped motion clock holds the baked grass');
+    const reduced = at(1);
+    assert.ok(reduced.gust, 'REDUCED keeps the sea gust field');
+    assert.equal(reduced.grassGust, 0, 'REDUCED sheds the grass course');
+    assert.equal(at(2).grassGust, 0, 'MINIMAL sheds it with the field');
+    const weather = { ...(feed.weather || feed.atmosphere?.weather), windX: 0 };
+    const calm = at(0, { weather });
+    assert.equal(calm.gust, null, 'calm air has no gust field');
+    assert.equal(calm.grassGust, 0, 'no field, no lift');
+});
+
 test('resolveLights keeps admission, the light records, the tile index, wet slots and the footprint march', () => {
     eachCase(({ key, feed, camera, level }) => {
         const lights = resolveLights(feed, camera, level, { width: W, height: H });

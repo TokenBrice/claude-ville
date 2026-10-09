@@ -155,19 +155,24 @@ test('resident mark records paint exactly the overlay plate pixels, and the ink-
     const previousDocument = globalThis.document;
     globalThis.document = { createElement: () => new RasterCanvas() };
     try {
+        const now = 2_000_000;
         const layout = layoutAttentionPlates(ctx, {
             sprites: [
                 // A stacked pair (the second keeps a leader), a lone plate,
                 // and two agents beyond the frame (top and right edge plates).
-                sprite('a', AgentStatus.ERRORED, 400),
-                sprite('b', AgentStatus.ERRORED, 440),
-                sprite('w', AgentStatus.WAITING_ON_USER, 900),
+                // Ages cover every wait-age rung: the ringed medallion (6 min),
+                // the 3× beacon (16 min), a fresh wait, one notch (90 s) and
+                // an unknown age.
+                sprite('a', AgentStatus.ERRORED, 400, now - 360_000),
+                sprite('b', AgentStatus.ERRORED, 440, now - 960_000),
+                sprite('w', AgentStatus.WAITING_ON_USER, 900, now - 20_000),
                 sprite('far', AgentStatus.RATE_LIMITED, 2400),
-                { ...sprite('up', AgentStatus.WAITING_ON_USER, 700), y: -900 },
+                { ...sprite('up', AgentStatus.WAITING_ON_USER, 700, now - 90_000), y: -900 },
             ],
-            camera, viewport, now: 100_000,
+            camera, viewport, now,
         });
         assert.ok(layout.plates.some(plate => plate.side) && layout.plates.some(plate => !plate.side && plate.tip - plate.rect.bottom > 3));
+        assert.deepEqual(layout.beacons.map(beacon => [beacon.step, beacon.ring]).sort(), [[2, false], [2, true], [3, false]]);
         for (const scale of [1, 2]) {
             const width = viewport.width * scale;
             const height = viewport.height * scale;

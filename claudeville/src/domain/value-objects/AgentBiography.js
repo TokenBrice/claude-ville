@@ -8,7 +8,7 @@
  * feature (e.g. `extensions.mood`, `extensions.affinity`).
  */
 
-export const BIOGRAPHY_SCHEMA_VERSION = 3;
+export const BIOGRAPHY_SCHEMA_VERSION = 4;
 
 const RECENT_PUSH_KEY_LIMIT = 96;
 export const LIFE_EPISODE_LIMIT = 32;
@@ -142,6 +142,10 @@ function normalizePushMemory(raw) {
     return {
         pushWatermarkAt: nonNegativeNumber(raw?.pushWatermarkAt),
         recentPushKeys: recentPushKeys.slice(-RECENT_PUSH_KEY_LIMIT),
+        recentCompletedSessionKeys: [...new Set(
+            (Array.isArray(raw?.recentCompletedSessionKeys) ? raw.recentCompletedSessionKeys : [])
+                .map(compactEventKey).filter(Boolean),
+        )].slice(-RECENT_PUSH_KEY_LIMIT),
     };
 }
 
@@ -232,18 +236,28 @@ export class AgentBiography {
      * Precedence:
      * 1. Team/custom-named agents keep their given name across sessions
      *    (`named:<provider>:<name>`).
-     * 2. Anonymous agents are scoped to their provider session id. Generated
-     *    display names are presentation, not trustworthy cross-session
-     *    identity (`anonymous:<provider>:<session-id>`).
+     * 2. Unnamed mains share a provider/repository identity across days
+     *    (`project:<provider>:<repo>`), including concurrent mains.
+     * 3. Other anonymous agents remain scoped to their provider session id;
+     *    generated display names are not durable identity.
      */
     static identityKeyFor(agent) {
         if (!agent) return null;
         const provider = slug(agent.provider || 'unknown');
         const givenName = agent.agentName || (agent._customName ? agent.name : null);
         if (givenName) return compactEventKey(`named:${provider}:${slug(givenName)}`);
-        const sessionId = agent.id || agent.sessionId;
+        const repo = String(agent.projectPath || '').trim().split(/[\\/]/).filter(Boolean).pop();
+        if (agent.agentType === 'main' && !agent.parentSessionId && !agent.parentId && repo) {
+            return compactEventKey(`project:${provider}:${slug(repo)}`);
+        }
+        return AgentBiography.sessionIdentityKeyFor(agent);
+    }
+
+    /** v1–v3 anonymous key, also the stable completion-deduplication key. */
+    static sessionIdentityKeyFor(agent) {
+        const sessionId = agent?.id || agent?.sessionId;
         if (!sessionId) return null;
-        return compactEventKey(`anonymous:${provider}:${slug(sessionId)}`);
+        return compactEventKey(`anonymous:${slug(agent.provider || 'unknown')}:${slug(sessionId)}`);
     }
 
     static create(identityKey, now = Date.now()) {
@@ -255,9 +269,12 @@ export class AgentBiography {
     /** Rehydrate from a persisted record; returns null when unusable. */
     static fromRecord(record) {
         if (!record || typeof record !== 'object' || !record.identityKey) return null;
-        // v1 → v2 added error/nickname fields; v3 adds bounded event memory
-        // under extensions. Reward kind is inferred for older records, so the
-        // addition remains schema-compatible. All fields default safely.
+        // v1 → v2 added error/nickname fields; v3 added bounded event memory.
+        // v4 adds project identities and completion dedupe. Existing keys still
+        // read verbatim; the service lazily copies an observed main's v3 row
+        // into its project row, atomically marking the source as imported.
+        // Historical anonymous rows have no repo metadata: never guess their
+        // project or delete them. They remain readable by their original key.
         return new AgentBiography(record);
     }
 
@@ -277,9 +294,42 @@ export class AgentBiography {
                 biographyEvents: {
                     ...this.extensions.biographyEvents,
                     recentPushKeys: [...this.extensions.biographyEvents.recentPushKeys],
+                    recentCompletedSessionKeys: [...this.extensions.biographyEvents.recentCompletedSessionKeys],
                 },
                 lifeEpisodes: this.extensions.lifeEpisodes.map(episode => ({ ...episode })),
             },
+        };
+    }
+
+    /** Merge a v1–v3 main's memory once; its store row owns the import marker. */
+    absorbLegacyRecord(record) {
+        const legacy = AgentBiography.fromRecord(record);
+        if (!legacy) return;
+        this.firstSeenAt = Math.min(this.firstSeenAt || Infinity, legacy.firstSeenAt || Infinity);
+        if (!Number.isFinite(this.firstSeenAt)) this.firstSeenAt = 0;
+        this.lastSeenAt = Math.max(this.lastSeenAt, legacy.lastSeenAt);
+        for (const stat of ['sessionsCompleted', 'commitsPushed', 'lifetimeTokens', 'errorsRecovered']) {
+            this[stat] += legacy[stat];
+        }
+        const milestones = new Map();
+        for (const milestone of [...legacy.milestones, ...this.milestones]) {
+            const previous = milestones.get(milestone.id);
+            if (!previous || milestone.at < previous.at) milestones.set(milestone.id, milestone);
+        }
+        this.milestones = [...milestones.values()];
+        const memory = this.extensions.biographyEvents;
+        const oldMemory = legacy.extensions.biographyEvents;
+        this.extensions = {
+            ...legacy.extensions,
+            ...this.extensions,
+            biographyEvents: normalizePushMemory({
+                pushWatermarkAt: Math.max(memory.pushWatermarkAt, oldMemory.pushWatermarkAt),
+                recentPushKeys: [...oldMemory.recentPushKeys, ...memory.recentPushKeys],
+                recentCompletedSessionKeys: [
+                    ...oldMemory.recentCompletedSessionKeys, ...memory.recentCompletedSessionKeys,
+                ],
+            }),
+            lifeEpisodes: normalizeLifeEpisodes([...legacy.extensions.lifeEpisodes, ...this.extensions.lifeEpisodes]),
         };
     }
 
@@ -347,7 +397,14 @@ export class AgentBiography {
     }
 
     /** Returns newly earned milestones (possibly empty). */
-    recordSessionCompleted(now = Date.now()) {
+    recordSessionCompleted(now = Date.now(), sessionKey = null) {
+        if (sessionKey) {
+            const key = compactEventKey(sessionKey);
+            const keys = this.extensions.biographyEvents.recentCompletedSessionKeys;
+            if (keys.includes(key)) return [];
+            keys.push(key);
+            if (keys.length > RECENT_PUSH_KEY_LIMIT) keys.splice(0, keys.length - RECENT_PUSH_KEY_LIMIT);
+        }
         this.sessionsCompleted += 1;
         return this._collectNewMilestones(now);
     }

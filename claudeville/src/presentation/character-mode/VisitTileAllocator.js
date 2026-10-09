@@ -1,10 +1,13 @@
 import { normalizeBuildingType, VISIT_OVERFLOW_TILES } from '../../config/buildings.js';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { AMBIENT_GROUND_PROPS, DISTRICT_PROPS, SCENIC_POINT_PROPS } from '../../config/scenery.js';
-import { COMMAND_QUEUE, inVillageMasonry, REST_SEATS } from '../../config/townPlan.js';
+import { APPROACH_FILES, COMMAND_QUEUE, inVillageMasonry, REST_SEATS } from '../../config/townPlan.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { compareByWaitAge, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
+import { projectKeyFor, updateHomeDistrictContext } from './HomeDistrict.js';
+import { errandCap, ROUTINE_ROLES, STROLL_CAP } from './CrowdRoutine.js';
+import { restSeatStepBias } from './DayRoutine.js';
 
 const DEFAULT_RESERVATION_TTL_MS = 20000;
 const TILE_OCCUPANCY_RADIUS = 0.78;
@@ -13,7 +16,13 @@ const WALKABILITY_PENALTY = 240;
 const RESERVED_PENALTY = 180;
 const TILE_CROWD_PENALTY = 70;
 const BUILDING_CROWD_PENALTY = 18;
-const OVER_CAPACITY_PENALTY = 130;
+// PL-P14 — past capacity a slot costs `over² × k`, so the allocator tells
+// the 6th body at a five-slot building (over 1) from the 11th (over 6).
+const OVER_CAPACITY_PENALTY_K = 130;
+export function overCapacityPenalty(over) {
+    const n = Math.max(0, Number(over) || 0);
+    return n * n * OVER_CAPACITY_PENALTY_K;
+}
 const DISTANCE_WEIGHT = 0.15;
 const SAME_AGENT_SLOT_BONUS = 90;
 const RELATED_CLUSTER_BONUS = 45;
@@ -60,9 +69,21 @@ const FACING_TILE_STEP = Object.freeze({ 'south-east': [1, 0], 'south-west': [0,
 const FIXTURE_BODY = Object.freeze({ halfPx: 16, heightPx: 60, backPx: 8 });
 const FIXTURE_PARTS = Object.freeze({
     'prop.runeBrazier': [14, 0], 'prop.lantern': [5, 16], 'prop.bridgeLanternPost': [6, 0],
-    'prop.well': [22, 0], 'prop.oreCart': [19, 0], 'prop.flowerCart': [16, 0],
-    'prop.marketStall': [32, 0], 'prop.signpost': [11, 16], 'prop.noticePillar': [21, 0],
-    'prop.runestone': [11, 0], 'prop.scrollCrates': [19, 0], 'prop.netRack': [15, 0],
+    'prop.well': [22, 0], 'prop.oreCart': [19, 0], 'prop.flowerCart': [24, 0],
+    'prop.marketStall': [32, 0], 'prop.marketStall.ochre': [32, 0], 'prop.marketStall.canvas': [32, 0],
+    'prop.signpost': [13, 0], 'prop.noticePillar': [21, 0],
+    'prop.runestone': [11, 0], 'prop.scrollCrates': [19, 0], 'prop.netRack': [14, 0],
+    // W8.3c garden furniture (scenery.js DISTRICT_PROPS).
+    'veg.hedgerow': [25, 0], 'prop.trellisArch': [22, 0], 'prop.torchSconce': [8, 0],
+    'prop.cairn': [8, 0], 'prop.wellTrough': [21, 0], 'prop.laundryLine': [25, 0],
+    // W8.3b avenue + farm (half-widths of the alpha > 128 standing part).
+    'prop.marketStall.bread': [19, 0], 'prop.milestone': [7, 0],
+    'prop.farm.dovecote': [16, 0], 'prop.farm.scarecrow': [16, 0], 'prop.farm.hayWagon': [25, 0],
+    // W8.3a harbour quay, smithy and mine yards.
+    'prop.saltCrates': [20, 0], 'prop.crabPots': [18, 0], 'prop.anchorChain': [17, 0], 'prop.bollardPair': [15, 0],
+    'prop.fishRack': [22, 0], 'prop.firewoodStack': [22, 0], 'prop.bellowsBench': [19, 0], 'prop.barrelStack': [15, 0],
+    'prop.grindstone': [15, 0], 'prop.toolRack': [20, 0], 'prop.wheelbarrow': [17, 0], 'prop.slagHeap': [18, 0],
+    'prop.oreSacks': [18, 0],
     bench: [14, 0],
 });
 const fixtureFoot = (tileX, tileY, [half, rise], seatId = null) => Object.freeze({
@@ -134,6 +155,7 @@ export class VisitTileAllocator {
             queuedAllocations: 0,
             overCapacityAllocations: 0,
             clusterPressureAllocations: 0,
+            routineRefusals: 0,
         };
         this._occupancyEntries = [];
         this._occupancyBuckets = new Map();
@@ -152,6 +174,7 @@ export class VisitTileAllocator {
         this.pathfinder = pathfinder || null;
         this._rebuildAgentMeta();
         this._rebuildOccupancyIndex();
+        updateHomeDistrictContext(this.agentSprites);
         this.cleanup(Date.now());
         this._releaseStaleAgentReservations();
         return this;
@@ -168,6 +191,7 @@ export class VisitTileAllocator {
                 teamName: agent?.teamName || null,
                 parentSessionId: agent?.parentSessionId || null,
                 isSubagent: !!agent?.isSubagent,
+                projectKey: projectKeyFor(agent),
             });
         }
     }
@@ -282,12 +306,19 @@ export class VisitTileAllocator {
         return best;
     }
 
+    // W4.3 / W4.4 — `role` names a living-crowd routine leg ('stroll',
+    // 'errand', 'winddown'); the reservation carries it so the caps count
+    // live holders. `routineCap` lowers the stroll cap (DayRoutine night).
+    // `dayHour` tilts the rest-seat pick toward the brazier steps at night.
     allocate({
         agent,
         sprite = null,
         building = null,
         intent = null,
         candidates = null,
+        role = null,
+        routineCap = null,
+        dayHour = null,
     } = {}) {
         if (this._disposed) return null;
         const now = Date.now();
@@ -301,8 +332,14 @@ export class VisitTileAllocator {
 
         // 7.1 / 7.2 — rest seats and the Command queue are places, not
         // buildings: their slot is chosen by distance or by wait rank.
-        if (building?.restSeats) return this._allocateRestSeat({ agentId, agent, sprite, now });
+        if (building?.restSeats) return this._allocateRestSeat({ agentId, agent, sprite, now, dayHour });
         if (building?.commandQueue) return this._allocateQueuePlace({ agentId, now });
+
+        const routine = ROUTINE_ROLES.includes(role) ? role : null;
+        if (routine && this.routineHolders(routine, now, agentId) >= this.routineCap(routine, routineCap)) {
+            this.metrics.routineRefusals++;
+            return null;
+        }
 
         const resolvedBuilding = this._resolveBuilding(building, intent);
         const buildingType = this._buildingType(resolvedBuilding, intent);
@@ -310,7 +347,6 @@ export class VisitTileAllocator {
             building: resolvedBuilding,
             buildingType,
             candidates,
-            intent,
         });
         if (slots.length === 0) {
             this.metrics.rejected++;
@@ -350,6 +386,20 @@ export class VisitTileAllocator {
             return null;
         }
 
+        // W4.2 — door discipline: past capacity a working visitor waits in
+        // its landmark's approach file, then its outer ring, by arrival.
+        best = this._lineSlot({
+            agentId,
+            building: resolvedBuilding,
+            buildingType,
+            intent,
+            candidates,
+            best,
+            buildingCapacity,
+            existingReservation,
+            now,
+        }) || best;
+
         const previousReservationId = this.agentReservationIds.get(agentId);
         if (previousReservationId) this.reservations.delete(previousReservationId);
 
@@ -388,6 +438,10 @@ export class VisitTileAllocator {
             facingPoint: best.facingPoint
                 ? { x: best.facingPoint.x, y: best.facingPoint.y }
                 : null,
+            routine,
+            line: !!best.line,
+            queuedAt: best.line ? best.queuedAt : null,
+            queueSeq: best.line ? best.queueSeq : null,
         };
         this.reservations.set(reservationId, reservation);
         this.agentReservationIds.set(agentId, reservationId);
@@ -427,13 +481,110 @@ export class VisitTileAllocator {
             relatedCluster: reservation.relatedCluster,
             relatedDistance: reservation.relatedDistance,
             facingPoint: reservation.facingPoint,
+            line: reservation.line,
         };
+    }
+
+    // W4.2 — door discipline (PL-P8 / P14). A working visitor that finds its
+    // landmark full, or others already waiting there, joins the approach
+    // file (`APPROACH_FILES`) in arrival order: rank 0 faces the entrance and
+    // each later place faces the one ahead. Ranks past the file take the
+    // outer ring (`VISIT_OVERFLOW_TILES`) nearest first, and ranks past the
+    // ring the scored slot. A waiting body asks again at every dwell end, so
+    // it steps up when a place ahead frees, and the first `capacity - inside`
+    // ranks go in. Null: the scored slot stands.
+    _lineSlot({ agentId, building, buildingType, intent, candidates, best, buildingCapacity, existingReservation, now }) {
+        const file = APPROACH_FILES[buildingType];
+        if (!file || (Array.isArray(candidates) && candidates.length)) return null;
+        if (!intent || String(intent.source || '').toLowerCase() === 'ambient') return null;
+        const own = existingReservation?.buildingType === buildingType && existingReservation.expiresAt > now
+            ? existingReservation
+            : null;
+        if (own && !own.line) return null;
+        let inside = 0;
+        const waiting = [];
+        for (const reservation of this.reservations.values()) {
+            if (reservation.agentId === agentId || reservation.expiresAt <= now) continue;
+            if (reservation.buildingType !== buildingType) continue;
+            if (reservation.line) waiting.push(reservation);
+            else inside++;
+        }
+        const queuedAt = own ? own.queuedAt : now;
+        const queueSeq = own ? own.queueSeq : (this._lineSequence || 0) + 1;
+        const rank = waiting.filter((other) => other.queuedAt < queuedAt
+            || (other.queuedAt === queuedAt && other.queueSeq < queueSeq)).length;
+        if (rank < buildingCapacity - inside) return null;
+        if (!own) this._lineSequence = queueSeq;
+
+        const ring = VISIT_OVERFLOW_TILES[buildingType] || [];
+        const door = building?.entrance || file[0];
+        const placeId = (index) => (index < file.length
+            ? `${buildingType}:line:${index}`
+            : `${buildingType}:ring:${index - file.length}`);
+        // A body ahead that has not yet asked again still holds its old
+        // place; never share it, take the next free one back.
+        const held = new Set(waiting.map((other) => other.slotId));
+        let index = rank;
+        while (index < file.length + ring.length && held.has(placeId(index))) index++;
+        let place = best;
+        let slotId = best.slotId;
+        let facingPoint = best.facingPoint || { x: door.tileX, y: door.tileY };
+        if (index < file.length) {
+            place = file[index];
+            slotId = placeId(index);
+            const ahead = index > 0 ? file[index - 1] : door;
+            facingPoint = { x: ahead.tileX, y: ahead.tileY };
+        } else if (index < file.length + ring.length) {
+            place = ring[index - file.length];
+            slotId = placeId(index);
+            facingPoint = { x: door.tileX, y: door.tileY };
+        }
+        return {
+            ...best,
+            tileX: place.tileX,
+            tileY: place.tileY,
+            slotId,
+            slotIndex: null,
+            walkable: this._isStandable(place.tileX, place.tileY),
+            scenic: false,
+            overflow: true,
+            line: true,
+            queuedAt,
+            queueSeq,
+            queueGroup: `${buildingType}:line`,
+            queueIndex: rank,
+            queueDepth: waiting.length + 1,
+            queueOverflow: true,
+            facingPoint,
+        };
+    }
+
+    // W4.3 / W4.4 — live reservations on a routine leg, other than `exceptAgentId`'s.
+    routineHolders(role, now = Date.now(), exceptAgentId = null) {
+        let count = 0;
+        for (const reservation of this.reservations.values()) {
+            if (reservation.routine !== role || reservation.expiresAt <= now) continue;
+            if (exceptAgentId && reservation.agentId === exceptAgentId) continue;
+            count++;
+        }
+        return count;
+    }
+
+    // Strollers: STROLL_CAP, lowered by the daypart; errands: a third of the
+    // live agents; a wind-down is never refused.
+    routineCap(role, requested = null) {
+        if (role === 'stroll') {
+            const cap = requested == null ? NaN : Number(requested);
+            return Number.isFinite(cap) ? Math.max(0, Math.min(STROLL_CAP, cap)) : STROLL_CAP;
+        }
+        if (role === 'errand') return errandCap(this.agentSprites?.length || 0);
+        return Infinity;
     }
 
     // 7.1 — the free seat the villager reaches soonest on foot (a seat across
     // the water is far however close it looks); its own seat while it still
     // holds one. With every seat taken it stands beside the nearest seat.
-    _allocateRestSeat({ agentId, agent, sprite, now }) {
+    _allocateRestSeat({ agentId, agent, sprite, now, dayHour = null }) {
         const own = this._reservationForAgent(agentId);
         const taken = new Set();
         const standing = new Set();
@@ -452,7 +603,7 @@ export class VisitTileAllocator {
             .map((seat) => {
                 const direct = source ? this._distance(source, seat) : 0;
                 const walked = steps ? steps.get(`${seat.tileX},${seat.tileY}`) ?? SEAT_UNREACHED_STEPS + direct : direct;
-                return { seat, distance: walked };
+                return { seat, distance: walked + restSeatStepBias(dayHour, seat) };
             })
             .sort((a, b) => (a.distance - b.distance) || a.seat.id.localeCompare(b.seat.id));
         for (const { seat } of bySource) {
@@ -752,6 +903,40 @@ export class VisitTileAllocator {
         };
     }
 
+    get occupancyBuckets() {
+        return this._occupancyBuckets;
+    }
+
+    // One immutable-by-convention map per two-second window. Rounded pressure
+    // and a content version keep unchanged crowds reusable across windows.
+    getCongestionSnapshot(now = Date.now()) {
+        const bucket = Math.floor(now / 2000);
+        if (this._congestionSnapshot?.bucket === bucket) return this._congestionSnapshot;
+        const congestionTiles = new Map();
+        for (const [key, entries] of this._occupancyBuckets) {
+            congestionTiles.set(key, Math.min(8, Math.round(entries.length / 2) * 2));
+        }
+        const congestionVersion = [...congestionTiles].sort(([a], [b]) => a.localeCompare(b))
+            .map(([key, count]) => `${key}:${count}`).join(';');
+        this._congestionSnapshot = { bucket, congestionTiles, congestionVersion };
+        return this._congestionSnapshot;
+    }
+
+    _projectSlotBonus(agentId, buildingType, slot) {
+        const project = this.agentMeta.get(agentId)?.projectKey;
+        if (!project) return 0;
+        let bonus = 0;
+        for (const reservation of this.reservations.values()) {
+            if (reservation.agentId === agentId || reservation.buildingType !== buildingType) continue;
+            const other = this.agentMeta.get(reservation.agentId)?.projectKey;
+            if (!other) continue;
+            const proximity = Math.max(0, 1 - this._distance(reservation, slot) / 3);
+            bonus += (other === project ? 1 : -1) * proximity;
+        }
+        // Less than one point: capacity, safety and tool-selected slots win.
+        return Math.max(-0.8, Math.min(0.8, bonus));
+    }
+
     debug(now = Date.now()) {
         return this.snapshot(now);
     }
@@ -783,6 +968,7 @@ export class VisitTileAllocator {
         this._occupancyEntries = [];
         this._occupancyBuckets.clear();
         this._crowdClusters = [];
+        this._congestionSnapshot = null;
     }
 
     _scoreSlot({
@@ -834,7 +1020,7 @@ export class VisitTileAllocator {
         score += tileOccupancy * TILE_CROWD_PENALTY;
         score += clusterPressure * LOCAL_CLUSTER_PENALTY;
         score += Math.max(0, buildingOccupancy - 1) * BUILDING_CROWD_PENALTY;
-        score += (overTileCapacity + overBuildingCapacity) * OVER_CAPACITY_PENALTY;
+        score += overCapacityPenalty(overTileCapacity) + overCapacityPenalty(overBuildingCapacity);
         score += distance * DISTANCE_WEIGHT;
         if (sameAgentSlot) score -= SAME_AGENT_SLOT_BONUS;
         if (clustered) score -= RELATED_CLUSTER_BONUS;
@@ -843,6 +1029,7 @@ export class VisitTileAllocator {
             score -= TARGET_SLOT_INDEX_BONUS;
         }
         score -= intentBonus;
+        score -= this._projectSlotBonus(agentId, buildingType, slot);
         if (slot.overflow) score += 35;
         if (slot.scenic) score += intent?.source === 'ambient' ? -14 : 10;
 
@@ -869,10 +1056,10 @@ export class VisitTileAllocator {
         };
     }
 
-    _candidateTiles({ building, buildingType, candidates, intent = null }) {
+    _candidateTiles({ building, buildingType, candidates }) {
         const source = Array.isArray(candidates) && candidates.length
             ? candidates
-            : this._buildingVisitTiles(building, intent);
+            : this._buildingVisitTiles(building);
         const seen = new Set();
         const out = [];
         for (let index = 0; index < source.length; index++) {
@@ -890,7 +1077,7 @@ export class VisitTileAllocator {
         return out;
     }
 
-    _buildingVisitTiles(building, intent = null) {
+    _buildingVisitTiles(building) {
         if (!building) return [];
         let base = [];
         if (Array.isArray(building.visitTiles) && building.visitTiles.length) {
@@ -910,15 +1097,11 @@ export class VisitTileAllocator {
                 }];
             }
         }
-        const buildingType = this._normalizeBuildingType(building.type);
-        const overflow = buildingType
-            ? (VISIT_OVERFLOW_TILES[buildingType] || []).map((tile, index) => ({
-                ...tile,
-                slotId: tile.slotId || `${buildingType}:overflow:${index}`,
-                intentId: intent?.id || null,
-            }))
-            : [];
-        return overflow.length ? [...base, ...overflow] : base;
+        // A file place on the building's own slot (the Harbor quay) is the
+        // line's alone; the outer ring is ranked by `_lineSlot`, never scored.
+        const file = APPROACH_FILES[this._normalizeBuildingType(building.type)];
+        if (!file) return base;
+        return base.filter((tile) => !file.some((place) => place.tileX === tile.tileX && place.tileY === tile.tileY));
     }
 
     _normalizeTile(tile) {
@@ -985,8 +1168,14 @@ export class VisitTileAllocator {
     _buildingOccupancy(building, buildingType, ignoredAgentId) {
         let count = 0;
         const visitTiles = this._candidateTiles({ building, buildingType, candidates: null });
+        // A body waiting in the approach file is not inside (W4.2).
+        const waiting = new Set();
+        for (const reservation of this.reservations.values()) {
+            if (reservation.line && reservation.buildingType === buildingType) waiting.add(reservation.agentId);
+        }
         for (const tile of this._occupancyEntries || []) {
             if (ignoredAgentId && tile.agentId === ignoredAgentId) continue;
+            if (waiting.has(tile.agentId)) continue;
             if (building && typeof building.containsVisitPoint === 'function' && building.containsVisitPoint(tile.tileX, tile.tileY)) {
                 count++;
                 continue;
@@ -1068,7 +1257,7 @@ export class VisitTileAllocator {
     _reservationCountForBuilding(buildingType, ignoredAgentId) {
         let count = 0;
         for (const reservation of this.reservations.values()) {
-            if (reservation.buildingType !== buildingType) continue;
+            if (reservation.buildingType !== buildingType || reservation.line) continue;
             if (ignoredAgentId && reservation.agentId === ignoredAgentId) continue;
             count++;
         }

@@ -25,6 +25,20 @@
 // side merge into one exact group. Nothing action-needed is culled for being
 // offscreen.
 //
+// Wait age as size (Living Isle W5.4). Every mark steps on the one ladder
+// `SignalLedger.waitAgeTier` (< 1 / 1–5 / 5–15 / >= 15 min), aged from the
+// same instant the plate prints: the beacon is the 2× motif below 5 minutes,
+// the 2× motif on a ringed dark medallion (a one-pixel status-colour ring) from
+// 5 minutes, and the 3× motif from 15 minutes; the status cell carries one
+// carved notch row per rung above the first. An unknown age claims no rung.
+// State changes only — nothing blinks, so reduced motion is identical.
+//
+// Off-frame tally (W5.6). When a live, silent (not action-needed) agent
+// stands wholly beyond the frame, one walnut tab docks on that side with a
+// stepped arrow and the exact per-status counts (`4 working · 2 idle`):
+// counts only, no names, no text from the agents. T1 plates take their slots
+// first; a tab slides along its edge to a clear slot, or is not drawn.
+//
 // Cost: layout is O(n²) over on-screen action-needed agents only (usually
 // 0–10); drawing is ≤ 8 fills + 2 fillText per plate and one cached stamp
 // blit per beacon. Static: no motion, so reduced motion is identical.
@@ -43,12 +57,12 @@
 // edge arrow (plate ink) are role 0. Canvas and non-integer DPR keep the
 // overlay plates.
 
-import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { waitAnchor } from '../../domain/services/SignalLedger.js';
+import { AgentStatus, normalizeAgentStatus } from '../../domain/value-objects/AgentStatus.js';
+import { waitAgeTier, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { STATUS_VISUALS, WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { EFFECT_COLORS } from '../../config/artPalette.js';
 import { elapsedTickNow, formatElapsed } from '../shared/Formatters.js';
-import { LABEL_INK, drawOutlinedMotif, fitLabelText, measureLabelText, outlinedMotifStamp } from './WorldLabelKit.js';
+import { LABEL_INK, WALNUT, drawOutlinedMotif, fitLabelText, measureLabelText, outlinedMotifStamp, paintWalnutBoard } from './WorldLabelKit.js';
 import { GPU_RECORD_FLAGS } from './gpu/GpuWorldPolicy.js';
 
 export const ATTENTION_STATUSES = Object.freeze([
@@ -65,6 +79,16 @@ const KIND = Object.freeze({
 
 const BEACON_STEP = 2;
 const BEACON_SIZE = 8 * BEACON_STEP + 2;
+// W5.4 — the beacon from 5 minutes: the 2× motif centred on a dark medallion
+// whose one-pixel status ring keeps a one-pixel dark rim, filling the same
+// 26 px box the 3× motif fills from 15 minutes.
+const BEACON_RING_BOX = 26;
+const BEACON_RING_INSET = (BEACON_RING_BOX - BEACON_SIZE) / 2;
+const BEACON_BIG_STEP = 3;
+// The status cell's age notches: one 3×2 row per rung above the first,
+// stacked up from the word's baseline, 3 px clear of the word.
+const AGE_NOTCH_W = 3;
+const AGE_NOTCH_GAP = 3;
 const BEACON_GAP = 2;          // head (or chevron) top → beacon bottom
 const PLATE_H = 17;
 const NOTCH_ROWS = 3;
@@ -93,6 +117,17 @@ const EDGE_ARROW_DOWN = Object.freeze(['..###..', '..###..', '..###..', '#######
 const EDGE_SIDE_ORDER = Object.freeze(['top', 'bottom', 'left', 'right']);
 const EDGE_MERGE_PAD = 32;
 const CAPTION_CLEAR = 100;
+// W5.6 off-frame tally tab: a walnut board as tall as a plate holding a 7×7
+// arrow and the counts, sliding along its edge in TALLY_SLIDE steps to clear
+// the T1 plates.
+const TALLY_PAD = 5;
+const TALLY_SLIDE = 24;
+const TALLY_WORDS = Object.freeze([
+    [AgentStatus.WORKING, 'working'],
+    [AgentStatus.WAITING, 'waiting'],
+    [AgentStatus.IDLE, 'idle'],
+    [AgentStatus.COMPLETED, 'done'],
+]);
 
 export function isAttentionStatus(status) {
     return status === AgentStatus.WAITING_ON_USER
@@ -125,9 +160,28 @@ function rectsOverlap(a, b, pad = 0) {
     return a.left < b.right + pad && a.right + pad > b.left && a.top < b.bottom + pad && a.bottom + pad > b.top;
 }
 
-function plateWidths(ctx, word, text) {
+// The ladder rung a mark shows for an age anchored at `since` (null: unknown).
+function ageTier(since, now) {
+    return since ? waitAgeTier(Math.max(0, now - since)) : null;
+}
+
+// Beacon geometry for a rung: the drawn box, the motif step, and whether the
+// motif sits on the ringed medallion (inset by BEACON_RING_INSET).
+function beaconForm(tier) {
+    if (tier >= 3) return { size: 8 * BEACON_BIG_STEP + 2, step: BEACON_BIG_STEP, ring: false };
+    if (tier === 2) return { size: BEACON_RING_BOX, step: BEACON_STEP, ring: true };
+    return { size: BEACON_SIZE, step: BEACON_STEP, ring: false };
+}
+
+// Notch rows a status cell carries for a rung: one per rung above the first.
+function notchRows(tier) {
+    return tier > 0 ? tier : 0;
+}
+
+function plateWidths(ctx, word, text, tier = null) {
     ctx.font = WORLD_DISPLAY_FONT_8;
-    const wordCell = measureLabelText(ctx, word) + WORD_PAD * 2;
+    const notchCell = notchRows(tier) ? AGE_NOTCH_GAP + AGE_NOTCH_W : 0;
+    const wordCell = measureLabelText(ctx, word) + WORD_PAD * 2 + notchCell;
     ctx.font = WORLD_BODY_FONT_11;
     const textCell = measureLabelText(ctx, text) + TEXT_PAD * 2;
     return { wordCell, textCell, width: 1 + wordCell + textCell + 1 };
@@ -141,30 +195,43 @@ function plateWidths(ctx, word, text) {
  * V8 — `reserved` rects (chrome over the world, e.g. the World dock, in the
  * same canvas CSS px) are occluded screen: a beacon under one counts as
  * beyond the top edge, and no plate rect ever intersects one.
- * @returns {{ plates: object[], beacons: object[], count: number, offscreen: number }}
+ * W5.6 — `tallies` are the off-frame walnut tabs, one per side holding at
+ * least one live silent agent wholly beyond the frame.
+ * @returns {{ plates: object[], beacons: object[], tallies: object[], count: number, offscreen: number }}
  */
 export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved = null, now = elapsedTickNow() } = {}) {
-    const layout = { plates: [], beacons: [], count: 0, offscreen: 0 };
+    const layout = { plates: [], beacons: [], tallies: [], count: 0, offscreen: 0 };
     if (!ctx || !camera?.worldToScreen || !viewport?.width) return layout;
     if (reserved?.length) viewport = { ...viewport, reserved };
     const items = [];
     const edgeItems = [];
+    const silent = [];
     for (const sprite of sprites || []) {
         const status = sprite?.agent?.status;
         const kind = KIND[status];
-        if (!kind || sprite.isArrivalPending?.() || sprite.agent?.isDeparted || sprite._archiveAnim) continue;
-        if (!Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
+        if (sprite?.isArrivalPending?.() || sprite?.agent?.isDeparted || sprite?._archiveAnim) continue;
+        if (!sprite?.agent || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
         const headY = typeof sprite._labelTopY === 'function' && typeof sprite._headTopY === 'function'
             ? sprite._labelTopY(sprite._headTopY())
             : sprite.y - 64;
         const head = camera.worldToScreen(sprite.x, headY);
+        if (!kind) {
+            const tally = offFrameTallyItem(sprite, head, camera, viewport);
+            if (tally) silent.push(tally);
+            continue;
+        }
         const x = Math.round(head.x);
         const beaconBottom = Math.round(head.y) - BEACON_GAP;
+        const since = statusSince(sprite);
+        const tier = ageTier(since, now);
+        const form = beaconForm(tier);
         const beacon = {
             kind,
-            left: x - BEACON_SIZE / 2,
-            top: beaconBottom - BEACON_SIZE,
-            right: x + BEACON_SIZE / 2,
+            step: form.step,
+            ring: form.ring,
+            left: x - form.size / 2,
+            top: beaconBottom - form.size,
+            right: x + form.size / 2,
             bottom: beaconBottom,
         };
         const item = {
@@ -173,7 +240,8 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
             x,
             y: Math.round(head.y),
             beacon,
-            since: statusSince(sprite),
+            since,
+            tier,
             name: spriteName(sprite),
             id: String(sprite.agent?.id || ''),
             // 7.2 — holds a place in the Command queue (a line slot or, for the
@@ -190,7 +258,10 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
     }
     layout.count = items.length + edgeItems.length;
     layout.offscreen = edgeItems.length;
-    if (!layout.count) return layout;
+    if (!layout.count) {
+        layout.tallies = layoutTallies(ctx, silent, viewport, layout.plates);
+        return layout;
+    }
 
     // Oldest first: it keeps the natural slot; unknown ages sort last.
     const byAge = (a, b) => ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.id.localeCompare(b.id);
@@ -200,7 +271,7 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
     for (const item of [...items, ...edgeItems]) {
         item.text = fitName(ctx, item.name);
         item.age = ageText(item.since, now);
-        item.widths = plateWidths(ctx, item.kind.word, item.age ? `${item.text} ${item.age}` : item.text);
+        item.widths = plateWidths(ctx, item.kind.word, item.age ? `${item.text} ${item.age}` : item.text, item.tier);
     }
 
     // Edge plates are placed first: their slots are fixed by the frame, and
@@ -276,7 +347,87 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
         if (!changed) break;
     }
     for (const plate of placedPlates) layout.plates.push(plate);
+    layout.tallies = layoutTallies(ctx, silent, viewport, [...layout.plates, ...layout.beacons]);
     return layout;
+}
+
+// W5.6 — a silent agent wholly beyond the frame: the side it lies beyond
+// (largest overshoot of its head-to-feet column, like `offscreenSide`) and its
+// live status. Null while any part of the body is in view.
+function offFrameTallyItem(sprite, head, camera, viewport) {
+    const feet = camera.worldToScreen(sprite.x, sprite.y);
+    const top = Math.min(head.y, feet.y);
+    const bottom = Math.max(head.y, feet.y);
+    const over = {
+        top: -bottom,
+        bottom: top - viewport.height,
+        left: -(feet.x + 8),
+        right: feet.x - 8 - viewport.width,
+    };
+    let side = null;
+    let best = 0;
+    for (const key of EDGE_SIDE_ORDER) {
+        if (over[key] > best) {
+            best = over[key];
+            side = key;
+        }
+    }
+    if (!side) return null;
+    return { side, status: normalizeAgentStatus(sprite.agent.status), x: feet.x, y: (top + bottom) / 2 };
+}
+
+// The exact per-status count text of one side's members, in a fixed order;
+// every silent status has a word, so the parts always sum to the members.
+export function offFrameTallyText(statuses) {
+    const counts = new Map();
+    for (const status of statuses) {
+        const key = normalizeAgentStatus(status);
+        counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    const parts = [];
+    for (const [status, word] of TALLY_WORDS) {
+        const count = counts.get(status);
+        if (count) parts.push(`${count} ${word}`);
+    }
+    return parts.join(' · ');
+}
+
+// One tab per side, docked like an edge plate at the members' mean position
+// along that edge, then slid in TALLY_SLIDE steps (nearest first) until it
+// clears every T1 plate and beacon, every earlier tab and reserved chrome.
+// No clear slot: the tab gives way and is not drawn.
+function layoutTallies(ctx, silent, viewport, taken) {
+    const tabs = [];
+    if (!silent.length) return tabs;
+    ctx.font = WORLD_BODY_FONT_11;
+    for (const side of EDGE_SIDE_ORDER) {
+        const horizontal = side === 'top' || side === 'bottom';
+        const members = silent.filter(item => item.side === side);
+        if (!members.length) continue;
+        let sumX = 0;
+        let sumY = 0;
+        for (const item of members) {
+            sumX += item.x;
+            sumY += item.y;
+        }
+        const text = offFrameTallyText(members.map(item => item.status));
+        const width = 1 + TALLY_PAD + 7 + TALLY_PAD + 1 + TALLY_PAD + measureLabelText(ctx, text) + TALLY_PAD + 1;
+        const anchorX = sumX / members.length;
+        const anchorY = sumY / members.length;
+        const reach = Math.ceil((horizontal ? viewport.width : viewport.height) / TALLY_SLIDE);
+        let rect = null;
+        for (let step = 0; step <= reach * 2 && !rect; step++) {
+            const shift = (step % 2 ? 1 : -1) * Math.ceil(step / 2) * TALLY_SLIDE;
+            const candidate = edgeRect(side, anchorX + (horizontal ? shift : 0), anchorY + (horizontal ? 0 : shift), width, viewport);
+            if (candidate.left < 0 || candidate.top < 0 || candidate.right > viewport.width || candidate.bottom > viewport.height) continue;
+            if (taken.some(other => rectsOverlap(candidate, other.rect || other, 4))) continue;
+            if (tabs.some(tab => rectsOverlap(candidate, tab.rect, 4))) continue;
+            if (viewport.reserved?.some(chrome => rectsOverlap(candidate, chrome, 2))) continue;
+            rect = candidate;
+        }
+        if (rect) tabs.push({ side, text, members: members.length, rect });
+    }
+    return tabs;
 }
 
 function beaconsNear(a, b) {
@@ -477,6 +628,7 @@ function singlePlate(item) {
         tip: item.tip,
         members: 1,
         since: item.since,
+        tier: item.tier,
         ids: [item.id],
     };
 }
@@ -498,11 +650,12 @@ function groupPlate(ctx, members, now) {
         color: kind.color,
         text,
         age,
-        widths: plateWidths(ctx, kind.word, age ? `${text} ${age}` : text),
+        widths: plateWidths(ctx, kind.word, age ? `${text} ${age}` : text, oldest.tier),
         anchorX: Math.round(sumX / members.length),
         tip,
         members: members.length,
         since: oldest.since,
+        tier: oldest.tier,
         ids: members.map(item => item.id),
     };
 }
@@ -540,11 +693,13 @@ function clampRect(rect, viewport) {
     return clearReserved({ left, top, right: left + width, bottom: top + height }, viewport);
 }
 
-// Screen rects of every plate and beacon, for plaque/name reservations.
+// Screen rects of every plate, beacon and off-frame tally tab, for
+// plaque/name reservations.
 export function attentionScreenRects(layout) {
     const out = [];
     for (const plate of layout?.plates || []) out.push(plate.rect);
     for (const beacon of layout?.beacons || []) out.push(beacon);
+    for (const tab of layout?.tallies || []) out.push(tab.rect);
     return out;
 }
 
@@ -552,10 +707,11 @@ export function attentionScreenRects(layout) {
  * Draws a layout from layoutAttentionPlates. `ctx` must be in CSS-pixel screen space.
  * `inkOnly` (the resident path, whose GPU drew `attentionMarkRecords` this
  * frame): clear every graphic's footprint instead of filling it, then print
- * the text — the overlay above the GPU marks carries only the ink.
+ * the text — the overlay above the GPU marks carries only the ink. The W5.6
+ * off-frame tally tabs are overlay-only walnut and draw whole either way.
  */
 export function drawAttentionPlates(ctx, layout, { inkOnly = false } = {}) {
-    if (!ctx || !layout?.count) return;
+    if (!ctx || !(layout?.count || layout?.tallies?.length)) return;
     ctx.save();
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
@@ -572,8 +728,12 @@ export function drawAttentionPlates(ctx, layout, { inkOnly = false } = {}) {
     // A beacon stamp's opaque pixels erase exactly what they would cover.
     if (inkOnly) ctx.globalCompositeOperation = 'destination-out';
     for (const beacon of layout.beacons) {
-        drawOutlinedMotif(ctx, beacon.kind.motif, beacon.left + 1, beacon.top + 1, {
-            step: BEACON_STEP,
+        // The medallion's clears ignore the composite mode, so the ink-only
+        // pass erases it before the stamp, in the GPU records' order.
+        if (beacon.ring) beaconRingFills(beacon, fill);
+        const inset = beacon.ring ? BEACON_RING_INSET : 0;
+        drawOutlinedMotif(ctx, beacon.kind.motif, beacon.left + inset + 1, beacon.top + inset + 1, {
+            step: beacon.step || BEACON_STEP,
             color: beacon.kind.color,
             outline: LABEL_INK.plateOutline,
         });
@@ -583,6 +743,7 @@ export function drawAttentionPlates(ctx, layout, { inkOnly = false } = {}) {
         plateFills(plate, fill);
         drawPlateText(ctx, plate);
     }
+    for (const tab of layout.tallies || []) drawTallyTab(ctx, tab);
     ctx.restore();
 }
 
@@ -688,13 +849,16 @@ export function attentionMarkRecords(layout, { scale = 1, out = [] } = {}) {
     };
     for (const plate of layout.plates) leaderFills(plate, fill);
     for (const beacon of layout.beacons) {
+        if (beacon.ring) beaconRingFills(beacon, fill);
+        const step = beacon.step || BEACON_STEP;
+        const inset = beacon.ring ? BEACON_RING_INSET : 0;
         // Two stamps, outline under colour: the silhouette in the outline
         // ink (role 0), then only the motif's colour pixels (role 2). Both
         // are opaque-or-empty, so together they are drawOutlinedMotif's
         // pixels exactly.
         const stamps = [
-            [outlinedMotifStamp(beacon.kind.motif, { step: BEACON_STEP, color: LABEL_INK.plateOutline, outline: LABEL_INK.plateOutline, scale }), ROLE_RIM],
-            [outlinedMotifStamp(beacon.kind.motif, { step: BEACON_STEP, color: beacon.kind.color, outline: 'transparent', scale }), ROLE_MARK],
+            [outlinedMotifStamp(beacon.kind.motif, { step, color: LABEL_INK.plateOutline, outline: LABEL_INK.plateOutline, scale }), ROLE_RIM],
+            [outlinedMotifStamp(beacon.kind.motif, { step, color: beacon.kind.color, outline: 'transparent', scale }), ROLE_MARK],
         ];
         for (const [stamp, role] of stamps) {
             if (!stamp) return null;
@@ -704,8 +868,8 @@ export function attentionMarkRecords(layout, { scale = 1, out = [] } = {}) {
             record.sw = stamp.canvas.width;
             record.sh = stamp.canvas.height;
             // drawOutlinedMotif's device origin: one pixel up-left of the motif.
-            record.x = Math.round(beacon.left * scale);
-            record.y = Math.round(beacon.top * scale);
+            record.x = Math.round((beacon.left + inset) * scale);
+            record.y = Math.round((beacon.top + inset) * scale);
             record.width = stamp.canvas.width;
             record.height = stamp.canvas.height;
             record.role = role;
@@ -762,15 +926,23 @@ function leaderFills(plate, fill) {
     const fromY = plate.rect.bottom + NOTCH_ROWS;
     const toY = plate.tip;
     if (toY - fromY < 1 && nx === plate.anchorX) return;
+    elbowLeaderFills(fill, nx, fromY, plate.anchorX, toY, plate.color);
+}
+
+// The one leader grammar for every displaced world label (T1 plates here, the
+// W3.1 thought column in AgentSprite): a one-pixel core in `ink` inside a
+// three-pixel dark outline, vertical at `x` from `fromY` to `toY`, then
+// horizontal along `toY` to `anchorX`. Whole CSS px, axis-aligned only.
+export function elbowLeaderFills(fill, x, fromY, anchorX, toY, ink) {
     const top = Math.min(fromY, toY);
-    fill(LABEL_INK.plateOutline, nx - 1, top, 3, Math.abs(toY - fromY) + 1, ROLE_RIM);
-    if (nx !== plate.anchorX) {
-        const left = Math.min(nx, plate.anchorX);
-        fill(LABEL_INK.plateOutline, left - 1, toY - 1, Math.abs(plate.anchorX - nx) + 3, 3, ROLE_RIM);
+    const height = Math.abs(toY - fromY) + 1;
+    fill(LABEL_INK.plateOutline, x - 1, top, 3, height, ROLE_RIM);
+    if (x !== anchorX) {
+        fill(LABEL_INK.plateOutline, Math.min(x, anchorX) - 1, toY - 1, Math.abs(anchorX - x) + 3, 3, ROLE_RIM);
     }
-    fill(plate.color, nx, top, 1, Math.abs(toY - fromY) + 1, ROLE_RIM);
-    if (nx !== plate.anchorX) {
-        fill(plate.color, Math.min(nx, plate.anchorX), toY, Math.abs(plate.anchorX - nx) + 1, 1, ROLE_RIM);
+    fill(ink, x, top, 1, height, ROLE_RIM);
+    if (x !== anchorX) {
+        fill(ink, Math.min(x, anchorX), toY, Math.abs(anchorX - x) + 1, 1, ROLE_RIM);
     }
 }
 
@@ -782,9 +954,16 @@ function plateFills(plate, fill) {
     fill(LABEL_INK.plateOutline, left, top, width, PLATE_H, ROLE_RIM);
     fill(plate.color, left + 1, top + 1, widths.wordCell, PLATE_H - 2, ROLE_MARK);
     fill(LABEL_INK.plate, left + 1 + widths.wordCell, top + 1, widths.textCell, PLATE_H - 2, ROLE_RIM);
+    // W5.4 — age notches: one carved 3×2 row per wait-age rung above the
+    // first, in plate ink at the status cell's right end, stacked up from
+    // the word's last glyph row.
+    const notchLeft = left + 1 + widths.wordCell - WORD_PAD - AGE_NOTCH_W;
+    for (let row = 0; row < notchRows(plate.tier); row++) {
+        fill(LABEL_INK.plate, notchLeft, top + 11 - row * 3, AGE_NOTCH_W, 2, ROLE_RIM);
+    }
 
     if (plate.side) {
-        edgeArrowFills(plate, fill);
+        arrowFills(plate.side, rect.left + 1 + WORD_PAD, rect.top + 5, LABEL_INK.plate, fill);
     } else {
         // Notch: three stepped rows under the plate in the status colour,
         // with a dark outline, pointing down at the beacon.
@@ -816,13 +995,54 @@ function drawPlateText(ctx, plate) {
     }
 }
 
-// Edge plate arrow: a 7×7 pixel arrow in plate ink at the head of the status
-// cell, pointing past the frame toward the agent (the authored down arrow,
-// flipped or transposed for the other sides).
-function edgeArrowFills(plate, fill) {
-    const { rect, side } = plate;
-    const x0 = rect.left + 1 + WORD_PAD;
-    const y0 = rect.top + 5;
+// W5.4 — the 5–15 min beacon's medallion, in the beacon's 26 px box: a dark
+// chamfered disc (role 0) carrying a one-pixel status-colour ring (role 2)
+// one pixel inside its rim; the 2× motif then stamps on its centre.
+function beaconRingFills(beacon, fill) {
+    const x = beacon.left;
+    const y = beacon.top;
+    const n = BEACON_RING_BOX;
+    const dark = LABEL_INK.plateOutline;
+    fill(dark, x + 3, y, n - 6, 1, ROLE_RIM);
+    fill(dark, x + 2, y + 1, n - 4, 1, ROLE_RIM);
+    fill(dark, x + 1, y + 2, n - 2, 1, ROLE_RIM);
+    fill(dark, x, y + 3, n, n - 6, ROLE_RIM);
+    fill(dark, x + 1, y + n - 3, n - 2, 1, ROLE_RIM);
+    fill(dark, x + 2, y + n - 2, n - 4, 1, ROLE_RIM);
+    fill(dark, x + 3, y + n - 1, n - 6, 1, ROLE_RIM);
+    const hue = beacon.kind.color;
+    fill(hue, x + 3, y + 1, n - 6, 1, ROLE_MARK);
+    fill(hue, x + 2, y + 2, 1, 1, ROLE_MARK);
+    fill(hue, x + n - 3, y + 2, 1, 1, ROLE_MARK);
+    fill(hue, x + 1, y + 3, 1, n - 6, ROLE_MARK);
+    fill(hue, x + n - 2, y + 3, 1, n - 6, ROLE_MARK);
+    fill(hue, x + 2, y + n - 3, 1, 1, ROLE_MARK);
+    fill(hue, x + n - 3, y + n - 3, 1, 1, ROLE_MARK);
+    fill(hue, x + 3, y + n - 2, n - 6, 1, ROLE_MARK);
+}
+
+// W5.6 — one off-frame tally tab: the T5 walnut board at plate height, the
+// stepped edge arrow in walnut gold, a carved divider, then the counts in
+// the plaque count ink. Overlay only; static.
+function drawTallyTab(ctx, tab) {
+    const { rect } = tab;
+    paintWalnutBoard(ctx, rect.left, rect.top, rect.right - rect.left, PLATE_H);
+    const fill = (ink, left, top, width, height) => {
+        ctx.fillStyle = ink;
+        ctx.fillRect(left, top, width, height);
+    };
+    arrowFills(tab.side, rect.left + 1 + TALLY_PAD, rect.top + 5, WALNUT.text, fill);
+    const dividerX = rect.left + 1 + TALLY_PAD + 7 + TALLY_PAD;
+    fill(WALNUT.divider, dividerX, rect.top + 2, 1, PLATE_H - 4);
+    ctx.font = WORLD_BODY_FONT_11;
+    ctx.fillStyle = WALNUT.count;
+    ctx.fillText(tab.text, dividerX + 1 + TALLY_PAD, rect.top + 12);
+}
+
+// Edge arrow: a 7×7 pixel arrow with its top-left at (x0, y0), pointing past
+// the frame on `side` (the authored down arrow, flipped or transposed for the
+// other sides) — the edge plate's in plate ink, the tally tab's in walnut gold.
+function arrowFills(side, x0, y0, ink, fill) {
     const size = EDGE_ARROW_DOWN.length;
     for (let row = 0; row < size; row++) {
         for (let col = 0; col < size; col++) {
@@ -830,7 +1050,7 @@ function edgeArrowFills(plate, fill) {
                 : side === 'top' ? EDGE_ARROW_DOWN[size - 1 - row][col]
                     : side === 'right' ? EDGE_ARROW_DOWN[col][row]
                         : EDGE_ARROW_DOWN[size - 1 - col][row];
-            if (filled === '#') fill(LABEL_INK.plate, x0 + col, y0 + row, 1, 1, ROLE_RIM);
+            if (filled === '#') fill(ink, x0 + col, y0 + row, 1, 1, ROLE_RIM);
         }
     }
 }

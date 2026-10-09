@@ -3,8 +3,10 @@
 // Every body stands on exactly one baked contact shadow. The ground carries a
 // ring only when it means something: the selected agent, the hovered agent,
 // and the three action-needed states (waiting on you, errored, rate-limited).
-// Working and idle villagers stand on their shadow alone, so exceptions read
-// loudest instead of the default state.
+// W7.4 (D2: repo = colour) — under those, a quiet 1-texel course in the
+// body's repo accent hugs the contact shadow, so bodies on one project read
+// as one work party; any action-needed ring replaces it, and the caller's
+// mark governor sheds it first under pressure.
 //
 // All marks are cached stamps rasterised on the world texel grid (hard 1-texel
 // edges, no anti-aliasing, no gradients). The Canvas fallback blits them with
@@ -33,6 +35,11 @@ const RING_ASPECT = 0.44;
 const SELECTED_RING_PAD = 12;
 const STATUS_RING_PAD = 6;
 const HOVER_RING_PAD = 8;
+// The repo course sits one texel outside the contact shadow, inside every
+// status, hover and selection ring, at a lighter strength than they do.
+const REPO_RING_PAD = 2;
+const REPO_RING_ALPHA = 200;
+const REPO_KEYLINE_ALPHA = 96;
 
 // Feet sit at the anchor; the shadow centre rides one texel below it.
 export const GROUND_MARK_FOOT_Y = 1;
@@ -182,9 +189,9 @@ function pruneCastStamps(castKey) {
 
 // A 1-texel ellipse outline in `color`, with a dark keyline course directly
 // beneath each lit texel so the ring holds on sunlit grass and pale plaza.
-function ringStamp(kind, width, color) {
+function ringStamp(kind, width, color, alpha = 255, keylineAlpha = KEYLINE_ALPHA) {
     const w = Math.max(8, Math.round((Number(width) || 0) / 2) * 2);
-    const key = `${kind}|${w}|${color}`;
+    const key = `${kind}|${w}|${color}|${alpha}|${keylineAlpha}`;
     const cached = STAMP_CACHE.get(key);
     if (cached) return cached;
     const h = Math.max(7, Math.round(w * RING_ASPECT) | 1);
@@ -209,9 +216,9 @@ function ringStamp(kind, width, color) {
         for (let x = 0; x < w; x++) {
             const index = y * w + x;
             if (lit[index]) {
-                setPixel(image.data, index, rgb, 255);
+                setPixel(image.data, index, rgb, alpha);
             } else if (y > 0 && lit[index - w] && !(y < h && inside[index])) {
-                setPixel(image.data, index, KEYLINE_RGB, KEYLINE_ALPHA);
+                setPixel(image.data, index, KEYLINE_RGB, keylineAlpha);
             }
         }
     }
@@ -225,12 +232,27 @@ export function actionNeededRingColor(status) {
     return ACTION_NEEDED_RING[status] || null;
 }
 
+// W7.4 — which rings a body's ground carries, in paint order (pure, so the
+// priority is testable without a canvas). An action-needed ring always wins
+// over the repo course: the course never stacks under NEEDS YOU, ERROR or
+// LIMIT. Selection and hover sit outside both.
+export function groundRingPlan({ status = null, selected = false, hovered = false, repo = null } = {}) {
+    const plan = [];
+    const statusColor = actionNeededRingColor(status);
+    if (statusColor) plan.push({ kind: 'status', pad: STATUS_RING_PAD, color: statusColor });
+    else if (repo) plan.push({ kind: 'repo', pad: REPO_RING_PAD, color: repo });
+    if (selected) plan.push({ kind: 'selected', pad: SELECTED_RING_PAD });
+    else if (hovered) plan.push({ kind: 'hover', pad: HOVER_RING_PAD });
+    return plan;
+}
+
 // Resolves the ground mark set for one body. `x`/`y` is the body's placement
 // for this frame (V7 `snapBodyPx`: a whole texel at rest, the backing-pixel
 // grid while walking), taken as is so shadow, rings and body never part.
-// `owner` (the body) keeps its 2.8 lamp choice between frames. Returns stamps
-// plus top-left positions in world texels; callers paint them in order.
-export function resolveGroundMarks({ x, y, contentWidth, status, selected = false, hovered = false, accent, trim, owner = null }) {
+// `owner` (the body) keeps its 2.8 lamp choice between frames. `repo` is the
+// admitted repo accent or null. Returns stamps plus top-left positions in
+// world texels; callers paint them in order.
+export function resolveGroundMarks({ x, y, contentWidth, status, selected = false, hovered = false, accent, trim, repo = null, owner = null }) {
     const cx = x;
     const cy = y + GROUND_MARK_FOOT_Y;
     const shadowW = contactShadowWidth(contentWidth);
@@ -246,28 +268,28 @@ export function resolveGroundMarks({ x, y, contentWidth, status, selected = fals
     };
     const cast = frameCastLighting();
     push(contactShadowStamp(shadowW, cast, pointCastFor(owner, cx, cy, shadowW, cast)), 'shadow');
-    const statusColor = actionNeededRingColor(status);
-    if (statusColor) push(ringStamp('status', shadowW + STATUS_RING_PAD, statusColor), 'status');
-    if (selected) push(ringStamp('selected', shadowW + SELECTED_RING_PAD, accent), 'selected');
-    else if (hovered) push(ringStamp('hover', shadowW + HOVER_RING_PAD, trim), 'hover');
+    for (const ring of groundRingPlan({ status, selected, hovered, repo })) {
+        const width = shadowW + ring.pad;
+        if (ring.kind === 'repo') push(ringStamp('repo', width, ring.color, REPO_RING_ALPHA, REPO_KEYLINE_ALPHA), 'repo');
+        else if (ring.kind === 'status') push(ringStamp('status', width, ring.color), 'status');
+        else if (ring.kind === 'selected') push(ringStamp('selected', width, accent), 'selected');
+        else push(ringStamp('hover', width, trim), 'hover');
+    }
     return marks;
 }
 
 // Texels from the feet anchor down to the lowest row of the ground marks
 // resolveGroundMarks would lay out (contact core or ring; the raking-light
 // trail is a cast, not a mark), so labels under the feet can clear them.
-export function groundMarkDepth({ contentWidth, status = null, selected = false, hovered = false } = {}) {
+export function groundMarkDepth({ contentWidth, status = null, selected = false, hovered = false, repo = null } = {}) {
     const shadowW = contactShadowWidth(contentWidth);
     const shadowH = Math.max(5, Math.round(evenWidth(shadowW) * SHADOW_ASPECT) | 1);
     let depth = Math.ceil(shadowH / 2);
-    const ring = (pad) => {
-        const w = Math.max(8, Math.round((shadowW + pad) / 2) * 2);
+    for (const ring of groundRingPlan({ status, selected, hovered, repo })) {
+        const w = Math.max(8, Math.round((shadowW + ring.pad) / 2) * 2);
         const h = Math.max(7, Math.round(w * RING_ASPECT) | 1);
-        return Math.ceil((h + 1) / 2);
-    };
-    if (actionNeededRingColor(status)) depth = Math.max(depth, ring(STATUS_RING_PAD));
-    if (selected) depth = Math.max(depth, ring(SELECTED_RING_PAD));
-    else if (hovered) depth = Math.max(depth, ring(HOVER_RING_PAD));
+        depth = Math.max(depth, Math.ceil((h + 1) / 2));
+    }
     return GROUND_MARK_FOOT_Y + depth;
 }
 

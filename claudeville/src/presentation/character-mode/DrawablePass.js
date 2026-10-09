@@ -363,9 +363,12 @@ function behindSplitSortY(x, y, splitBuildings) {
 // sprite (`_depthSortY`), so the particles it emits (footfalls, sweat, motes)
 // sort with the body that owns them, behind a building with it.
 function agentSortY(sprite, splitBuildings) {
-    const behind = behindSplitSortY(sprite.x, sprite.y, splitBuildings);
-    sprite._behindBuilding = behind != null;
-    sprite._depthSortY = behind ?? sprite.y;
+    const split = behindSplit(sprite.x, sprite.y, splitBuildings);
+    sprite._behindBuilding = split != null;
+    // W3.4 — the occluding building, so the overlay can lift this body's
+    // thought above its crown while the body itself stays hidden.
+    sprite._behindBuildingDrawable = split ? split.drawable : null;
+    sprite._depthSortY = split ? split.backSortY - 0.5 : sprite.y;
     return sprite._depthSortY;
 }
 

@@ -68,6 +68,13 @@ function nameFromIdentityKey(identityKey) {
     return String(identityKey || '').split(':').pop() || '';
 }
 
+function isCleanReturn(agent) {
+    const status = String(agent?.status || '').toLowerCase();
+    if (status === 'errored' || status === 'rate_limited') return false;
+    return status === 'completed' || agent?.turnState === 'awaiting_input'
+        || Number(agent?.sessionEndedAt) > 0;
+}
+
 /**
  * Accumulates per-villager biography state (sessions completed, pushes,
  * lifetime tokens, error recoveries, milestones, earned nicknames) across
@@ -91,6 +98,7 @@ export class AgentBiographyService {
         this._flushingKeys = new Set();
         this._mutationTails = new Map(); // identityKey -> Promise (serializes mutations)
         this._sessions = new Map(); // agent.id -> { identityKey, tokenBaseline, countedPushKeys, completed }
+        this._removedSessions = new Map(); // bounded late-return evidence; listener order is unspecified
         this._dirty = new Set();
         this._foundingPromise = null;
         this._flushTimer = null;
@@ -109,6 +117,10 @@ export class AgentBiographyService {
         this._unsubscribers.push(eventBus.on('agent:added', seen));
         this._unsubscribers.push(eventBus.on('agent:updated', seen));
         this._unsubscribers.push(eventBus.on('agent:removed', (agent) => this._handleAgentRemoved(agent)));
+        this._unsubscribers.push(eventBus.on(
+            'subagent:completed',
+            (event) => this._handleSubagentCompleted(event),
+        ));
         this._unsubscribers.push(eventBus.on(
             'chronicle:recorded',
             (record) => this._handleChronicleRecord(record),
@@ -153,6 +165,7 @@ export class AgentBiographyService {
                 this._flushingKeys.clear();
                 this._mutationTails.clear();
                 this._sessions.clear();
+                this._removedSessions.clear();
                 this._dirty.clear();
             }
         })();
@@ -233,6 +246,9 @@ export class AgentBiographyService {
             firstObservation = true;
         }
         session.identityKey = identityKey;
+        session.parentId = agent.parentSessionId || agent.parentId || null;
+        session.cleanReturn = isCleanReturn(agent);
+        session.sessionKey = AgentBiography.sessionIdentityKeyFor(agent);
         this._ensureFounding(identityKey, agent);
 
         const status = String(agent.status || '').toLowerCase();
@@ -265,7 +281,7 @@ export class AgentBiographyService {
             }
             if (recoveredFromError) earned.push(...biography.recordErrorRecovery(now));
             return earned;
-        });
+        }, firstObservation && identityKey.startsWith('project:') ? session.sessionKey : null);
     }
 
     /**
@@ -307,15 +323,36 @@ export class AgentBiographyService {
         const session = this._sessions.get(agent.id);
         this._sessions.delete(agent.id);
         this._pruneBiographyCache();
-        if (!session || session.completed || !this._holdsWriteLease()) return;
-        session.completed = true;
+        if (!session || !this._holdsWriteLease()) return;
         const now = Date.now();
-        // S7 / plan 5.5 — a sub-agent leaving is a return to its parent, not a
-        // completed session: it is seen, never counted or celebrated.
-        const subagent = Boolean(agent.isSubagent || agent.parentSessionId || agent.parentId);
+        const subagent = Boolean(agent.isSubagent || agent.parentSessionId || agent.parentId
+            || (agent.agentType && agent.agentType !== 'main'));
+        if (subagent) {
+            session.cleanReturn = isCleanReturn(agent);
+            this._removedSessions.set(agent.id, session);
+            while (this._removedSessions.size > BIOGRAPHY_CACHE_LIMIT) {
+                this._removedSessions.delete(this._removedSessions.keys().next().value);
+            }
+            return; // Absence is not success; wait for the parent's recorded return.
+        }
+        if (session.completed) return;
+        session.completed = true;
         this._mutate(session.identityKey, (biography) => {
             biography.noteSeen(now);
-            return subagent ? [] : biography.recordSessionCompleted(now);
+            return biography.recordSessionCompleted(now, session.sessionKey);
+        });
+    }
+
+    _handleSubagentCompleted({ parentId, childId, ts } = {}) {
+        if (!this._accepting || !parentId || !childId || !this._holdsWriteLease()) return;
+        const session = this._sessions.get(childId) || this._removedSessions.get(childId);
+        if (!session || session.completed || session.parentId !== parentId
+            || !this._sessions.has(parentId) || !session.cleanReturn) return;
+        session.completed = true;
+        const now = Number(ts) || Date.now();
+        this._mutate(session.identityKey, (biography) => {
+            biography.noteSeen(now);
+            return biography.recordSessionCompleted(now, session.sessionKey);
         });
     }
 
@@ -328,10 +365,11 @@ export class AgentBiographyService {
     }
 
     /** Serialize async mutations per identity to avoid lost updates. */
-    _mutate(identityKey, mutator) {
+    _mutate(identityKey, mutator, legacyIdentityKey = null) {
         if (!this.store) return;
         const tail = this._mutationTails.get(identityKey) || Promise.resolve();
         const next = tail
+            .then(() => legacyIdentityKey ? this._migrateProjectIdentity(identityKey, legacyIdentityKey) : null)
             .then(() => this.getBiography(identityKey))
             .then(async (existing) => {
                 let biography = existing;
@@ -375,6 +413,36 @@ export class AgentBiographyService {
             console.warn('[AgentBiographyService] load failed:', err?.message || err);
             return null;
         }
+    }
+
+    /**
+     * v4 lazy migration: anonymous rows did not store repo attribution, so only
+     * a currently observed main can safely associate one with a project. Copy
+     * its totals/milestones/episodes once and retain the readable source row.
+     * Source import marker + target are one atomic biographies transaction;
+     * reloads and concurrent mains therefore cannot import a session twice.
+     * No IndexedDB store/index change is needed (Chronicle DB stays v7).
+     */
+    async _migrateProjectIdentity(identityKey, legacyIdentityKey) {
+        const record = await this.store.getBiography(legacyIdentityKey);
+        if (!record || record.extensions?.projectIdentity?.migratedTo) return;
+        // Drain queued snapshots before replacing the cached project object.
+        // Otherwise an in-flight flush could commit its older target afterward.
+        await this.flush();
+        const existing = await this.getBiography(identityKey);
+        const biography = AgentBiography.fromRecord(existing?.toRecord())
+            || AgentBiography.create(identityKey);
+        biography.absorbLegacyRecord(record);
+        const source = {
+            ...record,
+            extensions: {
+                ...record.extensions,
+                projectIdentity: { migratedTo: identityKey },
+            },
+        };
+        await this.store.putBiographies([biography.toRecord(), source]);
+        this._biographies.set(identityKey, Promise.resolve(biography));
+        this._biographies.delete(legacyIdentityKey);
     }
 
     _touchBiography(identityKey) {

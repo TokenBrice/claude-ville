@@ -1,0 +1,8 @@
+{"type":"session","id":"outcomes-fixture","cwd":"__PROJECT__","timestamp":"2026-09-01T12:00:00.000Z"}
+{"type":"message","timestamp":"2026-09-01T12:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Check the synthetic project."}]}}
+{"type":"message","timestamp":"2026-09-01T12:00:02.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-pass","name":"bash","arguments":{"command":"npm run build"}},{"type":"toolCall","id":"call-fail","name":"bash","arguments":{"command":"npm test"}},{"type":"toolCall","id":"call-unknown","name":"read","arguments":{"path":"src/example.js"}},{"type":"toolCall","id":"call-open","name":"bash","arguments":{"command":"npm run pending"}}]}}
+{"type":"message","timestamp":"2026-09-01T12:00:03.000Z","message":{"role":"toolResult","toolCallId":"call-pass","toolName":"bash","isError":false,"content":[]}}
+{"type":"message","timestamp":"2026-09-01T12:00:04.000Z","message":{"role":"toolResult","toolCallId":"call-fail","toolName":"bash","isError":true,"content":[]}}
+{"type":"message","timestamp":"2026-09-01T12:00:05.000Z","message":{"role":"toolResult","toolCallId":"call-unknown","toolName":"read","content":[]}}
+{"type":"message","timestamp":"2026-09-01T12:00:06.000Z","message":{"role":"toolResult","toolCallId":"outside-tail","toolName":"bash","isError":true,"content":[]}}
+{"type":"custom","customType":"session_exit","timestamp":"2026-09-01T12:00:07.000Z","data":{"recordedAt":"2026-09-01T12:00:07.000Z"}}

@@ -154,6 +154,22 @@ export const EFFECT_BUDGET = Object.freeze({
         staticFallback: 'frozen-offset',
         canvas: 'none',
     }),
+    // W6.11 (AW-P13) — the grass gust course: on terrain grass texels at a
+    // grass ramp's stop 3 (`GroundBake.GRASS_GUST_STOPS`, verge stems and the
+    // meadow's upper course), where the `sea-weather` gust field (no second
+    // texture) passes a static ruffle-and-Bayer order, the texel steps one
+    // authored stop lighter for that 125 ms gust step. One bilinear gust
+    // fetch, one cloud-tile fetch and three exact-colour tests on terrain
+    // fragments only. No receipt yet (V2 quiet host pending): the band is
+    // [INFERENCE] the sea cat's-paw branch's. FULL only; the static frame is
+    // the baked grass (also under reduced motion).
+    grassGust: Object.freeze({
+        id: 'grassGust',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'off', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.24], cpuMsBand: [0, 0.3], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'baked-grass',
+        canvas: 'step-overlay',
+    }),
     // 1.6 — screen-Y aerial perspective toward the C2 horizon haze; ALU only,
     // in the composite, world layer only. Same rig as `cloud-courses`.
     'aerial-perspective': Object.freeze({
@@ -743,6 +759,11 @@ export const CLOUD_TILE_WORLD_SCALE = 4;
 // drift wraps on that period.
 export const CLOUD_SECOND_OCTAVE = Object.freeze({ scale: 1.75, offset: Object.freeze([317, 911]), weight: 0.9 });
 export const CLOUD_FIELD_PERIOD = 7168;
+// W6.3 — the lone cumulus: the shaders mix the field 0.3 : 0.7 with a dome
+// (1 - r / radius) round the cloud's field point and cut two courses at
+// these values, so the patch reaches about 0.35–0.6 of its radius.
+export const LONE_CLOUD_MIX = 0.7;
+export const LONE_CLOUD_THRESHOLDS = Object.freeze([0.55, 0.68]);
 
 /**
  * 1.4 / 3.4 — the share of the ground and sea under a cloud course at a

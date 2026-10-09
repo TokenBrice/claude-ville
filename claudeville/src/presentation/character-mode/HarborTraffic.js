@@ -12,6 +12,7 @@ import {
     displayRepoName,
     gitEventKind,
     normalizeGitEvent,
+    parseEventTime,
     shortGitLabel,
 } from '../shared/GitEventIdentity.js';
 import { tileToWorld, worldToTile } from './Projection.js';
@@ -132,6 +133,17 @@ const CANCEL_RETURN_MS = 12000;
 const INBOUND_DURATION_MS = 36000;
 const INBOUND_FADE_IN_MS = 8000;
 const INBOUND_SHIP_CLASS_KEY = 'cutter';
+// W7.9 (SW-P9) — the pull-request cutter: `gh pr create` moors one at the
+// outer roadstead for as long as an open PR plausibly waits (PR_SHIP_MOOR_MS
+// from its creation), `gh pr merge` sails it in to a quay berth over
+// PR_MERGE_SAIL_MS, where it lies PR_QUAY_HOLD_MS before retiring. Its one
+// mark is a parchment pennant above the repo flag (no new hull art).
+const PR_SHIP_MOOR_MS = 2 * 60 * 60 * 1000;
+const PR_QUAY_HOLD_MS = 10 * 60 * 1000;
+const PR_MERGE_SAIL_MS = 20000;
+const PR_ROADSTEAD_ROWS = 3;
+const PR_PENNANT_CLOTH = '#e8dcb8';
+const PR_PENNANT_RIM = '#3a2c1a';
 const NO_SINK = Object.freeze({ progress: 0, px: 0, alphaScale: 1 });
 // The repo flag's staff foot laps this many texels down the mast top.
 const FLAG_MAST_OVERLAP = 3;
@@ -2146,7 +2158,8 @@ function outboundRouteIdForBand(band, zone = 'harbor') {
 
 function waterRouteMetadataForBand(band, ship = {}, kind = 'outbound') {
     if (kind === 'inbound') {
-        return routeGraphMetadata(ship?.arrivingKind === 'fetch' ? 'inbound.fetch-roadstead' : 'inbound.pull');
+        const moorsOut = ship?.arrivingKind === 'fetch' || ship?.arrivingKind === 'pr';
+        return routeGraphMetadata(moorsOut ? 'inbound.fetch-roadstead' : 'inbound.pull');
     }
     const zone = ship?.departWaterZone || ship?.waitingZone || 'harbor';
     return routeGraphMetadata(outboundRouteIdForBand(band, zone), {
@@ -2425,6 +2438,8 @@ function commitIdFragment(value = '') {
 }
 
 function commitPennantLabel(ship = {}) {
+    // PR cutters carry pull identity, never a commit hash or source event ID.
+    if (ship.prShip) return pullRequestShipLabel(ship);
     const visualPackSize = Number(ship.visualPackSize);
     if (Number.isFinite(visualPackSize) && visualPackSize > 1) {
         return `${Math.round(visualPackSize)}x`;
@@ -2466,7 +2481,7 @@ export function snapshotHarborTrafficState(state) {
                     quayIndex: ship.quayIndex ?? null,
                     repoName: ship.repoName || '',
                     sha: ship.sha || '',
-                    label: ship.label || '',
+                    label: ship.prShip ? pullRequestShipLabel(ship) : ship.label || '',
                     status: ship.status,
                     gitKind: ship.gitKind || '',
                     eventStatus: ship.eventStatus || '',
@@ -2718,6 +2733,8 @@ function harborShipClass(ship = {}) {
             packSize: 1,
             trim: 0,
             scale: variant.scale,
+            // W7.9 — a PR cutter carries no commit count: no `2+` badge.
+            ...(ship.prShip ? { badge: '' } : null),
         };
     }
     const packSize = harborShipPackSize(ship);
@@ -2775,6 +2792,72 @@ function parseIncomingCommits(event = {}) {
         }
     }
     return 0;
+}
+
+// W7.9 — the moored PR cutter a `gh pr merge` sends in: the one whose scraped
+// pull URL matches, else the project's newest moored PR with no URL to
+// contradict it. Null when no cutter is waiting (a PR opened elsewhere).
+function findMooredPullRequest(state, event) {
+    const url = String(event?.url || '');
+    let best = null;
+    for (const ship of state.ships.values()) {
+        if (!ship.prShip || ship.arrivingKind !== 'pr' || ship.project !== event.project) continue;
+        if (url && ship.prUrl) {
+            if (ship.prUrl === url) return ship;
+            continue;
+        }
+        if (!best || (ship.prCreatedAt || 0) > (best.prCreatedAt || 0)) best = ship;
+    }
+    return best;
+}
+
+// Moored PR cutters fill the outer-roadstead anchorages in turn, a row
+// further out each lap, so two open PRs never moor on one tile.
+function pullRequestRoadsteadTile(state) {
+    const anchorages = HARBOR_SQUAD_ANCHORAGES.filter(anchorage => anchorage.zone === 'outer-roadstead');
+    let slot = 0;
+    for (const ship of state.ships.values()) {
+        if (ship.prShip && ship.arrivingKind === 'pr') slot++;
+    }
+    const anchorage = anchorages[slot % anchorages.length] || HARBOR_SQUAD_ANCHORAGES[0];
+    const row = Math.floor(slot / Math.max(1, anchorages.length)) % PR_ROADSTEAD_ROWS;
+    return { tileX: anchorage.tileX + anchorage.rowDx * row, tileY: anchorage.tileY + anchorage.rowDy * row };
+}
+
+function pullRequestShipLabel(event = {}) {
+    const match = String(event.prUrl || event.url || '').match(/\/pull\/(\d+)(?:[/?#]|$)/);
+    if (match) return `PR #${match[1]}`;
+    const detail = String(event.branch || event.prTitle || event.title || '').trim();
+    return detail ? `PR ${detail}` : 'PR';
+}
+
+function pullRequestShip(state, event, now) {
+    const profile = trafficProfile(event.project, event.branch || '');
+    state.nextSequence++;
+    return {
+        id: `pr:${event.id}`,
+        project: event.project,
+        branch: event.branch || '',
+        targetRef: '',
+        ...gitEventDebugMetadata(event, ''),
+        repoName: profile.shortName,
+        quayIndex: assignedQuayIndex(state, event.project),
+        sha: '',
+        label: pullRequestShipLabel(event),
+        inboundCargoCount: 0,
+        berthIndex: state.nextSequence % BERTHS.length,
+        laneIndex: stableHash(`${event.project}:${event.id}:pr`) % SEA_LANES.length,
+        eventTime: event.timestamp || now,
+        createdAt: now,
+        eventIds: [event.id],
+        isInbound: true,
+        prShip: true,
+        prUrl: String(event.url || ''),
+        prTitle: String(event.title || ''),
+        prCreatedAt: event.timestamp || now,
+        detachedHead: false,
+        amendCount: 0,
+    };
 }
 
 export function reduceHarborTrafficState(previous, events, options = {}) {
@@ -2915,6 +2998,64 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             state.ships.set(inboundId, ship);
             occupiedBerths.add(ship.berthIndex);
             indexCommitShip(commitIdentityIndex, ship);
+            continue;
+        }
+
+        // W7.9 (SW-P9) — pull requests as the PR cutter class. A failed
+        // command sails nothing; a PR older than the replay window appears
+        // already moored (or already at the quay) instead of re-sailing.
+        if (event.type === 'pr') {
+            const prStatus = String(event.status || gitEventStatusLabel(event) || '').toLowerCase();
+            if (prStatus === 'failed' || prStatus === 'rejected'
+                || prStatus === 'cancelled' || prStatus === 'canceled') continue;
+            const eventAge = Number.isFinite(event.timestamp) && event.timestamp > 0
+                ? Math.max(0, now - event.timestamp)
+                : 0;
+            const sail = motionScale !== 0 && eventAge <= RECENT_PUSH_REPLAY_MS;
+            if (event.action === 'create') {
+                if (eventAge > PR_SHIP_MOOR_MS || state.ships.has(`pr:${event.id}`)) continue;
+                const ship = pullRequestShip(state, event, now);
+                Object.assign(ship, {
+                    status: sail ? 'arriving' : 'anchored',
+                    arrivingKind: 'pr',
+                    route: routeGraphMetadata('inbound.fetch-roadstead'),
+                    inboundRoadsteadTile: pullRequestRoadsteadTile(state),
+                    arrivingStartedAt: sail ? now : now - INBOUND_DURATION_MS,
+                    prMooredAt: sail ? 0 : (event.timestamp || now),
+                });
+                state.ships.set(ship.id, ship);
+                continue;
+            }
+            if (event.action !== 'merge') continue;
+            const moored = findMooredPullRequest(state, event);
+            if (eventAge > PR_QUAY_HOLD_MS) {
+                if (moored) retireHarborShip(state, moored.id, moored, now, { recordFloor: false });
+                continue;
+            }
+            if (!moored && state.ships.has(`pr:${event.id}`)) continue;
+            const ship = moored || pullRequestShip(state, event, now);
+            if (moored) ship.eventIds.push(event.id);
+            ship.prUrl = String(event.url || ship.prUrl || '');
+            ship.branch = event.branch || ship.branch || '';
+            ship.prTitle = String(event.title || ship.prTitle || '');
+            ship.label = pullRequestShipLabel(ship);
+            const { berthIndex, quayIndex } = chooseBerthIndex(state, event.project, occupiedBerths);
+            Object.assign(ship, {
+                status: sail ? 'arriving' : 'anchored',
+                arrivingKind: 'pr-merge',
+                route: routeGraphMetadata('inbound.pull'),
+                prFromTile: moored ? ship.inboundRoadsteadTile : null,
+                inboundRoadsteadTile: null,
+                berthIndex,
+                quayIndex,
+                arrivingStartedAt: sail ? now : now - INBOUND_DURATION_MS,
+                arrivingDuration: moored ? PR_MERGE_SAIL_MS : INBOUND_DURATION_MS,
+                prMergedAt: event.timestamp || now,
+                prQuayedAt: sail ? 0 : (event.timestamp || now),
+                eventTime: event.timestamp || now,
+            });
+            state.ships.set(ship.id, ship);
+            occupiedBerths.add(berthIndex);
             continue;
         }
 
@@ -3200,13 +3341,18 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             }
             continue;
         }
-        // 3.2 — inbound lifecycle: arrive then dock (pull) or anchor (fetch).
+        // 3.2 — inbound lifecycle: arrive then dock (pull) or anchor (fetch,
+        // a moored PR, a merged PR at its quay berth).
         if (ship.status === 'arriving') {
             const startedAt = ship.arrivingStartedAt || now;
             const duration = Math.max(1, Number(ship.arrivingDuration) || INBOUND_DURATION_MS);
             if (motionScale === 0 || now - startedAt >= duration) {
-                if (ship.arrivingKind === 'fetch') {
+                if (ship.arrivingKind === 'fetch' || ship.arrivingKind === 'pr') {
                     ship.status = 'anchored';
+                    if (ship.arrivingKind === 'pr') ship.prMooredAt = ship.prMooredAt || now;
+                } else if (ship.arrivingKind === 'pr-merge') {
+                    ship.status = 'anchored';
+                    ship.prQuayedAt = ship.prQuayedAt || now;
                 } else {
                     ship.status = 'docked';
                     ship.eventTime = ship.eventTime || now;
@@ -3214,12 +3360,16 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             }
             continue;
         }
-        // 3.2 — anchored fetch ships expire after a while.
+        // 3.2 — anchored fetch ships expire after a while; W7.9 moored and
+        // quayed PR cutters on their own holds.
         if (ship.status === 'anchored') {
             const startedAt = ship.arrivingStartedAt || now;
-            if (now - startedAt > INBOUND_DURATION_MS * 2) {
-                retireHarborShip(state, id, ship, now, { recordFloor: false });
-            }
+            const expired = ship.arrivingKind === 'pr'
+                ? now - (ship.prMooredAt || startedAt) > PR_SHIP_MOOR_MS
+                : ship.arrivingKind === 'pr-merge'
+                    ? now - (ship.prQuayedAt || startedAt) > PR_QUAY_HOLD_MS
+                    : now - startedAt > INBOUND_DURATION_MS * 2;
+            if (expired) retireHarborShip(state, id, ship, now, { recordFloor: false });
             continue;
         }
         if (ship.status !== 'departing') continue;
@@ -3326,6 +3476,39 @@ function preferCanonicalRawGitEvent(previous, candidate) {
     return rawGitEventCompletionScore(candidate.event) > rawGitEventCompletionScore(previous.event);
 }
 
+// W7.9 — `gh pr create|merge` events (the adapter's forge `pr` type) in the
+// harbor's normalized shape. The shared git normalizer has no PR kind.
+function normalizeHarborPullRequestEvent(event, agent = {}, index = 0) {
+    if (String(event?.type || '').toLowerCase() !== 'pr' || event.dryRun === true) return null;
+    const action = String(event.action || '').toLowerCase();
+    if (action !== 'create' && action !== 'merge') return null;
+    const project = String(event.project || event.repository || event.repo || agent.projectPath || agent.project || 'unknown');
+    const timestamp = parseEventTime(
+        event.timestamp || event.time || event.ts || event.completedAt,
+        parseEventTime(agent.lastSessionActivity, 0),
+    );
+    return {
+        id: String(event.id || `pr:${project}:${action}:${timestamp}:${index}`),
+        type: 'pr',
+        action,
+        project,
+        timestamp,
+        ts: timestamp,
+        url: String(event.url || ''),
+        title: String(event.title || ''),
+        status: gitEventStatusLabel(event),
+        label: action === 'merge' ? 'PR merged' : 'PR opened',
+        command: event.command ? String(event.command) : '',
+        sha: '',
+        branch: String(event.branch || ''),
+        targetRef: '',
+        inferred: true,
+        observed: false,
+        provider: event.provider || agent.provider || '',
+        sessionId: event.sessionId || agent.sessionId || null,
+    };
+}
+
 function collectHarborGitEvents(agents, options = {}, stats = null) {
     const candidates = [];
     const canonicalCandidates = new Map();
@@ -3359,7 +3542,8 @@ function collectHarborGitEvents(agents, options = {}, stats = null) {
     }
     const events = [];
     for (const candidate of candidates) {
-        const normalized = normalizeGitEvent(candidate.event, candidate.agent, candidate.index, options);
+        const normalized = normalizeGitEvent(candidate.event, candidate.agent, candidate.index, options)
+            || normalizeHarborPullRequestEvent(candidate.event, candidate.agent, candidate.index);
         if (!normalized || (options.type && normalized.type !== options.type)) continue;
         const normalizedKey = `${normalized.type}\x1f${normalized.project}\x1f${normalized.id}`;
         if (normalizedKeys.has(normalizedKey)) continue;
@@ -3466,7 +3650,10 @@ function harborEventsVersion(events) {
 function harborStateHasTimedLifecycle(state) {
     if (state?.batches?.size) return true;
     for (const ship of state?.ships?.values?.() || []) {
-        if (ship.status !== 'docked') return true;
+        if (ship.status === 'docked') continue;
+        // Moored and quayed PR cutters only expire, on the maintenance tick.
+        if (ship.status === 'anchored' && ship.prShip) continue;
+        return true;
     }
     return false;
 }
@@ -4281,6 +4468,7 @@ export class HarborTraffic {
     // 3.6 — hover lore: native-tooltip text for a hovered ship (repo + commit subject).
     shipTooltip(ship = {}) {
         const repo = trafficLabel(ship.project, ship.branch, 40);
+        if (ship.prShip) return `${repo} - ${pullRequestShipLabel(ship)}`;
         const visualPackSize = Number(ship.visualPackSize);
         if (Number.isFinite(visualPackSize) && visualPackSize > 1) {
             const start = Number.isFinite(Number(ship.visualPackStartIndex))
@@ -5412,13 +5600,26 @@ export class HarborTraffic {
             };
         } else if (ship.status === 'arriving' || ship.status === 'anchored') {
             // 3.2 — inbound ship: sail toward dock through the reversed route.
-            const dockTile = ship.arrivingKind === 'fetch'
+            const dockTile = ship.arrivingKind === 'fetch' || ship.arrivingKind === 'pr'
                 ? (ship.inboundRoadsteadTile || { tileX: 38.05, tileY: 13.15 })
                 : startTile;
             const fakeShipForRoute = { ...ship, departFromTile: dockTile };
             const fwdRoute = composeWaterRouteTiles(dockTile, fakeShipForRoute, this.waterRouteData)
                 .map(point => toWorld(point.tileX, point.tileY));
-            const reversedRoute = [...fwdRoute].reverse();
+            let reversedRoute = [...fwdRoute].reverse();
+            // W7.9 — a merged PR sails in from its mooring, not from the sea:
+            // the approach joins the route at its nearest point.
+            if (ship.arrivingKind === 'pr-merge' && ship.prFromTile) {
+                const from = toWorld(ship.prFromTile.tileX, ship.prFromTile.tileY);
+                let nearest = 0;
+                let best = Infinity;
+                for (let i = 0; i < reversedRoute.length; i++) {
+                    const d = (reversedRoute[i].x - from.x) ** 2 + (reversedRoute[i].y - from.y) ** 2;
+                    if (d < best) { best = d; nearest = i; }
+                }
+                const rest = reversedRoute.slice(nearest + 1);
+                reversedRoute = [from, ...(rest.length ? rest : reversedRoute.slice(-1))];
+            }
             const startedAt = ship.arrivingStartedAt || now;
             const duration = Math.max(1, Number(ship.arrivingDuration) || INBOUND_DURATION_MS);
             inboundProgress = this.motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - startedAt) / duration));
@@ -5574,6 +5775,7 @@ export class HarborTraffic {
         if (ship.status === 'docked' && ship.pushStatus === 'rejected') {
             this._drawRejectedCautionFlag(ctx, ship, zoom, shipClass);
         }
+        if (ship.prShip) this._drawPullRequestPennant(ctx, ship, zoom, shipClass);
         // Boomerang collision flare at apex (~50% of phase 1).
         if (ship.status === 'rejecting' && ship.boomerangOutbound && Number(ship.boomerangPhaseProgress || 0) > 0.92) {
             this._drawCollisionFlare(ctx, ship.x, ship.y, Math.min(1, (Number(ship.boomerangPhaseProgress) - 0.92) / 0.08));
@@ -5645,6 +5847,8 @@ export class HarborTraffic {
     _shipAlpha(ship = {}) {
         if (ship.releaseSail) return ship.releaseAlpha ?? 1;
         if (ship.status === 'departing') return this._departureAlpha(ship);
+        // A merged PR cutter is already in view at its mooring.
+        if (ship.arrivingKind === 'pr-merge') return 1;
         if (ship.status === 'arriving' || ship.status === 'anchored') {
             const elapsed = Math.max(0, Number(ship.elapsed) || 0);
             return Math.max(0, Math.min(1, elapsed / INBOUND_FADE_IN_MS));
@@ -5885,10 +6089,12 @@ export class HarborTraffic {
     }
 
     _hasShipBadge(ship, shipClass) {
+        if (ship.prShip) return false;
         return (this._isFleetLead(ship) && !(Number(ship.visualPackSize) > 1)) || Boolean(shipClass.badge);
     }
 
     _drawShipTierBadge(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), zoom = 1) {
+        if (ship.prShip) return;
         // v0.23 A7 — the repo's lead docked ship shows a single fleet-count banner
         // in place of its class tier badge. Titan packs keep their exact `Nx`
         // badge instead (a 57-commit fleet reads 29x + 28x; the buoy label
@@ -6020,6 +6226,24 @@ export class HarborTraffic {
             accent: '#ffd34a',
             rim: '#281c08',
             frame: pennantFrame(currentPennantTime(), windX, { motion: this.motionScale > 0, phase: 1 }),
+            windX,
+            withPole: false,
+        });
+        ctx.restore();
+    }
+
+    // W7.9 — the PR cutter's one mark: a parchment pennant hoisted above its
+    // repo flag (the shared pixel strip, flying downwind; the rest frame in
+    // calm air and under reduced motion), so a PR reads apart from a
+    // pull/fetch cutter on the same hull.
+    _drawPullRequestPennant(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
+        const { x, y } = this._flagAnchor(ship, shipClass);
+        const windX = currentPennantWind();
+        ctx.save();
+        drawPennant(ctx, x, y, {
+            accent: PR_PENNANT_CLOTH,
+            rim: PR_PENNANT_RIM,
+            frame: pennantFrame(currentPennantTime(), windX, { motion: this.motionScale > 0, phase: 2 }),
             windX,
             withPole: false,
         });
@@ -6512,7 +6736,7 @@ export class HarborTraffic {
 
     // 3.6 — hover lore: cargo label above the hovered ship carrying the commit subject.
     _drawHoverCargoLabel(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const subject = cachedCleanCommitSubject(ship.label || '');
+        const subject = ship.prShip ? pullRequestShipLabel(ship) : cachedCleanCommitSubject(ship.label || '');
         const label = shortGitLabel(subject || `commit ${commitPennantLabel(ship)}`, 36, '…');
         if (!label) return;
         const base = this._plateBase(ship, shipClass, zoom) - (this._hasShipBadge(ship, shipClass) ? 18 : 0);

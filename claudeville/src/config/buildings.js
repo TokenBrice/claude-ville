@@ -37,33 +37,69 @@ export const normalizeBuildingType = (type) => {
     return value === 'lighthouse' ? 'watchtower' : value;
 };
 
+// W4.2 / PL-P14 — each landmark's ranked outer ring: where its working
+// visitors stand once the building is full and its approach file
+// (`APPROACH_FILES`, townPlan.js) is too, nearest rank first, one body per
+// place (VisitTileAllocator `_lineSlot`). Never a scored visit slot.
 export const VISIT_OVERFLOW_TILES = Object.freeze({
     archive: [
-        { tileX: 7, tileY: 19, overflow: true, reason: 'archive-walk' },
-        { tileX: 8, tileY: 20, overflow: true, reason: 'reading-alcove' },
         { tileX: 9, tileY: 19, overflow: true, reason: 'archive-walk' },
+        { tileX: 8, tileY: 20, overflow: true, reason: 'reading-alcove' },
         { tileX: 9, tileY: 20, overflow: true, reason: 'reading-alcove' },
-        { tileX: 10, tileY: 19, overflow: true, reason: 'archive-walk' },
+        { tileX: 3, tileY: 21, overflow: true, reason: 'archive-bank' },
+        { tileX: 5, tileY: 22, overflow: true, reason: 'archive-bank' },
+        { tileX: 4, tileY: 22, overflow: true, reason: 'archive-bank' },
     ],
     command: [
         { tileX: 14, tileY: 22, overflow: true, reason: 'plaza' },
-        { tileX: 19, tileY: 22, overflow: true, reason: 'plaza' },
-        { tileX: 13, tileY: 22, overflow: true, reason: 'plaza' },
+        { tileX: 21, tileY: 20, overflow: true, reason: 'east-arm' },
+        { tileX: 22, tileY: 20, overflow: true, reason: 'east-arm' },
+    ],
+    forge: [
+        { tileX: 29, tileY: 31, overflow: true, reason: 'forge-shore' },
+        { tileX: 29, tileY: 32, overflow: true, reason: 'forge-shore' },
+        { tileX: 30, tileY: 32, overflow: true, reason: 'forge-shore' },
+        { tileX: 22, tileY: 30, overflow: true, reason: 'forge-yard' },
+        { tileX: 22, tileY: 28, overflow: true, reason: 'forge-yard' },
+        { tileX: 24, tileY: 27, overflow: true, reason: 'forge-yard' },
     ],
     taskboard: [
-        { tileX: 22, tileY: 36, overflow: true, reason: 'review' },
         { tileX: 27, tileY: 36, overflow: true, reason: 'review' },
+        { tileX: 29, tileY: 36, overflow: true, reason: 'review' },
+        { tileX: 29, tileY: 37, overflow: true, reason: 'review' },
+        { tileX: 29, tileY: 35, overflow: true, reason: 'review' },
+        { tileX: 30, tileY: 36, overflow: true, reason: 'review' },
+        { tileX: 30, tileY: 35, overflow: true, reason: 'review' },
     ],
     mine: [
-        { tileX: 9, tileY: 34, overflow: true, reason: 'mine-yard' },
-        { tileX: 10, tileY: 36, overflow: true, reason: 'mine-yard' },
-        { tileX: 13, tileY: 37, overflow: true, reason: 'cart-path' },
         { tileX: 16, tileY: 34, overflow: true, reason: 'ore-sort' },
-        { tileX: 16, tileY: 36, overflow: true, reason: 'ore-sort' },
+        { tileX: 17, tileY: 36, overflow: true, reason: 'ore-sort' },
+        { tileX: 17, tileY: 35, overflow: true, reason: 'ore-sort' },
+        { tileX: 13, tileY: 37, overflow: true, reason: 'cart-path' },
+        { tileX: 11, tileY: 37, overflow: true, reason: 'cart-path' },
+        { tileX: 18, tileY: 36, overflow: true, reason: 'ore-sort' },
+    ],
+    portal: [
+        { tileX: 8, tileY: 33, overflow: true, reason: 'portal-lawn' },
+        { tileX: 1, tileY: 35, overflow: true, reason: 'portal-court' },
+        { tileX: 3, tileY: 36, overflow: true, reason: 'portal-court' },
+        { tileX: 1, tileY: 33, overflow: true, reason: 'portal-court' },
+        { tileX: 11, tileY: 30, overflow: true, reason: 'portal-lawn' },
+    ],
+    observatory: [
+        { tileX: 23, tileY: 20, overflow: true, reason: 'skywatch' },
+        { tileX: 23, tileY: 21, overflow: true, reason: 'skywatch' },
+        { tileX: 22, tileY: 21, overflow: true, reason: 'skywatch' },
     ],
     watchtower: [
-        { tileX: 27, tileY: 16, overflow: true, reason: 'lookout' },
-        { tileX: 26, tileY: 15, overflow: true, reason: 'lookout' },
+        { tileX: 23, tileY: 11, overflow: true, reason: 'lookout' },
+        { tileX: 24, tileY: 10, overflow: true, reason: 'lookout' },
+        { tileX: 23, tileY: 10, overflow: true, reason: 'lookout' },
+    ],
+    harbor: [
+        { tileX: 26, tileY: 18, overflow: true, reason: 'quay' },
+        { tileX: 28, tileY: 17, overflow: true, reason: 'quay' },
+        { tileX: 24, tileY: 21, overflow: true, reason: 'quay' },
     ],
 });
 

@@ -383,7 +383,9 @@ validateTileObjects(reporter, 'DISTRICT_PROPS', DISTRICT_PROPS, MAP_SIZE);
 validateTileObjects(reporter, 'MARINE_FISH_SCHOOLS', MARINE_FISH_SCHOOLS, MAP_SIZE);
 
 // Trees stand in clumps of 3–7 (SceneryEngine drops smaller remnants).
-const TREE_SPECIES = new Set(['oak', 'pine', 'willow']);
+// Poplar is absent on purpose: it has only a tall sheet and grows only in
+// TREE_AVENUES rows (W8.3d).
+const TREE_SPECIES = new Set(['oak', 'pine', 'willow', 'birch', 'maple']);
 for (const [index, clump] of TREE_CLUMPS.entries()) {
     if (!Number.isInteger(clump.trees) || clump.trees < 3 || clump.trees > 7) {
         reporter.error(`TREE_CLUMPS[${index}].trees`, 'must be an integer from 3 to 7');
@@ -399,7 +401,7 @@ for (const [index, cluster] of TREE_CLUSTERS.entries()) {
     }
     for (const species of Object.keys(cluster.species ?? {})) {
         if (species === 'willow' || !TREE_SPECIES.has(species)) {
-            reporter.error(`TREE_CLUSTERS[${index}].species.${species}`, 'must be oak or pine (willow is chosen only beside water)');
+            reporter.error(`TREE_CLUSTERS[${index}].species.${species}`, 'must be oak, pine, birch or maple (willow is chosen only beside water)');
         }
     }
 }

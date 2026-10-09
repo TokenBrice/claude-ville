@@ -1,4 +1,6 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
+import { classifyTool } from '../../domain/services/ToolIdentity.js';
+import { homeDistrictFor } from './HomeDistrict.js';
 
 /**
  * Resolve the building that may replace an agent's in-flight route.
@@ -10,6 +12,7 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
  */
 export function resolveUpdateRouteBuilding({
     activeIntentBuilding = null,
+    agent = null,
     status = null,
     currentBuilding = null,
     targetBuilding = null,
@@ -18,7 +21,10 @@ export function resolveUpdateRouteBuilding({
     if (activeIntentBuilding) return activeIntentBuilding;
 
     if (status === AgentStatus.WORKING) {
-        return targetBuilding || lastKnownBuilding || 'command';
+        const toolBuilding = agent?.currentTool
+            ? classifyTool(agent.currentTool, agent.currentToolInput ?? agent.lastToolInput)?.building
+            : null;
+        return toolBuilding || targetBuilding || lastKnownBuilding || homeDistrictFor(agent);
     }
     if (status === AgentStatus.WAITING) {
         return targetBuilding || lastKnownBuilding || 'taskboard';

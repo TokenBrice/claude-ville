@@ -2,7 +2,7 @@
 //
 // Hooks complement provider transcripts; they never replace discovery and
 // never write to disk. The registry owns one bounded, short-lived record per
-// session and exposes only normalized turn-state fields.
+// session and exposes normalized turn-state fields and explicit session ends.
 
 const MAX_HOOK_SESSIONS = 256;
 const HOOK_EXPIRY_MS = 30_000;
@@ -118,11 +118,16 @@ function urgency(value = {}) {
 }
 
 function shouldMergeOverlay(session, overlay, now = Date.now()) {
-  if (!overlay || now - overlay.lastHookAt >= (overlay.waitReason ? HOOK_WAIT_RETENTION_MS : HOOK_MERGE_WINDOW_MS)) return false;
+  const retained = overlay?.waitReason || overlay?.sessionEndedAt;
+  if (!overlay || now - overlay.lastHookAt >= (retained ? HOOK_WAIT_RETENTION_MS : HOOK_MERGE_WINDOW_MS)) return false;
   if (session?.provider && overlay.provider && session.provider !== overlay.provider) return false;
+  if (Number(session?.sessionEndedAt) > overlay.eventAt) return false;
   // A recorded resolution newer than the hook closes the unanswered wait.
-  if (session?.turnState === 'awaiting_input' && Number(session.awaitingSince) >= overlay.eventAt) return false;
-  if (Math.max(Number(session?.turnStartedAt) || 0, Number(session?.pendingSince) || 0) > overlay.eventAt) return false;
+  if (!overlay.sessionEndedAt && session?.turnState === 'awaiting_input' && Number(session.awaitingSince) >= overlay.eventAt) return false;
+  if (Math.max(Number(session?.turnStartedAt) || 0, Number(session?.pendingSince) || 0) > (overlay.sessionEndedAt || overlay.eventAt)) return false;
+  // Session end is presence evidence, not turn urgency. Retain it while the
+  // same recorded turn remains, so ordinary hook expiry cannot resurrect it.
+  if (overlay.sessionEndedAt) return true;
   return urgency(overlay) > urgency(session)
     || overlay.lastHookAt >= stateTimestamp(session);
 }
@@ -133,6 +138,7 @@ function mergeOverlay(session, overlay, now = Date.now()) {
   return {
     ...session,
     turnState: overlay.turnState,
+    sessionEndedAt: overlay.sessionEndedAt || null,
     pendingTool: overlay.pendingTool,
     pendingSince: overlay.pendingSince,
     awaitingSince: overlay.awaitingSince,
@@ -238,6 +244,9 @@ class HookOverlay {
     this._entries.set(key, {
       ...next,
       provider,
+      sessionEndedAt: kind === 'sessionend' ? eventAt
+        : TURN_START_KINDS.has(kind) || TOOL_START_KINDS.has(kind) ? null
+          : previous?.sessionEndedAt || null,
       sessionId,
       cwd: typeof event.cwd === 'string' ? event.cwd.slice(0, 4096) : '',
       eventAt,
@@ -253,7 +262,7 @@ class HookOverlay {
     const key = `${provider || matches[0].provider}::${sessionId}`;
     const entry = this._entries.get(key);
     if (!entry) return null;
-    if (now - entry.lastHookAt >= (entry.waitReason ? HOOK_WAIT_RETENTION_MS : HOOK_EXPIRY_MS)) {
+    if (now - entry.lastHookAt >= (entry.waitReason || entry.sessionEndedAt ? HOOK_WAIT_RETENTION_MS : HOOK_EXPIRY_MS)) {
       this._entries.delete(key);
       return null;
     }
@@ -262,7 +271,7 @@ class HookOverlay {
 
   prune(now = this._now()) {
     for (const [sessionId, entry] of this._entries) {
-      if (now - entry.lastHookAt >= (entry.waitReason ? HOOK_WAIT_RETENTION_MS : HOOK_EXPIRY_MS)) this._entries.delete(sessionId);
+      if (now - entry.lastHookAt >= (entry.waitReason || entry.sessionEndedAt ? HOOK_WAIT_RETENTION_MS : HOOK_EXPIRY_MS)) this._entries.delete(sessionId);
     }
   }
 
@@ -279,7 +288,7 @@ class HookOverlay {
   nextExpiryAt(now = this._now()) {
     let next = null;
     for (const entry of this._entries.values()) {
-      const at = entry.lastHookAt + (entry.waitReason ? HOOK_WAIT_RETENTION_MS : HOOK_EXPIRY_MS);
+      const at = entry.lastHookAt + (entry.waitReason || entry.sessionEndedAt ? HOOK_WAIT_RETENTION_MS : HOOK_EXPIRY_MS);
       if (at <= now) continue;
       if (next === null || at < next) next = at;
     }

@@ -52,7 +52,7 @@ test('GPT-5.4 tool cleanup runs before crests can anchor to the detached wrench'
         const compositor = Object.create(Compositor.prototype);
         Object.assign(compositor, {
             assets: { get: () => ({}), getDims: () => ({ w: 736, h: 920 }) },
-            cache: new Map(), cachePixels: 0,
+            cache: new Map(), cacheUsedAt: new Map(), cachePixels: 0,
             _resolvedVariantKey: () => '0', _trimCache() {},
             _applyPaletteSwap: () => order.push('palette'),
             _compositeAccessory: () => order.push('crest'),

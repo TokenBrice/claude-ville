@@ -5,7 +5,7 @@ import { tileToWorld, worldToTile } from './Projection.js';
 import { compactToolLabel, isCommandToolName, isTaskCommandInput, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
 import { providerColor } from './ArrivalDeparture.js';
 import { resolveObservation } from './ObservationCertainty.js';
-import { diamond, dottedCurve, gradeTone, momentRectClear, resolveMomentAnchor, snap } from './EffectStamps.js';
+import { FAILURE, FAILURE_OUTLINE, STONE_RAMP, bracket, diamond, dottedCurve, gradeTone, momentRectClear, resolveMomentAnchor, snap } from './EffectStamps.js';
 import { fillPixelEllipse } from './PixelShapes.js';
 
 const MAX_ITEMS_PER_KIND = 10;
@@ -65,8 +65,8 @@ const FORGE_BILLET_THRESHOLDS = [1, 4, 10];
 const FORGE_BANK_IDLE_MS = 600000;
 
 // Activity chips stand on the ground in front of the building's door, never on
-// its face: world-texel offsets from the centre of the tile one step out from
-// the entrance, fanned across the apron.
+// its face: world-texel offsets from the door ground (`_entranceGround`),
+// fanned across it.
 const CHIP_SLOTS = 4;
 const ENTRANCE_CHIP_OFFSETS = [
     { x: -24, y: 0 }, { x: -8, y: 4 }, { x: 8, y: 4 }, { x: 24, y: 0 },
@@ -77,6 +77,49 @@ const ENTRANCE_CHIP_OFFSETS = [
 const MINE_CART_OFFSETS = [
     { x: -72, y: 6 }, { x: -44, y: 14 }, { x: -16, y: 20 }, { x: 12, y: 26 },
 ];
+// W7.2 — outcome chits: one row in front of the activity chips, toward the
+// camera, so a result never lands on a billet, a pinned note or a letter.
+// The chips reach 5 texels below the door ground (a billet's rim), a broken
+// bracket 12 above its foot, and the bracket is 12 wide: the inner chits stand
+// 17 below the door ground (at most one shared texel row with a billet) on a
+// 13-texel pitch, so two failures side by side never touch. Each building
+// holds its newest four; the per-kind cap (10) and the snapshot TTL (18 s)
+// still apply.
+const OUTCOME_CHIT_OFFSETS = [
+    { x: -20, y: 16 }, { x: -7, y: 17 }, { x: 6, y: 17 }, { x: 19, y: 16 },
+];
+// Where the ground in front of the door is not open ground the row moves, in
+// world texels, to the nearest visible apron the camera sees: the Command
+// door's front is the moat fence, so its row stands back on the lit plaza at
+// the stair foot; the Task board's slides along its apron off the curtain
+// wall's corner; the Forge's brazier, the Mine's ore cart and the
+// Observatory's lamp post would stand on it; the Portal's door front is the
+// hedge; the lighthouse's door ground is under the Harbor Master's roofs, so
+// its row stands at the foot of the tower's own stair; the Harbor's is the
+// slipway's water. Every shift keeps the row clear of the chip rows above.
+const OUTCOME_ROW_SHIFT = Object.freeze({
+    command: { x: -17, y: -34 },
+    taskboard: { x: 6, y: 1 },
+    forge: { x: 34, y: 2 },
+    mine: { x: 14, y: 3 },
+    observatory: { x: -6, y: -14 },
+    portal: { x: 20, y: -26 },
+    watchtower: { x: 16, y: -62 },
+    harbor: { x: -8, y: -38 },
+});
+const NO_SHIFT = Object.freeze({ x: 0, y: 0 });
+// Where the entrance tile itself is hidden from the camera, the door ground
+// steps back toward the face (tiles, from the entrance tile's centre): the
+// Task board's door-front sits under the south curtain wall's crenellations,
+// the lighthouse's under the Harbor Master's roofs, and the mine's beside the
+// wall tower's cap. Each lands on the visible apron between the face and that
+// door. Every other landmark's door ground is its entrance tile's centre.
+const DOOR_GROUND_STEP_BACK = Object.freeze({
+    taskboard: 1.5,
+    watchtower: 1.1,
+    mine: 1.3,
+});
+const OUTCOME_SEEN_LIMIT = 400;
 // A chit shows `verb · detail` only while it fits this many screen pixels;
 // past that it shows the verb alone, never a word cut in half (S14).
 const CHIT_MAX_TEXT_PX = 132;
@@ -314,6 +357,13 @@ export class LandmarkActivity {
         this._forgeObservingSince = Date.now();
         this._onToolInvoked = (event) => this._observeForgeEditCall(event);
         eventBus.on('tool:invoked', this._onToolInvoked);
+        // W7.2 — how a call *ended*, at the building that owned the call.
+        // Only a real exit code lands; an unknown outcome draws nothing
+        // (absence is never success).
+        this._outcomeSeen = new Set();
+        this._outcomeSeqByBuilding = new Map();
+        this._onToolResult = (event) => this._observeToolResult(event);
+        eventBus.on('tool:result', this._onToolResult);
         this.agentSprites = [];
         this._kindIds = new Map();
         this._recencyByType = new Map();
@@ -412,6 +462,9 @@ export class LandmarkActivity {
         eventBus.off('agent:selected', this._onAgentSelected);
         eventBus.off('agent:deselected', this._onAgentDeselected);
         eventBus.off('tool:invoked', this._onToolInvoked);
+        eventBus.off('tool:result', this._onToolResult);
+        this._outcomeSeen.clear();
+        this._outcomeSeqByBuilding.clear();
         this._kindIds.clear();
         this._recencyByType.clear();
         this._countByType.clear();
@@ -485,6 +538,9 @@ export class LandmarkActivity {
             const color = item.type === 'chat-line' ? item.color || '#f2d36b' : '#f6c85f';
             return this._drawConnection(ctx, item, color);
         }
+        // W7.2 — the outcome stamp is static ground evidence and always
+        // draws; only its text plate waits for the chit gate.
+        if (item.type === 'outcome') return this._drawOutcomeItem(ctx, item, this._chipVisible(item));
         if (!this._chipVisible(item)) return;
         if (item.type === 'forge') return this._drawForgeItem(ctx, item);
         if (item.type === 'handoff') return this._drawHandoffItem(ctx, item);
@@ -793,8 +849,9 @@ export class LandmarkActivity {
                 ts: now,
                 cargo,
             });
-            return;
         }
+        // The existing yard cart carries the receipt even when the villager
+        // is working elsewhere and the physical-visit ritual gate rejects it.
         const id = `token:${agent.id}:${agent.lastSessionActivity || now}:${Math.round(current / 128)}`;
         if (this.items.has(id)) return;
         this.items.set(id, {
@@ -965,6 +1022,62 @@ export class LandmarkActivity {
         this._capKind('command', MAX_ITEMS_PER_KIND, id);
     }
 
+    // W7.2 — one `tool:result` → one chit in front of the owning building's
+    // door: a broken bracket for a non-zero exit, a stone residue for exit 0.
+    // A null exit (the provider did not say), an unknown building or a
+    // repeated result id lands nothing.
+    _observeToolResult(event, now = Date.now()) {
+        if (this._disposed) return;
+        const id = typeof event?.id === 'string' ? event.id : '';
+        const building = typeof event?.building === 'string' ? event.building : '';
+        const raw = event?.exitCode;
+        if (!id || !building || raw === null || raw === undefined || raw === '') return;
+        const exitCode = Number(raw);
+        if (!Number.isFinite(exitCode)) return;
+        if (!this.world?.buildings?.get?.(building)) return;
+        const itemId = `outcome:${id}`;
+        if (this._outcomeSeen.has(itemId)) return;
+        this._outcomeSeen.add(itemId);
+        if (this._outcomeSeen.size > OUTCOME_SEEN_LIMIT) {
+            this._outcomeSeen.delete(this._outcomeSeen.values().next().value);
+        }
+        // The building's newest four keep distinct places: live outcomes at
+        // one door are always a consecutive run, so `seq % 4` never collides.
+        let oldest = null;
+        let live = 0;
+        for (const item of this.items.values()) {
+            if (item.type !== 'outcome' || item.building !== building) continue;
+            live += 1;
+            if (!oldest || item.seq < oldest.seq) oldest = item;
+        }
+        if (oldest && live >= OUTCOME_CHIT_OFFSETS.length) {
+            this.items.delete(oldest.id);
+            const ids = this._kindIds.get('outcome');
+            const index = ids ? ids.indexOf(oldest.id) : -1;
+            if (index >= 0) ids.splice(index, 1);
+        }
+        const seq = this._outcomeSeqByBuilding.get(building) || 0;
+        this._outcomeSeqByBuilding.set(building, seq + 1);
+        const failed = exitCode !== 0;
+        this.items.set(itemId, {
+            id: itemId,
+            type: 'outcome',
+            building,
+            agentId: typeof event.agentId === 'string' ? event.agentId : null,
+            createdAt: now,
+            expiresAt: now + SNAPSHOT_TTL_MS,
+            seq,
+            slot: seq % OUTCOME_CHIT_OFFSETS.length,
+            exitCode,
+            failed,
+            label: toolVerbLabel(event.tool, null),
+            detail: failed ? `exit ${Math.trunc(exitCode)}` : '',
+            sortOffset: 4,
+        });
+        this._recencyByType.set(building, now);
+        this._capKind('outcome', MAX_ITEMS_PER_KIND, itemId);
+    }
+
     _expireItems(now) {
         for (const [id, item] of this.items) {
             if (item.expiresAt <= now) this.items.delete(id);
@@ -1077,17 +1190,20 @@ export class LandmarkActivity {
             };
         }
 
-        const mine = item.building === 'mine';
-        const anchor = mine ? this._buildingCenter('mine') : this._entranceGround(item.building);
+        // The mine's carts keep their yard; its outcomes stand at the mouth.
+        const yard = item.building === 'mine' && item.type !== 'outcome';
+        const anchor = yard ? this._buildingCenter('mine') : this._entranceGround(item.building);
         if (!anchor) return null;
-        const offsets = mine ? MINE_CART_OFFSETS : ENTRANCE_CHIP_OFFSETS;
+        const outcome = item.type === 'outcome';
+        const offsets = yard ? MINE_CART_OFFSETS : (outcome ? OUTCOME_CHIT_OFFSETS : ENTRANCE_CHIP_OFFSETS);
         const offset = offsets[(item.slot || 0) % offsets.length] || offsets[0];
+        const shift = outcome ? (OUTCOME_ROW_SHIFT[item.building] || NO_SHIFT) : NO_SHIFT;
         const age = now - item.createdAt;
         // A chip drops onto its spot in two steps, then holds still.
         const drop = this.motionScale && age < 350 ? (age < 175 ? 4 : 2) : 0;
         return {
-            x: anchor.x + offset.x,
-            y: anchor.y + offset.y - drop,
+            x: anchor.x + offset.x + shift.x,
+            y: anchor.y + offset.y + shift.y - drop,
             progress: Math.max(0, Math.min(1, age / Math.max(1, item.expiresAt - item.createdAt))),
         };
     }
@@ -1100,14 +1216,15 @@ export class LandmarkActivity {
         return toWorld(cx, cy);
     }
 
-    // The centre of the tile one step out from the building's door: open
-    // ground in front of the face, where the activity chips stand.
+    // The door ground: the centre of the walkable tile at the building's door
+    // (stepped back onto the apron where that tile is hidden from the camera),
+    // where the activity chips and outcome chits stand.
     _entranceGround(type) {
         const building = this.world?.buildings?.get(type);
         if (!building) return null;
         const entrance = building.entrance;
         if (!entrance) return toWorld(building.position.tileX + building.width / 2, building.position.tileY + building.height + 0.5);
-        return toWorld(entrance.tileX + 0.5, entrance.tileY + 1.5);
+        return toWorld(entrance.tileX + 0.5, entrance.tileY + 0.5 - (DOOR_GROUND_STEP_BACK[type] || 0));
     }
 
     // C4 stepped follow-through: the envelope lands on 1 / .66 / .33 quanta
@@ -1188,6 +1305,33 @@ export class LandmarkActivity {
             ctx.fillRect(x + 2, y - 4, 1, 1);
         }
         this._drawTinyLabel(ctx, item, x, y - 15, '#ffe7a3');
+        ctx.restore();
+    }
+
+    // W7.2 — an outcome on the apron. A failure is the failed-push bracket
+    // grammar at chit scale (broken top-right corner, static red); a success
+    // is the stone residue diamond. Neither moves after its two-step drop.
+    _drawOutcomeItem(ctx, item, labelled) {
+        const x = snap(item.x);
+        const y = snap(item.y);
+        ctx.save();
+        ctx.globalAlpha = item.alpha;
+        if (item.failed) {
+            bracket(ctx, x, y - 4, {
+                width: 9,
+                height: 8,
+                thickness: 1,
+                arm: 3,
+                broken: true,
+                color: this._tone(FAILURE),
+                outline: this._tone(FAILURE_OUTLINE),
+            });
+        } else {
+            diamond(ctx, x, y - 3, 3, { color: this._tone(STONE_RAMP[0]), fill: this._tone(STONE_RAMP[1]) });
+            ctx.fillStyle = this._tone(STONE_RAMP[2]);
+            ctx.fillRect(x - 1, y - 4, 1, 1);
+        }
+        if (labelled) this._drawTinyLabel(ctx, item, x, y - 16, item.failed ? FAILURE : '#ffe7a3');
         ctx.restore();
     }
 

@@ -10,7 +10,9 @@ const USER_IDLE_MS = 45000;
 const SELECTED_AGENT_GRACE_MS = 45000;
 const MANUAL_EVENT_GRACE_MS = 30000;
 const FOCUS_DWELL_MS = 40000;
-const ORDINARY_MOVE_COOLDOWN_MS = 14000;
+// W5.2 (PI-P6) — calm Auto: an ordinary move waits 45 s after the last move
+// (cue or ordinary). Cues keep their own cooldowns below.
+const ORDINARY_MOVE_COOLDOWN_MS = 45000;
 const GLOBAL_EVENT_COOLDOWN_MS = 15000;
 
 const CENTRAL_RADIUS = 260;
@@ -18,6 +20,17 @@ const CENTRAL_FALLOFF_RADIUS = 360;
 const FOCUS_NEIGHBOR_RADIUS = 320;
 const ORDINARY_MAX_DISTANCE = 720;
 const SPARSE_AGENT_LIMIT = 3;
+// W5.2 — the comfort dead zone: the share of the frame a subject's centre may
+// stray from the anchor before a move is worth it. Ordinary Auto widens to
+// 0.26; the Ambient schedule keeps 0.18 and cues 0.22.
+const ORDINARY_DEADZONE_SHARE = 0.26;
+const AMBIENT_DEADZONE_SHARE = 0.18;
+const EVENT_DEADZONE_SHARE = 0.22;
+// W5.2 — Auto leaves a frame alone that already shows the village: when at
+// least 80 % of the live bodies stand inside its inner 80 % (a 10 % inset on
+// every side), no ordinary move runs.
+const VILLAGE_SHOWN_SHARE = 0.8;
+const VILLAGE_SHOWN_INSET = 0.1;
 
 const GROUP_BOX_PAD = 135;
 const SPARSE_BOX_PAD = 170;
@@ -301,6 +314,29 @@ export function buildFocusBox(focusAgentId, agents, { includeAll = false } = {})
             ? GROUP_BOX_PAD
             : LONE_AGENT_BOX_PAD;
     return boxForPoints(points, pad);
+}
+
+// W5.2 — the share of `points` (feet, world px) standing inside the frame's
+// inner region (`inset` of the width and height trimmed from every side);
+// `toScreen(x, y)` maps a world point to canvas CSS px.
+export function shareInInnerFrame(points, toScreen, width, height, inset = VILLAGE_SHOWN_INSET) {
+    if (!points?.length || typeof toScreen !== 'function' || !(width > 0) || !(height > 0)) return 0;
+    const minX = width * inset;
+    const maxX = width * (1 - inset);
+    const minY = height * inset;
+    const maxY = height * (1 - inset);
+    let inside = 0;
+    for (const point of points) {
+        const screen = toScreen(point.x, point.y);
+        if (screen && screen.x >= minX && screen.x <= maxX && screen.y >= minY && screen.y <= maxY) inside += 1;
+    }
+    return inside / points.length;
+}
+
+// W5.2 — true when the frame already shows the village: ≥ 80 % of the live
+// bodies' feet stand in its inner 80 %. Ordinary Auto then has nothing to add.
+export function frameShowsVillage(points, toScreen, width, height) {
+    return shareInInnerFrame(points, toScreen, width, height) >= VILLAGE_SHOWN_SHARE;
 }
 
 // 5.1 — the wide composition: every active district in one frame. Districts
@@ -609,6 +645,8 @@ export class CameraDirector {
             this._focus = null;
             return;
         }
+        // W5.2 — a frame that already shows the village is left alone.
+        if (this._frameShowsVillage(agents)) return;
 
         const candidates = scoreAgentCandidates(agents);
         const nextFocus = selectFocus(this._focus, candidates, now);
@@ -617,7 +655,7 @@ export class CameraDirector {
 
         const includeAll = agents.length <= SPARSE_AGENT_LIMIT;
         const box = buildFocusBox(nextFocus.agentId, agents, { includeAll });
-        if (!validBox(box) || this._isFrameComfortable(box)) return;
+        if (!validBox(box) || this._isFrameComfortable(box, { ordinary: true })) return;
         if (now - this._lastMoveAt < ORDINARY_MOVE_COOLDOWN_MS) return;
 
         const distance = this._distanceFromCurrentCenter(boxCenter(box));
@@ -1048,7 +1086,9 @@ export class CameraDirector {
         return screenDistance >= 120 || zoomDistance >= 0.05;
     }
 
-    _isFrameComfortable(box, { event = false } = {}) {
+    // `ordinary` widens the centring dead zone for ordinary Auto (W5.2); the
+    // Ambient schedule keeps 0.18 and cues 0.22.
+    _isFrameComfortable(box, { event = false, ordinary = false } = {}) {
         const camera = this.camera;
         const w = camera?._viewportWidth?.() || camera?.canvas?.clientWidth || 0;
         const h = camera?._viewportHeight?.() || camera?.canvas?.clientHeight || 0;
@@ -1074,11 +1114,22 @@ export class CameraDirector {
         const screenCenter = camera.worldToScreen(center.x, center.y);
         const anchorX = 0.5;
         const anchorY = event ? 0.53 : 0.55;
-        const deadzoneX = w * (event ? 0.22 : 0.18);
-        const deadzoneY = h * (event ? 0.22 : 0.18);
+        const deadzoneShare = event ? EVENT_DEADZONE_SHARE : ordinary ? ORDINARY_DEADZONE_SHARE : AMBIENT_DEADZONE_SHARE;
+        const deadzoneX = w * deadzoneShare;
+        const deadzoneY = h * deadzoneShare;
         const centered = Math.abs(screenCenter.x - w * anchorX) <= deadzoneX
             && Math.abs(screenCenter.y - h * anchorY) <= deadzoneY;
 
         return visible && centered;
+    }
+
+    // W5.2 — does the frame already show ≥ 80 % of the live bodies in its
+    // inner 80 %?
+    _frameShowsVillage(agents) {
+        const camera = this.camera;
+        const w = camera?._viewportWidth?.() || camera?.canvas?.clientWidth || 0;
+        const h = camera?._viewportHeight?.() || camera?.canvas?.clientHeight || 0;
+        if (!camera?.worldToScreen || !w || !h) return false;
+        return frameShowsVillage(agents, (x, y) => camera.worldToScreen(x, y), w, h);
     }
 }

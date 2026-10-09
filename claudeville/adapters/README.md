@@ -126,6 +126,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `waitReason` | string \| null | Why the session is blocked on a person: `'question'`, `'approval'`, or `'plan_review'`. Null when a pending tool is judged to be merely executing. |
 | `awaitingSince` | number \| null | ms epoch the session started waiting on the user (or closed its turn). Orders the attention queue. |
 | `turnStartedAt` | number \| null | ms epoch the current turn started, when the transcript records it. |
+| `sessionEndedAt` | number \| null | Explicit session end, ms epoch; distinct from a completed turn. OMP reads `custom.session_exit`; Claude can receive an opt-in `SessionEnd` hook. A newer user/assistant message (OMP) or session/turn-start hook clears it on resume. Ends immediately remove village presence through the existing gate staging; mere roster absence still uses the 90-second grace. Other providers default to null. |
 | `lastTurnDurationMs` | number \| null | Claude-only. Duration of the last completed turn from `system` `turn_duration` records. |
 | `resident` | boolean | True when the server is serving a frozen snapshot of a session that has left the active window (see `services/sessionResidency.js`). |
 | `dialogue` | object \| null | Provenance-tagged speech built by `dialogue.js`: `{ text, full, kind, source, authorship, fidelity, redacted, observedAt, actionId }`. `kind` is `intent`, `plan`, `thinking`, or `assistant`; `text` is capped at 80 characters and `full` at 400. Only model-written text qualifies; lines older than 90 seconds are dropped. Null when nothing qualifies — the world stays silent rather than inventing a line. |
@@ -145,7 +146,8 @@ exists only where the provider wrote one down.
 - **Codex** — `item_completed` records of type `CommandExecution` (`codex.js`). `exit_code` may be absent on an interrupted command; `exitCode` is then `null` and the outcome stays explicitly unknown.
 - **Kimi Code** — `tool.result` loop events carrying an exit code, or an explicit `isError`/`is_error`/`error` flag (`kimi.js`). A result that only carries output is not an outcome and produces nothing.
 - **OpenCode** — tool parts with a numeric `state.metadata.exit` (`opencode.js`).
-- **Claude, Gemini, Grok, OMP** — no result record is published. Nothing downstream may synthesize one.
+- **OMP** — `toolResult` records paired with their `toolCall` id inside the bounded transcript tail (`omp.js`). An explicit `isError` flag maps to exit 1 or 0; an absent flag leaves `exitCode: null`. Unpaired results and still-open calls are not published.
+- **Claude, Gemini, Grok** — no result record is published. Nothing downstream may synthesize one.
 
 `id` is derived from provider, session, and call identity in `toolResults.js`, so
 re-reading the same transcript yields the same id and consumers deduplicate
@@ -170,7 +172,7 @@ Public `sessionId` remains the filename-derived dashboard identity. Hooks are ke
 
 Sessions and details expose `freshness: { state, observedAt, ageMs }`. A successful provider scan is `fresh`; an actual empty result removes that provider slice. Failed discovery/read keeps the last good slice `stale` for at most 60 seconds, without changing its observation time. Detail failures use the same bound and then return `state: 'unavailable'`. Dirty-cache invalidation preserves this backup. A missing provider is unavailable, and successful recovery clears staleness. Residency never extends degraded provider retention; ordinary unresolved residents carry stale observation metadata.
 
-`signalCertainty` is `observed`, `inferred`, or `unavailable`; `signalObservedAt` gives its timestamp and `signalStale` marks a last observation. A pending ordinary tool remains work however long it runs. Explicit question/review tools and approval hooks supply waiting evidence. Exact unanswered hook approvals remain last-observed waits after the 10-second fresh window, until a resolving hook/newer recorded turn or a bounded 30-minute expiry. Other hook overlays stop merging after 10 seconds and expire after 30 seconds. Gemini text and Grok message chunks alone do not assert a completed turn.
+`signalCertainty` is `observed`, `inferred`, or `unavailable`; `signalObservedAt` gives its timestamp and `signalStale` marks a last observation. A pending ordinary tool remains work however long it runs. Explicit question/review tools and approval hooks supply waiting evidence. Exact unanswered hook approvals remain last-observed waits after the 10-second fresh window, until a resolving hook/newer recorded turn or a bounded 30-minute expiry. Explicit `SessionEnd` hooks retain `sessionEndedAt` under the same bound until a session/turn-start hook or newer recorded turn, preventing ordinary overlay expiry from resurrecting an ended session. Other hook overlays stop merging after 10 seconds and expire after 30 seconds. Gemini text and Grok message chunks alone do not assert a completed turn.
 
 Claude quota utilization is provider-qualified pressure, never evidence of enforcement. Session `rateLimit: { enforced: true }` carries an observed rejection (including Claude `stop_reason: 'rate_limited'`). Account-wide enforcement also requires matching provider and explicit account ID. An unanswered question/approval remains the primary status.
 

@@ -8,7 +8,8 @@ import { tileToWorld, worldToTile } from './Projection.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { pulseBand01 } from './PulsePolicy.js';
 import { gradeColor } from './AtmosphereState.js';
-import { dottedCurve } from './EffectStamps.js';
+import { dottedCurve, snap } from './EffectStamps.js';
+import { drawSquadPennon, SQUAD_DEVICES } from './PixelPennant.js';
 import { cueNoteDue } from '../shared/audio/CueScore.js';
 
 const MAX_TALK_ARCS = 8;
@@ -27,6 +28,190 @@ const COUNCIL_MARK_LIFT = 96;
 let _councilCeremony = null;
 const _teamGatherCooldownsByOwner = new WeakMap();
 const _commandPlazaVisitTiles = (BUILDING_DEFS.find(def => def.type === 'command')?.visitTiles || []).map(tile => ({ ...tile }));
+// W7.4 (D2: squad = shape) — a squad is a live parent with at least two live
+// children. Each live squad holds one of four shapes (pennon device + tether
+// pattern) for as long as it lives: a new squad probes from its id hash to
+// the first shape no other live squad holds, like RepoColor's visible-slot
+// probe, and never shifts a squad that already has one. Hue stays the repo's.
+export const SQUAD_MIN_CHILDREN = 2;
+export const SQUAD_TETHER_PATTERNS = Object.freeze([
+    Object.freeze([1, 0, 0]), // dot
+    Object.freeze([1, 1, 1, 0, 0, 0]), // bar
+    Object.freeze([1, 0, 1, 0, 0, 0, 0]), // pair
+    Object.freeze([1, 1, 1, 0, 1, 0, 0, 0]), // chevron
+]);
+// The standard stands on the ground beside the leader: its pole foot sits on
+// the leader's foot row, this many texels clear of the body's half-width, on
+// whichever side no neighbour's body would hide it (right first).
+const SQUAD_PENNON_GAP = 2;
+// The ground notch sits in front of the leader, below its rings.
+const SQUAD_NOTCH_DROP = 8;
+// Squad cords lie on the ground plane feet to feet, never across a body:
+// quieter than the rings, broken around every member's footprint. A cord
+// (and a talk arc) between two bodies already within about a tile of each
+// other draws nothing: their closeness says it. Source alpha is 0.88: at
+// neutral lighting, uncrowded secondary admission (0.78) snaps to about 0.69;
+// half-strength admission snaps to about 0.44 (the repo course is 0.78).
+// Each lit texel keeps a keyline under it so it reads on cobble and grass.
+const SQUAD_TETHER_ALPHA = 0.88;
+const NEAR_PAIR_TILES = 1.25;
+const SQUAD_FOOTPRINT = { rx: 12, ry: 5 };
+const _squadShapes = new Map();
+
+function squadHash(text) {
+    let hash = 2166136261;
+    const value = String(text || '');
+    for (let i = 0; i < value.length; i++) {
+        hash ^= value.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+}
+
+function liveSquadSprite(sprite) {
+    return Boolean(sprite) && !sprite.isArrivalPending?.() && !(sprite.agent?.isDeparted && !sprite.leaving);
+}
+
+/**
+ * Live squads from `parentToChildren` (Map parent id → Set|Array of child
+ * ids) and the drawn sprites (Map id → sprite). Returns `[{ parentId,
+ * childIds, shape }]` ordered by parent id; `shape` indexes
+ * SQUAD_TETHER_PATTERNS and SQUAD_DEVICES. `registry` is the sticky shape
+ * map (module state by default; tests pass their own).
+ */
+export function resolveSquads(parentToChildren, agentSprites, { registry = _squadShapes } = {}) {
+    const squads = [];
+    if (!parentToChildren?.entries || !agentSprites?.get) return squads;
+    for (const [parentId, childIds] of parentToChildren.entries()) {
+        if (!liveSquadSprite(agentSprites.get(parentId))) continue;
+        const live = [];
+        for (const childId of childIds || []) {
+            if (childId !== parentId && liveSquadSprite(agentSprites.get(childId))) live.push(childId);
+        }
+        if (live.length >= SQUAD_MIN_CHILDREN) squads.push({ parentId, childIds: live, shape: -1 });
+    }
+    squads.sort((a, b) => (a.parentId < b.parentId ? -1 : a.parentId > b.parentId ? 1 : 0));
+    const liveIds = new Set(squads.map(squad => squad.parentId));
+    for (const id of registry.keys()) if (!liveIds.has(id)) registry.delete(id);
+    const taken = new Set();
+    for (const squad of squads) {
+        if (!registry.has(squad.parentId)) continue;
+        squad.shape = registry.get(squad.parentId);
+        taken.add(squad.shape);
+    }
+    const count = SQUAD_TETHER_PATTERNS.length;
+    for (const squad of squads) {
+        if (squad.shape >= 0) continue;
+        const start = squadHash(squad.parentId) % count;
+        let shape = start;
+        for (let step = 0; step < count; step++) {
+            const candidate = (start + step) % count;
+            if (!taken.has(candidate)) { shape = candidate; break; }
+        }
+        squad.shape = shape;
+        taken.add(shape);
+        registry.set(squad.parentId, shape);
+    }
+    return squads;
+}
+
+// A straight ground-plane run walked one texel at a time with a fixed on/off
+// pattern: the squad's tether shape. Static (no march), whole texels only.
+// Texels inside any `clear` footprint stay dark but still advance the
+// pattern, so the cord reads as passing under the body's feet. Two passes —
+// the keyline texel under every lit texel first, then the lit texels — so no
+// keyline lands on a lit texel whichever way the run walks.
+function patternLine(ctx, x0, y0, x1, y1, pattern, color, keyline, clear) {
+    for (let pass = 0; pass < 2; pass++) {
+        const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0)));
+        let lastX = NaN;
+        let lastY = NaN;
+        let index = 0;
+        ctx.fillStyle = pass === 0 ? keyline : color;
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const px = snap(x0 + (x1 - x0) * t);
+            const py = snap(y0 + (y1 - y0) * t);
+            if (px === lastX && py === lastY) continue;
+            lastX = px;
+            lastY = py;
+            const on = pattern[index % pattern.length];
+            index += 1;
+            if (!on || insideFootprint(px, py, clear)) continue;
+            if (pass === 0 && insideFootprint(px, py + 1, clear)) continue;
+            ctx.fillRect(px, py + (pass === 0 ? 1 : 0), 1, 1);
+        }
+    }
+}
+
+function insideFootprint(px, py, feet) {
+    for (const foot of feet) {
+        const dx = (px - foot.x) / SQUAD_FOOTPRINT.rx;
+        const dy = (py - foot.y) / SQUAD_FOOTPRINT.ry;
+        if (dx * dx + dy * dy <= 1) return true;
+    }
+    return false;
+}
+
+function squadFoot(sprite) {
+    return { x: snap(sprite.x), y: snap(sprite.y) + 1 };
+}
+
+function tileGap(a, b) {
+    const ta = worldToTile(a.x, a.y);
+    const tb = worldToTile(b.x, b.y);
+    return Math.hypot(ta.tileX - tb.tileX, ta.tileY - tb.tileY);
+}
+
+function bodyHalfWidth(sprite) {
+    const width = Number(sprite?._stableContentWidth?.()) || 28;
+    return Math.ceil(width / 2);
+}
+
+// Which side of the leader the standard stands on: right unless a
+// neighbour's body (standing level with or in front of the pole, where the
+// ground layer would lose it) covers that side and the left is clear.
+export function squadPennonSide(leader, agentSprites) {
+    const reach = bodyHalfWidth(leader) + SQUAD_PENNON_GAP;
+    const covered = (side) => {
+        const poleX = leader.x + side * (reach + 4);
+        for (const other of agentSprites?.values?.() || []) {
+            if (other === leader || !liveSquadSprite(other)) continue;
+            const dy = other.y - leader.y;
+            if (dy < -6 || dy > 40) continue;
+            if (Math.abs(other.x - poleX) < bodyHalfWidth(other) + 4) return true;
+        }
+        return false;
+    };
+    return covered(1) && !covered(-1) ? -1 : 1;
+}
+
+function scaleHex(hex, k) {
+    const text = String(hex || '');
+    if (!/^#[0-9a-f]{6}$/i.test(text)) return text;
+    const n = parseInt(text.slice(1), 16);
+    const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(v => Math.max(0, Math.min(255, Math.round(v * k))));
+    return `#${c.map(v => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function squadAccent(parent) {
+    return parent?.thoughtRepoAccent?.() || parent?._providerTrimColor?.() || parent?.providerTrimColor || '#8b8b9e';
+}
+
+// The leader's static ground notch: a 5-texel wedge pointing at its feet,
+// in front of its rings, with a keyline under each lit texel.
+function drawSquadNotch(ctx, x, y, color, keyline) {
+    const left = snap(x);
+    const top = snap(y) + SQUAD_NOTCH_DROP;
+    ctx.fillStyle = keyline;
+    ctx.fillRect(left - 2, top + 1, 5, 1);
+    ctx.fillRect(left - 1, top + 2, 3, 1);
+    ctx.fillRect(left, top + 3, 1, 1);
+    ctx.fillStyle = color;
+    ctx.fillRect(left - 2, top, 5, 1);
+    ctx.fillRect(left - 1, top + 1, 3, 1);
+    ctx.fillRect(left, top + 2, 1, 1);
+}
 
 function tileToScreen(tile) {
     return tileToWorld(tile);
@@ -374,17 +559,46 @@ export function drawFamilyTethers(ctx, {
     const governor = getActiveMarkGovernor();
 
     const advisorChildIds = new Set((snapshot.advisorPairs || []).map(pair => pair.advisorId));
+    // W7.4 — squads (a live parent with >= 2 live children) draw their own
+    // static tethers in the squad's shape and the leader's repo accent, plus
+    // the leader's pennon and ground notch; every other family keeps the
+    // faint marching dots.
+    const squads = resolveSquads(snapshot.parentToChildren, agentSprites);
+    const squadByParent = new Map(squads.map(squad => [squad.parentId, squad]));
 
     for (const [parentId, childIds] of snapshot.parentToChildren.entries()) {
         const parent = agentSprites.get(parentId);
         if (!parent || parent.isArrivalPending?.()) continue;
-        const trim = gradeColor(parent._providerTrimColor?.() || parent.providerTrimColor || '#8b8b9e', grade);
+        const squad = squadByParent.get(parentId) || null;
+        const trim = squad
+            ? gradeColor(squadAccent(parent), grade)
+            : gradeColor(parent._providerTrimColor?.() || parent.providerTrimColor || '#8b8b9e', grade);
+        const keyline = squad ? gradeColor('#1c130d', grade) : null;
+        // Every member's footprint: a squad cord breaks under each of them.
+        const feet = squad
+            ? [parent, ...squad.childIds.map(id => agentSprites.get(id))].filter(Boolean).map(squadFoot)
+            : null;
 
         for (const childId of childIds) {
             // Advisor pairs get their own explicit tether pass below.
             if (advisorChildIds.has(childId)) continue;
             const child = agentSprites.get(childId);
             if (!child || child.isArrivalPending?.()) continue;
+
+            if (squad) {
+                if (tileGap(parent, child) < NEAR_PAIR_TILES) continue;
+                const start = squadFoot(parent);
+                const end = squadFoot(child);
+                const gate = governor
+                    ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
+                    : { draw: true, alpha: 1 };
+                if (!gate.draw) continue;
+                ctx.save();
+                ctx.globalAlpha = steppedAlpha(SQUAD_TETHER_ALPHA * Math.min(1.2, boost) * gate.alpha);
+                patternLine(ctx, start.x, start.y, end.x, end.y, SQUAD_TETHER_PATTERNS[squad.shape], trim, keyline, feet);
+                ctx.restore();
+                continue;
+            }
 
             const start = { x: parent.x, y: parent.y - 6 };
             const end = { x: child.x, y: child.y - 6 };
@@ -406,6 +620,28 @@ export function drawFamilyTethers(ctx, {
             dottedCurve(ctx, start.x, start.y, control.x, control.y, end.x, end.y, { step: 4, phase, color: trim });
             ctx.restore();
         }
+    }
+
+    // The standards: drawn after the tethers so no cord crosses a pennon.
+    for (const squad of squads) {
+        const leader = agentSprites.get(squad.parentId);
+        const accent = gradeColor(squadAccent(leader), grade);
+        const keyline = gradeColor('#1c130d', grade);
+        ctx.save();
+        ctx.globalAlpha = 1;
+        drawSquadNotch(ctx, leader.x, leader.y, accent, keyline);
+        const side = squadPennonSide(leader, agentSprites);
+        const poleX = snap(leader.x) + side * (bodyHalfWidth(leader) + SQUAD_PENNON_GAP);
+        drawSquadPennon(ctx, poleX, snap(leader.y) + 1, {
+            facing: side,
+            accent,
+            shade: gradeColor(scaleHex(squadAccent(leader), 0.62), grade),
+            device: gradeColor('#efe6cf', grade),
+            rim: keyline,
+            pole: gradeColor('#5a3d26', grade),
+            deviceIndex: squad.shape % SQUAD_DEVICES.length,
+        });
+        ctx.restore();
     }
 }
 
@@ -563,6 +799,7 @@ export function admitTalkArcMarks({ relationship, agentSprites } = {}) {
         const a = agentSprites.get(pair.aId);
         const b = agentSprites.get(pair.bId);
         if (!a || !b || a.isArrivalPending?.() || b.isArrivalPending?.()) continue;
+        if (tileGap(a, b) < NEAR_PAIR_TILES) continue;
         _talkArcGates.set(`talk:${pair.aId}:${pair.bId}`, governor.admit(MarkTier.SECONDARY, a.x, a.y - 18));
     }
 
@@ -602,6 +839,9 @@ export function drawTalkArcs(ctx, {
         const a = agentSprites.get(pair.aId);
         const b = agentSprites.get(pair.bId);
         if (!a || !b || a.isArrivalPending?.() || b.isArrivalPending?.()) continue;
+        // Face to face, the two bubbles already say it: an arc between bodies
+        // a tile apart only crosses their chests as loose gold dots.
+        if (tileGap(a, b) < NEAR_PAIR_TILES) continue;
 
         const start = { x: a.x, y: a.y - 18 };
         const end = { x: b.x, y: b.y - 18 };

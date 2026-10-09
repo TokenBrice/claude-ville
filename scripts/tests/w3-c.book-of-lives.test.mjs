@@ -65,6 +65,15 @@ test('an empty ring has a graceful state and anonymous history is session-scoped
     assert.doesNotMatch(model.scopeLabel, /across sessions/i);
 });
 
+test('project history is durable and explains the identity shared by concurrent mains', () => {
+    const model = buildBookOfLivesViewModel(biography({
+        identityKey: 'project:omp:claude-ville',
+    }), { now: NOW });
+    assert.equal(model.sessionScoped, false);
+    assert.match(model.scopeLabel, /project lead across sessions/i);
+    assert.match(model.scopeLabel, /Concurrent mains on one repo share this project identity/);
+});
+
 test('generated descriptors expose first and last seen plus multiple bounded milestones', () => {
     const model = buildBookOfLivesViewModel(biography({
         milestones: [

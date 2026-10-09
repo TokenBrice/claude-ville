@@ -237,3 +237,80 @@ export function drawMiniPennant(ctx, x, y, { accent, shade = null, frame = PENNA
         ctx.fillRect(cx, top + h - 1, 1, 1);
     }
 }
+
+// W7.4 (D2: squad = shape) — the squad standard: a small swallowtail pennon
+// (8×6 cloth on a 12-texel pole, about knee-to-hip on a villager) standing on
+// the ground beside a squad leader's feet, its cloth in the leader's repo
+// accent and carrying one of four devices that match the squad's tether
+// pattern. Static: no flutter and no wind (the motion budget row is
+// `static`); whole-texel fills only, so the ground cue recorder takes it on
+// the resident path too.
+export const SQUAD_DEVICES = Object.freeze([
+    Object.freeze([[2, 2], [3, 2], [2, 3], [3, 3]]), // dot
+    Object.freeze([[2, 1], [2, 2], [2, 3], [2, 4]]), // bar
+    Object.freeze([[2, 2], [2, 3], [4, 2], [4, 3]]), // pair
+    Object.freeze([[2, 1], [3, 2], [3, 3], [2, 4]]), // chevron
+]);
+// Row spans of the cloth, top to bottom: [first column, length]. Rows 2–3
+// stop short, which cuts the swallowtail.
+const SQUAD_CLOTH = Object.freeze([[0, 7], [0, 8], [0, 6], [0, 6], [0, 8], [0, 7]]);
+const SQUAD_POLE_H = 12;
+
+function squadClothHas(cx, cy) {
+    const row = SQUAD_CLOTH[cy];
+    return Boolean(row) && cx >= row[0] && cx < row[0] + row[1];
+}
+
+/**
+ * Draws a squad pennon with its pole foot at the art-grid point (x, y). The
+ * caller supplies graded colours: `accent` cloth, `shade` lower course,
+ * `device` the squad's mark, `rim` the outline, `pole` the staff. `facing`
+ * 1 flies the cloth to the right of the pole, -1 mirrors it to the left.
+ */
+export function drawSquadPennon(ctx, x, y, {
+    accent,
+    shade = null,
+    device = '#efe6cf',
+    rim = '#1c130d',
+    pole = '#5a3d26',
+    deviceIndex = 0,
+    facing = 1,
+} = {}) {
+    if (!ctx || !accent) return;
+    const px = Math.round(x);
+    const py = Math.round(y);
+    const dir = facing < 0 ? -1 : 1;
+    const top = py - SQUAD_POLE_H + 1;
+    const clothY = top + 1;
+    // Cloth column `cx` (0 at the pole) to a world column, either way out.
+    const col = (cx) => px + dir * (cx + 1);
+    // Rim first: every texel next to the cloth or the pole that is neither.
+    ctx.fillStyle = rim;
+    ctx.fillRect(px - 1, top - 1, 3, SQUAD_POLE_H + 1);
+    for (let cy = -1; cy <= SQUAD_CLOTH.length; cy++) {
+        for (let cx = 0; cx <= 9; cx++) {
+            if (squadClothHas(cx, cy)) continue;
+            if (squadClothHas(cx - 1, cy) || squadClothHas(cx + 1, cy)
+                || squadClothHas(cx, cy - 1) || squadClothHas(cx, cy + 1)) {
+                ctx.fillRect(col(cx), clothY + cy, 1, 1);
+            }
+        }
+    }
+    ctx.fillStyle = pole;
+    ctx.fillRect(px, top, 1, SQUAD_POLE_H);
+    ctx.fillStyle = device;
+    ctx.fillRect(px, top - 1, 1, 1);
+    const shadeRgb = shade || (() => {
+        const rgb = parseHex(accent);
+        return rgb ? `rgb(${scaled(rgb, 0.62).join(',')})` : accent;
+    })();
+    SQUAD_CLOTH.forEach(([start, length], cy) => {
+        ctx.fillStyle = cy >= SQUAD_CLOTH.length - 2 ? shadeRgb : accent;
+        const a = col(start);
+        const b = col(start + length - 1);
+        ctx.fillRect(Math.min(a, b), clothY + cy, length, 1);
+    });
+    ctx.fillStyle = device;
+    const cells = SQUAD_DEVICES[((deviceIndex % SQUAD_DEVICES.length) + SQUAD_DEVICES.length) % SQUAD_DEVICES.length];
+    for (const [cx, cy] of cells) ctx.fillRect(col(cx), clothY + cy, 1, 1);
+}

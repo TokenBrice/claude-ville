@@ -30,7 +30,11 @@ import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayM
 import { CameraDirector } from './CameraDirector.js';
 import { ParticleSystem } from './ParticleSystem.js';
 import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
-import { BuildingSprite, SOURCE_HALO_RADIUS_CAP } from './BuildingSprite.js';
+import { BuildingSprite, SOURCE_HALO_RADIUS_CAP, lampsLitAt } from './BuildingSprite.js';
+import { VillageCalendar } from './VillageCalendar.js';
+import { IsleLandmarks } from './IsleLandmarks.js';
+import { getActiveChronicleLog } from '../../application/ChronicleLog.js';
+import { BehaviorTelemetry } from './BehaviorTelemetry.js';
 
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
@@ -42,12 +46,13 @@ import { WeatherRenderer } from './WeatherRenderer.js';
 import { WildlifeRenderer } from './WildlifeRenderer.js';
 import { FoliageRenderer } from './FoliageRenderer.js';
 import { PropWinter, WINTER_PROPS } from './PropWinter.js';
-import { WALL_SPEC, drawWallLantern, lanternLit, paintWallRun, wallLanternLight, wallRunLayout } from './VillageWall.js';
+import { WALL_BRAZIER, WALL_IVY_SPRITE, WALL_SPEC, WALL_STAIR, drawWallLantern, lanternLit, paintWallRun, wallLanternLight, wallRunLayout } from './VillageWall.js';
 import { SeasonalAmbience, seasonTokenForAtmosphere } from './SeasonalAmbience.js';
+import { ambientEventsForHost, ambientDebugSnapshot } from './AmbientEvents.js';
 import { ChimneySmoke } from './ChimneySmoke.js';
 import { setPennantWeather } from './PixelPennant.js';
 import { openGroundTiles } from './AmbientGround.js';
-import { installGroundBake } from './GroundBake.js';
+import { TERRAIN_HAZE_COURSES, installGroundBake } from './GroundBake.js';
 import { OCEAN_HORIZON_WORLD_Y, drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
 import { snowBucketOf } from './GroundState.js';
 import {
@@ -65,9 +70,10 @@ import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
 import VisitTileAllocator, { standsOnFixture } from './VisitTileAllocator.js';
+import { scenicScoreBias } from './DayRoutine.js';
 import { getPulsePriority } from './PulsePolicy.js';
 import { annotationModeForPressure, calculateScenePressure, getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
-import { fireBreath, fireBreathDepth, groundCourseHeight, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
+import { fireBreath, fireBreathDepth, groundCourseHeight, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import { applyTeamPlazaPreferences, getCouncilRingDiagnostics, releaseCouncilRingState } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
 import { extractRecipientName } from '../../domain/services/RecipientResolver.js';
@@ -81,6 +87,18 @@ import { tileToWorld, worldToTile, buildingCenterToWorld } from './Projection.js
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { attentionScreenRects, isAttentionStatus, layoutAttentionPlates } from './AttentionPlates.js';
 import { IDENTITY_LABEL, identityLabelTop, identityLabelWidth } from './WorldLabelKit.js';
+import {
+    THOUGHT_CANDIDATE_COUNT,
+    THOUGHT_CANDIDATE_LATERAL,
+    THOUGHT_CANDIDATE_SLOT,
+    THOUGHT_HISTORY_LIMIT,
+    THOUGHT_LEADER_TIP,
+    THOUGHT_STACK_STEP,
+    createThoughtColumn,
+    layoutThoughtColumn,
+    thoughtLateralShift,
+    thoughtLeader,
+} from './ThoughtColumn.js';
 import { StaticPropSprite, buildStaticPropDrawables, lineOcclusionColumns } from './StaticPropDrawables.js';
 import { buildRestSeatPropSprites } from './RestSeats.js';
 import { createDepthDrawable, propPartSortY } from './DrawablePass.js';
@@ -110,7 +128,7 @@ import {
     drawCanvasGradeSaturation,
     gradedPoolReceiver,
 } from './CanvasGrade.js';
-import { drawCloudShadowCourses } from './CloudShadowCourses.js';
+import { createLoneCloudPose, drawCloudShadowCourses, loneCloudPose } from './CloudShadowCourses.js';
 import {
     CANVAS_BUDGET,
     canvasMapPixelCount,
@@ -382,27 +400,22 @@ const AGENT_BODY_AREA_H = 62;
 // 3.4 — cell size (world px) for the static prop footprint index that keeps
 // name-tag de-collision slots from landing on prop art.
 const NAME_SLOT_PROP_CELL = 96;
-// Full-mode speech/status bubble de-collision. Bubbles are drawn per sprite at
-// a fixed head offset, so clustered agents pile unreadably; these drive the
-// rect-overlap slot search that stacks bubbles and caps how many render.
-const AGENT_BUBBLE_SLOT_CAP = 3;
-// Floor for the reservation estimate (short status labels).
-const AGENT_BUBBLE_EST_WIDTH = 104;
-// Departure Mono advance at the anchored 11 px body size, plus bubble padding.
-// Measured against the sprite's own layout, not guessed: AgentSprite adds 18px
-// of horizontal padding around the measured text at this size.
-const AGENT_BUBBLE_CHAR_WIDTH = 7;
-const AGENT_BUBBLE_PADDING = 18;
-// Mirrors STATUS_BUBBLE_MAIN_MAX_WIDTH.anchored in AgentSprite.js, which is
-// where the text is actually truncated to fit.
-const AGENT_BUBBLE_MAX_WIDTH = 232;
-const AGENT_BUBBLE_HEIGHT = 22;
-// Bubble centre above the head (AgentSprite._drawBubble anchors at the
-// label top and lifts 18 screen px), not a fixed height above the feet.
-const AGENT_BUBBLE_HEAD_OFFSET = 18;
-// Vertical step per stacked slot, in screen pixels; must match AgentSprite
-// STATUS_BUBBLE_STACK_STEP so assigned slots line up with the drawn offset.
-const AGENT_BUBBLE_STACK_STEP = 24;
+// W3.1/W3.3 — thought placement (ThoughtColumn.js owns the geometry). A
+// committed candidate is kept while it stays free; a collision must persist
+// THOUGHT_RESEARCH_MS before the column searches again, and a cheaper
+// candidate must stay free THOUGHT_RETURN_MS before the column moves back.
+const THOUGHT_RESEARCH_MS = 300;
+const THOUGHT_RETURN_MS = 2000;
+// W3.4 — screen px between an occluding building's crown and the tail tip of
+// the thought it lifts there.
+const THOUGHT_CROWN_GAP = 4;
+const THOUGHT_NO_THREAD = Object.freeze([]);
+
+function rectIntersectionArea(a, b) {
+    const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    return w > 0 && h > 0 ? w * h : 0;
+}
 const ATMOSPHERE_EFFECT_ASSETS = Object.freeze({
     rainSplash: 'atmosphere.rain.splash',
 });
@@ -608,6 +621,8 @@ export class IsometricRenderer {
         if (this.buildingRenderer) {
             this.buildingRenderer.chronicleDressing = this.chronicleMonuments.planter.dressing;
             this.buildingRenderer.releaseDay = this.chronicleMonuments;
+            // W6.10 — the calendar's landmark dressing (door wreaths).
+            this.buildingRenderer.villageCalendar = (this.villageCalendar ||= new VillageCalendar());
         }
         this.trailRenderer = new TrailRenderer({
             store: this.chronicleStore,
@@ -659,6 +674,9 @@ export class IsometricRenderer {
             parentCoherentChildren: 0,
             handoffIntents: 0,
         };
+        this.behaviorTelemetry = new BehaviorTelemetry({
+            buildingTypes: Array.from(this.world?.buildings?.values?.() || [], building => building.type),
+        });
         this._chronicleNextUpdateAt = 0;
         this._chronicleUpdating = false;
         this._chronicleUpdatePromise = null;
@@ -3248,6 +3266,10 @@ export class IsometricRenderer {
         return normalized ? this.world?.buildings?.get?.(normalized) || null : null;
     }
 
+    get laneTiles() {
+        return this._laneTiles;
+    }
+
     _allocateVisitTile(request = {}) {
         const building = request.building || this._getBuildingByType(request.intent?.building);
         return this.visitTileAllocator?.allocate?.({
@@ -3256,18 +3278,36 @@ export class IsometricRenderer {
         }) || null;
     }
 
-    _getAmbientDestination({ agent, recentBuildings = [], cycle = 0 } = {}) {
+    // W4.9 — the local hour of the atmosphere clock (fractional; `setHour`
+    // pins it): the one clock the daypart table (DayRoutine) reads.
+    _dayHour() {
+        const clock = this._lastAtmosphere?.clock ?? this.atmosphereState?.snapshot?.()?.clock;
+        const minute = Number(clock?.minuteOfDay);
+        if (Number.isFinite(minute)) return minute / 60;
+        const now = new Date();
+        return now.getHours() + now.getMinutes() / 60;
+    }
+
+    // W4.3 — a routine leg (`role`, e.g. 'stroll') over its cap gets no
+    // destination, so `scenicVisits` counts only strolls that can happen.
+    _getAmbientDestination({ agent, recentBuildings = [], cycle = 0, role = null, routineCap = null } = {}) {
         if (!agent?.id) return null;
+        const allocator = this.visitTileAllocator;
+        if (role && allocator?.routineHolders
+            && allocator.routineHolders(role, Date.now(), agent.id) >= allocator.routineCap(role, routineCap)) return null;
         const seed = Math.abs(Math.floor(this._tileNoise(agent.id.length + cycle * 7, cycle + String(agent.id).charCodeAt(0)) * 100000));
         const recent = new Set(recentBuildings);
         const provider = String(agent.provider || '').toLowerCase();
         const model = String(agent.model || '').toLowerCase();
         const sprite = this.agentSprites.get(agent.id);
         const sourceTile = sprite?._screenToTile?.(sprite.x, sprite.y) || agent.position || null;
+        const hour = this._dayHour();
         const weighted = AMBIENT_SCENIC_POINTS
             .map((point, index) => {
                 let score = index * 0.1 + ((seed + index * 17) % 37);
                 if (sourceTile) score += Math.hypot((sourceTile.tileX || 0) - point.tileX, (sourceTile.tileY || 0) - point.tileY) * 1.4;
+                // W4.9 — the daypart tilts the pick (golden hour to the shore).
+                score += scenicScoreBias(hour, point);
                 if (recent.has(`ambient:${point.id}`)) score += 80;
                 if (provider === 'gemini' && point.tags?.includes('observatory')) score -= 12;
                 if (provider === 'codex' && point.tags?.includes('forge')) score -= 10;
@@ -3346,6 +3386,7 @@ export class IsometricRenderer {
             byState,
             intentSources,
             behaviorMetrics: derivedMetrics,
+            rollingBehavior: this.behaviorTelemetry?.metrics || null,
             ritualOverflow: this.ritualConductor?.getOverflowCount?.() || 0,
             allocatorMetrics: reservations.metrics || {},
             reservationCount: reservations.reservationCount || 0,
@@ -3665,7 +3706,12 @@ export class IsometricRenderer {
                 releaseVisitReservation: (agentId) => this.visitTileAllocator?.release?.(agentId),
                 renewVisitReservation: (agentId) => this.visitTileAllocator?.renew?.(agentId),
                 getAmbientDestination: (request) => this._getAmbientDestination(request),
+                getDayHour: () => this._dayHour(),
                 getRoadTiles: () => this.pathTiles,
+                getRoutingContext: () => ({
+                    laneTiles: this.laneTiles,
+                    ...this.visitTileAllocator.getCongestionSnapshot(),
+                }),
                 getTileType: (tileX, tileY) => this._surfaceMaterialAt(tileX, tileY),
                 motionClock: this._motionClock,
             });
@@ -5073,6 +5119,7 @@ export class IsometricRenderer {
             this._crowdStatsAccumulator = 0;
             this._lastAgentCount = this.agentSprites.size;
             this._crowdStats = this._summarizeCrowdClusters();
+            this._sampleBehaviorTelemetry(Date.now());
         }
         const walkerStopped = this._settleLandings(movingSprites);
         this._stationaryOverlapAccumulator += dt;
@@ -5131,6 +5178,16 @@ export class IsometricRenderer {
         // SeasonalAmbience.update().
         this.seasonalAmbience?.update?.(dt);
 
+        // W6.2 / W6.3 — the date-seeded ambient events (clock, calendar and
+        // the village's own weather only, V3) and the lone cloud's pose.
+        this.ambientEvents = ambientEventsForHost(this, updateNow);
+        this.ambientLoneCloud = loneCloudPose(
+            this.ambientEvents?.frequent,
+            this._lastAtmosphere?.effectiveDate?.getTime?.() ?? updateNow,
+            this._lastAtmosphere?.weather || null,
+            this.ambientLoneCloud || createLoneCloudPose(),
+        );
+
         // Rain splashes at agent feet, gated by weather + reduced motion.
         this._updateRainSplashes(dt);
 
@@ -5146,9 +5203,23 @@ export class IsometricRenderer {
             waterTiles: this.waterTiles,
             blockedTiles: this._monumentBlockedTiles(),
         };
+        // W6.10 — the calendar turns at most once a local midnight (and holds
+        // its turn through a live release reveal); W7.8 — the dusk ledger
+        // sets its day stone once a local day, at the blue-hour lamp course.
+        const lampsLit = lampsLitAt(this._lastAtmosphere);
+        (this.villageCalendar ||= new VillageCalendar()).update(now, {
+            lampsLit,
+            revealLive: this.chronicleMonuments?.releaseRevealLive?.() === true,
+        });
+        (this.isleLandmarks ||= new IsleLandmarks(this)).update(lampsLit);
         const pending = Promise.allSettled([
             this.chronicleMonuments?.update?.(agents, context, now),
             this.trailRenderer?.update?.(agents, now, this._lastAtmosphere),
+            this.chronicleMonuments?.updateDuskLedger?.(now, {
+                lampsLit,
+                minuteOfDay: this._lastAtmosphere?.clock?.minuteOfDay,
+                chronicleLog: getActiveChronicleLog(),
+            }),
         ]);
         this._chronicleUpdatePromise = pending;
         pending.finally(() => {
@@ -6007,6 +6078,30 @@ export class IsometricRenderer {
         };
     }
 
+    _sampleBehaviorTelemetry(now) {
+        const telemetry = this.behaviorTelemetry;
+        if (!telemetry?.beginSample(now, this.visitTileAllocator?.metrics)) return;
+        for (const sprite of this.agentSprites.values()) {
+            if (!sprite || this._isGateTransit(sprite, 'departure') || sprite.isArrivalPending?.()) continue;
+            const behavior = sprite.behavior;
+            // Residence begins at an observed arrival, not when a route is
+            // assigned. Walkers and scenic/rest/queue stops remain outside the
+            // nine buildings; this is not the semantic work/light population.
+            const arrived = !sprite.moving && behavior?.visitStartedAt != null;
+            const destination = arrived ? behavior.building : null;
+            telemetry.observeAgent(
+                sprite.agent?.id,
+                destination,
+                destination,
+                Boolean(sprite.moving),
+                false, // W3.3 — no thought is ever suppressed
+                sprite.bubbleSlot ?? null,
+                Number(sprite.bubbleLateral) || 0,
+            );
+        }
+        telemetry.endSample();
+    }
+
     _summarizeCrowdClusters() {
         const entries = [];
         let visibleAgents = 0;
@@ -6018,6 +6113,7 @@ export class IsometricRenderer {
             visibleAgents++;
             if (sprite.moving) movingAgents++;
             entries.push({
+                agentId: sprite.agent?.id ?? null,
                 tileX: tile.tileX,
                 tileY: tile.tileY,
                 moving: !!sprite.moving,
@@ -6027,11 +6123,14 @@ export class IsometricRenderer {
             });
         }
 
+        // W7.11 — the director's work cohorts fold into the same clusters:
+        // one aura and one tab per working building.
         const summary = summarizeCrowdClusterEntries(entries, {
             cellSize: CROWD_CLUSTER_TILE_SIZE,
             topLimit: CROWD_CLUSTER_TOP_LIMIT,
             includeDominantProvider: true,
             includeStatusCounts: true,
+            cohorts: this.villageDirector?.getSnapshot?.()?.workCohorts || null,
         });
 
         return {
@@ -6747,7 +6846,12 @@ export class IsometricRenderer {
         const bubbleSprites = this._overlayBubbleSprites;
         bubbleSprites.length = 0;
         for (const sprite of prioritized) {
-            if (sprite.decisionFocusMuted || (sprite._behindBuilding && !sprite.selected)) continue;
+            // W3.4 — a speaker hidden behind a building keeps its thought; the
+            // column is lifted above the occluding building's crown.
+            if (sprite.decisionFocusMuted) {
+                this._clearThoughtPlacement(sprite);
+                continue;
+            }
             bubbleSprites.push(sprite);
         }
         this._assignAgentBubbleSlots(
@@ -6755,6 +6859,7 @@ export class IsometricRenderer {
             zoom,
             useSpatialGrid ? null : reservedRects,
             useSpatialGrid ? bubbleGrid : false,
+            now,
         );
     }
 
@@ -6766,21 +6871,23 @@ export class IsometricRenderer {
         return { x: topLeft.x, y: topLeft.y, w: bottomRight.x - topLeft.x, h: bottomRight.y - topLeft.y };
     }
 
-    // Crowd bubble de-collision. Reuses the overlay-slot rect-overlap technique:
-    // register each intended bubble rect and, when it overlaps an already-placed
-    // one, stack it into the next free slot above; past the cap, suppress it to
-    // an ellipsis dot so at most AGENT_BUBBLE_SLOT_CAP full bubbles render per
-    // cluster. Deterministic priority (selected, then label priority, then stable
-    // id) keeps slots from flickering frame to frame. Pure layout, no motion.
+    // W3.1 — thought placement. Every speaker's column (head bubble plus its
+    // drawn history, ThoughtColumn.js) is placed at the first free candidate of
+    // slot × lateral, in a deterministic priority order (selected, label
+    // priority, stable id). A displaced column's leader is reserved with it,
+    // so leaders never cross a placed thought. Nothing is ever hidden: when
+    // every candidate collides the column takes the least-overlapping one.
+    // W3.3 — a committed candidate is sticky (see THOUGHT_RESEARCH_MS).
+    // Rects and columns live on the sprite and are reused frame to frame.
     _assignAgentBubbleSlots(
         sprites,
         zoom = this.camera?.zoom || 1,
         reservedLabels = [],
         occupiedGrid = null,
+        now = performance.now(),
     ) {
         // Names and thoughts share one reservation plane even though their
         // anchors are deliberately below and above the character respectively.
-        // This prevents one villager's thought from covering another's name.
         const useSpatialGrid = occupiedGrid !== false;
         const grid = useSpatialGrid ? (occupiedGrid || this._overlayBubbleGrid) : null;
         const occupied = this._overlayBubbleOccupiedRects;
@@ -6791,55 +6898,291 @@ export class IsometricRenderer {
         } else if (!useSpatialGrid) {
             for (const rect of reservedLabels) occupied.push(rect);
         }
+        const s = 1 / (zoom || 1);
         const order = this._overlayBubbleOrder;
         order.length = 0;
         for (const sprite of sprites || []) {
-            if (sprite.agent && this._spriteWantsBubble(sprite)) order.push(sprite);
+            if (!sprite?.agent) continue;
+            if (this._prepareThought(sprite, s)) order.push(sprite);
+            else this._clearThoughtPlacement(sprite);
         }
         order.sort((a, b) => {
             const delta = this._agentLabelPriority(b) - this._agentLabelPriority(a);
             if (delta !== 0) return delta;
             return String(a.agent.id) < String(b.agent.id) ? -1 : 1;
         });
-        // 3.8 — each sprite's slot-0 rect, kept for the identical-bubble merge
-        // pass below (same allocation envelope the slot loop already has).
         const baseRects = this._overlayBubbleBaseRects;
         baseRects.length = 0;
         for (const sprite of order) {
-            sprite.bubbleSlot = 0;
-            sprite.bubbleSuppressed = false;
-            // 3.8 — merge flags reset per frame; groups are rebuilt after slots.
-            sprite.bubbleMergedCount = 1;
-            sprite.bubbleMergedInto = null;
-            const baseRect = this._agentBubbleSlotRect(sprite, 0);
-            baseRects.push(baseRect);
-            let slot = 0;
-            let rect = baseRect;
-            const slotCap = sprite.selected ? 8 : AGENT_BUBBLE_SLOT_CAP;
-            while (
-                slot < slotCap &&
-                (useSpatialGrid
-                    ? this._rectGridHasOverlap(grid, rect)
-                    : this._rectListHasOverlap(occupied, rect))
-            ) {
-                slot++;
-                rect = this._agentBubbleSlotRect(sprite, slot);
+            const rects = this._thoughtCandidateRects(sprite, 0, s);
+            const home = rects.home;
+            home.x = rects.body.x;
+            home.y = rects.body.y;
+            home.w = rects.body.w;
+            home.h = rects.body.h;
+            baseRects.push(home);
+        }
+        // W3.7 — merge before placement, so a member folded into an identical
+        // ×N thought reserves nothing.
+        this._mergeIdenticalClusterBubbles(order, baseRects, useSpatialGrid);
+        for (const sprite of order) {
+            if (sprite.bubbleMergedInto) {
+                sprite.bubbleSlot = null;
+                sprite.bubbleLateral = 0;
+                sprite._bubbleCandidate = null;
+                continue;
             }
-            if (slot >= slotCap && !sprite.selected) {
-                sprite.bubbleSuppressed = true;
-            } else {
-                sprite.bubbleSlot = slot;
-                if (useSpatialGrid) this._insertRectGridItem(grid, rect);
-                else occupied.push(rect);
+            if (sprite.bubbleMergedCount > 1) this._layoutThoughtColumns(sprite);
+            this._placeThought(sprite, s, now, grid, occupied, useSpatialGrid);
+        }
+    }
+
+    // Builds the sprite's thread and columns for this frame; false = no thought.
+    _prepareThought(sprite, s) {
+        sprite.bubbleMergedCount = 1;
+        sprite.bubbleMergedInto = null;
+        if (!this._spriteWantsBubble(sprite)) return false;
+        const thread = typeof sprite._activityThread === 'function' ? sprite._activityThread() : THOUGHT_NO_THREAD;
+        const clock = Boolean(sprite._shouldUseLongWaitClock?.());
+        if (!thread.length && !clock) return false;
+        // The painter consumes this thread, so it is built once per frame.
+        sprite._statusThread = thread;
+        sprite._statusClock = clock;
+        if (!sprite._thoughtRects) {
+            sprite._thoughtRects = {
+                body: { x: 0, y: 0, w: 0, h: 0 },
+                v: { x: 0, y: 0, w: 0, h: 0 },
+                h: { x: 0, y: 0, w: 0, h: 0 },
+                home: { x: 0, y: 0, w: 0, h: 0 },
+                leader: false,
+                horizontal: false,
+            };
+        }
+        if (sprite._thoughtSideFor !== sprite.agent.id) {
+            const id = String(sprite.agent.id);
+            let hash = 0;
+            for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+            sprite._thoughtSideFor = sprite.agent.id;
+            sprite._thoughtSide = (hash & 1) ? 1 : -1;
+        }
+        this._layoutThoughtColumns(sprite);
+        sprite._thoughtAnchorX = sprite.x;
+        sprite.bubbleOccluded = Boolean(sprite._behindBuilding && !sprite.selected);
+        if (sprite.bubbleOccluded && this._thoughtOccluderBase(sprite, s)) return true;
+        sprite.bubbleBaseY = typeof sprite._headTopY === 'function'
+            ? (typeof sprite._labelTopY === 'function' ? sprite._labelTopY(sprite._headTopY()) : sprite._headTopY())
+            : sprite.y;
+        sprite.bubbleAnchorDy = THOUGHT_LEADER_TIP;
+        return true;
+    }
+
+    _layoutThoughtColumns(sprite) {
+        const thread = sprite._statusThread || THOUGHT_NO_THREAD;
+        const clock = sprite._statusClock === true;
+        const chip = !clock && Boolean(sprite.thoughtRepoAccent?.());
+        const tagLength = clock ? 0 : (sprite.thoughtSpeakerTag?.() || '').length;
+        const merged = sprite.bubbleMergedCount || 1;
+        sprite._thoughtColumn = layoutThoughtColumn(sprite._thoughtColumn || createThoughtColumn(), thread, clock, chip, 0, merged);
+        sprite._thoughtColumnTagged = layoutThoughtColumn(sprite._thoughtColumnTagged || createThoughtColumn(), thread, clock, chip, tagLength, merged);
+    }
+
+    _clearThoughtPlacement(sprite) {
+        sprite.bubbleSlot = null;
+        sprite.bubbleLateral = 0;
+        sprite.bubbleOccluded = false;
+        sprite.bubbleMergedCount = 1;
+        sprite.bubbleMergedInto = null;
+        sprite._bubbleCandidate = null;
+        sprite._bubbleBlockedSince = 0;
+        sprite._bubbleBetterSince = 0;
+    }
+
+    // W3.4 — the base and leader landing for a speaker the depth pass hid
+    // behind a split building: the tail tip sits THOUGHT_CROWN_GAP px above the
+    // building's highest opaque row and the leader lands on the roofline in the
+    // speaker's own column. False when the building's mask is unknown.
+    _thoughtOccluderBase(sprite, s) {
+        const drawable = sprite._behindBuildingDrawable;
+        const id = drawable?.entry?.id;
+        const assets = this.assets;
+        if (!id || !assets?.getDims) return false;
+        const crowns = this._thoughtCrowns || (this._thoughtCrowns = new Map());
+        let crown = crowns.get(id);
+        if (!crown) {
+            const dims = assets.getDims(id);
+            const mask = assets.getMask?.(id);
+            if (!dims || !mask) return false;
+            const first = mask.indexOf(1);
+            crown = { w: dims.w, h: dims.h, mask, firstRow: first >= 0 ? Math.floor(first / dims.w) : 0 };
+            crowns.set(id, crown);
+        }
+        const [ax, ay] = assets.getAnchor(id);
+        const left = drawable.wx - ax;
+        const top = drawable.wy - ay;
+        const column = Math.max(0, Math.min(crown.w - 1, Math.round(sprite.x - left)));
+        let roof = crown.firstRow;
+        for (let row = crown.firstRow; row < crown.h; row++) {
+            if (crown.mask[row * crown.w + column]) {
+                roof = row;
+                break;
             }
         }
-        this._mergeIdenticalClusterBubbles(order, baseRects, useSpatialGrid);
+        sprite.bubbleBaseY = top + crown.firstRow - (THOUGHT_CROWN_GAP + THOUGHT_LEADER_TIP) * s;
+        sprite.bubbleAnchorDy = Math.round((top + roof - sprite.bubbleBaseY) / s);
+        return true;
+    }
+
+    // World rects of candidate `index`: the column body, plus the leader's
+    // vertical and horizontal runs (each three px wide with their outline).
+    _thoughtCandidateRects(sprite, index, s) {
+        const lateral = THOUGHT_CANDIDATE_LATERAL[index] * (sprite._thoughtSide || 1);
+        const slot = THOUGHT_CANDIDATE_SLOT[index];
+        const occluded = sprite.bubbleOccluded === true;
+        const column = lateral !== 0 || occluded ? sprite._thoughtColumnTagged : sprite._thoughtColumn;
+        const shiftX = thoughtLateralShift(column, lateral);
+        const slotShift = -slot * THOUGHT_STACK_STEP;
+        const anchorX = sprite._thoughtAnchorX;
+        const baseY = sprite.bubbleBaseY;
+        const rects = sprite._thoughtRects;
+        const body = rects.body;
+        body.x = anchorX + (shiftX + column.left) * s;
+        body.y = baseY + (slotShift + column.top) * s;
+        body.w = column.width * s;
+        body.h = column.height * s;
+        rects.leader = lateral !== 0 || slot !== 0 || occluded;
+        rects.horizontal = false;
+        if (!rects.leader) return rects;
+        const geo = thoughtLeader(this._thoughtLeaderScratch || (this._thoughtLeaderScratch = {}), column, shiftX, slotShift, sprite.bubbleAnchorDy);
+        const v = rects.v;
+        v.x = anchorX + (geo.x - 1) * s;
+        v.y = baseY + Math.min(geo.fromY, geo.toY) * s;
+        v.w = 3 * s;
+        v.h = (Math.abs(geo.toY - geo.fromY) + 1) * s;
+        if (geo.x !== 0) {
+            const h = rects.h;
+            rects.horizontal = true;
+            h.x = anchorX + (Math.min(geo.x, 0) - 1) * s;
+            h.y = baseY + (geo.toY - 1) * s;
+            h.w = (Math.abs(geo.x) + 3) * s;
+            h.h = 3 * s;
+        }
+        return rects;
+    }
+
+    _thoughtRectHits(rect, grid, occupied, useSpatialGrid) {
+        return useSpatialGrid ? this._rectGridHasOverlap(grid, rect) : this._rectListHasOverlap(occupied, rect);
+    }
+
+    _thoughtRectsCollide(rects, grid, occupied, useSpatialGrid) {
+        if (this._thoughtRectHits(rects.body, grid, occupied, useSpatialGrid)) return true;
+        if (rects.leader && this._thoughtRectHits(rects.v, grid, occupied, useSpatialGrid)) return true;
+        return rects.horizontal && this._thoughtRectHits(rects.h, grid, occupied, useSpatialGrid);
+    }
+
+    _thoughtOverlapArea(rects, grid, occupied, useSpatialGrid) {
+        let area = this._rectOverlapArea(rects.body, grid, occupied, useSpatialGrid);
+        if (rects.leader) area += this._rectOverlapArea(rects.v, grid, occupied, useSpatialGrid);
+        if (rects.horizontal) area += this._rectOverlapArea(rects.h, grid, occupied, useSpatialGrid);
+        return area;
+    }
+
+    _rectOverlapArea(rect, grid, occupied, useSpatialGrid) {
+        let area = 0;
+        if (!useSpatialGrid) {
+            for (const item of occupied) area += rectIntersectionArea(rect, item.rect || item);
+            return area;
+        }
+        const seen = grid.seen;
+        seen.clear();
+        const size = grid.cellSize;
+        const x1 = Math.floor((rect.x + rect.w) / size);
+        const y1 = Math.floor((rect.y + rect.h) / size);
+        for (let x = Math.floor(rect.x / size); x <= x1; x++) {
+            for (let y = Math.floor(rect.y / size); y <= y1; y++) {
+                const bucket = grid.buckets.get((x + 32768) * 65536 + y + 32768);
+                if (!bucket || bucket.generation !== grid.generation) continue;
+                for (const item of bucket.items) {
+                    if (seen.has(item)) continue;
+                    seen.add(item);
+                    area += rectIntersectionArea(rect, item.rect || item);
+                }
+            }
+        }
+        return area;
+    }
+
+    _placeThought(sprite, s, now, grid, occupied, useSpatialGrid) {
+        const stickyKey = (sprite.selected ? 1 : 0) | (sprite.bubbleOccluded ? 2 : 0);
+        if (sprite._bubbleStickyKey !== stickyKey) {
+            sprite._bubbleStickyKey = stickyKey;
+            sprite._bubbleCandidate = null;
+        }
+        const committed = sprite._bubbleCandidate ?? null;
+        let chosen = -1;
+        if (committed !== null) {
+            const blocked = this._thoughtRectsCollide(this._thoughtCandidateRects(sprite, committed, s), grid, occupied, useSpatialGrid);
+            if (!blocked) {
+                chosen = committed;
+                sprite._bubbleBlockedSince = 0;
+            } else {
+                if (!sprite._bubbleBlockedSince) sprite._bubbleBlockedSince = now;
+                // A brief crossing holds the column still.
+                if (now - sprite._bubbleBlockedSince < THOUGHT_RESEARCH_MS) chosen = committed;
+            }
+            // A cheaper candidate that has stayed free long enough wins back.
+            if (chosen === committed && committed > 0 && !sprite._bubbleBlockedSince) {
+                let better = -1;
+                for (let index = 0; index < committed; index++) {
+                    if (this._thoughtRectsCollide(this._thoughtCandidateRects(sprite, index, s), grid, occupied, useSpatialGrid)) continue;
+                    better = index;
+                    break;
+                }
+                if (better < 0) sprite._bubbleBetterSince = 0;
+                else if (!sprite._bubbleBetterSince) sprite._bubbleBetterSince = now;
+                else if (now - sprite._bubbleBetterSince >= THOUGHT_RETURN_MS) chosen = better;
+            }
+        }
+        if (chosen < 0) {
+            let leastArea = Infinity;
+            let least = 0;
+            for (let index = 0; index < THOUGHT_CANDIDATE_COUNT; index++) {
+                const rects = this._thoughtCandidateRects(sprite, index, s);
+                if (!this._thoughtRectsCollide(rects, grid, occupied, useSpatialGrid)) {
+                    chosen = index;
+                    break;
+                }
+                const area = this._thoughtOverlapArea(rects, grid, occupied, useSpatialGrid);
+                if (area < leastArea) {
+                    leastArea = area;
+                    least = index;
+                }
+            }
+            if (chosen < 0) chosen = least;
+        }
+        if (chosen !== committed) {
+            sprite._bubbleBlockedSince = 0;
+            sprite._bubbleBetterSince = 0;
+        }
+        sprite._bubbleCandidate = chosen;
+        const rects = this._thoughtCandidateRects(sprite, chosen, s);
+        if (useSpatialGrid) {
+            this._insertRectGridItem(grid, rects.body);
+            if (rects.leader) this._insertRectGridItem(grid, rects.v);
+            if (rects.horizontal) this._insertRectGridItem(grid, rects.h);
+        } else {
+            occupied.push(rects.body);
+            if (rects.leader) occupied.push(rects.v);
+            if (rects.horizontal) occupied.push(rects.h);
+        }
+        // Telemetry samples these: they change only with the committed placement.
+        sprite.bubbleSlot = THOUGHT_CANDIDATE_SLOT[chosen];
+        sprite.bubbleLateral = THOUGHT_CANDIDATE_LATERAL[chosen] * (sprite._thoughtSide || 1);
     }
 
     // 3.8 — identical-bubble merge. Within one bubble-slot cluster (sprites
     // whose slot-0 bubble rects transitively overlap), agents showing the
     // identical head line collapse into the deterministic-first sprite's
-    // bubble, which draws a ×N chip (AgentSprite._drawBubble); the others skip
+    // bubble, which draws an inline gold ×N (AgentSprite._drawThoughtHead); the others skip
     // their own. Merges never cross cluster boundaries and the representative
     // comes from the stable `order` sort, so membership cannot flicker. Slot
     // assignment above is left untouched: merged members keep their slots, so
@@ -6957,23 +7300,25 @@ export class IsometricRenderer {
         return true;
     }
 
-    // Merge identity = the head line the bubble will actually draw (same text,
-    // same resolved accent, same confidence, so the low-confidence '?' variant
-    // never merges with the confident one). Sprites without a drawable head —
-    // or showing the long-wait clock bubble, which has no ×N chip path —
-    // never merge.
+    // W3.7 — merge identity is everything the column will draw: every row's
+    // text, accent, confidence, shape and provenance badge, plus the
+    // attribution (repo chip accent, speaker tag) and whether the column is
+    // lifted over a roof. Two speakers whose older lines differ never merge,
+    // so no thread is lost. The long-wait clock has no ×N path and never merges.
     _bubbleMergeKey(sprite) {
-        // Layout already reads the sprite's current activity snapshot. Reusing
-        // it avoids rebuilding/pruning the complete activity thread solely to
-        // derive a merge key.
-        const archiveProgress = sprite._archiveFadeProgress?.();
-        const head = archiveProgress > 0 && archiveProgress < 1
-            ? { text: 'FINAL', accent: sprite._statusVisual?.()?.color || '#f2d36b' }
-            : sprite._activitySnapshot;
-        if (!head || !head.text) return null;
-        if (sprite._shouldUseLongWaitClock?.()) return null;
-        const accent = head.accent || sprite._statusVisual?.()?.color || '';
-        return `${head.text}|${accent}|${head.confidence ?? ''}`;
+        if (sprite._statusClock) return null;
+        const thread = sprite._statusThread;
+        if (!thread?.length) return null;
+        const fallback = sprite._statusVisual?.()?.color || '';
+        const trim = sprite._providerTrimColor?.() || '';
+        let key = `${sprite.thoughtRepoAccent?.() || ''}|${sprite.thoughtSpeakerTag?.() || ''}|${sprite.bubbleOccluded ? 1 : 0}`;
+        const rows = Math.min(thread.length, THOUGHT_HISTORY_LIMIT + 1);
+        for (let i = 0; i < rows; i++) {
+            const entry = thread[i];
+            const accent = entry.accent || (i === 0 ? fallback : trim);
+            key += `|${entry.text}|${accent}|${entry.confidence ?? ''}|${entry.shape || ''}|${entry.badge || ''}`;
+        }
+        return key;
     }
 
     _spriteWantsBubble(sprite) {
@@ -6989,35 +7334,6 @@ export class IsometricRenderer {
             && (!sprite._activityBubbleVisible || sprite._activityBubbleVisible());
         if (!hasSpeech && !sprite._shouldUseLongWaitClock?.()) return false;
         return true;
-    }
-
-    _agentBubbleSlotRect(sprite, slot) {
-        const s = 1 / ((this.camera?.zoom) || 1);
-        const halfW = (this._agentBubbleWidth(sprite) / 2) * s;
-        const halfH = (AGENT_BUBBLE_HEIGHT / 2) * s;
-        const headY = typeof sprite._headTopY === 'function'
-            ? (typeof sprite._labelTopY === 'function' ? sprite._labelTopY(sprite._headTopY()) : sprite._headTopY())
-            : sprite.y;
-        const centerY = headY - (AGENT_BUBBLE_HEAD_OFFSET + slot * AGENT_BUBBLE_STACK_STEP) * s;
-        return {
-            x: sprite.x - halfW,
-            y: centerY - halfH,
-            w: halfW * 2,
-            h: halfH * 2,
-        };
-    }
-
-    // Reservation width for de-collision. Dialogue lines are real model text of
-    // varying length, so a single fixed estimate would under-reserve for long
-    // lines and let bubbles overlap. Estimating from character count at the
-    // anchored 11px body font keeps this allocation-free and off the
-    // measureText path, while STATUS_BUBBLE_MAIN_MAX_WIDTH caps it exactly as
-    // the sprite's own pixel truncation does.
-    _agentBubbleWidth(sprite) {
-        const text = sprite?._activitySnapshot?.text;
-        if (!text) return AGENT_BUBBLE_EST_WIDTH;
-        const estimate = text.length * AGENT_BUBBLE_CHAR_WIDTH + AGENT_BUBBLE_PADDING;
-        return Math.min(AGENT_BUBBLE_MAX_WIDTH, Math.max(AGENT_BUBBLE_EST_WIDTH, estimate));
     }
 
     // Routine-name admission order: a recent tool change or a fresh arrival
@@ -7666,21 +7982,15 @@ export class IsometricRenderer {
         const bottomY = points[2].y;    // near apex (tileY≈MAP_SIZE)
         if (!(bottomY > topY) || typeof document === 'undefined') return;
         const CELL = 2;
-        const COURSES = 6;
+        const COURSES = TERRAIN_HAZE_COURSES.length;
         const SEAM_CELLS = 2;
         const rows = Math.ceil((bottomY - topY) / CELL);
         if (this._perspectiveTile?.height !== rows) {
             // Cool, high-value haze tint at half strength: multiply leaves the
-            // near rows untouched (white → 1×) and cools the far rows.
-            const stops = [[0, [196, 214, 232]], [0.5, [232, 240, 248]], [1, [255, 255, 255]]];
-            const profile = (t) => {
-                const k = t < 0.5 ? 0 : 1;
-                const [t0, c0] = stops[k];
-                const [t1, c1] = stops[k + 1];
-                const f = (t - t0) / (t1 - t0);
-                return c0.map((c, i) => Math.round(255 - (255 - (c + (c1[i] - c) * f)) * 0.5));
-            };
-            const colours = Array.from({ length: COURSES }, (_, course) => profile((course + 0.5) / COURSES));
+            // near rows nearly untouched and cools the far rows. The course
+            // colours live in GroundBake (TERRAIN_HAZE_COURSES), where W6.11's
+            // grass gust stops are hazed to match this cache.
+            const colours = TERRAIN_HAZE_COURSES;
             const seam = SEAM_CELLS / Math.max(1, rows / COURSES);
             const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
             const tile = this._perspectiveTile || document.createElement('canvas');
@@ -7760,7 +8070,7 @@ export class IsometricRenderer {
         sprites.push(...this._buildVillageWallTerminalSprites());
         sprites.push(...this._buildWatchtowerBeaconBuoySprites());
         sprites.push(...DISTRICT_PROPS
-            .filter((prop) => prop.layer === 'sorted')
+            .filter((prop) => prop.layer === 'sorted' && !prop.landmark)
             .filter((prop) => !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.sceneryClearTiles, this.bridgeTiles))
             .map((prop) => {
                 const dims = this.assets?.getDims?.(prop.id);
@@ -7779,6 +8089,23 @@ export class IsometricRenderer {
                     },
                 });
             }));
+        // W8.5b — the four non-semantic landmarks (windmill, watermill,
+        // chapel, ruined tower): walkBlock placements, so they skip the
+        // tall-scenery tile filter above, which their own block would trip.
+        sprites.push(...(this.isleLandmarks ||= new IsleLandmarks(this)).buildSprites());
+        // W6.10 / W8.4b — the calendar's prop dressing: fixed sprites that
+        // paint only inside their date window (VillageCalendar), the authored
+        // `prop.festival.*` art blitted like any sorted district prop.
+        sprites.push(...(this.villageCalendar ||= new VillageCalendar()).buildPropSprites({
+            sprites: {
+                draw: (ctx, id, x, y, tile) => {
+                    this._drawPropContactShadow(ctx, x, y, id, tile.tileX, tile.tileY);
+                    this.sprites?.drawSprite(ctx, id, x, y, this._winterPropOpts(id));
+                },
+                bounds: (id) => this._assetPropBounds(id),
+                materialClass: (id) => this.assets?.getEntry?.(id)?.materialClass || null,
+            },
+        }));
         // 7.1 — rest-seat furniture: back and front slices around each seat.
         sprites.push(...buildRestSeatPropSprites());
         return sprites;
@@ -7855,12 +8182,14 @@ export class IsometricRenderer {
     }
 
     // The two curtain runs (VillageWall), each one cached image with its 2.3
-    // surface channel, and the bracket lanterns on some of their piers as
-    // their own small props (their glass follows the village's lamplight,
-    // so the runs' caches never repaint for it).
+    // surface channel, and the fixtures its layout places as their own small
+    // props: the bracket lanterns on some piers and the sentry brazier on one
+    // pier's lookout (lit with the village's lamplight, so the runs' caches
+    // never repaint for it), and the barrel store at the wall stair's foot.
     _buildVillageWallSprites() {
         const out = [];
         const lanterns = [];
+        const braziers = [];
         for (const route of VILLAGE_WALL_ROUTES) {
             for (let i = 0; i < route.points.length - 1; i++) {
                 const startTile = route.points[i];
@@ -7903,35 +8232,54 @@ export class IsometricRenderer {
                         occluder: (ctx, x, y) => this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i, { ...options, channel: 'surface' }),
                     },
                 }));
-                lanterns.push(...this._villageWallLanternSprites(route.id, i, start, end, options, sortY));
+                const fixtures = this._villageWallFixtureSprites(route.id, i, start, end, options, sortY);
+                lanterns.push(...fixtures.lanterns);
+                braziers.push(...fixtures.braziers);
+                out.push(...fixtures.stores);
             }
         }
         this._wallLanternSprites = lanterns;
-        out.push(...lanterns);
+        this._wallBrazierSprites = braziers;
+        out.push(...lanterns, ...braziers);
         return out;
     }
 
-    // The lantern piers of one run (the painter's own layout), each lantern
-    // a prop standing on the ground under its glass, sorted just after its
-    // run.
-    _villageWallLanternSprites(routeId, index, start, end, { seed, startTurret = false }, wallSortY) {
+    // The fixtures of one run, from the painter's own layout, each sorted
+    // just after its run (they stand in front of or on its stone):
+    // - a bracket lantern on each lantern pier, a prop standing on the ground
+    //   under its glass;
+    // - the sentry brazier (`pier.brazier`) on its pier's lookout crown,
+    //   cold by day and burning on the lamps clock (`_wallLanternsLit`),
+    //   its flame a `lamps` fixture light (`_villageWallLanternLightSources`);
+    // - the barrel store (`prop.barrelStack`) on the verge at the wall foot
+    //   beside the stair: outside the curtain, where no walk node reaches
+    //   (`_wallMassNodes` closes the row under the wall and the verge holds
+    //   none), clear of the lantern feet and the ivy curtains.
+    _villageWallFixtureSprites(routeId, index, start, end, { seed, startTurret = false }, wallSortY) {
+        const S = WALL_SPEC;
         const x1 = Math.round(start.x);
         const y1 = Math.round(start.y);
         const x2 = Math.round(end.x);
         const y2 = Math.round(end.y);
         const slope = (y2 - y1) / Math.max(1, x2 - x1);
+        // The painter's lattice: a point d px before (negative) the base line
+        // at height h, in screen column c, lands on row yb(c) - d - h.
+        const yb = (c) => y1 + Math.floor((c - x1) * slope + 0.5);
         const layout = wallRunLayout({ x1, x2, seed, piers: true, ivy: true, startTurret });
-        const arm = WALL_SPEC.lanternArmH;
-        const out = [];
+        const arm = S.lanternArmH;
+        const lanterns = [];
+        const braziers = [];
         for (const pier of layout.piers) {
+            const cu = pier.u0 + Math.floor(S.pier.width / 2);
+            if (pier.brazier) braziers.push(this._villageWallBrazierSprite(routeId, index, pier, cu, yb, wallSortY));
             if (!pier.lantern) continue;
             // The arm tip stands `pier.project + lanternReach` in front of
             // the base line under the pier's centre; its foot is the ground
             // there (the lattice row yb(c) - d).
-            const d = -(WALL_SPEC.pier.project + WALL_SPEC.lanternReach);
-            const c = pier.u0 + Math.floor(WALL_SPEC.pier.width / 2) + d;
+            const d = -(S.pier.project + S.lanternReach);
+            const c = cu + d;
             const fx = c;
-            const fy = y1 + Math.floor((c - x1) * slope + 0.5) - d;
+            const fy = yb(c) - d;
             const tile = worldToTile(fx, fy);
             const sprite = new StaticPropSprite({
                 tileX: tile.tileX,
@@ -7946,31 +8294,123 @@ export class IsometricRenderer {
                 },
             });
             sprite.lanternFoot = { x: fx, y: fy, height: arm - 7 };
-            out.push(sprite);
+            lanterns.push(sprite);
         }
-        return out;
+        const store = this._villageWallStoreSprite(routeId, index, layout, x1, x2, yb, wallSortY);
+        return { lanterns, braziers, stores: store ? [store] : [] };
     }
 
-    // The wall lanterns' fixture lights while the village's lamps are lit;
-    // a change of state repaints the lantern props (glass lit or unlit) and
-    // the gatehouse and sea tower, whose lamp glass is lit with them.
+    // The sentry brazier: the tripod's front foot one row behind the front
+    // lip of the lookout crown's top face (h walk + merlonH + 3; the splayed
+    // back feet then land on its 4 rows), the cold sheet by day and the lit
+    // one while the lamps burn; its emissive channel is the lit sheet's
+    // flame sidecar. The light's ground foot is the verge in front of the
+    // pier, straight under the flame, so its pool and the courses it warms
+    // fall on the face the camera sees.
+    _villageWallBrazierSprite(routeId, index, pier, cu, yb, wallSortY) {
+        const S = WALL_SPEC;
+        const crownTop = S.walk + S.merlonH + 3;
+        const depth = 1;
+        const fx = cu + depth;
+        const standY = yb(fx) - depth - crownTop;
+        const fy = yb(fx) + S.pier.project + 1;
+        const tile = worldToTile(fx, fy);
+        let sprite = null;
+        const flame = (ctx) => {
+            if (this._wallLanternsLit !== true) return;
+            const glow = this.assets?.getCompanion?.(WALL_BRAZIER.litId, 'emissive') || null;
+            // Repaint once more when the sidecar lands after a lit bake.
+            sprite.flamePending = !glow;
+            if (!glow) return;
+            const [ax, ay] = this.assets.getAnchor(WALL_BRAZIER.litId);
+            ctx.drawImage(glow, fx - ax, standY - ay);
+        };
+        sprite = new StaticPropSprite({
+            tileX: tile.tileX,
+            tileY: tile.tileY,
+            id: `village.wallBrazier.${routeId}.${index}.${pier.n}`,
+            bounds: { left: -17, right: 17, top: standY - fy - 30, bottom: 2, splitY: 0 },
+            sortY: wallSortY + 0.5,
+            materialClass: 'metal',
+            drawFn: (ctx) => this.sprites?.drawSprite(ctx, this._wallLanternsLit === true ? WALL_BRAZIER.litId : WALL_BRAZIER.id, fx, standY),
+            channels: { emissive: flame },
+        });
+        sprite.lanternFoot = { x: fx, y: fy, height: fy - (standY - WALL_BRAZIER.flame) };
+        sprite.flamePending = false;
+        return sprite;
+    }
+
+    // The barrel store at the wall foot: a `prop.barrelStack` on the verge
+    // just left of the stair's foot (else right of its pier), its back
+    // clear of the plinth, its top clear of the ivy curtains and 32 px from
+    // any lantern's foot. A run with no stair, or no clear place, has none.
+    _villageWallStoreSprite(routeId, index, layout, x1, x2, yb, wallSortY) {
+        const S = WALL_SPEC;
+        const id = 'prop.barrelStack';
+        const stair = layout.piers.find((pier) => pier.stair);
+        if (!stair || !this.assets?.getDims?.(id)) return null;
+        const half = 16;
+        const s0 = stair.u0 - WALL_STAIR.steps * WALL_STAIR.run;
+        const clear = (u) => u - half > x1 + 30 && u + half < x2 - 30
+            && layout.piers.every((pier) => !pier.lantern || Math.abs(pier.u0 + S.pier.width / 2 - u) > 32 + half)
+            && layout.piers.every((pier) => pier.u1 + 2 < u - half || pier.u0 - 2 > u + half)
+            && layout.ivySprites.every((slot) => slot.u1 + 2 < u - half || slot.u0 - 2 > u + half);
+        const u = [s0 - half - 4, s0 - half - 20, stair.u1 + half + 6, stair.u1 + half + 22].find(clear);
+        if (u === undefined) return null;
+        // Foot 9 rows before the base line: the group's back (4 rows behind
+        // its anchor) stands in front of the plinth's 2-px batter.
+        const d = -9;
+        const fx = u + d;
+        const fy = yb(fx) - d;
+        const tile = worldToTile(fx, fy);
+        return new StaticPropSprite({
+            tileX: tile.tileX,
+            tileY: tile.tileY,
+            id: `village.wallStore.${routeId}.${index}`,
+            bounds: this._assetPropBounds(id),
+            splitForOcclusion: false,
+            sortY: wallSortY + 0.5,
+            materialClass: 'timber',
+            drawFn: (ctx) => {
+                this._drawPropContactShadow(ctx, fx, fy, id, tile.tileX, tile.tileY);
+                this.sprites?.drawSprite(ctx, id, fx, fy, this._winterPropOpts(id));
+            },
+        });
+    }
+
+    // The wall lanterns' and sentry braziers' fixture lights while the
+    // village's lamps are lit; a change of state repaints the lantern and
+    // brazier props (glass or fire lit or cold) and the gatehouse and sea
+    // tower, whose lamp glass is lit with them.
     _villageWallLanternLightSources(lighting = null) {
         const lit = lanternLit(lighting);
         if (lit !== this._wallLanternsLit) {
             this._wallLanternsLit = lit;
             for (const sprite of this._wallLanternSprites || []) sprite.invalidateCache();
+            for (const sprite of this._wallBrazierSprites || []) sprite.invalidateCache();
             for (const sprite of this._lampGlassSprites || []) sprite.invalidateCache();
         }
         if (!lit) return [];
+        for (const sprite of this._wallBrazierSprites || []) {
+            if (sprite.flamePending && this.assets?.getCompanion?.(WALL_BRAZIER.litId, 'emissive')) {
+                sprite.flamePending = false;
+                sprite.invalidateCache();
+            }
+        }
         const core = sourceEnergyFor(lighting).core;
-        return (this._wallLanternSprites || []).map((sprite) => wallLanternLight({
+        const record = (sprite, fire) => wallLanternLight({
             id: sprite.id,
             fx: sprite.lanternFoot.x,
             fy: sprite.lanternFoot.y,
             height: sprite.lanternFoot.height,
             lighting,
             core,
-        }));
+            fire,
+        });
+        return [
+            ...(this._wallLanternSprites || []).map((sprite) => record(sprite, false)),
+            ...(this._wallBrazierSprites || []).map((sprite) => record(sprite, true)),
+        ];
     }
 
     _villageWallVisualEndTile(route, startTile, endTile) {
@@ -8190,9 +8630,11 @@ export class IsometricRenderer {
 
     // One run of the stone curtain (VillageWall.paintWallRun) between two
     // local points of a prop drawn at (originX, originY). The gatehouse
-    // stubs call it bare; the full runs pass `{ piers, ivy, seed }`. The
-    // paint is memoized per run and snow bucket, so the albedo cache and the
-    // surface channel (`channel: 'surface'`) share one rasterization.
+    // stubs call it bare; the full runs pass `{ piers, ivy, seed }`, and an
+    // ivy run hangs the `prop.wallIvyCurtain` sheet at its layout's slots.
+    // The paint is memoized per run, snow bucket and ivy sheet, so the
+    // albedo cache and the surface channel (`channel: 'surface'`) share one
+    // rasterization.
     _drawVillageWallSegment(ctx, originX, originY, start, end, phase = 0, options = {}) {
         const out = this._villageWallPaint(originX + start.x, originY + start.y, originX + end.x, originY + end.y, phase, options);
         if (!out) return null;
@@ -8207,11 +8649,12 @@ export class IsometricRenderer {
         const x2 = Math.round(bx);
         const y2 = Math.round(by);
         const runSeed = seed ?? (phase + 1) * 977;
-        const key = `${x1},${y1},${x2},${y2}|${runSeed}|${piers ? 1 : 0}${ivy ? 1 : 0}${endFace ? 1 : 0}${openStart ? 1 : 0}${openEnd ? 1 : 0}${startTurret ? 1 : 0}|${snowBucket}`;
+        const ivyImage = ivy ? this.assets?.get?.(WALL_IVY_SPRITE.id) || null : null;
+        const key = `${x1},${y1},${x2},${y2}|${runSeed}|${piers ? 1 : 0}${ivy ? 1 : 0}${endFace ? 1 : 0}${openStart ? 1 : 0}${openEnd ? 1 : 0}${startTurret ? 1 : 0}|${snowBucket}|${ivyImage ? 1 : 0}`;
         const cache = this._wallPaintCache || (this._wallPaintCache = new Map());
         if (cache.has(key)) return cache.get(key);
         if (cache.size > 24) cache.clear();
-        const out = paintWallRun({ x1, y1, x2, y2, seed: runSeed, piers, ivy, endFace, snowBucket, openStart, openEnd, startTurret });
+        const out = paintWallRun({ x1, y1, x2, y2, seed: runSeed, piers, ivy, endFace, snowBucket, openStart, openEnd, startTurret, ivyImage });
         cache.set(key, out);
         return out;
     }
@@ -8983,7 +9426,20 @@ export class IsometricRenderer {
                 radius: Math.min(isBrazier ? 62 : 52, SOURCE_HALO_RADIUS_CAP),
                 intensity: (isBrazier ? 0.94 : 0.82) * core,
             });
-        });
+        }).concat(this._hearthLightSources(lighting));
+    }
+
+    // W6.9 / W6.10 / W7.8 — the hearths (gatehouse guard rooms, lake shrine),
+    // the calendar's lit bonfire and the dusk-ledger lamp: fixtures on the
+    // village lamp clock (LightSourceRegistry.hearthLightSources) that never
+    // read occupancy, so no work building lights without a working visitor.
+    _hearthLightSources(lighting = null) {
+        const lampsLit = lampsLitAt(this._lastAtmosphere);
+        if (!lampsLit) return [];
+        const extra = [...(this.villageCalendar?.lightFixtures?.() || []), ...(this.isleLandmarks?.lightFixtures?.() || [])];
+        const ledgerLamp = this.chronicleMonuments?.ledgerLampFixture?.();
+        if (ledgerLamp) extra.push(ledgerLamp);
+        return hearthLightSources({ lampsLit, core: sourceEnergyFor(lighting).core, extra });
     }
 
     _attentionLightSources() {
@@ -9240,6 +9696,7 @@ export class IsometricRenderer {
             region: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }],
             timeMs: this.motionTimeMs ?? perfNow,
             reducedMotion: !((this.motionScale ?? 1) > 0),
+            lone: this.ambientLoneCloud,
         });
     }
 
@@ -9471,6 +9928,18 @@ export class IsometricRenderer {
                 ? fireBreath(motionTimeMs, `village.brazier.${src.tileX}.${src.tileY}`, this.motionScale)
                 : 1;
             const stamp = this._getLightGlowStamp(light, radius, nightFactor * spill * breath, atmosphere);
+            this._stampPool(ctx, stamp, p.x, p.y);
+        }
+        // The hearths' smaller, dimmer pools (never breathing: no fire here
+        // but the bonfire, which holds its static frame).
+        const hearthRadius = Math.max(7, Math.round(10 * zoom));
+        const hearthLight = this._hearthPoolLight || (this._hearthPoolLight = {
+            id: 'prop-hearth', kind: 'point', color: HEARTH_TONE, radius: 10,
+        });
+        for (const src of this._hearthLightSources(atmosphere?.lighting)) {
+            const p = this.camera.worldToScreen(src.ground.x, src.ground.y);
+            if (p.x < -hearthRadius || p.y < -hearthRadius || p.x > canvas.width + hearthRadius || p.y > canvas.height + hearthRadius) continue;
+            const stamp = this._getLightGlowStamp(hearthLight, hearthRadius, nightFactor * spill * 0.6, atmosphere);
             this._stampPool(ctx, stamp, p.x, p.y);
         }
     }
@@ -9726,6 +10195,10 @@ export class IsometricRenderer {
         return overlay;
     }
 
+    ambientDiagnostics() {
+        return ambientDebugSnapshot(this);
+    }
+
     getWorldPerformanceDiagnostics() {
         const liveSpriteCanvases = new Set();
         for (const sprite of this.agentSprites.values()) {
@@ -9765,6 +10238,8 @@ export class IsometricRenderer {
             monuments: this.chronicleMonuments?.getDiagnostics?.() || null,
             visits: this.visitIntentManager?.getDiagnostics?.() || null,
             allocator: this.visitTileAllocator?.getDiagnostics?.() || null,
+            behavior: this.behaviorTelemetry?.metrics || null,
+            ambient: this.ambientDiagnostics(),
             relationships: this.relationshipState?.getDiagnostics?.() || null,
             council: getCouncilRingDiagnostics(this.relationshipState),
             pathfinder: this.pathfinder?.getDiagnostics?.() || null,

@@ -250,9 +250,17 @@ function mapClaudeHookEvent(input, now = Date.now()) {
   const kinds = {
     PreToolUse: 'PreToolUse',
     PostToolUse: 'PostToolUse',
-    Stop: 'Stop'
+    Stop: 'Stop',
+    SessionStart: 'SessionStart',
+    SessionEnd: 'SessionEnd',
+    SubagentStart: 'SubagentStart',
+    SubagentStop: 'SubagentStop',
+    UserPromptSubmit: 'UserPromptSubmit',
+    PermissionRequest: 'PermissionRequest',
+    Notification: 'Notification'
   };
   const kind = kinds[input?.hook_event_name];
+  if (kind === 'Notification' && input.notification_type !== 'permission_prompt') return null;
   const sessionId = typeof input?.session_id === 'string' ? input.session_id.trim() : '';
   if (!kind || !sessionId) return null;
 
