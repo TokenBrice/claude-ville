@@ -613,6 +613,47 @@ test('git pair admission retries after durability frees the cache, even on anoth
     await service.stop();
 });
 
+test('a crowded repo past the affinity cache bound settles every pair with bounded work per observation', async () => {
+    const store = affinityStore();
+    const service = new RelationshipAffinityService({ store }).start();
+    service._scheduleFlush = () => {};
+    await service._ready;
+    const residents = 50;
+    const pairs = residents * (residents - 1) / 2;
+    assert.ok(pairs > AFFINITY_CACHE_LIMIT, 'the crowd must saturate the cache');
+    // More shared commits than the per-category dedupe window holds.
+    const commits = Array.from({ length: 70 }, (_, index) => ({ id: `crowd-${index}`, type: 'commit', ts: 1000 + index }));
+    const crowd = Array.from({ length: residents }, (_, index) => agent(`Crowd${index}`, { gitEvents: commits }));
+    // One observation replays at most its own history and one pending
+    // resident's against every peer, plus its own meetings.
+    const budget = (residents - 1) * (2 * commits.length + 1);
+    const mutatePair = service._mutatePair.bind(service);
+    let work = 0;
+    service._mutatePair = (...args) => {
+        if (++work > budget) throw new Error(`one observation exceeded ${budget} pair mutations`);
+        return mutatePair(...args);
+    };
+    const observe = (resident) => {
+        work = 0;
+        service._handleAgentSeen(resident);
+    };
+    crowd.forEach(observe);
+    for (let round = 1; round <= 20 && store.affinities.size < pairs; round++) {
+        await service.flush();
+        for (const resident of crowd) observe({ ...resident, tokens: { input: 0, output: round } });
+    }
+    await service.flush();
+    assert.equal(store.affinities.size, pairs, 'freed capacity admits every refused pair');
+    let settled = 0;
+    service._mutatePair = (...args) => {
+        settled++;
+        return mutatePair(...args);
+    };
+    for (const resident of crowd) service._handleAgentSeen({ ...resident, tokens: { input: 0, output: 99 } });
+    assert.equal(settled, 0, 'a settled crowd does no pair work on unrelated updates');
+    await service.stop();
+});
+
 test('unchanged git history cannot cycle the durable dedup window and recount commits', () => {
     const service = new RelationshipAffinityService();
     service._accepting = true;

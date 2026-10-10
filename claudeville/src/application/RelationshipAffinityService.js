@@ -204,7 +204,9 @@ function sharesContext(a, b) {
  * Fixed-size per-resident telemetry revisions skip unrelated updates.
  * Membership/alias changes revisit affected senders so late recipients and
  * returning project peers still consume retained telemetry. Failed git pair
- * admissions remain pending until a later observation can retry them.
+ * admissions remain pending until a flush frees cache capacity; each later
+ * observation then retries one pending resident, so a crowded repo whose
+ * pairs outnumber the cache settles over several flushes, never in one burst.
  * Dirty snapshots commit atomically before per-pair follower invalidations.
  *
  * Emits `affinity:changed` on the event bus (`{ pairKey, affinity, kind }`)
@@ -236,6 +238,9 @@ export class RelationshipAffinityService {
         this._unsubscribers = [];
         this._channelListener = null;
         this._capacityDrops = 0;
+        // Set when a full cache holds no clean (persisted) pair to evict; only
+        // a flush or prune can free one, so admissions refuse in O(1) until then.
+        this._saturated = false;
     }
 
     start() {
@@ -306,6 +311,7 @@ export class RelationshipAffinityService {
                 this._pendingGit.clear();
                 this._dirty.clear();
                 this._flushing.clear();
+                this._saturated = false;
                 this._readyState = 'stopped';
             }
         })();
@@ -479,7 +485,10 @@ export class RelationshipAffinityService {
             }
             return;
         }
-        if (!recipientChanged && !projectChanged && !this._pendingGit.size) {
+        // Pending git admissions retry only once capacity may have been freed,
+        // and one resident per observation, so no single update replays a crowd.
+        const retryGit = this._pendingGit.size > 0 && !this._saturated;
+        if (!recipientChanged && !projectChanged && !retryGit) {
             if (chatChanged) this._recordChats(entry, firstObservation);
             if (gitChanged && !this._recordSharedCommits(entry, firstObservation)) entry.gitRevision = null;
             return;
@@ -489,6 +498,7 @@ export class RelationshipAffinityService {
         // aliases and commits in the affected project, against the arriving peer.
         // Roster order and chat-before-git preserve admission and baseline order.
         const affectedAliases = new Set([...aliases, ...(previous?.aliases || [])].filter(Boolean));
+        let retried = false;
         for (const sender of this._roster.values()) {
             if (!isLiveAgent(sender.agent)) continue;
             if (sender === entry) {
@@ -500,6 +510,8 @@ export class RelationshipAffinityService {
                 this._recordChats(sender, false, affectedAliases);
             }
             if (this._pendingGit.has(sender.agent.id)) {
+                if (retried || this._saturated) continue;
+                retried = true;
                 if (!this._recordSharedCommits(sender)) sender.gitRevision = null;
             } else if (projectChanged && entry.agent.projectPath
                 && sender.agent.projectPath === entry.agent.projectPath) {
@@ -608,24 +620,35 @@ export class RelationshipAffinityService {
             if (!peer) this._pendingGit.delete(entry.agent.id);
             return true;
         }
+        // One pair key per peer, not one per (commit, peer).
+        const pairKeys = peers.map(other => affinityPairKey(entry.identityKey, other.identityKey));
         for (const event of entry.agent.gitEvents || []) {
             if (!isCountableGitEvent(event)) continue;
             const key = `git:${gitEventKey(event)}`;
             const at = eventTimestamp(event);
             const baseline = firstObservation || (at > 0 && at <= entry.observedAt);
-            for (const other of peers) {
-                if (!affinityPairKey(entry.identityKey, other.identityKey)) continue;
-                if (this._mutatePair(entry, other, 'sharedCommit', key, { baseline }) === null) admitted = false;
+            for (let index = 0; index < peers.length; index++) {
+                const pairKey = pairKeys[index];
+                if (!pairKey) continue;
+                if (this._mutatePair(entry, peers[index], 'sharedCommit', key, { baseline, pairKey }) === null) {
+                    // Refused admission: the resident stays pending and its whole
+                    // history replays later, so the rest of this pass is wasted.
+                    admitted = false;
+                    break;
+                }
             }
+            if (!admitted) break;
         }
         if (!admitted) this._pendingGit.add(entry.agent.id);
         else if (!peer) this._pendingGit.delete(entry.agent.id);
         return admitted;
     }
 
-    _mutatePair(entryA, entryB, kind, interactionKey, { baseline = false } = {}) {
+    _mutatePair(entryA, entryB, kind, interactionKey, {
+        baseline = false,
+        pairKey = affinityPairKey(entryA?.identityKey, entryB?.identityKey),
+    } = {}) {
         if (!this._accepting || isDepartedAgent(entryA?.agent) || isDepartedAgent(entryB?.agent)) return null;
-        const pairKey = affinityPairKey(entryA.identityKey, entryB.identityKey);
         if (!pairKey) return null;
         const now = Date.now();
         let affinity = this._affinities.get(pairKey);
@@ -706,10 +729,13 @@ export class RelationshipAffinityService {
 
     _reserveAffinitySlot() {
         if (this._affinities.size < AFFINITY_CACHE_LIMIT) return true;
-        for (const pairKey of this._affinities.keys()) {
-            if (this._dirty.has(pairKey) || this._flushing.has(pairKey)) continue;
-            this._affinities.delete(pairKey);
-            return true;
+        if (!this._saturated) {
+            for (const pairKey of this._affinities.keys()) {
+                if (this._dirty.has(pairKey) || this._flushing.has(pairKey)) continue;
+                this._affinities.delete(pairKey);
+                return true;
+            }
+            this._saturated = true;
         }
         // Affinity is ambient telemetry. When every retained pair is awaiting
         // persistence, prefer a hard memory bound over an unbounded dirty burst.
@@ -726,6 +752,8 @@ export class RelationshipAffinityService {
     }
 
     _pruneAffinityCache(now = Date.now()) {
+        // Every caller runs after pairs were persisted, evicted or replaced.
+        this._saturated = false;
         const cutoff = now - AFFINITY_RETENTION_MS;
         for (const [pairKey, affinity] of this._affinities) {
             if (this._dirty.has(pairKey) || this._flushing.has(pairKey)) continue;

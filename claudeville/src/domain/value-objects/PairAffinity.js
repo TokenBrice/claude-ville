@@ -41,41 +41,58 @@ function compactInteractionKey(value) {
     return `${key.slice(0, 120)}:${(hash >>> 0).toString(36)}`;
 }
 
+// The prefix before the first ':' names the category; read without
+// allocating, since every admission and eviction asks.
 function interactionCategory(key) {
-    const prefix = String(key || '').split(':', 1)[0];
-    if (prefix.startsWith('chat')) return 'chat';
-    if (prefix === 'meeting' || prefix === 'git') return prefix;
+    const text = String(key || '');
+    if (text.startsWith('chat')) return 'chat';
+    if (text === 'meeting' || text.startsWith('meeting:')) return 'meeting';
+    if (text === 'git' || text.startsWith('git:')) return 'git';
     return 'other';
 }
 
-function trimInteractionKeys(keys, newestCategory) {
-    while (
-        keys.filter(key => interactionCategory(key) === newestCategory).length
-        > RECENT_INTERACTION_KEYS_PER_CATEGORY
-    ) {
-        keys.splice(keys.findIndex(key => interactionCategory(key) === newestCategory), 1);
+// Admits `key` to the bounded dedupe window. `keys` keeps arrival order;
+// `index` (membership) and `counts` (per category) mirror it, so a repeated
+// key or an admission never rescans the window. Past a bound, the oldest key
+// of the newest key's category goes first, then the oldest of the largest.
+function admitInteractionKey(keys, index, counts, key) {
+    if (index.has(key)) return false;
+    const newestCategory = interactionCategory(key);
+    keys.push(key);
+    index.add(key);
+    counts.set(newestCategory, (counts.get(newestCategory) || 0) + 1);
+    while (counts.get(newestCategory) > RECENT_INTERACTION_KEYS_PER_CATEGORY) {
+        evictInteractionKey(keys, index, counts, newestCategory);
     }
     while (keys.length > RECENT_INTERACTION_KEY_LIMIT) {
-        const counts = new Map();
-        for (const key of keys) {
-            const category = interactionCategory(key);
-            counts.set(category, (counts.get(category) || 0) + 1);
+        // Ties go to the category whose oldest key is oldest.
+        const ordered = new Map();
+        for (const existing of keys) {
+            const category = interactionCategory(existing);
+            ordered.set(category, (ordered.get(category) || 0) + 1);
         }
-        const largestCategory = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
-        const index = keys.findIndex(key => interactionCategory(key) === largestCategory);
-        keys.splice(index >= 0 ? index : 0, 1);
+        const largestCategory = [...ordered].sort((a, b) => b[1] - a[1])[0]?.[0];
+        evictInteractionKey(keys, index, counts, largestCategory);
     }
+    return true;
 }
 
-function normalizeInteractionKeys(raw) {
+function evictInteractionKey(keys, index, counts, category) {
+    const at = keys.findIndex(key => interactionCategory(key) === category);
+    const [removed] = keys.splice(at >= 0 ? at : 0, 1);
+    index.delete(removed);
+    const removedCategory = interactionCategory(removed);
+    counts.set(removedCategory, counts.get(removedCategory) - 1);
+}
+
+function normalizeInteractionKeys(raw, index, counts) {
     const keys = [];
     const seen = new Set();
     for (const value of Array.isArray(raw) ? raw : []) {
         const key = compactInteractionKey(value);
         if (!key || seen.has(key)) continue;
         seen.add(key);
-        keys.push(key);
-        trimInteractionKeys(keys, interactionCategory(key));
+        admitInteractionKey(keys, index, counts, key);
     }
     return keys;
 }
@@ -115,7 +132,11 @@ export class PairAffinity {
         this.lastInteractionAt = nonNegativeNumber(lastInteractionAt) || this.firstMetAt;
         this.score = nonNegativeNumber(score);
         this.scoreUpdatedAt = nonNegativeNumber(scoreUpdatedAt) || this.lastInteractionAt;
-        this.recentInteractionKeys = normalizeInteractionKeys(recentInteractionKeys);
+        this._recentKeyIndex = new Set();
+        this._recentKeyCounts = new Map();
+        this.recentInteractionKeys = normalizeInteractionKeys(
+            recentInteractionKeys, this._recentKeyIndex, this._recentKeyCounts,
+        );
     }
 
     static create(identityA, identityB, now = Date.now()) {
@@ -192,10 +213,10 @@ export class PairAffinity {
      */
     rememberInteraction(key) {
         const normalized = compactInteractionKey(key);
-        if (!normalized || this.recentInteractionKeys.includes(normalized)) return false;
-        this.recentInteractionKeys.push(normalized);
-        trimInteractionKeys(this.recentInteractionKeys, interactionCategory(normalized));
-        return true;
+        if (!normalized) return false;
+        return admitInteractionKey(
+            this.recentInteractionKeys, this._recentKeyIndex, this._recentKeyCounts, normalized,
+        );
     }
 
     /** Current warmth with exponential decay applied (not persisted). */
