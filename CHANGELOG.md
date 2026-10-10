@@ -2,6 +2,22 @@
 
 ---
 
+## v0.51.2 — *The Thronged Hall* · Oct 10, 2026
+
+With many agents working in one repository, the World froze while loading and never recovered. A large crowd now loads and keeps running.
+
+- **No freeze when a crowd shares a repository.**
+  - The cause was the bookkeeping that tracks how well each pair of villagers knows the other, not the thought bubbles.
+  - Every session in a repository carries that repository's commits, and each commit is credited to every pair of villagers working there. 85 sessions sharing 91 commits make 3,570 pairs, but the cache holds 1,024.
+  - Once the cache was full of unsaved pairs, every refused pair rescanned the whole cache. Every agent update also replayed every waiting villager's full commit history against every peer. The page locked up before the save that would have freed space could run.
+  - A full cache now refuses new pairs instantly and stops that replay at the first refusal. Waiting villagers retry only after a save frees space, one per update, so a crowd that outgrows the cache catches up over a few saves instead of in one burst.
+  - Recording an interaction no longer re-scans the pair's history of past interactions.
+- With 85 sessions sharing 91 commits, the first load takes about 95 ms instead of never finishing. While the backlog drains, no single agent update costs more than about 11 ms, and once it has drained, unrelated updates cost nothing.
+
+Validation: `gate:release` is clean with 1804 unit tests and both integration tests passing, including a new crowded-repository case that fails on v0.51.1, and `verify:render` is clean. On the maintained village with 112 live sessions, v0.51.1 froze while loading; this build loaded and kept rendering, at the same frame rate as a run with the relationship bookkeeping switched off.
+
+---
+
 ## v0.51.1 — *The Kindled Night* · Oct 10, 2026
 
 Night on the island used to fall flat and grey. Now it stays its own scene, a cool moonlit blue under warm lights, and it is as worth watching as the day.
