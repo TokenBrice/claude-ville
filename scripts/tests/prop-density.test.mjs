@@ -10,7 +10,7 @@ import { REST_SEATS } from '../../claudeville/src/config/townPlan.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 
-// The prop cleanup (v0.51.4) cut the island's standing props by a third.
+// The prop cleanup (v0.52.0) cut the island's standing props by a third.
 // These budgets keep the density from creeping back: raising one is a
 // deliberate decision, not a side effect of adding dressing.
 const STANDING_PROP_BUDGET = 90;

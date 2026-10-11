@@ -2,6 +2,22 @@
 
 ---
 
+## v0.52.0 — *The Cleared Commons* · Oct 11, 2026
+
+The island had filled up with props and trees over the last visual passes and read as cluttered even with few agents. It now carries about a third less, chosen by where agents actually walk, and keeps its light at night.
+
+- **Paths are clear.** Nothing big stands on the gate avenue or a plaza lane anymore: the avenue stall, the notice pillar, the milestone, the Command plaza stall and the cart in the Forge yard are gone.
+- **No more random piles.** Crowded spots keep one centrepiece each: the Observatory quay, the Archive bank, the south lawn, the lily pond, the mine yards, the Archive west lawn and the lagoon. Outside the farm, no spot holds more than three props within a tile and a half.
+- **Trees stand on dry land.** Trunks now keep clear of the water's drawn edge, so no tree stands in a river or the lagoon. Willows may still root at the bank. Trunks keep 0.9 tile apart, so crowns no longer stack on one another, and trees keep off the main avenue's verge. Trees went from 142 to 100.
+- **Night stays lit.** The lamp chain keeps one post per stretch instead of pairs, each throwing a wider pool. Command's watchfires now light the plaza, and the braziers moved from the lanes to the verges. More of the village's paths are lit at night than before.
+- **The farm stays.** Its goat now grazes in the paddock instead of nosing into the Archive's wall.
+- **Withdrawn:** the unnamed watermill and the dusk-ledger day stone, which stood in the Archive's foot traffic.
+- A new density test caps the number of standing props and checks the tree rules, so the clutter cannot creep back.
+
+Validation: `gate:release` is clean with 1807 unit tests and both integration tests passing, and `verify:render` is clean. On the live village, night lighting reaches 42 % of path tiles (31 % before). Command's west plaza mouth is a little dimmer: its only light stood on the lane itself.
+
+---
+
 ## v0.51.3 — *The Hushed Crowd* · Oct 11, 2026
 
 A swarm of agents turned the World into a wall of overlapping thought bubbles and spent frame time on all of them. Thoughts now run on a budget: a few readable bubbles at once, the same cost at any crowd size.
