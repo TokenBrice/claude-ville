@@ -1,6 +1,5 @@
 import { MonumentPlanter, MonumentRules, compareMonumentStanding } from '../../application/MonumentRules.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { DuskLedger } from '../../application/ChronicleLog.js';
 import { RepoStones } from './RepoStones.js';
 import { collectCommitEvents } from './ChronicleEvents.js';
 import { tileToWorld } from './Projection.js';
@@ -259,16 +258,12 @@ export class ChronicleMonuments {
         this._selectedMonumentId = null;
         this._disposed = false;
         this._lifecycleGeneration = 0;
-        // W7.8 — the dusk ledger's day stone (persisted, one per local day).
-        this.duskLedger = new DuskLedger({ store });
-        this._lampsLit = false;
         // W7.7 — repo standing stones on the Harbor quay slots.
         this.repoStones = new RepoStones({ assets });
         // Static Chronicle faces on the resident GPU path: the drawables carry
         // `buildGpuRecord` (the DrawablePass seam), answered from the same
         // baked images the Canvas draw blits; one reused record per stone.
         this._monumentImages = new Map();
-        this._dayStoneImage = null;
         this._gpuRecords = new Map();
         this._buildGpuRecord = (context, drawable) => this._gpuRecordFor(drawable, context);
     }
@@ -492,17 +487,6 @@ export class ChronicleMonuments {
                 payload: { ...banner, worldX: world.x, worldY: world.y },
             });
         }
-        // W7.8 — the day stone beside the Archive lectern, from its first dusk.
-        const stone = this.duskLedger?.stone;
-        if (stone) {
-            const world = toWorld(DAY_STONE_TILE.tileX, DAY_STONE_TILE.tileY);
-            drawables.push({
-                kind: 'chronicle-day-stone',
-                sortY: world.y,
-                payload: { kind: 'chronicle-day-stone', stone, lit: this._lampsLit, worldX: world.x, worldY: world.y },
-                buildGpuRecord: this._buildGpuRecord,
-            });
-        }
         if (this.repoStones) {
             for (const drawable of this.repoStones.drawables(camera)) {
                 drawable.buildGpuRecord = this._buildGpuRecord;
@@ -515,11 +499,6 @@ export class ChronicleMonuments {
     draw(ctx, drawable, zoom = 1, now = Date.now()) {
         const record = drawable?.payload || drawable;
         if (!record) return;
-        if (drawable?.kind === 'chronicle-day-stone' || record.kind === 'chronicle-day-stone') {
-            const image = this._dayStoneImageFor(record);
-            if (image) ctx.drawImage(image.canvas, image.x, image.y);
-            return;
-        }
         if (record.kind === 'repo-stone') {
             // The renderer may wire `assets` after construction.
             if (this.repoStones) {
@@ -535,8 +514,8 @@ export class ChronicleMonuments {
         this._drawMonument(ctx, record, zoom, now);
     }
 
-    // The resident twin of `draw` for the static faces (monuments, the day
-    // stone, repo stones): one V9 record over the very image the Canvas draw
+    // The resident twin of `draw` for the static faces (monuments, repo
+    // stones): one V9 record over the very image the Canvas draw
     // blits, at the same world rect, graded and lit as stone, depth-keyed by
     // GpuSceneBuilder from the drawable's sortY. Milestone banners animate,
     // carry no builder and stay on the Canvas path.
@@ -544,12 +523,6 @@ export class ChronicleMonuments {
         const record = drawable?.payload;
         if (!record) return null;
         const sequence = context?.sequence ?? 0;
-        if (drawable.kind === 'chronicle-day-stone') {
-            const image = this._dayStoneImageFor(record);
-            return image
-                ? this._stoneRecord('chronicle:day-stone', image, image.x, image.y, record.worldY, 1, sequence)
-                : null;
-        }
         if (record.kind === 'repo-stone') {
             if (!this.repoStones) return null;
             this.repoStones.assets = this.assets;
@@ -580,11 +553,10 @@ export class ChronicleMonuments {
         record.textureKey = `chronicle:${image.key}`;
         record.source = image.canvas;
         record.textureRevision = image.revision;
-        // The lit day-stone lamp: its own emissive channel, like the calendar
-        // bonfire's flame (StaticPropSprite `channels.emissive`).
-        record.emissiveSource = image.emissive || null;
-        record.sidecarKey = image.emissive ? `chronicle:${image.key}:own` : '';
-        record.sidecarRevision = image.emissive ? `own:${image.revision}` : null;
+        // Stone faces carry no emissive channel.
+        record.emissiveSource = null;
+        record.sidecarKey = '';
+        record.sidecarRevision = null;
         record.sourceWidth = width;
         record.sourceHeight = height;
         record.sw = width;
@@ -604,24 +576,6 @@ export class ChronicleMonuments {
         record.depthSortY = null;
         record.sequence = sequence;
         return record;
-    }
-
-    _dayStoneImageFor(payload) {
-        const lit = payload.lit === true;
-        const held = this._dayStoneImage;
-        if (held && held.stone === payload.stone && held.lit === lit
-            && held.worldX === payload.worldX && held.worldY === payload.worldY) return held;
-        const geometry = dayStoneGeometry(payload);
-        const revision = dayStoneRevision(geometry, lit);
-        if (held?.revision === revision) {
-            held.stone = payload.stone;
-            held.worldX = payload.worldX;
-            held.worldY = payload.worldY;
-            return held;
-        }
-        if (typeof document === 'undefined') return null;
-        this._dayStoneImage = bakeDayStone(payload, geometry, revision);
-        return this._dayStoneImage;
     }
 
     hitTest(worldX, worldY, now = Date.now()) {
@@ -1391,168 +1345,8 @@ export class ChronicleMonuments {
         }
     }
 
-    // W7.8 — set the day's stone at the blue-hour lamp course (once a local
-    // day; DuskLedger persists the date so a reload sets nothing new). The
-    // stone and its lamp are static; `lampsLit` only says whether the lamp
-    // burns tonight, never occupancy.
-    async updateDuskLedger(now = Date.now(), { lampsLit = false, minuteOfDay = NaN, chronicleLog = null } = {}) {
-        if (this._disposed || !this.duskLedger) return null;
-        this._lampsLit = lampsLit === true;
-        return this.duskLedger.evaluate(now, { lampsLit: this._lampsLit, minuteOfDay, chronicleLog });
-    }
-
-    /** The ledger lamp on the day stone: a `lamps` fixture while a stone stands. */
-    ledgerLampFixture() {
-        if (!this._lampsLit || !this.duskLedger?.stone) return null;
-        return {
-            id: 'archive.ledgerLamp',
-            tileX: DAY_STONE_TILE.tileX,
-            tileY: DAY_STONE_TILE.tileY,
-            height: DAY_STONE_LAMP_HEIGHT,
-            intensity: 0.42,
-            radius: 24,
-            color: '#ffc06a',
-        };
-    }
-
     /** True while a release crown is queued or playing (the calendar holds its turn). */
     releaseRevealLive() {
         return Boolean(this._crown);
     }
-}
-
-// ── W7.8 day stone ──────────────────────────────────────────────────────────
-// A slate tablet on the Archive's south green carrying four carved rows,
-// glyph then exact number: shipped (a sail), mended (a hammer), waited (an
-// hourglass), tokens (a coin). Numbers only, no prose; a small lamp in its
-// crown niche burns while the village lamps are lit.
-// The south green lies off the Archive ↔ Command lane and in front of every
-// building, so the tall tablet neither stands in foot traffic nor paints over
-// a roof.
-export const DAY_STONE_TILE = Object.freeze({ tileX: 3.45, tileY: 19.55 });
-const DAY_STONE_LAMP_HEIGHT = 34;
-const DAY_STONE = Object.freeze({ face: '#4a525c', light: '#6c7682', dark: '#2f353c', ink: '#1d2126', carve: '#d9c58a', lamp: '#ffd27a', lampCore: '#fff0c8' });
-const DIGITS = Object.freeze([
-    '111101101101111', '010110010010111', '111001111100111', '111001111001111', '101101111001001',
-    '111100111001111', '111100111101111', '111001010010010', '111101111101111', '111101111001111',
-]);
-const GLYPHS = Object.freeze({
-    shipped: '010110111010111', // a sail over a hull
-    mended: '111111010010010',  // a hammer
-    waited: '111010010010111',  // an hourglass
-    tokens: '010111101111010',  // a coin
-});
-const DAY_STONE_ROWS = Object.freeze(['shipped', 'mended', 'waited', 'tokens']);
-
-function paintBits(ctx, bits, x, y) {
-    for (let i = 0; i < 15; i++) {
-        if (bits[i] === '1') ctx.fillRect(x + (i % 3), y + Math.floor(i / 3), 1, 1);
-    }
-}
-
-/** Whole digits of a non-negative count (exact; never abbreviated). */
-export function dayStoneRows(stone) {
-    return DAY_STONE_ROWS.map((key) => ({ key, text: String(Math.max(0, Math.floor(Number(stone?.[key]) || 0))) }));
-}
-
-function dayStoneGeometry(payload) {
-    const rows = dayStoneRows(payload.stone);
-    const digits = Math.max(...rows.map((row) => row.text.length));
-    const w = 3 + 3 + 2 + digits * 4 + 1;
-    const h = rows.length * 7 + 4;
-    return {
-        rows,
-        w,
-        h,
-        x0: Math.round(payload.worldX - w / 2),
-        y0: Math.round(payload.worldY - h - 3),
-        cx: Math.round(payload.worldX),
-    };
-}
-
-/** The baked face's identity: its world origin, its numbers and its lamp. */
-function dayStoneRevision(geometry, lit) {
-    return `${geometry.x0},${geometry.y0}|${geometry.rows.map((row) => row.text).join(',')}|${lit ? 'lit' : 'dark'}`;
-}
-
-function paintDayStoneLamp(ctx, { cx, y0 }) {
-    ctx.fillStyle = DAY_STONE.lamp;
-    ctx.fillRect(cx - 1, y0 - 4, 2, 3);
-    ctx.fillStyle = DAY_STONE.lampCore;
-    ctx.fillRect(cx - 1, y0 - 3, 1, 1);
-}
-
-function paintDayStone(ctx, geometry, lit) {
-    const { rows, w, h, x0, y0, cx } = geometry;
-    ctx.fillStyle = DAY_STONE.ink;
-    ctx.fillRect(x0 - 1, y0 - 1, w + 2, h + 2);
-    ctx.fillRect(x0 + 2, y0 + h + 1, w - 4, 2);
-    ctx.fillStyle = DAY_STONE.face;
-    ctx.fillRect(x0, y0, w, h);
-    ctx.fillStyle = DAY_STONE.light;
-    ctx.fillRect(x0, y0, w, 1);
-    ctx.fillRect(x0, y0, 1, h);
-    ctx.fillStyle = DAY_STONE.dark;
-    ctx.fillRect(x0 + w - 1, y0 + 1, 1, h - 1);
-    ctx.fillRect(x0 + 1, y0 + h - 1, w - 1, 1);
-    // Crown niche and its lamp.
-    ctx.fillStyle = DAY_STONE.ink;
-    ctx.fillRect(cx - 3, y0 - 5, 6, 4);
-    ctx.fillStyle = DAY_STONE.face;
-    ctx.fillRect(cx - 2, y0 - 4, 4, 3);
-    if (lit) paintDayStoneLamp(ctx, geometry);
-    else {
-        ctx.fillStyle = DAY_STONE.dark;
-        ctx.fillRect(cx - 1, y0 - 4, 2, 3);
-    }
-    ctx.fillStyle = DAY_STONE.carve;
-    rows.forEach((row, i) => {
-        const y = y0 + 2 + i * 7;
-        paintBits(ctx, GLYPHS[row.key], x0 + 2, y);
-        const right = x0 + w - 2;
-        for (let d = 0; d < row.text.length; d++) {
-            const digit = row.text.charCodeAt(row.text.length - 1 - d) - 48;
-            paintBits(ctx, DIGITS[digit], right - 3 - d * 4, y);
-        }
-    });
-}
-
-/**
- * The day stone baked once per state (`dayStoneRevision`) into a world-placed
- * image: the niche (5 texels over the face) to the base (3 under it). A lit
- * lamp is also painted alone on an emissive channel of the same size, so the
- * resident record keeps it burning through the night grade.
- */
-function bakeDayStone(payload, geometry, revision) {
-    const lit = payload.lit === true;
-    const x = geometry.x0 - 1;
-    const y = geometry.y0 - 5;
-    const layer = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = geometry.w + 2;
-        canvas.height = geometry.h + 8;
-        const ctx = canvas.getContext('2d');
-        ctx.translate(-x, -y);
-        return { canvas, ctx };
-    };
-    const face = layer();
-    paintDayStone(face.ctx, geometry, lit);
-    let emissive = null;
-    if (lit) {
-        const lamp = layer();
-        paintDayStoneLamp(lamp.ctx, geometry);
-        emissive = lamp.canvas;
-    }
-    return {
-        canvas: face.canvas,
-        emissive,
-        x,
-        y,
-        key: 'day-stone',
-        revision,
-        stone: payload.stone,
-        lit,
-        worldX: payload.worldX,
-        worldY: payload.worldY,
-    };
 }

@@ -1,5 +1,5 @@
 // W6.10 (AW-P10) — the village calendar: static, date-keyed dressing laid into
-// the prop pass, and the one local-date key W7.8's dusk ledger shares.
+// the prop pass.
 //
 // The table lives in `config/villageCalendar.js`. This module resolves it for
 // a local date (pure, so tests pin dates without a DOM) and owns the sorted

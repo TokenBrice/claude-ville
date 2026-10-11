@@ -194,8 +194,8 @@ export function fireBreath(motionTimeMs, sourceId, motionScale = 1, depth = 1) {
 // braziers and the Lighthouse lens: they never read occupancy, so the nine
 // work buildings keep the midnight-oil rule (one lit room per working
 // occupant). The tone is warmer and dimmer than glass and never breathes.
-// The renderer adds the dressing fires it owns (the midsummer bonfire, the
-// W7.8 ledger lamp) through `extra`.
+// The renderer adds the fires it owns (the midsummer bonfire, Command's
+// watchfires) through `extra`.
 export const HEARTH_TONE = '#ff9248';
 const HEARTH_RADIUS = 30;
 const HEARTH_INTENSITY = 0.46;

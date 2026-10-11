@@ -33,7 +33,6 @@ import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './Agen
 import { BuildingSprite, SOURCE_HALO_RADIUS_CAP, lampsLitAt } from './BuildingSprite.js';
 import { VillageCalendar } from './VillageCalendar.js';
 import { IsleLandmarks } from './IsleLandmarks.js';
-import { getActiveChronicleLog } from '../../application/ChronicleLog.js';
 import { BehaviorTelemetry } from './BehaviorTelemetry.js';
 
 import { SceneryEngine } from './SceneryEngine.js';
@@ -5230,8 +5229,7 @@ export class IsometricRenderer {
             blockedTiles: this._monumentBlockedTiles(),
         };
         // W6.10 — the calendar turns at most once a local midnight (and holds
-        // its turn through a live release reveal); W7.8 — the dusk ledger
-        // sets its day stone once a local day, at the blue-hour lamp course.
+        // its turn through a live release reveal).
         const lampsLit = lampsLitAt(this._lastAtmosphere);
         (this.villageCalendar ||= new VillageCalendar()).update(now, {
             lampsLit,
@@ -5241,11 +5239,6 @@ export class IsometricRenderer {
         const pending = Promise.allSettled([
             this.chronicleMonuments?.update?.(agents, context, now),
             this.trailRenderer?.update?.(agents, now, this._lastAtmosphere),
-            this.chronicleMonuments?.updateDuskLedger?.(now, {
-                lampsLit,
-                minuteOfDay: this._lastAtmosphere?.clock?.minuteOfDay,
-                chronicleLog: getActiveChronicleLog(),
-            }),
         ]);
         this._chronicleUpdatePromise = pending;
         pending.finally(() => {
@@ -9529,8 +9522,8 @@ export class IsometricRenderer {
         }).concat(this._hearthLightSources(lighting));
     }
 
-    // W6.9 / W6.10 / W7.8 — the hearths (gatehouse guard rooms, lake shrine),
-    // the calendar's lit bonfire and the dusk-ledger lamp: fixtures on the
+    // W6.9 / W6.10 — the hearths (gatehouse guard rooms, lake shrine), the
+    // calendar's lit bonfire and Command's watchfires: fixtures on the
     // village lamp clock (LightSourceRegistry.hearthLightSources) that never
     // read occupancy, so no work building lights without a working visitor.
     _hearthLightSources(lighting = null) {
@@ -9550,8 +9543,6 @@ export class IsometricRenderer {
                 fire: true,
             });
         }
-        const ledgerLamp = this.chronicleMonuments?.ledgerLampFixture?.();
-        if (ledgerLamp) extra.push(ledgerLamp);
         return hearthLightSources({ lampsLit, core: sourceEnergyFor(lighting).core, extra });
     }
 

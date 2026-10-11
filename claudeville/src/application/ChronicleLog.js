@@ -525,25 +525,6 @@ export class ChronicleLog {
         }, reducer, initialValue);
     }
 
-    /**
-     * W7.8 — the dusk ledger's four numbers for the local day holding `now`:
-     * `{ dateKey, shipped, mended, waited, tokens }`. One fold over the day's
-     * events (shipped = verified commits, mended = the `fix:` commits among
-     * them, waited = the day's waits) plus SpendLedger's persisted day total
-     * (`usageLedger:<date>`, the tokens this page observed today). Counts
-     * only what the day book recorded; nothing is estimated.
-     */
-    async todayRollup(now = Date.now()) {
-        const dateKey = chronicleDateKey(now);
-        const counts = await this._foldDay(createLedgerCounts(), accumulateLedgerCounts, new Date(now)).catch(() => createLedgerCounts());
-        let tokens = 0;
-        try {
-            const record = await this.store?.get?.('meta', `usageLedger:${dateKey}`);
-            tokens = Math.max(0, Math.floor(Number(record?.value?.tokens) || 0));
-        } catch { /* no spend recorded today */ }
-        return Object.freeze({ dateKey, ...counts, tokens });
-    }
-
     /** Wait for the replay and any queued writes. */
     async flush() {
         await this._replayPromise;
@@ -813,86 +794,4 @@ export function summarizeDay(events = []) {
     const summary = createDaySummary();
     for (const event of events) accumulateDaySummary(summary, event);
     return finalizeDaySummary(summary);
-}
-
-// W7.8 — the dusk ledger's day counts. `mended` counts the conventional
-// `fix:` commits among the shipped ones (MonumentRules reads the same
-// prefix), from the subject the day book kept.
-const FIX_SUBJECT = /^fix(?:\([^)]*\))?!?:\s/i;
-
-function createLedgerCounts() {
-    return { shipped: 0, mended: 0, waited: 0 };
-}
-
-function accumulateLedgerCounts(counts, event) {
-    if (event?.kind === ChronicleEventKind.COMMIT) {
-        counts.shipped++;
-        if (FIX_SUBJECT.test(commitSubject(event) || event.subject || '')) counts.mended++;
-    } else if (event?.kind === ChronicleEventKind.WAITING) {
-        counts.waited++;
-    }
-    return counts;
-}
-
-/** Pure W7.8 rollup over a day's events plus the day's observed tokens. */
-export function rollupDayLedger(events = [], { dateKey = null, tokens = 0 } = {}) {
-    const counts = createLedgerCounts();
-    for (const event of events || []) accumulateLedgerCounts(counts, event);
-    return Object.freeze({ dateKey, ...counts, tokens: Math.max(0, Math.floor(Number(tokens) || 0)) });
-}
-
-export const DUSK_LEDGER_META_KEY = 'duskLedger';
-// The ledger is set from the afternoon's blue hour on, never by the pre-dawn
-// lamps of the day that has just begun.
-export const DUSK_LEDGER_FROM_MINUTE = 12 * 60;
-
-/** Whether the day stone for `dateKey` is due: lamps lit at dusk, not yet set. */
-export function duskLedgerDue({ lampsLit = false, minuteOfDay = NaN, dateKey = null, stone = null } = {}) {
-    const minute = Number(minuteOfDay);
-    if (!lampsLit || !Number.isFinite(minute) || minute < DUSK_LEDGER_FROM_MINUTE) return false;
-    return Boolean(dateKey) && stone?.dateKey !== dateKey;
-}
-
-/**
- * W7.8 — the dusk ledger's one day stone, persisted in the `meta` store under
- * DUSK_LEDGER_META_KEY (like AuroraGate's fired-date log), so a reload in the
- * evening finds today's stone already set and sets nothing new. The stone
- * holds until the next dusk, when the new one replaces (retires) it.
- */
-export class DuskLedger {
-    constructor({ store = null } = {}) {
-        this.store = store;
-        this.stone = null;
-        this._loaded = false;
-        this._pending = null;
-    }
-
-    async load() {
-        if (this._loaded) return this.stone;
-        this._loaded = true;
-        try {
-            const record = await this.store?.get?.('meta', DUSK_LEDGER_META_KEY);
-            const value = record?.value;
-            if (value?.dateKey) this.stone = Object.freeze({ ...value });
-        } catch { /* no stone yet */ }
-        return this.stone;
-    }
-
-    /** Set today's stone if due; resolves to the stone set now, or null. */
-    async evaluate(now = Date.now(), { lampsLit = false, minuteOfDay = NaN, chronicleLog = null } = {}) {
-        await this.load();
-        if (this._pending || !chronicleLog?.todayRollup) return null;
-        const dateKey = chronicleDateKey(now);
-        if (!duskLedgerDue({ lampsLit, minuteOfDay, dateKey, stone: this.stone })) return null;
-        this._pending = (async () => {
-            const rollup = await chronicleLog.todayRollup(now);
-            const stone = Object.freeze({ ...rollup, dateKey, setAt: now });
-            this.stone = stone;
-            try {
-                await this.store?.put?.('meta', { key: DUSK_LEDGER_META_KEY, value: { ...stone } });
-            } catch { /* the stone still stands for this page */ }
-            return stone;
-        })().finally(() => { this._pending = null; });
-        return this._pending;
-    }
 }

@@ -175,8 +175,6 @@ test('Chronicle stones reach the resident GPU world as records over their baked 
             project: '/r/a', slot: 2, spriteId: 'prop.repoStone.pillar', tileX: quay.tileX, tileY: quay.tileY,
             worldX: quayWorld.x, worldY: quayWorld.y, accent: '#e0584f',
         }];
-        monuments.duskLedger.stone = { dateKey: '2027-01-15', shipped: 4, mended: 12, waited: 3, tokens: 48210 };
-        monuments._lampsLit = true;
         monuments.records.set('m1', { id: 'm1', district: 'harbor', kind: 'release', weight: 'major', label: 'v1', tileX: 12, tileY: 20, plantedAt: NOW - 15 * 24 * 60 * MIN });
         const renderer = { camera: { zoom: 1 } };
         const frame = () => {
@@ -188,15 +186,14 @@ test('Chronicle stones reach the resident GPU world as records over their baked 
         };
 
         const first = frame();
-        assert.deepEqual([...first.records.keys()].sort(), ['chronicle:day-stone', 'chronicle:monument:m1', 'chronicle:repo:2']);
+        assert.deepEqual([...first.records.keys()].sort(), ['chronicle:monument:m1', 'chronicle:repo:2']);
         const stone = materialClassId('stone');
         for (const record of first.records.values()) {
             assert.ok(fake.made.includes(record.source), `${record.id} draws its baked canvas`);
             assert.equal(record.material, stone);
             assert.ok(record.width > 0 && record.height > 0);
             const drawable = first.target.find(entry => entry.payload.buildGpuRecord && record.id.endsWith(
-                entry.payload.kind === 'chronicle-day-stone' ? 'day-stone'
-                    : entry.payload.payload.kind === 'repo-stone' ? `repo:${entry.payload.payload.slot}` : entry.payload.payload.id));
+                entry.payload.payload.kind === 'repo-stone' ? `repo:${entry.payload.payload.slot}` : entry.payload.payload.id));
             assert.equal(record.depthSortY, drawable.sortY, `${record.id} sorts at its drawable`);
         }
         const repo = first.records.get('chronicle:repo:2');
@@ -206,25 +203,13 @@ test('Chronicle stones reach the resident GPU world as records over their baked 
         assert.equal(repo.writesDepth, true);
         const monument = first.records.get('chronicle:monument:m1');
         assert.ok(monument.alpha > 0.55 && monument.alpha < 1, 'a 15-day monument carries its age fade');
-        const day = first.records.get('chronicle:day-stone');
-        assert.ok(day.emissiveSource, 'the lit lamp is an emissive channel');
-        assert.equal(day.sidecarKey, 'chronicle:day-stone:own');
+        for (const record of first.records.values()) assert.equal(record.emissiveSource, null);
 
         // Static faces: a second frame bakes nothing and reuses every record.
         const baked = fake.made.length;
         const second = frame();
         assert.equal(fake.made.length, baked);
         for (const [id, record] of second.records) assert.equal(record, first.records.get(id));
-
-        // New numbers or a dark lamp rebake the day stone under a new revision.
-        const revision = day.textureRevision;
-        monuments.duskLedger.stone = { ...monuments.duskLedger.stone, tokens: 50000 };
-        monuments._lampsLit = false;
-        const third = frame().records.get('chronicle:day-stone');
-        assert.notEqual(third.textureRevision, revision);
-        assert.equal(third.emissiveSource, null);
-        assert.equal(third.sidecarKey, '');
-        assert.equal(fake.made.length, baked + 1);
     } finally {
         if (previous === undefined) delete globalThis.document;
         else globalThis.document = previous;

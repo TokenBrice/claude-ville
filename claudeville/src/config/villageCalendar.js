@@ -3,8 +3,7 @@
 // Pure data, read by `presentation/character-mode/VillageCalendar.js`, which
 // resolves it against the local date (the same local day `localDateKey`
 // keys the weather timeline and the ambient schedule on) and rebakes at most
-// once a local midnight. W7.8's dusk ledger keys its day stone on the same
-// local date.
+// once a local midnight.
 //
 // Occasion windows are inclusive local calendar days, month 1-based. Every
 // window is a fixed date range, so a pinned clock (`page.clock.install`)
@@ -25,13 +24,12 @@ export const VILLAGE_OCCASIONS = Object.freeze({
 });
 
 // The anchors the Chronicle dressing owns (ChronicleDressingLedger:
-// `harbor.bunting`, `forge.billetRack`, `archive.lectern`, plus the W7.8 day
-// stone beside the lectern). A calendar dressing never claims one.
+// `harbor.bunting`, `forge.billetRack`, `archive.lectern`). A calendar
+// dressing never claims one.
 export const CHRONICLE_DRESSING_ANCHORS = Object.freeze([
     'harbor.bunting',
     'forge.billetRack',
     'archive.lectern',
-    'archive.dayStone',
 ]);
 
 // One row per placed dressing. `sprite` names the authored manifest prop a
