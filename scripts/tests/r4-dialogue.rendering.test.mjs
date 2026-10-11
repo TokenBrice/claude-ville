@@ -30,13 +30,13 @@ function speakingSprite(id, now) {
     return sprite;
 }
 
-test('new thoughts expire independently after thirty seconds, measured from receipt', (t) => {
+test('new thoughts expire independently after ten seconds, measured from receipt', (t) => {
     const now = 1_800_000_000_000;
     t.mock.timers.enable({ apis: ['Date'], now });
     const first = speakingSprite('first', now);
     t.mock.timers.tick(500);
     const second = speakingSprite('second', Date.now());
-    t.mock.timers.tick(29_499);
+    t.mock.timers.tick(9_499);
     assert.equal(first._activityThread().length, 1);
     t.mock.timers.tick(1);
     assert.deepEqual(first._activityThread(), []);
@@ -51,10 +51,10 @@ test('duplicate snapshots and temporarily missing dialogue do not replay an expi
     const now = 1_800_000_000_000;
     t.mock.timers.enable({ apis: ['Date'], now });
     const sprite = speakingSprite('first', now);
-    t.mock.timers.tick(20_000);
+    t.mock.timers.tick(6_000);
     sprite.agent.dialogue = { ...sprite.agent.dialogue };
     sprite._activitySnapshot = sprite._captureActivitySnapshot();
-    t.mock.timers.tick(10_000);
+    t.mock.timers.tick(4_000);
     assert.deepEqual(sprite._activityThread(), []);
     const dialogue = sprite.agent.dialogue;
     sprite.agent.dialogue = null;
@@ -64,7 +64,7 @@ test('duplicate snapshots and temporarily missing dialogue do not replay an expi
     // The same words in a genuinely new source event still deserve a window.
     sprite.agent.dialogue = { ...dialogue, observedAt: Date.now() };
     assert.equal(sprite._activityThread().length, 1);
-    t.mock.timers.tick(30_000);
+    t.mock.timers.tick(10_000);
     assert.deepEqual(sprite._activityThread(), []);
 });
 
@@ -73,7 +73,7 @@ test('expired history cannot keep bubbles alive after the current thought expire
     t.mock.timers.enable({ apis: ['Date'], now });
     const sprite = speakingSprite('first', now);
     sprite._rememberActivitySnapshot({ text: 'An earlier thought', key: 'earlier', timestamp: now });
-    t.mock.timers.tick(30_000);
+    t.mock.timers.tick(10_000);
     assert.deepEqual(sprite._activityThread(), []);
 });
 
@@ -82,11 +82,11 @@ test('a new thought gets its own window without reviving expired history', (t) =
     t.mock.timers.enable({ apis: ['Date'], now });
     const sprite = speakingSprite('first', now);
     const previous = sprite._activitySnapshot;
-    t.mock.timers.tick(30_000);
+    t.mock.timers.tick(10_000);
     sprite.agent.dialogue = { ...sprite.agent.dialogue, text: 'Running the tests', observedAt: Date.now() };
     sprite._rememberActivitySnapshot(previous);
     assert.deepEqual(sprite._activityThread().map(entry => entry.text), ['Running the tests']);
-    t.mock.timers.tick(29_999);
+    t.mock.timers.tick(9_999);
     assert.deepEqual(sprite._activityThread().map(entry => entry.text), ['Running the tests']);
     t.mock.timers.tick(1);
     assert.deepEqual(sprite._activityThread(), []);

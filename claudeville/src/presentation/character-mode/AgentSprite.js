@@ -406,7 +406,7 @@ const PROVIDER_HOME_BUILDINGS = {
     zai: 'archive',
 };
 const ACTION_TRAIL_LIMIT = 2;
-const DIALOGUE_BUBBLE_DISPLAY_MS = 30_000;
+const DIALOGUE_BUBBLE_DISPLAY_MS = 10_000;
 const ACTIVITY_BUBBLE_TTL_MS = 12000;
 const ACTION_TRAIL_TTL_MS = ACTIVITY_BUBBLE_TTL_MS;
 // Trail entries are capped upstream: adapters bound dialogue text and the
