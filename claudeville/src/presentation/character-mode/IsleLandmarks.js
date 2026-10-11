@@ -1,5 +1,5 @@
-// Living Isle W8.5b (AD-P10) — the four non-semantic landmarks: windmill,
-// watermill, wayside chapel and ruined tower (DISTRICT_PROPS `landmark`).
+// Living Isle W8.5b (AD-P10) — the three non-semantic landmarks: windmill,
+// wayside chapel and ruined tower (DISTRICT_PROPS `landmark`).
 //
 // They are scenery, not places: no occupancy, label, gate or session reading
 // of any kind (V3). Each is a sorted StaticPropSprite (tall, among the trees)

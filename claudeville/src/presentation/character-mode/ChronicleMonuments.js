@@ -1422,11 +1422,14 @@ export class ChronicleMonuments {
 }
 
 // ── W7.8 day stone ──────────────────────────────────────────────────────────
-// A slate tablet on the Archive's door-step green carrying four carved rows,
+// A slate tablet on the Archive's south green carrying four carved rows,
 // glyph then exact number: shipped (a sail), mended (a hammer), waited (an
 // hourglass), tokens (a coin). Numbers only, no prose; a small lamp in its
 // crown niche burns while the village lamps are lit.
-export const DAY_STONE_TILE = Object.freeze({ tileX: 10.45, tileY: 19.55 });
+// The south green lies off the Archive ↔ Command lane and in front of every
+// building, so the tall tablet neither stands in foot traffic nor paints over
+// a roof.
+export const DAY_STONE_TILE = Object.freeze({ tileX: 3.45, tileY: 19.55 });
 const DAY_STONE_LAMP_HEIGHT = 34;
 const DAY_STONE = Object.freeze({ face: '#4a525c', light: '#6c7682', dark: '#2f353c', ink: '#1d2126', carve: '#d9c58a', lamp: '#ffd27a', lampCore: '#fff0c8' });
 const DIGITS = Object.freeze([

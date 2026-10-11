@@ -53,7 +53,7 @@ import { ChimneySmoke } from './ChimneySmoke.js';
 import { setPennantWeather } from './PixelPennant.js';
 import { openGroundTiles } from './AmbientGround.js';
 import { TERRAIN_HAZE_COURSES, installGroundBake } from './GroundBake.js';
-import { OCEAN_HORIZON_WORLD_Y, drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
+import { OCEAN_HORIZON_WORLD_Y, coastDistanceProbe, drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
 import { snowBucketOf } from './GroundState.js';
 import {
     TerrainArtifactStore, terrainArtifactConfiguration, terrainArtifactInputsSettled, terrainArtifactKey, terrainContentHash,
@@ -423,6 +423,16 @@ const THOUGHT_SHORTLIST = THOUGHT_BUDGET * 3;
 // the thought it lifts there.
 const THOUGHT_CROWN_GAP = 4;
 const THOUGHT_NO_THREAD = Object.freeze([]);
+// Street fixture pools (world px). The village keeps fewer lamp posts with a
+// wider throw, so the night chain stays continuous without a plinth every
+// tile; both stay under SOURCE_HALO_RADIUS_CAP.
+const STREET_LAMP_POOL_RADIUS = 66;
+const BRAZIER_POOL_RADIUS = 70;
+// Command's watchfires are drawn burning, so at night they light the plaza
+// like any other clock-gated hearth (LightSourceRegistry).
+const WATCHFIRE_POOL_RADIUS = 52;
+const WATCHFIRE_FLAME_HEIGHT = 12;
+const AVENUE_TREE_CLEARANCE = 0.5;
 
 function rectIntersectionArea(a, b) {
     const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
@@ -800,6 +810,8 @@ export class IsometricRenderer {
             this.sceneryClearTiles,
             this.bridgeTiles,
             (tileX, tileY) => this._isInBridgeTreeExclusion(tileX, tileY),
+            coastDistanceProbe(this),
+            (tileX, tileY) => this._nearMainAvenue(tileX, tileY),
         );
         this.treePropSprites = this.foliageRenderer.createTreeProps(this.scenery.getTreeProps());
 
@@ -8157,8 +8169,8 @@ export class IsometricRenderer {
                     },
                 });
             }));
-        // W8.5b — the four non-semantic landmarks (windmill, watermill,
-        // chapel, ruined tower): walkBlock placements, so they skip the
+        // W8.5b — the three non-semantic landmarks (windmill, chapel, ruined
+        // tower): walkBlock placements, so they skip the
         // tall-scenery tile filter above, which their own block would trip.
         sprites.push(...(this.isleLandmarks ||= new IsleLandmarks(this)).buildSprites());
         // W6.10 / W8.4b — the calendar's prop dressing: fixed sprites that
@@ -9276,6 +9288,21 @@ export class IsometricRenderer {
         return 0;
     }
 
+    // The busiest walk keeps a clear verge: no trunk within
+    // AVENUE_TREE_CLEARANCE tiles of a main-avenue tile.
+    _nearMainAvenue(tileX, tileY) {
+        const reach = AVENUE_TREE_CLEARANCE;
+        for (let y = Math.floor(tileY - reach); y <= Math.floor(tileY + reach); y++) {
+            for (let x = Math.floor(tileX - reach); x <= Math.floor(tileX + reach); x++) {
+                if (!this.mainAvenueTiles.has(`${x},${y}`)) continue;
+                const dx = tileX - Math.max(x, Math.min(tileX, x + 1));
+                const dy = tileY - Math.max(y, Math.min(tileY, y + 1));
+                if (dx * dx + dy * dy < reach * reach) return true;
+            }
+        }
+        return false;
+    }
+
     _isInBridgeTreeExclusion(tileX, tileY) {
         if (!this.bridgeSpans?.length) return false;
         const p = this._tileToScreen(tileX, tileY);
@@ -9496,7 +9523,7 @@ export class IsometricRenderer {
                 height,
                 fire: isBrazier,
                 color: isBrazier ? '#ffa94a' : '#ffc95e',
-                radius: Math.min(isBrazier ? 62 : 52, SOURCE_HALO_RADIUS_CAP),
+                radius: Math.min(isBrazier ? BRAZIER_POOL_RADIUS : STREET_LAMP_POOL_RADIUS, SOURCE_HALO_RADIUS_CAP),
                 intensity: (isBrazier ? 0.94 : 0.82) * core,
             });
         }).concat(this._hearthLightSources(lighting));
@@ -9510,6 +9537,19 @@ export class IsometricRenderer {
         const lampsLit = lampsLitAt(this._lastAtmosphere);
         if (!lampsLit) return [];
         const extra = [...(this.villageCalendar?.lightFixtures?.() || []), ...(this.isleLandmarks?.lightFixtures?.() || [])];
+        for (const [index, prop] of (this.commandCenterGroundProps || []).entries()) {
+            if (prop.type !== 'watchfire') continue;
+            extra.push({
+                id: `hearth.watchfire.${index}`,
+                tileX: prop.tileX,
+                tileY: prop.tileY,
+                height: WATCHFIRE_FLAME_HEIGHT,
+                radius: WATCHFIRE_POOL_RADIUS,
+                intensity: 0.72,
+                color: '#ffa94a',
+                fire: true,
+            });
+        }
         const ledgerLamp = this.chronicleMonuments?.ledgerLampFixture?.();
         if (ledgerLamp) extra.push(ledgerLamp);
         return hearthLightSources({ lampsLit, core: sourceEnergyFor(lighting).core, extra });

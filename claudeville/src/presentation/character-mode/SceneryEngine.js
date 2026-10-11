@@ -26,11 +26,17 @@ import { inVillageMasonry, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js'
 
 const CARDINAL_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 // Tree clumps: spiral probe count, ring step (tiles) and minimum trunk
-// spacing². At 1× a large canopy is ~0.8 tile wide, so trunks ~0.7 tile apart
-// knit into one crown mass without stacking on the same pixels.
+// spacing². At 1× a large canopy is ~0.8 tile wide, so trunks 0.9 tile apart
+// touch crowns into one mass without one canopy painting over the next.
 const TREE_CLUMP_PROBES = 20;
 const TREE_CLUMP_STEP = 0.72;
-const TREE_TRUNK_SPACING_SQ = 0.5;
+const TREE_TRUNK_SPACING_SQ = 0.81;
+// A trunk stands this far inland of the drawn shoreline (tiles of the coast
+// field's signed distance; the coast is drawn sub-tile, so a land tile can
+// still read as water at the trunk). Willows are waterside trees and may root
+// closer, never in the water.
+const TREE_COAST_INLAND = 0.35;
+const WILLOW_COAST_INLAND = 0.15;
 // The world ash's islet tiles: every tile whose centre the islet's oval covers
 // (scenery.js `inWorldTreeIslet`, the same test CoastBake seeds its shore from).
 const WORLD_TREE_ISLET = new Set();
@@ -835,10 +841,17 @@ export class SceneryEngine {
     // the civic and scholars' ground, pine for the windbreaks. The world ash
     // (WORLD_TREE) is authored: added last, variant 0 (its canopy follows the
     // season, not a variant).
-    generateTrees(pathTiles, bridgeTiles, isExcluded = null) {
+    // `nearBusyWalk` keeps clumps and woodland off the busiest walk's verge;
+    // the authored avenue rows line a walk on purpose and skip it.
+    generateTrees(pathTiles, bridgeTiles, isExcluded = null, coastDistance = null, nearBusyWalk = null) {
         this.treeProps = [];
+        this._coastDistance = coastDistance;
         const clumpCentres = [];
-        const ctx = { pathTiles, bridgeTiles, isExcluded };
+        const ctx = {
+            pathTiles,
+            bridgeTiles,
+            isExcluded: nearBusyWalk ? (x, y) => Boolean(isExcluded?.(x, y)) || nearBusyWalk(x, y) : isExcluded,
+        };
         for (const anchor of TREE_CLUMPS) {
             const placed = this._growTreeClump(anchor.tileX, anchor.tileY, anchor.trees, anchor.species, anchor.mix ?? null, ctx);
             if (placed) clumpCentres.push({ x: anchor.tileX, y: anchor.tileY, spacing: 2.2 });
@@ -880,7 +893,7 @@ export class SceneryEngine {
         }
         this._promoteWoodlandTrees(ctx);
         for (const tree of this.treeProps) tree.variant = this._canopyVariant(tree);
-        this._plantTreeAvenues(ctx);
+        this._plantTreeAvenues({ pathTiles, bridgeTiles, isExcluded });
         this.treeProps.push({ tileX: WORLD_TREE.tileX, tileY: WORLD_TREE.tileY, species: 'ash', size: 'world', variant: 0 });
     }
 
@@ -990,15 +1003,22 @@ export class SceneryEngine {
 
     // Where a new tree may stand (a clump probe or a stand's lattice point);
     // trees `yields` accepts make way instead of spacing it out.
-    _clearForNewTree(x, y, pathTiles, bridgeTiles, isExcluded, yields = null) {
+    _clearForNewTree(x, y, pathTiles, bridgeTiles, isExcluded, yields = null, inland = TREE_COAST_INLAND) {
         const tx = Math.floor(x);
         const ty = Math.floor(y);
         return !this.isBlockedForTallScenery(x, y, pathTiles, bridgeTiles)
             && !isExcluded?.(x, y)
+            && this._inlandOfCoast(x, y, inland)
             && !this.bushTiles.has(`${tx},${ty}`)
             && this._clearingBias(tx, ty) < 0.45
             && this._insideVillageWall(x, y)
             && this._passesTreeSpacing(x, y, yields);
+    }
+
+    // True when (x, y) stands `inland` tiles inside the drawn shoreline, or
+    // when no coast field was supplied (headless callers keep tile rules).
+    _inlandOfCoast(x, y, inland) {
+        return !this._coastDistance || this._coastDistance(x, y) <= -inland;
     }
 
     // Both wall routes run east along the south shore, so the sea lies on the
@@ -1136,7 +1156,7 @@ export class SceneryEngine {
             const y = cy + Math.sin(angle) * radius;
             const tx = Math.floor(x);
             const ty = Math.floor(y);
-            if (!this._clearForNewTree(x, y, pathTiles, bridgeTiles, isExcluded)) continue;
+            if (!this._clearForNewTree(x, y, pathTiles, bridgeTiles, isExcluded, null, WILLOW_COAST_INLAND)) continue;
             const nearWater = this._distanceToWater(tx, ty) <= 1;
             const pick = this.tileNoise(tx * 3 + k, ty * 5 + 29);
             let species = pick < 0.72 || !mix ? dominant : this._pickWeighted(mix, this.tileNoise(tx + 131, ty + k));
@@ -1144,10 +1164,13 @@ export class SceneryEngine {
             // clump to willow, and a willow never stands away from water.
             if (nearWater && this._nearFreshWater(tx, ty) && this.tileNoise(tx + 61, ty + 157) < 0.5) species = 'willow';
             if (species === 'willow' && !nearWater) species = 'oak';
+            if (species !== 'willow' && !this._inlandOfCoast(x, y, TREE_COAST_INLAND)) continue;
             const size = k >= 2 && species !== 'pine' && this.tileNoise(tx + 17, ty + 71 + k) < 0.4 ? 'small' : 'large';
             this.treeProps.push(woodland ? { tileX: x, tileY: y, species, size, woodland } : { tileX: x, tileY: y, species, size });
         }
-        if (this.treeProps.length - start >= 3) return true;
+        // A clump needs three trees to read as one, unless it was authored
+        // smaller (a waterside pair).
+        if (this.treeProps.length - start >= Math.min(3, count)) return true;
         this.treeProps.length = start;
         return false;
     }

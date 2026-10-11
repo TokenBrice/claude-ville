@@ -8,8 +8,8 @@ import { APPROACH_FILES, REST_SEATS, COMMAND_QUEUE } from '../../claudeville/src
 import { BUILDING_DEFS, VISIT_OVERFLOW_TILES } from '../../claudeville/src/config/buildings.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 
-test('fourteen low lamp feet keep every standing place and approach file clear', () => {
-    assert.equal(VILLAGE_NIGHT_LAMPS.length, 14);
+test('nine low lamp feet keep every standing place and approach file clear', () => {
+    assert.equal(VILLAGE_NIGHT_LAMPS.length, 9);
     const places = [...REST_SEATS, ...COMMAND_QUEUE.slots, ...COMMAND_QUEUE.overflow,
         ...AMBIENT_SCENIC_POINTS, ...Object.values(APPROACH_FILES).flat(),
         ...Object.values(VISIT_OVERFLOW_TILES).flat(),

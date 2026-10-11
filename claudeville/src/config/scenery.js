@@ -291,13 +291,13 @@ export const FOREST_FLOOR_REGIONS = [
 // too narrow for clumps to land on the few clear sites.
 export const TREE_CLUSTERS = [
     // North-west elderwood above the lagoon: the densest mass on the island.
-    { name: 'elderwood', centerX: 8, centerY: 2.2, radiusX: 10.5, radiusY: 4.4, density: 0.9, clump: [5, 7], spacing: 2.9, species: { oak: 0.3, birch: 0.35, pine: 0.35 }, tall: 0.75 },
+    { name: 'elderwood', centerX: 8, centerY: 2.2, radiusX: 10.5, radiusY: 4.4, density: 0.75, clump: [4, 6], spacing: 2.9, species: { oak: 0.3, birch: 0.35, pine: 0.35 }, tall: 0.75 },
     { name: 'west-cliff', centerX: 1.2, centerY: 9, radiusX: 2.4, radiusY: 4.2, density: 0.7, clump: [3, 5], spacing: 2.6, species: { pine: 0.5, birch: 0.3, oak: 0.2 }, tall: 0.5 },
     // South wildwood along the island's lower rim, clear of the gate avenue:
     // a belt between the Portal and Mine yards and the sea wall, grown as a
     // tall stand so it reads as forest, not a hedge.
-    { name: 'south-wildwood', centerX: 9.5, centerY: 38, radiusX: 11, radiusY: 3.4, density: 0.8, clump: [4, 7], spacing: 2.9, species: { oak: 0.4, maple: 0.25, pine: 0.35 }, stand: ['oak', 'maple', 'pine'] },
-    { name: 'south-rim', centerX: 27, centerY: 38.4, radiusX: 4.6, radiusY: 1.8, density: 0.55, clump: [3, 5], spacing: 3.0, species: { oak: 0.35, maple: 0.25, pine: 0.4 }, tall: 0.45 },
+    { name: 'south-wildwood', centerX: 9.5, centerY: 38, radiusX: 9.5, radiusY: 3.4, density: 0.8, clump: [4, 7], spacing: 2.9, species: { oak: 0.4, maple: 0.25, pine: 0.35 }, stand: ['oak', 'maple', 'pine'] },
+    { name: 'south-rim', centerX: 27, centerY: 38.4, radiusX: 4.6, radiusY: 1.8, density: 0.4, clump: [3, 5], spacing: 3.0, species: { oak: 0.35, maple: 0.25, pine: 0.4 }, tall: 0.45 },
     // Sea-facing pine windbreak on the south-east coast.
     { name: 'coast-windbreak', centerX: 32, centerY: 35, radiusX: 3.4, radiusY: 4.8, density: 0.6, clump: [3, 6], spacing: 2.8, species: { pine: 0.75, oak: 0.25 }, tall: 0.45 },
 ];
@@ -321,26 +321,27 @@ export const TALL_TREE_RULES = Object.freeze({
 
 // Authored clumps that compose the settlement: they frame districts and water
 // edges and leave the ground around every landmark open. `trees` is the clump
-// size (3–7); `species` the dominant species (willow only stands within one
+// size (2–7); `species` the dominant species (willow only stands within one
 // tile of water; elsewhere it falls back to oak); `mix` optional secondary
 // weights.
 export const TREE_CLUMPS = [
     // Lagoon islet: waterside willows.
-    { tileX: 15.5, tileY: 5.6, trees: 4, species: 'willow' },
+    { tileX: 15.5, tileY: 5.6, trees: 2, species: 'willow' },
     // West terrace between the lagoon and the Archive (clear of the Archive's
     // sightline): the ridge's birches running down toward the scholars.
-    { tileX: 2.6, tileY: 11.4, trees: 5, species: 'birch', mix: { birch: 0.4, oak: 0.35, pine: 0.25 } },
+    { tileX: 2.6, tileY: 11.4, trees: 4, species: 'birch', mix: { birch: 0.4, oak: 0.35, pine: 0.25 } },
     { tileX: 10.8, tileY: 12.2, trees: 3, species: 'maple', mix: { oak: 1 } },
     // River frame: willows on the Archive bank and the east river isle.
-    { tileX: 3.2, tileY: 21.5, trees: 4, species: 'willow', mix: { oak: 1 } },
+    { tileX: 3.2, tileY: 21.5, trees: 3, species: 'willow', mix: { oak: 1 } },
     { tileX: 22.6, tileY: 22.0, trees: 3, species: 'willow' },
     // South meadow copse between the river and the Mine, and the maple clump
     // that frames the gate avenue's approach to the Forge (the inhabited
     // belt's scarlet in October).
-    { tileX: 9.2, tileY: 27.8, trees: 4, species: 'maple', mix: { oak: 1 } },
+    { tileX: 9.2, tileY: 27.8, trees: 3, species: 'maple', mix: { oak: 1 } },
     { tileX: 22.6, tileY: 28.3, trees: 3, species: 'maple' },
-    // Pines screening the Task board's sea side.
-    { tileX: 30.4, tileY: 31.6, trees: 4, species: 'pine', mix: { oak: 1 } },
+    // A pine pair screening the Task board's sea side, set back from the
+    // shore so neither crown stacks on the forge-shore bench or the water.
+    { tileX: 29.8, tileY: 31.0, trees: 2, species: 'pine' },
 ];
 
 // W8.3d (AD-P8) — avenue rows: Lombardy poplars, the island's one vertical
@@ -352,12 +353,11 @@ export const TREE_CLUMPS = [
 // a walk tile) in place of the woodland path clearance. One canopy `variant`
 // per row so the file turns as one (0 gold, 2 a stop lighter in autumn).
 // The civic core's walks and yards leave no verge whose crown column is clear
-// (a poplar hides any walk tile up its screen column), so both rows stand on
-// the river banks where the two approaches cross the water.
+// (a poplar hides any walk tile up its screen column), so the row stands on
+// the river bank where the gate approach crosses the water. (The Archive
+// walk's row stood on the drawn waterline, the one place its crowns cleared
+// the walk, so it was withdrawn with the other waterside trees.)
 export const TREE_AVENUES = [
-    // The Archive walk's foot: a file along the north bank, west of the
-    // scholars' crossing.
-    { name: 'archive-walk', species: 'poplar', variant: 0, verge: 0.3, points: [[4.45, 22.45], [5.5, 22.45], [6.55, 22.4]] },
     // The Command approach from the gate: a file on the south bank behind the
     // walk's bend to the bridge, one screen row of columns over the river.
     { name: 'command-approach', species: 'poplar', variant: 2, verge: 0.3, points: [[17.6, 27.4], [16.7, 28.0], [15.95, 28.7]] },
@@ -396,23 +396,9 @@ export const inWorldTreeIslet = (x, y) => {
 
 // Static large boulders. Drawn Y-sorted (occlude behind agents).
 export const BOULDERS = [
-    { tileX: 7.4, tileY: 14.2, scale: 1.1, variant: 'a' },
-    { tileX: 31.6, tileY: 28.8, scale: 0.95, variant: 'b' },
-    { tileX: 18.2, tileY: 31.4, scale: 1.05, variant: 'a' },
-    { tileX: 20.4, tileY: 11.6, scale: 0.9, variant: 'b' },
-    { tileX: 12.4, tileY: 24.2, scale: 0.85, variant: 'a' },
-    { tileX: 33.4, tileY: 21.5, scale: 1.0, variant: 'b' },
     { tileX: 9.1, tileY: 11.5, scale: 0.85, variant: 'a' },
     { tileX: 30.3, tileY: 36.2, scale: 1.0, variant: 'b' },
-    { tileX: 4.8, tileY: 27.4, scale: 0.95, variant: 'a' },
-    { tileX: 6.2, tileY: 30.6, scale: 1.1, variant: 'b' },
-    { tileX: 15.4, tileY: 34.3, scale: 0.9, variant: 'a' },
     { tileX: 29.2, tileY: 33.6, scale: 1.05, variant: 'b' },
-    { tileX: 32.8, tileY: 6.5, scale: 0.9, variant: 'a' },
-    { tileX: 22.0, tileY: 14.0, scale: 1.05, variant: 'b' },
-    { tileX: 23.2, tileY: 13.2, scale: 0.95, variant: 'b' },
-    { tileX: 14.6, tileY: 22.4, scale: 0.9, variant: 'b' },
-    { tileX: 21.5, tileY: 26.4, scale: 0.85, variant: 'b' },
 ];
 
 // District biases make the authored map read in larger masses instead of
@@ -459,13 +445,13 @@ export const SCENERY_CLEARINGS = [
 ];
 
 export const ANCIENT_RUINS = [
-    { tileX: 37, tileY: 3, scale: 1.05 },
     { tileX: 2, tileY: 16, scale: 0.82 },
-    { tileX: 36, tileY: 34, scale: 0.95 },
 ];
 
 // Night's low street-lantern chain, linking the existing scenic lamps at
-// both landmark bridges to the road verges and Harbor quay. Whole-tile
+// both landmark bridges to the road verges and Harbor quay: one post per
+// stretch, never a pair, each with a wide pool (IsometricRenderer
+// STREET_LAMP_POOL_RADIUS) so the chain stays continuous. Whole-tile
 // feet close one unused walk node apiece, never a path, approach-file,
 // queue, seat or visit node; the lantern/body fixture box clears those
 // standing places as well. All sites are dry land, not the harbor's
@@ -473,82 +459,54 @@ export const ANCIENT_RUINS = [
 // no new tall prop can occlude a landmark, and EmitterCuts restores only
 // the clock-gated glass. The posts stay dark by day, with no occupancy gate.
 export const VILLAGE_NIGHT_LAMPS = Object.freeze([
-    { tileX: 5, tileY: 21, district: 'knowledge' },
     { tileX: 6, tileY: 22, district: 'civic' },
-    { tileX: 15, tileY: 26, district: 'civic' },
-    { tileX: 16, tileY: 28, district: 'civic' },
+    { tileX: 14, tileY: 30, district: 'civic' },
     { tileX: 19, tileY: 29, district: 'gate' },
-    { tileX: 20, tileY: 30, district: 'gate' },
     { tileX: 20, tileY: 32, district: 'gate' },
-    { tileX: 17, tileY: 34, district: 'gate' },
     { tileX: 18, tileY: 35, district: 'gate' },
     { tileX: 18, tileY: 37, district: 'gate' },
     { tileX: 6, tileY: 35, district: 'arcane' },
     { tileX: 9, tileY: 36, district: 'resource' },
     { tileX: 25, tileY: 21, district: 'harbor' },
-    { tileX: 25, tileY: 22, district: 'harbor' },
 ].map(row => Object.freeze({ ...row, id: 'prop.lantern', layer: 'cache', walkBlock: true })));
 
 export const DISTRICT_PROPS = [
-    { tileX: 11.9, tileY: 21.0, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
-    { tileX: 2.2, tileY: 14.4, id: 'veg.root.arch', layer: 'sorted', district: 'elderwood' },
-    { tileX: 6.2, tileY: 26.5, id: 'veg.standingStone.mossy', layer: 'cache', district: 'elderwood' },
+    { tileX: 11, tileY: 19, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
     { tileX: 6.9, tileY: 27.3, id: 'prop.lakeShrine', layer: 'cache', district: 'elderwood' },
     { tileX: 32.3, tileY: 19.6, id: 'prop.netRack', layer: 'cache', district: 'harbor' },
     { tileX: 33.2, tileY: 22.2, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
     { tileX: 37.1, tileY: 22.0, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
-    { tileX: 6.0, tileY: 8.0, id: 'prop.netRack', layer: 'cache', district: 'lagoon' },
     { tileX: 14.0, tileY: 5.5, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'lagoon' },
     { tileX: 20.0, tileY: 11.0, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'lagoon' },
     // Lagoon lilypad drifts: tight 2-3 pad clusters on calm interior water
     // instead of isolated singles.
-    { tileX: 13.4, tileY: 7.6, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     { tileX: 12.6, tileY: 8.2, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     { tileX: 13.2, tileY: 8.7, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
-    { tileX: 15.2, tileY: 8.4, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     { tileX: 14.0, tileY: 9.2, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     { tileX: 15.6, tileY: 9.3, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     // Lily pair on the east lagoon basin.
     { tileX: 24.2, tileY: 7.4, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     { tileX: 25.0, tileY: 7.9, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
-    // Mangrove roots: west shore shallow water.
-    { tileX: 6.6, tileY: 7.8, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'lagoon' },
-    { tileX: 7.4, tileY: 9.6, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'lagoon' },
-    { tileX: 6.2, tileY: 8.8, id: 'prop.mangroveRoot.arch', layer: 'sorted', district: 'lagoon' },
-    // Driftwood logs: west shore shallows.
+    // A driftwood log in the west shore shallows.
     { tileX: 7.2, tileY: 10.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
-    { tileX: 8.6, tileY: 9.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
-    // Central island lily pool composition. The pond's open water (coast
-    // field) spans tileX ~15.9-17.1 north of the command-pond plank row, so
-    // pads and the buoy keep to tileX 16.1-17.0, tileY <= 21.05: in the
-    // water, never over the plaza, the planks or the bridge landing. Roots,
-    // the standing stone and the driftwood ring the dry west and south banks,
-    // clear of the avenue and bridge. The plaza in front of Command carries no
-    // fixture: it is where the briefing, the queue and the overflow crowd.
-    { tileX: 15.3, tileY: 22.5, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
+    // Central island lily pond: the pond's open water (coast field) spans
+    // tileX ~15.9-17.1 north of the command-pond plank row, so the pads keep
+    // to tileX 16.1-17.0, tileY <= 21.05: in the water, never over the plaza,
+    // the planks or the bridge landing. One mangrove root and a flower mark
+    // the east bank, clear of the avenue and bridge. The plaza in front of
+    // Command carries no fixture: it is where the briefing, the queue and the
+    // overflow crowd.
     { tileX: 16.15, tileY: 20.95, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
     { tileX: 16.6, tileY: 20.8, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 16.55, tileY: 21.05, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 17.0, tileY: 21.0, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'civic' },
-    { tileX: 15.2, tileY: 22.1, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
-    { tileX: 14.6, tileY: 22.8, id: 'prop.mangroveRoot.arch', layer: 'sorted', district: 'civic' },
     { tileX: 20.4, tileY: 22.7, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
-    { tileX: 15.8, tileY: 22.8, id: 'prop.driftwood.log', layer: 'cache', district: 'civic' },
-    { tileX: 20.6, tileY: 22.2, id: 'prop.signpost', layer: 'sorted', district: 'civic' },
-    // Footbridge abutments. The north-west corner stands in the lily pond, so
-    // only the dry south-east corner carries a lantern post; the sprite's own
-    // post lanterns light the other three.
-    { tileX: 19.4, tileY: 26.6, id: 'prop.bridgeLanternPost', layer: 'sorted', district: 'civic' },
-    { tileX: 16.4, tileY: 26.9, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
-    { tileX: 19.6, tileY: 22.3, id: 'veg.boulder.mossy.small', layer: 'sorted', district: 'civic' },
-    { tileX: 16.3, tileY: 22.6, id: 'veg.flower.a', layer: 'cache', district: 'civic' },
     { tileX: 19.8, tileY: 22.5, id: 'veg.flower.b', layer: 'cache', district: 'civic' },
-    { tileX: 16.4, tileY: 26.6, id: 'veg.flower.c', layer: 'cache', district: 'civic' },
-    { tileX: 19.7, tileY: 26.7, id: 'veg.flowerBed', layer: 'cache', district: 'civic' },
+    // The central bridge's south foot keeps one banner rune; the bridge
+    // sprite's own post lanterns light its corners.
     { tileX: 19.7, tileY: 26.1, id: 'prop.bridgeBannerRune', layer: 'sorted', district: 'civic' },
-    // Workshop district: Forge → Task Board handoff yard (brazier, bed, hedge
-    // and the handoff crates at the scenic point below).
-    { tileX: 26.2, tileY: 31.5, id: 'prop.runeBrazier', layer: 'cache', district: 'workshop' },
+    // Workshop district: the Forge → Task Board handoff brazier stands on the
+    // yard's verge, off the handoff path, and lights the yard at night (the
+    // handoff crates are at the scenic point below).
+    { tileX: 26, tileY: 32, id: 'prop.runeBrazier', layer: 'cache', district: 'workshop' },
     // Living Isle W8.3a (AD-P5): working yards. Each prop stands on one
     // whole tile so `walkBlock` closes exactly its own lattice node, never a
     // lane, visit slot, seat or queue place; listed back to front per yard
@@ -556,12 +514,11 @@ export const DISTRICT_PROPS = [
     // channel). The door queues (townPlan APPROACH_FILES, the outer rings)
     // claim the ground between the Observatory and the harbour office, so
     // the harbour quay spreads to its shores: a fishing nook on the lagoon
-    // shore north of the Observatory (fish rack and drying crab pots), an
+    // shore north of the Observatory (a fish rack), an
     // anchor beached on the lawn below the Pharos, the salt store against
     // the harbour office's west wall by its door, the bollard pair where
     // the causeway meets land.
     { tileX: 21, tileY: 12, id: 'prop.fishRack', layer: 'cache', district: 'harbor', walkBlock: true },
-    { tileX: 22, tileY: 12, id: 'prop.crabPots', layer: 'cache', district: 'harbor', walkBlock: true },
     { tileX: 26, tileY: 10, id: 'prop.anchorChain', layer: 'cache', district: 'harbor', walkBlock: true },
     { tileX: 29, tileY: 19, id: 'prop.saltCrates', layer: 'cache', district: 'harbor', walkBlock: true },
     { tileX: 29, tileY: 20, id: 'prop.bollardPair', layer: 'cache', district: 'harbor', walkBlock: true },
@@ -572,15 +529,11 @@ export const DISTRICT_PROPS = [
     { tileX: 25, tileY: 26, id: 'prop.firewoodStack', layer: 'cache', district: 'workshop', walkBlock: true },
     { tileX: 31, tileY: 32, id: 'prop.bellowsBench', layer: 'cache', district: 'workshop', walkBlock: true },
     { tileX: 27, tileY: 33, id: 'prop.barrelStack', layer: 'cache', district: 'workshop', walkBlock: true },
-    // Token Mine: a tool corner west of the rock (roofed tool rack and
-    // grindstone), beside the Portal's door file; ore sacks, the parked
-    // barrow and the spoil heap at the rock's north-east foot by the mine
+    // Token Mine: a roofed tool rack west of the rock, beside the Portal's
+    // door file, and ore sacks at the rock's north-east foot by the mine
     // road. The rock hides anything closer to its west face.
     { tileX: 8, tileY: 31, id: 'prop.toolRack', layer: 'cache', district: 'resource', walkBlock: true },
-    { tileX: 8, tileY: 32, id: 'prop.grindstone', layer: 'cache', district: 'resource', walkBlock: true },
     { tileX: 15, tileY: 29, id: 'prop.oreSacks', layer: 'cache', district: 'resource', walkBlock: true },
-    { tileX: 16, tileY: 29, id: 'prop.wheelbarrow', layer: 'cache', district: 'resource', walkBlock: true },
-    { tileX: 16, tileY: 30, id: 'prop.slagHeap', layer: 'cache', district: 'resource', walkBlock: true },
     // South-bank green between the Token Mine's rock and the central bridge:
     // the village well on the river bank, the flower cart parked at its side
     // and the south-lawn bench beyond. No lane, visit slot or queue place
@@ -589,18 +542,16 @@ export const DISTRICT_PROPS = [
     // (SceneryEngine), so no body stands on or crosses the baked sprites.
     { tileX: 12.5, tileY: 27.5, id: 'prop.well', layer: 'cache', district: 'civic', walkBlock: true },
     { tileX: 13.7, tileY: 28.5, id: 'prop.flowerCart', layer: 'cache', district: 'civic', walkBlock: true },
-    // Archive west lawn: the rune fountain between its two braziers, a
+    // Archive west lawn: the rune fountain with its brazier, a
     // reading-garden shrine on the open grass between the Archive's bell
     // tower and the shore. No lane, path, visit slot, queue place, seat or
     // loiter point reaches the lawn (the archive walk and the bank benches
     // stop at x >= 4), and `walkBlock` keeps every body off the baked group.
     { tileX: 1.15, tileY: 19.0, id: 'prop.runeFountain', layer: 'cache', district: 'knowledge', walkBlock: true },
     { tileX: 1.9, tileY: 18.25, id: 'prop.runeBrazier', layer: 'cache', district: 'knowledge', walkBlock: true },
-    { tileX: 0.4, tileY: 19.75, id: 'prop.runeBrazier', layer: 'cache', district: 'knowledge', walkBlock: true },
-    // Gate-avenue spine between river bridge and village gate.
-    { tileX: 17.5, tileY: 30.0, id: `prop.${marketStallType(17.5, 30.0)}`, layer: 'sorted', district: 'gate' },
-    { tileX: 20.0, tileY: 27.5, id: 'prop.noticePillar', layer: 'sorted', district: 'gate' },
     // Mine ↔ Portal corridor along west-production-road: one lit waymark.
+    // Its tile lies on the road, so the sorted post is culled and only its
+    // pool remains, read as the Mine door's lanterns (_lanternGlowSources).
     { tileX: 10.0, tileY: 32.0, id: 'prop.lantern', layer: 'sorted', district: 'arcane' },
     // W8.4b (AW-P15) — the north road: a parked handcart of firewood on the
     // watchtower green's verge beside the dirt road up to the lighthouse.
@@ -610,31 +561,18 @@ export const DISTRICT_PROPS = [
     // whole-tile row keeps its walkBlock to two lattice nodes, neither a path
     // nor an approach-file place. Static everyday dressing, never an actor.
     { tileX: 27.5, tileY: 12.0, id: 'prop.handcart', layer: 'cache', district: 'knowledge', walkBlock: true },
-    // Birdsong & Bloom (v0.16): cultivated garden plants in the lived-in
-    // districts. layer 'sorted' so any that land on a footprint/path/sightline
-    // are auto-culled by _buildDistrictPropSprites rather than drawn wrongly.
-    { tileX: 17.0, tileY: 28.8, id: 'veg.flowerBed', layer: 'sorted', district: 'gate' },
-    { tileX: 20.6, tileY: 28.2, id: 'veg.planter', layer: 'sorted', district: 'gate' },
-    { tileX: 18.8, tileY: 33.2, id: 'veg.hedge', layer: 'sorted', district: 'gate' },
-    { tileX: 8.4, tileY: 23.6, id: 'veg.flowerBed', layer: 'sorted', district: 'civic' },
-    { tileX: 7.2, tileY: 21.4, id: 'veg.planter', layer: 'sorted', district: 'civic' },
-    { tileX: 19.4, tileY: 19.8, id: 'veg.planter', layer: 'sorted', district: 'civic' },
-    { tileX: 26.4, tileY: 31.2, id: 'veg.flowerBed', layer: 'sorted', district: 'workshop' },
-    { tileX: 28.8, tileY: 30.2, id: 'veg.hedge', layer: 'sorted', district: 'workshop' },
-    // Living Isle W8.5b (AD-P10): four non-semantic landmarks, no occupancy,
+    // Living Isle W8.5b (AD-P10): three non-semantic landmarks, no occupancy,
     // label or gate; `landmark` props are built by IsleLandmarks.js (the
     // windmill's sails step on wind gusts, the chapel lantern on the lamps
     // clock), sorted with the trees, and `walkBlock` keeps every body off
     // them. Each stands on open grass no lane, visit slot, queue, seat,
     // scenic point or building sightline zone reaches: the windmill on the
-    // north shore's open crest, the watermill on the river's north bank east
-    // of the central bridge (its wheel rim dipping over the river's edge), the chapel
-    // on the Archive's north lawn (west of the farm pocket), the ruined
-    // tower at the north wood's edge on the lake's north-west beach. The
+    // north shore's open crest, the chapel on the Archive's north lawn (west
+    // of the farm pocket), the ruined tower at the north wood's edge on the
+    // lake's north-west beach. The
     // headland between the Observatory and the Lighthouse stays bare: it is
     // both buildings' tall-scenery sightline zone.
     { tileX: 9.6, tileY: 0.9, id: 'prop.windmill', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
-    { tileX: 22.9, tileY: 22.2, id: 'prop.watermill', layer: 'sorted', district: 'civic', walkBlock: true, landmark: true },
     { tileX: 1.6, tileY: 9.0, id: 'prop.waysideChapel', layer: 'sorted', district: 'knowledge', walkBlock: true, landmark: true },
     { tileX: 4.5, tileY: 3.6, id: 'prop.ruinedTower', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
     // Living Isle W8.3c (AD-P5 group D): civic/garden and wetland/forest
@@ -642,26 +580,20 @@ export const DISTRICT_PROPS = [
     // on lawns no lane, visit slot, queue place or scenic point reaches;
     // standing places keep off it through VisitTileAllocator FIXTURE_PARTS,
     // and `walkBlock` takes the solid pieces out of the walk grid. The
-    // Archive's south-west lawn takes a two-clump hedgerow on the lake shore,
-    // clear of its door file, the west lawn a rose arbor with a cold torch
-    // post beside the fountain (the tower hides its east side), its lake lawn
-    // a laundry line between the reeds; the Observatory's north lawn a
-    // waymark cairn; the well green a trough.
+    // Archive's south-west lawn takes a hedgerow on the lake shore, clear of
+    // its door file, the west lawn a rose arbor beside the fountain (the
+    // tower hides its east side), its lake lawn a laundry line; the well
+    // green a trough.
     { tileX: 0.9, tileY: 16.9, id: 'prop.trellisArch', layer: 'cache', district: 'knowledge', walkBlock: true },
-    { tileX: 0.3, tileY: 17.5, id: 'prop.torchSconce', layer: 'cache', district: 'knowledge', walkBlock: true },
-    { tileX: 0.4, tileY: 21.0, id: 'veg.hedgerow', layer: 'cache', district: 'knowledge' },
     { tileX: 1.5, tileY: 21.0, id: 'veg.hedgerow', layer: 'cache', district: 'knowledge' },
     { tileX: 6.85, tileY: 12.0, id: 'prop.laundryLine', layer: 'cache', district: 'knowledge', walkBlock: true },
-    { tileX: 23, tileY: 12, id: 'prop.cairn', layer: 'cache', district: 'knowledge', walkBlock: true },
     { tileX: 11.3, tileY: 27.8, id: 'prop.wellTrough', layer: 'cache', district: 'civic', walkBlock: true },
     // Reeds and cattails on dry bank tiles of the lagoon's south shore and
     // the west river's south bank: never on water, a heron shallow or a duck
     // bank (CALM_WATER_FAUNA, HERON_SHALLOWS), never at a bridge foot.
-    { tileX: 5.4, tileY: 11.5, id: 'veg.reedClump', layer: 'cache', district: 'lagoon' },
     { tileX: 9.2, tileY: 11.4, id: 'veg.cattailClump', layer: 'cache', district: 'lagoon' },
     { tileX: 12.3, tileY: 12.6, id: 'veg.reedClump', layer: 'cache', district: 'lagoon' },
     { tileX: 15.6, tileY: 13.6, id: 'veg.cattailClump', layer: 'cache', district: 'lagoon' },
-    { tileX: 4.3, tileY: 27.3, id: 'veg.reedClump', layer: 'cache', district: 'civic' },
     { tileX: 3.4, tileY: 27.6, id: 'veg.cattailClump', layer: 'cache', district: 'civic' },
     { tileX: 14.5, tileY: 27.1, id: 'veg.cattailClump', layer: 'cache', district: 'civic' },
     // Fern and bramble where the woods meet the lagoon's west and north
@@ -671,7 +603,7 @@ export const DISTRICT_PROPS = [
     { tileX: 7.5, tileY: 4.4, id: 'veg.fernCluster', layer: 'cache', district: 'elderwood' },
     { tileX: 1.3, tileY: 3.4, id: 'veg.bramblePatch', layer: 'cache', district: 'elderwood' },
     // W8.3b (AD-P5) — the gate avenue market: the bread stall on the
-    // avenue's west verge below the existing stall, between the gate-green
+    // avenue's west verge, between the gate-green
     // bench and the gatehouse (the east verge sits under the Task Board's
     // sprite, the verge at the gate under its tower). Clear of the Task
     // Board's approach file, the queue, the rest seats and the calendar
@@ -679,13 +611,8 @@ export const DISTRICT_PROPS = [
     // avenue strip are culled by the landmark sightline rule); `walkBlock`
     // keeps every body off the baked feet.
     { tileX: 17.3, tileY: 32.9, id: 'prop.marketStall.bread', layer: 'cache', district: 'gate', walkBlock: true },
-    // The W8.3b milestone stands on the avenue's west verge between the two
-    // stalls: a whole tile the sightline rule leaves open, so it sorts like
-    // the avenue stall, and its fixture box clears the Task Board's approach
-    // file. (The fish and cloth stalls and the notice board were withdrawn:
-    // every visible verge left is a queue-overflow or visit place, a path
-    // node, or ground under the Mine, Task Board or gatehouse sprites.)
-    { tileX: 17.85, tileY: 31.65, id: 'prop.milestone', layer: 'sorted', district: 'gate' },
+    // The avenue itself carries no stall, pillar or milestone: it is the
+    // village's busiest walk, so its line stays open from bridge to gate.
     // W8.3b (AD-P5) — the farm pocket on the lagoon lawn between the Archive
     // gable and the seat park, around the laundry line and the repo stone:
     // dovecote, scarecrow and two crop beds fenced on their back (bank and
@@ -708,34 +635,23 @@ export const DISTRICT_PROPS = [
     ...VILLAGE_NIGHT_LAMPS,
 ];
 
-// Living Isle W2.2: three awning colourways of one stall (manifest
-// prop.marketStall, .ochre, .canvas), picked per placement by a fixed hash
-// of its tile so a stall keeps its colours across reloads.
-function marketStallType(tileX, tileY) {
-    const ways = ['marketStall', 'marketStall.ochre', 'marketStall.canvas'];
-    const h = (Math.imul(Math.round(tileX * 10), 73856093) ^ Math.imul(Math.round(tileY * 10), 19349663)) >>> 0;
-    return ways[h % ways.length];
-}
-
 // Props group by purpose (plan item 4.1): a work yard reads as cart + lantern,
 // never as lone steles on open dirt. Upright stones and crates are rationed
-// island-wide — two runestones (portal ruins, observatory skywatch), one gate
-// notice pillar, three crates (harbor ledger, archive alcove, forge handoff).
+// island-wide — two runestones (portal ruins, observatory skywatch), two
+// crates (archive alcove, forge handoff). Nothing stands on a busy lane.
 export const AMBIENT_GROUND_PROPS = [
-    // Forge and mine work yards: ore carts with their lanterns.
-    { tileX: 24.4, tileY: 29.7, type: 'oreCart' },
-    { tileX: 25.4, tileY: 29.6, type: 'lantern' },
+    // The mine work yard: an ore cart with its lantern.
     { tileX: 13.3, tileY: 34.7, type: 'oreCart' },
     { tileX: 12.5, tileY: 35.4, type: 'lantern' },
 
     // Civic core: utility props around the square, not scattered through the
     // woods. The Command gate steps own the front of the plaza (row 20); the
     // village well stands on the south-bank green (DISTRICT_PROPS).
-    { tileX: 12.1, tileY: 20.0, type: marketStallType(12.1, 20.0) },
     { tileX: 17.8, tileY: 19.4, type: 'signpost' },
 
     // Research edges: a reading lamp beside the Archive alcove's scroll
-    // crates, a skywatch lamp beside the Observatory's runestone.
+    // crates, a skywatch lamp beside the Observatory's runestone (the quay's
+    // second lamp, crates and bench went, so it stands alone there).
     { tileX: 11.2, tileY: 17.3, type: 'lantern' },
     { tileX: 24.5, tileY: 18.9, type: 'lantern' },
 ];
@@ -769,7 +685,6 @@ export const SCENIC_POINT_PROPS = [
     // The harbor-rail and harbor-ledger loiter tiles sit in open water; their
     // props stand on the quay where the causeway meets land, never afloat.
     { scenicPoint: 'harbor-rail', tileX: 28.0, tileY: 20.8, id: 'prop.netRack', layer: 'cache' },
-    { scenicPoint: 'harbor-ledger', tileX: 26.6, tileY: 20.6, id: 'prop.scrollCrates', layer: 'cache' },
     { scenicPoint: 'portal-ruins', tileX: 4.5, tileY: 35.5, id: 'prop.runestone', layer: 'cache' },
     { scenicPoint: 'mine-cart', tileX: 15.4, tileY: 36.5, id: 'prop.oreCart', layer: 'cache' },
     { scenicPoint: 'forest-edge', tileX: 25.5, tileY: 11.4, id: 'veg.standingStone.mossy', layer: 'cache' },
@@ -1047,7 +962,7 @@ export const LIVESTOCK_ROUTES = [
     { id: 'sheep', sprite: 'prop.fauna.sheep', speed: 0.18, holdS: [26, 58], phase: 0.57, kind: 'grazer',
         points: [{ tileX: 8.72, tileY: 14.41, face: 'east' }, { tileX: 8.75, tileY: 14.63, face: 'south' }] },
     { id: 'goat', sprite: 'prop.fauna.goat', speed: 0.22, holdS: [20, 44], phase: 0.31, kind: 'grazer',
-        points: [{ tileX: 7.69, tileY: 14.56, face: 'west' }, { tileX: 7.72, tileY: 14.78, face: 'south' }] },
+        points: [{ tileX: 8.05, tileY: 14.3, face: 'east' }, { tileX: 8.1, tileY: 14.48, face: 'south' }] },
     { id: 'dog', sprite: 'prop.fauna.dog', speed: 0.55, holdS: [24, 60], phase: 0.44, kind: 'roamer', night: 'away', wet: 'away',
         points: [{ tileX: 26.4, tileY: 29.45, face: 'south' }, { tileX: 29.3, tileY: 29.45, face: 'west' }] },
     { id: 'cat', sprite: 'prop.fauna.cat', speed: 0.4, holdS: [40, 90], phase: 0.73, kind: 'roamer', night: 'roam', wet: 'away',

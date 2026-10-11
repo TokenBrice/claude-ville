@@ -520,6 +520,16 @@ export function getCoastField(renderer) {
     return renderer._coastField;
 }
 
+/**
+ * The coast field's `signedDistance` built once without caching it on the
+ * renderer, for tree placement: trees are planted before the Command roads
+ * join the path set, so a cached build here would carry a key that is
+ * about to change.
+ */
+export function coastDistanceProbe(renderer) {
+    return buildCoastField(renderer).signedDistance;
+}
+
 export function coastArtifactInputsSettled(renderer) {
     for (const building of renderer.world?.buildings?.values?.() || []) {
         const id = `building.${building.type}`;

@@ -382,13 +382,14 @@ validateTileObjects(reporter, 'BOULDERS', BOULDERS, MAP_SIZE);
 validateTileObjects(reporter, 'DISTRICT_PROPS', DISTRICT_PROPS, MAP_SIZE);
 validateTileObjects(reporter, 'MARINE_FISH_SCHOOLS', MARINE_FISH_SCHOOLS, MAP_SIZE);
 
-// Trees stand in clumps of 3–7 (SceneryEngine drops smaller remnants).
+// Authored clumps hold 2–7 trees (a waterside pair is the smallest; SceneryEngine
+// drops a clump that grows fewer than min(3, trees)).
 // Poplar is absent on purpose: it has only a tall sheet and grows only in
 // TREE_AVENUES rows (W8.3d).
 const TREE_SPECIES = new Set(['oak', 'pine', 'willow', 'birch', 'maple']);
 for (const [index, clump] of TREE_CLUMPS.entries()) {
-    if (!Number.isInteger(clump.trees) || clump.trees < 3 || clump.trees > 7) {
-        reporter.error(`TREE_CLUMPS[${index}].trees`, 'must be an integer from 3 to 7');
+    if (!Number.isInteger(clump.trees) || clump.trees < 2 || clump.trees > 7) {
+        reporter.error(`TREE_CLUMPS[${index}].trees`, 'must be an integer from 2 to 7');
     }
     if (!TREE_SPECIES.has(clump.species)) {
         reporter.error(`TREE_CLUMPS[${index}].species`, `must be one of ${[...TREE_SPECIES].join(', ')}`);
