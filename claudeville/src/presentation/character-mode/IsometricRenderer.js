@@ -406,6 +406,19 @@ const NAME_SLOT_PROP_CELL = 96;
 // candidate must stay free THOUGHT_RETURN_MS before the column moves back.
 const THOUGHT_RESEARCH_MS = 300;
 const THOUGHT_RETURN_MS = 2000;
+// Thought budget: a swarm must not turn the World into a wall of text. At most
+// THOUGHT_BUDGET columns are placed per frame, freshest line first; a placed
+// column keeps its seat THOUGHT_MIN_SEAT_MS so it can be read before a newer
+// line takes it. Only the selected or hovered speaker may overlap; anyone else
+// with no free candidate stays silent (its head glyph returns). Older lines are
+// drawn only for the focused speaker or while at most THOUGHT_CALM_SPEAKERS
+// want a thought.
+const THOUGHT_BUDGET = 8;
+const THOUGHT_MIN_SEAT_MS = 4000;
+const THOUGHT_CALM_SPEAKERS = 4;
+// Ranking needs no thread, so only this many top-ranked speakers build one,
+// merge and search candidates: the pass stays bounded however large the crowd.
+const THOUGHT_SHORTLIST = THOUGHT_BUDGET * 3;
 // W3.4 — screen px between an occluding building's crown and the tail tip of
 // the thought it lifts there.
 const THOUGHT_CROWN_GAP = 4;
@@ -2237,6 +2250,7 @@ export class IsometricRenderer {
         this._overlayBubbleSprites.length = 0;
         this._overlayBubbleOrder.length = 0;
         this._overlayBubbleBaseRects.length = 0;
+        if (this._thoughtSeated) this._thoughtSeated.length = 0;
         this._agentLabelHitRects.length = 0;
         this._overlayNameRects.length = 0;
         this._overlayReservedRects.length = 0;
@@ -6094,7 +6108,7 @@ export class IsometricRenderer {
                 destination,
                 destination,
                 Boolean(sprite.moving),
-                false, // W3.3 — no thought is ever suppressed
+                sprite._thoughtFiltered === true, // filtered by the thought budget
                 sprite.bubbleSlot ?? null,
                 Number(sprite.bubbleLateral) || 0,
             );
@@ -6872,12 +6886,13 @@ export class IsometricRenderer {
         return { x: topLeft.x, y: topLeft.y, w: bottomRight.x - topLeft.x, h: bottomRight.y - topLeft.y };
     }
 
-    // W3.1 — thought placement. Every speaker's column (head bubble plus its
-    // drawn history, ThoughtColumn.js) is placed at the first free candidate of
-    // slot × lateral, in a deterministic priority order (selected, label
-    // priority, stable id). A displaced column's leader is reserved with it,
-    // so leaders never cross a placed thought. Nothing is ever hidden: when
-    // every candidate collides the column takes the least-overlapping one.
+    // W3.1 — thought placement. Speakers are ranked (focus, seat hold,
+    // freshest line, stable id); the top THOUGHT_SHORTLIST build their column
+    // (head bubble plus its drawn history, ThoughtColumn.js) and up to
+    // THOUGHT_BUDGET are placed at the first free candidate of slot × lateral.
+    // A displaced column's leader is reserved with it, so leaders never cross
+    // a placed thought. When every candidate collides, a focused speaker takes
+    // the least-overlapping one and anyone else is filtered for the frame.
     // W3.3 — a committed candidate is sticky (see THOUGHT_RESEARCH_MS).
     // Rects and columns live on the sprite and are reused frame to frame.
     _assignAgentBubbleSlots(
@@ -6902,16 +6917,38 @@ export class IsometricRenderer {
         const s = 1 / (zoom || 1);
         const order = this._overlayBubbleOrder;
         order.length = 0;
+        const frame = this._thoughtFrame = (this._thoughtFrame || 0) + 1;
         for (const sprite of sprites || []) {
             if (!sprite?.agent) continue;
-            if (this._prepareThought(sprite, s)) order.push(sprite);
+            sprite._thoughtFrame = frame;
+            if (this._spriteWantsBubble(sprite)) order.push(sprite);
             else this._clearThoughtPlacement(sprite);
         }
+        // Focus first, then a column still inside its seat hold, then the
+        // freshest line; the id breaks ties so the order cannot flicker.
+        for (const sprite of order) {
+            sprite._thoughtRank = sprite.selected ? 3 : sprite.hovered ? 2
+                : (sprite._thoughtSeatedAt && now - sprite._thoughtSeatedAt < THOUGHT_MIN_SEAT_MS ? 1 : 0);
+        }
         order.sort((a, b) => {
-            const delta = this._agentLabelPriority(b) - this._agentLabelPriority(a);
+            const delta = b._thoughtRank - a._thoughtRank;
             if (delta !== 0) return delta;
+            const fresh = (b._dialogueDisplayUntil || 0) - (a._dialogueDisplayUntil || 0);
+            if (fresh !== 0) return fresh;
             return String(a.agent.id) < String(b.agent.id) ? -1 : 1;
         });
+        const calm = order.length <= THOUGHT_CALM_SPEAKERS;
+        let prepared = 0;
+        for (const sprite of order) {
+            sprite._thoughtHistoryLimit = calm || sprite._thoughtRank >= 2 ? THOUGHT_HISTORY_LIMIT : 0;
+            if (prepared < THOUGHT_SHORTLIST && this._prepareThought(sprite, s)) {
+                order[prepared++] = sprite;
+                continue;
+            }
+            this._clearThoughtPlacement(sprite);
+            if (prepared >= THOUGHT_SHORTLIST) sprite._thoughtFiltered = true;
+        }
+        order.length = prepared;
         const baseRects = this._overlayBubbleBaseRects;
         baseRects.length = 0;
         for (const sprite of order) {
@@ -6926,6 +6963,7 @@ export class IsometricRenderer {
         // W3.7 — merge before placement, so a member folded into an identical
         // ×N thought reserves nothing.
         this._mergeIdenticalClusterBubbles(order, baseRects, useSpatialGrid);
+        let placed = 0;
         for (const sprite of order) {
             if (sprite.bubbleMergedInto) {
                 sprite.bubbleSlot = null;
@@ -6933,8 +6971,26 @@ export class IsometricRenderer {
                 sprite._bubbleCandidate = null;
                 continue;
             }
+            const focused = sprite._thoughtRank >= 2;
             if (sprite.bubbleMergedCount > 1) this._layoutThoughtColumns(sprite);
-            this._placeThought(sprite, s, now, grid, occupied, useSpatialGrid);
+            if ((focused || placed < THOUGHT_BUDGET)
+                && this._placeThought(sprite, s, now, grid, occupied, useSpatialGrid, focused)) {
+                placed++;
+                if (!sprite._thoughtSeatedAt) sprite._thoughtSeatedAt = now;
+                continue;
+            }
+            this._clearThoughtPlacement(sprite);
+            sprite._thoughtFiltered = true;
+        }
+        // A speaker that left the visible set drops its placement and seat
+        // instead of carrying them stale until it returns.
+        const seated = this._thoughtSeated || (this._thoughtSeated = []);
+        for (const sprite of seated) {
+            if (sprite._thoughtFrame !== frame) this._clearThoughtPlacement(sprite);
+        }
+        seated.length = 0;
+        for (const sprite of order) {
+            if (sprite.bubbleSlot != null) seated.push(sprite);
         }
     }
 
@@ -6942,6 +6998,7 @@ export class IsometricRenderer {
     _prepareThought(sprite, s) {
         sprite.bubbleMergedCount = 1;
         sprite.bubbleMergedInto = null;
+        sprite._thoughtFiltered = false;
         if (!this._spriteWantsBubble(sprite)) return false;
         const thread = typeof sprite._activityThread === 'function' ? sprite._activityThread() : THOUGHT_NO_THREAD;
         const clock = Boolean(sprite._shouldUseLongWaitClock?.());
@@ -6983,8 +7040,9 @@ export class IsometricRenderer {
         const chip = !clock && Boolean(sprite.thoughtRepoAccent?.());
         const tagLength = clock ? 0 : (sprite.thoughtSpeakerTag?.() || '').length;
         const merged = sprite.bubbleMergedCount || 1;
-        sprite._thoughtColumn = layoutThoughtColumn(sprite._thoughtColumn || createThoughtColumn(), thread, clock, chip, 0, merged);
-        sprite._thoughtColumnTagged = layoutThoughtColumn(sprite._thoughtColumnTagged || createThoughtColumn(), thread, clock, chip, tagLength, merged);
+        const history = sprite._thoughtHistoryLimit ?? THOUGHT_HISTORY_LIMIT;
+        sprite._thoughtColumn = layoutThoughtColumn(sprite._thoughtColumn || createThoughtColumn(), thread, clock, chip, 0, merged, history);
+        sprite._thoughtColumnTagged = layoutThoughtColumn(sprite._thoughtColumnTagged || createThoughtColumn(), thread, clock, chip, tagLength, merged, history);
     }
 
     _clearThoughtPlacement(sprite) {
@@ -6996,6 +7054,8 @@ export class IsometricRenderer {
         sprite._bubbleCandidate = null;
         sprite._bubbleBlockedSince = 0;
         sprite._bubbleBetterSince = 0;
+        sprite._thoughtSeatedAt = 0;
+        sprite._thoughtFiltered = false;
     }
 
     // W3.4 — the base and leader landing for a speaker the depth pass hid
@@ -7112,7 +7172,9 @@ export class IsometricRenderer {
         return area;
     }
 
-    _placeThought(sprite, s, now, grid, occupied, useSpatialGrid) {
+    // False when no candidate is free and the speaker may not overlap: only a
+    // focused speaker falls back to the least-overlapping candidate.
+    _placeThought(sprite, s, now, grid, occupied, useSpatialGrid, mayOverlap = true) {
         const stickyKey = (sprite.selected ? 1 : 0) | (sprite.bubbleOccluded ? 2 : 0);
         if (sprite._bubbleStickyKey !== stickyKey) {
             sprite._bubbleStickyKey = stickyKey;
@@ -7152,13 +7214,17 @@ export class IsometricRenderer {
                     chosen = index;
                     break;
                 }
+                if (!mayOverlap) continue;
                 const area = this._thoughtOverlapArea(rects, grid, occupied, useSpatialGrid);
                 if (area < leastArea) {
                     leastArea = area;
                     least = index;
                 }
             }
-            if (chosen < 0) chosen = least;
+            if (chosen < 0) {
+                if (!mayOverlap) return false;
+                chosen = least;
+            }
         }
         if (chosen !== committed) {
             sprite._bubbleBlockedSince = 0;
@@ -7178,6 +7244,7 @@ export class IsometricRenderer {
         // Telemetry samples these: they change only with the committed placement.
         sprite.bubbleSlot = THOUGHT_CANDIDATE_SLOT[chosen];
         sprite.bubbleLateral = THOUGHT_CANDIDATE_LATERAL[chosen] * (sprite._thoughtSide || 1);
+        return true;
     }
 
     // 3.8 — identical-bubble merge. Within one bubble-slot cluster (sprites
@@ -7313,7 +7380,7 @@ export class IsometricRenderer {
         const fallback = sprite._statusVisual?.()?.color || '';
         const trim = sprite._providerTrimColor?.() || '';
         let key = `${sprite.thoughtRepoAccent?.() || ''}|${sprite.thoughtSpeakerTag?.() || ''}|${sprite.bubbleOccluded ? 1 : 0}`;
-        const rows = Math.min(thread.length, THOUGHT_HISTORY_LIMIT + 1);
+        const rows = Math.min(thread.length, (sprite._thoughtHistoryLimit ?? THOUGHT_HISTORY_LIMIT) + 1);
         for (let i = 0; i < rows; i++) {
             const entry = thread[i];
             const accent = entry.accent || (i === 0 ? fallback : trim);

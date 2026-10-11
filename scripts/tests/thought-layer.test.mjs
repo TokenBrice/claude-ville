@@ -27,7 +27,8 @@ function entry(text) {
 function speakingSprite(id, thread = [entry('Checking the renderer')], options = {}) {
     return {
         agent: { id, name: 'Atlas', status: 'working' },
-        x: 100, y: 200, selected: false, addedAt: -60000,
+        x: options.x ?? 100, y: 200, selected: false, addedAt: -60000,
+        _dialogueDisplayUntil: options.fresh ?? 0,
         _activitySnapshot: thread[0],
         _activityThread: () => thread,
         _shouldUseLongWaitClock: () => false,
@@ -42,15 +43,24 @@ function assign(renderer, sprites, labels = [], useGrid = false, now = 1000) {
     renderer._assignAgentBubbleSlots(sprites, 1, labels, useGrid ? null : false, now);
 }
 
+// Mirrors IsometricRenderer's THOUGHT_BUDGET and THOUGHT_MIN_SEAT_MS.
+const BUDGET = 8;
+const MIN_SEAT_MS = 4000;
+
+function placedIds(sprites) {
+    return sprites.filter(sprite => sprite.bubbleSlot != null).map(sprite => sprite.agent.id);
+}
+
 for (const useGrid of [false, true]) {
-    test(`every crowded speaker is placed with least-overlap fallback (${useGrid ? 'grid' : 'linear'})`, () => {
+    test(`only a focused speaker overlaps; a blocked crowd is filtered (${useGrid ? 'grid' : 'linear'})`, () => {
         const renderer = rendererHost();
         const speakers = Array.from({ length: THOUGHT_CANDIDATE_COUNT + 5 }, (_, i) =>
             speakingSprite(`speaker-${String(i).padStart(2, '0')}`, [entry(`Thought ${String(i).padStart(2, '0')}`)]));
-        // Every candidate is blocked, not just the home slot. There are more
-        // speakers than candidate positions and zero completely free positions.
+        const focused = speakers[7];
+        focused.selected = true;
+        // Every candidate is blocked, not just the home slot.
         const blocker = { x: -10000, y: -10000, w: 20000, h: 20000 };
-        const probe = speakingSprite('probe', speakers[0]._activityThread());
+        const probe = speakingSprite('probe', focused._activityThread());
         assert.equal(renderer._prepareThought(probe, 1), true);
         let leastArea = Infinity;
         let leastIndex = -1;
@@ -64,19 +74,62 @@ for (const useGrid of [false, true]) {
             }
         }
         assign(renderer, speakers, [blocker], useGrid);
-        assert.equal(speakers[0]._bubbleCandidate, leastIndex);
+        assert.equal(focused._bubbleCandidate, leastIndex);
+        assert.equal(focused.bubbleSlot, THOUGHT_CANDIDATE_SLOT[leastIndex]);
+        assert.equal(focused.bubbleLateral, THOUGHT_CANDIDATE_LATERAL[leastIndex] * focused._thoughtSide);
+        assert.equal(focused._thoughtFiltered, false);
         for (const sprite of speakers) {
-            assert.equal(sprite.bubbleMergedInto, null, `${sprite.agent.id} lost its distinct thought`);
-            assert.ok(Number.isInteger(sprite._bubbleCandidate));
-            assert.ok(sprite._bubbleCandidate >= 0 && sprite._bubbleCandidate < THOUGHT_CANDIDATE_COUNT);
-            assert.equal(sprite.bubbleSlot, THOUGHT_CANDIDATE_SLOT[sprite._bubbleCandidate]);
-            assert.equal(sprite.bubbleLateral, THOUGHT_CANDIDATE_LATERAL[sprite._bubbleCandidate] * sprite._thoughtSide);
-            const body = renderer._thoughtCandidateRects(sprite, sprite._bubbleCandidate, 1).body;
-            assert.ok(Object.values(body).every(Number.isFinite));
-            assert.ok(body.w > 0 && body.h > 0);
+            if (sprite === focused) continue;
+            assert.equal(sprite.bubbleSlot, null, `${sprite.agent.id} overlapped the blocker`);
+            assert.equal(sprite._thoughtFiltered, true);
         }
     });
 }
+
+test('the budget admits the freshest lines first', () => {
+    const renderer = rendererHost();
+    const speakers = Array.from({ length: BUDGET + 4 }, (_, i) =>
+        speakingSprite(`s${String(i).padStart(2, '0')}`, [entry(`Line ${i}`)], { x: i * 1000, fresh: 1000 + i }));
+    assign(renderer, speakers);
+    const expected = speakers.slice(4).map(sprite => sprite.agent.id);
+    assert.deepEqual(placedIds(speakers).sort(), expected.sort());
+    for (const sprite of speakers.slice(0, 4)) assert.equal(sprite._thoughtFiltered, true);
+});
+
+test('a seated column holds its seat against fresher lines for the seat hold', () => {
+    const renderer = rendererHost();
+    const seated = Array.from({ length: BUDGET }, (_, i) =>
+        speakingSprite(`seated-${i}`, [entry(`Line ${i}`)], { x: i * 1000, fresh: 1000 + i }));
+    assign(renderer, seated, [], false, 1000);
+    assert.equal(placedIds(seated).length, BUDGET);
+    const newcomer = speakingSprite('newcomer', [entry('A fresher line')], { x: 50_000, fresh: 9000 });
+    const all = [...seated, newcomer];
+    assign(renderer, all, [], false, 1000 + MIN_SEAT_MS - 1);
+    assert.equal(newcomer.bubbleSlot, null);
+    assert.equal(newcomer._thoughtFiltered, true);
+    // Past the hold the freshest lines win: the stalest seat goes.
+    assign(renderer, all, [], false, 1000 + MIN_SEAT_MS);
+    assert.notEqual(newcomer.bubbleSlot, null);
+    assert.equal(seated[0].bubbleSlot, null);
+    assert.equal(placedIds(all).length, BUDGET);
+});
+
+test('older lines are drawn only in a calm scene or for the focused speaker', () => {
+    const thread = () => [entry('Head line'), entry('Earlier line'), entry('Oldest line')];
+    const calm = Array.from({ length: 4 }, (_, i) => speakingSprite(`calm-${i}`, thread(), { x: i * 1000 }));
+    let renderer = rendererHost();
+    assign(renderer, calm);
+    for (const sprite of calm) assert.equal(sprite._thoughtColumn.rows, 3);
+
+    const crowd = Array.from({ length: 5 }, (_, i) => speakingSprite(`crowd-${i}`, thread(), { x: i * 1000 }));
+    crowd[2].hovered = true;
+    renderer = rendererHost();
+    assign(renderer, crowd);
+    for (const sprite of crowd) {
+        assert.equal(sprite._thoughtColumn.rows, sprite === crowd[2] ? 3 : 1);
+        assert.equal(sprite._thoughtHistoryLimit, sprite === crowd[2] ? 2 : 0);
+    }
+});
 
 for (const length of [1, 2, 3]) {
     test(`reservation matches painted column height for ${length} thread rows`, () => {
@@ -101,6 +154,8 @@ for (const length of [1, 2, 3]) {
 
 function assertSeparate(first, second) {
     const renderer = rendererHost();
+    // Close enough to share a merge cluster, far enough for both to fit.
+    second.x = first.x + 60;
     renderer._prepareThought(first, 1);
     renderer._prepareThought(second, 1);
     assert.notEqual(renderer._bubbleMergeKey(first), renderer._bubbleMergeKey(second));

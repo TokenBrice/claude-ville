@@ -21,6 +21,7 @@ import {
     THOUGHT_COUNT_GAP,
     THOUGHT_HEAD,
     THOUGHT_HISTORY,
+    THOUGHT_HISTORY_LIMIT,
     THOUGHT_LEADER_TIP,
     THOUGHT_PAINT,
     THOUGHT_STACK_STEP,
@@ -6294,6 +6295,7 @@ export class AgentSprite {
         const column = layoutThoughtColumn(
             this._paintColumn || (this._paintColumn = createThoughtColumn()),
             thread, useClock, Boolean(repoAccent), tag.length, this.bubbleMergedCount || 1,
+            this._thoughtHistoryLimit ?? THOUGHT_HISTORY_LIMIT,
         );
         const shiftX = thoughtLateralShift(column, lateral);
         const slotShift = -slot * THOUGHT_STACK_STEP;

@@ -150,11 +150,12 @@ function countDigits(value) {
  * Lays out the column `thread` will draw into `out` (from createThoughtColumn).
  * `clock` swaps the head for the long-wait clock glyph; `chip` reserves the
  * repo pennant zone; `tagLength` > 0 adds the speaker tag (displaced or
- * occluded heads only); `mergedCount` > 1 adds the ×N count.
+ * occluded heads only); `mergedCount` > 1 adds the ×N count; `historyLimit`
+ * caps the older lines drawn (0 in a crowd, see IsometricRenderer).
  * Bounds (`left/right/top/bottom`) are whole pixels around every painted
  * fill and stroke, tail included, relative to the bubble centre and base.
  */
-export function layoutThoughtColumn(out, thread, clock = false, chip = false, tagLength = 0, mergedCount = 1) {
+export function layoutThoughtColumn(out, thread, clock = false, chip = false, tagLength = 0, mergedCount = 1, historyLimit = THOUGHT_HISTORY_LIMIT) {
     const head = thread?.[0] || null;
     out.clock = clock;
     out.headTop = THOUGHT_HEAD.centerY - THOUGHT_HEAD.height / 2;
@@ -183,7 +184,7 @@ export function layoutThoughtColumn(out, thread, clock = false, chip = false, ta
     }
     out.tailTipY = out.headBottom + out.tail;
 
-    const historyCount = Math.min(Math.max(0, (thread?.length || 0) - 1), THOUGHT_HISTORY_LIMIT);
+    const historyCount = Math.min(Math.max(0, (thread?.length || 0) - 1), THOUGHT_HISTORY_LIMIT, historyLimit);
     out.historyCount = historyCount;
     let rowBottom = out.headTop - THOUGHT_HISTORY.gap;
     let top = out.headTop - THOUGHT_HEAD.stroke / 2;

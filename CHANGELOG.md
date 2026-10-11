@@ -2,6 +2,23 @@
 
 ---
 
+## v0.51.3 — *The Hushed Crowd* · Oct 11, 2026
+
+A swarm of agents turned the World into a wall of overlapping thought bubbles and spent frame time on all of them. Thoughts now run on a budget: a few readable bubbles at once, the same cost at any crowd size.
+
+- **At most eight thoughts at once.**
+  - Speakers are ranked by the freshest line. The selected and hovered agents always show theirs.
+  - A shown bubble keeps its seat for 4 s before a newer line may take it, so it can be read. In a quiet scene nothing competes and a line stays for its full window.
+  - Each new line now shows for 10 s instead of 30 s.
+- **Thoughts no longer overlap.** A speaker with no free spot used to take the least-overlapping one. Now it shows no bubble that frame: its head glyph returns and its line stays in the Activity Panel. Only the selected or hovered agent may still overlap.
+- **Older lines only when it is calm.** The two faded rows above a bubble appear when four or fewer agents are speaking, or on the selected or hovered agent.
+- **Bounded cost.** Ranking reads no text, so only the top 24 speakers build and place a bubble each frame. A speaker that walks out of view drops its placement instead of keeping it stale.
+- The Shift-D "suppressed bubbles" count now reports how many speakers the budget filtered.
+
+Validation: `gate:release` is clean, with new thought-layer tests for the budget, ranking, seat hold, overlap rule and older-line rule, and `verify:render` is clean. With 50 speaking agents, v0.51.2 drew 50 bubbles with 110 overlapping pairs at about 2.1 ms per frame; this build draws 8 with none overlapping at about 0.45 ms, and stays at about 0.46 ms with 100 agents.
+
+---
+
 ## v0.51.2 — *The Thronged Hall* · Oct 10, 2026
 
 With many agents working in one repository, the World froze while loading and never recovered. A large crowd now loads and keeps running.
