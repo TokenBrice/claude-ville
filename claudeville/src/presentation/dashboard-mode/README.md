@@ -2,7 +2,7 @@
 
 Dashboard mode is the compact DOM row view for scanning active sessions without the Canvas world. It is owned by `DashboardRenderer.js` and uses the same domain `World` data as World mode.
 
-Desktop-only constraint: validate at browser widths of 1280px or wider. Do not add narrow-viewport behavior, mobile breakpoints, or responsive shrinking in this area. The one width query is the ultrawide layout at 2400px and above, which only widens.
+Desktop-first constraint: validate at browser widths of 1280px or wider. Do not add narrow-viewport behavior or breakpoints to `dashboard.css`; the one width query is the ultrawide layout at 2400px and above, which only widens. The mobile profile (`/m/`) narrows the cards from `css/mobile.css` under `:root[data-cv-profile="mobile"]`.
 
 ## Responsibilities
 

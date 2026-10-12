@@ -4,7 +4,7 @@
 
 Work from the repository root. This shared checkout may be edited by multiple agents: run `git status --short` before changes, preserve unrelated edits, and follow the root [`AGENTS.md`](../AGENTS.md).
 
-ClaudeVille is static HTML/CSS with vanilla ES modules. `server.js` uses Node built-ins only; there is no build step, bundler, transpiler, framework, or runtime dependency. The desktop-only UI targets viewports at least 1280px wide. Start the maintained server with `npm run dev`; do not change its port casually.
+ClaudeVille is static HTML/CSS with vanilla ES modules. `server.js` uses Node built-ins only; there is no build step, bundler, transpiler, framework, or runtime dependency. The desktop UI at `/` targets viewports at least 1280px wide; `/m/` serves the same `index.html` as the mobile profile (`data-cv-profile="mobile"`, `css/mobile.css`, the Canvas world by default, `m.webmanifest`). Start the maintained server with `npm run dev`; do not change its port casually.
 
 ## Server
 

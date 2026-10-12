@@ -1799,7 +1799,9 @@ export class App {
         // like /#agent=<id> can be shared.
         this._eventUnsubscribers.push(eventBus.on('agent:selected', (agent) => {
             if (!agent?.id) return;
-            history.replaceState(null, '', `#agent=${encodeURIComponent(agent.id)}`);
+            // Absolute path + search: index.html's `<base href="/">` would
+            // otherwise resolve a bare `#agent=` to `/`, dropping `/m/` and the query.
+            history.replaceState(null, '', `${location.pathname}${location.search}#agent=${encodeURIComponent(agent.id)}`);
         }));
         this._eventUnsubscribers.push(eventBus.on('agent:deselected', () => {
             if (location.hash.startsWith('#agent=')) {

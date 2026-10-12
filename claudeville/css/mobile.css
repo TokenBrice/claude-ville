@@ -1,0 +1,578 @@
+/* ── Mobile profile (/m/): the keep folded to fit a phone ──
+   The owner's one exception to the desktop-only rule. The head script in
+   index.html sets `data-cv-profile="mobile"` on the root for `/m` and `/m/`,
+   so every rule below is scoped under it and `/` keeps its
+   desktop layout to the pixel. Nothing here is a redesign: the same
+   surfaces, frame kit, type grid and ink ramp, re-arranged for a narrow
+   screen and a finger.
+     · World first: the canvas takes the full width; the Activity Panel
+       becomes a bottom sheet in portrait (it stays the right-hand column in
+       landscape, where height is the scarce axis), and the sidebar becomes an
+       overlay drawer, so neither covers the world nor squeezes its width.
+     · One finger: every control on the bar, the dock, the sheet and the
+       drawer is at least 44 CSS px on its short axis.
+     · The device's own edges: safe-area insets on every edge the chrome
+       touches, `dvh` for heights so Chrome's collapsing URL bar never hides
+       the sheet. */
+
+:root[data-cv-profile="mobile"] {
+    /* Pull-to-refresh would reload the village under a downward pan. */
+    overscroll-behavior: none;
+}
+
+:root[data-cv-profile="mobile"] body {
+    height: 100dvh;
+    overscroll-behavior: none;
+}
+
+/* ── Top bar: the instrument, minus what a phone cannot use ──
+   The token ledger, version, uptime and village clock fold away: they are
+   the first things a 412px bar cannot hold. Desktop alerts go too, because
+   Android Chrome cannot construct a `Notification` without a service
+   worker. Brand, connection, FPS, the fleet counts, Chronicle, sound,
+   settings and the mode well stay. */
+:root[data-cv-profile="mobile"] .topbar__ledger,
+:root[data-cv-profile="mobile"] .topbar__version,
+:root[data-cv-profile="mobile"] .topbar__uptime,
+:root[data-cv-profile="mobile"] .topbar__clock,
+:root[data-cv-profile="mobile"] #topbarAlertsToggle {
+    display: none;
+}
+
+/* One 52px row (landscape, the unfolded screen's wide side): the bar's own
+   48px could not hold a 44px key inside the well's 2px rim. */
+:root[data-cv-profile="mobile"] .topbar {
+    height: calc(52px + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+}
+
+:root[data-cv-profile="mobile"] .topbar__icon-btn {
+    width: 44px;
+    height: 44px;
+}
+
+/* The sound group keeps its fixed width (turning sound on moves nothing),
+   rescaled to the larger keys: the 44px note and a 28px chevron. */
+:root[data-cv-profile="mobile"] .topbar__sound {
+    width: 72px;
+}
+
+:root[data-cv-profile="mobile"] .topbar__sound-caret {
+    width: 28px;
+    height: 44px;
+}
+
+/* Every segmented well (the mode well and the dock's camera well) grows
+   44px keys inside its 2px recessed rim. */
+:root[data-cv-profile="mobile"] .topbar__well {
+    height: 48px;
+}
+
+:root[data-cv-profile="mobile"] .topbar__well > .topbar__sound-btn,
+:root[data-cv-profile="mobile"] .topbar__well > .topbar__mode-btn {
+    height: 44px;
+}
+
+:root[data-cv-profile="mobile"] .topbar__connection-panel,
+:root[data-cv-profile="mobile"] .topbar__spend-panel,
+:root[data-cv-profile="mobile"] .topbar__sound-panel,
+:root[data-cv-profile="mobile"] .cv-tip {
+    max-width: calc(100vw - 16px);
+}
+
+/* Narrow screens (the folded cover screen, the unfolded inner screen in
+   portrait): two rows, because brand + counts + five keys cannot share 412px.
+   Row one is identity and navigation (wordmark and meta line, the mode
+   well); row two is the instrument (the fleet counts, which keep the whole
+   remaining width so a lit NEEDS YOU slot still fits beside them) and the
+   three action keys. `.topbar__right` dissolves into the grid so its keys
+   can sit on either row without new markup. */
+@media (max-width: 799px) {
+    :root[data-cv-profile="mobile"] .topbar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) repeat(3, auto);
+        grid-template-rows: 52px 44px;
+        align-items: center;
+        gap: 0;
+        height: calc(96px + env(safe-area-inset-top));
+    }
+
+    :root[data-cv-profile="mobile"] .topbar__left {
+        grid-area: 1 / 1;
+    }
+
+    :root[data-cv-profile="mobile"] .topbar__right {
+        display: contents;
+    }
+
+    :root[data-cv-profile="mobile"] .topbar__right > .topbar__well {
+        grid-area: 1 / 2 / 2 / 5;
+        justify-self: end;
+    }
+
+    /* The clipped-second-row overflow rule still holds: a unit that does not
+       fit disappears whole, and NEEDS YOU leads, so it is never the one. */
+    :root[data-cv-profile="mobile"] .topbar__center {
+        grid-area: 2 / 1;
+        height: 44px;
+        padding-top: 6px;
+    }
+
+    :root[data-cv-profile="mobile"] #topbarChronicle {
+        grid-area: 2 / 2;
+    }
+
+    :root[data-cv-profile="mobile"] .topbar__right > .topbar__sound {
+        grid-area: 2 / 3;
+    }
+
+    /* Settings: TopBar inserts it after the sound group, with no id. */
+    :root[data-cv-profile="mobile"] .topbar__right > .topbar__icon-btn--action:not(#topbarChronicle) {
+        grid-area: 2 / 4;
+    }
+}
+
+/* ── World dock: the same walnut tab, finger-sized ──
+   The keys grow to 44px; READ drops its `B` key cap (there is no keyboard to
+   press it on). */
+:root[data-cv-profile="mobile"] .world-dock {
+    right: max(8px, env(safe-area-inset-right));
+    height: auto;
+    padding: 3px 5px;
+}
+
+:root[data-cv-profile="mobile"] .world-dock .topbar__well > .topbar__sound-btn {
+    padding: 0 6px;
+}
+
+:root[data-cv-profile="mobile"] .world-read {
+    min-width: 44px;
+    height: 44px;
+}
+
+:root[data-cv-profile="mobile"] .world-read kbd {
+    display: none;
+}
+
+/* The World-controls popover: never wider than the screen, scrolls when the
+   screen is short, and closes from a 44px key (the 16px plate becomes a bare
+   glyph so the header keeps its weight). */
+:root[data-cv-profile="mobile"] .world-grammar {
+    width: min(312px, calc(100vw - 16px));
+    max-height: calc(100dvh - 176px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+:root[data-cv-profile="mobile"] .world-grammar__header {
+    padding: 0 0 0 8px;
+}
+
+:root[data-cv-profile="mobile"] .world-grammar__close {
+    width: 44px;
+    height: 44px;
+    background: none;
+    box-shadow: none;
+}
+
+/* Its copy teaches keyboard keys; the World-controls popover carries the
+   same grammar for whoever has a keyboard attached. */
+:root[data-cv-profile="mobile"] .first-run-hint {
+    display: none;
+}
+
+/* ── Agent drawer ──
+   Positioned against `.main` (below the bar), so its top needs no bar
+   arithmetic and it never covers the bar. `data-cv-drawer` is Sidebar.js's
+   mobile state; until Sidebar sets it, the drawer stays shut, so boot never
+   flashes it open over the world. Shut, only the toggle remains: a walnut
+   tab hanging from the bar's seam at the world's top left, mirroring the
+   World dock on the right, holding a pixel roster glyph and the agent
+   count, the whole tab one key. */
+:root[data-cv-profile="mobile"] .main {
+    position: relative;
+}
+
+:root[data-cv-profile="mobile"] .sidebar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 20;
+    overflow: visible;
+}
+
+:root[data-cv-profile="mobile"] .sidebar:not([data-cv-drawer="open"]) {
+    left: max(12px, env(safe-area-inset-left));
+    width: auto;
+    padding: 3px 5px;
+    border: 3px solid transparent;
+    border-top-width: 0;
+    border-image: url("../assets/ui/walnut.png") 3 fill / 0 3px 3px / 0 stretch;
+    background: transparent;
+    box-shadow: none;
+    image-rendering: pixelated;
+}
+
+:root[data-cv-profile="mobile"] .sidebar:not([data-cv-drawer="open"]) > :not(.sidebar__header),
+:root[data-cv-profile="mobile"] .sidebar:not([data-cv-drawer="open"]) .sidebar__title {
+    display: none;
+}
+
+:root[data-cv-profile="mobile"] .sidebar:not([data-cv-drawer="open"]) .sidebar__header {
+    position: relative;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 0;
+    height: 48px;
+    padding: 0 12px 0 34px;
+    border-bottom: 0;
+    animation: none;
+}
+
+:root[data-cv-profile="mobile"] .sidebar:not([data-cv-drawer="open"]) .sidebar__count {
+    color: var(--ink-2);
+}
+
+/* The toggle spans the tab; its `>` text gives way to the glyph. */
+:root[data-cv-profile="mobile"] .sidebar:not([data-cv-drawer="open"]) .sidebar__toggle {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    width: auto;
+    height: auto;
+    border: 0;
+    color: transparent;
+}
+
+:root[data-cv-profile="mobile"] .sidebar:not([data-cv-drawer="open"]) .sidebar__toggle::before {
+    content: "";
+    position: absolute;
+    top: 16px;
+    left: 12px;
+    width: 16px;
+    height: 16px;
+    background: var(--ink-3);
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1 3h2v2H1zM5 3h10v2H5zM1 7h2v2H1zM5 7h10v2H5zM1 11h2v2H1zM5 11h10v2H5z'/%3E%3C/svg%3E") 0 0 / 16px 16px no-repeat;
+}
+
+:root[data-cv-profile="mobile"] .sidebar:not([data-cv-drawer="open"]) .sidebar__toggle:hover {
+    background: color-mix(in srgb, var(--ink-1) 4%, transparent);
+}
+
+:root[data-cv-profile="mobile"] .sidebar:not([data-cv-drawer="open"]) .sidebar__toggle:hover::before,
+:root[data-cv-profile="mobile"] .sidebar:not([data-cv-drawer="open"]) .sidebar__toggle:focus-visible::before {
+    background: var(--gold-hi);
+}
+
+:root[data-cv-profile="mobile"] .sidebar:not([data-cv-drawer="open"]) .sidebar__toggle:focus-visible {
+    outline-offset: -2px;
+}
+
+/* Open: the full roster over the world, full height of the area under the
+   bar. It steps in on the chrome's one curve (three whole 4px steps); the
+   scrim (its own ::after, so a press on it targets the aside, which
+   Sidebar.js reads as "close") dims the world and the sheet beside it. */
+:root[data-cv-profile="mobile"] .sidebar[data-cv-drawer="open"] {
+    bottom: 0;
+    width: min(86vw, 340px);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    animation: cv-mobile-drawer-in var(--cv-step-in);
+}
+
+:root[data-cv-profile="mobile"] .sidebar[data-cv-drawer="open"]::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(100% + 1px);
+    width: 100vw;
+    background: color-mix(in srgb, var(--bg-0) 62%, transparent);
+    animation: cv-mobile-scrim-in var(--cv-step-in);
+}
+
+:root[data-cv-profile="mobile"] .sidebar[data-cv-drawer="open"] .sidebar__header {
+    height: 52px;
+    padding-right: 4px;
+}
+
+:root[data-cv-profile="mobile"] .sidebar[data-cv-drawer="open"] .sidebar__toggle {
+    width: 44px;
+    height: 44px;
+}
+
+:root[data-cv-profile="mobile"] .sidebar__body {
+    overscroll-behavior: contain;
+}
+
+:root[data-cv-profile="mobile"] .sidebar__filter-input {
+    height: 44px;
+}
+
+:root[data-cv-profile="mobile"] .sidebar__workflow-toggle {
+    height: 44px;
+}
+
+:root[data-cv-profile="mobile"] .attention-shelf__agent {
+    padding: 6px 0;
+}
+
+@keyframes cv-mobile-drawer-in {
+    from { transform: translateX(-12px); opacity: 0; }
+    to { transform: none; opacity: 1; }
+}
+
+@keyframes cv-mobile-scrim-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* ── Activity Panel: finger-sized controls in both orientations ──
+   The pin and close keys grow to 44px but keep their 24px row: negative
+   margins hand the extra hit area to the header's padding. */
+:root[data-cv-profile="mobile"] .activity-panel {
+    overscroll-behavior: contain;
+}
+
+:root[data-cv-profile="mobile"] .activity-panel__actions {
+    margin: -10px -12px -10px 0;
+}
+
+:root[data-cv-profile="mobile"] .activity-panel__actions .activity-panel__icon-btn {
+    width: 44px;
+    height: 44px;
+}
+
+:root[data-cv-profile="mobile"] .activity-panel__score-btn {
+    height: 44px;
+}
+
+/* ── Portrait: the Activity Panel is a bottom sheet ──
+   `.main__body` stacks the world over the sheet, so opening it shrinks the
+   world's height (App's resize path holds the centre) instead of covering
+   it. The seam and lit bevel move to the sheet's top edge, and it rises
+   12px on the same stepped curve the column slides on. Toasts climb above
+   the open sheet instead of stepping left of a column that is not there. */
+@media (orientation: portrait) {
+    :root[data-cv-profile="mobile"] .main__body {
+        flex-direction: column;
+    }
+
+    :root[data-cv-profile="mobile"] .activity-panel {
+        width: auto;
+        height: 55dvh;
+        padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+        border-top: 1px solid var(--seam);
+        border-left: 0;
+        box-shadow: inset 0 1px 0 var(--line-2);
+    }
+
+    :root[data-cv-profile="mobile"] .activity-panel[inert] {
+        transform: translateY(12px);
+    }
+
+    @starting-style {
+        :root[data-cv-profile="mobile"] .activity-panel {
+            transform: translateY(12px);
+        }
+    }
+
+    :root[data-cv-profile="mobile"] .toast-container {
+        right: max(8px, env(safe-area-inset-right));
+    }
+
+    :root[data-cv-profile="mobile"] body.cv-panel-open .toast-container {
+        bottom: calc(55dvh + 8px);
+    }
+}
+
+/* Landscape keeps layout.css's step left of the open column. */
+:root[data-cv-profile="mobile"] .toast-container {
+    bottom: max(8px, env(safe-area-inset-bottom));
+}
+
+:root[data-cv-profile="mobile"] .toast {
+    max-width: min(360px, calc(100vw - 16px));
+}
+
+/* ── Modals: the screen's width, never past its height ── */
+:root[data-cv-profile="mobile"] .modal {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 32px);
+}
+
+:root[data-cv-profile="mobile"] .modal__close {
+    width: 44px;
+    height: 44px;
+}
+
+/* ── Dashboard: one readable column ──
+   The desktop row is a seven-column ~800px grid with one header row per
+   section; on a phone each row restacks under its portrait (name and age,
+   then NOW across the row, then the 10-minute tape beside tokens and cost)
+   and the column headers fold away, since no column lines up any more. The
+   bell lane drops to one card per row; the selected detail wraps, and its
+   480px strip scrolls inside itself rather than being resampled. The agent
+   drawer's tab folds away here: the Dashboard is itself the full roster,
+   and the tab would sit over the tally bar. */
+:root[data-cv-profile="mobile"] body:has(#btnModeDashboard.topbar__mode-btn--active) .sidebar {
+    display: none;
+}
+
+:root[data-cv-profile="mobile"] .content__dashboard {
+    padding: 12px max(12px, env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    overscroll-behavior: contain;
+}
+
+:root[data-cv-profile="mobile"] .dashboard-attention {
+    top: -12px;
+    margin: -12px -12px 12px;
+    padding: 0 12px;
+}
+
+:root[data-cv-profile="mobile"] .dashboard__section-header {
+    top: 28px;
+}
+
+:root[data-cv-profile="mobile"] .dashboard__cols {
+    display: none;
+}
+
+:root[data-cv-profile="mobile"] .dashboard__section .dash-card__row {
+    grid-template-columns: 44px minmax(0, 1fr) auto auto;
+    grid-template-rows: none;
+    row-gap: 4px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+}
+
+:root[data-cv-profile="mobile"] .dash-card__niche {
+    grid-column: 1;
+    grid-row: 1 / span 3;
+    align-self: start;
+}
+
+:root[data-cv-profile="mobile"] .dash-card__identity {
+    grid-column: 2 / 4;
+    grid-row: 1;
+}
+
+:root[data-cv-profile="mobile"] .dash-card__for {
+    grid-column: 4;
+    grid-row: 1;
+    align-self: start;
+}
+
+:root[data-cv-profile="mobile"] .dash-card__now {
+    grid-column: 2 / -1;
+    grid-row: 2;
+}
+
+:root[data-cv-profile="mobile"] .dash-card__tape {
+    grid-column: 2;
+    grid-row: 3;
+    height: 16px;
+    overflow: hidden;
+}
+
+:root[data-cv-profile="mobile"] .dash-card__usage-tokens {
+    grid-column: 3;
+    grid-row: 3;
+}
+
+:root[data-cv-profile="mobile"] .dash-card__usage-cost {
+    grid-column: 4;
+    grid-row: 3;
+}
+
+:root[data-cv-profile="mobile"] .dash-card__work-cell {
+    grid-column: 2 / -1;
+    grid-row: 4;
+}
+
+:root[data-cv-profile="mobile"] .dash-card__children-cell {
+    grid-column: 2 / -1;
+    grid-row: 5;
+}
+
+/* The unfolded screen (600px and up) has room for the desktop's numeric
+   columns at their desktop widths: two lines per row, the identity beside
+   NOW over the tape, FOR, tokens and cost. */
+@media (min-width: 600px) {
+    :root[data-cv-profile="mobile"] .dashboard__section .dash-card__row {
+        grid-template-columns: 44px minmax(150px, 200px) minmax(0, 1fr) 56px 64px 76px;
+    }
+
+    :root[data-cv-profile="mobile"] .dash-card__niche {
+        grid-row: 1 / span 2;
+    }
+
+    :root[data-cv-profile="mobile"] .dash-card__identity {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+    }
+
+    :root[data-cv-profile="mobile"] .dash-card__now {
+        grid-column: 3 / -1;
+        grid-row: 1;
+    }
+
+    :root[data-cv-profile="mobile"] .dash-card__tape {
+        grid-column: 3;
+        grid-row: 2;
+    }
+
+    :root[data-cv-profile="mobile"] .dash-card__for {
+        grid-column: 4;
+        grid-row: 2;
+        align-self: center;
+    }
+
+    :root[data-cv-profile="mobile"] .dash-card__usage-tokens {
+        grid-column: 5;
+        grid-row: 2;
+    }
+
+    :root[data-cv-profile="mobile"] .dash-card__usage-cost {
+        grid-column: 6;
+        grid-row: 2;
+    }
+
+    :root[data-cv-profile="mobile"] .dash-card__work-cell {
+        grid-row: 3;
+    }
+
+    :root[data-cv-profile="mobile"] .dash-card__children-cell {
+        grid-row: 4;
+    }
+}
+
+:root[data-cv-profile="mobile"] .dashboard__bell {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+:root[data-cv-profile="mobile"] .dash-card__header {
+    flex-wrap: wrap;
+}
+
+/* The key and the axis keep the canvas's 480px, so all three scroll as one. */
+:root[data-cv-profile="mobile"] .dash-card__strip {
+    width: 100%;
+    overflow-x: auto;
+}
+
+:root[data-cv-profile="mobile"] .dash-card__strip-key,
+:root[data-cv-profile="mobile"] .dash-card__strip-axis {
+    flex: none;
+    width: 480px;
+}
+
+/* Reduced motion: the drawer and its scrim cut in (the operator's override
+   already shortens every animation through topbar.css); the sheet cuts
+   through activity-panel.css. */
+@media (prefers-reduced-motion: reduce) {
+    :root[data-cv-profile="mobile"] .sidebar[data-cv-drawer="open"],
+    :root[data-cv-profile="mobile"] .sidebar[data-cv-drawer="open"]::after {
+        animation: none;
+    }
+}

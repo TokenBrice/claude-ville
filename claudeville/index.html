@@ -2,10 +2,29 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <!-- `/m/` serves this same file (server.js): the base keeps every
+         document-relative URL (assets, css, src) rooted on both paths. -->
+    <base href="/">
     <title>ClaudeVille - Agent Visualization</title>
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="manifest" href="manifest.webmanifest">
+    <!-- The mobile profile (`/m` or `/m/`): `data-cv-profile="mobile"` scopes
+         css/mobile.css and the touch-shell behaviour; the World takes the
+         Canvas world (Canvas + hybrid PostFx; the resident GPU world is the slow
+         path on phone GPUs) unless the URL names a renderer; and the install
+         manifest opens /m/. Runs before any module reads `location.search`. -->
+    <script>{
+        if (/^\/m\/?$/.test(location.pathname)) {
+            document.documentElement.dataset.cvProfile = 'mobile';
+            const params = new URLSearchParams(location.search);
+            if (!params.has('renderer')) {
+                params.set('renderer', 'canvas');
+                history.replaceState(history.state, '', `${location.pathname}?${params}${location.hash}`);
+            }
+            document.querySelector('link[rel="manifest"]').href = 'm.webmanifest';
+        }
+    }</script>
     <meta name="theme-color" content="#1b120d">
     <link rel="apple-touch-icon" href="icon-192.png">
     <link rel="modulepreload" href="src/presentation/character-mode/WorldFrameRenderer.js">
@@ -29,6 +48,7 @@
     <link rel="stylesheet" href="css/sidebar.css">
     <link rel="stylesheet" href="css/character.css">
     <link rel="stylesheet" href="css/frame-kit.css">
+    <link rel="stylesheet" href="css/mobile.css">
 </head>
 <body>
     <!-- Top bar -->
@@ -38,7 +58,7 @@
                 <span class="topbar__logo">ClaudeVille</span>
                 <div class="topbar__meta">
                     <span id="topbarConnection" class="topbar__conn topbar__conn--syncing">SYNCING</span>
-                    <span class="topbar__version" tabindex="0" role="button">v0.52</span>
+                    <span class="topbar__version" tabindex="0" role="button">v0.53</span>
                     <span id="statFps" class="topbar__fps" data-tip="World render loop is idle">FPS idle</span>
                     <span id="statTime" class="topbar__uptime" data-tip="Village uptime" hidden>00:00:00</span>
                     <span id="villageClock" class="topbar__clock" data-tip="Modeled village weather" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor"></path></svg><span class="topbar__clock-time"></span><span class="topbar__clock-phase"></span><span class="topbar__clock-override" hidden></span></span>
@@ -205,6 +225,7 @@
                         </div>
                         <div class="world-grammar__body"><b>/ or Ctrl/Cmd+K</b> search agents · <b>↑/↓/Home/End</b> move · <b>Enter</b> select and follow · <b>Esc</b> clear search / close panel · <b>A</b> frame attention · <b>F</b> frame village · <b>drag / arrows</b> pan · <b>wheel / +/-</b> zoom · <b>R</b> replay · <b>M</b> sound on/off</div>
                         <div class="world-grammar__body"><b>Hold B / READ</b> reveal work labels; release to restore names.</div>
+                        <div class="world-grammar__body"><b>Touch</b> drag to pan · pinch to zoom · tap to select · long-press for details.</div>
                         <div class="world-grammar__body"><b>FREE · AUTO · AMBIENT</b> who moves the camera: only you, the idle auto-framer, or the working-village broadcast. Any pan, zoom, key, or selection hands Ambient straight back; it waits as a lit pip on AMBIENT.</div>
                     </div>
                     <div id="worldSemanticSummary" class="world-semantic-summary" role="status" aria-live="polite"></div>

@@ -729,7 +729,10 @@ function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Stat
       return sendError(res, 400, 'Bad Request');
     }
 
-    const relativePath = requestedPath === '/'
+    // `/m` and `/m/` are the mobile profile of the same shell: index.html's
+    // head script reads the path, and its `<base href="/">` keeps every
+    // relative URL rooted.
+    const relativePath = (requestedPath === '/' || requestedPath === '/m' || requestedPath === '/m/')
       ? 'index.html'
       : requestedPath.replace(/^\/+/, '');
     let filePath = path.resolve(root, relativePath);

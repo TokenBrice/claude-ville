@@ -6,7 +6,7 @@ brand
 
 ## Users
 
-A solo developer who runs several AI coding CLIs at once (Claude Code, Codex, Gemini, Kimi, OpenCode) and wants to *watch* them work. ClaudeVille lives on a second monitor while they code on the first: glanced at, not stared at. The job to be done is mostly ambient awareness — "is anything stuck, waiting on me, or burning tokens?" — answered from the corner of the eye, plus the simple pleasure of seeing your agents alive in a place. It runs entirely locally (a zero-build Node server on port 4000) and reads provider session logs read-only. Desktop only, 1280px and wider; no mobile or narrow viewports.
+A solo developer who runs several AI coding CLIs at once (Claude Code, Codex, Gemini, Kimi, OpenCode) and wants to *watch* them work. ClaudeVille lives on a second monitor while they code on the first: glanced at, not stared at. The job to be done is mostly ambient awareness — "is anything stuck, waiting on me, or burning tokens?" — answered from the corner of the eye, plus the simple pleasure of seeing your agents alive in a place. It runs entirely locally (a zero-build Node server on port 4000) and reads provider session logs read-only. Desktop first, 1280px and wider; the one narrow surface is the `/m/` mobile profile, for watching agents that run on the phone itself.
 
 ## Product Purpose
 

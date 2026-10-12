@@ -2062,7 +2062,9 @@ export class IsometricRenderer {
             const screenX = e.clientX - rect.left;
             const screenY = e.clientY - rect.top;
             const worldPos = this.camera.screenToWorld(screenX, screenY);
-            this._handleClick(worldPos.x, worldPos.y);
+            this._handleClick(worldPos.x, worldPos.y, e.pointerType
+                ? e.pointerType !== 'mouse'
+                : e.sourceCapabilities?.firesTouchEvents === true);
         };
         canvas.addEventListener('click', this._onClick);
 
@@ -2079,31 +2081,7 @@ export class IsometricRenderer {
             const screenX = e.clientX - rect.left;
             const screenY = e.clientY - rect.top;
             const worldPos = this.camera.screenToWorld(screenX, screenY);
-            const hoveredBuilding = this.buildingRenderer?.hitTest(worldPos.x, worldPos.y) ?? null;
-            this.buildingRenderer?.setHovered(hoveredBuilding);
-            this.villageDirector?.setHoveredBuilding?.(hoveredBuilding);
-            const monument = hoveredBuilding ? null : this.chronicleMonuments?.hitTest?.(worldPos.x, worldPos.y, Date.now());
-            // 3.6 — harbor lore: hovering a ship surfaces its commit subject.
-            const hoveredShip = (hoveredBuilding || monument)
-                ? null
-                : (this.harborTraffic?.hitTestShip?.(worldPos.x, worldPos.y) ?? null);
-            this.harborTraffic?.setHoveredShip?.(hoveredShip ? hoveredShip.id : null);
-            const bridgeLantern = (hoveredBuilding || monument || hoveredShip)
-                ? null
-                : (this.bridgeLanterns?.hitTest?.(worldPos.x, worldPos.y, Date.now()) ?? null);
-            this.bridgeLanterns?.setHovered?.(bridgeLantern);
-            const tokenItem = (hoveredBuilding || monument || hoveredShip || bridgeLantern)
-                ? null
-                : (this.landmarkActivity?.hitTestTokenItem?.(worldPos.x, worldPos.y) ?? null);
-            canvas.title = hoveredBuilding
-                ? this._buildingVisitorTooltip(hoveredBuilding)
-                : (monument
-                    ? this.chronicleMonuments.tooltipFor(monument, Date.now())
-                    : (hoveredShip
-                        ? this.harborTraffic.shipTooltip(hoveredShip)
-                        : (bridgeLantern
-                            ? this.bridgeLanterns.tooltipFor(bridgeLantern, Date.now())
-                            : (tokenItem ? this.landmarkActivity.tokenItemTooltip(tokenItem) : ''))));
+            canvas.title = this._worldHoverInfo(worldPos.x, worldPos.y);
             this._scheduleAgentHoverTest(worldPos.x, worldPos.y);
         };
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
@@ -2120,6 +2098,9 @@ export class IsometricRenderer {
             canvas.title = '';
         };
         canvas.addEventListener('mouseleave', this._onMouseLeaveMain);
+        this.camera.onTouchStart = this._onMouseLeaveMain;
+        this.camera.onTouchLongPress = (x, y) => this._showTouchInfo(x, y);
+        this.camera.onTouchDismiss = () => this._dismissTouchInfo();
         this._onKeyDown = (e) => {
             if (e.code === 'KeyD' && e.shiftKey) void this._toggleDebugOverlay('toggle');
             if (e.code === 'KeyP' && e.shiftKey) void this._toggleDebugOverlay('togglePathDebug');
@@ -4265,7 +4246,7 @@ export class IsometricRenderer {
         return false;
     }
 
-    _handleClick(worldX, worldY) {
+    _handleClick(worldX, worldY, touch = false) {
         if (!this.agentSprites.size && !this.buildingRenderer) return;
         this._invalidateIdleFrame();
 
@@ -4311,6 +4292,25 @@ export class IsometricRenderer {
                 return;
             }
             this.chronicleMonuments?.setSelectedMonument?.(null);
+        }
+        // Exact instruments, monuments and buildings keep their precedence.
+        // Only a miss gains the finger-sized margin around a selectable body.
+        if (!clicked && touch && !this.buildingRenderer?.hitTest(worldX, worldY)) {
+            const radius = 22 / this.camera.zoom;
+            let nearest = radius * radius;
+            for (const sprite of sorted) {
+                if (this._isGateTransit(sprite, 'departure') || sprite.isArrivalPending()) continue;
+                const box = sprite._bodyBox;
+                const x = sprite._placeX ?? sprite.x;
+                const y = sprite._placeY ?? sprite.y;
+                const dx = Math.max(x + (box?.left ?? -17) - worldX, 0, worldX - x - (box?.right ?? 17));
+                const dy = Math.max(y + (box?.top ?? -58) - worldY, 0, worldY - y - Math.max(box?.bottom ?? 3, 4));
+                const distance = dx * dx + dy * dy;
+                if (distance < nearest) {
+                    nearest = distance;
+                    clicked = sprite;
+                }
+            }
         }
 
         // Deselect all
@@ -4385,6 +4385,75 @@ export class IsometricRenderer {
         if (this._hoveredAgentSprite) this._hoveredAgentSprite.setHovered(false);
         this._hoveredAgentSprite = sprite || null;
         if (this._hoveredAgentSprite) this._hoveredAgentSprite.setHovered(true);
+    }
+
+    _worldHoverInfo(worldX, worldY) {
+        const hoveredBuilding = this.buildingRenderer?.hitTest(worldX, worldY) ?? null;
+        this.buildingRenderer?.setHovered(hoveredBuilding);
+        this.villageDirector?.setHoveredBuilding?.(hoveredBuilding);
+        const monument = hoveredBuilding ? null : this.chronicleMonuments?.hitTest?.(worldX, worldY, Date.now());
+        const hoveredShip = (hoveredBuilding || monument)
+            ? null
+            : (this.harborTraffic?.hitTestShip?.(worldX, worldY) ?? null);
+        this.harborTraffic?.setHoveredShip?.(hoveredShip ? hoveredShip.id : null);
+        const bridgeLantern = (hoveredBuilding || monument || hoveredShip)
+            ? null
+            : (this.bridgeLanterns?.hitTest?.(worldX, worldY, Date.now()) ?? null);
+        this.bridgeLanterns?.setHovered?.(bridgeLantern);
+        const tokenItem = (hoveredBuilding || monument || hoveredShip || bridgeLantern)
+            ? null
+            : (this.landmarkActivity?.hitTestTokenItem?.(worldX, worldY) ?? null);
+        return hoveredBuilding
+            ? this._buildingVisitorTooltip(hoveredBuilding)
+            : (monument
+                ? this.chronicleMonuments.tooltipFor(monument, Date.now())
+                : (hoveredShip
+                    ? this.harborTraffic.shipTooltip(hoveredShip)
+                    : (bridgeLantern
+                        ? this.bridgeLanterns.tooltipFor(bridgeLantern, Date.now())
+                        : (tokenItem ? this.landmarkActivity.tokenItemTooltip(tokenItem) : ''))));
+    }
+
+    _showTouchInfo(clientX, clientY) {
+        const rect = this.canvas.getBoundingClientRect();
+        const world = this.camera.screenToWorld(clientX - rect.left, clientY - rect.top);
+        this.canvas.title = this._worldHoverInfo(world.x, world.y);
+        // The agent pass uses the same front-most/arrival filters and dialogue
+        // provenance as mouse hover, which wins over the scenery underneath.
+        this._applyAgentHover(world.x, world.y);
+        const text = this.canvas.title;
+        this._onMouseLeaveMain();
+        if (!text) return false;
+        this._dismissTouchInfo();
+        const tip = document.createElement('div');
+        tip.className = 'world-touch-tip cv-frame cv-frame--bg2';
+        tip.setAttribute('role', 'tooltip');
+        tip.textContent = text;
+        this.canvas.parentElement.append(tip);
+        const width = tip.offsetWidth;
+        const height = tip.offsetHeight;
+        const x = Math.max(8, Math.min(rect.width - width - 8, clientX - rect.left - width / 2));
+        let y = Math.max(8, Math.min(rect.height - height - 8, clientY - rect.top - height - 24));
+        // The dock and mobile ledger tab reserve screen space just as they do
+        // for canvas labels. A held readout must not disappear underneath them.
+        for (const reserved of getReservedRects()) {
+            if (x < reserved.right && x + width > reserved.left
+                && y < reserved.bottom && y + height > reserved.top) {
+                y = Math.max(8, Math.min(rect.height - height - 8, reserved.bottom + 8));
+            }
+        }
+        tip.style.left = `${Math.round(x)}px`;
+        tip.style.top = `${Math.round(y)}px`;
+        this._touchInfo = tip;
+        this._touchInfoTimer = setTimeout(() => this._dismissTouchInfo(), 4000);
+        return true;
+    }
+
+    _dismissTouchInfo() {
+        clearTimeout(this._touchInfoTimer);
+        this._touchInfoTimer = null;
+        this._touchInfo?.remove();
+        this._touchInfo = null;
     }
 
     _buildingVisitorTooltip(building) {

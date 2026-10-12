@@ -2,6 +2,25 @@
 
 ---
 
+## v0.53.0 — *The Pocket Hamlet* · Oct 12, 2026
+
+ClaudeVille now runs on a phone. When agents run on the phone itself (for example in a Linux environment on Android), open `http://localhost:4000/m/` in Chrome. It's the same village, with a layout that fits a narrow screen and real touch controls.
+
+- **Touch controls in World mode.** Drag to pan, pinch to zoom (it settles on the nearest zoom step), tap to select, and long-press a building, ship, monument or agent for the details a mouse gets on hover. A drag or pinch never selects by accident, and a tap that lands a little off an agent still selects it. These work on any touch screen, including `/`; mouse, wheel and keyboard behave exactly as before.
+- **The `/m/` mobile layout.** The town fills the width.
+  - The agent list is a drawer that opens from a tab at the top-left and closes when you pick an agent.
+  - Agent details open as a bottom sheet in portrait, so the town shrinks above it instead of being covered. Landscape keeps the right-hand panel.
+  - The top bar fits on two rows, and buttons are at least 44 px.
+  - Popovers stay on screen, Dashboard cards stack into one column, and pull-to-refresh no longer reloads the page.
+  - Hidden on phones: the token ledger, the version, the clock, and the desktop-alerts button (Android Chrome can't show page notifications).
+- **The Canvas world by default on `/m/`.** On a Galaxy Z Fold 7 the Canvas world held 60 fps where the resident WebGL world managed 10–20. A `?renderer=` in the address still wins.
+- **Installs as its own app.** "Add to Home screen" from `/m/` opens the mobile layout.
+- The desktop layout at `/` is unchanged; the mobile layout lives in its own stylesheet that only applies on `/m/`.
+
+Validation: `gate:release` is clean, with new tests for the touch gestures and the `/m/` route. `verify:render` was not run (its Playwright browser is not installed on the release machine). In a headless phone-sized browser (412×915 and 750×830) the drawer, sheet, pan, pinch, tap and long-press work with no page overflow, and the desktop layout measures identically before and after. Not yet tried on a real phone.
+
+---
+
 ## v0.52.0 — *The Cleared Commons* · Oct 11, 2026
 
 The island had filled up with props and trees over the last visual passes and read as cluttered even with few agents. It now carries about a third less, chosen by where agents actually walk, and keeps its light at night.

@@ -113,6 +113,17 @@ test('text MIME and gzip variants preserve exact bodies, HEAD and strong validat
       const unversioned = await request(port, '/fixture.woff2');
       assert.equal(unversioned.headers['cache-control'], 'no-cache');
     });
+    await t.test('/m and /m/ serve the root index.html; other /m paths stay contained', async () => {
+      const shell = Buffer.from('<!DOCTYPE html><title>shell</title>');
+      fs.writeFileSync(path.join(root, 'index.html'), shell);
+      for (const pathname of ['/', '/m', '/m/', '/m/?sim=1']) {
+        const response = await request(port, pathname);
+        assert.equal(response.status, 200, pathname);
+        assert.equal(response.headers['content-type'].split(';')[0], 'text/html', pathname);
+        assert.deepEqual(response.body, shell, pathname);
+      }
+      assert.equal((await request(port, '/m/index.html')).status, 404);
+    });
   } finally {
     await new Promise(resolve => server.close(resolve));
     runtime.shutdownRuntime({ reason: 'static-test', exitProcess: false });

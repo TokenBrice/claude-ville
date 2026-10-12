@@ -415,6 +415,16 @@ export class Camera {
         this.camStartX = 0;
         this.camStartY = 0;
 
+        // Non-mouse gestures never borrow the mouse drag state: a pending tap
+        // must leave follow/Auto ownership alone until it becomes a gesture.
+        this._touchPointers = new Map();
+        this._touchGesture = null;
+        this._touchHoldTimer = null;
+        this._touchClickUntil = 0;
+        this.onTouchStart = null;
+        this.onTouchLongPress = null;
+        this.onTouchDismiss = null;
+
         // Follow mechanism
         this.followTarget = null;      // AgentSprite reference
         this._followEase = null;       // timed entry glide when follow starts
@@ -487,6 +497,14 @@ export class Camera {
         this._onMouseMove = this._onMouseMove.bind(this);
         this._onMouseUp = this._onMouseUp.bind(this);
         this._onWheel = this._onWheel.bind(this);
+        this._onPointerDown = this._onPointerDown.bind(this);
+        this._onPointerMove = this._onPointerMove.bind(this);
+        this._onPointerUp = this._onPointerUp.bind(this);
+        this._onPointerCancel = this._onPointerCancel.bind(this);
+        this._onLostPointerCapture = this._onLostPointerCapture.bind(this);
+        this._onWindowPointerDown = this._onWindowPointerDown.bind(this);
+        this._onTouchClick = this._onTouchClick.bind(this);
+        this._onTouchBlur = () => this._cancelTouchGesture();
 
         this.centerOnMap();
     }
@@ -1085,6 +1103,15 @@ export class Camera {
         window.addEventListener('mousemove', this._onMouseMove);
         window.addEventListener('mouseup', this._onMouseUp);
         this.canvas.addEventListener('wheel', this._onWheel, { passive: false });
+        this.canvas.addEventListener('pointerdown', this._onPointerDown, { passive: false });
+        this.canvas.addEventListener('pointermove', this._onPointerMove, { passive: false });
+        this.canvas.addEventListener('pointerup', this._onPointerUp);
+        this.canvas.addEventListener('pointercancel', this._onPointerCancel);
+        this.canvas.addEventListener('lostpointercapture', this._onLostPointerCapture);
+        // Window capture precedes document selection intent and canvas cues.
+        window.addEventListener('pointerdown', this._onWindowPointerDown, true);
+        window.addEventListener('click', this._onTouchClick, true);
+        window.addEventListener('blur', this._onTouchBlur);
         // #54 — village population feed for the empty-village tour.
         if (!this._populationUnsub) {
             this._populationUnsub = eventBus.on('village:population', this._onVillagePopulation);
@@ -1096,6 +1123,16 @@ export class Camera {
         window.removeEventListener('mousemove', this._onMouseMove);
         window.removeEventListener('mouseup', this._onMouseUp);
         this.canvas.removeEventListener('wheel', this._onWheel);
+        this.canvas.removeEventListener('pointerdown', this._onPointerDown);
+        this.canvas.removeEventListener('pointermove', this._onPointerMove);
+        this.canvas.removeEventListener('pointerup', this._onPointerUp);
+        this.canvas.removeEventListener('pointercancel', this._onPointerCancel);
+        this.canvas.removeEventListener('lostpointercapture', this._onLostPointerCapture);
+        window.removeEventListener('pointerdown', this._onWindowPointerDown, true);
+        window.removeEventListener('click', this._onTouchClick, true);
+        window.removeEventListener('blur', this._onTouchBlur);
+        this._cancelTouchGesture();
+        this._touchClickUntil = 0;
         if (this._populationUnsub) {
             this._populationUnsub();
             this._populationUnsub = null;
@@ -1323,6 +1360,211 @@ export class Camera {
         this.y = (anim.mouseY / this.zoom) - anim.worldBeforeY;
         if (t >= 1) this._zoomAnimation = null;
         this._clampToBounds();
+    }
+
+    _onWindowPointerDown() {
+        this._touchClickUntil = 0;
+        this.onTouchDismiss?.();
+    }
+
+    _onTouchClick(event) {
+        const nonMouse = event.pointerType
+            ? event.pointerType !== 'mouse'
+            : event.sourceCapabilities?.firesTouchEvents === true;
+        const stack = this.canvas.closest?.('#worldStack');
+        if (!nonMouse || performance.now() > this._touchClickUntil
+            || !(stack ? stack.contains(event.target) : event.target === this.canvas)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+    }
+
+    _clearTouchHold() {
+        clearTimeout(this._touchHoldTimer);
+        this._touchHoldTimer = null;
+    }
+
+    _onPointerDown(event) {
+        if (event.pointerType === 'mouse' || event.button !== 0) return;
+        event.preventDefault();
+        this.canvas.setPointerCapture(event.pointerId);
+        this._touchPointers.set(event.pointerId, {
+            x: event.clientX, y: event.clientY,
+            startX: event.clientX, startY: event.clientY,
+        });
+        if (!this._touchGesture) {
+            this.onTouchStart?.();
+            this._touchGesture = {
+                kind: 'pending', pinched: false, consumed: false,
+                vx: 0, vy: 0, lastTime: performance.now(),
+            };
+            this._rebaseTouchGesture();
+            this._touchHoldTimer = setTimeout(() => {
+                this._touchHoldTimer = null;
+                const gesture = this._touchGesture;
+                if (!gesture || gesture.kind !== 'pending' || this._touchPointers.size !== 1) return;
+                const point = this._touchPointers.values().next().value;
+                gesture.kind = 'hold';
+                gesture.consumed = true;
+                this.onTouchLongPress?.(point.x, point.y);
+            }, 500);
+        } else {
+            this._clearTouchHold();
+            this._beginTouchMotion();
+            this._touchGesture.pinched = true;
+            this._touchGesture.kind = 'pinch';
+            this._rebaseTouchGesture();
+        }
+    }
+
+    _beginTouchMotion() {
+        this.noteUserInput();
+        this.abortDirectorGlide();
+        this._endIdleDrift();
+        this._momentum = null;
+        this._snapZoom = null;
+        this._zoomAnimation = null;
+        if (this.followTarget) this.stopFollow();
+        this._touchGesture.consumed = true;
+        this._userAdjusted = true;
+        this._clearTouchHold();
+    }
+
+    _rebaseTouchGesture() {
+        const gesture = this._touchGesture;
+        const points = this._touchPointers.values();
+        const first = points.next().value;
+        if (!gesture || !first) return;
+        const second = points.next().value;
+        gesture.lastX = second ? (first.x + second.x) / 2 : first.x;
+        gesture.lastY = second ? (first.y + second.y) / 2 : first.y;
+        gesture.distance = second ? Math.max(1, Math.hypot(first.x - second.x, first.y - second.y)) : 0;
+        gesture.vx = 0;
+        gesture.vy = 0;
+        gesture.lastTime = performance.now();
+        if (second) {
+            gesture.midX = gesture.lastX;
+            gesture.midY = gesture.lastY;
+        }
+    }
+
+    _onPointerMove(event) {
+        const point = this._touchPointers.get(event.pointerId);
+        if (!point) return;
+        event.preventDefault();
+        point.x = event.clientX;
+        point.y = event.clientY;
+        const gesture = this._touchGesture;
+        if (this._touchPointers.size === 1) {
+            if (gesture.kind === 'pending' || gesture.kind === 'hold') {
+                if (Math.hypot(point.x - point.startX, point.y - point.startY) <= 8) return;
+                this._beginTouchMotion();
+                this.onTouchDismiss?.();
+                gesture.kind = 'pan';
+            }
+            this.noteUserInput();
+            const dx = point.x - gesture.lastX;
+            const dy = point.y - gesture.lastY;
+            this.x += dx / this.zoom;
+            this.y += dy / this.zoom;
+            const now = performance.now();
+            const elapsed = now - gesture.lastTime;
+            if (elapsed > 0) {
+                gesture.vx = gesture.vx * 0.6 + dx / elapsed * 0.4;
+                gesture.vy = gesture.vy * 0.6 + dy / elapsed * 0.4;
+                gesture.lastTime = now;
+            }
+            gesture.lastX = point.x;
+            gesture.lastY = point.y;
+        } else {
+            this.noteUserInput();
+            const points = this._touchPointers.values();
+            const first = points.next().value;
+            const second = points.next().value;
+            const midX = (first.x + second.x) / 2;
+            const midY = (first.y + second.y) / 2;
+            const distance = Math.max(1, Math.hypot(first.x - second.x, first.y - second.y));
+            const rect = this.canvas.getBoundingClientRect();
+            const worldX = (gesture.lastX - rect.left) / this.zoom - this.x;
+            const worldY = (gesture.lastY - rect.top) / this.zoom - this.y;
+            const steps = this.zoomSteps;
+            this.zoom = Math.max(steps[0], Math.min(steps[steps.length - 1], this.zoom * distance / gesture.distance));
+            this.x = (midX - rect.left) / this.zoom - worldX;
+            this.y = (midY - rect.top) / this.zoom - worldY;
+            gesture.lastX = gesture.midX = midX;
+            gesture.lastY = gesture.midY = midY;
+            gesture.distance = distance;
+        }
+        this._clampToBounds();
+    }
+
+    _onPointerUp(event) {
+        if (!this._touchPointers.has(event.pointerId)) return;
+        this._clearTouchHold();
+        this._touchPointers.delete(event.pointerId);
+        // Delete before releasing: the ensuing lostpointercapture is normal.
+        if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+        if (this._touchPointers.size) {
+            this._touchGesture.kind = this._touchPointers.size === 1 ? 'pan' : 'pinch';
+            this._rebaseTouchGesture();
+            return;
+        }
+        const gesture = this._touchGesture;
+        this._touchGesture = null;
+        if (gesture.consumed) this._touchClickUntil = performance.now() + 650;
+        if (gesture.pinched) {
+            this._settleTouchZoom(gesture);
+        } else if (gesture.kind === 'pan' && !this._reducedMotion
+            && performance.now() - gesture.lastTime <= 80
+            && Math.hypot(gesture.vx, gesture.vy) >= 0.05) {
+            this._momentum = { vx: gesture.vx / this.zoom, vy: gesture.vy / this.zoom };
+        }
+    }
+
+    _settleTouchZoom(gesture) {
+        const targetZoom = this.zoomSteps.reduce((best, step) => (
+            Math.abs(step - this.zoom) < Math.abs(best - this.zoom) ? step : best
+        ));
+        if (targetZoom === this.zoom) return;
+        const rect = this.canvas.getBoundingClientRect();
+        const mouseX = gesture.midX - rect.left;
+        const mouseY = gesture.midY - rect.top;
+        const worldBeforeX = mouseX / this.zoom - this.x;
+        const worldBeforeY = mouseY / this.zoom - this.y;
+        if (this._reducedMotion) {
+            this.zoom = targetZoom;
+            this.x = mouseX / this.zoom - worldBeforeX;
+            this.y = mouseY / this.zoom - worldBeforeY;
+            this._clampToBounds();
+        } else {
+            this._zoomAnimation = {
+                fromZoom: this.zoom, toZoom: targetZoom, mouseX, mouseY,
+                worldBeforeX, worldBeforeY, elapsed: 0, duration: WHEEL_STEP_MS,
+            };
+        }
+    }
+
+    _onPointerCancel(event) {
+        if (this._touchPointers.has(event.pointerId)) this._cancelTouchGesture();
+    }
+
+    _onLostPointerCapture(event) {
+        if (this._touchPointers.has(event.pointerId)) this._cancelTouchGesture();
+    }
+
+    _cancelTouchGesture() {
+        this._clearTouchHold();
+        this.onTouchDismiss?.();
+        const gesture = this._touchGesture;
+        const ids = Array.from(this._touchPointers.keys());
+        this._touchPointers.clear();
+        this._touchGesture = null;
+        if (gesture) {
+            this._touchClickUntil = performance.now() + 650;
+            if (gesture.pinched) this._settleTouchZoom(gesture);
+        }
+        for (const id of ids) {
+            if (this.canvas.hasPointerCapture(id)) this.canvas.releasePointerCapture(id);
+        }
     }
 
     _onMouseDown(e) {

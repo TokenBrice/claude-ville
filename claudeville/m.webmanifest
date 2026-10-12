@@ -1,0 +1,15 @@
+{
+  "id": "/m/",
+  "name": "ClaudeVille Mobile — Agent Visualization",
+  "short_name": "ClaudeVille",
+  "description": "Watch your AI coding CLI sessions as a living village, on a phone.",
+  "start_url": "/m/",
+  "scope": "/m/",
+  "display": "standalone",
+  "background_color": "#1b120d",
+  "theme_color": "#1b120d",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

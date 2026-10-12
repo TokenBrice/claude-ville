@@ -2,7 +2,7 @@
 
 This directory contains UI components used by both World and Dashboard mode. Components communicate through the global `eventBus` and should avoid importing renderer-specific modules.
 
-Desktop-only constraint: shared UI only needs to support browser widths of 1280px or wider. Keep validation and layout decisions scoped to desktop; do not add mobile breakpoints or responsive shrinking here.
+Desktop-first constraint: shared UI at `/` only needs to support browser widths of 1280px or wider; do not add breakpoints or responsive shrinking to the shared stylesheets. The mobile profile (`/m/`, `:root[data-cv-profile="mobile"]`) adapts this same chrome from `claudeville/css/mobile.css` only, and any mobile-specific JS checks `document.documentElement.dataset.cvProfile === 'mobile'`.
 
 ## File Map
 

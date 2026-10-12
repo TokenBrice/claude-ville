@@ -123,7 +123,7 @@ The runtime needs no install: `npm run dev` uses only Node built-ins and static 
 ## Requirements
 
 - Node.js 22.7 or newer. The browser modules are `.js` ES modules, and Node detects that syntax unflagged only from 22.7, so the checks and tests need it. CI runs Node 22 and 24.
-- A desktop browser at 1280px wide or larger. Mobile and narrow viewports are out of scope.
+- A desktop browser at 1280px wide or larger for `/`. On a phone (for example with the server running on the device), open `/m/`: the same app with a touch layout, touch camera gestures (drag to pan, pinch to zoom, tap to select, long-press for details) and the Canvas world by default; it installs as its own home-screen app.
 - At least one provider store from [Supported Providers](#supported-providers). Kimi reads legacy sessions from `~/.kimi/sessions/` and Kimi Code sessions from `~/.kimi-code/sessions/`. OpenCode needs Node's `node:sqlite` or the `sqlite3` CLI for read-only database access.
 
 Empty provider lists are normal on machines where no supported CLI has local session files yet.

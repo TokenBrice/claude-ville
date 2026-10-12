@@ -173,11 +173,16 @@ export class Sidebar {
         this._emptyLegendEl = null;
         this._emptyNoMatchEl = null;
         this._renderWhileHidden = false;
-        this.isCollapsed = safeStorageGet(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
+        // The /m/ profile turns the sidebar into an overlay drawer: it boots
+        // closed whatever the desktop fold says, and never writes that fold back.
+        this._mobileDrawer = document.documentElement?.dataset?.cvProfile === 'mobile';
+        this.isCollapsed = this._mobileDrawer || safeStorageGet(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
         this.selection = new AgentSelectionMirror({
             onChange: (nextId, previousId) => {
                 this._syncSelection(previousId, nextId);
                 this._scheduleSelectedDetailIndex(nextId);
+                // A pick hands the screen back to the world and the agent's sheet.
+                if (nextId) this._closeMobileDrawer();
             },
         });
 
@@ -352,7 +357,7 @@ export class Sidebar {
         if (this._destroyed || !this.filterEl) return false;
         if (this.isCollapsed) {
             this.isCollapsed = false;
-            safeStorageSet(SIDEBAR_COLLAPSED_STORAGE_KEY, 'false');
+            this._persistCollapsed();
             this._applyCollapsedState();
             this.render();
             this.renderHarbor();
@@ -432,7 +437,7 @@ export class Sidebar {
         if (!this.toggleEl) return;
         this._onToggleClick = () => {
             this.isCollapsed = !this.isCollapsed;
-            safeStorageSet(SIDEBAR_COLLAPSED_STORAGE_KEY, String(this.isCollapsed));
+            this._persistCollapsed();
             this._applyCollapsedState();
             if (!this.isCollapsed && this._renderWhileHidden) {
                 this.render();
@@ -440,6 +445,24 @@ export class Sidebar {
             }
         };
         this.toggleEl.addEventListener('click', this._onToggleClick);
+        if (this._mobileDrawer && this.sidebarEl) {
+            // The drawer's scrim is the aside's own ::after (mobile.css), so a
+            // press on it targets the aside itself, never one of its children.
+            this._onDrawerScrimClick = (event) => {
+                if (event.target === this.sidebarEl) this._closeMobileDrawer();
+            };
+            this.sidebarEl.addEventListener('click', this._onDrawerScrimClick);
+        }
+    }
+
+    _persistCollapsed() {
+        if (!this._mobileDrawer) safeStorageSet(SIDEBAR_COLLAPSED_STORAGE_KEY, String(this.isCollapsed));
+    }
+
+    _closeMobileDrawer() {
+        if (!this._mobileDrawer || this.isCollapsed) return;
+        this.isCollapsed = true;
+        this._applyCollapsedState();
     }
 
     _bindListClick() {
@@ -551,6 +574,9 @@ export class Sidebar {
     _applyCollapsedState() {
         if (!this.sidebarEl) return;
         this.sidebarEl.classList.toggle('sidebar--collapsed', this.isCollapsed);
+        // mobile.css keys the drawer on this, not on the class: until Sidebar
+        // sets it, the drawer stays shut, so boot never flashes it open.
+        if (this._mobileDrawer) this.sidebarEl.dataset.cvDrawer = this.isCollapsed ? 'closed' : 'open';
 
         if (this.toggleEl) {
             const label = this.isCollapsed ? 'Expand agent sidebar' : 'Collapse agent sidebar';
@@ -1405,6 +1431,7 @@ export class Sidebar {
         }
         this.selection?.destroy?.();
         if (this._onToggleClick) this.toggleEl?.removeEventListener('click', this._onToggleClick);
+        if (this._onDrawerScrimClick) this.sidebarEl?.removeEventListener('click', this._onDrawerScrimClick);
         if (this._onListClick) this.listEl?.removeEventListener('click', this._onListClick);
         if (this._onListKeydown) this.listEl?.removeEventListener('keydown', this._onListKeydown);
         if (this._onFilterInput) this.filterEl?.removeEventListener('input', this._onFilterInput);

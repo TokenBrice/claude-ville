@@ -47,6 +47,13 @@ body {
     cursor: grabbing;
 }
 
+/* Only the canvas stack owns direct manipulation; dock and panel controls
+   retain native scrolling, focus and activation outside this surface. */
+#worldStack {
+    touch-action: none;
+    overscroll-behavior: none;
+}
+
 .content__dashboard {
     flex: 1;
     min-height: 0;

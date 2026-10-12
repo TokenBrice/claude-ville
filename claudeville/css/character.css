@@ -127,6 +127,21 @@
     z-index: 2;
 }
 
+/* A held finger has no native title bubble. Keep its readout inside the
+   canvas stack, above the marks but below the surrounding chrome. */
+.world-touch-tip {
+    position: absolute;
+    z-index: 3;
+    max-width: min(320px, calc(100% - 16px));
+    box-sizing: border-box;
+    padding: 6px 8px;
+    color: var(--ink-1);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+}
+
 /* 7.2 system: flat --bg-1 plate, 1px --line-2 bevel and 1px black seam, the
    parchment ink ramp, gold only for light, C5 type (PS2P 8/16, DM 11). */
 .world-empty {

@@ -2,7 +2,7 @@
 
 - Work from the repository root (the directory containing this file).
 - ClaudeVille is a local, zero-build Node/vanilla-JS dashboard for watching AI coding CLI sessions as a browser village. Do not add a bundler, transpiler, TypeScript, framework, or runtime dependency.
-- Desktop only: assume viewports at least 1280px wide; do not add mobile breakpoints or responsive shrinking.
+- Desktop first: `/` assumes viewports at least 1280px wide; do not add breakpoints or responsive shrinking there. The one exception is the mobile profile at `/m/` (same shell, `data-cv-profile="mobile"`): its layout lives only in `claudeville/css/mobile.css` under `:root[data-cv-profile="mobile"]`, and any mobile JS is gated on that profile. Touch/pen input is generic and must leave mouse behavior unchanged.
 - This is a shared checkout. Start with `git status --short`, preserve unrelated edits, and touch only task-owned files. Prefer `rg` and `rg --files` for discovery.
 - Use English for new or edited UI copy, docs, comments, and agent-facing text.
 
