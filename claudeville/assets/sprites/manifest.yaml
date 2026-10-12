@@ -2991,41 +2991,6 @@ props:
     anchor: [27, 28]
     provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 6fee7f36-e36b-4ee7-a903-e8679dc589cf, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
 
-  # ── CHRONICLE MONUMENTS (plan 6.1) ─────────────────────────────────────────
-  # Release-history monuments drawn by ChronicleMonuments (vector fallback when
-  # a sprite is missing). Ids intentionally use the `monument.*` namespace; the
-  # generic path mapper has no monument prefix, so each entry pins `assetPath`.
-  # Baked on the building style contract (cool grey stone ramp, gold trim,
-  # painterly 3-4 tone steps, warm key from upper-left). The major obelisk's
-  # gem socket is left dark — the renderer composites the kind-colored glow.
-  - id: monument.minor
-    tool: map_object
-    prompt: "small fantasy cairn of three stacked weathered fieldstones, cool grey stone with warm highlights and a moss touch, tiny gold rune pebble on top, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
-    size: 48
-    anchor: [24, 42]
-    assetPath: assets/sprites/props/monument.minor.png
-
-  - id: monument.medium
-    tool: map_object
-    prompt: "fantasy standing stone marker, single upright cool grey granite stele with a chiseled gold rune near the top, weathered edges, small moss at the foot, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
-    size: 48
-    anchor: [24, 44]
-    assetPath: assets/sprites/props/monument.medium.png
-
-  - id: monument.major
-    tool: map_object
-    prompt: "tall fantasy rune obelisk monument, tapered cool grey stone pillar with gold trim bands, one dark unlit gem socket inset near the top, carved base steps, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no glow, no baked shadow, empty transparent corners"
-    size: 64
-    anchor: [32, 58]
-    assetPath: assets/sprites/props/monument.major.png
-
-  - id: monument.founding
-    tool: map_object
-    prompt: "founding monument of three weathered granite standing stones side by side, plain rectangular slabs with rounded tops and staggered heights, the middle one tallest, cool grey stone with faint gold chisel marks, small moss at the feet, thin tile, transparent background only, isolated sprite, no swords, no blades, no crosses, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
-    size: 64
-    anchor: [32, 58]
-    assetPath: assets/sprites/props/monument.founding.png
-
   # ── REPO STANDING STONES (Living Isle W7.7 / W8.1) ─────────────────────────
   # One stone per repo with >= 1 lifetime commit, on the land behind its
   # Harbor quay pennant (ChronicleMonuments + townPlan REPO_STONE_ANCHORS),

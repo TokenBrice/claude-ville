@@ -1,4 +1,4 @@
-import { MonumentPlanter, MonumentRules, compareMonumentStanding } from '../../application/MonumentRules.js';
+import { MonumentPlanter, MonumentRules } from '../../application/MonumentRules.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { RepoStones } from './RepoStones.js';
 import { collectCommitEvents } from './ChronicleEvents.js';
@@ -23,28 +23,10 @@ import {
     resolveMomentAnchor,
     successGrammarDeferred,
 } from './EffectStamps.js';
-import { repoProfile } from '../shared/RepoColor.js';
 import { scheduleAccent } from '../shared/audio/CueScore.js';
-import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { LABEL_INK, measureLabelText, snapScreenOrigin } from './WorldLabelKit.js';
-import { fillPixelEllipse } from './PixelShapes.js';
 import { materialClassId } from './MaterialRegistry.js';
-
-// 4.7 — the selected monument's stone ledger: the last three real records of
-// its district, the exact count of the rest, and the period those records
-// actually cover. Month-retained records are never called all-time history.
-const LEDGER_ROWS = 3;
-const LEDGER_MONTHS = Object.freeze([
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-]);
-
-function ledgerDate(value) {
-    const at = Number(value);
-    if (!Number.isFinite(at) || at <= 0) return 'date unknown';
-    const date = new Date(at);
-    return `${date.getDate()} ${LEDGER_MONTHS[date.getMonth()] || '?'}`;
-}
 
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 const KIND_COLORS = {
@@ -59,49 +41,10 @@ const KIND_COLORS = {
     merge: '#e8dcb8',
 };
 
-// 6.1 — sprite ids for the PixelLab monument set. When the asset is missing
-// (not yet generated or failed to load) the vector draws below stay as the
-// fallback. `founding-layer` maps to the founding sprite.
-const MONUMENT_SPRITE_IDS = Object.freeze({
-    minor: 'monument.minor',
-    medium: 'monument.medium',
-    major: 'monument.major',
-    founding: 'monument.founding',
-});
-// Gem-glow anchor on the sprite, as a fraction of its box (from bottom-center).
-const MONUMENT_SPRITE_GEM = Object.freeze({
-    minor: { fx: 0.5, fy: 0.5, r: 6 },
-    medium: { fx: 0.5, fy: 0.45, r: 7 },
-    major: { fx: 0.5, fy: 0.42, r: 8 },
-    founding: { fx: 0.5, fy: 0.5, r: 7 },
-});
-const MONUMENT_WEIGHTS = new Set(['minor', 'medium', 'major']);
-// Baked-face boxes relative to the ground point, in world texels (right and
-// bottom exclusive): the contact shadow (fillPixelEllipse 0, 11, 13 x 5) and
-// the vector fallback's tallest shape (the obelisk tip at -34) with its gem.
-const MONUMENT_SHADOW_BOX = Object.freeze({ left: -13, right: 14, bottom: 17 });
-const MONUMENT_VECTOR_BOX = Object.freeze({ left: -16, top: -40, right: 17, bottom: 18 });
 // Every Chronicle stone grades and takes light as masonry on the resident path.
 const STONE_MATERIAL = materialClassId('stone');
 // A reused record per stone; past this many ids the map starts over.
 const MAX_GPU_RECORDS = 128;
-
-/** A monument fades from 1 to 0.55 over its 30 days. */
-function monumentAlpha(record, now) {
-    const age = Math.max(0, now - Number(record.plantedAt || record.ts || now));
-    return Math.max(0.55, 1 - age / MONTH_MS * 0.45);
-}
-
-// 6.5 — quiet mote presence over major monuments: one slow trickle shared by
-// all majors (update cadence is ~1s; the modulo staggers them deterministically).
-const MONUMENT_MOTE_INTERVAL_MS = 900;
-
-function hashText(value) {
-    const text = String(value || '');
-    let hash = 0;
-    for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
-    return Math.abs(hash);
-}
 
 // 6.4 / 8.2 — the release crown: one Major moment over the release's own
 // sloop, only for a planted release record (MonumentRules plants only
@@ -184,22 +127,6 @@ function reducedMotionPreferred() {
     }
 }
 
-function kindIcon(kind) {
-    switch (kind) {
-        case 'release': return '*';
-        case 'feature': return '+';
-        case 'fix': return '~';
-        case 'performance': return '!';
-        case 'verified': return '#';
-        case 'docs': return '"';
-        case 'test': return '^';
-        case 'upkeep': return '.';
-        case 'merge': return '>';
-        case 'founding-layer': return '=';
-        default: return '-';
-    }
-}
-
 export class ChronicleMonuments {
     constructor({
         store = null,
@@ -208,28 +135,17 @@ export class ChronicleMonuments {
         chronicleStore = null,
         auroraGate = null,
         assets = null,
-        particles = null,
         harbor = null,
     } = {}) {
         this.store = store;
         this.rules = rules;
         this.eventBus = eventTarget;
         this.records = new Map();
-        this._visibleRecords = null;
-        this._districtLedgers = new Map();
-        this._projectionRecordCount = -1;
-        this._projectionAt = -Infinity;
-        this._nextRecordExpiry = Infinity;
         this.planter = new MonumentPlanter({ store, rules, eventTarget });
         this._loaded = false;
         this._pendingHydrate = null;
-        // 6.1 — optional AssetManager: when injected and the monument.* sprites
-        // exist, monuments draw from PixelLab art with the vector path as the
-        // asset-missing fallback. 6.5 — optional ParticleSystem for the quiet
-        // major-monument mote trickle. Both are wired by the renderer.
+        // Optional AssetManager for the repo stones, wired by the renderer.
         this.assets = assets;
-        this.particles = particles;
-        this._lastMonumentMoteAt = 0;
         // 8.2 — the HarborTraffic whose release sloop the crown rides (wired by
         // the renderer); without it no crown is staged.
         this.harbor = harbor;
@@ -254,16 +170,13 @@ export class ChronicleMonuments {
         this._christenedRepos = new Set();
         this._onRepoChristened = (event) => this._christenRepo(event);
         this._unsubscribeRepoChristened = this.eventBus?.on?.('harbor:repo-christened', this._onRepoChristened) || null;
-        // 4.7 — the one stone whose ledger is open, or null.
-        this._selectedMonumentId = null;
         this._disposed = false;
         this._lifecycleGeneration = 0;
         // W7.7 — repo standing stones on the Harbor quay slots.
         this.repoStones = new RepoStones({ assets });
-        // Static Chronicle faces on the resident GPU path: the drawables carry
+        // Repo stones on the resident GPU path: the drawables carry
         // `buildGpuRecord` (the DrawablePass seam), answered from the same
         // baked images the Canvas draw blits; one reused record per stone.
-        this._monumentImages = new Map();
         this._gpuRecords = new Map();
         this._buildGpuRecord = (context, drawable) => this._gpuRecordFor(drawable, context);
     }
@@ -276,7 +189,6 @@ export class ChronicleMonuments {
             .then((records) => {
                 if (this._disposed || generation !== this._lifecycleGeneration) return;
                 for (const record of records || []) this.records.set(record.id, record);
-                this._visibleRecords = null;
                 this._loaded = true;
             })
             .catch(() => {
@@ -314,56 +226,13 @@ export class ChronicleMonuments {
             this.planter.seen = new Set([...this.planter.seen].slice(-MAX_PLANTER_SEEN));
         }
         for (const record of planted) this.records.set(record.id, record);
-        if (planted.length) this._visibleRecords = null;
         await this._processCommitMilestones(gitEvents, now, generation);
         if (this._disposed || generation !== this._lifecycleGeneration) return [];
         await this.repoStones?.refresh(this.harbor, this.chronicleStore, now);
         if (this._disposed || generation !== this._lifecycleGeneration) return [];
         this._dropExpired(now);
         this._dropExpiredOverlays(now);
-        this._emitMajorMonumentMotes(now);
         return planted;
-    }
-
-    // 6.5 — quiet mote presence over major monuments: a slow single mote per
-    // major, staggered by record hash so several majors never pulse in
-    // lockstep, tinted to the monument kind. Silent when no ParticleSystem is
-    // wired; reduced motion no-ops inside ParticleSystem.spawn itself.
-    _emitMajorMonumentMotes(now) {
-        if (!this.particles) return;
-        if (now - this._lastMonumentMoteAt < MONUMENT_MOTE_INTERVAL_MS) return;
-        this._lastMonumentMoteAt = now;
-        const tick = Math.floor(now / MONUMENT_MOTE_INTERVAL_MS);
-        for (const record of this.records.values()) {
-            if (now - Number(record.plantedAt || record.ts || 0) > MONTH_MS) continue;
-            if ((record.weight || 'medium') !== 'major') continue;
-            const seed = hashText(record.id || record.project || 'monument');
-            if ((tick + seed) % 3 !== 0) continue;
-            const world = toWorld(record.tileX, record.tileY);
-            this.particles.spawn('archiveMote', world.x, world.y - 26, {
-                count: 1,
-                colors: [KIND_COLORS[record.kind] || '#d8b96d'],
-                size: [1, 2],
-                life: [40, 80],
-                speed: [0.06, 0.2],
-                alpha: [0.3, 0.55],
-                spread: [8, 12],
-                // 0.6 — just in front of the monument (drawable sortY y + 18).
-                sortY: world.y + 19,
-            });
-        }
-    }
-
-    // 6.1 — sprite id for a monument record, or null when the record should
-    // keep the vector draw (unknown weights fall back to medium).
-    _monumentSpriteId(record) {
-        if (record.kind === 'founding-layer') return MONUMENT_SPRITE_IDS.founding;
-        const weight = record.weight || 'medium';
-        return MONUMENT_SPRITE_IDS[weight] || MONUMENT_SPRITE_IDS.medium;
-    }
-
-    _monumentSpriteAvailable(spriteId) {
-        return Boolean(spriteId && this.assets?.has?.(spriteId) && this.assets.get(spriteId));
     }
 
     getDiagnostics() {
@@ -392,8 +261,6 @@ export class ChronicleMonuments {
         this._unsubscribeRepoChristened = null;
         this._onRepoChristened = null;
         this.records.clear();
-        this._visibleRecords = null;
-        this._districtLedgers.clear();
         this._seenCommitIds.clear();
         this.planter?.seen?.clear?.();
         this.planter?.dressing?.reveal?.();
@@ -407,77 +274,13 @@ export class ChronicleMonuments {
         this.chronicleStore = null;
         this.auroraGate = null;
         this.assets = null;
-        this.particles = null;
         this.repoStones?.dispose();
     }
 
-    _refreshProjection(now) {
-        if (this._visibleRecords
-            && this._projectionRecordCount === this.records.size
-            && now >= this._projectionAt
-            && now <= this._nextRecordExpiry) return;
-        const byDistrict = new Map();
-        let nextExpiry = Infinity;
-        for (const record of this.records.values()) {
-            const plantedAt = Number(record.plantedAt || record.ts || 0);
-            if (now - plantedAt > MONTH_MS) continue;
-            const expiresAt = plantedAt + MONTH_MS;
-            if (expiresAt < nextExpiry) nextExpiry = expiresAt;
-            const group = byDistrict.get(record.district) || [];
-            group.push(record);
-            byDistrict.set(record.district, group);
-        }
-        const visible = [];
-        this._districtLedgers.clear();
-        for (const [district, records] of byDistrict) {
-            // Keep the existing stable timestamp ordering and oldest founding
-            // record; only derive them when history or its retention changes.
-            const capped = MonumentRules.applyDistrictCap(records);
-            visible.push(...capped.visible);
-            if (capped.foundingLayer) visible.push(this._foundingLayerRecord(district, records));
-            // W7.9 — upkeep sorts below every other kind, then newest first.
-            const ledgerRows = records
-                .filter(record => now - Number(record.plantedAt || record.ts || 0) <= MONTH_MS)
-                .sort(compareMonumentStanding);
-            this._districtLedgers.set(district, {
-                rows: ledgerRows.slice(0, LEDGER_ROWS),
-                total: ledgerRows.length,
-                overflow: Math.max(0, ledgerRows.length - LEDGER_ROWS),
-            });
-        }
-        this._visibleRecords = visible;
-        this._projectionRecordCount = this.records.size;
-        this._projectionAt = now;
-        // Records remain visible at exactly one month; invalidate just after
-        // that boundary, including when enumerate runs before the next update.
-        this._nextRecordExpiry = nextExpiry;
-    }
-
-    enumerateDrawables(now = Date.now(), camera = null) {
-        // The resident records fade monuments at this frame's clock, as the
-        // Canvas draw does with the same `now`.
-        this._drawablesAt = now;
-        this._refreshProjection(now);
-        const bounds = camera?.getViewportTileBounds?.(2);
-
-        const drawables = this._visibleRecords
-            .filter(record => now - Number(record.plantedAt || record.ts || 0) <= MONTH_MS)
-            .filter(record => !bounds || (
-                record.tileX >= bounds.startX && record.tileX <= bounds.endX &&
-                record.tileY >= bounds.startY && record.tileY <= bounds.endY
-            ))
-            .map(record => {
-                const world = toWorld(record.tileX, record.tileY);
-                return {
-                    kind: 'chronicle-monument',
-                    sortY: world.y + 18,
-                    payload: { ...record, worldX: world.x, worldY: world.y },
-                    buildGpuRecord: this._buildGpuRecord,
-                };
-            });
-
+    enumerateDrawables(_now = Date.now(), camera = null) {
+        const drawables = [];
         // Append overlays (milestone banners) — drawn at a sortY above their
-        // anchor so they paint on top of nearby monuments. The release crown
+        // anchor so they paint on top of nearby stones. The release crown
         // is not a depth drawable: it draws on the upper overlay (drawMoments).
         for (const banner of this._activeBanners) {
             const world = toWorld(banner.tileX, banner.tileY);
@@ -509,36 +312,23 @@ export class ChronicleMonuments {
         }
         if (drawable?.kind === 'chronicle-banner' || record.kind === 'chronicle-banner') {
             this._drawBanner(ctx, record, zoom, now);
-            return;
         }
-        this._drawMonument(ctx, record, zoom, now);
     }
 
-    // The resident twin of `draw` for the static faces (monuments, repo
-    // stones): one V9 record over the very image the Canvas draw
-    // blits, at the same world rect, graded and lit as stone, depth-keyed by
-    // GpuSceneBuilder from the drawable's sortY. Milestone banners animate,
-    // carry no builder and stay on the Canvas path.
+    // The resident twin of `draw` for the repo stones: one V9 record over the
+    // very image the Canvas draw blits, at the same world rect, graded and lit
+    // as stone, depth-keyed by GpuSceneBuilder from the drawable's sortY.
+    // Milestone banners animate, carry no builder and stay on the Canvas path.
     _gpuRecordFor(drawable, context = {}) {
         const record = drawable?.payload;
-        if (!record) return null;
-        const sequence = context?.sequence ?? 0;
-        if (record.kind === 'repo-stone') {
-            if (!this.repoStones) return null;
-            this.repoStones.assets = this.assets;
-            const image = this.repoStones.image(record);
-            return image
-                ? this._stoneRecord(`chronicle:repo:${record.slot}`, image,
-                    Math.round(record.worldX - image.ax), Math.round(record.worldY - image.ay),
-                    record.worldY, 1, sequence)
-                : null;
-        }
-        if (drawable.kind !== 'chronicle-monument') return null;
-        const image = this._monumentImage(record);
-        if (!image) return null;
-        return this._stoneRecord(`chronicle:monument:${record.id}`, image,
-            Math.round(record.worldX) + image.ox, Math.round(record.worldY) + image.oy,
-            record.worldY, monumentAlpha(record, this._drawablesAt ?? Date.now()), sequence);
+        if (record?.kind !== 'repo-stone' || !this.repoStones) return null;
+        this.repoStones.assets = this.assets;
+        const image = this.repoStones.image(record);
+        return image
+            ? this._stoneRecord(`chronicle:repo:${record.slot}`, image,
+                Math.round(record.worldX - image.ax), Math.round(record.worldY - image.ay),
+                record.worldY, 1, context?.sequence ?? 0)
+            : null;
     }
 
     _stoneRecord(id, image, x, y, groundY, alpha, sequence) {
@@ -576,339 +366,6 @@ export class ChronicleMonuments {
         record.depthSortY = null;
         record.sequence = sequence;
         return record;
-    }
-
-    hitTest(worldX, worldY, now = Date.now()) {
-        for (const drawable of this.enumerateDrawables(now)) {
-            if (drawable.kind !== 'chronicle-monument') continue;
-            const record = drawable.payload;
-            // 6.1 — when the sprite path is live the hit box hugs the sprite
-            // bounds (anchored like the draw) instead of the legacy fixed box.
-            const spriteId = this._monumentSpriteId(record);
-            if (this._monumentSpriteAvailable(spriteId)) {
-                const dims = this.assets.getDims(spriteId);
-                const [ax, ay] = this.assets.anchors?.has?.(spriteId)
-                    ? this.assets.getAnchor(spriteId)
-                    : [dims.w / 2, dims.h];
-                if (worldX >= record.worldX - ax && worldX <= record.worldX + (dims.w - ax) &&
-                    worldY >= record.worldY - ay && worldY <= record.worldY + (dims.h - ay)) {
-                    return record;
-                }
-                continue;
-            }
-            if (worldX >= record.worldX - 12 && worldX <= record.worldX + 12 &&
-                worldY >= record.worldY - 28 && worldY <= record.worldY + 12) {
-                return record;
-            }
-        }
-        return null;
-    }
-
-    tooltipFor(record, now = Date.now()) {
-        if (!record) return '';
-        const ageDays = Math.max(0, Math.floor((now - Number(record.plantedAt || record.ts || now)) / 86400000));
-        const ageLabel = ageDays === 0 ? 'today' : `${ageDays}d ago`;
-        const label = record.label || record.kind;
-        const repo = projectName(record.project);
-        const weight = record.weight ? ` [${record.weight}]` : '';
-        // 4.8 — monument records may carry a chronicle lore line.
-        const lore = String(record.lore || '').trim();
-        const loreSuffix = lore ? `\n${lore}` : '';
-        return `${kindIcon(record.kind)} ${record.kind}${weight}\nrepo: ${repo}\n${label}\nplanted ${ageLabel}${loreSuffix}`;
-    }
-
-    minimapMarkers() {
-        return this.enumerateDrawables()
-            .filter(drawable => drawable.kind === 'chronicle-monument')
-            .map(drawable => drawable.payload)
-            .map(record => ({
-                tileX: record.tileX,
-                tileY: record.tileY,
-                kind: record.kind,
-                color: KIND_COLORS[record.kind] || '#d8b96d',
-            }));
-    }
-
-    _foundingLayerRecord(district, records) {
-        const oldest = [...records].sort((a, b) => Number(a.plantedAt || a.ts || 0) - Number(b.plantedAt || b.ts || 0))[0];
-        return {
-            ...oldest,
-            id: `founding:${district}`,
-            kind: 'founding-layer',
-            label: 'Founding layer',
-            district,
-            plantedAt: oldest?.plantedAt || oldest?.ts || Date.now(),
-        };
-    }
-
-    _drawMonument(ctx, record, zoom, now) {
-        const world = record.worldX == null ? toWorld(record.tileX, record.tileY) : record;
-        // 4.7 — only the selected stone opens its ledger; everything else keeps
-        // its silence.
-        const selected = this._selectedMonumentId && record.id === this._selectedMonumentId;
-        const image = this._monumentImage(record);
-        if (image) {
-            ctx.save();
-            ctx.globalAlpha = monumentAlpha(record, now);
-            ctx.drawImage(image.canvas,
-                Math.round(world.worldX ?? world.x) + image.ox,
-                Math.round(world.worldY ?? world.y) + image.oy);
-            ctx.restore();
-        }
-        if (selected) this._drawMonumentLedger(ctx, record, world, now, zoom);
-    }
-
-    // 4.7 — the low stone ledger. Rows are real retained records of this
-    // stone's district, newest first, each stating its kind, its classified
-    // label, its planted date and its repository crest. The rest is an exact
-    // count, and the covered period is stated rather than implied.
-    setSelectedMonument(id) {
-        this._selectedMonumentId = typeof id === 'string' && id ? id : null;
-    }
-
-    getSelectedMonumentId() {
-        return this._selectedMonumentId;
-    }
-
-    ledgerFor(record, now = Date.now()) {
-        if (!record) return null;
-        this._refreshProjection(now);
-        const district = record.district;
-        const ledger = this._districtLedgers.get(district);
-        return {
-            district,
-            rows: ledger ? ledger.rows.slice() : [],
-            overflow: ledger?.overflow || 0,
-            total: ledger?.total || 0,
-        };
-    }
-
-    // Screen-fixed 11 px Departure Mono on 12-row courses (5.4): the tablet is
-    // anchored beside the stone in world space but never scales with it.
-    _drawMonumentLedger(ctx, record, world, now, zoom = 1) {
-        const ledger = this.ledgerFor(record, now);
-        if (!ledger?.rows.length) return;
-        const z = zoom > 0 ? zoom : 1;
-        const rowH = 12;
-        ctx.save();
-        ctx.translate((world.worldX ?? world.x) + 8, (world.worldY ?? world.y) - 2);
-        ctx.scale(1 / z, 1 / z);
-        snapScreenOrigin(ctx);
-        ctx.font = WORLD_BODY_FONT_11;
-        ctx.textBaseline = 'alphabetic';
-        ctx.textAlign = 'left';
-        const lines = ledger.rows.map((entry) => ({
-            text: `${entry.kind} · ${String(entry.label || '').slice(0, 22)} · ${ledgerDate(entry.plantedAt || entry.ts)}`,
-            crest: repoProfile(entry.project).accent || '#d8b96d',
-        }));
-        const header = `${ledger.district} · last 30 days`;
-        const overflowText = ledger.overflow > 0 ? `+${ledger.overflow} recorded` : '';
-        let width = measureLabelText(ctx, header);
-        for (const line of lines) width = Math.max(width, measureLabelText(ctx, line.text) + 6);
-        if (overflowText) width = Math.max(width, measureLabelText(ctx, overflowText) + 6);
-        width += 8;
-        const rows = 1 + lines.length + (overflowText ? 1 : 0);
-        const height = rows * rowH + 4;
-        const top = -height;
-        // A low tablet, not a floating card: one stone face with a lit top
-        // course and a dark outline, sitting on the plinth beside the stone.
-        ctx.fillStyle = LABEL_INK.plateOutline;
-        ctx.fillRect(-1, top - 1, width + 2, height + 2);
-        ctx.fillStyle = '#1c1914';
-        ctx.fillRect(0, top, width, height);
-        ctx.fillStyle = '#9b8a6b';
-        ctx.fillRect(0, top, width, 1);
-        ctx.fillStyle = '#d8b96d';
-        ctx.fillText(header, 4, top + 11);
-        lines.forEach((line, index) => {
-            const baseline = top + 11 + (index + 1) * rowH;
-            ctx.fillStyle = line.crest;
-            ctx.fillRect(4, baseline - 7, 3, 5);
-            ctx.fillStyle = '#e8e4d8';
-            ctx.fillText(line.text, 10, baseline);
-        });
-        if (overflowText) {
-            ctx.fillStyle = '#c6beac';
-            ctx.fillText(overflowText, 10, top + 11 + (lines.length + 1) * rowH);
-        }
-        ctx.restore();
-    }
-
-    // 6.1 — one baked face per (shape, kind colour), shared by the Canvas blit
-    // and the resident record (`_gpuRecordFor`): the contact shadow, the
-    // PixelLab sprite (the vector draws while the asset is missing) and the
-    // KIND_COLORS gem glow, two stepped pixel discs screen-composited onto
-    // the art at the calibrated sprite spot. The age fade is applied at the
-    // blit (Canvas globalAlpha, record alpha), so a face never rebakes as it
-    // ages; a sprite arriving after a vector bake takes a new key.
-    _monumentImage(record) {
-        if (typeof document === 'undefined') return null;
-        const weight = record.kind === 'founding-layer'
-            ? 'founding'
-            : (MONUMENT_WEIGHTS.has(record.weight) ? record.weight : 'medium');
-        const color = KIND_COLORS[record.kind] || '#d8b96d';
-        const spriteId = this._monumentSpriteId(record);
-        const img = this._monumentSpriteAvailable(spriteId) ? this.assets.get(spriteId) : null;
-        const dims = img ? this.assets.getDims(spriteId) : null;
-        const key = `monument:${dims ? spriteId : 'vector'}|${weight}|${color}`;
-        let image = this._monumentImages.get(key);
-        if (!image) {
-            image = dims
-                ? this._bakeMonumentSprite(spriteId, img, dims, weight, color)
-                : this._bakeMonumentVector(weight, color);
-            image.key = key;
-            image.revision = 0;
-            this._monumentImages.set(key, image);
-        }
-        return image;
-    }
-
-    _bakeMonumentSprite(spriteId, img, dims, weight, color) {
-        // Honor a registered manifest anchor; default to bottom-center on the
-        // ground point (the engine-wide anchor convention).
-        const [ax, ay] = this.assets.anchors?.has?.(spriteId)
-            ? this.assets.getAnchor(spriteId)
-            : [dims.w / 2, dims.h];
-        const sx = Math.round(-ax);
-        const sy = Math.round(-ay);
-        const ox = Math.min(sx, MONUMENT_SHADOW_BOX.left);
-        const oy = Math.min(sy, 0);
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(sx + dims.w, MONUMENT_SHADOW_BOX.right) - ox;
-        canvas.height = Math.max(sy + dims.h, MONUMENT_SHADOW_BOX.bottom) - oy;
-        const ctx = canvas.getContext('2d');
-        ctx.imageSmoothingEnabled = false;
-        ctx.translate(-ox, -oy);
-        fillPixelEllipse(ctx, 0, 11, 13, 5, 'rgba(26, 22, 18, 0.35)');
-        ctx.drawImage(img, sx, sy);
-        const gem = MONUMENT_SPRITE_GEM[weight] || MONUMENT_SPRITE_GEM.medium;
-        const gx = Math.round(-ax + dims.w * gem.fx);
-        const gy = Math.round(-ay + dims.h * gem.fy);
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.2;
-        fillPixelEllipse(ctx, gx, gy, gem.r, gem.r, color);
-        ctx.globalAlpha = 0.3;
-        fillPixelEllipse(ctx, gx, gy, gem.r * 0.5, gem.r * 0.5, color);
-        return { canvas, ox, oy };
-    }
-
-    // The asset-missing fallback, baked at one world texel per pixel.
-    _bakeMonumentVector(weight, color) {
-        const box = MONUMENT_VECTOR_BOX;
-        const canvas = document.createElement('canvas');
-        canvas.width = box.right - box.left;
-        canvas.height = box.bottom - box.top;
-        const ctx = canvas.getContext('2d');
-        ctx.translate(-box.left, -box.top);
-        ctx.fillStyle = 'rgba(26, 22, 18, 0.35)';
-        ctx.beginPath();
-        ctx.ellipse(0, 11, 13, 5, 0, 0, Math.PI * 2);
-        ctx.fill();
-        if (weight === 'founding') {
-            this._drawFoundingLayer(ctx, 1, 1);
-            return { canvas, ox: box.left, oy: box.top };
-        }
-        if (weight === 'minor') this._drawMinorCairn(ctx, 1, 1);
-        else if (weight === 'major') this._drawMajorObelisk(ctx, 1, 1, color);
-        else this._drawMediumStone(ctx, 1, 1);
-        // Energy inset varies with weight: brighter / taller on major releases.
-        ctx.globalCompositeOperation = 'screen';
-        ctx.fillStyle = color;
-        if (weight === 'major') {
-            ctx.globalAlpha = 0.62;
-            ctx.fillRect(-3, -16, 6, 18);
-        } else if (weight === 'minor') {
-            ctx.globalAlpha = 0.28;
-            ctx.fillRect(-2, -6, 4, 7);
-        } else {
-            ctx.globalAlpha = 0.42;
-            ctx.fillRect(-3, -11, 6, 13);
-        }
-        return { canvas, ox: box.left, oy: box.top };
-    }
-
-    _drawMediumStone(ctx, alpha, zoom) {
-        ctx.fillStyle = '#9b8a6b';
-        ctx.strokeStyle = '#3e3429';
-        ctx.lineWidth = 1 / Math.max(1, zoom);
-        const scale = 0.75;
-        ctx.beginPath();
-        ctx.moveTo(0, -24 * scale);
-        ctx.lineTo(8 * scale, -8 * scale);
-        ctx.lineTo(6 * scale, 8 * scale);
-        ctx.lineTo(-7 * scale, 8 * scale);
-        ctx.lineTo(-8 * scale, -8 * scale);
-        ctx.closePath();
-        ctx.globalAlpha = alpha;
-        ctx.fill();
-        ctx.stroke();
-    }
-
-    _drawMajorObelisk(ctx, alpha, zoom, color) {
-        ctx.fillStyle = '#a89677';
-        ctx.strokeStyle = '#3e3429';
-        ctx.lineWidth = 1 / Math.max(1, zoom);
-        ctx.beginPath();
-        ctx.moveTo(0, -34);
-        ctx.lineTo(9, -10);
-        ctx.lineTo(7, 9);
-        ctx.lineTo(-8, 9);
-        ctx.lineTo(-9, -10);
-        ctx.closePath();
-        ctx.globalAlpha = alpha;
-        ctx.fill();
-        ctx.stroke();
-        // Glowing inset gem centred on the obelisk.
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        ctx.globalAlpha = alpha * 0.85;
-        const gradient = ctx.createRadialGradient(0, -16, 0, 0, -16, 7);
-        gradient.addColorStop(0, color);
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(0, -16, 7, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-    }
-
-    _drawMinorCairn(ctx, alpha, zoom) {
-        ctx.strokeStyle = '#3e3429';
-        ctx.lineWidth = 1 / Math.max(1, zoom);
-        ctx.globalAlpha = alpha;
-        // Three stacked rocks, smallest on top.
-        const rocks = [
-            { x: -4, y: 6, w: 9, h: 5, fill: '#8a7a5e' },
-            { x: 2, y: 4, w: 7, h: 4, fill: '#9b8a6b' },
-            { x: -2, y: -2, w: 5, h: 4, fill: '#a89677' },
-        ];
-        for (const rock of rocks) {
-            ctx.fillStyle = rock.fill;
-            ctx.beginPath();
-            ctx.ellipse(rock.x, rock.y, rock.w, rock.h, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-        }
-    }
-
-    _drawFoundingLayer(ctx, alpha, zoom) {
-        ctx.strokeStyle = '#3e3429';
-        ctx.lineWidth = 1 / Math.max(1, zoom);
-        for (let i = 0; i < 3; i++) {
-            const x = -9 + i * 8;
-            const h = 10 + i * 3;
-            ctx.fillStyle = i === 1 ? '#a49677' : '#82745d';
-            ctx.beginPath();
-            ctx.moveTo(x, -h - 4);
-            ctx.lineTo(x + 5, -h + 2);
-            ctx.lineTo(x + 5, 7);
-            ctx.lineTo(x - 4, 7);
-            ctx.lineTo(x - 5, -h + 2);
-            ctx.closePath();
-            ctx.globalAlpha = alpha * (0.84 + i * 0.05);
-            ctx.fill();
-            ctx.stroke();
-        }
     }
 
     _scheduleReleaseCrown(record, now, actorId = null) {
@@ -1334,7 +791,6 @@ export class ChronicleMonuments {
         for (const [id, record] of this.records) {
             if (now - Number(record.plantedAt || record.ts || 0) > MONTH_MS) {
                 this.records.delete(id);
-                this._visibleRecords = null;
             }
         }
     }

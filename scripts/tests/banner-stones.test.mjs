@@ -175,7 +175,6 @@ test('Chronicle stones reach the resident GPU world as records over their baked 
             project: '/r/a', slot: 2, spriteId: 'prop.repoStone.pillar', tileX: quay.tileX, tileY: quay.tileY,
             worldX: quayWorld.x, worldY: quayWorld.y, accent: '#e0584f',
         }];
-        monuments.records.set('m1', { id: 'm1', district: 'harbor', kind: 'release', weight: 'major', label: 'v1', tileX: 12, tileY: 20, plantedAt: NOW - 15 * 24 * 60 * MIN });
         const renderer = { camera: { zoom: 1 } };
         const frame = () => {
             const target = [];
@@ -186,7 +185,7 @@ test('Chronicle stones reach the resident GPU world as records over their baked 
         };
 
         const first = frame();
-        assert.deepEqual([...first.records.keys()].sort(), ['chronicle:monument:m1', 'chronicle:repo:2']);
+        assert.deepEqual([...first.records.keys()].sort(), ['chronicle:repo:2']);
         const stone = materialClassId('stone');
         for (const record of first.records.values()) {
             assert.ok(fake.made.includes(record.source), `${record.id} draws its baked canvas`);
@@ -201,8 +200,6 @@ test('Chronicle stones reach the resident GPU world as records over their baked 
         assert.equal(repo.y, Math.round(quayWorld.y - 42));
         assert.equal(repo.footY, Math.round(quayWorld.y));
         assert.equal(repo.writesDepth, true);
-        const monument = first.records.get('chronicle:monument:m1');
-        assert.ok(monument.alpha > 0.55 && monument.alpha < 1, 'a 15-day monument carries its age fade');
         for (const record of first.records.values()) assert.equal(record.emissiveSource, null);
 
         // Static faces: a second frame bakes nothing and reuses every record.

@@ -2,6 +2,20 @@
 
 ---
 
+## v0.53.1 — *The Lifted Stones* · Oct 12, 2026
+
+The Chronicle monuments read as tombstones scattered across the districts, so they are gone. The village still keeps its history; it just no longer marks every commit with a stone.
+
+- **No more monuments.** The cairns, rune stones, gold-banded obelisks and three-stone founding markers no longer appear in the world. Their hover tooltip, the click-to-open stone ledger and the motes over major stones are gone too. The four `monument.*` sprites are deleted.
+- **What still answers a commit.** Commits are still recorded, so the release crown over the sloop, the Harbor's gold day pennant, the building decorations earned over time and the milestone banners all work as before.
+- **Repo standing stones stay** on the Harbor quay, but no longer show a tooltip on hover or open on click. They only did because they shared the monuments' hit test.
+- **Leaner trails code.** The ambient-trail cache and direct-draw paths, unused since v0.33.0 hid ambient trail history, are removed along with their helpers. Trails look and behave exactly as before.
+- **The world-state smoke runs again.** `scripts/smoke/world-state-bounds.mjs` had been failing on two stale checks. It now checks monument records are kept and released, that ambient trail history stays hidden, and that a selected agent draws a short newest-first route.
+
+Validation: `gate:release` is clean with 1816 unit tests and both integration tests passing, and the world-state smoke passes. `verify:render` was not run (its Playwright browser is not installed on the release machine); on the live village the world boots with no console errors and no monuments in view.
+
+---
+
 ## v0.53.0 — *The Pocket Hamlet* · Oct 12, 2026
 
 ClaudeVille now runs on a phone. When agents run on the phone itself (for example in a Linux environment on Android), open `http://localhost:4000/m/` in Chrome. It's the same village, with a layout that fits a narrow screen and real touch controls.

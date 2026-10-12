@@ -1,5 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { CANVAS_BUDGET, canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
+import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { dottedCurve } from './EffectStamps.js';
 
@@ -18,10 +18,6 @@ const MAX_RENDER_SAMPLES_TOTAL = 4000;
 const MAX_SELECTED_RENDER_SAMPLES = 24;
 const MAX_ACTION_RENDER_SAMPLES = 12;
 const DIRECT_RENDER_SAMPLE_LIMIT = 512;
-// Historical trails are intentionally half-resolution. They are faint ground
-// context, while selected/action-needed recent paths render directly at full
-// resolution. This keeps the camera-stable cache cheap to composite.
-const WORLD_CACHE_SCALE = 0.5;
 const ACTION_NEEDED_STATUSES = new Set(['waiting_on_user', 'errored', 'rate_limited']);
 const CAMERA_MOTION_MODES = Object.freeze([
     'stationary',
@@ -42,14 +38,6 @@ function sampleId(agentId, ts) {
 
 function pageIsVisible() {
     return typeof document === 'undefined' || document.visibilityState === 'visible';
-}
-
-function viewportMetrics(viewport = {}) {
-    const dpr = viewport.dpr || viewport._claudeVilleDpr || 1;
-    const taggedCssViewport = viewport._claudeVilleDpr && !viewport._claudeVilleCssWidth;
-    const width = viewport._claudeVilleCssWidth || viewport.clientWidth || (taggedCssViewport ? viewport.width : Math.round((viewport.width || 0) / dpr)) || viewport.width || 0;
-    const height = viewport._claudeVilleCssHeight || viewport.clientHeight || (taggedCssViewport ? viewport.height : Math.round((viewport.height || 0) / dpr)) || viewport.height || 0;
-    return { dpr, width, height };
 }
 
 function sampleListToLimit(samples, limit, recentTailLimit = 0) {
@@ -517,123 +505,6 @@ export class TrailRenderer {
         return this._needsRepaint && now - this.lastRepaintAt >= REPAINT_INTERVAL_MS;
     }
 
-    _drawDirect(ctx, camera, viewport, now) {
-        const startedAt = timerNow();
-        const { dpr } = viewportMetrics(viewport);
-        const bounds = camera.getViewportTileBounds?.(3);
-        ctx.save();
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        for (const [agentId, samples] of this.samplesByAgent) {
-            if (samples.length < 2) continue;
-            const visible = !bounds || samples.some(sample => (
-                sample.tileX >= bounds.startX && sample.tileX <= bounds.endX
-                && sample.tileY >= bounds.startY && sample.tileY <= bounds.endY
-            ));
-            if (!visible) continue;
-            const limit = agentId === this.selectedAgentId
-                ? MAX_SELECTED_RENDER_SAMPLES
-                : MAX_RENDER_SAMPLES_PER_AGENT;
-            const renderSamples = samples.length > limit
-                ? sampleListToLimit(samples, limit)
-                : samples;
-            this._drawTrailPoints(
-                ctx,
-                this._trailPoints(renderSamples, camera),
-                now,
-                this._trailImportance(agentId),
-            );
-        }
-        ctx.restore();
-        this._stats.directDrawCount++;
-        this._stats.directDrawTimeMs += Math.max(0, timerNow() - startedAt);
-    }
-
-    _repaintWorldCache(now, motionMode = this._lastCameraMotion) {
-        const repaintStartedAt = timerNow();
-        const trails = [];
-        let minX = Infinity;
-        let minY = Infinity;
-        let maxX = -Infinity;
-        let maxY = -Infinity;
-
-        const cacheTrails = [];
-        for (const [agentId, samples] of this.samplesByAgent) {
-            if (samples.length < 2) continue;
-            cacheTrails.push({ agentId, samples });
-        }
-
-        const ordinaryCount = Math.max(1, cacheTrails.length);
-        const ordinaryLimit = Math.max(
-            2,
-            Math.min(
-                MAX_RENDER_SAMPLES_PER_AGENT,
-                Math.floor(MAX_RENDER_SAMPLES_TOTAL / ordinaryCount),
-            ),
-        );
-        for (const { samples } of cacheTrails) {
-            const renderSamples = samples.length > ordinaryLimit
-                ? sampleListToLimit(samples, ordinaryLimit)
-                : samples;
-            const points = this._worldTrailPoints(renderSamples);
-            if (points.length < 2) continue;
-            trails.push(points);
-            for (const point of points) {
-                minX = Math.min(minX, point.x);
-                minY = Math.min(minY, point.y);
-                maxX = Math.max(maxX, point.x);
-                maxY = Math.max(maxY, point.y);
-            }
-        }
-
-        const pad = 6;
-        const left = Math.floor(minX - pad);
-        const top = Math.floor(minY - pad);
-        const right = Math.ceil(maxX + pad);
-        const bottom = Math.ceil(maxY + pad);
-        if (!trails.length || right <= left || bottom <= top) {
-            releaseCanvasBackingStore(this.cache);
-            this.cache = null;
-            this.cacheBounds = null;
-            this.cacheKey = '';
-            this._needsRepaint = false;
-            this.lastRepaintAt = now;
-            this._recordRepaint(repaintStartedAt, motionMode);
-            return;
-        }
-
-        const cacheWidth = right - left;
-        const cacheHeight = bottom - top;
-        const uncappedPixels = cacheWidth * cacheHeight * WORLD_CACHE_SCALE * WORLD_CACHE_SCALE;
-        const scale = Math.max(
-            0.25,
-            Math.min(WORLD_CACHE_SCALE, Math.sqrt(CANVAS_BUDGET.maxTrailCachePixels / Math.max(1, uncappedPixels))),
-        );
-        if (scale < WORLD_CACHE_SCALE) this._stats.oversizedCacheFallbacks++;
-        const canvas = this.cache || document.createElement('canvas');
-        const backingWidth = Math.max(1, Math.ceil(cacheWidth * scale));
-        const backingHeight = Math.max(1, Math.ceil(cacheHeight * scale));
-        if (canvas.width !== backingWidth) canvas.width = backingWidth;
-        if (canvas.height !== backingHeight) canvas.height = backingHeight;
-        const ctx = canvas.getContext('2d');
-        ctx.imageSmoothingEnabled = false;
-        ctx.setTransform(scale, 0, 0, scale, -left * scale, -top * scale);
-        ctx.clearRect(left, top, cacheWidth, cacheHeight);
-        for (const points of trails) {
-            this._drawTrailPoints(ctx, points, now, 'ambient');
-        }
-
-        this.cache = canvas;
-        this.cacheBounds = { x: left, y: top, width: cacheWidth, height: cacheHeight, scale };
-        this.cacheKey = `world|${this._totalSamples}|${left},${top},${cacheWidth},${cacheHeight}|${scale.toFixed(3)}`;
-        this._stats.highWaterCachePixels = Math.max(
-            this._stats.highWaterCachePixels,
-            canvasPixelCount(canvas),
-        );
-        this._needsRepaint = false;
-        this.lastRepaintAt = now;
-        this._recordRepaint(repaintStartedAt, motionMode);
-    }
-
     _drawSemanticTrailOverlays(ctx, camera, now, preserveTransform = false) {
         let drewAny = false;
         ctx.save();
@@ -659,16 +530,6 @@ export class TrailRenderer {
         if (agentId === this.selectedAgentId) return 'selected';
         const status = String(this.world?.agents?.get?.(agentId)?.status || '').toLowerCase();
         return ACTION_NEEDED_STATUSES.has(status) ? 'action-needed' : 'ambient';
-    }
-
-    _trailPoints(samples, camera) {
-        const points = [];
-        for (const sample of samples) {
-            const world = tileToWorld(sample.tileX, sample.tileY);
-            const p = camera.worldToScreen(world.x, world.y);
-            points.push({ x: p.x, y: p.y, ts: sample.ts, phase: sample.phase });
-        }
-        return points;
     }
 
     _worldTrailPoints(samples) {
@@ -782,15 +643,6 @@ export class TrailRenderer {
 
     _recordCompaction(removed) {
         if (removed > 0) this._stats.compactedSamples += removed;
-    }
-
-    _recordRepaint(startedAt, motionMode = this._lastCameraMotion) {
-        const elapsed = Math.max(0, timerNow() - startedAt);
-        this._stats.repaintCount++;
-        this._stats.repaintTimeMs += elapsed;
-        const bucket = this._stats.cameraMotion[motionMode] || this._stats.cameraMotion.stationary;
-        bucket.repaintCount++;
-        bucket.repaintTimeMs += elapsed;
     }
 
     _recordCameraMotionDraw(motionMode, startedAt) {

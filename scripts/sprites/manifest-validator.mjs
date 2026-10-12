@@ -42,8 +42,7 @@ const CUBE_CHECK_GROUPS = ['props', 'vegetation', 'accessories', 'statusOverlays
 const DIMENSION_CHECK_GROUPS = ['props', 'vegetation', 'accessories', 'statusOverlays', 'bridges'];
 const REFERENCE_CHECK_GROUPS = ['props', 'vegetation', 'bridges', 'atmosphere'];
 // Deliberately unreferenced today (documented keeps); everything else in the
-// reference-checked groups should have a live code path. monument.* is wired
-// into ChronicleMonuments (plan 6.1) and intentionally NOT allowlisted.
+// reference-checked groups should have a live code path.
 const UNREFERENCED_ALLOWLIST = new Set([
     'bridge.ew', // reserved for a future EW plank crossing (manifest comment)
     // 4.1 inspection interior kit: the six props are baked into

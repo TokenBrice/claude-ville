@@ -45,10 +45,6 @@ export const CANVAS_BUDGET = Object.freeze({
     maxScreenCachePixels: MAX_MAIN_CANVAS_PIXELS,
     maxWorldCachePixels: WORLD_CACHE_PIXEL_RESERVE,
     maxLightCachePixels: LIGHT_CACHE_PIXEL_RESERVE,
-    // Persisted trails are cached once in world space. The current 40x40 map
-    // projects to roughly 3.3M pixels, leaving margin without allowing a future
-    // map expansion to create an unbounded backing store.
-    maxTrailCachePixels: 4_000_000,
     maxGpuResourceBytes: MAX_GPU_RESOURCE_BYTES,
     // One accounting ceiling for Canvas backing stores plus GPU-owned textures,
     // attachments, and buffers. This is diagnostic policy, not an allocator.

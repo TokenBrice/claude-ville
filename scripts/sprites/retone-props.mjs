@@ -19,17 +19,12 @@
 //     prop.marketStall.ochre    A clothOchre,   B clothCrimson (swap)
 //     prop.marketStall.canvas   A clothCrimson, B undyed canvas (ashlar's
 //                               three lit stops)
-// monument.minor/medium/major/founding: the cool violet-grey stone snaps to
-//   `ashlar` (the landmarks' coursed masonry) and the gold accents to
-//   `trimGold`, lightness kept; moss, grass and soil are untouched.
-//   MonumentRules tiers are not touched.
 //
 // Idempotent: the stall colourways are always derived from the original
-// stall bytes (sha256-pinned); a monument whose hash differs from its
-// original is skipped unless --force is given.
+// stall bytes (sha256-pinned).
 //
 // Usage:
-//   node scripts/sprites/retone-props.mjs [--dry-run] [--force] [--preview=<dir>]
+//   node scripts/sprites/retone-props.mjs [--dry-run] [--preview=<dir>]
 
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -40,7 +35,6 @@ import { repoRoot } from './manifest-utils.mjs';
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
-const force = args.includes('--force');
 const previewArg = args.find((arg) => arg.startsWith('--preview='));
 const previewDir = previewArg ? previewArg.slice('--preview='.length) : null;
 
@@ -50,12 +44,6 @@ const STALL_COLOURWAYS = [
     { file: 'prop.marketStall.png', a: ART_RAMPS.clothCrimson, b: ART_RAMPS.clothOchre },
     { file: 'prop.marketStall.ochre.png', a: ART_RAMPS.clothOchre, b: ART_RAMPS.clothCrimson },
     { file: 'prop.marketStall.canvas.png', a: ART_RAMPS.clothCrimson, b: ART_RAMPS.ashlar.slice(6) },
-];
-const MONUMENTS = [
-    { file: 'monument.minor.png', sha256: '0c131d2bd0c248cb7971be2ea5dcc17b1cec5de0be1418378b54618692e7d1dd' },
-    { file: 'monument.medium.png', sha256: 'c2afed8e05aa76e84d37d7a965c6e8bfae1c84495ef607da960e1c1cc7522106' },
-    { file: 'monument.major.png', sha256: '7fcfb4967b0e97b0a6a391d695196095fce7b17790207551b9b587a4e5d13b80' },
-    { file: 'monument.founding.png', sha256: '613415360d825aedd466f64bed3ee830c3454d1df02760777f675b351dcf2c9d' },
 ];
 const STALL_MAX_COLOURS = 40;
 const CLOTH_WIDEN = 0.08;
@@ -79,29 +67,6 @@ const STALL_AWNING = [[30, 5], [62, 20], [60, 26], [33, 38], [5, 19]];
             emit(way.file, png, `stripe A ${counts.a} px, stripe B ${counts.b} px, frame ${counts.frame} px; ${colours} colours`);
         }
     }
-}
-
-// ── monuments ───────────────────────────────────────────────────────────────
-for (const target of MONUMENTS) {
-    const bytes = readFileSync(join(PROPS, target.file));
-    const sha = sha256(bytes);
-    if (sha !== target.sha256 && !force) {
-        console.log(`[retone-props] skip ${target.file} (hash ${sha.slice(0, 12)} is not the original; --force to reprocess)`);
-        continue;
-    }
-    const png = PNG.sync.read(bytes);
-    let stone = 0;
-    let gold = 0;
-    forEachTexel(png, (p, rgb) => {
-        const c = hsv(rgb);
-        const isGold = c.h >= 30 && c.h <= 65 && c.s >= 0.35 && c.v >= 0.45;
-        const isStone = !isGold && (c.s < 0.32 || (c.h >= 190 && c.h <= 300));
-        if (!isGold && !isStone) return;
-        const out = snapKeepLightness(rgb, isGold ? ART_RAMPS.trimGold : ART_RAMPS.ashlar);
-        png.data.set(out, p);
-        if (isGold) gold++; else stone++;
-    });
-    emit(target.file, png, `stone ${stone} px -> ashlar, gold ${gold} px -> trimGold`);
 }
 
 // ── recolour ────────────────────────────────────────────────────────────────

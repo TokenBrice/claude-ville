@@ -625,16 +625,10 @@ export class IsometricRenderer {
         this.motionScale = this.motionQuery?.matches ? 0 : 1;
         this.ritualConductor = new RitualConductor({ motionScale: this.motionScale });
         this.arrivalDeparture = new ArrivalDepartureController({ motionScale: this.motionScale });
-        // ChronicleMonuments takes `assets` and `particles` as optional
-        // injections and silently falls back to a vector path without them.
-        // They were never passed, so every monument in the village drew as
-        // antialiased ellipses while the four authored PixelLab sprites sat
-        // unused — smooth curves in a world that is hard pixel steps everywhere
-        // else. Wire both.
+        // The repo stones draw from `assets`.
         this.chronicleMonuments = new ChronicleMonuments({
             store: this.chronicleStore,
             assets: this.assets,
-            particles: this.particleSystem,
             // 8.2 — the release crown rides the release's own sloop.
             harbor: this.harborTraffic,
         });
@@ -4280,20 +4274,8 @@ export class IsometricRenderer {
                 if (this.onAgentSelect) this.onAgentSelect(instrumentAgent);
                 return;
             }
-            // 4.7 — selecting a district monument opens its stone ledger. It is
-            // an inspection of the record, not a session selection.
-            const monument = this.chronicleMonuments?.hitTest?.(worldX, worldY, Date.now()) ?? null;
-            if (monument) {
-                this.chronicleMonuments.setSelectedMonument?.(monument.id);
-                for (const sprite of this.agentSprites.values()) sprite.selected = false;
-                this.selectedAgent = null;
-                if (this.onAgentSelect) this.onAgentSelect(null);
-                eventBus.emit(BUILDING_EVENTS.DESELECTED);
-                return;
-            }
-            this.chronicleMonuments?.setSelectedMonument?.(null);
         }
-        // Exact instruments, monuments and buildings keep their precedence.
+        // Exact instruments and buildings keep their precedence.
         // Only a miss gains the finger-sized margin around a selectable body.
         if (!clicked && touch && !this.buildingRenderer?.hitTest(worldX, worldY)) {
             const radius = 22 / this.camera.zoom;
@@ -4391,27 +4373,24 @@ export class IsometricRenderer {
         const hoveredBuilding = this.buildingRenderer?.hitTest(worldX, worldY) ?? null;
         this.buildingRenderer?.setHovered(hoveredBuilding);
         this.villageDirector?.setHoveredBuilding?.(hoveredBuilding);
-        const monument = hoveredBuilding ? null : this.chronicleMonuments?.hitTest?.(worldX, worldY, Date.now());
-        const hoveredShip = (hoveredBuilding || monument)
+        const hoveredShip = hoveredBuilding
             ? null
             : (this.harborTraffic?.hitTestShip?.(worldX, worldY) ?? null);
         this.harborTraffic?.setHoveredShip?.(hoveredShip ? hoveredShip.id : null);
-        const bridgeLantern = (hoveredBuilding || monument || hoveredShip)
+        const bridgeLantern = (hoveredBuilding || hoveredShip)
             ? null
             : (this.bridgeLanterns?.hitTest?.(worldX, worldY, Date.now()) ?? null);
         this.bridgeLanterns?.setHovered?.(bridgeLantern);
-        const tokenItem = (hoveredBuilding || monument || hoveredShip || bridgeLantern)
+        const tokenItem = (hoveredBuilding || hoveredShip || bridgeLantern)
             ? null
             : (this.landmarkActivity?.hitTestTokenItem?.(worldX, worldY) ?? null);
         return hoveredBuilding
             ? this._buildingVisitorTooltip(hoveredBuilding)
-            : (monument
-                ? this.chronicleMonuments.tooltipFor(monument, Date.now())
-                : (hoveredShip
-                    ? this.harborTraffic.shipTooltip(hoveredShip)
-                    : (bridgeLantern
-                        ? this.bridgeLanterns.tooltipFor(bridgeLantern, Date.now())
-                        : (tokenItem ? this.landmarkActivity.tokenItemTooltip(tokenItem) : ''))));
+            : (hoveredShip
+                ? this.harborTraffic.shipTooltip(hoveredShip)
+                : (bridgeLantern
+                    ? this.bridgeLanterns.tooltipFor(bridgeLantern, Date.now())
+                    : (tokenItem ? this.landmarkActivity.tokenItemTooltip(tokenItem) : '')));
     }
 
     _showTouchInfo(clientX, clientY) {

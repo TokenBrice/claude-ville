@@ -287,7 +287,7 @@ function checkRelationshipGateTileBounds() {
   relationships.dispose();
 }
 
-async function checkMonumentProjectionRetention() {
+async function checkMonumentRecordRetention() {
   const now = 3_000_000_000;
   const month = 30 * 24 * 60 * 60 * 1000;
   const records = Array.from({ length: 7 }, (_, index) => ({
@@ -313,24 +313,7 @@ async function checkMonumentProjectionRetention() {
     eventTarget: { on: () => () => {}, emit() {} },
   });
   await monuments.hydrate(now);
-  const ids = at => monuments.enumerateDrawables(at).map(drawable => drawable.payload.id);
-  const visible = records.slice(1).map(record => record.id);
-  assert.deepEqual(ids(now), [...visible, 'founding:forge'], 'equal ts values preserve record insertion order');
-  const founding = monuments.enumerateDrawables(now).at(-1).payload;
-  assert.equal(founding.lore, records[0].lore);
-  assert.equal(founding.tileX, records[0].tileX);
-  assert.equal(founding.plantedAt, records[0].plantedAt);
-  assert.deepEqual(monuments.ledgerFor(founding, now), {
-    district: 'forge',
-    rows: [records[6], records[5], records[4]],
-    overflow: 4,
-    total: 7,
-  });
-  assert.deepEqual(monuments.enumerateDrawables(now, {
-    getViewportTileBounds: () => ({ startX: 1, endX: 1, startY: 1, endY: 1 }),
-  }).map(drawable => drawable.payload.id), ['forge-1']);
-  assert.deepEqual(ids(now + 1), visible, 'the founding row expires just after its month boundary, before update');
-  assert.equal(monuments.ledgerFor(records[1], now + 1).total, 6);
+  assert.equal(monuments.records.size, records.length);
   const planted = await monuments.update([{
     id: 'planter',
     gitEvents: [gitEvent('projection-new', now + 2, {
@@ -339,10 +322,7 @@ async function checkMonumentProjectionRetention() {
     })],
   }], {}, now + 2);
   assert.equal(planted.length, 1);
-  assert.deepEqual(ids(now + 2), [planted[0].id, ...visible.slice(0, 5), 'founding:forge']);
-  assert.equal(monuments.enumerateDrawables(now + 2).at(-1).payload.lore, records[1].lore);
-  assert.equal(monuments.ledgerFor(planted[0], now + 2).total, 7);
-  assert.equal(monuments.ledgerFor(planted[0], now + 2).rows[0].id, planted[0].id);
+  assert.equal(monuments.records.has(planted[0].id), true);
   assert.equal(monuments.records.has(records[0].id), false, 'expired hydrated memory is released on update');
   assert.equal(persisted.has(records[0].id), true, 'projection expiry never deletes persisted monument history');
   monuments.dispose();
@@ -423,23 +403,27 @@ function checkTrailSamplingBounds() {
   }));
   directTrail.samplesByAgent.set('direct', directSamples);
   directTrail._totalSamples = directSamples.length;
-  let directRenderSamples = 0;
-  directTrail._trailPoints = samples => {
-    directRenderSamples = samples.length;
+  let directRendered = [];
+  directTrail._worldTrailPoints = samples => {
+    directRendered = samples;
     return samples.map(sample => ({ x: sample.tileX, y: sample.tileY, ts: sample.ts }));
   };
   directTrail._drawTrailPoints = () => {};
-  directTrail.draw(
+  const drawDirect = () => directTrail.draw(
     { save() {}, setTransform() {}, restore() {} },
     { getViewportTileBounds: () => null },
     { width: 1280, height: 720, dpr: 1 },
     startedAt + 500_000,
   );
-  assert.equal(
-    directRenderSamples,
-    directTrail.getDiagnostics().renderPerAgentLimit,
-    'direct trail rendering must use the same per-agent cap as cached rendering',
+  drawDirect();
+  assert.equal(directRendered.length, 0, 'ambient trail history stays invisible');
+  directTrail.setSelectedAgent('direct');
+  drawDirect();
+  assert.ok(
+    directRendered.length >= 2 && directRendered.length <= directTrail.getDiagnostics().renderPerAgentLimit,
+    'a selected trail renders a bounded recent route',
   );
+  assert.deepEqual(directRendered, directSamples.slice(-directRendered.length), 'the selected route is the newest tail');
   stationaryTrail.dispose();
   boundedTrail.dispose();
   directTrail.dispose();
@@ -449,7 +433,7 @@ function checkTrailSamplingBounds() {
     stationaryDuplicateDrops: stationaryDiagnostics.duplicateDrops,
     boundedSamples: boundedDiagnostics.totalSamples,
     compactedSamples: boundedDiagnostics.compactedSamples,
-    directRenderSamples,
+    directRenderSamples: directRendered.length,
   };
 }
 
@@ -531,7 +515,7 @@ checkVisitReplayWindow();
 const sharedRepositoryVisitMs = checkSharedRepositoryVisitCost();
 checkPostDisposeNoMutation();
 checkRelationshipGateTileBounds();
-await checkMonumentProjectionRetention();
+await checkMonumentRecordRetention();
 await checkTrailHydrateDisposeBoundary();
 const trailBounds = { ...checkTrailSamplingBounds(), ...checkTrailSingletonBounds() };
 await checkTrailPauseHydrationBoundary();
