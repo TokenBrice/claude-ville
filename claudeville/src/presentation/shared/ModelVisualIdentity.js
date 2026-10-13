@@ -194,7 +194,16 @@ export function contextWindowLimitForModel(model, provider = '') {
     return contextWindowForModel(model, provider) ?? 200000;
 }
 
-export function getModelVisualIdentity(model, effort, provider = '') {
+// Body variants (models.json `spriteVariants`, base sheet first): one model,
+// several authored bodies of the same family. An agent keeps one body for its
+// whole life (a hash of its id); without an id the base body is used.
+export function agentBodySpriteId(spriteId, spriteVariants, agentId) {
+    if (!Array.isArray(spriteVariants) || spriteVariants.length < 2) return spriteId;
+    if (agentId === null || agentId === undefined || agentId === '') return spriteId;
+    return spriteVariants[signatureHash(`${agentId}:body`) % spriteVariants.length];
+}
+
+export function getModelVisualIdentity(model, effort, provider = '', agentId = null) {
     const { row, isDefault } = selectModelRow(model, provider);
     const effortTier = normalizeReasoningEffort(effort);
     const effortAccessory = EFFORT_ACCESSORIES[effortTier] || null;
@@ -248,7 +257,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             ...DEFAULT_EFFORT_RENDERING,
             effortAccessory,
             effortFloorRing,
-            spriteId: ladderSprite || row.spriteId,
+            spriteId: ladderSprite || agentBodySpriteId(row.spriteId, row.spriteVariants, agentId),
         };
     }
 
@@ -269,7 +278,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         ...equipment,
         spriteId: row.modelClass === 'gpt55'
             ? codexGpt55Sprite(codexEffortTier)
-            : row.spriteId,
+            : agentBodySpriteId(row.spriteId, row.spriteVariants, agentId),
     };
     if (row.modelClass === 'gpt55') {
         identity.codexHeavyGearBaked = codexEffortTier === 'high' || codexEffortTier === 'xhigh';

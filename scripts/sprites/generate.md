@@ -193,6 +193,32 @@ plus `<id>.sit.json` (`groups.sit.hold`, per-facing `seatLine`, provenance),
 judged over a bench front covering everything below `seatLine`, and audited
 with `feet-audit.mjs --groups=sit:0-1 --reference=group --directions=se,sw`.
 
+### Custom-animation groups and wrist tables (hero pass, 2026-10-13)
+
+Robed or prop-holding profiles keep their prop far better under PixMiniMax
+than v3: request one facing per job (MCP `animate_character`, `mode:
+pixminimax`, `frame_count: 8`, an `initial_pose` that names the held prop and
+a `subject_description`), then stage the chosen frames without spending:
+
+```bash
+node scripts/sprites/stage-animation-strip.mjs --id=<id> --group=think \
+    --animation=claudeville-think-pmm --frames=3,6,8 --hold=2 \
+    --directions=south-east,east,west,south-west --seat
+node scripts/sprites/feet-audit.mjs --id=<id> --strip=output/pose-strips/<id>.think.png --groups=think:0-2 --directions=se,e,w,sw
+node scripts/sprites/assemble-action-strip.mjs --id=<id> --stage=output/pose-strips/<id>.think.png
+```
+
+A second staging run with other `--directions` merges into the same stage, so a
+re-rolled facing can come from a second animation. `generate-pose-strip.mjs
+--group-override='{"wait":{"clearance":0,"frames":[…]}}'` retunes a skeleton
+group for one profile (Opus's hat made the stock wait arm overreach).
+
+A regenerated or new Codex body needs its `CodexCelestialGrips.js` wrists:
+`node scripts/sprites/measure-wrists.mjs --id=<id> --overlay=<png>` (base
+sheet) or `--strip-group=run` proposes them from one PixelLab skeleton
+estimate per cell (≈0.1 generation each, cached by cell hash). Review the
+overlay before pasting; fix outliers by hand.
+
 ### Run gait strips (plan 7.5, deferred; recipe in OF-020)
 
 W8.7 (2026-10-09) ships `run` on `agent.codex.gpt56sol` and

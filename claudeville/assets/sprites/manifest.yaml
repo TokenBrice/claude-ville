@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-09-living-isle-art"
+  assetVersion: "2026-10-13-hero-sprites"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -117,16 +117,20 @@ characters:
       path: characters/agent.claude.opus/actions.png
       cell: 92
       groups:
-        wait: { rows: [0, 2], hold: 2, directions: [se, e, w, sw] }
-        sit: { rows: [3, 4], hold: 4, seatLine: { south-east: 65, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "d32f466a-17ec-43f6-a0fe-fc1cc7cbdf34", sw: "bf08d6ab-1d4f-4b92-8879-ad2c361d285a" } }, directions: [se, sw] }
-        strike: { rows: [5, 10], hold: 10, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [55, 49], w: [35, 49], se: [50, 52], sw: [43, 50] } }
-        tinker: { rows: [11, 16], hold: 11, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [58, 47], w: [37, 50], se: [49, 53], sw: [44, 51] } }
-        gaze: { rows: [17, 20], hold: 18, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [46, 35], w: [45, 32], se: [43, 34], sw: [50, 34] } }
+        read: { rows: [0, 3], hold: 3, directions: [s, se, e, ne, nw, w, sw] }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 65, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "d32f466a-17ec-43f6-a0fe-fc1cc7cbdf34", sw: "bf08d6ab-1d4f-4b92-8879-ad2c361d285a" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [55, 49], w: [35, 49], se: [50, 52], sw: [43, 50] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [58, 47], w: [37, 50], se: [49, 53], sw: [44, 51] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [46, 35], w: [45, 32], se: [43, 34], sw: [50, 34] } }
+        celebrate: { rows: [25, 27], hold: 27, directions: [se, w, sw] }
+        think: { rows: [28, 30], hold: 30, directions: [se, e, w, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "f8a273d6-1b74-4192-ba60-c9854d8e2683"
         generationSize: 128
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "4aa926e2-fc13-4afc-8489-9818de80d0c8", w: "26f39a00-7b38-4a44-adb8-1750f6210cda", se: "54abff10-40a8-43b3-94e5-2a7097440530", sw: "6c209e9f-922d-4d7f-8b2f-aadb9d61eb59" }, gaze: { e: "3073784b-15a2-47e9-b226-a90a87d49a4a", w: "1822ad0e-d318-41ae-a803-14a3e3c44979", se: "382911cc-977a-478b-acf4-5adfe21f166c", sw: "e007fc4d-28ed-4fcc-8d20-fd1c0aa4e515" } } }
+        animationStrips: { groups: { read: { s: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", se: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", e: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", ne: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", nw: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", w: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", sw: "b3c39c0e-297b-410b-99dc-77e5a2363f0b" }, wait: { se: "caaa99b9-5eab-475d-a280-b4c9b2615650", e: "caaa99b9-5eab-475d-a280-b4c9b2615650", w: "caaa99b9-5eab-475d-a280-b4c9b2615650", sw: "caaa99b9-5eab-475d-a280-b4c9b2615650" }, think: { se: "1a5022f7-3fea-4579-aeee-a3f140b8a49c", e: "1a5022f7-3fea-4579-aeee-a3f140b8a49c", w: "1a5022f7-3fea-4579-aeee-a3f140b8a49c", sw: "1a5022f7-3fea-4579-aeee-a3f140b8a49c" }, celebrate: { se: "916c4129-59fd-4e3b-a6d7-520502af2835", w: "916c4129-59fd-4e3b-a6d7-520502af2835", sw: "916c4129-59fd-4e3b-a6d7-520502af2835" } } }
     portraitCrop: { x: 29, y: 8, w: 34, h: 32 }
     provenance: { characterId: f8a273d6-1b74-4192-ba60-c9854d8e2683 }
     palette_layer: claude
@@ -142,6 +146,46 @@ characters:
       strength: 0.45
       sources:
         - { id: emissive.agent.claude.opus.crystal, kind: rune, geometry: sidecar-required, strength: 0.45 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  # Body variant of agent.claude.opus (models.json `spriteVariants`): the same
+  # archmage family under a hooded mantle instead of the celestial hat.
+  - id: agent.claude.opus.b
+    tool: create_character
+    prompt: "Claude Opus female arcane scholar, long silver-white hair, ivory and midnight-blue ceremonial robe with ornate gold and copper arcane trim, tall deep midnight-blue hooded mantle with a pointed hood and gold rune embroidery instead of a hat, long flowing sleeves, crystal-tipped wooden staff held upright in one hand, calm wise stance, identical outfit and colors from every viewing angle, no floating objects, old-school RPG pixel art, 8-direction character sprite"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.claude.opus.b/actions.png
+      cell: 92
+      groups:
+        read: { rows: [0, 3], hold: 3, directions: [s, se, e, n, nw, w, sw] }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        strike: { rows: [7, 12], hold: 12, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [57, 48], w: [37, 48], se: [50, 53], sw: [41, 54] } }
+        tinker: { rows: [13, 18], hold: 13, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [55, 50], w: [38, 49], se: [48, 54], sw: [42, 54] } }
+        gaze: { rows: [19, 22], hold: 20, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [47, 30], w: [46, 33], se: [42, 35], sw: [50, 33] } }
+        celebrate: { rows: [23, 25], hold: 25, directions: [se, e, w, sw] }
+        think: { rows: [26, 28], hold: 28, directions: [se, e, w, sw] }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "1622d08f-4388-44b1-b60c-8b6c583b3f92"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker": { e: "df08a1b1-f166-41db-8af0-e289d96d6900", w: "3b85ada0-b10a-4439-aa06-2c7853bf7111", se: "02e1f0dd-324a-455e-a756-5e93b9b29b12", sw: "f8a85d01-aa11-4e57-9f63-a355eb18a297" }, gaze: { e: "e307b90d-b59b-4d8c-a967-bd02aa31f0db", w: "6a864cec-d29a-4788-b1bb-26bb509fe090", se: "cc752b56-de3b-42d2-9bbf-7cfa52bc8fdf", sw: "a6b32257-48f4-4448-8935-9d1abd3e5e13" } } }
+        animationStrips: { groups: { read: { s: "36920ca0-87e9-48e4-9306-d5631cf4b322", se: "6b8f81d8-f6b5-430d-a7ac-5ba5aa99c67b", e: "b1bd2a98-5225-4f24-9323-aff3b287cdbc", n: "abef05e2-aa61-4c5a-b47a-e5dad0c025a1", nw: "a1c0d1ca-0ea9-4e88-8747-b8732ebfe694", w: "ae5af482-5452-4c9f-b261-bb16f49ba4db", sw: "8623d143-524b-4524-a0d4-fd560e9c1ec3" }, wait: { se: "91601c94-6d47-45af-8596-ce0fdc392f17", e: "5b0dedae-a7ba-4867-b690-5103e61f5cc1", w: "65b14557-3eba-4027-b9b2-7909af4fdaac", sw: "cb4062be-031b-4dd2-8a86-39cb5458a883" }, think: { se: "d123edfd-676c-4f71-afdb-6c13520fb7f7", e: "98425c20-986d-4179-9e33-28c8c6ca2514", w: "69654b6b-d59c-480b-8065-808cff3e5403", sw: "8bc160fb-ad5c-4d88-8f51-57d42101ed65" }, celebrate: { se: "1391546f-3966-4443-9d63-fe7ee99d983c", e: "40a1ee64-6b8d-479c-902c-d27fb5497a55", w: "6b317400-1fd1-4164-8052-0db70978fdcb", sw: "8bae2372-e65a-44ad-af6e-fb8e3567f404" } } }
+    provenance: { characterId: 1622d08f-4388-44b1-b60c-8b6c583b3f92, generationSize: 76, generationMode: pro }
+    portraitCrop: { x: 29, y: 15, w: 34, h: 32 }
+    palette_layer: claude
+    # Sampled from sheet.png: midnight hood and mantle, ivory robe, dusty trim.
+    paletteSource: { robe: ['#242846', '#17152d'], pants: '#efe0bc', trim: '#a89682' }
+    headCovered: true
+    anchor: [46, 80]
+    materialClass: fabric
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.claude.sonnet
@@ -369,12 +413,15 @@ characters:
         strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [63, 45], w: [21, 45], se: [54, 52], sw: [18, 47] } }
         tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [60, 48], w: [33, 49], se: [51, 54], sw: [44, 51] } }
         gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [49, 21], w: [35, 19], se: [43, 23], sw: [29, 19] } }
+        celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
+        think: { rows: [28, 30], hold: 30, directions: [se, e, w, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "a1da82e8-9dc7-410c-9c5e-81698604ab2c"
         animationGroupId: "6b29a379-57d5-482d-a4a9-961dbace148f"
         generationSize: 76
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "3d53d06c-72bd-45a6-a605-9c200781e09d", w: "4f975fba-7952-4d5c-8582-ae9235232c32", se: "2be28b82-41d7-49d5-bbf0-a09c43f13000", sw: "16286937-0fff-434b-b47f-39340f391c19" }, gaze: { e: "ed3f5608-4c56-43e3-b1ed-fcb492afdd2f", w: "1e8e477a-51e3-42d7-ad16-faf11c47607c", se: "39780efa-6aab-43c9-b8cc-bb0898cdb06d", sw: "929dea74-4787-420d-87cb-6f55b498430c" } } }
+        animationStrips: { groups: { think: { se: "4991d160-7831-4f86-8501-e3764686fd14", e: "5ae3a73d-5270-4627-a996-5d16c9085b05", w: "0abb16ed-755c-47ac-bb9e-27f96598a843", sw: "c80c64da-1c00-4dc1-8c9a-bb459d697b6c" }, celebrate: { se: "0e72b87a-8f47-41c6-9ccc-fdfb975cd9bf", e: "093e4ce9-2eb2-4fc6-9632-a64aff568fbe", w: "e3b0ca89-5128-42c7-a47e-5557d805b937", sw: "3c675eb6-2811-4d6e-9432-7fe86edc6ae2" } } }
     provenance:
       characterId: a1da82e8-9dc7-410c-9c5e-81698604ab2c
       animationGroupId: astra-caped-walk-repair
@@ -399,8 +446,14 @@ characters:
     headCovered: true
     anchor: [46, 80]
     materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     elevation: { base: 0, top: 80, unit: sprite-px }
-    emissive: { strength: 0, sources: [] }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.codex.gpt6astra.visor, kind: rune, geometry: sidecar, strength: 0.16 }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   # GPT-5.6 celestial warrior triad (Sol/Terra/Luna). Base sprites are
@@ -425,6 +478,8 @@ characters:
         strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [61, 48], w: [23, 47], se: [50, 54], sw: [23, 50] } }
         tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [68, 46], w: [36, 49], se: [49, 55], sw: [44, 54] } }
         run: { rows: [21, 26], hold: 21 }
+        celebrate: { rows: [27, 29], hold: 29, directions: [se, e, w, sw] }
+        think: { rows: [30, 32], hold: 32, directions: [se, e, w, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "c3424b1d-2a37-47db-bc9a-dfb88bf53885"
@@ -432,6 +487,7 @@ characters:
         generationSize: 128
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "d3d0018c-75a7-4e44-948f-6ec1a47c8ff6", w: "d2fe3fd1-87ee-4b05-9c47-df883e05f8f9", se: "d2f06dcf-3437-4ac9-89f1-934c0cc362b7", sw: "932d670b-f99d-4eb2-b552-6350039cf252" } } }
         templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "0ef145f0-7a88-42e6-8b55-92d99d07a67d", se: "3dcfd3e0-5eff-4c52-909a-ff9465236efa", e: "d8ded118-5a79-4254-a323-978a7c56d695", ne: "bc7c8700-06d5-4073-93fd-3ef16a370356", n: "88ef54ec-8090-474f-842e-a8daa6cd4d8c", nw: "272a0259-0287-46d4-92ba-bf213086061b", w: "97e04757-c702-4a3a-a820-8e6362d46845", sw: "fa29f881-d019-4d70-ade8-5c07a7be5696" } } }
+        animationStrips: { groups: { think: { se: "ed65bfbc-09c8-4777-b7a0-43934c3c87f4", e: "4b3cbf29-dc1b-40b7-91a4-bc9a93cab38a", w: "20f9b297-7cd8-4ecb-85d5-dc227d04b7fb", sw: "c1e5e288-be0c-46e6-8ad9-cb1c656c2286" }, celebrate: { se: "943976b5-836e-4749-b642-f0025d97d426", e: "aae6f47c-c20b-46e3-82f1-247fdcf7e542", sw: "85f43c5c-bb56-4825-9d99-4d75898466ad", w: "c74b3892-d179-4ba7-b69d-3fbf4e23d643" } } }
     portraitCrop: { x: 26, y: 13, w: 40, h: 34 }
     provenance: { characterId: c3424b1d-2a37-47db-bc9a-dfb88bf53885 }
     palette_layer: codex
@@ -441,12 +497,54 @@ characters:
     headCovered: true
     anchor: [46, 80]
     materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     atlasFrame: { atlas: world-pilot, keyPrefix: agent.codex.gpt56sol }
     elevation: { base: 0, top: 80, unit: sprite-px }
     emissive:
-      strength: 0.7
+      strength: 0
       sources:
-        - { id: emissive.agent.codex.gpt56sol.reactor, kind: rune, geometry: sidecar-required, strength: 0.7 }
+        - { id: emissive.agent.codex.gpt56sol.reactor, kind: rune, geometry: sidecar, strength: 0.18 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  # Body variant of agent.codex.gpt56sol: the sun-paladin under a radiant
+  # sunburst crown helm.
+  - id: agent.codex.gpt56sol.b
+    tool: create_character
+    prompt: "Codex GPT-6.1 Sol sun-paladin, tall imposing broad-shouldered heroic build, open-faced gold sun-crown helm with tall radiant sunburst rays, ornate navy and gold full plate armor, large sunburst-shaped gold pauldrons, molten gold sun reactor core blazing on the breastplate, long flowing white-gold cape, identical outfit and colors from every viewing angle, empty visible hands held near torso for gripping runtime greatblade, no held weapon, no sword, no shield, no polearm, no staff, apex old-school RPG pixel art, 8-direction character sprite"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.codex.gpt56sol.b/actions.png
+      cell: 92
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        strike: { rows: [7, 12], hold: 12, contactFrame: 3, directions: [se, w, sw], contact: { e: [55, 48], w: [32, 46], se: [50, 52], sw: [26, 48] } }
+        tinker: { rows: [13, 18], hold: 13, contactFrame: 2, directions: [se, w, sw], contact: { e: [60, 47], w: [40, 49], se: [48, 53], sw: [45, 52] } }
+        celebrate: { rows: [19, 21], hold: 21, directions: [se, e, w, sw] }
+        think: { rows: [22, 24], hold: 24, directions: [se, e, w, sw] }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "bafdea82-e961-40f3-9c4e-a321ccab3005"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "52b237d6-e6fe-46ac-a80e-de1533541f49", w: "30f29082-b0f5-43bf-aee5-b17deda276d2", se: "e3202311-cbbc-468a-8945-0acf55cd6e8c", sw: "c2a6bcd6-fe85-49d2-8431-9824c4d3b057" } } }
+        animationStrips: { groups: { read: { s: "0667f1ad-519e-4302-8270-5788d72cf713", se: "26e0629c-5a95-4229-be55-1cae6f340a94", e: "a74a2215-72d8-4e55-b34e-519724302704", ne: "25482aad-7bff-4c47-b8f3-e666a4dcd1d0", n: "4c173cef-796a-4304-9cfe-ae4f12ed830e", nw: "8986477f-fd3e-4d60-9d0c-8e79a1b1079f", w: "9f8c7f5b-3ef5-469a-8652-09e42d2e5de3", sw: "f2ce0272-1972-475d-b91a-9bfe1b31cc4e" }, think: { se: "d439881a-713e-4bd6-9e1b-8cf7e171aad1", e: "1ea17a4d-92e7-44f5-8354-9ab25dfaaefd", w: "5d583c5a-e96c-40ab-a848-20135ca6e3c1", sw: "8bf0ddc3-ed7e-4a4f-9a8e-b3e0dcfd58c4" }, celebrate: { se: "83610acb-da5b-4654-a652-1bbc7ea12cf5", e: "31957868-870e-4708-86bb-06101e1b03a3", w: "1070fe22-5a3f-42c6-9582-40e5c891617c", sw: "acf507cb-8919-4b76-a0c0-0dce6e6012d4" } } }
+    portraitCrop: { x: 28, y: 11, w: 36, h: 34 }
+    provenance: { characterId: bafdea82-e961-40f3-9c4e-a321ccab3005, generationSize: 76, generationMode: pro }
+    palette_layer: codex
+    # Sampled from sheet.png: the navy plate takes the crowd hue, as on Sol.
+    paletteSource: { robe: ['#282940', '#343651'] }
+    headCovered: true
+    anchor: [46, 80]
+    materialClass: metal
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.codex.gpt56terra
@@ -494,7 +592,7 @@ characters:
 
   - id: agent.codex.gpt56luna
     tool: create_character
-    prompt: "Codex GPT-5.6 Luna moonlit skirmisher, sleek silver and pale blue light armor over dark navy under-suit, slim crescent-moon crest on a light open-face helm, short silver-blue scarf, lean agile duelist stance, identical outfit and colors from every viewing angle, empty visible hands held near torso for gripping runtime saber, no held weapon, no sword, no dagger, no shield, no staff, swift readable old-school RPG pixel art, 8-direction character sprite"
+    prompt: "Codex GPT-6 Luna moonlit blade-dancer knight, sleek silver and pale ice-blue light plate armor over dark navy under-suit, softly glowing moon-blue runes on gauntlets and breastplate, open-face silver helm with a large sweeping crescent-moon crest, long silver-white hair tail, flowing silver-blue scarf and short starlit navy cape trailing behind, agile confident duelist stance, identical outfit and colors from every viewing angle, empty visible hands held near torso for gripping runtime saber, no held weapon, no sword, no dagger, no shield, no staff, swift readable old-school RPG pixel art, 8-direction character sprite"
     n_directions: 8
     size: 92
     generationSize: 76
@@ -507,29 +605,72 @@ characters:
       groups:
         read: { rows: [0, 3], hold: 3 }
         wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
-        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 69, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "eabff481-02df-40ad-9073-e7c9483e06a7", sw: "99a939af-3809-4102-a2ac-184e9d92b32e" } }, directions: [se, sw] }
-        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [58, 48], w: [31, 47], se: [51, 52], sw: [31, 50] } }
-        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [59, 46], w: [38, 48], se: [50, 53], sw: [44, 52] } }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 67, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "d02bbd8f-9d71-4075-8f29-abfda51d8cd8", sw: "20119801-c0fa-4648-856b-2e7329561c81" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [55, 47], w: [31, 47], se: [51, 52], sw: [30, 50] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [58, 46], w: [33, 48], se: [50, 53], sw: [44, 52] } }
         run: { rows: [21, 26], hold: 21 }
+        celebrate: { rows: [27, 29], hold: 29, directions: [se, e, w, sw] }
+        think: { rows: [30, 32], hold: 32, directions: [se, e, w, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
-        characterId: "4c14cc02-74fc-48bc-8968-d4594c2ae150"
-        animationGroupId: "c4039946-9cc6-47e0-9f09-393c0c33572c"
-        generationSize: 120
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "c150b335-8e45-49c4-a2d5-e5027a5640e4", w: "34d28e8f-8eac-4dda-a12f-fe2e46604c9f", se: "5c8a6550-4cee-4e9c-9a12-52c974cabb98", sw: "0698be6d-47fe-4121-aeef-fa2d4cc76a0f" } } }
-        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "da1d9061-316d-499b-b865-c825a561d2e1", se: "5cefa775-d459-4142-9d6e-046b104c4d90", e: "dcdbcb91-1ab3-4328-8473-4a2bf431b249", ne: "8db776c3-ef14-46bb-b108-c5fbf15f8946", n: "52c02837-9307-4eba-8998-5469bd8355ec", nw: "2c08eeea-391a-4ce2-9e85-dd6d967cd544", w: "6bce23e9-4ffd-420d-a523-c0115d48ca1a", sw: "7aae759e-3882-4f92-8125-a1779d097190" } } }
+        characterId: "a84176da-b4a8-4e2e-a98a-c80d16d36c43"
+        animationGroupId: "075fcd11-485f-4dfa-bcbc-729369a68318"
+        generationSize: 76
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "c66b3262-9e13-4503-b880-f93a4bc69d1c", w: "d05a78a9-c8e1-4a71-968e-fb06e91439fc", se: "5904067a-71dc-481e-b252-a38c4d0d42b3", sw: "d548fc63-6feb-434b-9630-c9bb2e8dbe0c" } } }
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "6ea3f408-7060-45cc-99ff-c494884d7bd2", se: "ae4bec2e-c773-4b9a-bc6b-5c47c9f09236", e: "e1a089e5-d525-4ac6-a9b9-18fbaaef5821", ne: "5871aee4-0853-4b96-8dfc-17847664b2e5", n: "a48733bc-fc46-46f4-bd5d-6122a64d3ce6", nw: "8fd816d3-a836-4109-bdf7-1c1f490b7e3a", w: "dca1f636-97b5-48ed-9cda-53b4bd7bf618", sw: "bf0cace3-4b6b-46de-bdc0-c7b41e7d9fb1" } } }
+        animationStrips: { groups: { read: { s: "273e9224-684f-4ae5-9ebb-2d4a045d871b", se: "273e9224-684f-4ae5-9ebb-2d4a045d871b", e: "273e9224-684f-4ae5-9ebb-2d4a045d871b", ne: "273e9224-684f-4ae5-9ebb-2d4a045d871b", n: "273e9224-684f-4ae5-9ebb-2d4a045d871b", nw: "273e9224-684f-4ae5-9ebb-2d4a045d871b", w: "273e9224-684f-4ae5-9ebb-2d4a045d871b", sw: "273e9224-684f-4ae5-9ebb-2d4a045d871b" }, think: { se: "1fbe8805-870c-4078-8a6d-8554e4c750b3", e: "e9ab2738-25b6-4f9d-b7e3-a6dd41ef7edf", w: "62b2ee9d-f1e9-47fd-a926-c55ad7162cf6", sw: "976e9f69-9b33-4f84-8101-d842c13e8edb" }, celebrate: { se: "ae48d4f0-e535-453e-b791-fd4de5e91106", e: "7375273f-29c7-4d89-a424-d4d0f9f86021", w: "20eab189-03f3-4ca2-b3df-96f0d5739b29", sw: "36f56d40-5a02-4bce-8d17-6a3ebb7e4088" } } }
     portraitCrop: { x: 29, y: 14, w: 34, h: 36 }
-    provenance: { characterId: 4c14cc02-74fc-48bc-8968-d4594c2ae150 }
+    provenance: { characterId: a84176da-b4a8-4e2e-a98a-c80d16d36c43, generationSize: 76, generationMode: pro }
     palette_layer: codex
-    # Sampled from sheet.png (plan 0.5): silver-blue light armor + navy
-    # under-suit + steel accent; the declared codex sources are inert here.
-    paletteSource: { robe: ['#bdd2e3', '#a6b8cd'], pants: '#24263e', trim: '#8c9bb5' }
+    # Sampled from sheet.png (2026-10-13 moon-knight body): the starlit navy
+    # cape takes the crowd hue, the silver plate stays authored.
+    paletteSource: { robe: ['#324069', '#131a3c'], pants: '#222e4f', trim: '#7597b3' }
     headCovered: true
     anchor: [46, 80]
     materialClass: metal
     materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  # Body variant of agent.codex.gpt56luna: the winged moon-knight with the
+  # luminous crescent crest (candidate A of the 2026-10-13 Luna rebuild).
+  - id: agent.codex.gpt56luna.b
+    tool: create_character
+    prompt: "Codex GPT-6 Luna moon-knight duelist, elegant polished silver and pearl plate armor with thin glowing pale moonlight-blue inlay lines, crescent-shaped silver pauldrons, glowing crescent-moon emblem on the breastplate, sleek winged silver helm with a tall luminous crescent-moon crest, long flowing midnight-blue cape lined with starlit silver, dark navy under-suit, confident heroic duelist stance, identical outfit and colors from every viewing angle, empty visible hands held near torso for gripping runtime saber, no held weapon, no sword, no dagger, no shield, no staff, swift readable old-school RPG pixel art, 8-direction character sprite"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.codex.gpt56luna.b/actions.png
+      cell: 92
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        strike: { rows: [7, 12], hold: 12, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [56, 48], w: [31, 47], se: [52, 53], sw: [30, 49] } }
+        tinker: { rows: [13, 18], hold: 13, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [57, 48], w: [38, 48], se: [50, 54], sw: [44, 51] } }
+        celebrate: { rows: [19, 21], hold: 21, directions: [se, e, w, sw] }
+        think: { rows: [22, 24], hold: 24, directions: [se, e, w, sw] }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "8881d235-be6f-4bd3-b3b9-99e3098f2a91"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "7924484f-7fa1-48dd-93f3-0156595a5094", w: "2fe2d655-90b4-444c-b4fb-a4eb54d66953", se: "eb44542e-4754-468d-9e1a-a3b7187d6123", sw: "47da7172-9295-420f-b76b-c501262666b9" } } }
+        animationStrips: { groups: { read: { s: "9aae15b3-7285-4b8c-b1af-a81f920f16e8", se: "3ebe15b4-4841-42fe-8c83-cf595a2b2499", e: "36a58aa3-2a79-4fb9-8aae-6236f119542c", ne: "f9c11cb2-136c-481d-a248-b08714da713c", n: "7681ac46-b1f8-49c2-b996-f5ae33574a25", nw: "4a4cdfab-649e-470d-b186-4ec9ef974380", w: "1214b6cf-bb77-4154-9f9c-5939aed0580c", sw: "e2d291cb-53fb-478d-ad4b-1ffe37c5f14c" }, think: { se: "4c2816c8-07c3-42d0-a938-6a48cb2c0809", e: "b6c37b6d-760b-4639-9835-f61c4cee6466", w: "0250c799-cdab-4fcf-8c3f-d96ef3c4292c", sw: "99ba4db5-18fc-4857-9c56-49ac3689f6ae" }, celebrate: { se: "1d60ff1c-ccae-4332-b78f-7a9bbd86343d", e: "0ace0743-3433-498e-862b-d2aebfc601c1", w: "ad5ccfc6-400b-4a1d-a57f-34c3c76466e9", sw: "2f227b33-e1a5-44ff-9c87-f7d823c1d22a" } } }
+    # N/NW walk repaired with skeleton-v3 (the template walk dropped the cape).
+    portraitCrop: { x: 29, y: 14, w: 34, h: 34 }
+    provenance: { characterId: 8881d235-be6f-4bd3-b3b9-99e3098f2a91, animationGroupId: walk-skel-repair, repairedDirections: [north, north-west], animationSourceSize: 96, generationSize: 76, generationMode: pro }
+    palette_layer: codex
+    # Sampled from sheet.png: the midnight cape takes the crowd hue.
+    paletteSource: { robe: ['#2a365f', '#171d41'] }
+    headCovered: true
+    anchor: [46, 80]
+    materialClass: metal
     elevation: { base: 0, top: 80, unit: sprite-px }
     emissive: { strength: 0, sources: [] }
     occluder: { mode: alpha-silhouette, strength: 1 }
@@ -2287,8 +2428,8 @@ props:
     provenance: { generationSize: 32 }
 
   - id: prop.lantern
-    tool: isometric_tile
-    prompt: "iron street lantern on post, warm amber candlelight glow, isometric"
+    tool: create_map_object
+    prompt: "medieval fantasy wrought-iron street lantern on a tall thin post, ornate curled bracket, glass lantern glowing warm amber candlelight, upright, no ground tile, no base slab, transparent background"
     size: 32
     anchor: [16, 28]
     materialClass: metal

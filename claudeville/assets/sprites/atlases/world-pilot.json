@@ -631,7 +631,7 @@
       "id": "prop.lantern",
       "materialClass": "metal",
       "sourcePath": "props/prop.lantern.png",
-      "sourceSha256": "ef1252bb884d3a94f74041849bf02a5874e6dd55f154a24994f7e3165a674ccb",
+      "sourceSha256": "732777ed8ac543d88a23d19ba3d49f087b18405c8bc03301a9bb3a88391a7ae7",
       "sourceSize": {
         "h": 32,
         "w": 32
@@ -750,10 +750,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "1c0c5221d5879d3c3711e0b9067c06f209b8f2713670fbc7d373e288b1629350",
-    "emissive": "de119ac7c84985245e64eebf933bcf3869682a83d124c8f62ace1393a3f68ec6",
-    "material": "2ffb3e8848dad2ea02d7d6d2839e2afe4172fec74614c70170469aac2f7ee18d",
-    "occluder": "f99768f6c97d556800b949794b26527de610c26bbf04033eda07f6b8bb0f40b0"
+    "albedo": "04b9752c25b2c29c7c9c2261eafaa0b97b9372b8e909d383f270623ee8272b74",
+    "emissive": "2efcf154ab589bf743fe998e5d93e4d44731397836cae85e9dbf358292a123db",
+    "material": "e720819ad92e8cc901ebee7784dc162c5f45b4408496b14dbe0f989740b54dc7",
+    "occluder": "2510022a7bb5bc404a01e6e37a2541c4d2debbbc52d079f4d2cbee1508a68cac"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -5251,13 +5251,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5277,9 +5277,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5307,13 +5307,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5333,9 +5333,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5363,13 +5363,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5389,9 +5389,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5419,13 +5419,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5445,9 +5445,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5475,13 +5475,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5501,9 +5501,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5531,13 +5531,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5557,9 +5557,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5587,13 +5587,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5613,9 +5613,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5643,13 +5643,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5669,9 +5669,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5699,13 +5699,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5725,9 +5725,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5755,13 +5755,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5781,9 +5781,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5811,13 +5811,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5837,9 +5837,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5867,13 +5867,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5893,9 +5893,9 @@
         "y": 1158
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5923,13 +5923,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -5949,9 +5949,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -5979,13 +5979,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6005,9 +6005,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6035,13 +6035,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6061,9 +6061,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6091,13 +6091,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6117,9 +6117,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6147,13 +6147,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6173,9 +6173,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6203,13 +6203,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6229,9 +6229,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6259,13 +6259,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6285,9 +6285,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6315,13 +6315,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6341,9 +6341,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6371,13 +6371,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6397,9 +6397,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6427,13 +6427,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6453,9 +6453,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6483,13 +6483,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6509,9 +6509,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6539,13 +6539,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6565,9 +6565,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6595,13 +6595,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6621,9 +6621,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6651,13 +6651,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6677,9 +6677,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6707,13 +6707,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6733,9 +6733,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6763,13 +6763,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6789,9 +6789,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6819,13 +6819,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6845,9 +6845,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6875,13 +6875,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6901,9 +6901,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6931,13 +6931,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -6957,9 +6957,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -6987,13 +6987,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7013,9 +7013,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7043,13 +7043,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7069,9 +7069,9 @@
         "y": 1254
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7099,13 +7099,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7125,9 +7125,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7155,13 +7155,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7181,9 +7181,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7211,13 +7211,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7237,9 +7237,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7267,13 +7267,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7293,9 +7293,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7323,13 +7323,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7349,9 +7349,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7379,13 +7379,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7405,9 +7405,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7435,13 +7435,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7461,9 +7461,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7491,13 +7491,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7517,9 +7517,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7547,13 +7547,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7573,9 +7573,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7603,13 +7603,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7629,9 +7629,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7659,13 +7659,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7685,9 +7685,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7715,13 +7715,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7741,9 +7741,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7771,13 +7771,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7797,9 +7797,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7827,13 +7827,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7853,9 +7853,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7883,13 +7883,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7909,9 +7909,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7939,13 +7939,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -7965,9 +7965,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -7995,13 +7995,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8021,9 +8021,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8051,13 +8051,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8077,9 +8077,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8107,13 +8107,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8133,9 +8133,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8163,13 +8163,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8189,9 +8189,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8219,13 +8219,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8245,9 +8245,9 @@
         "y": 1350
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8275,13 +8275,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8301,9 +8301,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8331,13 +8331,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8357,9 +8357,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8387,13 +8387,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8413,9 +8413,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8443,13 +8443,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8469,9 +8469,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8499,13 +8499,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8525,9 +8525,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8555,13 +8555,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8581,9 +8581,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8611,13 +8611,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8637,9 +8637,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8667,13 +8667,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8693,9 +8693,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8723,13 +8723,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8749,9 +8749,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8779,13 +8779,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8805,9 +8805,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8835,13 +8835,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8861,9 +8861,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8891,13 +8891,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8917,9 +8917,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -8947,13 +8947,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -8973,9 +8973,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9003,13 +9003,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9029,9 +9029,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9059,13 +9059,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9085,9 +9085,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9115,13 +9115,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9141,9 +9141,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9171,13 +9171,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9197,9 +9197,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9227,13 +9227,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9253,9 +9253,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9283,13 +9283,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9309,9 +9309,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9339,13 +9339,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9365,9 +9365,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9395,13 +9395,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9421,9 +9421,9 @@
         "y": 1446
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9451,13 +9451,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9477,9 +9477,9 @@
         "y": 1542
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9507,13 +9507,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9533,9 +9533,9 @@
         "y": 1542
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9563,13 +9563,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9589,9 +9589,9 @@
         "y": 1542
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9619,13 +9619,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9645,9 +9645,9 @@
         "y": 1542
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -9675,13 +9675,13 @@
       "emissive": {
         "sources": [
           {
-            "geometry": "sidecar-required",
+            "geometry": "sidecar",
             "id": "emissive.agent.codex.gpt56sol.reactor",
             "kind": "rune",
-            "strength": 0.7
+            "strength": 0.18
           }
         ],
-        "strength": 0.7
+        "strength": 0
       },
       "materialClass": "metal",
       "occluder": {
@@ -9701,9 +9701,9 @@
         "y": 1542
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
+        "material": "characters/agent.codex.gpt56sol/sheet.material.png",
+        "occluder": "characters/agent.codex.gpt56sol/sheet.occluder.png"
       },
       "sourcePath": "characters/agent.codex.gpt56sol/sheet.png",
       "sourceRect": {
@@ -11657,7 +11657,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "ef1252bb884d3a94f74041849bf02a5874e6dd55f154a24994f7e3165a674ccb",
+      "sourceSha256": "732777ed8ac543d88a23d19ba3d49f087b18405c8bc03301a9bb3a88391a7ae7",
       "sourceSize": {
         "h": 32,
         "w": 32

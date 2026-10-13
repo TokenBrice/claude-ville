@@ -76,6 +76,8 @@ const jobs = {};
 const templateGroups = {};
 // …and the PixelLab animation mode that produced them (template or skeleton-v3).
 let templateMode = null;
+// Custom rig animations (v3 / pixminimax) staged per facing: animation group ids.
+const animationGroups = {};
 
 for (const stagePath of list(option('stage')).map((path) => join(repoRoot, path))) {
     if (!existsSync(stagePath)) fail(`stage ${stagePath} does not exist`);
@@ -94,6 +96,11 @@ for (const stagePath of list(option('stage')).map((path) => join(repoRoot, path)
         if (meta.keypoints?.groups?.[name]) {
             keypoints.groups[name] = meta.keypoints.groups[name];
             Object.assign(keypoints.base, meta.keypoints.base || {});
+        }
+        // stage-animation-strip.mjs stages: the rig animation group per facing.
+        for (const [direction, source] of Object.entries(meta.provenance?.sources || {})) {
+            const short = SHORT[DIRECTIONS.indexOf(direction)];
+            if (short && source?.animationGroupId) (animationGroups[name] ||= {})[short] = source.animationGroupId;
         }
         // One job per facing per clip: groups packed into one clip share it.
         const clipName = meta.jobs?.[stageName]?.clip || name;
@@ -174,6 +181,7 @@ const record = {
         generationSize: entry.actionStrip?.provenance?.generationSize ?? keypoints.pad,
         ...(Object.keys(jobs).length ? { poseStrips: { generationMode: 'skeleton-v3', jobs: mergeJobs(entry.actionStrip?.provenance?.poseStrips?.jobs, jobs) } } : {}),
         ...(Object.keys(templateGroups).length ? { templateStrips: { generationMode: templateMode, groups: mergeJobs(entry.actionStrip?.provenance?.templateStrips?.groups, templateGroups) } } : {}),
+        ...(Object.keys(animationGroups).length ? { animationStrips: { groups: mergeJobs(entry.actionStrip?.provenance?.animationStrips?.groups, animationGroups) } } : {}),
     },
 };
 

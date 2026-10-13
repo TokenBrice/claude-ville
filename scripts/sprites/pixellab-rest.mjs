@@ -476,8 +476,34 @@ export async function waitForCharacterAnimation(token, characterId, {
     let best = -1;
     let lastProgress = Date.now();
     for (;;) {
-        const character = await getCharacter(token, characterId);
+        // A transient network failure (DNS, reset) is a missed poll, not a
+        // failed job: the paid job keeps running on the server.
+        const character = await getCharacter(token, characterId).catch((err) => {
+            if (!(err instanceof TypeError)) throw err;
+            console.log(`[pixellab] ${label}: poll failed (${err?.cause?.code || err?.message}); retrying`);
+            return null;
+        });
+        if (!character) {
+            if (Date.now() > deadline) throw new Error(`PixelLab animation ${label} timed out`);
+            await sleep(pollIntervalMs);
+            continue;
+        }
         const { byDirection, byDirectionGroup, groupIds } = characterAnimationFrames(character, animationName, { frameCount });
+        // The per-direction winner follows record order, which can put an
+        // excluded (pre-request) record last; any fresh complete record counts.
+        if (excludeGroupIds) {
+            for (const direction of directions) {
+                if (byDirection.has(direction) && !excludeGroupIds.has(byDirectionGroup.get(direction))) continue;
+                for (const animation of character?.animations || []) {
+                    if (animation.display_name !== animationName && animation.animation_type !== animationName) continue;
+                    if (!animation.animation_group_id || excludeGroupIds.has(animation.animation_group_id)) continue;
+                    const entry = (animation.directions || []).find((item) => item.direction === direction);
+                    if ((entry?.frames?.length || 0) < frameCount) continue;
+                    byDirection.set(direction, entry.frames);
+                    byDirectionGroup.set(direction, animation.animation_group_id);
+                }
+            }
+        }
         const ready = directions.filter((direction) => byDirection.has(direction)
             && (!excludeGroupIds || !byDirectionGroup.get(direction) || !excludeGroupIds.has(byDirectionGroup.get(direction))));
         if (ready.length === directions.length) return { character, byDirection, byDirectionGroup, groupIds };

@@ -50,7 +50,10 @@ const PROFILES = Object.freeze({
         },
     },
     'agent.codex.gpt56luna': character('metal'),
-    'agent.codex.gpt56sol': character('metal'),
+    // Sampled 2026-10-13: the reactor core's oranges (chest height, front facings).
+    'agent.codex.gpt56sol': character('metal', 0.18, ['#cb6728', '#d26e1b', '#9b3c0f']),
+    // Sampled 2026-10-13 from the sheet: the violet visor slit only (head rows).
+    'agent.codex.gpt6astra': character('metal', 0.16, ['#9d73d4', '#8e6dc3']),
     'agent.codex.gpt54': character('metal'),
     'agent.codex.gpt53spark': character('metal'),
     'agent.claude.base': character('fabric'),

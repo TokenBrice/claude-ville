@@ -97,6 +97,10 @@ const MODEL_REGISTRY = [
         "sample": "claude-opus-5",
         "shortLabel": "Opus",
         "spriteId": "agent.claude.opus",
+        "spriteVariants": [
+            "agent.claude.opus",
+            "agent.claude.opus.b"
+        ],
         "trim": [
             "#ffe7a8",
             "#c8a3ff",
@@ -130,6 +134,10 @@ const MODEL_REGISTRY = [
         "sample": "claude-opus-4-8",
         "shortLabel": "Opus",
         "spriteId": "agent.claude.opus",
+        "spriteVariants": [
+            "agent.claude.opus",
+            "agent.claude.opus.b"
+        ],
         "trim": [
             "#ffe7a8",
             "#c8a3ff",
@@ -163,6 +171,10 @@ const MODEL_REGISTRY = [
         "sample": "claude-opus-4-7",
         "shortLabel": "Opus",
         "spriteId": "agent.claude.opus",
+        "spriteVariants": [
+            "agent.claude.opus",
+            "agent.claude.opus.b"
+        ],
         "trim": [
             "#ffe7a8",
             "#c8a3ff",
@@ -196,6 +208,10 @@ const MODEL_REGISTRY = [
         "sample": "claude-opus-4-6",
         "shortLabel": "Opus",
         "spriteId": "agent.claude.opus",
+        "spriteVariants": [
+            "agent.claude.opus",
+            "agent.claude.opus.b"
+        ],
         "trim": [
             "#ffe7a8",
             "#c8a3ff",
@@ -328,6 +344,10 @@ const MODEL_REGISTRY = [
         "sample": "claude-opus-4-5",
         "shortLabel": "Opus",
         "spriteId": "agent.claude.opus",
+        "spriteVariants": [
+            "agent.claude.opus",
+            "agent.claude.opus.b"
+        ],
         "trim": [
             "#ffe7a8",
             "#c8a3ff",
@@ -493,6 +513,10 @@ const MODEL_REGISTRY = [
         "sample": "gpt-6.1-sol",
         "shortLabel": "6.1 Sol",
         "spriteId": "agent.codex.gpt56sol",
+        "spriteVariants": [
+            "agent.codex.gpt56sol",
+            "agent.codex.gpt56sol.b"
+        ],
         "trim": [
             "#ffd76a",
             "#ffedb3",
@@ -526,6 +550,10 @@ const MODEL_REGISTRY = [
         "sample": "gpt-6-sol",
         "shortLabel": "6 Sol",
         "spriteId": "agent.codex.gpt56sol",
+        "spriteVariants": [
+            "agent.codex.gpt56sol",
+            "agent.codex.gpt56sol.b"
+        ],
         "trim": [
             "#ffd76a",
             "#ffedb3",
@@ -559,6 +587,10 @@ const MODEL_REGISTRY = [
         "sample": "gpt-6-luna",
         "shortLabel": "6 Luna",
         "spriteId": "agent.codex.gpt56luna",
+        "spriteVariants": [
+            "agent.codex.gpt56luna",
+            "agent.codex.gpt56luna.b"
+        ],
         "trim": [
             "#cfe4ff",
             "#9db8d9",
@@ -592,6 +624,10 @@ const MODEL_REGISTRY = [
         "sample": "gpt-5.6-sol",
         "shortLabel": "5.6 Sol",
         "spriteId": "agent.codex.gpt56sol",
+        "spriteVariants": [
+            "agent.codex.gpt56sol",
+            "agent.codex.gpt56sol.b"
+        ],
         "trim": [
             "#ffd76a",
             "#ffedb3",
@@ -658,6 +694,10 @@ const MODEL_REGISTRY = [
         "sample": "gpt-5.6-luna",
         "shortLabel": "5.6 Luna",
         "spriteId": "agent.codex.gpt56luna",
+        "spriteVariants": [
+            "agent.codex.gpt56luna",
+            "agent.codex.gpt56luna.b"
+        ],
         "trim": [
             "#cfe4ff",
             "#9db8d9",

@@ -99,7 +99,7 @@ test('a delayed profile sheet preserves body and label geometry until the ready 
         assert.equal(s._gpuFrameRecord.source, oldSource);
         assert.equal(s._gpuFrameRecord.textureKey, `agent-sheet:${oldKey}`);
     }
-    const nextId = getModelVisualIdentity(s.agent.model, undefined, 'claude').spriteId;
+    const nextId = getModelVisualIdentity(s.agent.model, undefined, 'claude', s.agent.id).spriteId;
     sheets.set(nextId, nextSource);
     s.draw(ctx);
     assert.equal(s.spriteCanvas, nextSource);

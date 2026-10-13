@@ -58,10 +58,10 @@ export const PROP_SIDECAR_RULES = Object.freeze({
         accept: ({ h, s, v }) => (h >= 15 && h <= 62 && s >= 0.2 && v >= 0.45)
             || ((h >= 340 || h <= 8) && s >= 0.5 && v >= 0.7),
     },
-    // The four lit panes of the lantern head; the iron cage and the dark red
-    // side pane stay albedo.
+    // The lit glass of the lantern head (2026-10-13 post lantern); the iron
+    // cap, cage and post stay albedo.
     'prop.lantern': {
-        rect: [15, 0, 7, 5],
+        rect: [13, 1, 7, 6],
         alpha: 144,
         accept: ({ h, s, v }) => (h <= 45 || h >= 345) && s >= 0.25 && v >= 0.65,
     },

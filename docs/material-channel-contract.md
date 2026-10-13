@@ -768,14 +768,33 @@ actionStrip:
   none), one cycle per gesture period with the contact frame on the beat; `wait`
   shows its held row. Every strip frame passes `scripts/sprites/feet-audit.mjs`
   (feet ±2 px of the V7 anchor, no new detached fragment, non-arm identity
-  held, the wait hand ≥ 3 px above the head) before it ships.
+  held, the wait hand ≥ 3 px above the head) before it ships. A wide-hat or
+  hooded profile may hold the wait hand beside the head instead (Opus and its
+  variant): the clearance check then fails by design and is reviewed by eye.
+- Expression groups (hero pass, 2026-10-13): `think` (THINK: hand to chin, 3
+  rows) and `celebrate` (CELEBRATE, a verified outcome: a raised fist, 3
+  rows) on the work facings. `AgentSprite.actionStripGroup` asks for them from
+  the resolved agent action like `read`; they play the two-frame read beat, and
+  an authored `think` pose replaces the procedural thought chip (the release
+  crown stays over a celebration). A profile or facing without the group keeps
+  the procedural chip.
 - Pose strips (7.1/7.3): `scripts/sprites/generate-pose-strip.mjs` stages
   skeleton-v3 candidates (idle row-6 first frame, arm joints only, feet,
   hips, head and prop hand verbatim; `--clip` packs several groups into one
   ≤ 15-frame job), `feet-audit.mjs --strip=…` reviews them, and
   `scripts/sprites/assemble-action-strip.mjs` is the single writer of
   `actions.png` (shipped groups kept, staged groups added in the order read,
-  wait, sit, strike, tinker, gaze) and prints the `actionStrip` record.
+  wait, sit, strike, tinker, gaze, run, then any other group by name) and
+  prints the `actionStrip` record.
+- Custom-animation stages: an animation already on the rig (MCP
+  `animate_character`, e.g. `mode: pixminimax`, one job per facing) is staged
+  with `scripts/sprites/stage-animation-strip.mjs --id=<id> --group=<name>
+  --animation=<rig animation name> --frames=a,b,c [--directions=…] --seat`
+  (`--seat` lands each frame's feet on the V7 anchor the way feet-audit
+  measures them; a second run merges other facings into the same stage). The
+  assembler records those facings under `provenance.animationStrips`.
+  Pixminimax keeps a held staff or prop in hand far better than v3 on robed
+  profiles (Opus read and wait), at 1 generation per facing.
 - Production: `node scripts/sprites/generate-action-strip.mjs --ids=<id> --plan`
   quotes the live balance and per-direction generations; without `--plan` it
   requests one named v3 group at a time (Tier 1 allows 8 concurrent background

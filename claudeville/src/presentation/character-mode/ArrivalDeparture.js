@@ -107,7 +107,7 @@ function providerColor(provider) {
 // alone, so a return still identifies its child after the sprite is disposed.
 function agentSignatureFor(agent) {
     if (!agent?.id) return null;
-    const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
+    const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider, agent.id);
     const family = identity.spriteId || `agent.${providerPaletteKey(agent)}.base`;
     return agentSignature(agent.id, family);
 }

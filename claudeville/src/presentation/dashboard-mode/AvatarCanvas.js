@@ -250,7 +250,7 @@ export class AvatarCanvas {
         const w = this.canvas.width;
         const h = this.canvas.height;
         const app = this.agent.appearance;
-        const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
+        const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider, this.agent.id);
         const trim = identity.trim?.[0] || app.shirt;
         const accent = identity.accent?.[0] || app.skin;
 

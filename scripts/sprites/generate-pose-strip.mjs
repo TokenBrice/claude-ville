@@ -37,6 +37,7 @@
 //   … --assemble-only        re-assemble from the cache, no spend
 //   … --freeze-detached      freeze the idle's detached props in every group (freezeProps)
 //   … --force=<group>        re-request a cached group (new seed); --force=clip for a clip
+//   … --group-override=<json> replace a group's fields, e.g. '{"wait":{"frames":[…]}}'
 //   Output: --out=<dir> (default output/pose-strips) → <id>.<groups>.png + .json
 //   (the .json carries every frame's keypoints for feet-audit's identity check)
 //   Audit every candidate with scripts/sprites/feet-audit.mjs, then ship it with
@@ -92,7 +93,7 @@ const ESTIMATE_COST = 1;
 // poses the other arm (never the prop arm). `clearance` (wait) lifts the hand
 // joint at least that many px above the head top so the raised hand clears
 // the hat or helm. `contactFrame` is the WorkDownbeats frame.
-const GROUPS = Object.freeze({
+const BASE_GROUPS = Object.freeze({
     // Edit/Write/apply_patch at the Forge: raise overhead, cock behind the
     // head, downswing, contact at waist height, recoil, settle. Frames 0–1 go
     // overhead on every facing so the E/SE arc never reads as pointing.
@@ -163,6 +164,34 @@ const GROUPS = Object.freeze({
             { upper: 165, fore: 185 },
         ],
         hold: 2,
+    },
+    // Planning/thinking (THINK): the hand rises to the chin and rests there,
+    // the other forearm folds across the waist; the eyes lift a pixel on the
+    // held beat. Calm: the runtime alternates the last two rows only.
+    think: {
+        route: 'skeleton',
+        action: 'resting the chin on one hand, thinking quietly',
+        arm: 'near',
+        support: { upper: 20, fore: 95 },
+        frames: [
+            { upper: 35, fore: 120 },
+            { upper: 30, fore: 160 },
+            { upper: 30, fore: 160, look: 1 },
+        ],
+        hold: 2,
+    },
+    // Verified outcome (CELEBRATE): a wind-up, then both empty fists high in
+    // triumph (the prop hand keeps its prop and only the free arm rises).
+    celebrate: {
+        route: 'skeleton',
+        action: 'raising both empty fists high in triumph',
+        arm: 'near',
+        frames: [
+            { upper: 95, fore: 130, support: { upper: 60, fore: 90 } },
+            { upper: 160, fore: 175, support: { upper: 160, fore: 175 } },
+            { upper: 150, fore: 185, support: { upper: 150, fore: 185 } },
+        ],
+        hold: 1,
     },
     // Rest seat, heavy-armour route: sit down once and hold (hands on thighs).
     sit: {
@@ -245,6 +274,7 @@ const GROUPS = Object.freeze({
 const PROPS = Object.freeze({
     'agent.claude.fable': { prop: 'a tall golden staff', hands: { 'south-east': 'right', 'south-west': 'left' } },
     'agent.claude.opus': { prop: 'a tall wooden staff with a crystal head', hands: { 'south-east': 'right', west: 'left', 'south-west': 'left' } },
+    'agent.claude.opus.b': { prop: 'a tall wooden staff with a crystal head', hands: { 'south-east': 'right', east: 'right', west: 'left', 'south-west': 'left' } },
     'agent.claude.sonnet': { prop: 'a wooden staff topped with a violet crystal', hands: { 'south-west': 'left' } },
     'agent.deepseek.flash': { prop: 'a short dagger held low', hands: { west: 'right' } },
     'agent.deepseek.flash.high': { prop: 'a wooden longbow held low in front', hands: { 'south-east': 'right', east: 'right', west: 'left', 'south-west': 'left' } },
@@ -292,6 +322,11 @@ const smearMax = Number(option('smear', '40'));
 // frame of the facing takes the idle cell's pixels (idle opaque → idle pixel,
 // else cleared) — a planted staff the model nudged; the box must stay clear of
 // the body. Both are recorded in the stage json provenance.
+// `--group-override='{"wait":{"clearance":0,"frames":[…]}}'` replaces a group's
+// fields for one profile's request (recorded in the stage json provenance).
+const groupOverride = JSON.parse(option('group-override', '{}'));
+const GROUPS = Object.freeze(Object.fromEntries(Object.entries(BASE_GROUPS)
+    .map(([name, group]) => [name, { ...group, ...(groupOverride[name] || {}) }])));
 const seatFrontOverride = JSON.parse(option('seat-front', '{}'));
 const freezeBoxes = Object.fromEntries((option('freeze') || '').split(';').filter(Boolean).map((spec) => {
     const [facing, box] = spec.split('@');
@@ -474,7 +509,8 @@ async function skeletonClip(names, direction) {
     const seatFront = names.some((name) => GROUPS[name].pose === 'seat-front') ? { seatFront: seatFrontParams(GROUPS['sit-front']) } : {};
     const frozen = freezeBoxes[direction] ? { freeze: freezeBoxes[direction] } : {};
     const detachedFrozen = freezeDetachedAll ? { freezeDetached: true } : {};
-    return { cells, base, keypoints: perGroup, provenance: { jobId: job.jobId, seed: job.seed, usage: job.usage, ...seatFront, ...frozen, ...detachedFrozen } };
+    const overridden = names.some((name) => groupOverride[name]) ? { groupOverride: Object.fromEntries(names.filter((name) => groupOverride[name]).map((name) => [name, groupOverride[name]])) } : {};
+    return { cells, base, keypoints: perGroup, provenance: { jobId: job.jobId, seed: job.seed, usage: job.usage, ...seatFront, ...frozen, ...detachedFrozen, ...overridden } };
 }
 
 // The prop clause for this facing: the profile's baked prop stays still in
@@ -616,7 +652,8 @@ function workSkeleton(base, pose, direction, group) {
         out[`${side} ARM`] = { ...out[`${side} ARM`], ...hand };
     };
     if (pose.upper !== undefined) poseArm(gesture, pose.upper, pose.fore ?? pose.upper, pose.clearance ?? group.clearance ?? 0);
-    if (group.support && other !== propHand) poseArm(other, group.support.upper, group.support.fore);
+    const support = pose.support || group.support;
+    if (support && other !== propHand) poseArm(other, support.upper, support.fore);
     return base.map((k) => {
         const p = out[k.label];
         return { x: clamp01(p.x / PAD), y: clamp01(p.y / PAD), label: k.label, z_index: k.z_index };

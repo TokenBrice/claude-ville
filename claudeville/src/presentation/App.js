@@ -1396,7 +1396,7 @@ export class App {
         if (!agents || typeof agents.values !== 'function') return null;
         const ids = new Set();
         for (const agent of agents.values()) {
-            const identity = getModelVisualIdentity(agent?.model, agent?.effort, agent?.provider);
+            const identity = getModelVisualIdentity(agent?.model, agent?.effort, agent?.provider, agent?.id);
             if (identity?.spriteId?.startsWith('agent.')) ids.add(identity.spriteId);
         }
         return [...ids];
@@ -1406,7 +1406,7 @@ export class App {
         if (this._characterAssetsBound) return;
         this._characterAssetsBound = true;
         const request = (agent) => {
-            const identity = getModelVisualIdentity(agent?.model, agent?.effort, agent?.provider);
+            const identity = getModelVisualIdentity(agent?.model, agent?.effort, agent?.provider, agent?.id);
             const id = identity?.spriteId;
             if (!id?.startsWith('agent.')) return;
             void this._loadYamlParser().then(() => (

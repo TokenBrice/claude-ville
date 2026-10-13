@@ -24,14 +24,27 @@ export const GLOBAL_FLOOR = 272;
 // with the endpoint's JSON body (never the request headers).
 export async function api(token, path, { method = 'GET', body = null, label = path, slotWaitMs = 30_000, slotAttempts = 20 } = {}) {
     for (let attempt = 1; ; attempt++) {
-        const response = await fetch(`${API_BASE}${path}`, {
-            method,
-            headers: {
-                Authorization: `Bearer ${token}`,
-                ...(body ? { 'Content-Type': 'application/json' } : {}),
-            },
-            ...(body ? { body: JSON.stringify(body) } : {}),
-        });
+        let response;
+        try {
+            response = await fetch(`${API_BASE}${path}`, {
+                method,
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    ...(body ? { 'Content-Type': 'application/json' } : {}),
+                },
+                ...(body ? { body: JSON.stringify(body) } : {}),
+            });
+        } catch (err) {
+            // A DNS failure happens before the request leaves, so a retry can
+            // never double-submit a paid job.
+            const code = err?.cause?.code;
+            if ((code === 'EAI_AGAIN' || code === 'ENOTFOUND') && attempt < slotAttempts) {
+                console.log(`[pixellab] ${label}: ${code}, retrying in 15s`);
+                await sleep(15_000);
+                continue;
+            }
+            throw err;
+        }
         const json = await response.json().catch(() => null);
         if (response.ok) return json;
         const busy = response.status === 429 && /concurrent/i.test(JSON.stringify(json));

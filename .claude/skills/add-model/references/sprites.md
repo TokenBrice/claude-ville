@@ -6,6 +6,7 @@ Follow the canonical [Add One Character](../../../../scripts/sprites/generate.md
 2. Set integer `generationSize` from 32 through 128; keep engine `size: 92`. Use the documented unverified default comment only when generation history is unknown.
 3. Write the 736x920 PNG to `claudeville/assets/sprites/characters/<spriteId>/sheet.png`.
 4. Set the registry row's `spriteId` to that exact manifest ID.
+   A body variant (a second authored body for the same model) is listed in the row's optional `spriteVariants` (base `spriteId` first, e.g. `["agent.claude.opus", "agent.claude.opus.b"]`); `getModelVisualIdentity(model, effort, provider, agentId)` then gives each agent one stable body by a hash of its id. Codex variants also need their own `CodexCelestialGrips.js` profile (`node scripts/sprites/measure-wrists.mjs --id=<variant>`).
 5. Bump manifest `style.assetVersion` only after PNG bytes change.
 6. If `materialSidecar`, `emissiveSidecar`, or `occluderSidecar` is declared, add its required PNG. Add a profile in `scripts/sprites/author-roster-channels.mjs` only when that script authors the sidecars.
 7. Edit both the manifest palette block and `claudeville/assets/sprites/palettes.yaml` only for a new or changed palette.

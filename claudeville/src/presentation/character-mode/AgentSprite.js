@@ -261,6 +261,13 @@ const ACTION_BEAT_MS = 600;
 // period with its contact frame on the period boundary, where WorkDownbeats
 // strikes. Held wait and work poses carry no idle bob.
 const WORK_STRIP_GROUPS = new Set(['strike', 'tinker', 'gaze']);
+// Agent actions a profile may author as a body pose. A profile without the
+// group resolves no cell, so the procedural chip stays in charge.
+const ACTION_STRIP_GROUPS = Object.freeze({
+    [AgentAction.READ]: 'read',
+    [AgentAction.THINK]: 'think',
+    [AgentAction.CELEBRATE]: 'celebrate',
+});
 // 2.3 — how long the resolved command slip shows its wax seal. Static mark,
 // bounded to the lifecycle event that earned it.
 const SEALED_SLIP_MS = 1800;
@@ -4009,7 +4016,7 @@ export class AgentSprite {
             return;
         }
 
-        let identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
+        let identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider, this.agent.id);
         const provider = this._providerKey();
         const variant = this._hashVariant();
         let spriteId = identity.spriteId || `agent.${provider}.base`;
@@ -6032,7 +6039,8 @@ export class AgentSprite {
 
     // Which authored group the current truth asks for. The held wait row wins
     // over the generic work/think vocabulary (2.3); an admitted tool ritual
-    // asks for its tool class's work strip (7.3); reading keeps its group.
+    // asks for its tool class's work strip (7.3); reading, thinking and a
+    // verified celebration keep their groups.
     // Never derived from elapsed time.
     actionStripGroup() {
         // 7.1 — a villager on its seat sits (static held row).
@@ -6040,7 +6048,7 @@ export class AgentSprite {
         if (this.agent?.status === AgentStatus.WAITING_ON_USER) return 'wait';
         const work = this._admittedWorkStripGroup();
         if (work) return work;
-        return resolveAgentAction(this.agent, { chatting: this.chatting }) === AgentAction.READ ? 'read' : null;
+        return ACTION_STRIP_GROUPS[resolveAgentAction(this.agent, { chatting: this.chatting })] || null;
     }
 
     _admittedWorkStripGroup() {
@@ -6123,7 +6131,7 @@ export class AgentSprite {
     }
 
     _canonicalSpriteFamily() {
-        const identity = getModelVisualIdentity(this.agent?.model, this.agent?.effort, this.agent?.provider);
+        const identity = getModelVisualIdentity(this.agent?.model, this.agent?.effort, this.agent?.provider, this.agent?.id);
         return identity.spriteId || `agent.${this._providerKey()}.base`;
     }
 
@@ -6193,7 +6201,7 @@ export class AgentSprite {
     // spriteCanvas yet, and it must still leave as itself.
     _composeBaseSheet() {
         if (!this.compositor) return null;
-        const identity = getModelVisualIdentity(this.agent?.model, this.agent?.effort, this.agent?.provider);
+        const identity = getModelVisualIdentity(this.agent?.model, this.agent?.effort, this.agent?.provider, this.agent?.id);
         const provider = this._providerKey();
         return this.compositor.spriteFor(
             identity.spriteId || `agent.${provider}.base`,
@@ -7530,6 +7538,7 @@ export class AgentSprite {
         // 2.2 — the authored body already holds the book: one instrument per
         // fact, so the procedural read prop is removed for strip characters.
         if (poseGroup === 'read' && action === AgentAction.READ) return;
+        if (poseGroup === 'think' && action === AgentAction.THINK) return;
         const { dx, dy, bounds, drawScale } = frameGeometry || {};
         if (!bounds || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
         const width = Math.max(1, bounds.maxX - bounds.minX);

@@ -2,6 +2,33 @@
 
 ---
 
+## v0.54.0 — *The Moonforged Muster* · Oct 13, 2026
+
+The four busiest villagers (Luna, Sol, Astra and Opus) got a visual overhaul: a new Luna, fixed and fuller poses, body variants so a crowd of one model no longer looks identical, and night glow.
+
+- **A new Luna.** GPT-6 Luna, the most common villager, was a thin silver figure with 16 colours. She is now a silver moon-knight with a tall crescent crest, a silver ponytail and a starry navy cape. Every animation was redone for the new body: walk, idle, read, wait, work, sit and run. Her saber is re-fitted to the new hands.
+- **Agents think and celebrate with their whole body.** Instead of a small icon by the hand, a thinking agent rests its chin on its hand and an agent with a verified success raises a fist. This applies to Luna, Sol, Astra and Opus on the four facings agents rest in; other facings and models keep the old icons. The thought icon steps aside when the body shows the pose; the release crown stays.
+- **Opus fixes.**
+  - Her "waiting for you" pose no longer shows a huge, misshapen raised arm; the hand now rises beside her hat.
+  - She reads from a spellbook while keeping her staff, instead of a drawn-on book icon.
+- **Body variants.** Opus, Sol and Luna each have a second body, and each agent keeps one for its whole life:
+  - Opus: a hooded scholar.
+  - Sol: a sun-paladin under a sunburst crown.
+  - Luna: a winged knight with a glowing crescent crest.
+
+  Each variant has its own read, think, celebrate, wait and work poses, and the Codex variants hold their weapons. The model is still readable from colours and gear.
+- **Night glow.** Astra's violet visor and Sol's reactor core now glow after dusk. Sol had declared a glow but never actually had one.
+- **A better street lantern.** The lantern used across the village (15 placements) is now a slim iron post lantern instead of a tiny lamp on a dark slab, with its glass still lit at night. No props were added.
+- **Sprite tooling.**
+  - `scripts/sprites/stage-animation-strip.mjs` turns any animation on a character's PixelLab rig into a strip group, with feet seated on the anchor.
+  - `scripts/sprites/measure-wrists.mjs` proposes weapon-grip wrist tables from PixelLab skeleton estimates.
+  - The strip scripts no longer pay twice after a network blip or miss a finished run animation.
+  - `models.json` rows accept `spriteVariants`.
+
+Validation: `gate:release` is clean, with 1817 unit tests and both integration tests passing. Every new pose passed the feet audit on the facings it ships, and each was reviewed by eye. `verify:render` was not run (its Playwright browser is not installed on the release machine). On the live village the world boots with no console errors, and the new Luna, Sol's variant with its greatblade in hand, Opus's variant and the new lantern were checked in view.
+
+---
+
 ## v0.53.1 — *The Lifted Stones* · Oct 12, 2026
 
 The Chronicle monuments read as tombstones scattered across the districts, so they are gone. The village still keeps its history; it just no longer marks every commit with a stone.

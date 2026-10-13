@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import * as browserRegistry from '../../claudeville/src/config/models.generated.js';
 import {
+    agentBodySpriteId,
     formatModelLabel as browserFormatModelLabel,
     getModelVisualIdentity,
     POLICY_SPRITE_IDS,
@@ -136,6 +137,22 @@ describe('presentation model identity parity', () => {
     }
 });
 
+test('body variants: base body without an agent id, one stable body per agent, every variant reachable', () => {
+    assert.equal(getModelVisualIdentity('gpt-6-luna', 'high', 'codex').spriteId, 'agent.codex.gpt56luna');
+    const bodies = new Set();
+    for (let i = 0; i < 64; i++) {
+        const id = `agent-${i}`;
+        const body = getModelVisualIdentity('gpt-6-luna', 'high', 'codex', id).spriteId;
+        assert.equal(getModelVisualIdentity('gpt-6-luna', 'xhigh', 'codex', id).spriteId, body, 'effort never changes the body');
+        bodies.add(body);
+    }
+    assert.deepEqual([...bodies].sort(), ['agent.codex.gpt56luna', 'agent.codex.gpt56luna.b']);
+    assert.equal(agentBodySpriteId('agent.x', ['agent.x'], 'a'), 'agent.x');
+    assert.equal(agentBodySpriteId('agent.x', null, 'a'), 'agent.x');
+    // Rows without variants keep their single body for every agent.
+    assert.equal(getModelVisualIdentity('gpt-6-astra', 'high', 'codex', 'agent-1').spriteId, 'agent.codex.gpt6astra');
+});
+
 test('registry and defaults cover every manifest agent sprite in both directions', (t) => {
     if (!manifestTools) {
         if (manifestImportError?.code === 'ERR_MODULE_NOT_FOUND' && String(manifestImportError.message).includes('js-yaml')) {
@@ -154,10 +171,15 @@ test('registry and defaults cover every manifest agent sprite in both directions
 
     for (const row of browserRegistry.MODEL_REGISTRY) {
         assert.ok(characterIds.has(row.spriteId), `${row.id}: manifest is missing ${row.spriteId}`);
+        for (const variant of row.spriteVariants || []) {
+            assert.ok(characterIds.has(variant), `${row.id}: manifest is missing body variant ${variant}`);
+        }
+        if (row.spriteVariants) assert.equal(row.spriteVariants[0], row.spriteId, `${row.id}: spriteVariants must start with spriteId`);
     }
 
     const referencedIds = new Set([
         ...browserRegistry.MODEL_REGISTRY.map((row) => row.spriteId),
+        ...browserRegistry.MODEL_REGISTRY.flatMap((row) => row.spriteVariants || []),
         ...Object.values(browserRegistry.MODEL_DEFAULTS).map((row) => row.spriteId),
         ...POLICY_SPRITE_IDS,
     ]);
