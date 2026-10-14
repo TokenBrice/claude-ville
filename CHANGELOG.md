@@ -2,6 +2,15 @@
 
 ---
 
+## v0.55.1.1 · Oct 14, 2026 — Hotfix
+
+- **The open-front Tavern now reaches every browser.** The Tavern's art changed after the sprite cache version was last bumped, so a browser that had loaded the first draft kept showing the closed inn, even after a hard refresh. The cache version is bumped, and the open-front Tavern loads on a normal refresh.
+- **A clear beer garden.** The willow clump on the Tavern's bank is gone: its large willow stood right in front of the beer-garden tables, and a small oak grew in the aisle between them. No props were added.
+
+Validation: `gate:release` is clean. The beer garden was checked in the simulated village.
+
+---
+
 ## v0.55.1 — *The Charted Strait* · Oct 14, 2026
 
 Ships in the Commit Lagoon no longer sail across the world ash's islet.

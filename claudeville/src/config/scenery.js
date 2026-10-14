@@ -331,9 +331,9 @@ export const TREE_CLUMPS = [
     // sightline): the ridge's birches running down toward the scholars.
     { tileX: 2.6, tileY: 11.4, trees: 4, species: 'birch', mix: { birch: 0.4, oak: 0.35, pine: 0.25 } },
     { tileX: 10.8, tileY: 12.2, trees: 3, species: 'maple', mix: { oak: 1 } },
-    // River frame: willows on the Archive bank and the east river isle.
+    // River frame: willows on the Archive bank. The Tavern's beer garden
+    // keeps its own bank open.
     { tileX: 3.2, tileY: 21.5, trees: 3, species: 'willow', mix: { oak: 1 } },
-    { tileX: 22.6, tileY: 22.0, trees: 3, species: 'willow' },
     // South meadow copse between the river and the Mine, and the maple clump
     // that frames the gate avenue's approach to the Forge (the inhabited
     // belt's scarlet in October).
