@@ -41,11 +41,18 @@ body:
     validations:
       required: true
   - type: input
+    id: version
+    attributes:
+      label: ClaudeVille version or commit
+      description: Use the version shown in the top bar, or run git rev-parse --short HEAD.
+    validations:
+      required: true
+  - type: input
     id: environment
     attributes:
       label: Environment
-      description: Include the operating system, Node version, and installed providers.
-      placeholder: "OS: ...; Node: ...; Providers installed: ..."
+      description: Include the operating system, Node version, browser version, and relevant provider CLI versions. For UI issues, say whether you used / or /m/.
+      placeholder: "OS: ...; Node: ...; Browser: ...; Provider CLI: ...; Route: ..."
     validations:
       required: true
   - type: textarea

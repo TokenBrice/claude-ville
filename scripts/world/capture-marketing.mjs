@@ -4,7 +4,8 @@
 // playing, and the 1280x640 social card. Needs the server on :4000.
 // Output: docs/assets/github/*.png with --write, else output/playwright/marketing-*.png.
 import { chromium } from 'playwright';
-import { mkdirSync } from 'node:fs';
+import assert from 'node:assert/strict';
+import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,13 +13,13 @@ const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const write = process.argv.includes('--write');
 const outDir = write ? join(repoRoot, 'docs', 'assets', 'github') : join(repoRoot, 'output', 'playwright');
 const prefix = write ? '' : 'marketing-';
-const url = 'http://localhost:4000/?sim=1&scenario=readme-showcase';
+const url = 'http://localhost:4000/?sim=1&scenario=readme-showcase&renderer=webgl';
 mkdirSync(outDir, { recursive: true });
 
 // Projection.js: tileToWorld with 64x32 tiles. Zoom snaps to the 1/2/3 pixel grid.
 const TILE_HALF_WIDTH = 32;
 const TILE_HALF_HEIGHT = 16;
-const HERO = { tileX: 16, tileY: 21, zoom: 1 };
+const HERO = { tileX: 18, tileY: 22, zoom: 1 };
 const DAY_HOUR = 10.5;
 const NIGHT_HOUR = 22;
 
@@ -50,101 +51,151 @@ function astraDetail() {
     };
 }
 
-const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
-const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
-// Auto-camera off so framing sticks; first-run hint already seen.
-await ctx.addInitScript(() => {
-    localStorage.setItem('cv-auto-camera', '0');
-    localStorage.setItem('claudeville.firstRunHint.worldControls.v1', '1');
+// Full Chromium uses the host GPU; the headless shell forces SwiftShader.
+const browser = await chromium.launch({
+    channel: 'chromium',
+    args: [
+        '--autoplay-policy=no-user-gesture-required',
+        '--ignore-gpu-blocklist',
+        '--enable-gpu-rasterization',
+        ...(process.platform === 'linux' ? ['--use-angle=gl-egl'] : []),
+        ...(process.platform === 'darwin' ? ['--use-angle=metal'] : []),
+    ],
 });
-await ctx.route('**/api/session-detail?*', (route) => {
-    const sessionId = new URL(route.request().url()).searchParams.get('sessionId');
-    if (sessionId !== 'readme-astra') return route.continue();
-    return route.fulfill({ contentType: 'application/json', body: JSON.stringify(astraDetail()) });
-});
-const page = await ctx.newPage();
-const errors = [];
-page.on('pageerror', (e) => errors.push(e.message));
+try {
+    const ctx = await browser.newContext({ viewport: { width: 1920, height: 1200 }, deviceScaleFactor: 1 });
+    // Auto-camera off so framing sticks; first-run hint already seen.
+    await ctx.addInitScript(() => {
+        localStorage.setItem('cv-auto-camera', '0');
+        localStorage.setItem('claudeville.firstRunHint.worldControls.v1', '1');
+    });
+    // Keep all API traffic inside the fixture, including dashboard batch polling.
+    const requests = [];
+    await ctx.route('**/api/**', (route) => {
+        const request = route.request();
+        const { pathname, searchParams } = new URL(request.url());
+        requests.push(pathname);
+        let body = {};
+        if (pathname === '/api/session-detail') {
+            assert.ok(searchParams.get('sessionId')?.startsWith('readme-'));
+            body = searchParams.get('sessionId') === 'readme-astra' ? astraDetail() : {};
+        } else if (pathname === '/api/session-details') {
+            const items = request.postDataJSON().items;
+            assert.ok(items.every(item => item.sessionId.startsWith('readme-')));
+            body = { details: Object.fromEntries(items.map(item => [item.key, item.sessionId === 'readme-astra' ? astraDetail() : {}])) };
+        } else {
+            throw new Error(`Unexpected API request in simulation: ${pathname}`);
+        }
+        return route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    });
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    page.on('console', (message) => {
+        if (message.type() === 'error') errors.push(message.text());
+    });
 
-const path = (name) => join(outDir, `${prefix}${name}.png`);
-const clearToasts = () => page.evaluate(() => document.querySelectorAll('.toast').forEach((toast) => toast.remove()));
-async function shot(name) {
+    const path = (name) => join(outDir, `${prefix}${name}.png`);
+    const clearToasts = () => page.evaluate(() => document.querySelectorAll('.toast').forEach((toast) => toast.remove()));
+    async function shot(name) {
+        await clearToasts();
+        assert.deepEqual(errors, [], 'Browser errors must be resolved before publishing screenshots');
+        await page.screenshot({ path: path(name) });
+        console.log(`${prefix}${name}.png`);
+    }
+    async function sky(hour) {
+        await page.evaluate((h) => {
+            const a = window.__claudeVilleAtmosphere;
+            a.setTimelineMode('fixed');
+            a.setHour(h);
+            a.setWeather({ type: 'clear', intensity: 0, windX: 0.2, seed: 4242 });
+            a.freeze();
+        }, hour);
+    }
+    async function frame({ tileX, tileY, zoom }, settle = 1200) {
+        const x = (tileX - tileY) * TILE_HALF_WIDTH;
+        const y = (tileX + tileY) * TILE_HALF_HEIGHT;
+        await page.evaluate(([a, b, z]) => window.cameraSet({ x: a, y: b, zoom: z }), [x, y, zoom]);
+        await page.waitForTimeout(settle);
+    }
+
+    await page.goto(url, { waitUntil: 'networkidle' });
+    await page.waitForFunction(() => window.__claudeVilleApp?._bootState === 'ready' && window.cameraSet && window.__claudeVilleAtmosphere);
+    const backend = await page.evaluate(() => {
+        const app = window.__claudeVilleApp;
+        const gl = app.renderer.gpuWorld?.gl;
+        const info = gl?.getExtension('WEBGL_debug_renderer_info');
+        return { mode: app.renderer.worldRendererMode, active: app.renderer.gpuWorld?.isActive(), renderer: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : null, agents: app.world.agents.size, simulated: app.simMode };
+    });
+    assert.equal(backend.simulated, true);
+    assert.equal(backend.agents, 31);
+    assert.equal(backend.mode, 'webgl');
+    assert.equal(backend.active, true);
+    assert.ok(backend.renderer, 'GPU renderer identity must be available');
+    assert.doesNotMatch(backend.renderer, /swiftshader|llvmpipe|software/i, 'Use a hardware GPU for representative captures');
+    console.log('Capture renderer:', backend);
+    // Automation timing is not a product performance claim; retain the SIMULATED label.
+    await page.addStyleTag({ content: '#statFps { visibility: hidden !important; }' });
+    // Let the crowd walk to its buildings.
+    await page.waitForTimeout(12000);
+
+    // Hero: the whole core (Archive, Command, bridge, Forge, Tavern) at 1x.
+    await sky(DAY_HOUR);
+    await frame(HERO);
+    await shot('world-day');
+
+    // Social card source: the world canvas only, no chrome, same framing.
     await clearToasts();
-    await page.screenshot({ path: path(name) });
-    console.log(`${prefix}${name}.png`);
+    const cardSource = (await page.screenshot({ clip: { x: 448, y: 256, width: 1280, height: 640 } })).toString('base64');
+
+    await page.click('#btnModeDashboard');
+    await page.waitForTimeout(2500);
+    await shot('dashboard');
+
+    await page.click('#btnModeCharacter');
+    await page.waitForTimeout(2000);
+    const astra = page.locator('.sidebar__agent-select[data-agent-id="readme-astra"]');
+    await astra.scrollIntoViewIfNeeded();
+    await astra.click();
+    await page.waitForTimeout(3000);
+    await shot('activity-panel');
+    await page.click('#panelClose');
+    await page.waitForTimeout(800);
+
+    // Open the sound menu and choose Town band.
+    await frame(HERO);
+    await page.click('#topbarSoundMenu');
+    await page.waitForSelector('#soundPanel:not([hidden])');
+    await page.click('#soundPanel [data-preset="townBand"]');
+    await page.waitForFunction(() => document.querySelector('#soundPanel [data-preset="townBand"]')?.getAttribute('aria-checked') === 'true');
+    await page.waitForTimeout(4000);
+    await shot('sound-popover');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => document.activeElement?.blur?.());
+    await page.waitForTimeout(500);
+
+    await sky(NIGHT_HOUR);
+    await frame(HERO, 1800);
+    await shot('world-night');
+
+    const card = await (await browser.newContext({ viewport: { width: 1280, height: 640 }, deviceScaleFactor: 1 })).newPage();
+    await card.setContent(`<!doctype html><html><body style="margin:0;position:relative;width:1280px;height:640px;overflow:hidden;background:#0b0f14">
+      <img src="data:image/png;base64,${cardSource}" style="position:absolute;inset:0;width:1280px;height:640px"/>
+      <div style="position:absolute;inset:0;background:linear-gradient(180deg, rgba(8,6,10,0) 45%, rgba(8,6,10,0.6) 70%, rgba(8,6,10,0.92) 100%)"></div>
+      <div style="position:absolute;left:56px;bottom:48px;font-family:Georgia,'Times New Roman',serif">
+        <div style="font-size:72px;font-weight:700;color:#f5c86e;letter-spacing:1px;line-height:1;text-shadow:0 2px 12px rgba(0,0,0,.6)">ClaudeVille</div>
+        <div style="font-size:32px;color:#f2ead9;margin-top:14px;text-shadow:0 1px 6px rgba(0,0,0,.6)">Your coding agents, one living village</div>
+        <div style="font:18px Arial,sans-serif;color:#d2c5ab;margin-top:18px;letter-spacing:2px">LOCAL &nbsp;·&nbsp; READ-ONLY &nbsp;·&nbsp; 7 PROVIDERS</div>
+      </div>
+    </body></html>`);
+    await card.waitForTimeout(400);
+    await card.screenshot({ path: path('claudeville-og-card') });
+    assert.ok(statSync(path('claudeville-og-card')).size < 1_000_000, 'GitHub social previews must be under 1 MB');
+    console.log(`${prefix}claudeville-og-card.png`);
+
+    assert.deepEqual(errors, []);
+    console.log('Synthetic API requests:', [...new Set(requests)]);
+    console.log('errors: none');
+} finally {
+    await browser.close();
 }
-async function sky(hour) {
-    await page.evaluate((h) => {
-        const a = window.__claudeVilleAtmosphere;
-        a.setTimelineMode('fixed');
-        a.setHour(h);
-        a.setWeather({ type: 'clear', intensity: 0, windX: 0.2, seed: 4242 });
-        a.freeze();
-    }, hour);
-}
-async function frame({ tileX, tileY, zoom }, settle = 1200) {
-    const x = (tileX - tileY) * TILE_HALF_WIDTH;
-    const y = (tileX + tileY) * TILE_HALF_HEIGHT;
-    await page.evaluate(([a, b, z]) => window.cameraSet({ x: a, y: b, zoom: z }), [x, y, zoom]);
-    await page.waitForTimeout(settle);
-}
-
-await page.goto(url, { waitUntil: 'networkidle' });
-await page.waitForFunction(() => window.cameraSet && window.__claudeVilleAtmosphere);
-// Let the crowd walk to its buildings.
-await page.waitForTimeout(12000);
-
-// Hero: the whole core (Archive, Command, bridge, Forge, Tavern) at 1x.
-await sky(DAY_HOUR);
-await frame(HERO);
-await shot('world-day');
-
-// Social card source: the world canvas only, no chrome, same framing.
-await clearToasts();
-const cardSource = (await page.screenshot({ clip: { x: 280, y: 180, width: 1280, height: 640 } })).toString('base64');
-
-await page.click('#btnModeDashboard');
-await page.waitForTimeout(2500);
-await shot('dashboard');
-
-await page.click('#btnModeCharacter');
-await page.waitForTimeout(2000);
-const astra = page.locator('.sidebar__agent-select[data-agent-id="readme-astra"]');
-await astra.scrollIntoViewIfNeeded();
-await astra.click();
-await page.waitForTimeout(3000);
-await shot('activity-panel');
-await page.click('#panelClose');
-await page.waitForTimeout(800);
-
-// First click on the fresh sound chip opens the SOUND popover; choose Town band.
-await frame(HERO);
-await page.click('#topbarSoundToggle');
-await page.waitForSelector('#soundPanel:not([hidden])');
-await page.click('#soundPanel [data-preset="townBand"]');
-await page.waitForFunction(() => /Now/.test(document.getElementById('soundNow')?.textContent || ''), null, { timeout: 15000 });
-await page.waitForTimeout(4000);
-await shot('sound-popover');
-await page.keyboard.press('Escape');
-await page.evaluate(() => document.activeElement?.blur?.());
-await page.waitForTimeout(500);
-
-await sky(NIGHT_HOUR);
-await frame(HERO, 1800);
-await shot('world-night');
-
-const card = await (await browser.newContext({ viewport: { width: 1280, height: 640 }, deviceScaleFactor: 1 })).newPage();
-await card.setContent(`<!doctype html><html><body style="margin:0;position:relative;width:1280px;height:640px;overflow:hidden;background:#0b0f14">
-  <img src="data:image/png;base64,${cardSource}" style="position:absolute;inset:0;width:1280px;height:640px"/>
-  <div style="position:absolute;inset:0;background:linear-gradient(180deg, rgba(8,6,10,0) 45%, rgba(8,6,10,0.6) 70%, rgba(8,6,10,0.92) 100%)"></div>
-  <div style="position:absolute;left:56px;bottom:48px;font-family:Georgia,'Times New Roman',serif">
-    <div style="font-size:72px;font-weight:700;color:#f5c86e;letter-spacing:1px;line-height:1;text-shadow:0 2px 12px rgba(0,0,0,.6)">ClaudeVille</div>
-    <div style="font-size:28px;color:#f2ead9;margin-top:12px;text-shadow:0 1px 6px rgba(0,0,0,.6)">Watch your local AI coding CLIs work in a living pixel village</div>
-  </div>
-</body></html>`);
-await card.waitForTimeout(400);
-await card.screenshot({ path: path('claudeville-og-card') });
-console.log(`${prefix}claudeville-og-card.png`);
-
-console.log('errors:', errors.length ? errors : 'none');
-await browser.close();

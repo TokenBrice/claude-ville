@@ -1,45 +1,20 @@
-## Summary
-
--
-
-## Why
+## What changed and why
 
 -
 
 ## Validation
 
-### Changed paths
+- Commands run and results:
+- Checks skipped and why:
+- Pre-existing failures, if any:
 
-List every path changed by this PR.
+## Visual evidence (if applicable)
 
--
+For UI or canvas changes, include screenshots and console evidence from `npm run verify:render`, plus your World and Dashboard checks on the maintained local server. Mention the viewport, layout (`/` or `/m/`), and selection behavior you checked. Remove this section for changes without a visual effect.
 
-### Commands run and results (verbatim)
+## Release (release PRs only)
 
-Paste the exact commands and their results, including any expected failures.
-
-```text
-
-```
-
-### Browser evidence or "N/A — reason"
-
-For frontend changes, describe the World and Dashboard checks performed, including resize and agent select/deselect. Otherwise write `N/A — reason: ...`.
-
--
-
-### Pre-existing failures
-
-List failures that predate this PR, or write `None`.
-
--
-
-### Release
-
-Confirm the version in `package.json`, `claudeville/index.html`, and the top `CHANGELOG.md` entry agree (`npm run release:verify`). Confirm the release tag and GitHub release were created, or write `N/A — reason: ...`.
-
-- Version trio agrees:
-- Tag + GitHub release created:
+Remove this section for ordinary contributions. Release PRs must pass `npm run release:verify` and `npm run gate:release`; publication follows [CONTRIBUTING.md](https://github.com/TokenBrice/claude-ville/blob/main/CONTRIBUTING.md#releases) only when explicitly requested. Do not create a tag or GitHub release as part of an ordinary pull request.
 
 ## Notes
 

@@ -11,11 +11,11 @@ ClaudeVille is a local-first dashboard for watching AI coding CLI sessions. Smal
 - Focused UI quality improvements that preserve the current design language.
 - New provider proposals after the data source, privacy boundary, and maintenance cost are clear.
 
-Feature ideas usually work best in GitHub Discussions before implementation.
+Feature ideas usually work best in [GitHub Discussions](https://github.com/TokenBrice/claude-ville/discussions) before implementation.
 
 ## Before Editing
 
-1. Read `AGENTS.md` for repo workflow, validation, git hygiene, and desktop-only constraints.
+1. Read [AGENTS.md](AGENTS.md) for repo workflow, validation, git hygiene, and the desktop and mobile layout boundaries.
 2. Read the nearest area README for the files you plan to touch.
 3. Keep provider session files read-only. ClaudeVille observes local CLI logs; it must not mutate them.
 4. Keep changes narrow. Avoid unrelated refactors, generated churn, and formatting sweeps.
@@ -23,13 +23,29 @@ Feature ideas usually work best in GitHub Discussions before implementation.
 
 ## Local Setup
 
+Use Node.js 22.7 or newer and Git:
+
 ```bash
+git clone https://github.com/TokenBrice/claude-ville.git
+cd claude-ville
 npm run dev
 ```
 
-Open `http://localhost:4000`.
+Open [localhost:4000](http://localhost:4000). To explore without live CLI sessions, use the [built-in simulator](http://localhost:4000/?sim=1).
 
-The runtime does not need installed packages. Run `npm install` only when you intentionally need development scripts that import packages, such as sprite validation, visual diffs, Playwright capture, or the audio probe. Repository checks need Node 22.7 or newer; CI runs `npm ci` and `npm run validate:full` on Node 22 and 24.
+The runtime does not need installed packages. For development checks, install the locked dev dependencies:
+
+```bash
+npm ci
+```
+
+Browser checks such as `verify:render` and `audio:probe` also need Playwright's Chromium:
+
+```bash
+npx playwright install chromium
+```
+
+CI runs `npm ci --ignore-scripts` and `npm run validate:full` on Node 22 and 24.
 
 ## Validation
 

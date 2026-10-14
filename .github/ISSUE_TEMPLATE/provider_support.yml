@@ -23,6 +23,14 @@ body:
     validations:
       required: true
   - type: input
+    id: versions
+    attributes:
+      label: ClaudeVille and provider CLI versions
+      description: Include ClaudeVille's top-bar version (or commit) and the affected CLI's version.
+      placeholder: "ClaudeVille: ...; CLI: ..."
+    validations:
+      required: true
+  - type: input
     id: os-node
     attributes:
       label: OS and Node version

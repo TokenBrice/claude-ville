@@ -17,6 +17,7 @@ ClaudeVille documentation stays current, task-oriented, and close to the code it
 | [`docs/agent-provider-addition.md`](agent-provider-addition.md) | Current | Runbook | Adds providers or model-registry rows, including fixture and validation routes. |
 | [`docs/building-style-contract.md`](building-style-contract.md) | Current | Contract | Defines building silhouette, material, palette, lighting, and landmark-quality rules. |
 | [`docs/design-decisions.md`](design-decisions.md) | Current | Reference | Records load-bearing architecture decisions, rationale, and change obligations. |
+| [`docs/local-api.md`](local-api.md) | Current | Reference | Local HTTP endpoints, hook ingestion, and WebSocket updates. |
 | [`docs/material-channel-contract.md`](material-channel-contract.md) | Current | Contract | Defines semantic drawables, material channels, sidecars, atlases, and deterministic defaults. |
 | [`docs/motion-budget.md`](motion-budget.md) | Current | Contract | Defines animation allocation gates, pulse bands, and reduced-motion fallbacks. |
 | [`docs/pixellab-reference.md`](pixellab-reference.md) | Current | Reference | Covers PixelLab capabilities, parameters, lifecycle, and API pitfalls; the generation runbook remains under `scripts/sprites/`. |
@@ -43,7 +44,7 @@ For a screen watched from across the room, 150 % doubles every body, plate and t
 | --- | --- |
 | Hook ingestion | [Permission prompts are inferred or arrive late](troubleshooting.md#permission-prompts-are-inferred-or-arrive-late) documents the payload schema and opt-in Claude Code dogfood setup. |
 | Sound | [Sound does not come back](troubleshooting.md#sound-does-not-come-back) diagnoses the sound control; audio changes are gated locally by `npm run audio:probe` ([`scripts/audio/README.md`](../scripts/audio/README.md)), with decisions in [`design-decisions.md`](design-decisions.md). |
-| Screenshot capture | Run `npm run verify:render` for UI screenshot and console evidence. Use `npm run sprites:capture-baseline` or `npm run sprites:capture-fresh`, followed by `npm run sprites:visual-diff`, for sprite comparisons. Regenerate the README images in `docs/assets/github/` with `node scripts/world/capture-marketing.mjs --write` against the server on port 4000; without `--write` it writes `output/playwright/marketing-*.png`. |
+| Screenshot capture | Run `npm run verify:render` for UI screenshot and console evidence. Use `npm run sprites:capture-baseline` or `npm run sprites:capture-fresh`, followed by `npm run sprites:visual-diff`, for sprite comparisons. For README images, follow the [GitHub image capture guide](assets/github/README.md): `node scripts/world/capture-marketing.mjs --write` uses the maintained server on port 4000 and a hardware GPU; without `--write` it writes previews to `output/playwright/`. |
 | Adapter fixtures | Add redacted synthetic transcripts under `scripts/adapters/fixtures/<provider>/` following its [README](../scripts/adapters/fixtures/README.md); `npm run check:adapter-fixtures` runs the adapter contract. |
 | Releases | [`CONTRIBUTING.md`](../CONTRIBUTING.md#releases) and [`.claude/skills/release/SKILL.md`](../.claude/skills/release/SKILL.md); `scripts/release/prepare.mjs` owns changelog grammar and version edits. |
 | Sprite generation | Follow [`scripts/sprites/generate.md`](../scripts/sprites/generate.md); use the PixelLab reference only for tool/API specifics. |
@@ -60,9 +61,10 @@ For a screen watched from across the room, 150 % doubles every body, plate and t
 
 | Location | Purpose |
 | --- | --- |
-| [`README.md`](../README.md) | Product overview, quick start, providers, and README screenshots. |
+| [`README.md`](../README.md) | Operator overview, quick start, providers, privacy, and README screenshots. |
 | [`AGENTS.md`](../AGENTS.md) / [`CLAUDE.md`](../CLAUDE.md) | Shared-checkout rules, project map, validation routing, and changelog grammar (kept identical after line 2). |
 | [`CHANGELOG.md`](../CHANGELOG.md) | Release history, served in-app through `/api/changelog`; the top entry drives `release:check` and `release:verify`. |
+| [`PRODUCT.md`](../PRODUCT.md) / [`DESIGN.md`](../DESIGN.md) | Product purpose, audience, and the shared UI design language. |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Contribution lanes, setup, remotes, pull requests, and release publication. |
 | [`claudeville/CLAUDE.md`](../claudeville/CLAUDE.md) | Server invariants, model registry, frontend ownership, sprites, and event bus. |
 | [`claudeville/adapters/README.md`](../claudeville/adapters/README.md) | Adapter contract and per-provider source formats. |

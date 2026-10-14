@@ -4,22 +4,24 @@ This guide covers the failure modes a new contributor or first-time user is most
 
 The dashboard observes local AI CLI session files. It writes nothing back to those CLIs. Most "missing data" symptoms therefore come from the upstream CLI not having produced data yet, not from a ClaudeVille bug.
 
-## "No providers detected" / `/api/providers` returns `[]`
+## "No providers detected" / `/api/providers` has an empty provider list
 
-At least one provider source must exist and be readable: `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.grok/`, `~/.kimi/`, or `~/.local/share/opencode/opencode.db`. Most adapters register by home-directory presence, not by whether session subdirectories already contain data. OpenCode is stricter: the database must exist and either Node's `node:sqlite` support or the `sqlite3` CLI must be available for read-only access. A fresh machine with none of these CLIs installed correctly returns an empty list.
+At least one provider source must exist and be readable: `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.grok/`, `~/.kimi/`, `~/.kimi-code/`, `~/.local/share/opencode/opencode.db`, or `~/.omp/agent/sessions/`. Most adapters register by home-directory presence, not by whether session subdirectories already contain data. OMP requires its session directory. OpenCode requires its database and either Node's `node:sqlite` support or the `sqlite3` CLI for read-only access. A fresh machine with none of these sources correctly returns `providers: []` and `count: 0` in the API response.
 
 Server log on startup will say:
 
 ```
 [!] No active providers
-    One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.grok/, ~/.kimi/, or ~/.local/share/opencode/ is required
+    One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.grok/, ~/.kimi-code/, ~/.local/share/opencode/, or ~/.omp/ is required
 ```
 
-Fix: install at least one supported CLI and run a session so the provider home and session files are created. Then restart the server.
+Fix: install at least one supported CLI and run a session so the provider home and session files are created. Then restart the server. To explore without installing a CLI, use `http://localhost:4000/?sim=1`.
 
 ## Providers detected, but `/api/sessions` is empty
 
-Only sessions whose last activity is within `ACTIVE_THRESHOLD_MS` are returned. The constant is defined in `claudeville/server.js` and is currently `2 * 60 * 1000` (two minutes). If you have not used the CLI in the last two minutes, the dashboard correctly shows nothing active.
+New session discovery uses `ACTIVE_THRESHOLD_MS` in `claudeville/server.js`, currently `2 * 60 * 1000` (two minutes). A session that has not produced recent activity may therefore be absent when the server starts.
+
+This is not a universal two-minute expiry. Once observed, unresolved `tool_pending` sessions can remain as stale residents for up to 45 minutes after their last live observation, with a cap of 24 retained sessions. Hook-derived waits expire after 30 minutes from their signal. Completed turns are not retained by the server; the browser gives them a shorter departure grace. These rules live in [`sessionResidency.js`](../claudeville/services/sessionResidency.js), and stale residency does not prove the CLI is still running or waiting for approval.
 
 Confirm by running a CLI command in a real session, then refresh `/api/sessions` within two minutes.
 
@@ -28,8 +30,10 @@ Provider scan windows also matter:
 - Claude uses recent `history.jsonl` entries to find active sessions, then checks recent project/session files.
 - Codex scans recent date folders under `~/.codex/sessions/YYYY/MM/DD/` and filters by file activity.
 - Gemini reads recent chat JSON files under `~/.gemini/tmp/<project_hash>/chats/`.
+- Grok reads session summaries and chat history under `~/.grok/sessions/<url-encoded-cwd>/<session-id>/`.
 - Kimi reads recent legacy `~/.kimi/sessions/<project_hash>/<session_uuid>/wire.jsonl` data and resolves project hashes from Kimi config and common local work directories. Kimi Code sessions are read from `~/.kimi-code/sessions/<workspace>/<session_uuid>/agents/<agent>/wire.jsonl` and mapped back to projects through `~/.kimi-code/session_index.jsonl`.
 - OpenCode reads recent rows from `~/.local/share/opencode/opencode.db` in read-only mode.
+- OMP reads JSONL sessions and nested agent transcripts under `~/.omp/agent/sessions/`.
 - Some detail lookups can search a wider window than the active-session list, so a detail URL may work for a session that no longer appears as active.
 
 Repository-only `git` sessions can also appear when git enrichment detects unpushed or pushed GitHub repository activity outside a live provider session. That scan defaults to `~/Documents/git`, can be narrowed with `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`, capped with `CLAUDEVILLE_REPOSITORY_SCAN_MAX`, and disabled with `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`. Synthetic git session detail returns a reason string rather than a provider transcript.

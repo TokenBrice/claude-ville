@@ -16,7 +16,7 @@ body:
         - Agent sprites
         - Building sprites
         - Terrain or scenery
-        - Dashboard cards
+        - Dashboard rows or attention cards
         - Sidebar or activity panel
     validations:
       required: true
@@ -31,11 +31,41 @@ body:
     attributes:
       label: Expected visual result
   - type: input
+    id: environment
+    attributes:
+      label: Version and environment
+      description: Include ClaudeVille's top-bar version (or commit), operating system, and browser version.
+      placeholder: "ClaudeVille: ...; OS: ...; Browser: ..."
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Layout
+      options:
+        - Desktop (/)
+        - Mobile (/m/)
+    validations:
+      required: true
+  - type: input
     id: viewport
     attributes:
-      label: "Desktop viewport (minimum width: 1280px)"
-      description: "Record the viewport as width x height; use a width of at least 1280px."
-      placeholder: 1440x900, 100% browser zoom, 2x display scale
+      label: Viewport and display scale
+      description: "Record width x height, browser zoom, and display scale. Desktop / expects at least 1280px; /m/ supports smaller screens."
+      placeholder: "1440x900, 100% browser zoom, 2x display scale; or 390x844 on /m/"
+    validations:
+      required: true
+  - type: input
+    id: renderer
+    attributes:
+      label: World renderer (if relevant)
+      description: Shift-D shows the backend in the World debug overlay. Include any renderer URL flag you used; leave blank if unknown.
+      placeholder: WebGPU, WebGL2, or Canvas 2D
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the view, action, and whether it also happens with ?sim=1. Do not share a URL containing private session IDs.
     validations:
       required: true
   - type: input
