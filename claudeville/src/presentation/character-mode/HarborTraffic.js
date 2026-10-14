@@ -16,6 +16,7 @@ import {
     shortGitLabel,
 } from '../shared/GitEventIdentity.js';
 import { tileToWorld, worldToTile } from './Projection.js';
+import { WORLD_TREE } from '../../config/scenery.js';
 import { WILDLIFE_SCENE_CATEGORY } from './WildlifeRenderer.js';
 import {
     FAILURE,
@@ -51,7 +52,7 @@ export { normalizeGitEvent } from '../shared/GitEventIdentity.js';
 
 const MAX_SHIPS_PER_SQUAD_ANCHORAGE = 3;
 const HARBOR_LOG_TILE = { tileX: 34.8, tileY: 17.2 };
-const COMMIT_LAGOON_LOG_TILE = { tileX: 17.2, tileY: 6.1 };
+const COMMIT_LAGOON_LOG_TILE = { tileX: 15.2, tileY: 8.6 };
 const DEPARTURE_MS = 48000;
 const DEPARTURE_STAGGER_MS = 720;
 const STORAGE_TRANSFER_MS = 9000;
@@ -247,12 +248,19 @@ const COMMIT_LAGOON_WATER_BOUNDS = Object.freeze({
     minTileY: 3.55,
     maxTileY: 12.85,
 });
+// The lagoon's open water, clear of the world ash's islet at its mouth, the
+// Tavern's roof and the Lighthouse's quay (both tall sprites a ship behind
+// them would vanish under): the west basin, the spring reach, the water west
+// of the Tavern and the roadstead north-east of the islet.
 const COMMIT_LAGOON_WATER_REGIONS = Object.freeze([
     { centerX: 7.60, centerY: 8.30, radiusX: 5.45, radiusY: 3.65, limit: 0.88 },
     { centerX: 12.40, centerY: 5.20, radiusX: 3.85, radiusY: 2.65, limit: 0.86 },
-    { centerX: 17.40, centerY: 10.50, radiusX: 5.15, radiusY: 3.45, limit: 0.88 },
-    { centerX: 24.80, centerY: 7.60, radiusX: 3.95, radiusY: 2.70, limit: 0.86 },
+    { centerX: 14.40, centerY: 9.40, radiusX: 3.00, radiusY: 1.50, limit: 0.88 },
+    { centerX: 25.80, centerY: 4.20, radiusX: 2.80, radiusY: 1.60, limit: 0.86 },
 ]);
+// World px a lagoon ship keeps from the world ash's islet (WORLD_TREE.islet):
+// about a hull's half-length, so no keel ever rides its sand.
+const WORLD_TREE_ISLET_CLEARANCE_PX = 24;
 const HARBOR_SQUAD_ANCHORAGES = Object.freeze([
     { name: 'Inner West Basin', zone: 'inner-harbor', tileX: 32.60, tileY: 22.75, columns: 2, columnDx: 1.16, columnDy: 0.08, rowDx: -0.54, rowDy: 1.02 },
     { name: 'Inner Quay Basin', zone: 'inner-harbor', tileX: 35.15, tileY: 22.55, columns: 2, columnDx: 1.12, columnDy: -0.12, rowDx: -0.40, rowDy: 1.04 },
@@ -263,11 +271,11 @@ const HARBOR_SQUAD_ANCHORAGES = Object.freeze([
     { name: 'South Roadstead', zone: 'outer-roadstead', tileX: 38.90, tileY: 21.20, columns: 2, columnDx: 1.04, columnDy: 0.08, rowDx: 0.38, rowDy: 0.98 },
     { name: 'Outer Fairway', zone: 'outer-roadstead', tileX: 38.25, tileY: 24.05, columns: 2, columnDx: 1.06, columnDy: 0.20, rowDx: -0.28, rowDy: 1.04 },
 ]);
-const COMMIT_LAGOON_SQUAD_ANCHORAGES = Object.freeze([
+export const COMMIT_LAGOON_SQUAD_ANCHORAGES = Object.freeze([
     { name: 'Commit Lagoon West', zone: 'commit-lagoon', tileX: 7.75, tileY: 8.55, columns: 2, columnDx: 0.96, columnDy: -0.22, rowDx: 0.36, rowDy: 0.82 },
     { name: 'Commit Lagoon Spring', zone: 'commit-lagoon', tileX: 12.30, tileY: 5.75, columns: 2, columnDx: 0.82, columnDy: 0.18, rowDx: 0.54, rowDy: 0.72 },
-    { name: 'Commit Lagoon Center', zone: 'commit-lagoon', tileX: 17.20, tileY: 10.10, columns: 2, columnDx: 1.04, columnDy: -0.18, rowDx: 0.42, rowDy: 0.82 },
-    { name: 'Commit Lagoon East', zone: 'commit-lagoon', tileX: 24.20, tileY: 7.55, columns: 2, columnDx: 0.82, columnDy: -0.24, rowDx: 0.46, rowDy: 0.78 },
+    { name: 'Commit Lagoon Center', zone: 'commit-lagoon', tileX: 14.20, tileY: 9.30, columns: 2, columnDx: 1.04, columnDy: -0.18, rowDx: 0.42, rowDy: 0.82 },
+    { name: 'Commit Lagoon East', zone: 'commit-lagoon', tileX: 25.60, tileY: 3.90, columns: 2, columnDx: 0.82, columnDy: -0.24, rowDx: 0.46, rowDy: 0.78 },
 ]);
 
 const BERTHS = [
@@ -473,6 +481,10 @@ const LOCAL_WATER_ROUTE_BANDS = Object.freeze([
         exitLaneIndex: 3,
     },
 ]);
+// The world ash's islet stands in the lagoon's mouth, so every lagoon route
+// leaves by the south channel between the islet and the Tavern's shore, rounds
+// the islet's east end and stands out to sea north-east of it. A ship already
+// east of a waypoint never sails back west to it (composeWaterRouteTiles).
 const COMMIT_LAGOON_ROUTE_BANDS = Object.freeze([
     {
         name: 'lagoon-east-channel',
@@ -480,10 +492,14 @@ const COMMIT_LAGOON_ROUTE_BANDS = Object.freeze([
         offsetY: -0.14,
         allowSouthbound: true,
         waypoints: [
-            { tileX: 14.8, tileY: 8.2 },
-            { tileX: 20.4, tileY: 8.8 },
-            { tileX: 25.0, tileY: 7.2 },
-            { tileX: 30.6, tileY: 5.2 },
+            { tileX: 15.6, tileY: 9.3 },
+            { tileX: 18.8, tileY: 9.85 },
+            { tileX: 21.0, tileY: 9.75 },
+            { tileX: 22.5, tileY: 9.0 },
+            { tileX: 23.8, tileY: 7.8 },
+            { tileX: 24.8, tileY: 5.6 },
+            { tileX: 27.5, tileY: 3.2 },
+            { tileX: 32.0, tileY: 3.4 },
             { tileX: 36.2, tileY: 4.9 },
         ],
         exitLaneIndex: 2,
@@ -494,10 +510,14 @@ const COMMIT_LAGOON_ROUTE_BANDS = Object.freeze([
         offsetY: -0.26,
         allowSouthbound: true,
         waypoints: [
-            { tileX: 12.8, tileY: 6.3 },
-            { tileX: 18.2, tileY: 6.6 },
-            { tileX: 24.8, tileY: 6.0 },
-            { tileX: 31.4, tileY: 4.4 },
+            { tileX: 13.4, tileY: 7.5 },
+            { tileX: 15.2, tileY: 8.9 },
+            { tileX: 18.6, tileY: 9.7 },
+            { tileX: 21.0, tileY: 9.6 },
+            { tileX: 22.6, tileY: 8.8 },
+            { tileX: 24.2, tileY: 6.8 },
+            { tileX: 26.0, tileY: 4.0 },
+            { tileX: 31.4, tileY: 4.0 },
             { tileX: 36.8, tileY: 5.6 },
         ],
         exitLaneIndex: 1,
@@ -508,14 +528,28 @@ const COMMIT_LAGOON_ROUTE_BANDS = Object.freeze([
         offsetY: 0.22,
         allowSouthbound: true,
         waypoints: [
-            { tileX: 18.4, tileY: 10.2 },
-            { tileX: 22.8, tileY: 8.9 },
-            { tileX: 27.8, tileY: 6.2 },
+            { tileX: 16.4, tileY: 9.9 },
+            { tileX: 19.2, tileY: 10.1 },
+            { tileX: 21.2, tileY: 9.9 },
+            { tileX: 22.7, tileY: 9.1 },
+            { tileX: 24.0, tileY: 7.6 },
+            { tileX: 25.2, tileY: 5.4 },
+            { tileX: 29.0, tileY: 4.6 },
             { tileX: 34.0, tileY: 4.3 },
             { tileX: 38.2, tileY: 6.6 },
         ],
         exitLaneIndex: 3,
     },
+]);
+// A lagoon ship skips any route waypoint more than this many tiles west of it.
+const LAGOON_BACKTRACK_TILES = 1.0;
+// Inbound to the lagoon: the islet's east end, the south channel, its west mouth.
+const LAGOON_INBOUND_CHANNEL = Object.freeze([
+    Object.freeze({ tileX: 25.0, tileY: 5.6 }),
+    Object.freeze({ tileX: 23.9, tileY: 7.8 }),
+    Object.freeze({ tileX: 22.5, tileY: 9.05 }),
+    Object.freeze({ tileX: 20.4, tileY: 9.8 }),
+    Object.freeze({ tileX: 17.4, tileY: 9.7 }),
 ]);
 const DEPARTURE_EDGE_Y = 2.8;
 const HARBOR_ROUTE_GRAPH_VERSION = 1;
@@ -532,8 +566,9 @@ const HARBOR_ROUTE_WAYPOINTS = Object.freeze({
     'sea.exit': { id: 'sea.exit', name: 'Departure Edge', zone: 'sea', tileY: DEPARTURE_EDGE_Y },
     'lagoon.west': { id: 'lagoon.west', name: 'Commit Lagoon West', zone: 'commit-lagoon', tileX: 7.75, tileY: 8.55 },
     'lagoon.spring': { id: 'lagoon.spring', name: 'Commit Lagoon Spring', zone: 'commit-lagoon', tileX: 12.30, tileY: 5.75 },
-    'lagoon.center': { id: 'lagoon.center', name: 'Commit Lagoon Center', zone: 'commit-lagoon', tileX: 17.20, tileY: 10.10 },
-    'lagoon.east': { id: 'lagoon.east', name: 'Commit Lagoon East', zone: 'commit-lagoon', tileX: 24.20, tileY: 7.55 },
+    'lagoon.center': { id: 'lagoon.center', name: 'Commit Lagoon Center', zone: 'commit-lagoon', tileX: 14.20, tileY: 9.30 },
+    'lagoon.south-channel': { id: 'lagoon.south-channel', name: 'Islet South Channel', zone: 'commit-lagoon', tileX: 21.00, tileY: 9.75 },
+    'lagoon.east': { id: 'lagoon.east', name: 'Commit Lagoon East', zone: 'commit-lagoon', tileX: 25.60, tileY: 3.90 },
     'lagoon.channel-buoy': { id: 'lagoon.channel-buoy', name: 'Lagoon Channel Buoy', zone: 'commit-lagoon', tileX: 26.0, tileY: 6.0 },
 });
 const HARBOR_ROUTE_GRAPH = Object.freeze({
@@ -569,7 +604,7 @@ const HARBOR_ROUTE_GRAPH = Object.freeze({
             kind: 'lagoon',
             zone: 'commit-lagoon',
             bandName: 'lagoon-east-channel',
-            waypoints: ['lagoon.center', 'lagoon.east', 'lagoon.channel-buoy', 'roadstead.north', 'sea.exit'],
+            waypoints: ['lagoon.center', 'lagoon.south-channel', 'lagoon.channel-buoy', 'lagoon.east', 'roadstead.north', 'sea.exit'],
         },
         'lagoon.lagoon-spring-channel': {
             id: 'lagoon.lagoon-spring-channel',
@@ -577,7 +612,7 @@ const HARBOR_ROUTE_GRAPH = Object.freeze({
             kind: 'lagoon',
             zone: 'commit-lagoon',
             bandName: 'lagoon-spring-channel',
-            waypoints: ['lagoon.spring', 'lagoon.channel-buoy', 'roadstead.north', 'sea.exit'],
+            waypoints: ['lagoon.spring', 'lagoon.south-channel', 'lagoon.channel-buoy', 'roadstead.north', 'sea.exit'],
         },
         'lagoon.tavern-backwater': {
             id: 'lagoon.tavern-backwater',
@@ -585,7 +620,7 @@ const HARBOR_ROUTE_GRAPH = Object.freeze({
             kind: 'lagoon',
             zone: 'commit-lagoon',
             bandName: 'tavern-backwater',
-            waypoints: ['lagoon.center', 'lagoon.east', 'lagoon.channel-buoy', 'roadstead.outer', 'sea.exit'],
+            waypoints: ['lagoon.center', 'lagoon.south-channel', 'lagoon.channel-buoy', 'roadstead.outer', 'sea.exit'],
         },
         'inbound.pull': {
             id: 'inbound.pull',
@@ -613,7 +648,7 @@ const HARBOR_ROUTE_GRAPH = Object.freeze({
             name: 'Lagoon Storage Transfer',
             kind: 'lagoon-transfer',
             zone: 'commit-lagoon',
-            waypoints: ['harbor.inner-basin', 'lagoon.channel-buoy', 'lagoon.center'],
+            waypoints: ['harbor.inner-basin', 'lagoon.channel-buoy', 'lagoon.south-channel', 'lagoon.center'],
         },
     }),
 });
@@ -1641,7 +1676,28 @@ function projectTileIntoHarborRegion(tile, region) {
     };
 }
 
+// A tile pushed radially off the world ash's islet until it stands
+// WORLD_TREE_ISLET_CLEARANCE_PX clear of its oval; any other tile unchanged.
+export function clearOfWorldTreeIslet(tile) {
+    const { centerX, centerY, radiusX, radiusY } = WORLD_TREE.islet;
+    const world = tileToWorld(tile.tileX, tile.tileY);
+    const dx = world.x - centerX;
+    const dy = world.y - centerY;
+    const outerX = radiusX + WORLD_TREE_ISLET_CLEARANCE_PX;
+    const outerY = radiusY + WORLD_TREE_ISLET_CLEARANCE_PX;
+    const reach = Math.hypot(dx / outerX, dy / outerY);
+    if (reach >= 1) return tile;
+    const angle = reach > 0 ? Math.atan2(dy / outerY, dx / outerX) : Math.PI / 2;
+    const pushed = worldToTile(centerX + Math.cos(angle) * outerX, centerY + Math.sin(angle) * outerY);
+    return { tileX: pushed.tileX, tileY: pushed.tileY };
+}
+
 function clampDockTileToHarborWater(tile, entry = {}) {
+    const clamped = clampDockTileToHarborRegions(tile, entry);
+    return isCommitLagoonZone(entry.waitingZone || entry.departWaterZone) ? clearOfWorldTreeIslet(clamped) : clamped;
+}
+
+function clampDockTileToHarborRegions(tile, entry = {}) {
     const bounds = dockShipWaterBounds(entry);
     let next = {
         tileX: clamp(Number(tile.tileX) || bounds.maxTileX, bounds.minTileX, bounds.maxTileX),
@@ -2210,17 +2266,21 @@ function offsetWaterRoutePoint(point, band, ship, index, lastIndex) {
     };
 }
 
-function composeWaterRouteTiles(startTile, ship, routeData = null) {
+export function composeWaterRouteTiles(startTile, ship, routeData = null) {
     const bands = routeBandsFromData(routeData, ship);
     const routeIndex = Number.isFinite(Number(ship?.departRouteIndex))
         ? Number(ship.departRouteIndex)
         : Number(ship?.laneIndex || 0);
     const band = bands[Math.abs(routeIndex) % bands.length] || bands[0];
     const fallbackLane = SEA_LANES[Math.abs(Number(band.exitLaneIndex ?? ship?.laneIndex ?? 0)) % SEA_LANES.length] || SEA_LANES[0];
+    const lagoon = bands === COMMIT_LAGOON_ROUTE_BANDS;
     const raw = [];
     pushRoutePoint(raw, startTile);
     for (const point of band.waypoints || []) {
         if (!band.allowSouthbound && Number(point.tileY) > Number(startTile.tileY) + 0.65) continue;
+        // A lagoon ship east of a waypoint never turns back west to it: the
+        // way back would cross the world ash's islet.
+        if (lagoon && Number(point.tileX) < Number(startTile.tileX) - LAGOON_BACKTRACK_TILES) continue;
         pushRoutePoint(raw, point);
     }
     // End at the established sea-lane endpoint. The old randomized edge leg
@@ -2232,7 +2292,8 @@ function composeWaterRouteTiles(startTile, ship, routeData = null) {
     const lastIndex = raw.length - 1;
     const route = [];
     raw.forEach((point, index) => {
-        pushRoutePoint(route, offsetWaterRoutePoint(point, band, ship, index, lastIndex));
+        const offset = offsetWaterRoutePoint(point, band, ship, index, lastIndex);
+        pushRoutePoint(route, lagoon ? clearOfWorldTreeIslet(offset) : offset);
     });
     return route.length ? route : [startTile, ...(fallbackLane || [])];
 }
@@ -2245,11 +2306,10 @@ function composeStorageTransferTiles(fromTile, toTile, ship = {}) {
     pushRoutePoint(route, { tileX: 37.0 + laneOffset, tileY: entryY });
     pushRoutePoint(route, { tileX: 35.2 + laneOffset, tileY: 9.1 });
     pushRoutePoint(route, { tileX: 28.4 + laneOffset * 0.6, tileY: 6.6 });
-    if (toTile.tileX < 15) {
-        pushRoutePoint(route, { tileX: 20.6 + laneOffset * 0.4, tileY: 6.3 });
-        pushRoutePoint(route, { tileX: 14.2 + laneOffset * 0.3, tileY: 6.5 });
-    } else if (toTile.tileX > 21) {
-        pushRoutePoint(route, { tileX: 24.2 + laneOffset * 0.3, tileY: 6.6 });
+    if (toTile.tileX < 23) {
+        // Into the lagoon round the world ash's islet: down its east end and
+        // in by the south channel, then west to the anchorage.
+        for (const point of LAGOON_INBOUND_CHANNEL) pushRoutePoint(route, { tileX: point.tileX, tileY: point.tileY + laneOffset * 0.25 });
     }
     pushRoutePoint(route, toTile);
     return route;

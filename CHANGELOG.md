@@ -2,6 +2,23 @@
 
 ---
 
+## v0.55.1 — *The Charted Strait* · Oct 14, 2026
+
+Ships in the Commit Lagoon no longer sail across the world ash's islet.
+
+- **Lagoon routes go around the islet.** The three lagoon departure routes were drawn before the islet and its great tree were planted in the lagoon's mouth, and cut straight across them. Every route now leaves through the channel south of the islet, rounds its east end and stands out to sea north-east of it. A ship that starts east of the islet no longer turns back west across it.
+- **Storage transfers go around too.** Ships carried into the lagoon from the harbour now come in by the same channel; one path used to pass the middle of the islet.
+- **No more ships moored on land or out of sight.**
+  - The lagoon's Center anchorage, which had been left behind the Tavern's roof, now sits in open water west of it.
+  - The East anchorage, which had been on the Lighthouse's grass, now sits in open water north-east of the islet.
+  - The lagoon's ledger marker moved off the islet's sand.
+  - Any docked lagoon ship is pushed clear of the islet.
+- **A regression test** (`scripts/tests/lagoon-islet.test.mjs`) checks every lagoon anchorage, and every departure route from each one, stays clear of the islet.
+
+Validation: `gate:release` is clean, with 1825 unit tests passing, including the new lagoon test. In the simulated village, docked lagoon ships sit in open water, and a pushed convoy sails out through the south channel without crossing the islet or the tree.
+
+---
+
 ## v0.55.0 — *The Open Tap* · Oct 14, 2026
 
 The Observatory, which only web-search agents ever visited, is gone. In its place stands the Tavern, an open-front inn where idle agents go for a pint. It replaces the green benches as the village's place to rest.
